@@ -1,0 +1,24 @@
+// Prisma 7 Schema
+// Documentation: https://pris.ly/d/prisma-schema
+// Connection URLs are configured in prisma.config.ts
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// Add your models below
+// Example:
+// model User {
+//   id        String   @id @default(cuid())
+//   email     String   @unique
+//   name      String?
+//   createdAt DateTime @default(now()) @map("created_at")
+//   updatedAt DateTime @updatedAt @map("updated_at")
+//
+//   @@map("users")
+// }

@@ -1,0 +1,51 @@
+name: Lint & Type Check
+
+on:
+  pull_request:
+    branches:
+      - main
+      - preview
+      - staging
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10.4.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm run db:generate
+
+      - name: Run Biome lint
+        run: pnpm run lint
+
+      - name: TypeScript type check
+        run: pnpm exec tsc --noEmit
+
+      - name: Add summary
+        run: |
+          echo "## Lint & Type Check Results" >> $GITHUB_STEP_SUMMARY
+          echo "- Branch: ${{ github.head_ref }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Commit: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Status: Passed" >> $GITHUB_STEP_SUMMARY
