@@ -90,9 +90,7 @@ async function main(): Promise<void> {
   mkdirSync(OUTPUT, { recursive: true });
   logger.info("calibrating baseline (unfiltered × 3)");
   const baseline = await probe("", 3);
-  logger.info(
-    `baseline repeats=${JSON.stringify(baseline.repeats)} stable=${baseline.stable}`
-  );
+  logger.info(`baseline repeats=${JSON.stringify(baseline.repeats)} stable=${baseline.stable}`);
 
   // Range-filter candidate encodings (tried alone first).
   const rangeCandidates = [
@@ -171,7 +169,9 @@ async function main(): Promise<void> {
     `done: working=${working.length}, narrowingButNoisy=${narrowingButNoisy.length}, collapsed=${collapsed.length}`
   );
   for (const w of working.slice(0, 10)) {
-    logger.info(`  ✓ stable narrowing: "${w.filters}" → ${w.repeats[0]} (baseline ${baseline.mean})`);
+    logger.info(
+      `  ✓ stable narrowing: "${w.filters}" → ${w.repeats[0]} (baseline ${baseline.mean})`
+    );
   }
 }
 

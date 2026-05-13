@@ -282,15 +282,79 @@ on `/graph` returns the same info for single-market queries.
 
 Full JSON at `/tmp/recon/graphql/006-home-anon.json`.
 
+### 7. Multi-key AND in `filters` — ACCEPTED BUT ONLY FIRST PREDICATE APPLIED
+
+Ran a probe matrix of 55 encodings × 3 repeats, then a v2 validation
+matrix of 24 encodings × 5 repeats (see `/tmp/recon/filter-probe-matrix.json`
+and `/tmp/recon/filter-probe-matrix-v2.json`). Findings:
+
+- **Single predicate, list type:** `key:value`. Stable 5/5 for
+  `destination:ALCAN` (296), `ship:WN` (4), `ship:IC` (10),
+  `departurePort:FLL` (97).
+- **Within-key OR:** `key:v1,v2` (e.g. `destination:CARIB,BAHAM`).
+  Confirmed iteration 8.
+- **Range filter syntax:** `key:min~max` (tilde). Narrows but with
+  1-8 count jitter (`nights:7~7`→~282, `nights:3~5`→~187,
+  `startDate:2026-06-01~2026-06-30`→~62). Tilde is correct; jitter
+  is the same cache-layer effect that drifts baseline totals.
+- **Multi-key AND:** `::` separator is parsed (request returns stable
+  results) but **only the first predicate is actually applied**:
+  `destination:CARIB::ship:WN` → 340 (same as `destination:CARIB`
+  alone), `destination:BAHAM::departurePort:MIA` → 67 (same as
+  `destination:BAHAM` alone). `destination:BAHAM::nights:3~5` → 67
+  (same as Bahamas-only). No separator tested achieved true
+  intersection.
+
+**Implementation consequence:** the direct-HTTP client sends ONE
+most-selective predicate (shipCodes > destination > date range)
+and applies the rest client-side on `productViewLink` +
+`lowestPriceSailing.sailDate`. Even with just the destination
+predicate, 1006 → 259 cruises = 4× reduction for free.
+
+### 8. Detail-page per-cabin pricing — PARTIALLY RESOLVED
+
+The `/itinerary/...` detail page **does not fire any per-sailing
+pricing call against `/cruises/graph`** on load — every captured
+run (three attempts) shows zero detail-phase GraphQL activity even
+when `[data-testid="pricing-bar"]` is visible and clicked.
+
+**BUT:** the RSC (React Server Components) hydration payload
+embedded in the SSR HTML **does** contain a `lowestPrice` struct
+for the package:
+
+```json
+"lowestPrice": { "amount": 460.51, "total": 921.02 },
+"totalSailings": 92,
+"resolvedSearchParams": { "sailDate": "2026-10-02", "packageCode": "WN3BH177" }
+```
+
+Captured by plain `curl` — no browser, no Steel. The payload is
+inside `self.__next_f.push([N, "..."])` blocks; concatenate those
+19 blocks and it's ~572KB of RSC state per package.
+
+**Per-CABIN-CATEGORY pricing** (Inside/Oceanview/Balcony/Deluxe/
+Aqua/Concierge breakdown that VPS's `super-category-pricing` and
+`category-pricing` endpoints require) is **NOT** in the SSR and
+**NOT** fired on page load by the SPA. It presumably fires when a
+user selects a specific sail-date in the pricing bar widget —
+which the free-tier browser sessions can't reliably drive due to
+Akamai challenges.
+
+**Implementation consequence:** for per-package starting prices we
+use the RSC extraction (plain HTTP, no browser). For per-category
+breakdowns we either (a) upgrade Steel to a tier with residential
+proxies to reliably hydrate, or (b) treat category pricing as
+"best-effort" in the initial release and extrapolate from
+`superCategory` field if present in the list-level `cruiseSearch_Cruises`
+response.
+
 ## Remaining open items
 
-1. **Multi-key AND composition in `filters`** — if we ever want to push
-   predicates server-side rather than filter client-side, the encoding
-   is still unknown. The SPA in observed captures always sent
-   `filters: ""` and let the backend session infer them, so this may
-   not have a pure-HTTP answer.
-2. **Detail-page per-cabin pricing queries** — next recon pass should
-   hold the `/itinerary/…` page longer so hydration GraphQL fires before
-   close.
-3. **Production rate-limit ceiling** — probed 5 rps × 60, no throttling.
+1. **Per-category pricing hydration flow** — would require Steel
+   residential proxies ($29+/mo). Free-tier sessions hit intermittent
+   empty-response symptoms (4 total XHRs captured out of expected
+   ~2500) consistent with Akamai Bot Manager serving stripped pages
+   to unproxied datacenter IPs. Park until we know whether the initial
+   launch requires category-level pricing parity.
+2. **Production rate-limit ceiling** — probed 5 rps × 60, no throttling.
    Higher thresholds unexplored on purpose (don't burn the egress IP).
