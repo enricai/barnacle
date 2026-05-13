@@ -14,7 +14,15 @@ import { buildVpsEnvelope } from "@/api/errors";
 import authPlugin from "@/api/plugins/auth";
 import errorHandlerPlugin from "@/api/plugins/error-handler";
 import requestContextPlugin from "@/api/plugins/request-context";
+import { categoryPricingRoute } from "@/api/routes/category-pricing";
+import { groupPricingRoute } from "@/api/routes/group-pricing";
 import { healthRoutes } from "@/api/routes/health";
+import { priceChangesCategoryRoute } from "@/api/routes/price-changes-category";
+import { priceChangesSuperCategoryRoute } from "@/api/routes/price-changes-super-category";
+import { promotionDetailsRoute } from "@/api/routes/promotion-details";
+import { sailingPackageRoute } from "@/api/routes/sailing-package";
+import { sailingPackageChangesRoute } from "@/api/routes/sailing-package-changes";
+import { superCategoryPricingRoute } from "@/api/routes/super-category-pricing";
 import { VPS_ERROR_CODES } from "@/api/schemas/common";
 import { config } from "@/config";
 import { getLogger } from "@/lib/logging";
@@ -86,6 +94,14 @@ export async function buildServer() {
   }
 
   await app.register(healthRoutes);
+  await app.register(sailingPackageRoute);
+  await app.register(sailingPackageChangesRoute);
+  await app.register(superCategoryPricingRoute);
+  await app.register(categoryPricingRoute);
+  await app.register(groupPricingRoute);
+  await app.register(priceChangesSuperCategoryRoute);
+  await app.register(priceChangesCategoryRoute);
+  await app.register(promotionDetailsRoute);
 
   return app;
 }
