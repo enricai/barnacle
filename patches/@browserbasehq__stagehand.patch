@@ -1,0 +1,14 @@
+diff --git a/package.json b/package.json
+index 337239401d5a7c1380263e460872840f3d4f34bc..479657b5ec44aa87ca37477e7271df08c8adf617 100644
+--- a/package.json
++++ b/package.json
+@@ -5,9 +5,6 @@
+   "main": "./dist/index.js",
+   "module": "./dist/index.js",
+   "types": "./dist/index.d.ts",
+-  "bin": {
+-    "evals": "./dist/evals/cli.js"
+-  },
+   "files": [
+     "dist/**"
+   ],

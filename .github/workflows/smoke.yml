@@ -1,0 +1,87 @@
+name: Nightly Smoke Test
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      run_fallback:
+        description: 'Also run the --fallback probe to catch Stagehand cache staleness'
+        required: false
+        default: 'true'
+        type: boolean
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    name: Smoke Test
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: "postgresql://localhost/unused"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10.4.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check required secrets
+        id: check-secrets
+        run: |
+          if [ -z "$SMOKE_API_KEY" ] || [ -z "$SMOKE_HOST" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "SMOKE_API_KEY or SMOKE_HOST not configured — skipping smoke test"
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          SMOKE_API_KEY: ${{ secrets.SMOKE_API_KEY }}
+          SMOKE_HOST: ${{ secrets.SMOKE_HOST }}
+
+      # Add one step per registered site plugin when a new site is onboarded.
+      # Pattern (replace MY_SITE and the payload with the plugin's siteId and a
+      # representative request body):
+      #
+      #   - name: Run smoke test — my-site
+      #     if: steps.check-secrets.outputs.skip == 'false'
+      #     run: |
+      #       FALLBACK_FLAG=""
+      #       if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ inputs.run_fallback }}" = "true" ]; then
+      #         FALLBACK_FLAG="--fallback"
+      #       fi
+      #       pnpm tsx src/scripts/smoke-test.ts \
+      #         --site my-site \
+      #         --payload '{"query":"test"}' \
+      #         --host "$SMOKE_HOST" \
+      #         $FALLBACK_FLAG
+      #     env:
+      #       API_KEY: ${{ secrets.SMOKE_API_KEY }}
+      #       SMOKE_HOST: ${{ secrets.SMOKE_HOST }}
+      #       NODE_ENV: production
+
+      - name: Add summary
+        if: always()
+        run: |
+          echo "## Smoke Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "- Triggered by: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Commit: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.check-secrets.outputs.skip }}" = "true" ]; then
+            echo "- Status: **Skipped** — SMOKE_API_KEY or SMOKE_HOST secrets not configured" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- Status: See job steps above" >> $GITHUB_STEP_SUMMARY
+          fi
