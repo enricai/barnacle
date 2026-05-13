@@ -1,0 +1,52 @@
+name: Smoke Test (RC GraphQL)
+
+on:
+  schedule:
+    # Daily at 09:00 UTC (04:00 US-Central). Offset from hour boundaries
+    # so we don't collide with RC's own cache warms.
+    - cron: "30 9 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    name: Sailing-package smoke against royalcaribbean.com
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10.4.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # No Steel / Anthropic keys needed — the smoke runs the direct-HTTP
+      # GraphQL path. Task 12's job is to catch schema drift at RC's end
+      # and alert before the drift reaches clients.
+      - name: Run smoke
+        run: pnpm run smoke
+        env:
+          NODE_ENV: production
+
+      - name: Add summary
+        if: always()
+        run: |
+          echo "## Smoke Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "- Date: $(date -u +'%Y-%m-%d %H:%M:%SZ')" >> $GITHUB_STEP_SUMMARY
+          echo "- Commit: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Status: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY

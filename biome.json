@@ -10,7 +10,6 @@
     "includes": [
       "**",
       "!**/node_modules",
-      "!**/.next",
       "!**/dist",
       "!**/coverage",
       "!**/prisma",
@@ -58,11 +57,6 @@
   "json": {
     "formatter": {
       "trailingCommas": "none"
-    }
-  },
-  "css": {
-    "parser": {
-      "tailwindDirectives": true
     }
   }
 }

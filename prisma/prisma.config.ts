@@ -1,33 +1,18 @@
 /**
- * Prisma Configuration File
- *
- * Prisma v7 configuration file for the Prisma CLI.
+ * Prisma v7 configuration — consumed by `prisma` CLI commands.
  * See: https://www.prisma.io/docs/orm/reference/prisma-config-reference
  *
- * Note: Environment variables from .env files are
- * not automatically loaded - use dotenv/config import if needed.
+ * We used to `import "dotenv/config"` at the top of this file, but
+ * dotenv was dropped from our direct deps (landed transitively via
+ * Prisma's c12). Operators should load env with their orchestrator
+ * of choice (direnv, tsx's --env-file, ops tooling); the Prisma CLI
+ * then reads `process.env` here directly via `env(...)`.
  */
-import "dotenv/config";
-
 import { defineConfig, env } from "prisma/config";
 
 export default defineConfig({
-  // Path to the Prisma schema file
   schema: "./schema.prisma",
-
-  // Migration configuration
-  migrations: {
-    // Directory where migration files are stored
-    path: "./migrations",
-    // Seed command to run after migrations
-    seed: "ts-node -r tsconfig-paths/register ../prisma/seed.ts",
-  },
-
-  // Database connection configuration
   datasource: {
-    // Primary connection URL (uses connection pooler like PgBouncer)
     url: env("DATABASE_URL"),
-    // Direct connection URL (bypasses connection pooler for migrations)
-    directUrl: env("DIRECT_URL"),
   },
 });

@@ -34,9 +34,6 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Generate Prisma client
-        run: pnpm run db:generate
-
       - name: Build application
         run: pnpm run build
         env:
@@ -44,12 +41,33 @@ jobs:
 
       - name: Verify build output
         run: |
-          if [ -d ".next" ]; then
-            echo "Build successful - .next directory exists"
+          if [ -d "dist" ] && [ -f "dist/server.js" ]; then
+            echo "Build successful — dist/server.js exists"
           else
-            echo "Build failed - .next directory not found"
+            echo "Build failed — dist/server.js not found"
             exit 1
           fi
+
+      # Load-smoke the production build — catches path-alias resolution
+      # bugs and Prisma CJS/ESM regressions that existence-only checks
+      # miss. `require()` initializes every top-level module as Node
+      # would on a real boot; a missing @/ alias or ESM/CJS interop
+      # failure throws here. main() doesn't fire because process.argv[1]
+      # is the -e script, not server.js — so no HTTP listen, no workers.
+      - name: Smoke-load dist/server.js
+        run: node -e "require('./dist/server.js')"
+        env:
+          NODE_ENV: production
+
+      # Generate the OpenAPI spec. Catches Zod→OpenAPI conversion
+      # regressions (recursive schemas, unresolvable unions, etc.) that
+      # wouldn't surface in the typecheck or runtime module load. The
+      # generator exits non-zero on any serialization failure.
+      - name: Generate OpenAPI spec
+        run: pnpm run openapi:generate
+        env:
+          ENABLE_DOCS: "true"
+          NODE_ENV: production
 
       - name: Add summary
         run: |
