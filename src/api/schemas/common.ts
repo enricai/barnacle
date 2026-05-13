@@ -176,7 +176,8 @@ export const occupancySchema = z.number().int().min(1).max(8);
  */
 export const pricingPreferenceSchema = z
   .object({
-    depositFareType: z.union([z.literal("BOTH"), z.literal("REF"), z.literal("NON_REF"), z.string()])
+    depositFareType: z
+      .union([z.literal("BOTH"), z.literal("REF"), z.literal("NON_REF"), z.string()])
       .optional(),
     includeGuestLevelDetail: z.boolean().optional(),
     includeGratuity: z.boolean().optional(),

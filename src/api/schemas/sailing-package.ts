@@ -1,10 +1,6 @@
 import { z } from "zod";
 
-import {
-  brandCodeSchema,
-  sailDateStringSchema,
-  vpsStatusSchema,
-} from "@/api/schemas/common";
+import { brandCodeSchema, sailDateStringSchema, vpsStatusSchema } from "@/api/schemas/common";
 
 /**
  * Request parameters accepted by `GET /v1/catalog/sailing-package`. RC uses
@@ -35,22 +31,25 @@ export const sailingPackageQueryStringSchema = z
     fromSailDate: sailDateStringSchema,
     toSailDate: sailDateStringSchema,
     shipCodes: z.string().optional(),
-    includeTourPackages: z
-      .union([z.boolean(), z.string()])
-      .optional(),
+    includeTourPackages: z.union([z.boolean(), z.string()]).optional(),
   })
-  .transform((input): SailingPackageRequest => ({
-    brandCode: input.brandCode,
-    fromSailDate: input.fromSailDate,
-    toSailDate: input.toSailDate,
-    shipCodes: input.shipCodes
-      ? input.shipCodes.split(",").map((code) => code.trim()).filter(Boolean)
-      : undefined,
-    includeTourPackages:
-      typeof input.includeTourPackages === "boolean"
-        ? input.includeTourPackages
-        : input.includeTourPackages === "true",
-  }));
+  .transform(
+    (input): SailingPackageRequest => ({
+      brandCode: input.brandCode,
+      fromSailDate: input.fromSailDate,
+      toSailDate: input.toSailDate,
+      shipCodes: input.shipCodes
+        ? input.shipCodes
+            .split(",")
+            .map((code) => code.trim())
+            .filter(Boolean)
+        : undefined,
+      includeTourPackages:
+        typeof input.includeTourPackages === "boolean"
+          ? input.includeTourPackages
+          : input.includeTourPackages === "true",
+    })
+  );
 
 /**
  * One entry in a sailing's itinerary schedule. RC exposes a deep itinerary
