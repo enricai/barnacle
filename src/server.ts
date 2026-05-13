@@ -10,7 +10,6 @@ import {
   validatorCompiler,
 } from "fastify-type-provider-zod";
 
-import { buildVpsEnvelope } from "@/api/errors";
 import authPlugin from "@/api/plugins/auth";
 import errorHandlerPlugin from "@/api/plugins/error-handler";
 import requestContextPlugin from "@/api/plugins/request-context";
@@ -23,8 +22,7 @@ import { promotionDetailsRoute } from "@/api/routes/promotion-details";
 import { sailingPackageRoute } from "@/api/routes/sailing-package";
 import { sailingPackageChangesRoute } from "@/api/routes/sailing-package-changes";
 import { superCategoryPricingRoute } from "@/api/routes/super-category-pricing";
-import { VPS_ERROR_CODES } from "@/api/schemas/common";
-import { config } from "@/config";
+import { config as defaultConfig, loadConfig } from "@/config";
 import { getLogger } from "@/lib/logging";
 import { startChangesWorker } from "@/workers/changes";
 import { startRefreshWorker } from "@/workers/refresh";
@@ -37,6 +35,12 @@ const logger = getLogger({ name: "server" });
  * instead of binding to a port.
  */
 export async function buildServer() {
+  // Load a fresh config per build so tests can toggle env vars between
+  // buildServer() invocations. The exported `defaultConfig` is still
+  // used for module-level pieces (logger, cron scheduling) that are
+  // process-wide.
+  const cfg = loadConfig();
+
   const app = Fastify({
     loggerInstance: logger,
     disableRequestLogging: false,
@@ -53,27 +57,25 @@ export async function buildServer() {
   await app.register(fastifyCompress, { encodings: ["gzip", "br"] });
 
   await app.register(fastifyRateLimit, {
-    max: config.rateLimit.max,
-    timeWindow: config.rateLimit.windowMs,
+    global: true,
+    max: cfg.rateLimit.max,
+    timeWindow: cfg.rateLimit.windowMs,
     keyGenerator: (request) => {
       const auth = request.headers.authorization;
       if (typeof auth === "string" && auth.length > 0) return auth;
       return request.ip;
     },
-    errorResponseBuilder: (_request, context) => {
-      const envelope = buildVpsEnvelope(
-        VPS_ERROR_CODES.THROTTLED_REQUEST,
-        `rate limit exceeded; retry after ${context.after}`
-      );
-      return envelope as unknown as object;
-    },
+    // We don't pass a custom errorResponseBuilder — fastify-rate-limit
+    // throws a FastifyError with statusCode=429 which our setErrorHandler
+    // catches and emits as the VPS envelope (code 1010). Keeping a single
+    // error-rendering path avoids schema-serializer mismatches.
   });
 
   await app.register(requestContextPlugin);
   await app.register(errorHandlerPlugin);
   await app.register(authPlugin);
 
-  if (config.docs.enabled) {
+  if (cfg.docs.enabled) {
     await app.register(fastifySwagger, {
       openapi: {
         openapi: "3.1.0",
@@ -83,7 +85,7 @@ export async function buildServer() {
             "Headless Node.js API mirroring Royal Caribbean's Vendor Pricing Services (VPS) surface.",
           version: "0.1.0",
         },
-        servers: [{ url: `http://${config.host}:${config.port}` }],
+        servers: [{ url: `http://${cfg.host}:${cfg.port}` }],
         components: {
           securitySchemes: {
             bearerAuth: { type: "http", scheme: "bearer" },
@@ -114,8 +116,8 @@ export async function buildServer() {
 async function main(): Promise<void> {
   const app = await buildServer();
   try {
-    await app.listen({ host: config.host, port: config.port });
-    logger.info(`server listening on http://${config.host}:${config.port}`);
+    await app.listen({ host: defaultConfig.host, port: defaultConfig.port });
+    logger.info(`server listening on http://${defaultConfig.host}:${defaultConfig.port}`);
   } catch (err) {
     logger.errorWithStack(err, "server failed to start");
     process.exit(1);

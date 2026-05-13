@@ -44,8 +44,13 @@ describe("api/errors", () => {
       expect(vpsHttpStatusString(504)).toBe("GATEWAY_TIMEOUT");
     });
 
-    it("falls back to HTTP_<n> for unknowns", () => {
-      expect(vpsHttpStatusString(418)).toBe("HTTP_418");
+    it("uses the RFC reason phrase for any valid status via http-status-codes", () => {
+      expect(vpsHttpStatusString(418)).toBe("I_M_A_TEAPOT");
+      expect(vpsHttpStatusString(418)).toMatch(/^[A-Z0-9_]+$/);
+    });
+
+    it("falls back to HTTP_<n> for statuses http-status-codes does not know", () => {
+      expect(vpsHttpStatusString(999)).toBe("HTTP_999");
     });
   });
 

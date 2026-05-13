@@ -1,4 +1,6 @@
+import { constantCase } from "change-case";
 import { formatISO } from "date-fns";
+import { getReasonPhrase, StatusCodes } from "http-status-codes";
 
 import {
   VPS_ERROR_CODE_DESCRIPTIONS,
@@ -27,73 +29,57 @@ export interface VpsErrorEnvelope {
 }
 
 /**
- * Maps a VPS error code to the HTTP status we return. The RC spec does
- * not prescribe the mapping (VPS returns 200 with `httpStatus` as a
- * string); Barnacle both sets the HTTP status AND mirrors it in the
- * envelope so modern clients can branch on either.
+ * Maps a VPS error code to the HTTP status we return. Status codes come
+ * from the `http-status-codes` package (battle-tested, RFC-aligned, used
+ * by Express and thousands of production APIs) so we don't maintain our
+ * own numeric table.
+ *
+ * The RC spec does not prescribe the mapping — VPS returns 200 with
+ * `httpStatus` as a string. Barnacle both sets the HTTP status AND
+ * mirrors it in the envelope so modern clients can branch on either.
  */
 export function httpStatusForCode(code: VpsErrorCode): number {
   switch (code) {
     case VPS_ERROR_CODES.PARTIAL_CONTENT_SUCCESS:
-      return 206;
+      return StatusCodes.PARTIAL_CONTENT;
     case VPS_ERROR_CODES.AUTHORIZATION_ERROR:
-      return 401;
+      return StatusCodes.UNAUTHORIZED;
     case VPS_ERROR_CODES.DECODING_ERROR:
     case VPS_ERROR_CODES.FIELD_VIOLATION:
     case VPS_ERROR_CODES.EMPTY_REQUEST:
-      return 400;
+      return StatusCodes.BAD_REQUEST;
     case VPS_ERROR_CODES.RESOURCE_NOT_FOUND:
     case VPS_ERROR_CODES.INDEX_NOT_FOUND:
     case VPS_ERROR_CODES.SAILING_NOT_FOUND:
-      return 404;
+      return StatusCodes.NOT_FOUND;
     case VPS_ERROR_CODES.SAILING_SOLD_OUT:
-      return 409;
+      return StatusCodes.CONFLICT;
     case VPS_ERROR_CODES.THROTTLED_REQUEST:
-      return 429;
+      return StatusCodes.TOO_MANY_REQUESTS;
     case VPS_ERROR_CODES.TIME_OUT:
-      return 504;
+      return StatusCodes.GATEWAY_TIMEOUT;
     case VPS_ERROR_CODES.CLIENT_CALL_ERROR:
     case VPS_ERROR_CODES.GENERIC_ERROR:
     case VPS_ERROR_CODES.EXTRA_DETAIL:
     case VPS_ERROR_CODES.SCRAPE_FAILURE:
     case VPS_ERROR_CODES.CAPTCHA_ENCOUNTERED:
-      return 500;
+      return StatusCodes.INTERNAL_SERVER_ERROR;
     default:
-      return 500;
+      return StatusCodes.INTERNAL_SERVER_ERROR;
   }
 }
 
 /**
- * Maps an HTTP status number to the string form RC uses in the envelope.
+ * Converts an HTTP status number into the upper-snake-case string form
+ * RC uses in the envelope (e.g. 400 → `"BAD_REQUEST"`). Uses
+ * `getReasonPhrase` from `http-status-codes` for the canonical RFC
+ * reason phrase and `constantCase` from `change-case` for the casing.
  */
 export function vpsHttpStatusString(status: number): string {
-  switch (status) {
-    case 200:
-      return "OK";
-    case 206:
-      return "PARTIAL_CONTENT";
-    case 400:
-      return "BAD_REQUEST";
-    case 401:
-      return "UNAUTHORIZED";
-    case 403:
-      return "FORBIDDEN";
-    case 404:
-      return "NOT_FOUND";
-    case 409:
-      return "CONFLICT";
-    case 429:
-      return "TOO_MANY_REQUESTS";
-    case 500:
-      return "INTERNAL_SERVER_ERROR";
-    case 502:
-      return "BAD_GATEWAY";
-    case 503:
-      return "SERVICE_UNAVAILABLE";
-    case 504:
-      return "GATEWAY_TIMEOUT";
-    default:
-      return `HTTP_${status}`;
+  try {
+    return constantCase(getReasonPhrase(status));
+  } catch {
+    return `HTTP_${status}`;
   }
 }
 

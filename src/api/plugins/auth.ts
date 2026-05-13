@@ -3,7 +3,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import fp from "fastify-plugin";
 
 import { UnauthorizedError } from "@/api/errors";
-import { config } from "@/config";
+import { loadConfig } from "@/config";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -49,10 +49,15 @@ async function findMatchingHash(token: string, hashes: readonly string[]): Promi
  * access in non-production environments. NEVER set this in prod.
  */
 async function authPlugin(app: FastifyInstance): Promise<void> {
+  // Reload config at plugin-registration time so tests can toggle
+  // DEV_BYPASS_AUTH and spin up a fresh server instance without the
+  // frozen module-scope `config` singleton getting in the way.
+  const cfg = loadConfig();
+
   app.decorate(
     "authenticate",
     async (request: FastifyRequest, _reply: FastifyReply): Promise<void> => {
-      if (config.auth.devBypass && config.nodeEnv !== "production") {
+      if (cfg.auth.devBypass && cfg.nodeEnv !== "production") {
         request.apiKeyTier = "dev";
         return;
       }
@@ -62,11 +67,11 @@ async function authPlugin(app: FastifyInstance): Promise<void> {
         throw new UnauthorizedError("missing or malformed Authorization: Bearer header");
       }
 
-      if (config.auth.hashedKeys.length === 0) {
+      if (cfg.auth.hashedKeys.length === 0) {
         throw new UnauthorizedError("no API keys configured on server");
       }
 
-      const match = await findMatchingHash(token, config.auth.hashedKeys);
+      const match = await findMatchingHash(token, cfg.auth.hashedKeys);
       if (!match) {
         throw new UnauthorizedError("invalid API key");
       }
