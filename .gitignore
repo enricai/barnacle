@@ -51,3 +51,10 @@ next-env.d.ts
 package-lock.json
 
 *.log
+
+# local tooling / workspace state — never commit
+.claude/
+.planning/
+/tmp/
+# recon script output is runtime-generated per run; keep hand-curated rc-recon.md only
+/docs/rc-recon-live.md

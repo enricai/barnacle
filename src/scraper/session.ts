@@ -46,10 +46,15 @@ export async function createBrowserSession(): Promise<BrowserSession> {
 
   const session = await steel.sessions.create({
     useProxy: config.scraper.proxyType === "residential",
-    solveCaptcha: true,
+    solveCaptcha: config.scraper.solveCaptcha,
   });
 
-  const cdpUrl = session.websocketUrl;
+  // Steel's websocketUrl is `wss://connect.steel.dev?sessionId=…`. Playwright's
+  // connectOverCDP requires the apiKey as a query parameter too — without it
+  // the connection returns a 502 before the CDP handshake completes.
+  const cdpUrl = session.websocketUrl.includes("apiKey=")
+    ? session.websocketUrl
+    : `${session.websocketUrl}&apiKey=${encodeURIComponent(config.scraper.steelApiKey)}`;
   logger.info(`created steel session ${session.id}`);
 
   const stagehand = new Stagehand({

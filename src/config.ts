@@ -21,6 +21,7 @@ export interface AppConfig {
     anthropicApiKey: string | undefined;
     model: string;
     proxyType: string;
+    solveCaptcha: boolean;
     poolSize: number;
     minActionDelayMs: number;
     maxActionDelayMs: number;
@@ -73,8 +74,14 @@ export function loadConfig(): AppConfig {
     scraper: {
       steelApiKey: process.env.STEEL_API_KEY,
       anthropicApiKey: process.env.ANTHROPIC_API_KEY,
-      model: getEnv("STAGEHAND_MODEL", "claude-sonnet-4-6"),
+      // Stagehand 2.x's modelToProviderMap is stale (knows only up to
+      // claude-3-7-sonnet). Using the provider-prefixed form
+      // `anthropic/<model-id>` routes through the AI-SDK fallback
+      // path which forwards the name verbatim to the Anthropic SDK,
+      // letting us use live model ids like claude-sonnet-4-6.
+      model: getEnv("STAGEHAND_MODEL", "anthropic/claude-sonnet-4-6"),
       proxyType: getEnv("SCRAPER_PROXY_TYPE", "residential"),
+      solveCaptcha: getBoolEnv("SCRAPER_SOLVE_CAPTCHA", true),
       poolSize: getNumericEnv("SESSION_POOL_SIZE", 3),
       minActionDelayMs: getNumericEnv("SCRAPER_MIN_ACTION_DELAY_MS", 500),
       maxActionDelayMs: getNumericEnv("SCRAPER_MAX_ACTION_DELAY_MS", 1500),

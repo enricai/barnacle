@@ -1,16 +1,16 @@
 # Royal Caribbean site reconnaissance
 
-> **TASKS.md Task 3** — reconnaissance of `royalcaribbean.com`.
-> This document records **verified findings** gathered by inspecting the
-> live site (HTTP fetches + sitemap walks). A fuller interactive pass
-> with a real browser session (Stagehand via Steel) is still needed to
-> capture in-app search filter interactions — see "Open items" at the
-> bottom.
+> Verified findings from live inspection of `royalcaribbean.com`, both via
+> HTTP fetches (curl + sitemap) and a live headless browser session
+> (Stagehand + Steel). All facts below were captured from the wire, not
+> guessed.
 
-**Last walked:** 2026-05-12 (automated fetch + curl + sitemap)
-**Method:** `curl` with a desktop Chrome UA + WebFetch summaries + the
-live `sitemap_itineraries.xml` + `sitemap_browser.xml` endpoints.
-**Market:** USA / www.royalcaribbean.com (root, no locale prefix).
+**Method:** curl + `sitemap_index.xml` + `sitemap_itineraries.xml` walk
+for static content, plus a Steel-hosted Chrome driven by Stagehand with
+`claude-sonnet-4-6` for SPA + XHR capture.
+**Market:** USA / `www.royalcaribbean.com` (root, no locale prefix).
+**Last walked:** automated recon script (`pnpm exec tsx src/scripts/recon.ts`);
+output archived to `docs/rc-recon-live.md` (gitignored).
 
 ---
 
@@ -18,158 +18,189 @@ live `sitemap_itineraries.xml` + `sitemap_browser.xml` endpoints.
 
 Source: `https://www.royalcaribbean.com/robots.txt`.
 
-- **`/cruises`** — NOT disallowed. Scraping it is policy-safe.
-- **`/itinerary/…`** — NOT disallowed either.
-- **`/booking/`, `/room-selection/`, `/mycruises/`, `/favorites`** — all
-  disallowed for every user-agent. We do NOT target these.
-- **DotBot is completely banned.** Generic bot UAs are fine.
+- `/cruises` — NOT disallowed.
+- `/itinerary/…` — NOT disallowed.
+- `/graph`, `/cruises/graph`, `/bin/services/royal/*` — NOT disallowed (all
+  are used by the public SPA).
+- `/booking/`, `/room-selection/`, `/mycruises/`, `/favorites` — disallowed.
+  Do NOT target these.
+- DotBot is completely banned; generic user-agents are fine.
 
 ## Sitemaps
 
 - `https://www.royalcaribbean.com/sitemap/sitemap_index.xml` — root index.
-- `https://www.royalcaribbean.com/sitemap/sitemap_itineraries.xml` —
-  **the single most useful URL for discovery.** Every public cruise
-  itinerary (sailing package) has one entry. Sampled first 30 URLs all
-  match the pattern:
+- `https://www.royalcaribbean.com/sitemap/sitemap_itineraries.xml` — every
+  public cruise itinerary URL. Each ends in the exact `packageCode` VPS
+  uses.
 
-  ```
-  /itinerary/{duration}-night-{destination-slug}-cruise-from-{port-slug}-on-{ship-slug}-{packageCode}
-  ```
+URL pattern:
 
-  Examples:
-  - `/itinerary/3-night-bahamas-getaway-cruise-from-fort-lauderdale-on-jewel-JW3BH224`
-  - `/itinerary/3-night-ensenada-cruise-from-los-angeles-on-ovation-OV03X039`
-  - `/itinerary/2-night-perfect-day-at-cococay-getaway-from-orlando-port-canaveral-on-harmony-HM2BH024`
-
-  **The trailing `packageCode` is the same identifier VPS uses** in the
-  `packageCode` field of its Sailing Package response. First 2 chars =
-  ship code (`JW`=Jewel, `OV`=Ovation, `HM`=Harmony, `NV`=Navigator,
-  `SC`=Spectrum, `VY`=Voyager, `QN`=Quantum).
-
-  Regional sitemaps mirror this for AUS / UK / DE / ES / FR / IT / BR /
-  CN / LAC / MX / NO / SG / SE.
-
-## (a) Filter widgets — `/cruises`
-
-**Key finding:** `/cruises` is a React / Next.js SPA shell. The raw
-HTML that `curl` returns has **zero `data-testid` attributes** and no
-search-form markup. All filter widgets are client-rendered after
-hydration. You cannot scrape `/cruises` with plain HTTP. You need a
-real browser session — which is exactly what Stagehand + Steel give us.
-
-The canonical filter set documented by RC (deduced from the dropdown
-options visible only in a live browser session — pending verification):
-
-| Widget | Expected values | Prompt-engineering note |
-|--------|-----------------|------------------------|
-| Destinations | ALASKA, ASIA, AUSTRALIA, BAHAMAS, BERMUDA, CANADA, CARIBBEAN, EUROPE, HAWAII, MEDITERRANEAN, PANAMA CANAL, REPOSITIONING, TRANSATLANTIC | Multi-select dropdown |
-| Departure port | MIA, FLL, PCV, NYC, GAL, LAX, VAN, YVR, SOU, BCN, SIN, HKG, … | Single-select |
-| Date range (from) | YYYY-MM-DD | Date picker |
-| Date range (to) | YYYY-MM-DD | Date picker |
-| Cruise length | 1–5 nights / 6–9 nights / 10+ nights | Multi-select buckets |
-| Number of guests | 1, 2, 3, 4+ | Stepper, default 2 |
-| Ship | Single-select from full fleet | |
-
-**Open recon item:** confirm the exact option labels by opening
-`/cruises` in a live Stagehand session and calling
-`page.extract({ instruction: "list every filter dropdown and its options" })`.
-Until then, `page.act()` prompts use natural language (not selectors),
-so they'll resolve against whatever the real labels are.
-
-## (b) Results loading pattern — `/cruises`
-
-**Unknown via HTTP** — SPA. The scraper flow now handles both variants
-(next-button and infinite-scroll) via a pagination probe that asks
-Stagehand `"report whether more sailing results can be loaded"` on each
-pass. When recon confirms which pattern RC ships, narrow the prompt.
-
-**Fallback path that bypasses `/cruises` entirely:** because every
-sailing is listed in `sitemap_itineraries.xml` with a deterministic
-URL containing the `packageCode`, we could alternatively:
-1. Parse the sitemap offline (fast, no browser cost).
-2. For each sailing of interest, hit
-   `/itinerary/…-{packageCode}` directly in Stagehand.
-
-This is a strong candidate for the sailing-package catalog flow — it
-avoids the whole SPA search UI and gets us a list of every package in
-one HTTP fetch. Tracked as an open item below.
-
-## (c) Card vs detail data — `/itinerary/{…}-{packageCode}`
-
-**Good news:** the itinerary detail page is substantially server-
-rendered. A plain `curl` returned **97 unique `data-testid` attributes**
-and visible content. The relevant ones for our Zod schema:
-
-| Field | data-testid | Server-rendered? | Notes |
-|-------|-------------|------------------|-------|
-| Itinerary name / title | `hero-itinerary-name` | Yes | e.g. "3 Night Bahamas Getaway Cruise" |
-| Ship name (hero) | `hero-ship-name` | Yes | "Jewel of the Seas" |
-| Ship name (ship section) | `ship-name`, `ship-description`, `ship-link` | Yes | |
-| Number of nights | `hero-number-of-nights` | Yes | "3 Nights" |
-| Departure / arrival ports | `hero-departure-arrival-ports` | Yes | "Fort Lauderdale, Florida" |
-| Itinerary day list (ports) | `chapter-list-item-0..N` | Yes | Each port / sea-day is a "chapter". |
-| Per-day detail | `chapter-section-0..N`, `chapter-section-N-name`, `chapter-section-N-header` | Yes | |
-| Chapter detail panel | `chapter-detail-0..4`, `chapter-detail-description`, `chapter-detail-overview-description`, `chapter-detail-map-image`, `chapter-detail-ship-image`, `chapter-detail-days-at-sea-info-panel`, `chapter-detail-travel-tips-info-panel`, `chapter-detail-location-currency`, `chapter-detail-location-language`, `chapter-detail-disclaimer` | Yes | |
-| Highlights | `highlight-experience-list`, `panel-highlight-experience-drawer` | Yes | |
-| Free activities | `free-activity-list`, `free-activity-list-item-0..N` | Yes | |
-| Itinerary section | `itinerary-section` | Yes | Wraps all chapter-list content |
-| Hero actions | `hero-cruise-search-button`, `hero-share-button`, `hero-favorite-itinerary-button-wrapper` | Yes | |
-| Attribute list | `attribute-list` | Yes | Usually tags (e.g. "Family", "Adventure") |
-| **Pricing bar** | `pricing-bar`, `pricing-mobile-selector` | **Placeholder only** | The bar element exists but prices are fetched client-side — need a live browser for real prices. |
-| **Sail dates** | _(not in server HTML)_ | **No** | Sail dates are fetched client-side after hydration. |
-| **Cabin options + prices** | _(not in server HTML)_ | **No** | Rendered after date selection in a live session. |
-| **Book button** | _(behind `hero-cruise-search-button` flow)_ | **No** | Routes into `/booking/*` which is robots-disallowed. |
-
-**Implication:** the sailing-package catalog flow can harvest
-`{packageCode, shipCode (from packageCode prefix), shipName, duration,
-departurePort, itinerary stops, destinations}` WITHOUT a browser. The
-pricing flow (cabin options, currency-specific prices, sail-date-
-indexed availability) still needs Stagehand.
-
-## Metadata & JSON-LD
-
-`<head>` on the itinerary page carries a canonical URL (confirmed).
-JSON-LD was not detected in the WebFetch pass but the `<head>` is
-truncated in the summarizer — **needs confirmation via a live
-browser/curl head inspection**. If JSON-LD exists with `@type:
-CruiseTrip`, we'd get structured sailing data for free.
-
-## Flow prompt impact
-
-The selectors above let us tighten the Stagehand prompts in
-`src/scraper/flows/sailing-package.ts`. Verified-against-live prompts
-now reference the real testids (see commit). Example:
-
-```ts
-// Before (generic)
-"extract every visible sailing card with shipCode, shipName, …"
-// After (grounded in real testids for itinerary detail pages)
-"On an itinerary detail page, extract from: hero-ship-name, hero-number-of-nights, hero-departure-arrival-ports, chapter-list-item-{0..N}, chapter-section-{N}-name …"
+```
+/itinerary/{duration}-night-{destination-slug}-cruise-from-{port-slug}-on-{ship-slug}-{packageCode}
 ```
 
-## Open items
+Examples: `JW3BH224` (Jewel), `OV03X039` (Ovation), `IC07E479` (Icon),
+`WN4BH349` (Wonder). First two chars = ship code; suffix = package.
 
-1. **Live browser recon of `/cruises`** — confirm exact destination /
-   port / duration option labels, which pagination pattern RC uses,
-   and capture the search-form's own data-testids. Requires Steel +
-   Anthropic keys and one Stagehand session.
-2. **Sitemap-first catalog flow** — evaluate
-   `sitemap_itineraries.xml` as the primary discovery source instead
-   of driving the `/cruises` UI. Much cheaper (no Steel minutes). Still
-   need Stagehand for pricing/sail-date detail.
-3. **JSON-LD** on itinerary pages — verify presence; would eliminate
-   prompt work entirely for catalog data.
-4. **Brand parity** — Celebrity Cruises (`celebrity.com`) has its own
-   domain; when we extend for brand `C` in VPS responses, repeat this
-   recon.
+Regional variants exist for AUS / UK / DE / ES / FR / IT / BR / CN / LAC /
+MX / NO / SG / SE.
+
+---
+
+## Direct GraphQL API (the big find)
+
+The SPA calls **two GraphQL endpoints** — both public, both bulk-returning
+JSON, both safe to call directly from Node without a browser. Confirmed
+via `curl -X POST` with a plain desktop UA, no session token, no cookies:
+returned **1018 total cruises** with `packageCode`, `sailDate`, pricing,
+promotions.
+
+| Endpoint | Operations |
+|----------|------------|
+| `POST https://www.royalcaribbean.com/graph` | `GetLocale`, `bestPromotionForMarket`, region/ship metadata |
+| `POST https://www.royalcaribbean.com/cruises/graph` | `cruiseSearch_Cruises`, `cruiseSearch_FilterOptions`, `csearchWidget_FacetOptions` |
+
+Required headers:
+
+```http
+content-type: application/json
+accept: application/json
+origin: https://www.royalcaribbean.com
+referer: https://www.royalcaribbean.com/cruises
+```
+
+No auth header is sent by the site; no auth is required.
+
+### `cruiseSearch_Cruises` — the catalog query
+
+Minimal reproducer (returns cruises + total count):
+
+```bash
+curl -X POST https://www.royalcaribbean.com/cruises/graph \
+  -H "content-type: application/json" \
+  --data-raw '{
+    "operationName":"cruiseSearch_Cruises",
+    "query":"query cruiseSearch_Cruises($sort:CruiseSearchSort,$pagination:CruiseSearchPagination){cruiseSearch(sort:$sort,pagination:$pagination){results{cruises{id productViewLink lowestPriceSailing{id sailDate}}total}}}",
+    "variables":{"sort":{"by":"RECOMMENDED"},"pagination":{"count":10,"skip":0}}
+  }'
+```
+
+Sample response:
+
+```json
+{"data":{"cruiseSearch":{"results":{"cruises":[
+  {"id":"WN04MIA-1040267344","productViewLink":"itinerary/4-night-bahamas-perfect-day-cruise-from-miami-on-wonder-WN4BH349?sailDate=2026-09-28&packageCode=WN4BH349&groupId=WN04MIA-1040267344&country=USA","lowestPriceSailing":{"id":"WN4BH351_2026-09-28","sailDate":"2026-09-28"}},
+  …
+], "total": 1018 }}}}
+```
+
+The query supports: `filters` (string-encoded), `qualifiers`, `sort`,
+`pagination` (`count` + `skip`), and `nlSearch`. The full query shape
+recorded in `docs/rc-recon-live.md` includes `highlights`, cabin prices,
+promo text, itinerary map URLs, and more.
+
+### `cruises_FilterOptions` / `csearchWidget_FacetOptions` — facet discovery
+
+Returns the full filter taxonomy + counts per facet code. Observed values:
+
+**destination** — `CARIB` (1621), `BAHAM` (781), `ALCAN` (401 = Alaska /
+Canada), `MEXCO` (334), `EUROP` (316), `FAR.E` (191 = Far East),
+`BERMU` (56), `SOPAC` (55 = South Pacific), `AUSTL` (45),
+`ATLCO` (24), `T.ATL` (18 = Transatlantic), `TPACI` (9), `ISLAN` (7),
+`HAWAI` (3), `PACIF` (3), `T.PAN` (1).
+
+**nights** — integer buckets (7 has the most at 14xx, plus 3/4/5/6/8/9/10+).
+
+Other filter keys the probe reveals: `accessible` (boolean), `departureDate`
+(date range), `departurePort`, `cruiseLength`, `guest`, `ship`,
+`stateroomClass`, `sort` (RECOMMENDED | PRICE | SAIL_DATE).
+
+---
+
+## Result cards — live Stagehand extract
+
+From a real search (Caribbean, 2026, 2 guests):
+
+| shipName | sailDate | nights | departurePort | startingPrice |
+|----------|----------|--------|----------------|---------------|
+| Wonder of the Seas | Sep 28, 2026 | 4 | Miami, FL | $497 |
+| Wonder of the Seas | Oct 2, 2026 | 3 | Miami, FL | $461 |
+| Icon of the Seas | May 30, 2026 | 7 | Miami, FL | $1,273 |
+| Freedom of the Seas | Oct 17, 2026 | 5 | Miami, FL | $423 |
+| Freedom of the Seas | Aug 22, 2026 | 5 | Miami, FL | $581 |
+
+Card HTML uses `class="cruise-card"` (no stable data-testid on the card
+itself). Badges visible: "Last Minute Cruise Deals", "Early Booking Bonus".
+
+## Pagination
+
+**Mechanism:** `load-more` button (explicit "Load More" text). Observed
+in the live DOM after scrolling past the first batch. The GraphQL
+endpoint also supports `pagination: { count, skip }` for direct API
+paging.
+
+## `/itinerary/{…}-{packageCode}` — detail page
+
+Substantially server-rendered. A plain `curl` returned **97 unique
+`data-testid` attributes**. Key ones for our Zod schema:
+
+| Field | data-testid | Rendered where |
+|-------|-------------|----------------|
+| Itinerary name | `hero-itinerary-name` | SSR |
+| Ship name | `hero-ship-name`, `ship-name` | SSR |
+| Nights | `hero-number-of-nights` | SSR |
+| Departure/arrival ports | `hero-departure-arrival-ports` | SSR |
+| Itinerary day list | `chapter-list-item-0..N`, `chapter-section-N-name` | SSR |
+| Attribute tags | `attribute-list` | SSR |
+| Pricing bar | `pricing-bar`, `pricing-mobile-selector` | CSR (placeholder + client fetch) |
+
+**Sail dates + cabin pricing are CSR.** The hydration calls the same
+`/cruises/graph` endpoint for per-sailing pricing — same direct path as
+catalog discovery.
+
+---
+
+## Implementation consequences
+
+Given the GraphQL endpoint is public and callable without a browser:
+
+1. **Primary catalog path → direct HTTP.** `src/services/sailing-catalog.ts`
+   should issue `cruiseSearch_Cruises` against `/cruises/graph` with the
+   right filters, paginating via `count/skip`. No Steel minutes used.
+   Implementation is a thin `fetch()` wrapper.
+
+2. **Stagehand becomes a fallback.** Use it only when:
+   - GraphQL shape drifts in a breaking way (Stagehand's AI adapts, static
+     code breaks).
+   - RC adds a bot challenge to the GraphQL endpoint (hasn't yet — it's
+     the SPA's own backend).
+   - An unusual query that doesn't map cleanly to the GraphQL variables.
+
+3. **Sitemap stays useful for cold-start enumeration.**
+   `src/scraper/sitemap.ts` already parses it; combine with the GraphQL
+   search for full catalog coverage.
+
+4. **Promotions** → `bestPromotionForMarket` query on `/graph`.
 
 ## Known hazards
 
-- **CAPTCHA**: Steel's `solveCaptcha: true` handles the common ones.
-  If RC rolls a new challenge, the scraper surfaces a
-  `CaptchaEncounteredError` → code 2004 in the VPS envelope.
-- **Bot detection / IP bans**: residential proxies via Steel
-  (`useProxy: true`). If RC blocks, rotate the pool size down.
-- **UI drift**: the data-testids listed above could change. The smoke
-  test (`pnpm run smoke`) asserts the Zod response schema parses;
-  drift shows up as a parse failure in CI.
+- **Akamai bot detection** — RC posts to `/0k5EPrqOSRkyqDEVcg/…` (Akamai
+  Bot Manager beacon) on every page load. Plain curl to `/cruises/graph`
+  still works, but high-rate requests could trip it. Rate-limit via our
+  existing `bottleneck` wrapper and use the sitemap for cold discovery.
+- **UI drift** — GraphQL schemas change; keep the `scripts/recon.ts`
+  runnable in CI so drift surfaces as a schema-parse failure.
+- **Regional pricing** — the `locale` query (`GetLocale(localeCountry:"USA")`)
+  returns `office=MIA, currency=USD`; other markets would pass a
+  different country and receive different offices/currencies. Mapping
+  stays aligned with VPS's market/office/currency triplet.
+
+## Open items
+
+1. Dump the full GraphQL schema via introspection (may be disabled in
+   prod — try `{__schema{types{name}}}`). If enabled, we can generate
+   typed client code.
+2. Confirm `/graph` auth behavior under load — does RC enforce a
+   rate limit or require a session cookie after N requests?
+3. Record the `filters` string encoding — is it URL-encoded
+   `key=value&key=value`, or JSON? Future probe with `filters` set.
