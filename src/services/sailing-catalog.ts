@@ -4,18 +4,27 @@ import { successEnvelope } from "@/api/helpers/envelope";
 import type { SailingPackageRequest, SailingPackageResponse } from "@/api/schemas/sailing-package";
 import type { SailingPackageChangesResponse } from "@/api/schemas/sailing-package-changes";
 import { getCachedResponse, setCachedResponse } from "@/cache/response-cache";
+import { getLogger } from "@/lib/logging";
 import { EmptyResultsError } from "@/scraper/errors";
-import { scrapeSailingPackages } from "@/scraper/flows/sailing-package";
+import { fetchSailingPackagesViaGraphql } from "@/scraper/flows/graphql-catalog";
+import { type ScrapedSailing, scrapeSailingPackages } from "@/scraper/flows/sailing-package";
 import { runWithSession } from "@/scraper/pool";
 import { findSailingKeysChangedSince, saveSailingSnapshot } from "@/snapshots/store";
+
+const logger = getLogger({ name: "services/sailing-catalog" });
 
 const ENDPOINT = "/v1/catalog/sailing-package";
 
 /**
- * Fetches sailings for the given request. Hot-path goes straight through
- * the response cache; cold-path drives the scraper pool, persists a
- * snapshot per sailing (for the delta endpoint), and shapes the result
- * into VPS's SailingPackageResponse.
+ * Fetches sailings for the given request. Hot path goes straight
+ * through the response cache. Cold path prefers the direct-HTTP
+ * GraphQL flow (zero Steel minutes, sub-second); falls back to the
+ * Stagehand flow only if GraphQL errors — this preserves the
+ * resilience we had when GraphQL was the fallback, not the primary.
+ *
+ * Per recon (docs/rc-recon.md): `cruiseSearch_Cruises` returns the
+ * full catalog with per-stateroom-class pricing inline, so one call
+ * covers what Stagehand did in ~20-40s of session time.
  */
 export async function getSailingPackages(
   request: SailingPackageRequest
@@ -23,15 +32,7 @@ export async function getSailingPackages(
   const cached = getCachedResponse<SailingPackageResponse>(ENDPOINT, request);
   if (cached.value) return cached.value;
 
-  // Task 10: "empty results (return empty array, not 500)". Catch the
-  // EmptyResultsError sentinel the scraper throws and convert into an
-  // empty-packages VPS envelope; everything else propagates.
-  const sailings = await runWithSession((session) => scrapeSailingPackages(session, request)).catch(
-    (err) => {
-      if (err instanceof EmptyResultsError) return [] as const;
-      throw err;
-    }
-  );
+  const sailings = await runCatalogFetchWithFallback(request);
 
   for (const s of sailings) {
     await saveSailingSnapshot(
@@ -51,6 +52,33 @@ export async function getSailingPackages(
 
   setCachedResponse(cached.key, response);
   return response;
+}
+
+/**
+ * GraphQL-first, Stagehand-second catalog fetch. Both paths return
+ * `ScrapedSailing[]`. EmptyResultsError from either is mapped to an
+ * empty array per Task 10 ("empty results → return empty array, not
+ * 500"). A GraphQL exception other than empty-results triggers the
+ * Stagehand fallback; if that also fails, the exception propagates.
+ */
+async function runCatalogFetchWithFallback(
+  request: SailingPackageRequest
+): Promise<ScrapedSailing[]> {
+  try {
+    const sailings = await fetchSailingPackagesViaGraphql(request);
+    if (sailings.length === 0) {
+      logger.info("graphql catalog returned 0 sailings — treating as empty");
+    }
+    return sailings;
+  } catch (err) {
+    logger.warn(`graphql catalog failed, falling back to Stagehand: ${String(err).slice(0, 200)}`);
+    try {
+      return await runWithSession((session) => scrapeSailingPackages(session, request));
+    } catch (fallbackErr) {
+      if (fallbackErr instanceof EmptyResultsError) return [];
+      throw fallbackErr;
+    }
+  }
 }
 
 /**
