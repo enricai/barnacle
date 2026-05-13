@@ -185,14 +185,21 @@ export const pricingPreferenceSchema = z
   .passthrough();
 
 /**
+ * Flexible sail-date that accepts either `YYYY-MM-DD` (catalog responses)
+ * or a `YYYYMMDD` integer (delta responses).
+ */
+export const flexibleSailDateSchema = z.union([sailDateStringSchema, z.number().int()]);
+
+/**
  * A single sailing identity tuple (shipCode, sailDate, packageCode). Used
- * as keys in the delta endpoints.
+ * as keys in the delta endpoints. `sailDate` is numeric on the wire for
+ * delta responses and string for catalog responses.
  */
 export const sailingKeySchema = z
   .object({
     brandCode: brandCodeSchema.optional(),
     shipCode: z.string(),
-    sailDate: sailDateStringSchema,
+    sailDate: flexibleSailDateSchema,
     packageCode: z.string(),
   })
   .passthrough();
