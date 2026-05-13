@@ -1,0 +1,59 @@
+// Sample Price Change Identification – Super Category Request 
+
+// Request by Client:
+
+    curl --request POST \
+      --url https://tst.vps.rccl-it.cruises/vps/vps/pricing-snapshot/v1/price-changes:super-category \
+      --header 'Content-Type: application/json' \
+      --header 'X-API-key: xxxxxx' \
+      --data '{
+        "fromDateTime": "2023-06-05T00:00:00",
+        "client": {
+            "agencyId": "######"
+        }
+    }'
+
+// Request by Market:
+
+    curl --request POST \
+      --url https://tst.vps.rccl-it.cruises/vps/vps/pricing-snapshot/v1/price-changes:super-category \
+      --header 'Content-Type: application/json' \
+      --header 'X-API-key: xxxxxx' \
+      --data '{
+      "fromDateTime": "2023-06-05T00:00:00",
+      "market": {
+        "officeCode": "MIA",
+        "countryCode": "USA",
+        "currencyCodes": [
+            "USD"
+        ]
+      }
+    }'
+
+
+// Sample Price Change Identification - Super Category Response
+
+{
+	"status": {
+		"httpStatus": "OK",
+		"dateTime": "2023-06-06T15:52:18.736606",
+		"details": []
+	},
+	"keys": [
+		{
+			"shipCode": "FL",
+			"sailDate": 20230611,
+			"packageCode": "FL07G039",
+			"officeCode": "MIA",
+			"countryCode": "USA",
+			"currencyCode": "USD",
+			"bookingChannel": "PI",
+			"bookingType": "I",
+			"occupancy": 2
+		}
+	],
+	"dateTimeRange": {
+		"fromDateTime": "2023-06-05T16:19:25",
+		"toDateTime": "2023-06-06T15:51:18"
+	}
+}

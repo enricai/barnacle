@@ -1,0 +1,101 @@
+import { getBoolEnv, getEnv, getNodeEnv, getNumericEnv } from "@/lib/env";
+
+/**
+ * Fully resolved, strongly typed application config derived from environment
+ * variables at process start. Consumers import the `config` singleton instead
+ * of reading `process.env` directly so that required vars are validated once.
+ */
+export interface AppConfig {
+  appName: string;
+  nodeEnv: "development" | "production" | "test";
+  host: string;
+  port: number;
+  logLevel: string;
+  databaseUrl: string | undefined;
+  auth: {
+    hashedKeys: readonly string[];
+    devBypass: boolean;
+  };
+  scraper: {
+    steelApiKey: string | undefined;
+    anthropicApiKey: string | undefined;
+    model: string;
+    proxyType: string;
+    poolSize: number;
+    minActionDelayMs: number;
+    maxActionDelayMs: number;
+  };
+  cache: {
+    ttlMs: number;
+    maxEntries: number;
+  };
+  rateLimit: {
+    max: number;
+    windowMs: number;
+  };
+  workers: {
+    enabled: boolean;
+    refreshCron: string;
+    changesCron: string;
+  };
+  docs: {
+    enabled: boolean;
+  };
+}
+
+/**
+ * Parses a comma-separated env var into a non-empty string array with the
+ * empty entries filtered out. Returns an empty array if the var is unset.
+ */
+function parseList(value: string): readonly string[] {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
+/**
+ * Loads and validates the application config. Call this once at process
+ * startup; subsequent calls return the same frozen object.
+ */
+export function loadConfig(): AppConfig {
+  return Object.freeze<AppConfig>({
+    appName: getEnv("APP_NAME", "barnacle"),
+    nodeEnv: getNodeEnv(),
+    host: getEnv("HOST", "0.0.0.0"),
+    port: getNumericEnv("PORT", 3000),
+    logLevel: getEnv("LOG_LEVEL", "info"),
+    databaseUrl: process.env.DATABASE_URL,
+    auth: {
+      hashedKeys: parseList(getEnv("API_KEYS_HASHED", "")),
+      devBypass: getBoolEnv("DEV_BYPASS_AUTH", false),
+    },
+    scraper: {
+      steelApiKey: process.env.STEEL_API_KEY,
+      anthropicApiKey: process.env.ANTHROPIC_API_KEY,
+      model: getEnv("STAGEHAND_MODEL", "claude-sonnet-4-6"),
+      proxyType: getEnv("SCRAPER_PROXY_TYPE", "residential"),
+      poolSize: getNumericEnv("SESSION_POOL_SIZE", 3),
+      minActionDelayMs: getNumericEnv("SCRAPER_MIN_ACTION_DELAY_MS", 500),
+      maxActionDelayMs: getNumericEnv("SCRAPER_MAX_ACTION_DELAY_MS", 1500),
+    },
+    cache: {
+      ttlMs: getNumericEnv("CACHE_TTL_MS", 15 * 60 * 1000),
+      maxEntries: getNumericEnv("CACHE_MAX_ENTRIES", 1000),
+    },
+    rateLimit: {
+      max: getNumericEnv("RATE_LIMIT_MAX", 120),
+      windowMs: getNumericEnv("RATE_LIMIT_WINDOW_MS", 60_000),
+    },
+    workers: {
+      enabled: getBoolEnv("ENABLE_WORKERS", false),
+      refreshCron: getEnv("REFRESH_CRON", "0 3 * * *"),
+      changesCron: getEnv("CHANGES_CRON", "0 * * * *"),
+    },
+    docs: {
+      enabled: getBoolEnv("ENABLE_DOCS", false),
+    },
+  });
+}
+
+export const config: AppConfig = loadConfig();

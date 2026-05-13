@@ -1,19 +1,16 @@
+import { resolve } from "node:path";
 import { defineConfig } from "vitest/config";
-import react from "@vitejs/plugin-react";
-import { resolve } from "path";
 
 export default defineConfig({
-  plugins: [react()],
   test: {
-    environment: "jsdom",
+    environment: "node",
     globals: true,
-    setupFiles: ["./vitest.setup.ts"],
-    include: ["**/*.test.{ts,tsx}"],
-    exclude: ["node_modules", ".next", "dist"],
+    include: ["src/**/*.test.ts", "test/**/*.test.ts"],
+    exclude: ["node_modules", "dist"],
     coverage: {
       provider: "v8",
-      include: ["src/**/*.{ts,tsx}"],
-      exclude: ["src/**/*.d.ts", "src/tests/**"],
+      include: ["src/**/*.ts"],
+      exclude: ["src/**/*.d.ts", "src/**/*.test.ts", "src/scripts/**"],
     },
     testTimeout: 30000,
     pool: "forks",

@@ -1,0 +1,72 @@
+// Sample Price Change Identification - Category Request
+
+// Request by Client:
+
+    curl --request POST \
+    --url https://tst.vps.rccl-it.cruises/vps/vps/pricing-snapshot/v1/price-changes:category \
+    --header 'Content-Type: application/json' \
+    --header 'X-API-key: xxxxxx' \
+    --data '{
+        "fromDateTime": "2023-08-08T00:00:00",
+        "client": {
+            "agencyId": "######",
+            "currencyCodes": [
+                "USD"
+            ]
+        }
+    }'
+
+// Request by Market:
+
+    curl --request POST \
+    --url https://tst.vps.rccl-it.cruises/vps/vps/pricing-snapshot/v1/price-changes:category \
+    --header 'Content-Type: application/json' \
+    --header 'X-API-key: xxxxxx' \
+    --data '{
+        "fromDateTime": "2023-08-08T00:00:00",
+        "market": {
+            "officeCode": "MIA",
+            "countryCode": "USA",
+            "currencyCodes": [
+                "USD"
+            ]
+        }
+    }'
+
+// Sample Price Change Identification - Category Response
+
+{
+	"status": {
+		"httpStatus": "OK",
+		"dateTime": "2023-08-08T18:07:36.40919",
+		"details": []
+	},
+	"keys": [
+		{
+			"shipCode": "SY",
+			"sailDate": 20230817,
+			"packageCode": "SY7IP091",
+			"officeCode": "MIA",
+			"countryCode": "USA",
+			"currencyCode": "USD",
+			"bookingChannel": "PI",
+			"bookingType": "I",
+			"occupancy": 2
+		},
+		{
+			"shipCode": "EG",
+			"sailDate": 20230903,
+			"packageCode": "EGEGTST2",
+			"officeCode": "MIA",
+			"countryCode": "USA",
+			"currencyCode": "USD",
+			"bookingChannel": "PI",
+			"bookingType": "I",
+			"occupancy": 2
+		}
+	],
+	"dateTimeRange": {
+		"fromDateTime": "2023-08-08T18:02:12",
+		"toDateTime": "2023-08-08T18:06:36.402875"
+	}
+}
