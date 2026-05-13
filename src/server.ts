@@ -26,6 +26,8 @@ import { superCategoryPricingRoute } from "@/api/routes/super-category-pricing";
 import { VPS_ERROR_CODES } from "@/api/schemas/common";
 import { config } from "@/config";
 import { getLogger } from "@/lib/logging";
+import { startChangesWorker } from "@/workers/changes";
+import { startRefreshWorker } from "@/workers/refresh";
 
 const logger = getLogger({ name: "server" });
 
@@ -119,9 +121,14 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  const refreshJob = startRefreshWorker();
+  const changesJob = startChangesWorker();
+
   const shutdown = async (signal: string): Promise<void> => {
     logger.info(`received ${signal}, shutting down`);
     try {
+      refreshJob?.stop();
+      changesJob?.stop();
       await app.close();
       process.exit(0);
     } catch (err) {
