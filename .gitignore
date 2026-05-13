@@ -58,3 +58,5 @@ package-lock.json
 /tmp/
 # recon script output is runtime-generated per run; keep hand-curated rc-recon.md only
 /docs/rc-recon-live.md
+
+/.claude

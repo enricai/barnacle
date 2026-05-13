@@ -188,19 +188,109 @@ Given the GraphQL endpoint is public and callable without a browser:
   Bot Manager beacon) on every page load. Plain curl to `/cruises/graph`
   still works, but high-rate requests could trip it. Rate-limit via our
   existing `bottleneck` wrapper and use the sitemap for cold discovery.
-- **UI drift** — GraphQL schemas change; keep the `scripts/recon.ts`
-  runnable in CI so drift surfaces as a schema-parse failure.
+- **UI drift** — GraphQL schemas change; keep `scripts/recon-browser.ts` +
+  `scripts/recon-http.ts` runnable in CI so drift surfaces as a schema-parse
+  failure.
 - **Regional pricing** — the `locale` query (`GetLocale(localeCountry:"USA")`)
   returns `office=MIA, currency=USD`; other markets would pass a
   different country and receive different offices/currencies. Mapping
   stays aligned with VPS's market/office/currency triplet.
 
-## Open items
+## Resolved open items (from 2026-05-12 recon)
 
-1. Dump the full GraphQL schema via introspection (may be disabled in
-   prod — try `{__schema{types{name}}}`). If enabled, we can generate
-   typed client code.
-2. Confirm `/graph` auth behavior under load — does RC enforce a
-   rate limit or require a session cookie after N requests?
-3. Record the `filters` string encoding — is it URL-encoded
-   `key=value&key=value`, or JSON? Future probe with `filters` set.
+Captures on disk under `/tmp/recon/` (gitignored); see `docs/rc-recon-live.md`
+for the regenerated summary. Script entry points: `recon-browser.ts`,
+`recon-http.ts`, `recon-summarize.ts`.
+
+### 1. GraphQL introspection — DISABLED
+
+Both `POST /graph` and `POST /cruises/graph` return `200` for a
+`{__schema{types{name}}}` probe but with no `data.__schema` payload —
+introspection is disabled in production. No typed-client codegen path;
+we have to hand-write type definitions from captured queries.
+
+### 2. Rate-limit behaviour — NO THROTTLING UP TO 5 rps × 60
+
+Probed via 60 sequential `cruiseSearch_Cruises` calls @ 5 rps from a
+plain Node egress IP (no residential proxy). 60/60 returned 200, zero
+429/403. `retry-after` / `x-ratelimit-*` headers never set. Direct-HTTP
+catalog strategy is viable. Still wrap in `bottleneck` for politeness
+and to stay under whatever threshold we haven't probed yet.
+
+### 3. `filters` string encoding — PARTIALLY RESOLVED, use "no filter" path
+
+- **Single predicate:** `key:value` (e.g. `destination:CARIB`) — confirmed.
+- **Multi-value OR within a key:** `key:v1,v2` (e.g. `destination:CARIB,BAHAM`)
+  — confirmed.
+- **Multi-key AND:** UNRESOLVED. Every separator tried (`;`, `,`, `&`,
+  `|`, `+`, space, `AND`, `&&`) either collapsed to the first predicate
+  or returned zero matches.
+- **Response non-determinism:** identical requests return different
+  `total` counts on repeat (observed 259 / 340 / 822 / 1006 for the
+  same literal), implying RC's backend partitions cache by qualifiers
+  / session state the SPA sets up.
+
+**Implementation consequence:** the simplest, most robust path is to
+**paginate `cruiseSearch_Cruises` without `filters`** (empty string) and
+apply VPS-parity predicates (`brandCode`, `fromSailDate`..`toSailDate`,
+`shipCodes`, `includeTourPackages`) **client-side** on the response's
+`productViewLink` (contains `packageCode`, `sailDate`, `groupId`,
+`country`) and `lowestPriceSailing.sailDate`. Full pagination via
+`pagination: {count, skip}` until `cruises.length < count` OR
+`skip >= total`. Sidesteps both the encoding uncertainty and the
+non-determinism.
+
+### 4. Detail-page CSR GraphQL ops — NOT CAPTURED THIS RUN
+
+The browser recon's `/itinerary/…` navigation timed out before hydration
+fired the per-sailing pricing queries (the captures all landed in the
+`home` phase). Not a blocker: we already know from the `cruiseSearch_Cruises`
+response that `lowestPriceSailing` + `lowestStateroomClassPrice` + currency
+are returned at the list level. For per-cabin breakdowns, next recon pass
+should keep the session alive longer on the detail page.
+
+### 5. `markets-all` aux endpoint — VPS market triplet available for free
+
+`GET /bin/services/royal/markets/all` returns the **exact**
+market/office/country/currency/agencyId tuples VPS's requests require.
+Sample rows (out of ~16):
+
+| market | office | country | language | agencyId |
+|--------|--------|---------|----------|----------|
+| usa | MIA | USA | en | 156393 |
+| esp | SPA | ESP | es | 192679 |
+| gbr | LON | gbr | en | 156473 |
+| deu | FRA | deu | de | 204185 |
+| fra | PAR | fra | fr | 386322 |
+| ita | GEN | ita | it | 310559 |
+| mex | MEX | mex | es | 279277 |
+| bra | IBR | bra | pt | 386526 |
+| nor | OSL | nor | no | 157197 |
+
+This removes any guesswork from VPS's `officeCode` / `countryCode` /
+`currencyCode` fields on pricing requests. `GetLocale(localeCountry:"USA")`
+on `/graph` returns the same info for single-market queries.
+
+### 6. Filter taxonomy — FULLY CAPTURED
+
+`cruises_FilterOptions` on `/cruises/graph` returns 17 filter keys:
+`accessible`, `destination` (16 facets), `nights` (19 facets), `port`
+(223 facets), `ship` (31 facets), `startDate` (24 facets), `voyageType`,
+`visiting` (576 facets — POI-level), `departurePort` (31 facets),
+`coupon`, `crownAndAnchorNumber`, `military`, `police`, `senior`,
+`resident`, `custom` (13 facets — seasonal promos), `sort`.
+
+Full JSON at `/tmp/recon/graphql/006-home-anon.json`.
+
+## Remaining open items
+
+1. **Multi-key AND composition in `filters`** — if we ever want to push
+   predicates server-side rather than filter client-side, the encoding
+   is still unknown. The SPA in observed captures always sent
+   `filters: ""` and let the backend session infer them, so this may
+   not have a pure-HTTP answer.
+2. **Detail-page per-cabin pricing queries** — next recon pass should
+   hold the `/itinerary/…` page longer so hydration GraphQL fires before
+   close.
+3. **Production rate-limit ceiling** — probed 5 rps × 60, no throttling.
+   Higher thresholds unexplored on purpose (don't burn the egress IP).
