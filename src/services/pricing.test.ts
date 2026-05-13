@@ -4,6 +4,7 @@ import { categoryPricingResponseSchema } from "@/api/schemas/category-pricing";
 import { groupPricingResponseSchema } from "@/api/schemas/group-pricing";
 import { superCategoryPricingResponseSchema } from "@/api/schemas/super-category-pricing";
 import { clearResponseCache } from "@/cache/response-cache";
+import { EmptyResultsError } from "@/scraper/errors";
 import { runWithSession } from "@/scraper/pool";
 import { getCategoryPricing, getGroupPricing, getSuperCategoryPricing } from "@/services/pricing";
 import { savePricingSnapshot } from "@/snapshots/store";
@@ -90,6 +91,15 @@ describe("services/pricing", () => {
     expect(response.groupBestPrices).toHaveLength(1);
     expect(response.groupBestPrices[0]?.groupId).toBe("PUBLIC");
     expect(response.groupBestPrices[0]?.allocatedCategoryBestPrices).toHaveLength(2);
+  });
+
+  it("EmptyResultsError from scraper yields empty pricing response (Task 10)", async () => {
+    vi.mocked(runWithSession).mockRejectedValue(new EmptyResultsError());
+    const response = await getSuperCategoryPricing(fakeRequest());
+    expect(response.status.httpStatus).toBe("OK");
+    expect(response.promotionBestPrices).toHaveLength(1);
+    expect(response.promotionBestPrices[0]?.superCategoryBestPrices).toEqual([]);
+    expect(vi.mocked(savePricingSnapshot)).not.toHaveBeenCalled();
   });
 
   it("persists a pricing snapshot with the granularity tag", async () => {

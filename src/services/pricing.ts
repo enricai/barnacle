@@ -6,6 +6,7 @@ import type { GroupPricingResponse } from "@/api/schemas/group-pricing";
 import type { PricingRequestBase } from "@/api/schemas/pricing-common";
 import type { SuperCategoryPricingResponse } from "@/api/schemas/super-category-pricing";
 import { getCachedResponse, setCachedResponse } from "@/cache/response-cache";
+import { EmptyResultsError } from "@/scraper/errors";
 import { type PricingScrapeResult, scrapeSailingPricing } from "@/scraper/flows/pricing";
 import { runWithSession } from "@/scraper/pool";
 import { savePricingSnapshot } from "@/snapshots/store";
@@ -43,6 +44,10 @@ async function scrapeAndPersist(
   request: PricingRequestBase,
   granularity: "super-category" | "category" | "group"
 ): Promise<PricingScrapeResult> {
+  // Task 10: empty results are a legitimate outcome, not an error.
+  // Translate the EmptyResultsError sentinel into [] here so downstream
+  // response builders produce an empty-array envelope (200) instead of
+  // bubbling up as a 500.
   const cabins = await runWithSession((session) =>
     scrapeSailingPricing(session, {
       brandCode: request.brandCode,
@@ -53,7 +58,12 @@ async function scrapeAndPersist(
       currencyCode: request.currencyCode,
       bookingTypeCode: request.bookingTypeCode,
     })
-  );
+  ).catch((err) => {
+    if (err instanceof EmptyResultsError) return [] as PricingScrapeResult;
+    throw err;
+  });
+
+  if (cabins.length === 0) return cabins;
 
   await savePricingSnapshot(
     {

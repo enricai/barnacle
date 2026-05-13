@@ -4,6 +4,7 @@ import type {
   PromotionDetailsResponse,
 } from "@/api/schemas/promotion-details";
 import { getCachedResponse, setCachedResponse } from "@/cache/response-cache";
+import { EmptyResultsError } from "@/scraper/errors";
 import { scrapePromotions } from "@/scraper/flows/promotions";
 import { runWithSession } from "@/scraper/pool";
 import { savePromotionSnapshot } from "@/snapshots/store";
@@ -35,13 +36,17 @@ export async function getPromotionDetails(
   if (cached.value) return cached.value;
 
   const currencyCodes = request.client?.currencyCodes ?? request.market?.currencyCodes ?? ["USD"];
+  // Task 10: empty results → empty array, never a 500.
   const scraped = await runWithSession((session) =>
     scrapePromotions(session, {
       brand: request.brand,
       currencyCodes,
       marketCountryCode: request.market?.countryCode,
     })
-  );
+  ).catch((err) => {
+    if (err instanceof EmptyResultsError) return [] as Awaited<ReturnType<typeof scrapePromotions>>;
+    throw err;
+  });
 
   const promotions = scraped.map((p) => ({
     id: p.id,

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { sailingPackageResponseSchema } from "@/api/schemas/sailing-package";
 import { clearResponseCache } from "@/cache/response-cache";
+import { EmptyResultsError } from "@/scraper/errors";
 import { runWithSession } from "@/scraper/pool";
 import { getSailingPackageChanges, getSailingPackages } from "@/services/sailing-catalog";
 import { findSailingKeysChangedSince, saveSailingSnapshot } from "@/snapshots/store";
@@ -74,6 +75,19 @@ describe("services/sailing-catalog", () => {
     await getSailingPackages(request);
     await getSailingPackages(request);
     expect(vi.mocked(runWithSession)).toHaveBeenCalledTimes(1);
+  });
+
+  it("EmptyResultsError from the scraper becomes an empty sailingPackages array (Task 10)", async () => {
+    vi.mocked(runWithSession).mockRejectedValue(new EmptyResultsError());
+    const response = await getSailingPackages({
+      brandCode: "R",
+      fromSailDate: "2099-01-01",
+      toSailDate: "2099-01-02",
+      includeTourPackages: false,
+    });
+    expect(response.status.httpStatus).toBe("OK");
+    expect(response.sailingPackages).toEqual([]);
+    expect(vi.mocked(saveSailingSnapshot)).not.toHaveBeenCalled();
   });
 
   it("getSailingPackageChanges projects snapshot rows into VPS keys", async () => {

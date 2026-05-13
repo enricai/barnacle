@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { promotionDetailsResponseSchema } from "@/api/schemas/promotion-details";
 import { clearResponseCache } from "@/cache/response-cache";
+import { EmptyResultsError } from "@/scraper/errors";
 import { runWithSession } from "@/scraper/pool";
 import { getPromotionDetails } from "@/services/promotions";
 import { savePromotionSnapshot } from "@/snapshots/store";
@@ -51,6 +52,16 @@ describe("services/promotions", () => {
     expect(vi.mocked(savePromotionSnapshot)).toHaveBeenCalledTimes(1);
     const call = vi.mocked(savePromotionSnapshot).mock.calls[0];
     expect(call?.[0]?.marketKey).toBe("MIA|USA|USD");
+  });
+
+  it("EmptyResultsError yields an empty promotions array (Task 10)", async () => {
+    vi.mocked(runWithSession).mockRejectedValue(new EmptyResultsError());
+    const response = await getPromotionDetails({
+      brand: "R",
+      client: { agencyId: "A1", currencyCodes: ["USD"] },
+    });
+    expect(response.status.httpStatus).toBe("OK");
+    expect(response.promotions).toEqual([]);
   });
 
   it("falls back to the open-ended endDateTime sentinel when undefined", async () => {

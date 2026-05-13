@@ -17,39 +17,84 @@ export interface SailingPackageFlowInput {
   toSailDate: string;
   shipCodes?: string[];
   includeTourPackages?: boolean;
+  /**
+   * Hard cap on pagination passes. Prevents runaway scraping when the RC
+   * site has thousands of matches. Each pass either clicks "next" or
+   * scrolls to load more results.
+   */
+  maxPaginationPasses?: number;
+  /**
+   * When set, also opens each sailing's detail page and extracts cabin-
+   * level pricing (Task 6's secondary extract). Capped by
+   * `maxDetailEnrichments` so we don't open 500 pages for free.
+   */
+  enrichPricing?: boolean;
+  maxDetailEnrichments?: number;
 }
 
+const DEFAULT_MAX_PAGES = 10;
+const DEFAULT_MAX_DETAILS = 20;
+
+export const scrapedCabinSchema = z.object({
+  stateroomCategoryCode: z.string(),
+  stateroomSuperCategory: z.string().optional(),
+  pricePerGuest: z.number(),
+  currency: z.string().optional(),
+});
+
+const scrapedSailingSchema = z.object({
+  brandCode: z.string(),
+  shipCode: z.string(),
+  shipName: z.string().optional(),
+  sailDate: z.string(),
+  packageCode: z.string(),
+  duration: z.number().int(),
+  packageDescription: z.string().optional(),
+  regionCode: z.string().optional(),
+  subRegionCode: z.string().optional(),
+  sailingDetailUrl: z.string().optional(),
+  cabinOptions: z.array(scrapedCabinSchema).optional(),
+});
+
 const sailingScrapeSchema = z.object({
-  sailings: z.array(
-    z.object({
-      brandCode: z.string(),
-      shipCode: z.string(),
-      shipName: z.string().optional(),
-      sailDate: z.string(),
-      packageCode: z.string(),
-      duration: z.number().int(),
-      packageDescription: z.string().optional(),
-      regionCode: z.string().optional(),
-      subRegionCode: z.string().optional(),
-    })
-  ),
+  sailings: z.array(scrapedSailingSchema),
+});
+
+export type ScrapedSailing = z.infer<typeof scrapedSailingSchema>;
+
+const paginationProbeSchema = z.object({
+  hasMore: z.boolean(),
+  method: z.enum(["next-button", "scroll", "none"]).optional(),
+});
+
+const cabinExtractSchema = z.object({
+  cabinOptions: z.array(scrapedCabinSchema),
 });
 
 /**
- * Drives the RC cruise-search UI and returns a list of sailings. The
- * selector/prompt work is lean and intentionally replaceable — real
- * production recon (per TASKS.md Task 3) pins these prompts against the
- * live DOM. What's locked in here is the CONTRACT: a typed input, a
- * typed return shape that services map into the VPS SailingPackage
- * schema, and throttled AI calls via `scheduleAction`.
+ * Drives the RC cruise-search UI and returns a list of sailings.
  *
- * How to apply: services call this via `runWithSession` in pool.ts so
- * retries + timeouts + session teardown are handled uniformly.
+ * Task 5: filters are applied via `page.act()`, one discrete call per
+ * filter, throttled through the session limiter.
+ *
+ * Task 6: we paginate — up to `maxPaginationPasses` iterations of
+ * "click next" or "scroll to load more", deciding which via an extract
+ * against `paginationProbeSchema`. Secondary per-sailing pricing
+ * extract is opt-in via `enrichPricing`, capped so we don't run up
+ * Steel minutes on a huge result set.
+ *
+ * Task 10: empty results after pagination surface as EmptyResultsError
+ * which the service layer converts to an empty-array envelope.
+ *
+ * Selector/prompt text is intentionally generic — real production
+ * recon (TASKS.md Task 3) tunes these against the live DOM. What's
+ * locked is the CONTRACT: typed input, typed output, deterministic
+ * throttling.
  */
 export async function scrapeSailingPackages(
   session: BrowserSession,
   input: SailingPackageFlowInput
-): Promise<z.infer<typeof sailingScrapeSchema>["sailings"]> {
+): Promise<ScrapedSailing[]> {
   const { stagehand, limiter } = session;
   const page = stagehand.page;
 
@@ -71,18 +116,102 @@ export async function scrapeSailingPackages(
     );
   }
 
-  const extracted = await scheduleAction(limiter, () =>
-    page.extract({
-      instruction:
-        "extract every visible sailing card with shipCode, shipName, sailDate (YYYY-MM-DD), packageCode, duration, packageDescription, regionCode, subRegionCode",
-      schema: sailingScrapeSchema,
-    })
-  );
+  const maxPasses = input.maxPaginationPasses ?? DEFAULT_MAX_PAGES;
+  const collected = new Map<string, ScrapedSailing>();
 
-  const sailings = extracted.sailings.map((s) => ({ ...s, brandCode: input.brandCode }));
+  const extractPass = async (): Promise<void> => {
+    const extracted = await scheduleAction(limiter, () =>
+      page.extract({
+        instruction:
+          "extract every visible sailing card with shipCode, shipName, sailDate (YYYY-MM-DD), packageCode, duration, packageDescription, regionCode, subRegionCode, and the sailingDetailUrl if visible on the card",
+        schema: sailingScrapeSchema,
+      })
+    );
+    for (const s of extracted.sailings) {
+      // Dedup by the VPS identity tuple — pagination may overlap.
+      const key = `${s.shipCode}|${s.sailDate}|${s.packageCode}`;
+      if (!collected.has(key)) {
+        collected.set(key, { ...s, brandCode: input.brandCode });
+      }
+    }
+  };
+
+  await extractPass();
+
+  for (let pass = 0; pass < maxPasses; pass += 1) {
+    const probe = await scheduleAction(limiter, () =>
+      page.extract({
+        instruction:
+          "report whether more sailing results can be loaded. Set hasMore=true if a 'next' or 'load more' button exists, OR if scrolling to the bottom would fetch more results. Set method to 'next-button', 'scroll', or 'none'.",
+        schema: paginationProbeSchema,
+      })
+    );
+    if (!probe.hasMore) break;
+    if (probe.method === "next-button") {
+      await scheduleAction(limiter, () =>
+        page.act("click the 'next' or 'load more' button to load additional sailing results")
+      );
+    } else {
+      await scheduleAction(limiter, () =>
+        page.act(
+          "scroll the sailing results list to the bottom to trigger infinite-scroll loading of more results"
+        )
+      );
+    }
+    await extractPass();
+  }
+
+  if (input.enrichPricing) {
+    const cap = input.maxDetailEnrichments ?? DEFAULT_MAX_DETAILS;
+    const toEnrich = Array.from(collected.values())
+      .filter((s) => s.sailingDetailUrl)
+      .slice(0, cap);
+    for (const sailing of toEnrich) {
+      const cabinOptions = await enrichSailingWithPricing(session, sailing);
+      if (cabinOptions.length > 0) {
+        sailing.cabinOptions = cabinOptions;
+      }
+    }
+    if (toEnrich.length > 0) {
+      // Return to the results list in case the caller wants to scrape again.
+      await scheduleAction(limiter, () => page.goto("https://www.royalcaribbean.com/cruises"));
+    }
+  }
+
+  const sailings = Array.from(collected.values());
   if (sailings.length === 0) {
     throw new EmptyResultsError();
   }
-
   return sailings;
+}
+
+/**
+ * Secondary extract for Task 6 — opens one sailing detail page and
+ * pulls cabin-level pricing. Separate function so services can call
+ * it on demand outside the main scrape loop if they already have
+ * sailing identities from the catalog + snapshot.
+ */
+export async function enrichSailingWithPricing(
+  session: BrowserSession,
+  sailing: ScrapedSailing
+): Promise<z.infer<typeof scrapedCabinSchema>[]> {
+  if (!sailing.sailingDetailUrl) return [];
+  const { stagehand, limiter } = session;
+  const page = stagehand.page;
+  try {
+    await scheduleAction(limiter, () => page.goto(sailing.sailingDetailUrl as string));
+    const extracted = await scheduleAction(limiter, () =>
+      page.extract({
+        instruction:
+          "extract every cabin / stateroom category offered for this sailing with stateroomCategoryCode, stateroomSuperCategory (I/O/B/D/A/C), pricePerGuest, and currency",
+        schema: cabinExtractSchema,
+      })
+    );
+    return extracted.cabinOptions;
+  } catch (err) {
+    logger.warn(
+      `enrich pricing failed for ${sailing.shipCode} ${sailing.sailDate} ${sailing.packageCode}: ${String(err)}`
+    );
+    return [];
+  }
 }

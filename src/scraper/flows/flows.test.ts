@@ -15,7 +15,7 @@ vi.mock("@/scraper/throttle", async () => {
 
 import { scrapeSailingPricing } from "@/scraper/flows/pricing";
 import { scrapePromotions } from "@/scraper/flows/promotions";
-import { scrapeSailingPackages } from "@/scraper/flows/sailing-package";
+import { enrichSailingWithPricing, scrapeSailingPackages } from "@/scraper/flows/sailing-package";
 import type { BrowserSession } from "@/scraper/session";
 
 /**
@@ -28,19 +28,38 @@ import type { BrowserSession } from "@/scraper/session";
  * guarantees.
  */
 
+/**
+ * Builds a fake session whose `extract()` responds according to the
+ * instruction text — this makes tests robust against flows that do
+ * several extract() calls in a row (sailings extract → pagination
+ * probe → cabin extract → …).
+ */
 function makeFakeSession(params: {
-  extractResult?: unknown;
+  sailings?: unknown[];
+  cabinOptions?: unknown[];
+  promotions?: unknown[];
+  paginationHasMore?: boolean;
   extractThrows?: Error;
 }): BrowserSession {
   const goto = vi.fn().mockResolvedValue(undefined);
   const act = vi.fn().mockResolvedValue(undefined);
-  const extract = vi.fn();
-  if (params.extractThrows) {
-    extract.mockRejectedValue(params.extractThrows);
-  } else {
-    extract.mockResolvedValue(params.extractResult ?? { sailings: [] });
-  }
-  // Low minTime so tests don't wait on real delays.
+  const extract = vi.fn(async (opts: { instruction: string }) => {
+    if (params.extractThrows) throw params.extractThrows;
+    const i = opts.instruction.toLowerCase();
+    if (i.includes("pagination") || i.includes("hasmore") || i.includes("more sailing results")) {
+      return { hasMore: params.paginationHasMore ?? false, method: "none" };
+    }
+    if (i.includes("sailing card")) {
+      return { sailings: params.sailings ?? [] };
+    }
+    if (i.includes("cabin") || i.includes("stateroom")) {
+      return { cabinOptions: params.cabinOptions ?? [] };
+    }
+    if (i.includes("promotion")) {
+      return { promotions: params.promotions ?? [] };
+    }
+    return {};
+  });
   const limiter = new Bottleneck({ maxConcurrent: 1, minTime: 0 });
   const stagehand = { page: { goto, act, extract } } as unknown as BrowserSession["stagehand"];
   return {
@@ -54,17 +73,15 @@ function makeFakeSession(params: {
 describe("scraper/flows/sailing-package", () => {
   it("returns sailings with the request brandCode stamped in", async () => {
     const session = makeFakeSession({
-      extractResult: {
-        sailings: [
-          {
-            brandCode: "R",
-            shipCode: "RD",
-            sailDate: "2025-06-20",
-            packageCode: "RD10BQ09",
-            duration: 10,
-          },
-        ],
-      },
+      sailings: [
+        {
+          brandCode: "R",
+          shipCode: "RD",
+          sailDate: "2025-06-20",
+          packageCode: "RD10BQ09",
+          duration: 10,
+        },
+      ],
     });
     const result = await scrapeSailingPackages(session, {
       brandCode: "R",
@@ -78,11 +95,9 @@ describe("scraper/flows/sailing-package", () => {
 
   it("only emits a shipCodes filter act() when shipCodes is non-empty", async () => {
     const session = makeFakeSession({
-      extractResult: {
-        sailings: [
-          { brandCode: "R", shipCode: "RD", sailDate: "2025-06-20", packageCode: "X", duration: 7 },
-        ],
-      },
+      sailings: [
+        { brandCode: "R", shipCode: "RD", sailDate: "2025-06-20", packageCode: "X", duration: 7 },
+      ],
     });
     await scrapeSailingPackages(session, {
       brandCode: "R",
@@ -96,11 +111,9 @@ describe("scraper/flows/sailing-package", () => {
 
   it("emits an additional act() when shipCodes are provided", async () => {
     const session = makeFakeSession({
-      extractResult: {
-        sailings: [
-          { brandCode: "R", shipCode: "RD", sailDate: "2025-06-20", packageCode: "X", duration: 7 },
-        ],
-      },
+      sailings: [
+        { brandCode: "R", shipCode: "RD", sailDate: "2025-06-20", packageCode: "X", duration: 7 },
+      ],
     });
     await scrapeSailingPackages(session, {
       brandCode: "R",
@@ -112,8 +125,67 @@ describe("scraper/flows/sailing-package", () => {
     expect(actMock).toHaveBeenCalledTimes(2);
   });
 
+  it("paginates when paginationHasMore is true, up to maxPaginationPasses", async () => {
+    const session = makeFakeSession({
+      sailings: [
+        { brandCode: "R", shipCode: "RD", sailDate: "2025-06-20", packageCode: "X", duration: 7 },
+      ],
+      paginationHasMore: true,
+    });
+    await scrapeSailingPackages(session, {
+      brandCode: "R",
+      fromSailDate: "2025-06-01",
+      toSailDate: "2025-06-30",
+      maxPaginationPasses: 2,
+    });
+    const actMock = session.stagehand.page.act as ReturnType<typeof vi.fn>;
+    const paginationActs = actMock.mock.calls.filter((call) =>
+      /load more|scroll|next/.test(String(call[0]))
+    );
+    // 2 pagination passes → 2 act() calls to advance the list.
+    expect(paginationActs).toHaveLength(2);
+  });
+
+  it("stops paginating when the probe reports hasMore=false", async () => {
+    const session = makeFakeSession({
+      sailings: [
+        { brandCode: "R", shipCode: "RD", sailDate: "2025-06-20", packageCode: "X", duration: 7 },
+      ],
+      paginationHasMore: false,
+    });
+    await scrapeSailingPackages(session, {
+      brandCode: "R",
+      fromSailDate: "2025-06-01",
+      toSailDate: "2025-06-30",
+      maxPaginationPasses: 10,
+    });
+    const actMock = session.stagehand.page.act as ReturnType<typeof vi.fn>;
+    const paginationActs = actMock.mock.calls.filter((call) =>
+      /load more|scroll|next/.test(String(call[0]))
+    );
+    expect(paginationActs).toHaveLength(0);
+  });
+
+  it("dedupes overlapping sailings across pagination passes by identity tuple", async () => {
+    const session = makeFakeSession({
+      sailings: [
+        { brandCode: "R", shipCode: "RD", sailDate: "2025-06-20", packageCode: "X", duration: 7 },
+      ],
+      paginationHasMore: true,
+    });
+    const result = await scrapeSailingPackages(session, {
+      brandCode: "R",
+      fromSailDate: "2025-06-01",
+      toSailDate: "2025-06-30",
+      maxPaginationPasses: 3,
+    });
+    // Every pass returns the same single sailing; dedup should collapse
+    // to length 1 even though we looped.
+    expect(result).toHaveLength(1);
+  });
+
   it("throws EmptyResultsError when extract returns []", async () => {
-    const session = makeFakeSession({ extractResult: { sailings: [] } });
+    const session = makeFakeSession({ sailings: [] });
     await expect(
       scrapeSailingPackages(session, {
         brandCode: "R",
@@ -122,14 +194,81 @@ describe("scraper/flows/sailing-package", () => {
       })
     ).rejects.toBeInstanceOf(EmptyResultsError);
   });
+
+  it("enriches up to maxDetailEnrichments sailings with cabin pricing when enrichPricing=true", async () => {
+    const session = makeFakeSession({
+      sailings: [
+        {
+          brandCode: "R",
+          shipCode: "RD",
+          sailDate: "2025-06-20",
+          packageCode: "X",
+          duration: 7,
+          sailingDetailUrl: "https://www.royalcaribbean.com/cruise/detail/1",
+        },
+      ],
+      cabinOptions: [{ stateroomCategoryCode: "A1", pricePerGuest: 500 }],
+    });
+    const result = await scrapeSailingPackages(session, {
+      brandCode: "R",
+      fromSailDate: "2025-06-01",
+      toSailDate: "2025-06-30",
+      enrichPricing: true,
+      maxDetailEnrichments: 1,
+    });
+    expect(result).toHaveLength(1);
+    expect(result[0]?.cabinOptions).toEqual([{ stateroomCategoryCode: "A1", pricePerGuest: 500 }]);
+  });
+});
+
+describe("enrichSailingWithPricing", () => {
+  it("returns [] when the sailing has no detail URL", async () => {
+    const session = makeFakeSession({});
+    const result = await enrichSailingWithPricing(session, {
+      brandCode: "R",
+      shipCode: "RD",
+      sailDate: "2025-06-20",
+      packageCode: "X",
+      duration: 7,
+    });
+    expect(result).toEqual([]);
+  });
+
+  it("fetches cabin options from the detail URL", async () => {
+    const session = makeFakeSession({
+      cabinOptions: [{ stateroomCategoryCode: "B1", pricePerGuest: 700 }],
+    });
+    const result = await enrichSailingWithPricing(session, {
+      brandCode: "R",
+      shipCode: "RD",
+      sailDate: "2025-06-20",
+      packageCode: "X",
+      duration: 7,
+      sailingDetailUrl: "https://detail/1",
+    });
+    expect(result).toEqual([{ stateroomCategoryCode: "B1", pricePerGuest: 700 }]);
+  });
+
+  it("returns [] and does not throw when the detail navigation errors", async () => {
+    const session = makeFakeSession({
+      extractThrows: new Error("timeout"),
+    });
+    const result = await enrichSailingWithPricing(session, {
+      brandCode: "R",
+      shipCode: "RD",
+      sailDate: "2025-06-20",
+      packageCode: "X",
+      duration: 7,
+      sailingDetailUrl: "https://detail/1",
+    });
+    expect(result).toEqual([]);
+  });
 });
 
 describe("scraper/flows/pricing", () => {
   it("returns cabin options from a successful extract", async () => {
     const session = makeFakeSession({
-      extractResult: {
-        cabinOptions: [{ stateroomCategoryCode: "A1", pricePerGuest: 4886 }],
-      },
+      cabinOptions: [{ stateroomCategoryCode: "A1", pricePerGuest: 4886 }],
     });
     const result = await scrapeSailingPricing(session, {
       brandCode: "R",
@@ -146,7 +285,7 @@ describe("scraper/flows/pricing", () => {
 
   it("appends a group-context act() only when bookingTypeCode is G", async () => {
     const individual = makeFakeSession({
-      extractResult: { cabinOptions: [{ stateroomCategoryCode: "X", pricePerGuest: 1 }] },
+      cabinOptions: [{ stateroomCategoryCode: "X", pricePerGuest: 1 }],
     });
     await scrapeSailingPricing(individual, {
       brandCode: "R",
@@ -164,7 +303,7 @@ describe("scraper/flows/pricing", () => {
     expect(groupInstruction).toBe(false);
 
     const group = makeFakeSession({
-      extractResult: { cabinOptions: [{ stateroomCategoryCode: "X", pricePerGuest: 1 }] },
+      cabinOptions: [{ stateroomCategoryCode: "X", pricePerGuest: 1 }],
     });
     await scrapeSailingPricing(group, {
       brandCode: "R",
@@ -183,7 +322,7 @@ describe("scraper/flows/pricing", () => {
   });
 
   it("throws EmptyResultsError when extract yields []", async () => {
-    const session = makeFakeSession({ extractResult: { cabinOptions: [] } });
+    const session = makeFakeSession({ cabinOptions: [] });
     await expect(
       scrapeSailingPricing(session, {
         brandCode: "R",
@@ -201,7 +340,7 @@ describe("scraper/flows/pricing", () => {
 describe("scraper/flows/promotions", () => {
   it("returns the scraped promotion list", async () => {
     const session = makeFakeSession({
-      extractResult: { promotions: [{ id: "P1", shortDescription: "Deal" }] },
+      promotions: [{ id: "P1", shortDescription: "Deal" }],
     });
     const result = await scrapePromotions(session, {
       brand: "R",
@@ -213,7 +352,7 @@ describe("scraper/flows/promotions", () => {
 
   it("drives a market-switch act() only when marketCountryCode is set", async () => {
     const session = makeFakeSession({
-      extractResult: { promotions: [{ id: "P1" }] },
+      promotions: [{ id: "P1" }],
     });
     await scrapePromotions(session, {
       brand: "R",
@@ -225,7 +364,7 @@ describe("scraper/flows/promotions", () => {
   });
 
   it("throws EmptyResultsError on empty extract", async () => {
-    const session = makeFakeSession({ extractResult: { promotions: [] } });
+    const session = makeFakeSession({ promotions: [] });
     await expect(
       scrapePromotions(session, { brand: "R", currencyCodes: ["USD"] })
     ).rejects.toBeInstanceOf(EmptyResultsError);
