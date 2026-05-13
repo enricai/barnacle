@@ -1,0 +1,66 @@
+// Sample Sailing Package Changes Request
+
+curl --request POST \
+  --url https://tst.vps.rccl-it.cruises/vps/vps/catalog/v1/sailing-package-changes \
+  --header 'Content-Type: application/json' \
+  --header 'X-API-key: xxxxxx' \
+  --data '{
+	"agencyId": "######",
+	"fromDateTime": "2023-06-05T04:06:43"
+}'
+
+// Sample Sailing Package Changes Response
+
+{
+	"status": {
+		"httpStatus": "OK",
+		"dateTime": "2023-06-05T17:50:39.397196",
+		"details": []
+	},
+	"keys": [
+		{
+			"shipCode": "XO",
+			"sailDate": 20230603,
+			"packageCode": "XO10G041"
+		},
+		{
+			"shipCode": "XO",
+			"sailDate": 20230603,
+			"packageCode": "XO16G041"
+		},
+		{
+			"shipCode": "XP",
+			"sailDate": 20230603,
+			"packageCode": "XP10G043"
+		},
+		{
+			"shipCode": "XO",
+			"sailDate": 20230603,
+			"packageCode": "XO07G041"
+		},
+		{
+			"shipCode": "XO",
+			"sailDate": 20230603,
+			"packageCode": "XO11G041"
+		},
+		{
+			"shipCode": "XP",
+			"sailDate": 20230603,
+			"packageCode": "XP16G043"
+		},
+		{
+			"shipCode": "XP",
+			"sailDate": 20230603,
+			"packageCode": "XP11G043"
+		},
+		{
+			"shipCode": "XP",
+			"sailDate": 20230603,
+			"packageCode": "XP07G043"
+		}
+	],
+	"dateTimeRange": {
+		"fromDateTime": "2023-06-05T04:06:43",
+		"toDateTime": "2023-06-05T17:49:39"
+	}
+}

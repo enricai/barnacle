@@ -1,0 +1,2211 @@
+// Sample Super Category Pricing Request
+
+curl --request POST \
+  --url https://tst1.api.rccl.com/vps/vps/partner-pricing/v1/super-category-pricing \
+  --header 'Content-Type: application/json' \
+  --header 'X-API-key: xxxxxx' \
+  --data '{
+	"clients": [
+		{
+			"clientContext": "AGENCY_1",
+			"clientId": "######"
+		}
+	],
+	"companyShortName": "AGENCYNAME",
+	"brandCode": "R",
+	"shipCode": "EN",
+	"sailDate": "2024-04-20",
+	"packageCode": "EN07W550",
+	"bookingChannel": "ES",
+	"officeCode": "MIA",
+	"countryCode": "CAN",
+	"currencyCode": "CAD",
+	"occupancy": 2,
+	"bookingTypeCode": "I",
+	"pricingPreference": {
+		"includeGuestLevelDetail": true,
+		"includeGratuity": true
+	},
+	"guestPreferences": [
+		{
+			"age": 45,
+			"lifeStageCode": "A"
+		},
+		{
+			"age": 45,
+			"lifeStageCode": "A"
+		}
+	]
+}'
+
+// Sample Super Category Pricing Response
+
+{
+	"status": {
+		"httpStatus": "OK",
+		"dateTime": "2023-08-08T18:19:34.867002",
+		"details": []
+	},
+	"promotionBestPrices": [
+		{
+			"leadPromotion": {
+				"promotionId": "I9645287",
+				"shortDescription": "P4BelowAPDWhole"
+			},
+			"eligible": true,
+			"combinableWith": [],
+			"superCategoryBestPrices": [
+				{
+					"superCategoryCode": "D",
+					"superCategoryName": "DELUXE",
+					"bestRate": {
+						"stateroomCategoryCode": "J3",
+						"guaranteeCategoryFlag": false,
+						"stateroomSuperCategory": "D",
+						"stateroomTypeCode": "JS",
+						"restrictedPromotionApplied": false,
+						"accessibleStateroomExistFlag": true,
+						"refundableFareFlag": true,
+						"appliedBasePriceId": "I9736184",
+						"basePriceShortDescription": "TEST",
+						"basePriceType": "S",
+						"appliedPromotionIds": [
+							"I9645287"
+						],
+						"promoCodeApplied": false,
+						"leadPromotion": {
+							"promotionId": "I9645287",
+							"shortDescription": "P4BelowAPDWhole"
+						},
+						"averagePerGuestPricePoint": {
+							"guestSequenceId": null,
+							"appliedLifeStage": null,
+							"netTotal": 710.00,
+							"includedInNetTotal": [
+								"CFARE",
+								"NCCF"
+							],
+							"netCruiseFareAmount": 500.00,
+							"nonComissionalCruiseFareAmount": 210.00,
+							"taxesAndFeesAmount": 152.00,
+							"gratuityAmount": 154.28,
+							"netDiscountAmount": 3079.00,
+							"valueAdds": [],
+							"originalAmount": 3789.00
+						},
+						"guestPricePoints": [
+							{
+								"guestSequenceId": 1,
+								"appliedLifeStage": "A",
+								"netTotal": 710.00,
+								"includedInNetTotal": [
+									"CFARE",
+									"NCCF"
+								],
+								"netCruiseFareAmount": 500.00,
+								"nonComissionalCruiseFareAmount": 210.00,
+								"taxesAndFeesAmount": 152.00,
+								"gratuityAmount": 154.28,
+								"netDiscountAmount": 3079.00,
+								"valueAdds": [],
+								"originalAmount": 3789.00
+							},
+							{
+								"guestSequenceId": 2,
+								"appliedLifeStage": "A",
+								"netTotal": 710.00,
+								"includedInNetTotal": [
+									"CFARE",
+									"NCCF"
+								],
+								"netCruiseFareAmount": 500.00,
+								"nonComissionalCruiseFareAmount": 210.00,
+								"taxesAndFeesAmount": 152.00,
+								"gratuityAmount": 154.28,
+								"netDiscountAmount": 3079.00,
+								"valueAdds": [],
+								"originalAmount": 3789.00
+							}
+						]
+					},
+					"bestValue": null
+				}
+			]
+		},
+		{
+			"leadPromotion": {
+				"promotionId": "I9645324",
+				"shortDescription": "P4APDBelowByDec"
+			},
+			"eligible": true,
+			"combinableWith": [],
+			"superCategoryBestPrices": [
+				{
+					"superCategoryCode": "D",
+					"superCategoryName": "DELUXE",
+					"bestRate": {
+						"stateroomCategoryCode": "J3",
+						"guaranteeCategoryFlag": false,
+						"stateroomSuperCategory": "D",
+						"stateroomTypeCode": "JS",
+						"restrictedPromotionApplied": false,
+						"accessibleStateroomExistFlag": true,
+						"refundableFareFlag": true,
+						"appliedBasePriceId": "I9736184",
+						"basePriceShortDescription": "TEST",
+						"basePriceType": "S",
+						"appliedPromotionIds": [
+							"I9645324"
+						],
+						"promoCodeApplied": false,
+						"leadPromotion": {
+							"promotionId": "I9645324",
+							"shortDescription": "P4APDBelowByDec"
+						},
+						"averagePerGuestPricePoint": {
+							"guestSequenceId": null,
+							"appliedLifeStage": null,
+							"netTotal": 712.00,
+							"includedInNetTotal": [
+								"CFARE",
+								"NCCF"
+							],
+							"netCruiseFareAmount": 502.00,
+							"nonComissionalCruiseFareAmount": 210.00,
+							"taxesAndFeesAmount": 152.00,
+							"gratuityAmount": 154.28,
+							"netDiscountAmount": 3077.00,
+							"valueAdds": [],
+							"originalAmount": 3789.00
+						},
+						"guestPricePoints": [
+							{
+								"guestSequenceId": 1,
+								"appliedLifeStage": "A",
+								"netTotal": 712.00,
+								"includedInNetTotal": [
+									"CFARE",
+									"NCCF"
+								],
+								"netCruiseFareAmount": 502.00,
+								"nonComissionalCruiseFareAmount": 210.00,
+								"taxesAndFeesAmount": 152.00,
+								"gratuityAmount": 154.28,
+								"netDiscountAmount": 3077.00,
+								"valueAdds": [],
+								"originalAmount": 3789.00
+							},
+							{
+								"guestSequenceId": 2,
+								"appliedLifeStage": "A",
+								"netTotal": 712.00,
+								"includedInNetTotal": [
+									"CFARE",
+									"NCCF"
+								],
+								"netCruiseFareAmount": 502.00,
+								"nonComissionalCruiseFareAmount": 210.00,
+								"taxesAndFeesAmount": 152.00,
+								"gratuityAmount": 154.28,
+								"netDiscountAmount": 3077.00,
+								"valueAdds": [],
+								"originalAmount": 3789.00
+							}
+						]
+					},
+					"bestValue": null
+				}
+			]
+		},
+		{
+			"leadPromotion": {
+				"promotionId": "I9573813",
+				"shortDescription": "Island Hop"
+			},
+			"eligible": false,
+			"combinableWith": [],
+			"superCategoryBestPrices": [
+				{
+					"superCategoryCode": "O",
+					"superCategoryName": "OUTSIDE",
+					"bestRate": {
+						"stateroomCategoryCode": "4N",
+						"guaranteeCategoryFlag": false,
+						"stateroomSuperCategory": "O",
+						"stateroomTypeCode": "N",
+						"restrictedPromotionApplied": false,
+						"accessibleStateroomExistFlag": false,
+						"refundableFareFlag": true,
+						"appliedBasePriceId": "I9736184",
+						"basePriceShortDescription": "TEST",
+						"basePriceType": "S",
+						"appliedPromotionIds": [
+							"I9573813"
+						],
+						"promoCodeApplied": false,
+						"leadPromotion": {
+							"promotionId": "I9573813",
+							"shortDescription": "Island Hop"
+						},
+						"averagePerGuestPricePoint": {
+							"guestSequenceId": null,
+							"appliedLifeStage": null,
+							"netTotal": 1356.00,
+							"includedInNetTotal": [
+								"CFARE",
+								"NCCF"
+							],
+							"netCruiseFareAmount": 1146.00,
+							"nonComissionalCruiseFareAmount": 210.00,
+							"taxesAndFeesAmount": 152.00,
+							"gratuityAmount": 154.28,
+							"netDiscountAmount": -127.00,
+							"valueAdds": [],
+							"originalAmount": 1229.00
+						},
+						"guestPricePoints": [
+							{
+								"guestSequenceId": 1,
+								"appliedLifeStage": "A",
+								"netTotal": 1356.00,
+								"includedInNetTotal": [
+									"CFARE",
+									"NCCF"
+								],
+								"netCruiseFareAmount": 1146.00,
+								"nonComissionalCruiseFareAmount": 210.00,
+								"taxesAndFeesAmount": 152.00,
+								"gratuityAmount": 154.28,
+								"netDiscountAmount": -127.00,
+								"valueAdds": [],
+								"originalAmount": 1229.00
+							},
+							{
+								"guestSequenceId": 2,
+								"appliedLifeStage": "A",
+								"netTotal": 1356.00,
+								"includedInNetTotal": [
+									"CFARE",
+									"NCCF"
+								],
+								"netCruiseFareAmount": 1146.00,
+								"nonComissionalCruiseFareAmount": 210.00,
+								"taxesAndFeesAmount": 152.00,
+								"gratuityAmount": 154.28,
+								"netDiscountAmount": -127.00,
+								"valueAdds": [],
+								"originalAmount": 1229.00
+							}
+						]
+					},
+					"bestValue": null
+				},
+				{
+					"superCategoryCode": "I",
+					"superCategoryName": "INSIDE",
+					"bestRate": {
+						"stateroomCategoryCode": "4V",
+						"guaranteeCategoryFlag": false,
+						"stateroomSuperCategory": "I",
+						"stateroomTypeCode": "V",
+						"restrictedPromotionApplied": false,
+						"accessibleStateroomExistFlag": false,
+						"refundableFareFlag": true,
+						"appliedBasePriceId": "I9736184",
+						"basePriceShortDescription": "TEST",
+						"basePriceType": "S",
+						"appliedPromotionIds": [
+							"I9573813"
+						],
+						"promoCodeApplied": false,
+						"leadPromotion": {
+							"promotionId": "I9573813",
+							"shortDescription": "Island Hop"
+						},
+						"averagePerGuestPricePoint": {
+							"guestSequenceId": null,
+							"appliedLifeStage": null,
+							"netTotal": 1276.00,
+							"includedInNetTotal": [
+								"CFARE",
+								"NCCF"
+							],
+							"netCruiseFareAmount": 1066.00,
+							"nonComissionalCruiseFareAmount": 210.00,
+							"taxesAndFeesAmount": 152.00,
+							"gratuityAmount": 154.28,
+							"netDiscountAmount": -127.00,
+							"valueAdds": [],
+							"originalAmount": 1149.00
+						},
+						"guestPricePoints": [
+							{
+								"guestSequenceId": 1,
+								"appliedLifeStage": "A",
+								"netTotal": 1276.00,
+								"includedInNetTotal": [
+									"CFARE",
+									"NCCF"
+								],
+								"netCruiseFareAmount": 1066.00,
+								"nonComissionalCruiseFareAmount": 210.00,
+								"taxesAndFeesAmount": 152.00,
+								"gratuityAmount": 154.28,
+								"netDiscountAmount": -127.00,
+								"valueAdds": [],
+								"originalAmount": 1149.00
+							},
+							{
+								"guestSequenceId": 2,
+								"appliedLifeStage": "A",
+								"netTotal": 1276.00,
+								"includedInNetTotal": [
+									"CFARE",
+									"NCCF"
+								],
+								"netCruiseFareAmount": 1066.00,
+								"nonComissionalCruiseFareAmount": 210.00,
+								"taxesAndFeesAmount": 152.00,
+								"gratuityAmount": 154.28,
+								"netDiscountAmount": -127.00,
+								"valueAdds": [],
+								"originalAmount": 1149.00
+							}
+						]
+					},
+					"bestValue": null
+				},
+				{
+					"superCategoryCode": "D",
+					"superCategoryName": "DELUXE",
+					"bestRate": {
+						"stateroomCategoryCode": "J3",
+						"guaranteeCategoryFlag": false,
+						"stateroomSuperCategory": "D",
+						"stateroomTypeCode": "JS",
+						"restrictedPromotionApplied": false,
+						"accessibleStateroomExistFlag": true,
+						"refundableFareFlag": true,
+						"appliedBasePriceId": "I9736184",
+						"basePriceShortDescription": "TEST",
+						"basePriceType": "S",
+						"appliedPromotionIds": [
+							"I9573813"
+						],
+						"promoCodeApplied": false,
+						"leadPromotion": {
+							"promotionId": "I9573813",
+							"shortDescription": "Island Hop"
+						},
+						"averagePerGuestPricePoint": {
+							"guestSequenceId": null,
+							"appliedLifeStage": null,
+							"netTotal": 3916.00,
+							"includedInNetTotal": [
+								"CFARE",
+								"NCCF"
+							],
+							"netCruiseFareAmount": 3706.00,
+							"nonComissionalCruiseFareAmount": 210.00,
+							"taxesAndFeesAmount": 152.00,
+							"gratuityAmount": 154.28,
+							"netDiscountAmount": -127.00,
+							"valueAdds": [],
+							"originalAmount": 3789.00
+						},
+						"guestPricePoints": [
+							{
+								"guestSequenceId": 1,
+								"appliedLifeStage": "A",
+								"netTotal": 3916.00,
+								"includedInNetTotal": [
+									"CFARE",
+									"NCCF"
+								],
+								"netCruiseFareAmount": 3706.00,
+								"nonComissionalCruiseFareAmount": 210.00,
+								"taxesAndFeesAmount": 152.00,
+								"gratuityAmount": 154.28,
+								"netDiscountAmount": -127.00,
+								"valueAdds": [],
+								"originalAmount": 3789.00
+							},
+							{
+								"guestSequenceId": 2,
+								"appliedLifeStage": "A",
+								"netTotal": 3916.00,
+								"includedInNetTotal": [
+									"CFARE",
+									"NCCF"
+								],
+								"netCruiseFareAmount": 3706.00,
+								"nonComissionalCruiseFareAmount": 210.00,
+								"taxesAndFeesAmount": 152.00,
+								"gratuityAmount": 154.28,
+								"netDiscountAmount": -127.00,
+								"valueAdds": [],
+								"originalAmount": 3789.00
+							}
+						]
+					},
+					"bestValue": null
+				}
+			]
+		},
+		{
+			"leadPromotion": {
+				"promotionId": "I9573815",
+				"shortDescription": "Island Hop NRD"
+			},
+			"eligible": false,
+			"combinableWith": [],
+			"superCategoryBestPrices": [
+				{
+					"superCategoryCode": "O",
+					"superCategoryName": "OUTSIDE",
+					"bestRate": {
+						"stateroomCategoryCode": "4N",
+						"guaranteeCategoryFlag": false,
+						"stateroomSuperCategory": "O",
+						"stateroomTypeCode": "N",
+						"restrictedPromotionApplied": false,
+						"accessibleStateroomExistFlag": false,
+						"refundableFareFlag": false,
+						"appliedBasePriceId": "I9736184",
+						"basePriceShortDescription": "TEST",
+						"basePriceType": "S",
+						"appliedPromotionIds": [
+							"I9573815"
+						],
+						"promoCodeApplied": false,
+						"leadPromotion": {
+							"promotionId": "I9573815",
+							"shortDescription": "Island Hop NRD"
+						},
+						"averagePerGuestPricePoint": {
+							"guestSequenceId": null,
+							"appliedLifeStage": null,
+							"netTotal": 1356.00,
+							"includedInNetTotal": [
+								"CFARE",
+								"NCCF"
+							],
+							"netCruiseFareAmount": 1146.00,
+							"nonComissionalCruiseFareAmount": 210.00,
+							"taxesAndFeesAmount": 152.00,
+							"gratuityAmount": 154.28,
+							"netDiscountAmount": -127.00,
+							"valueAdds": [],
+							"originalAmount": 1229.00
+						},
+						"guestPricePoints": [
+							{
+								"guestSequenceId": 1,
+								"appliedLifeStage": "A",
+								"netTotal": 1356.00,
+								"includedInNetTotal": [
+									"CFARE",
+									"NCCF"
+								],
+								"netCruiseFareAmount": 1146.00,
+								"nonComissionalCruiseFareAmount": 210.00,
+								"taxesAndFeesAmount": 152.00,
+								"gratuityAmount": 154.28,
+								"netDiscountAmount": -127.00,
+								"valueAdds": [],
+								"originalAmount": 1229.00
+							},
+							{
+								"guestSequenceId": 2,
+								"appliedLifeStage": "A",
+								"netTotal": 1356.00,
+								"includedInNetTotal": [
+									"CFARE",
+									"NCCF"
+								],
+								"netCruiseFareAmount": 1146.00,
+								"nonComissionalCruiseFareAmount": 210.00,
+								"taxesAndFeesAmount": 152.00,
+								"gratuityAmount": 154.28,
+								"netDiscountAmount": -127.00,
+								"valueAdds": [],
+								"originalAmount": 1229.00
+							}
+						]
+					},
+					"bestValue": null
+				},
+				{
+					"superCategoryCode": "I",
+					"superCategoryName": "INSIDE",
+					"bestRate": {
+						"stateroomCategoryCode": "ZI",
+						"guaranteeCategoryFlag": true,
+						"stateroomSuperCategory": "I",
+						"stateroomTypeCode": "V",
+						"restrictedPromotionApplied": false,
+						"accessibleStateroomExistFlag": false,
+						"refundableFareFlag": false,
+						"appliedBasePriceId": "I9736184",
+						"basePriceShortDescription": "TEST",
+						"basePriceType": "S",
+						"appliedPromotionIds": [
+							"I9573815"
+						],
+						"promoCodeApplied": false,
+						"leadPromotion": {
+							"promotionId": "I9573815",
+							"shortDescription": "Island Hop NRD"
+						},
+						"averagePerGuestPricePoint": {
+							"guestSequenceId": null,
+							"appliedLifeStage": null,
+							"netTotal": 1166.00,
+							"includedInNetTotal": [
+								"CFARE",
+								"NCCF"
+							],
+							"netCruiseFareAmount": 956.00,
+							"nonComissionalCruiseFareAmount": 210.00,
+							"taxesAndFeesAmount": 152.00,
+							"gratuityAmount": 154.28,
+							"netDiscountAmount": -127.00,
+							"valueAdds": [],
+							"originalAmount": 1039.00
+						},
+						"guestPricePoints": [
+							{
+								"guestSequenceId": 1,
+								"appliedLifeStage": "A",
+								"netTotal": 1166.00,
+								"includedInNetTotal": [
+									"CFARE",
+									"NCCF"
+								],
+								"netCruiseFareAmount": 956.00,
+								"nonComissionalCruiseFareAmount": 210.00,
+								"taxesAndFeesAmount": 152.00,
+								"gratuityAmount": 154.28,
+								"netDiscountAmount": -127.00,
+								"valueAdds": [],
+								"originalAmount": 1039.00
+							},
+							{
+								"guestSequenceId": 2,
+								"appliedLifeStage": "A",
+								"netTotal": 1166.00,
+								"includedInNetTotal": [
+									"CFARE",
+									"NCCF"
+								],
+								"netCruiseFareAmount": 956.00,
+								"nonComissionalCruiseFareAmount": 210.00,
+								"taxesAndFeesAmount": 152.00,
+								"gratuityAmount": 154.28,
+								"netDiscountAmount": -127.00,
+								"valueAdds": [],
+								"originalAmount": 1039.00
+							}
+						]
+					},
+					"bestValue": null
+				},
+				{
+					"superCategoryCode": "D",
+					"superCategoryName": "DELUXE",
+					"bestRate": {
+						"stateroomCategoryCode": "J3",
+						"guaranteeCategoryFlag": false,
+						"stateroomSuperCategory": "D",
+						"stateroomTypeCode": "JS",
+						"restrictedPromotionApplied": false,
+						"accessibleStateroomExistFlag": true,
+						"refundableFareFlag": false,
+						"appliedBasePriceId": "I9736184",
+						"basePriceShortDescription": "TEST",
+						"basePriceType": "S",
+						"appliedPromotionIds": [
+							"I9573815"
+						],
+						"promoCodeApplied": false,
+						"leadPromotion": {
+							"promotionId": "I9573815",
+							"shortDescription": "Island Hop NRD"
+						},
+						"averagePerGuestPricePoint": {
+							"guestSequenceId": null,
+							"appliedLifeStage": null,
+							"netTotal": 3916.00,
+							"includedInNetTotal": [
+								"CFARE",
+								"NCCF"
+							],
+							"netCruiseFareAmount": 3706.00,
+							"nonComissionalCruiseFareAmount": 210.00,
+							"taxesAndFeesAmount": 152.00,
+							"gratuityAmount": 154.28,
+							"netDiscountAmount": -127.00,
+							"valueAdds": [],
+							"originalAmount": 3789.00
+						},
+						"guestPricePoints": [
+							{
+								"guestSequenceId": 1,
+								"appliedLifeStage": "A",
+								"netTotal": 3916.00,
+								"includedInNetTotal": [
+									"CFARE",
+									"NCCF"
+								],
+								"netCruiseFareAmount": 3706.00,
+								"nonComissionalCruiseFareAmount": 210.00,
+								"taxesAndFeesAmount": 152.00,
+								"gratuityAmount": 154.28,
+								"netDiscountAmount": -127.00,
+								"valueAdds": [],
+								"originalAmount": 3789.00
+							},
+							{
+								"guestSequenceId": 2,
+								"appliedLifeStage": "A",
+								"netTotal": 3916.00,
+								"includedInNetTotal": [
+									"CFARE",
+									"NCCF"
+								],
+								"netCruiseFareAmount": 3706.00,
+								"nonComissionalCruiseFareAmount": 210.00,
+								"taxesAndFeesAmount": 152.00,
+								"gratuityAmount": 154.28,
+								"netDiscountAmount": -127.00,
+								"valueAdds": [],
+								"originalAmount": 3789.00
+							}
+						]
+					},
+					"bestValue": null
+				},
+				{
+					"superCategoryCode": "B",
+					"superCategoryName": "BALCONY",
+					"bestRate": {
+						"stateroomCategoryCode": "1B",
+						"guaranteeCategoryFlag": false,
+						"stateroomSuperCategory": "B",
+						"stateroomTypeCode": "B",
+						"restrictedPromotionApplied": false,
+						"accessibleStateroomExistFlag": true,
+						"refundableFareFlag": false,
+						"appliedBasePriceId": "I9736184",
+						"basePriceShortDescription": "TEST",
+						"basePriceType": "S",
+						"appliedPromotionIds": [
+							"I9573815"
+						],
+						"promoCodeApplied": false,
+						"leadPromotion": {
+							"promotionId": "I9573815",
+							"shortDescription": "Island Hop NRD"
+						},
+						"averagePerGuestPricePoint": {
+							"guestSequenceId": null,
+							"appliedLifeStage": null,
+							"netTotal": 3366.00,
+							"includedInNetTotal": [
+								"CFARE",
+								"NCCF"
+							],
+							"netCruiseFareAmount": 3156.00,
+							"nonComissionalCruiseFareAmount": 210.00,
+							"taxesAndFeesAmount": 152.00,
+							"gratuityAmount": 154.28,
+							"netDiscountAmount": -127.00,
+							"valueAdds": [],
+							"originalAmount": 3239.00
+						},
+						"guestPricePoints": [
+							{
+								"guestSequenceId": 1,
+								"appliedLifeStage": "A",
+								"netTotal": 3366.00,
+								"includedInNetTotal": [
+									"CFARE",
+									"NCCF"
+								],
+								"netCruiseFareAmount": 3156.00,
+								"nonComissionalCruiseFareAmount": 210.00,
+								"taxesAndFeesAmount": 152.00,
+								"gratuityAmount": 154.28,
+								"netDiscountAmount": -127.00,
+								"valueAdds": [],
+								"originalAmount": 3239.00
+							},
+							{
+								"guestSequenceId": 2,
+								"appliedLifeStage": "A",
+								"netTotal": 3366.00,
+								"includedInNetTotal": [
+									"CFARE",
+									"NCCF"
+								],
+								"netCruiseFareAmount": 3156.00,
+								"nonComissionalCruiseFareAmount": 210.00,
+								"taxesAndFeesAmount": 152.00,
+								"gratuityAmount": 154.28,
+								"netDiscountAmount": -127.00,
+								"valueAdds": [],
+								"originalAmount": 3239.00
+							}
+						]
+					},
+					"bestValue": null
+				}
+			]
+		},
+		{
+			"leadPromotion": {
+				"promotionId": "I9630756",
+				"shortDescription": "Loyalty Promo"
+			},
+			"eligible": false,
+			"combinableWith": [],
+			"superCategoryBestPrices": [
+				{
+					"superCategoryCode": "O",
+					"superCategoryName": "OUTSIDE",
+					"bestRate": {
+						"stateroomCategoryCode": "4N",
+						"guaranteeCategoryFlag": false,
+						"stateroomSuperCategory": "O",
+						"stateroomTypeCode": "N",
+						"restrictedPromotionApplied": true,
+						"accessibleStateroomExistFlag": false,
+						"refundableFareFlag": true,
+						"appliedBasePriceId": "I9736184",
+						"basePriceShortDescription": "TEST",
+						"basePriceType": "S",
+						"appliedPromotionIds": [
+							"I9630756"
+						],
+						"promoCodeApplied": false,
+						"leadPromotion": {
+							"promotionId": "I9630756",
+							"shortDescription": "Loyalty Promo"
+						},
+						"averagePerGuestPricePoint": {
+							"guestSequenceId": null,
+							"appliedLifeStage": null,
+							"netTotal": 974.00,
+							"includedInNetTotal": [
+								"CFARE",
+								"NCCF"
+							],
+							"netCruiseFareAmount": 764.00,
+							"nonComissionalCruiseFareAmount": 210.00,
+							"taxesAndFeesAmount": 152.00,
+							"gratuityAmount": 154.28,
+							"netDiscountAmount": 255.00,
+							"valueAdds": [],
+							"originalAmount": 1229.00
+						},
+						"guestPricePoints": [
+							{
+								"guestSequenceId": 1,
+								"appliedLifeStage": "A",
+								"netTotal": 974.00,
+								"includedInNetTotal": [
+									"CFARE",
+									"NCCF"
+								],
+								"netCruiseFareAmount": 764.00,
+								"nonComissionalCruiseFareAmount": 210.00,
+								"taxesAndFeesAmount": 152.00,
+								"gratuityAmount": 154.28,
+								"netDiscountAmount": 255.00,
+								"valueAdds": [],
+								"originalAmount": 1229.00
+							},
+							{
+								"guestSequenceId": 2,
+								"appliedLifeStage": "A",
+								"netTotal": 974.00,
+								"includedInNetTotal": [
+									"CFARE",
+									"NCCF"
+								],
+								"netCruiseFareAmount": 764.00,
+								"nonComissionalCruiseFareAmount": 210.00,
+								"taxesAndFeesAmount": 152.00,
+								"gratuityAmount": 154.28,
+								"netDiscountAmount": 255.00,
+								"valueAdds": [],
+								"originalAmount": 1229.00
+							}
+						]
+					},
+					"bestValue": null
+				},
+				{
+					"superCategoryCode": "I",
+					"superCategoryName": "INSIDE",
+					"bestRate": {
+						"stateroomCategoryCode": "ZI",
+						"guaranteeCategoryFlag": true,
+						"stateroomSuperCategory": "I",
+						"stateroomTypeCode": "V",
+						"restrictedPromotionApplied": true,
+						"accessibleStateroomExistFlag": false,
+						"refundableFareFlag": true,
+						"appliedBasePriceId": "I9736184",
+						"basePriceShortDescription": "TEST",
+						"basePriceType": "S",
+						"appliedPromotionIds": [
+							"I9630756"
+						],
+						"promoCodeApplied": false,
+						"leadPromotion": {
+							"promotionId": "I9630756",
+							"shortDescription": "Loyalty Promo"
+						},
+						"averagePerGuestPricePoint": {
+							"guestSequenceId": null,
+							"appliedLifeStage": null,
+							"netTotal": 831.00,
+							"includedInNetTotal": [
+								"CFARE",
+								"NCCF"
+							],
+							"netCruiseFareAmount": 621.00,
+							"nonComissionalCruiseFareAmount": 210.00,
+							"taxesAndFeesAmount": 152.00,
+							"gratuityAmount": 154.28,
+							"netDiscountAmount": 208.00,
+							"valueAdds": [],
+							"originalAmount": 1039.00
+						},
+						"guestPricePoints": [
+							{
+								"guestSequenceId": 1,
+								"appliedLifeStage": "A",
+								"netTotal": 831.00,
+								"includedInNetTotal": [
+									"CFARE",
+									"NCCF"
+								],
+								"netCruiseFareAmount": 621.00,
+								"nonComissionalCruiseFareAmount": 210.00,
+								"taxesAndFeesAmount": 152.00,
+								"gratuityAmount": 154.28,
+								"netDiscountAmount": 208.00,
+								"valueAdds": [],
+								"originalAmount": 1039.00
+							},
+							{
+								"guestSequenceId": 2,
+								"appliedLifeStage": "A",
+								"netTotal": 831.00,
+								"includedInNetTotal": [
+									"CFARE",
+									"NCCF"
+								],
+								"netCruiseFareAmount": 621.00,
+								"nonComissionalCruiseFareAmount": 210.00,
+								"taxesAndFeesAmount": 152.00,
+								"gratuityAmount": 154.28,
+								"netDiscountAmount": 208.00,
+								"valueAdds": [],
+								"originalAmount": 1039.00
+							}
+						]
+					},
+					"bestValue": null
+				},
+				{
+					"superCategoryCode": "D",
+					"superCategoryName": "DELUXE",
+					"bestRate": {
+						"stateroomCategoryCode": "J3",
+						"guaranteeCategoryFlag": false,
+						"stateroomSuperCategory": "D",
+						"stateroomTypeCode": "JS",
+						"restrictedPromotionApplied": true,
+						"accessibleStateroomExistFlag": true,
+						"refundableFareFlag": true,
+						"appliedBasePriceId": "I9736184",
+						"basePriceShortDescription": "TEST",
+						"basePriceType": "S",
+						"appliedPromotionIds": [
+							"I9630756"
+						],
+						"promoCodeApplied": false,
+						"leadPromotion": {
+							"promotionId": "I9630756",
+							"shortDescription": "Loyalty Promo"
+						},
+						"averagePerGuestPricePoint": {
+							"guestSequenceId": null,
+							"appliedLifeStage": null,
+							"netTotal": 2894.00,
+							"includedInNetTotal": [
+								"CFARE",
+								"NCCF"
+							],
+							"netCruiseFareAmount": 2684.00,
+							"nonComissionalCruiseFareAmount": 210.00,
+							"taxesAndFeesAmount": 152.00,
+							"gratuityAmount": 154.28,
+							"netDiscountAmount": 895.00,
+							"valueAdds": [],
+							"originalAmount": 3789.00
+						},
+						"guestPricePoints": [
+							{
+								"guestSequenceId": 1,
+								"appliedLifeStage": "A",
+								"netTotal": 2894.00,
+								"includedInNetTotal": [
+									"CFARE",
+									"NCCF"
+								],
+								"netCruiseFareAmount": 2684.00,
+								"nonComissionalCruiseFareAmount": 210.00,
+								"taxesAndFeesAmount": 152.00,
+								"gratuityAmount": 154.28,
+								"netDiscountAmount": 895.00,
+								"valueAdds": [],
+								"originalAmount": 3789.00
+							},
+							{
+								"guestSequenceId": 2,
+								"appliedLifeStage": "A",
+								"netTotal": 2894.00,
+								"includedInNetTotal": [
+									"CFARE",
+									"NCCF"
+								],
+								"netCruiseFareAmount": 2684.00,
+								"nonComissionalCruiseFareAmount": 210.00,
+								"taxesAndFeesAmount": 152.00,
+								"gratuityAmount": 154.28,
+								"netDiscountAmount": 895.00,
+								"valueAdds": [],
+								"originalAmount": 3789.00
+							}
+						]
+					},
+					"bestValue": null
+				},
+				{
+					"superCategoryCode": "B",
+					"superCategoryName": "BALCONY",
+					"bestRate": {
+						"stateroomCategoryCode": "1B",
+						"guaranteeCategoryFlag": false,
+						"stateroomSuperCategory": "B",
+						"stateroomTypeCode": "B",
+						"restrictedPromotionApplied": true,
+						"accessibleStateroomExistFlag": true,
+						"refundableFareFlag": true,
+						"appliedBasePriceId": "I9736184",
+						"basePriceShortDescription": "TEST",
+						"basePriceType": "S",
+						"appliedPromotionIds": [
+							"I9630756"
+						],
+						"promoCodeApplied": false,
+						"leadPromotion": {
+							"promotionId": "I9630756",
+							"shortDescription": "Loyalty Promo"
+						},
+						"averagePerGuestPricePoint": {
+							"guestSequenceId": null,
+							"appliedLifeStage": null,
+							"netTotal": 2481.00,
+							"includedInNetTotal": [
+								"CFARE",
+								"NCCF"
+							],
+							"netCruiseFareAmount": 2271.00,
+							"nonComissionalCruiseFareAmount": 210.00,
+							"taxesAndFeesAmount": 152.00,
+							"gratuityAmount": 154.28,
+							"netDiscountAmount": 758.00,
+							"valueAdds": [],
+							"originalAmount": 3239.00
+						},
+						"guestPricePoints": [
+							{
+								"guestSequenceId": 1,
+								"appliedLifeStage": "A",
+								"netTotal": 2481.00,
+								"includedInNetTotal": [
+									"CFARE",
+									"NCCF"
+								],
+								"netCruiseFareAmount": 2271.00,
+								"nonComissionalCruiseFareAmount": 210.00,
+								"taxesAndFeesAmount": 152.00,
+								"gratuityAmount": 154.28,
+								"netDiscountAmount": 758.00,
+								"valueAdds": [],
+								"originalAmount": 3239.00
+							},
+							{
+								"guestSequenceId": 2,
+								"appliedLifeStage": "A",
+								"netTotal": 2481.00,
+								"includedInNetTotal": [
+									"CFARE",
+									"NCCF"
+								],
+								"netCruiseFareAmount": 2271.00,
+								"nonComissionalCruiseFareAmount": 210.00,
+								"taxesAndFeesAmount": 152.00,
+								"gratuityAmount": 154.28,
+								"netDiscountAmount": 758.00,
+								"valueAdds": [],
+								"originalAmount": 3239.00
+							}
+						]
+					},
+					"bestValue": null
+				}
+			]
+		},
+		{
+			"leadPromotion": {
+				"promotionId": "I9639851",
+				"shortDescription": "Loyalty OFF"
+			},
+			"eligible": false,
+			"combinableWith": [],
+			"superCategoryBestPrices": [
+				{
+					"superCategoryCode": "O",
+					"superCategoryName": "OUTSIDE",
+					"bestRate": {
+						"stateroomCategoryCode": "4N",
+						"guaranteeCategoryFlag": false,
+						"stateroomSuperCategory": "O",
+						"stateroomTypeCode": "N",
+						"restrictedPromotionApplied": true,
+						"accessibleStateroomExistFlag": false,
+						"refundableFareFlag": true,
+						"appliedBasePriceId": "I9736184",
+						"basePriceShortDescription": "TEST",
+						"basePriceType": "S",
+						"appliedPromotionIds": [
+							"I9639851"
+						],
+						"promoCodeApplied": false,
+						"leadPromotion": {
+							"promotionId": "I9639851",
+							"shortDescription": "Loyalty OFF"
+						},
+						"averagePerGuestPricePoint": {
+							"guestSequenceId": null,
+							"appliedLifeStage": null,
+							"netTotal": 1026.00,
+							"includedInNetTotal": [
+								"CFARE",
+								"NCCF"
+							],
+							"netCruiseFareAmount": 816.00,
+							"nonComissionalCruiseFareAmount": 210.00,
+							"taxesAndFeesAmount": 152.00,
+							"gratuityAmount": 154.28,
+							"netDiscountAmount": 203.00,
+							"valueAdds": [],
+							"originalAmount": 1229.00
+						},
+						"guestPricePoints": [
+							{
+								"guestSequenceId": 1,
+								"appliedLifeStage": "A",
+								"netTotal": 1026.00,
+								"includedInNetTotal": [
+									"CFARE",
+									"NCCF"
+								],
+								"netCruiseFareAmount": 816.00,
+								"nonComissionalCruiseFareAmount": 210.00,
+								"taxesAndFeesAmount": 152.00,
+								"gratuityAmount": 154.28,
+								"netDiscountAmount": 203.00,
+								"valueAdds": [],
+								"originalAmount": 1229.00
+							},
+							{
+								"guestSequenceId": 2,
+								"appliedLifeStage": "A",
+								"netTotal": 1026.00,
+								"includedInNetTotal": [
+									"CFARE",
+									"NCCF"
+								],
+								"netCruiseFareAmount": 816.00,
+								"nonComissionalCruiseFareAmount": 210.00,
+								"taxesAndFeesAmount": 152.00,
+								"gratuityAmount": 154.28,
+								"netDiscountAmount": 203.00,
+								"valueAdds": [],
+								"originalAmount": 1229.00
+							}
+						]
+					},
+					"bestValue": null
+				},
+				{
+					"superCategoryCode": "I",
+					"superCategoryName": "INSIDE",
+					"bestRate": {
+						"stateroomCategoryCode": "ZI",
+						"guaranteeCategoryFlag": true,
+						"stateroomSuperCategory": "I",
+						"stateroomTypeCode": "V",
+						"restrictedPromotionApplied": true,
+						"accessibleStateroomExistFlag": false,
+						"refundableFareFlag": true,
+						"appliedBasePriceId": "I9736184",
+						"basePriceShortDescription": "TEST",
+						"basePriceType": "S",
+						"appliedPromotionIds": [
+							"I9639851"
+						],
+						"promoCodeApplied": false,
+						"leadPromotion": {
+							"promotionId": "I9639851",
+							"shortDescription": "Loyalty OFF"
+						},
+						"averagePerGuestPricePoint": {
+							"guestSequenceId": null,
+							"appliedLifeStage": null,
+							"netTotal": 836.00,
+							"includedInNetTotal": [
+								"CFARE",
+								"NCCF"
+							],
+							"netCruiseFareAmount": 626.00,
+							"nonComissionalCruiseFareAmount": 210.00,
+							"taxesAndFeesAmount": 152.00,
+							"gratuityAmount": 154.28,
+							"netDiscountAmount": 203.00,
+							"valueAdds": [],
+							"originalAmount": 1039.00
+						},
+						"guestPricePoints": [
+							{
+								"guestSequenceId": 1,
+								"appliedLifeStage": "A",
+								"netTotal": 836.00,
+								"includedInNetTotal": [
+									"CFARE",
+									"NCCF"
+								],
+								"netCruiseFareAmount": 626.00,
+								"nonComissionalCruiseFareAmount": 210.00,
+								"taxesAndFeesAmount": 152.00,
+								"gratuityAmount": 154.28,
+								"netDiscountAmount": 203.00,
+								"valueAdds": [],
+								"originalAmount": 1039.00
+							},
+							{
+								"guestSequenceId": 2,
+								"appliedLifeStage": "A",
+								"netTotal": 836.00,
+								"includedInNetTotal": [
+									"CFARE",
+									"NCCF"
+								],
+								"netCruiseFareAmount": 626.00,
+								"nonComissionalCruiseFareAmount": 210.00,
+								"taxesAndFeesAmount": 152.00,
+								"gratuityAmount": 154.28,
+								"netDiscountAmount": 203.00,
+								"valueAdds": [],
+								"originalAmount": 1039.00
+							}
+						]
+					},
+					"bestValue": null
+				},
+				{
+					"superCategoryCode": "D",
+					"superCategoryName": "DELUXE",
+					"bestRate": {
+						"stateroomCategoryCode": "J3",
+						"guaranteeCategoryFlag": false,
+						"stateroomSuperCategory": "D",
+						"stateroomTypeCode": "JS",
+						"restrictedPromotionApplied": true,
+						"accessibleStateroomExistFlag": true,
+						"refundableFareFlag": true,
+						"appliedBasePriceId": "I9736184",
+						"basePriceShortDescription": "TEST",
+						"basePriceType": "S",
+						"appliedPromotionIds": [
+							"I9639851"
+						],
+						"promoCodeApplied": false,
+						"leadPromotion": {
+							"promotionId": "I9639851",
+							"shortDescription": "Loyalty OFF"
+						},
+						"averagePerGuestPricePoint": {
+							"guestSequenceId": null,
+							"appliedLifeStage": null,
+							"netTotal": 3586.00,
+							"includedInNetTotal": [
+								"CFARE",
+								"NCCF"
+							],
+							"netCruiseFareAmount": 3376.00,
+							"nonComissionalCruiseFareAmount": 210.00,
+							"taxesAndFeesAmount": 152.00,
+							"gratuityAmount": 154.28,
+							"netDiscountAmount": 203.00,
+							"valueAdds": [],
+							"originalAmount": 3789.00
+						},
+						"guestPricePoints": [
+							{
+								"guestSequenceId": 1,
+								"appliedLifeStage": "A",
+								"netTotal": 3586.00,
+								"includedInNetTotal": [
+									"CFARE",
+									"NCCF"
+								],
+								"netCruiseFareAmount": 3376.00,
+								"nonComissionalCruiseFareAmount": 210.00,
+								"taxesAndFeesAmount": 152.00,
+								"gratuityAmount": 154.28,
+								"netDiscountAmount": 203.00,
+								"valueAdds": [],
+								"originalAmount": 3789.00
+							},
+							{
+								"guestSequenceId": 2,
+								"appliedLifeStage": "A",
+								"netTotal": 3586.00,
+								"includedInNetTotal": [
+									"CFARE",
+									"NCCF"
+								],
+								"netCruiseFareAmount": 3376.00,
+								"nonComissionalCruiseFareAmount": 210.00,
+								"taxesAndFeesAmount": 152.00,
+								"gratuityAmount": 154.28,
+								"netDiscountAmount": 203.00,
+								"valueAdds": [],
+								"originalAmount": 3789.00
+							}
+						]
+					},
+					"bestValue": null
+				},
+				{
+					"superCategoryCode": "B",
+					"superCategoryName": "BALCONY",
+					"bestRate": {
+						"stateroomCategoryCode": "1B",
+						"guaranteeCategoryFlag": false,
+						"stateroomSuperCategory": "B",
+						"stateroomTypeCode": "B",
+						"restrictedPromotionApplied": true,
+						"accessibleStateroomExistFlag": true,
+						"refundableFareFlag": true,
+						"appliedBasePriceId": "I9736184",
+						"basePriceShortDescription": "TEST",
+						"basePriceType": "S",
+						"appliedPromotionIds": [
+							"I9639851"
+						],
+						"promoCodeApplied": false,
+						"leadPromotion": {
+							"promotionId": "I9639851",
+							"shortDescription": "Loyalty OFF"
+						},
+						"averagePerGuestPricePoint": {
+							"guestSequenceId": null,
+							"appliedLifeStage": null,
+							"netTotal": 3036.00,
+							"includedInNetTotal": [
+								"CFARE",
+								"NCCF"
+							],
+							"netCruiseFareAmount": 2826.00,
+							"nonComissionalCruiseFareAmount": 210.00,
+							"taxesAndFeesAmount": 152.00,
+							"gratuityAmount": 154.28,
+							"netDiscountAmount": 203.00,
+							"valueAdds": [],
+							"originalAmount": 3239.00
+						},
+						"guestPricePoints": [
+							{
+								"guestSequenceId": 1,
+								"appliedLifeStage": "A",
+								"netTotal": 3036.00,
+								"includedInNetTotal": [
+									"CFARE",
+									"NCCF"
+								],
+								"netCruiseFareAmount": 2826.00,
+								"nonComissionalCruiseFareAmount": 210.00,
+								"taxesAndFeesAmount": 152.00,
+								"gratuityAmount": 154.28,
+								"netDiscountAmount": 203.00,
+								"valueAdds": [],
+								"originalAmount": 3239.00
+							},
+							{
+								"guestSequenceId": 2,
+								"appliedLifeStage": "A",
+								"netTotal": 3036.00,
+								"includedInNetTotal": [
+									"CFARE",
+									"NCCF"
+								],
+								"netCruiseFareAmount": 2826.00,
+								"nonComissionalCruiseFareAmount": 210.00,
+								"taxesAndFeesAmount": 152.00,
+								"gratuityAmount": 154.28,
+								"netDiscountAmount": 203.00,
+								"valueAdds": [],
+								"originalAmount": 3239.00
+							}
+						]
+					},
+					"bestValue": null
+				}
+			]
+		}
+	],
+	"superCategoryBestPrices": [
+		{
+			"superCategoryCode": "O",
+			"superCategoryName": "OUTSIDE",
+			"bestRate": {
+				"stateroomCategoryCode": "4N",
+				"guaranteeCategoryFlag": false,
+				"stateroomSuperCategory": "O",
+				"stateroomTypeCode": "N",
+				"restrictedPromotionApplied": false,
+				"accessibleStateroomExistFlag": false,
+				"refundableFareFlag": true,
+				"appliedBasePriceId": "I9736184",
+				"basePriceShortDescription": "TEST",
+				"basePriceType": "S",
+				"appliedPromotionIds": [],
+				"promoCodeApplied": false,
+				"leadPromotion": null,
+				"averagePerGuestPricePoint": {
+					"guestSequenceId": null,
+					"appliedLifeStage": null,
+					"netTotal": 1229.00,
+					"includedInNetTotal": [
+						"CFARE",
+						"NCCF"
+					],
+					"netCruiseFareAmount": 1019.00,
+					"nonComissionalCruiseFareAmount": 210.00,
+					"taxesAndFeesAmount": 152.00,
+					"gratuityAmount": 154.28,
+					"netDiscountAmount": 0.00,
+					"valueAdds": [],
+					"originalAmount": 1229.00
+				},
+				"guestPricePoints": [
+					{
+						"guestSequenceId": 1,
+						"appliedLifeStage": "A",
+						"netTotal": 1229.00,
+						"includedInNetTotal": [
+							"CFARE",
+							"NCCF"
+						],
+						"netCruiseFareAmount": 1019.00,
+						"nonComissionalCruiseFareAmount": 210.00,
+						"taxesAndFeesAmount": 152.00,
+						"gratuityAmount": 154.28,
+						"netDiscountAmount": 0.00,
+						"valueAdds": [],
+						"originalAmount": 1229.00
+					},
+					{
+						"guestSequenceId": 2,
+						"appliedLifeStage": "A",
+						"netTotal": 1229.00,
+						"includedInNetTotal": [
+							"CFARE",
+							"NCCF"
+						],
+						"netCruiseFareAmount": 1019.00,
+						"nonComissionalCruiseFareAmount": 210.00,
+						"taxesAndFeesAmount": 152.00,
+						"gratuityAmount": 154.28,
+						"netDiscountAmount": 0.00,
+						"valueAdds": [],
+						"originalAmount": 1229.00
+					}
+				]
+			},
+			"bestValue": null
+		},
+		{
+			"superCategoryCode": "I",
+			"superCategoryName": "INSIDE",
+			"bestRate": {
+				"stateroomCategoryCode": "ZI",
+				"guaranteeCategoryFlag": true,
+				"stateroomSuperCategory": "I",
+				"stateroomTypeCode": "V",
+				"restrictedPromotionApplied": false,
+				"accessibleStateroomExistFlag": false,
+				"refundableFareFlag": true,
+				"appliedBasePriceId": "I9736184",
+				"basePriceShortDescription": "TEST",
+				"basePriceType": "S",
+				"appliedPromotionIds": [],
+				"promoCodeApplied": false,
+				"leadPromotion": null,
+				"averagePerGuestPricePoint": {
+					"guestSequenceId": null,
+					"appliedLifeStage": null,
+					"netTotal": 1039.00,
+					"includedInNetTotal": [
+						"CFARE",
+						"NCCF"
+					],
+					"netCruiseFareAmount": 829.00,
+					"nonComissionalCruiseFareAmount": 210.00,
+					"taxesAndFeesAmount": 152.00,
+					"gratuityAmount": 154.28,
+					"netDiscountAmount": 0.00,
+					"valueAdds": [],
+					"originalAmount": 1039.00
+				},
+				"guestPricePoints": [
+					{
+						"guestSequenceId": 1,
+						"appliedLifeStage": "A",
+						"netTotal": 1039.00,
+						"includedInNetTotal": [
+							"CFARE",
+							"NCCF"
+						],
+						"netCruiseFareAmount": 829.00,
+						"nonComissionalCruiseFareAmount": 210.00,
+						"taxesAndFeesAmount": 152.00,
+						"gratuityAmount": 154.28,
+						"netDiscountAmount": 0.00,
+						"valueAdds": [],
+						"originalAmount": 1039.00
+					},
+					{
+						"guestSequenceId": 2,
+						"appliedLifeStage": "A",
+						"netTotal": 1039.00,
+						"includedInNetTotal": [
+							"CFARE",
+							"NCCF"
+						],
+						"netCruiseFareAmount": 829.00,
+						"nonComissionalCruiseFareAmount": 210.00,
+						"taxesAndFeesAmount": 152.00,
+						"gratuityAmount": 154.28,
+						"netDiscountAmount": 0.00,
+						"valueAdds": [],
+						"originalAmount": 1039.00
+					}
+				]
+			},
+			"bestValue": null
+		},
+		{
+			"superCategoryCode": "D",
+			"superCategoryName": "DELUXE",
+			"bestRate": {
+				"stateroomCategoryCode": "J3",
+				"guaranteeCategoryFlag": false,
+				"stateroomSuperCategory": "D",
+				"stateroomTypeCode": "JS",
+				"restrictedPromotionApplied": false,
+				"accessibleStateroomExistFlag": true,
+				"refundableFareFlag": true,
+				"appliedBasePriceId": "I9736184",
+				"basePriceShortDescription": "TEST",
+				"basePriceType": "S",
+				"appliedPromotionIds": [
+					"I9645287"
+				],
+				"promoCodeApplied": false,
+				"leadPromotion": {
+					"promotionId": "I9645287",
+					"shortDescription": "P4BelowAPDWhole"
+				},
+				"averagePerGuestPricePoint": {
+					"guestSequenceId": null,
+					"appliedLifeStage": null,
+					"netTotal": 710.00,
+					"includedInNetTotal": [
+						"CFARE",
+						"NCCF"
+					],
+					"netCruiseFareAmount": 500.00,
+					"nonComissionalCruiseFareAmount": 210.00,
+					"taxesAndFeesAmount": 152.00,
+					"gratuityAmount": 154.28,
+					"netDiscountAmount": 3079.00,
+					"valueAdds": [],
+					"originalAmount": 3789.00
+				},
+				"guestPricePoints": [
+					{
+						"guestSequenceId": 1,
+						"appliedLifeStage": "A",
+						"netTotal": 710.00,
+						"includedInNetTotal": [
+							"CFARE",
+							"NCCF"
+						],
+						"netCruiseFareAmount": 500.00,
+						"nonComissionalCruiseFareAmount": 210.00,
+						"taxesAndFeesAmount": 152.00,
+						"gratuityAmount": 154.28,
+						"netDiscountAmount": 3079.00,
+						"valueAdds": [],
+						"originalAmount": 3789.00
+					},
+					{
+						"guestSequenceId": 2,
+						"appliedLifeStage": "A",
+						"netTotal": 710.00,
+						"includedInNetTotal": [
+							"CFARE",
+							"NCCF"
+						],
+						"netCruiseFareAmount": 500.00,
+						"nonComissionalCruiseFareAmount": 210.00,
+						"taxesAndFeesAmount": 152.00,
+						"gratuityAmount": 154.28,
+						"netDiscountAmount": 3079.00,
+						"valueAdds": [],
+						"originalAmount": 3789.00
+					}
+				]
+			},
+			"bestValue": null
+		},
+		{
+			"superCategoryCode": "B",
+			"superCategoryName": "BALCONY",
+			"bestRate": {
+				"stateroomCategoryCode": "1B",
+				"guaranteeCategoryFlag": false,
+				"stateroomSuperCategory": "B",
+				"stateroomTypeCode": "B",
+				"restrictedPromotionApplied": false,
+				"accessibleStateroomExistFlag": true,
+				"refundableFareFlag": true,
+				"appliedBasePriceId": "I9736184",
+				"basePriceShortDescription": "TEST",
+				"basePriceType": "S",
+				"appliedPromotionIds": [],
+				"promoCodeApplied": false,
+				"leadPromotion": null,
+				"averagePerGuestPricePoint": {
+					"guestSequenceId": null,
+					"appliedLifeStage": null,
+					"netTotal": 3239.00,
+					"includedInNetTotal": [
+						"CFARE",
+						"NCCF"
+					],
+					"netCruiseFareAmount": 3029.00,
+					"nonComissionalCruiseFareAmount": 210.00,
+					"taxesAndFeesAmount": 152.00,
+					"gratuityAmount": 154.28,
+					"netDiscountAmount": 0.00,
+					"valueAdds": [],
+					"originalAmount": 3239.00
+				},
+				"guestPricePoints": [
+					{
+						"guestSequenceId": 1,
+						"appliedLifeStage": "A",
+						"netTotal": 3239.00,
+						"includedInNetTotal": [
+							"CFARE",
+							"NCCF"
+						],
+						"netCruiseFareAmount": 3029.00,
+						"nonComissionalCruiseFareAmount": 210.00,
+						"taxesAndFeesAmount": 152.00,
+						"gratuityAmount": 154.28,
+						"netDiscountAmount": 0.00,
+						"valueAdds": [],
+						"originalAmount": 3239.00
+					},
+					{
+						"guestSequenceId": 2,
+						"appliedLifeStage": "A",
+						"netTotal": 3239.00,
+						"includedInNetTotal": [
+							"CFARE",
+							"NCCF"
+						],
+						"netCruiseFareAmount": 3029.00,
+						"nonComissionalCruiseFareAmount": 210.00,
+						"taxesAndFeesAmount": 152.00,
+						"gratuityAmount": 154.28,
+						"netDiscountAmount": 0.00,
+						"valueAdds": [],
+						"originalAmount": 3239.00
+					}
+				]
+			},
+			"bestValue": null
+		}
+	],
+	"superCategoryBasePriceRates": [
+		{
+			"stateroomSuperCategory": "O",
+			"standardBestRate": {
+				"stateroomCategoryCode": "4N",
+				"guaranteeCategoryFlag": false,
+				"stateroomSuperCategory": "O",
+				"stateroomTypeCode": "N",
+				"restrictedPromotionApplied": false,
+				"accessibleStateroomExistFlag": false,
+				"refundableFareFlag": true,
+				"appliedBasePriceId": "I9736184",
+				"basePriceShortDescription": "TEST",
+				"basePriceType": "S",
+				"appliedPromotionIds": [],
+				"promoCodeApplied": false,
+				"leadPromotion": null,
+				"averagePerGuestPricePoint": {
+					"guestSequenceId": null,
+					"appliedLifeStage": null,
+					"netTotal": 1229.00,
+					"includedInNetTotal": [
+						"CFARE",
+						"NCCF"
+					],
+					"netCruiseFareAmount": 1019.00,
+					"nonComissionalCruiseFareAmount": 210.00,
+					"taxesAndFeesAmount": 152.00,
+					"gratuityAmount": 154.28,
+					"netDiscountAmount": 0.00,
+					"valueAdds": [],
+					"originalAmount": 1229.00
+				},
+				"guestPricePoints": [
+					{
+						"guestSequenceId": 1,
+						"appliedLifeStage": "A",
+						"netTotal": 1229.00,
+						"includedInNetTotal": [
+							"CFARE",
+							"NCCF"
+						],
+						"netCruiseFareAmount": 1019.00,
+						"nonComissionalCruiseFareAmount": 210.00,
+						"taxesAndFeesAmount": 152.00,
+						"gratuityAmount": 154.28,
+						"netDiscountAmount": 0.00,
+						"valueAdds": [],
+						"originalAmount": 1229.00
+					},
+					{
+						"guestSequenceId": 2,
+						"appliedLifeStage": "A",
+						"netTotal": 1229.00,
+						"includedInNetTotal": [
+							"CFARE",
+							"NCCF"
+						],
+						"netCruiseFareAmount": 1019.00,
+						"nonComissionalCruiseFareAmount": 210.00,
+						"taxesAndFeesAmount": 152.00,
+						"gratuityAmount": 154.28,
+						"netDiscountAmount": 0.00,
+						"valueAdds": [],
+						"originalAmount": 1229.00
+					}
+				]
+			},
+			"brochureBestRate": {
+				"stateroomCategoryCode": "4N",
+				"guaranteeCategoryFlag": false,
+				"stateroomSuperCategory": "O",
+				"stateroomTypeCode": "N",
+				"restrictedPromotionApplied": false,
+				"accessibleStateroomExistFlag": false,
+				"refundableFareFlag": true,
+				"appliedBasePriceId": "I9639734",
+				"basePriceShortDescription": "BROCHURE",
+				"basePriceType": "B",
+				"appliedPromotionIds": [],
+				"promoCodeApplied": false,
+				"leadPromotion": null,
+				"averagePerGuestPricePoint": {
+					"guestSequenceId": null,
+					"appliedLifeStage": null,
+					"netTotal": 1829.00,
+					"includedInNetTotal": [
+						"CFARE",
+						"NCCF"
+					],
+					"netCruiseFareAmount": 1619.00,
+					"nonComissionalCruiseFareAmount": 210.00,
+					"taxesAndFeesAmount": 152.00,
+					"gratuityAmount": 154.28,
+					"netDiscountAmount": 0.00,
+					"valueAdds": [],
+					"originalAmount": 1829.00
+				},
+				"guestPricePoints": [
+					{
+						"guestSequenceId": 1,
+						"appliedLifeStage": "A",
+						"netTotal": 1829.00,
+						"includedInNetTotal": [
+							"CFARE",
+							"NCCF"
+						],
+						"netCruiseFareAmount": 1619.00,
+						"nonComissionalCruiseFareAmount": 210.00,
+						"taxesAndFeesAmount": 152.00,
+						"gratuityAmount": 154.28,
+						"netDiscountAmount": 0.00,
+						"valueAdds": [],
+						"originalAmount": 1829.00
+					},
+					{
+						"guestSequenceId": 2,
+						"appliedLifeStage": "A",
+						"netTotal": 1829.00,
+						"includedInNetTotal": [
+							"CFARE",
+							"NCCF"
+						],
+						"netCruiseFareAmount": 1619.00,
+						"nonComissionalCruiseFareAmount": 210.00,
+						"taxesAndFeesAmount": 152.00,
+						"gratuityAmount": 154.28,
+						"netDiscountAmount": 0.00,
+						"valueAdds": [],
+						"originalAmount": 1829.00
+					}
+				]
+			}
+		},
+		{
+			"stateroomSuperCategory": "I",
+			"standardBestRate": {
+				"stateroomCategoryCode": "ZI",
+				"guaranteeCategoryFlag": true,
+				"stateroomSuperCategory": "I",
+				"stateroomTypeCode": "V",
+				"restrictedPromotionApplied": false,
+				"accessibleStateroomExistFlag": false,
+				"refundableFareFlag": true,
+				"appliedBasePriceId": "I9736184",
+				"basePriceShortDescription": "TEST",
+				"basePriceType": "S",
+				"appliedPromotionIds": [],
+				"promoCodeApplied": false,
+				"leadPromotion": null,
+				"averagePerGuestPricePoint": {
+					"guestSequenceId": null,
+					"appliedLifeStage": null,
+					"netTotal": 1039.00,
+					"includedInNetTotal": [
+						"CFARE",
+						"NCCF"
+					],
+					"netCruiseFareAmount": 829.00,
+					"nonComissionalCruiseFareAmount": 210.00,
+					"taxesAndFeesAmount": 152.00,
+					"gratuityAmount": 154.28,
+					"netDiscountAmount": 0.00,
+					"valueAdds": [],
+					"originalAmount": 1039.00
+				},
+				"guestPricePoints": [
+					{
+						"guestSequenceId": 1,
+						"appliedLifeStage": "A",
+						"netTotal": 1039.00,
+						"includedInNetTotal": [
+							"CFARE",
+							"NCCF"
+						],
+						"netCruiseFareAmount": 829.00,
+						"nonComissionalCruiseFareAmount": 210.00,
+						"taxesAndFeesAmount": 152.00,
+						"gratuityAmount": 154.28,
+						"netDiscountAmount": 0.00,
+						"valueAdds": [],
+						"originalAmount": 1039.00
+					},
+					{
+						"guestSequenceId": 2,
+						"appliedLifeStage": "A",
+						"netTotal": 1039.00,
+						"includedInNetTotal": [
+							"CFARE",
+							"NCCF"
+						],
+						"netCruiseFareAmount": 829.00,
+						"nonComissionalCruiseFareAmount": 210.00,
+						"taxesAndFeesAmount": 152.00,
+						"gratuityAmount": 154.28,
+						"netDiscountAmount": 0.00,
+						"valueAdds": [],
+						"originalAmount": 1039.00
+					}
+				]
+			},
+			"brochureBestRate": {
+				"stateroomCategoryCode": "ZI",
+				"guaranteeCategoryFlag": true,
+				"stateroomSuperCategory": "I",
+				"stateroomTypeCode": "V",
+				"restrictedPromotionApplied": false,
+				"accessibleStateroomExistFlag": false,
+				"refundableFareFlag": true,
+				"appliedBasePriceId": "I9639734",
+				"basePriceShortDescription": "BROCHURE",
+				"basePriceType": "B",
+				"appliedPromotionIds": [],
+				"promoCodeApplied": false,
+				"leadPromotion": null,
+				"averagePerGuestPricePoint": {
+					"guestSequenceId": null,
+					"appliedLifeStage": null,
+					"netTotal": 1544.00,
+					"includedInNetTotal": [
+						"CFARE",
+						"NCCF"
+					],
+					"netCruiseFareAmount": 1334.00,
+					"nonComissionalCruiseFareAmount": 210.00,
+					"taxesAndFeesAmount": 152.00,
+					"gratuityAmount": 154.28,
+					"netDiscountAmount": 0.00,
+					"valueAdds": [],
+					"originalAmount": 1544.00
+				},
+				"guestPricePoints": [
+					{
+						"guestSequenceId": 1,
+						"appliedLifeStage": "A",
+						"netTotal": 1544.00,
+						"includedInNetTotal": [
+							"CFARE",
+							"NCCF"
+						],
+						"netCruiseFareAmount": 1334.00,
+						"nonComissionalCruiseFareAmount": 210.00,
+						"taxesAndFeesAmount": 152.00,
+						"gratuityAmount": 154.28,
+						"netDiscountAmount": 0.00,
+						"valueAdds": [],
+						"originalAmount": 1544.00
+					},
+					{
+						"guestSequenceId": 2,
+						"appliedLifeStage": "A",
+						"netTotal": 1544.00,
+						"includedInNetTotal": [
+							"CFARE",
+							"NCCF"
+						],
+						"netCruiseFareAmount": 1334.00,
+						"nonComissionalCruiseFareAmount": 210.00,
+						"taxesAndFeesAmount": 152.00,
+						"gratuityAmount": 154.28,
+						"netDiscountAmount": 0.00,
+						"valueAdds": [],
+						"originalAmount": 1544.00
+					}
+				]
+			}
+		},
+		{
+			"stateroomSuperCategory": "D",
+			"standardBestRate": {
+				"stateroomCategoryCode": "J3",
+				"guaranteeCategoryFlag": false,
+				"stateroomSuperCategory": "D",
+				"stateroomTypeCode": "JS",
+				"restrictedPromotionApplied": false,
+				"accessibleStateroomExistFlag": true,
+				"refundableFareFlag": true,
+				"appliedBasePriceId": "I9736184",
+				"basePriceShortDescription": "TEST",
+				"basePriceType": "S",
+				"appliedPromotionIds": [],
+				"promoCodeApplied": false,
+				"leadPromotion": null,
+				"averagePerGuestPricePoint": {
+					"guestSequenceId": null,
+					"appliedLifeStage": null,
+					"netTotal": 3789.00,
+					"includedInNetTotal": [
+						"CFARE",
+						"NCCF"
+					],
+					"netCruiseFareAmount": 3579.00,
+					"nonComissionalCruiseFareAmount": 210.00,
+					"taxesAndFeesAmount": 152.00,
+					"gratuityAmount": 154.28,
+					"netDiscountAmount": 0.00,
+					"valueAdds": [],
+					"originalAmount": 3789.00
+				},
+				"guestPricePoints": [
+					{
+						"guestSequenceId": 1,
+						"appliedLifeStage": "A",
+						"netTotal": 3789.00,
+						"includedInNetTotal": [
+							"CFARE",
+							"NCCF"
+						],
+						"netCruiseFareAmount": 3579.00,
+						"nonComissionalCruiseFareAmount": 210.00,
+						"taxesAndFeesAmount": 152.00,
+						"gratuityAmount": 154.28,
+						"netDiscountAmount": 0.00,
+						"valueAdds": [],
+						"originalAmount": 3789.00
+					},
+					{
+						"guestSequenceId": 2,
+						"appliedLifeStage": "A",
+						"netTotal": 3789.00,
+						"includedInNetTotal": [
+							"CFARE",
+							"NCCF"
+						],
+						"netCruiseFareAmount": 3579.00,
+						"nonComissionalCruiseFareAmount": 210.00,
+						"taxesAndFeesAmount": 152.00,
+						"gratuityAmount": 154.28,
+						"netDiscountAmount": 0.00,
+						"valueAdds": [],
+						"originalAmount": 3789.00
+					}
+				]
+			},
+			"brochureBestRate": {
+				"stateroomCategoryCode": "J3",
+				"guaranteeCategoryFlag": false,
+				"stateroomSuperCategory": "D",
+				"stateroomTypeCode": "JS",
+				"restrictedPromotionApplied": false,
+				"accessibleStateroomExistFlag": true,
+				"refundableFareFlag": true,
+				"appliedBasePriceId": "I9639734",
+				"basePriceShortDescription": "BROCHURE",
+				"basePriceType": "B",
+				"appliedPromotionIds": [],
+				"promoCodeApplied": false,
+				"leadPromotion": null,
+				"averagePerGuestPricePoint": {
+					"guestSequenceId": null,
+					"appliedLifeStage": null,
+					"netTotal": 5669.00,
+					"includedInNetTotal": [
+						"CFARE",
+						"NCCF"
+					],
+					"netCruiseFareAmount": 5459.00,
+					"nonComissionalCruiseFareAmount": 210.00,
+					"taxesAndFeesAmount": 152.00,
+					"gratuityAmount": 154.28,
+					"netDiscountAmount": 0.00,
+					"valueAdds": [],
+					"originalAmount": 5669.00
+				},
+				"guestPricePoints": [
+					{
+						"guestSequenceId": 1,
+						"appliedLifeStage": "A",
+						"netTotal": 5669.00,
+						"includedInNetTotal": [
+							"CFARE",
+							"NCCF"
+						],
+						"netCruiseFareAmount": 5459.00,
+						"nonComissionalCruiseFareAmount": 210.00,
+						"taxesAndFeesAmount": 152.00,
+						"gratuityAmount": 154.28,
+						"netDiscountAmount": 0.00,
+						"valueAdds": [],
+						"originalAmount": 5669.00
+					},
+					{
+						"guestSequenceId": 2,
+						"appliedLifeStage": "A",
+						"netTotal": 5669.00,
+						"includedInNetTotal": [
+							"CFARE",
+							"NCCF"
+						],
+						"netCruiseFareAmount": 5459.00,
+						"nonComissionalCruiseFareAmount": 210.00,
+						"taxesAndFeesAmount": 152.00,
+						"gratuityAmount": 154.28,
+						"netDiscountAmount": 0.00,
+						"valueAdds": [],
+						"originalAmount": 5669.00
+					}
+				]
+			}
+		},
+		{
+			"stateroomSuperCategory": "B",
+			"standardBestRate": {
+				"stateroomCategoryCode": "1B",
+				"guaranteeCategoryFlag": false,
+				"stateroomSuperCategory": "B",
+				"stateroomTypeCode": "B",
+				"restrictedPromotionApplied": false,
+				"accessibleStateroomExistFlag": true,
+				"refundableFareFlag": true,
+				"appliedBasePriceId": "I9736184",
+				"basePriceShortDescription": "TEST",
+				"basePriceType": "S",
+				"appliedPromotionIds": [],
+				"promoCodeApplied": false,
+				"leadPromotion": null,
+				"averagePerGuestPricePoint": {
+					"guestSequenceId": null,
+					"appliedLifeStage": null,
+					"netTotal": 3239.00,
+					"includedInNetTotal": [
+						"CFARE",
+						"NCCF"
+					],
+					"netCruiseFareAmount": 3029.00,
+					"nonComissionalCruiseFareAmount": 210.00,
+					"taxesAndFeesAmount": 152.00,
+					"gratuityAmount": 154.28,
+					"netDiscountAmount": 0.00,
+					"valueAdds": [],
+					"originalAmount": 3239.00
+				},
+				"guestPricePoints": [
+					{
+						"guestSequenceId": 1,
+						"appliedLifeStage": "A",
+						"netTotal": 3239.00,
+						"includedInNetTotal": [
+							"CFARE",
+							"NCCF"
+						],
+						"netCruiseFareAmount": 3029.00,
+						"nonComissionalCruiseFareAmount": 210.00,
+						"taxesAndFeesAmount": 152.00,
+						"gratuityAmount": 154.28,
+						"netDiscountAmount": 0.00,
+						"valueAdds": [],
+						"originalAmount": 3239.00
+					},
+					{
+						"guestSequenceId": 2,
+						"appliedLifeStage": "A",
+						"netTotal": 3239.00,
+						"includedInNetTotal": [
+							"CFARE",
+							"NCCF"
+						],
+						"netCruiseFareAmount": 3029.00,
+						"nonComissionalCruiseFareAmount": 210.00,
+						"taxesAndFeesAmount": 152.00,
+						"gratuityAmount": 154.28,
+						"netDiscountAmount": 0.00,
+						"valueAdds": [],
+						"originalAmount": 3239.00
+					}
+				]
+			},
+			"brochureBestRate": {
+				"stateroomCategoryCode": "1B",
+				"guaranteeCategoryFlag": false,
+				"stateroomSuperCategory": "B",
+				"stateroomTypeCode": "B",
+				"restrictedPromotionApplied": false,
+				"accessibleStateroomExistFlag": true,
+				"refundableFareFlag": true,
+				"appliedBasePriceId": "I9736185",
+				"basePriceShortDescription": "BROCHURE",
+				"basePriceType": "B",
+				"appliedPromotionIds": [],
+				"promoCodeApplied": false,
+				"leadPromotion": null,
+				"averagePerGuestPricePoint": {
+					"guestSequenceId": null,
+					"appliedLifeStage": null,
+					"netTotal": 4859.00,
+					"includedInNetTotal": [
+						"CFARE",
+						"NCCF"
+					],
+					"netCruiseFareAmount": 4649.00,
+					"nonComissionalCruiseFareAmount": 210.00,
+					"taxesAndFeesAmount": 152.00,
+					"gratuityAmount": 154.28,
+					"netDiscountAmount": 0.00,
+					"valueAdds": [],
+					"originalAmount": 4859.00
+				},
+				"guestPricePoints": [
+					{
+						"guestSequenceId": 1,
+						"appliedLifeStage": "A",
+						"netTotal": 4859.00,
+						"includedInNetTotal": [
+							"CFARE",
+							"NCCF"
+						],
+						"netCruiseFareAmount": 4649.00,
+						"nonComissionalCruiseFareAmount": 210.00,
+						"taxesAndFeesAmount": 152.00,
+						"gratuityAmount": 154.28,
+						"netDiscountAmount": 0.00,
+						"valueAdds": [],
+						"originalAmount": 4859.00
+					},
+					{
+						"guestSequenceId": 2,
+						"appliedLifeStage": "A",
+						"netTotal": 4859.00,
+						"includedInNetTotal": [
+							"CFARE",
+							"NCCF"
+						],
+						"netCruiseFareAmount": 4649.00,
+						"nonComissionalCruiseFareAmount": 210.00,
+						"taxesAndFeesAmount": 152.00,
+						"gratuityAmount": 154.28,
+						"netDiscountAmount": 0.00,
+						"valueAdds": [],
+						"originalAmount": 4859.00
+					}
+				]
+			}
+		}
+	],
+	"metaInfo": {
+		"bookingChannel": "PI",
+		"effectiveDateTime": 20230808141934
+	}
+}
