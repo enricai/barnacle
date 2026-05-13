@@ -15,6 +15,8 @@ jobs:
   test:
     name: Run Tests
     runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: "postgresql://localhost/unused"
 
     steps:
       - name: Checkout code
@@ -33,9 +35,6 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
-      - name: Generate Prisma client
-        run: pnpm run db:generate
 
       - name: Run tests
         run: pnpm run test

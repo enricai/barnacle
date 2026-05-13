@@ -10,7 +10,6 @@
     "includes": [
       "**",
       "!**/node_modules",
-      "!**/.next",
       "!**/dist",
       "!**/coverage",
       "!**/prisma",
@@ -60,9 +59,19 @@
       "trailingCommas": "none"
     }
   },
-  "css": {
-    "parser": {
-      "tailwindDirectives": true
+  "overrides": [
+    {
+      "includes": ["src/scripts/**"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noConsole": "off"
+          },
+          "style": {
+            "noNonNullAssertion": "off"
+          }
+        }
+      }
     }
-  }
+  ]
 }
