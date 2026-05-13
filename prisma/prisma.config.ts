@@ -20,14 +20,12 @@ export default defineConfig({
     // Directory where migration files are stored
     path: "./migrations",
     // Seed command to run after migrations
-    seed: "ts-node -r tsconfig-paths/register ../prisma/seed.ts",
+    seed: "tsx ../prisma/seed.ts",
   },
 
   // Database connection configuration
   datasource: {
     // Primary connection URL (uses connection pooler like PgBouncer)
     url: env("DATABASE_URL"),
-    // Direct connection URL (bypasses connection pooler for migrations)
-    directUrl: env("DIRECT_URL"),
   },
 });

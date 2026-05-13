@@ -1,7 +1,7 @@
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Pool } from "pg";
-import { PrismaClient } from "@/generated/prisma/client";
 
+import { PrismaClient } from "@/generated/prisma/client";
 import { getLoggerFromFilename } from "@/lib/logging";
 
 const logger = getLoggerFromFilename({ filename: __filename });
