@@ -2,9 +2,9 @@
 
 **This document contains mandatory development standards referenced by all code in this project.**
 
-Barnacle is a headless Node.js API that mirrors Royal Caribbean's VPS (Vendor
-Pricing Services) surface. All contributors must follow these patterns and rules.
-Code reviews will reference sections in this document.
+Barnacle is a headless Node.js API that automates FEMA disaster assistance
+application submissions via Steel + Stagehand browser automation. All contributors
+must follow these patterns and rules. Code reviews will reference sections in this document.
 
 ---
 
@@ -17,8 +17,6 @@ Code reviews will reference sections in this document.
 - Format: `pnpm run format` (Biome)
 - Typecheck: `pnpm run typecheck` (tsc --noEmit)
 - Tests: `pnpm run test` (Vitest)
-- Smoke: `pnpm run smoke` — one live sailing-package request via direct-HTTP GraphQL
-- OpenAPI: `ENABLE_DOCS=true pnpm run openapi:generate` — writes openapi.json
 - Clean: `pnpm run clean`
 
 ## MANDATORY Requirements
@@ -106,7 +104,6 @@ need one of these, use the listed library, not a hand-rolled alternative:
 - Scraper: **@browserbasehq/stagehand** + **steel-sdk**
 - Concurrency: **p-queue** (queues), **p-retry** (retries), **bottleneck** (throttling + jitter)
 - Caching: **lru-cache**
-- Cron: **croner**
 - Logging: **pino** + **pino-pretty** (pino-pretty is the dev transport only; prod emits raw JSON)
 - Hashing: **bcryptjs**
 - Auth: bearer token via the custom `authPlugin` wired into Fastify
@@ -114,9 +111,9 @@ need one of these, use the listed library, not a hand-rolled alternative:
 Do not add custom retry loops, concurrency queues, in-memory caches, request-id
 plumbing, or security-header middleware. The frameworks own those concerns.
 
-### VPS parity is non-negotiable
+### Response envelope
 
-Every response body MUST conform to RC VPS's envelope:
+Every response body MUST use the standard envelope shape:
 
 ```json
 {
@@ -136,8 +133,6 @@ HTTP status codes are set by `httpStatusForCode()` — don't hard-code statuses.
 
 - **Unit tests**: Vitest, `.test.ts`, Node environment.
 - **Route tests**: use `app.inject()` — no port binding.
-- **Round-trip tests**: every Zod response schema must parse the corresponding
-  `RC_API_Docs/Sample *.json` fixture.
 
 ## Task Completion Checklist
 

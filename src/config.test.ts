@@ -25,13 +25,12 @@ describe("config/loadConfig", () => {
     expect(cfg.scraper.poolSize).toBe(3);
     expect(cfg.scraper.solveCaptcha).toBe(true);
     expect(cfg.scraper.readinessQueueThreshold).toBe(20);
-    expect(cfg.scraper.httpTimeoutMs).toBe(20_000);
+    expect(cfg.scraper.femaBaseUrl).toBe("https://disasterassistance.gov");
     expect(cfg.scraper.model).toBe("anthropic/claude-sonnet-4-6");
     // Default trustProxy=true matches the most common deploy shape
     // (behind an ALB/nginx/Cloudflare); bare-metal runners must opt out.
     expect(cfg.trustProxy).toBe(true);
     expect(cfg.cache.ttlMs).toBe(15 * 60 * 1000);
-    expect(cfg.workers.enabled).toBe(false);
     expect(cfg.docs.enabled).toBe(false);
   });
 
@@ -39,22 +38,20 @@ describe("config/loadConfig", () => {
     process.env.PORT = "4321";
     process.env.SESSION_POOL_SIZE = "10";
     process.env.RATE_LIMIT_MAX = "500";
-    process.env.SCRAPER_HTTP_TIMEOUT_MS = "45000";
+    process.env.FEMA_BASE_URL = "http://localhost:8020";
     const cfg = loadConfig();
     expect(cfg.port).toBe(4321);
     expect(cfg.scraper.poolSize).toBe(10);
     expect(cfg.rateLimit.max).toBe(500);
-    expect(cfg.scraper.httpTimeoutMs).toBe(45_000);
+    expect(cfg.scraper.femaBaseUrl).toBe("http://localhost:8020");
   });
 
   it("parses boolean env vars", () => {
     process.env.ENABLE_DOCS = "true";
-    process.env.ENABLE_WORKERS = "1";
     process.env.DEV_BYPASS_AUTH = "yes";
     process.env.TRUST_PROXY = "false";
     const cfg = loadConfig();
     expect(cfg.docs.enabled).toBe(true);
-    expect(cfg.workers.enabled).toBe(true);
     expect(cfg.auth.devBypass).toBe(true);
     // TRUST_PROXY=false is the bare-metal setting — flip it off so
     // X-Forwarded-For spoofing can't bypass IP-based rate limiting.

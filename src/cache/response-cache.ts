@@ -44,11 +44,11 @@ function canonicalReplacer(_key: string, value: unknown): unknown {
     }
     return sorted;
   }
-  // Primitive-only arrays are set-semantic in every request body we
-  // cache today (shipCodes, destinations, departurePorts, currencyCodes,
-  // agencyTypes). Sorting them in the canonical form collapses
-  // ["CARIB","BAHAM"] and ["BAHAM","CARIB"] to the same cache entry
-  // without touching arrays of objects (where order may carry meaning).
+  // Primitive-only arrays are set-semantic in request bodies where field
+  // order carries no meaning (e.g. a list of damage types). Sorting them
+  // in the canonical form collapses ["roof","flooding"] and
+  // ["flooding","roof"] to the same cache entry without touching arrays
+  // of objects (where order may carry meaning).
   if (Array.isArray(value) && value.every((v) => typeof v === "string" || typeof v === "number")) {
     const copy = [...value] as Array<string | number>;
     copy.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));

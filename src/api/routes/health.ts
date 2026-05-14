@@ -129,9 +129,9 @@ function checkScraperPool(
 }
 
 /**
- * Health and readiness probes. Ops-only routes — not part of the VPS parity
- * surface — so they bypass auth and return plain JSON instead of the VPS
- * envelope. `/healthz` is a liveness check (process is up). `/readyz`
+ * Health and readiness probes. Ops-only routes — not part of the FEMA
+ * submission surface — so they bypass auth and return plain JSON instead
+ * of the standard envelope. `/healthz` is a liveness check (process is up). `/readyz`
  * verifies external dependencies and downgrades to 503 when any are
  * unreachable so orchestrators stop routing traffic.
  *

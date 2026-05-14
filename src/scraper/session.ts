@@ -9,11 +9,8 @@ import { createSessionLimiter } from "@/scraper/throttle";
 const logger = getLogger({ name: "scraper/session" });
 
 /**
- * Common desktop viewports for per-session randomization (TASKS.md Task 11:
- * "randomize viewport size per session"). Sessions rotate through these on
- * creation so RC's bot-detection can't pattern-match on a single pixel size.
- * Each entry is a real-world resolution seen in RC's web analytics (1080p
- * dominates; the smaller sizes cover laptops that still load the search UI).
+ * Common desktop viewports rotated per session to reduce bot-detection
+ * fingerprinting — a fixed pixel size is an easy signal to filter on.
  */
 const VIEWPORTS = [
   { width: 1280, height: 720 },
@@ -46,14 +43,14 @@ export interface BrowserSession {
  * Spins up one Steel cloud browser session with residential proxies +
  * the configured Stagehand LLM, connected via Steel's CDP endpoint.
  *
- * Why we use Steel's residential proxies by default: RC blocks datacenter
- * IPs aggressively. Residential is the only option that works consistently.
+ * Why residential proxies: government portals are more reliably reachable
+ * from residential IPs; datacenter ranges are commonly flagged.
  *
  * Why enableCaching=true: Stagehand's built-in action cache skips LLM
  * inference on replay. After the first run against a page structure,
- * subsequent `act()` calls complete in milliseconds. When RC changes the
- * UI and a cached action fails, Stagehand automatically falls back to
- * fresh AI resolution; our retry.ts wraps that in a retry policy.
+ * subsequent `act()` calls complete in milliseconds. When the form UI
+ * changes and a cached action fails, Stagehand automatically falls back
+ * to fresh AI resolution; retry.ts wraps that in a retry policy.
  */
 export async function createBrowserSession(): Promise<BrowserSession> {
   if (!config.scraper.steelApiKey) {

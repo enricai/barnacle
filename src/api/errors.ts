@@ -8,9 +8,9 @@ import {
 } from "@/api/schemas/common";
 
 /**
- * Representation of the VPS error envelope on the wire. Every non-2xx
+ * Representation of the error envelope on the wire. Every non-2xx
  * response from Barnacle conforms to this shape so clients can share a
- * single parser with RC's official API.
+ * single parser across all error types.
  */
 interface VpsStatusDetail {
   code: number;
@@ -33,9 +33,8 @@ interface VpsErrorEnvelope {
  * by Express and thousands of production APIs) so we don't maintain our
  * own numeric table.
  *
- * The RC spec does not prescribe the mapping — VPS returns 200 with
- * `httpStatus` as a string. Barnacle both sets the HTTP status AND
- * mirrors it in the envelope so modern clients can branch on either.
+ * The envelope uses `httpStatus` as a string. Barnacle also sets the actual
+ * HTTP status code so modern clients can branch on either.
  */
 export function httpStatusForCode(code: VpsErrorCode): number {
   switch (code) {
@@ -49,10 +48,7 @@ export function httpStatusForCode(code: VpsErrorCode): number {
       return StatusCodes.BAD_REQUEST;
     case VPS_ERROR_CODES.RESOURCE_NOT_FOUND:
     case VPS_ERROR_CODES.INDEX_NOT_FOUND:
-    case VPS_ERROR_CODES.SAILING_NOT_FOUND:
       return StatusCodes.NOT_FOUND;
-    case VPS_ERROR_CODES.SAILING_SOLD_OUT:
-      return StatusCodes.CONFLICT;
     case VPS_ERROR_CODES.THROTTLED_REQUEST:
       return StatusCodes.TOO_MANY_REQUESTS;
     case VPS_ERROR_CODES.TIME_OUT:
@@ -69,11 +65,10 @@ export function httpStatusForCode(code: VpsErrorCode): number {
 }
 
 /**
- * Converts an HTTP status number into the upper-snake-case string form
- * RC uses in the envelope (e.g. 400 → `"BAD_REQUEST"`). Uses
- * `getReasonPhrase` from `http-status-codes` for the canonical RFC
- * reason phrase, then uppercases and replaces any non-alphanumeric run
- * with `_` — matches RC's own casing (e.g. `I'm a teapot` → `I_M_A_TEAPOT`).
+ * Converts an HTTP status number into the upper-snake-case string used in
+ * the response envelope (e.g. 400 → `"BAD_REQUEST"`). Uses `getReasonPhrase`
+ * from `http-status-codes`, then uppercases and replaces non-alphanumeric
+ * runs with `_` (e.g. `I'm a teapot` → `I_M_A_TEAPOT`).
  */
 export function vpsHttpStatusString(status: number): string {
   try {

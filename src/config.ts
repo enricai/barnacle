@@ -35,12 +35,8 @@ export interface AppConfig {
     minActionDelayMs: number;
     maxActionDelayMs: number;
     readinessQueueThreshold: number;
-    /**
-     * Per-request timeout for direct-HTTP fetches against RC (GraphQL
-     * catalog, GraphQL pricing, sitemap). Without a bound, a stalled
-     * upstream hangs the worker tick or the inbound request forever.
-     */
-    httpTimeoutMs: number;
+    /** Base URL for the FEMA disaster assistance portal. */
+    femaBaseUrl: string;
   };
   cache: {
     ttlMs: number;
@@ -49,11 +45,6 @@ export interface AppConfig {
   rateLimit: {
     max: number;
     windowMs: number;
-  };
-  workers: {
-    enabled: boolean;
-    refreshCron: string;
-    changesCron: string;
   };
   docs: {
     enabled: boolean;
@@ -103,7 +94,7 @@ export function loadConfig(): AppConfig {
       minActionDelayMs: getNumericEnv("SCRAPER_MIN_ACTION_DELAY_MS", 500),
       maxActionDelayMs: getNumericEnv("SCRAPER_MAX_ACTION_DELAY_MS", 1500),
       readinessQueueThreshold: getNumericEnv("READINESS_QUEUE_THRESHOLD", 20),
-      httpTimeoutMs: getNumericEnv("SCRAPER_HTTP_TIMEOUT_MS", 20_000),
+      femaBaseUrl: getEnv("FEMA_BASE_URL", "https://disasterassistance.gov"),
     },
     cache: {
       ttlMs: getNumericEnv("CACHE_TTL_MS", 15 * 60 * 1000),
@@ -112,11 +103,6 @@ export function loadConfig(): AppConfig {
     rateLimit: {
       max: getNumericEnv("RATE_LIMIT_MAX", 120),
       windowMs: getNumericEnv("RATE_LIMIT_WINDOW_MS", 60_000),
-    },
-    workers: {
-      enabled: getBoolEnv("ENABLE_WORKERS", false),
-      refreshCron: getEnv("REFRESH_CRON", "0 3 * * *"),
-      changesCron: getEnv("CHANGES_CRON", "0 * * * *"),
     },
     docs: {
       enabled: getBoolEnv("ENABLE_DOCS", false),

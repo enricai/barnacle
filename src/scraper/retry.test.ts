@@ -70,7 +70,7 @@ describe("scraper/retry", () => {
       loggerStub.error.mockClear();
       await expect(
         withScraperRetry(async () => {
-          throw new CaptchaError("hCaptcha challenge from RC");
+          throw new CaptchaError("hCaptcha challenge encountered");
         })
       ).rejects.toThrow(/captcha/i);
       expect(loggerStub.error).toHaveBeenCalledOnce();

@@ -38,7 +38,7 @@ function fingerprintHash(hash: string): string {
 /**
  * Extracts the Bearer token from the Authorization header. Returns `null`
  * if the header is missing or malformed — callers must translate that
- * into the UnauthorizedError for VPS parity.
+ * into the UnauthorizedError.
  */
 function extractBearer(authHeader: string | undefined): string | null {
   if (!authHeader) return null;
