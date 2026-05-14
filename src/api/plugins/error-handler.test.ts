@@ -83,12 +83,12 @@ async function makeApp() {
     // A CaptchaError raised from the scraper layer (not a VpsError) —
     // the error-handler must still route it to VPS code 2004 rather
     // than the generic 1008 fallback.
-    throw new CaptchaError("hCaptcha challenge from RC");
+    throw new CaptchaError("hCaptcha challenge encountered");
   });
   app.get("/throw/scraper-selector", async () => {
     // Selector failures are the most common Stagehand failure mode.
     // They must surface as SCRAPE_FAILURE (2003) so clients can
-    // distinguish our scrape pain from upstream RC pain.
+    // distinguish our scrape pain from upstream portal pain.
     throw new SelectorFailureError("could not find .price button after 3 retries");
   });
   app.get("/throw/scraper-session-timeout", async () => {
@@ -165,7 +165,7 @@ describe("error-handler plugin", () => {
     const body = response.json();
     expect(body.status.details[0].code).toBe(2004);
     expect(body.status.details[0].codeDescription).toBe("CAPTCHA_ENCOUNTERED");
-    expect(body.status.details[0].message).toBe("hCaptcha challenge from RC");
+    expect(body.status.details[0].message).toBe("hCaptcha challenge encountered");
   });
 
   it("maps scraper SelectorFailureError to code 2003 envelope", async () => {

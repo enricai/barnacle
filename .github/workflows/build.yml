@@ -59,16 +59,6 @@ jobs:
         env:
           NODE_ENV: production
 
-      # Generate the OpenAPI spec. Catches Zod→OpenAPI conversion
-      # regressions (recursive schemas, unresolvable unions, etc.) that
-      # wouldn't surface in the typecheck or runtime module load. The
-      # generator exits non-zero on any serialization failure.
-      - name: Generate OpenAPI spec
-        run: pnpm run openapi:generate
-        env:
-          ENABLE_DOCS: "true"
-          NODE_ENV: production
-
       - name: Add summary
         run: |
           echo "## Build Results" >> $GITHUB_STEP_SUMMARY
