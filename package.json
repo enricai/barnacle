@@ -2,7 +2,7 @@
   "name": "barnacle",
   "version": "0.1.0",
   "private": true,
-  "description": "Headless Node.js API automating FEMA disaster assistance application submissions via Steel + Stagehand browser automation.",
+  "description": "Site-agnostic browser automation engine. POST a structured payload to a typed endpoint; Barnacle drives a Steel + Stagehand session through the target site and returns a structured result.",
   "packageManager": "pnpm@10.4.1",
   "engines": {
     "node": ">=22.0.0"
