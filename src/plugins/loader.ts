@@ -9,7 +9,7 @@ import { getLogger } from "@/lib/logging";
 import { CaptchaError, ScraperError } from "@/scraper/errors";
 import { runWithSession } from "@/scraper/pool";
 import type { SitePlugin, SitePluginContext, SitePluginResult } from "@/site-plugin";
-import { femaPlugin } from "@/sites/fema/index";
+import { femaPlugin as loadedPlugin } from "@/sites/fema/index";
 import type { Logger } from "@/types/logging";
 
 const logger = getLogger({ name: "plugins/loader" });
@@ -21,7 +21,7 @@ const logger = getLogger({ name: "plugins/loader" });
  * exist.
  */
 export const SITE_PLUGINS: SitePlugin<unknown, unknown>[] = [
-  femaPlugin as unknown as SitePlugin<unknown, unknown>,
+  loadedPlugin as unknown as SitePlugin<unknown, unknown>,
 ];
 
 /**
@@ -73,7 +73,8 @@ export async function registerRoutes(
 ): Promise<void> {
   for (const plugin of SITE_PLUGINS) {
     const routePath = plugin.meta.routeOverride ?? `/v1/${plugin.meta.siteId}/run`;
-    const baseUrl = cfg.scraper.siteBaseUrls[plugin.meta.siteId] ?? "";
+    const baseUrl =
+      cfg.scraper.siteBaseUrls[plugin.meta.siteId] ?? plugin.meta.defaultBaseUrl ?? "";
 
     app.post(
       routePath,
