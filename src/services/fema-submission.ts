@@ -44,7 +44,7 @@ export async function submitApplication(
 
     return successEnvelope({
       submissionId: record.id,
-      confirmationNumber: result.confirmationNumber,
+      ...(result.confirmationNumber ? { confirmationNumber: result.confirmationNumber } : {}),
       pagesCompleted: result.pagesCompleted,
       submittedAt: formatISO(new Date()),
     }) as FemaSubmissionResponse;

@@ -1,5 +1,3 @@
-import { type AnyZodObject, z } from "zod";
-
 import type {
   FemaApplicant,
   FemaIdentity,
@@ -25,14 +23,6 @@ export interface FemaSubmissionResult {
 
 async function act(session: BrowserSession, instruction: string): Promise<void> {
   await session.limiter.schedule(() => session.stagehand.page.act({ action: instruction }));
-}
-
-async function extract<T extends AnyZodObject>(
-  session: BrowserSession,
-  instruction: string,
-  schema: T
-): Promise<z.infer<T>> {
-  return session.limiter.schedule(() => session.stagehand.page.extract({ instruction, schema }));
 }
 
 // Maps femaNeeds.damageTypes string keys to checkbox IDs in damage-types.js.
@@ -425,23 +415,29 @@ async function phase5Submit(session: BrowserSession): Promise<string | undefined
   // Page 41: Review Application
   await act(session, "click the button with id 'submit-application'");
 
-  // Page 42: Success — extract the confirmation number from the font-monospace
-  // div inside the green alert box:
+  // Page 42: Success — read the confirmation number directly from the DOM.
+  // The success page renders it as:
   //   <div class="alert alert-success text-center">
-  //     <h3>Confirmation Number</h3>
   //     <div class="h3 mb-0 font-monospace">FEMA-XXXXXXXXXX</div>
   //   </div>
-  const resultSchema = z.object({ confirmationNumber: z.string().min(1).optional() });
-
+  // Direct evaluate() is more reliable than LLM-based extract() here because
+  // the success page is complex and the number is a single known CSS selector.
   try {
-    const result = await extract(
-      session,
-      "extract the text content of the div with class 'font-monospace' inside the green success alert — this is the FEMA confirmation number starting with 'FEMA-'",
-      resultSchema
+    const confirmationNumber = await session.limiter.schedule(() =>
+      // eslint-disable-next-line @typescript-eslint/no-implied-eval
+      session.stagehand.page.evaluate(
+        /* runs in browser context */ `
+          (() => {
+            const el = document.querySelector(".alert-success .font-monospace");
+            return el ? el.textContent.trim() : null;
+          })()`
+      ) as Promise<string | null>
     );
-    return result.confirmationNumber;
-  } catch {
-    logger.warn("could not extract confirmation number from success page");
+    if (confirmationNumber) return confirmationNumber;
+    logger.warn("confirmation number element not found on success page");
+    return undefined;
+  } catch (err) {
+    logger.warn(`could not read confirmation number: ${String(err)}`);
     return undefined;
   }
 }
