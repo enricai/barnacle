@@ -102,6 +102,7 @@ const incomeSchema = z.object({
 });
 
 const bankAccountSchema = z.object({
+  bankName: z.string().min(1).default("My Bank"),
   routingNumber: z.string().regex(/^\d{9}$/, "must be a 9-digit routing number"),
   accountNumber: z.string().min(1),
   accountType: z.enum(["checking", "savings"]),

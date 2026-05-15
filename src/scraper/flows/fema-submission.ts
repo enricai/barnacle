@@ -220,6 +220,7 @@ async function phase4ApplicationCenter(
   await act(session, `type "${input.ssn}" into the input with id 'ssn'`);
   await act(session, `type "${input.dateOfBirth}" into the input with id 'dateOfBirth'`);
   await act(session, `type "${input.phone}" into the input with id 'primaryPhone'`);
+  await act(session, "select the option with value 'cell' in the select with id 'primaryPhoneType'");
   if (input.alternatePhone) {
     await act(session, `type "${input.alternatePhone}" into the input with id 'altPhone'`);
   }
@@ -265,12 +266,14 @@ async function phase4ApplicationCenter(
     await act(session, "click the button with id 'next-btn'");
   }
 
-  // Page 29: Home Access
+  // Page 29: Home Access — requires homeAccess radio, currentLiving select, movingStorage radio
   const homeAccessValue = input.canAccessHome ? "yes" : "no-flooding";
   await act(
     session,
     `click the radio button with name 'homeAccess' and value '${homeAccessValue}'`
   );
+  await act(session, "select the option with value 'MY_HOME' in the select with id 'currentLiving'");
+  await act(session, "click the radio button with name 'movingStorage' and value 'no'");
   await act(session, "click the button with id 'next-btn'");
 
   // Page 30 (conditional): Serious Needs
@@ -359,9 +362,10 @@ async function phase4ApplicationCenter(
   await act(session, "check the checkbox with id 'income-certification'");
   await act(session, "click the button with id 'next-btn'");
 
-  // Page 37: Payment Information
+  // Page 37: Payment Information — bank-name required when direct_deposit selected
   const bank = input.bankAccount;
   await act(session, "click the radio button with id 'payment-direct'");
+  await act(session, `type "${bank.bankName}" into the input with id 'bank-name'`);
   await act(session, `click the radio button with id 'account-${bank.accountType}'`);
   await act(session, `type "${bank.routingNumber}" into the input with id 'routing-number'`);
   await act(session, `type "${bank.accountNumber}" into the input with id 'account-number'`);
@@ -378,20 +382,24 @@ async function phase4ApplicationCenter(
     session,
     `select the option with value '${notif.language}' in the select with id 'language'`
   );
+  // textNotifications is required — select no to avoid needing to accept terms
+  await act(session, "click the radio button with id 'text-no'");
   await act(session, "click the button with id 'next-btn'");
 
-  // Page 39: Disability Needs
+  // Page 39: Disability Needs — both hasDisability AND equipmentDamaged are required
   if (input.disabilityNeeds) {
     const dn = input.disabilityNeeds;
     await act(
       session,
       `click the radio button with name 'hasDisability' and value '${dn.accessibleHousing || dn.electricalMedicalEquipment ? "yes" : "no"}'`
     );
-    if (dn.electricalMedicalEquipment) {
-      await act(session, "click the radio button with name 'equipmentDamaged' and value 'yes'");
-    }
+    await act(
+      session,
+      `click the radio button with id '${dn.electricalMedicalEquipment ? "equipment-yes" : "equipment-no"}'`
+    );
   } else {
     await act(session, "click the radio button with name 'hasDisability' and value 'no'");
+    await act(session, "click the radio button with id 'equipment-no'");
   }
   await act(session, "click the button with id 'next-btn'");
 
