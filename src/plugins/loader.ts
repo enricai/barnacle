@@ -1,4 +1,5 @@
-import type { FastifyInstance } from "fastify";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import type { FastifyInstance, RawServerDefault } from "fastify";
 
 import { CaptchaEncounteredError, ScrapeFailureError } from "@/api/errors";
 import { successEnvelope } from "@/api/helpers/envelope";
@@ -66,7 +67,10 @@ export async function dispatch<TResult>(
  * all plugin-specific route knowledge (path, schema, dispatch) to this
  * module instead of maintaining an inline loop.
  */
-export async function registerRoutes(app: FastifyInstance, cfg: AppConfig): Promise<void> {
+export async function registerRoutes(
+  app: FastifyInstance<RawServerDefault, IncomingMessage, ServerResponse, Logger>,
+  cfg: AppConfig
+): Promise<void> {
   for (const plugin of SITE_PLUGINS) {
     const routePath = plugin.meta.routeOverride ?? `/v1/${plugin.meta.siteId}/run`;
     const baseUrl = cfg.scraper.siteBaseUrls[plugin.meta.siteId] ?? "";
