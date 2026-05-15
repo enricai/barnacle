@@ -29,7 +29,10 @@ vi.mock("@/scraper/pool", () => ({
 
 // Stub Prisma so buildServer() doesn't need a live DB.
 vi.mock("@/lib/db/client", () => ({
-  prisma: { $disconnect: vi.fn() },
+  prisma: {
+    $disconnect: vi.fn(),
+    siteSubmission: { create: vi.fn().mockResolvedValue({ id: "stub-id" }) },
+  },
 }));
 
 const VALID_BODY = {
