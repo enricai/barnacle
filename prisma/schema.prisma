@@ -1,4 +1,4 @@
-// Prisma 7 schema — Barnacle VPS-parity API
+// Prisma 7 schema — Barnacle site-agnostic automation engine
 // Documentation: https://pris.ly/d/prisma-schema
 // Connection URLs are configured in prisma.config.ts
 
@@ -16,62 +16,21 @@ datasource db {
   provider = "postgresql"
 }
 
-/// Latest snapshot of a sailing package (itinerary, ship, dates). Written by
-/// the background refresh worker; consumed by the sailing-package-changes
-/// delta endpoint by comparing successive captures.
-model SailingSnapshot {
-  id          String   @id @default(cuid())
-  brandCode   String   @map("brand_code")
-  shipCode    String   @map("ship_code")
-  sailDate    DateTime @map("sail_date")
-  packageCode String   @map("package_code")
-  payload     Json
-  capturedAt  DateTime @default(now()) @map("captured_at")
-
-  // findSailingKeysChangedSince filters by capturedAt with no brand
-  // prefix, so the compound key index (which leads with brandCode)
-  // can't be used for the range-scan candidate step. A dedicated
-  // capturedAt index makes the delta query index-only.
-  @@index([capturedAt], map: "sailing_snapshot_captured_at_idx")
-  @@index([brandCode, shipCode, sailDate, capturedAt], map: "sailing_snapshot_key_idx")
-  @@map("sailing_snapshots")
-}
-
-/// Latest snapshot of pricing for a specific (sailing, currency, occupancy,
-/// bookingType) tuple. Used to compute the price-changes delta endpoints.
-model PricingSnapshot {
-  id              String   @id @default(cuid())
-  brandCode       String   @map("brand_code")
-  shipCode        String   @map("ship_code")
-  sailDate        DateTime @map("sail_date")
-  packageCode     String   @map("package_code")
-  currencyCode    String   @map("currency_code")
-  occupancy       Int
-  bookingTypeCode String   @map("booking_type_code")
-  granularity     String
-  pricePayload    Json     @map("price_payload")
-  capturedAt      DateTime @default(now()) @map("captured_at")
-
-  // Primary read path for find*ChangedSince queries: they filter by
-  // granularity + capturedAt first, then narrow to specific identity
-  // tuples. Leading with (granularity, capturedAt) lets Postgres use
-  // the index directly for the candidate scan instead of filtering
-  // granularity post-index, which matters once the table grows past
-  // a few million rows.
-  @@index([granularity, capturedAt], map: "pricing_snapshot_delta_idx")
-  @@index([brandCode, shipCode, sailDate, currencyCode, occupancy, capturedAt], map: "pricing_snapshot_key_idx")
-  @@map("pricing_snapshots")
-}
-
-/// Snapshot of the promotion catalog for a brand/agency or brand/market.
-model PromotionSnapshot {
+/// Site-agnostic audit row written by Phase 3 dispatch for every plugin
+/// execution. Using one table across all sites lets audit and replay logic live
+/// in core rather than being duplicated per-plugin, and makes cross-site queries
+/// trivial — the siteId column scopes rows back to the originating plugin.
+model SiteSubmission {
   id         String   @id @default(cuid())
-  brand      String
-  agencyId   String?  @map("agency_id")
-  marketKey  String?  @map("market_key")
+  siteId     String   @map("site_id")
+  /// "submitted" | "error"
+  status     String
+  /// Full plugin result payload for auditability. MAY be redacted by the plugin
+  /// (via SitePluginResult.auditPayload) to strip PII before persistence.
   payload    Json
   capturedAt DateTime @default(now()) @map("captured_at")
 
-  @@index([brand, agencyId, marketKey, capturedAt], map: "promotion_snapshot_key_idx")
-  @@map("promotion_snapshots")
+  @@index([siteId], map: "site_submission_site_id_idx")
+  @@index([capturedAt], map: "site_submission_captured_at_idx")
+  @@map("site_submissions")
 }

@@ -2,9 +2,10 @@
 
 **This document contains mandatory development standards referenced by all code in this project.**
 
-Barnacle is a headless Node.js API that mirrors Royal Caribbean's VPS (Vendor
-Pricing Services) surface. All contributors must follow these patterns and rules.
-Code reviews will reference sections in this document.
+Barnacle is a headless Node.js API that drives browser automation workflows via
+Steel + Stagehand. Each supported site is a self-contained plugin; core handles
+sessions, retries, audit persistence, and response envelopes. All contributors
+must follow these patterns and rules. Code reviews will reference sections in this document.
 
 ---
 
@@ -17,8 +18,6 @@ Code reviews will reference sections in this document.
 - Format: `pnpm run format` (Biome)
 - Typecheck: `pnpm run typecheck` (tsc --noEmit)
 - Tests: `pnpm run test` (Vitest)
-- Smoke: `pnpm run smoke` — one live sailing-package request via direct-HTTP GraphQL
-- OpenAPI: `ENABLE_DOCS=true pnpm run openapi:generate` — writes openapi.json
 - Clean: `pnpm run clean`
 
 ## MANDATORY Requirements
@@ -106,7 +105,6 @@ need one of these, use the listed library, not a hand-rolled alternative:
 - Scraper: **@browserbasehq/stagehand** + **steel-sdk**
 - Concurrency: **p-queue** (queues), **p-retry** (retries), **bottleneck** (throttling + jitter)
 - Caching: **lru-cache**
-- Cron: **croner**
 - Logging: **pino** + **pino-pretty** (pino-pretty is the dev transport only; prod emits raw JSON)
 - Hashing: **bcryptjs**
 - Auth: bearer token via the custom `authPlugin` wired into Fastify
@@ -114,9 +112,9 @@ need one of these, use the listed library, not a hand-rolled alternative:
 Do not add custom retry loops, concurrency queues, in-memory caches, request-id
 plumbing, or security-header middleware. The frameworks own those concerns.
 
-### VPS parity is non-negotiable
+### Response envelope
 
-Every response body MUST conform to RC VPS's envelope:
+Every response body MUST use the standard envelope shape:
 
 ```json
 {
@@ -129,15 +127,13 @@ Every response body MUST conform to RC VPS's envelope:
 }
 ```
 
-Error codes MUST come from `VPS_ERROR_CODES` in `src/api/schemas/common.ts`.
+Error codes MUST come from `ERROR_CODES` in `src/api/schemas/common.ts`.
 HTTP status codes are set by `httpStatusForCode()` — don't hard-code statuses.
 
 ### Tests
 
 - **Unit tests**: Vitest, `.test.ts`, Node environment.
 - **Route tests**: use `app.inject()` — no port binding.
-- **Round-trip tests**: every Zod response schema must parse the corresponding
-  `RC_API_Docs/Sample *.json` fixture.
 
 ## Task Completion Checklist
 

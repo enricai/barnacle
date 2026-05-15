@@ -6,7 +6,7 @@ import authPlugin from "@/api/plugins/auth";
 import errorHandlerPlugin from "@/api/plugins/error-handler";
 
 // Hoisted logger stub so the dev-bypass startup warn can be asserted.
-// Same pattern used by retry.test.ts / graphql.test.ts for module-level
+// Same pattern used by retry.test.ts for module-level
 // getLogger calls.
 const { loggerStub } = vi.hoisted(() => ({
   loggerStub: {

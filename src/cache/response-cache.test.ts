@@ -35,13 +35,12 @@ describe("response-cache", () => {
   });
 
   it("treats primitive arrays as sets — reorder collapses to one cache entry", async () => {
-    // All array filters in our request schemas (shipCodes, destinations,
-    // departurePorts, currencyCodes, agencyTypes) are set-semantic —
-    // clients that send the same values in a different order should
-    // hit the same cache entry instead of thrashing through duplicates.
-    const first = getCachedResponse("/v1/test", { shipCodes: ["WN", "IC"] });
+    // Arrays whose elements are set-semantic (order carries no meaning)
+    // must collapse to the same cache key regardless of send order so
+    // callers don't thrash duplicate upstream work.
+    const first = getCachedResponse("/v1/test", { damageTypes: ["roof", "flooding"] });
     await getOrCreateInFlight(first.key, async () => ({ payload: "sorted" }));
-    const { value } = getCachedResponse("/v1/test", { shipCodes: ["IC", "WN"] });
+    const { value } = getCachedResponse("/v1/test", { damageTypes: ["flooding", "roof"] });
     expect(value).toEqual({ payload: "sorted" });
   });
 

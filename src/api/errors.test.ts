@@ -1,43 +1,41 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  buildVpsEnvelope,
+  ApiError,
+  buildErrorEnvelope,
   CaptchaEncounteredError,
   FieldViolationError,
   httpStatusForCode,
+  httpStatusString,
   ScrapeFailureError,
   ThrottledRequestError,
   UnauthorizedError,
-  VpsError,
-  vpsHttpStatusString,
 } from "@/api/errors";
-import { VPS_ERROR_CODES, vpsStatusSchema } from "@/api/schemas/common";
+import { ERROR_CODES, statusSchema } from "@/api/schemas/common";
 
 describe("api/errors", () => {
   describe("httpStatusForCode", () => {
     const cases: Array<[number, number]> = [
-      [VPS_ERROR_CODES.PARTIAL_CONTENT_SUCCESS, 206],
-      [VPS_ERROR_CODES.AUTHORIZATION_ERROR, 401],
-      [VPS_ERROR_CODES.DECODING_ERROR, 400],
-      [VPS_ERROR_CODES.FIELD_VIOLATION, 400],
-      [VPS_ERROR_CODES.EMPTY_REQUEST, 400],
-      [VPS_ERROR_CODES.RESOURCE_NOT_FOUND, 404],
-      [VPS_ERROR_CODES.INDEX_NOT_FOUND, 404],
-      [VPS_ERROR_CODES.SAILING_NOT_FOUND, 404],
-      [VPS_ERROR_CODES.SAILING_SOLD_OUT, 409],
-      [VPS_ERROR_CODES.THROTTLED_REQUEST, 429],
-      [VPS_ERROR_CODES.TIME_OUT, 504],
-      [VPS_ERROR_CODES.CLIENT_CALL_ERROR, 500],
-      [VPS_ERROR_CODES.EXTRA_DETAIL, 500],
-      [VPS_ERROR_CODES.SCRAPE_FAILURE, 500],
-      [VPS_ERROR_CODES.CAPTCHA_ENCOUNTERED, 500],
-      [VPS_ERROR_CODES.GENERIC_ERROR, 500],
+      [ERROR_CODES.PARTIAL_CONTENT_SUCCESS, 206],
+      [ERROR_CODES.AUTHORIZATION_ERROR, 401],
+      [ERROR_CODES.DECODING_ERROR, 400],
+      [ERROR_CODES.FIELD_VIOLATION, 400],
+      [ERROR_CODES.EMPTY_REQUEST, 400],
+      [ERROR_CODES.RESOURCE_NOT_FOUND, 404],
+      [ERROR_CODES.INDEX_NOT_FOUND, 404],
+      [ERROR_CODES.THROTTLED_REQUEST, 429],
+      [ERROR_CODES.TIME_OUT, 504],
+      [ERROR_CODES.CLIENT_CALL_ERROR, 500],
+      [ERROR_CODES.EXTRA_DETAIL, 500],
+      [ERROR_CODES.SCRAPE_FAILURE, 500],
+      [ERROR_CODES.CAPTCHA_ENCOUNTERED, 500],
+      [ERROR_CODES.GENERIC_ERROR, 500],
     ];
     it.each(cases)("code %i → HTTP %i", (code, http) => {
       expect(httpStatusForCode(code as never)).toBe(http);
     });
 
-    // Defensive fallback — if someone introduces a new VPS code and
+    // Defensive fallback — if someone introduces a new error code and
     // forgets to add a branch, the default arm must still emit a 500
     // rather than leak undefined into Fastify's response path.
     it("falls back to 500 for an unknown code", () => {
@@ -45,31 +43,31 @@ describe("api/errors", () => {
     });
   });
 
-  describe("vpsHttpStatusString", () => {
-    it("maps common statuses to VPS strings", () => {
-      expect(vpsHttpStatusString(200)).toBe("OK");
-      expect(vpsHttpStatusString(400)).toBe("BAD_REQUEST");
-      expect(vpsHttpStatusString(401)).toBe("UNAUTHORIZED");
-      expect(vpsHttpStatusString(404)).toBe("NOT_FOUND");
-      expect(vpsHttpStatusString(429)).toBe("TOO_MANY_REQUESTS");
-      expect(vpsHttpStatusString(500)).toBe("INTERNAL_SERVER_ERROR");
-      expect(vpsHttpStatusString(504)).toBe("GATEWAY_TIMEOUT");
+  describe("httpStatusString", () => {
+    it("maps common statuses to upper-snake-case strings", () => {
+      expect(httpStatusString(200)).toBe("OK");
+      expect(httpStatusString(400)).toBe("BAD_REQUEST");
+      expect(httpStatusString(401)).toBe("UNAUTHORIZED");
+      expect(httpStatusString(404)).toBe("NOT_FOUND");
+      expect(httpStatusString(429)).toBe("TOO_MANY_REQUESTS");
+      expect(httpStatusString(500)).toBe("INTERNAL_SERVER_ERROR");
+      expect(httpStatusString(504)).toBe("GATEWAY_TIMEOUT");
     });
 
     it("uses the RFC reason phrase for any valid status via http-status-codes", () => {
-      expect(vpsHttpStatusString(418)).toBe("I_M_A_TEAPOT");
-      expect(vpsHttpStatusString(418)).toMatch(/^[A-Z0-9_]+$/);
+      expect(httpStatusString(418)).toBe("I_M_A_TEAPOT");
+      expect(httpStatusString(418)).toMatch(/^[A-Z0-9_]+$/);
     });
 
     it("falls back to HTTP_<n> for statuses http-status-codes does not know", () => {
-      expect(vpsHttpStatusString(999)).toBe("HTTP_999");
+      expect(httpStatusString(999)).toBe("HTTP_999");
     });
   });
 
-  describe("buildVpsEnvelope", () => {
-    it("produces an envelope that parses through vpsStatusSchema", () => {
-      const envelope = buildVpsEnvelope(VPS_ERROR_CODES.FIELD_VIOLATION, "bad field");
-      const parsed = vpsStatusSchema.safeParse(envelope.status);
+  describe("buildErrorEnvelope", () => {
+    it("produces an envelope that parses through statusSchema", () => {
+      const envelope = buildErrorEnvelope(ERROR_CODES.FIELD_VIOLATION, "bad field");
+      const parsed = statusSchema.safeParse(envelope.status);
       expect(parsed.success).toBe(true);
       expect(envelope.status.httpStatus).toBe("BAD_REQUEST");
       expect(envelope.status.details[0]?.code).toBe(1002);
@@ -78,28 +76,28 @@ describe("api/errors", () => {
     });
 
     it("defaults detailType to ERROR", () => {
-      const envelope = buildVpsEnvelope(VPS_ERROR_CODES.GENERIC_ERROR, "oops");
+      const envelope = buildErrorEnvelope(ERROR_CODES.GENERIC_ERROR, "oops");
       expect(envelope.status.details[0]?.detailType).toBe("ERROR");
     });
 
     it("respects a custom detailType", () => {
-      const envelope = buildVpsEnvelope(VPS_ERROR_CODES.EXTRA_DETAIL, "note", "INFO");
+      const envelope = buildErrorEnvelope(ERROR_CODES.EXTRA_DETAIL, "note", "INFO");
       expect(envelope.status.details[0]?.detailType).toBe("INFO");
     });
   });
 
-  describe("VpsError subclasses", () => {
+  describe("ApiError subclasses", () => {
     it("each subclass carries the expected code", () => {
-      expect(new UnauthorizedError().code).toBe(VPS_ERROR_CODES.AUTHORIZATION_ERROR);
-      expect(new FieldViolationError("x").code).toBe(VPS_ERROR_CODES.FIELD_VIOLATION);
-      expect(new ThrottledRequestError().code).toBe(VPS_ERROR_CODES.THROTTLED_REQUEST);
-      expect(new ScrapeFailureError().code).toBe(VPS_ERROR_CODES.SCRAPE_FAILURE);
-      expect(new CaptchaEncounteredError().code).toBe(VPS_ERROR_CODES.CAPTCHA_ENCOUNTERED);
+      expect(new UnauthorizedError().code).toBe(ERROR_CODES.AUTHORIZATION_ERROR);
+      expect(new FieldViolationError("x").code).toBe(ERROR_CODES.FIELD_VIOLATION);
+      expect(new ThrottledRequestError().code).toBe(ERROR_CODES.THROTTLED_REQUEST);
+      expect(new ScrapeFailureError().code).toBe(ERROR_CODES.SCRAPE_FAILURE);
+      expect(new CaptchaEncounteredError().code).toBe(ERROR_CODES.CAPTCHA_ENCOUNTERED);
     });
 
-    it("subclasses are instanceof VpsError", () => {
-      expect(new UnauthorizedError()).toBeInstanceOf(VpsError);
-      expect(new FieldViolationError("x")).toBeInstanceOf(VpsError);
+    it("subclasses are instanceof ApiError", () => {
+      expect(new UnauthorizedError()).toBeInstanceOf(ApiError);
+      expect(new FieldViolationError("x")).toBeInstanceOf(ApiError);
     });
   });
 });

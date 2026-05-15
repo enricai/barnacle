@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
+import type { IncomingMessage, ServerResponse } from "node:http";
 
 import fastifyCompress from "@fastify/compress";
 import fastifyHelmet from "@fastify/helmet";
 import fastifyRateLimit from "@fastify/rate-limit";
 import fastifySwagger from "@fastify/swagger";
 import fastifySwaggerUi from "@fastify/swagger-ui";
-import Fastify from "fastify";
+import Fastify, { type FastifyInstance, type RawServerDefault } from "fastify";
 import {
   jsonSchemaTransform,
   serializerCompiler,
@@ -15,22 +16,13 @@ import {
 import authPlugin from "@/api/plugins/auth";
 import errorHandlerPlugin from "@/api/plugins/error-handler";
 import requestContextPlugin from "@/api/plugins/request-context";
-import { categoryPricingRoute } from "@/api/routes/category-pricing";
-import { groupPricingRoute } from "@/api/routes/group-pricing";
 import { healthRoutes } from "@/api/routes/health";
-import { priceChangesCategoryRoute } from "@/api/routes/price-changes-category";
-import { priceChangesSuperCategoryRoute } from "@/api/routes/price-changes-super-category";
-import { promotionDetailsRoute } from "@/api/routes/promotion-details";
-import { sailingPackageRoute } from "@/api/routes/sailing-package";
-import { sailingPackageChangesRoute } from "@/api/routes/sailing-package-changes";
-import { searchRoute } from "@/api/routes/search";
-import { superCategoryPricingRoute } from "@/api/routes/super-category-pricing";
 import { config as defaultConfig, loadConfig } from "@/config";
 import { prisma } from "@/lib/db/client";
 import { getLogger } from "@/lib/logging";
+import { registerRoutes } from "@/plugins/loader";
 import { drainPool } from "@/scraper/pool";
-import { startChangesWorker } from "@/workers/changes";
-import { startRefreshWorker } from "@/workers/refresh";
+import type { Logger } from "@/types/logging";
 
 const logger = getLogger({ name: "server" });
 
@@ -39,11 +31,12 @@ const logger = getLogger({ name: "server" });
  * from `main()` so tests can call `buildServer()` and use `inject()`
  * instead of binding to a port.
  */
-export async function buildServer() {
+export async function buildServer(): Promise<
+  FastifyInstance<RawServerDefault, IncomingMessage, ServerResponse, Logger>
+> {
   // Load a fresh config per build so tests can toggle env vars between
   // buildServer() invocations. The exported `defaultConfig` is still
-  // used for module-level pieces (logger, cron scheduling) that are
-  // process-wide.
+  // used for module-level pieces (logger) that are process-wide.
   const cfg = loadConfig();
 
   const app = Fastify({
@@ -83,7 +76,7 @@ export async function buildServer() {
     },
     // We don't pass a custom errorResponseBuilder — fastify-rate-limit
     // throws a FastifyError with statusCode=429 which our setErrorHandler
-    // catches and emits as the VPS envelope (code 1010). Keeping a single
+    // catches and emits as the error envelope (code 1010). Keeping a single
     // error-rendering path avoids schema-serializer mismatches.
   });
 
@@ -96,9 +89,9 @@ export async function buildServer() {
       openapi: {
         openapi: "3.1.0",
         info: {
-          title: "Barnacle — RC VPS-parity API",
+          title: "Barnacle",
           description:
-            "Headless Node.js API mirroring Royal Caribbean's Vendor Pricing Services (VPS) surface.",
+            "Site-agnostic browser automation engine. POST a structured payload to a typed endpoint; Barnacle drives a Steel + Stagehand session through the target site and returns a structured result via a plugin adapter.",
           version: "0.1.0",
         },
         servers: [{ url: `http://${cfg.host}:${cfg.port}` }],
@@ -114,22 +107,12 @@ export async function buildServer() {
   }
 
   await app.register(healthRoutes);
-  await app.register(sailingPackageRoute);
-  await app.register(sailingPackageChangesRoute);
-  await app.register(superCategoryPricingRoute);
-  await app.register(categoryPricingRoute);
-  await app.register(groupPricingRoute);
-  await app.register(priceChangesSuperCategoryRoute);
-  await app.register(priceChangesCategoryRoute);
-  await app.register(promotionDetailsRoute);
-  await app.register(searchRoute);
+  await registerRoutes(app, cfg);
 
   // Drain in-flight scrape sessions and disconnect Prisma when the app
   // shuts down. Without this, SIGTERM leaves Steel sessions alive until
   // their own idle timeout kicks in (billable minutes wasted) and leaves
-  // Prisma connections open past process exit. Fastify's onClose hooks
-  // run before the HTTP server stops accepting, so workers in flight get
-  // a chance to settle.
+  // Prisma connections open past process exit.
   app.addHook("onClose", async () => {
     try {
       await drainPool();
@@ -159,9 +142,6 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const refreshJob = startRefreshWorker();
-  const changesJob = startChangesWorker();
-
   // Guard against double signals — an impatient orchestrator sending
   // SIGTERM twice while the first shutdown is mid-flight would spawn a
   // second concurrent shutdown, racing `app.close()` and `process.exit()`.
@@ -175,8 +155,6 @@ async function main(): Promise<void> {
     shuttingDown = true;
     logger.info(`received ${signal}, shutting down`);
     try {
-      refreshJob?.stop();
-      changesJob?.stop();
       await app.close();
       process.exit(0);
     } catch (err) {
@@ -188,11 +166,7 @@ async function main(): Promise<void> {
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
   process.on("SIGINT", () => void shutdown("SIGINT"));
 
-  // Last-line-of-defense for errors escaping every `try` boundary. We
-  // don't resume execution — crashing on uncaught errors is the correct
-  // behavior — but we get one chance to log structurally so ops can
-  // correlate the crash with request IDs instead of digging through a
-  // bare node stack in CloudWatch.
+  // Last-line-of-defense for errors escaping every `try` boundary.
   process.on("uncaughtException", (err) => {
     logger.errorWithStack(err, "uncaughtException — process will exit");
     process.exit(1);

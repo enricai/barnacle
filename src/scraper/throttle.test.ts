@@ -101,7 +101,7 @@ describe("scraper/throttle createSessionLimiter", () => {
   it("emits a Bottleneck configured for serial scrape actions", () => {
     const limiter = createSessionLimiter();
     try {
-      // maxConcurrent=1 is the load-bearing guarantee — RC sees one
+      // maxConcurrent=1 is the load-bearing guarantee — the form sees one
       // action at a time per session; queue.counts() reports the
       // waiting/running state and confirms the limiter is alive.
       expect(limiter.counts).toBeTypeOf("function");

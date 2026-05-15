@@ -25,13 +25,12 @@ describe("config/loadConfig", () => {
     expect(cfg.scraper.poolSize).toBe(3);
     expect(cfg.scraper.solveCaptcha).toBe(true);
     expect(cfg.scraper.readinessQueueThreshold).toBe(20);
-    expect(cfg.scraper.httpTimeoutMs).toBe(20_000);
+    expect(cfg.scraper.siteBaseUrls).toEqual({});
     expect(cfg.scraper.model).toBe("anthropic/claude-sonnet-4-6");
     // Default trustProxy=true matches the most common deploy shape
     // (behind an ALB/nginx/Cloudflare); bare-metal runners must opt out.
     expect(cfg.trustProxy).toBe(true);
     expect(cfg.cache.ttlMs).toBe(15 * 60 * 1000);
-    expect(cfg.workers.enabled).toBe(false);
     expect(cfg.docs.enabled).toBe(false);
   });
 
@@ -39,22 +38,18 @@ describe("config/loadConfig", () => {
     process.env.PORT = "4321";
     process.env.SESSION_POOL_SIZE = "10";
     process.env.RATE_LIMIT_MAX = "500";
-    process.env.SCRAPER_HTTP_TIMEOUT_MS = "45000";
     const cfg = loadConfig();
     expect(cfg.port).toBe(4321);
     expect(cfg.scraper.poolSize).toBe(10);
     expect(cfg.rateLimit.max).toBe(500);
-    expect(cfg.scraper.httpTimeoutMs).toBe(45_000);
   });
 
   it("parses boolean env vars", () => {
     process.env.ENABLE_DOCS = "true";
-    process.env.ENABLE_WORKERS = "1";
     process.env.DEV_BYPASS_AUTH = "yes";
     process.env.TRUST_PROXY = "false";
     const cfg = loadConfig();
     expect(cfg.docs.enabled).toBe(true);
-    expect(cfg.workers.enabled).toBe(true);
     expect(cfg.auth.devBypass).toBe(true);
     // TRUST_PROXY=false is the bare-metal setting — flip it off so
     // X-Forwarded-For spoofing can't bypass IP-based rate limiting.
@@ -73,8 +68,41 @@ describe("config/loadConfig", () => {
     expect(cfg.auth.hashedKeys).toEqual([]);
   });
 
-  it("returned object is frozen", () => {
+  it("bedrock defaults when USE_BEDROCK is unset", () => {
+    process.env = {};
     const cfg = loadConfig();
-    expect(Object.isFrozen(cfg)).toBe(true);
+    expect(cfg.scraper.useBedrock).toBe(false);
+    expect(cfg.bedrock.region).toBe("us-east-1");
+    expect(cfg.bedrock.model).toBe("us.anthropic.claude-sonnet-4-6[1m]");
+    expect(cfg.bedrock.accessKeyId).toBeUndefined();
+    expect(cfg.bedrock.secretAccessKey).toBeUndefined();
+    expect(cfg.bedrock.sessionToken).toBeUndefined();
+  });
+
+  it("normalizes empty-string AWS credentials to undefined", () => {
+    process.env.USE_BEDROCK = "true";
+    process.env.AWS_ACCESS_KEY_ID = "";
+    process.env.AWS_SECRET_ACCESS_KEY = "";
+    process.env.AWS_SESSION_TOKEN = "";
+    const cfg = loadConfig();
+    expect(cfg.bedrock.accessKeyId).toBeUndefined();
+    expect(cfg.bedrock.secretAccessKey).toBeUndefined();
+    expect(cfg.bedrock.sessionToken).toBeUndefined();
+  });
+
+  it("bedrock config is populated when USE_BEDROCK=true", () => {
+    process.env.USE_BEDROCK = "true";
+    process.env.AWS_REGION = "us-west-2";
+    process.env.AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE";
+    process.env.AWS_SECRET_ACCESS_KEY = "secret";
+    process.env.AWS_SESSION_TOKEN = "token";
+    process.env.BEDROCK_MODEL = "us.anthropic.claude-opus-4-7[1m]";
+    const cfg = loadConfig();
+    expect(cfg.scraper.useBedrock).toBe(true);
+    expect(cfg.bedrock.region).toBe("us-west-2");
+    expect(cfg.bedrock.accessKeyId).toBe("AKIAIOSFODNN7EXAMPLE");
+    expect(cfg.bedrock.secretAccessKey).toBe("secret");
+    expect(cfg.bedrock.sessionToken).toBe("token");
+    expect(cfg.bedrock.model).toBe("us.anthropic.claude-opus-4-7[1m]");
   });
 });

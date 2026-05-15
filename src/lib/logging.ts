@@ -8,7 +8,7 @@ const nodeEnv = getNodeEnv();
 const isDevelopment = nodeEnv === "development";
 const isTest = nodeEnv === "test";
 const defaultLoggingLevel = process.env.DEBUG ? "debug" : "info";
-const defaultAppName = process.env.APP_NAME || "app";
+const defaultAppName = process.env.APP_NAME || "barnacle";
 
 /**
  * CloudWatch Logs has a hard limit of 256KB per log event.
@@ -143,11 +143,13 @@ function getLogName(name: string, appName: string): string {
 }
 
 /**
- * Wraps pino's level methods so every string message flows through the
- * CloudWatch-split path, and adds `errorWithStack` — our convention for
- * one-line error logs that include the stack inline.
+ * Wraps a pino logger with the project's extended Logger interface: CloudWatch
+ * message splitting on every level method, and `errorWithStack` for one-line
+ * error logs that include the stack inline. Used internally by `getLogger` and
+ * exported so callers with an existing pino instance (e.g. `request.log`) can
+ * promote it to the full Logger contract without creating a new logger.
  */
-function extendLogger(logger: pino.Logger): Logger {
+export function extendLogger(logger: pino.Logger): Logger {
   const extendedLogger = logger as Logger;
 
   const originalInfo = extendedLogger.info.bind(extendedLogger) as LogFunction;

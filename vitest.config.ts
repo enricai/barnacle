@@ -12,21 +12,15 @@ export default defineConfig({
       exclude: [
         "src/**/*.d.ts",
         "src/**/*.test.ts",
-        // One-shot scripts (smoke, openapi:generate) — executed by CI,
-        // not by the unit suite. Exercising them here would require
-        // mocking fs + the live GraphQL endpoint.
-        "src/scripts/**",
         // Prisma-generated client — regenerated on every `db:generate`.
         "src/generated/**",
         // Pure interface files — no executable code to cover.
         "src/types/**",
         // Steel SDK + Stagehand wiring — testing it means booting a
-        // real Steel session. Exercised through integration + the live
-        // smoke test.
+        // real Steel session.
         "src/scraper/session.ts",
-        // Fastify server bootstrap module is covered end-to-end by
-        // server.test.ts; the entrypoint main() only runs when the
-        // file is executed directly, not under vitest.
+        // Fastify server bootstrap — the entrypoint main() only fires
+        // when the file is executed directly, not under vitest.
         "src/server.ts",
       ],
     },

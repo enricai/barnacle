@@ -48,6 +48,12 @@ export interface HealthConfig {
     steelApiKey: string | undefined;
     anthropicApiKey: string | undefined;
     readinessQueueThreshold: number;
+    useBedrock: boolean;
+  };
+  bedrock: {
+    accessKeyId: string | undefined;
+    secretAccessKey: string | undefined;
+    region: string;
   };
 }
 
@@ -95,14 +101,28 @@ async function checkDatabase(cfg: HealthConfig): Promise<DependencyStatus> {
 }
 
 /**
- * Confirms the scraper has the secrets it needs. Without Steel and
- * Anthropic keys the Stagehand fallback path is a 500 waiting to
- * happen — surface that before traffic lands.
+ * Confirms the scraper has the secrets it needs. When Bedrock is enabled,
+ * validates key-pair consistency: if one of accessKeyId/secretAccessKey is
+ * set the other must be too. If neither is set, ambient IAM credentials are
+ * assumed (ECS task role, EC2 instance profile) — these can't be probed
+ * synchronously at health-check time. When Anthropic is the provider,
+ * verifies the API key is present.
  */
 function checkScraperCredentials(cfg: HealthConfig): DependencyStatus {
   const missing: string[] = [];
   if (!cfg.scraper.steelApiKey) missing.push("STEEL_API_KEY");
-  if (!cfg.scraper.anthropicApiKey) missing.push("ANTHROPIC_API_KEY");
+
+  if (cfg.scraper.useBedrock) {
+    if (cfg.bedrock.accessKeyId && !cfg.bedrock.secretAccessKey) {
+      missing.push("AWS_SECRET_ACCESS_KEY");
+    }
+    if (!cfg.bedrock.accessKeyId && cfg.bedrock.secretAccessKey) {
+      missing.push("AWS_ACCESS_KEY_ID");
+    }
+  } else {
+    if (!cfg.scraper.anthropicApiKey) missing.push("ANTHROPIC_API_KEY");
+  }
+
   if (missing.length === 0) return { ok: true };
   return { ok: false, detail: `missing: ${missing.join(", ")}` };
 }
@@ -129,9 +149,9 @@ function checkScraperPool(
 }
 
 /**
- * Health and readiness probes. Ops-only routes — not part of the VPS parity
- * surface — so they bypass auth and return plain JSON instead of the VPS
- * envelope. `/healthz` is a liveness check (process is up). `/readyz`
+ * Health and readiness probes. Ops-only routes — not part of the FEMA
+ * submission surface — so they bypass auth and return plain JSON instead
+ * of the standard envelope. `/healthz` is a liveness check (process is up). `/readyz`
  * verifies external dependencies and downgrades to 503 when any are
  * unreachable so orchestrators stop routing traffic.
  *

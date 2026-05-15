@@ -36,11 +36,20 @@ export interface AppConfig {
     maxActionDelayMs: number;
     readinessQueueThreshold: number;
     /**
-     * Per-request timeout for direct-HTTP fetches against RC (GraphQL
-     * catalog, GraphQL pricing, sitemap). Without a bound, a stalled
-     * upstream hangs the worker tick or the inbound request forever.
+     * Per-site base URLs keyed by `meta.siteId`. Populated by each site's
+     * plugin at server startup via env vars or explicit config. Falls back to
+     * `SitePluginMeta.defaultBaseUrl` when a key is absent.
      */
-    httpTimeoutMs: number;
+    siteBaseUrls: Record<string, string>;
+    /** Master switch: routes Stagehand LLM calls through AWS Bedrock when true. */
+    useBedrock: boolean;
+  };
+  bedrock: {
+    region: string;
+    accessKeyId: string | undefined;
+    secretAccessKey: string | undefined;
+    sessionToken: string | undefined;
+    model: string;
   };
   cache: {
     ttlMs: number;
@@ -49,11 +58,6 @@ export interface AppConfig {
   rateLimit: {
     max: number;
     windowMs: number;
-  };
-  workers: {
-    enabled: boolean;
-    refreshCron: string;
-    changesCron: string;
   };
   docs: {
     enabled: boolean;
@@ -76,7 +80,7 @@ function parseList(value: string): readonly string[] {
  * startup; subsequent calls return the same frozen object.
  */
 export function loadConfig(): AppConfig {
-  return Object.freeze<AppConfig>({
+  return {
     appName: getEnv("APP_NAME", "barnacle"),
     nodeEnv: getNodeEnv(),
     host: getEnv("HOST", "0.0.0.0"),
@@ -103,7 +107,15 @@ export function loadConfig(): AppConfig {
       minActionDelayMs: getNumericEnv("SCRAPER_MIN_ACTION_DELAY_MS", 500),
       maxActionDelayMs: getNumericEnv("SCRAPER_MAX_ACTION_DELAY_MS", 1500),
       readinessQueueThreshold: getNumericEnv("READINESS_QUEUE_THRESHOLD", 20),
-      httpTimeoutMs: getNumericEnv("SCRAPER_HTTP_TIMEOUT_MS", 20_000),
+      siteBaseUrls: {},
+      useBedrock: getBoolEnv("USE_BEDROCK", false),
+    },
+    bedrock: {
+      region: getEnv("AWS_REGION", "us-east-1"),
+      accessKeyId: process.env.AWS_ACCESS_KEY_ID || undefined,
+      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || undefined,
+      sessionToken: process.env.AWS_SESSION_TOKEN || undefined,
+      model: getEnv("BEDROCK_MODEL", "us.anthropic.claude-sonnet-4-6[1m]"),
     },
     cache: {
       ttlMs: getNumericEnv("CACHE_TTL_MS", 15 * 60 * 1000),
@@ -113,15 +125,10 @@ export function loadConfig(): AppConfig {
       max: getNumericEnv("RATE_LIMIT_MAX", 120),
       windowMs: getNumericEnv("RATE_LIMIT_WINDOW_MS", 60_000),
     },
-    workers: {
-      enabled: getBoolEnv("ENABLE_WORKERS", false),
-      refreshCron: getEnv("REFRESH_CRON", "0 3 * * *"),
-      changesCron: getEnv("CHANGES_CRON", "0 * * * *"),
-    },
     docs: {
       enabled: getBoolEnv("ENABLE_DOCS", false),
     },
-  });
+  };
 }
 
 export const config: AppConfig = loadConfig();

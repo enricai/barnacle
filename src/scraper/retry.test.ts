@@ -66,11 +66,11 @@ describe("scraper/retry", () => {
       expect(counter.n).toBe(1);
     });
 
-    it("emits logger.error on CaptchaError so ops can alert on it (task 10)", async () => {
+    it("emits logger.error on CaptchaError so ops can alert on it", async () => {
       loggerStub.error.mockClear();
       await expect(
         withScraperRetry(async () => {
-          throw new CaptchaError("hCaptcha challenge from RC");
+          throw new CaptchaError("hCaptcha challenge encountered");
         })
       ).rejects.toThrow(/captcha/i);
       expect(loggerStub.error).toHaveBeenCalledOnce();
@@ -242,7 +242,7 @@ describe("scraper/retry", () => {
         expected: UnknownScraperError,
       },
       {
-        name: "GraphQL 200 body with errors[] (propagated as JSON string)",
+        name: "upstream 200 body with errors[] (propagated as JSON string)",
         raw: 'graphql response contained errors: [{"message":"internal"}]',
         expected: UnknownScraperError,
       },
@@ -263,7 +263,7 @@ describe("scraper/retry", () => {
       },
       {
         name: "extractor returns no results",
-        raw: new Error("received 0 sailing cards — no results"),
+        raw: new Error("received no results from the form"),
         expected: EmptyResultsError,
       },
     ];

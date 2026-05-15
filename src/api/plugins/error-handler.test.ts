@@ -16,7 +16,7 @@ import { CaptchaError, SelectorFailureError, SessionTimeoutError } from "@/scrap
 /**
  * Narrow tests for the error handler plugin — spin up a minimal Fastify
  * instance with just the plugin + a few routes that throw on purpose.
- * Verifies that every error category lands in the VPS envelope with the
+ * Verifies that every error category lands in the error envelope with the
  * right code + HTTP status, and that unhandled generic errors don't leak
  * stack traces.
  */
@@ -49,7 +49,7 @@ async function makeApp() {
   });
   app.get("/throw/fastify-4xx", async () => {
     // Simulate a generic Fastify error with a 4xx status that isn't 429
-    // and isn't a VpsError — e.g. @fastify/helmet content-security-policy
+    // and isn't an ApiError — e.g. @fastify/helmet content-security-policy
     // rejections surface this way.
     const err = new Error("unprocessable request") as Error & { statusCode: number };
     err.statusCode = 422;
@@ -80,15 +80,15 @@ async function makeApp() {
     throw err;
   });
   app.get("/throw/scraper-captcha", async () => {
-    // A CaptchaError raised from the scraper layer (not a VpsError) —
-    // the error-handler must still route it to VPS code 2004 rather
+    // A CaptchaError raised from the scraper layer (not an ApiError) —
+    // the error-handler must still route it to code 2004 rather
     // than the generic 1008 fallback.
-    throw new CaptchaError("hCaptcha challenge from RC");
+    throw new CaptchaError("hCaptcha challenge encountered");
   });
   app.get("/throw/scraper-selector", async () => {
     // Selector failures are the most common Stagehand failure mode.
     // They must surface as SCRAPE_FAILURE (2003) so clients can
-    // distinguish our scrape pain from upstream RC pain.
+    // distinguish our scrape pain from upstream portal pain.
     throw new SelectorFailureError("could not find .price button after 3 retries");
   });
   app.get("/throw/scraper-session-timeout", async () => {
@@ -159,13 +159,13 @@ describe("error-handler plugin", () => {
     expect(response.json().status.details[0].code).toBe(1010);
   });
 
-  it("maps scraper CaptchaError (not VpsError) to code 2004 envelope", async () => {
+  it("maps scraper CaptchaError (not ApiError) to code 2004 envelope", async () => {
     const response = await app().inject({ method: "GET", url: "/throw/scraper-captcha" });
     expect(response.statusCode).toBe(500);
     const body = response.json();
     expect(body.status.details[0].code).toBe(2004);
     expect(body.status.details[0].codeDescription).toBe("CAPTCHA_ENCOUNTERED");
-    expect(body.status.details[0].message).toBe("hCaptcha challenge from RC");
+    expect(body.status.details[0].message).toBe("hCaptcha challenge encountered");
   });
 
   it("maps scraper SelectorFailureError to code 2003 envelope", async () => {
@@ -205,7 +205,7 @@ describe("error-handler plugin", () => {
     expect(body.status.details[0].code).toBe(1002);
   });
 
-  it("404s emit a VPS envelope with code 1005 for unknown routes", async () => {
+  it("404s emit an error envelope with code 1005 for unknown routes", async () => {
     const response = await app().inject({ method: "GET", url: "/nope" });
     expect(response.statusCode).toBe(404);
     expect(response.json().status.details[0].code).toBe(1005);
