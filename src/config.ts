@@ -108,9 +108,9 @@ export function loadConfig(): AppConfig {
     },
     bedrock: {
       region: getEnv("AWS_REGION", "us-east-1"),
-      accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-      sessionToken: process.env.AWS_SESSION_TOKEN,
+      accessKeyId: process.env.AWS_ACCESS_KEY_ID || undefined,
+      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || undefined,
+      sessionToken: process.env.AWS_SESSION_TOKEN || undefined,
       model: getEnv("BEDROCK_MODEL", "us.anthropic.claude-sonnet-4-6[1m]"),
     },
     cache: {

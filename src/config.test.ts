@@ -86,6 +86,17 @@ describe("config/loadConfig", () => {
     expect(cfg.bedrock.sessionToken).toBeUndefined();
   });
 
+  it("normalizes empty-string AWS credentials to undefined", () => {
+    process.env.USE_BEDROCK = "true";
+    process.env.AWS_ACCESS_KEY_ID = "";
+    process.env.AWS_SECRET_ACCESS_KEY = "";
+    process.env.AWS_SESSION_TOKEN = "";
+    const cfg = loadConfig();
+    expect(cfg.bedrock.accessKeyId).toBeUndefined();
+    expect(cfg.bedrock.secretAccessKey).toBeUndefined();
+    expect(cfg.bedrock.sessionToken).toBeUndefined();
+  });
+
   it("bedrock config is populated when USE_BEDROCK=true", () => {
     process.env.USE_BEDROCK = "true";
     process.env.AWS_REGION = "us-west-2";

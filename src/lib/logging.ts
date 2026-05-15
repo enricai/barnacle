@@ -8,7 +8,7 @@ const nodeEnv = getNodeEnv();
 const isDevelopment = nodeEnv === "development";
 const isTest = nodeEnv === "test";
 const defaultLoggingLevel = process.env.DEBUG ? "debug" : "info";
-const defaultAppName = process.env.APP_NAME || "app";
+const defaultAppName = process.env.APP_NAME || "barnacle";
 
 /**
  * CloudWatch Logs has a hard limit of 256KB per log event.
