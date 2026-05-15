@@ -2,15 +2,29 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildServer } from "@/server";
 
+// vi.hoisted ensures the mock function is available when vi.mock factories run (which are hoisted).
+const mockExecute = vi.hoisted(() =>
+  vi.fn().mockResolvedValue({
+    data: {
+      confirmationNumber: "FEMA-2024-99999",
+      pagesCompleted: 42,
+    },
+    auditPayload: {},
+  })
+);
+
 // Stub the service so tests don't touch the browser or DB.
-vi.mock("@/services/fema-submission", () => ({
-  submitApplication: vi.fn().mockResolvedValue({
-    status: { httpStatus: "OK", dateTime: "2024-08-15T12:00:00Z", details: [] },
-    submissionId: "cltestid",
-    confirmationNumber: "FEMA-2024-99999",
-    pagesCompleted: 42,
-    submittedAt: "2024-08-15T12:00:00Z",
-  }),
+vi.mock("@/sites/fema/service", () => ({
+  execute: mockExecute,
+}));
+
+// Bypass the session pool so tests don't need a real Steel session.
+// The server's plugin loop calls runWithSession(task) — we invoke task directly
+// with a null session since execute is already mocked above.
+vi.mock("@/scraper/pool", () => ({
+  runWithSession: vi.fn().mockImplementation((task: (s: null) => Promise<unknown>) => task(null)),
+  drainPool: vi.fn().mockResolvedValue(undefined),
+  poolStats: vi.fn().mockReturnValue({ size: 0, pending: 0, concurrency: 3 }),
 }));
 
 // Stub Prisma so buildServer() doesn't need a live DB.
@@ -85,7 +99,7 @@ describe("POST /v1/fema/submit", () => {
     return buildServer();
   }
 
-  it("returns 200 with submissionId on a valid request", async () => {
+  it("returns 200 with the VPS envelope on a valid request", async () => {
     const app = await buildWithBypass();
     const response = await app.inject({
       method: "POST",
@@ -96,10 +110,11 @@ describe("POST /v1/fema/submit", () => {
 
     expect(response.statusCode).toBe(200);
     const body = response.json();
-    expect(body.submissionId).toBe("cltestid");
     expect(body.confirmationNumber).toBe("FEMA-2024-99999");
     expect(body.pagesCompleted).toBe(42);
     expect(body.status.httpStatus).toBe("OK");
+    // submissionId is absent until Phase 3 adds DB persistence
+    expect(body.submissionId).toBeUndefined();
   });
 
   it("returns 401 without an auth header", async () => {
