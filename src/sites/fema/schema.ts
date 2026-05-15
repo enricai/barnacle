@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { vpsStatusSchema } from "@/api/schemas/common";
+import { statusSchema } from "@/api/schemas/common";
 
 // ---------------------------------------------------------------------------
 // Phase 1: Pre-Application
@@ -215,7 +215,7 @@ export type FemaSubmissionRequest = z.infer<typeof femaSubmissionRequestSchema>;
 // ---------------------------------------------------------------------------
 
 export const femaSubmissionResponseSchema = z.object({
-  status: vpsStatusSchema,
+  status: statusSchema,
   submissionId: z.string(),
   confirmationNumber: z.string().optional(),
   pagesCompleted: z.number().int().nonnegative(),
@@ -225,7 +225,7 @@ export const femaSubmissionResponseSchema = z.object({
 export type FemaSubmissionResponse = z.infer<typeof femaSubmissionResponseSchema>;
 
 export const femaPluginResponseSchema = z.object({
-  status: vpsStatusSchema,
+  status: statusSchema,
   confirmationNumber: z.string().optional(),
   pagesCompleted: z.number().int().nonnegative(),
 });

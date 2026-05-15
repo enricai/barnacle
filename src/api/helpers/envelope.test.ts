@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { successEnvelope } from "@/api/helpers/envelope";
-import { vpsStatusSchema } from "@/api/schemas/common";
+import { statusSchema } from "@/api/schemas/common";
 
 describe("api/helpers/envelope", () => {
   it("merges the status block with a domain payload", () => {
@@ -11,9 +11,9 @@ describe("api/helpers/envelope", () => {
     expect(env.submissions).toEqual([]);
   });
 
-  it("status block round-trips through vpsStatusSchema", () => {
+  it("status block round-trips through statusSchema", () => {
     const env = successEnvelope({ keys: [] });
-    expect(vpsStatusSchema.safeParse(env.status).success).toBe(true);
+    expect(statusSchema.safeParse(env.status).success).toBe(true);
   });
 
   it("preserves extra payload keys alongside status", () => {

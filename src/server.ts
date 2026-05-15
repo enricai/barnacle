@@ -76,7 +76,7 @@ export async function buildServer(): Promise<
     },
     // We don't pass a custom errorResponseBuilder — fastify-rate-limit
     // throws a FastifyError with statusCode=429 which our setErrorHandler
-    // catches and emits as the VPS envelope (code 1010). Keeping a single
+    // catches and emits as the error envelope (code 1010). Keeping a single
     // error-rendering path avoids schema-serializer mismatches.
   });
 

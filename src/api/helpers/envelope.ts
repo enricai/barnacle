@@ -1,9 +1,9 @@
 import { formatISO } from "date-fns";
 
 /**
- * Builds the VPS success envelope — `{ status: { httpStatus: "OK", ... } }`
+ * Builds the success envelope — `{ status: { httpStatus: "OK", ... } }`
  * merged with the domain payload. Service methods return the complete
- * VPS-shaped object so route handlers just pass them through.
+ * envelope-shaped object so route handlers just pass them through.
  */
 export function successEnvelope<T extends object>(
   payload: T

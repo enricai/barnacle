@@ -2,8 +2,9 @@
 
 **This document contains mandatory development standards referenced by all code in this project.**
 
-Barnacle is a headless Node.js API that automates FEMA disaster assistance
-application submissions via Steel + Stagehand browser automation. All contributors
+Barnacle is a headless Node.js API that drives browser automation workflows via
+Steel + Stagehand. Each supported site is a self-contained plugin; core handles
+sessions, retries, audit persistence, and response envelopes. All contributors
 must follow these patterns and rules. Code reviews will reference sections in this document.
 
 ---
@@ -126,7 +127,7 @@ Every response body MUST use the standard envelope shape:
 }
 ```
 
-Error codes MUST come from `VPS_ERROR_CODES` in `src/api/schemas/common.ts`.
+Error codes MUST come from `ERROR_CODES` in `src/api/schemas/common.ts`.
 HTTP status codes are set by `httpStatusForCode()` — don't hard-code statuses.
 
 ### Tests

@@ -46,7 +46,7 @@ pnpm run db:push       # create tables
 
 ```bash
 FEMA_BASE_URL=http://localhost:8020 pnpm run dev
-# Point at the mock site for development; omit to hit DisasterAssistance.gov
+# Point at a local mock for development; omit for the plugin's default base URL
 ```
 
 ### Build for production

@@ -28,7 +28,7 @@ export const SITE_PLUGINS: SitePlugin<unknown, unknown>[] = [
 /**
  * Runs a single plugin submission end-to-end: acquires a browser session,
  * calls `plugin.execute()`, writes a `SiteSubmission` audit row on both
- * success and failure, and maps scraper errors to the VPS error hierarchy
+ * success and failure, and maps scraper errors to the API error hierarchy
  * so callers receive typed, client-readable errors instead of raw scraper
  * internals.
  */

@@ -103,7 +103,7 @@ describe("POST /v1/fema/submit", () => {
     return buildServer();
   }
 
-  it("returns 200 with the VPS envelope on a valid request", async () => {
+  it("returns 200 with the success envelope on a valid request", async () => {
     const app = await buildWithBypass();
     const response = await app.inject({
       method: "POST",

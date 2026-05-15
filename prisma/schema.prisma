@@ -1,4 +1,4 @@
-// Prisma 7 schema — Barnacle FEMA submission API
+// Prisma 7 schema — Barnacle site-agnostic automation engine
 // Documentation: https://pris.ly/d/prisma-schema
 // Connection URLs are configured in prisma.config.ts
 
@@ -16,26 +16,7 @@ datasource db {
   provider = "postgresql"
 }
 
-/// Record of a FEMA disaster assistance application submission attempt.
-/// Written by the submission service on both success and failure so ops
-/// can audit outcomes and replay failed sessions.
-model FemaSubmission {
-  id                 String   @id @default(cuid())
-  disasterNumber     String   @map("disaster_number")
-  applicantEmail     String   @map("applicant_email")
-  /// "submitted" | "error"
-  status             String
-  confirmationNumber String?  @map("confirmation_number")
-  /// Full input payload + scraper result snapshot for auditability.
-  payload            Json
-  capturedAt         DateTime @default(now()) @map("captured_at")
-
-  @@index([applicantEmail], map: "fema_submission_email_idx")
-  @@index([capturedAt], map: "fema_submission_captured_at_idx")
-  @@map("fema_submissions")
-}
-
-/// Generic site-agnostic audit row written by Phase 3 dispatch for every plugin
+/// Site-agnostic audit row written by Phase 3 dispatch for every plugin
 /// execution. Using one table across all sites lets audit and replay logic live
 /// in core rather than being duplicated per-plugin, and makes cross-site queries
 /// trivial — the siteId column scopes rows back to the originating plugin.

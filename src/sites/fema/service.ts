@@ -9,7 +9,7 @@ const logger = getLogger({ name: "sites/fema/service" });
 
 /**
  * Drives the FEMA form automation and returns the result for core to wrap
- * in a VPS envelope. All DB persistence is deferred to Phase 3's dispatch().
+ * in the response envelope. All DB persistence is deferred to dispatch().
  */
 export async function execute(
   payload: FemaSubmissionRequest,

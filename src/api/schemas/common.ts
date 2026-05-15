@@ -5,7 +5,7 @@ import { z } from "zod";
  * API responses. The envelope shape keeps every response — success and
  * error — parseable by a single client-side decoder.
  */
-export const VPS_ERROR_CODES = {
+export const ERROR_CODES = {
   PARTIAL_CONTENT_SUCCESS: 1000,
   DECODING_ERROR: 1001,
   FIELD_VIOLATION: 1002,
@@ -22,13 +22,13 @@ export const VPS_ERROR_CODES = {
   CAPTCHA_ENCOUNTERED: 2004,
 } as const;
 
-export type VpsErrorCode = (typeof VPS_ERROR_CODES)[keyof typeof VPS_ERROR_CODES];
+export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];
 
 /**
  * Reverse lookup: numeric code → canonical description. Used to render
  * `codeDescription` on the wire.
  */
-export const VPS_ERROR_CODE_DESCRIPTIONS: Record<VpsErrorCode, string> = {
+export const ERROR_CODE_DESCRIPTIONS: Record<ErrorCode, string> = {
   1000: "PARTIAL_CONTENT_SUCCESS",
   1001: "DECODING_ERROR",
   1002: "FIELD_VIOLATION",
@@ -48,7 +48,7 @@ export const VPS_ERROR_CODE_DESCRIPTIONS: Record<VpsErrorCode, string> = {
 /**
  * HTTP status strings (upper-snake-case) used in the response envelope.
  */
-const vpsHttpStatusSchema = z
+const httpStatusSchema = z
   .enum([
     "OK",
     "BAD_REQUEST",
@@ -78,9 +78,9 @@ const statusDetailSchema = z
  * The envelope every response is wrapped in. Success and error responses
  * both carry this status block so clients can share a single parser.
  */
-export const vpsStatusSchema = z
+export const statusSchema = z
   .object({
-    httpStatus: vpsHttpStatusSchema,
+    httpStatus: httpStatusSchema,
     dateTime: z.string(),
     details: z.array(statusDetailSchema).default([]),
   })

@@ -1,6 +1,6 @@
 /**
  * Error hierarchy produced by the scraper. These are internal — they stay
- * inside the scraper + service layer and are translated into VPS envelope
+ * inside the scraper + service layer and are translated into API envelope
  * errors (via src/api/errors.ts) before they reach the client.
  *
  * Why: each class encodes a distinct recovery policy that p-retry and the
@@ -26,7 +26,7 @@ export abstract class ScraperError extends Error {
 
 /**
  * The scraper encountered a CAPTCHA challenge Steel couldn't solve on our
- * behalf. Propagate upstream as VPS code 2004.
+ * behalf. Propagate upstream as error code 2004.
  */
 export class CaptchaError extends ScraperError {
   constructor(message = "captcha challenge encountered") {

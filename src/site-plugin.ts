@@ -70,12 +70,12 @@ export interface SitePluginContext {
 
 /**
  * Value returned by `execute()` and consumed by core's dispatch layer. Core
- * merges `data` into the VPS response envelope and writes `auditPayload` to
+ * merges `data` into the response envelope and writes `auditPayload` to
  * the `SiteSubmission` DB row so audit and replay work without re-running the
  * browser flow.
  */
 export interface SitePluginResult<TData = Record<string, unknown>> {
-  /** Merged verbatim into the VPS response envelope by core. */
+  /** Merged verbatim into the response envelope by core. */
   data: TData;
   /**
    * Written to the `SiteSubmission.payload` DB column by core. If absent, core
