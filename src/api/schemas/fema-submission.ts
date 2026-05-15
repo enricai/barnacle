@@ -98,6 +98,7 @@ const incomeSchema = z.object({
   occupation: z.string().optional(),
   annualIncome: z.number().nonnegative(),
   disasterImpact: z.string().min(1),
+  dependentsCount: z.number().int().min(1).max(50).default(1),
 });
 
 const bankAccountSchema = z.object({
@@ -114,7 +115,7 @@ const notificationsSchema = z.object({
 });
 
 const extentOfDamageSchema = z.object({
-  severity: z.string().min(1),
+  severity: z.enum(["minor", "moderate", "major", "complete-loss", "unsure"]),
   habitable: z.boolean(),
   estimatedRepairCost: z.number().nonnegative(),
   affectedRooms: z.array(z.string()).min(1),

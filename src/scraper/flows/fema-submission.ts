@@ -35,8 +35,7 @@ async function extract<T extends AnyZodObject>(
   return session.limiter.schedule(() => session.stagehand.page.extract({ instruction, schema }));
 }
 
-// Maps the femaNeeds.damageTypes string values the caller sends to the
-// checkbox IDs the mock site uses (sourced from damage-types.js).
+// Maps femaNeeds.damageTypes string keys to checkbox IDs in damage-types.js.
 const DAMAGE_TYPE_IDS: Record<string, string> = {
   flood: "damage-flood",
   powerSurge: "damage-power-surge",
@@ -65,7 +64,7 @@ async function phase1PreApplication(
   // Page 1: Landing
   await act(session, "click the button with id 'apply-now-btn'");
 
-  // Page 2: reCAPTCHA (mocked — checkbox enables submit button)
+  // Page 2: reCAPTCHA (mocked — checkbox enables submit)
   await act(session, "check the checkbox with id 'recaptcha-checkbox'");
   await act(session, "click the button with id 'submit-btn'");
 
@@ -87,7 +86,7 @@ async function phase1PreApplication(
   );
   await act(session, "click the button with id 'next-btn'");
 
-  // Page 6: Assistance Info — informational, just advance
+  // Page 6: Assistance Info — informational
   await act(session, "click the button with id 'next-btn'");
 }
 
@@ -115,8 +114,8 @@ async function phase2Needs(session: BrowserSession, input: FemaNeeds): Promise<v
   if (input.homeSafetyItems) await act(session, "check the checkbox with id 'home-safety'");
   await act(session, "click the button with id 'next-btn'");
 
-  // Pages 8–12: Conditional yes/no pages — shown by the router only when
-  // the corresponding checkbox was checked on page 7.
+  // Pages 8–12: Conditional yes/no pages shown by router based on selections.
+  // Router order: funeral → medical → home → childcare → safety
   if (input.funeralExpenses) {
     await act(session, "click the radio button with id 'funeral-yes'");
     await act(session, "click the button with id 'next-btn'");
@@ -152,7 +151,7 @@ async function phase2Needs(session: BrowserSession, input: FemaNeeds): Promise<v
   await act(session, "check the checkbox with name 'lossDateConfirmed'");
   await act(session, "click the button with id 'next-btn'");
 
-  // Page 15: Damage Types — map caller's string keys to real checkbox IDs
+  // Page 15: Damage Types
   for (const damageType of input.damageTypes) {
     const checkboxId = DAMAGE_TYPE_IDS[damageType];
     if (checkboxId) {
@@ -176,15 +175,14 @@ async function phase2Needs(session: BrowserSession, input: FemaNeeds): Promise<v
 async function phase3Identity(session: BrowserSession, input: FemaIdentity): Promise<void> {
   logger.info("fema phase 3: identity");
 
-  // Page 17: Sign In — use the create account path for new users.
-  // The sign-in path skips check-email and auth-setup; create-account
-  // goes through the full identity verification sequence.
+  // Page 17: Use create-account path — goes through check-email and auth-setup.
+  // The sign-in path skips those pages entirely.
   await act(session, "click the button with id 'create-account-pill'");
   await act(session, `type "${input.email}" into the input with id 'email'`);
   await act(session, "check the checkbox with id 'accept-rules'");
   await act(session, "click the button with id 'create-account-btn'");
 
-  // Page 18: Check Email — mock site has a simulate button
+  // Page 18: Check Email — mock has a simulate button
   await act(session, "click the button with id 'simulate-confirm'");
 
   // Page 19: Auth Setup — pick a verification method
@@ -211,6 +209,7 @@ async function phase3Identity(session: BrowserSession, input: FemaIdentity): Pro
 
 // ---------------------------------------------------------------------------
 // Phase 4: Application Center (pages 23–40)
+// Page order matches router.js registration order exactly.
 // ---------------------------------------------------------------------------
 
 async function phase4ApplicationCenter(
@@ -264,11 +263,19 @@ async function phase4ApplicationCenter(
   }
   await act(session, "click the button with id 'next-btn'");
 
-  // Page 27: Address Verification — choose entered address
+  // Page 27: Address Verification
   await act(session, "click the radio button with id 'address-entered'");
   await act(session, "click the button with id 'next-btn'");
 
-  // Page 28: Home Access
+  // Page 28 (conditional): Extent of Damage — shown when homeDamage selected
+  if (input.extentOfDamage) {
+    const dmg = input.extentOfDamage;
+    // severity enum values match checkbox IDs exactly: damage-minor, damage-major, etc.
+    await act(session, `click the radio button with id 'damage-${dmg.severity}'`);
+    await act(session, "click the button with id 'next-btn'");
+  }
+
+  // Page 29: Home Access
   const homeAccessValue = input.canAccessHome ? "yes" : "no-flooding";
   await act(
     session,
@@ -276,76 +283,32 @@ async function phase4ApplicationCenter(
   );
   await act(session, "click the button with id 'next-btn'");
 
-  // Page 29: Occupants — applicant card is pre-populated; skip adding more
-  await act(session, "click the button with id 'next-btn'");
-
-  // Page 30: Income Information
-  const inc = input.income;
-  await act(
-    session,
-    `click the radio button with name 'selfEmployment' and value '${inc.employmentStatus === "self-employed" ? "yes" : "no"}'`
-  );
-  await act(session, `type "${inc.annualIncome}" into the input with id 'annual-income'`);
-  await act(session, "check the checkbox with id 'income-certification'");
-  await act(session, "click the button with id 'next-btn'");
-
-  // Page 31: Payment Information
-  const bank = input.bankAccount;
-  await act(session, "click the radio button with id 'payment-direct'");
-  await act(session, `click the radio button with id 'account-${bank.accountType}'`);
-  await act(session, `type "${bank.routingNumber}" into the input with id 'routing-number'`);
-  await act(session, `type "${bank.accountNumber}" into the input with id 'account-number'`);
-  await act(session, `type "${bank.accountNumber}" into the input with id 'verify-account-number'`);
-  await act(session, "click the button with id 'next-btn'");
-
-  // Page 32: Notifications
-  const notif = input.notifications;
-  await act(
-    session,
-    `click the radio button with name 'deliveryMethod' and value '${notif.method === "mail" ? "postal" : "email"}'`
-  );
-  await act(
-    session,
-    `select the option with value '${notif.language}' in the select with id 'language'`
-  );
-  await act(session, "click the button with id 'next-btn'");
-
-  // Page 33: Extent of Damage (conditional — shown when homeDamage was selected)
-  if (input.extentOfDamage) {
-    const dmg = input.extentOfDamage;
-    await act(
-      session,
-      `click the radio button with id 'damage-${dmg.severity.toLowerCase().replace(/\s+/g, "-")}'`
-    );
-    await act(session, "click the button with id 'next-btn'");
-  }
-
-  // Page 34: Serious Needs (conditional)
+  // Page 30 (conditional): Serious Needs
+  // Mock site has 4 checkboxes: #need-supplies, #need-shelter, #need-infant, #need-none
   if (input.seriousNeeds) {
     const sn = input.seriousNeeds;
+    const needsSupplies = sn.food || sn.fuel || sn.medical || sn.clothing;
+    if (needsSupplies) await act(session, "check the checkbox with id 'need-supplies'");
     if (sn.shelter) await act(session, "check the checkbox with id 'need-shelter'");
     if (sn.infantSupplies) await act(session, "check the checkbox with id 'need-infant'");
-    if (sn.food || sn.clothing || sn.medical || sn.fuel) {
-      await act(session, "check the checkbox with id 'need-supplies'");
-    }
-    if (!sn.shelter && !sn.infantSupplies && !sn.food && !sn.clothing && !sn.medical && !sn.fuel) {
+    if (!needsSupplies && !sn.shelter && !sn.infantSupplies) {
       await act(session, "check the checkbox with id 'need-none'");
     }
     await act(session, "click the button with id 'next-btn'");
   }
 
-  // Page 35: Essential Utilities (conditional)
+  // Page 31 (conditional): Essential Utilities
+  // Two questions — both must be answered before Next enables.
   if (input.essentialUtilities) {
     const eu = input.essentialUtilities;
     const outNow = eu.electricity === "out" || eu.gas === "out" || eu.water === "out";
-    await act(
-      session,
-      `click the radio button with id 'utilities-out-${outNow ? "yes" : "no"}'`
-    );
+    const val = outNow ? "yes" : "no";
+    await act(session, `click the radio button with id 'utilities-out-${val}'`);
+    await act(session, `click the radio button with id 'utilities-now-${val}'`);
     await act(session, "click the button with id 'next-btn'");
   }
 
-  // Page 36: Home Insurance (conditional)
+  // Page 32 (conditional): Home Insurance
   if (input.homeInsurance) {
     const ins = input.homeInsurance;
     await act(session, "check the checkbox with id 'ins-homeowners'");
@@ -353,10 +316,15 @@ async function phase4ApplicationCenter(
     await act(session, "click the button with id 'next-btn'");
   }
 
-  // Page 37: Funeral Expenses detail (conditional)
+  // Page 33: Occupants — applicant card pre-populated; advance without adding more
+  await act(session, "click the button with id 'next-btn'");
+
+  // Page 34 (conditional): Funeral Expenses
+  // #add-deceased-btn opens modal; submit button (type=submit) inside #add-deceased-form saves it.
   if (input.funeralExpenses) {
     const fe = input.funeralExpenses;
     const nameParts = fe.deceasedName.split(" ");
+    await act(session, "click the button with id 'add-deceased-btn'");
     await act(
       session,
       `type "${nameParts[0]}" into the input with id 'deceased-first-name'`
@@ -366,13 +334,15 @@ async function phase4ApplicationCenter(
       `type "${nameParts.slice(1).join(" ")}" into the input with id 'deceased-last-name'`
     );
     await act(session, `type "${fe.dateOfDeath}" into the input with id 'deceased-dod'`);
-    await act(session, "click the button with id 'add-deceased-btn'");
+    await act(session, "click the submit button inside the form with id 'add-deceased-form'");
     await act(session, "click the button with id 'next-btn'");
   }
 
-  // Page 38: Vehicle Damage detail (conditional)
+  // Page 35 (conditional): Vehicle Damage
+  // #add-vehicle-btn opens modal; #modal-save-btn saves it.
   if (input.vehicleDamage) {
     const vd = input.vehicleDamage;
+    await act(session, "click the button with id 'add-vehicle-btn'");
     await act(session, `type "${vd.year}" into the input with id 'modal-year'`);
     await act(session, `type "${vd.make}" into the input with id 'modal-make'`);
     await act(session, `type "${vd.model}" into the input with id 'modal-model'`);
@@ -384,9 +354,41 @@ async function phase4ApplicationCenter(
       session,
       `click the radio button with name 'modal-hasLiability' and value '${vd.insured ? "yes" : "no"}'`
     );
-    await act(session, "click the button with id 'add-vehicle-btn'");
+    await act(session, "click the button with id 'modal-save-btn'");
     await act(session, "click the button with id 'next-btn'");
   }
+
+  // Page 36: Income Information
+  const inc = input.income;
+  await act(
+    session,
+    `click the radio button with name 'selfEmployment' and value '${inc.employmentStatus === "self-employed" ? "yes" : "no"}'`
+  );
+  await act(session, `type "${inc.annualIncome}" into the input with id 'annual-income'`);
+  await act(session, `type "${inc.dependentsCount}" into the input with id 'dependents-count'`);
+  await act(session, "check the checkbox with id 'income-certification'");
+  await act(session, "click the button with id 'next-btn'");
+
+  // Page 37: Payment Information
+  const bank = input.bankAccount;
+  await act(session, "click the radio button with id 'payment-direct'");
+  await act(session, `click the radio button with id 'account-${bank.accountType}'`);
+  await act(session, `type "${bank.routingNumber}" into the input with id 'routing-number'`);
+  await act(session, `type "${bank.accountNumber}" into the input with id 'account-number'`);
+  await act(session, `type "${bank.accountNumber}" into the input with id 'verify-account-number'`);
+  await act(session, "click the button with id 'next-btn'");
+
+  // Page 38: Notifications
+  const notif = input.notifications;
+  await act(
+    session,
+    `click the radio button with name 'deliveryMethod' and value '${notif.method === "mail" ? "postal" : "email"}'`
+  );
+  await act(
+    session,
+    `select the option with value '${notif.language}' in the select with id 'language'`
+  );
+  await act(session, "click the button with id 'next-btn'");
 
   // Page 39: Disability Needs
   if (input.disabilityNeeds) {
@@ -398,14 +400,12 @@ async function phase4ApplicationCenter(
     if (dn.electricalMedicalEquipment) {
       await act(session, "click the radio button with name 'equipmentDamaged' and value 'yes'");
     }
-    await act(session, "click the button with id 'next-btn'");
   } else {
     await act(session, "click the radio button with name 'hasDisability' and value 'no'");
-    await act(session, "click the button with id 'next-btn'");
   }
+  await act(session, "click the button with id 'next-btn'");
 
-  // Page 40: Other Needs — accessibility needs.
-  // The page requires at least one selection; #need-none means no needs.
+  // Page 40: Other Needs — must select at least one option
   if (!input.otherNeeds) {
     await act(session, "check the checkbox with id 'need-none'");
   } else {
