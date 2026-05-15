@@ -415,22 +415,22 @@ async function phase5Submit(session: BrowserSession): Promise<string | undefined
   // Page 41: Review Application
   await act(session, "click the button with id 'submit-application'");
 
-  // Page 42: Success — read the confirmation number directly from the DOM.
-  // The success page renders it as:
+  // Page 42: Success — wait for the confirmation number element to appear,
+  // then read it directly from the DOM. The success page render is async
+  // (calls loadState()) so the element may not be present immediately after
+  // the click. waitForSelector ensures we don't read before it's rendered.
   //   <div class="alert alert-success text-center">
   //     <div class="h3 mb-0 font-monospace">FEMA-XXXXXXXXXX</div>
   //   </div>
-  // Direct evaluate() is more reliable than LLM-based extract() here because
-  // the success page is complex and the number is a single known CSS selector.
   try {
+    await session.limiter.schedule(() =>
+      session.stagehand.page.waitForSelector(".alert-success .font-monospace", {
+        timeout: 15_000,
+      })
+    );
     const confirmationNumber = await session.limiter.schedule(() =>
-      // eslint-disable-next-line @typescript-eslint/no-implied-eval
       session.stagehand.page.evaluate(
-        /* runs in browser context */ `
-          (() => {
-            const el = document.querySelector(".alert-success .font-monospace");
-            return el ? el.textContent.trim() : null;
-          })()`
+        `document.querySelector(".alert-success .font-monospace")?.textContent?.trim() ?? null`
       ) as Promise<string | null>
     );
     if (confirmationNumber) return confirmationNumber;
