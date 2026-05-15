@@ -1,0 +1,114 @@
+/**
+ * Contract every site plugin implements and that core's dispatch layer consumes.
+ * Lives at the top of `src/` alongside `config.ts` and `server.ts` because it
+ * is engine-level infrastructure, not site-specific logic — any new site drops
+ * a plugin into `src/sites/<id>/` and satisfies this interface without touching
+ * core.
+ *
+ * All imports are type-only: this file has zero runtime side effects and is safe
+ * to import from any layer without pulling in browser or config initialization.
+ */
+
+import type { ZodTypeAny } from "zod";
+
+import type { AppConfig } from "@/config";
+import type { ScraperError } from "@/scraper/errors";
+import type { BrowserSession } from "@/scraper/session";
+import type { Logger } from "@/types/logging";
+
+/**
+ * Static metadata that core reads at startup to register the plugin's Fastify
+ * route. Separating metadata from `execute()` lets the loader validate config
+ * and build routes before any session is acquired.
+ */
+export interface SitePluginMeta {
+  /** Stable identifier matching the `config.scraper.siteBaseUrls` key. */
+  siteId: string;
+  /** Human-readable label used in logs and Swagger docs. */
+  displayName: string;
+  /** Zod schema for the route request body — validated by core before execute(). */
+  bodySchema: ZodTypeAny;
+  /** Zod schema for the successful response body — drives the Swagger response shape. */
+  responseSchema: ZodTypeAny;
+  /**
+   * Route path segment appended to the site prefix; defaults to `"/run"` when
+   * absent. Applied by the loader in Phase 3 — plugins only set this when they
+   * need a non-standard path.
+   */
+  path?: string;
+  /**
+   * Full path override that takes precedence over `path` when set. Intended for
+   * legacy compatibility where an existing client contract cannot change.
+   */
+  routeOverride?: string;
+}
+
+/**
+ * Runtime dependencies injected by core immediately before `execute()` is called.
+ * Plugins receive this instead of importing config or loggers directly, which
+ * keeps each plugin self-contained and testable without the full app wired up.
+ */
+export interface SitePluginContext {
+  /**
+   * Resolved from `config.scraper.siteBaseUrls[meta.siteId]` by core. Plugins
+   * should use this rather than reading config directly to stay decoupled from
+   * the config shape.
+   */
+  baseUrl: string;
+  /**
+   * Request-scoped logger with `siteId` and `requestId` already bound by core.
+   * Plugins log here without needing to create or configure their own logger.
+   */
+  logger: Logger;
+  /**
+   * Full application config. Prefer `baseUrl` for site URL resolution; reach
+   * into `config` only for cross-cutting settings (timeouts, feature flags, etc.)
+   * that core does not already surface through the context.
+   */
+  config: AppConfig;
+}
+
+/**
+ * Value returned by `execute()` and consumed by core's dispatch layer. Core
+ * merges `data` into the VPS response envelope and writes `auditPayload` to
+ * the `SiteSubmission` DB row so audit and replay work without re-running the
+ * browser flow.
+ */
+export interface SitePluginResult<TData = Record<string, unknown>> {
+  /** Merged verbatim into the VPS response envelope by core. */
+  data: TData;
+  /**
+   * Written to the `SiteSubmission.payload` DB column by core. If absent, core
+   * falls back to the original request body. Intentionally not generic so
+   * plugins can redact PII freely — only `Record<string, unknown>` is required,
+   * not a shape that matches `TData`.
+   */
+  auditPayload?: Record<string, unknown>;
+}
+
+/**
+ * Contract every site plugin must satisfy. Core's dispatch layer types its
+ * `SITE_PLUGINS` registry and `dispatch()` function against this interface so
+ * adding a new site never requires changes to core — only a new file in
+ * `src/sites/<id>/`.
+ */
+export interface SitePlugin<TPayload = unknown, TResult = Record<string, unknown>> {
+  /** Static metadata used by the loader to register this plugin's Fastify route. */
+  meta: SitePluginMeta;
+  /**
+   * Performs the full browser-automation flow for one submission. Core acquires
+   * `session` from the pool and injects `context` before calling this; the plugin
+   * must not create or close sessions itself.
+   */
+  execute(
+    payload: TPayload,
+    session: BrowserSession,
+    context: SitePluginContext
+  ): Promise<SitePluginResult<TResult>>;
+  /**
+   * Optional hook called by core's retry layer before each retry attempt. Plugins
+   * use this for telemetry or local cleanup (e.g. resetting in-memory state). The
+   * return type is `void` — no async work should be done here.
+   */
+  onRetry?: (error: ScraperError, attempt: number) => void;
+}

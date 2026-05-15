@@ -34,3 +34,22 @@ model FemaSubmission {
   @@index([capturedAt], map: "fema_submission_captured_at_idx")
   @@map("fema_submissions")
 }
+
+/// Generic site-agnostic audit row written by Phase 3 dispatch for every plugin
+/// execution. Using one table across all sites lets audit and replay logic live
+/// in core rather than being duplicated per-plugin, and makes cross-site queries
+/// trivial — the siteId column scopes rows back to the originating plugin.
+model SiteSubmission {
+  id         String   @id @default(cuid())
+  siteId     String   @map("site_id")
+  /// "submitted" | "error"
+  status     String
+  /// Full plugin result payload for auditability. MAY be redacted by the plugin
+  /// (via SitePluginResult.auditPayload) to strip PII before persistence.
+  payload    Json
+  capturedAt DateTime @default(now()) @map("captured_at")
+
+  @@index([siteId], map: "site_submission_site_id_idx")
+  @@index([capturedAt], map: "site_submission_captured_at_idx")
+  @@map("site_submissions")
+}
