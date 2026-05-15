@@ -36,8 +36,7 @@ async function extract<T extends AnyZodObject>(
 }
 
 // Maps the femaNeeds.damageTypes string values the caller sends to the
-// checkbox IDs the mock site uses. The name field (e.g. "flood") doubles
-// as the canonical key callers should use in damageTypes[].
+// checkbox IDs the mock site uses (sourced from damage-types.js).
 const DAMAGE_TYPE_IDS: Record<string, string> = {
   flood: "damage-flood",
   powerSurge: "damage-power-surge",
@@ -57,21 +56,16 @@ const DAMAGE_TYPE_IDS: Record<string, string> = {
 
 async function phase1PreApplication(
   session: BrowserSession,
-  input: FemaPreApplication,
-  sessionFixture: string | undefined
+  input: FemaPreApplication
 ): Promise<void> {
   logger.info("fema phase 1: pre-application");
 
-  const url = sessionFixture
-    ? `${config.scraper.femaBaseUrl}?sessionFixture=${encodeURIComponent(sessionFixture)}`
-    : config.scraper.femaBaseUrl;
-
-  await session.stagehand.page.goto(url);
+  await session.stagehand.page.goto(config.scraper.femaBaseUrl);
 
   // Page 1: Landing
   await act(session, "click the button with id 'apply-now-btn'");
 
-  // Page 2: reCAPTCHA (mocked — checkbox + submit button)
+  // Page 2: reCAPTCHA (mocked — checkbox enables submit button)
   await act(session, "check the checkbox with id 'recaptcha-checkbox'");
   await act(session, "click the button with id 'submit-btn'");
 
@@ -104,17 +98,25 @@ async function phase1PreApplication(
 async function phase2Needs(session: BrowserSession, input: FemaNeeds): Promise<void> {
   logger.info("fema phase 2: needs assessment");
 
-  // Page 7: Needs Selection — real checkbox IDs from needs.js
+  // Page 7: Needs Selection — all 11 checkboxes across 3 sections
+  // Property Damage
   if (input.homeDamage) await act(session, "check the checkbox with id 'home-damage'");
   if (input.vehicleDamage) await act(session, "check the checkbox with id 'vehicle-damage'");
+  if (input.personalPropertyDamage) await act(session, "check the checkbox with id 'personal-property'");
+  // Emergency Needs
+  if (input.foodShelter) await act(session, "check the checkbox with id 'food-shelter'");
+  if (input.homeAccess) await act(session, "check the checkbox with id 'home-access'");
+  if (input.lossOfUtilities) await act(session, "check the checkbox with id 'utilities'");
+  // Other Expenses
   if (input.funeralExpenses) await act(session, "check the checkbox with id 'funeral'");
+  if (input.lodging) await act(session, "check the checkbox with id 'lodging'");
   if (input.medicalExpenses) await act(session, "check the checkbox with id 'medical'");
   if (input.childcare) await act(session, "check the checkbox with id 'childcare'");
   if (input.homeSafetyItems) await act(session, "check the checkbox with id 'home-safety'");
   await act(session, "click the button with id 'next-btn'");
 
-  // Pages 8–12: Conditional detail pages
-  // Each asks yes/no whether the applicant has those expenses, then advances.
+  // Pages 8–12: Conditional yes/no pages — shown by the router only when
+  // the corresponding checkbox was checked on page 7.
   if (input.funeralExpenses) {
     await act(session, "click the radio button with id 'funeral-yes'");
     await act(session, "click the button with id 'next-btn'");
@@ -122,6 +124,8 @@ async function phase2Needs(session: BrowserSession, input: FemaNeeds): Promise<v
 
   if (input.medicalExpenses) {
     await act(session, "click the radio button with id 'medical-yes'");
+    // conditional-medical.js also asks about dental expenses
+    await act(session, "click the radio button with id 'dental-yes'");
     await act(session, "click the button with id 'next-btn'");
   }
 
@@ -140,7 +144,7 @@ async function phase2Needs(session: BrowserSession, input: FemaNeeds): Promise<v
     await act(session, "click the button with id 'next-btn'");
   }
 
-  // Page 13: Needs Review — display only, just advance
+  // Page 13: Needs Review — display only
   await act(session, "click the button with id 'next-btn'");
 
   // Page 14: Date of Loss
@@ -148,7 +152,7 @@ async function phase2Needs(session: BrowserSession, input: FemaNeeds): Promise<v
   await act(session, "check the checkbox with name 'lossDateConfirmed'");
   await act(session, "click the button with id 'next-btn'");
 
-  // Page 15: Damage Types — map caller's type keys to real checkbox IDs
+  // Page 15: Damage Types — map caller's string keys to real checkbox IDs
   for (const damageType of input.damageTypes) {
     const checkboxId = DAMAGE_TYPE_IDS[damageType];
     if (checkboxId) {
@@ -159,7 +163,7 @@ async function phase2Needs(session: BrowserSession, input: FemaNeeds): Promise<v
   }
   await act(session, "click the button with id 'next-btn'");
 
-  // Page 16: Privacy — two checkboxes then next
+  // Page 16: Privacy — two checkboxes required
   await act(session, "check the checkbox with id 'privacy-acknowledge'");
   await act(session, "check the checkbox with id 'citizenship-declare'");
   await act(session, "click the button with id 'next-btn'");
@@ -172,16 +176,18 @@ async function phase2Needs(session: BrowserSession, input: FemaNeeds): Promise<v
 async function phase3Identity(session: BrowserSession, input: FemaIdentity): Promise<void> {
   logger.info("fema phase 3: identity");
 
-  // Page 17: Sign In — email field + signin button
+  // Page 17: Sign In — use the create account path for new users.
+  // The sign-in path skips check-email and auth-setup; create-account
+  // goes through the full identity verification sequence.
+  await act(session, "click the button with id 'create-account-pill'");
   await act(session, `type "${input.email}" into the input with id 'email'`);
-  await act(session, `type "${input.password}" into the input with id 'password'`);
   await act(session, "check the checkbox with id 'accept-rules'");
-  await act(session, "click the button with id 'signin-btn'");
+  await act(session, "click the button with id 'create-account-btn'");
 
-  // Page 18: Check Email — simulate confirmation button on the mock site
+  // Page 18: Check Email — mock site has a simulate button
   await act(session, "click the button with id 'simulate-confirm'");
 
-  // Page 19: Auth Setup — pick a method (sms is the simplest for test)
+  // Page 19: Auth Setup — pick a verification method
   await act(
     session,
     `check the checkbox with name 'authMethod' and value '${input.verificationMethod === "text" ? "sms" : "backup"}'`
@@ -199,7 +205,7 @@ async function phase3Identity(session: BrowserSession, input: FemaIdentity): Pro
   await act(session, `type "${input.verificationCode}" into the input with id 'verificationCode'`);
   await act(session, "click the button with id 'verify-btn'");
 
-  // Page 22: Login Success — countdown then continue
+  // Page 22: Login Success
   await act(session, "click the button with id 'continue-btn'");
 }
 
@@ -258,7 +264,7 @@ async function phase4ApplicationCenter(
   }
   await act(session, "click the button with id 'next-btn'");
 
-  // Page 27: Address Verification — select entered address and advance
+  // Page 27: Address Verification — choose entered address
   await act(session, "click the radio button with id 'address-entered'");
   await act(session, "click the button with id 'next-btn'");
 
@@ -270,7 +276,7 @@ async function phase4ApplicationCenter(
   );
   await act(session, "click the button with id 'next-btn'");
 
-  // Page 29: Occupants — modal-based; skip to next if no names to add
+  // Page 29: Occupants — applicant card is pre-populated; skip adding more
   await act(session, "click the button with id 'next-btn'");
 
   // Page 30: Income Information
@@ -286,16 +292,10 @@ async function phase4ApplicationCenter(
   // Page 31: Payment Information
   const bank = input.bankAccount;
   await act(session, "click the radio button with id 'payment-direct'");
-  await act(
-    session,
-    `click the radio button with id 'account-${bank.accountType}'`
-  );
+  await act(session, `click the radio button with id 'account-${bank.accountType}'`);
   await act(session, `type "${bank.routingNumber}" into the input with id 'routing-number'`);
   await act(session, `type "${bank.accountNumber}" into the input with id 'account-number'`);
-  await act(
-    session,
-    `type "${bank.accountNumber}" into the input with id 'verify-account-number'`
-  );
+  await act(session, `type "${bank.accountNumber}" into the input with id 'verify-account-number'`);
   await act(session, "click the button with id 'next-btn'");
 
   // Page 32: Notifications
@@ -315,7 +315,7 @@ async function phase4ApplicationCenter(
     const dmg = input.extentOfDamage;
     await act(
       session,
-      `click the radio button with id 'damage-${dmg.severity.replace(" ", "-")}'`
+      `click the radio button with id 'damage-${dmg.severity.toLowerCase().replace(/\s+/g, "-")}'`
     );
     await act(session, "click the button with id 'next-btn'");
   }
@@ -348,25 +348,22 @@ async function phase4ApplicationCenter(
   // Page 36: Home Insurance (conditional)
   if (input.homeInsurance) {
     const ins = input.homeInsurance;
-    // Select insurance type; default to homeowners if company is set
     await act(session, "check the checkbox with id 'ins-homeowners'");
-    await act(
-      session,
-      `type "${ins.company}" into the input with id 'homeowners-company'`
-    );
+    await act(session, `type "${ins.company}" into the input with id 'homeowners-company'`);
     await act(session, "click the button with id 'next-btn'");
   }
 
   // Page 37: Funeral Expenses detail (conditional)
   if (input.funeralExpenses) {
     const fe = input.funeralExpenses;
+    const nameParts = fe.deceasedName.split(" ");
     await act(
       session,
-      `type "${fe.deceasedName.split(" ")[0]}" into the input with id 'deceased-first-name'`
+      `type "${nameParts[0]}" into the input with id 'deceased-first-name'`
     );
     await act(
       session,
-      `type "${fe.deceasedName.split(" ").slice(1).join(" ")}" into the input with id 'deceased-last-name'`
+      `type "${nameParts.slice(1).join(" ")}" into the input with id 'deceased-last-name'`
     );
     await act(session, `type "${fe.dateOfDeath}" into the input with id 'deceased-dod'`);
     await act(session, "click the button with id 'add-deceased-btn'");
@@ -399,10 +396,7 @@ async function phase4ApplicationCenter(
       `click the radio button with name 'hasDisability' and value '${dn.accessibleHousing || dn.electricalMedicalEquipment ? "yes" : "no"}'`
     );
     if (dn.electricalMedicalEquipment) {
-      await act(
-        session,
-        `click the radio button with name 'equipmentDamaged' and value 'yes'`
-      );
+      await act(session, "click the radio button with name 'equipmentDamaged' and value 'yes'");
     }
     await act(session, "click the button with id 'next-btn'");
   } else {
@@ -410,11 +404,13 @@ async function phase4ApplicationCenter(
     await act(session, "click the button with id 'next-btn'");
   }
 
-  // Page 40: Other Needs — accessibility needs
-  if (input.otherNeeds) {
-    await act(session, "check the checkbox with id 'none'");
+  // Page 40: Other Needs — accessibility needs.
+  // The page requires at least one selection; #need-none means no needs.
+  if (!input.otherNeeds) {
+    await act(session, "check the checkbox with id 'need-none'");
   } else {
-    await act(session, "check the checkbox with id 'none'");
+    await act(session, "check the checkbox with id 'need-other'");
+    await act(session, `type "${input.otherNeeds}" into the input with id 'other-text'`);
   }
   await act(session, "click the button with id 'next-btn'");
 }
@@ -426,11 +422,11 @@ async function phase4ApplicationCenter(
 async function phase5Submit(session: BrowserSession): Promise<string | undefined> {
   logger.info("fema phase 5: review and submit");
 
-  // Page 41: Review Application — click the submit button by its real ID
+  // Page 41: Review Application
   await act(session, "click the button with id 'submit-application'");
 
   // Page 42: Success — extract the confirmation number from the font-monospace
-  // div inside the green alert box. The mock site renders it as:
+  // div inside the green alert box:
   //   <div class="alert alert-success text-center">
   //     <h3>Confirmation Number</h3>
   //     <div class="h3 mb-0 font-monospace">FEMA-XXXXXXXXXX</div>
@@ -455,9 +451,9 @@ async function phase5Submit(session: BrowserSession): Promise<string | undefined
 // ---------------------------------------------------------------------------
 
 /**
- * Drives a Stagehand browser session through all 42 pages of the FEMA
- * disaster assistance form. Returns the confirmation number from the success
- * screen and a count of pages completed.
+ * Drives a Stagehand browser session through the FEMA disaster assistance
+ * form. When a sessionFixture is provided the mock site pre-seeds the
+ * session at /personal-info (Phase 4), so Phases 1–3 are skipped.
  *
  * Throws `ScraperError` subclasses on failure so `retry.ts` can classify
  * and retry appropriately.
@@ -469,14 +465,23 @@ export async function submitFemaApplication(
   let pagesCompleted = 0;
 
   try {
-    await phase1PreApplication(session, input.preApplication, input.sessionFixture);
-    pagesCompleted = 6;
+    if (input.sessionFixture) {
+      // Fixture pre-seeds the session at /personal-info with auth done and
+      // needs pre-selected — phases 1–3 are already complete in the state.
+      await session.stagehand.page.goto(
+        `${config.scraper.femaBaseUrl}?sessionFixture=${encodeURIComponent(input.sessionFixture)}`
+      );
+      pagesCompleted = 22;
+    } else {
+      await phase1PreApplication(session, input.preApplication);
+      pagesCompleted = 6;
 
-    await phase2Needs(session, input.needs);
-    pagesCompleted = 16;
+      await phase2Needs(session, input.needs);
+      pagesCompleted = 16;
 
-    await phase3Identity(session, input.identity);
-    pagesCompleted = 22;
+      await phase3Identity(session, input.identity);
+      pagesCompleted = 22;
+    }
 
     await phase4ApplicationCenter(session, input.applicant);
     pagesCompleted = 40;

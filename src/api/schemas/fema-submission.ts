@@ -34,12 +34,20 @@ const homeDamageDetailSchema = z.object({
 });
 
 export const femaNeedsSchema = z.object({
+  // Property Damage
   homeDamage: z.boolean(),
   vehicleDamage: z.boolean(),
+  personalPropertyDamage: z.boolean().default(false),
+  // Emergency Needs
+  foodShelter: z.boolean().default(false),
+  homeAccess: z.boolean().default(false),
+  lossOfUtilities: z.boolean().default(false),
+  // Other Expenses
   funeralExpenses: z.boolean(),
   medicalExpenses: z.boolean(),
   childcare: z.boolean(),
   homeSafetyItems: z.boolean(),
+  lodging: z.boolean().default(false),
   // Conditional detail pages — required when the matching flag is true.
   // Callers must populate these if the corresponding flag is set.
   funeralDetail: funeralDetailSchema.optional(),
