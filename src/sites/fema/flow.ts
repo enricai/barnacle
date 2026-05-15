@@ -1,3 +1,6 @@
+import { getLogger } from "@/lib/logging";
+import { SelectorFailureError } from "@/scraper/errors";
+import type { BrowserSession } from "@/scraper/session";
 import type {
   FemaApplicant,
   FemaIdentity,
@@ -5,9 +8,6 @@ import type {
   FemaPreApplication,
   FemaSubmissionRequest,
 } from "@/sites/fema/schema";
-import { getLogger } from "@/lib/logging";
-import { SelectorFailureError } from "@/scraper/errors";
-import type { BrowserSession } from "@/scraper/session";
 
 const logger = getLogger({ name: "sites/fema/flow" });
 
