@@ -37,11 +37,10 @@ export interface AppConfig {
     readinessQueueThreshold: number;
     /** Base URL for the FEMA disaster assistance portal. */
     femaBaseUrl: string;
-    /** Shorthand: true when bedrock.enabled is true. */
+    /** Master switch: routes Stagehand LLM calls through AWS Bedrock when true. */
     useBedrock: boolean;
   };
   bedrock: {
-    enabled: boolean;
     region: string;
     accessKeyId: string | undefined;
     secretAccessKey: string | undefined;
@@ -108,7 +107,6 @@ export function loadConfig(): AppConfig {
       useBedrock: getBoolEnv("USE_BEDROCK", false),
     },
     bedrock: {
-      enabled: getBoolEnv("USE_BEDROCK", false),
       region: getEnv("AWS_REGION", "us-east-1"),
       accessKeyId: process.env.AWS_ACCESS_KEY_ID,
       secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,

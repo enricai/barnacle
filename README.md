@@ -22,7 +22,7 @@ application center, review/submit).
 
 Operational routes:
 - `GET /healthz` — liveness probe
-- `GET /readyz`  — readiness probe (checks DB, Steel/Anthropic credentials, queue depth)
+- `GET /readyz`  — readiness probe (checks DB, scraper credentials, queue depth)
 - `GET /docs`    — Swagger UI (when `ENABLE_DOCS=true`)
 
 ## Getting started
@@ -33,13 +33,13 @@ Operational routes:
 - pnpm 10.4.1
 - PostgreSQL (for submission history; optional — server starts without it)
 - A Steel account (`STEEL_API_KEY`) for managed browser sessions
-- An Anthropic key (`ANTHROPIC_API_KEY`) for Stagehand's LLM calls
+- An Anthropic key (`ANTHROPIC_API_KEY`) for Stagehand's LLM calls, **or** AWS Bedrock (`USE_BEDROCK=true` + AWS credentials) — see `.env.example` for details
 
 ### Install
 
 ```bash
 pnpm install
-cp .env.example .env   # fill in STEEL_API_KEY, ANTHROPIC_API_KEY, DATABASE_URL
+cp .env.example .env   # fill in STEEL_API_KEY and either ANTHROPIC_API_KEY or Bedrock creds
 pnpm run db:push       # create tables
 ```
 

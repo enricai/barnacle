@@ -79,7 +79,6 @@ describe("config/loadConfig", () => {
     process.env = {};
     const cfg = loadConfig();
     expect(cfg.scraper.useBedrock).toBe(false);
-    expect(cfg.bedrock.enabled).toBe(false);
     expect(cfg.bedrock.region).toBe("us-east-1");
     expect(cfg.bedrock.model).toBe("us.anthropic.claude-sonnet-4-6[1m]");
     expect(cfg.bedrock.accessKeyId).toBeUndefined();
@@ -93,20 +92,13 @@ describe("config/loadConfig", () => {
     process.env.AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE";
     process.env.AWS_SECRET_ACCESS_KEY = "secret";
     process.env.AWS_SESSION_TOKEN = "token";
-    process.env.BEDROCK_MODEL = "anthropic.claude-3-5-sonnet-20241022-v2:0";
+    process.env.BEDROCK_MODEL = "us.anthropic.claude-opus-4-7[1m]";
     const cfg = loadConfig();
     expect(cfg.scraper.useBedrock).toBe(true);
-    expect(cfg.bedrock.enabled).toBe(true);
     expect(cfg.bedrock.region).toBe("us-west-2");
     expect(cfg.bedrock.accessKeyId).toBe("AKIAIOSFODNN7EXAMPLE");
     expect(cfg.bedrock.secretAccessKey).toBe("secret");
     expect(cfg.bedrock.sessionToken).toBe("token");
-    expect(cfg.bedrock.model).toBe("anthropic.claude-3-5-sonnet-20241022-v2:0");
-  });
-
-  it("scraper.useBedrock and bedrock.enabled are always in sync", () => {
-    process.env.USE_BEDROCK = "true";
-    const cfg = loadConfig();
-    expect(cfg.scraper.useBedrock).toBe(cfg.bedrock.enabled);
+    expect(cfg.bedrock.model).toBe("us.anthropic.claude-opus-4-7[1m]");
   });
 });
