@@ -39,3 +39,4 @@ package-lock.json
 
 # openapi.json is generated on demand (`pnpm run openapi:generate`); don't commit
 /openapi.json
+data.json
