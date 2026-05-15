@@ -7,7 +7,7 @@ import {
   femaPreApplicationSchema,
   femaSubmissionRequestSchema,
   femaSubmissionResponseSchema,
-} from "@/api/schemas/fema-submission";
+} from "@/sites/fema/schema";
 
 const validPreApplication = {
   zipCode: "70001",
