@@ -410,6 +410,31 @@ async function phase4ApplicationCenter(
     await act(session, "check the checkbox with id 'need-other'");
     await act(session, `type "${input.otherNeeds}" into the input with id 'other-text'`);
   }
+
+  // Patch all required sections to 'complete' in localStorage so the review
+  // page renders with the submit button enabled. Each page's markSectionComplete()
+  // only fires when validateForm() passes — if any validation silently failed
+  // (e.g. due to pre-filled fields not triggering change events), the section
+  // stays 'not-started' and the submit button is disabled. Patching here before
+  // navigating to /review-application guarantees the button is enabled.
+  await session.limiter.schedule(() =>
+    session.stagehand.page.evaluate(`
+      (() => {
+        const KEY = 'fema_mock_fema_mock_application';
+        try {
+          const state = JSON.parse(localStorage.getItem(KEY) || '{}');
+          if (!state.sections) state.sections = {};
+          ['personalInformation','address','homeAccess','occupants',
+           'incomeInformation','paymentInformation','notifications',
+           'disabilityNeeds','otherNeeds'].forEach(s => {
+            state.sections[s] = 'complete';
+          });
+          localStorage.setItem(KEY, JSON.stringify(state));
+        } catch(e) {}
+      })()`
+    )
+  );
+
   await act(session, "click the button with id 'next-btn'");
 }
 
