@@ -1,11 +1,12 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { FastifyInstance, RawServerDefault } from "fastify";
+import type pino from "pino";
 
 import { CaptchaEncounteredError, ScrapeFailureError } from "@/api/errors";
 import { successEnvelope } from "@/api/helpers/envelope";
 import type { AppConfig } from "@/config";
 import { prisma } from "@/lib/db/client";
-import { getLogger } from "@/lib/logging";
+import { extendLogger, getLogger } from "@/lib/logging";
 import { CaptchaError, ScraperError } from "@/scraper/errors";
 import { runWithSession } from "@/scraper/pool";
 import type { SitePlugin, SitePluginContext, SitePluginResult } from "@/site-plugin";
@@ -105,7 +106,7 @@ export async function registerRoutes(
       async (request) => {
         const context: SitePluginContext = {
           baseUrl,
-          logger: request.log as unknown as Logger,
+          logger: extendLogger(request.log as unknown as pino.Logger),
           config: cfg,
         };
         const result = await dispatch(plugin, request.body, context);

@@ -80,7 +80,7 @@ function parseList(value: string): readonly string[] {
  * startup; subsequent calls return the same frozen object.
  */
 export function loadConfig(): AppConfig {
-  return Object.freeze<AppConfig>({
+  return {
     appName: getEnv("APP_NAME", "barnacle"),
     nodeEnv: getNodeEnv(),
     host: getEnv("HOST", "0.0.0.0"),
@@ -128,7 +128,7 @@ export function loadConfig(): AppConfig {
     docs: {
       enabled: getBoolEnv("ENABLE_DOCS", false),
     },
-  });
+  };
 }
 
 export const config: AppConfig = loadConfig();

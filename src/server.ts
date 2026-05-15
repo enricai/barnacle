@@ -89,9 +89,9 @@ export async function buildServer(): Promise<
       openapi: {
         openapi: "3.1.0",
         info: {
-          title: "Barnacle — FEMA Disaster Assistance API",
+          title: "Barnacle",
           description:
-            "Headless Node.js API that automates FEMA disaster assistance application submissions.",
+            "Site-agnostic browser automation engine. POST a structured payload to a typed endpoint; Barnacle drives a Steel + Stagehand session through the target site and returns a structured result via a plugin adapter.",
           version: "0.1.0",
         },
         servers: [{ url: `http://${cfg.host}:${cfg.port}` }],

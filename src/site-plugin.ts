@@ -31,14 +31,9 @@ export interface SitePluginMeta {
   /** Zod schema for the successful response body — drives the Swagger response shape. */
   responseSchema: ZodTypeAny;
   /**
-   * Route path segment appended to the site prefix; defaults to `"/run"` when
-   * absent. Applied by the loader in Phase 3 — plugins only set this when they
-   * need a non-standard path.
-   */
-  path?: string;
-  /**
-   * Full path override that takes precedence over `path` when set. Intended for
-   * legacy compatibility where an existing client contract cannot change.
+   * Full route path override. When set, the loader uses this verbatim instead
+   * of `/v1/{siteId}/run`. Intended for legacy compatibility where an existing
+   * client contract cannot change.
    */
   routeOverride?: string;
   /**

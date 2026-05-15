@@ -224,7 +224,6 @@ export const femaSubmissionResponseSchema = z.object({
 
 export type FemaSubmissionResponse = z.infer<typeof femaSubmissionResponseSchema>;
 
-// Phase 2 plugin response shape — submissionId/submittedAt come from dispatch() in Phase 3 and are not present yet.
 export const femaPluginResponseSchema = z.object({
   status: vpsStatusSchema,
   confirmationNumber: z.string().optional(),

@@ -68,11 +68,6 @@ describe("config/loadConfig", () => {
     expect(cfg.auth.hashedKeys).toEqual([]);
   });
 
-  it("returned object is frozen", () => {
-    const cfg = loadConfig();
-    expect(Object.isFrozen(cfg)).toBe(true);
-  });
-
   it("bedrock defaults when USE_BEDROCK is unset", () => {
     process.env = {};
     const cfg = loadConfig();

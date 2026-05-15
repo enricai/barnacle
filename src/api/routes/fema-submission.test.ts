@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { prisma } from "@/lib/db/client";
 import { buildServer } from "@/server";
 
 // vi.hoisted ensures the mock function is available when vi.mock factories run (which are hoisted).
@@ -116,8 +117,12 @@ describe("POST /v1/fema/submit", () => {
     expect(body.confirmationNumber).toBe("FEMA-2024-99999");
     expect(body.pagesCompleted).toBe(42);
     expect(body.status.httpStatus).toBe("OK");
-    // submissionId is absent until Phase 3 adds DB persistence
-    expect(body.submissionId).toBeUndefined();
+
+    expect(prisma.siteSubmission.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ siteId: "fema", status: "submitted" }),
+      })
+    );
   });
 
   it("returns 401 without an auth header", async () => {
