@@ -36,8 +36,32 @@ export async function dispatch<TResult>(
   payload: unknown,
   context: SitePluginContext
 ): Promise<SitePluginResult<TResult>> {
+  let result: SitePluginResult<TResult> | undefined;
   try {
-    const result = await runWithSession((session) => plugin.execute(payload, session, context));
+    result = (await runWithSession((session) =>
+      plugin.execute(payload, session, context)
+    )) as SitePluginResult<TResult>;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    try {
+      await prisma.siteSubmission.create({
+        data: {
+          siteId: plugin.meta.siteId,
+          status: "error",
+          payload: { error: message, siteId: plugin.meta.siteId },
+        },
+      });
+    } catch (dbErr) {
+      logger.warn(
+        `audit write failed after scrape error: ${dbErr instanceof Error ? dbErr.message : String(dbErr)}`
+      );
+    }
+    if (err instanceof CaptchaError) throw new CaptchaEncounteredError(err.message);
+    if (err instanceof ScraperError) throw new ScrapeFailureError(err.message);
+    throw err;
+  }
+
+  try {
     await prisma.siteSubmission.create({
       data: {
         siteId: plugin.meta.siteId,
@@ -45,20 +69,13 @@ export async function dispatch<TResult>(
         payload: (result.auditPayload ?? result.data) as object,
       },
     });
-    return result as SitePluginResult<TResult>;
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    await prisma.siteSubmission.create({
-      data: {
-        siteId: plugin.meta.siteId,
-        status: "error",
-        payload: { error: message, siteId: plugin.meta.siteId },
-      },
-    });
-    if (err instanceof CaptchaError) throw new CaptchaEncounteredError(err.message);
-    if (err instanceof ScraperError) throw new ScrapeFailureError(err.message);
-    throw err;
+  } catch (dbErr) {
+    logger.warn(
+      `audit write failed after successful scrape: ${dbErr instanceof Error ? dbErr.message : String(dbErr)}`
+    );
   }
+
+  return result;
 }
 
 /**
