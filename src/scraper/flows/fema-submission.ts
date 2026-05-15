@@ -447,17 +447,23 @@ async function phase5Submit(session: BrowserSession): Promise<string | undefined
   // Page 41: Review Application
   await act(session, "click the button with id 'submit-application'");
 
-  // Page 42: Success — wait for the confirmation number element to appear,
-  // then read it directly from the DOM. The success page render is async
-  // (calls loadState()) so the element may not be present immediately after
-  // the click. waitForSelector ensures we don't read before it's rendered.
+  // Page 42: Success — two-step wait before reading the confirmation number.
+  // Step 1: wait for the SPA to update window.location.hash to #/success.
+  // This fires synchronously inside handleSubmit() before any async storage
+  // work, so it's fast and confirms the submit click was processed.
+  // Step 2: renderSuccessPage calls await loadState() before writing innerHTML
+  // (saveState + loadState are two sequential localStorage round-trips), so
+  // the .alert-success element only appears after that async chain resolves.
   //   <div class="alert alert-success text-center">
   //     <div class="h3 mb-0 font-monospace">FEMA-XXXXXXXXXX</div>
   //   </div>
   try {
     await session.limiter.schedule(() =>
+      session.stagehand.page.waitForURL(/[#/]success/, { timeout: 30_000 })
+    );
+    await session.limiter.schedule(() =>
       session.stagehand.page.waitForSelector(".alert-success .font-monospace", {
-        timeout: 15_000,
+        timeout: 30_000,
       })
     );
     const confirmationNumber = await session.limiter.schedule(
