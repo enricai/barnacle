@@ -26,8 +26,18 @@ export async function execute(
     `fema submission success: confirmation=${data.confirmationNumber ?? "unknown"} pages=${data.pagesCompleted}`
   );
 
+  // Redact PII fields before audit persistence — SSN and password must not
+  // reach the DB in plaintext.
+  const { identity, ...safePayload } = payload;
+  const { password: _pw, ...safeIdentity } = identity;
+  const { applicant, ...restPayload } = safePayload;
+  const { ssn: _ssn, ...safeApplicant } = applicant;
+
   return {
     data,
-    auditPayload: { payload, result: data },
+    auditPayload: {
+      payload: { ...restPayload, identity: safeIdentity, applicant: safeApplicant },
+      result: data,
+    },
   };
 }
