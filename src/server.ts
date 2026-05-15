@@ -12,17 +12,22 @@ import {
   validatorCompiler,
 } from "fastify-type-provider-zod";
 
+import { successEnvelope } from "@/api/helpers/envelope";
 import authPlugin from "@/api/plugins/auth";
 import errorHandlerPlugin from "@/api/plugins/error-handler";
 import requestContextPlugin from "@/api/plugins/request-context";
-import { femaSubmissionRoute } from "@/api/routes/fema-submission";
 import { healthRoutes } from "@/api/routes/health";
 import { config as defaultConfig, loadConfig } from "@/config";
 import { prisma } from "@/lib/db/client";
 import { getLogger } from "@/lib/logging";
-import { drainPool } from "@/scraper/pool";
+import { drainPool, runWithSession } from "@/scraper/pool";
+import type { SitePlugin } from "@/site-plugin";
+import { femaPlugin } from "@/sites/fema/index";
 
 const logger = getLogger({ name: "server" });
+
+// Phase 3 will extract this registry and the loop body to src/plugins/loader.ts.
+const SITE_PLUGINS: SitePlugin[] = [femaPlugin as unknown as SitePlugin];
 
 /**
  * Builds a configured (but not-yet-listening) Fastify instance. Split out
@@ -103,7 +108,35 @@ export async function buildServer() {
   }
 
   await app.register(healthRoutes);
-  await app.register(femaSubmissionRoute);
+
+  // Inline plugin loop — Phase 3 extracts this to src/plugins/loader.ts.
+  for (const plugin of SITE_PLUGINS) {
+    const routePath = plugin.meta.routeOverride ?? `/v1/${plugin.meta.siteId}/run`;
+    const baseUrl = cfg.scraper.siteBaseUrls[plugin.meta.siteId] ?? "";
+
+    app.post<{ Body: Parameters<typeof plugin.execute>[0] }>(
+      routePath,
+      {
+        onRequest: [app.authenticate],
+        schema: {
+          body: plugin.meta.bodySchema,
+          response: { 200: plugin.meta.responseSchema },
+        },
+      },
+      async (request) => {
+        const context = {
+          baseUrl,
+          logger: request.log,
+          config: cfg,
+        };
+        // request.body validated by Fastify against plugin.meta.bodySchema above
+        const result = await runWithSession((session) =>
+          plugin.execute(request.body as Parameters<typeof plugin.execute>[0], session, context)
+        );
+        return successEnvelope(result.data);
+      }
+    );
+  }
 
   // Drain in-flight scrape sessions and disconnect Prisma when the app
   // shuts down. Without this, SIGTERM leaves Steel sessions alive until
