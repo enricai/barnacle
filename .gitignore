@@ -40,3 +40,5 @@ package-lock.json
 # openapi.json is generated on demand (`pnpm run openapi:generate`); don't commit
 /openapi.json
 data.json
+# root planning doc was never committed — exclude to prevent accidental commit
+PLAN.md
