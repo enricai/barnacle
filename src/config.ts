@@ -37,6 +37,16 @@ export interface AppConfig {
     readinessQueueThreshold: number;
     /** Base URL for the FEMA disaster assistance portal. */
     femaBaseUrl: string;
+    /** Shorthand: true when bedrock.enabled is true. */
+    useBedrock: boolean;
+  };
+  bedrock: {
+    enabled: boolean;
+    region: string;
+    accessKeyId: string | undefined;
+    secretAccessKey: string | undefined;
+    sessionToken: string | undefined;
+    model: string;
   };
   cache: {
     ttlMs: number;
@@ -95,6 +105,15 @@ export function loadConfig(): AppConfig {
       maxActionDelayMs: getNumericEnv("SCRAPER_MAX_ACTION_DELAY_MS", 1500),
       readinessQueueThreshold: getNumericEnv("READINESS_QUEUE_THRESHOLD", 20),
       femaBaseUrl: getEnv("FEMA_BASE_URL", "https://disasterassistance.gov"),
+      useBedrock: getBoolEnv("USE_BEDROCK", false),
+    },
+    bedrock: {
+      enabled: getBoolEnv("USE_BEDROCK", false),
+      region: getEnv("AWS_REGION", "us-east-1"),
+      accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+      sessionToken: process.env.AWS_SESSION_TOKEN,
+      model: getEnv("BEDROCK_MODEL", "us.anthropic.claude-sonnet-4-6[1m]"),
     },
     cache: {
       ttlMs: getNumericEnv("CACHE_TTL_MS", 15 * 60 * 1000),

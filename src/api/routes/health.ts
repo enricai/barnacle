@@ -48,6 +48,12 @@ export interface HealthConfig {
     steelApiKey: string | undefined;
     anthropicApiKey: string | undefined;
     readinessQueueThreshold: number;
+    useBedrock: boolean;
+  };
+  bedrock: {
+    accessKeyId: string | undefined;
+    secretAccessKey: string | undefined;
+    region: string;
   };
 }
 
@@ -95,14 +101,27 @@ async function checkDatabase(cfg: HealthConfig): Promise<DependencyStatus> {
 }
 
 /**
- * Confirms the scraper has the secrets it needs. Without Steel and
- * Anthropic keys the Stagehand fallback path is a 500 waiting to
- * happen — surface that before traffic lands.
+ * Confirms the scraper has the secrets it needs. When Bedrock is enabled,
+ * checks key-pair consistency (both or neither). Ambient IAM credentials
+ * (instance profile, task role) cannot be probed synchronously, so we only
+ * flag explicit misconfigurations. When Anthropic is the provider, verifies
+ * the API key is present.
  */
 function checkScraperCredentials(cfg: HealthConfig): DependencyStatus {
   const missing: string[] = [];
   if (!cfg.scraper.steelApiKey) missing.push("STEEL_API_KEY");
-  if (!cfg.scraper.anthropicApiKey) missing.push("ANTHROPIC_API_KEY");
+
+  if (cfg.scraper.useBedrock) {
+    if (cfg.bedrock.accessKeyId && !cfg.bedrock.secretAccessKey) {
+      missing.push("AWS_SECRET_ACCESS_KEY");
+    }
+    if (!cfg.bedrock.accessKeyId && cfg.bedrock.secretAccessKey) {
+      missing.push("AWS_ACCESS_KEY_ID");
+    }
+  } else {
+    if (!cfg.scraper.anthropicApiKey) missing.push("ANTHROPIC_API_KEY");
+  }
+
   if (missing.length === 0) return { ok: true };
   return { ok: false, detail: `missing: ${missing.join(", ")}` };
 }

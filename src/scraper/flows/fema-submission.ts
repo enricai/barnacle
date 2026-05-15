@@ -91,7 +91,8 @@ async function phase2Needs(session: BrowserSession, input: FemaNeeds): Promise<v
   // Property Damage
   if (input.homeDamage) await act(session, "check the checkbox with id 'home-damage'");
   if (input.vehicleDamage) await act(session, "check the checkbox with id 'vehicle-damage'");
-  if (input.personalPropertyDamage) await act(session, "check the checkbox with id 'personal-property'");
+  if (input.personalPropertyDamage)
+    await act(session, "check the checkbox with id 'personal-property'");
   // Emergency Needs
   if (input.foodShelter) await act(session, "check the checkbox with id 'food-shelter'");
   if (input.homeAccess) await act(session, "check the checkbox with id 'home-access'");
@@ -220,7 +221,10 @@ async function phase4ApplicationCenter(
   await act(session, `type "${input.ssn}" into the input with id 'ssn'`);
   await act(session, `type "${input.dateOfBirth}" into the input with id 'dateOfBirth'`);
   await act(session, `type "${input.phone}" into the input with id 'primaryPhone'`);
-  await act(session, "select the option with value 'cell' in the select with id 'primaryPhoneType'");
+  await act(
+    session,
+    "select the option with value 'cell' in the select with id 'primaryPhoneType'"
+  );
   if (input.alternatePhone) {
     await act(session, `type "${input.alternatePhone}" into the input with id 'altPhone'`);
   }
@@ -272,7 +276,10 @@ async function phase4ApplicationCenter(
     session,
     `click the radio button with name 'homeAccess' and value '${homeAccessValue}'`
   );
-  await act(session, "select the option with value 'MY_HOME' in the select with id 'currentLiving'");
+  await act(
+    session,
+    "select the option with value 'MY_HOME' in the select with id 'currentLiving'"
+  );
   await act(session, "click the radio button with name 'movingStorage' and value 'no'");
   await act(session, "click the button with id 'next-btn'");
 
@@ -318,10 +325,7 @@ async function phase4ApplicationCenter(
     const fe = input.funeralExpenses;
     const nameParts = fe.deceasedName.split(" ");
     await act(session, "click the button with id 'add-deceased-btn'");
-    await act(
-      session,
-      `type "${nameParts[0]}" into the input with id 'deceased-first-name'`
-    );
+    await act(session, `type "${nameParts[0]}" into the input with id 'deceased-first-name'`);
     await act(
       session,
       `type "${nameParts.slice(1).join(" ")}" into the input with id 'deceased-last-name'`
@@ -427,8 +431,7 @@ async function phase4ApplicationCenter(
          'disabilityNeeds','otherNeeds'].forEach(s => {
           window.femaMock.setState('sections.' + s, 'complete');
         });
-      })()`
-    )
+      })()`)
   );
 
   await act(session, "click the button with id 'next-btn'");
@@ -457,10 +460,11 @@ async function phase5Submit(session: BrowserSession): Promise<string | undefined
         timeout: 15_000,
       })
     );
-    const confirmationNumber = await session.limiter.schedule(() =>
-      session.stagehand.page.evaluate(
-        `document.querySelector(".alert-success .font-monospace")?.textContent?.trim() ?? null`
-      ) as Promise<string | null>
+    const confirmationNumber = await session.limiter.schedule(
+      () =>
+        session.stagehand.page.evaluate(
+          `document.querySelector(".alert-success .font-monospace")?.textContent?.trim() ?? null`
+        ) as Promise<string | null>
     );
     if (confirmationNumber) return confirmationNumber;
     logger.warn("confirmation number element not found on success page");

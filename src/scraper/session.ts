@@ -1,8 +1,9 @@
-import { Stagehand } from "@browserbasehq/stagehand";
+import { AISdkClient, Stagehand } from "@browserbasehq/stagehand";
 import type Bottleneck from "bottleneck";
 import Steel from "steel-sdk";
 
 import { config } from "@/config";
+import { createBedrockModel } from "@/lib/bedrock";
 import { getLogger } from "@/lib/logging";
 import { createSessionLimiter } from "@/scraper/throttle";
 
@@ -56,7 +57,7 @@ export async function createBrowserSession(): Promise<BrowserSession> {
   if (!config.scraper.steelApiKey) {
     throw new Error("STEEL_API_KEY is required to create a browser session");
   }
-  if (!config.scraper.anthropicApiKey) {
+  if (!config.scraper.useBedrock && !config.scraper.anthropicApiKey) {
     throw new Error("ANTHROPIC_API_KEY is required for the Stagehand LLM client");
   }
 
@@ -86,11 +87,21 @@ export async function createBrowserSession(): Promise<BrowserSession> {
     logger.info(
       `created steel session ${session.id} viewport=${viewport.width}x${viewport.height}`
     );
+    if (config.scraper.useBedrock) {
+      logger.info(`using bedrock model ${config.bedrock.model} in region ${config.bedrock.region}`);
+    }
+
+    const llmClient = config.scraper.useBedrock
+      ? new AISdkClient({ model: createBedrockModel(config.bedrock), enableCaching: true })
+      : undefined;
 
     stagehand = new Stagehand({
       env: "LOCAL",
-      modelName: config.scraper.model,
-      modelClientOptions: { apiKey: config.scraper.anthropicApiKey },
+      modelName: config.scraper.useBedrock ? undefined : config.scraper.model,
+      modelClientOptions: config.scraper.useBedrock
+        ? undefined
+        : { apiKey: config.scraper.anthropicApiKey },
+      llmClient,
       enableCaching: true,
       localBrowserLaunchOptions: { cdpUrl },
       verbose: 0,

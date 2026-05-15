@@ -26,10 +26,16 @@ function makeConfig(overrides: Partial<HealthConfig> = {}): HealthConfig {
     steelApiKey: "test-steel",
     anthropicApiKey: "test-anthropic",
     readinessQueueThreshold: 20,
+    useBedrock: false,
   };
   return {
     databaseUrl: overrides.databaseUrl,
     scraper: { ...scraperDefaults, ...(overrides.scraper ?? {}) },
+    bedrock: overrides.bedrock ?? {
+      accessKeyId: undefined,
+      secretAccessKey: undefined,
+      region: "us-east-1",
+    },
   };
 }
 
@@ -106,6 +112,7 @@ describe("routes/health /readyz", () => {
           steelApiKey: undefined,
           anthropicApiKey: undefined,
           readinessQueueThreshold: 20,
+          useBedrock: false,
         },
       })
     );
@@ -150,6 +157,7 @@ describe("routes/health /readyz", () => {
           steelApiKey: "test-steel",
           anthropicApiKey: "test-anthropic",
           readinessQueueThreshold: 5,
+          useBedrock: false,
         },
       }),
       makePoolStats(10, 3) // depth 13 > threshold 5
@@ -177,6 +185,7 @@ describe("routes/health /readyz", () => {
           steelApiKey: "test-steel",
           anthropicApiKey: "test-anthropic",
           readinessQueueThreshold: 5,
+          useBedrock: false,
         },
       }),
       makePoolStats(3, 2) // depth 5 == threshold
@@ -200,6 +209,102 @@ describe("routes/health /readyz", () => {
       const response = await app.inject({ method: "GET", url: "/healthz" });
       expect(response.statusCode).toBe(200);
       expect(response.json()).toEqual({ status: "ok" });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 200 when useBedrock=true and no explicit AWS keys (ambient IAM assumed)", async () => {
+    const app = await buildHealthApp(
+      makeConfig({
+        scraper: {
+          steelApiKey: "test-steel",
+          anthropicApiKey: undefined,
+          readinessQueueThreshold: 20,
+          useBedrock: true,
+        },
+        bedrock: { accessKeyId: undefined, secretAccessKey: undefined, region: "us-east-1" },
+      })
+    );
+    try {
+      const response = await app.inject({ method: "GET", url: "/readyz" });
+      expect(response.statusCode).toBe(200);
+      const body = response.json() as { checks: { scraperCredentials: { ok: boolean } } };
+      expect(body.checks.scraperCredentials.ok).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 503 when useBedrock=true and only accessKeyId is set", async () => {
+    const app = await buildHealthApp(
+      makeConfig({
+        scraper: {
+          steelApiKey: "test-steel",
+          anthropicApiKey: undefined,
+          readinessQueueThreshold: 20,
+          useBedrock: true,
+        },
+        bedrock: { accessKeyId: "AKIA...", secretAccessKey: undefined, region: "us-east-1" },
+      })
+    );
+    try {
+      const response = await app.inject({ method: "GET", url: "/readyz" });
+      expect(response.statusCode).toBe(503);
+      const body = response.json() as {
+        checks: { scraperCredentials: { ok: boolean; detail?: string } };
+      };
+      expect(body.checks.scraperCredentials.ok).toBe(false);
+      expect(body.checks.scraperCredentials.detail).toContain("AWS_SECRET_ACCESS_KEY");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 503 when useBedrock=true and only secretAccessKey is set", async () => {
+    const app = await buildHealthApp(
+      makeConfig({
+        scraper: {
+          steelApiKey: "test-steel",
+          anthropicApiKey: undefined,
+          readinessQueueThreshold: 20,
+          useBedrock: true,
+        },
+        bedrock: { accessKeyId: undefined, secretAccessKey: "secret", region: "us-east-1" },
+      })
+    );
+    try {
+      const response = await app.inject({ method: "GET", url: "/readyz" });
+      expect(response.statusCode).toBe(503);
+      const body = response.json() as {
+        checks: { scraperCredentials: { ok: boolean; detail?: string } };
+      };
+      expect(body.checks.scraperCredentials.ok).toBe(false);
+      expect(body.checks.scraperCredentials.detail).toContain("AWS_ACCESS_KEY_ID");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 503 when useBedrock=false and ANTHROPIC_API_KEY is missing (regression guard)", async () => {
+    const app = await buildHealthApp(
+      makeConfig({
+        scraper: {
+          steelApiKey: "test-steel",
+          anthropicApiKey: undefined,
+          readinessQueueThreshold: 20,
+          useBedrock: false,
+        },
+      })
+    );
+    try {
+      const response = await app.inject({ method: "GET", url: "/readyz" });
+      expect(response.statusCode).toBe(503);
+      const body = response.json() as {
+        checks: { scraperCredentials: { ok: boolean; detail?: string } };
+      };
+      expect(body.checks.scraperCredentials.ok).toBe(false);
+      expect(body.checks.scraperCredentials.detail).toContain("ANTHROPIC_API_KEY");
     } finally {
       await app.close();
     }
