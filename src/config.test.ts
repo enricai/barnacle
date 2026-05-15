@@ -25,7 +25,7 @@ describe("config/loadConfig", () => {
     expect(cfg.scraper.poolSize).toBe(3);
     expect(cfg.scraper.solveCaptcha).toBe(true);
     expect(cfg.scraper.readinessQueueThreshold).toBe(20);
-    expect(cfg.scraper.femaBaseUrl).toBe("https://disasterassistance.gov");
+    expect(cfg.scraper.siteBaseUrls.fema).toBe("https://disasterassistance.gov");
     expect(cfg.scraper.model).toBe("anthropic/claude-sonnet-4-6");
     // Default trustProxy=true matches the most common deploy shape
     // (behind an ALB/nginx/Cloudflare); bare-metal runners must opt out.
@@ -43,7 +43,7 @@ describe("config/loadConfig", () => {
     expect(cfg.port).toBe(4321);
     expect(cfg.scraper.poolSize).toBe(10);
     expect(cfg.rateLimit.max).toBe(500);
-    expect(cfg.scraper.femaBaseUrl).toBe("http://localhost:8020");
+    expect(cfg.scraper.siteBaseUrls.fema).toBe("http://localhost:8020");
   });
 
   it("parses boolean env vars", () => {

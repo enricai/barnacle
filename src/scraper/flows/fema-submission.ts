@@ -49,7 +49,7 @@ async function phase1PreApplication(
 ): Promise<void> {
   logger.info("fema phase 1: pre-application");
 
-  await session.stagehand.page.goto(config.scraper.femaBaseUrl);
+  await session.stagehand.page.goto(config.scraper.siteBaseUrls.fema);
 
   // Page 1: Landing
   await act(session, "click the button with id 'apply-now-btn'");
@@ -504,7 +504,7 @@ export async function submitFemaApplication(
       // Fixture pre-seeds the session at /personal-info with auth done and
       // needs pre-selected — phases 1–3 are already complete in the state.
       await session.stagehand.page.goto(
-        `${config.scraper.femaBaseUrl}?sessionFixture=${encodeURIComponent(input.sessionFixture)}`
+        `${config.scraper.siteBaseUrls.fema}?sessionFixture=${encodeURIComponent(input.sessionFixture)}`
       );
       pagesCompleted = 22;
     } else {

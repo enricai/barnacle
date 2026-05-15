@@ -35,8 +35,12 @@ export interface AppConfig {
     minActionDelayMs: number;
     maxActionDelayMs: number;
     readinessQueueThreshold: number;
-    /** Base URL for the FEMA disaster assistance portal. */
-    femaBaseUrl: string;
+    /**
+     * Per-site base URLs keyed by siteId. The `fema` key is compile-time
+     * anchored so the existing FEMA flow keeps strict typing; the index
+     * signature keeps the map open for new sites without editing config.ts.
+     */
+    siteBaseUrls: { fema: string; [key: string]: string };
     /** Master switch: routes Stagehand LLM calls through AWS Bedrock when true. */
     useBedrock: boolean;
   };
@@ -103,7 +107,7 @@ export function loadConfig(): AppConfig {
       minActionDelayMs: getNumericEnv("SCRAPER_MIN_ACTION_DELAY_MS", 500),
       maxActionDelayMs: getNumericEnv("SCRAPER_MAX_ACTION_DELAY_MS", 1500),
       readinessQueueThreshold: getNumericEnv("READINESS_QUEUE_THRESHOLD", 20),
-      femaBaseUrl: getEnv("FEMA_BASE_URL", "https://disasterassistance.gov"),
+      siteBaseUrls: { fema: getEnv("FEMA_BASE_URL", "https://disasterassistance.gov") },
       useBedrock: getBoolEnv("USE_BEDROCK", false),
     },
     bedrock: {
