@@ -102,10 +102,11 @@ async function checkDatabase(cfg: HealthConfig): Promise<DependencyStatus> {
 
 /**
  * Confirms the scraper has the secrets it needs. When Bedrock is enabled,
- * checks key-pair consistency (both or neither). Ambient IAM credentials
- * (instance profile, task role) cannot be probed synchronously, so we only
- * flag explicit misconfigurations. When Anthropic is the provider, verifies
- * the API key is present.
+ * validates key-pair consistency: if one of accessKeyId/secretAccessKey is
+ * set the other must be too. If neither is set, ambient IAM credentials are
+ * assumed (ECS task role, EC2 instance profile) — these can't be probed
+ * synchronously at health-check time. When Anthropic is the provider,
+ * verifies the API key is present.
  */
 function checkScraperCredentials(cfg: HealthConfig): DependencyStatus {
   const missing: string[] = [];
