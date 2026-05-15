@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
+import type { IncomingMessage, ServerResponse } from "node:http";
 
 import fastifyCompress from "@fastify/compress";
 import fastifyHelmet from "@fastify/helmet";
 import fastifyRateLimit from "@fastify/rate-limit";
 import fastifySwagger from "@fastify/swagger";
 import fastifySwaggerUi from "@fastify/swagger-ui";
-import Fastify from "fastify";
+import Fastify, { type FastifyInstance, type RawServerDefault } from "fastify";
 import {
   jsonSchemaTransform,
   serializerCompiler,
@@ -21,6 +22,7 @@ import { prisma } from "@/lib/db/client";
 import { getLogger } from "@/lib/logging";
 import { registerRoutes } from "@/plugins/loader";
 import { drainPool } from "@/scraper/pool";
+import type { Logger } from "@/types/logging";
 
 const logger = getLogger({ name: "server" });
 
@@ -29,7 +31,9 @@ const logger = getLogger({ name: "server" });
  * from `main()` so tests can call `buildServer()` and use `inject()`
  * instead of binding to a port.
  */
-export async function buildServer() {
+export async function buildServer(): Promise<
+  FastifyInstance<RawServerDefault, IncomingMessage, ServerResponse, Logger>
+> {
   // Load a fresh config per build so tests can toggle env vars between
   // buildServer() invocations. The exported `defaultConfig` is still
   // used for module-level pieces (logger) that are process-wide.
