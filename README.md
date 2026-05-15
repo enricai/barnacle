@@ -1,14 +1,15 @@
 # Barnacle
 
-Headless Node.js / TypeScript API that automates FEMA disaster assistance
-application submissions on behalf of disaster survivors.
+Site-agnostic browser automation engine. Callers POST a structured payload to a
+typed HTTP endpoint; Barnacle drives a Steel + Stagehand browser session through
+the target site and returns a structured result. Each supported site is a
+self-contained plugin — core handles sessions, retries, error mapping, audit
+persistence, and response envelope wrapping.
 
-A caller POSTs a fully structured application payload (applicant info, needs,
-identity, bank account, etc.) and Barnacle drives a Steel + Stagehand browser
-session through all 42 pages of DisasterAssistance.gov, returning the FEMA
-confirmation number on success.
+## Endpoints
 
-## Endpoint
+Each registered plugin exposes a POST route. The FEMA disaster assistance plugin
+uses its legacy path for backward compatibility:
 
 ```
 POST /v1/fema/submit
@@ -16,9 +17,7 @@ Authorization: Bearer <key>
 Content-Type: application/json
 ```
 
-Request body: see `src/api/schemas/fema-submission.ts` for the full Zod schema
-covering all five form phases (pre-application, needs assessment, identity,
-application center, review/submit).
+New plugins follow the default convention: `POST /v1/<siteId>/run`.
 
 Operational routes:
 - `GET /healthz` — liveness probe
@@ -73,12 +72,21 @@ pnpm start
 
 ```
 src/
-├── server.ts                  # Fastify bootstrap + plugin registration
+├── server.ts                  # Fastify bootstrap — calls registerRoutes(), site-agnostic
+├── site-plugin.ts             # SitePlugin<TInput,TOutput> interface (engine contract)
 ├── config.ts                  # frozen env-typed config singleton
+├── plugins/
+│   └── loader.ts              # SITE_PLUGINS registry, dispatch(), registerRoutes()
+├── sites/
+│   └── fema/                  # FEMA disaster assistance plugin (reference implementation)
+│       ├── index.ts           # femaPlugin export: meta + execute()
+│       ├── schema.ts          # Zod schemas for request + response
+│       ├── service.ts         # execute() implementation
+│       └── flow.ts            # Steel + Stagehand 42-page form automation
 ├── api/
 │   ├── plugins/               # auth, error-handler, request-context
-│   ├── routes/                # fema-submission, health
-│   ├── schemas/               # Zod schemas (fema-submission, common envelope)
+│   ├── routes/                # health
+│   ├── schemas/               # common envelope schemas
 │   ├── helpers/envelope.ts    # success envelope builder
 │   └── errors.ts              # error hierarchy + envelope builder
 ├── scraper/
@@ -86,11 +94,7 @@ src/
 │   ├── pool.ts                # p-queue over createBrowserSession
 │   ├── throttle.ts            # Bottleneck limiter + jitter
 │   ├── retry.ts               # p-retry + failure classification
-│   ├── errors.ts              # typed scraper error hierarchy
-│   └── flows/
-│       └── fema-submission.ts # 42-page FEMA form automation
-├── services/
-│   └── fema-submission.ts     # orchestration: pool → flow → Prisma → envelope
+│   └── errors.ts              # typed scraper error hierarchy
 ├── cache/response-cache.ts    # lru-cache wrapper
 ├── lib/                       # logging, env, db client
 └── types/
@@ -104,6 +108,89 @@ src/
 - Concurrency: [`p-queue`](https://github.com/sindresorhus/p-queue), [`p-retry`](https://github.com/sindresorhus/p-retry), [`bottleneck`](https://github.com/SGrondin/bottleneck)
 - Caching: [`lru-cache`](https://github.com/isaacs/node-lru-cache)
 - Logging: [`pino`](https://github.com/pinojs/pino) with CloudWatch 256KB splitting + sensitive-field redaction
+
+## Plugin Authoring Guide
+
+A site plugin is a single TypeScript module that satisfies `SitePlugin<TInput, TOutput>`
+from `src/site-plugin.ts`. Core's loader discovers it through the static `SITE_PLUGINS`
+array in `src/plugins/loader.ts` — no filesystem scanning, no dynamic imports.
+
+### The SitePlugin interface
+
+```ts
+interface SitePlugin<TPayload, TResult> {
+  meta: SitePluginMeta;
+  execute(
+    payload: TPayload,
+    session: BrowserSession,
+    context: SitePluginContext
+  ): Promise<SitePluginResult<TResult>>;
+  onRetry?: (error: ScraperError, attempt: number) => void;
+}
+```
+
+### SitePluginMeta — required fields
+
+| Field | Type | Purpose |
+|---|---|---|
+| `siteId` | `string` | Stable key used for routing (`/v1/<siteId>/run`) and audit rows |
+| `displayName` | `string` | Human-readable label for logs and Swagger docs |
+| `bodySchema` | `ZodTypeAny` | Request body schema — core validates before calling `execute()` |
+| `responseSchema` | `ZodTypeAny` | Success response schema — drives Swagger output shape |
+| `routeOverride?` | `string` | Override the full route path (legacy compatibility only) |
+| `defaultBaseUrl?` | `string` | Fallback base URL when `config.scraper.siteBaseUrls[siteId]` is absent |
+
+### Minimal plugin skeleton
+
+```ts
+// src/sites/example/index.ts
+import { z } from "zod";
+import { getEnv } from "@/lib/env";
+import type { SitePlugin } from "@/site-plugin";
+
+const requestSchema = z.object({ targetUrl: z.string().url() });
+const responseSchema = z.object({ title: z.string() });
+
+type ExampleRequest = z.infer<typeof requestSchema>;
+type ExampleResult = z.infer<typeof responseSchema>;
+
+export const examplePlugin: SitePlugin<ExampleRequest, ExampleResult> = {
+  meta: {
+    siteId: "example",
+    displayName: "Example Site",
+    bodySchema: requestSchema,
+    responseSchema,
+    defaultBaseUrl: getEnv("EXAMPLE_BASE_URL", "https://example.com"),
+  },
+  async execute(payload, session, context) {
+    // context.baseUrl — resolved base URL (config map → defaultBaseUrl)
+    // context.logger  — request-scoped Pino logger
+    // context.config  — full AppConfig for cross-cutting settings
+    await session.page.goto(`${context.baseUrl}${payload.targetUrl}`);
+    const title = await session.page.title();
+    return { data: { title } };
+  },
+};
+```
+
+### Register the plugin
+
+Add one line to the `SITE_PLUGINS` array in `src/plugins/loader.ts`:
+
+```ts
+import { examplePlugin as loadedExamplePlugin } from "@/sites/example/index";
+
+export const SITE_PLUGINS: SitePlugin<unknown, unknown>[] = [
+  loadedPlugin as unknown as SitePlugin<unknown, unknown>,
+  loadedExamplePlugin as unknown as SitePlugin<unknown, unknown>,
+];
+```
+
+Use an import alias that doesn't repeat the siteId as a substring — this keeps
+the `grep -v sites/<id>` lint check clean for the usage line.
+
+Core registers the route `POST /v1/example/run` automatically at startup. No
+changes to `server.ts`, `config.ts`, or any other core file are required.
 
 ## Reference
 

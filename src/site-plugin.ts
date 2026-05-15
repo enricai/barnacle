@@ -22,7 +22,7 @@ import type { Logger } from "@/types/logging";
  * and build routes before any session is acquired.
  */
 export interface SitePluginMeta {
-  /** Stable identifier matching the `config.scraper.siteBaseUrls` key. */
+  /** Stable identifier used as the `config.scraper.siteBaseUrls` lookup key. */
   siteId: string;
   /** Human-readable label used in logs and Swagger docs. */
   displayName: string;
@@ -41,6 +41,11 @@ export interface SitePluginMeta {
    * legacy compatibility where an existing client contract cannot change.
    */
   routeOverride?: string;
+  /**
+   * Fallback base URL used by the loader when `config.scraper.siteBaseUrls[siteId]`
+   * is absent. Plugins read their own env vars here so core config stays generic.
+   */
+  defaultBaseUrl?: string;
 }
 
 /**
