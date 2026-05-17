@@ -9,12 +9,13 @@ import { type BrowserSession, createBrowserSession } from "@/scraper/session";
 const logger = getLogger({ name: "scraper/pool" });
 
 /**
- * Per-task hard timeout. A hung Stagehand operation (infinite network wait,
+ * Per-task hard timeout default. A hung Stagehand operation (infinite network wait,
  * frozen CDP connection) would otherwise block the queue slot indefinitely,
  * draining pool capacity without recovery. This ceiling converts a silent
  * hang into a SessionTimeoutError that the retry policy can act on.
+ * Individual plugins may override this via SitePluginMeta.taskTimeoutMs.
  */
-const TASK_TIMEOUT_MS = 90_000;
+const TASK_TIMEOUT_MS = 60 * 60 * 1_000; // 60 minutes
 
 /**
  * Shared queue that limits how many scraper tasks run concurrently across
@@ -37,7 +38,8 @@ const queue = new PQueue({ concurrency: config.scraper.poolSize });
  */
 export async function runWithSession<T>(
   task: (session: BrowserSession) => Promise<T>,
-  retryOptions: Omit<RetryOptions, "onSessionRestart"> = {}
+  retryOptions: Omit<RetryOptions, "onSessionRestart"> = {},
+  taskTimeoutMs = TASK_TIMEOUT_MS
 ): Promise<T> {
   return queue.add(
     async () => {
@@ -63,8 +65,8 @@ export async function runWithSession<T>(
             const session = await ensureSession();
             const timeout = new Promise<never>((_, reject) => {
               const t = setTimeout(
-                () => reject(new SessionTimeoutError(`task exceeded ${TASK_TIMEOUT_MS}ms`)),
-                TASK_TIMEOUT_MS
+                () => reject(new SessionTimeoutError(`task exceeded ${taskTimeoutMs}ms`)),
+                taskTimeoutMs
               );
               t.unref();
             });

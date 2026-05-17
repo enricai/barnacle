@@ -259,7 +259,7 @@ describe("dispatch — executeHttp hot-path branches", () => {
       onRetry,
     };
     await dispatch(pluginWithRetry, {}, stubContext);
-    expect(mockRunWithSession).toHaveBeenCalledWith(expect.any(Function), { onRetry });
+    expect(mockRunWithSession).toHaveBeenCalledWith(expect.any(Function), { onRetry }, undefined);
   });
 });
 
@@ -391,8 +391,7 @@ describe("dispatch — forceFallback option", () => {
 });
 
 describe("SITE_PLUGINS", () => {
-  it("contains the example plugin by default", () => {
-    expect(SITE_PLUGINS).toHaveLength(1);
-    expect(SITE_PLUGINS[0]?.meta.siteId).toBe("example");
+  it("contains the example plugin", () => {
+    expect(SITE_PLUGINS.some((p) => p.meta.siteId === "example")).toBe(true);
   });
 });

@@ -31,6 +31,7 @@ import {
 import { runWithSession } from "@/scraper/pool";
 import type { SitePlugin, SitePluginContext, SitePluginResult } from "@/site-plugin";
 import { examplePlugin } from "@/sites/example";
+import { femaDisasterAssistancePlugin } from "@/sites/fema-disaster-assistance";
 import type { Logger } from "@/types/logging";
 
 const logger = getLogger({ name: "plugins/loader" });
@@ -55,6 +56,7 @@ const logger = getLogger({ name: "plugins/loader" });
  */
 export const SITE_PLUGINS: SitePlugin<unknown, unknown>[] = [
   examplePlugin as SitePlugin<unknown, unknown>,
+  femaDisasterAssistancePlugin as SitePlugin<unknown, unknown>,
 ];
 
 /**
@@ -104,9 +106,11 @@ export async function dispatch<TResult>(
             `hot path failed for ${plugin.meta.siteId} (${httpErr.constructor.name}): ${httpErr.message} — engaging browser fallback`
           );
           recordFallbackActivation(plugin.meta.siteId);
-          result = (await runWithSession((session) => plugin.execute(payload, session, context), {
-            onRetry: plugin.onRetry,
-          })) as SitePluginResult<TResult>;
+          result = (await runWithSession(
+            (session) => plugin.execute(payload, session, context),
+            { onRetry: plugin.onRetry },
+            plugin.meta.taskTimeoutMs
+          )) as SitePluginResult<TResult>;
         } else if (httpErr instanceof HttpRateLimitError) {
           logger.warn(
             `hot path rate-limited for ${plugin.meta.siteId}: ${httpErr.message} — not falling back`
@@ -121,9 +125,11 @@ export async function dispatch<TResult>(
       if (options.forceFallback) {
         recordFallbackActivation(plugin.meta.siteId);
       }
-      result = (await runWithSession((session) => plugin.execute(payload, session, context), {
-        onRetry: plugin.onRetry,
-      })) as SitePluginResult<TResult>;
+      result = (await runWithSession(
+        (session) => plugin.execute(payload, session, context),
+        { onRetry: plugin.onRetry },
+        plugin.meta.taskTimeoutMs
+      )) as SitePluginResult<TResult>;
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

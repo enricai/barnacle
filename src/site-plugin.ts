@@ -41,6 +41,12 @@ export interface SitePluginMeta {
    * is absent. Plugins read their own env vars here so core config stays generic.
    */
   defaultBaseUrl?: string;
+  /**
+   * Per-task hard timeout in ms passed to the pool's runWithSession.
+   * Overrides the pool's 60-minute default. Only set when a plugin needs
+   * a shorter ceiling than the default.
+   */
+  taskTimeoutMs?: number;
 }
 
 /**
