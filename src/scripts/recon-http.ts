@@ -426,6 +426,7 @@ async function main(): Promise<void> {
     if (!replay.success) continue;
     try {
       const u = new URL(replay.url);
+      if (u.protocol !== "http:" && u.protocol !== "https:") continue;
       const pathname = u.pathname.toLowerCase();
       // Skip static fixture endpoints — probing them 60+ times could ban the CDN egress IP
       if (
