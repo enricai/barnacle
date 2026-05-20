@@ -32,7 +32,7 @@
     "recon:summarize": "tsx src/scripts/recon-summarize.ts"
   },
   "dependencies": {
-    "@ai-sdk/amazon-bedrock": "^3.0.0",
+    "@ai-sdk/amazon-bedrock": "^3.0.99",
     "@anthropic-ai/sdk": "^0.97.1",
     "@browserbasehq/stagehand": "^3.4.0",
     "@fastify/compress": "^8.0.1",
