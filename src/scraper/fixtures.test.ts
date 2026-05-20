@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { z } from "zod";
+import { z } from "zod/v4";
 
 const mockReadFileSync = vi.hoisted(() => vi.fn());
 

@@ -9,7 +9,7 @@
  * to import from any layer without pulling in browser or config initialization.
  */
 
-import type { ZodTypeAny } from "zod";
+import type { ZodType } from "zod/v4";
 
 import type { AppConfig } from "@/config";
 import type { ScraperError } from "@/scraper/errors";
@@ -27,9 +27,9 @@ export interface SitePluginMeta {
   /** Human-readable label used in logs and Swagger docs. */
   displayName: string;
   /** Zod schema for the route request body — validated by core before execute(). */
-  bodySchema: ZodTypeAny;
+  bodySchema: ZodType;
   /** Zod schema for the successful response body — drives the Swagger response shape. */
-  responseSchema: ZodTypeAny;
+  responseSchema: ZodType;
   /**
    * Full route path override. When set, the loader uses this verbatim instead
    * of `/v1/{siteId}/run`. Intended for legacy compatibility where an existing

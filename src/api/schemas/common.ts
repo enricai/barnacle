@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v4";
 
 /**
  * Error code registry and HTTP status envelope schema shared across all
@@ -74,7 +74,7 @@ const statusDetailSchema = z
     detailType: z.string().optional(),
     message: z.string().optional(),
   })
-  .passthrough();
+  .loose();
 
 /**
  * The envelope every response is wrapped in. Success and error responses
@@ -86,4 +86,4 @@ export const statusSchema = z
     dateTime: z.string(),
     details: z.array(statusDetailSchema).default([]),
   })
-  .passthrough();
+  .loose();

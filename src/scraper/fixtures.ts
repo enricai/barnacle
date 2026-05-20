@@ -9,7 +9,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import type { z } from "zod";
+import type { z } from "zod/v4";
 
 /**
  * Loads a committed JSON fixture from the `sites/<siteId>/fixtures/<filename>`
