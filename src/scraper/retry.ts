@@ -80,12 +80,13 @@ export async function withScraperRetry<T>(
       minTimeout: 500,
       maxTimeout: 5_000,
       randomize: true,
-      onFailedAttempt: async (error) => {
+      onFailedAttempt: async (context) => {
+        const { error, attemptNumber, retriesLeft } = context;
         logger.warn(
-          `scraper attempt ${error.attemptNumber} failed (${error.name}): ${error.message}; ${error.retriesLeft} retries left`
+          `scraper attempt ${attemptNumber} failed (${error.name}): ${error.message}; ${retriesLeft} retries left`
         );
         if (options.onRetry && error instanceof ScraperError) {
-          await options.onRetry(error, error.attemptNumber);
+          await options.onRetry(error, attemptNumber);
         }
       },
     }
