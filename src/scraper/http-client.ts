@@ -134,9 +134,9 @@ export function createHttpClient<TResponse>(
           minTimeout: 200,
           maxTimeout: 1_000,
           randomize: true,
-          onFailedAttempt: (error) => {
+          onFailedAttempt: (context) => {
             logger.warn(
-              `http hot-path attempt ${error.attemptNumber} failed: ${error.message}; ${error.retriesLeft} retries left`
+              `http hot-path attempt ${context.attemptNumber} failed: ${context.error.message}; ${context.retriesLeft} retries left`
             );
           },
         }
