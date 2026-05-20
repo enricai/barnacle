@@ -41,51 +41,48 @@ export async function runWithSession<T>(
   retryOptions: Omit<RetryOptions, "onSessionRestart"> = {},
   taskTimeoutMs = TASK_TIMEOUT_MS
 ): Promise<T> {
-  return queue.add(
-    async () => {
-      const sessionRef: { session: BrowserSession | null } = { session: null };
+  return queue.add(async () => {
+    const sessionRef: { session: BrowserSession | null } = { session: null };
 
-      const ensureSession = async (): Promise<BrowserSession> => {
-        if (!sessionRef.session) {
-          sessionRef.session = await createBrowserSession();
-        }
-        return sessionRef.session;
-      };
-
-      const closeSession = async (): Promise<void> => {
-        if (sessionRef.session) {
-          await sessionRef.session.close();
-          sessionRef.session = null;
-        }
-      };
-
-      try {
-        return await withScraperRetry(
-          async () => {
-            const session = await ensureSession();
-            const timeout = new Promise<never>((_, reject) => {
-              const t = setTimeout(
-                () => reject(new SessionTimeoutError(`task exceeded ${taskTimeoutMs}ms`)),
-                taskTimeoutMs
-              );
-              t.unref();
-            });
-            return Promise.race([task(session), timeout]);
-          },
-          {
-            ...retryOptions,
-            onSessionRestart: async () => {
-              logger.info("restarting scraper session after timeout");
-              await closeSession();
-            },
-          }
-        );
-      } finally {
-        await closeSession();
+    const ensureSession = async (): Promise<BrowserSession> => {
+      if (!sessionRef.session) {
+        sessionRef.session = await createBrowserSession();
       }
-    },
-    { throwOnTimeout: true }
-  ) as Promise<T>;
+      return sessionRef.session;
+    };
+
+    const closeSession = async (): Promise<void> => {
+      if (sessionRef.session) {
+        await sessionRef.session.close();
+        sessionRef.session = null;
+      }
+    };
+
+    try {
+      return await withScraperRetry(
+        async () => {
+          const session = await ensureSession();
+          const timeout = new Promise<never>((_, reject) => {
+            const t = setTimeout(
+              () => reject(new SessionTimeoutError(`task exceeded ${taskTimeoutMs}ms`)),
+              taskTimeoutMs
+            );
+            t.unref();
+          });
+          return Promise.race([task(session), timeout]);
+        },
+        {
+          ...retryOptions,
+          onSessionRestart: async () => {
+            logger.info("restarting scraper session after timeout");
+            await closeSession();
+          },
+        }
+      );
+    } finally {
+      await closeSession();
+    }
+  }) as Promise<T>;
 }
 
 /**
