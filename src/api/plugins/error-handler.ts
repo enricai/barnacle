@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import fp from "fastify-plugin";
 import { hasZodFastifySchemaValidationErrors } from "fastify-type-provider-zod";
-import { ZodError } from "zod";
+import { ZodError } from "zod/v4";
 
 import { ApiError, buildErrorEnvelope, httpStatusForCode } from "@/api/errors";
 import { ERROR_CODES } from "@/api/schemas/common";

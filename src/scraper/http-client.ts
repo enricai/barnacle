@@ -1,6 +1,6 @@
 import type Bottleneck from "bottleneck";
 import pRetry, { AbortError } from "p-retry";
-import type { ZodType } from "zod";
+import type { ZodType } from "zod/v4";
 
 import { getLogger } from "@/lib/logging";
 import {

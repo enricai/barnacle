@@ -65,7 +65,7 @@ function inferZodSchema(value: unknown, depth = 0, indent = ""): string {
   }
   if (typeof value === "object") {
     const entries = Object.entries(value as Record<string, unknown>);
-    if (entries.length === 0) return "z.record(z.unknown())";
+    if (entries.length === 0) return "z.record(z.string(), z.unknown())";
     const inner = `${indent}  `;
     const fields = entries
       .map(([k, v]) => `${inner}${JSON.stringify(k)}: ${inferZodSchema(v, depth + 1, inner)}`)
@@ -300,7 +300,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
  */
 
 import Bottleneck from "bottleneck";
-import { z } from "zod";
+import { z } from "zod/v4";
 
 ${fixtureImport}${clientImport}
 import type { BrowserSession } from "@/scraper/session";
@@ -380,7 +380,7 @@ function emitBrowserFlowTs(opts: {
  */
 
 import type { Stagehand } from "@browserbasehq/stagehand";
-import { z } from "zod";
+import { z } from "zod/v4";
 
 import type { ${pascal}Response } from "@/sites/${siteId}/contract";
 

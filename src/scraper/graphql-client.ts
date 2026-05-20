@@ -1,5 +1,5 @@
 import type Bottleneck from "bottleneck";
-import type { ZodType } from "zod";
+import type { ZodType } from "zod/v4";
 
 import { createHttpClient } from "@/scraper/http-client";
 

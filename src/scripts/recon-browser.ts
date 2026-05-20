@@ -41,7 +41,7 @@ import { join, resolve } from "node:path";
 
 import Anthropic from "@anthropic-ai/sdk";
 import type { Action, Page, Stagehand } from "@browserbasehq/stagehand";
-import { z } from "zod";
+import { z } from "zod/v4";
 
 import { config } from "@/config";
 import { configureHttpDispatcher } from "@/lib/http";

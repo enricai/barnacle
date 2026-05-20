@@ -21,7 +21,7 @@
 
 import { resolve } from "node:path";
 
-import { z } from "zod";
+import { z } from "zod/v4";
 
 import { configureHttpDispatcher } from "@/lib/http";
 import { getScriptLogger } from "@/lib/logging";

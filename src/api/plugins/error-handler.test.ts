@@ -1,7 +1,7 @@
 import Fastify from "fastify";
 import { serializerCompiler, validatorCompiler } from "fastify-type-provider-zod";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { z } from "zod";
+import { z } from "zod/v4";
 
 import {
   CaptchaEncounteredError,
