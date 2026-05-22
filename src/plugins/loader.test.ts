@@ -1,9 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { CaptchaEncounteredError, ScrapeFailureError, ThrottledRequestError } from "@/api/errors";
+import {
+  CaptchaEncounteredError,
+  EmptyResultsApiError,
+  ScrapeFailureError,
+  ThrottledRequestError,
+} from "@/api/errors";
 import { dispatch } from "@/plugins/loader";
 import {
   CaptchaError,
+  EmptyResultsError,
   HttpBotChallengeError,
   HttpRateLimitError,
   HttpSchemaError,
@@ -127,6 +133,19 @@ describe("dispatch", () => {
     await expect(dispatch(stubPlugin, {}, stubContext)).rejects.toBeInstanceOf(
       CaptchaEncounteredError
     );
+  });
+
+  it("throws EmptyResultsApiError when execute throws EmptyResultsError", async () => {
+    mockPluginExecute.mockRejectedValueOnce(new EmptyResultsError("no results found"));
+    await expect(dispatch(stubPlugin, {}, stubContext)).rejects.toBeInstanceOf(
+      EmptyResultsApiError
+    );
+  });
+
+  it("resolves normally when recordSubmission DB write fails (best-effort swallow)", async () => {
+    mockCreate.mockRejectedValueOnce(new Error("db connection lost"));
+    const result = await dispatch(stubPlugin, {}, stubContext);
+    expect(result.data).toEqual({ result: "ok" });
   });
 
   it("throws ScrapeFailureError when execute throws a non-CaptchaError ScraperError subclass", async () => {

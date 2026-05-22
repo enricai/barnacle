@@ -3,7 +3,8 @@ import fp from "fastify-plugin";
 import { hasZodFastifySchemaValidationErrors } from "fastify-type-provider-zod";
 import { ZodError } from "zod/v4";
 
-import { ApiError, buildErrorEnvelope, httpStatusForCode } from "@/api/errors";
+import { ApiError } from "@/api/errors";
+import { replyWithError } from "@/api/helpers/reply";
 import { ERROR_CODES } from "@/api/schemas/common";
 import { CaptchaError, ScraperError } from "@/scraper/errors";
 
@@ -16,11 +17,11 @@ import { CaptchaError, ScraperError } from "@/scraper/errors";
  */
 async function errorHandlerPlugin(app: FastifyInstance): Promise<void> {
   app.setNotFoundHandler((_request, reply) => {
-    const envelope = buildErrorEnvelope(
+    replyWithError(
+      reply,
       ERROR_CODES.RESOURCE_NOT_FOUND,
       `route ${_request.method} ${_request.url} not found`
     );
-    void reply.status(httpStatusForCode(ERROR_CODES.RESOURCE_NOT_FOUND)).send(envelope);
   });
 
   app.setErrorHandler((error, request, reply) => {
@@ -28,8 +29,7 @@ async function errorHandlerPlugin(app: FastifyInstance): Promise<void> {
       const message = error.validation
         .map((issue) => `${issue.instancePath || "body"}: ${issue.message}`)
         .join("; ");
-      const envelope = buildErrorEnvelope(ERROR_CODES.FIELD_VIOLATION, message);
-      void reply.status(httpStatusForCode(ERROR_CODES.FIELD_VIOLATION)).send(envelope);
+      replyWithError(reply, ERROR_CODES.FIELD_VIOLATION, message);
       return;
     }
 
@@ -37,14 +37,12 @@ async function errorHandlerPlugin(app: FastifyInstance): Promise<void> {
       const message = error.issues
         .map((issue) => `${issue.path.join(".") || "body"}: ${issue.message}`)
         .join("; ");
-      const envelope = buildErrorEnvelope(ERROR_CODES.FIELD_VIOLATION, message);
-      void reply.status(httpStatusForCode(ERROR_CODES.FIELD_VIOLATION)).send(envelope);
+      replyWithError(reply, ERROR_CODES.FIELD_VIOLATION, message);
       return;
     }
 
     if (error instanceof ApiError) {
-      const envelope = buildErrorEnvelope(error.code, error.message, error.detailType);
-      void reply.status(httpStatusForCode(error.code)).send(envelope);
+      replyWithError(reply, error.code, error.message, error.detailType);
       return;
     }
 
@@ -58,18 +56,13 @@ async function errorHandlerPlugin(app: FastifyInstance): Promise<void> {
         error instanceof CaptchaError
           ? ERROR_CODES.CAPTCHA_ENCOUNTERED
           : ERROR_CODES.SCRAPE_FAILURE;
-      const envelope = buildErrorEnvelope(code, error.message);
-      void reply.status(httpStatusForCode(code)).send(envelope);
+      replyWithError(reply, code, error.message);
       return;
     }
 
     const err = error as { statusCode?: number; message?: string };
     if (typeof err.statusCode === "number" && err.statusCode === 429) {
-      const envelope = buildErrorEnvelope(
-        ERROR_CODES.THROTTLED_REQUEST,
-        err.message || "rate limit exceeded"
-      );
-      void reply.status(httpStatusForCode(ERROR_CODES.THROTTLED_REQUEST)).send(envelope);
+      replyWithError(reply, ERROR_CODES.THROTTLED_REQUEST, err.message || "rate limit exceeded");
       return;
     }
 
@@ -78,17 +71,18 @@ async function errorHandlerPlugin(app: FastifyInstance): Promise<void> {
     // Pass the original status through — these aren't domain errors,
     // so we stay faithful to what Fastify decided rather than re-mapping.
     if (typeof err.statusCode === "number" && err.statusCode < 500) {
-      const envelope = buildErrorEnvelope(
+      replyWithError(
+        reply,
         ERROR_CODES.GENERIC_ERROR,
-        err.message || "request failed"
+        err.message || "request failed",
+        undefined,
+        err.statusCode
       );
-      void reply.status(err.statusCode).send(envelope);
       return;
     }
 
     request.log.error({ err }, "unhandled error");
-    const envelope = buildErrorEnvelope(ERROR_CODES.GENERIC_ERROR, "internal server error");
-    void reply.status(httpStatusForCode(ERROR_CODES.GENERIC_ERROR)).send(envelope);
+    replyWithError(reply, ERROR_CODES.GENERIC_ERROR, "internal server error");
   });
 }
 

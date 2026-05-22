@@ -3,6 +3,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { cacheStats as defaultCacheStats } from "@/cache/response-cache";
 import { config as defaultConfig } from "@/config";
 import { prisma } from "@/lib/db/client";
+import { toErrorMessage } from "@/lib/errors";
 import { getLogger } from "@/lib/logging";
 import { allMetrics, type SiteMetrics } from "@/scraper/metrics";
 import { poolStats as defaultPoolStats } from "@/scraper/pool";
@@ -97,7 +98,7 @@ async function checkDatabase(cfg: HealthConfig): Promise<DependencyStatus> {
     await Promise.race([prisma.$queryRawUnsafe("SELECT 1"), timeout]);
     return { ok: true };
   } catch (err) {
-    return { ok: false, detail: String(err).slice(0, 200) };
+    return { ok: false, detail: toErrorMessage(err).slice(0, 200) };
   } finally {
     if (timer) clearTimeout(timer);
   }

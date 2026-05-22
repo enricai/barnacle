@@ -1,6 +1,7 @@
 import Bottleneck from "bottleneck";
 
 import { config } from "@/config";
+import { randomIntInclusive } from "@/lib/random";
 
 /**
  * Creates a Bottleneck limiter scoped to a single scraper session.
@@ -27,19 +28,14 @@ export function createSessionLimiter(): Bottleneck {
  * result of `fn`.
  */
 export async function scheduleAction<T>(limiter: Bottleneck, fn: () => Promise<T>): Promise<T> {
-  const jitter = randomIntInRange(
+  const jitter = randomIntInclusive(
     0,
-    config.scraper.maxActionDelayMs - config.scraper.minActionDelayMs
+    config.scraper.maxActionDelayMs - config.scraper.minActionDelayMs - 1
   );
   return limiter.schedule({ weight: 1, priority: 5 }, async () => {
     if (jitter > 0) await sleep(jitter);
     return fn();
   });
-}
-
-function randomIntInRange(min: number, max: number): number {
-  if (max <= min) return min;
-  return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
 function sleep(ms: number): Promise<void> {

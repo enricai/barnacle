@@ -26,6 +26,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 
+import { toErrorMessage } from "@/lib/errors";
 import { getScriptLogger } from "@/lib/logging";
 import {
   AUX_DIR,
@@ -540,6 +541,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
-  logger.error(`recon-generate failed: ${String(err)}`);
+  logger.error(`recon-generate failed: ${toErrorMessage(err)}`);
   process.exit(1);
 });

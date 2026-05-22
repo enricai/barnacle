@@ -19,6 +19,7 @@
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { toErrorMessage } from "@/lib/errors";
 import { configureHttpDispatcher } from "@/lib/http";
 import { getScriptLogger } from "@/lib/logging";
 
@@ -182,7 +183,7 @@ async function replayCapture(filename: string, capture: Capture): Promise<Replay
       error: null,
     };
   } catch (err) {
-    logger.error(`[ERR] ${capture.method} ${capture.url}: ${String(err)}`);
+    logger.error(`[ERR] ${capture.method} ${capture.url}: ${toErrorMessage(err)}`);
     return {
       sourceCapture: filename,
       url: capture.url,
@@ -193,7 +194,7 @@ async function replayCapture(filename: string, capture: Capture): Promise<Replay
       replayHeaders: {},
       replayBody: null,
       success: false,
-      error: String(err),
+      error: toErrorMessage(err),
     };
   }
 }
@@ -220,7 +221,7 @@ async function probeIntrospection(endpoint: string): Promise<void> {
       logger.info("  → introspection DISABLED — write Zod schemas by hand from captured JSON");
     }
   } catch (err) {
-    logger.error(`  → introspection error: ${String(err)}`);
+    logger.error(`  → introspection error: ${toErrorMessage(err)}`);
   }
 }
 
@@ -276,7 +277,7 @@ async function probeAuxiliaryEndpoints(replays: ReplayResult[]): Promise<void> {
       writtenInRun.add(base);
       logger.info(`[fixture] ${candidate.url} → ${AUX_DIR}/${filename} — commit as static fixture`);
     } catch (err) {
-      logger.error(`[aux err] ${candidate.url}: ${String(err)}`);
+      logger.error(`[aux err] ${candidate.url}: ${toErrorMessage(err)}`);
     }
   }
 }
@@ -455,6 +456,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  logger.error(`recon-http failed: ${String(err)}`);
+  logger.error(`recon-http failed: ${toErrorMessage(err)}`);
   process.exit(1);
 });
