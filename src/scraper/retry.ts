@@ -1,5 +1,6 @@
 import pRetry, { AbortError } from "p-retry";
 
+import { toErrorMessage } from "@/lib/errors";
 import { getLogger } from "@/lib/logging";
 import {
   CaptchaError,
@@ -99,7 +100,7 @@ export async function withScraperRetry<T>(
  */
 export function classifyScraperError(raw: unknown): ScraperError {
   if (raw instanceof ScraperError) return raw;
-  const message = raw instanceof Error ? raw.message : String(raw);
+  const message = toErrorMessage(raw);
   const lower = message.toLowerCase();
   if (lower.includes("captcha")) return new CaptchaError(message);
   if (lower.includes("timeout") || lower.includes("timed out")) {

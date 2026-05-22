@@ -23,6 +23,7 @@ import { resolve } from "node:path";
 
 import { z } from "zod/v4";
 
+import { toErrorMessage } from "@/lib/errors";
 import { configureHttpDispatcher } from "@/lib/http";
 import { getScriptLogger } from "@/lib/logging";
 
@@ -103,7 +104,7 @@ async function loadResponseSchema(schemaPath: string): Promise<z.ZodTypeAny> {
     }
     return mod.default;
   } catch (err) {
-    logger.error(`--response-schema: failed to import ${schemaPath}: ${String(err)}`);
+    logger.error(`--response-schema: failed to import ${schemaPath}: ${toErrorMessage(err)}`);
     process.exit(1);
   }
 }
@@ -142,7 +143,7 @@ async function main(): Promise<void> {
     if (err instanceof Error && err.name === "AbortError") {
       logger.error(`smoke-test timed out after ${timeoutMs}ms`);
     } else {
-      logger.error(`fetch failed: ${String(err)}`);
+      logger.error(`fetch failed: ${toErrorMessage(err)}`);
     }
     process.exit(1);
   } finally {
@@ -156,7 +157,7 @@ async function main(): Promise<void> {
   try {
     body = await response.json();
   } catch (err) {
-    logger.error(`response body is not JSON: ${String(err)}`);
+    logger.error(`response body is not JSON: ${toErrorMessage(err)}`);
     process.exit(1);
   }
 
@@ -214,7 +215,7 @@ async function main(): Promise<void> {
       if (err instanceof Error && err.name === "AbortError") {
         logger.error(`smoke-test (fallback) timed out after ${timeoutMs}ms`);
       } else {
-        logger.error(`fallback probe fetch failed: ${String(err)}`);
+        logger.error(`fallback probe fetch failed: ${toErrorMessage(err)}`);
       }
       process.exit(1);
     } finally {
@@ -234,7 +235,7 @@ async function main(): Promise<void> {
     try {
       fallbackBody = await fallbackResponse.json();
     } catch (err) {
-      logger.error(`fallback response body is not JSON: ${String(err)}`);
+      logger.error(`fallback response body is not JSON: ${toErrorMessage(err)}`);
       process.exit(1);
     }
 
@@ -271,6 +272,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  logger.error(`smoke-test error: ${String(err)}`);
+  logger.error(`smoke-test error: ${toErrorMessage(err)}`);
   process.exit(1);
 });

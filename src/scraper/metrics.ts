@@ -1,3 +1,5 @@
+import { randomIntInclusive } from "@/lib/random";
+
 /**
  * In-process counters for the spec's drift-detection signals (spec §6B).
  * Exposed via /readyz so ops dashboards can alert when fallback rate rises —
@@ -73,7 +75,7 @@ export function recordHotPathLatency(siteId: string, latencyMs: number): void {
   if (reservoir.length < RESERVOIR_SIZE) {
     reservoir.push(latencyMs);
   } else {
-    reservoir[Math.floor(Math.random() * RESERVOIR_SIZE)] = latencyMs;
+    reservoir[randomIntInclusive(0, RESERVOIR_SIZE - 1)] = latencyMs;
   }
   const sorted = [...reservoir].sort((a, b) => a - b);
   entry.p95LatencyMs = sorted[Math.floor(sorted.length * 0.95)] ?? sorted[sorted.length - 1];

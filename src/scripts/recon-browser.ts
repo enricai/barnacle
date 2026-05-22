@@ -44,6 +44,7 @@ import type { Action, Page, Stagehand } from "@browserbasehq/stagehand";
 import { z } from "zod/v4";
 
 import { config } from "@/config";
+import { toErrorMessage } from "@/lib/errors";
 import { configureHttpDispatcher } from "@/lib/http";
 import { getScriptLogger } from "@/lib/logging";
 import { StepVerificationError } from "@/scraper/errors";
@@ -610,7 +611,7 @@ async function executeStepWithHealing(params: {
       }
     } catch (err) {
       const cause = err instanceof Error && err.cause instanceof Error ? err.cause.message : null;
-      record.errorMessage = `${err instanceof Error ? err.message : String(err)}${cause ? ` (cause: ${cause})` : ""}`;
+      record.errorMessage = `${toErrorMessage(err)}${cause ? ` (cause: ${cause})` : ""}`;
     }
 
     await page.waitForTimeout(STEP_PAUSE_MS);
@@ -691,7 +692,7 @@ function parseCli(): { url: string; flow: string[]; captureAll: boolean } {
     try {
       flow = JSON.parse(readFileSync(flowFile, "utf8")) as string[];
     } catch (err) {
-      logger.error(`failed to read --flow-file ${flowFile}: ${String(err)}`);
+      logger.error(`failed to read --flow-file ${flowFile}: ${toErrorMessage(err)}`);
       process.exit(1);
     }
   }
@@ -823,7 +824,7 @@ main().catch((err) => {
   // StagehandDefaultError wraps the real cause with a verbose "Hey! We're sorry..." banner.
   // Unwrap it so the log shows just the meaningful error message.
   const message =
-    err instanceof Error && err.cause instanceof Error ? err.cause.message : String(err);
+    err instanceof Error && err.cause instanceof Error ? err.cause.message : toErrorMessage(err);
   logger.error(`recon-browser failed: ${message}`);
   process.exit(1);
 });

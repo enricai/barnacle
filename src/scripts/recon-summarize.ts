@@ -15,6 +15,7 @@
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
+import { toErrorMessage } from "@/lib/errors";
 import { getScriptLogger } from "@/lib/logging";
 import {
   AUX_DIR,
@@ -254,6 +255,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  logger.error(`recon-summarize failed: ${String(err)}`);
+  logger.error(`recon-summarize failed: ${toErrorMessage(err)}`);
   process.exit(1);
 });

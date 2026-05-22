@@ -3,6 +3,7 @@ import type { FastifyInstance, RawServerDefault } from "fastify";
 import type pino from "pino";
 
 import {
+  type ApiError,
   CaptchaEncounteredError,
   EmptyResultsApiError,
   ScrapeFailureError,
@@ -12,6 +13,7 @@ import { successEnvelope } from "@/api/helpers/envelope";
 import { getCachedResponse, getOrCreateInFlight } from "@/cache/response-cache";
 import type { AppConfig } from "@/config";
 import { prisma } from "@/lib/db/client";
+import { toErrorMessage } from "@/lib/errors";
 import { extendLogger, getLogger } from "@/lib/logging";
 import {
   CaptchaError,
@@ -57,6 +59,113 @@ const logger = getLogger({ name: "plugins/loader" });
 export const SITE_PLUGINS: SitePlugin<unknown, unknown>[] = [];
 
 /**
+ * Pure mapping from scraper-internal errors to the public ApiError hierarchy.
+ *
+ * Exists so dispatch()'s catch block stays a short tail of guard clauses —
+ * the if-instanceof chain captures the entire scraper-to-wire error contract
+ * in one place. Returns `undefined` when the caller should re-throw the
+ * original error (plain Error or anything outside the ScraperError tree).
+ */
+function toApiError(err: unknown): ApiError | undefined {
+  if (err instanceof CaptchaError) return new CaptchaEncounteredError(err.message);
+  if (err instanceof EmptyResultsError) return new EmptyResultsApiError(err.message);
+  if (err instanceof HttpRateLimitError) return new ThrottledRequestError(err.message);
+  if (err instanceof ScraperError) return new ScrapeFailureError(err.message);
+  return undefined;
+}
+
+/**
+ * Writes a single audit row to the SiteSubmission table.
+ *
+ * Exists because dispatch() persists audit rows on both the success and the
+ * failure branches and the inline `prisma.siteSubmission.create({ ... })`
+ * + try/catch + log block was duplicated. Centralising it keeps the
+ * audit-write semantics (best-effort, never re-throws, always logs a warning
+ * on DB failure) consistent across both branches.
+ */
+async function recordSubmission(
+  siteId: string,
+  status: "submitted" | "error",
+  payload: object
+): Promise<void> {
+  try {
+    await prisma.siteSubmission.create({
+      data: { siteId, status, payload },
+    });
+  } catch (dbErr) {
+    const phase = status === "submitted" ? "successful scrape" : "scrape error";
+    logger.warn(`audit write failed after ${phase}: ${toErrorMessage(dbErr)}`);
+  }
+}
+
+/**
+ * Runs the hot path (when available) + fallback pipeline for a single
+ * submission. Extracted so dispatch() reads as a linear "run pipeline,
+ * record audit, return" sequence rather than a `let result` mutated across
+ * three branches.
+ */
+async function runPluginPipeline<TResult>(
+  plugin: SitePlugin<unknown, unknown>,
+  payload: unknown,
+  context: SitePluginContext,
+  options: { forceFallback?: boolean }
+): Promise<SitePluginResult<TResult>> {
+  if (!plugin.executeHttp || options.forceFallback) {
+    if (options.forceFallback) {
+      recordFallbackActivation(plugin.meta.siteId);
+    }
+    return (await runWithSession(
+      (session) => plugin.execute(payload, session, context),
+      { onRetry: plugin.onRetry },
+      plugin.meta.taskTimeoutMs
+    )) as SitePluginResult<TResult>;
+  }
+
+  try {
+    const { value: cached, key } = getCachedResponse<SitePluginResult<TResult>>(
+      `${context.baseUrl}:${plugin.meta.siteId}`,
+      payload
+    );
+    if (cached) {
+      recordHotPathSuccess(plugin.meta.siteId);
+      return cached;
+    }
+    const t0 = Date.now();
+    const fresh = await getOrCreateInFlight(
+      key,
+      // biome-ignore lint/style/noNonNullAssertion: guarded by !plugin.executeHttp above
+      () => plugin.executeHttp!(payload, context) as Promise<SitePluginResult<TResult>>
+    );
+    recordHotPathLatency(plugin.meta.siteId, Date.now() - t0);
+    recordHotPathSuccess(plugin.meta.siteId);
+    return fresh;
+  } catch (httpErr) {
+    if (
+      httpErr instanceof HttpSchemaError ||
+      httpErr instanceof HttpBotChallengeError ||
+      httpErr instanceof HttpServerError
+    ) {
+      logger.warn(
+        `hot path failed for ${plugin.meta.siteId} (${httpErr.constructor.name}): ${httpErr.message} — engaging browser fallback`
+      );
+      recordFallbackActivation(plugin.meta.siteId);
+      return (await runWithSession(
+        (session) => plugin.execute(payload, session, context),
+        { onRetry: plugin.onRetry },
+        plugin.meta.taskTimeoutMs
+      )) as SitePluginResult<TResult>;
+    }
+    if (httpErr instanceof HttpRateLimitError) {
+      logger.warn(
+        `hot path rate-limited for ${plugin.meta.siteId}: ${httpErr.message} — not falling back`
+      );
+      recordRateLimitRejection(plugin.meta.siteId);
+    }
+    throw httpErr;
+  }
+}
+
+/**
  * Runs a single plugin submission end-to-end. Tries the direct-HTTP hot path
  * first when the plugin supplies `executeHttp`; on `HttpSchemaError`,
  * `HttpBotChallengeError`, or `HttpServerError` falls back to the Stagehand
@@ -72,99 +181,23 @@ export async function dispatch<TResult>(
   context: SitePluginContext,
   options: { forceFallback?: boolean } = {}
 ): Promise<SitePluginResult<TResult>> {
-  let result: SitePluginResult<TResult> | undefined;
   try {
-    if (plugin.executeHttp && !options.forceFallback) {
-      try {
-        const { value: cached, key } = getCachedResponse<SitePluginResult<TResult>>(
-          `${context.baseUrl}:${plugin.meta.siteId}`,
-          payload
-        );
-        if (cached) {
-          result = cached;
-          recordHotPathSuccess(plugin.meta.siteId);
-        } else {
-          const t0 = Date.now();
-          result = await getOrCreateInFlight(
-            key,
-            // biome-ignore lint/style/noNonNullAssertion: guarded by if (plugin.executeHttp &&...)
-            () => plugin.executeHttp!(payload, context) as Promise<SitePluginResult<TResult>>
-          );
-          recordHotPathLatency(plugin.meta.siteId, Date.now() - t0);
-          recordHotPathSuccess(plugin.meta.siteId);
-        }
-      } catch (httpErr) {
-        if (
-          httpErr instanceof HttpSchemaError ||
-          httpErr instanceof HttpBotChallengeError ||
-          httpErr instanceof HttpServerError
-        ) {
-          logger.warn(
-            `hot path failed for ${plugin.meta.siteId} (${httpErr.constructor.name}): ${httpErr.message} — engaging browser fallback`
-          );
-          recordFallbackActivation(plugin.meta.siteId);
-          result = (await runWithSession(
-            (session) => plugin.execute(payload, session, context),
-            { onRetry: plugin.onRetry },
-            plugin.meta.taskTimeoutMs
-          )) as SitePluginResult<TResult>;
-        } else if (httpErr instanceof HttpRateLimitError) {
-          logger.warn(
-            `hot path rate-limited for ${plugin.meta.siteId}: ${httpErr.message} — not falling back`
-          );
-          recordRateLimitRejection(plugin.meta.siteId);
-          throw httpErr;
-        } else {
-          throw httpErr;
-        }
-      }
-    } else {
-      if (options.forceFallback) {
-        recordFallbackActivation(plugin.meta.siteId);
-      }
-      result = (await runWithSession(
-        (session) => plugin.execute(payload, session, context),
-        { onRetry: plugin.onRetry },
-        plugin.meta.taskTimeoutMs
-      )) as SitePluginResult<TResult>;
-    }
+    const result = await runPluginPipeline<TResult>(plugin, payload, context, options);
+    await recordSubmission(
+      plugin.meta.siteId,
+      "submitted",
+      (result.auditPayload ?? result.data) as object
+    );
+    return result;
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    try {
-      await prisma.siteSubmission.create({
-        data: {
-          siteId: plugin.meta.siteId,
-          status: "error",
-          payload: { error: message, siteId: plugin.meta.siteId },
-        },
-      });
-    } catch (dbErr) {
-      logger.warn(
-        `audit write failed after scrape error: ${dbErr instanceof Error ? dbErr.message : String(dbErr)}`
-      );
-    }
-    if (err instanceof CaptchaError) throw new CaptchaEncounteredError(err.message);
-    if (err instanceof EmptyResultsError) throw new EmptyResultsApiError(err.message);
-    if (err instanceof HttpRateLimitError) throw new ThrottledRequestError(err.message);
-    if (err instanceof ScraperError) throw new ScrapeFailureError(err.message);
+    await recordSubmission(plugin.meta.siteId, "error", {
+      error: toErrorMessage(err),
+      siteId: plugin.meta.siteId,
+    });
+    const apiErr = toApiError(err);
+    if (apiErr) throw apiErr;
     throw err;
   }
-
-  try {
-    await prisma.siteSubmission.create({
-      data: {
-        siteId: plugin.meta.siteId,
-        status: "submitted",
-        payload: (result.auditPayload ?? result.data) as object,
-      },
-    });
-  } catch (dbErr) {
-    logger.warn(
-      `audit write failed after successful scrape: ${dbErr instanceof Error ? dbErr.message : String(dbErr)}`
-    );
-  }
-
-  return result;
 }
 
 /**

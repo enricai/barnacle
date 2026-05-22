@@ -4,7 +4,9 @@ import Steel from "steel-sdk";
 
 import { config } from "@/config";
 import { createBedrockModel } from "@/lib/bedrock";
+import { toErrorMessage } from "@/lib/errors";
 import { getLogger } from "@/lib/logging";
+import { pickRandom } from "@/lib/random";
 import { createSessionLimiter } from "@/scraper/throttle";
 
 const logger = getLogger({ name: "scraper/session" });
@@ -40,10 +42,7 @@ const VIEWPORTS = [
 ] as const;
 
 function pickRandomViewport(): { width: number; height: number } {
-  // Math.floor(Math.random() * len) is always < len, so the indexed
-  // access is total — no need for a non-null assertion.
-  const index = Math.floor(Math.random() * VIEWPORTS.length);
-  return VIEWPORTS[index] ?? VIEWPORTS[0];
+  return pickRandom(VIEWPORTS);
 }
 
 /**
@@ -147,12 +146,14 @@ export async function createBrowserSession(): Promise<BrowserSession> {
     try {
       if (stagehand) await stagehand.close();
     } catch (closeErr) {
-      logger.warn(`stagehand close during failed init: ${String(closeErr)}`);
+      logger.warn(`stagehand close during failed init: ${toErrorMessage(closeErr)}`);
     }
     try {
       await steel.sessions.release(session.id);
     } catch (releaseErr) {
-      logger.warn(`steel release during failed init for ${session.id}: ${String(releaseErr)}`);
+      logger.warn(
+        `steel release during failed init for ${session.id}: ${toErrorMessage(releaseErr)}`
+      );
     }
     throw err;
   }
@@ -163,12 +164,12 @@ export async function createBrowserSession(): Promise<BrowserSession> {
     try {
       await stagehand.close();
     } catch (err) {
-      logger.warn(`stagehand close failed for session ${session.id}: ${String(err)}`);
+      logger.warn(`stagehand close failed for session ${session.id}: ${toErrorMessage(err)}`);
     }
     try {
       await steel.sessions.release(session.id);
     } catch (err) {
-      logger.warn(`steel release failed for session ${session.id}: ${String(err)}`);
+      logger.warn(`steel release failed for session ${session.id}: ${toErrorMessage(err)}`);
     }
     await limiter.stop({ dropWaitingJobs: true });
   };

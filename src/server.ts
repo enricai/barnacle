@@ -17,6 +17,7 @@ import requestContextPlugin from "@/api/plugins/request-context";
 import { healthRoutes } from "@/api/routes/health";
 import { config as defaultConfig, loadConfig } from "@/config";
 import { prisma } from "@/lib/db/client";
+import { toErrorMessage } from "@/lib/errors";
 import { configureHttpDispatcher } from "@/lib/http";
 import { getLogger } from "@/lib/logging";
 import { registerRoutes } from "@/plugins/loader";
@@ -118,12 +119,12 @@ export async function buildServer(): Promise<
     try {
       await drainPool();
     } catch (err) {
-      logger.warn(`drainPool failed during shutdown: ${String(err).slice(0, 200)}`);
+      logger.warn(`drainPool failed during shutdown: ${toErrorMessage(err).slice(0, 200)}`);
     }
     try {
       await prisma.$disconnect();
     } catch (err) {
-      logger.warn(`prisma disconnect failed during shutdown: ${String(err).slice(0, 200)}`);
+      logger.warn(`prisma disconnect failed during shutdown: ${toErrorMessage(err).slice(0, 200)}`);
     }
   });
 
