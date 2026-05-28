@@ -1,9 +1,12 @@
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import type { FastifyInstance, FastifyReply } from "fastify";
 
 import { cacheStats as defaultCacheStats } from "@/cache/response-cache";
 import { config as defaultConfig } from "@/config";
 import { prisma } from "@/lib/db/client";
 import { getLogger } from "@/lib/logging";
+import { getTelemetryState, type RunState } from "@/lib/telemetry/run-state";
 import { allMetrics, type SiteMetrics } from "@/scraper/metrics";
 import { poolStats as defaultPoolStats } from "@/scraper/pool";
 
@@ -17,6 +20,13 @@ const logger = getLogger({ name: "routes/health" });
 interface DependencyStatus {
   ok: boolean;
   detail?: string;
+}
+
+/** Latest verdict from the recon-heal loop for one site. */
+interface HealSummary {
+  verdict: string;
+  bestPassRate: number;
+  reportPath: string;
 }
 
 interface ReadinessReport {
@@ -37,6 +47,13 @@ interface ReadinessReport {
     /** Per-site drift-detection counters (spec §6B). Rising fallbackActivations signals recon should re-run. */
     metrics: Record<string, SiteMetrics>;
   };
+  /** NDJSON event-stream telemetry for the current run. */
+  telemetry: RunState;
+  /**
+   * Latest heal-loop verdict per siteId, populated by scanning heal-out/.
+   * Empty object when no healing reports exist.
+   */
+  heal: Record<string, HealSummary>;
 }
 
 /**
@@ -66,6 +83,13 @@ interface HealthRoutesOptions {
   poolStats?: () => { size: number; pending: number; concurrency: number };
   /** Override for tests — defaults to the live response-cache stats. */
   cacheStats?: () => { size: number; max: number; inFlight: number };
+  /** Override for tests — defaults to the live telemetry run state. */
+  telemetryState?: () => RunState;
+  /**
+   * Override for tests — root directory scanned for heal-out/<siteId>/healing-<siteId>.md.
+   * Defaults to process.cwd().
+   */
+  healOutRoot?: string;
 }
 
 const DB_CHECK_TIMEOUT_MS = 1500;
@@ -152,6 +176,50 @@ function checkScraperPool(
 }
 
 /**
+ * Scans heal-out/<siteId>/healing-<siteId>.md files under `rootDir` and
+ * extracts the verdict and best-pass-rate lines written by writeHealReport().
+ * Returns an empty object when the heal-out directory doesn't exist yet —
+ * the caller treats absence as "no healing runs performed."
+ */
+function readHealSummaries(rootDir: string): Record<string, HealSummary> {
+  const healOut = resolve(join(rootDir, "heal-out"));
+  if (!existsSync(healOut)) return {};
+
+  const result: Record<string, HealSummary> = {};
+  let siteDirs: string[];
+  try {
+    siteDirs = readdirSync(healOut, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name);
+  } catch {
+    return {};
+  }
+
+  for (const siteId of siteDirs) {
+    const reportPath = join(healOut, siteId, `healing-${siteId}.md`);
+    if (!existsSync(reportPath)) continue;
+
+    let content: string;
+    try {
+      content = readFileSync(reportPath, "utf-8");
+    } catch {
+      continue;
+    }
+
+    const verdictMatch = /^\*\*Verdict:\*\*\s+(\S+)/m.exec(content);
+    const passRateMatch = /^\*\*Best pass rate:\*\*\s+(\d+)%/m.exec(content);
+    if (!verdictMatch) continue;
+
+    const verdict = verdictMatch[1] ?? "UNKNOWN";
+    const bestPassRate = passRateMatch ? Number(passRateMatch[1]) / 100 : 0;
+
+    result[siteId] = { verdict, bestPassRate, reportPath: resolve(reportPath) };
+  }
+
+  return result;
+}
+
+/**
  * Health and readiness probes. Ops-only routes — bypass auth and return plain JSON instead
  * of the standard envelope. `/healthz` is a liveness check (process is up). `/readyz`
  * verifies external dependencies and downgrades to 503 when any are
@@ -170,6 +238,8 @@ export async function healthRoutes(
 
   const poolStatsFn = options.poolStats ?? defaultPoolStats;
   const cacheStatsFn = options.cacheStats ?? defaultCacheStats;
+  const telemetryStateFn = options.telemetryState ?? getTelemetryState;
+  const healOutRoot = options.healOutRoot ?? process.cwd();
 
   app.get("/readyz", async (_request, reply: FastifyReply) => {
     const [database, scraperCredentials, scraperPool] = await Promise.all([
@@ -186,6 +256,8 @@ export async function healthRoutes(
         cache: cacheStatsFn(),
         metrics: allMetrics(),
       },
+      telemetry: telemetryStateFn(),
+      heal: readHealSummaries(healOutRoot),
     };
     if (!allOk) {
       logger.warn(
