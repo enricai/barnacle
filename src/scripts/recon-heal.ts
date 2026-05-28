@@ -490,6 +490,7 @@ export function writeHealReport(params: {
 
 // ── main heal loop ────────────────────────────────────────────────────────────
 
+/** Parameters accepted by `phaseHeal` — all fields except `siteId` and `url` are optional with sensible defaults. */
 export interface HealParams {
   siteId: string;
   url: string;
@@ -504,6 +505,7 @@ export interface HealParams {
   requestPatchFn?: typeof requestPatch;
 }
 
+/** Return value of `phaseHeal` — verdict, written report path, and final in-memory state. */
 export interface HealResult {
   verdict: HealVerdict;
   reportPath: string;
