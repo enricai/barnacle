@@ -394,6 +394,14 @@ When using Anthropic directly (not Bedrock), the model is controlled by `STAGEHA
         "p95LatencyMs": 187
       }
     }
+  },
+  "telemetry": {
+    "currentRunFile": "/path/to/.barnacle/events/run-123.ndjson",
+    "currentRunFileSizeBytes": 4096,
+    "orphansRecovered": 0
+  },
+  "heal": {
+    "my-site": { "verdict": "SUCCESS", "bestPassRate": 0.95, "reportPath": "heal-out/my-site/healing-my-site.md" }
   }
 }
 ```
