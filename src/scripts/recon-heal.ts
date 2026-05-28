@@ -214,7 +214,6 @@ Return ONLY a single JSON object — no prose, no markdown, no code fences:
       pivot_reason: typeof raw.pivot_reason === "string" ? raw.pivot_reason : null,
     };
 
-    // Verify the anchor appears verbatim in at least one step.
     const anchorFound = currentFlow.some((step) => step.includes(patch.anchor));
     if (!anchorFound) {
       logger.warn(`patch anchor not found in current flow: "${patch.anchor}"`);
@@ -230,8 +229,8 @@ Return ONLY a single JSON object — no prose, no markdown, no code fences:
 // ── patch application ─────────────────────────────────────────────────────────
 
 /**
- * Applies a patch by replacing the first occurrence of `anchor` in the step
- * that contains it. Returns a new flow array; the original is never mutated.
+ * Produces a patched flow without touching the source — callers depend on the
+ * original remaining unmodified so it can be safely re-used across iterations.
  */
 export function applyPatch(flow: string[], patch: FlowPatch): string[] {
   const patched = flow.map((step) => {
@@ -264,20 +263,16 @@ export function checkConvergence(params: {
 
   const latest = history[history.length - 1]!;
 
-  // SUCCESS: the latest pass rate cleared the threshold.
   if (latest.passRate >= successThreshold) return "SUCCESS";
 
-  // BUDGET_EXHAUSTED: ran out of iterations.
   if (history.length >= maxIterations) return "BUDGET_EXHAUSTED";
 
-  // REGRESSED: last plateau_window iters have all dropped > plateau_delta below best.
   if (history.length >= plateauWindow) {
     const window = history.slice(-plateauWindow);
     const allRegressed = window.every((h) => bestPassRate - h.passRate > plateauDelta);
     if (allRegressed) return "REGRESSED";
   }
 
-  // PLATEAUED: last plateau_window iters are all within plateau_delta of each other.
   if (history.length >= plateauWindow) {
     const window = history.slice(-plateauWindow);
     const rates = window.map((h) => h.passRate);
@@ -373,7 +368,8 @@ export function writeState(outDir: string, siteId: string, state: HealState): vo
 }
 
 /**
- * Writes the per-iteration artifacts under heal-out/<siteId>/iter-N/.
+ * Persists all per-iteration inputs and outputs so the operator can audit
+ * exactly what the patch-generator saw and how the patched arm performed.
  */
 export function writeIterationArtifacts(params: {
   outDir: string;
@@ -591,7 +587,6 @@ export async function phaseHeal(params: HealParams): Promise<HealResult> {
   // ── iteration loop ──────────────────────────────────────────────────────────
 
   let currentFlow = [...originalFlow];
-  // Failing steps: steps not passing at baseline (simple heuristic — all steps contribute)
   let failingSteps = [...originalFlow];
   const priorAttempts: Array<{
     iter: number;
@@ -633,7 +628,6 @@ export async function phaseHeal(params: HealParams): Promise<HealResult> {
 
     const appliedFlow = applyPatch(currentFlow, patch);
 
-    // Replay patched arm n_replays times, average the pass rate.
     let patchedPassSum = 0;
     let totalPassCount = 0;
     let totalFailCount = 0;
@@ -658,7 +652,6 @@ export async function phaseHeal(params: HealParams): Promise<HealResult> {
       state.bestPatch = patch;
       state.bestIterN = iterN;
       currentFlow = appliedFlow;
-      // Update failing steps: these are the steps in the current best flow.
       failingSteps = appliedFlow;
     }
 
