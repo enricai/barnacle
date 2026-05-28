@@ -1,11 +1,3 @@
-/**
- * In-process singleton for surfacing the current NDJSON run-file and boot-time
- * orphan-recovery count on /readyz. Written by whoever opens the active run
- * file (the full event-stream subsystem when present; defaulting to null/0 in
- * deployments that have not yet wired it). Read-only accessors are exported so
- * health.ts stays decoupled from how the state is set.
- */
-
 export interface RunState {
   /** Absolute path of the currently open .barnacle/events/*.ndjson file, or null when idle. */
   currentRunFile: string | null;
@@ -21,17 +13,17 @@ let state: RunState = {
   orphansRecovered: 0,
 };
 
-/** Returns a snapshot of the current telemetry run state. */
+/** Exposes the current run state to health.ts without coupling it to the event-stream writer. */
 export function getTelemetryState(): RunState {
   return { ...state };
 }
 
-/** Merges partial overrides into the run state. Intended for boot wiring and tests. */
+/** Allows the event-stream subsystem (or tests) to update state without importing health.ts. */
 export function setTelemetryState(partial: Partial<RunState>): void {
   state = { ...state, ...partial };
 }
 
-/** Resets state to defaults. For tests only. */
+/** Restores initial defaults between test cases so state doesn't bleed across tests. */
 export function resetTelemetryState(): void {
   state = { currentRunFile: null, currentRunFileSizeBytes: 0, orphansRecovered: 0 };
 }
