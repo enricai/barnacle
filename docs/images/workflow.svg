@@ -95,20 +95,20 @@
         fill: #110972;
       }
 
-      .terminal-rect.setup   { fill: #FF5810; }
-      .terminal-rect.runtime { fill: #110972; }
+      .terminal-rect.setup   { fill: #ffffff; stroke: #FF5810; stroke-width: 1.25; }
+      .terminal-rect.runtime { fill: #ffffff; stroke: #110972; stroke-width: 1.25; }
       .terminal-title-white {
         font-family: "Clash Display", "DM Sans", -apple-system, BlinkMacSystemFont, sans-serif;
         font-weight: 600;
         font-size: 13px;
-        fill: #ffffff;
+        fill: #110972;
       }
       .terminal-kicker-white {
         font-family: "DM Sans", -apple-system, BlinkMacSystemFont, sans-serif;
         font-weight: 700;
         font-size: 8.5px;
         letter-spacing: 0.18em;
-        fill: rgba(255,255,255,0.78);
+        fill: #5D6682;
       }
 
       .edge {
@@ -151,6 +151,37 @@
         stroke: #110972;
         stroke-width: 1.6;
         stroke-dasharray: 6 5;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        .lane-bg { fill: #0d1117; }
+
+        .node-title,
+        .node-mono,
+        .terminal-title-white { fill: #e6edf3; }
+
+        .node-kicker,
+        .node-sub,
+        .lane-cadence,
+        .lane-num,
+        .edge-label,
+        .terminal-kicker-white { fill: #8b949e; }
+
+        .lane-title { fill: #c9d1d9; }
+
+        .node-rect,
+        .terminal-rect.setup,
+        .terminal-rect.runtime { fill: #0d1117; }
+
+        .edge.runtime { stroke: #79c0ff; }
+        .edge.setup   { stroke: #ff7b3d; }
+        .edge.heal    { stroke: #8b949e; }
+
+        .deploy-edge { stroke: #79c0ff; }
+
+        .loop-edge { stroke: #ff7b3d; }
+        .edge-label-orange { fill: #ff7b3d; }
+        .edge-label-blue   { fill: #79c0ff; }
       }
     </style>
   </defs>
@@ -210,7 +241,7 @@
 
   <rect class="terminal-rect setup" x="40" y="586" width="280" height="64" rx="4" />
   <text class="terminal-kicker-white" x="56" y="609">HUMAN PR</text>
-  <text class="terminal-title-white"  x="56" y="633"><tspan class="node-mono" fill="#ffffff" font-weight="600">src/sites/&lt;id&gt;/contract.ts</tspan></text>
+  <text class="terminal-title-white"  x="56" y="633"><tspan class="node-mono" fill="#110972" font-weight="600">src/sites/&lt;id&gt;/contract.ts</tspan></text>
 
   <!-- Runtime nodes -->
   <rect class="node-rect runtime" x="410" y="160" width="280" height="60" rx="4" />
