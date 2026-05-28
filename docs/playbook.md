@@ -210,6 +210,12 @@ subagent automates the analysis: pass it the dump, the step verdict, and the
 current flow JSON and it returns a minimal `{anchor, replacement}` patch for
 the failing step — verified mechanically before it is applied.
 
+For repeated or intermittent failures, `pnpm run recon:heal -- --site-id <id>
+--url <url>` orchestrates the full baseline → patch → replay → convergence
+loop automatically: it proposes patches, replays the patched flow, scores each
+arm, and writes `heal-out/<id>/healing-<id>.md` with the verdict and best patch
+for manual review. The source `recon-flow.json` is never modified.
+
 ### 1e — Global replan loop
 
 When `StepVerificationError` reaches the `main()` loop, it triggers a global
