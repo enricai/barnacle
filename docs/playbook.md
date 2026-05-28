@@ -205,7 +205,10 @@ When the cascade exhausts, the executor writes a diagnostic bundle to
 
 This is the artifact the operator reads to fix the flow. If the global replan
 loop (1e) doesn't recover, the dump is everything you need to edit the source
-`--flow-file` and rerun.
+`--flow-file` and rerun. The `.claude/agents/recon-flow-patch-generator`
+subagent automates the analysis: pass it the dump, the step verdict, and the
+current flow JSON and it returns a minimal `{anchor, replacement}` patch for
+the failing step — verified mechanically before it is applied.
 
 ### 1e — Global replan loop
 

@@ -97,7 +97,12 @@ presigned-url-lambda.py
 presigned-url-lambda.zip
 
 
-/.claude
+/.claude/settings*.json
+/.claude/todos
+/.claude/memory
+/.claude/plans
+/.claude/checkpoints
+/.claude/MEMORY.md
 
 /.planning
 
