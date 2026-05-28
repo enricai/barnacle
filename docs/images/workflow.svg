@@ -1,0 +1,284 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 1100 720"
+  role="img"
+  aria-labelledby="title desc"
+>
+  <title id="title">Barnacle end-to-end workflow</title>
+  <desc id="desc">
+    Three swimlanes — Setup, Runtime, Heal — show the full Barnacle loop.
+    Setup (Phases 0–4, orange) goes Write recon-flow.json → recon:browser
+    (Stagehand on Steel) → recon:http (replay + rate-limit probe) →
+    recon:generate (Zod schemas + headers + client) → Human PR
+    contract.ts. A dashed blue Deploys arrow leaves the PR and enters
+    Runtime at dispatch(). Runtime (Phase 5, deep blue) goes
+    POST /v1/&lt;site&gt;/run → dispatch() in loader.ts → response-cache lookup
+    with in-flight coalescing, which branches to the response envelope on
+    hit, or to the hot path (executeHttp, fetch + Bottleneck throttle) on
+    miss before returning the envelope. Heal (Phase 6, slate) handles
+    errors and drift: SchemaError, BotChallenge, or 5xx route to a browser
+    fallback under withScraperRetry (3 attempts); RateLimitError returns
+    429 without falling back; smoke-test.ts runs nightly with full Zod
+    validation. A solid orange arrow sweeps across the top from
+    smoke-test.ts back to Phase 1, closing the self-healing loop on drift.
+  </desc>
+  <defs>
+    <marker id="ah-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#110972" />
+    </marker>
+    <marker id="ah-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#FF5810" />
+    </marker>
+    <marker id="ah-slate" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5D6682" />
+    </marker>
+
+    <style>
+      .lane-bg { fill: #fafafb; }
+      .lane-top-setup   { fill: #FF5810; }
+      .lane-top-runtime { fill: #110972; }
+      .lane-top-heal    { fill: #5D6682; }
+
+      .lane-num {
+        font-family: "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        font-weight: 700;
+        font-size: 10px;
+        letter-spacing: 0.18em;
+        fill: #5D6682;
+      }
+      .lane-title {
+        font-family: "Clash Display", "DM Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+        font-weight: 600;
+        font-size: 22px;
+        letter-spacing: -0.01em;
+      }
+      .lane-cadence {
+        font-family: "DM Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+        font-weight: 500;
+        font-size: 9.5px;
+        letter-spacing: 0.14em;
+        fill: #5D6682;
+      }
+
+      .node-rect {
+        fill: #ffffff;
+        stroke-width: 1.25;
+      }
+      .node-rect.setup   { stroke: #FF5810; }
+      .node-rect.runtime { stroke: #110972; }
+      .node-rect.heal    { stroke: #5D6682; }
+
+      .node-kicker {
+        font-family: "DM Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+        font-weight: 700;
+        font-size: 8.5px;
+        letter-spacing: 0.16em;
+        fill: #5D6682;
+      }
+      .node-title {
+        font-family: "Clash Display", "DM Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+        font-weight: 600;
+        font-size: 13px;
+        fill: #110972;
+      }
+      .node-sub {
+        font-family: "DM Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+        font-weight: 400;
+        font-size: 10.5px;
+        fill: #5D6682;
+      }
+      .node-mono {
+        font-family: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+        font-weight: 500;
+        font-size: 11.5px;
+        fill: #110972;
+      }
+
+      .terminal-rect.setup   { fill: #FF5810; }
+      .terminal-rect.runtime { fill: #110972; }
+      .terminal-title-white {
+        font-family: "Clash Display", "DM Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+        font-weight: 600;
+        font-size: 13px;
+        fill: #ffffff;
+      }
+      .terminal-kicker-white {
+        font-family: "DM Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+        font-weight: 700;
+        font-size: 8.5px;
+        letter-spacing: 0.18em;
+        fill: rgba(255,255,255,0.78);
+      }
+
+      .edge {
+        fill: none;
+        stroke-width: 1.4;
+      }
+      .edge.setup   { stroke: #FF5810; }
+      .edge.runtime { stroke: #110972; }
+      .edge.heal    { stroke: #5D6682; }
+
+      .edge-label {
+        font-family: "DM Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+        font-weight: 700;
+        font-size: 9px;
+        letter-spacing: 0.14em;
+        fill: #5D6682;
+      }
+      .edge-label-orange {
+        font-family: "DM Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+        font-weight: 700;
+        font-size: 10px;
+        letter-spacing: 0.18em;
+        fill: #FF5810;
+      }
+      .edge-label-blue {
+        font-family: "DM Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+        font-weight: 700;
+        font-size: 10px;
+        letter-spacing: 0.18em;
+        fill: #110972;
+      }
+
+      .loop-edge {
+        fill: none;
+        stroke: #FF5810;
+        stroke-width: 2.25;
+      }
+      .deploy-edge {
+        fill: none;
+        stroke: #110972;
+        stroke-width: 1.6;
+        stroke-dasharray: 6 5;
+      }
+    </style>
+  </defs>
+
+  <!-- Lane backgrounds -->
+  <rect class="lane-bg" x="20"  y="60"  width="320" height="610" rx="4" />
+  <rect class="lane-top-setup"   x="20"  y="60"  width="320" height="4" />
+  <rect class="lane-bg" x="390" y="60"  width="320" height="610" rx="4" />
+  <rect class="lane-top-runtime" x="390" y="60"  width="320" height="4" />
+  <rect class="lane-bg" x="760" y="60"  width="320" height="610" rx="4" />
+  <rect class="lane-top-heal"    x="760" y="60"  width="320" height="4" />
+
+  <!-- Lane headers -->
+  <g>
+    <text class="lane-num"   x="36"  y="88">01 · PHASES 0–4</text>
+    <text class="lane-title" x="36"  y="116" fill="#FF5810">Setup</text>
+    <text class="lane-cadence" x="36" y="134">PER SITE · RE-RUNS ON DRIFT</text>
+  </g>
+  <g>
+    <text class="lane-num"   x="406" y="88">02 · PHASE 5</text>
+    <text class="lane-title" x="406" y="116" fill="#110972">Runtime</text>
+    <text class="lane-cadence" x="406" y="134">EVERY REQUEST</text>
+  </g>
+  <g>
+    <text class="lane-num"   x="776" y="88">03 · PHASE 6</text>
+    <text class="lane-title" x="776" y="116" fill="#5D6682">Heal</text>
+    <text class="lane-cadence" x="776" y="134">ON ERROR · NIGHTLY</text>
+  </g>
+
+  <!-- Setup nodes -->
+  <rect class="node-rect setup" x="40" y="160" width="280" height="64" rx="4" />
+  <text class="node-kicker"     x="56" y="183">PHASE 0 · HUMAN, ONCE</text>
+  <text class="node-title"      x="56" y="207">Write <tspan class="node-mono">recon-flow.json</tspan></text>
+
+  <path class="edge setup" d="M180,224 L180,254" marker-end="url(#ah-orange)" />
+
+  <rect class="node-rect setup" x="40" y="256" width="280" height="78" rx="4" />
+  <text class="node-kicker"     x="56" y="279">PHASE 1 · <tspan class="node-mono" font-size="10">recon:browser</tspan></text>
+  <text class="node-title"      x="56" y="302">Stagehand on Steel</text>
+  <text class="node-sub"        x="56" y="320">captures every network call</text>
+
+  <path class="edge setup" d="M180,334 L180,364" marker-end="url(#ah-orange)" />
+
+  <rect class="node-rect setup" x="40" y="366" width="280" height="78" rx="4" />
+  <text class="node-kicker"     x="56" y="389">PHASE 2–3 · <tspan class="node-mono" font-size="10">recon:http</tspan></text>
+  <text class="node-title"      x="56" y="412">Replay without a browser</text>
+  <text class="node-sub"        x="56" y="430">+ rate&#8209;limit probe</text>
+
+  <path class="edge setup" d="M180,444 L180,474" marker-end="url(#ah-orange)" />
+
+  <rect class="node-rect setup" x="40" y="476" width="280" height="78" rx="4" />
+  <text class="node-kicker"     x="56" y="499">PHASE 4 · <tspan class="node-mono" font-size="10">recon:generate</tspan></text>
+  <text class="node-title"      x="56" y="522">Generate plugin</text>
+  <text class="node-sub"        x="56" y="540">Zod schemas · headers · client</text>
+
+  <path class="edge setup" d="M180,554 L180,584" marker-end="url(#ah-orange)" />
+
+  <rect class="terminal-rect setup" x="40" y="586" width="280" height="64" rx="4" />
+  <text class="terminal-kicker-white" x="56" y="609">HUMAN PR</text>
+  <text class="terminal-title-white"  x="56" y="633"><tspan class="node-mono" fill="#ffffff" font-weight="600">src/sites/&lt;id&gt;/contract.ts</tspan></text>
+
+  <!-- Runtime nodes -->
+  <rect class="node-rect runtime" x="410" y="160" width="280" height="60" rx="4" />
+  <text class="node-kicker"       x="426" y="183">INBOUND</text>
+  <text class="node-title"        x="426" y="206"><tspan class="node-mono">POST /v1/&lt;site&gt;/run</tspan></text>
+
+  <path class="edge runtime" d="M550,220 L550,250" marker-end="url(#ah-blue)" />
+
+  <rect class="node-rect runtime" x="410" y="252" width="280" height="60" rx="4" />
+  <text class="node-kicker"       x="426" y="275">CORE</text>
+  <text class="node-title"        x="426" y="298"><tspan class="node-mono">dispatch()</tspan> · loader.ts</text>
+
+  <path class="edge runtime" d="M550,312 L550,342" marker-end="url(#ah-blue)" />
+
+  <rect class="node-rect runtime" x="410" y="344" width="280" height="78" rx="4" />
+  <text class="node-kicker"       x="426" y="367">CACHE</text>
+  <text class="node-title"        x="426" y="390">response&#8209;cache lookup</text>
+  <text class="node-sub"          x="426" y="408">+ in&#8209;flight coalescing</text>
+
+  <path class="edge runtime" d="M520,422 L520,486" marker-end="url(#ah-blue)" />
+  <text class="edge-label" x="455" y="458">MISS</text>
+
+  <path class="edge runtime" d="M690,383 L702,383 L702,580 L550,580 L550,586" marker-end="url(#ah-blue)" />
+  <text class="edge-label" x="710" y="490" transform="rotate(-90 710 490)">HIT</text>
+
+  <rect class="node-rect runtime" x="410" y="488" width="280" height="78" rx="4" />
+  <text class="node-kicker"       x="426" y="511">HOT PATH · CACHE MISS</text>
+  <text class="node-title"        x="426" y="534"><tspan class="node-mono">executeHttp</tspan></text>
+  <text class="node-sub"          x="426" y="552">fetch + Bottleneck throttle</text>
+
+  <path class="edge runtime" d="M520,566 L520,584" marker-end="url(#ah-blue)" />
+
+  <rect class="terminal-rect runtime" x="410" y="586" width="280" height="64" rx="4" />
+  <text class="terminal-kicker-white" x="426" y="609">RESPONSE</text>
+  <text class="terminal-title-white"  x="426" y="633">Standard envelope</text>
+
+  <!-- Heal nodes -->
+  <rect class="node-rect heal" x="780" y="160" width="280" height="92" rx="4" />
+  <text class="node-kicker"    x="796" y="183">FALLBACK · 3 ATTEMPTS</text>
+  <text class="node-title"     x="796" y="207"><tspan class="node-mono" font-size="11">SchemaError</tspan> /</text>
+  <text class="node-title"     x="796" y="223"><tspan class="node-mono" font-size="11">BotChallenge</tspan> / 5xx →</text>
+  <text class="node-sub"       x="796" y="241">browser via <tspan class="node-mono" font-size="10" fill="#5D6682">withScraperRetry</tspan></text>
+
+  <path class="edge heal" d="M920,252 L920,288" marker-end="url(#ah-slate)" stroke-dasharray="3 4" opacity="0.55" />
+
+  <rect class="node-rect heal" x="780" y="290" width="280" height="78" rx="4" />
+  <text class="node-kicker"    x="796" y="313">NO FALLBACK</text>
+  <text class="node-title"     x="796" y="336"><tspan class="node-mono" font-size="11">RateLimitError</tspan> → 429</text>
+  <text class="node-sub"       x="796" y="354">backs off · doesn't burn a session</text>
+
+  <path class="edge heal" d="M920,368 L920,404" marker-end="url(#ah-slate)" stroke-dasharray="3 4" opacity="0.55" />
+
+  <rect class="node-rect heal" x="780" y="406" width="280" height="92" rx="4" />
+  <text class="node-kicker"    x="796" y="429">NIGHTLY · DRIFT DETECTION</text>
+  <text class="node-title"     x="796" y="453"><tspan class="node-mono" font-size="11">smoke-test.ts</tspan></text>
+  <text class="node-sub"       x="796" y="471">full Zod validation</text>
+  <text class="node-sub"       x="796" y="488">drift surfaces at 03:00, not 10:00</text>
+
+  <!-- Cross-lane: hot-path error branches into Heal -->
+  <path class="edge heal" d="M690,527 L735,527 L735,210 L778,210" marker-end="url(#ah-slate)" />
+  <path class="edge heal" d="M735,330 L778,330" marker-end="url(#ah-slate)" />
+  <text class="edge-label" x="744" y="520">ON HOT&#8209;PATH ERROR</text>
+
+  <!-- Cross-lane: deploys (dashed blue) -->
+  <path class="deploy-edge" d="M320,618 C 365,618 365,282 408,282" marker-end="url(#ah-blue)" />
+  <text class="edge-label-blue" x="345" y="455" transform="rotate(-90 345 455)">DEPLOYS</text>
+
+  <!-- Cross-lane: drift detected (solid orange loop) -->
+  <path class="loop-edge" d="M780,452 C 700,-50 280,-50 180,256" marker-end="url(#ah-orange)" />
+  <text class="edge-label-orange" x="350" y="22">DRIFT DETECTED · LOOPS BACK TO PHASE 1</text>
+</svg>
