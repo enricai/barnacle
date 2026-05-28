@@ -28,6 +28,7 @@
     "smoke": "tsx --env-file=.env src/scripts/smoke-test.ts",
     "recon:browser": "tsx --env-file=.env src/scripts/recon-browser.ts",
     "recon:generate": "tsx src/scripts/recon-generate.ts",
+    "recon:heal": "tsx --env-file=.env src/scripts/recon-heal.ts",
     "recon:http": "tsx src/scripts/recon-http.ts",
     "recon:summarize": "tsx src/scripts/recon-summarize.ts"
   },

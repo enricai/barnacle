@@ -205,7 +205,16 @@ When the cascade exhausts, the executor writes a diagnostic bundle to
 
 This is the artifact the operator reads to fix the flow. If the global replan
 loop (1e) doesn't recover, the dump is everything you need to edit the source
-`--flow-file` and rerun.
+`--flow-file` and rerun. The `.claude/agents/recon-flow-patch-generator`
+subagent automates the analysis: pass it the dump, the step verdict, and the
+current flow JSON and it returns a minimal `{anchor, replacement}` patch for
+the failing step — verified mechanically before it is applied.
+
+For repeated or intermittent failures, `pnpm run recon:heal -- --site-id <id>
+--url <url>` orchestrates the full baseline → patch → replay → convergence
+loop automatically: it proposes patches, replays the patched flow, scores each
+arm, and writes `heal-out/<id>/healing-<id>.md` with the verdict and best patch
+for manual review. The source `recon-flow.json` is never modified.
 
 ### 1e — Global replan loop
 
@@ -652,6 +661,78 @@ Smoke test fails (nightly, automated)
 
 Human involvement = one diff review + a small PR. All detection and execution is
 automated.
+
+### 6D — Heal-loop workflow
+
+When a smoke test fails *and* the failure is a recon flow step error (the browser
+couldn't find an element or a step timed out after all four cascade attempts), the
+automated maintenance loop in §6C won't help — you don't need a schema update, you
+need a better flow instruction. The heal loop handles this case.
+
+**Step 1 — Run the heal loop**
+
+```bash
+pnpm tsx src/scripts/recon-heal.ts \
+  --site-id <id> \
+  --url https://<target-site.example.com>
+```
+
+The loop runs a baseline replay of `src/sites/<id>/recon-flow.json`, measures which
+steps fail, then iterates: propose a minimal patch to one failing step, replay the
+patched flow, score, repeat. Defaults: 5 iterations, 3 replays per arm,
+success threshold 0.9. Add `--dry-run` to stub the browser runner in CI.
+
+**Step 2 — Review the report**
+
+When the loop finishes it writes:
+
+```
+heal-out/<id>/healing-<id>.md   ← verdict, best patch, iteration table
+heal-out/<id>/state.json        ← full convergence history
+heal-out/<id>/iter-N/           ← per-iteration patch-request, patch-response, scores
+```
+
+Open `heal-out/<id>/healing-<id>.md`. It shows:
+
+- **Verdict**: `SUCCESS` / `PLATEAUED` / `BUDGET_EXHAUSTED` / `REGRESSED`
+- **Best patch**: the `anchor` (verbatim substring of the failing step) and its
+  `replacement` (the new instruction text)
+- **Iteration table**: pass-rate delta per iteration
+
+The `/readyz` endpoint surfaces the latest verdict per site in the `heal` field:
+
+```json
+{
+  "heal": {
+    "my-site": { "verdict": "SUCCESS", "bestPassRate": 0.95, "reportPath": "heal-out/my-site/healing-my-site.md" }
+  }
+}
+```
+
+**Step 3 — Manually apply the patch**
+
+The heal loop never modifies `src/sites/<id>/recon-flow.json` — the operator owns
+the source of truth. After reviewing the report, open the flow file and apply the
+patch by hand:
+
+```bash
+# The report gives you: anchor="<old text>" replacement="<new text>"
+# Find the matching step in src/sites/<id>/recon-flow.json and substitute.
+$EDITOR src/sites/<id>/recon-flow.json
+```
+
+Then re-run the smoke test to confirm:
+
+```bash
+pnpm run smoke -- --site <id> --payload '{"query":"test"}' --host "$SMOKE_HOST"
+```
+
+**The manual-apply discipline** — prompts and flow instructions stay under human
+control; the loop proposes patches backed by measured evidence (replay pass rates)
+rather than modifying the source directly. This mirrors the pila self-healing
+principle: the tool produces evidence, the human applies judgment. A patch that
+improved the pass rate in the heal environment still needs human review before it
+ships to `main` — the operator is the last verifier, not the loop.
 
 ---
 
