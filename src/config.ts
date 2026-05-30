@@ -1,4 +1,4 @@
-import { getBoolEnv, getEnv, getNodeEnv, getNumericEnv } from "@/lib/env";
+import { getBoolEnv, getEnv, getFloatEnv, getNodeEnv, getNumericEnv } from "@/lib/env";
 
 /**
  * Fully resolved, strongly typed application config derived from environment
@@ -73,11 +73,90 @@ export interface AppConfig {
   };
   telemetry: {
     /**
+     * Master switch — set to false to disable all NDJSON telemetry writes.
+     * Useful for environments where the disk path is unavailable or I/O is
+     * cost-sensitive; the capture sink checks this before every append.
+     */
+    enabled: boolean;
+    /**
+     * Directory that holds per-run NDJSON event stream files. The event-writer
+     * creates `<eventsDir>/<runId>.ndjson` at session start. Default matches
+     * the `.barnacle/events` path referenced in run-state.ts so operator docs
+     * and `.gitignore` stay consistent.
+     */
+    eventsDir: string;
+    /**
      * Absolute or cwd-relative path for the append-only NDJSON file that
      * records one line per LLM/Stagehand call. Feed this to the judge and
      * self-heal skills. Default keeps it alongside the event-stream files.
      */
     callsNdjsonPath: string;
+    /**
+     * Rotate / drop the calls NDJSON once it exceeds this byte count.
+     * Guards against unbounded disk growth on long-running deployments.
+     * Default is 100 MB.
+     */
+    maxFileSizeBytes: number;
+    /**
+     * Drop event-stream files older than this many milliseconds. Default is
+     * 30 days — long enough for a monthly judge/heal cadence.
+     */
+    maxRetentionMs: number;
+  };
+  judging: {
+    /**
+     * Anthropic model used by the judge script to score captured call samples.
+     * Defaults to the Bedrock cross-region inference profile so it reuses the
+     * scraper's AWS creds without a separate billing account.
+     */
+    model: string;
+    /**
+     * Sampling temperature for judge LLM calls. Lower values (≤ 0.3) produce
+     * more deterministic verdicts; raise only for exploratory runs.
+     */
+    temperature: number;
+    /**
+     * Number of call samples sent to the judge in one LLM request. Larger
+     * batches reduce round-trips but increase per-call token cost.
+     */
+    batchSize: number;
+    /**
+     * Anthropic SDK request timeout for judge calls in ms. Judge batches are
+     * larger than scraper calls so a longer timeout is warranted.
+     */
+    timeoutMs: number;
+  };
+  selfheal: {
+    /**
+     * Maximum patch→replay→score iterations before giving up with
+     * BUDGET_EXHAUSTED. Mirrors the recon-heal default of 5.
+     */
+    maxIterations: number;
+    /**
+     * Number of replay runs per iteration arm. Replays are cheap (no browser),
+     * so a higher n gives a more stable pass-rate estimate.
+     */
+    nReplays: number;
+    /**
+     * Minimum pass rate (0..1) to declare SUCCESS and stop iterating.
+     * Mirrors the pila llm-self-heal SKILL default of 0.9.
+     */
+    successThreshold: number;
+    /**
+     * Consecutive iterations whose pass-rate improvement is below
+     * `plateauDelta` that triggers a PLATEAUED verdict. Mirrors recon-heal.
+     */
+    plateauWindow: number;
+    /**
+     * Minimum absolute improvement in pass rate between iterations to be
+     * considered meaningful progress; below this the run plateaus.
+     */
+    plateauDelta: number;
+    /**
+     * Per-replay LLM request timeout in ms. Patch replay calls are small
+     * single-turn requests so a tighter timeout keeps the loop fast.
+     */
+    timeoutMs: number;
   };
 }
 
@@ -158,7 +237,25 @@ export function loadConfig(): AppConfig {
       enabled: getBoolEnv("ENABLE_DOCS", false),
     },
     telemetry: {
+      enabled: getBoolEnv("TELEMETRY_ENABLED", true),
+      eventsDir: getEnv("TELEMETRY_EVENTS_DIR", ".barnacle/events"),
       callsNdjsonPath: getEnv("CALLS_NDJSON_PATH", ".barnacle/calls.ndjson"),
+      maxFileSizeBytes: getNumericEnv("TELEMETRY_MAX_FILE_SIZE_BYTES", 100 * 1024 * 1024),
+      maxRetentionMs: getNumericEnv("TELEMETRY_MAX_RETENTION_MS", 30 * 24 * 60 * 60 * 1000),
+    },
+    judging: {
+      model: getEnv("JUDGE_MODEL", "us.anthropic.claude-sonnet-4-6[1m]"),
+      temperature: getFloatEnv("JUDGE_TEMPERATURE", 0.2),
+      batchSize: getNumericEnv("JUDGE_BATCH_SIZE", 10),
+      timeoutMs: getNumericEnv("JUDGE_TIMEOUT_MS", 120_000),
+    },
+    selfheal: {
+      maxIterations: getNumericEnv("SELFHEAL_MAX_ITERATIONS", 5),
+      nReplays: getNumericEnv("SELFHEAL_N_REPLAYS", 5),
+      successThreshold: getFloatEnv("SELFHEAL_SUCCESS_THRESHOLD", 0.9),
+      plateauWindow: getNumericEnv("SELFHEAL_PLATEAU_WINDOW", 3),
+      plateauDelta: getFloatEnv("SELFHEAL_PLATEAU_DELTA", 0.03),
+      timeoutMs: getNumericEnv("SELFHEAL_TIMEOUT_MS", 60_000),
     },
   };
 }
