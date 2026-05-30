@@ -393,7 +393,7 @@ instrument, not a load-bearing path.
 
 ### Why judging is offline over captured samples
 
-The judge (`pnpm judge:llm`, `src/scripts/judge-llm-batch.ts`) reads the capture
+The judge (`pnpm run judge:llm`, `src/scripts/judge-llm-batch.ts`) reads the capture
 file, filters by `callType`, and scores each sample on three dimensions: schema
 adherence (`parsedOk` + structure check), factual grounding, and
 hallucination-freeness. It runs entirely offline — after a recon run or a
@@ -415,7 +415,7 @@ equivalent — each call is transient and unrepeatable.
 
 ### Why self-heal proposes patches for human review rather than auto-editing source
 
-The self-heal loop (`pnpm heal:llm`, `src/scripts/llm-heal.ts`) runs a
+The self-heal loop (`pnpm run heal:llm`, `src/scripts/llm-heal.ts`) runs a
 measured-baseline → patch-proposal → replay → convergence cycle for failing LLM
 call templates. When the loop converges, it writes a `healing-<callType>.md`
 report containing the best patch and the pass-rate trajectory. It **never**
