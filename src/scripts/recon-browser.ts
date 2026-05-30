@@ -36,6 +36,7 @@
  * per act; healing and replans push the upper bound higher on flaky sites).
  */
 
+import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
@@ -47,6 +48,8 @@ import { config } from "@/config";
 import { toErrorMessage } from "@/lib/errors";
 import { configureHttpDispatcher } from "@/lib/http";
 import { getScriptLogger } from "@/lib/logging";
+import { captureLlmCall, type LlmCallInput } from "@/lib/telemetry/call-capture";
+import { CALL_TYPE_RECON_REPHRASE, CALL_TYPE_RECON_REPLAN } from "@/lib/telemetry/call-types";
 import { StepVerificationError } from "@/scraper/errors";
 import { createBrowserSession } from "@/scraper/session";
 import { CAPTURES_DIR, type Capture, STEP_FAILURES_DIR } from "@/scripts/recon-shared";
@@ -305,18 +308,21 @@ function anthropicModelName(): string {
   return raw.startsWith("anthropic/") ? raw.slice("anthropic/".length) : raw;
 }
 
+/** Injectable capture function — matches `captureLlmCall`'s signature. */
+type CaptureFn = (input: LlmCallInput) => Promise<void>;
+
 /**
- * Asks Claude for a rephrased instruction given the original step, the
- * candidates Stagehand could see, and the selectors we already tried. Returns
- * null if the SDK is unavailable or the call fails — the caller dumps and
- * throws in that case.
+ * Attempt-4 of the step-healing cascade: when three mechanical retry variations
+ * all fail, this is the last resort before the step is declared terminal. Exported
+ * so tests can inject a fake capture sink without touching the browser session.
  */
 async function rephraseWithLLM(
   client: Anthropic,
   originalStep: string,
   triedSelectors: string[],
   observeCandidates: Action[],
-  failureReasons: string[]
+  failureReasons: string[],
+  captureFn: CaptureFn = captureLlmCall
 ): Promise<string | null> {
   const candidateList = observeCandidates
     .slice(0, 12)
@@ -341,18 +347,49 @@ ${candidateList || "(no candidates returned by observe)"}
 
 Rewrite the instruction so a Stagehand act() call can resolve it unambiguously to a different element than the ones already tried. Keep it short — one sentence, natural language, no quotes around it. If the original instruction is itself impossible on the current page (the element does not exist), reply with the literal string IMPOSSIBLE so the caller can stop trying.`;
 
+  const model = anthropicModelName();
+  const t0 = performance.now();
   try {
     const response = await client.messages.create({
-      model: anthropicModelName(),
+      model,
       max_tokens: 200,
       messages: [{ role: "user", content: prompt }],
     });
+    const latencyMs = performance.now() - t0;
     const block = response.content.find((b) => b.type === "text");
-    if (!block || block.type !== "text") return null;
-    const text = block.text.trim();
-    if (text === "IMPOSSIBLE" || text.length === 0) return null;
+    const text = block?.type === "text" ? block.text.trim() : "";
+    const parsedOk = text.length > 0 && text !== "IMPOSSIBLE";
+
+    await captureFn({
+      callId: randomUUID(),
+      callType: CALL_TYPE_RECON_REPHRASE,
+      model,
+      systemPrompt: null,
+      userContent: prompt,
+      responseContent: text || null,
+      parsedOk,
+      inputTokens: response.usage?.input_tokens ?? null,
+      outputTokens: response.usage?.output_tokens ?? null,
+      latencyMs,
+      success: parsedOk,
+    });
+
+    if (!parsedOk) return null;
     return text;
   } catch {
+    await captureFn({
+      callId: randomUUID(),
+      callType: CALL_TYPE_RECON_REPHRASE,
+      model,
+      systemPrompt: null,
+      userContent: prompt,
+      responseContent: null,
+      parsedOk: false,
+      inputTokens: null,
+      outputTokens: null,
+      latencyMs: performance.now() - t0,
+      success: false,
+    });
     return null;
   }
 }
@@ -360,10 +397,9 @@ Rewrite the instruction so a Stagehand act() call can resolve it unambiguously t
 const REPLAN_RESPONSE_SCHEMA = z.array(z.string().min(1)).min(1).max(REPLAN_MAX_STEPS);
 
 /**
- * Asks Claude to rewrite the remaining steps of a flow when one step
- * terminally failed. Already-completed steps are held fixed — we only revise
- * the tail. Returns the new step array or null when Claude says IMPOSSIBLE,
- * the JSON doesn't parse, or the call errors.
+ * Global fallback after a step terminally fails all healing attempts: rewrites
+ * only the un-run tail of the flow so already-verified steps are not disturbed.
+ * Exported so tests can inject a fake capture sink without a live browser.
  */
 async function replanRemainingFlow(params: {
   client: Anthropic;
@@ -374,6 +410,7 @@ async function replanRemainingFlow(params: {
   failureDumpPath: string;
   page: Page;
   stagehand: Stagehand;
+  captureFn?: CaptureFn;
 }): Promise<string[] | null> {
   const {
     client,
@@ -384,6 +421,7 @@ async function replanRemainingFlow(params: {
     failureDumpPath,
     page,
     stagehand,
+    captureFn = captureLlmCall,
   } = params;
   const candidates = await stagehand.observe().catch(() => [] as Action[]);
   const candidateList = candidates
@@ -428,26 +466,88 @@ Constraints:
 - If the user's intent is unreachable from this page state, reply with the literal string IMPOSSIBLE.
 - Maximum ${REPLAN_MAX_STEPS} steps.`;
 
+  const model = anthropicModelName();
+  const t0 = performance.now();
   try {
     const response = await client.messages.create({
-      model: anthropicModelName(),
+      model,
       max_tokens: 2000,
       messages: [{ role: "user", content: prompt }],
     });
+    const latencyMs = performance.now() - t0;
     const block = response.content.find((b) => b.type === "text");
-    if (!block || block.type !== "text") return null;
-    const text = block.text.trim();
-    if (text === "IMPOSSIBLE" || text.length === 0) return null;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
+    const rawText = block?.type === "text" ? block.text.trim() : "";
+
+    if (rawText === "IMPOSSIBLE" || rawText.length === 0) {
+      await captureFn({
+        callId: randomUUID(),
+        callType: CALL_TYPE_RECON_REPLAN,
+        model,
+        systemPrompt: null,
+        userContent: prompt,
+        responseContent: rawText || null,
+        parsedOk: false,
+        inputTokens: response.usage?.input_tokens ?? null,
+        outputTokens: response.usage?.output_tokens ?? null,
+        latencyMs,
+        success: false,
+      });
       return null;
     }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(rawText);
+    } catch {
+      await captureFn({
+        callId: randomUUID(),
+        callType: CALL_TYPE_RECON_REPLAN,
+        model,
+        systemPrompt: null,
+        userContent: prompt,
+        responseContent: rawText,
+        parsedOk: false,
+        inputTokens: response.usage?.input_tokens ?? null,
+        outputTokens: response.usage?.output_tokens ?? null,
+        latencyMs,
+        success: false,
+      });
+      return null;
+    }
+
     const validated = REPLAN_RESPONSE_SCHEMA.safeParse(parsed);
-    if (!validated.success) return null;
+    const parsedOk = validated.success;
+
+    await captureFn({
+      callId: randomUUID(),
+      callType: CALL_TYPE_RECON_REPLAN,
+      model,
+      systemPrompt: null,
+      userContent: prompt,
+      responseContent: rawText,
+      parsedOk,
+      inputTokens: response.usage?.input_tokens ?? null,
+      outputTokens: response.usage?.output_tokens ?? null,
+      latencyMs,
+      success: parsedOk,
+    });
+
+    if (!parsedOk) return null;
     return validated.data;
   } catch {
+    await captureFn({
+      callId: randomUUID(),
+      callType: CALL_TYPE_RECON_REPLAN,
+      model,
+      systemPrompt: null,
+      userContent: prompt,
+      responseContent: null,
+      parsedOk: false,
+      inputTokens: null,
+      outputTokens: null,
+      latencyMs: performance.now() - t0,
+      success: false,
+    });
     return null;
   }
 }
@@ -528,9 +628,20 @@ async function executeStepWithHealing(params: {
   recentCaptures: string[];
   anthropic: Anthropic | null;
   logger: Logger;
+  captureFn?: CaptureFn;
 }): Promise<void> {
-  const { stagehand, page, step, stepIndex, phase, counter, recentCaptures, anthropic, logger } =
-    params;
+  const {
+    stagehand,
+    page,
+    step,
+    stepIndex,
+    phase,
+    counter,
+    recentCaptures,
+    anthropic,
+    logger,
+    captureFn,
+  } = params;
   const attempts: AttemptRecord[] = [];
   const triedSelectors: string[] = [];
   const failureReasons: string[] = [];
@@ -594,7 +705,8 @@ async function executeStepWithHealing(params: {
             step,
             triedSelectors,
             candidates,
-            failureReasons
+            failureReasons,
+            captureFn
           );
           if (!rephrased) {
             record.errorMessage = "llm declined to rephrase or returned IMPOSSIBLE";
@@ -820,11 +932,20 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err) => {
-  // StagehandDefaultError wraps the real cause with a verbose "Hey! We're sorry..." banner.
-  // Unwrap it so the log shows just the meaningful error message.
-  const message =
-    err instanceof Error && err.cause instanceof Error ? err.cause.message : toErrorMessage(err);
-  logger.error(`recon-browser failed: ${message}`);
-  process.exit(1);
-});
+if (
+  process.argv[1] !== undefined &&
+  (process.argv[1].endsWith("recon-browser.ts") || process.argv[1].endsWith("recon-browser.js"))
+) {
+  main().catch((err) => {
+    // StagehandDefaultError wraps the real cause with a verbose "Hey! We're sorry..." banner.
+    // Unwrap it so the log shows just the meaningful error message.
+    const message =
+      err instanceof Error && err.cause instanceof Error ? err.cause.message : toErrorMessage(err);
+    logger.error(`recon-browser failed: ${message}`);
+    process.exit(1);
+  });
+}
+
+// Test-only exports — allow unit tests to inject a fake capture sink without
+// touching the main() entry-point or the real browser session.
+export { rephraseWithLLM, replanRemainingFlow };
