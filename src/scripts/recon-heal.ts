@@ -21,6 +21,7 @@
  *   --dry-run                   stubs the browser runner (CI mode)
  */
 
+import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
@@ -30,6 +31,8 @@ import { formatISO } from "date-fns";
 import { config } from "@/config";
 import { configureHttpDispatcher } from "@/lib/http";
 import { getScriptLogger } from "@/lib/logging";
+import { captureLlmCall, type LlmCallInput } from "@/lib/telemetry/call-capture";
+import { CALL_TYPE_RECON_FLOW_PATCH } from "@/lib/telemetry/call-types";
 import { StepVerificationError } from "@/scraper/errors";
 import { createBrowserSession } from "@/scraper/session";
 
@@ -98,6 +101,9 @@ export type StepRunner = (params: {
   runId: string;
 }) => Promise<ReplayResult>;
 
+/** Injectable capture function — matches `captureLlmCall`'s signature. */
+export type CaptureFn = (input: LlmCallInput) => Promise<void>;
+
 // ── Anthropic client ──────────────────────────────────────────────────────────
 
 /**
@@ -134,8 +140,16 @@ export async function requestPatch(params: {
     strategy: string;
     outcome: "improved" | "no_change" | "regressed";
   }>;
+  captureFn?: CaptureFn;
 }): Promise<FlowPatch | null> {
-  const { client, currentFlow, failingSteps, iterN, priorAttempts } = params;
+  const {
+    client,
+    currentFlow,
+    failingSteps,
+    iterN,
+    priorAttempts,
+    captureFn = captureLlmCall,
+  } = params;
 
   const flowJson = JSON.stringify(currentFlow, null, 2);
   const failingList = failingSteps.map((s, i) => `  ${i + 1}. "${s}"`).join("\n");
@@ -178,21 +192,52 @@ Return ONLY a single JSON object — no prose, no markdown, no code fences:
   "pivot_reason": <null on first iteration, otherwise a string explaining the pivot>
 }`;
 
+  const model = anthropicModelName();
+  const t0 = performance.now();
   try {
     const response = await client.messages.create({
-      model: anthropicModelName(),
+      model,
       max_tokens: 500,
       messages: [{ role: "user", content: prompt }],
     });
+    const latencyMs = performance.now() - t0;
 
     const block = response.content.find((b) => b.type === "text");
-    if (!block || block.type !== "text") return null;
+    if (!block || block.type !== "text") {
+      await captureFn({
+        callId: randomUUID(),
+        callType: CALL_TYPE_RECON_FLOW_PATCH,
+        model,
+        systemPrompt: null,
+        userContent: prompt,
+        responseContent: null,
+        parsedOk: false,
+        inputTokens: response.usage?.input_tokens ?? null,
+        outputTokens: response.usage?.output_tokens ?? null,
+        latencyMs,
+        success: false,
+      });
+      return null;
+    }
 
     const text = block.text.trim();
     let parsed: unknown;
     try {
       parsed = JSON.parse(text);
     } catch {
+      await captureFn({
+        callId: randomUUID(),
+        callType: CALL_TYPE_RECON_FLOW_PATCH,
+        model,
+        systemPrompt: null,
+        userContent: prompt,
+        responseContent: text,
+        parsedOk: false,
+        inputTokens: response.usage?.input_tokens ?? null,
+        outputTokens: response.usage?.output_tokens ?? null,
+        latencyMs,
+        success: false,
+      });
       return null;
     }
 
@@ -203,6 +248,19 @@ Return ONLY a single JSON object — no prose, no markdown, no code fences:
       typeof (parsed as Record<string, unknown>).replacement !== "string" ||
       typeof (parsed as Record<string, unknown>).strategy !== "string"
     ) {
+      await captureFn({
+        callId: randomUUID(),
+        callType: CALL_TYPE_RECON_FLOW_PATCH,
+        model,
+        systemPrompt: null,
+        userContent: prompt,
+        responseContent: text,
+        parsedOk: false,
+        inputTokens: response.usage?.input_tokens ?? null,
+        outputTokens: response.usage?.output_tokens ?? null,
+        latencyMs,
+        success: false,
+      });
       return null;
     }
 
@@ -217,11 +275,51 @@ Return ONLY a single JSON object — no prose, no markdown, no code fences:
     const anchorFound = currentFlow.some((step) => step.includes(patch.anchor));
     if (!anchorFound) {
       logger.warn(`patch anchor not found in current flow: "${patch.anchor}"`);
+      await captureFn({
+        callId: randomUUID(),
+        callType: CALL_TYPE_RECON_FLOW_PATCH,
+        model,
+        systemPrompt: null,
+        userContent: prompt,
+        responseContent: text,
+        parsedOk: false,
+        inputTokens: response.usage?.input_tokens ?? null,
+        outputTokens: response.usage?.output_tokens ?? null,
+        latencyMs,
+        success: false,
+      });
       return null;
     }
 
+    await captureFn({
+      callId: randomUUID(),
+      callType: CALL_TYPE_RECON_FLOW_PATCH,
+      model,
+      systemPrompt: null,
+      userContent: prompt,
+      responseContent: text,
+      parsedOk: true,
+      inputTokens: response.usage?.input_tokens ?? null,
+      outputTokens: response.usage?.output_tokens ?? null,
+      latencyMs,
+      success: true,
+    });
+
     return patch;
   } catch {
+    await captureFn({
+      callId: randomUUID(),
+      callType: CALL_TYPE_RECON_FLOW_PATCH,
+      model,
+      systemPrompt: null,
+      userContent: prompt,
+      responseContent: null,
+      parsedOk: false,
+      inputTokens: null,
+      outputTokens: null,
+      latencyMs: performance.now() - t0,
+      success: false,
+    });
     return null;
   }
 }

@@ -418,6 +418,64 @@ When using Anthropic directly (not Bedrock), the model is controlled by `STAGEHA
 
 See [docs/playbook.md](./docs/playbook.md#6b--metrics-signals-the-detection-ladder) for the full detection ladder.
 
+### NDJSON telemetry files
+
+Barnacle writes two append-only NDJSON files alongside its metrics:
+
+| File | Default path | Purpose |
+|------|-------------|---------|
+| LLM call samples | `.barnacle/calls.ndjson` | One line per LLM/Stagehand call; feed to the `judge:llm` and `slm-self-heal` skills |
+| Run event stream | `.barnacle/events/<runId>.ndjson` | Per-run event stream written by the event-stream subsystem; path surfaced in `/readyz` `telemetry.currentRunFile` |
+
+#### LLM call sample schema
+
+Every line in `.barnacle/calls.ndjson` is a JSON object with these fields (source: `src/api/schemas/telemetry.ts`):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `callId` | `string` | UUID generated per call |
+| `callType` | `string` | Which LLM call site produced this sample — see table below |
+| `model` | `string` | Model identifier string passed to the SDK |
+| `systemPrompt` | `string \| null` | System-prompt text, or `null` when absent |
+| `userContent` | `string` | Full user-turn content |
+| `responseContent` | `string \| null` | Raw response text, or `null` on SDK error |
+| `parsedOk` | `boolean` | Whether the response was successfully parsed into the expected schema |
+| `inputTokens` | `number \| null` | Input token count from SDK usage metadata |
+| `outputTokens` | `number \| null` | Output token count from SDK usage metadata |
+| `latencyMs` | `number \| null` | Wall-clock latency of the SDK call in milliseconds |
+| `success` | `boolean` | Whether the call site considered the call successful end-to-end |
+| `ts` | `string` | ISO-8601 timestamp at write time |
+
+#### Call types
+
+`callType` is a stable string constant defined in `src/lib/telemetry/call-types.ts`:
+
+| `callType` | Source | When emitted |
+|------------|--------|--------------|
+| `recon-rephrase` | `src/scripts/recon-browser.ts` | Attempt-4 rephrase inside the recon-browser step-healing cascade — Anthropic SDK is asked to reword the failing step |
+| `recon-replan` | `src/scripts/recon-browser.ts` | Global replan after a step terminally fails — Claude rewrites the remaining flow tail |
+| `recon-flow-patch` | `src/scripts/recon-heal.ts` | Patch proposal from the recon-flow-patch-generator during the `recon-heal` self-healing loop |
+| `llm-prompt-patch` | `src/scripts/llm-heal.ts` | Patch proposal from the llm-call-patch-generator during the `llm-heal` self-healing loop |
+
+#### Tailing call samples with jq
+
+```bash
+# Stream all LLM call samples as they arrive
+tail -f .barnacle/calls.ndjson | jq '.'
+
+# Filter to a specific call type
+tail -f .barnacle/calls.ndjson | jq 'select(.callType == "recon-rephrase")'
+
+# Show only failures
+tail -f .barnacle/calls.ndjson | jq 'select(.success == false) | {callId, callType, latencyMs}'
+
+# Token usage summary by call type
+jq -s 'group_by(.callType) | map({callType: .[0].callType, totalInputTokens: map(.inputTokens // 0) | add, totalOutputTokens: map(.outputTokens // 0) | add, n: length})' .barnacle/calls.ndjson
+
+# Tail the current run event stream (path from /readyz telemetry.currentRunFile)
+tail -f .barnacle/events/<runId>.ndjson | jq '.'
+```
+
 ## Environment variables
 
 All variables are read once at process start. Required variables cause the
@@ -458,6 +516,9 @@ process to exit on missing values; optional ones have safe defaults.
 | `SESSION_POOL_SIZE` | `3` | No | Maximum concurrent Steel browser sessions. |
 | `SCRAPER_MIN_ACTION_DELAY_MS` | `500` | No | Minimum delay between scraper actions (ms). Jitter applied on top. |
 | `SCRAPER_MAX_ACTION_DELAY_MS` | `1500` | No | Maximum delay between scraper actions (ms). |
+| `STAGEHAND_API_TIMEOUT_MS` | `120000` | No | Anthropic SDK request timeout (ms). Raise on slow network paths to `api.anthropic.com`. |
+| `STAGEHAND_CONNECT_TIMEOUT_MS` | `120000` | No | TCP connect timeout for all outbound fetch calls (ms). Raised from the undici default of 10 s to match `STAGEHAND_API_TIMEOUT_MS`. |
+| `STEEL_SESSION_TIMEOUT_MS` | `3600000` | No | Steel session wall-clock timeout (ms). Default is 1 hour; lower on plans that enforce shorter maximum session durations. |
 
 ### AWS Bedrock (alternative LLM provider)
 
@@ -499,6 +560,36 @@ in each `contract.ts` for outbound rate limits to target sites.
 |----------|---------|---------|
 | `READINESS_QUEUE_THRESHOLD` | `20` | `/readyz` returns 503 when scraper queue depth exceeds this. Lets orchestrators shed load before the pool is saturated. |
 | `ENABLE_DOCS` | `false` | Serve Swagger UI at `/docs`. Disable in production. |
+
+### Telemetry
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `TELEMETRY_ENABLED` | `true` | Master switch — set `false` to disable all NDJSON telemetry writes. |
+| `TELEMETRY_EVENTS_DIR` | `.barnacle/events` | Directory for per-run NDJSON event stream files (`<eventsDir>/<runId>.ndjson`). |
+| `CALLS_NDJSON_PATH` | `.barnacle/calls.ndjson` | Append-only NDJSON sink for LLM/Stagehand call samples. One line per call; feed to the judge and self-heal skills. |
+| `TELEMETRY_MAX_FILE_SIZE_BYTES` | `104857600` (100 MB) | Rotate/drop the calls NDJSON once it exceeds this byte count. |
+| `TELEMETRY_MAX_RETENTION_MS` | `2592000000` (30 days) | Drop event-stream files older than this many milliseconds. |
+
+### LLM judging
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `JUDGE_MODEL` | `us.anthropic.claude-sonnet-4-6[1m]` | Anthropic model used by the judge script. Reuses Bedrock creds via the cross-region inference profile. |
+| `JUDGE_TEMPERATURE` | `0.2` | Sampling temperature for judge LLM calls. Keep low (≤ 0.3) for deterministic verdicts. |
+| `JUDGE_BATCH_SIZE` | `10` | Number of call samples sent to the judge in one LLM request. |
+| `JUDGE_TIMEOUT_MS` | `120000` (2 min) | Anthropic SDK request timeout for judge calls. |
+
+### Self-heal
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `SELFHEAL_MAX_ITERATIONS` | `5` | Maximum patch→replay→score iterations before BUDGET_EXHAUSTED. |
+| `SELFHEAL_N_REPLAYS` | `5` | Number of replay runs per iteration arm. |
+| `SELFHEAL_SUCCESS_THRESHOLD` | `0.9` | Minimum pass rate (0–1) to declare SUCCESS and stop iterating. |
+| `SELFHEAL_PLATEAU_WINDOW` | `3` | Consecutive iterations below `SELFHEAL_PLATEAU_DELTA` that triggers PLATEAUED. |
+| `SELFHEAL_PLATEAU_DELTA` | `0.03` | Minimum absolute pass-rate improvement per iteration to count as progress. |
+| `SELFHEAL_TIMEOUT_MS` | `60000` (1 min) | Per-replay LLM request timeout. |
 
 ### Per-site base URL overrides
 
@@ -647,6 +738,8 @@ Operational routes:
 | `pnpm run recon:summarize -- --site-id <id>` | Phase 4 (optional) — write human-readable findings doc |
 | `pnpm run recon:heal -- --site-id <id> --url <url>` | Self-heal a failing recon flow without modifying the source file |
 | `pnpm run smoke -- --site <id> --payload '...'` | Phase 6 — run nightly drift-detection smoke test |
+| `pnpm run judge:llm -- --calls-ndjson <path> --call-type <type>` | Score captured LLM calls on a three-dimensional rubric; writes a verdict JSON to `judge-out/` |
+| `pnpm run heal:llm -- --verdict-path <path> --call-type <type>` | Self-heal a failing prompt template: iterate patch→replay→score, write `healing-<callType>.md` with the best patch — production prompts are never modified |
 
 ## Architecture
 
@@ -661,7 +754,7 @@ src/
 ├── api/
 │   ├── plugins/               # auth, error-handler, request-context
 │   ├── routes/                # health
-│   ├── schemas/               # common envelope schemas
+│   ├── schemas/               # common envelope schemas; LLM telemetry + judge-verdict schemas
 │   ├── helpers/envelope.ts    # success envelope builder
 │   └── errors.ts              # error hierarchy + envelope builder
 ├── scraper/
@@ -675,8 +768,8 @@ src/
 │   ├── metrics.ts             # drift-detection counters
 │   └── fixtures.ts            # static JSON fixture loader
 ├── cache/response-cache.ts    # lru-cache wrapper
-├── lib/                       # logging, env, bedrock, db client
-├── scripts/                   # recon-browser, recon-http, recon-generate, recon-summarize, recon-heal, recon-shared, smoke-test
+├── lib/                       # logging, env, bedrock, db client, telemetry/
+├── scripts/                   # recon-browser, recon-http, recon-generate, recon-summarize, recon-heal, recon-shared, smoke-test, judge-llm-batch, llm-heal
 └── types/
 ```
 
@@ -783,4 +876,5 @@ readinessProbe:
 - Architecture & design rationale: [docs/architecture.md](./docs/architecture.md)
 - Recon playbook (step-by-step): [docs/playbook.md](./docs/playbook.md)
 - Testing guide: [docs/testing.md](./docs/testing.md)
+- Telemetry & LLM judging concept guide: [docs/telemetry-and-judging.md](./docs/telemetry-and-judging.md)
 - Per-site recon findings: [docs/target-recon.md](./docs/target-recon.md) (populated after first `pnpm run recon:summarize`)
