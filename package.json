@@ -30,7 +30,8 @@
     "recon:generate": "tsx src/scripts/recon-generate.ts",
     "recon:heal": "tsx --env-file=.env src/scripts/recon-heal.ts",
     "recon:http": "tsx src/scripts/recon-http.ts",
-    "recon:summarize": "tsx src/scripts/recon-summarize.ts"
+    "recon:summarize": "tsx src/scripts/recon-summarize.ts",
+    "judge:llm": "tsx --env-file=.env src/scripts/judge-llm-batch.ts"
   },
   "dependencies": {
     "@ai-sdk/amazon-bedrock": "^3.0.99",
