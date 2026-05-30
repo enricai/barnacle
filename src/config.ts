@@ -71,6 +71,14 @@ export interface AppConfig {
   docs: {
     enabled: boolean;
   };
+  telemetry: {
+    /**
+     * Absolute or cwd-relative path for the append-only NDJSON file that
+     * records one line per LLM/Stagehand call. Feed this to the judge and
+     * self-heal skills. Default keeps it alongside the event-stream files.
+     */
+    callsNdjsonPath: string;
+  };
 }
 
 /**
@@ -148,6 +156,9 @@ export function loadConfig(): AppConfig {
     },
     docs: {
       enabled: getBoolEnv("ENABLE_DOCS", false),
+    },
+    telemetry: {
+      callsNdjsonPath: getEnv("CALLS_NDJSON_PATH", ".barnacle/calls.ndjson"),
     },
   };
 }
