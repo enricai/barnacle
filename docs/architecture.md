@@ -368,6 +368,107 @@ Paths are defined as `CAPTURES_DIR` and `STEP_FAILURES_DIR` in
 
 ---
 
+## Telemetry, judging, and self-healing rationale
+
+### Why structured NDJSON, not log lines
+
+Every LLM call Barnacle makes at recon-time (attempt-4 rephrase, global replan,
+recon-flow-patch proposals, llm-prompt-patch proposals) is written as a validated
+NDJSON record to `.barnacle/calls.ndjson` via `captureLlmCall`
+(`src/lib/telemetry/call-capture.ts`). Each line carries the full call context:
+`callType`, `model`, `systemPrompt`, `userContent`, `responseContent`,
+`parsedOk`, token counts, latency, and a timestamp.
+
+Structured NDJSON is the right format here for two concrete reasons. First, the
+judge and self-heal skills need a *scoreable corpus* — they filter by `callType`,
+replay individual samples, and compare pass rates across iterations. Pino's
+unstructured log lines are searchable but not replayable; you can't feed a log
+line back into a scorer as a typed `LlmCallSample`. Second, NDJSON is
+append-only and crash-safe: a run that aborts mid-recon leaves a partial capture
+file that is still fully valid — every line is independently parseable.
+
+Telemetry capture is fire-and-forget — errors are logged and swallowed so a disk
+full or permission error never breaks the recon run. The capture is a diagnostic
+instrument, not a load-bearing path.
+
+### Why judging is offline over captured samples
+
+The judge (`pnpm judge:llm`, `src/scripts/judge-llm-batch.ts`) reads the capture
+file, filters by `callType`, and scores each sample on three dimensions: schema
+adherence (`parsedOk` + structure check), factual grounding, and
+hallucination-freeness. It runs entirely offline — after a recon run or a
+batch of replays — not inline as each LLM call completes.
+
+This is deliberate. Inline judging would add a second LLM call to every
+production path (the rephrase or replan call *plus* the judge call), doubling
+the token cost and latency on the already-expensive recon pipeline. The cost
+model for recon is "infrequent, expensive, must-be-correct" (see §Recon recovery
+model above) — we trade tokens for correctness, but inline scoring would buy
+only observability, not correctness, and at full price on every run. Offline
+scoring over a batch of captures buys the same observability signal at a fraction
+of the cost, without touching the hot or recon paths at all.
+
+Offline scoring also provides a stable baseline: you can re-judge the same
+capture file with a different judge model or a patched prompt and compare the
+pass rates directly, because the inputs are frozen. Inline judging has no
+equivalent — each call is transient and unrepeatable.
+
+### Why self-heal proposes patches for human review rather than auto-editing source
+
+The self-heal loop (`pnpm heal:llm`, `src/scripts/llm-heal.ts`) runs a
+measured-baseline → patch-proposal → replay → convergence cycle for failing LLM
+call templates. When the loop converges, it writes a `healing-<callType>.md`
+report containing the best patch and the pass-rate trajectory. It **never**
+modifies any source file in `src/`.
+
+This mirrors the same invariant already established for the recon-flow
+self-healing cascade (see `docs/playbook.md` §Phase 1e and §Recon recovery model
+above): *the tool produces evidence; the human applies judgment.* There are two
+concrete reasons this invariant matters for LLM prompt templates specifically.
+
+First, a patch that improves the pass rate in the heal environment — which
+replays a captured sample corpus — may still degrade behavior on live inputs not
+in the corpus. The pass rate on captured samples is a proxy for correctness, not
+a proof. A human reviewer can compare the patched and original prompts, check
+the worst-offender excerpts in the report, and decide whether the improvement
+generalises.
+
+Second, prompt templates are semantically load-bearing text. An anchor/replacement
+edit that looks locally safe can silently shift the instruction boundary for
+other parts of the same prompt. Unlike a function signature change (where the
+type-checker catches incompatibilities), prompt changes are invisible to static
+analysis. Human review is the last verifier.
+
+The loop's convergence signals (`SUCCESS`, `PLATEAUED`, `BUDGET_EXHAUSTED`,
+`REGRESSED`, `TIMEOUT`) surface in the `/readyz` endpoint's `heal` field and in
+the report, so operators can track whether a failing call type is trending
+toward resolution without needing to inspect the iteration artifacts directly.
+
+### How this differs from the recon-flow cascade
+
+The recon-flow healing cascade (`src/scripts/recon-heal.ts`) and the LLM
+prompt-template self-heal (`src/scripts/llm-heal.ts`) share the same
+anchor/replacement patch discipline and the same convergence checker
+(`checkConvergence` in `recon-heal.ts`), but they operate on different artifacts
+and at different cost points.
+
+The recon-flow cascade heals `recon-flow.json` flow-step strings — the
+natural-language instructions a human wrote once for Phase 0. Its patch
+generator (`recon-flow-patch-generator`) proposes rewording of those strings so
+the step-execution cascade succeeds. The target artifact is committed JSON that
+humans own.
+
+The LLM prompt-template self-heal heals system/user prompt templates embedded in
+TypeScript source code. Its patch generator (`llm-call-patch-generator`) proposes
+edits to those prompt strings. The target artifact is source code — the bar for
+auto-modification is higher than for a JSON config file.
+
+Both loops share the same human-review discipline: a patch is evidence of
+improvement in the captured-sample regime, not a commit. Both leave the source of
+truth unchanged until a human reviews and manually applies the change.
+
+---
+
 ## Why this approach wins — the alternatives
 
 ### The summary comparison
@@ -515,3 +616,9 @@ maintenance loop.
 | Smoke test | `src/scripts/smoke-test.ts` |
 | Plugin contract interface (template for all site plugins) | `src/site-plugin.ts` |
 | Findings doc (generated) | `docs/target-recon.md` |
+| LLM call telemetry sink (NDJSON capture) | `src/lib/telemetry/call-capture.ts` |
+| Canonical call_type constants | `src/lib/telemetry/call-types.ts` |
+| Per-run telemetry state | `src/lib/telemetry/run-state.ts` |
+| LlmCallSample + JudgeVerdict schemas | `src/api/schemas/telemetry.ts` |
+| LLM batch judge | `src/scripts/judge-llm-batch.ts` |
+| LLM prompt self-heal loop | `src/scripts/llm-heal.ts` |
