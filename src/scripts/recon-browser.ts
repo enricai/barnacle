@@ -312,10 +312,9 @@ function anthropicModelName(): string {
 type CaptureFn = (input: LlmCallInput) => Promise<void>;
 
 /**
- * Asks Claude for a rephrased instruction given the original step, the
- * candidates Stagehand could see, and the selectors we already tried. Returns
- * null if the SDK is unavailable or the call fails — the caller dumps and
- * throws in that case.
+ * Attempt-4 of the step-healing cascade: when three mechanical retry variations
+ * all fail, this is the last resort before the step is declared terminal. Exported
+ * so tests can inject a fake capture sink without touching the browser session.
  */
 async function rephraseWithLLM(
   client: Anthropic,
@@ -398,10 +397,9 @@ Rewrite the instruction so a Stagehand act() call can resolve it unambiguously t
 const REPLAN_RESPONSE_SCHEMA = z.array(z.string().min(1)).min(1).max(REPLAN_MAX_STEPS);
 
 /**
- * Asks Claude to rewrite the remaining steps of a flow when one step
- * terminally failed. Already-completed steps are held fixed — we only revise
- * the tail. Returns the new step array or null when Claude says IMPOSSIBLE,
- * the JSON doesn't parse, or the call errors.
+ * Global fallback after a step terminally fails all healing attempts: rewrites
+ * only the un-run tail of the flow so already-verified steps are not disturbed.
+ * Exported so tests can inject a fake capture sink without a live browser.
  */
 async function replanRemainingFlow(params: {
   client: Anthropic;
