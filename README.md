@@ -458,6 +458,9 @@ process to exit on missing values; optional ones have safe defaults.
 | `SESSION_POOL_SIZE` | `3` | No | Maximum concurrent Steel browser sessions. |
 | `SCRAPER_MIN_ACTION_DELAY_MS` | `500` | No | Minimum delay between scraper actions (ms). Jitter applied on top. |
 | `SCRAPER_MAX_ACTION_DELAY_MS` | `1500` | No | Maximum delay between scraper actions (ms). |
+| `STAGEHAND_API_TIMEOUT_MS` | `120000` | No | Anthropic SDK request timeout (ms). Raise on slow network paths to `api.anthropic.com`. |
+| `STAGEHAND_CONNECT_TIMEOUT_MS` | `120000` | No | TCP connect timeout for all outbound fetch calls (ms). Raised from the undici default of 10 s to match `STAGEHAND_API_TIMEOUT_MS`. |
+| `STEEL_SESSION_TIMEOUT_MS` | `3600000` | No | Steel session wall-clock timeout (ms). Default is 1 hour; lower on plans that enforce shorter maximum session durations. |
 
 ### AWS Bedrock (alternative LLM provider)
 
