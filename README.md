@@ -661,7 +661,7 @@ src/
 ├── api/
 │   ├── plugins/               # auth, error-handler, request-context
 │   ├── routes/                # health
-│   ├── schemas/               # common envelope schemas
+│   ├── schemas/               # common envelope schemas; LLM telemetry + judge-verdict schemas
 │   ├── helpers/envelope.ts    # success envelope builder
 │   └── errors.ts              # error hierarchy + envelope builder
 ├── scraper/
