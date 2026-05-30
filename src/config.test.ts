@@ -118,4 +118,80 @@ describe("config/loadConfig", () => {
     expect(cfg.bedrock.sessionToken).toBe("token");
     expect(cfg.bedrock.model).toBe("us.anthropic.claude-opus-4-7[1m]");
   });
+
+  it("telemetry defaults", () => {
+    process.env = {};
+    const cfg = loadConfig();
+    expect(cfg.telemetry.enabled).toBe(true);
+    expect(cfg.telemetry.eventsDir).toBe(".barnacle/events");
+    expect(cfg.telemetry.callsNdjsonPath).toBe(".barnacle/calls.ndjson");
+    // 100 MB default guards against unbounded growth
+    expect(cfg.telemetry.maxFileSizeBytes).toBe(100 * 1024 * 1024);
+    // 30-day retention covers a monthly judge/heal cadence
+    expect(cfg.telemetry.maxRetentionMs).toBe(30 * 24 * 60 * 60 * 1000);
+  });
+
+  it("telemetry env overrides", () => {
+    process.env.TELEMETRY_ENABLED = "false";
+    process.env.TELEMETRY_EVENTS_DIR = "/data/events";
+    process.env.CALLS_NDJSON_PATH = "/data/calls.ndjson";
+    process.env.TELEMETRY_MAX_FILE_SIZE_BYTES = "52428800";
+    process.env.TELEMETRY_MAX_RETENTION_MS = "86400000";
+    const cfg = loadConfig();
+    expect(cfg.telemetry.enabled).toBe(false);
+    expect(cfg.telemetry.eventsDir).toBe("/data/events");
+    expect(cfg.telemetry.callsNdjsonPath).toBe("/data/calls.ndjson");
+    expect(cfg.telemetry.maxFileSizeBytes).toBe(52428800);
+    expect(cfg.telemetry.maxRetentionMs).toBe(86400000);
+  });
+
+  it("judging defaults", () => {
+    process.env = {};
+    const cfg = loadConfig();
+    expect(cfg.judging.model).toBe("us.anthropic.claude-sonnet-4-6[1m]");
+    // Low temperature for deterministic verdicts
+    expect(cfg.judging.temperature).toBe(0.2);
+    expect(cfg.judging.batchSize).toBe(10);
+    expect(cfg.judging.timeoutMs).toBe(120_000);
+  });
+
+  it("judging env overrides", () => {
+    process.env.JUDGE_MODEL = "us.anthropic.claude-opus-4-8[1m]";
+    process.env.JUDGE_TEMPERATURE = "0.5";
+    process.env.JUDGE_BATCH_SIZE = "20";
+    process.env.JUDGE_TIMEOUT_MS = "60000";
+    const cfg = loadConfig();
+    expect(cfg.judging.model).toBe("us.anthropic.claude-opus-4-8[1m]");
+    expect(cfg.judging.temperature).toBe(0.5);
+    expect(cfg.judging.batchSize).toBe(20);
+    expect(cfg.judging.timeoutMs).toBe(60000);
+  });
+
+  it("selfheal defaults", () => {
+    process.env = {};
+    const cfg = loadConfig();
+    expect(cfg.selfheal.maxIterations).toBe(5);
+    expect(cfg.selfheal.nReplays).toBe(5);
+    // 0.9 success threshold mirrors pila llm-self-heal SKILL default
+    expect(cfg.selfheal.successThreshold).toBe(0.9);
+    expect(cfg.selfheal.plateauWindow).toBe(3);
+    expect(cfg.selfheal.plateauDelta).toBe(0.03);
+    expect(cfg.selfheal.timeoutMs).toBe(60_000);
+  });
+
+  it("selfheal env overrides", () => {
+    process.env.SELFHEAL_MAX_ITERATIONS = "10";
+    process.env.SELFHEAL_N_REPLAYS = "8";
+    process.env.SELFHEAL_SUCCESS_THRESHOLD = "0.95";
+    process.env.SELFHEAL_PLATEAU_WINDOW = "5";
+    process.env.SELFHEAL_PLATEAU_DELTA = "0.05";
+    process.env.SELFHEAL_TIMEOUT_MS = "30000";
+    const cfg = loadConfig();
+    expect(cfg.selfheal.maxIterations).toBe(10);
+    expect(cfg.selfheal.nReplays).toBe(8);
+    expect(cfg.selfheal.successThreshold).toBe(0.95);
+    expect(cfg.selfheal.plateauWindow).toBe(5);
+    expect(cfg.selfheal.plateauDelta).toBe(0.05);
+    expect(cfg.selfheal.timeoutMs).toBe(30000);
+  });
 });

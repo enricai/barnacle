@@ -504,7 +504,31 @@ in each `contract.ts` for outbound rate limits to target sites.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
+| `TELEMETRY_ENABLED` | `true` | Master switch — set `false` to disable all NDJSON telemetry writes. |
+| `TELEMETRY_EVENTS_DIR` | `.barnacle/events` | Directory for per-run NDJSON event stream files (`<eventsDir>/<runId>.ndjson`). |
 | `CALLS_NDJSON_PATH` | `.barnacle/calls.ndjson` | Append-only NDJSON sink for LLM/Stagehand call samples. One line per call; feed to the judge and self-heal skills. |
+| `TELEMETRY_MAX_FILE_SIZE_BYTES` | `104857600` (100 MB) | Rotate/drop the calls NDJSON once it exceeds this byte count. |
+| `TELEMETRY_MAX_RETENTION_MS` | `2592000000` (30 days) | Drop event-stream files older than this many milliseconds. |
+
+### LLM judging
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `JUDGE_MODEL` | `us.anthropic.claude-sonnet-4-6[1m]` | Anthropic model used by the judge script. Reuses Bedrock creds via the cross-region inference profile. |
+| `JUDGE_TEMPERATURE` | `0.2` | Sampling temperature for judge LLM calls. Keep low (≤ 0.3) for deterministic verdicts. |
+| `JUDGE_BATCH_SIZE` | `10` | Number of call samples sent to the judge in one LLM request. |
+| `JUDGE_TIMEOUT_MS` | `120000` (2 min) | Anthropic SDK request timeout for judge calls. |
+
+### Self-heal
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `SELFHEAL_MAX_ITERATIONS` | `5` | Maximum patch→replay→score iterations before BUDGET_EXHAUSTED. |
+| `SELFHEAL_N_REPLAYS` | `5` | Number of replay runs per iteration arm. |
+| `SELFHEAL_SUCCESS_THRESHOLD` | `0.9` | Minimum pass rate (0–1) to declare SUCCESS and stop iterating. |
+| `SELFHEAL_PLATEAU_WINDOW` | `3` | Consecutive iterations below `SELFHEAL_PLATEAU_DELTA` that triggers PLATEAUED. |
+| `SELFHEAL_PLATEAU_DELTA` | `0.03` | Minimum absolute pass-rate improvement per iteration to count as progress. |
+| `SELFHEAL_TIMEOUT_MS` | `60000` (1 min) | Per-replay LLM request timeout. |
 
 ### Per-site base URL overrides
 
