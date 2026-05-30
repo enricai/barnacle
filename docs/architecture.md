@@ -613,6 +613,7 @@ maintenance loop.
 | Phase 4f — plugin skeleton generator | `src/scripts/recon-generate.ts` |
 | Phase 4e — findings doc generator | `src/scripts/recon-summarize.ts` |
 | Shared recon types + utilities (`CAPTURES_DIR`, `STEP_FAILURES_DIR`) | `src/scripts/recon-shared.ts` |
+| Recon flow self-heal loop | `src/scripts/recon-heal.ts` |
 | Smoke test | `src/scripts/smoke-test.ts` |
 | Plugin contract interface (template for all site plugins) | `src/site-plugin.ts` |
 | Findings doc (generated) | `docs/target-recon.md` |
