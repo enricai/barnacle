@@ -12,3 +12,6 @@ export const CALL_TYPE_RECON_REPLAN = "recon-replan";
 
 /** Patch proposal from the recon-flow-patch-generator (recon-heal). */
 export const CALL_TYPE_RECON_FLOW_PATCH = "recon-flow-patch";
+
+/** Patch proposal from the llm-call-patch-generator (llm-heal). */
+export const CALL_TYPE_LLM_PROMPT_PATCH = "llm-prompt-patch";

@@ -33,6 +33,7 @@ import { type JudgeVerdict, judgeVerdictSchema, type LlmCallSample } from "@/api
 import { config } from "@/config";
 import { getScriptLogger } from "@/lib/logging";
 import { captureLlmCall, type LlmCallInput } from "@/lib/telemetry/call-capture";
+import { CALL_TYPE_LLM_PROMPT_PATCH } from "@/lib/telemetry/call-types";
 import {
   makeAnthropicScorer,
   makeDryRunScorer,
@@ -57,8 +58,6 @@ const DEFAULT_SUCCESS_THRESHOLD = 0.9;
 const DEFAULT_PLATEAU_DELTA = 0.03;
 const DEFAULT_PLATEAU_WINDOW = 3;
 const DEFAULT_OUT_DIR = "llm-heal-out";
-
-const CALL_TYPE_LLM_PROMPT_PATCH = "llm-prompt-patch";
 
 // ── types ─────────────────────────────────────────────────────────────────────
 
