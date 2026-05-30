@@ -203,7 +203,7 @@ Return ONLY a single JSON object — no prose, no markdown, no code fences:
     const latencyMs = performance.now() - t0;
 
     const block = response.content.find((b) => b.type === "text");
-    if (!block || block.type !== "text") {
+    if (block?.type !== "text") {
       await captureFn({
         callId: randomUUID(),
         callType: CALL_TYPE_RECON_FLOW_PATCH,
