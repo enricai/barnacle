@@ -56,15 +56,8 @@ export async function captureLlmCall(
   const sinkPath = opts.sinkPath ?? config.telemetry.callsNdjsonPath;
   const sample: LlmCallSample = { ...input, ts: formatISO(new Date()) };
 
-  let line: string;
   try {
-    line = `${JSON.stringify(sample)}\n`;
-  } catch (err) {
-    logger.error(`captureLlmCall: failed to serialize sample: ${String(err)}`);
-    return;
-  }
-
-  try {
+    const line = `${JSON.stringify(sample)}\n`;
     await mkdir(dirname(sinkPath), { recursive: true });
     await appendFile(sinkPath, line, "utf8");
   } catch (err) {
