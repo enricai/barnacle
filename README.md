@@ -500,6 +500,12 @@ in each `contract.ts` for outbound rate limits to target sites.
 | `READINESS_QUEUE_THRESHOLD` | `20` | `/readyz` returns 503 when scraper queue depth exceeds this. Lets orchestrators shed load before the pool is saturated. |
 | `ENABLE_DOCS` | `false` | Serve Swagger UI at `/docs`. Disable in production. |
 
+### Telemetry
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `CALLS_NDJSON_PATH` | `.barnacle/calls.ndjson` | Append-only NDJSON sink for LLM/Stagehand call samples. One line per call; feed to the judge and self-heal skills. |
+
 ### Per-site base URL overrides
 
 Set `BARNACLE_SITE_<UPPERCASE_SITE_ID>_BASE_URL` to override a plugin's
