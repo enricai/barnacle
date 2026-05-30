@@ -734,6 +734,8 @@ principle: the tool produces evidence, the human applies judgment. A patch that
 improved the pass rate in the heal environment still needs human review before it
 ships to `main` — the operator is the last verifier, not the loop.
 
+> **LLM prompt self-healing is different from recon-flow self-healing.** `pnpm run recon:heal` (this section) heals natural-language flow-step strings in `recon-flow.json`. `pnpm run heal:llm` heals the TypeScript prompt templates used by the LLM call sites (rephrase, replan, recon-flow-patch, llm-prompt-patch). See [docs/telemetry-and-judging.md](./telemetry-and-judging.md) for the judging rubric and the `heal:llm` self-heal loop.
+
 ---
 
 ### 6E — LLM judging and prompt self-healing
@@ -1037,5 +1039,13 @@ script is re-runnable — that's our maintenance loop.
 | Phase 4f — plugin skeleton generator | `src/scripts/recon-generate.ts` |
 | Phase 4e — findings doc generator | `src/scripts/recon-summarize.ts` |
 | Shared recon types + utilities | `src/scripts/recon-shared.ts` |
+| Recon flow self-heal loop | `src/scripts/recon-heal.ts` |
 | Smoke test | `src/scripts/smoke-test.ts` |
+| LLM call telemetry sink (NDJSON capture) | `src/lib/telemetry/call-capture.ts` |
+| Canonical call_type constants | `src/lib/telemetry/call-types.ts` |
+| Per-run telemetry state | `src/lib/telemetry/run-state.ts` |
+| LlmCallSample + JudgeVerdict schemas | `src/api/schemas/telemetry.ts` |
+| LLM batch judge (`pnpm judge:llm`) | `src/scripts/judge-llm-batch.ts` |
+| LLM prompt self-heal loop (`pnpm heal:llm`) | `src/scripts/llm-heal.ts` |
 | Findings doc (generated) | `docs/target-recon.md` |
+| Telemetry & LLM judging concept guide | `docs/telemetry-and-judging.md` |

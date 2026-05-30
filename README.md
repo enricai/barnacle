@@ -768,7 +768,7 @@ src/
 │   ├── metrics.ts             # drift-detection counters
 │   └── fixtures.ts            # static JSON fixture loader
 ├── cache/response-cache.ts    # lru-cache wrapper
-├── lib/                       # logging, env, bedrock, db client
+├── lib/                       # logging, env, bedrock, db client, telemetry/
 ├── scripts/                   # recon-browser, recon-http, recon-generate, recon-summarize, recon-heal, recon-shared, smoke-test, judge-llm-batch, llm-heal
 └── types/
 ```
