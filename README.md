@@ -653,6 +653,7 @@ Operational routes:
 | `pnpm run recon:summarize -- --site-id <id>` | Phase 4 (optional) — write human-readable findings doc |
 | `pnpm run recon:heal -- --site-id <id> --url <url>` | Self-heal a failing recon flow without modifying the source file |
 | `pnpm run smoke -- --site <id> --payload '...'` | Phase 6 — run nightly drift-detection smoke test |
+| `pnpm run judge:llm -- --calls-ndjson <path> --call-type <type>` | Score captured LLM calls on a three-dimensional rubric; writes a verdict JSON to `judge-out/` |
 
 ## Architecture
 
@@ -682,7 +683,7 @@ src/
 │   └── fixtures.ts            # static JSON fixture loader
 ├── cache/response-cache.ts    # lru-cache wrapper
 ├── lib/                       # logging, env, bedrock, db client
-├── scripts/                   # recon-browser, recon-http, recon-generate, recon-summarize, recon-heal, recon-shared, smoke-test
+├── scripts/                   # recon-browser, recon-http, recon-generate, recon-summarize, recon-heal, recon-shared, smoke-test, judge-llm-batch
 └── types/
 ```
 
