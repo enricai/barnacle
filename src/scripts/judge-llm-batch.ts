@@ -257,7 +257,7 @@ export function makeAnthropicScorer(client: Anthropic, judgeModel?: string): Sco
       });
 
       const block = response.content.find((b) => b.type === "text");
-      if (!block || block.type !== "text") {
+      if (block?.type !== "text") {
         return fallbackScore("no text block in model response");
       }
 
