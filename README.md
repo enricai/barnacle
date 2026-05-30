@@ -418,6 +418,63 @@ When using Anthropic directly (not Bedrock), the model is controlled by `STAGEHA
 
 See [docs/playbook.md](./docs/playbook.md#6b--metrics-signals-the-detection-ladder) for the full detection ladder.
 
+### NDJSON telemetry files
+
+Barnacle writes two append-only NDJSON files alongside its metrics:
+
+| File | Default path | Purpose |
+|------|-------------|---------|
+| LLM call samples | `.barnacle/calls.ndjson` | One line per LLM/Stagehand call; feed to the `judge:llm` and `slm-self-heal` skills |
+| Run event stream | `.barnacle/events/<runId>.ndjson` | Per-run event stream written by the event-stream subsystem; path surfaced in `/readyz` `telemetry.currentRunFile` |
+
+#### LLM call sample schema
+
+Every line in `.barnacle/calls.ndjson` is a JSON object with these fields (source: `src/api/schemas/telemetry.ts`):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `callId` | `string` | UUID generated per call |
+| `callType` | `string` | Which LLM call site produced this sample — see table below |
+| `model` | `string` | Model identifier string passed to the SDK |
+| `systemPrompt` | `string \| null` | System-prompt text, or `null` when absent |
+| `userContent` | `string` | Full user-turn content |
+| `responseContent` | `string \| null` | Raw response text, or `null` on SDK error |
+| `parsedOk` | `boolean` | Whether the response was successfully parsed into the expected schema |
+| `inputTokens` | `number \| null` | Input token count from SDK usage metadata |
+| `outputTokens` | `number \| null` | Output token count from SDK usage metadata |
+| `latencyMs` | `number \| null` | Wall-clock latency of the SDK call in milliseconds |
+| `success` | `boolean` | Whether the call site considered the call successful end-to-end |
+| `ts` | `string` | ISO-8601 timestamp at write time |
+
+#### Call types
+
+`callType` is a stable string constant defined in `src/lib/telemetry/call-types.ts`:
+
+| `callType` | Source | When emitted |
+|------------|--------|--------------|
+| `recon-rephrase` | `src/scripts/recon-browser.ts` | Attempt-4 rephrase inside the recon-browser step-healing cascade — Anthropic SDK is asked to reword the failing step |
+| `recon-replan` | `src/scripts/recon-browser.ts` | Global replan after a step terminally fails — Claude rewrites the remaining flow tail |
+| `recon-flow-patch` | `src/scripts/recon-heal.ts` | Patch proposal from the recon-flow-patch-generator during the `recon-heal` self-healing loop |
+
+#### Tailing call samples with jq
+
+```bash
+# Stream all LLM call samples as they arrive
+tail -f .barnacle/calls.ndjson | jq '.'
+
+# Filter to a specific call type
+tail -f .barnacle/calls.ndjson | jq 'select(.callType == "recon-rephrase")'
+
+# Show only failures
+tail -f .barnacle/calls.ndjson | jq 'select(.success == false) | {callId, callType, latencyMs}'
+
+# Token usage summary by call type
+jq -s 'group_by(.callType) | map({callType: .[0].callType, totalInputTokens: map(.inputTokens // 0) | add, totalOutputTokens: map(.outputTokens // 0) | add, n: length})' .barnacle/calls.ndjson
+
+# Tail the current run event stream (path from /readyz telemetry.currentRunFile)
+tail -f .barnacle/events/<runId>.ndjson | jq '.'
+```
+
 ## Environment variables
 
 All variables are read once at process start. Required variables cause the
