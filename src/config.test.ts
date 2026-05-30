@@ -28,6 +28,8 @@ describe("config/loadConfig", () => {
     expect(cfg.scraper.siteBaseUrls).toEqual({});
     expect(cfg.scraper.model).toBe("anthropic/claude-sonnet-4-6");
     expect(cfg.scraper.anthropicTimeoutMs).toBe(120_000);
+    expect(cfg.scraper.connectTimeoutMs).toBe(120_000);
+    expect(cfg.scraper.steelSessionTimeoutMs).toBe(3_600_000);
     // Default trustProxy=true matches the most common deploy shape
     // (behind an ALB/nginx/Cloudflare); bare-metal runners must opt out.
     expect(cfg.trustProxy).toBe(true);
