@@ -51,7 +51,7 @@ import { getScriptLogger } from "@/lib/logging";
 import { captureLlmCall, type LlmCallInput } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE, CALL_TYPE_RECON_REPLAN } from "@/lib/telemetry/call-types";
 import { StepVerificationError } from "@/scraper/errors";
-import { createBrowserSession } from "@/scraper/session";
+import { createBrowserSession, type ProviderName } from "@/scraper/session";
 import { CAPTURES_DIR, type Capture, STEP_FAILURES_DIR } from "@/scripts/recon-shared";
 import type { Logger } from "@/types/logging";
 
@@ -975,12 +975,18 @@ async function executeStepWithHealing(params: {
   );
 }
 
-function parseCli(): { url: string; flow: string[]; captureAll: boolean } {
+function parseCli(): {
+  url: string;
+  flow: string[];
+  captureAll: boolean;
+  provider: ProviderName | undefined;
+} {
   const args = process.argv.slice(2);
   let url = "";
   let flow: string[] = [];
   let flowFile: string | null = null;
   let captureAll = false;
+  let provider: ProviderName | undefined;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--url" && args[i + 1]) {
@@ -991,12 +997,19 @@ function parseCli(): { url: string; flow: string[]; captureAll: boolean } {
       flowFile = resolve(args[++i]!);
     } else if (args[i] === "--capture-all") {
       captureAll = true;
+    } else if (args[i] === "--provider" && args[i + 1]) {
+      const raw = args[++i]!.toLowerCase();
+      if (raw !== "browserbase" && raw !== "steel") {
+        logger.error(`--provider must be "browserbase" or "steel" (got ${JSON.stringify(raw)})`);
+        process.exit(1);
+      }
+      provider = raw;
     }
   }
 
   if (!url) {
     logger.error(
-      'usage: recon-browser.ts --url <url> [--flow \'["step1","step2"]\'] [--flow-file <path>] [--capture-all]'
+      'usage: recon-browser.ts --url <url> [--flow \'["step1","step2"]\'] [--flow-file <path>] [--capture-all] [--provider browserbase|steel]'
     );
     process.exit(1);
   }
@@ -1013,18 +1026,18 @@ function parseCli(): { url: string; flow: string[]; captureAll: boolean } {
     }
   }
 
-  return { url, flow, captureAll };
+  return { url, flow, captureAll, provider };
 }
 
 async function main(): Promise<void> {
-  const { url, flow, captureAll } = parseCli();
+  const { url, flow, captureAll, provider } = parseCli();
 
   mkdirSync(CAPTURES_DIR, { recursive: true });
   logger.info(
-    `recon-browser: target=${url} flow_steps=${flow.length} capture_all=${captureAll} out=${CAPTURES_DIR}`
+    `recon-browser: target=${url} flow_steps=${flow.length} capture_all=${captureAll} provider=${provider ?? "(config-default)"} out=${CAPTURES_DIR}`
   );
 
-  const session = await createBrowserSession();
+  const session = await createBrowserSession({ provider });
   const counter = { n: 0 };
   const recentCaptures: string[] = [];
 

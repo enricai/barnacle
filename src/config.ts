@@ -26,6 +26,17 @@ export interface AppConfig {
    */
   trustProxy: boolean;
   scraper: {
+    /**
+     * Default browser-session provider. Browserbase is the default because
+     * Stagehand v3's payload-injection upload path is gated on
+     * `env === "BROWSERBASE"` and several other code paths (CDP timeouts,
+     * session recovery, event-window timing) only activate in that mode.
+     * Steel remains a supported fallback via `SCRAPER_PROVIDER=steel` or the
+     * `--provider steel` CLI flag.
+     */
+    provider: "browserbase" | "steel";
+    browserbaseApiKey: string | undefined;
+    browserbaseProjectId: string | undefined;
     steelApiKey: string | undefined;
     anthropicApiKey: string | undefined;
     model: string;
@@ -189,6 +200,17 @@ export function loadConfig(): AppConfig {
     },
     trustProxy: getBoolEnv("TRUST_PROXY", true),
     scraper: {
+      provider: (() => {
+        const raw = (getEnv("SCRAPER_PROVIDER", "browserbase") || "").toLowerCase();
+        if (raw !== "browserbase" && raw !== "steel") {
+          throw new Error(
+            `SCRAPER_PROVIDER must be "browserbase" or "steel" (got ${JSON.stringify(raw)})`
+          );
+        }
+        return raw;
+      })(),
+      browserbaseApiKey: process.env.BROWSERBASE_API_KEY,
+      browserbaseProjectId: process.env.BROWSERBASE_PROJECT_ID,
       steelApiKey: process.env.STEEL_API_KEY,
       anthropicApiKey: process.env.ANTHROPIC_API_KEY,
       // Stagehand 2.x's modelToProviderMap is stale (knows only up to
