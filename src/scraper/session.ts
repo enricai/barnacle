@@ -1,9 +1,6 @@
 import { config } from "@/config";
 import { createBrowserbaseBrowserSession } from "@/scraper/session-browserbase";
-import {
-  type BrowserSession,
-  type ProviderName,
-} from "@/scraper/session-shared";
+import type { BrowserSession, ProviderName } from "@/scraper/session-shared";
 import { createSteelBrowserSession } from "@/scraper/session-steel";
 
 export type { BrowserSession, ProviderName } from "@/scraper/session-shared";

@@ -1,21 +1,28 @@
 /**
- * One-off probe: does Stagehand v3's `Locator.setInputFiles({ buffer })`
- * payload-injection variant actually work on a remote Steel session?
+ * Regression probe for `Locator.setInputFiles({ buffer })` semantics across
+ * browser providers (Browserbase, Steel). Originally written as a one-off to
+ * discover whether the buffer-payload-injection path actually works on a
+ * remote Steel session — it doesn't, because Stagehand v3's payload-injection
+ * code path is gated on `env === "BROWSERBASE"` and Steel runs as `env: "LOCAL"`,
+ * falling through to a path-based CDP call that Steel's sandbox rejects with
+ * `-32602 'DOM.setFileInputFiles' was blocked: file path is outside the
+ * permitted directory`.
  *
- * We need to know this before designing the full upload primitive in
- * recon-browser.ts. The Stagehand type docs say buffer-based upload exists
- * for remote browsers (Browserbase, Steel) — but "documented" and "works on
- * our specific Steel + CDP transport" are different things.
+ * Kept committed (and worth re-running) when:
+ * - Upgrading Stagehand to confirm the buffer path still works on Browserbase.
+ * - Switching browser providers to verify upload semantics on the new one.
+ * - Debugging an upload regression in production scraping.
  *
  * Target: https://the-internet.herokuapp.com/upload — a public, well-known
  * test page with a single `<input type="file" id="file-upload">` and a
  * "File Uploaded!" success page that says the filename back.
  *
- * Pass criteria: after setInputFiles + clicking submit, the URL changes to
- * /upload (sic — the success page is at the same path) and the body contains
- * the filename we passed.
+ * Pass criteria: setInputFiles attaches the buffer (input.files.length === 1)
+ * AND clicking submit produces a success page body containing the filename.
  *
- * Throwaway. Delete after we know the answer.
+ * Usage:
+ *   pnpm tsx --env-file=.env src/scripts/probe-setinputfiles.ts
+ *   SCRAPER_PROVIDER=steel pnpm tsx --env-file=.env src/scripts/probe-setinputfiles.ts
  */
 
 import { getScriptLogger } from "@/lib/logging";
@@ -33,7 +40,10 @@ async function main(): Promise<void> {
   // Make a tiny PDF-shaped buffer. Doesn't have to be a real PDF — the test
   // page just echoes the name. A minimal valid PDF would be ~200 bytes;
   // the test page accepts anything.
-  const fileBuffer = Buffer.from("%PDF-1.4\n%probe\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n", "utf8");
+  const fileBuffer = Buffer.from(
+    "%PDF-1.4\n%probe\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n",
+    "utf8"
+  );
   const fileName = "probe-resume.pdf";
 
   const session = await createBrowserSession();
@@ -50,14 +60,23 @@ async function main(): Promise<void> {
     logger.info(`pre-upload state: url=${preUrl} title=${JSON.stringify(preTitle)}`);
 
     const fileInput = page.locator(FILE_INPUT_SELECTOR).first();
-    const inputCount = await page.locator(FILE_INPUT_SELECTOR).count().catch(() => -1);
+    const inputCount = await page
+      .locator(FILE_INPUT_SELECTOR)
+      .count()
+      .catch(() => -1);
     logger.info(`file input locator count=${inputCount}`);
     if (inputCount === 0) {
       throw new Error(`file input ${FILE_INPUT_SELECTOR} not found on ${TARGET_URL}`);
     }
 
-    logger.info(`calling setInputFiles with buffer payload (name=${fileName}, size=${fileBuffer.length}b)`);
-    await fileInput.setInputFiles({ name: fileName, mimeType: "application/pdf", buffer: fileBuffer });
+    logger.info(
+      `calling setInputFiles with buffer payload (name=${fileName}, size=${fileBuffer.length}b)`
+    );
+    await fileInput.setInputFiles({
+      name: fileName,
+      mimeType: "application/pdf",
+      buffer: fileBuffer,
+    });
     logger.info("setInputFiles resolved without throwing");
 
     // Read the input's files[].length from the page itself to prove the file

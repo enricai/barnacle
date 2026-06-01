@@ -1,4 +1,4 @@
-import { type Stagehand } from "@browserbasehq/stagehand";
+import type { Stagehand } from "@browserbasehq/stagehand";
 import type Bottleneck from "bottleneck";
 
 import { pickRandom } from "@/lib/random";

@@ -27,7 +27,13 @@ const { configRef } = vi.hoisted(() => ({
         anthropicTimeoutMs: 120000,
         steelSessionTimeoutMs: 3600000,
       },
-      bedrock: { region: "us-east-1", model: "test", accessKeyId: undefined, secretAccessKey: undefined, sessionToken: undefined },
+      bedrock: {
+        region: "us-east-1",
+        model: "test",
+        accessKeyId: undefined,
+        secretAccessKey: undefined,
+        sessionToken: undefined,
+      },
     },
   },
 }));
@@ -97,7 +103,13 @@ const defaultConfig = (): typeof configRef.value => ({
     anthropicTimeoutMs: 120000,
     steelSessionTimeoutMs: 3600000,
   },
-  bedrock: { region: "us-east-1", model: "test", accessKeyId: undefined, secretAccessKey: undefined, sessionToken: undefined },
+  bedrock: {
+    region: "us-east-1",
+    model: "test",
+    accessKeyId: undefined,
+    secretAccessKey: undefined,
+    sessionToken: undefined,
+  },
 });
 
 describe("scraper/session router", () => {
