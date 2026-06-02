@@ -838,13 +838,19 @@ const UPLOAD_RESUME_PATTERN =
  * doesn't match the resume-upload pattern OR no file input was found
  * (caller falls through to the existing cascade in that case).
  */
+/** How long the upload primitive waits for a post-setInputFiles network POST. */
+const UPLOAD_NETWORK_TIMEOUT_MS = 5_000;
+/** Polling interval while waiting for the upload's network signal. */
+const UPLOAD_NETWORK_POLL_INTERVAL_MS = 250;
+
 async function tryUploadPrimitive(params: {
   page: Page;
   step: string;
   fixture: { buffer: Buffer; name: string; mimeType: string } | null;
   logger: Logger;
+  signalCounter: { n: number };
 }): Promise<boolean> {
-  const { page, step, fixture, logger } = params;
+  const { page, step, fixture, logger, signalCounter } = params;
   if (!fixture) {
     return false;
   }
@@ -867,6 +873,7 @@ async function tryUploadPrimitive(params: {
     return false;
   }
   const target = page.locator(fileInputSelector).first();
+  const networkCountBefore = signalCounter.n;
   try {
     await target.setInputFiles({
       name: fixture.name,
@@ -877,10 +884,24 @@ async function tryUploadPrimitive(params: {
     logger.warn(`upload primitive: setInputFiles threw: ${toErrorMessage(err)}`);
     return false;
   }
-  // Verify via DOM check that the file actually attached, not just that the
-  // API call returned cleanly. Stagehand has been observed to return success
-  // on attach calls that produced no DOM mutation (e.g. when env=LOCAL on a
-  // remote browser); this confirms before we declare victory.
+  // Primary signal: wait for a non-poll POST to fire. Widgets that upload
+  // immediately on setInputFiles (the common case — ClearCompany, AppCast,
+  // most ATS file widgets) trigger one within milliseconds. signalCounter
+  // already excludes background polls, so a single bump here is the upload.
+  const startedAt = performance.now();
+  while (performance.now() - startedAt < UPLOAD_NETWORK_TIMEOUT_MS) {
+    if (signalCounter.n > networkCountBefore) {
+      logger.info(
+        `upload primitive: network activity detected post-setInputFiles (name=${fixture.name}, size=${fixture.buffer.length}b)`
+      );
+      return true;
+    }
+    await page.waitForTimeout(UPLOAD_NETWORK_POLL_INTERVAL_MS);
+  }
+  // Fallback: some widgets defer the upload to a separate Save click. For
+  // those the DOM still has the attached File — verify there. Widgets that
+  // clear input.files on upload trigger (ClearCompany's jQuery File Upload)
+  // would fail this check, but they should have fired a network call above.
   //
   // Trust boundary: the evaluate expression is a static string literal — no
   // interpolation from external data, no risk of injecting attacker-controlled
@@ -892,11 +913,11 @@ async function tryUploadPrimitive(params: {
     )
     .catch(() => 0);
   if (typeof attachedLength !== "number" || attachedLength === 0) {
-    logger.warn("upload primitive: setInputFiles returned but no file attached in DOM");
+    logger.warn("upload primitive: no network activity within timeout and no file attached in DOM");
     return false;
   }
   logger.info(
-    `upload primitive: attached fixture (name=${fixture.name}, size=${fixture.buffer.length}b, filesLength=${attachedLength})`
+    `upload primitive: file attached in DOM after setInputFiles (deferred-upload widget; name=${fixture.name}, filesLength=${attachedLength})`
   );
   return true;
 }
@@ -1056,7 +1077,7 @@ async function executeStepWithHealing(params: {
   // the step is fully handled — no cascade needed. If it returns false (step
   // didn't match the pattern, or no file input on the page), we fall through
   // to the existing cascade unchanged.
-  if (await tryUploadPrimitive({ page, step, fixture: resumeFixture, logger })) {
+  if (await tryUploadPrimitive({ page, step, fixture: resumeFixture, logger, signalCounter })) {
     logger.info(`step ${stepIndex + 1} resolved by upload primitive`);
     return;
   }
