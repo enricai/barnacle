@@ -695,6 +695,106 @@ function xpathBody(selector: string): string | null {
 }
 
 /**
+ * Recognizes flow-step instructions that ask the agent to upload a resume
+ * (PDF or generic). Site-agnostic: matches the natural-language intent users
+ * naturally write into recon-flow.json files. Variations covered include
+ * "upload the test resume PDF", "Upload the resume file", "attach a resume",
+ * "upload your CV as a PDF", etc.
+ *
+ * Used by `tryUploadPrimitive` to decide whether to bypass the LLM cascade
+ * and go straight to a `Locator.setInputFiles({ buffer })` call.
+ */
+const UPLOAD_RESUME_PATTERN =
+  /\b(upload|attach)\b[^.]*\b(resume|cv)\b|\b(resume|cv)\b[^.]*\b(upload|attach)\b/i;
+
+/**
+ * Site-agnostic file-upload primitive that bypasses Stagehand's click-and-act
+ * cascade for resume-style upload steps.
+ *
+ * Why this exists: many ATS upload widgets wrap the real `<input type="file">`
+ * behind a styled button or dropdown menu (jQuery File Upload + Bootstrap,
+ * Material UI menus, custom React popovers). Stagehand's CDP click often
+ * fails to trigger the JS handlers that reveal the hidden file input — the
+ * verifier correctly reports the click had no observable effect, but no
+ * amount of replanning resolves it because no clickable path actually
+ * surfaces the input.
+ *
+ * Strategy: when the flow-step instruction matches the resume-upload
+ * pattern, observe for any `<input type="file">` on the page (Stagehand's
+ * accessibility tree won't show it if the site hides it via CSS, but the
+ * raw DOM does). If found, call `Locator.setInputFiles({ buffer })` with
+ * the cached fixture buffer. This dispatches via Stagehand's payload-
+ * injection path (active on Browserbase sessions), so no host-filesystem
+ * access is required.
+ *
+ * Returns `true` if the upload completed; `false` if either the step
+ * doesn't match the resume-upload pattern OR no file input was found
+ * (caller falls through to the existing cascade in that case).
+ */
+async function tryUploadPrimitive(params: {
+  page: Page;
+  step: string;
+  fixture: { buffer: Buffer; name: string; mimeType: string } | null;
+  logger: Logger;
+}): Promise<boolean> {
+  const { page, step, fixture, logger } = params;
+  if (!fixture) {
+    return false;
+  }
+  if (!UPLOAD_RESUME_PATTERN.test(step)) {
+    return false;
+  }
+  // Raw-DOM xpath: matches `<input type="file">` even when accessibility-tree
+  // observers miss it (the common pattern when sites style the input invisible
+  // and overlay a button on top of it).
+  const fileInputSelector = "xpath=//input[@type='file']";
+  let count = 0;
+  try {
+    count = await page.locator(fileInputSelector).count();
+  } catch (err) {
+    logger.warn(`upload primitive: file-input probe threw: ${toErrorMessage(err)}`);
+    return false;
+  }
+  if (count === 0) {
+    logger.info("upload primitive: no <input type=file> on page; falling through to cascade");
+    return false;
+  }
+  const target = page.locator(fileInputSelector).first();
+  try {
+    await target.setInputFiles({
+      name: fixture.name,
+      mimeType: fixture.mimeType,
+      buffer: fixture.buffer,
+    });
+  } catch (err) {
+    logger.warn(`upload primitive: setInputFiles threw: ${toErrorMessage(err)}`);
+    return false;
+  }
+  // Verify via DOM check that the file actually attached, not just that the
+  // API call returned cleanly. Stagehand has been observed to return success
+  // on attach calls that produced no DOM mutation (e.g. when env=LOCAL on a
+  // remote browser); this confirms before we declare victory.
+  //
+  // Trust boundary: the evaluate expression is a static string literal — no
+  // interpolation from external data, no risk of injecting attacker-controlled
+  // values into the browser-side JS. Same trust posture as the type-probe
+  // expression in verifyDomEffect's click case.
+  const attachedLength = await page
+    .evaluate(
+      "(() => { const els = document.querySelectorAll('input[type=file]'); for (const el of els) { if (el.files && el.files.length > 0) return el.files.length; } return 0; })()"
+    )
+    .catch(() => 0);
+  if (typeof attachedLength !== "number" || attachedLength === 0) {
+    logger.warn("upload primitive: setInputFiles returned but no file attached in DOM");
+    return false;
+  }
+  logger.info(
+    `upload primitive: attached fixture (name=${fixture.name}, size=${fixture.buffer.length}b, filesLength=${attachedLength})`
+  );
+  return true;
+}
+
+/**
  * For state-class Stagehand actions (`fill`, `check`, etc.) the network/URL
  * heuristic is meaningless — typing into an input never fires a request.
  * Re-read DOM state from the same selector Stagehand acted upon and compare
@@ -786,6 +886,7 @@ async function executeStepWithHealing(params: {
   anthropic: Anthropic | null;
   logger: Logger;
   captureFn?: CaptureFn;
+  resumeFixture: { buffer: Buffer; name: string; mimeType: string } | null;
 }): Promise<void> {
   const {
     stagehand,
@@ -798,10 +899,20 @@ async function executeStepWithHealing(params: {
     anthropic,
     logger,
     captureFn,
+    resumeFixture,
   } = params;
   const attempts: AttemptRecord[] = [];
   const triedSelectors: string[] = [];
   const failureReasons: string[] = [];
+
+  // Try the site-agnostic upload primitive first. If it triggers and succeeds,
+  // the step is fully handled — no cascade needed. If it returns false (step
+  // didn't match the pattern, or no file input on the page), we fall through
+  // to the existing cascade unchanged.
+  if (await tryUploadPrimitive({ page, step, fixture: resumeFixture, logger })) {
+    logger.info(`step ${stepIndex + 1} resolved by upload primitive`);
+    return;
+  }
 
   for (let attempt = 1; attempt <= MAX_STEP_ATTEMPTS; attempt++) {
     if (attempt > 1) {
@@ -975,11 +1086,15 @@ async function executeStepWithHealing(params: {
   );
 }
 
+/** Default resume fixture path; overridable via --resume-fixture or RESUME_FIXTURE_PATH. */
+const DEFAULT_RESUME_FIXTURE_PATH = "src/sites/_shared/fixtures/resume.pdf";
+
 function parseCli(): {
   url: string;
   flow: string[];
   captureAll: boolean;
   provider: ProviderName | undefined;
+  resumeFixturePath: string;
 } {
   const args = process.argv.slice(2);
   let url = "";
@@ -987,6 +1102,8 @@ function parseCli(): {
   let flowFile: string | null = null;
   let captureAll = false;
   let provider: ProviderName | undefined;
+  // Precedence: --resume-fixture flag > RESUME_FIXTURE_PATH env > default path.
+  let resumeFixturePath = process.env.RESUME_FIXTURE_PATH || DEFAULT_RESUME_FIXTURE_PATH;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--url" && args[i + 1]) {
@@ -1004,12 +1121,14 @@ function parseCli(): {
         process.exit(1);
       }
       provider = raw;
+    } else if (args[i] === "--resume-fixture" && args[i + 1]) {
+      resumeFixturePath = args[++i]!;
     }
   }
 
   if (!url) {
     logger.error(
-      'usage: recon-browser.ts --url <url> [--flow \'["step1","step2"]\'] [--flow-file <path>] [--capture-all] [--provider browserbase|steel]'
+      'usage: recon-browser.ts --url <url> [--flow \'["step1","step2"]\'] [--flow-file <path>] [--capture-all] [--provider browserbase|steel] [--resume-fixture <path>]'
     );
     process.exit(1);
   }
@@ -1026,15 +1145,43 @@ function parseCli(): {
     }
   }
 
-  return { url, flow, captureAll, provider };
+  return { url, flow, captureAll, provider, resumeFixturePath };
+}
+
+/**
+ * Loads the resume fixture from disk at startup so the upload primitive
+ * doesn't re-read the file from disk for every recon step. Returns null
+ * when the file doesn't exist — the primitive then falls through to the
+ * regular cascade and the recon continues unchanged (so flows that don't
+ * involve resume uploads aren't affected by a missing fixture).
+ */
+function loadResumeFixture(
+  path: string
+): { buffer: Buffer; name: string; mimeType: string } | null {
+  try {
+    const buffer = readFileSync(path);
+    const name = path.split("/").pop() ?? "resume.pdf";
+    // Conservative: every site we've targeted accepts PDF; if we ever ship a
+    // .docx fixture we'd extend this map. Default keeps the primitive safe.
+    const mimeType = name.toLowerCase().endsWith(".pdf")
+      ? "application/pdf"
+      : "application/octet-stream";
+    return { buffer, name, mimeType };
+  } catch (err) {
+    logger.warn(
+      `resume fixture not loaded from ${path}: ${toErrorMessage(err)} — upload primitive will fall through`
+    );
+    return null;
+  }
 }
 
 async function main(): Promise<void> {
-  const { url, flow, captureAll, provider } = parseCli();
+  const { url, flow, captureAll, provider, resumeFixturePath } = parseCli();
 
   mkdirSync(CAPTURES_DIR, { recursive: true });
+  const resumeFixture = loadResumeFixture(resumeFixturePath);
   logger.info(
-    `recon-browser: target=${url} flow_steps=${flow.length} capture_all=${captureAll} provider=${provider ?? "(config-default)"} out=${CAPTURES_DIR}`
+    `recon-browser: target=${url} flow_steps=${flow.length} capture_all=${captureAll} provider=${provider ?? "(config-default)"} resume_fixture=${resumeFixture ? `${resumeFixturePath} (${resumeFixture.buffer.length}b)` : "(missing)"} out=${CAPTURES_DIR}`
   );
 
   const session = await createBrowserSession({ provider });
@@ -1090,6 +1237,7 @@ async function main(): Promise<void> {
           recentCaptures,
           anthropic,
           logger,
+          resumeFixture,
         });
         completedSteps.push(step);
       } catch (err) {
