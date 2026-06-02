@@ -505,21 +505,33 @@ const RECON_FLOW_STEP_SCHEMA = z.union([
   z.object({
     step: z.string().min(1),
     optional: z.boolean().default(false),
+    /**
+     * When true, dispatches to the site-agnostic upload primitive
+     * (setInputFiles with the cached fixture) instead of the normal cascade.
+     * Required because resume-upload widgets often hide the real
+     * <input type="file"> behind styled buttons that Stagehand can't click.
+     *
+     * Explicit field per the no-regex-on-open-sets feedback — pre-N+24 code
+     * pattern-matched the step text to decide dispatch, which false-positived
+     * on click steps that happened to mention "resume" or "upload".
+     */
+    upload: z.boolean().default(false),
   }),
 ]);
 const RECON_FLOW_SCHEMA = z.array(RECON_FLOW_STEP_SCHEMA).min(1);
 
-/** Internal normalized step shape. Source-flow strings normalize with optional=false. */
+/** Internal normalized step shape. Source-flow strings normalize with all flags false. */
 interface NormalizedStep {
   instruction: string;
   optional: boolean;
+  upload: boolean;
 }
 
 function normalizeFlow(steps: z.infer<typeof RECON_FLOW_SCHEMA>): NormalizedStep[] {
   return steps.map((s) =>
     typeof s === "string"
-      ? { instruction: s, optional: false }
-      : { instruction: s.step, optional: s.optional }
+      ? { instruction: s, optional: false, upload: false }
+      : { instruction: s.step, optional: s.optional, upload: s.upload }
   );
 }
 
@@ -688,7 +700,25 @@ a specific element. Examples:
 
 Do NOT mark required actions optional (form fills the user needs filled, the
 Continue/Submit button at the end of a section, etc.) — that would silently
-skip them when the cascade can't see them, leaving the form half-filled.`;
+skip them when the cascade can't see them, leaving the form half-filled.
+
+UPLOAD STEPS:
+A step that uploads a file to a file input MUST be emitted as
+\`{step: "...", upload: true}\` so the cascade routes it to the file-upload
+primitive (which handles widgets that hide the real <input type=file> behind
+a styled button Stagehand can't click).
+
+Do NOT mark non-upload actions as upload — even if their description mentions
+"upload" or "resume". Examples:
+  - "Upload the test resume PDF when the upload screen appears" → emit as
+    \`{step: "Upload the test resume PDF", upload: true}\`
+  - "Click Continue past the resume upload screen" → emit as the bare string
+    "Click Continue past the resume upload screen" (NOT upload — it's a click).
+  - "Click the Remove button to delete the previous resume" → bare string
+    (NOT upload — it's a click).
+
+A step CAN be both upload and optional (object form with both fields set),
+but that's rare — most upload steps are required.`;
 
   const model = anthropicModelName();
   const t0 = performance.now();
@@ -847,22 +877,14 @@ function xpathBody(selector: string): string | null {
   return selector.startsWith("xpath=") ? selector.slice("xpath=".length) : null;
 }
 
-/**
- * Recognizes flow-step instructions that ask the agent to upload a resume
- * (PDF or generic). Site-agnostic: matches the natural-language intent users
- * naturally write into recon-flow.json files. Variations covered include
- * "upload the test resume PDF", "Upload the resume file", "attach a resume",
- * "upload your CV as a PDF", etc.
- *
- * Used by `tryUploadPrimitive` to decide whether to bypass the LLM cascade
- * and go straight to a `Locator.setInputFiles({ buffer })` call.
- */
-const UPLOAD_RESUME_PATTERN =
-  /\b(upload|attach)\b[^.]*\b(resume|cv)\b|\b(resume|cv)\b[^.]*\b(upload|attach)\b/i;
+/** How long the upload primitive waits for a post-setInputFiles network POST. */
+const UPLOAD_NETWORK_TIMEOUT_MS = 5_000;
+/** Polling interval while waiting for the upload's network signal. */
+const UPLOAD_NETWORK_POLL_INTERVAL_MS = 250;
 
 /**
  * Site-agnostic file-upload primitive that bypasses Stagehand's click-and-act
- * cascade for resume-style upload steps.
+ * cascade for steps explicitly marked `upload: true` in the flow file.
  *
  * Why this exists: many ATS upload widgets wrap the real `<input type="file">`
  * behind a styled button or dropdown menu (jQuery File Upload + Bootstrap,
@@ -872,35 +894,29 @@ const UPLOAD_RESUME_PATTERN =
  * amount of replanning resolves it because no clickable path actually
  * surfaces the input.
  *
- * Strategy: when the flow-step instruction matches the resume-upload
- * pattern, observe for any `<input type="file">` on the page (Stagehand's
- * accessibility tree won't show it if the site hides it via CSS, but the
- * raw DOM does). If found, call `Locator.setInputFiles({ buffer })` with
- * the cached fixture buffer. This dispatches via Stagehand's payload-
- * injection path (active on Browserbase sessions), so no host-filesystem
- * access is required.
+ * Dispatch is structural (the caller passes `isUploadStep: boolean` from the
+ * flow file's `upload: true` field), NOT text-matched on the step
+ * instruction. The pre-N+24 regex-based dispatch (`UPLOAD_RESUME_PATTERN`)
+ * false-positived on click steps that mentioned "resume" or "upload" in their
+ * descriptions, causing duplicate uploads — see feedback_no_regex_open_sets.
  *
- * Returns `true` if the upload completed; `false` if either the step
- * doesn't match the resume-upload pattern OR no file input was found
- * (caller falls through to the existing cascade in that case).
+ * Returns `true` if the upload completed; `false` if either the step isn't
+ * marked upload OR no file input was found (caller falls through to the
+ * existing cascade in that case).
  */
-/** How long the upload primitive waits for a post-setInputFiles network POST. */
-const UPLOAD_NETWORK_TIMEOUT_MS = 5_000;
-/** Polling interval while waiting for the upload's network signal. */
-const UPLOAD_NETWORK_POLL_INTERVAL_MS = 250;
-
 async function tryUploadPrimitive(params: {
   page: Page;
-  step: string;
+  /** Set from the flow file's `upload: true` field. Replaces the prior regex test. */
+  isUploadStep: boolean;
   fixture: { buffer: Buffer; name: string; mimeType: string } | null;
   logger: Logger;
   signalCounter: { n: number };
 }): Promise<boolean> {
-  const { page, step, fixture, logger, signalCounter } = params;
-  if (!fixture) {
+  const { page, isUploadStep, fixture, logger, signalCounter } = params;
+  if (!isUploadStep) {
     return false;
   }
-  if (!UPLOAD_RESUME_PATTERN.test(step)) {
+  if (!fixture) {
     return false;
   }
   // Raw-DOM xpath: matches `<input type="file">` even when accessibility-tree
@@ -1099,6 +1115,13 @@ async function executeStepWithHealing(params: {
    * replan budget. Required steps (default) keep the full 4-attempt healing.
    */
   optional: boolean;
+  /**
+   * When true, dispatches to the upload primitive (which sets the fixture
+   * on the page's <input type=file>) instead of running the cascade. Required
+   * for resume-upload widgets that hide the real file input behind styled
+   * buttons Stagehand can't click. Set from the flow file's `upload: true`.
+   */
+  upload: boolean;
   stepIndex: number;
   phase: string;
   signalCounter: { n: number };
@@ -1113,6 +1136,7 @@ async function executeStepWithHealing(params: {
     page,
     step,
     optional,
+    upload,
     stepIndex,
     phase,
     signalCounter,
@@ -1126,11 +1150,20 @@ async function executeStepWithHealing(params: {
   const triedSelectors: string[] = [];
   const failureReasons: string[] = [];
 
-  // Try the site-agnostic upload primitive first. If it triggers and succeeds,
-  // the step is fully handled — no cascade needed. If it returns false (step
-  // didn't match the pattern, or no file input on the page), we fall through
-  // to the existing cascade unchanged.
-  if (await tryUploadPrimitive({ page, step, fixture: resumeFixture, logger, signalCounter })) {
+  // When the flow file marks the step `upload: true`, dispatch to the
+  // site-agnostic upload primitive (setInputFiles + network-signal verify).
+  // On success, the step is fully handled — no cascade needed. On failure
+  // (no file input on the page, network never fires), we fall through to
+  // the existing cascade.
+  if (
+    await tryUploadPrimitive({
+      page,
+      isUploadStep: upload,
+      fixture: resumeFixture,
+      logger,
+      signalCounter,
+    })
+  ) {
     logger.info(`step ${stepIndex + 1} resolved by upload primitive`);
     return;
   }
@@ -1552,6 +1585,7 @@ async function main(): Promise<void> {
           page,
           step: step.instruction,
           optional: step.optional,
+          upload: step.upload,
           stepIndex: i,
           phase: currentPhase,
           signalCounter,
