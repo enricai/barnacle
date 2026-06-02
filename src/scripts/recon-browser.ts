@@ -41,6 +41,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import Anthropic from "@anthropic-ai/sdk";
+import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import type { Action, Page, Stagehand } from "@browserbasehq/stagehand";
 import { z } from "zod/v4";
 
@@ -485,7 +486,23 @@ Rewrite the instruction so a Stagehand act() call can resolve it unambiguously t
   }
 }
 
-const REPLAN_RESPONSE_SCHEMA = z.array(z.string().min(1)).min(1).max(REPLAN_MAX_STEPS);
+/**
+ * Replanner response shape. Sent to Anthropic via `zodOutputFormat` so the API
+ * enforces the schema and rejects malformed output (no prose preambles, no
+ * markdown code fences, no schema-violating shapes). We accept either a
+ * replanned step array or an explicit "impossible" outcome — the latter is
+ * the structured replacement for the old IMPOSSIBLE magic string.
+ */
+const REPLAN_RESPONSE_SCHEMA = z.discriminatedUnion("outcome", [
+  z.object({
+    outcome: z.literal("replan"),
+    steps: z.array(z.string().min(1)).min(1).max(REPLAN_MAX_STEPS),
+  }),
+  z.object({
+    outcome: z.literal("impossible"),
+    reason: z.string().min(1),
+  }),
+]);
 
 /**
  * Pull the raw-DOM and unfocused-observe evidence out of an on-disk failure
@@ -622,62 +639,33 @@ runs. But NEVER combine multiple actions even when they're each conditional.
 
 Constraints:
 - Do NOT include the already-completed steps in your output — only the new remaining tail to execute from here.
-- Return ONLY a JSON array of strings — no prose, no markdown, no code fences.
-- If the user's intent is unreachable from this page state, reply with the literal string IMPOSSIBLE.
+- If you can recover the flow, return outcome="replan" with the steps array.
+- If the user's intent is unreachable from this page state, return outcome="impossible" with a brief reason.
 - Maximum ${REPLAN_MAX_STEPS} steps.
 - Each step is a single DOM action (see CRITICAL section above).`;
 
   const model = anthropicModelName();
   const t0 = performance.now();
   try {
-    const response = await client.messages.create({
+    const response = await client.messages.parse({
       model,
       max_tokens: 2000,
       messages: [{ role: "user", content: prompt }],
+      output_config: {
+        format: zodOutputFormat(REPLAN_RESPONSE_SCHEMA),
+      },
     });
     const latencyMs = performance.now() - t0;
-    const block = response.content.find((b) => b.type === "text");
-    const rawText = block?.type === "text" ? block.text.trim() : "";
-
-    if (rawText === "IMPOSSIBLE" || rawText.length === 0) {
-      await captureFn({
-        callId: randomUUID(),
-        callType: CALL_TYPE_RECON_REPLAN,
-        model,
-        systemPrompt: null,
-        userContent: prompt,
-        responseContent: rawText || null,
-        parsedOk: false,
-        inputTokens: response.usage?.input_tokens ?? null,
-        outputTokens: response.usage?.output_tokens ?? null,
-        latencyMs,
-        success: false,
-      });
-      return null;
+    // Structured output: SDK throws on JSON or schema-validation failure, so
+    // reaching this point means parsed_output is the validated object. The
+    // typings keep T | null in the signature for the "no format supplied"
+    // branch — guard so the discriminated-union narrows cleanly below.
+    const parsed = response.parsed_output;
+    if (parsed === null) {
+      throw new Error("structured-output enabled but parsed_output is null");
     }
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(rawText);
-    } catch {
-      await captureFn({
-        callId: randomUUID(),
-        callType: CALL_TYPE_RECON_REPLAN,
-        model,
-        systemPrompt: null,
-        userContent: prompt,
-        responseContent: rawText,
-        parsedOk: false,
-        inputTokens: response.usage?.input_tokens ?? null,
-        outputTokens: response.usage?.output_tokens ?? null,
-        latencyMs,
-        success: false,
-      });
-      return null;
-    }
-
-    const validated = REPLAN_RESPONSE_SCHEMA.safeParse(parsed);
-    const parsedOk = validated.success;
+    const textBlock = response.content.find((b) => b.type === "text");
+    const rawText = textBlock?.type === "text" ? textBlock.text : "";
 
     await captureFn({
       callId: randomUUID(),
@@ -686,15 +674,15 @@ Constraints:
       systemPrompt: null,
       userContent: prompt,
       responseContent: rawText,
-      parsedOk,
+      parsedOk: true,
       inputTokens: response.usage?.input_tokens ?? null,
       outputTokens: response.usage?.output_tokens ?? null,
       latencyMs,
-      success: parsedOk,
+      success: true,
     });
 
-    if (!parsedOk) return null;
-    return validated.data;
+    if (parsed.outcome === "replan") return parsed.steps;
+    return null;
   } catch {
     await captureFn({
       callId: randomUUID(),
