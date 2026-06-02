@@ -23,10 +23,8 @@
  *     --url https://example.com \
  *     --flow-file src/sites/my-site/recon-flow.json
  *
- *   # Capture every network response (useful for non-GraphQL/REST sites):
- *   pnpm tsx src/scripts/recon-browser.ts --url https://example.com --capture-all
- *
- *   # Capture page-load XHRs only (no interaction — pure GET-style SPAs):
+ *   # Captures every network response — no URL-shape filtering. Use grep
+ *   # against /tmp/recon/graphql/ if you only want specific endpoints.
  *   pnpm tsx src/scripts/recon-browser.ts --url https://example.com
  *
  * The script needs STEEL_API_KEY and either ANTHROPIC_API_KEY or USE_BEDROCK=true
@@ -64,47 +62,6 @@ const logger = getScriptLogger("recon-browser");
 const GOTO_TIMEOUT_MS = 120_000;
 /** Post-action pause between flow steps — gives the page time to settle. */
 const STEP_PAUSE_MS = 2_000;
-
-/**
- * URL patterns we care about — GraphQL, REST API paths, and static JSON.
- * Intentionally conservative: add `--capture-all` for sites whose API paths
- * don't match these patterns (e.g. `/catalog`, `/products` without `/api/`).
- */
-const CAPTURE_PATTERNS = [/\/graph/, /\/api\//, /\/graphql/, /\/v1\//, /\.json(\?|$)/];
-
-/**
- * URLs that look like background polling. Captures still get written to disk
- * (we want the evidence), but they don't increment the verifier's network
- * counter — otherwise SPAs that poll for async state ('did the resume parse
- * yet?', 'is payment processed?') make every action look "verified" because
- * a coincident poll happened to fire. Patterns target the *shape* of polling
- * URLs (suffixes, cache-busters) not specific site paths.
- *
- * The `_=\d{10,}` rule catches jQuery's default cache-buster — added on GETs
- * that need to bypass browser caches, which in practice is overwhelmingly
- * polling or retried pre-fetches. Real form-submitting POSTs don't carry it.
- */
-const POLLING_URL_PATTERNS = [
-  /\/check(\?|$|\/)/,
-  /\/poll(\?|$|\/)/,
-  /\/status(\?|$|\/)/,
-  /\/ping(\?|$|\/)/,
-  /\/heartbeat(\?|$|\/)/,
-  /[?&]_=\d{10,}/,
-];
-
-function shouldCapture(url: string, captureAll: boolean): boolean {
-  if (captureAll) return true;
-  return CAPTURE_PATTERNS.some((p) => p.test(url));
-}
-
-/**
- * True when the captured URL looks like a background poll. The verifier
- * excludes these from its network-delta signal — see POLLING_URL_PATTERNS.
- */
-function isBackgroundPoll(url: string): boolean {
-  return POLLING_URL_PATTERNS.some((p) => p.test(url));
-}
 
 /**
  * Attempts to decode opaque request parameters: tries JSON parse, then
@@ -153,7 +110,6 @@ const RECENT_CAPTURES_WINDOW = 20;
  */
 function wireNetworkCapture(
   page: Page,
-  captureAll: boolean,
   counter: { n: number },
   signalCounter: { n: number },
   recentCaptures: string[],
@@ -174,7 +130,6 @@ function wireNetworkCapture(
   type GetResponseBodyResponse = { body: string; base64Encoded: boolean };
 
   const onRequest = (params: RequestWillBeSentEvent): void => {
-    if (!shouldCapture(params.request.url, captureAll)) return;
     inFlight.set(params.requestId, {
       url: params.request.url,
       method: params.request.method,
@@ -234,10 +189,21 @@ function wireNetworkCapture(
     }
 
     const idx = String(counter.n++).padStart(3, "0");
-    // The verifier reads signalCounter (not counter) so a background poll
-    // doesn't poison its "did anything happen" signal. Filename indexing
-    // stays on counter so polls still get unique filenames on disk.
-    if (!isBackgroundPoll(req.url)) {
+    // The verifier reads `signalCounter` (not `counter`) so background polls
+    // and page-load chrome don't poison the "did this action cause something"
+    // signal. We approximate "action-driven" with "non-GET method": real form
+    // submits, uploads, and state-change calls are POST/PUT/PATCH/DELETE.
+    // GETs are page-load chrome, polls, and idle prefetches — none of which
+    // are caused by the user step we just executed.
+    //
+    // This replaces a prior URL-shape regex (POLLING_URL_PATTERNS) that
+    // misclassified jQuery-cache-busted page-load GETs as polls. See
+    // feedback_no_regex_open_sets — URL classification is an open-set
+    // problem; HTTP method is a closed-set discriminator.
+    //
+    // Filename indexing stays on `counter` so polls still get unique
+    // filenames on disk.
+    if (req.method !== "GET") {
       signalCounter.n++;
     }
     const opLabel = operationName ?? new URL(req.url).pathname.split("/").pop() ?? "unknown";
@@ -1423,7 +1389,6 @@ const DEFAULT_RESUME_FIXTURE_PATH = "src/sites/_shared/fixtures/resume.pdf";
 function parseCli(): {
   url: string;
   flow: NormalizedStep[];
-  captureAll: boolean;
   provider: ProviderName | undefined;
   resumeFixturePath: string;
 } {
@@ -1431,7 +1396,6 @@ function parseCli(): {
   let url = "";
   let rawFlow: unknown = null;
   let flowFile: string | null = null;
-  let captureAll = false;
   let provider: ProviderName | undefined;
   // Precedence: --resume-fixture flag > RESUME_FIXTURE_PATH env > default path.
   let resumeFixturePath = process.env.RESUME_FIXTURE_PATH || DEFAULT_RESUME_FIXTURE_PATH;
@@ -1443,8 +1407,6 @@ function parseCli(): {
       rawFlow = JSON.parse(args[++i]!);
     } else if (args[i] === "--flow-file" && args[i + 1]) {
       flowFile = resolve(args[++i]!);
-    } else if (args[i] === "--capture-all") {
-      captureAll = true;
     } else if (args[i] === "--provider" && args[i + 1]) {
       const raw = args[++i]!.toLowerCase();
       if (raw !== "browserbase" && raw !== "steel") {
@@ -1459,7 +1421,7 @@ function parseCli(): {
 
   if (!url) {
     logger.error(
-      'usage: recon-browser.ts --url <url> [--flow \'["step1","step2"]\'] [--flow-file <path>] [--capture-all] [--provider browserbase|steel] [--resume-fixture <path>]'
+      'usage: recon-browser.ts --url <url> [--flow \'["step1","step2"]\'] [--flow-file <path>] [--provider browserbase|steel] [--resume-fixture <path>]'
     );
     process.exit(1);
   }
@@ -1477,7 +1439,7 @@ function parseCli(): {
   }
 
   if (rawFlow === null) {
-    return { url, flow: [], captureAll, provider, resumeFixturePath };
+    return { url, flow: [], provider, resumeFixturePath };
   }
   const parsed = RECON_FLOW_SCHEMA.safeParse(rawFlow);
   if (!parsed.success) {
@@ -1487,7 +1449,6 @@ function parseCli(): {
   return {
     url,
     flow: normalizeFlow(parsed.data),
-    captureAll,
     provider,
     resumeFixturePath,
   };
@@ -1521,19 +1482,20 @@ function loadResumeFixture(
 }
 
 async function main(): Promise<void> {
-  const { url, flow, captureAll, provider, resumeFixturePath } = parseCli();
+  const { url, flow, provider, resumeFixturePath } = parseCli();
 
   mkdirSync(CAPTURES_DIR, { recursive: true });
   const resumeFixture = loadResumeFixture(resumeFixturePath);
   logger.info(
-    `recon-browser: target=${url} flow_steps=${flow.length} capture_all=${captureAll} provider=${provider ?? "(config-default)"} resume_fixture=${resumeFixture ? `${resumeFixturePath} (${resumeFixture.buffer.length}b)` : "(missing)"} out=${CAPTURES_DIR}`
+    `recon-browser: target=${url} flow_steps=${flow.length} provider=${provider ?? "(config-default)"} resume_fixture=${resumeFixture ? `${resumeFixturePath} (${resumeFixture.buffer.length}b)` : "(missing)"} out=${CAPTURES_DIR}`
   );
 
   const session = await createBrowserSession({ provider });
-  // `counter` indexes captures on disk (filenames must stay unique even for
-  // background polls). `signalCounter` drives the verifier — polls don't
-  // increment it so coincident polling traffic doesn't falsely "verify"
-  // a click that produced no real effect.
+  // `counter` indexes captures on disk (filenames must stay unique).
+  // `signalCounter` drives the verifier — only non-GET methods increment
+  // it so coincident polling/page-load GETs don't falsely "verify" a
+  // click that produced no real effect. See the onFinished comment in
+  // wireNetworkCapture for the rationale.
   const counter = { n: 0 };
   const signalCounter = { n: 0 };
   const recentCaptures: string[] = [];
@@ -1547,7 +1509,6 @@ async function main(): Promise<void> {
     let currentPhase = "home";
     const stopCapture = wireNetworkCapture(
       page,
-      captureAll,
       counter,
       signalCounter,
       recentCaptures,
