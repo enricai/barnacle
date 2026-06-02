@@ -590,11 +590,42 @@ Rewrite the remaining flow so the agent can reach the user's original intent fro
 - drop redundant steps
 - rephrase steps to be unambiguous given the current page state
 
+CRITICAL: single-action steps only.
+Each step in your output array MUST invoke exactly ONE DOM action:
+- one \`fill\` on one input, OR
+- one \`click\` on one button/radio/checkbox, OR
+- one \`selectOption\` on one dropdown, OR
+- one observable trigger like "upload the resume PDF".
+
+The underlying agent (Stagehand \`act()\`) can only execute one action per step.
+Multi-action steps silently drop all but one action and corrupt downstream form state.
+
+WRONG (multi-action — DO NOT emit steps like these):
+  "Fill in First Name 'Reginald', Last Name 'Reconaldo', Email '...'"
+  "If Street is visible fill Street; if City is visible fill City; then click Continue"
+  "Fill the signature field with 'Name'; check the I agree box; click Submit"
+
+RIGHT (single-action — emit steps like these):
+  "Fill in the First Name field with 'Reginald'"
+  "Fill in the Last Name field with 'Reconaldo'"
+  "Fill in the Email field with '...'"
+  "If a Street Address field is visible, fill it with '123 Test Lane'"
+  "If a City field is visible, fill it with 'Austin'"
+  "Click the Continue button"
+  "Fill the signature field with 'Name'"
+  "Check the I agree checkbox"
+  "Click the Submit button"
+
+A step CAN combine ONE conditional + ONE action ("If X is visible, do Y") — that
+counts as single-action because the conditional only gates whether the action
+runs. But NEVER combine multiple actions even when they're each conditional.
+
 Constraints:
 - Do NOT include the already-completed steps in your output — only the new remaining tail to execute from here.
 - Return ONLY a JSON array of strings — no prose, no markdown, no code fences.
 - If the user's intent is unreachable from this page state, reply with the literal string IMPOSSIBLE.
-- Maximum ${REPLAN_MAX_STEPS} steps.`;
+- Maximum ${REPLAN_MAX_STEPS} steps.
+- Each step is a single DOM action (see CRITICAL section above).`;
 
   const model = anthropicModelName();
   const t0 = performance.now();
