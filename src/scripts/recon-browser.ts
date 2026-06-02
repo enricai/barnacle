@@ -1174,6 +1174,59 @@ async function executeStepWithHealing(params: {
     logger.info(
       `dom snapshot deltas: step=${stepIndex + 1} attempt=${attempt} htmlLengthDelta=${htmlLengthDelta} visibleTextChanged=${visibleTextChanged} verifiedBy=${record.verifiedBy}`
     );
+
+    // N+16 probe: Stagehand's CDP click sometimes lands on the button without
+    // triggering React's SyntheticEvent layer (or jQuery delegated handlers).
+    // Empirically: failing Continue clicks produce zero network, zero URL change,
+    // zero DOM delta — the React handler never runs. Try invoking the element's
+    // native HTMLElement.click() through the JS event pipeline as a fallback;
+    // that path is guaranteed to fire registered click handlers. If it produces
+    // an observable effect, treat this attempt as healed.
+    if (
+      !verified &&
+      record.actResultSuccess === true &&
+      resolvedAction?.method === "click" &&
+      resolvedAction.selector
+    ) {
+      const xpath = xpathBody(resolvedAction.selector);
+      if (xpath) {
+        try {
+          // Trust boundary: xpath is from Stagehand's resolved selector (not
+          // URL/user input). JSON.stringify produces a safe JS string literal
+          // even for content with quotes/backslashes, so composing this
+          // expression cannot inject behavior through the xpath content.
+          const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); const el = r.singleNodeValue; if (!el || typeof el.click !== "function") return false; el.click(); return true; })()`;
+          const fired = await page.evaluate(clickExpr);
+          await page.waitForTimeout(STEP_PAUSE_MS);
+          const retryPost = await snapshotPage(page, signalCounter);
+          const retryNetworkFired = retryPost.networkCount > pre.networkCount;
+          const retryUrlChanged = retryPost.url !== pre.url;
+          const retryHtmlDelta = retryPost.bodyHtmlLength - pre.bodyHtmlLength;
+          const retryTextChanged = retryPost.visibleTextSignature !== pre.visibleTextSignature;
+          const retryVerified =
+            retryNetworkFired || retryUrlChanged || retryHtmlDelta !== 0 || retryTextChanged;
+          logger.info(
+            `n+16 probe: step=${stepIndex + 1} attempt=${attempt} el.click() fallback fired=${fired === true}; network=${retryNetworkFired} url=${retryUrlChanged} htmlDelta=${retryHtmlDelta} textChanged=${retryTextChanged} verified=${retryVerified}`
+          );
+          if (retryVerified) {
+            record.verifiedBy = retryUrlChanged ? "url" : retryNetworkFired ? "network" : "dom";
+            record.post = retryPost;
+            attempts.push(record);
+            if (attempt > 1) {
+              logger.info(
+                `step ${stepIndex + 1} healed on attempt ${attempt} via ${record.technique} + el.click() fallback`
+              );
+            }
+            return;
+          }
+        } catch (probeErr) {
+          logger.warn(
+            `n+16 probe: step=${stepIndex + 1} attempt=${attempt} el.click() fallback threw: ${toErrorMessage(probeErr)}`
+          );
+        }
+      }
+    }
+
     attempts.push(record);
 
     if (verified) {
