@@ -493,10 +493,40 @@ Rewrite the instruction so a Stagehand act() call can resolve it unambiguously t
  * replanned step array or an explicit "impossible" outcome — the latter is
  * the structured replacement for the old IMPOSSIBLE magic string.
  */
+/**
+ * Flow step shape. A bare string is a required step (backward-compatible with
+ * pre-N+23 flow files). An object form with `optional: true` lets the cascade
+ * skip the step cleanly when Stagehand's act+observe finds no target — the
+ * intended replacement for "If X is visible, do Y" conditionals that fail the
+ * cascade today even when the conditional should have been skipped.
+ */
+const RECON_FLOW_STEP_SCHEMA = z.union([
+  z.string().min(1),
+  z.object({
+    step: z.string().min(1),
+    optional: z.boolean().default(false),
+  }),
+]);
+const RECON_FLOW_SCHEMA = z.array(RECON_FLOW_STEP_SCHEMA).min(1);
+
+/** Internal normalized step shape. Source-flow strings normalize with optional=false. */
+interface NormalizedStep {
+  instruction: string;
+  optional: boolean;
+}
+
+function normalizeFlow(steps: z.infer<typeof RECON_FLOW_SCHEMA>): NormalizedStep[] {
+  return steps.map((s) =>
+    typeof s === "string"
+      ? { instruction: s, optional: false }
+      : { instruction: s.step, optional: s.optional }
+  );
+}
+
 const REPLAN_RESPONSE_SCHEMA = z.discriminatedUnion("outcome", [
   z.object({
     outcome: z.literal("replan"),
-    steps: z.array(z.string().min(1)).min(1).max(REPLAN_MAX_STEPS),
+    steps: z.array(RECON_FLOW_STEP_SCHEMA).min(1).max(REPLAN_MAX_STEPS),
   }),
   z.object({
     outcome: z.literal("impossible"),
@@ -547,7 +577,7 @@ async function replanRemainingFlow(params: {
   page: Page;
   stagehand: Stagehand;
   captureFn?: CaptureFn;
-}): Promise<string[] | null> {
+}): Promise<NormalizedStep[] | null> {
   const {
     client,
     originalFlow,
@@ -642,7 +672,23 @@ Constraints:
 - If you can recover the flow, return outcome="replan" with the steps array.
 - If the user's intent is unreachable from this page state, return outcome="impossible" with a brief reason.
 - Maximum ${REPLAN_MAX_STEPS} steps.
-- Each step is a single DOM action (see CRITICAL section above).`;
+- Each step is a single DOM action (see CRITICAL section above).
+
+OPTIONAL STEPS:
+Each step entry can be a bare string (required step — cascade fails if the
+target is missing) OR an object \`{step: "...", optional: true}\` (cascade
+skips cleanly if Stagehand observes no candidates).
+
+Use optional ONLY when the action is genuinely conditional on the page having
+a specific element. Examples:
+  - "If a 'Currently employed here' checkbox is visible, check it" → emit as
+    \`{step: "Check the 'Currently employed here' checkbox", optional: true}\`
+  - "If an 'Add Experience' button is visible, click it" → emit as
+    \`{step: "Click the 'Add Experience' button", optional: true}\`
+
+Do NOT mark required actions optional (form fills the user needs filled, the
+Continue/Submit button at the end of a section, etc.) — that would silently
+skip them when the cascade can't see them, leaving the form half-filled.`;
 
   const model = anthropicModelName();
   const t0 = performance.now();
@@ -681,7 +727,7 @@ Constraints:
       success: true,
     });
 
-    if (parsed.outcome === "replan") return parsed.steps;
+    if (parsed.outcome === "replan") return normalizeFlow(parsed.steps);
     return null;
   } catch {
     await captureFn({
@@ -1047,6 +1093,12 @@ async function executeStepWithHealing(params: {
   stagehand: Stagehand;
   page: Page;
   step: string;
+  /**
+   * When true and Stagehand's act+observe finds no candidates, the cascade
+   * skips the step cleanly instead of burning through attempts 3-4 and the
+   * replan budget. Required steps (default) keep the full 4-attempt healing.
+   */
+  optional: boolean;
   stepIndex: number;
   phase: string;
   signalCounter: { n: number };
@@ -1060,6 +1112,7 @@ async function executeStepWithHealing(params: {
     stagehand,
     page,
     step,
+    optional,
     stepIndex,
     phase,
     signalCounter,
@@ -1130,6 +1183,20 @@ async function executeStepWithHealing(params: {
           : await stagehand.observe(step);
         if (candidates.length === 0) {
           record.errorMessage = "observe returned no candidates";
+          // Optional-step short-circuit: when attempt 2 confirms no candidates
+          // match AND the step was marked optional in the flow, skip cleanly.
+          // We require attempt 1 to also have returned no actions (no resolved
+          // selector — `triedSelectors` only fills when act/observe resolved
+          // something) so an optional step that did find a target but failed
+          // to verify still runs the full healing cascade.
+          if (optional && attempt === 2 && triedSelectors.length === 0) {
+            record.verifiedBy = null;
+            attempts.push(record);
+            logger.info(
+              `step ${stepIndex + 1} skipped (optional, no candidates after act+observe)`
+            );
+            return;
+          }
         } else {
           const target = candidates[0]!;
           record.instruction = target.description;
@@ -1322,14 +1389,14 @@ const DEFAULT_RESUME_FIXTURE_PATH = "src/sites/_shared/fixtures/resume.pdf";
 
 function parseCli(): {
   url: string;
-  flow: string[];
+  flow: NormalizedStep[];
   captureAll: boolean;
   provider: ProviderName | undefined;
   resumeFixturePath: string;
 } {
   const args = process.argv.slice(2);
   let url = "";
-  let flow: string[] = [];
+  let rawFlow: unknown = null;
   let flowFile: string | null = null;
   let captureAll = false;
   let provider: ProviderName | undefined;
@@ -1340,7 +1407,7 @@ function parseCli(): {
     if (args[i] === "--url" && args[i + 1]) {
       url = args[++i]!;
     } else if (args[i] === "--flow" && args[i + 1]) {
-      flow = JSON.parse(args[++i]!) as string[];
+      rawFlow = JSON.parse(args[++i]!);
     } else if (args[i] === "--flow-file" && args[i + 1]) {
       flowFile = resolve(args[++i]!);
     } else if (args[i] === "--capture-all") {
@@ -1365,18 +1432,32 @@ function parseCli(): {
   }
 
   if (flowFile) {
-    if (flow.length > 0) {
+    if (rawFlow !== null) {
       logger.warn("recon-browser: --flow-file takes precedence over --flow");
     }
     try {
-      flow = JSON.parse(readFileSync(flowFile, "utf8")) as string[];
+      rawFlow = JSON.parse(readFileSync(flowFile, "utf8"));
     } catch (err) {
       logger.error(`failed to read --flow-file ${flowFile}: ${toErrorMessage(err)}`);
       process.exit(1);
     }
   }
 
-  return { url, flow, captureAll, provider, resumeFixturePath };
+  if (rawFlow === null) {
+    return { url, flow: [], captureAll, provider, resumeFixturePath };
+  }
+  const parsed = RECON_FLOW_SCHEMA.safeParse(rawFlow);
+  if (!parsed.success) {
+    logger.error(`flow file/arg failed schema validation: ${parsed.error.message}`);
+    process.exit(1);
+  }
+  return {
+    url,
+    flow: normalizeFlow(parsed.data),
+    captureAll,
+    provider,
+    resumeFixturePath,
+  };
 }
 
 /**
@@ -1450,24 +1531,27 @@ async function main(): Promise<void> {
       );
     }
 
-    const plan: string[] = [...flow];
+    const plan: NormalizedStep[] = [...flow];
     const completedSteps: string[] = [];
     let replansUsed = 0;
 
     for (let i = 0; i < plan.length; i++) {
       const step = plan[i]!;
       currentPhase =
-        step
+        step.instruction
           .replace(/[^a-z0-9]+/gi, "-")
           .toLowerCase()
           .replace(/^-|-$/g, "")
           .slice(0, 24) || `step-${i}`;
-      logger.info(`step ${i + 1}/${plan.length} [${currentPhase}]: ${step}`);
+      logger.info(
+        `step ${i + 1}/${plan.length} [${currentPhase}]${step.optional ? " (optional)" : ""}: ${step.instruction}`
+      );
       try {
         await executeStepWithHealing({
           stagehand,
           page,
-          step,
+          step: step.instruction,
+          optional: step.optional,
           stepIndex: i,
           phase: currentPhase,
           signalCounter,
@@ -1476,7 +1560,7 @@ async function main(): Promise<void> {
           logger,
           resumeFixture,
         });
-        completedSteps.push(step);
+        completedSteps.push(step.instruction);
       } catch (err) {
         if (!(err instanceof StepVerificationError)) throw err;
         if (!anthropic || replansUsed >= MAX_REPLANS) throw err;
@@ -1491,10 +1575,10 @@ async function main(): Promise<void> {
 
         const newSteps = await replanRemainingFlow({
           client: anthropic,
-          originalFlow: flow,
+          originalFlow: flow.map((s) => s.instruction),
           completedSteps,
-          failedStep: step,
-          remainingSteps: originalRemaining,
+          failedStep: step.instruction,
+          remainingSteps: originalRemaining.map((s) => s.instruction),
           failureDumpPath: dumpPath,
           page,
           stagehand,
@@ -1512,14 +1596,16 @@ async function main(): Promise<void> {
           phase: currentPhase,
           replanIndex: replansUsed,
           completedSteps,
-          originalRemaining,
-          newRemaining: newSteps,
+          originalRemaining: originalRemaining.map((s) => s.instruction),
+          newRemaining: newSteps.map((s) => s.instruction),
         });
         logger.info(
           `replan #${replansUsed} produced ${newSteps.length} new step(s); resuming (record: ${replanPath})`
         );
         for (const [j, s] of newSteps.entries()) {
-          logger.info(`  replanned step ${j + 1}: ${s}`);
+          logger.info(
+            `  replanned step ${j + 1}${s.optional ? " (optional)" : ""}: ${s.instruction}`
+          );
         }
 
         plan.splice(i, plan.length - i, ...newSteps);
