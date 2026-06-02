@@ -305,6 +305,20 @@ const REPLAN_MAX_STEPS = 20;
 interface StepSnapshot {
   networkCount: number;
   url: string;
+  /**
+   * `document.body.outerHTML.length`. Measurement-only — pre/post delta
+   * exposes whether a click triggered a client-side state change that
+   * doesn't show up in network or URL (e.g. React view swap inside an SPA).
+   * Not consumed by the verifier yet; gathered for threshold tuning.
+   */
+  bodyHtmlLength: number;
+  /**
+   * `document.body.innerText.length + ":" + first 200 chars`. A cheap,
+   * deterministic proxy for "did the visible text change" that filters
+   * React-internal attribute churn (which moves `bodyHtmlLength` without
+   * moving anything the user perceives). Measurement-only.
+   */
+  visibleTextSignature: string;
 }
 
 /** One attempt's audit trail — included verbatim in the failure dump. */
@@ -330,8 +344,39 @@ interface AttemptRecord {
   verifiedBy: "network" | "url" | "dom" | null;
 }
 
-function snapshotPage(page: Page, signalCounter: { n: number }): StepSnapshot {
-  return { networkCount: signalCounter.n, url: page.url() };
+/**
+ * Trust boundary: static string literal, fixed at compile time. No interpolation
+ * means no injection surface. Runs in browser context and returns a typed-narrow
+ * shape via Runtime.callFunctionOn.
+ */
+const DOM_SNAPSHOT_EXPR = `(() => { const b = document.body; if (!b) return { html: 0, text: "" }; const t = b.innerText || ""; return { html: (b.outerHTML || "").length, text: t.length + ":" + t.slice(0, 200) }; })()`;
+
+async function snapshotPage(page: Page, signalCounter: { n: number }): Promise<StepSnapshot> {
+  let bodyHtmlLength = 0;
+  let visibleTextSignature = "";
+  try {
+    const result = await page.evaluate(DOM_SNAPSHOT_EXPR);
+    if (
+      result !== null &&
+      typeof result === "object" &&
+      "html" in result &&
+      "text" in result &&
+      typeof (result as { html: unknown }).html === "number" &&
+      typeof (result as { text: unknown }).text === "string"
+    ) {
+      bodyHtmlLength = (result as { html: number }).html;
+      visibleTextSignature = (result as { text: string }).text;
+    }
+  } catch {
+    // Snapshot is observational; on failure, defaults to 0/"" so the verifier
+    // sees no delta. Real state-class checks already cover the verified path.
+  }
+  return {
+    networkCount: signalCounter.n,
+    url: page.url(),
+    bodyHtmlLength,
+    visibleTextSignature,
+  };
 }
 
 /**
@@ -1002,7 +1047,7 @@ async function executeStepWithHealing(params: {
       await page.waitForTimeout(attempt * ATTEMPT_BACKOFF_MS);
     }
 
-    const pre = snapshotPage(page, signalCounter);
+    const pre = await snapshotPage(page, signalCounter);
     const record: AttemptRecord = {
       attempt,
       technique: "act-string",
@@ -1091,7 +1136,7 @@ async function executeStepWithHealing(params: {
     }
 
     await page.waitForTimeout(STEP_PAUSE_MS);
-    const post = snapshotPage(page, signalCounter);
+    const post = await snapshotPage(page, signalCounter);
     record.post = post;
 
     if (resolvedAction) {
@@ -1119,6 +1164,16 @@ async function executeStepWithHealing(params: {
     if (verified) {
       record.verifiedBy = urlChanged ? "url" : networkFired ? "network" : "dom";
     }
+    // Observational signal: pre/post DOM deltas. Not consumed by the verifier
+    // yet — emitted alongside `verifiedBy` so populations (real-nav, state-class,
+    // client-side-only, no-op) are tabulatable for threshold tuning. Once a
+    // threshold is picked from real recon data, the verifier's click branch
+    // will consume this; for now it's measurement only.
+    const htmlLengthDelta = post.bodyHtmlLength - pre.bodyHtmlLength;
+    const visibleTextChanged = post.visibleTextSignature !== pre.visibleTextSignature;
+    logger.info(
+      `dom snapshot deltas: step=${stepIndex + 1} attempt=${attempt} htmlLengthDelta=${htmlLengthDelta} visibleTextChanged=${visibleTextChanged} verifiedBy=${record.verifiedBy}`
+    );
     attempts.push(record);
 
     if (verified) {
