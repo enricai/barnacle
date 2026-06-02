@@ -71,9 +71,38 @@ const STEP_PAUSE_MS = 2_000;
  */
 const CAPTURE_PATTERNS = [/\/graph/, /\/api\//, /\/graphql/, /\/v1\//, /\.json(\?|$)/];
 
+/**
+ * URLs that look like background polling. Captures still get written to disk
+ * (we want the evidence), but they don't increment the verifier's network
+ * counter — otherwise SPAs that poll for async state ('did the resume parse
+ * yet?', 'is payment processed?') make every action look "verified" because
+ * a coincident poll happened to fire. Patterns target the *shape* of polling
+ * URLs (suffixes, cache-busters) not specific site paths.
+ *
+ * The `_=\d{10,}` rule catches jQuery's default cache-buster — added on GETs
+ * that need to bypass browser caches, which in practice is overwhelmingly
+ * polling or retried pre-fetches. Real form-submitting POSTs don't carry it.
+ */
+const POLLING_URL_PATTERNS = [
+  /\/check(\?|$|\/)/,
+  /\/poll(\?|$|\/)/,
+  /\/status(\?|$|\/)/,
+  /\/ping(\?|$|\/)/,
+  /\/heartbeat(\?|$|\/)/,
+  /[?&]_=\d{10,}/,
+];
+
 function shouldCapture(url: string, captureAll: boolean): boolean {
   if (captureAll) return true;
   return CAPTURE_PATTERNS.some((p) => p.test(url));
+}
+
+/**
+ * True when the captured URL looks like a background poll. The verifier
+ * excludes these from its network-delta signal — see POLLING_URL_PATTERNS.
+ */
+function isBackgroundPoll(url: string): boolean {
+  return POLLING_URL_PATTERNS.some((p) => p.test(url));
 }
 
 /**
@@ -125,6 +154,7 @@ function wireNetworkCapture(
   page: Page,
   captureAll: boolean,
   counter: { n: number },
+  signalCounter: { n: number },
   recentCaptures: string[],
   getCurrentPhase: () => string
 ): () => void {
@@ -203,6 +233,12 @@ function wireNetworkCapture(
     }
 
     const idx = String(counter.n++).padStart(3, "0");
+    // The verifier reads signalCounter (not counter) so a background poll
+    // doesn't poison its "did anything happen" signal. Filename indexing
+    // stays on counter so polls still get unique filenames on disk.
+    if (!isBackgroundPoll(req.url)) {
+      signalCounter.n++;
+    }
     const opLabel = operationName ?? new URL(req.url).pathname.split("/").pop() ?? "unknown";
     const filename = `${idx}-${phase}-${opLabel}.json`;
 
@@ -294,8 +330,8 @@ interface AttemptRecord {
   verifiedBy: "network" | "url" | "dom" | null;
 }
 
-function snapshotPage(page: Page, counter: { n: number }): StepSnapshot {
-  return { networkCount: counter.n, url: page.url() };
+function snapshotPage(page: Page, signalCounter: { n: number }): StepSnapshot {
+  return { networkCount: signalCounter.n, url: page.url() };
 }
 
 /**
@@ -675,11 +711,18 @@ function dumpStepFailure(params: {
   return target;
 }
 
-/** Stagehand action methods that mutate DOM state without firing a request. */
+/**
+ * Stagehand action methods that mutate DOM state without firing a request.
+ * Reconcile against `SupportedUnderstudyAction` in
+ * `node_modules/@browserbasehq/stagehand/dist/esm/lib/v3/types/private/handlers.js`
+ * when bumping Stagehand — new state-class methods must be added here, or the
+ * verifier falls back to the network/URL signal and silently false-fails.
+ */
 const STATE_CLASS_METHODS = new Set([
   "fill",
   "type",
   "selectOption",
+  "selectOptionFromDropdown",
   "check",
   "uncheck",
   "setInputFiles",
@@ -826,10 +869,50 @@ async function verifyDomEffect(page: Page, action: Action): Promise<boolean> {
         return !(await locator.isChecked());
       }
       case "selectOption":
+      case "selectOptionFromDropdown": {
+        // Stagehand dispatches both names to Playwright's selectOption(text),
+        // which only succeeds on native <select> and matches against any of
+        // the option's value/label/textContent. Mirror that resolution here
+        // so the verifier succeeds iff Playwright's "selection happened" is
+        // true — same equality semantics, just read from the other side.
+        const expected = action.arguments?.[0]?.toString().trim() ?? "";
+        if (!expected) return false;
+        const xpath = xpathBody(selector);
+        if (!xpath) {
+          // Non-xpath selector: can't compose the page.evaluate; fall back
+          // to a weaker non-empty inputValue check.
+          const current = await locator.inputValue().catch(() => "");
+          return current.length > 0;
+        }
+        // Trust boundary: xpath comes from Stagehand's resolved selector
+        // (not URL/user input). JSON.stringify produces a safe JS string
+        // literal even for xpath containing quotes/backslashes, so composing
+        // this expression cannot inject behavior through the xpath content.
+        const expr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); const el = r.singleNodeValue; if (!el || el.tagName !== "SELECT") return null; const opt = el.options[el.selectedIndex]; if (!opt) return { value: "", label: "", text: "" }; return { value: (opt.value || "").trim(), label: (opt.label || "").trim(), text: (opt.textContent || "").trim() }; })()`;
+        let selected: { value: string; label: string; text: string } | null = null;
+        try {
+          const result = await page.evaluate(expr);
+          if (
+            result !== null &&
+            typeof result === "object" &&
+            "value" in result &&
+            "label" in result &&
+            "text" in result
+          ) {
+            selected = result as { value: string; label: string; text: string };
+          }
+        } catch {
+          return false;
+        }
+        if (!selected) return false;
+        const want = expected.toLowerCase();
+        const matches = (field: string): boolean =>
+          field.length > 0 && field.toLowerCase().includes(want);
+        return matches(selected.value) || matches(selected.label) || matches(selected.text);
+      }
       case "setInputFiles":
-        // Stagehand reports success; we don't have a cheap DOM equivalent
-        // for either of these without re-resolving the option/file. Trust
-        // its `actResultSuccess` upstream — caller composes signals.
+        // No cheap DOM equivalent without re-resolving the file. Trust Stagehand's
+        // actResultSuccess upstream — caller composes signals.
         return true;
       case "click": {
         // Clicks on radios and checkboxes toggle `:checked` without firing a
@@ -881,7 +964,7 @@ async function executeStepWithHealing(params: {
   step: string;
   stepIndex: number;
   phase: string;
-  counter: { n: number };
+  signalCounter: { n: number };
   recentCaptures: string[];
   anthropic: Anthropic | null;
   logger: Logger;
@@ -894,7 +977,7 @@ async function executeStepWithHealing(params: {
     step,
     stepIndex,
     phase,
-    counter,
+    signalCounter,
     recentCaptures,
     anthropic,
     logger,
@@ -919,7 +1002,7 @@ async function executeStepWithHealing(params: {
       await page.waitForTimeout(attempt * ATTEMPT_BACKOFF_MS);
     }
 
-    const pre = snapshotPage(page, counter);
+    const pre = snapshotPage(page, signalCounter);
     const record: AttemptRecord = {
       attempt,
       technique: "act-string",
@@ -1008,7 +1091,7 @@ async function executeStepWithHealing(params: {
     }
 
     await page.waitForTimeout(STEP_PAUSE_MS);
-    const post = snapshotPage(page, counter);
+    const post = snapshotPage(page, signalCounter);
     record.post = post;
 
     if (resolvedAction) {
@@ -1185,7 +1268,12 @@ async function main(): Promise<void> {
   );
 
   const session = await createBrowserSession({ provider });
+  // `counter` indexes captures on disk (filenames must stay unique even for
+  // background polls). `signalCounter` drives the verifier — polls don't
+  // increment it so coincident polling traffic doesn't falsely "verify"
+  // a click that produced no real effect.
   const counter = { n: 0 };
+  const signalCounter = { n: 0 };
   const recentCaptures: string[] = [];
 
   try {
@@ -1199,6 +1287,7 @@ async function main(): Promise<void> {
       page,
       captureAll,
       counter,
+      signalCounter,
       recentCaptures,
       () => currentPhase
     );
@@ -1233,7 +1322,7 @@ async function main(): Promise<void> {
           step,
           stepIndex: i,
           phase: currentPhase,
-          counter,
+          signalCounter,
           recentCaptures,
           anthropic,
           logger,
