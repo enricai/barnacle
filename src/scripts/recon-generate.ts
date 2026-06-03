@@ -475,7 +475,10 @@ function interpolateStateValues(template: string, priorSteps: ActionStep[]): str
   const sorted = [...varNameByValue.entries()].sort((a, b) => b[0].length - a[0].length);
   let result = template;
   for (const [value, varName] of sorted) {
-    result = result.split(value).join("${" + varName + "}");
+    // `\$` is a literal dollar sign (NOT an interpolation); `${varName}`
+    // interpolates the binding name at code-generation time so the resulting
+    // string contains a template-literal placeholder like `${candidateId}`.
+    result = result.split(value).join(`\${${varName}}`);
   }
   return result;
 }
