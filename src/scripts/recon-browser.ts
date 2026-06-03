@@ -113,6 +113,7 @@ function wireNetworkCapture(
   counter: { n: number },
   signalCounter: { n: number },
   recentCaptures: string[],
+  recentCaptureMeta: { method: string; status: number }[],
   getCurrentPhase: () => string
 ): () => void {
   const session = page.getSessionForFrame(page.mainFrameId());
@@ -239,6 +240,10 @@ function wireNetworkCapture(
     if (recentCaptures.length > RECENT_CAPTURES_WINDOW) {
       recentCaptures.splice(0, recentCaptures.length - RECENT_CAPTURES_WINDOW);
     }
+    recentCaptureMeta.push({ method: capture.method, status: capture.status });
+    if (recentCaptureMeta.length > RECENT_CAPTURES_WINDOW) {
+      recentCaptureMeta.splice(0, recentCaptureMeta.length - RECENT_CAPTURES_WINDOW);
+    }
 
     logger.info(`captured [${capture.status}] ${capture.method} ${req.url} → ${filename}`);
   };
@@ -266,7 +271,16 @@ const ATTEMPT_BACKOFF_MS = 1_000;
  */
 const MAX_REPLANS = 2;
 /** Guardrail on the size of an LLM-produced revised flow tail. */
-const REPLAN_MAX_STEPS = 20;
+const REPLAN_MAX_STEPS = 30;
+/**
+ * How many steps from the end of the flow are considered "trailing" for the
+ * Tier 1 grace path. A verification failure on an optional step within this
+ * window is treated as a benign no-op exit when a recent non-GET capture also
+ * returned 2xx — the flow's real work landed and the trailing tail is
+ * redundant. Two covers the common pattern: an upload step followed by a
+ * final Continue/Submit click.
+ */
+const TRAILING_GRACE_WINDOW = 2;
 
 /** Cheap snapshot of side effects we use to decide whether a step "worked". */
 interface StepSnapshot {
@@ -609,11 +623,22 @@ ${bodyExcerpt || "(missing)"}
 DIAGNOSTIC DUMP FILE (for reference):
 ${failureDumpPath}
 
-Rewrite the remaining flow so the agent can reach the user's original intent from where it is now. You may:
-- reorder remaining steps
-- insert new steps (e.g. an "open the section first" prerequisite the original flow missed)
-- drop redundant steps
-- rephrase steps to be unambiguous given the current page state
+Emit ONLY the RECOVERY BRIDGE steps from the failure point back to where the
+original flow's remaining tail can resume. The driver will automatically append
+the original REMAINING UNEXECUTED STEPS (shown above) AFTER your bridge steps,
+so you do NOT need to re-emit them. Your job is just the recovery — the few
+steps needed to get the SPA from its current state into a shape where the
+original tail can run.
+
+Concretely:
+- If the page is at an intermediate state the original flow didn't anticipate,
+  emit the steps that bridge to where the original flow can pick back up.
+- If the failed step's effect actually happened despite our verifier saying it
+  didn't (e.g. SPA-internal navigation that produced no observable signal),
+  the bridge may be EMPTY — just re-emit the failed step (or nothing if the
+  state already advanced) and the original tail picks up after.
+- Do NOT try to drive the form to completion yourself — the original tail
+  covers that. Just unstick the cascade and let it resume.
 
 CRITICAL: single-action steps only.
 Each step in your output array MUST invoke exactly ONE DOM action:
@@ -646,10 +671,12 @@ counts as single-action because the conditional only gates whether the action
 runs. But NEVER combine multiple actions even when they're each conditional.
 
 Constraints:
-- Do NOT include the already-completed steps in your output — only the new remaining tail to execute from here.
-- If you can recover the flow, return outcome="replan" with the steps array.
+- Do NOT include the already-completed steps in your output.
+- Do NOT include the original REMAINING UNEXECUTED STEPS in your output — they will be appended automatically after your bridge.
+- Emit ONLY the recovery bridge steps that get the SPA from its current state to where the original tail can resume.
+- If you can recover the flow, return outcome="replan" with the steps array (can be just 1-2 steps if that's all that's needed).
 - If the user's intent is unreachable from this page state, return outcome="impossible" with a brief reason.
-- Maximum ${REPLAN_MAX_STEPS} steps.
+- Maximum ${REPLAN_MAX_STEPS} bridge steps.
 - Each step is a single DOM action (see CRITICAL section above).
 
 OPTIONAL STEPS:
@@ -951,6 +978,48 @@ async function tryUploadPrimitive(params: {
 }
 
 /**
+ * Dispatch DOM `input` + `change` + `blur` events on the given element from the
+ * page context. Stagehand's `fill` for regular text inputs types via CDP
+ * `Input.insertText` which fires `input` per keystroke but never fires `change`
+ * — `change` only fires on blur, and Stagehand never blurs. Many jQuery /
+ * Backbone forms (e.g. ClearCompany's formField.js) bind their input handlers
+ * to the native `change` event via event delegation; without `change` firing,
+ * the form's internal data model never records the typed value, so when the
+ * SPA re-renders the form the value is wiped back to empty.
+ *
+ * This helper closes that gap. Idempotent: dispatching change after a
+ * successful fill is a no-op for forms that don't bind to `change`, and a
+ * mandatory wake-up for forms that do.
+ *
+ * Trust boundary: xpath comes from Stagehand's resolved selector. JSON.stringify
+ * safely escapes it into a JS string literal. The expression body is a fixed
+ * literal — no user-controlled JS execution.
+ */
+async function dispatchJqueryChangeEvent(page: Page, selector: string): Promise<void> {
+  const xpath = xpathBody(selector);
+  if (!xpath) return;
+  const expr = `(() => {
+    const r = document.evaluate(${JSON.stringify(xpath)}, document, null,
+      XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+    const el = r.singleNodeValue;
+    if (!el) return "no-element";
+    try {
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      el.dispatchEvent(new Event('blur', { bubbles: true }));
+      return "dispatched";
+    } catch (e) {
+      return "threw:" + (e && e.message || String(e));
+    }
+  })()`;
+  try {
+    await page.evaluate(expr);
+  } catch {
+    // best-effort: jQuery dispatch failure shouldn't fail the verifier
+  }
+}
+
+/**
  * For state-class Stagehand actions (`fill`, `check`, etc.) the network/URL
  * heuristic is meaningless — typing into an input never fires a request.
  * Re-read DOM state from the same selector Stagehand acted upon and compare
@@ -960,47 +1029,67 @@ async function tryUploadPrimitive(params: {
 async function verifyDomEffect(page: Page, action: Action): Promise<boolean> {
   const selector = action.selector;
   const method = action.method;
-  if (!selector || !method) {
-    return false;
-  }
+  if (!selector || !method) return false;
   try {
     const locator = page.locator(selector).first();
     switch (method) {
       case "fill":
       case "type": {
         const expected = action.arguments?.[0];
-        if (typeof expected !== "string" || expected.length === 0) {
-          return false;
-        }
+        if (typeof expected !== "string" || expected.length === 0) return false;
         const current = await locator.inputValue();
-        return current.includes(expected);
+        const hit = current.includes(expected);
+        if (hit) {
+          // Stagehand typed via CDP Input.insertText which fires `input` per
+          // keystroke but never fires `change`. Dispatch change here so jQuery/
+          // Backbone forms (e.g. ClearCompany formField.js's "change
+          // .field-dropdown,.form-input" delegated handler) record the value
+          // into their internal data model. Without this, the SPA's next
+          // re-render wipes the typed value back to empty.
+          await dispatchJqueryChangeEvent(page, selector);
+
+          // Angular reactive forms (e.g. ADP WOTC questionnaire on tcs.adp.com)
+          // don't pick up CDP Input.insertText OR dispatchEvent('input') —
+          // their FormControl model updates require real keyboard events.
+          // Angular's zone.js patches keydown/keyup at the document root, so
+          // synthesizing real keystrokes via CDP Input.dispatchKeyEvent (which
+          // is what Stagehand's Locator.type does WITH delay) flows the values
+          // through change detection → FormControl.setValue() → form validity
+          // → button [disabled] re-evaluates. Verified from ADP main.js bundle:
+          // button's [disabled] binds to `formStatus && !enableSubmitBtn`;
+          // formStatus tracks Angular form invalidity.
+          try {
+            // Clear via empty fill (focuses + select-all under the hood) then
+            // re-type with delay so each character is a CDP keyDown+keyUp.
+            await locator.fill("");
+            await locator.type(expected, { delay: 50 });
+          } catch {
+            // best-effort: Angular re-type failure shouldn't fail the verifier
+          }
+        }
+        return hit;
       }
-      case "check": {
+      case "check":
         return await locator.isChecked();
-      }
-      case "uncheck": {
+      case "uncheck":
         return !(await locator.isChecked());
-      }
       case "selectOption":
       case "selectOptionFromDropdown": {
-        // Stagehand dispatches both names to Playwright's selectOption(text),
-        // which only succeeds on native <select> and matches against any of
-        // the option's value/label/textContent. Mirror that resolution here
-        // so the verifier succeeds iff Playwright's "selection happened" is
-        // true — same equality semantics, just read from the other side.
+        // Stagehand dispatches both names to Playwright's `locator.selectOption(text)`,
+        // which only succeeds on native <select> and matches the input against any of
+        // the option's value/label/textContent. Mirror that resolution at verify time
+        // so we get a real equality signal — Playwright's "selection happened" succeeds
+        // iff one of those three fields matches.
         const expected = action.arguments?.[0]?.toString().trim() ?? "";
         if (!expected) return false;
         const xpath = xpathBody(selector);
         if (!xpath) {
-          // Non-xpath selector: can't compose the page.evaluate; fall back
-          // to a weaker non-empty inputValue check.
           const current = await locator.inputValue().catch(() => "");
           return current.length > 0;
         }
-        // Trust boundary: xpath comes from Stagehand's resolved selector
-        // (not URL/user input). JSON.stringify produces a safe JS string
-        // literal even for xpath containing quotes/backslashes, so composing
-        // this expression cannot inject behavior through the xpath content.
+        // Same trust-boundary rationale as the click case below: xpath is from
+        // Stagehand's resolved selector, JSON.stringify produces a safe JS string
+        // literal, and the expression cannot inject behavior through xpath content.
         const expr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); const el = r.singleNodeValue; if (!el || el.tagName !== "SELECT") return null; const opt = el.options[el.selectedIndex]; if (!opt) return { value: "", label: "", text: "" }; return { value: (opt.value || "").trim(), label: (opt.label || "").trim(), text: (opt.textContent || "").trim() }; })()`;
         let selected: { value: string; label: string; text: string } | null = null;
         try {
@@ -1019,9 +1108,11 @@ async function verifyDomEffect(page: Page, action: Action): Promise<boolean> {
         }
         if (!selected) return false;
         const want = expected.toLowerCase();
-        const matches = (field: string): boolean =>
-          field.length > 0 && field.toLowerCase().includes(want);
-        return matches(selected.value) || matches(selected.label) || matches(selected.text);
+        return (
+          (selected.value.length > 0 && selected.value.toLowerCase().includes(want)) ||
+          (selected.label.length > 0 && selected.label.toLowerCase().includes(want)) ||
+          (selected.text.length > 0 && selected.text.toLowerCase().includes(want))
+        );
       }
       case "setInputFiles":
         // No cheap DOM equivalent without re-resolving the file. Trust Stagehand's
@@ -1033,18 +1124,16 @@ async function verifyDomEffect(page: Page, action: Action): Promise<boolean> {
         // click (buttons, links, custom toggles) return false so the verifier
         // falls back to the network/URL signal, which is the right signal there.
         const xpath = xpathBody(selector);
-        if (!xpath) {
-          return false;
-        }
+        if (!xpath) return false;
         let inputType: string | null = null;
         try {
           // Trust boundary: xpath comes from Stagehand's own resolved selector
           // (not URL/user input). JSON.stringify produces a safe JS string
           // literal even for content with quotes/backslashes, so composing
           // this expression cannot exfiltrate or inject behavior through the
-          // xpath content alone. We use a string expression rather than a
-          // function so Node-side typechecking doesn't choke on the browser
-          // globals `document`/`XPathResult`.
+          // xpath content alone. String expression rather than a function so
+          // Node-side typechecking doesn't choke on the browser globals
+          // `document`/`XPathResult`.
           const expr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); const el = r.singleNodeValue; return el ? (el.type || null) : null; })()`;
           const result = await page.evaluate(expr);
           inputType = typeof result === "string" ? result : null;
@@ -1270,16 +1359,6 @@ async function executeStepWithHealing(params: {
     if (verified) {
       record.verifiedBy = urlChanged ? "url" : networkFired ? "network" : "dom";
     }
-    // Observational signal: pre/post DOM deltas. Not consumed by the verifier
-    // yet — emitted alongside `verifiedBy` so populations (real-nav, state-class,
-    // client-side-only, no-op) are tabulatable for threshold tuning. Once a
-    // threshold is picked from real recon data, the verifier's click branch
-    // will consume this; for now it's measurement only.
-    const htmlLengthDelta = post.bodyHtmlLength - pre.bodyHtmlLength;
-    const visibleTextChanged = post.visibleTextSignature !== pre.visibleTextSignature;
-    logger.info(
-      `dom snapshot deltas: step=${stepIndex + 1} attempt=${attempt} htmlLengthDelta=${htmlLengthDelta} visibleTextChanged=${visibleTextChanged} verifiedBy=${record.verifiedBy}`
-    );
 
     // N+16 probe: Stagehand's CDP click sometimes lands on the button without
     // triggering React's SyntheticEvent layer (or jQuery delegated handlers).
@@ -1301,8 +1380,29 @@ async function executeStepWithHealing(params: {
           // URL/user input). JSON.stringify produces a safe JS string literal
           // even for content with quotes/backslashes, so composing this
           // expression cannot inject behavior through the xpath content.
-          const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); const el = r.singleNodeValue; if (!el || typeof el.click !== "function") return false; el.click(); return true; })()`;
-          const fired = await page.evaluate(clickExpr);
+          // For checkbox/radio inputs, Stagehand's isolated-world page.evaluate
+          // may not trigger the browser's native default action that toggles
+          // .checked. ClearCompany's formField.js delegated "click .form-checkbox"
+          // handler (optionSelected) reads state via .is(':checked') — if the
+          // default action didn't fire, it sees unchecked and treats the click as
+          // "deselect this option" rather than "select it". Force the state and
+          // dispatch both events (click for optionSelected, change for inputChanged)
+          // so jQuery/Backbone forms record the value into their internal model.
+          // Return a structured value so we can distinguish the checkbox branch's
+          // "state confirmed" signal from the regular click branch. For checkbox/
+          // radio, `checked` reflects `el.checked` AFTER our assignment + event
+          // dispatches — that's the verification signal we trust (outerHTML
+          // serialization doesn't reflect IDL .checked changes so the other
+          // signals would all be blind).
+          const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); const el = r.singleNodeValue; if (!el || typeof el.click !== "function") return { fired: false }; if (el.type === "checkbox" || el.type === "radio") { el.checked = true; el.dispatchEvent(new Event("click", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { fired: true, kind: "checkbox", checked: el.checked }; } el.click(); return { fired: true, kind: "click" }; })()`;
+          const probeResult = (await page.evaluate(clickExpr)) as {
+            fired: boolean;
+            kind?: string;
+            checked?: boolean;
+          };
+          const fired = probeResult.fired;
+          const checkboxStateVerified =
+            probeResult.kind === "checkbox" && probeResult.checked === true;
           await page.waitForTimeout(STEP_PAUSE_MS);
           const retryPost = await snapshotPage(page, signalCounter);
           const retryNetworkFired = retryPost.networkCount > pre.networkCount;
@@ -1310,9 +1410,13 @@ async function executeStepWithHealing(params: {
           const retryHtmlDelta = retryPost.bodyHtmlLength - pre.bodyHtmlLength;
           const retryTextChanged = retryPost.visibleTextSignature !== pre.visibleTextSignature;
           const retryVerified =
-            retryNetworkFired || retryUrlChanged || retryHtmlDelta !== 0 || retryTextChanged;
+            retryNetworkFired ||
+            retryUrlChanged ||
+            retryHtmlDelta !== 0 ||
+            retryTextChanged ||
+            checkboxStateVerified;
           logger.info(
-            `n+16 probe: step=${stepIndex + 1} attempt=${attempt} el.click() fallback fired=${fired === true}; network=${retryNetworkFired} url=${retryUrlChanged} htmlDelta=${retryHtmlDelta} textChanged=${retryTextChanged} verified=${retryVerified}`
+            `n+16 probe: step=${stepIndex + 1} attempt=${attempt} el.click() fallback fired=${fired === true} kind=${probeResult.kind ?? "none"} checkboxStateVerified=${checkboxStateVerified}; network=${retryNetworkFired} url=${retryUrlChanged} htmlDelta=${retryHtmlDelta} textChanged=${retryTextChanged} verified=${retryVerified}`
           );
           if (retryVerified) {
             record.verifiedBy = retryUrlChanged ? "url" : retryNetworkFired ? "network" : "dom";
@@ -1499,6 +1603,13 @@ async function main(): Promise<void> {
   const counter = { n: 0 };
   const signalCounter = { n: 0 };
   const recentCaptures: string[] = [];
+  // Parallel tracker of recent captures' HTTP method + status. Used by the
+  // Tier 1 trailing-optional-step grace: a verification failure on an optional
+  // trailing step is treated as a benign no-op when a recent non-GET request
+  // returned 200 (i.e. the SPA's "real work" already completed server-side and
+  // the trailing step is a redundant tail that the flow file may have included
+  // for sites where it's actually needed).
+  const recentCaptureMeta: { method: string; status: number }[] = [];
 
   try {
     const stagehand = session.stagehand;
@@ -1512,6 +1623,7 @@ async function main(): Promise<void> {
       counter,
       signalCounter,
       recentCaptures,
+      recentCaptureMeta,
       () => currentPhase
     );
 
@@ -1558,6 +1670,28 @@ async function main(): Promise<void> {
         completedSteps.push(step.instruction);
       } catch (err) {
         if (!(err instanceof StepVerificationError)) throw err;
+
+        // Tier 1 — trailing-optional-step grace: when an OPTIONAL step at
+        // trailing position fails verification AND a recent non-GET capture
+        // returned 2xx, treat as a benign no-op exit. The flow's "real work"
+        // already completed server-side (recent successful POST proves it);
+        // the trailing step is a redundant tail that the cascade can't make
+        // meaningful progress on (e.g. resume re-upload after the workflow
+        // already ended, final Continue when the Submit button is in
+        // "Saving..." state). Uses only flow-position metadata + capture HTTP
+        // metadata — no content matching, no open-set patterns.
+        if (step.optional && i >= plan.length - TRAILING_GRACE_WINDOW) {
+          const recentMutationSucceeded = recentCaptureMeta.some(
+            (m) => m.method !== "GET" && m.status >= 200 && m.status < 300
+          );
+          if (recentMutationSucceeded) {
+            logger.info(
+              `step ${i + 1} optional + trailing position; recent non-GET 2xx captured — treating verification failure as benign no-op; recon complete`
+            );
+            break;
+          }
+        }
+
         if (!anthropic || replansUsed >= MAX_REPLANS) throw err;
 
         replansUsed++;
@@ -1603,7 +1737,14 @@ async function main(): Promise<void> {
           );
         }
 
-        plan.splice(i, plan.length - i, ...newSteps);
+        // Prepend recovery steps before the original remaining tail — the
+        // replanner emits bridge steps from the failure point back to where
+        // the original flow can resume. Idempotent fills/clicks on already-
+        // satisfied form fields cost a few seconds each but keep the rest of
+        // the original intent (page-0 Continue, page-1 sections, resume
+        // upload, final submit) intact instead of replacing them with the
+        // replanner's necessarily-truncated tail (capped at REPLAN_MAX_STEPS).
+        plan.splice(i, plan.length - i, ...newSteps, ...originalRemaining);
         i--;
       }
     }
