@@ -462,6 +462,22 @@ function walkForNestedErrorKeys(
 type FieldNameMap = Map<string, string>;
 
 /**
+ * Per-OptionId-using field: an ordered list of {semanticValue, optionId}
+ * pairs derived from the form schema's FieldOptions[]. The generator emits
+ * each as an OPT_<FieldName> constant + z.enum payload field; the body emit
+ * pass rewrites `OptionId: "<uuid>"` slots to `OptionId: ${OPT_X[payload.X]}`.
+ *
+ * Only populated for fields whose options all have a non-empty Value (i.e.
+ * SystemFieldOption-tagged options). Custom options without a semantic
+ * label are skipped — the field's OptionIds stay baked.
+ */
+interface FieldOptionsMapping {
+  semanticName: string;
+  options: Array<{ value: string; optionId: string }>;
+}
+type FieldOptionsMap = Map<string, FieldOptionsMapping>;
+
+/**
  * Converts a FieldSourceCode like "contact.first.name" or "address.country.subdivision"
  * to PascalCase: "ContactFirstName", "AddressCountrySubdivision". Site-agnostic:
  * operates only on the input string. Returns null for inputs that don't
@@ -498,25 +514,37 @@ function fieldNameToPascalCase(fieldName: string, prefix: string | null): string
  * Site-agnostic: identifies form-schema captures by structural fingerprint,
  * not by URL or site name. Any ATS exposing a similar schema would match.
  */
-function detectFormSchemaFieldNames(captures: Capture[]): FieldNameMap {
+function detectFormSchemaFieldNames(captures: Capture[]): {
+  fieldNameMap: FieldNameMap;
+  fieldOptionsMap: FieldOptionsMap;
+} {
   const fieldNameMap: FieldNameMap = new Map();
+  const fieldOptionsMap: FieldOptionsMap = new Map();
   for (const capture of captures) {
-    walkForSectionFieldsArrays(capture.responseBody, fieldNameMap);
+    walkForSectionFieldsArrays(capture.responseBody, fieldNameMap, fieldOptionsMap);
   }
-  return fieldNameMap;
+  return { fieldNameMap, fieldOptionsMap };
 }
 
-function walkForSectionFieldsArrays(value: unknown, fieldNameMap: FieldNameMap): void {
+function walkForSectionFieldsArrays(
+  value: unknown,
+  fieldNameMap: FieldNameMap,
+  fieldOptionsMap: FieldOptionsMap
+): void {
   if (value === null || typeof value !== "object") return;
   if (Array.isArray(value)) {
     if (looksLikeSectionFieldsArray(value)) {
-      assignFieldNamesFromArray(value as Array<Record<string, unknown>>, fieldNameMap);
+      assignFieldNamesFromArray(
+        value as Array<Record<string, unknown>>,
+        fieldNameMap,
+        fieldOptionsMap
+      );
     }
-    for (const item of value) walkForSectionFieldsArrays(item, fieldNameMap);
+    for (const item of value) walkForSectionFieldsArrays(item, fieldNameMap, fieldOptionsMap);
     return;
   }
   for (const v of Object.values(value as Record<string, unknown>)) {
-    walkForSectionFieldsArrays(v, fieldNameMap);
+    walkForSectionFieldsArrays(v, fieldNameMap, fieldOptionsMap);
   }
 }
 
@@ -544,7 +572,8 @@ function looksLikeSectionFieldsArray(arr: unknown[]): boolean {
 
 function assignFieldNamesFromArray(
   arr: Array<Record<string, unknown>>,
-  fieldNameMap: FieldNameMap
+  fieldNameMap: FieldNameMap,
+  fieldOptionsMap: FieldOptionsMap
 ): void {
   let currentPrefix: string | null = null;
   const usedNames = new Set<string>([...fieldNameMap.values()]);
@@ -588,6 +617,37 @@ function assignFieldNamesFromArray(
       }
       fieldNameMap.set(fieldId, unique);
       usedNames.add(unique);
+
+      // Capture FieldOptions when present and ALL options have non-empty
+      // semantic Values (SystemFieldOption-tagged). Custom options with empty
+      // Value are skipped — they have no semantic label, so we can't generate
+      // a meaningful enum and leave the field's OptionId baked.
+      const optionsRaw = obj.FieldOptions;
+      if (Array.isArray(optionsRaw) && optionsRaw.length > 0) {
+        const options: Array<{ value: string; optionId: string }> = [];
+        let allSemantic = true;
+        for (const optRaw of optionsRaw) {
+          if (optRaw === null || typeof optRaw !== "object") {
+            allSemantic = false;
+            break;
+          }
+          const opt = optRaw as Record<string, unknown>;
+          const optId = opt.Id;
+          const optValue = opt.Value;
+          if (
+            typeof optId !== "string" ||
+            typeof optValue !== "string" ||
+            optValue.trim().length === 0
+          ) {
+            allSemantic = false;
+            break;
+          }
+          options.push({ value: optValue, optionId: optId });
+        }
+        if (allSemantic && options.length > 0 && !fieldOptionsMap.has(fieldId)) {
+          fieldOptionsMap.set(fieldId, { semanticName: unique, options });
+        }
+      }
     }
   }
 }
@@ -638,6 +698,59 @@ function applyFormSchemaSubstitutions(
       result = result.slice(0, valueStart) + replacement + result.slice(valueEnd);
       outDiscoveredFields.add(semanticName);
       cursor = valueStart + replacement.length;
+    }
+  }
+  return result;
+}
+
+/**
+ * Substitutes Responses[].OptionId literals with payload-driven enum lookups.
+ * Operates on the body string before state interpolation. For each FieldId
+ * with a captured FieldOptionsMapping, find `"FieldId":"<uuid>"` and rewrite
+ * the matching `"OptionId":"<uuid>"` to `"OptionId":"${OPT_<Name>[payload.<Name>]}"`.
+ *
+ * Order-insensitive: matches `"OptionId":"<uuid>"` anywhere within the same
+ * JSON object as the FieldId (which is between this FieldId marker and the
+ * closing `}`). Closed-set substring matching: both FieldId and OptionId
+ * come from the generator's own input.
+ */
+function applyFormSchemaOptionIdSubstitutions(
+  rawBody: string,
+  fieldOptionsMap: FieldOptionsMap,
+  outDiscoveredOptionFields: Set<string>
+): string {
+  if (fieldOptionsMap.size === 0) return rawBody;
+  let result = rawBody;
+  for (const [fieldId, mapping] of fieldOptionsMap) {
+    const fieldIdMarker = `"FieldId":"${fieldId}"`;
+    let cursor = 0;
+    while (true) {
+      const idx = result.indexOf(fieldIdMarker, cursor);
+      if (idx === -1) break;
+      const objEnd = result.indexOf("}", idx);
+      if (objEnd === -1) break;
+      const segment = result.slice(idx, objEnd);
+      const optionIdMarker = `"OptionId":"`;
+      const optionIdLocal = segment.indexOf(optionIdMarker);
+      if (optionIdLocal === -1) {
+        cursor = objEnd;
+        continue;
+      }
+      const optionStart = idx + optionIdLocal + optionIdMarker.length;
+      const optionEnd = result.indexOf(`"`, optionStart);
+      if (optionEnd === -1 || optionEnd > objEnd) {
+        cursor = objEnd;
+        continue;
+      }
+      const currentOptionId = result.slice(optionStart, optionEnd);
+      if (currentOptionId.includes("${")) {
+        cursor = objEnd;
+        continue;
+      }
+      const replacement = `\${OPT_${mapping.semanticName}[payload.${mapping.semanticName}]}`;
+      result = result.slice(0, optionStart) + replacement + result.slice(optionEnd);
+      outDiscoveredOptionFields.add(mapping.semanticName);
+      cursor = optionStart + replacement.length;
     }
   }
   return result;
@@ -989,7 +1102,9 @@ function emitMultiStepExecuteHttp(
   inputBody: unknown,
   errorSignals: ErrorSignals,
   fieldNameMap: FieldNameMap,
-  outDiscoveredFields: Set<string>
+  outDiscoveredFields: Set<string>,
+  fieldOptionsMap: FieldOptionsMap,
+  outDiscoveredOptionFields: Set<string>
 ): string {
   interface Rendered {
     url: string;
@@ -1027,9 +1142,15 @@ function emitMultiStepExecuteHttp(
     const url = interpolateStateValues(cap.url, prior, payloadAccessorByValue);
     // Form-schema substitution runs first on the raw recon body so its
     // FieldId-anchored matches see the original JSON. State-threading and
-    // payload key-value passes then run on top.
+    // payload key-value passes then run on top. OptionId substitution runs
+    // here too: same closed-set FieldId anchor; rewrites "OptionId":"<uuid>"
+    // slots to "${OPT_X[payload.X]}" lookups.
     const rawBodyWithFormSubs = cap.requestPostData
-      ? applyFormSchemaSubstitutions(cap.requestPostData, fieldNameMap, outDiscoveredFields)
+      ? applyFormSchemaOptionIdSubstitutions(
+          applyFormSchemaSubstitutions(cap.requestPostData, fieldNameMap, outDiscoveredFields),
+          fieldOptionsMap,
+          outDiscoveredOptionFields
+        )
       : "";
     const bodyTemplate = rawBodyWithFormSubs
       ? applyPayloadKeyValueSubstitutions(
@@ -1227,6 +1348,14 @@ function emitContractTs(opts: {
    * substituting Responses[].Value literals. Added to the payload schema so
    * the caller can supply real values for them. */
   discoveredFormFields?: Set<string>;
+  /** Full FieldOptions map (FieldId → semanticName + options). Only the
+   * entries whose semanticName is in `discoveredOptionFields` will get emitted
+   * — those are the fields where applyFormSchemaOptionIdSubstitutions actually
+   * rewrote an OptionId slot. */
+  fieldOptionsMap?: FieldOptionsMap;
+  /** Semantic names whose OptionId slots were rewritten by the generator —
+   * each gets an OPT_<Name> constant and a z.enum payload field. */
+  discoveredOptionFields?: Set<string>;
 }): string {
   const {
     siteId,
@@ -1244,6 +1373,8 @@ function emitContractTs(opts: {
     inputBody,
     hasMultipartStep = false,
     discoveredFormFields,
+    fieldOptionsMap,
+    discoveredOptionFields,
   } = opts;
 
   // Multi-step plugins thread responses through many different shapes that a
@@ -1276,9 +1407,50 @@ function emitContractTs(opts: {
           .map((name) => `  ${name}: z.string(),`)
           .join("\n")}\n})`
       : "";
+
+  // Build per-field OPT_<Name> constant declarations + payload-schema enum
+  // entries from the form schema's FieldOptions. Only fields whose OptionId
+  // slots were actually rewritten in the body (i.e. that appear in
+  // discoveredOptionFields) get emitted; the rest leave their schema entries
+  // unused. Computed BEFORE payloadSchemaExpr so the extension string is
+  // available for the final schema concat.
+  const emittedOptionMappings: FieldOptionsMapping[] = [];
+  if (fieldOptionsMap && discoveredOptionFields && discoveredOptionFields.size > 0) {
+    for (const mapping of fieldOptionsMap.values()) {
+      if (discoveredOptionFields.has(mapping.semanticName)) {
+        emittedOptionMappings.push(mapping);
+      }
+    }
+    emittedOptionMappings.sort((a, b) => a.semanticName.localeCompare(b.semanticName));
+  }
+  const optionDecls = emittedOptionMappings
+    .map((mapping) => {
+      const entries = mapping.options
+        .map(
+          ({ value, optionId }) =>
+            `  ${isValidJsIdentifier(value) ? value : JSON.stringify(value)}: ${JSON.stringify(optionId)},`
+        )
+        .join("\n");
+      return `\nconst OPT_${mapping.semanticName} = {\n${entries}\n} as const;\n`;
+    })
+    .join("");
+  const optionSchemaExtension =
+    emittedOptionMappings.length > 0
+      ? `.extend({\n${emittedOptionMappings
+          .map(
+            (m) =>
+              `  ${m.semanticName}: z.enum([${m.options.map((o) => JSON.stringify(o.value)).join(", ")}]),`
+          )
+          .join("\n")}\n})`
+      : "";
+
+  // optionSchemaExtension is appended LAST so option enums show up at the
+  // end of the payload type — the section ordering (base, multipart fields,
+  // form-schema fields, option enums) mirrors the body emit order and keeps
+  // the generated payload type readable.
   const payloadSchemaExpr = hasMultipartStep
-    ? `${basePayloadSchemaExpr}.extend({\n  Resume: z.instanceof(Buffer),\n  ResumeContentType: z.string(),\n  ResumeFilename: z.string(),\n})${formFieldsExtension}`
-    : `${basePayloadSchemaExpr}${formFieldsExtension}`;
+    ? `${basePayloadSchemaExpr}.extend({\n  Resume: z.instanceof(Buffer),\n  ResumeContentType: z.string(),\n  ResumeFilename: z.string(),\n})${formFieldsExtension}${optionSchemaExtension}`
+    : `${basePayloadSchemaExpr}${formFieldsExtension}${optionSchemaExtension}`;
   // When the payload schema needs the MULTIPART_BOOL reference, emit its
   // declaration once at the top of the contract file so each boolean field
   // stays short (SmsOptIn: MULTIPART_BOOL,) and the preprocess expression
@@ -1384,7 +1556,7 @@ const ${pascal}ResponseSchema = ${responseSchemaExpr};
 export type ${pascal}Response = z.infer<typeof ${pascal}ResponseSchema>;
 
 export default ${pascal}ResponseSchema;
-${multipartBoolDecl}
+${multipartBoolDecl}${optionDecls}
 const ${pascal}PayloadSchema = ${payloadSchemaExpr};
 
 export type ${pascal}Payload = z.infer<typeof ${pascal}PayloadSchema>;
@@ -1592,15 +1764,18 @@ async function main(): Promise<void> {
       })()
     : undefined;
   const errorSignals = detectErrorSignals(actionSteps);
-  const fieldNameMap = detectFormSchemaFieldNames(captures);
+  const { fieldNameMap, fieldOptionsMap } = detectFormSchemaFieldNames(captures);
   const discoveredFormFields = new Set<string>();
+  const discoveredOptionFields = new Set<string>();
   const multiStepBody = isSubmissionFlow
     ? emitMultiStepExecuteHttp(
         actionSteps,
         inputBody,
         errorSignals,
         fieldNameMap,
-        discoveredFormFields
+        discoveredFormFields,
+        fieldOptionsMap,
+        discoveredOptionFields
       )
     : undefined;
   const hasMultipartStep = actionSteps.some((s) => s.isMultipart);
@@ -1635,6 +1810,8 @@ async function main(): Promise<void> {
       inputBody,
       hasMultipartStep,
       discoveredFormFields,
+      fieldOptionsMap,
+      discoveredOptionFields,
     })
   );
   logger.info(`wrote ${outDir}/contract.ts`);
