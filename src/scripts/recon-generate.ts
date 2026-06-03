@@ -314,6 +314,16 @@ const MIN_STATE_VALUE_LENGTH = 8;
  * embedded base64 images, etc.) that aren't candidates for state threading. */
 const MAX_STATE_VALUE_LENGTH = 256;
 
+/** Canonical "uninitialized" sentinel values that some REST APIs return as
+ * placeholders before a downstream call populates the real identifier.
+ * ClearCompany's `/user/create` returns these for CandidateId/ApplicationId/
+ * ApplyProcessId, then `/user/start` returns the real values. Indexing the
+ * placeholder would lock the generated plugin's `${candidateId}` binding to
+ * the all-zero UUID — every downstream call would then 404 with "candidate
+ * does not exist". Closed set, literal-string match — never expand to
+ * pattern-based detection (would trip the no-regex-on-open-sets rule). */
+const PLACEHOLDER_STATE_VALUES = new Set(["00000000-0000-0000-0000-000000000000"]);
+
 /**
  * Walks every capture's response (including GETs — formHistoryId-style values
  * may originate in a state-load GET, not a POST). Indexes every string leaf
@@ -325,6 +335,10 @@ const MAX_STATE_VALUE_LENGTH = 256;
  * web. Authoritative filtering happens downstream in `compileActionSteps`,
  * which only emits produces[] entries for values that ALSO appear in some
  * downstream URL/headers/body (i.e. real cross-step reuse).
+ *
+ * Exception: values in `PLACEHOLDER_STATE_VALUES` are skipped entirely so
+ * the LATER non-placeholder occurrence at the same JSON path becomes the
+ * canonical binding instead.
  */
 function indexStateValues(captures: Capture[]): Map<string, StateValue> {
   const index = new Map<string, StateValue>();
@@ -334,6 +348,7 @@ function indexStateValues(captures: Capture[]): Map<string, StateValue> {
     for (const { value, path } of walkStringLeaves(c.responseBody)) {
       if (value.length < MIN_STATE_VALUE_LENGTH) continue;
       if (value.length > MAX_STATE_VALUE_LENGTH) continue;
+      if (PLACEHOLDER_STATE_VALUES.has(value)) continue;
       if (!index.has(value)) {
         index.set(value, { value, originIndex: i, path });
       }
@@ -629,23 +644,42 @@ function emitMultiStepExecuteHttp(actions: ActionStep[], inputBody: unknown): st
 
     if (step.isMultipart) {
       // Bypasses httpClient because its typed string-body interface can't
-      // carry a FormData payload. The next call goes back through httpClient
-      // for rate-limit + Zod parsing.
+      // carry a FormData payload. We splice in BASE_HEADERS (minus
+      // Content-Type, which FormData sets to multipart/form-data with the
+      // boundary it generates) so site-required custom headers like
+      // API-Realm/API-AppType/etc. are carried over. The next call goes
+      // back through httpClient for rate-limit + Zod parsing.
       const fdVar = `fd_${step.varName}`;
       const bufVar = `buf_${step.varName}`;
       const respVar = `resp_${step.varName}`;
+      const headersVar = `headers_${step.varName}`;
+      // Extract just the per-call header overrides (API-Token etc.) from the
+      // rendered headers expression to merge with BASE_HEADERS.
+      const perCallHeaderEntries: string[] = [];
+      for (const [k, v] of Object.entries(cap.requestHeaders)) {
+        const lower = k.toLowerCase();
+        if (lower === "api-token" || lower === "authorization") {
+          perCallHeaderEntries.push(
+            `${JSON.stringify(k)}: \`${interpolateStateValues(v, actions.slice(0, i), payloadAccessorByValue)}\``
+          );
+        }
+      }
+      const perCallHeadersLit = perCallHeaderEntries.length
+        ? `, ${perCallHeaderEntries.join(", ")}`
+        : "";
       lines.push(
         `    // Expected response shape: ${JSON.stringify(summariseResponseShape(cap.responseBody))}`,
         `    const ${bufVar} = readFileSync(resolve(__dirname, "..", "_shared", "fixtures", "resume.pdf"));`,
         `    const ${fdVar} = new FormData();`,
         `    ${fdVar}.append("files[]", new Blob([${bufVar}], { type: "application/pdf" }), "resume.pdf");`,
+        `    const ${headersVar} = { ...Object.fromEntries(Object.entries(BASE_HEADERS).filter(([k]) => k.toLowerCase() !== "content-type"))${perCallHeadersLit} };`,
         `    const ${respVar} = await fetch(\`${r.url}\`, {`,
-        `      method: "POST",`
+        `      method: "POST",`,
+        `      headers: ${headersVar},`,
+        `      body: ${fdVar},`,
+        `    });`,
+        `    if (!${respVar}.ok) throw new Error(\`step ${step.varName} (multipart upload) failed: HTTP \${${respVar}.status}\`);`
       );
-      if (r.headersExpr !== "") {
-        lines.push(`      ${r.headersExpr}`);
-      }
-      lines.push(`      body: ${fdVar},`, `    });`);
       if (bindResponse) {
         lines.push(
           `    const ${step.varName} = (await ${respVar}.json()) as Record<string, unknown>;`
@@ -654,15 +688,30 @@ function emitMultiStepExecuteHttp(actions: ActionStep[], inputBody: unknown): st
         lines.push(`    await ${respVar}.json();`);
       }
     } else {
-      const lhs = bindResponse ? `const ${step.varName} = (await ` : "await ";
-      const rhsSuffix = bindResponse ? `)) as Record<string, unknown>;` : `);`;
-      lines.push(`    ${lhs}httpClient(\`${r.url}\`, {`);
+      // Always bind the response so we can emit a validation check that
+      // turns 200-with-error-body responses into thrown errors instead of
+      // silently chaining to downstream calls with bad state.
+      lines.push(`    const ${step.varName} = (await httpClient(\`${r.url}\`, {`);
       lines.push(`      method: ${JSON.stringify(r.method)},`);
       const joined = [r.headersExpr, r.bodyArg].filter((s) => s !== "").join(" ");
       if (joined !== "") {
         lines.push(`      ${joined}`);
       }
-      lines.push(`    }${rhsSuffix}`);
+      lines.push(`    })) as Record<string, unknown>;`);
+      // Structural error-shape check: any of `Message` (string), `Sections.
+      // ResponseValidationErrors` (non-null), or `Sections.DataValidationErrors`
+      // (non-null) signal a 200-with-error response. Closed grammar — no
+      // regex on open-set content. Guard on `typeof obj === "object" &&
+      // obj !== null` first because some endpoints return `null` for an
+      // ack-without-data success (e.g. ClearCompany's WOTC v2 POST).
+      lines.push(
+        `    if (typeof ${step.varName} === "object" && ${step.varName} !== null) {`,
+        `      if (typeof (${step.varName} as { Message?: unknown }).Message === "string") throw new Error(\`step ${step.varName} (${cap.url.split("/").slice(3).join("/").split("?")[0]}) returned error: \${(${step.varName} as { Message: string }).Message}\`);`,
+        `      const ${step.varName}_sections = (${step.varName} as { Sections?: { ResponseValidationErrors?: unknown; DataValidationErrors?: unknown } }).Sections;`,
+        `      if (${step.varName}_sections != null && ${step.varName}_sections.ResponseValidationErrors != null) throw new Error(\`step ${step.varName} validation errors: \${JSON.stringify(${step.varName}_sections.ResponseValidationErrors)}\`);`,
+        `      if (${step.varName}_sections != null && ${step.varName}_sections.DataValidationErrors != null) throw new Error(\`step ${step.varName} data errors: \${JSON.stringify(${step.varName}_sections.DataValidationErrors)}\`);`,
+        `    }`
+      );
     }
 
     for (const p of step.produces) {
