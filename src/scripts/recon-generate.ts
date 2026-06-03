@@ -322,6 +322,103 @@ function* walkStringLeaves(
  * inflate the index without contributing to state threading. */
 const MIN_STATE_VALUE_LENGTH = 8;
 
+/**
+ * Documented enum of common HTTP-API error-reporting key names. Closed set
+ * (per the no-regex-open-sets feedback): when an API returns 200 with an
+ * error payload, it almost always uses one of these key names at the top of
+ * the body. Matched case-insensitively so `Message`/`message`/`Error`/`error`
+ * all detect.
+ */
+const KNOWN_TOP_LEVEL_ERROR_KEYS = new Set(["message", "error", "errormessage"]);
+
+/**
+ * Suffixes that mark a JSON key as carrying validation/data errors when its
+ * value is non-null. Case-sensitive because real APIs use mixed-case in the
+ * exact form they ship (e.g. ClearCompany's `ResponseValidationErrors`).
+ */
+const NESTED_ERROR_KEY_SUFFIXES = ["ValidationErrors", "DataErrors", "ValidationError"];
+
+interface ErrorSignals {
+  /** Top-level string-valued key whose presence in a response signals an
+   * error. Emitted by the generator as a `typeof obj.X === "string"` guard. */
+  stringMessageKey: string | null;
+  /** JSON paths whose non-null value signals an error. The `parentPath` walks
+   * to the parent object and `errorKey` is the leaf property name. Emitted as
+   * `obj.<parentPath>.<errorKey> != null` guards. */
+  nestedErrorPaths: Array<{ parentPath: string[]; errorKey: string }>;
+}
+
+/**
+ * Detects which error-reporting key names this site's recon uses. Scans
+ * successful action-step response bodies for the well-known key shapes; only
+ * emits guards for keys that NEVER appear as non-null values in success
+ * responses (so legitimate success-only fields like `Name` aren't false-
+ * flagged as errors).
+ *
+ * Site-agnostic: ClearCompany uses `Message`/`Sections.ResponseValidationErrors`
+ * /`Sections.DataValidationErrors`; a different ATS using `error`/`errors[]`
+ * would emit guards for those instead.
+ */
+function detectErrorSignals(actions: ActionStep[]): ErrorSignals {
+  const candidateTopLevelKeys = new Map<string, { presentInSuccess: boolean }>();
+  const candidateNestedPaths = new Map<
+    string,
+    { parentPath: string[]; errorKey: string; presentInSuccess: boolean }
+  >();
+
+  for (const step of actions) {
+    const body = step.capture.responseBody;
+    if (body === null || typeof body !== "object" || Array.isArray(body)) continue;
+
+    for (const [k, v] of Object.entries(body as Record<string, unknown>)) {
+      if (KNOWN_TOP_LEVEL_ERROR_KEYS.has(k.toLowerCase())) {
+        const existing = candidateTopLevelKeys.get(k) ?? { presentInSuccess: false };
+        if (typeof v === "string" && v.length > 0) existing.presentInSuccess = true;
+        candidateTopLevelKeys.set(k, existing);
+      }
+    }
+
+    walkForNestedErrorKeys(body, [], candidateNestedPaths);
+  }
+
+  const successKeys = new Set<string>();
+  for (const [k, info] of candidateTopLevelKeys) {
+    if (info.presentInSuccess) successKeys.add(k);
+  }
+  const stringMessageKey =
+    [...candidateTopLevelKeys.keys()].find((k) => !successKeys.has(k)) ?? null;
+
+  const nestedErrorPaths: ErrorSignals["nestedErrorPaths"] = [];
+  for (const info of candidateNestedPaths.values()) {
+    if (!info.presentInSuccess) {
+      nestedErrorPaths.push({ parentPath: info.parentPath, errorKey: info.errorKey });
+    }
+  }
+
+  return { stringMessageKey, nestedErrorPaths };
+}
+
+function walkForNestedErrorKeys(
+  value: unknown,
+  path: string[],
+  candidates: Map<string, { parentPath: string[]; errorKey: string; presentInSuccess: boolean }>
+): void {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return;
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (NESTED_ERROR_KEY_SUFFIXES.some((suffix) => k.endsWith(suffix))) {
+      const dedupeKey = `${path.join(".")}::${k}`;
+      const existing = candidates.get(dedupeKey) ?? {
+        parentPath: path,
+        errorKey: k,
+        presentInSuccess: false,
+      };
+      if (v !== null) existing.presentInSuccess = true;
+      candidates.set(dedupeKey, existing);
+    }
+    walkForNestedErrorKeys(v, [...path, k], candidates);
+  }
+}
+
 /** Maximum length to guard against indexing massive blobs (HTML fragments,
  * embedded base64 images, etc.) that aren't candidates for state threading. */
 const MAX_STATE_VALUE_LENGTH = 256;
@@ -558,7 +655,71 @@ function interpolateStateValues(
  *      referenced AND isn't the terminal var (needed for `return { data }`).
  *      Skip produces[] entries whose name isn't referenced anywhere downstream.
  */
-function emitMultiStepExecuteHttp(actions: ActionStep[], inputBody: unknown): string {
+/**
+ * Emits per-step `throw new Error(...)` lines for each detected error signal.
+ * Returns lines indented to sit inside the `if (typeof X === "object" && X !==
+ * null)` wrapper that `emitMultiStepExecuteHttp` writes.
+ */
+function emitErrorSignalGuards(varName: string, urlPath: string, signals: ErrorSignals): string[] {
+  const out: string[] = [];
+
+  if (signals.stringMessageKey !== null) {
+    const k = signals.stringMessageKey;
+    out.push(
+      `      if (typeof (${varName} as { ${k}?: unknown }).${k} === "string") throw new Error(\`step ${varName} (${urlPath}) returned error: \${(${varName} as { ${k}: string }).${k}}\`);`
+    );
+  }
+
+  const nestedByParent = new Map<string, Array<{ errorKey: string }>>();
+  for (const { parentPath, errorKey } of signals.nestedErrorPaths) {
+    const key = parentPath.join(".");
+    const existing = nestedByParent.get(key) ?? [];
+    existing.push({ errorKey });
+    nestedByParent.set(key, existing);
+  }
+
+  for (const [parentPathStr, errorKeys] of nestedByParent) {
+    if (parentPathStr === "") {
+      for (const { errorKey } of errorKeys) {
+        out.push(
+          `      if ((${varName} as { ${errorKey}?: unknown }).${errorKey} != null) throw new Error(\`step ${varName} ${errorKey.toLowerCase()}: \${JSON.stringify((${varName} as { ${errorKey}: unknown }).${errorKey})}\`);`
+        );
+      }
+      continue;
+    }
+    const parentSegments = parentPathStr.split(".");
+    const parentVar = `${varName}_${parentSegments[parentSegments.length - 1]!.toLowerCase()}`;
+    const parentAccessor = parentSegments.join("?.");
+    const parentTypeAssertion = errorKeys.map(({ errorKey }) => `${errorKey}?: unknown`).join("; ");
+    const parentObjType = parentSegments
+      .reverse()
+      .reduce((inner, seg) => `${seg}?: { ${inner} }`, parentTypeAssertion);
+    parentSegments.reverse();
+    out.push(`      const ${parentVar} = (${varName} as { ${parentObjType} }).${parentAccessor};`);
+    for (const { errorKey } of errorKeys) {
+      const label =
+        errorKey === "ResponseValidationErrors"
+          ? "validation errors"
+          : errorKey === "DataValidationErrors"
+            ? "data errors"
+            : errorKey
+                .replace(/([A-Z])/g, " $1")
+                .trim()
+                .toLowerCase();
+      out.push(
+        `      if (${parentVar} != null && ${parentVar}.${errorKey} != null) throw new Error(\`step ${varName} ${label}: \${JSON.stringify(${parentVar}.${errorKey})}\`);`
+      );
+    }
+  }
+
+  return out;
+}
+
+function emitMultiStepExecuteHttp(
+  actions: ActionStep[],
+  inputBody: unknown,
+  errorSignals: ErrorSignals
+): string {
   interface Rendered {
     url: string;
     method: string;
@@ -719,20 +880,19 @@ function emitMultiStepExecuteHttp(actions: ActionStep[], inputBody: unknown): st
         lines.push(`      ${joined}`);
       }
       lines.push(`    })) as Record<string, unknown>;`);
-      // Structural error-shape check: any of `Message` (string), `Sections.
-      // ResponseValidationErrors` (non-null), or `Sections.DataValidationErrors`
-      // (non-null) signal a 200-with-error response. Closed grammar — no
-      // regex on open-set content. Guard on `typeof obj === "object" &&
-      // obj !== null` first because some endpoints return `null` for an
-      // ack-without-data success (e.g. ClearCompany's WOTC v2 POST).
-      lines.push(
-        `    if (typeof ${step.varName} === "object" && ${step.varName} !== null) {`,
-        `      if (typeof (${step.varName} as { Message?: unknown }).Message === "string") throw new Error(\`step ${step.varName} (${cap.url.split("/").slice(3).join("/").split("?")[0]}) returned error: \${(${step.varName} as { Message: string }).Message}\`);`,
-        `      const ${step.varName}_sections = (${step.varName} as { Sections?: { ResponseValidationErrors?: unknown; DataValidationErrors?: unknown } }).Sections;`,
-        `      if (${step.varName}_sections != null && ${step.varName}_sections.ResponseValidationErrors != null) throw new Error(\`step ${step.varName} validation errors: \${JSON.stringify(${step.varName}_sections.ResponseValidationErrors)}\`);`,
-        `      if (${step.varName}_sections != null && ${step.varName}_sections.DataValidationErrors != null) throw new Error(\`step ${step.varName} data errors: \${JSON.stringify(${step.varName}_sections.DataValidationErrors)}\`);`,
-        `    }`
-      );
+      // Structural error-shape check — signals come from `errorSignals`,
+      // which `detectErrorSignals` derived from this site's actual recon
+      // (closed-set key-name detection: known top-level error keys like
+      // `Message`/`error`, plus nested keys ending in `ValidationErrors`
+      // etc.). Guard on `typeof obj === "object" && obj !== null` first
+      // because some endpoints return `null` for an ack-without-data success.
+      const urlPath = cap.url.split("/").slice(3).join("/").split("?")[0] ?? "";
+      const guardLines = emitErrorSignalGuards(step.varName, urlPath, errorSignals);
+      if (guardLines.length > 0) {
+        lines.push(`    if (typeof ${step.varName} === "object" && ${step.varName} !== null) {`);
+        for (const line of guardLines) lines.push(line);
+        lines.push(`    }`);
+      }
     }
 
     for (const p of step.produces) {
@@ -1135,8 +1295,9 @@ async function main(): Promise<void> {
         }
       })()
     : undefined;
+  const errorSignals = detectErrorSignals(actionSteps);
   const multiStepBody = isSubmissionFlow
-    ? emitMultiStepExecuteHttp(actionSteps, inputBody)
+    ? emitMultiStepExecuteHttp(actionSteps, inputBody, errorSignals)
     : undefined;
   const hasMultipartStep = actionSteps.some((s) => s.isMultipart);
   // For submission flows the final action's response body is the most useful
