@@ -317,6 +317,40 @@ function* walkStringLeaves(
   }
 }
 
+/**
+ * Yields every primitive leaf (string, number, boolean, null) in the JSON
+ * value with its path. Used by the body-literal substitution pass to find
+ * JSON-keyed values whose key matches a payload field name — for example,
+ * `"FutureConsideration":true` becomes `"FutureConsideration":${payload.FutureConsideration}`.
+ * Unlike walkStringLeaves this includes non-string primitives, so boolean
+ * and number payload fields get parameterized too.
+ */
+function* walkAllPrimitiveLeaves(
+  value: unknown,
+  path: string[] = []
+): Generator<{ value: string | number | boolean | null; path: string[] }, void, unknown> {
+  if (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean" ||
+    value === null
+  ) {
+    yield { value, path };
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      yield* walkAllPrimitiveLeaves(value[i], [...path, String(i)]);
+    }
+    return;
+  }
+  if (typeof value === "object") {
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      yield* walkAllPrimitiveLeaves(v, [...path, k]);
+    }
+  }
+}
+
 /** Minimum length for a string leaf to be indexed as a potential state value.
  * Shorter strings (1-7 chars) are rarely meaningful auth tokens / IDs and
  * inflate the index without contributing to state threading. */
@@ -645,6 +679,51 @@ function interpolateStateValues(
   return result;
 }
 
+/**
+ * Substitutes literal JSON key/value pairs in a body template with payload
+ * interpolations. Catches short strings (e.g. Culture: "en"), booleans
+ * (FutureConsideration: true), and numbers that interpolateStateValues skips
+ * because they're below the state-value length threshold or non-string.
+ *
+ * Site-agnostic: only consults the recon's first POST body shape, doesn't
+ * reference any site-specific key names.
+ *
+ * Substitution is **JSON-key-aware** — only fires on `"key":value` patterns
+ * with the exact recon-captured value. Closed-set matching per the
+ * no-regex-open-sets feedback: both the key and the value come from the
+ * generator's own input. No risk of substring false positives because the
+ * key-prefix anchors the match to a JSON object property.
+ */
+function applyPayloadKeyValueSubstitutions(template: string, inputBody: unknown): string {
+  if (
+    inputBody === undefined ||
+    inputBody === null ||
+    typeof inputBody !== "object" ||
+    Array.isArray(inputBody)
+  ) {
+    return template;
+  }
+  let result = template;
+  for (const { value, path } of walkAllPrimitiveLeaves(inputBody)) {
+    // Only top-level fields map to caller payload fields; nested keys are
+    // structural artifacts of the body shape, not caller-supplied values.
+    if (path.length !== 1) continue;
+    const key = path[0]!;
+    if (!isValidJsIdentifier(key)) continue;
+    const accessor = `payload.${key}`;
+    if (typeof value === "string") {
+      const target = `"${key}":${JSON.stringify(value)}`;
+      const replacement = `"${key}":"\${${accessor}}"`;
+      result = result.split(target).join(replacement);
+    } else if (typeof value === "boolean" || typeof value === "number") {
+      const target = `"${key}":${JSON.stringify(value)}`;
+      const replacement = `"${key}":\${${accessor}}`;
+      result = result.split(target).join(replacement);
+    }
+  }
+  return result;
+}
+
 /** Builds the multi-step `executeHttp` body as a single template-literal string.
  *
  * Two-pass design avoids emitting unused bindings (which would trip Biome's
@@ -755,7 +834,10 @@ function emitMultiStepExecuteHttp(
     const prior = actions.slice(0, i);
     const url = interpolateStateValues(cap.url, prior, payloadAccessorByValue);
     const bodyTemplate = cap.requestPostData
-      ? interpolateStateValues(cap.requestPostData, prior, payloadAccessorByValue)
+      ? applyPayloadKeyValueSubstitutions(
+          interpolateStateValues(cap.requestPostData, prior, payloadAccessorByValue),
+          inputBody
+        )
       : "";
 
     const perCallHeaders: Record<string, string> = {};
