@@ -32,6 +32,7 @@ import {
 } from "@/scraper/metrics";
 import { runWithSession } from "@/scraper/pool";
 import type { SitePlugin, SitePluginContext, SitePluginResult } from "@/site-plugin";
+import { clearcompanyPlugin } from "@/sites/clearcompany";
 import type { Logger } from "@/types/logging";
 
 const logger = getLogger({ name: "plugins/loader" });
@@ -56,7 +57,9 @@ const logger = getLogger({ name: "plugins/loader" });
  * steps for the browser fallback), and index.ts (barrel export). See
  * src/site-plugin.ts for the SitePlugin interface every plugin must implement.
  */
-export const SITE_PLUGINS: SitePlugin<unknown, unknown>[] = [];
+export const SITE_PLUGINS: SitePlugin<unknown, unknown>[] = [
+  clearcompanyPlugin as SitePlugin<unknown, unknown>,
+];
 
 /**
  * Pure mapping from scraper-internal errors to the public ApiError hierarchy.
