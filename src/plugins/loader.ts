@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import fastifyMultipart from "@fastify/multipart";
 import type { FastifyInstance, RawServerDefault } from "fastify";
 import type pino from "pino";
 
@@ -213,6 +214,10 @@ export async function registerRoutes(
   app: FastifyInstance<RawServerDefault, IncomingMessage, ServerResponse, Logger>,
   cfg: AppConfig
 ): Promise<void> {
+  if (SITE_PLUGINS.some((p) => p.meta.multipart === true)) {
+    await app.register(fastifyMultipart, { attachFieldsToBody: "keyValues" });
+  }
+
   for (const plugin of SITE_PLUGINS) {
     const routePath = plugin.meta.routeOverride ?? `/v1/${plugin.meta.siteId}/run`;
     const baseUrl =
@@ -225,6 +230,7 @@ export async function registerRoutes(
         schema: {
           body: plugin.meta.bodySchema,
           response: { 200: plugin.meta.responseSchema },
+          ...(plugin.meta.multipart === true ? { consumes: ["multipart/form-data"] } : {}),
         },
       },
       async (request) => {

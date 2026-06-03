@@ -54,14 +54,26 @@ function toPascalCase(siteId: string): string {
  * Caps recursion at 4 levels to avoid generating unwieldy output for deeply
  * nested API responses — deeper fields collapse to z.unknown().
  */
-function inferZodSchema(value: unknown, depth = 0, indent = ""): string {
+function inferZodSchema(
+  value: unknown,
+  depth = 0,
+  indent = "",
+  opts: { multipartCoerce?: boolean } = {}
+): string {
   if (depth > 4) return "z.unknown()";
   if (value === null) return "z.null()";
   if (typeof value === "string") return "z.string()";
-  if (typeof value === "number") return "z.number()";
-  if (typeof value === "boolean") return "z.boolean()";
+  if (typeof value === "number") return opts.multipartCoerce ? "z.coerce.number()" : "z.number()";
+  if (typeof value === "boolean") {
+    // multipart/form-data encodes booleans as the strings "true"/"false". The
+    // contract emitter (emitContractTs) prepends a MULTIPART_BOOL constant
+    // wrapping z.preprocess + z.boolean() when any field needs this coercion;
+    // we just reference it here to keep each field declaration short and DRY.
+    return opts.multipartCoerce ? "MULTIPART_BOOL" : "z.boolean()";
+  }
   if (Array.isArray(value)) {
-    const item = value.length > 0 ? inferZodSchema(value[0], depth + 1, indent) : "z.unknown()";
+    const item =
+      value.length > 0 ? inferZodSchema(value[0], depth + 1, indent, opts) : "z.unknown()";
     return `z.array(${item})`;
   }
   if (typeof value === "object") {
@@ -73,7 +85,7 @@ function inferZodSchema(value: unknown, depth = 0, indent = ""): string {
     const fields = entries
       .map(
         ([k, v]) =>
-          `${inner}${isValidJsIdentifier(k) ? k : JSON.stringify(k)}: ${inferZodSchema(v, depth + 1, inner)}`
+          `${inner}${isValidJsIdentifier(k) ? k : JSON.stringify(k)}: ${inferZodSchema(v, depth + 1, inner, opts)}`
       )
       .join(",\n");
     return `z.object({\n${fields},\n${indent}})`;
@@ -649,8 +661,12 @@ function emitMultiStepExecuteHttp(actions: ActionStep[], inputBody: unknown): st
       // boundary it generates) so site-required custom headers like
       // API-Realm/API-AppType/etc. are carried over. The next call goes
       // back through httpClient for rate-limit + Zod parsing.
+      //
+      // Binary asset (file Buffer + content-type + filename) is required on
+      // the payload. The plugin route is registered with @fastify/multipart's
+      // `attachFieldsToBody: 'keyValues'` so callers POST these fields as
+      // standard multipart/form-data — no base64-in-JSON, no fixtures.
       const fdVar = `fd_${step.varName}`;
-      const bufVar = `buf_${step.varName}`;
       const respVar = `resp_${step.varName}`;
       const headersVar = `headers_${step.varName}`;
       // Extract just the per-call header overrides (API-Token etc.) from the
@@ -667,11 +683,16 @@ function emitMultiStepExecuteHttp(actions: ActionStep[], inputBody: unknown): st
       const perCallHeadersLit = perCallHeaderEntries.length
         ? `, ${perCallHeaderEntries.join(", ")}`
         : "";
+      // Buffer-to-Blob coercion in the emitted line below: Node's Buffer is a
+      // Uint8Array subclass, but its TS type lists ArrayBufferLike (which
+      // includes SharedArrayBuffer), so it isn't assignable to BlobPart
+      // directly. Uint8Array.from copies the bytes into a fresh
+      // ArrayBuffer-backed view that satisfies BlobPart.
       lines.push(
         `    // Expected response shape: ${JSON.stringify(summariseResponseShape(cap.responseBody))}`,
-        `    const ${bufVar} = readFileSync(resolve(__dirname, "..", "_shared", "fixtures", "resume.pdf"));`,
         `    const ${fdVar} = new FormData();`,
-        `    ${fdVar}.append("files[]", new Blob([${bufVar}], { type: "application/pdf" }), "resume.pdf");`,
+        `    const ${fdVar}_bytes = Uint8Array.from(payload.Resume);`,
+        `    ${fdVar}.append("files[]", new Blob([${fdVar}_bytes], { type: payload.ResumeContentType }), payload.ResumeFilename);`,
         `    const ${headersVar} = { ...Object.fromEntries(Object.entries(BASE_HEADERS).filter(([k]) => k.toLowerCase() !== "content-type"))${perCallHeadersLit} };`,
         `    const ${respVar} = await fetch(\`${r.url}\`, {`,
         `      method: "POST",`,
@@ -760,6 +781,8 @@ function emitContractTs(opts: {
   multiStepBody?: string;
   /** First action capture's request body — used to infer the payload schema for submission flows. */
   inputBody?: unknown;
+  /** Whether the flow has a multipart upload step — derived from actionSteps at the call site. */
+  hasMultipartStep?: boolean;
 }): string {
   const {
     siteId,
@@ -775,15 +798,38 @@ function emitContractTs(opts: {
     auxFiles,
     multiStepBody,
     inputBody,
+    hasMultipartStep = false,
   } = opts;
 
   // Multi-step plugins thread responses through many different shapes that a
   // single Zod schema can't cover — use z.unknown() so each per-step access
   // compiles cleanly. Single-endpoint plugins keep the inferred schema.
   const responseSchemaExpr = multiStepBody ? `z.unknown()` : inferZodSchema(responseBody);
-  const payloadSchemaExpr = inputBody
-    ? inferZodSchema(inputBody)
+  // Multi-step flows that include a multipart upload need the binary asset
+  // on the payload. Add Resume/ResumeContentType/ResumeFilename as required
+  // fields so the @fastify/multipart-populated request body has everything
+  // the upload step needs. Site-agnostic: works for any flow with a multipart
+  // step, regardless of which step in the sequence it is. The hasMultipartStep
+  // flag is computed once at the call site from actionSteps.some(s.isMultipart).
+  //
+  // multipart/form-data wire format encodes every text field as a string, so
+  // pass multipartCoerce so inferZodSchema emits MULTIPART_BOOL references for
+  // booleans and z.coerce.number() for numbers at the source rather than via
+  // brittle post-process string substitution. Site-agnostic: only flips on
+  // when meta.multipart is true.
+  const basePayloadSchemaExpr = inputBody
+    ? inferZodSchema(inputBody, 0, "", { multipartCoerce: hasMultipartStep })
     : `z.object({\n  query: z.string().min(1),\n})`;
+  const payloadSchemaExpr = hasMultipartStep
+    ? `${basePayloadSchemaExpr}.extend({\n  Resume: z.instanceof(Buffer),\n  ResumeContentType: z.string(),\n  ResumeFilename: z.string(),\n})`
+    : basePayloadSchemaExpr;
+  // When the payload schema needs the MULTIPART_BOOL reference, emit its
+  // declaration once at the top of the contract file so each boolean field
+  // stays short (SmsOptIn: MULTIPART_BOOL,) and the preprocess expression
+  // isn't duplicated per field.
+  const multipartBoolDecl = hasMultipartStep
+    ? `\nconst MULTIPART_BOOL = z.preprocess(\n  (v) => (v === "true" ? true : v === "false" ? false : v),\n  z.boolean(),\n);\n`
+    : "";
   // Emit identifier-shaped keys unquoted so Biome's formatter doesn't rewrite
   // the generated file on first lint:fix.
   const headersLiteral = Object.entries(baseHeaders)
@@ -853,12 +899,6 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
     ? `\n *   [ ] Trim UI-only fields from ${pascal.toUpperCase()}_QUERY (keep only fields you need)`
     : "";
 
-  // Multi-step flows that include a multipart upload need node:fs + node:path
-  // for inlining the resume fixture at runtime. Single-endpoint plugins don't.
-  const nodeBuiltinImports = multiStepBody?.includes("readFileSync(resolve(__dirname")
-    ? `\nimport { readFileSync } from "node:fs";\nimport { resolve } from "node:path";\n`
-    : "";
-
   return `/**
  * Generated by recon-generate.ts — review before shipping.
  *
@@ -867,7 +907,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
  *   [ ] Adjust ${pascal}PayloadSchema to your actual request parameters
  *   [ ] Verify BASE_HEADERS — remove any that aren't load-bearing
  */
-${nodeBuiltinImports}
+
 import Bottleneck from "bottleneck";
 import { z } from "zod/v4";
 
@@ -888,7 +928,7 @@ const ${pascal}ResponseSchema = ${responseSchemaExpr};
 export type ${pascal}Response = z.infer<typeof ${pascal}ResponseSchema>;
 
 export default ${pascal}ResponseSchema;
-
+${multipartBoolDecl}
 const ${pascal}PayloadSchema = ${payloadSchemaExpr};
 
 export type ${pascal}Payload = z.infer<typeof ${pascal}PayloadSchema>;
@@ -903,7 +943,7 @@ export const ${siteId.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase())}Pl
     displayName: ${JSON.stringify(pascal.replace(/([A-Z])/g, " $1").trim())},
     bodySchema: ${pascal}PayloadSchema,
     responseSchema: ${pascal}ResponseSchema,
-    defaultBaseUrl: ${JSON.stringify(baseUrl)},
+    defaultBaseUrl: ${JSON.stringify(baseUrl)},${hasMultipartStep ? "\n    multipart: true," : ""}
   },
 
   /** Hot path: direct HTTP — no browser, no LLM tokens. */
@@ -1098,6 +1138,7 @@ async function main(): Promise<void> {
   const multiStepBody = isSubmissionFlow
     ? emitMultiStepExecuteHttp(actionSteps, inputBody)
     : undefined;
+  const hasMultipartStep = actionSteps.some((s) => s.isMultipart);
   // For submission flows the final action's response body is the most useful
   // shape inference target (it's the terminal success signal). Fall back to
   // the replay body for single-endpoint sites.
@@ -1127,6 +1168,7 @@ async function main(): Promise<void> {
       auxFiles,
       multiStepBody,
       inputBody,
+      hasMultipartStep,
     })
   );
   logger.info(`wrote ${outDir}/contract.ts`);

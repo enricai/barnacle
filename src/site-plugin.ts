@@ -47,6 +47,13 @@ export interface SitePluginMeta {
    * a shorter ceiling than the default.
    */
   taskTimeoutMs?: number;
+  /**
+   * When true, the loader registers the route to accept `multipart/form-data`
+   * via `@fastify/multipart` in `attachFieldsToBody: 'keyValues'` mode. Text
+   * parts arrive as strings on `request.body`; file parts arrive as `Buffer`s.
+   * Generator emits this for flows whose recon includes a binary upload step.
+   */
+  multipart?: boolean;
 }
 
 /**
