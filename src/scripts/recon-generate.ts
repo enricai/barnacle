@@ -115,6 +115,15 @@ const IGNORE_REQUEST_HEADERS = new Set([
  * during recon, filtered to those present in every capture whose endpoint
  * replayed successfully. Always includes the standard Content-Type / Accept /
  * Origin / Referer / User-Agent baseline regardless of presence count.
+ *
+ * Fallback: when no replays succeeded (typical for auth-gated multi-step
+ * flows where every request after `/user/create` requires a token the
+ * stateless replay phase can't thread), derive headers from the meaningful
+ * action POSTs instead — same `extractActionSequence` definition used by
+ * the submission-flow detector. This catches load-bearing site-specific
+ * headers (Workday's `X-CSRF-Token`, Greenhouse's `Job-Boards-API-Token`,
+ * ClearCompany's `API-ShortName`, etc.) without the generator needing to
+ * know about any particular site.
  */
 function deriveRequestHeaders(
   captures: Capture[],
@@ -134,7 +143,15 @@ function deriveRequestHeaders(
       })
   );
 
-  const relevantCaptures = captures.filter((c) => {
+  // Prefer ACTION captures (non-GET 2xx to baseUrl host, non-telemetry) as
+  // the authoritative header source. Replay-matched static-asset GETs lack
+  // the API-specific headers that REST endpoints require, so falling back
+  // to those produces a degenerate baseline-only header set. When action
+  // captures exist (multi-step submission flows), use them. For sites
+  // where the flow is a single REST call (no detectable action sequence),
+  // fall back to the replay-matched captures.
+  const actionCaptures = extractActionSequence(captures, baseUrl).map((a) => a.capture);
+  const replayMatchedCaptures = captures.filter((c) => {
     try {
       const u = new URL(c.url);
       return successfulUrls.has(`${u.origin}${u.pathname}`);
@@ -142,6 +159,8 @@ function deriveRequestHeaders(
       return false;
     }
   });
+
+  const relevantCaptures = actionCaptures.length > 0 ? actionCaptures : replayMatchedCaptures;
 
   const counts = new Map<string, number>();
   for (const c of relevantCaptures) {
