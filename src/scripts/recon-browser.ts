@@ -1401,7 +1401,14 @@ async function executeStepWithHealing(params: {
           // dispatches — that's the verification signal we trust (outerHTML
           // serialization doesn't reflect IDL .checked changes so the other
           // signals would all be blind).
-          const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); const el = r.singleNodeValue; if (!el || typeof el.click !== "function") return { fired: false }; if (el.type === "checkbox" || el.type === "radio") { el.checked = true; el.dispatchEvent(new Event("click", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { fired: true, kind: "checkbox", checked: el.checked }; } el.click(); return { fired: true, kind: "click" }; })()`;
+          // If Stagehand resolved to a <label> that wraps a checkbox/radio
+          // input (HTML labeled-control pattern — Bootstrap, MUI, Tailwind, and
+          // most UI kits use it), retarget to the wrapped input. Native label
+          // clicks toggle the wrapped input's .checked via the browser's
+          // default action, but isolated-world page.evaluate() click()s don't
+          // reliably trigger that default action — same gap N+42 documented
+          // for direct checkbox/radio clicks.
+          const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); let el = r.singleNodeValue; if (!el || typeof el.click !== "function") return { fired: false }; if (el.tagName === "LABEL") { const wrapped = el.querySelector("input[type=checkbox], input[type=radio]"); if (wrapped) el = wrapped; } if (el.type === "checkbox" || el.type === "radio") { el.checked = true; el.dispatchEvent(new Event("click", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { fired: true, kind: "checkbox", checked: el.checked }; } el.click(); return { fired: true, kind: "click" }; })()`;
           const probeResult = (await page.evaluate(clickExpr)) as {
             fired: boolean;
             kind?: string;
