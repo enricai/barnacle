@@ -453,6 +453,196 @@ function walkForNestedErrorKeys(
   }
 }
 
+/**
+ * Map from form-schema FieldId UUIDs to PascalCase payload field names. Used
+ * by emitMultiStepExecuteHttp to substitute Responses[].Value literals with
+ * caller payload references. Empty when the recon doesn't include a form
+ * schema (no-op for those sites).
+ */
+type FieldNameMap = Map<string, string>;
+
+/**
+ * Converts a FieldSourceCode like "contact.first.name" or "address.country.subdivision"
+ * to PascalCase: "ContactFirstName", "AddressCountrySubdivision". Site-agnostic:
+ * operates only on the input string. Returns null for inputs that don't
+ * produce a valid JS identifier.
+ */
+function sourceCodeToPascalCase(sourceCode: string): string | null {
+  const parts = sourceCode.split(/[.\-_\s]+/).filter((p) => p.length > 0);
+  if (parts.length === 0) return null;
+  const pascal = parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()).join("");
+  return isValidJsIdentifier(pascal) ? pascal : null;
+}
+
+/**
+ * Converts a free-form FieldName like "Reference #1 First Name" or "Email" to
+ * PascalCase, stripping punctuation in a way that preserves position (so
+ * "Reference #1 First Name" → "Reference1FirstName" via a section-heading
+ * prefix). Site-agnostic: operates only on input strings.
+ */
+function fieldNameToPascalCase(fieldName: string, prefix: string | null): string | null {
+  const cleaned = fieldName.replace(/[^a-zA-Z0-9\s]/g, " ").trim();
+  if (cleaned === "") return null;
+  const parts = cleaned.split(/\s+/).filter((p) => p.length > 0);
+  if (parts.length === 0) return null;
+  const pascal = parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()).join("");
+  const withPrefix = prefix ? `${prefix}${pascal}` : pascal;
+  return isValidJsIdentifier(withPrefix) ? withPrefix : null;
+}
+
+/**
+ * Recon-driven detection of form-schema captures. Scans all response bodies
+ * for arrays whose objects look like SectionField (UUID-shaped FieldId plus
+ * FieldName or FieldSourceCode). Builds FieldId → PascalCase name map.
+ *
+ * Site-agnostic: identifies form-schema captures by structural fingerprint,
+ * not by URL or site name. Any ATS exposing a similar schema would match.
+ */
+function detectFormSchemaFieldNames(captures: Capture[]): FieldNameMap {
+  const fieldNameMap: FieldNameMap = new Map();
+  for (const capture of captures) {
+    walkForSectionFieldsArrays(capture.responseBody, fieldNameMap);
+  }
+  return fieldNameMap;
+}
+
+function walkForSectionFieldsArrays(value: unknown, fieldNameMap: FieldNameMap): void {
+  if (value === null || typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    if (looksLikeSectionFieldsArray(value)) {
+      assignFieldNamesFromArray(value as Array<Record<string, unknown>>, fieldNameMap);
+    }
+    for (const item of value) walkForSectionFieldsArrays(item, fieldNameMap);
+    return;
+  }
+  for (const v of Object.values(value as Record<string, unknown>)) {
+    walkForSectionFieldsArrays(v, fieldNameMap);
+  }
+}
+
+/**
+ * Structural fingerprint: array of objects, at least half of which have a
+ * UUID-shaped FieldId AND at least one of FieldName/FieldSourceCode.
+ */
+function looksLikeSectionFieldsArray(arr: unknown[]): boolean {
+  if (arr.length === 0) return false;
+  let matches = 0;
+  for (const item of arr) {
+    if (item === null || typeof item !== "object") continue;
+    const obj = item as Record<string, unknown>;
+    const fieldIdRaw = obj.FieldId;
+    if (typeof fieldIdRaw !== "string") continue;
+    if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(fieldIdRaw)) {
+      continue;
+    }
+    if (typeof obj.FieldName === "string" || typeof obj.FieldSourceCode === "string") {
+      matches++;
+    }
+  }
+  return matches >= Math.max(1, Math.floor(arr.length * 0.5));
+}
+
+function assignFieldNamesFromArray(
+  arr: Array<Record<string, unknown>>,
+  fieldNameMap: FieldNameMap
+): void {
+  let currentPrefix: string | null = null;
+  const usedNames = new Set<string>([...fieldNameMap.values()]);
+  for (const obj of arr) {
+    const fieldId = obj.FieldId;
+    if (typeof fieldId !== "string") continue;
+
+    const sourceCode = obj.FieldSourceCode;
+    const name = obj.FieldName;
+
+    let semantic: string | null = null;
+    if (typeof sourceCode === "string" && sourceCode.trim().length > 0) {
+      semantic = sourceCodeToPascalCase(sourceCode);
+      currentPrefix = null;
+    } else if (typeof name === "string" && name.trim().length > 0 && name.length < 80) {
+      const hasNoSourceCode = typeof sourceCode !== "string" || sourceCode.trim().length === 0;
+      // Section-heading heuristic: short FieldName, no SourceCode, MOSTLY
+      // uppercase letters (>= 70% of alphabetic chars) OR contains '#'.
+      // Whole-name uppercase ratio avoids false positives like "MM/DD/YYYY"
+      // appearing as a format hint inside a normal field label.
+      const letters = name.replace(/[^a-zA-Z]/g, "");
+      const upperLetters = name.replace(/[^A-Z]/g, "");
+      const isMostlyUppercase = letters.length >= 3 && upperLetters.length / letters.length >= 0.7;
+      const isSectionHeading = hasNoSourceCode && (isMostlyUppercase || name.includes("#"));
+      if (isSectionHeading) {
+        const headingPrefix = fieldNameToPascalCase(name, null);
+        if (headingPrefix !== null) {
+          currentPrefix = headingPrefix;
+        }
+        continue;
+      }
+      semantic = fieldNameToPascalCase(name, currentPrefix);
+    }
+
+    if (semantic !== null && !fieldNameMap.has(fieldId)) {
+      let unique = semantic;
+      let suffix = 2;
+      while (usedNames.has(unique)) {
+        unique = `${semantic}${suffix}`;
+        suffix++;
+      }
+      fieldNameMap.set(fieldId, unique);
+      usedNames.add(unique);
+    }
+  }
+}
+
+/**
+ * Substitutes Responses[].Value literals with payload accessors based on the
+ * field-name map from the form schema. Operates on the body string before
+ * state interpolation so already-substituted state values (e.g. ${firstName})
+ * are preserved.
+ *
+ * Closed-set substring matching: both FieldId and the literal Value come from
+ * the generator's own input (recon).
+ */
+function applyFormSchemaSubstitutions(
+  rawBody: string,
+  fieldNameMap: FieldNameMap,
+  outDiscoveredFields: Set<string>
+): string {
+  if (fieldNameMap.size === 0) return rawBody;
+  let result = rawBody;
+  for (const [fieldId, semanticName] of fieldNameMap) {
+    const fieldIdMarker = `"FieldId":"${fieldId}"`;
+    let cursor = 0;
+    while (true) {
+      const idx = result.indexOf(fieldIdMarker, cursor);
+      if (idx === -1) break;
+      const objEnd = result.indexOf("}", idx);
+      if (objEnd === -1) break;
+      const segment = result.slice(idx, objEnd);
+      const valueMarker = `"Value":"`;
+      const valueIdx = segment.indexOf(valueMarker);
+      if (valueIdx === -1) {
+        cursor = objEnd;
+        continue;
+      }
+      const valueStart = idx + valueIdx + valueMarker.length;
+      const valueEnd = result.indexOf(`"`, valueStart);
+      if (valueEnd === -1 || valueEnd > objEnd) {
+        cursor = objEnd;
+        continue;
+      }
+      const currentValue = result.slice(valueStart, valueEnd);
+      if (currentValue.includes("${")) {
+        cursor = objEnd;
+        continue;
+      }
+      const replacement = `\${payload.${semanticName}}`;
+      result = result.slice(0, valueStart) + replacement + result.slice(valueEnd);
+      outDiscoveredFields.add(semanticName);
+      cursor = valueStart + replacement.length;
+    }
+  }
+  return result;
+}
+
 /** Maximum length to guard against indexing massive blobs (HTML fragments,
  * embedded base64 images, etc.) that aren't candidates for state threading. */
 const MAX_STATE_VALUE_LENGTH = 256;
@@ -797,7 +987,9 @@ function emitErrorSignalGuards(varName: string, urlPath: string, signals: ErrorS
 function emitMultiStepExecuteHttp(
   actions: ActionStep[],
   inputBody: unknown,
-  errorSignals: ErrorSignals
+  errorSignals: ErrorSignals,
+  fieldNameMap: FieldNameMap,
+  outDiscoveredFields: Set<string>
 ): string {
   interface Rendered {
     url: string;
@@ -833,9 +1025,15 @@ function emitMultiStepExecuteHttp(
     const cap = step.capture;
     const prior = actions.slice(0, i);
     const url = interpolateStateValues(cap.url, prior, payloadAccessorByValue);
-    const bodyTemplate = cap.requestPostData
+    // Form-schema substitution runs first on the raw recon body so its
+    // FieldId-anchored matches see the original JSON. State-threading and
+    // payload key-value passes then run on top.
+    const rawBodyWithFormSubs = cap.requestPostData
+      ? applyFormSchemaSubstitutions(cap.requestPostData, fieldNameMap, outDiscoveredFields)
+      : "";
+    const bodyTemplate = rawBodyWithFormSubs
       ? applyPayloadKeyValueSubstitutions(
-          interpolateStateValues(cap.requestPostData, prior, payloadAccessorByValue),
+          interpolateStateValues(rawBodyWithFormSubs, prior, payloadAccessorByValue),
           inputBody
         )
       : "";
@@ -1025,6 +1223,10 @@ function emitContractTs(opts: {
   inputBody?: unknown;
   /** Whether the flow has a multipart upload step — derived from actionSteps at the call site. */
   hasMultipartStep?: boolean;
+  /** PascalCase payload-field names discovered by walking the form schema and
+   * substituting Responses[].Value literals. Added to the payload schema so
+   * the caller can supply real values for them. */
+  discoveredFormFields?: Set<string>;
 }): string {
   const {
     siteId,
@@ -1041,6 +1243,7 @@ function emitContractTs(opts: {
     multiStepBody,
     inputBody,
     hasMultipartStep = false,
+    discoveredFormFields,
   } = opts;
 
   // Multi-step plugins thread responses through many different shapes that a
@@ -1062,9 +1265,20 @@ function emitContractTs(opts: {
   const basePayloadSchemaExpr = inputBody
     ? inferZodSchema(inputBody, 0, "", { multipartCoerce: hasMultipartStep })
     : `z.object({\n  query: z.string().min(1),\n})`;
+  // Form-schema-discovered fields (e.g. AddressLine1, UserSsn, Reference1FirstName)
+  // are added to the payload as required strings. Site-agnostic: the set is
+  // populated by applyFormSchemaSubstitutions when the recon includes a
+  // detectable form schema; empty for sites without one.
+  const formFieldsExtension =
+    discoveredFormFields && discoveredFormFields.size > 0
+      ? `.extend({\n${[...discoveredFormFields]
+          .sort()
+          .map((name) => `  ${name}: z.string(),`)
+          .join("\n")}\n})`
+      : "";
   const payloadSchemaExpr = hasMultipartStep
-    ? `${basePayloadSchemaExpr}.extend({\n  Resume: z.instanceof(Buffer),\n  ResumeContentType: z.string(),\n  ResumeFilename: z.string(),\n})`
-    : basePayloadSchemaExpr;
+    ? `${basePayloadSchemaExpr}.extend({\n  Resume: z.instanceof(Buffer),\n  ResumeContentType: z.string(),\n  ResumeFilename: z.string(),\n})${formFieldsExtension}`
+    : `${basePayloadSchemaExpr}${formFieldsExtension}`;
   // When the payload schema needs the MULTIPART_BOOL reference, emit its
   // declaration once at the top of the contract file so each boolean field
   // stays short (SmsOptIn: MULTIPART_BOOL,) and the preprocess expression
@@ -1378,8 +1592,16 @@ async function main(): Promise<void> {
       })()
     : undefined;
   const errorSignals = detectErrorSignals(actionSteps);
+  const fieldNameMap = detectFormSchemaFieldNames(captures);
+  const discoveredFormFields = new Set<string>();
   const multiStepBody = isSubmissionFlow
-    ? emitMultiStepExecuteHttp(actionSteps, inputBody, errorSignals)
+    ? emitMultiStepExecuteHttp(
+        actionSteps,
+        inputBody,
+        errorSignals,
+        fieldNameMap,
+        discoveredFormFields
+      )
     : undefined;
   const hasMultipartStep = actionSteps.some((s) => s.isMultipart);
   // For submission flows the final action's response body is the most useful
@@ -1412,6 +1634,7 @@ async function main(): Promise<void> {
       multiStepBody,
       inputBody,
       hasMultipartStep,
+      discoveredFormFields,
     })
   );
   logger.info(`wrote ${outDir}/contract.ts`);
