@@ -504,6 +504,25 @@ function sourceCodeToPascalCase(sourceCode: string): string | null {
  * "Reference #1 First Name" → "Reference1FirstName" via a section-heading
  * prefix). Site-agnostic: operates only on input strings.
  */
+/**
+ * Converts an HTTP header name (e.g. `API-ShortName`, `X-CSRF-Token`) into a
+ * PascalCase JS identifier suitable for a payload field name. Preserves
+ * internal casing of each header-name part (so `ShortName` stays `ShortName`)
+ * while normalizing UPPER-only parts (`API` → `Api`). Site-agnostic.
+ */
+function headerNameToPayloadFieldName(headerName: string): string {
+  return headerName
+    .split(/[^a-zA-Z0-9]+/)
+    .filter((p) => p.length > 0)
+    .map((p) => {
+      const isAllUpper = p === p.toUpperCase();
+      return isAllUpper
+        ? p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()
+        : p.charAt(0).toUpperCase() + p.slice(1);
+    })
+    .join("");
+}
+
 function fieldNameToPascalCase(fieldName: string, prefix: string | null): string | null {
   const cleaned = fieldName.replace(/[^a-zA-Z0-9\s]/g, " ").trim();
   if (cleaned === "") return null;
@@ -1342,7 +1361,10 @@ function emitMultiStepExecuteHttp(
   fieldOptionsMap: FieldOptionsMap,
   outDiscoveredOptionFields: Set<string>,
   outDiscoveredRawOptionFields: Map<string, string>,
-  outDiscoveredAdditionalBodyKeys: Map<string, "string" | "number" | "boolean">
+  outDiscoveredAdditionalBodyKeys: Map<string, "string" | "number" | "boolean">,
+  baseUrl: string,
+  baseUrlDerivedHeaders: Map<string, string>,
+  tenantSubdomainHeaders: Map<string, string>
 ): string {
   interface Rendered {
     url: string;
@@ -1377,6 +1399,20 @@ function emitMultiStepExecuteHttp(
         payloadAccessorByValue.set(value.toLowerCase(), accessor);
       }
     }
+  }
+  // G1: register the recon's baseUrl so the existing payload-substitution pass
+  // rewrites every URL occurrence to `${payload.BaseUrl}/...`. Same plugin
+  // then works for any tenant on the same ATS just by passing a different
+  // BaseUrl. Site-agnostic: just registers the recon's own baseUrl as a payload
+  // accessor; no site-specific URL knowledge.
+  if (baseUrl.length >= MIN_STATE_VALUE_LENGTH) {
+    payloadAccessorByValue.set(baseUrl, "payload.BaseUrl");
+    outDiscoveredFields.add("BaseUrl");
+  }
+  // G2: register any tenant-subdomain header values as payload-supplied fields
+  // (e.g. ClearCompany's `API-ShortName: "addus"` becomes `payload.ApiShortName`).
+  for (const [headerName, _value] of tenantSubdomainHeaders) {
+    outDiscoveredFields.add(headerNameToPayloadFieldName(headerName));
   }
 
   // Phase F: gather all action POST bodies (parsed) so the T1 substitution
@@ -1433,6 +1469,24 @@ function emitMultiStepExecuteHttp(
       if (lower === "api-token" || lower === "authorization") {
         perCallHeaders[k] = interpolateStateValues(v, prior, payloadAccessorByValue);
       }
+    }
+    // G1: emit baseUrl-derived headers (Origin, Referer) per-call from
+    // payload.BaseUrl. interpolateStateValues already substituted the literal
+    // baseUrl with `${payload.BaseUrl}`, so a simple sub of the recon's
+    // observed baseUrl in each header value gives us `${payload.BaseUrl}/`.
+    // Emit "${payload.BaseUrl}" as a template-literal placeholder into the
+    // generated plugin code. Built via concatenation so Biome doesn't mistake
+    // it for a placeholder in THIS file's source.
+    const baseUrlPlaceholder = `$${"{"}payload.BaseUrl${"}"}`;
+    for (const [headerName, observedValue] of baseUrlDerivedHeaders) {
+      perCallHeaders[headerName] = observedValue.split(baseUrl).join(baseUrlPlaceholder);
+    }
+    // G2: emit tenant-subdomain headers per-call from caller payload field
+    // (e.g. API-ShortName → ${payload.ApiShortName}). The discoveredFields
+    // population above ensures the field is in the payload schema.
+    for (const [headerName, _observedValue] of tenantSubdomainHeaders) {
+      const fieldName = headerNameToPayloadFieldName(headerName);
+      perCallHeaders[headerName] = `\${payload.${fieldName}}`;
     }
     const headersExpr = Object.keys(perCallHeaders).length
       ? `headers: { ${Object.entries(perCallHeaders)
@@ -1509,6 +1563,18 @@ function emitMultiStepExecuteHttp(
             `${JSON.stringify(k)}: \`${interpolateStateValues(v, actions.slice(0, i), payloadAccessorByValue)}\``
           );
         }
+      }
+      // G1+G2: include tenant-derived headers in the multipart fetch too.
+      // Build the placeholder via concatenation so Biome doesn't mistake it
+      // for a template-literal in THIS file's source.
+      const baseUrlPlaceholder = `$${"{"}payload.BaseUrl${"}"}`;
+      for (const [headerName, observedValue] of baseUrlDerivedHeaders) {
+        const v = observedValue.split(baseUrl).join(baseUrlPlaceholder);
+        perCallHeaderEntries.push(`${JSON.stringify(headerName)}: \`${v}\``);
+      }
+      for (const [headerName, _observedValue] of tenantSubdomainHeaders) {
+        const fieldName = headerNameToPayloadFieldName(headerName);
+        perCallHeaderEntries.push(`${JSON.stringify(headerName)}: \`\${payload.${fieldName}}\``);
       }
       const perCallHeadersLit = perCallHeaderEntries.length
         ? `, ${perCallHeaderEntries.join(", ")}`
@@ -2140,6 +2206,33 @@ async function main(): Promise<void> {
   // that get parameterized. Recorded with their value type so the contract
   // emitter can add them to the payload schema with appropriate Zod types.
   const discoveredAdditionalBodyKeys = new Map<string, "string" | "number" | "boolean">();
+  // G1+G2: partition baseHeaders into three buckets:
+  //   - static: values that don't reference baseUrl or tenant subdomain
+  //   - baseUrl-derived: values containing the recon's baseUrl as substring
+  //     (e.g. Origin, Referer) — emit per-call from payload.BaseUrl
+  //   - tenant-subdomain: values that EXACTLY equal the first subdomain
+  //     (e.g. API-ShortName: "addus") — emit per-call from a payload field
+  const staticBaseHeaders: Record<string, string> = {};
+  const baseUrlDerivedHeaders = new Map<string, string>();
+  const tenantSubdomainHeaders = new Map<string, string>();
+  const firstSubdomain = (() => {
+    try {
+      const host = new URL(baseUrl).hostname;
+      const firstDot = host.indexOf(".");
+      return firstDot === -1 ? host : host.slice(0, firstDot);
+    } catch {
+      return "";
+    }
+  })();
+  for (const [k, v] of Object.entries(baseHeaders)) {
+    if (firstSubdomain.length > 0 && v === firstSubdomain) {
+      tenantSubdomainHeaders.set(k, v);
+    } else if (baseUrl.length > 0 && v.includes(baseUrl)) {
+      baseUrlDerivedHeaders.set(k, v);
+    } else {
+      staticBaseHeaders[k] = v;
+    }
+  }
   const multiStepBody = isSubmissionFlow
     ? emitMultiStepExecuteHttp(
         actionSteps,
@@ -2150,7 +2243,10 @@ async function main(): Promise<void> {
         fieldOptionsMap,
         discoveredOptionFields,
         discoveredRawOptionFields,
-        discoveredAdditionalBodyKeys
+        discoveredAdditionalBodyKeys,
+        baseUrl,
+        baseUrlDerivedHeaders,
+        tenantSubdomainHeaders
       )
     : undefined;
   const hasMultipartStep = actionSteps.some((s) => s.isMultipart);
@@ -2173,7 +2269,9 @@ async function main(): Promise<void> {
       siteId,
       pascal,
       baseUrl,
-      baseHeaders,
+      // G1+G2: only the static headers (no baseUrl/tenant-subdomain references)
+      // get baked into BASE_HEADERS. The rest are emitted per-call from payload.
+      baseHeaders: isSubmissionFlow ? staticBaseHeaders : baseHeaders,
       minTime,
       safeRps,
       responseBody: effectiveResponseBody,
