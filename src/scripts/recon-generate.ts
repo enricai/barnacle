@@ -451,7 +451,11 @@ function compileActionSteps(
  * descending order avoids prefix conflicts (e.g. an 8-char prefix of a
  * 36-char UUID).
  */
-function interpolateStateValues(template: string, priorSteps: ActionStep[]): string {
+function interpolateStateValues(
+  template: string,
+  priorSteps: ActionStep[],
+  payloadAccessorByValue: Map<string, string> = new Map()
+): string {
   const varNameByValue = new Map<string, string>();
   for (const step of priorSteps) {
     for (const p of step.produces) {
@@ -472,14 +476,29 @@ function interpolateStateValues(template: string, priorSteps: ActionStep[]): str
     }
   }
 
-  const sorted = [...varNameByValue.entries()].sort((a, b) => b[0].length - a[0].length);
   let result = template;
-  for (const [value, varName] of sorted) {
-    // `\$` is a literal dollar sign (NOT an interpolation); `${varName}`
-    // interpolates the binding name at code-generation time so the resulting
-    // string contains a template-literal placeholder like `${candidateId}`.
+
+  // Pass 1: substitute state values (length-descending to avoid prefix
+  // conflicts). `\$` is a literal dollar sign (NOT an interpolation);
+  // `${varName}` interpolates the binding name at code-generation time so
+  // the resulting string contains a template-literal placeholder like
+  // `${candidateId}`.
+  const sortedState = [...varNameByValue.entries()].sort((a, b) => b[0].length - a[0].length);
+  for (const [value, varName] of sortedState) {
     result = result.split(value).join(`\${${varName}}`);
   }
+
+  // Pass 2: substitute payload values that survived the state pass. Same
+  // length-descending order. The payload pass only fires on remaining
+  // literal occurrences, so state substitutions win on collisions
+  // (e.g., when an Auth.UserName response value contains the user's email).
+  const sortedPayload = [...payloadAccessorByValue.entries()].sort(
+    (a, b) => b[0].length - a[0].length
+  );
+  for (const [value, accessor] of sortedPayload) {
+    result = result.split(value).join(`\${${accessor}}`);
+  }
+
   return result;
 }
 
@@ -493,12 +512,32 @@ function interpolateStateValues(template: string, priorSteps: ActionStep[]): str
  *      referenced AND isn't the terminal var (needed for `return { data }`).
  *      Skip produces[] entries whose name isn't referenced anywhere downstream.
  */
-function emitMultiStepExecuteHttp(actions: ActionStep[]): string {
+function emitMultiStepExecuteHttp(actions: ActionStep[], inputBody: unknown): string {
   interface Rendered {
     url: string;
     method: string;
     headersExpr: string;
     bodyArg: string;
+  }
+
+  // Walk the first action's request body to map each leaf string value to its
+  // `payload.<accessor>` expression. The emit's second interpolation pass uses
+  // this to substitute literal occurrences (e.g. "Reginald") with their
+  // payload references (e.g. ${payload.FirstName}) — so the generated plugin
+  // actually uses the runtime payload instead of the recon's frozen identity.
+  //
+  // Same MIN_STATE_VALUE_LENGTH threshold as state values: short values
+  // (e.g. `"en"` for Culture, `"US"` for country) collide with arbitrary
+  // substrings in URLs/bodies ("token", "entities", "Australia") and would
+  // produce nonsense substitutions. Values below the threshold stay literal
+  // in the emitted template — fine for short enum-like fields that rarely
+  // need to vary at runtime.
+  const payloadAccessorByValue = new Map<string, string>();
+  if (inputBody !== undefined && inputBody !== null) {
+    for (const { value, path } of walkStringLeaves(inputBody)) {
+      if (value.length < MIN_STATE_VALUE_LENGTH) continue;
+      payloadAccessorByValue.set(value, `payload${pathToAccessor(path)}`);
+    }
   }
 
   // Pass 1: render every step's emitted strings; collect referenced var names.
@@ -507,16 +546,16 @@ function emitMultiStepExecuteHttp(actions: ActionStep[]): string {
     const step = actions[i]!;
     const cap = step.capture;
     const prior = actions.slice(0, i);
-    const url = interpolateStateValues(cap.url, prior);
+    const url = interpolateStateValues(cap.url, prior, payloadAccessorByValue);
     const bodyTemplate = cap.requestPostData
-      ? interpolateStateValues(cap.requestPostData, prior)
+      ? interpolateStateValues(cap.requestPostData, prior, payloadAccessorByValue)
       : "";
 
     const perCallHeaders: Record<string, string> = {};
     for (const [k, v] of Object.entries(cap.requestHeaders)) {
       const lower = k.toLowerCase();
       if (lower === "api-token" || lower === "authorization") {
-        perCallHeaders[k] = interpolateStateValues(v, prior);
+        perCallHeaders[k] = interpolateStateValues(v, prior, payloadAccessorByValue);
       }
     }
     const headersExpr = Object.keys(perCallHeaders).length
@@ -979,7 +1018,6 @@ async function main(): Promise<void> {
     actionCaptures.length > 1 ? compileActionSteps(actionCaptures, stateIndex) : [];
   const isSubmissionFlow = actionSteps.length > 1;
 
-  const multiStepBody = isSubmissionFlow ? emitMultiStepExecuteHttp(actionSteps) : undefined;
   const inputBody = isSubmissionFlow
     ? (() => {
         try {
@@ -988,6 +1026,9 @@ async function main(): Promise<void> {
           return null;
         }
       })()
+    : undefined;
+  const multiStepBody = isSubmissionFlow
+    ? emitMultiStepExecuteHttp(actionSteps, inputBody)
     : undefined;
   // For submission flows the final action's response body is the most useful
   // shape inference target (it's the terminal success signal). Fall back to
