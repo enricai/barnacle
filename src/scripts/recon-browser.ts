@@ -240,9 +240,16 @@ function wireNetworkCapture(
     if (recentCaptures.length > RECENT_CAPTURES_WINDOW) {
       recentCaptures.splice(0, recentCaptures.length - RECENT_CAPTURES_WINDOW);
     }
-    recentCaptureMeta.push({ method: capture.method, status: capture.status });
-    if (recentCaptureMeta.length > RECENT_CAPTURES_WINDOW) {
-      recentCaptureMeta.splice(0, recentCaptureMeta.length - RECENT_CAPTURES_WINDOW);
+    // GETs are static asset chunks, polls, and idle prefetches — none are
+    // user-action signals. Filter them out at the source so Tier 1's mutation
+    // window (size RECENT_CAPTURES_WINDOW) doesn't get washed out by SPA
+    // chunk loads between meaningful mutations. Same discriminator signalCounter
+    // uses for the per-step verifier.
+    if (capture.method !== "GET") {
+      recentCaptureMeta.push({ method: capture.method, status: capture.status });
+      if (recentCaptureMeta.length > RECENT_CAPTURES_WINDOW) {
+        recentCaptureMeta.splice(0, recentCaptureMeta.length - RECENT_CAPTURES_WINDOW);
+      }
     }
 
     logger.info(`captured [${capture.status}] ${capture.method} ${req.url} → ${filename}`);
@@ -1603,12 +1610,14 @@ async function main(): Promise<void> {
   const counter = { n: 0 };
   const signalCounter = { n: 0 };
   const recentCaptures: string[] = [];
-  // Parallel tracker of recent captures' HTTP method + status. Used by the
-  // Tier 1 trailing-optional-step grace: a verification failure on an optional
-  // trailing step is treated as a benign no-op when a recent non-GET request
-  // returned 200 (i.e. the SPA's "real work" already completed server-side and
-  // the trailing step is a redundant tail that the flow file may have included
-  // for sites where it's actually needed).
+  // Parallel tracker of recent non-GET captures' method + status. Used by
+  // the Tier 1 trailing-optional-step grace: a verification failure on an
+  // optional trailing step is treated as a benign no-op when a recent
+  // mutation returned 2xx (i.e. the SPA's "real work" already completed
+  // server-side and the trailing step is a redundant tail that the flow
+  // file may have included for sites where it's actually needed). GETs are
+  // filtered at the push site so the window isn't washed out by SPA chunk
+  // loads — see the comment in wireNetworkCapture's onFinished.
   const recentCaptureMeta: { method: string; status: number }[] = [];
 
   try {
