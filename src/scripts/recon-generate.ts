@@ -454,6 +454,14 @@ function walkForNestedErrorKeys(
 }
 
 /**
+ * Canonical UUID-shape test. Closed-form regex per the no-regex-open-sets
+ * feedback: matches the dash-delimited 8-4-4-4-12 hex format universally used
+ * by Microsoft/RFC4122 UUIDs. Used to distinguish schema identifiers (UUIDs
+ * that the API uses as stable structural keys) from semantic strings.
+ */
+const UUID_REGEX = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+
+/**
  * Map from form-schema FieldId UUIDs to PascalCase payload field names. Used
  * by emitMultiStepExecuteHttp to substitute Responses[].Value literals with
  * caller payload references. Empty when the recon doesn't include a form
@@ -560,9 +568,7 @@ function looksLikeSectionFieldsArray(arr: unknown[]): boolean {
     const obj = item as Record<string, unknown>;
     const fieldIdRaw = obj.FieldId;
     if (typeof fieldIdRaw !== "string") continue;
-    if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(fieldIdRaw)) {
-      continue;
-    }
+    if (!UUID_REGEX.test(fieldIdRaw)) continue;
     if (typeof obj.FieldName === "string" || typeof obj.FieldSourceCode === "string") {
       matches++;
     }
@@ -786,15 +792,32 @@ const PLACEHOLDER_STATE_VALUES = new Set(["00000000-0000-0000-0000-000000000000"
  * the LATER non-placeholder occurrence at the same JSON path becomes the
  * canonical binding instead.
  */
-function indexStateValues(captures: Capture[]): Map<string, StateValue> {
+function indexStateValues(
+  captures: Capture[],
+  shieldedUuids: Set<string> = new Set()
+): Map<string, StateValue> {
   const index = new Map<string, StateValue>();
   for (let i = 0; i < captures.length; i++) {
     const c = captures[i]!;
     if (c.responseBody === undefined || c.responseBody === null) continue;
+    // For GET captures, only index UUID-shaped strings. GET captures (today,
+    // only the form-schema fetch inserted as an action step) surface stable
+    // structural identifiers — UUIDs that downstream POSTs need to thread.
+    // Short non-UUID strings ("candidate", "unlocked") from GET responses are
+    // noise and create substring-collision bugs in length-descending replace:
+    // e.g. "candidate" as a state value gets substituted INSIDE an already-
+    // emitted ${candidateId} interpolation, producing ${${entityTypeCode}Id}.
+    const isGet = c.method === "GET";
     for (const { value, path } of walkStringLeaves(c.responseBody)) {
       if (value.length < MIN_STATE_VALUE_LENGTH) continue;
       if (value.length > MAX_STATE_VALUE_LENGTH) continue;
       if (PLACEHOLDER_STATE_VALUES.has(value)) continue;
+      // Schema-identifier UUIDs (FieldId, OptionId) are stable anchors that
+      // T2/T3 substitution depends on remaining literal in body templates.
+      // Indexing them would let state-threading rewrite the anchors and
+      // corrupt T2/T3's already-substituted Values.
+      if (shieldedUuids.has(value)) continue;
+      if (isGet && !UUID_REGEX.test(value)) continue;
       if (!index.has(value)) {
         index.set(value, { value, originIndex: i, path });
       }
@@ -1748,8 +1771,20 @@ async function main(): Promise<void> {
   // checkout, etc.). When the action sequence has 2+ POSTs, switch the
   // contract template to emit a state-threaded executeHttp.
   const actionCaptures = gql ? [] : extractActionSequence(captures, baseUrl);
+  // Form-schema detection runs BEFORE state-indexing so the FieldId/OptionId
+  // UUIDs can be shielded from indexing — those UUIDs are stable schema
+  // anchors that T2/T3 substitution depends on remaining literal in body
+  // templates.
+  const { fieldNameMap, fieldOptionsMap } = detectFormSchemaFieldNames(captures);
+  const shieldedUuids = new Set<string>();
+  for (const fieldId of fieldNameMap.keys()) shieldedUuids.add(fieldId);
+  for (const mapping of fieldOptionsMap.values()) {
+    for (const { optionId } of mapping.options) shieldedUuids.add(optionId);
+  }
   const stateIndex =
-    actionCaptures.length > 1 ? indexStateValues(captures) : new Map<string, StateValue>();
+    actionCaptures.length > 1
+      ? indexStateValues(captures, shieldedUuids)
+      : new Map<string, StateValue>();
   const actionSteps =
     actionCaptures.length > 1 ? compileActionSteps(actionCaptures, stateIndex) : [];
   const isSubmissionFlow = actionSteps.length > 1;
@@ -1764,7 +1799,6 @@ async function main(): Promise<void> {
       })()
     : undefined;
   const errorSignals = detectErrorSignals(actionSteps);
-  const { fieldNameMap, fieldOptionsMap } = detectFormSchemaFieldNames(captures);
   const discoveredFormFields = new Set<string>();
   const discoveredOptionFields = new Set<string>();
   const multiStepBody = isSubmissionFlow
