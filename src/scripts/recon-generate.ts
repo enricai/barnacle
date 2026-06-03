@@ -220,7 +220,6 @@ const TELEMETRY_URL_PATTERNS = [
 interface ActionCapture {
   capture: Capture;
   index: number;
-  filename: string;
 }
 
 /**
@@ -236,7 +235,7 @@ function extractActionSequence(captures: Capture[], baseUrl: string): ActionCapt
   }
 
   return captures
-    .map((capture, index) => ({ capture, index, filename: "" }))
+    .map((capture, index) => ({ capture, index }))
     .filter(({ capture }) => {
       if (capture.method === "GET") return false;
       if (capture.status < 200 || capture.status >= 300) return false;
@@ -287,23 +286,26 @@ function* walkStringLeaves(
   }
 }
 
-/** Looks like a token/ID worth threading (UUIDs, JWT-like, alphanumeric IDs). */
-function isStateworthy(value: string): boolean {
-  if (value.length < 8) return false;
-  if (value.length > 256) return false;
-  // UUID
-  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) return true;
-  // Auth-like (CWEB_, JWT-style, base64-ish with a prefix)
-  if (/^[A-Z]{2,}_[A-Za-z0-9_-]{16,}$/.test(value)) return true;
-  if (/^[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{8,}/.test(value)) return true; // JWT
-  return false;
-}
+/** Minimum length for a string leaf to be indexed as a potential state value.
+ * Shorter strings (1-7 chars) are rarely meaningful auth tokens / IDs and
+ * inflate the index without contributing to state threading. */
+const MIN_STATE_VALUE_LENGTH = 8;
+
+/** Maximum length to guard against indexing massive blobs (HTML fragments,
+ * embedded base64 images, etc.) that aren't candidates for state threading. */
+const MAX_STATE_VALUE_LENGTH = 256;
 
 /**
  * Walks every capture's response (including GETs — formHistoryId-style values
- * may originate in a state-load GET, not a POST). For each stateworthy string
- * value, records the EARLIEST capture index that produced it. Later occurrences
- * of the same value reuse the earliest origin.
+ * may originate in a state-load GET, not a POST). Indexes every string leaf
+ * whose length is in [MIN, MAX], recording the EARLIEST capture index that
+ * produced it. Later occurrences of the same value reuse the earliest origin.
+ *
+ * The index is intentionally permissive — it doesn't try to shape-match
+ * "what looks like a token" because token shapes are an open set across the
+ * web. Authoritative filtering happens downstream in `compileActionSteps`,
+ * which only emits produces[] entries for values that ALSO appear in some
+ * downstream URL/headers/body (i.e. real cross-step reuse).
  */
 function indexStateValues(captures: Capture[]): Map<string, StateValue> {
   const index = new Map<string, StateValue>();
@@ -311,7 +313,8 @@ function indexStateValues(captures: Capture[]): Map<string, StateValue> {
     const c = captures[i]!;
     if (c.responseBody === undefined || c.responseBody === null) continue;
     for (const { value, path } of walkStringLeaves(c.responseBody)) {
-      if (!isStateworthy(value)) continue;
+      if (value.length < MIN_STATE_VALUE_LENGTH) continue;
+      if (value.length > MAX_STATE_VALUE_LENGTH) continue;
       if (!index.has(value)) {
         index.set(value, { value, originIndex: i, path });
       }
@@ -323,8 +326,6 @@ function indexStateValues(captures: Capture[]): Map<string, StateValue> {
 interface ActionStep {
   /** The capture this step corresponds to. */
   capture: Capture;
-  /** Original index in the captures array (for state-edge lookups). */
-  captureIndex: number;
   /** Local variable name to assign the response to (e.g. "r101"). */
   varName: string;
   /** Camelcase state values this step's response produces, ready for destructure.
@@ -436,7 +437,7 @@ function compileActionSteps(
     const isCrossDomain = lastHost !== null && currentHost !== null && lastHost !== currentHost;
     lastHost = currentHost;
 
-    return { capture, captureIndex: index, varName, produces, isMultipart, isCrossDomain };
+    return { capture, varName, produces, isMultipart, isCrossDomain };
   });
 }
 
@@ -454,12 +455,8 @@ function interpolateStateValues(template: string, priorSteps: ActionStep[]): str
   const varNameByValue = new Map<string, string>();
   for (const step of priorSteps) {
     for (const p of step.produces) {
-      const path = p.pathExpr
-        .replace(/^r\d+/, "")
-        .split(/[.[\]]/)
-        .filter(Boolean);
       let cursor: unknown = step.capture.responseBody;
-      for (const segment of path) {
+      for (const segment of p.path) {
         if (
           cursor !== null &&
           typeof cursor === "object" &&
