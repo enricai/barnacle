@@ -99,8 +99,8 @@ type InFlightRequest = {
 };
 
 /**
- * Per-replan record kept so the end-of-run write-back can emit a console
- * summary listing each replanned span. `failedInstruction` is the verbatim
+ * Per-replan record kept so the end-of-run write-back can emit a summary
+ * log block listing each replanned span. `failedInstruction` is the verbatim
  * instruction string that triggered the replan (probe-absent or cascade
  * exhausted), and `replanSteps` is the LLM-produced bridge that took its
  * place. The numeric `indexAtFailure` is the position in the in-memory plan
@@ -577,9 +577,9 @@ function denormalizeStep(
 /**
  * Write-back at the end of a successful recon: back up the original file
  * bytes verbatim (so a subtle denormalization bug can never lose the user's
- * hand-authored flow), then write the in-memory plan back out and print a
- * console summary of each replan event. No-op when `--no-save-replan` was
- * passed or when no replans fired.
+ * hand-authored flow), then write the in-memory plan back out and log a
+ * summary of each replan event. No-op when `--no-save-replan` was passed or
+ * when no replans fired.
  *
  * Backup path encodes the timestamp + .bak so accumulated backups are easy
  * to sort and prune. Uses synchronous writes — the recon is single-purpose
