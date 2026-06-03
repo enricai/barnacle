@@ -525,13 +525,122 @@ function fieldNameToPascalCase(fieldName: string, prefix: string | null): string
 function detectFormSchemaFieldNames(captures: Capture[]): {
   fieldNameMap: FieldNameMap;
   fieldOptionsMap: FieldOptionsMap;
+  allSchemaUuids: Set<string>;
 } {
   const fieldNameMap: FieldNameMap = new Map();
   const fieldOptionsMap: FieldOptionsMap = new Map();
+  const allSchemaUuids = new Set<string>();
   for (const capture of captures) {
     walkForSectionFieldsArrays(capture.responseBody, fieldNameMap, fieldOptionsMap);
+    walkForSchemaUuids(capture.responseBody, allSchemaUuids);
   }
-  return { fieldNameMap, fieldOptionsMap };
+  return { fieldNameMap, fieldOptionsMap, allSchemaUuids };
+}
+
+/**
+ * Walks a response body collecting every UUID-shaped string that appears at
+ * a `FieldId` or `OptionId` (and its lowercase variants) path leaf, OR as the
+ * `Id` of an object that has `OptionSourceCode`/`StringKey`/`FieldOptions`
+ * sibling — i.e. an OptionId in the form schema. These UUIDs are stable
+ * schema anchors that must be shielded from state-threading even when
+ * detectFormSchemaFieldNames doesn't emit a payload-mappable name for the
+ * field (e.g. when the field's FieldName is too long for our naming heuristic).
+ */
+function walkForSchemaUuids(value: unknown, out: Set<string>): void {
+  if (value === null || typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    for (const item of value) walkForSchemaUuids(item, out);
+    return;
+  }
+  const obj = value as Record<string, unknown>;
+  const fieldIdRaw = obj.FieldId;
+  if (typeof fieldIdRaw === "string" && UUID_REGEX.test(fieldIdRaw)) {
+    out.add(fieldIdRaw);
+  }
+  const optionsRaw = obj.FieldOptions;
+  if (Array.isArray(optionsRaw)) {
+    for (const opt of optionsRaw) {
+      if (opt !== null && typeof opt === "object") {
+        const optId = (opt as Record<string, unknown>).Id;
+        if (typeof optId === "string" && UUID_REGEX.test(optId)) out.add(optId);
+      }
+    }
+  }
+  // Recurse into nested objects/arrays so nested SectionFields get walked too.
+  for (const v of Object.values(obj)) walkForSchemaUuids(v, out);
+}
+
+/**
+ * Closed enum of well-known cache-buster query parameter names. Stripped
+ * from the schema-fetch URL template so the runtime emit doesn't carry the
+ * recon's stale timestamp. Per the no-regex-open-sets feedback this is a
+ * small enumerated set.
+ */
+const CACHE_BUSTER_QUERY_KEYS = new Set(["_", "cb", "t", "_t", "nocache"]);
+
+function stripCacheBusterParams(url: string): string {
+  try {
+    const u = new URL(url);
+    for (const key of CACHE_BUSTER_QUERY_KEYS) {
+      u.searchParams.delete(key);
+    }
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * Recon-driven detection of the form-schema fetch capture. Returns the first
+ * GET capture (in recon order) whose response body contains a SectionFields-
+ * shaped array. Sites without such a capture get `null` and Phase B/C/D
+ * become no-ops.
+ *
+ * Site-agnostic: identifies the fetch by structural fingerprint of the
+ * response body, not by URL or site name.
+ */
+function detectFormSchemaFetchCapture(
+  captures: Capture[],
+  baseUrl: string
+): { capture: Capture; index: number } | null {
+  let host: string;
+  try {
+    host = new URL(baseUrl).host;
+  } catch {
+    host = "";
+  }
+  for (let i = 0; i < captures.length; i++) {
+    const capture = captures[i]!;
+    if (capture.method !== "GET") continue;
+    if (capture.status < 200 || capture.status >= 300) continue;
+    let captureHost: string;
+    try {
+      captureHost = new URL(capture.url).host;
+    } catch {
+      continue;
+    }
+    if (captureHost !== host) continue;
+    if (TELEMETRY_URL_PATTERNS.some((p) => capture.url.includes(p))) continue;
+    if (responseContainsSectionFields(capture.responseBody)) {
+      return { capture, index: i };
+    }
+  }
+  return null;
+}
+
+function responseContainsSectionFields(value: unknown): boolean {
+  if (value === null || typeof value !== "object") return false;
+  if (Array.isArray(value)) {
+    if (looksLikeSectionFieldsArray(value)) return true;
+    for (const item of value) {
+      if (responseContainsSectionFields(item)) return true;
+    }
+    return false;
+  }
+  for (const v of Object.values(value as Record<string, unknown>)) {
+    if (responseContainsSectionFields(v)) return true;
+  }
+  return false;
 }
 
 function walkForSectionFieldsArrays(
@@ -594,7 +703,7 @@ function assignFieldNamesFromArray(
     if (typeof sourceCode === "string" && sourceCode.trim().length > 0) {
       semantic = sourceCodeToPascalCase(sourceCode);
       currentPrefix = null;
-    } else if (typeof name === "string" && name.trim().length > 0 && name.length < 80) {
+    } else if (typeof name === "string" && name.trim().length > 0 && name.length < 250) {
       const hasNoSourceCode = typeof sourceCode !== "string" || sourceCode.trim().length === 0;
       // Section-heading heuristic: short FieldName, no SourceCode, MOSTLY
       // uppercase letters (>= 70% of alphabetic chars) OR contains '#'.
@@ -762,6 +871,67 @@ function applyFormSchemaOptionIdSubstitutions(
   return result;
 }
 
+/**
+ * For fields whose FieldOptions have NO semantic values (CustomFieldOption
+ * options where the recon schema's `.Value` is empty), T3's OPT_* enum
+ * mapping can't be emitted. Instead, parameterize the OptionId slot as a
+ * caller-supplied `<FieldName>OptionId` payload field with the recon-observed
+ * UUID documented in a TSDoc comment.
+ *
+ * Operates on the same `"FieldId":"<uuid>"` anchored search as
+ * applyFormSchemaOptionIdSubstitutions, but only fires when the FieldId is
+ * in fieldNameMap (has a semantic name) AND NOT in fieldOptionsMap (the
+ * structured enum substitution didn't fire). Site-agnostic.
+ */
+function applyRawOptionIdPayloadSubstitutions(
+  rawBody: string,
+  fieldNameMap: FieldNameMap,
+  fieldOptionsMap: FieldOptionsMap,
+  outDiscoveredRawOptionFields: Map<string, string>
+): string {
+  if (fieldNameMap.size === 0) return rawBody;
+  let result = rawBody;
+  for (const [fieldId, fieldName] of fieldNameMap) {
+    if (fieldOptionsMap.has(fieldId)) continue; // T3's OPT_* already handles this.
+    const fieldIdMarker = `"FieldId":"${fieldId}"`;
+    let cursor = 0;
+    while (true) {
+      const idx = result.indexOf(fieldIdMarker, cursor);
+      if (idx === -1) break;
+      const objEnd = result.indexOf("}", idx);
+      if (objEnd === -1) break;
+      const segment = result.slice(idx, objEnd);
+      const optionIdMarker = `"OptionId":"`;
+      const optionIdLocal = segment.indexOf(optionIdMarker);
+      if (optionIdLocal === -1) {
+        cursor = objEnd;
+        continue;
+      }
+      const optionStart = idx + optionIdLocal + optionIdMarker.length;
+      const optionEnd = result.indexOf(`"`, optionStart);
+      if (optionEnd === -1 || optionEnd > objEnd) {
+        cursor = objEnd;
+        continue;
+      }
+      const currentOptionId = result.slice(optionStart, optionEnd);
+      if (currentOptionId.includes("${")) {
+        cursor = objEnd;
+        continue;
+      }
+      const fieldNameOptionId = `${fieldName}OptionId`;
+      const replacement = `\${payload.${fieldNameOptionId}}`;
+      result = result.slice(0, optionStart) + replacement + result.slice(optionEnd);
+      // Record the recon-observed UUID so the contract can document it in
+      // a TSDoc comment as the caller's starting reference value.
+      if (!outDiscoveredRawOptionFields.has(fieldNameOptionId)) {
+        outDiscoveredRawOptionFields.set(fieldNameOptionId, currentOptionId);
+      }
+      cursor = optionStart + replacement.length;
+    }
+  }
+  return result;
+}
+
 /** Maximum length to guard against indexing massive blobs (HTML fragments,
  * embedded base64 images, etc.) that aren't candidates for state threading. */
 const MAX_STATE_VALUE_LENGTH = 256;
@@ -794,12 +964,22 @@ const PLACEHOLDER_STATE_VALUES = new Set(["00000000-0000-0000-0000-000000000000"
  */
 function indexStateValues(
   captures: Capture[],
-  shieldedUuids: Set<string> = new Set()
+  shieldedUuids: Set<string> = new Set(),
+  actionCaptureIndices: Set<number> = new Set()
 ): Map<string, StateValue> {
   const index = new Map<string, StateValue>();
+  // First pass: identify the earliest origin among ACTION captures for each
+  // value. Action-only earliest-origin tracking is what compileActionSteps'
+  // produces[] check needs — it ignores non-action captures (telemetry GETs,
+  // static-asset fetches) that may have surfaced the same UUID earlier in
+  // recon order. Without this, a UUID like FormId that appears in some pre-
+  // r0 GET response would never produce[] from r1 because originIndex points
+  // at the non-action GET that nobody emits as a step.
+  const haveActionFilter = actionCaptureIndices.size > 0;
   for (let i = 0; i < captures.length; i++) {
     const c = captures[i]!;
     if (c.responseBody === undefined || c.responseBody === null) continue;
+    if (haveActionFilter && !actionCaptureIndices.has(i)) continue;
     // For GET captures, only index UUID-shaped strings. GET captures (today,
     // only the form-schema fetch inserted as an action step) surface stable
     // structural identifiers — UUIDs that downstream POSTs need to thread.
@@ -1011,7 +1191,7 @@ function interpolateStateValues(
  * (FutureConsideration: true), and numbers that interpolateStateValues skips
  * because they're below the state-value length threshold or non-string.
  *
- * Site-agnostic: only consults the recon's first POST body shape, doesn't
+ * Site-agnostic: only consults the recon's POST body shapes, doesn't
  * reference any site-specific key names.
  *
  * Substitution is **JSON-key-aware** — only fires on `"key":value` patterns
@@ -1019,23 +1199,56 @@ function interpolateStateValues(
  * no-regex-open-sets feedback: both the key and the value come from the
  * generator's own input. No risk of substring false positives because the
  * key-prefix anchors the match to a JSON object property.
+ *
+ * additionalBodies are merged after inputBody so subsequent POST bodies' new
+ * top-level keys also become caller-supplied payload fields. Used in Phase F
+ * to parameterize fields like SourceCode that appear in r1's body but not
+ * r0's (inputBody).
  */
-function applyPayloadKeyValueSubstitutions(template: string, inputBody: unknown): string {
-  if (
-    inputBody === undefined ||
-    inputBody === null ||
-    typeof inputBody !== "object" ||
-    Array.isArray(inputBody)
-  ) {
-    return template;
+function applyPayloadKeyValueSubstitutions(
+  template: string,
+  inputBody: unknown,
+  additionalBodies: unknown[] = [],
+  outAdditionalKeys: Map<string, "string" | "number" | "boolean"> = new Map()
+): string {
+  const merged: Array<[string, string | number | boolean | null]> = [];
+  const seenKeys = new Set<string>();
+  // Track keys from inputBody (r0) separately so we know which ones are NEW.
+  // Only NEW keys need to be added to discovered-form-fields (the payload
+  // schema's inferZodSchema(inputBody) already covers inputBody's keys).
+  if (inputBody !== null && typeof inputBody === "object" && !Array.isArray(inputBody)) {
+    for (const { path } of walkAllPrimitiveLeaves(inputBody)) {
+      if (path.length === 1) seenKeys.add(path[0]!);
+    }
+  }
+  const inputBodyKeys = new Set(seenKeys);
+  const allBodies = [inputBody, ...additionalBodies];
+  for (const body of allBodies) {
+    if (body === undefined || body === null || typeof body !== "object" || Array.isArray(body)) {
+      continue;
+    }
+    for (const { value, path } of walkAllPrimitiveLeaves(body)) {
+      if (path.length !== 1) continue;
+      const key = path[0]!;
+      if (!isValidJsIdentifier(key)) continue;
+      if (seenKeys.has(key) && body !== inputBody) continue;
+      // For inputBody first pass: don't dedupe (we need all values).
+      if (body === inputBody && !inputBodyKeys.has(key)) continue;
+      seenKeys.add(key);
+      if (value === null) continue;
+      merged.push([key, value]);
+      // Record only the NEW keys (not in inputBody) so the contract emitter
+      // can add them to the payload schema. inputBody's keys are already
+      // emitted by inferZodSchema(inputBody).
+      if (!inputBodyKeys.has(key)) {
+        if (typeof value === "string") outAdditionalKeys.set(key, "string");
+        else if (typeof value === "number") outAdditionalKeys.set(key, "number");
+        else if (typeof value === "boolean") outAdditionalKeys.set(key, "boolean");
+      }
+    }
   }
   let result = template;
-  for (const { value, path } of walkAllPrimitiveLeaves(inputBody)) {
-    // Only top-level fields map to caller payload fields; nested keys are
-    // structural artifacts of the body shape, not caller-supplied values.
-    if (path.length !== 1) continue;
-    const key = path[0]!;
-    if (!isValidJsIdentifier(key)) continue;
+  for (const [key, value] of merged) {
     const accessor = `payload.${key}`;
     if (typeof value === "string") {
       const target = `"${key}":${JSON.stringify(value)}`;
@@ -1127,7 +1340,9 @@ function emitMultiStepExecuteHttp(
   fieldNameMap: FieldNameMap,
   outDiscoveredFields: Set<string>,
   fieldOptionsMap: FieldOptionsMap,
-  outDiscoveredOptionFields: Set<string>
+  outDiscoveredOptionFields: Set<string>,
+  outDiscoveredRawOptionFields: Map<string, string>,
+  outDiscoveredAdditionalBodyKeys: Map<string, "string" | "number" | "boolean">
 ): string {
   interface Rendered {
     url: string;
@@ -1152,7 +1367,30 @@ function emitMultiStepExecuteHttp(
   if (inputBody !== undefined && inputBody !== null) {
     for (const { value, path } of walkStringLeaves(inputBody)) {
       if (value.length < MIN_STATE_VALUE_LENGTH) continue;
-      payloadAccessorByValue.set(value, `payload${pathToAccessor(path)}`);
+      const accessor = `payload${pathToAccessor(path)}`;
+      payloadAccessorByValue.set(value, accessor);
+      // Phase F: register a lowercase variant for UUID-shaped values so case-
+      // variant URL path segments (e.g. r9 echoes the requisition UUID in
+      // lowercase even though r0's body had it uppercase) still get
+      // substituted. Site-agnostic.
+      if (UUID_REGEX.test(value) && value.toLowerCase() !== value) {
+        payloadAccessorByValue.set(value.toLowerCase(), accessor);
+      }
+    }
+  }
+
+  // Phase F: gather all action POST bodies (parsed) so the T1 substitution
+  // can catch top-level keys from EVERY POST, not just the first one. E.g.
+  // r1's body has SourceCode/FormId/LocationIds/ReOpen — these become
+  // caller-supplied payload fields (when non-null).
+  const additionalBodies: unknown[] = [];
+  for (let i = 1; i < actions.length; i++) {
+    const cap = actions[i]!.capture;
+    if (cap.method !== "POST" || !cap.requestPostData) continue;
+    try {
+      additionalBodies.push(JSON.parse(cap.requestPostData));
+    } catch {
+      // skip non-JSON bodies (e.g. multipart raw bytes)
     }
   }
 
@@ -1169,16 +1407,23 @@ function emitMultiStepExecuteHttp(
     // here too: same closed-set FieldId anchor; rewrites "OptionId":"<uuid>"
     // slots to "${OPT_X[payload.X]}" lookups.
     const rawBodyWithFormSubs = cap.requestPostData
-      ? applyFormSchemaOptionIdSubstitutions(
-          applyFormSchemaSubstitutions(cap.requestPostData, fieldNameMap, outDiscoveredFields),
+      ? applyRawOptionIdPayloadSubstitutions(
+          applyFormSchemaOptionIdSubstitutions(
+            applyFormSchemaSubstitutions(cap.requestPostData, fieldNameMap, outDiscoveredFields),
+            fieldOptionsMap,
+            outDiscoveredOptionFields
+          ),
+          fieldNameMap,
           fieldOptionsMap,
-          outDiscoveredOptionFields
+          outDiscoveredRawOptionFields
         )
       : "";
     const bodyTemplate = rawBodyWithFormSubs
       ? applyPayloadKeyValueSubstitutions(
           interpolateStateValues(rawBodyWithFormSubs, prior, payloadAccessorByValue),
-          inputBody
+          inputBody,
+          additionalBodies,
+          outDiscoveredAdditionalBodyKeys
         )
       : "";
 
@@ -1379,6 +1624,16 @@ function emitContractTs(opts: {
   /** Semantic names whose OptionId slots were rewritten by the generator —
    * each gets an OPT_<Name> constant and a z.enum payload field. */
   discoveredOptionFields?: Set<string>;
+  /** Map of FieldName-derived raw-option payload field name (e.g.
+   * `WereYouReferredOptionId`) → recon-observed OptionId UUID. Each becomes
+   * a `<name>: z.string()` payload field with the recon-observed UUID
+   * documented in a TSDoc comment. Used for FieldOptions with empty Values
+   * where T3's structured enum can't be emitted. */
+  discoveredRawOptionFields?: Map<string, string>;
+  /** Phase F: top-level keys observed in action POST bodies beyond r0
+   * (inputBody). Mapped to their value type. Each becomes a payload field
+   * (string → z.string(), number → z.number(), boolean → z.boolean()). */
+  discoveredAdditionalBodyKeys?: Map<string, "string" | "number" | "boolean">;
 }): string {
   const {
     siteId,
@@ -1398,6 +1653,8 @@ function emitContractTs(opts: {
     discoveredFormFields,
     fieldOptionsMap,
     discoveredOptionFields,
+    discoveredRawOptionFields,
+    discoveredAdditionalBodyKeys,
   } = opts;
 
   // Multi-step plugins thread responses through many different shapes that a
@@ -1467,13 +1724,57 @@ function emitContractTs(opts: {
           .join("\n")}\n})`
       : "";
 
+  // Phase E raw-option payload fields: FieldOptions whose .Value strings are
+  // empty in the schema (CustomFieldOption) — no semantic enum is possible,
+  // so the caller supplies the OptionId UUID directly. The recon-observed
+  // UUID is documented in a TSDoc comment so callers have a starting point.
+  const sortedRawOptionEntries = discoveredRawOptionFields
+    ? [...discoveredRawOptionFields.entries()].sort(([a], [b]) => a.localeCompare(b))
+    : [];
+  const rawOptionSchemaExtension =
+    sortedRawOptionEntries.length > 0
+      ? `.extend({\n${sortedRawOptionEntries
+          .map(
+            ([name, reconUuid]) =>
+              `  /** Recon-observed: ${reconUuid}. Caller supplies the OptionId UUID for this field. */\n  ${name}: z.string(),`
+          )
+          .join("\n")}\n})`
+      : "";
+
+  // Phase F: additional-body keys (from action POSTs beyond r0). Each gets a
+  // payload field of the appropriate Zod type. Site-agnostic.
+  const sortedAdditionalKeys = discoveredAdditionalBodyKeys
+    ? [...discoveredAdditionalBodyKeys.entries()].sort(([a], [b]) => a.localeCompare(b))
+    : [];
+  const additionalBodyKeysExtension =
+    sortedAdditionalKeys.length > 0
+      ? `.extend({\n${sortedAdditionalKeys
+          .map(([name, kind]) => {
+            // Use MULTIPART_BOOL for booleans when multipart is in play, so
+            // multipart string-encoded "true"/"false" round-trip to native
+            // booleans (matches the inputBody boolean handling for parity).
+            const zod =
+              kind === "string"
+                ? "z.string()"
+                : kind === "number"
+                  ? hasMultipartStep
+                    ? "z.coerce.number()"
+                    : "z.number()"
+                  : hasMultipartStep
+                    ? "MULTIPART_BOOL"
+                    : "z.boolean()";
+            return `  ${name}: ${zod},`;
+          })
+          .join("\n")}\n})`
+      : "";
+
   // optionSchemaExtension is appended LAST so option enums show up at the
   // end of the payload type — the section ordering (base, multipart fields,
-  // form-schema fields, option enums) mirrors the body emit order and keeps
-  // the generated payload type readable.
+  // form-schema fields, option enums, raw-option fields) mirrors the body
+  // emit order and keeps the generated payload type readable.
   const payloadSchemaExpr = hasMultipartStep
-    ? `${basePayloadSchemaExpr}.extend({\n  Resume: z.instanceof(Buffer),\n  ResumeContentType: z.string(),\n  ResumeFilename: z.string(),\n})${formFieldsExtension}${optionSchemaExtension}`
-    : `${basePayloadSchemaExpr}${formFieldsExtension}${optionSchemaExtension}`;
+    ? `${basePayloadSchemaExpr}.extend({\n  Resume: z.instanceof(Buffer),\n  ResumeContentType: z.string(),\n  ResumeFilename: z.string(),\n})${formFieldsExtension}${optionSchemaExtension}${rawOptionSchemaExtension}${additionalBodyKeysExtension}`
+    : `${basePayloadSchemaExpr}${formFieldsExtension}${optionSchemaExtension}${rawOptionSchemaExtension}${additionalBodyKeysExtension}`;
   // When the payload schema needs the MULTIPART_BOOL reference, emit its
   // declaration once at the top of the contract file so each boolean field
   // stays short (SmsOptIn: MULTIPART_BOOL,) and the preprocess expression
@@ -1770,20 +2071,50 @@ async function main(): Promise<void> {
   // Detect a multi-step submission flow (transactional sites like apply forms,
   // checkout, etc.). When the action sequence has 2+ POSTs, switch the
   // contract template to emit a state-threaded executeHttp.
-  const actionCaptures = gql ? [] : extractActionSequence(captures, baseUrl);
+  const rawActionCaptures = gql ? [] : extractActionSequence(captures, baseUrl);
   // Form-schema detection runs BEFORE state-indexing so the FieldId/OptionId
   // UUIDs can be shielded from indexing — those UUIDs are stable schema
   // anchors that T2/T3 substitution depends on remaining literal in body
   // templates.
-  const { fieldNameMap, fieldOptionsMap } = detectFormSchemaFieldNames(captures);
-  const shieldedUuids = new Set<string>();
-  for (const fieldId of fieldNameMap.keys()) shieldedUuids.add(fieldId);
-  for (const mapping of fieldOptionsMap.values()) {
-    for (const { optionId } of mapping.options) shieldedUuids.add(optionId);
-  }
+  const { fieldNameMap, fieldOptionsMap, allSchemaUuids } = detectFormSchemaFieldNames(captures);
+  // Shield ALL FieldId/OptionId UUIDs that appear in any schema response, not
+  // just the ones that detectFormSchemaFieldNames emits a payload name for.
+  // Some fields have FieldNames too long for the naming heuristic (>80 chars)
+  // and would be skipped by fieldNameMap; their FieldIds still need shielding
+  // because they appear as anchors in the T2-substituted body templates.
+  const shieldedUuids = new Set<string>(allSchemaUuids);
+  // T4 — Phase B+C: detect a form-schema GET capture and insert it into the
+  // action sequence at the position observed during recon, so the existing
+  // state-threading machinery can produce its FormHistoryId / section UUIDs /
+  // etc. as state values for downstream POSTs. Strip cache-buster query
+  // params (recon timestamps) from the captured URL so the emitted runtime
+  // fetch uses a clean template. Sites without a schema-fetch capture
+  // (rawSchemaFetch === null) get unchanged behavior.
+  const rawSchemaFetch = gql ? null : detectFormSchemaFetchCapture(captures, baseUrl);
+  const schemaFetchCleaned: Capture | null = rawSchemaFetch
+    ? { ...rawSchemaFetch.capture, url: stripCacheBusterParams(rawSchemaFetch.capture.url) }
+    : null;
+  const actionCaptures: ActionCapture[] = (() => {
+    if (rawActionCaptures.length === 0 || schemaFetchCleaned === null || rawSchemaFetch === null) {
+      return rawActionCaptures;
+    }
+    let insertAt = rawActionCaptures.length;
+    for (let i = 0; i < rawActionCaptures.length; i++) {
+      if (rawActionCaptures[i]!.index >= rawSchemaFetch.index) {
+        insertAt = i;
+        break;
+      }
+    }
+    return [
+      ...rawActionCaptures.slice(0, insertAt),
+      { capture: schemaFetchCleaned, index: rawSchemaFetch.index },
+      ...rawActionCaptures.slice(insertAt),
+    ];
+  })();
+  const actionCaptureIndices = new Set<number>(actionCaptures.map((a) => a.index));
   const stateIndex =
     actionCaptures.length > 1
-      ? indexStateValues(captures, shieldedUuids)
+      ? indexStateValues(captures, shieldedUuids, actionCaptureIndices)
       : new Map<string, StateValue>();
   const actionSteps =
     actionCaptures.length > 1 ? compileActionSteps(actionCaptures, stateIndex) : [];
@@ -1801,6 +2132,14 @@ async function main(): Promise<void> {
   const errorSignals = detectErrorSignals(actionSteps);
   const discoveredFormFields = new Set<string>();
   const discoveredOptionFields = new Set<string>();
+  // Phase E: maps FieldName-derived raw-option payload field name (e.g.
+  // "AreYouOverTheAgeOf18OptionId") → recon-observed OptionId UUID. Used to
+  // emit `<FieldName>OptionId: z.string()` payload fields with TSDoc docs.
+  const discoveredRawOptionFields = new Map<string, string>();
+  // Phase F: keys from additional action POST bodies (beyond inputBody/r0)
+  // that get parameterized. Recorded with their value type so the contract
+  // emitter can add them to the payload schema with appropriate Zod types.
+  const discoveredAdditionalBodyKeys = new Map<string, "string" | "number" | "boolean">();
   const multiStepBody = isSubmissionFlow
     ? emitMultiStepExecuteHttp(
         actionSteps,
@@ -1809,7 +2148,9 @@ async function main(): Promise<void> {
         fieldNameMap,
         discoveredFormFields,
         fieldOptionsMap,
-        discoveredOptionFields
+        discoveredOptionFields,
+        discoveredRawOptionFields,
+        discoveredAdditionalBodyKeys
       )
     : undefined;
   const hasMultipartStep = actionSteps.some((s) => s.isMultipart);
@@ -1846,6 +2187,8 @@ async function main(): Promise<void> {
       discoveredFormFields,
       fieldOptionsMap,
       discoveredOptionFields,
+      discoveredRawOptionFields,
+      discoveredAdditionalBodyKeys,
     })
   );
   logger.info(`wrote ${outDir}/contract.ts`);
