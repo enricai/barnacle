@@ -42,7 +42,7 @@ const InboxQueryResponseSchema = z.object({
           subject: z.string(),
           text: z.string().nullable().optional(),
           html: z.string().nullable().optional(),
-          date: z.string(),
+          date: z.number(),
         })
       ),
     }),
@@ -69,7 +69,8 @@ export interface TestmailMessage {
   subject: string;
   text: string | null;
   html: string | null;
-  date: string;
+  /** Unix ms timestamp (per testmail GraphQL `Float`). */
+  date: number;
 }
 
 export interface AllocateTestmailInboxOptions {
