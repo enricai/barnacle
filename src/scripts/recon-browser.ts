@@ -287,7 +287,7 @@ function wireNetworkCapture(
 }
 
 /** Max attempts inside the self-healing cascade for a single flow step. */
-const MAX_STEP_ATTEMPTS = 4;
+const MAX_STEP_ATTEMPTS = 5;
 /** Per-attempt linear backoff base; sleep = attempt * BACKOFF_MS. */
 const ATTEMPT_BACKOFF_MS = 1_000;
 /**
@@ -348,7 +348,12 @@ interface StepSnapshot {
 /** One attempt's audit trail — included verbatim in the failure dump. */
 interface AttemptRecord {
   attempt: number;
-  technique: "act-string" | "observe-act" | "observe-act-exclude" | "llm-rephrase";
+  technique:
+    | "act-string"
+    | "observe-act"
+    | "structured-click"
+    | "observe-act-exclude"
+    | "llm-rephrase";
   instruction: string | null;
   triedSelectors: string[];
   actResultSuccess: boolean | null;
@@ -1445,10 +1450,10 @@ async function executeStepWithHealing(params: {
           if (action.selector) triedSelectors.push(action.selector);
           if (!resolvedAction) resolvedAction = action;
         }
-      } else if (attempt === 2 || attempt === 3) {
+      } else if (attempt === 2 || attempt === 4) {
         record.technique = attempt === 2 ? "observe-act" : "observe-act-exclude";
         const observeOptions =
-          attempt === 3 && triedSelectors.length > 0
+          attempt === 4 && triedSelectors.length > 0
             ? { ignoreSelectors: [...triedSelectors], timeout: STEP_WATCHDOG_MS }
             : { timeout: STEP_WATCHDOG_MS };
         const candidates = await stagehand.observe(step, observeOptions);
@@ -1479,6 +1484,128 @@ async function executeStepWithHealing(params: {
           // observe(...)[0] is what Stagehand acted on; use it directly when
           // result.actions[] is empty (some Stagehand paths don't echo it back).
           resolvedAction = result.actions?.[0] ?? target;
+        }
+      } else if (attempt === 3) {
+        // Structured-click cascade. Site-agnostic recovery for steps where
+        // Stagehand's CDP click landed on the visible UI but the underlying
+        // checkable <input> didn't actually toggle — the common case is a
+        // <label>-wrapped HIDDEN <input type="radio|checkbox">, where the
+        // browser's default label-click action does NOT toggle .checked for
+        // hidden inputs (Bootstrap, Tailwind, plain HTML labels-control,
+        // Angular Material's mat-radio-button, PrimeNG's p-radioButton, and
+        // custom Angular components like AppCast's app-radio-button all fit
+        // this shape). The framework's FormControl/state listens on the
+        // input's `change` event, which never fires when the visible click
+        // never reaches a clickable input — so the form stays invalid even
+        // though the visual state looks correct.
+        //
+        // Strategy: take the most-recently-tried selector, walk to a nearby
+        // checkable input (descendant / closest('label') / closest(framework
+        // wrapper)), then try three CLICK targets in order — label[for=id],
+        // closest('label'), closest(framework-wrapper) — checking
+        // input.checked after each. The clicks fire via DOM element.click()
+        // (not CDP) so they go through the page's own event pipeline and
+        // engage framework reactivity in zone/synthetic-event handlers.
+        //
+        // No-op when the resolved selector doesn't map to a checkable input
+        // shape (real button/link clicks, fills, etc.) — those steps fall
+        // through to attempts 4 + 5 with the cascade attempt slot "wasted"
+        // only in the sense of a fast skip + STEP_PAUSE_MS.
+        record.technique = "structured-click";
+        // resolvedAction is declared `Action | null` outside this branch
+        // (line above the for-loop). TS narrows it to `null` inside the
+        // attempt-3 branch because no code path within this attempt's
+        // try-block has assigned to it yet — explicit cast keeps the read
+        // type-safe without restructuring the outer declaration.
+        const prior = resolvedAction as Action | null;
+        const lastSelector = triedSelectors[triedSelectors.length - 1] ?? prior?.selector ?? null;
+        const xpath = lastSelector ? xpathBody(lastSelector) : null;
+        if (!xpath) {
+          record.errorMessage = "structured-click: no xpath from prior attempt";
+        } else {
+          // Trust boundary: xpath comes from Stagehand's own resolved
+          // selector during a prior attempt of THIS step, not from URL
+          // / user input. JSON.stringify produces a safe JS string literal
+          // for the composed page.evaluate expression.
+          const probeExpr = `(() => {
+            const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+            const start = r.singleNodeValue;
+            if (!start) return { resolved: false };
+            const isCheckable = (n) => n && n.tagName === "INPUT" && (n.type === "radio" || n.type === "checkbox");
+            // Find the checkable input reachable from the start element.
+            // Order: itself → ancestor label → ancestor framework wrapper →
+            // first descendant.
+            let input = isCheckable(start) ? start : null;
+            if (!input) {
+              const ancLabel = start.closest ? start.closest("label") : null;
+              if (ancLabel) input = ancLabel.querySelector('input[type="radio"], input[type="checkbox"]');
+            }
+            if (!input) {
+              const ancWrapper = start.closest ? start.closest("app-radio-button, app-checkbox, mat-radio-button, mat-checkbox, p-radioButton, p-checkbox, [role='radiogroup'], fieldset") : null;
+              if (ancWrapper) input = ancWrapper.querySelector('input[type="radio"], input[type="checkbox"]');
+            }
+            if (!input && start.querySelector) {
+              input = start.querySelector('input[type="radio"], input[type="checkbox"]');
+            }
+            if (!input) return { resolved: true, isCheckable: false };
+            // Strategy 1: label[for=id]
+            if (input.id) {
+              const lbl = document.querySelector('label[for="' + CSS.escape(input.id) + '"]');
+              if (lbl && lbl.scrollIntoView) {
+                lbl.scrollIntoView({ block: "center", inline: "center" });
+                lbl.click();
+                if (input.checked === true) return { resolved: true, isCheckable: true, checked: true, strategyUsed: "label-for" };
+              }
+            }
+            // Strategy 2: input.closest("label")
+            const parentLbl = input.closest("label");
+            if (parentLbl && parentLbl.scrollIntoView) {
+              parentLbl.scrollIntoView({ block: "center", inline: "center" });
+              parentLbl.click();
+              if (input.checked === true) return { resolved: true, isCheckable: true, checked: true, strategyUsed: "parent-label" };
+            }
+            // Strategy 3: closest framework wrapper
+            const wrap = input.closest("app-radio-button, app-checkbox, mat-radio-button, mat-checkbox, p-radioButton, p-checkbox");
+            if (wrap && wrap.scrollIntoView) {
+              wrap.scrollIntoView({ block: "center", inline: "center" });
+              wrap.click();
+              if (input.checked === true) return { resolved: true, isCheckable: true, checked: true, strategyUsed: "wrapper" };
+            }
+            return { resolved: true, isCheckable: true, checked: false, strategyUsed: null };
+          })()`;
+          try {
+            const result = await page.evaluate(probeExpr);
+            if (result !== null && typeof result === "object" && "resolved" in result) {
+              const probe = result as {
+                resolved: boolean;
+                isCheckable?: boolean;
+                checked?: boolean;
+                strategyUsed?: string | null;
+              };
+              if (probe.resolved !== true || probe.isCheckable !== true) {
+                record.errorMessage =
+                  "structured-click: no checkable input reachable from prior selector";
+              } else if (probe.checked === true && probe.strategyUsed) {
+                record.instruction = `structured-click via ${probe.strategyUsed}`;
+                record.actResultSuccess = true;
+                record.actResultDescription = `structured-click cascade clicked ${probe.strategyUsed} → input.checked=true`;
+                // Synthesize a click action so verifyDomEffect downstream
+                // routes through its radio/checkbox isChecked() path.
+                resolvedAction = {
+                  selector: lastSelector!,
+                  description: "structured-click",
+                  method: "click",
+                };
+              } else {
+                record.errorMessage =
+                  "structured-click: cascade exhausted (no strategy left input.checked)";
+              }
+            } else {
+              record.errorMessage = "structured-click: probe returned unexpected shape";
+            }
+          } catch (err) {
+            record.errorMessage = `structured-click: probe threw ${toErrorMessage(err)}`;
+          }
         }
       } else {
         record.technique = "llm-rephrase";
@@ -1694,6 +1821,8 @@ function parseCli(): {
   provider: ProviderName | undefined;
   resumeFixturePath: string;
   saveReplan: boolean;
+  advancedStealth: boolean;
+  dumpDomBeforeStep: number | null;
 } {
   const args = process.argv.slice(2);
   let url = "";
@@ -1703,6 +1832,8 @@ function parseCli(): {
   // Precedence: --resume-fixture flag > RESUME_FIXTURE_PATH env > default path.
   let resumeFixturePath = process.env.RESUME_FIXTURE_PATH || DEFAULT_RESUME_FIXTURE_PATH;
   let saveReplan = true;
+  let advancedStealth = false;
+  let dumpDomBeforeStep: number | null = null;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--url" && args[i + 1]) {
@@ -1722,12 +1853,23 @@ function parseCli(): {
       resumeFixturePath = args[++i]!;
     } else if (args[i] === "--no-save-replan") {
       saveReplan = false;
+    } else if (args[i] === "--advanced-stealth") {
+      advancedStealth = true;
+    } else if (args[i] === "--dump-dom-before-step" && args[i + 1]) {
+      const n = Number.parseInt(args[++i]!, 10);
+      if (!Number.isInteger(n) || n < 1) {
+        logger.error(
+          `--dump-dom-before-step must be a positive integer (got ${JSON.stringify(args[i])})`
+        );
+        process.exit(1);
+      }
+      dumpDomBeforeStep = n;
     }
   }
 
   if (!url) {
     logger.error(
-      'usage: recon-browser.ts --url <url> [--flow \'["step1","step2"]\'] [--flow-file <path>] [--provider browserbase|steel] [--resume-fixture <path>] [--no-save-replan]'
+      'usage: recon-browser.ts --url <url> [--flow \'["step1","step2"]\'] [--flow-file <path>] [--provider browserbase|steel] [--resume-fixture <path>] [--no-save-replan] [--advanced-stealth] [--dump-dom-before-step <N>]'
     );
     process.exit(1);
   }
@@ -1745,7 +1887,16 @@ function parseCli(): {
   }
 
   if (rawFlow === null) {
-    return { url, flow: [], flowFile, provider, resumeFixturePath, saveReplan };
+    return {
+      url,
+      flow: [],
+      flowFile,
+      provider,
+      resumeFixturePath,
+      saveReplan,
+      advancedStealth,
+      dumpDomBeforeStep,
+    };
   }
   const parsed = RECON_FLOW_SCHEMA.safeParse(rawFlow);
   if (!parsed.success) {
@@ -1759,6 +1910,8 @@ function parseCli(): {
     provider,
     resumeFixturePath,
     saveReplan,
+    advancedStealth,
+    dumpDomBeforeStep,
   };
 }
 
@@ -1790,15 +1943,24 @@ function loadResumeFixture(
 }
 
 async function main(): Promise<void> {
-  const { url, flow, flowFile, provider, resumeFixturePath, saveReplan } = parseCli();
+  const {
+    url,
+    flow,
+    flowFile,
+    provider,
+    resumeFixturePath,
+    saveReplan,
+    advancedStealth,
+    dumpDomBeforeStep,
+  } = parseCli();
 
   mkdirSync(CAPTURES_DIR, { recursive: true });
   const resumeFixture = loadResumeFixture(resumeFixturePath);
   logger.info(
-    `recon-browser: target=${url} flow_steps=${flow.length} provider=${provider ?? "(config-default)"} resume_fixture=${resumeFixture ? `${resumeFixturePath} (${resumeFixture.buffer.length}b)` : "(missing)"} out=${CAPTURES_DIR}`
+    `recon-browser: target=${url} flow_steps=${flow.length} provider=${provider ?? "(config-default)"} advancedStealth=${advancedStealth} resume_fixture=${resumeFixture ? `${resumeFixturePath} (${resumeFixture.buffer.length}b)` : "(missing)"} out=${CAPTURES_DIR}`
   );
 
-  const session = await createBrowserSession({ provider });
+  const session = await createBrowserSession({ provider, advancedStealth });
   // `counter` indexes captures on disk (filenames must stay unique).
   // `signalCounter` drives the verifier — only non-GET methods increment
   // it so coincident polling/page-load GETs don't falsely "verify" a
@@ -1860,6 +2022,25 @@ async function main(): Promise<void> {
       logger.info(
         `step ${i + 1}/${plan.length} [${currentPhase}]${step.optional ? " (optional)" : ""}: ${step.instruction}`
       );
+      // Debug: dump the full DOM right before this step's cascade runs. Lets
+      // a triager see the page state exactly as the cascade sees it, without
+      // re-running. One-shot per recon run via --dump-dom-before-step.
+      if (dumpDomBeforeStep !== null && i + 1 === dumpDomBeforeStep) {
+        try {
+          const html = await page.evaluate(
+            "document.documentElement ? document.documentElement.outerHTML : ''"
+          );
+          if (typeof html === "string" && html.length > 0) {
+            const dumpPath = join(CAPTURES_DIR, `..`, `dom-dump-step-${i + 1}.html`);
+            writeFileSync(dumpPath, html);
+            logger.info(`step ${i + 1}: wrote DOM dump (${html.length} bytes) to ${dumpPath}`);
+          } else {
+            logger.warn(`step ${i + 1}: DOM dump returned empty content; skipping write`);
+          }
+        } catch (err) {
+          logger.warn(`step ${i + 1}: DOM dump failed: ${toErrorMessage(err)}`);
+        }
+      }
       try {
         await executeStepWithHealing({
           stagehand,

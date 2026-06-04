@@ -35,7 +35,17 @@ const logger = getLogger({ name: "scraper/session-browserbase" });
  * boolean form takes Browserbase's default region; per-region routing is
  * available via the array form (not used here — out of scope until needed).
  */
-export async function createBrowserbaseBrowserSession(): Promise<BrowserSession> {
+/**
+ * `advancedStealth` opts into Browserbase's Scale Plan stealth profile. When
+ * enabled we also force `solveCaptchas: true` (explicit; Browserbase defaults
+ * it on) and pin a Windows desktop fingerprint — DataDome-protected sites
+ * (notably `apply.appcast.io`) react significantly better to Windows OS
+ * signals than the default mac/linux mix. Pattern mirrors nursefly-web's
+ * production preset at `server/jobs/ingest/scraped/browserbase/stagehand.config.ts`.
+ */
+export async function createBrowserbaseBrowserSession(opts?: {
+  advancedStealth?: boolean;
+}): Promise<BrowserSession> {
   if (!config.scraper.browserbaseApiKey) {
     throw new Error("BROWSERBASE_API_KEY is required for the browserbase provider");
   }
@@ -48,6 +58,7 @@ export async function createBrowserbaseBrowserSession(): Promise<BrowserSession>
 
   const viewport = pickRandomViewport();
   const useResidentialProxy = config.scraper.proxyType.toLowerCase() === "residential";
+  const advancedStealth = opts?.advancedStealth === true;
 
   if (config.scraper.useBedrock) {
     logger.info(`using bedrock model ${config.bedrock.model} in region ${config.bedrock.region}`);
@@ -56,6 +67,25 @@ export async function createBrowserbaseBrowserSession(): Promise<BrowserSession>
   const llmClient = config.scraper.useBedrock
     ? new AISdkClient({ model: createBedrockModel(config.bedrock) })
     : undefined;
+
+  // Base fingerprint always pins the screen size. Advanced stealth layers on
+  // desktop + Windows OS hints; the stronger fingerprint is required for
+  // DataDome-protected flows.
+  const baseFingerprint = {
+    screen: {
+      minWidth: viewport.width,
+      maxWidth: viewport.width,
+      minHeight: viewport.height,
+      maxHeight: viewport.height,
+    },
+  };
+  const fingerprint = advancedStealth
+    ? {
+        ...baseFingerprint,
+        devices: ["desktop" as const],
+        operatingSystems: ["windows" as const],
+      }
+    : baseFingerprint;
 
   let stagehand: Stagehand | undefined;
   try {
@@ -67,14 +97,8 @@ export async function createBrowserbaseBrowserSession(): Promise<BrowserSession>
         projectId: config.scraper.browserbaseProjectId,
         proxies: useResidentialProxy,
         browserSettings: {
-          fingerprint: {
-            screen: {
-              minWidth: viewport.width,
-              maxWidth: viewport.width,
-              minHeight: viewport.height,
-              maxHeight: viewport.height,
-            },
-          },
+          ...(advancedStealth ? { advancedStealth: true, solveCaptchas: true } : {}),
+          fingerprint,
         },
       },
       model: config.scraper.useBedrock
@@ -103,7 +127,7 @@ export async function createBrowserbaseBrowserSession(): Promise<BrowserSession>
 
   const sessionId = stagehand.browserbaseSessionID ?? "unknown";
   logger.info(
-    `created browserbase session ${sessionId} viewport=${viewport.width}x${viewport.height} proxies=${useResidentialProxy}`
+    `created browserbase session ${sessionId} viewport=${viewport.width}x${viewport.height} proxies=${useResidentialProxy} advancedStealth=${advancedStealth}`
   );
 
   const limiter = createSessionLimiter();
