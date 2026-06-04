@@ -6,7 +6,7 @@
 export class TestmailTimeoutError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = "TestmailTimeoutError";
+    this.name = new.target.name;
   }
 }
 
@@ -19,6 +19,6 @@ export class TestmailTimeoutError extends Error {
 export class TestmailApiError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = "TestmailApiError";
+    this.name = new.target.name;
   }
 }

@@ -5,7 +5,7 @@
  * by a new validator (e.g. the 555 → 310 phone-number swap during the
  * AppCast recon investigation).
  *
- * The Email field is left deliberately empty — callers should compose the
+ * The Email field is intentionally omitted — callers should compose the
  * payload by combining this fixture with a freshly allocated testmail.app
  * address. See `src/testmail/client.ts:allocateTestmailInbox`.
  */

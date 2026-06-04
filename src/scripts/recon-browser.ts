@@ -566,12 +566,13 @@ function normalizeFlow(steps: z.infer<typeof RECON_FLOW_SCHEMA>): NormalizedStep
 
 /**
  * Substitute `${VAR_NAME}` tokens in each step's instruction with
- * `process.env[VAR_NAME]`. Unset variables stay literal (visible as
- * `${VAR_NAME}` in subsequent log lines) so a missing allocation fails
- * loud at the next Stagehand verifier instead of silently filling with
- * an empty string. Only env keys matching `[A-Z_][A-Z0-9_]*` are
- * substituted — anything else is left as-is, including the JS template
- * literal syntax the flow file may legitimately use elsewhere.
+ * `process.env[VAR_NAME]`. Unset variables stay literal so the missing
+ * allocation surfaces in Stagehand's act() instruction logs (the literal
+ * `${VAR_NAME}` token appears verbatim in the rendered instruction)
+ * rather than silently filling with an empty string. Only env keys
+ * matching `[A-Z_][A-Z0-9_]*` are substituted — anything else is left
+ * as-is, including the JS template literal syntax the flow file may
+ * legitimately use elsewhere.
  */
 function substituteFlowEnvVars(steps: NormalizedStep[]): NormalizedStep[] {
   const pattern = /\$\{([A-Z_][A-Z0-9_]*)\}/g;
