@@ -46,23 +46,23 @@ vi.mock("@/config", () => ({
 
 vi.mock("@browserbasehq/stagehand", () => ({
   AISdkClient: vi.fn(),
-  Stagehand: vi.fn().mockImplementation(() => ({
-    init: vi.fn().mockResolvedValue(undefined),
-    close: vi.fn().mockResolvedValue(undefined),
-    browserbaseSessionID: "bb-session-id",
-  })),
+  Stagehand: vi.fn(function (this: Record<string, unknown>) {
+    this.init = vi.fn().mockResolvedValue(undefined);
+    this.close = vi.fn().mockResolvedValue(undefined);
+    this.browserbaseSessionID = "bb-session-id";
+  }),
 }));
 
 vi.mock("steel-sdk", () => ({
-  default: vi.fn().mockImplementation(() => ({
-    sessions: {
+  default: vi.fn(function (this: Record<string, unknown>) {
+    this.sessions = {
       create: vi.fn().mockResolvedValue({
         id: "steel-session-id",
         websocketUrl: "wss://connect.steel.dev?sessionId=steel-session-id",
       }),
       release: vi.fn().mockResolvedValue(undefined),
-    },
-  })),
+    };
+  }),
 }));
 
 vi.mock("@/lib/bedrock", () => ({
