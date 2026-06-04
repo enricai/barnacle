@@ -53,6 +53,7 @@ import { CALL_TYPE_RECON_REPHRASE, CALL_TYPE_RECON_REPLAN } from "@/lib/telemetr
 import { StepVerificationError } from "@/scraper/errors";
 import { createBrowserSession, type ProviderName } from "@/scraper/session";
 import { CAPTURES_DIR, type Capture, STEP_FAILURES_DIR } from "@/scripts/recon-shared";
+import { allocateTestmailInbox } from "@/testmail/client";
 import type { Logger } from "@/types/logging";
 
 configureHttpDispatcher();
@@ -561,6 +562,26 @@ function normalizeFlow(steps: z.infer<typeof RECON_FLOW_SCHEMA>): NormalizedStep
       ? { instruction: s, optional: false, upload: false }
       : { instruction: s.step, optional: s.optional, upload: s.upload }
   );
+}
+
+/**
+ * Substitute `${VAR_NAME}` tokens in each step's instruction with
+ * `process.env[VAR_NAME]`. Unset variables stay literal (visible as
+ * `${VAR_NAME}` in subsequent log lines) so a missing allocation fails
+ * loud at the next Stagehand verifier instead of silently filling with
+ * an empty string. Only env keys matching `[A-Z_][A-Z0-9_]*` are
+ * substituted — anything else is left as-is, including the JS template
+ * literal syntax the flow file may legitimately use elsewhere.
+ */
+function substituteFlowEnvVars(steps: NormalizedStep[]): NormalizedStep[] {
+  const pattern = /\$\{([A-Z_][A-Z0-9_]*)\}/g;
+  return steps.map((s) => ({
+    ...s,
+    instruction: s.instruction.replace(pattern, (match, name: string) => {
+      const value = process.env[name];
+      return value === undefined ? match : value;
+    }),
+  }));
 }
 
 /**
@@ -1823,6 +1844,7 @@ function parseCli(): {
   saveReplan: boolean;
   advancedStealth: boolean;
   dumpDomBeforeStep: number | null;
+  allocateEmailEnvVar: string | null;
 } {
   const args = process.argv.slice(2);
   let url = "";
@@ -1834,6 +1856,7 @@ function parseCli(): {
   let saveReplan = true;
   let advancedStealth = false;
   let dumpDomBeforeStep: number | null = null;
+  let allocateEmailEnvVar: string | null = null;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--url" && args[i + 1]) {
@@ -1864,12 +1887,21 @@ function parseCli(): {
         process.exit(1);
       }
       dumpDomBeforeStep = n;
+    } else if (args[i] === "--allocate-email" && args[i + 1]) {
+      const name = args[++i]!;
+      if (!/^[A-Z_][A-Z0-9_]*$/.test(name)) {
+        logger.error(
+          `--allocate-email value must be an UPPERCASE_SNAKE_CASE env var name (got ${JSON.stringify(name)})`
+        );
+        process.exit(1);
+      }
+      allocateEmailEnvVar = name;
     }
   }
 
   if (!url) {
     logger.error(
-      'usage: recon-browser.ts --url <url> [--flow \'["step1","step2"]\'] [--flow-file <path>] [--provider browserbase|steel] [--resume-fixture <path>] [--no-save-replan] [--advanced-stealth] [--dump-dom-before-step <N>]'
+      'usage: recon-browser.ts --url <url> [--flow \'["step1","step2"]\'] [--flow-file <path>] [--provider browserbase|steel] [--resume-fixture <path>] [--no-save-replan] [--advanced-stealth] [--dump-dom-before-step <N>] [--allocate-email <ENV_VAR_NAME>]'
     );
     process.exit(1);
   }
@@ -1896,6 +1928,7 @@ function parseCli(): {
       saveReplan,
       advancedStealth,
       dumpDomBeforeStep,
+      allocateEmailEnvVar,
     };
   }
   const parsed = RECON_FLOW_SCHEMA.safeParse(rawFlow);
@@ -1912,6 +1945,7 @@ function parseCli(): {
     saveReplan,
     advancedStealth,
     dumpDomBeforeStep,
+    allocateEmailEnvVar,
   };
 }
 
@@ -1945,14 +1979,29 @@ function loadResumeFixture(
 async function main(): Promise<void> {
   const {
     url,
-    flow,
+    flow: rawFlow,
     flowFile,
     provider,
     resumeFixturePath,
     saveReplan,
     advancedStealth,
     dumpDomBeforeStep,
+    allocateEmailEnvVar,
   } = parseCli();
+
+  // Allocate a fresh testmail.app inbox + bind it to the requested env var
+  // BEFORE substituting placeholders in the flow. Subsequent ${ENV_VAR}
+  // tokens anywhere in the flow's instruction strings resolve to the
+  // freshly-allocated address.
+  if (allocateEmailEnvVar) {
+    const inbox = allocateTestmailInbox();
+    process.env[allocateEmailEnvVar] = inbox.address;
+    logger.info(
+      `bound allocated testmail address to env var ${allocateEmailEnvVar}=${inbox.address}`
+    );
+  }
+
+  const flow = substituteFlowEnvVars(rawFlow);
 
   mkdirSync(CAPTURES_DIR, { recursive: true });
   const resumeFixture = loadResumeFixture(resumeFixturePath);

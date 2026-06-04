@@ -42,6 +42,7 @@
     "typecheck": "tsc --noEmit",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "test:integration": "INTEGRATION=true vitest run --testNamePattern integration",
     "prepare": "husky",
     "postinstall": "prisma generate",
     "db:generate": "prisma generate",
