@@ -154,3 +154,27 @@ export class HttpRateLimitError extends ScraperError {
     super(message, false);
   }
 }
+
+/**
+ * Thrown when code that translates stable semantic field keys (`address.city`,
+ * `firstName`, `applicantGender`) into tenant-specific GUIDs via a runtime
+ * form-map lookup cannot resolve one or more required keys.
+ *
+ * Use this in any future form-map / response-builder code so a missing field
+ * surfaces LOUDLY with an actionable error in the server log — instead of
+ * silently emitting an empty GUID and producing an HTTP 200 with missing data
+ * (which is how the StatusCode="unlocked" bug on 2026-06-04 hid for hours).
+ *
+ * Non-retryable — a missing key in the form definition is a configuration /
+ * tenant mismatch that retries won't fix; the dispatch layer should treat
+ * this as a hot-path failure and engage the browser fallback.
+ */
+export class MissingFormMapKeyError extends ScraperError {
+  readonly missingKeys: readonly string[];
+  readonly context: string;
+  constructor(missingKeys: readonly string[], context: string) {
+    super(`form-map missing required keys [${missingKeys.join(", ")}] in ${context}`, false);
+    this.missingKeys = missingKeys;
+    this.context = context;
+  }
+}

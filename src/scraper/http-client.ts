@@ -1,3 +1,6 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
 import type Bottleneck from "bottleneck";
 import pRetry, { AbortError } from "p-retry";
 import type { ZodType } from "zod/v4";
@@ -12,6 +15,16 @@ import {
 } from "@/scraper/errors";
 
 const logger = getLogger({ name: "scraper/http-client" });
+
+/**
+ * One-shot diagnostic: when `CAPTURE_BASELINE_BODIES=1`, write each successful
+ * (2xx) request to a numbered JSON file under the destination directory
+ * (`BASELINE_BODIES_DIR`, default `/tmp/clearcompany-baseline-bodies`). Used to
+ * snapshot the current hot-path request shapes as a frozen regression baseline
+ * before refactors that would alter how the JSON bodies are built. Off in
+ * production unless explicitly enabled.
+ */
+let baselineCallCounter = 0;
 
 /**
  * Static configuration passed to `createHttpClient` once per plugin. Bundles
@@ -101,6 +114,41 @@ export function createHttpClient<TResponse>(
             // Server error — non-retryable at the HTTP level; dispatch() will
             // engage the browser fallback instead.
             throw new AbortError(new HttpServerError(`http ${response.status} from ${url}`));
+          }
+
+          if (process.env.CAPTURE_BASELINE_BODIES === "1") {
+            try {
+              const dir = process.env.BASELINE_BODIES_DIR ?? "/tmp/clearcompany-baseline-bodies";
+              mkdirSync(dir, { recursive: true });
+              const idx = String(baselineCallCounter++).padStart(2, "0");
+              const slug =
+                new URL(url).pathname
+                  .split("/")
+                  .filter(Boolean)
+                  .slice(-2)
+                  .join("-")
+                  .replace(/[^a-zA-Z0-9._-]/g, "_") || "root";
+              const target = join(dir, `${idx}-${method}-${slug}.json`);
+              writeFileSync(
+                target,
+                JSON.stringify(
+                  {
+                    method,
+                    url,
+                    status: response.status,
+                    requestHeaders: headers,
+                    requestBody: init.body ?? null,
+                  },
+                  null,
+                  2
+                )
+              );
+              logger.warn(`baseline-body captured: ${target}`);
+            } catch (err) {
+              logger.warn(
+                `baseline-body capture failed: ${err instanceof Error ? err.message : String(err)}`
+              );
+            }
           }
 
           let body: unknown;
