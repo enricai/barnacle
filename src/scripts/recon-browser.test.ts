@@ -340,6 +340,88 @@ describe("recon-browser/persistReplannedFlow", () => {
     expect(allOutput).toContain("• Bridge");
   });
 
+  it("preserves the object-shape on write-back when originalShape='object'", () => {
+    // Start with the legacy bare-array bytes on disk; pass originalShape=object
+    // + a pattern. The new file should be an object with steps[] + pattern,
+    // not a bare array.
+    writeFileSync(flowPath, '["Step A"]\n');
+    const finalPlan: NormalizedStep[] = [{ instruction: "Step A", optional: false, upload: false }];
+    const replanEvents: ReplanEvent[] = [
+      {
+        replanIndex: 1,
+        cause: "probe-absent",
+        indexAtFailure: 0,
+        failedInstruction: "Step A",
+        replanSteps: finalPlan,
+        timestamp: "2026-06-03T20:00:00.000Z",
+      },
+    ];
+
+    persistReplannedFlow({
+      flowFile: flowPath,
+      finalPlan,
+      replanEvents,
+      logger: testLogger,
+      originalShape: "object",
+      submitEndpointPattern: "^https://example\\.com/api/submit$",
+    });
+
+    const newContents = readFileSync(flowPath, "utf8");
+    const parsed = JSON.parse(newContents) as { steps: unknown[]; submitEndpointPattern: string };
+    expect(parsed).toEqual({
+      steps: ["Step A"],
+      submitEndpointPattern: "^https://example\\.com/api/submit$",
+    });
+  });
+
+  it("falls back to bare-array shape when originalShape is omitted (back-compat)", () => {
+    writeFileSync(flowPath, '["X"]\n');
+    const finalPlan: NormalizedStep[] = [{ instruction: "X", optional: false, upload: false }];
+    const replanEvents: ReplanEvent[] = [
+      {
+        replanIndex: 1,
+        cause: "probe-absent",
+        indexAtFailure: 0,
+        failedInstruction: "X",
+        replanSteps: finalPlan,
+        timestamp: "2026-06-03T20:00:00.000Z",
+      },
+    ];
+
+    persistReplannedFlow({ flowFile: flowPath, finalPlan, replanEvents, logger: testLogger });
+
+    const newContents = readFileSync(flowPath, "utf8");
+    expect(JSON.parse(newContents)).toEqual(["X"]);
+  });
+
+  it("omits submitEndpointPattern from object-shape output when pattern is null", () => {
+    writeFileSync(flowPath, '{"steps":["X"]}\n');
+    const finalPlan: NormalizedStep[] = [{ instruction: "X", optional: false, upload: false }];
+    const replanEvents: ReplanEvent[] = [
+      {
+        replanIndex: 1,
+        cause: "probe-absent",
+        indexAtFailure: 0,
+        failedInstruction: "X",
+        replanSteps: finalPlan,
+        timestamp: "2026-06-03T20:00:00.000Z",
+      },
+    ];
+
+    persistReplannedFlow({
+      flowFile: flowPath,
+      finalPlan,
+      replanEvents,
+      logger: testLogger,
+      originalShape: "object",
+      submitEndpointPattern: null,
+    });
+
+    const parsed = JSON.parse(readFileSync(flowPath, "utf8"));
+    expect(parsed).toEqual({ steps: ["X"] });
+    expect(parsed.submitEndpointPattern).toBeUndefined();
+  });
+
   it("skips write-back gracefully when the original file disappears mid-run", () => {
     // No flowPath written — readFileSync should fail. persistReplannedFlow
     // logs an error and returns without writing the new flow.json. This

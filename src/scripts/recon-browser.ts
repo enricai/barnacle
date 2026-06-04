@@ -134,8 +134,9 @@ function wireNetworkCapture(
   counter: { n: number },
   signalCounter: { n: number },
   recentCaptures: string[],
-  recentCaptureMeta: { method: string; status: number }[],
-  getCurrentPhase: () => string
+  recentCaptureMeta: { method: string; status: number; url: string }[],
+  getCurrentPhase: () => string,
+  getCurrentPageOrigin: () => string
 ): () => void {
   const session = page.getSessionForFrame(page.mainFrameId());
   const inFlight = new Map<string, InFlightRequest>();
@@ -213,19 +214,33 @@ function wireNetworkCapture(
     const idx = String(counter.n++).padStart(3, "0");
     // The verifier reads `signalCounter` (not `counter`) so background polls
     // and page-load chrome don't poison the "did this action cause something"
-    // signal. We approximate "action-driven" with "non-GET method": real form
-    // submits, uploads, and state-change calls are POST/PUT/PATCH/DELETE.
-    // GETs are page-load chrome, polls, and idle prefetches — none of which
-    // are caused by the user step we just executed.
+    // signal. We approximate "action-driven" with two closed-set
+    // discriminators:
+    //   1. Non-GET method (real form submits/uploads/state-changes are
+    //      POST/PUT/PATCH/DELETE; GETs are page-load chrome and polls).
+    //   2. Same-origin as the page. Cross-origin POSTs are tracking-pixel
+    //      beacons (analytics, ad networks, bot-protection telemetry) that
+    //      fire on any click. Counting them poisons the verifier: a
+    //      submit-button click that fired only telemetry would be
+    //      indistinguishable from one that fired the real submit XHR, and
+    //      the cascade would silently declare victory while no actual
+    //      submission happened.
     //
-    // This replaces a prior URL-shape regex (POLLING_URL_PATTERNS) that
-    // misclassified jQuery-cache-busted page-load GETs as polls. See
-    // feedback_no_regex_open_sets — URL classification is an open-set
-    // problem; HTTP method is a closed-set discriminator.
+    // The method discriminator replaces a prior URL-shape regex
+    // (POLLING_URL_PATTERNS) that misclassified jQuery-cache-busted
+    // page-load GETs as polls. See feedback_no_regex_open_sets — URL
+    // classification is an open-set problem; HTTP method and origin
+    // are closed-set discriminators.
     //
-    // Filename indexing stays on `counter` so polls still get unique
-    // filenames on disk.
-    if (req.method !== "GET") {
+    // Filename indexing stays on `counter` so polls and cross-origin
+    // captures still get unique filenames on disk.
+    let sameOrigin = false;
+    try {
+      sameOrigin = new URL(req.url).origin === getCurrentPageOrigin();
+    } catch {
+      // Opaque CDP URLs (data:, blob:, malformed) — treat as not same-origin.
+    }
+    if (req.method !== "GET" && sameOrigin) {
       signalCounter.n++;
     }
     const opLabel = operationName ?? new URL(req.url).pathname.split("/").pop() ?? "unknown";
@@ -261,13 +276,18 @@ function wireNetworkCapture(
     if (recentCaptures.length > RECENT_CAPTURES_WINDOW) {
       recentCaptures.splice(0, recentCaptures.length - RECENT_CAPTURES_WINDOW);
     }
-    // GETs are static asset chunks, polls, and idle prefetches — none are
-    // user-action signals. Filter them out at the source so Tier 1's mutation
-    // window (size RECENT_CAPTURES_WINDOW) doesn't get washed out by SPA
-    // chunk loads between meaningful mutations. Same discriminator signalCounter
+    // GETs are static asset chunks, polls, and idle prefetches; cross-origin
+    // captures are tracking-pixel beacons. Neither is a user-action signal.
+    // Filter both at the source so Tier 1's mutation window (size
+    // RECENT_CAPTURES_WINDOW) doesn't get washed out by SPA chunk loads or GA
+    // pings between meaningful mutations. Same discriminator signalCounter
     // uses for the per-step verifier.
-    if (capture.method !== "GET") {
-      recentCaptureMeta.push({ method: capture.method, status: capture.status });
+    if (capture.method !== "GET" && sameOrigin) {
+      recentCaptureMeta.push({
+        method: capture.method,
+        status: capture.status,
+        url: capture.url,
+      });
       if (recentCaptureMeta.length > RECENT_CAPTURES_WINDOW) {
         recentCaptureMeta.splice(0, recentCaptureMeta.length - RECENT_CAPTURES_WINDOW);
       }
@@ -549,6 +569,28 @@ const RECON_FLOW_STEP_SCHEMA = z.union([
 ]);
 const RECON_FLOW_SCHEMA = z.array(RECON_FLOW_STEP_SCHEMA).min(1);
 
+/**
+ * Two on-disk shapes are accepted:
+ *
+ *  1. Legacy bare array — every existing site flow file uses this.
+ *  2. Object form — adds an optional `submitEndpointPattern` regex. When
+ *     set, the final flow step's verifier additionally requires at least
+ *     one same-origin capture in its mutation window whose URL matches the
+ *     pattern. Without that match `verified=false`, even if the click
+ *     produced a DOM mutation — which is the only way the self-healing
+ *     cascade can detect "the click fired tracking but not the real
+ *     submit XHR."
+ *
+ * Both forms route through `parseReconFlow` into a shared internal record.
+ */
+const RECON_FLOW_FILE_SCHEMA = z.union([
+  RECON_FLOW_SCHEMA,
+  z.object({
+    steps: RECON_FLOW_SCHEMA,
+    submitEndpointPattern: z.string().min(1).optional(),
+  }),
+]);
+
 /** Internal normalized step shape. Source-flow strings normalize with all flags false. */
 interface NormalizedStep {
   instruction: string;
@@ -618,8 +660,24 @@ function persistReplannedFlow(params: {
   finalPlan: NormalizedStep[];
   replanEvents: ReplanEvent[];
   logger: Logger;
+  /**
+   * Preserves the user's on-disk shape — bare array stays bare array,
+   * object form stays object form. Defaults to "array" for back-compat with
+   * older callers (tests, internal scripts) that don't know about the
+   * object form yet.
+   */
+  originalShape?: "array" | "object";
+  /** Carried through when the original file declared a submit pattern. */
+  submitEndpointPattern?: string | null;
 }): void {
-  const { flowFile, finalPlan, replanEvents, logger } = params;
+  const {
+    flowFile,
+    finalPlan,
+    replanEvents,
+    logger,
+    originalShape = "array",
+    submitEndpointPattern = null,
+  } = params;
   // Timestamp format chosen to be filesystem-safe (no colons or dots that
   // break common tooling on macOS/Windows).
   const timestamp = format(new Date(), "yyyy-MM-dd'T'HH-mm-ss");
@@ -638,10 +696,17 @@ function persistReplannedFlow(params: {
   }
   writeFileSync(backupPath, originalBytes);
 
-  const denormalized = finalPlan.map(denormalizeStep);
+  const denormalizedSteps = finalPlan.map(denormalizeStep);
   // 2-space indent + trailing newline matches the existing on-disk style
-  // (verified against clearcompany/appcast/getgreatcareers recon-flow.json).
-  writeFileSync(flowFile, `${JSON.stringify(denormalized, null, 2)}\n`);
+  // (verified against site recon-flow.json files).
+  const payload =
+    originalShape === "object"
+      ? {
+          steps: denormalizedSteps,
+          ...(submitEndpointPattern !== null ? { submitEndpointPattern } : {}),
+        }
+      : denormalizedSteps;
+  writeFileSync(flowFile, `${JSON.stringify(payload, null, 2)}\n`);
 
   // Summary log block — emit each line through the Pino logger so the dev
   // transport renders it nicely and the prod JSON output stays structured.
@@ -1377,10 +1442,21 @@ async function executeStepWithHealing(params: {
   phase: string;
   signalCounter: { n: number };
   recentCaptures: string[];
+  recentCaptureMeta: { method: string; status: number; url: string }[];
   anthropic: Anthropic | null;
   logger: Logger;
   captureFn?: CaptureFn;
   resumeFixture: { buffer: Buffer; name: string; mimeType: string } | null;
+  /**
+   * Final-step gate: when both are set, the verifier additionally requires at
+   * least one capture in `recentCaptureMeta` whose URL matches the pattern. Lets
+   * sites declare "the click that ends the flow must produce a request to
+   * /api/.../submit" so the cascade can detect tracking-pixel-only clicks as
+   * verification failures and engage the rephrase/replan recovery path
+   * instead of declaring victory.
+   */
+  isFinalStep: boolean;
+  submitEndpointPattern: string | null;
 }): Promise<void> {
   const {
     stagehand,
@@ -1392,11 +1468,16 @@ async function executeStepWithHealing(params: {
     phase,
     signalCounter,
     recentCaptures,
+    recentCaptureMeta,
     anthropic,
     logger,
     captureFn,
     resumeFixture,
+    isFinalStep,
+    submitEndpointPattern,
   } = params;
+  const requireSubmitEndpoint = isFinalStep && submitEndpointPattern !== null;
+  const compiledSubmitPattern = requireSubmitEndpoint ? new RegExp(submitEndpointPattern!) : null;
   const attempts: AttemptRecord[] = [];
   const triedSelectors: string[] = [];
   const failureReasons: string[] = [];
@@ -1441,6 +1522,10 @@ async function executeStepWithHealing(params: {
     }
 
     const pre = await snapshotPage(page, signalCounter);
+    // Snapshot the meta-tail length so the final-step pattern gate can scope
+    // its URL scan to captures added DURING this attempt (not historical
+    // tail from earlier steps).
+    const preMetaLength = recentCaptureMeta.length;
     const record: AttemptRecord = {
       attempt,
       technique: "act-string",
@@ -1688,7 +1773,30 @@ async function executeStepWithHealing(params: {
       resolvedAction !== null && (isStateClass || isClick)
         ? await verifyDomEffect(page, resolvedAction)
         : false;
-    const verified = networkFired || urlChanged || domVerified;
+    let verified = networkFired || urlChanged || domVerified;
+
+    // Final-step pattern gate. When the flow declared a submit endpoint
+    // pattern, we additionally require at least one same-origin POST in this
+    // attempt's mutation window whose URL matches the pattern. Without this,
+    // clicks that only fire client-side handlers (e.g. analytics beacons that
+    // sneak past same-origin filtering, or clicks that bump htmlDelta via a
+    // disabled-button tooltip) get a false-positive verified=true.
+    if (verified && requireSubmitEndpoint && compiledSubmitPattern) {
+      // Cap the scan from preMetaLength so we don't accept a historical
+      // submit-shaped capture from an earlier step as proof for this one.
+      const tail = recentCaptureMeta.slice(preMetaLength);
+      const matched = tail.some((m) => compiledSubmitPattern.test(m.url));
+      if (!matched) {
+        verified = false;
+        record.errorMessage =
+          (record.errorMessage ?? "") +
+          (record.errorMessage ? "; " : "") +
+          `submit-endpoint-not-matched: pattern ${submitEndpointPattern!} did not match any of ${tail.length} attempt-window capture(s)`;
+        failureReasons.push(
+          `submit-endpoint-not-matched: ${tail.length} capture(s) seen, none matched ${submitEndpointPattern!}`
+        );
+      }
+    }
 
     if (verified) {
       record.verifiedBy = urlChanged ? "url" : networkFired ? "network" : "dom";
@@ -1750,12 +1858,26 @@ async function executeStepWithHealing(params: {
           const retryUrlChanged = retryPost.url !== pre.url;
           const retryHtmlDelta = retryPost.bodyHtmlLength - pre.bodyHtmlLength;
           const retryTextChanged = retryPost.visibleTextSignature !== pre.visibleTextSignature;
-          const retryVerified =
+          let retryVerified =
             retryNetworkFired ||
             retryUrlChanged ||
             retryHtmlDelta !== 0 ||
             retryTextChanged ||
             checkboxStateVerified;
+          // Apply the same submit-endpoint gate the primary verifier uses.
+          // Without this, the n+16 fallback would still ride past a
+          // tracking-pixel-only click on the final step (DOM mutates via a
+          // disabled-button tooltip, htmlDelta != 0, fallback declares victory).
+          if (retryVerified && requireSubmitEndpoint && compiledSubmitPattern) {
+            const tail = recentCaptureMeta.slice(preMetaLength);
+            const matched = tail.some((m) => compiledSubmitPattern.test(m.url));
+            if (!matched) {
+              retryVerified = false;
+              failureReasons.push(
+                `n+16 fallback: submit-endpoint-not-matched: ${tail.length} capture(s) seen, none matched ${submitEndpointPattern!}`
+              );
+            }
+          }
           logger.info(
             `n+16 probe: step=${stepIndex + 1} attempt=${attempt} el.click() fallback fired=${fired === true} kind=${probeResult.kind ?? "none"} checkboxStateVerified=${checkboxStateVerified}; network=${retryNetworkFired} url=${retryUrlChanged} htmlDelta=${retryHtmlDelta} textChanged=${retryTextChanged} verified=${retryVerified}`
           );
@@ -1846,6 +1968,8 @@ function parseCli(): {
   advancedStealth: boolean;
   dumpDomBeforeStep: number | null;
   allocateEmailEnvVar: string | null;
+  submitEndpointPattern: string | null;
+  originalShape: "array" | "object";
 } {
   const args = process.argv.slice(2);
   let url = "";
@@ -1930,16 +2054,33 @@ function parseCli(): {
       advancedStealth,
       dumpDomBeforeStep,
       allocateEmailEnvVar,
+      submitEndpointPattern: null,
+      originalShape: "array",
     };
   }
-  const parsed = RECON_FLOW_SCHEMA.safeParse(rawFlow);
+  const parsed = RECON_FLOW_FILE_SCHEMA.safeParse(rawFlow);
   if (!parsed.success) {
     logger.error(`flow file/arg failed schema validation: ${parsed.error.message}`);
     process.exit(1);
   }
+  const stepsRaw = Array.isArray(parsed.data) ? parsed.data : parsed.data.steps;
+  const submitEndpointPattern = Array.isArray(parsed.data)
+    ? null
+    : (parsed.data.submitEndpointPattern ?? null);
+  const isArrayShape = Array.isArray(parsed.data);
+  // Validate regex compiles eagerly so a malformed pattern fails the run
+  // at startup, not deep in a per-step verifier.
+  if (submitEndpointPattern !== null) {
+    try {
+      new RegExp(submitEndpointPattern);
+    } catch (err) {
+      logger.error(`flow file: submitEndpointPattern is not a valid regex: ${toErrorMessage(err)}`);
+      process.exit(1);
+    }
+  }
   return {
     url,
-    flow: normalizeFlow(parsed.data),
+    flow: normalizeFlow(stepsRaw),
     flowFile,
     provider,
     resumeFixturePath,
@@ -1947,6 +2088,8 @@ function parseCli(): {
     advancedStealth,
     dumpDomBeforeStep,
     allocateEmailEnvVar,
+    submitEndpointPattern,
+    originalShape: isArrayShape ? "array" : "object",
   };
 }
 
@@ -1988,6 +2131,8 @@ async function main(): Promise<void> {
     advancedStealth,
     dumpDomBeforeStep,
     allocateEmailEnvVar,
+    submitEndpointPattern,
+    originalShape,
   } = parseCli();
 
   // Allocate a fresh testmail.app inbox + bind it to the requested env var
@@ -2027,7 +2172,7 @@ async function main(): Promise<void> {
   // file may have included for sites where it's actually needed). GETs are
   // filtered at the push site so the window isn't washed out by SPA chunk
   // loads — see the comment in wireNetworkCapture's onFinished.
-  const recentCaptureMeta: { method: string; status: number }[] = [];
+  const recentCaptureMeta: { method: string; status: number; url: string }[] = [];
 
   try {
     const stagehand = session.stagehand;
@@ -2042,7 +2187,18 @@ async function main(): Promise<void> {
       signalCounter,
       recentCaptures,
       recentCaptureMeta,
-      () => currentPhase
+      () => currentPhase,
+      () => {
+        // Live read so SPA history navigation between captures stays accurate.
+        // Fallback to the initial url on parse failure (e.g. about:blank early
+        // in the goto cycle) so we don't accidentally mark a capture as
+        // cross-origin and miss the user-action signal.
+        try {
+          return new URL(page.url()).origin;
+        } catch {
+          return new URL(url).origin;
+        }
+      }
     );
 
     logger.info(`navigating to ${url}`);
@@ -2102,9 +2258,12 @@ async function main(): Promise<void> {
           phase: currentPhase,
           signalCounter,
           recentCaptures,
+          recentCaptureMeta,
           anthropic,
           logger,
           resumeFixture,
+          isFinalStep: i === plan.length - 1,
+          submitEndpointPattern,
         });
         completedSteps.push(step.instruction);
       } catch (err) {
@@ -2235,7 +2394,14 @@ async function main(): Promise<void> {
         );
       } else {
         logger.info(`run completed; writing flow.json with ${replanEvents.length} replan event(s)`);
-        persistReplannedFlow({ flowFile, finalPlan: plan, replanEvents, logger });
+        persistReplannedFlow({
+          flowFile,
+          finalPlan: plan,
+          replanEvents,
+          logger,
+          originalShape,
+          submitEndpointPattern,
+        });
       }
     }
   } finally {
