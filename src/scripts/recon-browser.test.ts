@@ -60,6 +60,7 @@ import {
   type NormalizedStep,
   persistReplannedFlow,
   type ReplanEvent,
+  readFailureDumpEvidence,
   rephraseWithLLM,
 } from "@/scripts/recon-browser";
 import type { Logger } from "@/types/logging";
@@ -445,5 +446,126 @@ describe("recon-browser/persistReplannedFlow", () => {
     ).not.toThrow();
     expect(existsSync(flowPath)).toBe(false);
     expect(loggerStub.error).toHaveBeenCalled();
+  });
+});
+
+describe("recon-browser/readFailureDumpEvidence", () => {
+  let tmpDir: string;
+  let dumpPath: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "recon-evidence-"));
+    dumpPath = join(tmpDir, "step-failure.json");
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("returns empty fields when the dump file is missing", () => {
+    const result = readFailureDumpEvidence(join(tmpDir, "does-not-exist.json"));
+    expect(result).toEqual({
+      bodyExcerpt: "",
+      unfocusedList: "",
+      invalidFieldList: "",
+      errorTextList: "",
+      recentFailureReasons: [],
+    });
+  });
+
+  it("flags fields with ng-invalid class and surfaces the field label", () => {
+    // Angular reactive-form snippet: a labelled input with the ng-invalid +
+    // ng-touched class signature that means "user interacted, field is empty
+    // / wrong format." This is the smoking-gun pattern the replan prompt was
+    // missing.
+    const body = `<form class="ng-valid">
+      <li class="question ng-invalid ng-dirty ng-touched">
+        <label>County</label>
+        <input class="ng-invalid ng-dirty ng-touched" value=""/>
+      </li>
+      <li class="question ng-valid">
+        <label>State</label>
+        <input class="ng-valid" value="TX"/>
+      </li>
+    </form>`;
+    writeFileSync(dumpPath, JSON.stringify({ bodyOuterHtml: body, attempts: [] }));
+    const result = readFailureDumpEvidence(dumpPath);
+    // Signal contract: County (the invalid field) must be present with its
+    // ng-invalid class fingerprint. The 600-char following-window may bleed
+    // sibling text in by design — fine for an advisory LLM prompt section.
+    expect(result.invalidFieldList).toContain("County");
+    expect(result.invalidFieldList).toContain("ng-invalid");
+  });
+
+  it("does not flag a ng-valid form root just because its subtree contains invalid descendants", () => {
+    // Regression guard: the prior balanced-tag regex matched the outer
+    // <form> first and attributed the entire subtree to its ng-valid class,
+    // wrongly listing nothing as invalid. The opening-tag scan should
+    // produce at least one invalid entry from the inner ng-invalid <li>.
+    const body = `<form class="ng-valid">
+      <li class="question ng-invalid"><label>County</label></li>
+    </form>`;
+    writeFileSync(dumpPath, JSON.stringify({ bodyOuterHtml: body, attempts: [] }));
+    const result = readFailureDumpEvidence(dumpPath);
+    expect(result.invalidFieldList.length).toBeGreaterThan(0);
+    expect(result.invalidFieldList).toContain("County");
+  });
+
+  it("extracts visible error message text from error-class containers", () => {
+    const body = `<form>
+      <div class="error-message">This field is required.</div>
+      <div class="mat-error">Please provide correct phone number.</div>
+    </form>`;
+    writeFileSync(dumpPath, JSON.stringify({ bodyOuterHtml: body, attempts: [] }));
+    const result = readFailureDumpEvidence(dumpPath);
+    expect(result.errorTextList).toContain("This field is required");
+    expect(result.errorTextList).toContain("Please provide correct phone number");
+  });
+
+  it("ignores text inside an unrelated class when no error-pattern marker is present", () => {
+    const body = `<div class="some-other-class">Job title at Encompass Health</div>`;
+    writeFileSync(dumpPath, JSON.stringify({ bodyOuterHtml: body, attempts: [] }));
+    const result = readFailureDumpEvidence(dumpPath);
+    expect(result.errorTextList).toBe("");
+  });
+
+  it("recentFailureReasons surfaces the trailing 5 attempt errorMessage values", () => {
+    const attempts = Array.from({ length: 8 }, (_, i) => ({
+      errorMessage: `attempt-${i + 1}: reason`,
+    }));
+    writeFileSync(dumpPath, JSON.stringify({ bodyOuterHtml: null, attempts }));
+    const result = readFailureDumpEvidence(dumpPath);
+    expect(result.recentFailureReasons).toEqual([
+      "attempt-4: reason",
+      "attempt-5: reason",
+      "attempt-6: reason",
+      "attempt-7: reason",
+      "attempt-8: reason",
+    ]);
+  });
+
+  it("skips attempts with null/empty errorMessage when collecting reasons", () => {
+    const attempts = [
+      { errorMessage: "real failure A" },
+      { errorMessage: null },
+      { errorMessage: "" },
+      { errorMessage: "real failure B" },
+    ];
+    writeFileSync(dumpPath, JSON.stringify({ bodyOuterHtml: null, attempts }));
+    const result = readFailureDumpEvidence(dumpPath);
+    expect(result.recentFailureReasons).toEqual(["real failure A", "real failure B"]);
+  });
+
+  it("caps both extracted lists at the EVIDENCE_LIST_CAP", () => {
+    // Build a body with 20 invalid fields. Cap is 12 by current contract.
+    const items = Array.from(
+      { length: 20 },
+      (_, i) => `<li class="ng-invalid"><label>Field-${i}</label></li>`
+    ).join("");
+    const body = `<form>${items}</form>`;
+    writeFileSync(dumpPath, JSON.stringify({ bodyOuterHtml: body, attempts: [] }));
+    const result = readFailureDumpEvidence(dumpPath);
+    const lines = result.invalidFieldList.split("\n");
+    expect(lines.length).toBeLessThanOrEqual(12);
   });
 });

@@ -748,14 +748,91 @@ const REPLAN_RESPONSE_SCHEMA = z.discriminatedUnion("outcome", [
  * LLM-filtered candidate list. The dump file is a trust boundary (anything
  * could be on disk), so the body field is type-narrowed before slicing.
  */
+/** Cap on per-list entries we feed back into the LLM prompt — keeps the
+ * prompt token budget bounded even on pathological pages with many invalid
+ * fields. Matches the existing `unfocusedList` slice for visual symmetry. */
+const EVIDENCE_LIST_CAP = 12;
+
+/** Cap on character-length of an evidence entry's text content. The point is
+ * the *label* and *error signature*, not a paragraph. Anything longer is
+ * almost certainly a layout container that swept up siblings. */
+const EVIDENCE_ENTRY_MAX_CHARS = 200;
+
+/**
+ * Strip HTML tags and condense whitespace. Cheap-and-cheerful — we only need
+ * a readable label, not faithful rendering. Decodes the handful of named
+ * entities that show up in form error messages.
+ */
+function stripHtml(html: string): string {
+  return html
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Scan the page body HTML for opening tags whose class attribute matches a
+ * marker pattern. Returns a short text snippet from each match's
+ * immediately-following content (capped at EVIDENCE_ENTRY_MAX_CHARS) tagged
+ * with the relevant class signature.
+ *
+ * Pure string scan; no DOM parser. Intentionally only checks the class on
+ * each *opening tag* (not "this element's full subtree class signature") so
+ * nested invalid descendants don't get attributed to an outer valid parent
+ * via greedy matching of an outer-tag close. False positives are acceptable
+ * in an advisory evidence section — extra noise is strictly better than the
+ * current zero signal.
+ */
+function extractClassMatchedText(html: string, classPattern: RegExp, cap: number): string[] {
+  // Match each opening tag with a class attribute. No closing-tag anchor —
+  // we just look at content following the tag, up to a bounded window.
+  const tagPattern = /<([a-zA-Z][a-zA-Z0-9-]*)\b[^>]*?\bclass=("[^"]*"|'[^']*')[^>]*?>/g;
+  const entries: string[] = [];
+  let m: RegExpExecArray | null;
+  m = tagPattern.exec(html);
+  while (m !== null) {
+    const classValue = m[2]!.slice(1, -1);
+    if (classPattern.test(classValue)) {
+      // Look at up to 600 chars of HTML following this opening tag — enough
+      // to capture the label / first error-message text but bounded so a
+      // single match doesn't sweep up half the page.
+      const followingWindow = html.slice(m.index + m[0].length, m.index + m[0].length + 600);
+      const text = stripHtml(followingWindow).slice(0, EVIDENCE_ENTRY_MAX_CHARS);
+      if (text.length > 0) {
+        // Tag a short class fingerprint so the LLM can correlate signature
+        // patterns (e.g. "ng-invalid + ng-touched" = user-interacted invalid).
+        const classFingerprint = classValue
+          .split(/\s+/)
+          .filter((c) => classPattern.test(c) || /(invalid|error|required)/i.test(c))
+          .slice(0, 4)
+          .join(" ");
+        entries.push(`${text}${classFingerprint ? `  [${classFingerprint}]` : ""}`);
+        if (entries.length >= cap) break;
+      }
+    }
+    m = tagPattern.exec(html);
+  }
+  return entries;
+}
+
 function readFailureDumpEvidence(failureDumpPath: string): {
   bodyExcerpt: string;
   unfocusedList: string;
+  invalidFieldList: string;
+  errorTextList: string;
+  recentFailureReasons: string[];
 } {
   try {
     const dump = JSON.parse(readFileSync(failureDumpPath, "utf8")) as {
       bodyOuterHtml?: string | null;
       unfocusedObserve?: Action[];
+      attempts?: { errorMessage?: string | null }[];
     };
     const rawBody = dump.bodyOuterHtml;
     const bodyExcerpt = typeof rawBody === "string" ? rawBody.slice(0, 8000) : "";
@@ -763,10 +840,44 @@ function readFailureDumpEvidence(failureDumpPath: string): {
       .slice(0, 12)
       .map((a, i) => `${i + 1}. ${a.description} — ${a.selector}`)
       .join("\n");
-    return { bodyExcerpt, unfocusedList };
+
+    const fullBody = typeof rawBody === "string" ? rawBody : "";
+    // Framework-agnostic invalid-state markers. Covers Angular (`ng-invalid`,
+    // `mat-form-field-invalid`), Bootstrap (`is-invalid`), and the generic
+    // `*-invalid` / `field-invalid` patterns most form libraries adopt.
+    const invalidPattern =
+      /(ng-invalid|mat-form-field-invalid|is-invalid|field-invalid|input-invalid|form-invalid)/;
+    const invalidEntries = extractClassMatchedText(fullBody, invalidPattern, EVIDENCE_LIST_CAP);
+    const invalidFieldList = invalidEntries.map((e, i) => `${i + 1}. ${e}`).join("\n");
+
+    // Visible error/required-message containers. The class-pattern union
+    // catches the common naming conventions across Material, Bootstrap,
+    // custom Angular forms, and React form libraries.
+    const errorPattern =
+      /(error-message|mat-error|field-error|validation-error|required-message|invalid-feedback|form-error|help-block-error)/;
+    const errorEntries = extractClassMatchedText(fullBody, errorPattern, EVIDENCE_LIST_CAP);
+    const errorTextList = errorEntries.map((e, i) => `${i + 1}. ${e}`).join("\n");
+
+    // Trailing slice of attempt error messages. The dump's per-attempt
+    // errorMessage carries the verifier's structured reason (e.g.
+    // `submit-endpoint-not-matched: pattern …`), which currently only the
+    // rephrase prompt sees. Surfacing them here gives the replan LLM the
+    // same context.
+    const recentFailureReasons = (dump.attempts ?? [])
+      .map((a) => (typeof a.errorMessage === "string" ? a.errorMessage.trim() : ""))
+      .filter((r): r is string => r.length > 0)
+      .slice(-5);
+
+    return { bodyExcerpt, unfocusedList, invalidFieldList, errorTextList, recentFailureReasons };
   } catch {
     // Swallowed by design: a missing dump must not fail the replan.
-    return { bodyExcerpt: "", unfocusedList: "" };
+    return {
+      bodyExcerpt: "",
+      unfocusedList: "",
+      invalidFieldList: "",
+      errorTextList: "",
+      recentFailureReasons: [],
+    };
   }
 }
 
@@ -809,7 +920,9 @@ async function replanRemainingFlow(params: {
   // Without raw DOM in the prompt, the LLM only sees stagehand.observe()'s
   // filtered candidate list and hallucinates about surrounding state
   // (auth-wall reset, closed-message interstitial, etc.).
-  const { bodyExcerpt, unfocusedList } = readFailureDumpEvidence(failureDumpPath);
+  const { bodyExcerpt, unfocusedList, invalidFieldList, errorTextList, recentFailureReasons } =
+    readFailureDumpEvidence(failureDumpPath);
+  const failureReasonList = recentFailureReasons.map((r, i) => `${i + 1}. ${r}`).join("\n");
 
   const prompt = `You are helping a browser automation agent recover from a failed flow step.
 
@@ -828,6 +941,15 @@ ${remainingSteps.length > 0 ? remainingSteps.map((s, i) => `${i + 1}. ${s}`).joi
 CURRENT BROWSER STATE:
 URL: ${page.url()}
 Title: ${pageTitle}
+
+WHY VERIFICATION FAILED (latest attempt reasons from the cascade — read these carefully, they explain WHY the step is being declared failed):
+${failureReasonList || "(none)"}
+
+FORM FIELDS CURRENTLY MARKED INVALID (text + class signature for any element whose class matches the framework-agnostic invalid pattern — ng-invalid, mat-form-field-invalid, is-invalid, etc.):
+${invalidFieldList || "(none)"}
+
+VISIBLE ERROR / REQUIRED-FIELD MESSAGES ON THE PAGE (extracted text from error-class containers — error-message, mat-error, field-error, validation-error, invalid-feedback, etc.):
+${errorTextList || "(none)"}
 
 ELEMENTS CURRENTLY VISIBLE ON THE PAGE (stagehand.observe with the failed instruction):
 ${candidateList || "(no candidates returned by observe)"}
@@ -2426,4 +2548,10 @@ if (
 export type { NormalizedStep, ReplanEvent };
 // Test-only exports — allow unit tests to inject a fake capture sink without
 // touching the main() entry-point or the real browser session.
-export { denormalizeStep, persistReplannedFlow, rephraseWithLLM, replanRemainingFlow };
+export {
+  denormalizeStep,
+  persistReplannedFlow,
+  readFailureDumpEvidence,
+  rephraseWithLLM,
+  replanRemainingFlow,
+};
