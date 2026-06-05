@@ -1735,19 +1735,34 @@ const FORM_VALIDITY_PROBE_EXPR = `(() => {
     if (out.some((e) => e._el && el.contains(e._el))) continue;
     const ctrl = el.matches("input,select,textarea") ? el : el.querySelector("input,select,textarea");
     if (!ctrl) continue;
-    // Leaf-only correctness check: require the resolved control's OWN class
-    // to carry the invalid marker, not just an ancestor's. Container-level
-    // ng-invalid often propagates from a DIFFERENT child (a hierarchical
-    // FormGroup marking the parent invalid because a sibling is invalid).
-    // Attributing the parent's state to the FIRST descendant control mis-
-    // labels valid fields as invalid and sends the LLM-cascade chasing the
-    // wrong fix. Verified against the 23:18-23:44 telemetry: the dump's
-    // only ng-invalid opening tag was the outer <ol class="questions-
-    // container">, but its First Name input descendant was itself ng-valid
-    // — the probe still emitted "Legal First Name [ng-invalid]" and every
-    // cascade replan tried to re-fill it pointlessly.
+    // Accept two distinct invalid signatures:
+    //
+    // 1. Leaf-invalid (Angular reactive forms decorating the <input>):
+    //    the control's OWN class carries ng-invalid.
+    //
+    // 2. Wrapper-only invalid (Material/Angular custom wrappers like
+    //    <mat-form-field>, <app-input uappaddresssearch>): the wrapper
+    //    carries the marker but the inner <input> stays ng-pristine
+    //    ng-untouched because the user has never focused it. This is
+    //    the structural pattern for required-but-unfilled fields in
+    //    Material/AppCast forms. The pre-submit probe was structurally
+    //    blind to these — verified by run bu15gcpy2 where GA's
+    //    validationErrorsCount=1 fired from the very first submit at
+    //    05:29 yet the probe reported "no ng-invalid form controls".
+    //
+    // The wrapper-only branch must ALSO require the inner control to
+    // be empty/unset — without that the outer <ol class="questions-
+    // container ng-invalid"> case re-enters as a false positive
+    // (already-filled First Name input under an ng-invalid <ol>
+    // because a sibling field is invalid).
     const ctrlClass = ctrl.getAttribute("class") || "";
-    if (!INVALID_CLASS_RX.test(ctrlClass)) continue;
+    const leafInvalid = INVALID_CLASS_RX.test(ctrlClass);
+    const wrapperOnlyInvalid =
+      !leafInvalid &&
+      el !== ctrl &&
+      (ctrl.value === "" || ctrl.value == null) &&
+      /(ng-pristine|ng-untouched)/.test(ctrlClass);
+    if (!leafInvalid && !wrapperOnlyInvalid) continue;
     let label = "";
     let scan = el;
     for (let i = 0; i < 4 && scan && !label; i++) {
@@ -2246,7 +2261,26 @@ async function executeStepWithHealing(params: {
               if (ancWrapper) input = ancWrapper.querySelector('input[type="radio"], input[type="checkbox"]');
             }
             if (!input && start.querySelector) {
-              input = start.querySelector('input[type="radio"], input[type="checkbox"]');
+              // Bound the descendant search to the nearest single-question
+              // container so a broad start (form, <ol>, <fieldset> wrapping
+              // the whole form) cannot reach the FIRST radio anywhere in
+              // the form — which is almost always "Yes" of some unrelated
+              // question. Verified against run bu15gcpy2 dump-048
+              // chronology: cascade replan #5's step 48 ("fill any invalid
+              // field") healed via structured-click + htmlDelta=1167
+              // between dumps 045 (no follow-up textbox) and 048 (follow-
+              // up textbox present), flipping RelatedToEmployee No → Yes
+              // and mounting an empty conditional textbox that became the
+              // run's 2nd validation error (GA validationErrorsCount
+              // jumped 1 → 2 at exactly 05:49:23). If the bounded scope
+              // returns null the probe falls through to safer cascade
+              // techniques rather than picking a wrong target.
+              const scope = start.closest
+                ? start.closest("li, app-radio-group, app-checkbox-group, mat-radio-group, fieldset[role='radiogroup'], [role='radiogroup']")
+                : null;
+              if (scope) {
+                input = scope.querySelector('input[type="radio"], input[type="checkbox"]');
+              }
             }
             if (!input) return { resolved: true, isCheckable: false };
             // Strategy 1: label[for=id]
