@@ -56,6 +56,7 @@ vi.mock("@/lib/telemetry/call-capture", () => ({
 import type { LlmCallInput } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
 import {
+  dedupeConsecutiveIdentical,
   denormalizeStep,
   type InvalidFormControl,
   type NormalizedStep,
@@ -690,5 +691,62 @@ describe("recon-browser/narrowInvalidFormControl", () => {
     };
     const out: InvalidFormControl | null = narrowInvalidFormControl(raw);
     expect(out).not.toBeNull();
+  });
+});
+
+describe("recon-browser/dedupeConsecutiveIdentical", () => {
+  it("collapses consecutive identical strings", () => {
+    expect(dedupeConsecutiveIdentical(["A", "B", "B", "B", "C", "B", "B"])).toEqual([
+      "A",
+      "B",
+      "C",
+      "B",
+    ]);
+  });
+
+  it("returns empty array for empty input", () => {
+    expect(dedupeConsecutiveIdentical([])).toEqual([]);
+  });
+
+  it("returns single-item array unchanged", () => {
+    expect(dedupeConsecutiveIdentical(["only"])).toEqual(["only"]);
+  });
+
+  it("collapses an all-identical run to a single entry", () => {
+    expect(dedupeConsecutiveIdentical(["X", "X", "X", "X"])).toEqual(["X"]);
+  });
+
+  it("preserves non-adjacent duplicates", () => {
+    expect(dedupeConsecutiveIdentical(["A", "B", "A", "B", "A"])).toEqual([
+      "A",
+      "B",
+      "A",
+      "B",
+      "A",
+    ]);
+  });
+
+  it("compares objects structurally via JSON-stringify equality", () => {
+    const stepA = { step: "Fill First Name", optional: true };
+    const stepB = { step: "Fill Last Name", optional: true };
+    expect(dedupeConsecutiveIdentical([stepA, { ...stepA }, stepA, stepB, stepB])).toEqual([
+      stepA,
+      stepB,
+    ]);
+  });
+
+  it("does NOT collapse a string and an object with the same instruction (different semantics)", () => {
+    // Bare string = required step; object form = could be optional/upload.
+    // These are NOT identical even when text matches.
+    const bare = "Fill First Name";
+    const objForm = { step: "Fill First Name", optional: true };
+    expect(dedupeConsecutiveIdentical([bare, objForm])).toEqual([bare, objForm]);
+  });
+
+  it("returns a new array, not the input reference", () => {
+    const input = ["A", "B"];
+    const out = dedupeConsecutiveIdentical(input);
+    expect(out).not.toBe(input);
+    expect(out).toEqual(input);
   });
 });

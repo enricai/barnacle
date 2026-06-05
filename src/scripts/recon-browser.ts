@@ -663,6 +663,37 @@ function denormalizeStep(
 }
 
 /**
+ * Collapse any consecutive run of structurally-identical denormalized
+ * steps into a single entry. Used by `persistReplannedFlow` before write-
+ * back so cumulative-replan noise (each cascade-exhausted replan adds the
+ * same recovery bridge to the tail; after 5 replans the persisted file
+ * carries 5 stacked copies) doesn't pollute the on-disk flow.
+ *
+ * Comparison is structural via JSON-stringify equality:
+ * - Two strings with the same value collapse.
+ * - Two objects with the same {step, optional, upload} collapse.
+ * - A string and an object with the same instruction do NOT collapse — they
+ *   are semantically different (bare = required, object = could be optional
+ *   or upload).
+ *
+ * Only CONSECUTIVE duplicates collapse. A non-adjacent repeat is preserved
+ * since flow authors sometimes intentionally re-fill a field after a
+ * downstream interaction (e.g. re-fill First Name after the resume upload
+ * triggers an Angular re-render). Adjacent duplicates are almost always
+ * accumulation noise from successive replans converging on the same idea.
+ */
+function dedupeConsecutiveIdentical<T>(items: T[]): T[] {
+  if (items.length < 2) return [...items];
+  const out: T[] = [items[0]!];
+  for (let i = 1; i < items.length; i++) {
+    const prev = JSON.stringify(out[out.length - 1]);
+    const curr = JSON.stringify(items[i]);
+    if (prev !== curr) out.push(items[i]!);
+  }
+  return out;
+}
+
+/**
  * Write-back at the end of a successful recon: back up the original file
  * bytes verbatim (so a subtle denormalization bug can never lose the user's
  * hand-authored flow), then write the in-memory plan back out and log a
@@ -716,16 +747,26 @@ function persistReplannedFlow(params: {
   writeFileSync(backupPath, originalBytes);
 
   const denormalizedSteps = finalPlan.map(denormalizeStep);
+  // Cumulative-replan dedupe: each cascade-exhausted replan appends a
+  // recovery bridge to the tail; after several replans the persisted flow
+  // would carry stacked copies of the same bridge. Collapse them so the
+  // user reviewing the diff sees only the distinct LLM-discovered steps.
+  const dedupedSteps = dedupeConsecutiveIdentical(denormalizedSteps);
   // 2-space indent + trailing newline matches the existing on-disk style
   // (verified against site recon-flow.json files).
   const payload =
     originalShape === "object"
       ? {
-          steps: denormalizedSteps,
+          steps: dedupedSteps,
           ...(submitEndpointPattern !== null ? { submitEndpointPattern } : {}),
         }
-      : denormalizedSteps;
+      : dedupedSteps;
   writeFileSync(flowFile, `${JSON.stringify(payload, null, 2)}\n`);
+  if (dedupedSteps.length !== denormalizedSteps.length) {
+    logger.info(
+      `dedupe collapsed ${denormalizedSteps.length - dedupedSteps.length} consecutive identical step(s) before write-back`
+    );
+  }
 
   // Summary log block — emit each line through the Pino logger so the dev
   // transport renders it nicely and the prod JSON output stays structured.
@@ -2943,6 +2984,7 @@ export type { InvalidFormControl, NormalizedStep, ReplanEvent };
 // Test-only exports — allow unit tests to inject a fake capture sink without
 // touching the main() entry-point or the real browser session.
 export {
+  dedupeConsecutiveIdentical,
   denormalizeStep,
   narrowInvalidFormControl,
   persistReplannedFlow,
