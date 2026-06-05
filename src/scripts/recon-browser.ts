@@ -1582,23 +1582,49 @@ interface InvalidFormControl {
    * format). The cascade's pre-submit warning surfaces the empty ones
    * loudly because they are almost always Stagehand re-render victims. */
   emptyOrUnchecked: boolean;
+  /** Set by the probe when it auto-picked a value to clear the
+   * ng-invalid state. Identifies WHAT action was taken so the cascade
+   * can surface a self-heal hint ("the probe auto-picked X for you;
+   * consider adding an explicit step to the flow file"). `null` when no
+   * auto-pick fired (either the control was already valid, or the probe
+   * couldn't find a sensible default). */
+  autoFilled: {
+    action: "selected-radio" | "checked-checkbox" | "filled-text" | "selected-option";
+    value: string;
+  } | null;
 }
 
 /**
  * Trust boundary: static string literal, no interpolation. Runs in browser
  * context. Returns a JSON-serializable shape that the caller type-narrows.
  *
- * Strategy: query each element whose class attribute matches the closed-set
- * of framework-agnostic invalid markers (ng-invalid, mat-form-field-invalid,
- * is-invalid, field-invalid). For each one, walk DOWN to find an
- * `<input>` / `<select>` / `<textarea>` descendant (forms wrap controls in
- * Angular-style `<app-input>` / `<mat-form-field>` containers), then test
- * whether that descendant is empty or unchecked. Label resolution checks
- * (in order) the nearest `<label>`, `aria-label`, `data-id`, and `name`.
+ * Two phases:
+ *   1. SCAN — query each element whose class attribute matches the closed-set
+ *      of framework-agnostic invalid markers (ng-invalid, mat-form-field-invalid,
+ *      is-invalid, field-invalid). For each one, walk DOWN to find an
+ *      `<input>` / `<select>` / `<textarea>` descendant (forms wrap controls
+ *      in Angular-style `<app-input>` / `<mat-form-field>` containers), then
+ *      test whether that descendant is empty or unchecked.
+ *   2. AUTO-PICK — for each empty/unchecked control, take the cheapest action
+ *      that clears the ng-invalid state:
+ *        - radio: click the FIRST radio in the group (any choice is better
+ *          than blocking submit). Dispatches `input`+`change` so Angular's
+ *          FormControl picks up the change.
+ *        - checkbox: click the first available checkbox.
+ *        - text/textarea: set value to "NA" + dispatch `input`+`change`+`blur`.
+ *        - select: pick the first non-empty option.
+ *      Each auto-pick is recorded so the cascade can surface a self-heal
+ *      warning ("you auto-picked X; consider adding an explicit step").
+ *
+ * Label resolution checks (in order) the nearest `<label>`, `aria-label`,
+ * `data-id`, and `name`.
  */
 const FORM_VALIDITY_PROBE_EXPR = `(() => {
   const INVALID_CLASS_RX = /(ng-invalid|mat-form-field-invalid|is-invalid|field-invalid|input-invalid)/;
   const MARKERS = ["ng-invalid", "mat-form-field-invalid", "is-invalid", "field-invalid", "input-invalid", "ng-touched", "ng-dirty"];
+  function fire(el, ev) {
+    try { el.dispatchEvent(new Event(ev, { bubbles: true })); } catch (e) {}
+  }
   const allEls = document.querySelectorAll("[class]");
   const out = [];
   for (const el of allEls) {
@@ -1620,23 +1646,77 @@ const FORM_VALIDITY_PROBE_EXPR = `(() => {
     label = label.replace(/\\s+/g, " ").slice(0, 80);
     const classSignature = cls.split(/\\s+/).filter((c) => MARKERS.includes(c)).slice(0, 4).join(" ");
     let emptyOrUnchecked = false;
+    let autoFilled = null;
     const tag = ctrl.tagName.toLowerCase();
     if (tag === "input") {
       const type = (ctrl.getAttribute("type") || "text").toLowerCase();
-      if (type === "radio" || type === "checkbox") {
+      if (type === "radio") {
         emptyOrUnchecked = !ctrl.checked;
+        if (emptyOrUnchecked) {
+          // Click the first radio in this group (radio groups share a name
+          // OR live under a common ng-invalid container). Prefer the
+          // container's first radio descendant so labeled groups stay
+          // intact.
+          const firstRadio = el.querySelector('input[type="radio"]') || ctrl;
+          try {
+            firstRadio.click();
+            fire(firstRadio, "input");
+            fire(firstRadio, "change");
+            const rlbl = (firstRadio.getAttribute("aria-label") || firstRadio.value || "first option").toString();
+            autoFilled = { action: "selected-radio", value: rlbl.slice(0, 60) };
+          } catch (e) {}
+        }
+      } else if (type === "checkbox") {
+        emptyOrUnchecked = !ctrl.checked;
+        if (emptyOrUnchecked) {
+          try {
+            ctrl.click();
+            fire(ctrl, "input");
+            fire(ctrl, "change");
+            autoFilled = { action: "checked-checkbox", value: "true" };
+          } catch (e) {}
+        }
       } else {
         emptyOrUnchecked = !ctrl.value;
+        if (emptyOrUnchecked) {
+          try {
+            ctrl.value = "NA";
+            fire(ctrl, "input");
+            fire(ctrl, "change");
+            fire(ctrl, "blur");
+            autoFilled = { action: "filled-text", value: "NA" };
+          } catch (e) {}
+        }
       }
     } else if (tag === "select") {
       emptyOrUnchecked = !ctrl.value;
+      if (emptyOrUnchecked) {
+        try {
+          const firstOption = Array.from(ctrl.options || []).find((o) => o.value);
+          if (firstOption) {
+            ctrl.value = firstOption.value;
+            fire(ctrl, "input");
+            fire(ctrl, "change");
+            autoFilled = { action: "selected-option", value: (firstOption.textContent || firstOption.value).slice(0, 60) };
+          }
+        } catch (e) {}
+      }
     } else if (tag === "textarea") {
       emptyOrUnchecked = !ctrl.value;
+      if (emptyOrUnchecked) {
+        try {
+          ctrl.value = "NA";
+          fire(ctrl, "input");
+          fire(ctrl, "change");
+          fire(ctrl, "blur");
+          autoFilled = { action: "filled-text", value: "NA" };
+        } catch (e) {}
+      }
     }
-    out.push({ label, classSignature, emptyOrUnchecked, _el: el });
+    out.push({ label, classSignature, emptyOrUnchecked, autoFilled, _el: el });
   }
   // Strip the DOM reference before serialization.
-  return out.slice(0, 12).map((e) => ({ label: e.label, classSignature: e.classSignature, emptyOrUnchecked: e.emptyOrUnchecked }));
+  return out.slice(0, 12).map((e) => ({ label: e.label, classSignature: e.classSignature, emptyOrUnchecked: e.emptyOrUnchecked, autoFilled: e.autoFilled }));
 })()`;
 
 /**
@@ -1652,6 +1732,47 @@ const FORM_VALIDITY_PROBE_EXPR = `(() => {
  * inject structured warnings into the cascade's failureReasons array.
  * Pure read — no side effects on the page.
  */
+/**
+ * Type-narrow a raw page.evaluate payload entry into a typed
+ * `InvalidFormControl`. Exported for unit testing — the browser-context
+ * expression is hard to unit-test directly, but the narrowing happens on
+ * the Node side and is the source of any bugs that would silently coerce
+ * a malformed entry into a valid record.
+ *
+ * Returns null when the entry is missing required fields or has the wrong
+ * shape. Defensive about `autoFilled` (allowed to be null OR a typed
+ * action+value object; anything else becomes null).
+ */
+function narrowInvalidFormControl(entry: unknown): InvalidFormControl | null {
+  if (
+    entry === null ||
+    typeof entry !== "object" ||
+    !("label" in entry) ||
+    !("classSignature" in entry) ||
+    !("emptyOrUnchecked" in entry) ||
+    typeof (entry as { label: unknown }).label !== "string" ||
+    typeof (entry as { classSignature: unknown }).classSignature !== "string" ||
+    typeof (entry as { emptyOrUnchecked: unknown }).emptyOrUnchecked !== "boolean"
+  ) {
+    return null;
+  }
+  const af = (entry as { autoFilled?: unknown }).autoFilled;
+  const narrowedAutoFilled =
+    af !== null &&
+    typeof af === "object" &&
+    af !== undefined &&
+    "action" in af &&
+    "value" in af &&
+    typeof (af as { action: unknown }).action === "string" &&
+    typeof (af as { value: unknown }).value === "string"
+      ? (af as InvalidFormControl["autoFilled"])
+      : null;
+  return {
+    ...(entry as Omit<InvalidFormControl, "autoFilled">),
+    autoFilled: narrowedAutoFilled,
+  };
+}
+
 async function probeFormValidityBeforeSubmit(params: {
   page: Page;
   stepIndex: number;
@@ -1663,22 +1784,15 @@ async function probeFormValidityBeforeSubmit(params: {
     if (!Array.isArray(raw)) return [];
     const out: InvalidFormControl[] = [];
     for (const entry of raw) {
-      if (
-        entry !== null &&
-        typeof entry === "object" &&
-        "label" in entry &&
-        "classSignature" in entry &&
-        "emptyOrUnchecked" in entry &&
-        typeof (entry as { label: unknown }).label === "string" &&
-        typeof (entry as { classSignature: unknown }).classSignature === "string" &&
-        typeof (entry as { emptyOrUnchecked: unknown }).emptyOrUnchecked === "boolean"
-      ) {
-        out.push(entry as InvalidFormControl);
+      const narrowed = narrowInvalidFormControl(entry);
+      if (narrowed !== null) {
+        out.push(narrowed);
       }
     }
+    const autoCount = out.filter((e) => e.autoFilled !== null).length;
     if (out.length > 0) {
       logger.info(
-        `step ${stepIndex + 1} pre-submit probe: ${out.length} ng-invalid form control(s) detected; empty=${out.filter((e) => e.emptyOrUnchecked).length}`
+        `step ${stepIndex + 1} pre-submit probe: ${out.length} ng-invalid form control(s) detected; empty=${out.filter((e) => e.emptyOrUnchecked).length}; auto-picked=${autoCount}`
       );
     } else {
       logger.info(`step ${stepIndex + 1} pre-submit probe: no ng-invalid form controls detected`);
@@ -1834,8 +1948,18 @@ async function executeStepWithHealing(params: {
       logger,
     });
     for (const c of invalidControls) {
-      const emptyMarker = c.emptyOrUnchecked ? "empty/unchecked" : "non-empty but invalid";
-      const reason = `pre-submit: '${c.label}' is ${emptyMarker} (${c.classSignature || "ng-invalid"}); fill or correct before clicking submit`;
+      let reason: string;
+      if (c.autoFilled !== null) {
+        // The probe took action — surface what it did so the cascade's
+        // self-heal can persist this as an explicit flow step on the
+        // next replan. This is the signal the user explicitly asked
+        // for: "surface any missing values so that recon can self heal
+        // the recon-flow.json too."
+        reason = `auto-filled: '${c.label}' ${c.autoFilled.action} → '${c.autoFilled.value}' to clear ng-invalid state — consider adding an explicit step in the flow file for this field`;
+      } else {
+        const emptyMarker = c.emptyOrUnchecked ? "empty/unchecked" : "non-empty but invalid";
+        reason = `pre-submit: '${c.label}' is ${emptyMarker} (${c.classSignature || "ng-invalid"}); fill or correct before clicking submit`;
+      }
       failureReasons.push(reason);
       // Synthesize a pre-attempt record so the dump's `attempts[]` array
       // (which readFailureDumpEvidence reads to build recentFailureReasons)
@@ -1862,6 +1986,14 @@ async function executeStepWithHealing(params: {
         resolvedArguments: null,
         verifiedBy: null,
       });
+    }
+    // Brief settle window after auto-picks so Angular's change-detection
+    // and any downstream API calls (postal_code_geocoder, interruption_check,
+    // ...) finish before the cascade clicks submit. Empirically zone.js
+    // change detection completes in <250ms after a programmatic value+change
+    // dispatch; 500ms covers the long tail including downstream XHRs.
+    if (invalidControls.some((c) => c.autoFilled !== null)) {
+      await page.waitForTimeout(500);
     }
   }
 
@@ -2528,6 +2660,15 @@ async function main(): Promise<void> {
   // loads — see the comment in wireNetworkCapture's onFinished.
   const recentCaptureMeta: { method: string; status: number; url: string }[] = [];
 
+  // Hoisted out of the try block so the finally can run the replan
+  // write-back even when the cascade throws — replan-discovered steps
+  // accumulated up to the failure point should survive a cascade-exhausted
+  // exit so the user can review them and the next run starts where this
+  // one left off. The "only on success" gate before was the reason most
+  // recon discoveries got thrown away on failed runs.
+  const plan: NormalizedStep[] = [];
+  const replanEvents: ReplanEvent[] = [];
+
   try {
     const stagehand = session.stagehand;
     const page = await stagehand.context.awaitActivePage();
@@ -2565,11 +2706,10 @@ async function main(): Promise<void> {
       );
     }
 
-    const plan: NormalizedStep[] = [...flow];
+    plan.push(...flow);
     const completedSteps: string[] = [];
     let probeReplansUsed = 0;
     let cascadeReplansUsed = 0;
-    const replanEvents: ReplanEvent[] = [];
 
     for (let i = 0; i < plan.length; i++) {
       const step = plan[i]!;
@@ -2732,33 +2872,42 @@ async function main(): Promise<void> {
 
     stopCapture();
     logger.info(`recon complete — ${counter.n} captures written to ${CAPTURES_DIR}`);
-
-    // Replay-the-discovered-path: if any replan fired and the user provided a
-    // flow file, write the improved plan back so the next run starts where
-    // this one ended up. Skipped on --no-save-replan (diagnostic dry-runs)
-    // and when --flow was used inline (no file to write back to).
+  } finally {
+    // Replay-the-discovered-path: if any replan fired and the user provided
+    // a flow file, write the improved plan back so the next run starts
+    // where this one ended up. Runs INSIDE finally so the cascade's
+    // discoveries survive cascade-exhausted exits too — the persistence
+    // mechanism is the way recon self-heals the flow across runs, so it
+    // needs to fire on failure as much as on success. Skipped on
+    // --no-save-replan (diagnostic dry-runs) and when --flow was used
+    // inline (no file to write back to).
     if (replanEvents.length > 0) {
       if (!saveReplan) {
         logger.info(
-          `run completed with ${replanEvents.length} replan event(s); --no-save-replan, leaving flow.json unchanged`
+          `run done with ${replanEvents.length} replan event(s); --no-save-replan, leaving flow.json unchanged`
         );
       } else if (!flowFile) {
         logger.info(
-          `run completed with ${replanEvents.length} replan event(s); --flow used (no file to write back to)`
+          `run done with ${replanEvents.length} replan event(s); --flow used (no file to write back to)`
         );
       } else {
-        logger.info(`run completed; writing flow.json with ${replanEvents.length} replan event(s)`);
-        persistReplannedFlow({
-          flowFile,
-          finalPlan: plan,
-          replanEvents,
-          logger,
-          originalShape,
-          submitEndpointPattern,
-        });
+        logger.info(`run done; writing flow.json with ${replanEvents.length} replan event(s)`);
+        try {
+          persistReplannedFlow({
+            flowFile,
+            finalPlan: plan,
+            replanEvents,
+            logger,
+            originalShape,
+            submitEndpointPattern,
+          });
+        } catch (err) {
+          // Persistence is best-effort in the finally block — a write
+          // failure here must not eat the original cascade error.
+          logger.error(`persistReplannedFlow threw in finally: ${toErrorMessage(err)}`);
+        }
       }
     }
-  } finally {
     await session.close();
   }
 }
@@ -2777,11 +2926,12 @@ if (
   });
 }
 
-export type { NormalizedStep, ReplanEvent };
+export type { InvalidFormControl, NormalizedStep, ReplanEvent };
 // Test-only exports — allow unit tests to inject a fake capture sink without
 // touching the main() entry-point or the real browser session.
 export {
   denormalizeStep,
+  narrowInvalidFormControl,
   persistReplannedFlow,
   readFailureDumpEvidence,
   rephraseWithLLM,

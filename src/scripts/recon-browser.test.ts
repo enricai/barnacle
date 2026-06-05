@@ -57,7 +57,9 @@ import type { LlmCallInput } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
 import {
   denormalizeStep,
+  type InvalidFormControl,
   type NormalizedStep,
+  narrowInvalidFormControl,
   persistReplannedFlow,
   type ReplanEvent,
   readFailureDumpEvidence,
@@ -607,5 +609,86 @@ describe("recon-browser/readFailureDumpEvidence", () => {
     const result = readFailureDumpEvidence(dumpPath);
     const lines = result.invalidFieldList.split("\n");
     expect(lines.length).toBeLessThanOrEqual(12);
+  });
+});
+
+describe("recon-browser/narrowInvalidFormControl", () => {
+  // The pre-submit probe runs in browser context via page.evaluate. The
+  // Node side narrows the raw JS payload into a typed `InvalidFormControl`
+  // record — these tests exercise that narrowing directly so we catch
+  // schema-skew bugs without spinning up a real browser.
+
+  it("narrows a complete entry with no auto-pick", () => {
+    const raw = {
+      label: "Legal First Name",
+      classSignature: "ng-invalid ng-touched",
+      emptyOrUnchecked: true,
+      autoFilled: null,
+    };
+    const out = narrowInvalidFormControl(raw);
+    expect(out).not.toBeNull();
+    expect(out?.label).toBe("Legal First Name");
+    expect(out?.emptyOrUnchecked).toBe(true);
+    expect(out?.autoFilled).toBeNull();
+  });
+
+  it("narrows a complete entry with an auto-pick payload", () => {
+    const raw = {
+      label: "Gender",
+      classSignature: "ng-invalid",
+      emptyOrUnchecked: true,
+      autoFilled: { action: "selected-radio", value: "Male" },
+    };
+    const out = narrowInvalidFormControl(raw);
+    expect(out?.autoFilled).toEqual({ action: "selected-radio", value: "Male" });
+  });
+
+  it("returns null when required fields are missing", () => {
+    expect(narrowInvalidFormControl({ label: "X" })).toBeNull();
+    expect(
+      narrowInvalidFormControl({ label: "X", classSignature: "y", emptyOrUnchecked: "not-a-bool" })
+    ).toBeNull();
+    expect(narrowInvalidFormControl(null)).toBeNull();
+    expect(narrowInvalidFormControl("string")).toBeNull();
+  });
+
+  it("normalizes a malformed autoFilled to null without dropping the rest", () => {
+    // Malformed autoFilled (string instead of object) should NOT poison
+    // the record — the field still carries valid label/classSignature/etc.,
+    // we just lose the auto-pick claim.
+    const raw = {
+      label: "Phone",
+      classSignature: "ng-invalid",
+      emptyOrUnchecked: false,
+      autoFilled: "wrong-shape",
+    };
+    const out = narrowInvalidFormControl(raw);
+    expect(out).not.toBeNull();
+    expect(out?.label).toBe("Phone");
+    expect(out?.autoFilled).toBeNull();
+  });
+
+  it("normalizes an autoFilled missing action/value fields to null", () => {
+    const raw = {
+      label: "ZIP",
+      classSignature: "ng-invalid",
+      emptyOrUnchecked: true,
+      autoFilled: { value: "NA" }, // missing action
+    };
+    const out = narrowInvalidFormControl(raw);
+    expect(out?.autoFilled).toBeNull();
+  });
+
+  it("type-narrowed result satisfies the public InvalidFormControl type", () => {
+    // Compile-time check + structural assertion. If the type ever drifts
+    // away from what narrowInvalidFormControl produces, this fails.
+    const raw = {
+      label: "L",
+      classSignature: "s",
+      emptyOrUnchecked: true,
+      autoFilled: { action: "filled-text", value: "NA" },
+    };
+    const out: InvalidFormControl | null = narrowInvalidFormControl(raw);
+    expect(out).not.toBeNull();
   });
 });
