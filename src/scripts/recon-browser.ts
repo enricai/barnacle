@@ -1737,24 +1737,21 @@ const FORM_VALIDITY_PROBE_EXPR = `(() => {
     if (!ctrl) continue;
     // Accept two distinct invalid signatures:
     //
-    // 1. Leaf-invalid (Angular reactive forms decorating the <input>):
-    //    the control's OWN class carries ng-invalid.
+    // 1. Leaf-invalid: the control's own class carries ng-invalid
+    //    (Angular reactive forms decorating the <input> directly).
     //
-    // 2. Wrapper-only invalid (Material/Angular custom wrappers like
-    //    <mat-form-field>, <app-input uappaddresssearch>): the wrapper
-    //    carries the marker but the inner <input> stays ng-pristine
-    //    ng-untouched because the user has never focused it. This is
-    //    the structural pattern for required-but-unfilled fields in
-    //    Material/AppCast forms. The pre-submit probe was structurally
-    //    blind to these — verified by run bu15gcpy2 where GA's
-    //    validationErrorsCount=1 fired from the very first submit at
-    //    05:29 yet the probe reported "no ng-invalid form controls".
+    // 2. Wrapper-only invalid: an outer wrapper (<mat-form-field>,
+    //    custom <app-*> widgets) carries the marker while the inner
+    //    control stays ng-pristine ng-untouched — the structural
+    //    pattern for required-but-unfilled fields under Material /
+    //    Angular custom widgets.
     //
-    // The wrapper-only branch must ALSO require the inner control to
-    // be empty/unset — without that the outer <ol class="questions-
-    // container ng-invalid"> case re-enters as a false positive
-    // (already-filled First Name input under an ng-invalid <ol>
-    // because a sibling field is invalid).
+    // The wrapper-only branch MUST also require the inner control to
+    // be empty. Without that constraint, an outer container's
+    // ng-invalid (propagated from a sibling field) would mark its
+    // first descendant input as invalid even when that input is
+    // already filled — re-introducing the false positive the leaf-
+    // only check was originally added to eliminate.
     const ctrlClass = ctrl.getAttribute("class") || "";
     const leafInvalid = INVALID_CLASS_RX.test(ctrlClass);
     const wrapperOnlyInvalid =
@@ -2262,19 +2259,13 @@ async function executeStepWithHealing(params: {
             }
             if (!input && start.querySelector) {
               // Bound the descendant search to the nearest single-question
-              // container so a broad start (form, <ol>, <fieldset> wrapping
-              // the whole form) cannot reach the FIRST radio anywhere in
-              // the form — which is almost always "Yes" of some unrelated
-              // question. Verified against run bu15gcpy2 dump-048
-              // chronology: cascade replan #5's step 48 ("fill any invalid
-              // field") healed via structured-click + htmlDelta=1167
-              // between dumps 045 (no follow-up textbox) and 048 (follow-
-              // up textbox present), flipping RelatedToEmployee No → Yes
-              // and mounting an empty conditional textbox that became the
-              // run's 2nd validation error (GA validationErrorsCount
-              // jumped 1 → 2 at exactly 05:49:23). If the bounded scope
-              // returns null the probe falls through to safer cascade
-              // techniques rather than picking a wrong target.
+              // container so a broad start element (form, <ol>, fieldset
+              // wrapping the whole form) cannot reach the first radio
+              // anywhere in the form — which is almost always "Yes" of an
+              // unrelated question, and would silently flip a previously-
+              // answered radio with an unrelated instruction. If the
+              // bounded scope returns null the cascade falls through to
+              // safer techniques rather than picking a wrong target.
               const scope = start.closest
                 ? start.closest("li, app-radio-group, app-checkbox-group, mat-radio-group, fieldset[role='radiogroup'], [role='radiogroup']")
                 : null;
