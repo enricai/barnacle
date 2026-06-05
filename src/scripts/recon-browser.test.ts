@@ -192,6 +192,46 @@ describe("rephraseWithLLM — capture instrumentation", () => {
     expect(typeof calls[0]?.callId).toBe("string");
     expect((calls[0]?.callId ?? "").length).toBeGreaterThan(0);
   });
+
+  it("includes the ng-invalid evidence section when pageEvidence is supplied", async () => {
+    const client = makeAnthropicClient(
+      "Re-fill the Legal First Name field with the candidate's first name"
+    );
+    const { fn, calls } = makeCaptureFn();
+
+    await rephraseWithLLM(
+      client,
+      "Click the Submit Application button",
+      [],
+      [],
+      ["no observable effect"],
+      fn,
+      {
+        invalidFieldList: "1. Legal First Name <app-input>  [ng-invalid]",
+        errorTextList: "1. This field is required.",
+      }
+    );
+
+    const prompt = calls[0]?.userContent ?? "";
+    expect(prompt).toContain("FORM FIELDS CURRENTLY MARKED INVALID");
+    expect(prompt).toContain("Legal First Name");
+    expect(prompt).toContain("VISIBLE ERROR / REQUIRED-FIELD MESSAGES");
+    expect(prompt).toContain("This field is required");
+  });
+
+  it("renders the new evidence sections as '(none)' when no pageEvidence is supplied (back-compat)", async () => {
+    const client = makeAnthropicClient("Click the Submit button using the form's submit handler");
+    const { fn, calls } = makeCaptureFn();
+
+    await rephraseWithLLM(client, "Click Submit", [], [], ["no observable effect"], fn);
+
+    const prompt = calls[0]?.userContent ?? "";
+    // The two new sections always render — empty when no evidence is supplied
+    // so the prompt schema is consistent across runs with and without evidence.
+    expect(prompt).toContain("FORM FIELDS CURRENTLY MARKED INVALID");
+    expect(prompt).toMatch(/FORM FIELDS CURRENTLY MARKED INVALID[^\n]*\n[^\n]*\(none\)/);
+    expect(prompt).toContain("VISIBLE ERROR / REQUIRED-FIELD MESSAGES");
+  });
 });
 
 // ─── denormalizeStep + persistReplannedFlow ──────────────────────────────────

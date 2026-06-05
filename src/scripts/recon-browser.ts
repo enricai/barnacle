@@ -463,7 +463,18 @@ async function rephraseWithLLM(
   triedSelectors: string[],
   observeCandidates: Action[],
   failureReasons: string[],
-  captureFn: CaptureFn = captureLlmCall
+  captureFn: CaptureFn = captureLlmCall,
+  /**
+   * Optional live-page form evidence extracted by the caller (typically by
+   * fetching document.body.outerHTML and running extractClassMatchedText on
+   * it). When non-empty, surfaces ng-invalid form fields and visible error
+   * messages so the rephrase LLM can propose corrective fills instead of
+   * just "click harder" — the previous limitation observed in the
+   * telemetry of the appcast Encompass run (every rephrase converged on
+   * "Click Submit Application using JavaScript" because the prompt had no
+   * signal that the form was invalid).
+   */
+  pageEvidence?: { invalidFieldList: string; errorTextList: string }
 ): Promise<string | null> {
   const candidateList = observeCandidates
     .slice(0, 12)
@@ -471,6 +482,8 @@ async function rephraseWithLLM(
     .join("\n");
   const triedList = triedSelectors.length > 0 ? triedSelectors.join("\n") : "(none)";
   const reasonList = failureReasons.map((r, i) => `attempt ${i + 1}: ${r}`).join("\n");
+  const invalidFieldList = pageEvidence?.invalidFieldList ?? "";
+  const errorTextList = pageEvidence?.errorTextList ?? "";
 
   const prompt = `You are helping a browser automation agent recover from a failed step in a recon flow.
 
@@ -486,7 +499,13 @@ ${triedList}
 ELEMENTS CURRENTLY VISIBLE ON THE PAGE:
 ${candidateList || "(no candidates returned by observe)"}
 
-Rewrite the instruction so a Stagehand act() call can resolve it unambiguously to a different element than the ones already tried. Keep it short — one sentence, natural language, no quotes around it. If the original instruction is itself impossible on the current page (the element does not exist), reply with the literal string IMPOSSIBLE so the caller can stop trying.`;
+FORM FIELDS CURRENTLY MARKED INVALID (text + class signature for any element whose class matches the framework-agnostic invalid pattern — ng-invalid, mat-form-field-invalid, is-invalid, etc. — use this to detect "filled a field, then a downstream re-render wiped it" patterns where the verifier reports no observable effect but the form is actually invalid):
+${invalidFieldList || "(none)"}
+
+VISIBLE ERROR / REQUIRED-FIELD MESSAGES ON THE PAGE (extracted text from error-class containers):
+${errorTextList || "(none)"}
+
+Rewrite the instruction so a Stagehand act() call can resolve it unambiguously to a different element than the ones already tried. Keep it short — one sentence, natural language, no quotes around it. If the invalid-fields section above names a field, your rewrite SHOULD address that field (e.g. re-fill it) rather than retrying the original click. If the original instruction is itself impossible on the current page (the element does not exist), reply with the literal string IMPOSSIBLE so the caller can stop trying.`;
 
   const model = anthropicModelName();
   const t0 = performance.now();
@@ -819,6 +838,38 @@ function extractClassMatchedText(html: string, classPattern: RegExp, cap: number
     m = tagPattern.exec(html);
   }
   return entries;
+}
+
+/**
+ * Live-page sibling to `readFailureDumpEvidence` — fetches the current
+ * page body and runs the same framework-agnostic class scans. Used by the
+ * cascade's per-attempt rephrase path, which fires BEFORE the failure dump
+ * is written (the dump only happens after the whole cascade exhausts) and
+ * therefore can't read from disk.
+ *
+ * Returns empty strings on any failure (page.evaluate threw, body missing,
+ * etc.) — evidence is advisory, never load-bearing.
+ */
+async function extractLivePageFormEvidence(
+  page: Page
+): Promise<{ invalidFieldList: string; errorTextList: string }> {
+  let body = "";
+  try {
+    const raw = await page.evaluate("document.body ? document.body.outerHTML : null");
+    if (typeof raw === "string") body = raw;
+  } catch {
+    return { invalidFieldList: "", errorTextList: "" };
+  }
+  const invalidPattern =
+    /(ng-invalid|mat-form-field-invalid|is-invalid|field-invalid|input-invalid|form-invalid)/;
+  const errorPattern =
+    /(error-message|mat-error|field-error|validation-error|required-message|invalid-feedback|form-error|help-block-error)/;
+  const invalidEntries = extractClassMatchedText(body, invalidPattern, EVIDENCE_LIST_CAP);
+  const errorEntries = extractClassMatchedText(body, errorPattern, EVIDENCE_LIST_CAP);
+  return {
+    invalidFieldList: invalidEntries.map((e, i) => `${i + 1}. ${e}`).join("\n"),
+    errorTextList: errorEntries.map((e, i) => `${i + 1}. ${e}`).join("\n"),
+  };
 }
 
 function readFailureDumpEvidence(failureDumpPath: string): {
@@ -1516,6 +1567,131 @@ async function verifyDomEffect(page: Page, action: Action): Promise<boolean> {
  * probe lets us fail fast and feed the replanner a clean "no candidates"
  * signal instead of "all 4 attempts failed."
  */
+/** One entry per ng-invalid form control found by the pre-submit probe. */
+interface InvalidFormControl {
+  /** Human-readable label associated with the field — element's nearest
+   * `<label>` text, or the value of `aria-label` / `data-id` / `name`. */
+  label: string;
+  /** Compact class signature naming the framework-specific marker that
+   * matched, e.g. `ng-invalid ng-touched`. Helps the LLM correlate
+   * "user-interacted + still invalid" patterns. */
+  classSignature: string;
+  /** True when the underlying control is *empty* (text input value is "",
+   * radio/checkbox is unchecked, select has no chosen option). False
+   * means the field is non-empty but still marked invalid (e.g. wrong
+   * format). The cascade's pre-submit warning surfaces the empty ones
+   * loudly because they are almost always Stagehand re-render victims. */
+  emptyOrUnchecked: boolean;
+}
+
+/**
+ * Trust boundary: static string literal, no interpolation. Runs in browser
+ * context. Returns a JSON-serializable shape that the caller type-narrows.
+ *
+ * Strategy: query each element whose class attribute matches the closed-set
+ * of framework-agnostic invalid markers (ng-invalid, mat-form-field-invalid,
+ * is-invalid, field-invalid). For each one, walk DOWN to find an
+ * `<input>` / `<select>` / `<textarea>` descendant (forms wrap controls in
+ * Angular-style `<app-input>` / `<mat-form-field>` containers), then test
+ * whether that descendant is empty or unchecked. Label resolution checks
+ * (in order) the nearest `<label>`, `aria-label`, `data-id`, and `name`.
+ */
+const FORM_VALIDITY_PROBE_EXPR = `(() => {
+  const INVALID_CLASS_RX = /(ng-invalid|mat-form-field-invalid|is-invalid|field-invalid|input-invalid)/;
+  const MARKERS = ["ng-invalid", "mat-form-field-invalid", "is-invalid", "field-invalid", "input-invalid", "ng-touched", "ng-dirty"];
+  const allEls = document.querySelectorAll("[class]");
+  const out = [];
+  for (const el of allEls) {
+    const cls = el.getAttribute("class") || "";
+    if (!INVALID_CLASS_RX.test(cls)) continue;
+    // De-dupe: skip ancestors of an already-recorded element so we don't
+    // record the outer questions-container AND its invalid <li> child.
+    if (out.some((e) => e._el && el.contains(e._el))) continue;
+    const ctrl = el.matches("input,select,textarea") ? el : el.querySelector("input,select,textarea");
+    if (!ctrl) continue;
+    let label = "";
+    let scan = el;
+    for (let i = 0; i < 4 && scan && !label; i++) {
+      const lbl = scan.querySelector("label");
+      if (lbl && lbl.textContent) label = lbl.textContent.trim();
+      scan = scan.parentElement;
+    }
+    if (!label) label = el.getAttribute("aria-label") || el.getAttribute("data-id") || ctrl.getAttribute("name") || ctrl.getAttribute("id") || "(unlabeled)";
+    label = label.replace(/\\s+/g, " ").slice(0, 80);
+    const classSignature = cls.split(/\\s+/).filter((c) => MARKERS.includes(c)).slice(0, 4).join(" ");
+    let emptyOrUnchecked = false;
+    const tag = ctrl.tagName.toLowerCase();
+    if (tag === "input") {
+      const type = (ctrl.getAttribute("type") || "text").toLowerCase();
+      if (type === "radio" || type === "checkbox") {
+        emptyOrUnchecked = !ctrl.checked;
+      } else {
+        emptyOrUnchecked = !ctrl.value;
+      }
+    } else if (tag === "select") {
+      emptyOrUnchecked = !ctrl.value;
+    } else if (tag === "textarea") {
+      emptyOrUnchecked = !ctrl.value;
+    }
+    out.push({ label, classSignature, emptyOrUnchecked, _el: el });
+  }
+  // Strip the DOM reference before serialization.
+  return out.slice(0, 12).map((e) => ({ label: e.label, classSignature: e.classSignature, emptyOrUnchecked: e.emptyOrUnchecked }));
+})()`;
+
+/**
+ * Runs ONLY on the cascade's final step when a submitEndpointPattern is
+ * declared. Surfaces ng-invalid form controls (and whether each is empty)
+ * BEFORE the first click attempt, so the cascade's first failure reason
+ * names the real blocker instead of "no observable effect." Empty + invalid
+ * is the signature of "Stagehand filled this earlier but a downstream
+ * Angular/React re-render wiped it" — the issue the LLM-replan cannot
+ * diagnose from observe-list alone.
+ *
+ * Returns the list (potentially empty) so callers can both log it AND
+ * inject structured warnings into the cascade's failureReasons array.
+ * Pure read — no side effects on the page.
+ */
+async function probeFormValidityBeforeSubmit(params: {
+  page: Page;
+  stepIndex: number;
+  logger: Logger;
+}): Promise<InvalidFormControl[]> {
+  const { page, stepIndex, logger } = params;
+  try {
+    const raw = await page.evaluate(FORM_VALIDITY_PROBE_EXPR);
+    if (!Array.isArray(raw)) return [];
+    const out: InvalidFormControl[] = [];
+    for (const entry of raw) {
+      if (
+        entry !== null &&
+        typeof entry === "object" &&
+        "label" in entry &&
+        "classSignature" in entry &&
+        "emptyOrUnchecked" in entry &&
+        typeof (entry as { label: unknown }).label === "string" &&
+        typeof (entry as { classSignature: unknown }).classSignature === "string" &&
+        typeof (entry as { emptyOrUnchecked: unknown }).emptyOrUnchecked === "boolean"
+      ) {
+        out.push(entry as InvalidFormControl);
+      }
+    }
+    if (out.length > 0) {
+      logger.info(
+        `step ${stepIndex + 1} pre-submit probe: ${out.length} ng-invalid form control(s) detected; empty=${out.filter((e) => e.emptyOrUnchecked).length}`
+      );
+    } else {
+      logger.info(`step ${stepIndex + 1} pre-submit probe: no ng-invalid form controls detected`);
+    }
+    return out;
+  } catch (err) {
+    logger.warn(
+      `step ${stepIndex + 1} pre-submit probe threw: ${toErrorMessage(err)} — proceeding without pre-flight evidence`
+    );
+    return [];
+  }
+}
+
 async function probeStepBeforeAttempts(params: {
   stagehand: Stagehand;
   step: string;
@@ -1636,6 +1812,57 @@ async function executeStepWithHealing(params: {
       `step ${stepIndex + 1} (${step.slice(0, 60)}) probe found no candidates on page`,
       "probe-absent"
     );
+  }
+
+  // Pre-submit form-validity probe. Only fires on the final flow step when
+  // the flow declared a submitEndpointPattern (the gate signal for "this
+  // is the submission step"). Finds form controls still marked ng-invalid
+  // (or similar framework markers) and surfaces them as structured
+  // failureReasons before attempt 1. The cascade still runs — the probe
+  // is evidence-only — but the LLM-rephrase and LLM-replan prompts now
+  // start with a concrete diagnosis instead of having to reverse-engineer
+  // "no observable effect."
+  //
+  // The classic trigger: a downstream step's network call causes a
+  // framework re-render that wipes an earlier-filled value back to empty.
+  // The submit click then silently fails validation and the cascade can't
+  // tell what's wrong from the DOM excerpt alone.
+  if (requireSubmitEndpoint) {
+    const invalidControls = await probeFormValidityBeforeSubmit({
+      page,
+      stepIndex,
+      logger,
+    });
+    for (const c of invalidControls) {
+      const emptyMarker = c.emptyOrUnchecked ? "empty/unchecked" : "non-empty but invalid";
+      const reason = `pre-submit: '${c.label}' is ${emptyMarker} (${c.classSignature || "ng-invalid"}); fill or correct before clicking submit`;
+      failureReasons.push(reason);
+      // Synthesize a pre-attempt record so the dump's `attempts[]` array
+      // (which readFailureDumpEvidence reads to build recentFailureReasons)
+      // includes the warning even when no actual attempt has run yet.
+      // Snapshot fields are best-effort: pre/post are the same since no
+      // action ran. resolvedMethod=null marks this as evidence-only.
+      const emptyPre: StepSnapshot = {
+        networkCount: signalCounter.n,
+        url: page.url(),
+        bodyHtmlLength: 0,
+        visibleTextSignature: "",
+      };
+      attempts.push({
+        attempt: 0,
+        technique: "act-string",
+        instruction: null,
+        triedSelectors: [],
+        actResultSuccess: null,
+        actResultDescription: null,
+        errorMessage: reason,
+        pre: emptyPre,
+        post: emptyPre,
+        resolvedMethod: null,
+        resolvedArguments: null,
+        verifiedBy: null,
+      });
+    }
   }
 
   for (let attempt = 1; attempt <= MAX_STEP_ATTEMPTS; attempt++) {
@@ -1844,13 +2071,18 @@ async function executeStepWithHealing(params: {
           const candidates = await stagehand
             .observe(step, { timeout: STEP_WATCHDOG_MS })
             .catch(() => [] as Action[]);
+          // Fetch live-page evidence so the rephrase prompt can reason about
+          // form state, not just observe candidates. Mirrors the same
+          // extraction the cascade-exhaust dump path already does.
+          const livePageEvidence = await extractLivePageFormEvidence(page);
           const rephrased = await rephraseWithLLM(
             anthropic,
             step,
             triedSelectors,
             candidates,
             failureReasons,
-            captureFn
+            captureFn,
+            livePageEvidence
           );
           if (!rephrased) {
             record.errorMessage = "llm declined to rephrase or returned IMPOSSIBLE";
