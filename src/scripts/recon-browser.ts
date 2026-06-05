@@ -1625,13 +1625,26 @@ const FORM_VALIDITY_PROBE_EXPR = `(() => {
   function fire(el, ev) {
     try { el.dispatchEvent(new Event(ev, { bubbles: true })); } catch (e) {}
   }
-  const allEls = document.querySelectorAll("[class]");
+  // Iterate innermost-first: querySelectorAll is document order (outer →
+  // inner), but our dedupe (below) wants to record the most-specific
+  // invalid descendant and skip its outer ancestors. Reversing the order
+  // means the inner <li> lands in \`out\` first, then when the outer
+  // <form> shows up the contains check fires and skips it correctly.
+  // Without this reversal the iteration would record both: when the outer
+  // is hit first \`out\` is empty so it lands; the inner then lands too
+  // because the inner does NOT contain the outer. Confirmed via the
+  // 20:23-21:42 telemetry where the invalidFieldList included 4-6
+  // redundant nested entries that should have been deduped.
+  const allEls = Array.from(document.querySelectorAll("[class]")).reverse();
   const out = [];
   for (const el of allEls) {
     const cls = el.getAttribute("class") || "";
     if (!INVALID_CLASS_RX.test(cls)) continue;
-    // De-dupe: skip ancestors of an already-recorded element so we don't
-    // record the outer questions-container AND its invalid <li> child.
+    // De-dupe: skip the current el when it CONTAINS any already-recorded
+    // element — i.e. \`el\` is an outer ancestor and we already have its
+    // more-specific descendant in \`out\`. Combined with the inner-first
+    // iteration above, this records only the innermost invalid form
+    // control per nested hierarchy.
     if (out.some((e) => e._el && el.contains(e._el))) continue;
     const ctrl = el.matches("input,select,textarea") ? el : el.querySelector("input,select,textarea");
     if (!ctrl) continue;
