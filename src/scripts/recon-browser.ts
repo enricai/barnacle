@@ -474,12 +474,24 @@ async function rephraseWithLLM(
    * "Click Submit Application using JavaScript" because the prompt had no
    * signal that the form was invalid).
    */
-  pageEvidence?: { invalidFieldList: string; errorTextList: string }
+  pageEvidence?: { invalidFieldList: string; errorTextList: string },
+  /**
+   * Optional unfocused observe list. The default `observeCandidates` is
+   * Stagehand's observe filtered by the FAILED STEP'S INSTRUCTION — when
+   * that step is "click submit," candidates collapse to "Submit button"
+   * and any modals/dialogs blocking submit stay invisible to the LLM.
+   * Pass an unfocused observe (stagehand.observe() with no instruction)
+   * here so the rephrase prompt can see ambient UI like modal Save/Close
+   * buttons that the failed step's instruction filter hid. Modal entries
+   * are prioritized to the top by `renderUnfocusedObserve`.
+   */
+  unfocusedObserve?: Action[]
 ): Promise<string | null> {
   const candidateList = observeCandidates
     .slice(0, 12)
     .map((a, i) => `${i + 1}. ${a.description} — ${a.selector}`)
     .join("\n");
+  const unfocusedList = unfocusedObserve ? renderUnfocusedObserve(unfocusedObserve) : "";
   const triedList = triedSelectors.length > 0 ? triedSelectors.join("\n") : "(none)";
   const reasonList = failureReasons.map((r, i) => `attempt ${i + 1}: ${r}`).join("\n");
   const invalidFieldList = pageEvidence?.invalidFieldList ?? "";
@@ -496,8 +508,11 @@ ${reasonList}
 SELECTORS ALREADY TRIED (avoid these):
 ${triedList}
 
-ELEMENTS CURRENTLY VISIBLE ON THE PAGE:
+ELEMENTS CURRENTLY VISIBLE ON THE PAGE (filtered by the failed instruction):
 ${candidateList || "(no candidates returned by observe)"}
+
+UNFOCUSED OBSERVE (what Stagehand sees on the page without any instruction filter — modal/dialog/overlay/popup entries are prioritized; use this to detect blocking UI like open modals with Save buttons that the focused observe above hid):
+${unfocusedList || "(none)"}
 
 FORM FIELDS CURRENTLY MARKED INVALID (text + class signature for any element whose class matches the framework-agnostic invalid pattern — ng-invalid, mat-form-field-invalid, is-invalid, etc. — use this to detect "filled a field, then a downstream re-render wiped it" patterns where the verifier reports no observable effect but the form is actually invalid):
 ${invalidFieldList || "(none)"}
@@ -505,7 +520,7 @@ ${invalidFieldList || "(none)"}
 VISIBLE ERROR / REQUIRED-FIELD MESSAGES ON THE PAGE (extracted text from error-class containers):
 ${errorTextList || "(none)"}
 
-Rewrite the instruction so a Stagehand act() call can resolve it unambiguously to a different element than the ones already tried. Keep it short — one sentence, natural language, no quotes around it. If the invalid-fields section above names a field, your rewrite SHOULD address that field (e.g. re-fill it) rather than retrying the original click. If the original instruction is itself impossible on the current page (the element does not exist), reply with the literal string IMPOSSIBLE so the caller can stop trying.`;
+Rewrite the instruction so a Stagehand act() call can resolve it unambiguously to a different element than the ones already tried. Keep it short — one sentence, natural language, no quotes around it. If the invalid-fields section above names a field, your rewrite SHOULD address that field (e.g. re-fill it) rather than retrying the original click. If the unfocused observe section shows an open modal/dialog with a Save or Close action, your rewrite SHOULD invoke that action so the underlying form can clear its blocking state. If the original instruction is itself impossible on the current page (the element does not exist), reply with the literal string IMPOSSIBLE so the caller can stop trying.`;
 
   const model = anthropicModelName();
   const t0 = performance.now();
@@ -836,6 +851,43 @@ function stripHtml(html: string): string {
     .trim();
 }
 
+/** Cap on the unfocused-observe list rendered into LLM-recovery prompts. */
+const UNFOCUSED_OBSERVE_CAP = 30;
+
+/** Pattern matching the most actionable structural UI affordances — modals,
+ * dialogs, popups, overlays. Stagehand's observe describes elements in
+ * natural language using these terms, and the LLM-cascade gains the most
+ * leverage from seeing them surfaced because they usually indicate a
+ * pending interaction (Save/Close/Confirm) the cascade must complete
+ * before the form's enclosing validity clears. */
+const MODAL_PRIORITY_RX = /(modal|dialog|popup|overlay|drawer)/i;
+
+/**
+ * Render an unfocused-observe array into a numbered string the prompt can
+ * consume, prioritizing any modal/dialog/overlay/popup entries to the top
+ * regardless of their index in the raw list. Without this prefix, modals
+ * that Stagehand observes at index 70+ (verified against the prior run's
+ * dump — 11 modal entries lived at positions 64-79 of 80) get truncated
+ * away by the cap and the LLM-replan can't propose to save/close them.
+ */
+function renderUnfocusedObserve(
+  observations: Action[],
+  cap: number = UNFOCUSED_OBSERVE_CAP
+): string {
+  const modalHits: Action[] = [];
+  const others: Action[] = [];
+  for (const a of observations) {
+    const desc = a.description || "";
+    if (MODAL_PRIORITY_RX.test(desc)) {
+      modalHits.push(a);
+    } else {
+      others.push(a);
+    }
+  }
+  const combined = [...modalHits, ...others].slice(0, cap);
+  return combined.map((a, i) => `${i + 1}. ${a.description} — ${a.selector}`).join("\n");
+}
+
 /**
  * Scan the page body HTML for opening tags whose class attribute matches a
  * marker pattern. Returns a short text snippet from each match's
@@ -928,10 +980,7 @@ function readFailureDumpEvidence(failureDumpPath: string): {
     };
     const rawBody = dump.bodyOuterHtml;
     const bodyExcerpt = typeof rawBody === "string" ? rawBody.slice(0, 8000) : "";
-    const unfocusedList = (dump.unfocusedObserve ?? [])
-      .slice(0, 12)
-      .map((a, i) => `${i + 1}. ${a.description} — ${a.selector}`)
-      .join("\n");
+    const unfocusedList = renderUnfocusedObserve(dump.unfocusedObserve ?? []);
 
     const fullBody = typeof rawBody === "string" ? rawBody : "";
     // Framework-agnostic invalid-state markers. Covers Angular (`ng-invalid`,
@@ -1003,10 +1052,7 @@ async function replanRemainingFlow(params: {
   const candidates = await stagehand
     .observe({ timeout: STEP_WATCHDOG_MS })
     .catch(() => [] as Action[]);
-  const candidateList = candidates
-    .slice(0, 12)
-    .map((a, i) => `${i + 1}. ${a.description} — ${a.selector}`)
-    .join("\n");
+  const candidateList = renderUnfocusedObserve(candidates);
   const pageTitle = await page.title().catch(() => "");
 
   // Without raw DOM in the prompt, the LLM only sees stagehand.observe()'s
@@ -1689,6 +1735,19 @@ const FORM_VALIDITY_PROBE_EXPR = `(() => {
     if (out.some((e) => e._el && el.contains(e._el))) continue;
     const ctrl = el.matches("input,select,textarea") ? el : el.querySelector("input,select,textarea");
     if (!ctrl) continue;
+    // Leaf-only correctness check: require the resolved control's OWN class
+    // to carry the invalid marker, not just an ancestor's. Container-level
+    // ng-invalid often propagates from a DIFFERENT child (a hierarchical
+    // FormGroup marking the parent invalid because a sibling is invalid).
+    // Attributing the parent's state to the FIRST descendant control mis-
+    // labels valid fields as invalid and sends the LLM-cascade chasing the
+    // wrong fix. Verified against the 23:18-23:44 telemetry: the dump's
+    // only ng-invalid opening tag was the outer <ol class="questions-
+    // container">, but its First Name input descendant was itself ng-valid
+    // — the probe still emitted "Legal First Name [ng-invalid]" and every
+    // cascade replan tried to re-fill it pointlessly.
+    const ctrlClass = ctrl.getAttribute("class") || "";
+    if (!INVALID_CLASS_RX.test(ctrlClass)) continue;
     let label = "";
     let scan = el;
     for (let i = 0; i < 4 && scan && !label; i++) {
@@ -2261,6 +2320,12 @@ async function executeStepWithHealing(params: {
           // form state, not just observe candidates. Mirrors the same
           // extraction the cascade-exhaust dump path already does.
           const livePageEvidence = await extractLivePageFormEvidence(page);
+          // Unfocused observe so the rephrase prompt can see ambient UI
+          // like modal Save/Close buttons that the focused candidates
+          // (filtered by the failed step's instruction) would hide.
+          const unfocused = await stagehand
+            .observe({ timeout: STEP_WATCHDOG_MS })
+            .catch(() => [] as Action[]);
           const rephrased = await rephraseWithLLM(
             anthropic,
             step,
@@ -2268,7 +2333,8 @@ async function executeStepWithHealing(params: {
             candidates,
             failureReasons,
             captureFn,
-            livePageEvidence
+            livePageEvidence,
+            unfocused
           );
           if (!rephrased) {
             record.errorMessage = "llm declined to rephrase or returned IMPOSSIBLE";
@@ -2989,6 +3055,7 @@ export {
   narrowInvalidFormControl,
   persistReplannedFlow,
   readFailureDumpEvidence,
+  renderUnfocusedObserve,
   rephraseWithLLM,
   replanRemainingFlow,
 };

@@ -64,6 +64,7 @@ import {
   persistReplannedFlow,
   type ReplanEvent,
   readFailureDumpEvidence,
+  renderUnfocusedObserve,
   rephraseWithLLM,
 } from "@/scripts/recon-browser";
 import type { Logger } from "@/types/logging";
@@ -748,5 +749,80 @@ describe("recon-browser/dedupeConsecutiveIdentical", () => {
     const out = dedupeConsecutiveIdentical(input);
     expect(out).not.toBe(input);
     expect(out).toEqual(input);
+  });
+});
+
+describe("recon-browser/renderUnfocusedObserve", () => {
+  // Helper to build a minimal Action-shaped object for testing.
+  const make = (description: string): { description: string; selector: string } => ({
+    description,
+    selector: `xpath=//placeholder/${description.replace(/\s+/g, "-")}`,
+  });
+
+  it("returns empty string for empty input", () => {
+    expect(renderUnfocusedObserve([])).toBe("");
+  });
+
+  it("renders entries as numbered description + selector lines", () => {
+    const observations = [make("First Name input"), make("Submit button")];
+    const out = renderUnfocusedObserve(observations);
+    expect(out).toContain("1. First Name input");
+    expect(out).toContain("2. Submit button");
+  });
+
+  it("prioritizes entries with 'modal' in description to the top regardless of position", () => {
+    // Build a list with 80 dummy entries; place modal entries at indices 70-77.
+    const observations = [
+      ...Array.from({ length: 70 }, (_, i) => make(`form field ${i}`)),
+      make("Save button in education modal (first modal)"),
+      make("Close button in education modal (first modal)"),
+      make("Degree dropdown in education modal (first modal)"),
+      make("Education level dropdown in education modal (first modal)"),
+      make("Save button in education modal (second modal)"),
+      make("Close button in education modal (second modal)"),
+      make("Degree dropdown in education modal (second modal)"),
+      make("Education level dropdown in education modal (second modal)"),
+    ];
+    const out = renderUnfocusedObserve(observations);
+    expect(out).toContain("Save button in education modal (first modal)");
+    expect(out).toContain("Save button in education modal (second modal)");
+    expect(out.indexOf("Save button in education modal (first modal)")).toBeLessThan(
+      out.indexOf("form field 0")
+    );
+  });
+
+  it("also catches 'dialog', 'popup', 'overlay', 'drawer' as modal-shaped UI", () => {
+    const observations = [
+      ...Array.from({ length: 30 }, (_, i) => make(`form field ${i}`)),
+      make("Save button in confirmation dialog"),
+      make("Close button in popup window"),
+      make("Cancel button in side overlay"),
+      make("Submit button in nav drawer"),
+    ];
+    const out = renderUnfocusedObserve(observations);
+    expect(out).toContain("confirmation dialog");
+    expect(out).toContain("popup window");
+    expect(out).toContain("side overlay");
+    expect(out).toContain("nav drawer");
+  });
+
+  it("caps the rendered list at the default cap (30)", () => {
+    const observations = Array.from({ length: 60 }, (_, i) => make(`item ${i}`));
+    const out = renderUnfocusedObserve(observations);
+    const lines = out.split("\n");
+    expect(lines.length).toBeLessThanOrEqual(30);
+  });
+
+  it("honors an explicit cap override", () => {
+    const observations = Array.from({ length: 60 }, (_, i) => make(`item ${i}`));
+    const out = renderUnfocusedObserve(observations, 5);
+    const lines = out.split("\n");
+    expect(lines.length).toBeLessThanOrEqual(5);
+  });
+
+  it("modal matching is case-insensitive", () => {
+    const observations = [make("Submit button"), make("Save action inside MODAL container")];
+    const out = renderUnfocusedObserve(observations);
+    expect(out.indexOf("MODAL container")).toBeLessThan(out.indexOf("Submit button"));
   });
 });
