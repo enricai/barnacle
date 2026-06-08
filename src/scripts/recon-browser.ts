@@ -2105,8 +2105,37 @@ async function executeStepWithHealing(params: {
       logger.info(`step ${stepIndex + 1} skipped (optional, probe found no candidates)`);
       return;
     }
+    // Capture diagnostics + write a failure dump BEFORE throwing so the
+    // global replan path's `readFailureDumpEvidence` can populate the
+    // prompt's CURRENTLY VISIBLE / UNFOCUSED OBSERVE / PAGE BODY HTML
+    // sections. Without this, the LLM-replan receives empty diagnostic
+    // data, returns "repeat the failed step", and the next probe-absent
+    // burns the replan budget in seconds. Embed `see <path>` in the
+    // throw message so the existing regex at the dispatcher (`/see
+    // (\/[^\s]+)$/`) extracts dumpPath for replanRemainingFlow.
+    const pageTitle = await page.title().catch(() => "");
+    const bodyOuterHtmlRaw = await page
+      .evaluate("document.body ? document.body.outerHTML : null")
+      .catch(() => null);
+    const bodyOuterHtml =
+      typeof bodyOuterHtmlRaw === "string" ? bodyOuterHtmlRaw.slice(0, 100_000) : null;
+    const unfocusedObserve = await stagehand
+      .observe({ timeout: STEP_WATCHDOG_MS })
+      .catch(() => [] as Action[]);
+    const dumpPath = dumpStepFailure({
+      stepIndex,
+      phase,
+      originalStep: step,
+      attempts: [],
+      finalObserve: [],
+      pageUrl: page.url(),
+      pageTitle,
+      recentCaptures,
+      bodyOuterHtml,
+      unfocusedObserve,
+    });
     throw new StepVerificationError(
-      `step ${stepIndex + 1} (${step.slice(0, 60)}) probe found no candidates on page`,
+      `step ${stepIndex + 1} (${step.slice(0, 60)}) probe found no candidates on page; see ${dumpPath}`,
       "probe-absent"
     );
   }
