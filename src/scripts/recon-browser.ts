@@ -390,8 +390,18 @@ interface AttemptRecord {
   resolvedMethod: string | null;
   /** Args Stagehand passed to the resolved action — what we expect to see post-fill. */
   resolvedArguments: string[] | null;
-  /** Which verification signal carried the attempt: `network`, `url`, `dom`, or null on failure. */
-  verifiedBy: "network" | "url" | "dom" | null;
+  /**
+   * Which verification signal carried the attempt:
+   * - `network`: same-origin POST counter advanced in the attempt window.
+   * - `url`: page navigated to a new URL.
+   * - `dom`: verifyDomEffect confirmed a structural change (radio/checkbox state).
+   * - `submitted-state-dom`: final-step DOM fallback fired — a flow-declared
+   *   `submittedStateSelectors` entry matched live DOM, indicating the SPA
+   *   reached its submitted state even though the network capture missed
+   *   the submit POST within the attempt window.
+   * - `null`: failure path.
+   */
+  verifiedBy: "network" | "url" | "dom" | "submitted-state-dom" | null;
 }
 
 /**
@@ -551,7 +561,9 @@ Rewrite the instruction so a Stagehand act() call can resolve it unambiguously t
 
     if (!parsedOk) return null;
     return text;
-  } catch {
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logBillingErrorIfPresent(message);
     await captureFn({
       callId: randomUUID(),
       callType: CALL_TYPE_RECON_REPHRASE,
@@ -567,6 +579,26 @@ Rewrite the instruction so a Stagehand act() call can resolve it unambiguously t
     });
     return null;
   }
+}
+
+/**
+ * Detect terminal Anthropic API errors that the cascade can't possibly
+ * recover from (credit/billing exhaustion). Logs a single FATAL banner
+ * the first time per-process so the runner script can scan stdout and
+ * short-circuit a multi-job sweep instead of burning more browser
+ * sessions on jobs that will fail identically.
+ */
+let billingErrorLoggedThisProcess = false;
+const ANTHROPIC_BILLING_RX =
+  /(your credit balance is too low|insufficient_quota|billing_hard_limit_reached)/i;
+export function logBillingErrorIfPresent(errorMessage: string): boolean {
+  if (!ANTHROPIC_BILLING_RX.test(errorMessage)) return false;
+  if (billingErrorLoggedThisProcess) return true;
+  billingErrorLoggedThisProcess = true;
+  logger.fatal(
+    "FATAL_BILLING: Anthropic API rejected the call due to insufficient credit balance. Cascade cannot heal further. Top up at https://console.anthropic.com/billing then re-run."
+  );
+  return true;
 }
 
 /**
@@ -607,13 +639,21 @@ const RECON_FLOW_SCHEMA = z.array(RECON_FLOW_STEP_SCHEMA).min(1);
  * Two on-disk shapes are accepted:
  *
  *  1. Legacy bare array — every existing site flow file uses this.
- *  2. Object form — adds an optional `submitEndpointPattern` regex. When
- *     set, the final flow step's verifier additionally requires at least
- *     one same-origin capture in its mutation window whose URL matches the
- *     pattern. Without that match `verified=false`, even if the click
- *     produced a DOM mutation — which is the only way the self-healing
- *     cascade can detect "the click fired tracking but not the real
- *     submit XHR."
+ *  2. Object form — adds optional `submitEndpointPattern` regex and
+ *     optional `submittedStateSelectors` array.
+ *     - `submitEndpointPattern`: the final step's verifier additionally
+ *       requires at least one same-origin capture in its mutation window
+ *       whose URL matches the pattern. Without that match `verified=false`,
+ *       even if the click produced a DOM mutation — which is the only way
+ *       the self-healing cascade can detect "the click fired tracking but
+ *       not the real submit XHR."
+ *     - `submittedStateSelectors`: DOM-level fallback when the submit POST
+ *       lands outside the per-attempt capture window. SPAs (e.g. AppCast)
+ *       can swap the form for a thank-you component (`<uapp-universal-
+ *       submitted-page>`) faster than the network capture pipeline records
+ *       the POST. If any selector in this list matches via
+ *       document.querySelector at verifier time, the submit is treated as
+ *       verified-by-DOM regardless of the network capture.
  *
  * Both forms route through `parseReconFlow` into a shared internal record.
  */
@@ -622,6 +662,7 @@ const RECON_FLOW_FILE_SCHEMA = z.union([
   z.object({
     steps: RECON_FLOW_SCHEMA,
     submitEndpointPattern: z.string().min(1).optional(),
+    submittedStateSelectors: z.array(z.string().min(1)).optional(),
   }),
 ]);
 
@@ -734,6 +775,8 @@ function persistReplannedFlow(params: {
   originalShape?: "array" | "object";
   /** Carried through when the original file declared a submit pattern. */
   submitEndpointPattern?: string | null;
+  /** Carried through when the original file declared submitted-state DOM selectors. */
+  submittedStateSelectors?: string[];
 }): void {
   const {
     flowFile,
@@ -742,6 +785,7 @@ function persistReplannedFlow(params: {
     logger,
     originalShape = "array",
     submitEndpointPattern = null,
+    submittedStateSelectors = [],
   } = params;
   // Timestamp format chosen to be filesystem-safe (no colons or dots that
   // break common tooling on macOS/Windows).
@@ -774,6 +818,7 @@ function persistReplannedFlow(params: {
       ? {
           steps: dedupedSteps,
           ...(submitEndpointPattern !== null ? { submitEndpointPattern } : {}),
+          ...(submittedStateSelectors.length > 0 ? { submittedStateSelectors } : {}),
         }
       : dedupedSteps;
   writeFileSync(flowFile, `${JSON.stringify(payload, null, 2)}\n`);
@@ -1230,7 +1275,9 @@ but that's rare — most upload steps are required.`;
 
     if (parsed.outcome === "replan") return normalizeFlow(parsed.steps);
     return null;
-  } catch {
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logBillingErrorIfPresent(message);
     await captureFn({
       callId: randomUUID(),
       callType: CALL_TYPE_RECON_REPLAN,
@@ -1994,6 +2041,16 @@ async function executeStepWithHealing(params: {
    */
   isFinalStep: boolean;
   submitEndpointPattern: string | null;
+  /**
+   * DOM-level fallback for the final-step submit gate. If the network
+   * capture didn't match `submitEndpointPattern` within the attempt
+   * window, the verifier also probes the live DOM for any of these
+   * selectors — a match indicates the SPA has reached its submitted /
+   * thank-you state even though the underlying POST landed outside the
+   * verifier's capture window (debounced submits, batched requests,
+   * SPAs that swap the form before the network event records).
+   */
+  submittedStateSelectors: string[];
 }): Promise<void> {
   const {
     stagehand,
@@ -2012,6 +2069,7 @@ async function executeStepWithHealing(params: {
     resumeFixture,
     isFinalStep,
     submitEndpointPattern,
+    submittedStateSelectors,
   } = params;
   const requireSubmitEndpoint = isFinalStep && submitEndpointPattern !== null;
   const compiledSubmitPattern = requireSubmitEndpoint ? new RegExp(submitEndpointPattern!) : null;
@@ -2378,6 +2436,7 @@ async function executeStepWithHealing(params: {
     } catch (err) {
       const cause = err instanceof Error && err.cause instanceof Error ? err.cause.message : null;
       record.errorMessage = `${toErrorMessage(err)}${cause ? ` (cause: ${cause})` : ""}`;
+      logBillingErrorIfPresent(record.errorMessage);
     }
 
     await page.waitForTimeout(STEP_PAUSE_MS);
@@ -2418,18 +2477,57 @@ async function executeStepWithHealing(params: {
       const tail = recentCaptureMeta.slice(preMetaLength);
       const matched = tail.some((m) => compiledSubmitPattern.test(m.url));
       if (!matched) {
-        verified = false;
-        record.errorMessage =
-          (record.errorMessage ?? "") +
-          (record.errorMessage ? "; " : "") +
-          `submit-endpoint-not-matched: pattern ${submitEndpointPattern!} did not match any of ${tail.length} attempt-window capture(s)`;
-        failureReasons.push(
-          `submit-endpoint-not-matched: ${tail.length} capture(s) seen, none matched ${submitEndpointPattern!}`
-        );
+        // DOM-state fallback. Some SPAs swap the form for a thank-you
+        // component faster than the network capture pipeline records the
+        // submit POST — the verifier sees zero matching captures even
+        // though the submit went through. If the flow declared any
+        // submittedStateSelectors and ANY is present in the DOM right
+        // now, treat the submit as verified via the DOM marker.
+        let domSubmittedMatch: string | null = null;
+        if (submittedStateSelectors.length > 0) {
+          // page.evaluate via template string keeps the DOM globals out of
+          // the Node TS scope. Each selector is JSON-stringified so an
+          // accidental quote/backslash in the flow file can't break out
+          // of the inlined JS expression.
+          const selectorsJson = JSON.stringify(submittedStateSelectors);
+          const probeExpr = `(() => {
+            const sels = ${selectorsJson};
+            for (const sel of sels) {
+              try {
+                if (document.querySelector(sel)) return sel;
+              } catch (_e) {}
+            }
+            return null;
+          })()`;
+          try {
+            domSubmittedMatch = (await page.evaluate(probeExpr)) as string | null;
+          } catch (err) {
+            logger.warn(
+              `submitted-state DOM probe threw: ${toErrorMessage(err)} — falling back to network-only verdict`
+            );
+          }
+        }
+        if (domSubmittedMatch !== null) {
+          logger.info(
+            `submit verified via submitted-state DOM selector '${domSubmittedMatch}' (network capture missed the attempt window)`
+          );
+          record.verifiedBy = "submitted-state-dom";
+        } else {
+          verified = false;
+          record.errorMessage =
+            (record.errorMessage ?? "") +
+            (record.errorMessage ? "; " : "") +
+            `submit-endpoint-not-matched: pattern ${submitEndpointPattern!} did not match any of ${tail.length} attempt-window capture(s)`;
+          failureReasons.push(
+            `submit-endpoint-not-matched: ${tail.length} capture(s) seen, none matched ${submitEndpointPattern!}`
+          );
+        }
       }
     }
 
-    if (verified) {
+    if (verified && record.verifiedBy === null) {
+      // Preserve a richer verdict set earlier in this attempt (e.g.
+      // "submitted-state-dom" from the final-step DOM fallback).
       record.verifiedBy = urlChanged ? "url" : networkFired ? "network" : "dom";
     }
 
@@ -2503,17 +2601,47 @@ async function executeStepWithHealing(params: {
             const tail = recentCaptureMeta.slice(preMetaLength);
             const matched = tail.some((m) => compiledSubmitPattern.test(m.url));
             if (!matched) {
-              retryVerified = false;
-              failureReasons.push(
-                `n+16 fallback: submit-endpoint-not-matched: ${tail.length} capture(s) seen, none matched ${submitEndpointPattern!}`
-              );
+              // Same submitted-state DOM fallback as the primary verifier:
+              // accept SPA thank-you transitions when the network capture
+              // misses the submit POST within the attempt window.
+              let domSubmittedMatch: string | null = null;
+              if (submittedStateSelectors.length > 0) {
+                const selectorsJson = JSON.stringify(submittedStateSelectors);
+                const probeExpr = `(() => {
+                  const sels = ${selectorsJson};
+                  for (const sel of sels) {
+                    try {
+                      if (document.querySelector(sel)) return sel;
+                    } catch (_e) {}
+                  }
+                  return null;
+                })()`;
+                try {
+                  domSubmittedMatch = (await page.evaluate(probeExpr)) as string | null;
+                } catch (err) {
+                  logger.warn(`n+16 submitted-state DOM probe threw: ${toErrorMessage(err)}`);
+                }
+              }
+              if (domSubmittedMatch !== null) {
+                logger.info(
+                  `n+16 fallback submit verified via submitted-state DOM selector '${domSubmittedMatch}'`
+                );
+                record.verifiedBy = "submitted-state-dom";
+              } else {
+                retryVerified = false;
+                failureReasons.push(
+                  `n+16 fallback: submit-endpoint-not-matched: ${tail.length} capture(s) seen, none matched ${submitEndpointPattern!}`
+                );
+              }
             }
           }
           logger.info(
             `n+16 probe: step=${stepIndex + 1} attempt=${attempt} el.click() fallback fired=${fired === true} kind=${probeResult.kind ?? "none"} checkboxStateVerified=${checkboxStateVerified}; network=${retryNetworkFired} url=${retryUrlChanged} htmlDelta=${retryHtmlDelta} textChanged=${retryTextChanged} verified=${retryVerified}`
           );
           if (retryVerified) {
-            record.verifiedBy = retryUrlChanged ? "url" : retryNetworkFired ? "network" : "dom";
+            if (record.verifiedBy === null) {
+              record.verifiedBy = retryUrlChanged ? "url" : retryNetworkFired ? "network" : "dom";
+            }
             record.post = retryPost;
             attempts.push(record);
             if (attempt > 1) {
@@ -2600,6 +2728,7 @@ function parseCli(): {
   dumpDomBeforeStep: number | null;
   allocateEmailEnvVar: string | null;
   submitEndpointPattern: string | null;
+  submittedStateSelectors: string[];
   originalShape: "array" | "object";
 } {
   const args = process.argv.slice(2);
@@ -2686,6 +2815,7 @@ function parseCli(): {
       dumpDomBeforeStep,
       allocateEmailEnvVar,
       submitEndpointPattern: null,
+      submittedStateSelectors: [],
       originalShape: "array",
     };
   }
@@ -2698,6 +2828,9 @@ function parseCli(): {
   const submitEndpointPattern = Array.isArray(parsed.data)
     ? null
     : (parsed.data.submitEndpointPattern ?? null);
+  const submittedStateSelectors = Array.isArray(parsed.data)
+    ? []
+    : (parsed.data.submittedStateSelectors ?? []);
   const isArrayShape = Array.isArray(parsed.data);
   // Validate regex compiles eagerly so a malformed pattern fails the run
   // at startup, not deep in a per-step verifier.
@@ -2720,6 +2853,7 @@ function parseCli(): {
     dumpDomBeforeStep,
     allocateEmailEnvVar,
     submitEndpointPattern,
+    submittedStateSelectors,
     originalShape: isArrayShape ? "array" : "object",
   };
 }
@@ -2763,6 +2897,7 @@ async function main(): Promise<void> {
     dumpDomBeforeStep,
     allocateEmailEnvVar,
     submitEndpointPattern,
+    submittedStateSelectors,
     originalShape,
   } = parseCli();
 
@@ -2903,6 +3038,7 @@ async function main(): Promise<void> {
           resumeFixture,
           isFinalStep: i === plan.length - 1,
           submitEndpointPattern,
+          submittedStateSelectors,
         });
         completedSteps.push(step.instruction);
       } catch (err) {
@@ -3045,6 +3181,7 @@ async function main(): Promise<void> {
             logger,
             originalShape,
             submitEndpointPattern,
+            submittedStateSelectors,
           });
         } catch (err) {
           // Persistence is best-effort in the finally block — a write

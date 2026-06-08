@@ -73,20 +73,33 @@ async function runReconForJob(
   url: string,
   flowFile: string,
   email: string
-): Promise<{ exitCode: number | null; capturesBefore: Set<string> }> {
+): Promise<{ exitCode: number | null; capturesBefore: Set<string>; billingError: boolean }> {
   const capturesDir = "/tmp/recon/graphql";
   mkdirSync(capturesDir, { recursive: true });
   const capturesBefore = new Set(readdirSync(capturesDir));
 
+  // Pipe stdio so the parent can scan stdout/stderr for the
+  // FATAL_BILLING marker the engine emits when Anthropic rejects a
+  // call due to credit exhaustion — there's no point continuing a
+  // multi-job sweep when every subsequent job will fail identically.
+  let billingError = false;
   const exitCode = await new Promise<number | null>((resolveExit) => {
     const child = spawn(
       "pnpm",
       ["tsx", "src/scripts/recon-browser.ts", "--url", url, "--flow-file", flowFile],
       {
-        stdio: "inherit",
+        stdio: ["inherit", "pipe", "pipe"],
         env: { ...process.env, RECON_EMAIL: email },
       }
     );
+    const scan = (chunk: Buffer | string, sink: NodeJS.WriteStream): void => {
+      sink.write(chunk);
+      if (!billingError && /FATAL_BILLING/.test(chunk.toString())) {
+        billingError = true;
+      }
+    };
+    child.stdout?.on("data", (chunk) => scan(chunk, process.stdout));
+    child.stderr?.on("data", (chunk) => scan(chunk, process.stderr));
     child.on("exit", (code) => resolveExit(code));
     child.on("error", (err) => {
       logger.error(`recon spawn failed: ${err.message}`);
@@ -94,7 +107,7 @@ async function runReconForJob(
     });
   });
 
-  return { exitCode, capturesBefore };
+  return { exitCode, capturesBefore, billingError };
 }
 
 /**
@@ -145,7 +158,7 @@ async function main(): Promise<void> {
     const start = Date.now();
     logger.info(`[${i + 1}/${jobs.length}] jobId=${job.jobId} inbox=${inbox.address}`);
 
-    const { exitCode, capturesBefore } = await runReconForJob(
+    const { exitCode, capturesBefore, billingError } = await runReconForJob(
       job.resolvedUrl,
       flowFile,
       inbox.address
@@ -182,6 +195,16 @@ async function main(): Promise<void> {
     );
 
     writeFileSync(reportPath, `${JSON.stringify(verdicts, null, 2)}\n`);
+
+    if (billingError) {
+      // Hard short-circuit: every subsequent job's LLM-cascade will fail
+      // identically with the same billing error. Burning Browserbase
+      // sessions on them is pure waste — surface the gap loud and exit.
+      logger.error(
+        `replay aborted: Anthropic API billing exhausted detected in job ${i + 1}/${jobs.length}; remaining ${jobs.length - i - 1} job(s) skipped. Top up at https://console.anthropic.com/billing then re-run.`
+      );
+      break;
+    }
   }
 
   const passing = verdicts.filter((v) => v.integratedApply200 && v.emailReceived).length;
