@@ -51,6 +51,15 @@ export interface HttpRequestInit {
   method?: string;
   headers?: Record<string, string>;
   body?: string;
+  /**
+   * Cancels the underlying `fetch()` and short-circuits the p-retry loop
+   * when the signal aborts. Required for callers that long-poll endpoints
+   * (e.g. testmail's `livequery: true`) where a single request can
+   * outlast the caller's overall budget — Node's built-in fetch has no
+   * default timeout, so without a signal the request hangs the socket
+   * until the server closes it (~15min for testmail livequery).
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -88,8 +97,21 @@ export function createHttpClient<TResponse>(
 
           let response: Response;
           try {
-            response = await fetch(url, { method, headers, body: init.body });
+            response = await fetch(url, {
+              method,
+              headers,
+              body: init.body,
+              signal: init.signal,
+            });
           } catch (err) {
+            // Caller-triggered cancellation — propagate without retry. The
+            // outer p-retry's own `signal` option will also throwIfAborted
+            // on its retry-loop boundaries, but wrapping in AbortError here
+            // covers the window between fetch dispatch and the next signal
+            // check inside pRetry.
+            if (err instanceof Error && err.name === "AbortError") {
+              throw new AbortError(err);
+            }
             // Network-level failure (DNS, TCP reset, timeout) — retryable.
             throw new UnknownScraperError(`http fetch failed: ${String(err)}`);
           }
@@ -182,6 +204,7 @@ export function createHttpClient<TResponse>(
           minTimeout: 200,
           maxTimeout: 1_000,
           randomize: true,
+          signal: init.signal,
           onFailedAttempt: (context) => {
             logger.warn(
               `http hot-path attempt ${context.attemptNumber} failed: ${context.error.message}; ${context.retriesLeft} retries left`

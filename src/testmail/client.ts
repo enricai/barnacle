@@ -117,15 +117,16 @@ export function allocateTestmailInbox(opts: AllocateTestmailInboxOptions = {}): 
  * import doesn't fail when TESTMAIL_API_KEY isn't set (the helpers
  * themselves throw a clear error when called without config).
  */
-let cachedClient:
-  | ((operationName: string, query: string, variables: Record<string, unknown>) => Promise<unknown>)
-  | null = null;
-
-function getTestmailClient(): (
+type TestmailGqlClient = (
   operationName: string,
   query: string,
-  variables: Record<string, unknown>
-) => Promise<unknown> {
+  variables: Record<string, unknown>,
+  requestOptions?: { signal?: AbortSignal }
+) => Promise<unknown>;
+
+let cachedClient: TestmailGqlClient | null = null;
+
+function getTestmailClient(): TestmailGqlClient {
   if (cachedClient) return cachedClient;
   const apiKey = config.testmail.apiKey;
   if (!apiKey) {
@@ -141,11 +142,7 @@ function getTestmailClient(): (
       Authorization: `Bearer ${apiKey}`,
     },
     endpoint: TESTMAIL_ENDPOINT,
-  }) as (
-    operationName: string,
-    query: string,
-    variables: Record<string, unknown>
-  ) => Promise<unknown>;
+  }) as TestmailGqlClient;
   return cachedClient;
 }
 
@@ -202,12 +199,23 @@ export async function pollTestmailInbox(opts: PollTestmailInboxOptions): Promise
   while (Date.now() < deadline) {
     let response: z.infer<typeof InboxQueryResponseSchema>;
     try {
-      response = (await client("Inbox", INBOX_QUERY, {
-        namespace,
-        tag: inbox.tag,
-        timestampFrom: inbox.timestampFrom,
-        livequery: true,
-      })) as z.infer<typeof InboxQueryResponseSchema>;
+      // Bound the underlying fetch on the remaining deadline. testmail's
+      // `livequery: true` long-polls server-side (the server holds the
+      // connection open for ~15 min waiting for new mail), and Node's
+      // built-in fetch has no default timeout — without this signal a
+      // single query outlasts the caller's poll budget by many minutes.
+      const remaining = deadline - Date.now();
+      response = (await client(
+        "Inbox",
+        INBOX_QUERY,
+        {
+          namespace,
+          tag: inbox.tag,
+          timestampFrom: inbox.timestampFrom,
+          livequery: true,
+        },
+        { signal: AbortSignal.timeout(remaining) }
+      )) as z.infer<typeof InboxQueryResponseSchema>;
     } catch (err) {
       // Transient API failure — sleep + try again until deadline. Hold the
       // last error so a budget expiry can report something useful.

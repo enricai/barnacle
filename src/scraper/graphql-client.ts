@@ -25,12 +25,19 @@ export interface GraphqlClientOptions<TResponse> {
  * behave identically regardless of whether the plugin calls fetch() directly
  * or goes through this helper.
  */
+/** Per-call options forwarded to the underlying http-client. */
+export interface GraphqlRequestOptions {
+  /** Cancels the underlying fetch + p-retry loop when aborted. See `HttpRequestInit.signal`. */
+  signal?: AbortSignal;
+}
+
 export function createGraphqlClient<TResponse>(
   options: GraphqlClientOptions<TResponse>
 ): (
   operationName: string,
   query: string,
-  variables: Record<string, unknown>
+  variables: Record<string, unknown>,
+  requestOptions?: GraphqlRequestOptions
 ) => Promise<TResponse> {
   const { schema, bottleneck, baseHeaders, endpoint } = options;
 
@@ -39,10 +46,12 @@ export function createGraphqlClient<TResponse>(
   return (
     operationName: string,
     query: string,
-    variables: Record<string, unknown>
+    variables: Record<string, unknown>,
+    requestOptions?: GraphqlRequestOptions
   ): Promise<TResponse> =>
     httpClient(endpoint, {
       method: "POST",
       body: JSON.stringify({ operationName, query, variables }),
+      signal: requestOptions?.signal,
     });
 }
