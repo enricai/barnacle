@@ -29,7 +29,13 @@ export const llmCallFailureKindSchema = z.enum([
 ]);
 export type LlmCallFailureKind = z.infer<typeof llmCallFailureKindSchema>;
 
-const ANTHROPIC_BILLING_RX =
+/**
+ * Recognises the message shapes Anthropic returns when an account hits its
+ * credit / quota / hard-limit ceiling. Exported so callers that need to
+ * react to billing exhaustion (e.g. recon-browser's per-process FATAL
+ * banner) share one source of truth with the failure-kind classifier.
+ */
+export const ANTHROPIC_BILLING_RX =
   /(your credit balance is too low|insufficient_quota|billing_hard_limit_reached)/i;
 
 /**

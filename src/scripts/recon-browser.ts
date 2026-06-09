@@ -49,6 +49,7 @@ import { toErrorMessage } from "@/lib/errors";
 import { configureHttpDispatcher } from "@/lib/http";
 import { getScriptLogger } from "@/lib/logging";
 import {
+  ANTHROPIC_BILLING_RX,
   captureLlmCall,
   classifyLlmCallFailure,
   type LlmCallInput,
@@ -661,8 +662,6 @@ Rewrite the instruction so a Stagehand act() call can resolve it unambiguously t
  * sessions on jobs that will fail identically.
  */
 let billingErrorLoggedThisProcess = false;
-const ANTHROPIC_BILLING_RX =
-  /(your credit balance is too low|insufficient_quota|billing_hard_limit_reached)/i;
 export function logBillingErrorIfPresent(errorMessage: string): boolean {
   if (!ANTHROPIC_BILLING_RX.test(errorMessage)) return false;
   if (billingErrorLoggedThisProcess) return true;
@@ -1097,9 +1096,9 @@ async function extractLivePageFormEvidence(page: Page): Promise<{
  * walk the DOM tree under it and surface clickable descendants (radio
  * labels, dropdown options, text inputs) with an xpath the rephrase LLM
  * can hand directly to Stagehand's act(). Closes the gap where the
- * rephrase prompt today carries "field X is invalid" but no selector for
- * the radio/option that would clear it — so the LLM proposes "click
- * Submit harder" instead of "answer field X with Yes/No".
+ * rephrase prompt carries "field X is invalid" but no selector for the
+ * radio/option that would clear it — so the LLM proposes "click Submit
+ * harder" instead of "answer field X with Yes/No".
  */
 async function extractInteractiveTargetsNearInvalid(page: Page): Promise<string[]> {
   const expr = `(() => {
