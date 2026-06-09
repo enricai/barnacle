@@ -997,6 +997,17 @@ const RECON_FLOW_FILE_SCHEMA = z.union([
     steps: RECON_FLOW_SCHEMA,
     submitEndpointPattern: z.string().min(1).optional(),
     submittedStateSelectors: z.array(z.string().min(1)).optional(),
+    /**
+     * When true, the final-step verifier accepts ONLY a `submitEndpointPattern`
+     * network capture as proof of submission — `submittedStateSelectors` DOM
+     * matches become a tiebreaker, not a standalone fallback. Use this for
+     * SPAs where the success-route component renders optimistically even if
+     * the server-side submit was blocked (e.g. by a bot-management WAF), so
+     * the DOM marker would otherwise false-positive a failed submission.
+     * Default false preserves the lenient pre-existing behavior for sites
+     * that genuinely rely on DOM-only verification.
+     */
+    requireSubmitEndpointMatch: z.boolean().optional(),
   }),
 ]);
 
@@ -2658,6 +2669,13 @@ async function executeStepWithHealing(params: {
    */
   submittedStateSelectors: string[];
   /**
+   * When true, the final-step verifier accepts ONLY a `submitEndpointPattern`
+   * network capture as proof of submission — DOM-state matches become a
+   * tiebreaker, not a standalone fallback. See `RECON_FLOW_FILE_SCHEMA` for
+   * the rationale + the SPA failure mode this guards against.
+   */
+  requireSubmitEndpointMatch: boolean;
+  /**
    * Optional accumulator the cascade pushes onto when this step verifies.
    * Lets the main loop maintain a short cross-step trajectory of `verifiedBy`
    * signals (network / url / dom / submitted-state-dom) which is then
@@ -2686,6 +2704,7 @@ async function executeStepWithHealing(params: {
     isFinalStep,
     submitEndpointPattern,
     submittedStateSelectors,
+    requireSubmitEndpointMatch,
     trajectory,
   } = params;
   const requireSubmitEndpoint = isFinalStep && submitEndpointPattern !== null;
@@ -3226,8 +3245,13 @@ async function executeStepWithHealing(params: {
         // though the submit went through. If the flow declared any
         // submittedStateSelectors and ANY is present in the DOM right
         // now, treat the submit as verified via the DOM marker.
+        //
+        // When the flow declares `requireSubmitEndpointMatch: true`, this
+        // fallback is suppressed — sites that opt in are saying "the
+        // network capture is the source of truth for me; do NOT accept
+        // an optimistic SPA navigation as proof of submission."
         let domSubmittedMatch: string | null = null;
-        if (submittedStateSelectors.length > 0) {
+        if (!requireSubmitEndpointMatch && submittedStateSelectors.length > 0) {
           // page.evaluate via template string keeps the DOM globals out of
           // the Node TS scope. Each selector is JSON-stringified so an
           // accidental quote/backslash in the flow file can't break out
@@ -3401,8 +3425,9 @@ async function executeStepWithHealing(params: {
               // Same submitted-state DOM fallback as the primary verifier:
               // accept SPA thank-you transitions when the network capture
               // misses the submit POST within the attempt window.
+              // Suppressed when the flow opted into `requireSubmitEndpointMatch`.
               let domSubmittedMatch: string | null = null;
-              if (submittedStateSelectors.length > 0) {
+              if (!requireSubmitEndpointMatch && submittedStateSelectors.length > 0) {
                 const selectorsJson = JSON.stringify(submittedStateSelectors);
                 const probeExpr = `(() => {
                   const sels = ${selectorsJson};
@@ -3557,6 +3582,7 @@ function parseCli(): {
   allocateEmailEnvVar: string | null;
   submitEndpointPattern: string | null;
   submittedStateSelectors: string[];
+  requireSubmitEndpointMatch: boolean;
   originalShape: "array" | "object";
 } {
   const args = process.argv.slice(2);
@@ -3644,6 +3670,7 @@ function parseCli(): {
       allocateEmailEnvVar,
       submitEndpointPattern: null,
       submittedStateSelectors: [],
+      requireSubmitEndpointMatch: false,
       originalShape: "array",
     };
   }
@@ -3659,6 +3686,9 @@ function parseCli(): {
   const submittedStateSelectors = Array.isArray(parsed.data)
     ? []
     : (parsed.data.submittedStateSelectors ?? []);
+  const requireSubmitEndpointMatch = Array.isArray(parsed.data)
+    ? false
+    : (parsed.data.requireSubmitEndpointMatch ?? false);
   const isArrayShape = Array.isArray(parsed.data);
   // Validate regex compiles eagerly so a malformed pattern fails the run
   // at startup, not deep in a per-step verifier.
@@ -3682,6 +3712,7 @@ function parseCli(): {
     allocateEmailEnvVar,
     submitEndpointPattern,
     submittedStateSelectors,
+    requireSubmitEndpointMatch,
     originalShape: isArrayShape ? "array" : "object",
   };
 }
@@ -3726,6 +3757,7 @@ async function main(): Promise<void> {
     allocateEmailEnvVar,
     submitEndpointPattern,
     submittedStateSelectors,
+    requireSubmitEndpointMatch,
     originalShape,
   } = parseCli();
 
@@ -3868,6 +3900,7 @@ async function main(): Promise<void> {
           isFinalStep: i === plan.length - 1,
           submitEndpointPattern,
           submittedStateSelectors,
+          requireSubmitEndpointMatch,
           trajectory,
         });
         completedSteps.push(step.instruction);
