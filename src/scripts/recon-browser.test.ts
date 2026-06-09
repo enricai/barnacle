@@ -29,8 +29,16 @@ vi.mock("@/lib/http", () => ({ configureHttpDispatcher: vi.fn() }));
 vi.mock("@/scraper/session", () => ({ createBrowserSession: vi.fn() }));
 vi.mock("@/scraper/errors", () => ({
   StepVerificationError: class StepVerificationError extends Error {
-    constructor(message = "step failed") {
+    readonly kind: "cascade-exhausted" | "probe-absent" | "backend-error-unrecoverable";
+    constructor(
+      message = "step failed",
+      kind:
+        | "cascade-exhausted"
+        | "probe-absent"
+        | "backend-error-unrecoverable" = "cascade-exhausted"
+    ) {
       super(message);
+      this.kind = kind;
     }
   },
 }));
