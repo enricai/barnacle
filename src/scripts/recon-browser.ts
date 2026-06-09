@@ -1148,14 +1148,14 @@ function persistReplannedFlow(params: {
   writeFileSync(backupPath, originalBytes);
 
   // Coerce replan-origin steps to optional before persistence: when a job
-  // cascade-exhausts on an employer-specific field (e.g. "Are you a former
-  // X employee?"), the replan emits a recovery bridge tied to that employer.
-  // Persisting it as required would cascade-exhaust every subsequent run on
-  // a different employer trying to fill a question that doesn't exist.
-  // Optional means the probe-absent-skip path handles employers where the
-  // question isn't on the form; cascade still fires for the original
-  // employer when the persisted flow is replayed. Required to keep
-  // cross-employer sweeps from regressing across runs.
+  // cascade-exhausts on an employer-specific field, the replan emits a
+  // recovery bridge tied to that employer. Persisting it as required would
+  // cascade-exhaust every subsequent run on a different employer trying to
+  // fill a question that doesn't exist. Optional means the probe-absent-
+  // skip path handles employers where the question isn't on the form;
+  // cascade still fires for the original employer when the persisted flow
+  // is replayed. Required to keep cross-employer sweeps from regressing
+  // across runs.
   const denormalizedSteps = finalPlan.map((step) =>
     denormalizeStep(step.origin === "replan" && !step.optional ? { ...step, optional: true } : step)
   );
