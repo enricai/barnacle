@@ -2726,7 +2726,7 @@ async function executeStepWithHealing(params: {
       );
       throw new StepVerificationError(
         `step ${stepIndex + 1} (${step.slice(0, 60)}) backend 5xx at ${backendErrorUrl} — unrecoverable`,
-        "cascade-exhausted"
+        "backend-error-unrecoverable"
       );
     }
     // Capture diagnostics + write a failure dump BEFORE throwing so the
@@ -3838,6 +3838,18 @@ async function main(): Promise<void> {
         completedSteps.push(step.instruction);
       } catch (err) {
         if (!(err instanceof StepVerificationError)) throw err;
+
+        // Unrecoverable backend-error short-circuit. When the cascade
+        // detected a same-window 5xx on the submit endpoint, no amount of
+        // replan or rephrase can heal a server crash. Propagate the error
+        // out of the flow loop so main()'s outer try/catch reports the
+        // diagnostic — bypasses the trailing-grace and replan paths
+        // entirely. (The cascade-exhausted and probe-absent kinds fall
+        // through to the existing dispatcher below.)
+        if (err.kind === "backend-error-unrecoverable") {
+          logger.error(`backend error unrecoverable: ${err.message}; aborting run`);
+          throw err;
+        }
 
         // Tier 1 — trailing-optional-step grace: when an OPTIONAL step at
         // trailing position fails verification AND a recent non-GET capture

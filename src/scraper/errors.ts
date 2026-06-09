@@ -83,7 +83,7 @@ export class UnknownScraperError extends ScraperError {
 }
 
 /**
- * Recon-only: a flow step in recon-browser.ts could not be acted on. Two
+ * Recon-only: a flow step in recon-browser.ts could not be acted on. Three
  * variants per `kind`:
  *
  *   - "cascade-exhausted": the full 4-attempt self-healing cascade ran and
@@ -96,14 +96,19 @@ export class UnknownScraperError extends ScraperError {
  *     clearly off (e.g. flow expected the form-fill page but the SPA is
  *     still on the resume-upload screen). Cheap (~1 observe + 1 LLM call)
  *     — counted against the probe replan budget.
+ *   - "backend-error-unrecoverable": the cascade detected a same-window
+ *     5xx response from the configured submit endpoint. No amount of
+ *     retry or replan can heal a server crash — the main flow loop
+ *     special-cases this kind to bypass the replan dispatcher and
+ *     propagate the error out, terminating the run with the diagnostic.
  *
  * Non-retryable — the runtime path never sees this.
  */
 export class StepVerificationError extends ScraperError {
-  readonly kind: "cascade-exhausted" | "probe-absent";
+  readonly kind: "cascade-exhausted" | "probe-absent" | "backend-error-unrecoverable";
   constructor(
     message = "recon step failed verification after all heal attempts",
-    kind: "cascade-exhausted" | "probe-absent" = "cascade-exhausted"
+    kind: "cascade-exhausted" | "probe-absent" | "backend-error-unrecoverable" = "cascade-exhausted"
   ) {
     super(message, false);
     this.kind = kind;
