@@ -446,12 +446,15 @@ async function snapshotPage(page: Page, signalCounter: { n: number }): Promise<S
 }
 
 /**
- * Detect whether the page legitimately transitioned during the failing
- * step's attempt window — a 3xx redirect or a same-origin non-GET capture
+ * Detect whether the page legitimately transitioned within the supplied
+ * capture-meta window — a 3xx redirect or a same-origin non-GET capture
  * that returned 2xx and looks like a flow-progression URL (not a tracking
- * beacon). When this fires, a probe-absent escalation to replan is
- * unnecessary noise — the form auto-advanced and the next probe naturally
- * sees zero candidates for the OLD step.
+ * beacon). `preMetaLength` is the caller's chosen window start (typically
+ * captured at step entry, so the scan covers everything that landed since
+ * this step began processing). When a transition is detected, a probe-
+ * absent escalation to replan is unnecessary noise — the form auto-
+ * advanced and the next probe naturally sees zero candidates for the OLD
+ * step.
  *
  * Conservative: returns null when the signal is ambiguous so the cascade
  * keeps its existing replan path. Returns the matched URL string when a
