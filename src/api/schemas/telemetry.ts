@@ -1,44 +1,18 @@
 import { z } from "zod/v4";
 
 /**
- * Categorical failure reason for an LLM call. Mirrors the enum in
- * `lib/telemetry/call-capture.ts` so the two schemas stay in lockstep —
- * the call-capture module is the writer; this schema is the reader-side
- * mirror consumed by judge / self-heal skills.
+ * Re-exports of the call-capture telemetry types so the schema stays the
+ * single source of truth. The lib/telemetry/call-capture module is the
+ * canonical writer (it owns the schema + classifier helper); this barrel
+ * makes the same types available to the judge / self-heal reader paths
+ * without a redundant definition that could silently diverge.
  */
-export const llmCallFailureKindSchema = z.enum([
-  "anthropic-billing",
-  "anthropic-rate-limit",
-  "anthropic-other",
-  "schema-validation-failed",
-  "response-empty",
-  "exception-other",
-]);
-export type LlmCallFailureKind = z.infer<typeof llmCallFailureKindSchema>;
-
-/**
- * Zod schema for one LLM call sample written to the NDJSON capture sink.
- * Re-exported here so the schema stays the single source of truth for both
- * the capture sink (lib/telemetry/call-capture.ts) and the judge/self-heal skills.
- */
-export const llmCallSampleSchema = z.object({
-  callId: z.string(),
-  callType: z.string(),
-  model: z.string(),
-  systemPrompt: z.string().nullable(),
-  userContent: z.string(),
-  responseContent: z.string().nullable(),
-  parsedOk: z.boolean(),
-  inputTokens: z.number().int().nullable(),
-  outputTokens: z.number().int().nullable(),
-  latencyMs: z.number().nullable(),
-  success: z.boolean(),
-  errorMessage: z.string().nullable(),
-  failureKind: llmCallFailureKindSchema.nullable(),
-  ts: z.string(),
-});
-
-export type LlmCallSample = z.infer<typeof llmCallSampleSchema>;
+export {
+  type LlmCallFailureKind,
+  type LlmCallSample,
+  llmCallFailureKindSchema,
+  llmCallSampleSchema,
+} from "@/lib/telemetry/call-capture";
 
 /**
  * Per-sample verdict produced by the judge skill. Three boolean dimensions
