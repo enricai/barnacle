@@ -2624,6 +2624,7 @@ async function executeStepWithHealing(params: {
     })
   ) {
     logger.info(`step ${stepIndex + 1} resolved by upload primitive`);
+    trajectory?.push({ stepIndex, verifiedBy: "network" });
     return;
   }
 
@@ -2656,6 +2657,7 @@ async function executeStepWithHealing(params: {
       logger.info(
         `step ${stepIndex + 1} skipped (probe absent but recent transition detected: ${transitionUrl})`
       );
+      trajectory?.push({ stepIndex, verifiedBy: "url" });
       return;
     }
     // Capture diagnostics + write a failure dump BEFORE throwing so the

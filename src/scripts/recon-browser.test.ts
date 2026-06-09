@@ -74,6 +74,7 @@ import {
   readFailureDumpEvidence,
   renderUnfocusedObserve,
   rephraseWithLLM,
+  replanRemainingFlow,
   shouldSkipTechnique,
   summarizeReplanFailureKinds,
 } from "@/scripts/recon-browser";
@@ -1493,5 +1494,126 @@ describe("recon-browser/extractSubmitFailureEvidence — any-4xx mode", () => {
     });
     const out = extractSubmitFailureEvidence(["c1.json"], null, tmpDir, "any-4xx");
     expect(out).toBe("");
+  });
+});
+
+describe("replanRemainingFlow — trajectory prompt section", () => {
+  function makeReplanClient(): Anthropic {
+    return {
+      messages: {
+        parse: vi.fn().mockResolvedValue({
+          parsed_output: { outcome: "replan", steps: ["Click Submit"] },
+          content: [{ type: "text", text: "{}" }],
+          usage: { input_tokens: 100, output_tokens: 5 },
+        }),
+      },
+    } as unknown as Anthropic;
+  }
+
+  function makePageStub(): { url: () => string; title: () => Promise<string> } {
+    return {
+      url: () => "https://example.com/apply",
+      title: vi.fn().mockResolvedValue("Application Form"),
+    };
+  }
+
+  function makeStagehandStub(): { observe: ReturnType<typeof vi.fn> } {
+    return {
+      observe: vi.fn().mockResolvedValue([]),
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("renders (none) when trajectory is empty or undefined", async () => {
+    const client = makeReplanClient();
+    const { fn, calls } = makeCaptureFn();
+    await replanRemainingFlow({
+      client,
+      originalFlow: ["Step A"],
+      completedSteps: [],
+      failedStep: "Step A",
+      remainingSteps: [],
+      failureDumpPath: "/tmp/nonexistent-dump.json",
+      page: makePageStub() as never,
+      stagehand: makeStagehandStub() as never,
+      captureFn: fn,
+    });
+    const prompt = calls[0]?.userContent ?? "";
+    expect(prompt).toContain("PRIOR STEP TRAJECTORY");
+    expect(prompt).toMatch(/PRIOR STEP TRAJECTORY[^\n]*\):\n\(none\)/);
+  });
+
+  it("renders supplied trajectory entries with their verifiedBy signals", async () => {
+    const client = makeReplanClient();
+    const { fn, calls } = makeCaptureFn();
+    await replanRemainingFlow({
+      client,
+      originalFlow: ["Step A"],
+      completedSteps: [],
+      failedStep: "Step A",
+      remainingSteps: [],
+      failureDumpPath: "/tmp/nonexistent-dump.json",
+      page: makePageStub() as never,
+      stagehand: makeStagehandStub() as never,
+      captureFn: fn,
+      trajectory: [
+        { stepIndex: 0, verifiedBy: "network" },
+        { stepIndex: 1, verifiedBy: "submitted-state-dom" },
+        { stepIndex: 2, verifiedBy: "url" },
+      ],
+    });
+    const prompt = calls[0]?.userContent ?? "";
+    expect(prompt).toContain("PRIOR STEP TRAJECTORY");
+    expect(prompt).toContain("step 1 verified via network");
+    expect(prompt).toContain("step 2 verified via submitted-state-dom");
+    expect(prompt).toContain("step 3 verified via url");
+  });
+
+  it("caps the trajectory section to the last 5 entries", async () => {
+    const client = makeReplanClient();
+    const { fn, calls } = makeCaptureFn();
+    const trajectory = Array.from({ length: 8 }, (_, i) => ({
+      stepIndex: i,
+      verifiedBy: "network" as const,
+    }));
+    await replanRemainingFlow({
+      client,
+      originalFlow: ["Step A"],
+      completedSteps: [],
+      failedStep: "Step A",
+      remainingSteps: [],
+      failureDumpPath: "/tmp/nonexistent-dump.json",
+      page: makePageStub() as never,
+      stagehand: makeStagehandStub() as never,
+      captureFn: fn,
+      trajectory,
+    });
+    const prompt = calls[0]?.userContent ?? "";
+    expect(prompt).toContain("step 4 verified via network");
+    expect(prompt).toContain("step 8 verified via network");
+    expect(prompt).not.toContain("step 1 verified");
+    expect(prompt).not.toContain("step 3 verified");
+  });
+
+  it("renders '(no signal recorded)' for trajectory entries with null verifiedBy", async () => {
+    const client = makeReplanClient();
+    const { fn, calls } = makeCaptureFn();
+    await replanRemainingFlow({
+      client,
+      originalFlow: ["Step A"],
+      completedSteps: [],
+      failedStep: "Step A",
+      remainingSteps: [],
+      failureDumpPath: "/tmp/nonexistent-dump.json",
+      page: makePageStub() as never,
+      stagehand: makeStagehandStub() as never,
+      captureFn: fn,
+      trajectory: [{ stepIndex: 4, verifiedBy: null }],
+    });
+    const prompt = calls[0]?.userContent ?? "";
+    expect(prompt).toContain("step 5 verified via (no signal recorded)");
   });
 });
