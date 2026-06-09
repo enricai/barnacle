@@ -938,12 +938,12 @@ describe("recon-browser/describeAttemptEffectSignals", () => {
     ...overrides,
   });
 
-  it("flags dom-grew-without-network when body grew but no requests fired (Job 3's signature)", () => {
-    const pre = baseSnapshot({ bodyHtmlLength: 65715, visibleTextSignature: "10098:foo" });
-    const post = baseSnapshot({ bodyHtmlLength: 67762, visibleTextSignature: "10515:bar" });
+  it("flags dom-grew-without-network when body grew but no requests fired", () => {
+    const pre = baseSnapshot({ bodyHtmlLength: 1000, visibleTextSignature: "1000:foo" });
+    const post = baseSnapshot({ bodyHtmlLength: 1500, visibleTextSignature: "1500:bar" });
     const reason = describeAttemptEffectSignals(pre, post, [], 0);
     expect(reason).toContain("dom-grew-without-network");
-    expect(reason).toContain("+2047B");
+    expect(reason).toContain("+500B");
     expect(reason).toContain("visible text changed");
   });
 
@@ -977,43 +977,51 @@ describe("recon-browser/describeAttemptEffectSignals", () => {
 });
 
 describe("recon-browser/isSubmitRevealedInvalid", () => {
-  const job3Signature = {
+  const revealedInvalidSignature = {
     isFinalStep: true,
     requireSubmitEndpoint: true,
     resolvedMethod: "click",
     effectSignals:
-      "dom-grew-without-network: body +2047B, visible text changed, 0 same-origin non-GET requests",
+      "dom-grew-without-network: body +1024B, visible text changed, 0 same-origin non-GET requests",
     preSubmitInvalidCount: 0,
     postAttemptInvalidCount: 3,
   };
 
-  it("fires on the Job 3 step 46 signature (final-Submit click revealed 3 new ng-invalid)", () => {
-    expect(isSubmitRevealedInvalid(job3Signature)).toBe(true);
+  it("fires when a final-Submit click reveals new ng-invalid containers", () => {
+    expect(isSubmitRevealedInvalid(revealedInvalidSignature)).toBe(true);
   });
 
   it("does not fire when the step is not the final step", () => {
-    expect(isSubmitRevealedInvalid({ ...job3Signature, isFinalStep: false })).toBe(false);
+    expect(isSubmitRevealedInvalid({ ...revealedInvalidSignature, isFinalStep: false })).toBe(
+      false
+    );
   });
 
   it("does not fire when the flow declared no submit endpoint", () => {
-    expect(isSubmitRevealedInvalid({ ...job3Signature, requireSubmitEndpoint: false })).toBe(false);
+    expect(
+      isSubmitRevealedInvalid({ ...revealedInvalidSignature, requireSubmitEndpoint: false })
+    ).toBe(false);
   });
 
   it("does not fire on non-click resolved actions", () => {
-    expect(isSubmitRevealedInvalid({ ...job3Signature, resolvedMethod: "fill" })).toBe(false);
-    expect(isSubmitRevealedInvalid({ ...job3Signature, resolvedMethod: null })).toBe(false);
+    expect(isSubmitRevealedInvalid({ ...revealedInvalidSignature, resolvedMethod: "fill" })).toBe(
+      false
+    );
+    expect(isSubmitRevealedInvalid({ ...revealedInvalidSignature, resolvedMethod: null })).toBe(
+      false
+    );
   });
 
   it("does not fire without the dom-grew-without-network signal", () => {
     expect(
       isSubmitRevealedInvalid({
-        ...job3Signature,
+        ...revealedInvalidSignature,
         effectSignals: "no observable effect (no network, url, or dom change)",
       })
     ).toBe(false);
     expect(
       isSubmitRevealedInvalid({
-        ...job3Signature,
+        ...revealedInvalidSignature,
         effectSignals: "network-fired-but-only-tracking: 5 requests",
       })
     ).toBe(false);
@@ -1022,14 +1030,14 @@ describe("recon-browser/isSubmitRevealedInvalid", () => {
   it("does not fire when the ng-invalid count did not grow", () => {
     expect(
       isSubmitRevealedInvalid({
-        ...job3Signature,
+        ...revealedInvalidSignature,
         preSubmitInvalidCount: 3,
         postAttemptInvalidCount: 3,
       })
     ).toBe(false);
     expect(
       isSubmitRevealedInvalid({
-        ...job3Signature,
+        ...revealedInvalidSignature,
         preSubmitInvalidCount: 5,
         postAttemptInvalidCount: 3,
       })
@@ -1039,7 +1047,7 @@ describe("recon-browser/isSubmitRevealedInvalid", () => {
   it("fires when ng-invalid count grew from non-zero (e.g. partial fills missed by pre-probe)", () => {
     expect(
       isSubmitRevealedInvalid({
-        ...job3Signature,
+        ...revealedInvalidSignature,
         preSubmitInvalidCount: 2,
         postAttemptInvalidCount: 5,
       })
