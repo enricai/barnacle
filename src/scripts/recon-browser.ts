@@ -446,6 +446,34 @@ async function snapshotPage(page: Page, signalCounter: { n: number }): Promise<S
 }
 
 /**
+ * Detect whether the supplied capture-meta window contains a backend
+ * 5xx response that matches the configured submit endpoint pattern.
+ * The cascade can't heal a backend crash by retrying clicks or
+ * rephrasing instructions; surfacing this signal lets the caller
+ * fail-fast instead of burning replan budget on an unrecoverable
+ * server state.
+ *
+ * Conservative: requires both `submitEndpointPattern` to match (5xx
+ * from analytics/tracking URLs is noise, not a real backend failure)
+ * AND a 5xx status. Returns the matched URL when found; null otherwise.
+ */
+export function findRecentBackendError(params: {
+  recentCaptureMeta: readonly { method: string; status: number; url: string }[];
+  preMetaLength: number;
+  submitEndpointPattern: RegExp | null;
+}): string | null {
+  const { recentCaptureMeta, preMetaLength, submitEndpointPattern } = params;
+  if (!submitEndpointPattern) return null;
+  const window = recentCaptureMeta.slice(preMetaLength);
+  for (const m of window) {
+    if (m.status < 500 || m.status >= 600) continue;
+    if (!submitEndpointPattern.test(m.url)) continue;
+    return m.url;
+  }
+  return null;
+}
+
+/**
  * Detect whether the page legitimately transitioned within the supplied
  * capture-meta window — a 3xx redirect or a same-origin non-GET capture
  * that returned 2xx and looks like a flow-progression URL (not a tracking
@@ -874,6 +902,25 @@ Rewrite the instruction so a Stagehand act() call can resolve it unambiguously t
  * sessions on jobs that will fail identically.
  */
 let billingErrorLoggedThisProcess = false;
+
+/**
+ * Getter for the module-private billing-exhausted flag. Exported so the
+ * cascade's attempt-5 guard can read it without coupling to module-level
+ * state directly; also lets tests reset / observe the flag without
+ * mutating shared globals.
+ */
+export function hasBillingErrorBeenLogged(): boolean {
+  return billingErrorLoggedThisProcess;
+}
+
+/**
+ * Test-only reset. Tests that exercise the billing-exhausted path need to
+ * clear the per-process flag between cases; production code never resets it.
+ */
+export function resetBillingErrorFlagForTests(): void {
+  billingErrorLoggedThisProcess = false;
+}
+
 export function logBillingErrorIfPresent(errorMessage: string): boolean {
   if (!ANTHROPIC_BILLING_RX.test(errorMessage)) return false;
   if (billingErrorLoggedThisProcess) return true;
@@ -2663,6 +2710,25 @@ async function executeStepWithHealing(params: {
       trajectory?.push({ stepIndex, verifiedBy: "url" });
       return;
     }
+    // Telemetry-driven backend-error detection. If the same-window capture
+    // meta contains a 5xx response from the configured submit endpoint,
+    // the backend errored — no rephrase or replan can heal a server crash.
+    // Fail-fast so the runner surfaces the diagnostic instead of burning
+    // budget on retries that will fail identically.
+    const backendErrorUrl = findRecentBackendError({
+      recentCaptureMeta,
+      preMetaLength: stepStartMetaLength,
+      submitEndpointPattern: submitEndpointPattern ? new RegExp(submitEndpointPattern) : null,
+    });
+    if (backendErrorUrl !== null) {
+      logger.error(
+        `step ${stepIndex + 1} backend error detected (submit endpoint returned 5xx: ${backendErrorUrl}); aborting cascade`
+      );
+      throw new StepVerificationError(
+        `step ${stepIndex + 1} (${step.slice(0, 60)}) backend 5xx at ${backendErrorUrl} — unrecoverable`,
+        "cascade-exhausted"
+      );
+    }
     // Capture diagnostics + write a failure dump BEFORE throwing so the
     // global replan path's `readFailureDumpEvidence` can populate the
     // prompt's CURRENTLY VISIBLE / UNFOCUSED OBSERVE / PAGE BODY HTML
@@ -3017,6 +3083,15 @@ async function executeStepWithHealing(params: {
         record.technique = "llm-rephrase";
         if (!anthropic) {
           record.errorMessage = "no anthropic client (bedrock-only deployment); skipping rephrase";
+        } else if (hasBillingErrorBeenLogged()) {
+          // Telemetry-driven skip: when Anthropic billing has already been
+          // flagged FATAL for this process, every subsequent rephrase call
+          // will fail identically. Skip the observe + evidence-extraction
+          // + LLM round-trip and let the cascade exhaust cleanly so the
+          // global replan path can decide whether replans are still viable
+          // (the replan helper has the same guard via its own catch path).
+          record.errorMessage =
+            "anthropic billing exhausted (FATAL_BILLING already logged); skipping rephrase";
         } else {
           const candidates = await stagehand
             .observe(step, { timeout: STEP_WATCHDOG_MS })
@@ -3189,8 +3264,16 @@ async function executeStepWithHealing(params: {
     // native HTMLElement.click() through the JS event pipeline as a fallback;
     // that path is guaranteed to fire registered click handlers. If it produces
     // an observable effect, treat this attempt as healed.
+    // Telemetry-driven short-circuit: if a prior attempt already verified
+    // via DOM state inspection (`verifiedBy === "dom"`), the checkbox/radio
+    // is already in the correct state. Re-running the n+16 fallback would
+    // re-dispatch click + input + change events on an already-settled
+    // element, wasting STEP_PAUSE_MS + observe latency on a known-good
+    // state. Skip the fallback when this evidence is already in the record.
+    const priorDomVerified = attempts.some((a) => a.verifiedBy === "dom");
     if (
       !verified &&
+      !priorDomVerified &&
       record.actResultSuccess === true &&
       resolvedAction?.method === "click" &&
       resolvedAction.selector

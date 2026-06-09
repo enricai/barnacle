@@ -41,6 +41,7 @@ const { loggerStub } = vi.hoisted(() => ({
     warn: vi.fn(),
     error: vi.fn(),
     debug: vi.fn(),
+    fatal: vi.fn(),
     errorWithStack: vi.fn(),
   },
 }));
@@ -64,9 +65,12 @@ import {
   denormalizeStep,
   describeAttemptEffectSignals,
   extractSubmitFailureEvidence,
+  findRecentBackendError,
   findRecentPageTransition,
+  hasBillingErrorBeenLogged,
   type InvalidFormControl,
   isSubmitRevealedInvalid,
+  logBillingErrorIfPresent,
   type NormalizedStep,
   narrowInvalidFormControl,
   persistReplannedFlow,
@@ -75,6 +79,7 @@ import {
   renderUnfocusedObserve,
   rephraseWithLLM,
   replanRemainingFlow,
+  resetBillingErrorFlagForTests,
   shouldSkipTechnique,
   summarizeReplanFailureKinds,
 } from "@/scripts/recon-browser";
@@ -1615,5 +1620,118 @@ describe("replanRemainingFlow — trajectory prompt section", () => {
     });
     const prompt = calls[0]?.userContent ?? "";
     expect(prompt).toContain("step 5 verified via (no signal recorded)");
+  });
+});
+
+describe("recon-browser/hasBillingErrorBeenLogged + billing-aware skip", () => {
+  beforeEach(() => {
+    resetBillingErrorFlagForTests();
+  });
+
+  afterEach(() => {
+    resetBillingErrorFlagForTests();
+  });
+
+  it("returns false initially", () => {
+    expect(hasBillingErrorBeenLogged()).toBe(false);
+  });
+
+  it("returns true after logBillingErrorIfPresent matches the billing regex", () => {
+    expect(hasBillingErrorBeenLogged()).toBe(false);
+    logBillingErrorIfPresent("Your credit balance is too low to make this call");
+    expect(hasBillingErrorBeenLogged()).toBe(true);
+  });
+
+  it("stays false when the error message does not match the billing regex", () => {
+    logBillingErrorIfPresent("transient network error: ETIMEDOUT");
+    expect(hasBillingErrorBeenLogged()).toBe(false);
+  });
+
+  it("resetBillingErrorFlagForTests clears the flag", () => {
+    logBillingErrorIfPresent("insufficient_quota");
+    expect(hasBillingErrorBeenLogged()).toBe(true);
+    resetBillingErrorFlagForTests();
+    expect(hasBillingErrorBeenLogged()).toBe(false);
+  });
+});
+
+describe("recon-browser/findRecentBackendError", () => {
+  const submitRx = /^https:\/\/example\.com\/api\/apply$/;
+
+  it("returns null when the submit pattern is null", () => {
+    expect(
+      findRecentBackendError({
+        recentCaptureMeta: [{ method: "POST", status: 500, url: "https://example.com/api/apply" }],
+        preMetaLength: 0,
+        submitEndpointPattern: null,
+      })
+    ).toBeNull();
+  });
+
+  it("returns null when the window is empty", () => {
+    expect(
+      findRecentBackendError({
+        recentCaptureMeta: [],
+        preMetaLength: 0,
+        submitEndpointPattern: submitRx,
+      })
+    ).toBeNull();
+  });
+
+  it("returns null when only earlier-step captures exist", () => {
+    expect(
+      findRecentBackendError({
+        recentCaptureMeta: [{ method: "POST", status: 500, url: "https://example.com/api/apply" }],
+        preMetaLength: 1,
+        submitEndpointPattern: submitRx,
+      })
+    ).toBeNull();
+  });
+
+  it("returns the matched URL for a 5xx hitting the submit endpoint", () => {
+    expect(
+      findRecentBackendError({
+        recentCaptureMeta: [{ method: "POST", status: 500, url: "https://example.com/api/apply" }],
+        preMetaLength: 0,
+        submitEndpointPattern: submitRx,
+      })
+    ).toBe("https://example.com/api/apply");
+  });
+
+  it("ignores 5xx on URLs that do not match the submit pattern (analytics noise)", () => {
+    expect(
+      findRecentBackendError({
+        recentCaptureMeta: [
+          { method: "POST", status: 503, url: "https://googleads.g.doubleclick.net/pixel" },
+        ],
+        preMetaLength: 0,
+        submitEndpointPattern: submitRx,
+      })
+    ).toBeNull();
+  });
+
+  it("ignores 4xx and 2xx responses (only 5xx is backend-error)", () => {
+    expect(
+      findRecentBackendError({
+        recentCaptureMeta: [
+          { method: "POST", status: 422, url: "https://example.com/api/apply" },
+          { method: "POST", status: 200, url: "https://example.com/api/apply" },
+        ],
+        preMetaLength: 0,
+        submitEndpointPattern: submitRx,
+      })
+    ).toBeNull();
+  });
+
+  it("matches any 5xx code (500-599) on the submit endpoint", () => {
+    for (const status of [500, 502, 503, 504, 599]) {
+      expect(
+        findRecentBackendError({
+          recentCaptureMeta: [{ method: "POST", status, url: "https://example.com/api/apply" }],
+          preMetaLength: 0,
+          submitEndpointPattern: submitRx,
+        })
+      ).toBe("https://example.com/api/apply");
+    }
   });
 });
