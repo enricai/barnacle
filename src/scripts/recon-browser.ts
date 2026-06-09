@@ -595,6 +595,10 @@ export function logBillingErrorIfPresent(errorMessage: string): boolean {
   if (!ANTHROPIC_BILLING_RX.test(errorMessage)) return false;
   if (billingErrorLoggedThisProcess) return true;
   billingErrorLoggedThisProcess = true;
+  // FATAL_BILLING is a machine marker, not prose — the recon-replay-jobs
+  // runner regex-greps child stdout for this literal to short-circuit
+  // multi-job sweeps on Anthropic credit exhaustion. The uppercase is
+  // load-bearing; do not lowercase it.
   logger.fatal(
     "FATAL_BILLING: Anthropic API rejected the call due to insufficient credit balance. Cascade cannot heal further. Top up at https://console.anthropic.com/billing then re-run."
   );
