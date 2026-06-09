@@ -3325,6 +3325,7 @@ async function executeStepWithHealing(params: {
                 `step ${stepIndex + 1} healed on attempt ${attempt} via ${record.technique} + el.click() fallback`
               );
             }
+            trajectory?.push({ stepIndex, verifiedBy: record.verifiedBy });
             return;
           }
         } catch (probeErr) {
