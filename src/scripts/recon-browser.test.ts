@@ -270,13 +270,20 @@ const testLogger = loggerStub as unknown as Logger;
 
 describe("recon-browser/denormalizeStep", () => {
   it("returns bare string for default flags (required, non-upload)", () => {
-    expect(denormalizeStep({ instruction: "Click Continue", optional: false, upload: false })).toBe(
-      "Click Continue"
-    );
+    expect(
+      denormalizeStep({
+        instruction: "Click Continue",
+        optional: false,
+        upload: false,
+        origin: "original",
+      })
+    ).toBe("Click Continue");
   });
 
   it("emits object form with optional flag only when optional=true", () => {
-    expect(denormalizeStep({ instruction: "Skip me", optional: true, upload: false })).toEqual({
+    expect(
+      denormalizeStep({ instruction: "Skip me", optional: true, upload: false, origin: "original" })
+    ).toEqual({
       step: "Skip me",
       optional: true,
     });
@@ -284,12 +291,24 @@ describe("recon-browser/denormalizeStep", () => {
 
   it("emits object form with upload flag only when upload=true", () => {
     expect(
-      denormalizeStep({ instruction: "Upload resume", optional: false, upload: true })
+      denormalizeStep({
+        instruction: "Upload resume",
+        optional: false,
+        upload: true,
+        origin: "original",
+      })
     ).toEqual({ step: "Upload resume", upload: true });
   });
 
   it("emits both flags when both are set (schema supports it)", () => {
-    expect(denormalizeStep({ instruction: "Maybe upload", optional: true, upload: true })).toEqual({
+    expect(
+      denormalizeStep({
+        instruction: "Maybe upload",
+        optional: true,
+        upload: true,
+        origin: "original",
+      })
+    ).toEqual({
       step: "Maybe upload",
       optional: true,
       upload: true,
@@ -323,9 +342,9 @@ describe("recon-browser/persistReplannedFlow", () => {
     writeFileSync(flowPath, originalBytes);
 
     const finalPlan: NormalizedStep[] = [
-      { instruction: "Step A", optional: false, upload: false },
-      { instruction: "Bridge X", optional: false, upload: false },
-      { instruction: "Step B", optional: false, upload: false },
+      { instruction: "Step A", optional: false, upload: false, origin: "original" },
+      { instruction: "Bridge X", optional: false, upload: false, origin: "original" },
+      { instruction: "Step B", optional: false, upload: false, origin: "original" },
     ];
     const replanEvents: ReplanEvent[] = [
       {
@@ -333,7 +352,9 @@ describe("recon-browser/persistReplannedFlow", () => {
         cause: "probe-absent",
         indexAtFailure: 1,
         failedInstruction: "Step B",
-        replanSteps: [{ instruction: "Bridge X", optional: false, upload: false }],
+        replanSteps: [
+          { instruction: "Bridge X", optional: false, upload: false, origin: "original" },
+        ],
         timestamp: "2026-06-03T20:00:00.000Z",
       },
     ];
@@ -355,9 +376,9 @@ describe("recon-browser/persistReplannedFlow", () => {
     writeFileSync(flowPath, '["Step A"]\n');
 
     const finalPlan: NormalizedStep[] = [
-      { instruction: "Required", optional: false, upload: false },
-      { instruction: "Maybe", optional: true, upload: false },
-      { instruction: "File", optional: false, upload: true },
+      { instruction: "Required", optional: false, upload: false, origin: "original" },
+      { instruction: "Maybe", optional: true, upload: false, origin: "original" },
+      { instruction: "File", optional: false, upload: true, origin: "original" },
     ];
     const replanEvents: ReplanEvent[] = [
       {
@@ -384,14 +405,18 @@ describe("recon-browser/persistReplannedFlow", () => {
   it("prints a logger.info summary block describing each replan event", () => {
     writeFileSync(flowPath, '["Step A"]\n');
 
-    const finalPlan: NormalizedStep[] = [{ instruction: "Bridge", optional: false, upload: false }];
+    const finalPlan: NormalizedStep[] = [
+      { instruction: "Bridge", optional: false, upload: false, origin: "original" },
+    ];
     const replanEvents: ReplanEvent[] = [
       {
         replanIndex: 1,
         cause: "probe-absent",
         indexAtFailure: 0,
         failedInstruction: "Step A",
-        replanSteps: [{ instruction: "Bridge", optional: false, upload: false }],
+        replanSteps: [
+          { instruction: "Bridge", optional: false, upload: false, origin: "original" },
+        ],
         timestamp: "2026-06-03T20:00:00.000Z",
       },
     ];
@@ -413,7 +438,9 @@ describe("recon-browser/persistReplannedFlow", () => {
     // + a pattern. The new file should be an object with steps[] + pattern,
     // not a bare array.
     writeFileSync(flowPath, '["Step A"]\n');
-    const finalPlan: NormalizedStep[] = [{ instruction: "Step A", optional: false, upload: false }];
+    const finalPlan: NormalizedStep[] = [
+      { instruction: "Step A", optional: false, upload: false, origin: "original" },
+    ];
     const replanEvents: ReplanEvent[] = [
       {
         replanIndex: 1,
@@ -444,7 +471,9 @@ describe("recon-browser/persistReplannedFlow", () => {
 
   it("falls back to bare-array shape when originalShape is omitted (back-compat)", () => {
     writeFileSync(flowPath, '["X"]\n');
-    const finalPlan: NormalizedStep[] = [{ instruction: "X", optional: false, upload: false }];
+    const finalPlan: NormalizedStep[] = [
+      { instruction: "X", optional: false, upload: false, origin: "original" },
+    ];
     const replanEvents: ReplanEvent[] = [
       {
         replanIndex: 1,
@@ -464,7 +493,9 @@ describe("recon-browser/persistReplannedFlow", () => {
 
   it("omits submitEndpointPattern from object-shape output when pattern is null", () => {
     writeFileSync(flowPath, '{"steps":["X"]}\n');
-    const finalPlan: NormalizedStep[] = [{ instruction: "X", optional: false, upload: false }];
+    const finalPlan: NormalizedStep[] = [
+      { instruction: "X", optional: false, upload: false, origin: "original" },
+    ];
     const replanEvents: ReplanEvent[] = [
       {
         replanIndex: 1,
@@ -495,7 +526,7 @@ describe("recon-browser/persistReplannedFlow", () => {
     // logs an error and returns without writing the new flow.json. This
     // protects the user's data when something external removed the file.
     const finalPlan: NormalizedStep[] = [
-      { instruction: "Whatever", optional: false, upload: false },
+      { instruction: "Whatever", optional: false, upload: false, origin: "original" },
     ];
     const replanEvents: ReplanEvent[] = [
       {
@@ -513,6 +544,61 @@ describe("recon-browser/persistReplannedFlow", () => {
     ).not.toThrow();
     expect(existsSync(flowPath)).toBe(false);
     expect(loggerStub.error).toHaveBeenCalled();
+  });
+
+  it("coerces replan-origin steps to optional on write-back even when they came in as required", () => {
+    // Regression: the 2026-06-09 8-job sweep had job 3 (Presbyterian)
+    // persist 19 Presbyterian-specific replanned steps as REQUIRED bare
+    // strings, then job 4 (Encompass) cascade-exhausted trying to fill
+    // questions that don't exist on Encompass forms. Auto-coercion to
+    // optional means replanned steps probe-absent-skip on non-matching
+    // employers.
+    writeFileSync(flowPath, '["Step A"]\n');
+    const finalPlan: NormalizedStep[] = [
+      { instruction: "Hand-authored required", optional: false, upload: false, origin: "original" },
+      { instruction: "LLM-discovered required", optional: false, upload: false, origin: "replan" },
+    ];
+    const replanEvents: ReplanEvent[] = [
+      {
+        replanIndex: 1,
+        cause: "cascade-exhausted",
+        indexAtFailure: 0,
+        failedInstruction: "Step A",
+        replanSteps: [finalPlan[1]!],
+        timestamp: "2026-06-09T01:00:00.000Z",
+      },
+    ];
+
+    persistReplannedFlow({ flowFile: flowPath, finalPlan, replanEvents, logger: testLogger });
+
+    const parsed = JSON.parse(readFileSync(flowPath, "utf8")) as unknown[];
+    expect(parsed).toEqual([
+      "Hand-authored required",
+      { step: "LLM-discovered required", optional: true },
+    ]);
+  });
+
+  it("leaves an already-optional replan step alone (no-op coercion)", () => {
+    writeFileSync(flowPath, '["Step A"]\n');
+    const finalPlan: NormalizedStep[] = [
+      { instruction: "Replan-optional", optional: true, upload: false, origin: "replan" },
+    ];
+    const replanEvents: ReplanEvent[] = [
+      {
+        replanIndex: 1,
+        cause: "probe-absent",
+        indexAtFailure: 0,
+        failedInstruction: "Step A",
+        replanSteps: finalPlan,
+        timestamp: "2026-06-09T01:00:00.000Z",
+      },
+    ];
+
+    persistReplannedFlow({ flowFile: flowPath, finalPlan, replanEvents, logger: testLogger });
+
+    expect(JSON.parse(readFileSync(flowPath, "utf8"))).toEqual([
+      { step: "Replan-optional", optional: true },
+    ]);
   });
 });
 

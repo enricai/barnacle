@@ -1000,18 +1000,26 @@ const RECON_FLOW_FILE_SCHEMA = z.union([
   }),
 ]);
 
-/** Internal normalized step shape. Source-flow strings normalize with all flags false. */
+/**
+ * Internal normalized step shape. Source-flow strings normalize with all flags
+ * false. `origin` distinguishes hand-authored steps from steps the LLM
+ * replanner appended at cascade-exhausted recovery points — persistReplannedFlow
+ * uses it to force replan-origin steps to optional on write-back, preventing
+ * cross-employer regressions when a Presbyterian-specific replanned question
+ * gets persisted and the next run is on Encompass.
+ */
 interface NormalizedStep {
   instruction: string;
   optional: boolean;
   upload: boolean;
+  origin: "original" | "replan";
 }
 
 function normalizeFlow(steps: z.infer<typeof RECON_FLOW_SCHEMA>): NormalizedStep[] {
   return steps.map((s) =>
     typeof s === "string"
-      ? { instruction: s, optional: false, upload: false }
-      : { instruction: s.step, optional: s.optional, upload: s.upload }
+      ? { instruction: s, optional: false, upload: false, origin: "original" }
+      : { instruction: s.step, optional: s.optional, upload: s.upload, origin: "original" }
   );
 }
 
@@ -1139,7 +1147,18 @@ function persistReplannedFlow(params: {
   }
   writeFileSync(backupPath, originalBytes);
 
-  const denormalizedSteps = finalPlan.map(denormalizeStep);
+  // Coerce replan-origin steps to optional before persistence: when a job
+  // cascade-exhausts on an employer-specific field (e.g. "Are you a former
+  // Presbyterian employee?"), the replan emits a recovery bridge tied to
+  // that employer. Persisting it as required would cascade-exhaust every
+  // subsequent run on a different employer trying to fill a question that
+  // doesn't exist. Optional means the probe-absent-skip path handles
+  // employers where the question isn't on the form; cascade still fires
+  // for the original employer when the persisted flow is replayed. Verified
+  // against the 8-job 2026-06-09 sweep where this pattern caused regressions.
+  const denormalizedSteps = finalPlan.map((step) =>
+    denormalizeStep(step.origin === "replan" && !step.optional ? { ...step, optional: true } : step)
+  );
   // Cumulative-replan dedupe: each cascade-exhausted replan appends a
   // recovery bridge to the tail; after several replans the persisted flow
   // would carry stacked copies of the same bridge. Collapse them so the
@@ -2372,10 +2391,22 @@ const FORM_VALIDITY_PROBE_EXPR = `(() => {
     // only check was originally added to eliminate.
     const ctrlClass = ctrl.getAttribute("class") || "";
     const leafInvalid = INVALID_CLASS_RX.test(ctrlClass);
+    // A <select> whose currently-selected option is .disabled is the
+    // Angular "Please select..." placeholder state. AppCast's app-dropdown
+    // binds value="0: null" to a disabled placeholder, so ctrl.value !== ""
+    // even though no real option is chosen. Without this branch the empty
+    // check below silently drops every app-dropdown wrapper and the
+    // pre-submit probe reports "no ng-invalid form controls detected" on a
+    // form that's actually waiting on unfilled dropdowns. Verified against
+    // job 3's diagnostic dump on 2026-06-09.
+    const selectPlaceholderOpen =
+      ctrl.tagName.toLowerCase() === "select" &&
+      ctrl.selectedOptions[0] &&
+      ctrl.selectedOptions[0].disabled;
     const wrapperOnlyInvalid =
       !leafInvalid &&
       el !== ctrl &&
-      (ctrl.value === "" || ctrl.value == null) &&
+      (ctrl.value === "" || ctrl.value == null || selectPlaceholderOpen) &&
       /(ng-pristine|ng-untouched)/.test(ctrlClass);
     if (!leafInvalid && !wrapperOnlyInvalid) continue;
     let label = "";
@@ -2432,10 +2463,14 @@ const FORM_VALIDITY_PROBE_EXPR = `(() => {
         }
       }
     } else if (tag === "select") {
-      emptyOrUnchecked = !ctrl.value;
+      // Treat a select stuck on a .disabled placeholder option as empty
+      // even when ctrl.value is a truthy string (see the app-dropdown
+      // note above on the wrapperOnlyInvalid branch).
+      emptyOrUnchecked =
+        !ctrl.value || (ctrl.selectedOptions[0] && ctrl.selectedOptions[0].disabled);
       if (emptyOrUnchecked) {
         try {
-          const firstOption = Array.from(ctrl.options || []).find((o) => o.value);
+          const firstOption = Array.from(ctrl.options || []).find((o) => o.value && !o.disabled);
           if (firstOption) {
             ctrl.value = firstOption.value;
             fire(ctrl, "input");
@@ -3962,7 +3997,12 @@ async function main(): Promise<void> {
         // the original intent (page-0 Continue, page-1 sections, resume
         // upload, final submit) intact instead of replacing them with the
         // replanner's necessarily-truncated tail (capped at REPLAN_MAX_STEPS).
-        plan.splice(i, plan.length - i, ...newSteps, ...originalRemaining);
+        // Tag replan-discovered steps with origin so persistReplannedFlow
+        // can force them optional on write-back. originalRemaining keeps its
+        // origin: "original" — that's what protects the canonical final
+        // submit from being silently demoted to optional across replans.
+        const taggedNewSteps = newSteps.map((s) => ({ ...s, origin: "replan" as const }));
+        plan.splice(i, plan.length - i, ...taggedNewSteps, ...originalRemaining);
         i--;
       }
     }
