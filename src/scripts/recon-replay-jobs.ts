@@ -19,8 +19,9 @@
  */
 
 import { spawn } from "node:child_process";
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 
 import { getScriptLogger } from "@/lib/logging";
 import { allocateTestmailInbox, pollTestmailInbox } from "@/testmail/client";
@@ -77,6 +78,31 @@ async function runReconForJob(
   const capturesDir = "/tmp/recon/graphql";
   mkdirSync(capturesDir, { recursive: true });
   const capturesBefore = new Set(readdirSync(capturesDir));
+
+  // Flow-file ENOENT retry. If the flow file is transiently unreadable
+  // (git stash mid-sweep, file system race), wait briefly and retry up
+  // to 3 times before giving up. Covers the 2026-06-09 sweep where
+  // recon-flow.json was missing for ~1 second between git operations,
+  // causing job 7 to fail with ENOENT in 2 minutes rather than getting
+  // a real verdict. Without this gate, transient file-system races
+  // produce false negatives in the per-job verdict.
+  const ENOENT_MAX_RETRIES = 3;
+  const ENOENT_RETRY_DELAY_MS = 5000;
+  for (let attempt = 0; attempt < ENOENT_MAX_RETRIES; attempt++) {
+    if (existsSync(flowFile)) break;
+    if (attempt === ENOENT_MAX_RETRIES - 1) {
+      logger.error(
+        `flow file '${flowFile}' missing after ${ENOENT_MAX_RETRIES} attempts (${
+          (ENOENT_MAX_RETRIES - 1) * ENOENT_RETRY_DELAY_MS
+        }ms total wait); spawning child anyway and letting it fail explicitly`
+      );
+      break;
+    }
+    logger.warn(
+      `flow file '${flowFile}' missing (attempt ${attempt + 1}/${ENOENT_MAX_RETRIES}); retrying in ${ENOENT_RETRY_DELAY_MS}ms`
+    );
+    await sleep(ENOENT_RETRY_DELAY_MS);
+  }
 
   // Pipe stdio so the parent can scan stdout/stderr for the
   // FATAL_BILLING marker the engine emits when Anthropic rejects a

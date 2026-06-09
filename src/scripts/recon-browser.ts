@@ -35,7 +35,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -443,6 +443,63 @@ async function snapshotPage(page: Page, signalCounter: { n: number }): Promise<S
     bodyHtmlLength,
     visibleTextSignature,
   };
+}
+
+/**
+ * End-of-run audit: scan ALL captures written by this run for any 2xx
+ * whose URL matches the flow's submitEndpointPattern. Returns true when
+ * NO match is found — i.e. the run completed without an actual
+ * submission landing. Caller exits non-zero so silent-pass states
+ * surface as real failures.
+ *
+ * The audit is independent of the per-step verifier — the verifier may
+ * have accepted a DOM-fallback or URL-change signal as proof, but if
+ * the configured submit endpoint never returned 2xx, the application
+ * data didn't actually reach the server.
+ *
+ * Pre-existing AppCast-specific equivalent: readJobOutcome in
+ * recon-replay-jobs.ts. This is the agnostic engine-side version using
+ * the flow file's declared pattern.
+ */
+function auditFinalSubmitMatch(params: {
+  submitEndpointPattern: string;
+  capturesDir: string;
+  logger: Logger;
+}): boolean {
+  const { submitEndpointPattern, capturesDir, logger } = params;
+  const compiled = new RegExp(submitEndpointPattern);
+  let entries: string[];
+  try {
+    entries = readdirSync(capturesDir);
+  } catch (err) {
+    logger.warn(
+      `end-of-run audit: could not read captures dir ${capturesDir}: ${toErrorMessage(err)}`
+    );
+    // Without captures to scan we can't make the determination; treat as
+    // failed so the caller decides whether to retry.
+    return true;
+  }
+  for (const f of entries) {
+    try {
+      const data = JSON.parse(readFileSync(join(capturesDir, f), "utf8")) as {
+        status?: number;
+        url?: string;
+      };
+      if (
+        typeof data.url === "string" &&
+        compiled.test(data.url) &&
+        typeof data.status === "number" &&
+        data.status >= 200 &&
+        data.status < 300
+      ) {
+        return false;
+      }
+    } catch {
+      // Ignore unparseable capture files — they're either malformed or
+      // a different shape (e.g. resource captures that don't have status/url).
+    }
+  }
+  return true;
 }
 
 /**
@@ -4061,6 +4118,35 @@ async function main(): Promise<void> {
     }
 
     stopCapture();
+
+    // End-of-run audit: when the flow declared submitEndpointPattern AND
+    // opted into requireSubmitEndpointMatch=true, scan ALL captures from
+    // this run for a pattern-matching 200 before declaring success. If no
+    // match, the run "succeeded" by the verifier's lights but the actual
+    // submission didn't land. Exit non-zero so the caller (test harness,
+    // CI, or production runner) can distinguish silent-pass from real
+    // success. This closes the loop the silent-pass bug exposed on 2026-
+    // 06-09: per-step verifier accepted DOM-fallback as proof; run-level
+    // audit catches that the network proof never actually arrived.
+    if (requireSubmitEndpointMatch && submitEndpointPattern) {
+      const auditFailed = auditFinalSubmitMatch({
+        submitEndpointPattern,
+        capturesDir: CAPTURES_DIR,
+        logger,
+      });
+      if (auditFailed) {
+        logger.error(
+          `end-of-run audit FAILED: no captured 2xx matched submitEndpointPattern '${submitEndpointPattern}' — submission did not land despite verifier success`
+        );
+        // Exit non-zero so the runner counts this as a real failure rather
+        // than rolling silent-pass forward as success.
+        process.exit(1);
+      }
+      logger.info(
+        `end-of-run audit PASSED: at least one captured 2xx matched submitEndpointPattern`
+      );
+    }
+
     logger.info(`recon complete — ${counter.n} captures written to ${CAPTURES_DIR}`);
   } finally {
     // Replay-the-discovered-path: if any replan fired and the user provided
