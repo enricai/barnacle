@@ -82,6 +82,12 @@ export class UnknownScraperError extends ScraperError {
   }
 }
 
+/** Discriminator for {@link StepVerificationError}. See the class TSDoc for the per-variant semantics. */
+export type StepVerificationErrorKind =
+  | "cascade-exhausted"
+  | "probe-absent"
+  | "backend-error-unrecoverable";
+
 /**
  * Recon-only: a flow step in recon-browser.ts could not be acted on. Three
  * variants per `kind`:
@@ -104,11 +110,6 @@ export class UnknownScraperError extends ScraperError {
  *
  * Non-retryable — the runtime path never sees this.
  */
-export type StepVerificationErrorKind =
-  | "cascade-exhausted"
-  | "probe-absent"
-  | "backend-error-unrecoverable";
-
 export class StepVerificationError extends ScraperError {
   readonly kind: StepVerificationErrorKind;
   constructor(
