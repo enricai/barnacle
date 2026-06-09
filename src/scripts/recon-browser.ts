@@ -519,11 +519,13 @@ export function describeAttemptEffectSignals(
  * route directly to global replan, which already reads the failure dump's
  * ng-invalid + interactive-target lists and produces follow-up steps.
  *
- * Directly observed on Job 3 Presbyterian Albuquerque: steps 46 and 64
- * both burned ~1m 50s on attempts 2-5 after attempt 1 had already produced
- * the unambiguous signature (body +2047B, 0 network, new ng-invalid
- * containers). All 5 conditions must hold to fire; conservative scope
- * keeps the predicate from false-positiving on ordinary state changes.
+ * Strict 5-condition predicate: the click must be on the final flow step
+ * with a configured submit endpoint, the resolved action must be a click,
+ * the pre/post snapshot delta must produce the dom-grew-without-network
+ * signal, AND the ng-invalid container count must have grown. When any
+ * condition fails, the full cascade runs as usual — keeping the predicate
+ * from false-positiving on ordinary state changes (network-fired
+ * navigations, partial DOM reflows, etc.).
  */
 export function isSubmitRevealedInvalid(params: {
   isFinalStep: boolean;
@@ -3100,12 +3102,12 @@ async function executeStepWithHealing(params: {
     );
 
     // Telemetry-driven early-exit: when attempt 1 on a final-Submit click
-    // reveals new ng-invalid containers, attempts 2-5 cannot succeed (the
+    // reveals new ng-invalid containers, attempts 2-N cannot succeed (the
     // form will keep blocking the POST until the new questions are answered).
     // Break out of the attempt loop so the dump runs and the step raises
-    // terminal failure → replan triggers immediately. Saves ~1m 40s of
-    // wasted Stagehand calls per submit-revealed-invalid round, directly
-    // observed on Job 3 Presbyterian at steps 46 and 64.
+    // terminal failure → replan triggers immediately, saving the cascade
+    // budget that would otherwise burn on identical retries of a click the
+    // page is structurally rejecting.
     if (attempt === 1) {
       const postAttemptInvalidCount = await countNgInvalidContainers(page);
       const earlyExit = isSubmitRevealedInvalid({
