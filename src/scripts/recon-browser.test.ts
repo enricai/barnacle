@@ -1165,8 +1165,29 @@ describe("recon-browser/summarizeReplanFailureKinds", () => {
   function writeEntries(
     entries: { callType: string; success: boolean; failureKind: string | null }[]
   ): void {
-    const lines = entries.map((e) => JSON.stringify(e)).join("\n");
-    writeFileSync(ndjsonPath, `${lines}\n`);
+    // parseSamples runs every line through llmCallSampleSchema, so the
+    // fixture must produce schema-conformant rows. Fill the required
+    // fields with neutral defaults; the predicate only consults
+    // callType, success, and failureKind.
+    const lines = entries.map((e, i) =>
+      JSON.stringify({
+        callId: `call-${i}`,
+        callType: e.callType,
+        model: "test-model",
+        systemPrompt: null,
+        userContent: "",
+        responseContent: null,
+        parsedOk: false,
+        inputTokens: null,
+        outputTokens: null,
+        latencyMs: null,
+        success: e.success,
+        errorMessage: null,
+        failureKind: e.failureKind,
+        ts: "2026-01-01T00:00:00Z",
+      })
+    );
+    writeFileSync(ndjsonPath, `${lines.join("\n")}\n`);
   }
 
   it("returns empty when the file is missing", () => {
@@ -1251,23 +1272,17 @@ describe("recon-browser/summarizeReplanFailureKinds", () => {
   });
 
   it("survives malformed NDJSON lines", () => {
-    writeFileSync(
-      ndjsonPath,
-      [
-        JSON.stringify({
-          callType: "recon-replan",
-          success: false,
-          failureKind: "anthropic-billing",
-        }),
-        "{not-json}",
-        JSON.stringify({
-          callType: "recon-replan",
-          success: false,
-          failureKind: "anthropic-billing",
-        }),
-        "",
-      ].join("\n")
-    );
+    writeEntries([
+      { callType: "recon-replan", success: false, failureKind: "anthropic-billing" },
+      { callType: "recon-replan", success: false, failureKind: "anthropic-billing" },
+    ]);
+    // Inject a malformed line + an empty line between the valid entries.
+    // parseSamples returns a makeMalformedSample row for the bad JSON and
+    // skips the empty one, neither of which matches the "recon-replan"
+    // callType filter — so the summary still tallies the two valid rows.
+    const current = readFileSync(ndjsonPath, "utf8");
+    const lines = current.split("\n").filter((l) => l.length > 0);
+    writeFileSync(ndjsonPath, [lines[0]!, "{not-json}", lines[1]!, ""].join("\n"));
     expect(
       summarizeReplanFailureKinds({ callsNdjsonPath: ndjsonPath, callType: "recon-replan" })
     ).toContain("2× anthropic-billing");

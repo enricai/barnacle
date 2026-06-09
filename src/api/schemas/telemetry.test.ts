@@ -22,6 +22,8 @@ function makeValidSample(): LlmCallSample {
     outputTokens: 8,
     latencyMs: 312,
     success: true,
+    errorMessage: null,
+    failureKind: null,
     ts: "2026-05-30T10:00:00.000Z",
   };
 }

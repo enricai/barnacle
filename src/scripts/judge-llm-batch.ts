@@ -107,6 +107,8 @@ function makeMalformedSample(raw: string): LlmCallSample {
     outputTokens: null,
     latencyMs: null,
     success: false,
+    errorMessage: null,
+    failureKind: null,
     ts: formatISO(new Date()),
   };
 }

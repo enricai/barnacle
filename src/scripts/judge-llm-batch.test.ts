@@ -66,6 +66,8 @@ function makeSample(overrides: Partial<LlmCallSample> = {}): LlmCallSample {
     outputTokens: 8,
     latencyMs: 312,
     success: true,
+    errorMessage: null,
+    failureKind: null,
     ts: "2026-05-30T00:00:00Z",
     ...overrides,
   };

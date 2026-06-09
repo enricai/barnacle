@@ -615,6 +615,8 @@ export async function phaseLlmHeal(params: LlmHealParams): Promise<LlmHealResult
       outputTokens: null,
       latencyMs: null,
       success: false,
+      errorMessage: null,
+      failureKind: null,
       ts: judgeVerdictData.judgedAt,
     }));
 

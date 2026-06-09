@@ -57,6 +57,7 @@ import {
 import { CALL_TYPE_RECON_REPHRASE, CALL_TYPE_RECON_REPLAN } from "@/lib/telemetry/call-types";
 import { StepVerificationError } from "@/scraper/errors";
 import { createBrowserSession, type ProviderName } from "@/scraper/session";
+import { filterByCallType, parseSamples } from "@/scripts/judge-llm-batch";
 import { CAPTURES_DIR, type Capture, STEP_FAILURES_DIR } from "@/scripts/recon-shared";
 import { allocateTestmailInbox } from "@/testmail/client";
 import type { Logger } from "@/types/logging";
@@ -593,36 +594,24 @@ export function summarizeReplanFailureKinds(params: {
   tailCount?: number;
 }): string {
   const { callsNdjsonPath, callType, tailCount = 10 } = params;
-  let lines: string[] = [];
+  let ndjsonContent: string;
   try {
-    const raw = readFileSync(callsNdjsonPath, "utf8");
-    lines = raw.split("\n").filter((l) => l.trim().length > 0);
+    ndjsonContent = readFileSync(callsNdjsonPath, "utf8");
   } catch {
     return "";
   }
+  const matching = filterByCallType(parseSamples(ndjsonContent), callType);
+  const failures = matching.filter((s) => s.success === false).slice(-tailCount);
+  if (failures.length === 0) return "";
   const counts: Record<string, number> = {};
-  let total = 0;
-  for (const line of lines.slice(-tailCount)) {
-    try {
-      const entry = JSON.parse(line) as {
-        callType?: string;
-        success?: boolean;
-        failureKind?: string | null;
-      };
-      if (entry.callType !== callType) continue;
-      if (entry.success !== false) continue;
-      const kind = entry.failureKind ?? "unknown";
-      counts[kind] = (counts[kind] ?? 0) + 1;
-      total++;
-    } catch {
-      // malformed NDJSON line — skip
-    }
+  for (const s of failures) {
+    const kind = s.failureKind ?? "unknown";
+    counts[kind] = (counts[kind] ?? 0) + 1;
   }
-  if (total === 0) return "";
   const parts = Object.entries(counts)
     .sort((a, b) => b[1] - a[1])
     .map(([kind, n]) => `${n}× ${kind}`);
-  return `${total} recent ${callType} failure(s): ${parts.join(", ")}`;
+  return `${failures.length} recent ${callType} failure(s): ${parts.join(", ")}`;
 }
 
 export function isSubmitRevealedInvalid(params: {
