@@ -1130,6 +1130,8 @@ function persistReplannedFlow(params: {
   submitEndpointPattern?: string | null;
   /** Carried through when the original file declared submitted-state DOM selectors. */
   submittedStateSelectors?: string[];
+  /** Carried through when the original file opted into network-authoritative verification. */
+  requireSubmitEndpointMatch?: boolean;
 }): void {
   const {
     flowFile,
@@ -1139,6 +1141,7 @@ function persistReplannedFlow(params: {
     originalShape = "array",
     submitEndpointPattern = null,
     submittedStateSelectors = [],
+    requireSubmitEndpointMatch = false,
   } = params;
   // Timestamp format chosen to be filesystem-safe (no colons or dots that
   // break common tooling on macOS/Windows).
@@ -1183,6 +1186,7 @@ function persistReplannedFlow(params: {
           steps: dedupedSteps,
           ...(submitEndpointPattern !== null ? { submitEndpointPattern } : {}),
           ...(submittedStateSelectors.length > 0 ? { submittedStateSelectors } : {}),
+          ...(requireSubmitEndpointMatch ? { requireSubmitEndpointMatch } : {}),
         }
       : dedupedSteps;
   writeFileSync(flowFile, `${JSON.stringify(payload, null, 2)}\n`);
@@ -4087,6 +4091,7 @@ async function main(): Promise<void> {
             originalShape,
             submitEndpointPattern,
             submittedStateSelectors,
+            requireSubmitEndpointMatch,
           });
         } catch (err) {
           // Persistence is best-effort in the finally block — a write
