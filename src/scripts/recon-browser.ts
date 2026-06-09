@@ -445,6 +445,33 @@ async function snapshotPage(page: Page, signalCounter: { n: number }): Promise<S
 }
 
 /**
+ * Read-only count of ng-invalid form controls on the page. Side-effect-free
+ * counterpart to `probeFormValidityBeforeSubmit` (which also auto-fills
+ * unselected radio groups via element.click()). Used by the cascade's
+ * early-exit predicate to detect "the Submit click revealed new required
+ * questions" — when this count grows from 0 (pre-submit) to ≥1 (post-attempt-1),
+ * attempts 2-5 cannot succeed and the cascade should route to replan
+ * immediately instead of burning Stagehand calls.
+ */
+export async function countNgInvalidContainers(page: Page): Promise<number> {
+  const expr = `(() => {
+    const rx = /(ng-invalid|mat-form-field-invalid|is-invalid|field-invalid|input-invalid|form-invalid)/;
+    let n = 0;
+    for (const el of document.querySelectorAll("[class]")) {
+      const cls = el.getAttribute("class") || "";
+      if (rx.test(cls)) n++;
+    }
+    return n;
+  })()`;
+  try {
+    const raw = await page.evaluate(expr);
+    return typeof raw === "number" ? raw : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
  * Translate the pre/post snapshot delta + same-window captures into a short
  * diagnostic phrase that goes into `failureReasons[]`. Surfaces patterns the
  * verifier itself discards: e.g. "DOM grew but no submit-shaped network
@@ -483,6 +510,43 @@ export function describeAttemptEffectSignals(
     );
   }
   return observations.join(" | ");
+}
+
+/**
+ * Decide whether attempt 1 on a final-Submit click revealed new required
+ * questions that mathematically can't be cleared by retrying the same
+ * click. When true, the cascade should break out of its attempt loop and
+ * route directly to global replan, which already reads the failure dump's
+ * ng-invalid + interactive-target lists and produces follow-up steps.
+ *
+ * Directly observed on Job 3 Presbyterian Albuquerque: steps 46 and 64
+ * both burned ~1m 50s on attempts 2-5 after attempt 1 had already produced
+ * the unambiguous signature (body +2047B, 0 network, new ng-invalid
+ * containers). All 5 conditions must hold to fire; conservative scope
+ * keeps the predicate from false-positiving on ordinary state changes.
+ */
+export function isSubmitRevealedInvalid(params: {
+  isFinalStep: boolean;
+  requireSubmitEndpoint: boolean;
+  resolvedMethod: string | null;
+  effectSignals: string;
+  preSubmitInvalidCount: number;
+  postAttemptInvalidCount: number;
+}): boolean {
+  const {
+    isFinalStep,
+    requireSubmitEndpoint,
+    resolvedMethod,
+    effectSignals,
+    preSubmitInvalidCount,
+    postAttemptInvalidCount,
+  } = params;
+  if (!isFinalStep) return false;
+  if (!requireSubmitEndpoint) return false;
+  if (resolvedMethod !== "click") return false;
+  if (!effectSignals.includes("dom-grew-without-network")) return false;
+  if (postAttemptInvalidCount <= preSubmitInvalidCount) return false;
+  return true;
 }
 
 /**
@@ -2440,6 +2504,11 @@ async function executeStepWithHealing(params: {
   // framework re-render that wipes an earlier-filled value back to empty.
   // The submit click then silently fails validation and the cascade can't
   // tell what's wrong from the DOM excerpt alone.
+  // Pre-submit ng-invalid count: side-effect-free baseline read BEFORE the
+  // form-validity auto-picker runs. The early-exit predicate compares this
+  // to the post-attempt-1 count to detect "the click revealed NEW required
+  // fields" — a state attempts 2-5 mathematically can't clear.
+  const preSubmitInvalidCount = requireSubmitEndpoint ? await countNgInvalidContainers(page) : 0;
   if (requireSubmitEndpoint) {
     const invalidControls = await probeFormValidityBeforeSubmit({
       page,
@@ -3029,6 +3098,31 @@ async function executeStepWithHealing(params: {
     logger.warn(
       `step ${stepIndex + 1} attempt ${attempt} (${record.technique}) produced no observable effect — ${reason}`
     );
+
+    // Telemetry-driven early-exit: when attempt 1 on a final-Submit click
+    // reveals new ng-invalid containers, attempts 2-5 cannot succeed (the
+    // form will keep blocking the POST until the new questions are answered).
+    // Break out of the attempt loop so the dump runs and the step raises
+    // terminal failure → replan triggers immediately. Saves ~1m 40s of
+    // wasted Stagehand calls per submit-revealed-invalid round, directly
+    // observed on Job 3 Presbyterian at steps 46 and 64.
+    if (attempt === 1) {
+      const postAttemptInvalidCount = await countNgInvalidContainers(page);
+      const earlyExit = isSubmitRevealedInvalid({
+        isFinalStep,
+        requireSubmitEndpoint,
+        resolvedMethod: record.resolvedMethod,
+        effectSignals,
+        preSubmitInvalidCount,
+        postAttemptInvalidCount,
+      });
+      if (earlyExit) {
+        const exitReason = `submit-revealed-invalid: click surfaced ${postAttemptInvalidCount - preSubmitInvalidCount} new ng-invalid container(s) (was ${preSubmitInvalidCount}, now ${postAttemptInvalidCount}); attempts 2-${MAX_STEP_ATTEMPTS} cannot heal a form that needs answers — routing to replan`;
+        failureReasons.push(exitReason);
+        logger.warn(`step ${stepIndex + 1} ${exitReason}`);
+        break;
+      }
+    }
   }
 
   const finalObserve = await stagehand
