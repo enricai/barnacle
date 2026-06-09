@@ -514,21 +514,6 @@ export function describeAttemptEffectSignals(
 }
 
 /**
- * Decide whether attempt 1 on a final-Submit click revealed new required
- * questions that mathematically can't be cleared by retrying the same
- * click. When true, the cascade should break out of its attempt loop and
- * route directly to global replan, which already reads the failure dump's
- * ng-invalid + interactive-target lists and produces follow-up steps.
- *
- * Strict 5-condition predicate: the click must be on the final flow step
- * with a configured submit endpoint, the resolved action must be a click,
- * the pre/post snapshot delta must produce the dom-grew-without-network
- * signal, AND the ng-invalid container count must have grown. When any
- * condition fails, the full cascade runs as usual — keeping the predicate
- * from false-positiving on ordinary state changes (network-fired
- * navigations, partial DOM reflows, etc.).
- */
-/**
  * Decide whether a cascade technique's preconditions cannot be met by the
  * prior attempts' state, so running it would burn the attempt slot without
  * exercising new behaviour. Conservative: returns true ONLY when the
@@ -614,6 +599,21 @@ export function summarizeReplanFailureKinds(params: {
   return `${failures.length} recent ${callType} failure(s): ${parts.join(", ")}`;
 }
 
+/**
+ * Decide whether attempt 1 on a final-Submit click revealed new required
+ * questions that mathematically can't be cleared by retrying the same
+ * click. When true, the cascade should break out of its attempt loop and
+ * route directly to global replan, which already reads the failure dump's
+ * ng-invalid + interactive-target lists and produces follow-up steps.
+ *
+ * Strict 5-condition predicate: the click must be on the final flow step
+ * with a configured submit endpoint, the resolved action must be a click,
+ * the pre/post snapshot delta must produce the dom-grew-without-network
+ * signal, AND the ng-invalid container count must have grown. When any
+ * condition fails, the full cascade runs as usual — keeping the predicate
+ * from false-positiving on ordinary state changes (network-fired
+ * navigations, partial DOM reflows, etc.).
+ */
 export function isSubmitRevealedInvalid(params: {
   isFinalStep: boolean;
   requireSubmitEndpoint: boolean;
