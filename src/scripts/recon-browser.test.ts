@@ -64,6 +64,7 @@ import {
   denormalizeStep,
   describeAttemptEffectSignals,
   extractSubmitFailureEvidence,
+  findRecentPageTransition,
   type InvalidFormControl,
   isSubmitRevealedInvalid,
   type NormalizedStep,
@@ -1366,5 +1367,131 @@ describe("rephraseWithLLM — instruction history (priorAttempts)", () => {
     expect(prompt).toContain("Click the No radio");
     expect(prompt).not.toContain("act-string");
     expect(prompt).not.toContain("structured-click");
+  });
+});
+
+describe("recon-browser/findRecentPageTransition", () => {
+  it("returns null when the window is empty", () => {
+    expect(findRecentPageTransition({ recentCaptureMeta: [], preMetaLength: 0 })).toBeNull();
+  });
+
+  it("returns null when only earlier-step captures exist (preMetaLength gate)", () => {
+    expect(
+      findRecentPageTransition({
+        recentCaptureMeta: [{ method: "POST", status: 302, url: "https://example.com/redirect" }],
+        preMetaLength: 1,
+      })
+    ).toBeNull();
+  });
+
+  it("detects a 3xx redirect within the window", () => {
+    expect(
+      findRecentPageTransition({
+        recentCaptureMeta: [
+          { method: "GET", status: 200, url: "https://example.com/old" },
+          { method: "POST", status: 302, url: "https://example.com/thank-you" },
+        ],
+        preMetaLength: 0,
+      })
+    ).toBe("https://example.com/thank-you");
+  });
+
+  it("detects a successful non-GET non-tracking capture as a transition", () => {
+    expect(
+      findRecentPageTransition({
+        recentCaptureMeta: [{ method: "POST", status: 200, url: "https://example.com/submit" }],
+        preMetaLength: 0,
+      })
+    ).toBe("https://example.com/submit");
+  });
+
+  it("ignores tracking beacons even when they returned 200", () => {
+    expect(
+      findRecentPageTransition({
+        recentCaptureMeta: [
+          { method: "POST", status: 200, url: "https://googleads.g.doubleclick.net/pixel" },
+          { method: "GET", status: 200, url: "https://www.google.com/pagead/conversion" },
+        ],
+        preMetaLength: 0,
+      })
+    ).toBeNull();
+  });
+
+  it("ignores GET requests when searching for non-redirect transitions", () => {
+    expect(
+      findRecentPageTransition({
+        recentCaptureMeta: [{ method: "GET", status: 200, url: "https://example.com/poll" }],
+        preMetaLength: 0,
+      })
+    ).toBeNull();
+  });
+
+  it("prefers a 3xx over a same-window 2xx non-tracking POST", () => {
+    const transition = findRecentPageTransition({
+      recentCaptureMeta: [
+        { method: "POST", status: 200, url: "https://example.com/api/save" },
+        { method: "POST", status: 302, url: "https://example.com/next-page" },
+      ],
+      preMetaLength: 0,
+    });
+    expect(transition).toBe("https://example.com/next-page");
+  });
+});
+
+describe("recon-browser/extractSubmitFailureEvidence — any-4xx mode", () => {
+  let tmpDir: string;
+  const submitRx = /^https:\/\/example\.com\/api\/apply$/;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "recon-anyfourxx-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function writeCapture(filename: string, body: object): void {
+    writeFileSync(join(tmpDir, filename), JSON.stringify(body));
+  }
+
+  it("strict mode (default) ignores 4xx whose URL does not match the pattern", () => {
+    writeCapture("c1.json", {
+      url: "https://example.com/api/errors",
+      status: 422,
+      responseBody: { errors: [{ field: "email", message: "Invalid format" }] },
+    });
+    const out = extractSubmitFailureEvidence(["c1.json"], submitRx, tmpDir);
+    expect(out).toBe("");
+  });
+
+  it("any-4xx mode parses a 4xx whose URL does NOT match the configured pattern", () => {
+    writeCapture("c1.json", {
+      url: "https://example.com/api/errors",
+      status: 422,
+      responseBody: { errors: [{ field: "email", message: "Invalid format" }] },
+    });
+    const out = extractSubmitFailureEvidence(["c1.json"], null, tmpDir, "any-4xx");
+    expect(out).toContain("422 https://example.com/api/errors");
+    expect(out).toContain("email: Invalid format");
+  });
+
+  it("any-4xx mode still requires status >= 400 (ignores 2xx)", () => {
+    writeCapture("c1.json", {
+      url: "https://example.com/api/track",
+      status: 200,
+      responseBody: { ok: true },
+    });
+    const out = extractSubmitFailureEvidence(["c1.json"], null, tmpDir, "any-4xx");
+    expect(out).toBe("");
+  });
+
+  it("any-4xx mode returns empty when no 4xx exists in the window", () => {
+    writeCapture("c1.json", {
+      url: "https://example.com/api/save",
+      status: 200,
+      responseBody: { ok: true },
+    });
+    const out = extractSubmitFailureEvidence(["c1.json"], null, tmpDir, "any-4xx");
+    expect(out).toBe("");
   });
 });

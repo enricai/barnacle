@@ -446,6 +446,39 @@ async function snapshotPage(page: Page, signalCounter: { n: number }): Promise<S
 }
 
 /**
+ * Detect whether the page legitimately transitioned during the failing
+ * step's attempt window — a 3xx redirect or a same-origin non-GET capture
+ * that returned 2xx and looks like a flow-progression URL (not a tracking
+ * beacon). When this fires, a probe-absent escalation to replan is
+ * unnecessary noise — the form auto-advanced and the next probe naturally
+ * sees zero candidates for the OLD step.
+ *
+ * Conservative: returns null when the signal is ambiguous so the cascade
+ * keeps its existing replan path. Returns the matched URL string when a
+ * transition is detected, which the caller logs as the reason for the
+ * clean skip.
+ */
+export function findRecentPageTransition(params: {
+  recentCaptureMeta: readonly { method: string; status: number; url: string }[];
+  preMetaLength: number;
+}): string | null {
+  const { recentCaptureMeta, preMetaLength } = params;
+  const window = recentCaptureMeta.slice(preMetaLength);
+  if (window.length === 0) return null;
+  for (const m of window) {
+    if (m.status >= 300 && m.status < 400) return m.url;
+  }
+  for (const m of window) {
+    if (m.method === "GET") continue;
+    if (m.status < 200 || m.status >= 300) continue;
+    if (/(googleads|doubleclick|gtm\.js|analytics|pixel|airbrake|sentry|rmkt)/i.test(m.url))
+      continue;
+    return m.url;
+  }
+  return null;
+}
+
+/**
  * Read-only count of ng-invalid form controls on the page. Side-effect-free
  * counterpart to `probeFormValidityBeforeSubmit` (which also auto-fills
  * unselected radio groups via element.click()). Used by the cascade's
@@ -1351,9 +1384,11 @@ async function extractInteractiveTargetsNearInvalid(page: Page): Promise<string[
 export function extractSubmitFailureEvidence(
   recentCaptureFilenames: readonly string[],
   submitEndpointPattern: RegExp | null,
-  capturesDir: string = CAPTURES_DIR
+  capturesDir: string = CAPTURES_DIR,
+  mode: "strict" | "any-4xx" = "strict"
 ): string {
-  if (!submitEndpointPattern || recentCaptureFilenames.length === 0) return "";
+  if (recentCaptureFilenames.length === 0) return "";
+  if (mode === "strict" && !submitEndpointPattern) return "";
   const records: string[] = [];
   const seen = new Set<string>();
   for (const filename of recentCaptureFilenames.slice(-20)) {
@@ -1364,7 +1399,7 @@ export function extractSubmitFailureEvidence(
       const raw = readFileSync(path, "utf8");
       const capture = JSON.parse(raw) as Partial<Capture>;
       if (typeof capture.url !== "string") continue;
-      if (!submitEndpointPattern.test(capture.url)) continue;
+      if (mode === "strict" && !submitEndpointPattern!.test(capture.url)) continue;
       const status = typeof capture.status === "number" ? capture.status : 0;
       if (status < 400) continue;
       const body = capture.responseBody;
@@ -1510,6 +1545,16 @@ async function replanRemainingFlow(params: {
   recentCaptures?: readonly string[];
   /** Compiled submit-endpoint regex from the flow file, when defined. */
   submitEndpointPattern?: RegExp | null;
+  /**
+   * Optional short tail of prior steps' verification signals (network,
+   * url, dom, submitted-state-dom). When provided, the prompt gets a
+   * PRIOR STEP TRAJECTORY section so the LLM can distinguish "page has
+   * been visibly transitioning (URL changes / submitted-state markers)"
+   * from "page has been static (network signals + DOM-only updates)".
+   * Helps the replanner avoid proposing regression steps when the form
+   * has already advanced.
+   */
+  trajectory?: readonly { stepIndex: number; verifiedBy: AttemptRecord["verifiedBy"] }[];
 }): Promise<NormalizedStep[] | null> {
   const {
     client,
@@ -1523,7 +1568,17 @@ async function replanRemainingFlow(params: {
     captureFn = captureLlmCall,
     recentCaptures = [],
     submitEndpointPattern = null,
+    trajectory = [],
   } = params;
+  const trajectoryList =
+    trajectory.length > 0
+      ? trajectory
+          .slice(-5)
+          .map(
+            (t) => `step ${t.stepIndex + 1} verified via ${t.verifiedBy ?? "(no signal recorded)"}`
+          )
+          .join("; ")
+      : "";
   const candidates = await stagehand
     .observe({ timeout: STEP_WATCHDOG_MS })
     .catch(() => [] as Action[]);
@@ -1567,6 +1622,9 @@ ${errorTextList || "(none)"}
 
 STRUCTURED SERVER-SIDE VALIDATION ERRORS (parsed from captured 4xx responses to the submit endpoint — when populated, the form's submit DID fire and the server rejected it with specific feedback):
 ${submitFailureList || "(none)"}
+
+PRIOR STEP TRAJECTORY (how the last few completed steps verified — url / submitted-state-dom signal pages that visibly transitioned; network / dom signal pages that stayed static. Use this to distinguish "page has been advancing through the flow" from "page has been static and the form is still in front of us"; avoid proposing regression-style steps if the trajectory shows recent transitions):
+${trajectoryList || "(none)"}
 
 ELEMENTS CURRENTLY VISIBLE ON THE PAGE (stagehand.observe with the failed instruction):
 ${candidateList || "(no candidates returned by observe)"}
@@ -2514,6 +2572,16 @@ async function executeStepWithHealing(params: {
    * SPAs that swap the form before the network event records).
    */
   submittedStateSelectors: string[];
+  /**
+   * Optional accumulator the cascade pushes onto when this step verifies.
+   * Lets the main loop maintain a short cross-step trajectory of `verifiedBy`
+   * signals (network / url / dom / submitted-state-dom) which is then
+   * surfaced to the replan prompt as "PRIOR STEP TRAJECTORY" so the LLM
+   * can tell whether the page has been visibly transitioning vs. staying
+   * static. When omitted, the cascade behaves identically — purely
+   * additive instrumentation.
+   */
+  trajectory?: { stepIndex: number; verifiedBy: AttemptRecord["verifiedBy"] }[];
 }): Promise<void> {
   const {
     stagehand,
@@ -2533,6 +2601,7 @@ async function executeStepWithHealing(params: {
     isFinalStep,
     submitEndpointPattern,
     submittedStateSelectors,
+    trajectory,
   } = params;
   const requireSubmitEndpoint = isFinalStep && submitEndpointPattern !== null;
   const compiledSubmitPattern = requireSubmitEndpoint ? new RegExp(submitEndpointPattern!) : null;
@@ -2558,6 +2627,11 @@ async function executeStepWithHealing(params: {
     return;
   }
 
+  // Snapshot the capture-meta tail length at step entry. The probe-absent
+  // legitimate-transition check (below) scans captures landed during THIS
+  // step's processing — earlier-step transitions don't count.
+  const stepStartMetaLength = recentCaptureMeta.length;
+
   // Page-state probe BEFORE the cascade. When the page doesn't have any
   // candidate matching the step's instruction we either skip cleanly
   // (optional) or escalate straight to replan (required) — far cheaper than
@@ -2566,6 +2640,22 @@ async function executeStepWithHealing(params: {
   if (probeResult === "absent") {
     if (optional) {
       logger.info(`step ${stepIndex + 1} skipped (optional, probe found no candidates)`);
+      return;
+    }
+    // Telemetry-driven legitimate-transition detection. When the page
+    // already advanced (a 3xx redirect or successful non-tracking POST
+    // landed in the same-window capture meta), the step's "absent" state
+    // reflects expected progress, not a failure — replan would just be
+    // noise. Skip cleanly and let the next iteration probe the post-
+    // transition page.
+    const transitionUrl = findRecentPageTransition({
+      recentCaptureMeta,
+      preMetaLength: stepStartMetaLength,
+    });
+    if (transitionUrl !== null) {
+      logger.info(
+        `step ${stepIndex + 1} skipped (probe absent but recent transition detected: ${transitionUrl})`
+      );
       return;
     }
     // Capture diagnostics + write a failure dump BEFORE throwing so the
@@ -3059,6 +3149,24 @@ async function executeStepWithHealing(params: {
           failureReasons.push(
             `submit-endpoint-not-matched: ${tail.length} capture(s) seen, none matched ${submitEndpointPattern!}`
           );
+          // Any-4xx fallback. When the configured submit pattern didn't
+          // match BUT some same-window capture returned a 4xx (CSRF
+          // redirect to /errors, generic CDN error page, etc.), the
+          // structured field-level error JSON in that 4xx body is still
+          // actionable for the rephrase prompt. Surface it as a separate
+          // failureReason so the LLM sees the server's actual rejection
+          // reason instead of just "endpoint pattern didn't match".
+          const fallbackEvidence = extractSubmitFailureEvidence(
+            recentCaptures.slice(-tail.length),
+            null,
+            CAPTURES_DIR,
+            "any-4xx"
+          );
+          if (fallbackEvidence.length > 0) {
+            failureReasons.push(
+              `any-4xx fallback: ${fallbackEvidence.split("\n")[0]}`.slice(0, 240)
+            );
+          }
         }
       }
     }
@@ -3233,6 +3341,7 @@ async function executeStepWithHealing(params: {
           `step ${stepIndex + 1} healed on attempt ${attempt} via ${record.technique} (network=${networkFired} url=${urlChanged} dom=${domVerified})`
         );
       }
+      trajectory?.push({ stepIndex, verifiedBy: record.verifiedBy });
       return;
     }
 
@@ -3583,6 +3692,7 @@ async function main(): Promise<void> {
 
     plan.push(...flow);
     const completedSteps: string[] = [];
+    const trajectory: { stepIndex: number; verifiedBy: AttemptRecord["verifiedBy"] }[] = [];
     let probeReplansUsed = 0;
     let cascadeReplansUsed = 0;
 
@@ -3634,6 +3744,7 @@ async function main(): Promise<void> {
           isFinalStep: i === plan.length - 1,
           submitEndpointPattern,
           submittedStateSelectors,
+          trajectory,
         });
         completedSteps.push(step.instruction);
       } catch (err) {
@@ -3702,6 +3813,7 @@ async function main(): Promise<void> {
           stagehand,
           recentCaptures,
           submitEndpointPattern: submitEndpointPattern ? new RegExp(submitEndpointPattern) : null,
+          trajectory,
         });
 
         if (!newSteps) {
