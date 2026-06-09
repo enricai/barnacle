@@ -3895,13 +3895,29 @@ async function main(): Promise<void> {
         // already ended, final Continue when the Submit button is in
         // "Saving..." state). Uses only flow-position metadata + capture HTTP
         // metadata — no content matching, no open-set patterns.
+        //
+        // When the flow declares submitEndpointPattern, the "recent 2xx" must
+        // match it. Without this gate, the heuristic latches onto every
+        // non-GET 2xx — including pre-submit interruption_check POSTs and
+        // third-party analytics tracking pixels (Google Analytics, DoubleClick,
+        // googletagmanager) that fire on form interaction events. Those look
+        // exactly like real submissions by HTTP signal but don't represent the
+        // actual application landing. Verified by reading captures from
+        // /tmp/recon/graphql/ during a sweep: Presbyterian jobs hit this exact
+        // failure — only interruption_check + GA tracking POSTs fired, no
+        // integrated_apply, yet trailing-grace declared success.
         if (step.optional && i >= plan.length - TRAILING_GRACE_WINDOW) {
+          const compiledPattern = submitEndpointPattern ? new RegExp(submitEndpointPattern) : null;
           const recentMutationSucceeded = recentCaptureMeta.some(
-            (m) => m.method !== "GET" && m.status >= 200 && m.status < 300
+            (m) =>
+              m.method !== "GET" &&
+              m.status >= 200 &&
+              m.status < 300 &&
+              (compiledPattern === null || compiledPattern.test(m.url))
           );
           if (recentMutationSucceeded) {
             logger.info(
-              `step ${i + 1} optional + trailing position; recent non-GET 2xx captured — treating verification failure as benign no-op; recon complete`
+              `step ${i + 1} optional + trailing position; recent submit-endpoint 2xx captured — treating verification failure as benign no-op; recon complete`
             );
             break;
           }
