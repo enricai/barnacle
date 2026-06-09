@@ -104,11 +104,16 @@ export class UnknownScraperError extends ScraperError {
  *
  * Non-retryable — the runtime path never sees this.
  */
+export type StepVerificationErrorKind =
+  | "cascade-exhausted"
+  | "probe-absent"
+  | "backend-error-unrecoverable";
+
 export class StepVerificationError extends ScraperError {
-  readonly kind: "cascade-exhausted" | "probe-absent" | "backend-error-unrecoverable";
+  readonly kind: StepVerificationErrorKind;
   constructor(
     message = "recon step failed verification after all heal attempts",
-    kind: "cascade-exhausted" | "probe-absent" | "backend-error-unrecoverable" = "cascade-exhausted"
+    kind: StepVerificationErrorKind = "cascade-exhausted"
   ) {
     super(message, false);
     this.kind = kind;

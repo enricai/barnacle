@@ -11,6 +11,8 @@ import { join } from "node:path";
 import type Anthropic from "@anthropic-ai/sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { StepVerificationErrorKind } from "@/scraper/errors";
+
 vi.mock("@/config", () => ({
   config: {
     scraper: {
@@ -29,14 +31,8 @@ vi.mock("@/lib/http", () => ({ configureHttpDispatcher: vi.fn() }));
 vi.mock("@/scraper/session", () => ({ createBrowserSession: vi.fn() }));
 vi.mock("@/scraper/errors", () => ({
   StepVerificationError: class StepVerificationError extends Error {
-    readonly kind: "cascade-exhausted" | "probe-absent" | "backend-error-unrecoverable";
-    constructor(
-      message = "step failed",
-      kind:
-        | "cascade-exhausted"
-        | "probe-absent"
-        | "backend-error-unrecoverable" = "cascade-exhausted"
-    ) {
+    readonly kind: StepVerificationErrorKind;
+    constructor(message = "step failed", kind: StepVerificationErrorKind = "cascade-exhausted") {
       super(message);
       this.kind = kind;
     }
