@@ -1669,7 +1669,32 @@ async function verifyDomEffect(page: Page, action: Action): Promise<boolean> {
           // Real button/link click — let network/URL signal decide.
           return false;
         }
-        return await locator.isChecked();
+        const isCheckedNow = await locator.isChecked();
+        if (!isCheckedNow) return false;
+        // Vacuous-click guard. On multi-page Angular paginators an input
+        // can exist in the DOM while its containing component is on a
+        // hidden paginator page; CDP click + locator.isChecked both
+        // return true because the DOM property updated, but Angular's
+        // FormControl on the hidden component never re-validates. The
+        // FormControl's container keeps its ng-invalid marker. If any
+        // ancestor within 6 levels still carries a framework-agnostic
+        // invalid marker after the click, treat the click as vacuous so
+        // the cascade routes to rephrase/replan instead of advancing
+        // past a step that didn't actually change the form state.
+        const ancestorInvalidExpr = `(() => {
+          const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+          let node = r.singleNodeValue;
+          if (!node) return false;
+          const rx = /(ng-invalid|mat-form-field-invalid|is-invalid|field-invalid|input-invalid)/;
+          for (let depth = 0; depth < 6 && node; depth++) {
+            const cls = node.getAttribute && node.getAttribute("class");
+            if (cls && rx.test(cls)) return true;
+            node = node.parentElement;
+          }
+          return false;
+        })()`;
+        const ancestorStillInvalid = await page.evaluate(ancestorInvalidExpr).catch(() => false);
+        return !ancestorStillInvalid;
       }
       default:
         return false;
@@ -2608,8 +2633,36 @@ async function executeStepWithHealing(params: {
             checked?: boolean;
           };
           const fired = probeResult.fired;
+          // Vacuous-click guard for the n+16 fallback. Same rationale as
+          // verifyDomEffect's click case: a checkbox/radio input's .checked
+          // property can flip true via CDP click even when the input lives on
+          // a hidden Angular paginator page; the FormControl bound to that
+          // input doesn't re-validate, so the container's ng-invalid marker
+          // persists. Reading el.checked alone declares victory; routing the
+          // ancestor-invalid signal through prevents the cascade from
+          // advancing past a vacuous click.
+          let ancestorStillInvalid = false;
+          if (probeResult.kind === "checkbox" && probeResult.checked === true) {
+            const ancestorInvalidExpr = `(() => {
+              const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+              let node = r.singleNodeValue;
+              if (!node) return false;
+              const rx = /(ng-invalid|mat-form-field-invalid|is-invalid|field-invalid|input-invalid)/;
+              for (let depth = 0; depth < 6 && node; depth++) {
+                const cls = node.getAttribute && node.getAttribute("class");
+                if (cls && rx.test(cls)) return true;
+                node = node.parentElement;
+              }
+              return false;
+            })()`;
+            ancestorStillInvalid = (await page
+              .evaluate(ancestorInvalidExpr)
+              .catch(() => false)) as boolean;
+          }
           const checkboxStateVerified =
-            probeResult.kind === "checkbox" && probeResult.checked === true;
+            probeResult.kind === "checkbox" &&
+            probeResult.checked === true &&
+            !ancestorStillInvalid;
           await page.waitForTimeout(STEP_PAUSE_MS);
           const retryPost = await snapshotPage(page, signalCounter);
           const retryNetworkFired = retryPost.networkCount > pre.networkCount;
@@ -2665,7 +2718,7 @@ async function executeStepWithHealing(params: {
             }
           }
           logger.info(
-            `n+16 probe: step=${stepIndex + 1} attempt=${attempt} el.click() fallback fired=${fired === true} kind=${probeResult.kind ?? "none"} checkboxStateVerified=${checkboxStateVerified}; network=${retryNetworkFired} url=${retryUrlChanged} htmlDelta=${retryHtmlDelta} textChanged=${retryTextChanged} verified=${retryVerified}`
+            `n+16 probe: step=${stepIndex + 1} attempt=${attempt} el.click() fallback fired=${fired === true} kind=${probeResult.kind ?? "none"} checkboxStateVerified=${checkboxStateVerified} ancestorStillInvalid=${ancestorStillInvalid}; network=${retryNetworkFired} url=${retryUrlChanged} htmlDelta=${retryHtmlDelta} textChanged=${retryTextChanged} verified=${retryVerified}`
           );
           if (retryVerified) {
             if (record.verifiedBy === null) {
