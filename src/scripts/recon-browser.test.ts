@@ -49,15 +49,21 @@ vi.mock("@/lib/logging", () => ({
   getScriptLogger: () => loggerStub,
 }));
 
-vi.mock("@/lib/telemetry/call-capture", () => ({
-  captureLlmCall: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock("@/lib/telemetry/call-capture", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/telemetry/call-capture")>();
+  return {
+    ...actual,
+    captureLlmCall: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
 import type { LlmCallInput } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
 import {
   dedupeConsecutiveIdentical,
   denormalizeStep,
+  describeAttemptEffectSignals,
+  extractSubmitFailureEvidence,
   type InvalidFormControl,
   type NormalizedStep,
   narrowInvalidFormControl,
@@ -213,6 +219,7 @@ describe("rephraseWithLLM — capture instrumentation", () => {
       {
         invalidFieldList: "1. Legal First Name <app-input>  [ng-invalid]",
         errorTextList: "1. This field is required.",
+        interactiveTargetsList: "1. [Legal First Name] input '' — xpath=/html[1]/body[1]/input[1]",
       }
     );
 
@@ -221,6 +228,8 @@ describe("rephraseWithLLM — capture instrumentation", () => {
     expect(prompt).toContain("Legal First Name");
     expect(prompt).toContain("VISIBLE ERROR / REQUIRED-FIELD MESSAGES");
     expect(prompt).toContain("This field is required");
+    expect(prompt).toContain("INTERACTIVE TARGETS NEAR INVALID FIELDS");
+    expect(prompt).toContain("Legal First Name");
   });
 
   it("renders the new evidence sections as '(none)' when no pageEvidence is supplied (back-compat)", async () => {
@@ -824,5 +833,144 @@ describe("recon-browser/renderUnfocusedObserve", () => {
     const observations = [make("Submit button"), make("Save action inside MODAL container")];
     const out = renderUnfocusedObserve(observations);
     expect(out.indexOf("MODAL container")).toBeLessThan(out.indexOf("Submit button"));
+  });
+});
+
+describe("recon-browser/extractSubmitFailureEvidence", () => {
+  let tmpDir: string;
+  const submitRx = /^https:\/\/example\.com\/api\/apply$/;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "recon-submit-fail-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function writeCapture(filename: string, body: object): void {
+    writeFileSync(join(tmpDir, filename), JSON.stringify(body));
+  }
+
+  it("returns empty when the submit pattern is null", () => {
+    expect(extractSubmitFailureEvidence(["capture-1.json"], null, tmpDir)).toBe("");
+  });
+
+  it("returns empty when no recent captures match the submit endpoint", () => {
+    writeCapture("capture-1.json", {
+      url: "https://example.com/api/other",
+      status: 200,
+      responseBody: { ok: true },
+    });
+    expect(extractSubmitFailureEvidence(["capture-1.json"], submitRx, tmpDir)).toBe("");
+  });
+
+  it("returns empty when the submit-endpoint capture succeeded (2xx)", () => {
+    writeCapture("capture-1.json", {
+      url: "https://example.com/api/apply",
+      status: 200,
+      responseBody: { ok: true },
+    });
+    expect(extractSubmitFailureEvidence(["capture-1.json"], submitRx, tmpDir)).toBe("");
+  });
+
+  it("parses the { errors: [{ field, message }] } shape on a 4xx", () => {
+    writeCapture("capture-1.json", {
+      url: "https://example.com/api/apply",
+      status: 422,
+      responseBody: {
+        errors: [
+          { field: "email", message: "Invalid format" },
+          { field: "phone", message: "Required" },
+        ],
+      },
+    });
+    const out = extractSubmitFailureEvidence(["capture-1.json"], submitRx, tmpDir);
+    expect(out).toContain("422 https://example.com/api/apply");
+    expect(out).toContain("email: Invalid format");
+    expect(out).toContain("phone: Required");
+  });
+
+  it("parses the { validation: { field: message } } shape", () => {
+    writeCapture("capture-1.json", {
+      url: "https://example.com/api/apply",
+      status: 400,
+      responseBody: { validation: { firstName: "must be present" } },
+    });
+    const out = extractSubmitFailureEvidence(["capture-1.json"], submitRx, tmpDir);
+    expect(out).toContain("firstName: must be present");
+  });
+
+  it("falls back to top-level { message } when no field errors are present", () => {
+    writeCapture("capture-1.json", {
+      url: "https://example.com/api/apply",
+      status: 500,
+      responseBody: { message: "Internal server error" },
+    });
+    const out = extractSubmitFailureEvidence(["capture-1.json"], submitRx, tmpDir);
+    expect(out).toContain("Internal server error");
+  });
+
+  it("skips missing capture files silently", () => {
+    expect(extractSubmitFailureEvidence(["missing.json"], submitRx, tmpDir)).toBe("");
+  });
+});
+
+describe("recon-browser/describeAttemptEffectSignals", () => {
+  const baseSnapshot = (
+    overrides: Partial<{
+      networkCount: number;
+      url: string;
+      bodyHtmlLength: number;
+      visibleTextSignature: string;
+    }>
+  ): {
+    networkCount: number;
+    url: string;
+    bodyHtmlLength: number;
+    visibleTextSignature: string;
+  } => ({
+    networkCount: 0,
+    url: "https://example.com",
+    bodyHtmlLength: 1000,
+    visibleTextSignature: "1000:hello",
+    ...overrides,
+  });
+
+  it("flags dom-grew-without-network when body grew but no requests fired (Job 3's signature)", () => {
+    const pre = baseSnapshot({ bodyHtmlLength: 65715, visibleTextSignature: "10098:foo" });
+    const post = baseSnapshot({ bodyHtmlLength: 67762, visibleTextSignature: "10515:bar" });
+    const reason = describeAttemptEffectSignals(pre, post, [], 0);
+    expect(reason).toContain("dom-grew-without-network");
+    expect(reason).toContain("+2047B");
+    expect(reason).toContain("visible text changed");
+  });
+
+  it("flags network-fired-but-only-tracking when only GET / cross-origin captures land", () => {
+    const pre = baseSnapshot({ networkCount: 0 });
+    const post = baseSnapshot({ networkCount: 1 });
+    const reason = describeAttemptEffectSignals(
+      pre,
+      post,
+      [{ method: "GET", status: 200, url: "https://googleads.g.doubleclick.net/pixel" }],
+      0
+    );
+    expect(reason).toContain("network-fired-but-only-tracking");
+  });
+
+  it("returns empty string when there are no notable signals", () => {
+    const snap = baseSnapshot({});
+    expect(describeAttemptEffectSignals(snap, snap, [], 0)).toBe("");
+  });
+
+  it("only counts captures in the window starting at preMetaLength", () => {
+    const pre = baseSnapshot({ networkCount: 0 });
+    const post = baseSnapshot({ networkCount: 1 });
+    const meta = [
+      { method: "POST", status: 200, url: "https://example.com/old-submit" },
+      { method: "GET", status: 200, url: "https://example.com/tracking" },
+    ];
+    const reason = describeAttemptEffectSignals(pre, post, meta, 1);
+    expect(reason).toContain("network-fired-but-only-tracking");
   });
 });

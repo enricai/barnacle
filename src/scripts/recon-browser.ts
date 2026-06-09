@@ -48,7 +48,11 @@ import { config } from "@/config";
 import { toErrorMessage } from "@/lib/errors";
 import { configureHttpDispatcher } from "@/lib/http";
 import { getScriptLogger } from "@/lib/logging";
-import { captureLlmCall, type LlmCallInput } from "@/lib/telemetry/call-capture";
+import {
+  captureLlmCall,
+  classifyLlmCallFailure,
+  type LlmCallInput,
+} from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE, CALL_TYPE_RECON_REPLAN } from "@/lib/telemetry/call-types";
 import { StepVerificationError } from "@/scraper/errors";
 import { createBrowserSession, type ProviderName } from "@/scraper/session";
@@ -440,6 +444,47 @@ async function snapshotPage(page: Page, signalCounter: { n: number }): Promise<S
 }
 
 /**
+ * Translate the pre/post snapshot delta + same-window captures into a short
+ * diagnostic phrase that goes into `failureReasons[]`. Surfaces patterns the
+ * verifier itself discards: e.g. "DOM grew but no submit-shaped network
+ * request" (client-side validation blocked the form), or "analytics beacon
+ * fired but no same-origin submit" (third-party tracking, not real signal).
+ * The rephrase + replan LLMs read these strings to choose between "retry the
+ * click" and "fill an unanswered required field".
+ */
+export function describeAttemptEffectSignals(
+  pre: StepSnapshot,
+  post: StepSnapshot,
+  recentCaptureMeta: readonly { method: string; status: number; url: string }[],
+  preMetaLength: number
+): string {
+  const bytesDelta = post.bodyHtmlLength - pre.bodyHtmlLength;
+  const networkDelta = post.networkCount - pre.networkCount;
+  const textChanged = post.visibleTextSignature !== pre.visibleTextSignature;
+  const windowCaptures = recentCaptureMeta.slice(preMetaLength);
+  const observations: string[] = [];
+  if (networkDelta === 0 && bytesDelta >= 500) {
+    observations.push(
+      `dom-grew-without-network: body +${bytesDelta}B, ${textChanged ? "visible text changed" : "visible text unchanged"}, 0 same-origin non-GET requests (likely client-side validation rendered errors instead of submitting)`
+    );
+  }
+  if (networkDelta > 0 && windowCaptures.length > 0) {
+    const sameOriginNonGet = windowCaptures.filter((m) => m.method !== "GET");
+    if (sameOriginNonGet.length === 0) {
+      observations.push(
+        `network-fired-but-only-tracking: ${windowCaptures.length} requests captured but none were non-GET same-origin (analytics beacons / third-party tracking, not a form submit)`
+      );
+    }
+  }
+  if (textChanged && networkDelta === 0 && bytesDelta < 500) {
+    observations.push(
+      "visible-text-changed-without-network: page reflowed slightly (likely tooltip/focus state)"
+    );
+  }
+  return observations.join(" | ");
+}
+
+/**
  * Lazy Anthropic client for attempt 4's rephrase. Returns null when the
  * deployment is Bedrock-only (no ANTHROPIC_API_KEY) — attempt 4 then becomes
  * a no-op and the executor escalates straight to the failure dump. The other
@@ -484,7 +529,11 @@ async function rephraseWithLLM(
    * "Click Submit Application using JavaScript" because the prompt had no
    * signal that the form was invalid).
    */
-  pageEvidence?: { invalidFieldList: string; errorTextList: string },
+  pageEvidence?: {
+    invalidFieldList: string;
+    errorTextList: string;
+    interactiveTargetsList: string;
+  },
   /**
    * Optional unfocused observe list. The default `observeCandidates` is
    * Stagehand's observe filtered by the FAILED STEP'S INSTRUCTION — when
@@ -495,7 +544,15 @@ async function rephraseWithLLM(
    * buttons that the failed step's instruction filter hid. Modal entries
    * are prioritized to the top by `renderUnfocusedObserve`.
    */
-  unfocusedObserve?: Action[]
+  unfocusedObserve?: Action[],
+  /**
+   * Optional list of structured server-side validation errors harvested
+   * from any failed submit-endpoint captures in the recent window. Lets
+   * the rephrase LLM see "the form did POST and got back '{field: email,
+   * message: Invalid format}' from the server" — a signal the verifier
+   * alone hides behind "no observable effect".
+   */
+  submitFailureList?: string
 ): Promise<string | null> {
   const candidateList = observeCandidates
     .slice(0, 12)
@@ -506,6 +563,7 @@ async function rephraseWithLLM(
   const reasonList = failureReasons.map((r, i) => `attempt ${i + 1}: ${r}`).join("\n");
   const invalidFieldList = pageEvidence?.invalidFieldList ?? "";
   const errorTextList = pageEvidence?.errorTextList ?? "";
+  const interactiveTargetsList = pageEvidence?.interactiveTargetsList ?? "";
 
   const prompt = `You are helping a browser automation agent recover from a failed step in a recon flow.
 
@@ -530,7 +588,13 @@ ${invalidFieldList || "(none)"}
 VISIBLE ERROR / REQUIRED-FIELD MESSAGES ON THE PAGE (extracted text from error-class containers):
 ${errorTextList || "(none)"}
 
-Rewrite the instruction so a Stagehand act() call can resolve it unambiguously to a different element than the ones already tried. Keep it short — one sentence, natural language, no quotes around it. If the invalid-fields section above names a field, your rewrite SHOULD address that field (e.g. re-fill it) rather than retrying the original click. If the unfocused observe section shows an open modal/dialog with a Save or Close action, your rewrite SHOULD invoke that action so the underlying form can clear its blocking state. If the original instruction is itself impossible on the current page (the element does not exist), reply with the literal string IMPOSSIBLE so the caller can stop trying.`;
+INTERACTIVE TARGETS NEAR INVALID FIELDS (radio labels, dropdown options, inputs found UNDER each ng-invalid / mat-form-field-invalid / is-invalid container — these are the elements you can click/fill to clear the corresponding invalid state; the bracketed [Question Title] is the parent question text when one was discoverable):
+${interactiveTargetsList || "(none)"}
+
+STRUCTURED SERVER-SIDE VALIDATION ERRORS (parsed from captured 4xx responses to the configured submit endpoint — when this is populated, the form's submit DID fire and the server rejected it with specific field-level feedback; use these field+message pairs to decide which input needs correcting):
+${submitFailureList || "(none)"}
+
+Rewrite the instruction so a Stagehand act() call can resolve it unambiguously to a different element than the ones already tried. Keep it short — one sentence, natural language, no quotes around it. If the invalid-fields section above names a field AND the interactive-targets section below lists clickable options inside that same container, your rewrite SHOULD pick one of those options (e.g. for a yes/no question rendered as two radio labels, choose the candidate-favorable answer — 'No' for "do you have a non-compete", 'Yes' for "are you authorized to work", 'Prefer not to say' for demographic disclosures) rather than retrying the original click. If the unfocused observe section shows an open modal/dialog with a Save or Close action, your rewrite SHOULD invoke that action so the underlying form can clear its blocking state. If the original instruction is itself impossible on the current page (the element does not exist), reply with the literal string IMPOSSIBLE so the caller can stop trying.`;
 
   const model = anthropicModelName();
   const t0 = performance.now();
@@ -557,6 +621,12 @@ Rewrite the instruction so a Stagehand act() call can resolve it unambiguously t
       outputTokens: response.usage?.output_tokens ?? null,
       latencyMs,
       success: parsedOk,
+      errorMessage: parsedOk
+        ? null
+        : text === "IMPOSSIBLE"
+          ? "model replied IMPOSSIBLE — original instruction not resolvable on current page"
+          : "model returned empty text block",
+      failureKind: parsedOk ? null : "response-empty",
     });
 
     if (!parsedOk) return null;
@@ -576,6 +646,8 @@ Rewrite the instruction so a Stagehand act() call can resolve it unambiguously t
       outputTokens: null,
       latencyMs: performance.now() - t0,
       success: false,
+      errorMessage: message,
+      failureKind: classifyLlmCallFailure(err),
     });
     return null;
   }
@@ -992,15 +1064,17 @@ function extractClassMatchedText(html: string, classPattern: RegExp, cap: number
  * Returns empty strings on any failure (page.evaluate threw, body missing,
  * etc.) — evidence is advisory, never load-bearing.
  */
-async function extractLivePageFormEvidence(
-  page: Page
-): Promise<{ invalidFieldList: string; errorTextList: string }> {
+async function extractLivePageFormEvidence(page: Page): Promise<{
+  invalidFieldList: string;
+  errorTextList: string;
+  interactiveTargetsList: string;
+}> {
   let body = "";
   try {
     const raw = await page.evaluate("document.body ? document.body.outerHTML : null");
     if (typeof raw === "string") body = raw;
   } catch {
-    return { invalidFieldList: "", errorTextList: "" };
+    return { invalidFieldList: "", errorTextList: "", interactiveTargetsList: "" };
   }
   const invalidPattern =
     /(ng-invalid|mat-form-field-invalid|is-invalid|field-invalid|input-invalid|form-invalid)/;
@@ -1008,10 +1082,177 @@ async function extractLivePageFormEvidence(
     /(error-message|mat-error|field-error|validation-error|required-message|invalid-feedback|form-error|help-block-error)/;
   const invalidEntries = extractClassMatchedText(body, invalidPattern, EVIDENCE_LIST_CAP);
   const errorEntries = extractClassMatchedText(body, errorPattern, EVIDENCE_LIST_CAP);
+  const interactiveTargets = await extractInteractiveTargetsNearInvalid(page).catch(
+    () => [] as string[]
+  );
   return {
     invalidFieldList: invalidEntries.map((e, i) => `${i + 1}. ${e}`).join("\n"),
     errorTextList: errorEntries.map((e, i) => `${i + 1}. ${e}`).join("\n"),
+    interactiveTargetsList: interactiveTargets.map((e, i) => `${i + 1}. ${e}`).join("\n"),
   };
+}
+
+/**
+ * For each container marked invalid by the framework's validity classes,
+ * walk the DOM tree under it and surface clickable descendants (radio
+ * labels, dropdown options, text inputs) with an xpath the rephrase LLM
+ * can hand directly to Stagehand's act(). Closes the gap where the
+ * rephrase prompt today carries "field X is invalid" but no selector for
+ * the radio/option that would clear it — so the LLM proposes "click
+ * Submit harder" instead of "answer field X with Yes/No".
+ */
+async function extractInteractiveTargetsNearInvalid(page: Page): Promise<string[]> {
+  const expr = `(() => {
+    const out = [];
+    const containers = document.querySelectorAll(
+      "[class*='ng-invalid'], [class*='mat-form-field-invalid'], [class*='is-invalid'], [class*='field-invalid'], [class*='input-invalid'], [class*='form-invalid']"
+    );
+    const seen = new Set();
+    function xpathOf(node) {
+      const parts = [];
+      while (node && node.nodeType === 1 && node !== document.body) {
+        const tag = node.nodeName.toLowerCase();
+        let idx = 1;
+        let sib = node.previousElementSibling;
+        while (sib) {
+          if (sib.nodeName.toLowerCase() === tag) idx++;
+          sib = sib.previousElementSibling;
+        }
+        parts.unshift(tag + "[" + idx + "]");
+        node = node.parentElement;
+      }
+      return "/html[1]/body[1]/" + parts.join("/");
+    }
+    function questionTitleOf(container) {
+      let n = container;
+      for (let i = 0; i < 6 && n; i++) {
+        const title = n.querySelector
+          ? n.querySelector(".group-title, .question-title, .question-label, label")
+          : null;
+        if (title && title.textContent) {
+          const t = title.textContent.trim().replace(/\\s+/g, " ");
+          if (t.length > 5 && t.length < 200) return t;
+        }
+        n = n.parentElement;
+      }
+      return null;
+    }
+    for (const c of containers) {
+      if (out.length >= 12) break;
+      const title = questionTitleOf(c);
+      const clickables = c.querySelectorAll(
+        "label, button, app-radio-button, select option, input[type='radio'], input[type='checkbox']"
+      );
+      for (const el of clickables) {
+        if (out.length >= 12) break;
+        const text = (el.textContent || "").trim().replace(/\\s+/g, " ").slice(0, 60);
+        if (!text) continue;
+        const xp = xpathOf(el);
+        const key = xp;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const q = title ? "[" + title.slice(0, 80) + "] " : "";
+        out.push(q + (el.tagName.toLowerCase()) + " '" + text + "' — xpath=" + xp);
+      }
+    }
+    return out;
+  })()`;
+  const result = await page.evaluate(expr);
+  return Array.isArray(result) ? (result as string[]) : [];
+}
+
+/**
+ * Scan recent capture files for failed submit-endpoint requests and pull
+ * out structured field-level errors from the response body. The cascade
+ * already saves every captured request to `CAPTURES_DIR` with its parsed
+ * `responseBody`; this helper reads those files back, filters to captures
+ * matching the configured submit pattern with status >= 400, and walks
+ * common error-shape conventions (`{ errors: [{ field, message }] }`,
+ * `{ validation/fieldErrors: { … } }`, `{ message }`).
+ *
+ * Returns a short bullet list ready to drop into a prompt; empty string
+ * when no failed submit was found. Advisory — never load-bearing.
+ */
+export function extractSubmitFailureEvidence(
+  recentCaptureFilenames: readonly string[],
+  submitEndpointPattern: RegExp | null,
+  capturesDir: string = CAPTURES_DIR
+): string {
+  if (!submitEndpointPattern || recentCaptureFilenames.length === 0) return "";
+  const records: string[] = [];
+  const seen = new Set<string>();
+  for (const filename of recentCaptureFilenames.slice(-20)) {
+    if (seen.has(filename)) continue;
+    seen.add(filename);
+    try {
+      const path = join(capturesDir, filename);
+      const raw = readFileSync(path, "utf8");
+      const capture = JSON.parse(raw) as Partial<Capture>;
+      if (typeof capture.url !== "string") continue;
+      if (!submitEndpointPattern.test(capture.url)) continue;
+      const status = typeof capture.status === "number" ? capture.status : 0;
+      if (status < 400) continue;
+      const body = capture.responseBody;
+      const errors = harvestFieldErrors(body);
+      if (errors.length === 0) {
+        const fallback =
+          typeof body === "string"
+            ? body.slice(0, 240)
+            : body && typeof body === "object" && "message" in body
+              ? String((body as { message?: unknown }).message ?? "").slice(0, 240)
+              : `(status ${status}; no structured error body)`;
+        records.push(`${status} ${capture.url}: ${fallback}`);
+        continue;
+      }
+      for (const e of errors.slice(0, 8)) {
+        records.push(`${status} ${capture.url} — ${e}`);
+      }
+    } catch {
+      // capture file missing or malformed — skip
+    }
+  }
+  return records.map((r, i) => `${i + 1}. ${r}`).join("\n");
+}
+
+/**
+ * Pull field-level errors out of an arbitrary JSON response body. Walks a
+ * few of the conventional ATS shapes; falls through to `[]` so the caller
+ * can decide whether to emit a fallback summary.
+ */
+function harvestFieldErrors(body: unknown): string[] {
+  if (!body || typeof body !== "object") return [];
+  const out: string[] = [];
+  const rec = body as Record<string, unknown>;
+  const errorsArr = rec.errors;
+  if (Array.isArray(errorsArr)) {
+    for (const e of errorsArr) {
+      if (typeof e === "string") out.push(e);
+      else if (e && typeof e === "object") {
+        const fr = e as Record<string, unknown>;
+        const field = typeof fr.field === "string" ? fr.field : null;
+        const message =
+          typeof fr.message === "string"
+            ? fr.message
+            : typeof fr.error === "string"
+              ? fr.error
+              : null;
+        if (field && message) out.push(`${field}: ${message}`);
+        else if (message) out.push(message);
+        else if (field) out.push(field);
+      }
+    }
+  }
+  const fieldBags = [rec.validation, rec.fieldErrors, rec.field_errors];
+  for (const bag of fieldBags) {
+    if (bag && typeof bag === "object" && !Array.isArray(bag)) {
+      for (const [field, msg] of Object.entries(bag as Record<string, unknown>)) {
+        if (typeof msg === "string") out.push(`${field}: ${msg}`);
+        else if (Array.isArray(msg))
+          for (const m of msg) if (typeof m === "string") out.push(`${field}: ${m}`);
+      }
+    }
+  }
+  return out;
 }
 
 function readFailureDumpEvidence(failureDumpPath: string): {
@@ -1086,6 +1327,14 @@ async function replanRemainingFlow(params: {
   page: Page;
   stagehand: Stagehand;
   captureFn?: CaptureFn;
+  /**
+   * Files in `CAPTURES_DIR` recorded during the failed step's attempt
+   * window. Used to surface structured server-side validation errors
+   * to the replan LLM when a submit actually fired but was rejected.
+   */
+  recentCaptures?: readonly string[];
+  /** Compiled submit-endpoint regex from the flow file, when defined. */
+  submitEndpointPattern?: RegExp | null;
 }): Promise<NormalizedStep[] | null> {
   const {
     client,
@@ -1097,6 +1346,8 @@ async function replanRemainingFlow(params: {
     page,
     stagehand,
     captureFn = captureLlmCall,
+    recentCaptures = [],
+    submitEndpointPattern = null,
   } = params;
   const candidates = await stagehand
     .observe({ timeout: STEP_WATCHDOG_MS })
@@ -1110,6 +1361,7 @@ async function replanRemainingFlow(params: {
   const { bodyExcerpt, unfocusedList, invalidFieldList, errorTextList, recentFailureReasons } =
     readFailureDumpEvidence(failureDumpPath);
   const failureReasonList = recentFailureReasons.map((r, i) => `${i + 1}. ${r}`).join("\n");
+  const submitFailureList = extractSubmitFailureEvidence(recentCaptures, submitEndpointPattern);
 
   const prompt = `You are helping a browser automation agent recover from a failed flow step.
 
@@ -1137,6 +1389,9 @@ ${invalidFieldList || "(none)"}
 
 VISIBLE ERROR / REQUIRED-FIELD MESSAGES ON THE PAGE (extracted text from error-class containers — error-message, mat-error, field-error, validation-error, invalid-feedback, etc.):
 ${errorTextList || "(none)"}
+
+STRUCTURED SERVER-SIDE VALIDATION ERRORS (parsed from captured 4xx responses to the submit endpoint — when populated, the form's submit DID fire and the server rejected it with specific feedback):
+${submitFailureList || "(none)"}
 
 ELEMENTS CURRENTLY VISIBLE ON THE PAGE (stagehand.observe with the failed instruction):
 ${candidateList || "(no candidates returned by observe)"}
@@ -1275,6 +1530,8 @@ but that's rare — most upload steps are required.`;
       outputTokens: response.usage?.output_tokens ?? null,
       latencyMs,
       success: true,
+      errorMessage: null,
+      failureKind: null,
     });
 
     if (parsed.outcome === "replan") return normalizeFlow(parsed.steps);
@@ -1294,6 +1551,8 @@ but that's rare — most upload steps are required.`;
       outputTokens: null,
       latencyMs: performance.now() - t0,
       success: false,
+      errorMessage: message,
+      failureKind: classifyLlmCallFailure(err),
     });
     return null;
   }
@@ -2467,6 +2726,10 @@ async function executeStepWithHealing(params: {
           const unfocused = await stagehand
             .observe({ timeout: STEP_WATCHDOG_MS })
             .catch(() => [] as Action[]);
+          const submitFailureList = extractSubmitFailureEvidence(
+            recentCaptures,
+            submitEndpointPattern ? new RegExp(submitEndpointPattern) : null
+          );
           const rephrased = await rephraseWithLLM(
             anthropic,
             step,
@@ -2475,7 +2738,8 @@ async function executeStepWithHealing(params: {
             failureReasons,
             captureFn,
             livePageEvidence,
-            unfocused
+            unfocused,
+            submitFailureList
           );
           if (!rephrased) {
             record.errorMessage = "llm declined to rephrase or returned IMPOSSIBLE";
@@ -2756,11 +3020,15 @@ async function executeStepWithHealing(params: {
       return;
     }
 
-    failureReasons.push(
-      record.errorMessage ?? "no observable effect (no network, url, or dom change)"
-    );
+    const effectSignals = describeAttemptEffectSignals(pre, post, recentCaptureMeta, preMetaLength);
+    const reason = record.errorMessage
+      ? effectSignals
+        ? `${record.errorMessage}; ${effectSignals}`
+        : record.errorMessage
+      : effectSignals || "no observable effect (no network, url, or dom change)";
+    failureReasons.push(reason);
     logger.warn(
-      `step ${stepIndex + 1} attempt ${attempt} (${record.technique}) produced no observable effect — ${failureReasons[failureReasons.length - 1]}`
+      `step ${stepIndex + 1} attempt ${attempt} (${record.technique}) produced no observable effect — ${reason}`
     );
   }
 
@@ -3185,6 +3453,8 @@ async function main(): Promise<void> {
           failureDumpPath: dumpPath,
           page,
           stagehand,
+          recentCaptures,
+          submitEndpointPattern: submitEndpointPattern ? new RegExp(submitEndpointPattern) : null,
         });
 
         if (!newSteps) {
