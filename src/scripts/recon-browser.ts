@@ -1149,13 +1149,13 @@ function persistReplannedFlow(params: {
 
   // Coerce replan-origin steps to optional before persistence: when a job
   // cascade-exhausts on an employer-specific field (e.g. "Are you a former
-  // Presbyterian employee?"), the replan emits a recovery bridge tied to
-  // that employer. Persisting it as required would cascade-exhaust every
-  // subsequent run on a different employer trying to fill a question that
-  // doesn't exist. Optional means the probe-absent-skip path handles
-  // employers where the question isn't on the form; cascade still fires
-  // for the original employer when the persisted flow is replayed. Verified
-  // against the 8-job 2026-06-09 sweep where this pattern caused regressions.
+  // X employee?"), the replan emits a recovery bridge tied to that employer.
+  // Persisting it as required would cascade-exhaust every subsequent run on
+  // a different employer trying to fill a question that doesn't exist.
+  // Optional means the probe-absent-skip path handles employers where the
+  // question isn't on the form; cascade still fires for the original
+  // employer when the persisted flow is replayed. Required to keep
+  // cross-employer sweeps from regressing across runs.
   const denormalizedSteps = finalPlan.map((step) =>
     denormalizeStep(step.origin === "replan" && !step.optional ? { ...step, optional: true } : step)
   );
@@ -2392,13 +2392,13 @@ const FORM_VALIDITY_PROBE_EXPR = `(() => {
     const ctrlClass = ctrl.getAttribute("class") || "";
     const leafInvalid = INVALID_CLASS_RX.test(ctrlClass);
     // A <select> whose currently-selected option is .disabled is the
-    // Angular "Please select..." placeholder state. AppCast's app-dropdown
-    // binds value="0: null" to a disabled placeholder, so ctrl.value !== ""
+    // Angular "Please select..." placeholder state. Some custom-element
+    // dropdowns (e.g. AppCast's app-dropdown) bind a truthy sentinel value
+    // like "0: null" to the disabled placeholder, so ctrl.value !== ""
     // even though no real option is chosen. Without this branch the empty
-    // check below silently drops every app-dropdown wrapper and the
-    // pre-submit probe reports "no ng-invalid form controls detected" on a
-    // form that's actually waiting on unfilled dropdowns. Verified against
-    // job 3's diagnostic dump on 2026-06-09.
+    // check below silently drops every such wrapper and the pre-submit
+    // probe reports "no ng-invalid form controls detected" on a form
+    // that's actually waiting on unfilled dropdowns.
     const selectPlaceholderOpen =
       ctrl.tagName.toLowerCase() === "select" &&
       ctrl.selectedOptions[0] &&

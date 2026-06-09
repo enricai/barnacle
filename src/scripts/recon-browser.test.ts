@@ -547,12 +547,11 @@ describe("recon-browser/persistReplannedFlow", () => {
   });
 
   it("coerces replan-origin steps to optional on write-back even when they came in as required", () => {
-    // Regression: the 2026-06-09 8-job sweep had job 3 (Presbyterian)
-    // persist 19 Presbyterian-specific replanned steps as REQUIRED bare
-    // strings, then job 4 (Encompass) cascade-exhausted trying to fill
-    // questions that don't exist on Encompass forms. Auto-coercion to
-    // optional means replanned steps probe-absent-skip on non-matching
-    // employers.
+    // Regression: a cross-employer sweep had job N persist employer-specific
+    // replanned steps as REQUIRED bare strings, then job N+1 (different
+    // employer) cascade-exhausted trying to fill questions that don't exist
+    // on the new employer's form. Auto-coercion to optional means replanned
+    // steps probe-absent-skip on non-matching employers.
     writeFileSync(flowPath, '["Step A"]\n');
     const finalPlan: NormalizedStep[] = [
       { instruction: "Hand-authored required", optional: false, upload: false, origin: "original" },
@@ -565,7 +564,7 @@ describe("recon-browser/persistReplannedFlow", () => {
         indexAtFailure: 0,
         failedInstruction: "Step A",
         replanSteps: [finalPlan[1]!],
-        timestamp: "2026-06-09T01:00:00.000Z",
+        timestamp: "2026-06-03T20:00:00.000Z",
       },
     ];
 
@@ -590,7 +589,7 @@ describe("recon-browser/persistReplannedFlow", () => {
         indexAtFailure: 0,
         failedInstruction: "Step A",
         replanSteps: finalPlan,
-        timestamp: "2026-06-09T01:00:00.000Z",
+        timestamp: "2026-06-03T20:00:00.000Z",
       },
     ];
 
