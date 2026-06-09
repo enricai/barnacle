@@ -4,14 +4,12 @@
  * errors (via src/api/errors.ts) before they reach the client.
  *
  * Why: each class encodes a distinct recovery policy that p-retry and the
- * session pool key off of. CaptchaError aborts the whole call (the scraper
- * can't self-resolve one — Steel handles it upstream, and if we still see
- * a captcha downstream there's nothing a retry can do). EmptyResultsError
- * is "success but no data" and also aborts. SelectorFailureError is the
- * most common — the target page UI drifted, Stagehand's action cache got stale —
- * and a fresh AI-resolution retry usually fixes it. SessionTimeoutError
- * needs a brand-new session, so retry.ts invokes its onRestart callback
- * before the next attempt.
+ * session pool key off of. Some failures abort the whole call (no retry
+ * can resolve them); others are retryable in place because a fresh AI
+ * resolution or DOM re-settle usually fixes them; some need a brand-new
+ * Steel session before retrying, in which case retry.ts invokes its
+ * onRestart callback. See each class's TSDoc for its specific policy
+ * and the diagnostic it represents.
  */
 
 /**
