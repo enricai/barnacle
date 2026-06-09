@@ -527,6 +527,104 @@ export function describeAttemptEffectSignals(
  * from false-positiving on ordinary state changes (network-fired
  * navigations, partial DOM reflows, etc.).
  */
+/**
+ * Decide whether a cascade technique's preconditions cannot be met by the
+ * prior attempts' state, so running it would burn the attempt slot without
+ * exercising new behaviour. Conservative: returns true ONLY when the
+ * predicate can prove the technique is mathematically unable to succeed;
+ * anything ambiguous falls through to "run the attempt" so the cascade
+ * keeps healing opportunistically.
+ */
+export function shouldSkipTechnique(params: {
+  technique:
+    | "act-string"
+    | "observe-act"
+    | "structured-click"
+    | "observe-act-exclude"
+    | "llm-rephrase";
+  priorAttempts: readonly {
+    technique: string;
+    triedSelectors: readonly string[];
+    errorMessage: string | null;
+  }[];
+}): { skip: boolean; reason: string } {
+  const { technique, priorAttempts } = params;
+  if (technique === "structured-click") {
+    const anyXpathResolved = priorAttempts.some((a) => a.triedSelectors.length > 0);
+    if (!anyXpathResolved) {
+      return {
+        skip: true,
+        reason:
+          "structured-click needs a prior xpath; no attempt has resolved a selector yet — skipping to next technique",
+      };
+    }
+  }
+  if (technique === "observe-act-exclude") {
+    const observeAct2 = priorAttempts.find((a) => a.technique === "observe-act");
+    if (
+      observeAct2 &&
+      observeAct2.errorMessage === "observe returned no candidates" &&
+      observeAct2.triedSelectors.length === 0
+    ) {
+      return {
+        skip: true,
+        reason:
+          "observe-act-exclude re-runs the same observe with exclusions; prior observe-act returned 0 candidates — no new candidates to surface, skipping",
+      };
+    }
+  }
+  return { skip: false, reason: "" };
+}
+
+/**
+ * Bucket the recent `recon-replan` LLM calls by `failureKind` and produce a
+ * single diagnostic phrase the runner can surface when the cascade aborts
+ * its replan budget. Lets the operator distinguish transient
+ * (anthropic-rate-limit) from permanent (schema-validation-failed,
+ * response-empty) failure modes without having to grep calls.ndjson.
+ *
+ * Reads the most recent N entries from the configured calls path, filters
+ * to the matching callType, and tallies their failureKind. Empty string
+ * when no relevant failures are present.
+ */
+export function summarizeReplanFailureKinds(params: {
+  callsNdjsonPath: string;
+  callType: string;
+  tailCount?: number;
+}): string {
+  const { callsNdjsonPath, callType, tailCount = 10 } = params;
+  let lines: string[] = [];
+  try {
+    const raw = readFileSync(callsNdjsonPath, "utf8");
+    lines = raw.split("\n").filter((l) => l.trim().length > 0);
+  } catch {
+    return "";
+  }
+  const counts: Record<string, number> = {};
+  let total = 0;
+  for (const line of lines.slice(-tailCount)) {
+    try {
+      const entry = JSON.parse(line) as {
+        callType?: string;
+        success?: boolean;
+        failureKind?: string | null;
+      };
+      if (entry.callType !== callType) continue;
+      if (entry.success !== false) continue;
+      const kind = entry.failureKind ?? "unknown";
+      counts[kind] = (counts[kind] ?? 0) + 1;
+      total++;
+    } catch {
+      // malformed NDJSON line — skip
+    }
+  }
+  if (total === 0) return "";
+  const parts = Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([kind, n]) => `${n}× ${kind}`);
+  return `${total} recent ${callType} failure(s): ${parts.join(", ")}`;
+}
+
 export function isSubmitRevealedInvalid(params: {
   isFinalStep: boolean;
   requireSubmitEndpoint: boolean;
@@ -619,7 +717,20 @@ async function rephraseWithLLM(
    * message: Invalid format}' from the server" — a signal the verifier
    * alone hides behind "no observable effect".
    */
-  submitFailureList?: string
+  submitFailureList?: string,
+  /**
+   * Optional verbatim instructions sent by prior cascade attempts. The
+   * SELECTORS ALREADY TRIED section tells the LLM which xpaths failed,
+   * but not which natural-language strategies it (or earlier observe
+   * branches) already proposed. Surfacing the prior instruction text
+   * prevents the rephrase LLM from cycling on near-synonyms of a
+   * wording the cascade has already proven ineffective.
+   */
+  priorAttempts?: readonly {
+    technique: string;
+    instruction: string | null;
+    verdict: string | null;
+  }[]
 ): Promise<string | null> {
   const candidateList = observeCandidates
     .slice(0, 12)
@@ -631,6 +742,13 @@ async function rephraseWithLLM(
   const invalidFieldList = pageEvidence?.invalidFieldList ?? "";
   const errorTextList = pageEvidence?.errorTextList ?? "";
   const interactiveTargetsList = pageEvidence?.interactiveTargetsList ?? "";
+  const priorInstructionList = (priorAttempts ?? [])
+    .filter((a) => typeof a.instruction === "string" && a.instruction.trim().length > 0)
+    .map(
+      (a, i) =>
+        `${i + 1}. [${a.technique}] "${a.instruction}" → ${a.verdict ?? "(no verdict captured)"}`
+    )
+    .join("\n");
 
   const prompt = `You are helping a browser automation agent recover from a failed step in a recon flow.
 
@@ -642,6 +760,9 @@ ${reasonList}
 
 SELECTORS ALREADY TRIED (avoid these):
 ${triedList}
+
+INSTRUCTION TEXT ALREADY TRIED (do not re-propose these wordings or near-synonyms — they all produced the verdict shown after the arrow):
+${priorInstructionList || "(none)"}
 
 ELEMENTS CURRENTLY VISIBLE ON THE PAGE (filtered by the failed instruction):
 ${candidateList || "(no candidates returned by observe)"}
@@ -2568,6 +2689,36 @@ async function executeStepWithHealing(params: {
   }
 
   for (let attempt = 1; attempt <= MAX_STEP_ATTEMPTS; attempt++) {
+    // Telemetry-driven technique-skip: when a cascade technique's
+    // preconditions cannot be met by the prior attempts' state, running
+    // it would burn the attempt slot without exercising new behaviour.
+    // Skip to the next iteration so the cascade reaches its higher-value
+    // techniques faster.
+    if (attempt > 1) {
+      const wouldBeTechnique: AttemptRecord["technique"] =
+        attempt === 2
+          ? "observe-act"
+          : attempt === 3
+            ? "structured-click"
+            : attempt === 4
+              ? "observe-act-exclude"
+              : "llm-rephrase";
+      const decision = shouldSkipTechnique({
+        technique: wouldBeTechnique,
+        priorAttempts: attempts.map((a) => ({
+          technique: a.technique,
+          triedSelectors: a.triedSelectors,
+          errorMessage: a.errorMessage,
+        })),
+      });
+      if (decision.skip) {
+        logger.info(
+          `step ${stepIndex + 1} attempt ${attempt} (${wouldBeTechnique}) skipped: ${decision.reason}`
+        );
+        failureReasons.push(`attempt ${attempt} skipped: ${decision.reason}`);
+        continue;
+      }
+    }
     if (attempt > 1) {
       await page.waitForTimeout(attempt * ATTEMPT_BACKOFF_MS);
     }
@@ -2800,6 +2951,11 @@ async function executeStepWithHealing(params: {
             recentCaptures,
             submitEndpointPattern ? new RegExp(submitEndpointPattern) : null
           );
+          const priorAttemptsForPrompt = attempts.map((a, i) => ({
+            technique: a.technique,
+            instruction: a.instruction,
+            verdict: a.errorMessage ?? failureReasons[i] ?? null,
+          }));
           const rephrased = await rephraseWithLLM(
             anthropic,
             step,
@@ -2809,7 +2965,8 @@ async function executeStepWithHealing(params: {
             captureFn,
             livePageEvidence,
             unfocused,
-            submitFailureList
+            submitFailureList,
+            priorAttemptsForPrompt
           );
           if (!rephrased) {
             record.errorMessage = "llm declined to rephrase or returned IMPOSSIBLE";
@@ -3525,8 +3682,14 @@ async function main(): Promise<void> {
         const budget = isProbe ? MAX_PROBE_REPLANS : MAX_CASCADE_REPLANS;
         const usedSoFar = isProbe ? probeReplansUsed : cascadeReplansUsed;
         if (usedSoFar >= budget) {
+          const kindsSummary = summarizeReplanFailureKinds({
+            callsNdjsonPath: config.telemetry.callsNdjsonPath,
+            callType: CALL_TYPE_RECON_REPLAN,
+            tailCount: budget * 2,
+          });
+          const kindsSuffix = kindsSummary ? ` — ${kindsSummary}` : "";
           logger.error(
-            `step ${i + 1} ${err.kind} replan budget exhausted (${usedSoFar}/${budget}); aborting`
+            `step ${i + 1} ${err.kind} replan budget exhausted (${usedSoFar}/${budget}); aborting${kindsSuffix}`
           );
           throw err;
         }

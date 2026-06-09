@@ -73,6 +73,8 @@ import {
   readFailureDumpEvidence,
   renderUnfocusedObserve,
   rephraseWithLLM,
+  shouldSkipTechnique,
+  summarizeReplanFailureKinds,
 } from "@/scripts/recon-browser";
 import type { Logger } from "@/types/logging";
 
@@ -1052,5 +1054,302 @@ describe("recon-browser/isSubmitRevealedInvalid", () => {
         postAttemptInvalidCount: 5,
       })
     ).toBe(true);
+  });
+});
+
+describe("recon-browser/shouldSkipTechnique", () => {
+  it("skips structured-click when no prior attempt has resolved an xpath", () => {
+    const decision = shouldSkipTechnique({
+      technique: "structured-click",
+      priorAttempts: [
+        { technique: "act-string", triedSelectors: [], errorMessage: null },
+        {
+          technique: "observe-act",
+          triedSelectors: [],
+          errorMessage: "observe returned no candidates",
+        },
+      ],
+    });
+    expect(decision.skip).toBe(true);
+    expect(decision.reason).toContain("no attempt has resolved a selector");
+  });
+
+  it("runs structured-click when a prior attempt resolved a selector", () => {
+    const decision = shouldSkipTechnique({
+      technique: "structured-click",
+      priorAttempts: [
+        { technique: "act-string", triedSelectors: [], errorMessage: null },
+        {
+          technique: "observe-act",
+          triedSelectors: ["xpath=/html/body/button"],
+          errorMessage: null,
+        },
+      ],
+    });
+    expect(decision.skip).toBe(false);
+  });
+
+  it("skips observe-act-exclude when prior observe-act returned zero candidates", () => {
+    const decision = shouldSkipTechnique({
+      technique: "observe-act-exclude",
+      priorAttempts: [
+        { technique: "act-string", triedSelectors: [], errorMessage: null },
+        {
+          technique: "observe-act",
+          triedSelectors: [],
+          errorMessage: "observe returned no candidates",
+        },
+        {
+          technique: "structured-click",
+          triedSelectors: [],
+          errorMessage: "structured-click: no xpath from prior attempt",
+        },
+      ],
+    });
+    expect(decision.skip).toBe(true);
+    expect(decision.reason).toContain("observe-act-exclude re-runs the same observe");
+  });
+
+  it("runs observe-act-exclude when prior observe-act DID find candidates", () => {
+    const decision = shouldSkipTechnique({
+      technique: "observe-act-exclude",
+      priorAttempts: [
+        { technique: "act-string", triedSelectors: [], errorMessage: null },
+        {
+          technique: "observe-act",
+          triedSelectors: ["xpath=/html/body/button"],
+          errorMessage: null,
+        },
+      ],
+    });
+    expect(decision.skip).toBe(false);
+  });
+
+  it("never skips act-string (attempt 1 has no prior state to evaluate)", () => {
+    const decision = shouldSkipTechnique({
+      technique: "act-string",
+      priorAttempts: [],
+    });
+    expect(decision.skip).toBe(false);
+  });
+
+  it("never skips llm-rephrase (attempt 5 is the final-fallback recovery)", () => {
+    const decision = shouldSkipTechnique({
+      technique: "llm-rephrase",
+      priorAttempts: [
+        { technique: "act-string", triedSelectors: [], errorMessage: null },
+        {
+          technique: "observe-act",
+          triedSelectors: [],
+          errorMessage: "observe returned no candidates",
+        },
+      ],
+    });
+    expect(decision.skip).toBe(false);
+  });
+});
+
+describe("recon-browser/summarizeReplanFailureKinds", () => {
+  let tmpDir: string;
+  let ndjsonPath: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "recon-replan-summary-"));
+    ndjsonPath = join(tmpDir, "calls.ndjson");
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function writeEntries(
+    entries: { callType: string; success: boolean; failureKind: string | null }[]
+  ): void {
+    const lines = entries.map((e) => JSON.stringify(e)).join("\n");
+    writeFileSync(ndjsonPath, `${lines}\n`);
+  }
+
+  it("returns empty when the file is missing", () => {
+    expect(
+      summarizeReplanFailureKinds({
+        callsNdjsonPath: join(tmpDir, "missing.ndjson"),
+        callType: "recon-replan",
+      })
+    ).toBe("");
+  });
+
+  it("returns empty when no entries match the callType", () => {
+    writeEntries([{ callType: "other-call", success: false, failureKind: "anthropic-billing" }]);
+    expect(
+      summarizeReplanFailureKinds({ callsNdjsonPath: ndjsonPath, callType: "recon-replan" })
+    ).toBe("");
+  });
+
+  it("returns empty when matching entries all succeeded", () => {
+    writeEntries([
+      { callType: "recon-replan", success: true, failureKind: null },
+      { callType: "recon-replan", success: true, failureKind: null },
+    ]);
+    expect(
+      summarizeReplanFailureKinds({ callsNdjsonPath: ndjsonPath, callType: "recon-replan" })
+    ).toBe("");
+  });
+
+  it("buckets by failureKind, sorted by frequency descending", () => {
+    writeEntries([
+      { callType: "recon-replan", success: false, failureKind: "anthropic-rate-limit" },
+      { callType: "recon-replan", success: false, failureKind: "anthropic-rate-limit" },
+      { callType: "recon-replan", success: false, failureKind: "anthropic-rate-limit" },
+      { callType: "recon-replan", success: false, failureKind: "anthropic-rate-limit" },
+      { callType: "recon-replan", success: false, failureKind: "schema-validation-failed" },
+    ]);
+    const summary = summarizeReplanFailureKinds({
+      callsNdjsonPath: ndjsonPath,
+      callType: "recon-replan",
+    });
+    expect(summary).toContain("5 recent recon-replan failure(s)");
+    expect(summary).toContain("4× anthropic-rate-limit");
+    expect(summary).toContain("1× schema-validation-failed");
+    expect(summary.indexOf("4×")).toBeLessThan(summary.indexOf("1×"));
+  });
+
+  it("ignores unrelated callTypes in the same NDJSON file", () => {
+    writeEntries([
+      { callType: "recon-rephrase", success: false, failureKind: "response-empty" },
+      { callType: "recon-replan", success: false, failureKind: "anthropic-billing" },
+    ]);
+    const summary = summarizeReplanFailureKinds({
+      callsNdjsonPath: ndjsonPath,
+      callType: "recon-replan",
+    });
+    expect(summary).toContain("1 recent recon-replan");
+    expect(summary).toContain("anthropic-billing");
+    expect(summary).not.toContain("response-empty");
+  });
+
+  it("treats null failureKind as 'unknown'", () => {
+    writeEntries([{ callType: "recon-replan", success: false, failureKind: null }]);
+    expect(
+      summarizeReplanFailureKinds({ callsNdjsonPath: ndjsonPath, callType: "recon-replan" })
+    ).toContain("1× unknown");
+  });
+
+  it("only inspects the most recent tailCount entries", () => {
+    const entries = Array.from({ length: 20 }, (_, i) => ({
+      callType: "recon-replan" as const,
+      success: false,
+      failureKind: i < 10 ? "anthropic-billing" : "anthropic-rate-limit",
+    }));
+    writeEntries(entries);
+    const summary = summarizeReplanFailureKinds({
+      callsNdjsonPath: ndjsonPath,
+      callType: "recon-replan",
+      tailCount: 10,
+    });
+    expect(summary).toContain("10× anthropic-rate-limit");
+    expect(summary).not.toContain("anthropic-billing");
+  });
+
+  it("survives malformed NDJSON lines", () => {
+    writeFileSync(
+      ndjsonPath,
+      [
+        JSON.stringify({
+          callType: "recon-replan",
+          success: false,
+          failureKind: "anthropic-billing",
+        }),
+        "{not-json}",
+        JSON.stringify({
+          callType: "recon-replan",
+          success: false,
+          failureKind: "anthropic-billing",
+        }),
+        "",
+      ].join("\n")
+    );
+    expect(
+      summarizeReplanFailureKinds({ callsNdjsonPath: ndjsonPath, callType: "recon-replan" })
+    ).toContain("2× anthropic-billing");
+  });
+});
+
+describe("rephraseWithLLM — instruction history (priorAttempts)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("includes INSTRUCTION TEXT ALREADY TRIED when priorAttempts is supplied", async () => {
+    const client = makeAnthropicClient("click the Yes radio button label");
+    const { fn, calls } = makeCaptureFn();
+
+    await rephraseWithLLM(
+      client,
+      "Click the Submit button",
+      ["xpath=/html/body/button[1]"],
+      [],
+      ["no observable effect"],
+      fn,
+      undefined,
+      undefined,
+      undefined,
+      [
+        {
+          technique: "act-string",
+          instruction: "Click the Submit button",
+          verdict: "no observable effect",
+        },
+        {
+          technique: "observe-act",
+          instruction: "Submit application button at the bottom of the form",
+          verdict: "no observable effect",
+        },
+      ]
+    );
+
+    const prompt = calls[0]?.userContent ?? "";
+    expect(prompt).toContain("INSTRUCTION TEXT ALREADY TRIED");
+    expect(prompt).toContain("act-string");
+    expect(prompt).toContain("Click the Submit button");
+    expect(prompt).toContain("observe-act");
+    expect(prompt).toContain("Submit application button");
+  });
+
+  it("renders (none) when priorAttempts is empty or undefined", async () => {
+    const client = makeAnthropicClient("click the Yes radio button label");
+    const { fn, calls } = makeCaptureFn();
+
+    await rephraseWithLLM(client, "Click the Submit button", [], [], ["no observable effect"], fn);
+
+    const prompt = calls[0]?.userContent ?? "";
+    expect(prompt).toContain("INSTRUCTION TEXT ALREADY TRIED");
+    expect(prompt).toMatch(/INSTRUCTION TEXT ALREADY TRIED[^\n]*\):\n\(none\)/);
+  });
+
+  it("filters out attempts whose instruction is null or empty", async () => {
+    const client = makeAnthropicClient("click the Yes label");
+    const { fn, calls } = makeCaptureFn();
+
+    await rephraseWithLLM(
+      client,
+      "Click the Submit button",
+      [],
+      [],
+      ["no observable effect"],
+      fn,
+      undefined,
+      undefined,
+      undefined,
+      [
+        { technique: "act-string", instruction: null, verdict: "no observable effect" },
+        { technique: "structured-click", instruction: "   ", verdict: "no xpath" },
+        { technique: "observe-act", instruction: "Click the No radio", verdict: "ok" },
+      ]
+    );
+
+    const prompt = calls[0]?.userContent ?? "";
+    expect(prompt).toContain("Click the No radio");
+    expect(prompt).not.toContain("act-string");
+    expect(prompt).not.toContain("structured-click");
   });
 });
