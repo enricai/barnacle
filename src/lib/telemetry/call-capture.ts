@@ -16,6 +16,44 @@ import { getLogger } from "@/lib/logging";
 const logger = getLogger({ name: "telemetry/call-capture" });
 
 /**
+ * Categorical failure reason for an LLM call. Surfaces post-mortem without
+ * regex-scanning `errorMessage`. Discriminated upstream by the caller.
+ */
+export const llmCallFailureKindSchema = z.enum([
+  "anthropic-billing",
+  "anthropic-rate-limit",
+  "anthropic-other",
+  "schema-validation-failed",
+  "response-empty",
+  "exception-other",
+]);
+export type LlmCallFailureKind = z.infer<typeof llmCallFailureKindSchema>;
+
+const ANTHROPIC_BILLING_RX =
+  /(your credit balance is too low|insufficient_quota|billing_hard_limit_reached)/i;
+
+/**
+ * Classify a thrown error from an LLM call into one of the discrete failure
+ * kinds. Keeps the call-capture module SDK-agnostic: probes `err.status` and
+ * `err.name` instead of `instanceof Anthropic.*Error`, so the helper works
+ * for any provider whose SDK errors expose those standard HTTP fields.
+ */
+export function classifyLlmCallFailure(err: unknown): LlmCallFailureKind {
+  const message = err instanceof Error ? err.message : String(err);
+  if (ANTHROPIC_BILLING_RX.test(message)) return "anthropic-billing";
+  const status =
+    typeof err === "object" && err !== null && "status" in err
+      ? (err as { status: unknown }).status
+      : undefined;
+  const name = err instanceof Error ? err.name : "";
+  if (status === 429 || name === "RateLimitError") return "anthropic-rate-limit";
+  if (typeof status === "number" && status >= 400 && status < 600) return "anthropic-other";
+  if (/APIError$|AnthropicError$/.test(name)) return "anthropic-other";
+  if (/zod|schema|parsed_output is null/i.test(message)) return "schema-validation-failed";
+  return "exception-other";
+}
+
+/**
  * Validated shape of one LLM call sample. Field names follow beacon/pila's
  * NDJSON contract but in Barnacle's camelCase convention.
  */
@@ -31,6 +69,8 @@ export const llmCallSampleSchema = z.object({
   outputTokens: z.number().int().nullable(),
   latencyMs: z.number().nullable(),
   success: z.boolean(),
+  errorMessage: z.string().nullable(),
+  failureKind: llmCallFailureKindSchema.nullable(),
   ts: z.string(),
 });
 

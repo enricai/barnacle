@@ -48,9 +48,13 @@ vi.mock("@/lib/logging", () => ({
   getScriptLogger: () => loggerStub,
 }));
 
-vi.mock("@/lib/telemetry/call-capture", () => ({
-  captureLlmCall: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock("@/lib/telemetry/call-capture", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/telemetry/call-capture")>();
+  return {
+    ...actual,
+    captureLlmCall: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
 import type { LlmCallInput } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_FLOW_PATCH } from "@/lib/telemetry/call-types";

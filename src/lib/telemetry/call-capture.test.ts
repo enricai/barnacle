@@ -29,6 +29,7 @@ vi.mock("@/lib/logging", () => ({
 
 import {
   captureLlmCall,
+  classifyLlmCallFailure,
   type LlmCallSample,
   llmCallSampleSchema,
 } from "@/lib/telemetry/call-capture";
@@ -48,6 +49,8 @@ function makeInput(): Parameters<typeof captureLlmCall>[0] {
     outputTokens: 8,
     latencyMs: 312,
     success: true,
+    errorMessage: null,
+    failureKind: null,
   };
 }
 
@@ -158,5 +161,43 @@ describe("captureLlmCall", () => {
     expect(parsed.inputTokens).toBeNull();
     expect(parsed.outputTokens).toBeNull();
     expect(parsed.latencyMs).toBeNull();
+  });
+});
+
+describe("classifyLlmCallFailure", () => {
+  it("detects Anthropic billing exhaustion from the error message", () => {
+    expect(classifyLlmCallFailure(new Error("Your credit balance is too low. Top up at..."))).toBe(
+      "anthropic-billing"
+    );
+    expect(classifyLlmCallFailure(new Error("insufficient_quota for this account"))).toBe(
+      "anthropic-billing"
+    );
+  });
+
+  it("detects rate-limit errors by HTTP status or error name", () => {
+    const rateErr = Object.assign(new Error("Too Many Requests"), {
+      status: 429,
+      name: "RateLimitError",
+    });
+    expect(classifyLlmCallFailure(rateErr)).toBe("anthropic-rate-limit");
+  });
+
+  it("detects schema-validation failures by message content", () => {
+    expect(
+      classifyLlmCallFailure(new Error("structured-output enabled but parsed_output is null"))
+    ).toBe("schema-validation-failed");
+    expect(classifyLlmCallFailure(new Error("Zod parsing failed: missing field x"))).toBe(
+      "schema-validation-failed"
+    );
+  });
+
+  it("classifies generic Anthropic API errors with a numeric status as anthropic-other", () => {
+    const apiErr = Object.assign(new Error("Internal server error"), { status: 500 });
+    expect(classifyLlmCallFailure(apiErr)).toBe("anthropic-other");
+  });
+
+  it("falls back to exception-other for unmatched errors", () => {
+    expect(classifyLlmCallFailure(new Error("DNS lookup timed out"))).toBe("exception-other");
+    expect(classifyLlmCallFailure("plain string error")).toBe("exception-other");
   });
 });

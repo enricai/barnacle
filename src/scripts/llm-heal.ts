@@ -32,7 +32,11 @@ import { formatISO } from "date-fns";
 import { type JudgeVerdict, judgeVerdictSchema, type LlmCallSample } from "@/api/schemas/telemetry";
 import { config } from "@/config";
 import { getScriptLogger } from "@/lib/logging";
-import { captureLlmCall, type LlmCallInput } from "@/lib/telemetry/call-capture";
+import {
+  captureLlmCall,
+  classifyLlmCallFailure,
+  type LlmCallInput,
+} from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_LLM_PROMPT_PATCH } from "@/lib/telemetry/call-types";
 import {
   makeAnthropicScorer,
@@ -242,6 +246,8 @@ Return ONLY a single JSON object — no prose, no markdown, no code fences:
         outputTokens: response.usage?.output_tokens ?? null,
         latencyMs,
         success: false,
+        errorMessage: "model returned no text block",
+        failureKind: "response-empty",
       });
       return null;
     }
@@ -250,7 +256,7 @@ Return ONLY a single JSON object — no prose, no markdown, no code fences:
     let parsed: unknown;
     try {
       parsed = JSON.parse(text);
-    } catch {
+    } catch (parseErr) {
       await captureFn({
         callId: randomUUID(),
         callType: CALL_TYPE_LLM_PROMPT_PATCH,
@@ -263,6 +269,8 @@ Return ONLY a single JSON object — no prose, no markdown, no code fences:
         outputTokens: response.usage?.output_tokens ?? null,
         latencyMs,
         success: false,
+        errorMessage: `JSON.parse failed: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`,
+        failureKind: "schema-validation-failed",
       });
       return null;
     }
@@ -286,6 +294,8 @@ Return ONLY a single JSON object — no prose, no markdown, no code fences:
         outputTokens: response.usage?.output_tokens ?? null,
         latencyMs,
         success: false,
+        errorMessage: "patch shape missing required fields (anchor/replacement/strategy)",
+        failureKind: "schema-validation-failed",
       });
       return null;
     }
@@ -312,6 +322,8 @@ Return ONLY a single JSON object — no prose, no markdown, no code fences:
         outputTokens: response.usage?.output_tokens ?? null,
         latencyMs,
         success: false,
+        errorMessage: `patch anchor not found in prompt template: ${patch.anchor.slice(0, 80)}`,
+        failureKind: "schema-validation-failed",
       });
       return null;
     }
@@ -328,10 +340,12 @@ Return ONLY a single JSON object — no prose, no markdown, no code fences:
       outputTokens: response.usage?.output_tokens ?? null,
       latencyMs,
       success: true,
+      errorMessage: null,
+      failureKind: null,
     });
 
     return patch;
-  } catch {
+  } catch (err) {
     await captureFn({
       callId: randomUUID(),
       callType: CALL_TYPE_LLM_PROMPT_PATCH,
@@ -344,6 +358,8 @@ Return ONLY a single JSON object — no prose, no markdown, no code fences:
       outputTokens: null,
       latencyMs: performance.now() - t0,
       success: false,
+      errorMessage: err instanceof Error ? err.message : String(err),
+      failureKind: classifyLlmCallFailure(err),
     });
     return null;
   }
