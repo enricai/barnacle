@@ -2,9 +2,9 @@
  * Unit coverage for the per-site / per-URL telemetry path helpers.
  *
  * The helpers wrap a couple of behaviours that are easy to get subtly wrong
- * (URL canonicalization, hash stability, partition walking on a missing
- * directory), so a small focused suite locks those in without standing up
- * the full recon harness.
+ * (URL canonicalization, directory-name uniqueness, partition walking on a
+ * missing directory), so a small focused suite locks those in without
+ * standing up the full recon harness.
  */
 
 import { Buffer } from "node:buffer";

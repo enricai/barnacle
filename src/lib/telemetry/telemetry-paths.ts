@@ -2,8 +2,8 @@
  * Path helpers for per-site, per-URL telemetry partitioning. Lets each site's
  * recon flow accumulate its LLM call corpus next to the flow file itself
  * (durable as part of the site definition) rather than into a single global
- * sink. The URL hash keeps one URL's history isolated from another's, so
- * cross-run pattern analysis on a specific target stays clean.
+ * sink. The per-URL directory name keeps one URL's history isolated from
+ * another's, so cross-run pattern analysis on a specific target stays clean.
  */
 
 import { Buffer } from "node:buffer";
@@ -66,7 +66,7 @@ export function resolveRunUrlPath(siteTelemetryDir: string, rawUrl: string): str
 }
 
 /**
- * Concatenate every `runs/<urlHash>/calls.ndjson` under the site telemetry
+ * Concatenate every `runs/<urlDirName>/calls.ndjson` under the site telemetry
  * directory into a single NDJSON string. Used when a consumer needs the
  * site's full call history (cross-URL pattern analysis) rather than a single
  * URL's slice. Returns empty string when the directory doesn't exist yet —
