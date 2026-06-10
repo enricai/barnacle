@@ -68,11 +68,13 @@ import {
   dedupeConsecutiveIdentical,
   denormalizeStep,
   describeAttemptEffectSignals,
+  extractFillTargetFieldName,
   extractSubmitFailureEvidence,
   findRecentBackendError,
   findRecentPageTransition,
   hasBillingErrorBeenLogged,
   type InvalidFormControl,
+  invalidListContainsField,
   isReplanCycle,
   isSubmitRevealedInvalid,
   logBillingErrorIfPresent,
@@ -1930,5 +1932,43 @@ describe("recon-browser/findRecentBackendError", () => {
         })
       ).toBe("https://example.com/api/apply");
     }
+  });
+});
+
+describe("recon-browser/extractFillTargetFieldName", () => {
+  it("extracts the field name from 'Fill in the X field with Y' instructions", () => {
+    expect(extractFillTargetFieldName("Fill in the Legal First Name field with 'Reginald'")).toBe(
+      "Legal First Name"
+    );
+    expect(extractFillTargetFieldName("Fill the Postal Code field with '83646'")).toBe(
+      "Postal Code"
+    );
+  });
+
+  it("returns null for clicks, selects, and other non-fill instructions", () => {
+    expect(extractFillTargetFieldName("Click the Continue button")).toBeNull();
+    expect(extractFillTargetFieldName("Select 'Day' in the Shift dropdown")).toBeNull();
+  });
+});
+
+describe("recon-browser/invalidListContainsField", () => {
+  it("matches when the field name appears in any invalidFieldList entry", () => {
+    const list = "1. Legal First Name <app-input  [ng-invalid]\n2. Phone <input  [ng-invalid]";
+    expect(invalidListContainsField(list, "Legal First Name")).toBe(true);
+  });
+
+  it("is case-insensitive", () => {
+    const list = "1. LEGAL FIRST NAME <app-input  [ng-invalid]";
+    expect(invalidListContainsField(list, "legal first name")).toBe(true);
+  });
+
+  it("returns false when the field is not in the list", () => {
+    const list = "1. Phone <input  [ng-invalid]";
+    expect(invalidListContainsField(list, "Legal First Name")).toBe(false);
+  });
+
+  it("returns false on empty inputs", () => {
+    expect(invalidListContainsField("", "Foo")).toBe(false);
+    expect(invalidListContainsField("1. Foo [ng-invalid]", "")).toBe(false);
   });
 });

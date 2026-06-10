@@ -624,6 +624,35 @@ export async function countNgInvalidContainers(page: Page): Promise<number> {
 }
 
 /**
+ * Extract the field-name token from a "Fill … field …" instruction. Closes
+ * the gap where the replan LLM has no signal that its prior fill on field X
+ * did not clear X's `ng-invalid` state — without this, it keeps re-emitting
+ * "Fill X with Y" against a form silently rejecting the value (hidden
+ * validator, masked input, format constraint, stale model binding).
+ *
+ * Returns the trimmed field name, or null when the instruction shape does
+ * not match (e.g. clicks, selects, conditionals where the failed target
+ * isn't a fill).
+ */
+export function extractFillTargetFieldName(instruction: string): string | null {
+  const m = instruction.match(/\bfill\s+(?:in\s+)?(?:the\s+)?(.+?)\s+field\b/i);
+  if (!m?.[1]) return null;
+  return m[1].trim();
+}
+
+/**
+ * True when `fieldName` appears (case-insensitive substring) in any entry of
+ * the framework-agnostic invalidFieldList (the "Legal First Name <app-input …
+ * [ng-invalid]" style lines `extractLivePageFormEvidence` and
+ * `readFailureDumpEvidence` produce).
+ */
+export function invalidListContainsField(invalidFieldList: string, fieldName: string): boolean {
+  if (invalidFieldList.length === 0 || fieldName.length === 0) return false;
+  const needle = fieldName.toLowerCase();
+  return invalidFieldList.toLowerCase().includes(needle);
+}
+
+/**
  * Translate the pre/post snapshot delta + same-window captures into a short
  * diagnostic phrase that goes into `failureReasons[]`. Surfaces patterns the
  * verifier itself discards: e.g. "DOM grew but no submit-shaped network
@@ -1841,7 +1870,7 @@ ${errorTextList || "(none)"}
 STRUCTURED SERVER-SIDE VALIDATION ERRORS (parsed from captured 4xx responses to the submit endpoint — when populated, the form's submit DID fire and the server rejected it with specific feedback):
 ${submitFailureList || "(none)"}
 
-PRIOR REPLAN HISTORY (proposals from previous replans for this same failure; the cascade executed each one and verification still failed at the time it ran. Between replans, the page may have advanced — a step that failed earlier could potentially work now if intervening steps filled missing prerequisites or dismissed blockers. But re-proposing the EXACT same multi-step sequence that already failed is unlikely to produce a different outcome. Prefer structurally different recovery paths. If you re-use a prior step, pair it with new context that addresses why it failed before):
+PRIOR REPLAN HISTORY (proposals from previous replans for this same failure; the cascade executed each one and verification still failed at the time it ran. Between replans, the page may have advanced — a step that failed earlier could potentially work now if intervening steps filled missing prerequisites or dismissed blockers. See the HARD CONSTRAINT in the Constraints block below for the no-repetition rule):
 ${priorReplanList || "(none)"}
 
 PRIOR STEP TRAJECTORY (how the last few completed steps verified — url / submitted-state-dom signal pages that visibly transitioned; network / dom signal pages that stayed static. Use this to distinguish "page has been advancing through the flow" from "page has been static and the form is still in front of us"; avoid proposing regression-style steps if the trajectory shows recent transitions):
@@ -1892,15 +1921,15 @@ WRONG (multi-action — DO NOT emit steps like these):
   "Fill the signature field with 'Name'; check the I agree box; click Submit"
 
 RIGHT (single-action — emit steps like these):
-  "Fill in the First Name field with 'Reginald'"
-  "Fill in the Last Name field with 'Reconaldo'"
-  "Fill in the Email field with '...'"
-  "If a Street Address field is visible, fill it with '123 Test Lane'"
-  "If a City field is visible, fill it with 'Austin'"
-  "Click the Continue button"
-  "Fill the signature field with 'Name'"
-  "Check the I agree checkbox"
-  "Click the Submit button"
+  "Fill the Postal Code field with '83646'"
+  "Fill the Years of Experience field with '5'"
+  "Select 'Bachelor's Degree' in the Highest Education dropdown"
+  "Select 'Day shift' in the Shift Preference dropdown"
+  "If a Cover Letter textarea is visible, fill it with 'See attached resume.'"
+  "Click the Show More link to expand the job description"
+  "Check the 'Currently employed here' checkbox"
+  "Upload the resume PDF when the upload widget appears"
+  "Click the Save button to commit the education entry"
 
 A step CAN combine ONE conditional + ONE action ("If X is visible, do Y") — that
 counts as single-action because the conditional only gates whether the action
@@ -1914,6 +1943,7 @@ Constraints:
 - If the user's intent is unreachable from this page state, return outcome="impossible" with a brief reason.
 - Maximum ${REPLAN_MAX_STEPS} bridge steps.
 - Each step is a single DOM action (see CRITICAL section above).
+- HARD CONSTRAINT — no repeating prior proposals: do NOT emit a steps array whose joined instruction signature matches any entry in PRIOR REPLAN HISTORY. The cascade already executed each prior proposal against this same failure and verification still failed. If the only recovery you can name is one already in PRIOR REPLAN HISTORY, return outcome="impossible" with a reason instead — the engine routes "impossible" to the next strategy rather than burning another replan budget slot on a known-failing sequence.
 
 OPTIONAL STEPS:
 Each step entry can be a bare string (required step — cascade fails if the
@@ -3645,6 +3675,32 @@ async function executeStepWithHealing(params: {
     logger.warn(
       `step ${stepIndex + 1} attempt ${attempt} (${record.technique}) produced no observable effect — ${reason}`
     );
+
+    // Differential signal for the replan LLM: when a fill action "succeeded"
+    // from Stagehand's view (no errorMessage) but the post-snapshot still
+    // shows the target field in an ng-invalid container, the form is
+    // silently rejecting the value (hidden validator, masked input, format
+    // constraint, stale Angular model binding). Without this line, the
+    // failureReasons list only reports the *click* failures; the LLM
+    // reasonably concludes "I clicked too early, let me fill more fields"
+    // and locks into byte-identical replan proposals until cycle detection
+    // bails it out. Surfacing this tells the LLM the fill itself is the
+    // dead-end — pivot to a different action class or return impossible.
+    if (record.resolvedMethod === "fill" && record.instruction !== null) {
+      const fieldName = extractFillTargetFieldName(record.instruction);
+      if (fieldName !== null) {
+        const livePageEvidence = await extractLivePageFormEvidence(page).catch(() => ({
+          invalidFieldList: "",
+          errorTextList: "",
+          interactiveTargetsList: "",
+        }));
+        if (invalidListContainsField(livePageEvidence.invalidFieldList, fieldName)) {
+          const fillReason = `fill-did-not-clear-invalidity: target='${fieldName}' remained in ng-invalid after fill — the page is rejecting the value (hidden validator, masked input, format constraint, or stale model binding); a different action class is required (clear+retype, focus event, format adjustment, or return impossible if no recovery is plausible)`;
+          failureReasons.push(fillReason);
+          logger.warn(`step ${stepIndex + 1} ${fillReason}`);
+        }
+      }
+    }
 
     // Telemetry-driven early-exit: when attempt 1 on a final-Submit click
     // reveals new ng-invalid containers, attempts 2-N cannot succeed (the
