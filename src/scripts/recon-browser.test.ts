@@ -73,6 +73,7 @@ import {
   findRecentPageTransition,
   hasBillingErrorBeenLogged,
   type InvalidFormControl,
+  isReplanCycle,
   isSubmitRevealedInvalid,
   logBillingErrorIfPresent,
   type NormalizedStep,
@@ -356,6 +357,7 @@ describe("recon-browser/persistReplannedFlow", () => {
           { instruction: "Bridge X", optional: false, upload: false, origin: "original" },
         ],
         timestamp: "2026-06-03T20:00:00.000Z",
+        pageState: { url: "https://example.com/apply", htmlLength: 50000 },
       },
     ];
 
@@ -388,6 +390,7 @@ describe("recon-browser/persistReplannedFlow", () => {
         failedInstruction: "Step A",
         replanSteps: finalPlan,
         timestamp: "2026-06-03T20:00:00.000Z",
+        pageState: { url: "https://example.com/apply", htmlLength: 50000 },
       },
     ];
 
@@ -418,6 +421,7 @@ describe("recon-browser/persistReplannedFlow", () => {
           { instruction: "Bridge", optional: false, upload: false, origin: "original" },
         ],
         timestamp: "2026-06-03T20:00:00.000Z",
+        pageState: { url: "https://example.com/apply", htmlLength: 50000 },
       },
     ];
 
@@ -449,6 +453,7 @@ describe("recon-browser/persistReplannedFlow", () => {
         failedInstruction: "Step A",
         replanSteps: finalPlan,
         timestamp: "2026-06-03T20:00:00.000Z",
+        pageState: { url: "https://example.com/apply", htmlLength: 50000 },
       },
     ];
 
@@ -482,6 +487,7 @@ describe("recon-browser/persistReplannedFlow", () => {
         failedInstruction: "X",
         replanSteps: finalPlan,
         timestamp: "2026-06-03T20:00:00.000Z",
+        pageState: { url: "https://example.com/apply", htmlLength: 50000 },
       },
     ];
 
@@ -504,6 +510,7 @@ describe("recon-browser/persistReplannedFlow", () => {
         failedInstruction: "X",
         replanSteps: finalPlan,
         timestamp: "2026-06-03T20:00:00.000Z",
+        pageState: { url: "https://example.com/apply", htmlLength: 50000 },
       },
     ];
 
@@ -536,6 +543,7 @@ describe("recon-browser/persistReplannedFlow", () => {
         failedInstruction: "X",
         replanSteps: finalPlan,
         timestamp: "2026-06-03T20:00:00.000Z",
+        pageState: { url: "https://example.com/apply", htmlLength: 50000 },
       },
     ];
 
@@ -565,6 +573,7 @@ describe("recon-browser/persistReplannedFlow", () => {
         failedInstruction: "Step A",
         replanSteps: [finalPlan[1]!],
         timestamp: "2026-06-03T20:00:00.000Z",
+        pageState: { url: "https://example.com/apply", htmlLength: 50000 },
       },
     ];
 
@@ -590,6 +599,7 @@ describe("recon-browser/persistReplannedFlow", () => {
         failedInstruction: "Step A",
         replanSteps: finalPlan,
         timestamp: "2026-06-03T20:00:00.000Z",
+        pageState: { url: "https://example.com/apply", htmlLength: 50000 },
       },
     ];
 
@@ -1242,6 +1252,104 @@ describe("recon-browser/shouldSkipTechnique", () => {
       ],
     });
     expect(decision.skip).toBe(false);
+  });
+});
+
+describe("recon-browser/isReplanCycle", () => {
+  function makeEvent(
+    replanIndex: number,
+    proposals: string[],
+    pageState: { url: string; htmlLength: number }
+  ): ReplanEvent {
+    return {
+      replanIndex,
+      cause: "cascade-exhausted",
+      indexAtFailure: 0,
+      failedInstruction: "Click submit",
+      replanSteps: proposals.map((p) => ({
+        instruction: p,
+        optional: false,
+        upload: false,
+        origin: "original",
+      })),
+      timestamp: "2026-06-09T00:00:00.000Z",
+      pageState,
+    };
+  }
+  const url = "https://example.com/apply";
+
+  it("returns false when fewer than threshold prior replans", () => {
+    const newSteps: NormalizedStep[] = [
+      { instruction: "Fill phone", optional: false, upload: false, origin: "original" },
+    ];
+    expect(isReplanCycle([], newSteps, { url, htmlLength: 50000 })).toBe(false);
+    expect(
+      isReplanCycle([makeEvent(1, ["Fill phone"], { url, htmlLength: 50000 })], newSteps, {
+        url,
+        htmlLength: 50000,
+      })
+    ).toBe(false);
+  });
+
+  it("returns true when threshold identical proposals under static page state", () => {
+    const proposals = ["Fill phone", "Click submit"];
+    const priors = [
+      makeEvent(1, proposals, { url, htmlLength: 50000 }),
+      makeEvent(2, proposals, { url, htmlLength: 50010 }),
+      makeEvent(3, proposals, { url, htmlLength: 50020 }),
+    ];
+    const newSteps: NormalizedStep[] = proposals.map((p) => ({
+      instruction: p,
+      optional: false,
+      upload: false,
+      origin: "original",
+    }));
+    expect(isReplanCycle(priors, newSteps, { url, htmlLength: 50030 })).toBe(true);
+  });
+
+  it("returns false when URL changed between replans", () => {
+    const proposals = ["Fill phone"];
+    const priors = [
+      makeEvent(1, proposals, { url, htmlLength: 50000 }),
+      makeEvent(2, proposals, { url: "https://example.com/apply/page2", htmlLength: 50000 }),
+      makeEvent(3, proposals, { url, htmlLength: 50000 }),
+    ];
+    const newSteps: NormalizedStep[] = proposals.map((p) => ({
+      instruction: p,
+      optional: false,
+      upload: false,
+      origin: "original",
+    }));
+    expect(isReplanCycle(priors, newSteps, { url, htmlLength: 50000 })).toBe(false);
+  });
+
+  it("returns false when HTML length changed beyond tolerance (page advanced)", () => {
+    const proposals = ["Fill phone"];
+    const priors = [
+      makeEvent(1, proposals, { url, htmlLength: 50000 }),
+      makeEvent(2, proposals, { url, htmlLength: 50000 }),
+      makeEvent(3, proposals, { url, htmlLength: 50000 }),
+    ];
+    const newSteps: NormalizedStep[] = proposals.map((p) => ({
+      instruction: p,
+      optional: false,
+      upload: false,
+      origin: "original",
+    }));
+    expect(isReplanCycle(priors, newSteps, { url, htmlLength: 52000 })).toBe(false);
+  });
+
+  it("returns false when proposals differ in instructions or order", () => {
+    const priors = [
+      makeEvent(1, ["Fill phone", "Click submit"], { url, htmlLength: 50000 }),
+      makeEvent(2, ["Fill phone", "Click submit"], { url, htmlLength: 50000 }),
+      makeEvent(3, ["Click submit", "Fill phone"], { url, htmlLength: 50000 }),
+    ];
+    const newSteps: NormalizedStep[] = [
+      { instruction: "Fill phone", optional: false, upload: false, origin: "original" },
+      { instruction: "Click submit", optional: false, upload: false, origin: "original" },
+    ];
+    expect(isReplanCycle(priors, newSteps, { url, htmlLength: 50000 })).toBe(false);
   });
 });
 

@@ -122,7 +122,33 @@ interface ReplanEvent {
   failedInstruction: string;
   replanSteps: NormalizedStep[];
   timestamp: string;
+  /**
+   * Page state at the moment this replan was constructed. Used by
+   * isReplanCycle to distinguish "same proposal under static page" (true
+   * cycle) from "same proposal but page state advanced" (legitimate retry
+   * under new conditions). Cheap signals: url equality + a permissive
+   * htmlLength delta. See HTML_STATIC_TOLERANCE for the threshold rationale.
+   */
+  pageState: { url: string; htmlLength: number };
 }
+
+/**
+ * Identical-proposal threshold for {@link isReplanCycle}. Set to a value
+ * high enough that one repeat plus one retry under the page-state guard
+ * doesn't trip — only a sustained fixed point should. Below 3, legitimate
+ * "same proposal under slightly-different state" retries can produce false
+ * cycle detections.
+ */
+const REPLAN_CYCLE_THRESHOLD = 3;
+
+/**
+ * Maximum bodyHtmlLength delta (in chars) at which two replan attempts are
+ * treated as targeting the same page state. Separates incidental DOM churn
+ * (framework attribute updates, focus rings, single-element re-renders;
+ * typically single-to-low-double-digit char deltas) from real page
+ * transitions (typically kilobyte-scale once new sections render).
+ */
+const HTML_STATIC_TOLERANCE = 100;
 
 /** Cap on the rolling capture-filename window held in memory for failure dumps. */
 const RECENT_CAPTURES_WINDOW = 20;
@@ -718,6 +744,33 @@ export function summarizeReplanFailureKinds(params: {
     .sort((a, b) => b[1] - a[1])
     .map(([kind, n]) => `${n}× ${kind}`);
   return `${failures.length} recent ${callType} failure(s): ${parts.join(", ")}`;
+}
+
+/**
+ * Detect a true replan cycle: the same multi-step instruction sequence
+ * proposed REPLAN_CYCLE_THRESHOLD times in a row under page state that
+ * hasn't materially advanced. The page-state guard (URL equality + bounded
+ * htmlLength delta) is essential — a re-proposal under genuinely different
+ * page state is a valid retry, not a cycle. Without the guard we'd block
+ * legitimate "the page advanced; the same step now works" recoveries.
+ */
+export function isReplanCycle(
+  priorReplans: readonly ReplanEvent[],
+  newSteps: readonly NormalizedStep[],
+  currentState: { url: string; htmlLength: number }
+): boolean {
+  if (priorReplans.length < REPLAN_CYCLE_THRESHOLD) return false;
+  const newSig = newSteps.map((s) => s.instruction).join("|||");
+  let identicalCount = 0;
+  for (const prior of priorReplans) {
+    const priorSig = prior.replanSteps.map((s) => s.instruction).join("|||");
+    if (priorSig !== newSig) continue;
+    const urlSame = prior.pageState.url === currentState.url;
+    const htmlStatic =
+      Math.abs(prior.pageState.htmlLength - currentState.htmlLength) < HTML_STATIC_TOLERANCE;
+    if (urlSame && htmlStatic) identicalCount++;
+  }
+  return identicalCount >= REPLAN_CYCLE_THRESHOLD;
 }
 
 /**
@@ -1696,6 +1749,14 @@ async function replanRemainingFlow(params: {
    * has already advanced.
    */
   trajectory?: readonly { stepIndex: number; verifiedBy: AttemptRecord["verifiedBy"] }[];
+  /**
+   * Previous replans constructed for this run. Rendered into a PRIOR REPLAN
+   * HISTORY section as graduated discouragement — re-proposing a sequence
+   * that already failed is unlikely to converge, but is not forbidden because
+   * intervening cascade steps may have advanced the page since the prior
+   * attempt. The deterministic isReplanCycle predicate is the safety net.
+   */
+  priorReplans?: readonly ReplanEvent[];
 }): Promise<NormalizedStep[] | null> {
   const {
     client,
@@ -1710,6 +1771,7 @@ async function replanRemainingFlow(params: {
     recentCaptures = [],
     submitEndpointPattern = null,
     trajectory = [],
+    priorReplans = [],
   } = params;
   const trajectoryList =
     trajectory.length > 0
@@ -1719,6 +1781,17 @@ async function replanRemainingFlow(params: {
             (t) => `step ${t.stepIndex + 1} verified via ${t.verifiedBy ?? "(no signal recorded)"}`
           )
           .join("; ")
+      : "";
+  const priorReplanList =
+    priorReplans.length > 0
+      ? priorReplans
+          .map(
+            (ev) =>
+              `replan #${ev.replanIndex} (failed on: ${ev.failedInstruction})\nproposed:\n${ev.replanSteps
+                .map((s, i) => `  ${i + 1}. ${s.instruction}`)
+                .join("\n")}`
+          )
+          .join("\n\n")
       : "";
   const candidates = await stagehand
     .observe({ timeout: STEP_WATCHDOG_MS })
@@ -1763,6 +1836,9 @@ ${errorTextList || "(none)"}
 
 STRUCTURED SERVER-SIDE VALIDATION ERRORS (parsed from captured 4xx responses to the submit endpoint — when populated, the form's submit DID fire and the server rejected it with specific feedback):
 ${submitFailureList || "(none)"}
+
+PRIOR REPLAN HISTORY (proposals from previous replans for this same failure; the cascade executed each one and verification still failed at the time it ran. Between replans, the page may have advanced — a step that failed earlier could potentially work now if intervening steps filled missing prerequisites or dismissed blockers. But re-proposing the EXACT same multi-step sequence that already failed is unlikely to produce a different outcome. Prefer structurally different recovery paths. If you re-use a prior step, pair it with new context that addresses why it failed before):
+${priorReplanList || "(none)"}
 
 PRIOR STEP TRAJECTORY (how the last few completed steps verified — url / submitted-state-dom signal pages that visibly transitioned; network / dom signal pages that stayed static. Use this to distinguish "page has been advancing through the flow" from "page has been static and the form is still in front of us"; avoid proposing regression-style steps if the trajectory shows recent transitions):
 ${trajectoryList || "(none)"}
@@ -4060,6 +4136,7 @@ async function main(): Promise<void> {
           recentCaptures,
           submitEndpointPattern: submitEndpointPattern ? new RegExp(submitEndpointPattern) : null,
           trajectory,
+          priorReplans: replanEvents,
         });
 
         if (!newSteps) {
@@ -4069,18 +4146,41 @@ async function main(): Promise<void> {
           throw err;
         }
 
+        const currentPageState = await snapshotPage(page, signalCounter).catch(() => ({
+          url: page.url(),
+          bodyHtmlLength: 0,
+        }));
+        if (
+          isReplanCycle(replanEvents, newSteps, {
+            url: currentPageState.url,
+            htmlLength: currentPageState.bodyHtmlLength,
+          })
+        ) {
+          const cycleMessage = `replan cycle detected: identical proposal × ${REPLAN_CYCLE_THRESHOLD} under static page state; aborting`;
+          logger.error(cycleMessage);
+          throw new StepVerificationError(cycleMessage, "replan-cycle-detected");
+        }
+
         if (isProbe) {
           probeReplansUsed++;
         } else {
           cascadeReplansUsed++;
         }
+        // err.kind narrowed to the two replan-bearing variants here: the
+        // backend-error-unrecoverable dispatcher above throws out, and the
+        // cycle-detected variant is only constructed at the throw site just
+        // above this push — never caught back here.
         replanEvents.push({
           replanIndex,
-          cause: err.kind,
+          cause: err.kind as "probe-absent" | "cascade-exhausted",
           indexAtFailure: i,
           failedInstruction: step.instruction,
           replanSteps: newSteps,
           timestamp: formatISO(new Date()),
+          pageState: {
+            url: currentPageState.url,
+            htmlLength: currentPageState.bodyHtmlLength,
+          },
         });
 
         const replanPath = dumpReplanRecord({

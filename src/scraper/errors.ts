@@ -84,10 +84,11 @@ export class UnknownScraperError extends ScraperError {
 export type StepVerificationErrorKind =
   | "cascade-exhausted"
   | "probe-absent"
-  | "backend-error-unrecoverable";
+  | "backend-error-unrecoverable"
+  | "replan-cycle-detected";
 
 /**
- * Recon-only: a flow step in recon-browser.ts could not be acted on. Three
+ * Recon-only: a flow step in recon-browser.ts could not be acted on. Four
  * variants per `kind`:
  *
  *   - "cascade-exhausted": the full 4-attempt self-healing cascade ran and
@@ -105,6 +106,11 @@ export type StepVerificationErrorKind =
  *     retry or replan can heal a server crash — the main flow loop
  *     special-cases this kind to bypass the replan dispatcher and
  *     propagate the error out, terminating the run with the diagnostic.
+ *   - "replan-cycle-detected": the engine observed the replanner proposing
+ *     the same multi-step instruction sequence under unchanged page state
+ *     N times in a row (default 3). Further replans on this trajectory
+ *     cannot converge — the main loop short-circuits to terminate the run
+ *     instead of burning the remaining replan budget on a known fixed point.
  *
  * Non-retryable — the runtime path never sees this.
  */
