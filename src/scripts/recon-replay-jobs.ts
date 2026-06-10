@@ -112,7 +112,15 @@ async function runReconForJob(
   const exitCode = await new Promise<number | null>((resolveExit) => {
     const child = spawn(
       "pnpm",
-      ["tsx", "src/scripts/recon-browser.ts", "--url", url, "--flow-file", flowFile],
+      [
+        "tsx",
+        "src/scripts/recon-browser.ts",
+        "--url",
+        url,
+        "--flow-file",
+        flowFile,
+        "--advanced-stealth",
+      ],
       {
         stdio: ["inherit", "pipe", "pipe"],
         env: { ...process.env, RECON_EMAIL: email },
