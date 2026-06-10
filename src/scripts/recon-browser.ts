@@ -36,7 +36,7 @@
 
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
@@ -55,6 +55,11 @@ import {
   type LlmCallInput,
 } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE, CALL_TYPE_RECON_REPLAN } from "@/lib/telemetry/call-types";
+import {
+  resolveRunCallsPath,
+  resolveRunUrlPath,
+  resolveSiteTelemetryDir,
+} from "@/lib/telemetry/telemetry-paths";
 import { StepVerificationError } from "@/scraper/errors";
 import { createBrowserSession, type ProviderName } from "@/scraper/session";
 import { filterByCallType, parseSamples } from "@/scripts/judge-llm-batch";
@@ -3914,6 +3919,24 @@ async function main(): Promise<void> {
 
   mkdirSync(CAPTURES_DIR, { recursive: true });
   const resumeFixture = loadResumeFixture(resumeFixturePath);
+  // Per-URL partition under the flow file's site directory. Without a flow
+  // file (inline --flow mode), telemetry has no durable home and is dropped
+  // — captureFn becomes a no-op so dev one-offs don't crash and don't
+  // pollute the global sink.
+  const siteTelemetryDir = resolveSiteTelemetryDir(flowFile);
+  const callsNdjsonPath =
+    siteTelemetryDir !== null ? resolveRunCallsPath(siteTelemetryDir, url) : null;
+  if (siteTelemetryDir !== null && callsNdjsonPath !== null) {
+    mkdirSync(dirname(callsNdjsonPath), { recursive: true });
+    writeFileSync(resolveRunUrlPath(siteTelemetryDir, url), `${url}\n`);
+    logger.info(`telemetry: per-URL partition at ${callsNdjsonPath}`);
+  } else {
+    logger.info("telemetry: no flow file path — call capture disabled for this run");
+  }
+  const captureFn: CaptureFn =
+    callsNdjsonPath !== null
+      ? (input) => captureLlmCall(input, { sinkPath: callsNdjsonPath })
+      : async () => {};
   logger.info(
     `recon-browser: target=${url} flow_steps=${flow.length} provider=${provider ?? "(config-default)"} advancedStealth=${advancedStealth} resume_fixture=${resumeFixture ? `${resumeFixturePath} (${resumeFixture.buffer.length}b)` : "(missing)"} out=${CAPTURES_DIR}`
   );
@@ -4039,6 +4062,7 @@ async function main(): Promise<void> {
           submittedStateSelectors,
           requireSubmitEndpointMatch,
           trajectory,
+          captureFn,
         });
         completedSteps.push(step.instruction);
       } catch (err) {
@@ -4104,11 +4128,14 @@ async function main(): Promise<void> {
         const budget = isProbe ? MAX_PROBE_REPLANS : MAX_CASCADE_REPLANS;
         const usedSoFar = isProbe ? probeReplansUsed : cascadeReplansUsed;
         if (usedSoFar >= budget) {
-          const kindsSummary = summarizeReplanFailureKinds({
-            callsNdjsonPath: config.telemetry.callsNdjsonPath,
-            callType: CALL_TYPE_RECON_REPLAN,
-            tailCount: budget * 2,
-          });
+          const kindsSummary =
+            callsNdjsonPath !== null
+              ? summarizeReplanFailureKinds({
+                  callsNdjsonPath,
+                  callType: CALL_TYPE_RECON_REPLAN,
+                  tailCount: budget * 2,
+                })
+              : "";
           const kindsSuffix = kindsSummary ? ` — ${kindsSummary}` : "";
           logger.error(
             `step ${i + 1} ${err.kind} replan budget exhausted (${usedSoFar}/${budget}); aborting${kindsSuffix}`
@@ -4133,6 +4160,7 @@ async function main(): Promise<void> {
           failureDumpPath: dumpPath,
           page,
           stagehand,
+          captureFn,
           recentCaptures,
           submitEndpointPattern: submitEndpointPattern ? new RegExp(submitEndpointPattern) : null,
           trajectory,
