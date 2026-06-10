@@ -6,19 +6,16 @@
  * cross-run pattern analysis on a specific target stays clean.
  */
 
-import { createHash } from "node:crypto";
+import { Buffer } from "node:buffer";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import normalizeUrl from "normalize-url";
 
-/** Length of the hex prefix used as the per-URL partition directory name. */
-const URL_HASH_HEX_LENGTH = 10;
-
 /**
- * Canonicalize a URL before hashing so trivially-different forms of the same
- * target (query-param reorderings, trailing slashes, scheme case) hash to the
- * same partition. Query parameters are dropped entirely because the sites in
+ * Canonicalize a URL so trivially-different forms of the same target
+ * (query-param reorderings, trailing slashes, scheme case) collapse to the
+ * same identity. Query parameters are dropped entirely because the sites in
  * the current corpus identify targets by path, not by query state.
  */
 export function canonicalizeUrl(rawUrl: string): string {
@@ -30,13 +27,16 @@ export function canonicalizeUrl(rawUrl: string): string {
 }
 
 /**
- * Stable filesystem-safe identifier for a URL. The prefix length is wide
- * enough that collisions are vanishingly unlikely across the run volume any
- * one site sees in practice.
+ * Filesystem-safe directory name for a URL. base64url is a bijection over the
+ * canonical URL bytes — distinct URLs always produce distinct names, so
+ * partition collisions are mathematically impossible (a property a truncated
+ * cryptographic hash cannot guarantee). The encoding is also reversible, so a
+ * future caller can recover the URL from the directory name without consulting
+ * any sidecar file.
  */
-export function urlHash(rawUrl: string): string {
+export function urlDirName(rawUrl: string): string {
   const canonical = canonicalizeUrl(rawUrl);
-  return createHash("sha256").update(canonical).digest("hex").slice(0, URL_HASH_HEX_LENGTH);
+  return Buffer.from(canonical, "utf8").toString("base64url");
 }
 
 /**
@@ -53,15 +53,16 @@ export function resolveSiteTelemetryDir(flowFile: string | null): string | null 
  * Per-URL `calls.ndjson` sink path within a site telemetry directory.
  */
 export function resolveRunCallsPath(siteTelemetryDir: string, rawUrl: string): string {
-  return join(siteTelemetryDir, "runs", urlHash(rawUrl), "calls.ndjson");
+  return join(siteTelemetryDir, "runs", urlDirName(rawUrl), "calls.ndjson");
 }
 
 /**
- * Per-URL `url.txt` companion path. Makes the partition directory greppable
- * by hand when an engineer pokes around the telemetry tree.
+ * Per-URL `url.txt` companion path. base64url directory names round-trip
+ * back to the canonical URL, but keeping the plain-text companion saves any
+ * engineer browsing the telemetry tree the mental decode.
  */
 export function resolveRunUrlPath(siteTelemetryDir: string, rawUrl: string): string {
-  return join(siteTelemetryDir, "runs", urlHash(rawUrl), "url.txt");
+  return join(siteTelemetryDir, "runs", urlDirName(rawUrl), "url.txt");
 }
 
 /**

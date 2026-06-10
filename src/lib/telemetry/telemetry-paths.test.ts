@@ -7,6 +7,7 @@
  * the full recon harness.
  */
 
+import { Buffer } from "node:buffer";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,7 +20,7 @@ import {
   resolveRunCallsPath,
   resolveRunUrlPath,
   resolveSiteTelemetryDir,
-  urlHash,
+  urlDirName,
 } from "@/lib/telemetry/telemetry-paths";
 
 describe("telemetry-paths/canonicalizeUrl", () => {
@@ -46,21 +47,29 @@ describe("telemetry-paths/canonicalizeUrl", () => {
   });
 });
 
-describe("telemetry-paths/urlHash", () => {
-  it("collapses query-only variants to the same hash", () => {
-    expect(urlHash("https://example.com/apply?a=1")).toBe(urlHash("https://example.com/apply?b=2"));
-  });
-
-  it("returns different hashes for different paths", () => {
-    expect(urlHash("https://example.com/jobs/100")).not.toBe(
-      urlHash("https://example.com/jobs/101")
+describe("telemetry-paths/urlDirName", () => {
+  it("collapses query-only variants to the same directory name", () => {
+    expect(urlDirName("https://example.com/apply?a=1")).toBe(
+      urlDirName("https://example.com/apply?b=2")
     );
   });
 
-  it("returns a fixed-width hex string", () => {
-    const h = urlHash("https://example.com/apply");
-    expect(h).toMatch(/^[a-f0-9]+$/);
-    expect(h.length).toBeGreaterThanOrEqual(8);
+  it("returns different names for different paths", () => {
+    expect(urlDirName("https://example.com/jobs/100")).not.toBe(
+      urlDirName("https://example.com/jobs/101")
+    );
+  });
+
+  it("produces filesystem-safe base64url output (no /, +, =)", () => {
+    const name = urlDirName("https://example.com/jobs/abc?token=xyz");
+    expect(name).toMatch(/^[A-Za-z0-9_-]+$/);
+  });
+
+  it("round-trips back to the canonical URL", () => {
+    const url = "https://example.com/jobs/12345";
+    const name = urlDirName(url);
+    const decoded = Buffer.from(name, "base64url").toString("utf8");
+    expect(decoded).toBe(canonicalizeUrl(url));
   });
 });
 
@@ -77,11 +86,11 @@ describe("telemetry-paths/resolveSiteTelemetryDir", () => {
 });
 
 describe("telemetry-paths/resolveRunCallsPath + resolveRunUrlPath", () => {
-  it("places calls.ndjson under runs/<hash>/", () => {
+  it("places calls.ndjson under runs/<urlDirName>/", () => {
     const dir = "/site/telemetry";
     const url = "https://example.com/apply";
-    expect(resolveRunCallsPath(dir, url)).toBe(`${dir}/runs/${urlHash(url)}/calls.ndjson`);
-    expect(resolveRunUrlPath(dir, url)).toBe(`${dir}/runs/${urlHash(url)}/url.txt`);
+    expect(resolveRunCallsPath(dir, url)).toBe(`${dir}/runs/${urlDirName(url)}/calls.ndjson`);
+    expect(resolveRunUrlPath(dir, url)).toBe(`${dir}/runs/${urlDirName(url)}/url.txt`);
   });
 });
 
