@@ -49,7 +49,6 @@ import { toErrorMessage } from "@/lib/errors";
 import { configureHttpDispatcher } from "@/lib/http";
 import { getScriptLogger } from "@/lib/logging";
 import {
-  ANTHROPIC_BILLING_RX,
   captureLlmCall,
   classifyLlmCallFailure,
   type LlmCallInput,
@@ -989,7 +988,7 @@ Rewrite the instruction so a Stagehand act() call can resolve it unambiguously t
     return text;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    logBillingErrorIfPresent(message);
+    logBillingErrorIfPresent(err);
     await captureFn({
       callId: randomUUID(),
       callType: CALL_TYPE_RECON_REPHRASE,
@@ -1036,8 +1035,8 @@ export function resetBillingErrorFlagForTests(): void {
   billingErrorLoggedThisProcess = false;
 }
 
-export function logBillingErrorIfPresent(errorMessage: string): boolean {
-  if (!ANTHROPIC_BILLING_RX.test(errorMessage)) return false;
+export function logBillingErrorIfPresent(err: unknown): boolean {
+  if (classifyLlmCallFailure(err) !== "anthropic-billing") return false;
   if (billingErrorLoggedThisProcess) return true;
   billingErrorLoggedThisProcess = true;
   // FATAL_BILLING is a machine marker, not prose — the recon-replay-jobs
@@ -1993,7 +1992,7 @@ but that's rare — most upload steps are required.`;
     return null;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    logBillingErrorIfPresent(message);
+    logBillingErrorIfPresent(err);
     await captureFn({
       callId: randomUUID(),
       callType: CALL_TYPE_RECON_REPLAN,
@@ -3340,7 +3339,7 @@ async function executeStepWithHealing(params: {
     } catch (err) {
       const cause = err instanceof Error && err.cause instanceof Error ? err.cause.message : null;
       record.errorMessage = `${toErrorMessage(err)}${cause ? ` (cause: ${cause})` : ""}`;
-      logBillingErrorIfPresent(record.errorMessage);
+      logBillingErrorIfPresent(err);
     }
 
     await page.waitForTimeout(STEP_PAUSE_MS);

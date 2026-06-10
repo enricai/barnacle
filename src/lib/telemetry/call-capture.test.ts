@@ -174,6 +174,57 @@ describe("classifyLlmCallFailure", () => {
     );
   });
 
+  it("classifies status 402 + structured billing_error as anthropic-billing", () => {
+    const err = Object.assign(new Error("Payment method declined"), {
+      status: 402,
+      type: "billing_error",
+    });
+    expect(classifyLlmCallFailure(err)).toBe("anthropic-billing");
+  });
+
+  it("classifies status 429 + structured rate_limit_error as anthropic-rate-limit", () => {
+    const err = Object.assign(new Error("RPM exceeded"), {
+      status: 429,
+      type: "rate_limit_error",
+    });
+    expect(classifyLlmCallFailure(err)).toBe("anthropic-rate-limit");
+  });
+
+  it("classifies status 400 + invalid_request_error + quota message as anthropic-billing", () => {
+    // The ACTUAL shape we observed on Saint Alphonsus jobs 6+7 — Anthropic
+    // returns 400 + invalid_request_error for quota exhaustion, with the
+    // distinguishing phrase only in the message.
+    const responseBody =
+      '{"type":"error","error":{"type":"invalid_request_error","message":"You have reached your specified API usage limits. You will regain access on 2026-07-01."}}';
+    const err = Object.assign(new Error(`400 ${responseBody}`), {
+      statusCode: 400,
+      responseBody,
+    });
+    expect(classifyLlmCallFailure(err)).toBe("anthropic-billing");
+  });
+
+  it("classifies status 400 + invalid_request_error + non-quota message as anthropic-other", () => {
+    // The disambiguation case: same 400/invalid_request_error tuple, but
+    // a genuinely bad request — should not trip the billing classifier.
+    const responseBody =
+      '{"type":"error","error":{"type":"invalid_request_error","message":"model: claude-fake-model not found"}}';
+    const err = Object.assign(new Error(`400 ${responseBody}`), {
+      statusCode: 400,
+      responseBody,
+    });
+    expect(classifyLlmCallFailure(err)).toBe("anthropic-other");
+  });
+
+  it("extracts error.type from JSON embedded in err.message when no structured fields present", () => {
+    // Vercel ai SDK default toString format: "<status> {json}" in the message.
+    // No .statusCode, no .responseBody — just the message — but the embedded
+    // JSON still resolves to the structural classification.
+    const err = new Error(
+      '400 {"type":"error","error":{"type":"invalid_request_error","message":"You have reached your specified API usage limits."}}'
+    );
+    expect(classifyLlmCallFailure(err)).toBe("anthropic-billing");
+  });
+
   it("detects rate-limit errors by HTTP status or error name", () => {
     const rateErr = Object.assign(new Error("Too Many Requests"), {
       status: 429,
