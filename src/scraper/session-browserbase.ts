@@ -113,6 +113,15 @@ export async function createBrowserbaseBrowserSession(opts?: {
       serverCache: true,
       selfHeal: false,
       verbose: 0,
+      // Bypass Stagehand's hosted middleware (api.stagehand.browserbase.com).
+      // Without this, Stagehand routes /sessions/start AND every act/observe
+      // through its cloud, sharing a project-wide 50 req/min burst limit with
+      // every other workload in the same Browserbase project. The shared
+      // org's project crossed 50/min for the first time at 12:27 UTC on
+      // 2026-06-11; our Jobs 5 and 6 got bounced as collateral. With
+      // disableAPI=true, Stagehand still creates Browserbase sessions and
+      // still uses our `llmClient` for the LLM — it just skips the middleman.
+      disableAPI: true,
     });
 
     await stagehand.init();
