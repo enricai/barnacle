@@ -47,6 +47,12 @@ import { z } from "zod/v4";
 import { config } from "@/config";
 import { toErrorMessage } from "@/lib/errors";
 import { configureHttpDispatcher } from "@/lib/http";
+import {
+  RECON_FLOW_STEP_SCHEMA,
+  REPHRASE_RESPONSE_SCHEMA,
+  REPLAN_MAX_STEPS,
+  REPLAN_RESPONSE_SCHEMA,
+} from "@/lib/llm/schemas";
 import { getScriptLogger } from "@/lib/logging";
 import {
   captureLlmCall,
@@ -386,8 +392,6 @@ const MAX_PROBE_REPLANS = 5;
  * consume the budget reserved for expensive recoveries.
  */
 const MAX_CASCADE_REPLANS = 5;
-/** Guardrail on the size of an LLM-produced revised flow tail. */
-const REPLAN_MAX_STEPS = 30;
 /**
  * How many steps from the end of the flow are considered "trailing" for the
  * Tier 1 grace path. A verification failure on an optional step within this
@@ -856,6 +860,16 @@ function anthropicModelName(): string {
 type CaptureFn = (input: LlmCallInput) => Promise<void>;
 
 /**
+ * System prompt for the recon-rephrase call. Carries the durable contract
+ * (single rule: target a different element OR return outcome=impossible),
+ * leaving the user prompt for evidence and the active rewrite query. Per
+ * Anthropic guidance, rules/constraints belong in `system`; the user prompt
+ * is the per-call data.
+ */
+const REPHRASE_SYSTEM_PROMPT =
+  "You rewrite a failed Stagehand act() instruction so the next attempt targets a different element than those already tried. If no different element exists on the page that could plausibly unblock the flow, return outcome=impossible. Never re-propose a selector or wording from the lists labeled SELECTORS ALREADY TRIED or INSTRUCTION TEXT ALREADY TRIED.";
+
+/**
  * Attempt-4 of the step-healing cascade: when three mechanical retry variations
  * all fail, this is the last resort before the step is declared terminal. Exported
  * so tests can inject a fake capture sink without touching the browser session.
@@ -933,9 +947,35 @@ async function rephraseWithLLM(
     )
     .join("\n");
 
+  // V4-C structural fix: when off-target redirect evidence exists (invalid
+  // fields + clickable options under them), prepend a context block ABOVE
+  // ORIGINAL INSTRUCTION. Empirically validated 3/3 PIVOT vs 3/3 FIXATE on
+  // the production Good Samaritan rephrase prompt (A/B against
+  // claude-opus-4-7). Mechanism: `ORIGINAL INSTRUCTION:` at the top of a
+  // long prompt anchors the LLM to the wrong task even with a buried
+  // redirect directive. Any meaningful content above it breaks the anchor.
+  // When the conditional doesn't fire (no invalid evidence), the prompt is
+  // byte-identical to the previous version.
+  const hasRedirectEvidence = invalidFieldList.length > 0 && interactiveTargetsList.length > 0;
+  const redirectBlock = hasRedirectEvidence
+    ? `Important context: the form is currently blocked by OTHER fields than the one mentioned in the original instruction. Resolving the original instruction's element will not unblock the form. Your rewrite should target one of the fields below.
+
+FORM FIELDS CURRENTLY MARKED INVALID:
+${invalidFieldList}
+
+INTERACTIVE TARGETS NEAR INVALID FIELDS:
+${interactiveTargetsList}
+
+For yes/no questions, choose the candidate-favorable answer ('No' for adverse questions like non-compete; 'Yes' for confirmations like work-authorized; 'Prefer not to say' for demographic disclosures). Your one-sentence rewrite targets one of the bracketed [Question Title] options above.
+
+---
+
+`
+    : "";
+
   const prompt = `You are helping a browser automation agent recover from a failed step in a recon flow.
 
-ORIGINAL INSTRUCTION:
+${redirectBlock}ORIGINAL INSTRUCTION:
 ${originalStep}
 
 WHY EARLIER ATTEMPTS FAILED:
@@ -965,43 +1005,46 @@ ${interactiveTargetsList || "(none)"}
 STRUCTURED SERVER-SIDE VALIDATION ERRORS (parsed from captured 4xx responses to the configured submit endpoint — when this is populated, the form's submit DID fire and the server rejected it with specific field-level feedback; use these field+message pairs to decide which input needs correcting):
 ${submitFailureList || "(none)"}
 
-Rewrite the instruction so a Stagehand act() call can resolve it unambiguously to a different element than the ones already tried. Keep it short — one sentence, natural language, no quotes around it. If the invalid-fields section above names a field AND the interactive-targets section below lists clickable options inside that same container, your rewrite SHOULD pick one of those options (e.g. for a yes/no question rendered as two radio labels, choose the candidate-favorable answer — 'No' for "do you have a non-compete", 'Yes' for "are you authorized to work", 'Prefer not to say' for demographic disclosures) rather than retrying the original click. If the unfocused observe section shows an open modal/dialog with a Save or Close action, your rewrite SHOULD invoke that action so the underlying form can clear its blocking state. If the original instruction is itself impossible on the current page (the element does not exist), reply with the literal string IMPOSSIBLE so the caller can stop trying.`;
+Rewrite the instruction so a Stagehand act() call can resolve it unambiguously to a different element than the ones already tried. Keep it short — one sentence, natural language, no quotes around it. If the invalid-fields section above names a field AND the interactive-targets section below lists clickable options inside that same container, your rewrite picks one of those options (e.g. for a yes/no question rendered as two radio labels, choose the candidate-favorable answer — 'No' for "do you have a non-compete", 'Yes' for "are you authorized to work", 'Prefer not to say' for demographic disclosures) rather than retrying the original click. If the unfocused observe section shows an open modal/dialog with a Save or Close action, your rewrite invokes that action so the underlying form can clear its blocking state. Set outcome to "impossible" with a one-line reason only when the original instruction's element does not exist on the current page and no redirect target is available.`;
 
   const model = anthropicModelName();
   const t0 = performance.now();
   try {
-    const response = await client.messages.create({
+    const response = await client.messages.parse({
       model,
-      max_tokens: 200,
+      max_tokens: 400,
+      system: REPHRASE_SYSTEM_PROMPT,
       messages: [{ role: "user", content: prompt }],
+      output_config: {
+        format: zodOutputFormat(REPHRASE_RESPONSE_SCHEMA),
+      },
     });
     const latencyMs = performance.now() - t0;
-    const block = response.content.find((b) => b.type === "text");
-    const text = block?.type === "text" ? block.text.trim() : "";
-    const parsedOk = text.length > 0 && text !== "IMPOSSIBLE";
+    const parsed = response.parsed_output;
+    if (parsed === null) {
+      throw new Error("structured-output enabled but parsed_output is null");
+    }
+    const textBlock = response.content.find((b) => b.type === "text");
+    const rawText = textBlock?.type === "text" ? textBlock.text : "";
 
     await captureFn({
       callId: randomUUID(),
       callType: CALL_TYPE_RECON_REPHRASE,
       model,
-      systemPrompt: null,
+      systemPrompt: REPHRASE_SYSTEM_PROMPT,
       userContent: prompt,
-      responseContent: text || null,
-      parsedOk,
+      responseContent: rawText,
+      parsedOk: true,
       inputTokens: response.usage?.input_tokens ?? null,
       outputTokens: response.usage?.output_tokens ?? null,
       latencyMs,
-      success: parsedOk,
-      errorMessage: parsedOk
-        ? null
-        : text === "IMPOSSIBLE"
-          ? "model replied IMPOSSIBLE — original instruction not resolvable on current page"
-          : "model returned empty text block",
-      failureKind: parsedOk ? null : "response-empty",
+      success: true,
+      errorMessage: null,
+      failureKind: null,
     });
 
-    if (!parsedOk) return null;
-    return text;
+    if (parsed.outcome === "impossible") return null;
+    return parsed.instruction;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     logBillingErrorIfPresent(err);
@@ -1009,7 +1052,7 @@ Rewrite the instruction so a Stagehand act() call can resolve it unambiguously t
       callId: randomUUID(),
       callType: CALL_TYPE_RECON_REPHRASE,
       model,
-      systemPrompt: null,
+      systemPrompt: REPHRASE_SYSTEM_PROMPT,
       userContent: prompt,
       responseContent: null,
       parsedOk: false,
@@ -1065,38 +1108,6 @@ export function logBillingErrorIfPresent(err: unknown): boolean {
   return true;
 }
 
-/**
- * Replanner response shape. Sent to Anthropic via `zodOutputFormat` so the API
- * enforces the schema and rejects malformed output (no prose preambles, no
- * markdown code fences, no schema-violating shapes). We accept either a
- * replanned step array or an explicit "impossible" outcome — the latter is
- * the structured replacement for the old IMPOSSIBLE magic string.
- */
-/**
- * Flow step shape. A bare string is a required step (backward-compatible with
- * pre-N+23 flow files). An object form with `optional: true` lets the cascade
- * skip the step cleanly when Stagehand's act+observe finds no target — the
- * intended replacement for "If X is visible, do Y" conditionals that fail the
- * cascade today even when the conditional should have been skipped.
- */
-const RECON_FLOW_STEP_SCHEMA = z.union([
-  z.string().min(1),
-  z.object({
-    step: z.string().min(1),
-    optional: z.boolean().default(false),
-    /**
-     * When true, dispatches to the site-agnostic upload primitive
-     * (setInputFiles with the cached fixture) instead of the normal cascade.
-     * Required because resume-upload widgets often hide the real
-     * <input type="file"> behind styled buttons that Stagehand can't click.
-     *
-     * Explicit field per the no-regex-on-open-sets feedback — pre-N+24 code
-     * pattern-matched the step text to decide dispatch, which false-positived
-     * on click steps that happened to mention "resume" or "upload".
-     */
-    upload: z.boolean().default(false),
-  }),
-]);
 const RECON_FLOW_SCHEMA = z.array(RECON_FLOW_STEP_SCHEMA).min(1);
 
 /**
@@ -1348,17 +1359,6 @@ function persistReplannedFlow(params: {
   logger.info(`run \`diff ${backupPath} ${flowFile}\` to inspect.`);
   logger.info("───────────────────────────────────────────────────────────");
 }
-
-const REPLAN_RESPONSE_SCHEMA = z.discriminatedUnion("outcome", [
-  z.object({
-    outcome: z.literal("replan"),
-    steps: z.array(RECON_FLOW_STEP_SCHEMA).min(1).max(REPLAN_MAX_STEPS),
-  }),
-  z.object({
-    outcome: z.literal("impossible"),
-    reason: z.string().min(1),
-  }),
-]);
 
 /**
  * Pull the raw-DOM and unfocused-observe evidence out of an on-disk failure
@@ -3410,7 +3410,7 @@ async function executeStepWithHealing(params: {
             priorAttemptsForPrompt
           );
           if (!rephrased) {
-            record.errorMessage = "llm declined to rephrase or returned IMPOSSIBLE";
+            record.errorMessage = "llm declined to rephrase or returned outcome=impossible";
           } else {
             record.instruction = rephrased;
             const result = await stagehand.act(rephrased, { timeout: STEP_WATCHDOG_MS });

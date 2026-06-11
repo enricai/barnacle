@@ -26,10 +26,12 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import Anthropic from "@anthropic-ai/sdk";
+import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { formatISO } from "date-fns";
 
 import { config } from "@/config";
 import { configureHttpDispatcher } from "@/lib/http";
+import { PATCH_RESPONSE_SCHEMA } from "@/lib/llm/schemas";
 import { getScriptLogger } from "@/lib/logging";
 import {
   captureLlmCall,
@@ -128,6 +130,20 @@ function anthropicModelName(): string {
 // ── patch generator ───────────────────────────────────────────────────────────
 
 /**
+ * System prompt carrying the minimal-change patch discipline. Per Anthropic
+ * guidance, durable rules live in `system` so the user prompt can focus on
+ * per-call data (current flow, failing steps, prior attempts).
+ */
+const PATCH_SYSTEM_PROMPT = `You propose minimal patches to a recon-flow JSON. Apply the minimise-change principle:
+- The anchor must be a verbatim substring of one of the step strings in the current flow; copy-paste it exactly.
+- The replacement is the new text to substitute in place of the anchor.
+- Prefer clarifying ambiguous phrasing over rewriting a clear instruction.
+- Add visible landmarks (labels, headings) to reduce selector ambiguity.
+- Do not anchor on text that appears in multiple steps.
+- Do not repeat a strategy already in PRIOR ITERATION HISTORY.
+- If PRIOR ITERATION HISTORY shows no_change or regressed, pivot to a fundamentally different approach and explain in pivot_reason.`;
+
+/**
  * Asks the model to propose a minimal patch to one failing step, following
  * the recon-flow-patch-generator subagent discipline: anchor is a verbatim
  * substring, replacement is the new step text.
@@ -167,7 +183,7 @@ export async function requestPatch(params: {
           .join("\n")
       : "  (no prior attempts)";
 
-  const prompt = `You are the recon-flow-patch-generator for barnacle. Propose a minimal patch to fix a failing step in a recon flow. This is iteration ${iterN}.
+  const prompt = `This is iteration ${iterN}.
 
 ## CURRENT FLOW JSON
 ${flowJson}
@@ -178,108 +194,33 @@ ${failingList}
 ## PRIOR ITERATION HISTORY
 ${historySection}
 
-## YOUR TASK
-Propose a patch to exactly ONE failing step. Apply the minimise-change principle:
-- anchor must be a verbatim substring of one of the step strings in the CURRENT FLOW JSON above — copy-paste it exactly
-- replacement is the new text to substitute in place of anchor
-- Prefer clarifying ambiguous phrasing over rewriting a clear instruction
-- Add visible landmarks (labels, headings) to reduce selector ambiguity
-- Do not anchor on text that appears in multiple steps
-- Do not repeat a strategy already in PRIOR ITERATION HISTORY
-- If PRIOR ITERATION HISTORY shows no_change or regressed, pivot to a fundamentally different approach and explain in pivot_reason
-
-Return ONLY a single JSON object — no prose, no markdown, no code fences:
-{
-  "anchor": "<exact verbatim substring of one step in current flow>",
-  "replacement": "<new natural-language step text to substitute for anchor>",
-  "strategy": "<one sentence describing what this patch does and why>",
-  "pivot_reason": <null on first iteration, otherwise a string explaining the pivot>
-}`;
+Propose a patch to exactly ONE failing step. Set pivot_reason to null on the first iteration; otherwise set it to one sentence explaining the pivot from the last failed attempt.`;
 
   const model = anthropicModelName();
   const t0 = performance.now();
   try {
-    const response = await client.messages.create({
+    const response = await client.messages.parse({
       model,
       max_tokens: 500,
+      system: PATCH_SYSTEM_PROMPT,
       messages: [{ role: "user", content: prompt }],
+      output_config: {
+        format: zodOutputFormat(PATCH_RESPONSE_SCHEMA),
+      },
     });
     const latencyMs = performance.now() - t0;
-
-    const block = response.content.find((b) => b.type === "text");
-    if (block?.type !== "text") {
-      await captureFn({
-        callId: randomUUID(),
-        callType: CALL_TYPE_RECON_FLOW_PATCH,
-        model,
-        systemPrompt: null,
-        userContent: prompt,
-        responseContent: null,
-        parsedOk: false,
-        inputTokens: response.usage?.input_tokens ?? null,
-        outputTokens: response.usage?.output_tokens ?? null,
-        latencyMs,
-        success: false,
-        errorMessage: "model returned no text block",
-        failureKind: "response-empty",
-      });
-      return null;
+    const parsed = response.parsed_output;
+    if (parsed === null) {
+      throw new Error("structured-output enabled but parsed_output is null");
     }
+    const textBlock = response.content.find((b) => b.type === "text");
+    const rawText = textBlock?.type === "text" ? textBlock.text : "";
 
-    const text = block.text.trim();
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(text);
-    } catch (parseErr) {
-      await captureFn({
-        callId: randomUUID(),
-        callType: CALL_TYPE_RECON_FLOW_PATCH,
-        model,
-        systemPrompt: null,
-        userContent: prompt,
-        responseContent: text,
-        parsedOk: false,
-        inputTokens: response.usage?.input_tokens ?? null,
-        outputTokens: response.usage?.output_tokens ?? null,
-        latencyMs,
-        success: false,
-        errorMessage: `JSON.parse failed: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`,
-        failureKind: "schema-validation-failed",
-      });
-      return null;
-    }
-
-    if (
-      typeof parsed !== "object" ||
-      parsed === null ||
-      typeof (parsed as Record<string, unknown>).anchor !== "string" ||
-      typeof (parsed as Record<string, unknown>).replacement !== "string" ||
-      typeof (parsed as Record<string, unknown>).strategy !== "string"
-    ) {
-      await captureFn({
-        callId: randomUUID(),
-        callType: CALL_TYPE_RECON_FLOW_PATCH,
-        model,
-        systemPrompt: null,
-        userContent: prompt,
-        responseContent: text,
-        parsedOk: false,
-        inputTokens: response.usage?.input_tokens ?? null,
-        outputTokens: response.usage?.output_tokens ?? null,
-        latencyMs,
-        success: false,
-        errorMessage: "patch shape missing required fields (anchor/replacement/strategy)",
-        failureKind: "schema-validation-failed",
-      });
-      return null;
-    }
-
-    const raw = parsed as Record<string, unknown>;
     const patch: FlowPatch = {
-      anchor: raw.anchor as string,
-      replacement: raw.replacement as string,
-      strategy: raw.strategy as string,
-      pivot_reason: typeof raw.pivot_reason === "string" ? raw.pivot_reason : null,
+      anchor: parsed.anchor,
+      replacement: parsed.replacement,
+      strategy: parsed.strategy,
+      pivot_reason: parsed.pivot_reason,
     };
 
     const anchorFound = currentFlow.some((step) => step.includes(patch.anchor));
@@ -289,9 +230,9 @@ Return ONLY a single JSON object — no prose, no markdown, no code fences:
         callId: randomUUID(),
         callType: CALL_TYPE_RECON_FLOW_PATCH,
         model,
-        systemPrompt: null,
+        systemPrompt: PATCH_SYSTEM_PROMPT,
         userContent: prompt,
-        responseContent: text,
+        responseContent: rawText,
         parsedOk: false,
         inputTokens: response.usage?.input_tokens ?? null,
         outputTokens: response.usage?.output_tokens ?? null,
@@ -307,9 +248,9 @@ Return ONLY a single JSON object — no prose, no markdown, no code fences:
       callId: randomUUID(),
       callType: CALL_TYPE_RECON_FLOW_PATCH,
       model,
-      systemPrompt: null,
+      systemPrompt: PATCH_SYSTEM_PROMPT,
       userContent: prompt,
-      responseContent: text,
+      responseContent: rawText,
       parsedOk: true,
       inputTokens: response.usage?.input_tokens ?? null,
       outputTokens: response.usage?.output_tokens ?? null,
@@ -325,7 +266,7 @@ Return ONLY a single JSON object — no prose, no markdown, no code fences:
       callId: randomUUID(),
       callType: CALL_TYPE_RECON_FLOW_PATCH,
       model,
-      systemPrompt: null,
+      systemPrompt: PATCH_SYSTEM_PROMPT,
       userContent: prompt,
       responseContent: null,
       parsedOk: false,

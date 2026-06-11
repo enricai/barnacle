@@ -95,11 +95,33 @@ import type { Logger } from "@/types/logging";
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
 
+/**
+ * Make a rephrase-mocking Anthropic stub.
+ *
+ * `responseText` overloads meaning per the new structured-output schema:
+ *  - "IMPOSSIBLE" or "" returns outcome=impossible (back-compat for tests
+ *    written against the previous magic-string contract)
+ *  - any other string returns outcome=rewrite with that text as the
+ *    instruction field
+ *
+ * The `content` field carries the JSON serialization the SDK would have
+ * received so capture instrumentation that records `responseContent` keeps
+ * working unchanged.
+ */
 function makeAnthropicClient(responseText: string, inputTokens = 50, outputTokens = 10): Anthropic {
+  const trimmed = responseText.trim();
+  const parsed =
+    trimmed.length === 0 || trimmed === "IMPOSSIBLE"
+      ? { outcome: "impossible" as const, reason: "no different element resolvable on this page" }
+      : {
+          outcome: "rewrite" as const,
+          instruction: responseText,
+        };
   return {
     messages: {
-      create: vi.fn().mockResolvedValue({
-        content: [{ type: "text", text: responseText }],
+      parse: vi.fn().mockResolvedValue({
+        parsed_output: parsed,
+        content: [{ type: "text", text: JSON.stringify(parsed) }],
         usage: { input_tokens: inputTokens, output_tokens: outputTokens },
       }),
     },
@@ -155,7 +177,10 @@ describe("rephraseWithLLM — capture instrumentation", () => {
     expect(calls[0]?.model).toBe("claude-sonnet-4-6");
   });
 
-  it("records parsedOk=false when the model replies IMPOSSIBLE", async () => {
+  it("returns null when the model emits outcome=impossible (schema-valid)", async () => {
+    // The new structured-output schema accepts outcome=impossible as a valid
+    // response. parsedOk=true reflects that the schema parsed cleanly; the
+    // caller still gets back null because there's no instruction to retry.
     const client = makeAnthropicClient("IMPOSSIBLE");
     const { fn, calls } = makeCaptureFn();
 
@@ -171,24 +196,14 @@ describe("rephraseWithLLM — capture instrumentation", () => {
     expect(result).toBeNull();
     expect(calls).toHaveLength(1);
     expect(calls[0]?.callType).toBe(CALL_TYPE_RECON_REPHRASE);
-    expect(calls[0]?.parsedOk).toBe(false);
-    expect(calls[0]?.success).toBe(false);
-  });
-
-  it("records parsedOk=false when the model returns an empty string", async () => {
-    const client = makeAnthropicClient("   ");
-    const { fn, calls } = makeCaptureFn();
-
-    const result = await rephraseWithLLM(client, "click the login button", [], [], [], fn);
-
-    expect(result).toBeNull();
-    expect(calls[0]?.parsedOk).toBe(false);
+    expect(calls[0]?.parsedOk).toBe(true);
+    expect(calls[0]?.success).toBe(true);
   });
 
   it("records parsedOk=false and does not throw when the API call throws", async () => {
     const client = {
       messages: {
-        create: vi.fn().mockRejectedValue(new Error("network error")),
+        parse: vi.fn().mockRejectedValue(new Error("network error")),
       },
     } as unknown as Anthropic;
     const { fn, calls } = makeCaptureFn();
@@ -262,6 +277,103 @@ describe("rephraseWithLLM — capture instrumentation", () => {
     expect(prompt).toContain("FORM FIELDS CURRENTLY MARKED INVALID");
     expect(prompt).toMatch(/FORM FIELDS CURRENTLY MARKED INVALID[^\n]*\n[^\n]*\(none\)/);
     expect(prompt).toContain("VISIBLE ERROR / REQUIRED-FIELD MESSAGES");
+  });
+
+  // V4-C structural-fix coverage. The empirical finding (3/3 PIVOT vs 3/3
+  // FIXATE in offline A/B against claude-opus-4-7) is that putting any
+  // meaningful content above ORIGINAL INSTRUCTION breaks the LLM's anchor
+  // to the failed instruction and lets it act on the redirect evidence.
+  it("V4-C: prepends a redirect block above ORIGINAL INSTRUCTION when invalid + interactive evidence both exist", async () => {
+    const client = makeAnthropicClient("Click the No radio for the current employee question");
+    const { fn, calls } = makeCaptureFn();
+
+    await rephraseWithLLM(
+      client,
+      "Click the date picker for earliest available start date",
+      [],
+      [],
+      ["no observable effect"],
+      fn,
+      {
+        invalidFieldList: "1. Are you a current employee? <!---- [ng-invalid]",
+        errorTextList: "1. This field is required.",
+        interactiveTargetsList:
+          "1. [Are you a current employee?] label 'No' — xpath=/html[1]/body[1]/...",
+      }
+    );
+
+    const prompt = calls[0]?.userContent ?? "";
+    // The top redirect block exists.
+    expect(prompt).toContain("Important context: the form is currently blocked by OTHER fields");
+    // And it sits ABOVE the ORIGINAL INSTRUCTION anchor.
+    const redirectIdx = prompt.indexOf("Important context: the form is currently blocked");
+    const originalIdx = prompt.indexOf("ORIGINAL INSTRUCTION:");
+    expect(redirectIdx).toBeGreaterThanOrEqual(0);
+    expect(originalIdx).toBeGreaterThan(redirectIdx);
+  });
+
+  it("V4-C: does NOT prepend the redirect block when only invalid fields exist (no interactive targets)", async () => {
+    const client = makeAnthropicClient("Click the No radio for the current employee question");
+    const { fn, calls } = makeCaptureFn();
+
+    await rephraseWithLLM(
+      client,
+      "Click the date picker for earliest available start date",
+      [],
+      [],
+      ["no observable effect"],
+      fn,
+      {
+        invalidFieldList: "1. Are you a current employee? <!---- [ng-invalid]",
+        errorTextList: "1. This field is required.",
+        interactiveTargetsList: "",
+      }
+    );
+
+    const prompt = calls[0]?.userContent ?? "";
+    // Without clickable redirect targets, the LLM can see the field is
+    // invalid but has nowhere to redirect — so V4-C stays silent.
+    expect(prompt).not.toContain(
+      "Important context: the form is currently blocked by OTHER fields"
+    );
+  });
+
+  it("V4-C: does NOT prepend the redirect block when only interactive targets exist (no invalid fields)", async () => {
+    const client = makeAnthropicClient("Click the No radio for the current employee question");
+    const { fn, calls } = makeCaptureFn();
+
+    await rephraseWithLLM(
+      client,
+      "Click the date picker for earliest available start date",
+      [],
+      [],
+      ["no observable effect"],
+      fn,
+      {
+        invalidFieldList: "",
+        errorTextList: "",
+        interactiveTargetsList:
+          "1. [Are you a current employee?] label 'No' — xpath=/html[1]/body[1]/...",
+      }
+    );
+
+    const prompt = calls[0]?.userContent ?? "";
+    expect(prompt).not.toContain(
+      "Important context: the form is currently blocked by OTHER fields"
+    );
+  });
+
+  it("V4-C: records the system prompt on captures (rule moved out of user prompt)", async () => {
+    const client = makeAnthropicClient("Click the alternative submit element");
+    const { fn, calls } = makeCaptureFn();
+
+    await rephraseWithLLM(client, "Click Submit", [], [], ["no observable effect"], fn);
+
+    // Per Anthropic guidance, the durable "target a different element OR
+    // return outcome=impossible" rule lives in `system`, not buried at the
+    // bottom of the user prompt.
+    expect(calls[0]?.systemPrompt).toBeTruthy();
+    expect(calls[0]?.systemPrompt).toContain("targets a different element");
   });
 });
 
