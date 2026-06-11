@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { buildServer } from "@/server";
+import { buildServer } from "../dist/server.js";
 
 /**
  * Vercel Node Function entry. Wraps the existing Fastify app so Vercel

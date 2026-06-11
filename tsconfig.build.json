@@ -4,7 +4,8 @@
     "rootDir": "src",
     "outDir": "dist",
     "incremental": false,
-    "tsBuildInfoFile": null
+    "tsBuildInfoFile": null,
+    "declaration": true
   },
   "include": ["src/**/*.ts"],
   "exclude": ["node_modules", "dist", "src/**/*.test.ts"]

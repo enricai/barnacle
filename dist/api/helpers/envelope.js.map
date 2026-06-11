@@ -1,0 +1,1 @@
+{"version":3,"file":"envelope.js","sourceRoot":"","sources":["../../../src/api/helpers/envelope.ts"],"names":[],"mappings":";;AAOA,0CAiBC;AAxBD,uCAAqC;AAErC;;;;GAIG;AACH,SAAgB,eAAe,CAC7B,OAAU;IAQV,OAAO;QACL,MAAM,EAAE;YACN,UAAU,EAAE,IAAI;YAChB,QAAQ,EAAE,IAAA,oBAAS,EAAC,IAAI,IAAI,EAAE,CAAC;YAC/B,OAAO,EAAE,EAAE;SACZ;QACD,GAAG,OAAO;KACX,CAAC;AACJ,CAAC"}

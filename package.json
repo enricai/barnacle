@@ -32,6 +32,7 @@
   "main": "dist/server.js",
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json && tsc-alias -p tsconfig.build.json && (test -d src/sites && find src/sites -type d -name fixtures | while read d; do mkdir -p \"dist/${d#src/}\" && cp -r \"$d/.\" \"dist/${d#src/}/\"; done || true) && rm -f dist/tsconfig.tsbuildinfo",
+    "vercel-build": "pnpm run build",
     "clean": "rm -rf node_modules dist",
     "dev": "tsx watch --env-file=.env src/server.ts",
     "start": "node dist/server.js",
