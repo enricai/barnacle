@@ -25,10 +25,10 @@
  *
  * Telemetry: every wrapper call lands in `calls.ndjson` regardless of
  * outcome (per user directive — full parity with our Anthropic SDK call
- * telemetry). Volume is dominated by `act`: ~131 calls × ~12 jobs × cascade
- * attempts ≈ several thousand entries per sweep. The NDJSON sink is
- * append-only and per-URL partitioned (see `src/lib/telemetry/telemetry-paths.ts`)
- * so this scale is intentional.
+ * telemetry). Volume is dominated by `act`: hundreds of calls per job
+ * across the cascade attempts ≈ thousands of entries per sweep. The
+ * NDJSON sink is append-only and per-URL partitioned (see
+ * `src/lib/telemetry/telemetry-paths.ts`) so this scale is intentional.
  *
  * Stagehand Zod compat: as of `@browserbasehq/stagehand@3.4.0`,
  * `StagehandZodSchema = Zod4TypeAny | z3.ZodTypeAny` — both Zod v3 and v4
@@ -85,8 +85,8 @@ export const ACTION_SCHEMA = z.object({
 /**
  * Zod mirror of Stagehand's public `ActResult` shape. The `actions` array
  * is sometimes empty when Stagehand acted via a path that doesn't echo the
- * action back (the cascade at recon-browser.ts:3227 already handles that
- * case); we accept empty arrays here as valid per the SDK contract.
+ * action back; the cascade's resolvedAction fallback already handles that
+ * case. We accept empty arrays here as valid per the SDK contract.
  */
 export const ACT_RESULT_SCHEMA = z.object({
   success: z.boolean(),
@@ -156,7 +156,14 @@ export async function guardedAct(
   const userContent = actInstructionOf(input);
   const t0 = performance.now();
   try {
-    const raw = await stagehand.act(input as string, options);
+    // Dispatch via typeof so TypeScript picks the correct overload per branch.
+    // Stagehand's underlying dispatch is `isObserveResult(input)`, so a single
+    // `as string` cast would work at runtime today, but TS would complain
+    // about the union mismatch and we'd hide future SDK contract drift.
+    const raw =
+      typeof input === "string"
+        ? await stagehand.act(input, options)
+        : await stagehand.act(input, options);
     const latencyMs = performance.now() - t0;
     const parsed = ACT_RESULT_SCHEMA.safeParse(raw);
     if (!parsed.success) {

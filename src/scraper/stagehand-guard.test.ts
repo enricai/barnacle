@@ -96,6 +96,23 @@ describe("guardedAct", () => {
     expect(captured[0]?.userContent).toBe(VALID_ACTION.description);
   });
 
+  // Regression guard for F1: the wrapper must dispatch to Stagehand's Action
+  // overload with the actual Action object, not a coerced string. If a
+  // future refactor reintroduces `as string`, Stagehand still works at
+  // runtime via isObserveResult, but the call-boundary assertion below
+  // would fail — surfacing the issue immediately.
+  it("forwards the Action object to stagehand.act, not a coerced string", async () => {
+    const stagehand = fakeStagehandAct(VALID_ACT_RESULT);
+    await guardedAct(stagehand, VALID_ACTION);
+    expect(stagehand.act).toHaveBeenCalledWith(VALID_ACTION, undefined);
+  });
+
+  it("forwards a string instruction to stagehand.act directly", async () => {
+    const stagehand = fakeStagehandAct(VALID_ACT_RESULT);
+    await guardedAct(stagehand, "click submit");
+    expect(stagehand.act).toHaveBeenCalledWith("click submit", undefined);
+  });
+
   it("throws StagehandSchemaError when the return envelope drifts", async () => {
     const malformed = { success: "not-a-boolean" };
     const stagehand = fakeStagehandAct(malformed);
@@ -136,6 +153,27 @@ describe("guardedObserve", () => {
     const result = await guardedObserve(stagehand);
     expect(result).toEqual([VALID_ACTION]);
     expect(captured[0]?.userContent).toBe("");
+  });
+
+  // Regression guards for F3: the wrapper has a nested ternary that picks
+  // between observe()'s three runtime overloads (no args, options only,
+  // instruction + options). Each test verifies the right one fires.
+  it("dispatches observe() with no args when only stagehand is passed", async () => {
+    const stagehand = fakeStagehandObserve([VALID_ACTION]);
+    await guardedObserve(stagehand);
+    expect(stagehand.observe).toHaveBeenCalledWith();
+  });
+
+  it("dispatches observe(options) when only options are passed", async () => {
+    const stagehand = fakeStagehandObserve([VALID_ACTION]);
+    await guardedObserve(stagehand, undefined, { timeout: 5000 });
+    expect(stagehand.observe).toHaveBeenCalledWith({ timeout: 5000 });
+  });
+
+  it("dispatches observe(instruction, options) when both are passed", async () => {
+    const stagehand = fakeStagehandObserve([VALID_ACTION]);
+    await guardedObserve(stagehand, "find a login link", { timeout: 5000 });
+    expect(stagehand.observe).toHaveBeenCalledWith("find a login link", { timeout: 5000 });
   });
 
   it("records callType=stagehand-observe on success", async () => {
