@@ -41,6 +41,7 @@ import {
 import { CALL_TYPE_RECON_FLOW_PATCH } from "@/lib/telemetry/call-types";
 import { StepVerificationError } from "@/scraper/errors";
 import { createBrowserSession } from "@/scraper/session";
+import { guardedAct } from "@/scraper/stagehand-guard";
 
 configureHttpDispatcher();
 
@@ -383,7 +384,7 @@ export function makeRealStepRunner(): StepRunner {
 
       for (const step of flow) {
         try {
-          const result = await session.stagehand.act(step);
+          const result = await guardedAct(session.stagehand, step);
           if (!result.success) {
             failCount++;
           } else {

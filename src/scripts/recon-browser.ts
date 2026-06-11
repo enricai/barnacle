@@ -67,6 +67,7 @@ import {
 } from "@/lib/telemetry/telemetry-paths";
 import { StepVerificationError } from "@/scraper/errors";
 import { createBrowserSession, type ProviderName } from "@/scraper/session";
+import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
 import { filterByCallType, parseSamples } from "@/scripts/judge-llm-batch";
 import { CAPTURES_DIR, type Capture, STEP_FAILURES_DIR } from "@/scripts/recon-shared";
 import { allocateTestmailInbox } from "@/testmail/client";
@@ -1884,9 +1885,9 @@ async function replanRemainingFlow(params: {
           )
           .join("\n\n")
       : "";
-  const candidates = await stagehand
-    .observe({ timeout: STEP_WATCHDOG_MS })
-    .catch(() => [] as Action[]);
+  const candidates = await guardedObserve(stagehand, undefined, {
+    timeout: STEP_WATCHDOG_MS,
+  }).catch(() => [] as Action[]);
   const candidateList = renderUnfocusedObserve(candidates);
   const pageTitle = await page.title().catch(() => "");
 
@@ -2831,7 +2832,7 @@ async function probeStepBeforeAttempts(params: {
 }): Promise<"present" | "absent"> {
   const { stagehand, step, stepIndex, logger } = params;
   try {
-    const candidates = await stagehand.observe(step, { timeout: STEP_WATCHDOG_MS });
+    const candidates = await guardedObserve(stagehand, step, { timeout: STEP_WATCHDOG_MS });
     if (candidates.length === 0) {
       logger.info(
         `step ${stepIndex + 1}: probe found 0 candidates — treating as absent (skip cascade, route to replan if required)`
@@ -3025,9 +3026,9 @@ async function executeStepWithHealing(params: {
       .catch(() => null);
     const bodyOuterHtml =
       typeof bodyOuterHtmlRaw === "string" ? bodyOuterHtmlRaw.slice(0, 100_000) : null;
-    const unfocusedObserve = await stagehand
-      .observe({ timeout: STEP_WATCHDOG_MS })
-      .catch(() => [] as Action[]);
+    const unfocusedObserve = await guardedObserve(stagehand, undefined, {
+      timeout: STEP_WATCHDOG_MS,
+    }).catch(() => [] as Action[]);
     const dumpPath = dumpStepFailure({
       stepIndex,
       phase,
@@ -3184,7 +3185,7 @@ async function executeStepWithHealing(params: {
       if (attempt === 1) {
         record.technique = "act-string";
         record.instruction = step;
-        const result = await stagehand.act(step, { timeout: STEP_WATCHDOG_MS });
+        const result = await guardedAct(stagehand, step, { timeout: STEP_WATCHDOG_MS });
         record.actResultSuccess = result.success;
         record.actResultDescription = result.actionDescription;
         for (const action of result.actions ?? []) {
@@ -3197,7 +3198,7 @@ async function executeStepWithHealing(params: {
           attempt === 4 && triedSelectors.length > 0
             ? { ignoreSelectors: [...triedSelectors], timeout: STEP_WATCHDOG_MS }
             : { timeout: STEP_WATCHDOG_MS };
-        const candidates = await stagehand.observe(step, observeOptions);
+        const candidates = await guardedObserve(stagehand, step, observeOptions);
         if (candidates.length === 0) {
           record.errorMessage = "observe returned no candidates";
           // Optional-step short-circuit: when attempt 2 confirms no candidates
@@ -3219,7 +3220,7 @@ async function executeStepWithHealing(params: {
           record.instruction = target.description;
           triedSelectors.push(target.selector);
           record.triedSelectors = [target.selector];
-          const result = await stagehand.act(target, { timeout: STEP_WATCHDOG_MS });
+          const result = await guardedAct(stagehand, target, { timeout: STEP_WATCHDOG_MS });
           record.actResultSuccess = result.success;
           record.actResultDescription = result.actionDescription;
           // observe(...)[0] is what Stagehand acted on; use it directly when
@@ -3375,9 +3376,9 @@ async function executeStepWithHealing(params: {
           record.errorMessage =
             "anthropic billing exhausted (FATAL_BILLING already logged); skipping rephrase";
         } else {
-          const candidates = await stagehand
-            .observe(step, { timeout: STEP_WATCHDOG_MS })
-            .catch(() => [] as Action[]);
+          const candidates = await guardedObserve(stagehand, step, {
+            timeout: STEP_WATCHDOG_MS,
+          }).catch(() => [] as Action[]);
           // Fetch live-page evidence so the rephrase prompt can reason about
           // form state, not just observe candidates. Mirrors the same
           // extraction the cascade-exhaust dump path already does.
@@ -3385,9 +3386,9 @@ async function executeStepWithHealing(params: {
           // Unfocused observe so the rephrase prompt can see ambient UI
           // like modal Save/Close buttons that the focused candidates
           // (filtered by the failed step's instruction) would hide.
-          const unfocused = await stagehand
-            .observe({ timeout: STEP_WATCHDOG_MS })
-            .catch(() => [] as Action[]);
+          const unfocused = await guardedObserve(stagehand, undefined, {
+            timeout: STEP_WATCHDOG_MS,
+          }).catch(() => [] as Action[]);
           const submitFailureList = extractSubmitFailureEvidence(
             recentCaptures,
             submitEndpointPattern ? new RegExp(submitEndpointPattern) : null
@@ -3413,7 +3414,7 @@ async function executeStepWithHealing(params: {
             record.errorMessage = "llm declined to rephrase or returned outcome=impossible";
           } else {
             record.instruction = rephrased;
-            const result = await stagehand.act(rephrased, { timeout: STEP_WATCHDOG_MS });
+            const result = await guardedAct(stagehand, rephrased, { timeout: STEP_WATCHDOG_MS });
             record.actResultSuccess = result.success;
             record.actResultDescription = result.actionDescription;
             for (const action of result.actions ?? []) {
@@ -3783,9 +3784,9 @@ async function executeStepWithHealing(params: {
     }
   }
 
-  const finalObserve = await stagehand
-    .observe(step, { timeout: STEP_WATCHDOG_MS })
-    .catch(() => [] as Action[]);
+  const finalObserve = await guardedObserve(stagehand, step, {
+    timeout: STEP_WATCHDOG_MS,
+  }).catch(() => [] as Action[]);
   const pageTitle = await page.title().catch(() => "");
   // Discriminator data for "Stagehand sees nothing" failures: capture the raw
   // DOM and an unfocused observe so a triager can tell empty-page from
@@ -3795,9 +3796,9 @@ async function executeStepWithHealing(params: {
     .catch(() => null);
   const bodyOuterHtml =
     typeof bodyOuterHtmlRaw === "string" ? bodyOuterHtmlRaw.slice(0, 100_000) : null;
-  const unfocusedObserve = await stagehand
-    .observe({ timeout: STEP_WATCHDOG_MS })
-    .catch(() => [] as Action[]);
+  const unfocusedObserve = await guardedObserve(stagehand, undefined, {
+    timeout: STEP_WATCHDOG_MS,
+  }).catch(() => [] as Action[]);
   const dumpPath = dumpStepFailure({
     stepIndex,
     phase,

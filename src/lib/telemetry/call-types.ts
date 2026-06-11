@@ -15,3 +15,18 @@ export const CALL_TYPE_RECON_FLOW_PATCH = "recon-flow-patch";
 
 /** Patch proposal from the llm-call-patch-generator (llm-heal). */
 export const CALL_TYPE_LLM_PROMPT_PATCH = "llm-prompt-patch";
+
+/**
+ * Stagehand `act()` envelope-validation. Captured by the guardedAct wrapper
+ * so every Stagehand-driven LLM call lands in the same NDJSON sink as
+ * Barnacle's own Anthropic-SDK calls. Per the user directive that every
+ * LLM-touching surface enforces a schema, every act call is logged
+ * regardless of outcome — full parity with our other call-type telemetry.
+ */
+export const CALL_TYPE_STAGEHAND_ACT = "stagehand-act";
+
+/** Stagehand `observe()` envelope-validation. See CALL_TYPE_STAGEHAND_ACT. */
+export const CALL_TYPE_STAGEHAND_OBSERVE = "stagehand-observe";
+
+/** Stagehand `extract()` schema-enforced call. See CALL_TYPE_STAGEHAND_ACT. */
+export const CALL_TYPE_STAGEHAND_EXTRACT = "stagehand-extract";
