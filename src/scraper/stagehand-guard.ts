@@ -156,14 +156,16 @@ export async function guardedAct(
   const userContent = actInstructionOf(input);
   const t0 = performance.now();
   try {
-    // Dispatch via typeof so TypeScript picks the correct overload per branch.
-    // Stagehand's underlying dispatch is `isObserveResult(input)`, so a single
-    // `as string` cast would work at runtime today, but TS would complain
-    // about the union mismatch and we'd hide future SDK contract drift.
-    const raw =
-      typeof input === "string"
-        ? await stagehand.act(input, options)
-        : await stagehand.act(input, options);
+    // Stagehand's `act` has two overloads (string and Action) that share the
+    // same runtime implementation (dispatch is via `isObserveResult` inside
+    // Stagehand). TypeScript can't pick between them when the input type is
+    // `string | Action`, so cast through the union once instead of writing
+    // a typeof-ternary with identical branches.
+    const callAct = stagehand.act as (
+      input: string | Action,
+      options?: ActOptions
+    ) => Promise<ActResult>;
+    const raw = await callAct(input, options);
     const latencyMs = performance.now() - t0;
     const parsed = ACT_RESULT_SCHEMA.safeParse(raw);
     if (!parsed.success) {
@@ -294,8 +296,14 @@ export async function guardedExtract<T extends z.ZodTypeAny>(
   const callId = randomUUID();
   const t0 = performance.now();
   try {
-    // Stagehand's TypeScript types narrow the overload by argument arity;
-    // its `StagehandZodSchema` union accepts both Zod v3 and v4 schemas.
+    // Widening cast: caller's `z.ZodTypeAny` (Zod v4) is one branch of
+    // Stagehand's `StagehandZodSchema = Zod4TypeAny | z3.ZodTypeAny` union,
+    // which Stagehand's extract overload-2 expects. We can't reference
+    // `StagehandZodSchema` directly because it's a deep import not exported
+    // from the package root; `Parameters<typeof stagehand.extract>[1]` is
+    // the cleanest public-API way to express "whatever overload-2 expects."
+    // The `as unknown` step is needed because TS won't accept a single
+    // direct cast across the entire overload set.
     const raw = await stagehand.extract(
       instruction,
       schema as unknown as Parameters<typeof stagehand.extract>[1],

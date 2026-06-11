@@ -96,11 +96,13 @@ describe("guardedAct", () => {
     expect(captured[0]?.userContent).toBe(VALID_ACTION.description);
   });
 
-  // Regression guard for F1: the wrapper must dispatch to Stagehand's Action
-  // overload with the actual Action object, not a coerced string. If a
-  // future refactor reintroduces `as string`, Stagehand still works at
-  // runtime via isObserveResult, but the call-boundary assertion below
-  // would fail — surfacing the issue immediately.
+  // Locks in the no-coercion contract: the wrapper must forward the Action
+  // object verbatim to Stagehand.act. A future refactor that runs the input
+  // through String() or JSON.stringify() before passing to act would fail
+  // this test. A type-only `as string` cast would NOT — Stagehand's runtime
+  // dispatches via isObserveResult, so the mock would still see the Action
+  // object verbatim. The runtime-coercion case is the meaningful one to
+  // guard against.
   it("forwards the Action object to stagehand.act, not a coerced string", async () => {
     const stagehand = fakeStagehandAct(VALID_ACT_RESULT);
     await guardedAct(stagehand, VALID_ACTION);
