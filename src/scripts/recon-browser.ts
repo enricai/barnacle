@@ -1470,6 +1470,77 @@ function extractClassMatchedText(html: string, classPattern: RegExp, cap: number
  * Returns empty strings on any failure (page.evaluate threw, body missing,
  * etc.) — evidence is advisory, never load-bearing.
  */
+/**
+ * One paired "we filled this field and the validator visibly rejected it"
+ * tuple. Surfaced to the LLM replan prompt as a structured failureReason
+ * line so it can pivot the value or return outcome=impossible instead of
+ * burning replan budget on the same proposal.
+ */
+export interface ValidationRejectionPair {
+  fieldLabel: string;
+  errorText: string;
+}
+
+/**
+ * Pair `ng-invalid + ng-touched + ng-dirty` field entries from
+ * invalidFieldList with their positionally-adjacent error text from
+ * errorTextList. Strategy is positional (not cross-product) — entry N
+ * pairs with entry N — because the engine's extractClassMatchedText
+ * walks the DOM in document order, so the Nth invalid container's
+ * sibling error message tends to be the Nth error entry. The
+ * touched+dirty gate ensures we only surface "we already filled this,
+ * it's still rejected" (the actionable case); pristine + invalid means
+ * "user never touched it" which is a different problem the existing
+ * submit-revealed-invalid signal handles.
+ *
+ * Returns an empty array when no entries match — pure additive signal,
+ * silent no-op on sites whose forms don't follow this DOM convention.
+ *
+ * Why "touched+dirty" instead of just "invalid": empirical survey of
+ * 30 production step-failure dumps showed 22 of 22 Continue/Submit
+ * failures had the touched+dirty + visible error text pattern. The
+ * remaining failure shapes (pristine empty required, fill-step
+ * errors, pre-form failures) need different diagnostics.
+ */
+export function pairInvalidWithErrors(
+  invalidFieldList: string,
+  errorTextList: string
+): ValidationRejectionPair[] {
+  if (invalidFieldList.length === 0 || errorTextList.length === 0) return [];
+  const invalidLines = invalidFieldList.split("\n").filter((l) => l.trim().length > 0);
+  const errorLines = errorTextList.split("\n").filter((l) => l.trim().length > 0);
+  if (invalidLines.length === 0 || errorLines.length === 0) return [];
+  const pairs: ValidationRejectionPair[] = [];
+  const max = Math.min(invalidLines.length, errorLines.length);
+  for (let i = 0; i < max; i++) {
+    const inv = invalidLines[i] ?? "";
+    const err = errorLines[i] ?? "";
+    // Gate: only emit when the invalid container is touched+dirty
+    // (we filled it, validator rejected the value).
+    if (!(inv.includes("ng-touched") && inv.includes("ng-dirty"))) continue;
+    // Strip the leading "N. " prefix the list formatter adds.
+    const fieldLabel = inv.replace(/^\d+\.\s*/, "").trim();
+    const errorText = err.replace(/^\d+\.\s*/, "").trim();
+    if (fieldLabel.length === 0 || errorText.length === 0) continue;
+    pairs.push({
+      fieldLabel: fieldLabel.slice(0, 200),
+      errorText: errorText.slice(0, 200),
+    });
+  }
+  return pairs;
+}
+
+/**
+ * Format a {@link ValidationRejectionPair} as a single-line failureReason
+ * string the LLM reads from the replan prompt's WHY VERIFICATION FAILED
+ * block. Style matches existing reason formats (`submit-revealed-invalid`,
+ * `submit-endpoint-not-matched`): leading category tag, then the facts,
+ * then a brief imperative for what the LLM should do.
+ */
+export function formatValidationRejectedReason(pair: ValidationRejectionPair): string {
+  return `validation-rejected: '${pair.fieldLabel}' rejected with '${pair.errorText}'; propose a different value or return impossible`;
+}
+
 async function extractLivePageFormEvidence(page: Page): Promise<{
   invalidFieldList: string;
   errorTextList: string;
@@ -3645,6 +3716,30 @@ async function executeStepWithHealing(params: {
     logger.warn(
       `step ${stepIndex + 1} attempt ${attempt} (${record.technique}) produced no observable effect — ${reason}`
     );
+
+    // One additive strategy among many: when a click on a final-step
+    // submit/continue button fails AND the page surfaces a visible
+    // <error> sibling next to a touched+dirty ng-invalid wrapper, surface
+    // the rejection text to the LLM so it can pivot the value or return
+    // outcome="impossible" instead of looping on the same plan. Silent
+    // no-op on sites where the DOM pattern doesn't match — the existing
+    // failure-reason and replan/cycle-detection paths still fire.
+    // Empirically grounded: 22 of 22 AppCast Continue/Submit step-failure
+    // dumps in a 2026-06-10 survey had the paired touched+dirty + visible
+    // error text pattern with 3 distinct rejection messages.
+    if (record.resolvedMethod === "click" && isFinalStep) {
+      const live = await extractLivePageFormEvidence(page).catch(() => ({
+        invalidFieldList: "",
+        errorTextList: "",
+        interactiveTargetsList: "",
+      }));
+      const pairs = pairInvalidWithErrors(live.invalidFieldList, live.errorTextList);
+      for (const p of pairs) {
+        const validationReason = formatValidationRejectedReason(p);
+        failureReasons.push(validationReason);
+        logger.warn(`step ${stepIndex + 1} ${validationReason}`);
+      }
+    }
 
     // Telemetry-driven early-exit: when attempt 1 on a final-Submit click
     // reveals new ng-invalid containers, attempts 2-N cannot succeed (the

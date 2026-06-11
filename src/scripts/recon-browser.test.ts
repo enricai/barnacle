@@ -71,6 +71,7 @@ import {
   extractSubmitFailureEvidence,
   findRecentBackendError,
   findRecentPageTransition,
+  formatValidationRejectedReason,
   hasBillingErrorBeenLogged,
   type InvalidFormControl,
   isReplanCycle,
@@ -78,6 +79,7 @@ import {
   logBillingErrorIfPresent,
   type NormalizedStep,
   narrowInvalidFormControl,
+  pairInvalidWithErrors,
   persistReplannedFlow,
   type ReplanEvent,
   readFailureDumpEvidence,
@@ -87,6 +89,7 @@ import {
   resetBillingErrorFlagForTests,
   shouldSkipTechnique,
   summarizeReplanFailureKinds,
+  type ValidationRejectionPair,
 } from "@/scripts/recon-browser";
 import type { Logger } from "@/types/logging";
 
@@ -1930,5 +1933,87 @@ describe("recon-browser/findRecentBackendError", () => {
         })
       ).toBe("https://example.com/api/apply");
     }
+  });
+});
+
+describe("recon-browser/pairInvalidWithErrors", () => {
+  it("pairs positionally-adjacent invalid + error when the invalid container is touched+dirty", () => {
+    const invalidList =
+      '1. Phone <uapp-phone-input class="question-control ng-touched ng-dirty ng-invalid">';
+    const errorList = "1. Please provide correct phone number.";
+    const pairs = pairInvalidWithErrors(invalidList, errorList);
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0]?.errorText).toBe("Please provide correct phone number.");
+    expect(pairs[0]?.fieldLabel).toContain("Phone");
+  });
+
+  it("skips invalid entries that lack ng-touched (pristine empty required fields)", () => {
+    const invalidList =
+      '1. First Name <app-input class="question-control ng-pristine ng-untouched ng-invalid">';
+    const errorList = "1. This field is required.";
+    expect(pairInvalidWithErrors(invalidList, errorList)).toEqual([]);
+  });
+
+  it("skips invalid entries that lack ng-dirty (touched but never typed into)", () => {
+    const invalidList =
+      '1. Field <app-input class="question-control ng-touched ng-pristine ng-invalid">';
+    const errorList = "1. Required.";
+    expect(pairInvalidWithErrors(invalidList, errorList)).toEqual([]);
+  });
+
+  it("returns empty array when either list is empty", () => {
+    expect(pairInvalidWithErrors("", "1. Error")).toEqual([]);
+    expect(pairInvalidWithErrors("1. Field [ng-touched ng-dirty ng-invalid]", "")).toEqual([]);
+    expect(pairInvalidWithErrors("", "")).toEqual([]);
+  });
+
+  it("pairs multiple invalids with multiple errors positionally", () => {
+    const invalidList = [
+      '1. Phone <input class="ng-touched ng-dirty ng-invalid">',
+      '2. Salary <input class="ng-touched ng-dirty ng-invalid">',
+    ].join("\n");
+    const errorList = ["1. Please provide correct phone number.", "2. Enter a valid amount."].join(
+      "\n"
+    );
+    const pairs = pairInvalidWithErrors(invalidList, errorList);
+    expect(pairs).toHaveLength(2);
+    expect(pairs[0]?.errorText).toBe("Please provide correct phone number.");
+    expect(pairs[1]?.errorText).toBe("Enter a valid amount.");
+  });
+
+  it("truncates very long field labels and error texts to 200 chars", () => {
+    const longLabel = "x".repeat(500);
+    const longError = "y".repeat(500);
+    const invalidList = `1. ${longLabel} [ng-touched ng-dirty ng-invalid]`;
+    const errorList = `1. ${longError}`;
+    const pairs = pairInvalidWithErrors(invalidList, errorList);
+    expect(pairs).toHaveLength(1);
+    expect((pairs[0]?.fieldLabel ?? "").length).toBeLessThanOrEqual(200);
+    expect((pairs[0]?.errorText ?? "").length).toBeLessThanOrEqual(200);
+  });
+
+  it("only pairs up to min(invalid.length, errors.length) — extras of either are dropped silently", () => {
+    const invalidList = [
+      '1. A <input class="ng-touched ng-dirty ng-invalid">',
+      '2. B <input class="ng-touched ng-dirty ng-invalid">',
+    ].join("\n");
+    const errorList = "1. Just one error";
+    const pairs = pairInvalidWithErrors(invalidList, errorList);
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0]?.errorText).toBe("Just one error");
+  });
+});
+
+describe("recon-browser/formatValidationRejectedReason", () => {
+  it("formats a pair into a single imperative-style failureReason line", () => {
+    const pair: ValidationRejectionPair = {
+      fieldLabel: "Phone",
+      errorText: "Please provide correct phone number.",
+    };
+    const reason = formatValidationRejectedReason(pair);
+    expect(reason).toContain("validation-rejected");
+    expect(reason).toContain("'Phone'");
+    expect(reason).toContain("'Please provide correct phone number.'");
+    expect(reason).toContain("propose a different value or return impossible");
   });
 });
