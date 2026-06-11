@@ -285,7 +285,12 @@ describe("dispatch — executeHttp hot-path branches", () => {
       onRetry,
     };
     await dispatch(pluginWithRetry, {}, stubContext);
-    expect(mockRunWithSession).toHaveBeenCalledWith(expect.any(Function), { onRetry }, undefined);
+    expect(mockRunWithSession).toHaveBeenCalledWith(
+      expect.any(Function),
+      { onRetry },
+      undefined,
+      { advancedStealth: undefined }
+    );
   });
 });
 
