@@ -92,7 +92,7 @@
   "devDependencies": {
     "@biomejs/biome": "^2.4.16",
     "@types/bcryptjs": "^3.0.0",
-    "@types/node": "^25.9.1",
+    "@types/node": "^25.9.2",
     "@types/pg": "^8.18.0",
     "@vitest/coverage-v8": "^4.1.8",
     "husky": "^9.1.6",
