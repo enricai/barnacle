@@ -34,7 +34,7 @@
  * per act; healing and replans push the upper bound higher on flaky sites).
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
@@ -279,8 +279,16 @@ function wireNetworkCapture(
     if (req.method !== "GET" && sameOrigin) {
       signalCounter.n++;
     }
-    const opLabel = operationName ?? new URL(req.url).pathname.split("/").pop() ?? "unknown";
-    const filename = `${idx}-${phase}-${opLabel}.json`;
+    // Capture filename uses <counter>-<phase>-<unix-ms>-<short-hash> to
+    // guarantee bounded length regardless of URL shape. Previously we used
+    // the URL's path tail verbatim, which crashed the run with ENAMETOOLONG
+    // on data:image/svg+xml;base64,... URLs (~2000+ char base64 payloads).
+    // The hash is SHA-1 over the request URL truncated to 8 hex chars —
+    // collision-resistant within the bounded set of captures per run, and
+    // the URL itself is durably recoverable from `capture.url` in the JSON
+    // body for forensics.
+    const urlHash = createHash("sha1").update(req.url, "utf8").digest("hex").slice(0, 8);
+    const filename = `${idx}-${phase}-${Date.now()}-${urlHash}.json`;
 
     const capture: Capture = {
       timestamp: new Date().toISOString(),
@@ -298,19 +306,27 @@ function wireNetworkCapture(
       decodedParams,
     };
 
-    writeFileSync(join(CAPTURES_DIR, filename), JSON.stringify(capture, null, 2));
-
-    if (capture.decodedParams !== null && capture.decodedParams !== capture.requestPostData) {
-      const decodedFilename = filename.replace(/\.json$/, ".decoded.json");
-      writeFileSync(
-        join(CAPTURES_DIR, decodedFilename),
-        JSON.stringify(capture.decodedParams, null, 2)
+    // Defense in depth: a future edge case (NFS, symlink loop, full disk)
+    // shouldn't crash the whole recon run. Drop the capture, log loudly,
+    // and let the cascade continue. The capture is forensic-only — the
+    // happy-path doesn't read these files until something else fails.
+    try {
+      writeFileSync(join(CAPTURES_DIR, filename), JSON.stringify(capture, null, 2));
+      if (capture.decodedParams !== null && capture.decodedParams !== capture.requestPostData) {
+        const decodedFilename = filename.replace(/\.json$/, ".decoded.json");
+        writeFileSync(
+          join(CAPTURES_DIR, decodedFilename),
+          JSON.stringify(capture.decodedParams, null, 2)
+        );
+      }
+      recentCaptures.push(filename);
+      if (recentCaptures.length > RECENT_CAPTURES_WINDOW) {
+        recentCaptures.splice(0, recentCaptures.length - RECENT_CAPTURES_WINDOW);
+      }
+    } catch (err) {
+      logger.warn(
+        `capture-write skipped for ${req.url.slice(0, 80)}: ${err instanceof Error ? err.message : String(err)}`
       );
-    }
-
-    recentCaptures.push(filename);
-    if (recentCaptures.length > RECENT_CAPTURES_WINDOW) {
-      recentCaptures.splice(0, recentCaptures.length - RECENT_CAPTURES_WINDOW);
     }
     // GETs are static asset chunks, polls, and idle prefetches; cross-origin
     // captures are tracking-pixel beacons. Neither is a user-action signal.
@@ -4018,11 +4034,14 @@ async function main(): Promise<void> {
   // — captureFn becomes a no-op so dev one-offs don't crash and don't
   // pollute the global sink.
   const siteTelemetryDir = resolveSiteTelemetryDir(flowFile);
+  // Capture the run-start timestamp once so the calls.ndjson and url.txt
+  // sidecar resolve to the same directory.
+  const runTimestampMs = Date.now();
   const callsNdjsonPath =
-    siteTelemetryDir !== null ? resolveRunCallsPath(siteTelemetryDir, url) : null;
+    siteTelemetryDir !== null ? resolveRunCallsPath(siteTelemetryDir, runTimestampMs, url) : null;
   if (siteTelemetryDir !== null && callsNdjsonPath !== null) {
     mkdirSync(dirname(callsNdjsonPath), { recursive: true });
-    writeFileSync(resolveRunUrlPath(siteTelemetryDir, url), `${url}\n`);
+    writeFileSync(resolveRunUrlPath(siteTelemetryDir, runTimestampMs, url), `${url}\n`);
     logger.info(`telemetry: per-URL partition at ${callsNdjsonPath}`);
   } else {
     logger.info("telemetry: no flow file path — call capture disabled for this run");

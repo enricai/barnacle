@@ -6,7 +6,7 @@
  * another's, so cross-run pattern analysis on a specific target stays clean.
  */
 
-import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -27,16 +27,26 @@ export function canonicalizeUrl(rawUrl: string): string {
 }
 
 /**
- * Filesystem-safe directory name for a URL. base64url is a bijection over the
- * canonical URL bytes — distinct URLs always produce distinct names, so
- * partition collisions are mathematically impossible (a property a truncated
- * cryptographic hash cannot guarantee). The encoding is also reversible, so a
- * future caller can recover the URL from the directory name without consulting
- * any sidecar file.
+ * Filesystem-safe directory name for a URL using the form
+ * `<unix-ms-timestamp>-<short-hash>`. The timestamp makes `ls runs/` sort
+ * chronologically by default. The hash (first 8 hex chars of SHA-1 over
+ * the canonical URL) gives URL-deterministic identity, so multiple runs of
+ * the same target can be grouped with `awk -F- '{print $NF}' | sort | uniq -c`
+ * without consulting any sidecar.
+ *
+ * Why a caller-supplied timestamp instead of `Date.now()` inline: two
+ * helpers below (`resolveRunCallsPath`, `resolveRunUrlPath`) need to agree
+ * on the same directory within a single run, so the caller captures
+ * `Date.now()` once at run-start and threads it through both calls. Same
+ * `(timestampMs, rawUrl)` always yields the same dirName — deterministic.
+ *
+ * The `url.txt` sidecar continues to carry the authoritative URL; the hash
+ * is not reversed in any current consumer.
  */
-export function urlDirName(rawUrl: string): string {
+export function urlDirName(timestampMs: number, rawUrl: string): string {
   const canonical = canonicalizeUrl(rawUrl);
-  return Buffer.from(canonical, "utf8").toString("base64url");
+  const hash = createHash("sha1").update(canonical, "utf8").digest("hex").slice(0, 8);
+  return `${timestampMs}-${hash}`;
 }
 
 /**
@@ -51,18 +61,28 @@ export function resolveSiteTelemetryDir(flowFile: string | null): string | null 
 
 /**
  * Per-URL `calls.ndjson` sink path within a site telemetry directory.
+ * `timestampMs` is the run-start timestamp captured once by the caller so
+ * sibling calls (`resolveRunUrlPath`) land in the same directory.
  */
-export function resolveRunCallsPath(siteTelemetryDir: string, rawUrl: string): string {
-  return join(siteTelemetryDir, "runs", urlDirName(rawUrl), "calls.ndjson");
+export function resolveRunCallsPath(
+  siteTelemetryDir: string,
+  timestampMs: number,
+  rawUrl: string
+): string {
+  return join(siteTelemetryDir, "runs", urlDirName(timestampMs, rawUrl), "calls.ndjson");
 }
 
 /**
- * Per-URL `url.txt` companion path. base64url directory names round-trip
- * back to the canonical URL, but keeping the plain-text companion saves any
- * engineer browsing the telemetry tree the mental decode.
+ * Per-URL `url.txt` companion path. The directory name is `<ts>-<hash>`;
+ * the sidecar carries the original URL so any engineer browsing the
+ * telemetry tree sees the URL without needing to recover it from the hash.
  */
-export function resolveRunUrlPath(siteTelemetryDir: string, rawUrl: string): string {
-  return join(siteTelemetryDir, "runs", urlDirName(rawUrl), "url.txt");
+export function resolveRunUrlPath(
+  siteTelemetryDir: string,
+  timestampMs: number,
+  rawUrl: string
+): string {
+  return join(siteTelemetryDir, "runs", urlDirName(timestampMs, rawUrl), "url.txt");
 }
 
 /**
