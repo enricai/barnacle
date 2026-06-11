@@ -59,7 +59,7 @@
   },
   "dependencies": {
     "@ai-sdk/amazon-bedrock": "^4.0.112",
-    "@anthropic-ai/sdk": "^0.100.1",
+    "@anthropic-ai/sdk": "^0.104.1",
     "@browserbasehq/stagehand": "^3.4.0",
     "@fastify/compress": "^8.0.1",
     "@fastify/helmet": "^13.0.1",

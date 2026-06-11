@@ -104,3 +104,103 @@ export const JUDGE_VERDICT_SCHEMA = z.object({
   hallucinationRationale: z.string().min(1).max(400),
   worstOffender: z.enum(["schema", "factual", "hallucination"]).nullable().optional(),
 });
+
+/**
+ * Submit-verification verdict. Replaces the per-site `submitEndpointPattern`
+ * regex. Discriminated union forces the LLM to commit to verified=true|false
+ * — no in-between "maybe" state.
+ *
+ * The verified=true branch requires populating three signal fields (any can
+ * be null but at least one of dom_signal / url_signal SHOULD be non-null per
+ * the strict system prompt). The verifier's `rationale` must cite the
+ * strongest signal — keeps Haiku honest about why it ruled success.
+ *
+ * The verified=false branch requires a reason — keeps Haiku from waving
+ * failures away without explanation, and gives the rephrase prompt
+ * downstream a structured signal about what to look for.
+ *
+ * Empirically validated 2026-06-11 on two real production failure dumps
+ * (one wrongly-flagged-as-fail, one genuinely-stuck) — both verdicts
+ * correct, both rationale fields coherent.
+ */
+export const SUBMIT_VERDICT_SCHEMA = z.discriminatedUnion("verified", [
+  z.object({
+    verified: z.literal(true),
+    network_signal: z
+      .object({
+        url: z.string().max(2048),
+        status: z.number(),
+        method: z.string().max(16),
+      })
+      .nullable(),
+    dom_signal: z.string().max(200).nullable(),
+    url_signal: z.string().max(200).nullable(),
+    rationale: z.string().min(1).max(400),
+  }),
+  z.object({
+    verified: z.literal(false),
+    reason: z.string().min(1).max(400),
+  }),
+]);
+
+/**
+ * Invalid-field detection verdict. Replaces INVALID_CLASS_RX regex.
+ * `present` is the top-level boolean so a downstream consumer can
+ * short-circuit on "no invalid fields here" without iterating `fields`.
+ * `fields` carries the discovered structural markers per-container so
+ * the rephrase prompt can build its INTERACTIVE TARGETS section.
+ *
+ * Strict prompting requires: structural marker (class containing
+ * "invalid", aria-invalid="true", data-invalid, or visible error
+ * container near input). Visual-only styling does NOT count.
+ */
+export const INVALID_FIELDS_SCHEMA = z.object({
+  present: z.boolean(),
+  fields: z
+    .array(
+      z.object({
+        containerXpath: z.string().min(1),
+        label: z.string().nullable(),
+        markerKind: z.enum(["class", "aria", "data", "error-container", "other"]),
+        framework: z.enum(["angular", "react", "vue", "mantine", "chakra", "bootstrap", "other"]),
+      })
+    )
+    .max(50),
+});
+
+/**
+ * Modal-priority verdict. Replaces MODAL_PRIORITY_RX keyword regex over
+ * Stagehand's English description strings. Returns indices into the
+ * caller-supplied unfocused-observe array — the engine just re-sorts
+ * its own list, the LLM doesn't see selectors or have to echo them
+ * back.
+ *
+ * Strict prompting requires: structurally blocking the form. Cookie
+ * banners and welcome modals ARE priority. Always-visible panels and
+ * sidebars are NOT.
+ */
+export const MODAL_PRIORITY_SCHEMA = z.object({
+  priorityIndices: z.array(z.number().int().min(0)).max(50),
+  rationale: z.string().min(1).max(200),
+});
+
+/**
+ * Visible-error-message extraction verdict. Replaces `errorPattern`
+ * regex. Each entry carries the text, an optional field-name hint,
+ * and a severity ranking — the rephrase prompt today renders these as
+ * the VISIBLE ERROR / REQUIRED-FIELD MESSAGES section.
+ *
+ * Strict prompting: structurally-marked error containers + visible text
+ * only. Skip placeholder text, help text, and inactive tooltips.
+ */
+export const ERROR_MESSAGES_SCHEMA = z.object({
+  messages: z
+    .array(
+      z.object({
+        text: z.string().min(1).max(400),
+        fieldHint: z.string().nullable(),
+        severity: z.enum(["error", "warning", "info"]),
+      })
+    )
+    .max(50),
+});

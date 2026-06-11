@@ -739,8 +739,8 @@ describe("recon-browser/readFailureDumpEvidence", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("returns empty fields when the dump file is missing", () => {
-    const result = readFailureDumpEvidence(join(tmpDir, "does-not-exist.json"));
+  it("returns empty fields when the dump file is missing", async () => {
+    const result = await readFailureDumpEvidence(join(tmpDir, "does-not-exist.json"));
     expect(result).toEqual({
       bodyExcerpt: "",
       unfocusedList: "",
@@ -750,68 +750,30 @@ describe("recon-browser/readFailureDumpEvidence", () => {
     });
   });
 
-  it("flags fields with ng-invalid class and surfaces the field label", () => {
-    // Angular reactive-form snippet: a labelled input with the ng-invalid +
-    // ng-touched class signature that means "user interacted, field is empty
-    // / wrong format." This is the smoking-gun pattern the replan prompt was
-    // missing.
+  it("returns empty judge-driven fields when no client is supplied", async () => {
+    // Without a Haiku client the judges short-circuit to null and the caller
+    // renders empty strings. Verifies the safe-fallback contract — judge
+    // failures must NEVER cascade into errors in the replan path.
     const body = `<form class="ng-valid">
       <li class="question ng-invalid ng-dirty ng-touched">
         <label>County</label>
-        <input class="ng-invalid ng-dirty ng-touched" value=""/>
-      </li>
-      <li class="question ng-valid">
-        <label>State</label>
-        <input class="ng-valid" value="TX"/>
+        <input class="ng-invalid" value=""/>
       </li>
     </form>`;
     writeFileSync(dumpPath, JSON.stringify({ bodyOuterHtml: body, attempts: [] }));
-    const result = readFailureDumpEvidence(dumpPath);
-    // Signal contract: County (the invalid field) must be present with its
-    // ng-invalid class fingerprint. The 600-char following-window may bleed
-    // sibling text in by design — fine for an advisory LLM prompt section.
-    expect(result.invalidFieldList).toContain("County");
-    expect(result.invalidFieldList).toContain("ng-invalid");
-  });
-
-  it("does not flag a ng-valid form root just because its subtree contains invalid descendants", () => {
-    // Regression guard: the prior balanced-tag regex matched the outer
-    // <form> first and attributed the entire subtree to its ng-valid class,
-    // wrongly listing nothing as invalid. The opening-tag scan should
-    // produce at least one invalid entry from the inner ng-invalid <li>.
-    const body = `<form class="ng-valid">
-      <li class="question ng-invalid"><label>County</label></li>
-    </form>`;
-    writeFileSync(dumpPath, JSON.stringify({ bodyOuterHtml: body, attempts: [] }));
-    const result = readFailureDumpEvidence(dumpPath);
-    expect(result.invalidFieldList.length).toBeGreaterThan(0);
-    expect(result.invalidFieldList).toContain("County");
-  });
-
-  it("extracts visible error message text from error-class containers", () => {
-    const body = `<form>
-      <div class="error-message">This field is required.</div>
-      <div class="mat-error">Please provide correct phone number.</div>
-    </form>`;
-    writeFileSync(dumpPath, JSON.stringify({ bodyOuterHtml: body, attempts: [] }));
-    const result = readFailureDumpEvidence(dumpPath);
-    expect(result.errorTextList).toContain("This field is required");
-    expect(result.errorTextList).toContain("Please provide correct phone number");
-  });
-
-  it("ignores text inside an unrelated class when no error-pattern marker is present", () => {
-    const body = `<div class="some-other-class">Job title at Encompass Health</div>`;
-    writeFileSync(dumpPath, JSON.stringify({ bodyOuterHtml: body, attempts: [] }));
-    const result = readFailureDumpEvidence(dumpPath);
+    const result = await readFailureDumpEvidence(dumpPath);
+    expect(result.bodyExcerpt).toContain("County");
+    expect(result.invalidFieldList).toBe("");
     expect(result.errorTextList).toBe("");
+    expect(result.unfocusedList).toBe("");
   });
 
-  it("recentFailureReasons surfaces the trailing 5 attempt errorMessage values", () => {
+  it("recentFailureReasons surfaces the trailing 5 attempt errorMessage values", async () => {
     const attempts = Array.from({ length: 8 }, (_, i) => ({
       errorMessage: `attempt-${i + 1}: reason`,
     }));
     writeFileSync(dumpPath, JSON.stringify({ bodyOuterHtml: null, attempts }));
-    const result = readFailureDumpEvidence(dumpPath);
+    const result = await readFailureDumpEvidence(dumpPath);
     expect(result.recentFailureReasons).toEqual([
       "attempt-4: reason",
       "attempt-5: reason",
@@ -821,7 +783,7 @@ describe("recon-browser/readFailureDumpEvidence", () => {
     ]);
   });
 
-  it("skips attempts with null/empty errorMessage when collecting reasons", () => {
+  it("skips attempts with null/empty errorMessage when collecting reasons", async () => {
     const attempts = [
       { errorMessage: "real failure A" },
       { errorMessage: null },
@@ -829,21 +791,8 @@ describe("recon-browser/readFailureDumpEvidence", () => {
       { errorMessage: "real failure B" },
     ];
     writeFileSync(dumpPath, JSON.stringify({ bodyOuterHtml: null, attempts }));
-    const result = readFailureDumpEvidence(dumpPath);
+    const result = await readFailureDumpEvidence(dumpPath);
     expect(result.recentFailureReasons).toEqual(["real failure A", "real failure B"]);
-  });
-
-  it("caps both extracted lists at the EVIDENCE_LIST_CAP", () => {
-    // Build a body with 20 invalid fields. Cap is 12 by current contract.
-    const items = Array.from(
-      { length: 20 },
-      (_, i) => `<li class="ng-invalid"><label>Field-${i}</label></li>`
-    ).join("");
-    const body = `<form>${items}</form>`;
-    writeFileSync(dumpPath, JSON.stringify({ bodyOuterHtml: body, attempts: [] }));
-    const result = readFailureDumpEvidence(dumpPath);
-    const lines = result.invalidFieldList.split("\n");
-    expect(lines.length).toBeLessThanOrEqual(12);
   });
 });
 
@@ -992,77 +941,45 @@ describe("recon-browser/renderUnfocusedObserve", () => {
     selector: `xpath=//placeholder/${description.replace(/\s+/g, "-")}`,
   });
 
-  it("returns empty string for empty input", () => {
-    expect(renderUnfocusedObserve([])).toBe("");
+  it("returns empty string for empty input", async () => {
+    expect(await renderUnfocusedObserve([])).toBe("");
   });
 
-  it("renders entries as numbered description + selector lines", () => {
+  it("renders entries as numbered description + selector lines (null-client fallback path)", async () => {
     const observations = [make("First Name input"), make("Submit button")];
-    const out = renderUnfocusedObserve(observations);
+    const out = await renderUnfocusedObserve(observations);
     expect(out).toContain("1. First Name input");
     expect(out).toContain("2. Submit button");
   });
 
-  it("prioritizes entries with 'modal' in description to the top regardless of position", () => {
-    // Build a list with 80 dummy entries; place modal entries at indices 70-77.
-    const observations = [
-      ...Array.from({ length: 70 }, (_, i) => make(`form field ${i}`)),
-      make("Save button in education modal (first modal)"),
-      make("Close button in education modal (first modal)"),
-      make("Degree dropdown in education modal (first modal)"),
-      make("Education level dropdown in education modal (first modal)"),
-      make("Save button in education modal (second modal)"),
-      make("Close button in education modal (second modal)"),
-      make("Degree dropdown in education modal (second modal)"),
-      make("Education level dropdown in education modal (second modal)"),
-    ];
-    const out = renderUnfocusedObserve(observations);
-    expect(out).toContain("Save button in education modal (first modal)");
-    expect(out).toContain("Save button in education modal (second modal)");
-    expect(out.indexOf("Save button in education modal (first modal)")).toBeLessThan(
-      out.indexOf("form field 0")
-    );
+  it("preserves source order when no Haiku client is supplied (safe-fallback)", async () => {
+    // Without a judge client, modal-priority migration leaves order untouched.
+    // This is the documented fallback: judge-failure must never corrupt the
+    // baseline. Stagehand's emitted descriptions already cluster modals
+    // near the top, so the unsorted output isn't catastrophic.
+    const observations = [make("form field 0"), make("Save in modal"), make("form field 1")];
+    const out = await renderUnfocusedObserve(observations);
+    expect(out.indexOf("form field 0")).toBeLessThan(out.indexOf("Save in modal"));
   });
 
-  it("also catches 'dialog', 'popup', 'overlay', 'drawer' as modal-shaped UI", () => {
-    const observations = [
-      ...Array.from({ length: 30 }, (_, i) => make(`form field ${i}`)),
-      make("Save button in confirmation dialog"),
-      make("Close button in popup window"),
-      make("Cancel button in side overlay"),
-      make("Submit button in nav drawer"),
-    ];
-    const out = renderUnfocusedObserve(observations);
-    expect(out).toContain("confirmation dialog");
-    expect(out).toContain("popup window");
-    expect(out).toContain("side overlay");
-    expect(out).toContain("nav drawer");
-  });
-
-  it("caps the rendered list at the default cap (30)", () => {
+  it("caps the rendered list at the default cap (30)", async () => {
     const observations = Array.from({ length: 60 }, (_, i) => make(`item ${i}`));
-    const out = renderUnfocusedObserve(observations);
+    const out = await renderUnfocusedObserve(observations);
     const lines = out.split("\n");
     expect(lines.length).toBeLessThanOrEqual(30);
   });
 
-  it("honors an explicit cap override", () => {
+  it("honors an explicit cap override via options", async () => {
     const observations = Array.from({ length: 60 }, (_, i) => make(`item ${i}`));
-    const out = renderUnfocusedObserve(observations, 5);
+    const out = await renderUnfocusedObserve(observations, { cap: 5 });
     const lines = out.split("\n");
     expect(lines.length).toBeLessThanOrEqual(5);
-  });
-
-  it("modal matching is case-insensitive", () => {
-    const observations = [make("Submit button"), make("Save action inside MODAL container")];
-    const out = renderUnfocusedObserve(observations);
-    expect(out.indexOf("MODAL container")).toBeLessThan(out.indexOf("Submit button"));
   });
 });
 
 describe("recon-browser/extractSubmitFailureEvidence", () => {
   let tmpDir: string;
-  const submitRx = /^https:\/\/example\.com\/api\/apply$/;
+  const ownHosts = ["example.com"];
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "recon-submit-fail-"));
@@ -1076,8 +993,8 @@ describe("recon-browser/extractSubmitFailureEvidence", () => {
     writeFileSync(join(tmpDir, filename), JSON.stringify(body));
   }
 
-  it("returns empty when the submit pattern is null", () => {
-    expect(extractSubmitFailureEvidence(["capture-1.json"], null, tmpDir)).toBe("");
+  it("returns empty when ownBackendHostnames is empty", () => {
+    expect(extractSubmitFailureEvidence(["capture-1.json"], [], tmpDir)).toBe("");
   });
 
   it("returns empty when no recent captures match the submit endpoint", () => {
@@ -1086,7 +1003,7 @@ describe("recon-browser/extractSubmitFailureEvidence", () => {
       status: 200,
       responseBody: { ok: true },
     });
-    expect(extractSubmitFailureEvidence(["capture-1.json"], submitRx, tmpDir)).toBe("");
+    expect(extractSubmitFailureEvidence(["capture-1.json"], ownHosts, tmpDir)).toBe("");
   });
 
   it("returns empty when the submit-endpoint capture succeeded (2xx)", () => {
@@ -1095,7 +1012,7 @@ describe("recon-browser/extractSubmitFailureEvidence", () => {
       status: 200,
       responseBody: { ok: true },
     });
-    expect(extractSubmitFailureEvidence(["capture-1.json"], submitRx, tmpDir)).toBe("");
+    expect(extractSubmitFailureEvidence(["capture-1.json"], ownHosts, tmpDir)).toBe("");
   });
 
   it("parses the { errors: [{ field, message }] } shape on a 4xx", () => {
@@ -1109,7 +1026,7 @@ describe("recon-browser/extractSubmitFailureEvidence", () => {
         ],
       },
     });
-    const out = extractSubmitFailureEvidence(["capture-1.json"], submitRx, tmpDir);
+    const out = extractSubmitFailureEvidence(["capture-1.json"], ownHosts, tmpDir);
     expect(out).toContain("422 https://example.com/api/apply");
     expect(out).toContain("email: Invalid format");
     expect(out).toContain("phone: Required");
@@ -1121,7 +1038,7 @@ describe("recon-browser/extractSubmitFailureEvidence", () => {
       status: 400,
       responseBody: { validation: { firstName: "must be present" } },
     });
-    const out = extractSubmitFailureEvidence(["capture-1.json"], submitRx, tmpDir);
+    const out = extractSubmitFailureEvidence(["capture-1.json"], ownHosts, tmpDir);
     expect(out).toContain("firstName: must be present");
   });
 
@@ -1131,12 +1048,12 @@ describe("recon-browser/extractSubmitFailureEvidence", () => {
       status: 500,
       responseBody: { message: "Internal server error" },
     });
-    const out = extractSubmitFailureEvidence(["capture-1.json"], submitRx, tmpDir);
+    const out = extractSubmitFailureEvidence(["capture-1.json"], ownHosts, tmpDir);
     expect(out).toContain("Internal server error");
   });
 
   it("skips missing capture files silently", () => {
-    expect(extractSubmitFailureEvidence(["missing.json"], submitRx, tmpDir)).toBe("");
+    expect(extractSubmitFailureEvidence(["missing.json"], ownHosts, tmpDir)).toBe("");
   });
 });
 
@@ -1758,7 +1675,7 @@ describe("recon-browser/findRecentPageTransition", () => {
 
 describe("recon-browser/extractSubmitFailureEvidence — any-4xx mode", () => {
   let tmpDir: string;
-  const submitRx = /^https:\/\/example\.com\/api\/apply$/;
+  const ownHosts = ["example.com"];
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "recon-anyfourxx-"));
@@ -1772,24 +1689,24 @@ describe("recon-browser/extractSubmitFailureEvidence — any-4xx mode", () => {
     writeFileSync(join(tmpDir, filename), JSON.stringify(body));
   }
 
-  it("strict mode (default) ignores 4xx whose URL does not match the pattern", () => {
+  it("strict mode ignores 4xx whose hostname is not on ownBackendHostnames (third-party CDN noise)", () => {
     writeCapture("c1.json", {
-      url: "https://example.com/api/errors",
+      url: "https://cdn.thirdparty.net/api/errors",
       status: 422,
       responseBody: { errors: [{ field: "email", message: "Invalid format" }] },
     });
-    const out = extractSubmitFailureEvidence(["c1.json"], submitRx, tmpDir);
+    const out = extractSubmitFailureEvidence(["c1.json"], ownHosts, tmpDir);
     expect(out).toBe("");
   });
 
-  it("any-4xx mode parses a 4xx whose URL does NOT match the configured pattern", () => {
+  it("any-4xx mode parses a 4xx whose hostname is not on ownBackendHostnames", () => {
     writeCapture("c1.json", {
-      url: "https://example.com/api/errors",
+      url: "https://cdn.thirdparty.net/api/errors",
       status: 422,
       responseBody: { errors: [{ field: "email", message: "Invalid format" }] },
     });
-    const out = extractSubmitFailureEvidence(["c1.json"], null, tmpDir, "any-4xx");
-    expect(out).toContain("422 https://example.com/api/errors");
+    const out = extractSubmitFailureEvidence(["c1.json"], [], tmpDir, "any-4xx");
+    expect(out).toContain("422 https://cdn.thirdparty.net/api/errors");
     expect(out).toContain("email: Invalid format");
   });
 
@@ -1799,7 +1716,7 @@ describe("recon-browser/extractSubmitFailureEvidence — any-4xx mode", () => {
       status: 200,
       responseBody: { ok: true },
     });
-    const out = extractSubmitFailureEvidence(["c1.json"], null, tmpDir, "any-4xx");
+    const out = extractSubmitFailureEvidence(["c1.json"], [], tmpDir, "any-4xx");
     expect(out).toBe("");
   });
 
@@ -1809,7 +1726,7 @@ describe("recon-browser/extractSubmitFailureEvidence — any-4xx mode", () => {
       status: 200,
       responseBody: { ok: true },
     });
-    const out = extractSubmitFailureEvidence(["c1.json"], null, tmpDir, "any-4xx");
+    const out = extractSubmitFailureEvidence(["c1.json"], [], tmpDir, "any-4xx");
     expect(out).toBe("");
   });
 });
@@ -1968,14 +1885,14 @@ describe("recon-browser/hasBillingErrorBeenLogged + billing-aware skip", () => {
 });
 
 describe("recon-browser/findRecentBackendError", () => {
-  const submitRx = /^https:\/\/example\.com\/api\/apply$/;
+  const ownHosts = ["example.com"];
 
-  it("returns null when the submit pattern is null", () => {
+  it("returns null when ownBackendHostnames is empty", () => {
     expect(
       findRecentBackendError({
         recentCaptureMeta: [{ method: "POST", status: 500, url: "https://example.com/api/apply" }],
         preMetaLength: 0,
-        submitEndpointPattern: null,
+        ownBackendHostnames: [],
       })
     ).toBeNull();
   });
@@ -1985,7 +1902,7 @@ describe("recon-browser/findRecentBackendError", () => {
       findRecentBackendError({
         recentCaptureMeta: [],
         preMetaLength: 0,
-        submitEndpointPattern: submitRx,
+        ownBackendHostnames: ownHosts,
       })
     ).toBeNull();
   });
@@ -1995,29 +1912,29 @@ describe("recon-browser/findRecentBackendError", () => {
       findRecentBackendError({
         recentCaptureMeta: [{ method: "POST", status: 500, url: "https://example.com/api/apply" }],
         preMetaLength: 1,
-        submitEndpointPattern: submitRx,
+        ownBackendHostnames: ownHosts,
       })
     ).toBeNull();
   });
 
-  it("returns the matched URL for a 5xx hitting the submit endpoint", () => {
+  it("returns the matched URL for a 5xx hitting the site's own backend", () => {
     expect(
       findRecentBackendError({
         recentCaptureMeta: [{ method: "POST", status: 500, url: "https://example.com/api/apply" }],
         preMetaLength: 0,
-        submitEndpointPattern: submitRx,
+        ownBackendHostnames: ownHosts,
       })
     ).toBe("https://example.com/api/apply");
   });
 
-  it("ignores 5xx on URLs that do not match the submit pattern (analytics noise)", () => {
+  it("ignores 5xx on URLs from third-party hosts (analytics noise)", () => {
     expect(
       findRecentBackendError({
         recentCaptureMeta: [
           { method: "POST", status: 503, url: "https://googleads.g.doubleclick.net/pixel" },
         ],
         preMetaLength: 0,
-        submitEndpointPattern: submitRx,
+        ownBackendHostnames: ownHosts,
       })
     ).toBeNull();
   });
@@ -2030,18 +1947,18 @@ describe("recon-browser/findRecentBackendError", () => {
           { method: "POST", status: 200, url: "https://example.com/api/apply" },
         ],
         preMetaLength: 0,
-        submitEndpointPattern: submitRx,
+        ownBackendHostnames: ownHosts,
       })
     ).toBeNull();
   });
 
-  it("matches any 5xx code (500-599) on the submit endpoint", () => {
+  it("matches any 5xx code (500-599) on the site's own backend", () => {
     for (const status of [500, 502, 503, 504, 599]) {
       expect(
         findRecentBackendError({
           recentCaptureMeta: [{ method: "POST", status, url: "https://example.com/api/apply" }],
           preMetaLength: 0,
-          submitEndpointPattern: submitRx,
+          ownBackendHostnames: ownHosts,
         })
       ).toBe("https://example.com/api/apply");
     }

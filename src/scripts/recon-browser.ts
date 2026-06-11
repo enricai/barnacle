@@ -47,6 +47,10 @@ import { z } from "zod/v4";
 import { config } from "@/config";
 import { toErrorMessage } from "@/lib/errors";
 import { configureHttpDispatcher } from "@/lib/http";
+import { judgeErrorMessagesWithLLM } from "@/lib/llm/judges/error-messages";
+import { judgeInvalidFieldsWithLLM } from "@/lib/llm/judges/invalid-fields";
+import { judgeModalPriorityWithLLM } from "@/lib/llm/judges/modal-priority";
+import { verifySubmitWithLLM } from "@/lib/llm/judges/verify-submit";
 import {
   RECON_FLOW_STEP_SCHEMA,
   REPHRASE_RESPONSE_SCHEMA,
@@ -513,12 +517,20 @@ async function snapshotPage(page: Page, signalCounter: { n: number }): Promise<S
  * the flow file's declared pattern.
  */
 function auditFinalSubmitMatch(params: {
-  submitEndpointPattern: string;
+  /**
+   * Hostnames considered "the site's own backend." A 2xx capture whose URL
+   * resolves to one of these hostnames is treated as proof the submit
+   * landed. Replaces the prior submitEndpointPattern regex with
+   * deterministic hostname equality on a URL component — no more URL-path
+   * pattern matching at the audit gate. Empty list = audit always returns
+   * "no proof of submit" (caller decides what that means).
+   */
+  ownBackendHostnames: readonly string[];
   capturesDir: string;
   logger: Logger;
 }): boolean {
-  const { submitEndpointPattern, capturesDir, logger } = params;
-  const compiled = new RegExp(submitEndpointPattern);
+  const { ownBackendHostnames, capturesDir, logger } = params;
+  if (ownBackendHostnames.length === 0) return true;
   let entries: string[];
   try {
     entries = readdirSync(capturesDir);
@@ -538,12 +550,19 @@ function auditFinalSubmitMatch(params: {
       };
       if (
         typeof data.url === "string" &&
-        compiled.test(data.url) &&
         typeof data.status === "number" &&
         data.status >= 200 &&
         data.status < 300
       ) {
-        return false;
+        let hostname: string;
+        try {
+          hostname = new URL(data.url).hostname;
+        } catch {
+          continue;
+        }
+        if (ownBackendHostnames.includes(hostname)) {
+          return false;
+        }
       }
     } catch {
       // Ignore unparseable capture files — they're either malformed or
@@ -568,14 +587,29 @@ function auditFinalSubmitMatch(params: {
 export function findRecentBackendError(params: {
   recentCaptureMeta: readonly { method: string; status: number; url: string }[];
   preMetaLength: number;
-  submitEndpointPattern: RegExp | null;
+  /**
+   * Hostnames considered "the site's own backend." Replaces the prior
+   * `submitEndpointPattern` regex — we no longer pattern-match URL paths,
+   * just check hostname against the site-supplied whitelist (deterministic
+   * string equality on a URL component, not a fuzzy regex). A 5xx from any
+   * URL whose hostname is on this list is treated as a backend error;
+   * 5xx from third-party hosts (analytics, CDNs) is ignored. Empty array
+   * disables the check entirely.
+   */
+  ownBackendHostnames: readonly string[];
 }): string | null {
-  const { recentCaptureMeta, preMetaLength, submitEndpointPattern } = params;
-  if (!submitEndpointPattern) return null;
+  const { recentCaptureMeta, preMetaLength, ownBackendHostnames } = params;
+  if (ownBackendHostnames.length === 0) return null;
   const window = recentCaptureMeta.slice(preMetaLength);
   for (const m of window) {
     if (m.status < 500 || m.status >= 600) continue;
-    if (!submitEndpointPattern.test(m.url)) continue;
+    let hostname: string;
+    try {
+      hostname = new URL(m.url).hostname;
+    } catch {
+      continue;
+    }
+    if (!ownBackendHostnames.includes(hostname)) continue;
     return m.url;
   }
   return null;
@@ -884,9 +918,10 @@ async function rephraseWithLLM(
   captureFn: CaptureFn = captureLlmCall,
   /**
    * Optional live-page form evidence extracted by the caller (typically by
-   * fetching document.body.outerHTML and running extractClassMatchedText on
-   * it). When non-empty, surfaces ng-invalid form fields and visible error
-   * messages so the rephrase LLM can propose corrective fills instead of
+   * fetching document.body.outerHTML and running the Haiku invalid-fields
+   * and error-messages judges on it). When non-empty, surfaces structurally
+   * invalid form fields and visible error messages so the rephrase LLM can
+   * propose corrective fills instead of
    * just "click harder" — the previous limitation observed in the
    * telemetry of the appcast Encompass run (every rephrase converged on
    * "Click Submit Application using JavaScript" because the prompt had no
@@ -934,7 +969,9 @@ async function rephraseWithLLM(
     .slice(0, 12)
     .map((a, i) => `${i + 1}. ${a.description} — ${a.selector}`)
     .join("\n");
-  const unfocusedList = unfocusedObserve ? renderUnfocusedObserve(unfocusedObserve) : "";
+  const unfocusedList = unfocusedObserve
+    ? await renderUnfocusedObserve(unfocusedObserve, { client, captureFn })
+    : "";
   const triedList = triedSelectors.length > 0 ? triedSelectors.join("\n") : "(none)";
   const reasonList = failureReasons.map((r, i) => `attempt ${i + 1}: ${r}`).join("\n");
   const invalidFieldList = pageEvidence?.invalidFieldList ?? "";
@@ -1150,6 +1187,43 @@ const RECON_FLOW_FILE_SCHEMA = z.union([
      * that genuinely rely on DOM-only verification.
      */
     requireSubmitEndpointMatch: z.boolean().optional(),
+    /**
+     * URL path fragments that indicate a successful submit transition.
+     * Surfaced to the Haiku verifySubmit judge as evidence — when the page
+     * URL after the click contains any of these, that's one of the strong
+     * signals required for verified=true. Examples: ["/applied",
+     * "/applyboard/applied", "/confirmation", "/thank-you"]. Site-specific
+     * since URL conventions vary across AppCast tenants and ClearCompany
+     * tenants.
+     */
+    successUrlFragments: z.array(z.string().min(1)).optional(),
+    /**
+     * Page-title substrings that indicate a successful submit. Same role as
+     * successUrlFragments — strong signal for the Haiku verifySubmit judge.
+     * Examples: ["Thank you", "Application submitted", "Submitted
+     * successfully", "Confirmation"]. English-only is fine; the judge can
+     * still reason about non-English variants from the DOM signals.
+     */
+    successPageTitleHints: z.array(z.string().min(1)).optional(),
+    /**
+     * Hostnames considered "the site's own backend." The Haiku
+     * verifySubmit judge treats a 2xx POST/PUT/DELETE to one of these
+     * hostnames as a corroborating network signal — anything else (e.g.
+     * analytics, third-party trackers, CDNs) is ignored. Without this
+     * list the judge falls back to the URL alone, which is weaker.
+     * Examples: ["apply.appcast.io"], ["careers.clearcompany.com",
+     * "<tenant>.clearcompany.com"].
+     */
+    ownBackendHostnames: z.array(z.string().min(1)).optional(),
+    /**
+     * Optional site-specific class-name prefixes that wrap form/error
+     * state. The Haiku invalid-fields judge uses these as additional
+     * structural evidence beyond framework-conventional patterns
+     * (ng-invalid, aria-invalid, data-invalid). Examples for AppCast:
+     * ["uapp-", "app-"]. When omitted, the judge falls back to framework
+     * conventions alone.
+     */
+    knownErrorClassPrefixes: z.array(z.string().min(1)).optional(),
   }),
 ]);
 
@@ -1274,6 +1348,14 @@ function persistReplannedFlow(params: {
   submittedStateSelectors?: string[];
   /** Carried through when the original file opted into network-authoritative verification. */
   requireSubmitEndpointMatch?: boolean;
+  /** Carried through when the original file declared success-URL fragments for the Haiku verifier. */
+  successUrlFragments?: string[];
+  /** Carried through when the original file declared success-page-title hints for the Haiku verifier. */
+  successPageTitleHints?: string[];
+  /** Carried through when the original file declared own-backend hostnames for the Haiku verifier. */
+  ownBackendHostnames?: string[];
+  /** Carried through when the original file declared known error-class prefixes for the Haiku judges. */
+  knownErrorClassPrefixes?: string[];
 }): void {
   const {
     flowFile,
@@ -1284,6 +1366,10 @@ function persistReplannedFlow(params: {
     submitEndpointPattern = null,
     submittedStateSelectors = [],
     requireSubmitEndpointMatch = false,
+    successUrlFragments = [],
+    successPageTitleHints = [],
+    ownBackendHostnames = [],
+    knownErrorClassPrefixes = [],
   } = params;
   // Timestamp format chosen to be filesystem-safe (no colons or dots that
   // break common tooling on macOS/Windows).
@@ -1329,6 +1415,10 @@ function persistReplannedFlow(params: {
           ...(submitEndpointPattern !== null ? { submitEndpointPattern } : {}),
           ...(submittedStateSelectors.length > 0 ? { submittedStateSelectors } : {}),
           ...(requireSubmitEndpointMatch ? { requireSubmitEndpointMatch } : {}),
+          ...(successUrlFragments.length > 0 ? { successUrlFragments } : {}),
+          ...(successPageTitleHints.length > 0 ? { successPageTitleHints } : {}),
+          ...(ownBackendHostnames.length > 0 ? { ownBackendHostnames } : {}),
+          ...(knownErrorClassPrefixes.length > 0 ? { knownErrorClassPrefixes } : {}),
         }
       : dedupedSteps;
   writeFileSync(flowFile, `${JSON.stringify(payload, null, 2)}\n`);
@@ -1367,44 +1457,8 @@ function persistReplannedFlow(params: {
  * LLM-filtered candidate list. The dump file is a trust boundary (anything
  * could be on disk), so the body field is type-narrowed before slicing.
  */
-/** Cap on per-list entries we feed back into the LLM prompt — keeps the
- * prompt token budget bounded even on pathological pages with many invalid
- * fields. Matches the existing `unfocusedList` slice for visual symmetry. */
-const EVIDENCE_LIST_CAP = 12;
-
-/** Cap on character-length of an evidence entry's text content. The point is
- * the *label* and *error signature*, not a paragraph. Anything longer is
- * almost certainly a layout container that swept up siblings. */
-const EVIDENCE_ENTRY_MAX_CHARS = 200;
-
-/**
- * Strip HTML tags and condense whitespace. Cheap-and-cheerful — we only need
- * a readable label, not faithful rendering. Decodes the handful of named
- * entities that show up in form error messages.
- */
-function stripHtml(html: string): string {
-  return html
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 /** Cap on the unfocused-observe list rendered into LLM-recovery prompts. */
 const UNFOCUSED_OBSERVE_CAP = 30;
-
-/** Pattern matching the most actionable structural UI affordances — modals,
- * dialogs, popups, overlays. Stagehand's observe describes elements in
- * natural language using these terms, and the LLM-cascade gains the most
- * leverage from seeing them surfaced because they usually indicate a
- * pending interaction (Save/Close/Confirm) the cascade must complete
- * before the form's enclosing validity clears. */
-const MODAL_PRIORITY_RX = /(modal|dialog|popup|overlay|drawer)/i;
 
 /**
  * Render an unfocused-observe array into a numbered string the prompt can
@@ -1414,67 +1468,53 @@ const MODAL_PRIORITY_RX = /(modal|dialog|popup|overlay|drawer)/i;
  * dump — 11 modal entries lived at positions 64-79 of 80) get truncated
  * away by the cap and the LLM-replan can't propose to save/close them.
  */
-function renderUnfocusedObserve(
+async function renderUnfocusedObserve(
   observations: Action[],
-  cap: number = UNFOCUSED_OBSERVE_CAP
-): string {
-  const modalHits: Action[] = [];
-  const others: Action[] = [];
-  for (const a of observations) {
-    const desc = a.description || "";
-    if (MODAL_PRIORITY_RX.test(desc)) {
-      modalHits.push(a);
-    } else {
-      others.push(a);
-    }
+  options?: {
+    cap?: number;
+    client?: Anthropic | null;
+    captureFn?: CaptureFn;
   }
-  const combined = [...modalHits, ...others].slice(0, cap);
-  return combined.map((a, i) => `${i + 1}. ${a.description} — ${a.selector}`).join("\n");
-}
+): Promise<string> {
+  const cap = options?.cap ?? UNFOCUSED_OBSERVE_CAP;
+  const client = options?.client ?? null;
+  const captureFn = options?.captureFn;
 
-/**
- * Scan the page body HTML for opening tags whose class attribute matches a
- * marker pattern. Returns a short text snippet from each match's
- * immediately-following content (capped at EVIDENCE_ENTRY_MAX_CHARS) tagged
- * with the relevant class signature.
- *
- * Pure string scan; no DOM parser. Intentionally only checks the class on
- * each *opening tag* (not "this element's full subtree class signature") so
- * nested invalid descendants don't get attributed to an outer valid parent
- * via greedy matching of an outer-tag close. False positives are acceptable
- * in an advisory evidence section — extra noise is strictly better than the
- * current zero signal.
- */
-function extractClassMatchedText(html: string, classPattern: RegExp, cap: number): string[] {
-  // Match each opening tag with a class attribute. No closing-tag anchor —
-  // we just look at content following the tag, up to a bounded window.
-  const tagPattern = /<([a-zA-Z][a-zA-Z0-9-]*)\b[^>]*?\bclass=("[^"]*"|'[^']*')[^>]*?>/g;
-  const entries: string[] = [];
-  let m: RegExpExecArray | null;
-  m = tagPattern.exec(html);
-  while (m !== null) {
-    const classValue = m[2]!.slice(1, -1);
-    if (classPattern.test(classValue)) {
-      // Look at up to 600 chars of HTML following this opening tag — enough
-      // to capture the label / first error-message text but bounded so a
-      // single match doesn't sweep up half the page.
-      const followingWindow = html.slice(m.index + m[0].length, m.index + m[0].length + 600);
-      const text = stripHtml(followingWindow).slice(0, EVIDENCE_ENTRY_MAX_CHARS);
-      if (text.length > 0) {
-        // Tag a short class fingerprint so the LLM can correlate signature
-        // patterns (e.g. "ng-invalid + ng-touched" = user-interacted invalid).
-        const classFingerprint = classValue
-          .split(/\s+/)
-          .filter((c) => classPattern.test(c) || /(invalid|error|required)/i.test(c))
-          .slice(0, 4)
-          .join(" ");
-        entries.push(`${text}${classFingerprint ? `  [${classFingerprint}]` : ""}`);
-        if (entries.length >= cap) break;
-      }
-    }
-    m = tagPattern.exec(html);
+  if (observations.length === 0) return "";
+
+  // Ask the Haiku judge which observations are blocking modals/dialogs/
+  // overlays. Returns indices to bubble to the top. When the judge is
+  // unavailable (null client / API failure), we leave the original order
+  // untouched — fail-safe: showing observations in source order is the
+  // pre-migration baseline. Stagehand's LLM-emitted descriptions
+  // already tend to cluster modals near the top of its results, so the
+  // ordering on the fallback path isn't catastrophic.
+  const judgeVerdict = await judgeModalPriorityWithLLM({
+    client,
+    input: {
+      observations: observations.map((a) => ({
+        description: a.description || "",
+        selector: a.selector,
+      })),
+    },
+    captureFn,
+  });
+
+  let combined: Action[];
+  if (judgeVerdict !== null && judgeVerdict.priorityIndices.length > 0) {
+    const priorityIdx = new Set(judgeVerdict.priorityIndices);
+    const priorityHits: Action[] = [];
+    const others: Action[] = [];
+    observations.forEach((a, i) => {
+      if (priorityIdx.has(i)) priorityHits.push(a);
+      else others.push(a);
+    });
+    combined = [...priorityHits, ...others].slice(0, cap);
+  } else {
+    combined = observations.slice(0, cap);
   }
-  return entries;
+
+  return combined.map((a, i) => `${i + 1}. ${a.description} — ${a.selector}`).join("\n");
 }
 
 /**
@@ -1499,16 +1539,12 @@ export interface ValidationRejectionPair {
 }
 
 /**
- * Pair `ng-invalid + ng-touched + ng-dirty` field entries from
- * invalidFieldList with their positionally-adjacent error text from
- * errorTextList. Strategy is positional (not cross-product) — entry N
- * pairs with entry N — because the engine's extractClassMatchedText
- * walks the DOM in document order, so the Nth invalid container's
- * sibling error message tends to be the Nth error entry. The
- * touched+dirty gate ensures we only surface "we already filled this,
- * it's still rejected" (the actionable case); pristine + invalid means
- * "user never touched it" which is a different problem the existing
- * submit-revealed-invalid signal handles.
+ * Pair invalid-marked field entries from invalidFieldList with their
+ * positionally-adjacent error text from errorTextList. Strategy is
+ * positional (not cross-product) — entry N pairs with entry N — because
+ * the Haiku judges return fields and messages in DOM document order, so
+ * the Nth invalid container's sibling error message tends to be the Nth
+ * error entry.
  *
  * Returns an empty array when no entries match — pure additive signal,
  * silent no-op on sites whose forms don't follow this DOM convention.
@@ -1558,7 +1594,14 @@ export function formatValidationRejectedReason(pair: ValidationRejectionPair): s
   return `validation-rejected: '${pair.fieldLabel}' rejected with '${pair.errorText}'; propose a different value or return impossible`;
 }
 
-async function extractLivePageFormEvidence(page: Page): Promise<{
+async function extractLivePageFormEvidence(
+  page: Page,
+  options?: {
+    client?: Anthropic | null;
+    knownErrorClassPrefixes?: readonly string[];
+    captureFn?: CaptureFn;
+  }
+): Promise<{
   invalidFieldList: string;
   errorTextList: string;
   interactiveTargetsList: string;
@@ -1570,18 +1613,50 @@ async function extractLivePageFormEvidence(page: Page): Promise<{
   } catch {
     return { invalidFieldList: "", errorTextList: "", interactiveTargetsList: "" };
   }
-  const invalidPattern =
-    /(ng-invalid|mat-form-field-invalid|is-invalid|field-invalid|input-invalid|form-invalid)/;
-  const errorPattern =
-    /(error-message|mat-error|field-error|validation-error|required-message|invalid-feedback|form-error|help-block-error)/;
-  const invalidEntries = extractClassMatchedText(body, invalidPattern, EVIDENCE_LIST_CAP);
-  const errorEntries = extractClassMatchedText(body, errorPattern, EVIDENCE_LIST_CAP);
-  const interactiveTargets = await extractInteractiveTargetsNearInvalid(page).catch(
-    () => [] as string[]
-  );
+
+  // Truncate the body to keep Haiku TTFT in budget. The first 8KB carries
+  // the form structure with high fidelity; below-fold content rarely
+  // includes new invalid markers since the cascade interacts with
+  // above-fold form fields first.
+  const bodyExcerpt = body.slice(0, 8000);
+
+  const client = options?.client ?? null;
+  const knownErrorClassPrefixes = options?.knownErrorClassPrefixes ?? [];
+  const captureFn = options?.captureFn;
+
+  // Run the two Haiku judges in parallel. Each returns null when the
+  // client is unavailable (Bedrock-only deployment) — callers fall back
+  // to the empty-string default, same as if no invalid markers had been
+  // present. No more regex-on-fuzzy-data anywhere in this codepath.
+  const [invalidVerdict, errorVerdict, interactiveTargets] = await Promise.all([
+    judgeInvalidFieldsWithLLM({
+      client,
+      input: { bodyHtmlExcerpt: bodyExcerpt, knownErrorClassPrefixes },
+      captureFn,
+    }),
+    judgeErrorMessagesWithLLM({
+      client,
+      input: { bodyHtmlExcerpt: bodyExcerpt },
+      captureFn,
+    }),
+    extractInteractiveTargetsNearInvalid(page).catch(() => [] as string[]),
+  ]);
+
+  const invalidLines =
+    invalidVerdict?.fields.map((f) => {
+      const label = f.label ?? "(unlabeled)";
+      return `${label}  [${f.framework} ${f.markerKind}] ${f.containerXpath}`;
+    }) ?? [];
+
+  const errorLines =
+    errorVerdict?.messages.map((m) => {
+      const field = m.fieldHint ? `[${m.fieldHint}] ` : "";
+      return `${field}${m.severity}: ${m.text}`;
+    }) ?? [];
+
   return {
-    invalidFieldList: invalidEntries.map((e, i) => `${i + 1}. ${e}`).join("\n"),
-    errorTextList: errorEntries.map((e, i) => `${i + 1}. ${e}`).join("\n"),
+    invalidFieldList: invalidLines.map((e, i) => `${i + 1}. ${e}`).join("\n"),
+    errorTextList: errorLines.map((e, i) => `${i + 1}. ${e}`).join("\n"),
     interactiveTargetsList: interactiveTargets.map((e, i) => `${i + 1}. ${e}`).join("\n"),
   };
 }
@@ -1669,12 +1744,20 @@ async function extractInteractiveTargetsNearInvalid(page: Page): Promise<string[
  */
 export function extractSubmitFailureEvidence(
   recentCaptureFilenames: readonly string[],
-  submitEndpointPattern: RegExp | null,
+  /**
+   * Hostnames considered "the site's own backend." In strict mode, only 4xx
+   * responses from one of these hostnames count as submit failures (we
+   * don't surface third-party CDN/analytics 4xx as form-rejection
+   * evidence). Replaces the prior `submitEndpointPattern` regex with
+   * deterministic hostname equality. Empty list / "any-4xx" mode disables
+   * the host filter and returns any 4xx in the window.
+   */
+  ownBackendHostnames: readonly string[],
   capturesDir: string = CAPTURES_DIR,
   mode: "strict" | "any-4xx" = "strict"
 ): string {
   if (recentCaptureFilenames.length === 0) return "";
-  if (mode === "strict" && !submitEndpointPattern) return "";
+  if (mode === "strict" && ownBackendHostnames.length === 0) return "";
   const records: string[] = [];
   const seen = new Set<string>();
   for (const filename of recentCaptureFilenames.slice(-20)) {
@@ -1685,7 +1768,15 @@ export function extractSubmitFailureEvidence(
       const raw = readFileSync(path, "utf8");
       const capture = JSON.parse(raw) as Partial<Capture>;
       if (typeof capture.url !== "string") continue;
-      if (mode === "strict" && !submitEndpointPattern!.test(capture.url)) continue;
+      if (mode === "strict") {
+        let hostname: string;
+        try {
+          hostname = new URL(capture.url).hostname;
+        } catch {
+          continue;
+        }
+        if (!ownBackendHostnames.includes(hostname)) continue;
+      }
       const status = typeof capture.status === "number" ? capture.status : 0;
       if (status < 400) continue;
       const body = capture.responseBody;
@@ -1751,13 +1842,20 @@ function harvestFieldErrors(body: unknown): string[] {
   return out;
 }
 
-function readFailureDumpEvidence(failureDumpPath: string): {
+async function readFailureDumpEvidence(
+  failureDumpPath: string,
+  options?: {
+    client?: Anthropic | null;
+    knownErrorClassPrefixes?: readonly string[];
+    captureFn?: CaptureFn;
+  }
+): Promise<{
   bodyExcerpt: string;
   unfocusedList: string;
   invalidFieldList: string;
   errorTextList: string;
   recentFailureReasons: string[];
-} {
+}> {
   try {
     const dump = JSON.parse(readFileSync(failureDumpPath, "utf8")) as {
       bodyOuterHtml?: string | null;
@@ -1766,24 +1864,41 @@ function readFailureDumpEvidence(failureDumpPath: string): {
     };
     const rawBody = dump.bodyOuterHtml;
     const bodyExcerpt = typeof rawBody === "string" ? rawBody.slice(0, 8000) : "";
-    const unfocusedList = renderUnfocusedObserve(dump.unfocusedObserve ?? []);
 
-    const fullBody = typeof rawBody === "string" ? rawBody : "";
-    // Framework-agnostic invalid-state markers. Covers Angular (`ng-invalid`,
-    // `mat-form-field-invalid`), Bootstrap (`is-invalid`), and the generic
-    // `*-invalid` / `field-invalid` patterns most form libraries adopt.
-    const invalidPattern =
-      /(ng-invalid|mat-form-field-invalid|is-invalid|field-invalid|input-invalid|form-invalid)/;
-    const invalidEntries = extractClassMatchedText(fullBody, invalidPattern, EVIDENCE_LIST_CAP);
-    const invalidFieldList = invalidEntries.map((e, i) => `${i + 1}. ${e}`).join("\n");
+    const client = options?.client ?? null;
+    const knownErrorClassPrefixes = options?.knownErrorClassPrefixes ?? [];
+    const captureFn = options?.captureFn;
 
-    // Visible error/required-message containers. The class-pattern union
-    // catches the common naming conventions across Material, Bootstrap,
-    // custom Angular forms, and React form libraries.
-    const errorPattern =
-      /(error-message|mat-error|field-error|validation-error|required-message|invalid-feedback|form-error|help-block-error)/;
-    const errorEntries = extractClassMatchedText(fullBody, errorPattern, EVIDENCE_LIST_CAP);
-    const errorTextList = errorEntries.map((e, i) => `${i + 1}. ${e}`).join("\n");
+    // Run the modal-priority, invalid-fields, and error-messages judges in
+    // parallel. Each returns null when client is unavailable (Bedrock-only)
+    // or when the API call fails — callers fall back to empty strings.
+    const [unfocusedList, invalidVerdict, errorVerdict] = await Promise.all([
+      renderUnfocusedObserve(dump.unfocusedObserve ?? [], { client, captureFn }),
+      judgeInvalidFieldsWithLLM({
+        client,
+        input: { bodyHtmlExcerpt: bodyExcerpt, knownErrorClassPrefixes },
+        captureFn,
+      }),
+      judgeErrorMessagesWithLLM({
+        client,
+        input: { bodyHtmlExcerpt: bodyExcerpt },
+        captureFn,
+      }),
+    ]);
+
+    const invalidLines =
+      invalidVerdict?.fields.map((f) => {
+        const label = f.label ?? "(unlabeled)";
+        return `${label}  [${f.framework} ${f.markerKind}] ${f.containerXpath}`;
+      }) ?? [];
+    const invalidFieldList = invalidLines.map((e, i) => `${i + 1}. ${e}`).join("\n");
+
+    const errorLines =
+      errorVerdict?.messages.map((m) => {
+        const field = m.fieldHint ? `[${m.fieldHint}] ` : "";
+        return `${field}${m.severity}: ${m.text}`;
+      }) ?? [];
+    const errorTextList = errorLines.map((e, i) => `${i + 1}. ${e}`).join("\n");
 
     // Trailing slice of attempt error messages. The dump's per-attempt
     // errorMessage carries the verifier's structured reason (e.g.
@@ -1829,8 +1944,20 @@ async function replanRemainingFlow(params: {
    * to the replan LLM when a submit actually fired but was rejected.
    */
   recentCaptures?: readonly string[];
-  /** Compiled submit-endpoint regex from the flow file, when defined. */
-  submitEndpointPattern?: RegExp | null;
+  /**
+   * Hostnames considered "the site's own backend" — passed through to
+   * extractSubmitFailureEvidence to filter which 4xx captures count as
+   * form-rejection evidence vs third-party CDN/analytics noise. Replaces
+   * the prior compiled submit-endpoint regex with deterministic hostname
+   * equality on a structured URL component.
+   */
+  ownBackendHostnames?: readonly string[];
+  /**
+   * Site-supplied class-name prefixes that wrap error/invalid state markers.
+   * Threaded into the readFailureDumpEvidence judge calls so the Haiku
+   * invalid-fields and error-messages judges get site-specific hints.
+   */
+  knownErrorClassPrefixes?: readonly string[];
   /**
    * Optional short tail of prior steps' verification signals (network,
    * url, dom, submitted-state-dom). When provided, the prompt gets a
@@ -1861,7 +1988,8 @@ async function replanRemainingFlow(params: {
     stagehand,
     captureFn = captureLlmCall,
     recentCaptures = [],
-    submitEndpointPattern = null,
+    ownBackendHostnames = [],
+    knownErrorClassPrefixes: replanKnownErrorClassPrefixes = [],
     trajectory = [],
     priorReplans = [],
   } = params;
@@ -1888,16 +2016,20 @@ async function replanRemainingFlow(params: {
   const candidates = await guardedObserve(stagehand, undefined, {
     timeout: STEP_WATCHDOG_MS,
   }).catch(() => [] as Action[]);
-  const candidateList = renderUnfocusedObserve(candidates);
+  const candidateList = await renderUnfocusedObserve(candidates, { client, captureFn });
   const pageTitle = await page.title().catch(() => "");
 
   // Without raw DOM in the prompt, the LLM only sees stagehand.observe()'s
   // filtered candidate list and hallucinates about surrounding state
   // (auth-wall reset, closed-message interstitial, etc.).
   const { bodyExcerpt, unfocusedList, invalidFieldList, errorTextList, recentFailureReasons } =
-    readFailureDumpEvidence(failureDumpPath);
+    await readFailureDumpEvidence(failureDumpPath, {
+      client,
+      knownErrorClassPrefixes: replanKnownErrorClassPrefixes,
+      captureFn,
+    });
   const failureReasonList = recentFailureReasons.map((r, i) => `${i + 1}. ${r}`).join("\n");
-  const submitFailureList = extractSubmitFailureEvidence(recentCaptures, submitEndpointPattern);
+  const submitFailureList = extractSubmitFailureEvidence(recentCaptures, ownBackendHostnames);
 
   const prompt = `You are helping a browser automation agent recover from a failed flow step.
 
@@ -2905,6 +3037,31 @@ async function executeStepWithHealing(params: {
    */
   requireSubmitEndpointMatch: boolean;
   /**
+   * URL path fragments that indicate a successful submit transition.
+   * Surfaced to the Haiku verifySubmit judge as one of the strong
+   * corroborating signals (DOM/URL/title) required for verified=true.
+   * Site-supplied via the flow file. Empty array = no URL hints.
+   */
+  successUrlFragments: string[];
+  /**
+   * Page-title substrings that indicate a successful submit. Same role as
+   * successUrlFragments. Site-supplied via the flow file. Empty = no hints.
+   */
+  successPageTitleHints: string[];
+  /**
+   * Hostnames considered "the site's own backend." A 2xx POST/PUT/DELETE
+   * to one of these hostnames within the attempt window is a corroborating
+   * network signal for the Haiku verifySubmit judge. Site-supplied via the
+   * flow file. Empty array means the judge ignores network signals.
+   */
+  ownBackendHostnames: string[];
+  /**
+   * Optional site-specific class-name prefixes that wrap form/error
+   * state. Surfaced to the Haiku invalid-fields judge as additional
+   * structural evidence. Empty array = framework-conventional only.
+   */
+  knownErrorClassPrefixes: string[];
+  /**
    * Optional accumulator the cascade pushes onto when this step verifies.
    * Lets the main loop maintain a short cross-step trajectory of `verifiedBy`
    * signals (network / url / dom / submitted-state-dom) which is then
@@ -2934,10 +3091,25 @@ async function executeStepWithHealing(params: {
     submitEndpointPattern,
     submittedStateSelectors,
     requireSubmitEndpointMatch,
+    successUrlFragments,
+    successPageTitleHints,
+    ownBackendHostnames,
+    knownErrorClassPrefixes,
     trajectory,
   } = params;
+  // Read-once to suppress "unused" — knownErrorClassPrefixes is threaded
+  // through executeStepWithHealing's signature so the cascade has it in
+  // scope when the invalid-fields judge migration (Task #43) lands. The
+  // judges already exist (src/lib/llm/judges/invalid-fields.ts); the
+  // remaining work is wiring them into extractLivePageFormEvidence.
+  void knownErrorClassPrefixes;
+  // requireSubmitEndpoint gates the Haiku verifySubmit judge. We retain the
+  // submitEndpointPattern field as a hint (some downstream code paths still
+  // read the original pattern to feed extractSubmitFailureEvidence with a
+  // submit-specific filter), but the verifier itself no longer treats the
+  // pattern as a hard regex check — verifySubmitWithLLM reasons over
+  // multi-signal evidence with strict prompting instead.
   const requireSubmitEndpoint = isFinalStep && submitEndpointPattern !== null;
-  const compiledSubmitPattern = requireSubmitEndpoint ? new RegExp(submitEndpointPattern!) : null;
   const attempts: AttemptRecord[] = [];
   const triedSelectors: string[] = [];
   const failureReasons: string[] = [];
@@ -3001,7 +3173,7 @@ async function executeStepWithHealing(params: {
     const backendErrorUrl = findRecentBackendError({
       recentCaptureMeta,
       preMetaLength: stepStartMetaLength,
-      submitEndpointPattern: submitEndpointPattern ? new RegExp(submitEndpointPattern) : null,
+      ownBackendHostnames,
     });
     if (backendErrorUrl !== null) {
       logger.error(
@@ -3382,7 +3554,11 @@ async function executeStepWithHealing(params: {
           // Fetch live-page evidence so the rephrase prompt can reason about
           // form state, not just observe candidates. Mirrors the same
           // extraction the cascade-exhaust dump path already does.
-          const livePageEvidence = await extractLivePageFormEvidence(page);
+          const livePageEvidence = await extractLivePageFormEvidence(page, {
+            client: anthropic,
+            knownErrorClassPrefixes,
+            captureFn,
+          });
           // Unfocused observe so the rephrase prompt can see ambient UI
           // like modal Save/Close buttons that the focused candidates
           // (filtered by the failed step's instruction) would hide.
@@ -3391,7 +3567,7 @@ async function executeStepWithHealing(params: {
           }).catch(() => [] as Action[]);
           const submitFailureList = extractSubmitFailureEvidence(
             recentCaptures,
-            submitEndpointPattern ? new RegExp(submitEndpointPattern) : null
+            ownBackendHostnames
           );
           const priorAttemptsForPrompt = attempts.map((a, i) => ({
             technique: a.technique,
@@ -3456,37 +3632,32 @@ async function executeStepWithHealing(params: {
         : false;
     let verified = networkFired || urlChanged || domVerified;
 
-    // Final-step pattern gate. When the flow declared a submit endpoint
-    // pattern, we additionally require at least one same-origin POST in this
-    // attempt's mutation window whose URL matches the pattern. Without this,
-    // clicks that only fire client-side handlers (e.g. analytics beacons that
-    // sneak past same-origin filtering, or clicks that bump htmlDelta via a
-    // disabled-button tooltip) get a false-positive verified=true.
-    if (verified && requireSubmitEndpoint && compiledSubmitPattern) {
+    // Final-step submit-verification gate. Replaces the deterministic
+    // submitEndpointPattern regex with a Haiku 4.5 LLM judgment over
+    // multi-signal evidence (network captures, page URL/title, DOM
+    // submitted-state probe, site-supplied criteria). The regex
+    // mislabeled successful submits as failures whenever AppCast used a
+    // POST URL outside the regex's narrow expectation — empirically
+    // observed in last night's sweep and validated 2026-06-11 against
+    // claude-haiku-4-5-20251001 with the SUBMIT_VERDICT_SCHEMA.
+    //
+    // Strictness: verifySubmitWithLLM's system prompt forbids verified=true
+    // unless there's at least one DOM/URL/title signal of post-submit
+    // state. A 2xx network response alone is insufficient (could be
+    // telemetry). The Haiku judge defaults to verified=false when
+    // ambiguous — strong evidence, not lax permission.
+    if (verified && requireSubmitEndpoint) {
       // Cap the scan from preMetaLength so we don't accept a historical
       // submit-shaped capture from an earlier step as proof for this one.
       const tail = recentCaptureMeta.slice(preMetaLength);
-      const matched = tail.some((m) => compiledSubmitPattern.test(m.url));
-      if (!matched) {
-        // DOM-state fallback. Some SPAs swap the form for a thank-you
-        // component faster than the network capture pipeline records the
-        // submit POST — the verifier sees zero matching captures even
-        // though the submit went through. If the flow declared any
-        // submittedStateSelectors and ANY is present in the DOM right
-        // now, treat the submit as verified via the DOM marker.
-        //
-        // When the flow declares `requireSubmitEndpointMatch: true`, this
-        // fallback is suppressed — sites that opt in are saying "the
-        // network capture is the source of truth for me; do NOT accept
-        // an optimistic SPA navigation as proof of submission."
-        let domSubmittedMatch: string | null = null;
-        if (!requireSubmitEndpointMatch && submittedStateSelectors.length > 0) {
-          // page.evaluate via template string keeps the DOM globals out of
-          // the Node TS scope. Each selector is JSON-stringified so an
-          // accidental quote/backslash in the flow file can't break out
-          // of the inlined JS expression.
-          const selectorsJson = JSON.stringify(submittedStateSelectors);
-          const probeExpr = `(() => {
+
+      // DOM-state probe: which submitted-state selectors (if any) match
+      // the current DOM right now? Deterministic querySelector — not
+      // pattern-matching. The result becomes evidence for the LLM judge.
+      let domSubmittedMatch: string | null = null;
+      if (submittedStateSelectors.length > 0) {
+        const selectorsJson = JSON.stringify(submittedStateSelectors);
+        const probeExpr = `(() => {
             const sels = ${selectorsJson};
             for (const sel of sels) {
               try {
@@ -3495,17 +3666,56 @@ async function executeStepWithHealing(params: {
             }
             return null;
           })()`;
-          try {
-            domSubmittedMatch = (await page.evaluate(probeExpr)) as string | null;
-          } catch (err) {
-            logger.warn(
-              `submitted-state DOM probe threw: ${toErrorMessage(err)} — falling back to network-only verdict`
-            );
-          }
+        try {
+          domSubmittedMatch = (await page.evaluate(probeExpr)) as string | null;
+        } catch (err) {
+          logger.warn(
+            `submitted-state DOM probe threw: ${toErrorMessage(err)} — judge will reason without it`
+          );
         }
-        if (domSubmittedMatch !== null) {
+      }
+
+      // Build the unfocused-observe evidence list. Used by the judge to
+      // assess whether the page transitioned to a success state.
+      const unfocusedForJudge = await guardedObserve(stagehand, undefined, {
+        timeout: STEP_WATCHDOG_MS,
+      }).catch(() => [] as Action[]);
+
+      // Quick invalid-marker count (deterministic DOM querying — counting
+      // structural ng-invalid containers is not fuzzy matching, just
+      // observing existence).
+      const invalidMarkerCount = await countNgInvalidContainers(page).catch(() => 0);
+
+      const pageTitle = await page.title().catch(() => "");
+      const matchedSubmittedSelectors = domSubmittedMatch !== null ? [domSubmittedMatch] : [];
+
+      const judgeVerdict = await verifySubmitWithLLM({
+        client: anthropic,
+        input: {
+          pageUrl: post.url,
+          pageTitle,
+          unfocusedObserve: unfocusedForJudge.map((a) => ({
+            description: a.description,
+            selector: a.selector,
+          })),
+          networkCaptures: tail,
+          invalidMarkerCount,
+          ownBackendHostnames,
+          successUrlFragments,
+          successPageTitleHints,
+          submittedStateSelectors: matchedSubmittedSelectors,
+        },
+        captureFn,
+      });
+
+      if (judgeVerdict === null) {
+        // Bedrock-only deployment or judge call failed entirely. Fall back
+        // to the DOM-state probe + requireSubmitEndpointMatch policy: if a
+        // submitted-state selector matched and the site didn't require
+        // network-authoritative verification, treat as verified-by-DOM.
+        if (!requireSubmitEndpointMatch && domSubmittedMatch !== null) {
           logger.info(
-            `submit verified via submitted-state DOM selector '${domSubmittedMatch}' (network capture missed the attempt window)`
+            `submit verified via submitted-state DOM selector '${domSubmittedMatch}' (judge unavailable)`
           );
           record.verifiedBy = "submitted-state-dom";
         } else {
@@ -3513,28 +3723,33 @@ async function executeStepWithHealing(params: {
           record.errorMessage =
             (record.errorMessage ?? "") +
             (record.errorMessage ? "; " : "") +
-            `submit-endpoint-not-matched: pattern ${submitEndpointPattern!} did not match any of ${tail.length} attempt-window capture(s)`;
-          failureReasons.push(
-            `submit-endpoint-not-matched: ${tail.length} capture(s) seen, none matched ${submitEndpointPattern!}`
-          );
-          // Any-4xx fallback. When the configured submit pattern didn't
-          // match BUT some same-window capture returned a 4xx (CSRF
-          // redirect to /errors, generic CDN error page, etc.), the
-          // structured field-level error JSON in that 4xx body is still
-          // actionable for the rephrase prompt. Surface it as a separate
-          // failureReason so the LLM sees the server's actual rejection
-          // reason instead of just "endpoint pattern didn't match".
-          const fallbackEvidence = extractSubmitFailureEvidence(
-            recentCaptures.slice(-tail.length),
-            null,
-            CAPTURES_DIR,
-            "any-4xx"
-          );
-          if (fallbackEvidence.length > 0) {
-            failureReasons.push(
-              `any-4xx fallback: ${fallbackEvidence.split("\n")[0]}`.slice(0, 240)
-            );
-          }
+            "submit-judge-unavailable: no DOM-state match either";
+          failureReasons.push("submit-judge-unavailable: no fallback DOM-state match");
+        }
+      } else if (judgeVerdict.verified) {
+        logger.info(
+          `submit verified by judge: ${judgeVerdict.rationale} (dom=${judgeVerdict.dom_signal ?? "—"}, url=${judgeVerdict.url_signal ?? "—"})`
+        );
+        record.verifiedBy = judgeVerdict.dom_signal !== null ? "submitted-state-dom" : "url";
+      } else {
+        verified = false;
+        record.errorMessage =
+          (record.errorMessage ?? "") +
+          (record.errorMessage ? "; " : "") +
+          `submit-judge-rejected: ${judgeVerdict.reason}`;
+        failureReasons.push(`submit-judge-rejected: ${judgeVerdict.reason}`);
+
+        // Any-4xx fallback. The judge said failed; surface any captured 4xx
+        // body's field-level error JSON for the rephrase prompt downstream
+        // — same role as before the migration.
+        const fallbackEvidence = extractSubmitFailureEvidence(
+          recentCaptures.slice(-tail.length),
+          [],
+          CAPTURES_DIR,
+          "any-4xx"
+        );
+        if (fallbackEvidence.length > 0) {
+          failureReasons.push(`any-4xx fallback: ${fallbackEvidence.split("\n")[0]}`.slice(0, 240));
         }
       }
     }
@@ -3645,20 +3860,17 @@ async function executeStepWithHealing(params: {
             checkboxStateVerified;
           // Apply the same submit-endpoint gate the primary verifier uses.
           // Without this, the n+16 fallback would still ride past a
-          // tracking-pixel-only click on the final step (DOM mutates via a
-          // disabled-button tooltip, htmlDelta != 0, fallback declares victory).
-          if (retryVerified && requireSubmitEndpoint && compiledSubmitPattern) {
+          // tracking-pixel-only click on the final step. Same Haiku LLM
+          // judgment as the primary verifier — multi-signal corroboration
+          // replaces deterministic URL regex matching.
+          if (retryVerified && requireSubmitEndpoint) {
             const tail = recentCaptureMeta.slice(preMetaLength);
-            const matched = tail.some((m) => compiledSubmitPattern.test(m.url));
-            if (!matched) {
-              // Same submitted-state DOM fallback as the primary verifier:
-              // accept SPA thank-you transitions when the network capture
-              // misses the submit POST within the attempt window.
-              // Suppressed when the flow opted into `requireSubmitEndpointMatch`.
-              let domSubmittedMatch: string | null = null;
-              if (!requireSubmitEndpointMatch && submittedStateSelectors.length > 0) {
-                const selectorsJson = JSON.stringify(submittedStateSelectors);
-                const probeExpr = `(() => {
+
+            // DOM-state probe (deterministic).
+            let domSubmittedMatch: string | null = null;
+            if (submittedStateSelectors.length > 0) {
+              const selectorsJson = JSON.stringify(submittedStateSelectors);
+              const probeExpr = `(() => {
                   const sels = ${selectorsJson};
                   for (const sel of sels) {
                     try {
@@ -3667,23 +3879,58 @@ async function executeStepWithHealing(params: {
                   }
                   return null;
                 })()`;
-                try {
-                  domSubmittedMatch = (await page.evaluate(probeExpr)) as string | null;
-                } catch (err) {
-                  logger.warn(`n+16 submitted-state DOM probe threw: ${toErrorMessage(err)}`);
-                }
+              try {
+                domSubmittedMatch = (await page.evaluate(probeExpr)) as string | null;
+              } catch (err) {
+                logger.warn(`n+16 submitted-state DOM probe threw: ${toErrorMessage(err)}`);
               }
-              if (domSubmittedMatch !== null) {
+            }
+
+            const unfocusedForJudge = await guardedObserve(stagehand, undefined, {
+              timeout: STEP_WATCHDOG_MS,
+            }).catch(() => [] as Action[]);
+            const invalidMarkerCount = await countNgInvalidContainers(page).catch(() => 0);
+            const pageTitle = await page.title().catch(() => "");
+            const matchedSubmittedSelectors = domSubmittedMatch !== null ? [domSubmittedMatch] : [];
+
+            const judgeVerdict = await verifySubmitWithLLM({
+              client: anthropic,
+              input: {
+                pageUrl: retryPost.url,
+                pageTitle,
+                unfocusedObserve: unfocusedForJudge.map((a) => ({
+                  description: a.description,
+                  selector: a.selector,
+                })),
+                networkCaptures: tail,
+                invalidMarkerCount,
+                ownBackendHostnames,
+                successUrlFragments,
+                successPageTitleHints,
+                submittedStateSelectors: matchedSubmittedSelectors,
+              },
+              captureFn,
+            });
+
+            if (judgeVerdict === null) {
+              // Bedrock-only or judge failed; fall back to DOM-state + policy.
+              if (!requireSubmitEndpointMatch && domSubmittedMatch !== null) {
                 logger.info(
-                  `n+16 fallback submit verified via submitted-state DOM selector '${domSubmittedMatch}'`
+                  `n+16 fallback submit verified via submitted-state DOM selector '${domSubmittedMatch}' (judge unavailable)`
                 );
                 record.verifiedBy = "submitted-state-dom";
               } else {
                 retryVerified = false;
                 failureReasons.push(
-                  `n+16 fallback: submit-endpoint-not-matched: ${tail.length} capture(s) seen, none matched ${submitEndpointPattern!}`
+                  `n+16 fallback: submit-judge-unavailable: no DOM-state match either`
                 );
               }
+            } else if (judgeVerdict.verified) {
+              logger.info(`n+16 fallback submit verified by judge: ${judgeVerdict.rationale}`);
+              record.verifiedBy = judgeVerdict.dom_signal !== null ? "submitted-state-dom" : "url";
+            } else {
+              retryVerified = false;
+              failureReasons.push(`n+16 fallback: submit-judge-rejected: ${judgeVerdict.reason}`);
             }
           }
           logger.info(
@@ -3745,7 +3992,11 @@ async function executeStepWithHealing(params: {
     // dumps in a 2026-06-10 survey had the paired touched+dirty + visible
     // error text pattern with 3 distinct rejection messages.
     if (record.resolvedMethod === "click" && isFinalStep) {
-      const live = await extractLivePageFormEvidence(page).catch(() => ({
+      const live = await extractLivePageFormEvidence(page, {
+        client: anthropic,
+        knownErrorClassPrefixes,
+        captureFn,
+      }).catch(() => ({
         invalidFieldList: "",
         errorTextList: "",
         interactiveTargetsList: "",
@@ -3836,6 +4087,10 @@ function parseCli(): {
   submitEndpointPattern: string | null;
   submittedStateSelectors: string[];
   requireSubmitEndpointMatch: boolean;
+  successUrlFragments: string[];
+  successPageTitleHints: string[];
+  ownBackendHostnames: string[];
+  knownErrorClassPrefixes: string[];
   originalShape: "array" | "object";
 } {
   const args = process.argv.slice(2);
@@ -3924,6 +4179,10 @@ function parseCli(): {
       submitEndpointPattern: null,
       submittedStateSelectors: [],
       requireSubmitEndpointMatch: false,
+      successUrlFragments: [],
+      successPageTitleHints: [],
+      ownBackendHostnames: [],
+      knownErrorClassPrefixes: [],
       originalShape: "array",
     };
   }
@@ -3942,6 +4201,18 @@ function parseCli(): {
   const requireSubmitEndpointMatch = Array.isArray(parsed.data)
     ? false
     : (parsed.data.requireSubmitEndpointMatch ?? false);
+  const successUrlFragments = Array.isArray(parsed.data)
+    ? []
+    : (parsed.data.successUrlFragments ?? []);
+  const successPageTitleHints = Array.isArray(parsed.data)
+    ? []
+    : (parsed.data.successPageTitleHints ?? []);
+  const ownBackendHostnames = Array.isArray(parsed.data)
+    ? []
+    : (parsed.data.ownBackendHostnames ?? []);
+  const knownErrorClassPrefixes = Array.isArray(parsed.data)
+    ? []
+    : (parsed.data.knownErrorClassPrefixes ?? []);
   const isArrayShape = Array.isArray(parsed.data);
   // Validate regex compiles eagerly so a malformed pattern fails the run
   // at startup, not deep in a per-step verifier.
@@ -3966,6 +4237,10 @@ function parseCli(): {
     submitEndpointPattern,
     submittedStateSelectors,
     requireSubmitEndpointMatch,
+    successUrlFragments,
+    successPageTitleHints,
+    ownBackendHostnames,
+    knownErrorClassPrefixes,
     originalShape: isArrayShape ? "array" : "object",
   };
 }
@@ -4011,6 +4286,10 @@ async function main(): Promise<void> {
     submitEndpointPattern,
     submittedStateSelectors,
     requireSubmitEndpointMatch,
+    successUrlFragments,
+    successPageTitleHints,
+    ownBackendHostnames,
+    knownErrorClassPrefixes,
     originalShape,
   } = parseCli();
 
@@ -4175,6 +4454,10 @@ async function main(): Promise<void> {
           submitEndpointPattern,
           submittedStateSelectors,
           requireSubmitEndpointMatch,
+          successUrlFragments,
+          successPageTitleHints,
+          ownBackendHostnames,
+          knownErrorClassPrefixes,
           trajectory,
           captureFn,
         });
@@ -4215,17 +4498,29 @@ async function main(): Promise<void> {
         // failure — only interruption_check + GA tracking POSTs fired, no
         // integrated_apply, yet trailing-grace declared success.
         if (step.optional && i >= plan.length - TRAILING_GRACE_WINDOW) {
-          const compiledPattern = submitEndpointPattern ? new RegExp(submitEndpointPattern) : null;
-          const recentMutationSucceeded = recentCaptureMeta.some(
-            (m) =>
-              m.method !== "GET" &&
-              m.status >= 200 &&
-              m.status < 300 &&
-              (compiledPattern === null || compiledPattern.test(m.url))
-          );
-          if (recentMutationSucceeded) {
+          // Trailing-grace check: did the submit actually land somewhere in
+          // the recent capture history? Ask the same Haiku judge — it has
+          // multi-signal reasoning to distinguish real submit POSTs from
+          // analytics/tracking 2xx that look submission-shaped.
+          const pageTitle = await page.title().catch(() => "");
+          const trailingGraceVerdict = await verifySubmitWithLLM({
+            client: anthropic,
+            input: {
+              pageUrl: page.url(),
+              pageTitle,
+              unfocusedObserve: [],
+              networkCaptures: recentCaptureMeta,
+              invalidMarkerCount: 0,
+              ownBackendHostnames,
+              successUrlFragments,
+              successPageTitleHints,
+              submittedStateSelectors,
+            },
+            captureFn,
+          });
+          if (trailingGraceVerdict !== null && trailingGraceVerdict.verified) {
             logger.info(
-              `step ${i + 1} optional + trailing position; recent submit-endpoint 2xx captured — treating verification failure as benign no-op; recon complete`
+              `step ${i + 1} optional + trailing position; judge verified recent submit (${trailingGraceVerdict.rationale}) — treating verification failure as benign no-op; recon complete`
             );
             break;
           }
@@ -4276,7 +4571,7 @@ async function main(): Promise<void> {
           stagehand,
           captureFn,
           recentCaptures,
-          submitEndpointPattern: submitEndpointPattern ? new RegExp(submitEndpointPattern) : null,
+          ownBackendHostnames,
           trajectory,
           priorReplans: replanEvents,
         });
@@ -4370,15 +4665,15 @@ async function main(): Promise<void> {
     // success. This closes the loop the silent-pass bug exposed on 2026-
     // 06-09: per-step verifier accepted DOM-fallback as proof; run-level
     // audit catches that the network proof never actually arrived.
-    if (requireSubmitEndpointMatch && submitEndpointPattern) {
+    if (requireSubmitEndpointMatch && ownBackendHostnames.length > 0) {
       const auditFailed = auditFinalSubmitMatch({
-        submitEndpointPattern,
+        ownBackendHostnames,
         capturesDir: CAPTURES_DIR,
         logger,
       });
       if (auditFailed) {
         logger.error(
-          `end-of-run audit FAILED: no captured 2xx matched submitEndpointPattern '${submitEndpointPattern}' — submission did not land despite verifier success`
+          `end-of-run audit FAILED: no captured 2xx had hostname in ${JSON.stringify(ownBackendHostnames)} — submission did not land despite verifier success`
         );
         // Exit non-zero so the runner counts this as a real failure rather
         // than rolling silent-pass forward as success.
@@ -4420,6 +4715,10 @@ async function main(): Promise<void> {
             submitEndpointPattern,
             submittedStateSelectors,
             requireSubmitEndpointMatch,
+            successUrlFragments,
+            successPageTitleHints,
+            ownBackendHostnames,
+            knownErrorClassPrefixes,
           });
         } catch (err) {
           // Persistence is best-effort in the finally block — a write
