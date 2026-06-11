@@ -4282,7 +4282,7 @@ async function main(): Promise<void> {
 
         if (!newSteps) {
           logger.error(
-            `replan #${replanIndex} returned IMPOSSIBLE or unparseable output; aborting`
+            `replan #${replanIndex} returned outcome=impossible or unparseable output; aborting`
           );
           throw err;
         }
