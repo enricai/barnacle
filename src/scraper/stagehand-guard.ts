@@ -61,6 +61,15 @@ import {
 } from "@/lib/telemetry/call-types";
 
 /**
+ * Injectable capture function — matches `captureLlmCall`'s signature. Same
+ * shape as `JudgeCaptureFn` in `@/lib/llm/judge`. Lets each guard call route
+ * its telemetry into the caller's per-run NDJSON sink instead of the global
+ * default in `captureLlmCall`. Without this, every Stagehand guard entry
+ * lands in `.barnacle/calls.ndjson` instead of the per-URL run partition.
+ */
+export type StagehandCaptureFn = (input: LlmCallInput) => Promise<void>;
+
+/**
  * Zod mirror of Stagehand's public `Action` shape (from
  * `@browserbasehq/stagehand/.../public/methods.d.ts`):
  *
@@ -150,7 +159,8 @@ function actInstructionOf(input: string | Action): string {
 export async function guardedAct(
   stagehand: Stagehand,
   input: string | Action,
-  options?: ActOptions
+  options?: ActOptions,
+  captureFn?: StagehandCaptureFn
 ): Promise<ActResult> {
   const callId = randomUUID();
   const userContent = actInstructionOf(input);
@@ -158,56 +168,66 @@ export async function guardedAct(
   try {
     // Stagehand's `act` has two overloads (string and Action) that share the
     // same runtime implementation (dispatch is via `isObserveResult` inside
-    // Stagehand). TypeScript can't pick between them when the input type is
-    // `string | Action`, so cast through the union once instead of writing
-    // a typeof-ternary with identical branches.
-    const callAct = stagehand.act as (
-      input: string | Action,
-      options?: ActOptions
-    ) => Promise<ActResult>;
-    const raw = await callAct(input, options);
+    // Stagehand). The two branches LOOK identical but TS can't resolve the
+    // union against the overload set without splitting them — and assigning
+    // `stagehand.act` to a variable then calling it as a standalone function
+    // loses `this` in strict mode, which crashes inside Stagehand's
+    // `withInstanceLogContext(this.instanceId, ...)` wrapper on entry.
+    const raw =
+      typeof input === "string"
+        ? await stagehand.act(input, options)
+        : await stagehand.act(input, options);
     const latencyMs = performance.now() - t0;
     const parsed = ACT_RESULT_SCHEMA.safeParse(raw);
     if (!parsed.success) {
-      await captureCall({
+      await captureCall(
+        {
+          callId,
+          callType: CALL_TYPE_STAGEHAND_ACT,
+          userContent,
+          responseContent: safeStringify(raw),
+          latencyMs,
+          success: false,
+          parsedOk: false,
+          errorMessage: `act envelope failed schema validation: ${parsed.error.message}`,
+          failureKind: "schema-validation-failed",
+        },
+        captureFn
+      );
+      throw new StagehandSchemaError("act", parsed.error, raw);
+    }
+    await captureCall(
+      {
         callId,
         callType: CALL_TYPE_STAGEHAND_ACT,
         userContent,
-        responseContent: safeStringify(raw),
+        responseContent: safeStringify(parsed.data),
         latencyMs,
-        success: false,
-        parsedOk: false,
-        errorMessage: `act envelope failed schema validation: ${parsed.error.message}`,
-        failureKind: "schema-validation-failed",
-      });
-      throw new StagehandSchemaError("act", parsed.error, raw);
-    }
-    await captureCall({
-      callId,
-      callType: CALL_TYPE_STAGEHAND_ACT,
-      userContent,
-      responseContent: safeStringify(parsed.data),
-      latencyMs,
-      success: parsed.data.success,
-      parsedOk: true,
-      errorMessage: null,
-      failureKind: null,
-    });
+        success: parsed.data.success,
+        parsedOk: true,
+        errorMessage: null,
+        failureKind: null,
+      },
+      captureFn
+    );
     return parsed.data;
   } catch (err) {
     if (err instanceof StagehandSchemaError) throw err;
     const latencyMs = performance.now() - t0;
-    await captureCall({
-      callId,
-      callType: CALL_TYPE_STAGEHAND_ACT,
-      userContent,
-      responseContent: null,
-      latencyMs,
-      success: false,
-      parsedOk: false,
-      errorMessage: err instanceof Error ? err.message : String(err),
-      failureKind: classifyLlmCallFailure(err),
-    });
+    await captureCall(
+      {
+        callId,
+        callType: CALL_TYPE_STAGEHAND_ACT,
+        userContent,
+        responseContent: null,
+        latencyMs,
+        success: false,
+        parsedOk: false,
+        errorMessage: err instanceof Error ? err.message : String(err),
+        failureKind: classifyLlmCallFailure(err),
+      },
+      captureFn
+    );
     throw err;
   }
 }
@@ -221,7 +241,8 @@ export async function guardedAct(
 export async function guardedObserve(
   stagehand: Stagehand,
   instruction?: string,
-  options?: ObserveOptions
+  options?: ObserveOptions,
+  captureFn?: StagehandCaptureFn
 ): Promise<Action[]> {
   const callId = randomUUID();
   const userContent = instruction ?? "";
@@ -238,45 +259,54 @@ export async function guardedObserve(
     const latencyMs = performance.now() - t0;
     const parsed = z.array(ACTION_SCHEMA).safeParse(raw);
     if (!parsed.success) {
-      await captureCall({
+      await captureCall(
+        {
+          callId,
+          callType: CALL_TYPE_STAGEHAND_OBSERVE,
+          userContent,
+          responseContent: safeStringify(raw),
+          latencyMs,
+          success: false,
+          parsedOk: false,
+          errorMessage: `observe envelope failed schema validation: ${parsed.error.message}`,
+          failureKind: "schema-validation-failed",
+        },
+        captureFn
+      );
+      throw new StagehandSchemaError("observe", parsed.error, raw);
+    }
+    await captureCall(
+      {
         callId,
         callType: CALL_TYPE_STAGEHAND_OBSERVE,
         userContent,
-        responseContent: safeStringify(raw),
+        responseContent: safeStringify(parsed.data),
         latencyMs,
-        success: false,
-        parsedOk: false,
-        errorMessage: `observe envelope failed schema validation: ${parsed.error.message}`,
-        failureKind: "schema-validation-failed",
-      });
-      throw new StagehandSchemaError("observe", parsed.error, raw);
-    }
-    await captureCall({
-      callId,
-      callType: CALL_TYPE_STAGEHAND_OBSERVE,
-      userContent,
-      responseContent: safeStringify(parsed.data),
-      latencyMs,
-      success: true,
-      parsedOk: true,
-      errorMessage: null,
-      failureKind: null,
-    });
+        success: true,
+        parsedOk: true,
+        errorMessage: null,
+        failureKind: null,
+      },
+      captureFn
+    );
     return parsed.data;
   } catch (err) {
     if (err instanceof StagehandSchemaError) throw err;
     const latencyMs = performance.now() - t0;
-    await captureCall({
-      callId,
-      callType: CALL_TYPE_STAGEHAND_OBSERVE,
-      userContent,
-      responseContent: null,
-      latencyMs,
-      success: false,
-      parsedOk: false,
-      errorMessage: err instanceof Error ? err.message : String(err),
-      failureKind: classifyLlmCallFailure(err),
-    });
+    await captureCall(
+      {
+        callId,
+        callType: CALL_TYPE_STAGEHAND_OBSERVE,
+        userContent,
+        responseContent: null,
+        latencyMs,
+        success: false,
+        parsedOk: false,
+        errorMessage: err instanceof Error ? err.message : String(err),
+        failureKind: classifyLlmCallFailure(err),
+      },
+      captureFn
+    );
     throw err;
   }
 }
@@ -291,7 +321,8 @@ export async function guardedExtract<T extends z.ZodTypeAny>(
   stagehand: Stagehand,
   instruction: string,
   schema: T,
-  options?: ExtractOptions
+  options?: ExtractOptions,
+  captureFn?: StagehandCaptureFn
 ): Promise<z.infer<T>> {
   const callId = randomUUID();
   const t0 = performance.now();
@@ -312,45 +343,54 @@ export async function guardedExtract<T extends z.ZodTypeAny>(
     const latencyMs = performance.now() - t0;
     const parsed = schema.safeParse(raw);
     if (!parsed.success) {
-      await captureCall({
+      await captureCall(
+        {
+          callId,
+          callType: CALL_TYPE_STAGEHAND_EXTRACT,
+          userContent: instruction,
+          responseContent: safeStringify(raw),
+          latencyMs,
+          success: false,
+          parsedOk: false,
+          errorMessage: `extract envelope failed schema validation: ${parsed.error.message}`,
+          failureKind: "schema-validation-failed",
+        },
+        captureFn
+      );
+      throw new StagehandSchemaError("extract", parsed.error, raw);
+    }
+    await captureCall(
+      {
         callId,
         callType: CALL_TYPE_STAGEHAND_EXTRACT,
         userContent: instruction,
-        responseContent: safeStringify(raw),
+        responseContent: safeStringify(parsed.data),
         latencyMs,
-        success: false,
-        parsedOk: false,
-        errorMessage: `extract envelope failed schema validation: ${parsed.error.message}`,
-        failureKind: "schema-validation-failed",
-      });
-      throw new StagehandSchemaError("extract", parsed.error, raw);
-    }
-    await captureCall({
-      callId,
-      callType: CALL_TYPE_STAGEHAND_EXTRACT,
-      userContent: instruction,
-      responseContent: safeStringify(parsed.data),
-      latencyMs,
-      success: true,
-      parsedOk: true,
-      errorMessage: null,
-      failureKind: null,
-    });
+        success: true,
+        parsedOk: true,
+        errorMessage: null,
+        failureKind: null,
+      },
+      captureFn
+    );
     return parsed.data as z.infer<T>;
   } catch (err) {
     if (err instanceof StagehandSchemaError) throw err;
     const latencyMs = performance.now() - t0;
-    await captureCall({
-      callId,
-      callType: CALL_TYPE_STAGEHAND_EXTRACT,
-      userContent: instruction,
-      responseContent: null,
-      latencyMs,
-      success: false,
-      parsedOk: false,
-      errorMessage: err instanceof Error ? err.message : String(err),
-      failureKind: classifyLlmCallFailure(err),
-    });
+    await captureCall(
+      {
+        callId,
+        callType: CALL_TYPE_STAGEHAND_EXTRACT,
+        userContent: instruction,
+        responseContent: null,
+        latencyMs,
+        success: false,
+        parsedOk: false,
+        errorMessage: err instanceof Error ? err.message : String(err),
+        failureKind: classifyLlmCallFailure(err),
+      },
+      captureFn
+    );
     throw err;
   }
 }
@@ -374,9 +414,10 @@ async function captureCall(
     | "parsedOk"
     | "errorMessage"
     | "failureKind"
-  >
+  >,
+  captureFn: StagehandCaptureFn = captureLlmCall
 ): Promise<void> {
-  await captureLlmCall({
+  await captureFn({
     ...partial,
     model: "stagehand-internal",
     systemPrompt: null,

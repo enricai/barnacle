@@ -63,7 +63,7 @@ vi.mock("@/lib/telemetry/call-capture", async (importOriginal) => {
 });
 
 import type { LlmCallInput } from "@/lib/telemetry/call-capture";
-import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
+import { CALL_TYPE_RECON_REPHRASE, CALL_TYPE_RECON_REPLAN } from "@/lib/telemetry/call-types";
 import {
   dedupeConsecutiveIdentical,
   denormalizeStep,
@@ -1775,7 +1775,7 @@ describe("replanRemainingFlow — trajectory prompt section", () => {
       stagehand: makeStagehandStub() as never,
       captureFn: fn,
     });
-    const prompt = calls[0]?.userContent ?? "";
+    const prompt = calls.find((c) => c.callType === CALL_TYPE_RECON_REPLAN)?.userContent ?? "";
     expect(prompt).toContain("PRIOR STEP TRAJECTORY");
     expect(prompt).toMatch(/PRIOR STEP TRAJECTORY[^\n]*\):\n\(none\)/);
   });
@@ -1799,7 +1799,7 @@ describe("replanRemainingFlow — trajectory prompt section", () => {
         { stepIndex: 2, verifiedBy: "url" },
       ],
     });
-    const prompt = calls[0]?.userContent ?? "";
+    const prompt = calls.find((c) => c.callType === CALL_TYPE_RECON_REPLAN)?.userContent ?? "";
     expect(prompt).toContain("PRIOR STEP TRAJECTORY");
     expect(prompt).toContain("step 1 verified via network");
     expect(prompt).toContain("step 2 verified via submitted-state-dom");
@@ -1825,7 +1825,7 @@ describe("replanRemainingFlow — trajectory prompt section", () => {
       captureFn: fn,
       trajectory,
     });
-    const prompt = calls[0]?.userContent ?? "";
+    const prompt = calls.find((c) => c.callType === CALL_TYPE_RECON_REPLAN)?.userContent ?? "";
     expect(prompt).toContain("step 4 verified via network");
     expect(prompt).toContain("step 8 verified via network");
     expect(prompt).not.toContain("step 1 verified");
@@ -1847,7 +1847,7 @@ describe("replanRemainingFlow — trajectory prompt section", () => {
       captureFn: fn,
       trajectory: [{ stepIndex: 4, verifiedBy: null }],
     });
-    const prompt = calls[0]?.userContent ?? "";
+    const prompt = calls.find((c) => c.callType === CALL_TYPE_RECON_REPLAN)?.userContent ?? "";
     expect(prompt).toContain("step 5 verified via (no signal recorded)");
   });
 });

@@ -181,7 +181,7 @@ export const INVALID_FIELDS_SCHEMA = z.object({
  */
 export const MODAL_PRIORITY_SCHEMA = z.object({
   priorityIndices: z.array(z.number().int().min(0)).max(50),
-  rationale: z.string().min(1).max(200),
+  rationale: z.string().min(1).max(400),
 });
 
 /**

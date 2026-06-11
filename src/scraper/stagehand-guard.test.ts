@@ -141,6 +141,22 @@ describe("guardedAct", () => {
     expect(captured[0]?.success).toBe(false);
     expect(captured[0]?.errorMessage).toContain("network error");
   });
+
+  // Per-run NDJSON sink plumbing: a caller can inject a `captureFn` so
+  // its telemetry lands in the run-specific NDJSON instead of the default
+  // global `.barnacle/calls.ndjson`. Without this, every Stagehand entry
+  // landed in the global sink and hid the `instanceId` regression for the
+  // entire pre-2026-06-11 ship.
+  it("routes telemetry to caller-supplied captureFn when supplied", async () => {
+    const stagehand = fakeStagehandAct(VALID_ACT_RESULT);
+    const injected: LlmCallInput[] = [];
+    await guardedAct(stagehand, "click submit", undefined, async (input) => {
+      injected.push(input);
+    });
+    expect(injected).toHaveLength(1);
+    expect(injected[0]?.callType).toBe("stagehand-act");
+    expect(captured).toHaveLength(0);
+  });
 });
 
 describe("guardedObserve", () => {
