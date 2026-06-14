@@ -1908,14 +1908,14 @@ export function extractGaEventEvidence(
       if (!eventName) continue;
       const documentLocation = params.get("dl") ?? "";
       const pageTitle = params.get("dt") ?? "";
-      let pagePath = "";
-      if (documentLocation.length > 0) {
+      const pagePath = ((): string => {
+        if (documentLocation.length === 0) return "";
         try {
-          pagePath = new URL(documentLocation).pathname;
+          return new URL(documentLocation).pathname;
         } catch {
-          pagePath = documentLocation.slice(0, 80);
+          return documentLocation.slice(0, 80);
         }
-      }
+      })();
       const detailParts: string[] = [];
       params.forEach((value, key) => {
         if (key.startsWith("epn.")) {
