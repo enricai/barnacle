@@ -145,9 +145,9 @@ export class StagehandSchemaError extends Error {
  * applyboard (10 distinct instruction patterns × multiple observations over
  * 53 min returned byte-identical xpath strings each). When the DOM IS
  * perturbed (a click changed a radio state, or page navigated), the caller
- * invalidates affected entries via `invalidateObserveCacheForSelector`
- * (called from `guardedAct` on success) or by calling `resetObserveCache`
- * (on navigation).
+ * `guardedAct` evicts affected entries by selector on successful action
+ * (a click that flipped a radio's state changes what subsequent observes
+ * would return for the same instruction).
  *
  * Per-run scoped; instantiate via `newObserveCache()` and pass through the
  * cascade. Engine-only; no site-specific knowledge.
@@ -186,7 +186,7 @@ export function newObserveCache(): ObserveCache {
  * radio element appears in observes for different conditional flow steps
  * that all target the same question).
  */
-export function invalidateObserveCacheForSelector(cache: ObserveCache, selector: string): void {
+function invalidateObserveCacheForSelector(cache: ObserveCache, selector: string): void {
   if (!selector) return;
   for (const [instruction, actions] of cache.byInstruction) {
     if (actions.some((a) => a.selector === selector)) {
@@ -194,12 +194,6 @@ export function invalidateObserveCacheForSelector(cache: ObserveCache, selector:
       cache.stats.invalidations += 1;
     }
   }
-}
-
-/** Drop every entry. Use on page navigation — DOM is wholesale different. */
-export function resetObserveCache(cache: ObserveCache): void {
-  cache.stats.invalidations += cache.byInstruction.size;
-  cache.byInstruction.clear();
 }
 
 /**
@@ -282,12 +276,12 @@ export async function guardedAct(
       },
       captureFn
     );
-    // Invalidate the observe cache for any selector this act touched. When
-    // the act flipped a radio's state or disabled a button, subsequent
-    // observes for the same question would return a different element
-    // (or no element). Verified scoped: typical AppCast act-success evicts
-    // 2-3 cache entries — the same element appears in observes for several
-    // conditional flow steps that all target the same DOM target.
+    // A successful act mutates the element's state (radio toggled, button
+    // disabled), so subsequent observes for any question that referenced
+    // this selector would return a different element. Verified scoped:
+    // typical AppCast act-success evicts 2-3 cache entries — the same
+    // element appears in observes for several conditional flow steps that
+    // all target the same DOM target, all correctly evicted.
     if (cache && parsed.data.success) {
       for (const action of parsed.data.actions ?? []) {
         if (action.selector) invalidateObserveCacheForSelector(cache, action.selector);

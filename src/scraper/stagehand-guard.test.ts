@@ -35,9 +35,7 @@ import {
   guardedAct,
   guardedExtract,
   guardedObserve,
-  invalidateObserveCacheForSelector,
   newObserveCache,
-  resetObserveCache,
   StagehandSchemaError,
 } from "./stagehand-guard";
 
@@ -301,35 +299,6 @@ describe("ObserveCache", () => {
     expect(cache.stats.misses).toBe(0);
     expect(cache.stats.hits).toBe(0);
     expect(stagehand.observe).toHaveBeenCalledTimes(1);
-  });
-
-  it("invalidateObserveCacheForSelector evicts entries whose Action[] contains the selector", () => {
-    const cache = newObserveCache();
-    cache.byInstruction.set("find login", [VALID_ACTION]);
-    cache.byInstruction.set("find email", [
-      { selector: "xpath=//input", description: "Email input", method: "fill", arguments: [] },
-    ]);
-    invalidateObserveCacheForSelector(cache, "xpath=//button");
-    expect(cache.byInstruction.has("find login")).toBe(false);
-    expect(cache.byInstruction.has("find email")).toBe(true);
-    expect(cache.stats.invalidations).toBe(1);
-  });
-
-  it("invalidateObserveCacheForSelector is a no-op when no entry contains the selector", () => {
-    const cache = newObserveCache();
-    cache.byInstruction.set("find login", [VALID_ACTION]);
-    invalidateObserveCacheForSelector(cache, "xpath=//nonexistent");
-    expect(cache.byInstruction.size).toBe(1);
-    expect(cache.stats.invalidations).toBe(0);
-  });
-
-  it("resetObserveCache drops all entries and counts invalidations", () => {
-    const cache = newObserveCache();
-    cache.byInstruction.set("a", [VALID_ACTION]);
-    cache.byInstruction.set("b", [VALID_ACTION]);
-    resetObserveCache(cache);
-    expect(cache.byInstruction.size).toBe(0);
-    expect(cache.stats.invalidations).toBe(2);
   });
 
   it("guardedAct invalidates cache entries containing the clicked selector on success", async () => {
