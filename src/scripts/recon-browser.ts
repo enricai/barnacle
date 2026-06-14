@@ -3638,24 +3638,26 @@ async function executeStepWithHealing(params: {
       const cause = err instanceof Error && err.cause instanceof Error ? err.cause.message : null;
       record.errorMessage = `${toErrorMessage(err)}${cause ? ` (cause: ${cause})` : ""}`;
       logBillingErrorIfPresent(err);
-      // Fast-skip: when attempt 1 (act-string) fails with schema-validation
-      // from Stagehand's internal Haiku Zod check (elementId regex
-      // /^\d+-\d+$/ at @browserbasehq/stagehand/dist/esm/lib/inference.js:147
-      // and :240 — Haiku consistently returns bare integer IDs like "4387"
-      // instead of the required "N-N" format), the rest of this attempt
-      // body's snapshot + verifyDomEffect work is wasted because
-      // resolvedAction is null and verified will be false. Skip straight
-      // to attempt 2 (observe-act), which bypasses the failing call by
-      // passing a resolved Action object instead of a string instruction.
-      // Empirically attempt 2 healed 24/24 schema-error cases in the
-      // 2026-06-14 partial sweep before this fast-skip existed.
-      if (attempt === 1 && classifyLlmCallFailure(err) === "schema-validation-failed") {
-        attempts.push(record);
-        failureReasons.push(
-          "attempt 1 act-string fast-skipped: schema-validation-failed (Stagehand/Haiku elementId regex)"
-        );
-        continue;
-      }
+    }
+
+    // Fast-skip: attempt 1 (act-string) failed to resolve any actionable
+    // element — either Stagehand threw and our catch above stored the
+    // errorMessage, or Stagehand returned `{success: false, actions: []}`
+    // without throwing (its internal self-heal couldn't recover, typically
+    // when Haiku's elementId response fails the regex schema at
+    // node_modules/.../stagehand/dist/esm/lib/inference.js:147 + :240).
+    // In either case resolvedAction is null, so the rest of this attempt
+    // body — snapshotPage, verifyDomEffect, the verifier gates below —
+    // cannot produce a positive signal: verified is forced false and the
+    // cascade always falls through to attempt 2. Skip the wasted ~2-3s
+    // of timeout + snapshot work and let the cascade try observe-act.
+    if (attempt === 1 && resolvedAction === null) {
+      attempts.push(record);
+      const reason = record.errorMessage
+        ? `attempt 1 fast-skipped (no resolved action): ${record.errorMessage}`
+        : "attempt 1 fast-skipped (no resolved action; Stagehand returned no candidates)";
+      failureReasons.push(reason);
+      continue;
     }
 
     await page.waitForTimeout(STEP_PAUSE_MS);
