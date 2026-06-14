@@ -3638,6 +3638,24 @@ async function executeStepWithHealing(params: {
       const cause = err instanceof Error && err.cause instanceof Error ? err.cause.message : null;
       record.errorMessage = `${toErrorMessage(err)}${cause ? ` (cause: ${cause})` : ""}`;
       logBillingErrorIfPresent(err);
+      // Fast-skip: when attempt 1 (act-string) fails with schema-validation
+      // from Stagehand's internal Haiku Zod check (elementId regex
+      // /^\d+-\d+$/ at @browserbasehq/stagehand/dist/esm/lib/inference.js:147
+      // and :240 — Haiku consistently returns bare integer IDs like "4387"
+      // instead of the required "N-N" format), the rest of this attempt
+      // body's snapshot + verifyDomEffect work is wasted because
+      // resolvedAction is null and verified will be false. Skip straight
+      // to attempt 2 (observe-act), which bypasses the failing call by
+      // passing a resolved Action object instead of a string instruction.
+      // Empirically attempt 2 healed 24/24 schema-error cases in the
+      // 2026-06-14 partial sweep before this fast-skip existed.
+      if (attempt === 1 && classifyLlmCallFailure(err) === "schema-validation-failed") {
+        attempts.push(record);
+        failureReasons.push(
+          "attempt 1 act-string fast-skipped: schema-validation-failed (Stagehand/Haiku elementId regex)"
+        );
+        continue;
+      }
     }
 
     await page.waitForTimeout(STEP_PAUSE_MS);
