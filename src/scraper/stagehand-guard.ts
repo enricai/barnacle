@@ -132,6 +132,61 @@ export class StagehandSchemaError extends Error {
 }
 
 /**
+ * Per-run cache of `stagehand-observe` results, keyed by instruction string.
+ * Reduces the ~4s cost-per-call (DOM hybrid-snapshot extraction + Haiku LLM
+ * inference inside Stagehand) when the cascade re-asks for the same
+ * accessibility-tree analysis. Empirically the per-step probe and the
+ * cascade's attempt-2 observe-act both run the same instruction within
+ * ~10s of each other; the cross-step pattern observes the same form
+ * questions across multiple flow passes after the user revisits a section.
+ *
+ * Selector stability across page state changes was verified on AppCast's
+ * applyboard (10 distinct instruction patterns × multiple observations over
+ * 53 min returned byte-identical xpath strings each). When the DOM IS
+ * perturbed (a click changed a radio state, or page navigated), the caller
+ * invalidates affected entries via `invalidateObserveCacheForSelector`
+ * (called from `guardedAct` on success) or by calling `resetObserveCache`
+ * (on navigation).
+ *
+ * Per-run scoped; instantiate via `newObserveCache()` and pass through the
+ * cascade. Engine-only; no site-specific knowledge.
+ */
+export interface ObserveCache {
+  readonly byInstruction: Map<string, Action[]>;
+  readonly stats: { hits: number; misses: number; invalidations: number };
+}
+
+/** Create a fresh per-run observe cache. */
+export function newObserveCache(): ObserveCache {
+  return { byInstruction: new Map(), stats: { hits: 0, misses: 0, invalidations: 0 } };
+}
+
+/**
+ * Evict any cached observe result whose `Action[]` contains the given
+ * selector. Called after a successful `guardedAct` because the act may have
+ * mutated the element's state (radio toggled, button disabled), making
+ * subsequent observe results different from the cached version. Verified
+ * scoped: typical AppCast act-success evicts 2-3 cache entries (the same
+ * radio element appears in observes for different conditional flow steps
+ * that all target the same question).
+ */
+export function invalidateObserveCacheForSelector(cache: ObserveCache, selector: string): void {
+  if (!selector) return;
+  for (const [instruction, actions] of cache.byInstruction) {
+    if (actions.some((a) => a.selector === selector)) {
+      cache.byInstruction.delete(instruction);
+      cache.stats.invalidations += 1;
+    }
+  }
+}
+
+/** Drop every entry. Use on page navigation — DOM is wholesale different. */
+export function resetObserveCache(cache: ObserveCache): void {
+  cache.stats.invalidations += cache.byInstruction.size;
+  cache.byInstruction.clear();
+}
+
+/**
  * Stringify a possibly-circular value safely; used to populate
  * `responseContent` in telemetry without risking a `TypeError` on circular
  * Stagehand internals.
@@ -160,7 +215,8 @@ export async function guardedAct(
   stagehand: Stagehand,
   input: string | Action,
   options?: ActOptions,
-  captureFn?: StagehandCaptureFn
+  captureFn?: StagehandCaptureFn,
+  cache?: ObserveCache
 ): Promise<ActResult> {
   const callId = randomUUID();
   const userContent = actInstructionOf(input);
@@ -210,6 +266,17 @@ export async function guardedAct(
       },
       captureFn
     );
+    // Invalidate the observe cache for any selector this act touched. When
+    // the act flipped a radio's state or disabled a button, subsequent
+    // observes for the same question would return a different element
+    // (or no element). Verified scoped: typical AppCast act-success evicts
+    // 2-3 cache entries — the same element appears in observes for several
+    // conditional flow steps that all target the same DOM target.
+    if (cache && parsed.data.success) {
+      for (const action of parsed.data.actions ?? []) {
+        if (action.selector) invalidateObserveCacheForSelector(cache, action.selector);
+      }
+    }
     return parsed.data;
   } catch (err) {
     if (err instanceof StagehandSchemaError) throw err;
@@ -242,10 +309,39 @@ export async function guardedObserve(
   stagehand: Stagehand,
   instruction?: string,
   options?: ObserveOptions,
-  captureFn?: StagehandCaptureFn
+  captureFn?: StagehandCaptureFn,
+  cache?: ObserveCache
 ): Promise<Action[]> {
   const callId = randomUUID();
   const userContent = instruction ?? "";
+  // Cache lookup: skip Stagehand's DOM hybrid-snapshot AND the LLM call
+  // entirely on hit. The cache only holds results for the same instruction
+  // string — empty-string key (unfocused observes) and `ignoreSelectors`
+  // calls (cascade attempt 4 = observe-act-exclude) bypass because the
+  // caller wants Stagehand to re-run with different inputs. Cache misses
+  // fall through to fresh observe and get populated post-parse below.
+  if (cache && instruction !== undefined && !options?.ignoreSelectors?.length) {
+    const cached = cache.byInstruction.get(userContent);
+    if (cached) {
+      cache.stats.hits += 1;
+      await captureCall(
+        {
+          callId,
+          callType: CALL_TYPE_STAGEHAND_OBSERVE,
+          userContent,
+          responseContent: safeStringify(cached),
+          latencyMs: 0,
+          success: true,
+          parsedOk: true,
+          errorMessage: null,
+          failureKind: null,
+        },
+        captureFn
+      );
+      return cached;
+    }
+    cache.stats.misses += 1;
+  }
   const t0 = performance.now();
   try {
     // Match Stagehand's overloads: pass instruction only when defined, so
@@ -289,6 +385,12 @@ export async function guardedObserve(
       },
       captureFn
     );
+    // Populate cache on miss. Same gating as the lookup above: only store
+    // focused observes (instruction set) without `ignoreSelectors`, since
+    // those are the only calls that benefit from being replayed verbatim.
+    if (cache && instruction !== undefined && !options?.ignoreSelectors?.length) {
+      cache.byInstruction.set(userContent, parsed.data);
+    }
     return parsed.data;
   } catch (err) {
     if (err instanceof StagehandSchemaError) throw err;

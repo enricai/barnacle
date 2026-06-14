@@ -71,7 +71,12 @@ import {
 } from "@/lib/telemetry/telemetry-paths";
 import { StepVerificationError } from "@/scraper/errors";
 import { createBrowserSession, type ProviderName } from "@/scraper/session";
-import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
+import {
+  guardedAct,
+  guardedObserve,
+  newObserveCache,
+  type ObserveCache,
+} from "@/scraper/stagehand-guard";
 import { filterByCallType, parseSamples } from "@/scripts/judge-llm-batch";
 import { CAPTURES_DIR, type Capture, STEP_FAILURES_DIR } from "@/scripts/recon-shared";
 import { allocateTestmailInbox } from "@/testmail/client";
@@ -2965,14 +2970,16 @@ async function probeStepBeforeAttempts(params: {
   stepIndex: number;
   logger: Logger;
   captureFn?: CaptureFn;
+  observeCache?: ObserveCache;
 }): Promise<"present" | "absent"> {
-  const { stagehand, step, stepIndex, logger, captureFn } = params;
+  const { stagehand, step, stepIndex, logger, captureFn, observeCache } = params;
   try {
     const candidates = await guardedObserve(
       stagehand,
       step,
       { timeout: STEP_WATCHDOG_MS },
-      captureFn
+      captureFn,
+      observeCache
     );
     if (candidates.length === 0) {
       logger.info(
@@ -3080,6 +3087,15 @@ async function executeStepWithHealing(params: {
    * additive instrumentation.
    */
   trajectory?: { stepIndex: number; verifiedBy: AttemptRecord["verifiedBy"] }[];
+  /**
+   * Per-run observe cache. When supplied, the cascade's per-step probe and
+   * attempt-2/4 observe-act calls reuse a prior observe result keyed by
+   * instruction string instead of paying the ~4s of DOM extraction + LLM
+   * inference each time. `guardedAct` evicts entries by selector on
+   * successful action so radio/checkbox state changes propagate. When
+   * omitted, cascade behaves identically — purely additive optimization.
+   */
+  observeCache?: ObserveCache;
 }): Promise<void> {
   const {
     stagehand,
@@ -3105,6 +3121,7 @@ async function executeStepWithHealing(params: {
     ownBackendHostnames,
     knownErrorClassPrefixes,
     trajectory,
+    observeCache,
   } = params;
   // Read-once to suppress "unused" — knownErrorClassPrefixes is threaded
   // through executeStepWithHealing's signature so the cascade has it in
@@ -3157,6 +3174,7 @@ async function executeStepWithHealing(params: {
     stepIndex,
     logger,
     captureFn,
+    observeCache,
   });
   if (probeResult === "absent") {
     if (optional) {
@@ -3375,7 +3393,13 @@ async function executeStepWithHealing(params: {
       if (attempt === 1) {
         record.technique = "act-string";
         record.instruction = step;
-        const result = await guardedAct(stagehand, step, { timeout: STEP_WATCHDOG_MS }, captureFn);
+        const result = await guardedAct(
+          stagehand,
+          step,
+          { timeout: STEP_WATCHDOG_MS },
+          captureFn,
+          observeCache
+        );
         record.actResultSuccess = result.success;
         record.actResultDescription = result.actionDescription;
         for (const action of result.actions ?? []) {
@@ -3388,7 +3412,13 @@ async function executeStepWithHealing(params: {
           attempt === 4 && triedSelectors.length > 0
             ? { ignoreSelectors: [...triedSelectors], timeout: STEP_WATCHDOG_MS }
             : { timeout: STEP_WATCHDOG_MS };
-        const candidates = await guardedObserve(stagehand, step, observeOptions, captureFn);
+        const candidates = await guardedObserve(
+          stagehand,
+          step,
+          observeOptions,
+          captureFn,
+          observeCache
+        );
         if (candidates.length === 0) {
           record.errorMessage = "observe returned no candidates";
           // Optional-step short-circuit: when attempt 2 confirms no candidates
@@ -3414,7 +3444,8 @@ async function executeStepWithHealing(params: {
             stagehand,
             target,
             { timeout: STEP_WATCHDOG_MS },
-            captureFn
+            captureFn,
+            observeCache
           );
           record.actResultSuccess = result.success;
           record.actResultDescription = result.actionDescription;
@@ -3575,7 +3606,8 @@ async function executeStepWithHealing(params: {
             stagehand,
             step,
             { timeout: STEP_WATCHDOG_MS },
-            captureFn
+            captureFn,
+            observeCache
           ).catch(() => [] as Action[]);
           // Fetch live-page evidence so the rephrase prompt can reason about
           // form state, not just observe candidates. Mirrors the same
@@ -3623,7 +3655,8 @@ async function executeStepWithHealing(params: {
               stagehand,
               rephrased,
               { timeout: STEP_WATCHDOG_MS },
-              captureFn
+              captureFn,
+              observeCache
             );
             record.actResultSuccess = result.success;
             record.actResultDescription = result.actionDescription;
@@ -4427,6 +4460,10 @@ async function main(): Promise<void> {
   // recon discoveries got thrown away on failed runs.
   const plan: NormalizedStep[] = [];
   const replanEvents: ReplanEvent[] = [];
+  // Per-run observe cache. Declared outside the try block so the finally
+  // can log its stats whether the run succeeded or threw. Engine-level
+  // optimization; see ObserveCache in stagehand-guard.ts for details.
+  const observeCache = newObserveCache();
 
   try {
     const stagehand = session.stagehand;
@@ -4526,6 +4563,7 @@ async function main(): Promise<void> {
           knownErrorClassPrefixes,
           trajectory,
           captureFn,
+          observeCache,
         });
         completedSteps.push(step.instruction);
       } catch (err) {
@@ -4752,6 +4790,14 @@ async function main(): Promise<void> {
 
     logger.info(`recon complete — ${counter.n} captures written to ${CAPTURES_DIR}`);
   } finally {
+    // Observe-cache stats: surfaces how often the per-run cache (cascade's
+    // probe + attempt 2/4 + cross-step revisits sharing the same
+    // instruction string) skipped Stagehand's DOM-snapshot + LLM call.
+    // Empirically ~60% hit rate across the AppCast applyboard flow (319
+    // observes / 112 unique instructions in a measured Job 1 run).
+    logger.info(
+      `observe-cache stats: hits=${observeCache.stats.hits} misses=${observeCache.stats.misses} invalidations=${observeCache.stats.invalidations}`
+    );
     // Replay-the-discovered-path: if any replan fired and the user provided
     // a flow file, write the improved plan back so the next run starts
     // where this one ended up. Runs INSIDE finally so the cascade's

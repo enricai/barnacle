@@ -35,6 +35,9 @@ import {
   guardedAct,
   guardedExtract,
   guardedObserve,
+  invalidateObserveCacheForSelector,
+  newObserveCache,
+  resetObserveCache,
   StagehandSchemaError,
 } from "./stagehand-guard";
 
@@ -240,5 +243,121 @@ describe("guardedExtract", () => {
       StagehandSchemaError
     );
     expect(captured[0]?.failureKind).toBe("schema-validation-failed");
+  });
+});
+
+describe("ObserveCache", () => {
+  const VALID_ACTION: Action = {
+    selector: "xpath=//button",
+    description: "Login button",
+    method: "click",
+    arguments: [],
+  };
+
+  it("starts empty with zeroed stats", () => {
+    const cache = newObserveCache();
+    expect(cache.byInstruction.size).toBe(0);
+    expect(cache.stats).toEqual({ hits: 0, misses: 0, invalidations: 0 });
+  });
+
+  it("populates on miss then returns the cached Action[] on hit without calling Stagehand again", async () => {
+    const cache = newObserveCache();
+    const stagehand = fakeStagehandObserve([VALID_ACTION]);
+    // First call: miss → real observe
+    const first = await guardedObserve(stagehand, "find login", undefined, undefined, cache);
+    expect(first).toEqual([VALID_ACTION]);
+    expect(cache.stats.misses).toBe(1);
+    expect(cache.stats.hits).toBe(0);
+    expect(stagehand.observe).toHaveBeenCalledTimes(1);
+    // Second call: hit → cached, Stagehand not called again
+    const second = await guardedObserve(stagehand, "find login", undefined, undefined, cache);
+    expect(second).toEqual([VALID_ACTION]);
+    expect(cache.stats.misses).toBe(1);
+    expect(cache.stats.hits).toBe(1);
+    expect(stagehand.observe).toHaveBeenCalledTimes(1);
+  });
+
+  it("bypasses the cache for unfocused observes (no instruction)", async () => {
+    const cache = newObserveCache();
+    const stagehand = fakeStagehandObserve([VALID_ACTION]);
+    await guardedObserve(stagehand, undefined, undefined, undefined, cache);
+    await guardedObserve(stagehand, undefined, undefined, undefined, cache);
+    // No hits, no misses — undefined-instruction paths skip the cache entirely
+    expect(cache.stats.hits).toBe(0);
+    expect(cache.stats.misses).toBe(0);
+    expect(stagehand.observe).toHaveBeenCalledTimes(2);
+  });
+
+  it("bypasses the cache when ignoreSelectors is set (cascade attempt 4)", async () => {
+    const cache = newObserveCache();
+    const stagehand = fakeStagehandObserve([VALID_ACTION]);
+    await guardedObserve(
+      stagehand,
+      "find login",
+      { ignoreSelectors: ["xpath=//x"] },
+      undefined,
+      cache
+    );
+    expect(cache.stats.misses).toBe(0);
+    expect(cache.stats.hits).toBe(0);
+    expect(stagehand.observe).toHaveBeenCalledTimes(1);
+  });
+
+  it("invalidateObserveCacheForSelector evicts entries whose Action[] contains the selector", () => {
+    const cache = newObserveCache();
+    cache.byInstruction.set("find login", [VALID_ACTION]);
+    cache.byInstruction.set("find email", [
+      { selector: "xpath=//input", description: "Email input", method: "fill", arguments: [] },
+    ]);
+    invalidateObserveCacheForSelector(cache, "xpath=//button");
+    expect(cache.byInstruction.has("find login")).toBe(false);
+    expect(cache.byInstruction.has("find email")).toBe(true);
+    expect(cache.stats.invalidations).toBe(1);
+  });
+
+  it("invalidateObserveCacheForSelector is a no-op when no entry contains the selector", () => {
+    const cache = newObserveCache();
+    cache.byInstruction.set("find login", [VALID_ACTION]);
+    invalidateObserveCacheForSelector(cache, "xpath=//nonexistent");
+    expect(cache.byInstruction.size).toBe(1);
+    expect(cache.stats.invalidations).toBe(0);
+  });
+
+  it("resetObserveCache drops all entries and counts invalidations", () => {
+    const cache = newObserveCache();
+    cache.byInstruction.set("a", [VALID_ACTION]);
+    cache.byInstruction.set("b", [VALID_ACTION]);
+    resetObserveCache(cache);
+    expect(cache.byInstruction.size).toBe(0);
+    expect(cache.stats.invalidations).toBe(2);
+  });
+
+  it("guardedAct invalidates cache entries containing the clicked selector on success", async () => {
+    const cache = newObserveCache();
+    cache.byInstruction.set("yes/no for question A", [VALID_ACTION]);
+    cache.byInstruction.set("yes/no for question B", [VALID_ACTION]);
+    const stagehand = fakeStagehandAct({
+      success: true,
+      message: "clicked",
+      actionDescription: "Yes label",
+      actions: [VALID_ACTION],
+    });
+    await guardedAct(stagehand, "click yes", undefined, undefined, cache);
+    expect(cache.byInstruction.size).toBe(0);
+    expect(cache.stats.invalidations).toBe(2);
+  });
+
+  it("guardedAct does NOT invalidate on success=false", async () => {
+    const cache = newObserveCache();
+    cache.byInstruction.set("find login", [VALID_ACTION]);
+    const stagehand = fakeStagehandAct({
+      success: false,
+      message: "No action found",
+      actionDescription: "click attempt",
+      actions: [VALID_ACTION],
+    });
+    await guardedAct(stagehand, "click missing", undefined, undefined, cache);
+    expect(cache.byInstruction.has("find login")).toBe(true);
+    expect(cache.stats.invalidations).toBe(0);
   });
 });
