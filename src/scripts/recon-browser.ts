@@ -1599,6 +1599,50 @@ export function formatValidationRejectedReason(pair: ValidationRejectionPair): s
   return `validation-rejected: '${pair.fieldLabel}' rejected with '${pair.errorText}'; propose a different value or return impossible`;
 }
 
+const BODY_EXCERPT_DEFAULT_CAP = 8_000;
+const BODY_EXCERPT_FORM_WINDOW = 32_000;
+
+/**
+ * Pick a window of `body` that's likely to contain the form's structural
+ * evidence (ng-invalid markers, error messages, question labels) that the
+ * downstream Haiku judges need to populate the replan/rephrase prompt's
+ * FORM FIELDS section.
+ *
+ * Default: first 8KB. That window held for tenants whose form was at the
+ * top of the page (early sweeps in 2026-06).
+ *
+ * For pages where the form HTML lives below 8KB (verified on AppCast's
+ * applyboard SPA: ng-invalid first appears at byte ~15,500 after a header
+ * of Angular hydration JS + chrome), the 8KB cap silently produced
+ * "FORM FIELDS CURRENTLY MARKED INVALID: (none)" in the replan prompt,
+ * leaving the LLM with no evidence and causing it to hallucinate steps
+ * from the existing flow's tenant content. The smart path: when an
+ * `ng-invalid` or `<form` token appears beyond the default cap, return a
+ * window of FORM_WINDOW bytes centered on the marker so the judge sees
+ * the actual form structure.
+ *
+ * Site-agnostic: the markers we look for (ng-invalid, mat-form-field-
+ * invalid, is-invalid, <form) are framework-level CSS-class conventions
+ * used across countless SPAs, not AppCast-specific.
+ */
+export function selectBodyExcerpt(body: string): string {
+  if (body.length <= BODY_EXCERPT_DEFAULT_CAP) return body;
+  const defaultExcerpt = body.slice(0, BODY_EXCERPT_DEFAULT_CAP);
+  if (
+    /ng-invalid|mat-form-field-invalid|is-invalid|<form\b|questions-container/.test(defaultExcerpt)
+  ) {
+    return defaultExcerpt;
+  }
+  const searchFrom = BODY_EXCERPT_DEFAULT_CAP;
+  const markerIndex = body
+    .slice(searchFrom)
+    .search(/ng-invalid|mat-form-field-invalid|is-invalid|<form\b|questions-container/);
+  if (markerIndex < 0) return defaultExcerpt;
+  const absoluteIndex = searchFrom + markerIndex;
+  const start = Math.max(0, absoluteIndex - BODY_EXCERPT_FORM_WINDOW / 4);
+  return body.slice(start, start + BODY_EXCERPT_FORM_WINDOW);
+}
+
 async function extractLivePageFormEvidence(
   page: Page,
   options?: {
@@ -1619,11 +1663,12 @@ async function extractLivePageFormEvidence(
     return { invalidFieldList: "", errorTextList: "", interactiveTargetsList: "" };
   }
 
-  // Truncate the body to keep Haiku TTFT in budget. The first 8KB carries
-  // the form structure with high fidelity; below-fold content rarely
-  // includes new invalid markers since the cascade interacts with
-  // above-fold form fields first.
-  const bodyExcerpt = body.slice(0, 8000);
+  // Pick a body excerpt that's likely to contain the form's invalid-field
+  // markers. Default 8KB cap unless the body has ng-invalid / <form past
+  // the cap (typical of AppCast applyboard SPA, where the form starts
+  // ~15KB into a page of Angular hydration scaffolding). See
+  // selectBodyExcerpt for details.
+  const bodyExcerpt = selectBodyExcerpt(body);
 
   const client = options?.client ?? null;
   const knownErrorClassPrefixes = options?.knownErrorClassPrefixes ?? [];
@@ -1868,7 +1913,7 @@ async function readFailureDumpEvidence(
       attempts?: { errorMessage?: string | null }[];
     };
     const rawBody = dump.bodyOuterHtml;
-    const bodyExcerpt = typeof rawBody === "string" ? rawBody.slice(0, 8000) : "";
+    const bodyExcerpt = typeof rawBody === "string" ? selectBodyExcerpt(rawBody) : "";
 
     const client = options?.client ?? null;
     const knownErrorClassPrefixes = options?.knownErrorClassPrefixes ?? [];

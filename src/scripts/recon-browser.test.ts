@@ -87,6 +87,7 @@ import {
   rephraseWithLLM,
   replanRemainingFlow,
   resetBillingErrorFlagForTests,
+  selectBodyExcerpt,
   shouldSkipTechnique,
   summarizeReplanFailureKinds,
   type ValidationRejectionPair,
@@ -2044,5 +2045,63 @@ describe("recon-browser/formatValidationRejectedReason", () => {
     expect(reason).toContain("'Phone'");
     expect(reason).toContain("'Please provide correct phone number.'");
     expect(reason).toContain("propose a different value or return impossible");
+  });
+});
+
+describe("recon-browser/selectBodyExcerpt", () => {
+  it("returns the body verbatim when it's smaller than the default cap", () => {
+    const body = "<body>small page</body>";
+    expect(selectBodyExcerpt(body)).toBe(body);
+  });
+
+  it("returns the first 8KB when form markers are already inside it", () => {
+    // Body where ng-invalid appears in the first 8KB — the default cap is
+    // sufficient. Padding fills the rest with non-form chrome.
+    const head =
+      "<body><uapp-root>" +
+      "x".repeat(4000) +
+      'class="ng-invalid"' +
+      "y".repeat(3000) +
+      "</uapp-root>";
+    const tail = "z".repeat(50_000) + "</body>";
+    const body = head + tail;
+    const excerpt = selectBodyExcerpt(body);
+    expect(excerpt.length).toBe(8000);
+    expect(excerpt).toContain("ng-invalid");
+  });
+
+  it("returns a window centered on the form marker when it lives beyond the default cap", () => {
+    // Body where ng-invalid is past 8KB — mimics the AppCast applyboard
+    // SPA, whose form starts ~15KB after a header of Angular hydration JS.
+    const chrome = "x".repeat(15_000);
+    const formRegion =
+      'class="ng-invalid"' + "y".repeat(1000) + "First Name required" + "z".repeat(1000);
+    const trailing = "w".repeat(50_000);
+    const body = chrome + formRegion + trailing;
+    const excerpt = selectBodyExcerpt(body);
+    expect(excerpt.length).toBe(32_000);
+    expect(excerpt).toContain("ng-invalid");
+    expect(excerpt).toContain("First Name required");
+  });
+
+  it("falls back to the default cap when no markers are found anywhere", () => {
+    // Big body with no form markers — degrade gracefully.
+    const body = "x".repeat(50_000);
+    const excerpt = selectBodyExcerpt(body);
+    expect(excerpt.length).toBe(8000);
+  });
+
+  it("detects mat-form-field-invalid (Material UI)", () => {
+    const body = "x".repeat(10_000) + "mat-form-field-invalid" + "y".repeat(50_000);
+    const excerpt = selectBodyExcerpt(body);
+    expect(excerpt.length).toBe(32_000);
+    expect(excerpt).toContain("mat-form-field-invalid");
+  });
+
+  it("detects <form tag when invalid markers are absent", () => {
+    const body = "x".repeat(10_000) + "<form action='/submit'>" + "y".repeat(50_000);
+    const excerpt = selectBodyExcerpt(body);
+    expect(excerpt.length).toBe(32_000);
+    expect(excerpt).toContain("<form action");
   });
 });
