@@ -9,11 +9,12 @@
 ## Running tests
 
 ```bash
-pnpm run test              # run all tests
-pnpm run test:watch        # re-run on file changes (dev loop)
-pnpm run test:coverage     # run tests with v8 coverage report
-pnpm run typecheck         # strict TypeScript (no emit) — run before every PR
-pnpm run lint:fix          # Biome lint + format — run before every PR
+pnpm run test                           # run all tests
+pnpm test src/scraper/fixtures.test.ts  # single file (NEVER use -- before the filter)
+pnpm run test:watch                     # re-run on file changes (dev loop)
+pnpm run test:coverage                  # run tests with v8 coverage report
+pnpm run typecheck                      # strict TypeScript (no emit) — run before every PR
+pnpm run lint:fix                       # Biome lint + format — run before every PR
 ```
 
 Tests use [Vitest](https://vitest.dev/) in Node environment (no DOM). Coverage
@@ -217,7 +218,7 @@ Before marking any task done:
 
 1. `pnpm run lint:fix` — must pass with no errors
 2. `pnpm run typecheck` — must pass
-3. `pnpm run test` — relevant tests must pass
+3. `pnpm test <relevant-file>` — relevant tests must pass (NEVER use `--` before the filter)
 4. Verify `@/` alias usage on all src imports
 5. Confirm explicit return types on all exported functions
 6. Confirm TSDoc on all exported functions (explain *why*, not *what*)

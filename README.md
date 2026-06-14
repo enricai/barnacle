@@ -726,6 +726,7 @@ Operational routes:
 | `pnpm run typecheck` | strict TS noEmit |
 | `pnpm run lint` / `lint:fix` | Biome |
 | `pnpm run test` | Vitest unit + integration |
+| `pnpm test src/scraper/fixtures.test.ts` | Run a single test file (NEVER use `--` before the filter) |
 | `pnpm run test:watch` | Vitest in watch mode (re-runs on file changes) |
 | `pnpm run test:coverage` | Vitest with v8 coverage report |
 | `pnpm run format` | Biome format write |
