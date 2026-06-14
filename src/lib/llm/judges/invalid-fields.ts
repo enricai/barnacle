@@ -38,6 +38,7 @@ Do NOT mark a field when:
 - Only visual styling indicates error (red border via CSS, no semantic marker).
 - The container is in a pristine/untouched state (e.g. ng-pristine ng-untouched alongside ng-invalid means the user hasn't interacted yet — that's a "may become invalid" state, not currently invalid).
 - The element is a hidden input or non-interactive ancestor.
+- The container is invalid ONLY because a descendant is invalid (parent-bubbled invalidity). Angular bubbles ng-invalid up to wrapping forms / lists / question containers; Bootstrap mirrors this on form-group; React Hook Form propagates aria-invalid through fieldsets. When you see <ol class="ng-invalid"> with <li class="ng-valid"> children where ONE deeper descendant is actually invalid, report ONLY the deepest leaf that carries the failure. The leaf is the smallest container with the invalid marker AND no further invalid descendants. Reporting bubbled parents alongside the real leaf creates false positives (the parent's children look like they're invalid when they are not).
 
 When the supplied knownErrorClassPrefixes list is non-empty, also treat class names starting with any of those prefixes followed by "-invalid" or "-error" as structural markers (site-specific convention).
 

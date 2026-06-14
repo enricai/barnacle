@@ -1939,6 +1939,47 @@ export function extractGaEventEvidence(
 }
 
 /**
+ * Render a long step list as a small head + tail window with an elision
+ * marker. Replan prompts grew to ~114KB on the AppCast 331-step flow
+ * (verified Fitchburg 2026-06-14 run), causing Sonnet 4.6 to TTFT-stall
+ * out at 187s with `APIConnectionTimeoutError: Request timed out.` —
+ * the ONLY non-API-quota replan failure across ~30+ historical calls.
+ *
+ * Empirically, replans at ≤65K chars complete in 3-13s; the 114K case
+ * was 15x slower than the worst clean run. Trimming the THREE step
+ * blocks (THE ORIGINAL FLOW + STEPS ALREADY SUCCESSFULLY COMPLETED +
+ * REMAINING UNEXECUTED STEPS) eliminates ~80% of the bloat without
+ * losing replan-relevant context: the LLM's job is to bridge from the
+ * failed step back into the remaining tail, not enumerate every step.
+ *
+ * Configurable head/tail caps so callers can keep relevant boundaries
+ * (e.g. completed tail = the last few steps that just succeeded;
+ * remaining head = what to bridge into).
+ */
+export function renderStepWindow(
+  steps: readonly string[],
+  options: { head?: number; tail?: number } = {}
+): string {
+  const { head = 0, tail = 10 } = options;
+  if (steps.length === 0) return "(none)";
+  const headSteps = head > 0 ? steps.slice(0, head) : [];
+  const tailSteps = tail > 0 ? steps.slice(-tail) : [];
+  const elided = steps.length - headSteps.length - tailSteps.length;
+  const lines: string[] = [];
+  for (const [i, s] of headSteps.entries()) {
+    lines.push(`${i + 1}. ${s}`);
+  }
+  if (elided > 0) {
+    lines.push(`... (${elided} steps elided for prompt budget) ...`);
+  }
+  const tailStart = steps.length - tailSteps.length + 1;
+  for (const [i, s] of tailSteps.entries()) {
+    lines.push(`${tailStart + i}. ${s}`);
+  }
+  return lines.join("\n");
+}
+
+/**
  * Pull field-level errors out of an arbitrary JSON response body. Walks a
  * few of the conventional ATS shapes; falls through to `[]` so the caller
  * can decide whether to emit a fallback summary.
@@ -2174,17 +2215,16 @@ async function replanRemainingFlow(params: {
 
   const prompt = `You are helping a browser automation agent recover from a failed flow step.
 
-THE ORIGINAL FLOW (as the user wrote it):
-${originalFlow.map((s, i) => `${i + 1}. ${s}`).join("\n")}
+ORIGINAL FLOW SUMMARY: ${originalFlow.length} total steps; ${completedSteps.length} executed, ${remainingSteps.length} remaining after the failed step. The completed-tail and remaining-head windows below give you the local context — that's the only flow context replan needs.
 
-STEPS ALREADY SUCCESSFULLY COMPLETED (do not re-run these):
-${completedSteps.length > 0 ? completedSteps.map((s, i) => `${i + 1}. ${s}`).join("\n") : "(none)"}
+STEPS RECENTLY COMPLETED (last few that just succeeded; do not re-run):
+${renderStepWindow(completedSteps, { tail: 10 })}
 
 THE STEP THAT JUST FAILED (after exhausting its per-step healing cascade):
 ${failedStep}
 
-REMAINING UNEXECUTED STEPS (after the failed one):
-${remainingSteps.length > 0 ? remainingSteps.map((s, i) => `${i + 1}. ${s}`).join("\n") : "(none)"}
+REMAINING UNEXECUTED STEPS (head of what comes after the failed step; the driver will auto-append the FULL remaining tail after your bridge so do not re-emit these):
+${renderStepWindow(remainingSteps, { head: 15, tail: 0 })}
 
 CURRENT BROWSER STATE:
 URL: ${page.url()}

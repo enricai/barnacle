@@ -84,6 +84,7 @@ import {
   persistReplannedFlow,
   type ReplanEvent,
   readFailureDumpEvidence,
+  renderStepWindow,
   renderUnfocusedObserve,
   rephraseWithLLM,
   replanRemainingFlow,
@@ -1149,6 +1150,65 @@ describe("recon-browser/extractGaEventEvidence", () => {
     });
     const out = extractGaEventEvidence(["capture-1.json", "capture-1.json"], tmpDir);
     expect(out.split("\n").length).toBe(1);
+  });
+});
+
+describe("recon-browser/renderStepWindow", () => {
+  it("returns (none) for empty step list", () => {
+    expect(renderStepWindow([])).toBe("(none)");
+  });
+
+  it("returns all steps verbatim when count fits within head+tail", () => {
+    const steps = ["one", "two", "three"];
+    const out = renderStepWindow(steps, { head: 0, tail: 10 });
+    expect(out).toBe("1. one\n2. two\n3. three");
+  });
+
+  it("elides the middle when steps exceed head+tail budget", () => {
+    const steps = Array.from({ length: 50 }, (_, i) => `step ${i + 1}`);
+    const out = renderStepWindow(steps, { head: 3, tail: 5 });
+    const lines = out.split("\n");
+    expect(lines[0]).toBe("1. step 1");
+    expect(lines[1]).toBe("2. step 2");
+    expect(lines[2]).toBe("3. step 3");
+    expect(lines[3]).toContain("elided");
+    expect(lines[3]).toContain("42");
+    expect(lines[4]).toBe("46. step 46");
+    expect(lines[8]).toBe("50. step 50");
+  });
+
+  it("uses tail-only mode for completed step lists", () => {
+    const steps = Array.from({ length: 100 }, (_, i) => `done ${i + 1}`);
+    const out = renderStepWindow(steps, { tail: 10 });
+    const lines = out.split("\n");
+    expect(lines[0]).toContain("elided");
+    expect(lines[0]).toContain("90");
+    expect(lines[1]).toBe("91. done 91");
+    expect(lines[10]).toBe("100. done 100");
+  });
+
+  it("uses head-only mode for remaining step lists", () => {
+    const steps = Array.from({ length: 100 }, (_, i) => `todo ${i + 1}`);
+    const out = renderStepWindow(steps, { head: 15, tail: 0 });
+    const lines = out.split("\n");
+    expect(lines[0]).toBe("1. todo 1");
+    expect(lines[14]).toBe("15. todo 15");
+    expect(lines[15]).toContain("elided");
+    expect(lines[15]).toContain("85");
+  });
+
+  it("falls through cleanly when head+tail exactly equals length", () => {
+    const steps = ["a", "b", "c", "d", "e"];
+    const out = renderStepWindow(steps, { head: 2, tail: 3 });
+    expect(out).toBe("1. a\n2. b\n3. c\n4. d\n5. e");
+  });
+
+  it("preserves original step indices for elided tail-only output", () => {
+    const steps = Array.from({ length: 20 }, (_, i) => `x${i + 1}`);
+    const out = renderStepWindow(steps, { tail: 3 });
+    const lines = out.split("\n");
+    expect(lines[1]).toBe("18. x18");
+    expect(lines[3]).toBe("20. x20");
   });
 });
 
