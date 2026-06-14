@@ -47,6 +47,7 @@ import type {
   ObserveOptions,
   Stagehand,
 } from "@browserbasehq/stagehand";
+import { LRUCache } from "lru-cache";
 import { z } from "zod/v4";
 
 import {
@@ -152,13 +153,28 @@ export class StagehandSchemaError extends Error {
  * cascade. Engine-only; no site-specific knowledge.
  */
 export interface ObserveCache {
-  readonly byInstruction: Map<string, Action[]>;
+  readonly byInstruction: LRUCache<string, Action[]>;
   readonly stats: { hits: number; misses: number; invalidations: number };
 }
 
-/** Create a fresh per-run observe cache. */
+/**
+ * Create a fresh per-run observe cache.
+ *
+ * Uses `lru-cache` per CLAUDE.md's battle-tested-libraries rule (mirrors
+ * `src/cache/response-cache.ts`'s usage pattern). `max: 256` is ~2.3× the
+ * empirical unique-instruction count (112) measured in the 2026-06-14
+ * AppCast Job 1 run — comfortable headroom for larger flows with bounded
+ * memory (~256 × ~1KB Action[] ≈ ~256KB worst case). No `ttl`: selector
+ * stability was verified across 10 distinct instructions × 53 minutes; the
+ * bounded-LRU semantics give us memory safety without time-based churn.
+ * If a future site has unstable selectors, adding `ttl: 300_000` (5 min)
+ * is a one-line change.
+ */
 export function newObserveCache(): ObserveCache {
-  return { byInstruction: new Map(), stats: { hits: 0, misses: 0, invalidations: 0 } };
+  return {
+    byInstruction: new LRUCache<string, Action[]>({ max: 256 }),
+    stats: { hits: 0, misses: 0, invalidations: 0 },
+  };
 }
 
 /**
