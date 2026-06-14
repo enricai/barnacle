@@ -1687,16 +1687,20 @@ async function extractLivePageFormEvidence(
   const knownErrorClassPrefixes = options?.knownErrorClassPrefixes ?? [];
   const captureFn = options?.captureFn;
 
-  // Run the two Haiku judges in parallel. Each returns null when the
-  // client is unavailable (Bedrock-only deployment) — callers fall back
-  // to the empty-string default, same as if no invalid markers had been
-  // present. No more regex-on-fuzzy-data anywhere in this codepath.
-  const [invalidVerdict, errorVerdict, interactiveTargets] = await Promise.all([
-    judgeInvalidFieldsWithLLM({
-      client,
-      input: { bodyHtmlExcerpt: bodyExcerpt, knownErrorClassPrefixes },
-      captureFn,
-    }),
+  // Deterministic-first: run the DOM probe synchronously alongside the
+  // error-messages judge + interactive-targets extraction. The probe uses
+  // CSS `:has()` to find only LEAF invalid containers — bubbled parents
+  // (Angular's `<ol class="ng-invalid">` matching because a descendant is
+  // invalid) are filtered out structurally. Falls back to the Haiku
+  // invalid-fields judge ONLY when the probe returns empty (truly novel
+  // framework convention the selector list doesn't cover). Reason for
+  // the inversion: today's smoke (run 1781478440322) showed Haiku
+  // surfaced `(unlabeled) <ol>` for 3 replans + 4 rephrases, and all 7
+  // LLM calls converged on "Click Continue" because no specific fillable
+  // field was named in FORM FIELDS. Deterministic extraction gives the
+  // LLM `"Address" <app-input> — error: "This field is required"` instead.
+  const [leafFields, errorVerdict, interactiveTargets] = await Promise.all([
+    probeLeafInvalidContainers(page),
     judgeErrorMessagesWithLLM({
       client,
       input: { bodyHtmlExcerpt: bodyExcerpt },
@@ -1705,11 +1709,25 @@ async function extractLivePageFormEvidence(
     extractInteractiveTargetsNearInvalid(page).catch(() => [] as string[]),
   ]);
 
-  const invalidLines =
-    invalidVerdict?.fields.map((f) => {
-      const label = f.label ?? "(unlabeled)";
-      return `${label}  [${f.framework} ${f.markerKind}] ${f.containerXpath}`;
-    }) ?? [];
+  // Probe is the primary signal. Judge only runs if probe is empty AND a
+  // client is available — so the fallback semantics match today's behavior
+  // exactly when the deterministic path returns nothing.
+  const invalidFieldList =
+    leafFields.length > 0
+      ? renderLeafInvalidFields(leafFields)
+      : await (async (): Promise<string> => {
+          const verdict = await judgeInvalidFieldsWithLLM({
+            client,
+            input: { bodyHtmlExcerpt: bodyExcerpt, knownErrorClassPrefixes },
+            captureFn,
+          });
+          const lines =
+            verdict?.fields.map((f) => {
+              const label = f.label ?? "(unlabeled)";
+              return `${label}  [${f.framework} ${f.markerKind}] ${f.containerXpath}`;
+            }) ?? [];
+          return lines.map((e, i) => `${i + 1}. ${e}`).join("\n");
+        })();
 
   const errorLines =
     errorVerdict?.messages.map((m) => {
@@ -1718,7 +1736,7 @@ async function extractLivePageFormEvidence(
     }) ?? [];
 
   return {
-    invalidFieldList: invalidLines.map((e, i) => `${i + 1}. ${e}`).join("\n"),
+    invalidFieldList,
     errorTextList: errorLines.map((e, i) => `${i + 1}. ${e}`).join("\n"),
     interactiveTargetsList: interactiveTargets.map((e, i) => `${i + 1}. ${e}`).join("\n"),
   };
@@ -1733,6 +1751,167 @@ async function extractLivePageFormEvidence(
  * radio/option that would clear it — so the LLM proposes "click Submit
  * harder" instead of "answer field X with Yes/No".
  */
+/**
+ * Structured leaf-invalid-container record emitted by `probeLeafInvalidContainers`.
+ * Replaces the LLM-judge's `{ containerXpath, label, framework, markerKind }` shape
+ * with a deterministic-only record carrying everything the prompt needs to surface
+ * a specific actionable target ("the Address field, an Angular smart-address
+ * autocomplete component, error text 'This field is required'").
+ */
+export interface LeafInvalidField {
+  /** Best-effort xpath of the leaf invalid container itself. */
+  xpath: string;
+  /** Nearest discoverable label text walking up from the container, null if not findable. */
+  label: string | null;
+  /** Which framework convention triggered the leaf match. */
+  framework: "angular" | "material" | "bootstrap" | "aria" | "other";
+  /** The actual class signature on the container that matched (debug aid). */
+  markerClass: string;
+  /** Any visible error/required-message text in an adjacent error container. */
+  visibleErrorText: string | null;
+  /** Tag of the input element inside the container (input, app-input, etc.). */
+  inputTag: string;
+}
+
+/**
+ * Deterministic DOM probe for LEAF invalid form containers, replacing the
+ * LLM-judge's stochastic "prefer the deepest container" heuristic. Uses the
+ * native CSS `:has()` selector — universally supported as of 2023 (Chrome 105+,
+ * we run Chrome 149) — to query only containers whose `ng-invalid` /
+ * `mat-form-field-invalid` / `is-invalid` / `aria-invalid` marker is NOT
+ * shadowed by a same-marker descendant. That's the exact definition of "leaf"
+ * in Angular's invalidity-bubbling model: a `<ol class="ng-invalid">` parent
+ * matches `ng-invalid` because of bubbling, but its child `<app-input
+ * class="ng-invalid">` ALSO matches; `:not(:has(...))` filters out the parent.
+ *
+ * Today's Encompass-Fitchburg smoke (run 1781478440322) showed E1's prompt
+ * instruction ("prefer the leaf, not the bubbled parent") only got Haiku from
+ * 5 wrong fields → 1 wrong field — still surfaced `(unlabeled) <ol>` instead
+ * of `<app-input autocomplete="zip-code">` at byte 95,033. All 3 replans + 4
+ * rephrases then converged on "Click Continue" because the FORM FIELDS section
+ * never named a specific fillable target. Switching to deterministic extraction
+ * is industry-standard: Anthropic's prompt-engineering guidance says "use the
+ * LLM for fuzzy judgment, deterministic extraction for structurally-derivable
+ * signals" — DOM tree walking is the latter.
+ *
+ * Returns up to 12 leaf records. Empty array on `page.evaluate` failure (safe
+ * fallback to the existing Haiku judge upstream). The `inputTag` and
+ * `visibleErrorText` fields let the prompt distinguish a smart-address
+ * autocomplete (where typing-only fails and the cascade needs dropdown
+ * selection) from a plain text input.
+ */
+export async function probeLeafInvalidContainers(page: Page): Promise<LeafInvalidField[]> {
+  const expr = `(() => {
+    const SELECTOR =
+      "[class*='ng-invalid']:not(:has([class*='ng-invalid'])), " +
+      "[class*='mat-form-field-invalid']:not(:has([class*='mat-form-field-invalid'])), " +
+      "[class*='is-invalid']:not(:has([class*='is-invalid'])), " +
+      "[class*='field-invalid']:not(:has([class*='field-invalid'])), " +
+      "[aria-invalid='true']:not(:has([aria-invalid='true']))";
+    const containers = document.querySelectorAll(SELECTOR);
+    const out = [];
+    const seen = new Set();
+    function xpathOf(node) {
+      const parts = [];
+      while (node && node.nodeType === 1 && node !== document.body) {
+        const tag = node.nodeName.toLowerCase();
+        let idx = 1;
+        let sib = node.previousElementSibling;
+        while (sib) {
+          if (sib.nodeName.toLowerCase() === tag) idx++;
+          sib = sib.previousElementSibling;
+        }
+        parts.unshift(tag + "[" + idx + "]");
+        node = node.parentElement;
+      }
+      return "/html[1]/body[1]/" + parts.join("/");
+    }
+    function labelFor(container) {
+      let n = container;
+      for (let i = 0; i < 6 && n; i++) {
+        const cand = n.querySelector
+          ? n.querySelector(".uapp-html-markup, .question-title, .question-label, .group-title, label")
+          : null;
+        if (cand && cand.textContent) {
+          const t = cand.textContent.trim().replace(/\\s+/g, " ");
+          if (t.length > 1 && t.length < 200) return t;
+        }
+        n = n.parentElement;
+      }
+      return null;
+    }
+    function errorTextFor(container) {
+      let n = container;
+      for (let i = 0; i < 4 && n; i++) {
+        const cand = n.querySelector
+          ? n.querySelector("app-control-errors p, mat-error, .error-message, .field-error, .validation-error, .invalid-feedback, [class*='error']:not([class*='boundary'])")
+          : null;
+        if (cand && cand.textContent) {
+          const t = cand.textContent.trim().replace(/\\s+/g, " ");
+          if (t.length > 3 && t.length < 200 && !/^\\s*$/.test(t)) return t;
+        }
+        n = n.parentElement;
+      }
+      return null;
+    }
+    function frameworkFor(cls, ariaInv) {
+      if (cls.indexOf("mat-form-field-invalid") >= 0) return "material";
+      if (cls.indexOf("ng-invalid") >= 0) return "angular";
+      if (cls.indexOf("is-invalid") >= 0) return "bootstrap";
+      if (cls.indexOf("field-invalid") >= 0) return "other";
+      if (ariaInv) return "aria";
+      return "other";
+    }
+    for (const c of containers) {
+      if (out.length >= 12) break;
+      const xp = xpathOf(c);
+      if (seen.has(xp)) continue;
+      seen.add(xp);
+      const cls = (c.getAttribute("class") || "").slice(0, 200);
+      const ariaInv = c.getAttribute("aria-invalid") === "true";
+      const inputEl = c.tagName.toLowerCase() === "input"
+        ? c
+        : c.querySelector("input, textarea, select, app-input, app-dropdown, app-autocomplete, uapp-phone-input, uapp-resume-upload, uapp-upload");
+      const inputTag = inputEl ? inputEl.tagName.toLowerCase() : c.tagName.toLowerCase();
+      out.push({
+        xpath: xp,
+        label: labelFor(c),
+        framework: frameworkFor(cls, ariaInv),
+        markerClass: cls,
+        visibleErrorText: errorTextFor(c),
+        inputTag: inputTag,
+      });
+    }
+    return out;
+  })()`;
+  try {
+    const result = await page.evaluate(expr);
+    return Array.isArray(result) ? (result as LeafInvalidField[]) : [];
+  } catch {
+    // page.evaluate failure (navigation in-flight, CSP, browser detached)
+    // is non-fatal — caller falls back to the Haiku judge.
+    return [];
+  }
+}
+
+/**
+ * Render a list of structured leaf-invalid records as the numbered evidence
+ * lines the prompt's FORM FIELDS section expects. Surfaces label + framework
+ * + input tag + visible error text in one line so the LLM can disambiguate
+ * a smart-address autocomplete from a plain text input (separate widget
+ * interaction patterns) and target the field by its real name instead of
+ * the `(unlabeled) <ol>` bubble parent the LLM-judge surfaced today.
+ */
+export function renderLeafInvalidFields(fields: readonly LeafInvalidField[]): string {
+  if (fields.length === 0) return "";
+  const lines = fields.map((f, i) => {
+    const label = f.label ?? "(unlabeled)";
+    const err = f.visibleErrorText ? ` — error: "${f.visibleErrorText}"` : "";
+    return `${i + 1}. "${label}" [${f.framework}] <${f.inputTag}>${err} at ${f.xpath}`;
+  });
+  return lines.join("\n");
+}
+
 async function extractInteractiveTargetsNearInvalid(page: Page): Promise<string[]> {
   const expr = `(() => {
     const out = [];
@@ -2026,6 +2205,14 @@ async function readFailureDumpEvidence(
     client?: Anthropic | null;
     knownErrorClassPrefixes?: readonly string[];
     captureFn?: CaptureFn;
+    /**
+     * Live page from the running session. When provided, the deterministic
+     * `:has()`-based leaf probe runs against the LIVE DOM (authoritative)
+     * before falling back to the dump-based Haiku judge. Optional because
+     * tests inject a dump path without a Playwright session; production
+     * callers (replanRemainingFlow) always have `page` in scope and pass it.
+     */
+    page?: Page;
   }
 ): Promise<{
   bodyExcerpt: string;
@@ -2046,17 +2233,24 @@ async function readFailureDumpEvidence(
     const client = options?.client ?? null;
     const knownErrorClassPrefixes = options?.knownErrorClassPrefixes ?? [];
     const captureFn = options?.captureFn;
+    const page = options?.page;
 
-    // Run the modal-priority, invalid-fields, and error-messages judges in
-    // parallel. Each returns null when client is unavailable (Bedrock-only)
-    // or when the API call fails — callers fall back to empty strings.
+    // Deterministic-first when the live page is available: probe the LIVE
+    // DOM for leaf invalid containers via CSS `:has()`. Falls back to the
+    // dump-based Haiku judge only when the live probe returns empty or
+    // when no page is in scope (tests). See `probeLeafInvalidContainers`
+    // docs for the rationale.
+    const leafFields = page ? await probeLeafInvalidContainers(page) : [];
+
     const [unfocusedList, invalidVerdict, errorVerdict] = await Promise.all([
       renderUnfocusedObserve(dump.unfocusedObserve ?? [], { client, captureFn }),
-      judgeInvalidFieldsWithLLM({
-        client,
-        input: { bodyHtmlExcerpt: bodyExcerpt, knownErrorClassPrefixes },
-        captureFn,
-      }),
+      leafFields.length > 0
+        ? Promise.resolve(null)
+        : judgeInvalidFieldsWithLLM({
+            client,
+            input: { bodyHtmlExcerpt: bodyExcerpt, knownErrorClassPrefixes },
+            captureFn,
+          }),
       judgeErrorMessagesWithLLM({
         client,
         input: { bodyHtmlExcerpt: bodyExcerpt },
@@ -2064,12 +2258,17 @@ async function readFailureDumpEvidence(
       }),
     ]);
 
-    const invalidLines =
-      invalidVerdict?.fields.map((f) => {
-        const label = f.label ?? "(unlabeled)";
-        return `${label}  [${f.framework} ${f.markerKind}] ${f.containerXpath}`;
-      }) ?? [];
-    const invalidFieldList = invalidLines.map((e, i) => `${i + 1}. ${e}`).join("\n");
+    const invalidFieldList =
+      leafFields.length > 0
+        ? renderLeafInvalidFields(leafFields)
+        : (() => {
+            const invalidLines =
+              invalidVerdict?.fields.map((f) => {
+                const label = f.label ?? "(unlabeled)";
+                return `${label}  [${f.framework} ${f.markerKind}] ${f.containerXpath}`;
+              }) ?? [];
+            return invalidLines.map((e, i) => `${i + 1}. ${e}`).join("\n");
+          })();
 
     const errorLines =
       errorVerdict?.messages.map((m) => {
@@ -2208,6 +2407,7 @@ async function replanRemainingFlow(params: {
       client,
       knownErrorClassPrefixes: replanKnownErrorClassPrefixes,
       captureFn,
+      page,
     });
   const failureReasonList = recentFailureReasons.map((r, i) => `${i + 1}. ${r}`).join("\n");
   const submitFailureList = extractSubmitFailureEvidence(recentCaptures, ownBackendHostnames);

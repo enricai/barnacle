@@ -77,13 +77,16 @@ import {
   type InvalidFormControl,
   isReplanCycle,
   isSubmitRevealedInvalid,
+  type LeafInvalidField,
   logBillingErrorIfPresent,
   type NormalizedStep,
   narrowInvalidFormControl,
   pairInvalidWithErrors,
   persistReplannedFlow,
+  probeLeafInvalidContainers,
   type ReplanEvent,
   readFailureDumpEvidence,
+  renderLeafInvalidFields,
   renderStepWindow,
   renderUnfocusedObserve,
   rephraseWithLLM,
@@ -1209,6 +1212,147 @@ describe("recon-browser/renderStepWindow", () => {
     const lines = out.split("\n");
     expect(lines[1]).toBe("18. x18");
     expect(lines[3]).toBe("20. x20");
+  });
+});
+
+describe("recon-browser/probeLeafInvalidContainers", () => {
+  function fakePage(
+    payload: unknown,
+    opts?: { throw?: Error }
+  ): import("@browserbasehq/stagehand").Page {
+    return {
+      evaluate: vi.fn().mockImplementation(async () => {
+        if (opts?.throw) throw opts.throw;
+        return payload;
+      }),
+    } as unknown as import("@browserbasehq/stagehand").Page;
+  }
+
+  it("returns empty when page.evaluate throws", async () => {
+    const page = fakePage(null, { throw: new Error("navigation in flight") });
+    const out = await probeLeafInvalidContainers(page);
+    expect(out).toEqual([]);
+  });
+
+  it("returns empty when page.evaluate returns non-array", async () => {
+    const page = fakePage({ unexpected: "shape" });
+    const out = await probeLeafInvalidContainers(page);
+    expect(out).toEqual([]);
+  });
+
+  it("returns the structured records that the in-page evaluator emits", async () => {
+    const payload: LeafInvalidField[] = [
+      {
+        xpath: "/html[1]/body[1]/form[1]/ol[1]/li[7]/div[1]/div[2]/div[1]/app-input[1]",
+        label: "Address",
+        framework: "angular",
+        markerClass: "question-control ng-invalid ng-star-inserted ng-touched ng-dirty",
+        visibleErrorText: "This field is required.",
+        inputTag: "input",
+      },
+    ];
+    const page = fakePage(payload);
+    const out = await probeLeafInvalidContainers(page);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.label).toBe("Address");
+    expect(out[0]?.framework).toBe("angular");
+    expect(out[0]?.visibleErrorText).toBe("This field is required.");
+  });
+});
+
+describe("recon-browser/renderLeafInvalidFields", () => {
+  it("returns empty string when no fields", () => {
+    expect(renderLeafInvalidFields([])).toBe("");
+  });
+
+  it("renders label + framework + input tag + error text on one line per field", () => {
+    const out = renderLeafInvalidFields([
+      {
+        xpath: "/html/body/form/li[7]/app-input",
+        label: "Address",
+        framework: "angular",
+        markerClass: "ng-invalid",
+        visibleErrorText: "This field is required.",
+        inputTag: "input",
+      },
+    ]);
+    expect(out).toContain('1. "Address"');
+    expect(out).toContain("[angular]");
+    expect(out).toContain("<input>");
+    expect(out).toContain('error: "This field is required."');
+    expect(out).toContain("/html/body/form/li[7]/app-input");
+  });
+
+  it("falls back to (unlabeled) when label is null", () => {
+    const out = renderLeafInvalidFields([
+      {
+        xpath: "/html/body/x",
+        label: null,
+        framework: "other",
+        markerClass: "",
+        visibleErrorText: null,
+        inputTag: "input",
+      },
+    ]);
+    expect(out).toContain('"(unlabeled)"');
+    expect(out).not.toContain("error:");
+  });
+
+  it("numbers fields in order without elision (cap is upstream in probe)", () => {
+    const fields: LeafInvalidField[] = Array.from({ length: 5 }, (_, i) => ({
+      xpath: `/x[${i}]`,
+      label: `field${i}`,
+      framework: "angular" as const,
+      markerClass: "ng-invalid",
+      visibleErrorText: null,
+      inputTag: "input",
+    }));
+    const out = renderLeafInvalidFields(fields);
+    const lines = out.split("\n");
+    expect(lines).toHaveLength(5);
+    expect(lines[0]).toContain('1. "field0"');
+    expect(lines[4]).toContain('5. "field4"');
+  });
+
+  it("preserves framework differentiation across rows", () => {
+    const out = renderLeafInvalidFields([
+      {
+        xpath: "/a",
+        label: "A",
+        framework: "angular",
+        markerClass: "ng-invalid",
+        visibleErrorText: null,
+        inputTag: "input",
+      },
+      {
+        xpath: "/b",
+        label: "B",
+        framework: "material",
+        markerClass: "mat-form-field-invalid",
+        visibleErrorText: null,
+        inputTag: "input",
+      },
+      {
+        xpath: "/c",
+        label: "C",
+        framework: "bootstrap",
+        markerClass: "is-invalid",
+        visibleErrorText: null,
+        inputTag: "input",
+      },
+      {
+        xpath: "/d",
+        label: "D",
+        framework: "aria",
+        markerClass: "",
+        visibleErrorText: null,
+        inputTag: "input",
+      },
+    ]);
+    expect(out).toContain("[angular]");
+    expect(out).toContain("[material]");
+    expect(out).toContain("[bootstrap]");
+    expect(out).toContain("[aria]");
   });
 });
 
