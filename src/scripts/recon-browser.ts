@@ -968,7 +968,17 @@ async function rephraseWithLLM(
     technique: string;
     instruction: string | null;
     verdict: string | null;
-  }[]
+  }[],
+  /**
+   * Optional rendered Google Analytics Measurement Protocol event list
+   * (output of `extractGaEventEvidence`). When non-empty, surfaces SPA-
+   * internal page transitions (view_secondPage), success signals
+   * (view_thankYouPage), and the site's own validator counts
+   * (epn.validationErrorsCount) so the rephrase LLM can pivot off
+   * "click harder" into "fill the actually-missing field." Telemetry
+   * the engine already captures but never showed the LLM until now.
+   */
+  gaEventEvidence?: string
 ): Promise<string | null> {
   const candidateList = observeCandidates
     .slice(0, 12)
@@ -1047,6 +1057,9 @@ ${interactiveTargetsList || "(none)"}
 
 STRUCTURED SERVER-SIDE VALIDATION ERRORS (parsed from captured 4xx responses to the configured submit endpoint — when this is populated, the form's submit DID fire and the server rejected it with specific field-level feedback; use these field+message pairs to decide which input needs correcting):
 ${submitFailureList || "(none)"}
+
+PAGE TRANSITION + VALIDATOR TELEMETRY (parsed from Google Analytics Measurement Protocol beacons (POSTs to google-analytics.com/g/collect) captured during the failed step's attempt window — the SPA's own telemetry. Watch for: en=view_secondPage / en=view_thirdPage = the SPA advanced to a later form page WITHOUT firing Page.frameNavigated (URL stays the same but the questions changed); en=view_thankYouPage = the application SUBMITTED SUCCESSFULLY (a stronger success signal than network captures because /integrated_apply POSTs are sometimes debounced); epn.validationErrorsCount=N = the site's own client validator counts N unfilled required fields. When validationErrorsCount > 0, prefer targeting an unfilled field over re-clicking Submit/Continue. When view_thankYouPage appears, the form already submitted — emit outcome=impossible because there is nothing left to click):
+${gaEventEvidence || "(none)"}
 
 Rewrite the instruction so a Stagehand act() call can resolve it unambiguously to a different element than the ones already tried. Keep it short — one sentence, natural language, no quotes around it. If the invalid-fields section above names a field AND the interactive-targets section below lists clickable options inside that same container, your rewrite picks one of those options (e.g. for a yes/no question rendered as two radio labels, choose the candidate-favorable answer — 'No' for "do you have a non-compete", 'Yes' for "are you authorized to work", 'Prefer not to say' for demographic disclosures) rather than retrying the original click. If the unfocused observe section shows an open modal/dialog with a Save or Close action, your rewrite invokes that action so the underlying form can clear its blocking state. Set outcome to "impossible" with a one-line reason only when the original instruction's element does not exist on the current page and no redirect target is available.`;
 
@@ -1852,6 +1865,80 @@ export function extractSubmitFailureEvidence(
 }
 
 /**
+ * Surface Google Analytics Measurement Protocol events captured during a
+ * step's attempt window. AppCast (and most GA4-instrumented SPAs) emit
+ * `view_secondPage`, `view_thankYouPage`, `form_submit` and similar events
+ * via `https://www.google-analytics.com/g/collect` — the engine already
+ * stores these in `recentCaptures[]` but no code reads them. Without
+ * surfacing them the LLM cannot tell that a Submit click actually advanced
+ * the SPA to page 2 (because `pre.url === post.url` under SPA routing), nor
+ * that the site's own validator (`epn.validationErrorsCount`) reports N
+ * unfilled required fields, nor that the application reached the
+ * thank-you page (the canonical SUCCESS signal when `/integrated_apply`
+ * POSTs are debounced or missed).
+ *
+ * Returns a numbered evidence list. Empty string when no GA collect
+ * captures are present. Advisory — never load-bearing.
+ */
+export function extractGaEventEvidence(
+  recentCaptureFilenames: readonly string[],
+  capturesDir: string = CAPTURES_DIR
+): string {
+  if (recentCaptureFilenames.length === 0) return "";
+  const records: string[] = [];
+  const seen = new Set<string>();
+  for (const filename of recentCaptureFilenames.slice(-20)) {
+    if (seen.has(filename)) continue;
+    seen.add(filename);
+    try {
+      const path = join(capturesDir, filename);
+      const raw = readFileSync(path, "utf8");
+      const capture = JSON.parse(raw) as Partial<Capture>;
+      if (typeof capture.url !== "string") continue;
+      let url: URL;
+      try {
+        url = new URL(capture.url);
+      } catch {
+        continue;
+      }
+      if (url.hostname !== "www.google-analytics.com") continue;
+      if (!url.pathname.startsWith("/g/collect")) continue;
+      const params = url.searchParams;
+      const eventName = params.get("en");
+      if (!eventName) continue;
+      const documentLocation = params.get("dl") ?? "";
+      const pageTitle = params.get("dt") ?? "";
+      let pagePath = "";
+      if (documentLocation.length > 0) {
+        try {
+          pagePath = new URL(documentLocation).pathname;
+        } catch {
+          pagePath = documentLocation.slice(0, 80);
+        }
+      }
+      const detailParts: string[] = [];
+      params.forEach((value, key) => {
+        if (key.startsWith("epn.")) {
+          detailParts.push(`${key.slice(4)}=${value}`);
+        } else if (key.startsWith("ep.")) {
+          detailParts.push(`${key.slice(3)}=${value}`);
+        }
+      });
+      const detail = detailParts.slice(0, 8).join("; ");
+      const locationHint = pagePath || pageTitle || "(no page hint)";
+      records.push(
+        detail.length > 0
+          ? `${eventName} @ ${locationHint} — ${detail}`
+          : `${eventName} @ ${locationHint}`
+      );
+    } catch {
+      // capture file missing or malformed — skip
+    }
+  }
+  return records.map((r, i) => `${i + 1}. ${r}`).join("\n");
+}
+
+/**
  * Pull field-level errors out of an arbitrary JSON response body. Walks a
  * few of the conventional ATS shapes; falls through to `[]` so the caller
  * can decide whether to emit a fallback summary.
@@ -2083,6 +2170,7 @@ async function replanRemainingFlow(params: {
     });
   const failureReasonList = recentFailureReasons.map((r, i) => `${i + 1}. ${r}`).join("\n");
   const submitFailureList = extractSubmitFailureEvidence(recentCaptures, ownBackendHostnames);
+  const gaEventList = extractGaEventEvidence(recentCaptures);
 
   const prompt = `You are helping a browser automation agent recover from a failed flow step.
 
@@ -2104,6 +2192,9 @@ Title: ${pageTitle}
 
 WHY VERIFICATION FAILED (latest attempt reasons from the cascade — read these carefully, they explain WHY the step is being declared failed):
 ${failureReasonList || "(none)"}
+
+PAGE TRANSITION + VALIDATOR TELEMETRY (parsed from Google Analytics Measurement Protocol beacons (POSTs to google-analytics.com/g/collect) captured during the failed step's attempt window — this is the SPA's own telemetry telling you what state it thinks it's in. Watch for: en=view_secondPage / en=view_thirdPage indicating the SPA advanced to a later form page WITHOUT firing Page.frameNavigated (so URL stays the same but questions changed); en=view_thankYouPage indicating the application SUBMITTED SUCCESSFULLY (a stronger success signal than network captures because the /integrated_apply POST is sometimes debounced); epn.validationErrorsCount=N indicating the site's own client validator counts N unfilled required fields. When validationErrorsCount > 0, prefer steps that target unfilled fields over re-clicking Submit/Continue. When view_thankYouPage appears, the application already submitted — do not propose more form-fill steps):
+${gaEventList || "(none)"}
 
 FORM FIELDS CURRENTLY MARKED INVALID (text + class signature for any element whose class matches the framework-agnostic invalid pattern — ng-invalid, mat-form-field-invalid, is-invalid, etc.):
 ${invalidFieldList || "(none)"}
@@ -3675,6 +3766,7 @@ async function executeStepWithHealing(params: {
             recentCaptures,
             ownBackendHostnames
           );
+          const gaEventList = extractGaEventEvidence(recentCaptures);
           const priorAttemptsForPrompt = attempts.map((a, i) => ({
             technique: a.technique,
             instruction: a.instruction,
@@ -3690,7 +3782,8 @@ async function executeStepWithHealing(params: {
             livePageEvidence,
             unfocused,
             submitFailureList,
-            priorAttemptsForPrompt
+            priorAttemptsForPrompt,
+            gaEventList
           );
           if (!rephrased) {
             record.errorMessage = "llm declined to rephrase or returned outcome=impossible";

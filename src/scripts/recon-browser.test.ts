@@ -68,6 +68,7 @@ import {
   dedupeConsecutiveIdentical,
   denormalizeStep,
   describeAttemptEffectSignals,
+  extractGaEventEvidence,
   extractSubmitFailureEvidence,
   findRecentBackendError,
   findRecentPageTransition,
@@ -1055,6 +1056,99 @@ describe("recon-browser/extractSubmitFailureEvidence", () => {
 
   it("skips missing capture files silently", () => {
     expect(extractSubmitFailureEvidence(["missing.json"], ownHosts, tmpDir)).toBe("");
+  });
+});
+
+describe("recon-browser/extractGaEventEvidence", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "recon-ga-event-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function writeCapture(filename: string, body: object): void {
+    writeFileSync(join(tmpDir, filename), JSON.stringify(body));
+  }
+
+  it("returns empty when no capture filenames are passed", () => {
+    expect(extractGaEventEvidence([], tmpDir)).toBe("");
+  });
+
+  it("returns empty when captures do not target google-analytics.com/g/collect", () => {
+    writeCapture("capture-1.json", {
+      url: "https://apply.appcast.io/api/jobs/123/integrated_apply",
+      status: 200,
+      method: "POST",
+    });
+    expect(extractGaEventEvidence(["capture-1.json"], tmpDir)).toBe("");
+  });
+
+  it("parses view_secondPage with numeric and string event params", () => {
+    writeCapture("capture-1.json", {
+      url: "https://www.google-analytics.com/g/collect?v=2&tid=G-X&en=view_secondPage&dl=https%3A%2F%2Fapply.appcast.io%2Fjobs%2F999%2Fapplyboard%2Fapply%3Fcs%3Dsy3&dt=RN%20Hiring&epn.validationErrorsCount=10&epn.integratedRequiredQuestionsCount=24&ep.isFirstVisit=true",
+      status: 204,
+      method: "POST",
+    });
+    const out = extractGaEventEvidence(["capture-1.json"], tmpDir);
+    expect(out).toContain("view_secondPage");
+    expect(out).toContain("/jobs/999/applyboard/apply");
+    expect(out).toContain("validationErrorsCount=10");
+    expect(out).toContain("integratedRequiredQuestionsCount=24");
+    expect(out).toContain("isFirstVisit=true");
+  });
+
+  it("surfaces view_thankYouPage (success signal)", () => {
+    writeCapture("capture-1.json", {
+      url: "https://www.google-analytics.com/g/collect?v=2&en=view_thankYouPage&dl=https%3A%2F%2Fapply.appcast.io%2Fjobs%2F999%2Fapplyboard%2Fapplied",
+      status: 204,
+      method: "POST",
+    });
+    const out = extractGaEventEvidence(["capture-1.json"], tmpDir);
+    expect(out).toContain("view_thankYouPage");
+    expect(out).toContain("/jobs/999/applyboard/applied");
+  });
+
+  it("numbers multiple GA events in capture order", () => {
+    writeCapture("capture-1.json", {
+      url: "https://www.google-analytics.com/g/collect?v=2&en=form_start&dl=https%3A%2F%2Fexample.com%2Fapply",
+      status: 204,
+      method: "POST",
+    });
+    writeCapture("capture-2.json", {
+      url: "https://www.google-analytics.com/g/collect?v=2&en=view_secondPage&dl=https%3A%2F%2Fexample.com%2Fapply",
+      status: 204,
+      method: "POST",
+    });
+    const out = extractGaEventEvidence(["capture-1.json", "capture-2.json"], tmpDir);
+    expect(out).toMatch(/1\. form_start/);
+    expect(out).toMatch(/2\. view_secondPage/);
+  });
+
+  it("skips captures with no 'en' param (e.g. gtm config beacons)", () => {
+    writeCapture("capture-1.json", {
+      url: "https://www.google-analytics.com/g/collect?v=2&tid=G-X&_p=1234",
+      status: 204,
+      method: "POST",
+    });
+    expect(extractGaEventEvidence(["capture-1.json"], tmpDir)).toBe("");
+  });
+
+  it("skips missing capture files silently", () => {
+    expect(extractGaEventEvidence(["missing.json"], tmpDir)).toBe("");
+  });
+
+  it("deduplicates the same filename to avoid double-counting", () => {
+    writeCapture("capture-1.json", {
+      url: "https://www.google-analytics.com/g/collect?v=2&en=view_secondPage&dl=https%3A%2F%2Fexample.com%2Fapply",
+      status: 204,
+      method: "POST",
+    });
+    const out = extractGaEventEvidence(["capture-1.json", "capture-1.json"], tmpDir);
+    expect(out.split("\n").length).toBe(1);
   });
 });
 
