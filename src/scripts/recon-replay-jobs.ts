@@ -197,16 +197,21 @@ function readJobOutcome(capturesBefore: Set<string>): {
         // (AppCast `not_qualified`, Greenhouse `rejected`, Lever `qualified:
         // false`, Workday `status: "rejected"`). HTTP 200 alone is not proof
         // of acceptance — many ATSs use a "200 with rejection envelope"
-        // pattern.
-        if (typeof data.responseBody === "string") {
+        // pattern. The capture writer at recon-browser.ts:240 stores
+        // responseBody as either an object (JSON success) or a string
+        // (JSON-parse failure fallback) — handle both shapes here.
+        let body: unknown = data.responseBody;
+        if (typeof body === "string") {
           try {
-            const body = JSON.parse(data.responseBody);
-            const rejection = detectRejectionInResponseBody(body);
-            if (rejection.rejected) {
-              serverRejected = true;
-              serverRejectionReason = rejection.reason;
-            }
-          } catch {}
+            body = JSON.parse(body);
+          } catch {
+            body = null;
+          }
+        }
+        const rejection = detectRejectionInResponseBody(body);
+        if (rejection.rejected) {
+          serverRejected = true;
+          serverRejectionReason = rejection.reason;
         }
       }
       if (typeof data.url === "string" && /\/applyboard\/applied/.test(data.url)) {

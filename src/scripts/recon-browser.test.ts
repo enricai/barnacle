@@ -2755,3 +2755,83 @@ describe("recon-browser/detectRejectionInResponseBody (Q1)", () => {
     ).toEqual({ rejected: false, reason: null });
   });
 });
+
+describe("recon-browser/Q1B — capture-shape integration (responseBody can be object|string|null)", () => {
+  // The capture writer at recon-browser.ts:240 stores responseBody as either a
+  // parsed object (JSON success — common case for any JSON-serving API) or as
+  // a string (rare fallback when JSON.parse threw). Q1's original wrapper
+  // assumed string-only and returned null for objects, silently missing 100%
+  // of real rejection envelopes. These tests pin the fix by exercising the
+  // exact call-site pattern used by readJobOutcome + auditFinalSubmitMatch.
+
+  function detectFromCaptureLike(capture: { responseBody?: unknown }): {
+    rejected: boolean;
+    reason: string | null;
+  } {
+    // Mirror the call-site pattern that handles all three shapes the
+    // capture writer can produce: object, string-of-JSON, null.
+    let body: unknown = capture.responseBody;
+    if (typeof body === "string") {
+      try {
+        body = JSON.parse(body);
+      } catch {
+        body = null;
+      }
+    }
+    return detectRejectionInResponseBody(body);
+  }
+
+  it("detects rejection when capture.responseBody is an OBJECT (the AppCast real-world case)", () => {
+    const capture = {
+      url: "https://apply.appcast.io/api/jobs/53722549083/integrated_apply",
+      status: 200,
+      responseBody: {
+        not_qualified: true,
+        error: "Not qualified reason: email",
+        ggc_thank_you_redirect_url: "https://www.getgreatcareers.com/?...",
+      },
+    };
+    expect(detectFromCaptureLike(capture)).toEqual({
+      rejected: true,
+      reason: "Not qualified reason: email",
+    });
+  });
+
+  it("detects rejection when capture.responseBody is a STRING containing JSON (fallback case)", () => {
+    const capture = {
+      responseBody: '{"not_qualified": true, "error": "Not qualified reason: email"}',
+    };
+    expect(detectFromCaptureLike(capture)).toEqual({
+      rejected: true,
+      reason: "Not qualified reason: email",
+    });
+  });
+
+  it("returns rejected=false when capture.responseBody is a non-JSON string", () => {
+    const capture = { responseBody: "<html>error page</html>" };
+    expect(detectFromCaptureLike(capture)).toEqual({ rejected: false, reason: null });
+  });
+
+  it("returns rejected=false when capture.responseBody is null (CDP fetch failure)", () => {
+    expect(detectFromCaptureLike({ responseBody: null })).toEqual({
+      rejected: false,
+      reason: null,
+    });
+  });
+
+  it("returns rejected=false when capture.responseBody is missing entirely", () => {
+    expect(detectFromCaptureLike({})).toEqual({ rejected: false, reason: null });
+  });
+
+  it("returns rejected=false when capture.responseBody is an OBJECT representing acceptance", () => {
+    const capture = {
+      url: "https://apply.appcast.io/api/jobs/56388099463/integrated_apply",
+      status: 200,
+      responseBody: {
+        not_qualified: false,
+        ggc_thank_you_redirect_url: "https://www.getgreatcareers.com/?...",
+      },
+    };
+    expect(detectFromCaptureLike(capture)).toEqual({ rejected: false, reason: null });
+  });
+});

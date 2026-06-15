@@ -554,17 +554,36 @@ export function detectRejectionInResponseBody(body: unknown): {
 }
 
 /**
- * Parse a capture file's responseBody field as JSON if possible. Returns
- * the parsed object or null if the body is absent, not a string, or not
- * valid JSON. Used by the end-of-run audit to detect rejection envelopes.
+ * Normalize a capture's responseBody to the parsed-object shape that
+ * `detectRejectionInResponseBody` expects. Capture writer at
+ * recon-browser.ts:240 stores the field as either:
+ *   - a parsed OBJECT (the common case — JSON.parse succeeded at capture time)
+ *   - a STRING (fallback when JSON.parse failed — raw text body)
+ *   - null (CDP body fetch failed; binary; unavailable)
+ *
+ * Previous version of this helper assumed string-only and returned null for
+ * the object case — causing Q1's audit to miss 100% of rejection envelopes
+ * because AppCast (and any JSON-serving ATS) lands in the object case.
+ * Verified 2026-06-15 against capture 122-...-a4ab5256.json:
+ * `jq '.responseBody | type'` returned `"object"`, the broken helper
+ * returned null, the audit declared "PASSED" while the body contained
+ * `{"not_qualified": true}`.
+ *
+ * Site-agnostic: every JSON-serving REST endpoint produces the object
+ * case; the string-as-JSON fallback covers rare cases where the capture
+ * writer stored a parseable JSON string for some reason.
  */
-function parseResponseBodyForAudit(data: { responseBody?: unknown }): unknown {
-  if (typeof data.responseBody !== "string") return null;
-  try {
-    return JSON.parse(data.responseBody);
-  } catch {
-    return null;
+function normalizeResponseBodyForAudit(data: { responseBody?: unknown }): unknown {
+  const body = data.responseBody;
+  if (body && typeof body === "object") return body;
+  if (typeof body === "string") {
+    try {
+      return JSON.parse(body);
+    } catch {
+      return null;
+    }
   }
+  return null;
 }
 
 /**
@@ -638,7 +657,7 @@ function auditFinalSubmitMatch(params: {
           continue;
         }
         if (!ownBackendHostnames.includes(hostname)) continue;
-        const parsedBody = parseResponseBodyForAudit(data);
+        const parsedBody = normalizeResponseBodyForAudit(data);
         const rejection = detectRejectionInResponseBody(parsedBody);
         if (rejection.rejected) {
           lastRejectionReason = rejection.reason;
