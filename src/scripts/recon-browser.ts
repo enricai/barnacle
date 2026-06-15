@@ -506,16 +506,84 @@ async function snapshotPage(page: Page, signalCounter: { n: number }): Promise<S
 }
 
 /**
+ * Detect whether a 2xx response body indicates the server REJECTED the
+ * application despite returning a 2xx HTTP status. Many ATSs use a "200 OK
+ * with rejection envelope" pattern instead of a 4xx: AppCast returns
+ * `{not_qualified: true, error: "Not qualified reason: <field>"}`,
+ * Greenhouse uses `{rejected: true, reason: "..."}`, Lever uses
+ * `{qualified: false, reason: "..."}`, Workday uses
+ * `{status: "rejected"}`. Empirically verified on AppCast: 4/6 historical
+ * /integrated_apply 200s on this codebase had `not_qualified: true` and
+ * we treated them as wins because the audit only checked HTTP status.
+ *
+ * Site-agnostic: the helper checks for the union of common rejection
+ * envelope shapes. New ATSs can be added by extending the recognized
+ * keys; the existing ones cover the four most common patterns.
+ */
+export function detectRejectionInResponseBody(body: unknown): {
+  rejected: boolean;
+  reason: string | null;
+} {
+  if (!body || typeof body !== "object") return { rejected: false, reason: null };
+  const rec = body as Record<string, unknown>;
+  if (rec.not_qualified === true) {
+    return {
+      rejected: true,
+      reason: typeof rec.error === "string" ? rec.error : "not_qualified",
+    };
+  }
+  if (rec.rejected === true) {
+    return {
+      rejected: true,
+      reason: typeof rec.reason === "string" ? rec.reason : "rejected",
+    };
+  }
+  if (rec.qualified === false) {
+    return {
+      rejected: true,
+      reason: typeof rec.reason === "string" ? rec.reason : "qualified=false",
+    };
+  }
+  if (typeof rec.status === "string" && rec.status === "rejected") {
+    return {
+      rejected: true,
+      reason: typeof rec.reason === "string" ? rec.reason : "status=rejected",
+    };
+  }
+  return { rejected: false, reason: null };
+}
+
+/**
+ * Parse a capture file's responseBody field as JSON if possible. Returns
+ * the parsed object or null if the body is absent, not a string, or not
+ * valid JSON. Used by the end-of-run audit to detect rejection envelopes.
+ */
+function parseResponseBodyForAudit(data: { responseBody?: unknown }): unknown {
+  if (typeof data.responseBody !== "string") return null;
+  try {
+    return JSON.parse(data.responseBody);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * End-of-run audit: scan ALL captures written by this run for any 2xx
- * whose URL matches the flow's submitEndpointPattern. Returns true when
- * NO match is found — i.e. the run completed without an actual
- * submission landing. Caller exits non-zero so silent-pass states
- * surface as real failures.
+ * whose URL matches the flow's submitEndpointPattern AND whose response
+ * body does NOT indicate a rejection envelope. Returns true when NO clean
+ * 2xx match is found — i.e. the run completed without an accepted
+ * submission landing. Caller exits non-zero so silent-pass states surface
+ * as real failures.
  *
  * The audit is independent of the per-step verifier — the verifier may
  * have accepted a DOM-fallback or URL-change signal as proof, but if
- * the configured submit endpoint never returned 2xx, the application
- * data didn't actually reach the server.
+ * the configured submit endpoint never returned 2xx, OR returned 2xx
+ * with a rejection envelope (e.g. AppCast's `not_qualified: true`), the
+ * application data didn't actually reach the employer's ATS.
+ *
+ * Site-agnostic: rejection detection is via `detectRejectionInResponseBody`
+ * which knows the union of common ATS rejection-envelope shapes
+ * (AppCast/Greenhouse/Lever/Workday). New ATSs extend the union.
  *
  * Pre-existing AppCast-specific equivalent: readJobOutcome in
  * recon-replay-jobs.ts. This is the agnostic engine-side version using
@@ -533,9 +601,9 @@ function auditFinalSubmitMatch(params: {
   ownBackendHostnames: readonly string[];
   capturesDir: string;
   logger: Logger;
-}): boolean {
+}): { auditFailed: boolean; rejectionReason: string | null } {
   const { ownBackendHostnames, capturesDir, logger } = params;
-  if (ownBackendHostnames.length === 0) return true;
+  if (ownBackendHostnames.length === 0) return { auditFailed: true, rejectionReason: null };
   let entries: string[];
   try {
     entries = readdirSync(capturesDir);
@@ -543,15 +611,19 @@ function auditFinalSubmitMatch(params: {
     logger.warn(
       `end-of-run audit: could not read captures dir ${capturesDir}: ${toErrorMessage(err)}`
     );
-    // Without captures to scan we can't make the determination; treat as
-    // failed so the caller decides whether to retry.
-    return true;
+    return { auditFailed: true, rejectionReason: null };
   }
+  // Collect the most recent rejection reason in case we don't find a clean
+  // 2xx — surfaces "we DID submit but the server rejected" rather than
+  // "we never submitted" so the operator knows whether to fix the engine
+  // or fix the application content.
+  let lastRejectionReason: string | null = null;
   for (const f of entries) {
     try {
       const data = JSON.parse(readFileSync(join(capturesDir, f), "utf8")) as {
         status?: number;
         url?: string;
+        responseBody?: unknown;
       };
       if (
         typeof data.url === "string" &&
@@ -565,16 +637,21 @@ function auditFinalSubmitMatch(params: {
         } catch {
           continue;
         }
-        if (ownBackendHostnames.includes(hostname)) {
-          return false;
+        if (!ownBackendHostnames.includes(hostname)) continue;
+        const parsedBody = parseResponseBodyForAudit(data);
+        const rejection = detectRejectionInResponseBody(parsedBody);
+        if (rejection.rejected) {
+          lastRejectionReason = rejection.reason;
+          continue;
         }
+        return { auditFailed: false, rejectionReason: null };
       }
     } catch {
       // Ignore unparseable capture files — they're either malformed or
       // a different shape (e.g. resource captures that don't have status/url).
     }
   }
-  return true;
+  return { auditFailed: true, rejectionReason: lastRejectionReason };
 }
 
 /**
@@ -5662,21 +5739,22 @@ async function main(): Promise<void> {
     // 06-09: per-step verifier accepted DOM-fallback as proof; run-level
     // audit catches that the network proof never actually arrived.
     if (requireSubmitEndpointMatch && ownBackendHostnames.length > 0) {
-      const auditFailed = auditFinalSubmitMatch({
+      const { auditFailed, rejectionReason } = auditFinalSubmitMatch({
         ownBackendHostnames,
         capturesDir: CAPTURES_DIR,
         logger,
       });
       if (auditFailed) {
-        logger.error(
-          `end-of-run audit FAILED: no captured 2xx had hostname in ${JSON.stringify(ownBackendHostnames)} — submission did not land despite verifier success`
-        );
+        const reasonSuffix = rejectionReason
+          ? ` — server REJECTED submission with rejection envelope (reason: "${rejectionReason}"); HTTP layer succeeded but application was not accepted`
+          : ` — no captured 2xx had hostname in ${JSON.stringify(ownBackendHostnames)} — submission did not land despite verifier success`;
+        logger.error(`end-of-run audit FAILED${reasonSuffix}`);
         // Exit non-zero so the runner counts this as a real failure rather
         // than rolling silent-pass forward as success.
         process.exit(1);
       }
       logger.info(
-        `end-of-run audit PASSED: at least one captured 2xx matched submitEndpointPattern`
+        `end-of-run audit PASSED: at least one captured 2xx matched submitEndpointPattern with clean response body`
       );
     }
 

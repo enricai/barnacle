@@ -24,6 +24,7 @@ import { resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { getScriptLogger } from "@/lib/logging";
+import { detectRejectionInResponseBody } from "@/scripts/recon-browser";
 import { allocateTestmailInbox, pollTestmailInbox } from "@/testmail/client";
 
 const logger = getScriptLogger("recon-replay-jobs");
@@ -39,6 +40,22 @@ interface JobVerdict {
   inboxAddress: string;
   reconExitCode: number | null;
   integratedApply200: boolean;
+  /**
+   * True when the submit endpoint returned a 2xx whose response body
+   * declared rejection (e.g. AppCast `not_qualified: true`, Greenhouse
+   * `rejected: true`). When this is true, `integratedApply200` should
+   * NOT be interpreted as a real success — the application reached the
+   * HTTP layer but was filtered out by the ATS's qualification check
+   * before reaching the employer.
+   */
+  serverRejected: boolean;
+  /**
+   * The reason string the ATS reported when `serverRejected === true`,
+   * verbatim from the response body (e.g. "Not qualified reason: email").
+   * Null when the server accepted the submit or when the audit couldn't
+   * find a matching capture.
+   */
+  serverRejectionReason: string | null;
   terminalUrl: string | null;
   emailReceived: boolean;
   emailSubject: string | null;
@@ -151,6 +168,8 @@ async function runReconForJob(
  */
 function readJobOutcome(capturesBefore: Set<string>): {
   integratedApply200: boolean;
+  serverRejected: boolean;
+  serverRejectionReason: string | null;
   terminalUrl: string | null;
 } {
   const capturesDir = "/tmp/recon/graphql";
@@ -158,12 +177,15 @@ function readJobOutcome(capturesBefore: Set<string>): {
   const newCaptures = after.filter((f) => !capturesBefore.has(f));
 
   let integratedApply200 = false;
+  let serverRejected = false;
+  let serverRejectionReason: string | null = null;
   let terminalUrl: string | null = null;
   for (const f of newCaptures) {
     try {
       const data = JSON.parse(readFileSync(resolve(capturesDir, f), "utf8")) as {
         status?: number;
         url?: string;
+        responseBody?: unknown;
       };
       if (
         typeof data.url === "string" &&
@@ -171,13 +193,28 @@ function readJobOutcome(capturesBefore: Set<string>): {
         data.status === 200
       ) {
         integratedApply200 = true;
+        // Parse the response body to detect server-side rejection envelopes
+        // (AppCast `not_qualified`, Greenhouse `rejected`, Lever `qualified:
+        // false`, Workday `status: "rejected"`). HTTP 200 alone is not proof
+        // of acceptance — many ATSs use a "200 with rejection envelope"
+        // pattern.
+        if (typeof data.responseBody === "string") {
+          try {
+            const body = JSON.parse(data.responseBody);
+            const rejection = detectRejectionInResponseBody(body);
+            if (rejection.rejected) {
+              serverRejected = true;
+              serverRejectionReason = rejection.reason;
+            }
+          } catch {}
+        }
       }
       if (typeof data.url === "string" && /\/applyboard\/applied/.test(data.url)) {
         terminalUrl = data.url;
       }
     } catch {}
   }
-  return { integratedApply200, terminalUrl };
+  return { integratedApply200, serverRejected, serverRejectionReason, terminalUrl };
 }
 
 async function main(): Promise<void> {
@@ -197,7 +234,8 @@ async function main(): Promise<void> {
       flowFile,
       inbox.address
     );
-    const { integratedApply200, terminalUrl } = readJobOutcome(capturesBefore);
+    const { integratedApply200, serverRejected, serverRejectionReason, terminalUrl } =
+      readJobOutcome(capturesBefore);
 
     let emailReceived = false;
     let emailSubject: string | null = null;
@@ -217,6 +255,8 @@ async function main(): Promise<void> {
       inboxAddress: inbox.address,
       reconExitCode: exitCode,
       integratedApply200,
+      serverRejected,
+      serverRejectionReason,
       terminalUrl,
       emailReceived,
       emailSubject,
@@ -224,8 +264,11 @@ async function main(): Promise<void> {
       durationMs: Date.now() - start,
     };
     verdicts.push(verdict);
+    const rejectionSuffix = serverRejected
+      ? ` REJECTED="${serverRejectionReason ?? "(no reason)"}"`
+      : "";
     logger.info(
-      `[${i + 1}/${jobs.length}] verdict: exit=${exitCode} apply200=${integratedApply200} email=${emailReceived} subj=${emailSubject ?? "-"} dur=${Math.round(verdict.durationMs / 1000)}s`
+      `[${i + 1}/${jobs.length}] verdict: exit=${exitCode} apply200=${integratedApply200} accepted=${integratedApply200 && !serverRejected}${rejectionSuffix} email=${emailReceived} subj=${emailSubject ?? "-"} dur=${Math.round(verdict.durationMs / 1000)}s`
     );
 
     writeFileSync(reportPath, `${JSON.stringify(verdicts, null, 2)}\n`);
@@ -241,8 +284,14 @@ async function main(): Promise<void> {
     }
   }
 
-  const passing = verdicts.filter((v) => v.integratedApply200 && v.emailReceived).length;
-  logger.info(`replay complete: ${passing}/${verdicts.length} jobs with apply200 + email`);
+  const httpAccepted = verdicts.filter((v) => v.integratedApply200 && !v.serverRejected).length;
+  const httpAcceptedWithEmail = verdicts.filter(
+    (v) => v.integratedApply200 && !v.serverRejected && v.emailReceived
+  ).length;
+  const httpRejected = verdicts.filter((v) => v.integratedApply200 && v.serverRejected).length;
+  logger.info(
+    `replay complete: ${httpAccepted}/${verdicts.length} accepted (HTTP 200 + no rejection envelope); ${httpRejected} rejected by ATS qualification filter; ${httpAcceptedWithEmail} also received confirmation email`
+  );
   logger.info(`report: ${reportPath}`);
 }
 

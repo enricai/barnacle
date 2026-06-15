@@ -69,6 +69,7 @@ import {
   dedupeConsecutiveIdentical,
   denormalizeStep,
   describeAttemptEffectSignals,
+  detectRejectionInResponseBody,
   extractGaEventEvidence,
   extractSubmitFailureEvidence,
   fillHtml5DateTimeInput,
@@ -2677,5 +2678,80 @@ describe("recon-browser/extractSubmitFailureEvidence — J' singular-error key",
     // The parser change is structurally validated by the existing
     // test suite's fallback fixtures. Marker test for traceability.
     expect(true).toBe(true);
+  });
+});
+
+describe("recon-browser/detectRejectionInResponseBody (Q1)", () => {
+  it("returns rejected=false for null/undefined/non-object body", () => {
+    expect(detectRejectionInResponseBody(null)).toEqual({ rejected: false, reason: null });
+    expect(detectRejectionInResponseBody(undefined)).toEqual({ rejected: false, reason: null });
+    expect(detectRejectionInResponseBody("not an object")).toEqual({
+      rejected: false,
+      reason: null,
+    });
+    expect(detectRejectionInResponseBody(42)).toEqual({ rejected: false, reason: null });
+  });
+
+  it("detects AppCast `not_qualified: true` with error reason", () => {
+    expect(
+      detectRejectionInResponseBody({
+        not_qualified: true,
+        error: "Not qualified reason: email",
+      })
+    ).toEqual({ rejected: true, reason: "Not qualified reason: email" });
+  });
+
+  it("detects AppCast `not_qualified: true` without error field (falls back to default reason)", () => {
+    expect(detectRejectionInResponseBody({ not_qualified: true })).toEqual({
+      rejected: true,
+      reason: "not_qualified",
+    });
+  });
+
+  it("does NOT flag AppCast `not_qualified: false` as rejection (real success)", () => {
+    expect(
+      detectRejectionInResponseBody({
+        not_qualified: false,
+        ggc_thank_you_redirect_url: "https://example.com",
+      })
+    ).toEqual({ rejected: false, reason: null });
+  });
+
+  it("detects Greenhouse `rejected: true` with reason", () => {
+    expect(
+      detectRejectionInResponseBody({ rejected: true, reason: "Duplicate application" })
+    ).toEqual({
+      rejected: true,
+      reason: "Duplicate application",
+    });
+  });
+
+  it("detects Lever `qualified: false` with reason", () => {
+    expect(detectRejectionInResponseBody({ qualified: false, reason: "Location" })).toEqual({
+      rejected: true,
+      reason: "Location",
+    });
+  });
+
+  it('detects Workday `status: "rejected"` shape', () => {
+    expect(
+      detectRejectionInResponseBody({ status: "rejected", reason: "Required field empty" })
+    ).toEqual({
+      rejected: true,
+      reason: "Required field empty",
+    });
+  });
+
+  it('does NOT flag `status: "accepted"` as rejection', () => {
+    expect(detectRejectionInResponseBody({ status: "accepted" })).toEqual({
+      rejected: false,
+      reason: null,
+    });
+  });
+
+  it("ignores unrelated fields when no rejection markers present", () => {
+    expect(
+      detectRejectionInResponseBody({ applicationId: 12345, redirectUrl: "https://x.com" })
+    ).toEqual({ rejected: false, reason: null });
   });
 });
