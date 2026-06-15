@@ -2159,6 +2159,122 @@ export function renderStepWindow(
 }
 
 /**
+ * Detect a "false-premise loop" — the current cascade-exhausted step
+ * shares a slug-prefix with at least N prior replans' failed steps,
+ * suggesting the flow's element model for THIS widget family doesn't
+ * match the actual DOM. Slug derivation mirrors the `currentPhase`
+ * pattern at recon-browser.ts:5001 (24-char alphanumeric prefix of
+ * normalized instruction). When the threshold is exceeded, callers
+ * inject an ELEMENT MODEL CHECK section into the replan prompt so the
+ * LLM is nudged to reconsider whether the failed-step's element
+ * description matches anything on the page.
+ *
+ * Research grounding: Reflexion (Shinn et al., 2023) demonstrates +22%
+ * improvement on AlfWorld via verbal-reinforcement feedback on prior
+ * failures. Our existing replan prompt's PRIOR REPLAN HISTORY section
+ * is Reflexion-style; this helper adds a quantified meta-signal when
+ * the same element pattern fails N+ times in a row.
+ */
+export function countSlugPrefixMatches(
+  currentFailedStep: string,
+  priorReplans: readonly ReplanEvent[]
+): number {
+  const slugOf = (s: string): string =>
+    s
+      .replace(/[^a-z0-9]+/gi, "-")
+      .toLowerCase()
+      .replace(/^-|-$/g, "")
+      .slice(0, 24);
+  const currentSlug = slugOf(currentFailedStep);
+  if (currentSlug.length === 0) return 0;
+  let matches = 0;
+  for (const ev of priorReplans) {
+    if (slugOf(ev.failedInstruction) === currentSlug) matches++;
+  }
+  return matches;
+}
+
+/**
+ * Outcome of attempting to fill an HTML5 date/time input via the
+ * native-setter + dispatch-events workaround. `null` when the target
+ * isn't a date/time input (caller falls back to the normal cascade).
+ */
+export interface Html5DateFillResult {
+  /** Whether the value actually landed in the DOM after dispatch. */
+  filled: boolean;
+  /** What the input's value is now (for verifier signal). */
+  postValue: string;
+  /** The input's type attribute, for the verifier and prompt context. */
+  inputType: string;
+}
+
+/**
+ * Deterministic fill for HTML5 `<input type="date|time|datetime-local|month|week">`
+ * elements. Bypasses Stagehand bug #1249 (locator.fill() and act({method: 'fill'})
+ * resolve without error but the value reads back as empty string — confirmed
+ * OPEN as of 2026-06-14 in browserbase/stagehand). The fix follows the
+ * industry-standard React/Angular controlled-component pattern, also
+ * documented as the verified workaround in the Stagehand issue itself.
+ *
+ * Mechanism:
+ *  1. Walk the input value setter on `HTMLInputElement.prototype` to bypass
+ *     framework value-setter interception (React, Angular Forms, Vue v-model
+ *     all override the setter at instance level — calling the prototype
+ *     descriptor's setter restores the native behavior).
+ *  2. Dispatch synthesized `input` and `change` events with `bubbles: true`
+ *     so the framework's reactivity hooks fire and the form-control state
+ *     updates (mark dirty / mark touched / clear ng-pristine).
+ *
+ * Returns `null` when the xpath doesn't resolve OR the resolved element
+ * isn't a date/time input — caller falls back to the normal cascade path.
+ *
+ * Site-agnostic: the bug + workaround are universal across any tenant
+ * using HTML5 date/time inputs.
+ */
+export async function fillHtml5DateTimeInput(
+  page: Page,
+  xpath: string,
+  value: string
+): Promise<Html5DateFillResult | null> {
+  const HTML5_DATE_TYPES = new Set(["date", "time", "datetime-local", "month", "week"]);
+  const expr = `(() => {
+    const xpath = ${JSON.stringify(xpath)};
+    const value = ${JSON.stringify(value)};
+    const result = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+    const el = result.singleNodeValue;
+    if (!el || el.tagName !== "INPUT") return null;
+    const inputType = (el.getAttribute("type") || "text").toLowerCase();
+    if (!["date", "time", "datetime-local", "month", "week"].includes(inputType)) {
+      return { filled: false, postValue: el.value || "", inputType };
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+    if (descriptor && descriptor.set) {
+      descriptor.set.call(el, value);
+    } else {
+      el.value = value;
+    }
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    el.dispatchEvent(new Event("blur", { bubbles: true }));
+    return { filled: el.value === value, postValue: el.value || "", inputType };
+  })()`;
+  try {
+    const raw = await page.evaluate(expr);
+    if (raw === null || typeof raw !== "object") return null;
+    const r = raw as { filled?: unknown; postValue?: unknown; inputType?: unknown };
+    if (typeof r.inputType !== "string") return null;
+    if (!HTML5_DATE_TYPES.has(r.inputType)) return null;
+    return {
+      filled: r.filled === true,
+      postValue: typeof r.postValue === "string" ? r.postValue : "",
+      inputType: r.inputType,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Pull field-level errors out of an arbitrary JSON response body. Walks a
  * few of the conventional ATS shapes; falls through to `[]` so the caller
  * can decide whether to emit a fallback summary.
@@ -2413,6 +2529,20 @@ async function replanRemainingFlow(params: {
   const submitFailureList = extractSubmitFailureEvidence(recentCaptures, ownBackendHostnames);
   const gaEventList = extractGaEventEvidence(recentCaptures);
 
+  // False-premise meta-signal: when 2+ prior replans failed on a step
+  // sharing the same 24-char slug-prefix as the current failed step,
+  // inject an ELEMENT MODEL CHECK section. Reflexion-grounded
+  // (verbal-reinforcement on repeated failures); intended to break the
+  // degenerate "Click Continue" / "Fill Address" loop the smoke run
+  // showed when the cascade got anchored to a non-existent element
+  // ("Click the Year spinbutton" steps targeting an HTML5 <input
+  // type='date'>).
+  const slugPriorMatches = countSlugPrefixMatches(failedStep, priorReplans);
+  const elementModelCheck =
+    slugPriorMatches >= 2
+      ? `ELEMENT MODEL CHECK — The cascade has now failed ${slugPriorMatches + 1} times on steps matching the same element pattern. When the same element family fails repeatedly, the failed-step's element description may NOT match the actual DOM (e.g. the step asks for "spinbutton" but the page only has <input type="date">; asks for "Select dropdown" but the page has a custom autocomplete; asks for a "Click" target that's a label-only with no clickable child). Inspect PAGE BODY HTML AT FAILURE: if the actual widget in the DOM differs from the failed step's element description, propose a STRUCTURALLY DIFFERENT recovery that targets the actual widget visible on the page (e.g. "Fill in the date input field with today's date" instead of "Click the Month spinbutton") rather than restating the failed step's premise.`
+      : "";
+
   const prompt = `You are helping a browser automation agent recover from a failed flow step.
 
 ORIGINAL FLOW SUMMARY: ${originalFlow.length} total steps; ${completedSteps.length} executed, ${remainingSteps.length} remaining after the failed step. The completed-tail and remaining-head windows below give you the local context — that's the only flow context replan needs.
@@ -2430,7 +2560,7 @@ CURRENT BROWSER STATE:
 URL: ${page.url()}
 Title: ${pageTitle}
 
-WHY VERIFICATION FAILED (latest attempt reasons from the cascade — read these carefully, they explain WHY the step is being declared failed):
+${elementModelCheck ? `${elementModelCheck}\n\n` : ""}WHY VERIFICATION FAILED (latest attempt reasons from the cascade — read these carefully, they explain WHY the step is being declared failed):
 ${failureReasonList || "(none)"}
 
 PAGE TRANSITION + VALIDATOR TELEMETRY (parsed from Google Analytics Measurement Protocol beacons (POSTs to google-analytics.com/g/collect) captured during the failed step's attempt window — this is the SPA's own telemetry telling you what state it thinks it's in. Watch for: en=view_secondPage / en=view_thirdPage indicating the SPA advanced to a later form page WITHOUT firing Page.frameNavigated (so URL stays the same but questions changed); en=view_thankYouPage indicating the application SUBMITTED SUCCESSFULLY (a stronger success signal than network captures because the /integrated_apply POST is sometimes debounced); epn.validationErrorsCount=N indicating the site's own client validator counts N unfilled required fields. When validationErrorsCount > 0, prefer steps that target unfilled fields over re-clicking Submit/Continue. When view_thankYouPage appears, the application already submitted — do not propose more form-fill steps):
@@ -3828,6 +3958,36 @@ async function executeStepWithHealing(params: {
           // observe(...)[0] is what Stagehand acted on; use it directly when
           // result.actions[] is empty (some Stagehand paths don't echo it back).
           resolvedAction = result.actions?.[0] ?? target;
+
+          // Stagehand bug #1249 (OPEN as of 2026-06-14): act("fill") on
+          // HTML5 <input type="date|time|datetime-local|month|week">
+          // returns success but the value doesn't actually land in the
+          // DOM. Standard React/Angular controlled-component workaround:
+          // set the value via the native HTMLInputElement.prototype
+          // setter + dispatch input/change events. Runs only when the
+          // resolved action was a fill on a date/time input, so the
+          // happy path for regular inputs is byte-identical to today.
+          if (
+            result.success === true &&
+            resolvedAction &&
+            resolvedAction.method === "fill" &&
+            Array.isArray(resolvedAction.arguments) &&
+            resolvedAction.arguments.length > 0
+          ) {
+            const fillValue = resolvedAction.arguments[0];
+            if (typeof fillValue === "string") {
+              const dateFill = await fillHtml5DateTimeInput(
+                page,
+                resolvedAction.selector,
+                fillValue
+              );
+              if (dateFill !== null) {
+                record.errorMessage = dateFill.filled
+                  ? `html5-date-fallback: filled ${dateFill.inputType}="${dateFill.postValue}"`
+                  : `html5-date-fallback: failed to fill ${dateFill.inputType} (post=${dateFill.postValue})`;
+              }
+            }
+          }
         }
       } else if (attempt === 3) {
         // Structured-click cascade. Site-agnostic recovery for steps where

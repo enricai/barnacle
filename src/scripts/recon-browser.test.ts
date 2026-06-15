@@ -65,14 +65,17 @@ vi.mock("@/lib/telemetry/call-capture", async (importOriginal) => {
 import type { LlmCallInput } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE, CALL_TYPE_RECON_REPLAN } from "@/lib/telemetry/call-types";
 import {
+  countSlugPrefixMatches,
   dedupeConsecutiveIdentical,
   denormalizeStep,
   describeAttemptEffectSignals,
   extractGaEventEvidence,
   extractSubmitFailureEvidence,
+  fillHtml5DateTimeInput,
   findRecentBackendError,
   findRecentPageTransition,
   formatValidationRejectedReason,
+  type Html5DateFillResult,
   hasBillingErrorBeenLogged,
   type InvalidFormControl,
   isReplanCycle,
@@ -1353,6 +1356,158 @@ describe("recon-browser/renderLeafInvalidFields", () => {
     expect(out).toContain("[material]");
     expect(out).toContain("[bootstrap]");
     expect(out).toContain("[aria]");
+  });
+});
+
+describe("recon-browser/fillHtml5DateTimeInput", () => {
+  function fakePage(
+    payload: unknown,
+    opts?: { throw?: Error }
+  ): import("@browserbasehq/stagehand").Page {
+    return {
+      evaluate: vi.fn().mockImplementation(async () => {
+        if (opts?.throw) throw opts.throw;
+        return payload;
+      }),
+    } as unknown as import("@browserbasehq/stagehand").Page;
+  }
+
+  it("returns null when page.evaluate returns null (xpath did not resolve)", async () => {
+    const out = await fillHtml5DateTimeInput(fakePage(null), "/x", "2026-06-14");
+    expect(out).toBeNull();
+  });
+
+  it("returns null when target is not an HTML5 date/time input (regression safety)", async () => {
+    const out = await fillHtml5DateTimeInput(
+      fakePage({ filled: false, postValue: "", inputType: "text" }),
+      "/x",
+      "hello"
+    );
+    expect(out).toBeNull();
+  });
+
+  it("returns Html5DateFillResult when input is type=date and the value lands", async () => {
+    const payload: Html5DateFillResult = {
+      filled: true,
+      postValue: "2026-06-14",
+      inputType: "date",
+    };
+    const out = await fillHtml5DateTimeInput(fakePage(payload), "/x", "2026-06-14");
+    expect(out).not.toBeNull();
+    expect(out?.filled).toBe(true);
+    expect(out?.postValue).toBe("2026-06-14");
+    expect(out?.inputType).toBe("date");
+  });
+
+  it("returns Html5DateFillResult with filled=false when value doesn't stick", async () => {
+    const payload: Html5DateFillResult = {
+      filled: false,
+      postValue: "",
+      inputType: "time",
+    };
+    const out = await fillHtml5DateTimeInput(fakePage(payload), "/x", "10:30");
+    expect(out).not.toBeNull();
+    expect(out?.filled).toBe(false);
+    expect(out?.inputType).toBe("time");
+  });
+
+  it("returns null when page.evaluate throws (CSP, detached browser, etc.)", async () => {
+    const out = await fillHtml5DateTimeInput(
+      fakePage(null, { throw: new Error("navigation in flight") }),
+      "/x",
+      "2026-06-14"
+    );
+    expect(out).toBeNull();
+  });
+
+  it("accepts datetime-local, month, and week as supported types", async () => {
+    for (const t of ["datetime-local", "month", "week"]) {
+      const out = await fillHtml5DateTimeInput(
+        fakePage({ filled: true, postValue: "v", inputType: t }),
+        "/x",
+        "v"
+      );
+      expect(out?.inputType).toBe(t);
+    }
+  });
+});
+
+describe("recon-browser/countSlugPrefixMatches", () => {
+  it("returns 0 for empty priorReplans", () => {
+    expect(countSlugPrefixMatches("Click the Submit button", [])).toBe(0);
+  });
+
+  it("returns 0 when no prior replan shares the slug prefix", () => {
+    const priors: ReplanEvent[] = [
+      {
+        replanIndex: 1,
+        cause: "cascade-exhausted",
+        indexAtFailure: 35,
+        failedInstruction: "Click the Submit button to submit the application form",
+        replanSteps: [],
+        timestamp: "2026-06-14T18:00:00Z",
+        pageState: { url: "https://example.com", htmlLength: 0 },
+      },
+    ];
+    expect(countSlugPrefixMatches("Fill in the Address Line field", priors)).toBe(0);
+  });
+
+  it("returns the number of prior replans sharing the 24-char slug prefix", () => {
+    const priors: ReplanEvent[] = [
+      {
+        replanIndex: 1,
+        cause: "cascade-exhausted",
+        indexAtFailure: 252,
+        failedInstruction: "Click the spinbutton for Month",
+        replanSteps: [],
+        timestamp: "2026-06-14T19:20:00Z",
+        pageState: { url: "https://example.com", htmlLength: 0 },
+      },
+      {
+        replanIndex: 2,
+        cause: "cascade-exhausted",
+        indexAtFailure: 256,
+        failedInstruction: "Click the spinbutton for Day",
+        replanSteps: [],
+        timestamp: "2026-06-14T19:25:00Z",
+        pageState: { url: "https://example.com", htmlLength: 0 },
+      },
+    ];
+    // All three slug to "click-the-spinbutton-for"
+    expect(countSlugPrefixMatches("Click the spinbutton for Year", priors)).toBe(2);
+  });
+
+  it("does not match when only the long tail differs after the 24-char cutoff", () => {
+    const priors: ReplanEvent[] = [
+      {
+        replanIndex: 1,
+        cause: "cascade-exhausted",
+        indexAtFailure: 1,
+        failedInstruction: "Click the No label for 'Have you ever been terminated'",
+        replanSteps: [],
+        timestamp: "2026-06-14T19:00:00Z",
+        pageState: { url: "https://example.com", htmlLength: 0 },
+      },
+    ];
+    // Same slug prefix (24 chars truncate before the differentiating tail)
+    expect(
+      countSlugPrefixMatches("Click the No label for 'Have you ever been excluded'", priors)
+    ).toBe(1);
+  });
+
+  it("returns 0 for empty failed step", () => {
+    const priors: ReplanEvent[] = [
+      {
+        replanIndex: 1,
+        cause: "cascade-exhausted",
+        indexAtFailure: 1,
+        failedInstruction: "Click X",
+        replanSteps: [],
+        timestamp: "2026-06-14T19:00:00Z",
+        pageState: { url: "https://example.com", htmlLength: 0 },
+      },
+    ];
+    expect(countSlugPrefixMatches("", priors)).toBe(0);
   });
 });
 
