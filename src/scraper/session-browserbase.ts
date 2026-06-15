@@ -10,8 +10,80 @@ import {
   pickRandomViewport,
 } from "@/scraper/session-shared";
 import { createSessionLimiter } from "@/scraper/throttle";
+import type { Logger } from "@/types/logging";
 
 const logger = getLogger({ name: "scraper/session-browserbase" });
+
+/**
+ * Shape of the LogLine objects Stagehand passes to its `logger` callback.
+ * We declare a minimal local subset rather than importing from Stagehand
+ * because the type isn't re-exported from the package's top-level entrypoint.
+ */
+interface StagehandLogLine {
+  message: string;
+  category?: string;
+  level?: number;
+  auxiliary?: Record<string, { value: string; type: string }>;
+}
+
+/**
+ * Build a custom Stagehand logger that filters out the noisy upstream
+ * `AI_TypeValidationError` schema-validation spam. The errors come from
+ * Stagehand's internal Haiku LLM returning bare integers like "4671"
+ * when its Zod schema requires "N-N" format (regex /^\\d+-\\d+$/ at
+ * stagehand inference.js:147+240). Each error stack-trace is ~500 bytes
+ * of pino I/O — verified at 118 occurrences in run 1781485435455
+ * (2026-06-14), totaling ~5-7 min of wasted wall clock.
+ *
+ * The existing cascade Fix 1B (resolvedAction-null fast-skip) already
+ * handles the consequence: when Stagehand returns success=false due to
+ * this schema error, attempt 1 short-circuits cleanly and attempt 2
+ * (observe-act) runs on a structured target instead. The error log
+ * lines are pure noise.
+ *
+ * Filter is precise — only matches when category is "AISDK error"
+ * AND the cause body contains both `AI_TypeValidationError` and
+ * `elementId`. Other AISDK errors (rate limits, malformed requests,
+ * server errors) pass through unchanged. Site-agnostic — the
+ * upstream Stagehand bug is universal across tenants.
+ *
+ * Returns the callback + a `reportSuppressed` function that the
+ * session teardown calls to log the final suppression count — keeps
+ * the noise out of the running log while preserving the diagnostic
+ * for run-completion summary.
+ */
+function makeFilteredStagehandLogger(pinoLogger: Logger): {
+  callback: (line: StagehandLogLine) => void;
+  reportSuppressed: () => void;
+} {
+  let suppressedCount = 0;
+  const callback = (line: StagehandLogLine): void => {
+    if (line.category === "AISDK error") {
+      const cause = line.auxiliary?.cause?.value ?? "";
+      if (cause.includes("AI_TypeValidationError") && cause.includes("elementId")) {
+        suppressedCount++;
+        return;
+      }
+    }
+    // Forward everything else as today — Stagehand's default logger
+    // emits via console; we route through pino for consistency.
+    if (line.level === 0) {
+      pinoLogger.error({ stagehand: line.category }, line.message);
+    } else if (line.level === 1) {
+      pinoLogger.info({ stagehand: line.category }, line.message);
+    } else {
+      pinoLogger.debug({ stagehand: line.category }, line.message);
+    }
+  };
+  const reportSuppressed = (): void => {
+    if (suppressedCount > 0) {
+      pinoLogger.info(
+        `stagehand-logger: suppressed ${suppressedCount} AISDK elementId-regex errors (upstream Stagehand bug; cascade Fix 1B handles consequence)`
+      );
+    }
+  };
+  return { callback, reportSuppressed };
+}
 
 /**
  * Spins up one Browserbase cloud session with the configured Stagehand LLM.
@@ -87,6 +159,9 @@ export async function createBrowserbaseBrowserSession(opts?: {
       }
     : baseFingerprint;
 
+  const { callback: stagehandLoggerCallback, reportSuppressed: reportSuppressedAisdkErrors } =
+    makeFilteredStagehandLogger(logger);
+
   let stagehand: Stagehand | undefined;
   try {
     stagehand = new Stagehand({
@@ -113,6 +188,9 @@ export async function createBrowserbaseBrowserSession(opts?: {
       serverCache: true,
       selfHeal: false,
       verbose: 0,
+      // Custom logger to filter AISDK schema-error spam — see
+      // makeFilteredStagehandLogger TSDoc for rationale.
+      logger: stagehandLoggerCallback,
     });
 
     await stagehand.init();
@@ -139,6 +217,7 @@ export async function createBrowserbaseBrowserSession(opts?: {
       logger.warn(`stagehand close failed for session ${sessionId}: ${toErrorMessage(err)}`);
     }
     await limiter.stop({ dropWaitingJobs: true });
+    reportSuppressedAisdkErrors();
   };
 
   return {

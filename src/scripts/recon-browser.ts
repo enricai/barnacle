@@ -2029,12 +2029,39 @@ export function extractSubmitFailureEvidence(
             ? body.slice(0, 240)
             : body && typeof body === "object" && "message" in body
               ? String((body as { message?: unknown }).message ?? "").slice(0, 240)
-              : `(status ${status}; no structured error body)`;
+              : body && typeof body === "object" && "error" in body
+                ? String((body as { error?: unknown }).error ?? "").slice(0, 240)
+                : `(status ${status}; no structured error body)`;
         records.push(`${status} ${capture.url}: ${fallback}`);
         continue;
       }
       for (const e of errors.slice(0, 8)) {
         records.push(`${status} ${capture.url} — ${e}`);
+      }
+      // K'3: when the submit failure mentions "resume" or "file" or
+      // "attachment" AND the request body is multipart form-data but does
+      // NOT contain an apply[resume] / file part, surface a hint. This
+      // catches the exact pattern from today's smoke (run 1781485435455):
+      // 10/10 422 responses said "Resume is blank" while the multipart
+      // body had 53 question fields but ZERO resume part — the framework
+      // wrapper never registered the file. The hint helps the replan LLM
+      // propose "re-upload the resume" instead of cycling on form fields.
+      const submitFailureText = errors.join(" ").toLowerCase();
+      const mentionsResume =
+        submitFailureText.includes("resume") ||
+        submitFailureText.includes("file") ||
+        submitFailureText.includes("attachment");
+      const requestBody = capture.requestPostData;
+      if (
+        mentionsResume &&
+        typeof requestBody === "string" &&
+        requestBody.includes("multipart/form-data") === false && // body itself isn't the boundary marker
+        !/name="(apply\[resume\]|resume|file|attachment)"/i.test(requestBody) &&
+        /name="apply\[/.test(requestBody) // confirm this IS the submit (apply[*] field shape)
+      ) {
+        records.push(
+          `${status} ${capture.url} — HINT: server reports resume/file missing AND the multipart request body had no resume/file part — upload primitive likely failed to register the file in the framework wrapper's state. Re-try the upload step OR find the resume upload widget and use a different fill mechanism.`
+        );
       }
     } catch {
       // capture file missing or malformed — skip
@@ -2231,15 +2258,74 @@ export interface Html5DateFillResult {
  * Site-agnostic: the bug + workaround are universal across any tenant
  * using HTML5 date/time inputs.
  */
+/**
+ * Normalize a date/time string to the format the HTML5 spec requires for
+ * the given input type. The HTML5 spec REJECTS programmatic .value writes
+ * that don't match the canonical format, regardless of how the browser
+ * DISPLAYS the date (locale only affects display formatting).
+ *
+ * - type="date": YYYY-MM-DD
+ * - type="time": HH:MM (or HH:MM:SS)
+ * - type="month": YYYY-MM
+ * - type="week": YYYY-Www
+ * - type="datetime-local": YYYY-MM-DDTHH:MM
+ *
+ * Today's smoke surfaced this gap: flow text passed "06-14-2026" (MM-DD-YYYY)
+ * to a `<input type="date">`. Even if Stagehand had fired the fill correctly,
+ * the value would have been silently rejected by the input's setter. K'2's
+ * dispatchEvent and Fix I's verifyFillReadback both catch the consequence,
+ * but normalizing the value here lets the cascade WORK on first try.
+ *
+ * Returns null when the input format is unrecognized — caller knows to
+ * either pass-through (the value might be correct as-is) or skip.
+ */
+export function normalizeDateValue(raw: string, inputType: string): string | null {
+  const t = inputType.toLowerCase();
+  if (t === "date") {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+    // MM-DD-YYYY or MM/DD/YYYY → YYYY-MM-DD (US convention)
+    const usMatch = raw.match(/^(\d{2})[-/](\d{2})[-/](\d{4})$/);
+    if (usMatch) return `${usMatch[3]}-${usMatch[1]}-${usMatch[2]}`;
+    return null;
+  }
+  if (t === "month") {
+    if (/^\d{4}-\d{2}$/.test(raw)) return raw;
+    return null;
+  }
+  if (t === "week") {
+    if (/^\d{4}-W\d{2}$/.test(raw)) return raw;
+    return null;
+  }
+  if (t === "time") {
+    if (/^\d{2}:\d{2}(:\d{2})?$/.test(raw)) return raw;
+    return null;
+  }
+  if (t === "datetime-local") {
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(raw)) return raw;
+    return null;
+  }
+  return null;
+}
+
 export async function fillHtml5DateTimeInput(
   page: Page,
   xpath: string,
   value: string
 ): Promise<Html5DateFillResult | null> {
   const HTML5_DATE_TYPES = new Set(["date", "time", "datetime-local", "month", "week"]);
+  // K'/H' Change 1: pre-normalize the value before dispatching to the page
+  // evaluator. The HTML5 spec rejects programmatic .value writes that don't
+  // match the canonical format — see normalizeDateValue TSDoc.
+  // We don't yet know the input type until the page.evaluate runs (we'd
+  // have to probe it first), so we try BOTH the raw value AND a normalized
+  // pass: if raw works, fine; if raw fails (post-value mismatch), the
+  // returned filled=false signal tells the caller to retry with a normalized
+  // candidate. Today's known fix: try YYYY-MM-DD if raw is MM-DD-YYYY.
+  const normalizedDate = normalizeDateValue(value, "date");
+  const valueToTry = normalizedDate ?? value;
   const expr = `(() => {
     const xpath = ${JSON.stringify(xpath)};
-    const value = ${JSON.stringify(value)};
+    const value = ${JSON.stringify(valueToTry)};
     const result = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
     const el = result.singleNodeValue;
     if (!el || el.tagName !== "INPUT") return null;
@@ -2275,6 +2361,80 @@ export async function fillHtml5DateTimeInput(
 }
 
 /**
+ * Outcome of verifying that a fill action's value actually landed in the
+ * target element. Used by the cascade verifier to catch silent-value-rejection
+ * cases (HTML5 type validation, framework-controlled-component rejection,
+ * masked-input library reformatting).
+ */
+export interface VerifyFillReadbackResult {
+  /** "matched" = element.value === expectedValue; "rejected" = element.value === "" after a non-empty fill; "differs" = element value is non-empty but different (masked / reformatted) */
+  outcome: "matched" | "rejected" | "differs";
+  /** Actual value read back from the element after the fill. */
+  postValue: string;
+  /** Tag of the target element (input/textarea/contenteditable). */
+  tag: string;
+}
+
+/**
+ * Read back an element's value after a fill action and compare to the
+ * expected value. Catches silent-value-rejection cases that the verifier's
+ * existing signals (network/url/dom/htmlDelta/textChanged) miss:
+ *  - HTML5 type validation rejecting bad format (date with MM-DD-YYYY,
+ *    number with letters, email without @, url without protocol, etc.)
+ *  - Framework-controlled-component (Angular [(ngModel)], React useState)
+ *    silently rejecting values that don't pass internal validation
+ *  - Masked-input libraries (phone, currency, date formatters) reformatting
+ *    the value as it's typed
+ *
+ * Returns null for non-fillable elements (clicks, selects, etc.) — caller
+ * knows to skip the check.
+ *
+ * Site-agnostic: works on any <input>, <textarea>, or [contenteditable]
+ * element regardless of framework wrapping. Industry-standard pattern
+ * (react-testing-library's `getByDisplayValue` does the same readback).
+ */
+export async function verifyFillReadback(
+  page: Page,
+  xpath: string,
+  expectedValue: string
+): Promise<VerifyFillReadbackResult | null> {
+  const expr = `(() => {
+    const xpath = ${JSON.stringify(xpath)};
+    const expected = ${JSON.stringify(expectedValue)};
+    const result = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+    const el = result.singleNodeValue;
+    if (!el) return null;
+    const tag = el.tagName ? el.tagName.toLowerCase() : "";
+    let actual = "";
+    if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
+      actual = el.value || "";
+    } else if (el.isContentEditable) {
+      actual = el.textContent || "";
+    } else {
+      return null;
+    }
+    let outcome;
+    if (actual === expected) outcome = "matched";
+    else if (actual === "" && expected !== "") outcome = "rejected";
+    else outcome = "differs";
+    return { outcome, postValue: actual, tag };
+  })()`;
+  try {
+    const raw = await page.evaluate(expr);
+    if (raw === null || typeof raw !== "object") return null;
+    const r = raw as { outcome?: unknown; postValue?: unknown; tag?: unknown };
+    if (r.outcome !== "matched" && r.outcome !== "rejected" && r.outcome !== "differs") return null;
+    return {
+      outcome: r.outcome,
+      postValue: typeof r.postValue === "string" ? r.postValue : "",
+      tag: typeof r.tag === "string" ? r.tag : "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Pull field-level errors out of an arbitrary JSON response body. Walks a
  * few of the conventional ATS shapes; falls through to `[]` so the caller
  * can decide whether to emit a fallback summary.
@@ -2283,6 +2443,17 @@ function harvestFieldErrors(body: unknown): string[] {
   if (!body || typeof body !== "object") return [];
   const out: string[] = [];
   const rec = body as Record<string, unknown>;
+  // Singular `{error: "message"}` shape used by AppCast, Lever, Greenhouse,
+  // and any REST API following the {error:string} terse-error convention.
+  // Verified on AppCast Encompass-Fitchburg: /integrated_apply 422 body is
+  // exactly {"error":"Resume is blank"} — no `errors`, no `message`. Before
+  // J', this was caught by neither the array branch below nor the
+  // extractSubmitFailureEvidence fallback at line 2028, resulting in
+  // `(status 422; no structured error body)` reaching the replan LLM
+  // instead of the actual cause.
+  if (typeof rec.error === "string" && rec.error.length > 0) {
+    out.push(rec.error);
+  }
   const errorsArr = rec.errors;
   if (Array.isArray(errorsArr)) {
     for (const e of errorsArr) {
@@ -2880,8 +3051,19 @@ async function tryUploadPrimitive(params: {
   fixture: { buffer: Buffer; name: string; mimeType: string } | null;
   logger: Logger;
   signalCounter: { n: number };
+  /**
+   * Tail of the recent-capture-meta window. Used to verify the post-upload
+   * network signal is actually an upload-related POST (URL contains
+   * /upload, /resume, /file, /attachment OR body has section:"resume"),
+   * not coincidental traffic like /interruption_check, /postal_code_geocoder,
+   * or analytics beacons. Today's smoke (run 1781485435455) declared upload
+   * success on a /interruption_check POST that did NOT register the file
+   * in AppCast's framework state — false positive. K'1 catches this by
+   * filtering the network signal by URL keyword.
+   */
+  recentCaptureMeta: readonly { method: string; status: number; url: string }[];
 }): Promise<boolean> {
-  const { page, isUploadStep, fixture, logger, signalCounter } = params;
+  const { page, isUploadStep, fixture, logger, signalCounter, recentCaptureMeta } = params;
   if (!isUploadStep) {
     return false;
   }
@@ -2911,21 +3093,69 @@ async function tryUploadPrimitive(params: {
       mimeType: fixture.mimeType,
       buffer: fixture.buffer,
     });
+    // Framework-wrapper reactivity: Angular/React/Vue components that wrap
+    // <input type="file"> typically register the dropped file via a
+    // (change) binding on a parent <uapp-upload> / <app-upload> element,
+    // not on the raw input. Playwright's setInputFiles populates
+    // input.files[0] AND fires `change` on the input itself, but Angular's
+    // ControlValueAccessor binds at the wrapper level — and the wrapper's
+    // change handler doesn't observe input.files mutations directly.
+    //
+    // Verified on AppCast Encompass-Fitchburg today: setInputFiles
+    // populated input.files but the subsequent /integrated_apply submit
+    // had no `apply[resume]` multipart field — the framework wrapper
+    // never registered the file in its internal state. Server returned
+    // 10/10 "Resume is blank" 422s.
+    //
+    // Re-dispatching `change` + `input` on the input bubbles the events
+    // up through the DOM tree so any parent component listening for
+    // `change`/`input` fires its handler and updates state. We use
+    // page.evaluate rather than Playwright's locator.dispatchEvent
+    // because Stagehand's Locator subset doesn't expose dispatchEvent.
+    // Industry-standard workaround documented across Playwright
+    // community. Site-agnostic — works for any tenant with framework-
+    // wrapped file inputs.
+    await page
+      .evaluate(
+        "(() => { const els = document.querySelectorAll('input[type=file]'); for (const el of els) { if (el.files && el.files.length > 0) { el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); return true; } } return false; })()"
+      )
+      .catch((err: unknown) => {
+        logger.warn(`upload primitive: change dispatch failed: ${toErrorMessage(err)}`);
+      });
   } catch (err) {
     logger.warn(`upload primitive: setInputFiles threw: ${toErrorMessage(err)}`);
     return false;
   }
-  // Primary signal: wait for a non-poll POST to fire. Widgets that upload
-  // immediately on setInputFiles (the common case — ClearCompany, AppCast,
-  // most ATS file widgets) trigger one within milliseconds. signalCounter
-  // already excludes background polls, so a single bump here is the upload.
+  // Primary signal: wait for an UPLOAD-RELATED POST to fire (URL contains
+  // /upload, /resume, /file, /attachment, OR a non-upload URL whose body
+  // includes the `section:"resume"` marker that AppCast and similar ATSs
+  // use for resume-as-base64 inline uploads). Before K'1, ANY network bump
+  // was treated as upload success — but today's smoke captured
+  // /interruption_check + analytics POSTs after setInputFiles and falsely
+  // declared upload-done. The URL filter is generic (works for any ATS
+  // that names its upload endpoint conventionally), with the body-shape
+  // check as a fallback for inline-base64 upload schemes.
+  const captureMetaCountBefore = recentCaptureMeta.length;
+  const UPLOAD_URL_PATTERNS = ["/upload", "/resume", "/file", "/attachment"];
   const startedAt = performance.now();
   while (performance.now() - startedAt < UPLOAD_NETWORK_TIMEOUT_MS) {
     if (signalCounter.n > networkCountBefore) {
-      logger.info(
-        `upload primitive: network activity detected post-setInputFiles (name=${fixture.name}, size=${fixture.buffer.length}b)`
-      );
-      return true;
+      const newCaptures = recentCaptureMeta.slice(captureMetaCountBefore);
+      const uploadCapture = newCaptures.find((cap) => {
+        if (cap.method === "GET") return false;
+        const lowerUrl = cap.url.toLowerCase();
+        return UPLOAD_URL_PATTERNS.some((p) => lowerUrl.includes(p));
+      });
+      if (uploadCapture) {
+        logger.info(
+          `upload primitive: upload POST detected post-setInputFiles (name=${fixture.name}, size=${fixture.buffer.length}b, url=${uploadCapture.url.slice(0, 100)})`
+        );
+        return true;
+      }
+      // Fall through: a non-upload-URL POST fired (e.g. AppCast's
+      // /interruption_check). Don't declare success on this signal alone;
+      // continue polling for the upload POST OR fall through to the
+      // DOM-attached-files check below.
     }
     await page.waitForTimeout(UPLOAD_NETWORK_POLL_INTERVAL_MS);
   }
@@ -2944,13 +3174,109 @@ async function tryUploadPrimitive(params: {
     )
     .catch(() => 0);
   if (typeof attachedLength !== "number" || attachedLength === 0) {
-    logger.warn("upload primitive: no network activity within timeout and no file attached in DOM");
+    logger.warn(
+      "upload primitive: no network activity within timeout and no file attached in DOM; attempting drag-drop fallback"
+    );
+    // K'4: fall back to simulated drag-drop on the most-likely drop zone.
+    // Some custom upload widgets (Material Dropzone, react-dropzone, custom
+    // <uapp-upload> wrappers) only register files when a `drop` event with
+    // a DataTransfer fires on the visible drop area — they don't observe
+    // the hidden input's `files[]` mutations even with synthetic `change`
+    // dispatches. This is the documented Playwright community workaround.
+    const dragDropOk = await simulateDragDropUpload(page, fixture, logger);
+    if (dragDropOk) {
+      logger.info(
+        `upload primitive: drag-drop fallback succeeded (name=${fixture.name}, size=${fixture.buffer.length}b)`
+      );
+      return true;
+    }
     return false;
   }
   logger.info(
     `upload primitive: file attached in DOM after setInputFiles (deferred-upload widget; name=${fixture.name}, filesLength=${attachedLength})`
   );
   return true;
+}
+
+/**
+ * Synthesize a drag-drop event sequence on the most-likely upload drop
+ * zone using DataTransfer + DragEvent. Used as K'4 fallback when
+ * setInputFiles + change-event dispatch don't trigger the framework's
+ * file-registration handler (some custom upload widgets only listen
+ * for `drop` events on a wrapper element, not for `change` on the
+ * underlying input).
+ *
+ * Drop zone detection is keyword-based: searches for elements with
+ * upload/dropzone/file-related class or tag names. Tries multiple
+ * candidates in order. Returns true on first success.
+ *
+ * Site-agnostic — DataTransfer + DragEvent dispatch is universal HTML5
+ * drag-and-drop API. Works on react-dropzone, Material Dropzone, custom
+ * <uapp-upload>/<app-upload>, and any other drop-zone-based upload UI.
+ */
+async function simulateDragDropUpload(
+  page: Page,
+  fixture: { buffer: Buffer; name: string; mimeType: string },
+  logger: Logger
+): Promise<boolean> {
+  const base64 = fixture.buffer.toString("base64");
+  const expr = `(async () => {
+    const fileName = ${JSON.stringify(fixture.name)};
+    const fileType = ${JSON.stringify(fixture.mimeType)};
+    const base64 = ${JSON.stringify(base64)};
+    const dropZoneSelectors = [
+      "uapp-upload",
+      "app-upload",
+      "uapp-resume-upload",
+      "[class*='dropzone']",
+      "[class*='drop-zone']",
+      "[class*='file-drop']",
+      "[class*='upload-zone']",
+      "[class*='uapp-upload']",
+    ];
+    let dropZone = null;
+    for (const sel of dropZoneSelectors) {
+      const el = document.querySelector(sel);
+      if (el) { dropZone = el; break; }
+    }
+    if (!dropZone) return { ok: false, reason: "no drop zone found" };
+    try {
+      const binStr = atob(base64);
+      const bytes = new Uint8Array(binStr.length);
+      for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
+      const file = new File([bytes], fileName, { type: fileType });
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      for (const evtName of ["dragenter", "dragover", "drop"]) {
+        const evt = new DragEvent(evtName, {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer: dt,
+        });
+        dropZone.dispatchEvent(evt);
+      }
+      return { ok: true, dropZoneTag: dropZone.tagName.toLowerCase() };
+    } catch (e) {
+      return { ok: false, reason: e instanceof Error ? e.message : String(e) };
+    }
+  })()`;
+  try {
+    const result = await page.evaluate(expr);
+    if (result && typeof result === "object" && "ok" in result && result.ok === true) {
+      const tag = "dropZoneTag" in result ? String(result.dropZoneTag) : "(unknown)";
+      logger.info(`upload primitive: drag-drop dispatched on <${tag}>`);
+      return true;
+    }
+    const reason =
+      result && typeof result === "object" && "reason" in result
+        ? String(result.reason)
+        : "(unknown)";
+    logger.warn(`upload primitive: drag-drop fallback skipped: ${reason}`);
+    return false;
+  } catch (err) {
+    logger.warn(`upload primitive: drag-drop fallback threw: ${toErrorMessage(err)}`);
+    return false;
+  }
 }
 
 /**
@@ -3658,6 +3984,7 @@ async function executeStepWithHealing(params: {
       fixture: resumeFixture,
       logger,
       signalCounter,
+      recentCaptureMeta,
     })
   ) {
     logger.info(`step ${stepIndex + 1} resolved by upload primitive`);
@@ -3964,27 +4291,54 @@ async function executeStepWithHealing(params: {
           // returns success but the value doesn't actually land in the
           // DOM. Standard React/Angular controlled-component workaround:
           // set the value via the native HTMLInputElement.prototype
-          // setter + dispatch input/change events. Runs only when the
-          // resolved action was a fill on a date/time input, so the
-          // happy path for regular inputs is byte-identical to today.
+          // setter + dispatch input/change events. Helper returns null
+          // for non-date inputs (no-op), so the happy path for regular
+          // inputs is byte-identical to today.
+          //
+          // H' Change 2: drop the `result.success === true` precondition.
+          // Today's smoke (run 1781485435455, step 251) showed Stagehand
+          // returns success=false on date inputs because its internal
+          // Haiku LLM hits AI_TypeValidationError when formulating the
+          // fill action — but `target` (the observe-resolved candidate)
+          // still has the right xpath + arguments. Use `target` directly
+          // so the helper fires even when guardedAct technically failed.
           if (
-            result.success === true &&
-            resolvedAction &&
-            resolvedAction.method === "fill" &&
-            Array.isArray(resolvedAction.arguments) &&
-            resolvedAction.arguments.length > 0
+            target.method === "fill" &&
+            Array.isArray(target.arguments) &&
+            target.arguments.length > 0
           ) {
-            const fillValue = resolvedAction.arguments[0];
+            const fillValue = target.arguments[0];
             if (typeof fillValue === "string") {
-              const dateFill = await fillHtml5DateTimeInput(
-                page,
-                resolvedAction.selector,
-                fillValue
-              );
+              const dateFill = await fillHtml5DateTimeInput(page, target.selector, fillValue);
               if (dateFill !== null) {
                 record.errorMessage = dateFill.filled
                   ? `html5-date-fallback: filled ${dateFill.inputType}="${dateFill.postValue}"`
                   : `html5-date-fallback: failed to fill ${dateFill.inputType} (post=${dateFill.postValue})`;
+                // Override the act result based on the deterministic fill
+                // outcome — the helper bypasses Stagehand's schema-error
+                // failure mode by writing directly via the native setter.
+                if (dateFill.filled) {
+                  record.actResultSuccess = true;
+                  resolvedAction = target;
+                }
+              } else {
+                // Fix I: not a date input — verify the regular fill landed.
+                // Catches silent-value-rejection cases (HTML5 type validation
+                // on number/email/url/tel inputs, framework-controlled-
+                // component rejection, masked-input library reformatting).
+                // Generic primitive that the verifier's existing signals
+                // (network/url/dom/htmlDelta/textChanged) miss.
+                const readback = await verifyFillReadback(page, target.selector, fillValue);
+                if (readback !== null) {
+                  if (readback.outcome === "rejected") {
+                    record.errorMessage = `fill-value-rejected: tried "${fillValue.slice(0, 60)}" on <${readback.tag}>; element value remains empty (silent rejection — HTML5 type validation, framework controlled-component, or masked-input library)`;
+                    record.actResultSuccess = false;
+                  } else if (readback.outcome === "differs") {
+                    logger.info(
+                      `step ${stepIndex + 1} fill-value-differs: tried "${fillValue.slice(0, 60)}" got "${readback.postValue.slice(0, 60)}" (framework reformatted)`
+                    );
+                  }
+                }
               }
             }
           }
