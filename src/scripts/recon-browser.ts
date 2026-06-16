@@ -192,6 +192,14 @@ function wireNetworkCapture(
 ): () => void {
   const session = page.getSessionForFrame(page.mainFrameId());
   const inFlight = new Map<string, InFlightRequest>();
+  // One-shot per-run warning state for the GA `ep.isExpired=true` beacon.
+  // Defensive instrumentation: across 5,542 captures surveyed 2026-06-15,
+  // every observation was `false` — but if a future job ever ships in the
+  // "expired" state, the cascade should surface it loudly rather than burn
+  // a full run trying to submit against a closed application. Stays
+  // site-agnostic: any GA4-instrumented site that publishes the same
+  // `ep.isExpired` event parameter benefits without engine changes.
+  let isExpiredWarned = false;
 
   type RequestWillBeSentEvent = {
     requestId: string;
@@ -342,6 +350,18 @@ function wireNetworkCapture(
     } catch (err) {
       logger.warn(
         `capture-write skipped for ${req.url.slice(0, 80)}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+    // GA `ep.isExpired=true` early-warning: when the site's own analytics
+    // says the job is expired, attempting to submit is dead work. Emit a
+    // loud one-shot warning so the run summary surfaces this state instead
+    // of letting the cascade burn budget on an unsolvable form. URL-only
+    // scan (no body parse) keeps the cost bounded; the parameter is a top-
+    // level URL param on `*google-analytics.com/g/collect` beacons.
+    if (!isExpiredWarned && /[?&]ep\.isExpired=true(?:&|$)/.test(capture.url)) {
+      isExpiredWarned = true;
+      logger.warn(
+        `EXPIRED_JOB_DETECTED: site analytics reported ep.isExpired=true on ${capture.url.slice(0, 120)} — the job posting has expired; submit attempts will likely fail or be rejected silently. Verify the resolved URL is still active before continuing this run.`
       );
     }
     // GETs are static asset chunks, polls, and idle prefetches; cross-origin
@@ -1353,6 +1373,13 @@ interface NormalizedStep {
   instruction: string;
   optional: boolean;
   upload: boolean;
+  // See RECON_FLOW_STEP_SCHEMA in src/lib/llm/schemas.ts for why this exists:
+  // engine gates the pre-submit DOM probe and final-step submit verifier on
+  // (isFinalStep || submitStep), not on isFinalStep alone, so flows whose
+  // canonical submit click lives mid-flow can still mark it explicitly.
+  // Optional in the type so existing test fixtures + call sites that predate
+  // the flag don't need to be touched — absence is treated as false.
+  submitStep?: boolean;
   origin: "original" | "replan";
 }
 
@@ -1360,7 +1387,13 @@ function normalizeFlow(steps: z.infer<typeof RECON_FLOW_SCHEMA>): NormalizedStep
   return steps.map((s) =>
     typeof s === "string"
       ? { instruction: s, optional: false, upload: false, origin: "original" }
-      : { instruction: s.step, optional: s.optional, upload: s.upload, origin: "original" }
+      : {
+          instruction: s.step,
+          optional: s.optional,
+          upload: s.upload,
+          submitStep: s.submitStep,
+          origin: "original",
+        }
   );
 }
 
@@ -1393,11 +1426,14 @@ function substituteFlowEnvVars(steps: NormalizedStep[]): NormalizedStep[] {
  */
 function denormalizeStep(
   step: NormalizedStep
-): string | { step: string; optional?: true; upload?: true } {
-  if (!step.optional && !step.upload) return step.instruction;
-  const out: { step: string; optional?: true; upload?: true } = { step: step.instruction };
+): string | { step: string; optional?: true; upload?: true; submitStep?: true } {
+  if (!step.optional && !step.upload && !step.submitStep) return step.instruction;
+  const out: { step: string; optional?: true; upload?: true; submitStep?: true } = {
+    step: step.instruction,
+  };
   if (step.optional) out.optional = true;
   if (step.upload) out.upload = true;
+  if (step.submitStep) out.submitStep = true;
   return out;
 }
 
@@ -3944,6 +3980,16 @@ async function executeStepWithHealing(params: {
    * buttons Stagehand can't click. Set from the flow file's `upload: true`.
    */
   upload: boolean;
+  /**
+   * When true, treat this step as the canonical submit click for the
+   * `submitEndpointPattern` verifier even if it is NOT the last step in
+   * the flow. Set from the flow file's `submitStep: true`. AppCast's flow
+   * has its Submit click at index 55/328 — without this flag, the pre-
+   * submit DOM probe (gated on isFinalStep alone) never fires on the real
+   * Submit, so unfilled required fields produce silent submit failures.
+   * Site-agnostic: any flow whose canonical submit is mid-list can opt in.
+   */
+  submitStep: boolean;
   stepIndex: number;
   phase: string;
   signalCounter: { n: number };
@@ -4031,6 +4077,7 @@ async function executeStepWithHealing(params: {
     step,
     optional,
     upload,
+    submitStep,
     stepIndex,
     phase,
     signalCounter,
@@ -4057,13 +4104,23 @@ async function executeStepWithHealing(params: {
   // judges already exist (src/lib/llm/judges/invalid-fields.ts); the
   // remaining work is wiring them into extractLivePageFormEvidence.
   void knownErrorClassPrefixes;
-  // requireSubmitEndpoint gates the Haiku verifySubmit judge. We retain the
+  // requireSubmitEndpoint gates the Haiku verifySubmit judge AND the pre-
+  // submit DOM probe (probeFormValidityBeforeSubmit). We retain the
   // submitEndpointPattern field as a hint (some downstream code paths still
   // read the original pattern to feed extractSubmitFailureEvidence with a
   // submit-specific filter), but the verifier itself no longer treats the
   // pattern as a hard regex check — verifySubmitWithLLM reasons over
   // multi-signal evidence with strict prompting instead.
-  const requireSubmitEndpoint = isFinalStep && submitEndpointPattern !== null;
+  //
+  // Gate accepts (isFinalStep || submitStep): flows whose canonical Submit
+  // click lives mid-list (e.g. AppCast's flow has Submit at step 55/328 with
+  // 273 post-submit verification steps) opt in via the per-step
+  // `submitStep: true` flag in the flow file. Without this opt-in, the pre-
+  // submit DOM probe gated solely on `isFinalStep` never fires on the real
+  // Submit, and unfilled required fields produce silent submit failures
+  // (verified 2026-06-15 on UVA Verona telemetry). Site-agnostic: any flow
+  // whose submit is mid-list can mark its submit step explicitly.
+  const requireSubmitEndpoint = (isFinalStep || submitStep) && submitEndpointPattern !== null;
   const attempts: AttemptRecord[] = [];
   const triedSelectors: string[] = [];
   const failureReasons: string[] = [];
@@ -4184,9 +4241,10 @@ async function executeStepWithHealing(params: {
     );
   }
 
-  // Pre-submit form-validity probe. Only fires on the final flow step when
-  // the flow declared a submitEndpointPattern (the gate signal for "this
-  // is the submission step"). Finds form controls still marked ng-invalid
+  // Pre-submit form-validity probe. Fires on the canonical submit step
+  // (either the final flow step OR a step explicitly flagged `submitStep:
+  // true` in the flow file) when the flow declared a submitEndpointPattern.
+  // Finds form controls still marked ng-invalid
   // (or similar framework markers) and surfaces them as structured
   // failureReasons before attempt 1. The cascade still runs — the probe
   // is evidence-only — but the LLM-rephrase and LLM-replan prompts now
@@ -5027,6 +5085,10 @@ async function executeStepWithHealing(params: {
               logger.info(
                 `step ${stepIndex + 1} healed on attempt ${attempt} via ${record.technique} + el.click() fallback`
               );
+            } else {
+              logger.info(
+                `step ${stepIndex + 1} succeeded on attempt 1 via ${record.technique} + el.click() fallback`
+              );
             }
             trajectory?.push({ stepIndex, verifiedBy: record.verifiedBy });
             return;
@@ -5045,6 +5107,17 @@ async function executeStepWithHealing(params: {
       if (attempt > 1) {
         logger.info(
           `step ${stepIndex + 1} healed on attempt ${attempt} via ${record.technique} (network=${networkFired} url=${urlChanged} dom=${domVerified})`
+        );
+      } else {
+        // Why log first-try wins explicitly: prior to this change, attempt-1
+        // successes were silent — only attempts 2+ emitted "healed on attempt
+        // N" lines. That under-reporting caused a 2026-06-15 telemetry-vs-log
+        // contradiction where UVA Verona's run looked like a "cascade
+        // collapse" (log showed 2 heals) but telemetry calls.ndjson showed
+        // 32 successful Stagehand acts. Surfacing attempt-1 wins lets the
+        // log match telemetry and prevents the same false alarm.
+        logger.info(
+          `step ${stepIndex + 1} succeeded on attempt 1 via ${record.technique} (network=${networkFired} url=${urlChanged} dom=${domVerified})`
         );
       }
       trajectory?.push({ stepIndex, verifiedBy: record.verifiedBy });
@@ -5072,7 +5145,7 @@ async function executeStepWithHealing(params: {
     // Empirically grounded: 22 of 22 AppCast Continue/Submit step-failure
     // dumps in a 2026-06-10 survey had the paired touched+dirty + visible
     // error text pattern with 3 distinct rejection messages.
-    if (record.resolvedMethod === "click" && isFinalStep) {
+    if (record.resolvedMethod === "click" && (isFinalStep || submitStep)) {
       const live = await extractLivePageFormEvidence(page, {
         client: anthropic,
         knownErrorClassPrefixes,
@@ -5100,7 +5173,10 @@ async function executeStepWithHealing(params: {
     if (attempt === 1) {
       const postAttemptInvalidCount = await countNgInvalidContainers(page);
       const earlyExit = isSubmitRevealedInvalid({
-        isFinalStep,
+        // Treat the canonical submit click as "final" for this predicate
+        // even when it lives mid-flow. See requireSubmitEndpoint derivation
+        // above for the same gate-widening rationale.
+        isFinalStep: isFinalStep || submitStep,
         requireSubmitEndpoint,
         resolvedMethod: record.resolvedMethod,
         effectSignals,
@@ -5533,6 +5609,7 @@ async function main(): Promise<void> {
           step: step.instruction,
           optional: step.optional,
           upload: step.upload,
+          submitStep: step.submitStep === true,
           stepIndex: i,
           phase: currentPhase,
           signalCounter,

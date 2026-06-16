@@ -34,6 +34,17 @@ export const RECON_FLOW_STEP_SCHEMA = z.union([
     step: z.string().min(1),
     optional: z.boolean().default(false),
     upload: z.boolean().default(false),
+    /**
+     * When true, the step is treated as the canonical submit click for the
+     * `submitEndpointPattern` verifier even when its position in the flow
+     * is not the last index. The pre-2026-06-15 implementation gated the
+     * pre-submit DOM probe on `isFinalStep` only, but real AppCast flows
+     * put the submit click in the middle of the step list (UVA Verona's
+     * Submit was at index 55/328) and follow it with post-submit
+     * verification steps. With this flag set, the probe + verifier fire
+     * at the actual submit click, not at the unrelated last step.
+     */
+    submitStep: z.boolean().default(false),
   }),
 ]);
 
