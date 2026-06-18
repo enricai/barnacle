@@ -1,0 +1,13 @@
+node_modules
+dist
+.git
+.env
+.env.*
+.npmrc
+*.md
+coverage/
+test/
+**/*.test.ts
+.github/
+.vscode/
+.idea/
