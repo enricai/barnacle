@@ -79,10 +79,6 @@ backstop.dynamic.json
 *.sqlite3
 
 
-# Prisma generated client
-/src/generated/
-
-
 *.log
 
 # Temporary prompt and planning files

@@ -201,6 +201,7 @@ All telemetry and judging knobs are in `src/config.ts` under the `telemetry`,
 |---------|---------|---------|
 | `TELEMETRY_ENABLED` | `true` | Master switch — set `false` to disable all NDJSON writes |
 | `CALLS_NDJSON_PATH` | `.barnacle/calls.ndjson` | Append-only call capture file |
+| `SUBMISSIONS_NDJSON_PATH` | `.barnacle/submissions.ndjson` | Append-only submission-envelope file |
 | `TELEMETRY_EVENTS_DIR` | `.barnacle/events` | Per-run event-stream directory |
 | `TELEMETRY_MAX_FILE_SIZE_BYTES` | 100 MB | Rotate/drop threshold for the calls file |
 | `TELEMETRY_MAX_RETENTION_MS` | 30 days | Event-stream file retention |
@@ -217,11 +218,33 @@ All telemetry and judging knobs are in `src/config.ts` under the `telemetry`,
 
 ---
 
+## Submission-envelope sink
+
+A separate append-only NDJSON file, `.barnacle/submissions.ndjson`, captures
+one record per dispatch outcome — the durable answer to "what did we submit
+for jobId X on date Y, and did it succeed?" Each line carries:
+
+- `siteId` — which plugin handled the request.
+- `requestId` — the Fastify-issued correlation ID for the inbound request.
+- `inboundPayload` — the request body the caller posted (PII-redacted).
+- `status` — `"submitted"` or `"error"`.
+- `auditPayload` — the same object plugins return via `SitePluginResult.auditPayload`; `null` on errors.
+- `errorMessage` — the failure message on errors; `null` on success.
+- `durationMs` — total dispatch wall time.
+- `ts` — ISO timestamp.
+
+Kept on its own sink (not mixed into `calls.ndjson`) so the judge and
+self-heal readers — which Zod-parse every line of `calls.ndjson` as an
+`LlmCallSample` — stay untouched. Downstream consumption (querying by
+jobId, aggregating by site, replaying a payload) is an ETL concern; the
+file is the durable source-of-truth those pipelines read from.
+
 ## File map
 
 | Concern | File |
 |---------|------|
 | NDJSON capture sink + `LlmCallSample` type | `src/lib/telemetry/call-capture.ts` |
+| Submission-envelope sink + `SubmissionEnvelopeSample` type | `src/lib/telemetry/submission-capture.ts` |
 | Call-type string constants | `src/lib/telemetry/call-types.ts` |
 | `llmCallSampleSchema`, `judgeVerdictSchema` | `src/api/schemas/telemetry.ts` |
 | Judge batch script (`pnpm judge:llm`) | `src/scripts/judge-llm-batch.ts` |

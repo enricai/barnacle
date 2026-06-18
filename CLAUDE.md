@@ -20,7 +20,6 @@ must follow these patterns and rules. Code reviews will reference sections in th
 - Tests: `pnpm run test` (Vitest) — single file: `pnpm test src/scraper/fixtures.test.ts`
 - **NEVER use `--` before filter args** — `pnpm test -- <filter>` silently runs the entire suite. Always use `pnpm test <filter>` directly.
 - Clean: `pnpm run clean`
-- Prisma: `pnpm run db:push` (apply schema to DB), `pnpm run db:generate` (regenerate client after schema changes), `pnpm run db:studio` (local DB browser UI)
 
 ## MANDATORY Requirements
 

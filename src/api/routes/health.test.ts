@@ -2,28 +2,21 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Fastify from "fastify";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
 import { type HealthConfig, healthRoutes } from "@/api/routes/health";
-import { prisma } from "@/lib/db/client";
 import type { RunState } from "@/lib/telemetry/run-state";
 
 /**
  * The readiness probe is the single source of truth ops uses to route
  * traffic away from a pod. Tests cover the happy path (every dep ok →
- * 200 + "ready") and the two degradation modes (missing scraper creds,
- * DB unreachable → 503 + "degraded" with per-check detail).
+ * 200 + "ready") and the degradation modes (missing scraper creds,
+ * pool queue depth → 503 + "degraded" with per-check detail).
  *
  * Config is injected through the plugin options, so each test builds a
  * small Fastify instance with exactly the state it wants — no env-var
  * gymnastics, no frozen-config redefinition hacks.
  */
-
-vi.mock("@/lib/db/client", () => ({
-  prisma: {
-    $queryRawUnsafe: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
-  },
-}));
 
 function makeConfig(overrides: Partial<HealthConfig> = {}): HealthConfig {
   const scraperDefaults = {
@@ -33,7 +26,6 @@ function makeConfig(overrides: Partial<HealthConfig> = {}): HealthConfig {
     useBedrock: false,
   };
   return {
-    databaseUrl: overrides.databaseUrl,
     scraper: { ...scraperDefaults, ...(overrides.scraper ?? {}) },
     bedrock: overrides.bedrock ?? {
       accessKeyId: undefined,
@@ -95,34 +87,18 @@ beforeEach(() => {
 });
 
 describe("routes/health /readyz", () => {
-  beforeEach(() => {
-    vi.mocked(prisma.$queryRawUnsafe).mockReset();
-    vi.mocked(prisma.$queryRawUnsafe).mockResolvedValue([{ "?column?": 1 }]);
-  });
-
-  it("returns 200 + 'ready' when all deps are healthy and DB is skipped", async () => {
+  it("returns 200 + 'ready' when all deps are healthy", async () => {
     const app = await buildHealthApp(makeConfig());
     try {
       const response = await app.inject({ method: "GET", url: "/readyz" });
       expect(response.statusCode).toBe(200);
       const body = response.json() as {
         status: string;
-        checks: { database: { ok: boolean }; scraperCredentials: { ok: boolean } };
+        checks: { scraperCredentials: { ok: boolean }; scraperPool: { ok: boolean } };
       };
       expect(body.status).toBe("ready");
-      expect(body.checks.database.ok).toBe(true);
       expect(body.checks.scraperCredentials.ok).toBe(true);
-    } finally {
-      await app.close();
-    }
-  });
-
-  it("returns 200 + 'ready' when DB is configured and reachable", async () => {
-    const app = await buildHealthApp(makeConfig({ databaseUrl: "postgres://ok:5432/db" }));
-    try {
-      const response = await app.inject({ method: "GET", url: "/readyz" });
-      expect(response.statusCode).toBe(200);
-      expect(vi.mocked(prisma.$queryRawUnsafe)).toHaveBeenCalledWith("SELECT 1");
+      expect(body.checks.scraperPool.ok).toBe(true);
     } finally {
       await app.close();
     }
@@ -150,24 +126,6 @@ describe("routes/health /readyz", () => {
       expect(body.checks.scraperCredentials.ok).toBe(false);
       expect(body.checks.scraperCredentials.detail).toContain("STEEL_API_KEY");
       expect(body.checks.scraperCredentials.detail).toContain("ANTHROPIC_API_KEY");
-    } finally {
-      await app.close();
-    }
-  });
-
-  it("returns 503 + 'degraded' when the database is unreachable", async () => {
-    vi.mocked(prisma.$queryRawUnsafe).mockRejectedValueOnce(new Error("ECONNREFUSED"));
-    const app = await buildHealthApp(makeConfig({ databaseUrl: "postgres://unreachable:5432/db" }));
-    try {
-      const response = await app.inject({ method: "GET", url: "/readyz" });
-      expect(response.statusCode).toBe(503);
-      const body = response.json() as {
-        status: string;
-        checks: { database: { ok: boolean; detail?: string } };
-      };
-      expect(body.status).toBe("degraded");
-      expect(body.checks.database.ok).toBe(false);
-      expect(body.checks.database.detail).toContain("ECONNREFUSED");
     } finally {
       await app.close();
     }

@@ -16,7 +16,6 @@ import errorHandlerPlugin from "@/api/plugins/error-handler";
 import requestContextPlugin from "@/api/plugins/request-context";
 import { healthRoutes } from "@/api/routes/health";
 import { config as defaultConfig, loadConfig } from "@/config";
-import { prisma } from "@/lib/db/client";
 import { toErrorMessage } from "@/lib/errors";
 import { configureHttpDispatcher } from "@/lib/http";
 import { getLogger } from "@/lib/logging";
@@ -111,20 +110,14 @@ export async function buildServer(): Promise<
   await app.register(healthRoutes);
   await registerRoutes(app, cfg);
 
-  // Drain in-flight scrape sessions and disconnect Prisma when the app
-  // shuts down. Without this, SIGTERM leaves Steel sessions alive until
-  // their own idle timeout kicks in (billable minutes wasted) and leaves
-  // Prisma connections open past process exit.
+  // Drain in-flight scrape sessions when the app shuts down. Without
+  // this, SIGTERM leaves Steel sessions alive until their own idle
+  // timeout kicks in (billable minutes wasted).
   app.addHook("onClose", async () => {
     try {
       await drainPool();
     } catch (err) {
       logger.warn(`drainPool failed during shutdown: ${toErrorMessage(err).slice(0, 200)}`);
-    }
-    try {
-      await prisma.$disconnect();
-    } catch (err) {
-      logger.warn(`prisma disconnect failed during shutdown: ${toErrorMessage(err).slice(0, 200)}`);
     }
   });
 

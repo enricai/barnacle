@@ -470,7 +470,7 @@ Request arrives
         → zod.parse(response)                   [drift detector]
   → record hot-path latency
   → write cache entry
-  → write audit row (SiteSubmission)
+  → emit submission envelope (NDJSON)
   → return
 ```
 
@@ -502,7 +502,7 @@ Hot path fails (schema mismatch, bot challenge, or 5xx)
           → Stagehand.init() via CDP
       → Promise.race([plugin.execute(session), TASK_TIMEOUT_MS (60min default)])
     → session.close() in finally
-  → write audit row (SiteSubmission)
+  → emit submission envelope (NDJSON)
   → return
 ```
 

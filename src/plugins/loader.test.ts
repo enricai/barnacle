@@ -28,7 +28,7 @@ import type { SitePlugin, SitePluginContext } from "@/site-plugin";
 
 // vi.hoisted runs before vi.mock factories — required so these references
 // are available when the factory closures execute.
-const mockCreate = vi.hoisted(() => vi.fn().mockResolvedValue({ id: "stub-id" }));
+const mockCaptureSubmissionEnvelope = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const mockPluginExecute = vi.hoisted(() =>
   vi.fn().mockResolvedValue({
     data: { result: "ok" },
@@ -56,13 +56,11 @@ vi.mock("@/scraper/pool", () => ({
   runWithSession: mockRunWithSession,
 }));
 
-// Stub prisma so tests don't need a live DB. siteSubmission.create must be
-// a mock we can inspect to verify audit writes happened (and in the right order).
-vi.mock("@/lib/db/client", () => ({
-  prisma: {
-    siteSubmission: { create: mockCreate },
-    $disconnect: vi.fn().mockResolvedValue(undefined),
-  },
+// Stub captureSubmissionEnvelope so tests don't touch the real NDJSON sink.
+// We assert on its call args to verify dispatch emits envelopes on both
+// success and error branches.
+vi.mock("@/lib/telemetry/submission-capture", () => ({
+  captureSubmissionEnvelope: mockCaptureSubmissionEnvelope,
 }));
 
 vi.mock("@/scraper/metrics", () => ({
@@ -98,11 +96,12 @@ const stubContext: SitePluginContext = {
     debug: vi.fn(),
   } as unknown as SitePluginContext["logger"],
   config: {} as SitePluginContext["config"],
+  requestId: "req-test-123",
 };
 
 describe("dispatch", () => {
   beforeEach(() => {
-    mockCreate.mockResolvedValue({ id: "stub-id" });
+    mockCaptureSubmissionEnvelope.mockResolvedValue(undefined);
     mockPluginExecute.mockResolvedValue({
       data: { result: "ok" },
       auditPayload: { redacted: true },
@@ -120,12 +119,18 @@ describe("dispatch", () => {
     expect(mockPluginExecute).toHaveBeenCalledWith(payload, null, stubContext);
   });
 
-  it("writes a SiteSubmission row with status=submitted and correct siteId on success", async () => {
-    await dispatch(stubPlugin, {}, stubContext);
-    expect(mockCreate).toHaveBeenCalledTimes(1);
-    expect(mockCreate).toHaveBeenCalledWith(
+  it("emits a submission envelope with status=submitted, siteId, and requestId on success", async () => {
+    const payload = { jobId: "job-1" };
+    await dispatch(stubPlugin, payload, stubContext);
+    expect(mockCaptureSubmissionEnvelope).toHaveBeenCalledTimes(1);
+    expect(mockCaptureSubmissionEnvelope).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ status: "submitted", siteId: "test-site" }),
+        siteId: "test-site",
+        requestId: "req-test-123",
+        status: "submitted",
+        inboundPayload: payload,
+        auditPayload: { redacted: true },
+        errorMessage: null,
       })
     );
   });
@@ -149,8 +154,8 @@ describe("dispatch", () => {
     );
   });
 
-  it("resolves normally when recordSubmission DB write fails (best-effort swallow)", async () => {
-    mockCreate.mockRejectedValueOnce(new Error("db connection lost"));
+  it("resolves normally when the envelope sink write fails (best-effort swallow)", async () => {
+    mockCaptureSubmissionEnvelope.mockRejectedValueOnce(new Error("disk full"));
     const result = await dispatch(stubPlugin, {}, stubContext);
     expect(result.data).toEqual({ result: "ok" });
   });
@@ -174,19 +179,23 @@ describe("dispatch", () => {
     expect(caught).toBe(plainErr);
   });
 
-  it("writes the error SiteSubmission row BEFORE throwing", async () => {
+  it("emits an error envelope with the original error message BEFORE throwing", async () => {
     mockPluginExecute.mockRejectedValueOnce(new CaptchaError("captcha hit"));
 
     try {
       await dispatch(stubPlugin, {}, stubContext);
     } catch {
-      // expected — we only care that create was called
+      // expected — we only care that the envelope was emitted
     }
 
-    expect(mockCreate).toHaveBeenCalledTimes(1);
-    expect(mockCreate).toHaveBeenCalledWith(
+    expect(mockCaptureSubmissionEnvelope).toHaveBeenCalledTimes(1);
+    expect(mockCaptureSubmissionEnvelope).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ status: "error", siteId: "test-site" }),
+        siteId: "test-site",
+        requestId: "req-test-123",
+        status: "error",
+        errorMessage: "captcha hit",
+        auditPayload: null,
       })
     );
   });
@@ -207,7 +216,7 @@ describe("dispatch — executeHttp hot-path branches", () => {
   };
 
   beforeEach(() => {
-    mockCreate.mockResolvedValue({ id: "stub-id" });
+    mockCaptureSubmissionEnvelope.mockResolvedValue(undefined);
     mockPluginExecute.mockResolvedValue({ data: { result: "ok" } });
     mockHttpExecute.mockResolvedValue({ data: { result: "hot" } });
   });
@@ -306,7 +315,7 @@ describe("dispatch — cache integration", () => {
   };
 
   beforeEach(() => {
-    mockCreate.mockResolvedValue({ id: "stub-id" });
+    mockCaptureSubmissionEnvelope.mockResolvedValue(undefined);
     mockPluginExecute.mockResolvedValue({ data: { result: "browser" } });
     mockHttpExecute.mockResolvedValue({ data: { result: "hot" } });
     mockGetCachedResponse.mockReturnValue({ value: undefined, key: "test-key" });
@@ -372,7 +381,7 @@ describe("dispatch — forceFallback option", () => {
   };
 
   beforeEach(() => {
-    mockCreate.mockResolvedValue({ id: "stub-id" });
+    mockCaptureSubmissionEnvelope.mockResolvedValue(undefined);
     mockPluginExecute.mockResolvedValue({ data: { result: "browser" } });
     mockHttpExecute.mockResolvedValue({ data: { result: "hot" } });
     mockGetCachedResponse.mockReturnValue({ value: undefined, key: "test-key" });
@@ -439,9 +448,9 @@ describe("registerRoutes — multipart flag", () => {
     process.env.DEV_BYPASS_AUTH = "true";
     process.env.NODE_ENV = "test";
     SITE_PLUGINS.length = 0;
-    // dispatch() writes a SiteSubmission audit row; the prisma mock at module
-    // scope handles that. executeHttp returns a payload we can assert on.
-    mockCreate.mockResolvedValue({ id: "stub-id" });
+    // dispatch() emits a submission envelope via captureSubmissionEnvelope;
+    // the module-scoped mock swallows it so tests don't touch the NDJSON sink.
+    mockCaptureSubmissionEnvelope.mockResolvedValue(undefined);
   });
 
   afterEach(() => {

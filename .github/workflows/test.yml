@@ -15,8 +15,6 @@ jobs:
   test:
     name: Run Tests
     runs-on: ubuntu-latest
-    env:
-      DATABASE_URL: "postgresql://localhost/unused"
 
     steps:
       - name: Checkout code

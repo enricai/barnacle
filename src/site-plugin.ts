@@ -87,19 +87,25 @@ export interface SitePluginContext {
    * that core does not already surface through the context.
    */
   config: AppConfig;
+  /**
+   * Fastify-issued correlation ID for this inbound request. Core threads it
+   * into the submission-envelope telemetry record so downstream tooling can
+   * tie a captured outcome back to the originating API call.
+   */
+  requestId: string;
 }
 
 /**
  * Value returned by `execute()` and consumed by core's dispatch layer. Core
- * merges `data` into the response envelope and writes `auditPayload` to
- * the `SiteSubmission` DB row so audit and replay work without re-running the
- * browser flow.
+ * merges `data` into the response envelope and emits a `submission-envelope`
+ * telemetry record carrying `auditPayload` so audit and replay work without
+ * re-running the browser flow.
  */
 export interface SitePluginResult<TData = Record<string, unknown>> {
   /** Merged verbatim into the response envelope by core. */
   data: TData;
   /**
-   * Written to the `SiteSubmission.payload` DB column by core. If absent, core
+   * Written to the `submission-envelope` telemetry record by core. If absent, core
    * writes `data` instead. Intentionally not generic so plugins can redact PII
    * freely — only `Record<string, unknown>` is required, not a shape that
    * matches `TData`.

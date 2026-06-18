@@ -11,7 +11,6 @@ export interface AppConfig {
   host: string;
   port: number;
   logLevel: string;
-  databaseUrl: string | undefined;
   auth: {
     hashedKeys: readonly string[];
     devBypass: boolean;
@@ -102,6 +101,15 @@ export interface AppConfig {
      * self-heal skills. Default keeps it alongside the event-stream files.
      */
     callsNdjsonPath: string;
+    /**
+     * Absolute or cwd-relative path for the append-only NDJSON file that
+     * records one line per dispatch outcome — the submission envelope. This
+     * is the durable source-of-truth for "what did we submit for jobId X,
+     * what did the site return, and did it succeed." Kept on a separate
+     * sink from `callsNdjsonPath` so existing judge/heal readers (which
+     * Zod-parse every line as an LlmCallSample) stay untouched.
+     */
+    submissionsNdjsonPath: string;
     /**
      * Rotate / drop the calls NDJSON once it exceeds this byte count.
      * Guards against unbounded disk growth on long-running deployments.
@@ -205,7 +213,6 @@ export function loadConfig(): AppConfig {
     host: getEnv("HOST", "0.0.0.0"),
     port: getNumericEnv("PORT", 3000),
     logLevel: getEnv("LOG_LEVEL", "info"),
-    databaseUrl: process.env.DATABASE_URL,
     auth: {
       hashedKeys: parseList(getEnv("API_KEYS_HASHED", "")),
       devBypass: getBoolEnv("DEV_BYPASS_AUTH", false),
@@ -274,6 +281,7 @@ export function loadConfig(): AppConfig {
       enabled: getBoolEnv("TELEMETRY_ENABLED", true),
       eventsDir: getEnv("TELEMETRY_EVENTS_DIR", ".barnacle/events"),
       callsNdjsonPath: getEnv("CALLS_NDJSON_PATH", ".barnacle/calls.ndjson"),
+      submissionsNdjsonPath: getEnv("SUBMISSIONS_NDJSON_PATH", ".barnacle/submissions.ndjson"),
       maxFileSizeBytes: getNumericEnv("TELEMETRY_MAX_FILE_SIZE_BYTES", 100 * 1024 * 1024),
       maxRetentionMs: getNumericEnv("TELEMETRY_MAX_RETENTION_MS", 30 * 24 * 60 * 60 * 1000),
     },

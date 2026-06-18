@@ -13,9 +13,9 @@ import {
 import { successEnvelope } from "@/api/helpers/envelope";
 import { getCachedResponse, getOrCreateInFlight } from "@/cache/response-cache";
 import type { AppConfig } from "@/config";
-import { prisma } from "@/lib/db/client";
 import { toErrorMessage } from "@/lib/errors";
 import { extendLogger, getLogger } from "@/lib/logging";
+import { captureSubmissionEnvelope } from "@/lib/telemetry/submission-capture";
 import {
   CaptchaError,
   EmptyResultsError,
@@ -73,30 +73,6 @@ function toApiError(err: unknown): ApiError | undefined {
   if (err instanceof HttpRateLimitError) return new ThrottledRequestError(err.message);
   if (err instanceof ScraperError) return new ScrapeFailureError(err.message);
   return undefined;
-}
-
-/**
- * Writes a single audit row to the SiteSubmission table.
- *
- * Exists because dispatch() persists audit rows on both the success and the
- * failure branches and the inline `prisma.siteSubmission.create({ ... })`
- * + try/catch + log block was duplicated. Centralising it keeps the
- * audit-write semantics (best-effort, never re-throws, always logs a warning
- * on DB failure) consistent across both branches.
- */
-async function recordSubmission(
-  siteId: string,
-  status: "submitted" | "error",
-  payload: object
-): Promise<void> {
-  try {
-    await prisma.siteSubmission.create({
-      data: { siteId, status, payload },
-    });
-  } catch (dbErr) {
-    const phase = status === "submitted" ? "successful scrape" : "scrape error";
-    logger.warn(`audit write failed after ${phase}: ${toErrorMessage(dbErr)}`);
-  }
 }
 
 /**
@@ -169,14 +145,32 @@ async function runPluginPipeline<TResult>(
 }
 
 /**
+ * Best-effort wrapper around `captureSubmissionEnvelope`. The helper itself
+ * already swallows write errors, but defending dispatch against a misbehaving
+ * sink (or a test mock that bypasses the helper's internal try/catch) keeps
+ * the audit emission contractually non-breaking: a sink failure must never
+ * propagate into the request path.
+ */
+async function emitEnvelopeSafely(
+  input: Parameters<typeof captureSubmissionEnvelope>[0]
+): Promise<void> {
+  try {
+    await captureSubmissionEnvelope(input);
+  } catch (err) {
+    logger.warn(`submission envelope emit failed: ${toErrorMessage(err)}`);
+  }
+}
+
+/**
  * Runs a single plugin submission end-to-end. Tries the direct-HTTP hot path
  * first when the plugin supplies `executeHttp`; on `HttpSchemaError`,
  * `HttpBotChallengeError`, or `HttpServerError` falls back to the Stagehand
- * browser path. Records
- * metrics on each branch so ops dashboards can alert on rising fallback rates.
- * Writes a `SiteSubmission` audit row on both success and failure, and maps
- * scraper errors to the API error hierarchy so callers receive typed,
- * client-readable errors instead of raw scraper internals.
+ * browser path. Records metrics on each branch so ops dashboards can alert on
+ * rising fallback rates. Emits a `submission-envelope` telemetry record on
+ * both success and failure — the durable source-of-truth for "what did we
+ * submit for jobId X and did it succeed." Maps scraper errors to the API
+ * error hierarchy so callers receive typed, client-readable errors instead
+ * of raw scraper internals.
  */
 export async function dispatch<TResult>(
   plugin: SitePlugin<unknown, unknown>,
@@ -184,18 +178,28 @@ export async function dispatch<TResult>(
   context: SitePluginContext,
   options: { forceFallback?: boolean } = {}
 ): Promise<SitePluginResult<TResult>> {
+  const startedAt = Date.now();
   try {
     const result = await runPluginPipeline<TResult>(plugin, payload, context, options);
-    await recordSubmission(
-      plugin.meta.siteId,
-      "submitted",
-      (result.auditPayload ?? result.data) as object
-    );
+    await emitEnvelopeSafely({
+      siteId: plugin.meta.siteId,
+      requestId: context.requestId,
+      inboundPayload: payload,
+      status: "submitted",
+      auditPayload: result.auditPayload ?? result.data,
+      errorMessage: null,
+      durationMs: Date.now() - startedAt,
+    });
     return result;
   } catch (err) {
-    await recordSubmission(plugin.meta.siteId, "error", {
-      error: toErrorMessage(err),
+    await emitEnvelopeSafely({
       siteId: plugin.meta.siteId,
+      requestId: context.requestId,
+      inboundPayload: payload,
+      status: "error",
+      auditPayload: null,
+      errorMessage: toErrorMessage(err),
+      durationMs: Date.now() - startedAt,
     });
     const apiErr = toApiError(err);
     if (apiErr) throw apiErr;
@@ -238,6 +242,7 @@ export async function registerRoutes(
           baseUrl,
           logger: extendLogger(request.log as unknown as pino.Logger),
           config: cfg,
+          requestId: request.id,
         };
         const result = await dispatch(plugin, request.body, context, { forceFallback });
         return successEnvelope(result.data as object);

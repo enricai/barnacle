@@ -76,7 +76,7 @@ flow, the schemas). Core (`src/plugins/loader.ts`) decides *when* to use
 which path. This separation means:
 
 - Plugins can't accidentally bypass the cache, skip metrics, or forget to
-  write audit rows.
+  emit the submission envelope.
 - Adding a new site requires zero changes to core — one import + one push
   to `SITE_PLUGINS`.
 - The fallback logic is tested once, in one place.
@@ -607,7 +607,6 @@ maintenance loop.
 | Pino logger + CloudWatch splitting | `src/lib/logging.ts` |
 | Environment variable parsers | `src/lib/env.ts` |
 | AWS Bedrock model factory | `src/lib/bedrock.ts` |
-| Prisma client singleton | `src/lib/db/client.ts` |
 | Phase 1 — browser recon | `src/scripts/recon-browser.ts` |
 | Phase 2–3 — HTTP replay + probes | `src/scripts/recon-http.ts` |
 | Phase 4f — plugin skeleton generator | `src/scripts/recon-generate.ts` |
