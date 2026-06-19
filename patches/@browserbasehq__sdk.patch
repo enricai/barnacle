@@ -1,0 +1,15 @@
+diff --git a/_shims/node-runtime.js b/_shims/node-runtime.js
+index 02107e27ed0fbdfc3783ad2d133aa10b057eabae..e4b3a2f1c0000000000000000000000000000000 100644
+--- a/_shims/node-runtime.js
++++ b/_shims/node-runtime.js
+@@ -60,8 +60,8 @@
+     // @ts-ignore
+     return await _fileFromPath(path, ...args);
+ }
+-const defaultHttpAgent = new agentkeepalive_1.default({ keepAlive: true, timeout: 5 * 60 * 1000 });
+-const defaultHttpsAgent = new agentkeepalive_1.default.HttpsAgent({ keepAlive: true, timeout: 5 * 60 * 1000 });
++const defaultHttpAgent = new agentkeepalive_1.default({ keepAlive: false, timeout: 5 * 60 * 1000 });
++const defaultHttpsAgent = new agentkeepalive_1.default.HttpsAgent({ keepAlive: false, timeout: 5 * 60 * 1000 });
+ async function getMultipartRequestOptions(form, opts) {
+     const encoder = new form_data_encoder_1.FormDataEncoder(form);
+     const readable = node_stream_1.Readable.from(encoder);

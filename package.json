@@ -97,7 +97,8 @@
       "esbuild"
     ],
     "patchedDependencies": {
-      "@browserbasehq/stagehand": "patches/@browserbasehq__stagehand.patch"
+      "@browserbasehq/stagehand": "patches/@browserbasehq__stagehand.patch",
+      "@browserbasehq/sdk": "patches/@browserbasehq__sdk.patch"
     }
   }
 }
