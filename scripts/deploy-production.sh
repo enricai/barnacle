@@ -23,14 +23,20 @@ echo "==> Pushing image to ECR"
 docker push "$IMAGE"
 
 echo "==> Registering new task definition"
-aws ecs register-task-definition \
-  --cli-input-json "$(sed "s|IMAGE_PLACEHOLDER|${IMAGE}|" .aws/task-definition-production.json)"
+REVISION=$(aws ecs register-task-definition \
+  --cli-input-json "$(sed "s|IMAGE_PLACEHOLDER|${IMAGE}|" .aws/task-definition-production.json)" \
+  --query 'taskDefinition.revision' \
+  --output text)
+echo "    revision: ${REVISION}"
 
 echo "==> Updating ECS service"
-aws ecs update-service \
+TASK_DEF=$(aws ecs update-service \
   --cluster "$ECS_CLUSTER" \
   --service "$ECS_SERVICE" \
   --task-definition "$TASK_FAMILY" \
-  --force-new-deployment
+  --force-new-deployment \
+  --query 'service.taskDefinition' \
+  --output text)
+echo "    task definition: ${TASK_DEF}"
 
 echo "==> Done. Service updating with image ${SHA}"
