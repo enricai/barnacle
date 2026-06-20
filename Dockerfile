@@ -26,6 +26,8 @@ COPY --from=build /app/package.json ./
 
 ENV NODE_ENV=production
 
+RUN mkdir -p .barnacle && chown node:node .barnacle
+
 USER node
 
 EXPOSE 3000
