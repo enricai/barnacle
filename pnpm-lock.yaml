@@ -71,8 +71,8 @@ importers:
         specifier: ^11.5.1
         version: 11.5.1
       nanoid:
-        specifier: ^3.3.7
-        version: 3.3.12
+        specifier: ^5.1.11
+        version: 5.1.11
       normalize-url:
         specifier: ^9.0.1
         version: 9.0.1
@@ -1864,6 +1864,11 @@ packages:
   nanoid@3.3.12:
     resolution: {integrity: sha512-ZB9RH/39qpq5Vu6Y+NmUaFhQR6pp+M2Xt76XBnEwDaGcVAqhlvxrl3B2bKS5D3NH3QR76v3aSrKaF/Kiy7lEtQ==}
     engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
+    hasBin: true
+
+  nanoid@5.1.11:
+    resolution: {integrity: sha512-v+KEsUv2ps74PaSKv0gHTxTCgMXOIfBEbaqa6w6ISIGC7ZsvHN4N9oJ8d4cmf0n5oTzQz2SLmThbQWhjd/8eKg==}
+    engines: {node: ^18 || >=20}
     hasBin: true
 
   negotiator@1.0.0:
@@ -4237,6 +4242,8 @@ snapshots:
   mylas@2.1.14: {}
 
   nanoid@3.3.12: {}
+
+  nanoid@5.1.11: {}
 
   negotiator@1.0.0: {}
 
