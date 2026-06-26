@@ -5557,7 +5557,35 @@ async function main(): Promise<void> {
     );
 
     logger.info(`navigating to ${url}`);
-    await page.goto(url, { waitUntil: "domcontentloaded", timeoutMs: GOTO_TIMEOUT_MS });
+    await page.goto(url, { waitUntil: "networkidle", timeoutMs: GOTO_TIMEOUT_MS });
+
+    const SPA_READINESS_TIMEOUT_MS = 15_000;
+    const SPA_READINESS_POLL_MS = 500;
+    const SPA_MIN_BODY_LENGTH = 5_000;
+    const spaDeadline = Date.now() + SPA_READINESS_TIMEOUT_MS;
+    let bodyLength = await page
+      .evaluate("document.body ? document.body.outerHTML.length : 0")
+      .catch(() => 0);
+    if (typeof bodyLength === "number" && bodyLength < SPA_MIN_BODY_LENGTH) {
+      logger.info(
+        `spa readiness: body ${bodyLength} chars < ${SPA_MIN_BODY_LENGTH} threshold — waiting for SPA to render`
+      );
+      while (Date.now() < spaDeadline) {
+        await new Promise((r) => setTimeout(r, SPA_READINESS_POLL_MS));
+        bodyLength = await page
+          .evaluate("document.body ? document.body.outerHTML.length : 0")
+          .catch(() => 0);
+        if (typeof bodyLength === "number" && bodyLength >= SPA_MIN_BODY_LENGTH) {
+          logger.info(`spa readiness: body grew to ${bodyLength} chars — SPA rendered`);
+          break;
+        }
+      }
+      if (typeof bodyLength === "number" && bodyLength < SPA_MIN_BODY_LENGTH) {
+        logger.warn(
+          `spa readiness: body still ${bodyLength} chars after ${SPA_READINESS_TIMEOUT_MS}ms — proceeding with possibly incomplete page`
+        );
+      }
+    }
 
     const anthropic = buildAnthropicClient();
     if (!anthropic) {
