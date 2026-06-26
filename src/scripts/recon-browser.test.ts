@@ -2520,7 +2520,7 @@ describe("recon-browser/selectBodyExcerpt", () => {
       'class="ng-invalid"' +
       "y".repeat(3000) +
       "</uapp-root>";
-    const tail = "z".repeat(50_000) + "</body>";
+    const tail = `${"z".repeat(50_000)}</body>`;
     const body = head + tail;
     const excerpt = selectBodyExcerpt(body);
     expect(excerpt.length).toBe(8000);
@@ -2531,8 +2531,7 @@ describe("recon-browser/selectBodyExcerpt", () => {
     // Body where ng-invalid is past 8KB — mimics the AppCast applyboard
     // SPA, whose form starts ~15KB after a header of Angular hydration JS.
     const chrome = "x".repeat(15_000);
-    const formRegion =
-      'class="ng-invalid"' + "y".repeat(1000) + "First Name required" + "z".repeat(1000);
+    const formRegion = `class="ng-invalid"${"y".repeat(1000)}First Name required${"z".repeat(1000)}`;
     const trailing = "w".repeat(50_000);
     const body = chrome + formRegion + trailing;
     const excerpt = selectBodyExcerpt(body);
@@ -2549,14 +2548,14 @@ describe("recon-browser/selectBodyExcerpt", () => {
   });
 
   it("detects mat-form-field-invalid (Material UI)", () => {
-    const body = "x".repeat(10_000) + "mat-form-field-invalid" + "y".repeat(50_000);
+    const body = `${"x".repeat(10_000)}mat-form-field-invalid${"y".repeat(50_000)}`;
     const excerpt = selectBodyExcerpt(body);
     expect(excerpt.length).toBe(32_000);
     expect(excerpt).toContain("mat-form-field-invalid");
   });
 
   it("detects <form tag when invalid markers are absent", () => {
-    const body = "x".repeat(10_000) + "<form action='/submit'>" + "y".repeat(50_000);
+    const body = `${"x".repeat(10_000)}<form action='/submit'>${"y".repeat(50_000)}`;
     const excerpt = selectBodyExcerpt(body);
     expect(excerpt.length).toBe(32_000);
     expect(excerpt).toContain("<form action");
