@@ -282,6 +282,29 @@ function extractActionSequence(captures: Capture[], baseUrl: string): ActionCapt
     });
 }
 
+/**
+ * Collapses redundant PATCH calls to the same endpoint path, keeping only the
+ * last occurrence. SPA auto-save patterns produce one PATCH per field change,
+ * but the API accepts a single full-state PATCH. Reduces the generated hot
+ * path from dozens of calls to the essential sequence.
+ */
+function collapseRedundantPatches(actions: ActionCapture[]): ActionCapture[] {
+  const lastPatchByPath = new Map<string, number>();
+  for (let i = 0; i < actions.length; i++) {
+    const a = actions[i]!;
+    if (a.capture.method === "PATCH") {
+      const path = a.capture.url.split("?")[0] ?? a.capture.url;
+      lastPatchByPath.set(path, i);
+    }
+  }
+
+  return actions.filter((a, i) => {
+    if (a.capture.method !== "PATCH") return true;
+    const path = a.capture.url.split("?")[0] ?? a.capture.url;
+    return lastPatchByPath.get(path) === i;
+  });
+}
+
 interface StateValue {
   /** The raw string that appears in some response and is reused downstream. */
   value: string;
@@ -1282,6 +1305,199 @@ function applyPayloadKeyValueSubstitutions(
   return result;
 }
 
+// ── base64 Content parameterization ──────────────────────────────────────────
+
+/** Keyword map for matching ATS screening question prompts to payload.Answers field names. */
+const QUESTION_PROMPT_KEYWORDS: Record<string, string[]> = {
+  RelatedToEmployee: ["related", "employee"],
+  PreviouslyEmployedAtEncompass: ["previously", "worked"],
+  EverSanctionedOrOnProbation: ["sanctions", "probation", "limitations"],
+  EverTerminated: ["terminated", "resign"],
+  EverExcludedFromFederalProgram: ["excluded", "federal", "program"],
+  VisaSponsorship: ["visa", "sponsor"],
+  LegallyEligibleToWorkUS: ["legal", "eligib", "work", "united states"],
+  CanPerformJobFunctions: ["perform", "job functions", "duties"],
+};
+
+interface QuestionAnswerMapping {
+  questionId: number;
+  payloadField: string;
+  answers: Record<string, number>;
+}
+
+/**
+ * Scans captures for a `recruitingCEQuestions` GET response and builds a
+ * mapping from question prompts to payload.Answers field names using keyword
+ * overlap scoring. Returns null if no questions capture is found.
+ */
+function buildQuestionnaireMapping(captures: Capture[]): QuestionAnswerMapping[] | null {
+  const questionCapture = captures.find(
+    (c) => c.method === "GET" && c.url.includes("recruitingCEQuestions")
+  );
+  if (!questionCapture) return null;
+  const resp =
+    typeof questionCapture.responseBody === "string"
+      ? (JSON.parse(questionCapture.responseBody) as Record<string, unknown>)
+      : (questionCapture.responseBody as Record<string, unknown> | null);
+  if (!resp || !Array.isArray(resp.items)) return null;
+
+  const mappings: QuestionAnswerMapping[] = [];
+  for (const item of resp.items as Array<Record<string, unknown>>) {
+    const prompt = String(item.Prompt ?? "").toLowerCase();
+    const qid = item.AttributeName as number | undefined;
+    const uiType = String(item.UIDisplayType ?? "");
+    if (!qid || uiType === "TextBox") continue;
+
+    let bestField: string | null = null;
+    let bestScore = 0;
+    for (const [field, keywords] of Object.entries(QUESTION_PROMPT_KEYWORDS)) {
+      const score = keywords.filter((kw) => prompt.includes(kw)).length;
+      if (score > bestScore) {
+        bestScore = score;
+        bestField = field;
+      }
+    }
+    if (!bestField || bestScore < 2) continue;
+    if (mappings.some((m) => m.payloadField === bestField)) continue;
+
+    const answers: Record<string, number> = {};
+    for (const a of (item.answers ?? []) as Array<Record<string, unknown>>) {
+      const meaning = String(a.Meaning ?? "");
+      const code = a.LookupCode as number | undefined;
+      if (meaning && code) answers[meaning] = code;
+    }
+    mappings.push({ questionId: qid, payloadField: bestField, answers });
+  }
+  return mappings.length > 0 ? mappings : null;
+}
+
+/**
+ * Builds the TypeScript source for a `buildBase64Content` function that
+ * constructs the base64-encoded Content JSON from payload values and returns
+ * it as a base64 string. The function replaces persona-specific values
+ * with payload references and maps questionnaire answers via a static
+ * lookup table derived from the recon captures.
+ */
+function emitBuildBase64ContentFunction(
+  base64: string,
+  personaValues: Map<string, string>,
+  questionMapping: QuestionAnswerMapping[] | null,
+  pascal: string
+): string {
+  const decoded = Buffer.from(base64, "base64").toString("utf8");
+  const content = JSON.parse(decoded) as Record<string, unknown>;
+
+  const candidate = (content as { candidate: Record<string, unknown> }).candidate;
+  const basic = (candidate as { basicInformation: Record<string, unknown> }).basicInformation;
+  const phone = basic.phone as Record<string, unknown> | undefined;
+  const application = (content as { application: Record<string, unknown> }).application;
+  const esig = (application as { eSignature: Record<string, unknown> }).eSignature;
+
+  basic.firstName = "__PAYLOAD_FirstName__";
+  basic.lastName = "__PAYLOAD_LastName__";
+  basic.email = "__PAYLOAD_Email__";
+  if (esig) esig.fullName = "__PAYLOAD_SignatureFullName__";
+  if (basic.displayName && typeof basic.displayName === "string")
+    basic.displayName = "__PAYLOAD_DisplayName__";
+  if (phone && typeof phone.number === "string" && phone.number) phone.number = "__PAYLOAD_Phone__";
+
+  for (const [personaVal, _payloadRef] of personaValues) {
+    if (typeof basic.email === "string" && basic.email === personaVal)
+      basic.email = "__PAYLOAD_Email__";
+  }
+
+  const questionnaires = (
+    candidate as {
+      questionnaires: Array<{
+        questionnaireId: number;
+        questions: Array<{
+          questionId: number;
+          answer: unknown;
+        }>;
+      }>;
+    }
+  ).questionnaires;
+  if (questionnaires && questionMapping) {
+    for (const q of questionnaires) {
+      q.questionnaireId = -1;
+      for (const question of q.questions) {
+        const mapping = questionMapping.find((m) => m.questionId === question.questionId);
+        if (mapping) {
+          question.answer = `__QMAP_${mapping.payloadField}__`;
+        }
+      }
+    }
+  }
+
+  const attachments = (candidate as { attachments: Array<{ id: string }> }).attachments;
+  if (attachments) {
+    for (const att of attachments) {
+      if (att.id && att.id !== "draft-json-undefined") {
+        att.id = "__PAYLOAD_AttachmentId__";
+      }
+    }
+    if (attachments[0]) {
+      (attachments[0] as Record<string, unknown>).appDraftId = "__PAYLOAD_DraftId__";
+    }
+  }
+
+  const jsonStr = JSON.stringify(content, null, 0);
+
+  const contentObj = JSON.parse(jsonStr) as Record<string, unknown>;
+
+  const questionMapEntries = (questionMapping ?? []).map(
+    (m) =>
+      `    ${JSON.stringify(m.payloadField)}: { answers: ${JSON.stringify(m.answers)} as Record<string, number>, questionId: ${m.questionId} },`
+  );
+
+  const questionMapConst2 =
+    questionMapEntries.length > 0
+      ? `\nconst QUESTIONNAIRE_ANSWER_MAP = {\n${questionMapEntries.join("\n")}\n};\n`
+      : "";
+
+  const contentTemplate = JSON.stringify(contentObj, null, 2);
+
+  const parameterized = contentTemplate
+    .replace(/"__PAYLOAD_FirstName__"/g, "payload.FirstName")
+    .replace(/"__PAYLOAD_LastName__"/g, "payload.LastName")
+    .replace(/"__PAYLOAD_Email__"/g, "payload.Email")
+    .replace(/"__PAYLOAD_Phone__"/g, "payload.Phone")
+    .replace(/"__PAYLOAD_SignatureFullName__"/g, "payload.Answers.SignatureFullName")
+    .replace(/"__PAYLOAD_DisplayName__"/g, "`${payload.FirstName} ${payload.LastName}`")
+    .replace(/"__PAYLOAD_AttachmentId__"/g, "attachmentId")
+    .replace(/"__PAYLOAD_DraftId__"/g, "draftId")
+    .replace(/-1(?=,\n\s*"questions")/g, "questionnaireId");
+
+  for (const m of questionMapping ?? []) {
+    parameterized.replace(
+      `"__QMAP_${m.payloadField}__"`,
+      `QUESTIONNAIRE_ANSWER_MAP[${JSON.stringify(m.payloadField)}].answers[payload.Answers.${m.payloadField}] ?? "draft-json-undefined"`
+    );
+  }
+
+  let finalTemplate = parameterized.replace(/"__QMAP_[^"]*__"/g, '"draft-json-undefined"');
+
+  for (const m of questionMapping ?? []) {
+    finalTemplate = finalTemplate.replace(
+      `"__QMAP_${m.payloadField}__"`,
+      `(QUESTIONNAIRE_ANSWER_MAP[${JSON.stringify(m.payloadField)}].answers[payload.Answers.${m.payloadField}] ?? "draft-json-undefined")`
+    );
+  }
+
+  return `${questionMapConst2}
+/** Builds the ATS Content payload as a base64-encoded JSON string. */
+function buildBase64Content(
+  payload: ${pascal}Payload,
+  questionnaireId: number,
+  draftId: number,
+  attachmentId: string
+): string {
+  const content = ${finalTemplate};
+  return Buffer.from(JSON.stringify(content)).toString("base64");
+}
+`;
+}
+
 /** Builds the multi-step `executeHttp` body as a single template-literal string.
  *
  * Two-pass design avoids emitting unused bindings (which would trip Biome's
@@ -1364,7 +1580,8 @@ function emitMultiStepExecuteHttp(
   outDiscoveredAdditionalBodyKeys: Map<string, "string" | "number" | "boolean">,
   baseUrl: string,
   baseUrlDerivedHeaders: Map<string, string>,
-  tenantSubdomainHeaders: Map<string, string>
+  tenantSubdomainHeaders: Map<string, string>,
+  base64PatchOverride: Map<string, string> = new Map()
 ): string {
   interface Rendered {
     url: string;
@@ -1454,7 +1671,7 @@ function emitMultiStepExecuteHttp(
           outDiscoveredRawOptionFields
         )
       : "";
-    const bodyTemplate = rawBodyWithFormSubs
+    let bodyTemplate = rawBodyWithFormSubs
       ? applyPayloadKeyValueSubstitutions(
           interpolateStateValues(rawBodyWithFormSubs, prior, payloadAccessorByValue),
           inputBody,
@@ -1462,6 +1679,11 @@ function emitMultiStepExecuteHttp(
           outDiscoveredAdditionalBodyKeys
         )
       : "";
+
+    const contentOverride = base64PatchOverride.get(step.varName);
+    if (contentOverride && bodyTemplate) {
+      bodyTemplate = bodyTemplate.replace(/"Content":"ey[A-Za-z0-9+/=]{100,}"/, contentOverride);
+    }
 
     const perCallHeaders: Record<string, string> = {};
     for (const [k, v] of Object.entries(cap.requestHeaders)) {
@@ -1518,6 +1740,17 @@ function emitMultiStepExecuteHttp(
   }
   // The last step's var is also referenced by the closing `return { data }`.
   if (actions.length > 0) referencedNames.add(actions[actions.length - 1]!.varName);
+  // Base64 Content overrides reference variables inside function calls
+  // (e.g. buildBase64Content(payload, questionnaireId, ...)) that the
+  // ${name} regex above doesn't capture. Add them explicitly.
+  for (const [key, override] of base64PatchOverride.entries()) {
+    if (key === "__EXTRA_VARS__") continue;
+    for (const m of override.matchAll(/\b([A-Za-z_$][A-Za-z0-9_$]*)\b/g)) {
+      const name = m[1]!;
+      if (/^r\d+$/.test(name)) continue;
+      referencedNames.add(name);
+    }
+  }
 
   // Pass 2: emit. Skip response bindings that aren't referenced; skip
   // produces[] entries whose name isn't referenced. A step's response var
@@ -1531,6 +1764,11 @@ function emitMultiStepExecuteHttp(
     const r = rendered[i]!;
     const hasReferencedProduce = step.produces.some((p) => referencedNames.has(p.name));
     const bindResponse = referencedNames.has(step.varName) || hasReferencedProduce;
+
+    if (base64PatchOverride.has(step.varName) && base64PatchOverride.has("__EXTRA_VARS__")) {
+      lines.push(base64PatchOverride.get("__EXTRA_VARS__")!);
+      lines.push("");
+    }
 
     if (step.isCrossDomain) {
       lines.push(
@@ -1700,6 +1938,7 @@ function emitContractTs(opts: {
    * (inputBody). Mapped to their value type. Each becomes a payload field
    * (string → z.string(), number → z.number(), boolean → z.boolean()). */
   discoveredAdditionalBodyKeys?: Map<string, "string" | "number" | "boolean">;
+  base64ContentHelper?: string;
 }): string {
   const {
     siteId,
@@ -1721,6 +1960,7 @@ function emitContractTs(opts: {
     discoveredOptionFields,
     discoveredRawOptionFields,
     discoveredAdditionalBodyKeys,
+    base64ContentHelper = "",
   } = opts;
 
   // Multi-step plugins thread responses through many different shapes that a
@@ -1838,9 +2078,10 @@ function emitContractTs(opts: {
   // end of the payload type — the section ordering (base, multipart fields,
   // form-schema fields, option enums, raw-option fields) mirrors the body
   // emit order and keeps the generated payload type readable.
+  const answersExtension = base64ContentHelper ? ".extend({ Answers: AnswersSchema })" : "";
   const payloadSchemaExpr = hasMultipartStep
-    ? `${basePayloadSchemaExpr}.extend({\n  Resume: z.instanceof(Buffer),\n  ResumeContentType: z.string(),\n  ResumeFilename: z.string(),\n})${formFieldsExtension}${optionSchemaExtension}${rawOptionSchemaExtension}${additionalBodyKeysExtension}`
-    : `${basePayloadSchemaExpr}${formFieldsExtension}${optionSchemaExtension}${rawOptionSchemaExtension}${additionalBodyKeysExtension}`;
+    ? `${basePayloadSchemaExpr}.extend({\n  Resume: z.instanceof(Buffer),\n  ResumeContentType: z.string(),\n  ResumeFilename: z.string(),\n})${formFieldsExtension}${optionSchemaExtension}${rawOptionSchemaExtension}${additionalBodyKeysExtension}${answersExtension}`
+    : `${basePayloadSchemaExpr}${formFieldsExtension}${optionSchemaExtension}${rawOptionSchemaExtension}${additionalBodyKeysExtension}${answersExtension}`;
   // When the payload schema needs the MULTIPART_BOOL reference, emit its
   // declaration once at the top of the contract file so each boolean field
   // stays short (SmsOptIn: MULTIPART_BOOL,) and the preprocess expression
@@ -1946,7 +2187,7 @@ const ${pascal}ResponseSchema = ${responseSchemaExpr};
 export type ${pascal}Response = z.infer<typeof ${pascal}ResponseSchema>;
 
 export default ${pascal}ResponseSchema;
-${multipartBoolDecl}${optionDecls}
+${multipartBoolDecl}${optionDecls}${base64ContentHelper}
 const ${pascal}PayloadSchema = ${payloadSchemaExpr};
 
 export type ${pascal}Payload = z.infer<typeof ${pascal}PayloadSchema>;
@@ -2151,7 +2392,9 @@ async function main(): Promise<void> {
   // Detect a multi-step submission flow (transactional sites like apply forms,
   // checkout, etc.). When the action sequence has 2+ POSTs, switch the
   // contract template to emit a state-threaded executeHttp.
-  const rawActionCaptures = gql ? [] : extractActionSequence(captures, baseUrl);
+  const rawActionCaptures = gql
+    ? []
+    : collapseRedundantPatches(extractActionSequence(captures, baseUrl));
   // Form-schema detection runs BEFORE state-indexing so the FieldId/OptionId
   // UUIDs can be shielded from indexing — those UUIDs are stable schema
   // anchors that T2/T3 substitution depends on remaining literal in body
@@ -2263,6 +2506,142 @@ async function main(): Promise<void> {
         tenantSubdomainHeaders
       )
     : undefined;
+
+  let base64ContentHelper = "";
+  const base64PatchOverride = new Map<string, string>();
+
+  if (isSubmissionFlow && actionSteps.length > 0) {
+    const lastPatchWithContent = [...actionSteps]
+      .reverse()
+      .find(
+        (s) =>
+          s.capture.method === "PATCH" &&
+          s.capture.requestPostData &&
+          /"Content":"ey[A-Za-z0-9+/=]{100,}"/.test(s.capture.requestPostData)
+      );
+    if (lastPatchWithContent) {
+      const b64Match = lastPatchWithContent.capture.requestPostData!.match(
+        /"Content":"(ey[A-Za-z0-9+/=]{100,})"/
+      );
+      if (b64Match) {
+        const b64 = b64Match[1]!;
+        const qMapping = buildQuestionnaireMapping(captures);
+        const personaValues = new Map<string, string>();
+        const firstPost = captures.find(
+          (c) =>
+            c.method === "POST" &&
+            c.url.includes("recruitingCEJobApplicationDrafts") &&
+            c.requestPostData
+        );
+        if (firstPost?.requestPostData) {
+          try {
+            const pb = JSON.parse(firstPost.requestPostData) as Record<string, unknown>;
+            if (typeof pb.EmailAddress === "string")
+              personaValues.set(pb.EmailAddress, "payload.Email");
+          } catch {
+            /* skip */
+          }
+        }
+
+        base64ContentHelper = emitBuildBase64ContentFunction(b64, personaValues, qMapping, pascal);
+
+        base64PatchOverride.set(
+          lastPatchWithContent.varName,
+          '"Content":"${buildBase64Content(payload, questionnaireId, Number(draftId), String(attachmentId))}"'
+        );
+
+        const draftPostStep = actionSteps.find(
+          (s) =>
+            s.capture.method === "POST" &&
+            s.capture.url.includes("recruitingCEJobApplicationDrafts")
+        );
+        if (draftPostStep && !draftPostStep.produces.some((p) => p.name === "draftId")) {
+          draftPostStep.produces.push({
+            name: "draftId",
+            pathExpr: `${draftPostStep.varName}.APPDraftId`,
+            path: ["APPDraftId"],
+          });
+        }
+
+        const attachPostStep = actionSteps.find(
+          (s) => s.capture.method === "POST" && s.capture.url.includes("/attachments")
+        );
+        if (attachPostStep && !attachPostStep.produces.some((p) => p.name === "attachmentId")) {
+          attachPostStep.produces.push({
+            name: "attachmentId",
+            pathExpr: `${attachPostStep.varName}.Id`,
+            path: ["Id"],
+          });
+        }
+
+        const questionnaireCapture = captures.find(
+          (c) =>
+            c.method === "GET" &&
+            c.url.includes("recruitingCEQuestions") &&
+            c.url.includes("expand=answers")
+        );
+        let sampleQid: number | undefined;
+        if (questionnaireCapture) {
+          const qResp =
+            typeof questionnaireCapture.responseBody === "string"
+              ? (JSON.parse(questionnaireCapture.responseBody) as {
+                  items?: Array<{ QuestionnaireId?: number }>;
+                })
+              : (questionnaireCapture.responseBody as {
+                  items?: Array<{ QuestionnaireId?: number }>;
+                } | null);
+          sampleQid = qResp?.items?.[0]?.QuestionnaireId ?? undefined;
+        }
+
+        const overrideValue = base64PatchOverride.values().next().value as string;
+        if (overrideValue) {
+          const extraVarLines: string[] = [];
+          if (sampleQid) {
+            extraVarLines.push(`    const questionnaireId = ${sampleQid};`);
+          }
+          if (!attachPostStep) {
+            extraVarLines.push(`    const attachmentId = "";`);
+          }
+          if (extraVarLines.length > 0) {
+            base64PatchOverride.set("__EXTRA_VARS__", extraVarLines.join("\n"));
+          }
+        }
+
+        const answersFields = (qMapping ?? []).map((m) => m.payloadField);
+        answersFields.push("SignatureFullName");
+        const answersSchemaFields = answersFields.map((f) => `    ${f}: z.string(),`).join("\n");
+        base64ContentHelper =
+          `\nconst AnswersSchema = z.object({\n${answersSchemaFields}\n});\n` + base64ContentHelper;
+
+        const inputKeys = new Set<string>();
+        if (inputBody && typeof inputBody === "object" && !Array.isArray(inputBody)) {
+          for (const k of Object.keys(inputBody as Record<string, unknown>)) inputKeys.add(k);
+        }
+        for (const fld of ["FirstName", "LastName", "Email", "Phone"]) {
+          if (!inputKeys.has(fld)) discoveredAdditionalBodyKeys.set(fld, "string");
+        }
+      }
+    }
+  }
+
+  const processedMultiStepBody = isSubmissionFlow
+    ? emitMultiStepExecuteHttp(
+        actionSteps,
+        inputBody,
+        errorSignals,
+        fieldNameMap,
+        discoveredFormFields,
+        fieldOptionsMap,
+        discoveredOptionFields,
+        discoveredRawOptionFields,
+        discoveredAdditionalBodyKeys,
+        baseUrl,
+        baseUrlDerivedHeaders,
+        tenantSubdomainHeaders,
+        base64PatchOverride
+      )
+    : multiStepBody;
+
   const hasMultipartStep = actionSteps.some((s) => s.isMultipart);
   // For submission flows the final action's response body is the most useful
   // shape inference target (it's the terminal success signal). Fall back to
@@ -2293,7 +2672,8 @@ async function main(): Promise<void> {
       gqlQuery,
       endpointPath,
       auxFiles,
-      multiStepBody,
+      multiStepBody: processedMultiStepBody,
+      base64ContentHelper,
       inputBody,
       hasMultipartStep,
       discoveredFormFields,
