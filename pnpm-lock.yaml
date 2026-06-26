@@ -59,8 +59,8 @@ importers:
         specifier: ^5.2.1
         version: 5.8.5
       fastify-plugin:
-        specifier: ^5.1.0
-        version: 5.1.0
+        specifier: ^6.0.0
+        version: 6.0.0
       fastify-type-provider-zod:
         specifier: ^5.0.2
         version: 5.0.2(@fastify/swagger@9.7.0)(fastify@5.8.5)(zod@3.25.76)
@@ -1468,6 +1468,9 @@ packages:
 
   fastify-plugin@5.1.0:
     resolution: {integrity: sha512-FAIDA8eovSt5qcDgcBvDuX/v0Cjz0ohGhENZ/wpc3y+oZCY2afZ9Baqql3g/lC+OHRnciQol4ww7tuthOb9idw==}
+
+  fastify-plugin@6.0.0:
+    resolution: {integrity: sha512-fZOty7z3O7vOliF6d8bHE3wiEh1KcNnKEQensSgTk9C1DvN6nRLS++XVd86v33Hw/8u9Un8A1zDrQ8ujcQDHEg==}
 
   fastify-type-provider-zod@5.0.2:
     resolution: {integrity: sha512-myolKCxze2rx25Ia88Erb4TZpFIUWyCUqMDgNqE6KQnXoERXwMCPuwfj/1zKkVBlu5dvLo1c/H7GneZUhOWXiw==}
@@ -3837,6 +3840,8 @@ snapshots:
   fast-uri@3.1.2: {}
 
   fastify-plugin@5.1.0: {}
+
+  fastify-plugin@6.0.0: {}
 
   fastify-type-provider-zod@5.0.2(@fastify/swagger@9.7.0)(fastify@5.8.5)(zod@3.25.76):
     dependencies:
