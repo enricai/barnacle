@@ -1605,24 +1605,24 @@ function emitMultiStepExecuteHttp(
         lines.push(`    await ${respVar}.json();`);
       }
     } else {
-      // Always bind the response so we can emit a validation check that
-      // turns 200-with-error-body responses into thrown errors instead of
-      // silently chaining to downstream calls with bad state.
-      lines.push(`    const ${step.varName} = (await httpClient(\`${r.url}\`, {`);
+      const urlPath = cap.url.split("/").slice(3).join("/").split("?")[0] ?? "";
+      const guardLines = emitErrorSignalGuards(step.varName, urlPath, errorSignals);
+      const needsBinding = bindResponse || guardLines.length > 0;
+      if (needsBinding) {
+        lines.push(`    const ${step.varName} = (await httpClient(\`${r.url}\`, {`);
+      } else {
+        lines.push(`    await httpClient(\`${r.url}\`, {`);
+      }
       lines.push(`      method: ${JSON.stringify(r.method)},`);
       const joined = [r.headersExpr, r.bodyArg].filter((s) => s !== "").join(" ");
       if (joined !== "") {
         lines.push(`      ${joined}`);
       }
-      lines.push(`    })) as Record<string, unknown>;`);
-      // Structural error-shape check — signals come from `errorSignals`,
-      // which `detectErrorSignals` derived from this site's actual recon
-      // (closed-set key-name detection: known top-level error keys like
-      // `Message`/`error`, plus nested keys ending in `ValidationErrors`
-      // etc.). Guard on `typeof obj === "object" && obj !== null` first
-      // because some endpoints return `null` for an ack-without-data success.
-      const urlPath = cap.url.split("/").slice(3).join("/").split("?")[0] ?? "";
-      const guardLines = emitErrorSignalGuards(step.varName, urlPath, errorSignals);
+      if (needsBinding) {
+        lines.push(`    })) as Record<string, unknown>;`);
+      } else {
+        lines.push(`    });`);
+      }
       if (guardLines.length > 0) {
         lines.push(`    if (typeof ${step.varName} === "object" && ${step.varName} !== null) {`);
         for (const line of guardLines) lines.push(line);
@@ -1967,7 +1967,7 @@ export const ${siteId.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase())}Pl
   /** Hot path: direct HTTP — no browser, no LLM tokens. */
   async executeHttp(
     payload: ${pascal}Payload,
-    context: SitePluginContext
+    ${executeHttpBody.includes("context.") ? "context" : "_context"}: SitePluginContext
   ): Promise<SitePluginResult<${pascal}Response>> {
 ${executeHttpBody}
   },
@@ -2119,9 +2119,20 @@ async function main(): Promise<void> {
   const flowSteps = (() => {
     const flowFile = `src/sites/${siteId}/recon-flow.json`;
     try {
-      return JSON.parse(readFileSync(flowFile, "utf8")) as Array<
-        string | { step: string; optional?: boolean; upload?: boolean }
-      >;
+      const raw: unknown = JSON.parse(readFileSync(flowFile, "utf8"));
+      if (Array.isArray(raw))
+        return raw as Array<string | { step: string; optional?: boolean; upload?: boolean }>;
+      if (
+        raw !== null &&
+        typeof raw === "object" &&
+        "steps" in raw &&
+        Array.isArray((raw as { steps: unknown }).steps)
+      ) {
+        return (
+          raw as { steps: Array<string | { step: string; optional?: boolean; upload?: boolean }> }
+        ).steps;
+      }
+      return [] as string[];
     } catch {
       return [] as string[];
     }
