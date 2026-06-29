@@ -106,6 +106,8 @@ const stubContext: SitePluginContext = {
       path: "http" as const,
       steps: [],
       attemptCount: 1,
+      startedAt: "",
+      endedAt: "",
       recordedAt: "",
     })),
   } as unknown as SitePluginContext["metricsCollector"],
