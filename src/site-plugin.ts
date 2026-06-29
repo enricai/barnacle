@@ -12,8 +12,10 @@
 import type { ZodType } from "zod/v4";
 
 import type { AppConfig } from "@/config";
+import type { MetricsCollector } from "@/lib/dispatch-metrics";
 import type { ScraperError } from "@/scraper/errors";
 import type { BrowserSession } from "@/scraper/session";
+import type { DispatchMetrics } from "@/types/dispatch-metrics";
 import type { Logger } from "@/types/logging";
 
 /**
@@ -93,6 +95,12 @@ export interface SitePluginContext {
    * tie a captured outcome back to the originating API call.
    */
   requestId: string;
+  /**
+   * Step-timing accumulator for the current dispatch. Plugins call
+   * `metricsCollector.startStep()` / `endStep()` at phase boundaries;
+   * core finalizes and attaches the result to the response envelope.
+   */
+  metricsCollector: MetricsCollector;
 }
 
 /**
@@ -111,6 +119,12 @@ export interface SitePluginResult<TData = Record<string, unknown>> {
    * matches `TData`.
    */
   auditPayload?: Record<string, unknown>;
+  /**
+   * Step-level dispatch metrics attached by core after finalize(). Included in
+   * the response envelope so Vivian can forward into Segment events for A/B
+   * warehouse analysis.
+   */
+  metrics?: DispatchMetrics;
 }
 
 /**

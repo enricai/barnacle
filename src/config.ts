@@ -189,6 +189,20 @@ export interface AppConfig {
      */
     timeoutMs: number;
   };
+  datadog: {
+    /** Master switch — dd-trace only initializes when true. */
+    traceEnabled: boolean;
+    /** Hostname of the DD agent sidecar (localhost in ECS Fargate). */
+    agentHost: string;
+    /** DogStatsD UDP port on the agent host. */
+    statsdPort: number;
+    /** Service name emitted on all spans, metrics, and logs. */
+    service: string;
+    /** Deployment environment tag (production, staging, development). */
+    env: string;
+    /** Application version tag — git SHA or package version. */
+    version: string;
+  };
 }
 
 /**
@@ -302,6 +316,14 @@ export function loadConfig(): AppConfig {
       plateauWindow: getNumericEnv("SELFHEAL_PLATEAU_WINDOW", 3),
       plateauDelta: getFloatEnv("SELFHEAL_PLATEAU_DELTA", 0.03),
       timeoutMs: getNumericEnv("SELFHEAL_TIMEOUT_MS", 60_000),
+    },
+    datadog: {
+      traceEnabled: getBoolEnv("DD_TRACE_ENABLED", false),
+      agentHost: getEnv("DD_AGENT_HOST", "localhost"),
+      statsdPort: getNumericEnv("DD_DOGSTATSD_PORT", 8125),
+      service: getEnv("DD_SERVICE", "barnacle"),
+      env: getEnv("DD_ENV", getNodeEnv()),
+      version: getEnv("DD_VERSION", "0.1.0"),
     },
   };
 }

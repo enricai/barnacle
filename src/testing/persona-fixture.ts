@@ -14,14 +14,11 @@ export const TEST_PERSONA = {
   LastName: "Reconaldo",
   /**
    * Avoid both the 555 fictional range AND famously-fictional numbers like
-   * 310-867-5309 ("Jenny / 867-5309" pop-song). AppCast's `uapp-phone-input`
-   * Web Component rejects both with "Please provide correct phone number."
-   * — empirically verified on Saint Alphonsus's apply.appcast.io form on
-   * 2026-06-10 via the production stuck-state DOM dump at
-   * /tmp/recon/step-failures/147-click-the-continue-butto.json.
+   * 310-867-5309 ("Jenny / 867-5309" pop-song). Some ATS phone-input
+   * widgets reject both with "Please provide correct phone number."
    *
-   * 208-377-2156: Boise area code (matches the Saint Alphonsus probe
-   * fixture city), random NXX-XXXX, no known pop-culture meaning.
+   * 208-377-2156: Boise area code, random NXX-XXXX, no known
+   * pop-culture meaning.
    */
   Phone: "+1 208-377-2156",
   Address: {

@@ -13,6 +13,16 @@ import {
 import { successEnvelope } from "@/api/helpers/envelope";
 import { getCachedResponse, getOrCreateInFlight } from "@/cache/response-cache";
 import type { AppConfig } from "@/config";
+import {
+  type FailureDispatchTags,
+  recordDdAttempt,
+  recordDdDuration,
+  recordDdFailure,
+  recordDdFallback,
+  recordDdRateLimit,
+  recordDdSuccess,
+} from "@/lib/dd-metrics";
+import { MetricsCollector } from "@/lib/dispatch-metrics";
 import { toErrorMessage } from "@/lib/errors";
 import { extendLogger, getLogger } from "@/lib/logging";
 import { captureSubmissionEnvelope } from "@/lib/telemetry/submission-capture";
@@ -33,6 +43,7 @@ import {
 } from "@/scraper/metrics";
 import { runWithSession } from "@/scraper/pool";
 import type { SitePlugin, SitePluginContext, SitePluginResult } from "@/site-plugin";
+import type { DispatchMetrics } from "@/types/dispatch-metrics";
 import type { Logger } from "@/types/logging";
 
 const logger = getLogger({ name: "plugins/loader" });
@@ -90,6 +101,7 @@ async function runPluginPipeline<TResult>(
   if (!plugin.executeHttp || options.forceFallback) {
     if (options.forceFallback) {
       recordFallbackActivation(plugin.meta.siteId);
+      recordDdFallback(plugin.meta.siteId);
     }
     return (await runWithSession(
       (session) => plugin.execute(payload, session, context),
@@ -127,6 +139,7 @@ async function runPluginPipeline<TResult>(
         `hot path failed for ${plugin.meta.siteId} (${httpErr.constructor.name}): ${httpErr.message} — engaging browser fallback`
       );
       recordFallbackActivation(plugin.meta.siteId);
+      recordDdFallback(plugin.meta.siteId);
       return (await runWithSession(
         (session) => plugin.execute(payload, session, context),
         { onRetry: plugin.onRetry },
@@ -139,6 +152,7 @@ async function runPluginPipeline<TResult>(
         `hot path rate-limited for ${plugin.meta.siteId}: ${httpErr.message} — not falling back`
       );
       recordRateLimitRejection(plugin.meta.siteId);
+      recordDdRateLimit(plugin.meta.siteId);
     }
     throw httpErr;
   }
@@ -179,8 +193,22 @@ export async function dispatch<TResult>(
   options: { forceFallback?: boolean } = {}
 ): Promise<SitePluginResult<TResult>> {
   const startedAt = Date.now();
+  const hasHttpPath = !!plugin.executeHttp && !options.forceFallback;
+  const pathTag: "http" | "browser" = hasHttpPath ? "http" : "browser";
+  const ddTags = { site: plugin.meta.siteId, path: pathTag };
+
+  recordDdAttempt(ddTags);
+
   try {
     const result = await runPluginPipeline<TResult>(plugin, payload, context, options);
+    const durationMs = Date.now() - startedAt;
+
+    recordDdSuccess(ddTags);
+    recordDdDuration(ddTags, durationMs);
+
+    const metrics = context.metricsCollector.finalize(pathTag);
+    result.metrics = metrics;
+
     await emitEnvelopeSafely({
       siteId: plugin.meta.siteId,
       requestId: context.requestId,
@@ -188,10 +216,19 @@ export async function dispatch<TResult>(
       status: "submitted",
       auditPayload: result.auditPayload ?? result.data,
       errorMessage: null,
-      durationMs: Date.now() - startedAt,
+      durationMs,
     });
     return result;
   } catch (err) {
+    const durationMs = Date.now() - startedAt;
+    const errorType = classifyDispatchError(err);
+    const failureTags: FailureDispatchTags = { ...ddTags, error_type: errorType };
+
+    recordDdFailure(failureTags);
+    recordDdDuration(ddTags, durationMs);
+
+    const metrics = context.metricsCollector.finalize(pathTag);
+
     await emitEnvelopeSafely({
       siteId: plugin.meta.siteId,
       requestId: context.requestId,
@@ -199,12 +236,29 @@ export async function dispatch<TResult>(
       status: "error",
       auditPayload: null,
       errorMessage: toErrorMessage(err),
-      durationMs: Date.now() - startedAt,
+      durationMs,
     });
+
     const apiErr = toApiError(err);
-    if (apiErr) throw apiErr;
+    if (apiErr) {
+      (apiErr as unknown as { metrics: DispatchMetrics }).metrics = metrics;
+      throw apiErr;
+    }
+    (err as unknown as { metrics: DispatchMetrics }).metrics = metrics;
     throw err;
   }
+}
+
+/** Maps errors to DogStatsD-friendly classification strings. */
+function classifyDispatchError(err: unknown): string {
+  if (err instanceof HttpBotChallengeError) return "bot_challenge";
+  if (err instanceof HttpRateLimitError) return "rate_limit";
+  if (err instanceof HttpSchemaError) return "schema_drift";
+  if (err instanceof HttpServerError) return "server_error";
+  if (err instanceof CaptchaError) return "captcha";
+  if (err instanceof EmptyResultsError) return "empty_results";
+  if (err instanceof ScraperError) return "scraper_generic";
+  return "unknown";
 }
 
 /**
@@ -243,9 +297,13 @@ export async function registerRoutes(
           logger: extendLogger(request.log as unknown as pino.Logger),
           config: cfg,
           requestId: request.id,
+          metricsCollector: new MetricsCollector(),
         };
         const result = await dispatch(plugin, request.body, context, { forceFallback });
-        return successEnvelope(result.data as object);
+        return successEnvelope({
+          ...(result.data as object),
+          ...(result.metrics && { metrics: result.metrics }),
+        });
       }
     );
   }

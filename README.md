@@ -714,7 +714,7 @@ Operational routes:
 | Command | What it does |
 |---------|--------------|
 | `pnpm run dev` | `tsx watch --env-file=.env src/server.ts` with hot reload |
-| `pnpm run build` | compile to `dist/` (tsc + path alias rewriting + copy `src/sites/`) |
+| `pnpm run build` | compile to `dist/` (tsc + path alias rewriting + copy `src/sites/` fixtures and `src/testing/fixtures`) |
 | `pnpm start` | `node dist/server.js` |
 | `pnpm run typecheck` | strict TS noEmit |
 | `pnpm run lint` / `lint:fix` | Biome |
@@ -759,8 +759,12 @@ src/
 │   ├── metrics.ts             # drift-detection counters
 │   └── fixtures.ts            # static JSON fixture loader
 ├── cache/response-cache.ts    # lru-cache wrapper
-├── lib/                       # logging, env, bedrock, db client, telemetry/
+├── lib/                       # logging, env, bedrock, db client, multipart, telemetry/
 ├── scripts/                   # recon-browser, recon-http, recon-generate, recon-summarize, recon-heal, recon-shared, smoke-test, judge-llm-batch, llm-heal
+├── testing/
+│   ├── integration-runner.ts         # site-agnostic scaffold for integration tests (allocate inbox → dispatch → poll)
+│   ├── batch-email-confirmation.ts   # two-phase batch runner: submit jobs → poll inboxes (site-agnostic)
+│   └── batch-report.ts               # markdown table renderer for batch-test verdicts
 └── types/
 ```
 

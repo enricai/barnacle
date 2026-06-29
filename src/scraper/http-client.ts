@@ -27,6 +27,17 @@ const logger = getLogger({ name: "scraper/http-client" });
 let baselineCallCounter = 0;
 
 /**
+ * Payload surfaced to the optional `onResponse` hook. Provides the raw HTTP
+ * outcome before any error classification or body parsing so callers can read
+ * headers (e.g. token-rotation, audit) regardless of status code.
+ */
+export interface HttpResponseInfo {
+  status: number;
+  headers: Headers;
+  url: string;
+}
+
+/**
  * Static configuration passed to `createHttpClient` once per plugin. Bundles
  * the Zod response schema, the Bottleneck rate limiter, and the load-bearing
  * headers discovered during recon so each per-call invocation only needs the
@@ -39,6 +50,12 @@ export interface HttpClientOptions<TResponse> {
   bottleneck: Bottleneck;
   /** Load-bearing headers committed from recon — Origin, Referer, User-Agent, etc. */
   baseHeaders: Record<string, string>;
+  /**
+   * Optional hook invoked on every fetch outcome — including non-2xx — before
+   * error classification. Use to inspect response headers (e.g. token rotation)
+   * or capture audit data without bypassing the core client.
+   */
+  onResponse?: (info: HttpResponseInfo) => void;
 }
 
 /**
@@ -86,7 +103,7 @@ export interface HttpRequestInit {
 export function createHttpClient<TResponse>(
   options: HttpClientOptions<TResponse>
 ): (url: string, init?: HttpRequestInit) => Promise<TResponse> {
-  const { schema, bottleneck, baseHeaders } = options;
+  const { schema, bottleneck, baseHeaders, onResponse } = options;
 
   return async (url: string, init: HttpRequestInit = {}): Promise<TResponse> => {
     return bottleneck.schedule(() =>
@@ -115,6 +132,8 @@ export function createHttpClient<TResponse>(
             // Network-level failure (DNS, TCP reset, timeout) — retryable.
             throw new UnknownScraperError(`http fetch failed: ${String(err)}`);
           }
+
+          onResponse?.({ status: response.status, headers: response.headers, url });
 
           if (response.status === 401 || response.status === 403) {
             // Bot challenge / auth wall — not a transient failure, abort retry.

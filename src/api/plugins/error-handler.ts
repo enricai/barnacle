@@ -7,6 +7,7 @@ import { ApiError } from "@/api/errors";
 import { replyWithError } from "@/api/helpers/reply";
 import { ERROR_CODES } from "@/api/schemas/common";
 import { CaptchaError, ScraperError } from "@/scraper/errors";
+import type { DispatchMetrics } from "@/types/dispatch-metrics";
 
 /**
  * Fastify plugin that replaces Fastify's default error serializer with the
@@ -25,11 +26,13 @@ async function errorHandlerPlugin(app: FastifyInstance): Promise<void> {
   });
 
   app.setErrorHandler((error, request, reply) => {
+    const metrics = (error as unknown as { metrics?: DispatchMetrics }).metrics;
+
     if (hasZodFastifySchemaValidationErrors(error)) {
       const message = error.validation
         .map((issue) => `${issue.instancePath || "body"}: ${issue.message}`)
         .join("; ");
-      replyWithError(reply, ERROR_CODES.FIELD_VIOLATION, message);
+      replyWithError(reply, ERROR_CODES.FIELD_VIOLATION, message, undefined, undefined, metrics);
       return;
     }
 
@@ -37,12 +40,12 @@ async function errorHandlerPlugin(app: FastifyInstance): Promise<void> {
       const message = error.issues
         .map((issue) => `${issue.path.join(".") || "body"}: ${issue.message}`)
         .join("; ");
-      replyWithError(reply, ERROR_CODES.FIELD_VIOLATION, message);
+      replyWithError(reply, ERROR_CODES.FIELD_VIOLATION, message, undefined, undefined, metrics);
       return;
     }
 
     if (error instanceof ApiError) {
-      replyWithError(reply, error.code, error.message, error.detailType);
+      replyWithError(reply, error.code, error.message, error.detailType, undefined, metrics);
       return;
     }
 
@@ -56,33 +59,44 @@ async function errorHandlerPlugin(app: FastifyInstance): Promise<void> {
         error instanceof CaptchaError
           ? ERROR_CODES.CAPTCHA_ENCOUNTERED
           : ERROR_CODES.SCRAPE_FAILURE;
-      replyWithError(reply, code, error.message);
+      replyWithError(reply, code, error.message, undefined, undefined, metrics);
       return;
     }
 
     const err = error as { statusCode?: number; message?: string };
     if (typeof err.statusCode === "number" && err.statusCode === 429) {
-      replyWithError(reply, ERROR_CODES.THROTTLED_REQUEST, err.message || "rate limit exceeded");
+      replyWithError(
+        reply,
+        ERROR_CODES.THROTTLED_REQUEST,
+        err.message || "rate limit exceeded",
+        undefined,
+        undefined,
+        metrics
+      );
       return;
     }
 
-    // Fastify's built-in 4xx errors (malformed JSON, method-not-allowed,
-    // payload-too-large, etc.) arrive as plain Errors with `statusCode`.
-    // Pass the original status through — these aren't domain errors,
-    // so we stay faithful to what Fastify decided rather than re-mapping.
     if (typeof err.statusCode === "number" && err.statusCode < 500) {
       replyWithError(
         reply,
         ERROR_CODES.GENERIC_ERROR,
         err.message || "request failed",
         undefined,
-        err.statusCode
+        err.statusCode,
+        metrics
       );
       return;
     }
 
     request.log.error({ err }, "unhandled error");
-    replyWithError(reply, ERROR_CODES.GENERIC_ERROR, "internal server error");
+    replyWithError(
+      reply,
+      ERROR_CODES.GENERIC_ERROR,
+      "internal server error",
+      undefined,
+      undefined,
+      metrics
+    );
   });
 }
 

@@ -1,7 +1,8 @@
 import { formatISO } from "date-fns";
 import pino from "pino";
 
-import { getNodeEnv } from "@/lib/env";
+import { tracer } from "@/lib/datadog";
+import { getBoolEnv, getEnv, getNodeEnv } from "@/lib/env";
 import type { Logger } from "@/types/logging";
 
 const nodeEnv = getNodeEnv();
@@ -9,6 +10,7 @@ const isDevelopment = nodeEnv === "development";
 const isTest = nodeEnv === "test";
 const defaultLoggingLevel = process.env.LOG_LEVEL ?? (process.env.DEBUG ? "debug" : "info");
 const defaultAppName = process.env.APP_NAME || "barnacle";
+const ddEnabled = getBoolEnv("DD_TRACE_ENABLED", false);
 
 /**
  * CloudWatch Logs has a hard limit of 256KB per log event.
@@ -216,9 +218,17 @@ export function getLogger({ name, level }: { name: string; level?: string }): Lo
     base: {
       appName: defaultAppName,
       env: nodeEnv,
+      ...(ddEnabled && {
+        dd: {
+          service: getEnv("DD_SERVICE", "barnacle"),
+          version: getEnv("DD_VERSION", "0.1.0"),
+          env: getEnv("DD_ENV", nodeEnv),
+        },
+      }),
     },
     timestamp: getTimestamp,
     formatters,
+    mixin: ddEnabled ? ddMixin : undefined,
     redact: {
       paths: redactPaths,
       censor: "[REDACTED]",
@@ -227,4 +237,11 @@ export function getLogger({ name, level }: { name: string; level?: string }): Lo
   };
 
   return extendLogger(pino(options));
+}
+
+function ddMixin(): object {
+  const span = tracer.scope().active();
+  if (!span) return {};
+  const ctx = span.context();
+  return { "dd.trace_id": ctx.toTraceId(), "dd.span_id": ctx.toSpanId() };
 }

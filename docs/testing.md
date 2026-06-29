@@ -161,7 +161,7 @@ A new plugin needs tests for:
 `createGraphqlClient()`) once at module scope and reuse the returned wrapper
 inside `executeHttp`. Both factories return a **plain callable function**, not
 an object with method names — `createHttpClient` returns
-`(url, init) => Promise<TResponse>` (`src/scraper/http-client.ts:64-66`);
+`(url, init) => Promise<TResponse>` (`src/scraper/http-client.ts:103-105`);
 `createGraphqlClient` returns
 `(operationName, query, variables) => Promise<TResponse>`
 (`src/scraper/graphql-client.ts:28-34`). Your mock must be a callable with the
@@ -192,6 +192,64 @@ it("hot path returns items from the GraphQL response", async () => {
   expect(result.data.data.items[0]?.id).toBe("1");
 });
 ```
+
+---
+
+## Integration-test scaffold
+
+`src/testing/integration-runner.ts` exports `runIntegrationJob` — a
+site-agnostic orchestrator for end-to-end integration tests that verify a
+plugin submission by polling a [testmail.app](https://testmail.app) inbox.
+
+Each plugin's integration test owns only the per-job payload mapping; the
+generic steps (inbox allocation, context construction, `dispatch()`, inbox
+poll) live in the helper:
+
+```ts
+import { runIntegrationJob } from "@/testing/integration-runner";
+import { myPlugin } from "@/sites/my-site";
+
+const { result, message } = await runIntegrationJob({
+  plugin: myPlugin as SitePlugin<unknown, unknown>,
+  baseUrl: "https://my-site.com",
+  buildPayload: (inbox) => ({ Email: inbox.address, JobId: "42" }),
+  pollTimeoutMs: 120_000,
+});
+
+expect(message.subject).toBeTruthy();
+```
+
+In unit tests, pass a stub `pollFn` to avoid real network calls — see
+`src/testing/integration-runner.test.ts` for the full pattern.
+
+---
+
+## Batch-test harness
+
+`src/testing/batch-email-confirmation.ts` exports `runBatchEmailConfirmation` — a
+site-agnostic two-phase batch runner used by scripts that submit many jobs and
+then verify each one via a confirmation email. Phase 1 submits all jobs (with
+configurable concurrency via `p-queue`); phase 2 polls each inbox serially to
+stay within testmail's rate limit.
+
+All site-specific behaviour is injected via callbacks (`allocateInbox`,
+`submit`, `pollEmail`, `mapVerdict`), so the harness owns only the loop:
+
+```ts
+import { runBatchEmailConfirmation } from "@/testing/batch-email-confirmation";
+
+const verdicts = await runBatchEmailConfirmation(jobs, {
+  allocateInbox: () => allocateTestmailInbox(),
+  submit: async (job, inbox) => { /* returns SubmitOutcome */ },
+  pollEmail: async (inbox) => { /* returns PollOutcome */ },
+  mapVerdict: (job, submitOutcome, pollOutcome) => ({ ... }),
+  concurrency: 3,
+});
+```
+
+`src/testing/batch-report.ts` exports `renderBatchReport` — a pure function
+that converts a `BatchJobVerdict[]` into a markdown table with a `Net: N/M`
+summary line. Callers decide how to emit the string (stdout, file, logger).
 
 ---
 

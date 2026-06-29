@@ -97,6 +97,18 @@ const stubContext: SitePluginContext = {
   } as unknown as SitePluginContext["logger"],
   config: {} as SitePluginContext["config"],
   requestId: "req-test-123",
+  metricsCollector: {
+    startStep: vi.fn(),
+    endStep: vi.fn(),
+    markRetry: vi.fn(),
+    finalize: vi.fn(() => ({
+      totalDurationMs: 0,
+      path: "http" as const,
+      steps: [],
+      attemptCount: 1,
+      recordedAt: "",
+    })),
+  } as unknown as SitePluginContext["metricsCollector"],
 };
 
 describe("dispatch", () => {
