@@ -26,6 +26,7 @@ import { MetricsCollector } from "@/lib/dispatch-metrics";
 import { toErrorMessage } from "@/lib/errors";
 import { extendLogger, getLogger } from "@/lib/logging";
 import { captureSubmissionEnvelope } from "@/lib/telemetry/submission-capture";
+import { fireTrackingClick } from "@/lib/tracking-click";
 import {
   CaptchaError,
   EmptyResultsError,
@@ -218,6 +219,12 @@ export async function dispatch<TResult>(
       errorMessage: null,
       durationMs,
     });
+
+    const trackingUrl = (payload as Record<string, unknown>)?.TrackingUrl;
+    if (typeof trackingUrl === "string" && trackingUrl.length > 0) {
+      fireTrackingClick(trackingUrl, plugin.meta.siteId);
+    }
+
     return result;
   } catch (err) {
     const durationMs = Date.now() - startedAt;

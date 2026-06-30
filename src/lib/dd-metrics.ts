@@ -47,3 +47,23 @@ export function recordDdFallback(site: string): void {
 export function recordDdRateLimit(site: string): void {
   getStatsD().increment("dispatch.rate_limit", 1, [`site:${site}`]);
 }
+
+/** Increments `tracking_click.attempt` — background click fired. */
+export function recordTrackingClickAttempt(site: string): void {
+  getStatsD().increment("tracking_click.attempt", 1, [`site:${site}`]);
+}
+
+/** Increments `tracking_click.success`. */
+export function recordTrackingClickSuccess(site: string): void {
+  getStatsD().increment("tracking_click.success", 1, [`site:${site}`]);
+}
+
+/** Increments `tracking_click.failure` with error classification. */
+export function recordTrackingClickFailure(site: string, errorType: string): void {
+  getStatsD().increment("tracking_click.failure", 1, [`site:${site}`, `error_type:${errorType}`]);
+}
+
+/** Records tracking click latency as a timing distribution. */
+export function recordTrackingClickDuration(site: string, durationMs: number): void {
+  getStatsD().timing("tracking_click.duration_ms", durationMs, [`site:${site}`]);
+}
