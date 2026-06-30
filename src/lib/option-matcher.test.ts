@@ -91,4 +91,30 @@ describe("lib/option-matcher matchToOptions", () => {
     const opts = ["yes", "YES", "Yes"];
     expect(matchToOptions("yes", opts)).toBe("yes");
   });
+
+  it("semantic synonym — higher degree synonyms map to canonical option", () => {
+    const opts = ["Higher Degree (PHD/JD/MD/DO)", "Master's Degree", "Bachelor's Degree"];
+    expect(matchToOptions("jd", opts)).toBe("Higher Degree (PHD/JD/MD/DO)");
+    expect(matchToOptions("md", opts)).toBe("Higher Degree (PHD/JD/MD/DO)");
+    expect(matchToOptions("j.d.", opts)).toBe("Higher Degree (PHD/JD/MD/DO)");
+  });
+
+  it("semantic synonym — associate degree synonyms map to canonical option", () => {
+    const opts = ["Associate's Degree/College Diploma", "Bachelor's Degree", "Master's Degree"];
+    expect(matchToOptions("aa", opts)).toBe("Associate's Degree/College Diploma");
+    expect(matchToOptions("associates", opts)).toBe("Associate's Degree/College Diploma");
+  });
+
+  it("not coupled to AppCast payload shape — works with arbitrary plugin option sets", () => {
+    // Clearcompany-style boolean options; the helper must resolve without
+    // any knowledge of the originating plugin's schema.
+    const boolOpts = ["true", "false"];
+    expect(matchToOptions("true", boolOpts)).toBe("true");
+    expect(matchToOptions("false", boolOpts)).toBe("false");
+
+    // Encompass-style enum with unrelated domain vocabulary.
+    const shiftOpts = ["Day Shift", "Night Shift", "Rotating Shift"];
+    expect(matchToOptions("day shift", shiftOpts)).toBe("Day Shift");
+    expect(matchToOptions("Night", shiftOpts)).toBe("Night Shift");
+  });
 });

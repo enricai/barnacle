@@ -4,15 +4,15 @@ import { stateToCode, US_STATE_NAMES } from "@/lib/us-states";
 
 describe("lib/us-states US_STATE_NAMES", () => {
   it("resolves lowercase full state names to uppercase abbreviations", () => {
-    expect(US_STATE_NAMES["pennsylvania"]).toBe("PA");
+    expect(US_STATE_NAMES.pennsylvania).toBe("PA");
     expect(US_STATE_NAMES["new york"]).toBe("NY");
-    expect(US_STATE_NAMES["california"]).toBe("CA");
+    expect(US_STATE_NAMES.california).toBe("CA");
     expect(US_STATE_NAMES["district of columbia"]).toBe("DC");
   });
 
   it("resolves all 5 US territories", () => {
     expect(US_STATE_NAMES["american samoa"]).toBe("AS");
-    expect(US_STATE_NAMES["guam"]).toBe("GU");
+    expect(US_STATE_NAMES.guam).toBe("GU");
     expect(US_STATE_NAMES["northern mariana islands"]).toBe("MP");
     expect(US_STATE_NAMES["puerto rico"]).toBe("PR");
     expect(US_STATE_NAMES["u.s. virgin islands"]).toBe("VI");
