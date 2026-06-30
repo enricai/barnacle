@@ -598,6 +598,7 @@ maintenance loop.
 | Session pool + timeout | `src/scraper/pool.ts` |
 | Retry policy | `src/scraper/retry.ts` |
 | Hot-path HTTP client | `src/scraper/http-client.ts` |
+| Raw-fetch scaffold (undici + onResponse hook + optional status classify via `skipClassify`) | `src/scraper/raw-fetch.ts` |
 | GraphQL client | `src/scraper/graphql-client.ts` |
 | Per-plugin rate limiting | `src/scraper/throttle.ts` |
 | Scraper error hierarchy (includes recon-only `StepVerificationError`) | `src/scraper/errors.ts` |

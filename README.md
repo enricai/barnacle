@@ -758,6 +758,7 @@ src/
 │   ├── errors.ts              # typed scraper error hierarchy
 │   ├── http-client.ts         # typed fetch wrapper (hot path)
 │   ├── http-status-classifier.ts # pure status→ScraperError classifier for raw-fetch callers
+│   ├── raw-fetch.ts           # site-agnostic undici scaffold: network-error wrap, onResponse hook, optional classifyHttpStatus (skipClassify for callers that classify manually)
 │   ├── graphql-client.ts      # GraphQL POST wrapper
 │   ├── metrics.ts             # drift-detection counters
 │   ├── fixtures.ts            # static JSON fixture loader
