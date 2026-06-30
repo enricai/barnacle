@@ -1,16 +1,14 @@
 /**
- * Unit tests for defineContractParitySuite. Uses a stub plugin whose bodySchema
- * is a real Zod schema so safeParse exercises actual validation paths — no
- * network, no INTEGRATION flag, no browser session needed.
- *
- * defineContractParitySuite registers vitest suites at the top level, so the
- * call below happens at module load time and its describe/it blocks run as
- * ordinary vitest tests.
+ * Unit tests for defineContractParitySuite using a stub plugin. These exercise
+ * the schema accept/reject paths without any network, INTEGRATION flag, or
+ * browser session. The cross-plugin coverage guard (structural file-existence
+ * checks + per-plugin bodySchema rejection baselines) lives in
+ * src/sites/_shared/coverage-expectations.test.ts so this engine file stays
+ * free of site imports.
  */
 
 import { describe, expect, it } from "vitest";
 import { z } from "zod/v4";
-
 import type { SitePlugin, SitePluginContext, SitePluginResult } from "@/site-plugin";
 import {
   type ContractParitySuiteOptions,

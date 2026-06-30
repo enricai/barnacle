@@ -741,7 +741,9 @@ src/
 ├── config.ts                  # frozen env-typed config singleton
 ├── plugins/
 │   └── loader.ts              # SITE_PLUGINS registry, dispatch(), registerRoutes()
-├── sites/                     # one directory per registered plugin
+├── sites/
+│   ├── _shared/               # branch-local cross-plugin guards (coverage-expectations.test.ts)
+│   └── <site-id>/             # one directory per registered plugin
 ├── api/
 │   ├── plugins/               # auth, error-handler, request-context
 │   ├── routes/                # health
@@ -767,6 +769,7 @@ src/
 │   ├── integration-runner.ts              # site-agnostic scaffold for integration tests (allocate inbox → dispatch → poll)
 │   ├── replay-integration-suite.ts        # generic describe.skipIf/it.each scaffold; eliminates per-site integration boilerplate
 │   ├── contract-parity-suite.ts           # offline schema-parity scaffold; one-call drop-in for accept + rejection-case coverage
+│   ├── coverage-guard-suite.ts            # registry-driven structural guard; asserts contract.parity.test.ts exists per registered plugin
 │   ├── batch-email-confirmation.ts        # two-phase batch runner: submit jobs → poll inboxes (site-agnostic)
 │   └── batch-report.ts                    # markdown table renderer for batch-test verdicts
 └── types/

@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { loadTestResume } from "@/testing/resume-fixture";
+import { loadTestResume, resumePayloadFields } from "@/testing/resume-fixture";
 
 describe("loadTestResume", () => {
   it("returns a non-empty Buffer", () => {
@@ -27,5 +27,18 @@ describe("loadTestResume", () => {
   it("sets base64 to the base64-encoded buffer contents", () => {
     const resume = loadTestResume();
     expect(resume.base64).toBe(resume.buffer.toString("base64"));
+  });
+});
+
+describe("resumePayloadFields", () => {
+  it("maps TestResume to the four payload field names used by every resume-accepting site", () => {
+    const resume = loadTestResume();
+    const fields = resumePayloadFields(resume);
+    expect(fields).toStrictEqual({
+      Resume: resume.buffer,
+      ResumeContentType: "application/pdf",
+      ResumeFilename: "reginald-reconaldo.pdf",
+      ResumeBase64: resume.buffer.toString("base64"),
+    });
   });
 });

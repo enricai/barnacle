@@ -14,6 +14,18 @@ export interface TestResume {
   base64: string;
 }
 
+/**
+ * The payload-side field names that every resume-accepting site uses
+ * identically. Extracted so tests can spread this instead of repeating
+ * the four-field mapping verbatim.
+ */
+export interface ResumePayloadFields {
+  Resume: Buffer;
+  ResumeContentType: string;
+  ResumeFilename: string;
+  ResumeBase64: string;
+}
+
 const RESUME_PATH = resolve(__dirname, "./fixtures/resume.pdf");
 
 /**
@@ -30,5 +42,20 @@ export function loadTestResume(): TestResume {
     contentType: "application/pdf",
     filename: "reginald-reconaldo.pdf",
     base64: buffer.toString("base64"),
+  };
+}
+
+/**
+ * Maps a `TestResume` to the four payload field names every resume-accepting
+ * site shares (Resume, ResumeContentType, ResumeFilename, ResumeBase64).
+ * Extracted here so tests can spread `resumePayloadFields(resume)` instead
+ * of repeating the same literal mapping at every call site.
+ */
+export function resumePayloadFields(resume: TestResume): ResumePayloadFields {
+  return {
+    Resume: resume.buffer,
+    ResumeContentType: resume.contentType,
+    ResumeFilename: resume.filename,
+    ResumeBase64: resume.base64,
   };
 }
