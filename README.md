@@ -761,11 +761,12 @@ src/
 │   ├── fixtures.ts            # static JSON fixture loader
 │   └── navigate.ts            # shared awaitActivePage + goto(networkidle) helper
 ├── cache/response-cache.ts    # lru-cache wrapper
-├── lib/                       # logging, env, bedrock, db client, multipart, telemetry/
+├── lib/                       # logging, env, bedrock, db client, multipart, option-matcher, telemetry/
 ├── scripts/                   # recon-browser, recon-http, recon-generate, recon-summarize, recon-heal, recon-shared, smoke-test, judge-llm-batch, llm-heal
 ├── testing/
 │   ├── integration-runner.ts              # site-agnostic scaffold for integration tests (allocate inbox → dispatch → poll)
 │   ├── replay-integration-suite.ts        # generic describe.skipIf/it.each scaffold; eliminates per-site integration boilerplate
+│   ├── contract-parity-suite.ts           # offline schema-parity scaffold; one-call drop-in for accept + rejection-case coverage
 │   ├── batch-email-confirmation.ts        # two-phase batch runner: submit jobs → poll inboxes (site-agnostic)
 │   └── batch-report.ts                    # markdown table renderer for batch-test verdicts
 └── types/

@@ -1,7 +1,7 @@
 /**
  * Shared Zod schema for the applicant identity, address, and resume fields
  * that AppCast-powered ATS plugins require on every submission. Both AppCast
- * and Encompass Health declare the same 11 fields; this module is the single
+ * and Encompass Health declare the same 13 fields; this module is the single
  * source of truth so a field-type change propagates to every AppCast-shaped
  * plugin from one place.
  *
@@ -9,26 +9,14 @@
  * plugin's own contract because their types or presence differ across plugins.
  */
 
-import { z } from "zod/v4";
+import type { z } from "zod/v4";
 
-export const ApplicantContactSchema = z.object({
-  FirstName: z.string().min(1),
-  LastName: z.string().min(1),
-  Phone: z.string().min(1),
+import { ApplicantAddressSchema } from "@/lib/application-address";
+import { ApplicantIdentitySchema } from "@/lib/application-identity";
+import { ApplicantResumeSchema } from "@/lib/application-resume";
 
-  AddressLine: z.string().min(1),
-  City: z.string().min(1),
-  State: z.string().min(1),
-  PostalCode: z.string().min(1),
-  Country: z.string().min(1),
-  /** Some tenants (Encompass Health and similar) require a County field
-   * nested in the Address group before submit unlocks. */
-  County: z.string().min(1),
-
-  Resume: z.instanceof(Buffer),
-  ResumeContentType: z.string(),
-  ResumeFilename: z.string(),
-  ResumeBase64: z.string(),
-});
+export const ApplicantContactSchema = ApplicantIdentitySchema.omit({ Email: true })
+  .merge(ApplicantAddressSchema)
+  .merge(ApplicantResumeSchema);
 
 export type ApplicantContact = z.infer<typeof ApplicantContactSchema>;
