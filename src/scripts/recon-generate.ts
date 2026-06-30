@@ -65,11 +65,10 @@ function inferZodSchema(
   if (typeof value === "string") return "z.string()";
   if (typeof value === "number") return opts.multipartCoerce ? "z.coerce.number()" : "z.number()";
   if (typeof value === "boolean") {
-    // multipart/form-data encodes booleans as the strings "true"/"false". The
-    // contract emitter (emitContractTs) prepends a MULTIPART_BOOL constant
-    // wrapping z.preprocess + z.boolean() when any field needs this coercion;
-    // we just reference it here to keep each field declaration short and DRY.
-    return opts.multipartCoerce ? "MULTIPART_BOOL" : "z.boolean()";
+    // multipart/form-data encodes booleans as "true"/"false". The contract
+    // emitter imports the shared multipartBoolean() helper from @/lib/zod-multipart
+    // when any field needs this coercion; we call it here to keep field declarations short.
+    return opts.multipartCoerce ? "multipartBoolean()" : "z.boolean()";
   }
   if (Array.isArray(value)) {
     const item =
@@ -1899,7 +1898,9 @@ function summariseResponseShape(value: unknown): unknown {
 
 // ── code emitters ─────────────────────────────────────────────────────────────
 
-function emitContractTs(opts: {
+/** Generates a complete contract.ts source string for a plugin — exported so
+ * unit tests can drive the emitter directly without spawning the CLI. */
+export function emitContractTs(opts: {
   siteId: string;
   pascal: string;
   baseUrl: string;
@@ -1976,7 +1977,7 @@ function emitContractTs(opts: {
   // flag is computed once at the call site from actionSteps.some(s.isMultipart).
   //
   // multipart/form-data wire format encodes every text field as a string, so
-  // pass multipartCoerce so inferZodSchema emits MULTIPART_BOOL references for
+  // pass multipartCoerce so inferZodSchema emits multipartBoolean() calls for
   // booleans and z.coerce.number() for numbers at the source rather than via
   // brittle post-process string substitution. Site-agnostic: only flips on
   // when meta.multipart is true.
@@ -2057,7 +2058,7 @@ function emitContractTs(opts: {
     sortedAdditionalKeys.length > 0
       ? `.extend({\n${sortedAdditionalKeys
           .map(([name, kind]) => {
-            // Use MULTIPART_BOOL for booleans when multipart is in play, so
+            // Use multipartBoolean() for booleans when multipart is in play, so
             // multipart string-encoded "true"/"false" round-trip to native
             // booleans (matches the inputBody boolean handling for parity).
             const zod =
@@ -2068,7 +2069,7 @@ function emitContractTs(opts: {
                     ? "z.coerce.number()"
                     : "z.number()"
                   : hasMultipartStep
-                    ? "MULTIPART_BOOL"
+                    ? "multipartBoolean()"
                     : "z.boolean()";
             return `  ${name}: ${zod},`;
           })
@@ -2083,12 +2084,11 @@ function emitContractTs(opts: {
   const payloadSchemaExpr = hasMultipartStep
     ? `${basePayloadSchemaExpr}.extend({\n  Resume: z.instanceof(Buffer),\n  ResumeContentType: z.string(),\n  ResumeFilename: z.string(),\n})${formFieldsExtension}${optionSchemaExtension}${rawOptionSchemaExtension}${additionalBodyKeysExtension}${answersExtension}`
     : `${basePayloadSchemaExpr}${formFieldsExtension}${optionSchemaExtension}${rawOptionSchemaExtension}${additionalBodyKeysExtension}${answersExtension}`;
-  // When the payload schema needs the MULTIPART_BOOL reference, emit its
-  // declaration once at the top of the contract file so each boolean field
-  // stays short (SmsOptIn: MULTIPART_BOOL,) and the preprocess expression
-  // isn't duplicated per field.
-  const multipartBoolDecl = hasMultipartStep
-    ? `\nconst MULTIPART_BOOL = z.preprocess(\n  (v) => (v === "true" ? true : v === "false" ? false : v),\n  z.boolean(),\n);\n`
+  // When the payload schema uses multipartBoolean(), import the shared helper
+  // from @/lib/zod-multipart so the generated file resolves the reference and
+  // doesn't re-inline the preprocess expression per boolean field.
+  const multipartBoolImport = hasMultipartStep
+    ? `import { multipartBoolean } from "@/lib/zod-multipart";\n`
     : "";
   // Emit identifier-shaped keys unquoted so Biome's formatter doesn't rewrite
   // the generated file on first lint:fix.
@@ -2171,7 +2171,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
 import Bottleneck from "bottleneck";
 import { z } from "zod/v4";
 
-${fixtureImport}${clientImport}
+${fixtureImport}${multipartBoolImport}${clientImport}
 import type { BrowserSession } from "@/scraper/session";
 import type { SitePlugin, SitePluginContext, SitePluginResult } from "@/site-plugin";
 import { run${pascal}BrowserFlow } from "@/sites/${siteId}/flows/browser-flow";
@@ -2188,7 +2188,7 @@ const ${pascal}ResponseSchema = ${responseSchemaExpr};
 export type ${pascal}Response = z.infer<typeof ${pascal}ResponseSchema>;
 
 export default ${pascal}ResponseSchema;
-${multipartBoolDecl}${optionDecls}${base64ContentHelper}
+${optionDecls}${base64ContentHelper}
 const ${pascal}PayloadSchema = ${payloadSchemaExpr};
 
 export type ${pascal}Payload = z.infer<typeof ${pascal}PayloadSchema>;
@@ -2706,7 +2706,12 @@ async function main(): Promise<void> {
   logger.info(`done — review ${outDir}/, then register in src/plugins/loader.ts`);
 }
 
-main().catch((err: unknown) => {
-  logger.error(`recon-generate failed: ${toErrorMessage(err)}`);
-  process.exit(1);
-});
+if (
+  process.argv[1] !== undefined &&
+  (process.argv[1].endsWith("recon-generate.ts") || process.argv[1].endsWith("recon-generate.js"))
+) {
+  main().catch((err: unknown) => {
+    logger.error(`recon-generate failed: ${toErrorMessage(err)}`);
+    process.exit(1);
+  });
+}

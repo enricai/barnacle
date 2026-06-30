@@ -18,3 +18,16 @@ export function multipartJsonObject<T extends z.ZodTypeAny>(innerSchema: T): z.Z
     }
   }, innerSchema) as z.ZodType<z.infer<T>>;
 }
+
+/**
+ * Multipart form fields serialize booleans as the strings 'true'/'false'.
+ * Accepts real booleans as-is (from dispatch() callers that bypass the
+ * multipart parser). Unrecognized values are passed through so z.boolean()
+ * produces the right validation error.
+ */
+export function multipartBoolean(): z.ZodType<boolean> {
+  return z.preprocess(
+    (v) => (v === "true" ? true : v === "false" ? false : v),
+    z.boolean()
+  ) as z.ZodType<boolean>;
+}
