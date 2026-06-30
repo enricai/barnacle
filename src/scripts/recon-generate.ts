@@ -1463,6 +1463,7 @@ function emitBuildBase64ContentFunction(
     .replace(/"__PAYLOAD_Email__"/g, "payload.Email")
     .replace(/"__PAYLOAD_Phone__"/g, "payload.Phone")
     .replace(/"__PAYLOAD_SignatureFullName__"/g, "payload.Answers.SignatureFullName")
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: emitted as generated template-literal source
     .replace(/"__PAYLOAD_DisplayName__"/g, "`${payload.FirstName} ${payload.LastName}`")
     .replace(/"__PAYLOAD_AttachmentId__"/g, "attachmentId")
     .replace(/"__PAYLOAD_DraftId__"/g, "draftId")
@@ -2547,6 +2548,7 @@ async function main(): Promise<void> {
 
         base64PatchOverride.set(
           lastPatchWithContent.varName,
+          // biome-ignore lint/suspicious/noTemplateCurlyInString: emitted as generated template-literal source
           '"Content":"${buildBase64Content(payload, questionnaireId, Number(draftId), String(attachmentId))}"'
         );
 
@@ -2610,8 +2612,7 @@ async function main(): Promise<void> {
         const answersFields = (qMapping ?? []).map((m) => m.payloadField);
         answersFields.push("SignatureFullName");
         const answersSchemaFields = answersFields.map((f) => `    ${f}: z.string(),`).join("\n");
-        base64ContentHelper =
-          `\nconst AnswersSchema = z.object({\n${answersSchemaFields}\n});\n` + base64ContentHelper;
+        base64ContentHelper = `\nconst AnswersSchema = z.object({\n${answersSchemaFields}\n});\n${base64ContentHelper}`;
 
         const inputKeys = new Set<string>();
         if (inputBody && typeof inputBody === "object" && !Array.isArray(inputBody)) {
