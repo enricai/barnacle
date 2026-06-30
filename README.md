@@ -755,16 +755,19 @@ src/
 │   ├── retry.ts               # p-retry + failure classification
 │   ├── errors.ts              # typed scraper error hierarchy
 │   ├── http-client.ts         # typed fetch wrapper (hot path)
+│   ├── http-status-classifier.ts # pure status→ScraperError classifier for raw-fetch callers
 │   ├── graphql-client.ts      # GraphQL POST wrapper
 │   ├── metrics.ts             # drift-detection counters
-│   └── fixtures.ts            # static JSON fixture loader
+│   ├── fixtures.ts            # static JSON fixture loader
+│   └── navigate.ts            # shared awaitActivePage + goto(networkidle) helper
 ├── cache/response-cache.ts    # lru-cache wrapper
 ├── lib/                       # logging, env, bedrock, db client, multipart, telemetry/
 ├── scripts/                   # recon-browser, recon-http, recon-generate, recon-summarize, recon-heal, recon-shared, smoke-test, judge-llm-batch, llm-heal
 ├── testing/
-│   ├── integration-runner.ts         # site-agnostic scaffold for integration tests (allocate inbox → dispatch → poll)
-│   ├── batch-email-confirmation.ts   # two-phase batch runner: submit jobs → poll inboxes (site-agnostic)
-│   └── batch-report.ts               # markdown table renderer for batch-test verdicts
+│   ├── integration-runner.ts              # site-agnostic scaffold for integration tests (allocate inbox → dispatch → poll)
+│   ├── replay-integration-suite.ts        # generic describe.skipIf/it.each scaffold; eliminates per-site integration boilerplate
+│   ├── batch-email-confirmation.ts        # two-phase batch runner: submit jobs → poll inboxes (site-agnostic)
+│   └── batch-report.ts                    # markdown table renderer for batch-test verdicts
 └── types/
 ```
 
