@@ -765,10 +765,11 @@ src/
 │   ├── navigate.ts            # shared awaitActivePage + goto(networkidle) helper
 │   └── require-response-field.ts # shared helpers for extracting required fields from HTTP response objects (HttpSchemaError on missing/null)
 ├── cache/response-cache.ts    # lru-cache wrapper
-├── lib/                       # logging, env, bedrock, db client, multipart, option-matcher, telemetry/
+├── lib/                       # logging, env, bedrock, db client, multipart, option-matcher, chromium-client-hints, telemetry/
 ├── scripts/                   # recon-browser, recon-http, recon-generate, recon-summarize, recon-heal, recon-shared, smoke-test, judge-llm-batch, llm-heal
 ├── testing/
 │   ├── integration-runner.ts              # site-agnostic scaffold for integration tests (allocate inbox → dispatch → poll)
+│   ├── mock-fetch-response.ts             # shared undici-compatible Response stub factory for flow tests that mock fetch
 │   ├── replay-integration-suite.ts        # generic describe.skipIf/it.each scaffold; eliminates per-site integration boilerplate
 │   ├── contract-parity-suite.ts           # offline schema-parity scaffold; one-call drop-in for accept + rejection-case coverage
 │   ├── coverage-guard-suite.ts            # registry-driven structural guard; asserts contract.parity.test.ts exists per registered plugin

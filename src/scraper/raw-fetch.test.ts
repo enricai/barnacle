@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { HttpBotChallengeError, HttpSchemaError, HttpServerError } from "@/scraper/errors";
 import { rawFetch } from "@/scraper/raw-fetch";
+import { makeMockFetchResponse } from "@/testing/mock-fetch-response";
 
 vi.mock("undici", () => ({
   fetch: vi.fn(),
@@ -13,16 +14,7 @@ const mockFetch = vi.mocked(undiciFetch);
 const BASE_URL = "https://example.com/api/resource";
 const LABEL = "test/resource";
 
-function makeResponse(status: number, body: string): Awaited<ReturnType<typeof undiciFetch>> {
-  return {
-    status,
-    headers: new Headers({
-      "x-session-token": "rotated-token",
-      "x-xsrf-token": "rotated-xsrf",
-    }),
-    text: () => Promise.resolve(body),
-  } as unknown as Awaited<ReturnType<typeof undiciFetch>>;
-}
+const RESPONSE_HEADERS = { "x-session-token": "rotated-token", "x-xsrf-token": "rotated-xsrf" };
 
 function makeOptions(onResponse: (h: Headers) => void = vi.fn()) {
   return {
@@ -40,7 +32,7 @@ describe("rawFetch", () => {
 
   describe("onResponse hook", () => {
     it("calls onResponse with response headers on a 200", async () => {
-      mockFetch.mockResolvedValueOnce(makeResponse(200, '{"ok":true}'));
+      mockFetch.mockResolvedValueOnce(makeMockFetchResponse(200, '{"ok":true}', RESPONSE_HEADERS));
       const captured: Headers[] = [];
       await rawFetch(
         BASE_URL,
@@ -51,7 +43,7 @@ describe("rawFetch", () => {
     });
 
     it("calls onResponse with response headers on 401 before throwing", async () => {
-      mockFetch.mockResolvedValueOnce(makeResponse(401, "Unauthorized"));
+      mockFetch.mockResolvedValueOnce(makeMockFetchResponse(401, "Unauthorized", RESPONSE_HEADERS));
       const captured: Headers[] = [];
       await expect(
         rawFetch(
@@ -64,7 +56,7 @@ describe("rawFetch", () => {
     });
 
     it("calls onResponse with response headers on 500 before throwing", async () => {
-      mockFetch.mockResolvedValueOnce(makeResponse(500, "Server Error"));
+      mockFetch.mockResolvedValueOnce(makeMockFetchResponse(500, "Server Error", RESPONSE_HEADERS));
       const captured: Headers[] = [];
       await expect(
         rawFetch(
@@ -77,7 +69,9 @@ describe("rawFetch", () => {
     });
 
     it("calls onResponse with response headers on 422 before throwing", async () => {
-      mockFetch.mockResolvedValueOnce(makeResponse(422, "Unprocessable"));
+      mockFetch.mockResolvedValueOnce(
+        makeMockFetchResponse(422, "Unprocessable", RESPONSE_HEADERS)
+      );
       const captured: Headers[] = [];
       await expect(
         rawFetch(
@@ -100,32 +94,36 @@ describe("rawFetch", () => {
 
   describe("classifyHttpStatus delegation", () => {
     it("throws HttpBotChallengeError on 401", async () => {
-      mockFetch.mockResolvedValueOnce(makeResponse(401, "Unauthorized"));
+      mockFetch.mockResolvedValueOnce(makeMockFetchResponse(401, "Unauthorized", RESPONSE_HEADERS));
       await expect(rawFetch(BASE_URL, makeOptions())).rejects.toBeInstanceOf(HttpBotChallengeError);
     });
 
     it("throws HttpBotChallengeError on 403", async () => {
-      mockFetch.mockResolvedValueOnce(makeResponse(403, "Forbidden"));
+      mockFetch.mockResolvedValueOnce(makeMockFetchResponse(403, "Forbidden", RESPONSE_HEADERS));
       await expect(rawFetch(BASE_URL, makeOptions())).rejects.toBeInstanceOf(HttpBotChallengeError);
     });
 
     it("throws HttpServerError on 500", async () => {
-      mockFetch.mockResolvedValueOnce(makeResponse(500, "Internal Server Error"));
+      mockFetch.mockResolvedValueOnce(
+        makeMockFetchResponse(500, "Internal Server Error", RESPONSE_HEADERS)
+      );
       await expect(rawFetch(BASE_URL, makeOptions())).rejects.toBeInstanceOf(HttpServerError);
     });
 
     it("throws HttpServerError on 502", async () => {
-      mockFetch.mockResolvedValueOnce(makeResponse(502, "Bad Gateway"));
+      mockFetch.mockResolvedValueOnce(makeMockFetchResponse(502, "Bad Gateway", RESPONSE_HEADERS));
       await expect(rawFetch(BASE_URL, makeOptions())).rejects.toBeInstanceOf(HttpServerError);
     });
 
     it("throws HttpSchemaError on 422", async () => {
-      mockFetch.mockResolvedValueOnce(makeResponse(422, "Unprocessable Entity"));
+      mockFetch.mockResolvedValueOnce(
+        makeMockFetchResponse(422, "Unprocessable Entity", RESPONSE_HEADERS)
+      );
       await expect(rawFetch(BASE_URL, makeOptions())).rejects.toBeInstanceOf(HttpSchemaError);
     });
 
     it("throws HttpSchemaError on generic 4xx (e.g. 400)", async () => {
-      mockFetch.mockResolvedValueOnce(makeResponse(400, "Bad Request"));
+      mockFetch.mockResolvedValueOnce(makeMockFetchResponse(400, "Bad Request", RESPONSE_HEADERS));
       await expect(rawFetch(BASE_URL, makeOptions())).rejects.toBeInstanceOf(HttpSchemaError);
     });
   });
@@ -147,7 +145,7 @@ describe("rawFetch", () => {
   describe("2xx success path", () => {
     it("returns { status, rawBody } verbatim without parsing on 200", async () => {
       const body = '{"key":"value","nested":{"a":1}}';
-      mockFetch.mockResolvedValueOnce(makeResponse(200, body));
+      mockFetch.mockResolvedValueOnce(makeMockFetchResponse(200, body, RESPONSE_HEADERS));
       const result = await rawFetch(BASE_URL, makeOptions());
       expect(result.status).toBe(200);
       expect(result.rawBody).toBe(body);
@@ -155,14 +153,14 @@ describe("rawFetch", () => {
 
     it("returns { status, rawBody } on 201 without throwing", async () => {
       const body = '{"id":"new-resource"}';
-      mockFetch.mockResolvedValueOnce(makeResponse(201, body));
+      mockFetch.mockResolvedValueOnce(makeMockFetchResponse(201, body, RESPONSE_HEADERS));
       const result = await rawFetch(BASE_URL, makeOptions());
       expect(result.status).toBe(201);
       expect(result.rawBody).toBe(body);
     });
 
     it("passes method, headers, and body to undici fetch", async () => {
-      mockFetch.mockResolvedValueOnce(makeResponse(200, "{}"));
+      mockFetch.mockResolvedValueOnce(makeMockFetchResponse(200, "{}", RESPONSE_HEADERS));
       await rawFetch(BASE_URL, {
         method: "POST",
         headers: { "Content-Type": "multipart/form-data" },
@@ -180,7 +178,7 @@ describe("rawFetch", () => {
 
   describe("skipClassify", () => {
     it("returns { status, rawBody } without throwing on a 4xx when skipClassify is true", async () => {
-      mockFetch.mockResolvedValueOnce(makeResponse(401, "Unauthorized"));
+      mockFetch.mockResolvedValueOnce(makeMockFetchResponse(401, "Unauthorized", RESPONSE_HEADERS));
       const result = await rawFetch(BASE_URL, {
         ...makeOptions(),
         skipClassify: true,
@@ -190,7 +188,9 @@ describe("rawFetch", () => {
     });
 
     it("returns { status, rawBody } without throwing on a 5xx when skipClassify is true", async () => {
-      mockFetch.mockResolvedValueOnce(makeResponse(500, "Internal Server Error"));
+      mockFetch.mockResolvedValueOnce(
+        makeMockFetchResponse(500, "Internal Server Error", RESPONSE_HEADERS)
+      );
       const result = await rawFetch(BASE_URL, {
         ...makeOptions(),
         skipClassify: true,
@@ -200,7 +200,7 @@ describe("rawFetch", () => {
     });
 
     it("still calls onResponse before returning when skipClassify is true", async () => {
-      mockFetch.mockResolvedValueOnce(makeResponse(403, "Forbidden"));
+      mockFetch.mockResolvedValueOnce(makeMockFetchResponse(403, "Forbidden", RESPONSE_HEADERS));
       const captured: Headers[] = [];
       const result = await rawFetch(BASE_URL, {
         ...makeOptions((h) => captured.push(h)),
