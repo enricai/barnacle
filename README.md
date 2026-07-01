@@ -762,7 +762,8 @@ src/
 │   ├── graphql-client.ts      # GraphQL POST wrapper
 │   ├── metrics.ts             # drift-detection counters
 │   ├── fixtures.ts            # static JSON fixture loader
-│   └── navigate.ts            # shared awaitActivePage + goto(networkidle) helper
+│   ├── navigate.ts            # shared awaitActivePage + goto(networkidle) helper
+│   └── require-response-field.ts # shared helpers for extracting required fields from HTTP response objects (HttpSchemaError on missing/null)
 ├── cache/response-cache.ts    # lru-cache wrapper
 ├── lib/                       # logging, env, bedrock, db client, multipart, option-matcher, telemetry/
 ├── scripts/                   # recon-browser, recon-http, recon-generate, recon-summarize, recon-heal, recon-shared, smoke-test, judge-llm-batch, llm-heal
