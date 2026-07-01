@@ -53,7 +53,7 @@
     "heal:llm": "tsx --env-file=.env src/scripts/llm-heal.ts"
   },
   "dependencies": {
-    "@ai-sdk/amazon-bedrock": "^5.0.3",
+    "@ai-sdk/amazon-bedrock": "^5.0.4",
     "@anthropic-ai/sdk": "^0.107.0",
     "@browserbasehq/stagehand": "^3.6.0",
     "@fastify/compress": "^9.0.0",
