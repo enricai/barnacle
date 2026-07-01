@@ -24,7 +24,7 @@ const VALID_ANSWERS = {
 } as const;
 
 describe("ApplicationAnswersSchema", () => {
-  it("parses a valid answer block with all 18 fields", () => {
+  it("parses a valid answer block with all required fields", () => {
     const result = ApplicationAnswersSchema.safeParse(VALID_ANSWERS);
     expect(result.success).toBe(true);
   });
