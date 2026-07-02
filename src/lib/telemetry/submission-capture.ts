@@ -18,6 +18,7 @@ import { z } from "zod/v4";
 
 import { config } from "@/config";
 import { getLogger } from "@/lib/logging";
+import { bufferSubmissionLine } from "@/lib/telemetry/s3-sink";
 
 const logger = getLogger({ name: "telemetry/submission-capture" });
 
@@ -64,6 +65,7 @@ export async function captureSubmissionEnvelope(
     const line = `${JSON.stringify(sample)}\n`;
     await mkdir(dirname(sinkPath), { recursive: true });
     await appendFile(sinkPath, line, "utf8");
+    bufferSubmissionLine(line);
   } catch (err) {
     logger.error(`captureSubmissionEnvelope: failed to write to ${sinkPath}: ${String(err)}`);
   }

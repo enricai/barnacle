@@ -121,6 +121,21 @@ export interface AppConfig {
      * 30 days — long enough for a monthly judge/heal cadence.
      */
     maxRetentionMs: number;
+    /**
+     * Opt-in buffered S3 sink that mirrors local NDJSON telemetry so it
+     * survives ECS container restarts. Entirely inert when `bucket` is
+     * undefined — the sink checks this before buffering or flushing.
+     */
+    s3: {
+      /** `TELEMETRY_S3_BUCKET` — destination bucket. Sink is a no-op when unset. */
+      bucket: string | undefined;
+      /** `TELEMETRY_S3_PREFIX` — key prefix for uploaded NDJSON objects. */
+      prefix: string;
+      /** `TELEMETRY_S3_FLUSH_INTERVAL_MS` — periodic flush interval. */
+      flushIntervalMs: number;
+      /** `TELEMETRY_S3_MAX_BUFFER_LINES` — threshold-flush trigger per buffer. */
+      maxBufferLines: number;
+    };
   };
   judging: {
     /**
@@ -298,6 +313,12 @@ export function loadConfig(): AppConfig {
       submissionsNdjsonPath: getEnv("SUBMISSIONS_NDJSON_PATH", ".barnacle/submissions.ndjson"),
       maxFileSizeBytes: getNumericEnv("TELEMETRY_MAX_FILE_SIZE_BYTES", 100 * 1024 * 1024),
       maxRetentionMs: getNumericEnv("TELEMETRY_MAX_RETENTION_MS", 30 * 24 * 60 * 60 * 1000),
+      s3: {
+        bucket: process.env.TELEMETRY_S3_BUCKET || undefined,
+        prefix: getEnv("TELEMETRY_S3_PREFIX", "telemetry"),
+        flushIntervalMs: getNumericEnv("TELEMETRY_S3_FLUSH_INTERVAL_MS", 60_000),
+        maxBufferLines: getNumericEnv("TELEMETRY_S3_MAX_BUFFER_LINES", 500),
+      },
     },
     judging: {
       model: getEnv("JUDGE_MODEL", "us.anthropic.claude-sonnet-4-6[1m]"),

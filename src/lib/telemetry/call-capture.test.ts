@@ -13,6 +13,9 @@ vi.mock("@/config", () => ({
   config: {
     telemetry: {
       callsNdjsonPath: ".barnacle/calls.ndjson",
+      s3: {
+        bucket: undefined,
+      },
     },
   },
 }));

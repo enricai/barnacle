@@ -20,7 +20,14 @@ echo "==> Building image"
 docker build --platform linux/amd64 -t "$IMAGE" .
 
 echo "==> Pushing image to ECR"
-docker push "$IMAGE"
+if ! docker push "$IMAGE" 2>&1; then
+  if aws ecr describe-images --repository-name vivian-barnacle-staging --image-ids imageTag="$SHA" --region "$REGION" &>/dev/null; then
+    echo "    image already exists in ECR, continuing"
+  else
+    echo "ERROR: push failed and image not found in ECR" >&2
+    exit 1
+  fi
+fi
 
 echo "==> Registering new task definition"
 REVISION=$(aws ecs register-task-definition \

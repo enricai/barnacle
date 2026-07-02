@@ -12,6 +12,7 @@ import { z } from "zod/v4";
 
 import { config } from "@/config";
 import { getLogger } from "@/lib/logging";
+import { bufferCallLine } from "@/lib/telemetry/s3-sink";
 
 const logger = getLogger({ name: "telemetry/call-capture" });
 
@@ -190,6 +191,7 @@ export async function captureLlmCall(
     const line = `${JSON.stringify(sample)}\n`;
     await mkdir(dirname(sinkPath), { recursive: true });
     await appendFile(sinkPath, line, "utf8");
+    bufferCallLine(line);
   } catch (err) {
     logger.error(`captureLlmCall: failed to write to ${sinkPath}: ${String(err)}`);
   }

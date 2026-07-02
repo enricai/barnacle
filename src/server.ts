@@ -20,6 +20,7 @@ import { toErrorMessage } from "@/lib/errors";
 import { configureHttpDispatcher } from "@/lib/http";
 import { getLogger } from "@/lib/logging";
 import { shutdownStatsD } from "@/lib/statsd";
+import { shutdownS3Sink, startS3SinkTimer } from "@/lib/telemetry/s3-sink";
 import { drainTrackingClicks } from "@/lib/tracking-click";
 import { registerRoutes } from "@/plugins/loader";
 import { drainPool } from "@/scraper/pool";
@@ -112,6 +113,8 @@ export async function buildServer(): Promise<
   await app.register(healthRoutes);
   await registerRoutes(app, cfg);
 
+  startS3SinkTimer();
+
   // Drain in-flight scrape sessions when the app shuts down. Without
   // this, SIGTERM leaves Steel sessions alive until their own idle
   // timeout kicks in (billable minutes wasted).
@@ -132,6 +135,11 @@ export async function buildServer(): Promise<
       await shutdownStatsD();
     } catch (err) {
       logger.warn(`shutdownStatsD failed during shutdown: ${toErrorMessage(err).slice(0, 200)}`);
+    }
+    try {
+      await shutdownS3Sink();
+    } catch (err) {
+      logger.warn(`shutdownS3Sink failed during shutdown: ${toErrorMessage(err).slice(0, 200)}`);
     }
   });
 
