@@ -30,6 +30,16 @@ vi.mock("@/lib/logging", () => ({
   }),
 }));
 
+const { bufferCallLineMock, bufferSubmissionLineMock } = vi.hoisted(() => ({
+  bufferCallLineMock: vi.fn(),
+  bufferSubmissionLineMock: vi.fn(),
+}));
+
+vi.mock("@/lib/telemetry/s3-sink", () => ({
+  bufferCallLine: bufferCallLineMock,
+  bufferSubmissionLine: bufferSubmissionLineMock,
+}));
+
 import {
   captureLlmCall,
   classifyLlmCallFailure,
@@ -137,6 +147,15 @@ describe("captureLlmCall", () => {
 
     const content = fs.readFileSync(sinkPath, "utf-8");
     expect(content.endsWith("\n")).toBe(true);
+  });
+
+  it("forwards the serialized line to the S3 call buffer", async () => {
+    const input = makeInput();
+    await captureLlmCall(input, { sinkPath });
+
+    const line = fs.readFileSync(sinkPath, "utf-8");
+    expect(bufferCallLineMock).toHaveBeenCalledTimes(1);
+    expect(bufferCallLineMock).toHaveBeenCalledWith(line);
   });
 
   it("creates the sink directory if it does not exist", async () => {

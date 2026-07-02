@@ -30,6 +30,11 @@ vi.mock("@/lib/logging", () => ({
   }),
 }));
 
+vi.mock("@/lib/telemetry/s3-sink", () => ({
+  bufferSubmissionLine: vi.fn(),
+}));
+
+import { bufferSubmissionLine } from "@/lib/telemetry/s3-sink";
 import {
   captureSubmissionEnvelope,
   type SubmissionEnvelopeSample,
@@ -148,5 +153,13 @@ describe("captureSubmissionEnvelope", () => {
     await captureSubmissionEnvelope(makeSuccessInput(), { sinkPath: nestedSink });
 
     expect(fs.existsSync(nestedSink)).toBe(true);
+  });
+
+  it("forwards the exact serialized line to the S3 submission buffer", async () => {
+    await captureSubmissionEnvelope(makeSuccessInput(), { sinkPath });
+
+    const line = fs.readFileSync(sinkPath, "utf-8");
+    expect(bufferSubmissionLine).toHaveBeenCalledTimes(1);
+    expect(bufferSubmissionLine).toHaveBeenCalledWith(line);
   });
 });
