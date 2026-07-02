@@ -24,11 +24,7 @@ export default defineConfig({
     },
     testTimeout: 30000,
     pool: "forks",
-    poolOptions: {
-      forks: {
-        maxForks: "50%",
-      },
-    },
+    maxWorkers: "50%",
   },
   resolve: {
     alias: {

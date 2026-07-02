@@ -99,6 +99,29 @@ describe("createKeyedTtlCache", () => {
   });
 });
 
+describe("createKeyedTtlCache — TTL expiry", () => {
+  it("(f) get returns undefined after the TTL elapses", { timeout: 500 }, async () => {
+    const cache = createKeyedTtlCache<{ value: number }>({ max: 10, ttlMs: 50 });
+    cache.set("k", { value: 1 });
+    expect(cache.get("k")).toEqual({ value: 1 });
+
+    await new Promise<void>((r) => setTimeout(r, 80));
+    expect(cache.get("k")).toBeUndefined();
+  });
+
+  it("(g) getOrWarm re-invokes warmer after TTL expiry", { timeout: 500 }, async () => {
+    const cache = createKeyedTtlCache<{ value: number }>({ max: 10, ttlMs: 50 });
+
+    const warmer = vi.fn().mockResolvedValue({ value: 42 });
+    await cache.getOrWarm("k", warmer);
+    expect(warmer).toHaveBeenCalledTimes(1);
+
+    await new Promise<void>((r) => setTimeout(r, 80));
+    await cache.getOrWarm("k", warmer);
+    expect(warmer).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("createKeyedTtlCache — keyPrefix isolation", () => {
   it("two caches with different prefixes do not share entries", async () => {
     const a = createKeyedTtlCache<{ n: number }>({ max: 10, ttlMs: 60_000, keyPrefix: "ns-a" });
