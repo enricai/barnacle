@@ -171,6 +171,17 @@ export class HttpRateLimitError extends ScraperError {
 }
 
 /**
+ * Oracle HCM returned ChallengeFlag=true for a repeat applicant, requiring
+ * a 6-digit email verification PIN that Barnacle cannot automate. NOT a
+ * fallback trigger — the browser flow cannot handle the PIN screen either.
+ */
+export class AccessCodeChallengeError extends ScraperError {
+  constructor(message = "applicant requires email verification challenge") {
+    super(message, false);
+  }
+}
+
+/**
  * Thrown when code that translates stable semantic field keys (`address.city`,
  * `firstName`, `applicantGender`) into tenant-specific GUIDs via a runtime
  * form-map lookup cannot resolve one or more required keys.
