@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { lookupHeaderCaseInsensitive } from "@/lib/case-insensitive-headers";
+import {
+  lookupHeaderCaseInsensitive,
+  omitHeaderCaseInsensitive,
+} from "@/lib/case-insensitive-headers";
 
 describe("lib/case-insensitive-headers lookupHeaderCaseInsensitive", () => {
   it("returns the value for an exact-case match", () => {
@@ -25,5 +28,49 @@ describe("lib/case-insensitive-headers lookupHeaderCaseInsensitive", () => {
 
   it("returns undefined for an empty record", () => {
     expect(lookupHeaderCaseInsensitive({}, "Content-Type")).toBeUndefined();
+  });
+});
+
+describe("lib/case-insensitive-headers omitHeaderCaseInsensitive", () => {
+  it("removes the key when the stored key matches exactly", () => {
+    const headers = { "Content-Type": "text/plain", Authorization: "Bearer x" };
+    expect(omitHeaderCaseInsensitive(headers, "Content-Type")).toEqual({
+      Authorization: "Bearer x",
+    });
+  });
+
+  it("removes the key when the stored key has different capitalisation", () => {
+    const headers = { "content-type": "text/plain", Authorization: "Bearer x" };
+    expect(omitHeaderCaseInsensitive(headers, "Content-Type")).toEqual({
+      Authorization: "Bearer x",
+    });
+  });
+
+  it("removes the key when the name argument has different capitalisation", () => {
+    const headers = { "Content-Type": "text/plain", Authorization: "Bearer x" };
+    expect(omitHeaderCaseInsensitive(headers, "content-type")).toEqual({
+      Authorization: "Bearer x",
+    });
+  });
+
+  it("leaves the record unchanged when the named key is absent", () => {
+    const headers = { Authorization: "Bearer x" };
+    expect(omitHeaderCaseInsensitive(headers, "Content-Type")).toEqual({
+      Authorization: "Bearer x",
+    });
+  });
+
+  it("returns an empty record when the input has only the named key", () => {
+    expect(omitHeaderCaseInsensitive({ "Content-Type": "text/plain" }, "content-type")).toEqual({});
+  });
+
+  it("returns an empty record for an empty input", () => {
+    expect(omitHeaderCaseInsensitive({}, "Content-Type")).toEqual({});
+  });
+
+  it("does not mutate the original record", () => {
+    const headers = { "Content-Type": "text/plain", Authorization: "Bearer x" };
+    omitHeaderCaseInsensitive(headers, "Content-Type");
+    expect(headers).toEqual({ "Content-Type": "text/plain", Authorization: "Bearer x" });
   });
 });

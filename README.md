@@ -767,6 +767,8 @@ src/
 │   ├── metrics.ts             # drift-detection counters
 │   ├── fixtures.ts            # static JSON fixture loader
 │   ├── navigate.ts            # shared awaitActivePage + goto(networkidle) helper
+│   ├── behavioral-signals.ts  # CDP synthetic mouse-move + scroll dispatcher for bot-detection warmup
+│   ├── session-warmup.ts      # generic pRetry browser-session runner: acquire → callback → close, with caller-supplied exhaustion mapping
 │   └── require-response-field.ts # shared helpers for extracting required fields from HTTP response objects (HttpSchemaError on missing/null)
 ├── cache/
 │   ├── response-cache.ts      # lru-cache wrapper for deduplicating concurrent identical scraper requests
