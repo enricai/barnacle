@@ -1,6 +1,6 @@
 /**
  * Verifies that TEST_ANSWERS satisfies ApplicationAnswersSchema and contains
- * all 19 keys, so downstream consumers can trust the fixture as a valid
+ * all 20 keys, so downstream consumers can trust the fixture as a valid
  * starting point before spreading overrides.
  */
 
@@ -29,6 +29,7 @@ const EXPECTED_KEYS: Array<keyof typeof TEST_ANSWERS> = [
   "EducationLevel",
   "SignatureFullName",
   "MeetsMinimumAge",
+  "AppliedToSanfordOrGoodSamaritanLast6Months",
 ];
 
 describe("TEST_ANSWERS", () => {
@@ -37,14 +38,14 @@ describe("TEST_ANSWERS", () => {
     expect(result.success).toBe(true);
   });
 
-  it("contains all 19 keys", () => {
-    expect(EXPECTED_KEYS).toHaveLength(19);
+  it("contains all 20 keys", () => {
+    expect(EXPECTED_KEYS).toHaveLength(20);
     for (const key of EXPECTED_KEYS) {
       expect(TEST_ANSWERS, `missing key: ${key}`).toHaveProperty(key);
     }
   });
 
-  it("has no extra keys beyond the 19 schema fields", () => {
-    expect(Object.keys(TEST_ANSWERS)).toHaveLength(19);
+  it("has no extra keys beyond the 20 schema fields", () => {
+    expect(Object.keys(TEST_ANSWERS)).toHaveLength(20);
   });
 });
