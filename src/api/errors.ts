@@ -135,6 +135,18 @@ export class EmptyResultsApiError extends ApiError {
 }
 
 /**
+ * The OTP a candidate supplied to /resume was rejected by Oracle HCM, which
+ * surfaces as a 401/403 on the first AccessCode-authed call. Distinct from a
+ * generic scrape failure so Vivian can re-prompt for the code rather than
+ * treating the resume as terminally failed.
+ */
+export class InvalidOtpError extends ApiError {
+  constructor(message = "provided OTP was rejected by Oracle HCM") {
+    super(ERROR_CODES.RESUME_INVALID_OTP, message);
+  }
+}
+
+/**
  * Builds an error envelope for the given code + message. Used by the
  * Fastify error handler and anywhere else a manual non-200 response needs
  * to be emitted (e.g. Fastify's built-in rate-limit 429).

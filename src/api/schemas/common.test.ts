@@ -78,6 +78,35 @@ describe("needsUserInfoResponseSchema", () => {
     expect(result.success).toBe(true);
   });
 
+  it("parses with an optional metrics payload", () => {
+    const result = needsUserInfoResponseSchema.safeParse({
+      status: validStatus,
+      needsUserInfo: true,
+      missingFields: [],
+      requiresOtp: true,
+      metrics: {
+        totalDurationMs: 120,
+        path: "http",
+        steps: [{ step: "setup", durationMs: 5, status: "success" }],
+        attemptCount: 1,
+        startedAt: "2026-07-06T00:00:00Z",
+        endedAt: "2026-07-06T00:00:01Z",
+        recordedAt: "2026-07-06T00:00:01Z",
+      },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("parses when metrics is omitted (optional)", () => {
+    const result = needsUserInfoResponseSchema.safeParse({
+      status: validStatus,
+      needsUserInfo: true,
+      missingFields: [],
+      requiresOtp: false,
+    });
+    expect(result.success).toBe(true);
+  });
+
   it("rejects when requiresOtp is missing", () => {
     const result = needsUserInfoResponseSchema.safeParse({
       status: validStatus,

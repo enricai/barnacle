@@ -1,11 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  AccessCodeChallengeError,
-  MissingFormMapKeyError,
-  type NeedsUserInfoResult,
-  ScraperError,
-} from "@/scraper/errors";
+import { MissingFormMapKeyError, type NeedsUserInfoResult, ScraperError } from "@/scraper/errors";
 
 describe("MissingFormMapKeyError", () => {
   it("carries the missing keys + context and is non-retryable", () => {
@@ -18,16 +13,6 @@ describe("MissingFormMapKeyError", () => {
       "form-map missing required keys [firstName, applicantGender] in buildFormMap"
     );
     expect(err.name).toBe("MissingFormMapKeyError");
-  });
-});
-
-describe("AccessCodeChallengeError", () => {
-  it("constructs with the default message and is non-retryable", () => {
-    const err = new AccessCodeChallengeError();
-    expect(err).toBeInstanceOf(ScraperError);
-    expect(err.retryable).toBe(false);
-    expect(err.name).toBe("AccessCodeChallengeError");
-    expect(err.message).toBe("applicant requires email verification challenge");
   });
 });
 

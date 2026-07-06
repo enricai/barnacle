@@ -1,5 +1,7 @@
 import { z } from "zod/v4";
 
+import { DispatchMetricsSchema } from "@/types/dispatch-metrics";
+
 /**
  * Error code registry and HTTP status envelope schema shared across all
  * API responses. The envelope shape keeps every response — success and
@@ -108,4 +110,5 @@ export const needsUserInfoResponseSchema = z.object({
     })
   ),
   requiresOtp: z.boolean(),
+  metrics: DispatchMetricsSchema.optional(),
 });

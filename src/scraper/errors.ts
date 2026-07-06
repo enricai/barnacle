@@ -171,17 +171,6 @@ export class HttpRateLimitError extends ScraperError {
 }
 
 /**
- * Oracle HCM returned ChallengeFlag=true for a repeat applicant, requiring
- * a 6-digit email verification PIN that Barnacle cannot automate. NOT a
- * fallback trigger — the browser flow cannot handle the PIN screen either.
- */
-export class AccessCodeChallengeError extends ScraperError {
-  constructor(message = "applicant requires email verification challenge") {
-    super(message, false);
-  }
-}
-
-/**
  * Structured result returned (not thrown) by the hot path when it cannot
  * complete the application because the user must supply additional data.
  * Assignable as the `data` payload of a `SitePluginResult` so dispatch can
