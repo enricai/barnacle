@@ -860,23 +860,8 @@ export function shouldSkipTechnique(params: {
     triedSelectors: readonly string[];
     errorMessage: string | null;
   }[];
-  /**
-   * True when the pre-cascade probe only found the target via its unfocused
-   * fallback (focused observe empty, page has actionable content). The element
-   * is present but focused observe can't phrase it, so the usual
-   * "no-xpath / no-candidates → skip technique" heuristics would wrongly thin
-   * the cascade before the rephrase. When set, no technique is skipped so the
-   * loop reaches the rephrase that can resolve the element.
-   */
-  viaUnfocusedFallback?: boolean;
 }): { skip: boolean; reason: string } {
-  const { technique, priorAttempts, viaUnfocusedFallback } = params;
-  // Element is known-present (via unfocused fallback): run every technique so
-  // the cascade reaches the rephrase instead of skipping on focused-observe
-  // emptiness that isn't evidence of absence.
-  if (viaUnfocusedFallback) {
-    return { skip: false, reason: "" };
-  }
+  const { technique, priorAttempts } = params;
   if (technique === "structured-click") {
     const anyXpathResolved = priorAttempts.some((a) => a.triedSelectors.length > 0);
     if (!anyXpathResolved) {
@@ -1481,6 +1466,24 @@ function dedupeConsecutiveIdentical<T>(items: T[]): T[] {
     if (prev !== curr) out.push(items[i]!);
   }
   return out;
+}
+
+/**
+ * Resume-from-failure filter for replan output. The global replanner should emit
+ * only a recovery BRIDGE from the failure point (the original remaining tail is
+ * re-appended by the driver), but it sometimes re-emits already-completed steps
+ * — re-filling name/email/etc. after a later step fails — which inflates the
+ * plan and wastes wall-clock + replan budget re-doing done work. Drop any bridge
+ * step whose instruction matches a completed step, EXCEPT a re-emission of the
+ * failed step itself (a legitimate no-op bridge the replan prompt allows).
+ */
+export function filterCompletedFromReplan(
+  newSteps: readonly NormalizedStep[],
+  completedSteps: readonly string[],
+  failedStep: string
+): NormalizedStep[] {
+  const completed = new Set(completedSteps);
+  return newSteps.filter((s) => s.instruction === failedStep || !completed.has(s.instruction));
 }
 
 /**
@@ -2865,8 +2868,8 @@ async function replanRemainingFlow(params: {
 
 ORIGINAL FLOW SUMMARY: ${originalFlow.length} total steps; ${completedSteps.length} executed, ${remainingSteps.length} remaining after the failed step. The completed-tail and remaining-head windows below give you the local context — that's the only flow context replan needs.
 
-STEPS RECENTLY COMPLETED (last few that just succeeded; do not re-run):
-${renderStepWindow(completedSteps, { tail: 10 })}
+STEPS ALREADY COMPLETED (these succeeded — do NOT re-emit any of them; the head shows early fills like name/email so you don't repeat them):
+${renderStepWindow(completedSteps, { head: 8, tail: 10 })}
 
 THE STEP THAT JUST FAILED (after exhausting its per-step healing cascade):
 ${failedStep}
@@ -3952,19 +3955,6 @@ async function probeFormValidityBeforeSubmit(params: {
  * so a 0-candidate focused result falls back to an unfocused observe before the
  * step is declared "absent". Exported for tests.
  */
-/**
- * Result of the pre-cascade reachability probe. `viaUnfocusedFallback` is true
- * when the focused (instruction-scoped) observe returned nothing but an
- * unfocused observe found actionable content — i.e. the target IS on the page,
- * the focused observe just couldn't phrase it. The cascade uses that bit to
- * NOT take focused-empty-driven give-ups (attempt-2 optional skip,
- * technique-skips) so the step is driven to the rephrase that can resolve it.
- */
-interface ProbeResult {
-  verdict: "present" | "absent";
-  viaUnfocusedFallback: boolean;
-}
-
 async function probeStepBeforeAttempts(params: {
   stagehand: Stagehand;
   step: string;
@@ -3972,7 +3962,7 @@ async function probeStepBeforeAttempts(params: {
   logger: Logger;
   captureFn?: CaptureFn;
   observeCache?: ObserveCache;
-}): Promise<ProbeResult> {
+}): Promise<"present" | "absent"> {
   const { stagehand, step, stepIndex, logger, captureFn, observeCache } = params;
   try {
     const candidates = await guardedObserve(
@@ -4004,22 +3994,22 @@ async function probeStepBeforeAttempts(params: {
         logger.info(
           `step ${stepIndex + 1}: focused probe found 0 candidates but unfocused observe found ${unfocused.length} — treating as present (let cascade resolve)`
         );
-        return { verdict: "present", viaUnfocusedFallback: true };
+        return "present";
       }
       logger.info(
         `step ${stepIndex + 1}: probe found 0 candidates (focused and unfocused) — treating as absent (skip cascade, route to replan if required)`
       );
-      return { verdict: "absent", viaUnfocusedFallback: false };
+      return "absent";
     }
     logger.info(`step ${stepIndex + 1}: probe found ${candidates.length} candidate(s)`);
-    return { verdict: "present", viaUnfocusedFallback: false };
+    return "present";
   } catch (err) {
     // Bias toward the existing behavior on errors: don't trigger a spurious
     // replan when the probe itself is the broken thing.
     logger.warn(
       `step ${stepIndex + 1}: probe threw ${toErrorMessage(err)} — treating as present (cascade will run)`
     );
-    return { verdict: "present", viaUnfocusedFallback: false };
+    return "present";
   }
 }
 
@@ -4214,7 +4204,7 @@ async function executeStepWithHealing(params: {
   // candidate matching the step's instruction we either skip cleanly
   // (optional) or escalate straight to replan (required) — far cheaper than
   // burning 4 attempts on a page that clearly isn't the right one.
-  const { verdict: probeResult, viaUnfocusedFallback } = await probeStepBeforeAttempts({
+  const probeResult = await probeStepBeforeAttempts({
     stagehand,
     step,
     stepIndex,
@@ -4398,7 +4388,6 @@ async function executeStepWithHealing(params: {
           triedSelectors: a.triedSelectors,
           errorMessage: a.errorMessage,
         })),
-        viaUnfocusedFallback,
       });
       if (decision.skip) {
         logger.info(
@@ -4476,13 +4465,14 @@ async function executeStepWithHealing(params: {
           // something) so an optional step that did find a target but failed
           // to verify still runs the full healing cascade.
           //
-          // EXCEPTION: when the probe reached the cascade via its unfocused
-          // fallback (`viaUnfocusedFallback`), the element IS on the page — the
-          // focused observe just can't phrase it. Skipping here would abandon a
-          // present field; instead push through to attempts 3-5 (incl. the
-          // rephrase that can resolve it). Only truly-absent optional steps
-          // (probe returned "absent") skip — and those never reach the cascade.
-          if (optional && attempt === 2 && triedSelectors.length === 0 && !viaUnfocusedFallback) {
+          // This fast-skip is essential: a genuinely-absent optional step
+          // (e.g. a "dismiss modal" step on a page with no modal) must NOT run
+          // the full 5-attempt cascade + a global replan — that wastes minutes
+          // and drains the replan budget. The cache fix (guardedObserve no
+          // longer replays a stale empty result) makes attempt-1 act resolve
+          // present fields on its own, so present-but-hard fields succeed at
+          // attempt 1 and don't rely on suppressing this skip.
+          if (optional && attempt === 2 && triedSelectors.length === 0) {
             record.verifiedBy = null;
             attempts.push(record);
             logger.info(
@@ -5853,7 +5843,7 @@ async function main(): Promise<void> {
           `step ${i + 1} terminally failed (${err.kind}); attempting global replan #${replanIndex} (${isProbe ? "probe" : "cascade"} budget ${usedSoFar + 1}/${budget})`
         );
 
-        const newSteps = await replanRemainingFlow({
+        const rawNewSteps = await replanRemainingFlow({
           client: anthropic,
           originalFlow: flow.map((s) => s.instruction),
           completedSteps,
@@ -5869,9 +5859,26 @@ async function main(): Promise<void> {
           priorReplans: replanEvents,
         });
 
-        if (!newSteps) {
+        if (!rawNewSteps) {
           logger.error(
             `replan #${replanIndex} returned outcome=impossible or unparseable output; aborting`
+          );
+          throw err;
+        }
+
+        // Resume-from-failure: drop any replan bridge step that re-runs an
+        // already-completed step (see filterCompletedFromReplan). Keeps the
+        // failed step's re-emission. originalRemaining is re-appended below.
+        const newSteps = filterCompletedFromReplan(rawNewSteps, completedSteps, step.instruction);
+        const droppedCompleted = rawNewSteps.length - newSteps.length;
+        if (droppedCompleted > 0) {
+          logger.info(
+            `replan #${replanIndex}: dropped ${droppedCompleted} bridge step(s) that re-ran already-completed steps`
+          );
+        }
+        if (newSteps.length === 0) {
+          logger.error(
+            `replan #${replanIndex} produced only already-completed steps (nothing new to bridge); aborting`
           );
           throw err;
         }

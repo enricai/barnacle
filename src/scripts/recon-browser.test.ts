@@ -73,6 +73,7 @@ import {
   extractGaEventEvidence,
   extractSubmitFailureEvidence,
   fillHtml5DateTimeInput,
+  filterCompletedFromReplan,
   findRecentBackendError,
   findRecentPageTransition,
   formatValidationRejectedReason,
@@ -948,6 +949,42 @@ describe("recon-browser/dedupeConsecutiveIdentical", () => {
   });
 });
 
+describe("recon-browser/filterCompletedFromReplan", () => {
+  const mk = (instruction: string): NormalizedStep => ({
+    instruction,
+    optional: false,
+    upload: false,
+    origin: "replan",
+  });
+
+  it("drops bridge steps that re-run already-completed steps", () => {
+    const raw = [
+      mk("Fill in the First Name field with 'Reginald'"),
+      mk("Fill in the Email field with 'x@y.z'"),
+      mk("Click the NEXT button to proceed"),
+    ];
+    const completed = [
+      "Fill in the First Name field with 'Reginald'",
+      "Fill in the Email field with 'x@y.z'",
+    ];
+    const out = filterCompletedFromReplan(raw, completed, "Fill in the Address field");
+    expect(out.map((s) => s.instruction)).toEqual(["Click the NEXT button to proceed"]);
+  });
+
+  it("keeps a re-emission of the failed step itself (legitimate no-op bridge)", () => {
+    const raw = [mk("Fill in the Address field"), mk("Click NEXT")];
+    const completed = ["Fill in the First Name field"];
+    const out = filterCompletedFromReplan(raw, completed, "Fill in the Address field");
+    expect(out.map((s) => s.instruction)).toEqual(["Fill in the Address field", "Click NEXT"]);
+  });
+
+  it("returns all steps unchanged when none are completed", () => {
+    const raw = [mk("Step A"), mk("Step B")];
+    const out = filterCompletedFromReplan(raw, [], "Step failed");
+    expect(out).toEqual(raw);
+  });
+});
+
 describe("recon-browser/renderUnfocusedObserve", () => {
   // Helper to build a minimal Action-shaped object for testing.
   const make = (description: string): { description: string; selector: string } => ({
@@ -1741,33 +1778,6 @@ describe("recon-browser/shouldSkipTechnique", () => {
           errorMessage: "observe returned no candidates",
         },
       ],
-    });
-    expect(decision.skip).toBe(false);
-  });
-
-  it("does NOT skip structured-click when viaUnfocusedFallback (element known-present)", () => {
-    // Without the flag this would skip (no prior xpath resolved).
-    const decision = shouldSkipTechnique({
-      technique: "structured-click",
-      priorAttempts: [{ technique: "act-string", triedSelectors: [], errorMessage: null }],
-      viaUnfocusedFallback: true,
-    });
-    expect(decision.skip).toBe(false);
-  });
-
-  it("does NOT skip observe-act-exclude when viaUnfocusedFallback (element known-present)", () => {
-    // Without the flag this would skip (prior observe-act returned 0 candidates).
-    const decision = shouldSkipTechnique({
-      technique: "observe-act-exclude",
-      priorAttempts: [
-        { technique: "act-string", triedSelectors: [], errorMessage: null },
-        {
-          technique: "observe-act",
-          triedSelectors: [],
-          errorMessage: "observe returned no candidates",
-        },
-      ],
-      viaUnfocusedFallback: true,
     });
     expect(decision.skip).toBe(false);
   });
@@ -2901,7 +2911,7 @@ describe("recon-browser/probeStepBeforeAttempts", () => {
       stepIndex: 5,
       logger: testLogger,
     });
-    expect(result).toEqual({ verdict: "present", viaUnfocusedFallback: true });
+    expect(result).toBe("present");
     // focused probe + unfocused fallback = two observe calls.
     expect(stagehand.observe).toHaveBeenCalledTimes(2);
     expect(typeof stagehand.observe.mock.calls[0]?.[0]).toBe("string");
@@ -2916,7 +2926,7 @@ describe("recon-browser/probeStepBeforeAttempts", () => {
       stepIndex: 5,
       logger: testLogger,
     });
-    expect(result).toEqual({ verdict: "absent", viaUnfocusedFallback: false });
+    expect(result).toBe("absent");
     expect(stagehand.observe).toHaveBeenCalledTimes(2);
   });
 
@@ -2928,7 +2938,7 @@ describe("recon-browser/probeStepBeforeAttempts", () => {
       stepIndex: 2,
       logger: testLogger,
     });
-    expect(result).toEqual({ verdict: "present", viaUnfocusedFallback: false });
+    expect(result).toBe("present");
     // Happy path: only the focused probe runs; no wasted unfocused observe.
     expect(stagehand.observe).toHaveBeenCalledTimes(1);
   });
