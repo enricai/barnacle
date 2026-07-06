@@ -634,3 +634,71 @@ describe("registerRoutes — multipart flag", () => {
     await app.close();
   });
 });
+
+describe("dispatch — needsUserInfo branch", () => {
+  const mockHttpExecute = vi.fn();
+
+  const httpPlugin: SitePlugin<unknown, unknown> = {
+    meta: {
+      siteId: "http-site",
+      displayName: "HTTP Site",
+      bodySchema: {} as never,
+      responseSchema: {} as never,
+    },
+    execute: mockPluginExecute,
+    executeHttp: mockHttpExecute,
+  };
+
+  const needsUserInfoResult = {
+    data: {
+      verified: false,
+      needsUserInfo: true,
+      missingFields: [] as { field: string; question: string }[],
+      requiresOtp: true,
+    },
+  };
+
+  beforeEach(() => {
+    mockCaptureSubmissionEnvelope.mockResolvedValue(undefined);
+    mockHttpExecute.mockResolvedValue(needsUserInfoResult);
+    mockGetCachedResponse.mockReturnValue({ value: undefined, key: "test-key" });
+    mockGetOrCreateInFlight.mockImplementation((_key: string, producer: () => Promise<unknown>) =>
+      producer()
+    );
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns the needsUserInfo result without emitting a submission envelope", async () => {
+    const result = await dispatch(httpPlugin, {}, stubContext);
+    expect((result.data as { needsUserInfo: boolean }).needsUserInfo).toBe(true);
+    expect(mockCaptureSubmissionEnvelope).not.toHaveBeenCalled();
+  });
+
+  it("does not fire the tracking click when needsUserInfo is true", async () => {
+    await dispatch(httpPlugin, { TrackingUrl: "https://click.example.com/t/abc" }, stubContext);
+    expect(mockFireTrackingClick).not.toHaveBeenCalled();
+  });
+
+  it("returns missingFields and requiresOtp from the result", async () => {
+    mockHttpExecute.mockResolvedValue({
+      data: {
+        verified: false,
+        needsUserInfo: true,
+        missingFields: [{ field: "educationLevel", question: "What is your highest education?" }],
+        requiresOtp: false,
+      },
+    });
+    const result = await dispatch(httpPlugin, {}, stubContext);
+    const data = result.data as {
+      needsUserInfo: boolean;
+      missingFields: { field: string; question: string }[];
+      requiresOtp: boolean;
+    };
+    expect(data.missingFields).toHaveLength(1);
+    expect(data.missingFields[0]?.field).toBe("educationLevel");
+    expect(data.requiresOtp).toBe(false);
+  });
+});

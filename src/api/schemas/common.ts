@@ -21,6 +21,8 @@ export const ERROR_CODES = {
   SCRAPE_FAILURE: 2003,
   CAPTCHA_ENCOUNTERED: 2004,
   EMPTY_RESULTS: 2005,
+  VERIFICATION_TRIGGER_FAILED: 2006,
+  RESUME_INVALID_OTP: 2007,
 } as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];
@@ -45,6 +47,8 @@ export const ERROR_CODE_DESCRIPTIONS: Record<ErrorCode, string> = {
   2003: "SCRAPE_FAILURE",
   2004: "CAPTCHA_ENCOUNTERED",
   2005: "EMPTY_RESULTS",
+  2006: "VERIFICATION_TRIGGER_FAILED",
+  2007: "RESUME_INVALID_OTP",
 };
 
 /**
@@ -87,3 +91,21 @@ export const statusSchema = z
     details: z.array(statusDetailSchema).default([]),
   })
   .loose();
+
+/**
+ * Response envelope emitted by dispatch when the hot path cannot complete
+ * the application because the user must supply additional information (e.g.
+ * missing profile fields or an OTP code). Returned as HTTP 200 so clients
+ * can parse it without branching on status codes.
+ */
+export const needsUserInfoResponseSchema = z.object({
+  status: statusSchema,
+  needsUserInfo: z.literal(true),
+  missingFields: z.array(
+    z.object({
+      field: z.string(),
+      question: z.string(),
+    })
+  ),
+  requiresOtp: z.boolean(),
+});

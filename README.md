@@ -692,6 +692,8 @@ Every response — success or error — uses the same envelope shape so clients 
 | 2003 | `SCRAPE_FAILURE` | Browser automation failed after retries |
 | 2004 | `CAPTCHA_ENCOUNTERED` | CAPTCHA challenge could not be resolved |
 | 2005 | `EMPTY_RESULTS` | Scrape succeeded but returned no data |
+| 2006 | `VERIFICATION_TRIGGER_FAILED` | OTP trigger to Oracle HCM failed |
+| 2007 | `RESUME_INVALID_OTP` | Provided OTP was rejected by Oracle HCM |
 
 Full definitions: `src/api/schemas/common.ts`.
 

@@ -56,7 +56,10 @@ export function httpStatusForCode(code: ErrorCode): number {
     case ERROR_CODES.EXTRA_DETAIL:
     case ERROR_CODES.SCRAPE_FAILURE:
     case ERROR_CODES.CAPTCHA_ENCOUNTERED:
+    case ERROR_CODES.VERIFICATION_TRIGGER_FAILED:
       return StatusCodes.INTERNAL_SERVER_ERROR;
+    case ERROR_CODES.RESUME_INVALID_OTP:
+      return StatusCodes.BAD_REQUEST;
     default:
       return StatusCodes.INTERNAL_SERVER_ERROR;
   }

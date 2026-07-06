@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import fastifyMultipart from "@fastify/multipart";
 import type { FastifyInstance, RawServerDefault } from "fastify";
 import type pino from "pino";
+import { z } from "zod/v4";
 
 import {
   type ApiError,
@@ -34,6 +35,7 @@ import {
   HttpRateLimitError,
   HttpSchemaError,
   HttpServerError,
+  type NeedsUserInfoResult,
   ScraperError,
 } from "@/scraper/errors";
 import {
@@ -44,7 +46,7 @@ import {
 } from "@/scraper/metrics";
 import { runWithSession } from "@/scraper/pool";
 import type { SitePlugin, SitePluginContext, SitePluginResult } from "@/site-plugin";
-import type { DispatchMetrics } from "@/types/dispatch-metrics";
+import { type DispatchMetrics, DispatchMetricsSchema } from "@/types/dispatch-metrics";
 import type { Logger } from "@/types/logging";
 
 const logger = getLogger({ name: "plugins/loader" });
@@ -204,6 +206,15 @@ export async function dispatch<TResult>(
     const result = await runPluginPipeline<TResult>(plugin, payload, context, options);
     const durationMs = Date.now() - startedAt;
 
+    // Short-circuit: the hot path signalled that the user must supply additional
+    // information (OTP or missing profile fields). This is not a success — skip
+    // the submission envelope and tracking click so the challenge state is not
+    // recorded as a completed application.
+    if ((result.data as NeedsUserInfoResult).needsUserInfo === true) {
+      result.metrics = context.metricsCollector.finalize(pathTag);
+      return result;
+    }
+
     recordDdSuccess(ddTags);
     recordDdDuration(ddTags, durationMs);
 
@@ -268,6 +279,22 @@ function classifyDispatchError(err: unknown): string {
   return "unknown";
 }
 
+const ResponseEnvelopeSchema = z.object({
+  status: z.object({
+    httpStatus: z.string(),
+    dateTime: z.string(),
+    details: z.array(z.unknown()),
+  }),
+  metrics: DispatchMetricsSchema.optional(),
+});
+
+function buildEnvelopedResponseSchema(pluginSchema: z.ZodType): z.ZodType {
+  if (pluginSchema instanceof z.ZodObject) {
+    return ResponseEnvelopeSchema.extend(pluginSchema.shape).passthrough();
+  }
+  return z.unknown();
+}
+
 /**
  * Registers one Fastify POST route per plugin in `SITE_PLUGINS`. Called
  * from `buildServer()` so `server.ts` stays site-agnostic — it delegates
@@ -293,7 +320,7 @@ export async function registerRoutes(
         onRequest: [app.authenticate],
         schema: {
           body: plugin.meta.bodySchema,
-          response: { 200: plugin.meta.responseSchema },
+          response: { 200: buildEnvelopedResponseSchema(plugin.meta.responseSchema) },
           ...(plugin.meta.multipart === true ? { consumes: ["multipart/form-data"] } : {}),
         },
       },

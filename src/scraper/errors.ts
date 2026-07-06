@@ -182,6 +182,19 @@ export class AccessCodeChallengeError extends ScraperError {
 }
 
 /**
+ * Structured result returned (not thrown) by the hot path when it cannot
+ * complete the application because the user must supply additional data.
+ * Assignable as the `data` payload of a `SitePluginResult` so dispatch can
+ * detect it without instanceof checks on thrown errors.
+ */
+export type NeedsUserInfoResult = {
+  verified: false;
+  needsUserInfo: true;
+  missingFields: { field: string; question: string }[];
+  requiresOtp: boolean;
+};
+
+/**
  * Thrown when code that translates stable semantic field keys (`address.city`,
  * `firstName`, `applicantGender`) into tenant-specific GUIDs via a runtime
  * form-map lookup cannot resolve one or more required keys.
