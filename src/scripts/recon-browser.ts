@@ -3946,8 +3946,31 @@ async function probeStepBeforeAttempts(params: {
       observeCache
     );
     if (candidates.length === 0) {
+      // Focused observe under-returns on some controlled-component forms:
+      // Stagehand's instruction-scoped observe can resolve zero candidates for a
+      // declarative "Fill in the X field with 'Y'" step even when the field is
+      // present and actionable (confirmed on HCA's MUI/React Talemetry form — an
+      // unfocused observe enumerated every field and a direct act filled them).
+      // Treating focused-empty as hard "absent" skips the whole cascade and burns
+      // a global replan per step. Fall back to an UNFOCUSED observe as a
+      // reachability check: if the page clearly has actionable content, hand off
+      // to the cascade (its observe-act / rephrase attempts recover the field
+      // without spending the scarce replan budget). Only genuinely blank pages —
+      // where the unfocused observe is also empty — stay "absent".
+      const unfocused = await guardedObserve(
+        stagehand,
+        undefined,
+        { timeout: STEP_WATCHDOG_MS },
+        captureFn
+      );
+      if (unfocused.length > 0) {
+        logger.info(
+          `step ${stepIndex + 1}: focused probe found 0 candidates but unfocused observe found ${unfocused.length} — treating as present (let cascade resolve)`
+        );
+        return "present";
+      }
       logger.info(
-        `step ${stepIndex + 1}: probe found 0 candidates — treating as absent (skip cascade, route to replan if required)`
+        `step ${stepIndex + 1}: probe found 0 candidates (focused and unfocused) — treating as absent (skip cascade, route to replan if required)`
       );
       return "absent";
     }
@@ -5987,6 +6010,7 @@ export {
   denormalizeStep,
   narrowInvalidFormControl,
   persistReplannedFlow,
+  probeStepBeforeAttempts,
   readFailureDumpEvidence,
   renderUnfocusedObserve,
   rephraseWithLLM,

@@ -89,6 +89,7 @@ import {
   pairInvalidWithErrors,
   persistReplannedFlow,
   probeLeafInvalidContainers,
+  probeStepBeforeAttempts,
   type ReplanEvent,
   readFailureDumpEvidence,
   renderLeafInvalidFields,
@@ -2832,5 +2833,76 @@ describe("recon-browser/Q1B — capture-shape integration (responseBody can be o
       },
     };
     expect(detectFromCaptureLike(capture)).toEqual({ rejected: false, reason: null });
+  });
+});
+
+// ─── probeStepBeforeAttempts (focused → unfocused observe fallback) ───────────
+
+describe("recon-browser/probeStepBeforeAttempts", () => {
+  // guardedObserve dispatches to stagehand.observe(instruction, options) for the
+  // FOCUSED probe (first arg is the step string) and stagehand.observe(options)
+  // for the UNFOCUSED fallback (first arg is the options object). We branch the
+  // mock on `typeof args[0]` to control each independently.
+  const nonEmpty = [
+    { selector: "xpath=/html/body/input", description: "First Name field", method: "fill" },
+  ];
+
+  function makeProbeStagehand(
+    focused: unknown[],
+    unfocused: unknown[]
+  ): {
+    observe: ReturnType<typeof vi.fn>;
+  } {
+    return {
+      observe: vi
+        .fn()
+        .mockImplementation((...args: unknown[]) =>
+          Promise.resolve(typeof args[0] === "string" ? focused : unfocused)
+        ),
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns present when focused observe is empty but unfocused observe finds candidates", async () => {
+    const stagehand = makeProbeStagehand([], nonEmpty);
+    const result = await probeStepBeforeAttempts({
+      stagehand: stagehand as never,
+      step: "Fill in the First Name field with 'Reginald'",
+      stepIndex: 5,
+      logger: testLogger,
+    });
+    expect(result).toBe("present");
+    // focused probe + unfocused fallback = two observe calls.
+    expect(stagehand.observe).toHaveBeenCalledTimes(2);
+    expect(typeof stagehand.observe.mock.calls[0]?.[0]).toBe("string");
+    expect(typeof stagehand.observe.mock.calls[1]?.[0]).not.toBe("string");
+  });
+
+  it("returns absent when both focused and unfocused observe are empty", async () => {
+    const stagehand = makeProbeStagehand([], []);
+    const result = await probeStepBeforeAttempts({
+      stagehand: stagehand as never,
+      step: "Fill in the First Name field with 'Reginald'",
+      stepIndex: 5,
+      logger: testLogger,
+    });
+    expect(result).toBe("absent");
+    expect(stagehand.observe).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns present without the unfocused fallback when the focused observe finds candidates", async () => {
+    const stagehand = makeProbeStagehand(nonEmpty, nonEmpty);
+    const result = await probeStepBeforeAttempts({
+      stagehand: stagehand as never,
+      step: "Click the Apply button",
+      stepIndex: 2,
+      logger: testLogger,
+    });
+    expect(result).toBe("present");
+    // Happy path: only the focused probe runs; no wasted unfocused observe.
+    expect(stagehand.observe).toHaveBeenCalledTimes(1);
   });
 });
