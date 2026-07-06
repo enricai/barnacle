@@ -80,6 +80,23 @@ export interface HttpRequestInit {
 }
 
 /**
+ * Parses `rawText` as JSON. Oracle HCM occasionally returns plaintext
+ * `ORA_IRC_*` sentinels (e.g. `ORA_IRC_TOKEN_EXPIRED`) during burst /
+ * rate-limit windows — these are transient. On any JSON parse failure, logs
+ * the first 200 chars and throws `UnknownScraperError` (retryable) so
+ * p-retry re-issues the request rather than hard-aborting with
+ * `HttpSchemaError`.
+ */
+function parseJsonOrThrowRetryable(rawText: string, url: string): unknown {
+  try {
+    return JSON.parse(rawText);
+  } catch (err) {
+    logger.warn(`non-JSON response body from ${url} (first 200 chars): ${rawText.slice(0, 200)}`);
+    throw new UnknownScraperError(`response body is not valid JSON: ${String(err)}`);
+  }
+}
+
+/**
  * Factory that creates a typed direct-HTTP request function pre-wired with
  * the plugin's Bottleneck limiter, p-retry for transient network failures,
  * and Zod response schema. This is the hot-path runtime: no browser, no LLM
@@ -192,15 +209,8 @@ export function createHttpClient<TResponse>(
             }
           }
 
-          let body: unknown;
-          try {
-            body = await response.json();
-          } catch (err) {
-            // Malformed JSON — not transient, abort retry.
-            throw new AbortError(
-              new HttpSchemaError(`response body is not valid JSON: ${String(err)}`)
-            );
-          }
+          const rawText = await response.text();
+          const body = parseJsonOrThrowRetryable(rawText, url);
 
           const parsed = schema.safeParse(body);
           if (!parsed.success) {
