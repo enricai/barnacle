@@ -329,4 +329,36 @@ describe("ObserveCache", () => {
     expect(cache.byInstruction.has("find login")).toBe(true);
     expect(cache.stats.invalidations).toBe(0);
   });
+
+  it("does NOT cache an empty observe result (empty [] must always re-run fresh)", async () => {
+    const cache = newObserveCache();
+    const stagehand = fakeStagehandObserve([]);
+    const first = await guardedObserve(stagehand, "fill first name", undefined, undefined, cache);
+    expect(first).toEqual([]);
+    expect(cache.stats.misses).toBe(1);
+    // The empty result was NOT stored — nothing cached.
+    expect(cache.byInstruction.size).toBe(0);
+  });
+
+  it("re-observes (no stale-empty hit) after a prior empty result for the same instruction", async () => {
+    const cache = newObserveCache();
+    // First observe returns empty (e.g. a probe under-returning on a MUI field).
+    const emptyStagehand = fakeStagehandObserve([]);
+    await guardedObserve(emptyStagehand, "fill first name", undefined, undefined, cache);
+    expect(cache.stats.hits).toBe(0);
+    // Second observe for the SAME instruction must NOT hit the stale [] — it
+    // re-runs and can now resolve the element (the cascade attempt-2 case).
+    const resolvedStagehand = fakeStagehandObserve([VALID_ACTION]);
+    const second = await guardedObserve(
+      resolvedStagehand,
+      "fill first name",
+      undefined,
+      undefined,
+      cache
+    );
+    expect(second).toEqual([VALID_ACTION]);
+    expect(cache.stats.hits).toBe(0); // no stale-empty hit
+    expect(cache.stats.misses).toBe(2); // both calls were real observes
+    expect(resolvedStagehand.observe).toHaveBeenCalledTimes(1);
+  });
 });

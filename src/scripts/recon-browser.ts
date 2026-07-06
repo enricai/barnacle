@@ -860,8 +860,23 @@ export function shouldSkipTechnique(params: {
     triedSelectors: readonly string[];
     errorMessage: string | null;
   }[];
+  /**
+   * True when the pre-cascade probe only found the target via its unfocused
+   * fallback (focused observe empty, page has actionable content). The element
+   * is present but focused observe can't phrase it, so the usual
+   * "no-xpath / no-candidates → skip technique" heuristics would wrongly thin
+   * the cascade before the rephrase. When set, no technique is skipped so the
+   * loop reaches the rephrase that can resolve the element.
+   */
+  viaUnfocusedFallback?: boolean;
 }): { skip: boolean; reason: string } {
-  const { technique, priorAttempts } = params;
+  const { technique, priorAttempts, viaUnfocusedFallback } = params;
+  // Element is known-present (via unfocused fallback): run every technique so
+  // the cascade reaches the rephrase instead of skipping on focused-observe
+  // emptiness that isn't evidence of absence.
+  if (viaUnfocusedFallback) {
+    return { skip: false, reason: "" };
+  }
   if (technique === "structured-click") {
     const anyXpathResolved = priorAttempts.some((a) => a.triedSelectors.length > 0);
     if (!anyXpathResolved) {
@@ -3937,6 +3952,19 @@ async function probeFormValidityBeforeSubmit(params: {
  * so a 0-candidate focused result falls back to an unfocused observe before the
  * step is declared "absent". Exported for tests.
  */
+/**
+ * Result of the pre-cascade reachability probe. `viaUnfocusedFallback` is true
+ * when the focused (instruction-scoped) observe returned nothing but an
+ * unfocused observe found actionable content — i.e. the target IS on the page,
+ * the focused observe just couldn't phrase it. The cascade uses that bit to
+ * NOT take focused-empty-driven give-ups (attempt-2 optional skip,
+ * technique-skips) so the step is driven to the rephrase that can resolve it.
+ */
+interface ProbeResult {
+  verdict: "present" | "absent";
+  viaUnfocusedFallback: boolean;
+}
+
 async function probeStepBeforeAttempts(params: {
   stagehand: Stagehand;
   step: string;
@@ -3944,7 +3972,7 @@ async function probeStepBeforeAttempts(params: {
   logger: Logger;
   captureFn?: CaptureFn;
   observeCache?: ObserveCache;
-}): Promise<"present" | "absent"> {
+}): Promise<ProbeResult> {
   const { stagehand, step, stepIndex, logger, captureFn, observeCache } = params;
   try {
     const candidates = await guardedObserve(
@@ -3976,22 +4004,22 @@ async function probeStepBeforeAttempts(params: {
         logger.info(
           `step ${stepIndex + 1}: focused probe found 0 candidates but unfocused observe found ${unfocused.length} — treating as present (let cascade resolve)`
         );
-        return "present";
+        return { verdict: "present", viaUnfocusedFallback: true };
       }
       logger.info(
         `step ${stepIndex + 1}: probe found 0 candidates (focused and unfocused) — treating as absent (skip cascade, route to replan if required)`
       );
-      return "absent";
+      return { verdict: "absent", viaUnfocusedFallback: false };
     }
     logger.info(`step ${stepIndex + 1}: probe found ${candidates.length} candidate(s)`);
-    return "present";
+    return { verdict: "present", viaUnfocusedFallback: false };
   } catch (err) {
     // Bias toward the existing behavior on errors: don't trigger a spurious
     // replan when the probe itself is the broken thing.
     logger.warn(
       `step ${stepIndex + 1}: probe threw ${toErrorMessage(err)} — treating as present (cascade will run)`
     );
-    return "present";
+    return { verdict: "present", viaUnfocusedFallback: false };
   }
 }
 
@@ -4186,7 +4214,7 @@ async function executeStepWithHealing(params: {
   // candidate matching the step's instruction we either skip cleanly
   // (optional) or escalate straight to replan (required) — far cheaper than
   // burning 4 attempts on a page that clearly isn't the right one.
-  const probeResult = await probeStepBeforeAttempts({
+  const { verdict: probeResult, viaUnfocusedFallback } = await probeStepBeforeAttempts({
     stagehand,
     step,
     stepIndex,
@@ -4370,6 +4398,7 @@ async function executeStepWithHealing(params: {
           triedSelectors: a.triedSelectors,
           errorMessage: a.errorMessage,
         })),
+        viaUnfocusedFallback,
       });
       if (decision.skip) {
         logger.info(
@@ -4446,7 +4475,14 @@ async function executeStepWithHealing(params: {
           // selector — `triedSelectors` only fills when act/observe resolved
           // something) so an optional step that did find a target but failed
           // to verify still runs the full healing cascade.
-          if (optional && attempt === 2 && triedSelectors.length === 0) {
+          //
+          // EXCEPTION: when the probe reached the cascade via its unfocused
+          // fallback (`viaUnfocusedFallback`), the element IS on the page — the
+          // focused observe just can't phrase it. Skipping here would abandon a
+          // present field; instead push through to attempts 3-5 (incl. the
+          // rephrase that can resolve it). Only truly-absent optional steps
+          // (probe returned "absent") skip — and those never reach the cascade.
+          if (optional && attempt === 2 && triedSelectors.length === 0 && !viaUnfocusedFallback) {
             record.verifiedBy = null;
             attempts.push(record);
             logger.info(
