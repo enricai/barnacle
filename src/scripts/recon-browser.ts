@@ -3928,6 +3928,15 @@ async function probeFormValidityBeforeSubmit(params: {
   }
 }
 
+/**
+ * Cheap pre-cascade reachability gate. Runs before the 5-attempt healing cascade
+ * (and any global replan) so a step aimed at the wrong page state fails fast
+ * instead of burning attempts and replan budget. A focused observe can
+ * under-return on controlled-component (React/MUI) forms — returning zero
+ * candidates for a declarative "Fill in X" step even when the field is present —
+ * so a 0-candidate focused result falls back to an unfocused observe before the
+ * step is declared "absent". Exported for tests.
+ */
 async function probeStepBeforeAttempts(params: {
   stagehand: Stagehand;
   step: string;
