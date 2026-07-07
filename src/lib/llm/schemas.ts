@@ -225,6 +225,11 @@ export const ERROR_MESSAGES_SCHEMA = z.object({
  * availableOptions array; null means no option is a valid answer.
  */
 export const SELECT_OPTION_SCHEMA = z.object({
-  chosenIndex: z.number().int().min(0).nullable(),
+  /** Index into the caller-supplied candidate dropdowns — which dropdown on the
+   *  page answers the question. Null when none does. */
+  selectIndex: z.number().int().min(0).nullable(),
+  /** Index into that dropdown's options — which option to choose. Null when
+   *  selectIndex is null. */
+  optionIndex: z.number().int().min(0).nullable(),
   reason: z.string().min(1).max(400),
 });

@@ -1,9 +1,9 @@
 /**
  * Unit coverage for the select-option picker judge. Verifies:
- *  - returns the parsed { chosenIndex } from a mocked Haiku client
+ *  - returns the parsed { selectIndex, optionIndex } from a mocked client
  *  - null client (Bedrock-only) short-circuits to null with no call
- *  - empty availableOptions short-circuits to null
- *  - an out-of-range chosenIndex is clamped to null (guards the caller)
+ *  - empty candidates short-circuits to null
+ *  - an out-of-range selectIndex / optionIndex is clamped to null (guards the caller)
  */
 
 import type Anthropic from "@anthropic-ai/sdk";
@@ -23,44 +23,68 @@ function fakeClient(parsedOutput: unknown): Anthropic {
   } as unknown as Anthropic;
 }
 
+const CANDIDATES = [
+  { label: "disability", options: ["Yes", "No", "I do not wish to answer"] },
+  { label: "nursing education", options: ["ADN", "BSN", "MSN"] },
+];
+
 describe("judgeSelectOptionWithLLM", () => {
-  it("returns the chosen index from the mocked judge", async () => {
-    const client = fakeClient({ chosenIndex: 2, reason: "closest clinical specialty" });
+  it("returns the chosen dropdown + option from the mocked judge", async () => {
+    const client = fakeClient({ selectIndex: 1, optionIndex: 1, reason: "BSN answers education" });
     const result = await judgeSelectOptionWithLLM({
       client,
       input: {
-        questionLabel: "Which best describes your current or most recent experience?",
-        desiredHint: "Emergency Department",
-        availableOptions: ["Behavioral Health", "CVICU", "Progressive Care"],
+        questionLabel: "What is your highest level of nursing education?",
+        desiredHint: "Bachelors of Science in Nursing completed",
+        candidates: CANDIDATES,
       },
     });
-    expect(result).toEqual({ chosenIndex: 2, reason: "closest clinical specialty" });
+    expect(result).toEqual({ selectIndex: 1, optionIndex: 1, reason: "BSN answers education" });
   });
 
   it("short-circuits to null when the client is null (Bedrock-only)", async () => {
     const result = await judgeSelectOptionWithLLM({
       client: null,
-      input: { questionLabel: "Q", desiredHint: "X", availableOptions: ["a", "b"] },
+      input: { questionLabel: "Q", desiredHint: "X", candidates: CANDIDATES },
     });
     expect(result).toBeNull();
   });
 
-  it("short-circuits to null when there are no options", async () => {
-    const client = fakeClient({ chosenIndex: 0, reason: "n/a" });
+  it("short-circuits to null when there are no candidate dropdowns", async () => {
+    const client = fakeClient({ selectIndex: 0, optionIndex: 0, reason: "n/a" });
     const result = await judgeSelectOptionWithLLM({
       client,
-      input: { questionLabel: "Q", desiredHint: "X", availableOptions: [] },
+      input: { questionLabel: "Q", desiredHint: "X", candidates: [] },
     });
     expect(result).toBeNull();
     expect(client.messages.parse as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
   });
 
-  it("clamps an out-of-range chosenIndex to null so the caller can't index past the array", async () => {
-    const client = fakeClient({ chosenIndex: 9, reason: "hallucinated index" });
+  it("clamps an out-of-range selectIndex to null", async () => {
+    const client = fakeClient({ selectIndex: 5, optionIndex: 0, reason: "hallucinated" });
     const result = await judgeSelectOptionWithLLM({
       client,
-      input: { questionLabel: "Q", desiredHint: "X", availableOptions: ["a", "b"] },
+      input: { questionLabel: "Q", desiredHint: "X", candidates: CANDIDATES },
     });
-    expect(result?.chosenIndex).toBeNull();
+    expect(result?.selectIndex).toBeNull();
+  });
+
+  it("clamps an out-of-range optionIndex (for the chosen dropdown) to null", async () => {
+    const client = fakeClient({ selectIndex: 0, optionIndex: 9, reason: "hallucinated option" });
+    const result = await judgeSelectOptionWithLLM({
+      client,
+      input: { questionLabel: "Q", desiredHint: "X", candidates: CANDIDATES },
+    });
+    expect(result?.selectIndex).toBeNull();
+    expect(result?.optionIndex).toBeNull();
+  });
+
+  it("passes through a null selectIndex (no dropdown fits)", async () => {
+    const client = fakeClient({ selectIndex: null, optionIndex: null, reason: "none fit" });
+    const result = await judgeSelectOptionWithLLM({
+      client,
+      input: { questionLabel: "Q", desiredHint: "X", candidates: CANDIDATES },
+    });
+    expect(result).toEqual({ selectIndex: null, optionIndex: null, reason: "none fit" });
   });
 });
