@@ -3714,6 +3714,193 @@ async function trySelectPrimitive(params: {
 }
 
 /**
+ * Site-agnostic checkbox primitive: answer a multi-select checkbox-group
+ * question by directly checking the matching option in the DOM, bypassing
+ * Stagehand observe/act.
+ *
+ * Why this exists (parallels `trySelectPrimitive`): HCA/Talemetry render
+ * multi-select screening questions ("In which settings have you worked…",
+ * certifications) as `c-MultiCheckboxInput` groups — a `<fieldset>`/`<legend>`
+ * question with `<input type=checkbox>` options, each tied to its text by a
+ * canonical `<label for="checkbox-id">Option</label>`. Stagehand observe can't
+ * reliably resolve "select 'Hospital'" against these, so the required question
+ * goes unanswered, "Next" no-ops on validation, and the run caps at the
+ * question pages. This primitive enumerates the checkbox groups (bypassing
+ * observe), matches the requested option deterministically (or via the LLM
+ * picker when the flow's hint doesn't exist in this requisition's options),
+ * and checks it via the React-safe click + bubbling change.
+ *
+ * The flow names ONE option per step ("select 'Hospital'"), so this checks a
+ * single option per call. Returns true when a matching option was checked
+ * (cascade skipped); false when the step isn't a select-style step, there are
+ * no checkbox groups, or no option fits (fall through to the cascade — which is
+ * also where `<select>`-only pages go, since trySelectPrimitive runs first).
+ */
+async function tryCheckboxPrimitive(params: {
+  page: Page;
+  instruction: string;
+  logger: Logger;
+  anthropic: Anthropic | null;
+  captureFn?: JudgeCaptureFn;
+}): Promise<boolean> {
+  const { page, instruction, logger, anthropic, captureFn } = params;
+  const parsed = parseSelectStep(instruction);
+  if (!parsed) return false;
+  const { option, questionLabel } = parsed;
+  const optLabel = `option "${option.slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
+  // Phase 1 (browser, no mutation): find checkbox GROUPS and their options.
+  // A group is a `c-MultiCheckboxInput` container or a `<fieldset>` containing
+  // checkboxes. Question label = the group's legend / associated label; each
+  // option = the `<label for=checkbox-id>` text (canonical association). Try a
+  // deterministic option-text match first; if unique, check it (no LLM). Else
+  // return the groups so the LLM picks which group + which option.
+  const enumerateExpr = `((option) => {
+    const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
+    const wantOpt = norm(option);
+    // Collect groups: c-MultiCheckboxInput roots, else fieldsets with checkboxes.
+    let groupEls = Array.from(document.querySelectorAll("[class*='MultiCheckboxInput'],[class*='c-MultiCheckboxInput-root']"));
+    if (groupEls.length === 0) {
+      groupEls = Array.from(document.querySelectorAll("fieldset")).filter(
+        (f) => f.querySelector("input[type=checkbox]")
+      );
+    }
+    if (groupEls.length === 0) return { groupPresent: false };
+    const groupLabel = (g) => {
+      const leg = g.querySelector("legend");
+      if (leg && leg.textContent) return leg.textContent.replace(/\\s+/g, " ").trim();
+      const al = g.getAttribute("aria-label") || g.getAttribute("label");
+      if (al) return al.replace(/\\s+/g, " ").trim();
+      const alb = g.getAttribute("aria-labelledby");
+      if (alb) { const el = document.getElementById(alb.split(/\\s+/)[0]); if (el) return (el.textContent||"").replace(/\\s+/g," ").trim(); }
+      return "";
+    };
+    // For a checkbox, its option text = <label for=id>, else nearest label text.
+    const cbLabel = (cb) => {
+      if (cb.id) {
+        try {
+          const esc = (window.CSS && CSS.escape) ? CSS.escape(cb.id) : cb.id;
+          const lf = document.querySelector('label[for="' + esc + '"]');
+          if (lf && lf.textContent) return lf.textContent.replace(/\\s+/g, " ").trim();
+        } catch (e) {}
+      }
+      const al = cb.getAttribute("aria-label");
+      if (al) return al.replace(/\\s+/g, " ").trim();
+      const p = cb.closest("label");
+      if (p && p.textContent) return p.textContent.replace(/\\s+/g, " ").trim();
+      return "";
+    };
+    const setChecked = (cb) => {
+      if (!cb.checked) {
+        cb.checked = true;
+        cb.dispatchEvent(new Event("click", { bubbles: true }));
+        cb.dispatchEvent(new Event("input", { bubbles: true }));
+        cb.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      return cb.checked === true;
+    };
+    // Build group list with per-option labels; track DOM index for apply.
+    const groups = [];
+    for (let gi = 0; gi < groupEls.length; gi++) {
+      const boxes = Array.from(groupEls[gi].querySelectorAll("input[type=checkbox]"));
+      if (boxes.length === 0) continue;
+      const options = boxes.map((cb, bi) => ({ bi, text: cbLabel(cb) })).filter((o) => o.text);
+      groups.push({ gi, label: groupLabel(groupEls[gi]), options });
+    }
+    if (groups.length === 0) return { groupPresent: false };
+    // Deterministic: exactly one option across all groups equals wantOpt.
+    let detHits = [];
+    for (const grp of groups) {
+      for (const o of grp.options) {
+        if (norm(o.text) === wantOpt) detHits.push({ gi: grp.gi, bi: o.bi, text: o.text });
+      }
+    }
+    if (detHits.length === 1) {
+      const h = detHits[0];
+      const grpEl = groupEls[h.gi];
+      const cb = grpEl.querySelectorAll("input[type=checkbox]")[h.bi];
+      const ok = cb ? setChecked(cb) : false;
+      return { groupPresent: true, applied: true, ok, chosen: h.text };
+    }
+    // LLM path: return groups (label + option texts) for the picker.
+    return { groupPresent: true, applied: false, groups: groups.map((g) => ({ gi: g.gi, label: g.label, options: g.options })) };
+  })(${JSON.stringify(option)})`;
+  try {
+    const enumResult = (await page.evaluate(enumerateExpr)) as {
+      groupPresent: boolean;
+      applied?: boolean;
+      ok?: boolean;
+      chosen?: string;
+      groups?: { gi: number; label: string; options: { bi: number; text: string }[] }[];
+    };
+    if (!enumResult?.groupPresent) return false; // no checkbox groups → cascade
+    if (enumResult.applied && enumResult.ok) {
+      logger.info(
+        `checkbox primitive: checked "${(enumResult.chosen || "").trim().slice(0, 40)}" (${optLabel})`
+      );
+      return true;
+    }
+    const groups = enumResult.groups ?? [];
+    if (anthropic === null || groups.length === 0) {
+      logger.info(
+        `checkbox primitive: no unique option match for ${optLabel}${anthropic === null ? " (no LLM client)" : ""}; falling through to cascade`
+      );
+      return false;
+    }
+    // LLM picks which group answers the question + which option. Reuse the
+    // select-option judge (candidate "dropdowns" == checkbox groups here).
+    const verdict = await judgeSelectOptionWithLLM({
+      client: anthropic,
+      input: {
+        questionLabel,
+        desiredHint: option,
+        candidates: groups.map((g) => ({
+          label: g.label || null,
+          options: g.options.map((o) => o.text),
+        })),
+      },
+      captureFn,
+    });
+    if (!verdict || verdict.selectIndex === null || verdict.optionIndex === null) {
+      logger.info(
+        `checkbox primitive: LLM found no matching group for ${optLabel}${verdict ? ` (${verdict.reason})` : ""}; falling through to cascade`
+      );
+      return false;
+    }
+    const chosenGroup = groups[verdict.selectIndex]!;
+    const chosenOption = chosenGroup.options[verdict.optionIndex]!;
+    const applyExpr = `((gi, bi) => {
+      let groupEls = Array.from(document.querySelectorAll("[class*='MultiCheckboxInput'],[class*='c-MultiCheckboxInput-root']"));
+      if (groupEls.length === 0) groupEls = Array.from(document.querySelectorAll("fieldset")).filter((f) => f.querySelector("input[type=checkbox]"));
+      const grp = groupEls[gi];
+      if (!grp) return { ok: false };
+      const cb = grp.querySelectorAll("input[type=checkbox]")[bi];
+      if (!cb) return { ok: false };
+      if (!cb.checked) {
+        cb.checked = true;
+        cb.dispatchEvent(new Event("click", { bubbles: true }));
+        cb.dispatchEvent(new Event("input", { bubbles: true }));
+        cb.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      return { ok: cb.checked === true };
+    })(${JSON.stringify(chosenGroup.gi)}, ${JSON.stringify(chosenOption.bi)})`;
+    const applyResult = (await page.evaluate(applyExpr)) as { ok: boolean };
+    if (applyResult?.ok) {
+      logger.info(
+        `checkbox primitive: LLM checked "${chosenOption.text.slice(0, 40)}" for ${optLabel} (${verdict.reason.slice(0, 60)})`
+      );
+      return true;
+    }
+    logger.info(
+      `checkbox primitive: LLM-chosen checkbox did not stick for ${optLabel}; falling through`
+    );
+    return false;
+  } catch (err) {
+    logger.warn(`checkbox primitive: evaluate threw: ${toErrorMessage(err)}; falling through`);
+    return false;
+  }
+}
+
+/**
  * Synthesize a drag-drop event sequence on the most-likely upload drop
  * zone using DataTransfer + DragEvent. Used as K'4 fallback when
  * setInputFiles + change-event dispatch don't trigger the framework's
@@ -4582,6 +4769,17 @@ async function executeStepWithHealing(params: {
   // isn't a single-dropdown select or no option matches.
   if (await trySelectPrimitive({ page, instruction: step, logger, anthropic, captureFn })) {
     logger.info(`step ${stepIndex + 1} resolved by select primitive`);
+    trajectory?.push({ stepIndex, verifiedBy: "dom" });
+    return "completed";
+  }
+
+  // When the step is a "select 'X'" against a multi-select CHECKBOX group
+  // (c-MultiCheckboxInput) rather than a <select> — Talemetry renders some
+  // screening questions this way — answer it directly in the DOM. Runs AFTER
+  // trySelectPrimitive (which handles <select> and no-ops on checkbox-only
+  // pages). No-op (falls through) when there's no checkbox group or no match.
+  if (await tryCheckboxPrimitive({ page, instruction: step, logger, anthropic, captureFn })) {
+    logger.info(`step ${stepIndex + 1} resolved by checkbox primitive`);
     trajectory?.push({ stepIndex, verifiedBy: "dom" });
     return "completed";
   }

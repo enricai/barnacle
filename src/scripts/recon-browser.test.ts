@@ -3040,6 +3040,29 @@ describe("recon-browser/parseSelectStep", () => {
     });
   });
 
+  it("parses the multi-select CHECKBOX question steps (tryCheckboxPrimitive entry contract)", () => {
+    // These Talemetry questions render as c-MultiCheckboxInput groups, not
+    // <select>; tryCheckboxPrimitive reuses parseSelectStep to extract the
+    // option + question label, so these must parse to {option, questionLabel}.
+    expect(
+      parseSelectStep(
+        "For 'In which settings have you worked as a Registered Nurse during the past three years?' select 'Hospital'"
+      )
+    ).toEqual({
+      option: "Hospital",
+      questionLabel:
+        "In which settings have you worked as a Registered Nurse during the past three years?",
+    });
+    expect(
+      parseSelectStep(
+        "For 'Which best describes your current or most recent experience?' select 'Emergency Department'"
+      )
+    ).toEqual({
+      option: "Emergency Department",
+      questionLabel: "Which best describes your current or most recent experience?",
+    });
+  });
+
   it("returns null for generic catch-all steps (no single target)", () => {
     expect(
       parseSelectStep(
