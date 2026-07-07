@@ -47,9 +47,11 @@ import { z } from "zod/v4";
 import { config } from "@/config";
 import { toErrorMessage } from "@/lib/errors";
 import { configureHttpDispatcher } from "@/lib/http";
+import type { JudgeCaptureFn } from "@/lib/llm/judge";
 import { judgeErrorMessagesWithLLM } from "@/lib/llm/judges/error-messages";
 import { judgeInvalidFieldsWithLLM } from "@/lib/llm/judges/invalid-fields";
 import { judgeModalPriorityWithLLM } from "@/lib/llm/judges/modal-priority";
+import { judgeSelectOptionWithLLM } from "@/lib/llm/judges/select-option";
 import { verifySubmitWithLLM } from "@/lib/llm/judges/verify-submit";
 import {
   RECON_FLOW_STEP_SCHEMA,
@@ -3523,81 +3525,163 @@ export function parseSelectStep(
  * uses for text inputs and file inputs), so React/MUI's value tracker
  * registers the change.
  *
- * Returns true when a matching select was found and its value set (cascade is
- * skipped); false when the step isn't a select or no matching option exists on
- * any select (fall through to the cascade).
+ * When the flow's hardcoded option text doesn't exist in THIS requisition's
+ * option list (per-req screening-question variance — e.g. an ER answer on a
+ * Cardiac job), it enumerates the target select's real options and asks an LLM
+ * judge to pick the best available one, then applies that. Deterministic
+ * matches never invoke the LLM (fast path); the LLM fires only on a
+ * present-but-unmatched select. A page with no `<select>` (radio group /
+ * absent) falls through to the cascade unchanged.
+ *
+ * Returns true when an option was selected (deterministic or LLM) and its
+ * value set (cascade is skipped); false when the step isn't a select, there's
+ * no select on the page, or no option fits (fall through to the cascade).
  */
 async function trySelectPrimitive(params: {
   page: Page;
   instruction: string;
   logger: Logger;
+  anthropic: Anthropic | null;
+  captureFn?: JudgeCaptureFn;
 }): Promise<boolean> {
-  const { page, instruction, logger } = params;
+  const { page, instruction, logger, anthropic, captureFn } = params;
   const parsed = parseSelectStep(instruction);
   if (!parsed) return false;
   const { option, questionLabel } = parsed;
+  const optLabel = `option "${option.slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
+  // Phase 1 (browser, no mutation): find the target select — the one whose
+  // nearby text matches the question label (or, when no label, any select).
+  // Try a deterministic option match first; if it hits, apply immediately (no
+  // LLM). Otherwise return the target select's real option list so the Node
+  // side can ask the LLM to pick the best available option (per-req variance:
+  // the flow's hardcoded answer may not exist in THIS requisition's options).
+  //
   // Trust boundary: option/questionLabel come from the committed flow file
-  // (operator-authored), not from page content — but JSON.stringify them
-  // anyway so any apostrophes/quotes can't break the evaluated expression.
-  const expr = `((option, questionLabel) => {
+  // (operator-authored); JSON.stringify anyway so quotes can't break the expr.
+  const enumerateExpr = `((option, questionLabel) => {
     const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
     const wantOpt = norm(option);
     const wantLabel = questionLabel ? norm(questionLabel) : null;
     // All native selects, INCLUDING tabindex=-1 (MuiNativeSelect) which the
     // a11y tree — and therefore Stagehand observe — never surfaces.
     const selects = Array.from(document.querySelectorAll("select"));
-    // Score each select: does it have an option matching wantOpt, and does its
-    // nearby label match wantLabel (when a label was given)?
+    if (selects.length === 0) return { selectPresent: false };
     const scoreLabel = (sel) => {
       if (!wantLabel) return 0;
       let node = sel;
       for (let d = 0; d < 6 && node; d++) {
-        const txt = norm(node.textContent);
-        if (txt.includes(wantLabel)) return 1;
+        if (norm(node.textContent).includes(wantLabel)) return 1;
         node = node.parentElement;
       }
       return -1; // label given but not found near this select → deprioritize
     };
+    // Deterministic match: any select with an option matching wantOpt, best
+    // label score wins.
     let best = null;
     let bestScore = -Infinity;
     for (const sel of selects) {
       const opts = Array.from(sel.options || []);
       const match = opts.find(
         (o) => norm(o.textContent) === wantOpt || norm(o.value) === wantOpt
-      ) || opts.find(
-        (o) => norm(o.textContent).includes(wantOpt) && wantOpt.length > 2
-      );
+      ) || opts.find((o) => norm(o.textContent).includes(wantOpt) && wantOpt.length > 2);
       if (!match) continue;
       const score = scoreLabel(sel);
       if (score > bestScore) { bestScore = score; best = { sel, match }; }
     }
-    if (!best) return { ok: false, reason: "no select has a matching option" };
-    const { sel, match } = best;
-    // React-safe value set: React tracks <select> values via a native setter
-    // and ignores plain \`sel.value =\`. Use the prototype's setter (same
-    // technique the text-input path uses) so MUI/React registers the change.
-    const desc = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value");
-    if (desc && desc.set) { desc.set.call(sel, match.value); } else { sel.value = match.value; }
-    sel.dispatchEvent(new Event("input", { bubbles: true }));
-    sel.dispatchEvent(new Event("change", { bubbles: true }));
-    sel.dispatchEvent(new Event("blur", { bubbles: true }));
-    return { ok: sel.value === match.value, chosen: match.textContent, value: match.value };
+    const applySet = (sel, value) => {
+      const desc = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value");
+      if (desc && desc.set) { desc.set.call(sel, value); } else { sel.value = value; }
+      sel.dispatchEvent(new Event("input", { bubbles: true }));
+      sel.dispatchEvent(new Event("change", { bubbles: true }));
+      sel.dispatchEvent(new Event("blur", { bubbles: true }));
+      return sel.value === value;
+    };
+    if (best) {
+      const ok = applySet(best.sel, best.match.value);
+      return { selectPresent: true, applied: true, ok, chosen: best.match.textContent };
+    }
+    // No deterministic match — pick the target select for the LLM. Prefer the
+    // one whose label matches; else the first select. Mark it with a data attr
+    // so the apply pass can find the SAME select by index.
+    let targetIdx = -1;
+    if (wantLabel) {
+      for (let i = 0; i < selects.length; i++) {
+        if (scoreLabel(selects[i]) === 1) { targetIdx = i; break; }
+      }
+    }
+    if (targetIdx === -1) targetIdx = 0;
+    const target = selects[targetIdx];
+    // Enumerate its real, selectable options (skip disabled placeholders).
+    const options = Array.from(target.options || [])
+      .filter((o) => !o.disabled)
+      .map((o) => ({ text: (o.textContent || "").replace(/\\s+/g, " ").trim(), value: o.value }));
+    return { selectPresent: true, applied: false, targetIdx, options };
   })(${JSON.stringify(option)}, ${JSON.stringify(questionLabel)})`;
   try {
-    const result = (await page.evaluate(expr)) as {
-      ok: boolean;
+    const enumResult = (await page.evaluate(enumerateExpr)) as {
+      selectPresent: boolean;
+      applied?: boolean;
+      ok?: boolean;
       chosen?: string;
-      value?: string;
-      reason?: string;
+      targetIdx?: number;
+      options?: { text: string; value: string }[];
     };
-    if (result?.ok) {
+    // No <select> on the page at all (e.g. the question is a radio group) —
+    // fall through to the cascade unchanged; the LLM picker can't help here.
+    if (!enumResult?.selectPresent) {
       logger.info(
-        `select primitive: set dropdown to "${(result.chosen || "").trim().slice(0, 40)}" (option "${option.slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""})`
+        `select primitive: no <select> on page for ${optLabel}; falling through to cascade`
+      );
+      return false;
+    }
+    // Deterministic match applied.
+    if (enumResult.applied && enumResult.ok) {
+      logger.info(
+        `select primitive: set dropdown to "${(enumResult.chosen || "").trim().slice(0, 40)}" (${optLabel})`
+      );
+      return true;
+    }
+    // Present but no option matched → LLM picks the best AVAILABLE option.
+    const options = enumResult.options ?? [];
+    if (anthropic === null || options.length === 0) {
+      logger.info(
+        `select primitive: no matching option for ${optLabel}${anthropic === null ? " (no LLM client)" : ""}; falling through to cascade`
+      );
+      return false;
+    }
+    const verdict = await judgeSelectOptionWithLLM({
+      client: anthropic,
+      input: { questionLabel, desiredHint: option, availableOptions: options.map((o) => o.text) },
+      captureFn,
+    });
+    if (!verdict || verdict.chosenIndex === null) {
+      logger.info(
+        `select primitive: LLM found no valid option for ${optLabel}${verdict ? ` (${verdict.reason})` : ""}; falling through to cascade`
+      );
+      return false;
+    }
+    const chosen = options[verdict.chosenIndex]!;
+    // Apply pass: set the SAME target select (by index) to the chosen value.
+    const applyExpr = `((targetIdx, value) => {
+      const selects = Array.from(document.querySelectorAll("select"));
+      const sel = selects[targetIdx];
+      if (!sel) return { ok: false };
+      const desc = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value");
+      if (desc && desc.set) { desc.set.call(sel, value); } else { sel.value = value; }
+      sel.dispatchEvent(new Event("input", { bubbles: true }));
+      sel.dispatchEvent(new Event("change", { bubbles: true }));
+      sel.dispatchEvent(new Event("blur", { bubbles: true }));
+      return { ok: sel.value === value };
+    })(${JSON.stringify(enumResult.targetIdx ?? 0)}, ${JSON.stringify(chosen.value)})`;
+    const applyResult = (await page.evaluate(applyExpr)) as { ok: boolean };
+    if (applyResult?.ok) {
+      logger.info(
+        `select primitive: LLM chose "${chosen.text.slice(0, 40)}" for ${optLabel} (${verdict.reason.slice(0, 60)})`
       );
       return true;
     }
     logger.info(
-      `select primitive: no match for option "${option.slice(0, 40)}"${result?.reason ? ` (${result.reason})` : ""}; falling through to cascade`
+      `select primitive: LLM-chosen value did not stick for ${optLabel}; falling through`
     );
     return false;
   } catch (err) {
@@ -4473,7 +4557,7 @@ async function executeStepWithHealing(params: {
   // cascade would otherwise skip them ("no candidates") and leave a required
   // question unanswered. No-op (returns false → falls through) when the step
   // isn't a single-dropdown select or no option matches.
-  if (await trySelectPrimitive({ page, instruction: step, logger })) {
+  if (await trySelectPrimitive({ page, instruction: step, logger, anthropic, captureFn })) {
     logger.info(`step ${stepIndex + 1} resolved by select primitive`);
     trajectory?.push({ stepIndex, verifiedBy: "dom" });
     return "completed";

@@ -215,3 +215,16 @@ export const ERROR_MESSAGES_SCHEMA = z.object({
     )
     .max(50),
 });
+
+/**
+ * Select-option picker verdict. When a flow step's hardcoded dropdown answer
+ * doesn't exist in a given requisition's option list (per-req variance —
+ * e.g. an ER-flavored answer on a Cardiac job), this judge picks the most
+ * plausible AVAILABLE option so the required question can be answered and the
+ * wizard advances. `chosenIndex` indexes into the caller-supplied
+ * availableOptions array; null means no option is a valid answer.
+ */
+export const SELECT_OPTION_SCHEMA = z.object({
+  chosenIndex: z.number().int().min(0).nullable(),
+  reason: z.string().min(1).max(400),
+});
