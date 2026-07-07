@@ -3509,6 +3509,35 @@ export function parseSelectStep(
   return { option, questionLabel };
 }
 
+/** Max settle-retry attempts for a primitive's DOM enumerate (see `pollEnumerate`). */
+const PRIMITIVE_ENUMERATE_ATTEMPTS = 5;
+/** Delay between settle-retry attempts. Total cap ≈ ATTEMPTS × this. */
+const PRIMITIVE_ENUMERATE_RETRY_MS = 600;
+
+/**
+ * Run a primitive's read-only DOM enumerate with a bounded settle-retry. SPA
+ * wizards (Talemetry) frequently render the target widget a beat AFTER the flow
+ * step fires — the first evaluate sees an empty page, so the primitive would
+ * give up even though the widget appears moments later. Re-run the enumerate up
+ * to `PRIMITIVE_ENUMERATE_ATTEMPTS` times, waiting `PRIMITIVE_ENUMERATE_RETRY_MS`
+ * between tries, returning as soon as `isPresent(result)` is true; otherwise
+ * return the last (absent) result so the caller falls through to the cascade
+ * unchanged. Only wraps the ENUMERATE (which is read-only when nothing matches);
+ * the apply/mutate paths are untouched. Site-agnostic render-lag mitigation.
+ */
+export async function pollEnumerate<T>(
+  page: Page,
+  expr: string,
+  isPresent: (result: T) => boolean
+): Promise<T> {
+  let result = (await page.evaluate(expr)) as T;
+  for (let attempt = 1; attempt < PRIMITIVE_ENUMERATE_ATTEMPTS && !isPresent(result); attempt++) {
+    await page.waitForTimeout(PRIMITIVE_ENUMERATE_RETRY_MS);
+    result = (await page.evaluate(expr)) as T;
+  }
+  return result;
+}
+
 /**
  * Site-agnostic select primitive: answer a native `<select>` dropdown by
  * directly setting its value in the DOM, bypassing Stagehand observe/act.
@@ -3633,13 +3662,15 @@ async function trySelectPrimitive(params: {
     return { selectPresent: true, candidates };
   })(${JSON.stringify(option)})`;
   try {
-    const enumResult = (await page.evaluate(enumerateExpr)) as {
+    // Settle-retry: the <select> may render a beat after the step fires (SPA
+    // render-lag); poll until it appears or the cap is hit.
+    const enumResult = await pollEnumerate<{
       selectPresent: boolean;
       applied?: boolean;
       ok?: boolean;
       chosen?: string;
       candidates?: { selIdx: number; label: string; options: { text: string; value: string }[] }[];
-    };
+    }>(page, enumerateExpr, (r) => r?.selectPresent === true);
     // No <select> on the page at all (e.g. the question is a radio group) —
     // fall through to the cascade unchanged; the LLM picker can't help here.
     if (!enumResult?.selectPresent) {
@@ -3825,13 +3856,15 @@ async function tryCheckboxPrimitive(params: {
     return { groupPresent: true, applied: false, groups: groups.map((g) => ({ gi: g.gi, label: g.label, options: g.options })) };
   })(${JSON.stringify(option)})`;
   try {
-    const enumResult = (await page.evaluate(enumerateExpr)) as {
+    // Settle-retry: the checkbox group may render a beat after the step fires
+    // (SPA render-lag); poll until it appears or the cap is hit.
+    const enumResult = await pollEnumerate<{
       groupPresent: boolean;
       applied?: boolean;
       ok?: boolean;
       chosen?: string;
       groups?: { gi: number; label: string; options: { bi: number; text: string }[] }[];
-    };
+    }>(page, enumerateExpr, (r) => r?.groupPresent === true);
     if (!enumResult?.groupPresent) return false; // no checkbox groups → cascade
     if (enumResult.applied && enumResult.ok) {
       logger.info(

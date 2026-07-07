@@ -92,6 +92,7 @@ import {
   pairInvalidWithErrors,
   parseSelectStep,
   persistReplannedFlow,
+  pollEnumerate,
   probeLeafInvalidContainers,
   probeStepBeforeAttempts,
   type ReplanEvent,
@@ -3093,5 +3094,51 @@ describe("recon-browser/selectBodyExcerpt — MUI marker (RC1)", () => {
     // The MUI marker (past the default cap) must appear in the returned window;
     // an ng-only matcher would have returned the head slice without it.
     expect(excerpt).toContain("Mui-error");
+  });
+});
+
+describe("recon-browser/pollEnumerate — settle-retry", () => {
+  it("returns immediately when the widget is present on the first evaluate", async () => {
+    const evaluate = vi.fn().mockResolvedValue({ present: true, n: 1 });
+    const waitForTimeout = vi.fn().mockResolvedValue(undefined);
+    const page = { evaluate, waitForTimeout } as unknown as Parameters<typeof pollEnumerate>[0];
+    const result = await pollEnumerate<{ present: boolean; n: number }>(
+      page,
+      "expr",
+      (r) => r.present
+    );
+    expect(result).toEqual({ present: true, n: 1 });
+    expect(evaluate).toHaveBeenCalledTimes(1);
+    expect(waitForTimeout).not.toHaveBeenCalled();
+  });
+
+  it("re-polls until the widget appears (render-lag), then returns it", async () => {
+    // Empty on the first two tries (widget not rendered yet), present on the third.
+    const evaluate = vi
+      .fn()
+      .mockResolvedValueOnce({ present: false })
+      .mockResolvedValueOnce({ present: false })
+      .mockResolvedValueOnce({ present: true, n: 3 });
+    const waitForTimeout = vi.fn().mockResolvedValue(undefined);
+    const page = { evaluate, waitForTimeout } as unknown as Parameters<typeof pollEnumerate>[0];
+    const result = await pollEnumerate<{ present: boolean; n?: number }>(
+      page,
+      "expr",
+      (r) => r.present
+    );
+    expect(result).toEqual({ present: true, n: 3 });
+    expect(evaluate).toHaveBeenCalledTimes(3);
+    expect(waitForTimeout).toHaveBeenCalledTimes(2);
+  });
+
+  it("gives up after the attempt cap and returns the last absent result", async () => {
+    const evaluate = vi.fn().mockResolvedValue({ present: false });
+    const waitForTimeout = vi.fn().mockResolvedValue(undefined);
+    const page = { evaluate, waitForTimeout } as unknown as Parameters<typeof pollEnumerate>[0];
+    const result = await pollEnumerate<{ present: boolean }>(page, "expr", (r) => r.present);
+    expect(result).toEqual({ present: false });
+    // Capped at PRIMITIVE_ENUMERATE_ATTEMPTS (5) evaluates, 4 waits between them.
+    expect(evaluate).toHaveBeenCalledTimes(5);
+    expect(waitForTimeout).toHaveBeenCalledTimes(4);
   });
 });
