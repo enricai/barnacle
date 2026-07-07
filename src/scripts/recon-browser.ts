@@ -773,6 +773,74 @@ export function findRecentPageTransition(params: {
 }
 
 /**
+ * Wizard-exit action labels: controls that ABANDON / restart a multi-page
+ * wizard rather than advance it. When a flow's "advance / click Next" step
+ * resolves the LLM's `act` onto one of these, acting on it can save-and-exit,
+ * cancel, or restart the application — silently sending the run backward. The
+ * cascade rejects a resolved action whose description matches one of these so
+ * an advance step never fires a destructive control. Deliberately narrow: only
+ * unambiguously-destructive labels, NEVER bare "continue"/"next"/"apply"/
+ * "accept" (those are legitimate advance controls on many ATSes).
+ */
+const WIZARD_EXIT_ACTION_LABELS: readonly string[] = [
+  "continue later",
+  "save & exit",
+  "save and exit",
+  "save for later",
+  "cancel application",
+  "cancel and exit",
+  "start over",
+  "delete application",
+  "discard",
+];
+
+/**
+ * True when a resolved action's description names a wizard-exit control (a
+ * save-and-exit / cancel / restart button) rather than a forward action.
+ * Matched case-insensitively as a substring against the built-in list plus any
+ * site-supplied `extraLabels`. Bare "cancel"/"back" are intentionally NOT in the
+ * default list (too many false positives, e.g. "cancel changes to this field",
+ * "background"); a site can add them via `wizardExitButtonLabels` if its wizard
+ * uses them destructively.
+ */
+export function isWizardExitAction(
+  description: string | null | undefined,
+  extraLabels: readonly string[] = []
+): boolean {
+  if (!description) return false;
+  const haystack = description.toLowerCase();
+  for (const label of [...WIZARD_EXIT_ACTION_LABELS, ...extraLabels]) {
+    if (haystack.includes(label.toLowerCase())) return true;
+  }
+  return false;
+}
+
+/**
+ * Detects a multi-page-wizard RESTART / backward navigation by scanning the
+ * recent full-URL capture list for a configured restart-signal pattern (e.g.
+ * `init-apply`, `application_canceled=true`). Scans `recentCaptures` — NOT
+ * `recentCaptureMeta`, which drops GETs — because the restart signal is often a
+ * plain GET (Talemetry's `GET .../init-apply?...&application_canceled=true`).
+ * Returns the matching URL (for the diagnostic) or null. No-op when the flow
+ * declares no `restartSignalUrlPatterns`.
+ */
+export function findWizardRestartSignal(params: {
+  recentCaptures: readonly string[];
+  preLength: number;
+  restartSignalUrlPatterns: readonly string[];
+}): string | null {
+  const { recentCaptures, preLength, restartSignalUrlPatterns } = params;
+  if (restartSignalUrlPatterns.length === 0) return null;
+  const window = recentCaptures.slice(preLength);
+  for (const url of window) {
+    for (const pattern of restartSignalUrlPatterns) {
+      if (url.includes(pattern)) return url;
+    }
+  }
+  return null;
+}
+
+/**
  * Read-only count of ng-invalid form controls on the page. Side-effect-free
  * counterpart to `probeFormValidityBeforeSubmit` (which also auto-fills
  * unselected radio groups via element.click()). Used by the cascade's
@@ -1358,6 +1426,22 @@ const RECON_FLOW_FILE_SCHEMA = z.union([
      * conventions alone.
      */
     knownErrorClassPrefixes: z.array(z.string().min(1)).optional(),
+    /**
+     * Optional site-specific labels for wizard-exit controls (save-and-exit,
+     * cancel, restart) — appended to the engine's built-in
+     * WIZARD_EXIT_ACTION_LABELS. An "advance / click Next" step whose resolved
+     * action description matches one of these is rejected so the cascade never
+     * clicks a destructive control. Only add unambiguously-destructive labels.
+     */
+    wizardExitButtonLabels: z.array(z.string().min(1)).optional(),
+    /**
+     * Optional URL substrings that signal a multi-page wizard RESTART / backward
+     * navigation (e.g. `init-apply`, `application_canceled=true`). When any
+     * recent capture URL matches after a step, the run aborts with a
+     * `wizard-regression` error instead of running later steps against the reset
+     * page or replanning against the restarted wizard.
+     */
+    restartSignalUrlPatterns: z.array(z.string().min(1)).optional(),
   }),
 ]);
 
@@ -4102,6 +4186,12 @@ async function executeStepWithHealing(params: {
    */
   knownErrorClassPrefixes: string[];
   /**
+   * Site + engine wizard-exit labels. When a "click / advance" step's resolved
+   * action names one of these (via isWizardExitAction), the cascade rejects it
+   * so an advance step never fires a save-and-exit / cancel / restart control.
+   */
+  wizardExitButtonLabels: string[];
+  /**
    * Optional accumulator the cascade pushes onto when this step verifies.
    * Lets the main loop maintain a short cross-step trajectory of `verifiedBy`
    * signals (network / url / dom / submitted-state-dom) which is then
@@ -4145,6 +4235,7 @@ async function executeStepWithHealing(params: {
     successPageTitleHints,
     ownBackendHostnames,
     knownErrorClassPrefixes,
+    wizardExitButtonLabels,
     trajectory,
     observeCache,
   } = params;
@@ -4439,9 +4530,26 @@ async function executeStepWithHealing(params: {
         );
         record.actResultSuccess = result.success;
         record.actResultDescription = result.actionDescription;
-        for (const action of result.actions ?? []) {
-          if (action.selector) triedSelectors.push(action.selector);
-          if (!resolvedAction) resolvedAction = action;
+        // Deny-list guard (post-hoc): attempt-1 act resolves internally, so we
+        // can't block the click, but we refuse to COUNT a wizard-exit control as
+        // success — don't set resolvedAction, force failure — so the cascade
+        // doesn't treat "clicked Cancel/Continue-Later" as a completed step.
+        // (If the click already restarted the wizard, the loop's restart-signal
+        // detection aborts the run regardless.)
+        if (
+          isWizardExitAction(result.actionDescription, wizardExitButtonLabels) ||
+          result.actions?.some((a) => isWizardExitAction(a.description, wizardExitButtonLabels))
+        ) {
+          record.errorMessage = `refused wizard-exit control: "${result.actionDescription.slice(0, 60)}"`;
+          record.actResultSuccess = false;
+          for (const action of result.actions ?? []) {
+            if (action.selector) triedSelectors.push(action.selector);
+          }
+        } else {
+          for (const action of result.actions ?? []) {
+            if (action.selector) triedSelectors.push(action.selector);
+            if (!resolvedAction) resolvedAction = action;
+          }
         }
       } else if (attempt === 2 || attempt === 4) {
         record.technique = attempt === 2 ? "observe-act" : "observe-act-exclude";
@@ -4482,6 +4590,19 @@ async function executeStepWithHealing(params: {
           }
         } else {
           const target = candidates[0]!;
+          // Deny-list guard: never act on a wizard-exit control (save-and-exit,
+          // cancel, restart) for a click/advance step. Record it as tried (so a
+          // re-observe with ignoreSelectors surfaces a different candidate) and
+          // fail this attempt instead of firing a destructive click.
+          if (isWizardExitAction(target.description, wizardExitButtonLabels)) {
+            record.errorMessage = `refused wizard-exit control: "${target.description.slice(0, 60)}"`;
+            triedSelectors.push(target.selector);
+            record.triedSelectors = [target.selector];
+            attempts.push(record);
+            failureReasons.push(record.errorMessage);
+            logger.info(`step ${stepIndex + 1} attempt ${attempt}: ${record.errorMessage}`);
+            continue;
+          }
           record.instruction = target.description;
           triedSelectors.push(target.selector);
           record.triedSelectors = [target.selector];
@@ -5312,6 +5433,8 @@ function parseCli(): {
   successPageTitleHints: string[];
   ownBackendHostnames: string[];
   knownErrorClassPrefixes: string[];
+  wizardExitButtonLabels: string[];
+  restartSignalUrlPatterns: string[];
   originalShape: "array" | "object";
 } {
   const args = process.argv.slice(2);
@@ -5404,6 +5527,8 @@ function parseCli(): {
       successPageTitleHints: [],
       ownBackendHostnames: [],
       knownErrorClassPrefixes: [],
+      wizardExitButtonLabels: [],
+      restartSignalUrlPatterns: [],
       originalShape: "array",
     };
   }
@@ -5434,6 +5559,12 @@ function parseCli(): {
   const knownErrorClassPrefixes = Array.isArray(parsed.data)
     ? []
     : (parsed.data.knownErrorClassPrefixes ?? []);
+  const wizardExitButtonLabels = Array.isArray(parsed.data)
+    ? []
+    : (parsed.data.wizardExitButtonLabels ?? []);
+  const restartSignalUrlPatterns = Array.isArray(parsed.data)
+    ? []
+    : (parsed.data.restartSignalUrlPatterns ?? []);
   const isArrayShape = Array.isArray(parsed.data);
   // Validate regex compiles eagerly so a malformed pattern fails the run
   // at startup, not deep in a per-step verifier.
@@ -5462,6 +5593,8 @@ function parseCli(): {
     successPageTitleHints,
     ownBackendHostnames,
     knownErrorClassPrefixes,
+    wizardExitButtonLabels,
+    restartSignalUrlPatterns,
     originalShape: isArrayShape ? "array" : "object",
   };
 }
@@ -5511,6 +5644,8 @@ async function main(): Promise<void> {
     successPageTitleHints,
     ownBackendHostnames,
     knownErrorClassPrefixes,
+    wizardExitButtonLabels,
+    restartSignalUrlPatterns,
     originalShape,
   } = parseCli();
 
@@ -5693,6 +5828,10 @@ async function main(): Promise<void> {
           logger.warn(`step ${i + 1}: DOM dump failed: ${toErrorMessage(err)}`);
         }
       }
+      // Baseline for wizard-restart detection: capture the recentCaptures
+      // length before the step so findWizardRestartSignal scans only URLs that
+      // landed during THIS step's processing.
+      const recentCapturesLenBeforeStep = recentCaptures.length;
       try {
         const stepOutcome = await executeStepWithHealing({
           stagehand,
@@ -5717,10 +5856,28 @@ async function main(): Promise<void> {
           successPageTitleHints,
           ownBackendHostnames,
           knownErrorClassPrefixes,
+          wizardExitButtonLabels,
           trajectory,
           captureFn,
           observeCache,
         });
+
+        // Wizard-restart detection: if a configured restart-signal URL (e.g.
+        // Talemetry's `init-apply?...&application_canceled=true`) landed during
+        // this step, the multi-page wizard reset to page 1. Remaining steps now
+        // target a reset page and replanning against the restarted wizard is
+        // futile — abort with a diagnostic instead of silently cycling.
+        const restartUrl = findWizardRestartSignal({
+          recentCaptures,
+          preLength: recentCapturesLenBeforeStep,
+          restartSignalUrlPatterns,
+        });
+        if (restartUrl !== null) {
+          throw new StepVerificationError(
+            `step ${i + 1} (${step.instruction.slice(0, 60)}) triggered a wizard restart (${restartUrl.slice(0, 120)}) — the application reset to the first page; aborting`,
+            "wizard-regression"
+          );
+        }
 
         if (stepOutcome === "skipped") {
           const pageStagnant =
@@ -5757,6 +5914,12 @@ async function main(): Promise<void> {
         // through to the existing dispatcher below.)
         if (err.kind === "backend-error-unrecoverable") {
           logger.error(`backend error unrecoverable: ${err.message}; aborting run`);
+          throw err;
+        }
+        if (err.kind === "wizard-regression") {
+          // The wizard restarted; replanning against a reset page cannot recover
+          // the lost progress. Bypass the replan dispatcher and abort.
+          logger.error(`wizard regression: ${err.message}; aborting run`);
           throw err;
         }
 

@@ -76,12 +76,14 @@ import {
   filterCompletedFromReplan,
   findRecentBackendError,
   findRecentPageTransition,
+  findWizardRestartSignal,
   formatValidationRejectedReason,
   type Html5DateFillResult,
   hasBillingErrorBeenLogged,
   type InvalidFormControl,
   isReplanCycle,
   isSubmitRevealedInvalid,
+  isWizardExitAction,
   type LeafInvalidField,
   logBillingErrorIfPresent,
   type NormalizedStep,
@@ -982,6 +984,69 @@ describe("recon-browser/filterCompletedFromReplan", () => {
     const raw = [mk("Step A"), mk("Step B")];
     const out = filterCompletedFromReplan(raw, [], "Step failed");
     expect(out).toEqual(raw);
+  });
+});
+
+describe("recon-browser/isWizardExitAction", () => {
+  it("matches unambiguous wizard-exit labels (case-insensitive substring)", () => {
+    expect(isWizardExitAction("Continue Later button")).toBe(true);
+    expect(isWizardExitAction("Save & Exit")).toBe(true);
+    expect(isWizardExitAction("CANCEL APPLICATION link")).toBe(true);
+    expect(isWizardExitAction("Start Over")).toBe(true);
+  });
+
+  it("does NOT match legitimate advance controls", () => {
+    expect(isWizardExitAction("Continue button to proceed")).toBe(false);
+    expect(isWizardExitAction("NEXT button to advance to the next page")).toBe(false);
+    expect(isWizardExitAction("Apply link to advance to the job application page")).toBe(false);
+    expect(isWizardExitAction("I ACCEPT button which serves as the Continue/Next action")).toBe(
+      false
+    );
+    expect(isWizardExitAction("Submit Application")).toBe(false);
+  });
+
+  it("respects site-supplied extra labels and handles null/empty", () => {
+    expect(isWizardExitAction("Return to dashboard", ["return to dashboard"])).toBe(true);
+    expect(isWizardExitAction("Return to dashboard")).toBe(false);
+    expect(isWizardExitAction(null)).toBe(false);
+    expect(isWizardExitAction("")).toBe(false);
+  });
+});
+
+describe("recon-browser/findWizardRestartSignal", () => {
+  it("returns the matching URL when a restart-signal pattern appears in the step window", () => {
+    const captures = [
+      "https://apply.talemetry.com/application/abc/gq",
+      "https://apply.talemetry.com/init-apply/x/job/id/1?application_canceled=true",
+    ];
+    const hit = findWizardRestartSignal({
+      recentCaptures: captures,
+      preLength: 1,
+      restartSignalUrlPatterns: ["application_canceled=true"],
+    });
+    expect(hit).toContain("application_canceled=true");
+  });
+
+  it("ignores matches that landed BEFORE the step (preLength window)", () => {
+    const captures = [
+      "https://apply.talemetry.com/init-apply/x?application_canceled=true",
+      "https://apply.talemetry.com/application/abc/gq",
+    ];
+    const hit = findWizardRestartSignal({
+      recentCaptures: captures,
+      preLength: 1,
+      restartSignalUrlPatterns: ["application_canceled=true"],
+    });
+    expect(hit).toBeNull();
+  });
+
+  it("returns null when no patterns are configured (feature off)", () => {
+    const hit = findWizardRestartSignal({
+      recentCaptures: ["https://x/init-apply?application_canceled=true"],
+      preLength: 0,
+      restartSignalUrlPatterns: [],
+    });
+    expect(hit).toBeNull();
   });
 });
 
