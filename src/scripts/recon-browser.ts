@@ -3566,14 +3566,45 @@ async function trySelectPrimitive(params: {
     // a11y tree — and therefore Stagehand observe — never surfaces.
     const selects = Array.from(document.querySelectorAll("select"));
     if (selects.length === 0) return { selectPresent: false };
+    // Does this select belong to the question identified by wantLabel? Checks
+    // the three ways forms associate a label with a control, in order of
+    // reliability: (1) an explicit <label for=id> or aria-labelledby target,
+    // (2) an aria-label, (3) an ancestor container whose text contains the
+    // label (fieldset/question-item wrappers). Returns 1 on a match, -1 when a
+    // label was given but none of these tie this select to it (so we can
+    // REFUSE to answer the wrong dropdown), 0 when no label was given.
+    const selLabelText = (sel) => {
+      const parts = [];
+      if (sel.id) {
+        const lf = document.querySelector('label[for="' + (window.CSS && CSS.escape ? CSS.escape(sel.id) : sel.id) + '"]');
+        if (lf) parts.push(lf.textContent);
+      }
+      const alb = sel.getAttribute("aria-labelledby");
+      if (alb) {
+        for (const id of alb.split(/\\s+/)) {
+          const el = document.getElementById(id);
+          if (el) parts.push(el.textContent);
+        }
+      }
+      const al = sel.getAttribute("aria-label");
+      if (al) parts.push(al);
+      return norm(parts.join(" "));
+    };
     const scoreLabel = (sel) => {
       if (!wantLabel) return 0;
-      let node = sel;
-      for (let d = 0; d < 6 && node; d++) {
+      // (1)+(2): explicit label / aria association.
+      const lt = selLabelText(sel);
+      if (lt && lt.includes(wantLabel)) return 1;
+      // (3): ancestor container text. Bounded to a small container so we don't
+      // match a whole-page wrapper (which would tie every select to every
+      // question). Stop climbing once the container gets large (many controls).
+      let node = sel.parentElement;
+      for (let d = 0; d < 5 && node; d++) {
+        if (node.querySelectorAll("select,input,textarea").length > 3) break;
         if (norm(node.textContent).includes(wantLabel)) return 1;
         node = node.parentElement;
       }
-      return -1; // label given but not found near this select → deprioritize
+      return -1; // label given but this select isn't tied to it
     };
     // Deterministic match: any select with an option matching wantOpt, best
     // label score wins.
@@ -3600,16 +3631,32 @@ async function trySelectPrimitive(params: {
       const ok = applySet(best.sel, best.match.value);
       return { selectPresent: true, applied: true, ok, chosen: best.match.textContent };
     }
-    // No deterministic match — pick the target select for the LLM. Prefer the
-    // one whose label matches; else the first select. Mark it with a data attr
-    // so the apply pass can find the SAME select by index.
+    // No deterministic match — pick the target select for the LLM, but ONLY a
+    // select the label actually ties to. When a question label is given and NO
+    // select matches it, REFUSE (return noLabelMatch) rather than answering an
+    // arbitrary dropdown — answering the wrong select (e.g. picking a Disability
+    // option for a nursing-education question) is worse than falling through to
+    // the cascade. Only when NO label was given do we accept the sole/first
+    // select (the un-labeled "Select 'United States' in the Country dropdown"
+    // style step, where there's one obvious target).
     let targetIdx = -1;
     if (wantLabel) {
       for (let i = 0; i < selects.length; i++) {
         if (scoreLabel(selects[i]) === 1) { targetIdx = i; break; }
       }
+      if (targetIdx === -1) {
+        return { selectPresent: true, applied: false, noLabelMatch: true };
+      }
+    } else if (selects.length === 1) {
+      // No question label (e.g. "Select 'Texas' in the State dropdown" — the
+      // field name isn't quoted so parseSelectStep yields no label). Only safe
+      // to target the sole select; with multiple selects and no label there's
+      // no way to know which one, so refuse rather than guess select[0] (the
+      // v18 State-picked-from-Country mis-pick).
+      targetIdx = 0;
+    } else {
+      return { selectPresent: true, applied: false, noLabelMatch: true };
     }
-    if (targetIdx === -1) targetIdx = 0;
     const target = selects[targetIdx];
     // Enumerate its real, selectable options (skip disabled placeholders).
     const options = Array.from(target.options || [])
@@ -3624,6 +3671,7 @@ async function trySelectPrimitive(params: {
       ok?: boolean;
       chosen?: string;
       targetIdx?: number;
+      noLabelMatch?: boolean;
       options?: { text: string; value: string }[];
     };
     // No <select> on the page at all (e.g. the question is a radio group) —
@@ -3632,6 +3680,13 @@ async function trySelectPrimitive(params: {
       logger.info(
         `select primitive: no <select> on page for ${optLabel}; falling through to cascade`
       );
+      return false;
+    }
+    // A question label was given but no select on the page ties to it — refuse
+    // to answer an arbitrary dropdown; let the cascade handle it. (Prevents the
+    // v18 bug where every question was answered against one wrong select.)
+    if (enumResult.noLabelMatch) {
+      logger.info(`select primitive: no <select> matches ${optLabel}; falling through to cascade`);
       return false;
     }
     // Deterministic match applied.
