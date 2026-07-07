@@ -423,6 +423,37 @@ const MAX_PROBE_REPLANS = 5;
  */
 const MAX_CASCADE_REPLANS = 5;
 /**
+ * Framework-agnostic invalid/required-unfilled marker source, shared across
+ * every DOM invalid-detection path so they stay uniform. Exported as a raw
+ * pattern string (not a RegExp) because most consumers interpolate it into a
+ * browser-context `page.evaluate` expression string, where a Node RegExp can't
+ * cross the boundary.
+ *
+ * Why the additions beyond the original Angular/Bootstrap set: HCA's Talemetry
+ * wizard mixes Angular pages AND Material-UI (React) pages (Review, self-ID,
+ * COMPENSATION). MUI marks invalid controls with `Mui-error` (class) +
+ * `aria-invalid="true"` (attribute), NONE of which the ng-only regex matched —
+ * so the engine was structurally blind to MUI required-field validation and
+ * silently advanced past unfilled MUI forms. Confirmed on real captures: a
+ * Review dump had 0 ng-invalid but 18 `Mui-error` + 12 `aria-invalid`.
+ */
+const INVALID_MARKER_CLASS_SOURCE =
+  "ng-invalid|mat-form-field-invalid|is-invalid|field-invalid|input-invalid|form-invalid|Mui-error";
+/**
+ * Browser-context predicate string: given an element `el` in scope, is it a
+ * required-unfilled / invalid control? Covers the class markers above AND the
+ * MUI/React attribute signature (`aria-invalid="true"`, or a required control
+ * still empty). Interpolate into a `page.evaluate` expr where `el` is bound.
+ * Kept as an IIFE-free expression so it composes inside larger exprs.
+ */
+const INVALID_MARKER_EL_EXPR = `((el) => {
+  const rx = /(${INVALID_MARKER_CLASS_SOURCE})/;
+  const cls = (el.getAttribute && el.getAttribute("class")) || "";
+  if (rx.test(cls)) return true;
+  if (el.getAttribute && el.getAttribute("aria-invalid") === "true") return true;
+  return false;
+})`;
+/**
  * How many steps from the end of the flow are considered "trailing" for the
  * Tier 1 grace path. A verification failure on an optional step within this
  * window is treated as a benign no-op exit when a recent non-GET capture also
@@ -851,11 +882,10 @@ export function findWizardRestartSignal(params: {
  */
 export async function countNgInvalidContainers(page: Page): Promise<number> {
   const expr = `(() => {
-    const rx = /(ng-invalid|mat-form-field-invalid|is-invalid|field-invalid|input-invalid|form-invalid)/;
+    const isInvalid = ${INVALID_MARKER_EL_EXPR};
     let n = 0;
-    for (const el of document.querySelectorAll("[class]")) {
-      const cls = el.getAttribute("class") || "";
-      if (rx.test(cls)) n++;
+    for (const el of document.querySelectorAll("[class],[aria-invalid]")) {
+      if (isInvalid(el)) n++;
     }
     return n;
   })()`;
@@ -1876,14 +1906,16 @@ export function selectBodyExcerpt(body: string): string {
   if (body.length <= BODY_EXCERPT_DEFAULT_CAP) return body;
   const defaultExcerpt = body.slice(0, BODY_EXCERPT_DEFAULT_CAP);
   if (
-    /ng-invalid|mat-form-field-invalid|is-invalid|<form\b|questions-container/.test(defaultExcerpt)
+    /ng-invalid|mat-form-field-invalid|is-invalid|Mui-error|<form\b|questions-container/.test(
+      defaultExcerpt
+    )
   ) {
     return defaultExcerpt;
   }
   const searchFrom = BODY_EXCERPT_DEFAULT_CAP;
   const markerIndex = body
     .slice(searchFrom)
-    .search(/ng-invalid|mat-form-field-invalid|is-invalid|<form\b|questions-container/);
+    .search(/ng-invalid|mat-form-field-invalid|is-invalid|Mui-error|<form\b|questions-container/);
   if (markerIndex < 0) return defaultExcerpt;
   const absoluteIndex = searchFrom + markerIndex;
   const start = Math.max(0, absoluteIndex - BODY_EXCERPT_FORM_WINDOW / 4);
@@ -3433,6 +3465,148 @@ async function tryUploadPrimitive(params: {
 }
 
 /**
+ * Parse a select/dropdown flow step into the option to choose and (when
+ * present) the question label that scopes which dropdown it targets.
+ *
+ * Why: HCA/Talemetry render dropdowns as `MuiNativeSelect` native `<select>`
+ * with `tabindex="-1"` — removed from the accessibility tree, so Stagehand
+ * observe returns `[]` and the cascade can never select an option. The select
+ * primitive answers these directly from the DOM, but needs the target option
+ * text (and, to disambiguate multiple dropdowns on one page, the question
+ * label) extracted from the human-readable step.
+ *
+ * Recognizes the flow's conventional phrasings, all quoted:
+ *   "select 'Yes'", "select or check 'BLS'",
+ *   "for 'What is your highest level…?' select 'BSN completed'",
+ *   "select 'Texas' in the State/Region dropdown".
+ * Returns null when the step is not a single-dropdown select (e.g. generic
+ * "for any remaining question…" catch-alls, or radio/checkbox-only steps) so
+ * the caller falls through to the normal cascade.
+ */
+export function parseSelectStep(
+  instruction: string
+): { option: string; questionLabel: string | null } | null {
+  const lower = instruction.toLowerCase();
+  // Must look like a dropdown selection, not a radio/checkbox click. "select
+  // or check" is allowed (some option lists render as either). A bare
+  // "click the 'Yes' answer" is a radio and handled by the cascade.
+  const mentionsSelect = /\bselect(\s+or\s+check)?\b/.test(lower);
+  if (!mentionsSelect) return null;
+  // Catch-all steps ("for any remaining…") have no concrete single target.
+  if (/\bany\s+remaining\b/.test(lower)) return null;
+  const quoted = [...instruction.matchAll(/'([^']+)'/g)].map((m) => m[1]!);
+  if (quoted.length === 0) return null;
+  // The OPTION is the quoted string immediately following the word "select".
+  const selMatch = instruction.match(/\bselect(?:\s+or\s+check)?\s+'([^']+)'/i);
+  if (!selMatch) return null;
+  const option = selMatch[1]!.trim();
+  // The QUESTION LABEL, when present, is a DIFFERENT quoted string — the one
+  // introduced by "for '…'" or "in the '…' dropdown". Pick the first quoted
+  // string that is not the option.
+  const questionLabel = quoted.find((q) => q.trim() !== option)?.trim() ?? null;
+  return { option, questionLabel };
+}
+
+/**
+ * Site-agnostic select primitive: answer a native `<select>` dropdown by
+ * directly setting its value in the DOM, bypassing Stagehand observe/act.
+ *
+ * Why this exists (parallels `tryUploadPrimitive`): Talemetry/MUI dropdowns are
+ * `MuiNativeSelect` native `<select>` elements carrying `tabindex="-1"`, which
+ * removes them from the accessibility tree. Stagehand observe returns `[]` for
+ * them, so the cascade's `selectOption` (which needs a resolved locator) never
+ * fires — the required question stays unanswered, "Next" no-ops on client-side
+ * validation, and every run caps at the questions pages. This primitive finds
+ * the `<select>` by raw DOM (including tabindex=-1), matches the requested
+ * option by text/value/normalized label, and sets it via the React-safe native
+ * value setter + bubbling `change` (the same technique the codebase already
+ * uses for text inputs and file inputs), so React/MUI's value tracker
+ * registers the change.
+ *
+ * Returns true when a matching select was found and its value set (cascade is
+ * skipped); false when the step isn't a select or no matching option exists on
+ * any select (fall through to the cascade).
+ */
+async function trySelectPrimitive(params: {
+  page: Page;
+  instruction: string;
+  logger: Logger;
+}): Promise<boolean> {
+  const { page, instruction, logger } = params;
+  const parsed = parseSelectStep(instruction);
+  if (!parsed) return false;
+  const { option, questionLabel } = parsed;
+  // Trust boundary: option/questionLabel come from the committed flow file
+  // (operator-authored), not from page content — but JSON.stringify them
+  // anyway so any apostrophes/quotes can't break the evaluated expression.
+  const expr = `((option, questionLabel) => {
+    const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
+    const wantOpt = norm(option);
+    const wantLabel = questionLabel ? norm(questionLabel) : null;
+    // All native selects, INCLUDING tabindex=-1 (MuiNativeSelect) which the
+    // a11y tree — and therefore Stagehand observe — never surfaces.
+    const selects = Array.from(document.querySelectorAll("select"));
+    // Score each select: does it have an option matching wantOpt, and does its
+    // nearby label match wantLabel (when a label was given)?
+    const scoreLabel = (sel) => {
+      if (!wantLabel) return 0;
+      let node = sel;
+      for (let d = 0; d < 6 && node; d++) {
+        const txt = norm(node.textContent);
+        if (txt.includes(wantLabel)) return 1;
+        node = node.parentElement;
+      }
+      return -1; // label given but not found near this select → deprioritize
+    };
+    let best = null;
+    let bestScore = -Infinity;
+    for (const sel of selects) {
+      const opts = Array.from(sel.options || []);
+      const match = opts.find(
+        (o) => norm(o.textContent) === wantOpt || norm(o.value) === wantOpt
+      ) || opts.find(
+        (o) => norm(o.textContent).includes(wantOpt) && wantOpt.length > 2
+      );
+      if (!match) continue;
+      const score = scoreLabel(sel);
+      if (score > bestScore) { bestScore = score; best = { sel, match }; }
+    }
+    if (!best) return { ok: false, reason: "no select has a matching option" };
+    const { sel, match } = best;
+    // React-safe value set: React tracks <select> values via a native setter
+    // and ignores plain \`sel.value =\`. Use the prototype's setter (same
+    // technique the text-input path uses) so MUI/React registers the change.
+    const desc = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value");
+    if (desc && desc.set) { desc.set.call(sel, match.value); } else { sel.value = match.value; }
+    sel.dispatchEvent(new Event("input", { bubbles: true }));
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    sel.dispatchEvent(new Event("blur", { bubbles: true }));
+    return { ok: sel.value === match.value, chosen: match.textContent, value: match.value };
+  })(${JSON.stringify(option)}, ${JSON.stringify(questionLabel)})`;
+  try {
+    const result = (await page.evaluate(expr)) as {
+      ok: boolean;
+      chosen?: string;
+      value?: string;
+      reason?: string;
+    };
+    if (result?.ok) {
+      logger.info(
+        `select primitive: set dropdown to "${(result.chosen || "").trim().slice(0, 40)}" (option "${option.slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""})`
+      );
+      return true;
+    }
+    logger.info(
+      `select primitive: no match for option "${option.slice(0, 40)}"${result?.reason ? ` (${result.reason})` : ""}; falling through to cascade`
+    );
+    return false;
+  } catch (err) {
+    logger.warn(`select primitive: evaluate threw: ${toErrorMessage(err)}; falling through`);
+    return false;
+  }
+}
+
+/**
  * Synthesize a drag-drop event sequence on the most-likely upload drop
  * zone using DataTransfer + DragEvent. Used as K'4 fallback when
  * setInputFiles + change-event dispatch don't trigger the framework's
@@ -3693,13 +3867,12 @@ async function verifyDomEffect(page: Page, action: Action): Promise<boolean> {
         // the cascade routes to rephrase/replan instead of advancing
         // past a step that didn't actually change the form state.
         const ancestorInvalidExpr = `(() => {
+          const isInvalid = ${INVALID_MARKER_EL_EXPR};
           const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
           let node = r.singleNodeValue;
           if (!node) return false;
-          const rx = /(ng-invalid|mat-form-field-invalid|is-invalid|field-invalid|input-invalid)/;
           for (let depth = 0; depth < 6 && node; depth++) {
-            const cls = node.getAttribute && node.getAttribute("class");
-            if (cls && rx.test(cls)) return true;
+            if (node.getAttribute && isInvalid(node)) return true;
             node = node.parentElement;
           }
           return false;
@@ -3790,8 +3963,8 @@ interface InvalidFormControl {
  * `data-id`, and `name`.
  */
 const FORM_VALIDITY_PROBE_EXPR = `(() => {
-  const INVALID_CLASS_RX = /(ng-invalid|mat-form-field-invalid|is-invalid|field-invalid|input-invalid)/;
-  const MARKERS = ["ng-invalid", "mat-form-field-invalid", "is-invalid", "field-invalid", "input-invalid", "ng-touched", "ng-dirty"];
+  const INVALID_CLASS_RX = /(${INVALID_MARKER_CLASS_SOURCE})/;
+  const MARKERS = ["ng-invalid", "mat-form-field-invalid", "is-invalid", "field-invalid", "input-invalid", "Mui-error", "ng-touched", "ng-dirty"];
   function fire(el, ev) {
     try { el.dispatchEvent(new Event(ev, { bubbles: true })); } catch (e) {}
   }
@@ -3849,11 +4022,19 @@ const FORM_VALIDITY_PROBE_EXPR = `(() => {
       ctrl.tagName.toLowerCase() === "select" &&
       ctrl.selectedOptions[0] &&
       ctrl.selectedOptions[0].disabled;
+    // MUI/React signature: the wrapper (FormControl/FormLabel) carries
+    // Mui-error while the native control is empty and/or aria-invalid="true".
+    // MUI has no ng-pristine/ng-untouched, so the Angular wrapper branch below
+    // would skip these — accept the MUI marker (wrapper class or the control's
+    // aria-invalid) as an equivalent required-unfilled signal.
+    const muiInvalid =
+      (/Mui-error/.test(cls) || ctrl.getAttribute("aria-invalid") === "true") &&
+      (ctrl.value === "" || ctrl.value == null || selectPlaceholderOpen);
     const wrapperOnlyInvalid =
       !leafInvalid &&
       el !== ctrl &&
       (ctrl.value === "" || ctrl.value == null || selectPlaceholderOpen) &&
-      /(ng-pristine|ng-untouched)/.test(ctrlClass);
+      (/(ng-pristine|ng-untouched)/.test(ctrlClass) || muiInvalid);
     if (!leafInvalid && !wrapperOnlyInvalid) continue;
     let label = "";
     let scan = el;
@@ -4283,6 +4464,18 @@ async function executeStepWithHealing(params: {
   ) {
     logger.info(`step ${stepIndex + 1} resolved by upload primitive`);
     trajectory?.push({ stepIndex, verifiedBy: "network" });
+    return "completed";
+  }
+
+  // When the step is a native-<select> dropdown selection, answer it directly
+  // in the DOM ahead of the cascade. Critical for MuiNativeSelect/tabindex=-1
+  // dropdowns (HCA/Talemetry) that Stagehand observe can't surface — the
+  // cascade would otherwise skip them ("no candidates") and leave a required
+  // question unanswered. No-op (returns false → falls through) when the step
+  // isn't a single-dropdown select or no option matches.
+  if (await trySelectPrimitive({ page, instruction: step, logger })) {
+    logger.info(`step ${stepIndex + 1} resolved by select primitive`);
+    trajectory?.push({ stepIndex, verifiedBy: "dom" });
     return "completed";
   }
 
@@ -5142,13 +5335,12 @@ async function executeStepWithHealing(params: {
           let ancestorStillInvalid = false;
           if (probeResult.kind === "checkbox" && probeResult.checked === true) {
             const ancestorInvalidExpr = `(() => {
+              const isInvalid = ${INVALID_MARKER_EL_EXPR};
               const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
               let node = r.singleNodeValue;
               if (!node) return false;
-              const rx = /(ng-invalid|mat-form-field-invalid|is-invalid|field-invalid|input-invalid)/;
               for (let depth = 0; depth < 6 && node; depth++) {
-                const cls = node.getAttribute && node.getAttribute("class");
-                if (cls && rx.test(cls)) return true;
+                if (node.getAttribute && isInvalid(node)) return true;
                 node = node.parentElement;
               }
               return false;
@@ -5167,12 +5359,28 @@ async function executeStepWithHealing(params: {
           const retryUrlChanged = retryPost.url !== pre.url;
           const retryHtmlDelta = retryPost.bodyHtmlLength - pre.bodyHtmlLength;
           const retryTextChanged = retryPost.visibleTextSignature !== pre.visibleTextSignature;
+          // RC2: an advance/`kind=click` "Next" that only grew the DOM
+          // (validation errors rendered) with NO network/URL change is a
+          // validation-blocked no-op, not a real transition — but the
+          // dom-delta/text-change signals below would score it verified and
+          // advance the wizard past an unfilled required page. Mirror the
+          // checkbox vacuous-click guard: when a click produced no network/URL
+          // change AND the page still has required-invalid controls (MUI-aware
+          // via countNgInvalidContainers), treat the DOM-only signal as NOT
+          // verifying so the cascade routes to the fill-invalid-fields replan.
+          // Confirmed no-op signature on HCA COMPENSATION (network=false
+          // url=false htmlDelta>0 textChanged) mis-scored verified=true(dom).
+          const clickWasDomOnly =
+            probeResult.kind === "click" && !retryNetworkFired && !retryUrlChanged;
+          const clickBlockedByInvalid =
+            clickWasDomOnly && (await countNgInvalidContainers(page).catch(() => 0)) > 0;
           let retryVerified =
-            retryNetworkFired ||
-            retryUrlChanged ||
-            retryHtmlDelta !== 0 ||
-            retryTextChanged ||
-            checkboxStateVerified;
+            !clickBlockedByInvalid &&
+            (retryNetworkFired ||
+              retryUrlChanged ||
+              retryHtmlDelta !== 0 ||
+              retryTextChanged ||
+              checkboxStateVerified);
           // Apply the same submit-endpoint gate the primary verifier uses.
           // Without this, the n+16 fallback would still ride past a
           // tracking-pixel-only click on the final step. Same Haiku LLM

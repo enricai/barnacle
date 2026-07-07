@@ -90,6 +90,7 @@ import {
   narrowInvalidFormControl,
   normalizeDateValue,
   pairInvalidWithErrors,
+  parseSelectStep,
   persistReplannedFlow,
   probeLeafInvalidContainers,
   probeStepBeforeAttempts,
@@ -3006,5 +3007,68 @@ describe("recon-browser/probeStepBeforeAttempts", () => {
     expect(result).toBe("present");
     // Happy path: only the focused probe runs; no wasted unfocused observe.
     expect(stagehand.observe).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("recon-browser/parseSelectStep", () => {
+  it("extracts the option from a bare select step", () => {
+    expect(parseSelectStep("Select 'Texas' in the State or State/Region dropdown")).toEqual({
+      option: "Texas",
+      questionLabel: null,
+    });
+  });
+
+  it("extracts option AND question label when the step scopes a question", () => {
+    expect(
+      parseSelectStep(
+        "On the COMPENSATION / Job-Related Questions page, for 'What is your highest level of nursing education?' select 'Bachelors of Science in Nursing completed'"
+      )
+    ).toEqual({
+      option: "Bachelors of Science in Nursing completed",
+      questionLabel: "What is your highest level of nursing education?",
+    });
+  });
+
+  it("handles 'select or check' phrasing", () => {
+    expect(
+      parseSelectStep(
+        "For 'Which of the following certifications do you currently possess?' select or check 'Basic Life Support (BLS)'"
+      )
+    ).toEqual({
+      option: "Basic Life Support (BLS)",
+      questionLabel: "Which of the following certifications do you currently possess?",
+    });
+  });
+
+  it("returns null for generic catch-all steps (no single target)", () => {
+    expect(
+      parseSelectStep(
+        "For any remaining self-identification, EEO, or voluntary question with a dropdown or radio, select 'I do not wish to answer' or 'Prefer not to answer'"
+      )
+    ).toBeNull();
+  });
+
+  it("returns null for non-select steps (radio click / Next)", () => {
+    expect(
+      parseSelectStep("Click the 'Yes' answer for the question 'Are you at least 18?'")
+    ).toBeNull();
+    expect(
+      parseSelectStep("Click the 'Next' button to leave the Basic Information page")
+    ).toBeNull();
+  });
+
+  it("returns null when there is no quoted option to select", () => {
+    expect(parseSelectStep("Select an appropriate value in the dropdown")).toBeNull();
+  });
+});
+
+describe("recon-browser/selectBodyExcerpt — MUI marker (RC1)", () => {
+  it("centers the excerpt on a Mui-error marker past the default cap", () => {
+    const filler = "x".repeat(50_000);
+    const body = `${filler}<div class="MuiFormControl-root Mui-error"><label>State/Region *</label></div>${"y".repeat(50_000)}`;
+    const excerpt = selectBodyExcerpt(body);
+    // The MUI marker (past the default cap) must appear in the returned window;
+    // an ng-only matcher would have returned the head slice without it.
+    expect(excerpt).toContain("Mui-error");
   });
 });
