@@ -950,6 +950,35 @@ export function windowHasTransitionBody(params: {
 }
 
 /**
+ * Decide whether the n+16 `el.click()` fallback's "advance" signals should be
+ * VETOED — i.e. NOT counted as verifying a wizard transition. Pure + exported so
+ * the RC2 gate is unit-testable.
+ *
+ * An interior "Next" on an SPA where an advance and a mere field-edit share one
+ * endpoint (Talemetry `/gq`: TransitionWorklet vs EditQuestionItem — same URL,
+ * different body) can fire a network POST that is NOT a real advance; the
+ * fallback's htmlDelta/textChanged/checked-radio signals are then validation
+ * re-renders / field toggles that don't move the wizard. So for an opted-in
+ * (`hasPattern`) non-final/non-submit ADVANCE step, a real advance requires a URL
+ * change OR a same-window capture body matching the transition pattern
+ * (`retryNetworkIsRealAdvance`); anything less is vetoed. Non-advance/field-answer
+ * steps and sites without the pattern are never vetoed here.
+ */
+export function shouldVetoFallbackAdvance(params: {
+  hasPattern: boolean;
+  isFinalOrSubmit: boolean;
+  isAdvance: boolean;
+  retryUrlChanged: boolean;
+  retryNetworkIsRealAdvance: boolean;
+}): boolean {
+  const { hasPattern, isFinalOrSubmit, isAdvance, retryUrlChanged, retryNetworkIsRealAdvance } =
+    params;
+  if (!hasPattern || isFinalOrSubmit || !isAdvance) return false;
+  // Advance step with the pattern configured: veto unless a real transition fired.
+  return !(retryUrlChanged || retryNetworkIsRealAdvance);
+}
+
+/**
  * Read-only count of ng-invalid form controls on the page. Side-effect-free
  * counterpart to `probeFormValidityBeforeSubmit` (which also auto-fills
  * unselected radio groups via element.click()). Used by the cascade's
@@ -4455,6 +4484,155 @@ async function tryCheckboxPrimitive(params: {
   }
 }
 
+/** One radio group enumerated from the DOM for `selectRadioGroupOption`. */
+export type RadioGroupCandidate = {
+  /** Index into the DOM's radio-group list (stable across the enumerate/apply pair). */
+  gi: number;
+  /** The group's legend/label text; empty string when the group is unlabeled. */
+  label: string;
+  /** The group's radio options, each with its DOM index `ri` and label text. */
+  options: { ri: number; text: string }[];
+  /** True when the group already has a checked radio (answered by an earlier step). */
+  alreadyChecked: boolean;
+};
+
+/**
+ * Choose which radio group + option answers a flow step, deterministically and
+ * positionally. Pure (no DOM/LLM) so it is unit-testable — the crux of the
+ * unlabeled-radio disambiguation.
+ *
+ * Why this exists: HCA/Talemetry Basic Info has multiple UNLABELED yes/no groups
+ * (visa-sponsorship, common-domicile), answered by consecutive flow steps. The
+ * old in-browser matcher treated an unlabeled group (`label===""`) as matching
+ * ANY question (`"".includes(q)`/`q.includes("")===0`), so two unlabeled "No"
+ * groups both matched → ambiguous → an LLM guess that could answer one group
+ * twice and leave the other required-blank. This picks the k-th unanswered
+ * unlabeled group for the k-th unlabeled step instead.
+ *
+ * Resolution order (already-answered groups — `alreadyChecked` — are excluded
+ * throughout, since a prior step leaves its group's radio checked):
+ *  1. exactly one unanswered group whose NON-empty label genuinely matches the
+ *     question (substring either way) AND offers the wanted option → pick it;
+ *  2. more than one such labeled match → `"ambiguous"` (caller uses the LLM);
+ *  3. else (no labeled match — the question is unlabeled-in-DOM) → the FIRST
+ *     unanswered group in DOM order that offers the wanted option → pick it
+ *     (positional: k-th unlabeled step → k-th unlabeled group);
+ *  4. nothing offers the wanted option → `null` (caller falls through).
+ */
+export function selectRadioGroupOption(params: {
+  groups: readonly RadioGroupCandidate[];
+  wantOption: string;
+  questionLabel: string | null;
+}): { gi: number; ri: number } | null | "ambiguous" {
+  const { groups, wantOption, questionLabel } = params;
+  const norm = (s: string | null | undefined): string =>
+    (s ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+  const wantOpt = norm(wantOption);
+  const normQ = norm(questionLabel);
+  const optionRi = (g: RadioGroupCandidate): number | null => {
+    const hit = g.options.find((o) => norm(o.text) === wantOpt);
+    return hit ? hit.ri : null;
+  };
+  // Significant-token overlap: robust to phrasing variance between the flow's
+  // question and the DOM legend ("...served in a branch of the US Military?" vs
+  // "...served in the US Military?"). Stop-words are dropped so overlap reflects
+  // content words. A shared-token ratio (over the shorter side) ≥ 0.5 counts as
+  // a genuine label match — stricter than substring (which missed the variance)
+  // but tolerant of small wording differences.
+  const STOP = new Set([
+    "a",
+    "an",
+    "the",
+    "of",
+    "to",
+    "in",
+    "on",
+    "at",
+    "for",
+    "and",
+    "or",
+    "is",
+    "are",
+    "you",
+    "your",
+    "have",
+    "has",
+    "do",
+    "does",
+    "did",
+    "with",
+    "any",
+    "this",
+    "that",
+    "as",
+    "be",
+    "been",
+    "was",
+    "were",
+    "will",
+    "would",
+    "can",
+    "us",
+  ]);
+  const tokens = (s: string): Set<string> =>
+    new Set(s.split(/[^a-z0-9]+/).filter((t) => t.length > 1 && !STOP.has(t)));
+  const overlapRatio = (gl: string): number => {
+    const a = tokens(gl);
+    const b = tokens(normQ);
+    if (a.size === 0 || b.size === 0) return 0;
+    let shared = 0;
+    for (const t of a) if (b.has(t)) shared++;
+    return shared / Math.min(a.size, b.size);
+  };
+  const unanswered = groups.filter((g) => !g.alreadyChecked);
+  // (1)/(2) labeled match: among unanswered groups that OFFER the option and have
+  // a non-empty label, score token-overlap with the question; a genuine match is
+  // ratio ≥ 0.5. Empty labels never count as a label match (→ positional below).
+  if (normQ) {
+    const scored = unanswered
+      .filter((g) => norm(g.label) && optionRi(g) !== null)
+      .map((g) => ({ g, score: overlapRatio(norm(g.label)) }))
+      .filter((x) => x.score >= 0.5)
+      .sort((a, b) => b.score - a.score);
+    if (scored.length === 1) {
+      const g = scored[0]!.g;
+      return { gi: g.gi, ri: optionRi(g)! };
+    }
+    if (scored.length > 1) {
+      // A clearly-best match (strictly higher than the runner-up) is not
+      // ambiguous; only a tie defers to the LLM.
+      if (scored[0]!.score > scored[1]!.score) {
+        const g = scored[0]!.g;
+        return { gi: g.gi, ri: optionRi(g)! };
+      }
+      return "ambiguous";
+    }
+    // No labeled group matched the question. If any unanswered group HAS a
+    // (non-matching) label, this question's group may just be phrased
+    // differently OR be one of several — don't positional-pick a labeled group
+    // meant for another question. Only positional-pick among UNLABELED groups.
+  }
+  // (3) positional: first unanswered UNLABELED group (DOM order) offering the
+  // option — the k-th unlabeled step answers the k-th unlabeled group. Applies
+  // when the question is unlabeled, or when no labeled group matched and the
+  // remaining candidates are unlabeled (the identical-unlabeled-groups case).
+  for (const g of unanswered) {
+    if (norm(g.label)) continue; // never positional-pick a labeled group
+    const ri = optionRi(g);
+    if (ri !== null) return { gi: g.gi, ri };
+  }
+  // (4) Fallback: if the question is unlabeled and there are no unlabeled groups
+  // left but a labeled group offers the option, take the first such (best effort).
+  if (!normQ) {
+    for (const g of unanswered) {
+      const ri = optionRi(g);
+      if (ri !== null) return { gi: g.gi, ri };
+    }
+  }
+  // (5) nothing offers the option / no safe pick.
+  return null;
+}
+
 /**
  * Site-agnostic RADIO primitive: answer a single-choice radio-group question by
  * directly selecting the matching option in the DOM, bypassing Stagehand
@@ -4502,8 +4680,6 @@ async function tryRadioPrimitive(params: {
   // the change, then reports `ok` = post-commit `radio.checked && !invalid`.
   const enumerateExpr = `((option) => {
     const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
-    const wantOpt = norm(option);
-    const isInvalid = ${INVALID_MARKER_EL_EXPR};
     let groupEls = Array.from(document.querySelectorAll("fieldset,[role='radiogroup'],[class*='RadioGroup']"))
       .filter((g) => g.querySelector("input[type=radio]"));
     if (groupEls.length === 0) return { groupPresent: false };
@@ -4530,85 +4706,67 @@ async function tryRadioPrimitive(params: {
       if (p && p.textContent) return p.textContent.replace(/\\s+/g, " ").trim();
       return "";
     };
-    // Commit via the native value setter so React's controlled-input tracker
-    // fires onChange — a bare rb.checked=true does NOT, which is the exact bug
-    // the cascade's el.click() fallback hit on this MUI form.
-    const setChecked = (rb) => {
-      const desc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "checked");
-      if (desc && desc.set) { desc.set.call(rb, true); } else { rb.checked = true; }
-      rb.dispatchEvent(new Event("click", { bubbles: true }));
-      rb.dispatchEvent(new Event("input", { bubbles: true }));
-      rb.dispatchEvent(new Event("change", { bubbles: true }));
-      // Readback gate: the radio must read checked AND its group must no longer
-      // be invalid (walk up to the fieldset/radiogroup). Mirrors the cascade's
-      // checkboxStateVerified + ancestorStillInvalid guard.
-      if (rb.checked !== true) return false;
-      let node = rb;
-      for (let depth = 0; depth < 6 && node; depth++) {
-        if (node.getAttribute && isInvalid(node)) return false;
-        node = node.parentElement;
-      }
-      return true;
-    };
+    // Enumerate only (no selection/commit here — TS's selectRadioGroupOption
+    // decides, so the disambiguation is deterministic + unit-testable). Per
+    // group, report whether it already has a checked radio so answered groups
+    // (from earlier steps) are excluded → positional pick of the k-th unlabeled
+    // group for the k-th unlabeled step.
     const groups = [];
     for (let gi = 0; gi < groupEls.length; gi++) {
       const radios = Array.from(groupEls[gi].querySelectorAll("input[type=radio]"));
       if (radios.length === 0) continue;
       const options = radios.map((rb, ri) => ({ ri, text: rbLabel(rb) })).filter((o) => o.text);
-      groups.push({ gi, label: groupLabel(groupEls[gi]), options });
+      const alreadyChecked = radios.some((rb) => rb.checked === true);
+      groups.push({ gi, label: groupLabel(groupEls[gi]), options, alreadyChecked });
     }
     if (groups.length === 0) return { groupPresent: false };
-    // Deterministic: exactly one option across all groups equals wantOpt AND
-    // its group's label matches the question (when a label was supplied) —
-    // guards against picking the wrong "Yes"/"No" when many groups share it.
-    const wantQ = ${JSON.stringify(questionLabel)};
-    const normQ = norm(wantQ);
-    let detHits = [];
-    for (const grp of groups) {
-      const grpMatchesQ = !normQ || norm(grp.label).indexOf(normQ) !== -1 || normQ.indexOf(norm(grp.label)) !== -1;
-      for (const o of grp.options) {
-        if (norm(o.text) === wantOpt && grpMatchesQ) detHits.push({ gi: grp.gi, ri: o.ri, text: o.text });
-      }
-    }
-    if (detHits.length === 1) {
-      const h = detHits[0];
-      const grpEl = groupEls[h.gi];
-      const rb = grpEl.querySelectorAll("input[type=radio]")[h.ri];
-      const ok = rb ? setChecked(rb) : false;
-      return { groupPresent: true, applied: true, ok, chosen: h.text };
-    }
-    return { groupPresent: true, applied: false, groups: groups.map((g) => ({ gi: g.gi, label: g.label, options: g.options })) };
+    return { groupPresent: true, groups };
   })(${JSON.stringify(option)})`;
   try {
     const enumResult = await pollEnumerate<{
       groupPresent: boolean;
-      applied?: boolean;
-      ok?: boolean;
-      chosen?: string;
-      groups?: { gi: number; label: string; options: { ri: number; text: string }[] }[];
+      groups?: RadioGroupCandidate[];
     }>(page, enumerateExpr, (r) => r?.groupPresent === true);
     if (!enumResult?.groupPresent) return false; // no radio group → cascade
-    if (enumResult.applied && enumResult.ok) {
-      logger.info(
-        `radio primitive: selected "${(enumResult.chosen || "").trim().slice(0, 40)}" (${optLabel})`
-      );
-      return true;
-    }
     const groups = enumResult.groups ?? [];
-    if (anthropic === null || groups.length === 0) {
+    if (groups.length === 0) return false;
+    // Deterministic + positional selection (excludes already-answered groups,
+    // fixes the empty-label universal-match bug). Only genuine labeled ambiguity
+    // defers to the LLM.
+    const selection = selectRadioGroupOption({ groups, wantOption: option, questionLabel });
+    if (selection !== null && selection !== "ambiguous") {
+      const applied = await applyRadioSelection(page, selection.gi, selection.ri);
+      if (applied) {
+        const chosen = groups[selection.gi]?.options.find((o) => o.ri === selection.ri)?.text ?? "";
+        logger.info(`radio primitive: selected "${chosen.trim().slice(0, 40)}" (${optLabel})`);
+        return true;
+      }
+      logger.info(`radio primitive: chosen radio did not stick for ${optLabel}; falling through`);
+      return false;
+    }
+    if (selection === null) {
       logger.info(
-        `radio primitive: no unique option match for ${optLabel}${anthropic === null ? " (no LLM client)" : ""}; falling through to cascade`
+        `radio primitive: no group offers option for ${optLabel}; falling through to cascade`
+      );
+      return false;
+    }
+    // selection === "ambiguous": multiple labeled groups match → let the LLM pick.
+    if (anthropic === null) {
+      logger.info(
+        `radio primitive: ambiguous labeled match for ${optLabel} (no LLM client); falling through to cascade`
       );
       return false;
     }
     // LLM picks which group answers the question + which option. Reuse the
-    // select-option judge (candidate "dropdowns" == radio groups here).
+    // select-option judge (candidate "dropdowns" == radio groups here). Only
+    // unanswered groups are offered so the LLM can't re-answer a done group.
+    const llmGroups = groups.filter((g) => !g.alreadyChecked);
     const verdict = await judgeSelectOptionWithLLM({
       client: anthropic,
       input: {
         questionLabel,
         desiredHint: option,
-        candidates: groups.map((g) => ({
+        candidates: llmGroups.map((g) => ({
           label: g.label || null,
           options: g.options.map((o) => o.text),
         })),
@@ -4621,9 +4779,33 @@ async function tryRadioPrimitive(params: {
       );
       return false;
     }
-    const chosenGroup = groups[verdict.selectIndex]!;
+    const chosenGroup = llmGroups[verdict.selectIndex]!;
     const chosenOption = chosenGroup.options[verdict.optionIndex]!;
-    const applyExpr = `((gi, ri) => {
+    const applyResult = { ok: await applyRadioSelection(page, chosenGroup.gi, chosenOption.ri) };
+    if (applyResult?.ok) {
+      logger.info(
+        `radio primitive: LLM selected "${chosenOption.text.slice(0, 40)}" for ${optLabel} (${verdict.reason.slice(0, 60)})`
+      );
+      return true;
+    }
+    logger.info(`radio primitive: LLM-chosen radio did not stick for ${optLabel}; falling through`);
+    return false;
+  } catch (err) {
+    logger.warn(`radio primitive: evaluate threw: ${toErrorMessage(err)}; falling through`);
+    return false;
+  }
+}
+
+/**
+ * Commit a chosen radio (group index `gi`, option index `ri`) in the DOM via the
+ * React-safe native `checked` setter + bubbling `click`/`input`/`change` so
+ * MUI/React's controlled-input tracker registers the change, then gate on a
+ * readback: the radio must read `checked` AND no ancestor (≤6 up) may still be
+ * `INVALID_MARKER_EL_EXPR`-invalid. Returns whether the commit stuck. Shared by
+ * the deterministic and LLM selection paths so both use one commit+verify.
+ */
+async function applyRadioSelection(page: Page, gi: number, ri: number): Promise<boolean> {
+  const applyExpr = `((gi, ri) => {
       const isInvalid = ${INVALID_MARKER_EL_EXPR};
       const groupEls = Array.from(document.querySelectorAll("fieldset,[role='radiogroup'],[class*='RadioGroup']"))
         .filter((g) => g.querySelector("input[type=radio]"));
@@ -4643,20 +4825,11 @@ async function tryRadioPrimitive(params: {
         node = node.parentElement;
       }
       return { ok: true };
-    })(${JSON.stringify(chosenGroup.gi)}, ${JSON.stringify(chosenOption.ri)})`;
-    const applyResult = (await page.evaluate(applyExpr)) as { ok: boolean };
-    if (applyResult?.ok) {
-      logger.info(
-        `radio primitive: LLM selected "${chosenOption.text.slice(0, 40)}" for ${optLabel} (${verdict.reason.slice(0, 60)})`
-      );
-      return true;
-    }
-    logger.info(`radio primitive: LLM-chosen radio did not stick for ${optLabel}; falling through`);
-    return false;
-  } catch (err) {
-    logger.warn(`radio primitive: evaluate threw: ${toErrorMessage(err)}; falling through`);
-    return false;
-  }
+    })(${JSON.stringify(gi)}, ${JSON.stringify(ri)})`;
+  const applyResult = (await page.evaluate(applyExpr).catch(() => ({ ok: false }))) as {
+    ok: boolean;
+  };
+  return applyResult?.ok === true;
 }
 
 /**
@@ -6603,26 +6776,36 @@ async function executeStepWithHealing(params: {
             probeResult.kind === "click" && !retryNetworkFired && !retryUrlChanged;
           const clickBlockedByInvalid =
             clickWasDomOnly && (await countNgInvalidContainers(page).catch(() => 0)) > 0;
-          // DOM-only-advance veto (same as the primary verifier, applied to the
-          // n+16 fallback). For a non-submit ADVANCE/"Next" step (per the ORIGINAL
-          // instruction) with NO network/URL change, the fallback's DOM signals
-          // (a checked radio/checkbox via `checkboxStateVerified`, or html/text
-          // delta) are field toggles / re-renders — they do NOT move the wizard.
-          // Verified end-to-end on HCA: the rephrase turned "Next" into a radio
-          // click, the primary verifier's veto rejected it, then THIS fallback
-          // re-healed via checkboxStateVerified while the wizard stayed put. Gate
-          // it the same way; only arms when the site opted into
-          // `advanceTransitionBodyPattern`.
-          const fallbackDomOnlyAdvance =
-            advanceTransitionBodyPattern !== null &&
-            !isFinalStep &&
-            !submitStep &&
-            !retryNetworkFired &&
-            !retryUrlChanged &&
-            isAdvanceStep(step);
+          // Advance-transition gate (same as the primary verifier, applied to the
+          // n+16 fallback). RC2: for a non-submit ADVANCE/"Next" step (per the
+          // ORIGINAL instruction) the fallback's positive signals — a network POST
+          // that is NOT a real transition (EditQuestionItem autosave, not
+          // TransitionWorklet), plus html/text deltas (validation re-renders) or a
+          // checked radio (field toggle) — do NOT move the wizard. Require a REAL
+          // transition: a URL change OR a same-window capture body matching
+          // `advanceTransitionBodyPattern`. Without this, a non-advancing POST
+          // (retryNetworkFired=true) both satisfied retryVerified AND disarmed the
+          // old !retryNetworkFired-gated veto, so the fallback rode past a
+          // validation-blocked Next while the page stayed put (HCA Basic Info
+          // stage1d). Only arms when the site opted into the pattern; field-answer
+          // (non-advance) steps keep their checkboxStateVerified/DOM path.
+          const retryNetworkIsRealAdvance =
+            retryNetworkFired &&
+            windowHasTransitionBody({
+              recentCaptures,
+              preLength: preCapturesLength,
+              advanceTransitionBodyPattern,
+            });
+          const fallbackDomOnlyAdvance = shouldVetoFallbackAdvance({
+            hasPattern: advanceTransitionBodyPattern !== null,
+            isFinalOrSubmit: isFinalStep || submitStep,
+            isAdvance: isAdvanceStep(step),
+            retryUrlChanged,
+            retryNetworkIsRealAdvance,
+          });
           if (fallbackDomOnlyAdvance) {
             logger.info(
-              `step ${stepIndex + 1} n+16 fallback advanced only via DOM state change (field toggle), not a real transition; not treating as verified`
+              `step ${stepIndex + 1} n+16 fallback advanced but no real transition (non-advancing POST / field toggle); not treating as verified`
             );
           }
           let retryVerified =

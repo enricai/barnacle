@@ -99,6 +99,7 @@ import {
   pollEnumerate,
   probeLeafInvalidContainers,
   probeStepBeforeAttempts,
+  type RadioGroupCandidate,
   type ReplanEvent,
   readFailureDumpEvidence,
   renderLeafInvalidFields,
@@ -108,7 +109,9 @@ import {
   replanRemainingFlow,
   resetBillingErrorFlagForTests,
   selectBodyExcerpt,
+  selectRadioGroupOption,
   shouldSkipTechnique,
+  shouldVetoFallbackAdvance,
   summarizeReplanFailureKinds,
   type ValidationRejectionPair,
   type VerifyFillReadbackResult,
@@ -3143,6 +3146,116 @@ describe("recon-browser/parseRadioStep", () => {
 
   it("returns null when there is no quoted option", () => {
     expect(parseRadioStep("Click the appropriate answer for the question")).toBeNull();
+  });
+});
+
+describe("recon-browser/selectRadioGroupOption", () => {
+  const grp = (
+    gi: number,
+    label: string,
+    opts: string[],
+    alreadyChecked = false
+  ): RadioGroupCandidate => ({
+    gi,
+    label,
+    options: opts.map((text, ri) => ({ ri, text })),
+    alreadyChecked,
+  });
+
+  it("picks the single genuinely-labeled group that offers the option", () => {
+    const groups = [
+      grp(0, "Are you at least 18 years of age?", ["Yes", "No"]),
+      grp(1, "Have you served in the US Military?", ["Yes", "No"]),
+    ];
+    expect(
+      selectRadioGroupOption({
+        groups,
+        wantOption: "No",
+        questionLabel: "Have you served in a branch of the US Military?",
+      })
+    ).toEqual({ gi: 1, ri: 1 });
+  });
+
+  it("answers two identical UNLABELED groups positionally across consecutive steps", () => {
+    // Step 1: both unlabeled, neither answered → first unlabeled group (DOM order).
+    const groups1 = [grp(0, "", ["Yes", "No"]), grp(1, "", ["Yes", "No"])];
+    expect(
+      selectRadioGroupOption({ groups: groups1, wantOption: "No", questionLabel: null })
+    ).toEqual({ gi: 0, ri: 1 });
+    // Step 2: group 0 now answered → the NEXT unanswered unlabeled group.
+    const groups2 = [grp(0, "", ["Yes", "No"], true), grp(1, "", ["Yes", "No"])];
+    expect(
+      selectRadioGroupOption({ groups: groups2, wantOption: "No", questionLabel: null })
+    ).toEqual({ gi: 1, ri: 1 });
+  });
+
+  it("uses positional pick when the question is labeled but the DOM groups are unlabeled", () => {
+    // The flow step has a question label, but the DOM group has none — must NOT
+    // treat the empty label as a universal match; falls to positional.
+    const groups = [grp(0, "", ["Yes", "No"], true), grp(1, "", ["Yes", "No"])];
+    expect(
+      selectRadioGroupOption({
+        groups,
+        wantOption: "No",
+        questionLabel: "common domicile with any employee",
+      })
+    ).toEqual({ gi: 1, ri: 1 });
+  });
+
+  it("returns 'ambiguous' only when multiple genuinely-labeled groups match", () => {
+    const groups = [
+      grp(0, "Years of experience", ["Yes", "No"]),
+      grp(1, "Years of experience (RN)", ["Yes", "No"]),
+    ];
+    expect(
+      selectRadioGroupOption({ groups, wantOption: "Yes", questionLabel: "Years of experience" })
+    ).toBe("ambiguous");
+  });
+
+  it("returns null when no group offers the wanted option", () => {
+    const groups = [grp(0, "Some question", ["Maybe", "Unsure"])];
+    expect(selectRadioGroupOption({ groups, wantOption: "No", questionLabel: null })).toBeNull();
+  });
+
+  it("excludes already-answered groups from a labeled match (defers rather than mis-picks)", () => {
+    const groups = [grp(0, "Are you 18?", ["Yes", "No"], true)];
+    expect(
+      selectRadioGroupOption({ groups, wantOption: "Yes", questionLabel: "Are you 18?" })
+    ).toBeNull();
+  });
+});
+
+describe("recon-browser/shouldVetoFallbackAdvance", () => {
+  const base = {
+    hasPattern: true,
+    isFinalOrSubmit: false,
+    isAdvance: true,
+    retryUrlChanged: false,
+    retryNetworkIsRealAdvance: false,
+  };
+
+  it("vetoes an advance step whose network fired but was NOT a real transition", () => {
+    expect(shouldVetoFallbackAdvance(base)).toBe(true);
+  });
+
+  it("does NOT veto when the network body matched the transition pattern", () => {
+    expect(shouldVetoFallbackAdvance({ ...base, retryNetworkIsRealAdvance: true })).toBe(false);
+  });
+
+  it("does NOT veto when the URL changed (a real navigation)", () => {
+    expect(shouldVetoFallbackAdvance({ ...base, retryUrlChanged: true })).toBe(false);
+  });
+
+  it("does NOT veto sites without the transition pattern", () => {
+    expect(shouldVetoFallbackAdvance({ ...base, hasPattern: false })).toBe(false);
+  });
+
+  it("does NOT veto final/submit steps (their own submit gate applies)", () => {
+    expect(shouldVetoFallbackAdvance({ ...base, isFinalOrSubmit: true })).toBe(false);
+  });
+
+  it("does NOT veto non-advance (field-answer) steps", () => {
+    expect(shouldVetoFallbackAdvance({ ...base, isAdvance: false })).toBe(false);
   });
 });
 
