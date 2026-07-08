@@ -76,6 +76,7 @@ import {
   filterCompletedFromReplan,
   findRecentBackendError,
   findRecentPageTransition,
+  findUniqueBbSelectMatch,
   findWizardRestartSignal,
   formatValidationRejectedReason,
   type Html5DateFillResult,
@@ -3083,6 +3084,50 @@ describe("recon-browser/parseSelectStep", () => {
 
   it("returns null when there is no quoted option to select", () => {
     expect(parseSelectStep("Select an appropriate value in the dropdown")).toBeNull();
+  });
+});
+
+describe("recon-browser/findUniqueBbSelectMatch", () => {
+  const candidates = [
+    {
+      containerIndex: 0,
+      options: [
+        "Bachelors of Science in Nursing in progress",
+        "Bachelors of Science in Nursing completed",
+        "Masters of Science in Nursing completed",
+      ],
+    },
+    { containerIndex: 1, options: ["Yes", "No", "No, but I plan to take the NCLEX"] },
+    { containerIndex: 2, options: ["1-2 Years", "5-7 Years", "10+ Years"] },
+  ];
+
+  it("returns the unique container+option when exactly one option matches", () => {
+    expect(findUniqueBbSelectMatch(candidates, "5-7 Years")).toEqual({
+      containerIndex: 2,
+      optionIndex: 1,
+    });
+  });
+
+  it("matches case- and whitespace-insensitively", () => {
+    expect(
+      findUniqueBbSelectMatch(candidates, "  bachelors of science in nursing COMPLETED ")
+    ).toEqual({ containerIndex: 0, optionIndex: 1 });
+  });
+
+  it("returns null when the option is absent (per-req variance → defer to LLM)", () => {
+    expect(findUniqueBbSelectMatch(candidates, "Doctoral degree completed")).toBeNull();
+  });
+
+  it("returns null when the option is ambiguous across containers (shared 'Yes')", () => {
+    const shared = [
+      { containerIndex: 0, options: ["Yes", "No"] },
+      { containerIndex: 1, options: ["Yes", "No"] },
+    ];
+    expect(findUniqueBbSelectMatch(shared, "Yes")).toBeNull();
+  });
+
+  it("returns null for an empty desired option", () => {
+    expect(findUniqueBbSelectMatch(candidates, "   ")).toBeNull();
   });
 });
 

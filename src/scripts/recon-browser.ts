@@ -3934,6 +3934,265 @@ async function tryCheckboxPrimitive(params: {
 }
 
 /**
+ * Site-agnostic custom-select primitive: answer a `bb-custom-select` dropdown
+ * (Talemetry / Radancy TalentBrew) by opening its panel and clicking the
+ * matching option, bypassing Stagehand observe/act.
+ *
+ * Why this exists (parallels `trySelectPrimitive`): Talemetry renders the
+ * COMPENSATION / Job-Related screening dropdowns as `bb-custom-select` — a
+ * pure-JS custom widget with NO underlying native `<select>` (verified: on the
+ * fully-hydrated page `document.querySelectorAll("select")` returns 0 while the
+ * questions plainly render). `trySelectPrimitive` therefore no-ops on them, and
+ * Stagehand's focused observe returns `[]` because "select 'Hospital'" can't be
+ * resolved against the custom `<div>` structure — so the required question goes
+ * unanswered, "Next" no-ops on client-side validation, and every run caps at the
+ * question pages. The DOM shape (from the widget's own CSS) is: a
+ * `.bb-custom-select-container` (gains `.bb-is-open` when open) wrapping a
+ * `.bb-custom-select-opener` trigger and a `.bb-custom-select-panel` whose
+ * `.bb-custom-select-option` children carry the option text (`.bb-is-selected`
+ * marks the chosen one). Options live in the DOM even while the panel is hidden,
+ * so enumeration is read-only; only APPLYING requires a real open→click because
+ * there is no value to set — hence this takes `page` clicks, not a pure
+ * `evaluate` value-set like the native-select path.
+ *
+ * When the flow's hardcoded option text doesn't exist in THIS requisition's
+ * option list (per-req screening-question variance), it asks the same LLM judge
+ * `trySelectPrimitive` uses to pick the best available option. Deterministic
+ * unique matches skip the LLM. A page with no `bb-custom-select` (or no unfilled
+ * one) falls through to the cascade unchanged.
+ *
+ * Returns true when an option was clicked and `.bb-is-selected` moved to it
+ * (cascade skipped); false when the step isn't a select, there's no
+ * `bb-custom-select` on the page, or no option fits (fall through).
+ */
+async function tryBbCustomSelectPrimitive(params: {
+  page: Page;
+  instruction: string;
+  logger: Logger;
+  anthropic: Anthropic | null;
+  captureFn?: JudgeCaptureFn;
+}): Promise<boolean> {
+  const { page, instruction, logger, anthropic, captureFn } = params;
+  const parsed = parseSelectStep(instruction);
+  if (!parsed) return false;
+  const { option, questionLabel } = parsed;
+  const optLabel = `option "${option.slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
+  // Phase 1 (read-only): enumerate every UNFILLED bb-custom-select and its
+  // options. Options are in the DOM even while the panel is display:none, so
+  // this reads them without opening anything. A widget is "filled" when one of
+  // its options carries `.bb-is-selected` (and it isn't the placeholder). Emit
+  // a stable containerIndex (position among all bb-custom-select-containers) so
+  // the apply pass can re-find the exact widget + option deterministically.
+  const enumerateExpr = `((option) => {
+    const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
+    const wantOpt = norm(option);
+    const containers = Array.from(document.querySelectorAll(".bb-custom-select-container"));
+    if (containers.length === 0) return { present: false };
+    // Question label for a container: nearest preceding label/legend text.
+    const containerLabel = (c) => {
+      let node = c;
+      for (let d = 0; d < 6 && node; d++) {
+        const lbl = node.querySelector && node.querySelector("label,legend");
+        if (lbl && lbl.textContent && lbl.textContent.trim()) {
+          return lbl.textContent.replace(/\\s+/g, " ").trim().slice(0, 120);
+        }
+        node = node.parentElement;
+      }
+      return "";
+    };
+    const isFilled = (c) => {
+      const sel = c.querySelector(".bb-custom-select-option.bb-is-selected");
+      if (!sel) return false;
+      const t = norm(sel.textContent);
+      // Treat an empty / placeholder-ish selection as unfilled.
+      return t.length > 0 && t !== "select" && t !== "please select" && t !== "-";
+    };
+    const candidates = [];
+    for (let i = 0; i < containers.length; i++) {
+      const c = containers[i];
+      if (isFilled(c)) continue;
+      const opts = Array.from(c.querySelectorAll(".bb-custom-select-option"))
+        .map((o) => (o.textContent || "").replace(/\\s+/g, " ").trim())
+        .filter((t) => t && norm(t) !== "select" && norm(t) !== "please select");
+      if (opts.length > 0) candidates.push({ containerIndex: i, label: containerLabel(c), options: opts });
+    }
+    if (candidates.length === 0) return { present: true, candidates: [] };
+    // Deterministic unique match: exactly one option across all unfilled
+    // containers equals the flow's answer text. Unambiguous → no LLM.
+    let detHits = [];
+    for (const cand of candidates) {
+      for (let oi = 0; oi < cand.options.length; oi++) {
+        if (norm(cand.options[oi]) === wantOpt) detHits.push({ containerIndex: cand.containerIndex, optionIndex: oi });
+      }
+    }
+    if (detHits.length === 1) {
+      return { present: true, deterministic: detHits[0], candidates };
+    }
+    return { present: true, candidates };
+  })(${JSON.stringify(option)})`;
+  try {
+    // Settle-retry: Talemetry hydrates the question widgets a beat after the
+    // step fires; poll until a bb-custom-select container appears (gate on
+    // container presence, not on a matched option) or the cap is hit.
+    const enumResult = await pollEnumerate<{
+      present: boolean;
+      deterministic?: { containerIndex: number; optionIndex: number };
+      candidates?: { containerIndex: number; label: string; options: string[] }[];
+    }>(page, enumerateExpr, (r) => r?.present === true);
+    if (!enumResult?.present) {
+      logger.info(
+        `bb-select primitive: no bb-custom-select on page for ${optLabel}; falling through`
+      );
+      return false;
+    }
+    const candidates = enumResult.candidates ?? [];
+    if (candidates.length === 0) {
+      logger.info(
+        `bb-select primitive: bb-custom-select present but all filled/empty for ${optLabel}; falling through`
+      );
+      return false;
+    }
+    // Resolve which container + option to click: deterministic unique match, or
+    // the LLM picker (reusing the native-select judge — "dropdowns" == the
+    // bb-custom-select containers here).
+    const target = await resolveBbSelectTarget({
+      deterministic: enumResult.deterministic ?? null,
+      candidates,
+      option,
+      questionLabel,
+      anthropic,
+      captureFn,
+    });
+    if (!target) {
+      logger.info(`bb-select primitive: no matching option for ${optLabel}; falling through`);
+      return false;
+    }
+    // Apply pass: open the container, then click the option by index, then
+    // verify `.bb-is-selected` landed on it. Real clicks (not value-set) — the
+    // widget has no native <select> to mutate.
+    const opened = await clickBbSelectOption(page, target.containerIndex, target.optionIndex);
+    if (opened.ok) {
+      logger.info(
+        `bb-select primitive: clicked "${opened.chosen.slice(0, 40)}" for ${optLabel}${target.reason ? ` (${target.reason.slice(0, 50)})` : ""}`
+      );
+      return true;
+    }
+    logger.info(
+      `bb-select primitive: option click did not register for ${optLabel}; falling through`
+    );
+    return false;
+  } catch (err) {
+    logger.warn(`bb-select primitive: evaluate threw: ${toErrorMessage(err)}; falling through`);
+    return false;
+  }
+}
+
+/**
+ * Find the UNIQUE (containerIndex, optionIndex) whose option text equals the
+ * desired option across the enumerated bb-custom-select candidates. Returns null
+ * when zero or more-than-one option matches (ambiguous — e.g. "Yes" shared
+ * across questions — must defer to the LLM picker, never guess). Pure; mirrors
+ * the deterministic match the enumerate `evaluate` performs in-browser, and is
+ * the unit-testable seam for that logic.
+ */
+export function findUniqueBbSelectMatch(
+  candidates: readonly { containerIndex: number; options: readonly string[] }[],
+  desiredOption: string
+): { containerIndex: number; optionIndex: number } | null {
+  const norm = (s: string): string => s.replace(/\s+/g, " ").trim().toLowerCase();
+  const want = norm(desiredOption);
+  if (!want) return null;
+  const hits: { containerIndex: number; optionIndex: number }[] = [];
+  for (const cand of candidates) {
+    for (let oi = 0; oi < cand.options.length; oi++) {
+      if (norm(cand.options[oi]!) === want) {
+        hits.push({ containerIndex: cand.containerIndex, optionIndex: oi });
+      }
+    }
+  }
+  return hits.length === 1 ? hits[0]! : null;
+}
+
+/**
+ * Choose which bb-custom-select container + option answers the step: a
+ * deterministic unique text match when the enumerate found one, otherwise the
+ * shared select-option LLM judge. Extracted (pure but for the LLM call) so the
+ * container/option resolution is unit-testable apart from the browser clicks.
+ */
+export async function resolveBbSelectTarget(params: {
+  deterministic: { containerIndex: number; optionIndex: number } | null;
+  candidates: { containerIndex: number; label: string; options: string[] }[];
+  option: string;
+  questionLabel: string | null;
+  anthropic: Anthropic | null;
+  captureFn?: JudgeCaptureFn;
+}): Promise<{ containerIndex: number; optionIndex: number; reason?: string } | null> {
+  const { deterministic, candidates, option, questionLabel, anthropic, captureFn } = params;
+  if (deterministic) return deterministic;
+  if (anthropic === null || candidates.length === 0) return null;
+  const verdict = await judgeSelectOptionWithLLM({
+    client: anthropic,
+    input: {
+      questionLabel,
+      desiredHint: option,
+      candidates: candidates.map((c) => ({ label: c.label || null, options: c.options })),
+    },
+    captureFn,
+  });
+  if (!verdict || verdict.selectIndex === null || verdict.optionIndex === null) return null;
+  const chosen = candidates[verdict.selectIndex];
+  if (!chosen) return null;
+  return {
+    containerIndex: chosen.containerIndex,
+    optionIndex: verdict.optionIndex,
+    reason: verdict.reason,
+  };
+}
+
+/**
+ * Open the Nth `.bb-custom-select-container` and click its option at
+ * `optionIndex`, then confirm `.bb-is-selected` moved to that option. Two
+ * `page.evaluate` clicks (open, then select) with a short settle between, since
+ * the panel only renders its clickable options once `.bb-is-open` is set.
+ */
+async function clickBbSelectOption(
+  page: Page,
+  containerIndex: number,
+  optionIndex: number
+): Promise<{ ok: boolean; chosen: string }> {
+  const openExpr = `((ci) => {
+    const c = document.querySelectorAll(".bb-custom-select-container")[ci];
+    if (!c) return false;
+    const opener = c.querySelector(".bb-custom-select-opener") || c;
+    opener.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    opener.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    opener.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    return c.classList.contains("bb-is-open");
+  })(${JSON.stringify(containerIndex)})`;
+  await page.evaluate(openExpr).catch(() => false);
+  await page.waitForTimeout(150);
+  const selectExpr = `((ci, oi) => {
+    const c = document.querySelectorAll(".bb-custom-select-container")[ci];
+    if (!c) return { ok: false, chosen: "" };
+    const opts = c.querySelectorAll(".bb-custom-select-option");
+    const opt = opts[oi];
+    if (!opt) return { ok: false, chosen: "" };
+    const chosen = (opt.textContent || "").replace(/\\s+/g, " ").trim();
+    opt.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    opt.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    opt.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    const nowSelected = c.querySelector(".bb-custom-select-option.bb-is-selected");
+    const ok = !!nowSelected && (nowSelected.textContent || "").replace(/\\s+/g, " ").trim() === chosen;
+    return { ok, chosen };
+  })(${JSON.stringify(containerIndex)}, ${JSON.stringify(optionIndex)})`;
+  const result = (await page.evaluate(selectExpr).catch(() => ({ ok: false, chosen: "" }))) as {
+    ok: boolean;
+    chosen: string;
+  };
+  return result;
+}
+
+/**
  * Synthesize a drag-drop event sequence on the most-likely upload drop
  * zone using DataTransfer + DragEvent. Used as K'4 fallback when
  * setInputFiles + change-event dispatch don't trigger the framework's
@@ -4813,6 +5072,18 @@ async function executeStepWithHealing(params: {
   // pages). No-op (falls through) when there's no checkbox group or no match.
   if (await tryCheckboxPrimitive({ page, instruction: step, logger, anthropic, captureFn })) {
     logger.info(`step ${stepIndex + 1} resolved by checkbox primitive`);
+    trajectory?.push({ stepIndex, verifiedBy: "dom" });
+    return "completed";
+  }
+
+  // When the step is a "select 'X'" against a Talemetry `bb-custom-select`
+  // custom dropdown (no native <select>, options are `.bb-custom-select-option`
+  // divs) — the COMPENSATION/Job-Related screening questions render this way —
+  // open the widget and click the option directly. Runs AFTER the native-select
+  // and checkbox primitives (which no-op on this widget). No-op (falls through)
+  // when there's no bb-custom-select or no option matches.
+  if (await tryBbCustomSelectPrimitive({ page, instruction: step, logger, anthropic, captureFn })) {
+    logger.info(`step ${stepIndex + 1} resolved by bb-select primitive`);
     trajectory?.push({ stepIndex, verifiedBy: "dom" });
     return "completed";
   }
