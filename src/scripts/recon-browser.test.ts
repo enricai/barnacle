@@ -83,6 +83,7 @@ import {
   hasBillingErrorBeenLogged,
   type InvalidFormControl,
   isReplanCycle,
+  isStructurallyBlocked,
   isSubmitRevealedInvalid,
   isWizardExitAction,
   type LeafInvalidField,
@@ -110,6 +111,7 @@ import {
   type ValidationRejectionPair,
   type VerifyFillReadbackResult,
   verifyFillReadback,
+  windowHasTransitionBody,
 } from "@/scripts/recon-browser";
 import type { Logger } from "@/types/logging";
 
@@ -3128,6 +3130,123 @@ describe("recon-browser/findUniqueBbSelectMatch", () => {
 
   it("returns null for an empty desired option", () => {
     expect(findUniqueBbSelectMatch(candidates, "   ")).toBeNull();
+  });
+});
+
+describe("recon-browser/isStructurallyBlocked", () => {
+  it("is true when every attempt resolved no selector and never verified", () => {
+    expect(
+      isStructurallyBlocked([
+        { triedSelectors: [], verifiedBy: null },
+        { triedSelectors: [], verifiedBy: null },
+        { triedSelectors: [], verifiedBy: null },
+      ])
+    ).toBe(true);
+  });
+
+  it("is false when any attempt resolved a selector (control was found)", () => {
+    expect(
+      isStructurallyBlocked([
+        { triedSelectors: [], verifiedBy: null },
+        { triedSelectors: ["xpath=/html/body/input"], verifiedBy: null },
+      ])
+    ).toBe(false);
+  });
+
+  it("is false when any attempt carried a verification signal", () => {
+    expect(
+      isStructurallyBlocked([
+        { triedSelectors: [], verifiedBy: null },
+        { triedSelectors: [], verifiedBy: "dom" },
+      ])
+    ).toBe(false);
+  });
+
+  it("is false for an empty attempts array (no evidence either way)", () => {
+    expect(isStructurallyBlocked([])).toBe(false);
+  });
+});
+
+describe("recon-browser/windowHasTransitionBody", () => {
+  let dir: string;
+  const writeCapture = (name: string, requestPostData: unknown): void => {
+    writeFileSync(join(dir, name), JSON.stringify({ url: "https://x/gq", requestPostData }));
+  };
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "recon-adv-gate-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("returns false when no pattern is configured (opt-in)", () => {
+    writeCapture("0-x.json", '{"query":"mutation TransitionWorklet"}');
+    expect(
+      windowHasTransitionBody({
+        recentCaptures: ["0-x.json"],
+        preLength: 0,
+        advanceTransitionBodyPattern: null,
+        capturesDir: dir,
+      })
+    ).toBe(false);
+  });
+
+  it("returns true when a body in the window matches the pattern (real advance)", () => {
+    writeCapture("0-a.json", '{"query":"mutation TransitionWorklet(...)"}');
+    expect(
+      windowHasTransitionBody({
+        recentCaptures: ["0-a.json"],
+        preLength: 0,
+        advanceTransitionBodyPattern: "TransitionWorklet",
+        capturesDir: dir,
+      })
+    ).toBe(true);
+  });
+
+  it("returns false when the only same-endpoint POST is a non-advance mutation", () => {
+    // The exact false-heal case: EditQuestionItem shares the /gq URL but must NOT
+    // count as an advance.
+    writeCapture(
+      "0-edit.json",
+      '{"query":"mutation questionItemEditMutation { EditQuestionItem }"}'
+    );
+    expect(
+      windowHasTransitionBody({
+        recentCaptures: ["0-edit.json"],
+        preLength: 0,
+        advanceTransitionBodyPattern: "TransitionWorklet",
+        capturesDir: dir,
+      })
+    ).toBe(false);
+  });
+
+  it("only scans captures added after preLength (this step's window)", () => {
+    writeCapture("0-old.json", '{"query":"mutation TransitionWorklet"}');
+    writeCapture("1-new.json", '{"query":"mutation EditQuestionItem"}');
+    // preLength=1 → only "1-new.json" is in-window → no transition match.
+    expect(
+      windowHasTransitionBody({
+        recentCaptures: ["0-old.json", "1-new.json"],
+        preLength: 1,
+        advanceTransitionBodyPattern: "TransitionWorklet",
+        capturesDir: dir,
+      })
+    ).toBe(false);
+  });
+
+  it("skips .decoded.json sidecars and tolerates unreadable captures", () => {
+    writeCapture("0-a.json", '{"query":"EditQuestionItem"}');
+    // decoded sidecar with a matching string must be ignored (only raw counts)
+    writeFileSync(join(dir, "0-a.decoded.json"), '"mutation TransitionWorklet"');
+    expect(
+      windowHasTransitionBody({
+        recentCaptures: ["0-a.json", "0-a.decoded.json", "missing.json"],
+        preLength: 0,
+        advanceTransitionBodyPattern: "TransitionWorklet",
+        capturesDir: dir,
+      })
+    ).toBe(false);
   });
 });
 

@@ -874,6 +874,50 @@ export function findWizardRestartSignal(params: {
 }
 
 /**
+ * Does any same-window network capture's REQUEST BODY match the configured
+ * transition pattern? Proves an interior "advance"/"Next" step really moved the
+ * wizard forward when advance and non-advance mutations share one endpoint URL
+ * (e.g. Talemetry `/gq`: a real advance is a `TransitionWorklet` mutation, a
+ * field edit is `EditQuestionItem` — same URL, only the body differs, so a
+ * URL/meta-based check can't tell them apart). Reads the capture files by name
+ * from `capturesDir` (mirrors `extractSubmitFailureEvidence`). Returns false
+ * when no pattern is configured (opt-in) or nothing in the window matches.
+ */
+export function windowHasTransitionBody(params: {
+  recentCaptures: readonly string[];
+  preLength: number;
+  advanceTransitionBodyPattern: string | null;
+  capturesDir?: string;
+}): boolean {
+  const { recentCaptures, preLength, advanceTransitionBodyPattern } = params;
+  if (!advanceTransitionBodyPattern) return false;
+  const capturesDir = params.capturesDir ?? CAPTURES_DIR;
+  let rx: RegExp;
+  try {
+    rx = new RegExp(advanceTransitionBodyPattern);
+  } catch {
+    return false;
+  }
+  const window = recentCaptures.slice(preLength);
+  for (const filename of window) {
+    // Skip decoded sidecars; the raw capture carries requestPostData.
+    if (filename.endsWith(".decoded.json")) continue;
+    try {
+      const raw = readFileSync(join(capturesDir, filename), "utf8");
+      const capture = JSON.parse(raw) as Partial<Capture> & { requestPostData?: unknown };
+      const body =
+        typeof capture.requestPostData === "string"
+          ? capture.requestPostData
+          : JSON.stringify(capture.requestPostData ?? "");
+      if (rx.test(body)) return true;
+    } catch {
+      // Unreadable/absent capture — ignore, keep scanning.
+    }
+  }
+  return false;
+}
+
+/**
  * Read-only count of ng-invalid form controls on the page. Side-effect-free
  * counterpart to `probeFormValidityBeforeSubmit` (which also auto-fills
  * unselected radio groups via element.click()). Used by the cascade's
@@ -938,6 +982,26 @@ export function describeAttemptEffectSignals(
     );
   }
   return observations.join(" | ");
+}
+
+/**
+ * Was the failed step *structurally* unresolvable — i.e. no cascade attempt ever
+ * resolved a selector/control for it — as opposed to a control that WAS found but
+ * failed to verify? True only when every attempt resolved nothing
+ * (`triedSelectors` empty) and none carried a verification signal. The replan
+ * prompt uses this to stop merely rewording a step whose target the engine has no
+ * driver for (e.g. a custom widget), and instead propose a different path or mark
+ * impossible. Conservative: any attempt that resolved a selector or verified makes
+ * this false (that step is resolvable; rewording may still help).
+ */
+export function isStructurallyBlocked(
+  attempts: readonly {
+    triedSelectors: readonly string[];
+    verifiedBy: string | null;
+  }[]
+): boolean {
+  if (attempts.length === 0) return false;
+  return attempts.every((a) => a.triedSelectors.length === 0 && a.verifiedBy === null);
 }
 
 /**
@@ -1474,6 +1538,19 @@ const RECON_FLOW_FILE_SCHEMA = z.union([
      * page or replanning against the restarted wizard.
      */
     restartSignalUrlPatterns: z.array(z.string().min(1)).optional(),
+    /**
+     * Optional regex matched against the REQUEST BODY of same-window network
+     * captures to prove an interior (non-submit) "advance"/"Next" step actually
+     * moved the wizard forward — not merely fired some other same-origin POST.
+     * Needed for SPAs where advance and non-advance mutations share one endpoint
+     * URL (e.g. Talemetry's `/gq`: a real page advance is a `TransitionWorklet`
+     * mutation, while `EditQuestionItem` is just a field edit — byte-identical
+     * URLs, only the body differs). When set, an advance step's `networkFired`
+     * signal is trusted ONLY if a capture body in the step's window matches this
+     * pattern. Opt-in: sites that don't set it keep today's behavior (any
+     * network/url/dom signal verifies), so no cross-site regression.
+     */
+    advanceTransitionBodyPattern: z.string().min(1).optional(),
   }),
 ]);
 
@@ -2982,6 +3059,29 @@ async function replanRemainingFlow(params: {
       ? `ELEMENT MODEL CHECK — The cascade has now failed ${slugPriorMatches + 1} times on steps matching the same element pattern. When the same element family fails repeatedly, the failed-step's element description may NOT match the actual DOM (e.g. the step asks for "spinbutton" but the page only has <input type="date">; asks for "Select dropdown" but the page has a custom autocomplete; asks for a "Click" target that's a label-only with no clickable child). Inspect PAGE BODY HTML AT FAILURE: if the actual widget in the DOM differs from the failed step's element description, propose a STRUCTURALLY DIFFERENT recovery that targets the actual widget visible on the page (e.g. "Fill in the date input field with today's date" instead of "Click the Month spinbutton") rather than restating the failed step's premise.`
       : "";
 
+  // Structural-block meta-signal: when NO attempt ever resolved a selector for
+  // the failed step (every attempt found nothing to act on), the step's target
+  // widget/control was never present-and-drivable — rewording the same premise
+  // will fail identically. Tell the LLM to change approach or mark impossible,
+  // not paraphrase. Read the persisted attempt records from the failure dump.
+  const structurallyBlocked = (() => {
+    try {
+      const dump = JSON.parse(readFileSync(failureDumpPath, "utf8")) as {
+        attempts?: { triedSelectors?: string[]; verifiedBy?: string | null }[];
+      };
+      const attempts = (dump.attempts ?? []).map((a) => ({
+        triedSelectors: a.triedSelectors ?? [],
+        verifiedBy: a.verifiedBy ?? null,
+      }));
+      return isStructurallyBlocked(attempts);
+    } catch {
+      return false;
+    }
+  })();
+  const structuralBlockCheck = structurallyBlocked
+    ? `STRUCTURAL BLOCK — Every cascade attempt on the failed step resolved NO element (observe found no candidate; nothing was clicked or filled). The step's target is not present-and-drivable on this page as described. Do NOT merely reword or paraphrase the same premise — it will fail identically. Either (a) propose a STRUCTURALLY DIFFERENT step targeting a control that actually exists in PAGE BODY HTML AT FAILURE / the observed candidates, or (b) if the required control genuinely isn't reachable, return outcome=impossible rather than a cosmetic rewrite.`
+    : "";
+
   const prompt = `You are helping a browser automation agent recover from a failed flow step.
 
 ORIGINAL FLOW SUMMARY: ${originalFlow.length} total steps; ${completedSteps.length} executed, ${remainingSteps.length} remaining after the failed step. The completed-tail and remaining-head windows below give you the local context — that's the only flow context replan needs.
@@ -2999,7 +3099,7 @@ CURRENT BROWSER STATE:
 URL: ${page.url()}
 Title: ${pageTitle}
 
-${elementModelCheck ? `${elementModelCheck}\n\n` : ""}WHY VERIFICATION FAILED (latest attempt reasons from the cascade — read these carefully, they explain WHY the step is being declared failed):
+${elementModelCheck ? `${elementModelCheck}\n\n` : ""}${structuralBlockCheck ? `${structuralBlockCheck}\n\n` : ""}WHY VERIFICATION FAILED (latest attempt reasons from the cascade — read these carefully, they explain WHY the step is being declared failed):
 ${failureReasonList || "(none)"}
 
 PAGE TRANSITION + VALIDATOR TELEMETRY (parsed from Google Analytics Measurement Protocol beacons (POSTs to google-analytics.com/g/collect) captured during the failed step's attempt window — this is the SPA's own telemetry telling you what state it thinks it's in. Watch for: en=view_secondPage / en=view_thirdPage indicating the SPA advanced to a later form page WITHOUT firing Page.frameNavigated (so URL stays the same but questions changed); en=view_thankYouPage indicating the application SUBMITTED SUCCESSFULLY (a stronger success signal than network captures because the /integrated_apply POST is sometimes debounced); epn.validationErrorsCount=N indicating the site's own client validator counts N unfilled required fields. When validationErrorsCount > 0, prefer steps that target unfilled fields over re-clicking Submit/Continue. When view_thankYouPage appears, the application already submitted — do not propose more form-fill steps):
@@ -4193,6 +4293,79 @@ async function clickBbSelectOption(
 }
 
 /**
+ * Guard for the optional-step fast-skip: is there a REQUIRED, still-empty (or
+ * aria-invalid) form control on the page whose nearby label matches this step's
+ * question? A `parseSelectStep`-style optional step that "found no candidates"
+ * would normally skip cleanly — but when the page plainly has a required control
+ * the step was meant to answer (SPA hydration lag, or a driver gap where observe
+ * can't resolve the widget), skipping leaves a required field empty and silently
+ * dooms the later submit. Returns true → the caller should NOT fast-skip and
+ * should fall through to the cascade/replan instead.
+ *
+ * Conservative by construction: returns false unless the step parses as a
+ * select/answer step AND a required-and-unsatisfied control with a
+ * label-matching the question is actually present. A genuinely-absent optional
+ * step (e.g. "dismiss modal" on a modal-less page) has no such control, so the
+ * fast-skip the comments call essential is preserved.
+ */
+async function hasUnfilledRequiredControlForStep(
+  page: Page,
+  instruction: string
+): Promise<boolean> {
+  const parsed = parseSelectStep(instruction);
+  if (!parsed?.questionLabel) return false;
+  const expr = `((label) => {
+    const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
+    const want = norm(label);
+    if (!want) return false;
+    const isInvalid = ${INVALID_MARKER_EL_EXPR};
+    // Required markers: the control itself, or a required-asterisk label nearby.
+    const isRequired = (el) => {
+      if (!el || !el.getAttribute) return false;
+      if (el.hasAttribute("required")) return true;
+      if (el.getAttribute("aria-required") === "true") return true;
+      return false;
+    };
+    const isEmptyish = (el) => {
+      if (!el) return false;
+      if (el.getAttribute && el.getAttribute("aria-invalid") === "true") return true;
+      if (isInvalid(el)) return true;
+      const v = ("value" in el) ? el.value : "";
+      return !v || String(v).trim() === "";
+    };
+    // Scan form controls; for each required+empty one, check whether a nearby
+    // label (ancestor label/legend, or [aria-labelledby], or preceding label)
+    // contains the question text.
+    const controls = Array.from(document.querySelectorAll(
+      "input,select,textarea,[role=combobox],[role=listbox],.bb-custom-select-container,[class*='MultiCheckboxInput']"
+    ));
+    for (const el of controls) {
+      if (!isRequired(el) && !(el.querySelector && el.querySelector("[required],[aria-required=true]"))) {
+        // container widgets carry required on an inner element; allow those
+        if (!/bb-custom-select-container|MultiCheckboxInput/.test((el.getAttribute && el.getAttribute("class")) || "")) continue;
+      }
+      // is it empty/invalid?
+      const emptyOrInvalid = isEmptyish(el) || (el.querySelector && !!el.querySelector("[aria-invalid=true]"));
+      if (!emptyOrInvalid) continue;
+      // does a nearby label match the question?
+      let node = el;
+      for (let d = 0; d < 6 && node; d++) {
+        const lbl = node.querySelector && node.querySelector("label,legend");
+        const txt = lbl && lbl.textContent ? norm(lbl.textContent) : "";
+        if (txt && (txt.includes(want) || want.includes(txt))) return true;
+        node = node.parentElement;
+      }
+    }
+    return false;
+  })(${JSON.stringify(parsed.questionLabel)})`;
+  try {
+    return (await page.evaluate(expr)) === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Synthesize a drag-drop event sequence on the most-likely upload drop
  * zone using DataTransfer + DragEvent. Used as K'4 fallback when
  * setInputFiles + change-event dispatch don't trigger the framework's
@@ -4928,6 +5101,13 @@ async function executeStepWithHealing(params: {
    */
   requireSubmitEndpointMatch: boolean;
   /**
+   * Opt-in regex matched against same-window capture request BODIES to trust an
+   * interior advance/"Next" step's network signal (see `RECON_FLOW_FILE_SCHEMA`
+   * `advanceTransitionBodyPattern`). Null/empty = today's behavior (any
+   * network/url/dom signal verifies an advance).
+   */
+  advanceTransitionBodyPattern: string | null;
+  /**
    * URL path fragments that indicate a successful submit transition.
    * Surfaced to the Haiku verifySubmit judge as one of the strong
    * corroborating signals (DOM/URL/title) required for verified=true.
@@ -4998,6 +5178,7 @@ async function executeStepWithHealing(params: {
     submitEndpointPattern,
     submittedStateSelectors,
     requireSubmitEndpointMatch,
+    advanceTransitionBodyPattern,
     successUrlFragments,
     successPageTitleHints,
     ownBackendHostnames,
@@ -5107,8 +5288,18 @@ async function executeStepWithHealing(params: {
   });
   if (probeResult === "absent") {
     if (optional) {
-      logger.info(`step ${stepIndex + 1} skipped (optional, probe found no candidates)`);
-      return "skipped";
+      // Don't fast-skip when the page plainly has a required, still-empty
+      // control this step was meant to answer (SPA hydration lag / observe
+      // can't resolve the widget) — skipping would leave a required field empty
+      // and silently doom the later submit. Fall through to the cascade instead.
+      if (await hasUnfilledRequiredControlForStep(page, step)) {
+        logger.info(
+          `step ${stepIndex + 1} probe-absent but a required unfilled control matches the question; NOT skipping (escalating to cascade)`
+        );
+      } else {
+        logger.info(`step ${stepIndex + 1} skipped (optional, probe found no candidates)`);
+        return "skipped";
+      }
     }
     // Telemetry-driven legitimate-transition detection. When the page
     // already advanced (a 3xx redirect or successful non-tracking POST
@@ -5299,6 +5490,9 @@ async function executeStepWithHealing(params: {
     // its URL scan to captures added DURING this attempt (not historical
     // tail from earlier steps).
     const preMetaLength = recentCaptureMeta.length;
+    // Same idea for the interior-advance body gate, but against the capture
+    // FILE-PATH array (recentCaptures) since body inspection reads capture files.
+    const preCapturesLength = recentCaptures.length;
     const record: AttemptRecord = {
       attempt,
       technique: "act-string",
@@ -5383,12 +5577,22 @@ async function executeStepWithHealing(params: {
           // present fields on its own, so present-but-hard fields succeed at
           // attempt 1 and don't rely on suppressing this skip.
           if (optional && attempt === 2 && triedSelectors.length === 0) {
-            record.verifiedBy = null;
-            attempts.push(record);
-            logger.info(
-              `step ${stepIndex + 1} skipped (optional, no candidates after act+observe)`
-            );
-            return "skipped";
+            // Same escalation guard as the probe-absent skip: if a required,
+            // still-empty control matching this step's question is present,
+            // don't fast-skip — let the healing cascade continue so the
+            // required field gets answered instead of silently doomed.
+            if (await hasUnfilledRequiredControlForStep(page, step)) {
+              logger.info(
+                `step ${stepIndex + 1} no candidates after act+observe but a required unfilled control matches; NOT skipping (continuing cascade)`
+              );
+            } else {
+              record.verifiedBy = null;
+              attempts.push(record);
+              logger.info(
+                `step ${stepIndex + 1} skipped (optional, no candidates after act+observe)`
+              );
+              return "skipped";
+            }
           }
         } else {
           const target = candidates[0]!;
@@ -5744,7 +5948,31 @@ async function executeStepWithHealing(params: {
       resolvedAction !== null && (isStateClass || isClick)
         ? await verifyDomEffect(page, resolvedAction)
         : false;
-    let verified = networkFired || urlChanged || domVerified;
+    // Interior-advance transition gate (opt-in). On SPAs where a page advance
+    // and a mere field-edit share one endpoint URL (Talemetry `/gq`:
+    // TransitionWorklet vs EditQuestionItem — identical URLs, only the body
+    // differs), a `networkFired` signal on an interior "Next" can be a
+    // non-advancing POST. When the flow configures `advanceTransitionBodyPattern`
+    // and THIS is a non-submit step whose ONLY positive signal is networkFired
+    // (no url/dom change), require a same-window capture body to match the
+    // transition pattern before trusting it. Final/submit steps keep their own
+    // (stronger) submit-verification gate below; sites without the pattern are
+    // unaffected.
+    const isAdvanceOnlyNetwork = networkFired && !urlChanged && !domVerified;
+    const networkIsRealAdvance =
+      advanceTransitionBodyPattern === null || !isAdvanceOnlyNetwork || isFinalStep || submitStep
+        ? networkFired
+        : windowHasTransitionBody({
+            recentCaptures,
+            preLength: preCapturesLength,
+            advanceTransitionBodyPattern,
+          });
+    if (advanceTransitionBodyPattern !== null && isAdvanceOnlyNetwork && !networkIsRealAdvance) {
+      logger.info(
+        `step ${stepIndex + 1} network fired but no advance-transition body matched (non-advancing POST); not treating as verified`
+      );
+    }
+    let verified = networkIsRealAdvance || urlChanged || domVerified;
 
     // Final-step submit-verification gate. Replaces the deterministic
     // submitEndpointPattern regex with a Haiku 4.5 LLM judgment over
@@ -6246,6 +6474,7 @@ function parseCli(): {
   submitEndpointPattern: string | null;
   submittedStateSelectors: string[];
   requireSubmitEndpointMatch: boolean;
+  advanceTransitionBodyPattern: string | null;
   successUrlFragments: string[];
   successPageTitleHints: string[];
   ownBackendHostnames: string[];
@@ -6340,6 +6569,7 @@ function parseCli(): {
       submitEndpointPattern: null,
       submittedStateSelectors: [],
       requireSubmitEndpointMatch: false,
+      advanceTransitionBodyPattern: null,
       successUrlFragments: [],
       successPageTitleHints: [],
       ownBackendHostnames: [],
@@ -6364,6 +6594,9 @@ function parseCli(): {
   const requireSubmitEndpointMatch = Array.isArray(parsed.data)
     ? false
     : (parsed.data.requireSubmitEndpointMatch ?? false);
+  const advanceTransitionBodyPattern = Array.isArray(parsed.data)
+    ? null
+    : (parsed.data.advanceTransitionBodyPattern ?? null);
   const successUrlFragments = Array.isArray(parsed.data)
     ? []
     : (parsed.data.successUrlFragments ?? []);
@@ -6406,6 +6639,7 @@ function parseCli(): {
     submitEndpointPattern,
     submittedStateSelectors,
     requireSubmitEndpointMatch,
+    advanceTransitionBodyPattern,
     successUrlFragments,
     successPageTitleHints,
     ownBackendHostnames,
@@ -6457,6 +6691,7 @@ async function main(): Promise<void> {
     submitEndpointPattern,
     submittedStateSelectors,
     requireSubmitEndpointMatch,
+    advanceTransitionBodyPattern,
     successUrlFragments,
     successPageTitleHints,
     ownBackendHostnames,
@@ -6669,6 +6904,7 @@ async function main(): Promise<void> {
           submitEndpointPattern,
           submittedStateSelectors,
           requireSubmitEndpointMatch,
+          advanceTransitionBodyPattern,
           successUrlFragments,
           successPageTitleHints,
           ownBackendHostnames,
