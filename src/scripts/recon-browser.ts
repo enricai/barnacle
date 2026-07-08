@@ -3640,6 +3640,54 @@ export function parseSelectStep(
   return { option, questionLabel };
 }
 
+/**
+ * Parse a single-choice RADIO flow step into the option to click and (when
+ * present) the question label that scopes which radio group it targets.
+ *
+ * Why this exists (sibling of `parseSelectStep`): `parseSelectStep`
+ * deliberately excludes bare radio steps ("a bare 'click the Yes answer' is a
+ * radio"), leaving radios with no DOM-direct primitive — they fall to the
+ * observe cascade, which on HCA/Talemetry's MUI radio markup resolves the step
+ * to a wrapper `<div>`/`<span>` (not the `<input type=radio>`) and commits via
+ * a bare `el.click()` that never triggers React's controlled-state `onChange`.
+ * The field stays `Mui-error` "required", Next no-ops, and the wizard walls at
+ * Step 2 of 10. `tryRadioPrimitive` needs the option/question text extracted
+ * from the human-readable step to answer the radio group directly.
+ *
+ * Recognizes the flow's conventional radio phrasings, all quoted:
+ *   "Click the 'Yes' answer for the question 'Are you at least 18 years…?'",
+ *   "Click the 'No' answer for the question about requiring visa sponsorship…",
+ *   "Click the 'Yes' radio button for the 'Are you currently licensed…' question".
+ * Returns null for select/checkbox steps (`select`/`check` verbs — those route
+ * to the select/checkbox primitives) and for the "for any remaining…" catch-all.
+ */
+export function parseRadioStep(
+  instruction: string
+): { option: string; questionLabel: string | null } | null {
+  const lower = instruction.toLowerCase();
+  // Select/checkbox steps belong to trySelect/tryCheckbox; skip them here so a
+  // single step never resolves through two primitives.
+  if (/\bselect(\s+or\s+check)?\b/.test(lower)) return null;
+  // Must be a radio-style click: "click the 'X' answer/radio…".
+  if (!/\bclick\b/.test(lower)) return null;
+  if (!/\b(answer|radio)\b/.test(lower)) return null;
+  // Catch-all steps ("for any remaining…") have no concrete single target.
+  if (/\bany\s+remaining\b/.test(lower)) return null;
+  const quoted = [...instruction.matchAll(/'([^']+)'/g)].map((m) => m[1]!);
+  if (quoted.length === 0) return null;
+  // The OPTION is the quoted string immediately after "click the".
+  const optMatch = instruction.match(/\bclick\s+the\s+'([^']+)'/i);
+  if (!optMatch) return null;
+  const option = optMatch[1]!.trim();
+  // The QUESTION LABEL, when present, is a DIFFERENT quoted string — the one
+  // introduced by "for the question '…'" / "for the '…' question". Some steps
+  // phrase the question un-quoted ("…about requiring visa sponsorship"); in
+  // that case there is no second quoted string and questionLabel stays null,
+  // which the primitive handles via LLM group-matching.
+  const questionLabel = quoted.find((q) => q.trim() !== option)?.trim() ?? null;
+  return { option, questionLabel };
+}
+
 /** Max settle-retry attempts for a primitive's DOM enumerate (see `pollEnumerate`). */
 const PRIMITIVE_ENUMERATE_ATTEMPTS = 5;
 /** Delay between settle-retry attempts. Total cap ≈ ATTEMPTS × this. */
@@ -4060,6 +4108,210 @@ async function tryCheckboxPrimitive(params: {
     return false;
   } catch (err) {
     logger.warn(`checkbox primitive: evaluate threw: ${toErrorMessage(err)}; falling through`);
+    return false;
+  }
+}
+
+/**
+ * Site-agnostic RADIO primitive: answer a single-choice radio-group question by
+ * directly selecting the matching option in the DOM, bypassing Stagehand
+ * observe/act.
+ *
+ * Why this exists (parallels `trySelectPrimitive`/`tryCheckboxPrimitive`):
+ * HCA/Talemetry render eligibility/screening questions as MUI radio groups.
+ * Stagehand observe resolves the step to a wrapper `<div>`/`<span>`, not the
+ * `<input type=radio>`, so the cascade's `el.click()` fallback fires on the
+ * wrapper (or sets `.checked` without triggering React's `onChange`) and the
+ * controlled value never commits — the field stays `Mui-error` "required", Next
+ * no-ops, and the wizard walls (measured on HCA: the "Are you at least 18?"
+ * radio was the sole unfilled field blocking Basic Information → Step 2 of 10).
+ * This primitive finds the radio group by raw DOM, matches the requested option
+ * by its `<label for>` text, and commits via the React-safe native `checked`
+ * setter + bubbling `click`/`input`/`change` (the same technique the select
+ * primitive uses for `<select>.value`), so React/MUI's value tracker registers
+ * the change. It then verifies the input is actually `checked` AND the group is
+ * no longer invalid before claiming success; otherwise it falls through to the
+ * cascade unchanged.
+ *
+ * When the flow's hardcoded option text isn't uniquely present (per-req
+ * variance), it enumerates the groups' real options and asks the same
+ * select-option LLM judge to pick group+option. A page with no radio group
+ * (checkbox/select/absent) falls through to the cascade.
+ */
+async function tryRadioPrimitive(params: {
+  page: Page;
+  instruction: string;
+  logger: Logger;
+  anthropic: Anthropic | null;
+  captureFn?: JudgeCaptureFn;
+}): Promise<boolean> {
+  const { page, instruction, logger, anthropic, captureFn } = params;
+  const parsed = parseRadioStep(instruction);
+  if (!parsed) return false;
+  const { option, questionLabel } = parsed;
+  const optLabel = `option "${option.slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
+  // Phase 1 (browser): find radio GROUPS and their options. A group is a
+  // `<fieldset>` / `[role=radiogroup]` / `[class*='RadioGroup']` container with
+  // radios. Question label = the group's legend / associated label; each option
+  // = the `<label for=radio-id>` text. Deterministic unique option-text match
+  // commits immediately (no LLM). Else return groups for the LLM picker.
+  // `commit` uses the React-safe native `checked` setter so MUI/React registers
+  // the change, then reports `ok` = post-commit `radio.checked && !invalid`.
+  const enumerateExpr = `((option) => {
+    const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
+    const wantOpt = norm(option);
+    const isInvalid = ${INVALID_MARKER_EL_EXPR};
+    let groupEls = Array.from(document.querySelectorAll("fieldset,[role='radiogroup'],[class*='RadioGroup']"))
+      .filter((g) => g.querySelector("input[type=radio]"));
+    if (groupEls.length === 0) return { groupPresent: false };
+    const groupLabel = (g) => {
+      const leg = g.querySelector("legend");
+      if (leg && leg.textContent) return leg.textContent.replace(/\\s+/g, " ").trim();
+      const al = g.getAttribute("aria-label") || g.getAttribute("label");
+      if (al) return al.replace(/\\s+/g, " ").trim();
+      const alb = g.getAttribute("aria-labelledby");
+      if (alb) { const el = document.getElementById(alb.split(/\\s+/)[0]); if (el) return (el.textContent||"").replace(/\\s+/g," ").trim(); }
+      return "";
+    };
+    const rbLabel = (rb) => {
+      if (rb.id) {
+        try {
+          const esc = (window.CSS && CSS.escape) ? CSS.escape(rb.id) : rb.id;
+          const lf = document.querySelector('label[for="' + esc + '"]');
+          if (lf && lf.textContent) return lf.textContent.replace(/\\s+/g, " ").trim();
+        } catch (e) {}
+      }
+      const al = rb.getAttribute("aria-label");
+      if (al) return al.replace(/\\s+/g, " ").trim();
+      const p = rb.closest("label");
+      if (p && p.textContent) return p.textContent.replace(/\\s+/g, " ").trim();
+      return "";
+    };
+    // Commit via the native value setter so React's controlled-input tracker
+    // fires onChange — a bare rb.checked=true does NOT, which is the exact bug
+    // the cascade's el.click() fallback hit on this MUI form.
+    const setChecked = (rb) => {
+      const desc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "checked");
+      if (desc && desc.set) { desc.set.call(rb, true); } else { rb.checked = true; }
+      rb.dispatchEvent(new Event("click", { bubbles: true }));
+      rb.dispatchEvent(new Event("input", { bubbles: true }));
+      rb.dispatchEvent(new Event("change", { bubbles: true }));
+      // Readback gate: the radio must read checked AND its group must no longer
+      // be invalid (walk up to the fieldset/radiogroup). Mirrors the cascade's
+      // checkboxStateVerified + ancestorStillInvalid guard.
+      if (rb.checked !== true) return false;
+      let node = rb;
+      for (let depth = 0; depth < 6 && node; depth++) {
+        if (node.getAttribute && isInvalid(node)) return false;
+        node = node.parentElement;
+      }
+      return true;
+    };
+    const groups = [];
+    for (let gi = 0; gi < groupEls.length; gi++) {
+      const radios = Array.from(groupEls[gi].querySelectorAll("input[type=radio]"));
+      if (radios.length === 0) continue;
+      const options = radios.map((rb, ri) => ({ ri, text: rbLabel(rb) })).filter((o) => o.text);
+      groups.push({ gi, label: groupLabel(groupEls[gi]), options });
+    }
+    if (groups.length === 0) return { groupPresent: false };
+    // Deterministic: exactly one option across all groups equals wantOpt AND
+    // its group's label matches the question (when a label was supplied) —
+    // guards against picking the wrong "Yes"/"No" when many groups share it.
+    const wantQ = ${JSON.stringify(questionLabel)};
+    const normQ = norm(wantQ);
+    let detHits = [];
+    for (const grp of groups) {
+      const grpMatchesQ = !normQ || norm(grp.label).indexOf(normQ) !== -1 || normQ.indexOf(norm(grp.label)) !== -1;
+      for (const o of grp.options) {
+        if (norm(o.text) === wantOpt && grpMatchesQ) detHits.push({ gi: grp.gi, ri: o.ri, text: o.text });
+      }
+    }
+    if (detHits.length === 1) {
+      const h = detHits[0];
+      const grpEl = groupEls[h.gi];
+      const rb = grpEl.querySelectorAll("input[type=radio]")[h.ri];
+      const ok = rb ? setChecked(rb) : false;
+      return { groupPresent: true, applied: true, ok, chosen: h.text };
+    }
+    return { groupPresent: true, applied: false, groups: groups.map((g) => ({ gi: g.gi, label: g.label, options: g.options })) };
+  })(${JSON.stringify(option)})`;
+  try {
+    const enumResult = await pollEnumerate<{
+      groupPresent: boolean;
+      applied?: boolean;
+      ok?: boolean;
+      chosen?: string;
+      groups?: { gi: number; label: string; options: { ri: number; text: string }[] }[];
+    }>(page, enumerateExpr, (r) => r?.groupPresent === true);
+    if (!enumResult?.groupPresent) return false; // no radio group → cascade
+    if (enumResult.applied && enumResult.ok) {
+      logger.info(
+        `radio primitive: selected "${(enumResult.chosen || "").trim().slice(0, 40)}" (${optLabel})`
+      );
+      return true;
+    }
+    const groups = enumResult.groups ?? [];
+    if (anthropic === null || groups.length === 0) {
+      logger.info(
+        `radio primitive: no unique option match for ${optLabel}${anthropic === null ? " (no LLM client)" : ""}; falling through to cascade`
+      );
+      return false;
+    }
+    // LLM picks which group answers the question + which option. Reuse the
+    // select-option judge (candidate "dropdowns" == radio groups here).
+    const verdict = await judgeSelectOptionWithLLM({
+      client: anthropic,
+      input: {
+        questionLabel,
+        desiredHint: option,
+        candidates: groups.map((g) => ({
+          label: g.label || null,
+          options: g.options.map((o) => o.text),
+        })),
+      },
+      captureFn,
+    });
+    if (!verdict || verdict.selectIndex === null || verdict.optionIndex === null) {
+      logger.info(
+        `radio primitive: LLM found no matching group for ${optLabel}${verdict ? ` (${verdict.reason})` : ""}; falling through to cascade`
+      );
+      return false;
+    }
+    const chosenGroup = groups[verdict.selectIndex]!;
+    const chosenOption = chosenGroup.options[verdict.optionIndex]!;
+    const applyExpr = `((gi, ri) => {
+      const isInvalid = ${INVALID_MARKER_EL_EXPR};
+      const groupEls = Array.from(document.querySelectorAll("fieldset,[role='radiogroup'],[class*='RadioGroup']"))
+        .filter((g) => g.querySelector("input[type=radio]"));
+      const grp = groupEls[gi];
+      if (!grp) return { ok: false };
+      const rb = grp.querySelectorAll("input[type=radio]")[ri];
+      if (!rb) return { ok: false };
+      const desc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "checked");
+      if (desc && desc.set) { desc.set.call(rb, true); } else { rb.checked = true; }
+      rb.dispatchEvent(new Event("click", { bubbles: true }));
+      rb.dispatchEvent(new Event("input", { bubbles: true }));
+      rb.dispatchEvent(new Event("change", { bubbles: true }));
+      if (rb.checked !== true) return { ok: false };
+      let node = rb;
+      for (let depth = 0; depth < 6 && node; depth++) {
+        if (node.getAttribute && isInvalid(node)) return { ok: false };
+        node = node.parentElement;
+      }
+      return { ok: true };
+    })(${JSON.stringify(chosenGroup.gi)}, ${JSON.stringify(chosenOption.ri)})`;
+    const applyResult = (await page.evaluate(applyExpr)) as { ok: boolean };
+    if (applyResult?.ok) {
+      logger.info(
+        `radio primitive: LLM selected "${chosenOption.text.slice(0, 40)}" for ${optLabel} (${verdict.reason.slice(0, 60)})`
+      );
+      return true;
+    }
+    logger.info(`radio primitive: LLM-chosen radio did not stick for ${optLabel}; falling through`);
+    return false;
+  } catch (err) {
+    logger.warn(`radio primitive: evaluate threw: ${toErrorMessage(err)}; falling through`);
     return false;
   }
 }
@@ -5025,6 +5277,18 @@ async function executeStepWithHealing(params: {
   // pages). No-op (falls through) when there's no checkbox group or no match.
   if (await tryCheckboxPrimitive({ page, instruction: step, logger, anthropic, captureFn })) {
     logger.info(`step ${stepIndex + 1} resolved by checkbox primitive`);
+    trajectory?.push({ stepIndex, verifiedBy: "dom" });
+    return "completed";
+  }
+
+  // When the step is a single-choice RADIO answer ("Click the 'Yes' answer for
+  // the question '…'"), commit it directly in the DOM. Runs AFTER select/
+  // checkbox (which own their verbs) and BEFORE the cascade, so radios never
+  // reach the observe cascade's el.click() fallback that fails to commit MUI/
+  // React controlled state (the HCA Basic-Info Step-2 wall). No-op (falls
+  // through) when there's no radio group or no confident option match.
+  if (await tryRadioPrimitive({ page, instruction: step, logger, anthropic, captureFn })) {
+    logger.info(`step ${stepIndex + 1} resolved by radio primitive`);
     trajectory?.push({ stepIndex, verifiedBy: "dom" });
     return "completed";
   }

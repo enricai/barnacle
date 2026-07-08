@@ -92,6 +92,7 @@ import {
   narrowInvalidFormControl,
   normalizeDateValue,
   pairInvalidWithErrors,
+  parseRadioStep,
   parseSelectStep,
   persistReplannedFlow,
   pollEnumerate,
@@ -3086,6 +3087,60 @@ describe("recon-browser/parseSelectStep", () => {
 
   it("returns null when there is no quoted option to select", () => {
     expect(parseSelectStep("Select an appropriate value in the dropdown")).toBeNull();
+  });
+});
+
+describe("recon-browser/parseRadioStep", () => {
+  it("parses a radio answer with a quoted question label", () => {
+    expect(
+      parseRadioStep("Click the 'Yes' answer for the question 'Are you at least 18 years of age?'")
+    ).toEqual({ option: "Yes", questionLabel: "Are you at least 18 years of age?" });
+  });
+
+  it("parses a 'radio button' phrasing", () => {
+    expect(
+      parseRadioStep(
+        "Click the 'Yes' radio button for the 'Are you currently licensed to work as a Registered Nurse in this state?' question"
+      )
+    ).toEqual({
+      option: "Yes",
+      questionLabel: "Are you currently licensed to work as a Registered Nurse in this state?",
+    });
+  });
+
+  it("parses a radio answer whose question is phrased un-quoted (label null)", () => {
+    expect(
+      parseRadioStep(
+        "Click the 'No' answer for the question about requiring visa sponsorship (H-1B, O-1, E-3, TN) to work legally in the US"
+      )
+    ).toEqual({ option: "No", questionLabel: null });
+  });
+
+  it("returns null for <select>/checkbox steps (owned by select/checkbox primitives)", () => {
+    expect(parseRadioStep("Select 'Texas' in the State or State/Region dropdown")).toBeNull();
+    expect(
+      parseRadioStep(
+        "For 'Which of the following certifications do you currently possess?' select or check 'Basic Life Support (BLS)'"
+      )
+    ).toBeNull();
+  });
+
+  it("returns null for the 'any remaining' catch-all", () => {
+    expect(
+      parseRadioStep(
+        "For any remaining required job-related, screening, EEO, or self-identification question, provide a reasonable answer or check the acknowledgement box"
+      )
+    ).toBeNull();
+  });
+
+  it("returns null for a Next/advance click (no 'answer'/'radio')", () => {
+    expect(
+      parseRadioStep("Click the 'Next' button to leave the Basic Information page")
+    ).toBeNull();
+  });
+
+  it("returns null when there is no quoted option", () => {
+    expect(parseRadioStep("Click the appropriate answer for the question")).toBeNull();
   });
 });
 
