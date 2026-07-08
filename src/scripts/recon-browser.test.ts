@@ -3421,4 +3421,29 @@ describe("recon-browser/pollEnumerate — settle-retry", () => {
     expect(evaluate).toHaveBeenCalledTimes(5);
     expect(waitForTimeout).toHaveBeenCalledTimes(4);
   });
+
+  it("honors an opts.attempts override (longer window for slow widgets)", async () => {
+    const evaluate = vi.fn().mockResolvedValue({ present: false });
+    const waitForTimeout = vi.fn().mockResolvedValue(undefined);
+    const page = { evaluate, waitForTimeout } as unknown as Parameters<typeof pollEnumerate>[0];
+    const result = await pollEnumerate<{ present: boolean }>(page, "expr", (r) => r.present, {
+      attempts: 3,
+      intervalMs: 10,
+    });
+    expect(result).toEqual({ present: false });
+    // The override drives the loop, not the default 5.
+    expect(evaluate).toHaveBeenCalledTimes(3);
+    expect(waitForTimeout).toHaveBeenCalledTimes(2);
+  });
+
+  it("passes opts.intervalMs to waitForTimeout", async () => {
+    const evaluate = vi
+      .fn()
+      .mockResolvedValueOnce({ present: false })
+      .mockResolvedValueOnce({ present: true });
+    const waitForTimeout = vi.fn().mockResolvedValue(undefined);
+    const page = { evaluate, waitForTimeout } as unknown as Parameters<typeof pollEnumerate>[0];
+    await pollEnumerate<{ present: boolean }>(page, "expr", (r) => r.present, { intervalMs: 42 });
+    expect(waitForTimeout).toHaveBeenCalledWith(42);
+  });
 });

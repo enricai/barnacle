@@ -3422,6 +3422,16 @@ const UPLOAD_NETWORK_TIMEOUT_MS = 5_000;
 /** Polling interval while waiting for the upload's network signal. */
 const UPLOAD_NETWORK_POLL_INTERVAL_MS = 250;
 /**
+ * How long the upload primitive waits for the async ResumeUpload widget (and its
+ * lazily-mounted `<input type=file>`) to render before deciding the input is
+ * absent. HCA/Talemetry mounts the MUI/react-dropzone widget ~5s after the
+ * wizard lands on the Apply page, so a single probe races that mount and the
+ * primitive wrongly falls into the click-to-surface path (or skips). Only
+ * reached on `upload:true` steps, so it never slows a page with no upload step.
+ */
+const UPLOAD_WIDGET_RENDER_INTERVAL_MS = 600;
+const UPLOAD_WIDGET_RENDER_ATTEMPTS = 17;
+/**
  * URL substrings that mark a POST as an actual resume/attachment upload rather
  * than coincidental traffic (analytics beacons, `/interruption_check`,
  * geocoders). Talemetry posts the resume to an `attachment_upload_url` that
@@ -3554,22 +3564,33 @@ async function tryUploadPrimitive(params: {
   if (!fixture) {
     return false;
   }
-  // Raw-DOM xpath: matches `<input type="file">` even when accessibility-tree
-  // observers miss it (the common pattern when sites style the input invisible
-  // and overlay a button on top of it).
-  const fileInputSelector = "xpath=//input[@type='file']";
-  let count = 0;
+  // Wait (bounded) for the widget to render before deciding the input is absent.
+  // The ResumeUpload widget mounts its <input type=file> ~5s after arrival; a
+  // single probe races that mount and wrongly drops into click-to-surface. Poll
+  // up to the render window (matches `document.querySelectorAll` even when the
+  // accessibility tree / a Playwright locator misses a styled-invisible input)
+  // and take the proven raw-input path the moment the input exists. The loop
+  // exits on the first evaluate when the input is already present, so pages that
+  // already rendered it pay nothing.
+  let inputCount = 0;
   try {
-    count = await page.locator(fileInputSelector).count();
+    inputCount = await pollEnumerate<number>(
+      page,
+      "document.querySelectorAll('input[type=file]').length",
+      (n) => (n ?? 0) > 0,
+      { attempts: UPLOAD_WIDGET_RENDER_ATTEMPTS, intervalMs: UPLOAD_WIDGET_RENDER_INTERVAL_MS }
+    );
   } catch (err) {
     logger.warn(`upload primitive: file-input probe threw: ${toErrorMessage(err)}`);
     return false;
   }
-  if (count === 0) {
-    // Talemetry/MUI and other react-dropzone widgets render NO <input type=file>
-    // until the upload button is clicked. Try to surface it (click-to-mount or
-    // CDP native-chooser interception) before giving up to the cascade.
-    logger.info("upload primitive: no <input type=file> on page; attempting click-to-surface");
+  if ((inputCount ?? 0) === 0) {
+    // Talemetry/MUI and other react-dropzone widgets can render NO <input type=file>
+    // at all (a click surfaces it, or a native chooser opens). Try to surface it
+    // (click-to-mount or CDP native-chooser interception) before giving up.
+    logger.info(
+      "upload primitive: no <input type=file> after render wait; attempting click-to-surface"
+    );
     const surfaced = await surfaceAndUpload({
       page,
       fixture,
@@ -3707,6 +3728,43 @@ async function surfaceAndUpload(params: {
   recentCaptureMeta: readonly CaptureMeta[];
 }): Promise<boolean> {
   const { page, fixture, logger, signalCounter, recentCaptureMeta } = params;
+  // Render-gate: the input-less strategies below (drag-drop is one-shot, the
+  // affordance click resolves what's in the DOM) all race the async widget
+  // mount. Wait (bounded, same window as the raw-input probe) for ANY upload
+  // target to appear — a dropzone, an upload-affordance button, or an
+  // <input type=file> — so every downstream strategy runs against a rendered
+  // widget. Static evaluate literal (no interpolation); dropzone list mirrors
+  // simulateDragDropUpload and the button matcher mirrors clickUploadAffordance.
+  const targetExpr = `(() => {
+    const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
+    const isUpload = (raw) => {
+      const t = norm(raw);
+      if (!t) return false;
+      if (/\\b(later|skip|without|remove|delete|cancel)\\b/.test(t)) return false;
+      if (/\\bno file\\b/.test(t)) return false;
+      return /\\b(upload|browse|select file|choose file|attach|add (a )?(resume|cv|file)|resume\\/cv)\\b/.test(t);
+    };
+    if (document.querySelector("input[type=file]")) return { present: true };
+    const dz = document.querySelector("[class*='dropzone'],[class*='drop-zone'],[class*='file-drop'],[class*='upload-zone'],[class*='ResumeUpload'],[class*='resumeUpload'],[class*='resume-upload'],uapp-upload,app-upload");
+    if (dz) return { present: true };
+    const btns = Array.from(document.querySelectorAll("button,[role='button'],a"));
+    if (btns.some((el) => isUpload(el.getAttribute("aria-label") || el.textContent || ""))) return { present: true };
+    return { present: false };
+  })()`;
+  const gate = await pollEnumerate<{ present: boolean }>(
+    page,
+    targetExpr,
+    (r) => r?.present === true,
+    {
+      attempts: UPLOAD_WIDGET_RENDER_ATTEMPTS,
+      intervalMs: UPLOAD_WIDGET_RENDER_INTERVAL_MS,
+    }
+  );
+  if (!gate?.present) {
+    // Fall through anyway — the strategies below are individually cheap and safe;
+    // this just logs that we waited out the full render window without a target.
+    logger.info("upload primitive: no upload widget rendered within render window");
+  }
   // Strategy DZ: a synthetic drop is cheap, needs no click/chooser, and the
   // widget IS a dropzone. If it registers the file (upload POST or attached
   // input), we're done without touching CDP.
@@ -3981,15 +4039,22 @@ const PRIMITIVE_ENUMERATE_RETRY_MS = 600;
  * return the last (absent) result so the caller falls through to the cascade
  * unchanged. Only wraps the ENUMERATE (which is read-only when nothing matches);
  * the apply/mutate paths are untouched. Site-agnostic render-lag mitigation.
+ *
+ * `opts` overrides the attempt count / interval for callers that need a longer
+ * window (the resume-upload widget can take 5s+ to mount); omitting it keeps the
+ * default ~3s window so every existing caller is unchanged.
  */
 export async function pollEnumerate<T>(
   page: Page,
   expr: string,
-  isPresent: (result: T) => boolean
+  isPresent: (result: T) => boolean,
+  opts?: { attempts?: number; intervalMs?: number }
 ): Promise<T> {
+  const attempts = opts?.attempts ?? PRIMITIVE_ENUMERATE_ATTEMPTS;
+  const intervalMs = opts?.intervalMs ?? PRIMITIVE_ENUMERATE_RETRY_MS;
   let result = (await page.evaluate(expr)) as T;
-  for (let attempt = 1; attempt < PRIMITIVE_ENUMERATE_ATTEMPTS && !isPresent(result); attempt++) {
-    await page.waitForTimeout(PRIMITIVE_ENUMERATE_RETRY_MS);
+  for (let attempt = 1; attempt < attempts && !isPresent(result); attempt++) {
+    await page.waitForTimeout(intervalMs);
     result = (await page.evaluate(expr)) as T;
   }
   return result;
