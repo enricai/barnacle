@@ -35,7 +35,8 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -3420,6 +3421,90 @@ function xpathBody(selector: string): string | null {
 const UPLOAD_NETWORK_TIMEOUT_MS = 5_000;
 /** Polling interval while waiting for the upload's network signal. */
 const UPLOAD_NETWORK_POLL_INTERVAL_MS = 250;
+/**
+ * URL substrings that mark a POST as an actual resume/attachment upload rather
+ * than coincidental traffic (analytics beacons, `/interruption_check`,
+ * geocoders). Talemetry posts the resume to an `attachment_upload_url` that
+ * matches `/attachment`; the others cover AppCast/ClearCompany/Oracle. Module-
+ * level so both the raw-input path and the click-to-surface path share one list.
+ */
+const UPLOAD_URL_PATTERNS = ["/upload", "/resume", "/file", "/attachment", "/document"] as const;
+
+/** One entry of the recent-network-capture window shared across upload helpers. */
+type CaptureMeta = { method: string; status: number; url: string };
+
+/** Fixture shape carried by the upload helpers (never null past the guard). */
+type ResumeFixture = { buffer: Buffer; name: string; mimeType: string };
+
+/**
+ * Poll the recent-capture window for an upload-related POST after a file has
+ * been attached. Extracted from `tryUploadPrimitive` so the raw-input path,
+ * the click-to-surface path, and the CDP native-chooser path all verify the
+ * same way. Returns true as soon as a non-GET capture whose URL matches
+ * {@link UPLOAD_URL_PATTERNS} lands; false if the timeout elapses first.
+ */
+async function waitForUploadNetworkSignal(params: {
+  page: Page;
+  fixture: ResumeFixture;
+  logger: Logger;
+  signalCounter: { n: number };
+  recentCaptureMeta: readonly CaptureMeta[];
+}): Promise<boolean> {
+  const { page, fixture, logger, signalCounter, recentCaptureMeta } = params;
+  const networkCountBefore = signalCounter.n;
+  const captureMetaCountBefore = recentCaptureMeta.length;
+  const startedAt = performance.now();
+  while (performance.now() - startedAt < UPLOAD_NETWORK_TIMEOUT_MS) {
+    if (signalCounter.n > networkCountBefore) {
+      const newCaptures = recentCaptureMeta.slice(captureMetaCountBefore);
+      const uploadCapture = newCaptures.find((cap) => {
+        if (cap.method === "GET") return false;
+        const lowerUrl = cap.url.toLowerCase();
+        return UPLOAD_URL_PATTERNS.some((p) => lowerUrl.includes(p));
+      });
+      if (uploadCapture) {
+        logger.info(
+          `upload primitive: upload POST detected (name=${fixture.name}, size=${fixture.buffer.length}b, url=${uploadCapture.url.slice(0, 100)})`
+        );
+        return true;
+      }
+    }
+    await page.waitForTimeout(UPLOAD_NETWORK_POLL_INTERVAL_MS);
+  }
+  return false;
+}
+
+/**
+ * True when a control's text/aria-label denotes a resume-upload affordance
+ * (the button that surfaces a hidden `<input type=file>` or opens a chooser).
+ * Pure + exported for unit tests; the vocabulary is intentionally generic so it
+ * benefits any MUI/React/dropzone ATS, not just Talemetry. Rejects negative
+ * lookalikes ("upload later", "no file", a bare "submit") so the click-to-
+ * surface path never fires a skip/decline/submit control.
+ */
+export function isUploadAffordanceLabel(label: string): boolean {
+  const norm = label.replace(/\s+/g, " ").trim().toLowerCase();
+  if (norm.length === 0) return false;
+  if (/\b(later|skip|without|remove|delete|cancel)\b/.test(norm)) return false;
+  if (/\bno file\b/.test(norm)) return false;
+  return /\b(upload|browse|select file|choose file|attach|add (a )?(resume|cv|file)|resume\/cv)\b/.test(
+    norm
+  );
+}
+
+/**
+ * Materialize the in-memory resume fixture to a temp file so CDP
+ * `DOM.setFileInputFiles` (which requires a filesystem path, unlike
+ * Playwright's `locator.setInputFiles`) can reference it. Only used as a
+ * fallback when the on-disk fixture path is unavailable. Process-scoped — the
+ * recon run is ephemeral, so no explicit cleanup. Returns the absolute path.
+ */
+export function writeFixtureToTempFile(fixture: { buffer: Buffer; name: string }): string {
+  const dir = mkdtempSync(join(tmpdir(), "recon-upload-"));
+  const path = join(dir, fixture.name);
+  writeFileSync(path, fixture.buffer);
+  return path;
+}
 
 /**
  * Site-agnostic file-upload primitive that bypasses Stagehand's click-and-act
@@ -3481,11 +3566,40 @@ async function tryUploadPrimitive(params: {
     return false;
   }
   if (count === 0) {
-    logger.info("upload primitive: no <input type=file> on page; falling through to cascade");
+    // Talemetry/MUI and other react-dropzone widgets render NO <input type=file>
+    // until the upload button is clicked. Try to surface it (click-to-mount or
+    // CDP native-chooser interception) before giving up to the cascade.
+    logger.info("upload primitive: no <input type=file> on page; attempting click-to-surface");
+    const surfaced = await surfaceAndUpload({
+      page,
+      fixture,
+      logger,
+      signalCounter,
+      recentCaptureMeta,
+    });
+    if (surfaced) return true;
+    logger.info("upload primitive: click-to-surface failed; falling through to cascade");
     return false;
   }
-  const target = page.locator(fileInputSelector).first();
-  const networkCountBefore = signalCounter.n;
+  return attachToSurfacedInput({ page, fixture, logger, signalCounter, recentCaptureMeta });
+}
+
+/**
+ * Attach the fixture to an already-surfaced `<input type=file>` (raw or freshly
+ * mounted after a click) and verify. Extracted verbatim from the original
+ * `tryUploadPrimitive` body so the raw-input path and the click-to-surface
+ * path share one setInputFiles + framework-change-dispatch + network/DOM verify
+ * + drag-drop-fallback implementation.
+ */
+async function attachToSurfacedInput(params: {
+  page: Page;
+  fixture: ResumeFixture;
+  logger: Logger;
+  signalCounter: { n: number };
+  recentCaptureMeta: readonly CaptureMeta[];
+}): Promise<boolean> {
+  const { page, fixture, logger, signalCounter, recentCaptureMeta } = params;
+  const target = page.locator("xpath=//input[@type='file']").first();
   try {
     await target.setInputFiles({
       name: fixture.name,
@@ -3525,38 +3639,14 @@ async function tryUploadPrimitive(params: {
     logger.warn(`upload primitive: setInputFiles threw: ${toErrorMessage(err)}`);
     return false;
   }
-  // Primary signal: wait for an UPLOAD-RELATED POST to fire (URL contains
-  // /upload, /resume, /file, /attachment, OR a non-upload URL whose body
-  // includes the `section:"resume"` marker that AppCast and similar ATSs
-  // use for resume-as-base64 inline uploads). Before K'1, ANY network bump
-  // was treated as upload success — but today's smoke captured
+  // Primary signal: wait for an UPLOAD-RELATED POST to fire. Before K'1, ANY
+  // network bump was treated as upload success — but a smoke run captured
   // /interruption_check + analytics POSTs after setInputFiles and falsely
-  // declared upload-done. The URL filter is generic (works for any ATS
-  // that names its upload endpoint conventionally), with the body-shape
-  // check as a fallback for inline-base64 upload schemes.
-  const captureMetaCountBefore = recentCaptureMeta.length;
-  const UPLOAD_URL_PATTERNS = ["/upload", "/resume", "/file", "/attachment"];
-  const startedAt = performance.now();
-  while (performance.now() - startedAt < UPLOAD_NETWORK_TIMEOUT_MS) {
-    if (signalCounter.n > networkCountBefore) {
-      const newCaptures = recentCaptureMeta.slice(captureMetaCountBefore);
-      const uploadCapture = newCaptures.find((cap) => {
-        if (cap.method === "GET") return false;
-        const lowerUrl = cap.url.toLowerCase();
-        return UPLOAD_URL_PATTERNS.some((p) => lowerUrl.includes(p));
-      });
-      if (uploadCapture) {
-        logger.info(
-          `upload primitive: upload POST detected post-setInputFiles (name=${fixture.name}, size=${fixture.buffer.length}b, url=${uploadCapture.url.slice(0, 100)})`
-        );
-        return true;
-      }
-      // Fall through: a non-upload-URL POST fired (e.g. AppCast's
-      // /interruption_check). Don't declare success on this signal alone;
-      // continue polling for the upload POST OR fall through to the
-      // DOM-attached-files check below.
-    }
-    await page.waitForTimeout(UPLOAD_NETWORK_POLL_INTERVAL_MS);
+  // declared upload-done. waitForUploadNetworkSignal filters by URL keyword.
+  if (
+    await waitForUploadNetworkSignal({ page, fixture, logger, signalCounter, recentCaptureMeta })
+  ) {
+    return true;
   }
   // Fallback: some widgets defer the upload to a separate Save click. For
   // those the DOM still has the attached File — verify there. Widgets that
@@ -3595,6 +3685,194 @@ async function tryUploadPrimitive(params: {
     `upload primitive: file attached in DOM after setInputFiles (deferred-upload widget; name=${fixture.name}, filesLength=${attachedLength})`
   );
   return true;
+}
+
+/**
+ * Recover an upload for widgets that mount NO `<input type=file>` until a button
+ * is clicked (Talemetry/MUI `ResumeUpload`, react-dropzone). Ordered cheapest-
+ * first: (DZ) a synthetic drag-drop on the dropzone; then, arming CDP native-
+ * chooser interception BEFORE any click (a chooser-opening click with no
+ * interception blocks the run — the single biggest risk), click the upload
+ * affordance and resolve via the first of: (0) an immediate upload POST, (A) a
+ * lazily-mounted hidden input, or (B) an intercepted native chooser handled via
+ * CDP `DOM.setFileInputFiles`. Interception is always disabled in a finally.
+ * Site-agnostic — benefits any MUI/React/chooser ATS. Returns whether a resume
+ * was attached.
+ */
+async function surfaceAndUpload(params: {
+  page: Page;
+  fixture: ResumeFixture;
+  logger: Logger;
+  signalCounter: { n: number };
+  recentCaptureMeta: readonly CaptureMeta[];
+}): Promise<boolean> {
+  const { page, fixture, logger, signalCounter, recentCaptureMeta } = params;
+  // Strategy DZ: a synthetic drop is cheap, needs no click/chooser, and the
+  // widget IS a dropzone. If it registers the file (upload POST or attached
+  // input), we're done without touching CDP.
+  if (await simulateDragDropUpload(page, fixture, logger)) {
+    if (
+      await waitForUploadNetworkSignal({ page, fixture, logger, signalCounter, recentCaptureMeta })
+    ) {
+      logger.info("upload primitive: resolved via drag-drop onto dropzone");
+      return true;
+    }
+  }
+  const session = page.getSessionForFrame(page.mainFrameId());
+  let chooserBackendNodeId: number | null = null;
+  const onChooser = (paramsIn?: object): void => {
+    const p = paramsIn as { backendNodeId?: number } | undefined;
+    if (p && typeof p.backendNodeId === "number") chooserBackendNodeId = p.backendNodeId;
+  };
+  // ARM native-chooser interception BEFORE the click. Page.fileChooserOpened
+  // only carries a backendNodeId while interception is enabled; without it a
+  // chooser-opening click would pop a real OS dialog and hang the run.
+  await page.sendCDP("Page.enable").catch(() => {});
+  await page
+    .sendCDP("Page.setInterceptFileChooserDialog", { enabled: true })
+    .catch((e: unknown) =>
+      logger.warn(`upload primitive: chooser-intercept arm failed: ${toErrorMessage(e)}`)
+    );
+  session.on("Page.fileChooserOpened", onChooser);
+  try {
+    if (!(await clickUploadAffordance(page, logger))) return false;
+    // Strategy 0: some MUI widgets XHR straight to attachment_upload_url on
+    // click, no chooser, no input.
+    if (
+      await waitForUploadNetworkSignal({ page, fixture, logger, signalCounter, recentCaptureMeta })
+    ) {
+      logger.info("upload primitive: resolved via click → immediate upload POST");
+      return true;
+    }
+    // Strategy A: the click lazily mounted a hidden <input type=file>.
+    const appeared = await pollEnumerate<number>(
+      page,
+      "document.querySelectorAll('input[type=file]').length",
+      (n) => (n ?? 0) > 0
+    );
+    if ((appeared ?? 0) > 0) {
+      logger.info("upload primitive: click surfaced a hidden <input type=file>");
+      if (
+        await attachToSurfacedInput({ page, fixture, logger, signalCounter, recentCaptureMeta })
+      ) {
+        return true;
+      }
+    }
+    // Strategy B: the click opened a native chooser we intercepted.
+    if (chooserBackendNodeId !== null) {
+      logger.info(
+        `upload primitive: native file chooser intercepted (backendNodeId=${chooserBackendNodeId}); setting files via CDP`
+      );
+      return setFilesViaCdp({
+        page,
+        session,
+        backendNodeId: chooserBackendNodeId,
+        fixture,
+        logger,
+        signalCounter,
+        recentCaptureMeta,
+      });
+    }
+    return false;
+  } finally {
+    session.off("Page.fileChooserOpened", onChooser);
+    await page.sendCDP("Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
+  }
+}
+
+/**
+ * Locate and click the resume-upload affordance in the page DOM. Uses a DOM
+ * enumerate (NOT Stagehand observe, which returns [] for these MUI buttons)
+ * over `button`/`[role=button]`/`a`, matching text/aria-label via the same
+ * upload vocabulary as {@link isUploadAffordanceLabel}, preferring controls
+ * scoped inside an attachment/upload/resume container. Returns whether a
+ * matching control was clicked.
+ */
+async function clickUploadAffordance(page: Page, logger: Logger): Promise<boolean> {
+  // The browser-side matcher mirrors isUploadAffordanceLabel; kept as a literal
+  // so the enumerate is a static string (same trust posture as the other
+  // primitives). No external interpolation.
+  const expr = `(() => {
+    const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
+    const isUpload = (raw) => {
+      const t = norm(raw);
+      if (!t) return false;
+      if (/\\b(later|skip|without|remove|delete|cancel)\\b/.test(t)) return false;
+      if (/\\bno file\\b/.test(t)) return false;
+      return /\\b(upload|browse|select file|choose file|attach|add (a )?(resume|cv|file)|resume\\/cv)\\b/.test(t);
+    };
+    const els = Array.from(document.querySelectorAll("button,[role='button'],a"));
+    const scoped = (el) => !!el.closest("[class*='ttachment'],[class*='pload'],[class*='esume']");
+    const matches = els.filter((el) => isUpload(el.getAttribute("aria-label") || el.textContent || ""));
+    if (matches.length === 0) return { clicked: false };
+    const chosen = matches.find(scoped) || matches[0];
+    chosen.click();
+    return { clicked: true, text: norm(chosen.getAttribute("aria-label") || chosen.textContent || "").slice(0, 50) };
+  })()`;
+  try {
+    const result = (await pollEnumerate<{ clicked: boolean; text?: string }>(
+      page,
+      expr,
+      (r) => r?.clicked === true
+    )) ?? { clicked: false };
+    if (result.clicked) {
+      logger.info(`upload primitive: clicked upload affordance "${result.text ?? ""}"`);
+      return true;
+    }
+    logger.info("upload primitive: no upload affordance button found in DOM");
+    return false;
+  } catch (err) {
+    logger.warn(`upload primitive: affordance click threw: ${toErrorMessage(err)}`);
+    return false;
+  }
+}
+
+/**
+ * Complete a native-chooser upload the recon intercepted via CDP. CDP's
+ * `DOM.setFileInputFiles` takes filesystem PATHS (not buffers), so it uses the
+ * on-disk fixture path when available and otherwise writes the buffer to a temp
+ * file. Targets the intercepted input by `backendNodeId`, then verifies via the
+ * shared upload-network signal.
+ */
+async function setFilesViaCdp(params: {
+  page: Page;
+  session: ReturnType<Page["getSessionForFrame"]>;
+  backendNodeId: number;
+  fixture: ResumeFixture;
+  logger: Logger;
+  signalCounter: { n: number };
+  recentCaptureMeta: readonly CaptureMeta[];
+}): Promise<boolean> {
+  const { page, session, backendNodeId, fixture, logger, signalCounter, recentCaptureMeta } =
+    params;
+  // CDP needs a filesystem path; the fixture is an in-memory buffer. Write it
+  // to a temp file (tiny — a few KB) so the path is always valid regardless of
+  // where the recon loaded the fixture from.
+  const path = writeFixtureToTempFile(fixture);
+  try {
+    await session.send("DOM.setFileInputFiles", { files: [path], backendNodeId });
+  } catch (err) {
+    logger.warn(`upload primitive: CDP setFileInputFiles threw: ${toErrorMessage(err)}`);
+    return false;
+  }
+  if (
+    await waitForUploadNetworkSignal({ page, fixture, logger, signalCounter, recentCaptureMeta })
+  ) {
+    return true;
+  }
+  // CDP-set files don't surface via input.files, so the DOM-attached-files
+  // check can't confirm; treat a filename chip appearing in the DOM as the
+  // secondary success signal (the MUI widget renders the chosen filename).
+  const nameShown = await page
+    .evaluate(
+      `document.body && document.body.textContent && document.body.textContent.indexOf(${JSON.stringify(fixture.name)}) !== -1`
+    )
+    .catch(() => false);
+  if (nameShown === true) {
+    logger.info(`upload primitive: CDP upload confirmed by filename in DOM (name=${fixture.name})`);
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -4424,6 +4702,9 @@ async function simulateDragDropUpload(
       "[class*='file-drop']",
       "[class*='upload-zone']",
       "[class*='uapp-upload']",
+      "[class*='ResumeUpload']",
+      "[class*='resumeUpload']",
+      "[class*='resume-upload']",
     ];
     let dropZone = null;
     for (const sel of dropZoneSelectors) {

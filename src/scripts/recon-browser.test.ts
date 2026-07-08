@@ -6,7 +6,7 @@
 
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import type Anthropic from "@anthropic-ai/sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -85,6 +85,7 @@ import {
   isReplanCycle,
   isStructurallyBlocked,
   isSubmitRevealedInvalid,
+  isUploadAffordanceLabel,
   isWizardExitAction,
   type LeafInvalidField,
   logBillingErrorIfPresent,
@@ -113,6 +114,7 @@ import {
   type VerifyFillReadbackResult,
   verifyFillReadback,
   windowHasTransitionBody,
+  writeFixtureToTempFile,
 } from "@/scripts/recon-browser";
 import type { Logger } from "@/types/logging";
 
@@ -3141,6 +3143,69 @@ describe("recon-browser/parseRadioStep", () => {
 
   it("returns null when there is no quoted option", () => {
     expect(parseRadioStep("Click the appropriate answer for the question")).toBeNull();
+  });
+});
+
+describe("recon-browser/isUploadAffordanceLabel", () => {
+  it("matches the common upload-affordance labels (case/whitespace-insensitive)", () => {
+    for (const label of [
+      "Upload a Resume/CV",
+      "Browse",
+      "Select File",
+      "Choose File",
+      "Attach",
+      "Upload",
+      "Add resume",
+      "Add a file",
+      "  UPLOAD  ",
+      "Click here to upload a resume",
+    ]) {
+      expect(isUploadAffordanceLabel(label)).toBe(true);
+    }
+  });
+
+  it("rejects skip/decline/submit lookalikes and empty labels", () => {
+    for (const label of [
+      "Upload later",
+      "No file selected",
+      "Skip",
+      "Apply without a resume",
+      "Remove",
+      "Delete file",
+      "Cancel",
+      "Submit application",
+      "Save",
+      "Next",
+      "",
+      "   ",
+    ]) {
+      expect(isUploadAffordanceLabel(label)).toBe(false);
+    }
+  });
+});
+
+describe("recon-browser/writeFixtureToTempFile", () => {
+  const written: string[] = [];
+  afterEach(() => {
+    for (const p of written.splice(0)) {
+      rmSync(dirname(p), { recursive: true, force: true });
+    }
+  });
+
+  it("writes the fixture buffer to a real temp path with the fixture name", () => {
+    const buffer = Buffer.from("%PDF-1.4 fake resume bytes");
+    const path = writeFixtureToTempFile({ buffer, name: "resume.pdf" });
+    written.push(path);
+    expect(existsSync(path)).toBe(true);
+    expect(path.endsWith("resume.pdf")).toBe(true);
+    expect(readFileSync(path).equals(buffer)).toBe(true);
+  });
+
+  it("returns a unique dir per call so concurrent uploads don't collide", () => {
+    const a = writeFixtureToTempFile({ buffer: Buffer.from("a"), name: "resume.pdf" });
+    const b = writeFixtureToTempFile({ buffer: Buffer.from("b"), name: "resume.pdf" });
+    written.push(a, b);
+    expect(dirname(a)).not.toBe(dirname(b));
   });
 });
 
