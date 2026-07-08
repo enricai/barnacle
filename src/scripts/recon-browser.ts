@@ -5993,8 +5993,31 @@ async function executeStepWithHealing(params: {
             probeResult.kind === "click" && !retryNetworkFired && !retryUrlChanged;
           const clickBlockedByInvalid =
             clickWasDomOnly && (await countNgInvalidContainers(page).catch(() => 0)) > 0;
+          // DOM-only-advance veto (same as the primary verifier, applied to the
+          // n+16 fallback). For a non-submit ADVANCE/"Next" step (per the ORIGINAL
+          // instruction) with NO network/URL change, the fallback's DOM signals
+          // (a checked radio/checkbox via `checkboxStateVerified`, or html/text
+          // delta) are field toggles / re-renders — they do NOT move the wizard.
+          // Verified end-to-end on HCA: the rephrase turned "Next" into a radio
+          // click, the primary verifier's veto rejected it, then THIS fallback
+          // re-healed via checkboxStateVerified while the wizard stayed put. Gate
+          // it the same way; only arms when the site opted into
+          // `advanceTransitionBodyPattern`.
+          const fallbackDomOnlyAdvance =
+            advanceTransitionBodyPattern !== null &&
+            !isFinalStep &&
+            !submitStep &&
+            !retryNetworkFired &&
+            !retryUrlChanged &&
+            isAdvanceStep(step);
+          if (fallbackDomOnlyAdvance) {
+            logger.info(
+              `step ${stepIndex + 1} n+16 fallback advanced only via DOM state change (field toggle), not a real transition; not treating as verified`
+            );
+          }
           let retryVerified =
             !clickBlockedByInvalid &&
+            !fallbackDomOnlyAdvance &&
             (retryNetworkFired ||
               retryUrlChanged ||
               retryHtmlDelta !== 0 ||
