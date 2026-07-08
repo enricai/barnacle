@@ -101,6 +101,18 @@ const STEP_PAUSE_MS = 2_000;
  * re-validation land; far below `STEP_PAUSE_MS` so it barely affects run time.
  */
 const RADIO_SETTLE_MS = 400;
+/**
+ * Extra bounded poll window for a network-only advance whose real
+ * `TransitionWorklet(type="next")` POST lands AFTER the `STEP_PAUSE_MS`
+ * snapshot. HCA/Talemetry's "Next" click fires a fast `WorkletPayload` autosave
+ * first, then the actual transition ~0.6-2s+ later — so a one-shot check
+ * false-negatives the advance, retries the click, and the stale retry fires a
+ * `back` that bounces the wizard. Additive to `STEP_PAUSE_MS`; only spent on an
+ * advance-only-network step whose transition body hasn't landed yet.
+ */
+const ADVANCE_TRANSITION_POLL_MS = 4_000;
+/** Poll interval for {@link ADVANCE_TRANSITION_POLL_MS}. */
+const ADVANCE_TRANSITION_POLL_INTERVAL_MS = 350;
 
 /**
  * Attempts to decode opaque request parameters: tries JSON parse, then
@@ -950,6 +962,53 @@ export function windowHasTransitionBody(params: {
           ? capture.requestPostData
           : JSON.stringify(capture.requestPostData ?? "");
       if (rx.test(body)) return true;
+    } catch {
+      // Unreadable/absent capture — ignore, keep scanning.
+    }
+  }
+  return false;
+}
+
+/**
+ * Stricter sibling of {@link windowHasTransitionBody}: a same-window capture
+ * whose request body matches the transition pattern AND whose parsed
+ * `variables.input.type === "next"`. The mutation NAME alone is a weak
+ * distinguisher — on Talemetry a `back` bounce is ALSO a `TransitionWorklet`
+ * mutation (its body contains the pattern too) and would wrongly count as an
+ * advance; and the fast `WorkletPayload` autosave that precedes the real
+ * transition is a different mutation with no `input.type`. Requiring the parsed
+ * `type==="next"` isolates a genuine FORWARD advance. Deliberately does NOT use
+ * `input.is_next` — it is inverted/unreliable on this ATS (a real `next` carries
+ * `is_next:false`, a `back` carries `is_next:true`). Opt-in / site-agnostic:
+ * returns false when no pattern is configured.
+ */
+export function windowHasAdvanceTransition(params: {
+  recentCaptures: readonly string[];
+  preLength: number;
+  advanceTransitionBodyPattern: string | null;
+  capturesDir?: string;
+}): boolean {
+  const { recentCaptures, preLength, advanceTransitionBodyPattern } = params;
+  if (!advanceTransitionBodyPattern) return false;
+  const capturesDir = params.capturesDir ?? CAPTURES_DIR;
+  let rx: RegExp;
+  try {
+    rx = new RegExp(advanceTransitionBodyPattern);
+  } catch {
+    return false;
+  }
+  for (const filename of recentCaptures.slice(preLength)) {
+    if (filename.endsWith(".decoded.json")) continue;
+    try {
+      const raw = readFileSync(join(capturesDir, filename), "utf8");
+      const capture = JSON.parse(raw) as Partial<Capture> & { requestPostData?: unknown };
+      const body =
+        typeof capture.requestPostData === "string"
+          ? capture.requestPostData
+          : JSON.stringify(capture.requestPostData ?? "");
+      if (!rx.test(body)) continue;
+      const input = (capture.variables as { input?: { type?: unknown } } | null | undefined)?.input;
+      if (input && input.type === "next") return true;
     } catch {
       // Unreadable/absent capture — ignore, keep scanning.
     }
@@ -4098,6 +4157,49 @@ export async function pollEnumerate<T>(
 }
 
 /**
+ * Bounded poll for the real advance-transition POST to appear in this step's
+ * capture window. The verifiers snapshot once after `STEP_PAUSE_MS`, but the
+ * genuine `TransitionWorklet(type="next")` POST can land hundreds of ms to 2s+
+ * AFTER that snapshot (HCA fires a fast `WorkletPayload` autosave first). A
+ * one-shot check false-negatives the advance, retries the click, and the stale
+ * retry fires a `back` — a next→back oscillation that never leaves the page.
+ * Re-check {@link windowHasAdvanceTransition} every `intervalMs` until it matches
+ * or `timeoutMs` elapses; returns true the moment a real advance lands.
+ *
+ * Correctness depends on `recentCaptures` being the LIVE array the capture
+ * pipeline front-splices into — each poll iteration re-slices it from
+ * `preLength`, so newly-arrived POSTs enter the scanned window. `preLength`
+ * scopes the window to THIS step, so a later step's transition can't satisfy it.
+ */
+export async function waitForTransitionBody(params: {
+  page: Page;
+  recentCaptures: readonly string[];
+  preLength: number;
+  advanceTransitionBodyPattern: string | null;
+  timeoutMs: number;
+  intervalMs: number;
+  capturesDir?: string;
+}): Promise<boolean> {
+  const { page, recentCaptures, preLength, advanceTransitionBodyPattern, timeoutMs, intervalMs } =
+    params;
+  if (!advanceTransitionBodyPattern) return false;
+  const check = (): boolean =>
+    windowHasAdvanceTransition({
+      recentCaptures,
+      preLength,
+      advanceTransitionBodyPattern,
+      capturesDir: params.capturesDir,
+    });
+  if (check()) return true;
+  const deadline = performance.now() + timeoutMs;
+  while (performance.now() < deadline) {
+    await page.waitForTimeout(intervalMs);
+    if (check()) return true;
+  }
+  return false;
+}
+
+/**
  * Site-agnostic select primitive: answer a native `<select>` dropdown by
  * directly setting its value in the DOM, bypassing Stagehand observe/act.
  *
@@ -6610,17 +6712,27 @@ async function executeStepWithHealing(params: {
     // (stronger) submit-verification gate below; sites without the pattern are
     // unaffected.
     const isAdvanceOnlyNetwork = networkFired && !urlChanged && !domVerified;
-    const networkIsRealAdvance =
-      advanceTransitionBodyPattern === null || !isAdvanceOnlyNetwork || isFinalStep || submitStep
-        ? networkFired
-        : windowHasTransitionBody({
-            recentCaptures,
-            preLength: preCapturesLength,
-            advanceTransitionBodyPattern,
-          });
-    if (advanceTransitionBodyPattern !== null && isAdvanceOnlyNetwork && !networkIsRealAdvance) {
+    const advanceGateActive =
+      advanceTransitionBodyPattern !== null && isAdvanceOnlyNetwork && !isFinalStep && !submitStep;
+    // Advance-only-network step: the real TransitionWorklet(type="next") POST
+    // often lands AFTER the STEP_PAUSE_MS snapshot (a WorkletPayload autosave
+    // fires first), so poll for it — an immediate one-shot check false-negatives
+    // the advance and triggers a retry that bounces the wizard back. The poll
+    // short-circuits when the transition is already in-window (zero added latency
+    // on the common path). `recentCaptures` is the live front-spliced array.
+    const networkIsRealAdvance = !advanceGateActive
+      ? networkFired
+      : await waitForTransitionBody({
+          page,
+          recentCaptures,
+          preLength: preCapturesLength,
+          advanceTransitionBodyPattern,
+          timeoutMs: ADVANCE_TRANSITION_POLL_MS,
+          intervalMs: ADVANCE_TRANSITION_POLL_INTERVAL_MS,
+        });
+    if (advanceGateActive && !networkIsRealAdvance) {
       logger.info(
-        `step ${stepIndex + 1} network fired but no advance-transition body matched (non-advancing POST); not treating as verified`
+        `step ${stepIndex + 1} network fired but no advance-transition (type=next) body matched within ${ADVANCE_TRANSITION_POLL_MS}ms poll (non-advancing POST); not treating as verified`
       );
     }
     // DOM-only-advance veto (opt-in). A rephrase can turn an advance/"Next" step
@@ -6897,13 +7009,19 @@ async function executeStepWithHealing(params: {
           // validation-blocked Next while the page stayed put (HCA Basic Info
           // stage1d). Only arms when the site opted into the pattern; field-answer
           // (non-advance) steps keep their checkboxStateVerified/DOM path.
+          // Poll for the real TransitionWorklet(type="next") like the primary
+          // verifier — the transition POST can land after this snapshot, and a
+          // one-shot check would false-negative and retry into a back-bounce.
           const retryNetworkIsRealAdvance =
             retryNetworkFired &&
-            windowHasTransitionBody({
+            (await waitForTransitionBody({
+              page,
               recentCaptures,
               preLength: preCapturesLength,
               advanceTransitionBodyPattern,
-            });
+              timeoutMs: ADVANCE_TRANSITION_POLL_MS,
+              intervalMs: ADVANCE_TRANSITION_POLL_INTERVAL_MS,
+            }));
           const fallbackDomOnlyAdvance = shouldVetoFallbackAdvance({
             hasPattern: advanceTransitionBodyPattern !== null,
             isFinalOrSubmit: isFinalStep || submitStep,

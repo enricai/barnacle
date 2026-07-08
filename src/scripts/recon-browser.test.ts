@@ -117,6 +117,8 @@ import {
   type ValidationRejectionPair,
   type VerifyFillReadbackResult,
   verifyFillReadback,
+  waitForTransitionBody,
+  windowHasAdvanceTransition,
   windowHasTransitionBody,
   writeFixtureToTempFile,
 } from "@/scripts/recon-browser";
@@ -3490,6 +3492,196 @@ describe("recon-browser/windowHasTransitionBody", () => {
         capturesDir: dir,
       })
     ).toBe(false);
+  });
+});
+
+describe("recon-browser/windowHasAdvanceTransition — type=next gate", () => {
+  let dir: string;
+  const writeCapture = (name: string, requestPostData: string, variables: unknown): void => {
+    writeFileSync(
+      join(dir, name),
+      JSON.stringify({ url: "https://x/gq", requestPostData, variables })
+    );
+  };
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "recon-adv-next-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("true when body matches AND variables.input.type === 'next' (real advance)", () => {
+    writeCapture("0-next.json", '{"query":"mutation TransitionWorklet"}', {
+      input: { type: "next", is_next: false },
+    });
+    expect(
+      windowHasAdvanceTransition({
+        recentCaptures: ["0-next.json"],
+        preLength: 0,
+        advanceTransitionBodyPattern: "TransitionWorklet",
+        capturesDir: dir,
+      })
+    ).toBe(true);
+  });
+
+  it("false for a 'back' transition even though its body contains the pattern", () => {
+    // The latent bug: a back bounce IS a TransitionWorklet mutation. is_next is
+    // inverted here (back carries is_next=true) — type is the reliable signal.
+    writeCapture("0-back.json", '{"query":"mutation TransitionWorklet"}', {
+      input: { type: "back", is_next: true },
+    });
+    expect(
+      windowHasAdvanceTransition({
+        recentCaptures: ["0-back.json"],
+        preLength: 0,
+        advanceTransitionBodyPattern: "TransitionWorklet",
+        capturesDir: dir,
+      })
+    ).toBe(false);
+  });
+
+  it("false for the WorkletPayload autosave (no variables.input.type)", () => {
+    writeCapture("0-autosave.json", '{"query":"mutation WorkletPayload"}', { input: {} });
+    expect(
+      windowHasAdvanceTransition({
+        recentCaptures: ["0-autosave.json"],
+        preLength: 0,
+        advanceTransitionBodyPattern: "TransitionWorklet",
+        capturesDir: dir,
+      })
+    ).toBe(false);
+  });
+
+  it("false when no pattern is configured (opt-in)", () => {
+    writeCapture("0-next.json", '{"query":"mutation TransitionWorklet"}', {
+      input: { type: "next" },
+    });
+    expect(
+      windowHasAdvanceTransition({
+        recentCaptures: ["0-next.json"],
+        preLength: 0,
+        advanceTransitionBodyPattern: null,
+        capturesDir: dir,
+      })
+    ).toBe(false);
+  });
+
+  it("only scans captures after preLength (this step's window)", () => {
+    writeCapture("0-old-next.json", '{"query":"mutation TransitionWorklet"}', {
+      input: { type: "next" },
+    });
+    writeCapture("1-back.json", '{"query":"mutation TransitionWorklet"}', {
+      input: { type: "back" },
+    });
+    expect(
+      windowHasAdvanceTransition({
+        recentCaptures: ["0-old-next.json", "1-back.json"],
+        preLength: 1,
+        advanceTransitionBodyPattern: "TransitionWorklet",
+        capturesDir: dir,
+      })
+    ).toBe(false);
+  });
+});
+
+describe("recon-browser/waitForTransitionBody — poll", () => {
+  let dir: string;
+  const writeNext = (name: string): void => {
+    writeFileSync(
+      join(dir, name),
+      JSON.stringify({
+        url: "https://x/gq",
+        requestPostData: '{"query":"mutation TransitionWorklet"}',
+        variables: { input: { type: "next" } },
+      })
+    );
+  };
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "recon-adv-poll-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("returns true immediately without polling when the advance is already in-window", async () => {
+    writeNext("0-next.json");
+    const waitForTimeout = vi.fn().mockResolvedValue(undefined);
+    const page = { waitForTimeout } as unknown as Parameters<
+      typeof waitForTransitionBody
+    >[0]["page"];
+    const ok = await waitForTransitionBody({
+      page,
+      recentCaptures: ["0-next.json"],
+      preLength: 0,
+      advanceTransitionBodyPattern: "TransitionWorklet",
+      timeoutMs: 4000,
+      intervalMs: 50,
+      capturesDir: dir,
+    });
+    expect(ok).toBe(true);
+    expect(waitForTimeout).not.toHaveBeenCalled();
+  });
+
+  it("polls and returns true once the transition POST lands late", async () => {
+    const recent: string[] = [];
+    // The transition capture lands on the 2nd poll wait (mimics the late POST).
+    let ticks = 0;
+    const waitForTimeout = vi.fn().mockImplementation(async () => {
+      ticks++;
+      if (ticks === 2) {
+        writeNext("0-next.json");
+        recent.push("0-next.json");
+      }
+    });
+    const page = { waitForTimeout } as unknown as Parameters<
+      typeof waitForTransitionBody
+    >[0]["page"];
+    const ok = await waitForTransitionBody({
+      page,
+      recentCaptures: recent,
+      preLength: 0,
+      advanceTransitionBodyPattern: "TransitionWorklet",
+      timeoutMs: 4000,
+      intervalMs: 10,
+      capturesDir: dir,
+    });
+    expect(ok).toBe(true);
+    expect(waitForTimeout.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("returns false on timeout when no advance transition ever lands", async () => {
+    const waitForTimeout = vi.fn().mockResolvedValue(undefined);
+    const page = { waitForTimeout } as unknown as Parameters<
+      typeof waitForTransitionBody
+    >[0]["page"];
+    const ok = await waitForTransitionBody({
+      page,
+      recentCaptures: [],
+      preLength: 0,
+      advanceTransitionBodyPattern: "TransitionWorklet",
+      timeoutMs: 30,
+      intervalMs: 10,
+      capturesDir: dir,
+    });
+    expect(ok).toBe(false);
+  });
+
+  it("returns false immediately when no pattern is configured", async () => {
+    const waitForTimeout = vi.fn().mockResolvedValue(undefined);
+    const page = { waitForTimeout } as unknown as Parameters<
+      typeof waitForTransitionBody
+    >[0]["page"];
+    const ok = await waitForTransitionBody({
+      page,
+      recentCaptures: [],
+      preLength: 0,
+      advanceTransitionBodyPattern: null,
+      timeoutMs: 4000,
+      intervalMs: 10,
+      capturesDir: dir,
+    });
+    expect(ok).toBe(false);
+    expect(waitForTimeout).not.toHaveBeenCalled();
   });
 });
 
