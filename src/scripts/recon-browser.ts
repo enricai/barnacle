@@ -93,6 +93,14 @@ const logger = getScriptLogger("recon-browser");
 const GOTO_TIMEOUT_MS = 120_000;
 /** Post-action pause between flow steps — gives the page time to settle. */
 const STEP_PAUSE_MS = 2_000;
+/**
+ * Settle window after committing a radio before re-reading its validity. MUI's
+ * controlled-form validation re-flags `required` a beat AFTER the value change,
+ * so an immediate readback sees stale pre-validation state (the fs4 "18 years"
+ * bug: `checked=1` + `Mui-error` at once). One tick (~400ms) lets the async
+ * re-validation land; far below `STEP_PAUSE_MS` so it barely affects run time.
+ */
+const RADIO_SETTLE_MS = 400;
 
 /**
  * Attempts to decode opaque request parameters: tries JSON parse, then
@@ -4490,11 +4498,27 @@ export type RadioGroupCandidate = {
   gi: number;
   /** The group's legend/label text; empty string when the group is unlabeled. */
   label: string;
-  /** The group's radio options, each with its DOM index `ri` and label text. */
-  options: { ri: number; text: string }[];
+  /**
+   * The group's radio options. `ri` is the raw radio DOM index within the group;
+   * `id`/`xpath` are stable locator hints threaded to the trusted-click commit
+   * (`applyRadioSelection`) — `id` preferred, `xpath` the no-id fallback.
+   */
+  options: { ri: number; text: string; id: string; xpath: string }[];
   /** True when the group already has a checked radio (answered by an earlier step). */
   alreadyChecked: boolean;
 };
+
+/**
+ * Build an XPath predicate that matches an `<input>` by its `id`, safe for any
+ * id value. MUI/Talemetry radio ids are base64-ish (no double-quote), so a plain
+ * quoted literal suffices — but if an id ever contains a `"`, fall back to
+ * `concat(...)` so the XPath stays valid. Pure + exported for unit tests.
+ */
+export function buildRadioIdXPath(id: string): string {
+  if (!id.includes('"')) return `xpath=//input[@id="${id}"]`;
+  const parts = id.split('"').map((seg) => `"${seg}"`);
+  return `xpath=//input[@id=concat(${parts.join(", '\"', ")})]`;
+}
 
 /**
  * Choose which radio group + option answers a flow step, deterministically and
@@ -4715,7 +4739,22 @@ async function tryRadioPrimitive(params: {
     for (let gi = 0; gi < groupEls.length; gi++) {
       const radios = Array.from(groupEls[gi].querySelectorAll("input[type=radio]"));
       if (radios.length === 0) continue;
-      const options = radios.map((rb, ri) => ({ ri, text: rbLabel(rb) })).filter((o) => o.text);
+      // NOTE: ri is the raw radio DOM index (assigned in .map BEFORE .filter), so
+      // it stays aligned with the group's Nth <input type=radio> for the xpath
+      // fallback below. Do NOT reorder map/filter or ri↔DOM index will drift.
+      const options = radios
+        .map((rb, ri) => ({
+          ri,
+          text: rbLabel(rb),
+          id: rb.id || "",
+          xpath:
+            "(//fieldset|//*[@role='radiogroup']|//*[contains(@class,'RadioGroup')])[" +
+            (gi + 1) +
+            "]//input[@type='radio'][" +
+            (ri + 1) +
+            "]",
+        }))
+        .filter((o) => o.text);
       const alreadyChecked = radios.some((rb) => rb.checked === true);
       groups.push({ gi, label: groupLabel(groupEls[gi]), options, alreadyChecked });
     }
@@ -4735,10 +4774,15 @@ async function tryRadioPrimitive(params: {
     // defers to the LLM.
     const selection = selectRadioGroupOption({ groups, wantOption: option, questionLabel });
     if (selection !== null && selection !== "ambiguous") {
-      const applied = await applyRadioSelection(page, selection.gi, selection.ri);
+      const chosenOpt = groups[selection.gi]?.options.find((o) => o.ri === selection.ri);
+      const applied = await applyRadioSelection(page, selection.gi, selection.ri, {
+        id: chosenOpt?.id ?? "",
+        xpath: chosenOpt?.xpath ?? "",
+      });
       if (applied) {
-        const chosen = groups[selection.gi]?.options.find((o) => o.ri === selection.ri)?.text ?? "";
-        logger.info(`radio primitive: selected "${chosen.trim().slice(0, 40)}" (${optLabel})`);
+        logger.info(
+          `radio primitive: selected "${(chosenOpt?.text ?? "").trim().slice(0, 40)}" (${optLabel})`
+        );
         return true;
       }
       logger.info(`radio primitive: chosen radio did not stick for ${optLabel}; falling through`);
@@ -4781,7 +4825,12 @@ async function tryRadioPrimitive(params: {
     }
     const chosenGroup = llmGroups[verdict.selectIndex]!;
     const chosenOption = chosenGroup.options[verdict.optionIndex]!;
-    const applyResult = { ok: await applyRadioSelection(page, chosenGroup.gi, chosenOption.ri) };
+    const applyResult = {
+      ok: await applyRadioSelection(page, chosenGroup.gi, chosenOption.ri, {
+        id: chosenOption.id,
+        xpath: chosenOption.xpath,
+      }),
+    };
     if (applyResult?.ok) {
       logger.info(
         `radio primitive: LLM selected "${chosenOption.text.slice(0, 40)}" for ${optLabel} (${verdict.reason.slice(0, 60)})`
@@ -4797,14 +4846,75 @@ async function tryRadioPrimitive(params: {
 }
 
 /**
- * Commit a chosen radio (group index `gi`, option index `ri`) in the DOM via the
- * React-safe native `checked` setter + bubbling `click`/`input`/`change` so
- * MUI/React's controlled-input tracker registers the change, then gate on a
- * readback: the radio must read `checked` AND no ancestor (≤6 up) may still be
- * `INVALID_MARKER_EL_EXPR`-invalid. Returns whether the commit stuck. Shared by
- * the deterministic and LLM selection paths so both use one commit+verify.
+ * Commit a chosen radio and verify it STICKS. Tiered because synthetic events
+ * set the DOM `checked` but don't flow through React/MUI's controlled-input
+ * `onChange`, so the form model never records the value and MUI re-flags the
+ * group `required` a beat later (the fs4 "18 years" bug: `checked=1` + `Mui-error`
+ * at once). Each tier commits, waits `RADIO_SETTLE_MS` for MUI's async
+ * re-validation, then re-reads BOTH signals (input checked AND no invalid
+ * ancestor). Ordered most-faithful-first:
+ *   A. trusted hit-tested CDP click on the input by id (the real user gesture
+ *      React honors) — MUI's opacity:0 `PrivateSwitchBase-input` overlays the
+ *      control so real clicks land on it;
+ *   B. trusted click on the associated `<label for=id>` (when the hidden input
+ *      isn't hit-testable — common on MUI);
+ *   C. the legacy isolated-world synthetic-events path (backstop for no-id /
+ *      detached / non-MUI radios that already commit that way).
+ * Returns whether the commit stuck; false → caller falls through to the cascade.
  */
-async function applyRadioSelection(page: Page, gi: number, ri: number): Promise<boolean> {
+async function applyRadioSelection(
+  page: Page,
+  gi: number,
+  ri: number,
+  hint: { id: string; xpath: string }
+): Promise<boolean> {
+  // Post-settle readback for the input identified by id (preferred) or xpath:
+  // checked===true AND no INVALID_MARKER_EL_EXPR ancestor within 6 hops.
+  const readbackExpr = (sel: { id: string; xpath: string }): string => `((id, xp) => {
+      const isInvalid = ${INVALID_MARKER_EL_EXPR};
+      let rb = id ? document.getElementById(id) : null;
+      if (!rb && xp) { const r = document.evaluate(xp, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); rb = r.singleNodeValue; }
+      if (!rb || rb.checked !== true) return { ok: false };
+      let node = rb;
+      for (let depth = 0; depth < 6 && node; depth++) {
+        if (node.getAttribute && isInvalid(node)) return { ok: false };
+        node = node.parentElement;
+      }
+      return { ok: true };
+    })(${JSON.stringify(sel.id)}, ${JSON.stringify(sel.xpath)})`;
+  const readback = async (): Promise<boolean> => {
+    await page.waitForTimeout(RADIO_SETTLE_MS);
+    const r = (await page.evaluate(readbackExpr(hint)).catch(() => ({ ok: false }))) as {
+      ok: boolean;
+    };
+    return r?.ok === true;
+  };
+
+  // Tier A — trusted hit-tested click on the input by id (or xpath).
+  const inputSel = hint.id ? buildRadioIdXPath(hint.id) : hint.xpath ? `xpath=${hint.xpath}` : null;
+  if (inputSel) {
+    try {
+      await page.locator(inputSel).first().click();
+      if (await readback()) return true;
+    } catch {
+      // fall through to the next tier
+    }
+  }
+
+  // Tier B — trusted click on the associated label (MUI hides the real input).
+  if (hint.id) {
+    try {
+      await page
+        .locator(`xpath=//label[@for=${JSON.stringify(hint.id)}]`)
+        .first()
+        .click();
+      if (await readback()) return true;
+    } catch {
+      // fall through to the synthetic backstop
+    }
+  }
+
+  // Tier C — legacy synthetic-events backstop (native setter + bubbling events).
   const applyExpr = `((gi, ri) => {
       const isInvalid = ${INVALID_MARKER_EL_EXPR};
       const groupEls = Array.from(document.querySelectorAll("fieldset,[role='radiogroup'],[class*='RadioGroup']"))
@@ -4826,10 +4936,8 @@ async function applyRadioSelection(page: Page, gi: number, ri: number): Promise<
       }
       return { ok: true };
     })(${JSON.stringify(gi)}, ${JSON.stringify(ri)})`;
-  const applyResult = (await page.evaluate(applyExpr).catch(() => ({ ok: false }))) as {
-    ok: boolean;
-  };
-  return applyResult?.ok === true;
+  await page.evaluate(applyExpr).catch(() => ({ ok: false }));
+  return await readback();
 }
 
 /**

@@ -65,6 +65,7 @@ vi.mock("@/lib/telemetry/call-capture", async (importOriginal) => {
 import type { LlmCallInput } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE, CALL_TYPE_RECON_REPLAN } from "@/lib/telemetry/call-types";
 import {
+  buildRadioIdXPath,
   countSlugPrefixMatches,
   dedupeConsecutiveIdentical,
   denormalizeStep,
@@ -3158,7 +3159,7 @@ describe("recon-browser/selectRadioGroupOption", () => {
   ): RadioGroupCandidate => ({
     gi,
     label,
-    options: opts.map((text, ri) => ({ ri, text })),
+    options: opts.map((text, ri) => ({ ri, text, id: "", xpath: "" })),
     alreadyChecked,
   });
 
@@ -3222,6 +3223,19 @@ describe("recon-browser/selectRadioGroupOption", () => {
     expect(
       selectRadioGroupOption({ groups, wantOption: "Yes", questionLabel: "Are you 18?" })
     ).toBeNull();
+  });
+});
+
+describe("recon-browser/buildRadioIdXPath", () => {
+  it("emits a plain quoted-literal predicate for a normal (base64-ish) id", () => {
+    expect(buildRadioIdXPath("radio-question_itemV29ya2xldEl0ZW0=-yes")).toBe(
+      'xpath=//input[@id="radio-question_itemV29ya2xldEl0ZW0=-yes"]'
+    );
+  });
+
+  it("falls back to concat() when the id contains a double-quote", () => {
+    const xp = buildRadioIdXPath('a"b');
+    expect(xp).toBe(`xpath=//input[@id=concat("a", '"', "b")]`);
   });
 });
 
