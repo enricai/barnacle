@@ -102,6 +102,16 @@ const STEP_PAUSE_MS = 2_000;
  */
 const RADIO_SETTLE_MS = 400;
 /**
+ * Same async-revalidation tick as {@link RADIO_SETTLE_MS}, for native `<select>`
+ * commits. After a synthetic value-set on a MUI `NativeSelect`, the wrapping
+ * FormControl re-runs its required-validation a beat later; reading `aria-invalid`
+ * immediately sees stale (pre-validation) state. Waiting one tick lets the
+ * `Mui-error`/`aria-invalid` marker settle so the primitive can HONESTLY report
+ * whether the value committed (cleared the required flag) vs merely set the DOM
+ * value that a later worklet re-render will wipe.
+ */
+const SELECT_SETTLE_MS = 400;
+/**
  * Extra bounded poll window for a network-only advance whose real
  * `TransitionWorklet(type="next")` POST lands AFTER the `STEP_PAUSE_MS`
  * snapshot. HCA/Talemetry's "Next" click fires a fast `WorkletPayload` autosave
@@ -4356,6 +4366,51 @@ export async function waitForTransitionBody(params: {
  * value set (cascade is skipped); false when the step isn't a select, there's
  * no select on the page, or no option fits (fall through to the cascade).
  */
+/**
+ * Set a native `<select>` (by DOM index) to `value`, then settle and read back
+ * whether the field is STILL invalid. Split out from the enumerate expr so the
+ * validation tick can be awaited: MUI `NativeSelect` re-runs required-validation
+ * a beat after the synthetic `change`, so an immediate `sel.value === value`
+ * readback passes even when the FormControl still flags the field required (and
+ * a later worklet re-render then wipes the DOM-only value — the exact HCA
+ * Job-Related failure). Returns `stillInvalid` so {@link trySelectPrimitive} can
+ * refuse to claim success on an uncommitted select, routing to the cascade/replan
+ * instead of silently advancing. Walks ≤6 ancestors for the invalid marker, same
+ * as the radio/checkbox primitives.
+ */
+async function applySelectValue(
+  page: Page,
+  selIdx: number,
+  value: string
+): Promise<{ ok: boolean; stillInvalid: boolean }> {
+  const setExpr = `((selIdx, value) => {
+    const sel = Array.from(document.querySelectorAll("select"))[selIdx];
+    if (!sel) return { ok: false };
+    const desc = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value");
+    if (desc && desc.set) { desc.set.call(sel, value); } else { sel.value = value; }
+    sel.dispatchEvent(new Event("input", { bubbles: true }));
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    sel.dispatchEvent(new Event("blur", { bubbles: true }));
+    return { ok: sel.value === value };
+  })(${JSON.stringify(selIdx)}, ${JSON.stringify(value)})`;
+  const setResult = (await page.evaluate(setExpr)) as { ok: boolean };
+  if (!setResult?.ok) return { ok: false, stillInvalid: false };
+  await page.waitForTimeout(SELECT_SETTLE_MS);
+  const invalidExpr = `((selIdx) => {
+    const isInvalid = ${INVALID_MARKER_EL_EXPR};
+    const sel = Array.from(document.querySelectorAll("select"))[selIdx];
+    if (!sel) return false;
+    let node = sel;
+    for (let depth = 0; depth < 6 && node; depth++) {
+      if (node.getAttribute && isInvalid(node)) return true;
+      node = node.parentElement;
+    }
+    return false;
+  })(${JSON.stringify(selIdx)})`;
+  const stillInvalid = (await page.evaluate(invalidExpr).catch(() => false)) as boolean;
+  return { ok: true, stillInvalid };
+}
+
 async function trySelectPrimitive(params: {
   page: Page;
   instruction: string;
@@ -4384,27 +4439,20 @@ async function trySelectPrimitive(params: {
     // a11y tree — and therefore Stagehand observe — never surfaces.
     const selects = Array.from(document.querySelectorAll("select"));
     if (selects.length === 0) return { selectPresent: false };
-    const applySet = (sel, value) => {
-      const desc = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value");
-      if (desc && desc.set) { desc.set.call(sel, value); } else { sel.value = value; }
-      sel.dispatchEvent(new Event("input", { bubbles: true }));
-      sel.dispatchEvent(new Event("change", { bubbles: true }));
-      sel.dispatchEvent(new Event("blur", { bubbles: true }));
-      return sel.value === value;
-    };
     // FAST PATH — deterministic option match: exactly one select has an option
     // matching the flow's answer text. Unambiguous (the option text itself
     // identifies the dropdown), so no LLM needed. Requires a UNIQUE match to
     // avoid picking the wrong dropdown when two share an option (e.g. "Yes").
+    // NOTE: detection only — the actual value-set happens in Node (applySelectValue)
+    // so it can settle + read back the invalid marker asynchronously.
     let detMatches = [];
-    for (const sel of selects) {
-      const opts = Array.from(sel.options || []);
+    for (let i = 0; i < selects.length; i++) {
+      const opts = Array.from(selects[i].options || []);
       const m = opts.find((o) => norm(o.textContent) === wantOpt || norm(o.value) === wantOpt);
-      if (m) detMatches.push({ sel, value: m.value, text: m.textContent });
+      if (m) detMatches.push({ selIdx: i, value: m.value, text: m.textContent });
     }
     if (detMatches.length === 1) {
-      const ok = applySet(detMatches[0].sel, detMatches[0].value);
-      return { selectPresent: true, applied: true, ok, chosen: detMatches[0].text };
+      return { selectPresent: true, detMatch: detMatches[0] };
     }
     // LLM PATH — return every UNFILLED select (placeholder / empty value) with
     // its label + real options, in DOM order (index-aligned). The LLM decides
@@ -4456,9 +4504,7 @@ async function trySelectPrimitive(params: {
     // render-lag); poll until it appears or the cap is hit.
     const enumResult = await pollEnumerate<{
       selectPresent: boolean;
-      applied?: boolean;
-      ok?: boolean;
-      chosen?: string;
+      detMatch?: { selIdx: number; value: string; text: string };
       candidates?: { selIdx: number; label: string; options: { text: string; value: string }[] }[];
     }>(page, enumerateExpr, (r) => r?.selectPresent === true);
     // No <select> on the page at all (e.g. the question is a radio group) —
@@ -4469,12 +4515,26 @@ async function trySelectPrimitive(params: {
       );
       return false;
     }
-    // Deterministic unique-option match applied.
-    if (enumResult.applied && enumResult.ok) {
-      logger.info(
-        `select primitive: set dropdown to "${(enumResult.chosen || "").trim().slice(0, 40)}" (${optLabel})`
+    // Deterministic unique-option match: set it, settle, and confirm it committed
+    // (cleared the required/invalid marker). A set that doesn't clear the marker
+    // is uncommitted (a later worklet re-render will wipe it) — refuse to claim
+    // success so the cascade/replan can retry rather than silently advancing.
+    if (enumResult.detMatch) {
+      const { ok, stillInvalid } = await applySelectValue(
+        page,
+        enumResult.detMatch.selIdx,
+        enumResult.detMatch.value
       );
-      return true;
+      if (ok && !stillInvalid) {
+        logger.info(
+          `select primitive: set dropdown to "${enumResult.detMatch.text.trim().slice(0, 40)}" (${optLabel})`
+        );
+        return true;
+      }
+      logger.info(
+        `select primitive: dropdown value for ${optLabel} did not commit (ok=${ok} stillInvalid=${stillInvalid}); falling through to cascade`
+      );
+      return false;
     }
     const candidates = enumResult.candidates ?? [];
     if (anthropic === null || candidates.length === 0) {
@@ -4504,28 +4564,22 @@ async function trySelectPrimitive(params: {
     }
     const chosenCandidate = candidates[verdict.selectIndex]!;
     const chosenOption = chosenCandidate.options[verdict.optionIndex]!;
-    // Apply pass: set the chosen select (by its ORIGINAL DOM index) to the
-    // chosen option's value.
-    const applyExpr = `((selIdx, value) => {
-      const selects = Array.from(document.querySelectorAll("select"));
-      const sel = selects[selIdx];
-      if (!sel) return { ok: false };
-      const desc = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value");
-      if (desc && desc.set) { desc.set.call(sel, value); } else { sel.value = value; }
-      sel.dispatchEvent(new Event("input", { bubbles: true }));
-      sel.dispatchEvent(new Event("change", { bubbles: true }));
-      sel.dispatchEvent(new Event("blur", { bubbles: true }));
-      return { ok: sel.value === value };
-    })(${JSON.stringify(chosenCandidate.selIdx)}, ${JSON.stringify(chosenOption.value)})`;
-    const applyResult = (await page.evaluate(applyExpr)) as { ok: boolean };
-    if (applyResult?.ok) {
+    // Apply pass (set + settle + invalid-readback): set the chosen select by its
+    // ORIGINAL DOM index, then confirm it committed (cleared the invalid marker),
+    // same as the fast path.
+    const { ok, stillInvalid } = await applySelectValue(
+      page,
+      chosenCandidate.selIdx,
+      chosenOption.value
+    );
+    if (ok && !stillInvalid) {
       logger.info(
         `select primitive: LLM chose "${chosenOption.text.slice(0, 40)}" for ${optLabel} (${verdict.reason.slice(0, 60)})`
       );
       return true;
     }
     logger.info(
-      `select primitive: LLM-chosen value did not stick for ${optLabel}; falling through`
+      `select primitive: LLM-chosen value for ${optLabel} did not commit (ok=${ok} stillInvalid=${stillInvalid}); falling through`
     );
     return false;
   } catch (err) {
