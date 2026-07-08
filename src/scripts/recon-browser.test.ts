@@ -66,6 +66,7 @@ import type { LlmCallInput } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE, CALL_TYPE_RECON_REPLAN } from "@/lib/telemetry/call-types";
 import {
   buildRadioIdXPath,
+  capturesAfterIndex,
   countSlugPrefixMatches,
   dedupeConsecutiveIdentical,
   denormalizeStep,
@@ -82,18 +83,22 @@ import {
   type Html5DateFillResult,
   hasBillingErrorBeenLogged,
   type InvalidFormControl,
+  isAdvanceStalled,
   isAdvanceStep,
   isReplanCycle,
+  isReplanReproposingFailedStep,
   isStructurallyBlocked,
   isSubmitRevealedInvalid,
   isUploadAffordanceLabel,
   isWizardExitAction,
   type LeafInvalidField,
+  latestCaptureIndex,
   logBillingErrorIfPresent,
   type NormalizedStep,
   narrowInvalidFormControl,
   normalizeDateValue,
   pairInvalidWithErrors,
+  parseCaptureIndex,
   parseRadioStep,
   parseSelectStep,
   persistReplannedFlow,
@@ -1001,6 +1006,46 @@ describe("recon-browser/filterCompletedFromReplan", () => {
   });
 });
 
+describe("recon-browser/isReplanReproposingFailedStep", () => {
+  const mk = (instruction: string): NormalizedStep => ({
+    instruction,
+    optional: false,
+    upload: false,
+    origin: "replan",
+  });
+
+  it("fires when the only bridge step is the just-failed step (guaranteed re-fail)", () => {
+    expect(
+      isReplanReproposingFailedStep(
+        [mk("Click Next to leave Basic Information")],
+        "Click Next to leave Basic Information"
+      )
+    ).toBe(true);
+  });
+
+  it("fires despite whitespace/case differences (normalized compare)", () => {
+    expect(
+      isReplanReproposingFailedStep(
+        [mk("  click NEXT   to leave Basic   Information ")],
+        "Click Next to leave Basic Information"
+      )
+    ).toBe(true);
+  });
+
+  it("does not fire when the bridge adds a genuinely new step", () => {
+    expect(
+      isReplanReproposingFailedStep(
+        [mk("Fill the Address field"), mk("Click Next to leave Basic Information")],
+        "Click Next to leave Basic Information"
+      )
+    ).toBe(false);
+  });
+
+  it("does not fire on an empty bridge (handled separately upstream)", () => {
+    expect(isReplanReproposingFailedStep([], "Click Next")).toBe(false);
+  });
+});
+
 describe("recon-browser/isWizardExitAction", () => {
   it("matches unambiguous wizard-exit labels (case-insensitive substring)", () => {
     expect(isWizardExitAction("Continue Later button")).toBe(true);
@@ -1028,36 +1073,51 @@ describe("recon-browser/isWizardExitAction", () => {
 });
 
 describe("recon-browser/findWizardRestartSignal", () => {
+  let dir: string;
+  const writeCapture = (name: string, url: string): void => {
+    writeFileSync(join(dir, name), JSON.stringify({ url }));
+  };
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "recon-restart-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   it("returns the matching URL when a restart-signal pattern appears in the step window", () => {
-    const captures = [
-      "https://apply.talemetry.com/application/abc/gq",
-      "https://apply.talemetry.com/init-apply/x/job/id/1?application_canceled=true",
-    ];
+    writeCapture("000-apply-1-a.json", "https://apply.talemetry.com/application/abc/gq");
+    writeCapture(
+      "001-apply-2-b.json",
+      "https://apply.talemetry.com/init-apply/x/job/id/1?application_canceled=true"
+    );
     const hit = findWizardRestartSignal({
-      recentCaptures: captures,
-      preLength: 1,
+      preIdx: 0,
+      capturesDir: dir,
       restartSignalUrlPatterns: ["application_canceled=true"],
     });
     expect(hit).toContain("application_canceled=true");
   });
 
-  it("ignores matches that landed BEFORE the step (preLength window)", () => {
-    const captures = [
-      "https://apply.talemetry.com/init-apply/x?application_canceled=true",
-      "https://apply.talemetry.com/application/abc/gq",
-    ];
+  it("ignores matches that landed BEFORE the step (preIdx window)", () => {
+    writeCapture(
+      "000-apply-1-a.json",
+      "https://apply.talemetry.com/init-apply/x?application_canceled=true"
+    );
+    writeCapture("001-apply-2-b.json", "https://apply.talemetry.com/application/abc/gq");
+    // preIdx=0 → only index 1 is in-window → the canceled URL (index 0) is excluded.
     const hit = findWizardRestartSignal({
-      recentCaptures: captures,
-      preLength: 1,
+      preIdx: 0,
+      capturesDir: dir,
       restartSignalUrlPatterns: ["application_canceled=true"],
     });
     expect(hit).toBeNull();
   });
 
   it("returns null when no patterns are configured (feature off)", () => {
+    writeCapture("000-x-1-a.json", "https://x/init-apply?application_canceled=true");
     const hit = findWizardRestartSignal({
-      recentCaptures: ["https://x/init-apply?application_canceled=true"],
-      preLength: 0,
+      preIdx: -1,
+      capturesDir: dir,
       restartSignalUrlPatterns: [],
     });
     expect(hit).toBeNull();
@@ -1767,6 +1827,50 @@ describe("recon-browser/isSubmitRevealedInvalid", () => {
         postAttemptInvalidCount: 5,
       })
     ).toBe(true);
+  });
+});
+
+describe("recon-browser/isAdvanceStalled", () => {
+  const stalledSignature = {
+    isAdvance: true,
+    isFinalOrSubmit: false,
+    hasPattern: true,
+    clickFired: true,
+    networkFired: true,
+    networkIsRealAdvance: false,
+    urlChanged: false,
+  };
+
+  it("fires when an advance click fired network but no real transition landed", () => {
+    expect(isAdvanceStalled(stalledSignature)).toBe(true);
+  });
+
+  it("does not fire for a non-advance (field) step", () => {
+    expect(isAdvanceStalled({ ...stalledSignature, isAdvance: false })).toBe(false);
+  });
+
+  it("does not fire on the final/submit step (owned by isSubmitRevealedInvalid)", () => {
+    expect(isAdvanceStalled({ ...stalledSignature, isFinalOrSubmit: true })).toBe(false);
+  });
+
+  it("does not fire on a site without the transition-body pattern", () => {
+    expect(isAdvanceStalled({ ...stalledSignature, hasPattern: false })).toBe(false);
+  });
+
+  it("does not fire when the click never fired (let the cascade try other techniques)", () => {
+    expect(isAdvanceStalled({ ...stalledSignature, clickFired: false })).toBe(false);
+  });
+
+  it("does not fire when the transition WAS real (a genuine advance)", () => {
+    expect(isAdvanceStalled({ ...stalledSignature, networkIsRealAdvance: true })).toBe(false);
+  });
+
+  it("does not fire when the URL changed (navigated for real)", () => {
+    expect(isAdvanceStalled({ ...stalledSignature, urlChanged: true })).toBe(false);
+  });
+
+  it("does not fire when no network fired at all (click may not have registered)", () => {
+    expect(isAdvanceStalled({ ...stalledSignature, networkFired: false })).toBe(false);
   });
 });
 
@@ -3412,6 +3516,69 @@ describe("recon-browser/isStructurallyBlocked", () => {
   });
 });
 
+describe("recon-browser/parseCaptureIndex", () => {
+  it("parses the leading zero-padded counter from a capture filename", () => {
+    expect(parseCaptureIndex("003-apply-1700000000000-deadbeef.json")).toBe(3);
+    expect(parseCaptureIndex("200-consent-1-a.json")).toBe(200);
+    expect(parseCaptureIndex("0-x.json")).toBe(0);
+  });
+  it("returns null for a name with no leading integer", () => {
+    expect(parseCaptureIndex("missing.json")).toBeNull();
+    expect(parseCaptureIndex("abc-1.json")).toBeNull();
+    expect(parseCaptureIndex("")).toBeNull();
+  });
+});
+
+describe("recon-browser/latestCaptureIndex", () => {
+  it("returns the index of the last parseable entry (the high-water mark)", () => {
+    expect(latestCaptureIndex(["18-a.json", "19-b.json", "20-c.json"])).toBe(20);
+  });
+  it("skips a trailing non-parseable entry", () => {
+    expect(latestCaptureIndex(["19-b.json", "20-c.json", "sidecar.json"])).toBe(20);
+  });
+  it("returns -1 for an empty array (so index 0 is in-window)", () => {
+    expect(latestCaptureIndex([])).toBe(-1);
+  });
+});
+
+describe("recon-browser/capturesAfterIndex", () => {
+  let dir: string;
+  const write = (name: string): void => {
+    writeFileSync(join(dir, name), "{}");
+  };
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "recon-caps-after-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("returns only files indexed strictly after preIdx, sorted by index", () => {
+    write("0-a.json");
+    write("1-b.json");
+    write("2-c.json");
+    expect(capturesAfterIndex(0, dir)).toEqual(["1-b.json", "2-c.json"]);
+  });
+  it("preIdx=-1 includes index 0", () => {
+    write("0-a.json");
+    expect(capturesAfterIndex(-1, dir)).toEqual(["0-a.json"]);
+  });
+  it("excludes .decoded.json sidecars and non-indexed files", () => {
+    write("0-a.json");
+    write("0-a.decoded.json");
+    write("notes.txt");
+    write("sidecar.json");
+    expect(capturesAfterIndex(-1, dir)).toEqual(["0-a.json"]);
+  });
+  it("is eviction-proof: finds a high-index file with no low-index files present", () => {
+    write("200-next.json");
+    expect(capturesAfterIndex(189, dir)).toEqual(["200-next.json"]);
+  });
+  it("returns [] for an unreadable dir instead of throwing", () => {
+    expect(capturesAfterIndex(0, join(dir, "nope"))).toEqual([]);
+  });
+});
+
 describe("recon-browser/windowHasTransitionBody", () => {
   let dir: string;
   const writeCapture = (name: string, requestPostData: unknown): void => {
@@ -3429,8 +3596,7 @@ describe("recon-browser/windowHasTransitionBody", () => {
     writeCapture("0-x.json", '{"query":"mutation TransitionWorklet"}');
     expect(
       windowHasTransitionBody({
-        recentCaptures: ["0-x.json"],
-        preLength: 0,
+        preIdx: -1,
         advanceTransitionBodyPattern: null,
         capturesDir: dir,
       })
@@ -3441,8 +3607,7 @@ describe("recon-browser/windowHasTransitionBody", () => {
     writeCapture("0-a.json", '{"query":"mutation TransitionWorklet(...)"}');
     expect(
       windowHasTransitionBody({
-        recentCaptures: ["0-a.json"],
-        preLength: 0,
+        preIdx: -1,
         advanceTransitionBodyPattern: "TransitionWorklet",
         capturesDir: dir,
       })
@@ -3458,38 +3623,60 @@ describe("recon-browser/windowHasTransitionBody", () => {
     );
     expect(
       windowHasTransitionBody({
-        recentCaptures: ["0-edit.json"],
-        preLength: 0,
+        preIdx: -1,
         advanceTransitionBodyPattern: "TransitionWorklet",
         capturesDir: dir,
       })
     ).toBe(false);
   });
 
-  it("only scans captures added after preLength (this step's window)", () => {
+  it("only scans captures indexed after preIdx (this step's window)", () => {
     writeCapture("0-old.json", '{"query":"mutation TransitionWorklet"}');
     writeCapture("1-new.json", '{"query":"mutation EditQuestionItem"}');
-    // preLength=1 → only "1-new.json" is in-window → no transition match.
+    // preIdx=0 → only index 1 ("1-new.json") is in-window → no transition match.
     expect(
       windowHasTransitionBody({
-        recentCaptures: ["0-old.json", "1-new.json"],
-        preLength: 1,
+        preIdx: 0,
         advanceTransitionBodyPattern: "TransitionWorklet",
         capturesDir: dir,
       })
     ).toBe(false);
   });
 
-  it("skips .decoded.json sidecars and tolerates unreadable captures", () => {
+  it("is eviction-proof: finds a transition indexed far past RECENT_CAPTURES_WINDOW", () => {
+    // Simulate a step where >20 captures flooded the window: the transition is at
+    // index 200, and the in-memory array would have long since evicted it. The
+    // disk scan still finds it because it reads by filename index, not array slot.
+    for (let i = 190; i < 200; i++) {
+      writeCapture(`${i}-noise.json`, '{"query":"mutation EditQuestionItem"}');
+    }
+    writeCapture("200-next.json", '{"query":"mutation TransitionWorklet"}');
+    expect(
+      windowHasTransitionBody({
+        preIdx: 189,
+        advanceTransitionBodyPattern: "TransitionWorklet",
+        capturesDir: dir,
+      })
+    ).toBe(true);
+  });
+
+  it("skips .decoded.json sidecars and tolerates an unreadable dir", () => {
     writeCapture("0-a.json", '{"query":"EditQuestionItem"}');
     // decoded sidecar with a matching string must be ignored (only raw counts)
     writeFileSync(join(dir, "0-a.decoded.json"), '"mutation TransitionWorklet"');
     expect(
       windowHasTransitionBody({
-        recentCaptures: ["0-a.json", "0-a.decoded.json", "missing.json"],
-        preLength: 0,
+        preIdx: -1,
         advanceTransitionBodyPattern: "TransitionWorklet",
         capturesDir: dir,
+      })
+    ).toBe(false);
+    // A non-existent dir yields no captures rather than throwing.
+    expect(
+      windowHasTransitionBody({
+        preIdx: -1,
+        advanceTransitionBodyPattern: "TransitionWorklet",
+        capturesDir: join(dir, "does-not-exist"),
       })
     ).toBe(false);
   });
@@ -3516,8 +3703,7 @@ describe("recon-browser/windowHasAdvanceTransition — type=next gate", () => {
     });
     expect(
       windowHasAdvanceTransition({
-        recentCaptures: ["0-next.json"],
-        preLength: 0,
+        preIdx: -1,
         advanceTransitionBodyPattern: "TransitionWorklet",
         capturesDir: dir,
       })
@@ -3532,8 +3718,7 @@ describe("recon-browser/windowHasAdvanceTransition — type=next gate", () => {
     });
     expect(
       windowHasAdvanceTransition({
-        recentCaptures: ["0-back.json"],
-        preLength: 0,
+        preIdx: -1,
         advanceTransitionBodyPattern: "TransitionWorklet",
         capturesDir: dir,
       })
@@ -3544,8 +3729,7 @@ describe("recon-browser/windowHasAdvanceTransition — type=next gate", () => {
     writeCapture("0-autosave.json", '{"query":"mutation WorkletPayload"}', { input: {} });
     expect(
       windowHasAdvanceTransition({
-        recentCaptures: ["0-autosave.json"],
-        preLength: 0,
+        preIdx: -1,
         advanceTransitionBodyPattern: "TransitionWorklet",
         capturesDir: dir,
       })
@@ -3558,25 +3742,25 @@ describe("recon-browser/windowHasAdvanceTransition — type=next gate", () => {
     });
     expect(
       windowHasAdvanceTransition({
-        recentCaptures: ["0-next.json"],
-        preLength: 0,
+        preIdx: -1,
         advanceTransitionBodyPattern: null,
         capturesDir: dir,
       })
     ).toBe(false);
   });
 
-  it("only scans captures after preLength (this step's window)", () => {
+  it("only scans captures indexed after preIdx (this step's window)", () => {
     writeCapture("0-old-next.json", '{"query":"mutation TransitionWorklet"}', {
       input: { type: "next" },
     });
     writeCapture("1-back.json", '{"query":"mutation TransitionWorklet"}', {
       input: { type: "back" },
     });
+    // preIdx=0 → the real 'next' at index 0 is excluded; only the index-1 'back'
+    // remains → not an advance.
     expect(
       windowHasAdvanceTransition({
-        recentCaptures: ["0-old-next.json", "1-back.json"],
-        preLength: 1,
+        preIdx: 0,
         advanceTransitionBodyPattern: "TransitionWorklet",
         capturesDir: dir,
       })
@@ -3611,8 +3795,7 @@ describe("recon-browser/waitForTransitionBody — poll", () => {
     >[0]["page"];
     const ok = await waitForTransitionBody({
       page,
-      recentCaptures: ["0-next.json"],
-      preLength: 0,
+      preIdx: -1,
       advanceTransitionBodyPattern: "TransitionWorklet",
       timeoutMs: 4000,
       intervalMs: 50,
@@ -3623,14 +3806,13 @@ describe("recon-browser/waitForTransitionBody — poll", () => {
   });
 
   it("polls and returns true once the transition POST lands late", async () => {
-    const recent: string[] = [];
-    // The transition capture lands on the 2nd poll wait (mimics the late POST).
+    // The transition capture lands on the 2nd poll wait (mimics the late POST):
+    // each poll iteration re-scans disk, so the newly-written file is found.
     let ticks = 0;
     const waitForTimeout = vi.fn().mockImplementation(async () => {
       ticks++;
       if (ticks === 2) {
         writeNext("0-next.json");
-        recent.push("0-next.json");
       }
     });
     const page = { waitForTimeout } as unknown as Parameters<
@@ -3638,8 +3820,7 @@ describe("recon-browser/waitForTransitionBody — poll", () => {
     >[0]["page"];
     const ok = await waitForTransitionBody({
       page,
-      recentCaptures: recent,
-      preLength: 0,
+      preIdx: -1,
       advanceTransitionBodyPattern: "TransitionWorklet",
       timeoutMs: 4000,
       intervalMs: 10,
@@ -3656,8 +3837,7 @@ describe("recon-browser/waitForTransitionBody — poll", () => {
     >[0]["page"];
     const ok = await waitForTransitionBody({
       page,
-      recentCaptures: [],
-      preLength: 0,
+      preIdx: -1,
       advanceTransitionBodyPattern: "TransitionWorklet",
       timeoutMs: 30,
       intervalMs: 10,
@@ -3673,8 +3853,7 @@ describe("recon-browser/waitForTransitionBody — poll", () => {
     >[0]["page"];
     const ok = await waitForTransitionBody({
       page,
-      recentCaptures: [],
-      preLength: 0,
+      preIdx: -1,
       advanceTransitionBodyPattern: null,
       timeoutMs: 4000,
       intervalMs: 10,

@@ -901,23 +901,93 @@ export function isAdvanceStep(instruction: string | null | undefined): boolean {
 }
 
 /**
+ * Parse the monotonic capture index from a capture filename. Every capture is
+ * written as `<idx>-<phase>-<unix-ms>-<hash>.json` where `<idx>` is a
+ * zero-padded, never-reused counter (`counter.n++`). Returns the numeric prefix,
+ * or null when the name has no leading integer. Pure; the seam the window
+ * helpers use to scope a step's captures by INDEX rather than by array position.
+ */
+export function parseCaptureIndex(filename: string): number | null {
+  const m = /^(\d+)-/.exec(filename);
+  const digits = m?.[1];
+  if (digits === undefined) return null;
+  const n = Number.parseInt(digits, 10);
+  return Number.isNaN(n) ? null : n;
+}
+
+/**
+ * The highest capture index currently known, read from the LIVE `recentCaptures`
+ * array's last entry (captures are appended in index order, so the tail always
+ * carries the high-water mark even after the array is front-evicted to
+ * `RECENT_CAPTURES_WINDOW`). Snapshotting THIS before a step, then asking the
+ * window helpers for captures with a greater index, scopes the scan to the
+ * step's own captures WITHOUT depending on the capped array holding them — the
+ * eviction-proof replacement for the old `recentCaptures.length` slice index.
+ * Returns -1 when nothing has been captured yet (so index 0 is in-window).
+ */
+export function latestCaptureIndex(recentCaptures: readonly string[]): number {
+  for (let i = recentCaptures.length - 1; i >= 0; i--) {
+    const name = recentCaptures[i];
+    if (name === undefined) continue;
+    const idx = parseCaptureIndex(name);
+    if (idx !== null) return idx;
+  }
+  return -1;
+}
+
+/**
+ * Filenames of the raw captures written AFTER `preIdx` (this step's window),
+ * read straight from `capturesDir` — NOT from the in-memory `recentCaptures`
+ * array, which is front-evicted to `RECENT_CAPTURES_WINDOW` and therefore drops
+ * a step's transition when >20 captures flood during the step (measured 43
+ * across one HCA cascade). Scanning disk by filename index is eviction-proof:
+ * the transition file is always on disk regardless of array churn. `.decoded.json`
+ * sidecars are excluded (the raw file carries `requestPostData`). Sorted by index
+ * so callers scan in capture order. Returns [] when the dir is unreadable.
+ */
+export function capturesAfterIndex(preIdx: number, capturesDir: string): string[] {
+  let entries: string[];
+  try {
+    entries = readdirSync(capturesDir);
+  } catch {
+    return [];
+  }
+  return entries
+    .filter((f) => f.endsWith(".json") && !f.endsWith(".decoded.json"))
+    .map((f) => ({ f, idx: parseCaptureIndex(f) }))
+    .filter((e): e is { f: string; idx: number } => e.idx !== null && e.idx > preIdx)
+    .sort((a, b) => a.idx - b.idx)
+    .map((e) => e.f);
+}
+
+/**
  * Detects a multi-page-wizard RESTART / backward navigation by scanning the
- * recent full-URL capture list for a configured restart-signal pattern (e.g.
- * `init-apply`, `application_canceled=true`). Scans `recentCaptures` — NOT
- * `recentCaptureMeta`, which drops GETs — because the restart signal is often a
- * plain GET (Talemetry's `GET .../init-apply?...&application_canceled=true`).
- * Returns the matching URL (for the diagnostic) or null. No-op when the flow
- * declares no `restartSignalUrlPatterns`.
+ * captures written during this step for a configured restart-signal pattern
+ * (e.g. `init-apply`, `application_canceled=true`). The restart signal is often
+ * a plain GET (Talemetry's `GET .../init-apply?...&application_canceled=true`),
+ * so it scans the raw capture files' `url` field (GETs are written to disk even
+ * though they're dropped from `recentCaptureMeta`). Window scoped by
+ * `preIdx` via {@link capturesAfterIndex} (eviction-proof). Returns the matching
+ * URL (for the diagnostic) or null. No-op when no `restartSignalUrlPatterns`.
  */
 export function findWizardRestartSignal(params: {
-  recentCaptures: readonly string[];
-  preLength: number;
+  preIdx: number;
+  capturesDir?: string;
   restartSignalUrlPatterns: readonly string[];
 }): string | null {
-  const { recentCaptures, preLength, restartSignalUrlPatterns } = params;
+  const { preIdx, restartSignalUrlPatterns } = params;
   if (restartSignalUrlPatterns.length === 0) return null;
-  const window = recentCaptures.slice(preLength);
-  for (const url of window) {
+  const capturesDir = params.capturesDir ?? CAPTURES_DIR;
+  for (const filename of capturesAfterIndex(preIdx, capturesDir)) {
+    let url: string;
+    try {
+      const raw = readFileSync(join(capturesDir, filename), "utf8");
+      const capture = JSON.parse(raw) as { url?: unknown };
+      if (typeof capture.url !== "string") continue;
+      url = capture.url;
+    } catch {
+      continue;
+    }
     for (const pattern of restartSignalUrlPatterns) {
       if (url.includes(pattern)) return url;
     }
@@ -931,17 +1001,17 @@ export function findWizardRestartSignal(params: {
  * wizard forward when advance and non-advance mutations share one endpoint URL
  * (e.g. Talemetry `/gq`: a real advance is a `TransitionWorklet` mutation, a
  * field edit is `EditQuestionItem` — same URL, only the body differs, so a
- * URL/meta-based check can't tell them apart). Reads the capture files by name
- * from `capturesDir` (mirrors `extractSubmitFailureEvidence`). Returns false
+ * URL/meta-based check can't tell them apart). Window scoped by `preIdx` via
+ * {@link capturesAfterIndex} (disk-scan by filename index — eviction-proof, so a
+ * transition isn't lost when >20 captures flood during the step). Returns false
  * when no pattern is configured (opt-in) or nothing in the window matches.
  */
 export function windowHasTransitionBody(params: {
-  recentCaptures: readonly string[];
-  preLength: number;
+  preIdx: number;
   advanceTransitionBodyPattern: string | null;
   capturesDir?: string;
 }): boolean {
-  const { recentCaptures, preLength, advanceTransitionBodyPattern } = params;
+  const { preIdx, advanceTransitionBodyPattern } = params;
   if (!advanceTransitionBodyPattern) return false;
   const capturesDir = params.capturesDir ?? CAPTURES_DIR;
   let rx: RegExp;
@@ -950,10 +1020,7 @@ export function windowHasTransitionBody(params: {
   } catch {
     return false;
   }
-  const window = recentCaptures.slice(preLength);
-  for (const filename of window) {
-    // Skip decoded sidecars; the raw capture carries requestPostData.
-    if (filename.endsWith(".decoded.json")) continue;
+  for (const filename of capturesAfterIndex(preIdx, capturesDir)) {
     try {
       const raw = readFileSync(join(capturesDir, filename), "utf8");
       const capture = JSON.parse(raw) as Partial<Capture> & { requestPostData?: unknown };
@@ -979,16 +1046,16 @@ export function windowHasTransitionBody(params: {
  * transition is a different mutation with no `input.type`. Requiring the parsed
  * `type==="next"` isolates a genuine FORWARD advance. Deliberately does NOT use
  * `input.is_next` — it is inverted/unreliable on this ATS (a real `next` carries
- * `is_next:false`, a `back` carries `is_next:true`). Opt-in / site-agnostic:
- * returns false when no pattern is configured.
+ * `is_next:false`, a `back` carries `is_next:true`). Window scoped by `preIdx`
+ * via {@link capturesAfterIndex} (eviction-proof disk-scan). Opt-in /
+ * site-agnostic: returns false when no pattern is configured.
  */
 export function windowHasAdvanceTransition(params: {
-  recentCaptures: readonly string[];
-  preLength: number;
+  preIdx: number;
   advanceTransitionBodyPattern: string | null;
   capturesDir?: string;
 }): boolean {
-  const { recentCaptures, preLength, advanceTransitionBodyPattern } = params;
+  const { preIdx, advanceTransitionBodyPattern } = params;
   if (!advanceTransitionBodyPattern) return false;
   const capturesDir = params.capturesDir ?? CAPTURES_DIR;
   let rx: RegExp;
@@ -997,8 +1064,7 @@ export function windowHasAdvanceTransition(params: {
   } catch {
     return false;
   }
-  for (const filename of recentCaptures.slice(preLength)) {
-    if (filename.endsWith(".decoded.json")) continue;
+  for (const filename of capturesAfterIndex(preIdx, capturesDir)) {
     try {
       const raw = readFileSync(join(capturesDir, filename), "utf8");
       const capture = JSON.parse(raw) as Partial<Capture> & { requestPostData?: unknown };
@@ -1282,6 +1348,47 @@ export function isSubmitRevealedInvalid(params: {
   if (!effectSignals.includes("dom-grew-without-network")) return false;
   if (postAttemptInvalidCount <= preSubmitInvalidCount) return false;
   return true;
+}
+
+/**
+ * Decide whether attempt 1 on an interior wizard-ADVANCE step already proved
+ * that clicking cannot move the wizard, so attempts 2-N are dead work. When the
+ * step is an advance step on a site with the transition-body gate configured,
+ * the click DID fire (Stagehand resolved and clicked a button — `clickFired`)
+ * and network traffic happened, yet no real `TransitionWorklet(type="next")`
+ * landed within the poll window (`networkIsRealAdvance` false), the button works
+ * but the wizard is refusing to advance (a precondition isn't met, e.g. a
+ * required field the flow answers on a LATER step). Re-clicking the same button
+ * only re-fires the autosave / a `back` bounce — measured across HCA runs as the
+ * next→back oscillation. Break to replan instead, which can reorder a later step
+ * forward. Conservative: any condition unmet → run the full cascade as before.
+ * Never fires on final/submit steps (they own `isSubmitRevealedInvalid`) or on
+ * sites without the pattern.
+ */
+export function isAdvanceStalled(params: {
+  isAdvance: boolean;
+  isFinalOrSubmit: boolean;
+  hasPattern: boolean;
+  clickFired: boolean;
+  networkFired: boolean;
+  networkIsRealAdvance: boolean;
+  urlChanged: boolean;
+}): boolean {
+  const {
+    isAdvance,
+    isFinalOrSubmit,
+    hasPattern,
+    clickFired,
+    networkFired,
+    networkIsRealAdvance,
+    urlChanged,
+  } = params;
+  if (!isAdvance || isFinalOrSubmit || !hasPattern) return false;
+  if (!clickFired) return false;
+  if (urlChanged || networkIsRealAdvance) return false;
+  // The button clicked and something hit the network, but it wasn't a real
+  // forward transition — the wizard is stalled, not the click technique.
+  return networkFired;
 }
 
 /**
@@ -1805,6 +1912,31 @@ export function filterCompletedFromReplan(
 ): NormalizedStep[] {
   const completed = new Set(completedSteps);
   return newSteps.filter((s) => s.instruction === failedStep || !completed.has(s.instruction));
+}
+
+/** Whitespace/case-insensitive normalization for comparing step instructions. */
+function normalizeInstruction(instruction: string): string {
+  return instruction.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/**
+ * Detect a replan that only re-proposes the step that JUST terminally failed —
+ * i.e. after {@link filterCompletedFromReplan} the sole surviving bridge step is
+ * byte-identical (whitespace/case-normalized) to the failed instruction. The
+ * replan prompt allows a no-op re-emission of the failed step, but a bridge that
+ * is NOTHING but the failed step is a guaranteed re-fail: resuming re-runs the
+ * whole 5-attempt cascade on the exact click that just exhausted it (~1m40s
+ * wasted) before the cycle detector — which needs REPLAN_CYCLE_THRESHOLD repeats
+ * under a static page — even engages. This catches it on the FIRST occurrence.
+ * Pure; returns false whenever the bridge adds any genuinely new step.
+ */
+export function isReplanReproposingFailedStep(
+  newSteps: readonly NormalizedStep[],
+  failedStep: string
+): boolean {
+  if (newSteps.length === 0) return false;
+  const failedNorm = normalizeInstruction(failedStep);
+  return newSteps.every((s) => normalizeInstruction(s.instruction) === failedNorm);
 }
 
 /**
@@ -4166,27 +4298,24 @@ export async function pollEnumerate<T>(
  * Re-check {@link windowHasAdvanceTransition} every `intervalMs` until it matches
  * or `timeoutMs` elapses; returns true the moment a real advance lands.
  *
- * Correctness depends on `recentCaptures` being the LIVE array the capture
- * pipeline front-splices into — each poll iteration re-slices it from
- * `preLength`, so newly-arrived POSTs enter the scanned window. `preLength`
- * scopes the window to THIS step, so a later step's transition can't satisfy it.
+ * Each poll iteration re-scans `capturesDir` for files indexed after `preIdx`
+ * (via {@link capturesAfterIndex}), so a POST that lands on disk AFTER the first
+ * check enters the scanned window on the next iteration. `preIdx` scopes the
+ * window to THIS step, so a later step's transition can't satisfy it.
  */
 export async function waitForTransitionBody(params: {
   page: Page;
-  recentCaptures: readonly string[];
-  preLength: number;
+  preIdx: number;
   advanceTransitionBodyPattern: string | null;
   timeoutMs: number;
   intervalMs: number;
   capturesDir?: string;
 }): Promise<boolean> {
-  const { page, recentCaptures, preLength, advanceTransitionBodyPattern, timeoutMs, intervalMs } =
-    params;
+  const { page, preIdx, advanceTransitionBodyPattern, timeoutMs, intervalMs } = params;
   if (!advanceTransitionBodyPattern) return false;
   const check = (): boolean =>
     windowHasAdvanceTransition({
-      recentCaptures,
-      preLength,
+      preIdx,
       advanceTransitionBodyPattern,
       capturesDir: params.capturesDir,
     });
@@ -6243,9 +6372,11 @@ async function executeStepWithHealing(params: {
     // its URL scan to captures added DURING this attempt (not historical
     // tail from earlier steps).
     const preMetaLength = recentCaptureMeta.length;
-    // Same idea for the interior-advance body gate, but against the capture
-    // FILE-PATH array (recentCaptures) since body inspection reads capture files.
-    const preCapturesLength = recentCaptures.length;
+    // Same idea for the interior-advance body gate, but scoped by the monotonic
+    // capture INDEX (not the array length): the body gate scans capture files on
+    // disk for entries indexed after this point, which is eviction-proof when
+    // >RECENT_CAPTURES_WINDOW captures flood during the step.
+    const preCaptureIdx = latestCaptureIndex(recentCaptures);
     const record: AttemptRecord = {
       attempt,
       technique: "act-string",
@@ -6719,13 +6850,12 @@ async function executeStepWithHealing(params: {
     // fires first), so poll for it — an immediate one-shot check false-negatives
     // the advance and triggers a retry that bounces the wizard back. The poll
     // short-circuits when the transition is already in-window (zero added latency
-    // on the common path). `recentCaptures` is the live front-spliced array.
+    // on the common path). Scoped by preCaptureIdx via an eviction-proof disk scan.
     const networkIsRealAdvance = !advanceGateActive
       ? networkFired
       : await waitForTransitionBody({
           page,
-          recentCaptures,
-          preLength: preCapturesLength,
+          preIdx: preCaptureIdx,
           advanceTransitionBodyPattern,
           timeoutMs: ADVANCE_TRANSITION_POLL_MS,
           intervalMs: ADVANCE_TRANSITION_POLL_INTERVAL_MS,
@@ -7016,8 +7146,7 @@ async function executeStepWithHealing(params: {
             retryNetworkFired &&
             (await waitForTransitionBody({
               page,
-              recentCaptures,
-              preLength: preCapturesLength,
+              preIdx: preCaptureIdx,
               advanceTransitionBodyPattern,
               timeoutMs: ADVANCE_TRANSITION_POLL_MS,
               intervalMs: ADVANCE_TRANSITION_POLL_INTERVAL_MS,
@@ -7233,6 +7362,27 @@ async function executeStepWithHealing(params: {
       });
       if (earlyExit) {
         const exitReason = `submit-revealed-invalid: click surfaced ${postAttemptInvalidCount - preSubmitInvalidCount} new ng-invalid container(s) (was ${preSubmitInvalidCount}, now ${postAttemptInvalidCount}); attempts 2-${MAX_STEP_ATTEMPTS} cannot heal a form that needs answers — routing to replan`;
+        failureReasons.push(exitReason);
+        logger.warn(`step ${stepIndex + 1} ${exitReason}`);
+        break;
+      }
+
+      // Telemetry-driven early-exit for interior ADVANCE steps: if the Next
+      // click fired and hit the network but produced no real forward
+      // transition, attempts 2-N only re-fire the autosave / bounce the wizard
+      // back (the measured HCA next→back oscillation). Route to replan — which
+      // can reorder a later step forward — instead of burning the cascade.
+      const advanceStalled = isAdvanceStalled({
+        isAdvance: isAdvanceStep(step),
+        isFinalOrSubmit: isFinalStep || submitStep,
+        hasPattern: advanceTransitionBodyPattern !== null,
+        clickFired: record.resolvedMethod === "click" && record.actResultSuccess === true,
+        networkFired,
+        networkIsRealAdvance,
+        urlChanged,
+      });
+      if (advanceStalled) {
+        const exitReason = `advance-stalled: the Next click fired network but no real transition (type=next) landed within the poll window; attempts 2-${MAX_STEP_ATTEMPTS} would only re-bounce the wizard — routing to replan`;
         failureReasons.push(exitReason);
         logger.warn(`step ${stepIndex + 1} ${exitReason}`);
         break;
@@ -7704,10 +7854,10 @@ async function main(): Promise<void> {
           logger.warn(`step ${i + 1}: DOM dump failed: ${toErrorMessage(err)}`);
         }
       }
-      // Baseline for wizard-restart detection: capture the recentCaptures
-      // length before the step so findWizardRestartSignal scans only URLs that
-      // landed during THIS step's processing.
-      const recentCapturesLenBeforeStep = recentCaptures.length;
+      // Baseline for wizard-restart detection: capture the highest capture
+      // INDEX before the step so findWizardRestartSignal scans only URLs that
+      // landed during THIS step's processing (eviction-proof disk scan).
+      const preCaptureIdxBeforeStep = latestCaptureIndex(recentCaptures);
       try {
         const stepOutcome = await executeStepWithHealing({
           stagehand,
@@ -7745,8 +7895,7 @@ async function main(): Promise<void> {
         // target a reset page and replanning against the restarted wizard is
         // futile — abort with a diagnostic instead of silently cycling.
         const restartUrl = findWizardRestartSignal({
-          recentCaptures,
-          preLength: recentCapturesLenBeforeStep,
+          preIdx: preCaptureIdxBeforeStep,
           restartSignalUrlPatterns,
         });
         if (restartUrl !== null) {
@@ -7921,6 +8070,17 @@ async function main(): Promise<void> {
             `replan #${replanIndex} produced only already-completed steps (nothing new to bridge); aborting`
           );
           throw err;
+        }
+
+        // Immediate no-progress guard: if the replan's only bridge is a
+        // re-emission of the step that just failed, resuming re-runs the whole
+        // cascade on the identical click that just exhausted it. Abort now
+        // instead of waiting REPLAN_CYCLE_THRESHOLD repeats for the cycle
+        // detector — that many dead cascades cost minutes of wall-clock.
+        if (isReplanReproposingFailedStep(newSteps, step.instruction)) {
+          const noProgressMessage = `replan #${replanIndex} re-proposed only the just-failed step ("${step.instruction.slice(0, 60)}") with no new bridge; resuming would re-fail identically — aborting`;
+          logger.error(noProgressMessage);
+          throw new StepVerificationError(noProgressMessage, "replan-cycle-detected");
         }
 
         const currentPageState = await snapshotPage(page, signalCounter).catch(() => ({
