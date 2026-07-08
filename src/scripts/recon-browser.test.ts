@@ -67,6 +67,7 @@ import { CALL_TYPE_RECON_REPHRASE, CALL_TYPE_RECON_REPLAN } from "@/lib/telemetr
 import {
   buildRadioIdXPath,
   capturesAfterIndex,
+  chooseRequiredSelectOption,
   countSlugPrefixMatches,
   dedupeConsecutiveIdentical,
   denormalizeStep,
@@ -3124,6 +3125,36 @@ describe("recon-browser/probeStepBeforeAttempts", () => {
     expect(result).toBe("present");
     // Happy path: only the focused probe runs; no wasted unfocused observe.
     expect(stagehand.observe).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("recon-browser/chooseRequiredSelectOption", () => {
+  it("picks the first substantive (non-decline) option", () => {
+    expect(
+      chooseRequiredSelectOption(["None", "Less than one year", "1-2 Years", "5-7 Years"])
+    ).toBe("None");
+  });
+
+  it("skips decline/placeholder-style options in favor of a real answer", () => {
+    expect(chooseRequiredSelectOption(["Prefer not to answer", "Yes", "No"])).toBe("Yes");
+    expect(
+      chooseRequiredSelectOption(["I do not wish to disclose", "Bachelors of Science in Nursing"])
+    ).toBe("Bachelors of Science in Nursing");
+  });
+
+  it("falls back to the first option when EVERY option is a decline", () => {
+    expect(
+      chooseRequiredSelectOption(["Prefer not to answer", "I do not wish to disclose", "Withhold"])
+    ).toBe("Prefer not to answer");
+  });
+
+  it("ignores blank/whitespace-only options and trims", () => {
+    expect(chooseRequiredSelectOption(["", "  ", "  Yes  "])).toBe("Yes");
+  });
+
+  it("returns null when there is nothing selectable", () => {
+    expect(chooseRequiredSelectOption([])).toBeNull();
+    expect(chooseRequiredSelectOption(["", "   "])).toBeNull();
   });
 });
 

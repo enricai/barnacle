@@ -4588,6 +4588,180 @@ async function trySelectPrimitive(params: {
   }
 }
 
+/** Option texts that answer a required select without volunteering info — used
+ * only as a LAST resort when a required question offers nothing better. */
+const DECLINE_OPTION_MARKERS = [
+  "prefer not",
+  "decline",
+  "do not wish",
+  "don't wish",
+  "not to answer",
+  "not to disclose",
+  "withhold",
+  "choose not",
+];
+
+/**
+ * Pick an option to satisfy a REQUIRED select on a catch-all step, from the
+ * select's option TEXTS (placeholder already excluded upstream). Policy: take
+ * the first non-decline option (a plausible substantive answer — the operator
+ * accepts LLM-plausible answers reaching HCA prod); fall back to the first
+ * option only if every option is a decline/placeholder. Returns null when there
+ * is nothing selectable. Pure + exported so the policy is unit-testable; the LLM
+ * path ({@link judgeSelectOptionWithLLM}) is preferred when a client is present,
+ * this is the deterministic fallback.
+ */
+export function chooseRequiredSelectOption(options: readonly string[]): string | null {
+  const cleaned = options.map((o) => o.trim()).filter((o) => o.length > 0);
+  if (cleaned.length === 0) return null;
+  const isDecline = (t: string): boolean => {
+    const low = t.toLowerCase();
+    return DECLINE_OPTION_MARKERS.some((m) => low.includes(m));
+  };
+  return cleaned.find((o) => !isDecline(o)) ?? cleaned[0] ?? null;
+}
+
+/**
+ * Catch-all primitive: fill EVERY required-but-empty native `<select>` on the
+ * page, regardless of whether it shows a visible invalid marker.
+ *
+ * Why this exists: a required MuiNativeSelect (`tabindex=-1`, so invisible to
+ * Stagehand observe) can block the worklet's server-side advance while the flow
+ * has no step targeting it — requisition-specific specialty questions vary per
+ * posting ("years in Med Surg Services" / "…Emergency Room…" / ICU / OR …), so
+ * per-question flow steps can't cover them. `trySelectPrimitive` only handles a
+ * single concrete "select 'X'" target and `parseSelectStep` deliberately returns
+ * null for the catch-all step, so those unmarked required selects reach only the
+ * cascade, which can't see them. This runs ONLY on a catch-all step ("for any
+ * remaining … question") and fills each required-empty select with a sensible
+ * option (LLM-picked when a client is present, else {@link chooseRequiredSelectOption}),
+ * committing through {@link applySelectValue} (settle + invalid-marker readback).
+ * No-op (returns false → cascade) when the step isn't a catch-all or no
+ * required-empty select is present, so radio/checkbox catch-alls are unaffected.
+ */
+async function tryFillRequiredSelectsPrimitive(params: {
+  page: Page;
+  instruction: string;
+  logger: Logger;
+  anthropic: Anthropic | null;
+  captureFn?: JudgeCaptureFn;
+}): Promise<boolean> {
+  const { page, instruction, logger, anthropic, captureFn } = params;
+  // Gate: catch-all steps only. parseSelectStep returns null for these (its
+  // `any remaining` guard), so this never collides with the single-target
+  // trySelectPrimitive that owns concrete "select 'X'" steps.
+  if (!/\bany\s+remaining\b/i.test(instruction) || parseSelectStep(instruction) !== null) {
+    return false;
+  }
+  // Enumerate required-and-empty selects with their labels + real options.
+  // Required detection: the HTML `required` attr OR aria-required OR aria-invalid
+  // (MUI marks NativeSelect via any of these). Reuses the isUnfilled / selLabelText
+  // shape from trySelectPrimitive.
+  const enumerateExpr = `(() => {
+    const selects = Array.from(document.querySelectorAll("select"));
+    if (selects.length === 0) return { candidates: [] };
+    const selLabelText = (sel) => {
+      const parts = [];
+      if (sel.id) {
+        try {
+          const esc = (window.CSS && CSS.escape) ? CSS.escape(sel.id) : sel.id;
+          const lf = document.querySelector('label[for="' + esc + '"]');
+          if (lf) parts.push(lf.textContent);
+        } catch (e) {}
+      }
+      const alb = sel.getAttribute("aria-labelledby");
+      if (alb) for (const id of alb.split(/\\s+/)) { const el = document.getElementById(id); if (el) parts.push(el.textContent); }
+      const al = sel.getAttribute("aria-label");
+      if (al) parts.push(al);
+      if (parts.length === 0) {
+        let node = sel.parentElement;
+        for (let d = 0; d < 5 && node; d++) {
+          if (node.querySelectorAll("select,input,textarea").length > 2) break;
+          const t = (node.textContent || "").trim();
+          if (t) { parts.push(t); break; }
+          node = node.parentElement;
+        }
+      }
+      return (parts.join(" ") || "").replace(/\\s+/g, " ").trim().slice(0, 120);
+    };
+    const isUnfilled = (sel) => {
+      const so = sel.selectedOptions && sel.selectedOptions[0];
+      return !sel.value || sel.value === "" || (so && so.disabled);
+    };
+    const isRequired = (sel) =>
+      sel.required === true ||
+      sel.getAttribute("aria-required") === "true" ||
+      sel.getAttribute("aria-invalid") === "true";
+    const candidates = [];
+    for (let i = 0; i < selects.length; i++) {
+      const sel = selects[i];
+      if (!isRequired(sel) || !isUnfilled(sel)) continue;
+      const options = Array.from(sel.options || [])
+        .filter((o) => !o.disabled && (o.value || (o.textContent || "").trim()))
+        .map((o) => ({ text: (o.textContent || "").replace(/\\s+/g, " ").trim(), value: o.value }));
+      if (options.length > 0) candidates.push({ selIdx: i, label: selLabelText(sel), options });
+    }
+    return { candidates };
+  })()`;
+  try {
+    const enumResult = await pollEnumerate<{
+      candidates: { selIdx: number; label: string; options: { text: string; value: string }[] }[];
+    }>(page, enumerateExpr, (r) => Array.isArray(r?.candidates));
+    const candidates = enumResult?.candidates ?? [];
+    if (candidates.length === 0) return false;
+    logger.info(`required-select primitive: ${candidates.length} required-empty select(s) to fill`);
+    let allCommitted = true;
+    for (const cand of candidates) {
+      // Prefer an LLM pick (plausible, non-decline); fall back to the pure policy.
+      const llmVerdict =
+        anthropic !== null
+          ? await judgeSelectOptionWithLLM({
+              client: anthropic,
+              input: {
+                questionLabel: cand.label || null,
+                desiredHint:
+                  "a reasonable, truthful answer; prefer a substantive option over 'decline'/'prefer not to answer' unless declining is the only choice",
+                candidates: [
+                  { label: cand.label || null, options: cand.options.map((o) => o.text) },
+                ],
+              },
+              captureFn,
+            }).catch(() => null)
+          : null;
+      const chosenText =
+        llmVerdict && llmVerdict.optionIndex !== null
+          ? (cand.options[llmVerdict.optionIndex]?.text ?? null)
+          : chooseRequiredSelectOption(cand.options.map((o) => o.text));
+      if (chosenText === null) {
+        allCommitted = false;
+        continue;
+      }
+      const chosen = cand.options.find((o) => o.text === chosenText);
+      if (!chosen) {
+        allCommitted = false;
+        continue;
+      }
+      const { ok, stillInvalid } = await applySelectValue(page, cand.selIdx, chosen.value);
+      if (ok && !stillInvalid) {
+        logger.info(
+          `required-select primitive: filled "${cand.label.slice(0, 40)}" with "${chosen.text.slice(0, 40)}"`
+        );
+      } else {
+        allCommitted = false;
+        logger.info(
+          `required-select primitive: "${cand.label.slice(0, 40)}" did not commit (ok=${ok} stillInvalid=${stillInvalid})`
+        );
+      }
+    }
+    return allCommitted;
+  } catch (err) {
+    logger.warn(
+      `required-select primitive: evaluate threw: ${toErrorMessage(err)}; falling through`
+    );
+    return false;
+  }
+}
+
 /**
  * Site-agnostic checkbox primitive: answer a multi-select checkbox-group
  * question by directly checking the matching option in the DOM, bypassing
@@ -6201,6 +6375,20 @@ async function executeStepWithHealing(params: {
   // through) when there's no radio group or no confident option match.
   if (await tryRadioPrimitive({ page, instruction: step, logger, anthropic, captureFn })) {
     logger.info(`step ${stepIndex + 1} resolved by radio primitive`);
+    trajectory?.push({ stepIndex, verifiedBy: "dom" });
+    return "completed";
+  }
+
+  // On a CATCH-ALL step ("for any remaining … question"), fill every
+  // required-but-empty native <select> — including MuiNativeSelect dropdowns
+  // (tabindex=-1) that Stagehand observe can't see and that no concrete flow
+  // step targets (requisition-specific specialty questions). Runs only on the
+  // catch-all (parseSelectStep returns null there, so trySelectPrimitive above
+  // skipped it) and no-ops when the page has no required-empty select.
+  if (
+    await tryFillRequiredSelectsPrimitive({ page, instruction: step, logger, anthropic, captureFn })
+  ) {
+    logger.info(`step ${stepIndex + 1} resolved by required-select primitive`);
     trajectory?.push({ stepIndex, verifiedBy: "dom" });
     return "completed";
   }
