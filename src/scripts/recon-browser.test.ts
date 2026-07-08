@@ -81,6 +81,7 @@ import {
   type Html5DateFillResult,
   hasBillingErrorBeenLogged,
   type InvalidFormControl,
+  isAdvanceStep,
   isReplanCycle,
   isStructurallyBlocked,
   isSubmitRevealedInvalid,
@@ -3085,6 +3086,46 @@ describe("recon-browser/parseSelectStep", () => {
 
   it("returns null when there is no quoted option to select", () => {
     expect(parseSelectStep("Select an appropriate value in the dropdown")).toBeNull();
+  });
+});
+
+describe("recon-browser/isAdvanceStep", () => {
+  it("is true for the HCA flow's real 'Next' advance steps", () => {
+    expect(
+      isAdvanceStep(
+        "Click the 'Next' button to leave the Basic Information page. Click ONLY the primary 'Next' button — do NOT click 'Back', 'Cancel', or 'Continue Later'."
+      )
+    ).toBe(true);
+    expect(
+      isAdvanceStep(
+        "On the COMPENSATION landing page, click the 'Next' button to continue to the Job-Related Questions page"
+      )
+    ).toBe(true);
+  });
+
+  it("is false for field-answer steps (fill / select / radio)", () => {
+    expect(isAdvanceStep("Fill in the First Name field with 'Reginald'")).toBe(false);
+    expect(
+      isAdvanceStep(
+        "For 'Are you currently licensed to work as a Registered Nurse in this state?' select 'Yes'"
+      )
+    ).toBe(false);
+    expect(
+      isAdvanceStep("Click the 'Yes' answer for the question 'Are you at least 18 years of age?'")
+    ).toBe(false);
+  });
+
+  it("is false for the final submit step", () => {
+    expect(
+      isAdvanceStep(
+        "Click the final submit control to submit the application: 'Submit' or 'Submit Application'."
+      )
+    ).toBe(false);
+  });
+
+  it("is false for null/empty", () => {
+    expect(isAdvanceStep(null)).toBe(false);
+    expect(isAdvanceStep("")).toBe(false);
   });
 });
 

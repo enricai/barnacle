@@ -849,6 +849,37 @@ export function isWizardExitAction(
 }
 
 /**
+ * Phrases (in the ORIGINAL flow instruction) that mark a step whose intent is to
+ * ADVANCE the wizard to the next page — a "Next"/"Continue" click — as opposed
+ * to a field-answer step (fill / select / click a radio). Matched against the
+ * step text, not a resolved element description.
+ */
+const ADVANCE_STEP_PHRASES: readonly string[] = [
+  "'next' button",
+  "next button",
+  "click the next",
+  "click 'next'",
+  "continue to the next",
+  "proceed to the next",
+  "advance to the next",
+];
+
+/**
+ * Is this flow step an advance/"Next" click (move to the next wizard page),
+ * rather than a field-answer? Used to veto a DOM-only "success" (a field toggle)
+ * from counting as an advance: toggling a control never moves the wizard, so an
+ * advance step must be verified by a real transition (network/URL), not a DOM
+ * state change. Keyed on the ORIGINAL step instruction so a rephrase that
+ * resolves "Next" to a radio click can't launder a field toggle into a passed
+ * advance. Pure; unit-testable seam mirroring `isWizardExitAction`.
+ */
+export function isAdvanceStep(instruction: string | null | undefined): boolean {
+  if (!instruction) return false;
+  const haystack = instruction.toLowerCase();
+  return ADVANCE_STEP_PHRASES.some((p) => haystack.includes(p));
+}
+
+/**
  * Detects a multi-page-wizard RESTART / backward navigation by scanning the
  * recent full-URL capture list for a configured restart-signal pattern (e.g.
  * `init-apply`, `application_canceled=true`). Scans `recentCaptures` — NOT
@@ -5701,7 +5732,29 @@ async function executeStepWithHealing(params: {
         `step ${stepIndex + 1} network fired but no advance-transition body matched (non-advancing POST); not treating as verified`
       );
     }
-    let verified = networkIsRealAdvance || urlChanged || domVerified;
+    // DOM-only-advance veto (opt-in). A rephrase can turn an advance/"Next" step
+    // into a field click (e.g. "click the Yes radio for '18?' then Next"), which
+    // `verifyDomEffect` legitimately reports as dom=true — but toggling a field
+    // never moves the wizard. So for a non-submit ADVANCE step (per the ORIGINAL
+    // instruction) whose ONLY signal is that DOM state change, do NOT count it
+    // verified: an advance requires a real transition (network/URL). Field-answer
+    // steps are not advance steps, so their DOM verification is untouched; sites
+    // without `advanceTransitionBodyPattern` are unaffected.
+    const isDomOnlyAdvance =
+      advanceTransitionBodyPattern !== null &&
+      !isFinalStep &&
+      !submitStep &&
+      domVerified &&
+      !networkFired &&
+      !urlChanged &&
+      isAdvanceStep(step);
+    if (isDomOnlyAdvance) {
+      logger.info(
+        `step ${stepIndex + 1} advance step succeeded only via DOM state change (field toggle), not a real transition; not treating as verified`
+      );
+    }
+    const domVerifiedForStep = isDomOnlyAdvance ? false : domVerified;
+    let verified = networkIsRealAdvance || urlChanged || domVerifiedForStep;
 
     // Final-step submit-verification gate. Replaces the deterministic
     // submitEndpointPattern regex with a Haiku 4.5 LLM judgment over
