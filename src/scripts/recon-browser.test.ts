@@ -2787,7 +2787,7 @@ describe("recon-browser/selectBodyExcerpt", () => {
     const trailing = "w".repeat(50_000);
     const body = chrome + formRegion + trailing;
     const excerpt = selectBodyExcerpt(body);
-    expect(excerpt.length).toBe(32_000);
+    expect(excerpt.length).toBe(16_000);
     expect(excerpt).toContain("ng-invalid");
     expect(excerpt).toContain("First Name required");
   });
@@ -2802,14 +2802,14 @@ describe("recon-browser/selectBodyExcerpt", () => {
   it("detects mat-form-field-invalid (Material UI)", () => {
     const body = `${"x".repeat(10_000)}mat-form-field-invalid${"y".repeat(50_000)}`;
     const excerpt = selectBodyExcerpt(body);
-    expect(excerpt.length).toBe(32_000);
+    expect(excerpt.length).toBe(16_000);
     expect(excerpt).toContain("mat-form-field-invalid");
   });
 
   it("detects <form tag when invalid markers are absent", () => {
     const body = `${"x".repeat(10_000)}<form action='/submit'>${"y".repeat(50_000)}`;
     const excerpt = selectBodyExcerpt(body);
-    expect(excerpt.length).toBe(32_000);
+    expect(excerpt.length).toBe(16_000);
     expect(excerpt).toContain("<form action");
   });
 });
