@@ -131,6 +131,15 @@ Every response body MUST use the standard envelope shape:
 Error codes MUST come from `ERROR_CODES` in `src/api/schemas/common.ts`.
 HTTP status codes are set by `httpStatusForCode()` — don't hard-code statuses.
 
+### Plugin discovery: built-ins + out-of-tree
+
+Site plugin discovery has two sources:
+
+1. **Built-in plugins** — registered statically in `BUILTIN_SITE_PLUGINS` (`src/plugins/discover.ts`). These ship with the Barnacle source tree.
+2. **Out-of-tree plugins** — loaded at startup from `BARNACLE_PLUGINS` (comma-separated specifiers) via `loadAllPlugins()`. Operators point this at their own compiled modules; no core edits are required.
+
+`dispatch()` and `registerRoutes()` in `src/plugins/loader.ts` are site-agnostic and must remain so — no `siteId`-specific branches. Each plugin declares its own extra routes via `meta.extraRoutes`; core registers them uniformly. Do not add per-site logic to the loader.
+
 ### Tests
 
 - **Unit tests**: Vitest, `.test.ts`, Node environment.

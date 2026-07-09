@@ -19,6 +19,57 @@ import type { DispatchMetrics } from "@/types/dispatch-metrics";
 import type { Logger } from "@/types/logging";
 
 /**
+ * Minimal request surface exposed to extra-route handlers. Core passes a
+ * Fastify `FastifyRequest` here; the interface is narrowed so handlers stay
+ * decoupled from Fastify internals and testable with plain objects.
+ */
+export interface SitePluginExtraRouteRequest<TBody = unknown, TParams = Record<string, string>> {
+  /** Parsed and Zod-validated request body. Present when `bodySchema` is set on the route. */
+  body: TBody;
+  /** Parsed and Zod-validated route params. Present when `paramsSchema` is set on the route. */
+  params: TParams;
+  /** Request-scoped Fastify/Pino logger. */
+  log: Logger;
+}
+
+/**
+ * Declares one extra non-run route a plugin owns. Core iterates
+ * `meta.extraRoutes` at startup and registers each as an authenticated Fastify
+ * route, building the same `SitePluginContext` it uses for `/run`.
+ *
+ * Error rendering is always delegated to the app-level `errorHandlerPlugin` —
+ * handlers throw typed `ApiError`s; never return error shapes directly.
+ * `envelope` governs only the success reply shape.
+ */
+export interface SitePluginExtraRoute {
+  /** HTTP method for the route (lowercase). */
+  method: "get" | "post" | "put" | "patch" | "delete";
+  /**
+   * Absolute route path (e.g. `/v1/my-site/trigger-otp`). Core registers it
+   * verbatim — no prefix is added.
+   */
+  path: string;
+  /** Zod schema for the request body. When absent, the body is not validated. */
+  bodySchema?: ZodType;
+  /** Zod schema for route path params. When absent, params are not validated. */
+  paramsSchema?: ZodType;
+  /**
+   * When true, the route accepts `multipart/form-data`. Core ensures
+   * `@fastify/multipart` is registered when any plugin declares a multipart
+   * extra route.
+   */
+  multipart?: boolean;
+  /**
+   * When false, the handler's return value is sent as-is (raw reply). When
+   * true or absent, core wraps the return value in the standard success
+   * envelope. Defaults to true.
+   */
+  envelope?: boolean;
+  /** Handles the request and returns the (pre-envelope) response body. */
+  handler(request: SitePluginExtraRouteRequest, context: SitePluginContext): Promise<unknown>;
+}
+
+/**
  * Static metadata that core reads at startup to register the plugin's Fastify
  * route. Separating metadata from `execute()` lets the loader validate config
  * and build routes before any session is acquired.
@@ -64,6 +115,21 @@ export interface SitePluginMeta {
    * false to avoid the cost penalty on plugins that don't need it.
    */
   advancedStealth?: boolean;
+  /**
+   * Optional semver range string declaring which plugin API version this plugin
+   * targets (e.g. `"^1.0.0"`). Core compares this against `PLUGIN_API_VERSION`
+   * at load time and disables the plugin on a major-version mismatch. Absent
+   * means "accept any version."
+   */
+  apiVersion?: string;
+  /**
+   * Extra non-run routes this plugin owns (e.g. OTP trigger, resume). Core
+   * registers each at startup as an authenticated Fastify route, building the
+   * same `SitePluginContext` as for `/run`. Error rendering is always delegated
+   * to the app-level error handler; `envelope` on each route governs only the
+   * success reply.
+   */
+  extraRoutes?: readonly SitePluginExtraRoute[];
 }
 
 /**

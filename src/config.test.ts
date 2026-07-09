@@ -223,4 +223,42 @@ describe("config/loadConfig", () => {
     expect(cfg.selfheal.plateauDelta).toBe(0.05);
     expect(cfg.selfheal.timeoutMs).toBe(30000);
   });
+
+  it("plugins defaults: empty specifiers, strict=false, baseDir=cwd", () => {
+    process.env = {};
+    const cfg = loadConfig();
+    expect(cfg.plugins.specifiers).toEqual([]);
+    expect(cfg.plugins.strict).toBe(false);
+    expect(cfg.plugins.baseDir).toBe(process.cwd());
+  });
+
+  it("plugins: parses BARNACLE_PLUGINS into specifiers array", () => {
+    process.env.BARNACLE_PLUGINS = "./plugins/acme, @acme/barnacle-plugin , ./local";
+    const cfg = loadConfig();
+    expect(cfg.plugins.specifiers).toEqual(["./plugins/acme", "@acme/barnacle-plugin", "./local"]);
+  });
+
+  it("plugins: BARNACLE_PLUGINS_STRICT=true sets strict", () => {
+    process.env.BARNACLE_PLUGINS_STRICT = "true";
+    const cfg = loadConfig();
+    expect(cfg.plugins.strict).toBe(true);
+  });
+
+  it("plugins: BARNACLE_PLUGINS_DIR overrides baseDir", () => {
+    process.env.BARNACLE_PLUGINS_DIR = "/opt/operator/plugins";
+    const cfg = loadConfig();
+    expect(cfg.plugins.baseDir).toBe("/opt/operator/plugins");
+  });
+
+  it("plugins: empty BARNACLE_PLUGINS returns empty specifiers", () => {
+    process.env.BARNACLE_PLUGINS = "";
+    const cfg = loadConfig();
+    expect(cfg.plugins.specifiers).toEqual([]);
+  });
+
+  it("plugins: BARNACLE_PLUGINS drops empty entries from consecutive commas", () => {
+    process.env.BARNACLE_PLUGINS = "./a,,@scope/b, , ./c ";
+    const cfg = loadConfig();
+    expect(cfg.plugins.specifiers).toEqual(["./a", "@scope/b", "./c"]);
+  });
 });

@@ -28,6 +28,7 @@ import { toErrorMessage } from "@/lib/errors";
 import { extendLogger, getLogger } from "@/lib/logging";
 import { captureSubmissionEnvelope } from "@/lib/telemetry/submission-capture";
 import { fireTrackingClick } from "@/lib/tracking-click";
+import { BUILTIN_SITE_PLUGINS } from "@/plugins/discover";
 import {
   CaptchaError,
   EmptyResultsError,
@@ -52,26 +53,12 @@ import type { Logger } from "@/types/logging";
 const logger = getLogger({ name: "plugins/loader" });
 
 /**
- * Central registry of all site plugins known to the engine. Adding a new
- * site requires only a new entry here — core's dispatch loop and route
- * registration iterate this array at startup without knowing which plugins
- * exist. Ships empty by default; no reference plugin is bundled in-tree.
- *
- * Onboarding a new site (two steps):
- *
- *   1. Import the plugin and push it:
- *        import { myPlugin } from "@/sites/my-site";
- *        SITE_PLUGINS.push(myPlugin as SitePlugin<unknown, unknown>);
- *
- *   2. Add it to the nightly smoke-test invocation in CI:
- *        pnpm run smoke -- --site my-site --payload '{"query":"test"}'
- *
- * Each site plugin lives under src/sites/<siteId>/ as a self-contained
- * folder: contract.ts (meta, schemas, hot path + fallback), flows/ (Stagehand
- * steps for the browser fallback), and index.ts (barrel export). See
- * src/site-plugin.ts for the SitePlugin interface every plugin must implement.
+ * Alias for `BUILTIN_SITE_PLUGINS` kept for backwards compatibility with
+ * tests that import `SITE_PLUGINS` directly from this module. New code
+ * should reference `BUILTIN_SITE_PLUGINS` from `discover.ts` directly or
+ * call `loadAllPlugins` for the composed set.
  */
-export const SITE_PLUGINS: SitePlugin<unknown, unknown>[] = [];
+export const SITE_PLUGINS = BUILTIN_SITE_PLUGINS;
 
 /**
  * Pure mapping from scraper-internal errors to the public ApiError hierarchy.
@@ -296,20 +283,24 @@ function buildEnvelopedResponseSchema(pluginSchema: z.ZodType): z.ZodType {
 }
 
 /**
- * Registers one Fastify POST route per plugin in `SITE_PLUGINS`. Called
- * from `buildServer()` so `server.ts` stays site-agnostic — it delegates
- * all plugin-specific route knowledge (path, schema, dispatch) to this
- * module instead of maintaining an inline loop.
+ * Registers one Fastify POST route per plugin plus any extra routes declared
+ * in `plugin.meta.extraRoutes`. Called from `buildServer()` so `server.ts`
+ * stays site-agnostic — it delegates all plugin-specific route knowledge
+ * (path, schema, dispatch) to this module instead of maintaining an inline loop.
  */
 export async function registerRoutes(
   app: FastifyInstance<RawServerDefault, IncomingMessage, ServerResponse, Logger>,
-  cfg: AppConfig
+  cfg: AppConfig,
+  plugins: SitePlugin<unknown, unknown>[]
 ): Promise<void> {
-  if (SITE_PLUGINS.some((p) => p.meta.multipart === true)) {
+  const needsMultipart = plugins.some(
+    (p) => p.meta.multipart === true || p.meta.extraRoutes?.some((r) => r.multipart === true)
+  );
+  if (needsMultipart) {
     await app.register(fastifyMultipart, { attachFieldsToBody: "keyValues" });
   }
 
-  for (const plugin of SITE_PLUGINS) {
+  for (const plugin of plugins) {
     const routePath = plugin.meta.routeOverride ?? `/v1/${plugin.meta.siteId}/run`;
     const baseUrl =
       cfg.scraper.siteBaseUrls[plugin.meta.siteId] ?? plugin.meta.defaultBaseUrl ?? "";
@@ -340,7 +331,40 @@ export async function registerRoutes(
         });
       }
     );
-  }
 
-  logger.info(`registered ${SITE_PLUGINS.length} site plugin routes`);
+    logger.info(`${plugin.meta.siteId} → ${routePath} (loaded)`);
+
+    for (const route of plugin.meta.extraRoutes ?? []) {
+      app.route({
+        method: route.method.toUpperCase() as Uppercase<typeof route.method>,
+        url: route.path,
+        onRequest: [app.authenticate],
+        schema: {
+          ...(route.bodySchema ? { body: route.bodySchema } : {}),
+          ...(route.paramsSchema ? { params: route.paramsSchema } : {}),
+          ...(route.multipart === true ? { consumes: ["multipart/form-data"] } : {}),
+        },
+        handler: async (request) => {
+          const context: SitePluginContext = {
+            baseUrl,
+            logger: extendLogger(request.log as unknown as pino.Logger),
+            config: cfg,
+            requestId: request.id,
+            metricsCollector: new MetricsCollector(),
+          };
+          const result = await route.handler(
+            {
+              body: request.body,
+              params: request.params as Record<string, string>,
+              log: request.log as unknown as Logger,
+            },
+            context
+          );
+          return route.envelope === false ? result : successEnvelope(result as object);
+        },
+      });
+
+      logger.info(`${plugin.meta.siteId} → ${route.path} (loaded)`);
+    }
+  }
 }

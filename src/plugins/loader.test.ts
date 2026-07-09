@@ -13,6 +13,7 @@ import authPlugin from "@/api/plugins/auth";
 import errorHandlerPlugin from "@/api/plugins/error-handler";
 import type { AppConfig } from "@/config";
 import { getLogger } from "@/lib/logging";
+import { BUILTIN_SITE_PLUGINS } from "@/plugins/discover";
 import { dispatch, registerRoutes, SITE_PLUGINS } from "@/plugins/loader";
 import {
   CaptchaError,
@@ -501,7 +502,6 @@ describe("registerRoutes — multipart flag", () => {
   // Minimal AppConfig satisfying registerRoutes' only field access: cfg.scraper.siteBaseUrls.
   // Cast to AppConfig so the rest of the (deep) shape stays unmocked.
   const cfgStub = { scraper: { siteBaseUrls: {} } } as unknown as AppConfig;
-  const preservedSitePlugins = SITE_PLUGINS.slice();
   const preservedEnv = {
     DEV_BYPASS_AUTH: process.env.DEV_BYPASS_AUTH,
     NODE_ENV: process.env.NODE_ENV,
@@ -510,18 +510,12 @@ describe("registerRoutes — multipart flag", () => {
   beforeEach(() => {
     process.env.DEV_BYPASS_AUTH = "true";
     process.env.NODE_ENV = "test";
-    SITE_PLUGINS.length = 0;
     // dispatch() emits a submission envelope via captureSubmissionEnvelope;
     // the module-scoped mock swallows it so tests don't touch the NDJSON sink.
     mockCaptureSubmissionEnvelope.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
-    // Reset before push so the final after-block state matches the pre-block
-    // state; beforeEach also clears, but only the next test's beforeEach runs
-    // — after the last test, this is the only thing keeping the array clean.
-    SITE_PLUGINS.length = 0;
-    SITE_PLUGINS.push(...preservedSitePlugins);
     if (preservedEnv.DEV_BYPASS_AUTH === undefined) delete process.env.DEV_BYPASS_AUTH;
     else process.env.DEV_BYPASS_AUTH = preservedEnv.DEV_BYPASS_AUTH;
     if (preservedEnv.NODE_ENV === undefined) delete process.env.NODE_ENV;
@@ -535,7 +529,6 @@ describe("registerRoutes — multipart flag", () => {
   async function buildAppWithPlugin(
     plugin: SitePlugin<unknown, unknown>
   ): Promise<Parameters<typeof registerRoutes>[0]> {
-    SITE_PLUGINS.push(plugin);
     // loggerInstance carries the project's custom Logger (pino + errorWithStack)
     // so the resulting FastifyInstance generic matches registerRoutes' signature.
     const app = Fastify({ loggerInstance: getLogger({ name: "loader-test" }) });
@@ -543,7 +536,7 @@ describe("registerRoutes — multipart flag", () => {
     app.setSerializerCompiler(serializerCompiler);
     await app.register(errorHandlerPlugin);
     await app.register(authPlugin);
-    await registerRoutes(app, cfgStub);
+    await registerRoutes(app, cfgStub, [plugin]);
     await app.ready();
     return app;
   }
@@ -635,6 +628,136 @@ describe("registerRoutes — multipart flag", () => {
   });
 });
 
+describe("registerRoutes — extraRoutes loop", () => {
+  const cfgStub = { scraper: { siteBaseUrls: {} } } as unknown as AppConfig;
+  const preservedEnv = {
+    DEV_BYPASS_AUTH: process.env.DEV_BYPASS_AUTH,
+    NODE_ENV: process.env.NODE_ENV,
+  };
+
+  beforeEach(() => {
+    process.env.DEV_BYPASS_AUTH = "true";
+    process.env.NODE_ENV = "test";
+    mockCaptureSubmissionEnvelope.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    if (preservedEnv.DEV_BYPASS_AUTH === undefined) delete process.env.DEV_BYPASS_AUTH;
+    else process.env.DEV_BYPASS_AUTH = preservedEnv.DEV_BYPASS_AUTH;
+    if (preservedEnv.NODE_ENV === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = preservedEnv.NODE_ENV;
+    vi.clearAllMocks();
+  });
+
+  async function buildAppWithPlugin(
+    plugin: SitePlugin<unknown, unknown>
+  ): Promise<Parameters<typeof registerRoutes>[0]> {
+    const app = Fastify({ loggerInstance: getLogger({ name: "loader-extra-routes-test" }) });
+    app.setValidatorCompiler(validatorCompiler);
+    app.setSerializerCompiler(serializerCompiler);
+    await app.register(errorHandlerPlugin);
+    await app.register(authPlugin);
+    await registerRoutes(app, cfgStub, [plugin]);
+    await app.ready();
+    return app;
+  }
+
+  it("registers an extra route and returns an enveloped response by default", async () => {
+    const extraHandler = vi.fn().mockResolvedValue({ token: "abc123" });
+    const plugin: SitePlugin<unknown, unknown> = {
+      meta: {
+        siteId: "extra-test",
+        displayName: "Extra Test",
+        bodySchema: z.object({ q: z.string() }),
+        responseSchema: z.unknown(),
+        extraRoutes: [
+          {
+            method: "post",
+            path: "/v1/extra-test/action",
+            bodySchema: z.object({ input: z.string() }),
+            handler: extraHandler,
+          },
+        ],
+      },
+      execute: vi.fn(),
+    };
+
+    const app = await buildAppWithPlugin(plugin);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/extra-test/action",
+      payload: { input: "hello" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body) as { status: { httpStatus: string }; token: string };
+    expect(body.status.httpStatus).toBe("OK");
+    expect(body.token).toBe("abc123");
+    expect(extraHandler).toHaveBeenCalledOnce();
+
+    await app.close();
+  });
+
+  it("sends raw (non-enveloped) response when envelope===false", async () => {
+    const plugin: SitePlugin<unknown, unknown> = {
+      meta: {
+        siteId: "raw-test",
+        displayName: "Raw Test",
+        bodySchema: z.object({ q: z.string() }),
+        responseSchema: z.unknown(),
+        extraRoutes: [
+          {
+            method: "post",
+            path: "/v1/raw-test/action",
+            handler: async () => ({ raw: true }),
+            envelope: false,
+          },
+        ],
+      },
+      execute: vi.fn(),
+    };
+
+    const app = await buildAppWithPlugin(plugin);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/raw-test/action",
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body) as { raw: boolean };
+    expect(body.raw).toBe(true);
+    expect((body as Record<string, unknown>).status).toBeUndefined();
+
+    await app.close();
+  });
+
+  it("triggers multipart registration when an extraRoute declares multipart:true", async () => {
+    const plugin: SitePlugin<unknown, unknown> = {
+      meta: {
+        siteId: "mp-extra-test",
+        displayName: "Multipart Extra",
+        bodySchema: z.object({ q: z.string() }),
+        responseSchema: z.unknown(),
+        extraRoutes: [
+          {
+            method: "post",
+            path: "/v1/mp-extra-test/upload",
+            multipart: true,
+            handler: async () => ({ uploaded: true }),
+          },
+        ],
+      },
+      execute: vi.fn(),
+    };
+
+    // Merely verifies registration does not throw; multipart plugin must be
+    // registered before the routes that require it.
+    await expect(buildAppWithPlugin(plugin)).resolves.toBeDefined();
+  });
+});
+
 describe("dispatch — needsUserInfo branch", () => {
   const mockHttpExecute = vi.fn();
 
@@ -700,5 +823,15 @@ describe("dispatch — needsUserInfo branch", () => {
     expect(data.missingFields).toHaveLength(1);
     expect(data.missingFields[0]?.field).toBe("educationLevel");
     expect(data.requiresOtp).toBe(false);
+  });
+});
+
+describe("SITE_PLUGINS alias", () => {
+  it("is the same array reference as BUILTIN_SITE_PLUGINS from discover.ts", () => {
+    expect(SITE_PLUGINS).toBe(BUILTIN_SITE_PLUGINS);
+  });
+
+  it("contains no in-tree plugins (all plugins are loaded via BARNACLE_PLUGINS)", () => {
+    expect(SITE_PLUGINS).toHaveLength(0);
   });
 });

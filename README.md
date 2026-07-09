@@ -141,7 +141,7 @@ Writes `docs/my-site-recon.md` with: endpoints found, replay status, rate-limit 
 
 ### Phase 5 — Register the plugin
 
-See **[Plugin Authoring Guide → Register the plugin](#register-the-plugin)** below for the two-line registration in `src/plugins/loader.ts`.
+See **[Plugin Authoring Guide → Register the plugin](#register-the-plugin)** below for plugin registration options.
 
 ### Phase 6 — Wire up drift detection
 
@@ -158,8 +158,8 @@ The dashed `deploys` edge is the human-in-the-loop step (the contract PR merges 
 ## Plugin Authoring Guide
 
 A site plugin is a single TypeScript module that satisfies `SitePlugin<TInput, TOutput>`
-from `src/site-plugin.ts`. Core's loader discovers it through the static `SITE_PLUGINS`
-array in `src/plugins/loader.ts` — no filesystem scanning, no dynamic imports.
+from `src/site-plugin.ts`. Core registers built-in plugins via `BUILTIN_SITE_PLUGINS` in
+`src/plugins/discover.ts`; out-of-tree plugins are loaded at startup via `BARNACLE_PLUGINS`.
 
 ### The SitePlugin interface
 
@@ -195,6 +195,8 @@ interface SitePlugin<TPayload, TResult> {
 | `routeOverride?` | `string` | Override the full route path (legacy compatibility only) |
 | `defaultBaseUrl?` | `string` | Fallback base URL when `config.scraper.siteBaseUrls[siteId]` is absent |
 | `taskTimeoutMs?` | `number` | Override the pool's 60-minute per-task hang ceiling for this plugin only — set when the site's normal latency is well below the default and a faster failure is preferable |
+| `apiVersion?` | `string` | Semver range targeting a plugin API version (e.g. `"^1.0.0"`); core disables the plugin on a major-version mismatch. Absent means "accept any version." |
+| `extraRoutes?` | `readonly SitePluginExtraRoute[]` | Extra non-run routes (OTP trigger, resume, etc.) that core registers as authenticated Fastify routes at startup. See `SitePluginExtraRoute` in `src/site-plugin.ts`. |
 
 ### Full plugin skeleton (hot path + browser fallback)
 
@@ -203,7 +205,7 @@ interface SitePlugin<TPayload, TResult> {
 ```ts
 // src/sites/my-site/contract.ts
 import Bottleneck from "bottleneck";
-import { z } from "zod";
+import { z } from "zod/v4";
 import { createHttpClient } from "@/scraper/http-client";
 import type { BrowserSession } from "@/scraper/session";
 import type { SitePlugin, SitePluginContext, SitePluginResult } from "@/site-plugin";
@@ -272,7 +274,7 @@ When `auditPayload` is present, core writes it — not `data` — to the submiss
 If Phase 3b (auxiliary fixture detection) found static JSON endpoints (markets, currencies, labels), `recon:generate` copies them to `src/sites/<id>/fixtures/`. Load them at module init via `loadFixture()` — zero per-request overhead, fails fast on deploy if the fixture is missing or stale:
 
 ```ts
-import { z } from "zod";
+import { z } from "zod/v4";
 import { loadFixture } from "@/scraper/fixtures";
 
 const MarketsSchema = z.array(z.object({ id: z.string(), name: z.string() }));
@@ -286,19 +288,26 @@ See [docs/playbook.md — Phase 3b](./docs/playbook.md#3b--auxiliary-fixture-det
 
 ### Register the plugin
 
-Add to the `SITE_PLUGINS` array in `src/plugins/loader.ts`:
+**Out-of-tree (recommended for operator-owned plugins):** point `BARNACLE_PLUGINS` at the compiled plugin module — no core edits required:
+
+```bash
+BARNACLE_PLUGINS=./plugins/my-site/dist/index.js pnpm start
+```
+
+Barnacle validates the export at startup and registers `POST /v1/my-site/run` automatically. See the [Out-of-tree plugins](#out-of-tree-plugins) env var table for `BARNACLE_PLUGINS_STRICT` and `BARNACLE_PLUGINS_DIR`.
+
+**In-tree (bundled built-ins only):** push to `BUILTIN_SITE_PLUGINS` in `src/plugins/discover.ts`:
 
 ```ts
 import { mySitePlugin } from "@/sites/my-site";
+import { BUILTIN_SITE_PLUGINS } from "@/plugins/discover";
 
-export const SITE_PLUGINS: SitePlugin<unknown, unknown>[] = [
-  mySitePlugin as SitePlugin<unknown, unknown>,
-];
+BUILTIN_SITE_PLUGINS.push(mySitePlugin as SitePlugin<unknown, unknown>);
 ```
 
-`SITE_PLUGINS.push(mySitePlugin as SitePlugin<unknown, unknown>)` also works for conditional registrations. The array-literal form is preferred for statically known plugins.
+`SITE_PLUGINS` in `src/plugins/loader.ts` is an alias for `BUILTIN_SITE_PLUGINS` kept for backwards compatibility; prefer the `discover.ts` import for new code.
 
-Core registers `POST /v1/my-site/run` automatically at startup. No changes to `server.ts`, `config.ts`, or any other core file.
+Core registers `POST /v1/my-site/run` automatically at startup.
 
 ### Wire up the nightly smoke test
 
@@ -340,6 +349,7 @@ When the smoke test fails: re-run `pnpm run recon:browser` → diff `/tmp/recon/
 | `HttpBotChallengeError` | 401 / 403 | **Yes** | Residential proxy IP may get through |
 | `HttpServerError` | 5xx | **Yes** | Server-side outage; recovery strategy is the same |
 | `HttpRateLimitError` | 429 | **No** | A 429 means the configured rps ceiling is too high. Routing to the browser path would just hit the same ceiling and waste a Steel session. The right response is to lower the Bottleneck `minTime` in `contract.ts` and re-deploy. |
+| `UnknownScraperError` | Any | **No** | Transient network failure or non-JSON sentinel (e.g. Oracle HCM `ORA_IRC_*`). `createHttpClient` retries up to 2 times internally; if all attempts fail, the error propagates as `ScrapeFailureError`. |
 
 ### Cache deduplication
 
@@ -599,6 +609,23 @@ hyphens in the `siteId`:
 ```bash
 BARNACLE_SITE_MY_SHOP_BASE_URL="https://staging.my-shop.com"  # overrides plugin `my-shop`
 ```
+
+### Out-of-tree plugins
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `BARNACLE_PLUGINS` | `""` | Comma-separated list of plugin specifiers to load at startup — relative paths (`./plugins/acme`) or package names (`@acme/barnacle-plugin`). Empty by default (built-ins only). |
+| `BARNACLE_PLUGINS_STRICT` | `false` | When `true`, any plugin that fails to load aborts the process instead of producing a disabled record. |
+| `BARNACLE_PLUGINS_DIR` | `process.cwd()` | Base directory used to resolve relative specifiers and locate the operator's `node_modules`. Defaults to wherever the binary is run — not the installed Barnacle package root. |
+
+**Resolution rule:** a specifier starting with `.` or `/` is treated as a filesystem path resolved relative to `BARNACLE_PLUGINS_DIR`. Anything else is treated as an npm package name and resolved via `require.resolve` against the operator's own `node_modules` inside `BARNACLE_PLUGINS_DIR`.
+
+**Failure policy:** by default (non-strict), a plugin that fails to load is logged at `warn` level and recorded as `"disabled"` in the load report — the server still boots with the remaining plugins. Set `BARNACLE_PLUGINS_STRICT=true` to abort startup on any load failure instead.
+
+**`zod/v4` requirement for plugin authors:** import Zod as `import { z } from "zod/v4"` in your plugin, not as bare `"zod"`. Barnacle uses `fastify-type-provider-zod` which compiles routes against core's own zod instance; a plugin schema built against a different zod import may pass load-time validation but fail at route registration.
+
+`GET /v1/plugins` (authenticated) returns the full plugin load report — one record per built-in and out-of-tree specifier — including `siteId`, `displayName`, `route`, `specifier`, `resolvedPath`, `apiVersion`, `status` (`"loaded"` or `"disabled"`), and an optional `reason` when disabled. Requires a valid `Authorization: Bearer <token>` header (reveals filesystem paths, so it is separate from the auth-free `/healthz`/`/readyz` probes).
+
 ---
 
 ## Usage
@@ -650,7 +677,7 @@ pnpm start
 
 ### Try it
 
-Barnacle ships with no plugins registered — `SITE_PLUGINS` in `src/plugins/loader.ts` is empty by default. Follow [Adding a New Site](#adding-a-new-site--the-recon-playbook) above to build and register a plugin; core will register `POST /v1/<your-siteId>/run` automatically at startup.
+Barnacle boots with the built-in plugins registered (see `BUILTIN_SITE_PLUGINS` in `src/plugins/discover.ts`). Follow [Adding a New Site](#adding-a-new-site--the-recon-playbook) above to build and register a plugin; core will register `POST /v1/<your-siteId>/run` automatically at startup.
 
 With the dev server running (`pnpm run dev`), confirm the server is up:
 
@@ -708,12 +735,21 @@ Full definitions: `src/api/schemas/common.ts`.
 ## Endpoints
 
 Each registered plugin exposes a POST route following the default convention:
-`POST /v1/<siteId>/run`.
+`POST /v1/<siteId>/run`. When the hot path detects that required applicant
+answers are absent (e.g. Gender, Degree, EducationLevel, SignatureFullName) or
+a repeat-applicant OTP challenge, `/run` returns HTTP 200 with
+`{ needsUserInfo: true, missingFields: [{ field, question }], requiresOtp }`
+instead of a submission result, so Vivian can collect the gaps and hand back.
+
+Encompass Health-specific routes (registered outside the generic loop):
+- `POST /v1/encompasshealth/trigger-otp` — body `{ offerId, email }`; triggers Oracle HCM to email an OTP to a repeat applicant; returns `{ success: true }` or a `2006 VERIFICATION_TRIGGER_FAILED` error envelope
+- `POST /v1/encompasshealth/resume` — body = the full original candidate payload plus `collectedData` and `otpCode`; re-runs the hot path with the collected answers and/or OTP; returns the same `{ verified }` envelope as `/run`, or `2007 RESUME_INVALID_OTP` if the OTP is rejected
 
 Operational routes:
 - `GET /healthz` — liveness probe
 - `GET /readyz`  — readiness probe (checks scraper credentials, queue depth)
 - `GET /docs`    — Swagger UI (when `ENABLE_DOCS=true`)
+- `GET /v1/plugins` — authenticated plugin load report (see [Out-of-tree plugins](#out-of-tree-plugins))
 
 ## Commands
 
@@ -742,11 +778,12 @@ Operational routes:
 
 ```
 src/
-├── server.ts                  # Fastify bootstrap — calls registerRoutes(), site-agnostic
+├── server.ts                  # Fastify bootstrap — calls loadAllPlugins(), registerRoutes(), site-agnostic
 ├── site-plugin.ts             # SitePlugin<TInput,TOutput> interface (engine contract)
 ├── config.ts                  # frozen env-typed config singleton
 ├── plugins/
-│   └── loader.ts              # SITE_PLUGINS registry, dispatch(), registerRoutes()
+│   ├── loader.ts              # dispatch(), registerRoutes(app, cfg, plugins)
+│   └── discover.ts            # BUILTIN_SITE_PLUGINS, loadAllPlugins(), loadPlugins()
 ├── sites/
 │   ├── _shared/               # branch-local cross-plugin guards (coverage-expectations.test.ts)
 │   └── <site-id>/             # one directory per registered plugin

@@ -13,7 +13,7 @@ import authPlugin from "@/api/plugins/auth";
 import errorHandlerPlugin from "@/api/plugins/error-handler";
 import type { AppConfig } from "@/config";
 import { getLogger } from "@/lib/logging";
-import { registerRoutes, SITE_PLUGINS } from "@/plugins/loader";
+import { registerRoutes } from "@/plugins/loader";
 import type { SitePlugin } from "@/site-plugin";
 
 const mockCaptureSubmissionEnvelope = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
@@ -27,6 +27,8 @@ const mockRunWithSession = vi.hoisted(() =>
   vi.fn().mockImplementation((task: (s: null) => Promise<unknown>) => task(null))
 );
 const mockFireTrackingClick = vi.hoisted(() => vi.fn());
+const mockTriggerOtpFlow = vi.hoisted(() => vi.fn().mockResolvedValue({ success: true }));
+const mockResumeFlow = vi.hoisted(() => vi.fn().mockResolvedValue({ data: { verified: true } }));
 
 vi.mock("@/lib/telemetry/submission-capture", () => ({
   captureSubmissionEnvelope: mockCaptureSubmissionEnvelope,
@@ -54,9 +56,19 @@ vi.mock("@/scraper/metrics", () => ({
   resetMetrics: vi.fn(),
 }));
 
+vi.mock("@/sites/encompasshealth/flows/trigger-otp-flow", () => ({
+  triggerOtpFlow: mockTriggerOtpFlow,
+}));
+
+vi.mock("@/sites/encompasshealth/flows/resume-flow", () => ({
+  resumeFlow: mockResumeFlow,
+}));
+
 describe("POST /v1/{siteId}/run — needsUserInfo HTTP boundary", () => {
-  const cfgStub = { scraper: { siteBaseUrls: {} } } as unknown as AppConfig;
-  const preservedSitePlugins = SITE_PLUGINS.slice();
+  const cfgStub = {
+    scraper: { siteBaseUrls: {} },
+    plugins: { specifiers: [], strict: false, baseDir: process.cwd() },
+  } as unknown as AppConfig;
   const preservedEnv = {
     DEV_BYPASS_AUTH: process.env.DEV_BYPASS_AUTH,
     NODE_ENV: process.env.NODE_ENV,
@@ -65,7 +77,6 @@ describe("POST /v1/{siteId}/run — needsUserInfo HTTP boundary", () => {
   beforeEach(() => {
     process.env.DEV_BYPASS_AUTH = "true";
     process.env.NODE_ENV = "test";
-    SITE_PLUGINS.length = 0;
     mockCaptureSubmissionEnvelope.mockResolvedValue(undefined);
     mockGetCachedResponse.mockReturnValue({ value: undefined, key: "test-key" });
     mockGetOrCreateInFlight.mockImplementation((_key: string, producer: () => Promise<unknown>) =>
@@ -74,8 +85,6 @@ describe("POST /v1/{siteId}/run — needsUserInfo HTTP boundary", () => {
   });
 
   afterEach(() => {
-    SITE_PLUGINS.length = 0;
-    SITE_PLUGINS.push(...preservedSitePlugins);
     if (preservedEnv.DEV_BYPASS_AUTH === undefined) delete process.env.DEV_BYPASS_AUTH;
     else process.env.DEV_BYPASS_AUTH = preservedEnv.DEV_BYPASS_AUTH;
     if (preservedEnv.NODE_ENV === undefined) delete process.env.NODE_ENV;
@@ -86,13 +95,12 @@ describe("POST /v1/{siteId}/run — needsUserInfo HTTP boundary", () => {
   async function buildAppWithPlugin(
     plugin: SitePlugin<unknown, unknown>
   ): Promise<Parameters<typeof registerRoutes>[0]> {
-    SITE_PLUGINS.push(plugin);
     const app = Fastify({ loggerInstance: getLogger({ name: "needs-user-info-route-test" }) });
     app.setValidatorCompiler(validatorCompiler);
     app.setSerializerCompiler(serializerCompiler);
     await app.register(errorHandlerPlugin);
     await app.register(authPlugin);
-    await registerRoutes(app, cfgStub);
+    await registerRoutes(app, cfgStub, [plugin]);
     await app.ready();
     return app;
   }
