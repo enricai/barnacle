@@ -1966,6 +1966,35 @@ describe("recon-browser/shouldSkipTechnique", () => {
     });
     expect(decision.skip).toBe(false);
   });
+
+  it("skips observe-act / structured-click / observe-act-exclude when an advance step did not move on attempt 1", () => {
+    for (const technique of ["observe-act", "structured-click", "observe-act-exclude"] as const) {
+      const decision = shouldSkipTechnique({
+        technique,
+        priorAttempts: [{ technique: "act-string", triedSelectors: [], errorMessage: null }],
+        advanceUnmovedAfterAttempt1: true,
+      });
+      expect(decision.skip).toBe(true);
+      expect(decision.reason).toContain("did not move the wizard");
+    }
+  });
+
+  it("still runs llm-rephrase for an unmoved advance (the one attempt that can recover it)", () => {
+    const decision = shouldSkipTechnique({
+      technique: "llm-rephrase",
+      priorAttempts: [{ technique: "act-string", triedSelectors: [], errorMessage: null }],
+      advanceUnmovedAfterAttempt1: true,
+    });
+    expect(decision.skip).toBe(false);
+  });
+
+  it("does NOT skip when advanceUnmovedAfterAttempt1 is false/absent (non-advance steps unaffected)", () => {
+    const decision = shouldSkipTechnique({
+      technique: "observe-act",
+      priorAttempts: [{ technique: "act-string", triedSelectors: [], errorMessage: null }],
+    });
+    expect(decision.skip).toBe(false);
+  });
 });
 
 describe("recon-browser/isReplanCycle", () => {

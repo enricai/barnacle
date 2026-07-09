@@ -1261,8 +1261,37 @@ export function shouldSkipTechnique(params: {
     triedSelectors: readonly string[];
     errorMessage: string | null;
   }[];
+  /**
+   * True when the step is a wizard ADVANCE ("Next") whose attempt-1 produced no
+   * real forward transition — either a non-advancing POST or no observable
+   * effect at all. Optional so existing callers are unchanged.
+   */
+  advanceUnmovedAfterAttempt1?: boolean;
 }): { skip: boolean; reason: string } {
-  const { technique, priorAttempts } = params;
+  const { technique, priorAttempts, advanceUnmovedAfterAttempt1 } = params;
+  // Unmoved-advance short-circuit (measured: attempts 2-4 recovered a stuck
+  // advance 0 times in 289 steps). When attempt-1's act-string clicked the Next
+  // and the wizard did NOT move forward (non-advancing POST, or no effect),
+  // re-observing/re-clicking the same button cannot move it — only a rephrase (a
+  // different action) or the terminal replan can. So skip observe-act /
+  // structured-click / observe-act-exclude and let the cascade reach attempt-5
+  // rephrase (kept — the ONE attempt that has ever recovered an advance) or fail
+  // fast to replan. act-string (attempt 1) and llm-rephrase (attempt 5) are never
+  // skipped here. (The `isAdvanceStalled` early-exit already handles the
+  // network-fired subcase by breaking to replan; this also covers the
+  // no-effect-at-all subcase, where that early-exit does not fire.)
+  if (
+    advanceUnmovedAfterAttempt1 === true &&
+    (technique === "observe-act" ||
+      technique === "structured-click" ||
+      technique === "observe-act-exclude")
+  ) {
+    return {
+      skip: true,
+      reason:
+        "advance step did not move the wizard on attempt 1; re-observe/re-click cannot advance it — skipping to rephrase/replan",
+    };
+  }
   if (technique === "structured-click") {
     const anyXpathResolved = priorAttempts.some((a) => a.triedSelectors.length > 0);
     if (!anyXpathResolved) {
@@ -6607,6 +6636,10 @@ async function executeStepWithHealing(params: {
     }
   }
 
+  // Set after attempt 1: this is a wizard-advance step whose first attempt did
+  // NOT move the wizard forward. Read at the top of attempts 2-4 to skip the
+  // proven-dead re-observe/re-click techniques (see shouldSkipTechnique).
+  let advanceUnmovedAfterAttempt1 = false;
   for (let attempt = 1; attempt <= MAX_STEP_ATTEMPTS; attempt++) {
     // Telemetry-driven technique-skip: when a cascade technique's
     // preconditions cannot be met by the prior attempts' state, running
@@ -6629,6 +6662,7 @@ async function executeStepWithHealing(params: {
           triedSelectors: a.triedSelectors,
           errorMessage: a.errorMessage,
         })),
+        advanceUnmovedAfterAttempt1,
       });
       if (decision.skip) {
         logger.info(
@@ -7629,6 +7663,17 @@ async function executeStepWithHealing(params: {
     // budget that would otherwise burn on identical retries of a click the
     // page is structurally rejecting.
     if (attempt === 1) {
+      // Attempt 1 of an interior advance step didn't verify (we're past the
+      // `if (verified) return` above): the wizard didn't move forward. Mark it so
+      // attempts 2-4 skip the proven-dead re-observe/re-click techniques and the
+      // cascade goes straight to attempt-5 rephrase / replan.
+      advanceUnmovedAfterAttempt1 =
+        advanceTransitionBodyPattern !== null &&
+        !isFinalStep &&
+        !submitStep &&
+        isAdvanceStep(step) &&
+        !urlChanged &&
+        !networkIsRealAdvance;
       const postAttemptInvalidCount = await countNgInvalidContainers(page);
       const earlyExit = isSubmitRevealedInvalid({
         // Treat the canonical submit click as "final" for this predicate
