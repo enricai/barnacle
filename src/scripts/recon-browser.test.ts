@@ -86,6 +86,7 @@ import {
   type InvalidFormControl,
   isAdvanceStalled,
   isAdvanceStep,
+  isDomOnlyAdvanceVerified,
   isReplanCycle,
   isReplanReproposingFailedStep,
   isStructurallyBlocked,
@@ -3407,6 +3408,47 @@ describe("recon-browser/shouldVetoFallbackAdvance", () => {
 
   it("does NOT veto non-advance (field-answer) steps", () => {
     expect(shouldVetoFallbackAdvance({ ...base, isAdvance: false })).toBe(false);
+  });
+});
+
+describe("recon-browser/isDomOnlyAdvanceVerified", () => {
+  const base = {
+    hasPattern: true,
+    isFinalOrSubmit: false,
+    isAdvance: true,
+    domVerified: true,
+    networkIsRealAdvance: false,
+    urlChanged: false,
+  };
+
+  it("VETOES a DOM-only advance when no real transition fired (the desync bug)", () => {
+    // dom=true but no type=next and no URL change → must NOT verify, even if a
+    // non-advancing autosave POST fired (which this predicate deliberately ignores).
+    expect(isDomOnlyAdvanceVerified(base)).toBe(false);
+  });
+
+  it("allows the DOM signal when a real type=next transition fired", () => {
+    expect(isDomOnlyAdvanceVerified({ ...base, networkIsRealAdvance: true })).toBe(true);
+  });
+
+  it("allows the DOM signal when the URL changed (real navigation)", () => {
+    expect(isDomOnlyAdvanceVerified({ ...base, urlChanged: true })).toBe(true);
+  });
+
+  it("returns false when there is no DOM signal at all", () => {
+    expect(isDomOnlyAdvanceVerified({ ...base, domVerified: false })).toBe(false);
+  });
+
+  it("does NOT gate non-advance (field-answer) steps — DOM stands", () => {
+    expect(isDomOnlyAdvanceVerified({ ...base, isAdvance: false })).toBe(true);
+  });
+
+  it("does NOT gate sites without the transition pattern — DOM stands", () => {
+    expect(isDomOnlyAdvanceVerified({ ...base, hasPattern: false })).toBe(true);
+  });
+
+  it("does NOT gate final/submit steps — their own submit gate applies", () => {
+    expect(isDomOnlyAdvanceVerified({ ...base, isFinalOrSubmit: true })).toBe(true);
   });
 });
 

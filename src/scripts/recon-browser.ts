@@ -1122,6 +1122,39 @@ export function shouldVetoFallbackAdvance(params: {
 }
 
 /**
+ * Whether a DOM-verified signal should count as verifying an interior ADVANCE
+ * step (the PRIMARY verifier's counterpart to {@link shouldVetoFallbackAdvance}).
+ * Pure + exported so the RC2-on-the-DOM-branch gate is unit-testable.
+ *
+ * An advance/"Next" on a pattern-configured SPA is only real when a genuine
+ * transition fired — a URL change OR a real `type=next` (`networkIsRealAdvance`).
+ * A DOM change alone is a validation re-render / field toggle that never moves
+ * the wizard. Crucially this must veto even when a NON-advancing network POST
+ * fired (Talemetry's `WorkletPayload` autosave): keying the veto on "no network
+ * at all" let a rephrase that triggered an autosave + DOM reflow false-verify an
+ * advance, desyncing the flow from the wizard. Returns whether the DOM signal is
+ * ALLOWED to verify: false = veto it. Non-advance/field steps, sites without the
+ * pattern, and final/submit steps are never vetoed here (DOM stands).
+ */
+export function isDomOnlyAdvanceVerified(params: {
+  hasPattern: boolean;
+  isFinalOrSubmit: boolean;
+  isAdvance: boolean;
+  domVerified: boolean;
+  networkIsRealAdvance: boolean;
+  urlChanged: boolean;
+}): boolean {
+  const { hasPattern, isFinalOrSubmit, isAdvance, domVerified, networkIsRealAdvance, urlChanged } =
+    params;
+  if (!domVerified) return false;
+  // Only advance steps on pattern-configured, non-final pages are gated.
+  if (!hasPattern || isFinalOrSubmit || !isAdvance) return true;
+  // An advance requires a REAL transition; a bare DOM change (even alongside a
+  // non-advancing POST) does not verify it.
+  return networkIsRealAdvance || urlChanged;
+}
+
+/**
  * Read-only count of ng-invalid form controls on the page. Side-effect-free
  * counterpart to `probeFormValidityBeforeSubmit` (which also auto-fills
  * unselected radio groups via element.click()). Used by the cascade's
@@ -7112,23 +7145,29 @@ async function executeStepWithHealing(params: {
     // `verifyDomEffect` legitimately reports as dom=true — but toggling a field
     // never moves the wizard. So for a non-submit ADVANCE step (per the ORIGINAL
     // instruction) whose ONLY signal is that DOM state change, do NOT count it
-    // verified: an advance requires a real transition (network/URL). Field-answer
-    // steps are not advance steps, so their DOM verification is untouched; sites
-    // without `advanceTransitionBodyPattern` are unaffected.
-    const isDomOnlyAdvance =
-      advanceTransitionBodyPattern !== null &&
-      !isFinalStep &&
-      !submitStep &&
-      domVerified &&
-      !networkFired &&
-      !urlChanged &&
-      isAdvanceStep(step);
-    if (isDomOnlyAdvance) {
+    // verified: an advance requires a REAL transition (a `type=next` per
+    // `networkIsRealAdvance`, or a URL change). Keyed on `networkIsRealAdvance`,
+    // NOT `!networkFired` — a non-advancing autosave POST (Talemetry
+    // `WorkletPayload`) fires network=true while the wizard doesn't move, and the
+    // old `!networkFired` guard let a rephrase ride that autosave + a DOM reflow
+    // to a FALSE advance, desyncing the flow from the wizard. Field-answer steps
+    // are not advance steps, so their DOM verification is untouched; sites without
+    // `advanceTransitionBodyPattern` are unaffected.
+    const domVerifiedForStep = isDomOnlyAdvanceVerified({
+      hasPattern: advanceTransitionBodyPattern !== null,
+      isFinalOrSubmit: isFinalStep || submitStep,
+      isAdvance: isAdvanceStep(step),
+      domVerified,
+      networkIsRealAdvance,
+      urlChanged,
+    })
+      ? domVerified
+      : false;
+    if (domVerified && !domVerifiedForStep) {
       logger.info(
-        `step ${stepIndex + 1} advance step succeeded only via DOM state change (field toggle), not a real transition; not treating as verified`
+        `step ${stepIndex + 1} advance step succeeded only via DOM state change (field toggle / non-advancing POST), not a real transition; not treating as verified`
       );
     }
-    const domVerifiedForStep = isDomOnlyAdvance ? false : domVerified;
     let verified = networkIsRealAdvance || urlChanged || domVerifiedForStep;
 
     // Final-step submit-verification gate. Replaces the deterministic
