@@ -1,6 +1,19 @@
 import { describe, expect, it } from "vitest";
 
-import { emitContractTs, emitMultiStepExecuteHttp } from "@/scripts/recon-generate";
+import {
+  emitBrowserFlowTs,
+  emitContractTs,
+  emitMultiStepExecuteHttp,
+  resolveStepPayloadField,
+} from "@/scripts/recon-generate";
+
+/** The recon env-var token for the applicant email, built by concatenation so
+ * Biome's noTemplateCurlyInString rule doesn't flag the literal `${...}`. */
+const RECON_EMAIL_TOKEN = `$${"{RECON_EMAIL}"}`;
+/** Splice reference the emitter injects, e.g. `${payload.FirstName}`. */
+function payloadRef(field: string): string {
+  return `$${`{payload.${field}}`}`;
+}
 
 /** Minimal opts that satisfy the emitter for a non-multipart plugin. */
 const BASE_OPTS = {
@@ -127,5 +140,165 @@ describe("emitContractTs — non-multipart plugin does not import omitHeaderCase
 
   it("does not import omitHeaderCaseInsensitive", () => {
     expect(source).not.toContain("omitHeaderCaseInsensitive");
+  });
+});
+
+describe("resolveStepPayloadField — HCA-shaped positives", () => {
+  const cases: Array<[string, string]> = [
+    ["Fill in the First Name field with 'Reginald'", "FirstName"],
+    ["Fill in the Last Name field with 'Barrington'", "LastName"],
+    [`Enter ${RECON_EMAIL_TOKEN} in the Email Address field`, "Email"],
+    ["Type '5125551234' into the Mobile Phone field", "MobilePhone"],
+    ["Fill in the Street Address with '123 Main St'", "AddressLine1"],
+    ["Enter 'Austin' in the City field", "City"],
+    ["Select 'Texas' from the State dropdown", "State"],
+    ["Type '78701' into the Zip Code field", "PostalCode"],
+    ["Select 'United States' from the Country dropdown", "Country"],
+  ];
+  for (const [instruction, field] of cases) {
+    it(`maps ${JSON.stringify(instruction)} → ${field}`, () => {
+      expect(resolveStepPayloadField(instruction)).toBe(field);
+    });
+  }
+});
+
+describe("resolveStepPayloadField — trap negatives", () => {
+  const traps = [
+    "Fill in Reference #1 First Name with 'Priya'",
+    "Enter the Company Phone in Employment History Row 1 as '5551239999'",
+    "Type 'Reginald Barrington' into the Signature Name field",
+    "Fill in any Full Name field with 'Reginald Barrington'",
+    "Enter Today's Date as '2026-07-09'",
+    "Type '5125550000' into the Secondary Phone Number field",
+    // Screening questions: a candidate-label word ("state", "city") inside the
+    // QUESTION text must not splice — the first quote is the question, not a
+    // value. This is the real HCA step 42 shape (regression: "state" matched
+    // the State label and corrupted the question quote into ${payload.State}).
+    "For 'Are you currently licensed to work as a Registered Nurse in this state?' select 'Yes'",
+    "For 'In which settings have you worked as a Registered Nurse during the past three years?' select 'Hospital'",
+    "Click the 'No' answer for the question about common domicile with any employee",
+  ];
+  for (const instruction of traps) {
+    it(`leaves ${JSON.stringify(instruction)} literal (null)`, () => {
+      expect(resolveStepPayloadField(instruction)).toBeNull();
+    });
+  }
+});
+
+describe("resolveStepPayloadField — override + opt-out + no-constant", () => {
+  it("honors an explicit payloadField override", () => {
+    expect(resolveStepPayloadField("Click the Continue button", "FirstName")).toBe("FirstName");
+  });
+
+  it("returns null when forceNone is set even for a matching label", () => {
+    expect(
+      resolveStepPayloadField("Fill in the First Name field with 'Reginald'", undefined, true)
+    ).toBeNull();
+  });
+
+  it("returns null when the instruction carries no spliceable constant", () => {
+    expect(resolveStepPayloadField("Fill in the First Name field")).toBeNull();
+  });
+});
+
+describe("emitBrowserFlowTs — payload splicing", () => {
+  const { code, payloadFieldNames } = emitBrowserFlowTs({
+    siteId: "test-site",
+    pascal: "TestSite",
+    baseUrl: "https://example.com",
+    isSubmissionFlow: true,
+    flowSteps: [
+      "Fill in the First Name field with 'Reginald'",
+      `Enter ${RECON_EMAIL_TOKEN} in the Email Address field`,
+      "Select 'Decline to self-identify' from the Gender dropdown",
+      { step: "Click the Submit Application button", submitStep: true },
+    ],
+  });
+
+  it("splices a payload.FirstName reference for the Reginald step", () => {
+    expect(code).toContain(payloadRef("FirstName"));
+  });
+
+  it("splices a payload.Email reference for the RECON_EMAIL step", () => {
+    expect(code).toContain(payloadRef("Email"));
+  });
+
+  it("leaves the operational-default dropdown literal", () => {
+    expect(code).toContain("Decline to self-identify");
+  });
+
+  it("emits no un-spliced Reginald or RECON_EMAIL token", () => {
+    expect(code).not.toContain("Reginald");
+    expect(code).not.toContain(RECON_EMAIL_TOKEN);
+  });
+
+  it("calls runHealingFlow and emits a FLOW_STEPS array", () => {
+    expect(code).toContain("runHealingFlow(");
+    expect(code).toContain("const FLOW_STEPS: HealingFlowStep[] = [");
+  });
+
+  it("accumulates the spliced field names", () => {
+    expect(payloadFieldNames).toEqual(new Set(["FirstName", "Email"]));
+  });
+});
+
+describe("emitBrowserFlowTs — resumeFixture guard (upload vs multipart)", () => {
+  const uploadFlow = [{ step: "Upload the resume PDF using the upload control", upload: true }];
+
+  it("wires a Buffer-based resumeFixture when the contract is multipart", () => {
+    const { code } = emitBrowserFlowTs({
+      siteId: "s",
+      pascal: "S",
+      baseUrl: "https://x",
+      isSubmissionFlow: true,
+      flowSteps: uploadFlow,
+      hasMultipartStep: true,
+    });
+    expect(code).toContain("Buffer.from(payload.Resume");
+    expect(code).toContain("payload.ResumeFilename");
+  });
+
+  it("emits null + TODO (never a Resume field ref) when uploading but not multipart", () => {
+    const { code } = emitBrowserFlowTs({
+      siteId: "s",
+      pascal: "S",
+      baseUrl: "https://x",
+      isSubmissionFlow: true,
+      flowSteps: uploadFlow,
+      hasMultipartStep: false,
+    });
+    expect(code).not.toContain("payload.Resume");
+    expect(code).toContain("resumeFixture: null");
+    expect(code).toContain("TODO: this flow uploads");
+  });
+});
+
+describe("emitBrowserFlowTs + emitContractTs — schema/flow anti-drift", () => {
+  const flowSteps = [
+    "Fill in the First Name field with 'Reginald'",
+    `Enter ${RECON_EMAIL_TOKEN} in the Email Address field`,
+    "Type '5125551234' into the Mobile Phone field",
+    "Enter 'Austin' in the City field",
+  ];
+  const { code, payloadFieldNames } = emitBrowserFlowTs({
+    siteId: "test-site",
+    pascal: "TestSite",
+    baseUrl: "https://example.com",
+    isSubmissionFlow: true,
+    flowSteps,
+  });
+  const contract = emitContractTs({
+    ...BASE_OPTS,
+    inputBody: { Name: "Alice" },
+    payloadFieldNames,
+  });
+
+  it("every payload.X the flow references appears as a contract schema key", () => {
+    const referenced = [...code.matchAll(/\$\{payload\.([A-Za-z0-9_]+)\}/g)].map((m) => m[1]!);
+    expect(referenced.length).toBeGreaterThan(0);
+    for (const field of referenced) {
+      const decl = field === "Email" ? `${field}: z.email()` : `${field}: z.string()`;
+      expect(contract).toContain(decl);
+    }
   });
 });

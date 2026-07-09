@@ -50,6 +50,87 @@ function toPascalCase(siteId: string): string {
 }
 
 /**
+ * Instruction labels that name a NON-candidate field — a reference-contact, an
+ * employment-history row, the applicant's signature, etc. When any of these
+ * matches we leave the step literal so the generator never splices the primary
+ * applicant's PII into a field that must hold someone/something else. Matched
+ * against the English label in the instruction, never the recon constant value.
+ */
+const PAYLOAD_FIELD_EXCLUSIONS: RegExp[] = [
+  /reference\s*#?\s*\d/i,
+  /employment history/i,
+  /\bcompany (name|phone)\b/i,
+  /\bemployer\b/i,
+  /signature/i,
+  /\bfull name\b/i,
+  /today'?s date/i,
+  /school|institution|degree|major|education/i,
+  // Screening-question shapes: "For '<question>' select '<answer>'" and any
+  // step framed around a 'question'. Here the first quoted string is the
+  // question label, not a candidate value — a label word inside the question
+  // (e.g. "...licensed in this state?") must NOT trigger a splice that would
+  // overwrite the question quote. Candidate-fill steps say "fill in the X
+  // field with '...'" / "Select '...' from the X dropdown" instead.
+  /^\s*for\s+'/i,
+  /\bquestion\b/i,
+];
+
+/**
+ * Ordered candidate-field label table. Each entry maps an English-label regex
+ * to the PascalCase payload field the generator should splice. Order matters:
+ * the first matching row wins, so more-specific labels precede broader ones.
+ */
+const PAYLOAD_FIELD_TABLE: Array<[RegExp, string]> = [
+  [/\bfirst name\b/i, "FirstName"],
+  [/\blast name\b/i, "LastName"],
+  [/\b(e-?mail|email address)\b/i, "Email"],
+  [/\b(mobile phone|primary phone|phone number|mobile)\b/i, "MobilePhone"],
+  [/\b(street address|address line 1)\b/i, "AddressLine1"],
+  [/\bcity\b/i, "City"],
+  [/\b(state|province|state\/region)\b/i, "State"],
+  [/\b(zip|postal)\b/i, "PostalCode"],
+  [/\bcountry\b/i, "Country"],
+];
+
+/**
+ * Decide whether a flow step should splice a runtime `payload.<field>` value in
+ * place of the frozen recon constant baked into its instruction. Exists so
+ * generated browser-flows use the caller's real applicant identity instead of
+ * recon's captured identity, while operational-default steps (decline self-ID,
+ * legal yes/no answers) stay literal. Matching on the English LABEL — not the
+ * drifting constant value — keeps the decision stable when recon re-captures
+ * with a different identity.
+ *
+ * @param instruction the flow step's plain-English instruction
+ * @param explicit an optional flow-authored `payloadField` override (wins outright)
+ * @param forceNone when true, force a literal step (the `payloadFieldNone` opt-out)
+ * @returns the PascalCase payload field name to splice, or null to keep literal
+ */
+export function resolveStepPayloadField(
+  instruction: string,
+  explicit?: string,
+  forceNone?: boolean
+): string | null {
+  if (forceNone) return null;
+  if (explicit) return explicit;
+  // Nothing to splice unless the instruction actually carries a recon constant:
+  // a quoted literal, the ${RECON_EMAIL} token, or a dropdown/select phrasing.
+  const hasSpliceable =
+    /'[^']*'/.test(instruction) ||
+    /\$\{RECON_EMAIL\}/.test(instruction) ||
+    /\bdropdown\b/i.test(instruction) ||
+    /\bselect\b[^.]*\bfrom\b/i.test(instruction);
+  if (!hasSpliceable) return null;
+  if (PAYLOAD_FIELD_EXCLUSIONS.some((rx) => rx.test(instruction))) return null;
+  // "Secondary Phone Number" must not fill the primary MobilePhone field.
+  if (/\bsecondary\b/i.test(instruction) && /\bphone\b/i.test(instruction)) return null;
+  for (const [rx, field] of PAYLOAD_FIELD_TABLE) {
+    if (rx.test(instruction)) return field;
+  }
+  return null;
+}
+
+/**
  * Recursively infers a Zod schema expression string from a JSON value.
  * Caps recursion at 4 levels to avoid generating unwieldy output for deeply
  * nested API responses — deeper fields collapse to z.unknown().
@@ -1942,6 +2023,11 @@ export function emitContractTs(opts: {
    * (inputBody). Mapped to their value type. Each becomes a payload field
    * (string → z.string(), number → z.number(), boolean → z.boolean()). */
   discoveredAdditionalBodyKeys?: Map<string, "string" | "number" | "boolean">;
+  /** PascalCase candidate-PII field names the browser flow splices as
+   * `payload.<field>` (from resolveStepPayloadField). Each is added to the
+   * payload schema so those references typecheck. Shares the accumulator with
+   * emitBrowserFlowTs so schema and flow can never drift. */
+  payloadFieldNames?: Set<string>;
   base64ContentHelper?: string;
 }): string {
   const {
@@ -1964,6 +2050,7 @@ export function emitContractTs(opts: {
     discoveredOptionFields,
     discoveredRawOptionFields,
     discoveredAdditionalBodyKeys,
+    payloadFieldNames,
     base64ContentHelper = "",
   } = opts;
 
@@ -1995,6 +2082,21 @@ export function emitContractTs(opts: {
       ? `.extend({\n${[...discoveredFormFields]
           .sort()
           .map((name) => `  ${name}: z.string(),`)
+          .join("\n")}\n})`
+      : "";
+
+  // Candidate-PII fields the browser flow splices as `payload.<field>`. Emitted
+  // as required strings (z.email() for Email per the repo's z.string().email()→
+  // z.email() migration) so those references typecheck in the generated flow.
+  // Skip any field the form-schema pass already added to avoid a duplicate
+  // `.extend` key.
+  const splicedFieldNames = payloadFieldNames
+    ? [...payloadFieldNames].filter((name) => !discoveredFormFields?.has(name)).sort()
+    : [];
+  const splicedFieldsExtension =
+    splicedFieldNames.length > 0
+      ? `.extend({\n${splicedFieldNames
+          .map((name) => `  ${name}: ${name === "Email" ? "z.email()" : "z.string()"},`)
           .join("\n")}\n})`
       : "";
 
@@ -2084,8 +2186,8 @@ export function emitContractTs(opts: {
   // emit order and keeps the generated payload type readable.
   const answersExtension = base64ContentHelper ? ".extend({ Answers: AnswersSchema })" : "";
   const payloadSchemaExpr = hasMultipartStep
-    ? `${basePayloadSchemaExpr}.extend({\n  Resume: z.instanceof(Buffer),\n  ResumeContentType: z.string(),\n  ResumeFilename: z.string(),\n})${formFieldsExtension}${optionSchemaExtension}${rawOptionSchemaExtension}${additionalBodyKeysExtension}${answersExtension}`
-    : `${basePayloadSchemaExpr}${formFieldsExtension}${optionSchemaExtension}${rawOptionSchemaExtension}${additionalBodyKeysExtension}${answersExtension}`;
+    ? `${basePayloadSchemaExpr}.extend({\n  Resume: z.instanceof(Buffer),\n  ResumeContentType: z.string(),\n  ResumeFilename: z.string(),\n})${formFieldsExtension}${splicedFieldsExtension}${optionSchemaExtension}${rawOptionSchemaExtension}${additionalBodyKeysExtension}${answersExtension}`
+    : `${basePayloadSchemaExpr}${formFieldsExtension}${splicedFieldsExtension}${optionSchemaExtension}${rawOptionSchemaExtension}${additionalBodyKeysExtension}${answersExtension}`;
   // When the payload schema uses multipartBoolean(), import the shared helper
   // from @/lib/zod-multipart so the generated file resolves the reference and
   // doesn't re-inline the preprocess expression per boolean field.
@@ -2233,36 +2335,140 @@ ${executeHttpBody}
 `;
 }
 
-function emitBrowserFlowTs(opts: {
+/** A flow step as read from recon-flow.json, carrying the optional splicer hints. */
+type FlowStepInput =
+  | string
+  | {
+      step: string;
+      optional?: boolean;
+      upload?: boolean;
+      submitStep?: boolean;
+      payloadField?: string;
+      payloadFieldNone?: boolean;
+    };
+
+/**
+ * Escape a literal string segment so it is safe INSIDE a JS backtick template
+ * literal — backslashes, backticks, and `${` interpolation starts must all be
+ * neutralized so the only interpolation the emitted flow performs is the
+ * `${payload.X}` splice we insert deliberately.
+ */
+function escapeForTemplateLiteral(segment: string): string {
+  return segment.replace(/\\/g, "\\\\").replace(/`/g, "\\`").replace(/\$\{/g, "\\${");
+}
+
+/**
+ * Build the emitted instruction expression for one step: a plain double-quoted
+ * literal when nothing splices, or a backtick template literal with the recon
+ * constant replaced by `${payload.<field>}` when the resolver picks a field.
+ * The first `${RECON_EMAIL}` token (preferred) or the first single-quoted
+ * literal in the instruction is the splice site.
+ */
+function buildStepInstructionExpr(instruction: string, field: string | null): string {
+  if (field === null) return JSON.stringify(instruction);
+  // Concatenated so Biome's noTemplateCurlyInString doesn't flag the literal
+  // env-var token — it must stay `${RECON_EMAIL}` to match recon's flow files.
+  const emailToken = `$${"{RECON_EMAIL}"}`;
+  const emailIdx = instruction.indexOf(emailToken);
+  const [before, matched, after] =
+    emailIdx >= 0
+      ? [
+          instruction.slice(0, emailIdx),
+          emailToken,
+          instruction.slice(emailIdx + emailToken.length),
+        ]
+      : (() => {
+          const m = /'[^']*'/.exec(instruction);
+          if (m === null) return [instruction, "", ""] as const;
+          return [
+            instruction.slice(0, m.index),
+            m[0],
+            instruction.slice(m.index + m[0].length),
+          ] as const;
+        })();
+  if (matched === "") return JSON.stringify(instruction);
+  return `\`${escapeForTemplateLiteral(before)}\${payload.${field}}${escapeForTemplateLiteral(after)}\``;
+}
+
+/**
+ * Emit the generated browser-flow module and return the accumulated set of
+ * spliced payload-field names. Exported so the anti-drift unit test can assert
+ * every `payload.<field>` the flow references also appears in the contract's
+ * payload schema (both are driven by this same set).
+ */
+export function emitBrowserFlowTs(opts: {
   siteId: string;
   pascal: string;
   baseUrl: string;
-  flowSteps: Array<string | { step: string; optional?: boolean; upload?: boolean }>;
+  flowSteps: FlowStepInput[];
   isSubmissionFlow: boolean;
-}): string {
-  const { siteId, pascal, flowSteps, isSubmissionFlow } = opts;
+  hasMultipartStep?: boolean;
+}): { code: string; payloadFieldNames: Set<string> } {
+  const { siteId, pascal, flowSteps, isSubmissionFlow, hasMultipartStep = false } = opts;
 
-  const actCalls =
-    flowSteps.length > 0
-      ? flowSteps
-          .map((step) => {
-            const instruction = typeof step === "string" ? step : step.step;
-            return `  await guardedAct(stagehand, ${JSON.stringify(instruction)});`;
-          })
-          .join("\n")
+  const payloadFieldNames = new Set<string>();
+  const hasUploadStep = flowSteps.some((s) => typeof s !== "string" && s.upload === true);
+
+  const stepLiterals = flowSteps.map((step) => {
+    const isObj = typeof step !== "string";
+    const instruction = isObj ? step.step : step;
+    const field = resolveStepPayloadField(
+      instruction,
+      isObj ? step.payloadField : undefined,
+      isObj ? step.payloadFieldNone : undefined
+    );
+    if (field !== null) payloadFieldNames.add(field);
+    const instructionExpr = buildStepInstructionExpr(instruction, field);
+    const optional = isObj ? step.optional === true : false;
+    const upload = isObj ? step.upload === true : false;
+    const submitStep = isObj ? step.submitStep === true : false;
+    return `  { instruction: ${instructionExpr}, optional: ${optional}, upload: ${upload}, submitStep: ${submitStep} },`;
+  });
+
+  const flowStepsBlock =
+    stepLiterals.length > 0
+      ? stepLiterals.join("\n")
       : `  // TODO: add flow steps from src/sites/${siteId}/recon-flow.json`;
 
-  return `/**
+  // Wire a resumeFixture from the payload's Resume/ResumeFilename/
+  // ResumeContentType fields ONLY when the contract actually carries them
+  // (hasMultipartStep) AND the flow uploads. When a flow has an upload step but
+  // the captures weren't detected as multipart (e.g. a GraphQL site where
+  // multipart detection is dropped), those payload fields don't exist yet — emit
+  // a null + TODO so the generated module still typechecks; the operator adds
+  // the multipart contract fields and wires the fixture during hand-finish.
+  const resumeFixtureExpr =
+    hasUploadStep && hasMultipartStep
+      ? `{
+    buffer: Buffer.from(payload.Resume ?? "", "base64"),
+    name: payload.ResumeFilename ?? "resume.pdf",
+    mimeType: payload.ResumeContentType ?? "application/pdf",
+  }`
+      : hasUploadStep
+        ? `null /* TODO: this flow uploads, but the contract has no Resume multipart\n    fields yet. Add Resume/ResumeFilename/ResumeContentType to the payload\n    schema (set meta.multipart:true) and build the fixture from payload here. */`
+        : "null";
+
+  const code = `/**
  * Generated by recon-generate.ts — Stagehand browser fallback for ${siteId}.
  * Core invokes this automatically when executeHttp throws HttpSchemaError or
  * HttpBotChallengeError. Update the flow steps and extract schema as needed.
+ *
+ * Steps whose instruction named a candidate PII label have their recon
+ * constant spliced to \`payload.<field>\` so the caller's real applicant reaches
+ * the page; operational-default steps stay literal. The steps run through the
+ * self-heal cascade via runHealingFlow — the same engine the recon CLI uses,
+ * minus its disk-dump/replan layer.
  */
 
 import type { Stagehand } from "@browserbasehq/stagehand";
 import { z } from "zod/v4";
 
-import { guardedAct, guardedExtract } from "@/scraper/stagehand-guard";
+import { getLogger } from "@/lib/logging";
+import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
+import { guardedExtract } from "@/scraper/stagehand-guard";
 import type { ${pascal}Payload, ${pascal}Response } from "@/sites/${siteId}/contract";
+
+const logger = getLogger({ name: "${siteId}-browser-flow" });
 
 const ${pascal}BrowserSchema = z.object({
   // TODO: define the fields you need — align with ${pascal}Response
@@ -2282,7 +2488,21 @@ export async function run${pascal}BrowserFlow(
 
   await page.goto(baseUrl, { waitUntil: "networkidle" });
 
-${actCalls}
+  const FLOW_STEPS: HealingFlowStep[] = [
+${flowStepsBlock}
+  ];
+
+  // anthropic: null — the generated fallback has no Anthropic client in scope,
+  // so the cascade degrades to its deterministic DOM primitives with no LLM
+  // rephrase/replan. Wire a real client here when hand-finishing this plugin.
+  await runHealingFlow({
+    stagehand,
+    page,
+    steps: FLOW_STEPS,
+    logger,
+    anthropic: null,
+    resumeFixture: ${resumeFixtureExpr},
+  });
 
   // Schema-enforced extract via guardedExtract: Stagehand 3.4.0 accepts
   // both Zod v3 and v4 schemas natively (StagehandZodSchema union since
@@ -2298,6 +2518,7 @@ ${actCalls}
   return result as unknown as ${pascal}Response;
 }
 `;
+  return { code, payloadFieldNames };
 }
 
 function emitIndexTs(opts: { siteId: string; pascal: string }): string {
@@ -2369,17 +2590,14 @@ async function main(): Promise<void> {
     const flowFile = `src/sites/${siteId}/recon-flow.json`;
     try {
       const raw: unknown = JSON.parse(readFileSync(flowFile, "utf8"));
-      if (Array.isArray(raw))
-        return raw as Array<string | { step: string; optional?: boolean; upload?: boolean }>;
+      if (Array.isArray(raw)) return raw as FlowStepInput[];
       if (
         raw !== null &&
         typeof raw === "object" &&
         "steps" in raw &&
         Array.isArray((raw as { steps: unknown }).steps)
       ) {
-        return (
-          raw as { steps: Array<string | { step: string; optional?: boolean; upload?: boolean }> }
-        ).steps;
+        return (raw as { steps: FlowStepInput[] }).steps;
       }
       return [] as string[];
     } catch {
@@ -2664,6 +2882,18 @@ async function main(): Promise<void> {
 
   mkdirSync(`${outDir}/flows`, { recursive: true });
 
+  // Emit the browser flow first so the SAME payloadFieldNames set that drives
+  // its `payload.<field>` splices also extends the contract's payload schema —
+  // the two artifacts can't drift because one accumulator feeds both.
+  const browserFlow = emitBrowserFlowTs({
+    siteId,
+    pascal,
+    baseUrl,
+    flowSteps,
+    isSubmissionFlow,
+    hasMultipartStep,
+  });
+
   writeFileSync(
     `${outDir}/contract.ts`,
     emitContractTs({
@@ -2689,14 +2919,12 @@ async function main(): Promise<void> {
       discoveredOptionFields,
       discoveredRawOptionFields,
       discoveredAdditionalBodyKeys,
+      payloadFieldNames: browserFlow.payloadFieldNames,
     })
   );
   logger.info(`wrote ${outDir}/contract.ts`);
 
-  writeFileSync(
-    `${outDir}/flows/browser-flow.ts`,
-    emitBrowserFlowTs({ siteId, pascal, baseUrl, flowSteps, isSubmissionFlow })
-  );
+  writeFileSync(`${outDir}/flows/browser-flow.ts`, browserFlow.code);
   logger.info(`wrote ${outDir}/flows/browser-flow.ts`);
 
   writeFileSync(`${outDir}/index.ts`, emitIndexTs({ siteId, pascal }));

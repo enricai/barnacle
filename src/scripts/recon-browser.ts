@@ -560,6 +560,13 @@ interface NormalizedStep {
   // Optional in the type so existing test fixtures + call sites that predate
   // the flag don't need to be touched — absence is treated as false.
   submitStep?: boolean;
+  // Generator-only splicer hints (see RECON_FLOW_STEP_SCHEMA). Carried through
+  // the normalize/denormalize round-trip so a hand-authored flow file's
+  // payloadField/payloadFieldNone survives a recon run's write-back and reaches
+  // recon-generate.ts. The recon runtime itself never reads them. Optional so
+  // pre-existing fixtures and call sites need no changes.
+  payloadField?: string;
+  payloadFieldNone?: boolean;
   origin: "original" | "replan";
 }
 
@@ -572,6 +579,8 @@ function normalizeFlow(steps: z.infer<typeof RECON_FLOW_SCHEMA>): NormalizedStep
           optional: s.optional,
           upload: s.upload,
           submitStep: s.submitStep,
+          payloadField: s.payloadField,
+          payloadFieldNone: s.payloadFieldNone,
           origin: "original",
         }
   );
@@ -604,16 +613,35 @@ function substituteFlowEnvVars(steps: NormalizedStep[]): NormalizedStep[] {
  * non-upload); object with only the truthy flags otherwise. Round-trip is
  * lossless against `RECON_FLOW_SCHEMA` for any value the parser accepted.
  */
-function denormalizeStep(
-  step: NormalizedStep
-): string | { step: string; optional?: true; upload?: true; submitStep?: true } {
-  if (!step.optional && !step.upload && !step.submitStep) return step.instruction;
-  const out: { step: string; optional?: true; upload?: true; submitStep?: true } = {
+function denormalizeStep(step: NormalizedStep):
+  | string
+  | {
+      step: string;
+      optional?: true;
+      upload?: true;
+      submitStep?: true;
+      payloadField?: string;
+      payloadFieldNone?: true;
+    } {
+  const hasSplicerHint = step.payloadField !== undefined || step.payloadFieldNone === true;
+  if (!step.optional && !step.upload && !step.submitStep && !hasSplicerHint) {
+    return step.instruction;
+  }
+  const out: {
+    step: string;
+    optional?: true;
+    upload?: true;
+    submitStep?: true;
+    payloadField?: string;
+    payloadFieldNone?: true;
+  } = {
     step: step.instruction,
   };
   if (step.optional) out.optional = true;
   if (step.upload) out.upload = true;
   if (step.submitStep) out.submitStep = true;
+  if (step.payloadField !== undefined) out.payloadField = step.payloadField;
+  if (step.payloadFieldNone === true) out.payloadFieldNone = true;
   return out;
 }
 

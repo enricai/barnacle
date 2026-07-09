@@ -45,6 +45,21 @@ export const RECON_FLOW_STEP_SCHEMA = z.union([
      * at the actual submit click, not at the unrelated last step.
      */
     submitStep: z.boolean().default(false),
+    /**
+     * Optional payload-field override for the generator's splicer. When set,
+     * `resolveStepPayloadField` returns this field name verbatim instead of
+     * inferring one from the instruction's English label — lets a flow author
+     * pin a step to a specific `payload.<field>` reference in the generated
+     * browser-flow. Ignored by the recon runtime; consumed only by
+     * recon-generate.ts.
+     */
+    payloadField: z.string().optional(),
+    /**
+     * Optional opt-out for the generator's splicer. When true, the generator
+     * leaves the instruction literal even if its label would otherwise match a
+     * candidate payload field. Ignored by the recon runtime.
+     */
+    payloadFieldNone: z.boolean().optional(),
   }),
 ]);
 

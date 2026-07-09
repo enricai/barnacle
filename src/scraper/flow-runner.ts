@@ -5274,7 +5274,7 @@ export async function executeStepWithHealing(params: {
         unfocusedObserve,
       }) ?? null;
     throw new StepVerificationError(
-      `step ${stepIndex + 1} (${step.slice(0, 60)}) probe found no candidates on page; see ${dumpPath}`,
+      `step ${stepIndex + 1} (${step.slice(0, 60)}) probe found no candidates on page${dumpPath ? `; see ${dumpPath}` : ""}`,
       "probe-absent"
     );
   }
@@ -6452,13 +6452,117 @@ export async function executeStepWithHealing(params: {
       bodyOuterHtml,
       unfocusedObserve,
     }) ?? null;
-  logger.error(
-    `step ${stepIndex + 1} failed after ${MAX_STEP_ATTEMPTS} attempts; diagnostic bundle: ${dumpPath}`
-  );
+  if (dumpPath !== null) {
+    logger.error(
+      `step ${stepIndex + 1} failed after ${MAX_STEP_ATTEMPTS} attempts; diagnostic bundle: ${dumpPath}`
+    );
+  }
   throw new StepVerificationError(
-    `step ${stepIndex + 1} (${step.slice(0, 60)}) failed verification after ${MAX_STEP_ATTEMPTS} attempts; see ${dumpPath}`,
+    `step ${stepIndex + 1} (${step.slice(0, 60)}) failed verification after ${MAX_STEP_ATTEMPTS} attempts${dumpPath ? `; see ${dumpPath}` : ""}`,
     "cascade-exhausted"
   );
 }
 
 /** Default resume fixture path; overridable via --resume-fixture or RESUME_FIXTURE_PATH. */
+
+/**
+ * One flow step in the shape a generated plugin hands to {@link runHealingFlow}.
+ * Mirrors the recon CLI's `NormalizedStep` minus its replan-origin bookkeeping:
+ * a plugin only needs the four fields the self-heal cascade reads per step.
+ */
+export interface HealingFlowStep {
+  instruction: string;
+  optional: boolean;
+  upload: boolean;
+  submitStep: boolean;
+}
+
+/**
+ * Dependency bundle for {@link runHealingFlow}. The verifier-config fields are
+ * all optional and default to the SAME values the recon CLI's `main()` passes to
+ * {@link executeStepWithHealing}, so a plugin that supplies none gets identical
+ * cascade behavior to a recon run with no site-specific verifier hints.
+ */
+export interface RunHealingFlowDeps {
+  stagehand: Stagehand;
+  page: Page;
+  steps: HealingFlowStep[];
+  logger: Logger;
+  anthropic: Anthropic | null;
+  resumeFixture: { buffer: Buffer; name: string; mimeType: string } | null;
+  submitEndpointPattern?: string | null;
+  submittedStateSelectors?: string[];
+  requireSubmitEndpointMatch?: boolean;
+  advanceTransitionBodyPattern?: string | null;
+  successUrlFragments?: string[];
+  successPageTitleHints?: string[];
+  ownBackendHostnames?: string[];
+  knownErrorClassPrefixes?: string[];
+  wizardExitButtonLabels?: string[];
+}
+
+/**
+ * Plugin-facing wrapper that drives a recon flow's steps through the SAME
+ * self-heal cascade the recon CLI uses, WITHOUT the CLI's disk-dump/replan
+ * layer. Exists so a generated site plugin can reuse the battle-tested step
+ * runner (its five DOM primitives + multi-signal submit verifier) as a browser
+ * fallback, instead of re-implementing a bare `guardedAct` loop that has none of
+ * the healing. Passing no `onStepFailure`/`captureFn`/`trajectory` means a
+ * terminal step failure propagates as {@link StepVerificationError} for the
+ * plugin's `execute()` to handle — there is no on-disk dump and no LLM replan.
+ */
+export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<void> {
+  const { stagehand, page, steps, logger, anthropic, resumeFixture } = deps;
+  const counter = { n: 0 };
+  const signalCounter = { n: 0 };
+  const recentCaptures: string[] = [];
+  const recentCaptureMeta: { method: string; status: number; url: string }[] = [];
+
+  const stopCapture = wireSignalCapture(page, {
+    counter,
+    signalCounter,
+    recentCaptures,
+    recentCaptureMeta,
+    getCurrentPhase: () => "flow",
+    getCurrentPageOrigin: () => {
+      try {
+        return new URL(page.url()).origin;
+      } catch {
+        return "";
+      }
+    },
+  });
+
+  try {
+    for (const [i, s] of steps.entries()) {
+      await executeStepWithHealing({
+        stagehand,
+        page,
+        step: s.instruction,
+        optional: s.optional,
+        upload: s.upload,
+        submitStep: s.submitStep,
+        stepIndex: i,
+        phase: "flow",
+        signalCounter,
+        recentCaptures,
+        recentCaptureMeta,
+        anthropic,
+        logger,
+        resumeFixture,
+        isFinalStep: i === steps.length - 1,
+        submitEndpointPattern: deps.submitEndpointPattern ?? null,
+        submittedStateSelectors: deps.submittedStateSelectors ?? [],
+        requireSubmitEndpointMatch: deps.requireSubmitEndpointMatch ?? false,
+        advanceTransitionBodyPattern: deps.advanceTransitionBodyPattern ?? null,
+        successUrlFragments: deps.successUrlFragments ?? [],
+        successPageTitleHints: deps.successPageTitleHints ?? [],
+        ownBackendHostnames: deps.ownBackendHostnames ?? [],
+        knownErrorClassPrefixes: deps.knownErrorClassPrefixes ?? [],
+        wizardExitButtonLabels: deps.wizardExitButtonLabels ?? [],
+      });
+    }
+  } finally {
+    stopCapture();
+  }
+}
