@@ -80,3 +80,19 @@ export const ApplicationAnswersSchema = z.object({
 });
 
 export type ApplicationAnswers = z.infer<typeof ApplicationAnswersSchema>;
+
+/**
+ * Lax variant of ApplicationAnswersSchema used exclusively by the `/run` route
+ * body validation. The four detector-checked free-text fields are optional so
+ * that detectMissingRequiredFields can actually run instead of being
+ * pre-empted by a 400 from Fastify body validation. All other fields keep
+ * their strict constraints.
+ */
+export const RunIntakeAnswersSchema = ApplicationAnswersSchema.extend({
+  Gender: z.string().optional().default(""),
+  Degree: z.string().optional().default(""),
+  EducationLevel: z.string().optional().default(""),
+  SignatureFullName: z.string().optional().default(""),
+});
+
+export type RunIntakeAnswers = z.infer<typeof RunIntakeAnswersSchema>;
