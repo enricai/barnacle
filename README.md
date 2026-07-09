@@ -294,7 +294,7 @@ See [docs/playbook.md — Phase 3b](./docs/playbook.md#3b--auxiliary-fixture-det
 BARNACLE_PLUGINS=./plugins/my-site/dist/index.js pnpm start
 ```
 
-Barnacle validates the export at startup and registers `POST /v1/my-site/run` automatically. See the [Out-of-tree plugins](#out-of-tree-plugins) env var table for `BARNACLE_PLUGINS_STRICT` and `BARNACLE_PLUGINS_DIR`.
+Barnacle validates the export at startup and registers `POST /v1/my-site/run` automatically. See the [Out-of-tree plugins](#out-of-tree-plugins) env var table for `BARNACLE_PLUGINS_STRICT` and `BARNACLE_PLUGINS_DIR`. A copyable, runnable template lives at [`examples/plugins/hello-site/`](./examples/plugins/hello-site/).
 
 **In-tree (bundled built-ins only):** push to `BUILTIN_SITE_PLUGINS` in `src/plugins/discover.ts`:
 

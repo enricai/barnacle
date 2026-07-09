@@ -140,6 +140,16 @@ Site plugin discovery has two sources:
 
 `dispatch()` and `registerRoutes()` in `src/plugins/loader.ts` are site-agnostic and must remain so — no `siteId`-specific branches. Each plugin declares its own extra routes via `meta.extraRoutes`; core registers them uniformly. Do not add per-site logic to the loader.
 
+Out-of-tree config (parsed in `loadConfig()`):
+
+- `BARNACLE_PLUGINS` — comma-separated specifiers to load (default: empty → built-ins only).
+- `BARNACLE_PLUGINS_STRICT` — `true` aborts startup on any load failure; default `false` records a `"disabled"` entry and boots the rest.
+- `BARNACLE_PLUGINS_DIR` — base dir for resolving specifiers (default `process.cwd()`).
+
+**Resolution rule:** a specifier starting with `.` or `/` is a filesystem path (resolved against `BARNACLE_PLUGINS_DIR`); anything else is an npm package resolved via `require.resolve` against the operator's `node_modules`. **Failure policy:** non-strict = log-and-skip → `"disabled"` record; strict = abort. **Plugin authors must import Zod as `zod/v4`** (not bare `zod`) — `fastify-type-provider-zod` compiles routes against core's Zod instance. `GET /v1/plugins` (authenticated) returns the load report.
+
+Full env-var table and a copyable template: README §Out-of-tree plugins and `examples/plugins/hello-site/`.
+
 ### Tests
 
 - **Unit tests**: Vitest, `.test.ts`, Node environment.
