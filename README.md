@@ -200,28 +200,15 @@ interface SitePlugin<TPayload, TResult> {
 
 ### Full plugin skeleton (hot path + browser fallback)
 
-`pnpm run recon:generate` produces this structure automatically. Use `createHttpClient()` for REST endpoints and `createGraphqlClient()` for GraphQL endpoints — `recon:generate` selects the right one based on what it captured. The skeleton below illustrates the REST hot-path pattern; for GraphQL sites, `recon-generate` uses `createGraphqlClient` instead and inlines the captured query as a constant.
+`pnpm run recon:generate` produces this structure automatically. Use `createRateLimitedJsonClient()` for REST endpoints that send Chromium client-hint headers (the common case) and `createGraphqlClient()` for GraphQL endpoints — `recon:generate` selects the right one based on what it captured. The skeleton below illustrates the REST hot-path pattern; for GraphQL sites, `recon-generate` uses `createGraphqlClient` instead and inlines the captured query as a constant.
 
 ```ts
 // src/sites/my-site/contract.ts
-import Bottleneck from "bottleneck";
 import { z } from "zod/v4";
-import { createHttpClient } from "@/scraper/http-client";
+import { createRateLimitedJsonClient } from "@/scraper/rate-limited-json-client";
 import type { BrowserSession } from "@/scraper/session";
 import type { SitePlugin, SitePluginContext, SitePluginResult } from "@/site-plugin";
 import { runMySiteBrowserFlow } from "@/sites/my-site/flows/browser-flow";
-
-// Generated: load-bearing request headers from recon — review and remove anything decorative.
-const BASE_HEADERS: Record<string, string> = {
-  "Content-Type": "application/json",
-  Accept: "application/json, */*",
-  Origin: "https://my-site.com",
-  Referer: "https://my-site.com/",
-  "User-Agent": "Mozilla/5.0 ...",
-};
-
-// Generated: Bottleneck ceiling from Phase 3 rate-limit probe — verify before shipping.
-const limiter = new Bottleneck({ minTime: 200 }); // 5 rps safe ceiling
 
 // Generated: Zod schemas inferred from captured JSON — tighten z.unknown() fields as needed.
 const MySiteResponseSchema = z.object({ data: z.object({ items: z.array(z.object({ id: z.string() })) }) });
@@ -230,7 +217,19 @@ const MySitePayloadSchema = z.object({ query: z.string().min(1) });
 type MySitePayload = z.infer<typeof MySitePayloadSchema>;
 type MySiteResponse = z.infer<typeof MySiteResponseSchema>;
 
-const httpClient = createHttpClient({ schema: MySiteResponseSchema, bottleneck: limiter, baseHeaders: BASE_HEADERS });
+// Generated: rate-limit ceiling (5 rps) + Chromium hints + site-specific headers from recon.
+// Use createHttpClient() directly only when you need manual Bottleneck or header control.
+const httpClient = createRateLimitedJsonClient({
+  minTimeMs: 200,
+  userAgent: "Mozilla/5.0 ...",
+  secChUa: '"Chromium";v="..."',
+  platform: "Linux",
+  extraHeaders: {
+    "Content-Type": "application/json",
+    Accept: "application/json, */*",
+  },
+  schema: MySiteResponseSchema,
+});
 
 export const mySitePlugin: SitePlugin<MySitePayload, MySiteResponse> = {
   meta: {
@@ -800,6 +799,7 @@ src/
 │   ├── retry.ts               # p-retry + failure classification
 │   ├── errors.ts              # typed scraper error hierarchy
 │   ├── http-client.ts         # typed fetch wrapper (hot path)
+│   ├── rate-limited-json-client.ts # factory: Bottleneck + chromiumClientHints + createHttpClient in one call — prefer this over the three-step scaffold for Chromium-hint plugins
 │   ├── http-status-classifier.ts # pure status→ScraperError classifier for raw-fetch callers
 │   ├── raw-fetch.ts           # site-agnostic undici scaffold: network-error wrap, onResponse hook, optional classifyHttpStatus (skipClassify for callers that classify manually)
 │   ├── graphql-client.ts      # GraphQL POST wrapper
