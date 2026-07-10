@@ -6,7 +6,11 @@
  * truth — a version bump can't silently desync the emitter from the gate.
  */
 
-/** Manifest `apiVersion` the config-plugin factory understands (K8s `group/version`). */
+/**
+ * Manifest `apiVersion` the config-plugin factory understands (K8s
+ * `group/version`). Its major segment tracks `PLUGIN_API_VERSION`, the runtime
+ * plugin-API contract in `plugin-api-version.ts`.
+ */
 export const CONFIG_PLUGIN_API_VERSION = "barnacle.dev/v1" as const;
 
 /** Manifest `kind` the config-plugin factory understands. */

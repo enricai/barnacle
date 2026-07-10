@@ -1,6 +1,6 @@
 import path from "node:path";
 
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { buildConfigPlugin, CONFIG_PLUGIN_MANIFEST } from "@/plugins/config-plugin";
 
@@ -55,6 +55,11 @@ function baseManifest(): Record<string, unknown> {
 }
 
 describe("buildConfigPlugin", () => {
+  beforeEach(() => {
+    mockRunHealingFlow.mockClear();
+    mockGuardedExtract.mockClear();
+  });
+
   it("synthesizes a SitePlugin with real Zod schemas and mapped meta", async () => {
     const plugin = await buildConfigPlugin(baseManifest());
 
@@ -132,7 +137,6 @@ describe("buildConfigPlugin", () => {
     const plugin = await buildConfigPlugin(manifest);
     const { session, context } = mockExecuteDeps();
 
-    mockRunHealingFlow.mockClear();
     await expect(
       plugin.execute({ FirstName: "J", Email: "e" }, session, context)
     ).resolves.toBeDefined();
