@@ -2463,8 +2463,9 @@ export function emitBrowserFlowTs(opts: {
 import type { Stagehand } from "@browserbasehq/stagehand";
 import { z } from "zod/v4";
 
+import { buildAnthropicClient } from "@/lib/llm/anthropic-client";
 import { getLogger } from "@/lib/logging";
-import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
+import { type HealingFlowStep, runHealingFlow, waitForSpaReady } from "@/scraper/flow-runner";
 import { guardedExtract } from "@/scraper/stagehand-guard";
 import type { ${pascal}Payload, ${pascal}Response } from "@/sites/${siteId}/contract";
 
@@ -2476,8 +2477,9 @@ const ${pascal}BrowserSchema = z.object({
 });
 
 /**
- * Drives ${siteId} through the recon flow and extracts structured data.
- * Used only as fallback — the hot path in contract.ts is the production path.
+ * Drives ${siteId} through the recon flow and extracts structured data. This is
+ * the browser path; if contract.ts also defines executeHttp, that hot path runs
+ * first and this is the fallback — otherwise this IS the production path.
  */
 export async function run${pascal}BrowserFlow(
   stagehand: Stagehand,
@@ -2487,20 +2489,23 @@ export async function run${pascal}BrowserFlow(
   const page = await stagehand.context.awaitActivePage();
 
   await page.goto(baseUrl, { waitUntil: "networkidle" });
+  // networkidle can resolve before a Cloudflare-fronted SPA hydrates; wait for
+  // the real DOM so the first steps don't probe an empty shell page and skip.
+  await waitForSpaReady(page, logger);
 
   const FLOW_STEPS: HealingFlowStep[] = [
 ${flowStepsBlock}
   ];
 
-  // anthropic: null — the generated fallback has no Anthropic client in scope,
-  // so the cascade degrades to its deterministic DOM primitives with no LLM
-  // rephrase/replan. Wire a real client here when hand-finishing this plugin.
+  // buildAnthropicClient() enables the cascade's attempt-5 rephrase + replan to
+  // recover a stuck step; null on a Bedrock-only deployment, where the cascade
+  // degrades to its deterministic DOM primitives.
   await runHealingFlow({
     stagehand,
     page,
     steps: FLOW_STEPS,
     logger,
-    anthropic: null,
+    anthropic: buildAnthropicClient(),
     resumeFixture: ${resumeFixtureExpr},
   });
 

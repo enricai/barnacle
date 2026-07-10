@@ -237,6 +237,17 @@ describe("emitBrowserFlowTs — payload splicing", () => {
     expect(code).toContain("const FLOW_STEPS: HealingFlowStep[] = [");
   });
 
+  it("waits for SPA hydration after navigating (so early steps don't skip a shell page)", () => {
+    expect(code).toContain("import { type HealingFlowStep, runHealingFlow, waitForSpaReady }");
+    expect(code).toContain("await waitForSpaReady(page, logger);");
+  });
+
+  it("wires the shared Anthropic client so the cascade can rephrase/replan", () => {
+    expect(code).toContain('import { buildAnthropicClient } from "@/lib/llm/anthropic-client"');
+    expect(code).toContain("anthropic: buildAnthropicClient(),");
+    expect(code).not.toContain("anthropic: null");
+  });
+
   it("accumulates the spliced field names", () => {
     expect(payloadFieldNames).toEqual(new Set(["FirstName", "Email"]));
   });
