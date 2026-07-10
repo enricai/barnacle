@@ -38,15 +38,15 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
-import Anthropic from "@anthropic-ai/sdk";
+import type Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import type { Action, Page, Stagehand } from "@browserbasehq/stagehand";
 import { format, formatISO } from "date-fns";
 import { z } from "zod/v4";
 
-import { config } from "@/config";
 import { toErrorMessage } from "@/lib/errors";
 import { configureHttpDispatcher } from "@/lib/http";
+import { buildAnthropicClient } from "@/lib/llm/anthropic-client";
 import { judgeErrorMessagesWithLLM } from "@/lib/llm/judges/error-messages";
 import { judgeInvalidFieldsWithLLM } from "@/lib/llm/judges/invalid-fields";
 import { verifySubmitWithLLM } from "@/lib/llm/judges/verify-submit";
@@ -424,11 +424,6 @@ export function isReplanCycle(
     if (urlSame && htmlStatic) identicalCount++;
   }
   return identicalCount >= REPLAN_CYCLE_THRESHOLD;
-}
-
-function buildAnthropicClient(): Anthropic | null {
-  if (config.scraper.useBedrock || !config.scraper.anthropicApiKey) return null;
-  return new Anthropic({ apiKey: config.scraper.anthropicApiKey });
 }
 
 const RECON_FLOW_SCHEMA = z.array(RECON_FLOW_STEP_SCHEMA).min(1);

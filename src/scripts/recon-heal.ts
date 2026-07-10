@@ -25,12 +25,13 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-import Anthropic from "@anthropic-ai/sdk";
+import type Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { formatISO } from "date-fns";
 
 import { config } from "@/config";
 import { configureHttpDispatcher } from "@/lib/http";
+import { buildAnthropicClient } from "@/lib/llm/anthropic-client";
 import { PATCH_RESPONSE_SCHEMA } from "@/lib/llm/schemas";
 import { getScriptLogger } from "@/lib/logging";
 import {
@@ -111,17 +112,7 @@ export type StepRunner = (params: {
 /** Injectable capture function — matches `captureLlmCall`'s signature. */
 export type CaptureFn = (input: LlmCallInput) => Promise<void>;
 
-// ── Anthropic client ──────────────────────────────────────────────────────────
-
-/**
- * Returns the Anthropic client, or null when the deployment is Bedrock-only.
- * The heal loop requires the Anthropic SDK (not Bedrock) because it calls
- * claude.ai claude-code-agent-style subagent behaviour inline.
- */
-export function buildAnthropicClient(): Anthropic | null {
-  if (config.scraper.useBedrock || !config.scraper.anthropicApiKey) return null;
-  return new Anthropic({ apiKey: config.scraper.anthropicApiKey });
-}
+export { buildAnthropicClient };
 
 function anthropicModelName(): string {
   const raw = config.scraper.model;
