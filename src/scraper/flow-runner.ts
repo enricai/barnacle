@@ -2972,11 +2972,13 @@ export function parseSelectStep(
   if (!mentionsSelect) return null;
   // Catch-all steps ("for any remaining…") have no concrete single target.
   if (/\bany\s+remaining\b/.test(lower)) return null;
+  // biome-ignore lint/style/noNonNullAssertion: capture group 1 is required by the pattern, so it is present on every match
   const quoted = [...instruction.matchAll(/'([^']+)'/g)].map((m) => m[1]!);
   if (quoted.length === 0) return null;
   // The OPTION is the quoted string immediately following the word "select".
   const selMatch = instruction.match(/\bselect(?:\s+or\s+check)?\s+'([^']+)'/i);
   if (!selMatch) return null;
+  // biome-ignore lint/style/noNonNullAssertion: guarded by the !selMatch early-return; group 1 is required by the pattern
   const option = selMatch[1]!.trim();
   // The QUESTION LABEL, when present, is a DIFFERENT quoted string — the one
   // introduced by "for '…'" or "in the '…' dropdown". Pick the first quoted
@@ -3018,11 +3020,13 @@ export function parseRadioStep(
   if (!/\b(answer|radio)\b/.test(lower)) return null;
   // Catch-all steps ("for any remaining…") have no concrete single target.
   if (/\bany\s+remaining\b/.test(lower)) return null;
+  // biome-ignore lint/style/noNonNullAssertion: capture group 1 is required by the pattern, so it is present on every match
   const quoted = [...instruction.matchAll(/'([^']+)'/g)].map((m) => m[1]!);
   if (quoted.length === 0) return null;
   // The OPTION is the quoted string immediately after "click the".
   const optMatch = instruction.match(/\bclick\s+the\s+'([^']+)'/i);
   if (!optMatch) return null;
+  // biome-ignore lint/style/noNonNullAssertion: guarded by the !optMatch early-return; group 1 is required by the pattern
   const option = optMatch[1]!.trim();
   // The QUESTION LABEL, when present, is a DIFFERENT quoted string — the one
   // introduced by "for the question '…'" / "for the '…' question". Some steps
@@ -3333,7 +3337,9 @@ async function trySelectPrimitive(params: {
       );
       return false;
     }
+    // biome-ignore lint/style/noNonNullAssertion: guarded above by the verdict.selectIndex === null early-return
     const chosenCandidate = candidates[verdict.selectIndex]!;
+    // biome-ignore lint/style/noNonNullAssertion: guarded above by the verdict.optionIndex === null early-return
     const chosenOption = chosenCandidate.options[verdict.optionIndex]!;
     // Apply pass (set + settle + invalid-readback): set the chosen select by its
     // ORIGINAL DOM index, then confirm it committed (cleared the invalid marker),
@@ -3688,7 +3694,9 @@ async function tryCheckboxPrimitive(params: {
       );
       return false;
     }
+    // biome-ignore lint/style/noNonNullAssertion: guarded above by the verdict.selectIndex === null early-return
     const chosenGroup = groups[verdict.selectIndex]!;
+    // biome-ignore lint/style/noNonNullAssertion: guarded above by the verdict.optionIndex === null early-return
     const chosenOption = chosenGroup.options[verdict.optionIndex]!;
     const applyExpr = `((gi, bi) => {
       let groupEls = Array.from(document.querySelectorAll("[class*='MultiCheckboxInput'],[class*='c-MultiCheckboxInput-root']"));
@@ -3849,14 +3857,19 @@ export function selectRadioGroupOption(params: {
       .filter((x) => x.score >= 0.5)
       .sort((a, b) => b.score - a.score);
     if (scored.length === 1) {
+      // biome-ignore lint/style/noNonNullAssertion: scored.length === 1 in this branch
       const g = scored[0]!.g;
+      // biome-ignore lint/style/noNonNullAssertion: g survived the optionRi(g) !== null filter above
       return { gi: g.gi, ri: optionRi(g)! };
     }
     if (scored.length > 1) {
       // A clearly-best match (strictly higher than the runner-up) is not
       // ambiguous; only a tie defers to the LLM.
+      // biome-ignore lint/style/noNonNullAssertion: scored.length > 1 so indices 0 and 1 both exist
       if (scored[0]!.score > scored[1]!.score) {
+        // biome-ignore lint/style/noNonNullAssertion: scored.length > 1 in this branch
         const g = scored[0]!.g;
+        // biome-ignore lint/style/noNonNullAssertion: g survived the optionRi(g) !== null filter above
         return { gi: g.gi, ri: optionRi(g)! };
       }
       return "ambiguous";
@@ -4053,7 +4066,9 @@ async function tryRadioPrimitive(params: {
       );
       return false;
     }
+    // biome-ignore lint/style/noNonNullAssertion: guarded above by the verdict.selectIndex === null early-return
     const chosenGroup = llmGroups[verdict.selectIndex]!;
+    // biome-ignore lint/style/noNonNullAssertion: guarded above by the verdict.optionIndex === null early-return
     const chosenOption = chosenGroup.options[verdict.optionIndex]!;
     const applyResult = {
       ok: await applyRadioSelection(page, chosenGroup.gi, chosenOption.ri, {
@@ -5493,6 +5508,7 @@ export async function executeStepWithHealing(params: {
             }
           }
         } else {
+          // biome-ignore lint/style/noNonNullAssertion: this else-branch runs only when candidates.length !== 0
           const target = candidates[0]!;
           // Deny-list guard: never act on a wizard-exit control (save-and-exit,
           // cancel, restart) for a click/advance step. Record it as tried (so a
@@ -5699,6 +5715,7 @@ export async function executeStepWithHealing(params: {
                 // Synthesize a click action so verifyDomEffect downstream
                 // routes through its radio/checkbox isChecked() path.
                 resolvedAction = {
+                  // biome-ignore lint/style/noNonNullAssertion: reached only via the !xpath else-branch, and xpath is truthy iff lastSelector is (line 5616)
                   selector: lastSelector!,
                   description: "structured-click",
                   method: "click",
