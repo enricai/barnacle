@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { CONFIG_PLUGIN_API_VERSION, CONFIG_PLUGIN_KIND } from "@/plugins/plugin-manifest-envelope";
 import {
   emitBrowserFlowTs,
   emitConfigManifest,
@@ -327,8 +328,8 @@ describe("emitConfigManifest — config-only plugin emission", () => {
   };
 
   it("emits the K8s-style envelope", () => {
-    expect(manifest.apiVersion).toBe("barnacle.dev/v1");
-    expect(manifest.kind).toBe("SitePlugin");
+    expect(manifest.apiVersion).toBe(CONFIG_PLUGIN_API_VERSION);
+    expect(manifest.kind).toBe(CONFIG_PLUGIN_KIND);
   });
 
   it("rewrites recon splices into {{ .request.X }} templates", () => {

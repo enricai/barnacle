@@ -28,6 +28,7 @@ import { join } from "node:path";
 
 import { toErrorMessage } from "@/lib/errors";
 import { getScriptLogger } from "@/lib/logging";
+import { CONFIG_PLUGIN_API_VERSION, CONFIG_PLUGIN_KIND } from "@/plugins/plugin-manifest-envelope";
 import {
   AUX_DIR,
   CAPTURES_DIR,
@@ -2456,17 +2457,25 @@ export function emitConfigManifest(opts: {
   );
 
   const manifest = {
-    apiVersion: "barnacle.dev/v1",
-    kind: "SitePlugin",
+    apiVersion: CONFIG_PLUGIN_API_VERSION,
+    kind: CONFIG_PLUGIN_KIND,
     metadata: { siteId, displayName },
     spec: {
       defaultBaseUrl: baseUrl,
       request: { type: "object", properties: requestProperties },
-      response: { type: "object", properties: {} },
+      response: {
+        type: "object",
+        description: "TODO: declare the fields this site returns (recon leaves this empty).",
+        properties: {},
+      },
       flow: { steps },
       extract: {
         instruction: `extract the confirmation id and status for ${siteId}`,
-        schema: { type: "object", properties: {} },
+        schema: {
+          type: "object",
+          description: "TODO: declare the fields to extract (empty extracts nothing at runtime).",
+          properties: {},
+        },
       },
     },
   };

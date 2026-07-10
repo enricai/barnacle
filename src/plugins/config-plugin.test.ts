@@ -1,10 +1,32 @@
 import path from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { buildConfigPlugin, CONFIG_PLUGIN_MANIFEST } from "@/plugins/config-plugin";
 
+const mockRunHealingFlow = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const mockGuardedExtract = vi.hoisted(() => vi.fn().mockResolvedValue({ confirmationId: "X" }));
+
+vi.mock("@/scraper/flow-runner", () => ({ runHealingFlow: mockRunHealingFlow }));
+vi.mock("@/scraper/stagehand-guard", () => ({ guardedExtract: mockGuardedExtract }));
+
 const FIXTURES_DIR = path.join(__dirname, "__fixtures__");
+
+/** Minimal mocked browser session + context so `execute` runs without a real Stagehand. */
+function mockExecuteDeps(): { session: never; context: never } {
+  const page = { goto: async (): Promise<void> => undefined, url: (): string => "about:blank" };
+  const session = {
+    stagehand: { context: { awaitActivePage: async () => page } },
+  } as never;
+  const context = {
+    baseUrl: "https://apply.acme.example",
+    config: { scraper: { anthropicApiKey: undefined } },
+    metricsCollector: { startStep: () => undefined, endStep: () => undefined },
+    logger: { info: () => undefined, warn: () => undefined },
+    requestId: "test",
+  } as never;
+  return { session, context };
+}
 
 /** A minimal, valid browser-only manifest used as the base for each test. */
 function baseManifest(): Record<string, unknown> {
@@ -84,30 +106,39 @@ describe("buildConfigPlugin", () => {
     await expect(buildConfigPlugin(bad)).rejects.toThrow();
   });
 
-  it("throws inside execute when a flow step references an unknown request field", async () => {
+  it("throws inside execute when a flow step references an UNDECLARED request field", async () => {
     const manifest = baseManifest();
     (manifest.spec as { flow: { steps: unknown[] } }).flow.steps = [
       { step: "fill with {{ .request.DoesNotExist }}" },
     ];
     const plugin = await buildConfigPlugin(manifest);
+    const { session, context } = mockExecuteDeps();
 
-    // Mock the browser session so execute reaches template resolution without a
-    // real Stagehand. navigateActivePage awaits an active page then goto()s.
-    const page = { goto: async (): Promise<void> => undefined, url: (): string => "about:blank" };
-    const session = {
-      stagehand: { context: { awaitActivePage: async () => page } },
-    } as never;
-    const context = {
-      baseUrl: "https://apply.acme.example",
-      config: { scraper: { anthropicApiKey: undefined } },
-      metricsCollector: { startStep: () => undefined, endStep: () => undefined },
-      logger: { info: () => undefined, warn: () => undefined },
-      requestId: "test",
-    } as never;
-
-    await expect(plugin.execute({ FirstName: "J" }, session, context)).rejects.toThrow(
+    await expect(plugin.execute({ FirstName: "J", Email: "e" }, session, context)).rejects.toThrow(
       /unknown request field "DoesNotExist"/
     );
+  });
+
+  it("does NOT throw when an OPTIONAL declared field is omitted (splices empty string)", async () => {
+    // Phone is declared but not required, and referenced by an optional step —
+    // omitting it must resolve to "" rather than throwing "unknown request field".
+    const manifest = baseManifest();
+    (
+      manifest.spec as { request: { properties: Record<string, unknown> } }
+    ).request.properties.Phone = { type: "string" };
+    (manifest.spec as { flow: { steps: unknown[] } }).flow.steps = [
+      { step: "fill the Phone field with {{ .request.Phone }}", optional: true },
+    ];
+    const plugin = await buildConfigPlugin(manifest);
+    const { session, context } = mockExecuteDeps();
+
+    mockRunHealingFlow.mockClear();
+    await expect(
+      plugin.execute({ FirstName: "J", Email: "e" }, session, context)
+    ).resolves.toBeDefined();
+
+    const steps = mockRunHealingFlow.mock.calls[0]?.[0]?.steps as { instruction: string }[];
+    expect(steps[0]?.instruction).toBe("fill the Phone field with ");
   });
 });
 

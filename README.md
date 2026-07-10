@@ -305,6 +305,8 @@ BARNACLE_PLUGINS_CONFIG_DIR=./plugins pnpm start
 
 The manifest wears the Kubernetes-style `apiVersion` / `kind` / `metadata` / `spec` envelope, declares its request/response/extract shapes as **JSON Schema**, and lists the browser flow as data (the same self-heal step format the recon toolchain authors). Core reads it at startup and registers `POST /v1/acme-jobs/run` — no per-site code. A site needing the direct-HTTP hot path can reference a compiled `executeHttp` module via `spec.httpModule`. A copyable manifest lives at [`examples/plugins/acme-jobs.plugin.json`](./examples/plugins/acme-jobs.plugin.json).
 
+The JSON Schema converter accepts a deliberately small subset — `object`, `string`, `number`, `integer`, `boolean`, `array` (with `items`), string `enum`, and `required` — and rejects anything else (e.g. `pattern`, `minLength`, `$ref`, `format` constraints) at load time. Flow steps interpolate request values with `{{ .request.FieldName }}`; a reference to a field the request schema does not declare fails loudly, while an optional declared field the caller omits splices as an empty string.
+
 **In-tree (bundled built-ins only):** push to `BUILTIN_SITE_PLUGINS` in `src/plugins/discover.ts`:
 
 ```ts

@@ -24,16 +24,11 @@ import { RECON_FLOW_STEP_SCHEMA } from "@/lib/llm/schemas";
 import { getLogger } from "@/lib/logging";
 import { jsonSchemaToZod } from "@/plugins/json-schema-to-zod";
 import { PLUGIN_API_VERSION } from "@/plugins/plugin-api-version";
+import { CONFIG_PLUGIN_API_VERSION, CONFIG_PLUGIN_KIND } from "@/plugins/plugin-manifest-envelope";
 import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import { navigateActivePage } from "@/scraper/navigate";
 import { guardedExtract } from "@/scraper/stagehand-guard";
 import type { SitePlugin, SitePluginContext, SitePluginResult } from "@/site-plugin";
-
-/**
- * Manifest `apiVersion` this factory understands. Follows the K8s
- * `group/version` convention; the major segment tracks {@link PLUGIN_API_VERSION}.
- */
-export const CONFIG_PLUGIN_API_VERSION = "barnacle.dev/v1" as const;
 
 /** JSON-Schema fragment as it appears verbatim in a manifest; converted to Zod at build time. */
 const jsonSchemaFragment = z.record(z.string(), z.unknown());
@@ -58,7 +53,7 @@ const flowSchema = z.object({
  */
 export const CONFIG_PLUGIN_MANIFEST = z.object({
   apiVersion: z.literal(CONFIG_PLUGIN_API_VERSION),
-  kind: z.literal("SitePlugin"),
+  kind: z.literal(CONFIG_PLUGIN_KIND),
   metadata: z.object({
     siteId: z.string().min(1),
     displayName: z.string().min(1),
@@ -89,34 +84,42 @@ const TEMPLATE_PATTERN = /\{\{\s*\.request\.([A-Za-z0-9_]+)\s*\}\}/g;
 
 /**
  * Resolves `{{ .request.X }}` references in a step instruction against the
- * validated request payload. Unknown references throw so a manifest typo fails
- * loudly at run time; values are spliced as inert text (no expression
- * evaluation), so there is no injection surface.
+ * validated request payload. Distinguishes two cases via `declaredFields` (the
+ * request schema's property names) so an omitted *optional* field is not
+ * conflated with a typo: a reference to an **undeclared** field throws (the
+ * manifest is wrong), while a **declared** field the caller omitted resolves to
+ * an empty string (a legitimately optional value). Values splice as inert text
+ * (no expression evaluation), so there is no injection surface.
  */
-function resolveTemplate(instruction: string, payload: Record<string, unknown>): string {
+function resolveTemplate(
+  instruction: string,
+  payload: Record<string, unknown>,
+  declaredFields: Set<string>
+): string {
   return instruction.replace(TEMPLATE_PATTERN, (_match, field: string) => {
-    if (!(field in payload)) {
+    if (!declaredFields.has(field)) {
       throw new Error(`flow step references unknown request field "${field}"`);
     }
-    return String(payload[field]);
+    return field in payload ? String(payload[field]) : "";
   });
 }
 
 /** Normalizes one manifest flow step (bare string or object form) into a {@link HealingFlowStep}. */
 function toHealingStep(
   step: z.infer<typeof RECON_FLOW_STEP_SCHEMA>,
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
+  declaredFields: Set<string>
 ): HealingFlowStep {
   if (typeof step === "string") {
     return {
-      instruction: resolveTemplate(step, payload),
+      instruction: resolveTemplate(step, payload, declaredFields),
       optional: false,
       upload: false,
       submitStep: false,
     };
   }
   return {
-    instruction: resolveTemplate(step.step, payload),
+    instruction: resolveTemplate(step.step, payload, declaredFields),
     optional: step.optional,
     upload: step.upload,
     submitStep: step.submitStep,
@@ -192,6 +195,7 @@ export async function buildConfigPlugin(
   const executeHttp = spec.httpModule ? await loadHttpModule(spec.httpModule, baseDir) : undefined;
 
   const hasUploadStep = spec.flow.steps.some((s) => typeof s !== "string" && s.upload === true);
+  const declaredFields = new Set(Object.keys((spec.request.properties as object) ?? {}));
 
   const plugin: SitePlugin<unknown, unknown> = {
     meta: {
@@ -216,7 +220,7 @@ export async function buildConfigPlugin(
       const { stagehand } = session;
       const page = await navigateActivePage(stagehand, context.baseUrl, context.metricsCollector);
 
-      const steps = spec.flow.steps.map((s) => toHealingStep(s, payload));
+      const steps = spec.flow.steps.map((s) => toHealingStep(s, payload, declaredFields));
       const anthropic = context.config.scraper.anthropicApiKey
         ? new Anthropic({ apiKey: context.config.scraper.anthropicApiKey })
         : null;
