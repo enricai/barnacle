@@ -11,8 +11,10 @@ import {
   HttpRateLimitError,
   HttpSchemaError,
   HttpServerError,
+  HttpUrlLockedError,
   UnknownScraperError,
 } from "@/scraper/errors";
+import { classifyOracleSentinel } from "@/scraper/oracle-sentinels";
 
 const logger = getLogger({ name: "scraper/http-client" });
 
@@ -82,10 +84,10 @@ export interface HttpRequestInit {
 /**
  * Parses `rawText` as JSON. Oracle HCM occasionally returns plaintext
  * `ORA_IRC_*` sentinels (e.g. `ORA_IRC_TOKEN_EXPIRED`) during burst /
- * rate-limit windows — these are transient. On any JSON parse failure, logs
- * the first 200 chars and throws `UnknownScraperError` (retryable) so
- * p-retry re-issues the request rather than hard-aborting with
- * `HttpSchemaError`.
+ * rate-limit windows — these are transient and handled upstream before this
+ * call. On any JSON parse failure for a non-sentinel body, logs the first
+ * 200 chars and throws `UnknownScraperError` (retryable) so p-retry
+ * re-issues the request rather than hard-aborting with `HttpSchemaError`.
  */
 function parseJsonOrThrowRetryable(rawText: string, url: string): unknown {
   try {
@@ -210,6 +212,15 @@ export function createHttpClient<TResponse>(
           }
 
           const rawText = await response.text();
+
+          const sentinelKind = classifyOracleSentinel(rawText);
+          if (sentinelKind === "locked") {
+            // Oracle has locked the requisition URL — retrying cannot succeed.
+            throw new AbortError(
+              new HttpUrlLockedError(`oracle url locked (ORA_URL_LOCKED) from ${url}`)
+            );
+          }
+
           const body = parseJsonOrThrowRetryable(rawText, url);
 
           const parsed = schema.safeParse(body);

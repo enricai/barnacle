@@ -1,6 +1,30 @@
 import { describe, expect, it } from "vitest";
 
-import { MissingFormMapKeyError, type NeedsUserInfoResult, ScraperError } from "@/scraper/errors";
+import {
+  HttpRateLimitError,
+  HttpSchemaError,
+  HttpUrlLockedError,
+  MissingFormMapKeyError,
+  type NeedsUserInfoResult,
+  ScraperError,
+} from "@/scraper/errors";
+
+describe("HttpUrlLockedError", () => {
+  it("is non-retryable, instanceof ScraperError, and distinct from sibling Http errors", () => {
+    const err = new HttpUrlLockedError();
+    expect(err).toBeInstanceOf(ScraperError);
+    expect(err.retryable).toBe(false);
+    expect(err.name).toBe("HttpUrlLockedError");
+    expect(err.message).toBe("oracle requisition url locked (ORA_URL_LOCKED)");
+    expect(err).not.toBeInstanceOf(HttpRateLimitError);
+    expect(err).not.toBeInstanceOf(HttpSchemaError);
+  });
+
+  it("accepts a custom message", () => {
+    const err = new HttpUrlLockedError("ORA_URL_LOCKED on j-12345");
+    expect(err.message).toBe("ORA_URL_LOCKED on j-12345");
+  });
+});
 
 describe("MissingFormMapKeyError", () => {
   it("carries the missing keys + context and is non-retryable", () => {

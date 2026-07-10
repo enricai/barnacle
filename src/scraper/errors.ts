@@ -180,6 +180,22 @@ export class HttpRateLimitError extends ScraperError {
 }
 
 /**
+ * Oracle HCM returned a plain-text `ORA_URL_LOCKED` sentinel body, meaning the
+ * requisition URL has been locked by Oracle after repeated requests. Non-retryable
+ * and NOT a browser-fallback trigger — the URL is locked at Oracle's end, so
+ * neither a retry of the identical HTTP request nor a fresh Stagehand browser
+ * session can succeed. The caller must back off and surface a "retry later"
+ * state rather than burning a Steel session. Kept distinct from HttpRateLimitError
+ * so metrics/logs (classifyDispatchError) can tell an Oracle requisition lock
+ * apart from a self-inflicted 429 rate limit.
+ */
+export class HttpUrlLockedError extends ScraperError {
+  constructor(message = "oracle requisition url locked (ORA_URL_LOCKED)") {
+    super(message, false);
+  }
+}
+
+/**
  * Structured result returned (not thrown) by the hot path when it cannot
  * complete the application because the user must supply additional data.
  * Assignable as the `data` payload of a `SitePluginResult` so dispatch can

@@ -176,6 +176,28 @@ describe("rawFetch", () => {
     });
   });
 
+  // ORA_URL_LOCKED sentinel audit — intentional no-op on this seam:
+  // rawFetch issues a fetch, fires onResponse, reads the body, and delegates
+  // status classification to classifyHttpStatus. Oracle returns ORA_URL_LOCKED
+  // as HTTP 200 with a plain-text body, so classifyHttpStatus returns silently
+  // and rawFetch returns { status: 200, rawBody: "ORA_URL_LOCKED" } to the
+  // caller. Sentinel detection is the responsibility of parseJsonResponse
+  // (src/scraper/parse-json-response.ts), which is called downstream on the
+  // createHttpClient hot path. rawFetch callers that use parseJsonResponse
+  // inherit ORA_URL_LOCKED detection transitively; those that need raw Buffer
+  // bodies and skip parseJsonResponse do not reach Oracle HCM endpoints, so
+  // no gap exists in practice.
+  describe("ORA_URL_LOCKED sentinel (200 with plain-text body)", () => {
+    it("returns { status: 200, rawBody: 'ORA_URL_LOCKED' } without throwing — sentinel detection is parseJsonResponse's concern", async () => {
+      mockFetch.mockResolvedValueOnce(
+        makeMockFetchResponse(200, "ORA_URL_LOCKED", RESPONSE_HEADERS)
+      );
+      const result = await rawFetch(BASE_URL, makeOptions());
+      expect(result.status).toBe(200);
+      expect(result.rawBody).toBe("ORA_URL_LOCKED");
+    });
+  });
+
   describe("skipClassify", () => {
     it("returns { status, rawBody } without throwing on a 4xx when skipClassify is true", async () => {
       mockFetch.mockResolvedValueOnce(makeMockFetchResponse(401, "Unauthorized", RESPONSE_HEADERS));

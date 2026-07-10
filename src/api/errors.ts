@@ -46,6 +46,7 @@ export function httpStatusForCode(code: ErrorCode): number {
     case ERROR_CODES.INDEX_NOT_FOUND:
       return StatusCodes.NOT_FOUND;
     case ERROR_CODES.THROTTLED_REQUEST:
+    case ERROR_CODES.URL_LOCKED:
       return StatusCodes.TOO_MANY_REQUESTS;
     case ERROR_CODES.TIME_OUT:
       return StatusCodes.GATEWAY_TIMEOUT;
@@ -113,6 +114,16 @@ export class FieldViolationError extends ApiError {
 export class ThrottledRequestError extends ApiError {
   constructor(message = "rate limit exceeded") {
     super(ERROR_CODES.THROTTLED_REQUEST, message);
+  }
+}
+
+/**
+ * The upstream vendor has locked the target URL (e.g. Oracle ORA_URL_LOCKED).
+ * Signals "back off and retry later" — not a browser-fallback trigger.
+ */
+export class UrlLockedError extends ApiError {
+  constructor(message = "target URL is locked by the upstream vendor; retry later") {
+    super(ERROR_CODES.URL_LOCKED, message);
   }
 }
 
