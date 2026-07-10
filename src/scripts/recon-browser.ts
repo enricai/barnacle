@@ -82,6 +82,7 @@ import {
   selectBodyExcerpt,
   snapshotPage,
   TRAILING_GRACE_WINDOW,
+  waitForSpaReady,
   wireSignalCapture,
 } from "@/scraper/flow-runner";
 import { createBrowserSession, type ProviderName } from "@/scraper/session";
@@ -1819,6 +1820,19 @@ async function main(): Promise<void> {
     let consecutiveStaleSkips = 0;
     let lastSuccessNetworkCount = signalCounter.n;
     let lastSuccessUrl = page.url();
+    // Track the page origin so a cross-origin navigation mid-flow (e.g. the
+    // Apply click taking careers.hcahealthcare.com → apply.talemetry.com) can
+    // re-gate on SPA hydration. The initial goto's readiness gate only covers
+    // the landing page; the wizard app boots on a DIFFERENT origin with no gate,
+    // so its first steps would otherwise probe an un-hydrated shell and skip.
+    const originOf = (u: string): string => {
+      try {
+        return new URL(u).origin;
+      } catch {
+        return "";
+      }
+    };
+    let lastOrigin = originOf(page.url());
 
     for (let i = 0; i < plan.length; i++) {
       const step = plan[i]!;
@@ -1831,6 +1845,18 @@ async function main(): Promise<void> {
       logger.info(
         `step ${i + 1}/${plan.length} [${currentPhase}]${step.optional ? " (optional)" : ""}: ${step.instruction}`
       );
+      // Re-gate on SPA hydration when the origin changed since the last step —
+      // the wizard SPA (e.g. apply.talemetry.com after the Apply click) boots on
+      // a new origin the initial-goto readiness gate never covered, so wait for
+      // its body to render before probing rather than skipping a shell page.
+      const currentOrigin = originOf(page.url());
+      if (currentOrigin !== "" && currentOrigin !== lastOrigin) {
+        logger.info(
+          `origin changed ${lastOrigin || "(none)"} → ${currentOrigin}; re-gating on SPA hydration`
+        );
+        await waitForSpaReady(page, logger);
+        lastOrigin = currentOrigin;
+      }
       // Debug: dump the full DOM right before this step's cascade runs. Lets
       // a triager see the page state exactly as the cascade sees it, without
       // re-running. One-shot per recon run via --dump-dom-before-step.
