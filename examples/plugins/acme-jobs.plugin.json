@@ -1,0 +1,56 @@
+{
+  "apiVersion": "barnacle.dev/v1",
+  "kind": "SitePlugin",
+  "metadata": {
+    "siteId": "acme-jobs",
+    "displayName": "Acme Jobs"
+  },
+  "spec": {
+    "defaultBaseUrl": "https://apply.acme.example",
+    "multipart": false,
+    "advancedStealth": false,
+
+    "request": {
+      "type": "object",
+      "required": ["FirstName", "LastName", "Email"],
+      "properties": {
+        "FirstName": { "type": "string" },
+        "LastName": { "type": "string" },
+        "Email": { "type": "string" },
+        "Phone": { "type": "string" }
+      }
+    },
+
+    "response": {
+      "type": "object",
+      "properties": {
+        "confirmationId": { "type": "string" },
+        "status": { "type": "string" }
+      }
+    },
+
+    "flow": {
+      "steps": [
+        "click the Apply button",
+        { "step": "fill the First Name field with {{ .request.FirstName }}" },
+        { "step": "fill the Last Name field with {{ .request.LastName }}" },
+        { "step": "fill the Email field with {{ .request.Email }}" },
+        { "step": "fill the Phone field with {{ .request.Phone }}", "optional": true },
+        { "step": "click the Submit button", "submitStep": true }
+      ],
+      "successUrlFragments": ["confirmation", "thank-you"],
+      "ownBackendHostnames": ["apply.acme.example"]
+    },
+
+    "extract": {
+      "instruction": "extract the confirmation id and application status from the confirmation page",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "confirmationId": { "type": "string" },
+          "status": { "type": "string" }
+        }
+      }
+    }
+  }
+}

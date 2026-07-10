@@ -133,10 +133,11 @@ HTTP status codes are set by `httpStatusForCode()` — don't hard-code statuses.
 
 ### Plugin discovery: built-ins + out-of-tree
 
-Site plugin discovery has two sources:
+Site plugin discovery has three sources:
 
 1. **Built-in plugins** — registered statically in `BUILTIN_SITE_PLUGINS` (`src/plugins/discover.ts`). These ship with the Barnacle source tree.
-2. **Out-of-tree plugins** — loaded at startup from `BARNACLE_PLUGINS` (comma-separated specifiers) via `loadAllPlugins()`. Operators point this at their own compiled modules; no core edits are required.
+2. **Out-of-tree module plugins** — loaded at startup from `BARNACLE_PLUGINS` (comma-separated specifiers) via `loadAllPlugins()`. Operators point this at their own compiled modules; no core edits are required.
+3. **Config-only plugins** — a `*.plugin.json` manifest loaded with NO per-site TypeScript and NO compile step. A `.json` specifier in `BARNACLE_PLUGINS`, or any `*.plugin.json` in `BARNACLE_PLUGINS_CONFIG_DIR`, is read and passed to `buildConfigPlugin()` (`src/plugins/config-plugin.ts`), which synthesizes a `SitePlugin` and flows it through the SAME `validatePluginShape` gate as a module plugin.
 
 `dispatch()` and `registerRoutes()` in `src/plugins/loader.ts` are site-agnostic and must remain so — no `siteId`-specific branches. Each plugin declares its own extra routes via `meta.extraRoutes`; core registers them uniformly. Do not add per-site logic to the loader.
 
@@ -145,10 +146,13 @@ Out-of-tree config (parsed in `loadConfig()`):
 - `BARNACLE_PLUGINS` — comma-separated specifiers to load (default: empty → built-ins only).
 - `BARNACLE_PLUGINS_STRICT` — `true` aborts startup on any load failure; default `false` records a `"disabled"` entry and boots the rest.
 - `BARNACLE_PLUGINS_DIR` — base dir for resolving specifiers (default `process.cwd()`).
+- `BARNACLE_PLUGINS_CONFIG_DIR` — directory scanned for `*.plugin.json` config manifests (default: unset → no scan). Unreadable dir is logged and skipped, never crashes boot.
 
-**Resolution rule:** a specifier starting with `.` or `/` is a filesystem path (resolved against `BARNACLE_PLUGINS_DIR`); anything else is an npm package resolved via `require.resolve` against the operator's `node_modules`. **Failure policy:** non-strict = log-and-skip → `"disabled"` record; strict = abort. **Plugin authors must import Zod as `zod/v4`** (not bare `zod`) — `fastify-type-provider-zod` compiles routes against core's Zod instance. `GET /v1/plugins` (authenticated) returns the load report.
+**Resolution rule:** a specifier starting with `.` or `/` is a filesystem path (resolved against `BARNACLE_PLUGINS_DIR`); anything else is an npm package resolved via `require.resolve` against the operator's `node_modules`. A specifier ending in `.json` is a config manifest, not a module. **Failure policy:** non-strict = log-and-skip → `"disabled"` record; strict = abort. **Plugin authors must import Zod as `zod/v4`** (not bare `zod`) — `fastify-type-provider-zod` compiles routes against core's Zod instance. Config manifests declare schemas as JSON Schema (converted to `zod/v4` in-house by `src/plugins/json-schema-to-zod.ts`) so authors never touch Zod directly. `GET /v1/plugins` (authenticated) returns the load report.
 
-Full env-var table and a copyable template: README §Out-of-tree plugins and `examples/plugins/hello-site/`.
+**Config manifest shape:** K8s-style `apiVersion` (`barnacle.dev/v1`) / `kind` (`SitePlugin`) / `metadata` / `spec` envelope. `spec` carries `request`/`response`/`extract.schema` as JSON Schema, `flow` as the object-form recon-flow (steps + verifier config), and an optional `httpModule` escape hatch pointing at a compiled `executeHttp` module. The browser `execute` is data-driven via `runHealingFlow` — no imperative per-site code.
+
+Full env-var table and copyable templates: README §Out-of-tree plugins, `examples/plugins/hello-site/` (module), and `examples/plugins/acme-jobs.plugin.json` (config-only).
 
 ### Tests
 

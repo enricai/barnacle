@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   emitBrowserFlowTs,
+  emitConfigManifest,
   emitContractTs,
   emitMultiStepExecuteHttp,
   resolveStepPayloadField,
@@ -300,5 +301,53 @@ describe("emitBrowserFlowTs + emitContractTs — schema/flow anti-drift", () => 
       const decl = field === "Email" ? `${field}: z.email()` : `${field}: z.string()`;
       expect(contract).toContain(decl);
     }
+  });
+});
+
+describe("emitConfigManifest — config-only plugin emission", () => {
+  const manifestStr = emitConfigManifest({
+    siteId: "acme-demo",
+    displayName: "AcmeDemo",
+    baseUrl: "https://apply.acme.example",
+    flowSteps: [
+      "click the apply button",
+      { step: "fill the First Name field with 'Jane'", payloadField: "FirstName" },
+      { step: `fill the Email field with ${RECON_EMAIL_TOKEN}`, payloadField: "Email" },
+      { step: "click Submit", submitStep: true },
+      { step: "upload resume", upload: true, optional: true },
+    ],
+  });
+  const manifest = JSON.parse(manifestStr) as {
+    apiVersion: string;
+    kind: string;
+    spec: {
+      request: { properties: Record<string, unknown> };
+      flow: { steps: unknown[] };
+    };
+  };
+
+  it("emits the K8s-style envelope", () => {
+    expect(manifest.apiVersion).toBe("barnacle.dev/v1");
+    expect(manifest.kind).toBe("SitePlugin");
+  });
+
+  it("rewrites recon splices into {{ .request.X }} templates", () => {
+    expect(manifestStr).toContain("{{ .request.FirstName }}");
+    expect(manifestStr).toContain("{{ .request.Email }}");
+    expect(manifestStr).not.toContain("'Jane'");
+    expect(manifestStr).not.toContain(RECON_EMAIL_TOKEN);
+  });
+
+  it("promotes every spliced field into the request schema (no drift)", () => {
+    expect(Object.keys(manifest.spec.request.properties).sort()).toEqual(["Email", "FirstName"]);
+  });
+
+  it("preserves submit and upload/optional flags on object-form steps", () => {
+    const objectSteps = manifest.spec.flow.steps.filter(
+      (s): s is { step: string; submitStep?: boolean; upload?: boolean; optional?: boolean } =>
+        typeof s === "object" && s !== null
+    );
+    expect(objectSteps.some((s) => s.submitStep === true)).toBe(true);
+    expect(objectSteps.some((s) => s.upload === true && s.optional === true)).toBe(true);
   });
 });

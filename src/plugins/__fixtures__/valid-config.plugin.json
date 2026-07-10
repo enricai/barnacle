@@ -1,0 +1,34 @@
+{
+  "apiVersion": "barnacle.dev/v1",
+  "kind": "SitePlugin",
+  "metadata": { "siteId": "fixture-config", "displayName": "Fixture Config Plugin" },
+  "spec": {
+    "defaultBaseUrl": "https://apply.fixture.example",
+    "request": {
+      "type": "object",
+      "required": ["FirstName", "Email"],
+      "properties": {
+        "FirstName": { "type": "string" },
+        "Email": { "type": "string" }
+      }
+    },
+    "response": {
+      "type": "object",
+      "properties": { "confirmationId": { "type": "string" } }
+    },
+    "flow": {
+      "steps": [
+        "click the apply button",
+        { "step": "fill First Name with {{ .request.FirstName }}" }
+      ],
+      "successUrlFragments": ["confirmation"]
+    },
+    "extract": {
+      "instruction": "extract the confirmation id",
+      "schema": {
+        "type": "object",
+        "properties": { "confirmationId": { "type": "string" } }
+      }
+    }
+  }
+}

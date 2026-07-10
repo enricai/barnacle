@@ -1,11 +1,13 @@
+import { readdir, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { z } from "zod/v4";
 
 import type { AppConfig } from "@/config";
 import { getLogger } from "@/lib/logging";
+import { buildConfigPlugin } from "@/plugins/config-plugin";
 import { PLUGIN_API_VERSION } from "@/plugins/plugin-api-version";
 import type { SitePlugin } from "@/site-plugin";
 
@@ -175,6 +177,27 @@ function normalizeExport(mod: unknown): unknown {
 }
 
 /**
+ * Produces a raw plugin object from a resolved `file://` specifier. A `.json`
+ * specifier is a declarative manifest — read, parse, and run through
+ * `buildConfigPlugin` to synthesize a `SitePlugin` (no per-site TypeScript, no
+ * compile step). Anything else is a compiled module `import()`ed as before. The
+ * synthesized object still flows through the same `validatePluginShape` gate as
+ * a module plugin, so the two sources share one validation path.
+ *
+ * `baseDir` is threaded into `buildConfigPlugin` so a manifest's relative
+ * `spec.httpModule` escape-hatch path resolves against the operator's plugin
+ * directory, consistent with how module specifiers themselves are resolved.
+ */
+async function loadRawPlugin(resolvedPath: string, baseDir: string): Promise<unknown> {
+  if (resolvedPath.endsWith(".json")) {
+    const manifest = JSON.parse(await readFile(fileURLToPath(resolvedPath), "utf8"));
+    return await buildConfigPlugin(manifest, baseDir);
+  }
+  const mod = await import(resolvedPath);
+  return normalizeExport(mod);
+}
+
+/**
  * Loads and validates a list of plugin specifiers. Each specifier is resolved,
  * imported, shape-validated, version-checked, and deduplication-checked before
  * being added to the result. Failures produce disabled records; under `strict`
@@ -202,8 +225,7 @@ export async function loadPlugins(
     try {
       resolvedPath = resolvePluginSpecifier(spec, baseDir);
 
-      const mod = await import(resolvedPath);
-      const raw = normalizeExport(mod);
+      const raw = await loadRawPlugin(resolvedPath, baseDir);
 
       plugin = validatePluginShape(raw);
 
@@ -251,6 +273,27 @@ export async function loadPlugins(
 }
 
 /**
+ * Scans `configDir` for `*.plugin.json` manifests and returns their absolute
+ * paths as loader specifiers. Best-effort: an unreadable directory yields an
+ * empty list with a warn log so a misconfigured `BARNACLE_PLUGINS_CONFIG_DIR`
+ * never crashes boot — the same failure-isolation posture as a bad plugin.
+ */
+async function discoverConfigManifests(configDir: string): Promise<string[]> {
+  try {
+    const entries = await readdir(configDir);
+    return entries
+      .filter((name) => name.endsWith(".plugin.json"))
+      .sort()
+      .map((name) => path.resolve(configDir, name));
+  } catch (err) {
+    logger.warn(
+      `plugin config dir ${JSON.stringify(configDir)} not scannable — ${err instanceof Error ? err.message : String(err)}`
+    );
+    return [];
+  }
+}
+
+/**
  * Composes built-in and out-of-tree plugins into a single result. Built-ins
  * are always listed first and their `siteId`s seed the deduplication set, so
  * an out-of-tree plugin that collides with a built-in is disabled rather than
@@ -270,7 +313,12 @@ export async function loadAllPlugins(cfg: AppConfig): Promise<LoadPluginsResult>
     status: "loaded" as const,
   }));
 
-  const { plugins, report } = await loadPlugins(cfg.plugins.specifiers, {
+  const configManifests = cfg.plugins.configDir
+    ? await discoverConfigManifests(cfg.plugins.configDir)
+    : [];
+  const specifiers = [...cfg.plugins.specifiers, ...configManifests];
+
+  const { plugins, report } = await loadPlugins(specifiers, {
     baseDir: cfg.plugins.baseDir,
     strict: cfg.plugins.strict,
     seenSiteIds,

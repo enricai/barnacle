@@ -295,6 +295,16 @@ BARNACLE_PLUGINS=./plugins/my-site/dist/index.js pnpm start
 
 Barnacle validates the export at startup and registers `POST /v1/my-site/run` automatically. See the [Out-of-tree plugins](#out-of-tree-plugins) env var table for `BARNACLE_PLUGINS_STRICT` and `BARNACLE_PLUGINS_DIR`. A copyable, runnable template lives at [`examples/plugins/hello-site/`](./examples/plugins/hello-site/).
 
+**Config-only (no TypeScript, no compile step):** a browser-flow plugin can be a single JSON manifest. Point `BARNACLE_PLUGINS` at a `*.plugin.json` file, or drop manifests into a directory named by `BARNACLE_PLUGINS_CONFIG_DIR`:
+
+```bash
+BARNACLE_PLUGINS=./plugins/acme-jobs.plugin.json pnpm start
+# or, for directory-drop discovery of every *.plugin.json:
+BARNACLE_PLUGINS_CONFIG_DIR=./plugins pnpm start
+```
+
+The manifest wears the Kubernetes-style `apiVersion` / `kind` / `metadata` / `spec` envelope, declares its request/response/extract shapes as **JSON Schema**, and lists the browser flow as data (the same self-heal step format the recon toolchain authors). Core reads it at startup and registers `POST /v1/acme-jobs/run` — no per-site code. A site needing the direct-HTTP hot path can reference a compiled `executeHttp` module via `spec.httpModule`. A copyable manifest lives at [`examples/plugins/acme-jobs.plugin.json`](./examples/plugins/acme-jobs.plugin.json).
+
 **In-tree (bundled built-ins only):** push to `BUILTIN_SITE_PLUGINS` in `src/plugins/discover.ts`:
 
 ```ts
@@ -617,6 +627,7 @@ BARNACLE_SITE_MY_SHOP_BASE_URL="https://staging.my-shop.com"  # overrides plugin
 | `BARNACLE_PLUGINS` | `""` | Comma-separated list of plugin specifiers to load at startup — relative paths (`./plugins/acme`) or package names (`@acme/barnacle-plugin`). Empty by default (built-ins only). |
 | `BARNACLE_PLUGINS_STRICT` | `false` | When `true`, any plugin that fails to load aborts the process instead of producing a disabled record. |
 | `BARNACLE_PLUGINS_DIR` | `process.cwd()` | Base directory used to resolve relative specifiers and locate the operator's `node_modules`. Defaults to wherever the binary is run — not the installed Barnacle package root. |
+| `BARNACLE_PLUGINS_CONFIG_DIR` | _(unset)_ | Directory scanned at startup for `*.plugin.json` config manifests, each loaded as a config-only plugin. Lets operators register sites by dropping a JSON file in a directory instead of editing `BARNACLE_PLUGINS`. An unreadable directory is logged and skipped — it never crashes boot. |
 
 **Resolution rule:** a specifier starting with `.` or `/` is treated as a filesystem path resolved relative to `BARNACLE_PLUGINS_DIR`. Anything else is treated as an npm package name and resolved via `require.resolve` against the operator's own `node_modules` inside `BARNACLE_PLUGINS_DIR`.
 

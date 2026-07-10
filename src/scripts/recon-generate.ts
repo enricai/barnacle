@@ -2391,6 +2391,90 @@ function buildStepInstructionExpr(instruction: string, field: string | null): st
 }
 
 /**
+ * Rewrites one step instruction into the config-manifest templating form:
+ * the recon splice site (a `${RECON_EMAIL}` token or the first single-quoted
+ * literal) becomes `{{ .request.<field> }}`. Unlike {@link buildStepInstructionExpr}
+ * this yields a plain manifest string, not a TS expression — the runtime
+ * config-plugin resolver, not the code generator, performs the splice.
+ */
+function buildManifestInstruction(instruction: string, field: string | null): string {
+  if (field === null) return instruction;
+  const emailToken = `$${"{RECON_EMAIL}"}`;
+  const emailIdx = instruction.indexOf(emailToken);
+  if (emailIdx >= 0) {
+    return (
+      instruction.slice(0, emailIdx) +
+      `{{ .request.${field} }}` +
+      instruction.slice(emailIdx + emailToken.length)
+    );
+  }
+  const m = /'[^']*'/.exec(instruction);
+  if (m === null) return instruction;
+  return (
+    instruction.slice(0, m.index) +
+    `{{ .request.${field} }}` +
+    instruction.slice(m.index + m[0].length)
+  );
+}
+
+/**
+ * Emits a config-only plugin manifest (`<siteId>.plugin.json`) from the recon
+ * flow, as an alternative to the `.ts` trio for browser-only sites. Reuses the
+ * SAME `resolveStepPayloadField` splice logic as the browser-flow emitter, so
+ * every `{{ .request.<field> }}` reference also lands in the manifest's request
+ * schema — the two cannot drift. The direct-HTTP hot path is intentionally
+ * omitted; a site that needs it keeps the `.ts` path or wires `spec.httpModule`.
+ */
+export function emitConfigManifest(opts: {
+  siteId: string;
+  displayName: string;
+  baseUrl: string;
+  flowSteps: FlowStepInput[];
+}): string {
+  const { siteId, displayName, baseUrl, flowSteps } = opts;
+  const payloadFieldNames = new Set<string>();
+
+  const steps = flowSteps.map((step) => {
+    const isObj = typeof step !== "string";
+    const instruction = isObj ? step.step : step;
+    const field = resolveStepPayloadField(
+      instruction,
+      isObj ? step.payloadField : undefined,
+      isObj ? step.payloadFieldNone : undefined
+    );
+    if (field !== null) payloadFieldNames.add(field);
+    const rewritten = buildManifestInstruction(instruction, field);
+    const optional = isObj ? step.optional === true : false;
+    const upload = isObj ? step.upload === true : false;
+    const submitStep = isObj ? step.submitStep === true : false;
+    if (!optional && !upload && !submitStep) return rewritten;
+    return { step: rewritten, optional, upload, submitStep };
+  });
+
+  const requestProperties = Object.fromEntries(
+    [...payloadFieldNames].sort().map((name) => [name, { type: "string" }])
+  );
+
+  const manifest = {
+    apiVersion: "barnacle.dev/v1",
+    kind: "SitePlugin",
+    metadata: { siteId, displayName },
+    spec: {
+      defaultBaseUrl: baseUrl,
+      request: { type: "object", properties: requestProperties },
+      response: { type: "object", properties: {} },
+      flow: { steps },
+      extract: {
+        instruction: `extract the confirmation id and status for ${siteId}`,
+        schema: { type: "object", properties: {} },
+      },
+    },
+  };
+
+  return `${JSON.stringify(manifest, null, 2)}\n`;
+}
+
+/**
  * Emit the generated browser-flow module and return the accumulated set of
  * spliced payload-field names. Exported so the anti-drift unit test can assert
  * every `payload.<field>` the flow references also appears in the contract's
@@ -2543,10 +2627,19 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2);
   let siteId = "";
   let force = false;
+  let emit: "ts" | "config" = "ts";
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--site-id" && args[i + 1]) siteId = args[++i]!;
     else if (args[i] === "--force") force = true;
+    else if (args[i] === "--emit" && args[i + 1]) {
+      const value = args[++i]!;
+      if (value !== "ts" && value !== "config") {
+        logger.error(`--emit must be "ts" or "config", got ${JSON.stringify(value)}`);
+        process.exit(1);
+      }
+      emit = value;
+    }
   }
 
   if (!siteId) {
@@ -2555,9 +2648,14 @@ async function main(): Promise<void> {
   }
 
   const outDir = `src/sites/${siteId}`;
+  const manifestPath = `src/sites/${siteId}/${siteId}.plugin.json`;
 
-  if (existsSync(outDir) && !force) {
+  if (emit === "ts" && existsSync(outDir) && !force) {
     logger.error(`${outDir} already exists — pass --force to overwrite`);
+    process.exit(1);
+  }
+  if (emit === "config" && existsSync(manifestPath) && !force) {
+    logger.error(`${manifestPath} already exists — pass --force to overwrite`);
     process.exit(1);
   }
 
@@ -2879,6 +2977,24 @@ async function main(): Promise<void> {
   logger.info(
     `generating plugin for ${siteId} (${gql ? "GraphQL" : isSubmissionFlow ? `submission flow, ${actionSteps.length} steps` : "single-endpoint REST"}, baseUrl: ${baseUrl})`
   );
+
+  if (emit === "config") {
+    mkdirSync(outDir, { recursive: true });
+    writeFileSync(
+      manifestPath,
+      emitConfigManifest({
+        siteId,
+        displayName: pascal,
+        baseUrl,
+        flowSteps,
+      })
+    );
+    logger.info(`wrote ${manifestPath}`);
+    logger.info(
+      `done — review ${manifestPath}, fill in response/extract schemas, then load via BARNACLE_PLUGINS or BARNACLE_PLUGINS_CONFIG_DIR (no compile step)`
+    );
+    return;
+  }
 
   mkdirSync(`${outDir}/flows`, { recursive: true });
 
