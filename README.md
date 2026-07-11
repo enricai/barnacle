@@ -361,7 +361,8 @@ When the smoke test fails: re-run `pnpm run recon:browser` → diff `/tmp/recon/
 | `HttpServerError` | 5xx | **Yes** | Server-side outage; recovery strategy is the same |
 | `HttpRateLimitError` | 429 | **No** | A 429 means the configured rps ceiling is too high. Routing to the browser path would just hit the same ceiling and waste a Steel session. The right response is to lower the Bottleneck `minTime` in `contract.ts` and re-deploy. |
 | `HttpUrlLockedError` | 429 | **No** | Oracle HCM returned `ORA_URL_LOCKED` — the requisition URL is locked at Oracle's end. Neither a retry nor a browser session can succeed; the caller must back off and surface a "retry later" state. |
-| `UnknownScraperError` | Any | **No** | Transient network failure or non-JSON sentinel (e.g. Oracle HCM `ORA_IRC_*`). `createHttpClient` retries up to 2 times internally; if all attempts fail, the error propagates as `ScrapeFailureError`. |
+| `OracleTokenExpiredError` | Any | **No** | Oracle HCM returned a plain-text `ORA_IRC_TOKEN_EXPIRED` sentinel. Retryable so p-retry keeps retrying, but distinct from `UnknownScraperError` so the encompass http-flow can catch exactly this class and re-mint the AccessCode before retrying. |
+| `UnknownScraperError` | Any | **No** | Transient network failure or unclassified non-JSON response. `createHttpClient` retries up to 2 times internally; if all attempts fail, the error propagates as `ScrapeFailureError`. |
 
 ### Cache deduplication
 
