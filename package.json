@@ -81,7 +81,7 @@
     "p-retry": "^8.0.0",
     "pino": "^10.3.1",
     "steel-sdk": "^0.18.0",
-    "typescript": "^6.0.3",
+    "typescript": "^7.0.2",
     "undici": "8",
     "zod": "^3.23.8"
   },
