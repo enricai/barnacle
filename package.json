@@ -54,9 +54,9 @@
     "probe:warmup": "tsx --env-file=.env src/scripts/probe-warmup-reliability.ts"
   },
   "dependencies": {
-    "@ai-sdk/amazon-bedrock": "^5.0.14",
-    "@anthropic-ai/sdk": "^0.110.0",
-    "@aws-sdk/client-s3": "^3.1083.0",
+    "@ai-sdk/amazon-bedrock": "^5.0.17",
+    "@anthropic-ai/sdk": "^0.111.0",
+    "@aws-sdk/client-s3": "^3.1085.0",
     "@browserbasehq/stagehand": "^3.6.0",
     "@fastify/compress": "^9.0.0",
     "@fastify/helmet": "^13.1.0",
