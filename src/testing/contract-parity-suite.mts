@@ -8,7 +8,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import type { SitePluginMeta } from "@/site-plugin";
+import type { SitePluginMeta } from "@/site-plugin.js";
 
 /** One case that must be rejected by the plugin's bodySchema. */
 export interface ParityRejectionCase {

@@ -1,6 +1,6 @@
 {
   "name": "@enricai/barnacle",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Site-agnostic browser automation engine. POST a structured payload to a typed endpoint; Barnacle drives a Steel + Stagehand session through the target site and returns a structured result.",
   "license": "MIT",
   "author": "Enricai",
@@ -179,8 +179,8 @@
       "default": "./dist/testing/answers-fixture.js"
     },
     "./testing/contract-parity-suite": {
-      "types": "./dist/testing/contract-parity-suite.d.ts",
-      "default": "./dist/testing/contract-parity-suite.js"
+      "types": "./dist/testing/contract-parity-suite.d.mts",
+      "default": "./dist/testing/contract-parity-suite.mjs"
     },
     "./testing/mock-fetch-response": {
       "types": "./dist/testing/mock-fetch-response.d.ts",
@@ -191,8 +191,8 @@
       "default": "./dist/testing/persona-fixture.js"
     },
     "./testing/replay-integration-suite": {
-      "types": "./dist/testing/replay-integration-suite.d.ts",
-      "default": "./dist/testing/replay-integration-suite.js"
+      "types": "./dist/testing/replay-integration-suite.d.mts",
+      "default": "./dist/testing/replay-integration-suite.mjs"
     },
     "./testing/resume-fixture": {
       "types": "./dist/testing/resume-fixture.d.ts",
@@ -260,13 +260,17 @@
   },
   "peerDependencies": {
     "dd-trace": "^6",
-    "hot-shots": "^17"
+    "hot-shots": "^17",
+    "vitest": "^4.1.10"
   },
   "peerDependenciesMeta": {
     "dd-trace": {
       "optional": true
     },
     "hot-shots": {
+      "optional": true
+    },
+    "vitest": {
       "optional": true
     }
   },

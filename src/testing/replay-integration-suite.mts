@@ -11,9 +11,13 @@ import { resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import type { SitePlugin } from "@/site-plugin";
-import { runIntegrationJob } from "@/testing/integration-runner";
-import type { PollTestmailInboxOptions, TestmailInbox, TestmailMessage } from "@/testmail/client";
+import type { SitePlugin } from "@/site-plugin.js";
+import { runIntegrationJob } from "@/testing/integration-runner.js";
+import type {
+  PollTestmailInboxOptions,
+  TestmailInbox,
+  TestmailMessage,
+} from "@/testmail/client.js";
 
 const DEFAULT_TIMEOUT_MS = 600_000;
 

@@ -13,7 +13,7 @@ import type { SitePlugin, SitePluginContext, SitePluginResult } from "@/site-plu
 import {
   type ContractParitySuiteOptions,
   defineContractParitySuite,
-} from "@/testing/contract-parity-suite";
+} from "@/testing/contract-parity-suite.mjs";
 
 // ── Stub schema ───────────────────────────────────────────────────────────────
 
