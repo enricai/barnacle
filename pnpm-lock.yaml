@@ -71,8 +71,8 @@ importers:
         specifier: ^5.0.2
         version: 5.0.2(@fastify/swagger@9.8.0)(fastify@5.10.0)(zod@3.25.76)
       hot-shots:
-        specifier: ^16
-        version: 16.0.0
+        specifier: ^17
+        version: 17.0.0
       http-status-codes:
         specifier: ^2.3.0
         version: 2.3.0
@@ -1971,8 +1971,8 @@ packages:
     resolution: {integrity: sha512-1yrb/+w6HWQJrUCLkJ2IF5jNIPvvFkblV5RNOYl6bV+OA6p9GLcMpHFFGTosSvHvcAUibuUukRqhlYI4z32C7Q==}
     engines: {node: '>=16.9.0'}
 
-  hot-shots@16.0.0:
-    resolution: {integrity: sha512-1WHuq7vv0Hj6wiSmR89XpxxiNnw9s1W50yGJExC3/PSqVv+Kr7GSk3rz0jsTWjhIkF1c5Nz9mpLdzJ+CqKKwMg==}
+  hot-shots@17.0.0:
+    resolution: {integrity: sha512-d3URpxEO5b0HQfZsrU2qRJ+cUPr9WBrsgHCVnD1bRdFI7KIZokNVI8n1uthsl4WB2l50WWS9vTlwJSOF/6I12w==}
     engines: {node: '>=18.0.0'}
 
   html-escaper@2.0.2:
@@ -4735,7 +4735,7 @@ snapshots:
 
   hono@4.12.27: {}
 
-  hot-shots@16.0.0:
+  hot-shots@17.0.0:
     optionalDependencies:
       unix-dgram: 2.0.7
 
