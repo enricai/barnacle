@@ -862,12 +862,7 @@ describe("SITE_PLUGINS alias", () => {
     expect(SITE_PLUGINS).toBe(BUILTIN_SITE_PLUGINS);
   });
 
-  it("contains the built-in site plugins", () => {
-    expect(SITE_PLUGINS.map((p) => p.meta.siteId)).toEqual([
-      "appcast",
-      "clearcompany",
-      "encompasshealth",
-      "hca",
-    ]);
+  it("is empty on the engine branch — site plugins load via BARNACLE_PLUGINS", () => {
+    expect(SITE_PLUGINS).toEqual([]);
   });
 });
