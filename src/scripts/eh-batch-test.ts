@@ -101,7 +101,6 @@ async function main(): Promise<void> {
           MeetsMinimumAge: "Yes",
           AppliedToSanfordOrGoodSamaritanLast6Months: "No",
           HasOrWillObtainLicense: "Yes",
-          ReferredByCurrentSanfordOrGoodSamaritanEmployee: "No",
         },
       };
       const t0 = Date.now();
