@@ -14,6 +14,7 @@ import authPlugin from "@/api/plugins/auth";
 import errorHandlerPlugin from "@/api/plugins/error-handler";
 import type { AppConfig } from "@/config";
 import { getLogger } from "@/lib/logging";
+import { multipartJsonObject } from "@/lib/zod-multipart";
 import { BUILTIN_SITE_PLUGINS } from "@/plugins/discover";
 import { dispatch, registerRoutes, SITE_PLUGINS } from "@/plugins/loader";
 import {
@@ -867,6 +868,81 @@ describe("registerRoutes — extraRoutes loop", () => {
       payload: { a: "x" },
     });
     expect(unknownSite.statusCode).toBe(400);
+
+    await app.close();
+  });
+
+  // Regression: the PROD config — appcast + encompasshealth both register the
+  // SAME multipart :siteId/resume route. The shared-route path skips Fastify's
+  // schema.body and validates via manual route.bodySchema.parse(); this asserts
+  // that path still runs the schema's z.preprocess coercion (multipartJsonObject)
+  // over a real multipart/form-data body and dispatches to the right plugin.
+  it("dispatches a :siteId-shared MULTIPART route and coerces per-plugin body", async () => {
+    const alphaPayload = vi.fn();
+    const betaPayload = vi.fn();
+    const makePlugin = (
+      siteId: string,
+      capture: typeof alphaPayload
+    ): SitePlugin<unknown, unknown> => ({
+      meta: {
+        siteId,
+        displayName: siteId,
+        bodySchema: z.object({ q: z.string() }),
+        responseSchema: z.unknown(),
+        extraRoutes: [
+          {
+            method: "post",
+            path: "/v1/:siteId/resume",
+            multipart: true,
+            // Nested object arrives as a JSON string in multipart; the schema's
+            // preprocessor must decode it — the exact coercion the shared path
+            // must preserve when it parses manually.
+            bodySchema: z.object({
+              Name: z.string(),
+              Answers: multipartJsonObject(z.object({ a: z.string() })),
+            }),
+            paramsSchema: z.object({ siteId: z.string() }),
+            handler: async (request) => {
+              capture(request.body);
+              return { site: siteId };
+            },
+          },
+        ],
+      },
+      execute: vi.fn(),
+    });
+
+    const app = await buildAppWithPlugins([
+      makePlugin("alpha", alphaPayload),
+      makePlugin("beta", betaPayload),
+    ]);
+
+    const boundary = "----barnacleSharedMultipart";
+    const body = Buffer.concat([
+      Buffer.from(`--${boundary}\r\n`),
+      Buffer.from(`Content-Disposition: form-data; name="Name"\r\n\r\n`),
+      Buffer.from(`Nurse Joy\r\n`),
+      Buffer.from(`--${boundary}\r\n`),
+      Buffer.from(`Content-Disposition: form-data; name="Answers"\r\n\r\n`),
+      Buffer.from(`{"a":"yes"}\r\n`),
+      Buffer.from(`--${boundary}--\r\n`),
+    ]);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/beta/resume",
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+      payload: body,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(betaPayload).toHaveBeenCalledOnce();
+    expect(alphaPayload).not.toHaveBeenCalled();
+    const received = betaPayload.mock.calls[0]?.[0] as { Name: string; Answers: { a: string } };
+    expect(received.Name).toBe("Nurse Joy");
+    // The JSON string was decoded by the schema preprocessor through the manual
+    // shared-route parse — proves coercion is preserved off the Fastify path.
+    expect(received.Answers).toEqual({ a: "yes" });
 
     await app.close();
   });

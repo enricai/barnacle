@@ -382,7 +382,7 @@ function registerExtraRoutes(
   const byMethodPath = new Map<
     string,
     {
-      method: string;
+      method: Uppercase<SitePluginExtraRoute["method"]>;
       path: string;
       multipart: boolean;
       owners: Map<string, SitePlugin<unknown, unknown>>;
@@ -391,9 +391,10 @@ function registerExtraRoutes(
 
   for (const plugin of plugins) {
     for (const route of plugin.meta.extraRoutes ?? []) {
-      const key = `${route.method.toUpperCase()} ${route.path}`;
+      const method = route.method.toUpperCase() as Uppercase<SitePluginExtraRoute["method"]>;
+      const key = `${method} ${route.path}`;
       const entry = byMethodPath.get(key) ?? {
-        method: route.method.toUpperCase(),
+        method,
         path: route.path,
         multipart: false,
         owners: new Map<string, SitePlugin<unknown, unknown>>(),
@@ -416,7 +417,7 @@ function registerExtraRoutes(
     const soleRoute = soleOwner ? findRoute(soleOwner) : undefined;
 
     app.route({
-      method: entry.method as Uppercase<string>,
+      method: entry.method,
       url: entry.path,
       onRequest: [app.authenticate],
       schema: {
@@ -426,12 +427,11 @@ function registerExtraRoutes(
         ...(entry.multipart ? { consumes: ["multipart/form-data"] } : {}),
       },
       handler: async (request) => {
-        const plugin = shared
-          ? entry.owners.get((request.params as { siteId?: string }).siteId ?? "")
-          : soleOwner;
+        const siteId = (request.params as { siteId?: string }).siteId ?? "";
+        const plugin = shared ? entry.owners.get(siteId) : soleOwner;
         if (!plugin) {
           throw new FieldViolationError(
-            `no plugin registered for siteId ${JSON.stringify((request.params as { siteId?: string }).siteId ?? "")} on ${entry.method} ${entry.path}`
+            `no plugin registered for siteId ${JSON.stringify(siteId)} on ${entry.method} ${entry.path}`
           );
         }
         const route = findRoute(plugin);
@@ -468,7 +468,7 @@ function registerExtraRoutes(
     });
 
     logger.info(
-      `${entry.method} ${entry.path} → [${[...entry.owners.keys()].join(", ")}] (loaded)`
+      `${entry.path} → [${[...entry.owners.keys()].join(", ")}] via ${entry.method} (loaded)`
     );
   }
 }
