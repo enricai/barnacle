@@ -787,6 +787,89 @@ describe("registerRoutes — extraRoutes loop", () => {
     // registered before the routes that require it.
     await expect(buildAppWithPlugin(plugin)).resolves.toBeDefined();
   });
+
+  async function buildAppWithPlugins(
+    plugins: SitePlugin<unknown, unknown>[]
+  ): Promise<Parameters<typeof registerRoutes>[0]> {
+    const app = Fastify({ loggerInstance: getLogger({ name: "loader-test" }) });
+    app.setValidatorCompiler(validatorCompiler);
+    app.setSerializerCompiler(serializerCompiler);
+    await app.register(errorHandlerPlugin);
+    await app.register(authPlugin);
+    await registerRoutes(app, cfgStub, plugins);
+    await app.ready();
+    return app;
+  }
+
+  // Regression: two plugins declaring the SAME parameterized extra route
+  // (POST /v1/:siteId/resume) must not crash boot with FST_ERR_DUPLICATED_ROUTE,
+  // and each site must dispatch to its own handler + body contract.
+  it("registers a :siteId-shared extra route once and dispatches by siteId", async () => {
+    const alphaHandler = vi.fn().mockResolvedValue({ site: "alpha" });
+    const betaHandler = vi.fn().mockResolvedValue({ site: "beta" });
+    const makePlugin = (
+      siteId: string,
+      bodySchema: z.ZodType,
+      handler: typeof alphaHandler
+    ): SitePlugin<unknown, unknown> => ({
+      meta: {
+        siteId,
+        displayName: siteId,
+        bodySchema: z.object({ q: z.string() }),
+        responseSchema: z.unknown(),
+        extraRoutes: [
+          {
+            method: "post",
+            path: "/v1/:siteId/resume",
+            bodySchema,
+            paramsSchema: z.object({ siteId: z.string() }),
+            handler,
+          },
+        ],
+      },
+      execute: vi.fn(),
+    });
+
+    const app = await buildAppWithPlugins([
+      makePlugin("alpha", z.object({ a: z.string() }), alphaHandler),
+      makePlugin("beta", z.object({ b: z.string() }), betaHandler),
+    ]);
+
+    const alphaRes = await app.inject({
+      method: "POST",
+      url: "/v1/alpha/resume",
+      payload: { a: "hi" },
+    });
+    expect(alphaRes.statusCode).toBe(200);
+    expect(alphaHandler).toHaveBeenCalledOnce();
+    expect(betaHandler).not.toHaveBeenCalled();
+
+    const betaRes = await app.inject({
+      method: "POST",
+      url: "/v1/beta/resume",
+      payload: { b: "yo" },
+    });
+    expect(betaRes.statusCode).toBe(200);
+    expect(betaHandler).toHaveBeenCalledOnce();
+
+    // beta's body schema requires `b`; alpha's payload must fail beta's contract.
+    const wrongBody = await app.inject({
+      method: "POST",
+      url: "/v1/beta/resume",
+      payload: { a: "wrong" },
+    });
+    expect(wrongBody.statusCode).toBe(400);
+
+    // Unknown siteId on the shared path is a field violation, not a crash.
+    const unknownSite = await app.inject({
+      method: "POST",
+      url: "/v1/nope/resume",
+      payload: { a: "x" },
+    });
+    expect(unknownSite.statusCode).toBe(400);
+
+    await app.close();
+  });
 });
 
 describe("dispatch — needsUserInfo branch", () => {

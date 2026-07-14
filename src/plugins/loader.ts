@@ -8,6 +8,7 @@ import {
   type ApiError,
   CaptchaEncounteredError,
   EmptyResultsApiError,
+  FieldViolationError,
   ScrapeFailureError,
   ThrottledRequestError,
   UrlLockedError,
@@ -48,11 +49,23 @@ import {
   recordRateLimitRejection,
 } from "@/scraper/metrics";
 import { runWithSession } from "@/scraper/pool";
-import type { SitePlugin, SitePluginContext, SitePluginResult } from "@/site-plugin";
+import type {
+  SitePlugin,
+  SitePluginContext,
+  SitePluginExtraRoute,
+  SitePluginResult,
+} from "@/site-plugin";
 import { type DispatchMetrics, DispatchMetricsSchema } from "@/types/dispatch-metrics";
 import type { Logger } from "@/types/logging";
 
 const logger = getLogger({ name: "plugins/loader" });
+
+/**
+ * Params schema for shared `:siteId`-parameterized extra routes. Core validates
+ * only the site discriminator; each plugin's own body contract is enforced in
+ * the handler after the owning plugin is resolved.
+ */
+const siteIdRouteParamsSchema = z.object({ siteId: z.string().min(1) });
 
 /**
  * Alias for `BUILTIN_SITE_PLUGINS` kept for backwards compatibility with
@@ -342,38 +355,120 @@ export async function registerRoutes(
     );
 
     logger.info(`${plugin.meta.siteId} → ${routePath} (loaded)`);
+  }
 
-    for (const route of plugin.meta.extraRoutes ?? []) {
-      app.route({
-        method: route.method.toUpperCase() as Uppercase<typeof route.method>,
-        url: route.path,
-        onRequest: [app.authenticate],
-        schema: {
-          ...(route.bodySchema ? { body: route.bodySchema } : {}),
-          ...(route.paramsSchema ? { params: route.paramsSchema } : {}),
-          ...(route.multipart === true ? { consumes: ["multipart/form-data"] } : {}),
-        },
-        handler: async (request) => {
-          const context: SitePluginContext = {
-            baseUrl,
-            logger: extendLogger(request.log as unknown as pino.Logger),
-            config: cfg,
-            requestId: request.id,
-            metricsCollector: new MetricsCollector(),
-          };
-          const result = await route.handler(
-            {
-              body: request.body,
-              params: request.params as Record<string, string>,
-              log: request.log as unknown as Logger,
-            },
-            context
-          );
-          return route.envelope === false ? result : successEnvelope(result as object);
-        },
-      });
+  registerExtraRoutes(app, cfg, plugins);
+}
 
-      logger.info(`${plugin.meta.siteId} → ${route.path} (loaded)`);
+/**
+ * Fastify registers each `method+url` exactly once, but several plugins declare
+ * the SAME parameterized extra route (e.g. `POST /v1/:siteId/resume` for both
+ * appcast and encompasshealth). Registering per-plugin throws
+ * `FST_ERR_DUPLICATED_ROUTE` and crashes boot.
+ *
+ * We group extra routes by `method+path` and register each unique path once.
+ * A path claimed by a single plugin registers with that plugin's own body/params
+ * schema and handler (unchanged behavior). A path shared by multiple plugins is
+ * necessarily `:siteId`-parameterized: core validates only the `:siteId` param,
+ * then resolves the owning plugin from it at request time and validates the body
+ * against that plugin's own `bodySchema`, because sibling plugins sharing a path
+ * carry different body contracts.
+ */
+function registerExtraRoutes(
+  app: FastifyInstance<RawServerDefault, IncomingMessage, ServerResponse, Logger>,
+  cfg: AppConfig,
+  plugins: SitePlugin<unknown, unknown>[]
+): void {
+  const byMethodPath = new Map<
+    string,
+    {
+      method: string;
+      path: string;
+      multipart: boolean;
+      owners: Map<string, SitePlugin<unknown, unknown>>;
     }
+  >();
+
+  for (const plugin of plugins) {
+    for (const route of plugin.meta.extraRoutes ?? []) {
+      const key = `${route.method.toUpperCase()} ${route.path}`;
+      const entry = byMethodPath.get(key) ?? {
+        method: route.method.toUpperCase(),
+        path: route.path,
+        multipart: false,
+        owners: new Map<string, SitePlugin<unknown, unknown>>(),
+      };
+      entry.multipart = entry.multipart || route.multipart === true;
+      entry.owners.set(plugin.meta.siteId, plugin);
+      byMethodPath.set(key, entry);
+    }
+  }
+
+  for (const entry of byMethodPath.values()) {
+    const shared = entry.owners.size > 1;
+
+    const findRoute = (plugin: SitePlugin<unknown, unknown>): SitePluginExtraRoute | undefined =>
+      plugin.meta.extraRoutes?.find(
+        (r) => r.method.toUpperCase() === entry.method && r.path === entry.path
+      );
+
+    const soleOwner = shared ? undefined : [...entry.owners.values()][0];
+    const soleRoute = soleOwner ? findRoute(soleOwner) : undefined;
+
+    app.route({
+      method: entry.method as Uppercase<string>,
+      url: entry.path,
+      onRequest: [app.authenticate],
+      schema: {
+        ...(shared ? { params: siteIdRouteParamsSchema } : {}),
+        ...(!shared && soleRoute?.bodySchema ? { body: soleRoute.bodySchema } : {}),
+        ...(!shared && soleRoute?.paramsSchema ? { params: soleRoute.paramsSchema } : {}),
+        ...(entry.multipart ? { consumes: ["multipart/form-data"] } : {}),
+      },
+      handler: async (request) => {
+        const plugin = shared
+          ? entry.owners.get((request.params as { siteId?: string }).siteId ?? "")
+          : soleOwner;
+        if (!plugin) {
+          throw new FieldViolationError(
+            `no plugin registered for siteId ${JSON.stringify((request.params as { siteId?: string }).siteId ?? "")} on ${entry.method} ${entry.path}`
+          );
+        }
+        const route = findRoute(plugin);
+        if (!route) {
+          throw new FieldViolationError(
+            `plugin ${plugin.meta.siteId} has no handler for ${entry.method} ${entry.path}`
+          );
+        }
+
+        // Fastify already validated the body for single-owner routes (schema.body
+        // above); shared routes defer body validation to here, against the
+        // resolved plugin's own contract.
+        const body =
+          shared && route.bodySchema ? route.bodySchema.parse(request.body) : request.body;
+        const baseUrl =
+          cfg.scraper.siteBaseUrls[plugin.meta.siteId] ?? plugin.meta.defaultBaseUrl ?? "";
+        const context: SitePluginContext = {
+          baseUrl,
+          logger: extendLogger(request.log as unknown as pino.Logger),
+          config: cfg,
+          requestId: request.id,
+          metricsCollector: new MetricsCollector(),
+        };
+        const result = await route.handler(
+          {
+            body,
+            params: request.params as Record<string, string>,
+            log: request.log as unknown as Logger,
+          },
+          context
+        );
+        return route.envelope === false ? result : successEnvelope(result as object);
+      },
+    });
+
+    logger.info(
+      `${entry.method} ${entry.path} → [${[...entry.owners.keys()].join(", ")}] (loaded)`
+    );
   }
 }
