@@ -1,7 +1,7 @@
 import { formatISO } from "date-fns";
 import pino from "pino";
 
-import { tracer } from "@/lib/datadog";
+import { getTracer } from "@/lib/datadog";
 import { getBoolEnv, getEnv, getNodeEnv } from "@/lib/env";
 import type { Logger } from "@/types/logging";
 
@@ -238,7 +238,7 @@ export function getLogger({ name, level }: { name: string; level?: string }): Lo
 }
 
 function ddMixin(): object {
-  const span = tracer.scope().active();
+  const span = getTracer()?.scope().active();
   if (!span) return {};
   const ctx = span.context();
   return { "dd.trace_id": ctx.toTraceId(), "dd.span_id": ctx.toSpanId() };

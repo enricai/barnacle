@@ -578,6 +578,38 @@ in each `contract.ts` for outbound rate limits to target sites.
 | `READINESS_QUEUE_THRESHOLD` | `20` | `/readyz` returns 503 when scraper queue depth exceeds this. Lets orchestrators shed load before the pool is saturated. |
 | `ENABLE_DOCS` | `false` | Serve Swagger UI at `/docs`. Disable in production. |
 
+### Datadog (opt-in)
+
+APM tracing and DogStatsD metrics are **opt-in**: `dd-trace` and `hot-shots` are
+optional peer dependencies, so a plain `npm i @enricai/barnacle` installs neither
+and Barnacle runs without them. Enable either half independently — install the
+package and flip its flag. If a flag is on but the package is missing, Barnacle
+warns and carries on with that feature disabled; it never fails to boot.
+
+```bash
+# APM tracing
+pnpm add dd-trace
+DD_TRACE_ENABLED=true node --import dd-trace/initialize dist/server.js
+
+# DogStatsD metrics
+pnpm add hot-shots
+DD_METRICS_ENABLED=true node dist/server.js
+```
+
+Tracing needs `--import dd-trace/initialize` for full auto-instrumentation:
+Datadog requires the tracer to load before any other module so it can patch
+http/net/dns. Metrics have no such constraint.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `DD_TRACE_ENABLED` | `false` | Enable APM tracing. Requires the `dd-trace` peer dependency. |
+| `DD_METRICS_ENABLED` | `false` | Enable DogStatsD metrics. Requires the `hot-shots` peer dependency. Independent of `DD_TRACE_ENABLED`. |
+| `DD_AGENT_HOST` | `localhost` | Datadog agent hostname (the sidecar, in ECS Fargate). |
+| `DD_DOGSTATSD_PORT` | `8125` | DogStatsD UDP port on the agent host. |
+| `DD_SERVICE` | `barnacle` | Service name tagged on spans and metrics. |
+| `DD_ENV` | `NODE_ENV` | Deployment environment tag. |
+| `DD_VERSION` | `0.1.0` | Application version tag — git SHA or package version. |
+
 ### Telemetry
 
 | Variable | Default | Purpose |

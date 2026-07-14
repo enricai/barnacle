@@ -1,6 +1,6 @@
 {
   "name": "@enricai/barnacle",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Site-agnostic browser automation engine. POST a structured payload to a typed endpoint; Barnacle drives a Steel + Stagehand session through the target site and returns a structured result.",
   "license": "MIT",
   "author": "Enricai",
@@ -242,12 +242,10 @@
     "bcryptjs": "^3.0.3",
     "bottleneck": "^2.19.5",
     "date-fns": "^4.4.0",
-    "dd-trace": "^6",
     "dotenv": "^17.4.2",
     "fastify": "^5.10.0",
     "fastify-plugin": "^6.0.0",
     "fastify-type-provider-zod": "^5.0.2",
-    "hot-shots": "^17",
     "http-status-codes": "^2.3.0",
     "lru-cache": "^11.5.2",
     "nanoid": "^6.0.0",
@@ -260,11 +258,25 @@
     "undici": "8",
     "zod": "^3.23.8"
   },
+  "peerDependencies": {
+    "dd-trace": "^6",
+    "hot-shots": "^17"
+  },
+  "peerDependenciesMeta": {
+    "dd-trace": {
+      "optional": true
+    },
+    "hot-shots": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@biomejs/biome": "^2.5.2",
     "@types/bcryptjs": "^3.0.0",
     "@types/node": "^26.1.0",
     "@vitest/coverage-v8": "^4.1.10",
+    "dd-trace": "^6",
+    "hot-shots": "^17",
     "husky": "^9.1.6",
     "pino-pretty": "^13.0.0",
     "tsc-alias": "^1.9.0",
