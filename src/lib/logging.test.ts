@@ -1,6 +1,33 @@
-import { describe, expect, it } from "vitest";
+import type pino from "pino";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { getLogger, splitLargeMessage } from "@/lib/logging";
+
+const pinoOptionsCalls: pino.LoggerOptions[] = [];
+
+// Spies on the options pino is constructed with, so tests can assert on
+// `transport` directly instead of relying on pino-pretty being absent from
+// node_modules (it's a devDependency and is installed in this repo's test
+// environment either way).
+vi.mock("pino", async (importOriginal) => {
+  const actual = (await importOriginal()) as typeof import("pino") & { default: typeof pino };
+  const spied = (options: pino.LoggerOptions) => {
+    pinoOptionsCalls.push(options);
+    return actual.default(options);
+  };
+  return { ...actual, default: spied };
+});
+
+/** Re-imports the module fresh under the given NODE_ENV — isDevelopment
+ * and the pino transport are computed once at module load. */
+async function loadLoggingWithNodeEnv(nodeEnv: string) {
+  const preserved = process.env.NODE_ENV;
+  process.env.NODE_ENV = nodeEnv;
+  vi.resetModules();
+  const mod = await import("@/lib/logging.js");
+  process.env.NODE_ENV = preserved;
+  return mod;
+}
 
 /**
  * CloudWatch caps log events at 256KB. splitLargeMessage is the one
@@ -134,5 +161,41 @@ describe("lib/logging getLogger", () => {
     expect(() => logger.warn("simple warn")).not.toThrow();
     expect(() => logger.error("simple error")).not.toThrow();
     expect(() => logger.debug("simple debug")).not.toThrow();
+  });
+});
+
+/**
+ * Pins the pino-pretty prod-crash fix: getScriptLogger must gate its
+ * transport behind the same isDevelopment check getLogger uses, so it can
+ * never drag a devDependency-only transport into a production module-load
+ * path (see the crash report for src/lib/llm/judge.ts).
+ */
+describe("lib/logging getScriptLogger", () => {
+  afterEach(() => {
+    pinoOptionsCalls.length = 0;
+  });
+
+  it("configures no transport (raw JSON) under NODE_ENV=production", async () => {
+    const { getScriptLogger } = await loadLoggingWithNodeEnv("production");
+    pinoOptionsCalls.length = 0;
+    getScriptLogger("test-script");
+    expect(pinoOptionsCalls.at(-1)?.transport).toBeUndefined();
+  });
+
+  it("configures no transport (raw JSON) under NODE_ENV=test", async () => {
+    const { getScriptLogger } = await loadLoggingWithNodeEnv("test");
+    pinoOptionsCalls.length = 0;
+    getScriptLogger("test-script");
+    expect(pinoOptionsCalls.at(-1)?.transport).toBeUndefined();
+  });
+
+  it("still configures the pino-pretty transport under NODE_ENV=development", async () => {
+    const { getScriptLogger } = await loadLoggingWithNodeEnv("development");
+    pinoOptionsCalls.length = 0;
+    getScriptLogger("test-script");
+    expect(pinoOptionsCalls.at(-1)?.transport).toEqual({
+      target: "pino-pretty",
+      options: { colorize: true, translateTime: "SYS:standard", ignore: "pid,hostname" },
+    });
   });
 });

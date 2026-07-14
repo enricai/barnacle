@@ -31,7 +31,7 @@ import { judgeModalPriorityWithLLM } from "@/lib/llm/judges/modal-priority";
 import { judgeSelectOptionWithLLM } from "@/lib/llm/judges/select-option";
 import { verifySubmitWithLLM } from "@/lib/llm/judges/verify-submit";
 import { REPHRASE_RESPONSE_SCHEMA } from "@/lib/llm/schemas";
-import { getScriptLogger } from "@/lib/logging";
+import { getLogger } from "@/lib/logging";
 import {
   captureLlmCall,
   classifyLlmCallFailure,
@@ -43,7 +43,7 @@ import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
 import { CAPTURES_DIR, type Capture } from "@/scripts/recon-shared";
 import type { Logger } from "@/types/logging";
 
-const logger = getScriptLogger("flow-runner");
+const logger = getLogger({ name: "scraper/flow-runner" });
 
 /** Cap on the rolling capture-filename window held in memory for failure dumps. */
 const RECENT_CAPTURES_WINDOW = 20;

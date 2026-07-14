@@ -32,14 +32,14 @@ import type Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import type { z } from "zod/v4";
 
-import { getScriptLogger } from "@/lib/logging";
+import { getLogger } from "@/lib/logging";
 import {
   captureLlmCall,
   classifyLlmCallFailure,
   type LlmCallInput,
 } from "@/lib/telemetry/call-capture";
 
-const logger = getScriptLogger("haiku-judge");
+const logger = getLogger({ name: "haiku-judge" });
 
 /**
  * Pinned Haiku version. We pin to a dated snapshot so prompts that

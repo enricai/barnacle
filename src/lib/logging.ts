@@ -187,20 +187,18 @@ export function extendLogger(logger: pino.Logger): Logger {
 }
 
 /**
- * Returns a pino logger with pino-pretty transport unconditionally — for
- * one-shot CLI scripts where human-readable output is required in all
- * environments. Satisfies CLAUDE.md's "never console" rule without
- * emitting raw JSON that obscures progress output.
+ * Returns a pino logger for one-shot CLI scripts. Uses pino-pretty in
+ * development (where the devDependency is installed) and falls back to raw
+ * JSON elsewhere, mirroring `getLogger`'s gating — `pino-pretty` is pruned
+ * from production images, so an unconditional transport crashes on module
+ * load in prod (see the pino-pretty prod-crash incident).
  */
 export function getScriptLogger(name: string): Logger {
   return extendLogger(
     pino({
       name: getLogName(name, defaultAppName),
       level: process.env.LOG_LEVEL ?? "info",
-      transport: {
-        target: "pino-pretty",
-        options: { colorize: true, translateTime: "SYS:standard", ignore: "pid,hostname" },
-      },
+      transport,
     })
   );
 }
