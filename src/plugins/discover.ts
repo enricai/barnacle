@@ -10,10 +10,6 @@ import { getLogger } from "@/lib/logging";
 import { buildConfigPlugin } from "@/plugins/config-plugin";
 import { PLUGIN_API_VERSION } from "@/plugins/plugin-api-version";
 import type { SitePlugin } from "@/site-plugin";
-import { appcastPlugin } from "@/sites/appcast";
-import { clearcompanyPlugin } from "@/sites/clearcompany";
-import { encompasshealthPlugin } from "@/sites/encompasshealth";
-import { hcaPlugin } from "@/sites/hca";
 
 const logger = getLogger({ name: "plugins/discover" });
 
@@ -46,17 +42,15 @@ export interface LoadPluginsResult {
 }
 
 /**
- * In-tree plugins bundled with Barnacle. Operators extend the registry with
- * their own out-of-tree modules via `BARNACLE_PLUGINS`.
+ * Statically-registered in-tree plugins. Empty by default: this engine branch
+ * ships no site plugins, so operators register every plugin at runtime via
+ * `BARNACLE_PLUGINS` (compiled module specifiers) or `*.plugin.json` config
+ * manifests. Kept as a mutable array so tests can push a fixture builtin and so
+ * a downstream branch that vendors sites in-tree can repopulate it.
  *
  * @see loadAllPlugins for how built-ins and out-of-tree plugins are composed.
  */
-export const BUILTIN_SITE_PLUGINS: SitePlugin<unknown, unknown>[] = [
-  appcastPlugin as SitePlugin<unknown, unknown>,
-  clearcompanyPlugin as SitePlugin<unknown, unknown>,
-  encompasshealthPlugin as SitePlugin<unknown, unknown>,
-  hcaPlugin as SitePlugin<unknown, unknown>,
-];
+export const BUILTIN_SITE_PLUGINS: SitePlugin<unknown, unknown>[] = [];
 
 /**
  * Resolves a plugin specifier to a `file://` URL string that `import()` can
