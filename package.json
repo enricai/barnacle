@@ -178,6 +178,14 @@
       "types": "./dist/testing/answers-fixture.d.ts",
       "default": "./dist/testing/answers-fixture.js"
     },
+    "./testing/batch-email-confirmation": {
+      "types": "./dist/testing/batch-email-confirmation.d.ts",
+      "default": "./dist/testing/batch-email-confirmation.js"
+    },
+    "./testing/batch-report": {
+      "types": "./dist/testing/batch-report.d.ts",
+      "default": "./dist/testing/batch-report.js"
+    },
     "./testing/contract-parity-suite": {
       "types": "./dist/testing/contract-parity-suite.d.mts",
       "default": "./dist/testing/contract-parity-suite.mjs"
@@ -197,6 +205,10 @@
     "./testing/resume-fixture": {
       "types": "./dist/testing/resume-fixture.d.ts",
       "default": "./dist/testing/resume-fixture.js"
+    },
+    "./testmail/client": {
+      "types": "./dist/testmail/client.d.ts",
+      "default": "./dist/testmail/client.js"
     },
     "./types/logging": {
       "types": "./dist/types/logging.d.ts",
