@@ -757,9 +757,14 @@ a repeat-applicant OTP challenge, `/run` returns HTTP 200 with
 `{ needsUserInfo: true, missingFields: [{ field, question }], requiresOtp }`
 instead of a submission result, so Vivian can collect the gaps and hand back.
 
-Encompass Health-specific routes (registered outside the generic loop):
+Plugin-specific extra routes (registered via `meta.extraRoutes` in each plugin):
+
+Encompass Health:
 - `POST /v1/encompasshealth/trigger-otp` — body `{ offerId, email }`; triggers Oracle HCM to email an OTP to a repeat applicant; returns `{ success: true }` or a `2006 VERIFICATION_TRIGGER_FAILED` error envelope
 - `POST /v1/encompasshealth/resume` — body = the full original candidate payload plus `collectedData` and `otpCode`; re-runs the hot path with the collected answers and/or OTP; returns the same `{ verified }` envelope as `/run`, or `2007 RESUME_INVALID_OTP` if the OTP is rejected
+
+Appcast:
+- `POST /v1/appcast/resume` — body = the full original candidate payload plus `collectedData` (no `otpCode` — Appcast has no OTP challenge); re-runs the hot path with the chat-collected answers merged in; returns the same `{ verified, response }` envelope as `/run`
 
 Operational routes:
 - `GET /healthz` — liveness probe

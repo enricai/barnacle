@@ -257,9 +257,8 @@ describe("loadPlugins — out-of-tree plugin collides with seeded built-in siteI
 // ---------------------------------------------------------------------------
 
 describe("loadAllPlugins", () => {
-  it("returns an empty plugins array and empty report when no specifiers and no built-ins", async () => {
+  it("returns only the built-ins when no out-of-tree specifiers are configured", async () => {
     const { plugins, report } = await loadAllPlugins(makeConfig());
-    // BUILTIN_SITE_PLUGINS is empty (no in-tree sites).
     expect(plugins).toHaveLength(BUILTIN_SITE_PLUGINS.length);
     expect(report).toHaveLength(BUILTIN_SITE_PLUGINS.length);
   });
@@ -269,7 +268,7 @@ describe("loadAllPlugins", () => {
       makeConfig({ specifiers: [FIXTURE.validDefault] })
     );
 
-    // Built-ins (0 in this repo) come first; then the out-of-tree plugin.
+    // Built-ins come first; then the out-of-tree plugin.
     const outOfTreeIdx = report.findIndex((r) => r.siteId === "fixture-valid");
     expect(outOfTreeIdx).toBe(BUILTIN_SITE_PLUGINS.length);
     expect(plugins[BUILTIN_SITE_PLUGINS.length]?.meta.siteId).toBe("fixture-valid");
@@ -288,6 +287,7 @@ describe("loadAllPlugins", () => {
       execute: async () => ({ data: {} }),
     };
 
+    const originalLength = BUILTIN_SITE_PLUGINS.length;
     BUILTIN_SITE_PLUGINS.push(fakeBuiltin as typeof fakeBuiltin);
     try {
       const { report } = await loadAllPlugins(makeConfig({ specifiers: [FIXTURE.validDefault] }));
@@ -296,8 +296,8 @@ describe("loadAllPlugins", () => {
       expect(outOfTreeRec?.status).toBe("disabled");
       expect(outOfTreeRec?.reason).toMatch(/duplicate/i);
     } finally {
-      // Restore the array to its original empty state.
-      BUILTIN_SITE_PLUGINS.length = 0;
+      // Restore the array to its original state, keeping the real built-ins.
+      BUILTIN_SITE_PLUGINS.length = originalLength;
     }
   });
 

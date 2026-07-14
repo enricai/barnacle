@@ -862,7 +862,12 @@ describe("SITE_PLUGINS alias", () => {
     expect(SITE_PLUGINS).toBe(BUILTIN_SITE_PLUGINS);
   });
 
-  it("contains no in-tree plugins (all plugins are loaded via BARNACLE_PLUGINS)", () => {
-    expect(SITE_PLUGINS).toHaveLength(0);
+  it("contains the built-in site plugins", () => {
+    expect(SITE_PLUGINS.map((p) => p.meta.siteId)).toEqual([
+      "appcast",
+      "clearcompany",
+      "encompasshealth",
+      "hca",
+    ]);
   });
 });
