@@ -1,6 +1,6 @@
 {
   "name": "barnacle",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Site-agnostic browser automation engine. POST a structured payload to a typed endpoint; Barnacle drives a Steel + Stagehand session through the target site and returns a structured result.",
   "license": "MIT",
   "author": "Enricai",
@@ -29,6 +29,178 @@
     "node": ">=22.0.0"
   },
   "main": "dist/server.js",
+  "types": "dist/server.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/server.d.ts",
+      "default": "./dist/server.js"
+    },
+    "./api/errors": {
+      "types": "./dist/api/errors.d.ts",
+      "default": "./dist/api/errors.js"
+    },
+    "./api/plugins/auth": {
+      "types": "./dist/api/plugins/auth.d.ts",
+      "default": "./dist/api/plugins/auth.js"
+    },
+    "./api/plugins/error-handler": {
+      "types": "./dist/api/plugins/error-handler.d.ts",
+      "default": "./dist/api/plugins/error-handler.js"
+    },
+    "./api/schemas/common": {
+      "types": "./dist/api/schemas/common.d.ts",
+      "default": "./dist/api/schemas/common.js"
+    },
+    "./cache/keyed-ttl-cache": {
+      "types": "./dist/cache/keyed-ttl-cache.d.ts",
+      "default": "./dist/cache/keyed-ttl-cache.js"
+    },
+    "./config": {
+      "types": "./dist/config.d.ts",
+      "default": "./dist/config.js"
+    },
+    "./lib/applicant-payload": {
+      "types": "./dist/lib/applicant-payload.d.ts",
+      "default": "./dist/lib/applicant-payload.js"
+    },
+    "./lib/application-answers": {
+      "types": "./dist/lib/application-answers.d.ts",
+      "default": "./dist/lib/application-answers.js"
+    },
+    "./lib/case-insensitive-headers": {
+      "types": "./dist/lib/case-insensitive-headers.d.ts",
+      "default": "./dist/lib/case-insensitive-headers.js"
+    },
+    "./lib/chromium-client-hints": {
+      "types": "./dist/lib/chromium-client-hints.d.ts",
+      "default": "./dist/lib/chromium-client-hints.js"
+    },
+    "./lib/dispatch-metrics": {
+      "types": "./dist/lib/dispatch-metrics.d.ts",
+      "default": "./dist/lib/dispatch-metrics.js"
+    },
+    "./lib/errors": {
+      "types": "./dist/lib/errors.d.ts",
+      "default": "./dist/lib/errors.js"
+    },
+    "./lib/job-tracking": {
+      "types": "./dist/lib/job-tracking.d.ts",
+      "default": "./dist/lib/job-tracking.js"
+    },
+    "./lib/llm/anthropic-client": {
+      "types": "./dist/lib/llm/anthropic-client.d.ts",
+      "default": "./dist/lib/llm/anthropic-client.js"
+    },
+    "./lib/logging": {
+      "types": "./dist/lib/logging.d.ts",
+      "default": "./dist/lib/logging.js"
+    },
+    "./lib/multipart": {
+      "types": "./dist/lib/multipart.d.ts",
+      "default": "./dist/lib/multipart.js"
+    },
+    "./lib/option-matcher": {
+      "types": "./dist/lib/option-matcher.d.ts",
+      "default": "./dist/lib/option-matcher.js"
+    },
+    "./lib/phone": {
+      "types": "./dist/lib/phone.d.ts",
+      "default": "./dist/lib/phone.js"
+    },
+    "./lib/url-capture": {
+      "types": "./dist/lib/url-capture.d.ts",
+      "default": "./dist/lib/url-capture.js"
+    },
+    "./lib/us-states": {
+      "types": "./dist/lib/us-states.d.ts",
+      "default": "./dist/lib/us-states.js"
+    },
+    "./lib/zod-multipart": {
+      "types": "./dist/lib/zod-multipart.d.ts",
+      "default": "./dist/lib/zod-multipart.js"
+    },
+    "./plugins/loader": {
+      "types": "./dist/plugins/loader.d.ts",
+      "default": "./dist/plugins/loader.js"
+    },
+    "./scraper/errors": {
+      "types": "./dist/scraper/errors.d.ts",
+      "default": "./dist/scraper/errors.js"
+    },
+    "./scraper/flow-runner": {
+      "types": "./dist/scraper/flow-runner.d.ts",
+      "default": "./dist/scraper/flow-runner.js"
+    },
+    "./scraper/http-status-classifier": {
+      "types": "./dist/scraper/http-status-classifier.d.ts",
+      "default": "./dist/scraper/http-status-classifier.js"
+    },
+    "./scraper/navigate": {
+      "types": "./dist/scraper/navigate.d.ts",
+      "default": "./dist/scraper/navigate.js"
+    },
+    "./scraper/parse-json-response": {
+      "types": "./dist/scraper/parse-json-response.d.ts",
+      "default": "./dist/scraper/parse-json-response.js"
+    },
+    "./scraper/rate-limited-json-client": {
+      "types": "./dist/scraper/rate-limited-json-client.d.ts",
+      "default": "./dist/scraper/rate-limited-json-client.js"
+    },
+    "./scraper/raw-fetch": {
+      "types": "./dist/scraper/raw-fetch.d.ts",
+      "default": "./dist/scraper/raw-fetch.js"
+    },
+    "./scraper/require-response-field": {
+      "types": "./dist/scraper/require-response-field.d.ts",
+      "default": "./dist/scraper/require-response-field.js"
+    },
+    "./scraper/session": {
+      "types": "./dist/scraper/session.d.ts",
+      "default": "./dist/scraper/session.js"
+    },
+    "./scraper/session-browserbase": {
+      "types": "./dist/scraper/session-browserbase.d.ts",
+      "default": "./dist/scraper/session-browserbase.js"
+    },
+    "./scraper/stagehand-guard": {
+      "types": "./dist/scraper/stagehand-guard.d.ts",
+      "default": "./dist/scraper/stagehand-guard.js"
+    },
+    "./site-plugin": {
+      "types": "./dist/site-plugin.d.ts",
+      "default": "./dist/site-plugin.js"
+    },
+    "./testing/answers-fixture": {
+      "types": "./dist/testing/answers-fixture.d.ts",
+      "default": "./dist/testing/answers-fixture.js"
+    },
+    "./testing/contract-parity-suite": {
+      "types": "./dist/testing/contract-parity-suite.d.ts",
+      "default": "./dist/testing/contract-parity-suite.js"
+    },
+    "./testing/mock-fetch-response": {
+      "types": "./dist/testing/mock-fetch-response.d.ts",
+      "default": "./dist/testing/mock-fetch-response.js"
+    },
+    "./testing/persona-fixture": {
+      "types": "./dist/testing/persona-fixture.d.ts",
+      "default": "./dist/testing/persona-fixture.js"
+    },
+    "./testing/replay-integration-suite": {
+      "types": "./dist/testing/replay-integration-suite.d.ts",
+      "default": "./dist/testing/replay-integration-suite.js"
+    },
+    "./testing/resume-fixture": {
+      "types": "./dist/testing/resume-fixture.d.ts",
+      "default": "./dist/testing/resume-fixture.js"
+    },
+    "./types/logging": {
+      "types": "./dist/types/logging.d.ts",
+      "default": "./dist/types/logging.js"
+    },
+    "./package.json": "./package.json"
+  },
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json && tsc-alias -p tsconfig.build.json && (test -d src/sites && find src/sites -type d -name fixtures | while read d; do mkdir -p \"dist/${d#src/}\" && cp -r \"$d/.\" \"dist/${d#src/}/\"; done || true) && (test -d src/testing/fixtures && mkdir -p dist/testing/fixtures && cp -r src/testing/fixtures/. dist/testing/fixtures/ || true) && rm -f dist/tsconfig.tsbuildinfo",
     "clean": "rm -rf node_modules dist",
