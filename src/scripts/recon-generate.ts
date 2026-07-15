@@ -320,13 +320,20 @@ function firstEndpointPath(captures: Capture[]): string {
 // requests (auth tokens, candidate IDs, application IDs). Single-endpoint
 // sites (job search, pricing APIs) have one action capture and skip this path.
 
-/** Path elements we always treat as noise (analytics, logging). */
+/**
+ * Path elements we always treat as noise (analytics, logging). Site-specific
+ * trackers belong in RECON_TELEMETRY_URL_PATTERNS (comma-separated), not here —
+ * the engine must not carry any one site's ad-tech domains.
+ */
 const TELEMETRY_URL_PATTERNS = [
   "/util/logging/vweb/message",
   "/blank/page",
   "stats.g.doubleclick.net",
   "google-analytics.com",
-  "click.appcast.io",
+  ...(process.env.RECON_TELEMETRY_URL_PATTERNS ?? "")
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean),
 ];
 
 interface ActionCapture {

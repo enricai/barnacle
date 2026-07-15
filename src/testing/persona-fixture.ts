@@ -13,14 +13,16 @@ export const TEST_PERSONA = {
   FirstName: "Reginald",
   LastName: "Reconaldo",
   /**
-   * Avoid both the 555 fictional range AND famously-fictional numbers like
-   * 310-867-5309 ("Jenny / 867-5309" pop-song). Some ATS phone-input
-   * widgets reject both with "Please provide correct phone number."
+   * 555-0100..555-0199 is the only NANP range reserved for fiction, so this
+   * number reaches no real person — unlike a plausible-looking area-code/NXX
+   * pair, which is assignable and would send test traffic to a stranger.
    *
-   * 208-377-2156: Boise area code, random NXX-XXXX, no known
-   * pop-culture meaning.
+   * Avoid famously-fictional numbers like 310-867-5309 ("Jenny" pop-song):
+   * some ATS phone widgets reject those with "Please provide correct phone
+   * number." If a widget rejects this 555-01XX form too, prefer a number the
+   * project controls over reverting to a real one.
    */
-  Phone: "+1 208-377-2156",
+  Phone: "+1 208-555-0142",
   Address: {
     Line1: "123 Test Lane",
     City: "Austin",

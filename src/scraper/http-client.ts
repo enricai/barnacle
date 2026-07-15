@@ -22,7 +22,7 @@ const logger = getLogger({ name: "scraper/http-client" });
 /**
  * One-shot diagnostic: when `CAPTURE_BASELINE_BODIES=1`, write each successful
  * (2xx) request to a numbered JSON file under the destination directory
- * (`BASELINE_BODIES_DIR`, default `/tmp/clearcompany-baseline-bodies`). Used to
+ * (`BASELINE_BODIES_DIR`, default `/tmp/baseline-bodies`). Used to
  * snapshot the current hot-path request shapes as a frozen regression baseline
  * before refactors that would alter how the JSON bodies are built. Off in
  * production unless explicitly enabled.
@@ -178,7 +178,7 @@ export function createHttpClient<TResponse>(
 
           if (process.env.CAPTURE_BASELINE_BODIES === "1") {
             try {
-              const dir = process.env.BASELINE_BODIES_DIR ?? "/tmp/clearcompany-baseline-bodies";
+              const dir = process.env.BASELINE_BODIES_DIR ?? "/tmp/baseline-bodies";
               mkdirSync(dir, { recursive: true });
               const idx = String(baselineCallCounter++).padStart(2, "0");
               const slug =
