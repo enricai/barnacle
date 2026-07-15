@@ -301,6 +301,17 @@ describe("dispatch — executeHttp hot-path branches", () => {
     expect(mockRecordRateLimitRejection).not.toHaveBeenCalled();
   });
 
+  it("throws EmptyResultsApiError and does NOT invoke browser execute() on EmptyResultsError", async () => {
+    mockHttpExecute.mockRejectedValueOnce(
+      new EmptyResultsError("hca http-flow: job_expired — The job is no longer available.")
+    );
+    await expect(dispatch(httpPlugin, {}, stubContext)).rejects.toBeInstanceOf(
+      EmptyResultsApiError
+    );
+    expect(mockPluginExecute).not.toHaveBeenCalled();
+    expect(mockRecordFallbackActivation).not.toHaveBeenCalled();
+  });
+
   it("records dispatch.failure with error_type=url_locked (not rate_limit) on HttpUrlLockedError", async () => {
     mockHttpExecute.mockRejectedValueOnce(new HttpUrlLockedError("ORA_URL_LOCKED"));
     await expect(dispatch(httpPlugin, {}, stubContext)).rejects.toBeInstanceOf(UrlLockedError);
