@@ -1,6 +1,6 @@
 {
   "name": "@enricai/barnacle",
-  "version": "1.0.3",
+  "version": "1.1.0",
   "description": "Site-agnostic browser automation engine. POST a structured payload to a typed endpoint; Barnacle drives a Steel + Stagehand session through the target site and returns a structured result.",
   "license": "MIT",
   "author": "Enricai",
@@ -65,10 +65,6 @@
     "./lib/applicant-payload": {
       "types": "./dist/lib/applicant-payload.d.ts",
       "default": "./dist/lib/applicant-payload.js"
-    },
-    "./lib/application-answers": {
-      "types": "./dist/lib/application-answers.d.ts",
-      "default": "./dist/lib/application-answers.js"
     },
     "./lib/case-insensitive-headers": {
       "types": "./dist/lib/case-insensitive-headers.d.ts",
@@ -173,10 +169,6 @@
     "./site-plugin": {
       "types": "./dist/site-plugin.d.ts",
       "default": "./dist/site-plugin.js"
-    },
-    "./testing/answers-fixture": {
-      "types": "./dist/testing/answers-fixture.d.ts",
-      "default": "./dist/testing/answers-fixture.js"
     },
     "./testing/batch-email-confirmation": {
       "types": "./dist/testing/batch-email-confirmation.d.ts",

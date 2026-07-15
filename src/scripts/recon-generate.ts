@@ -320,13 +320,20 @@ function firstEndpointPath(captures: Capture[]): string {
 // requests (auth tokens, candidate IDs, application IDs). Single-endpoint
 // sites (job search, pricing APIs) have one action capture and skip this path.
 
-/** Path elements we always treat as noise (analytics, logging). */
+/**
+ * Path elements we always treat as noise (analytics, logging). Site-specific
+ * trackers belong in RECON_TELEMETRY_URL_PATTERNS (comma-separated), not here —
+ * the engine must not carry any one site's ad-tech domains.
+ */
 const TELEMETRY_URL_PATTERNS = [
   "/util/logging/vweb/message",
   "/blank/page",
   "stats.g.doubleclick.net",
   "google-analytics.com",
-  "click.appcast.io",
+  ...(process.env.RECON_TELEMETRY_URL_PATTERNS ?? "")
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean),
 ];
 
 interface ActionCapture {
@@ -1388,17 +1395,27 @@ function applyPayloadKeyValueSubstitutions(
 
 // ── base64 Content parameterization ──────────────────────────────────────────
 
-/** Keyword map for matching ATS screening question prompts to payload.Answers field names. */
-const QUESTION_PROMPT_KEYWORDS: Record<string, string[]> = {
-  RelatedToEmployee: ["related", "employee"],
-  PreviouslyEmployedAtEncompass: ["previously", "worked"],
-  EverSanctionedOrOnProbation: ["sanctions", "probation", "limitations"],
-  EverTerminated: ["terminated", "resign"],
-  EverExcludedFromFederalProgram: ["excluded", "federal", "program"],
-  VisaSponsorship: ["visa", "sponsor"],
-  LegallyEligibleToWorkUS: ["legal", "eligib", "work", "united states"],
-  CanPerformJobFunctions: ["perform", "job functions", "duties"],
-};
+/**
+ * Maps a site's screening-question prompts to the payload field that answers
+ * them, as `{ FieldName: [keyword, …] }`.
+ *
+ * Empty by default and supplied by the operator via `RECON_QUESTION_KEYWORDS`
+ * (JSON) — the engine cannot know what any site asks or what a caller's payload
+ * calls things. It previously hardcoded one product's field names, which capped
+ * discovery at those questions and silently dropped every other site's.
+ */
+export function loadQuestionPromptKeywords(): Record<string, string[]> {
+  const raw = process.env.RECON_QUESTION_KEYWORDS;
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw) as Record<string, string[]>;
+  } catch (err) {
+    logger.warn(`RECON_QUESTION_KEYWORDS is not valid JSON, ignoring: ${toErrorMessage(err)}`);
+    return {};
+  }
+}
+
+const QUESTION_PROMPT_KEYWORDS: Record<string, string[]> = loadQuestionPromptKeywords();
 
 interface QuestionAnswerMapping {
   questionId: number;
@@ -1423,6 +1440,7 @@ function buildQuestionnaireMapping(captures: Capture[]): QuestionAnswerMapping[]
   if (!resp || !Array.isArray(resp.items)) return null;
 
   const mappings: QuestionAnswerMapping[] = [];
+  const unmapped: string[] = [];
   for (const item of resp.items as Array<Record<string, unknown>>) {
     const prompt = String(item.Prompt ?? "").toLowerCase();
     const qid = item.AttributeName as number | undefined;
@@ -1438,7 +1456,14 @@ function buildQuestionnaireMapping(captures: Capture[]): QuestionAnswerMapping[]
         bestField = field;
       }
     }
-    if (!bestField || bestScore < 2) continue;
+    // A question the keyword map cannot place is the interesting case: it is a
+    // question this site asks and the caller has no field for. Report it —
+    // dropping it silently is how a generated plugin ends up submitting nothing
+    // for a required question.
+    if (!bestField || bestScore < 2) {
+      unmapped.push(`${qid}: ${String(item.Prompt ?? "")}`);
+      continue;
+    }
     if (mappings.some((m) => m.payloadField === bestField)) continue;
 
     const answers: Record<string, number> = {};
@@ -1448,6 +1473,11 @@ function buildQuestionnaireMapping(captures: Capture[]): QuestionAnswerMapping[]
       if (meaning && code) answers[meaning] = code;
     }
     mappings.push({ questionId: qid, payloadField: bestField, answers });
+  }
+  if (unmapped.length > 0) {
+    logger.warn(
+      `${unmapped.length} screening question(s) matched no payload field and will be unanswered — add keywords to RECON_QUESTION_KEYWORDS: ${unmapped.join(" | ")}`
+    );
   }
   return mappings.length > 0 ? mappings : null;
 }
