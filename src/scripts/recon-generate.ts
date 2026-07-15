@@ -1404,7 +1404,7 @@ function applyPayloadKeyValueSubstitutions(
  * calls things. It previously hardcoded one product's field names, which capped
  * discovery at those questions and silently dropped every other site's.
  */
-function loadQuestionPromptKeywords(): Record<string, string[]> {
+export function loadQuestionPromptKeywords(): Record<string, string[]> {
   const raw = process.env.RECON_QUESTION_KEYWORDS;
   if (!raw) return {};
   try {
