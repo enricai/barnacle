@@ -81,9 +81,9 @@ which path. This separation means:
   to `SITE_PLUGINS`.
 - The fallback logic is tested once, in one place.
 
-**Force-fallback escape hatch.** Sending `x-barnacle-force-fallback: true`
+**Browser-execution escape hatch.** Sending `x-barnacle-execution: browser`
 on a plugin request causes `dispatch()` to skip `executeHttp` and route
-straight to the browser path (`src/plugins/loader.ts:198`). Used by the
+straight to the browser path (`src/plugins/loader.ts:341`). Used by the
 nightly smoke test (`src/scripts/smoke-test.ts`) to exercise the browser
 path even when the hot path is healthy, and available to on-call for
 diagnosis when the hot path is suspect. Header name is lowercase — Fastify

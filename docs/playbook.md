@@ -506,11 +506,12 @@ Hot path fails (schema mismatch, bot challenge, or 5xx)
   → return
 ```
 
-**`x-barnacle-force-fallback: true`** — sending this header on the incoming
+**`x-barnacle-execution: browser`** — sending this header on the incoming
 request bypasses the hot path entirely and goes directly to the browser path.
-Useful for debugging or when you know the hot path is broken. (Fastify
-lowercases incoming header keys; the dispatcher reads
-`request.headers["x-barnacle-force-fallback"]` — supply lowercase to match.)
+Omit it (or send any other value) to use the default hot path. Useful for
+debugging or when you know the hot path is broken. (Fastify lowercases incoming
+header keys; the dispatcher reads `request.headers["x-barnacle-execution"]` —
+supply lowercase to match.)
 
 ### 5C — Error classification
 
