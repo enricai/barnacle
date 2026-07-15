@@ -671,6 +671,118 @@ describe("registerRoutes — multipart flag", () => {
   });
 });
 
+describe("registerRoutes — x-barnacle-execution header", () => {
+  const cfgStub = { scraper: { siteBaseUrls: {} } } as unknown as AppConfig;
+  const preservedEnv = {
+    DEV_BYPASS_AUTH: process.env.DEV_BYPASS_AUTH,
+    NODE_ENV: process.env.NODE_ENV,
+  };
+
+  beforeEach(() => {
+    process.env.DEV_BYPASS_AUTH = "true";
+    process.env.NODE_ENV = "test";
+    mockCaptureSubmissionEnvelope.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    if (preservedEnv.DEV_BYPASS_AUTH === undefined) delete process.env.DEV_BYPASS_AUTH;
+    else process.env.DEV_BYPASS_AUTH = preservedEnv.DEV_BYPASS_AUTH;
+    if (preservedEnv.NODE_ENV === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = preservedEnv.NODE_ENV;
+    vi.clearAllMocks();
+  });
+
+  async function buildAppWithPlugin(
+    plugin: SitePlugin<unknown, unknown>
+  ): Promise<Parameters<typeof registerRoutes>[0]> {
+    const app = Fastify({ loggerInstance: getLogger({ name: "loader-test" }) });
+    app.setValidatorCompiler(validatorCompiler);
+    app.setSerializerCompiler(serializerCompiler);
+    await app.register(errorHandlerPlugin);
+    await app.register(authPlugin);
+    await registerRoutes(app, cfgStub, [plugin]);
+    await app.ready();
+    return app;
+  }
+
+  // A plugin with both paths so header presence is the only variable deciding
+  // which one runs.
+  function dualPathPlugin(onHttp: () => void, onBrowser: () => void): SitePlugin<unknown, unknown> {
+    return {
+      meta: {
+        siteId: "exec-test",
+        displayName: "Execution Test",
+        bodySchema: z.object({ Field: z.string() }),
+        responseSchema: z.unknown(),
+      },
+      execute: async () => {
+        onBrowser();
+        return { data: { via: "browser" } };
+      },
+      executeHttp: async () => {
+        onHttp();
+        return { data: { via: "http" } };
+      },
+    };
+  }
+
+  it("routes to the browser path when x-barnacle-execution is browser", async () => {
+    const onHttp = vi.fn();
+    const onBrowser = vi.fn();
+    const app = await buildAppWithPlugin(dualPathPlugin(onHttp, onBrowser));
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/exec-test/run",
+      headers: { "x-barnacle-execution": "browser" },
+      payload: { Field: "value" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(onBrowser).toHaveBeenCalledTimes(1);
+    expect(onHttp).not.toHaveBeenCalled();
+
+    await app.close();
+  });
+
+  it("uses the hot path when the header is absent", async () => {
+    const onHttp = vi.fn();
+    const onBrowser = vi.fn();
+    const app = await buildAppWithPlugin(dualPathPlugin(onHttp, onBrowser));
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/exec-test/run",
+      payload: { Field: "value" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(onHttp).toHaveBeenCalledTimes(1);
+    expect(onBrowser).not.toHaveBeenCalled();
+
+    await app.close();
+  });
+
+  it("uses the hot path when the header carries any other value", async () => {
+    const onHttp = vi.fn();
+    const onBrowser = vi.fn();
+    const app = await buildAppWithPlugin(dualPathPlugin(onHttp, onBrowser));
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/exec-test/run",
+      headers: { "x-barnacle-execution": "hotpath" },
+      payload: { Field: "value" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(onHttp).toHaveBeenCalledTimes(1);
+    expect(onBrowser).not.toHaveBeenCalled();
+
+    await app.close();
+  });
+});
+
 describe("registerRoutes — extraRoutes loop", () => {
   const cfgStub = { scraper: { siteBaseUrls: {} } } as unknown as AppConfig;
   const preservedEnv = {
