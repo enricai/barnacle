@@ -131,6 +131,25 @@ Reads every artifact from Phases 1–3 — `/tmp/recon/graphql/*.json` (captures
 
 Then review the generated files: trim UI-only fields from the GraphQL query, narrow any `z.unknown()` entries in the schema you care about, and verify the headers. If you need to regenerate after making changes to the recon flow, pass `--force`.
 
+#### Mapping the site's screening questions
+
+If the site asks screening questions, tell the generator which payload field answers each one. Barnacle ships no vocabulary of its own — it cannot know what your site asks or what your payload calls things — so this map is yours to supply:
+
+| Env var | Default | Description |
+| --- | --- | --- |
+| `RECON_QUESTION_KEYWORDS` | `{}` | JSON object mapping a payload field name to the keywords that identify its question. A question must match **at least 2** keywords to map. |
+| `RECON_TELEMETRY_URL_PATTERNS` | *(empty)* | Comma-separated extra URL fragments to treat as analytics noise, on top of the built-in list. Put your site's trackers here. |
+
+```bash
+RECON_QUESTION_KEYWORDS='{
+  "VisaSponsorship":       ["visa", "sponsor"],
+  "RelatedToEmployee":     ["related", "employee"],
+  "CanPerformJobFunctions":["perform", "job functions", "duties"]
+}' pnpm run recon:generate -- --site-id my-site
+```
+
+Any question that matches no field is **logged by prompt** rather than skipped — an unmapped required question is how a generated plugin ends up submitting nothing for it. Read those warnings and either add keywords or accept that the question goes unanswered. Malformed JSON logs a warning and is treated as empty, so a typo cannot kill a recon run mid-flight.
+
 Optionally generate the human-readable findings doc alongside:
 
 ```bash
