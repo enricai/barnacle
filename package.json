@@ -1,6 +1,6 @@
 {
   "name": "@enricai/barnacle",
-  "version": "1.5.0",
+  "version": "1.4.1",
   "description": "Site-agnostic browser automation engine. POST a structured payload to a typed endpoint; Barnacle drives a Steel + Stagehand session through the target site and returns a structured result.",
   "license": "MIT",
   "author": "Enricai",
@@ -21,6 +21,8 @@
   ],
   "files": [
     "dist",
+    "!dist/**/*.tsbuildinfo",
+    "!dist/recon/fixtures",
     "README.md",
     "LICENSE"
   ],
@@ -122,6 +124,10 @@
       "types": "./dist/plugins/loader.d.ts",
       "default": "./dist/plugins/loader.js"
     },
+    "./recon/vocabulary": {
+      "types": "./dist/recon/vocabulary.d.ts",
+      "default": "./dist/recon/vocabulary.js"
+    },
     "./scraper/errors": {
       "types": "./dist/scraper/errors.d.ts",
       "default": "./dist/scraper/errors.js"
@@ -209,7 +215,8 @@
     "./package.json": "./package.json"
   },
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.build.json && tsc-alias -p tsconfig.build.json && (test -d src/sites && find src/sites -type d -name fixtures | while read d; do mkdir -p \"dist/${d#src/}\" && cp -r \"$d/.\" \"dist/${d#src/}/\"; done || true) && (test -d src/testing/fixtures && mkdir -p dist/testing/fixtures && cp -r src/testing/fixtures/. dist/testing/fixtures/ || true) && rm -f dist/tsconfig.tsbuildinfo",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && tsc-alias -p tsconfig.build.json && (find src -type d -name fixtures | while read d; do mkdir -p \"dist/${d#src/}\" && cp -r \"$d/.\" \"dist/${d#src/}/\"; done || true) && rm -f dist/tsconfig.tsbuildinfo",
+    "prepack": "pnpm run build",
     "clean": "rm -rf node_modules dist",
     "dev": "tsx watch --env-file=.env src/server.ts",
     "start": "node --import dd-trace/initialize dist/server.js",
