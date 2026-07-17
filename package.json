@@ -124,6 +124,10 @@
       "types": "./dist/plugins/loader.d.ts",
       "default": "./dist/plugins/loader.js"
     },
+    "./recon/form-schema": {
+      "types": "./dist/recon/form-schema.d.ts",
+      "default": "./dist/recon/form-schema.js"
+    },
     "./recon/vocabulary": {
       "types": "./dist/recon/vocabulary.d.ts",
       "default": "./dist/recon/vocabulary.js"

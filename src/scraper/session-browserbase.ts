@@ -107,6 +107,12 @@ function makeFilteredStagehandLogger(pinoLogger: Logger): {
  * Proxies: `proxies: true` enables Browserbase's residential proxy pool. The
  * boolean form takes Browserbase's default region; per-region routing is
  * available via the array form (not used here — out of scope until needed).
+ *
+ * Non-finding (recorded so it is not re-investigated): a Queue-it virtual-waiting-
+ * room interstitial has never blocked a Browserbase run in practice. It gates the
+ * HTML/browser path for every locale tried but not the underlying JSON API path,
+ * and across the runs observed it simply never appeared. Treat a Queue-it page as
+ * a site-path signal (prefer the API), not a Browserbase capability gap.
  */
 /**
  * `advancedStealth` opts into Browserbase's Scale Plan stealth profile. When

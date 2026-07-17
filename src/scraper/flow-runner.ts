@@ -2494,7 +2494,7 @@ const UPLOAD_WIDGET_RENDER_ATTEMPTS = 17;
  * URL substrings that mark a POST as an actual resume/attachment upload rather
  * than coincidental traffic (analytics beacons, `/interruption_check`,
  * geocoders). Talemetry posts the resume to an `attachment_upload_url` that
- * matches `/attachment`; the others cover AppCast/ClearCompany/Oracle. Module-
+ * matches `/attachment`; the others cover the other ATS upload sinks. Module-
  * level so both the raw-input path and the click-to-surface path share one list.
  */
 const UPLOAD_URL_PATTERNS = ["/upload", "/resume", "/file", "/attachment", "/document"] as const;
@@ -2730,7 +2730,7 @@ async function attachToSurfacedInput(params: {
   }
   // Fallback: some widgets defer the upload to a separate Save click. For
   // those the DOM still has the attached File — verify there. Widgets that
-  // clear input.files on upload trigger (ClearCompany's jQuery File Upload)
+  // clear input.files on upload trigger (a jQuery File Upload widget)
   // would fail this check, but they should have fired a network call above.
   //
   // Trust boundary: the evaluate expression is a static string literal — no
@@ -4397,8 +4397,9 @@ async function simulateDragDropUpload(
  * page context. Stagehand's `fill` for regular text inputs types via CDP
  * `Input.insertText` which fires `input` per keystroke but never fires `change`
  * — `change` only fires on blur, and Stagehand never blurs. Many jQuery /
- * Backbone forms (e.g. ClearCompany's formField.js) bind their input handlers
- * to the native `change` event via event delegation; without `change` firing,
+ * Backbone forms (e.g. a delegated `formField.js`-style handler) bind their
+ * input handlers to the native `change` event via event delegation; without
+ * `change` firing,
  * the form's internal data model never records the typed value, so when the
  * SPA re-renders the form the value is wiped back to empty.
  *
@@ -4457,8 +4458,8 @@ async function verifyDomEffect(page: Page, action: Action): Promise<boolean> {
         if (hit) {
           // Stagehand typed via CDP Input.insertText which fires `input` per
           // keystroke but never fires `change`. Dispatch change here so jQuery/
-          // Backbone forms (e.g. ClearCompany formField.js's "change
-          // .field-dropdown,.form-input" delegated handler) record the value
+          // Backbone forms (e.g. a `"change .field-dropdown,.form-input"`
+          // delegated handler) record the value
           // into their internal data model. Without this, the SPA's next
           // re-render wipes the typed value back to empty.
           await dispatchJqueryChangeEvent(page, selector);
@@ -6134,8 +6135,8 @@ export async function executeStepWithHealing(params: {
           // expression cannot inject behavior through the xpath content.
           // For checkbox/radio inputs, Stagehand's isolated-world page.evaluate
           // may not trigger the browser's native default action that toggles
-          // .checked. ClearCompany's formField.js delegated "click .form-checkbox"
-          // handler (optionSelected) reads state via .is(':checked') — if the
+          // .checked. A delegated `"click .form-checkbox"` handler
+          // (optionSelected-style) reads state via .is(':checked') — if the
           // default action didn't fire, it sees unchecked and treats the click as
           // "deselect this option" rather than "select it". Force the state and
           // dispatch both events (click for optionSelected, change for inputChanged)

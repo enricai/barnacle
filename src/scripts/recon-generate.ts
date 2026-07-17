@@ -30,6 +30,9 @@ import { toErrorMessage } from "@/lib/errors";
 import { getScriptLogger } from "@/lib/logging";
 import { PLUGIN_API_VERSION } from "@/plugins/plugin-api-version";
 import { CONFIG_PLUGIN_API_VERSION, CONFIG_PLUGIN_KIND } from "@/plugins/plugin-manifest-envelope";
+import { isNoiseUrl, telemetryUrlPatterns } from "@/recon/capture-filters";
+import type { ReconFormSchema } from "@/recon/form-schema";
+import { FORM_SCHEMA_NONE, loadReconFormSchema } from "@/recon/load-form-schema";
 import { loadReconVocabulary, VOCABULARY_NONE } from "@/recon/load-vocabulary";
 import { EMPTY_VOCABULARY, type ReconVocabulary } from "@/recon/vocabulary";
 import {
@@ -363,9 +366,8 @@ const IGNORE_REQUEST_HEADERS = new Set([
  * stateless replay phase can't thread), derive headers from the meaningful
  * action POSTs instead — same `extractActionSequence` definition used by
  * the submission-flow detector. This catches load-bearing site-specific
- * headers (Workday's `X-CSRF-Token`, Greenhouse's `Job-Boards-API-Token`,
- * ClearCompany's `API-ShortName`, etc.) without the generator needing to
- * know about any particular site.
+ * headers (a `X-CSRF-Token`, a `Job-Boards-API-Token`, an `API-ShortName`,
+ * etc.) without the generator needing to know about any particular site.
  */
 function deriveRequestHeaders(
   captures: Capture[],
@@ -451,38 +453,6 @@ function firstEndpointPath(captures: Capture[]): string {
 // requests (auth tokens, candidate IDs, application IDs). Single-endpoint
 // sites (job search, pricing APIs) have one action capture and skip this path.
 
-/**
- * Path elements we always treat as noise (analytics, logging). Site-specific
- * trackers belong in RECON_TELEMETRY_URL_PATTERNS (comma-separated), not here —
- * the engine must not carry any one site's ad-tech domains.
- */
-const TELEMETRY_URL_PATTERNS = [
-  "/util/logging/vweb/message",
-  "/blank/page",
-  "stats.g.doubleclick.net",
-  "google-analytics.com",
-  ...(process.env.RECON_TELEMETRY_URL_PATTERNS ?? "")
-    .split(",")
-    .map((p) => p.trim())
-    .filter(Boolean),
-];
-
-/**
- * A POST to a path whose own segment is `error`/`errors` is a client-side
- * reporting sink, never a call a caller wants replayed.
- *
- * Emitting one is worse than noise. A browser's error reports are frozen at
- * recon time, so the generated plugin re-POSTs a crash that never happened —
- * a stack trace and timestamp from the recon run, sent to the site on every
- * invocation, describing a failure in a page the plugin never loaded.
- *
- * Matched on a whole path segment rather than by substring so `/error-codes`
- * and `/terrorism-screening` stay data endpoints, and kept out of
- * TELEMETRY_URL_PATTERNS because that list is literal substrings — a site's own
- * sink is structural, not an ad-tech domain the operator must enumerate.
- */
-const ERROR_SINK_PATH_SEGMENT = /(^|\/)errors?(\/|$)/i;
-
 interface ActionCapture {
   capture: Capture;
   index: number;
@@ -517,12 +487,7 @@ export function extractActionSequence(captures: Capture[], baseUrl: string): Act
         return false;
       }
       if (captureHost !== host) return false;
-      if (TELEMETRY_URL_PATTERNS.some((p) => capture.url.includes(p))) return false;
-      try {
-        if (ERROR_SINK_PATH_SEGMENT.test(new URL(capture.url).pathname)) return false;
-      } catch {
-        return false;
-      }
+      if (isNoiseUrl(capture.url)) return false;
       return true;
     });
 }
@@ -641,7 +606,7 @@ const KNOWN_TOP_LEVEL_ERROR_KEYS = new Set(["message", "error", "errormessage"])
 /**
  * Suffixes that mark a JSON key as carrying validation/data errors when its
  * value is non-null. Case-sensitive because real APIs use mixed-case in the
- * exact form they ship (e.g. ClearCompany's `ResponseValidationErrors`).
+ * exact form they ship (e.g. a `ResponseValidationErrors` key).
  */
 const NESTED_ERROR_KEY_SUFFIXES = ["ValidationErrors", "DataErrors", "ValidationError"];
 
@@ -662,7 +627,7 @@ interface ErrorSignals {
  * responses (so legitimate success-only fields like `Name` aren't false-
  * flagged as errors).
  *
- * Site-agnostic: ClearCompany uses `Message`/`Sections.ResponseValidationErrors`
+ * Site-agnostic: one ATS may use `Message`/`Sections.ResponseValidationErrors`
  * /`Sections.DataValidationErrors`; a different ATS using `error`/`errors[]`
  * would emit guards for those instead.
  */
@@ -814,7 +779,15 @@ function fieldNameToPascalCase(fieldName: string, prefix: string | null): string
  * Site-agnostic: identifies form-schema captures by structural fingerprint,
  * not by URL or site name. Any ATS exposing a similar schema would match.
  */
-function detectFormSchemaFieldNames(captures: Capture[]): {
+/**
+ * Exported for unit testing — lets tests prove the rewiring: the same field is
+ * recovered from a vendor's wire keys whether they are the historical names or a
+ * differing vendor's, and that a null schema recovers nothing.
+ */
+export function detectFormSchemaFieldNames(
+  captures: Capture[],
+  formSchema: ReconFormSchema | null
+): {
   fieldNameMap: FieldNameMap;
   fieldOptionsMap: FieldOptionsMap;
   allSchemaUuids: Set<string>;
@@ -822,47 +795,50 @@ function detectFormSchemaFieldNames(captures: Capture[]): {
   const fieldNameMap: FieldNameMap = new Map();
   const fieldOptionsMap: FieldOptionsMap = new Map();
   const allSchemaUuids = new Set<string>();
+  // No form-schema declared → recover nothing. The engine carries no vendor's
+  // wire keys, so there is nothing to fingerprint ATS responses against.
+  if (formSchema === null) return { fieldNameMap, fieldOptionsMap, allSchemaUuids };
   for (const capture of captures) {
-    walkForSectionFieldsArrays(capture.responseBody, fieldNameMap, fieldOptionsMap);
-    walkForSchemaUuids(capture.responseBody, allSchemaUuids);
+    walkForSectionFieldsArrays(capture.responseBody, fieldNameMap, fieldOptionsMap, formSchema);
+    walkForSchemaUuids(capture.responseBody, allSchemaUuids, formSchema);
   }
   return { fieldNameMap, fieldOptionsMap, allSchemaUuids };
 }
 
 /**
- * Walks a response body collecting UUID-shaped strings under a `FieldId` key, or
- * under the `Id` of an entry in a sibling `FieldOptions` array. These are stable
- * schema anchors that must be shielded from state-threading even when
- * detectFormSchemaFieldNames emits no payload-mappable name for the field (e.g.
- * when the field's FieldName is too long for our naming heuristic).
+ * Walks a response body collecting UUID-shaped strings under the schema's
+ * field-id key, or under the option-id key of an entry in a sibling
+ * field-options array. These are stable schema anchors that must be shielded
+ * from state-threading even when detectFormSchemaFieldNames emits no
+ * payload-mappable name for the field (e.g. when the field name is too long for
+ * our naming heuristic).
  *
- * The key names are exact by design, not an oversight: a differing wire format
- * (a lowercase `fieldId`, another vendor's option key) is the consumer's to
- * declare, not the engine's to guess — see issue #57. Matching case variants
- * here would re-broaden the very fingerprint that issue exists to narrow.
+ * The wire keys come from the consumer-supplied {@link ReconFormSchema}, so a
+ * vendor declares its own keys with `--form-schema` rather than the engine
+ * hardcoding any — the inversion issue #57 asked for.
  */
-function walkForSchemaUuids(value: unknown, out: Set<string>): void {
+function walkForSchemaUuids(value: unknown, out: Set<string>, formSchema: ReconFormSchema): void {
   if (value === null || typeof value !== "object") return;
   if (Array.isArray(value)) {
-    for (const item of value) walkForSchemaUuids(item, out);
+    for (const item of value) walkForSchemaUuids(item, out, formSchema);
     return;
   }
   const obj = value as Record<string, unknown>;
-  const fieldIdRaw = obj.FieldId;
+  const fieldIdRaw = obj[formSchema.fieldIdKey];
   if (typeof fieldIdRaw === "string" && UUID_REGEX.test(fieldIdRaw)) {
     out.add(fieldIdRaw);
   }
-  const optionsRaw = obj.FieldOptions;
+  const optionsRaw = obj[formSchema.fieldOptionsKey];
   if (Array.isArray(optionsRaw)) {
     for (const opt of optionsRaw) {
       if (opt !== null && typeof opt === "object") {
-        const optId = (opt as Record<string, unknown>).Id;
+        const optId = (opt as Record<string, unknown>)[formSchema.optionIdKey];
         if (typeof optId === "string" && UUID_REGEX.test(optId)) out.add(optId);
       }
     }
   }
   // Recurse into nested objects/arrays so nested SectionFields get walked too.
-  for (const v of Object.values(obj)) walkForSchemaUuids(v, out);
+  for (const v of Object.values(obj)) walkForSchemaUuids(v, out, formSchema);
 }
 
 /**
@@ -896,7 +872,8 @@ function stripCacheBusterParams(url: string): string {
  */
 function detectFormSchemaFetchCapture(
   captures: Capture[],
-  baseUrl: string
+  baseUrl: string,
+  formSchema: ReconFormSchema
 ): { capture: Capture; index: number } | null {
   let host: string;
   try {
@@ -915,25 +892,25 @@ function detectFormSchemaFetchCapture(
       continue;
     }
     if (captureHost !== host) continue;
-    if (TELEMETRY_URL_PATTERNS.some((p) => capture.url.includes(p))) continue;
-    if (responseContainsSectionFields(capture.responseBody)) {
+    if (telemetryUrlPatterns().some((p) => capture.url.includes(p))) continue;
+    if (responseContainsSectionFields(capture.responseBody, formSchema)) {
       return { capture, index: i };
     }
   }
   return null;
 }
 
-function responseContainsSectionFields(value: unknown): boolean {
+function responseContainsSectionFields(value: unknown, formSchema: ReconFormSchema): boolean {
   if (value === null || typeof value !== "object") return false;
   if (Array.isArray(value)) {
-    if (looksLikeSectionFieldsArray(value)) return true;
+    if (looksLikeSectionFieldsArray(value, formSchema)) return true;
     for (const item of value) {
-      if (responseContainsSectionFields(item)) return true;
+      if (responseContainsSectionFields(item, formSchema)) return true;
     }
     return false;
   }
   for (const v of Object.values(value as Record<string, unknown>)) {
-    if (responseContainsSectionFields(v)) return true;
+    if (responseContainsSectionFields(v, formSchema)) return true;
   }
   return false;
 }
@@ -941,39 +918,42 @@ function responseContainsSectionFields(value: unknown): boolean {
 function walkForSectionFieldsArrays(
   value: unknown,
   fieldNameMap: FieldNameMap,
-  fieldOptionsMap: FieldOptionsMap
+  fieldOptionsMap: FieldOptionsMap,
+  formSchema: ReconFormSchema
 ): void {
   if (value === null || typeof value !== "object") return;
   if (Array.isArray(value)) {
-    if (looksLikeSectionFieldsArray(value)) {
+    if (looksLikeSectionFieldsArray(value, formSchema)) {
       assignFieldNamesFromArray(
         value as Array<Record<string, unknown>>,
         fieldNameMap,
-        fieldOptionsMap
+        fieldOptionsMap,
+        formSchema
       );
     }
-    for (const item of value) walkForSectionFieldsArrays(item, fieldNameMap, fieldOptionsMap);
+    for (const item of value)
+      walkForSectionFieldsArrays(item, fieldNameMap, fieldOptionsMap, formSchema);
     return;
   }
   for (const v of Object.values(value as Record<string, unknown>)) {
-    walkForSectionFieldsArrays(v, fieldNameMap, fieldOptionsMap);
+    walkForSectionFieldsArrays(v, fieldNameMap, fieldOptionsMap, formSchema);
   }
 }
 
 /**
  * Structural fingerprint: array of objects, at least half of which have a
- * UUID-shaped FieldId AND at least one of FieldName/FieldSourceCode.
+ * UUID-shaped field-id AND at least one of the schema's field-name keys.
  */
-function looksLikeSectionFieldsArray(arr: unknown[]): boolean {
+function looksLikeSectionFieldsArray(arr: unknown[], formSchema: ReconFormSchema): boolean {
   if (arr.length === 0) return false;
   let matches = 0;
   for (const item of arr) {
     if (item === null || typeof item !== "object") continue;
     const obj = item as Record<string, unknown>;
-    const fieldIdRaw = obj.FieldId;
+    const fieldIdRaw = obj[formSchema.fieldIdKey];
     if (typeof fieldIdRaw !== "string") continue;
     if (!UUID_REGEX.test(fieldIdRaw)) continue;
-    if (typeof obj.FieldName === "string" || typeof obj.FieldSourceCode === "string") {
+    if (formSchema.fieldNameKeys.some((key) => typeof obj[key] === "string")) {
       matches++;
     }
   }
@@ -983,16 +963,22 @@ function looksLikeSectionFieldsArray(arr: unknown[]): boolean {
 function assignFieldNamesFromArray(
   arr: Array<Record<string, unknown>>,
   fieldNameMap: FieldNameMap,
-  fieldOptionsMap: FieldOptionsMap
+  fieldOptionsMap: FieldOptionsMap,
+  formSchema: ReconFormSchema
 ): void {
   let currentPrefix: string | null = null;
   const usedNames = new Set<string>([...fieldNameMap.values()]);
+  // First field-name key is the machine code (preferred, PascalCased directly);
+  // any later key is a human label (subject to the section-heading heuristic).
+  // With one key both branches collapse to the label path.
+  const [codeKey, ...labelKeys] = formSchema.fieldNameKeys;
+  const labelKey = labelKeys[0];
   for (const obj of arr) {
-    const fieldId = obj.FieldId;
+    const fieldId = obj[formSchema.fieldIdKey];
     if (typeof fieldId !== "string") continue;
 
-    const sourceCode = obj.FieldSourceCode;
-    const name = obj.FieldName;
+    const sourceCode = codeKey !== undefined && labelKey !== undefined ? obj[codeKey] : undefined;
+    const name = labelKey !== undefined ? obj[labelKey] : obj[codeKey ?? ""];
 
     let semantic: string | null = null;
     if (typeof sourceCode === "string" && sourceCode.trim().length > 0) {
@@ -1028,11 +1014,11 @@ function assignFieldNamesFromArray(
       fieldNameMap.set(fieldId, unique);
       usedNames.add(unique);
 
-      // Capture FieldOptions when present and ALL options have non-empty
-      // semantic Values (SystemFieldOption-tagged). Custom options with empty
-      // Value are skipped — they have no semantic label, so we can't generate
-      // a meaningful enum and leave the field's OptionId baked.
-      const optionsRaw = obj.FieldOptions;
+      // Capture the field's options when present and ALL options have non-empty
+      // semantic labels. Options with an empty label are skipped — with no
+      // semantic value we can't generate a meaningful enum, so we leave the
+      // field's option-id baked.
+      const optionsRaw = obj[formSchema.fieldOptionsKey];
       if (Array.isArray(optionsRaw) && optionsRaw.length > 0) {
         const options: Array<{ value: string; optionId: string }> = [];
         let allSemantic = true;
@@ -1042,8 +1028,8 @@ function assignFieldNamesFromArray(
             break;
           }
           const opt = optRaw as Record<string, unknown>;
-          const optId = opt.Id;
-          const optValue = opt.Value;
+          const optId = opt[formSchema.optionIdKey];
+          const optValue = opt[formSchema.optionValueKey];
           if (
             typeof optId !== "string" ||
             typeof optValue !== "string" ||
@@ -1074,12 +1060,14 @@ function assignFieldNamesFromArray(
 function applyFormSchemaSubstitutions(
   rawBody: string,
   fieldNameMap: FieldNameMap,
-  outDiscoveredFields: Set<string>
+  outDiscoveredFields: Set<string>,
+  formSchema: ReconFormSchema
 ): string {
   if (fieldNameMap.size === 0) return rawBody;
   let result = rawBody;
+  const valueMarker = `"${formSchema.responseValueKey}":"`;
   for (const [fieldId, semanticName] of fieldNameMap) {
-    const fieldIdMarker = `"FieldId":"${fieldId}"`;
+    const fieldIdMarker = `"${formSchema.fieldIdKey}":"${fieldId}"`;
     let cursor = 0;
     while (true) {
       const idx = result.indexOf(fieldIdMarker, cursor);
@@ -1087,7 +1075,6 @@ function applyFormSchemaSubstitutions(
       const objEnd = result.indexOf("}", idx);
       if (objEnd === -1) break;
       const segment = result.slice(idx, objEnd);
-      const valueMarker = `"Value":"`;
       const valueIdx = segment.indexOf(valueMarker);
       if (valueIdx === -1) {
         cursor = objEnd;
@@ -1127,12 +1114,14 @@ function applyFormSchemaSubstitutions(
 function applyFormSchemaOptionIdSubstitutions(
   rawBody: string,
   fieldOptionsMap: FieldOptionsMap,
-  outDiscoveredOptionFields: Set<string>
+  outDiscoveredOptionFields: Set<string>,
+  formSchema: ReconFormSchema
 ): string {
   if (fieldOptionsMap.size === 0) return rawBody;
   let result = rawBody;
+  const optionIdMarker = `"${formSchema.responseOptionIdKey}":"`;
   for (const [fieldId, mapping] of fieldOptionsMap) {
-    const fieldIdMarker = `"FieldId":"${fieldId}"`;
+    const fieldIdMarker = `"${formSchema.fieldIdKey}":"${fieldId}"`;
     let cursor = 0;
     while (true) {
       const idx = result.indexOf(fieldIdMarker, cursor);
@@ -1140,7 +1129,6 @@ function applyFormSchemaOptionIdSubstitutions(
       const objEnd = result.indexOf("}", idx);
       if (objEnd === -1) break;
       const segment = result.slice(idx, objEnd);
-      const optionIdMarker = `"OptionId":"`;
       const optionIdLocal = segment.indexOf(optionIdMarker);
       if (optionIdLocal === -1) {
         cursor = objEnd;
@@ -1182,13 +1170,15 @@ function applyRawOptionIdPayloadSubstitutions(
   rawBody: string,
   fieldNameMap: FieldNameMap,
   fieldOptionsMap: FieldOptionsMap,
-  outDiscoveredRawOptionFields: Map<string, string>
+  outDiscoveredRawOptionFields: Map<string, string>,
+  formSchema: ReconFormSchema
 ): string {
   if (fieldNameMap.size === 0) return rawBody;
   let result = rawBody;
+  const optionIdMarker = `"${formSchema.responseOptionIdKey}":"`;
   for (const [fieldId, fieldName] of fieldNameMap) {
     if (fieldOptionsMap.has(fieldId)) continue; // T3's OPT_* already handles this.
-    const fieldIdMarker = `"FieldId":"${fieldId}"`;
+    const fieldIdMarker = `"${formSchema.fieldIdKey}":"${fieldId}"`;
     let cursor = 0;
     while (true) {
       const idx = result.indexOf(fieldIdMarker, cursor);
@@ -1196,7 +1186,6 @@ function applyRawOptionIdPayloadSubstitutions(
       const objEnd = result.indexOf("}", idx);
       if (objEnd === -1) break;
       const segment = result.slice(idx, objEnd);
-      const optionIdMarker = `"OptionId":"`;
       const optionIdLocal = segment.indexOf(optionIdMarker);
       if (optionIdLocal === -1) {
         cursor = objEnd;
@@ -1232,13 +1221,14 @@ function applyRawOptionIdPayloadSubstitutions(
 const MAX_STATE_VALUE_LENGTH = 256;
 
 /** Canonical "uninitialized" sentinel values that some REST APIs return as
- * placeholders before a downstream call populates the real identifier.
- * ClearCompany's `/user/create` returns these for CandidateId/ApplicationId/
- * ApplyProcessId, then `/user/start` returns the real values. Indexing the
- * placeholder would lock the generated plugin's `${candidateId}` binding to
- * the all-zero UUID — every downstream call would then 404 with "candidate
- * does not exist". Closed set, literal-string match — never expand to
- * pattern-based detection (would trip the no-regex-on-open-sets rule). */
+ * placeholders before a downstream call populates the real identifier. An ATS
+ * whose `/user/create` returns these for CandidateId/ApplicationId/
+ * ApplyProcessId, then yields the real values on `/user/start`, is the case that
+ * motivated this: indexing the placeholder would lock the generated plugin's
+ * `${candidateId}` binding to the all-zero UUID — every downstream call would
+ * then 404 with "candidate does not exist". Closed set, literal-string match —
+ * never expand to pattern-based detection (would trip the no-regex-on-open-sets
+ * rule). */
 const PLACEHOLDER_STATE_VALUES = new Set(["00000000-0000-0000-0000-000000000000"]);
 
 /**
@@ -2013,7 +2003,8 @@ export function emitMultiStepExecuteHttp(
   baseUrl: string,
   baseUrlDerivedHeaders: Map<string, string>,
   tenantSubdomainHeaders: Map<string, string>,
-  base64PatchOverride: Map<string, string> = new Map()
+  base64PatchOverride: Map<string, string> = new Map(),
+  formSchema: ReconFormSchema | null = null
 ): string {
   interface Rendered {
     url: string;
@@ -2059,7 +2050,7 @@ export function emitMultiStepExecuteHttp(
     outDiscoveredFields.add("BaseUrl");
   }
   // G2: register any tenant-subdomain header values as payload-supplied fields
-  // (e.g. ClearCompany's `API-ShortName: "addus"` becomes `payload.ApiShortName`).
+  // (e.g. an `API-ShortName: "addus"` header becomes `payload.ApiShortName`).
   for (const [headerName, _value] of tenantSubdomainHeaders) {
     outDiscoveredFields.add(headerNameToPayloadFieldName(headerName));
   }
@@ -2091,18 +2082,29 @@ export function emitMultiStepExecuteHttp(
     // payload key-value passes then run on top. OptionId substitution runs
     // here too: same closed-set FieldId anchor; rewrites "OptionId":"<uuid>"
     // slots to "${OPT_X[payload.X]}" lookups.
-    const rawBodyWithFormSubs = cap.requestPostData
-      ? applyRawOptionIdPayloadSubstitutions(
-          applyFormSchemaOptionIdSubstitutions(
-            applyFormSchemaSubstitutions(cap.requestPostData, fieldNameMap, outDiscoveredFields),
+    // Form-schema passes only fire when a `--form-schema` was supplied (which is
+    // also the only way the field maps are non-empty); without one they are
+    // no-ops and the raw recon body flows straight through.
+    const rawBodyWithFormSubs =
+      cap.requestPostData && formSchema !== null
+        ? applyRawOptionIdPayloadSubstitutions(
+            applyFormSchemaOptionIdSubstitutions(
+              applyFormSchemaSubstitutions(
+                cap.requestPostData,
+                fieldNameMap,
+                outDiscoveredFields,
+                formSchema
+              ),
+              fieldOptionsMap,
+              outDiscoveredOptionFields,
+              formSchema
+            ),
+            fieldNameMap,
             fieldOptionsMap,
-            outDiscoveredOptionFields
-          ),
-          fieldNameMap,
-          fieldOptionsMap,
-          outDiscoveredRawOptionFields
-        )
-      : "";
+            outDiscoveredRawOptionFields,
+            formSchema
+          )
+        : (cap.requestPostData ?? "");
     let bodyTemplate = rawBodyWithFormSubs
       ? applyPayloadKeyValueSubstitutions(
           interpolateStateValues(rawBodyWithFormSubs, prior, payloadAccessorByValue),
@@ -2841,9 +2843,13 @@ function jsonSchemaTypeOf(value: unknown): "string" | "number" | "boolean" | "ar
  * `recovered` carries the request contract the `.ts` path infers from real
  * captures — the first POST body's fields plus form-schema discoveries — so
  * `--emit config` no longer throws that away and emit a request schema built
- * only from the handful of flow-step splice hints. The direct-HTTP hot path is
- * still omitted; a site that needs it keeps the `.ts` path or wires
- * `spec.httpModule` by hand.
+ * only from the handful of flow-step splice hints.
+ *
+ * When the site has a direct-HTTP path (a submission flow whose `.ts` emit would
+ * carry an `executeHttp`), `httpModulePath` emits a `spec.httpModule` reference
+ * to a compiled module the operator drops in — the config plugin's escape hatch
+ * for the imperative hot path a JSON manifest cannot express. Absent that, the
+ * browser `flow` is the only execution path, and the field is omitted.
  */
 export function emitConfigManifest(opts: {
   siteId: string;
@@ -2855,8 +2861,23 @@ export function emitConfigManifest(opts: {
   inputBody?: unknown;
   /** Form-schema fields the recon recovered, added as caller-supplied strings. */
   recoveredFields?: Iterable<string>;
+  /**
+   * Relative path to the compiled `executeHttp` module for a site with a
+   * direct-HTTP path. Emitted as `spec.httpModule`; omitted when the site is
+   * browser-only.
+   */
+  httpModulePath?: string;
 }): string {
-  const { siteId, displayName, baseUrl, flowSteps, vocabulary, inputBody, recoveredFields } = opts;
+  const {
+    siteId,
+    displayName,
+    baseUrl,
+    flowSteps,
+    vocabulary,
+    inputBody,
+    recoveredFields,
+    httpModulePath,
+  } = opts;
   const payloadFieldNames = new Set<string>();
 
   const steps = flowSteps.map((step) => {
@@ -2901,6 +2922,7 @@ export function emitConfigManifest(opts: {
     metadata: { siteId, displayName },
     spec: {
       defaultBaseUrl: baseUrl,
+      ...(httpModulePath ? { httpModule: httpModulePath } : {}),
       request: { type: "object", properties: sortedRequestProperties },
       response: {
         type: "object",
@@ -3137,16 +3159,36 @@ async function resolveVocabulary(
   return DEPRECATED_BUILTIN_ATS_VOCABULARY;
 }
 
+/**
+ * Resolves the form-schema for this run and reports which one is in play.
+ *
+ * The engine carries no vendor's wire format (issue #57): a consumer whose ATS
+ * exposes a form definition declares its keys with `--form-schema`. Absent one
+ * (or `--form-schema none`), form-key recovery does not run and the generator
+ * recovers nothing from ATS-shaped responses — the same "absence means none"
+ * discipline `--vocabulary` uses.
+ */
+async function resolveFormSchema(specifier: string): Promise<ReconFormSchema | null> {
+  if (!specifier) return null;
+  const formSchema = await loadReconFormSchema(specifier, process.cwd());
+  logger.info(
+    `form-schema: ${specifier === FORM_SCHEMA_NONE ? "none (no ATS form recovery)" : `custom keys from ${specifier}`}`
+  );
+  return formSchema;
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   let siteId = "";
   let force = false;
   let emit: "ts" | "config" = "ts";
   let vocabularySpecifier = "";
+  let formSchemaSpecifier = "";
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--site-id" && args[i + 1]) siteId = args[++i]!;
     else if (args[i] === "--vocabulary" && args[i + 1]) vocabularySpecifier = args[++i]!;
+    else if (args[i] === "--form-schema" && args[i + 1]) formSchemaSpecifier = args[++i]!;
     else if (args[i] === "--force") force = true;
     else if (args[i] === "--emit" && args[i + 1]) {
       const value = args[++i]!;
@@ -3223,6 +3265,9 @@ async function main(): Promise<void> {
   // module-level const would freeze at import time, which is the bug that makes
   // RECON_QUESTION_KEYWORDS silently inert for anyone setting it after load.
   const vocabulary = await resolveVocabulary(vocabularySpecifier, flowSteps);
+  // Consumer-supplied wire keys for ATS form-schema recovery, or null. When
+  // null the recovery functions no-op — the engine hardcodes no vendor format.
+  const formSchema = await resolveFormSchema(formSchemaSpecifier);
 
   const pascal = toPascalCase(siteId);
   const baseUrl = deriveBaseUrl(captures);
@@ -3244,7 +3289,10 @@ async function main(): Promise<void> {
   // UUIDs can be shielded from indexing — those UUIDs are stable schema
   // anchors that T2/T3 substitution depends on remaining literal in body
   // templates.
-  const { fieldNameMap, fieldOptionsMap, allSchemaUuids } = detectFormSchemaFieldNames(captures);
+  const { fieldNameMap, fieldOptionsMap, allSchemaUuids } = detectFormSchemaFieldNames(
+    captures,
+    formSchema
+  );
   // Shield ALL FieldId/OptionId UUIDs that appear in any schema response, not
   // just the ones that detectFormSchemaFieldNames emits a payload name for.
   // Some fields have FieldNames too long for the naming heuristic (>80 chars)
@@ -3258,7 +3306,8 @@ async function main(): Promise<void> {
   // params (recon timestamps) from the captured URL so the emitted runtime
   // fetch uses a clean template. Sites without a schema-fetch capture
   // (rawSchemaFetch === null) get unchanged behavior.
-  const rawSchemaFetch = gql ? null : detectFormSchemaFetchCapture(captures, baseUrl);
+  const rawSchemaFetch =
+    gql || formSchema === null ? null : detectFormSchemaFetchCapture(captures, baseUrl, formSchema);
   const schemaFetchCleaned: Capture | null = rawSchemaFetch
     ? { ...rawSchemaFetch.capture, url: stripCacheBusterParams(rawSchemaFetch.capture.url) }
     : null;
@@ -3349,7 +3398,9 @@ async function main(): Promise<void> {
         discoveredAdditionalBodyKeys,
         baseUrl,
         baseUrlDerivedHeaders,
-        tenantSubdomainHeaders
+        tenantSubdomainHeaders,
+        new Map(),
+        formSchema
       )
     : undefined;
 
@@ -3486,7 +3537,8 @@ async function main(): Promise<void> {
         baseUrl,
         baseUrlDerivedHeaders,
         tenantSubdomainHeaders,
-        base64PatchOverride
+        base64PatchOverride,
+        formSchema
       )
     : multiStepBody;
 
@@ -3515,6 +3567,10 @@ async function main(): Promise<void> {
         vocabulary,
         inputBody,
         recoveredFields: [...discoveredFormFields, ...discoveredOptionFields],
+        // A submission flow is the case where the `.ts` emit carries an
+        // executeHttp hot path; point the manifest at where the operator drops
+        // the compiled module rather than silently dropping the direct path.
+        httpModulePath: isSubmissionFlow ? `./${siteId}.http.js` : undefined,
       })
     );
     logger.info(`wrote ${manifestPath}`);
