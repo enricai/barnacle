@@ -700,22 +700,21 @@ function walkForNestedErrorKeys(
 const UUID_REGEX = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 
 /**
- * Map from form-schema FieldId UUIDs to PascalCase payload field names. Used
- * by emitMultiStepExecuteHttp to substitute Responses[].Value literals with
+ * Map from form-schema field-id UUIDs to PascalCase payload field names. Used
+ * by emitMultiStepExecuteHttp to substitute the submitted-value literals with
  * caller payload references. Empty when the recon doesn't include a form
  * schema (no-op for those sites).
  */
 type FieldNameMap = Map<string, string>;
 
 /**
- * Per-OptionId-using field: an ordered list of {semanticValue, optionId}
- * pairs derived from the form schema's FieldOptions[]. The generator emits
- * each as an OPT_<FieldName> constant + z.enum payload field; the body emit
- * pass rewrites `OptionId: "<uuid>"` slots to `OptionId: ${OPT_X[payload.X]}`.
+ * Per-option-using field: an ordered list of {semanticValue, optionId}
+ * pairs derived from the form schema's options array. The generator emits
+ * each as an OPT_<Name> constant + z.enum payload field; the body emit
+ * pass rewrites the submitted option-id slots to `${OPT_X[payload.X]}`.
  *
- * Only populated for fields whose options all have a non-empty Value (i.e.
- * SystemFieldOption-tagged options). Custom options without a semantic
- * label are skipped — the field's OptionIds stay baked.
+ * Only populated for fields whose options all have a non-empty label. Options
+ * without a semantic label are skipped — the field's option ids stay baked.
  */
 interface FieldOptionsMapping {
   semanticName: string;
@@ -724,7 +723,7 @@ interface FieldOptionsMapping {
 type FieldOptionsMap = Map<string, FieldOptionsMapping>;
 
 /**
- * Converts a FieldSourceCode like "contact.first.name" or "address.country.subdivision"
+ * Converts a machine code like "contact.first.name" or "address.country.subdivision"
  * to PascalCase: "ContactFirstName", "AddressCountrySubdivision". Site-agnostic:
  * operates only on the input string. Returns null for inputs that don't
  * produce a valid JS identifier.
@@ -737,7 +736,7 @@ function sourceCodeToPascalCase(sourceCode: string): string | null {
 }
 
 /**
- * Converts a free-form FieldName like "Reference #1 First Name" or "Email" to
+ * Converts a free-form field label like "Reference #1 First Name" or "Email" to
  * PascalCase, stripping punctuation in a way that preserves position (so
  * "Reference #1 First Name" → "Reference1FirstName" via a section-heading
  * prefix). Site-agnostic: operates only on input strings.
@@ -773,11 +772,13 @@ function fieldNameToPascalCase(fieldName: string, prefix: string | null): string
 
 /**
  * Recon-driven detection of form-schema captures. Scans all response bodies
- * for arrays whose objects look like SectionField (UUID-shaped FieldId plus
- * FieldName or FieldSourceCode). Builds FieldId → PascalCase name map.
+ * for arrays whose objects look like form fields (a UUID-shaped field-id key
+ * plus at least one of the schema's name keys). Builds field-id → PascalCase
+ * name map.
  *
- * Site-agnostic: identifies form-schema captures by structural fingerprint,
- * not by URL or site name. Any ATS exposing a similar schema would match.
+ * Site-agnostic: identifies form-schema captures by structural fingerprint
+ * against the consumer-supplied keys, not by URL or site name. Any ATS exposing
+ * a matching schema would match.
  */
 /**
  * Exported for unit testing — lets tests prove the rewiring: the same field is
@@ -837,7 +838,7 @@ function walkForSchemaUuids(value: unknown, out: Set<string>, formSchema: ReconF
       }
     }
   }
-  // Recurse into nested objects/arrays so nested SectionFields get walked too.
+  // Recurse into nested objects/arrays so nested form fields get walked too.
   for (const v of Object.values(obj)) walkForSchemaUuids(v, out, formSchema);
 }
 
@@ -863,9 +864,9 @@ function stripCacheBusterParams(url: string): string {
 
 /**
  * Recon-driven detection of the form-schema fetch capture. Returns the first
- * GET capture (in recon order) whose response body contains a SectionFields-
- * shaped array. Sites without such a capture get `null` and Phase B/C/D
- * become no-ops.
+ * GET capture (in recon order) whose response body contains a form-fields-
+ * shaped array (per the supplied schema keys). Sites without such a capture get
+ * `null` and Phase B/C/D become no-ops.
  *
  * Site-agnostic: identifies the fetch by structural fingerprint of the
  * response body, not by URL or site name.
@@ -986,7 +987,7 @@ function assignFieldNamesFromArray(
       currentPrefix = null;
     } else if (typeof name === "string" && name.trim().length > 0 && name.length < 250) {
       const hasNoSourceCode = typeof sourceCode !== "string" || sourceCode.trim().length === 0;
-      // Section-heading heuristic: short FieldName, no SourceCode, MOSTLY
+      // Section-heading heuristic: short label, no machine code, MOSTLY
       // uppercase letters (>= 70% of alphabetic chars) OR contains '#'.
       // Whole-name uppercase ratio avoids false positives like "MM/DD/YYYY"
       // appearing as a format hint inside a normal field label.
@@ -1049,13 +1050,13 @@ function assignFieldNamesFromArray(
 }
 
 /**
- * Substitutes Responses[].Value literals with payload accessors based on the
+ * Substitutes the submitted-value literals with payload accessors based on the
  * field-name map from the form schema. Operates on the body string before
  * state interpolation so already-substituted state values (e.g. ${firstName})
  * are preserved.
  *
- * Closed-set substring matching: both FieldId and the literal Value come from
- * the generator's own input (recon).
+ * Closed-set substring matching: both the field-id and the submitted value come
+ * from the generator's own input (recon).
  */
 function applyFormSchemaSubstitutions(
   rawBody: string,
@@ -1101,15 +1102,15 @@ function applyFormSchemaSubstitutions(
 }
 
 /**
- * Substitutes Responses[].OptionId literals with payload-driven enum lookups.
- * Operates on the body string before state interpolation. For each FieldId
- * with a captured FieldOptionsMapping, find `"FieldId":"<uuid>"` and rewrite
- * the matching `"OptionId":"<uuid>"` to `"OptionId":"${OPT_<Name>[payload.<Name>]}"`.
+ * Substitutes submitted option-id literals with payload-driven enum lookups.
+ * Operates on the body string before state interpolation. For each field with a
+ * captured FieldOptionsMapping, find the schema's field-id marker and rewrite
+ * the matching option-id value to `${OPT_<Name>[payload.<Name>]}`.
  *
- * Order-insensitive: matches `"OptionId":"<uuid>"` anywhere within the same
- * JSON object as the FieldId (which is between this FieldId marker and the
- * closing `}`). Closed-set substring matching: both FieldId and OptionId
- * come from the generator's own input.
+ * Order-insensitive: matches the option-id marker anywhere within the same
+ * JSON object as the field-id marker (which is between it and the closing `}`).
+ * Closed-set substring matching: both marker values come from the generator's
+ * own input.
  */
 function applyFormSchemaOptionIdSubstitutions(
   rawBody: string,
@@ -1155,16 +1156,16 @@ function applyFormSchemaOptionIdSubstitutions(
 }
 
 /**
- * For fields whose FieldOptions have NO semantic values (CustomFieldOption
- * options where the recon schema's `.Value` is empty), T3's OPT_* enum
- * mapping can't be emitted. Instead, parameterize the OptionId slot as a
- * caller-supplied `<FieldName>OptionId` payload field with the recon-observed
- * UUID documented in a TSDoc comment.
+ * For fields whose options have NO semantic labels (the schema's option-label
+ * value is empty), T3's OPT_* enum mapping can't be emitted. Instead,
+ * parameterize the submitted option-id slot as a caller-supplied
+ * `<Name>OptionId` payload field with the recon-observed UUID documented in a
+ * TSDoc comment.
  *
- * Operates on the same `"FieldId":"<uuid>"` anchored search as
- * applyFormSchemaOptionIdSubstitutions, but only fires when the FieldId is
- * in fieldNameMap (has a semantic name) AND NOT in fieldOptionsMap (the
- * structured enum substitution didn't fire). Site-agnostic.
+ * Operates on the same field-id-anchored search as
+ * applyFormSchemaOptionIdSubstitutions, but only fires when the field is in
+ * fieldNameMap (has a semantic name) AND NOT in fieldOptionsMap (the structured
+ * enum substitution didn't fire). Site-agnostic.
  */
 function applyRawOptionIdPayloadSubstitutions(
   rawBody: string,
@@ -1322,8 +1323,9 @@ export function indexStateValues(
       if (value.length < MIN_STATE_VALUE_LENGTH) continue;
       if (value.length > MAX_STATE_VALUE_LENGTH) continue;
       if (PLACEHOLDER_STATE_VALUES.has(value)) continue;
-      // Schema-identifier UUIDs (FieldId, OptionId) are stable anchors that
-      // T2/T3 substitution depends on remaining literal in body templates.
+      // Schema-identifier UUIDs (the field-id and option-id anchors) are stable
+      // anchors that T2/T3 substitution depends on remaining literal in body
+      // templates.
       // Indexing them would let state-threading rewrite the anchors and
       // corrupt T2/T3's already-substituted Values.
       if (shieldedUuids.has(value)) continue;
@@ -1705,7 +1707,7 @@ function applyPayloadKeyValueSubstitutions(
 
 /**
  * Maps a site's screening-question prompts to the payload field that answers
- * them, as `{ FieldName: [keyword, …] }`.
+ * them, as `{ payloadField: [keyword, …] }`.
  *
  * Empty by default and supplied by the operator via `RECON_QUESTION_KEYWORDS`
  * (JSON) — the engine cannot know what any site asks or what a caller's payload
@@ -2078,10 +2080,10 @@ export function emitMultiStepExecuteHttp(
     const prior = actions.slice(0, i);
     const url = interpolateStateValues(cap.url, prior, payloadAccessorByValue);
     // Form-schema substitution runs first on the raw recon body so its
-    // FieldId-anchored matches see the original JSON. State-threading and
-    // payload key-value passes then run on top. OptionId substitution runs
-    // here too: same closed-set FieldId anchor; rewrites "OptionId":"<uuid>"
-    // slots to "${OPT_X[payload.X]}" lookups.
+    // field-id-anchored matches see the original JSON. State-threading and
+    // payload key-value passes then run on top. Option-id substitution runs
+    // here too: same closed-set field-id anchor; rewrites the submitted
+    // option-id slots to "${OPT_X[payload.X]}" lookups.
     // Form-schema passes only fire when a `--form-schema` was supplied (which is
     // also the only way the field maps are non-empty); without one they are
     // no-ops and the raw recon body flows straight through.
@@ -2377,21 +2379,21 @@ export function emitContractTs(opts: {
   /** Whether the flow has a multipart upload step — derived from actionSteps at the call site. */
   hasMultipartStep?: boolean;
   /** PascalCase payload-field names discovered by walking the form schema and
-   * substituting Responses[].Value literals. Added to the payload schema so
+   * substituting the submitted-value literals. Added to the payload schema so
    * the caller can supply real values for them. */
   discoveredFormFields?: Set<string>;
-  /** Full FieldOptions map (FieldId → semanticName + options). Only the
+  /** Full field-options map (field-id → semanticName + options). Only the
    * entries whose semanticName is in `discoveredOptionFields` will get emitted
    * — those are the fields where applyFormSchemaOptionIdSubstitutions actually
-   * rewrote an OptionId slot. */
+   * rewrote an option-id slot. */
   fieldOptionsMap?: FieldOptionsMap;
-  /** Semantic names whose OptionId slots were rewritten by the generator —
+  /** Semantic names whose option-id slots were rewritten by the generator —
    * each gets an OPT_<Name> constant and a z.enum payload field. */
   discoveredOptionFields?: Set<string>;
-  /** Map of FieldName-derived raw-option payload field name (e.g.
-   * `WereYouReferredOptionId`) → recon-observed OptionId UUID. Each becomes
+  /** Map of label-derived raw-option payload field name (e.g.
+   * `WereYouReferredOptionId`) → recon-observed option-id UUID. Each becomes
    * a `<name>: z.string()` payload field with the recon-observed UUID
-   * documented in a TSDoc comment. Used for FieldOptions with empty Values
+   * documented in a TSDoc comment. Used for options with empty labels
    * where T3's structured enum can't be emitted. */
   discoveredRawOptionFields?: Map<string, string>;
   /** Phase F: top-level keys observed in action POST bodies beyond r0
@@ -2489,7 +2491,7 @@ export function emitContractTs(opts: {
       : "";
 
   // Build per-field OPT_<Name> constant declarations + payload-schema enum
-  // entries from the form schema's FieldOptions. Only fields whose OptionId
+  // entries from the form schema's options. Only fields whose option-id
   // slots were actually rewritten in the body (i.e. that appear in
   // discoveredOptionFields) get emitted; the rest leave their schema entries
   // unused. Computed BEFORE payloadSchemaExpr so the extension string is
@@ -2524,10 +2526,10 @@ export function emitContractTs(opts: {
           .join("\n")}\n})`
       : "";
 
-  // Phase E raw-option payload fields: FieldOptions whose .Value strings are
-  // empty in the schema (CustomFieldOption) — no semantic enum is possible,
-  // so the caller supplies the OptionId UUID directly. The recon-observed
-  // UUID is documented in a TSDoc comment so callers have a starting point.
+  // Phase E raw-option payload fields: options whose label strings are empty in
+  // the schema — no semantic enum is possible, so the caller supplies the
+  // option-id UUID directly. The recon-observed UUID is documented in a TSDoc
+  // comment so callers have a starting point.
   const sortedRawOptionEntries = discoveredRawOptionFields
     ? [...discoveredRawOptionFields.entries()].sort(([a], [b]) => a.localeCompare(b))
     : [];
@@ -2536,7 +2538,7 @@ export function emitContractTs(opts: {
       ? `.extend({\n${sortedRawOptionEntries
           .map(
             ([name, reconUuid]) =>
-              `  /** Recon-observed: ${reconUuid}. Caller supplies the OptionId UUID for this field. */\n  ${name}: z.string(),`
+              `  /** Recon-observed: ${reconUuid}. Caller supplies the option-id UUID for this field. */\n  ${name}: z.string(),`
           )
           .join("\n")}\n})`
       : "";
@@ -3285,7 +3287,7 @@ async function main(): Promise<void> {
   const rawActionCaptures = gql
     ? []
     : collapseRedundantPatches(extractActionSequence(captures, baseUrl));
-  // Form-schema detection runs BEFORE state-indexing so the FieldId/OptionId
+  // Form-schema detection runs BEFORE state-indexing so the field-id/option-id
   // UUIDs can be shielded from indexing — those UUIDs are stable schema
   // anchors that T2/T3 substitution depends on remaining literal in body
   // templates.
@@ -3293,10 +3295,10 @@ async function main(): Promise<void> {
     captures,
     formSchema
   );
-  // Shield ALL FieldId/OptionId UUIDs that appear in any schema response, not
+  // Shield ALL field-id/option-id UUIDs that appear in any schema response, not
   // just the ones that detectFormSchemaFieldNames emits a payload name for.
-  // Some fields have FieldNames too long for the naming heuristic (>80 chars)
-  // and would be skipped by fieldNameMap; their FieldIds still need shielding
+  // Some fields have names too long for the naming heuristic (>80 chars) and
+  // would be skipped by fieldNameMap; their field-ids still need shielding
   // because they appear as anchors in the T2-substituted body templates.
   const shieldedUuids = new Set<string>(allSchemaUuids);
   // T4 — Phase B+C: detect a form-schema GET capture and insert it into the
@@ -3350,9 +3352,9 @@ async function main(): Promise<void> {
   const errorSignals = detectErrorSignals(actionSteps);
   const discoveredFormFields = new Set<string>();
   const discoveredOptionFields = new Set<string>();
-  // Phase E: maps FieldName-derived raw-option payload field name (e.g.
-  // "AreYouOverTheAgeOf18OptionId") → recon-observed OptionId UUID. Used to
-  // emit `<FieldName>OptionId: z.string()` payload fields with TSDoc docs.
+  // Phase E: maps label-derived raw-option payload field name (e.g.
+  // "AreYouOverTheAgeOf18OptionId") → recon-observed option-id UUID. Used to
+  // emit `<Name>OptionId: z.string()` payload fields with TSDoc docs.
   const discoveredRawOptionFields = new Map<string, string>();
   // Phase F: keys from additional action POST bodies (beyond inputBody/r0)
   // that get parameterized. Recorded with their value type so the contract
