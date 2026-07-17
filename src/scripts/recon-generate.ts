@@ -779,11 +779,10 @@ function fieldNameToPascalCase(fieldName: string, prefix: string | null): string
  * Site-agnostic: identifies form-schema captures by structural fingerprint
  * against the consumer-supplied keys, not by URL or site name. Any ATS exposing
  * a matching schema would match.
- */
-/**
+ *
  * Exported for unit testing — lets tests prove the rewiring: the same field is
- * recovered from a vendor's wire keys whether they are the historical names or a
- * differing vendor's, and that a null schema recovers nothing.
+ * recovered whether the supplied keys are one vendor's names or a differing
+ * vendor's, and that a null schema recovers nothing.
  */
 export function detectFormSchemaFieldNames(
   captures: Capture[],
