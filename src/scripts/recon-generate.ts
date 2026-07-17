@@ -2797,6 +2797,8 @@ ${flowStepsBlock}
   return { code, payloadFieldNames };
 }
 
+/** Generates the site's index.ts barrel — exported so the out-of-tree e2e
+ * test can drive the emitter directly without spawning the CLI. */
 export function emitIndexTs(opts: { siteId: string; pascal: string }): string {
   const { siteId } = opts;
   const camel = siteId.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
