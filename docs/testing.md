@@ -219,7 +219,7 @@ A new plugin needs tests for:
 `createGraphqlClient()`) once at module scope and reuse the returned wrapper
 inside `executeHttp`. Both factories return a **plain callable function**, not
 an object with method names — `createHttpClient` returns
-`(url, init) => Promise<TResponse>` (`src/scraper/http-client.ts:103-105`);
+`(url, init) => Promise<TResponse>` (`src/scraper/http-client.ts:198-207`);
 `createGraphqlClient` returns
 `(operationName, query, variables) => Promise<TResponse>`
 (`src/scraper/graphql-client.ts:28-34`). Your mock must be a callable with the
