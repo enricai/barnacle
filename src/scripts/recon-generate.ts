@@ -830,13 +830,16 @@ function detectFormSchemaFieldNames(captures: Capture[]): {
 }
 
 /**
- * Walks a response body collecting every UUID-shaped string that appears at
- * a `FieldId` or `OptionId` (and its lowercase variants) path leaf, OR as the
- * `Id` of an object that has `OptionSourceCode`/`StringKey`/`FieldOptions`
- * sibling — i.e. an OptionId in the form schema. These UUIDs are stable
+ * Walks a response body collecting UUID-shaped strings under a `FieldId` key, or
+ * under the `Id` of an entry in a sibling `FieldOptions` array. These are stable
  * schema anchors that must be shielded from state-threading even when
- * detectFormSchemaFieldNames doesn't emit a payload-mappable name for the
- * field (e.g. when the field's FieldName is too long for our naming heuristic).
+ * detectFormSchemaFieldNames emits no payload-mappable name for the field (e.g.
+ * when the field's FieldName is too long for our naming heuristic).
+ *
+ * The key names are exact by design, not an oversight: a differing wire format
+ * (a lowercase `fieldId`, another vendor's option key) is the consumer's to
+ * declare, not the engine's to guess — see issue #57. Matching case variants
+ * here would re-broaden the very fingerprint that issue exists to narrow.
  */
 function walkForSchemaUuids(value: unknown, out: Set<string>): void {
   if (value === null || typeof value !== "object") return;
