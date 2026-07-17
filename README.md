@@ -131,9 +131,43 @@ Reads every artifact from Phases 1–3 — `/tmp/recon/graphql/*.json` (captures
 
 Then review the generated files: trim UI-only fields from the GraphQL query, narrow any `z.unknown()` entries in the schema you care about, and verify the headers. If you need to regenerate after making changes to the recon flow, pass `--force`.
 
+#### Telling the generator which fields carry your caller's data
+
+Barnacle cannot know what your site's forms mean. `"Select the departure port from the Country dropdown"` and `"…select the test candidate's country"` are the same sentence shape; only you know that the first is a search facet and the second is your caller's address. So the vocabulary is yours to supply, with `--vocabulary`:
+
+```ts
+// src/recon/my-vocabulary.ts
+import type { ReconVocabulary } from "@enricai/barnacle/recon/vocabulary";
+
+export const vocabulary: ReconVocabulary = {
+  // Only a step naming the SUBJECT may splice off a bare dropdown — a dropdown
+  // step carries no quoted constant, so the label alone cannot tell your
+  // caller's data from a filter that happens to say "Country".
+  subject: /\b(the\s+)?(test\s+)?customer'?s\b/i,
+  // Labels that must stay literal even when a table row matches.
+  exclusions: [/\bbilling contact\b/i],
+  // Ordered label → payload field. First match wins, so specific precedes broad.
+  table: [
+    [/\bfirst name\b/i, "FirstName"],
+    [/\bcity\b/i, "City"],
+  ],
+};
+```
+
+```bash
+pnpm run recon:generate -- --site-id my-site --vocabulary ./src/recon/my-vocabulary.ts
+```
+
+- The specifier follows the same rule as `BARNACLE_PLUGINS`: a leading `.` or `/` is a filesystem path; anything else resolves from your `node_modules`. The module may export `vocabulary` or a default.
+- **`--vocabulary none`** for a site that splices no caller data at all (read-only inventory, search, pricing). Explicit, so it can't happen by accident.
+- Every regex must be free of the `g`/`y` flags and every field name must be a valid JS identifier — the loader rejects both. A stateful regex matches only every other step; a non-identifier emits `payload.<name>` as a syntax error.
+- Run the generator with a `.ts` vocabulary under `tsx`, or point it at compiled `.js` — plain `node` cannot import TypeScript before v22.18.
+
+> **Deprecated fallback:** omit `--vocabulary` and the generator falls back to a built-in recruiting table (first/last name, email, phone, address), warning as it does. That table is **removed in 2.0.0**, after which an absent vocabulary on a spliceable flow is an error. Supply one now.
+
 #### Mapping the site's screening questions
 
-If the site asks screening questions, tell the generator which payload field answers each one. Barnacle ships no vocabulary of its own — it cannot know what your site asks or what your payload calls things — so this map is yours to supply:
+If the site asks screening questions, tell the generator which payload field answers each one — the same reasoning applies, it cannot know what your site asks:
 
 | Env var | Default | Description |
 | --- | --- | --- |
