@@ -12,7 +12,7 @@ must follow these patterns and rules. Code reviews will reference sections in th
 ## Build/Lint/Test Commands
 
 - Dev: `pnpm run dev` (NODE_ENV=development, tsx watch)
-- Build: `pnpm run build` (tsc → dist/ via tsconfig.build.json + tsc-alias path rewriting + copies src/sites/ fixtures and src/testing/fixtures)
+- Build: `pnpm run build` (tsc → dist/ via tsconfig.build.json + tsc-alias path rewriting + copies every `src/**/fixtures/` dir into dist/)
 - Start: `pnpm start` (runs compiled dist/server.js)
 - Lint: `pnpm run lint` or `pnpm run lint:fix` (Biome)
 - Format: `pnpm run format` (Biome)

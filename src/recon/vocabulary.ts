@@ -23,6 +23,11 @@
  * before `city`). This is why the vocabulary is a JS module and not JSON — the
  * regexes stay real regexes, the array order survives, and the whole thing is
  * type-checked at the consumer.
+ *
+ * Every regex must be free of the `g` and `y` flags, and every table field name
+ * must be a valid JS identifier; the loader rejects both. A stateful regex would
+ * match only every other instruction (`.test()` advances `lastIndex`), and a
+ * non-identifier field name emits `payload.<name>` as a syntax error.
  */
 export interface ReconVocabulary {
   /**

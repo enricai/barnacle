@@ -15,9 +15,28 @@ import { EMPTY_VOCABULARY, type ReconVocabulary } from "@/recon/vocabulary";
 /** The `--vocabulary` value that opts a site out of splicing entirely. */
 export const VOCABULARY_NONE = "none";
 
-const regexSchema = z.custom<RegExp>((v) => v instanceof RegExp, {
-  message: "expected a RegExp literal",
+/**
+ * Rejects `g`/`y` regexes, which are a correctness hazard here rather than a
+ * style preference: `RegExp.prototype.test` advances `lastIndex` on a stateful
+ * regex, so the generator matches each pattern against many instructions and
+ * every other call returns false. A `/g` exclusion therefore misses half the
+ * steps it exists to protect — e.g. `[/signature/gi]` lets the applicant's real
+ * name splice into a signature field on alternate matches. Zod cannot save us
+ * downstream: it passes the RegExp through by identity, `lastIndex` included.
+ */
+const regexSchema = z.custom<RegExp>((v) => v instanceof RegExp && !v.global && !v.sticky, {
+  message: "expected a RegExp literal without the g or y flag (they make .test() stateful)",
 });
+
+/** Mirrors the emitter's identifier rule: a field name is spliced into source as
+ * `payload.<name>` / `{{ .request.<name> }}`, so anything else emits a broken
+ * plugin that still generates and still typechecks. */
+const payloadFieldNameSchema = z
+  .string()
+  .regex(
+    /^[A-Za-z_$][A-Za-z0-9_$]*$/,
+    "must be a valid JS identifier to splice into generated code"
+  );
 
 /**
  * Validates the shape at the boundary so a malformed preset fails at generate
@@ -27,7 +46,7 @@ const regexSchema = z.custom<RegExp>((v) => v instanceof RegExp, {
 const vocabularySchema = z.object({
   subject: regexSchema,
   exclusions: z.array(regexSchema),
-  table: z.array(z.tuple([regexSchema, z.string().min(1)])),
+  table: z.array(z.tuple([regexSchema, payloadFieldNameSchema])),
 });
 
 /**
