@@ -6,6 +6,7 @@ import {
   emitConfigManifest,
   emitContractTs,
   emitMultiStepExecuteHttp,
+  inferZodSchemaFromSamples,
   loadQuestionPromptKeywords,
   resolveStepPayloadField,
 } from "@/scripts/recon-generate";
@@ -314,6 +315,92 @@ describe("emitBrowserFlowTs + emitContractTs — schema/flow anti-drift", () => 
       const decl = field === "Email" ? `${field}: z.email()` : `${field}: z.string()`;
       expect(contract).toContain(decl);
     }
+  });
+});
+
+describe("inferZodSchemaFromSamples", () => {
+  it("marks a key absent from some samples optional rather than requiring it of every response", () => {
+    const schema = inferZodSchemaFromSamples([{ a: 1, b: "x" }, { a: 2 }]);
+    expect(schema).toContain("b: z.string().optional()");
+    expect(schema).toContain("a: z.number()");
+  });
+
+  it("treats a field seen as null in one sample and a string in another as nullable, not z.null()", () => {
+    const schema = inferZodSchemaFromSamples([{ p: null }, { p: "str" }]);
+    expect(schema).toContain("p: z.string().nullable()");
+    expect(schema).not.toContain("z.null()");
+  });
+
+  it("stays permissive when every observation of a field is null", () => {
+    // A z.null() here would reject the string the endpoint returns tomorrow.
+    expect(inferZodSchemaFromSamples([{ p: null }])).toContain("p: z.unknown()");
+  });
+
+  it("merges every array element so a field missing from element 0 is still discovered", () => {
+    const schema = inferZodSchemaFromSamples([[{ x: 1 }, { x: 2, y: 3 }]]);
+    expect(schema).toContain("y: z.number().optional()");
+  });
+
+  it("falls back to unknown for a field whose type varies across samples", () => {
+    expect(inferZodSchemaFromSamples([{ v: "s" }, { v: 1 }])).toContain("v: z.unknown()");
+  });
+
+  it("infers past four levels so deeply nested inventory fields survive", () => {
+    // products[].itineraries[].sailings[].price.summary.total — the shape real
+    // cruise inventory arrives in; a depth-4 cap erases exactly this.
+    const deep = {
+      products: [
+        {
+          itineraries: [
+            { sailings: [{ sailingId: "DD1522", price: { summary: { total: 1402 } } }] },
+          ],
+        },
+      ],
+    };
+    const schema = inferZodSchemaFromSamples([deep]);
+    expect(schema).toContain("sailingId: z.string()");
+    expect(schema).toContain("total: z.number()");
+  });
+
+  it("collapses to unknown past the configured depth so pathological payloads stay bounded", () => {
+    const deep = { a: { b: { c: { d: { e: "too far" } } } } };
+    expect(inferZodSchemaFromSamples([deep], 0, "", { maxDepth: 2 })).toContain("z.unknown()");
+  });
+});
+
+describe("emitBrowserFlowTs + emitContractTs — read-flow payload", () => {
+  // A read flow (no submission POSTs) reaches emitContractTs with inputBody
+  // undefined. The flow emitter and the contract emitter must still agree on
+  // the payload shape: the flow's extract instruction interpolates payload
+  // fields, and every one it names has to exist in the contract's bodySchema
+  // or the generated site fails to compile.
+  const { code } = emitBrowserFlowTs({
+    siteId: "read-site",
+    pascal: "ReadSite",
+    baseUrl: "https://example.com",
+    isSubmissionFlow: false,
+    flowSteps: ["Open the results list"],
+  });
+
+  it("keeps the flow's payload references and the contract's schema keys in sync with no inputBody", () => {
+    const contract = emitContractTs({ ...BASE_OPTS, inputBody: undefined });
+    const referenced = [...code.matchAll(/\$\{payload\.([A-Za-z0-9_]+)\}/g)].map((m) => m[1]!);
+    expect(referenced.length).toBeGreaterThan(0);
+    for (const field of referenced) {
+      expect(contract).toContain(`${field}:`);
+    }
+  });
+
+  it("derives the payload schema from a captured request body when one is available", () => {
+    // Real read-flow endpoints take a structured JSON body, not a search string.
+    const contract = emitContractTs({
+      ...BASE_OPTS,
+      inputBody: { page: 1, region: "INTL", filters: [], sorts: [{ criteria: "RECOMMENDED" }] },
+    });
+    expect(contract).toContain("page:");
+    expect(contract).toContain("region:");
+    expect(contract).toContain("sorts:");
+    expect(contract).not.toContain("query: z.string().min(1)");
   });
 });
 
