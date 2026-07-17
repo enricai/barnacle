@@ -167,20 +167,20 @@ pnpm run recon:generate -- --site-id my-site --vocabulary ./src/recon/my-vocabul
 
 #### Telling the generator your ATS's form-schema wire keys
 
-Where `--vocabulary` matches instruction *prose*, `--form-schema` names the JSON *keys* the generator reads out of an ATS's form-definition responses when recovering field ids, option ids, and submitted values. The engine ships one vendor's format as a built-in preset; a differing vendor declares its own keys with `--form-schema`:
+Where `--vocabulary` matches instruction *prose*, `--form-schema` names the JSON *keys* the generator reads out of an ATS's form-definition responses when recovering field ids, option ids, and submitted values. The engine ships no vendor's format; a site whose ATS exposes a form definition declares its keys with `--form-schema`:
 
 ```ts
 // src/recon/my-form-schema.ts
 import type { ReconFormSchema } from "@enricai/barnacle/recon/form-schema";
 
 export const formSchema: ReconFormSchema = {
-  fieldIdKey: "FieldId",                          // UUID-valued field identity
-  fieldNameKeys: ["FieldSourceCode", "FieldName"], // label/code, first present wins
-  fieldOptionsKey: "FieldOptions",
-  optionIdKey: "Id",                              // option id, inside FieldOptions[]
-  optionValueKey: "Value",                        // option label, inside FieldOptions[]
-  responseValueKey: "Value",                      // submitted free value
-  responseOptionIdKey: "OptionId",                // submitted option reference
+  fieldIdKey: "fieldId",                    // UUID-valued field identity
+  fieldNameKeys: ["code", "label"],         // code, then human label — code preferred
+  fieldOptionsKey: "options",
+  optionIdKey: "optionId",                  // option id, inside the options array
+  optionValueKey: "optionLabel",            // option label, inside the options array
+  responseValueKey: "submittedValue",       // submitted free value
+  responseOptionIdKey: "submittedOptionId", // submitted option reference
 };
 ```
 
@@ -191,6 +191,7 @@ pnpm run recon:generate -- --site-id my-site --form-schema ./src/recon/my-form-s
 - The specifier follows the same rule as `--vocabulary`: a leading `.` or `/` is a filesystem path; anything else resolves from your `node_modules`. The module may export `formSchema` or a default.
 - **`--form-schema none`** for a site with no ATS form definition (a search API, a cruise site) — same as omitting it. "none" is the explicit form.
 - Wire keys anchor `"key":"uuid"` markers, so they may be any non-empty string without a quote or backslash — the JS-identifier rule that governs vocabulary field names does **not** apply here.
+- `fieldNameKeys` models two roles: the first key is a machine code (PascalCased directly), the second is a human label (run through the section-heading heuristic). Supply one key for a label-only ATS, or two for one that exposes both. Additional keys are unused.
 - Omit `--form-schema` (or pass `none`) and ATS form-key recovery does not run — the engine hardcodes no vendor's wire format. A site whose ATS exposes a form definition must supply one to recover its option fields. See issue #57.
 
 #### Mapping the site's screening questions

@@ -31,9 +31,11 @@ export interface ReconFormSchema {
   /** The UUID-valued field-identity key. Anchors the substitution passes. */
   fieldIdKey: string;
   /**
-   * Label/code keys, tried in order — first present wins. Lets a vendor that
-   * exposes both a machine code and a human label prefer the code, as data. Must
-   * be non-empty.
+   * The name key(s), by role: the first is a machine code (PascalCased
+   * directly), the second is a human label (run through the section-heading
+   * heuristic). Supply one key for a label-only ATS, two for one exposing both
+   * (the code is preferred when present). Must be non-empty; a third+ key is
+   * unused — the model has exactly the two roles.
    */
   fieldNameKeys: string[];
   /** The options-array key on a field. */
