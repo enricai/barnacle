@@ -1,9 +1,14 @@
 import { config } from "@/config";
 import { createBrowserbaseBrowserSession } from "@/scraper/session-browserbase";
-import type { BrowserSession, ProviderName } from "@/scraper/session-shared";
+import type { BrowserSession, BrowserSessionOptions } from "@/scraper/session-shared";
 import { createSteelBrowserSession } from "@/scraper/session-steel";
 
-export type { BrowserSession, ProviderName } from "@/scraper/session-shared";
+export type {
+  BrowserbaseSessionCreateParams,
+  BrowserSession,
+  BrowserSessionOptions,
+  ProviderName,
+} from "@/scraper/session-shared";
 
 /**
  * Spins up one browser session via the configured provider. Browserbase is the
@@ -18,14 +23,17 @@ export type { BrowserSession, ProviderName } from "@/scraper/session-shared";
  * stronger fingerprint mitigation pipeline + forces a Windows desktop
  * fingerprint per Browserbase's DataDome guidance). No-op when the provider
  * is Steel — that path uses its own stealth defaults.
+ *
+ * `browserbaseSessionCreateParams` forwards extra Browserbase session-create
+ * params when the selected provider is Browserbase.
  */
-export async function createBrowserSession(opts?: {
-  provider?: ProviderName;
-  advancedStealth?: boolean;
-}): Promise<BrowserSession> {
+export async function createBrowserSession(opts?: BrowserSessionOptions): Promise<BrowserSession> {
   const provider = opts?.provider ?? config.scraper.provider;
   if (provider === "browserbase") {
-    return createBrowserbaseBrowserSession({ advancedStealth: opts?.advancedStealth });
+    return createBrowserbaseBrowserSession({
+      advancedStealth: opts?.advancedStealth,
+      browserbaseSessionCreateParams: opts?.browserbaseSessionCreateParams,
+    });
   }
   return createSteelBrowserSession();
 }

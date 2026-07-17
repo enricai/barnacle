@@ -7,6 +7,24 @@ import { pickRandom } from "@/lib/random";
 export type ProviderName = "browserbase" | "steel";
 
 /**
+ * Extra Browserbase session-create parameters forwarded through Stagehand.
+ *
+ * Barnacle still owns provider invariants like `projectId`, proxy selection,
+ * and fingerprinting; callers use this for bounded Browserbase knobs such as
+ * `timeout`.
+ */
+export type BrowserbaseSessionCreateParams = Record<string, unknown> & {
+  browserSettings?: Record<string, unknown>;
+};
+
+/** Options accepted by the browser-session factory. */
+export interface BrowserSessionOptions {
+  provider?: ProviderName;
+  advancedStealth?: boolean;
+  browserbaseSessionCreateParams?: BrowserbaseSessionCreateParams;
+}
+
+/**
  * A live browser session paired with the per-session action limiter.
  * Callers MUST call `close()` in a `finally` block so the upstream provider
  * stops billing and the underlying browser process is released.

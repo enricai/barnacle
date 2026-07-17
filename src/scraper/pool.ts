@@ -5,6 +5,7 @@ import { getLogger } from "@/lib/logging";
 import { SessionTimeoutError } from "@/scraper/errors";
 import { type RetryOptions, withScraperRetry } from "@/scraper/retry";
 import { type BrowserSession, createBrowserSession } from "@/scraper/session";
+import type { BrowserSessionOptions } from "@/scraper/session-shared";
 
 const logger = getLogger({ name: "scraper/pool" });
 
@@ -40,7 +41,7 @@ export async function runWithSession<T>(
   task: (session: BrowserSession) => Promise<T>,
   retryOptions: Omit<RetryOptions, "onSessionRestart"> = {},
   taskTimeoutMs = TASK_TIMEOUT_MS,
-  sessionOpts: { advancedStealth?: boolean } = {}
+  sessionOpts: Omit<BrowserSessionOptions, "provider"> = {}
 ): Promise<T> {
   return queue.add(async () => {
     const sessionRef: { session: BrowserSession | null } = { session: null };

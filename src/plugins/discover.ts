@@ -96,6 +96,7 @@ const metaSchema = z
     taskTimeoutMs: z.number().optional(),
     multipart: z.boolean().optional(),
     advancedStealth: z.boolean().optional(),
+    browserbaseSessionCreateParams: z.record(z.string(), z.unknown()).optional(),
     apiVersion: z.string().optional(),
     extraRoutes: z.array(z.unknown()).optional(),
   })

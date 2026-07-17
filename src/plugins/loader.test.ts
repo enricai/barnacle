@@ -361,6 +361,30 @@ describe("dispatch — executeHttp hot-path branches", () => {
       advancedStealth: undefined,
     });
   });
+
+  it("forwards Browserbase session params from plugin metadata", async () => {
+    const pluginWithBrowserbaseParams: SitePlugin<unknown, unknown> = {
+      ...httpPlugin,
+      meta: {
+        ...httpPlugin.meta,
+        siteId: "browserbase-params-site",
+        browserbaseSessionCreateParams: { timeout: 300 },
+      },
+      executeHttp: undefined,
+    };
+
+    await dispatch(pluginWithBrowserbaseParams, {}, stubContext);
+
+    expect(mockRunWithSession).toHaveBeenCalledWith(
+      expect.any(Function),
+      { onRetry: undefined },
+      undefined,
+      {
+        advancedStealth: undefined,
+        browserbaseSessionCreateParams: { timeout: 300 },
+      }
+    );
+  });
 });
 
 describe("dispatch — cache integration", () => {
