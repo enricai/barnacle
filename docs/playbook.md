@@ -68,6 +68,22 @@ initial page load, you can skip the flow entirely — run `recon:browser --url X
 with neither `--flow` nor `--flow-file` and the script will capture only the
 network activity that fires during navigation.
 
+**Ad-heavy commercial sites.** Analytics and session-replay beacons fire on
+timers, so the network never falls idle and a `networkidle` navigation wait can
+never resolve. The initial `goto` therefore waits for `domcontentloaded` and, if
+even that does not settle, warns and proceeds rather than discarding a run whose
+captures are already on disk. Page readiness is established afterwards by the SPA
+body-growth probe. Set `RECON_GOTO_WAIT_UNTIL` (`load` | `domcontentloaded` |
+`networkidle`) if a site genuinely needs a stricter wait — e.g. a form whose
+scripts must settle before step 1.
+
+**Read-only sites.** For a site whose flow ends in results rather than a
+submission, omit `submitStep` and `submitEndpointPattern` from the flow file: the
+submit verifier stays inert. Steps must still *act* on something — an
+instruction like "wait for the results to load" asks for no action, and the
+healing cascade will correctly report it as impossible. Settling is already
+handled by the navigation wait and `STEP_PAUSE_MS`.
+
 ---
 
 ## Phase 1 — Browser recon (`recon-browser.ts`)
@@ -76,12 +92,6 @@ network activity that fires during navigation.
 pnpm run recon:browser -- \
   --url https://example.com \
   --flow-file src/sites/my-site/recon-flow.json
-
-# For sites whose API paths don't match /graph, /api/, /graphql, /v1/, or *.json:
-pnpm run recon:browser -- \
-  --url https://example.com \
-  --flow-file src/sites/my-site/recon-flow.json \
-  --capture-all
 ```
 
 **Total runtime: 20–40 minutes for a typical flow (varies with flow length,
@@ -120,9 +130,9 @@ during navigation, before any page-level handler could be wired up. We pair
 `requestWillBeSent` / `responseReceived` / `loadingFinished` via `requestId` so
 we only fetch the response body after it's fully received.
 
-By default, the filter captures paths matching `/graph`, `/api/`, `/graphql`,
-`/v1/`, or `*.json`. Use `--capture-all` for sites with non-standard API paths —
-it captures every network response, producing more noise but missing nothing.
+Every network response is captured — there is no URL-shape filter, so a site
+with non-standard API paths cannot be missed. Grep `/tmp/recon/graphql/` when
+you only care about specific endpoints.
 
 Each capture records, untruncated:
 - Timestamp, method, URL, status
