@@ -505,8 +505,7 @@ const RECON_FLOW_FILE_SCHEMA = z.union([
      * URL after the click contains any of these, that's one of the strong
      * signals required for verified=true. Examples: ["/applied",
      * "/applyboard/applied", "/confirmation", "/thank-you"]. Site-specific
-     * since URL conventions vary across AppCast tenants and ClearCompany
-     * tenants.
+     * since URL conventions vary across ATS tenants.
      */
     successUrlFragments: z.array(z.string().min(1)).optional(),
     /**
@@ -523,8 +522,8 @@ const RECON_FLOW_FILE_SCHEMA = z.union([
      * hostnames as a corroborating network signal — anything else (e.g.
      * analytics, third-party trackers, CDNs) is ignored. Without this
      * list the judge falls back to the URL alone, which is weaker.
-     * Examples: ["apply.appcast.io"], ["careers.clearcompany.com",
-     * "<tenant>.clearcompany.com"].
+     * Examples: ["apply.appcast.io"], ["careers.<ats>.com",
+     * "<tenant>.<ats>.com"].
      */
     ownBackendHostnames: z.array(z.string().min(1)).optional(),
     /**

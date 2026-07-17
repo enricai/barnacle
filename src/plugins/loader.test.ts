@@ -560,7 +560,7 @@ describe("dispatch — forceFallback option", () => {
 
 /**
  * Covers the wire-to-payload boundary for multipart-flagged plugins. The hot
- * path was verified live against ClearCompany at ship time; these tests guard
+ * path was verified live against a real ATS at ship time; these tests guard
  * against silent regressions in the registration logic (e.g. someone removing
  * the `attachFieldsToBody: "keyValues"` option, or moving the
  * `@fastify/multipart` register call after the route loop).
