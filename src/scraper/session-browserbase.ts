@@ -109,10 +109,21 @@ function makeFilteredStagehandLogger(pinoLogger: Logger): {
  * available via the array form (not used here — out of scope until needed).
  */
 /**
- * `advancedStealth` opts into Browserbase's Scale Plan stealth profile.
- * `browserbaseSessionCreateParams` forwards additional Browserbase session
- * create params through Stagehand; Barnacle keeps owning project/proxy and
- * fingerprint settings so provider invariants remain centralized.
+ * `advancedStealth` opts into Browserbase's Scale Plan stealth profile. When
+ * enabled we also force `solveCaptchas: true` (explicit; Browserbase defaults
+ * it on) and pin a Windows desktop fingerprint — DataDome-protected sites react
+ * significantly better to Windows OS signals than the default mac/linux mix.
+ * The combination mirrors a production Stagehand preset validated against such
+ * sites, not Browserbase's defaults.
+ *
+ * `browserbaseSessionCreateParams` forwards caller-supplied Browserbase session
+ * create params (`timeout` being the intended knob). They are spread first so
+ * `proxies` and `browserSettings.fingerprint` land after and win — ordering is
+ * the only thing keeping those ours, so keep the caller spread above them.
+ * `projectId` is the exception: Stagehand resolves it as
+ * `browserbaseSessionCreateParams.projectId ?? projectId`, so a caller-supplied
+ * value would win over the top-level one and route the session into another
+ * project. It is safe today only because both are `browserbaseProjectId`.
  */
 export async function createBrowserbaseBrowserSession(
   opts?: Pick<BrowserSessionOptions, "advancedStealth" | "browserbaseSessionCreateParams">
