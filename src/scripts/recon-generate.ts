@@ -515,8 +515,13 @@ interface StateValue {
   value: string;
   /** Index of the capture whose response is the EARLIEST origin of this value. */
   originIndex: number;
-  /** JSON path within the origin response (e.g. ["Auth", "Token"]). */
+  /** JSON path within the origin response (e.g. ["Auth", "Token"]). Empty for
+   * a header/cookie-origin value — see `headerOrigin`. */
   path: string[];
+  /** Set when `value` originates in a response header/cookie rather than a
+   * body JSON leaf (e.g. disneycruise's `Set-Cookie: __pa=<jwt>` token mint).
+   * `path` is empty in this case since there is no body accessor. */
+  headerOrigin?: { sourceHeader: string; cookieName?: string };
 }
 
 /**
@@ -1194,10 +1199,32 @@ const MAX_STATE_VALUE_LENGTH = 256;
 const PLACEHOLDER_STATE_VALUES = new Set(["00000000-0000-0000-0000-000000000000"]);
 
 /**
+ * Splits a raw `Set-Cookie` response-header string into `name`/`value` pairs.
+ * Captures store `responseHeaders` as a flat `Record<string, string>`
+ * (see recon-shared.ts's `Capture`), so multiple `Set-Cookie` headers from the
+ * same response — if the recon browser's CDP session folds them together —
+ * would already have lost their individual boundaries before reaching here;
+ * this only recovers name/value pairs from whatever single string survives.
+ */
+function* walkSetCookiePairs(rawSetCookie: string): Generator<{ name: string; value: string }> {
+  const pair = rawSetCookie.split(";", 1)[0] ?? "";
+  const eq = pair.indexOf("=");
+  if (eq === -1) return;
+  const name = pair.slice(0, eq).trim();
+  const value = pair.slice(eq + 1).trim();
+  if (name && value) yield { name, value };
+}
+
+/**
  * Walks every capture's response (including GETs — formHistoryId-style values
  * may originate in a state-load GET, not a POST). Indexes every string leaf
  * whose length is in [MIN, MAX], recording the EARLIEST capture index that
  * produced it. Later occurrences of the same value reuse the earliest origin.
+ *
+ * Also indexes response-header/cookie-origin values (e.g. a `Set-Cookie`
+ * auth token) the same way, tagged with `headerOrigin` instead of a body
+ * `path` — this is what lets a stateful API's token-mint response feed a
+ * later call's `Cookie` header via `compileActionSteps`.
  *
  * The index is intentionally permissive — it doesn't try to shape-match
  * "what looks like a token" because token shapes are an open set across the
@@ -1209,7 +1236,9 @@ const PLACEHOLDER_STATE_VALUES = new Set(["00000000-0000-0000-0000-000000000000"
  * the LATER non-placeholder occurrence at the same JSON path becomes the
  * canonical binding instead.
  */
-function indexStateValues(
+/** Exported for unit testing — lets tests exercise the produces[] walk (body
+ * AND header/cookie origins) directly against synthetic Capture sequences. */
+export function indexStateValues(
   captures: Capture[],
   shieldedUuids: Set<string> = new Set(),
   actionCaptureIndices: Set<number> = new Set()
@@ -1225,8 +1254,29 @@ function indexStateValues(
   const haveActionFilter = actionCaptureIndices.size > 0;
   for (let i = 0; i < captures.length; i++) {
     const c = captures[i]!;
-    if (c.responseBody === undefined || c.responseBody === null) continue;
     if (haveActionFilter && !actionCaptureIndices.has(i)) continue;
+    // Headers/cookies are indexed regardless of responseBody presence — a
+    // token-mint call like disneycruise's `authz/private` returns `{}` and
+    // carries its whole payload in `Set-Cookie`.
+    const rawSetCookie = Object.entries(c.responseHeaders).find(
+      ([k]) => k.toLowerCase() === "set-cookie"
+    )?.[1];
+    if (rawSetCookie !== undefined) {
+      for (const { name, value } of walkSetCookiePairs(rawSetCookie)) {
+        if (value.length < MIN_STATE_VALUE_LENGTH) continue;
+        if (value.length > MAX_STATE_VALUE_LENGTH) continue;
+        if (PLACEHOLDER_STATE_VALUES.has(value)) continue;
+        if (!index.has(value)) {
+          index.set(value, {
+            value,
+            originIndex: i,
+            path: [],
+            headerOrigin: { sourceHeader: "set-cookie", cookieName: name },
+          });
+        }
+      }
+    }
+    if (c.responseBody === undefined || c.responseBody === null) continue;
     // For GET captures, only index UUID-shaped strings. GET captures (today,
     // only the form-schema fetch inserted as an action step) surface stable
     // structural identifiers — UUIDs that downstream POSTs need to thread.
@@ -1253,6 +1303,32 @@ function indexStateValues(
   return index;
 }
 
+/** A state value produced by a step's response body — read via a JSON
+ * accessor on the response variable (e.g. `r6.products["0"].productId`). */
+interface BodyProduce {
+  kind: "body";
+  name: string;
+  pathExpr: string;
+  path: string[];
+}
+
+/** A state value produced by a step's response header/cookie (e.g. a
+ * `Set-Cookie`-minted auth token). Unlike `BodyProduce` this has no JS
+ * accessor — the value never surfaces in emitted code at all, because
+ * `createHttpClient`'s `bind` option (see http-client.ts) captures and
+ * forwards it internally. Carried here only so the emitter knows to render
+ * a `bind` entry and which request header on the CONSUMING step observed it,
+ * i.e. `targetHeader`. */
+interface HeaderProduce {
+  kind: "header";
+  name: string;
+  sourceHeader: string;
+  cookieName?: string;
+  targetHeader: string;
+}
+
+type Produce = BodyProduce | HeaderProduce;
+
 interface ActionStep {
   /** The capture this step corresponds to. */
   capture: Capture;
@@ -1261,7 +1337,7 @@ interface ActionStep {
   /** Camelcase state values this step's response produces, ready for destructure.
    * `path` is the JSON path inside the response (used by the emitter to build
    * a narrow per-binding assertion type so the emitted access stays `any`-free). */
-  produces: Array<{ name: string; pathExpr: string; path: string[] }>;
+  produces: Produce[];
   /** Whether the request body is multipart (body bytes not in capture). */
   isMultipart: boolean;
   /** True when the capture's host differs from the immediately-preceding action. */
@@ -1322,27 +1398,75 @@ function pathToVarName(path: string[]): string {
  * var name, the state values its response produces (used by downstream steps),
  * and a multipart flag (request body bytes not captured).
  */
-function compileActionSteps(
+/** Exported for unit testing — see `indexStateValues`. */
+export function compileActionSteps(
   actions: ActionCapture[],
   stateIndex: Map<string, StateValue>
 ): ActionStep[] {
   const usedValues = new Set<string>();
+  // Maps a used state value to the request-header NAME that carries it, for
+  // values whose consuming reference is a request header (not the URL/body).
+  // A header-origin produce needs this as its `targetHeader` — the header the
+  // *next* httpClient call must send the bound value back on. Only the first
+  // consuming header name observed wins; a value used in more than one distinct
+  // header downstream isn't a shape this models (see http-client.ts's `bind`,
+  // which is single-target per binding).
+  const usedValueTargetHeader = new Map<string, string>();
   // Pre-scan: collect all state values referenced by ANY action's URL/headers/body
   // so we only "produce" the values that are actually consumed downstream.
   for (const { capture } of actions) {
     const haystacks: string[] = [capture.url];
-    for (const v of Object.values(capture.requestHeaders)) haystacks.push(v);
     if (capture.requestPostData) haystacks.push(capture.requestPostData);
     for (const sv of stateIndex.values()) {
       if (haystacks.some((h) => h.includes(sv.value))) usedValues.add(sv.value);
+    }
+    for (const [headerName, headerValue] of Object.entries(capture.requestHeaders)) {
+      for (const sv of stateIndex.values()) {
+        if (!headerValue.includes(sv.value)) continue;
+        usedValues.add(sv.value);
+        if (!usedValueTargetHeader.has(sv.value)) {
+          usedValueTargetHeader.set(sv.value, headerName);
+        }
+      }
     }
   }
 
   let lastHost: string | null = null;
   return actions.map(({ capture, index }, i) => {
     const varName = `r${i}`;
-    const produces: ActionStep["produces"] = [];
+    const produces: Produce[] = [];
     const seenNames = new Set<string>();
+
+    // Header/cookie-origin produces — walked first so a value that appears in
+    // BOTH a Set-Cookie and the JSON body (unlikely, but not ruled out) prefers
+    // the header binding, which is what the runtime actually threads.
+    const rawSetCookie = Object.entries(capture.responseHeaders).find(
+      ([k]) => k.toLowerCase() === "set-cookie"
+    )?.[1];
+    if (rawSetCookie !== undefined) {
+      for (const { name: cookieName, value } of walkSetCookiePairs(rawSetCookie)) {
+        if (!usedValues.has(value)) continue;
+        const sv = stateIndex.get(value);
+        if (!sv || sv.originIndex !== index || !sv.headerOrigin) continue;
+        const targetHeader = usedValueTargetHeader.get(value);
+        if (!targetHeader) continue;
+        let name = `${cookieName.replace(/[^A-Za-z0-9]/g, "")}Cookie`;
+        if (!/^[A-Za-z_$]/.test(name)) name = `_${name}`;
+        let suffix = 1;
+        while (seenNames.has(name)) {
+          suffix++;
+          name = `${cookieName.replace(/[^A-Za-z0-9]/g, "")}Cookie${suffix}`;
+        }
+        seenNames.add(name);
+        produces.push({
+          kind: "header",
+          name,
+          sourceHeader: sv.headerOrigin.sourceHeader,
+          cookieName: sv.headerOrigin.cookieName,
+          targetHeader,
+        });
+      }
+    }
 
     if (capture.responseBody !== undefined && capture.responseBody !== null) {
       for (const { value, path } of walkStringLeaves(capture.responseBody)) {
@@ -1357,7 +1481,7 @@ function compileActionSteps(
           name = `${pathToVarName(path)}${suffix}`;
         }
         seenNames.add(name);
-        produces.push({ name, pathExpr: `${varName}${pathToAccessor(path)}`, path });
+        produces.push({ kind: "body", name, pathExpr: `${varName}${pathToAccessor(path)}`, path });
       }
     }
 
@@ -1381,6 +1505,26 @@ function compileActionSteps(
 }
 
 /**
+ * Collects every header/cookie-origin produce across an action sequence, in
+ * step order — this is what `emitContractTs` renders as `createHttpClient`'s
+ * `bind` option so the generated `executeHttp` actually forwards a value like
+ * disneycruise's `Set-Cookie: __pa=<jwt>` mint to the stateful call that 401s
+ * without it. Deduped by `targetHeader`: `HttpResponseBinding` (http-client.ts)
+ * is one binding per target header, so if two steps somehow produced the same
+ * target the earliest wins.
+ */
+function collectHeaderBindings(actionSteps: ActionStep[]): HeaderProduce[] {
+  const byTarget = new Map<string, HeaderProduce>();
+  for (const step of actionSteps) {
+    for (const p of step.produces) {
+      if (p.kind !== "header") continue;
+      if (!byTarget.has(p.targetHeader)) byTarget.set(p.targetHeader, p);
+    }
+  }
+  return [...byTarget.values()];
+}
+
+/**
  * Replaces occurrences of state values in `template` with `${varName}`
  * interpolations. Returns a JS template-literal string fragment (no backticks).
  *
@@ -1398,6 +1542,11 @@ function interpolateStateValues(
   const varNameByValue = new Map<string, string>();
   for (const step of priorSteps) {
     for (const p of step.produces) {
+      // Header/cookie-origin produces have no body path — their value never
+      // appears as a literal in a URL/body template (http-client's `bind`
+      // forwards it directly as a request header), so there's nothing to
+      // interpolate here.
+      if (p.kind === "header") continue;
       let cursor: unknown = step.capture.responseBody;
       for (const segment of p.path) {
         if (
@@ -2109,6 +2258,10 @@ export function emitMultiStepExecuteHttp(
     }
 
     for (const p of step.produces) {
+      // Header/cookie-origin produces never surface as a JS accessor —
+      // createHttpClient's `bind` option (rendered once, above the steps)
+      // captures and forwards the value internally.
+      if (p.kind === "header") continue;
       if (declaredNames.has(p.name)) continue;
       if (!referencedNames.has(p.name)) continue;
       declaredNames.add(p.name);
@@ -2134,6 +2287,26 @@ function summariseResponseShape(value: unknown): unknown {
     obj[k] = v === null ? "null" : typeof v;
   }
   return obj;
+}
+
+/**
+ * Renders `headerBindings` as a trailing `, bind: [...]` fragment for
+ * `createHttpClient`'s options object literal — empty string when there are
+ * none, so a plugin with no header/cookie-origin state keeps the exact output
+ * this emitter already produced. Structurally matches `HttpResponseBinding`
+ * (http-client.ts) without importing the type: the object literal typechecks
+ * against `HttpClientOptions.bind` on its own shape.
+ */
+function bindOptionLiteral(headerBindings: HeaderProduce[]): string {
+  if (headerBindings.length === 0) return "";
+  const entries = headerBindings
+    .map((b) => {
+      const cookieNameField =
+        b.cookieName !== undefined ? ` cookieName: ${JSON.stringify(b.cookieName)},` : "";
+      return `{ sourceHeader: ${JSON.stringify(b.sourceHeader)},${cookieNameField} targetHeader: ${JSON.stringify(b.targetHeader)} }`;
+    })
+    .join(", ");
+  return `, bind: [${entries}]`;
 }
 
 // ── code emitters ─────────────────────────────────────────────────────────────
@@ -2186,6 +2359,11 @@ export function emitContractTs(opts: {
    * emitBrowserFlowTs so schema and flow can never drift. */
   payloadFieldNames?: Set<string>;
   base64ContentHelper?: string;
+  /** Response-header/cookie-origin state bindings collected from the action
+   * sequence's produces[] (see `collectHeaderBindings`) — rendered as
+   * `createHttpClient`'s `bind` option so a value like a `Set-Cookie`-minted
+   * auth token actually reaches the stateful call that needs it. */
+  headerBindings?: HeaderProduce[];
 }): string {
   const {
     siteId,
@@ -2209,6 +2387,7 @@ export function emitContractTs(opts: {
     discoveredAdditionalBodyKeys,
     payloadFieldNames,
     base64ContentHelper = "",
+    headerBindings = [],
   } = opts;
 
   // Multi-step plugins thread responses through many different shapes that a
@@ -2394,7 +2573,7 @@ function getGql(baseUrl: string): GqlFn {
 }
 `
     : `
-const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottleneck: limiter, baseHeaders: BASE_HEADERS });
+const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottleneck: limiter, baseHeaders: BASE_HEADERS${bindOptionLiteral(headerBindings)} });
 `;
 
   const executeHttpBody = multiStepBody
@@ -3134,6 +3313,7 @@ async function main(): Promise<void> {
         );
         if (draftPostStep && !draftPostStep.produces.some((p) => p.name === "draftId")) {
           draftPostStep.produces.push({
+            kind: "body",
             name: "draftId",
             pathExpr: `${draftPostStep.varName}.APPDraftId`,
             path: ["APPDraftId"],
@@ -3145,6 +3325,7 @@ async function main(): Promise<void> {
         );
         if (attachPostStep && !attachPostStep.produces.some((p) => p.name === "attachmentId")) {
           attachPostStep.produces.push({
+            kind: "body",
             name: "attachmentId",
             pathExpr: `${attachPostStep.varName}.Id`,
             path: ["Id"],
@@ -3219,6 +3400,7 @@ async function main(): Promise<void> {
     : multiStepBody;
 
   const hasMultipartStep = actionSteps.some((s) => s.isMultipart);
+  const headerBindings = collectHeaderBindings(actionSteps);
   // For submission flows the final action's response body is the most useful
   // shape inference target (it's the terminal success signal). Fall back to
   // the replay body for single-endpoint sites.
@@ -3290,6 +3472,7 @@ async function main(): Promise<void> {
       discoveredRawOptionFields,
       discoveredAdditionalBodyKeys,
       payloadFieldNames: browserFlow.payloadFieldNames,
+      headerBindings,
     })
   );
   logger.info(`wrote ${outDir}/contract.ts`);

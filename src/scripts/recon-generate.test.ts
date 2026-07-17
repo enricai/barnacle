@@ -2,10 +2,12 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { CONFIG_PLUGIN_API_VERSION, CONFIG_PLUGIN_KIND } from "@/plugins/plugin-manifest-envelope";
 import {
+  compileActionSteps,
   emitBrowserFlowTs,
   emitConfigManifest,
   emitContractTs,
   emitMultiStepExecuteHttp,
+  indexStateValues,
   inferZodSchemaFromSamples,
   loadQuestionPromptKeywords,
   resolveStepPayloadField,
@@ -163,6 +165,118 @@ describe("emitMultiStepExecuteHttp — payload accessor through an array-indexed
 
   it("emits a non-null-asserted bracket accessor for the array element", () => {
     expect(body).toContain(`$${'{payload.sorts["0"]!}'}`);
+  });
+});
+
+describe("compileActionSteps — Set-Cookie state binding (disneycruise-style token mint)", () => {
+  /** Capture 1: mints an anonymous bearer via Set-Cookie, response body is empty. */
+  const tokenMintCapture = {
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action",
+    method: "POST",
+    url: "https://api.example.com/authz/private",
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: "{}",
+    responseHeaders: { "set-cookie": "__pa=abc.def.ghi; Path=/; HttpOnly" },
+    responseBody: {},
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  };
+
+  /** Capture 2: the stateful call that 401s without the minted cookie —
+   * carries it back as a Cookie request header, exactly as the browser sent it. */
+  const statefulCallCapture = {
+    timestamp: "2024-01-01T00:00:01Z",
+    phase: "action",
+    method: "POST",
+    url: "https://api.example.com/available-products/",
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json", Cookie: "__pa=abc.def.ghi" },
+    requestPostData: "{}",
+    responseHeaders: { "content-type": "application/json" },
+    responseBody: { products: [{ productId: "p1" }] },
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  };
+
+  const captures = [tokenMintCapture, statefulCallCapture];
+  const actionCaptures = captures.map((capture, index) => ({ capture, index }));
+  const stateIndex = indexStateValues(captures);
+  const actionSteps = compileActionSteps(actionCaptures, stateIndex);
+
+  it("indexes the Set-Cookie value with a header origin, not a body path", () => {
+    const sv = stateIndex.get("abc.def.ghi");
+    expect(sv).toBeDefined();
+    expect(sv?.headerOrigin).toEqual({ sourceHeader: "set-cookie", cookieName: "__pa" });
+    expect(sv?.path).toEqual([]);
+  });
+
+  it("produces a header-kind binding on the token-mint step, not a body accessor", () => {
+    const [mintStep] = actionSteps;
+    const headerProduce = mintStep?.produces.find((p) => p.kind === "header");
+    expect(headerProduce).toBeDefined();
+    expect(headerProduce).toMatchObject({
+      kind: "header",
+      sourceHeader: "set-cookie",
+      cookieName: "__pa",
+      targetHeader: "Cookie",
+    });
+  });
+
+  it("does not fabricate a body-path produce for the cookie value", () => {
+    const [mintStep] = actionSteps;
+    expect(mintStep?.produces.some((p) => p.kind === "body")).toBe(false);
+  });
+
+  it("renders a bind: [...] entry on createHttpClient instead of dropping the token", () => {
+    const contract = emitContractTs({
+      ...BASE_OPTS,
+      inputBody: JSON.parse(tokenMintCapture.requestPostData) as unknown,
+      multiStepBody: emitMultiStepExecuteHttp(
+        actionSteps,
+        JSON.parse(tokenMintCapture.requestPostData) as unknown,
+        { stringMessageKey: null, nestedErrorPaths: [] },
+        new Map(),
+        new Set(),
+        new Map(),
+        new Set(),
+        new Map(),
+        new Map(),
+        "https://api.example.com",
+        new Map(),
+        new Map()
+      ),
+      headerBindings: actionSteps.flatMap((s) => s.produces).filter((p) => p.kind === "header"),
+    });
+
+    expect(contract).toContain(
+      'bind: [{ sourceHeader: "set-cookie", cookieName: "__pa", targetHeader: "Cookie" }]'
+    );
+  });
+
+  it("generated executeHttp body never references the raw JWT or emits an any-typed accessor", () => {
+    const body = emitMultiStepExecuteHttp(
+      actionSteps,
+      JSON.parse(tokenMintCapture.requestPostData) as unknown,
+      { stringMessageKey: null, nestedErrorPaths: [] },
+      new Map(),
+      new Set(),
+      new Map(),
+      new Set(),
+      new Map(),
+      new Map(),
+      "https://api.example.com",
+      new Map(),
+      new Map()
+    );
+    expect(body).not.toContain("abc.def.ghi");
+    expect(body).not.toContain(": any");
+    expect(body).not.toContain("<any>");
   });
 });
 
