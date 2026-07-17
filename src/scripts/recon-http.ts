@@ -1,6 +1,9 @@
 /**
- * Phase 2–3 recon: replays every capture from recon-browser.ts via plain
- * Node fetch() — no browser, no AI — to prove endpoints work standalone.
+ * Phase 2–3 recon: replays every same-site capture from recon-browser.ts via
+ * plain Node fetch() — no browser, no AI — to prove endpoints work standalone.
+ * Third-party asset/telemetry hosts and a site's own error sink are filtered out
+ * first (see `@/recon/capture-filters`) so the probe never burns time replaying
+ * clicktale/adsrvr/tiktok chatter.
  *
  * Also runs:
  *   - GraphQL introspection probe on each unique GraphQL endpoint
@@ -22,6 +25,7 @@ import { join } from "node:path";
 import { toErrorMessage } from "@/lib/errors";
 import { configureHttpDispatcher } from "@/lib/http";
 import { getScriptLogger } from "@/lib/logging";
+import { isNoiseUrl } from "@/recon/capture-filters";
 
 configureHttpDispatcher();
 
@@ -383,10 +387,20 @@ async function main(): Promise<void> {
   logger.info("=== PHASE 2: HTTP REPLAY ===");
   const all = loadCaptures(capturesDir);
   const unique = deduplicateCaptures(all);
-  logger.info(`found ${all.length} captures, ${unique.length} unique`);
+  // Drop third-party asset/telemetry hosts and a site's own error sink before
+  // replaying. Without this the probe replays and rate-limits every captured
+  // host — burning hours on clicktale/adsrvr/tiktok — and never reaches the one
+  // endpoint that matters. The count is logged so a skipped endpoint is never
+  // silently mistaken for "nothing captured it."
+  const probeworthy = unique.filter(({ capture }) => !isNoiseUrl(capture.url));
+  const skipped = unique.length - probeworthy.length;
+  logger.info(
+    `found ${all.length} captures, ${unique.length} unique, ${probeworthy.length} probeworthy` +
+      (skipped > 0 ? ` (${skipped} asset/telemetry/error host(s) skipped)` : "")
+  );
 
   const replays: ReplayResult[] = [];
-  for (const { filename, capture } of unique) {
+  for (const { filename, capture } of probeworthy) {
     const result = await replayCapture(filename, capture);
     replays.push(result);
     writeFileSync(join(REPLAYS_DIR, filename), JSON.stringify(result, null, 2));
