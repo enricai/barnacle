@@ -2,9 +2,10 @@
  * Consumer-supplied vocabulary that teaches the generator which flow-step
  * instructions carry the caller's data.
  *
- * Lives at the top of `src/` alongside `site-plugin.ts` because it is an
- * engine-level contract consumers implement, not a script internal. All imports
- * are type-only: zero runtime side effects, safe to import from any layer.
+ * Lives outside `src/scripts/` because it is an engine-level contract consumers
+ * implement — published at `@enricai/barnacle/recon/vocabulary` — not a script
+ * internal. Follows `site-plugin.ts`'s discipline: all imports are type-only, so
+ * there are zero runtime side effects and it is safe to import from any layer.
  *
  * Why this exists: deciding that "Fill in the First Name field with 'Reginald'"
  * should splice the caller's `FirstName` is a claim about a *domain*, not about
