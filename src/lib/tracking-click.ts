@@ -22,6 +22,7 @@ const logger = getLogger({ name: "tracking-click" });
 
 const NAVIGATE_TIMEOUT_MS = 30_000;
 const SETTLE_WAIT_MS = 5_000;
+const BROWSERBASE_SESSION_TIMEOUT_SECONDS = 300;
 
 const inFlightClicks = new Set<Promise<void>>();
 
@@ -36,7 +37,10 @@ async function executeTrackingClick(trackingUrl: string, siteId: string): Promis
 
   let session: Awaited<ReturnType<typeof createBrowserbaseBrowserSession>> | undefined;
   try {
-    session = await createBrowserbaseBrowserSession({ advancedStealth: true });
+    session = await createBrowserbaseBrowserSession({
+      advancedStealth: true,
+      browserbaseSessionCreateParams: { timeout: BROWSERBASE_SESSION_TIMEOUT_SECONDS },
+    });
     const page = await session.stagehand.context.awaitActivePage();
     await page.goto(trackingUrl, { waitUntil: "domcontentloaded", timeoutMs: NAVIGATE_TIMEOUT_MS });
     await page.waitForTimeout(SETTLE_WAIT_MS);

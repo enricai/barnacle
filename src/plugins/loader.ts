@@ -113,7 +113,12 @@ async function runPluginPipeline<TResult>(
       (session) => plugin.execute(payload, session, context),
       { onRetry: plugin.onRetry },
       plugin.meta.taskTimeoutMs,
-      { advancedStealth: plugin.meta.advancedStealth }
+      {
+        advancedStealth: plugin.meta.advancedStealth,
+        ...(plugin.meta.browserbaseSessionCreateParams && {
+          browserbaseSessionCreateParams: plugin.meta.browserbaseSessionCreateParams,
+        }),
+      }
     )) as SitePluginResult<TResult>;
   }
 
@@ -150,7 +155,12 @@ async function runPluginPipeline<TResult>(
         (session) => plugin.execute(payload, session, context),
         { onRetry: plugin.onRetry },
         plugin.meta.taskTimeoutMs,
-        { advancedStealth: plugin.meta.advancedStealth }
+        {
+          advancedStealth: plugin.meta.advancedStealth,
+          ...(plugin.meta.browserbaseSessionCreateParams && {
+            browserbaseSessionCreateParams: plugin.meta.browserbaseSessionCreateParams,
+          }),
+        }
       )) as SitePluginResult<TResult>;
     }
     if (httpErr instanceof HttpRateLimitError) {

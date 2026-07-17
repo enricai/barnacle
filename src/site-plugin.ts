@@ -15,6 +15,7 @@ import type { AppConfig } from "@/config";
 import type { MetricsCollector } from "@/lib/dispatch-metrics";
 import type { ScraperError } from "@/scraper/errors";
 import type { BrowserSession } from "@/scraper/session";
+import type { BrowserbaseSessionCreateParams } from "@/scraper/session-shared";
 import type { DispatchMetrics } from "@/types/dispatch-metrics";
 import type { Logger } from "@/types/logging";
 
@@ -115,6 +116,12 @@ export interface SitePluginMeta {
    * false to avoid the cost penalty on plugins that don't need it.
    */
   advancedStealth?: boolean;
+  /**
+   * Extra Browserbase session-create params for this plugin's browser fallback.
+   * Core-owned fields such as project id, proxy selection, and fingerprinting
+   * remain controlled by Barnacle. Use this for bounded knobs like `timeout`.
+   */
+  browserbaseSessionCreateParams?: BrowserbaseSessionCreateParams;
   /**
    * Optional semver range string declaring which plugin API version this plugin
    * targets (e.g. `"^1.0.0"`). Core compares this against `PLUGIN_API_VERSION`
