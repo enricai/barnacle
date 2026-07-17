@@ -109,10 +109,25 @@ function makeFilteredStagehandLogger(pinoLogger: Logger): {
  * available via the array form (not used here — out of scope until needed).
  */
 /**
- * `advancedStealth` opts into Browserbase's Scale Plan stealth profile.
- * `browserbaseSessionCreateParams` forwards additional Browserbase session
- * create params through Stagehand; Barnacle keeps owning project/proxy and
- * fingerprint settings so provider invariants remain centralized.
+ * `advancedStealth` opts into Browserbase's Scale Plan stealth profile. When
+ * enabled we also force `solveCaptchas: true` (explicit; Browserbase defaults
+ * it on) and pin a Windows desktop fingerprint — DataDome-protected sites react
+ * significantly better to Windows OS signals than the default mac/linux mix.
+ * The combination mirrors a production Stagehand preset validated against such
+ * sites, not Browserbase's defaults.
+ *
+ * `browserbaseSessionCreateParams` forwards caller-supplied Browserbase session
+ * create params (`timeout` being the intended knob — seconds, per Browserbase's
+ * `SessionCreateParams`). They are spread first so `proxies` and
+ * `browserSettings.fingerprint` land after and win — ordering is the only thing
+ * keeping those ours, so keep the caller spread above them.
+ *
+ * `projectId` is dropped from the caller params on top of being re-set below —
+ * belt and suspenders. Stagehand resolves it as `overrideProjectId ?? projectId`,
+ * so a caller value that reached the spread would beat the top-level one and
+ * silently route the session into a different Browserbase project. The re-set
+ * already prevents that; the strip is what keeps it prevented if the re-set is
+ * ever moved or dropped.
  */
 export async function createBrowserbaseBrowserSession(
   opts?: Pick<BrowserSessionOptions, "advancedStealth" | "browserbaseSessionCreateParams">
@@ -130,7 +145,8 @@ export async function createBrowserbaseBrowserSession(
   const viewport = pickRandomViewport();
   const useResidentialProxy = config.scraper.proxyType.toLowerCase() === "residential";
   const advancedStealth = opts?.advancedStealth === true;
-  const customSessionParams = opts?.browserbaseSessionCreateParams;
+  const { projectId: _callerProjectId, ...customSessionParams } =
+    opts?.browserbaseSessionCreateParams ?? {};
 
   if (config.scraper.useBedrock) {
     logger.info(`using bedrock model ${config.bedrock.model} in region ${config.bedrock.region}`);
@@ -173,7 +189,7 @@ export async function createBrowserbaseBrowserSession(
         projectId: config.scraper.browserbaseProjectId,
         proxies: useResidentialProxy,
         browserSettings: {
-          ...customSessionParams?.browserSettings,
+          ...customSessionParams.browserSettings,
           ...(advancedStealth ? { advancedStealth: true, solveCaptchas: true } : {}),
           fingerprint,
         },

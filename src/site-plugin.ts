@@ -117,9 +117,11 @@ export interface SitePluginMeta {
    */
   advancedStealth?: boolean;
   /**
-   * Extra Browserbase session-create params for this plugin's browser fallback.
-   * Core-owned fields such as project id, proxy selection, and fingerprinting
-   * remain controlled by Barnacle. Use this for bounded knobs like `timeout`.
+   * Extra Browserbase session-create params for this plugin's browser fallback;
+   * `timeout` (seconds until the session auto-ends) is the intended knob. Core
+   * applies `proxies` and `browserSettings.fingerprint` after these, and drops
+   * `projectId` outright, so those stay Barnacle's. Nothing constrains the shape
+   * beyond that.
    */
   browserbaseSessionCreateParams?: BrowserbaseSessionCreateParams;
   /**
