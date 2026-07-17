@@ -119,9 +119,9 @@ export interface SitePluginMeta {
   /**
    * Extra Browserbase session-create params for this plugin's browser fallback;
    * `timeout` (seconds until the session auto-ends) is the intended knob. Core
-   * applies `proxies` and `browserSettings.fingerprint` after these, so those
-   * stay Barnacle's. Nothing constrains the shape beyond that — see
-   * `createBrowserbaseBrowserSession` for the `projectId` caveat.
+   * applies `proxies` and `browserSettings.fingerprint` after these, and drops
+   * `projectId` outright, so those stay Barnacle's. Nothing constrains the shape
+   * beyond that.
    */
   browserbaseSessionCreateParams?: BrowserbaseSessionCreateParams;
   /**
