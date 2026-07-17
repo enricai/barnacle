@@ -9,6 +9,7 @@ import {
   inferZodSchemaFromSamples,
   loadQuestionPromptKeywords,
   resolveStepPayloadField,
+  selectPayloadAction,
 } from "@/scripts/recon-generate";
 
 /** The recon env-var token for the applicant email, built by concatenation so
@@ -315,6 +316,71 @@ describe("emitBrowserFlowTs + emitContractTs — schema/flow anti-drift", () => 
       const decl = field === "Email" ? `${field}: z.email()` : `${field}: z.string()`;
       expect(contract).toContain(decl);
     }
+  });
+});
+
+describe("selectPayloadAction", () => {
+  /** Minimal action step — only the fields selection reads. */
+  const step = (url: string, requestPostData: string | null, responseBody: unknown) => ({
+    capture: { url, requestPostData, responseBody } as unknown as Parameters<
+      typeof selectPayloadAction
+    >[0][number]["capture"],
+  });
+
+  it("keeps the first action for a transactional flow, where each endpoint is hit once", () => {
+    // The regression that matters: an apply flow puts the caller's data in the
+    // opening POST, and later steps only carry the transaction forward.
+    const steps = [
+      step("https://ats.test/api/application/create", '{"FirstName":"Reginald"}', { id: "a1" }),
+      step("https://ats.test/api/form-schema", '{"jobId":"9"}', { sections: [{ fields: [] }] }),
+      step("https://ats.test/api/application/a1/submit", '{"confirm":true}', { success: true }),
+    ];
+    expect(selectPayloadAction(steps)).toBe(steps[0]);
+  });
+
+  it("prefers an endpoint re-issued with a different body over whatever fired first", () => {
+    // A search page re-queries on every filter change; the toggle fetch that
+    // happened to load first is incidental.
+    const steps = [
+      step("https://shop.test/toggles", '{"flags":["a"]}', { featureA: true }),
+      step("https://shop.test/search", '{"page":1,"filters":[]}', { total: 699 }),
+      step("https://shop.test/search", '{"page":1,"filters":["7-night"]}', { total: 151 }),
+    ];
+    expect(selectPayloadAction(steps)).toBe(steps[1]);
+  });
+
+  it("ignores a chattering endpoint that returns nothing", () => {
+    // Client-side error reporting re-posts with varying bodies and an empty
+    // response — repetition alone must not make it look like the subject.
+    const steps = [
+      step("https://shop.test/config", '{"k":"v"}', { config: 1 }),
+      step("https://shop.test/error", '{"msg":"boom"}', null),
+      step("https://shop.test/error", '{"msg":"other"}', null),
+    ];
+    expect(selectPayloadAction(steps)).toBe(steps[0]);
+  });
+
+  it("keeps the first action when the same endpoint repeats with an identical body", () => {
+    // A retry is not a re-query: nothing varies, so nothing is learned.
+    const steps = [
+      step("https://shop.test/a", '{"x":1}', { ok: true }),
+      step("https://shop.test/b", '{"y":2}', { ok: true }),
+      step("https://shop.test/b", '{"y":2}', { ok: true }),
+    ];
+    expect(selectPayloadAction(steps)).toBe(steps[0]);
+  });
+
+  it("treats query strings on the same endpoint as one endpoint", () => {
+    const steps = [
+      step("https://shop.test/toggles", '{"f":1}', { on: true }),
+      step("https://shop.test/search?page=1", '{"page":1}', { total: 9 }),
+      step("https://shop.test/search?page=2", '{"page":2}', { total: 9 }),
+    ];
+    expect(selectPayloadAction(steps)).toBe(steps[1]);
+  });
+
+  it("returns null when there are no actions to choose from", () => {
+    expect(selectPayloadAction([])).toBeNull();
   });
 });
 

@@ -253,6 +253,50 @@ function endpointKey(url: string): string {
   }
 }
 
+/** Empty or absent response bodies carry no evidence of an endpoint's purpose. */
+function isVoidResponse(body: unknown): boolean {
+  if (body === null || body === undefined || body === "") return true;
+  if (typeof body !== "object") return false;
+  if (Array.isArray(body)) return body.length === 0;
+  return Object.keys(body).length === 0;
+}
+
+/**
+ * Picks the action whose request body should define the payload schema.
+ *
+ * Defaults to the first action, which is right for a transactional flow: the
+ * caller's data goes in with the opening POST and later steps only carry the
+ * transaction forward. It is wrong when the flow's real subject is a query the
+ * page issues repeatedly — a search or inventory endpoint is re-hit on every
+ * filter change, while whatever happened to fire first was incidental (a
+ * feature-toggle fetch, a config read). Re-issuing the same endpoint with a
+ * different body is the signature of the parameters a caller would want to
+ * control, so that wins. Anything less clear-cut falls through to first-action
+ * behavior rather than guessing.
+ */
+export function selectPayloadAction<T extends { capture: Capture }>(steps: readonly T[]): T | null {
+  const first = steps[0];
+  if (!first) return null;
+
+  const bodiesByEndpoint = new Map<string, Set<string>>();
+  for (const step of steps) {
+    const key = endpointKey(step.capture.url);
+    const bodies = bodiesByEndpoint.get(key) ?? new Set<string>();
+    bodies.add(step.capture.requestPostData ?? "");
+    bodiesByEndpoint.set(key, bodies);
+  }
+
+  const requeried = steps.filter((step) => {
+    const bodies = bodiesByEndpoint.get(endpointKey(step.capture.url));
+    if (!bodies || bodies.size < 2) return false;
+    // An endpoint re-hit with varying bodies but nothing to show for it is
+    // chatter — client-side error reporting, beacons — not the flow's subject.
+    return !isVoidResponse(step.capture.responseBody);
+  });
+
+  return requeried[0] ?? first;
+}
+
 function deriveBaseUrl(captures: Capture[]): string {
   for (const c of captures) {
     try {
@@ -2870,7 +2914,8 @@ async function main(): Promise<void> {
   const inputBody = isSubmissionFlow
     ? (() => {
         try {
-          return JSON.parse(actionSteps[0]!.capture.requestPostData ?? "null") as unknown;
+          const payloadAction = selectPayloadAction(actionSteps);
+          return JSON.parse(payloadAction?.capture.requestPostData ?? "null") as unknown;
         } catch {
           return null;
         }
