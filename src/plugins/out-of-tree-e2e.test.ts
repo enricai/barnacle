@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -198,35 +198,62 @@ describe("out-of-tree e2e — recon-generate output typechecks against the packa
     [`sites/${SITE_ID}/index.ts`]: indexSource,
   };
 
+  /**
+   * Four of the contract's engine imports are conditional — `multipartBoolean`
+   * and `omitHeaderCaseInsensitive` on `hasMultipartStep`, `loadFixture` on
+   * `auxFiles`, `createGraphqlClient` on `gql` — so the fixture above, which
+   * takes none of those branches, cannot see them. This variant takes all four,
+   * and exists solely so the import guards inspect every specifier the emitter
+   * can produce rather than the subset one fixture happens to reach.
+   */
+  const allBranchesContract = emitContractTs({
+    siteId: SITE_ID,
+    pascal: PASCAL,
+    baseUrl: "https://example.com",
+    baseHeaders: { "Content-Type": "application/json" },
+    minTime: 100,
+    safeRps: 10,
+    responseBody: { id: "abc" },
+    gql: true,
+    gqlQuery: "query Search { results { id } }",
+    endpointPath: "/graphql",
+    auxFiles: ["markets.json"],
+    hasMultipartStep: true,
+    inputBody: { Name: "Alice" },
+    payloadFieldNames: browserFlow.payloadFieldNames,
+    multiStepBody: `    return { data: {} as unknown };`,
+  });
+
+  /** Every emitted source the import guards must cover. */
+  const emittedSources = [...Object.values(files), allBranchesContract];
+
   it("resolves ./scraper/http-client from the package's exports map", () => {
     expect(packageJson.exports["./scraper/http-client"]).toBeDefined();
   });
 
-  it("emits every engine import the generated files carry from a declared exports subpath", () => {
+  it("emits no engine @/ alias — only the consumer's own @/sites/*", () => {
+    // Guards the cause, not the symptom. An emitted `@/` engine alias survives
+    // src/ review and every source-level assertion, then tsc-alias rewrites it
+    // to a relative path inside the template literal at build time and every
+    // consumer gets TS2307. Asserting the emitters' in-process output catches
+    // that without needing a build — `pnpm test` never runs `pnpm run build`.
+    const engineAliases = emittedSources
+      .flatMap((source) => Array.from(source.matchAll(/from "(@\/[^"]+)"/g), (m) => m[1] as string))
+      .filter((alias) => !alias.startsWith(`@/sites/`));
+    expect(engineAliases).toEqual([]);
+  });
+
+  it("emits every engine import from a declared exports subpath", () => {
     const declared = new Set(
       Object.keys(packageJson.exports)
         .filter((s) => s !== "." && s !== "./package.json")
         .map((s) => s.replace(/^\.\//, ""))
     );
-    const emitted = Object.values(files).flatMap((source) =>
+    const emitted = emittedSources.flatMap((source) =>
       Array.from(source.matchAll(/@enricai\/barnacle\/([^"']+)/g), (m) => m[1] as string)
     );
     expect(emitted.length).toBeGreaterThan(0);
     expect(emitted.filter((s) => !declared.has(s))).toEqual([]);
-  });
-
-  it("ships a dist emitter whose engine imports survived tsc-alias", () => {
-    const distEmitter = path.join(REPO_ROOT, "dist", "scripts", "recon-generate.js");
-    if (!existsSync(distEmitter)) return;
-    const built = readFileSync(distEmitter, "utf8");
-    // The bug this guards: tsc-alias rewrites `@/` by text, so an emitted
-    // alias becomes a relative path INSIDE the template literal — invisible in
-    // src/, broken in every consumer. Only the built artifact shows it.
-    const templateImports = Array.from(
-      built.matchAll(/^\s*(?:\/\/ )?import[^\n]*from "(\.\.\/[^"]+)"/gm),
-      (m) => m[1] as string
-    );
-    expect(templateImports).toEqual([]);
   });
 
   it("produces zero TS2307 (cannot find module) and TS2532 (possibly undefined) diagnostics", () => {

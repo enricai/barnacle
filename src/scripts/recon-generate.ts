@@ -467,6 +467,22 @@ const TELEMETRY_URL_PATTERNS = [
     .filter(Boolean),
 ];
 
+/**
+ * A POST to a path whose own segment is `error`/`errors` is a client-side
+ * reporting sink, never a call a caller wants replayed.
+ *
+ * Emitting one is worse than noise. A browser's error reports are frozen at
+ * recon time, so the generated plugin re-POSTs a crash that never happened —
+ * a stack trace and timestamp from the recon run, sent to the site on every
+ * invocation, describing a failure in a page the plugin never loaded.
+ *
+ * Matched on a whole path segment rather than by substring so `/error-codes`
+ * and `/terrorism-screening` stay data endpoints, and kept out of
+ * TELEMETRY_URL_PATTERNS because that list is literal substrings — a site's own
+ * sink is structural, not an ad-tech domain the operator must enumerate.
+ */
+const ERROR_SINK_PATH_SEGMENT = /(^|\/)errors?(\/|$)/i;
+
 interface ActionCapture {
   capture: Capture;
   index: number;
@@ -474,9 +490,14 @@ interface ActionCapture {
 
 /**
  * Extracts the ordered sequence of meaningful POSTs that represent the
- * transactional flow. Filters out GETs, telemetry, asset hits, and non-2xx.
+ * transactional flow: same-host 2xx POSTs, minus telemetry and error-reporting
+ * sinks. Assets need no filter of their own — they arrive as GETs.
+ *
+ * Exported for tests: this predicate decides what a generated plugin will POST
+ * at a live site, and it is the only gate between a browser's incidental
+ * chatter and the emitted hot path.
  */
-function extractActionSequence(captures: Capture[], baseUrl: string): ActionCapture[] {
+export function extractActionSequence(captures: Capture[], baseUrl: string): ActionCapture[] {
   let host: string;
   try {
     host = new URL(baseUrl).host;
@@ -497,6 +518,11 @@ function extractActionSequence(captures: Capture[], baseUrl: string): ActionCapt
       }
       if (captureHost !== host) return false;
       if (TELEMETRY_URL_PATTERNS.some((p) => capture.url.includes(p))) return false;
+      try {
+        if (ERROR_SINK_PATH_SEGMENT.test(new URL(capture.url).pathname)) return false;
+      } catch {
+        return false;
+      }
       return true;
     });
 }

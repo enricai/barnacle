@@ -7,6 +7,7 @@ import {
   emitConfigManifest,
   emitContractTs,
   emitMultiStepExecuteHttp,
+  extractActionSequence,
   indexStateValues,
   inferZodSchemaFromSamples,
   loadQuestionPromptKeywords,
@@ -167,6 +168,63 @@ describe("emitMultiStepExecuteHttp — payload accessor through an array-indexed
 
   it("emits a non-null-asserted bracket accessor for the array element", () => {
     expect(body).toContain(`$${'{payload.sorts["0"]!}'}`);
+  });
+});
+
+describe("extractActionSequence — error-reporting sinks never reach the emitted flow", () => {
+  const capture = (url: string, body: string) => ({
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action" as const,
+    method: "POST",
+    url,
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: body,
+    responseHeaders: {},
+    responseBody: {},
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  });
+
+  const BASE = "https://disneycruise.example.com";
+  // The real shape: a browser's Angular error handler posting a frozen crash —
+  // a stack trace and a recon-time timestamp that a replayed plugin would send
+  // to the site as a fabricated error report on every invocation.
+  const errorReport = capture(
+    `${BASE}/dcl-apps-productavail-spa/error`,
+    '[["Error logged by WDPR RA Angular Error handler service","{\\"timestamp\\":1784247853926,\\"message\\":\\"Script load error for //connect.facebook.net/en_US/fbevents.js\\"}"]]'
+  );
+
+  it("drops error sinks while keeping the calls that carry the flow", () => {
+    const kept = extractActionSequence(
+      [
+        capture(`${BASE}/dcl-apps-productavail-vas/authz/private`, "{}"),
+        errorReport,
+        capture(`${BASE}/dcl-apps-productavail-vas/available-products/`, '{"page":1}'),
+        errorReport,
+      ],
+      BASE
+    ).map((a) => new URL(a.capture.url).pathname);
+
+    expect(kept).toEqual([
+      "/dcl-apps-productavail-vas/authz/private",
+      "/dcl-apps-productavail-vas/available-products/",
+    ]);
+  });
+
+  it("matches a whole path segment, so data endpoints that merely spell 'error' survive", () => {
+    const kept = extractActionSequence(
+      [
+        capture(`${BASE}/api/error-codes`, "{}"),
+        capture(`${BASE}/api/terrorism-screening`, "{}"),
+        capture(`${BASE}/api/errors`, "{}"),
+      ],
+      BASE
+    ).map((a) => new URL(a.capture.url).pathname);
+
+    expect(kept).toEqual(["/api/error-codes", "/api/terrorism-screening"]);
   });
 });
 
