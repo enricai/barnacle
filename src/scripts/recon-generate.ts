@@ -2436,6 +2436,13 @@ export function emitContractTs(opts: {
   // Multi-step plugins thread responses through many different shapes that a
   // single Zod schema can't cover — use z.unknown() so each per-step access
   // compiles cleanly. Single-endpoint plugins keep the inferred schema.
+  //
+  // This is deliberate, not an unfinished schema: a submission flow's terminal
+  // shape is the plugin's OWN contract with its caller (e.g. { verified: boolean }),
+  // a field that appears in zero captured responses. Inferring a schema from the
+  // captures would emit the wrong shape with false confidence. z.unknown() plus
+  // the generated `[ ] Narrow ResponseSchema` checklist item is the intended
+  // hand-off to the plugin author, who alone knows that contract.
   const responseSchemaExpr = multiStepBody ? `z.unknown()` : inferZodSchema(responseBody);
   // Multi-step flows that include a multipart upload need the binary asset
   // on the payload. Add Resume/ResumeContentType/ResumeFilename as required
