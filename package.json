@@ -136,6 +136,14 @@
       "types": "./dist/scraper/flow-runner.d.ts",
       "default": "./dist/scraper/flow-runner.js"
     },
+    "./scraper/graphql-client": {
+      "types": "./dist/scraper/graphql-client.d.ts",
+      "default": "./dist/scraper/graphql-client.js"
+    },
+    "./scraper/http-client": {
+      "types": "./dist/scraper/http-client.d.ts",
+      "default": "./dist/scraper/http-client.js"
+    },
     "./scraper/http-status-classifier": {
       "types": "./dist/scraper/http-status-classifier.d.ts",
       "default": "./dist/scraper/http-status-classifier.js"

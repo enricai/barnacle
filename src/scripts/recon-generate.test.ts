@@ -121,6 +121,51 @@ describe("emitMultiStepExecuteHttp — multipart upload step", () => {
   });
 });
 
+/** Second action step whose URL echoes an inputBody array element, forcing
+ * the payload-accessor substitution pass to emit a bracket-indexed path. */
+const ARRAY_PAYLOAD_ACTION_STEP = {
+  capture: {
+    timestamp: "2024-01-01T00:00:01Z",
+    phase: "action",
+    method: "GET",
+    url: "https://api.example.com/search?criteria=longcriteriavalue",
+    status: 200,
+    requestHeaders: { Accept: "application/json" },
+    requestPostData: null,
+    responseHeaders: { "content-type": "application/json" },
+    responseBody: { results: [] },
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  },
+  varName: "r1",
+  produces: [],
+  isMultipart: false,
+  isCrossDomain: false,
+};
+
+describe("emitMultiStepExecuteHttp — payload accessor through an array-indexed path", () => {
+  const body = emitMultiStepExecuteHttp(
+    [MULTIPART_ACTION_STEP, ARRAY_PAYLOAD_ACTION_STEP],
+    { sorts: ["longcriteriavalue"] },
+    { stringMessageKey: null, nestedErrorPaths: [] },
+    new Map(),
+    new Set(),
+    new Map(),
+    new Set(),
+    new Map(),
+    new Map(),
+    "https://api.example.com",
+    new Map(),
+    new Map()
+  );
+
+  it("emits a non-null-asserted bracket accessor for the array element", () => {
+    expect(body).toContain(`$${'{payload.sorts["0"]!}'}`);
+  });
+});
+
 describe("emitContractTs — multipart plugin imports omitHeaderCaseInsensitive", () => {
   const source = emitContractTs({
     ...BASE_OPTS,
