@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -39,11 +39,16 @@ const packageJson = JSON.parse(readFileSync(path.join(REPO_ROOT, "package.json")
 };
 
 /**
- * Consumer-side `@/*` resolution restricted to exactly the subpaths the
- * package declares in `exports` — mirrors what an installed npm package
- * offers a consumer, so an emitted import to an undeclared subpath fails
- * exactly like it would out-of-tree, not merely because src/ happens to
- * have the file. `@/sites/*` is left out of this map — it's the consumer's
+ * Resolution for `@enricai/barnacle/*` restricted to exactly the subpaths the
+ * package declares in `exports` — mirrors what an installed npm package offers
+ * a consumer, so an emitted import to an undeclared subpath fails exactly like
+ * it would out-of-tree, not merely because src/ happens to have the file.
+ *
+ * Keyed by package name rather than the `@/` alias because that is what the
+ * emitter now writes: `tsc-alias` rewrites `@/` by text and cannot tell an
+ * import the emitter *uses* from one it *emits as a string*, so an emitted
+ * alias arrives at consumers as a broken relative path (see ENGINE_PKG in
+ * recon-generate.ts). `@/sites/*` stays out of this map — it is the consumer's
  * OWN generated tree, not part of the installed package's surface.
  */
 function buildExportsPathsMap(): Record<string, string[]> {
@@ -52,7 +57,9 @@ function buildExportsPathsMap(): Record<string, string[]> {
     if (subpath === "." || subpath === "./package.json") continue;
     // dist/foo/bar.js -> src/foo/bar.ts
     const srcRelative = target.default.replace(/^\.\/dist\//, "src/").replace(/\.js$/, ".ts");
-    paths[`@/${subpath.replace(/^\.\//, "")}`] = [path.join(REPO_ROOT, srcRelative)];
+    paths[`@enricai/barnacle/${subpath.replace(/^\.\//, "")}`] = [
+      path.join(REPO_ROOT, srcRelative),
+    ];
   }
   return paths;
 }
@@ -120,13 +127,17 @@ function typecheckGeneratedFiles(
 }
 
 /**
- * Rewrites a generated file's bare `@/`-aliased import specifiers to
- * absolute, extensioned file paths so Node's native TS type-stripping loader
- * (no bundler, no tsconfig-paths support) can `import()` it directly —
- * standing in for whatever bundling/alias-resolution step turns a consumer's
- * source into a loadable module. `@/sites/<siteId>/...` targets the sibling
- * generated file; everything else targets this package's real source, gated
- * to only the subpaths declared in `exports` (mirroring buildExportsPathsMap).
+ * Rewrites a generated file's import specifiers to absolute, extensioned file
+ * paths so Node's native TS type-stripping loader (no bundler, no
+ * tsconfig-paths support, and no installed copy of this package to resolve its
+ * own name against) can `import()` it directly — standing in for whatever
+ * install/bundling step turns a consumer's source into a loadable module.
+ *
+ * Two specifier shapes, because the emitted file legitimately carries both:
+ * `@enricai/barnacle/<subpath>` is the ENGINE, resolved against this package's
+ * real source and gated to only the subpaths declared in `exports` (mirroring
+ * buildExportsPathsMap); `@/sites/<siteId>/...` is the CONSUMER's own generated
+ * tree, resolved to the sibling temp file.
  */
 function resolveAliasImports(source: string, siteDir: string): string {
   const exportsToSrc = new Map(
@@ -137,14 +148,20 @@ function resolveAliasImports(source: string, siteDir: string): string {
         target.default.replace(/^\.\/dist\//, "src/").replace(/\.js$/, ".ts"),
       ])
   );
-  return source.replace(/from "@\/([^"]+)"/g, (match, specifier: string) => {
+  const withEngine = source.replace(
+    /from "@enricai\/barnacle\/([^"]+)"/g,
+    (match, specifier: string) => {
+      const srcRelative = exportsToSrc.get(specifier);
+      if (!srcRelative) return match;
+      return `from ${JSON.stringify(pathToFileURL(path.join(REPO_ROOT, srcRelative)).href)}`;
+    }
+  );
+  return withEngine.replace(/from "@\/([^"]+)"/g, (match, specifier: string) => {
     if (specifier.startsWith(`sites/${SITE_ID}/`)) {
       const rel = specifier.slice(`sites/${SITE_ID}/`.length);
       return `from ${JSON.stringify(pathToFileURL(path.join(siteDir, `${rel}.ts`)).href)}`;
     }
-    const srcRelative = exportsToSrc.get(specifier);
-    if (!srcRelative) return match;
-    return `from ${JSON.stringify(pathToFileURL(path.join(REPO_ROOT, srcRelative)).href)}`;
+    return match;
   });
 }
 
@@ -183,6 +200,33 @@ describe("out-of-tree e2e — recon-generate output typechecks against the packa
 
   it("resolves ./scraper/http-client from the package's exports map", () => {
     expect(packageJson.exports["./scraper/http-client"]).toBeDefined();
+  });
+
+  it("emits every engine import the generated files carry from a declared exports subpath", () => {
+    const declared = new Set(
+      Object.keys(packageJson.exports)
+        .filter((s) => s !== "." && s !== "./package.json")
+        .map((s) => s.replace(/^\.\//, ""))
+    );
+    const emitted = Object.values(files).flatMap((source) =>
+      Array.from(source.matchAll(/@enricai\/barnacle\/([^"']+)/g), (m) => m[1] as string)
+    );
+    expect(emitted.length).toBeGreaterThan(0);
+    expect(emitted.filter((s) => !declared.has(s))).toEqual([]);
+  });
+
+  it("ships a dist emitter whose engine imports survived tsc-alias", () => {
+    const distEmitter = path.join(REPO_ROOT, "dist", "scripts", "recon-generate.js");
+    if (!existsSync(distEmitter)) return;
+    const built = readFileSync(distEmitter, "utf8");
+    // The bug this guards: tsc-alias rewrites `@/` by text, so an emitted
+    // alias becomes a relative path INSIDE the template literal — invisible in
+    // src/, broken in every consumer. Only the built artifact shows it.
+    const templateImports = Array.from(
+      built.matchAll(/^\s*(?:\/\/ )?import[^\n]*from "(\.\.\/[^"]+)"/gm),
+      (m) => m[1] as string
+    );
+    expect(templateImports).toEqual([]);
   });
 
   it("produces zero TS2307 (cannot find module) and TS2532 (possibly undefined) diagnostics", () => {

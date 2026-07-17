@@ -44,6 +44,20 @@ import {
 
 const logger = getScriptLogger("recon-generate");
 
+/**
+ * Engine imports in GENERATED code must be package subpaths, never the `@/`
+ * alias, and the reason is not visible from the source: `tsc-alias` rewrites by
+ * text, so it cannot tell an import this module *uses* from one it *emits as a
+ * string*. Written as `@/scraper/session`, the build silently rewrote the
+ * template literal itself — shipping `dist/` emitters that generated
+ * `../scraper/session` and left every out-of-tree consumer with TS2307.
+ * (`@/sites/...` survived only because `src/sites/` is empty, so it resolved to
+ * no file.) A bare specifier has nothing to resolve against, so the build leaves
+ * it alone. `out-of-tree-e2e.test.ts` asserts this against the BUILT dist —
+ * asserting it against the source would pass while the shipped artifact is broken.
+ */
+const ENGINE_PKG = "@enricai/barnacle";
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 function toPascalCase(siteId: string): string {
@@ -2525,14 +2539,14 @@ export function emitContractTs(opts: {
     ? `${basePayloadSchemaExpr}.extend({\n  Resume: z.instanceof(Buffer),\n  ResumeContentType: z.string(),\n  ResumeFilename: z.string(),\n})${formFieldsExtension}${splicedFieldsExtension}${optionSchemaExtension}${rawOptionSchemaExtension}${additionalBodyKeysExtension}${answersExtension}`
     : `${basePayloadSchemaExpr}${formFieldsExtension}${splicedFieldsExtension}${optionSchemaExtension}${rawOptionSchemaExtension}${additionalBodyKeysExtension}${answersExtension}`;
   // When the payload schema uses multipartBoolean(), import the shared helper
-  // from @/lib/zod-multipart so the generated file resolves the reference and
-  // doesn't re-inline the preprocess expression per boolean field.
+  // so the generated file resolves the reference and doesn't re-inline the
+  // preprocess expression per boolean field.
   const multipartBoolImport = hasMultipartStep
-    ? `import { multipartBoolean } from "@/lib/zod-multipart";\n`
+    ? `import { multipartBoolean } from "${ENGINE_PKG}/lib/zod-multipart";\n`
     : "";
   // Content-Type must be absent from multipart fetch calls so FormData can inject the boundary.
   const caseInsensitiveHeadersImport = hasMultipartStep
-    ? `import { omitHeaderCaseInsensitive } from "@/lib/case-insensitive-headers";\n`
+    ? `import { omitHeaderCaseInsensitive } from "${ENGINE_PKG}/lib/case-insensitive-headers";\n`
     : "";
   // Emit identifier-shaped keys unquoted so Biome's formatter doesn't rewrite
   // the generated file on first lint:fix.
@@ -2541,11 +2555,11 @@ export function emitContractTs(opts: {
     .join(",\n");
 
   const fixtureImport =
-    auxFiles.length > 0 ? `// import { loadFixture } from "@/scraper/fixtures";\n` : "";
+    auxFiles.length > 0 ? `// import { loadFixture } from "${ENGINE_PKG}/scraper/fixtures";\n` : "";
 
   const clientImport = gql
-    ? `import { createGraphqlClient } from "@/scraper/graphql-client";`
-    : `import { createHttpClient } from "@/scraper/http-client";`;
+    ? `import { createGraphqlClient } from "${ENGINE_PKG}/scraper/graphql-client";`
+    : `import { createHttpClient } from "${ENGINE_PKG}/scraper/http-client";`;
 
   const queryConst =
     gql && gqlQuery
@@ -2621,8 +2635,8 @@ import Bottleneck from "bottleneck";
 import { z } from "zod/v4";
 
 ${fixtureImport}${caseInsensitiveHeadersImport}${multipartBoolImport}${clientImport}
-import type { BrowserSession } from "@/scraper/session";
-import type { SitePlugin, SitePluginContext, SitePluginResult } from "@/site-plugin";
+import type { BrowserSession } from "${ENGINE_PKG}/scraper/session";
+import type { SitePlugin, SitePluginContext, SitePluginResult } from "${ENGINE_PKG}/site-plugin";
 import { run${pascal}BrowserFlow } from "@/sites/${siteId}/flows/browser-flow";
 
 const BASE_HEADERS: Record<string, string> = {
@@ -2913,10 +2927,10 @@ export function emitBrowserFlowTs(opts: {
 import type { Stagehand } from "@browserbasehq/stagehand";
 import { z } from "zod/v4";
 
-import { buildAnthropicClient } from "@/lib/llm/anthropic-client";
-import { getLogger } from "@/lib/logging";
-import { type HealingFlowStep, runHealingFlow, waitForSpaReady } from "@/scraper/flow-runner";
-import { guardedExtract } from "@/scraper/stagehand-guard";
+import { buildAnthropicClient } from "${ENGINE_PKG}/lib/llm/anthropic-client";
+import { getLogger } from "${ENGINE_PKG}/lib/logging";
+import { type HealingFlowStep, runHealingFlow, waitForSpaReady } from "${ENGINE_PKG}/scraper/flow-runner";
+import { guardedExtract } from "${ENGINE_PKG}/scraper/stagehand-guard";
 import type { ${pascal}Payload, ${pascal}Response } from "@/sites/${siteId}/contract";
 
 const logger = getLogger({ name: "${siteId}-browser-flow" });

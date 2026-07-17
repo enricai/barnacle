@@ -45,8 +45,10 @@ describe("emitContractTs — multipart plugin", () => {
     multiStepBody: `    return { data: {} as unknown };`,
   });
 
-  it("imports multipartBoolean from @/lib/zod-multipart", () => {
-    expect(source).toContain('import { multipartBoolean } from "@/lib/zod-multipart"');
+  it("imports multipartBoolean from the package subpath, not the @/ alias", () => {
+    expect(source).toContain(
+      'import { multipartBoolean } from "@enricai/barnacle/lib/zod-multipart"'
+    );
   });
 
   it("uses multipartBoolean() at boolean payload fields", () => {
@@ -288,9 +290,9 @@ describe("emitContractTs — multipart plugin imports omitHeaderCaseInsensitive"
     multiStepBody: `    return { data: {} as unknown };`,
   });
 
-  it("imports omitHeaderCaseInsensitive from @/lib/case-insensitive-headers", () => {
+  it("imports omitHeaderCaseInsensitive from the package subpath, not the @/ alias", () => {
     expect(source).toContain(
-      'import { omitHeaderCaseInsensitive } from "@/lib/case-insensitive-headers"'
+      'import { omitHeaderCaseInsensitive } from "@enricai/barnacle/lib/case-insensitive-headers"'
     );
   });
 });
@@ -407,7 +409,9 @@ describe("emitBrowserFlowTs — payload splicing", () => {
   });
 
   it("wires the shared Anthropic client so the cascade can rephrase/replan", () => {
-    expect(code).toContain('import { buildAnthropicClient } from "@/lib/llm/anthropic-client"');
+    expect(code).toContain(
+      'import { buildAnthropicClient } from "@enricai/barnacle/lib/llm/anthropic-client"'
+    );
     expect(code).toContain("anthropic: buildAnthropicClient(),");
     expect(code).not.toContain("anthropic: null");
   });

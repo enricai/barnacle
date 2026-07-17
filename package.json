@@ -132,6 +132,10 @@
       "types": "./dist/scraper/errors.d.ts",
       "default": "./dist/scraper/errors.js"
     },
+    "./scraper/fixtures": {
+      "types": "./dist/scraper/fixtures.d.ts",
+      "default": "./dist/scraper/fixtures.js"
+    },
     "./scraper/flow-runner": {
       "types": "./dist/scraper/flow-runner.d.ts",
       "default": "./dist/scraper/flow-runner.js"
