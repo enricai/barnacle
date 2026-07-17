@@ -754,6 +754,53 @@ describe("emitConfigManifest — config-only plugin emission", () => {
   });
 });
 
+describe("emitConfigManifest — recovered request contract", () => {
+  const manifest = JSON.parse(
+    emitConfigManifest({
+      siteId: "acme-demo",
+      displayName: "AcmeDemo",
+      baseUrl: "https://apply.acme.example",
+      flowSteps: [{ step: "fill the First Name field with 'Jane'", payloadField: "FirstName" }],
+      inputBody: {
+        page: 1,
+        filters: [],
+        currency: "USD",
+        includeAdvancedBookingPrices: true,
+        region: { country: "US" },
+      },
+      recoveredFields: new Set(["AddressLine1"]),
+    })
+  ) as { spec: { request: { properties: Record<string, { type: string }> } } };
+  const props = manifest.spec.request.properties;
+
+  it("carries each first-POST-body key with its real JSON-Schema type", () => {
+    expect(props.page).toEqual({ type: "number" });
+    expect(props.filters).toEqual({ type: "array" });
+    expect(props.currency).toEqual({ type: "string" });
+    expect(props.includeAdvancedBookingPrices).toEqual({ type: "boolean" });
+    expect(props.region).toEqual({ type: "object" });
+  });
+
+  it("merges flow splices and recovered fields as caller-supplied strings", () => {
+    expect(props.FirstName).toEqual({ type: "string" });
+    expect(props.AddressLine1).toEqual({ type: "string" });
+  });
+
+  it("lets a body key's real type win over the string default when names overlap", () => {
+    const overlapped = JSON.parse(
+      emitConfigManifest({
+        siteId: "acme-demo",
+        displayName: "AcmeDemo",
+        baseUrl: "https://apply.acme.example",
+        flowSteps: [],
+        inputBody: { page: 1 },
+        recoveredFields: new Set(["page"]),
+      })
+    ) as { spec: { request: { properties: Record<string, { type: string }> } } };
+    expect(overlapped.spec.request.properties.page).toEqual({ type: "number" });
+  });
+});
+
 describe("loadQuestionPromptKeywords", () => {
   const original = process.env.RECON_QUESTION_KEYWORDS;
   afterEach(() => {

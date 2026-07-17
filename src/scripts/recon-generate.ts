@@ -2805,12 +2805,35 @@ function buildManifestInstruction(instruction: string, field: string | null): st
 }
 
 /**
+ * The JSON Schema `type` keyword for a sample value. Just the keyword, not a
+ * full schema: the manifest is a scaffold a human narrows, so it needs the real
+ * type a caller must send (`page` is a number, `filters` an array) without
+ * duplicating {@link inferZodSchema}'s recursive shape inference. `null` and
+ * `undefined` fall back to `string`, the safe default for a field a caller fills.
+ */
+function jsonSchemaTypeOf(value: unknown): "string" | "number" | "boolean" | "array" | "object" {
+  if (Array.isArray(value)) return "array";
+  if (value === null || value === undefined) return "string";
+  const t = typeof value;
+  if (t === "number") return "number";
+  if (t === "boolean") return "boolean";
+  if (t === "object") return "object";
+  return "string";
+}
+
+/**
  * Emits a config-only plugin manifest (`<siteId>.plugin.json`) from the recon
  * flow, as an alternative to the `.ts` trio for browser-only sites. Reuses the
  * SAME `resolveStepPayloadField` splice logic as the browser-flow emitter, so
  * every `{{ .request.<field> }}` reference also lands in the manifest's request
- * schema — the two cannot drift. The direct-HTTP hot path is intentionally
- * omitted; a site that needs it keeps the `.ts` path or wires `spec.httpModule`.
+ * schema — the two cannot drift.
+ *
+ * `recovered` carries the request contract the `.ts` path infers from real
+ * captures — the first POST body's fields plus form-schema discoveries — so
+ * `--emit config` no longer throws that away and emit a request schema built
+ * only from the handful of flow-step splice hints. The direct-HTTP hot path is
+ * still omitted; a site that needs it keeps the `.ts` path or wires
+ * `spec.httpModule` by hand.
  */
 export function emitConfigManifest(opts: {
   siteId: string;
@@ -2818,8 +2841,12 @@ export function emitConfigManifest(opts: {
   baseUrl: string;
   flowSteps: FlowStepInput[];
   vocabulary?: ReconVocabulary;
+  /** First action body: its top-level keys are the caller's real request fields. */
+  inputBody?: unknown;
+  /** Form-schema fields the recon recovered, added as caller-supplied strings. */
+  recoveredFields?: Iterable<string>;
 }): string {
-  const { siteId, displayName, baseUrl, flowSteps, vocabulary } = opts;
+  const { siteId, displayName, baseUrl, flowSteps, vocabulary, inputBody, recoveredFields } = opts;
   const payloadFieldNames = new Set<string>();
 
   const steps = flowSteps.map((step) => {
@@ -2840,8 +2867,22 @@ export function emitConfigManifest(opts: {
     return { step: rewritten, optional, upload, submitStep };
   });
 
-  const requestProperties = Object.fromEntries(
-    [...payloadFieldNames].sort().map((name) => [name, { type: "string" }])
+  // The request surface, widest wins: a flow splice, a recovered form field, or
+  // a key from the first POST body all name something a caller controls. Splices
+  // and recovered fields are strings (the browser flow fills them as text); a
+  // body key keeps its captured type so a caller sends `page: 1`, not `"1"`.
+  const requestProperties: Record<string, { type: string }> = {};
+  for (const name of payloadFieldNames) requestProperties[name] = { type: "string" };
+  for (const name of recoveredFields ?? []) requestProperties[name] = { type: "string" };
+  if (inputBody !== null && typeof inputBody === "object" && !Array.isArray(inputBody)) {
+    for (const [name, value] of Object.entries(inputBody)) {
+      requestProperties[name] = { type: jsonSchemaTypeOf(value) };
+    }
+  }
+  const sortedRequestProperties = Object.fromEntries(
+    Object.keys(requestProperties)
+      .sort()
+      .map((name) => [name, requestProperties[name]])
   );
 
   const manifest = {
@@ -2850,7 +2891,7 @@ export function emitConfigManifest(opts: {
     metadata: { siteId, displayName },
     spec: {
       defaultBaseUrl: baseUrl,
-      request: { type: "object", properties: requestProperties },
+      request: { type: "object", properties: sortedRequestProperties },
       response: {
         type: "object",
         description: "TODO: declare the fields this site returns (recon leaves this empty).",
@@ -3462,6 +3503,8 @@ async function main(): Promise<void> {
         baseUrl,
         flowSteps,
         vocabulary,
+        inputBody,
+        recoveredFields: [...discoveredFormFields, ...discoveredOptionFields],
       })
     );
     logger.info(`wrote ${manifestPath}`);
