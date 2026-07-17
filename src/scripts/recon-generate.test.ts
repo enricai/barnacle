@@ -379,6 +379,21 @@ describe("selectPayloadAction", () => {
     expect(selectPayloadAction(steps)).toBe(steps[1]);
   });
 
+  it("prefers a re-issued draft over an opening call that carries none of the caller's data", () => {
+    // A transactional flow can re-issue an endpoint too: an applicant record is
+    // built up across several writes while the call that opened the flow only
+    // ever sent a job id. Selection lands on the writes, which is where the
+    // caller's fields actually are.
+    const steps = [
+      step("https://ats.test/hcm/sourceTrackings", '{"jobId":"1"}', { items: [{ id: 1 }] }),
+      step("https://ats.test/hcm/applicationDrafts", '{"FirstName":"Reginald"}', { draftId: "d1" }),
+      step("https://ats.test/hcm/applicationDrafts", '{"MobilePhone":"5125550123"}', {
+        draftId: "d1",
+      }),
+    ];
+    expect(selectPayloadAction(steps)).toBe(steps[1]);
+  });
+
   it("returns null when there are no actions to choose from", () => {
     expect(selectPayloadAction([])).toBeNull();
   });

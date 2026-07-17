@@ -273,6 +273,10 @@ function isVoidResponse(body: unknown): boolean {
  * different body is the signature of the parameters a caller would want to
  * control, so that wins. Anything less clear-cut falls through to first-action
  * behavior rather than guessing.
+ *
+ * A transactional flow can re-issue an endpoint too — an applicant record built
+ * up across several writes — and lands on those writes for the same reason: the
+ * call that merely opened the flow carries none of the caller's fields.
  */
 export function selectPayloadAction<T extends { capture: Capture }>(steps: readonly T[]): T | null {
   const first = steps[0];
