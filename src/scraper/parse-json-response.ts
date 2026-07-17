@@ -8,23 +8,29 @@
 import type { ZodType } from "zod/v4";
 
 import { toErrorMessage } from "@/lib/errors";
-import { HttpSchemaError, HttpUrlLockedError } from "@/scraper/errors";
-import { classifyOracleSentinel } from "@/scraper/oracle-sentinels";
+import { HttpSchemaError, type ScraperError } from "@/scraper/errors";
 
 /**
  * Parses `rawBody` as JSON, validates it against `schema`, and returns the
- * narrowed result. Throws {@link HttpUrlLockedError} when the body is a locked
- * Oracle sentinel (ORA_URL_LOCKED). Throws {@link HttpSchemaError} on other
- * JSON parse failures or Zod schema mismatches, with `contextLabel` prefixed so
- * error messages are immediately actionable in logs without additional wrapping.
+ * narrowed result. On a JSON parse failure, an optional `classifyBody` gets
+ * first refusal — a plugin can recognize a non-JSON vendor sentinel and return
+ * the error to throw (e.g. a locked-URL signal) — otherwise this throws
+ * {@link HttpSchemaError}, with `contextLabel` prefixed so error messages are
+ * immediately actionable in logs without additional wrapping.
  */
-export function parseJsonResponse<T>(rawBody: string, schema: ZodType<T>, contextLabel: string): T {
+export function parseJsonResponse<T>(
+  rawBody: string,
+  schema: ZodType<T>,
+  contextLabel: string,
+  classifyBody?: (rawBody: string) => ScraperError | undefined
+): T {
   let parsed: unknown;
   try {
     parsed = JSON.parse(rawBody);
   } catch (err) {
-    if (classifyOracleSentinel(rawBody) === "locked") {
-      throw new HttpUrlLockedError();
+    const classified = classifyBody?.(rawBody);
+    if (classified !== undefined) {
+      throw classified;
     }
     throw new HttpSchemaError(
       `${contextLabel} non-JSON body: ${toErrorMessage(err)} (first 200B: ${rawBody.slice(0, 200)})`

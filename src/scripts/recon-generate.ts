@@ -1971,15 +1971,12 @@ function emitErrorSignalGuards(varName: string, urlPath: string, signals: ErrorS
     parentSegments.reverse();
     out.push(`      const ${parentVar} = (${varName} as { ${parentObjType} }).${parentAccessor};`);
     for (const { errorKey } of errorKeys) {
-      const label =
-        errorKey === "ResponseValidationErrors"
-          ? "validation errors"
-          : errorKey === "DataValidationErrors"
-            ? "data errors"
-            : errorKey
-                .replace(/([A-Z])/g, " $1")
-                .trim()
-                .toLowerCase();
+      // Humanize the wire key generically (CamelCase → "camel case"); no
+      // per-vendor special cases — the engine carries no vendor's key vocabulary.
+      const label = errorKey
+        .replace(/([A-Z])/g, " $1")
+        .trim()
+        .toLowerCase();
       out.push(
         `      if (${parentVar} != null && ${parentVar}.${errorKey} != null) throw new Error(\`step ${varName} ${label}: \${JSON.stringify(${parentVar}.${errorKey})}\`);`
       );

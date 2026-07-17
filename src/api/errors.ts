@@ -118,11 +118,12 @@ export class ThrottledRequestError extends ApiError {
 }
 
 /**
- * The upstream vendor has locked the target URL (e.g. Oracle ORA_URL_LOCKED).
+ * The upstream site has locked the target URL (a plugin raises the underlying
+ * `HttpUrlLockedError`, e.g. from a `classifyResponseBody` sentinel).
  * Signals "back off and retry later" — not a browser-fallback trigger.
  */
 export class UrlLockedError extends ApiError {
-  constructor(message = "target URL is locked by the upstream vendor; retry later") {
+  constructor(message = "target URL is locked by the upstream site; retry later") {
     super(ERROR_CODES.URL_LOCKED, message);
   }
 }
