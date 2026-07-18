@@ -4183,4 +4183,36 @@ describe("recon-browser/snapshotAndPersistCookieJar", () => {
     expect(readdirSync(dirA)).toEqual(["000-run-a-post-click.json"]);
     expect(readdirSync(dirB)).toEqual(["000-run-b-post-click.json"]);
   });
+
+  it("two concurrently-constructed writers with distinct run dirs writing the SAME logical filename do not collide", async () => {
+    const filename = "000-jar-persist-test-post-click.json";
+
+    const persistA = await loadCookieJarFn("20260718-000000-eeee");
+    const dirA = cookiesDir;
+    const pageA = makeCookiePage([
+      { name: "run", value: "a", domain: ".example.com", path: "/", httpOnly: false },
+    ]);
+    await persistA(pageA as never, { n: 0 }, "jar-persist-test", "post-click", 0);
+
+    const persistB = await loadCookieJarFn("20260718-000000-ffff");
+    const dirB = cookiesDir;
+    const pageB = makeCookiePage([
+      { name: "run", value: "b", domain: ".example.com", path: "/", httpOnly: false },
+    ]);
+    await persistB(pageB as never, { n: 0 }, "jar-persist-test", "post-click", 0);
+
+    expect(dirA).not.toBe(dirB);
+    expect(join(dirA, filename)).not.toBe(join(dirB, filename));
+    expect(existsSync(join(dirA, filename))).toBe(true);
+    expect(existsSync(join(dirB, filename))).toBe(true);
+
+    const bodyA = JSON.parse(readFileSync(join(dirA, filename), "utf8"));
+    const bodyB = JSON.parse(readFileSync(join(dirB, filename), "utf8"));
+    expect(bodyA.cookies).toEqual([
+      expect.objectContaining({ name: "run", value: "a" }),
+    ]);
+    expect(bodyB.cookies).toEqual([
+      expect.objectContaining({ name: "run", value: "b" }),
+    ]);
+  });
 });
