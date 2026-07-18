@@ -132,6 +132,10 @@
       "types": "./dist/recon/vocabulary.d.ts",
       "default": "./dist/recon/vocabulary.js"
     },
+    "./scraper/cookie-jar": {
+      "types": "./dist/scraper/cookie-jar.d.ts",
+      "default": "./dist/scraper/cookie-jar.js"
+    },
     "./scraper/errors": {
       "types": "./dist/scraper/errors.d.ts",
       "default": "./dist/scraper/errors.js"
@@ -187,6 +191,10 @@
     "./scraper/stagehand-guard": {
       "types": "./dist/scraper/stagehand-guard.d.ts",
       "default": "./dist/scraper/stagehand-guard.js"
+    },
+    "./scripts/recon-shared": {
+      "types": "./dist/scripts/recon-shared.d.ts",
+      "default": "./dist/scripts/recon-shared.js"
     },
     "./site-plugin": {
       "types": "./dist/site-plugin.d.ts",
