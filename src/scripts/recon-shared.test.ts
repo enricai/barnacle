@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { COOKIES_DIR } from "@/scripts/recon-shared";
 import type { CookieJarSnapshot } from "@/scripts/recon-shared";
+import { COOKIES_DIR } from "@/scripts/recon-shared";
 
 describe("COOKIES_DIR", () => {
   it("points at the recon cookies directory", () => {
@@ -32,7 +32,8 @@ describe("CookieJarSnapshot shape", () => {
       ],
     };
 
+    const [cookie] = snapshot.cookies;
     expect(snapshot.cookies).toHaveLength(1);
-    expect(snapshot.cookies[0].sameSite).toBe("Lax");
+    expect(cookie?.sameSite).toBe("Lax");
   });
 });
