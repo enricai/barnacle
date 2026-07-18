@@ -502,7 +502,12 @@ async function main(): Promise<void> {
   logger.info(`recon-http complete — replays in ${runDir.replaysDir}`);
 }
 
-main().catch((err) => {
-  logger.error(`recon-http failed: ${toErrorMessage(err)}`);
-  process.exit(1);
-});
+if (
+  process.argv[1] !== undefined &&
+  (process.argv[1].endsWith("recon-http.ts") || process.argv[1].endsWith("recon-http.js"))
+) {
+  main().catch((err) => {
+    logger.error(`recon-http failed: ${toErrorMessage(err)}`);
+    process.exit(1);
+  });
+}
