@@ -37,9 +37,8 @@ vi.mock("@/lib/logging", () => ({
 }));
 vi.mock("@/lib/http", () => ({ configureHttpDispatcher: vi.fn() }));
 
-import type { ReplayResult } from "@/scripts/recon-shared";
-
 import { buildRateLimitProbeTargets } from "@/scripts/recon-http";
+import type { ReplayResult } from "@/scripts/recon-shared";
 
 function replay(overrides: Partial<ReplayResult>): ReplayResult {
   return {
@@ -70,17 +69,15 @@ describe("recon-http run-scoped output dirs", () => {
   });
 
   afterEach(() => {
-    originalOutDir === undefined
-      ? delete process.env.RECON_OUT_DIR
-      : (process.env.RECON_OUT_DIR = originalOutDir);
-    originalRunId === undefined
-      ? delete process.env.RECON_RUN_ID
-      : (process.env.RECON_RUN_ID = originalRunId);
+    if (originalOutDir === undefined) delete process.env.RECON_OUT_DIR;
+    else process.env.RECON_OUT_DIR = originalOutDir;
+    if (originalRunId === undefined) delete process.env.RECON_RUN_ID;
+    else process.env.RECON_RUN_ID = originalRunId;
     rmSync(tmpRoot, { recursive: true, force: true });
   });
 
   it("resolves captures/replays/aux dirs under one injected run root, not a /tmp/recon literal", async () => {
-    const { resolveReconRunDir } = await import("@/scripts/recon-shared");
+    const { resolveReconRunDir } = await import("@/scripts/recon-shared.js");
     const runDir = resolveReconRunDir();
 
     expect(runDir.root).toBe(join(tmpRoot, "fixed-run-id"));
@@ -94,7 +91,7 @@ describe("recon-http run-scoped output dirs", () => {
   });
 
   it("memoizes the run dir so repeated calls in one process share a root", async () => {
-    const { resolveReconRunDir } = await import("@/scripts/recon-shared");
+    const { resolveReconRunDir } = await import("@/scripts/recon-shared.js");
     const first = resolveReconRunDir();
     const second = resolveReconRunDir();
     expect(second.root).toBe(first.root);
@@ -116,9 +113,8 @@ describe("buildRateLimitProbeTargets — noise host exclusion", () => {
   });
 
   afterEach(() => {
-    originalPatterns === undefined
-      ? delete process.env.RECON_TELEMETRY_URL_PATTERNS
-      : (process.env.RECON_TELEMETRY_URL_PATTERNS = originalPatterns);
+    if (originalPatterns === undefined) delete process.env.RECON_TELEMETRY_URL_PATTERNS;
+    else process.env.RECON_TELEMETRY_URL_PATTERNS = originalPatterns;
   });
 
   it("keeps only the real endpoint when noise hosts are mixed into the replay list", () => {
@@ -134,9 +130,7 @@ describe("buildRateLimitProbeTargets — noise host exclusion", () => {
 
     const targets = buildRateLimitProbeTargets(replays);
 
-    expect(Array.from(targets.keys())).toEqual([
-      "https://api.example.com/real/endpoint",
-    ]);
+    expect(Array.from(targets.keys())).toEqual(["https://api.example.com/real/endpoint"]);
   });
 
   it("still drops static fixture endpoints (path-suffix check) alongside noise", () => {
@@ -148,9 +142,7 @@ describe("buildRateLimitProbeTargets — noise host exclusion", () => {
 
     const targets = buildRateLimitProbeTargets(replays);
 
-    expect(Array.from(targets.keys())).toEqual([
-      "https://api.example.com/real/endpoint",
-    ]);
+    expect(Array.from(targets.keys())).toEqual(["https://api.example.com/real/endpoint"]);
   });
 
   it("excludes failed replays regardless of noise status", () => {
