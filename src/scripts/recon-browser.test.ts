@@ -4,7 +4,16 @@
  * network calls or Steel sessions occur.
  */
 
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import * as fs from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -121,6 +130,7 @@ import {
   selectRadioGroupOption,
   shouldSkipTechnique,
   shouldVetoFallbackAdvance,
+  snapshotAndPersistCookieJar,
   summarizeReplanFailureKinds,
   type ValidationRejectionPair,
   type VerifyFillReadbackResult,
@@ -130,6 +140,7 @@ import {
   windowHasTransitionBody,
   writeFixtureToTempFile,
 } from "@/scripts/recon-browser";
+import { COOKIES_DIR } from "@/scripts/recon-shared";
 import type { Logger } from "@/types/logging";
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
@@ -4070,5 +4081,88 @@ describe("recon-browser/pollEnumerate — settle-retry", () => {
     const page = { evaluate, waitForTimeout } as unknown as Parameters<typeof pollEnumerate>[0];
     await pollEnumerate<{ present: boolean }>(page, "expr", (r) => r.present, { intervalMs: 42 });
     expect(waitForTimeout).toHaveBeenCalledWith(42);
+  });
+});
+
+describe("recon-browser/snapshotAndPersistCookieJar", () => {
+  function makeCookiePage(cookies: unknown[]): { sendCDP: ReturnType<typeof vi.fn> } {
+    return { sendCDP: vi.fn().mockResolvedValue({ cookies }) };
+  }
+
+  beforeEach(() => {
+    mkdirSync(COOKIES_DIR, { recursive: true });
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    for (const f of readdirSync(COOKIES_DIR).filter((f) => f.includes("jar-persist-test"))) {
+      rmSync(join(COOKIES_DIR, f), { force: true });
+    }
+    vi.restoreAllMocks();
+  });
+
+  it("writes three ordered, labelled snapshot files across three phases with parseable bodies", async () => {
+    const page = makeCookiePage([
+      { name: "a", value: "1", domain: ".appcast.io", path: "/", httpOnly: true },
+    ]);
+    const counter = { n: 0 };
+
+    await snapshotAndPersistCookieJar(
+      page as never,
+      counter,
+      "jar-persist-test-click",
+      "post-click",
+      0
+    );
+    await snapshotAndPersistCookieJar(
+      page as never,
+      counter,
+      "jar-persist-test-apply-pre",
+      "pre-apply",
+      1
+    );
+    await snapshotAndPersistCookieJar(
+      page as never,
+      counter,
+      "jar-persist-test-apply-post",
+      "post-apply",
+      1
+    );
+
+    const written = readdirSync(COOKIES_DIR)
+      .filter((f) => f.includes("jar-persist-test"))
+      .sort();
+
+    expect(written).toEqual([
+      "000-jar-persist-test-click-post-click.json",
+      "001-jar-persist-test-apply-pre-pre-apply.json",
+      "002-jar-persist-test-apply-post-post-apply.json",
+    ]);
+
+    for (const [i, filename] of written.entries()) {
+      const body = JSON.parse(readFileSync(join(COOKIES_DIR, filename), "utf8"));
+      expect(body.label).toContain("jar-persist-test");
+      expect(Array.isArray(body.cookies)).toBe(true);
+      expect(typeof body.timestamp).toBe("string");
+      expect(body.stepIndex).toBe(i === 0 ? 0 : 1);
+    }
+    expect(counter.n).toBe(3);
+  });
+
+  it("logs a warning and does not throw when the write fails", async () => {
+    const page = makeCookiePage([]);
+    const counter = { n: 0 };
+    const writeSpy = vi.spyOn(fs, "writeFileSync").mockImplementationOnce(() => {
+      throw new Error("ENOSPC: no space left on device");
+    });
+
+    await expect(
+      snapshotAndPersistCookieJar(page as never, counter, "jar-persist-test-fail", "post-click", 0)
+    ).resolves.toBeUndefined();
+
+    expect(loggerStub.warn).toHaveBeenCalledWith(
+      expect.stringContaining("cookie-snapshot-write skipped")
+    );
+    writeSpy.mockRestore();
   });
 });
