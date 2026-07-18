@@ -181,7 +181,7 @@ See [docs/playbook.md](./docs/playbook.md#interpreting-replay-failures) for the 
 pnpm run recon:generate -- --site-id my-site
 ```
 
-Reads every artifact from Phases 1–3 — `/tmp/recon/graphql/*.json` (captures), `/tmp/recon/replays/*.json` (replay results), `/tmp/recon/replays/rate-limit.json` (probe findings), `/tmp/recon/aux/*.json` (static fixtures), and `src/sites/my-site/recon-flow.json` — and writes a complete plugin to `src/sites/my-site/`. Pass `--run-dir <path>` to read a specific run's artifacts instead of the most recently modified run root under `/tmp/recon`:
+Reads every artifact from Phases 1–3 — `<run-dir>/graphql/*.json` (captures), `<run-dir>/replays/*.json` (replay results), `<run-dir>/replays/rate-limit.json` (probe findings), `<run-dir>/aux/*.json` (static fixtures), and `src/sites/my-site/recon-flow.json` — and writes a complete plugin to `src/sites/my-site/`. Pass `--run-dir <path>` to read a specific run's artifacts instead of the most recently modified run root under `/tmp/recon` (or `RECON_OUT_DIR`, if set):
 
 - `contract.ts` — Zod schemas inferred from captured JSON, load-bearing headers, Bottleneck ceiling, and `executeHttp` / `execute` implementations
 - `flows/browser-flow.ts` — Stagehand fallback wired to your `recon-flow.json` steps
@@ -487,7 +487,7 @@ Add a step to `.github/workflows/smoke.yml`:
 
 ### Maintenance loop
 
-When the smoke test fails: re-run `pnpm run recon:browser` → diff `/tmp/recon/graphql/*<operationName>*.json` against `src/sites/<id>/contract.ts` → update query / headers / Zod schema → ship. See [docs/playbook.md](./docs/playbook.md#phase-6--drift-detection) for the full maintenance loop and change severity table.
+When the smoke test fails: re-run `pnpm run recon:browser` → diff `<run-dir>/graphql/*<operationName>*.json` against `src/sites/<id>/contract.ts` → update query / headers / Zod schema → ship. See [docs/playbook.md](./docs/playbook.md#phase-6--drift-detection) for the full maintenance loop and change severity table.
 
 ## Runtime internals
 
