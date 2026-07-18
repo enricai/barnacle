@@ -5,7 +5,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 import { format } from "date-fns";
@@ -47,6 +47,11 @@ function generateRunId(): string {
   return `${timestamp}-${suffix}`;
 }
 
+/** Base directory every recon run is rooted under; `RECON_OUT_DIR` overrides the `/tmp/recon` default. */
+function reconOutBaseDir(): string {
+  return process.env.RECON_OUT_DIR || "/tmp/recon";
+}
+
 /**
  * Resolves (and creates) the run-scoped root directory recon scripts should
  * write output under, namespacing every run so concurrent or repeated runs
@@ -64,7 +69,7 @@ export function resolveReconRunDir(): ReconRunDir {
   }
 
   const runId = process.env.RECON_RUN_ID || generateRunId();
-  const baseDir = process.env.RECON_OUT_DIR || "/tmp/recon";
+  const baseDir = reconOutBaseDir();
   const root = join(baseDir, runId);
 
   const runDir: ReconRunDir = {
@@ -84,6 +89,43 @@ export function resolveReconRunDir(): ReconRunDir {
   logger.info(`resolved recon run dir: runId=${runId}, root=${root}`);
   memoizedRunDir = runDir;
   return memoizedRunDir;
+}
+
+/**
+ * Resolves the run root a reader (recon-generate, recon-summarize) should
+ * read from: an explicit `runDir` wins, `RECON_RUN_ID` pins a specific run
+ * under the base dir, and otherwise this picks the most recently modified
+ * run subdirectory — the run root recon-browser/recon-http just wrote to —
+ * so the existing "recon, then generate" two-command workflow keeps working
+ * without operators passing a run dir by hand.
+ */
+export function resolveLatestReconRunRoot(runDir?: string): string {
+  if (runDir) return runDir;
+
+  const baseDir = reconOutBaseDir();
+  if (process.env.RECON_RUN_ID) return join(baseDir, process.env.RECON_RUN_ID);
+
+  const candidates = (() => {
+    try {
+      return readdirSync(baseDir, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => join(baseDir, entry.name));
+    } catch {
+      return [] as string[];
+    }
+  })();
+
+  const latest = candidates
+    .map((dir) => ({ dir, mtimeMs: statSync(dir).mtimeMs }))
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)[0]?.dir;
+
+  if (!latest) {
+    logger.info(`no recon run roots found under ${baseDir}; falling back to legacy path`);
+    return baseDir;
+  }
+
+  logger.info(`resolved latest recon run root: ${latest}`);
+  return latest;
 }
 
 export interface Capture {
