@@ -4914,12 +4914,29 @@ export function narrowInvalidFormControl(entry: unknown): InvalidFormControl | n
   };
 }
 
+/**
+ * Single source of truth for step-line prefixes. Exists because the cascade
+ * here has only ever received `stepIndex`, while the orchestrator loop in
+ * recon-browser owns the plan array — so half the step lines in a run printed
+ * a `N/total` denominator and half printed a bare `N`.
+ *
+ * Takes a getter rather than a number: a global replan splices new steps into
+ * the live plan array mid-run, so the total must be read when the line is
+ * emitted, not when the step started. Callers with no total omit it and get
+ * the bare form.
+ */
+export function formatStepPrefix(stepIndex: number, totalSteps?: () => number): string {
+  const total = totalSteps?.();
+  return total === undefined ? `step ${stepIndex + 1}` : `step ${stepIndex + 1}/${total}`;
+}
+
 async function probeFormValidityBeforeSubmit(params: {
   page: Page;
   stepIndex: number;
+  totalSteps?: () => number;
   logger: Logger;
 }): Promise<InvalidFormControl[]> {
-  const { page, stepIndex, logger } = params;
+  const { page, stepIndex, totalSteps, logger } = params;
   try {
     const raw = await page.evaluate(FORM_VALIDITY_PROBE_EXPR);
     if (!Array.isArray(raw)) return [];
@@ -4933,15 +4950,17 @@ async function probeFormValidityBeforeSubmit(params: {
     const autoCount = out.filter((e) => e.autoFilled !== null).length;
     if (out.length > 0) {
       logger.info(
-        `step ${stepIndex + 1} pre-submit probe: ${out.length} ng-invalid form control(s) detected; empty=${out.filter((e) => e.emptyOrUnchecked).length}; auto-picked=${autoCount}`
+        `${formatStepPrefix(stepIndex, totalSteps)} pre-submit probe: ${out.length} ng-invalid form control(s) detected; empty=${out.filter((e) => e.emptyOrUnchecked).length}; auto-picked=${autoCount}`
       );
     } else {
-      logger.info(`step ${stepIndex + 1} pre-submit probe: no ng-invalid form controls detected`);
+      logger.info(
+        `${formatStepPrefix(stepIndex, totalSteps)} pre-submit probe: no ng-invalid form controls detected`
+      );
     }
     return out;
   } catch (err) {
     logger.warn(
-      `step ${stepIndex + 1} pre-submit probe threw: ${toErrorMessage(err)} — proceeding without pre-flight evidence`
+      `${formatStepPrefix(stepIndex, totalSteps)} pre-submit probe threw: ${toErrorMessage(err)} — proceeding without pre-flight evidence`
     );
     return [];
   }
@@ -4960,10 +4979,11 @@ export async function probeStepBeforeAttempts(params: {
   stagehand: Stagehand;
   step: string;
   stepIndex: number;
+  totalSteps?: () => number;
   logger: Logger;
   captureFn?: CaptureFn;
 }): Promise<"present" | "absent"> {
-  const { stagehand, step, stepIndex, logger, captureFn } = params;
+  const { stagehand, step, stepIndex, totalSteps, logger, captureFn } = params;
   try {
     const candidates = await guardedObserve(
       stagehand,
@@ -4991,22 +5011,24 @@ export async function probeStepBeforeAttempts(params: {
       );
       if (unfocused.length > 0) {
         logger.info(
-          `step ${stepIndex + 1}: focused probe found 0 candidates but unfocused observe found ${unfocused.length} — treating as present (let cascade resolve)`
+          `${formatStepPrefix(stepIndex, totalSteps)}: focused probe found 0 candidates but unfocused observe found ${unfocused.length} — treating as present (let cascade resolve)`
         );
         return "present";
       }
       logger.info(
-        `step ${stepIndex + 1}: probe found 0 candidates (focused and unfocused) — treating as absent (skip cascade, route to replan if required)`
+        `${formatStepPrefix(stepIndex, totalSteps)}: probe found 0 candidates (focused and unfocused) — treating as absent (skip cascade, route to replan if required)`
       );
       return "absent";
     }
-    logger.info(`step ${stepIndex + 1}: probe found ${candidates.length} candidate(s)`);
+    logger.info(
+      `${formatStepPrefix(stepIndex, totalSteps)}: probe found ${candidates.length} candidate(s)`
+    );
     return "present";
   } catch (err) {
     // Bias toward the existing behavior on errors: don't trigger a spurious
     // replan when the probe itself is the broken thing.
     logger.warn(
-      `step ${stepIndex + 1}: probe threw ${toErrorMessage(err)} — treating as present (cascade will run)`
+      `${formatStepPrefix(stepIndex, totalSteps)}: probe threw ${toErrorMessage(err)} — treating as present (cascade will run)`
     );
     return "present";
   }
@@ -5040,6 +5062,12 @@ export async function executeStepWithHealing(params: {
    */
   submitStep: boolean;
   stepIndex: number;
+  /**
+   * Getter, not a number: a global replan splices new steps into the live plan
+   * array mid-run, so the denominator must be read at log time or every line
+   * after a replan prints a stale total.
+   */
+  totalSteps?: () => number;
   phase: string;
   signalCounter: { n: number };
   recentCaptures: string[];
@@ -5152,6 +5180,7 @@ export async function executeStepWithHealing(params: {
     upload,
     submitStep,
     stepIndex,
+    totalSteps,
     phase,
     signalCounter,
     recentCaptures,
@@ -5215,7 +5244,7 @@ export async function executeStepWithHealing(params: {
       recentCaptureMeta,
     })
   ) {
-    logger.info(`step ${stepIndex + 1} resolved by upload primitive`);
+    logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by upload primitive`);
     trajectory?.push({ stepIndex, verifiedBy: "network" });
     return "completed";
   }
@@ -5227,7 +5256,7 @@ export async function executeStepWithHealing(params: {
   // question unanswered. No-op (returns false → falls through) when the step
   // isn't a single-dropdown select or no option matches.
   if (await trySelectPrimitive({ page, instruction: step, logger, anthropic, captureFn })) {
-    logger.info(`step ${stepIndex + 1} resolved by select primitive`);
+    logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by select primitive`);
     trajectory?.push({ stepIndex, verifiedBy: "dom" });
     return "completed";
   }
@@ -5238,7 +5267,7 @@ export async function executeStepWithHealing(params: {
   // trySelectPrimitive (which handles <select> and no-ops on checkbox-only
   // pages). No-op (falls through) when there's no checkbox group or no match.
   if (await tryCheckboxPrimitive({ page, instruction: step, logger, anthropic, captureFn })) {
-    logger.info(`step ${stepIndex + 1} resolved by checkbox primitive`);
+    logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by checkbox primitive`);
     trajectory?.push({ stepIndex, verifiedBy: "dom" });
     return "completed";
   }
@@ -5250,7 +5279,7 @@ export async function executeStepWithHealing(params: {
   // React controlled state (the HCA Basic-Info Step-2 wall). No-op (falls
   // through) when there's no radio group or no confident option match.
   if (await tryRadioPrimitive({ page, instruction: step, logger, anthropic, captureFn })) {
-    logger.info(`step ${stepIndex + 1} resolved by radio primitive`);
+    logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by radio primitive`);
     trajectory?.push({ stepIndex, verifiedBy: "dom" });
     return "completed";
   }
@@ -5264,7 +5293,7 @@ export async function executeStepWithHealing(params: {
   if (
     await tryFillRequiredSelectsPrimitive({ page, instruction: step, logger, anthropic, captureFn })
   ) {
-    logger.info(`step ${stepIndex + 1} resolved by required-select primitive`);
+    logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by required-select primitive`);
     trajectory?.push({ stepIndex, verifiedBy: "dom" });
     return "completed";
   }
@@ -5282,6 +5311,7 @@ export async function executeStepWithHealing(params: {
     stagehand,
     step,
     stepIndex,
+    totalSteps,
     logger,
     captureFn,
   });
@@ -5293,10 +5323,12 @@ export async function executeStepWithHealing(params: {
       // and silently doom the later submit. Fall through to the cascade instead.
       if (await hasUnfilledRequiredControlForStep(page, step)) {
         logger.info(
-          `step ${stepIndex + 1} probe-absent but a required unfilled control matches the question; NOT skipping (escalating to cascade)`
+          `${formatStepPrefix(stepIndex, totalSteps)} probe-absent but a required unfilled control matches the question; NOT skipping (escalating to cascade)`
         );
       } else {
-        logger.info(`step ${stepIndex + 1} skipped (optional, probe found no candidates)`);
+        logger.info(
+          `${formatStepPrefix(stepIndex, totalSteps)} skipped (optional, probe found no candidates)`
+        );
         return "skipped";
       }
     }
@@ -5312,7 +5344,7 @@ export async function executeStepWithHealing(params: {
     });
     if (transitionUrl !== null) {
       logger.info(
-        `step ${stepIndex + 1} skipped (probe absent but recent transition detected: ${transitionUrl})`
+        `${formatStepPrefix(stepIndex, totalSteps)} skipped (probe absent but recent transition detected: ${transitionUrl})`
       );
       trajectory?.push({ stepIndex, verifiedBy: "url" });
       return "completed";
@@ -5329,10 +5361,10 @@ export async function executeStepWithHealing(params: {
     });
     if (backendErrorUrl !== null) {
       logger.error(
-        `step ${stepIndex + 1} backend error detected (submit endpoint returned 5xx: ${backendErrorUrl}); aborting cascade`
+        `${formatStepPrefix(stepIndex, totalSteps)} backend error detected (submit endpoint returned 5xx: ${backendErrorUrl}); aborting cascade`
       );
       throw new StepVerificationError(
-        `step ${stepIndex + 1} (${step.slice(0, 60)}) backend 5xx at ${backendErrorUrl} — unrecoverable`,
+        `${formatStepPrefix(stepIndex, totalSteps)} (${step.slice(0, 60)}) backend 5xx at ${backendErrorUrl} — unrecoverable`,
         "backend-error-unrecoverable"
       );
     }
@@ -5370,7 +5402,7 @@ export async function executeStepWithHealing(params: {
         unfocusedObserve,
       }) ?? null;
     throw new StepVerificationError(
-      `step ${stepIndex + 1} (${step.slice(0, 60)}) probe found no candidates on page${dumpPath ? `; see ${dumpPath}` : ""}`,
+      `${formatStepPrefix(stepIndex, totalSteps)} (${step.slice(0, 60)}) probe found no candidates on page${dumpPath ? `; see ${dumpPath}` : ""}`,
       "probe-absent"
     );
   }
@@ -5398,6 +5430,7 @@ export async function executeStepWithHealing(params: {
     const invalidControls = await probeFormValidityBeforeSubmit({
       page,
       stepIndex,
+      totalSteps,
       logger,
     });
     for (const c of invalidControls) {
@@ -5480,7 +5513,7 @@ export async function executeStepWithHealing(params: {
       });
       if (decision.skip) {
         logger.info(
-          `step ${stepIndex + 1} attempt ${attempt} (${wouldBeTechnique}) skipped: ${decision.reason}`
+          `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt} (${wouldBeTechnique}) skipped: ${decision.reason}`
         );
         failureReasons.push(`attempt ${attempt} skipped: ${decision.reason}`);
         continue;
@@ -5577,13 +5610,13 @@ export async function executeStepWithHealing(params: {
             // required field gets answered instead of silently doomed.
             if (await hasUnfilledRequiredControlForStep(page, step)) {
               logger.info(
-                `step ${stepIndex + 1} no candidates after act+observe but a required unfilled control matches; NOT skipping (continuing cascade)`
+                `${formatStepPrefix(stepIndex, totalSteps)} no candidates after act+observe but a required unfilled control matches; NOT skipping (continuing cascade)`
               );
             } else {
               record.verifiedBy = null;
               attempts.push(record);
               logger.info(
-                `step ${stepIndex + 1} skipped (optional, no candidates after act+observe)`
+                `${formatStepPrefix(stepIndex, totalSteps)} skipped (optional, no candidates after act+observe)`
               );
               return "skipped";
             }
@@ -5601,7 +5634,9 @@ export async function executeStepWithHealing(params: {
             record.triedSelectors = [target.selector];
             attempts.push(record);
             failureReasons.push(record.errorMessage);
-            logger.info(`step ${stepIndex + 1} attempt ${attempt}: ${record.errorMessage}`);
+            logger.info(
+              `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${record.errorMessage}`
+            );
             continue;
           }
           record.instruction = target.description;
@@ -5668,7 +5703,7 @@ export async function executeStepWithHealing(params: {
                     record.actResultSuccess = false;
                   } else if (readback.outcome === "differs") {
                     logger.info(
-                      `step ${stepIndex + 1} fill-value-differs: tried "${fillValue.slice(0, 60)}" got "${readback.postValue.slice(0, 60)}" (framework reformatted)`
+                      `${formatStepPrefix(stepIndex, totalSteps)} fill-value-differs: tried "${fillValue.slice(0, 60)}" got "${readback.postValue.slice(0, 60)}" (framework reformatted)`
                     );
                   }
                 }
@@ -5971,7 +6006,7 @@ export async function executeStepWithHealing(params: {
         });
     if (advanceGateActive && !networkIsRealAdvance) {
       logger.info(
-        `step ${stepIndex + 1} network fired but no advance-transition (type=next) body matched within ${ADVANCE_TRANSITION_POLL_MS}ms poll (non-advancing POST); not treating as verified`
+        `${formatStepPrefix(stepIndex, totalSteps)} network fired but no advance-transition (type=next) body matched within ${ADVANCE_TRANSITION_POLL_MS}ms poll (non-advancing POST); not treating as verified`
       );
     }
     // DOM-only-advance veto (opt-in). A rephrase can turn an advance/"Next" step
@@ -5999,7 +6034,7 @@ export async function executeStepWithHealing(params: {
       : false;
     if (domVerified && !domVerifiedForStep) {
       logger.info(
-        `step ${stepIndex + 1} advance step succeeded only via DOM state change (field toggle / non-advancing POST), not a real transition; not treating as verified`
+        `${formatStepPrefix(stepIndex, totalSteps)} advance step succeeded only via DOM state change (field toggle / non-advancing POST), not a real transition; not treating as verified`
       );
     }
     let verified = networkIsRealAdvance || urlChanged || domVerifiedForStep;
@@ -6275,7 +6310,7 @@ export async function executeStepWithHealing(params: {
           });
           if (fallbackDomOnlyAdvance) {
             logger.info(
-              `step ${stepIndex + 1} n+16 fallback advanced but no real transition (non-advancing POST / field toggle); not treating as verified`
+              `${formatStepPrefix(stepIndex, totalSteps)} n+16 fallback advanced but no real transition (non-advancing POST / field toggle); not treating as verified`
             );
           }
           let retryVerified =
@@ -6365,7 +6400,7 @@ export async function executeStepWithHealing(params: {
             }
           }
           logger.info(
-            `n+16 probe: step=${stepIndex + 1} attempt=${attempt} el.click() fallback fired=${fired === true} kind=${probeResult.kind ?? "none"} checkboxStateVerified=${checkboxStateVerified} ancestorStillInvalid=${ancestorStillInvalid}; network=${retryNetworkFired} url=${retryUrlChanged} htmlDelta=${retryHtmlDelta} textChanged=${retryTextChanged} verified=${retryVerified}`
+            `n+16 probe: step=${stepIndex + 1}/${totalSteps?.() ?? "?"} attempt=${attempt} el.click() fallback fired=${fired === true} kind=${probeResult.kind ?? "none"} checkboxStateVerified=${checkboxStateVerified} ancestorStillInvalid=${ancestorStillInvalid}; network=${retryNetworkFired} url=${retryUrlChanged} htmlDelta=${retryHtmlDelta} textChanged=${retryTextChanged} verified=${retryVerified}`
           );
           if (retryVerified) {
             if (record.verifiedBy === null) {
@@ -6375,11 +6410,11 @@ export async function executeStepWithHealing(params: {
             attempts.push(record);
             if (attempt > 1) {
               logger.info(
-                `step ${stepIndex + 1} healed on attempt ${attempt} via ${record.technique} + el.click() fallback`
+                `${formatStepPrefix(stepIndex, totalSteps)} healed on attempt ${attempt} via ${record.technique} + el.click() fallback`
               );
             } else {
               logger.info(
-                `step ${stepIndex + 1} succeeded on attempt 1 via ${record.technique} + el.click() fallback`
+                `${formatStepPrefix(stepIndex, totalSteps)} succeeded on attempt 1 via ${record.technique} + el.click() fallback`
               );
             }
             trajectory?.push({ stepIndex, verifiedBy: record.verifiedBy });
@@ -6387,7 +6422,7 @@ export async function executeStepWithHealing(params: {
           }
         } catch (probeErr) {
           logger.warn(
-            `n+16 probe: step=${stepIndex + 1} attempt=${attempt} el.click() fallback threw: ${toErrorMessage(probeErr)}`
+            `n+16 probe: step=${stepIndex + 1}/${totalSteps?.() ?? "?"} attempt=${attempt} el.click() fallback threw: ${toErrorMessage(probeErr)}`
           );
         }
       }
@@ -6398,7 +6433,7 @@ export async function executeStepWithHealing(params: {
     if (verified) {
       if (attempt > 1) {
         logger.info(
-          `step ${stepIndex + 1} healed on attempt ${attempt} via ${record.technique} (network=${networkFired} url=${urlChanged} dom=${domVerified})`
+          `${formatStepPrefix(stepIndex, totalSteps)} healed on attempt ${attempt} via ${record.technique} (network=${networkFired} url=${urlChanged} dom=${domVerified})`
         );
       } else {
         // Why log first-try wins explicitly: prior to this change, attempt-1
@@ -6409,7 +6444,7 @@ export async function executeStepWithHealing(params: {
         // 32 successful Stagehand acts. Surfacing attempt-1 wins lets the
         // log match telemetry and prevents the same false alarm.
         logger.info(
-          `step ${stepIndex + 1} succeeded on attempt 1 via ${record.technique} (network=${networkFired} url=${urlChanged} dom=${domVerified})`
+          `${formatStepPrefix(stepIndex, totalSteps)} succeeded on attempt 1 via ${record.technique} (network=${networkFired} url=${urlChanged} dom=${domVerified})`
         );
       }
       trajectory?.push({ stepIndex, verifiedBy: record.verifiedBy });
@@ -6424,7 +6459,7 @@ export async function executeStepWithHealing(params: {
       : effectSignals || "no observable effect (no network, url, or dom change)";
     failureReasons.push(reason);
     logger.warn(
-      `step ${stepIndex + 1} attempt ${attempt} (${record.technique}) produced no observable effect — ${reason}`
+      `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt} (${record.technique}) produced no observable effect — ${reason}`
     );
 
     // One additive strategy among many: when a click on a final-step
@@ -6451,7 +6486,7 @@ export async function executeStepWithHealing(params: {
       for (const p of pairs) {
         const validationReason = formatValidationRejectedReason(p);
         failureReasons.push(validationReason);
-        logger.warn(`step ${stepIndex + 1} ${validationReason}`);
+        logger.warn(`${formatStepPrefix(stepIndex, totalSteps)} ${validationReason}`);
       }
     }
 
@@ -6489,7 +6524,7 @@ export async function executeStepWithHealing(params: {
       if (earlyExit) {
         const exitReason = `submit-revealed-invalid: click surfaced ${postAttemptInvalidCount - preSubmitInvalidCount} new ng-invalid container(s) (was ${preSubmitInvalidCount}, now ${postAttemptInvalidCount}); attempts 2-${MAX_STEP_ATTEMPTS} cannot heal a form that needs answers — routing to replan`;
         failureReasons.push(exitReason);
-        logger.warn(`step ${stepIndex + 1} ${exitReason}`);
+        logger.warn(`${formatStepPrefix(stepIndex, totalSteps)} ${exitReason}`);
         break;
       }
 
@@ -6510,7 +6545,7 @@ export async function executeStepWithHealing(params: {
       if (advanceStalled) {
         const exitReason = `advance-stalled: the Next click fired network but no real transition (type=next) landed within the poll window; attempts 2-${MAX_STEP_ATTEMPTS} would only re-bounce the wizard — routing to replan`;
         failureReasons.push(exitReason);
-        logger.warn(`step ${stepIndex + 1} ${exitReason}`);
+        logger.warn(`${formatStepPrefix(stepIndex, totalSteps)} ${exitReason}`);
         break;
       }
     }
@@ -6552,11 +6587,11 @@ export async function executeStepWithHealing(params: {
     }) ?? null;
   if (dumpPath !== null) {
     logger.error(
-      `step ${stepIndex + 1} failed after ${MAX_STEP_ATTEMPTS} attempts; diagnostic bundle: ${dumpPath}`
+      `${formatStepPrefix(stepIndex, totalSteps)} failed after ${MAX_STEP_ATTEMPTS} attempts; diagnostic bundle: ${dumpPath}`
     );
   }
   throw new StepVerificationError(
-    `step ${stepIndex + 1} (${step.slice(0, 60)}) failed verification after ${MAX_STEP_ATTEMPTS} attempts${dumpPath ? `; see ${dumpPath}` : ""}`,
+    `${formatStepPrefix(stepIndex, totalSteps)} (${step.slice(0, 60)}) failed verification after ${MAX_STEP_ATTEMPTS} attempts${dumpPath ? `; see ${dumpPath}` : ""}`,
     "cascade-exhausted"
   );
 }
@@ -6693,6 +6728,7 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<void> {
         upload: s.upload,
         submitStep: s.submitStep,
         stepIndex: i,
+        totalSteps: () => steps.length,
         phase: "flow",
         signalCounter,
         recentCaptures,

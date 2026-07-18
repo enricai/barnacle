@@ -1,7 +1,7 @@
 import type { Page } from "@browserbasehq/stagehand";
 import { describe, expect, it, vi } from "vitest";
 
-import { waitForSpaReady, wireSignalCapture } from "@/scraper/flow-runner";
+import { formatStepPrefix, waitForSpaReady, wireSignalCapture } from "@/scraper/flow-runner";
 import type { Capture } from "@/scripts/recon-shared";
 import type { Logger } from "@/types/logging";
 
@@ -33,6 +33,24 @@ function fakePage(bodyLengths: number[]): {
   } as unknown as Page;
   return { page, waitForTimeout };
 }
+
+describe("flow-runner/formatStepPrefix", () => {
+  it("prints the bare form when no total getter is supplied", () => {
+    expect(formatStepPrefix(4)).toBe("step 5");
+  });
+
+  it("prints the N/total form when a getter is supplied", () => {
+    expect(formatStepPrefix(4, () => 338)).toBe("step 5/338");
+  });
+
+  it("re-reads the total on every call so a mid-run replan splice is reflected", () => {
+    const plan = new Array(338).fill("step");
+    const getter = (): number => plan.length;
+    expect(formatStepPrefix(19, getter)).toBe("step 20/338");
+    plan.splice(20, 0, "replanned");
+    expect(formatStepPrefix(20, getter)).toBe("step 21/339");
+  });
+});
 
 describe("flow-runner/waitForSpaReady", () => {
   it("returns immediately without polling when the body already exceeds the threshold", async () => {
