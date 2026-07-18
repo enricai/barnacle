@@ -51,6 +51,8 @@ export interface CookieRecord {
 /**
  * The full cookie jar at one phase of a recon journey (e.g. post-click vs.
  * post-apply), so a run can show what each phase specifically established.
+ * `error` is populated instead of `cookies` when the CDP call failed —
+ * cookie telemetry is best-effort and must never abort the run.
  */
 export interface CookieJarSnapshot {
   label: string;
@@ -58,6 +60,7 @@ export interface CookieJarSnapshot {
   stepIndex: number;
   timestamp: string;
   cookies: CookieRecord[];
+  error?: string;
 }
 
 export interface ReplayResult {
