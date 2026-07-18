@@ -20,11 +20,12 @@
 
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { getScriptLogger } from "@/lib/logging";
 import { detectRejectionInResponseBody } from "@/scripts/recon-browser";
+import { CAPTURES_DIR } from "@/scripts/recon-shared";
 import { allocateTestmailInbox, pollTestmailInbox } from "@/testmail/client";
 
 const logger = getScriptLogger("recon-replay-jobs");
@@ -67,7 +68,7 @@ function parseArgs(): { jobsPath: string; flowFile: string; reportPath: string }
   const args = process.argv.slice(2);
   let jobsPath: string | null = null;
   let flowFile: string | null = null;
-  let reportPath = "/tmp/recon/replay-report.json";
+  let reportPath = join(CAPTURES_DIR, "..", "replay-report.json");
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--jobs" && args[i + 1]) jobsPath = resolve(args[++i]!);
     else if (args[i] === "--flow-file" && args[i + 1]) flowFile = resolve(args[++i]!);
@@ -92,7 +93,7 @@ async function runReconForJob(
   flowFile: string,
   email: string
 ): Promise<{ exitCode: number | null; capturesBefore: Set<string>; billingError: boolean }> {
-  const capturesDir = "/tmp/recon/graphql";
+  const capturesDir = CAPTURES_DIR;
   mkdirSync(capturesDir, { recursive: true });
   const capturesBefore = new Set(readdirSync(capturesDir));
 
@@ -172,7 +173,7 @@ function readJobOutcome(capturesBefore: Set<string>): {
   serverRejectionReason: string | null;
   terminalUrl: string | null;
 } {
-  const capturesDir = "/tmp/recon/graphql";
+  const capturesDir = CAPTURES_DIR;
   const after = readdirSync(capturesDir);
   const newCaptures = after.filter((f) => !capturesBefore.has(f));
 
@@ -265,7 +266,7 @@ async function main(): Promise<void> {
       terminalUrl,
       emailReceived,
       emailSubject,
-      capturesDir: "/tmp/recon/graphql",
+      capturesDir: CAPTURES_DIR,
       durationMs: Date.now() - start,
     };
     verdicts.push(verdict);

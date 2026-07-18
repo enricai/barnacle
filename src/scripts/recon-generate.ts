@@ -4,15 +4,19 @@
  * coding is required between running recon and registering the plugin.
  *
  * Usage:
- *   pnpm run recon:generate -- --site-id my-site [--force]
+ *   pnpm run recon:generate -- --site-id my-site [--run-dir <path>] [--force]
  *
  * --force overwrites an existing src/sites/<siteId>/ directory.
+ * --run-dir selects which run root to read; defaults to the most recently
+ * modified run root under the recon output base dir (see
+ * {@link resolveLatestReconRunRoot}), so the existing two-command
+ * "recon, then generate" workflow keeps working unchanged.
  *
- * Reads from:
- *   /tmp/recon/graphql/*.json        — Capture[] from recon-browser.ts
- *   /tmp/recon/replays/*.json        — ReplayResult[] from recon-http.ts
- *   /tmp/recon/replays/rate-limit.json
- *   /tmp/recon/aux/*.json            — static fixture files
+ * Reads from (under the resolved run root):
+ *   graphql/*.json        — Capture[] from recon-browser.ts
+ *   replays/*.json        — ReplayResult[] from recon-http.ts
+ *   replays/rate-limit.json
+ *   aux/*.json            — static fixture files
  *   src/sites/<siteId>/recon-flow.json — plain-English flow steps
  */
 
@@ -36,13 +40,11 @@ import { FORM_SCHEMA_NONE, loadReconFormSchema } from "@/recon/load-form-schema"
 import { loadReconVocabulary, VOCABULARY_NONE } from "@/recon/load-vocabulary";
 import { EMPTY_VOCABULARY, type ReconVocabulary } from "@/recon/vocabulary";
 import {
-  AUX_DIR,
-  CAPTURES_DIR,
   type Capture,
   type RateLimitFinding,
-  REPLAYS_DIR,
   type ReplayResult,
   readJsonDir,
+  resolveLatestReconRunRoot,
 } from "@/scripts/recon-shared";
 
 const logger = getScriptLogger("recon-generate");
@@ -3189,11 +3191,13 @@ async function main(): Promise<void> {
   let emit: "ts" | "config" = "ts";
   let vocabularySpecifier = "";
   let formSchemaSpecifier = "";
+  let runDir: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--site-id" && args[i + 1]) siteId = args[++i]!;
     else if (args[i] === "--vocabulary" && args[i + 1]) vocabularySpecifier = args[++i]!;
     else if (args[i] === "--form-schema" && args[i + 1]) formSchemaSpecifier = args[++i]!;
+    else if (args[i] === "--run-dir" && args[i + 1]) runDir = args[++i]!;
     else if (args[i] === "--force") force = true;
     else if (args[i] === "--emit" && args[i + 1]) {
       const value = args[++i]!;
@@ -3222,15 +3226,21 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const captures = readJsonDir<Capture>(CAPTURES_DIR);
-  const replays = readJsonDir<ReplayResult>(REPLAYS_DIR, [
+  const runRoot = resolveLatestReconRunRoot(runDir);
+  logger.info(`reading recon artifacts from ${runRoot}`);
+  const capturesDir = join(runRoot, "graphql");
+  const replaysDir = join(runRoot, "replays");
+  const auxDir = join(runRoot, "aux");
+
+  const captures = readJsonDir<Capture>(capturesDir);
+  const replays = readJsonDir<ReplayResult>(replaysDir, [
     "rate-limit.json",
     "introspection-schema.json",
   ]);
   const rateLimits = (() => {
     try {
       return JSON.parse(
-        readFileSync(join(REPLAYS_DIR, "rate-limit.json"), "utf8")
+        readFileSync(join(replaysDir, "rate-limit.json"), "utf8")
       ) as RateLimitFinding[];
     } catch {
       return [] as RateLimitFinding[];
@@ -3239,7 +3249,7 @@ async function main(): Promise<void> {
 
   const auxFiles = (() => {
     try {
-      return readdirSync(AUX_DIR)
+      return readdirSync(auxDir)
         .filter((f) => f.endsWith(".json"))
         .sort();
     } catch {
@@ -3640,7 +3650,7 @@ async function main(): Promise<void> {
   if (auxFiles.length > 0) {
     mkdirSync(`${outDir}/fixtures`, { recursive: true });
     for (const f of auxFiles) {
-      copyFileSync(join(AUX_DIR, f), `${outDir}/fixtures/${f}`);
+      copyFileSync(join(auxDir, f), `${outDir}/fixtures/${f}`);
     }
     logger.info(`copied ${auxFiles.length} fixture(s) to ${outDir}/fixtures/`);
   }

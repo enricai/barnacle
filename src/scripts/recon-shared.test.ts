@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -128,5 +128,49 @@ describe("resolveReconRunDir", () => {
 
     expect(second).toBe(first);
     expect(second.root).toBe(first.root);
+  });
+});
+
+describe("resolveLatestReconRunRoot", () => {
+  it("returns an explicit runDir unchanged, ignoring env and disk state", async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), "recon-shared-test-"));
+    process.env.RECON_OUT_DIR = tmpDir;
+
+    const { resolveLatestReconRunRoot } = await loadResolver();
+    expect(resolveLatestReconRunRoot("/explicit/run/dir")).toBe("/explicit/run/dir");
+  });
+
+  it("resolves RECON_RUN_ID under the base dir when no explicit runDir is given", async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), "recon-shared-test-"));
+    process.env.RECON_OUT_DIR = tmpDir;
+    process.env.RECON_RUN_ID = "20260718-120326-fixd";
+
+    const { resolveLatestReconRunRoot } = await loadResolver();
+    expect(resolveLatestReconRunRoot()).toBe(join(tmpDir, "20260718-120326-fixd"));
+  });
+
+  it("picks the most recently modified run subdirectory under the base dir", async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), "recon-shared-test-"));
+    process.env.RECON_OUT_DIR = tmpDir;
+
+    const older = join(tmpDir, "20260718-100000-aaaa");
+    const newer = join(tmpDir, "20260718-110000-bbbb");
+    mkdirSync(older, { recursive: true });
+    mkdirSync(newer, { recursive: true });
+    const past = new Date("2026-07-18T10:00:00Z");
+    const future = new Date("2026-07-18T11:00:00Z");
+    utimesSync(older, past, past);
+    utimesSync(newer, future, future);
+
+    const { resolveLatestReconRunRoot } = await loadResolver();
+    expect(resolveLatestReconRunRoot()).toBe(newer);
+  });
+
+  it("falls back to the base dir when no run subdirectories exist", async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), "recon-shared-test-"));
+    process.env.RECON_OUT_DIR = tmpDir;
+
+    const { resolveLatestReconRunRoot } = await loadResolver();
+    expect(resolveLatestReconRunRoot()).toBe(tmpDir);
   });
 });

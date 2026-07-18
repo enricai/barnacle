@@ -40,7 +40,7 @@ import {
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
 import { StepVerificationError } from "@/scraper/errors";
 import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
-import { CAPTURES_DIR, type Capture } from "@/scripts/recon-shared";
+import { type Capture, resolveReconRunDir } from "@/scripts/recon-shared";
 import type { Logger } from "@/types/logging";
 
 const logger = getLogger({ name: "scraper/flow-runner" });
@@ -850,7 +850,7 @@ export function windowHasTransitionBody(params: {
 }): boolean {
   const { preIdx, advanceTransitionBodyPattern } = params;
   if (!advanceTransitionBodyPattern) return false;
-  const capturesDir = params.capturesDir ?? CAPTURES_DIR;
+  const capturesDir = params.capturesDir ?? resolveReconRunDir().graphqlDir;
   let rx: RegExp;
   try {
     rx = new RegExp(advanceTransitionBodyPattern);
@@ -894,7 +894,7 @@ export function windowHasAdvanceTransition(params: {
 }): boolean {
   const { preIdx, advanceTransitionBodyPattern } = params;
   if (!advanceTransitionBodyPattern) return false;
-  const capturesDir = params.capturesDir ?? CAPTURES_DIR;
+  const capturesDir = params.capturesDir ?? resolveReconRunDir().graphqlDir;
   let rx: RegExp;
   try {
     rx = new RegExp(advanceTransitionBodyPattern);
@@ -2027,8 +2027,9 @@ async function extractInteractiveTargetsNearInvalid(page: Page): Promise<string[
 /**
  * Scan recent capture files for failed submit-endpoint requests and pull
  * out structured field-level errors from the response body. The cascade
- * already saves every captured request to `CAPTURES_DIR` with its parsed
- * `responseBody`; this helper reads those files back, filters to captures
+ * already saves every captured request to the run's graphql capture dir
+ * (see {@link resolveReconRunDir}) with its parsed `responseBody`; this
+ * helper reads those files back, filters to captures
  * matching the configured submit pattern with status >= 400, and walks
  * common error-shape conventions (`{ errors: [{ field, message }] }`,
  * `{ validation/fieldErrors: { … } }`, `{ message }`).
@@ -2047,7 +2048,7 @@ export function extractSubmitFailureEvidence(
    * the host filter and returns any 4xx in the window.
    */
   ownBackendHostnames: readonly string[],
-  capturesDir: string = CAPTURES_DIR,
+  capturesDir: string = resolveReconRunDir().graphqlDir,
   mode: "strict" | "any-4xx" = "strict"
 ): string {
   if (recentCaptureFilenames.length === 0) return "";
@@ -2140,7 +2141,7 @@ export function extractSubmitFailureEvidence(
  */
 export function extractGaEventEvidence(
   recentCaptureFilenames: readonly string[],
-  capturesDir: string = CAPTURES_DIR
+  capturesDir: string = resolveReconRunDir().graphqlDir
 ): string {
   if (recentCaptureFilenames.length === 0) return "";
   const records: string[] = [];
@@ -6155,7 +6156,7 @@ export async function executeStepWithHealing(params: {
         const fallbackEvidence = extractSubmitFailureEvidence(
           recentCaptures.slice(-tail.length),
           [],
-          CAPTURES_DIR,
+          resolveReconRunDir().graphqlDir,
           "any-4xx"
         );
         if (fallbackEvidence.length > 0) {
