@@ -383,9 +383,10 @@ async function probeRateLimit(
  * upstream — the probe fires 60 requests per target, so a noise host reaching
  * this function must never silently slip through on a caller's say-so.
  */
-export function selectRateLimitTargets(
-  replays: ReplayResult[]
-): { targets: Map<string, { method: string; body: string | null }>; skipped: number } {
+export function selectRateLimitTargets(replays: ReplayResult[]): {
+  targets: Map<string, { method: string; body: string | null }>;
+  skipped: number;
+} {
   const targets = new Map<string, { method: string; body: string | null }>();
   let skipped = 0;
   for (const replay of replays) {
