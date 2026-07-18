@@ -359,6 +359,77 @@ describe("walkSetCookiePairs — newline-folded multi-cookie Set-Cookie strings"
   });
 });
 
+describe("indexStateValues — cookie-origin values get a separate, more permissive length cap", () => {
+  /** A 272-char JWT, long enough to exceed MAX_STATE_VALUE_LENGTH (256) but
+   * still under the cookie-specific cap. */
+  const longJwt = [
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+    "eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyLCJyb2xlIjoiYWRtaW4iLCJzY29wZSI6InJlYWQ6d3JpdGUiLCJvcmciOiJhY21lLWNvcnAiLCJzZXNzaW9uIjoiYWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoifQ",
+    "dozjgNryPQwerty1234567890abcdefghijk",
+  ].join(".");
+
+  const tokenMintCapture = {
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action",
+    method: "POST",
+    url: "https://api.example.com/authz/private",
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: "{}",
+    responseHeaders: {
+      "set-cookie": [
+        "ADRUM_BTa=R:0|g:abc123; Path=/; HttpOnly",
+        "ADRUM_BTa=R:1|g:def456; Path=/; HttpOnly",
+        "ADRUM_BT1=R:0; Path=/",
+        "ADRUM_BT1=R:1; Path=/",
+        "ADRUM_BT1=R:2; Path=/",
+        `__pa=${longJwt}; Path=/; HttpOnly; Secure`,
+        "bm_sv=ABCDEF1234567890; Path=/; HttpOnly; Secure",
+      ].join("\n"),
+    },
+    responseBody: {},
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  };
+
+  const statefulCallCapture = {
+    timestamp: "2024-01-01T00:00:01Z",
+    phase: "action",
+    method: "POST",
+    url: "https://api.example.com/available-products/",
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json", Cookie: `__pa=${longJwt}` },
+    requestPostData: "{}",
+    responseHeaders: { "content-type": "application/json" },
+    responseBody: { products: [{ productId: "p1" }] },
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  };
+
+  it("indexes the 272-char JWT cookie value despite exceeding MAX_STATE_VALUE_LENGTH", () => {
+    expect(longJwt.length).toBe(272);
+    const stateIndex = indexStateValues([tokenMintCapture, statefulCallCapture]);
+    const sv = stateIndex.get(longJwt);
+    expect(sv).toBeDefined();
+    expect(sv?.headerOrigin).toEqual({ sourceHeader: "set-cookie", cookieName: "__pa" });
+  });
+
+  it("still excludes a 300-char body-origin string — the exemption is scoped to cookie origins only", () => {
+    const longBodyString = "x".repeat(300);
+    const bodyCapture = {
+      ...statefulCallCapture,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { blob: longBodyString },
+    };
+    const stateIndex = indexStateValues([tokenMintCapture, bodyCapture]);
+    expect(stateIndex.has(longBodyString)).toBe(false);
+  });
+});
+
 describe("compileActionSteps — Set-Cookie state binding (disneycruise-style token mint)", () => {
   /** Capture 1: mints an anonymous bearer via Set-Cookie, response body is empty. */
   const tokenMintCapture = {
