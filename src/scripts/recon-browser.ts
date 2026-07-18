@@ -1,21 +1,26 @@
 /**
  * Phase 1 recon: drives a real browser through a user-defined flow while
- * wiretapping every network response. Captures are written to
- * /tmp/recon/graphql/<NNN>-<phase>-<operationName>.json — one file per call,
+ * wiretapping every network response. Every artifact is rooted under one
+ * run-scoped directory resolved once at startup via
+ * {@link resolveReconRunDir} (default `/tmp/recon/<runId>`, override with
+ * `RECON_OUT_DIR`/`RECON_RUN_ID`) so concurrent or repeated runs cannot
+ * intermix files. Captures are written to
+ * `<runDir>/graphql/<NNN>-<phase>-<operationName>.json` — one file per call,
  * diffable and greppable. The browser's full cookie jar is snapshotted at
  * each phase boundary (initial goto, pre-step, post-step, run completion) and
- * written to /tmp/recon/cookies/<NNN>-<label>-<phase>.json, so the jar state
+ * written to `<runDir>/cookies/<NNN>-<label>-<phase>.json`, so the jar state
  * can be diffed across the journey (e.g. what a click-tracker traversal
  * establishes vs. what a later step adds).
  *
  * Recovery model — each flow step runs through a 4-attempt self-healing cascade
  * (act → observe+act → observe+act with ignoreSelectors → Anthropic-SDK rephrase),
  * verified by "did the network counter advance OR did the URL change". On terminal
- * cascade failure the step is dumped to /tmp/recon/step-failures/ and the script's
- * main() loop attempts up to MAX_REPLANS=2 global replans, where Claude rewrites
- * the remaining flow tail given the failure context. Bedrock-only deployments
- * skip the LLM-rephrase attempt and the replan loop with a startup warn. See
- * docs/playbook.md sections 1c–1e for the full design.
+ * cascade failure the step is dumped to `<runDir>/step-failures/` and the
+ * script's main() loop attempts up to MAX_REPLANS=2 global replans, where
+ * Claude rewrites the remaining flow tail given the failure context.
+ * Bedrock-only deployments skip the LLM-rephrase attempt and the replan loop
+ * with a startup warn. See docs/playbook.md sections 1c–1e for the full
+ * design.
  *
  * Usage:
  *   pnpm tsx src/scripts/recon-browser.ts \
@@ -94,7 +99,7 @@ import {
 import { createBrowserSession, type ProviderName } from "@/scraper/session";
 import { guardedObserve } from "@/scraper/stagehand-guard";
 import { filterByCallType, parseSamples } from "@/scripts/judge-llm-batch";
-import { CAPTURES_DIR, COOKIES_DIR, STEP_FAILURES_DIR } from "@/scripts/recon-shared";
+import { resolveReconRunDir } from "@/scripts/recon-shared";
 import { allocateTestmailInbox } from "@/testmail/client";
 import type { Logger } from "@/types/logging";
 
@@ -139,10 +144,11 @@ const HTML_STATIC_TOLERANCE = 100;
 
 /**
  * Thin CLI wrapper over {@link wireSignalCapture}: owns the on-disk capture
- * layout (writes each capture — and its decoded-params sidecar — under
- * `CAPTURES_DIR`) while delegating all in-memory capture bookkeeping to the
- * shared flow-runner engine. Kept here so the persistence policy stays with
- * the recon entry-point and `flow-runner.ts` remains filesystem-agnostic.
+ * layout (writes each capture — and its decoded-params sidecar — under the
+ * resolved run dir's `graphql` subdir) while delegating all in-memory
+ * capture bookkeeping to the shared flow-runner engine. Kept here so the
+ * persistence policy stays with the recon entry-point and `flow-runner.ts`
+ * remains filesystem-agnostic.
  */
 function wireNetworkCapture(
   page: Page,
@@ -153,6 +159,7 @@ function wireNetworkCapture(
   getCurrentPhase: () => string,
   getCurrentPageOrigin: () => string
 ): () => void {
+  const { graphqlDir } = resolveReconRunDir();
   return wireSignalCapture(page, {
     counter,
     signalCounter,
@@ -166,11 +173,11 @@ function wireNetworkCapture(
       // and let the cascade continue. The capture is forensic-only — the
       // happy-path doesn't read these files until something else fails.
       try {
-        writeFileSync(join(CAPTURES_DIR, filename), JSON.stringify(capture, null, 2));
+        writeFileSync(join(graphqlDir, filename), JSON.stringify(capture, null, 2));
         if (capture.decodedParams !== null && capture.decodedParams !== capture.requestPostData) {
           const decodedFilename = filename.replace(/\.json$/, ".decoded.json");
           writeFileSync(
-            join(CAPTURES_DIR, decodedFilename),
+            join(graphqlDir, decodedFilename),
             JSON.stringify(capture.decodedParams, null, 2)
           );
         }
@@ -185,13 +192,13 @@ function wireNetworkCapture(
 
 /**
  * Reads the browser's full cookie jar for the given phase and writes it under
- * `COOKIES_DIR`, so a run's snapshots land in the same append-only, diffable
- * layout as `wireNetworkCapture`'s network captures. `counter` indexes
- * filenames chronologically (zero-padded, shared convention with
- * flow-runner's capture counter) so snapshots sort in the order the phases
- * actually occurred. Never throws — cookie telemetry is best-effort, matching
- * the existing capture-write behavior: a write failure logs a warning and the
- * recon run continues.
+ * the resolved run dir's `cookies` subdir, so a run's snapshots land in the
+ * same append-only, diffable layout as `wireNetworkCapture`'s network
+ * captures. `counter` indexes filenames chronologically (zero-padded, shared
+ * convention with flow-runner's capture counter) so snapshots sort in the
+ * order the phases actually occurred. Never throws — cookie telemetry is
+ * best-effort, matching the existing capture-write behavior: a write failure
+ * logs a warning and the recon run continues.
  */
 async function snapshotAndPersistCookieJar(
   page: Page,
@@ -203,8 +210,9 @@ async function snapshotAndPersistCookieJar(
   const snapshot = await captureCookieJarSnapshot(page, label, phase, stepIndex);
   const idx = String(counter.n++).padStart(3, "0");
   const filename = `${idx}-${label}-${phase}.json`;
+  const { cookiesDir } = resolveReconRunDir();
   try {
-    writeFileSync(join(COOKIES_DIR, filename), JSON.stringify(snapshot, null, 2));
+    writeFileSync(join(cookiesDir, filename), JSON.stringify(snapshot, null, 2));
   } catch (err) {
     logger.warn(`cookie-snapshot-write skipped for ${filename}: ${toErrorMessage(err)}`);
   }
@@ -410,7 +418,7 @@ export function findWizardRestartSignal(params: {
 }): string | null {
   const { preIdx, restartSignalUrlPatterns } = params;
   if (restartSignalUrlPatterns.length === 0) return null;
-  const capturesDir = params.capturesDir ?? CAPTURES_DIR;
+  const capturesDir = params.capturesDir ?? resolveReconRunDir().graphqlDir;
   for (const filename of capturesAfterIndex(preIdx, capturesDir)) {
     let url: string;
     try {
@@ -1087,9 +1095,9 @@ async function replanRemainingFlow(params: {
   stagehand: Stagehand;
   captureFn?: CaptureFn;
   /**
-   * Files in `CAPTURES_DIR` recorded during the failed step's attempt
-   * window. Used to surface structured server-side validation errors
-   * to the replan LLM when a submit actually fired but was rejected.
+   * Files in the run's captures dir recorded during the failed step's
+   * attempt window. Used to surface structured server-side validation
+   * errors to the replan LLM when a submit actually fired but was rejected.
    */
   recentCaptures?: readonly string[];
   /**
@@ -1432,10 +1440,10 @@ function dumpReplanRecord(params: {
   originalRemaining: string[];
   newRemaining: string[];
 }): string {
-  mkdirSync(STEP_FAILURES_DIR, { recursive: true });
+  const { stepFailuresDir } = resolveReconRunDir();
   const idx = String(params.stepIndex).padStart(3, "0");
   const filename = `${idx}-${params.phase}.replan.json`;
-  const target = join(STEP_FAILURES_DIR, filename);
+  const target = join(stepFailuresDir, filename);
   writeFileSync(
     target,
     JSON.stringify(
@@ -1477,7 +1485,7 @@ function dumpStepFailure(params: {
    */
   unfocusedObserve: Action[];
 }): string {
-  mkdirSync(STEP_FAILURES_DIR, { recursive: true });
+  const { stepFailuresDir } = resolveReconRunDir();
   const idx = String(params.stepIndex).padStart(3, "0");
   const filename = `${idx}-${params.phase}.json`;
   const bundle = {
@@ -1493,7 +1501,7 @@ function dumpStepFailure(params: {
     bodyOuterHtml: params.bodyOuterHtml,
     recentCaptures: params.recentCaptures.slice(-5),
   };
-  const target = join(STEP_FAILURES_DIR, filename);
+  const target = join(stepFailuresDir, filename);
   writeFileSync(target, JSON.stringify(bundle, null, 2));
   return target;
 }
@@ -1754,8 +1762,7 @@ async function main(): Promise<void> {
 
   const flow = substituteFlowEnvVars(rawFlow);
 
-  mkdirSync(CAPTURES_DIR, { recursive: true });
-  mkdirSync(COOKIES_DIR, { recursive: true });
+  const runDir = resolveReconRunDir();
   const resumeFixture = loadResumeFixture(resumeFixturePath);
   // Per-URL partition under the flow file's site directory. Without a flow
   // file (inline --flow mode), telemetry has no durable home and is dropped
@@ -1779,7 +1786,7 @@ async function main(): Promise<void> {
       ? (input) => captureLlmCall(input, { sinkPath: callsNdjsonPath })
       : async () => {};
   logger.info(
-    `recon-browser: target=${url} flow_steps=${flow.length} provider=${provider ?? "(config-default)"} advancedStealth=${advancedStealth} resume_fixture=${resumeFixture ? `${resumeFixturePath} (${resumeFixture.buffer.length}b)` : "(missing)"} out=${CAPTURES_DIR}`
+    `recon-browser: target=${url} flow_steps=${flow.length} provider=${provider ?? "(config-default)"} advancedStealth=${advancedStealth} resume_fixture=${resumeFixture ? `${resumeFixturePath} (${resumeFixture.buffer.length}b)` : "(missing)"} runId=${runDir.runId} out=${runDir.root}`
   );
 
   const session = await createBrowserSession({ provider, advancedStealth });
@@ -1948,7 +1955,7 @@ async function main(): Promise<void> {
             "document.documentElement ? document.documentElement.outerHTML : ''"
           );
           if (typeof html === "string" && html.length > 0) {
-            const dumpPath = join(CAPTURES_DIR, `..`, `dom-dump-step-${i + 1}.html`);
+            const dumpPath = join(runDir.root, `dom-dump-step-${i + 1}.html`);
             writeFileSync(dumpPath, html);
             logger.info(
               `${formatStepPrefix(i, () => plan.length)}: wrote DOM dump (${html.length} bytes) to ${dumpPath}`
@@ -2280,7 +2287,7 @@ async function main(): Promise<void> {
     if (requireSubmitEndpointMatch && ownBackendHostnames.length > 0) {
       const { auditFailed, rejectionReason } = auditFinalSubmitMatch({
         ownBackendHostnames,
-        capturesDir: CAPTURES_DIR,
+        capturesDir: runDir.graphqlDir,
         logger,
       });
       if (auditFailed) {
@@ -2305,7 +2312,7 @@ async function main(): Promise<void> {
       plan.length - 1
     );
 
-    logger.info(`recon complete — ${counter.n} captures written to ${CAPTURES_DIR}`);
+    logger.info(`recon complete — ${counter.n} captures written to ${runDir.root}`);
   } finally {
     // Replay-the-discovered-path: if any replan fired and the user provided
     // a flow file, write the improved plan back so the next run starts
