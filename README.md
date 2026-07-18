@@ -179,7 +179,7 @@ See [docs/playbook.md](./docs/playbook.md#interpreting-replay-failures) for the 
 pnpm run recon:generate -- --site-id my-site
 ```
 
-Reads every artifact from Phases 1–3 — `/tmp/recon/graphql/*.json` (captures), `/tmp/recon/replays/*.json` (replay results), `/tmp/recon/replays/rate-limit.json` (probe findings), `/tmp/recon/aux/*.json` (static fixtures), and `src/sites/my-site/recon-flow.json` — and writes a complete plugin to `src/sites/my-site/`:
+Reads every artifact from Phases 1–3 — `/tmp/recon/graphql/*.json` (captures), `/tmp/recon/replays/*.json` (replay results), `/tmp/recon/replays/rate-limit.json` (probe findings), `/tmp/recon/aux/*.json` (static fixtures), and `src/sites/my-site/recon-flow.json` — and writes a complete plugin to `src/sites/my-site/`. Pass `--run-dir <path>` to read a specific run's artifacts instead of the most recently modified run root under `/tmp/recon`:
 
 - `contract.ts` — Zod schemas inferred from captured JSON, load-bearing headers, Bottleneck ceiling, and `executeHttp` / `execute` implementations
 - `flows/browser-flow.ts` — Stagehand fallback wired to your `recon-flow.json` steps
@@ -276,7 +276,7 @@ Optionally generate the human-readable findings doc alongside:
 pnpm run recon:summarize -- --site-id my-site
 ```
 
-Writes `docs/my-site-recon.md` with: endpoints found, replay status, rate-limit ceiling, header frequency table, and hazards (Akamai, Cloudflare). Without `--site-id`, the default output path is `docs/target-recon.md`.
+Writes `docs/my-site-recon.md` with: endpoints found, replay status, rate-limit ceiling, header frequency table, and hazards (Akamai, Cloudflare). Without `--site-id`, the default output path is `docs/target-recon.md`. Accepts `--run-dir <path>` the same way `recon:generate` does.
 
 ### Phase 5 — Register the plugin
 
