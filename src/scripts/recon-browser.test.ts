@@ -139,7 +139,6 @@ import {
   windowHasTransitionBody,
   writeFixtureToTempFile,
 } from "@/scripts/recon-browser";
-import { COOKIES_DIR } from "@/scripts/recon-shared";
 import type { Logger } from "@/types/logging";
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
@@ -4088,47 +4087,48 @@ describe("recon-browser/snapshotAndPersistCookieJar", () => {
     return { sendCDP: vi.fn().mockResolvedValue({ cookies }) };
   }
 
+  // `resolveReconRunDir` memoizes per process, so the run dir must be pinned
+  // via env vars BEFORE the first call in this file (this describe block is
+  // the only caller) and reset via `vi.resetModules` per test so distinct
+  // RECON_RUN_ID values actually produce distinct, non-colliding roots.
+  let cookiesDir: string;
+
+  async function loadCookieJarFn(runId: string): Promise<typeof snapshotAndPersistCookieJar> {
+    process.env.RECON_RUN_ID = runId;
+    process.env.RECON_OUT_DIR = runsRoot;
+    vi.resetModules();
+    const mod = await import("@/scripts/recon-browser.js");
+    const { resolveReconRunDir } = await import("@/scripts/recon-shared.js");
+    cookiesDir = resolveReconRunDir().cookiesDir;
+    return mod.snapshotAndPersistCookieJar;
+  }
+
+  let runsRoot: string;
+
   beforeEach(() => {
-    mkdirSync(COOKIES_DIR, { recursive: true });
+    runsRoot = mkdtempSync(join(tmpdir(), "recon-browser-cookie-jar-"));
     vi.clearAllMocks();
   });
 
   afterEach(() => {
-    for (const f of readdirSync(COOKIES_DIR).filter((f) => f.includes("jar-persist-test"))) {
-      rmSync(join(COOKIES_DIR, f), { recursive: true, force: true });
-    }
+    rmSync(runsRoot, { recursive: true, force: true });
+    delete process.env.RECON_RUN_ID;
+    delete process.env.RECON_OUT_DIR;
     vi.restoreAllMocks();
   });
 
   it("writes three ordered, labelled snapshot files across three phases with parseable bodies", async () => {
+    const persist = await loadCookieJarFn("20260718-000000-aaaa");
     const page = makeCookiePage([
       { name: "a", value: "1", domain: ".appcast.io", path: "/", httpOnly: true },
     ]);
     const counter = { n: 0 };
 
-    await snapshotAndPersistCookieJar(
-      page as never,
-      counter,
-      "jar-persist-test-click",
-      "post-click",
-      0
-    );
-    await snapshotAndPersistCookieJar(
-      page as never,
-      counter,
-      "jar-persist-test-apply-pre",
-      "pre-apply",
-      1
-    );
-    await snapshotAndPersistCookieJar(
-      page as never,
-      counter,
-      "jar-persist-test-apply-post",
-      "post-apply",
-      1
-    );
+    await persist(page as never, counter, "jar-persist-test-click", "post-click", 0);
+    await persist(page as never, counter, "jar-persist-test-apply-pre", "pre-apply", 1);
+    await persist(page as never, counter, "jar-persist-test-apply-post", "post-apply", 1);
 
-    const written = readdirSync(COOKIES_DIR)
+    const written = readdirSync(cookiesDir)
       .filter((f) => f.includes("jar-persist-test"))
       .sort();
 
@@ -4139,7 +4139,7 @@ describe("recon-browser/snapshotAndPersistCookieJar", () => {
     ]);
 
     for (const [i, filename] of written.entries()) {
-      const body = JSON.parse(readFileSync(join(COOKIES_DIR, filename), "utf8"));
+      const body = JSON.parse(readFileSync(join(cookiesDir, filename), "utf8"));
       expect(body.label).toContain("jar-persist-test");
       expect(Array.isArray(body.cookies)).toBe(true);
       expect(typeof body.timestamp).toBe("string");
@@ -4149,6 +4149,7 @@ describe("recon-browser/snapshotAndPersistCookieJar", () => {
   });
 
   it("logs a warning and does not throw when the write fails", async () => {
+    const persist = await loadCookieJarFn("20260718-000000-bbbb");
     const page = makeCookiePage([]);
     const counter = { n: 0 };
     // Force a real fs failure (EISDIR) instead of mocking node:fs — Vitest
@@ -4156,15 +4157,30 @@ describe("recon-browser/snapshotAndPersistCookieJar", () => {
     // configurable"). A directory pre-created at the exact computed target
     // path makes writeFileSync throw for the same reason a real disk error
     // would: the write target is unusable.
-    const collisionPath = join(COOKIES_DIR, "000-jar-persist-test-fail-post-click.json");
+    const collisionPath = join(cookiesDir, "000-jar-persist-test-fail-post-click.json");
     mkdirSync(collisionPath, { recursive: true });
 
     await expect(
-      snapshotAndPersistCookieJar(page as never, counter, "jar-persist-test-fail", "post-click", 0)
+      persist(page as never, counter, "jar-persist-test-fail", "post-click", 0)
     ).resolves.toBeUndefined();
 
     expect(loggerStub.warn).toHaveBeenCalledWith(
       expect.stringContaining("cookie-snapshot-write skipped")
     );
+  });
+
+  it("two resolver runs with distinct RECON_RUN_ID values produce non-colliding 000-<label>.json files", async () => {
+    const persistA = await loadCookieJarFn("20260718-000000-cccc");
+    const dirA = cookiesDir;
+    const page = makeCookiePage([]);
+    await persistA(page as never, { n: 0 }, "run-a", "post-click", 0);
+
+    const persistB = await loadCookieJarFn("20260718-000000-dddd");
+    const dirB = cookiesDir;
+    await persistB(page as never, { n: 0 }, "run-b", "post-click", 0);
+
+    expect(dirA).not.toBe(dirB);
+    expect(readdirSync(dirA)).toEqual(["000-run-a-post-click.json"]);
+    expect(readdirSync(dirB)).toEqual(["000-run-b-post-click.json"]);
   });
 });
