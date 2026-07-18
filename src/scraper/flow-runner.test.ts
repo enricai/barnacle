@@ -172,4 +172,75 @@ describe("flow-runner/wireSignalCapture — Set-Cookie from responseReceivedExtr
     expect(cap.responseHeaders["content-type"]).toBe("application/json");
     expect(cap.responseHeaders["set-cookie"]).toBeUndefined();
   });
+
+  it("preserves the CDP newline separator across multiple Set-Cookie values", async () => {
+    const cap = await captureWith([
+      responseReceived,
+      [
+        "Network.responseReceivedExtraInfo",
+        { requestId: REQ, headers: { "set-cookie": "a=1; Path=/\nb=2; Path=/" } },
+      ],
+    ]);
+    expect(cap.responseHeaders["set-cookie"]).toBe("a=1; Path=/\nb=2; Path=/");
+    expect(cap.responseHeaders["set-cookie"]).not.toContain(", ");
+  });
+});
+
+describe("flow-runner/wireSignalCapture — Cookie from requestWillBeSentExtraInfo", () => {
+  const REQ = "req-2";
+  const REQ_URL = "https://api.example.com/apply/submit";
+
+  async function captureWith(events: Array<[string, unknown]>): Promise<Capture> {
+    const { page, emit } = fakeCapturePage();
+    const captured: Capture[] = [];
+    const teardown = wireSignalCapture(page, {
+      counter: { n: 0 },
+      signalCounter: { n: 0 },
+      recentCaptures: [],
+      recentCaptureMeta: [],
+      getCurrentPhase: () => "action",
+      getCurrentPageOrigin: () => "https://api.example.com",
+      onCapture: (capture) => captured.push(capture),
+    });
+    for (const [event, params] of events) emit(event, params);
+    await emit("Network.loadingFinished", { requestId: REQ });
+    teardown();
+    const cap = captured[0];
+    if (!cap) throw new Error("no capture emitted");
+    return cap;
+  }
+
+  const requestWillBeSent: [string, unknown] = [
+    "Network.requestWillBeSent",
+    { requestId: REQ, request: { url: REQ_URL, method: "POST", headers: {}, postData: "{}" } },
+  ];
+  const cookieExtraInfo: [string, unknown] = [
+    "Network.requestWillBeSentExtraInfo",
+    { requestId: REQ, headers: { cookie: "a=1; b=2" } },
+  ];
+
+  it("captures the outgoing Cookie header when extraInfo arrives AFTER requestWillBeSent", async () => {
+    const cap = await captureWith([requestWillBeSent, cookieExtraInfo]);
+    expect(cap.requestHeaders.cookie).toBe("a=1; b=2");
+  });
+
+  it("captures the outgoing Cookie header when extraInfo arrives BEFORE requestWillBeSent (the race)", async () => {
+    const cap = await captureWith([cookieExtraInfo, requestWillBeSent]);
+    expect(cap.requestHeaders.cookie).toBe("a=1; b=2");
+  });
+
+  it("merges multiple extraInfo events for one requestId (redirect case)", async () => {
+    const cap = await captureWith([
+      ["Network.requestWillBeSentExtraInfo", { requestId: REQ, headers: { cookie: "first=A" } }],
+      requestWillBeSent,
+      ["Network.requestWillBeSentExtraInfo", { requestId: REQ, headers: { "x-second": "B" } }],
+    ]);
+    expect(cap.requestHeaders.cookie).toBe("first=A");
+    expect(cap.requestHeaders["x-second"]).toBe("B");
+  });
+
+  it("preserves requestWillBeSent headers when no extraInfo fires", async () => {
+    const cap = await captureWith([requestWillBeSent]);
+    expect(cap.requestHeaders.cookie).toBeUndefined();
+  });
 });
