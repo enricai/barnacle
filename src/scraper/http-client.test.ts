@@ -8,7 +8,6 @@ import {
   HttpSchemaError,
   HttpServerError,
   HttpUrlLockedError,
-  OracleTokenExpiredError,
   UnknownScraperError,
 } from "@/scraper/errors";
 import type { HttpResponseBinding, HttpResponseInfo } from "@/scraper/http-client";
@@ -95,24 +94,45 @@ describe("scraper/http-client createHttpClient", () => {
     await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(HttpSchemaError);
   });
 
-  it("retries on ORA_IRC_* sentinel body and throws OracleTokenExpiredError when all attempts fail", async () => {
+  // A plugin-supplied classifier stands in for a vendor sentinel body the engine
+  // itself can't interpret. These exercise the generic seam, not any vendor's
+  // wire format — the vendor-specific parity assertions live in the plugin.
+  const RETRYABLE_BODY = "PLUGIN_TRANSIENT";
+  const TERMINAL_BODY = "PLUGIN_TERMINAL";
+  function makeClassifiedClient() {
+    return createHttpClient<Item>({
+      schema: ItemSchema,
+      bottleneck: passThruLimiter,
+      baseHeaders: BASE_HEADERS,
+      classifyResponseBody: (rawText) => {
+        const trimmed = rawText.trim();
+        if (trimmed === TERMINAL_BODY) return new HttpUrlLockedError("locked by plugin");
+        if (trimmed === RETRYABLE_BODY) return new UnknownScraperError("transient by plugin");
+        return undefined;
+      },
+    });
+  }
+  function stubBody(body: string): void {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({
         status: 200,
         ok: true,
-        text: vi.fn().mockResolvedValue("ORA_IRC_TOKEN_EXPIRED"),
+        text: vi.fn().mockResolvedValue(body),
         headers: new Headers(),
       })
     );
-    const client = makeClient();
-    const rejection = client("https://example.com/api/item");
-    await expect(rejection).rejects.toBeInstanceOf(OracleTokenExpiredError);
+  }
+
+  it("classifyResponseBody returning a retryable error retries, then throws it when all attempts fail", async () => {
+    stubBody(RETRYABLE_BODY);
+    const rejection = makeClassifiedClient()("https://example.com/api/item");
+    await expect(rejection).rejects.toBeInstanceOf(UnknownScraperError);
     await expect(rejection).rejects.not.toBeInstanceOf(HttpSchemaError);
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(3);
   });
 
-  it("retries on ORA_IRC_* sentinel body and resolves when second attempt returns valid JSON", async () => {
+  it("classifyResponseBody retryable then a valid JSON body resolves without further retries", async () => {
     const validJson = JSON.stringify({ id: "1", name: "Widget" });
     vi.stubGlobal(
       "fetch",
@@ -121,7 +141,7 @@ describe("scraper/http-client createHttpClient", () => {
         .mockResolvedValueOnce({
           status: 200,
           ok: true,
-          text: vi.fn().mockResolvedValue("ORA_IRC_TOKEN_EXPIRED"),
+          text: vi.fn().mockResolvedValue(RETRYABLE_BODY),
           headers: new Headers(),
         })
         .mockResolvedValueOnce({
@@ -131,10 +151,33 @@ describe("scraper/http-client createHttpClient", () => {
           headers: new Headers(),
         })
     );
-    const client = makeClient();
-    const result = await client("https://example.com/api/item");
+    const result = await makeClassifiedClient()("https://example.com/api/item");
     expect(result).toEqual({ id: "1", name: "Widget" });
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
+  });
+
+  it("classifyResponseBody returning a non-retryable error aborts immediately (no retry)", async () => {
+    stubBody(TERMINAL_BODY);
+    await expect(makeClassifiedClient()("https://example.com/api/item")).rejects.toBeInstanceOf(
+      HttpUrlLockedError
+    );
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+  });
+
+  it("classifyResponseBody returning undefined falls through to JSON parsing (retryable non-JSON)", async () => {
+    stubBody("SOME_UNCLASSIFIED_BODY");
+    await expect(makeClassifiedClient()("https://example.com/api/item")).rejects.toBeInstanceOf(
+      UnknownScraperError
+    );
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(3);
+  });
+
+  it("with no classifier, a non-JSON body is a plain retryable parse failure", async () => {
+    stubBody("not json at all");
+    await expect(makeClient()("https://example.com/api/item")).rejects.toBeInstanceOf(
+      UnknownScraperError
+    );
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(3);
   });
 
   it("retries on network-level failures (UnknownScraperError) and eventually throws", async () => {
@@ -171,51 +214,21 @@ describe("scraper/http-client createHttpClient", () => {
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
   });
 
-  it("throws HttpUrlLockedError on ORA_URL_LOCKED body — does NOT retry", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        status: 200,
-        ok: true,
-        text: vi.fn().mockResolvedValue("ORA_URL_LOCKED"),
-        headers: new Headers(),
-      })
-    );
-    const client = makeClient();
+  it("passes the raw (untrimmed) body to classifyResponseBody so the plugin owns trimming", async () => {
+    let seen: string | undefined;
+    const client = createHttpClient<Item>({
+      schema: ItemSchema,
+      bottleneck: passThruLimiter,
+      baseHeaders: BASE_HEADERS,
+      classifyResponseBody: (rawText) => {
+        seen = rawText;
+        return rawText.trim() === TERMINAL_BODY ? new HttpUrlLockedError() : undefined;
+      },
+    });
+    stubBody(`${TERMINAL_BODY}\n`);
     await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(HttpUrlLockedError);
+    expect(seen).toBe(`${TERMINAL_BODY}\n`);
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
-  });
-
-  it("throws HttpUrlLockedError on ORA_URL_LOCKED body with trailing whitespace — does NOT retry", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        status: 200,
-        ok: true,
-        text: vi.fn().mockResolvedValue("ORA_URL_LOCKED\n"),
-        headers: new Headers(),
-      })
-    );
-    const client = makeClient();
-    await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(HttpUrlLockedError);
-    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
-  });
-
-  it("retries on unknown ORA_* prefix (not IRC, not URL_LOCKED) — falls through to JSON parse", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        status: 200,
-        ok: true,
-        text: vi.fn().mockResolvedValue("ORA_SOME_FUTURE_CODE"),
-        headers: new Headers(),
-      })
-    );
-    const client = makeClient();
-    await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(
-      UnknownScraperError
-    );
-    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(3);
   });
 
   it("merges init headers on top of baseHeaders", async () => {
@@ -313,17 +326,17 @@ describe("scraper/http-client onResponse hook", () => {
     expect(captured).toHaveLength(0);
   });
 
-  it("fires onResponse before throwing HttpUrlLockedError on ORA_URL_LOCKED", async () => {
-    // onResponse fires at the HTTP layer (after fetch resolves) before sentinel
-    // classification — callers that audit response headers still see the 200 even
-    // when Oracle returns a locked-URL body.
-    const responseHeaders = new Headers({ "x-oracle-request-id": "lock-42" });
+  it("fires onResponse before classifyResponseBody aborts the retry loop", async () => {
+    // onResponse fires at the HTTP layer (after fetch resolves) before body
+    // classification — callers auditing response headers still see the 200 even
+    // when a classifier then raises a terminal sentinel.
+    const responseHeaders = new Headers({ "x-request-id": "lock-42" });
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({
         status: 200,
         ok: true,
-        text: vi.fn().mockResolvedValue("ORA_URL_LOCKED"),
+        text: vi.fn().mockResolvedValue("PLUGIN_TERMINAL"),
         headers: responseHeaders,
       })
     );
@@ -334,6 +347,8 @@ describe("scraper/http-client onResponse hook", () => {
       bottleneck: passThruLimiter,
       baseHeaders: BASE_HEADERS,
       onResponse: (info) => captured.push(info),
+      classifyResponseBody: (rawText) =>
+        rawText.trim() === "PLUGIN_TERMINAL" ? new HttpUrlLockedError() : undefined,
     });
 
     await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(HttpUrlLockedError);
@@ -341,7 +356,7 @@ describe("scraper/http-client onResponse hook", () => {
     expect(captured).toHaveLength(1);
     expect(captured[0]?.status).toBe(200);
     expect(captured[0]?.url).toBe("https://example.com/api/item");
-    expect(captured[0]?.headers.get("x-oracle-request-id")).toBe("lock-42");
+    expect(captured[0]?.headers.get("x-request-id")).toBe("lock-42");
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
   });
 });

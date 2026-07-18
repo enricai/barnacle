@@ -26,32 +26,39 @@ describe("parseJsonResponse", () => {
     });
   });
 
-  describe("locked Oracle sentinel body", () => {
-    it("throws HttpUrlLockedError for ORA_URL_LOCKED", () => {
-      expect(() => parseJsonResponse("ORA_URL_LOCKED", SimpleSchema, LABEL)).toThrow(
+  describe("plugin-supplied classifyBody on a non-JSON body", () => {
+    // Stands in for a vendor sentinel a plugin recognizes; the engine itself
+    // knows no vendor wire format.
+    const classify = (raw: string): HttpUrlLockedError | undefined =>
+      raw.trim() === "SENTINEL_LOCKED" ? new HttpUrlLockedError() : undefined;
+
+    it("throws the classifier's error when it recognizes the body", () => {
+      expect(() => parseJsonResponse("SENTINEL_LOCKED", SimpleSchema, LABEL, classify)).toThrow(
         HttpUrlLockedError
       );
     });
 
-    it("throws HttpUrlLockedError for ORA_URL_LOCKED with surrounding whitespace", () => {
-      expect(() => parseJsonResponse("  ORA_URL_LOCKED\n", SimpleSchema, LABEL)).toThrow(
+    it("receives the raw (untrimmed) body so the plugin owns trimming", () => {
+      expect(() => parseJsonResponse("  SENTINEL_LOCKED\n", SimpleSchema, LABEL, classify)).toThrow(
         HttpUrlLockedError
       );
     });
 
-    it("does NOT throw HttpSchemaError for ORA_URL_LOCKED", () => {
-      expect(() => parseJsonResponse("ORA_URL_LOCKED", SimpleSchema, LABEL)).not.toThrow(
+    it("does NOT throw HttpSchemaError when the classifier handles the body", () => {
+      expect(() => parseJsonResponse("SENTINEL_LOCKED", SimpleSchema, LABEL, classify)).not.toThrow(
         HttpSchemaError
       );
     });
 
-    it("throws HttpSchemaError (not HttpUrlLockedError) for a transient ORA_IRC_* sentinel", () => {
-      // classifyOracleSentinel returns "transient" for ORA_IRC_* — only "locked" maps to HttpUrlLockedError.
-      expect(() => parseJsonResponse("ORA_IRC_TOKEN_EXPIRED", SimpleSchema, LABEL)).toThrow(
+    it("falls through to HttpSchemaError when the classifier returns undefined", () => {
+      expect(() => parseJsonResponse("SENTINEL_OTHER", SimpleSchema, LABEL, classify)).toThrow(
         HttpSchemaError
       );
-      expect(() => parseJsonResponse("ORA_IRC_TOKEN_EXPIRED", SimpleSchema, LABEL)).not.toThrow(
-        HttpUrlLockedError
+    });
+
+    it("with no classifier, a non-JSON body is a plain HttpSchemaError", () => {
+      expect(() => parseJsonResponse("SENTINEL_LOCKED", SimpleSchema, LABEL)).toThrow(
+        HttpSchemaError
       );
     });
   });

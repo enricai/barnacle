@@ -11,11 +11,9 @@ import {
   HttpRateLimitError,
   HttpSchemaError,
   HttpServerError,
-  HttpUrlLockedError,
-  OracleTokenExpiredError,
+  type ScraperError,
   UnknownScraperError,
 } from "@/scraper/errors";
-import { classifyOracleSentinel } from "@/scraper/oracle-sentinels";
 
 const logger = getLogger({ name: "scraper/http-client" });
 
@@ -101,6 +99,15 @@ export interface HttpClientOptions<TResponse> {
    * requests rather than sent empty.
    */
   bind?: HttpResponseBinding[];
+  /**
+   * Optional plugin-supplied classifier for a response body the core client
+   * cannot interpret — an ATS that answers with a plain-text sentinel instead of
+   * JSON, say. Called with the raw body text on every fetch outcome; return a
+   * {@link ScraperError} to short-circuit (its `retryable` flag decides retry vs
+   * abort), or `undefined` to fall through to the normal JSON-parse path. This
+   * is how vendor-specific wire quirks stay in the plugin instead of the engine.
+   */
+  classifyResponseBody?: (rawText: string, ctx: { url: string }) => ScraperError | undefined;
 }
 
 /**
@@ -125,9 +132,9 @@ export interface HttpRequestInit {
 }
 
 /**
- * Parses `rawText` as JSON. Oracle HCM `ORA_IRC_*` transient sentinels are
- * caught before this call and thrown as {@link OracleTokenExpiredError}.
- * On any JSON parse failure for a non-sentinel body, logs the first 200 chars
+ * Parses `rawText` as JSON. Any plugin-supplied `classifyResponseBody` runs
+ * before this, so a recognized non-JSON sentinel is already handled.
+ * On any JSON parse failure for an unclassified body, logs the first 200 chars
  * and throws `UnknownScraperError` (retryable) so p-retry re-issues the
  * request rather than hard-aborting with `HttpSchemaError`.
  */
@@ -198,7 +205,7 @@ function resolveBinding(binding: HttpResponseBinding, headers: Headers): string 
 export function createHttpClient<TResponse>(
   options: HttpClientOptions<TResponse>
 ): (url: string, init?: HttpRequestInit) => Promise<TResponse> {
-  const { schema, bottleneck, baseHeaders, onResponse, bind = [] } = options;
+  const { schema, bottleneck, baseHeaders, onResponse, bind = [], classifyResponseBody } = options;
   // Values bound from prior responses (e.g. a minted auth cookie), keyed by
   // targetHeader. Lives for the lifetime of this client instance so a later
   // call can pick up what an earlier call captured — see HttpResponseBinding.
@@ -304,20 +311,13 @@ export function createHttpClient<TResponse>(
 
           const rawText = await response.text();
 
-          const sentinelKind = classifyOracleSentinel(rawText);
-          if (sentinelKind === "locked") {
-            // Oracle has locked the requisition URL — retrying cannot succeed.
-            throw new AbortError(
-              new HttpUrlLockedError(`oracle url locked (ORA_URL_LOCKED) from ${url}`)
-            );
-          }
-          if (sentinelKind === "transient") {
-            // Oracle returned an ORA_IRC_* token-expiry sentinel — retryable,
-            // but kept distinct from UnknownScraperError so the encompass flow
-            // can catch exactly this class and re-mint the AccessCode.
-            throw new OracleTokenExpiredError(
-              `oracle token expired from ${url}: ${rawText.trim().slice(0, 200)}`
-            );
+          // A plugin may recognize a non-JSON response body the engine can't
+          // (a vendor sentinel). Its verdict drives retry via the error's
+          // `retryable` flag: non-retryable aborts the p-retry loop, retryable
+          // is re-thrown so p-retry re-issues. `undefined` falls through.
+          const classified = classifyResponseBody?.(rawText, { url });
+          if (classified !== undefined) {
+            throw classified.retryable ? classified : new AbortError(classified);
           }
 
           const body = parseJsonOrThrowRetryable(rawText, url);

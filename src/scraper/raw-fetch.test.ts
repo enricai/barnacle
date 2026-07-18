@@ -176,25 +176,23 @@ describe("rawFetch", () => {
     });
   });
 
-  // ORA_URL_LOCKED sentinel audit — intentional no-op on this seam:
+  // Plain-text sentinel audit — intentional no-op on this seam:
   // rawFetch issues a fetch, fires onResponse, reads the body, and delegates
-  // status classification to classifyHttpStatus. Oracle returns ORA_URL_LOCKED
-  // as HTTP 200 with a plain-text body, so classifyHttpStatus returns silently
-  // and rawFetch returns { status: 200, rawBody: "ORA_URL_LOCKED" } to the
-  // caller. Sentinel detection is the responsibility of parseJsonResponse
-  // (src/scraper/parse-json-response.ts), which is called downstream on the
-  // createHttpClient hot path. rawFetch callers that use parseJsonResponse
-  // inherit ORA_URL_LOCKED detection transitively; those that need raw Buffer
-  // bodies and skip parseJsonResponse do not reach Oracle HCM endpoints, so
-  // no gap exists in practice.
-  describe("ORA_URL_LOCKED sentinel (200 with plain-text body)", () => {
-    it("returns { status: 200, rawBody: 'ORA_URL_LOCKED' } without throwing — sentinel detection is parseJsonResponse's concern", async () => {
+  // status classification to classifyHttpStatus. A vendor that answers with a
+  // plain-text sentinel at HTTP 200 passes through here untouched — rawFetch
+  // returns { status: 200, rawBody: "<sentinel>" } to the caller. Body-sentinel
+  // detection is a plugin concern (a `classifyResponseBody` on the createHttpClient
+  // hot path, or a `classifyBody` passed to parseJsonResponse downstream), not
+  // rawFetch's. Callers that need raw bodies and skip that classification simply
+  // receive the sentinel text verbatim.
+  describe("plain-text sentinel body (200 with non-JSON body)", () => {
+    it("returns { status: 200, rawBody } verbatim without throwing — body-sentinel detection is a plugin concern", async () => {
       mockFetch.mockResolvedValueOnce(
-        makeMockFetchResponse(200, "ORA_URL_LOCKED", RESPONSE_HEADERS)
+        makeMockFetchResponse(200, "PLUGIN_SENTINEL", RESPONSE_HEADERS)
       );
       const result = await rawFetch(BASE_URL, makeOptions());
       expect(result.status).toBe(200);
-      expect(result.rawBody).toBe("ORA_URL_LOCKED");
+      expect(result.rawBody).toBe("PLUGIN_SENTINEL");
     });
   });
 
