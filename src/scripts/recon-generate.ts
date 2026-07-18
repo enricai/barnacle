@@ -1235,17 +1235,24 @@ const PLACEHOLDER_STATE_VALUES = new Set(["00000000-0000-0000-0000-000000000000"
  * Splits a raw `Set-Cookie` response-header string into `name`/`value` pairs.
  * Captures store `responseHeaders` as a flat `Record<string, string>`
  * (see recon-shared.ts's `Capture`), so multiple `Set-Cookie` headers from the
- * same response — if the recon browser's CDP session folds them together —
- * would already have lost their individual boundaries before reaching here;
- * this only recovers name/value pairs from whatever single string survives.
+ * same response are folded by the recon browser's CDP session into one
+ * newline-delimited string — each line is one cookie's `name=value; attrs...`.
+ * This walks every newline-delimited line and recovers the name/value pair
+ * from before that line's first `;`, skipping any line with no `=`.
  */
-function* walkSetCookiePairs(rawSetCookie: string): Generator<{ name: string; value: string }> {
-  const pair = rawSetCookie.split(";", 1)[0] ?? "";
-  const eq = pair.indexOf("=");
-  if (eq === -1) return;
-  const name = pair.slice(0, eq).trim();
-  const value = pair.slice(eq + 1).trim();
-  if (name && value) yield { name, value };
+/** Exported for unit testing — lets tests exercise the newline-fold parsing
+ * directly against synthetic multi-cookie strings. */
+export function* walkSetCookiePairs(
+  rawSetCookie: string
+): Generator<{ name: string; value: string }> {
+  for (const line of rawSetCookie.split("\n")) {
+    const pair = line.split(";", 1)[0] ?? "";
+    const eq = pair.indexOf("=");
+    if (eq === -1) continue;
+    const name = pair.slice(0, eq).trim();
+    const value = pair.slice(eq + 1).trim();
+    if (name && value) yield { name, value };
+  }
 }
 
 /**
