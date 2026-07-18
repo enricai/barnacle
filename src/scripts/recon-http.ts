@@ -288,6 +288,49 @@ async function probeAuxiliaryEndpoints(replays: ReplayResult[], auxDir: string):
   }
 }
 
+/**
+ * Builds the deduplicated rate-limit probe target map from successful
+ * replays. Skips noise (`isNoiseUrl` — the same guard the replay phase
+ * applies, since a noise URL that slips through the earlier filter must not
+ * fire 60 rate-limit requests at a third-party host) and static fixture
+ * endpoints, which would burn probe budget without exercising the site's own
+ * API.
+ */
+export function buildRateLimitProbeTargets(
+  replays: ReplayResult[]
+): Map<string, { method: string; body: string | null }> {
+  const probeTargets = new Map<string, { method: string; body: string | null }>();
+  let skipped = 0;
+  for (const replay of replays) {
+    if (!replay.success) continue;
+    if (isNoiseUrl(replay.url)) {
+      skipped++;
+      continue;
+    }
+    try {
+      const u = new URL(replay.url);
+      if (u.protocol !== "http:" && u.protocol !== "https:") continue;
+      const pathname = u.pathname.toLowerCase();
+      // Skip static fixture endpoints — probing them 60+ times could ban the CDN egress IP
+      if (
+        pathname.endsWith(".json") ||
+        /\/(markets|currencies|labels|dictionaries|config|locales|i18n)/.test(pathname)
+      )
+        continue;
+      const key = `${u.origin}${u.pathname}`;
+      if (!probeTargets.has(key)) {
+        probeTargets.set(key, { method: replay.method, body: replay.requestBody });
+      }
+    } catch {
+      // skip unparseable urls
+    }
+  }
+  if (skipped > 0) {
+    logger.info(`rate-limit probe: skipped ${skipped} noise host(s) already filtered upstream`);
+  }
+  return probeTargets;
+}
+
 async function probeRateLimit(
   endpoint: string,
   method: string,
@@ -443,27 +486,7 @@ async function main(): Promise<void> {
 
   // Rate-limit probe — runs last
   logger.info("=== PHASE 3C: RATE-LIMIT PROBE (runs last — may trigger ban) ===");
-  const probeTargets = new Map<string, { method: string; body: string | null }>();
-  for (const replay of replays) {
-    if (!replay.success) continue;
-    try {
-      const u = new URL(replay.url);
-      if (u.protocol !== "http:" && u.protocol !== "https:") continue;
-      const pathname = u.pathname.toLowerCase();
-      // Skip static fixture endpoints — probing them 60+ times could ban the CDN egress IP
-      if (
-        pathname.endsWith(".json") ||
-        /\/(markets|currencies|labels|dictionaries|config|locales|i18n)/.test(pathname)
-      )
-        continue;
-      const key = `${u.origin}${u.pathname}`;
-      if (!probeTargets.has(key)) {
-        probeTargets.set(key, { method: replay.method, body: replay.requestBody });
-      }
-    } catch {
-      // skip unparseable urls
-    }
-  }
+  const probeTargets = buildRateLimitProbeTargets(replays);
 
   const rateLimitFindings: RateLimitFinding[] = [];
   for (const [endpoint, { method, body }] of probeTargets) {
@@ -479,7 +502,12 @@ async function main(): Promise<void> {
   logger.info(`recon-http complete — replays in ${runDir.replaysDir}`);
 }
 
-main().catch((err) => {
-  logger.error(`recon-http failed: ${toErrorMessage(err)}`);
-  process.exit(1);
-});
+if (
+  process.argv[1] !== undefined &&
+  (process.argv[1].endsWith("recon-http.ts") || process.argv[1].endsWith("recon-http.js"))
+) {
+  main().catch((err) => {
+    logger.error(`recon-http failed: ${toErrorMessage(err)}`);
+    process.exit(1);
+  });
+}
