@@ -129,7 +129,7 @@ import {
   selectRadioGroupOption,
   shouldSkipTechnique,
   shouldVetoFallbackAdvance,
-  snapshotAndPersistCookieJar,
+  type snapshotAndPersistCookieJar,
   summarizeReplanFailureKinds,
   type ValidationRejectionPair,
   type VerifyFillReadbackResult,

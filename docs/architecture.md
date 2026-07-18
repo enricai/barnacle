@@ -355,16 +355,17 @@ still run and cover the majority of recovery.
 
 ### Artifacts on disk
 
-- `/tmp/recon/graphql/<NNN>-<phase>-<op>.json` — every captured network call.
-- `/tmp/recon/step-failures/<NNN>-<phase>.json` — diagnostic dump on cascade
+- `<run-dir>/graphql/<NNN>-<phase>-<op>.json` — every captured network call.
+- `<run-dir>/step-failures/<NNN>-<phase>.json` — diagnostic dump on cascade
   exhaustion: full `attempts[]`, `finalObserve`, `pageUrl`, `pageTitle`,
   `recentCaptures`.
-- `/tmp/recon/step-failures/<NNN>-<phase>.replan.json` — audit record when a
+- `<run-dir>/step-failures/<NNN>-<phase>.replan.json` — audit record when a
   replan succeeds: `timestamp`, `stepIndex`, `phase`, `replanIndex`,
   `completedSteps`, `originalRemaining`, `newRemaining`.
 
-Paths are defined as `CAPTURES_DIR` and `STEP_FAILURES_DIR` in
-`src/scripts/recon-shared.ts`.
+`<run-dir>` defaults to `/tmp/recon/<runId>` and is resolved once per process
+by `resolveReconRunDir()` in `src/scripts/recon-shared.ts` — override the base
+with `RECON_OUT_DIR` or pin the runId with `RECON_RUN_ID`.
 
 ---
 
@@ -573,8 +574,8 @@ maintenance loop.
 
 **Four verifications:**
 - `pnpm run smoke` — exercises the direct-HTTP hot path end-to-end
-- Open `/tmp/recon/graphql/*.json` after a recon run — these are real captures
-- Diff `src/sites/<id>/contract.ts` against `/tmp/recon/graphql/*<operationName>*.json` — the committed query should be a lean subset of the captured one (UI-only fields stripped)
+- Open `<run-dir>/graphql/*.json` after a recon run — these are real captures
+- Diff `src/sites/<id>/contract.ts` against `<run-dir>/graphql/*<operationName>*.json` — the committed query should be a lean subset of the captured one (UI-only fields stripped)
 - `docs/target-recon.md` is the human rollup from Phase 4e
 
 ---
@@ -613,7 +614,7 @@ maintenance loop.
 | Phase 2–3 — HTTP replay + probes | `src/scripts/recon-http.ts` |
 | Phase 4f — plugin skeleton generator | `src/scripts/recon-generate.ts` |
 | Phase 4e — findings doc generator | `src/scripts/recon-summarize.ts` |
-| Shared recon types + utilities (`CAPTURES_DIR`, `STEP_FAILURES_DIR`) | `src/scripts/recon-shared.ts` |
+| Shared recon types + utilities (`resolveReconRunDir`, `resolveLatestReconRunRoot`) | `src/scripts/recon-shared.ts` |
 | Recon flow self-heal loop | `src/scripts/recon-heal.ts` |
 | Smoke test | `src/scripts/smoke-test.ts` |
 | Plugin contract interface (template for all site plugins) | `src/site-plugin.ts` |
