@@ -4208,11 +4208,7 @@ describe("recon-browser/snapshotAndPersistCookieJar", () => {
 
     const bodyA = JSON.parse(readFileSync(join(dirA, filename), "utf8"));
     const bodyB = JSON.parse(readFileSync(join(dirB, filename), "utf8"));
-    expect(bodyA.cookies).toEqual([
-      expect.objectContaining({ name: "run", value: "a" }),
-    ]);
-    expect(bodyB.cookies).toEqual([
-      expect.objectContaining({ name: "run", value: "b" }),
-    ]);
+    expect(bodyA.cookies).toEqual([expect.objectContaining({ name: "run", value: "a" })]);
+    expect(bodyB.cookies).toEqual([expect.objectContaining({ name: "run", value: "b" })]);
   });
 });
