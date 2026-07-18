@@ -29,7 +29,7 @@ Human involvement is one recon run up front and a small PR when things change.
 
 | Phase | What runs | What you get |
 |-------|-----------|--------------|
-| **1 — Browser recon** | `pnpm run recon:browser` | Every API call the site makes, captured to `/tmp/recon/graphql/*.json` |
+| **1 — Browser recon** | `pnpm run recon:browser` | Every API call the site makes, captured to `<run-dir>/graphql/*.json` |
 | **2–3 — HTTP replay + probing** | `pnpm run recon:http` | Proof each endpoint works without a browser; rate-limit ceiling; static fixtures |
 | **4 — Plugin generation** | `pnpm run recon:generate` | A complete plugin: Zod schemas, headers, Bottleneck config, hot-path client, Stagehand fallback |
 | **5+ — Runtime** | `pnpm start` | Direct HTTP hot path, automatic browser fallback, nightly smoke test, drift detection |
@@ -100,17 +100,19 @@ pnpm run recon:browser -- --url https://example.com
 
 Drives a real Stagehand + Steel browser through your flow. Captures are wired via a single CDP session-level listener (`page.getSessionForFrame().on(...)`) — Stagehand V3 enables the Network domain internally, so attaching our `Network.requestWillBeSent` / `responseReceived` / `loadingFinished` listeners on the main session catches every response, including the early ones that fire before any page-level handler could be wired.
 
-Captures every network call matching `/graph`, `/api/`, `/graphql`, `/v1/`, or `*.json` to `/tmp/recon/graphql/<NNN>-<phase>-<operationName>.json` — one file per call, diffable and greppable. Use `--capture-all` for sites with non-standard API paths; it captures every response, producing more noise but missing nothing. Omitting both `--flow` and `--flow-file` runs zero interaction steps and captures only the network activity that fires during page navigation — useful for pure GET-style SPAs that fetch everything they need on load.
+Captures every network call matching `/graph`, `/api/`, `/graphql`, `/v1/`, or `*.json` to `<run-dir>/graphql/<NNN>-<phase>-<operationName>.json` — one file per call, diffable and greppable. Use `--capture-all` for sites with non-standard API paths; it captures every response, producing more noise but missing nothing. Omitting both `--flow` and `--flow-file` runs zero interaction steps and captures only the network activity that fires during page navigation — useful for pure GET-style SPAs that fetch everything they need on load.
 
-Each step runs through a self-healing cascade (`act` → `observe + act` → `observe + act` with `ignoreSelectors` → Anthropic-SDK rephrase) verified by network-counter delta or URL change. The script's `main()` attempts up to two global flow replans before giving up; terminal failures dump a diagnostic bundle to `/tmp/recon/step-failures/`. See [docs/playbook.md#1c--self-healing-cascade](./docs/playbook.md#1c--self-healing-cascade) for the full design.
+Each step runs through a self-healing cascade (`act` → `observe + act` → `observe + act` with `ignoreSelectors` → Anthropic-SDK rephrase) verified by network-counter delta or URL change. The script's `main()` attempts up to two global flow replans before giving up; terminal failures dump a diagnostic bundle to `<run-dir>/step-failures/`. See [docs/playbook.md#1c--self-healing-cascade](./docs/playbook.md#1c--self-healing-cascade) for the full design.
 
 Total runtime: 20–40 minutes for a typical flow (longer if healing or replans fire), fully unattended.
+
+Every artifact — captures, cookie-jar snapshots, step-failure dumps, DOM dumps — is rooted under one run-scoped directory resolved once at startup: `<run-dir>` defaults to `/tmp/recon/<runId>`, where `<runId>` is a timestamp + random suffix generated per process (e.g. `20260718-120326-a1b2`). Set `RECON_RUN_ID` to pin a deterministic runId (e.g. for tests or replaying a known run) and `RECON_OUT_DIR` to override the base directory runs are rooted under. This keeps concurrent or repeated runs from intermixing files — the startup log line prints both the resolved `runId` and `out=<run-dir>`.
 
 #### Cookie-jar snapshots
 
 Alongside the network captures, every run snapshots the browser's complete cookie jar (via CDP `Network.getAllCookies`, which returns the whole-browser jar regardless of the current page's URL — unlike `document.cookie` or `Page.getCookies`, it also sees HttpOnly cookies) at each phase boundary: the initial goto, immediately before each flow step (`pre-step`), immediately after each flow step completes (`post-step`), and once more at run completion (`run-complete`).
 
-Snapshots land in `/tmp/recon/cookies/<NNN>-<label>-<phase>.json` — one file per boundary, using the same zero-padded chronological index convention as the network captures. `<label>` is the boundary kind (`goto`, `pre-step`, `post-step`, `run-complete`); `<phase>` is the current step's slugified instruction (e.g. `click-the-apply-button`), or `home` before the first step starts.
+Snapshots land in `<run-dir>/cookies/<NNN>-<label>-<phase>.json` — one file per boundary, using the same zero-padded chronological index convention as the network captures. `<label>` is the boundary kind (`goto`, `pre-step`, `post-step`, `run-complete`); `<phase>` is the current step's slugified instruction (e.g. `click-the-apply-button`), or `home` before the first step starts.
 
 Each file is a JSON object:
 
@@ -155,11 +157,11 @@ If the CDP call fails, the file still writes but with an empty `cookies` array a
 **Diffing what a phase established:** to isolate what a specific traversal (e.g. the click.appcast.io redirect) minted, diff its `post-step` snapshot against the `pre-step` snapshot for the *next* step — cookies present in the later file but absent from the earlier one were established during that step:
 
 ```bash
-diff <(jq -S .cookies /tmp/recon/cookies/004-post-step-click-the-apply-button.json) \
-     <(jq -S .cookies /tmp/recon/cookies/005-pre-step-fill-in-your-name.json)
+diff <(jq -S .cookies <run-dir>/cookies/004-post-step-click-the-apply-button.json) \
+     <(jq -S .cookies <run-dir>/cookies/005-pre-step-fill-in-your-name.json)
 ```
 
-**Cookies actually sent per request:** the jar snapshot shows what's *available*, not what's *sent*. Each network capture in `/tmp/recon/graphql/` separately carries the outgoing `Cookie` header in its `requestHeaders` (recovered via CDP's `Network.requestWillBeSentExtraInfo`, since `requestWillBeSent` omits it by design) — cross-reference that capture's `requestHeaders.Cookie` against a jar snapshot to see which of the available cookies a given request, e.g. the application submit, actually sent.
+**Cookies actually sent per request:** the jar snapshot shows what's *available*, not what's *sent*. Each network capture in `<run-dir>/graphql/` separately carries the outgoing `Cookie` header in its `requestHeaders` (recovered via CDP's `Network.requestWillBeSentExtraInfo`, since `requestWillBeSent` omits it by design) — cross-reference that capture's `requestHeaders.Cookie` against a jar snapshot to see which of the available cookies a given request, e.g. the application submit, actually sent.
 
 **Caveat on `Set-Cookie`:** response captures fold `responseReceivedExtraInfo` headers (which is where `Set-Cookie` actually appears — `responseReceived` omits it) into `responseHeaders` as a flat `Record<string, string>`. CDP does not guarantee multiple `Set-Cookie` values on one response stay distinguishable once folded into that shape — if a single response mints more than one cookie, treat the jar snapshot (not the response capture's `Set-Cookie` header) as the source of truth for what actually landed.
 
