@@ -4,7 +4,6 @@
  * network calls or Steel sessions occur.
  */
 
-import * as fs from "node:fs";
 import {
   existsSync,
   mkdirSync,
@@ -4096,7 +4095,7 @@ describe("recon-browser/snapshotAndPersistCookieJar", () => {
 
   afterEach(() => {
     for (const f of readdirSync(COOKIES_DIR).filter((f) => f.includes("jar-persist-test"))) {
-      rmSync(join(COOKIES_DIR, f), { force: true });
+      rmSync(join(COOKIES_DIR, f), { recursive: true, force: true });
     }
     vi.restoreAllMocks();
   });
@@ -4152,9 +4151,13 @@ describe("recon-browser/snapshotAndPersistCookieJar", () => {
   it("logs a warning and does not throw when the write fails", async () => {
     const page = makeCookiePage([]);
     const counter = { n: 0 };
-    const writeSpy = vi.spyOn(fs, "writeFileSync").mockImplementationOnce(() => {
-      throw new Error("ENOSPC: no space left on device");
-    });
+    // Force a real fs failure (EISDIR) instead of mocking node:fs — Vitest
+    // can't spy on node:fs exports under ESM ("Module namespace is not
+    // configurable"). A directory pre-created at the exact computed target
+    // path makes writeFileSync throw for the same reason a real disk error
+    // would: the write target is unusable.
+    const collisionPath = join(COOKIES_DIR, "000-jar-persist-test-fail-post-click.json");
+    mkdirSync(collisionPath, { recursive: true });
 
     await expect(
       snapshotAndPersistCookieJar(page as never, counter, "jar-persist-test-fail", "post-click", 0)
@@ -4163,6 +4166,5 @@ describe("recon-browser/snapshotAndPersistCookieJar", () => {
     expect(loggerStub.warn).toHaveBeenCalledWith(
       expect.stringContaining("cookie-snapshot-write skipped")
     );
-    writeSpy.mockRestore();
   });
 });
