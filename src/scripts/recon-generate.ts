@@ -1220,6 +1220,13 @@ function applyRawOptionIdPayloadSubstitutions(
  * embedded base64 images, etc.) that aren't candidates for state threading. */
 const MAX_STATE_VALUE_LENGTH = 256;
 
+/** Maximum length for `Set-Cookie`-origin values, distinct from
+ * `MAX_STATE_VALUE_LENGTH`. Auth tokens (JWTs) legitimately exceed the
+ * body-blob cap — a 272-char session cookie is normal, not a massive blob —
+ * so cookie origins get their own, more permissive ceiling. Still bounded so
+ * a pathological cookie can't blow up the index. */
+const MAX_COOKIE_STATE_VALUE_LENGTH = 4096;
+
 /** Canonical "uninitialized" sentinel values that some REST APIs return as
  * placeholders before a downstream call populates the real identifier. An ATS
  * whose `/user/create` returns these for CandidateId/ApplicationId/
@@ -1264,7 +1271,9 @@ export function* walkSetCookiePairs(
  * Also indexes response-header/cookie-origin values (e.g. a `Set-Cookie`
  * auth token) the same way, tagged with `headerOrigin` instead of a body
  * `path` — this is what lets a stateful API's token-mint response feed a
- * later call's `Cookie` header via `compileActionSteps`.
+ * later call's `Cookie` header via `compileActionSteps`. Cookie-origin values
+ * are capped by `MAX_COOKIE_STATE_VALUE_LENGTH`, not `MAX_STATE_VALUE_LENGTH`
+ * — session JWTs routinely exceed the body-blob cap.
  *
  * The index is intentionally permissive — it doesn't try to shape-match
  * "what looks like a token" because token shapes are an open set across the
@@ -1304,7 +1313,7 @@ export function indexStateValues(
     if (rawSetCookie !== undefined) {
       for (const { name, value } of walkSetCookiePairs(rawSetCookie)) {
         if (value.length < MIN_STATE_VALUE_LENGTH) continue;
-        if (value.length > MAX_STATE_VALUE_LENGTH) continue;
+        if (value.length > MAX_COOKIE_STATE_VALUE_LENGTH) continue;
         if (PLACEHOLDER_STATE_VALUES.has(value)) continue;
         if (!index.has(value)) {
           index.set(value, {
