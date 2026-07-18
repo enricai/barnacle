@@ -5,16 +5,26 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 /**
- * Regression guard for the cookie-jar snapshot's distribution path. The
- * capture logic (src/scraper/cookie-jar.ts) and its type/dir source
- * (src/scripts/recon-shared.ts) are only reachable by a downstream consumer
- * (nursefly/autoapply) through the SAME route recon-browser itself ships by:
- * `tsc -p tsconfig.build.json` compiling all of `src/**\/*.ts` into `dist/`,
- * with no package.json `exports` subpath or `bin` entry involved — recon
- * tooling is run from a checked-out Barnacle repo via `pnpm run recon:browser`,
- * never imported as an installed package. A source-level assertion can't pin
- * this; only the compiled `dist/` output proves the module survives the real
- * build toolchain and that the emitted script still runs standalone.
+ * Regression guard for the cookie-jar snapshot's distribution path. Two
+ * routes reach a downstream consumer:
+ *
+ * 1. recon-browser itself: `tsc -p tsconfig.build.json` compiles all of
+ *    `src/**\/*.ts` into `dist/`, and `pnpm run recon:browser` runs the
+ *    compiled-equivalent source directly from a checked-out Barnacle repo
+ *    (via tsx) — this proves the module survives the real build toolchain.
+ * 2. An installed-package consumer (nursefly/autoapply) reading the on-disk
+ *    cookie snapshots: it cannot run `pnpm run recon:browser` itself, so it
+ *    needs `CookieRecord`/`CookieJarSnapshot`/`COOKIES_DIR` and
+ *    `captureCookieJarSnapshot` importable via the package's declared
+ *    `exports` map — `@enricai/barnacle/scripts/recon-shared` and
+ *    `@enricai/barnacle/scraper/cookie-jar` — the same pattern
+ *    `@enricai/barnacle/recon/vocabulary` and
+ *    `@enricai/barnacle/recon/form-schema` already establish for consumer-
+ *    facing contracts (see README's vocabulary/form-schema sections).
+ *
+ * A source-level assertion can't pin either route; only the compiled `dist/`
+ * output proves the module survives the real build toolchain and that the
+ * package.json `exports` entries resolve against real emitted files.
  *
  * The throwaway outDir MUST be a relative path inside REPO_ROOT (not an
  * absolute os.tmpdir() path) — tsc-alias silently fails to rewrite `@/`
@@ -90,6 +100,32 @@ describe("recon-browser — cookie-jar snapshot module reaches the built dist tr
       // runtime inside a real dist/ tree with node_modules present.
       const builtReconBrowserSource = readFileSync(builtReconBrowser, "utf8");
       expect(builtReconBrowserSource).toMatch(/require\(["']\.\.\/scraper\/cookie-jar["']\)/);
+
+      // An installed-package consumer (nursefly/autoapply) never runs
+      // recon-browser — it imports the cookie contract via package.json's
+      // `exports` map. Pin that both subpaths are declared and that they
+      // point at files tsc actually emits under this same outDir shape, so
+      // a consumer's `@enricai/barnacle/scripts/recon-shared` /
+      // `@enricai/barnacle/scraper/cookie-jar` import resolves for real.
+      const pkg = JSON.parse(readFileSync(path.join(REPO_ROOT, "package.json"), "utf8"));
+      const reconSharedExport = pkg.exports["./scripts/recon-shared"];
+      const cookieJarExport = pkg.exports["./scraper/cookie-jar"];
+      if (!reconSharedExport || !cookieJarExport) {
+        throw new Error(
+          "package.json exports map is missing ./scripts/recon-shared or ./scraper/cookie-jar"
+        );
+      }
+      const toOutDirPath = (distPath: string) => path.join(outDir, path.relative("dist", distPath));
+      for (const [label, filePath] of [
+        ["exports['./scripts/recon-shared'].types", toOutDirPath(reconSharedExport.types)],
+        ["exports['./scripts/recon-shared'].default", toOutDirPath(reconSharedExport.default)],
+        ["exports['./scraper/cookie-jar'].types", toOutDirPath(cookieJarExport.types)],
+        ["exports['./scraper/cookie-jar'].default", toOutDirPath(cookieJarExport.default)],
+      ] as const) {
+        if (!existsSync(filePath)) {
+          throw new Error(`declared export ${label} does not resolve to a built file: ${filePath}`);
+        }
+      }
     } finally {
       rmSync(outDir, { recursive: true, force: true });
       rmSync(tsconfigPath, { force: true });
