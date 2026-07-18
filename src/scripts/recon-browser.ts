@@ -77,6 +77,7 @@ import {
   executeStepWithHealing,
   extractGaEventEvidence,
   extractSubmitFailureEvidence,
+  formatStepPrefix,
   GOTO_TIMEOUT_MS,
   latestCaptureIndex,
   logBillingErrorIfPresent,
@@ -1923,7 +1924,7 @@ async function main(): Promise<void> {
           .replace(/^-|-$/g, "")
           .slice(0, 24) || `step-${i}`;
       logger.info(
-        `step ${i + 1}/${plan.length} [${currentPhase}]${step.optional ? " (optional)" : ""}: ${step.instruction}`
+        `${formatStepPrefix(i, () => plan.length)} [${currentPhase}]${step.optional ? " (optional)" : ""}: ${step.instruction}`
       );
       await snapshotAndPersistCookieJar(page, jarCounter, "pre-step", currentPhase, i);
       // Re-gate on SPA hydration when the origin changed since the last step —
@@ -1949,12 +1950,18 @@ async function main(): Promise<void> {
           if (typeof html === "string" && html.length > 0) {
             const dumpPath = join(CAPTURES_DIR, `..`, `dom-dump-step-${i + 1}.html`);
             writeFileSync(dumpPath, html);
-            logger.info(`step ${i + 1}: wrote DOM dump (${html.length} bytes) to ${dumpPath}`);
+            logger.info(
+              `${formatStepPrefix(i, () => plan.length)}: wrote DOM dump (${html.length} bytes) to ${dumpPath}`
+            );
           } else {
-            logger.warn(`step ${i + 1}: DOM dump returned empty content; skipping write`);
+            logger.warn(
+              `${formatStepPrefix(i, () => plan.length)}: DOM dump returned empty content; skipping write`
+            );
           }
         } catch (err) {
-          logger.warn(`step ${i + 1}: DOM dump failed: ${toErrorMessage(err)}`);
+          logger.warn(
+            `${formatStepPrefix(i, () => plan.length)}: DOM dump failed: ${toErrorMessage(err)}`
+          );
         }
       }
       // Baseline for wizard-restart detection: capture the highest capture
@@ -1970,6 +1977,7 @@ async function main(): Promise<void> {
           upload: step.upload,
           submitStep: step.submitStep === true,
           stepIndex: i,
+          totalSteps: () => plan.length,
           phase: currentPhase,
           signalCounter,
           recentCaptures,
@@ -2004,7 +2012,7 @@ async function main(): Promise<void> {
         });
         if (restartUrl !== null) {
           throw new StepVerificationError(
-            `step ${i + 1} (${step.instruction.slice(0, 60)}) triggered a wizard restart (${restartUrl.slice(0, 120)}) — the application reset to the first page; aborting`,
+            `${formatStepPrefix(i, () => plan.length)} (${step.instruction.slice(0, 60)}) triggered a wizard restart (${restartUrl.slice(0, 120)}) — the application reset to the first page; aborting`,
             "wizard-regression"
           );
         }
@@ -2021,7 +2029,7 @@ async function main(): Promise<void> {
             );
             consecutiveStaleSkips = 0;
             throw new StepVerificationError(
-              `step ${i + 1} (${step.instruction.slice(0, 60)}) stuck: ${STUCK_SKIP_THRESHOLD}+ consecutive optional skips with stagnant page`,
+              `${formatStepPrefix(i, () => plan.length)} (${step.instruction.slice(0, 60)}) stuck: ${STUCK_SKIP_THRESHOLD}+ consecutive optional skips with stagnant page`,
               "probe-absent"
             );
           }
@@ -2096,7 +2104,7 @@ async function main(): Promise<void> {
           });
           if (trailingGraceVerdict?.verified) {
             logger.info(
-              `step ${i + 1} optional + trailing position; judge verified recent submit (${trailingGraceVerdict.rationale}) — treating verification failure as benign no-op; recon complete`
+              `${formatStepPrefix(i, () => plan.length)} optional + trailing position; judge verified recent submit (${trailingGraceVerdict.rationale}) — treating verification failure as benign no-op; recon complete`
             );
             break;
           }
@@ -2123,7 +2131,7 @@ async function main(): Promise<void> {
               : "";
           const kindsSuffix = kindsSummary ? ` — ${kindsSummary}` : "";
           logger.error(
-            `step ${i + 1} ${err.kind} replan budget exhausted (${usedSoFar}/${budget}); aborting${kindsSuffix}`
+            `${formatStepPrefix(i, () => plan.length)} ${err.kind} replan budget exhausted (${usedSoFar}/${budget}); aborting${kindsSuffix}`
           );
           throw err;
         }
@@ -2133,7 +2141,7 @@ async function main(): Promise<void> {
         const dumpMatch = err.message.match(/see (\/[^\s]+)$/);
         const dumpPath = dumpMatch ? dumpMatch[1]! : "";
         logger.warn(
-          `step ${i + 1} terminally failed (${err.kind}); attempting global replan #${replanIndex} (${isProbe ? "probe" : "cascade"} budget ${usedSoFar + 1}/${budget})`
+          `${formatStepPrefix(i, () => plan.length)} terminally failed (${err.kind}); attempting global replan #${replanIndex} (${isProbe ? "probe" : "cascade"} budget ${usedSoFar + 1}/${budget})`
         );
 
         const rawNewSteps = await replanRemainingFlow({
