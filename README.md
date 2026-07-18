@@ -171,7 +171,7 @@ diff <(jq -S .cookies <run-dir>/cookies/004-post-step-click-the-apply-button.jso
 pnpm run recon:http
 ```
 
-Replays every capture via plain `fetch()` — no browser, no AI — to prove endpoints work standalone. Every replay returning 200 proves the browser is unnecessary for production. Also runs GraphQL introspection, auxiliary fixture detection (static JSON to commit as fixtures), and a rate-limit probe at 1→3→5 rps (run last — if it triggers a ban, all captures are already saved). Results land in `/tmp/recon/replays/`.
+Replays every capture via plain `fetch()` — no browser, no AI — to prove endpoints work standalone. Every replay returning 200 proves the browser is unnecessary for production. Also runs GraphQL introspection, auxiliary fixture detection (static JSON to commit as fixtures), and a rate-limit probe at 1→3→5 rps (run last — if it triggers a ban, all captures are already saved). Results land under the run-scoped root resolved by `resolveReconRunDir()` — `/tmp/recon/<runId>/replays/` by default, rooted elsewhere via `--out-dir <path>` or `RECON_OUT_DIR`.
 
 See [docs/playbook.md](./docs/playbook.md#interpreting-replay-failures) for the full troubleshooting decision matrix when replays fail.
 
