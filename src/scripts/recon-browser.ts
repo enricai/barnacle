@@ -2,7 +2,11 @@
  * Phase 1 recon: drives a real browser through a user-defined flow while
  * wiretapping every network response. Captures are written to
  * /tmp/recon/graphql/<NNN>-<phase>-<operationName>.json — one file per call,
- * diffable and greppable.
+ * diffable and greppable. The browser's full cookie jar is snapshotted at
+ * each phase boundary (initial goto, pre-step, post-step, run completion) and
+ * written to /tmp/recon/cookies/<NNN>-<label>-<phase>.json, so the jar state
+ * can be diffed across the journey (e.g. what a click-tracker traversal
+ * establishes vs. what a later step adds).
  *
  * Recovery model — each flow step runs through a 4-attempt self-healing cascade
  * (act → observe+act → observe+act with ignoreSelectors → Anthropic-SDK rephrase),
