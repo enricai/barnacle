@@ -77,7 +77,7 @@ interface RunContext {
   replaysDir: string;
   cookiesDir: string;
   snapshotAndPersistCookieJar: (
-    page: { sendCDP: (...args: unknown[]) => Promise<{ cookies: unknown[] }> },
+    page: never,
     counter: { n: number },
     label: string,
     phase: string,
