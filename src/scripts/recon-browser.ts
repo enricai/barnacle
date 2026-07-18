@@ -2,7 +2,11 @@
  * Phase 1 recon: drives a real browser through a user-defined flow while
  * wiretapping every network response. Captures are written to
  * /tmp/recon/graphql/<NNN>-<phase>-<operationName>.json — one file per call,
- * diffable and greppable.
+ * diffable and greppable. The browser's full cookie jar is snapshotted at
+ * each phase boundary (initial goto, pre-step, post-step, run completion) and
+ * written to /tmp/recon/cookies/<NNN>-<label>-<phase>.json, so the jar state
+ * can be diffed across the journey (e.g. what a click-tracker traversal
+ * establishes vs. what a later step adds).
  *
  * Recovery model — each flow step runs through a 4-attempt self-healing cascade
  * (act → observe+act → observe+act with ignoreSelectors → Anthropic-SDK rephrase),
@@ -63,6 +67,7 @@ import {
   resolveRunUrlPath,
   resolveSiteTelemetryDir,
 } from "@/lib/telemetry/telemetry-paths";
+import { captureCookieJarSnapshot } from "@/scraper/cookie-jar";
 import { StepVerificationError } from "@/scraper/errors";
 import {
   type AttemptRecord,
@@ -88,7 +93,7 @@ import {
 import { createBrowserSession, type ProviderName } from "@/scraper/session";
 import { guardedObserve } from "@/scraper/stagehand-guard";
 import { filterByCallType, parseSamples } from "@/scripts/judge-llm-batch";
-import { CAPTURES_DIR, STEP_FAILURES_DIR } from "@/scripts/recon-shared";
+import { CAPTURES_DIR, COOKIES_DIR, STEP_FAILURES_DIR } from "@/scripts/recon-shared";
 import { allocateTestmailInbox } from "@/testmail/client";
 import type { Logger } from "@/types/logging";
 
@@ -175,6 +180,33 @@ function wireNetworkCapture(
       }
     },
   });
+}
+
+/**
+ * Reads the browser's full cookie jar for the given phase and writes it under
+ * `COOKIES_DIR`, so a run's snapshots land in the same append-only, diffable
+ * layout as `wireNetworkCapture`'s network captures. `counter` indexes
+ * filenames chronologically (zero-padded, shared convention with
+ * flow-runner's capture counter) so snapshots sort in the order the phases
+ * actually occurred. Never throws — cookie telemetry is best-effort, matching
+ * the existing capture-write behavior: a write failure logs a warning and the
+ * recon run continues.
+ */
+async function snapshotAndPersistCookieJar(
+  page: Page,
+  counter: { n: number },
+  label: string,
+  phase: string,
+  stepIndex: number
+): Promise<void> {
+  const snapshot = await captureCookieJarSnapshot(page, label, phase, stepIndex);
+  const idx = String(counter.n++).padStart(3, "0");
+  const filename = `${idx}-${label}-${phase}.json`;
+  try {
+    writeFileSync(join(COOKIES_DIR, filename), JSON.stringify(snapshot, null, 2));
+  } catch (err) {
+    logger.warn(`cookie-snapshot-write skipped for ${filename}: ${toErrorMessage(err)}`);
+  }
 }
 
 const MAX_PROBE_REPLANS = 5;
@@ -1722,6 +1754,7 @@ async function main(): Promise<void> {
   const flow = substituteFlowEnvVars(rawFlow);
 
   mkdirSync(CAPTURES_DIR, { recursive: true });
+  mkdirSync(COOKIES_DIR, { recursive: true });
   const resumeFixture = loadResumeFixture(resumeFixturePath);
   // Per-URL partition under the flow file's site directory. Without a flow
   // file (inline --flow mode), telemetry has no durable home and is dropped
@@ -1756,6 +1789,10 @@ async function main(): Promise<void> {
   // wireNetworkCapture for the rationale.
   const counter = { n: 0 };
   const signalCounter = { n: 0 };
+  // Indexes cookie-jar snapshot filenames chronologically, separate from
+  // `counter` (network captures) so a phase with zero network activity still
+  // gets a snapshot without skipping capture indices.
+  const jarCounter = { n: 0 };
   const recentCaptures: string[] = [];
   // Parallel tracker of recent non-GET captures' method + status. Used by
   // the Tier 1 trailing-optional-step grace: a verification failure on an
@@ -1816,6 +1853,7 @@ async function main(): Promise<void> {
         `navigation wait (${GOTO_WAIT_UNTIL}) did not settle: ${toErrorMessage(err)} — continuing; the SPA readiness probe below decides whether the page is usable`
       );
     }
+    await snapshotAndPersistCookieJar(page, jarCounter, "goto", currentPhase, -1);
 
     const SPA_READINESS_TIMEOUT_MS = 15_000;
     const SPA_READINESS_POLL_MS = 500;
@@ -1887,6 +1925,7 @@ async function main(): Promise<void> {
       logger.info(
         `step ${i + 1}/${plan.length} [${currentPhase}]${step.optional ? " (optional)" : ""}: ${step.instruction}`
       );
+      await snapshotAndPersistCookieJar(page, jarCounter, "pre-step", currentPhase, i);
       // Re-gate on SPA hydration when the origin changed since the last step —
       // the wizard SPA (e.g. apply.talemetry.com after the Apply click) boots on
       // a new origin the initial-goto readiness gate never covered, so wait for
@@ -1952,6 +1991,7 @@ async function main(): Promise<void> {
           captureFn,
           onStepFailure: dumpStepFailure,
         });
+        await snapshotAndPersistCookieJar(page, jarCounter, "post-step", currentPhase, i);
 
         // Wizard-restart detection: if a configured restart-signal URL (e.g.
         // Talemetry's `init-apply?...&application_canceled=true`) landed during
@@ -2249,6 +2289,14 @@ async function main(): Promise<void> {
       );
     }
 
+    await snapshotAndPersistCookieJar(
+      page,
+      jarCounter,
+      "run-complete",
+      currentPhase,
+      plan.length - 1
+    );
+
     logger.info(`recon complete — ${counter.n} captures written to ${CAPTURES_DIR}`);
   } finally {
     // Replay-the-discovered-path: if any replan fired and the user provided
@@ -2373,4 +2421,5 @@ export {
   persistReplannedFlow,
   readFailureDumpEvidence,
   replanRemainingFlow,
+  snapshotAndPersistCookieJar,
 };

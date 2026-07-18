@@ -106,6 +106,63 @@ Each step runs through a self-healing cascade (`act` → `observe + act` → `ob
 
 Total runtime: 20–40 minutes for a typical flow (longer if healing or replans fire), fully unattended.
 
+#### Cookie-jar snapshots
+
+Alongside the network captures, every run snapshots the browser's complete cookie jar (via CDP `Network.getAllCookies`, which returns the whole-browser jar regardless of the current page's URL — unlike `document.cookie` or `Page.getCookies`, it also sees HttpOnly cookies) at each phase boundary: the initial goto, immediately before each flow step (`pre-step`), immediately after each flow step completes (`post-step`), and once more at run completion (`run-complete`).
+
+Snapshots land in `/tmp/recon/cookies/<NNN>-<label>-<phase>.json` — one file per boundary, using the same zero-padded chronological index convention as the network captures. `<label>` is the boundary kind (`goto`, `pre-step`, `post-step`, `run-complete`); `<phase>` is the current step's slugified instruction (e.g. `click-the-apply-button`), or `home` before the first step starts.
+
+Each file is a JSON object:
+
+```json
+{
+  "label": "post-step",
+  "phase": "click-the-apply-button",
+  "stepIndex": 2,
+  "timestamp": "2026-07-18T12:34:56.789Z",
+  "cookies": [
+    {
+      "name": "_appcast_attr",
+      "value": "abc123",
+      "domain": ".appcast.io",
+      "path": "/",
+      "expires": 1234567890,
+      "size": 20,
+      "httpOnly": true,
+      "secure": true,
+      "session": false,
+      "sameSite": "Lax"
+    }
+  ]
+}
+```
+
+Field reference (mirrors CDP's `Network.Cookie` type verbatim — no remapping between capture and disk):
+
+| Field | Meaning |
+| --- | --- |
+| `name` / `value` | The cookie's name and value. |
+| `domain` | Scope, e.g. `.appcast.io` (all subdomains) vs. `apply.appcast.io` (exact host) — the detail needed to tell a click-domain cookie from an apply-domain cookie. |
+| `path` | Cookie path scope. |
+| `expires` | Raw CDP epoch-seconds number; `-1` means a session cookie (also reflected in `session: true`). Not reformatted — read it as CDP reports it. |
+| `size` | Cookie size in bytes, as reported by CDP. |
+| `httpOnly` / `secure` | Standard cookie flags. |
+| `session` | `true` for a session cookie (no persistent expiry). |
+| `sameSite` | `"Strict" \| "Lax" \| "None" \| null` — `null` when the cookie doesn't set the attribute. |
+
+If the CDP call fails, the file still writes but with an empty `cookies` array and an `error` string field carrying the failure message — cookie telemetry is best-effort and never aborts the run.
+
+**Diffing what a phase established:** to isolate what a specific traversal (e.g. the click.appcast.io redirect) minted, diff its `post-step` snapshot against the `pre-step` snapshot for the *next* step — cookies present in the later file but absent from the earlier one were established during that step:
+
+```bash
+diff <(jq -S .cookies /tmp/recon/cookies/004-post-step-click-the-apply-button.json) \
+     <(jq -S .cookies /tmp/recon/cookies/005-pre-step-fill-in-your-name.json)
+```
+
+**Cookies actually sent per request:** the jar snapshot shows what's *available*, not what's *sent*. Each network capture in `/tmp/recon/graphql/` separately carries the outgoing `Cookie` header in its `requestHeaders` (recovered via CDP's `Network.requestWillBeSentExtraInfo`, since `requestWillBeSent` omits it by design) — cross-reference that capture's `requestHeaders.Cookie` against a jar snapshot to see which of the available cookies a given request, e.g. the application submit, actually sent.
+
+**Caveat on `Set-Cookie`:** response captures fold `responseReceivedExtraInfo` headers (which is where `Set-Cookie` actually appears — `responseReceived` omits it) into `responseHeaders` as a flat `Record<string, string>`. CDP does not guarantee multiple `Set-Cookie` values on one response stay distinguishable once folded into that shape — if a single response mints more than one cookie, treat the jar snapshot (not the response capture's `Set-Cookie` header) as the source of truth for what actually landed.
+
 ### Phase 2–3 — Replay and probe
 
 ```bash

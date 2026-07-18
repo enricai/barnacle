@@ -110,6 +110,12 @@ export function wireSignalCapture(
   // into the capture once, in `onFinished` (the only place a Capture is built).
   // See mergeResponseHeaders.
   const extraResponseHeaders = new Map<string, Record<string, string>>();
+  // Cookie (and other extra-info-only request headers) keyed by requestId.
+  // Mirrors extraResponseHeaders: Network.requestWillBeSent omits the outgoing
+  // Cookie header by design, and requestWillBeSentExtraInfo — which carries it —
+  // can race requestWillBeSent in either order. Buffered here and folded into
+  // the capture once, in `onFinished`. See mergeResponseHeaders.
+  const extraRequestHeaders = new Map<string, Record<string, string>>();
   // One-shot per-run warning state for the GA `ep.isExpired=true` beacon.
   // Defensive instrumentation: across 5,542 captures surveyed 2026-06-15,
   // every observation was `false` — but if a future job ever ships in the
@@ -128,6 +134,10 @@ export function wireSignalCapture(
     response: { status: number; headers: Record<string, string> };
   };
   type ResponseReceivedExtraInfoEvent = {
+    requestId: string;
+    headers: Record<string, string>;
+  };
+  type RequestWillBeSentExtraInfoEvent = {
     requestId: string;
     headers: Record<string, string>;
   };
@@ -163,6 +173,17 @@ export function wireSignalCapture(
     extraResponseHeaders.set(params.requestId, merged);
   };
 
+  const onRequestExtraInfo = (params: RequestWillBeSentExtraInfoEvent): void => {
+    // Accumulate — can race requestWillBeSent in either order, and a redirect
+    // fires this more than once per requestId. The fold into the capture
+    // happens once, in onFinished, so order with requestWillBeSent never matters.
+    const merged = mergeResponseHeaders(
+      extraRequestHeaders.get(params.requestId) ?? {},
+      params.headers
+    );
+    extraRequestHeaders.set(params.requestId, merged);
+  };
+
   const onFinished = async (params: LoadingFinishedEvent): Promise<void> => {
     const req = inFlight.get(params.requestId);
     if (!req) return;
@@ -175,6 +196,13 @@ export function wireSignalCapture(
       extraResponseHeaders.get(params.requestId)
     );
     extraResponseHeaders.delete(params.requestId);
+    // Same fold, request side: recovers the outgoing Cookie header that
+    // requestWillBeSent omits by design.
+    req.requestHeaders = mergeResponseHeaders(
+      req.requestHeaders,
+      extraRequestHeaders.get(params.requestId)
+    );
+    extraRequestHeaders.delete(params.requestId);
 
     const phase = getCurrentPhase();
     let responseBody: unknown = null;
@@ -313,12 +341,14 @@ export function wireSignalCapture(
   };
 
   session.on("Network.requestWillBeSent", onRequest);
+  session.on("Network.requestWillBeSentExtraInfo", onRequestExtraInfo);
   session.on("Network.responseReceived", onResponse);
   session.on("Network.responseReceivedExtraInfo", onResponseExtraInfo);
   session.on("Network.loadingFinished", onFinished);
 
   return (): void => {
     session.off("Network.requestWillBeSent", onRequest);
+    session.off("Network.requestWillBeSentExtraInfo", onRequestExtraInfo);
     session.off("Network.responseReceived", onResponse);
     session.off("Network.responseReceivedExtraInfo", onResponseExtraInfo);
     session.off("Network.loadingFinished", onFinished);
