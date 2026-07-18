@@ -386,6 +386,26 @@ describe("indexStateValues — cookie-origin values get a separate, more permiss
     const stateIndex = indexStateValues([tokenMintCapture, bodyCapture]);
     expect(stateIndex.has(longBodyString)).toBe(false);
   });
+
+  it("still applies MIN_STATE_VALUE_LENGTH to cookie-origin values — the raised ceiling doesn't drop the floor", () => {
+    const shortCookieCapture = {
+      ...tokenMintCapture,
+      responseHeaders: { "set-cookie": "sid=abc; Path=/; HttpOnly" },
+    };
+    const stateIndex = indexStateValues([shortCookieCapture, statefulCallCapture]);
+    expect(stateIndex.has("abc")).toBe(false);
+  });
+
+  it("still skips PLACEHOLDER_STATE_VALUES for cookie-origin values — the raised ceiling doesn't bypass the placeholder gate", () => {
+    const placeholderCookieCapture = {
+      ...tokenMintCapture,
+      responseHeaders: {
+        "set-cookie": "sid=00000000-0000-0000-0000-000000000000; Path=/; HttpOnly",
+      },
+    };
+    const stateIndex = indexStateValues([placeholderCookieCapture, statefulCallCapture]);
+    expect(stateIndex.has("00000000-0000-0000-0000-000000000000")).toBe(false);
+  });
 });
 
 describe("compileActionSteps — Set-Cookie state binding (disneycruise-style token mint)", () => {
