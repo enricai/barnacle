@@ -377,6 +377,44 @@ async function probeRateLimit(
   return finding;
 }
 
+/**
+ * Builds the rate-limit probe's target set from replay results. Applies
+ * `isNoiseUrl` directly rather than trusting that `replays` was pre-filtered
+ * upstream — the probe fires 60 requests per target, so a noise host reaching
+ * this function must never silently slip through on a caller's say-so.
+ */
+export function selectRateLimitTargets(
+  replays: ReplayResult[]
+): { targets: Map<string, { method: string; body: string | null }>; skipped: number } {
+  const targets = new Map<string, { method: string; body: string | null }>();
+  let skipped = 0;
+  for (const replay of replays) {
+    if (!replay.success) continue;
+    if (isNoiseUrl(replay.url)) {
+      skipped++;
+      continue;
+    }
+    try {
+      const u = new URL(replay.url);
+      if (u.protocol !== "http:" && u.protocol !== "https:") continue;
+      const pathname = u.pathname.toLowerCase();
+      // Skip static fixture endpoints — probing them 60+ times could ban the CDN egress IP
+      if (
+        pathname.endsWith(".json") ||
+        /\/(markets|currencies|labels|dictionaries|config|locales|i18n)/.test(pathname)
+      )
+        continue;
+      const key = `${u.origin}${u.pathname}`;
+      if (!targets.has(key)) {
+        targets.set(key, { method: replay.method, body: replay.requestBody });
+      }
+    } catch {
+      // skip unparseable urls
+    }
+  }
+  return { targets, skipped };
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   for (let i = 0; i < args.length; i++) {
@@ -443,27 +481,11 @@ async function main(): Promise<void> {
 
   // Rate-limit probe — runs last
   logger.info("=== PHASE 3C: RATE-LIMIT PROBE (runs last — may trigger ban) ===");
-  const probeTargets = new Map<string, { method: string; body: string | null }>();
-  for (const replay of replays) {
-    if (!replay.success) continue;
-    try {
-      const u = new URL(replay.url);
-      if (u.protocol !== "http:" && u.protocol !== "https:") continue;
-      const pathname = u.pathname.toLowerCase();
-      // Skip static fixture endpoints — probing them 60+ times could ban the CDN egress IP
-      if (
-        pathname.endsWith(".json") ||
-        /\/(markets|currencies|labels|dictionaries|config|locales|i18n)/.test(pathname)
-      )
-        continue;
-      const key = `${u.origin}${u.pathname}`;
-      if (!probeTargets.has(key)) {
-        probeTargets.set(key, { method: replay.method, body: replay.requestBody });
-      }
-    } catch {
-      // skip unparseable urls
-    }
-  }
+  const { targets: probeTargets, skipped: skippedAsNoise } = selectRateLimitTargets(replays);
+  logger.info(
+    `rate-limit targets: ${probeTargets.size}` +
+      (skippedAsNoise > 0 ? ` (${skippedAsNoise} skipped as noise)` : "")
+  );
 
   const rateLimitFindings: RateLimitFinding[] = [];
   for (const [endpoint, { method, body }] of probeTargets) {
