@@ -11,6 +11,7 @@ export const CAPTURES_DIR = "/tmp/recon/graphql";
 export const REPLAYS_DIR = "/tmp/recon/replays";
 export const AUX_DIR = "/tmp/recon/aux";
 export const STEP_FAILURES_DIR = "/tmp/recon/step-failures";
+export const COOKIES_DIR = "/tmp/recon/cookies";
 
 export interface Capture {
   timestamp: string;
@@ -26,6 +27,37 @@ export interface Capture {
   query: string | null;
   variables: unknown;
   decodedParams: unknown;
+}
+
+/**
+ * A single cookie as reported by CDP's Network.getAllCookies. Field names and
+ * types mirror the CDP Network.Cookie type verbatim so no lossy remap step is
+ * needed between capture and disk. `expires` stays the raw CDP number
+ * (-1 for session cookies) — readers format it, not this layer.
+ */
+export interface CookieRecord {
+  name: string;
+  value: string;
+  domain: string;
+  path: string;
+  expires: number;
+  size: number;
+  httpOnly: boolean;
+  secure: boolean;
+  session: boolean;
+  sameSite: "Strict" | "Lax" | "None" | null;
+}
+
+/**
+ * The full cookie jar at one phase of a recon journey (e.g. post-click vs.
+ * post-apply), so a run can show what each phase specifically established.
+ */
+export interface CookieJarSnapshot {
+  label: string;
+  phase: string;
+  stepIndex: number;
+  timestamp: string;
+  cookies: CookieRecord[];
 }
 
 export interface ReplayResult {
