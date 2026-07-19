@@ -65,7 +65,14 @@ export interface HttpResponseBinding {
    * whose raw value is bound as-is.
    */
   cookieName?: string;
-  /** Outbound request header to populate on subsequent calls, e.g. `"Cookie"`. */
+  /**
+   * Outbound request header to populate on subsequent calls, e.g. `"Cookie"`.
+   * Multiple bindings with a `cookieName` may share the same `targetHeader`
+   * (the `Cookie` header carries many cookies) — each is tracked separately
+   * and materialized joined by `"; "`. Bindings without `cookieName` bind a
+   * raw header value as-is and keep overwrite semantics: a second such
+   * binding sharing a `targetHeader` replaces the first.
+   */
   targetHeader: string;
 }
 
@@ -210,6 +217,12 @@ export function createHttpClient<TResponse>(
   // targetHeader. Lives for the lifetime of this client instance so a later
   // call can pick up what an earlier call captured — see HttpResponseBinding.
   const boundHeaders: Record<string, string> = {};
+  // Per-cookie values for targetHeaders that carry multiple cookies (e.g.
+  // "Cookie"), keyed by `${targetHeader} ${cookieName}` so several
+  // bindings sharing one targetHeader accumulate instead of overwriting —
+  // see HttpResponseBinding.targetHeader. Materialized into boundHeaders
+  // (joined by "; ") whenever an entry changes.
+  const boundCookiesByTarget = new Map<string, Map<string, string>>();
 
   return async (url: string, init: HttpRequestInit = {}): Promise<TResponse> => {
     return bottleneck.schedule(() =>
@@ -247,9 +260,18 @@ export function createHttpClient<TResponse>(
             // clearing it — and if nothing has ever been bound, the target
             // header stays absent from `boundHeaders` entirely, so later
             // requests never send it as an empty string.
-            if (value !== undefined) {
+            if (value === undefined) continue;
+            if (binding.cookieName === undefined) {
               boundHeaders[binding.targetHeader] = value;
+              continue;
             }
+            const cookies =
+              boundCookiesByTarget.get(binding.targetHeader) ?? new Map<string, string>();
+            cookies.set(binding.cookieName, value);
+            boundCookiesByTarget.set(binding.targetHeader, cookies);
+            boundHeaders[binding.targetHeader] = [...cookies.entries()]
+              .map(([name, cookieValue]) => `${name}=${cookieValue}`)
+              .join("; ");
           }
 
           if (response.status === 401 || response.status === 403) {
