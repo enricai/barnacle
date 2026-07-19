@@ -218,9 +218,9 @@ export function createHttpClient<TResponse>(
   // call can pick up what an earlier call captured — see HttpResponseBinding.
   const boundHeaders: Record<string, string> = {};
   // Per-cookie values for targetHeaders that carry multiple cookies (e.g.
-  // "Cookie"), keyed by `${targetHeader} ${cookieName}` so several
-  // bindings sharing one targetHeader accumulate instead of overwriting —
-  // see HttpResponseBinding.targetHeader. Materialized into boundHeaders
+  // "Cookie"), keyed by targetHeader then cookieName so several bindings
+  // sharing one targetHeader accumulate instead of overwriting — see
+  // HttpResponseBinding.targetHeader. Materialized into boundHeaders
   // (joined by "; ") whenever an entry changes.
   const boundCookiesByTarget = new Map<string, Map<string, string>>();
 
