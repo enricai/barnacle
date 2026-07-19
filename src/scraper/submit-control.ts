@@ -114,7 +114,7 @@ export function buildRankSubmitCandidatesExpr(): string {
         accessibleName: name,
       });
     }
-    ranked.sort((a, b) => b.tier - a.tier);
+    ranked.sort((a, b) => b.tier - a.tier || a.deepIndex - b.deepIndex);
     return ranked;
   })()`;
 }

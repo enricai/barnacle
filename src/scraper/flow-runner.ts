@@ -5664,21 +5664,45 @@ export async function executeStepWithHealing(params: {
         // reach and click the top-ranked one; the ranking already excludes
         // Back/Cancel/Save-draft-shaped controls, so a false-positive submit
         // click cannot fire.
+        //
+        // Rank and click are two separate page.evaluate round trips over a
+        // live Angular page, so any re-render between them shifts every
+        // deepIndex — the click then lands on nothing (`{clicked: false}`),
+        // not because the page is broken but because the snapshot the index
+        // was computed from is already gone. That's a transient, self-clearing
+        // condition, so re-rank against the CURRENT DOM and click once more
+        // before giving up. Capped at one retry (two rank+click rounds total)
+        // so a page re-rendering on every tick can't turn this into a loop.
         record.technique = "deep-submit-locator";
-        const ranked = (await page
-          .evaluate(buildRankSubmitCandidatesExpr())
-          .catch(() => [] as SubmitCandidate[])) as SubmitCandidate[];
-        if (ranked.length === 0) {
-          record.errorMessage = "deep-submit-locator: no submit-shaped candidate found";
-        } else {
+        for (let deepAttempt = 1; deepAttempt <= 2; deepAttempt++) {
+          let ranked: SubmitCandidate[];
+          try {
+            ranked = (await page.evaluate(buildRankSubmitCandidatesExpr())) as SubmitCandidate[];
+          } catch (err) {
+            // A thrown evaluate (page navigated away / frame detached) is not
+            // a stale-index race — re-ranking a detached page will throw
+            // again, so don't retry; record it and let the cascade move on.
+            record.errorMessage = `deep-submit-locator: rank evaluate threw ${toErrorMessage(err)}`;
+            break;
+          }
+          if (ranked.length === 0) {
+            record.errorMessage = "deep-submit-locator: no submit-shaped candidate found";
+            break;
+          }
           // biome-ignore lint/style/noNonNullAssertion: guarded by the length check above
           const top = ranked[0]!;
           record.instruction = `deep-submit-locator: ${top.tag} "${top.accessibleName}" (tier ${top.tier})`;
           record.triedSelectors = [`deep-index:${top.deepIndex}`];
           triedSelectors.push(`deep-index:${top.deepIndex}`);
-          const clickResult = (await page
-            .evaluate(buildClickByDeepIndexExpr(top.deepIndex))
-            .catch(() => ({ clicked: false }))) as { clicked: boolean };
+          let clickResult: { clicked: boolean };
+          try {
+            clickResult = (await page.evaluate(buildClickByDeepIndexExpr(top.deepIndex))) as {
+              clicked: boolean;
+            };
+          } catch (err) {
+            record.errorMessage = `deep-submit-locator: click evaluate threw ${toErrorMessage(err)}`;
+            break;
+          }
           record.actResultSuccess = clickResult.clicked;
           record.actResultDescription = clickResult.clicked
             ? `deep-submit-locator clicked ${top.tag} "${top.accessibleName}"`
@@ -5691,8 +5715,65 @@ export async function executeStepWithHealing(params: {
               description: record.actResultDescription,
               method: "click",
             };
-          } else {
-            record.errorMessage = record.actResultDescription;
+
+            // Runner-up retry: the top pick can itself phantom-click (a
+            // second web-component / shadow-root control that LOOKS
+            // submit-shaped but doesn't wire a real handler — see
+            // submit-control.ts's module docblock). Re-snapshot right here
+            // and re-classify with the same classifyPhantomClick primitive
+            // that escalated attempt 1, so a phantom top pick doesn't fall
+            // through to attempt 3's structured-click, which can't reach a
+            // shadow-root control either. Cap at ranked[1] only (not the
+            // full list) so a page with many submit-shaped candidates can't
+            // burn the step budget probing all of them.
+            const runnerUp = ranked[1];
+            if (runnerUp) {
+              const midPost = await snapshotPage(page, signalCounter);
+              const topVerdict = classifyPhantomClick({
+                actResultSuccess: true,
+                pre,
+                post: midPost,
+              });
+              if (topVerdict === "phantom") {
+                logger.info(
+                  `${formatStepPrefix(stepIndex, totalSteps)} deep-submit-locator top pick (${top.tag} "${top.accessibleName}") phantom-clicked; retrying runner-up ${runnerUp.tag} "${runnerUp.accessibleName}" (tier ${runnerUp.tier})`
+                );
+                record.instruction = `deep-submit-locator: ${runnerUp.tag} "${runnerUp.accessibleName}" (tier ${runnerUp.tier}), runner-up after top pick ${top.tag} "${top.accessibleName}" phantomed`;
+                record.triedSelectors = [
+                  `deep-index:${top.deepIndex}`,
+                  `deep-index:${runnerUp.deepIndex}`,
+                ];
+                triedSelectors.push(`deep-index:${runnerUp.deepIndex}`);
+                const runnerUpClickResult = (await page
+                  .evaluate(buildClickByDeepIndexExpr(runnerUp.deepIndex))
+                  .catch(() => ({ clicked: false }))) as { clicked: boolean };
+                record.actResultSuccess = runnerUpClickResult.clicked;
+                record.actResultDescription = runnerUpClickResult.clicked
+                  ? `deep-submit-locator clicked runner-up ${runnerUp.tag} "${runnerUp.accessibleName}" after top pick phantomed`
+                  : "deep-submit-locator: runner-up candidate vanished before click (deepIndex stale)";
+                resolvedAction = runnerUpClickResult.clicked
+                  ? {
+                      selector: `deep-index:${runnerUp.deepIndex}`,
+                      description: record.actResultDescription,
+                      method: "click",
+                    }
+                  : null;
+                if (!runnerUpClickResult.clicked) {
+                  record.errorMessage = record.actResultDescription;
+                }
+              }
+            }
+            // The top pick (or its runner-up) was reached and clicked. A
+            // runner-up that itself vanished is not the stale-index race the
+            // re-rank exists for — the rank was fresh enough to click the top
+            // pick — so exit either way and let the cascade classify.
+            break;
+          }
+          record.errorMessage = record.actResultDescription;
+          if (deepAttempt === 1) {
+            logger.info(
+              `${formatStepPrefix(stepIndex, totalSteps)} deep-submit-locator: deepIndex stale on first click, re-ranking once`
+            );
           }
         }
       } else if (attempt === 2 || attempt === 4) {

@@ -194,6 +194,93 @@ describe("submit-control/buildRankSubmitCandidatesExpr", () => {
     expect(result).toHaveLength(2);
     expect(result[0]?.deepIndex).toBeLessThan(result[1]?.deepIndex as number);
   });
+
+  it("orders three same-tier candidates in strict ascending deepIndex order", () => {
+    const first = makeEl("button", { type: "submit" }, "Submit");
+    const second = makeEl("input", { type: "submit" }, "");
+    const third = makeEl("button", { type: "submit" }, "Submit");
+    const document = makeRoot([first, second, third]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(3);
+    expect(result.every((c) => c.tier === 3)).toBe(true);
+    expect(result.map((c) => c.deepIndex)).toEqual(
+      [...result.map((c) => c.deepIndex)].sort((a, b) => a - b)
+    );
+  });
+
+  it("orders mixed-tier candidates strictly by (tier desc, deepIndex asc), independent of sort stability", () => {
+    // Deliberately interleaves tiers out of order so a comparator that only
+    // compares `tier` (relying on Array.prototype.sort's stability to keep
+    // intra-tier document order) cannot pass this by accident: entries are
+    // pre-shuffled relative to their eventual rank.
+    const tier1First = makeEl("div", { role: "button" }, "Submit Application");
+    const tier3First = makeEl("button", { type: "submit" }, "Submit");
+    const tier2First = makeEl("button", {}, "Submit");
+    const tier1Second = makeEl("div", { role: "button" }, "Please Submit Now");
+    const tier3Second = makeEl("input", { type: "submit" }, "");
+    const document = makeRoot([tier1First, tier3First, tier2First, tier1Second, tier3Second]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(5);
+    expect(result.map((c) => c.tier)).toEqual([3, 3, 2, 1, 1]);
+    result.forEach((candidate, i) => {
+      const next = result[i + 1];
+      if (!next) return;
+      const strictlyOrdered =
+        candidate.tier > next.tier ||
+        (candidate.tier === next.tier && candidate.deepIndex < next.deepIndex);
+      expect(strictlyOrdered).toBe(true);
+    });
+  });
+
+  it('ranks an <input type="submit"> as tier 3, same as a type="submit" button', () => {
+    const input = makeEl("input", { type: "submit" }, "");
+    const document = makeRoot([input]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.tier).toBe(3);
+    expect(result[0]?.tag).toBe("input");
+  });
+
+  it("excludes a non-button-like element (no button/input tag, no role) carrying submit-shaped text", () => {
+    const div = makeEl("div", {}, "Submit Application");
+    const document = makeRoot([div]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toEqual([]);
+  });
+
+  it("prefers aria-label over conflicting textContent for the accessible name", () => {
+    const control = makeEl("button", { role: "button", "aria-label": "Submit" }, "Cancel");
+    const document = makeRoot([control]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.tier).toBe(2);
+    expect(result[0]?.accessibleName).toBe("submit");
+  });
 });
 
 describe("submit-control/buildClickByDeepIndexExpr", () => {
@@ -219,7 +306,13 @@ describe("submit-control/buildClickByDeepIndexExpr", () => {
     expect(shadowSubmit.clicked).toBe(true);
   });
 
-  it("supports retrying the runner-up candidate after the top pick fails to act", () => {
+  // Module-contract test, not a caller-behavior test: buildClickByDeepIndexExpr
+  // can click ANY ranked candidate by its deepIndex, including one that isn't
+  // the top pick. flow-runner.ts's deep-submit-locator branch exercises this
+  // via its runner-up retry when the top pick phantom-clicks (see
+  // flow-runner.test.ts's phantom-click-escalation suite) — this test pins
+  // the underlying module primitive directly, independent of that caller.
+  it("can click a lower-ranked candidate by deepIndex, independent of tier order (module contract)", () => {
     const topPick = makeEl("button", { type: "submit" }, "Submit");
     const runnerUp = makeEl("div", { role: "button" }, "Submit Application");
     const document = makeRoot([topPick, runnerUp]);
