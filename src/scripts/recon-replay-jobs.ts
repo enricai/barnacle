@@ -25,7 +25,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { getScriptLogger } from "@/lib/logging";
 import { detectRejectionInResponseBody } from "@/scripts/recon-browser";
-import { CAPTURES_DIR } from "@/scripts/recon-shared";
+import { resolveReconRunDir } from "@/scripts/recon-shared";
 import { allocateTestmailInbox, pollTestmailInbox } from "@/testmail/client";
 
 const logger = getScriptLogger("recon-replay-jobs");
@@ -64,11 +64,11 @@ interface JobVerdict {
   durationMs: number;
 }
 
-function parseArgs(): { jobsPath: string; flowFile: string; reportPath: string } {
+function parseArgs(runDirRoot: string): { jobsPath: string; flowFile: string; reportPath: string } {
   const args = process.argv.slice(2);
   let jobsPath: string | null = null;
   let flowFile: string | null = null;
-  let reportPath = join(CAPTURES_DIR, "..", "replay-report.json");
+  let reportPath = join(runDirRoot, "replay-report.json");
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--jobs" && args[i + 1]) jobsPath = resolve(args[++i]!);
     else if (args[i] === "--flow-file" && args[i + 1]) flowFile = resolve(args[++i]!);
@@ -84,18 +84,23 @@ function parseArgs(): { jobsPath: string; flowFile: string; reportPath: string }
 }
 
 /**
- * Spawns recon-browser as a child process with RECON_EMAIL pre-bound in
- * the child's env. The flow-file's `${RECON_EMAIL}` token resolves to
- * this address via the engine's existing substituteFlowEnvVars step.
+ * Spawns recon-browser as a child process with RECON_EMAIL and RECON_RUN_ID
+ * pre-bound in the child's env. The flow-file's `${RECON_EMAIL}` token
+ * resolves to this address via the engine's existing substituteFlowEnvVars
+ * step. Pinning RECON_RUN_ID forces the child's own resolveReconRunDir()
+ * call to reuse the parent's run root instead of minting its own — without
+ * this, the parent and child disagree on where captures land and the
+ * before/after capture diff always sees an empty directory.
  */
-async function runReconForJob(
+export async function runReconForJob(
   url: string,
   flowFile: string,
-  email: string
+  email: string,
+  runId: string,
+  graphqlDir: string
 ): Promise<{ exitCode: number | null; capturesBefore: Set<string>; billingError: boolean }> {
-  const capturesDir = CAPTURES_DIR;
-  mkdirSync(capturesDir, { recursive: true });
-  const capturesBefore = new Set(readdirSync(capturesDir));
+  mkdirSync(graphqlDir, { recursive: true });
+  const capturesBefore = new Set(readdirSync(graphqlDir));
 
   // Flow-file ENOENT retry. If the flow file is transiently unreadable
   // (git stash mid-sweep, file system race), wait briefly and retry up
@@ -141,7 +146,7 @@ async function runReconForJob(
       ],
       {
         stdio: ["inherit", "pipe", "pipe"],
-        env: { ...process.env, RECON_EMAIL: email },
+        env: { ...process.env, RECON_EMAIL: email, RECON_RUN_ID: runId },
       }
     );
     const scan = (chunk: Buffer | string, sink: NodeJS.WriteStream): void => {
@@ -167,14 +172,16 @@ async function runReconForJob(
  * this job's run, returning whether the AppCast integrated_apply
  * endpoint captured a 200 and the SPA's terminal URL.
  */
-function readJobOutcome(capturesBefore: Set<string>): {
+export function readJobOutcome(
+  capturesBefore: Set<string>,
+  graphqlDir: string
+): {
   integratedApply200: boolean;
   serverRejected: boolean;
   serverRejectionReason: string | null;
   terminalUrl: string | null;
 } {
-  const capturesDir = CAPTURES_DIR;
-  const after = readdirSync(capturesDir);
+  const after = readdirSync(graphqlDir);
   const newCaptures = after.filter((f) => !capturesBefore.has(f));
 
   let integratedApply200 = false;
@@ -183,7 +190,7 @@ function readJobOutcome(capturesBefore: Set<string>): {
   let terminalUrl: string | null = null;
   for (const f of newCaptures) {
     try {
-      const data = JSON.parse(readFileSync(resolve(capturesDir, f), "utf8")) as {
+      const data = JSON.parse(readFileSync(resolve(graphqlDir, f), "utf8")) as {
         status?: number;
         url?: string;
         responseBody?: unknown;
@@ -224,9 +231,12 @@ function readJobOutcome(capturesBefore: Set<string>): {
 }
 
 async function main(): Promise<void> {
-  const { jobsPath, flowFile, reportPath } = parseArgs();
+  const runDir = resolveReconRunDir();
+  const { jobsPath, flowFile, reportPath } = parseArgs(runDir.root);
   const jobs: ReplayJob[] = JSON.parse(readFileSync(jobsPath, "utf8"));
-  logger.info(`replay: ${jobs.length} jobs from ${jobsPath}, flow=${flowFile}`);
+  logger.info(
+    `replay: ${jobs.length} jobs from ${jobsPath}, flow=${flowFile}, runId=${runDir.runId}`
+  );
 
   const verdicts: JobVerdict[] = [];
   for (let i = 0; i < jobs.length; i++) {
@@ -238,10 +248,12 @@ async function main(): Promise<void> {
     const { exitCode, capturesBefore, billingError } = await runReconForJob(
       job.resolvedUrl,
       flowFile,
-      inbox.address
+      inbox.address,
+      runDir.runId,
+      runDir.graphqlDir
     );
     const { integratedApply200, serverRejected, serverRejectionReason, terminalUrl } =
-      readJobOutcome(capturesBefore);
+      readJobOutcome(capturesBefore, runDir.graphqlDir);
 
     let emailReceived = false;
     let emailSubject: string | null = null;
@@ -266,7 +278,7 @@ async function main(): Promise<void> {
       terminalUrl,
       emailReceived,
       emailSubject,
-      capturesDir: CAPTURES_DIR,
+      capturesDir: runDir.graphqlDir,
       durationMs: Date.now() - start,
     };
     verdicts.push(verdict);
@@ -301,7 +313,13 @@ async function main(): Promise<void> {
   logger.info(`report: ${reportPath}`);
 }
 
-main().catch((err) => {
-  logger.error(`replay failed: ${(err as Error).stack ?? String(err)}`);
-  process.exit(1);
-});
+if (
+  process.argv[1] !== undefined &&
+  (process.argv[1].endsWith("recon-replay-jobs.ts") ||
+    process.argv[1].endsWith("recon-replay-jobs.js"))
+) {
+  main().catch((err) => {
+    logger.error(`replay failed: ${(err as Error).stack ?? String(err)}`);
+    process.exit(1);
+  });
+}
