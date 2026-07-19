@@ -1,7 +1,12 @@
-import type { Page } from "@browserbasehq/stagehand";
+import type { ActResult, Page, Stagehand } from "@browserbasehq/stagehand";
 import { describe, expect, it, vi } from "vitest";
 
-import { formatStepPrefix, waitForSpaReady, wireSignalCapture } from "@/scraper/flow-runner";
+import {
+  executeStepWithHealing,
+  formatStepPrefix,
+  waitForSpaReady,
+  wireSignalCapture,
+} from "@/scraper/flow-runner";
 import type { Capture } from "@/scripts/recon-shared";
 import type { Logger } from "@/types/logging";
 
@@ -260,5 +265,173 @@ describe("flow-runner/wireSignalCapture — Cookie from requestWillBeSentExtraIn
   it("preserves requestWillBeSent headers when no extraInfo fires", async () => {
     const cap = await captureWith([requestWillBeSent]);
     expect(cap.requestHeaders.cookie).toBeUndefined();
+  });
+});
+
+describe("flow-runner/executeStepWithHealing — phantom-click escalation", () => {
+  const STEP = "Click the Submit button to submit the application form";
+
+  /** Minimal ActResult envelope satisfying stagehand-guard's ACT_RESULT_SCHEMA. */
+  function actResult(overrides: Partial<ActResult> = {}): ActResult {
+    return {
+      success: true,
+      message: "clicked",
+      actionDescription: "Click the Submit button",
+      actions: [
+        {
+          selector: "button#submit",
+          description: "Click the Submit button",
+          method: "click",
+        },
+      ],
+      ...overrides,
+    };
+  }
+
+  /**
+   * Fake page whose `evaluate` dispatches on the expression's shape rather
+   * than an exact string match — flow-runner composes several distinct
+   * page.evaluate expressions inline (DOM snapshot, ng-invalid count, submit
+   * ranking, click-by-deep-index) and this harness has no seam to inject a
+   * mock per callsite. `bodyHtmlLength` drives the DOM_SNAPSHOT_EXPR reply so
+   * a test can control the pre/post delta the phantom classifier sees.
+   */
+  function fakePage(params: {
+    url: string;
+    bodyHtmlLength: number;
+    deepIndexClicked?: number;
+    /** Fires when the deep-locator's click-by-index expression hits the ranked candidate. */
+    onDeepClick?: () => void;
+  }): {
+    page: Page;
+    evaluate: ReturnType<typeof vi.fn>;
+  } {
+    const { deepIndexClicked, onDeepClick } = params;
+    const url = params.url;
+    const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const src = String(expr);
+      if (src.includes("ranked.sort")) {
+        return [{ deepIndex: 7, tier: 3, tag: "button", accessibleName: "submit" }];
+      }
+      if (src.includes('dispatchEvent(new Event("click"')) {
+        const requestedIndex = Number(src.match(/all\[(\d+)\]/)?.[1]);
+        const clicked = requestedIndex === (deepIndexClicked ?? 7);
+        if (clicked) onDeepClick?.();
+        return { clicked };
+      }
+      if (src.includes("outerHTML")) {
+        return { html: params.bodyHtmlLength, text: `0:` };
+      }
+      if (src.includes("isInvalid(el)")) {
+        return 0;
+      }
+      return null;
+    });
+    const page = {
+      evaluate,
+      url: () => url,
+      title: vi.fn().mockResolvedValue("Registered Nurse"),
+      locator: vi.fn().mockReturnValue({
+        first: () => ({
+          isChecked: vi.fn().mockResolvedValue(false),
+          inputValue: vi.fn().mockResolvedValue(""),
+        }),
+      }),
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
+    } as unknown as Page;
+    return { page, evaluate };
+  }
+
+  function baseParams(page: Page, stagehandAct: ReturnType<typeof vi.fn>) {
+    const stagehand = {
+      act: stagehandAct,
+      observe: vi
+        .fn()
+        .mockResolvedValue([
+          { selector: "button#submit", description: "Click the Submit button", method: "click" },
+        ]),
+    } as unknown as Stagehand;
+    return {
+      stagehand,
+      page,
+      step: STEP,
+      optional: false,
+      upload: false,
+      submitStep: false,
+      stepIndex: 76,
+      phase: "apply",
+      signalCounter: { n: 0 },
+      recentCaptures: [],
+      recentCaptureMeta: [],
+      anthropic: null,
+      logger: testLogger,
+      captureFn: vi.fn().mockResolvedValue(undefined),
+      resumeFixture: null,
+      isFinalStep: false,
+      submitEndpointPattern: null,
+      submittedStateSelectors: [],
+      requireSubmitEndpointMatch: false,
+      advanceTransitionBodyPattern: null,
+      successUrlFragments: [],
+      successPageTitleHints: [],
+      ownBackendHostnames: [],
+      knownErrorClassPrefixes: [],
+      wizardExitButtonLabels: [],
+    };
+  }
+
+  it("escalates to the deep submit-control locator when attempt 1 phantom-clicks (success reported, zero observable effect)", async () => {
+    const signalCounter = { n: 0 };
+    // Attempt 1 (act-string): Stagehand reports success but the click landed
+    // on nothing — pre/post snapshot is byte-identical, matching the bug
+    // report's attempt-1 shape. Attempt 2 (deep-submit-locator) clicks the
+    // ranked candidate; its network effect (simulated via onDeepClick bumping
+    // the shared counter) verifies the step.
+    const { page, evaluate } = fakePage({
+      url: "https://apply.appcast.io/jobs/1/applyboard/apply",
+      bodyHtmlLength: 184186,
+      onDeepClick: () => {
+        signalCounter.n += 1;
+      },
+    });
+    const stagehandAct = vi.fn().mockResolvedValue(actResult());
+    const params = { ...baseParams(page, stagehandAct), signalCounter };
+
+    const result = await executeStepWithHealing(params);
+
+    expect(result).toBe("completed");
+    // Stagehand's act (attempt 1) was invoked exactly once — attempts 2-4
+    // (observe-act / structured-click / observe-act-exclude) never ran; the
+    // cascade escalated straight to the deep locator instead of repeating
+    // light-DOM techniques that would all no-op identically.
+    expect(stagehandAct).toHaveBeenCalledTimes(1);
+    const rankCalls = evaluate.mock.calls.filter(([expr]) => String(expr).includes("ranked.sort"));
+    expect(rankCalls.length).toBe(1);
+  });
+
+  it("succeeds on attempt 1 via the existing path when the click is verified, with no deep-locator call", async () => {
+    const { page, evaluate } = fakePage({
+      url: "https://apply.appcast.io/jobs/1/applyboard/apply",
+      bodyHtmlLength: 184186,
+    });
+    const signalCounter = { n: 0 };
+    const stagehandAct = vi.fn().mockImplementation(async () => {
+      // A real click's network request lands between the pre/post snapshot —
+      // simulate it by bumping the shared counter the moment `act` resolves.
+      signalCounter.n += 1;
+      return actResult();
+    });
+    const params = { ...baseParams(page, stagehandAct), signalCounter };
+
+    const result = await executeStepWithHealing(params);
+
+    expect(result).toBe("completed");
+    expect(stagehandAct).toHaveBeenCalledTimes(1);
+    const rankCalls = evaluate.mock.calls.filter(([expr]) => String(expr).includes("ranked.sort"));
+    expect(rankCalls.length).toBe(0);
+    const clickByIndexCalls = evaluate.mock.calls.filter(([expr]) =>
+      String(expr).includes('dispatchEvent(new Event("click"')
+    );
+    expect(clickByIndexCalls.length).toBe(0);
   });
 });
