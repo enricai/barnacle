@@ -1,6 +1,6 @@
 {
   "name": "@enricai/barnacle",
-  "version": "1.6.3",
+  "version": "1.6.4",
   "description": "Site-agnostic browser automation engine. POST a structured payload to a typed endpoint; Barnacle drives a Steel + Stagehand session through the target site and returns a structured result.",
   "license": "MIT",
   "author": "Enricai",
