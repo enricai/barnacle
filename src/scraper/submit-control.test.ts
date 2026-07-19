@@ -194,6 +194,53 @@ describe("submit-control/buildRankSubmitCandidatesExpr", () => {
     expect(result).toHaveLength(2);
     expect(result[0]?.deepIndex).toBeLessThan(result[1]?.deepIndex as number);
   });
+
+  it("orders three same-tier candidates in strict ascending deepIndex order", () => {
+    const first = makeEl("button", { type: "submit" }, "Submit");
+    const second = makeEl("input", { type: "submit" }, "");
+    const third = makeEl("button", { type: "submit" }, "Submit");
+    const document = makeRoot([first, second, third]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(3);
+    expect(result.every((c) => c.tier === 3)).toBe(true);
+    expect(result.map((c) => c.deepIndex)).toEqual(
+      [...result.map((c) => c.deepIndex)].sort((a, b) => a - b)
+    );
+  });
+
+  it("orders mixed-tier candidates strictly by (tier desc, deepIndex asc), independent of sort stability", () => {
+    // Deliberately interleaves tiers out of order so a comparator that only
+    // compares `tier` (relying on Array.prototype.sort's stability to keep
+    // intra-tier document order) cannot pass this by accident: entries are
+    // pre-shuffled relative to their eventual rank.
+    const tier1First = makeEl("div", { role: "button" }, "Submit Application");
+    const tier3First = makeEl("button", { type: "submit" }, "Submit");
+    const tier2First = makeEl("button", {}, "Submit");
+    const tier1Second = makeEl("div", { role: "button" }, "Please Submit Now");
+    const tier3Second = makeEl("input", { type: "submit" }, "");
+    const document = makeRoot([tier1First, tier3First, tier2First, tier1Second, tier3Second]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(5);
+    expect(result.map((c) => c.tier)).toEqual([3, 3, 2, 1, 1]);
+    result.forEach((candidate, i) => {
+      const next = result[i + 1];
+      if (!next) return;
+      const strictlyOrdered =
+        candidate.tier > next.tier ||
+        (candidate.tier === next.tier && candidate.deepIndex < next.deepIndex);
+      expect(strictlyOrdered).toBe(true);
+    });
+  });
 });
 
 describe("submit-control/buildClickByDeepIndexExpr", () => {
