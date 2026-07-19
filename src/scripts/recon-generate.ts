@@ -2073,6 +2073,7 @@ export function emitMultiStepExecuteHttp(
     method: string;
     headersExpr: string;
     bodyArg: string;
+    schemaExpr: string;
   }
 
   // Walk the first action's request body to map each leaf string value to its
@@ -2212,8 +2213,15 @@ export function emitMultiStepExecuteHttp(
           .join(", ")} },`
       : "";
     const bodyArg = bodyTemplate ? `body: \`${bodyTemplate}\`,` : "";
+    // G2: each call gets its own schema, inferred from this step's captured
+    // response — the client-level schema (z.unknown() for multi-step flows,
+    // see emitContractTs) stays the plugin's caller-facing contract, not what
+    // validates any individual call. Without this override, HttpRequestInit.schema
+    // would default to the client's z.unknown() and narrowing the caller-facing
+    // contract would enforce that narrowed shape on every call in the chain.
+    const schemaExpr = inferZodSchema(cap.responseBody);
 
-    rendered.push({ url, method: cap.method, headersExpr, bodyArg });
+    rendered.push({ url, method: cap.method, headersExpr, bodyArg, schemaExpr });
   }
 
   // Identifier scan against the rendered text — captures `${foo}`, `${foo.bar}`,
@@ -2354,6 +2362,7 @@ export function emitMultiStepExecuteHttp(
       if (joined !== "") {
         lines.push(`      ${joined}`);
       }
+      lines.push(`      schema: ${r.schemaExpr},`);
       if (needsBinding) {
         lines.push(`    })) as Record<string, unknown>;`);
       } else {
@@ -2499,16 +2508,25 @@ export function emitContractTs(opts: {
     headerBindings = [],
   } = opts;
 
-  // Multi-step plugins thread responses through many different shapes that a
-  // single Zod schema can't cover — use z.unknown() so each per-step access
-  // compiles cleanly. Single-endpoint plugins keep the inferred schema.
+  // This is the CLIENT-level schema — createHttpClient's default, and the
+  // plugin's caller-facing contract (what executeHttp's return value promises
+  // its own caller). It does NOT validate any individual call in a multi-step
+  // flow: emitMultiStepExecuteHttp threads a per-call `schema:` override
+  // (inferred from that step's own capture) onto every httpClient(...)
+  // invocation, so heterogeneous per-call shapes are each checked against
+  // their own inferred schema regardless of what this client-level schema is.
   //
-  // This is deliberate, not an unfinished schema: a submission flow's terminal
-  // shape is the plugin's OWN contract with its caller (e.g. { verified: boolean }),
-  // a field that appears in zero captured responses. Inferring a schema from the
-  // captures would emit the wrong shape with false confidence. z.unknown() plus
-  // the generated `[ ] Narrow ResponseSchema` checklist item is the intended
-  // hand-off to the plugin author, who alone knows that contract.
+  // For multi-step flows this stays z.unknown(), not an unfinished schema: a
+  // submission flow's terminal shape is the plugin's OWN contract with its
+  // caller (e.g. { verified: boolean }), a field that appears in zero
+  // captured responses. Inferring a schema from the captures would emit the
+  // wrong shape with false confidence. z.unknown() plus the generated
+  // `[ ] Narrow ResponseSchema` checklist item is the intended hand-off to
+  // the plugin author, who alone knows that contract — narrowing it only
+  // changes what executeHttp promises its caller, and is now safe to do
+  // without affecting per-call validation. Single-endpoint plugins keep the
+  // inferred schema, since there both roles (client default and sole call)
+  // coincide.
   const responseSchemaExpr = multiStepBody ? `z.unknown()` : inferZodSchema(responseBody);
   // Multi-step flows that include a multipart upload need the binary asset
   // on the payload. Add Resume/ResumeContentType/ResumeFilename as required
