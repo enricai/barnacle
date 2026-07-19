@@ -364,6 +364,18 @@ export function selectReturnAction<T extends { capture: Capture }>(steps: readon
   return requeried[requeried.length - 1] ?? last;
 }
 
+/**
+ * Picks the response body that should drive multi-step shape inference —
+ * reuses `selectReturnAction` so the inferred shape and the value
+ * `executeHttp` actually returns can never describe different calls.
+ */
+export function selectEffectiveResponseBody<T extends { capture: Capture }>(
+  steps: readonly T[],
+  fallback: unknown
+): unknown {
+  return selectReturnAction(steps)?.capture.responseBody ?? fallback;
+}
+
 function deriveBaseUrl(captures: Capture[]): string {
   for (const c of captures) {
     try {
@@ -3634,11 +3646,11 @@ async function main(): Promise<void> {
 
   const hasMultipartStep = actionSteps.some((s) => s.isMultipart);
   const headerBindings = collectHeaderBindings(actionSteps);
-  // For submission flows the final action's response body is the most useful
-  // shape inference target (it's the terminal success signal). Fall back to
-  // the replay body for single-endpoint sites.
+  // Shape inference targets the SAME call executeHttp returns — see
+  // selectEffectiveResponseBody — so the two surfaces can't describe different calls.
+  // Fall back to the replay body for single-endpoint sites.
   const effectiveResponseBody = isSubmissionFlow
-    ? (actionSteps[actionSteps.length - 1]!.capture.responseBody ?? responseBody)
+    ? selectEffectiveResponseBody(actionSteps, responseBody)
     : responseBody;
 
   logger.info(
