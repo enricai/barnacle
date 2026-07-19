@@ -363,7 +363,9 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
       step: STEP,
       optional: false,
       upload: false,
-      submitStep: false,
+      // Every test in this describe block exercises the deep-submit-locator
+      // escalation, which now only fires on submit-shaped steps.
+      submitStep: true,
       stepIndex: 76,
       phase: "apply",
       signalCounter: { n: 0 },
