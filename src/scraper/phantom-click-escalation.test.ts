@@ -89,7 +89,9 @@ describe("scraper/flow-runner shouldSkipTechnique phantom-click escalation", () 
     });
     const nonSubmitShaped = shouldSkipTechnique({
       technique: "llm-rephrase",
-      priorAttempts: [{ technique: "act-string", triedSelectors: ["#radio-no"], errorMessage: null }],
+      priorAttempts: [
+        { technique: "act-string", triedSelectors: ["#radio-no"], errorMessage: null },
+      ],
       phantomClickAfterAttempt1: true,
       submitShapedStep: false,
     });
