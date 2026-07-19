@@ -39,7 +39,13 @@ import {
 } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
 import { StepVerificationError } from "@/scraper/errors";
+import { classifyPhantomClick, type PhantomClickVerdict } from "@/scraper/phantom-click";
 import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
+import {
+  buildClickByDeepIndexExpr,
+  buildRankSubmitCandidatesExpr,
+  type SubmitCandidate,
+} from "@/scraper/submit-control";
 import { type Capture, resolveReconRunDir } from "@/scripts/recon-shared";
 import type { Logger } from "@/types/logging";
 
@@ -524,6 +530,7 @@ export interface AttemptRecord {
     | "observe-act"
     | "structured-click"
     | "observe-act-exclude"
+    | "deep-submit-locator"
     | "llm-rephrase";
   instruction: string | null;
   triedSelectors: string[];
@@ -552,6 +559,15 @@ export interface AttemptRecord {
    * - `null`: failure path.
    */
   verifiedBy: "network" | "url" | "dom" | "submitted-state-dom" | null;
+  /**
+   * {@link classifyPhantomClick}'s verdict for this attempt, computed from
+   * the same pre/post snapshot pair `describeAttemptEffectSignals` already
+   * renders — `null` until the no-observable-effect branch runs (verified
+   * attempts never reach it). `"phantom"` (Stagehand claimed success but
+   * nothing observably happened) is what escalates the next attempt to
+   * `deep-submit-locator` instead of repeating a light-DOM technique.
+   */
+  phantomClickVerdict: PhantomClickVerdict | null;
 }
 
 /**
@@ -1073,6 +1089,7 @@ export function shouldSkipTechnique(params: {
     | "observe-act"
     | "structured-click"
     | "observe-act-exclude"
+    | "deep-submit-locator"
     | "llm-rephrase";
   priorAttempts: readonly {
     technique: string;
@@ -1085,8 +1102,19 @@ export function shouldSkipTechnique(params: {
    * effect at all. Optional so existing callers are unchanged.
    */
   advanceUnmovedAfterAttempt1?: boolean;
+  /**
+   * True when attempt 1 reported success but the pre/post snapshot shows zero
+   * observable effect (see {@link classifyPhantomClick}) — a phantom click.
+   * Re-observing/re-clicking the light DOM will no-op identically (the target
+   * is almost certainly unreachable via `document.querySelectorAll`, e.g.
+   * inside a shadow root), so skip straight to the deep submit-control locator
+   * instead of burning attempts 2-4 repeating the same no-op. Optional so
+   * existing callers are unchanged.
+   */
+  phantomClickAfterAttempt1?: boolean;
 }): { skip: boolean; reason: string } {
-  const { technique, priorAttempts, advanceUnmovedAfterAttempt1 } = params;
+  const { technique, priorAttempts, advanceUnmovedAfterAttempt1, phantomClickAfterAttempt1 } =
+    params;
   // Unmoved-advance short-circuit (measured: attempts 2-4 recovered a stuck
   // advance 0 times in 289 steps). When attempt-1's act-string clicked the Next
   // and the wizard did NOT move forward (non-advancing POST, or no effect),
@@ -1108,6 +1136,28 @@ export function shouldSkipTechnique(params: {
       skip: true,
       reason:
         "advance step did not move the wizard on attempt 1; re-observe/re-click cannot advance it — skipping to rephrase/replan",
+    };
+  }
+  // Phantom-click short-circuit: attempt 1 clicked something Stagehand
+  // believes exists, but pre/post shows zero network, zero URL change, and
+  // no real DOM growth — the click almost certainly landed on nothing (the
+  // recon-submit-phantom-click bug report's light-DOM resolver can't see
+  // into a shadow root / web component). Repeating observe-act /
+  // structured-click / observe-act-exclude re-resolves the SAME
+  // light-DOM-only view of the page and would no-op identically, so skip
+  // straight to deep-submit-locator (attempt 2) instead. llm-rephrase
+  // (attempt 5) is never skipped — a differently-worded instruction is still
+  // a distinct attempt worth trying if the deep locator also fails.
+  if (
+    phantomClickAfterAttempt1 === true &&
+    (technique === "observe-act" ||
+      technique === "structured-click" ||
+      technique === "observe-act-exclude")
+  ) {
+    return {
+      skip: true,
+      reason:
+        "attempt 1 was a phantom click (reported success, zero observable effect); re-observe/re-click cannot reach a target the light-DOM resolver can't see — escalating to the deep submit-control locator",
     };
   }
   if (technique === "structured-click") {
@@ -5143,6 +5193,17 @@ export async function executeStepWithHealing(params: {
    */
   wizardExitButtonLabels: string[];
   /**
+   * Live accessor for the running count of suppressed Stagehand AISDK
+   * elementId-regex errors this session (see
+   * `BrowserSession.getSuppressedAisdkElementIdErrorCount`). Corroborating
+   * evidence only when a phantom click is detected — logged alongside the
+   * escalation, never a trigger by itself (a nonzero count alone is too weak
+   * a signal across a whole run). Omitted or absent on providers that don't
+   * expose it (e.g. Steel); the phantom-click detection is unaffected either
+   * way since it is keyed on the pre/post snapshot delta.
+   */
+  getSuppressedAisdkElementIdErrorCount?: () => number;
+  /**
    * Optional accumulator the cascade pushes onto when this step verifies.
    * Lets the main loop maintain a short cross-step trajectory of `verifiedBy`
    * signals (network / url / dom / submitted-state-dom) which is then
@@ -5200,6 +5261,7 @@ export async function executeStepWithHealing(params: {
     ownBackendHostnames,
     knownErrorClassPrefixes,
     wizardExitButtonLabels,
+    getSuppressedAisdkElementIdErrorCount,
     trajectory,
     onStepFailure,
   } = params;
@@ -5472,6 +5534,7 @@ export async function executeStepWithHealing(params: {
         resolvedMethod: null,
         resolvedArguments: null,
         verifiedBy: null,
+        phantomClickVerdict: null,
       });
     }
     // Brief settle window after auto-picks so Angular's change-detection
@@ -5488,6 +5551,11 @@ export async function executeStepWithHealing(params: {
   // NOT move the wizard forward. Read at the top of attempts 2-4 to skip the
   // proven-dead re-observe/re-click techniques (see shouldSkipTechnique).
   let advanceUnmovedAfterAttempt1 = false;
+  // Set after attempt 1: Stagehand reported success but pre/post shows zero
+  // observable effect (see classifyPhantomClick). Reroutes attempt 2 to
+  // deep-submit-locator instead of observe-act, since re-resolving via the
+  // same light-DOM view cannot reach a target the resolver can't see.
+  let phantomClickAfterAttempt1 = false;
   for (let attempt = 1; attempt <= MAX_STEP_ATTEMPTS; attempt++) {
     // Telemetry-driven technique-skip: when a cascade technique's
     // preconditions cannot be met by the prior attempts' state, running
@@ -5497,7 +5565,9 @@ export async function executeStepWithHealing(params: {
     if (attempt > 1) {
       const wouldBeTechnique: AttemptRecord["technique"] =
         attempt === 2
-          ? "observe-act"
+          ? phantomClickAfterAttempt1
+            ? "deep-submit-locator"
+            : "observe-act"
           : attempt === 3
             ? "structured-click"
             : attempt === 4
@@ -5511,6 +5581,7 @@ export async function executeStepWithHealing(params: {
           errorMessage: a.errorMessage,
         })),
         advanceUnmovedAfterAttempt1,
+        phantomClickAfterAttempt1,
       });
       if (decision.skip) {
         logger.info(
@@ -5547,6 +5618,7 @@ export async function executeStepWithHealing(params: {
       resolvedMethod: null,
       resolvedArguments: null,
       verifiedBy: null,
+      phantomClickVerdict: null,
     };
 
     // First resolved action from Stagehand's `act` result — used to decide
@@ -5580,6 +5652,47 @@ export async function executeStepWithHealing(params: {
           for (const action of result.actions ?? []) {
             if (action.selector) triedSelectors.push(action.selector);
             if (!resolvedAction) resolvedAction = action;
+          }
+        }
+      } else if (attempt === 2 && phantomClickAfterAttempt1) {
+        // Deep submit-control locator: attempt 1 phantom-clicked (Stagehand
+        // reported success but pre/post showed zero effect), so the target is
+        // almost certainly unreachable via document.querySelectorAll — most
+        // likely rendered inside an open shadow root by a web-component /
+        // framework-native submit control (see recon-submit-phantom-click bug
+        // report). Rank every submit-shaped candidate the deep traversal can
+        // reach and click the top-ranked one; the ranking already excludes
+        // Back/Cancel/Save-draft-shaped controls, so a false-positive submit
+        // click cannot fire.
+        record.technique = "deep-submit-locator";
+        const ranked = (await page
+          .evaluate(buildRankSubmitCandidatesExpr())
+          .catch(() => [] as SubmitCandidate[])) as SubmitCandidate[];
+        if (ranked.length === 0) {
+          record.errorMessage = "deep-submit-locator: no submit-shaped candidate found";
+        } else {
+          // biome-ignore lint/style/noNonNullAssertion: guarded by the length check above
+          const top = ranked[0]!;
+          record.instruction = `deep-submit-locator: ${top.tag} "${top.accessibleName}" (tier ${top.tier})`;
+          record.triedSelectors = [`deep-index:${top.deepIndex}`];
+          triedSelectors.push(`deep-index:${top.deepIndex}`);
+          const clickResult = (await page
+            .evaluate(buildClickByDeepIndexExpr(top.deepIndex))
+            .catch(() => ({ clicked: false }))) as { clicked: boolean };
+          record.actResultSuccess = clickResult.clicked;
+          record.actResultDescription = clickResult.clicked
+            ? `deep-submit-locator clicked ${top.tag} "${top.accessibleName}"`
+            : "deep-submit-locator: candidate vanished before click (deepIndex stale)";
+          if (clickResult.clicked) {
+            // Synthesize a click action so downstream verification (network /
+            // url / dom) treats this exactly like any other resolved click.
+            resolvedAction = {
+              selector: `deep-index:${top.deepIndex}`,
+              description: record.actResultDescription,
+              method: "click",
+            };
+          } else {
+            record.errorMessage = record.actResultDescription;
           }
         }
       } else if (attempt === 2 || attempt === 4) {
@@ -6453,6 +6566,16 @@ export async function executeStepWithHealing(params: {
     }
 
     const effectSignals = describeAttemptEffectSignals(pre, post, recentCaptureMeta, preMetaLength);
+    // Phantom-click verdict, computed from the SAME pre/post pair
+    // describeAttemptEffectSignals just rendered — not recomputed deltas.
+    // Recorded on every unverified attempt (not just attempt 1) so the
+    // failure dump's attempts[] always carries the classification; only
+    // attempt 1's verdict drives the escalation flag below.
+    record.phantomClickVerdict = classifyPhantomClick({
+      actResultSuccess: record.actResultSuccess,
+      pre,
+      post,
+    });
     const reason = record.errorMessage
       ? effectSignals
         ? `${record.errorMessage}; ${effectSignals}`
@@ -6510,6 +6633,19 @@ export async function executeStepWithHealing(params: {
         isAdvanceStep(step) &&
         !urlChanged &&
         !networkIsRealAdvance;
+      // Attempt 1 phantom-clicked: Stagehand reported success but pre/post
+      // shows zero observable effect. The zero-effect delta is the primary
+      // signal (classifyPhantomClick above); the live AISDK elementId
+      // suppression counter is corroborating evidence only — logged, never
+      // gating, since a nonzero count alone is too weak a signal on a run
+      // that sees dozens of suppressions across hundreds of unrelated steps.
+      phantomClickAfterAttempt1 = record.phantomClickVerdict === "phantom";
+      if (phantomClickAfterAttempt1) {
+        const suppressedCount = getSuppressedAisdkElementIdErrorCount?.();
+        logger.warn(
+          `${formatStepPrefix(stepIndex, totalSteps)} phantom click detected on attempt 1 (${record.technique}): reported success with no network/url/dom change${suppressedCount !== undefined ? `; ${suppressedCount} AISDK elementId errors suppressed this session (corroborating, not causal)` : ""} — escalating attempt 2 to deep-submit-locator`
+        );
+      }
       const postAttemptInvalidCount = await countNgInvalidContainers(page);
       const earlyExit = isSubmitRevealedInvalid({
         // Treat the canonical submit click as "final" for this predicate
