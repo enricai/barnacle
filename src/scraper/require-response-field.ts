@@ -28,7 +28,7 @@ export function requireResponseField<T>(
 /**
  * Returns `resp.items[0][key]` cast to `T`. Throws {@link HttpSchemaError}
  * when `items` is absent or empty, or when the field itself is nullish.
- * Covers the Oracle HCM `?finder=...` pattern where results always arrive as
+ * Covers the `?finder=...` pattern used by some ATS APIs where results arrive as
  * `{ items: [...] }` and the first element carries the required field.
  */
 export function requireFirstItemField<T>(

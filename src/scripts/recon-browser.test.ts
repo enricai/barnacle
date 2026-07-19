@@ -1123,10 +1123,10 @@ describe("recon-browser/findWizardRestartSignal", () => {
   });
 
   it("returns the matching URL when a restart-signal pattern appears in the step window", () => {
-    writeCapture("000-apply-1-a.json", "https://apply.talemetry.com/application/abc/gq");
+    writeCapture("000-apply-1-a.json", "https://apply.wizard.example/application/abc/gq");
     writeCapture(
       "001-apply-2-b.json",
-      "https://apply.talemetry.com/init-apply/x/job/id/1?application_canceled=true"
+      "https://apply.wizard.example/init-apply/x/job/id/1?application_canceled=true"
     );
     const hit = findWizardRestartSignal({
       preIdx: 0,
@@ -1139,9 +1139,9 @@ describe("recon-browser/findWizardRestartSignal", () => {
   it("ignores matches that landed BEFORE the step (preIdx window)", () => {
     writeCapture(
       "000-apply-1-a.json",
-      "https://apply.talemetry.com/init-apply/x?application_canceled=true"
+      "https://apply.wizard.example/init-apply/x?application_canceled=true"
     );
-    writeCapture("001-apply-2-b.json", "https://apply.talemetry.com/application/abc/gq");
+    writeCapture("001-apply-2-b.json", "https://apply.wizard.example/application/abc/gq");
     // preIdx=0 → only index 1 is in-window → the canceled URL (index 0) is excluded.
     const hit = findWizardRestartSignal({
       preIdx: 0,
@@ -1306,7 +1306,7 @@ describe("recon-browser/extractGaEventEvidence", () => {
 
   it("returns empty when captures do not target google-analytics.com/g/collect", () => {
     writeCapture("capture-1.json", {
-      url: "https://apply.appcast.io/api/jobs/123/integrated_apply",
+      url: "https://apply.acme.example/api/jobs/123/integrated_apply",
       status: 200,
       method: "POST",
     });
@@ -1315,13 +1315,13 @@ describe("recon-browser/extractGaEventEvidence", () => {
 
   it("parses view_secondPage with numeric and string event params", () => {
     writeCapture("capture-1.json", {
-      url: "https://www.google-analytics.com/g/collect?v=2&tid=G-X&en=view_secondPage&dl=https%3A%2F%2Fapply.appcast.io%2Fjobs%2F999%2Fapplyboard%2Fapply%3Fcs%3Dsy3&dt=RN%20Hiring&epn.validationErrorsCount=10&epn.integratedRequiredQuestionsCount=24&ep.isFirstVisit=true",
+      url: "https://www.google-analytics.com/g/collect?v=2&tid=G-X&en=view_secondPage&dl=https%3A%2F%2Fapply.acme.example%2Fjobs%2F999%2Fapply-portal%2Fapply%3Fcs%3Dsy3&dt=RN%20Hiring&epn.validationErrorsCount=10&epn.integratedRequiredQuestionsCount=24&ep.isFirstVisit=true",
       status: 204,
       method: "POST",
     });
     const out = extractGaEventEvidence(["capture-1.json"], tmpDir);
     expect(out).toContain("view_secondPage");
-    expect(out).toContain("/jobs/999/applyboard/apply");
+    expect(out).toContain("/jobs/999/apply-portal/apply");
     expect(out).toContain("validationErrorsCount=10");
     expect(out).toContain("integratedRequiredQuestionsCount=24");
     expect(out).toContain("isFirstVisit=true");
@@ -1329,13 +1329,13 @@ describe("recon-browser/extractGaEventEvidence", () => {
 
   it("surfaces view_thankYouPage (success signal)", () => {
     writeCapture("capture-1.json", {
-      url: "https://www.google-analytics.com/g/collect?v=2&en=view_thankYouPage&dl=https%3A%2F%2Fapply.appcast.io%2Fjobs%2F999%2Fapplyboard%2Fapplied",
+      url: "https://www.google-analytics.com/g/collect?v=2&en=view_thankYouPage&dl=https%3A%2F%2Fapply.acme.example%2Fjobs%2F999%2Fapply-portal%2Fapplied",
       status: 204,
       method: "POST",
     });
     const out = extractGaEventEvidence(["capture-1.json"], tmpDir);
     expect(out).toContain("view_thankYouPage");
-    expect(out).toContain("/jobs/999/applyboard/applied");
+    expect(out).toContain("/jobs/999/apply-portal/applied");
   });
 
   it("numbers multiple GA events in capture order", () => {
@@ -2816,7 +2816,7 @@ describe("recon-browser/selectBodyExcerpt", () => {
   });
 
   it("returns a window centered on the form marker when it lives beyond the default cap", () => {
-    // Body where ng-invalid is past 8KB — mimics the AppCast applyboard
+    // Body where ng-invalid is past 8KB — mimics the upstream ATS apply-portal
     // SPA, whose form starts ~15KB after a header of Angular hydration JS.
     const chrome = "x".repeat(15_000);
     const formRegion = `class="ng-invalid"${"y".repeat(1000)}First Name required${"z".repeat(1000)}`;
@@ -2952,7 +2952,7 @@ describe("recon-browser/verifyFillReadback (shape contract)", () => {
 });
 
 describe("recon-browser/extractSubmitFailureEvidence — J' singular-error key", () => {
-  // Behavioral test of the J' parser fix: AppCast returns
+  // Behavioral test of the J' parser fix: the upstream ATS returns
   // {"error": "Resume is blank"} in /integrated_apply 422 responses.
   // Before J', the parser only handled {errors: [...]} (plural) and
   // {message: "..."}, leaving the singular `error` string unsurfaced
@@ -2979,7 +2979,7 @@ describe("recon-browser/detectRejectionInResponseBody (Q1)", () => {
     expect(detectRejectionInResponseBody(42)).toEqual({ rejected: false, reason: null });
   });
 
-  it("detects AppCast `not_qualified: true` with error reason", () => {
+  it("detects the upstream ATS `not_qualified: true` with error reason", () => {
     expect(
       detectRejectionInResponseBody({
         not_qualified: true,
@@ -2988,14 +2988,14 @@ describe("recon-browser/detectRejectionInResponseBody (Q1)", () => {
     ).toEqual({ rejected: true, reason: "Not qualified reason: email" });
   });
 
-  it("detects AppCast `not_qualified: true` without error field (falls back to default reason)", () => {
+  it("detects the upstream ATS `not_qualified: true` without error field (falls back to default reason)", () => {
     expect(detectRejectionInResponseBody({ not_qualified: true })).toEqual({
       rejected: true,
       reason: "not_qualified",
     });
   });
 
-  it("does NOT flag AppCast `not_qualified: false` as rejection (real success)", () => {
+  it("does NOT flag the upstream ATS `not_qualified: false` as rejection (real success)", () => {
     expect(
       detectRejectionInResponseBody({
         not_qualified: false,
@@ -3068,9 +3068,9 @@ describe("recon-browser/Q1B — capture-shape integration (responseBody can be o
     return detectRejectionInResponseBody(body);
   }
 
-  it("detects rejection when capture.responseBody is an OBJECT (the AppCast real-world case)", () => {
+  it("detects rejection when capture.responseBody is an OBJECT (the upstream ATS real-world case)", () => {
     const capture = {
-      url: "https://apply.appcast.io/api/jobs/53722549083/integrated_apply",
+      url: "https://apply.acme.example/api/jobs/53722549083/integrated_apply",
       status: 200,
       responseBody: {
         not_qualified: true,
@@ -3112,7 +3112,7 @@ describe("recon-browser/Q1B — capture-shape integration (responseBody can be o
 
   it("returns rejected=false when capture.responseBody is an OBJECT representing acceptance", () => {
     const capture = {
-      url: "https://apply.appcast.io/api/jobs/56388099463/integrated_apply",
+      url: "https://apply.acme.example/api/jobs/56388099463/integrated_apply",
       status: 200,
       responseBody: {
         not_qualified: false,
@@ -3255,7 +3255,7 @@ describe("recon-browser/parseSelectStep", () => {
   });
 
   it("parses the multi-select CHECKBOX question steps (tryCheckboxPrimitive entry contract)", () => {
-    // These Talemetry questions render as c-MultiCheckboxInput groups, not
+    // These Wizard-ATS questions render as c-MultiCheckboxInput groups, not
     // <select>; tryCheckboxPrimitive reuses parseSelectStep to extract the
     // option + question label, so these must parse to {option, questionLabel}.
     expect(
@@ -3581,7 +3581,7 @@ describe("recon-browser/writeFixtureToTempFile", () => {
 });
 
 describe("recon-browser/isAdvanceStep", () => {
-  it("is true for the HCA flow's real 'Next' advance steps", () => {
+  it("is true for a wizard ATS flow's real 'Next' advance steps", () => {
     expect(
       isAdvanceStep(
         "Click the 'Next' button to leave the Basic Information page. Click ONLY the primary 'Next' button — do NOT click 'Back', 'Cancel', or 'Continue Later'."
@@ -4122,7 +4122,7 @@ describe("recon-browser/snapshotAndPersistCookieJar", () => {
   it("writes three ordered, labelled snapshot files across three phases with parseable bodies", async () => {
     const persist = await loadCookieJarFn("20260718-000000-aaaa");
     const page = makeCookiePage([
-      { name: "a", value: "1", domain: ".appcast.io", path: "/", httpOnly: true },
+      { name: "a", value: "1", domain: ".acme.example", path: "/", httpOnly: true },
     ]);
     const counter = { n: 0 };
 
@@ -4324,7 +4324,7 @@ describe("recon-browser/runHealingFlow — phantom-submit escalation, end-to-end
     // delta) — the same shape as the bug report's diagnostic bundle. Prior
     // to the escalation fix this run would exhaust the 5-attempt cascade on
     // step 3 and never reach a completed submit.
-    const BASE_URL = "https://apply.appcast.io/jobs/1/applyboard/apply";
+    const BASE_URL = "https://apply.acme.example/jobs/1/apply-portal/apply";
     let stepsCompleted = 0;
     const page = fakePage({
       getUrl: () => `${BASE_URL}?step=${stepsCompleted}`,
@@ -4380,7 +4380,7 @@ describe("recon-browser/runHealingFlow — phantom-submit escalation, end-to-end
     // (structured-click / observe-act-exclude — proven dead once the phantom
     // flag is set), leaving only attempt 5 (llm-rephrase, a no-op here since
     // `anthropic: null` short-circuits it before any LLM call).
-    const BASE_URL = "https://apply.appcast.io/jobs/1/applyboard/apply";
+    const BASE_URL = "https://apply.acme.example/jobs/1/apply-portal/apply";
     let stepsCompleted = 0;
     const page = fakePage({
       getUrl: () => `${BASE_URL}?step=${stepsCompleted}`,

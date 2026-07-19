@@ -56,14 +56,14 @@ describe("fireTrackingClick", () => {
   });
 
   it("creates a Browserbase session with advancedStealth and navigates to the tracking URL", async () => {
-    fireTrackingClick("https://click.appcast.io/t/abc?vivclid=123", "appcast");
+    fireTrackingClick("https://click.acme.example/t/abc?vivclid=123", "ats-c");
     await drainTrackingClicks();
 
     expect(mockCreateSession).toHaveBeenCalledWith({
       advancedStealth: true,
       browserbaseSessionCreateParams: { timeout: 300 },
     });
-    expect(mockPage.goto).toHaveBeenCalledWith("https://click.appcast.io/t/abc?vivclid=123", {
+    expect(mockPage.goto).toHaveBeenCalledWith("https://click.acme.example/t/abc?vivclid=123", {
       waitUntil: "domcontentloaded",
       timeoutMs: 30_000,
     });
@@ -72,34 +72,34 @@ describe("fireTrackingClick", () => {
   });
 
   it("records attempt and success metrics on success", async () => {
-    fireTrackingClick("https://click.appcast.io/t/abc", "appcast");
+    fireTrackingClick("https://click.acme.example/t/abc", "ats-c");
     await drainTrackingClicks();
 
-    expect(recordTrackingClickAttempt).toHaveBeenCalledWith("appcast");
-    expect(recordTrackingClickSuccess).toHaveBeenCalledWith("appcast");
+    expect(recordTrackingClickAttempt).toHaveBeenCalledWith("ats-c");
+    expect(recordTrackingClickSuccess).toHaveBeenCalledWith("ats-c");
     expect(recordTrackingClickFailure).not.toHaveBeenCalled();
   });
 
   it("closes the session even when navigation throws", async () => {
     mockPage.goto.mockRejectedValueOnce(new Error("navigation timeout"));
-    fireTrackingClick("https://click.appcast.io/t/abc", "appcast");
+    fireTrackingClick("https://click.acme.example/t/abc", "ats-c");
     await drainTrackingClicks();
 
     expect(mockClose).toHaveBeenCalledOnce();
-    expect(recordTrackingClickFailure).toHaveBeenCalledWith("appcast", "Error");
+    expect(recordTrackingClickFailure).toHaveBeenCalledWith("ats-c", "Error");
   });
 
   it("closes the session even when session creation throws", async () => {
     mockCreateSession.mockRejectedValueOnce(new Error("no API key"));
-    fireTrackingClick("https://click.appcast.io/t/abc", "appcast");
+    fireTrackingClick("https://click.acme.example/t/abc", "ats-c");
     await drainTrackingClicks();
 
-    expect(recordTrackingClickFailure).toHaveBeenCalledWith("appcast", "Error");
+    expect(recordTrackingClickFailure).toHaveBeenCalledWith("ats-c", "Error");
   });
 
   it("does not throw — errors are swallowed", async () => {
     mockCreateSession.mockRejectedValueOnce(new Error("boom"));
-    fireTrackingClick("https://click.appcast.io/t/abc", "appcast");
+    fireTrackingClick("https://click.acme.example/t/abc", "ats-c");
     await expect(drainTrackingClicks()).resolves.toBeUndefined();
   });
 
@@ -115,7 +115,7 @@ describe("fireTrackingClick", () => {
       })
     );
 
-    fireTrackingClick("https://click.appcast.io/t/slow", "appcast");
+    fireTrackingClick("https://click.acme.example/t/slow", "ats-c");
 
     const drainPromise = drainTrackingClicks(5_000);
     resolveGoto();

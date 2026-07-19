@@ -5,9 +5,9 @@ import { captureCookieJarSnapshot } from "@/scraper/cookie-jar";
 import type { CookieRecord } from "@/scripts/recon-shared";
 
 const HTTP_ONLY_COOKIE: CookieRecord = {
-  name: "_appcast_attr",
+  name: "_acme_attr",
   value: "abc123",
-  domain: ".appcast.io",
+  domain: ".acme.example",
   path: "/",
   expires: 1234567890,
   size: 20,
@@ -20,7 +20,7 @@ const HTTP_ONLY_COOKIE: CookieRecord = {
 const SESSION_COOKIE: CookieRecord = {
   name: "session_id",
   value: "xyz789",
-  domain: "apply.appcast.io",
+  domain: "apply.acme.example",
   path: "/",
   expires: -1,
   size: 15,
@@ -39,10 +39,10 @@ describe("scraper/cookie-jar captureCookieJarSnapshot", () => {
     const sendCDP = vi.fn().mockResolvedValue({ cookies: [HTTP_ONLY_COOKIE, SESSION_COOKIE] });
     const page = makePage(sendCDP);
 
-    const snapshot = await captureCookieJarSnapshot(page, "appcast-apply", "post-click", 2);
+    const snapshot = await captureCookieJarSnapshot(page, "ats-c-apply", "post-click", 2);
 
     expect(sendCDP).toHaveBeenCalledWith("Network.getAllCookies");
-    expect(snapshot.label).toBe("appcast-apply");
+    expect(snapshot.label).toBe("ats-c-apply");
     expect(snapshot.phase).toBe("post-click");
     expect(snapshot.stepIndex).toBe(2);
     expect(snapshot.error).toBeUndefined();
@@ -51,20 +51,20 @@ describe("scraper/cookie-jar captureCookieJarSnapshot", () => {
     expect(snapshot.cookies[0]?.secure).toBe(true);
     expect(snapshot.cookies[0]?.sameSite).toBe("Lax");
     expect(snapshot.cookies[0]?.expires).toBe(1234567890);
-    expect(snapshot.cookies[0]?.domain).toBe(".appcast.io");
+    expect(snapshot.cookies[0]?.domain).toBe(".acme.example");
     expect(snapshot.cookies[1]?.session).toBe(true);
-    expect(snapshot.cookies[1]?.domain).toBe("apply.appcast.io");
+    expect(snapshot.cookies[1]?.domain).toBe("apply.acme.example");
   });
 
   it("returns a snapshot with an error field instead of throwing when sendCDP rejects", async () => {
     const sendCDP = vi.fn().mockRejectedValue(new Error("CDP connection closed"));
     const page = makePage(sendCDP);
 
-    const snapshot = await captureCookieJarSnapshot(page, "appcast-apply", "post-apply", 5);
+    const snapshot = await captureCookieJarSnapshot(page, "ats-c-apply", "post-apply", 5);
 
     expect(snapshot.error).toBe("CDP connection closed");
     expect(snapshot.cookies).toEqual([]);
-    expect(snapshot.label).toBe("appcast-apply");
+    expect(snapshot.label).toBe("ats-c-apply");
     expect(snapshot.phase).toBe("post-apply");
     expect(snapshot.stepIndex).toBe(5);
   });

@@ -301,7 +301,7 @@ export function detectRejectionInResponseBody(body: unknown): {
  *
  * Previous version of this helper assumed string-only and returned null for
  * the object case — causing Q1's audit to miss 100% of rejection envelopes
- * because AppCast (and any JSON-serving ATS) lands in the object case.
+ * because JSON-serving ATSs land in the object case.
  * Verified 2026-06-15 against capture 122-...-a4ab5256.json:
  * `jq '.responseBody | type'` returned `"object"`, the broken helper
  * returned null, the audit declared "PASSED" while the body contained
@@ -335,14 +335,14 @@ function normalizeResponseBodyForAudit(data: { responseBody?: unknown }): unknow
  * The audit is independent of the per-step verifier — the verifier may
  * have accepted a DOM-fallback or URL-change signal as proof, but if
  * the configured submit endpoint never returned 2xx, OR returned 2xx
- * with a rejection envelope (e.g. AppCast's `not_qualified: true`), the
+ * with a rejection envelope (e.g. `not_qualified: true`), the
  * application data didn't actually reach the employer's ATS.
  *
  * Site-agnostic: rejection detection is via `detectRejectionInResponseBody`
  * which knows the union of common ATS rejection-envelope shapes
- * (AppCast/Greenhouse/Lever/Workday). New ATSs extend the union.
+ * (Greenhouse/Lever/Workday and JSON-envelope ATSs). New ATSs extend the union.
  *
- * Pre-existing AppCast-specific equivalent: readJobOutcome in
+ * Pre-existing site-specific equivalent: readJobOutcome in
  * recon-replay-jobs.ts. This is the agnostic engine-side version using
  * the flow file's declared pattern.
  */
@@ -514,7 +514,7 @@ const RECON_FLOW_SCHEMA = z.array(RECON_FLOW_STEP_SCHEMA).min(1);
  *       the self-healing cascade can detect "the click fired tracking but
  *       not the real submit XHR."
  *     - `submittedStateSelectors`: DOM-level fallback when the submit POST
- *       lands outside the per-attempt capture window. SPAs (e.g. AppCast)
+ *       lands outside the per-attempt capture window. Some SPAs
  *       can swap the form for a thank-you component (`<uapp-universal-
  *       submitted-page>`) faster than the network capture pipeline records
  *       the POST. If any selector in this list matches via
@@ -545,7 +545,7 @@ const RECON_FLOW_FILE_SCHEMA = z.union([
      * Surfaced to the Haiku verifySubmit judge as evidence — when the page
      * URL after the click contains any of these, that's one of the strong
      * signals required for verified=true. Examples: ["/applied",
-     * "/applyboard/applied", "/confirmation", "/thank-you"]. Site-specific
+     * "/apply-portal/applied", "/confirmation", "/thank-you"]. Site-specific
      * since URL conventions vary across ATS tenants.
      */
     successUrlFragments: z.array(z.string().min(1)).optional(),
@@ -563,7 +563,7 @@ const RECON_FLOW_FILE_SCHEMA = z.union([
      * hostnames as a corroborating network signal — anything else (e.g.
      * analytics, third-party trackers, CDNs) is ignored. Without this
      * list the judge falls back to the URL alone, which is weaker.
-     * Examples: ["apply.appcast.io"], ["careers.<ats>.com",
+     * Examples: ["apply.<ats>.com"], ["careers.<ats>.com",
      * "<tenant>.<ats>.com"].
      */
     ownBackendHostnames: z.array(z.string().min(1)).optional(),
@@ -571,8 +571,8 @@ const RECON_FLOW_FILE_SCHEMA = z.union([
      * Optional site-specific class-name prefixes that wrap form/error
      * state. The Haiku invalid-fields judge uses these as additional
      * structural evidence beyond framework-conventional patterns
-     * (ng-invalid, aria-invalid, data-invalid). Examples for AppCast:
-     * ["uapp-", "app-"]. When omitted, the judge falls back to framework
+     * (ng-invalid, aria-invalid, data-invalid). Examples for an Angular
+     * apply SPA: ["uapp-", "app-"]. When omitted, the judge falls back to framework
      * conventions alone.
      */
     knownErrorClassPrefixes: z.array(z.string().min(1)).optional(),
@@ -597,7 +597,7 @@ const RECON_FLOW_FILE_SCHEMA = z.union([
      * captures to prove an interior (non-submit) "advance"/"Next" step actually
      * moved the wizard forward — not merely fired some other same-origin POST.
      * Needed for SPAs where advance and non-advance mutations share one endpoint
-     * URL (e.g. Talemetry's `/gq`: a real page advance is a `TransitionWorklet`
+     * URL (e.g. a wizard ATS's `/gq`: a real page advance is a `TransitionWorklet`
      * mutation, while `EditQuestionItem` is just a field edit — byte-identical
      * URLs, only the body differs). When set, an advance step's `networkFired`
      * signal is trusted ONLY if a capture body in the step's window matches this
@@ -613,8 +613,8 @@ const RECON_FLOW_FILE_SCHEMA = z.union([
  * false. `origin` distinguishes hand-authored steps from steps the LLM
  * replanner appended at cascade-exhausted recovery points — persistReplannedFlow
  * uses it to force replan-origin steps to optional on write-back, preventing
- * cross-employer regressions when a Presbyterian-specific replanned question
- * gets persisted and the next run is on Encompass.
+ * cross-employer regressions when an employer-specific replanned question
+ * gets persisted and the next run is on a different tenant.
  */
 interface NormalizedStep {
   instruction: string;
@@ -1909,7 +1909,7 @@ async function main(): Promise<void> {
     let lastSuccessNetworkCount = signalCounter.n;
     let lastSuccessUrl = page.url();
     // Track the page origin so a cross-origin navigation mid-flow (e.g. the
-    // Apply click taking careers.hcahealthcare.com → apply.talemetry.com) can
+    // Apply click taking careers.<employer>.com → apply.<ats>.com) can
     // re-gate on SPA hydration. The initial goto's readiness gate only covers
     // the landing page; the wizard app boots on a DIFFERENT origin with no gate,
     // so its first steps would otherwise probe an un-hydrated shell and skip.
@@ -1935,7 +1935,7 @@ async function main(): Promise<void> {
       );
       await snapshotAndPersistCookieJar(page, jarCounter, "pre-step", currentPhase, i);
       // Re-gate on SPA hydration when the origin changed since the last step —
-      // the wizard SPA (e.g. apply.talemetry.com after the Apply click) boots on
+      // the wizard SPA (e.g. apply.<ats>.com after the Apply click) boots on
       // a new origin the initial-goto readiness gate never covered, so wait for
       // its body to render before probing rather than skipping a shell page.
       const currentOrigin = originOf(page.url());
@@ -2010,7 +2010,7 @@ async function main(): Promise<void> {
         await snapshotAndPersistCookieJar(page, jarCounter, "post-step", currentPhase, i);
 
         // Wizard-restart detection: if a configured restart-signal URL (e.g.
-        // Talemetry's `init-apply?...&application_canceled=true`) landed during
+        // a wizard ATS's `init-apply?...&application_canceled=true`) landed during
         // this step, the multi-page wizard reset to page 1. Remaining steps now
         // target a reset page and replanning against the restarted wizard is
         // futile — abort with a diagnostic instead of silently cycling.
@@ -2086,7 +2086,7 @@ async function main(): Promise<void> {
         // googletagmanager) that fire on form interaction events. Those look
         // exactly like real submissions by HTTP signal but don't represent the
         // actual application landing. Verified by reading captures from
-        // /tmp/recon/graphql/ during a sweep: Presbyterian jobs hit this exact
+        // /tmp/recon/graphql/ during a sweep: some tenants hit this exact
         // failure — only interruption_check + GA tracking POSTs fired, no
         // integrated_apply, yet trailing-grace declared success.
         if (step.optional && i >= plan.length - TRAILING_GRACE_WINDOW) {

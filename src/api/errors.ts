@@ -147,13 +147,13 @@ export class EmptyResultsApiError extends ApiError {
 }
 
 /**
- * The OTP a candidate supplied to /resume was rejected by Oracle HCM, which
- * surfaces as a 401/403 on the first AccessCode-authed call. Distinct from a
- * generic scrape failure so Vivian can re-prompt for the code rather than
+ * The OTP a candidate supplied to /resume was rejected by the target site, which
+ * typically surfaces as a 401/403 on the first authenticated call. Distinct from a
+ * generic scrape failure so the caller can re-prompt for the code rather than
  * treating the resume as terminally failed.
  */
 export class InvalidOtpError extends ApiError {
-  constructor(message = "provided OTP was rejected by Oracle HCM") {
+  constructor(message = "provided OTP was rejected by the target site") {
     super(ERROR_CODES.RESUME_INVALID_OTP, message);
   }
 }

@@ -27,8 +27,6 @@ const mockRunWithSession = vi.hoisted(() =>
   vi.fn().mockImplementation((task: (s: null) => Promise<unknown>) => task(null))
 );
 const mockFireTrackingClick = vi.hoisted(() => vi.fn());
-const mockTriggerOtpFlow = vi.hoisted(() => vi.fn().mockResolvedValue({ success: true }));
-const mockResumeFlow = vi.hoisted(() => vi.fn().mockResolvedValue({ data: { verified: true } }));
 
 vi.mock("@/lib/telemetry/submission-capture", () => ({
   captureSubmissionEnvelope: mockCaptureSubmissionEnvelope,
@@ -54,14 +52,6 @@ vi.mock("@/scraper/metrics", () => ({
   recordHotPathLatency: vi.fn(),
   allMetrics: vi.fn().mockReturnValue({}),
   resetMetrics: vi.fn(),
-}));
-
-vi.mock("@/sites/encompasshealth/flows/trigger-otp-flow", () => ({
-  triggerOtpFlow: mockTriggerOtpFlow,
-}));
-
-vi.mock("@/sites/encompasshealth/flows/resume-flow", () => ({
-  resumeFlow: mockResumeFlow,
 }));
 
 describe("POST /v1/{siteId}/run — needsUserInfo HTTP boundary", () => {

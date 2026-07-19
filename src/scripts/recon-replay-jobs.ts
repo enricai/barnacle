@@ -13,8 +13,8 @@
  *
  * Usage:
  *   pnpm tsx --env-file=.env src/scripts/recon-replay-jobs.ts \
- *     --jobs src/sites/appcast/fixtures/replay-jobs.json \
- *     --flow-file src/sites/appcast/recon-flow.json \
+ *     --jobs src/sites/<siteId>/fixtures/replay-jobs.json \
+ *     --flow-file src/sites/<siteId>/recon-flow.json \
  *     --report /tmp/recon/replay-report.json
  */
 
@@ -43,7 +43,7 @@ interface JobVerdict {
   integratedApply200: boolean;
   /**
    * True when the submit endpoint returned a 2xx whose response body
-   * declared rejection (e.g. AppCast `not_qualified: true`, Greenhouse
+   * declared rejection (e.g. `not_qualified: true`, Greenhouse
    * `rejected: true`). When this is true, `integratedApply200` should
    * NOT be interpreted as a real success — the application reached the
    * HTTP layer but was filtered out by the ATS's qualification check
@@ -169,7 +169,7 @@ export async function runReconForJob(
 
 /**
  * Scans the recon's graphql capture directory for files written during
- * this job's run, returning whether the AppCast integrated_apply
+ * this job's run, returning whether the site's integrated_apply
  * endpoint captured a 200 and the SPA's terminal URL.
  */
 export function readJobOutcome(
@@ -202,7 +202,7 @@ export function readJobOutcome(
       ) {
         integratedApply200 = true;
         // Parse the response body to detect server-side rejection envelopes
-        // (AppCast `not_qualified`, Greenhouse `rejected`, Lever `qualified:
+        // (`not_qualified`, Greenhouse `rejected`, Lever `qualified:
         // false`, Workday `status: "rejected"`). HTTP 200 alone is not proof
         // of acceptance — many ATSs use a "200 with rejection envelope"
         // pattern. The capture writer at recon-browser.ts:240 stores
