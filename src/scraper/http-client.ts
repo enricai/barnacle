@@ -176,6 +176,65 @@ function extractCookieValue(setCookieHeaders: string[], cookieName: string): str
 }
 
 /**
+ * Finds a header's value by case-insensitive key lookup — `baseHeaders` and
+ * `init.headers` are operator-supplied with arbitrary casing (unlike
+ * `boundHeaders`, which is normalized via `targetHeaderCasing`), so a plain
+ * `headers["Cookie"]` lookup would miss a `"cookie"` or `"COOKIE"` key.
+ */
+function findHeaderCaseInsensitive(
+  headers: Record<string, string>,
+  name: string
+): string | undefined {
+  const lower = name.toLowerCase();
+  const key = Object.keys(headers).find((k) => k.toLowerCase() === lower);
+  return key === undefined ? undefined : headers[key];
+}
+
+/**
+ * Parses a `name=value; name=value` Cookie header string into per-cookie
+ * entries, mirroring the pair-splitting `extractCookieValue` already does
+ * for `Set-Cookie`. Skips malformed segments (no `=`) rather than throwing —
+ * an operator-authored `baseHeaders` or per-call `init.headers` Cookie value
+ * is untrusted input, not a value this module produced.
+ */
+function parseCookiePairs(cookieHeader: string): Array<[string, string]> {
+  return cookieHeader
+    .split(";")
+    .map((pair) => pair.trim())
+    .filter(Boolean)
+    .flatMap((pair) => {
+      const eq = pair.indexOf("=");
+      return eq === -1 ? [] : [[pair.slice(0, eq).trim(), pair.slice(eq + 1).trim()] as const];
+    });
+}
+
+/**
+ * Merges the Cookie header across `baseHeaders`, the live `boundHeaders`
+ * accumulator, and per-call `init.headers` by individual cookie name instead
+ * of the last-wins overwrite plain object spread gives every other header —
+ * see the http-client.ts module docblock and CLAUDE.md "battle-tested
+ * libraries only" for why the Cookie header specifically needs pair-level
+ * merging. Precedence on a name collision: a freshly bound value (the live
+ * session state a response just handed back) wins over a per-call override,
+ * which wins over the plugin's static default — bound values are the most
+ * current source of truth for a cookie in active rotation.
+ */
+function mergeCookieHeader(
+  baseHeaders: Record<string, string>,
+  boundHeaders: Record<string, string>,
+  initHeaders: Record<string, string>
+): string | undefined {
+  const merged = new Map<string, string>();
+  for (const source of [baseHeaders, initHeaders, boundHeaders]) {
+    const cookieHeader = findHeaderCaseInsensitive(source, "Cookie");
+    if (cookieHeader === undefined) continue;
+    for (const [name, value] of parseCookiePairs(cookieHeader)) merged.set(name, value);
+  }
+  if (merged.size === 0) return undefined;
+  return [...merged.entries()].map(([name, value]) => `${name}=${value}`).join("; ");
+}
+
+/**
  * Resolves one {@link HttpResponseBinding} against a response's headers.
  * Returns `undefined` on a miss (source header/cookie absent) so the caller
  * can leave a previously-bound value untouched instead of overwriting it
@@ -239,7 +298,18 @@ export function createHttpClient<TResponse>(
       pRetry(
         async () => {
           const method = init.method ?? "GET";
-          const headers = { ...baseHeaders, ...boundHeaders, ...(init.headers ?? {}) };
+          const initHeaders = init.headers ?? {};
+          const mergedCookie = mergeCookieHeader(baseHeaders, boundHeaders, initHeaders);
+          const headers: Record<string, string> = {
+            ...baseHeaders,
+            ...boundHeaders,
+            ...initHeaders,
+          };
+          if (mergedCookie !== undefined) {
+            const cookieKey =
+              Object.keys(headers).find((k) => k.toLowerCase() === "cookie") ?? "Cookie";
+            headers[cookieKey] = mergedCookie;
+          }
 
           let response: Response;
           try {
