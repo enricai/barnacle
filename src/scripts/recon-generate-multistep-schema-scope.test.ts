@@ -76,6 +76,39 @@ describe("emitContractTs — G2 checklist/enforcement coherence (multi-call hete
     const enforcesClientWide = enforcesOneSchemaClientWide(source);
     expect(instructs && enforcesClientWide).toBe(false);
   });
+
+  it("tells the author the narrowed schema is the plugin's own caller contract, not a per-call gate", () => {
+    // bugfix-002 makes narrowing safe (per-call override validates each call
+    // independently); this pins that the wording itself says so, so an author
+    // who only reads the checklist — not the implementation — doesn't
+    // reintroduce the G2 footgun by assuming narrowing constrains every call.
+    const checklistLine = source
+      .split("\n")
+      .find((line) => line.includes("[ ] Narrow TestSiteResponseSchema"));
+    expect(checklistLine).toBeDefined();
+    expect(checklistLine).toMatch(/executeHttp should promise ITS CALLER/);
+    expect(checklistLine).toMatch(/not a per-call validator/);
+    expect(checklistLine).toMatch(/already checked against its own inferred schema/);
+  });
+
+  it("following the checklist item on the multi-call fixture leaves every non-terminal call's schema untouched", () => {
+    // Direct behavioral proof that the emitted instruction is safe to follow:
+    // hand-substituting a narrowed client schema (exactly as the checklist
+    // item instructs) does not change any individual httpClient(...) call's
+    // own `schema:` override, since none of them reference
+    // TestSiteResponseSchema.
+    const perCallSchemaBlocks = source.match(/schema:\s*z\.[^,]+,/g) ?? [];
+    expect(perCallSchemaBlocks.length).toBeGreaterThan(0);
+    for (const block of perCallSchemaBlocks) {
+      expect(block).not.toContain("TestSiteResponseSchema");
+    }
+    const narrowedSource = source.replace(
+      "const TestSiteResponseSchema = z.unknown();",
+      "const TestSiteResponseSchema = z.object({ verified: z.boolean() });"
+    );
+    const perCallSchemaBlocksAfterNarrowing = narrowedSource.match(/schema:\s*z\.[^,]+,/g) ?? [];
+    expect(perCallSchemaBlocksAfterNarrowing).toEqual(perCallSchemaBlocks);
+  });
 });
 
 describe("emitContractTs — single-endpoint plugin (positive control)", () => {
