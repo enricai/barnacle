@@ -2031,6 +2031,34 @@ describe("recon-browser/shouldSkipTechnique", () => {
     });
     expect(decision.skip).toBe(false);
   });
+
+  it("skips structured-click after a phantom click on attempt 1 of a submit-shaped step, escalating to the deep submit-control locator", () => {
+    const decision = shouldSkipTechnique({
+      technique: "structured-click",
+      priorAttempts: [{ technique: "act-string", triedSelectors: ["#submit"], errorMessage: null }],
+      phantomClickAfterAttempt1: true,
+      submitShapedStep: true,
+    });
+    expect(decision.skip).toBe(true);
+    expect(decision.reason).toContain("deep submit-control locator");
+  });
+
+  it("does NOT skip structured-click after a phantom click on a non-submit-shaped step (radio/checkbox fallback ladder stays intact)", () => {
+    const decision = shouldSkipTechnique({
+      technique: "structured-click",
+      priorAttempts: [
+        { technique: "act-string", triedSelectors: ["#radio-no"], errorMessage: null },
+        {
+          technique: "observe-act",
+          triedSelectors: ["xpath=/html/body/input"],
+          errorMessage: null,
+        },
+      ],
+      phantomClickAfterAttempt1: true,
+      submitShapedStep: false,
+    });
+    expect(decision.skip).toBe(false);
+  });
 });
 
 describe("recon-browser/isReplanCycle", () => {
