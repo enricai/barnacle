@@ -365,15 +365,19 @@ export function selectReturnAction<T extends { capture: Capture }>(steps: readon
 }
 
 /**
- * Picks the response body that should drive multi-step shape inference —
- * reuses `selectReturnAction` so the inferred shape and the value
- * `executeHttp` actually returns can never describe different calls.
+ * Picks the response body used to infer the emitted contract's response
+ * shape. MUST target the same call `selectReturnAction` returns — a
+ * submission flow's `executeHttp` and its inferred type/schema have to agree
+ * on which call they describe, or the emitted type disagrees with the value
+ * actually returned. Falls back to the replay body for single-endpoint sites.
  */
 export function selectEffectiveResponseBody<T extends { capture: Capture }>(
-  steps: readonly T[],
-  fallback: unknown
+  isSubmissionFlow: boolean,
+  actionSteps: readonly T[],
+  replayResponseBody: unknown
 ): unknown {
-  return selectReturnAction(steps)?.capture.responseBody ?? fallback;
+  if (!isSubmissionFlow) return replayResponseBody;
+  return selectReturnAction(actionSteps)?.capture.responseBody ?? replayResponseBody;
 }
 
 function deriveBaseUrl(captures: Capture[]): string {
@@ -3648,10 +3652,11 @@ async function main(): Promise<void> {
   const headerBindings = collectHeaderBindings(actionSteps);
   // Shape inference targets the SAME call executeHttp returns — see
   // selectEffectiveResponseBody — so the two surfaces can't describe different calls.
-  // Fall back to the replay body for single-endpoint sites.
-  const effectiveResponseBody = isSubmissionFlow
-    ? selectEffectiveResponseBody(actionSteps, responseBody)
-    : responseBody;
+  const effectiveResponseBody = selectEffectiveResponseBody(
+    isSubmissionFlow,
+    actionSteps,
+    responseBody
+  );
 
   logger.info(
     `generating plugin for ${siteId} (${gql ? "GraphQL" : isSubmissionFlow ? `submission flow, ${actionSteps.length} steps` : "single-endpoint REST"}, baseUrl: ${baseUrl})`

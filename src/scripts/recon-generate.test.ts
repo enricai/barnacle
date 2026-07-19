@@ -1210,7 +1210,7 @@ describe("selectEffectiveResponseBody — shape source agrees with the return va
   it("derives from the re-queried search call, not the terminal drill-down, for the drill-down-terminal fixture", () => {
     const steps = buildMulticallHeterogeneousActionStepsWithDrillDown();
 
-    const shapeSource = selectEffectiveResponseBody(steps, null);
+    const shapeSource = selectEffectiveResponseBody(true, steps, null);
     const returnAction = selectReturnAction(steps);
 
     // The search call (r3, the second available-products/ query) is what
@@ -1275,7 +1275,7 @@ describe("selectEffectiveResponseBody — shape source agrees with the return va
       },
     ];
 
-    const shapeSource = selectEffectiveResponseBody(steps, null);
+    const shapeSource = selectEffectiveResponseBody(true, steps, null);
     const returnAction = selectReturnAction(steps);
 
     expect(returnAction?.varName).toBe("r1");
