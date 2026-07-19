@@ -8,6 +8,7 @@ import {
   type NeedsUserInfoResult,
   OracleTokenExpiredError,
   ScraperError,
+  StepVerificationError,
   UnknownScraperError,
 } from "@/scraper/errors";
 
@@ -57,6 +58,36 @@ describe("MissingFormMapKeyError", () => {
       "form-map missing required keys [firstName, applicantGender] in buildFormMap"
     );
     expect(err.name).toBe("MissingFormMapKeyError");
+  });
+});
+
+describe("StepVerificationError", () => {
+  it("defaults to kind cascade-exhausted, is non-retryable, and instanceof ScraperError", () => {
+    const err = new StepVerificationError();
+    expect(err).toBeInstanceOf(ScraperError);
+    expect(err.retryable).toBe(false);
+    expect(err.name).toBe("StepVerificationError");
+    expect(err.kind).toBe("cascade-exhausted");
+  });
+
+  it("constructs with kind phantom-click-exhausted and round-trips consistently with cascade-exhausted", () => {
+    const phantomClick = new StepVerificationError(
+      "step failed verification after all heal attempts",
+      "phantom-click-exhausted"
+    );
+    expect(phantomClick).toBeInstanceOf(StepVerificationError);
+    expect(phantomClick).toBeInstanceOf(ScraperError);
+    expect(phantomClick.kind).toBe("phantom-click-exhausted");
+    expect(phantomClick.retryable).toBe(false);
+    expect(phantomClick.name).toBe("StepVerificationError");
+
+    const cascadeExhausted = new StepVerificationError(
+      "step failed verification after all heal attempts",
+      "cascade-exhausted"
+    );
+    expect(phantomClick.retryable).toBe(cascadeExhausted.retryable);
+    expect(phantomClick.name).toBe(cascadeExhausted.name);
+    expect(phantomClick.kind).not.toBe(cascadeExhausted.kind);
   });
 });
 
