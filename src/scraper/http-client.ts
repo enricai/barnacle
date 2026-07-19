@@ -67,11 +67,14 @@ export interface HttpResponseBinding {
   cookieName?: string;
   /**
    * Outbound request header to populate on subsequent calls, e.g. `"Cookie"`.
-   * Multiple bindings with a `cookieName` may share the same `targetHeader`
-   * (the `Cookie` header carries many cookies) — each is tracked separately
-   * and materialized joined by `"; "`. Bindings without `cookieName` bind a
-   * raw header value as-is and keep overwrite semantics: a second such
-   * binding sharing a `targetHeader` replaces the first.
+   * Compared case-insensitively (HTTP header names are), so bindings whose
+   * `targetHeader` differs only by casing (e.g. `"Cookie"` vs `"cookie"`)
+   * are treated as the same target. Multiple bindings with a `cookieName`
+   * may share the same `targetHeader` (the `Cookie` header carries many
+   * cookies) — each is tracked separately and materialized joined by `"; "`.
+   * Bindings without `cookieName` bind a raw header value as-is and keep
+   * overwrite semantics: a second such binding sharing a `targetHeader`
+   * replaces the first.
    */
   targetHeader: string;
 }
@@ -218,11 +221,18 @@ export function createHttpClient<TResponse>(
   // call can pick up what an earlier call captured — see HttpResponseBinding.
   const boundHeaders: Record<string, string> = {};
   // Per-cookie values for targetHeaders that carry multiple cookies (e.g.
-  // "Cookie"), keyed by targetHeader then cookieName so several bindings
-  // sharing one targetHeader accumulate instead of overwriting — see
+  // "Cookie"), keyed by targetHeader.toLowerCase() then cookieName so
+  // several bindings sharing one targetHeader — even across differing
+  // casing, since HTTP header names are case-insensitive — accumulate
+  // instead of overwriting or splitting into two outbound headers — see
   // HttpResponseBinding.targetHeader. Materialized into boundHeaders
   // (joined by "; ") whenever an entry changes.
   const boundCookiesByTarget = new Map<string, Map<string, string>>();
+  // Canonical (first-seen) casing of each targetHeader, keyed by
+  // targetHeader.toLowerCase() — lets both branches below write
+  // boundHeaders under one stable key regardless of which casing a later
+  // binding declares.
+  const targetHeaderCasing = new Map<string, string>();
 
   return async (url: string, init: HttpRequestInit = {}): Promise<TResponse> => {
     return bottleneck.schedule(() =>
@@ -261,15 +271,17 @@ export function createHttpClient<TResponse>(
             // header stays absent from `boundHeaders` entirely, so later
             // requests never send it as an empty string.
             if (value === undefined) continue;
+            const targetKey = binding.targetHeader.toLowerCase();
+            const canonicalTarget = targetHeaderCasing.get(targetKey) ?? binding.targetHeader;
+            targetHeaderCasing.set(targetKey, canonicalTarget);
             if (binding.cookieName === undefined) {
-              boundHeaders[binding.targetHeader] = value;
+              boundHeaders[canonicalTarget] = value;
               continue;
             }
-            const cookies =
-              boundCookiesByTarget.get(binding.targetHeader) ?? new Map<string, string>();
+            const cookies = boundCookiesByTarget.get(targetKey) ?? new Map<string, string>();
             cookies.set(binding.cookieName, value);
-            boundCookiesByTarget.set(binding.targetHeader, cookies);
-            boundHeaders[binding.targetHeader] = [...cookies.entries()]
+            boundCookiesByTarget.set(targetKey, cookies);
+            boundHeaders[canonicalTarget] = [...cookies.entries()]
               .map(([name, cookieValue]) => `${name}=${cookieValue}`)
               .join("; ");
           }

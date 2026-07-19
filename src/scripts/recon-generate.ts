@@ -1561,15 +1561,19 @@ export function compileActionSteps(
  * step order — this is what `emitContractTs` renders as `createHttpClient`'s
  * `bind` option so the generated `executeHttp` actually forwards a value like
  * disneycruise's `Set-Cookie: __pa=<jwt>` mint to the stateful call that 401s
- * without it. Deduped by `targetHeader` + `cookieName`: the `Cookie` request
- * header carries many cookies by design, so every distinct cookie-origin
- * produce targeting it must survive (the runtime accumulates them into one
- * `Cookie` header per binding — see http-client.ts); only a produce that
- * re-mints the SAME cookie on a later step collapses to its earliest
- * occurrence. Non-cookie targets (e.g. `X-Conversation-Id`) still keep
- * first-wins, since `HttpResponseBinding` is one binding per target header
- * there and two steps producing the same non-cookie target would otherwise
- * race with no defined winner.
+ * without it. Deduped by `targetHeader.toLowerCase()` + `cookieName` (HTTP
+ * header names are case-insensitive, and compileActionSteps derives
+ * `targetHeader` verbatim from observed request-header casing, so the same
+ * logical target can show up as e.g. `Cookie` on one step and `cookie` on
+ * another): the `Cookie` request header carries many cookies by design, so
+ * every distinct cookie-origin produce targeting it must survive (the
+ * runtime accumulates them into one `Cookie` header per binding — see
+ * http-client.ts); only a produce that re-mints the SAME cookie on a later
+ * step collapses to its earliest occurrence. Non-cookie targets (e.g.
+ * `X-Conversation-Id`) still keep first-wins, since `HttpResponseBinding` is
+ * one binding per target header there and two steps producing the same
+ * non-cookie target (even under differing casing) would otherwise race with
+ * no defined winner.
  *
  * Exported for unit testing (as `walkSetCookiePairs` is) — lets tests exercise
  * the produce → bind collection step directly against synthetic ActionStep
@@ -1580,7 +1584,7 @@ export function collectHeaderBindings(actionSteps: ActionStep[]): HeaderProduce[
   for (const step of actionSteps) {
     for (const p of step.produces) {
       if (p.kind !== "header") continue;
-      const key = `${p.targetHeader}\0${p.cookieName ?? ""}`;
+      const key = `${p.targetHeader.toLowerCase()}\0${p.cookieName ?? ""}`;
       if (!byKey.has(key)) byKey.set(key, p);
     }
   }

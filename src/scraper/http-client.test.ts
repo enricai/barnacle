@@ -587,6 +587,56 @@ describe("scraper/http-client response-header binding", () => {
     expect(cookieHeaderFromCall(2)).toBe("latestWDPROGeoIP=1.2.3.4; __pa=abc.def.ghi");
   });
 
+  it("merges cookie bindings whose targetHeader differs only by case into one Cookie header", async () => {
+    const CASE_VARIANT_GEO_BINDING: HttpResponseBinding = {
+      sourceHeader: "set-cookie",
+      cookieName: "latestWDPROGeoIP",
+      targetHeader: "cookie",
+    };
+
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce({
+          status: 200,
+          ok: true,
+          text: vi.fn().mockResolvedValue(JSON.stringify({ id: "1", name: "Widget" })),
+          headers: headersWithSetCookies(
+            "latestWDPROGeoIP=1.2.3.4; Path=/",
+            "__pa=abc.def.ghi; Path=/; HttpOnly"
+          ),
+        })
+        .mockResolvedValueOnce({
+          status: 200,
+          ok: true,
+          text: vi.fn().mockResolvedValue(JSON.stringify({ id: "2", name: "Gadget" })),
+          headers: new Headers(),
+        })
+    );
+
+    const client = createHttpClient<Item>({
+      schema: ItemSchema,
+      bottleneck: passThruLimiter,
+      baseHeaders: BASE_HEADERS,
+      bind: [CASE_VARIANT_GEO_BINDING, AUTH_COOKIE_BINDING],
+    });
+
+    await client("https://example.com/toggles", { method: "POST" });
+    await client("https://example.com/available-products", { method: "POST" });
+
+    const secondCall = vi.mocked(fetch).mock.calls[1];
+    const secondCallHeaders = (secondCall?.[1] as RequestInit)?.headers as Record<string, string>;
+    const cookieEntries = Object.entries(secondCallHeaders).filter(
+      ([name]) => name.toLowerCase() === "cookie"
+    );
+
+    expect(cookieEntries).toHaveLength(1);
+    const [, cookieValue] = cookieEntries[0] as [string, string];
+    expect(cookieValue).toContain("latestWDPROGeoIP=");
+    expect(cookieValue).toContain("__pa=");
+  });
+
   it("non-cookie targetHeaders still overwrite as before, with no concatenation", async () => {
     const CONVERSATION_ID_BINDING: HttpResponseBinding = {
       sourceHeader: "x-conversation-id",
