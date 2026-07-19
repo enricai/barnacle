@@ -90,7 +90,7 @@ export type StepVerificationErrorKind =
   | "wizard-regression";
 
 /**
- * Recon-only: a flow step in recon-browser.ts could not be acted on. Four
+ * Recon-only: a flow step in recon-browser.ts could not be acted on. Six
  * variants per `kind`:
  *
  *   - "cascade-exhausted": the full 4-attempt self-healing cascade ran and
