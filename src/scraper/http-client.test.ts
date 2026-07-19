@@ -402,7 +402,7 @@ describe("scraper/http-client response-header binding", () => {
 
     const secondCall = vi.mocked(fetch).mock.calls[1];
     const secondCallHeaders = (secondCall?.[1] as RequestInit)?.headers as Record<string, string>;
-    expect(secondCallHeaders.Cookie).toBe("abc.def.ghi");
+    expect(secondCallHeaders.Cookie).toBe("__pa=abc.def.ghi");
 
     const firstCall = vi.mocked(fetch).mock.calls[0];
     const firstCallHeaders = (firstCall?.[1] as RequestInit)?.headers as Record<string, string>;
@@ -442,5 +442,194 @@ describe("scraper/http-client response-header binding", () => {
     const secondCallHeaders = (secondCall?.[1] as RequestInit)?.headers as Record<string, string>;
     expect(secondCallHeaders.Cookie).toBeUndefined();
     expect("Cookie" in secondCallHeaders).toBe(false);
+  });
+
+  const GEO_COOKIE_BINDING: HttpResponseBinding = {
+    sourceHeader: "set-cookie",
+    cookieName: "latestWDPROGeoIP",
+    targetHeader: "Cookie",
+  };
+
+  function headersWithSetCookies(...cookiePairs: string[]): Headers {
+    const headers = new Headers();
+    for (const pair of cookiePairs) headers.append("Set-Cookie", pair);
+    return headers;
+  }
+
+  function cookieHeaderFromCall(callIndex: number): string | undefined {
+    const call = vi.mocked(fetch).mock.calls[callIndex];
+    const headers = (call?.[1] as RequestInit)?.headers as Record<string, string>;
+    return headers.Cookie;
+  }
+
+  it("accumulates multiple cookie bindings sharing targetHeader Cookie into one header", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce({
+          status: 200,
+          ok: true,
+          text: vi.fn().mockResolvedValue(JSON.stringify({ id: "1", name: "Widget" })),
+          headers: headersWithSetCookies(
+            "latestWDPROGeoIP=1.2.3.4; Path=/",
+            "__pa=abc.def.ghi; Path=/; HttpOnly"
+          ),
+        })
+        .mockResolvedValueOnce({
+          status: 200,
+          ok: true,
+          text: vi.fn().mockResolvedValue(JSON.stringify({ id: "2", name: "Gadget" })),
+          headers: new Headers(),
+        })
+    );
+
+    const client = createHttpClient<Item>({
+      schema: ItemSchema,
+      bottleneck: passThruLimiter,
+      baseHeaders: BASE_HEADERS,
+      bind: [GEO_COOKIE_BINDING, AUTH_COOKIE_BINDING],
+    });
+
+    await client("https://example.com/toggles", { method: "POST" });
+    await client("https://example.com/available-products", { method: "POST" });
+
+    const cookieHeader = cookieHeaderFromCall(1);
+    expect(cookieHeader).toContain("latestWDPROGeoIP=1.2.3.4");
+    expect(cookieHeader).toContain("__pa=abc.def.ghi");
+    expect(cookieHeader).toBe("latestWDPROGeoIP=1.2.3.4; __pa=abc.def.ghi");
+  });
+
+  it("re-minting one cookie updates it in place without dropping the other bound cookie", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce({
+          status: 200,
+          ok: true,
+          text: vi.fn().mockResolvedValue(JSON.stringify({ id: "1", name: "Widget" })),
+          headers: headersWithSetCookies(
+            "latestWDPROGeoIP=1.2.3.4; Path=/",
+            "__pa=abc.def.ghi; Path=/; HttpOnly"
+          ),
+        })
+        .mockResolvedValueOnce({
+          status: 200,
+          ok: true,
+          text: vi.fn().mockResolvedValue(JSON.stringify({ id: "2", name: "Gadget" })),
+          headers: headersWithSetCookies("__pa=xyz.rotated.token; Path=/; HttpOnly"),
+        })
+        .mockResolvedValueOnce({
+          status: 200,
+          ok: true,
+          text: vi.fn().mockResolvedValue(JSON.stringify({ id: "3", name: "Sprocket" })),
+          headers: new Headers(),
+        })
+    );
+
+    const client = createHttpClient<Item>({
+      schema: ItemSchema,
+      bottleneck: passThruLimiter,
+      baseHeaders: BASE_HEADERS,
+      bind: [GEO_COOKIE_BINDING, AUTH_COOKIE_BINDING],
+    });
+
+    await client("https://example.com/toggles", { method: "POST" });
+    await client("https://example.com/authz/private", { method: "POST" });
+    await client("https://example.com/available-products", { method: "POST" });
+
+    const cookieHeader = cookieHeaderFromCall(2);
+    expect(cookieHeader).toContain("latestWDPROGeoIP=1.2.3.4");
+    expect(cookieHeader).toContain("__pa=xyz.rotated.token");
+    expect(cookieHeader).not.toContain("abc.def.ghi");
+  });
+
+  it("leaves prior bound cookie state intact when a later response is missing that cookie", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce({
+          status: 200,
+          ok: true,
+          text: vi.fn().mockResolvedValue(JSON.stringify({ id: "1", name: "Widget" })),
+          headers: headersWithSetCookies(
+            "latestWDPROGeoIP=1.2.3.4; Path=/",
+            "__pa=abc.def.ghi; Path=/; HttpOnly"
+          ),
+        })
+        .mockResolvedValueOnce({
+          status: 200,
+          ok: true,
+          text: vi.fn().mockResolvedValue(JSON.stringify({ id: "2", name: "Gadget" })),
+          headers: new Headers(),
+        })
+        .mockResolvedValueOnce({
+          status: 200,
+          ok: true,
+          text: vi.fn().mockResolvedValue(JSON.stringify({ id: "3", name: "Sprocket" })),
+          headers: new Headers(),
+        })
+    );
+
+    const client = createHttpClient<Item>({
+      schema: ItemSchema,
+      bottleneck: passThruLimiter,
+      baseHeaders: BASE_HEADERS,
+      bind: [GEO_COOKIE_BINDING, AUTH_COOKIE_BINDING],
+    });
+
+    await client("https://example.com/toggles", { method: "POST" });
+    await client("https://example.com/no-cookies-here", { method: "POST" });
+    await client("https://example.com/available-products", { method: "POST" });
+
+    expect(cookieHeaderFromCall(2)).toBe("latestWDPROGeoIP=1.2.3.4; __pa=abc.def.ghi");
+  });
+
+  it("non-cookie targetHeaders still overwrite as before, with no concatenation", async () => {
+    const CONVERSATION_ID_BINDING: HttpResponseBinding = {
+      sourceHeader: "x-conversation-id",
+      targetHeader: "X-Conversation-Id",
+    };
+
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce({
+          status: 200,
+          ok: true,
+          text: vi.fn().mockResolvedValue(JSON.stringify({ id: "1", name: "Widget" })),
+          headers: new Headers({ "x-conversation-id": "conv-1" }),
+        })
+        .mockResolvedValueOnce({
+          status: 200,
+          ok: true,
+          text: vi.fn().mockResolvedValue(JSON.stringify({ id: "2", name: "Gadget" })),
+          headers: new Headers({ "x-conversation-id": "conv-2" }),
+        })
+        .mockResolvedValueOnce({
+          status: 200,
+          ok: true,
+          text: vi.fn().mockResolvedValue(JSON.stringify({ id: "3", name: "Sprocket" })),
+          headers: new Headers(),
+        })
+    );
+
+    const client = createHttpClient<Item>({
+      schema: ItemSchema,
+      bottleneck: passThruLimiter,
+      baseHeaders: BASE_HEADERS,
+      bind: [CONVERSATION_ID_BINDING],
+    });
+
+    await client("https://example.com/step-1", { method: "POST" });
+    await client("https://example.com/step-2", { method: "POST" });
+    await client("https://example.com/step-3", { method: "POST" });
+
+    const call = vi.mocked(fetch).mock.calls[2];
+    const headers = (call?.[1] as RequestInit)?.headers as Record<string, string>;
+    expect(headers["X-Conversation-Id"]).toBe("conv-2");
   });
 });

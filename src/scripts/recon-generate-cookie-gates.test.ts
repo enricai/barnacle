@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { walkSetCookiePairs } from "@/scripts/recon-generate";
+import { collectHeaderBindings, walkSetCookiePairs } from "@/scripts/recon-generate";
 
 describe("walkSetCookiePairs — newline-folded multi-cookie Set-Cookie strings", () => {
   it("yields every cookie in a newline-joined 7-cookie string, including one buried mid-string", () => {
@@ -40,5 +40,83 @@ describe("walkSetCookiePairs — newline-folded multi-cookie Set-Cookie strings"
     const rawSetCookie = ["malformed-entry-no-equals", "session=tok123; Path=/"].join("\n");
     const pairs = [...walkSetCookiePairs(rawSetCookie)];
     expect(pairs).toEqual([{ name: "session", value: "tok123" }]);
+  });
+});
+
+describe("collectHeaderBindings — multi-cookie Cookie target (disneycruise __pa report)", () => {
+  /** step 0: toggles/product-avail — surfaces three geo/toggle cookies plus one
+   * non-cookie header produce, in recon order. */
+  const productAvailStep = {
+    capture: {} as never,
+    varName: "r0",
+    produces: [
+      {
+        kind: "header",
+        name: "conversationUuidHeader",
+        sourceHeader: "x-conversation-id",
+        targetHeader: "X-Conversation-Id",
+      },
+      {
+        kind: "header",
+        name: "latestWdproGeoIpCookie",
+        sourceHeader: "set-cookie",
+        cookieName: "latestWDPROGeoIP",
+        targetHeader: "Cookie",
+      },
+      {
+        kind: "header",
+        name: "wdproGeoIpCookie",
+        sourceHeader: "set-cookie",
+        cookieName: "WDPROGeoIP",
+        targetHeader: "Cookie",
+      },
+      {
+        kind: "header",
+        name: "bmSvCookie",
+        sourceHeader: "set-cookie",
+        cookieName: "bm_sv",
+        targetHeader: "Cookie",
+      },
+    ],
+    isMultipart: false,
+    isCrossDomain: false,
+  };
+
+  /** step 1: authz/private — mints the load-bearing __pa session cookie, last
+   * in recon order among the four Cookie-targeting produces. */
+  const authzPrivateStep = {
+    capture: {} as never,
+    varName: "r1",
+    produces: [
+      {
+        kind: "header",
+        name: "paCookie",
+        sourceHeader: "set-cookie",
+        cookieName: "__pa",
+        targetHeader: "Cookie",
+      },
+    ],
+    isMultipart: false,
+    isCrossDomain: false,
+  };
+
+  const bindings = collectHeaderBindings([productAvailStep, authzPrivateStep] as never);
+
+  it("keeps every distinct cookie-origin produce targeting Cookie, including the last-produced __pa", () => {
+    const cookieNames = bindings
+      .filter((b) => b.targetHeader === "Cookie")
+      .map((b) => b.cookieName)
+      .sort();
+    expect(cookieNames).toEqual(["WDPROGeoIP", "__pa", "bm_sv", "latestWDPROGeoIP"].sort());
+  });
+
+  it("still dedupes the non-cookie X-Conversation-Id target to a single binding", () => {
+    const conversationBindings = bindings.filter((b) => b.targetHeader === "X-Conversation-Id");
+    expect(conversationBindings).toHaveLength(1);
+    expect(conversationBindings[0]?.name).toBe("conversationUuidHeader");
+  });
+
+  it("returns exactly five bindings total — four Cookie-origin plus one non-cookie", () => {
+    expect(bindings).toHaveLength(5);
   });
 });
