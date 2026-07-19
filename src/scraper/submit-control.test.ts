@@ -308,11 +308,11 @@ describe("submit-control/buildClickByDeepIndexExpr", () => {
 
   // Module-contract test, not a caller-behavior test: buildClickByDeepIndexExpr
   // can click ANY ranked candidate by its deepIndex, including one that isn't
-  // the top pick. flow-runner.ts's deep-submit-locator branch does not
-  // currently call this with anything but ranked[0] — there is no runner-up
-  // retry wired up today — so this pins the module's capability for a future
-  // caller rather than exercising an existing retry path.
-  it("can click a lower-ranked candidate by deepIndex, independent of tier order (module contract; not currently exercised by any caller)", () => {
+  // the top pick. flow-runner.ts's deep-submit-locator branch exercises this
+  // via its runner-up retry when the top pick phantom-clicks (see
+  // flow-runner.test.ts's phantom-click-escalation suite) — this test pins
+  // the underlying module primitive directly, independent of that caller.
+  it("can click a lower-ranked candidate by deepIndex, independent of tier order (module contract)", () => {
     const topPick = makeEl("button", { type: "submit" }, "Submit");
     const runnerUp = makeEl("div", { role: "button" }, "Submit Application");
     const document = makeRoot([topPick, runnerUp]);

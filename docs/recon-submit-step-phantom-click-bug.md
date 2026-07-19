@@ -105,10 +105,10 @@ submit step, then fails as above. Diagnostic bundle at `/tmp/recon/step-failures
 ## Test coverage findings
 
 Findings from the testing-domain follow-up work on remedy #3 (shadow-DOM / web-component submit
-control resolution). Recorded here rather than fixed in code because the gap below is a product
-decision (wire the retry, or drop the dead capability), which is out of scope for a testing subtask.
+control resolution). The runner-up-retry gap identified below has since been closed in code (see
+"Resolution" at the end of this section) — the finding is kept for the investigation trail.
 
-### Unwired runner-up retry
+### Unwired runner-up retry (resolved)
 
 `buildClickByDeepIndexExpr` (`src/scraper/submit-control.ts`) is built and documented explicitly to
 support retrying a lower-ranked candidate when the top-ranked one phantom-clicks — the module TSDoc
@@ -116,32 +116,20 @@ support retrying a lower-ranked candidate when the top-ranked one phantom-clicks
 the best-ranked candidate and retry the runner-up if the first click phantoms." The function itself
 takes an arbitrary `deepIndex`, not just the top candidate's, which is what makes that retry possible.
 
-The only caller, `flow-runner.ts`'s attempt-2 `deep-submit-locator` branch, does not use this
-capability: it clicks `ranked[0]` once (`src/scraper/flow-runner.ts:5675`) and on failure — whether
-`ranked` was empty, the click reported `clicked: false` (stale deepIndex), or the click landed but
-verification later found no observable effect — falls through to the cascade's next attempt (3/4/5)
-rather than retrying `ranked[1]` within the same deep-submit-locator technique. There is no code path
-anywhere in `flow-runner.ts` that calls `buildClickByDeepIndexExpr` with any index other than
-`ranked[0]!.deepIndex`.
+At the time this finding was recorded, the only caller, `flow-runner.ts`'s attempt-2
+`deep-submit-locator` branch, did not use this capability: it clicked `ranked[0]` once and on failure
+fell through to the cascade's next attempt (3/4/5) rather than retrying `ranked[1]` within the same
+deep-submit-locator technique.
 
-`submit-control.test.ts` covers the capability at the module level:
-`it("can click a lower-ranked candidate by deepIndex, independent of tier order (module contract; not
-currently exercised by any caller)", ...)` (`src/scraper/submit-control.test.ts:315`) — the test title
-itself documents that no caller exercises this today. `flow-runner.test.ts` independently confirms,
-from the caller side, that the ranked-empty and stale-deepIndex branches both fall through to the
-cascade's normal continue/skip machinery deterministically (no ambiguous intermediate state) rather
-than ever attempting a runner-up click — see `flow-runner.test.ts:469` ("records a ranked-empty
-deep-locator attempt and continues the cascade instead of throwing synchronously") and
-`flow-runner.test.ts:521` ("records a stale-deepIndex click failure with actResultSuccess false and
-does not crash the run").
+`submit-control.test.ts` covered the capability at the module level; `flow-runner.test.ts`
+independently confirmed, from the caller side, that the ranked-empty and stale-deepIndex branches both
+fell through to the cascade's normal continue/skip machinery deterministically (no ambiguous
+intermediate state) rather than ever attempting a runner-up click.
 
-**Gap:** the shipped fix (deep-submit-locator ranking + click-by-index) implements the data-gathering
-half of remedy #3 but not the retry-on-phantom half its own TSDoc claims. Writing a test that asserts
-`flow-runner.ts` retries the runner-up would fail against current `main` — that's a red test on
-`main`, not a valid regression test — so this is recorded as a finding instead of a test.
-
-**Decision needed (code-domain, not testing-domain):** either wire the retry — call
-`buildClickByDeepIndexExpr` again with `ranked[1]`'s `deepIndex` when the `ranked[0]` attempt phantom-
-clicks or reports `clicked: false` — or remove the now-misleading TSDoc claim and, if truly unused,
-the `deepIndex`-parameterization of `buildClickByDeepIndexExpr` in favor of a top-candidate-only
-signature. Either resolution is a code change; this document only records that the gap exists.
+**Resolution:** `flow-runner.ts`'s `deep-submit-locator` branch now retries `ranked[1]` in the same
+attempt-2 slot when the top pick's click is classified as a phantom (zero net/url/DOM delta), and
+separately retries the rank+click once when the top pick's click itself reports `clicked: false`
+(stale `deepIndex` from a re-render between the rank and click round trips). See
+`src/scraper/flow-runner.ts`'s `deep-submit-locator` branch and the phantom-click-escalation suite in
+`flow-runner.test.ts` for the caller-side coverage, and `submit-control.test.ts`'s
+"can click a lower-ranked candidate by deepIndex" test for the module-primitive coverage.
