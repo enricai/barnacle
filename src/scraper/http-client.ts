@@ -125,8 +125,12 @@ export interface HttpClientOptions<TResponse> {
  * the browser `RequestInit` API — keeps the interface portable and prevents
  * callers from bypassing the Bottleneck or Zod layers by passing raw fetch
  * options that the client doesn't know about.
+ *
+ * `TOverride` defaults to `unknown` for callers that don't need the per-call
+ * `schema` escape hatch — `HttpRequestInit` (no type argument) still behaves
+ * exactly as before.
  */
-export interface HttpRequestInit {
+export interface HttpRequestInit<TOverride = unknown> {
   method?: string;
   headers?: Record<string, string>;
   body?: string;
@@ -139,6 +143,14 @@ export interface HttpRequestInit {
    * until the server closes it (~15min for testmail livequery).
    */
   signal?: AbortSignal;
+  /**
+   * Validates this call's response against `schema` instead of the client's
+   * default schema — the escape hatch a multi-call chain with heterogeneous
+   * response shapes needs, since `createHttpClient`'s `schema` option is a
+   * single client-wide default (see `HttpClientOptions.schema`). Omitted
+   * calls keep validating against the client default exactly as before.
+   */
+  schema?: ZodType<TOverride>;
 }
 
 /**
@@ -273,7 +285,7 @@ function resolveBinding(binding: HttpResponseBinding, headers: Headers): string 
  */
 export function createHttpClient<TResponse>(
   options: HttpClientOptions<TResponse>
-): (url: string, init?: HttpRequestInit) => Promise<TResponse> {
+): <TOverride = TResponse>(url: string, init?: HttpRequestInit<TOverride>) => Promise<TOverride> {
   const { schema, bottleneck, baseHeaders, onResponse, bind = [], classifyResponseBody } = options;
   // Values bound from prior responses (e.g. a minted auth cookie), keyed by
   // targetHeader. Lives for the lifetime of this client instance so a later
@@ -293,7 +305,14 @@ export function createHttpClient<TResponse>(
   // binding declares.
   const targetHeaderCasing = new Map<string, string>();
 
-  return async (url: string, init: HttpRequestInit = {}): Promise<TResponse> => {
+  return async <TOverride = TResponse>(
+    url: string,
+    init: HttpRequestInit<TOverride> = {}
+  ): Promise<TOverride> => {
+    // A per-call `init.schema` supersedes the client-level default for this
+    // call only — see HttpRequestInit.schema for why a multi-call chain with
+    // heterogeneous response shapes needs this escape hatch.
+    const activeSchema = init.schema ?? (schema as unknown as ZodType<TOverride>);
     return bottleneck.schedule(() =>
       pRetry(
         async () => {
@@ -426,7 +445,7 @@ export function createHttpClient<TResponse>(
 
           const body = parseJsonOrThrowRetryable(rawText, url);
 
-          const parsed = schema.safeParse(body);
+          const parsed = activeSchema.safeParse(body);
           if (!parsed.success) {
             logger.warn(
               `http schema mismatch from ${url}: ${parsed.error.issues.map((i) => i.message).join("; ")}`
