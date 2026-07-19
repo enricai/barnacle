@@ -15,9 +15,11 @@ import {
   inferZodSchemaFromSamples,
   loadQuestionPromptKeywords,
   resolveStepPayloadField,
+  selectEffectiveResponseBody,
   selectPayloadAction,
   selectReturnAction,
 } from "@/scripts/recon-generate";
+import { buildMulticallHeterogeneousActionStepsWithDrillDown } from "@/scripts/recon-generate-multicall-fixture";
 
 /** The recon env-var token for the applicant email, built by concatenation so
  * Biome's noTemplateCurlyInString rule doesn't flag the literal `${...}`. */
@@ -1103,6 +1105,84 @@ describe("emitMultiStepExecuteHttp — relevance-selected return value (G1)", ()
 
     expect(body).toContain("return { data: r2 };");
     expect(body).toContain("const r2 = (await httpClient(");
+  });
+});
+
+describe("selectEffectiveResponseBody — shape source agrees with the return value (G1)", () => {
+  it("derives from the re-queried search call, not the terminal drill-down, for the drill-down-terminal fixture", () => {
+    const steps = buildMulticallHeterogeneousActionStepsWithDrillDown();
+
+    const shapeSource = selectEffectiveResponseBody(steps, null);
+    const returnAction = selectReturnAction(steps);
+
+    // The search call (r3, the second available-products/ query) is what
+    // executeHttp returns — assert the inferred shape comes from that SAME
+    // call, not the terminal available-sailings/ drill-down (r4).
+    expect(returnAction?.varName).toBe("r3");
+    expect(shapeSource).toEqual(returnAction?.capture.responseBody);
+    expect(shapeSource).toEqual({
+      totalPages: 5,
+      totalAvailableCruises: 699,
+      products: [{ productId: "p2" }],
+    });
+    expect(shapeSource).not.toEqual({
+      sailings: [{ sailingId: "s1" }],
+      exchangeRate: 1.0,
+    });
+  });
+
+  it("derives from the terminal call for a genuine single-pass submission flow, agreeing with the return value", () => {
+    const steps = [
+      {
+        capture: {
+          timestamp: "2024-01-01T00:00:00Z",
+          phase: "action" as const,
+          method: "POST",
+          url: "https://ats.test/api/application/create",
+          status: 200,
+          requestHeaders: { "Content-Type": "application/json" },
+          requestPostData: '{"FirstName":"Reginald"}',
+          responseHeaders: { "content-type": "application/json" },
+          responseBody: { id: "a1" },
+          operationName: null,
+          query: null,
+          variables: null,
+          decodedParams: null,
+        },
+        varName: "r0",
+        produces: [],
+        isMultipart: false,
+        isCrossDomain: false,
+      },
+      {
+        capture: {
+          timestamp: "2024-01-01T00:00:01Z",
+          phase: "action" as const,
+          method: "POST",
+          url: "https://ats.test/api/application/a1/submit",
+          status: 200,
+          requestHeaders: { "Content-Type": "application/json" },
+          requestPostData: '{"confirm":true}',
+          responseHeaders: { "content-type": "application/json" },
+          responseBody: { success: true },
+          operationName: null,
+          query: null,
+          variables: null,
+          decodedParams: null,
+        },
+        varName: "r1",
+        produces: [],
+        isMultipart: false,
+        isCrossDomain: false,
+      },
+    ];
+
+    const shapeSource = selectEffectiveResponseBody(steps, null);
+    const returnAction = selectReturnAction(steps);
+
+    expect(returnAction?.varName).toBe("r1");
+    expect(shapeSource).toEqual(returnAction?.capture.responseBody);
+    expect(shapeSource).toEqual({ success: true });
   });
 });
 
