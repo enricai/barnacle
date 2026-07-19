@@ -241,6 +241,46 @@ describe("submit-control/buildRankSubmitCandidatesExpr", () => {
       expect(strictlyOrdered).toBe(true);
     });
   });
+
+  it('ranks an <input type="submit"> as tier 3, same as a type="submit" button', () => {
+    const input = makeEl("input", { type: "submit" }, "");
+    const document = makeRoot([input]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.tier).toBe(3);
+    expect(result[0]?.tag).toBe("input");
+  });
+
+  it("excludes a non-button-like element (no button/input tag, no role) carrying submit-shaped text", () => {
+    const div = makeEl("div", {}, "Submit Application");
+    const document = makeRoot([div]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toEqual([]);
+  });
+
+  it("prefers aria-label over conflicting textContent for the accessible name", () => {
+    const control = makeEl("button", { role: "button", "aria-label": "Submit" }, "Cancel");
+    const document = makeRoot([control]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.tier).toBe(2);
+    expect(result[0]?.accessibleName).toBe("submit");
+  });
 });
 
 describe("submit-control/buildClickByDeepIndexExpr", () => {
@@ -266,7 +306,13 @@ describe("submit-control/buildClickByDeepIndexExpr", () => {
     expect(shadowSubmit.clicked).toBe(true);
   });
 
-  it("supports retrying the runner-up candidate after the top pick fails to act", () => {
+  // Module-contract test, not a caller-behavior test: buildClickByDeepIndexExpr
+  // can click ANY ranked candidate by its deepIndex, including one that isn't
+  // the top pick. flow-runner.ts's deep-submit-locator branch does not
+  // currently call this with anything but ranked[0] — there is no runner-up
+  // retry wired up today — so this pins the module's capability for a future
+  // caller rather than exercising an existing retry path.
+  it("can click a lower-ranked candidate by deepIndex, independent of tier order (module contract; not currently exercised by any caller)", () => {
     const topPick = makeEl("button", { type: "submit" }, "Submit");
     const runnerUp = makeEl("div", { role: "button" }, "Submit Application");
     const document = makeRoot([topPick, runnerUp]);
