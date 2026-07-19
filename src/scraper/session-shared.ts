@@ -37,6 +37,12 @@ export interface BrowserSession {
   /** Which provider produced this session — informational, useful for logs. */
   provider: ProviderName;
   close(): Promise<void>;
+  /**
+   * Live count of suppressed AISDK elementId-regex errors so far this
+   * session. Only present on providers that filter Stagehand's logger for
+   * this upstream error (currently Browserbase); absent on Steel.
+   */
+  getSuppressedAisdkElementIdErrorCount?: () => number;
 }
 
 /**
