@@ -294,6 +294,32 @@ function isVoidResponse(body: unknown): boolean {
 }
 
 /**
+ * Finds actions whose endpoint was re-hit with a varying, non-void body —
+ * the signature of a search/inventory endpoint the page queries repeatedly,
+ * as opposed to an endpoint that merely fired once or repeated an identical
+ * (retry) or void (chatter/beacon) call. Shared by `selectPayloadAction` and
+ * `selectReturnAction`, which each pick a different fallback when nothing
+ * was re-queried.
+ */
+function findRequeriedActions<T extends { capture: Capture }>(steps: readonly T[]): T[] {
+  const bodiesByEndpoint = new Map<string, Set<string>>();
+  for (const step of steps) {
+    const key = endpointKey(step.capture.url);
+    const bodies = bodiesByEndpoint.get(key) ?? new Set<string>();
+    bodies.add(step.capture.requestPostData ?? "");
+    bodiesByEndpoint.set(key, bodies);
+  }
+
+  return steps.filter((step) => {
+    const bodies = bodiesByEndpoint.get(endpointKey(step.capture.url));
+    if (!bodies || bodies.size < 2) return false;
+    // An endpoint re-hit with varying bodies but nothing to show for it is
+    // chatter — client-side error reporting, beacons — not the flow's subject.
+    return !isVoidResponse(step.capture.responseBody);
+  });
+}
+
+/**
  * Picks the action whose request body should define the payload schema.
  *
  * Defaults to the first action, which is right for a transactional flow: the
@@ -314,23 +340,44 @@ export function selectPayloadAction<T extends { capture: Capture }>(steps: reado
   const first = steps[0];
   if (!first) return null;
 
-  const bodiesByEndpoint = new Map<string, Set<string>>();
-  for (const step of steps) {
-    const key = endpointKey(step.capture.url);
-    const bodies = bodiesByEndpoint.get(key) ?? new Set<string>();
-    bodies.add(step.capture.requestPostData ?? "");
-    bodiesByEndpoint.set(key, bodies);
-  }
-
-  const requeried = steps.filter((step) => {
-    const bodies = bodiesByEndpoint.get(endpointKey(step.capture.url));
-    if (!bodies || bodies.size < 2) return false;
-    // An endpoint re-hit with varying bodies but nothing to show for it is
-    // chatter — client-side error reporting, beacons — not the flow's subject.
-    return !isVoidResponse(step.capture.responseBody);
-  });
-
+  const requeried = findRequeriedActions(steps);
   return requeried[0] ?? first;
+}
+
+/**
+ * Picks the action whose response body `executeHttp` should return.
+ *
+ * Defaults to the last action, which is right for a transactional/submission
+ * flow: the final call is the terminal success signal the caller wants back.
+ * It is wrong when the flow is a read/search whose last call happens to be an
+ * incidental drill-down (e.g. previewing one result) rather than the search
+ * result itself — the same re-queried-endpoint signal `selectPayloadAction`
+ * uses to find the flow's subject applies here: an endpoint hit repeatedly
+ * with varying, non-void bodies is what the flow is about, and its most
+ * recent response is the freshest instance of that answer.
+ */
+export function selectReturnAction<T extends { capture: Capture }>(steps: readonly T[]): T | null {
+  const last = steps[steps.length - 1] ?? null;
+  if (!last) return null;
+
+  const requeried = findRequeriedActions(steps);
+  return requeried[requeried.length - 1] ?? last;
+}
+
+/**
+ * Picks the response body used to infer the emitted contract's response
+ * shape. MUST target the same call `selectReturnAction` returns — a
+ * submission flow's `executeHttp` and its inferred type/schema have to agree
+ * on which call they describe, or the emitted type disagrees with the value
+ * actually returned. Falls back to the replay body for single-endpoint sites.
+ */
+export function selectEffectiveResponseBody<T extends { capture: Capture }>(
+  isSubmissionFlow: boolean,
+  actionSteps: readonly T[],
+  replayResponseBody: unknown
+): unknown {
+  if (!isSubmissionFlow) return replayResponseBody;
+  return selectReturnAction(actionSteps)?.capture.responseBody ?? replayResponseBody;
 }
 
 function deriveBaseUrl(captures: Capture[]): string {
@@ -2042,6 +2089,7 @@ export function emitMultiStepExecuteHttp(
     method: string;
     headersExpr: string;
     bodyArg: string;
+    schemaExpr: string;
   }
 
   // Walk the first action's request body to map each leaf string value to its
@@ -2181,8 +2229,15 @@ export function emitMultiStepExecuteHttp(
           .join(", ")} },`
       : "";
     const bodyArg = bodyTemplate ? `body: \`${bodyTemplate}\`,` : "";
+    // G2: each call gets its own schema, inferred from this step's captured
+    // response — the client-level schema (z.unknown() for multi-step flows,
+    // see emitContractTs) stays the plugin's caller-facing contract, not what
+    // validates any individual call. Without this override, HttpRequestInit.schema
+    // would default to the client's z.unknown() and narrowing the caller-facing
+    // contract would enforce that narrowed shape on every call in the chain.
+    const schemaExpr = inferZodSchema(cap.responseBody);
 
-    rendered.push({ url, method: cap.method, headersExpr, bodyArg });
+    rendered.push({ url, method: cap.method, headersExpr, bodyArg, schemaExpr });
   }
 
   // Identifier scan against the rendered text — captures `${foo}`, `${foo.bar}`,
@@ -2203,8 +2258,10 @@ export function emitMultiStepExecuteHttp(
       }
     }
   }
-  // The last step's var is also referenced by the closing `return { data }`.
-  if (actions.length > 0) referencedNames.add(actions[actions.length - 1]!.varName);
+  // The relevance-selected step's var is also referenced by the closing
+  // `return { data }` — see selectReturnAction.
+  const returnAction = selectReturnAction(actions);
+  if (returnAction) referencedNames.add(returnAction.varName);
   // Base64 Content overrides reference variables inside function calls
   // (e.g. buildBase64Content(payload, questionnaireId, ...)) that the
   // ${name} regex above doesn't capture. Add them explicitly.
@@ -2321,6 +2378,7 @@ export function emitMultiStepExecuteHttp(
       if (joined !== "") {
         lines.push(`      ${joined}`);
       }
+      lines.push(`      schema: ${r.schemaExpr},`);
       if (needsBinding) {
         lines.push(`    })) as Record<string, unknown>;`);
       } else {
@@ -2349,8 +2407,8 @@ export function emitMultiStepExecuteHttp(
     lines.push("");
   }
 
-  const lastVar = actions.length > 0 ? actions[actions.length - 1]!.varName : "undefined";
-  lines.push(`    return { data: ${lastVar} };`);
+  const returnVar = returnAction ? returnAction.varName : "undefined";
+  lines.push(`    return { data: ${returnVar} };`);
 
   return lines.join("\n");
 }
@@ -2466,16 +2524,25 @@ export function emitContractTs(opts: {
     headerBindings = [],
   } = opts;
 
-  // Multi-step plugins thread responses through many different shapes that a
-  // single Zod schema can't cover — use z.unknown() so each per-step access
-  // compiles cleanly. Single-endpoint plugins keep the inferred schema.
+  // This is the CLIENT-level schema — createHttpClient's default, and the
+  // plugin's caller-facing contract (what executeHttp's return value promises
+  // its own caller). It does NOT validate any individual call in a multi-step
+  // flow: emitMultiStepExecuteHttp threads a per-call `schema:` override
+  // (inferred from that step's own capture) onto every httpClient(...)
+  // invocation, so heterogeneous per-call shapes are each checked against
+  // their own inferred schema regardless of what this client-level schema is.
   //
-  // This is deliberate, not an unfinished schema: a submission flow's terminal
-  // shape is the plugin's OWN contract with its caller (e.g. { verified: boolean }),
-  // a field that appears in zero captured responses. Inferring a schema from the
-  // captures would emit the wrong shape with false confidence. z.unknown() plus
-  // the generated `[ ] Narrow ResponseSchema` checklist item is the intended
-  // hand-off to the plugin author, who alone knows that contract.
+  // For multi-step flows this stays z.unknown(), not an unfinished schema: a
+  // submission flow's terminal shape is the plugin's OWN contract with its
+  // caller (e.g. { verified: boolean }), a field that appears in zero
+  // captured responses. Inferring a schema from the captures would emit the
+  // wrong shape with false confidence. z.unknown() plus the generated
+  // `[ ] Narrow ResponseSchema` checklist item is the intended hand-off to
+  // the plugin author, who alone knows that contract — narrowing it only
+  // changes what executeHttp promises its caller, and is now safe to do
+  // without affecting per-call validation. Single-endpoint plugins keep the
+  // inferred schema, since there both roles (client default and sole call)
+  // coincide.
   const responseSchemaExpr = multiStepBody ? `z.unknown()` : inferZodSchema(responseBody);
   // Multi-step flows that include a multipart upload need the binary asset
   // on the payload. Add Resume/ResumeContentType/ResumeFilename as required
@@ -2686,13 +2753,22 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
     ? `\n *   [ ] Trim UI-only fields from ${pascal.toUpperCase()}_QUERY (keep only fields you need)`
     : "";
 
+  // Multi-step flows validate each call against its own per-call inferred
+  // schema (emitMultiStepExecuteHttp) — narrowing ResponseSchema only changes
+  // what executeHttp promises ITS OWN caller, never a per-call validator, so
+  // the checklist item must say that explicitly. Single-endpoint plugins have
+  // exactly one call, so the client schema and that call's validator are the
+  // same schema and the shorter wording stays accurate.
+  const narrowSchemaChecklistLine = multiStepBody
+    ? `\n *   [ ] Narrow ${pascal}ResponseSchema to match what executeHttp should promise ITS CALLER — this is the plugin's own return-value contract, not a per-call validator (each call in the flow is already checked against its own inferred schema)`
+    : `\n *   [ ] Narrow ${pascal}ResponseSchema to match the real response shape`;
+
   const camel = siteId.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
 
   return `/**
  * Generated by recon-generate.ts — review before shipping.
  *
- * Checklist:${queryChecklistLine}
- *   [ ] Narrow ${pascal}ResponseSchema to match the real response shape
+ * Checklist:${queryChecklistLine}${narrowSchemaChecklistLine}
  *   [ ] Adjust ${pascal}PayloadSchema to your actual request parameters
  *   [ ] Verify BASE_HEADERS — remove any that aren't load-bearing
  *   [ ] Out-of-tree: \`pnpm add bottleneck zod\` — this file imports both
@@ -3583,12 +3659,13 @@ async function main(): Promise<void> {
 
   const hasMultipartStep = actionSteps.some((s) => s.isMultipart);
   const headerBindings = collectHeaderBindings(actionSteps);
-  // For submission flows the final action's response body is the most useful
-  // shape inference target (it's the terminal success signal). Fall back to
-  // the replay body for single-endpoint sites.
-  const effectiveResponseBody = isSubmissionFlow
-    ? (actionSteps[actionSteps.length - 1]!.capture.responseBody ?? responseBody)
-    : responseBody;
+  // Shape inference targets the SAME call executeHttp returns — see
+  // selectEffectiveResponseBody — so the two surfaces can't describe different calls.
+  const effectiveResponseBody = selectEffectiveResponseBody(
+    isSubmissionFlow,
+    actionSteps,
+    responseBody
+  );
 
   logger.info(
     `generating plugin for ${siteId} (${gql ? "GraphQL" : isSubmissionFlow ? `submission flow, ${actionSteps.length} steps` : "single-endpoint REST"}, baseUrl: ${baseUrl})`
