@@ -465,4 +465,92 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
     const rankCalls = evaluate.mock.calls.filter(([expr]) => String(expr).includes("ranked.sort"));
     expect(rankCalls.length).toBe(1);
   });
+
+  it("records a ranked-empty deep-locator attempt and continues the cascade instead of throwing synchronously", async () => {
+    // Attempt 1 (act-string) phantom-clicks like the bug report. Attempt 2
+    // (deep-submit-locator) ranks zero submit-shaped candidates — the
+    // ranking expression resolves to [] — so the branch records the
+    // no-candidate error and falls through to the cascade's normal
+    // continue/skip machinery (attempts 3-4 skipped by the phantom
+    // short-circuit, attempt 5 llm-rephrase no-ops) rather than throwing
+    // from inside the attempt-2 block itself.
+    const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const src = String(expr);
+      if (src.includes("ranked.sort")) return [];
+      if (src.includes('dispatchEvent(new Event("click"')) return { clicked: false };
+      if (src.includes("outerHTML")) return { html: 184186, text: "0:" };
+      if (src.includes("isInvalid(el)")) return 0;
+      return null;
+    });
+    const page = {
+      evaluate,
+      url: () => "https://apply.appcast.io/jobs/1/applyboard/apply",
+      title: vi.fn().mockResolvedValue("Registered Nurse"),
+      locator: vi.fn().mockReturnValue({
+        first: () => ({
+          isChecked: vi.fn().mockResolvedValue(false),
+          inputValue: vi.fn().mockResolvedValue(""),
+        }),
+      }),
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
+    } as unknown as Page;
+    const stagehandAct = vi.fn().mockResolvedValue(actResult());
+    const onStepFailure = vi.fn().mockReturnValue(null);
+    const params = {
+      ...baseParams(page, stagehandAct),
+      signalCounter: { n: 0 },
+      onStepFailure,
+    };
+
+    await expect(executeStepWithHealing(params)).rejects.toMatchObject({
+      name: "StepVerificationError",
+      kind: "phantom-click-exhausted",
+    });
+
+    expect(onStepFailure).toHaveBeenCalledTimes(1);
+    const attempts = onStepFailure.mock.calls[0]?.[0].attempts;
+    const deepLocatorAttempt = attempts.find(
+      (a: { technique: string }) => a.technique === "deep-submit-locator"
+    );
+    expect(deepLocatorAttempt).toMatchObject({
+      technique: "deep-submit-locator",
+      errorMessage: "deep-submit-locator: no submit-shaped candidate found",
+    });
+  });
+
+  it("records a stale-deepIndex click failure with actResultSuccess false and does not crash the run", async () => {
+    // Attempt 1 (act-string) phantom-clicks. Attempt 2 (deep-submit-locator)
+    // ranks a candidate, but the click-by-index expression resolves
+    // {clicked:false} — the candidate vanished before the click landed
+    // (deepIndex went stale between rank and click). The branch must record
+    // actResultSuccess === false and a "candidate vanished" errorMessage,
+    // then let the cascade continue rather than throwing here.
+    const { page, evaluate } = fakePage({
+      url: "https://apply.appcast.io/jobs/1/applyboard/apply",
+      bodyHtmlLength: 184186,
+      deepIndexClicked: -1,
+    });
+    const stagehandAct = vi.fn().mockResolvedValue(actResult());
+    const onStepFailure = vi.fn().mockReturnValue(null);
+    const params = {
+      ...baseParams(page, stagehandAct),
+      signalCounter: { n: 0 },
+      onStepFailure,
+    };
+
+    await expect(executeStepWithHealing(params)).rejects.toMatchObject({
+      name: "StepVerificationError",
+      kind: "phantom-click-exhausted",
+    });
+
+    expect(onStepFailure).toHaveBeenCalledTimes(1);
+    const attempts = onStepFailure.mock.calls[0]?.[0].attempts;
+    const deepLocatorAttempt = attempts.find(
+      (a: { technique: string }) => a.technique === "deep-submit-locator"
+    );
+    expect(deepLocatorAttempt.actResultSuccess).toBe(false);
+    expect(deepLocatorAttempt.errorMessage).toMatch(/deepIndex stale/);
+    const rankCalls = evaluate.mock.calls.filter(([expr]) => String(expr).includes("ranked.sort"));
+    expect(rankCalls.length).toBe(1);
+  });
 });
