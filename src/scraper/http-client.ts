@@ -126,7 +126,7 @@ export interface HttpClientOptions<TResponse> {
  * callers from bypassing the Bottleneck or Zod layers by passing raw fetch
  * options that the client doesn't know about.
  */
-export interface HttpRequestInit {
+export interface HttpRequestInit<TResponse = unknown> {
   method?: string;
   headers?: Record<string, string>;
   body?: string;
@@ -139,6 +139,17 @@ export interface HttpRequestInit {
    * until the server closes it (~15min for testmail livequery).
    */
   signal?: AbortSignal;
+  /**
+   * Validates this call's response against a different schema than the
+   * client's own `HttpClientOptions.schema`, narrowing this call's return
+   * type independently of the client's `TResponse`. For a multi-call chain
+   * (one `createHttpClient` instance reused across calls with heterogeneous
+   * response shapes — e.g. a toggles array, an auth mint, then a search
+   * result) the client-level schema can only validate one of those shapes;
+   * every other call needs its own. Omit to fall back to the client's
+   * schema — the override is opt-in per call, not a global loosening.
+   */
+  schema?: ZodType<TResponse>;
 }
 
 /**
@@ -270,10 +281,19 @@ function resolveBinding(binding: HttpResponseBinding, headers: Headers): string 
  * should back off, not burn a Steel session.
  * Wraps transient network errors in `UnknownScraperError` and retries up to
  * 2 times with exponential backoff before propagating.
+ *
+ * A single client instance is often reused across a multi-call chain whose
+ * calls have heterogeneous response shapes (see `HttpRequestInit.schema`);
+ * each call may pass its own `schema` to validate and narrow against
+ * instead of the client-level `TResponse`, without affecting any other call
+ * made from the same client.
  */
 export function createHttpClient<TResponse>(
   options: HttpClientOptions<TResponse>
-): (url: string, init?: HttpRequestInit) => Promise<TResponse> {
+): <TCallResponse = TResponse>(
+  url: string,
+  init?: HttpRequestInit<TCallResponse>
+) => Promise<TCallResponse> {
   const { schema, bottleneck, baseHeaders, onResponse, bind = [], classifyResponseBody } = options;
   // Values bound from prior responses (e.g. a minted auth cookie), keyed by
   // targetHeader. Lives for the lifetime of this client instance so a later
@@ -293,7 +313,11 @@ export function createHttpClient<TResponse>(
   // binding declares.
   const targetHeaderCasing = new Map<string, string>();
 
-  return async (url: string, init: HttpRequestInit = {}): Promise<TResponse> => {
+  return async <TCallResponse = TResponse>(
+    url: string,
+    init: HttpRequestInit<TCallResponse> = {}
+  ): Promise<TCallResponse> => {
+    const effectiveSchema = (init.schema ?? schema) as ZodType<TCallResponse>;
     return bottleneck.schedule(() =>
       pRetry(
         async () => {
@@ -426,7 +450,7 @@ export function createHttpClient<TResponse>(
 
           const body = parseJsonOrThrowRetryable(rawText, url);
 
-          const parsed = schema.safeParse(body);
+          const parsed = effectiveSchema.safeParse(body);
           if (!parsed.success) {
             logger.warn(
               `http schema mismatch from ${url}: ${parsed.error.issues.map((i) => i.message).join("; ")}`
