@@ -25,7 +25,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { getScriptLogger } from "@/lib/logging";
 import { detectRejectionInResponseBody } from "@/scripts/recon-browser";
-import { resolveReconRunDir } from "@/scripts/recon-shared";
+import { readSuccessUrlFragments, resolveReconRunDir } from "@/scripts/recon-shared";
 import { allocateTestmailInbox, pollTestmailInbox } from "@/testmail/client";
 
 const logger = getScriptLogger("recon-replay-jobs");
@@ -171,10 +171,16 @@ export async function runReconForJob(
  * Scans the recon's graphql capture directory for files written during
  * this job's run, returning whether the site's integrated_apply
  * endpoint captured a 200 and the SPA's terminal URL.
+ *
+ * `successUrlFragments` comes from the flow file's own config (the same field the
+ * browser-flow verifier reads) rather than a built-in pattern, so terminal-URL
+ * detection stays site-agnostic. Empty ⇒ `terminalUrl` stays null; that field only
+ * decorates the report and never gates the accept/reject verdict.
  */
 export function readJobOutcome(
   capturesBefore: Set<string>,
-  graphqlDir: string
+  graphqlDir: string,
+  successUrlFragments: string[]
 ): {
   integratedApply200: boolean;
   serverRejected: boolean;
@@ -222,8 +228,9 @@ export function readJobOutcome(
           serverRejectionReason = rejection.reason;
         }
       }
-      if (typeof data.url === "string" && /\/applyboard\/applied/.test(data.url)) {
-        terminalUrl = data.url;
+      const url = data.url;
+      if (typeof url === "string" && successUrlFragments.some((f) => url.includes(f))) {
+        terminalUrl = url;
       }
     } catch {}
   }
@@ -234,6 +241,7 @@ async function main(): Promise<void> {
   const runDir = resolveReconRunDir();
   const { jobsPath, flowFile, reportPath } = parseArgs(runDir.root);
   const jobs: ReplayJob[] = JSON.parse(readFileSync(jobsPath, "utf8"));
+  const successUrlFragments = readSuccessUrlFragments(flowFile);
   logger.info(
     `replay: ${jobs.length} jobs from ${jobsPath}, flow=${flowFile}, runId=${runDir.runId}`
   );
@@ -253,7 +261,7 @@ async function main(): Promise<void> {
       runDir.graphqlDir
     );
     const { integratedApply200, serverRejected, serverRejectionReason, terminalUrl } =
-      readJobOutcome(capturesBefore, runDir.graphqlDir);
+      readJobOutcome(capturesBefore, runDir.graphqlDir, successUrlFragments);
 
     let emailReceived = false;
     let emailSubject: string | null = null;

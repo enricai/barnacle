@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -62,9 +62,9 @@ describe("CookieJarSnapshot shape", () => {
       timestamp: "2026-07-18T00:00:00.000Z",
       cookies: [
         {
-          name: "appcast_session",
+          name: "ats_c_session",
           value: "abc123",
-          domain: ".appcast.io",
+          domain: ".acme.example",
           path: "/",
           httpOnly: true,
           secure: true,
@@ -193,5 +193,68 @@ describe("resolveLatestReconRunRoot", () => {
 
     const { resolveLatestReconRunRoot } = await loadResolver();
     expect(resolveLatestReconRunRoot()).toBe(tmpDir);
+  });
+});
+
+describe("readSuccessUrlFragments", () => {
+  const writeFlow = (contents: string): string => {
+    tmpDir = mkdtempSync(join(tmpdir(), "recon-shared-test-"));
+    const flowFile = join(tmpDir, "recon-flow.json");
+    writeFileSync(flowFile, contents);
+    return flowFile;
+  };
+
+  it("returns the configured fragments from an object-shaped flow file", async () => {
+    const flowFile = writeFlow(
+      JSON.stringify({
+        url: "https://apply.acme.example/jobs/1",
+        successUrlFragments: ["/apply-portal/applied", "/apply/confirmation"],
+        steps: [],
+      })
+    );
+
+    const { readSuccessUrlFragments } = await loadResolver();
+    expect(readSuccessUrlFragments(flowFile)).toEqual([
+      "/apply-portal/applied",
+      "/apply/confirmation",
+    ]);
+  });
+
+  it("returns [] for the legacy bare-array flow shape", async () => {
+    const flowFile = writeFlow(JSON.stringify([{ instruction: "Click Apply" }]));
+
+    const { readSuccessUrlFragments } = await loadResolver();
+    expect(readSuccessUrlFragments(flowFile)).toEqual([]);
+  });
+
+  it("returns [] when the field is absent", async () => {
+    const flowFile = writeFlow(JSON.stringify({ url: "https://apply.acme.example", steps: [] }));
+
+    const { readSuccessUrlFragments } = await loadResolver();
+    expect(readSuccessUrlFragments(flowFile)).toEqual([]);
+  });
+
+  it("warns and returns [] on malformed JSON rather than throwing", async () => {
+    const flowFile = writeFlow("{ not valid json");
+
+    const { readSuccessUrlFragments } = await loadResolver();
+    expect(() => readSuccessUrlFragments(flowFile)).not.toThrow();
+    expect(readSuccessUrlFragments(flowFile)).toEqual([]);
+  });
+
+  it("warns and returns [] when the file does not exist", async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), "recon-shared-test-"));
+
+    const { readSuccessUrlFragments } = await loadResolver();
+    expect(readSuccessUrlFragments(join(tmpDir, "missing.json"))).toEqual([]);
+  });
+
+  it("drops non-string and empty entries so a bad config can't match every URL", async () => {
+    const flowFile = writeFlow(
+      JSON.stringify({ successUrlFragments: ["/applied", "", 42, null], steps: [] })
+    );
+
+    const { readSuccessUrlFragments } = await loadResolver();
+    expect(readSuccessUrlFragments(flowFile)).toEqual(["/applied"]);
   });
 });
