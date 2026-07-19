@@ -364,6 +364,22 @@ export function selectReturnAction<T extends { capture: Capture }>(steps: readon
   return requeried[requeried.length - 1] ?? last;
 }
 
+/**
+ * Picks the response body used to infer the emitted contract's response
+ * shape. MUST target the same call `selectReturnAction` returns — a
+ * submission flow's `executeHttp` and its inferred type/schema have to agree
+ * on which call they describe, or the emitted type disagrees with the value
+ * actually returned. Falls back to the replay body for single-endpoint sites.
+ */
+export function selectEffectiveResponseBody<T extends { capture: Capture }>(
+  isSubmissionFlow: boolean,
+  actionSteps: readonly T[],
+  replayResponseBody: unknown
+): unknown {
+  if (!isSubmissionFlow) return replayResponseBody;
+  return selectReturnAction(actionSteps)?.capture.responseBody ?? replayResponseBody;
+}
+
 function deriveBaseUrl(captures: Capture[]): string {
   for (const c of captures) {
     try {
@@ -3616,12 +3632,11 @@ async function main(): Promise<void> {
 
   const hasMultipartStep = actionSteps.some((s) => s.isMultipart);
   const headerBindings = collectHeaderBindings(actionSteps);
-  // For submission flows the final action's response body is the most useful
-  // shape inference target (it's the terminal success signal). Fall back to
-  // the replay body for single-endpoint sites.
-  const effectiveResponseBody = isSubmissionFlow
-    ? (actionSteps[actionSteps.length - 1]!.capture.responseBody ?? responseBody)
-    : responseBody;
+  const effectiveResponseBody = selectEffectiveResponseBody(
+    isSubmissionFlow,
+    actionSteps,
+    responseBody
+  );
 
   logger.info(
     `generating plugin for ${siteId} (${gql ? "GraphQL" : isSubmissionFlow ? `submission flow, ${actionSteps.length} steps` : "single-endpoint REST"}, baseUrl: ${baseUrl})`
