@@ -119,4 +119,69 @@ describe("collectHeaderBindings — multi-cookie Cookie target (disneycruise __p
   it("returns exactly five bindings total — four Cookie-origin plus one non-cookie", () => {
     expect(bindings).toHaveLength(5);
   });
+
+  /** step 2: a later capture re-produces latestWDPROGeoIP under 'cookie'
+   * (lowercase, as compileActionSteps derives targetHeader verbatim from the
+   * observed request-header casing) while step 0's produce above used 'Cookie'.
+   * Both produces carry the SAME cookieName — a correct emitter must treat
+   * them as one logical binding, not two. A duplicated non-cookie header
+   * ('X-Conversation-Id' vs 'x-conversation-id') is mixed in too, pinning
+   * that casing collisions collapse for BOTH shapes. */
+  const casingVariantStep = {
+    capture: {} as never,
+    varName: "r2",
+    produces: [
+      {
+        kind: "header",
+        name: "latestWdproGeoIpCookieLower",
+        sourceHeader: "set-cookie",
+        cookieName: "latestWDPROGeoIP",
+        targetHeader: "cookie",
+      },
+      {
+        kind: "header",
+        name: "conversationUuidHeaderLower",
+        sourceHeader: "x-conversation-id",
+        targetHeader: "x-conversation-id",
+      },
+    ],
+    isMultipart: false,
+    isCrossDomain: false,
+  };
+
+  const bindingsWithCasingVariants = collectHeaderBindings([
+    productAvailStep,
+    authzPrivateStep,
+    casingVariantStep,
+  ] as never);
+
+  it("does not split one logical cookie target across casings — the same cookieName produced under 'Cookie' and 'cookie' emits only one binding", () => {
+    const latestGeoIpBindings = bindingsWithCasingVariants.filter(
+      (b) => b.cookieName === "latestWDPROGeoIP"
+    );
+    expect(latestGeoIpBindings).toHaveLength(1);
+  });
+
+  it("groups every cookie-origin binding under one targetHeader.toLowerCase() bucket, so the emitted contract cannot contain two case-variant Cookie targets", () => {
+    const cookieGroups = new Set(
+      bindingsWithCasingVariants
+        .filter((b) => b.cookieName !== undefined)
+        .map((b) => b.targetHeader.toLowerCase())
+    );
+    expect(cookieGroups.size).toBe(1);
+  });
+
+  it("still surfaces the load-bearing __pa cookie once the lowercase 'cookie' target is mixed in", () => {
+    const cookieNames = bindingsWithCasingVariants
+      .filter((b) => b.cookieName !== undefined)
+      .map((b) => b.cookieName);
+    expect(cookieNames).toContain("__pa");
+  });
+
+  it("collapses a duplicated non-cookie target differing only by case ('X-Conversation-Id' vs 'x-conversation-id') to a single binding", () => {
+    const conversationBindings = bindingsWithCasingVariants.filter(
+      (b) => b.targetHeader.toLowerCase() === "x-conversation-id"
+    );
+    expect(conversationBindings).toHaveLength(1);
+  });
 });
