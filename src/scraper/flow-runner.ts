@@ -5691,6 +5691,54 @@ export async function executeStepWithHealing(params: {
               description: record.actResultDescription,
               method: "click",
             };
+
+            // Runner-up retry: the top pick can itself phantom-click (a
+            // second web-component / shadow-root control that LOOKS
+            // submit-shaped but doesn't wire a real handler — see
+            // submit-control.ts's module docblock). Re-snapshot right here
+            // and re-classify with the same classifyPhantomClick primitive
+            // that escalated attempt 1, so a phantom top pick doesn't fall
+            // through to attempt 3's structured-click, which can't reach a
+            // shadow-root control either. Cap at ranked[1] only (not the
+            // full list) so a page with many submit-shaped candidates can't
+            // burn the step budget probing all of them.
+            const runnerUp = ranked[1];
+            if (runnerUp) {
+              const midPost = await snapshotPage(page, signalCounter);
+              const topVerdict = classifyPhantomClick({
+                actResultSuccess: true,
+                pre,
+                post: midPost,
+              });
+              if (topVerdict === "phantom") {
+                logger.info(
+                  `${formatStepPrefix(stepIndex, totalSteps)} deep-submit-locator top pick (${top.tag} "${top.accessibleName}") phantom-clicked; retrying runner-up ${runnerUp.tag} "${runnerUp.accessibleName}" (tier ${runnerUp.tier})`
+                );
+                record.instruction = `deep-submit-locator: ${runnerUp.tag} "${runnerUp.accessibleName}" (tier ${runnerUp.tier}), runner-up after top pick ${top.tag} "${top.accessibleName}" phantomed`;
+                record.triedSelectors = [
+                  `deep-index:${top.deepIndex}`,
+                  `deep-index:${runnerUp.deepIndex}`,
+                ];
+                triedSelectors.push(`deep-index:${runnerUp.deepIndex}`);
+                const runnerUpClickResult = (await page
+                  .evaluate(buildClickByDeepIndexExpr(runnerUp.deepIndex))
+                  .catch(() => ({ clicked: false }))) as { clicked: boolean };
+                record.actResultSuccess = runnerUpClickResult.clicked;
+                record.actResultDescription = runnerUpClickResult.clicked
+                  ? `deep-submit-locator clicked runner-up ${runnerUp.tag} "${runnerUp.accessibleName}" after top pick phantomed`
+                  : "deep-submit-locator: runner-up candidate vanished before click (deepIndex stale)";
+                resolvedAction = runnerUpClickResult.clicked
+                  ? {
+                      selector: `deep-index:${runnerUp.deepIndex}`,
+                      description: record.actResultDescription,
+                      method: "click",
+                    }
+                  : null;
+                if (!runnerUpClickResult.clicked) {
+                  record.errorMessage = record.actResultDescription;
+                }
+              }
+            }
           } else {
             record.errorMessage = record.actResultDescription;
           }
