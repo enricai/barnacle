@@ -7,6 +7,7 @@ import {
   waitForSpaReady,
   wireSignalCapture,
 } from "@/scraper/flow-runner";
+import type { SubmitCandidate } from "@/scraper/submit-control";
 import type { Capture } from "@/scripts/recon-shared";
 import type { Logger } from "@/types/logging";
 
@@ -302,16 +303,21 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
     deepIndexClicked?: number;
     /** Fires when the deep-locator's click-by-index expression hits the ranked candidate. */
     onDeepClick?: () => void;
+    /** Overrides the ranked-candidates list; defaults to a single tier-3 "submit" button at deepIndex 7. */
+    rankedCandidates?: SubmitCandidate[];
   }): {
     page: Page;
     evaluate: ReturnType<typeof vi.fn>;
   } {
     const { deepIndexClicked, onDeepClick } = params;
     const url = params.url;
+    const rankedCandidates = params.rankedCandidates ?? [
+      { deepIndex: 7, tier: 3, tag: "button", accessibleName: "submit" },
+    ];
     const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
       const src = String(expr);
       if (src.includes("ranked.sort")) {
-        return [{ deepIndex: 7, tier: 3, tag: "button", accessibleName: "submit" }];
+        return rankedCandidates;
       }
       if (src.includes('dispatchEvent(new Event("click"')) {
         const requestedIndex = Number(src.match(/all\[(\d+)\]/)?.[1]);
@@ -552,5 +558,82 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
     expect(deepLocatorAttempt.errorMessage).toMatch(/deepIndex stale/);
     const rankCalls = evaluate.mock.calls.filter(([expr]) => String(expr).includes("ranked.sort"));
     expect(rankCalls.length).toBe(1);
+  });
+
+  it("retries the runner-up candidate within attempt 2 when the top-ranked deep click also phantoms", async () => {
+    // Attempt 1 (act-string) phantom-clicks. Attempt 2 (deep-submit-locator)
+    // ranks two candidates: the top pick (deepIndex 7) clicks successfully
+    // but produces zero observable effect (a second phantom, distinct
+    // web-component control) — so the branch retries ranked[1] (deepIndex
+    // 12) WITHOUT consuming another cascade attempt slot. The runner-up's
+    // click bumps the network signal, which verifies the step on attempt 2.
+    const rankedCandidates: SubmitCandidate[] = [
+      { deepIndex: 7, tier: 3, tag: "button", accessibleName: "submit" },
+      { deepIndex: 12, tier: 1, tag: "div", accessibleName: "submit application" },
+    ];
+    const signalCounter = { n: 0 };
+    const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const src = String(expr);
+      if (src.includes("ranked.sort")) return rankedCandidates;
+      if (src.includes('dispatchEvent(new Event("click"')) {
+        const requestedIndex = Number(src.match(/all\[(\d+)\]/)?.[1]);
+        if (requestedIndex === 12) signalCounter.n += 1;
+        return { clicked: requestedIndex === 7 || requestedIndex === 12 };
+      }
+      if (src.includes("outerHTML")) return { html: 184186, text: "0:" };
+      if (src.includes("isInvalid(el)")) return 0;
+      return null;
+    });
+    const page = {
+      evaluate,
+      url: () => "https://apply.appcast.io/jobs/1/applyboard/apply",
+      title: vi.fn().mockResolvedValue("Registered Nurse"),
+      locator: vi.fn().mockReturnValue({
+        first: () => ({
+          isChecked: vi.fn().mockResolvedValue(false),
+          inputValue: vi.fn().mockResolvedValue(""),
+        }),
+      }),
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
+    } as unknown as Page;
+    const stagehandAct = vi.fn().mockResolvedValue(actResult());
+    const params = { ...baseParams(page, stagehandAct), signalCounter };
+
+    const result = await executeStepWithHealing(params);
+
+    expect(result).toBe("completed");
+    // Only attempt 1 (act-string) invoked stagehand.act — the runner-up
+    // retry happened inside attempt 2, so attempts 3-5 never ran.
+    expect(stagehandAct).toHaveBeenCalledTimes(1);
+    const clickByIndexCalls = evaluate.mock.calls
+      .filter(([expr]) => String(expr).includes('dispatchEvent(new Event("click"'))
+      .map(([expr]) => Number(String(expr).match(/all\[(\d+)\]/)?.[1]));
+    // Top pick (7) clicked first, then the runner-up (12) — both by
+    // deep-index, extending the existing `deep-index:N` pseudo-selector
+    // convention rather than a new format.
+    expect(clickByIndexCalls).toEqual([7, 12]);
+  });
+
+  it("falls through to the existing light-DOM techniques when only one deep candidate exists and it phantoms (control case)", async () => {
+    // Same shape as the runner-up test, but with a single ranked candidate
+    // — there is no ranked[1] to retry, so the branch must not attempt to
+    // index past the array and must let the cascade continue to
+    // structured-click / observe-act-exclude / llm-rephrase as before.
+    const { page, evaluate } = fakePage({
+      url: "https://apply.appcast.io/jobs/1/applyboard/apply",
+      bodyHtmlLength: 184186,
+      rankedCandidates: [{ deepIndex: 7, tier: 3, tag: "button", accessibleName: "submit" }],
+    });
+    const stagehandAct = vi.fn().mockResolvedValue(actResult());
+    const params = { ...baseParams(page, stagehandAct), signalCounter: { n: 0 } };
+
+    await expect(executeStepWithHealing(params)).rejects.toMatchObject({
+      name: "StepVerificationError",
+      kind: "phantom-click-exhausted",
+    });
+    const clickByIndexCalls = evaluate.mock.calls
+      .filter(([expr]) => String(expr).includes('dispatchEvent(new Event("click"'))
+      .map(([expr]) => Number(String(expr).match(/all\[(\d+)\]/)?.[1]));
+    expect(clickByIndexCalls).toEqual([7]);
   });
 });
