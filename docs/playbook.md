@@ -176,14 +176,19 @@ pre/post snapshot shows zero network delta, zero URL change, and no real DOM
 growth, `classifyPhantomClick` (`src/scraper/phantom-click.ts`) marks the
 attempt `"phantom"` — Stagehand believes it clicked something, but the click
 landed on nothing (typically a submit control rendered inside a shadow root /
-web component that the light-DOM resolver can't see). When that happens,
-attempt 2 is rerouted from `observe-act` to `deep-submit-locator`
-(`src/scraper/submit-control.ts`): it ranks every submit-shaped candidate
-reachable via a deep DOM traversal (including shadow roots) and clicks the
-top-ranked one directly by index, skipping the light-DOM re-observe/re-click
-attempts that would otherwise no-op identically. `llm-rephrase` is never
-skipped by this escalation. See `shouldSkipTechnique` in
-`src/scraper/flow-runner.ts` for the skip logic.
+web component that the light-DOM resolver can't see). On a submit-shaped step
+(`isFinalStep || submitStep`), attempt 2 is rerouted from `observe-act` to
+`deep-submit-locator` (`src/scraper/submit-control.ts`): it ranks every
+submit-shaped candidate reachable via a deep DOM traversal (including shadow
+roots) and clicks the top-ranked one directly by index, skipping the
+light-DOM re-observe/re-click attempts that would otherwise no-op
+identically. On a non-submit step the deep submit-control locator would be a
+guaranteed no-op (it ranks submit-shaped candidates only), so the escalation
+does not fire — attempt 2 stays `observe-act` and the normal
+`structured-click` / `observe-act-exclude` ladder is left intact, since those
+are the techniques that can actually click a radio or checkbox.
+`llm-rephrase` is never skipped by this escalation. See `shouldSkipTechnique`
+in `src/scraper/flow-runner.ts` for the skip logic.
 
 The recon script calls `stagehand.act()` (not `page.act()`); the four
 techniques are, in order:

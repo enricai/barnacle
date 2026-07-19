@@ -1109,12 +1109,33 @@ export function shouldSkipTechnique(params: {
    * is almost certainly unreachable via `document.querySelectorAll`, e.g.
    * inside a shadow root), so skip straight to the deep submit-control locator
    * instead of burning attempts 2-4 repeating the same no-op. Optional so
-   * existing callers are unchanged.
+   * existing callers are unchanged. Gated by {@link submitShapedStep} below —
+   * on a non-submit control the deep submit-control locator cannot resolve
+   * the target either, so this short-circuit only applies when the step is
+   * submit-shaped.
    */
   phantomClickAfterAttempt1?: boolean;
+  /**
+   * True when the current step is a submit-shaped action (`isFinalStep ||
+   * submitStep`, the canonical gate used elsewhere in this file). The deep
+   * submit-control locator ranks submit-shaped candidates only and
+   * deliberately excludes Back/Cancel/Save-draft controls, so it is a
+   * guaranteed no-op on a non-submit control (e.g. a radio/checkbox). Scopes
+   * the phantom-click short-circuit above to submit-shaped steps only —
+   * on a non-submit step the fallback ladder (`structured-click`,
+   * `observe-act-exclude`) is left intact since those are the techniques
+   * that can actually click a radio or checkbox. Optional so existing
+   * callers are unchanged.
+   */
+  submitShapedStep?: boolean;
 }): { skip: boolean; reason: string } {
-  const { technique, priorAttempts, advanceUnmovedAfterAttempt1, phantomClickAfterAttempt1 } =
-    params;
+  const {
+    technique,
+    priorAttempts,
+    advanceUnmovedAfterAttempt1,
+    phantomClickAfterAttempt1,
+    submitShapedStep,
+  } = params;
   // Unmoved-advance short-circuit (measured: attempts 2-4 recovered a stuck
   // advance 0 times in 289 steps). When attempt-1's act-string clicked the Next
   // and the wizard did NOT move forward (non-advancing POST, or no effect),
@@ -1147,9 +1168,15 @@ export function shouldSkipTechnique(params: {
   // light-DOM-only view of the page and would no-op identically, so skip
   // straight to deep-submit-locator (attempt 2) instead. llm-rephrase
   // (attempt 5) is never skipped — a differently-worded instruction is still
-  // a distinct attempt worth trying if the deep locator also fails.
+  // a distinct attempt worth trying if the deep locator also fails. Gated on
+  // submitShapedStep: the deep submit-control locator ranks submit-shaped
+  // candidates only, so on a non-submit control (e.g. a radio/checkbox) it
+  // is a guaranteed no-op — leave the normal ladder intact so
+  // structured-click / observe-act-exclude, the techniques that can
+  // actually click it, still run.
   if (
     phantomClickAfterAttempt1 === true &&
+    submitShapedStep === true &&
     (technique === "observe-act" ||
       technique === "structured-click" ||
       technique === "observe-act-exclude")
@@ -1157,7 +1184,7 @@ export function shouldSkipTechnique(params: {
     return {
       skip: true,
       reason:
-        "attempt 1 was a phantom click (reported success, zero observable effect); re-observe/re-click cannot reach a target the light-DOM resolver can't see — escalating to the deep submit-control locator",
+        "attempt 1 was a phantom click (reported success, zero observable effect) on a submit-shaped step; re-observe/re-click cannot reach a target the light-DOM resolver can't see — escalating to the deep submit-control locator",
     };
   }
   if (technique === "structured-click") {
@@ -5565,7 +5592,7 @@ export async function executeStepWithHealing(params: {
     if (attempt > 1) {
       const wouldBeTechnique: AttemptRecord["technique"] =
         attempt === 2
-          ? phantomClickAfterAttempt1
+          ? phantomClickAfterAttempt1 && (isFinalStep || submitStep)
             ? "deep-submit-locator"
             : "observe-act"
           : attempt === 3
@@ -5582,6 +5609,7 @@ export async function executeStepWithHealing(params: {
         })),
         advanceUnmovedAfterAttempt1,
         phantomClickAfterAttempt1,
+        submitShapedStep: isFinalStep || submitStep,
       });
       if (decision.skip) {
         logger.info(
@@ -5654,7 +5682,7 @@ export async function executeStepWithHealing(params: {
             if (!resolvedAction) resolvedAction = action;
           }
         }
-      } else if (attempt === 2 && phantomClickAfterAttempt1) {
+      } else if (attempt === 2 && phantomClickAfterAttempt1 && (isFinalStep || submitStep)) {
         // Deep submit-control locator: attempt 1 phantom-clicked (Stagehand
         // reported success but pre/post showed zero effect), so the target is
         // almost certainly unreachable via document.querySelectorAll — most
@@ -6723,8 +6751,12 @@ export async function executeStepWithHealing(params: {
       phantomClickAfterAttempt1 = record.phantomClickVerdict === "phantom";
       if (phantomClickAfterAttempt1) {
         const suppressedCount = getSuppressedAisdkElementIdErrorCount?.();
+        const escalationTarget =
+          isFinalStep || submitStep
+            ? "escalating attempt 2 to deep-submit-locator"
+            : "non-submit step — leaving the normal structured-click/observe-act-exclude ladder intact";
         logger.warn(
-          `${formatStepPrefix(stepIndex, totalSteps)} phantom click detected on attempt 1 (${record.technique}): reported success with no network/url/dom change${suppressedCount !== undefined ? `; ${suppressedCount} AISDK elementId errors suppressed this session (corroborating, not causal)` : ""} — escalating attempt 2 to deep-submit-locator`
+          `${formatStepPrefix(stepIndex, totalSteps)} phantom click detected on attempt 1 (${record.technique}): reported success with no network/url/dom change${suppressedCount !== undefined ? `; ${suppressedCount} AISDK elementId errors suppressed this session (corroborating, not causal)` : ""} — ${escalationTarget}`
         );
       }
       const postAttemptInvalidCount = await countNgInvalidContainers(page);
