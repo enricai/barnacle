@@ -1,9 +1,9 @@
 /**
  * Shared Zod schema for the applicant identity, address, and resume fields
- * that AppCast-powered ATS plugins require on every submission. Both AppCast
- * and Encompass Health declare the same 13 fields; this module is the single
- * source of truth so a field-type change propagates to every AppCast-shaped
- * plugin from one place.
+ * that JSON-envelope ATS plugins require on every submission. Multiple
+ * production plugins declare the same 13 fields; this module is the single
+ * source of truth so a field-type change propagates to every plugin of this
+ * shape from one place.
  *
  * Diverging fields (Email, BaseUrl, ClickUrl, JobId, Answers) stay in each
  * plugin's own contract because their types or presence differ across plugins.

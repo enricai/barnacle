@@ -23,7 +23,7 @@
  * Usage:
  *   pnpm tsx src/scripts/migrate-telemetry-dir-names.ts
  *   pnpm tsx src/scripts/migrate-telemetry-dir-names.ts --apply
- *   pnpm tsx src/scripts/migrate-telemetry-dir-names.ts --site appcast --apply
+ *   pnpm tsx src/scripts/migrate-telemetry-dir-names.ts --site <siteId> --apply
  */
 
 import { existsSync, readdirSync, readFileSync, renameSync, statSync } from "node:fs";
@@ -39,7 +39,7 @@ const ALREADY_MIGRATED_RX = /^\d+-[0-9a-f]{8}$/;
 interface MigrateOptions {
   /** Path to the project root containing `src/sites/`. */
   sitesRoot: string;
-  /** Optional: restrict to one site directory by name (e.g. "appcast"). */
+  /** Optional: restrict to one site directory by name (e.g. "acme-jobs"). */
   siteFilter: string | null;
   /** If false, log planned renames but do not execute them. */
   apply: boolean;

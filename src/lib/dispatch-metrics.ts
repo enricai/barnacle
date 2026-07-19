@@ -2,7 +2,7 @@
  * Lightweight step-timing accumulator for a single dispatch invocation.
  * Instantiated per-request in the dispatch layer, threaded through
  * SitePluginContext, and finalized into a DispatchMetrics payload that
- * ships in the response body for Vivian → Segment forwarding.
+ * ships in the response body for caller → Segment forwarding.
  */
 import { formatISO } from "date-fns";
 

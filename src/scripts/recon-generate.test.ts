@@ -680,7 +680,7 @@ describe("emitContractTs — non-multipart plugin does not import omitHeaderCase
   });
 });
 
-describe("resolveStepPayloadField — HCA-shaped positives", () => {
+describe("resolveStepPayloadField — wizard-ATS-shaped positives", () => {
   const cases: Array<[string, string]> = [
     ["Fill in the First Name field with 'Reginald'", "FirstName"],
     ["Fill in the Last Name field with 'Barrington'", "LastName"],
@@ -709,7 +709,7 @@ describe("resolveStepPayloadField — trap negatives", () => {
     "Type '5125550000' into the Secondary Phone Number field",
     // Screening questions: a candidate-label word ("state", "city") inside the
     // QUESTION text must not splice — the first quote is the question, not a
-    // value. This is the real HCA step 42 shape (regression: "state" matched
+    // value. This is a real wizard-ATS step 42 shape (regression: "state" matched
     // the State label and corrupted the question quote into ${payload.State}).
     "For 'Are you currently licensed to work as a Registered Nurse in this state?' select 'Yes'",
     "For 'In which settings have you worked as a Registered Nurse during the past three years?' select 'Hospital'",

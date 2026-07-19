@@ -1,5 +1,5 @@
 /**
- * Structured metrics payload attached to dispatch responses so Vivian can
+ * Structured metrics payload attached to dispatch responses so the caller can
  * forward step-level detail into Segment events for A/B warehouse analysis.
  */
 

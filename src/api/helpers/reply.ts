@@ -6,7 +6,7 @@ import type { DispatchMetrics } from "@/types/dispatch-metrics";
 
 /**
  * Sends a standard error envelope on the given reply, optionally including
- * dispatch metrics so Vivian can forward step-level detail even on failures.
+ * dispatch metrics so the caller can forward step-level detail even on failures.
  */
 export function replyWithError(
   reply: FastifyReply,

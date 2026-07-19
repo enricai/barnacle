@@ -1,14 +1,14 @@
 /**
- * Shared Zod schema for the resume attachment block that AppCast-powered ATS
- * plugins require on every submission. AppCast and Encompass Health both declare
+ * Shared Zod schema for the resume attachment block that JSON-envelope ATS
+ * plugins require on every submission. Multiple production plugins declare
  * the same four fields; this fragment is extracted so the Buffer/instanceof
  * constraint and the base64 twin are defined once and propagate to every
- * AppCast-shaped plugin from one source of truth.
+ * plugin of this shape from one source of truth.
  *
  * `Resume` must be a real Node.js Buffer — multipart form builders call
  * `fd.append("Resume", payload.Resume, ...)` which requires an actual Buffer
  * instance, not a base64 string. `ResumeBase64` carries the same bytes
- * pre-encoded for JSON payloads (e.g. the AppCast `interruption_check` body).
+ * pre-encoded for JSON payloads (e.g. the `interruption_check` body).
  */
 
 import { z } from "zod/v4";

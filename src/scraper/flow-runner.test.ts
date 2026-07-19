@@ -394,7 +394,7 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
     // ranked candidate; its network effect (simulated via onDeepClick bumping
     // the shared counter) verifies the step.
     const { page, evaluate } = fakePage({
-      url: "https://apply.appcast.io/jobs/1/applyboard/apply",
+      url: "https://apply.acme.example/jobs/1/apply-portal/apply",
       bodyHtmlLength: 184186,
       onDeepClick: () => {
         signalCounter.n += 1;
@@ -417,7 +417,7 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
 
   it("succeeds on attempt 1 via the existing path when the click is verified, with no deep-locator call", async () => {
     const { page, evaluate } = fakePage({
-      url: "https://apply.appcast.io/jobs/1/applyboard/apply",
+      url: "https://apply.acme.example/jobs/1/apply-portal/apply",
       bodyHtmlLength: 184186,
     });
     const signalCounter = { n: 0 };
@@ -454,7 +454,7 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
     // exhausts in 3 recorded attempts (1, 2, 5) — strictly fewer than the
     // 5-attempt ceiling this replaces.
     const { page, evaluate } = fakePage({
-      url: "https://apply.appcast.io/jobs/1/applyboard/apply",
+      url: "https://apply.acme.example/jobs/1/apply-portal/apply",
       bodyHtmlLength: 184186,
       deepIndexClicked: -1,
     });
@@ -495,7 +495,7 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
     });
     const page = {
       evaluate,
-      url: () => "https://apply.appcast.io/jobs/1/applyboard/apply",
+      url: () => "https://apply.acme.example/jobs/1/apply-portal/apply",
       title: vi.fn().mockResolvedValue("Registered Nurse"),
       locator: vi.fn().mockReturnValue({
         first: () => ({
@@ -539,7 +539,7 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
     // errorMessage, and let the cascade continue rather than looping or
     // throwing here.
     const { page, evaluate } = fakePage({
-      url: "https://apply.appcast.io/jobs/1/applyboard/apply",
+      url: "https://apply.acme.example/jobs/1/apply-portal/apply",
       bodyHtmlLength: 184186,
       deepIndexClicked: -1,
     });
@@ -603,7 +603,7 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
     });
     const page = {
       evaluate,
-      url: () => "https://apply.appcast.io/jobs/1/applyboard/apply",
+      url: () => "https://apply.acme.example/jobs/1/apply-portal/apply",
       title: vi.fn().mockResolvedValue("Registered Nurse"),
       locator: vi.fn().mockReturnValue({
         first: () => ({
@@ -653,7 +653,7 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
     });
     const page = {
       evaluate,
-      url: () => "https://apply.appcast.io/jobs/1/applyboard/apply",
+      url: () => "https://apply.acme.example/jobs/1/apply-portal/apply",
       title: vi.fn().mockResolvedValue("Registered Nurse"),
       locator: vi.fn().mockReturnValue({
         first: () => ({
@@ -687,7 +687,7 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
     // index past the array and must let the cascade continue to
     // structured-click / observe-act-exclude / llm-rephrase as before.
     const { page, evaluate } = fakePage({
-      url: "https://apply.appcast.io/jobs/1/applyboard/apply",
+      url: "https://apply.acme.example/jobs/1/apply-portal/apply",
       bodyHtmlLength: 184186,
       rankedCandidates: [{ deepIndex: 7, tier: 3, tag: "button", accessibleName: "submit" }],
     });

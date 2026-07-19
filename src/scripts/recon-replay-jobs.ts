@@ -13,8 +13,8 @@
  *
  * Usage:
  *   pnpm tsx --env-file=.env src/scripts/recon-replay-jobs.ts \
- *     --jobs src/sites/appcast/fixtures/replay-jobs.json \
- *     --flow-file src/sites/appcast/recon-flow.json \
+ *     --jobs src/sites/<siteId>/fixtures/replay-jobs.json \
+ *     --flow-file src/sites/<siteId>/recon-flow.json \
  *     --report /tmp/recon/replay-report.json
  */
 
@@ -25,7 +25,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { getScriptLogger } from "@/lib/logging";
 import { detectRejectionInResponseBody } from "@/scripts/recon-browser";
-import { resolveReconRunDir } from "@/scripts/recon-shared";
+import { readSuccessUrlFragments, resolveReconRunDir } from "@/scripts/recon-shared";
 import { allocateTestmailInbox, pollTestmailInbox } from "@/testmail/client";
 
 const logger = getScriptLogger("recon-replay-jobs");
@@ -43,7 +43,7 @@ interface JobVerdict {
   integratedApply200: boolean;
   /**
    * True when the submit endpoint returned a 2xx whose response body
-   * declared rejection (e.g. AppCast `not_qualified: true`, Greenhouse
+   * declared rejection (e.g. `not_qualified: true`, Greenhouse
    * `rejected: true`). When this is true, `integratedApply200` should
    * NOT be interpreted as a real success — the application reached the
    * HTTP layer but was filtered out by the ATS's qualification check
@@ -169,12 +169,18 @@ export async function runReconForJob(
 
 /**
  * Scans the recon's graphql capture directory for files written during
- * this job's run, returning whether the AppCast integrated_apply
+ * this job's run, returning whether the site's integrated_apply
  * endpoint captured a 200 and the SPA's terminal URL.
+ *
+ * `successUrlFragments` comes from the flow file's own config (the same field the
+ * browser-flow verifier reads) rather than a built-in pattern, so terminal-URL
+ * detection stays site-agnostic. Empty ⇒ `terminalUrl` stays null; that field only
+ * decorates the report and never gates the accept/reject verdict.
  */
 export function readJobOutcome(
   capturesBefore: Set<string>,
-  graphqlDir: string
+  graphqlDir: string,
+  successUrlFragments: string[]
 ): {
   integratedApply200: boolean;
   serverRejected: boolean;
@@ -202,7 +208,7 @@ export function readJobOutcome(
       ) {
         integratedApply200 = true;
         // Parse the response body to detect server-side rejection envelopes
-        // (AppCast `not_qualified`, Greenhouse `rejected`, Lever `qualified:
+        // (`not_qualified`, Greenhouse `rejected`, Lever `qualified:
         // false`, Workday `status: "rejected"`). HTTP 200 alone is not proof
         // of acceptance — many ATSs use a "200 with rejection envelope"
         // pattern. The capture writer at recon-browser.ts:240 stores
@@ -222,8 +228,9 @@ export function readJobOutcome(
           serverRejectionReason = rejection.reason;
         }
       }
-      if (typeof data.url === "string" && /\/applyboard\/applied/.test(data.url)) {
-        terminalUrl = data.url;
+      const url = data.url;
+      if (typeof url === "string" && successUrlFragments.some((f) => url.includes(f))) {
+        terminalUrl = url;
       }
     } catch {}
   }
@@ -234,6 +241,7 @@ async function main(): Promise<void> {
   const runDir = resolveReconRunDir();
   const { jobsPath, flowFile, reportPath } = parseArgs(runDir.root);
   const jobs: ReplayJob[] = JSON.parse(readFileSync(jobsPath, "utf8"));
+  const successUrlFragments = readSuccessUrlFragments(flowFile);
   logger.info(
     `replay: ${jobs.length} jobs from ${jobsPath}, flow=${flowFile}, runId=${runDir.runId}`
   );
@@ -253,7 +261,7 @@ async function main(): Promise<void> {
       runDir.graphqlDir
     );
     const { integratedApply200, serverRejected, serverRejectionReason, terminalUrl } =
-      readJobOutcome(capturesBefore, runDir.graphqlDir);
+      readJobOutcome(capturesBefore, runDir.graphqlDir, successUrlFragments);
 
     let emailReceived = false;
     let emailSubject: string | null = null;

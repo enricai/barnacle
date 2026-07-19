@@ -212,6 +212,32 @@ export function readJsonDir<T>(dir: string, exclude: string[] = []): T[] {
 }
 
 /**
+ * Reads just `successUrlFragments` out of a recon flow file.
+ *
+ * Why a separate reader rather than reusing recon-browser's `parseReconFlow`:
+ * that parser exits the process on a malformed flow file, which is right for a
+ * recon run but wrong for the replay driver — a bad flow file must not abort a
+ * sweep over a field that only decorates the report. Returns `[]` for the legacy
+ * bare-array flow shape, and `[]` (with a warning) on any read/parse failure.
+ */
+export function readSuccessUrlFragments(flowFile: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(flowFile, "utf8"));
+    if (Array.isArray(parsed)) return [];
+    const fragments = (parsed as { successUrlFragments?: unknown }).successUrlFragments;
+    if (!Array.isArray(fragments)) return [];
+    return fragments.filter((f): f is string => typeof f === "string" && f.length > 0);
+  } catch (err) {
+    logger.warn(
+      `flow file '${flowFile}' unreadable for successUrlFragments, terminal-URL detection disabled: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
+    return [];
+  }
+}
+
+/**
  * Counts how often each response header appears across successful replays.
  * Infrastructure headers that are never load-bearing on the request side are
  * excluded so the caller sees only candidates worth committing as BASE_HEADERS.

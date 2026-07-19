@@ -111,8 +111,8 @@ export interface SitePluginMeta {
   /**
    * When true, sessions allocated for this plugin's browser fallback opt
    * into Browserbase's Scale Plan stealth profile (Windows desktop fingerprint
-   * + solveCaptchas). DataDome-protected flows (notably apply.appcast.io
-   * postings) need this to clear the silent fingerprint wall. Defaults to
+   * + solveCaptchas). DataDome-protected flows need this to clear the
+   * silent fingerprint wall. Defaults to
    * false to avoid the cost penalty on plugins that don't need it.
    */
   advancedStealth?: boolean;
@@ -196,8 +196,8 @@ export interface SitePluginResult<TData = Record<string, unknown>> {
   auditPayload?: Record<string, unknown>;
   /**
    * Step-level dispatch metrics attached by core after finalize(). Included in
-   * the response envelope so Vivian can forward into Segment events for A/B
-   * warehouse analysis.
+   * the response envelope so the caller can forward into Segment events for
+   * A/B warehouse analysis.
    */
   metrics?: DispatchMetrics;
 }

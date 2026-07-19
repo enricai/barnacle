@@ -386,7 +386,7 @@ const SELECT_SETTLE_MS = 400;
 /**
  * Extra bounded poll window for a network-only advance whose real
  * `TransitionWorklet(type="next")` POST lands AFTER the `STEP_PAUSE_MS`
- * snapshot. HCA/Talemetry's "Next" click fires a fast `WorkletPayload` autosave
+ * snapshot. The wizard ATS's "Next" click fires a fast `WorkletPayload` autosave
  * first, then the actual transition ~0.6-2s+ later — so a one-shot check
  * false-negatives the advance, retries the click, and the stale retry fires a
  * `back` that bounces the wizard. Additive to `STEP_PAUSE_MS`; only spent on an
@@ -468,7 +468,7 @@ export const STEP_WATCHDOG_MS = 120_000;
  * browser-context `page.evaluate` expression string, where a Node RegExp can't
  * cross the boundary.
  *
- * Why the additions beyond the original Angular/Bootstrap set: HCA's Talemetry
+ * Why the additions beyond the original Angular/Bootstrap set: the Angular/MUI
  * wizard mixes Angular pages AND Material-UI (React) pages (Review, self-ID,
  * COMPENSATION). MUI marks invalid controls with `Mui-error` (class) +
  * `aria-invalid="true"` (attribute), NONE of which the ng-only regex matched —
@@ -611,11 +611,11 @@ export async function snapshotPage(
 /**
  * Detect whether a 2xx response body indicates the server REJECTED the
  * application despite returning a 2xx HTTP status. Many ATSs use a "200 OK
- * with rejection envelope" pattern instead of a 4xx: AppCast returns
+ * with rejection envelope" pattern instead of a 4xx: one JSON-envelope ATS returns
  * `{not_qualified: true, error: "Not qualified reason: <field>"}`,
  * Greenhouse uses `{rejected: true, reason: "..."}`, Lever uses
  * `{qualified: false, reason: "..."}`, Workday uses
- * `{status: "rejected"}`. Empirically verified on AppCast: 4/6 historical
+ * `{status: "rejected"}`. Empirically verified on a JSON-envelope ATS: 4/6 historical
  * /integrated_apply 200s on this codebase had `not_qualified: true` and
  * we treated them as wins because the audit only checked HTTP status.
  *
@@ -817,7 +817,7 @@ export function latestCaptureIndex(recentCaptures: readonly string[]): number {
  * read straight from `capturesDir` — NOT from the in-memory `recentCaptures`
  * array, which is front-evicted to `RECENT_CAPTURES_WINDOW` and therefore drops
  * a step's transition when >20 captures flood during the step (measured 43
- * across one HCA cascade). Scanning disk by filename index is eviction-proof:
+ * across one wizard-ATS cascade). Scanning disk by filename index is eviction-proof:
  * the transition file is always on disk regardless of array churn. `.decoded.json`
  * sidecars are excluded (the raw file carries `requestPostData`). Sorted by index
  * so callers scan in capture order. Returns [] when the dir is unreadable.
@@ -841,7 +841,7 @@ export function capturesAfterIndex(preIdx: number, capturesDir: string): string[
  * Detects a multi-page-wizard RESTART / backward navigation by scanning the
  * captures written during this step for a configured restart-signal pattern
  * (e.g. `init-apply`, `application_canceled=true`). The restart signal is often
- * a plain GET (Talemetry's `GET .../init-apply?...&application_canceled=true`),
+ * a plain GET (the wizard ATS's `GET .../init-apply?...&application_canceled=true`),
  * so it scans the raw capture files' `url` field (GETs are written to disk even
  * though they're dropped from `recentCaptureMeta`). Window scoped by
  * `preIdx` via {@link capturesAfterIndex} (eviction-proof). Returns the matching
@@ -852,7 +852,7 @@ export function capturesAfterIndex(preIdx: number, capturesDir: string): string[
  * Does any same-window network capture's REQUEST BODY match the configured
  * transition pattern? Proves an interior "advance"/"Next" step really moved the
  * wizard forward when advance and non-advance mutations share one endpoint URL
- * (e.g. Talemetry `/gq`: a real advance is a `TransitionWorklet` mutation, a
+ * (e.g. the wizard ATS's `/gq`: a real advance is a `TransitionWorklet` mutation, a
  * field edit is `EditQuestionItem` — same URL, only the body differs, so a
  * URL/meta-based check can't tell them apart). Window scoped by `preIdx` via
  * {@link capturesAfterIndex} (disk-scan by filename index — eviction-proof, so a
@@ -893,7 +893,7 @@ export function windowHasTransitionBody(params: {
  * Stricter sibling of {@link windowHasTransitionBody}: a same-window capture
  * whose request body matches the transition pattern AND whose parsed
  * `variables.input.type === "next"`. The mutation NAME alone is a weak
- * distinguisher — on Talemetry a `back` bounce is ALSO a `TransitionWorklet`
+ * distinguisher — on the wizard ATS a `back` bounce is ALSO a `TransitionWorklet`
  * mutation (its body contains the pattern too) and would wrongly count as an
  * advance; and the fast `WorkletPayload` autosave that precedes the real
  * transition is a different mutation with no `input.type`. Requiring the parsed
@@ -941,7 +941,7 @@ export function windowHasAdvanceTransition(params: {
  * the RC2 gate is unit-testable.
  *
  * An interior "Next" on an SPA where an advance and a mere field-edit share one
- * endpoint (Talemetry `/gq`: TransitionWorklet vs EditQuestionItem — same URL,
+ * endpoint (the wizard ATS's `/gq`: TransitionWorklet vs EditQuestionItem — same URL,
  * different body) can fire a network POST that is NOT a real advance; the
  * fallback's htmlDelta/textChanged/checked-radio signals are then validation
  * re-renders / field toggles that don't move the wizard. So for an opted-in
@@ -973,7 +973,7 @@ export function shouldVetoFallbackAdvance(params: {
  * transition fired — a URL change OR a real `type=next` (`networkIsRealAdvance`).
  * A DOM change alone is a validation re-render / field toggle that never moves
  * the wizard. Crucially this must veto even when a NON-advancing network POST
- * fired (Talemetry's `WorkletPayload` autosave): keying the veto on "no network
+ * fired (the wizard ATS's `WorkletPayload` autosave): keying the veto on "no network
  * at all" let a rephrase that triggered an autosave + DOM reflow false-verify an
  * advance, desyncing the flow from the wizard. Returns whether the DOM signal is
  * ALLOWED to verify: false = veto it. Non-advance/field steps, sites without the
@@ -1247,7 +1247,7 @@ export function isSubmitRevealedInvalid(params: {
  * landed within the poll window (`networkIsRealAdvance` false), the button works
  * but the wizard is refusing to advance (a precondition isn't met, e.g. a
  * required field the flow answers on a LATER step). Re-clicking the same button
- * only re-fires the autosave / a `back` bounce — measured across HCA runs as the
+ * only re-fires the autosave / a `back` bounce — measured across wizard-ATS runs as the
  * next→back oscillation. Break to replan instead, which can reorder a later step
  * forward. Conservative: any condition unmet → run the full cascade as before.
  * Never fires on final/submit steps (they own `isSubmitRevealedInvalid`) or on
@@ -1327,7 +1327,7 @@ export async function rephraseWithLLM(
    * invalid form fields and visible error messages so the rephrase LLM can
    * propose corrective fills instead of
    * just "click harder" — the previous limitation observed in the
-   * telemetry of the appcast Encompass run (every rephrase converged on
+   * telemetry of the JSON-envelope ATS run (every rephrase converged on
    * "Click Submit Application using JavaScript" because the prompt had no
    * signal that the form was invalid).
    */
@@ -1724,8 +1724,8 @@ const BODY_EXCERPT_FORM_WINDOW = 16_000;
  * Default: first 8KB. That window held for tenants whose form was at the
  * top of the page (early sweeps in 2026-06).
  *
- * For pages where the form HTML lives below 8KB (verified on AppCast's
- * applyboard SPA: ng-invalid first appears at byte ~15,500 after a header
+ * For pages where the form HTML lives below 8KB (verified on an Angular
+ * apply SPA: ng-invalid first appears at byte ~15,500 after a header
  * of Angular hydration JS + chrome), the 8KB cap silently produced
  * "FORM FIELDS CURRENTLY MARKED INVALID: (none)" in the replan prompt,
  * leaving the LLM with no evidence and causing it to hallucinate steps
@@ -1736,7 +1736,7 @@ const BODY_EXCERPT_FORM_WINDOW = 16_000;
  *
  * Site-agnostic: the markers we look for (ng-invalid, mat-form-field-
  * invalid, is-invalid, <form) are framework-level CSS-class conventions
- * used across countless SPAs, not AppCast-specific.
+ * used across countless SPAs, not specific to any one ATS.
  */
 export function selectBodyExcerpt(body: string): string {
   if (body.length <= BODY_EXCERPT_DEFAULT_CAP) return body;
@@ -1780,7 +1780,7 @@ async function extractLivePageFormEvidence(
 
   // Pick a body excerpt that's likely to contain the form's invalid-field
   // markers. Default 8KB cap unless the body has ng-invalid / <form past
-  // the cap (typical of AppCast applyboard SPA, where the form starts
+  // the cap (typical of an Angular apply SPA, where the form starts
   // ~15KB into a page of Angular hydration scaffolding). See
   // selectBodyExcerpt for details.
   const bodyExcerpt = selectBodyExcerpt(body);
@@ -1886,7 +1886,7 @@ export interface LeafInvalidField {
  * matches `ng-invalid` because of bubbling, but its child `<app-input
  * class="ng-invalid">` ALSO matches; `:not(:has(...))` filters out the parent.
  *
- * Today's Encompass-Fitchburg smoke (run 1781478440322) showed E1's prompt
+ * A JSON-envelope ATS tenant's smoke (run 1781478440322) showed E1's prompt
  * instruction ("prefer the leaf, not the bubbled parent") only got Haiku from
  * 5 wrong fields → 1 wrong field — still surfaced `(unlabeled) <ol>` instead
  * of `<app-input autocomplete="zip-code">` at byte 95,033. All 3 replans + 4
@@ -2175,7 +2175,7 @@ export function extractSubmitFailureEvidence(
 
 /**
  * Surface Google Analytics Measurement Protocol events captured during a
- * step's attempt window. AppCast (and most GA4-instrumented SPAs) emit
+ * step's attempt window. A JSON-envelope ATS (and most GA4-instrumented SPAs) emits
  * `view_secondPage`, `view_thankYouPage`, `form_submit` and similar events
  * via `https://www.google-analytics.com/g/collect` — the engine already
  * stores these in `recentCaptures[]` but no code reads them. Without
@@ -2249,8 +2249,8 @@ export function extractGaEventEvidence(
 
 /**
  * Render a long step list as a small head + tail window with an elision
- * marker. Replan prompts grew to ~114KB on the AppCast 331-step flow
- * (verified Fitchburg 2026-06-14 run), causing Sonnet 4.6 to TTFT-stall
+ * marker. Replan prompts grew to ~114KB on a JSON-envelope ATS's 331-step flow
+ * (verified on a 2026-06-14 tenant run), causing Sonnet 4.6 to TTFT-stall
  * out at 187s with `APIConnectionTimeoutError: Request timed out.` —
  * the ONLY non-API-quota replan failure across ~30+ historical calls.
  *
@@ -2488,9 +2488,9 @@ function harvestFieldErrors(body: unknown): string[] {
   if (!body || typeof body !== "object") return [];
   const out: string[] = [];
   const rec = body as Record<string, unknown>;
-  // Singular `{error: "message"}` shape used by AppCast, Lever, Greenhouse,
+  // Singular `{error: "message"}` shape used by JSON-envelope ATSs, Lever, Greenhouse,
   // and any REST API following the {error:string} terse-error convention.
-  // Verified on AppCast Encompass-Fitchburg: /integrated_apply 422 body is
+  // Verified on a JSON-envelope ATS tenant: /integrated_apply 422 body is
   // exactly {"error":"Resume is blank"} — no `errors`, no `message`. Before
   // J', this was caught by neither the array branch below nor the
   // extractSubmitFailureEvidence fallback at line 2028, resulting in
@@ -2564,7 +2564,7 @@ const UPLOAD_NETWORK_POLL_INTERVAL_MS = 250;
 /**
  * How long the upload primitive waits for the async ResumeUpload widget (and its
  * lazily-mounted `<input type=file>`) to render before deciding the input is
- * absent. HCA/Talemetry mounts the MUI/react-dropzone widget ~5s after the
+ * absent. The wizard ATS mounts the MUI/react-dropzone widget ~5s after the
  * wizard lands on the Apply page, so a single probe races that mount and the
  * primitive wrongly falls into the click-to-surface path (or skips). Only
  * reached on `upload:true` steps, so it never slows a page with no upload step.
@@ -2574,7 +2574,7 @@ const UPLOAD_WIDGET_RENDER_ATTEMPTS = 17;
 /**
  * URL substrings that mark a POST as an actual resume/attachment upload rather
  * than coincidental traffic (analytics beacons, `/interruption_check`,
- * geocoders). Talemetry posts the resume to an `attachment_upload_url` that
+ * geocoders). The wizard ATS posts the resume to an `attachment_upload_url` that
  * matches `/attachment`; the others cover the other ATS upload sinks. Module-
  * level so both the raw-input path and the click-to-surface path share one list.
  */
@@ -2628,7 +2628,7 @@ async function waitForUploadNetworkSignal(params: {
  * True when a control's text/aria-label denotes a resume-upload affordance
  * (the button that surfaces a hidden `<input type=file>` or opens a chooser).
  * Pure + exported for unit tests; the vocabulary is intentionally generic so it
- * benefits any MUI/React/dropzone ATS, not just Talemetry. Rejects negative
+ * benefits any MUI/React/dropzone ATS, not just the wizard ATS. Rejects negative
  * lookalikes ("upload later", "no file", a bare "submit") so the click-to-
  * surface path never fires a skip/decline/submit control.
  */
@@ -2692,7 +2692,7 @@ async function tryUploadPrimitive(params: {
    * not coincidental traffic like /interruption_check, /postal_code_geocoder,
    * or analytics beacons. Today's smoke (run 1781485435455) declared upload
    * success on a /interruption_check POST that did NOT register the file
-   * in AppCast's framework state — false positive. K'1 catches this by
+   * in the ATS's framework state — false positive. K'1 catches this by
    * filtering the network signal by URL keyword.
    */
   recentCaptureMeta: readonly { method: string; status: number; url: string }[];
@@ -2725,7 +2725,7 @@ async function tryUploadPrimitive(params: {
     return false;
   }
   if ((inputCount ?? 0) === 0) {
-    // Talemetry/MUI and other react-dropzone widgets can render NO <input type=file>
+    // MUI wizard and other react-dropzone widgets can render NO <input type=file>
     // at all (a click surfaces it, or a native chooser opens). Try to surface it
     // (click-to-mount or CDP native-chooser interception) before giving up.
     logger.info(
@@ -2775,7 +2775,7 @@ async function attachToSurfacedInput(params: {
     // ControlValueAccessor binds at the wrapper level — and the wrapper's
     // change handler doesn't observe input.files mutations directly.
     //
-    // Verified on AppCast Encompass-Fitchburg today: setInputFiles
+    // Verified on a JSON-envelope ATS tenant: setInputFiles
     // populated input.files but the subsequent /integrated_apply submit
     // had no `apply[resume]` multipart field — the framework wrapper
     // never registered the file in its internal state. Server returned
@@ -2850,7 +2850,7 @@ async function attachToSurfacedInput(params: {
 
 /**
  * Recover an upload for widgets that mount NO `<input type=file>` until a button
- * is clicked (Talemetry/MUI `ResumeUpload`, react-dropzone). Ordered cheapest-
+ * is clicked (the MUI wizard's `ResumeUpload`, react-dropzone). Ordered cheapest-
  * first: (DZ) a synthetic drag-drop on the dropzone; then, arming CDP native-
  * chooser interception BEFORE any click (a chooser-opening click with no
  * interception blocks the run — the single biggest risk), click the upload
@@ -3077,7 +3077,7 @@ async function setFilesViaCdp(params: {
  * Parse a select/dropdown flow step into the option to choose and (when
  * present) the question label that scopes which dropdown it targets.
  *
- * Why: HCA/Talemetry render dropdowns as `MuiNativeSelect` native `<select>`
+ * Why: the Angular/MUI wizard ATS renders dropdowns as `MuiNativeSelect` native `<select>`
  * with `tabindex="-1"` — removed from the accessibility tree, so Stagehand
  * observe returns `[]` and the cascade can never select an option. The select
  * primitive answers these directly from the DOM, but needs the target option
@@ -3125,7 +3125,7 @@ export function parseSelectStep(
  * Why this exists (sibling of `parseSelectStep`): `parseSelectStep`
  * deliberately excludes bare radio steps ("a bare 'click the Yes answer' is a
  * radio"), leaving radios with no DOM-direct primitive — they fall to the
- * observe cascade, which on HCA/Talemetry's MUI radio markup resolves the step
+ * observe cascade, which on the wizard ATS's MUI radio markup resolves the step
  * to a wrapper `<div>`/`<span>` (not the `<input type=radio>`) and commits via
  * a bare `el.click()` that never triggers React's controlled-state `onChange`.
  * The field stays `Mui-error` "required", Next no-ops, and the wizard walls at
@@ -3175,7 +3175,7 @@ const PRIMITIVE_ENUMERATE_RETRY_MS = 600;
 
 /**
  * Run a primitive's read-only DOM enumerate with a bounded settle-retry. SPA
- * wizards (Talemetry) frequently render the target widget a beat AFTER the flow
+ * wizards frequently render the target widget a beat AFTER the flow
  * step fires — the first evaluate sees an empty page, so the primitive would
  * give up even though the widget appears moments later. Re-run the enumerate up
  * to `PRIMITIVE_ENUMERATE_ATTEMPTS` times, waiting `PRIMITIVE_ENUMERATE_RETRY_MS`
@@ -3208,7 +3208,7 @@ export async function pollEnumerate<T>(
  * Bounded poll for the real advance-transition POST to appear in this step's
  * capture window. The verifiers snapshot once after `STEP_PAUSE_MS`, but the
  * genuine `TransitionWorklet(type="next")` POST can land hundreds of ms to 2s+
- * AFTER that snapshot (HCA fires a fast `WorkletPayload` autosave first). A
+ * AFTER that snapshot (the wizard ATS fires a fast `WorkletPayload` autosave first). A
  * one-shot check false-negatives the advance, retries the click, and the stale
  * retry fires a `back` — a next→back oscillation that never leaves the page.
  * Re-check {@link windowHasAdvanceTransition} every `intervalMs` until it matches
@@ -3248,7 +3248,7 @@ export async function waitForTransitionBody(params: {
  * Site-agnostic select primitive: answer a native `<select>` dropdown by
  * directly setting its value in the DOM, bypassing Stagehand observe/act.
  *
- * Why this exists (parallels `tryUploadPrimitive`): Talemetry/MUI dropdowns are
+ * Why this exists (parallels `tryUploadPrimitive`): MUI wizard dropdowns are
  * `MuiNativeSelect` native `<select>` elements carrying `tabindex="-1"`, which
  * removes them from the accessibility tree. Stagehand observe returns `[]` for
  * them, so the cascade's `selectOption` (which needs a resolved locator) never
@@ -3278,7 +3278,7 @@ export async function waitForTransitionBody(params: {
  * validation tick can be awaited: MUI `NativeSelect` re-runs required-validation
  * a beat after the synthetic `change`, so an immediate `sel.value === value`
  * readback passes even when the FormControl still flags the field required (and
- * a later worklet re-render then wipes the DOM-only value — the exact HCA
+ * a later worklet re-render then wipes the DOM-only value — the exact wizard-ATS
  * Job-Related failure). Returns `stillInvalid` so {@link trySelectPrimitive} can
  * refuse to claim success on an uncommitted select, routing to the cascade/replan
  * instead of silently advancing. Walks ≤6 ancestors for the invalid marker, same
@@ -3513,7 +3513,7 @@ const DECLINE_OPTION_MARKERS = [
  * Pick an option to satisfy a REQUIRED select on a catch-all step, from the
  * select's option TEXTS (placeholder already excluded upstream). Policy: take
  * the first non-decline option (a plausible substantive answer — the operator
- * accepts LLM-plausible answers reaching HCA prod); fall back to the first
+ * accepts LLM-plausible answers reaching ATS prod); fall back to the first
  * option only if every option is a decline/placeholder. Returns null when there
  * is nothing selectable. Pure + exported so the policy is unit-testable; the LLM
  * path ({@link judgeSelectOptionWithLLM}) is preferred when a client is present,
@@ -3675,7 +3675,7 @@ async function tryFillRequiredSelectsPrimitive(params: {
  * question by directly checking the matching option in the DOM, bypassing
  * Stagehand observe/act.
  *
- * Why this exists (parallels `trySelectPrimitive`): HCA/Talemetry render
+ * Why this exists (parallels `trySelectPrimitive`): the Angular/MUI wizard ATS renders
  * multi-select screening questions ("In which settings have you worked…",
  * certifications) as `c-MultiCheckboxInput` groups — a `<fieldset>`/`<legend>`
  * question with `<input type=checkbox>` options, each tied to its text by a
@@ -3879,7 +3879,7 @@ export type RadioGroupCandidate = {
 
 /**
  * Build an XPath predicate that matches an `<input>` by its `id`, safe for any
- * id value. MUI/Talemetry radio ids are base64-ish (no double-quote), so a plain
+ * id value. MUI wizard radio ids are base64-ish (no double-quote), so a plain
  * quoted literal suffices — but if an id ever contains a `"`, fall back to
  * `concat(...)` so the XPath stays valid. Pure + exported for unit tests.
  */
@@ -3894,7 +3894,7 @@ export function buildRadioIdXPath(id: string): string {
  * positionally. Pure (no DOM/LLM) so it is unit-testable — the crux of the
  * unlabeled-radio disambiguation.
  *
- * Why this exists: HCA/Talemetry Basic Info has multiple UNLABELED yes/no groups
+ * Why this exists: the wizard ATS's Basic Info has multiple UNLABELED yes/no groups
  * (visa-sponsorship, common-domicile), answered by consecutive flow steps. The
  * old in-browser matcher treated an unlabeled group (`label===""`) as matching
  * ANY question (`"".includes(q)`/`q.includes("")===0`), so two unlabeled "No"
@@ -4037,12 +4037,12 @@ export function selectRadioGroupOption(params: {
  * observe/act.
  *
  * Why this exists (parallels `trySelectPrimitive`/`tryCheckboxPrimitive`):
- * HCA/Talemetry render eligibility/screening questions as MUI radio groups.
+ * The Angular/MUI wizard ATS renders eligibility/screening questions as MUI radio groups.
  * Stagehand observe resolves the step to a wrapper `<div>`/`<span>`, not the
  * `<input type=radio>`, so the cascade's `el.click()` fallback fires on the
  * wrapper (or sets `.checked` without triggering React's `onChange`) and the
  * controlled value never commits — the field stays `Mui-error` "required", Next
- * no-ops, and the wizard walls (measured on HCA: the "Are you at least 18?"
+ * no-ops, and the wizard walls (measured on the wizard ATS: the "Are you at least 18?"
  * radio was the sole unfilled field blocking Basic Information → Step 2 of 10).
  * This primitive finds the radio group by raw DOM, matches the requested option
  * by its `<label for>` text, and commits via the React-safe native `checked`
@@ -4799,7 +4799,7 @@ const FORM_VALIDITY_PROBE_EXPR = `(() => {
     const leafInvalid = INVALID_CLASS_RX.test(ctrlClass);
     // A <select> whose currently-selected option is .disabled is the
     // Angular "Please select..." placeholder state. Some custom-element
-    // dropdowns (e.g. AppCast's app-dropdown) bind a truthy sentinel value
+    // dropdowns (e.g. an Angular apply SPA's app-dropdown) bind a truthy sentinel value
     // like "0: null" to the disabled placeholder, so ctrl.value !== ""
     // even though no real option is chosen. Without this branch the empty
     // check below silently drops every such wrapper and the pre-submit
@@ -5046,7 +5046,7 @@ export async function probeStepBeforeAttempts(params: {
       // Focused observe under-returns on some controlled-component forms:
       // Stagehand's instruction-scoped observe can resolve zero candidates for a
       // declarative "Fill in the X field with 'Y'" step even when the field is
-      // present and actionable (confirmed on HCA's MUI/React Talemetry form — an
+      // present and actionable (confirmed on the MUI/React wizard ATS's form — an
       // unfocused observe enumerated every field and a direct act filled them).
       // Treating focused-empty as hard "absent" skips the whole cascade and burns
       // a global replan per step. Fall back to an UNFOCUSED observe as a
@@ -5105,7 +5105,7 @@ export async function executeStepWithHealing(params: {
   /**
    * When true, treat this step as the canonical submit click for the
    * `submitEndpointPattern` verifier even if it is NOT the last step in
-   * the flow. Set from the flow file's `submitStep: true`. AppCast's flow
+   * the flow. Set from the flow file's `submitStep: true`. One JSON-envelope ATS flow
    * has its Submit click at index 55/328 — without this flag, the pre-
    * submit DOM probe (gated on isFinalStep alone) never fires on the real
    * Submit, so unfilled required fields produce silent submit failures.
@@ -5280,12 +5280,12 @@ export async function executeStepWithHealing(params: {
   // multi-signal evidence with strict prompting instead.
   //
   // Gate accepts (isFinalStep || submitStep): flows whose canonical Submit
-  // click lives mid-list (e.g. AppCast's flow has Submit at step 55/328 with
+  // click lives mid-list (e.g. one JSON-envelope ATS flow has Submit at step 55/328 with
   // 273 post-submit verification steps) opt in via the per-step
   // `submitStep: true` flag in the flow file. Without this opt-in, the pre-
   // submit DOM probe gated solely on `isFinalStep` never fires on the real
   // Submit, and unfilled required fields produce silent submit failures
-  // (verified 2026-06-15 on UVA Verona telemetry). Site-agnostic: any flow
+  // (verified 2026-06-15 on one measured tenant's telemetry). Site-agnostic: any flow
   // whose submit is mid-list can mark its submit step explicitly.
   const requireSubmitEndpoint = (isFinalStep || submitStep) && submitEndpointPattern !== null;
   const attempts: AttemptRecord[] = [];
@@ -5314,7 +5314,7 @@ export async function executeStepWithHealing(params: {
 
   // When the step is a native-<select> dropdown selection, answer it directly
   // in the DOM ahead of the cascade. Critical for MuiNativeSelect/tabindex=-1
-  // dropdowns (HCA/Talemetry) that Stagehand observe can't surface — the
+  // dropdowns (the MUI wizard ATS) that Stagehand observe can't surface — the
   // cascade would otherwise skip them ("no candidates") and leave a required
   // question unanswered. No-op (returns false → falls through) when the step
   // isn't a single-dropdown select or no option matches.
@@ -5325,7 +5325,7 @@ export async function executeStepWithHealing(params: {
   }
 
   // When the step is a "select 'X'" against a multi-select CHECKBOX group
-  // (c-MultiCheckboxInput) rather than a <select> — Talemetry renders some
+  // (c-MultiCheckboxInput) rather than a <select> — the wizard ATS renders some
   // screening questions this way — answer it directly in the DOM. Runs AFTER
   // trySelectPrimitive (which handles <select> and no-ops on checkbox-only
   // pages). No-op (falls through) when there's no checkbox group or no match.
@@ -5339,7 +5339,7 @@ export async function executeStepWithHealing(params: {
   // the question '…'"), commit it directly in the DOM. Runs AFTER select/
   // checkbox (which own their verbs) and BEFORE the cascade, so radios never
   // reach the observe cascade's el.click() fallback that fails to commit MUI/
-  // React controlled state (the HCA Basic-Info Step-2 wall). No-op (falls
+  // React controlled state (the wizard ATS's Basic-Info Step-2 wall). No-op (falls
   // through) when there's no radio group or no confident option match.
   if (await tryRadioPrimitive({ page, instruction: step, logger, anthropic, captureFn })) {
     logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by radio primitive`);
@@ -5914,7 +5914,7 @@ export async function executeStepWithHealing(params: {
         // browser's default label-click action does NOT toggle .checked for
         // hidden inputs (Bootstrap, Tailwind, plain HTML labels-control,
         // Angular Material's mat-radio-button, PrimeNG's p-radioButton, and
-        // custom Angular components like AppCast's app-radio-button all fit
+        // custom Angular components like an apply SPA's app-radio-button all fit
         // this shape). The framework's FormControl/state listens on the
         // input's `change` event, which never fires when the visible click
         // never reaches a clickable input — so the form stays invalid even
@@ -6172,7 +6172,7 @@ export async function executeStepWithHealing(params: {
         ? await verifyDomEffect(page, resolvedAction)
         : false;
     // Interior-advance transition gate (opt-in). On SPAs where a page advance
-    // and a mere field-edit share one endpoint URL (Talemetry `/gq`:
+    // and a mere field-edit share one endpoint URL (the wizard ATS's `/gq`:
     // TransitionWorklet vs EditQuestionItem — identical URLs, only the body
     // differs), a `networkFired` signal on an interior "Next" can be a
     // non-advancing POST. When the flow configures `advanceTransitionBodyPattern`
@@ -6211,7 +6211,7 @@ export async function executeStepWithHealing(params: {
     // instruction) whose ONLY signal is that DOM state change, do NOT count it
     // verified: an advance requires a REAL transition (a `type=next` per
     // `networkIsRealAdvance`, or a URL change). Keyed on `networkIsRealAdvance`,
-    // NOT `!networkFired` — a non-advancing autosave POST (Talemetry
+    // NOT `!networkFired` — a non-advancing autosave POST (the wizard ATS's
     // `WorkletPayload`) fires network=true while the wizard doesn't move, and the
     // old `!networkFired` guard let a rephrase ride that autosave + a DOM reflow
     // to a FALSE advance, desyncing the flow from the wizard. Field-answer steps
@@ -6238,7 +6238,7 @@ export async function executeStepWithHealing(params: {
     // submitEndpointPattern regex with a Haiku 4.5 LLM judgment over
     // multi-signal evidence (network captures, page URL/title, DOM
     // submitted-state probe, site-supplied criteria). The regex
-    // mislabeled successful submits as failures whenever AppCast used a
+    // mislabeled successful submits as failures whenever an ATS used a
     // POST URL outside the regex's narrow expectation — empirically
     // observed in last night's sweep and validated 2026-06-11 against
     // claude-haiku-4-5-20251001 with the SUBMIT_VERDICT_SCHEMA.
@@ -6465,7 +6465,7 @@ export async function executeStepWithHealing(params: {
           // change AND the page still has required-invalid controls (MUI-aware
           // via countNgInvalidContainers), treat the DOM-only signal as NOT
           // verifying so the cascade routes to the fill-invalid-fields replan.
-          // Confirmed no-op signature on HCA COMPENSATION (network=false
+          // Confirmed no-op signature on the wizard ATS's COMPENSATION page (network=false
           // url=false htmlDelta>0 textChanged) mis-scored verified=true(dom).
           const clickWasDomOnly =
             probeResult.kind === "click" && !retryNetworkFired && !retryUrlChanged;
@@ -6481,7 +6481,7 @@ export async function executeStepWithHealing(params: {
           // `advanceTransitionBodyPattern`. Without this, a non-advancing POST
           // (retryNetworkFired=true) both satisfied retryVerified AND disarmed the
           // old !retryNetworkFired-gated veto, so the fallback rode past a
-          // validation-blocked Next while the page stayed put (HCA Basic Info
+          // validation-blocked Next while the page stayed put (the wizard ATS's Basic Info
           // stage1d). Only arms when the site opted into the pattern; field-answer
           // (non-advance) steps keep their checkboxStateVerified/DOM path.
           // Poll for the real TransitionWorklet(type="next") like the primary
@@ -6634,7 +6634,7 @@ export async function executeStepWithHealing(params: {
         // Why log first-try wins explicitly: prior to this change, attempt-1
         // successes were silent — only attempts 2+ emitted "healed on attempt
         // N" lines. That under-reporting caused a 2026-06-15 telemetry-vs-log
-        // contradiction where UVA Verona's run looked like a "cascade
+        // contradiction where one measured tenant's run looked like a "cascade
         // collapse" (log showed 2 heals) but telemetry calls.ndjson showed
         // 32 successful Stagehand acts. Surfacing attempt-1 wins lets the
         // log match telemetry and prevents the same false alarm.
@@ -6674,7 +6674,7 @@ export async function executeStepWithHealing(params: {
     // outcome="impossible" instead of looping on the same plan. Silent
     // no-op on sites where the DOM pattern doesn't match — the existing
     // failure-reason and replan/cycle-detection paths still fire.
-    // Empirically grounded: 22 of 22 AppCast Continue/Submit step-failure
+    // Empirically grounded: 22 of 22 JSON-envelope ATS Continue/Submit step-failure
     // dumps in a 2026-06-10 survey had the paired touched+dirty + visible
     // error text pattern with 3 distinct rejection messages.
     if (record.resolvedMethod === "click" && (isFinalStep || submitStep)) {
@@ -6749,7 +6749,7 @@ export async function executeStepWithHealing(params: {
       // Telemetry-driven early-exit for interior ADVANCE steps: if the Next
       // click fired and hit the network but produced no real forward
       // transition, attempts 2-N only re-fire the autosave / bounce the wizard
-      // back (the measured HCA next→back oscillation). Route to replan — which
+      // back (the measured wizard-ATS next→back oscillation). Route to replan — which
       // can reorder a later step forward — instead of burning the cascade.
       const advanceStalled = isAdvanceStalled({
         isAdvance: isAdvanceStep(step),

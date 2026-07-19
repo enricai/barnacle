@@ -124,9 +124,9 @@ Each file is a JSON object:
   "timestamp": "2026-07-18T12:34:56.789Z",
   "cookies": [
     {
-      "name": "_appcast_attr",
+      "name": "_acme_attr",
       "value": "abc123",
-      "domain": ".appcast.io",
+      "domain": ".acme.example",
       "path": "/",
       "expires": 1234567890,
       "size": 20,
@@ -144,7 +144,7 @@ Field reference (mirrors CDP's `Network.Cookie` type verbatim — no remapping b
 | Field | Meaning |
 | --- | --- |
 | `name` / `value` | The cookie's name and value. |
-| `domain` | Scope, e.g. `.appcast.io` (all subdomains) vs. `apply.appcast.io` (exact host) — the detail needed to tell a click-domain cookie from an apply-domain cookie. |
+| `domain` | Scope, e.g. `.acme.example` (all subdomains) vs. `apply.acme.example` (exact host) — the detail needed to tell a click-domain cookie from an apply-domain cookie. |
 | `path` | Cookie path scope. |
 | `expires` | Raw CDP epoch-seconds number; `-1` means a session cookie (also reflected in `session: true`). Not reformatted — read it as CDP reports it. |
 | `size` | Cookie size in bytes, as reported by CDP. |
@@ -154,7 +154,7 @@ Field reference (mirrors CDP's `Network.Cookie` type verbatim — no remapping b
 
 If the CDP call fails, the file still writes but with an empty `cookies` array and an `error` string field carrying the failure message — cookie telemetry is best-effort and never aborts the run.
 
-**Diffing what a phase established:** to isolate what a specific traversal (e.g. the click.appcast.io redirect) minted, diff its `post-step` snapshot against the `pre-step` snapshot for the *next* step — cookies present in the later file but absent from the earlier one were established during that step:
+**Diffing what a phase established:** to isolate what a specific traversal (e.g. a tracking-click redirect) minted, diff its `post-step` snapshot against the `pre-step` snapshot for the *next* step — cookies present in the later file but absent from the earlier one were established during that step:
 
 ```bash
 diff <(jq -S .cookies <run-dir>/cookies/004-post-step-click-the-apply-button.json) \
@@ -501,8 +501,7 @@ When the smoke test fails: re-run `pnpm run recon:browser` → diff `<run-dir>/g
 | `HttpBotChallengeError` | 401 / 403 | **Yes** | Residential proxy IP may get through |
 | `HttpServerError` | 5xx | **Yes** | Server-side outage; recovery strategy is the same |
 | `HttpRateLimitError` | 429 | **No** | A 429 means the configured rps ceiling is too high. Routing to the browser path would just hit the same ceiling and waste a Steel session. The right response is to lower the Bottleneck `minTime` in `contract.ts` and re-deploy. |
-| `HttpUrlLockedError` | 429 | **No** | Oracle HCM returned `ORA_URL_LOCKED` — the requisition URL is locked at Oracle's end. Neither a retry nor a browser session can succeed; the caller must back off and surface a "retry later" state. |
-| `OracleTokenExpiredError` | Any | **No** | Oracle HCM returned a plain-text `ORA_IRC_TOKEN_EXPIRED` sentinel. Retryable so p-retry keeps retrying, but distinct from `UnknownScraperError` so the encompass http-flow can catch exactly this class and re-mint the AccessCode before retrying. |
+| `HttpUrlLockedError` | 429 | **No** | A plugin's `classifyResponseBody` detected a terminal resource-lock sentinel — the URL is locked at the target's end. Neither a retry nor a browser session can succeed; the caller must back off and surface a "retry later" state. |
 | `UnknownScraperError` | Any | **No** | Transient network failure or unclassified non-JSON response. `createHttpClient` retries up to 2 times internally; if all attempts fail, the error propagates as `ScrapeFailureError`. |
 
 ### Cache deduplication
@@ -906,8 +905,8 @@ Every response — success or error — uses the same envelope shape so clients 
 | 2003 | `SCRAPE_FAILURE` | Browser automation failed after retries |
 | 2004 | `CAPTCHA_ENCOUNTERED` | CAPTCHA challenge could not be resolved |
 | 2005 | `EMPTY_RESULTS` | Scrape succeeded but returned no data |
-| 2006 | `VERIFICATION_TRIGGER_FAILED` | OTP trigger to Oracle HCM failed |
-| 2007 | `RESUME_INVALID_OTP` | Provided OTP was rejected by Oracle HCM |
+| 2006 | `VERIFICATION_TRIGGER_FAILED` | OTP trigger to the target site failed |
+| 2007 | `RESUME_INVALID_OTP` | Provided OTP was rejected by the target site |
 | 2008 | `URL_LOCKED` | Upstream vendor locked the target URL; back off and retry later |
 
 Full definitions: `src/api/schemas/common.ts`.
@@ -928,16 +927,22 @@ Each registered plugin exposes a POST route following the default convention:
 answers are absent (e.g. Gender, Degree, EducationLevel, SignatureFullName) or
 a repeat-applicant OTP challenge, `/run` returns HTTP 200 with
 `{ needsUserInfo: true, missingFields: [{ field, question }], requiresOtp }`
-instead of a submission result, so Vivian can collect the gaps and hand back.
+instead of a submission result, so the caller can collect the gaps and hand back.
 
-Plugin-specific extra routes (registered via `meta.extraRoutes` in each plugin):
+Plugins declare their own extra routes via `meta.extraRoutes`, which core registers
+uniformly — the engine has no per-site knowledge. Route paths are declared as
+`:siteId` templates, so the concrete path is whatever the plugin's `siteId` is. Two
+conventional shapes a plugin may add:
 
-Encompass Health:
-- `POST /v1/encompasshealth/trigger-otp` — body `{ offerId, email }`; triggers Oracle HCM to email an OTP to a repeat applicant; returns `{ success: true }` or a `2006 VERIFICATION_TRIGGER_FAILED` error envelope
-- `POST /v1/encompasshealth/resume` — body = the full original candidate payload plus `collectedData` and `otpCode`; re-runs the hot path with the collected answers and/or OTP; returns the same `{ verified }` envelope as `/run`, or `2007 RESUME_INVALID_OTP` if the OTP is rejected
+- `POST /v1/<siteId>/resume` — body = the full original candidate payload plus
+  `collectedData` (and `otpCode` where the site issues an OTP challenge); re-runs the
+  hot path with the collected answers merged in; returns the same `{ verified }`
+  envelope as `/run`, or `2007 RESUME_INVALID_OTP` if the OTP is rejected
+- `POST /v1/<siteId>/trigger-otp` — body `{ offerId, email }`; asks the target site to
+  email an OTP to a repeat applicant; returns `{ success: true }` or a
+  `2006 VERIFICATION_TRIGGER_FAILED` error envelope
 
-Appcast:
-- `POST /v1/appcast/resume` — body = the full original candidate payload plus `collectedData` (no `otpCode` — Appcast has no OTP challenge); re-runs the hot path with the chat-collected answers merged in; returns the same `{ verified, response }` envelope as `/run`
+See `examples/plugins/acme-jobs.plugin.json` for a runnable declaration.
 
 Operational routes:
 - `GET /healthz` — liveness probe
