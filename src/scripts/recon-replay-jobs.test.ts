@@ -9,11 +9,10 @@
  */
 
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { EventEmitter } from "node:events";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
-import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/config", () => ({
@@ -122,18 +121,23 @@ describe("recon-replay-jobs — run-scoped capture dir", () => {
     const { runReconForJob } = await import("@/scripts/recon-replay-jobs.js");
 
     const runDir = resolveReconRunDir();
+    // Deliberately distinct from process.env.RECON_RUN_ID (the ambient value
+    // resolveReconRunDir() picked up) so the assertion below can only pass if
+    // runReconForJob actually threads its `runId` param into the child's env
+    // — not because it leaked in via `{ ...process.env }`.
+    const explicitRunId = `${runDir.runId}-explicit`;
     await runReconForJob(
       "https://example.com/job/123",
       join(outRoot, "flow.json"),
       "someone@inbox.testmail.app",
-      runDir.runId,
+      explicitRunId,
       runDir.graphqlDir
     );
 
     expect(spawnMock).toHaveBeenCalledTimes(1);
     const [, , spawnOptions] = spawnMock.mock.calls[0]!;
     const env = (spawnOptions as { env?: Record<string, string | undefined> }).env;
-    expect(env?.RECON_RUN_ID).toBe(runDir.runId);
+    expect(env?.RECON_RUN_ID).toBe(explicitRunId);
     expect(env?.RECON_EMAIL).toBe("someone@inbox.testmail.app");
   });
 });
