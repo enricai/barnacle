@@ -6729,7 +6729,7 @@ export async function executeStepWithHealing(params: {
   }
   throw new StepVerificationError(
     `${formatStepPrefix(stepIndex, totalSteps)} (${step.slice(0, 60)}) failed verification after ${MAX_STEP_ATTEMPTS} attempts${dumpPath ? `; see ${dumpPath}` : ""}`,
-    "cascade-exhausted"
+    phantomClickAfterAttempt1 ? "phantom-click-exhausted" : "cascade-exhausted"
   );
 }
 

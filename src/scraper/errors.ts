@@ -83,19 +83,29 @@ export class UnknownScraperError extends ScraperError {
 /** Discriminator for {@link StepVerificationError}. See the class TSDoc for the per-variant semantics. */
 export type StepVerificationErrorKind =
   | "cascade-exhausted"
+  | "phantom-click-exhausted"
   | "probe-absent"
   | "backend-error-unrecoverable"
   | "replan-cycle-detected"
   | "wizard-regression";
 
 /**
- * Recon-only: a flow step in recon-browser.ts could not be acted on. Four
+ * Recon-only: a flow step in recon-browser.ts could not be acted on. Six
  * variants per `kind`:
  *
  *   - "cascade-exhausted": the full 4-attempt self-healing cascade ran and
  *     none of the attempts produced an observable effect. Expensive (the
  *     cascade burned its full LLM/observe budget) — counted against the
  *     cascade replan budget.
+ *   - "phantom-click-exhausted": attempt 1 phantom-clicked (Stagehand
+ *     reported success with zero network/url/DOM effect) and the cascade
+ *     escalated straight to the deep submit-control locator on attempt 2,
+ *     but every attempt through {@link MAX_STEP_ATTEMPTS} still produced no
+ *     observable effect — the submit control is unreachable by any
+ *     resolution strategy the cascade has, not just the light-DOM one.
+ *     Distinguished from "cascade-exhausted" so a replan/triager can skip
+ *     straight to a structural fix (e.g. a new locator strategy) instead of
+ *     re-trying the same techniques.
  *   - "probe-absent": the cheap page-state probe ran BEFORE the cascade
  *     and observed zero candidates for the step's instruction. We skip the
  *     cascade and ask for a replan immediately because the page state is

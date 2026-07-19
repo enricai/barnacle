@@ -434,4 +434,35 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
     );
     expect(clickByIndexCalls.length).toBe(0);
   });
+
+  it("aborts in strictly fewer than MAX_STEP_ATTEMPTS when the deep locator also phantom-clicks, throwing a phantom-click-specific kind", async () => {
+    // Attempt 1 (act-string) phantom-clicks like the bug report. Attempt 2
+    // (deep-submit-locator) finds a ranked candidate but its click never
+    // lands (deepIndexClicked set to an index nothing requests), so it also
+    // produces zero observable effect. shouldSkipTechnique then skips
+    // attempts 3-4 (structured-click / observe-act-exclude — proven dead
+    // once phantomClickAfterAttempt1 is set), leaving only attempt 5
+    // (llm-rephrase, a no-op here since `anthropic: null` short-circuits it
+    // before any LLM call). The cascade exhausts in 3 recorded attempts
+    // (1, 2, 5) — strictly fewer than the 5-attempt ceiling this replaces.
+    const { page, evaluate } = fakePage({
+      url: "https://apply.appcast.io/jobs/1/applyboard/apply",
+      bodyHtmlLength: 184186,
+      deepIndexClicked: -1,
+    });
+    const stagehandAct = vi.fn().mockResolvedValue(actResult());
+    const params = { ...baseParams(page, stagehandAct), signalCounter: { n: 0 } };
+
+    await expect(executeStepWithHealing(params)).rejects.toMatchObject({
+      name: "StepVerificationError",
+      kind: "phantom-click-exhausted",
+    });
+    // attempt 1 (act-string) + attempt 2 (deep-submit-locator); attempts 3-4
+    // never ran (skipped by the phantom short-circuit), attempt 5
+    // (llm-rephrase) short-circuits before touching stagehand.act — so
+    // stagehand.act itself was only invoked once, on attempt 1.
+    expect(stagehandAct).toHaveBeenCalledTimes(1);
+    const rankCalls = evaluate.mock.calls.filter(([expr]) => String(expr).includes("ranked.sort"));
+    expect(rankCalls.length).toBe(1);
+  });
 });
