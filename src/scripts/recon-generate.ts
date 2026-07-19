@@ -1576,7 +1576,7 @@ function collectHeaderBindings(actionSteps: ActionStep[]): HeaderProduce[] {
   for (const step of actionSteps) {
     for (const p of step.produces) {
       if (p.kind !== "header") continue;
-      const key = `${p.targetHeader} ${p.cookieName ?? ""}`;
+      const key = `${p.targetHeader}\0${p.cookieName ?? ""}`;
       if (!byKey.has(key)) byKey.set(key, p);
     }
   }
