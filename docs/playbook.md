@@ -171,6 +171,20 @@ flow step "X"
   └── all exhausted → dumpStepFailure() + throw StepVerificationError
 ```
 
+Phantom-click escalation: if attempt 1 reports `actResultSuccess: true` but the
+pre/post snapshot shows zero network delta, zero URL change, and no real DOM
+growth, `classifyPhantomClick` (`src/scraper/phantom-click.ts`) marks the
+attempt `"phantom"` — Stagehand believes it clicked something, but the click
+landed on nothing (typically a submit control rendered inside a shadow root /
+web component that the light-DOM resolver can't see). When that happens,
+attempt 2 is rerouted from `observe-act` to `deep-submit-locator`
+(`src/scraper/submit-control.ts`): it ranks every submit-shaped candidate
+reachable via a deep DOM traversal (including shadow roots) and clicks the
+top-ranked one directly by index, skipping the light-DOM re-observe/re-click
+attempts that would otherwise no-op identically. `llm-rephrase` is never
+skipped by this escalation. See `shouldSkipTechnique` in
+`src/scraper/flow-runner.ts` for the skip logic.
+
 The recon script calls `stagehand.act()` (not `page.act()`); the four
 techniques are, in order:
 
@@ -206,9 +220,10 @@ When the cascade exhausts, the executor writes a diagnostic bundle to
 - `timestamp`, `stepIndex`, `phase`, `originalStep`
 - `pageUrl`, `pageTitle`
 - `attempts[]` — every attempt's `technique` (one of `act-string`,
-  `observe-act`, `observe-act-exclude`, `llm-rephrase`), `instruction`,
-  `triedSelectors`, `actResultSuccess`, `actResultDescription`, `errorMessage`,
-  `pre`/`post` snapshots
+  `observe-act`, `structured-click`, `observe-act-exclude`,
+  `deep-submit-locator`, `llm-rephrase`), `instruction`, `triedSelectors`,
+  `actResultSuccess`, `actResultDescription`, `errorMessage`,
+  `phantomClickVerdict`, `pre`/`post` snapshots
 - `finalObserve[]` — what Stagehand could see at the point of giving up
 - `recentCaptures[]` — the last 5 capture filenames (helps locate what API
   calls *did* fire just before the broken step)

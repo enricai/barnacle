@@ -2002,6 +2002,7 @@ async function main(): Promise<void> {
           ownBackendHostnames,
           knownErrorClassPrefixes,
           wizardExitButtonLabels,
+          getSuppressedAisdkElementIdErrorCount: session.getSuppressedAisdkElementIdErrorCount,
           trajectory,
           captureFn,
           onStepFailure: dumpStepFailure,
