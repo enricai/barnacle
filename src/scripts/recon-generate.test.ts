@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { CONFIG_PLUGIN_API_VERSION, CONFIG_PLUGIN_KIND } from "@/plugins/plugin-manifest-envelope";
 import type { ReconFormSchema } from "@/recon/form-schema";
 import {
+  collectHeaderBindings,
   compileActionSteps,
   detectFormSchemaFieldNames,
   emitBrowserFlowTs,
@@ -517,6 +518,138 @@ describe("compileActionSteps — Set-Cookie state binding (disneycruise-style to
     expect(body).not.toContain("abc.def.ghi");
     expect(body).not.toContain(": any");
     expect(body).not.toContain("<any>");
+  });
+});
+
+describe("collectHeaderBindings — multi-cookie regression (disneycruise __pa first-wins bug)", () => {
+  /** Step 0: the feature-toggle call mints three geo/analytics cookies (all
+   * later threaded back on the `Cookie` request header) plus a conversation
+   * id threaded back on a distinct `X-Conversation-Id` header. */
+  const toggleCapture = {
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action",
+    method: "GET",
+    url: "https://api.example.com/toggles/product-avail",
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: null,
+    responseHeaders: {
+      "set-cookie": [
+        "latestWDPROGeoIP=US-TX-AUSTIN-1; Path=/",
+        "WDPROGeoIP=US-TX-AUSTIN-2; Path=/",
+        "bm_sv=BMSVSESSIONVALUE1; Path=/; HttpOnly; Secure",
+        "Conversation_UUID=conv-uuid-abcdefgh; Path=/",
+      ].join("\n"),
+    },
+    responseBody: {},
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  };
+
+  /** Step 1: the auth call — mints `__pa` LAST among the Cookie-targeting
+   * cookies, which is exactly the ordering that trips first-wins. */
+  const authzCapture = {
+    timestamp: "2024-01-01T00:00:01Z",
+    phase: "action",
+    method: "POST",
+    url: "https://api.example.com/dcl-apps-productavail-vas/authz/private",
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: "{}",
+    responseHeaders: { "set-cookie": "__pa=eyJhbGciOiJIUzI1NiJ9.payload.sig; Path=/; HttpOnly" },
+    responseBody: {},
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  };
+
+  /** Step 2: the stateful call that 401s without `__pa` — carries every
+   * minted cookie back as a `Cookie` request header, plus the conversation
+   * id back as `X-Conversation-Id`, exactly as the browser sent them. */
+  const availableProductsCapture = {
+    timestamp: "2024-01-01T00:00:02Z",
+    phase: "action",
+    method: "GET",
+    url: "https://api.example.com/dcl-apps-productavail-vas/available-products/",
+    status: 200,
+    requestHeaders: {
+      "Content-Type": "application/json",
+      Cookie:
+        "latestWDPROGeoIP=US-TX-AUSTIN-1; WDPROGeoIP=US-TX-AUSTIN-2; bm_sv=BMSVSESSIONVALUE1; __pa=eyJhbGciOiJIUzI1NiJ9.payload.sig",
+      "X-Conversation-Id": "conv-uuid-abcdefgh",
+    },
+    requestPostData: null,
+    responseHeaders: { "content-type": "application/json" },
+    responseBody: { products: [{ productId: "p1" }] },
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  };
+
+  const captures = [toggleCapture, authzCapture, availableProductsCapture];
+  const actionCaptures = captures.map((capture, index) => ({ capture, index }));
+  const stateIndex = indexStateValues(captures);
+  const actionSteps = compileActionSteps(actionCaptures, stateIndex);
+  const headerBindings = collectHeaderBindings(actionSteps);
+
+  it("indexes __pa with a header origin on the authz/private capture", () => {
+    const sv = stateIndex.get("eyJhbGciOiJIUzI1NiJ9.payload.sig");
+    expect(sv).toBeDefined();
+    expect(sv?.headerOrigin).toEqual({ sourceHeader: "set-cookie", cookieName: "__pa" });
+  });
+
+  it("produces a header-kind binding for __pa on the authz/private step, not just the toggle step", () => {
+    const [, authzStep] = actionSteps;
+    const pa = authzStep?.produces.find((p) => p.kind === "header" && p.cookieName === "__pa");
+    expect(pa).toBeDefined();
+    expect(pa).toMatchObject({ kind: "header", cookieName: "__pa", targetHeader: "Cookie" });
+  });
+
+  it("collectHeaderBindings returns all four Cookie-targeting bindings, __pa included — does not drop it in favour of latestWDPROGeoIP", () => {
+    const cookieBindings = headerBindings.filter((b) => b.targetHeader === "Cookie");
+    expect(cookieBindings.map((b) => b.cookieName).sort()).toEqual(
+      ["WDPROGeoIP", "__pa", "bm_sv", "latestWDPROGeoIP"].sort()
+    );
+    expect(cookieBindings.some((b) => b.cookieName === "__pa")).toBe(true);
+  });
+
+  it("returns exactly one X-Conversation-Id binding", () => {
+    const conversationBindings = headerBindings.filter(
+      (b) => b.targetHeader === "X-Conversation-Id"
+    );
+    expect(conversationBindings).toHaveLength(1);
+    expect(conversationBindings[0]).toMatchObject({
+      cookieName: "Conversation_UUID",
+      targetHeader: "X-Conversation-Id",
+    });
+  });
+
+  it("emits a bind entry for __pa in the generated contract source", () => {
+    const contract = emitContractTs({
+      ...BASE_OPTS,
+      inputBody: {},
+      multiStepBody: emitMultiStepExecuteHttp(
+        actionSteps,
+        {},
+        { stringMessageKey: null, nestedErrorPaths: [] },
+        new Map(),
+        new Set(),
+        new Map(),
+        new Set(),
+        new Map(),
+        new Map(),
+        "https://api.example.com",
+        new Map(),
+        new Map()
+      ),
+      headerBindings,
+    });
+
+    expect(contract).toContain('cookieName: "__pa"');
   });
 });
 

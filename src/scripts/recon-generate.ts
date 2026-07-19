@@ -1571,7 +1571,9 @@ export function compileActionSteps(
  * there and two steps producing the same non-cookie target would otherwise
  * race with no defined winner.
  */
-function collectHeaderBindings(actionSteps: ActionStep[]): HeaderProduce[] {
+/** Exported for unit testing — lets tests exercise the produce → bind
+ * collection step directly against synthetic ActionStep sequences. */
+export function collectHeaderBindings(actionSteps: ActionStep[]): HeaderProduce[] {
   const byKey = new Map<string, HeaderProduce>();
   for (const step of actionSteps) {
     for (const p of step.produces) {
