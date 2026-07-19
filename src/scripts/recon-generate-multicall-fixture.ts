@@ -8,7 +8,7 @@ import type { Capture } from "@/scripts/recon-shared";
 export interface MulticallFixtureStep {
   capture: Capture;
   varName: string;
-  produces: unknown[];
+  produces: never[];
   isMultipart: boolean;
   isCrossDomain: boolean;
 }
