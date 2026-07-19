@@ -1570,9 +1570,10 @@ export function compileActionSteps(
  * first-wins, since `HttpResponseBinding` is one binding per target header
  * there and two steps producing the same non-cookie target would otherwise
  * race with no defined winner.
+ *
+ * Exported for unit testing — lets tests exercise the produce → bind
+ * collection step directly against synthetic ActionStep sequences.
  */
-/** Exported for unit testing — lets tests exercise the produce → bind
- * collection step directly against synthetic ActionStep sequences. */
 export function collectHeaderBindings(actionSteps: ActionStep[]): HeaderProduce[] {
   const byKey = new Map<string, HeaderProduce>();
   for (const step of actionSteps) {
