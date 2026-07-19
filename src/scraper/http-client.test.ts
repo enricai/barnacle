@@ -637,6 +637,111 @@ describe("scraper/http-client response-header binding", () => {
     expect(cookieValue).toContain("__pa=");
   });
 
+  it("merges a static baseHeaders Cookie with a bound cookie instead of dropping it", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce({
+          status: 200,
+          ok: true,
+          text: vi.fn().mockResolvedValue(JSON.stringify({ id: "1", name: "Widget" })),
+          headers: headersWithSetCookies("__pa=abc.def.ghi; Path=/; HttpOnly"),
+        })
+        .mockResolvedValueOnce({
+          status: 200,
+          ok: true,
+          text: vi.fn().mockResolvedValue(JSON.stringify({ id: "2", name: "Gadget" })),
+          headers: new Headers(),
+        })
+    );
+
+    const client = createHttpClient<Item>({
+      schema: ItemSchema,
+      bottleneck: passThruLimiter,
+      baseHeaders: { ...BASE_HEADERS, Cookie: "consent=1" },
+      bind: [AUTH_COOKIE_BINDING],
+    });
+
+    await client("https://example.com/authz/private", { method: "POST" });
+    await client("https://example.com/available-products", { method: "POST" });
+
+    const cookieHeader = cookieHeaderFromCall(1);
+    expect(cookieHeader).toContain("consent=1");
+    expect(cookieHeader).toContain("__pa=abc.def.ghi");
+  });
+
+  it("merges a per-call init.headers Cookie with baseHeaders and bound cookies instead of replacing them", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce({
+          status: 200,
+          ok: true,
+          text: vi.fn().mockResolvedValue(JSON.stringify({ id: "1", name: "Widget" })),
+          headers: headersWithSetCookies("__pa=abc.def.ghi; Path=/; HttpOnly"),
+        })
+        .mockResolvedValueOnce({
+          status: 200,
+          ok: true,
+          text: vi.fn().mockResolvedValue(JSON.stringify({ id: "2", name: "Gadget" })),
+          headers: new Headers(),
+        })
+    );
+
+    const client = createHttpClient<Item>({
+      schema: ItemSchema,
+      bottleneck: passThruLimiter,
+      baseHeaders: { ...BASE_HEADERS, Cookie: "consent=1" },
+      bind: [AUTH_COOKIE_BINDING],
+    });
+
+    await client("https://example.com/authz/private", { method: "POST" });
+    await client("https://example.com/available-products", {
+      method: "POST",
+      headers: { Cookie: "session_hint=abc" },
+    });
+
+    const cookieHeader = cookieHeaderFromCall(1);
+    expect(cookieHeader).toContain("consent=1");
+    expect(cookieHeader).toContain("__pa=abc.def.ghi");
+    expect(cookieHeader).toContain("session_hint=abc");
+  });
+
+  it("a freshly bound cookie wins over a same-named cookie in baseHeaders", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce({
+          status: 200,
+          ok: true,
+          text: vi.fn().mockResolvedValue(JSON.stringify({ id: "1", name: "Widget" })),
+          headers: headersWithSetCookies("__pa=fresh.token; Path=/; HttpOnly"),
+        })
+        .mockResolvedValueOnce({
+          status: 200,
+          ok: true,
+          text: vi.fn().mockResolvedValue(JSON.stringify({ id: "2", name: "Gadget" })),
+          headers: new Headers(),
+        })
+    );
+
+    const client = createHttpClient<Item>({
+      schema: ItemSchema,
+      bottleneck: passThruLimiter,
+      baseHeaders: { ...BASE_HEADERS, Cookie: "__pa=stale.default" },
+      bind: [AUTH_COOKIE_BINDING],
+    });
+
+    await client("https://example.com/authz/private", { method: "POST" });
+    await client("https://example.com/available-products", { method: "POST" });
+
+    const cookieHeader = cookieHeaderFromCall(1);
+    expect(cookieHeader).toBe("__pa=fresh.token");
+  });
+
   it("non-cookie targetHeaders still overwrite as before, with no concatenation", async () => {
     const CONVERSATION_ID_BINDING: HttpResponseBinding = {
       sourceHeader: "x-conversation-id",

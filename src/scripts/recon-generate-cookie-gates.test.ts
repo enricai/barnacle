@@ -1,6 +1,27 @@
 import { describe, expect, it } from "vitest";
 
-import { collectHeaderBindings, walkSetCookiePairs } from "@/scripts/recon-generate";
+import {
+  collectHeaderBindings,
+  emitContractTs,
+  walkSetCookiePairs,
+} from "@/scripts/recon-generate";
+
+/** Minimal opts that satisfy emitContractTs for a non-multipart plugin —
+ * mirrors recon-generate.test.ts's BASE_OPTS so the rendered bind literal
+ * assertion below matches the shape the CLI actually emits. */
+const BASE_OPTS = {
+  siteId: "disneycruise",
+  pascal: "Disneycruise",
+  baseUrl: "https://api.example.com",
+  baseHeaders: { "Content-Type": "application/json" },
+  minTime: 100,
+  safeRps: 10,
+  responseBody: { products: [] },
+  gql: false,
+  gqlQuery: null,
+  endpointPath: "/dcl-apps-productavail-vas/available-products/",
+  auxFiles: [],
+};
 
 describe("walkSetCookiePairs — newline-folded multi-cookie Set-Cookie strings", () => {
   it("yields every cookie in a newline-joined 7-cookie string, including one buried mid-string", () => {
@@ -118,6 +139,20 @@ describe("collectHeaderBindings — multi-cookie Cookie target (disneycruise __p
 
   it("returns exactly five bindings total — four Cookie-origin plus one non-cookie", () => {
     expect(bindings).toHaveLength(5);
+  });
+
+  it("bindOptionLiteral renders __pa alongside the other three Cookie-origin cookies in the emitted contract, pinning the disneycruise report's exact ordering (__pa produced last)", () => {
+    const contract = emitContractTs({
+      ...BASE_OPTS,
+      inputBody: {},
+      multiStepBody: "    return { data: {} as unknown };",
+      headerBindings: bindings as never,
+    });
+
+    expect(contract).toContain('cookieName: "__pa"');
+    expect(contract).toContain('cookieName: "latestWDPROGeoIP"');
+    expect(contract).toContain('cookieName: "WDPROGeoIP"');
+    expect(contract).toContain('cookieName: "bm_sv"');
   });
 
   /** step 2: a later capture re-produces latestWDPROGeoIP under 'cookie'
