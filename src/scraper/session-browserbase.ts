@@ -20,7 +20,7 @@ const logger = getLogger({ name: "scraper/session-browserbase" });
  * We declare a minimal local subset rather than importing from Stagehand
  * because the type isn't re-exported from the package's top-level entrypoint.
  */
-interface StagehandLogLine {
+export interface StagehandLogLine {
   message: string;
   category?: string;
   level?: number;
