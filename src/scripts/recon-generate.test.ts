@@ -16,6 +16,7 @@ import {
   loadQuestionPromptKeywords,
   resolveStepPayloadField,
   selectPayloadAction,
+  selectReturnAction,
 } from "@/scripts/recon-generate";
 
 /** The recon env-var token for the applicant email, built by concatenation so
@@ -930,6 +931,178 @@ describe("selectPayloadAction", () => {
 
   it("returns null when there are no actions to choose from", () => {
     expect(selectPayloadAction([])).toBeNull();
+  });
+});
+
+describe("selectReturnAction", () => {
+  /** Minimal action step — only the fields selection reads. */
+  const step = (url: string, requestPostData: string | null, responseBody: unknown) => ({
+    capture: { url, requestPostData, responseBody } as unknown as Parameters<
+      typeof selectReturnAction
+    >[0][number]["capture"],
+  });
+
+  it("prefers the re-queried search endpoint's last call over a terminal drill-down (G1)", () => {
+    // The reported disneycruise shape: toggles (once) → authz mint (once) →
+    // available-products/ re-queried with varying filters → a drill-down
+    // into one itinerary fires last. The search result is the flow's
+    // subject, not the drill-down's single-itinerary body.
+    const steps = [
+      step("https://dcl.test/toggles/product-avail", '["a"]', [{ name: "a" }]),
+      step("https://dcl.test/authz/private", "{}", { result: "ok", successful: true }),
+      step("https://dcl.test/available-products/", '{"filters":[]}', {
+        totalAvailableCruises: 699,
+        products: [{ id: "p1" }],
+      }),
+      step("https://dcl.test/available-products/", '{"filters":["7-night"]}', {
+        totalAvailableCruises: 151,
+        products: [{ id: "p2" }],
+      }),
+      step("https://dcl.test/available-sailings/", '{"itineraryId":"i1"}', {
+        sailings: [{ id: "s1" }],
+        exchangeRate: 1,
+      }),
+    ];
+    expect(selectReturnAction(steps)).toBe(steps[3]);
+  });
+
+  it("falls through to the terminal call for a genuine single-pass submission flow", () => {
+    // Every endpoint fires exactly once — nothing is re-queried, so the
+    // fallback must be the LAST action (the terminal success signal), not
+    // the FIRST (that's selectPayloadAction's fallback).
+    const steps = [
+      step("https://ats.test/api/application/create", '{"FirstName":"Reginald"}', { id: "a1" }),
+      step("https://ats.test/api/form-schema", '{"jobId":"9"}', { sections: [{ fields: [] }] }),
+      step("https://ats.test/api/application/a1/submit", '{"confirm":true}', { success: true }),
+    ];
+    expect(selectReturnAction(steps)).toBe(steps[2]);
+  });
+
+  it("ignores a chattering endpoint that returns nothing, even when it fires last", () => {
+    const steps = [
+      step("https://shop.test/config", '{"k":"v"}', { config: 1 }),
+      step("https://shop.test/error", '{"msg":"boom"}', null),
+      step("https://shop.test/error", '{"msg":"other"}', null),
+    ];
+    expect(selectReturnAction(steps)).toBe(steps[2]);
+  });
+
+  it("returns the single action for a one-call flow", () => {
+    const steps = [step("https://shop.test/search", '{"q":"a"}', { total: 1 })];
+    expect(selectReturnAction(steps)).toBe(steps[0]);
+  });
+
+  it("returns null when there are no actions to choose from", () => {
+    expect(selectReturnAction([])).toBeNull();
+  });
+});
+
+describe("emitMultiStepExecuteHttp — relevance-selected return value (G1)", () => {
+  const capture = (
+    url: string,
+    requestPostData: string | null,
+    responseBody: unknown,
+    varName: string
+  ) => ({
+    capture: {
+      timestamp: "2024-01-01T00:00:00Z",
+      phase: "action" as const,
+      method: "POST",
+      url,
+      status: 200,
+      requestHeaders: { "Content-Type": "application/json" },
+      requestPostData,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody,
+      operationName: null,
+      query: null,
+      variables: null,
+      decodedParams: null,
+    },
+    varName,
+    produces: [],
+    isMultipart: false,
+    isCrossDomain: false,
+  });
+
+  it("returns the re-queried search call's var, not the terminal drill-down's, when they differ", () => {
+    const steps = [
+      capture("https://dcl.test/toggles", '["a"]', [{ name: "a" }], "r0"),
+      capture("https://dcl.test/authz/private", "{}", { successful: true }, "r1"),
+      capture(
+        "https://dcl.test/available-products/",
+        '{"filters":[]}',
+        { totalAvailableCruises: 699, products: [{ id: "p1" }] },
+        "r2"
+      ),
+      capture(
+        "https://dcl.test/available-products/",
+        '{"filters":["7-night"]}',
+        { totalAvailableCruises: 151, products: [{ id: "p2" }] },
+        "r3"
+      ),
+      capture(
+        "https://dcl.test/available-sailings/",
+        '{"itineraryId":"i1"}',
+        { sailings: [{ id: "s1" }], exchangeRate: 1 },
+        "r4"
+      ),
+    ];
+    const body = emitMultiStepExecuteHttp(
+      steps,
+      null,
+      { stringMessageKey: null, nestedErrorPaths: [] },
+      new Map(),
+      new Set(),
+      new Map(),
+      new Set(),
+      new Map(),
+      new Map(),
+      "https://dcl.test",
+      new Map(),
+      new Map()
+    );
+
+    expect(body).toContain("return { data: r3 };");
+    expect(body).not.toContain("return { data: r4 };");
+    // The selected var's `const` must actually be declared — otherwise the
+    // emitted code references an undeclared variable.
+    expect(body).toContain("const r3 = (await httpClient(");
+  });
+
+  it("returns the terminal call's var for a genuine single-pass submission flow", () => {
+    const steps = [
+      capture(
+        "https://ats.test/api/application/create",
+        '{"FirstName":"Reginald"}',
+        { id: "a1" },
+        "r0"
+      ),
+      capture("https://ats.test/api/form-schema", '{"jobId":"9"}', { sections: [] }, "r1"),
+      capture(
+        "https://ats.test/api/application/a1/submit",
+        '{"confirm":true}',
+        { success: true },
+        "r2"
+      ),
+    ];
+    const body = emitMultiStepExecuteHttp(
+      steps,
+      null,
+      { stringMessageKey: null, nestedErrorPaths: [] },
+      new Map(),
+      new Set(),
+      new Map(),
+      new Set(),
+      new Map(),
+      new Map(),
+      "https://ats.test",
+      new Map(),
+      new Map()
+    );
+
+    expect(body).toContain("return { data: r2 };");
+    expect(body).toContain("const r2 = (await httpClient(");
   });
 });
 

@@ -294,6 +294,32 @@ function isVoidResponse(body: unknown): boolean {
 }
 
 /**
+ * Finds actions whose endpoint was re-hit with a varying, non-void body —
+ * the signature of a search/inventory endpoint the page queries repeatedly,
+ * as opposed to an endpoint that merely fired once or repeated an identical
+ * (retry) or void (chatter/beacon) call. Shared by `selectPayloadAction` and
+ * `selectReturnAction`, which each pick a different fallback when nothing
+ * was re-queried.
+ */
+function findRequeriedActions<T extends { capture: Capture }>(steps: readonly T[]): T[] {
+  const bodiesByEndpoint = new Map<string, Set<string>>();
+  for (const step of steps) {
+    const key = endpointKey(step.capture.url);
+    const bodies = bodiesByEndpoint.get(key) ?? new Set<string>();
+    bodies.add(step.capture.requestPostData ?? "");
+    bodiesByEndpoint.set(key, bodies);
+  }
+
+  return steps.filter((step) => {
+    const bodies = bodiesByEndpoint.get(endpointKey(step.capture.url));
+    if (!bodies || bodies.size < 2) return false;
+    // An endpoint re-hit with varying bodies but nothing to show for it is
+    // chatter — client-side error reporting, beacons — not the flow's subject.
+    return !isVoidResponse(step.capture.responseBody);
+  });
+}
+
+/**
  * Picks the action whose request body should define the payload schema.
  *
  * Defaults to the first action, which is right for a transactional flow: the
@@ -314,23 +340,28 @@ export function selectPayloadAction<T extends { capture: Capture }>(steps: reado
   const first = steps[0];
   if (!first) return null;
 
-  const bodiesByEndpoint = new Map<string, Set<string>>();
-  for (const step of steps) {
-    const key = endpointKey(step.capture.url);
-    const bodies = bodiesByEndpoint.get(key) ?? new Set<string>();
-    bodies.add(step.capture.requestPostData ?? "");
-    bodiesByEndpoint.set(key, bodies);
-  }
-
-  const requeried = steps.filter((step) => {
-    const bodies = bodiesByEndpoint.get(endpointKey(step.capture.url));
-    if (!bodies || bodies.size < 2) return false;
-    // An endpoint re-hit with varying bodies but nothing to show for it is
-    // chatter — client-side error reporting, beacons — not the flow's subject.
-    return !isVoidResponse(step.capture.responseBody);
-  });
-
+  const requeried = findRequeriedActions(steps);
   return requeried[0] ?? first;
+}
+
+/**
+ * Picks the action whose response body `executeHttp` should return.
+ *
+ * Defaults to the last action, which is right for a transactional/submission
+ * flow: the final call is the terminal success signal the caller wants back.
+ * It is wrong when the flow is a read/search whose last call happens to be an
+ * incidental drill-down (e.g. previewing one result) rather than the search
+ * result itself — the same re-queried-endpoint signal `selectPayloadAction`
+ * uses to find the flow's subject applies here: an endpoint hit repeatedly
+ * with varying, non-void bodies is what the flow is about, and its most
+ * recent response is the freshest instance of that answer.
+ */
+export function selectReturnAction<T extends { capture: Capture }>(steps: readonly T[]): T | null {
+  const last = steps[steps.length - 1] ?? null;
+  if (!last) return null;
+
+  const requeried = findRequeriedActions(steps);
+  return requeried[requeried.length - 1] ?? last;
 }
 
 function deriveBaseUrl(captures: Capture[]): string {
@@ -2203,8 +2234,10 @@ export function emitMultiStepExecuteHttp(
       }
     }
   }
-  // The last step's var is also referenced by the closing `return { data }`.
-  if (actions.length > 0) referencedNames.add(actions[actions.length - 1]!.varName);
+  // The relevance-selected step's var is also referenced by the closing
+  // `return { data }` — see selectReturnAction.
+  const returnAction = selectReturnAction(actions);
+  if (returnAction) referencedNames.add(returnAction.varName);
   // Base64 Content overrides reference variables inside function calls
   // (e.g. buildBase64Content(payload, questionnaireId, ...)) that the
   // ${name} regex above doesn't capture. Add them explicitly.
@@ -2349,8 +2382,8 @@ export function emitMultiStepExecuteHttp(
     lines.push("");
   }
 
-  const lastVar = actions.length > 0 ? actions[actions.length - 1]!.varName : "undefined";
-  lines.push(`    return { data: ${lastVar} };`);
+  const returnVar = returnAction ? returnAction.varName : "undefined";
+  lines.push(`    return { data: ${returnVar} };`);
 
   return lines.join("\n");
 }
