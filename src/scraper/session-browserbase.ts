@@ -49,13 +49,16 @@ interface StagehandLogLine {
  * upstream Stagehand bug is universal across tenants.
  *
  * Returns the callback + a `reportSuppressed` function that the
- * session teardown calls to log the final suppression count — keeps
- * the noise out of the running log while preserving the diagnostic
- * for run-completion summary.
+ * session teardown calls to log the final suppression count, plus a
+ * `getSuppressedCount` live accessor so callers can read the running
+ * total while a step is still executing — e.g. treating "resolver
+ * threw on this step" as evidence a reported-success click was
+ * phantom, without waiting for teardown.
  */
-function makeFilteredStagehandLogger(pinoLogger: Logger): {
+export function makeFilteredStagehandLogger(pinoLogger: Logger): {
   callback: (line: StagehandLogLine) => void;
   reportSuppressed: () => void;
+  getSuppressedCount: () => number;
 } {
   let suppressedCount = 0;
   const callback = (line: StagehandLogLine): void => {
@@ -83,7 +86,8 @@ function makeFilteredStagehandLogger(pinoLogger: Logger): {
       );
     }
   };
-  return { callback, reportSuppressed };
+  const getSuppressedCount = (): number => suppressedCount;
+  return { callback, reportSuppressed, getSuppressedCount };
 }
 
 /**
@@ -181,8 +185,11 @@ export async function createBrowserbaseBrowserSession(
       }
     : baseFingerprint;
 
-  const { callback: stagehandLoggerCallback, reportSuppressed: reportSuppressedAisdkErrors } =
-    makeFilteredStagehandLogger(logger);
+  const {
+    callback: stagehandLoggerCallback,
+    reportSuppressed: reportSuppressedAisdkErrors,
+    getSuppressedCount: getSuppressedAisdkElementIdErrorCount,
+  } = makeFilteredStagehandLogger(logger);
 
   let stagehand: Stagehand | undefined;
   try {
@@ -250,5 +257,6 @@ export async function createBrowserbaseBrowserSession(
     sessionId,
     provider: "browserbase",
     close,
+    getSuppressedAisdkElementIdErrorCount,
   };
 }
