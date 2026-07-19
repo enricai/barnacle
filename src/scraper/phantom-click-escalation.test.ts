@@ -75,7 +75,27 @@ describe("scraper/flow-runner shouldSkipTechnique phantom-click escalation", () 
     });
 
     expect(structuredClick.skip).toBe(false);
+    expect(structuredClick.reason).not.toContain("deep submit-control locator");
     expect(observeActExclude.skip).toBe(false);
+    expect(observeActExclude.reason).not.toContain("deep submit-control locator");
+  });
+
+  it("never skips llm-rephrase after a phantom click, regardless of the submit-shaped gate", () => {
+    const submitShaped = shouldSkipTechnique({
+      technique: "llm-rephrase",
+      priorAttempts: [{ technique: "act-string", triedSelectors: ["#submit"], errorMessage: null }],
+      phantomClickAfterAttempt1: true,
+      submitShapedStep: true,
+    });
+    const nonSubmitShaped = shouldSkipTechnique({
+      technique: "llm-rephrase",
+      priorAttempts: [{ technique: "act-string", triedSelectors: ["#radio-no"], errorMessage: null }],
+      phantomClickAfterAttempt1: true,
+      submitShapedStep: false,
+    });
+
+    expect(submitShaped.skip).toBe(false);
+    expect(nonSubmitShaped.skip).toBe(false);
   });
 
   it("still skips structured-click when no prior attempt resolved an xpath (existing-behaviour control)", () => {
