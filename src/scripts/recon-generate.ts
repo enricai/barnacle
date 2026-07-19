@@ -1561,19 +1561,26 @@ export function compileActionSteps(
  * step order — this is what `emitContractTs` renders as `createHttpClient`'s
  * `bind` option so the generated `executeHttp` actually forwards a value like
  * disneycruise's `Set-Cookie: __pa=<jwt>` mint to the stateful call that 401s
- * without it. Deduped by `targetHeader`: `HttpResponseBinding` (http-client.ts)
- * is one binding per target header, so if two steps somehow produced the same
- * target the earliest wins.
+ * without it. Deduped by `targetHeader` + `cookieName`: the `Cookie` request
+ * header carries many cookies by design, so every distinct cookie-origin
+ * produce targeting it must survive (the runtime accumulates them into one
+ * `Cookie` header per binding — see http-client.ts); only a produce that
+ * re-mints the SAME cookie on a later step collapses to its earliest
+ * occurrence. Non-cookie targets (e.g. `X-Conversation-Id`) still keep
+ * first-wins, since `HttpResponseBinding` is one binding per target header
+ * there and two steps producing the same non-cookie target would otherwise
+ * race with no defined winner.
  */
 function collectHeaderBindings(actionSteps: ActionStep[]): HeaderProduce[] {
-  const byTarget = new Map<string, HeaderProduce>();
+  const byKey = new Map<string, HeaderProduce>();
   for (const step of actionSteps) {
     for (const p of step.produces) {
       if (p.kind !== "header") continue;
-      if (!byTarget.has(p.targetHeader)) byTarget.set(p.targetHeader, p);
+      const key = `${p.targetHeader} ${p.cookieName ?? ""}`;
+      if (!byKey.has(key)) byKey.set(key, p);
     }
   }
-  return [...byTarget.values()];
+  return [...byKey.values()];
 }
 
 /**
