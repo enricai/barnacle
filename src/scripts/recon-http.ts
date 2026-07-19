@@ -11,12 +11,18 @@
  *   - Rate-limit probe (1 → 3 → 5 rps, stops at first 429/403)
  *
  * Usage:
- *   pnpm tsx src/scripts/recon-http.ts [--captures-dir /tmp/recon/graphql]
+ *   pnpm tsx src/scripts/recon-http.ts [--captures-dir <path>] [--out-dir <path>]
  *
- * Outputs:
- *   /tmp/recon/replays/<filename>.json  — one replay result per unique capture
- *   /tmp/recon/aux/<basename>.json      — downloaded static fixture per auxiliary endpoint
- *   /tmp/recon/replays/rate-limit.json — rate-limit probe findings
+ * Output lands under the run-scoped root resolved by `resolveReconRunDir()`
+ * (`@/scripts/recon-shared`) — `/tmp/recon/<runId>/` by default, rooted
+ * elsewhere via `--out-dir <path>` / `RECON_OUT_DIR`:
+ *   replays/<filename>.json  — one replay result per unique capture
+ *   aux/<basename>.json      — downloaded static fixture per auxiliary endpoint
+ *   replays/rate-limit.json  — rate-limit probe findings
+ *
+ * `--captures-dir` overrides only the *read* path for captures (e.g. to
+ * replay a prior run's captures into a fresh output root) and defaults to
+ * this run's own `graphqlDir`.
  */
 
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -26,13 +32,11 @@ import { toErrorMessage } from "@/lib/errors";
 import { configureHttpDispatcher } from "@/lib/http";
 import { getScriptLogger } from "@/lib/logging";
 import { isNoiseUrl } from "@/recon/capture-filters";
+import { resolveReconRunDir } from "@/scripts/recon-shared";
 
 configureHttpDispatcher();
 
 const logger = getScriptLogger("recon-http");
-
-const CAPTURES_DIR = "/tmp/recon/graphql";
-const REPLAYS_DIR = "/tmp/recon/replays";
 
 /** Load-bearing headers — minimal set that proves the endpoint works standalone. */
 const RC_HEADERS: Record<string, string> = {
@@ -203,7 +207,7 @@ async function replayCapture(filename: string, capture: Capture): Promise<Replay
   }
 }
 
-async function probeIntrospection(endpoint: string): Promise<void> {
+async function probeIntrospection(endpoint: string, replaysDir: string): Promise<void> {
   logger.info(`introspection probe: ${endpoint}`);
   const origin = new URL(endpoint).origin;
   const headers: Record<string, string> = {
@@ -220,7 +224,7 @@ async function probeIntrospection(endpoint: string): Promise<void> {
     const body = (await response.json()) as Record<string, unknown>;
     if (body.data) {
       logger.info("  → introspection ENABLED — full schema available");
-      writeFileSync(join(REPLAYS_DIR, "introspection-schema.json"), JSON.stringify(body, null, 2));
+      writeFileSync(join(replaysDir, "introspection-schema.json"), JSON.stringify(body, null, 2));
     } else {
       logger.info("  → introspection DISABLED — write Zod schemas by hand from captured JSON");
     }
@@ -229,16 +233,14 @@ async function probeIntrospection(endpoint: string): Promise<void> {
   }
 }
 
-const AUX_DIR = "/tmp/recon/aux";
-
 /**
  * Finds static JSON endpoints in successful replays (markets, currencies,
  * labels, dictionaries, config) and downloads them as committed fixtures.
  * These rarely change and are cheaper to serve from a snapshot than to
  * re-fetch on every production call.
  */
-async function probeAuxiliaryEndpoints(replays: ReplayResult[]): Promise<void> {
-  mkdirSync(AUX_DIR, { recursive: true });
+async function probeAuxiliaryEndpoints(replays: ReplayResult[], auxDir: string): Promise<void> {
+  mkdirSync(auxDir, { recursive: true });
   const writtenInRun = new Set<string>();
 
   const candidates = replays.filter((r) => {
@@ -277,9 +279,9 @@ async function probeAuxiliaryEndpoints(replays: ReplayResult[]): Promise<void> {
       const rawBase = parsed.pathname.split("/").pop() ?? "aux";
       const base = rawBase.endsWith(".json") ? rawBase : `${rawBase}.json`;
       const filename = writtenInRun.has(base) ? `${parsed.hostname}-${base}` : base;
-      writeFileSync(join(AUX_DIR, filename), JSON.stringify(body, null, 2));
+      writeFileSync(join(auxDir, filename), JSON.stringify(body, null, 2));
       writtenInRun.add(base);
-      logger.info(`[fixture] ${candidate.url} → ${AUX_DIR}/${filename} — commit as static fixture`);
+      logger.info(`[fixture] ${candidate.url} → ${auxDir}/${filename} — commit as static fixture`);
     } catch (err) {
       logger.error(`[aux err] ${candidate.url}: ${toErrorMessage(err)}`);
     }
@@ -375,14 +377,58 @@ async function probeRateLimit(
   return finding;
 }
 
+/**
+ * Builds the rate-limit probe's target set from replay results. Applies
+ * `isNoiseUrl` directly rather than trusting that `replays` was pre-filtered
+ * upstream — the probe fires 60 requests per target, so a noise host reaching
+ * this function must never silently slip through on a caller's say-so.
+ */
+export function selectRateLimitTargets(replays: ReplayResult[]): {
+  targets: Map<string, { method: string; body: string | null }>;
+  skipped: number;
+} {
+  const targets = new Map<string, { method: string; body: string | null }>();
+  let skipped = 0;
+  for (const replay of replays) {
+    if (!replay.success) continue;
+    if (isNoiseUrl(replay.url)) {
+      skipped++;
+      continue;
+    }
+    try {
+      const u = new URL(replay.url);
+      if (u.protocol !== "http:" && u.protocol !== "https:") continue;
+      const pathname = u.pathname.toLowerCase();
+      // Skip static fixture endpoints — probing them 60+ times could ban the CDN egress IP
+      if (
+        pathname.endsWith(".json") ||
+        /\/(markets|currencies|labels|dictionaries|config|locales|i18n)/.test(pathname)
+      )
+        continue;
+      const key = `${u.origin}${u.pathname}`;
+      if (!targets.has(key)) {
+        targets.set(key, { method: replay.method, body: replay.requestBody });
+      }
+    } catch {
+      // skip unparseable urls
+    }
+  }
+  return { targets, skipped };
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
-  let capturesDir = CAPTURES_DIR;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--out-dir" && args[i + 1]) process.env.RECON_OUT_DIR = args[++i]!;
+  }
+
+  const runDir = resolveReconRunDir();
+  let capturesDir = runDir.graphqlDir;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--captures-dir" && args[i + 1]) capturesDir = args[++i]!;
   }
 
-  mkdirSync(REPLAYS_DIR, { recursive: true });
+  mkdirSync(runDir.replaysDir, { recursive: true });
 
   logger.info("=== PHASE 2: HTTP REPLAY ===");
   const all = loadCaptures(capturesDir);
@@ -403,7 +449,7 @@ async function main(): Promise<void> {
   for (const { filename, capture } of probeworthy) {
     const result = await replayCapture(filename, capture);
     replays.push(result);
-    writeFileSync(join(REPLAYS_DIR, filename), JSON.stringify(result, null, 2));
+    writeFileSync(join(runDir.replaysDir, filename), JSON.stringify(result, null, 2));
   }
 
   const passed = replays.filter((r) => r.success).length;
@@ -427,36 +473,20 @@ async function main(): Promise<void> {
     logger.info("no GraphQL endpoints found in captures");
   }
   for (const endpoint of graphqlEndpoints) {
-    await probeIntrospection(endpoint);
+    await probeIntrospection(endpoint, runDir.replaysDir);
   }
 
   // Auxiliary endpoint probe
   logger.info("=== PHASE 3B: AUXILIARY ENDPOINTS ===");
-  await probeAuxiliaryEndpoints(replays);
+  await probeAuxiliaryEndpoints(replays, runDir.auxDir);
 
   // Rate-limit probe — runs last
   logger.info("=== PHASE 3C: RATE-LIMIT PROBE (runs last — may trigger ban) ===");
-  const probeTargets = new Map<string, { method: string; body: string | null }>();
-  for (const replay of replays) {
-    if (!replay.success) continue;
-    try {
-      const u = new URL(replay.url);
-      if (u.protocol !== "http:" && u.protocol !== "https:") continue;
-      const pathname = u.pathname.toLowerCase();
-      // Skip static fixture endpoints — probing them 60+ times could ban the CDN egress IP
-      if (
-        pathname.endsWith(".json") ||
-        /\/(markets|currencies|labels|dictionaries|config|locales|i18n)/.test(pathname)
-      )
-        continue;
-      const key = `${u.origin}${u.pathname}`;
-      if (!probeTargets.has(key)) {
-        probeTargets.set(key, { method: replay.method, body: replay.requestBody });
-      }
-    } catch {
-      // skip unparseable urls
-    }
-  }
+  const { targets: probeTargets, skipped: skippedAsNoise } = selectRateLimitTargets(replays);
+  logger.info(
+    `rate-limit targets: ${probeTargets.size}` +
+      (skippedAsNoise > 0 ? ` (${skippedAsNoise} skipped as noise)` : "")
+  );
 
   const rateLimitFindings: RateLimitFinding[] = [];
   for (const [endpoint, { method, body }] of probeTargets) {
@@ -464,12 +494,20 @@ async function main(): Promise<void> {
     rateLimitFindings.push(finding);
   }
 
-  writeFileSync(join(REPLAYS_DIR, "rate-limit.json"), JSON.stringify(rateLimitFindings, null, 2));
+  writeFileSync(
+    join(runDir.replaysDir, "rate-limit.json"),
+    JSON.stringify(rateLimitFindings, null, 2)
+  );
 
-  logger.info(`recon-http complete — replays in ${REPLAYS_DIR}`);
+  logger.info(`recon-http complete — replays in ${runDir.replaysDir}`);
 }
 
-main().catch((err) => {
-  logger.error(`recon-http failed: ${toErrorMessage(err)}`);
-  process.exit(1);
-});
+if (
+  process.argv[1] !== undefined &&
+  (process.argv[1].endsWith("recon-http.ts") || process.argv[1].endsWith("recon-http.js"))
+) {
+  main().catch((err) => {
+    logger.error(`recon-http failed: ${toErrorMessage(err)}`);
+    process.exit(1);
+  });
+}

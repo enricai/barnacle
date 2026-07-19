@@ -14,7 +14,7 @@ import { describe, expect, it } from "vitest";
  *    (via tsx) — this proves the module survives the real build toolchain.
  * 2. An installed-package consumer (nursefly/autoapply) reading the on-disk
  *    cookie snapshots: it cannot run `pnpm run recon:browser` itself, so it
- *    needs `CookieRecord`/`CookieJarSnapshot`/`COOKIES_DIR` and
+ *    needs `CookieRecord`/`CookieJarSnapshot`/`resolveReconRunDir` and
  *    `captureCookieJarSnapshot` importable via the package's declared
  *    `exports` map — `@enricai/barnacle/scripts/recon-shared` and
  *    `@enricai/barnacle/scraper/cookie-jar` — the same pattern
@@ -86,13 +86,16 @@ describe("recon-browser — cookie-jar snapshot module reaches the built dist tr
       });
       expect(alias.status, `${alias.stdout}\n${alias.stderr}`).toBe(0);
 
-      // CookieRecord/CookieJarSnapshot/COOKIES_DIR are the on-disk contract a
-      // downstream consumer reads — pin that the declaration file still
-      // carries them post-alias-rewrite, not just pre-build in src/.
+      // CookieRecord/CookieJarSnapshot/resolveReconRunDir are the on-disk
+      // contract a downstream consumer reads — pin that the declaration file
+      // still carries them post-alias-rewrite, not just pre-build in src/.
+      // resolveReconRunDir is the run-scoped resolver recon-browser now uses
+      // exclusively to write cookie-jar snapshots (cookiesDir), replacing the
+      // old process-global COOKIES_DIR constant as the real write-path contract.
       const declaredTypes = readFileSync(path.join(outDir, "scripts", "recon-shared.d.ts"), "utf8");
       expect(declaredTypes).toContain("CookieRecord");
       expect(declaredTypes).toContain("CookieJarSnapshot");
-      expect(declaredTypes).toContain("COOKIES_DIR");
+      expect(declaredTypes).toContain("resolveReconRunDir");
 
       // Belt and suspenders: the built recon-browser.js still imports the
       // cookie-jar module by its post-tsc-alias relative path (not a `@/`

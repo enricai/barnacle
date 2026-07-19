@@ -1,11 +1,55 @@
-import { describe, expect, it } from "vitest";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { CookieJarSnapshot } from "@/scripts/recon-shared";
-import { COOKIES_DIR } from "@/scripts/recon-shared";
+import {
+  AUX_DIR,
+  CAPTURES_DIR,
+  COOKIES_DIR,
+  REPLAYS_DIR,
+  STEP_FAILURES_DIR,
+} from "@/scripts/recon-shared";
 
-describe("COOKIES_DIR", () => {
-  it("points at the recon cookies directory", () => {
-    expect(COOKIES_DIR).toBe("/tmp/recon/cookies");
+const RUN_ID_PATTERN = /^\d{8}-\d{6}-[a-z0-9]{4}$/;
+
+let tmpDir: string | null = null;
+
+/** Re-imports recon-shared fresh so its module-level memoization doesn't leak across cases. */
+async function loadResolver() {
+  vi.resetModules();
+  return import("@/scripts/recon-shared.js");
+}
+
+afterEach(() => {
+  delete process.env.RECON_RUN_ID;
+  delete process.env.RECON_OUT_DIR;
+  if (tmpDir) {
+    rmSync(tmpDir, { recursive: true, force: true });
+    tmpDir = null;
+  }
+});
+
+describe("legacy back-compat dir constants", () => {
+  it("share one common default base dir", () => {
+    const defaultBase = dirname(CAPTURES_DIR);
+
+    expect(dirname(COOKIES_DIR)).toBe(defaultBase);
+    expect(dirname(REPLAYS_DIR)).toBe(defaultBase);
+    expect(dirname(AUX_DIR)).toBe(defaultBase);
+    expect(dirname(STEP_FAILURES_DIR)).toBe(defaultBase);
+  });
+
+  it("names each leaf after its subdirectory role", () => {
+    const defaultBase = dirname(CAPTURES_DIR);
+
+    expect(CAPTURES_DIR).toBe(join(defaultBase, "graphql"));
+    expect(COOKIES_DIR).toBe(join(defaultBase, "cookies"));
+    expect(REPLAYS_DIR).toBe(join(defaultBase, "replays"));
+    expect(AUX_DIR).toBe(join(defaultBase, "aux"));
+    expect(STEP_FAILURES_DIR).toBe(join(defaultBase, "step-failures"));
   });
 });
 
@@ -35,5 +79,119 @@ describe("CookieJarSnapshot shape", () => {
     const [cookie] = snapshot.cookies;
     expect(snapshot.cookies).toHaveLength(1);
     expect(cookie?.sameSite).toBe("Lax");
+  });
+});
+
+describe("resolveReconRunDir", () => {
+  it("produces different run roots across two unseeded resolutions", async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), "recon-shared-test-"));
+    process.env.RECON_OUT_DIR = tmpDir;
+
+    const { resolveReconRunDir: resolveFirst } = await loadResolver();
+    const first = resolveFirst();
+
+    const { resolveReconRunDir: resolveSecond } = await loadResolver();
+    const second = resolveSecond();
+
+    expect(first.root).not.toBe(second.root);
+    expect(first.runId).not.toBe(second.runId);
+  });
+
+  it("yields a deterministic root when RECON_RUN_ID is set", async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), "recon-shared-test-"));
+    process.env.RECON_RUN_ID = "20260718-120326-fixd";
+    process.env.RECON_OUT_DIR = tmpDir;
+
+    const { resolveReconRunDir } = await loadResolver();
+    const runDir = resolveReconRunDir();
+
+    expect(runDir.runId).toBe("20260718-120326-fixd");
+    expect(runDir.root).toBe(join(tmpDir, "20260718-120326-fixd"));
+  });
+
+  it("roots all five subdirs under RECON_OUT_DIR and creates them on disk", async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), "recon-shared-test-"));
+    process.env.RECON_OUT_DIR = tmpDir;
+
+    const { resolveReconRunDir } = await loadResolver();
+    const runDir = resolveReconRunDir();
+
+    expect(runDir.graphqlDir).toBe(join(runDir.root, "graphql"));
+    expect(runDir.cookiesDir).toBe(join(runDir.root, "cookies"));
+    expect(runDir.replaysDir).toBe(join(runDir.root, "replays"));
+    expect(runDir.auxDir).toBe(join(runDir.root, "aux"));
+    expect(runDir.stepFailuresDir).toBe(join(runDir.root, "step-failures"));
+
+    expect(existsSync(runDir.graphqlDir)).toBe(true);
+    expect(existsSync(runDir.cookiesDir)).toBe(true);
+    expect(existsSync(runDir.replaysDir)).toBe(true);
+    expect(existsSync(runDir.auxDir)).toBe(true);
+    expect(existsSync(runDir.stepFailuresDir)).toBe(true);
+  });
+
+  it("generates a runId matching the timestamp+suffix shape", async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), "recon-shared-test-"));
+    process.env.RECON_OUT_DIR = tmpDir;
+
+    const { resolveReconRunDir } = await loadResolver();
+    const runDir = resolveReconRunDir();
+
+    expect(runDir.runId).toMatch(RUN_ID_PATTERN);
+  });
+
+  it("memoizes within one process so repeated calls return the identical root", async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), "recon-shared-test-"));
+    process.env.RECON_OUT_DIR = tmpDir;
+
+    const { resolveReconRunDir } = await loadResolver();
+    const first = resolveReconRunDir();
+    const second = resolveReconRunDir();
+
+    expect(second).toBe(first);
+    expect(second.root).toBe(first.root);
+  });
+});
+
+describe("resolveLatestReconRunRoot", () => {
+  it("returns an explicit runDir unchanged, ignoring env and disk state", async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), "recon-shared-test-"));
+    process.env.RECON_OUT_DIR = tmpDir;
+
+    const { resolveLatestReconRunRoot } = await loadResolver();
+    expect(resolveLatestReconRunRoot("/explicit/run/dir")).toBe("/explicit/run/dir");
+  });
+
+  it("resolves RECON_RUN_ID under the base dir when no explicit runDir is given", async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), "recon-shared-test-"));
+    process.env.RECON_OUT_DIR = tmpDir;
+    process.env.RECON_RUN_ID = "20260718-120326-fixd";
+
+    const { resolveLatestReconRunRoot } = await loadResolver();
+    expect(resolveLatestReconRunRoot()).toBe(join(tmpDir, "20260718-120326-fixd"));
+  });
+
+  it("picks the most recently modified run subdirectory under the base dir", async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), "recon-shared-test-"));
+    process.env.RECON_OUT_DIR = tmpDir;
+
+    const older = join(tmpDir, "20260718-100000-aaaa");
+    const newer = join(tmpDir, "20260718-110000-bbbb");
+    mkdirSync(older, { recursive: true });
+    mkdirSync(newer, { recursive: true });
+    const past = new Date("2026-07-18T10:00:00Z");
+    const future = new Date("2026-07-18T11:00:00Z");
+    utimesSync(older, past, past);
+    utimesSync(newer, future, future);
+
+    const { resolveLatestReconRunRoot } = await loadResolver();
+    expect(resolveLatestReconRunRoot()).toBe(newer);
+  });
+
+  it("falls back to the base dir when no run subdirectories exist", async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), "recon-shared-test-"));
+    process.env.RECON_OUT_DIR = tmpDir;
+
+    const { resolveLatestReconRunRoot } = await loadResolver();
+    expect(resolveLatestReconRunRoot()).toBe(tmpDir);
   });
 });
