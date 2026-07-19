@@ -18,6 +18,7 @@ import {
   selectPayloadAction,
   selectReturnAction,
 } from "@/scripts/recon-generate";
+import { buildMulticallHeterogeneousActionSteps } from "@/scripts/recon-generate-multicall-fixture";
 
 /** The recon env-var token for the applicant email, built by concatenation so
  * Biome's noTemplateCurlyInString rule doesn't flag the literal `${...}`. */
@@ -1103,6 +1104,101 @@ describe("emitMultiStepExecuteHttp — relevance-selected return value (G1)", ()
 
     expect(body).toContain("return { data: r2 };");
     expect(body).toContain("const r2 = (await httpClient(");
+  });
+});
+
+describe("emitMultiStepExecuteHttp — per-call response schema override (G2)", () => {
+  const steps = buildMulticallHeterogeneousActionSteps();
+  // MulticallFixtureStep.produces is typed unknown[] (its own module doesn't
+  // export recon-generate.ts's internal Produce type — see the fixture's
+  // docstring); every step's produces is [] at runtime, which structurally
+  // satisfies ActionStep.produces: Produce[].
+  const body = emitMultiStepExecuteHttp(
+    steps as Parameters<typeof emitMultiStepExecuteHttp>[0],
+    null,
+    { stringMessageKey: null, nestedErrorPaths: [] },
+    new Map(),
+    new Set(),
+    new Map(),
+    new Set(),
+    new Map(),
+    new Map(),
+    "https://api.example.com",
+    new Map(),
+    new Map()
+  );
+  const callBlocks = body
+    .split(/(?=(?:const \w+ = )?\(?await httpClient\()/)
+    .filter((b) => b.includes("await httpClient("));
+
+  function callBlockForUrl(urlSubstring: string): string {
+    const block = callBlocks.find((b) => b.includes(urlSubstring));
+    if (!block)
+      throw new Error(`no httpClient call block found for URL containing ${urlSubstring}`);
+    return block;
+  }
+
+  it("emits a distinct per-call schema for the toggles array response", () => {
+    const block = callBlockForUrl("toggles/product-avail");
+    expect(block).toMatch(/schema:\s*z\.array\(/);
+    expect(block).toContain("name: z.string()");
+    expect(block).toContain("enabled: z.boolean()");
+  });
+
+  it("emits a distinct per-call schema for the {result,successful} auth-mint response", () => {
+    const block = callBlockForUrl("authz/private");
+    expect(block).toContain("result: z.string()");
+    expect(block).toContain("successful: z.boolean()");
+    expect(block).not.toContain("totalPages");
+  });
+
+  it("emits the inventory shape's own schema on the available-products call, not the toggles shape", () => {
+    // r2's varying `page` field is threaded to `payload.page` (selectPayloadAction's
+    // re-query signature), distinguishing its block from r3's literal `body:
+    // \`{"page":2}\``.
+    const block = callBlockForUrl("payload.page");
+    expect(block).toContain("totalPages: z.number()");
+    expect(block).toContain("totalAvailableCruises: z.number()");
+    expect(block).toContain("products: z.array(");
+    expect(block).not.toMatch(/schema:\s*z\.array\(z\.object/);
+  });
+
+  it("the toggles call's schema is not the products/inventory schema (the G2 reproduction)", () => {
+    const togglesBlock = callBlockForUrl("toggles/product-avail");
+    expect(togglesBlock).not.toContain("totalPages");
+    expect(togglesBlock).not.toContain("totalAvailableCruises");
+  });
+
+  it("every httpClient(...) call carries its own schema: override rather than relying on the client default", () => {
+    const httpClientCallCount = (body.match(/await httpClient\(/g) ?? []).length;
+    const schemaOverrideCount = (body.match(/\n\s*schema: /g) ?? []).length;
+    expect(schemaOverrideCount).toBe(httpClientCallCount);
+  });
+
+  it("the client-level ResponseSchema is not referenced by any per-call schema, so narrowing it leaves non-terminal calls' schemas unchanged (the G2 reproduction)", () => {
+    // emitContractTs emits `${pascal}ResponseSchema = z.unknown()` for every
+    // multi-step flow and hands the author the `[ ] Narrow ResponseSchema`
+    // checklist item — the report's repro is the author following that item
+    // by hand-substituting the narrowed available-products/ shape (the same
+    // shape r2's own per-call schema below already carries) in place of
+    // z.unknown(), exactly as they would in the emitted file.
+    const contract = emitContractTs({ ...BASE_OPTS, multiStepBody: body });
+    expect(contract).toContain("const TestSiteResponseSchema = z.unknown();");
+    const narrowedContract = contract.replace(
+      "const TestSiteResponseSchema = z.unknown();",
+      "const TestSiteResponseSchema = z.object({\n  totalPages: z.number(),\n  totalAvailableCruises: z.number(),\n  products: z.array(z.object({ productId: z.string() })),\n});"
+    );
+
+    // Pre-fix (no per-call override), the toggles call had no `schema:` of
+    // its own and validated against the client's TestSiteResponseSchema —
+    // narrowing it here would have applied the products shape to the toggles
+    // call. Post-fix, the toggles call carries its own inferred `schema:`
+    // literal, so the narrowed client schema is unreferenced by it.
+    const togglesBlock = callBlockForUrl("toggles/product-avail");
+    expect(togglesBlock).toMatch(/schema:\s*z\.array\(/);
+    expect(togglesBlock).not.toContain("schema: TestSiteResponseSchema");
+    expect(togglesBlock).not.toContain("totalPages");
+    expect(narrowedContract).toContain("totalPages: z.number()");
   });
 });
 
