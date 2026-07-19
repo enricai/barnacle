@@ -246,6 +246,63 @@ describe("scraper/http-client createHttpClient", () => {
   });
 });
 
+describe("scraper/http-client per-call schema override", () => {
+  const ToggleSchema = z.object({ name: z.string(), enabled: z.boolean() });
+  type Toggle = z.infer<typeof ToggleSchema>;
+
+  it("validates against init.schema instead of the client schema when provided", async () => {
+    mockFetch(200, { name: "feature-x", enabled: true });
+    const client = makeClient();
+    const result = await client<Toggle>("https://example.com/api/toggle", {
+      schema: ToggleSchema,
+    });
+    expect(result).toEqual({ name: "feature-x", enabled: true });
+  });
+
+  it("still validates against the client schema when init.schema is omitted", async () => {
+    mockFetch(200, { id: "1", name: "Widget" });
+    const client = makeClient();
+    const result = await client("https://example.com/api/item");
+    expect(result).toEqual({ id: "1", name: "Widget" });
+  });
+
+  it("throws HttpSchemaError when the body fails init.schema, even though it matches the client schema", async () => {
+    // Matches ItemSchema (the client default) but not ToggleSchema (the override).
+    mockFetch(200, { id: "1", name: "Widget" });
+    const client = makeClient();
+    await expect(
+      client<Toggle>("https://example.com/api/toggle", { schema: ToggleSchema })
+    ).rejects.toBeInstanceOf(HttpSchemaError);
+  });
+
+  it("applies a per-call schema override to only that call in a multi-call sequence", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce({
+          status: 200,
+          ok: true,
+          text: vi.fn().mockResolvedValue(JSON.stringify({ name: "feature-x", enabled: true })),
+          headers: new Headers(),
+        })
+        .mockResolvedValueOnce({
+          status: 200,
+          ok: true,
+          text: vi.fn().mockResolvedValue(JSON.stringify({ id: "1", name: "Widget" })),
+          headers: new Headers(),
+        })
+    );
+    const client = makeClient();
+    const toggle = await client<Toggle>("https://example.com/api/toggle", {
+      schema: ToggleSchema,
+    });
+    const item = await client("https://example.com/api/item");
+    expect(toggle).toEqual({ name: "feature-x", enabled: true });
+    expect(item).toEqual({ id: "1", name: "Widget" });
+  });
+});
+
 describe("scraper/http-client onResponse hook", () => {
   it("fires with correct status, headers, and url on a 200 response", async () => {
     const responseHeaders = new Headers({ "x-request-id": "abc123" });
