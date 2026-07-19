@@ -20,7 +20,7 @@ const logger = getLogger({ name: "scraper/session-browserbase" });
  * We declare a minimal local subset rather than importing from Stagehand
  * because the type isn't re-exported from the package's top-level entrypoint.
  */
-interface StagehandLogLine {
+export interface StagehandLogLine {
   message: string;
   category?: string;
   level?: number;
@@ -53,7 +53,7 @@ interface StagehandLogLine {
  * the noise out of the running log while preserving the diagnostic
  * for run-completion summary.
  */
-function makeFilteredStagehandLogger(pinoLogger: Logger): {
+export function makeFilteredStagehandLogger(pinoLogger: Logger): {
   callback: (line: StagehandLogLine) => void;
   reportSuppressed: () => void;
 } {
