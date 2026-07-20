@@ -24,15 +24,13 @@ describe("lib/env getNodeEnv", () => {
     expect(getNodeEnv()).toBe(expected);
   });
 
-  it.each([
-    "development",
-    "staging",
-    "",
-    "random",
-  ] as const)("defaults to development when NODE_ENV=%s", (value) => {
-    process.env.NODE_ENV = value;
-    expect(getNodeEnv()).toBe("development");
-  });
+  it.each(["development", "staging", "", "random"] as const)(
+    "defaults to development when NODE_ENV=%s",
+    (value) => {
+      process.env.NODE_ENV = value;
+      expect(getNodeEnv()).toBe("development");
+    }
+  );
 
   it("defaults to development when NODE_ENV is unset", () => {
     delete process.env.NODE_ENV;
