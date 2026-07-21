@@ -265,7 +265,7 @@
   },
   "dependencies": {
     "@ai-sdk/amazon-bedrock": "^5.0.17",
-    "@anthropic-ai/sdk": "^0.111.0",
+    "@anthropic-ai/sdk": "^0.112.3",
     "@aws-sdk/client-s3": "^3.1085.0",
     "@browserbasehq/stagehand": "^3.6.0",
     "@fastify/compress": "^9.0.0",
