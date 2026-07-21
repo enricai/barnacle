@@ -38,7 +38,7 @@ import {
   type LlmCallInput,
 } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
-import { StepVerificationError } from "@/scraper/errors";
+import { type RunHealingFlowResult, StepVerificationError } from "@/scraper/errors";
 import { classifyPhantomClick, type PhantomClickVerdict } from "@/scraper/phantom-click";
 import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
 import {
@@ -6882,6 +6882,15 @@ export interface RunHealingFlowDeps {
   ownBackendHostnames?: string[];
   knownErrorClassPrefixes?: string[];
   wizardExitButtonLabels?: string[];
+  /**
+   * Per-run wall-clock budget for the whole flow. When set, the step loop
+   * throws {@link StepVerificationError} with kind `"flow-timeout"` once
+   * elapsed time exceeds this — finer-grained than the pool's coarse
+   * `taskTimeoutMs` session ceiling, and distinct from a dead session
+   * ({@link SessionTimeoutError}) since the browser itself is still fine.
+   * Omitted (default) preserves today's behavior: no flow-level deadline.
+   */
+  maxFlowMs?: number;
 }
 
 /** SPA-readiness gate defaults — mirror the recon CLI's post-navigation wait. */
@@ -6945,13 +6954,22 @@ export async function waitForSpaReady(
  * the healing. Passing no `onStepFailure`/`captureFn`/`trajectory` means a
  * terminal step failure propagates as {@link StepVerificationError} for the
  * plugin's `execute()` to handle — there is no on-disk dump and no LLM replan.
+ * Returns a {@link RunHealingFlowResult} instead of `void` so the caller can
+ * tell "submitted and verified" apart from "every step ran but the submit
+ * step was skipped" — a `submitStep:true` step that is skipped instead
+ * throws {@link StepVerificationError} with kind `"submit-skipped"` rather
+ * than let the flow report phantom success.
  */
-export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<void> {
-  const { stagehand, page, steps, logger, anthropic, resumeFixture } = deps;
+export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHealingFlowResult> {
+  const { stagehand, page, steps, logger, anthropic, resumeFixture, maxFlowMs } = deps;
   const counter = { n: 0 };
   const signalCounter = { n: 0 };
   const recentCaptures: string[] = [];
   const recentCaptureMeta: { method: string; status: number; url: string }[] = [];
+  const start = Date.now();
+  let submitVerified = false;
+  let submitStepSkipped = false;
+  let lastStepIndex = -1;
 
   const stopCapture = wireSignalCapture(page, {
     counter,
@@ -6970,7 +6988,14 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<void> {
 
   try {
     for (const [i, s] of steps.entries()) {
-      await executeStepWithHealing({
+      if (maxFlowMs !== undefined && Date.now() - start > maxFlowMs) {
+        throw new StepVerificationError(
+          `${formatStepPrefix(i, () => steps.length)} flow exceeded its maxFlowMs budget (${maxFlowMs}ms)`,
+          "flow-timeout"
+        );
+      }
+      lastStepIndex = i;
+      const outcome = await executeStepWithHealing({
         stagehand,
         page,
         step: s.instruction,
@@ -6997,8 +7022,20 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<void> {
         knownErrorClassPrefixes: deps.knownErrorClassPrefixes ?? [],
         wizardExitButtonLabels: deps.wizardExitButtonLabels ?? [],
       });
+      if (s.submitStep) {
+        if (outcome === "skipped") {
+          submitStepSkipped = true;
+          throw new StepVerificationError(
+            `${formatStepPrefix(i, () => steps.length)} submitStep was skipped instead of verified — flow cannot report success`,
+            "submit-skipped"
+          );
+        }
+        submitVerified = true;
+      }
     }
   } finally {
     stopCapture();
   }
+
+  return { submitVerified, submitStepSkipped, lastStepIndex };
 }

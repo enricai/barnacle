@@ -4388,7 +4388,11 @@ describe("recon-browser/runHealingFlow — phantom-submit escalation, end-to-end
         anthropic: null,
         resumeFixture: null,
       })
-    ).resolves.toBeUndefined();
+    ).resolves.toMatchObject({
+      submitVerified: true,
+      submitStepSkipped: false,
+      lastStepIndex: 2,
+    });
 
     // All three steps' act() calls happened exactly once each: the fill
     // steps succeed on attempt 1 normally, and the submit step's attempt 1

@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   executeStepWithHealing,
   formatStepPrefix,
+  type HealingFlowStep,
+  runHealingFlow,
   waitForSpaReady,
   wireSignalCapture,
 } from "@/scraper/flow-runner";
@@ -745,5 +747,204 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
       .filter(([expr]) => String(expr).includes('dispatchEvent(new Event("click"'))
       .map(([expr]) => Number(String(expr).match(/all\[(\d+)\]/)?.[1]));
     expect(clickByIndexCalls).toEqual([7]);
+  });
+});
+
+describe("flow-runner/runHealingFlow", () => {
+  /**
+   * Fake page satisfying `wireSignalCapture`'s CDP plumbing plus the plain
+   * DOM-evaluate surface `executeStepWithHealing` touches for a non-select/
+   * non-checkbox/non-radio instruction (DOM snapshot + invalid-marker count
+   * only — the select/checkbox/radio primitives all no-op on such a step
+   * because none of their instruction parsers match it).
+   */
+  function fakeFlowPage(
+    getUrl: () => string = () => "https://apply.acme.example/jobs/1/apply"
+  ): Page {
+    const session = { on: () => {}, off: () => {} };
+    const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const src = String(expr);
+      if (src.includes("outerHTML")) return { html: 184186, text: "0:" };
+      if (src.includes("isInvalid(el)")) return 0;
+      return null;
+    });
+    return {
+      evaluate,
+      url: getUrl,
+      title: vi.fn().mockResolvedValue("Apply"),
+      locator: vi.fn().mockReturnValue({
+        first: () => ({
+          isChecked: vi.fn().mockResolvedValue(false),
+          inputValue: vi.fn().mockResolvedValue(""),
+        }),
+      }),
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
+      getSessionForFrame: () => session,
+      mainFrameId: () => "main",
+      sendCDP: vi.fn().mockResolvedValue({ body: "{}", base64Encoded: false }),
+    } as unknown as Page;
+  }
+
+  /** Non-submit-shaped, non-select/checkbox/radio instruction. */
+  const STEP_A = "Fill in the middle name field";
+
+  function step(overrides: Partial<HealingFlowStep> = {}): HealingFlowStep {
+    return { instruction: STEP_A, optional: false, upload: false, submitStep: false, ...overrides };
+  }
+
+  it("throws StepVerificationError kind 'flow-timeout' carrying the current stepIndex once maxFlowMs elapses", async () => {
+    // Date.now() advances by 50ms every time stagehand.observe (the probe)
+    // is called, so the SECOND step's loop-entry deadline check (budget:
+    // 10ms) fires — the first step is allowed to run to completion
+    // (checked once per iteration, not mid-step). The URL flips on act so
+    // step 1 verifies via `urlChanged` instead of grinding the cascade.
+    let now = 1_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const urls = { current: "https://apply.acme.example/jobs/1/apply" };
+    const stagehand = {
+      observe: vi.fn().mockImplementation(async () => {
+        now += 50;
+        return [{ selector: "input#mname", description: "middle name", method: "fill" }];
+      }),
+      act: vi.fn().mockImplementation(async () => {
+        urls.current = "https://apply.acme.example/jobs/1/apply/step-2";
+        return {
+          success: true,
+          message: "filled",
+          actionDescription: "Fill in the middle name field",
+          actions: [{ selector: "input#mname", description: "middle name", method: "fill" }],
+        };
+      }),
+    } as unknown as Stagehand;
+    const page = fakeFlowPage(() => urls.current);
+
+    await expect(
+      runHealingFlow({
+        stagehand,
+        page,
+        steps: [step(), step()],
+        logger: testLogger,
+        anthropic: null,
+        resumeFixture: null,
+        maxFlowMs: 10,
+      })
+    ).rejects.toMatchObject({
+      name: "StepVerificationError",
+      kind: "flow-timeout",
+      message: expect.stringContaining("step 2"),
+    });
+
+    vi.restoreAllMocks();
+  });
+
+  it("completes under budget and returns submitVerified:true when the submitStep verifies", async () => {
+    // Verification (with submitEndpointPattern:null, the default) accepts a
+    // post-attempt URL change as proof of effect — the same `urlChanged`
+    // signal snapshotPage/executeStepWithHealing already use. The fake
+    // page's url() flips to the post-submit URL the instant stagehand.act
+    // resolves, simulating a real submit navigation.
+    let url = "https://apply.acme.example/jobs/1/apply";
+    const stagehand = {
+      observe: vi
+        .fn()
+        .mockResolvedValue([{ selector: "button#submit", description: "submit", method: "click" }]),
+      act: vi.fn().mockImplementation(async () => {
+        url = "https://apply.acme.example/jobs/1/apply/thank-you";
+        return {
+          success: true,
+          message: "clicked",
+          actionDescription: "Click the Submit button",
+          actions: [
+            { selector: "button#submit", description: "Click the Submit button", method: "click" },
+          ],
+        };
+      }),
+    } as unknown as Stagehand;
+    const page = fakeFlowPage(() => url);
+
+    const result = await runHealingFlow({
+      stagehand,
+      page,
+      steps: [step({ submitStep: true, instruction: "Click the Submit button" })],
+      logger: testLogger,
+      anthropic: null,
+      resumeFixture: null,
+    });
+
+    expect(result).toMatchObject({
+      submitVerified: true,
+      submitStepSkipped: false,
+      lastStepIndex: 0,
+    });
+  });
+
+  it("preserves current behavior (no deadline error) when maxFlowMs is omitted", async () => {
+    let stepCount = 0;
+    const urls = { current: "https://apply.acme.example/jobs/1/apply" };
+    const stagehand = {
+      observe: vi
+        .fn()
+        .mockResolvedValue([
+          { selector: "input#mname", description: "middle name", method: "fill" },
+        ]),
+      act: vi.fn().mockImplementation(async () => {
+        // Each step's act navigates to a fresh URL so its own pre/post
+        // snapshot sees a delta (urlChanged) — a URL that only changed once
+        // across the whole flow would false-negative step 2, since its
+        // pre-snapshot would already be on the post-step-1 URL.
+        stepCount += 1;
+        urls.current = `https://apply.acme.example/jobs/1/apply/step-${stepCount}`;
+        return {
+          success: true,
+          message: "filled",
+          actionDescription: "Fill in the middle name field",
+          actions: [{ selector: "input#mname", description: "middle name", method: "fill" }],
+        };
+      }),
+    } as unknown as Stagehand;
+    const page = fakeFlowPage(() => urls.current);
+
+    const result = await runHealingFlow({
+      stagehand,
+      page,
+      steps: [step(), step()],
+      logger: testLogger,
+      anthropic: null,
+      resumeFixture: null,
+    });
+
+    expect(result).toMatchObject({
+      submitVerified: false,
+      submitStepSkipped: false,
+      lastStepIndex: 1,
+    });
+  });
+
+  it("throws StepVerificationError kind 'submit-skipped' and never reports success when the submitStep is skipped", async () => {
+    // The probe returns zero candidates for BOTH the focused and unfocused
+    // observe calls, and the step is optional — the exact "probe found no
+    // candidates" fast-skip path executeStepWithHealing takes at
+    // flow-runner.ts:5408-5422, so the submit step resolves "skipped"
+    // without ever reaching the cascade.
+    const stagehand = {
+      observe: vi.fn().mockResolvedValue([]),
+      act: vi.fn(),
+    } as unknown as Stagehand;
+    const page = fakeFlowPage();
+
+    await expect(
+      runHealingFlow({
+        stagehand,
+        page,
+        steps: [step({ submitStep: true, optional: true, instruction: "Click the Submit button" })],
+        logger: testLogger,
+        anthropic: null,
+        resumeFixture: null,
+      })
+    ).rejects.toMatchObject({
+      name: "StepVerificationError",
+      kind: "submit-skipped",
+    });
+    expect(stagehand.act).not.toHaveBeenCalled();
   });
 });
