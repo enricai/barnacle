@@ -139,6 +139,12 @@ export interface SitePluginMeta {
    * success reply.
    */
   extraRoutes?: readonly SitePluginExtraRoute[];
+  /**
+   * Optional cleanup for background work the plugin launched fire-and-forget.
+   * Awaited during graceful shutdown so in-flight work is not abandoned and
+   * sessions are not leaked. Mirrors the engine's own drain functions.
+   */
+  onShutdown?: () => Promise<void>;
 }
 
 /**
