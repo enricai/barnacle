@@ -74,7 +74,10 @@ describe("StepVerificationError", () => {
   });
 
   it("constructs with kind flow-timeout, non-retryable, kind round-trips", () => {
-    const err = new StepVerificationError("flow exceeded maxFlowMs budget at step 3", "flow-timeout");
+    const err = new StepVerificationError(
+      "flow exceeded maxFlowMs budget at step 3",
+      "flow-timeout"
+    );
     expect(err).toBeInstanceOf(StepVerificationError);
     expect(err).toBeInstanceOf(ScraperError);
     expect(err.retryable).toBe(false);

@@ -4474,4 +4474,119 @@ describe("recon-browser/runHealingFlow — phantom-submit escalation, end-to-end
     // after exhausting the full local attempt budget.
     expect(stagehandAct).toHaveBeenCalledTimes(3);
   });
+
+  it("aborts with the flow-timeout kind at the step it stopped on and never runs the remaining steps once maxFlowMs elapses", async () => {
+    // Date.now() advances 50ms on every stagehand.observe call (the
+    // pre-cascade probe runs once per step), so a 10ms budget survives step 0's
+    // loop-entry check (start hasn't advanced yet) but trips on step 1's —
+    // before step 1's own act() ever fires and long before the submit step at
+    // index 2. This is the same clock-stubbing approach flow-runner.test.ts
+    // uses for its unit-level equivalent, applied here against the heavier
+    // CDP-stubbed fakePage + stepsWithSubmit harness.
+    let now = 1_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const BASE_URL = "https://apply.acme.example/jobs/1/apply-portal/apply";
+    let stepsCompleted = 0;
+    const page = fakePage({
+      getUrl: () => `${BASE_URL}?step=${stepsCompleted}`,
+      bodyHtmlLength: 184186,
+      onDeepClick: () => {
+        stepsCompleted += 1;
+      },
+    });
+    const stagehandAct = vi.fn().mockImplementation(async () => {
+      stepsCompleted += 1;
+      return actResult();
+    });
+    const stagehand = {
+      act: stagehandAct,
+      observe: vi.fn().mockImplementation(async () => {
+        now += 50;
+        return [
+          { selector: "button#submit", description: "Click the Submit button", method: "click" },
+        ];
+      }),
+    } as unknown as Stagehand;
+
+    let caught: { name?: string; kind?: string; message?: string } | undefined;
+    try {
+      await runHealingFlow({
+        stagehand,
+        page,
+        steps: stepsWithSubmit(),
+        logger: loggerStub as unknown as Logger,
+        anthropic: null,
+        resumeFixture: null,
+        maxFlowMs: 10,
+      });
+    } catch (err) {
+      caught = err as { name?: string; kind?: string; message?: string };
+    } finally {
+      vi.restoreAllMocks();
+    }
+
+    expect(caught?.kind).toBe("flow-timeout");
+    expect(caught?.message).toContain("step 2");
+
+    // Only step 0's act() ran before the deadline check on step 1's loop
+    // iteration threw — step 1 (last name) and step 2 (submit) never got the
+    // chance to call stagehand.act at all.
+    expect(stagehandAct).toHaveBeenCalledTimes(1);
+  });
+
+  it("surfaces submit-skipped instead of phantom success when the submit step's probe finds zero candidates, mirroring a bot-walled/dead page", async () => {
+    // Both fill steps proceed normally (URL advances on each act), but the
+    // submit step's probe (guardedObserve, focused AND unfocused) resolves
+    // zero candidates — the exact "page is dead/bot-walled" shape from the
+    // bug report — so executeStepWithHealing returns "skipped" for the
+    // optional submit step instead of ever invoking stagehand.act on it.
+    const BASE_URL = "https://apply.acme.example/jobs/1/apply-portal/apply";
+    let stepsCompleted = 0;
+    const page = fakePage({
+      getUrl: () => `${BASE_URL}?step=${stepsCompleted}`,
+      bodyHtmlLength: 184186,
+    });
+    const stagehandAct = vi.fn().mockImplementation(async () => {
+      stepsCompleted += 1;
+      return actResult();
+    });
+    const stagehandObserve = vi.fn().mockImplementation(async () => {
+      // Fill steps 1-2 (calls 1-2) resolve a candidate normally; the submit
+      // step's focused AND unfocused probe (calls 3-4) find nothing.
+      if (stagehandObserve.mock.calls.length <= 2) {
+        return [{ selector: "input#name", description: "name field", method: "fill" }];
+      }
+      return [];
+    });
+    const stagehand = {
+      act: stagehandAct,
+      observe: stagehandObserve,
+    } as unknown as Stagehand;
+    const steps = stepsWithSubmit();
+    const optionalSubmitSteps: HealingFlowStep[] = steps.map((s) =>
+      s.submitStep ? { ...s, optional: true } : s
+    );
+
+    let caught: { name?: string; kind?: string; message?: string } | undefined;
+    try {
+      await runHealingFlow({
+        stagehand,
+        page,
+        steps: optionalSubmitSteps,
+        logger: loggerStub as unknown as Logger,
+        anthropic: null,
+        resumeFixture: null,
+      });
+    } catch (err) {
+      caught = err as { name?: string; kind?: string; message?: string };
+    }
+
+    expect(caught?.kind).toBe("submit-skipped");
+
+    // The submit step's act() (the cascade itself) never ran — the probe's
+    // zero-candidate result short-circuited straight to "skipped" before any
+    // attempt was made, so the caller can never mistake this for a real
+    // (even if unverified) submit click.
+    expect(stagehandAct).toHaveBeenCalledTimes(2);
+  });
 });
