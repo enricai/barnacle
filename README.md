@@ -517,7 +517,7 @@ Cache key: `<endpoint>:<sha256(canonical payload)[:32]>` — the endpoint is a l
 
 **Per-task hang ceiling:** each queued task races against `TASK_TIMEOUT_MS` (`src/scraper/pool.ts`, **60 minutes** by default). A hung `execute()` — frozen CDP connection, infinite network wait — converts to `SessionTimeoutError`, which the retry policy handles by tearing down the broken session and creating a fresh one. The default is sized for long browser flows; shorten per-plugin via `SitePluginMeta.taskTimeoutMs`. This is a hang-recovery floor, not a p99 latency budget.
 
-**Retry policy:** `withScraperRetry` (`src/scraper/retry.ts`) uses p-retry with `factor: 2`, `minTimeout: 500ms`, `maxTimeout: 5000ms`, `randomize: true`, and default `maxAttempts: 3`. `EmptyResultsError` and abort signals short-circuit retries; `SessionTimeoutError` triggers a one-time session restart between attempts.
+**Retry policy:** `withScraperRetry` (`src/scraper/retry.ts`) uses p-retry with `factor: 2`, `minTimeout: 500ms`, `maxTimeout: 5000ms`, `randomize: true`, and default `maxAttempts: 3`. `EmptyResultsError`, `CaptchaError`, and `StepVerificationError` short-circuit retries (abort after the first attempt — a deterministic verification failure won't resolve by re-running the whole flow); `SessionTimeoutError` triggers a session restart before every retry attempt, not just the first.
 
 **Graceful shutdown:** `drainPool()` is called during graceful shutdown — `SIGTERM`/`SIGINT` triggers `app.close()`, which fires Fastify's `onClose` hook, which calls `drainPool()`. It pauses new intake, waits up to 20 seconds for in-flight tasks to close their Steel sessions, then resolves. Without this, process exit leaves live sessions billing until Steel's own timeout.
 
