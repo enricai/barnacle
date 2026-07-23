@@ -66,6 +66,7 @@ export const CONFIG_PLUGIN_MANIFEST = z.object({
     advancedStealth: z.boolean().optional(),
     browserbaseSessionCreateParams: z.record(z.string(), z.unknown()).optional(),
     taskTimeoutMs: z.number().optional(),
+    maxAttempts: z.number().optional(),
     request: jsonSchemaFragment,
     response: jsonSchemaFragment,
     flow: flowSchema,
@@ -210,6 +211,7 @@ export async function buildConfigPlugin(
       ...(spec.routeOverride !== undefined && { routeOverride: spec.routeOverride }),
       ...(spec.defaultBaseUrl !== undefined && { defaultBaseUrl: spec.defaultBaseUrl }),
       ...(spec.taskTimeoutMs !== undefined && { taskTimeoutMs: spec.taskTimeoutMs }),
+      ...(spec.maxAttempts !== undefined && { maxAttempts: spec.maxAttempts }),
       ...(spec.multipart !== undefined && { multipart: spec.multipart }),
       ...(spec.advancedStealth !== undefined && { advancedStealth: spec.advancedStealth }),
       ...(spec.browserbaseSessionCreateParams !== undefined && {
