@@ -162,14 +162,17 @@ each error class. Here's why each decision was made:
 |-------|--------|--------|
 | `CaptchaError` | Abort immediately | Steel's built-in solver handles most CAPTCHAs transparently when `SCRAPER_SOLVE_CAPTCHA=true` (default). This row covers the residual case where the solver fails: at that point the CAPTCHA needs human intervention, and burning more sessions just makes the IP look more like a bot. Surface immediately. |
 | `EmptyResultsError` | Abort immediately | Empty results are a query-shape bug, not a transient failure. Retrying the same malformed query will always return empty. Fix the query. |
-| `SessionTimeoutError` | Kill session → create fresh → retry up to `maxAttempts` | The session itself is corrupted (hung CDP, stale context). `onSessionRestart` is invoked at most once (a `done` flag prevents double-restart), then p-retry continues the normal attempt budget. |
+| `SessionTimeoutError` | Kill session → create fresh → retry up to `maxAttempts` | The session itself is corrupted (hung CDP, stale context). `onSessionRestart` is invoked before every retry attempt, not just the first, so a stuck session is never left running between repeat timeouts. |
 | `SelectorFailureError` | Retry up to `maxAttempts` with backoff | Stagehand cache may have a stale selector. Retry forces LLM re-resolution. Usually recovers in 1–2 retries. |
 | `UnknownScraperError` | Retry up to `maxAttempts` | Catch-all for transient network or Playwright errors. Exponential backoff with jitter prevents retry storms. |
 
 Concrete settings (`src/scraper/retry.ts`): `factor: 2`, `minTimeout: 500ms`,
-`maxTimeout: 5000ms`, `randomize: true`, default `maxAttempts: 3`.
-`EmptyResultsError` and abort signals short-circuit retries;
-`SessionTimeoutError` triggers a one-time session restart between attempts.
+`maxTimeout: 5000ms`, `randomize: true`, default `maxAttempts: 3` (a plugin
+can lower this via `SitePluginMeta.maxAttempts` so `taskTimeoutMs` is a real
+per-run cap instead of `maxAttempts × taskTimeoutMs`).
+`EmptyResultsError`, `CaptchaError`, and `StepVerificationError` short-circuit
+retries; `SessionTimeoutError` triggers a session restart before every retry
+attempt, not just the first.
 
 Hot-path → fallback decision (in `dispatch()`):
 
@@ -309,8 +312,12 @@ identical to attempt 2 — a rare edge case worth knowing when reading logs.
 
 Implementation: `executeStepWithHealing` in `src/scripts/recon-browser.ts`.
 Constants: `MAX_STEP_ATTEMPTS = 4`, `ATTEMPT_BACKOFF_MS = 1000`. The terminal
-failure error is `StepVerificationError` (`src/scraper/errors.ts`) — recon-only,
-non-retryable; the runtime path never sees it.
+failure error is `StepVerificationError` (`src/scraper/errors.ts`). It
+originates in recon's per-step cascade, but `runHealingFlow`
+(`src/scraper/flow-runner.ts`) throws the same error class at runtime on a
+step-verification failure; `withScraperRetry` catches it there and aborts
+immediately rather than retrying — a deterministic verification failure
+won't resolve by re-running the whole flow.
 
 ### Global replan loop
 

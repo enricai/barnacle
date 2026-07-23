@@ -553,14 +553,18 @@ supply lowercase to match.)
 |-------|--------|--------|
 | `CaptchaError` | Stagehand flow | **Abort immediately** — surface to humans, don't burn sessions |
 | `EmptyResultsError` | Plugin logic | **Abort** — query-shape bug, not transient |
-| `SessionTimeoutError` | Per-task hang ceiling (`TASK_TIMEOUT_MS`, 60min default) | Kill session → create fresh → retry up to `maxAttempts` (restart happens at most once) |
+| `SessionTimeoutError` | Per-task hang ceiling (`TASK_TIMEOUT_MS`, 60min default) | Kill session → create fresh → retry up to `maxAttempts` (restart happens before every retry, not just the first) |
 | `SelectorFailureError` | Stagehand can't find element | Retry up to `maxAttempts` (default 3) with exponential backoff |
 | `UnknownScraperError` | Unclassified | Retry up to `maxAttempts` |
 
 Concrete settings (`src/scraper/retry.ts`): `factor: 2`, `minTimeout: 500ms`,
-`maxTimeout: 5000ms`, `randomize: true`, default `maxAttempts: 3`.
-`EmptyResultsError` and abort signals short-circuit retries;
-`SessionTimeoutError` triggers a one-time session restart between attempts.
+`maxTimeout: 5000ms`, `randomize: true`, default `maxAttempts: 3` — a plugin
+can override this via `SitePluginMeta.maxAttempts` so the per-run ceiling is
+`maxAttempts × taskTimeoutMs` under its own control instead of a fixed 3×.
+`EmptyResultsError`, `CaptchaError`, and `StepVerificationError` short-circuit
+retries (a deterministic verification failure won't resolve by re-running the
+whole flow); `SessionTimeoutError` triggers a session restart before every
+retry attempt, not just the first.
 
 Hot-path error → fallback decision (in `dispatch()`):
 
