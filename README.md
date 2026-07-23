@@ -336,6 +336,7 @@ interface SitePlugin<TPayload, TResult> {
 | `routeOverride?` | `string` | Override the full route path (legacy compatibility only) |
 | `defaultBaseUrl?` | `string` | Fallback base URL when `config.scraper.siteBaseUrls[siteId]` is absent |
 | `taskTimeoutMs?` | `number` | Override the pool's 60-minute per-task hang ceiling for this plugin only — set when the site's normal latency is well below the default and a faster failure is preferable |
+| `maxAttempts?` | `number` | Override the retry policy's default of 3 attempts (including the first try). Without this, the per-run ceiling is `3 × taskTimeoutMs`; set to `1` so `taskTimeoutMs` is the real per-run cap |
 | `apiVersion?` | `string` | Semver range targeting a plugin API version (e.g. `"^1.0.0"`); core disables the plugin on a major-version mismatch. Absent means "accept any version." |
 | `extraRoutes?` | `readonly SitePluginExtraRoute[]` | Extra non-run routes (OTP trigger, resume, etc.) that core registers as authenticated Fastify routes at startup. See `SitePluginExtraRoute` in `src/site-plugin.ts`. |
 | `onShutdown?` | `() => Promise<void>` | Optional cleanup for background work the plugin launched fire-and-forget, awaited during graceful shutdown so in-flight work is not abandoned and sessions are not leaked. Mirrors the engine's own drain functions. Bounded by a per-plugin timeout, so a hanging drain cannot stall shutdown. Module plugins only — config-only `*.plugin.json` manifests are pure JSON and cannot declare a function. |
