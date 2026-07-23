@@ -94,6 +94,7 @@ const metaSchema = z
     routeOverride: z.string().optional(),
     defaultBaseUrl: z.string().optional(),
     taskTimeoutMs: z.number().optional(),
+    maxAttempts: z.number().optional(),
     multipart: z.boolean().optional(),
     advancedStealth: z.boolean().optional(),
     browserbaseSessionCreateParams: z.record(z.string(), z.unknown()).optional(),

@@ -357,9 +357,52 @@ describe("dispatch — executeHttp hot-path branches", () => {
       onRetry,
     };
     await dispatch(pluginWithRetry, {}, stubContext);
-    expect(mockRunWithSession).toHaveBeenCalledWith(expect.any(Function), { onRetry }, undefined, {
-      advancedStealth: undefined,
-    });
+    expect(mockRunWithSession).toHaveBeenCalledWith(
+      expect.any(Function),
+      { onRetry, maxAttempts: undefined },
+      undefined,
+      {
+        advancedStealth: undefined,
+      }
+    );
+  });
+
+  it("forwards plugin.meta.maxAttempts to runWithSession on the no-http/forceFallback path", async () => {
+    const onRetry = vi.fn();
+    const pluginWithMaxAttempts: SitePlugin<unknown, unknown> = {
+      ...httpPlugin,
+      meta: { ...httpPlugin.meta, siteId: "max-attempts-site", maxAttempts: 1 },
+      executeHttp: undefined,
+      onRetry,
+    };
+    await dispatch(pluginWithMaxAttempts, {}, stubContext);
+    expect(mockRunWithSession).toHaveBeenCalledWith(
+      expect.any(Function),
+      { onRetry, maxAttempts: 1 },
+      undefined,
+      {
+        advancedStealth: undefined,
+      }
+    );
+  });
+
+  it("forwards plugin.meta.maxAttempts to runWithSession on the http-fallback path", async () => {
+    const onRetry = vi.fn();
+    mockHttpExecute.mockRejectedValueOnce(new HttpServerError("http 503 from https://example.com"));
+    const pluginWithMaxAttempts: SitePlugin<unknown, unknown> = {
+      ...httpPlugin,
+      meta: { ...httpPlugin.meta, siteId: "max-attempts-fallback-site", maxAttempts: 1 },
+      onRetry,
+    };
+    await dispatch(pluginWithMaxAttempts, {}, stubContext);
+    expect(mockRunWithSession).toHaveBeenCalledWith(
+      expect.any(Function),
+      { onRetry, maxAttempts: 1 },
+      undefined,
+      {
+        advancedStealth: undefined,
+      }
+    );
   });
 
   it("forwards Browserbase session params from plugin metadata", async () => {
@@ -377,7 +420,7 @@ describe("dispatch — executeHttp hot-path branches", () => {
 
     expect(mockRunWithSession).toHaveBeenCalledWith(
       expect.any(Function),
-      { onRetry: undefined },
+      { onRetry: undefined, maxAttempts: undefined },
       undefined,
       {
         advancedStealth: undefined,

@@ -102,6 +102,13 @@ export interface SitePluginMeta {
    */
   taskTimeoutMs?: number;
   /**
+   * Max attempts (including the first try) passed to runWithSession's retry
+   * policy. Overrides the pool's default of 3. Without this, the per-run
+   * ceiling is `3 × taskTimeoutMs` regardless of the plugin's stated timeout —
+   * set to 1 so taskTimeoutMs is a real per-run cap, not one third of it.
+   */
+  maxAttempts?: number;
+  /**
    * When true, the loader registers the route to accept `multipart/form-data`
    * via `@fastify/multipart` in `attachFieldsToBody: 'keyValues'` mode. Text
    * parts arrive as strings on `request.body`; file parts arrive as `Buffer`s.
