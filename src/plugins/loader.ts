@@ -111,7 +111,7 @@ async function runPluginPipeline<TResult>(
     }
     return (await runWithSession(
       (session) => plugin.execute(payload, session, context),
-      { onRetry: plugin.onRetry },
+      { onRetry: plugin.onRetry, maxAttempts: plugin.meta.maxAttempts },
       plugin.meta.taskTimeoutMs,
       {
         advancedStealth: plugin.meta.advancedStealth,
@@ -153,7 +153,7 @@ async function runPluginPipeline<TResult>(
       recordDdFallback(plugin.meta.siteId);
       return (await runWithSession(
         (session) => plugin.execute(payload, session, context),
-        { onRetry: plugin.onRetry },
+        { onRetry: plugin.onRetry, maxAttempts: plugin.meta.maxAttempts },
         plugin.meta.taskTimeoutMs,
         {
           advancedStealth: plugin.meta.advancedStealth,
