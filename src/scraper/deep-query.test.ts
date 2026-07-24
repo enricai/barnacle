@@ -107,6 +107,30 @@ function evaluateInFakePage(expr: string, document: FakeRoot): unknown {
   });
 }
 
+/**
+ * Executes a generated expression string with `frameDocument` bound as
+ * global `document` and the outer page's own fake root bound under a
+ * DIFFERENT global name, simulating what `Frame.evaluate` does for real:
+ * the identifier `document` resolves to the executing frame's document,
+ * never to some outer captured reference. If a builder's generated
+ * expression ever referenced an outer `document` instead of the supplied
+ * `root`, this fixture would surface it by finding the outer page's
+ * elements (or nothing) instead of the frame's.
+ */
+function evaluateInFakeFrame(expr: string, frameDocument: FakeRoot, outerRoot: FakeRoot): unknown {
+  return runInNewContext(expr, {
+    document: frameDocument,
+    __outerDocumentNeverReferenced: outerRoot,
+    Event: class {
+      type: string;
+      constructor(type: string) {
+        this.type = type;
+      }
+    },
+    console,
+  });
+}
+
 describe("deep-query/buildDeepSubmitClickExpr", () => {
   it("finds and clicks a submit-shaped control nested two shadow roots deep", () => {
     const innerButton = makeEl("button", { type: "submit" }, "Submit Application");
@@ -168,5 +192,43 @@ describe("deep-query/buildDeepSubmitClickExpr", () => {
 
     expect(result).toEqual({ found: true, clicked: false });
     expect(button.clicked).toBe(false);
+  });
+
+  it("defaults to `document`, resolved from the executing realm (no root option passed)", () => {
+    const outerButton = makeEl("button", { type: "submit" }, "Submit");
+    const outerDocument = makeRoot([outerButton]);
+    const frameButton = makeEl("button", { type: "submit" }, "Submit Application");
+    const frameDocument = makeRoot([frameButton]);
+
+    const result = evaluateInFakeFrame(
+      buildDeepSubmitClickExpr(),
+      frameDocument,
+      outerDocument
+    ) as { found: boolean; clicked: boolean };
+
+    expect(result).toEqual({ found: true, clicked: true });
+    expect(frameButton.clicked).toBe(true);
+    expect(outerButton.clicked).toBe(false);
+  });
+
+  it("finds and clicks a submit-shaped control when rooted in a frame-document-like tree via options.root", () => {
+    const outerButton = makeEl("button", { type: "submit" }, "Outer Submit");
+    const outerDocument = makeRoot([outerButton]);
+
+    const frameButton = makeEl("button", { type: "submit" }, "Submit Application");
+    const frameShadowRoot = makeRoot([frameButton]);
+    const frameHost = makeEl("app-submit-button");
+    frameHost.shadowRoot = frameShadowRoot;
+    const frameDocument = makeRoot([frameHost]);
+
+    const result = evaluateInFakeFrame(
+      buildDeepSubmitClickExpr({ root: "document" }),
+      frameDocument,
+      outerDocument
+    ) as { found: boolean; clicked: boolean };
+
+    expect(result).toEqual({ found: true, clicked: true });
+    expect(frameButton.clicked).toBe(true);
+    expect(outerButton.clicked).toBe(false);
   });
 });
