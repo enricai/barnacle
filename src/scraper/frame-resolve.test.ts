@@ -153,4 +153,53 @@ describe("resolveFrameTarget (id-only and multi-candidate selectors)", () => {
       "https://apply.talemetry.com/application/abc-123?step=basic-info"
     );
   });
+
+  it("resolves the child frame when passed only the iframe-id hop of a '>> ' selector (Stagehand's own hop notation)", async () => {
+    const childFrame = makeFakeFrame("https://apply.talemetry.com/application/abc-123");
+    const page = makeFakePage({
+      mainUrl: "https://careers.uchealth.org/jobs/123",
+      elements: {
+        "iframe#talemetry_apply_iframe": {
+          tag: "IFRAME",
+          src: "https://apply.talemetry.com/application/abc-123",
+        },
+      },
+      frames: [childFrame],
+    });
+
+    // `resolveFrameTarget` resolves the iframe boundary itself; the part of a
+    // Stagehand `deepLocator` hop selector after " >> " addresses an element
+    // *inside* the resolved frame and is never passed to `document.querySelector`
+    // here — callers pass just the iframe-id hop (the part before " >> ").
+    const target = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe");
+
+    expect(target.frame).toBe(childFrame);
+    expect(target.frameSelector).toBe("iframe#talemetry_apply_iframe");
+  });
+
+  it("rejects rather than silently falling back when a full '>> ' hop selector is passed through unsplit", async () => {
+    // `document.querySelector` throws a SyntaxError on the combinator-bearing
+    // selector `"iframe#x >> inner"` (it isn't valid CSS) — the fake models
+    // that by rejecting, mirroring what a live `page.evaluate` would surface.
+    // `resolveFrameTarget`'s top-level `page.evaluate(iframeSrcExpr)` call has
+    // no `.catch`, so this documents that callers must split the hop selector
+    // themselves (pass only the iframe-id hop) rather than the raw hop string.
+    const page = {
+      url: () => "https://careers.uchealth.org/jobs/123",
+      title: async () => "main document title",
+      evaluate: async () => {
+        throw new DOMException(
+          "Failed to execute 'querySelector' on 'Document': " +
+            "'iframe#talemetry_apply_iframe >> inner' is not a valid selector.",
+          "SyntaxError"
+        );
+      },
+      locator: (selector: string) => ({ scope: "main" as const, selector }),
+      frames: () => [makeFakeFrame("https://apply.talemetry.com/application/abc-123")],
+    };
+
+    await expect(
+      resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe >> inner")
+    ).rejects.toThrow(/not a valid selector/);
+  });
 });
