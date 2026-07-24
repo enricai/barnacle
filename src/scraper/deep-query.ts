@@ -67,13 +67,24 @@ const DEEP_ELEMENTS_EXPR = `((root) => {
  * want to probe for a deep submit control before deciding whether to act
  * on it (e.g. to distinguish "no candidate anywhere" from "found but the
  * click cascade should try a different technique first").
+ *
+ * `options.root` overrides the traversal root expression (default
+ * `"document"`). The string is interpolated verbatim into the generated
+ * code, so a caller evaluating this expression via `Frame.evaluate` can
+ * still pass `"document"` to root the walk in that frame's own document —
+ * there is no captured outer `document` reference anywhere in this
+ * expression, only the identifier resolved at evaluation time.
  */
-export function buildDeepSubmitClickExpr(options?: { clickIfFound?: boolean }): string {
+export function buildDeepSubmitClickExpr(options?: {
+  clickIfFound?: boolean;
+  root?: string;
+}): string {
   const clickIfFound = options?.clickIfFound ?? true;
+  const root = options?.root ?? "document";
   return `(() => {
     const isSubmitShaped = ${SUBMIT_SHAPED_EL_EXPR};
     const deepElements = ${DEEP_ELEMENTS_EXPR};
-    const candidates = deepElements(document).filter(isSubmitShaped);
+    const candidates = deepElements(${root}).filter(isSubmitShaped);
     if (candidates.length === 0) return { found: false, clicked: false };
     const el = candidates[0];
     if (!${JSON.stringify(clickIfFound)}) return { found: true, clicked: false };
