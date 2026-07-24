@@ -17,6 +17,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod/v4";
 
 import type { LlmCallInput } from "@/lib/telemetry/call-capture";
+import type { FrameTarget } from "@/scraper/frame-target";
 
 const captured: LlmCallInput[] = [];
 vi.mock("@/lib/telemetry/call-capture", async () => {
@@ -52,6 +53,30 @@ function fakeStagehandObserve(result: unknown): Stagehand {
 
 function fakeStagehandExtract(result: unknown): Stagehand {
   return { extract: vi.fn().mockResolvedValue(result) } as unknown as Stagehand;
+}
+
+/** Minimal fake `FrameTarget` bound to a resolved cross-origin child frame. */
+function fakeChildFrameTarget(frameSelector: string): FrameTarget {
+  return {
+    frame: {} as never,
+    frameSelector,
+    evaluate: vi.fn(),
+    locator: vi.fn(),
+    url: vi.fn(),
+    title: vi.fn(),
+  };
+}
+
+/** Minimal fake `FrameTarget` bound to the main frame (`frameSelector: null`). */
+function fakeMainFrameTarget(): FrameTarget {
+  return {
+    frame: null,
+    frameSelector: null,
+    evaluate: vi.fn(),
+    locator: vi.fn(),
+    url: vi.fn(),
+    title: vi.fn(),
+  };
 }
 
 const VALID_ACT_RESULT: ActResult = {
@@ -157,6 +182,17 @@ describe("guardedAct", () => {
     expect(injected[0]?.callType).toBe("stagehand-act");
     expect(captured).toHaveLength(0);
   });
+
+  // guardedAct accepts a trailing frameTarget for signature symmetry with
+  // guardedObserve/guardedExtract, but ActOptions has no selector field and
+  // its page override can't accept a Frame handle — so a resolved
+  // frameTarget must NOT change what's forwarded to stagehand.act.
+  it("does not forward a resolved frameTarget into ActOptions", async () => {
+    const stagehand = fakeStagehandAct(VALID_ACT_RESULT);
+    const frameTarget = fakeChildFrameTarget("iframe#talemetry_apply_iframe");
+    await guardedAct(stagehand, "click submit", { timeout: 5000 }, undefined, frameTarget);
+    expect(stagehand.act).toHaveBeenCalledWith("click submit", { timeout: 5000 });
+  });
 });
 
 describe("guardedObserve", () => {
@@ -209,6 +245,54 @@ describe("guardedObserve", () => {
     );
     expect(captured[0]?.failureKind).toBe("schema-validation-failed");
   });
+
+  it("forwards a resolved frameTarget's frameSelector as ObserveOptions.selector", async () => {
+    const stagehand = fakeStagehandObserve([VALID_ACTION]);
+    const frameTarget = fakeChildFrameTarget("iframe#talemetry_apply_iframe");
+    await guardedObserve(stagehand, "find something", undefined, undefined, frameTarget);
+    expect(stagehand.observe).toHaveBeenCalledWith("find something", {
+      selector: "iframe#talemetry_apply_iframe",
+    });
+  });
+
+  it("merges frameTarget.frameSelector into existing options without a selector", async () => {
+    const stagehand = fakeStagehandObserve([VALID_ACTION]);
+    const frameTarget = fakeChildFrameTarget("iframe#talemetry_apply_iframe");
+    await guardedObserve(stagehand, "find something", { timeout: 5000 }, undefined, frameTarget);
+    expect(stagehand.observe).toHaveBeenCalledWith("find something", {
+      timeout: 5000,
+      selector: "iframe#talemetry_apply_iframe",
+    });
+  });
+
+  it("prefers a caller-supplied options.selector over frameTarget.frameSelector", async () => {
+    const stagehand = fakeStagehandObserve([VALID_ACTION]);
+    const frameTarget = fakeChildFrameTarget("iframe#talemetry_apply_iframe");
+    await guardedObserve(
+      stagehand,
+      "find something",
+      { selector: "input#explicit" },
+      undefined,
+      frameTarget
+    );
+    expect(stagehand.observe).toHaveBeenCalledWith("find something", {
+      selector: "input#explicit",
+    });
+  });
+
+  it("leaves options byte-identical to today when frameTarget is the main frame", async () => {
+    const stagehand = fakeStagehandObserve([VALID_ACTION]);
+    const frameTarget = fakeMainFrameTarget();
+    await guardedObserve(stagehand, "find something", { timeout: 5000 }, undefined, frameTarget);
+    expect(stagehand.observe).toHaveBeenCalledWith("find something", { timeout: 5000 });
+  });
+
+  it("leaves options undefined when frameTarget is the main frame and no options are passed", async () => {
+    const stagehand = fakeStagehandObserve([VALID_ACTION]);
+    const frameTarget = fakeMainFrameTarget();
+    await guardedObserve(stagehand, "find something", undefined, undefined, frameTarget);
+    expect(stagehand.observe).toHaveBeenCalledWith("find something", undefined);
+  });
 });
 
 describe("guardedExtract", () => {
@@ -240,5 +324,51 @@ describe("guardedExtract", () => {
       StagehandSchemaError
     );
     expect(captured[0]?.failureKind).toBe("schema-validation-failed");
+  });
+
+  it("forwards a resolved frameTarget's frameSelector as ExtractOptions.selector", async () => {
+    const stagehand = fakeStagehandExtract({ name: "Alice", age: 30 });
+    const frameTarget = fakeChildFrameTarget("iframe#talemetry_apply_iframe");
+    await guardedExtract(
+      stagehand,
+      "extract person",
+      PERSON_SCHEMA,
+      undefined,
+      undefined,
+      frameTarget
+    );
+    expect(stagehand.extract).toHaveBeenCalledWith("extract person", PERSON_SCHEMA, {
+      selector: "iframe#talemetry_apply_iframe",
+    });
+  });
+
+  it("prefers a caller-supplied options.selector over frameTarget.frameSelector", async () => {
+    const stagehand = fakeStagehandExtract({ name: "Alice", age: 30 });
+    const frameTarget = fakeChildFrameTarget("iframe#talemetry_apply_iframe");
+    await guardedExtract(
+      stagehand,
+      "extract person",
+      PERSON_SCHEMA,
+      { selector: "div#explicit" },
+      undefined,
+      frameTarget
+    );
+    expect(stagehand.extract).toHaveBeenCalledWith("extract person", PERSON_SCHEMA, {
+      selector: "div#explicit",
+    });
+  });
+
+  it("leaves options untouched when frameTarget is the main frame", async () => {
+    const stagehand = fakeStagehandExtract({ name: "Alice", age: 30 });
+    const frameTarget = fakeMainFrameTarget();
+    await guardedExtract(
+      stagehand,
+      "extract person",
+      PERSON_SCHEMA,
+      undefined,
+      undefined,
+      frameTarget
+    );
+    expect(stagehand.extract).toHaveBeenCalledWith("extract person", PERSON_SCHEMA, undefined);
   });
 });
