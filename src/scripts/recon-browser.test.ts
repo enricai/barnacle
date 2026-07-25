@@ -4921,4 +4921,71 @@ describe("recon-browser/main — frameSelector reaches the cascade call", () => 
     expect(callArgs.frameTarget?.frame).toBeNull();
     expect(callArgs.frameTarget?.frameSelector).toBeNull();
   });
+
+  it("awaits child-frame readiness before invoking executeStepWithHealing when the resolved frame starts on about:blank", async () => {
+    const readyStates = ["loading", "complete"];
+    let lastReadyState = "loading";
+    const childFrameEvaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      if (typeof expr === "string" && expr.includes("readyState")) {
+        lastReadyState = readyStates.length > 0 ? readyStates.shift()! : lastReadyState;
+        return lastReadyState;
+      }
+      return "https://apply.talemetry.com/application/abc-123";
+    });
+    const session = {
+      on: (): void => {},
+      off: (): void => {},
+    };
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      url: (): string => "https://example.com/apply",
+      title: vi.fn().mockResolvedValue("Apply"),
+      evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+        if (typeof expr === "string" && expr.includes("document.body")) {
+          return 10_000;
+        }
+        if (typeof expr === "string" && expr.includes("querySelector")) {
+          return "https://apply.talemetry.com/application/abc-123";
+        }
+        return null;
+      }),
+      frames: vi.fn().mockReturnValue([{ evaluate: childFrameEvaluate }]),
+      getSessionForFrame: () => session,
+      mainFrameId: () => "main",
+      sendCDP: vi.fn().mockResolvedValue({ cookies: [] }),
+    } as unknown as Page;
+    const stagehand = {
+      context: { awaitActivePage: async (): Promise<Page> => page },
+    } as unknown as Stagehand;
+    vi.mocked(createBrowserSession).mockResolvedValue({
+      stagehand,
+      limiter: {} as never,
+      sessionId: "test-session",
+      provider: "browserbase",
+      close: vi.fn().mockResolvedValue(undefined),
+    } as never);
+
+    process.argv = [
+      "node",
+      "recon-browser.ts",
+      "--url",
+      "https://example.com/apply",
+      "--flow",
+      JSON.stringify({
+        steps: ["Click Manual Application"],
+        frameSelector: "#talemetry_apply_iframe",
+      }),
+    ];
+
+    await main();
+
+    expect(readyStates).toHaveLength(0);
+    expect(executeStepWithHealingStub).toHaveBeenCalledTimes(1);
+    const readyStateCalls = childFrameEvaluate.mock.calls.filter(
+      ([expr]) => typeof expr === "string" && expr.includes("readyState")
+    );
+    expect(readyStateCalls.length).toBeGreaterThanOrEqual(2);
+    const callArgs = executeStepWithHealingStub.mock.calls[0]?.[0] as { frameTarget?: FrameTarget };
+    expect(callArgs.frameTarget?.frame).not.toBeNull();
+  });
 });
