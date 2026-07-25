@@ -505,8 +505,11 @@ const RECON_FLOW_SCHEMA = z.array(RECON_FLOW_STEP_SCHEMA).min(1);
  * Two on-disk shapes are accepted:
  *
  *  1. Legacy bare array — every existing site flow file uses this.
- *  2. Object form — adds optional `submitEndpointPattern` regex and
- *     optional `submittedStateSelectors` array.
+ *  2. Object form — adds optional `frameSelector`, `submitEndpointPattern`
+ *     regex, and `submittedStateSelectors` array.
+ *     - `frameSelector`: CSS selector of a cross-origin `<iframe>` the
+ *       flow's target elements live inside. Omitted (default) preserves
+ *       today's behavior: the flow drives the main frame.
  *     - `submitEndpointPattern`: the final step's verifier additionally
  *       requires at least one same-origin capture in its mutation window
  *       whose URL matches the pattern. Without that match `verified=false`,
