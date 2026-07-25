@@ -39,6 +39,7 @@ import {
 } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
 import { type RunHealingFlowResult, StepVerificationError } from "@/scraper/errors";
+import type { FrameTarget } from "@/scraper/frame-target";
 import { classifyPhantomClick, type PhantomClickVerdict } from "@/scraper/phantom-click";
 import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
 import {
@@ -998,15 +999,18 @@ export function isDomOnlyAdvanceVerified(params: {
 }
 
 /**
- * Read-only count of ng-invalid form controls on the page. Side-effect-free
+ * Read-only count of ng-invalid form controls on the resolved frame. Side-effect-free
  * counterpart to `probeFormValidityBeforeSubmit` (which also auto-fills
  * unselected radio groups via element.click()). Used by the cascade's
  * early-exit predicate to detect "the Submit click revealed new required
  * questions" — when this count grows from 0 (pre-submit) to ≥1 (post-attempt-1),
  * attempts 2-5 cannot succeed and the cascade should route to replan
- * immediately instead of burning Stagehand calls.
+ * immediately instead of burning Stagehand calls. Accepts a `FrameTarget` so a
+ * wizard embedded in a cross-origin iframe (e.g. UCHealth's Talemetry form) is
+ * scanned on its own frame; a main-frame target delegates straight to
+ * `page.evaluate`, matching today's behavior byte-for-byte.
  */
-export async function countNgInvalidContainers(page: Page): Promise<number> {
+export async function countNgInvalidContainers(target: FrameTarget): Promise<number> {
   const expr = `(() => {
     const isInvalid = ${INVALID_MARKER_EL_EXPR};
     let n = 0;
@@ -1016,7 +1020,7 @@ export async function countNgInvalidContainers(page: Page): Promise<number> {
     return n;
   })()`;
   try {
-    const raw = await page.evaluate(expr);
+    const raw = await target.evaluate(expr);
     return typeof raw === "number" ? raw : 0;
   } catch {
     return 0;
