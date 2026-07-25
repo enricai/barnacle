@@ -21,6 +21,7 @@ import type { ActResult, Page, Stagehand } from "@browserbasehq/stagehand";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { StepVerificationErrorKind } from "@/scraper/errors";
+import type { FrameTarget } from "@/scraper/frame-target";
 
 vi.mock("@/config", () => ({
   config: {
@@ -4043,12 +4044,25 @@ describe("recon-browser/selectBodyExcerpt — MUI marker (RC1)", () => {
 });
 
 describe("recon-browser/pollEnumerate — settle-retry", () => {
+  function fakeTarget(evaluate: ReturnType<typeof vi.fn>): FrameTarget {
+    return {
+      frame: null,
+      frameSelector: null,
+      evaluate,
+      locator: vi.fn(),
+      url: vi.fn(),
+      title: vi.fn(),
+    } as unknown as FrameTarget;
+  }
+
   it("returns immediately when the widget is present on the first evaluate", async () => {
     const evaluate = vi.fn().mockResolvedValue({ present: true, n: 1 });
     const waitForTimeout = vi.fn().mockResolvedValue(undefined);
-    const page = { evaluate, waitForTimeout } as unknown as Parameters<typeof pollEnumerate>[0];
+    const page = { waitForTimeout } as unknown as Parameters<typeof pollEnumerate>[0];
+    const target = fakeTarget(evaluate);
     const result = await pollEnumerate<{ present: boolean; n: number }>(
       page,
+      target,
       "expr",
       (r) => r.present
     );
@@ -4065,9 +4079,11 @@ describe("recon-browser/pollEnumerate — settle-retry", () => {
       .mockResolvedValueOnce({ present: false })
       .mockResolvedValueOnce({ present: true, n: 3 });
     const waitForTimeout = vi.fn().mockResolvedValue(undefined);
-    const page = { evaluate, waitForTimeout } as unknown as Parameters<typeof pollEnumerate>[0];
+    const page = { waitForTimeout } as unknown as Parameters<typeof pollEnumerate>[0];
+    const target = fakeTarget(evaluate);
     const result = await pollEnumerate<{ present: boolean; n?: number }>(
       page,
+      target,
       "expr",
       (r) => r.present
     );
@@ -4079,8 +4095,14 @@ describe("recon-browser/pollEnumerate — settle-retry", () => {
   it("gives up after the attempt cap and returns the last absent result", async () => {
     const evaluate = vi.fn().mockResolvedValue({ present: false });
     const waitForTimeout = vi.fn().mockResolvedValue(undefined);
-    const page = { evaluate, waitForTimeout } as unknown as Parameters<typeof pollEnumerate>[0];
-    const result = await pollEnumerate<{ present: boolean }>(page, "expr", (r) => r.present);
+    const page = { waitForTimeout } as unknown as Parameters<typeof pollEnumerate>[0];
+    const target = fakeTarget(evaluate);
+    const result = await pollEnumerate<{ present: boolean }>(
+      page,
+      target,
+      "expr",
+      (r) => r.present
+    );
     expect(result).toEqual({ present: false });
     // Capped at PRIMITIVE_ENUMERATE_ATTEMPTS (5) evaluates, 4 waits between them.
     expect(evaluate).toHaveBeenCalledTimes(5);
@@ -4090,11 +4112,18 @@ describe("recon-browser/pollEnumerate — settle-retry", () => {
   it("honors an opts.attempts override (longer window for slow widgets)", async () => {
     const evaluate = vi.fn().mockResolvedValue({ present: false });
     const waitForTimeout = vi.fn().mockResolvedValue(undefined);
-    const page = { evaluate, waitForTimeout } as unknown as Parameters<typeof pollEnumerate>[0];
-    const result = await pollEnumerate<{ present: boolean }>(page, "expr", (r) => r.present, {
-      attempts: 3,
-      intervalMs: 10,
-    });
+    const page = { waitForTimeout } as unknown as Parameters<typeof pollEnumerate>[0];
+    const target = fakeTarget(evaluate);
+    const result = await pollEnumerate<{ present: boolean }>(
+      page,
+      target,
+      "expr",
+      (r) => r.present,
+      {
+        attempts: 3,
+        intervalMs: 10,
+      }
+    );
     expect(result).toEqual({ present: false });
     // The override drives the loop, not the default 5.
     expect(evaluate).toHaveBeenCalledTimes(3);
@@ -4107,8 +4136,11 @@ describe("recon-browser/pollEnumerate — settle-retry", () => {
       .mockResolvedValueOnce({ present: false })
       .mockResolvedValueOnce({ present: true });
     const waitForTimeout = vi.fn().mockResolvedValue(undefined);
-    const page = { evaluate, waitForTimeout } as unknown as Parameters<typeof pollEnumerate>[0];
-    await pollEnumerate<{ present: boolean }>(page, "expr", (r) => r.present, { intervalMs: 42 });
+    const page = { waitForTimeout } as unknown as Parameters<typeof pollEnumerate>[0];
+    const target = fakeTarget(evaluate);
+    await pollEnumerate<{ present: boolean }>(page, target, "expr", (r) => r.present, {
+      intervalMs: 42,
+    });
     expect(waitForTimeout).toHaveBeenCalledWith(42);
   });
 });

@@ -39,6 +39,7 @@ import {
 } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
 import { type RunHealingFlowResult, StepVerificationError } from "@/scraper/errors";
+import type { FrameTarget } from "@/scraper/frame-target";
 import { classifyPhantomClick, type PhantomClickVerdict } from "@/scraper/phantom-click";
 import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
 import {
@@ -2707,6 +2708,8 @@ export function writeFixtureToTempFile(fixture: { buffer: Buffer; name: string }
  */
 async function tryUploadPrimitive(params: {
   page: Page;
+  /** Frame the upload widget lives in — the main frame by default, or a resolved cross-origin child frame (e.g. an embedded Talemetry wizard). */
+  target: FrameTarget;
   /** Set from the flow file's `upload: true` field. Replaces the prior regex test. */
   isUploadStep: boolean;
   fixture: { buffer: Buffer; name: string; mimeType: string } | null;
@@ -2724,7 +2727,7 @@ async function tryUploadPrimitive(params: {
    */
   recentCaptureMeta: readonly { method: string; status: number; url: string }[];
 }): Promise<boolean> {
-  const { page, isUploadStep, fixture, logger, signalCounter, recentCaptureMeta } = params;
+  const { page, target, isUploadStep, fixture, logger, signalCounter, recentCaptureMeta } = params;
   if (!isUploadStep) {
     return false;
   }
@@ -2743,6 +2746,7 @@ async function tryUploadPrimitive(params: {
   try {
     inputCount = await pollEnumerate<number>(
       page,
+      target,
       "document.querySelectorAll('input[type=file]').length",
       (n) => (n ?? 0) > 0,
       { attempts: UPLOAD_WIDGET_RENDER_ATTEMPTS, intervalMs: UPLOAD_WIDGET_RENDER_INTERVAL_MS }
@@ -2760,6 +2764,7 @@ async function tryUploadPrimitive(params: {
     );
     const surfaced = await surfaceAndUpload({
       page,
+      target,
       fixture,
       logger,
       signalCounter,
@@ -2769,7 +2774,7 @@ async function tryUploadPrimitive(params: {
     logger.info("upload primitive: click-to-surface failed; falling through to cascade");
     return false;
   }
-  return attachToSurfacedInput({ page, fixture, logger, signalCounter, recentCaptureMeta });
+  return attachToSurfacedInput({ page, target, fixture, logger, signalCounter, recentCaptureMeta });
 }
 
 /**
@@ -2781,15 +2786,17 @@ async function tryUploadPrimitive(params: {
  */
 async function attachToSurfacedInput(params: {
   page: Page;
+  /** Frame the surfaced `<input type=file>` lives in. */
+  target: FrameTarget;
   fixture: ResumeFixture;
   logger: Logger;
   signalCounter: { n: number };
   recentCaptureMeta: readonly CaptureMeta[];
 }): Promise<boolean> {
-  const { page, fixture, logger, signalCounter, recentCaptureMeta } = params;
-  const target = page.locator("xpath=//input[@type='file']").first();
+  const { page, target, fixture, logger, signalCounter, recentCaptureMeta } = params;
+  const inputLocator = target.locator("xpath=//input[@type='file']").first();
   try {
-    await target.setInputFiles({
+    await inputLocator.setInputFiles({
       name: fixture.name,
       mimeType: fixture.mimeType,
       buffer: fixture.buffer,
@@ -2816,7 +2823,7 @@ async function attachToSurfacedInput(params: {
     // Industry-standard workaround documented across Playwright
     // community. Site-agnostic — works for any tenant with framework-
     // wrapped file inputs.
-    await page
+    await target
       .evaluate(
         "(() => { const els = document.querySelectorAll('input[type=file]'); for (const el of els) { if (el.files && el.files.length > 0) { el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); return true; } } return false; })()"
       )
@@ -2845,7 +2852,7 @@ async function attachToSurfacedInput(params: {
   // interpolation from external data, no risk of injecting attacker-controlled
   // values into the browser-side JS. Same trust posture as the type-probe
   // expression in verifyDomEffect's click case.
-  const attachedLength = await page
+  const attachedLength = await target
     .evaluate(
       "(() => { const els = document.querySelectorAll('input[type=file]'); for (const el of els) { if (el.files && el.files.length > 0) return el.files.length; } return 0; })()"
     )
@@ -2889,12 +2896,14 @@ async function attachToSurfacedInput(params: {
  */
 async function surfaceAndUpload(params: {
   page: Page;
+  /** Frame the upload widget lives in — its CDP session owns the native file-chooser interception below. */
+  target: FrameTarget;
   fixture: ResumeFixture;
   logger: Logger;
   signalCounter: { n: number };
   recentCaptureMeta: readonly CaptureMeta[];
 }): Promise<boolean> {
-  const { page, fixture, logger, signalCounter, recentCaptureMeta } = params;
+  const { page, target, fixture, logger, signalCounter, recentCaptureMeta } = params;
   // Render-gate: the input-less strategies below (drag-drop is one-shot, the
   // affordance click resolves what's in the DOM) all race the async widget
   // mount. Wait (bounded, same window as the raw-input probe) for ANY upload
@@ -2920,6 +2929,7 @@ async function surfaceAndUpload(params: {
   })()`;
   const gate = await pollEnumerate<{ present: boolean }>(
     page,
+    target,
     targetExpr,
     (r) => r?.present === true,
     {
@@ -2943,7 +2953,12 @@ async function surfaceAndUpload(params: {
       return true;
     }
   }
-  const session = page.getSessionForFrame(page.mainFrameId());
+  // The file-chooser CDP interception below must run on the upload target's
+  // OWN session — an OOPIF (e.g. UCHealth's Talemetry wizard) has its own CDP
+  // target, and a chooser it opens is only observable via that frame's
+  // session, not the main session. Main-frame targets fall back to
+  // page.getSessionForFrame(page.mainFrameId()), matching today's behavior.
+  const session = target.frame ? target.frame.session : page.getSessionForFrame(page.mainFrameId());
   let chooserBackendNodeId: number | null = null;
   const onChooser = (paramsIn?: object): void => {
     const p = paramsIn as { backendNodeId?: number } | undefined;
@@ -2952,15 +2967,15 @@ async function surfaceAndUpload(params: {
   // ARM native-chooser interception BEFORE the click. Page.fileChooserOpened
   // only carries a backendNodeId while interception is enabled; without it a
   // chooser-opening click would pop a real OS dialog and hang the run.
-  await page.sendCDP("Page.enable").catch(() => {});
-  await page
-    .sendCDP("Page.setInterceptFileChooserDialog", { enabled: true })
+  await session.send("Page.enable").catch(() => {});
+  await session
+    .send("Page.setInterceptFileChooserDialog", { enabled: true })
     .catch((e: unknown) =>
       logger.warn(`upload primitive: chooser-intercept arm failed: ${toErrorMessage(e)}`)
     );
   session.on("Page.fileChooserOpened", onChooser);
   try {
-    if (!(await clickUploadAffordance(page, logger))) return false;
+    if (!(await clickUploadAffordance(page, target, logger))) return false;
     // Strategy 0: some MUI widgets XHR straight to attachment_upload_url on
     // click, no chooser, no input.
     if (
@@ -2972,13 +2987,21 @@ async function surfaceAndUpload(params: {
     // Strategy A: the click lazily mounted a hidden <input type=file>.
     const appeared = await pollEnumerate<number>(
       page,
+      target,
       "document.querySelectorAll('input[type=file]').length",
       (n) => (n ?? 0) > 0
     );
     if ((appeared ?? 0) > 0) {
       logger.info("upload primitive: click surfaced a hidden <input type=file>");
       if (
-        await attachToSurfacedInput({ page, fixture, logger, signalCounter, recentCaptureMeta })
+        await attachToSurfacedInput({
+          page,
+          target,
+          fixture,
+          logger,
+          signalCounter,
+          recentCaptureMeta,
+        })
       ) {
         return true;
       }
@@ -2990,6 +3013,7 @@ async function surfaceAndUpload(params: {
       );
       return setFilesViaCdp({
         page,
+        target,
         session,
         backendNodeId: chooserBackendNodeId,
         fixture,
@@ -3001,7 +3025,7 @@ async function surfaceAndUpload(params: {
     return false;
   } finally {
     session.off("Page.fileChooserOpened", onChooser);
-    await page.sendCDP("Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
+    await session.send("Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
   }
 }
 
@@ -3012,8 +3036,15 @@ async function surfaceAndUpload(params: {
  * upload vocabulary as {@link isUploadAffordanceLabel}, preferring controls
  * scoped inside an attachment/upload/resume container. Returns whether a
  * matching control was clicked.
+ *
+ * Takes both `page` (for `pollEnumerate`'s `waitForTimeout`) and `target`
+ * (the frame the enumerate/click runs against).
  */
-async function clickUploadAffordance(page: Page, logger: Logger): Promise<boolean> {
+async function clickUploadAffordance(
+  page: Page,
+  target: FrameTarget,
+  logger: Logger
+): Promise<boolean> {
   // The browser-side matcher mirrors isUploadAffordanceLabel; kept as a literal
   // so the enumerate is a static string (same trust posture as the other
   // primitives). No external interpolation.
@@ -3037,6 +3068,7 @@ async function clickUploadAffordance(page: Page, logger: Logger): Promise<boolea
   try {
     const result = (await pollEnumerate<{ clicked: boolean; text?: string }>(
       page,
+      target,
       expr,
       (r) => r?.clicked === true
     )) ?? { clicked: false };
@@ -3061,6 +3093,8 @@ async function clickUploadAffordance(page: Page, logger: Logger): Promise<boolea
  */
 async function setFilesViaCdp(params: {
   page: Page;
+  /** Frame the intercepted chooser's input lives in — scopes the filename-chip fallback check below. */
+  target: FrameTarget;
   session: ReturnType<Page["getSessionForFrame"]>;
   backendNodeId: number;
   fixture: ResumeFixture;
@@ -3068,8 +3102,16 @@ async function setFilesViaCdp(params: {
   signalCounter: { n: number };
   recentCaptureMeta: readonly CaptureMeta[];
 }): Promise<boolean> {
-  const { page, session, backendNodeId, fixture, logger, signalCounter, recentCaptureMeta } =
-    params;
+  const {
+    page,
+    target,
+    session,
+    backendNodeId,
+    fixture,
+    logger,
+    signalCounter,
+    recentCaptureMeta,
+  } = params;
   // CDP needs a filesystem path; the fixture is an in-memory buffer. Write it
   // to a temp file (tiny — a few KB) so the path is always valid regardless of
   // where the recon loaded the fixture from.
@@ -3088,7 +3130,7 @@ async function setFilesViaCdp(params: {
   // CDP-set files don't surface via input.files, so the DOM-attached-files
   // check can't confirm; treat a filename chip appearing in the DOM as the
   // secondary success signal (the MUI widget renders the chosen filename).
-  const nameShown = await page
+  const nameShown = await target
     .evaluate(
       `document.body && document.body.textContent && document.body.textContent.indexOf(${JSON.stringify(fixture.name)}) !== -1`
     )
@@ -3214,19 +3256,26 @@ const PRIMITIVE_ENUMERATE_RETRY_MS = 600;
  * `opts` overrides the attempt count / interval for callers that need a longer
  * window (the resume-upload widget can take 5s+ to mount); omitting it keeps the
  * default ~3s window so every existing caller is unchanged.
+ *
+ * Takes both `page` (for `waitForTimeout`, which `FrameTarget` has no
+ * equivalent of) and `target` (for the enumerate itself), so a widget
+ * rendered inside a resolved cross-origin child frame is polled on its own
+ * frame; a main-frame `target` delegates straight to `page.evaluate`,
+ * matching today's behavior byte-for-byte.
  */
 export async function pollEnumerate<T>(
   page: Page,
+  target: FrameTarget,
   expr: string,
   isPresent: (result: T) => boolean,
   opts?: { attempts?: number; intervalMs?: number }
 ): Promise<T> {
   const attempts = opts?.attempts ?? PRIMITIVE_ENUMERATE_ATTEMPTS;
   const intervalMs = opts?.intervalMs ?? PRIMITIVE_ENUMERATE_RETRY_MS;
-  let result = (await page.evaluate(expr)) as T;
+  let result = (await target.evaluate(expr)) as T;
   for (let attempt = 1; attempt < attempts && !isPresent(result); attempt++) {
     await page.waitForTimeout(intervalMs);
-    result = (await page.evaluate(expr)) as T;
+    result = (await target.evaluate(expr)) as T;
   }
   return result;
 }
