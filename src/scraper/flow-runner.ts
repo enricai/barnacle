@@ -6730,7 +6730,9 @@ export async function executeStepWithHealing(params: {
                   return null;
                 })()`;
               try {
-                domSubmittedMatch = (await page.evaluate(probeExpr)) as string | null;
+                domSubmittedMatch = (await (frameTarget ?? page).evaluate(probeExpr)) as
+                  | string
+                  | null;
               } catch (err) {
                 logger.warn(`n+16 submitted-state DOM probe threw: ${toErrorMessage(err)}`);
               }
@@ -6740,7 +6742,8 @@ export async function executeStepWithHealing(params: {
               stagehand,
               undefined,
               { timeout: STEP_WATCHDOG_MS },
-              captureFn
+              captureFn,
+              frameTarget
             ).catch(() => [] as Action[]);
             const invalidMarkerCount = await countNgInvalidContainers(mainFrameTarget(page)).catch(
               () => 0
@@ -6971,13 +6974,14 @@ export async function executeStepWithHealing(params: {
     stagehand,
     step,
     { timeout: STEP_WATCHDOG_MS },
-    captureFn
+    captureFn,
+    frameTarget
   ).catch(() => [] as Action[]);
   const pageTitle = await page.title().catch(() => "");
   // Discriminator data for "Stagehand sees nothing" failures: capture the raw
   // DOM and an unfocused observe so a triager can tell empty-page from
   // Stagehand-can't-see-it without reproducing the failure.
-  const bodyOuterHtmlRaw = await page
+  const bodyOuterHtmlRaw = await (frameTarget ?? page)
     .evaluate("document.body ? document.body.outerHTML : null")
     .catch(() => null);
   const bodyOuterHtml =
@@ -6986,7 +6990,8 @@ export async function executeStepWithHealing(params: {
     stagehand,
     undefined,
     { timeout: STEP_WATCHDOG_MS },
-    captureFn
+    captureFn,
+    frameTarget
   ).catch(() => [] as Action[]);
   const dumpPath =
     onStepFailure?.({
