@@ -21,6 +21,7 @@ import type { ActResult, Page, Stagehand } from "@browserbasehq/stagehand";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { StepVerificationErrorKind } from "@/scraper/errors";
+import type { FrameTarget } from "@/scraper/frame-target";
 
 vi.mock("@/config", () => ({
   config: {
@@ -3220,6 +3221,32 @@ describe("recon-browser/probeStepBeforeAttempts", () => {
     expect(result).toBe("present");
     // Happy path: only the focused probe runs; no wasted unfocused observe.
     expect(stagehand.observe).toHaveBeenCalledTimes(1);
+  });
+
+  it("scopes both the focused and unfocused observe to a resolved child frame", async () => {
+    const stagehand = makeProbeStagehand([], nonEmpty);
+    const frameTarget: FrameTarget = {
+      frame: {} as FrameTarget["frame"],
+      frameSelector: "iframe#talemetry_apply_iframe",
+      evaluate: vi.fn() as FrameTarget["evaluate"],
+      locator: vi.fn() as FrameTarget["locator"],
+      url: () => Promise.resolve("https://apply.talemetry.com/application/abc-123"),
+      title: () => Promise.resolve("main document title"),
+    };
+    await probeStepBeforeAttempts({
+      stagehand: stagehand as never,
+      step: "Fill in the First Name field with 'Reginald'",
+      stepIndex: 5,
+      logger: testLogger,
+      frameTarget,
+    });
+    // Both the focused (instruction, options) and unfocused (options-only)
+    // observe calls carry the hop-notation selector scoping the call to the
+    // resolved child frame.
+    const focusedCall = stagehand.observe.mock.calls[0] as [string, { selector?: string }];
+    const unfocusedCall = stagehand.observe.mock.calls[1] as [{ selector?: string }];
+    expect(focusedCall[1].selector).toBe("iframe#talemetry_apply_iframe >> *");
+    expect(unfocusedCall[0].selector).toBe("iframe#talemetry_apply_iframe >> *");
   });
 });
 
