@@ -3215,19 +3215,25 @@ const PRIMITIVE_ENUMERATE_RETRY_MS = 600;
  * `opts` overrides the attempt count / interval for callers that need a longer
  * window (the resume-upload widget can take 5s+ to mount); omitting it keeps the
  * default ~3s window so every existing caller is unchanged.
+ *
+ * `opts.evalTarget` scopes the enumerate expression itself to a resolved
+ * `FrameTarget` (defaults to `page`, byte-identical to today) — settle-retry
+ * timing always stays on `page.waitForTimeout`, which `FrameTarget` has no
+ * equivalent for.
  */
 export async function pollEnumerate<T>(
   page: Page,
   expr: string,
   isPresent: (result: T) => boolean,
-  opts?: { attempts?: number; intervalMs?: number }
+  opts?: { attempts?: number; intervalMs?: number; evalTarget?: FrameTarget }
 ): Promise<T> {
   const attempts = opts?.attempts ?? PRIMITIVE_ENUMERATE_ATTEMPTS;
   const intervalMs = opts?.intervalMs ?? PRIMITIVE_ENUMERATE_RETRY_MS;
-  let result = (await page.evaluate(expr)) as T;
+  const evalTarget = opts?.evalTarget ?? page;
+  let result = (await evalTarget.evaluate(expr)) as T;
   for (let attempt = 1; attempt < attempts && !isPresent(result); attempt++) {
     await page.waitForTimeout(intervalMs);
-    result = (await page.evaluate(expr)) as T;
+    result = (await evalTarget.evaluate(expr)) as T;
   }
   return result;
 }
@@ -3447,7 +3453,7 @@ async function trySelectPrimitive(params: {
       selectPresent: boolean;
       detMatch?: { selIdx: number; value: string; text: string };
       candidates?: { selIdx: number; label: string; options: { text: string; value: string }[] }[];
-    }>(page, enumerateExpr, (r) => r?.selectPresent === true);
+    }>(page, enumerateExpr, (r) => r?.selectPresent === true, { evalTarget: target });
     // No <select> on the page at all (e.g. the question is a radio group) —
     // fall through to the cascade unchanged; the LLM picker can't help here.
     if (!enumResult?.selectPresent) {
@@ -3652,7 +3658,7 @@ async function tryFillRequiredSelectsPrimitive(params: {
   try {
     const enumResult = await pollEnumerate<{
       candidates: { selIdx: number; label: string; options: { text: string; value: string }[] }[];
-    }>(page, enumerateExpr, (r) => Array.isArray(r?.candidates));
+    }>(page, enumerateExpr, (r) => Array.isArray(r?.candidates), { evalTarget: target });
     const candidates = enumResult?.candidates ?? [];
     if (candidates.length === 0) return false;
     logger.info(`required-select primitive: ${candidates.length} required-empty select(s) to fill`);
@@ -3829,7 +3835,7 @@ async function tryCheckboxPrimitive(params: {
       ok?: boolean;
       chosen?: string;
       groups?: { gi: number; label: string; options: { bi: number; text: string }[] }[];
-    }>(page, enumerateExpr, (r) => r?.groupPresent === true);
+    }>(page, enumerateExpr, (r) => r?.groupPresent === true, { evalTarget: target });
     if (!enumResult?.groupPresent) return false; // no checkbox groups → cascade
     if (enumResult.applied && enumResult.ok) {
       logger.info(
