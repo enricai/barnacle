@@ -96,7 +96,11 @@ import {
   waitForSpaReady,
   wireSignalCapture,
 } from "@/scraper/flow-runner";
-import { mainFrameTarget, resolveFrameTarget } from "@/scraper/frame-target";
+import {
+  mainFrameTarget,
+  resolveFrameTarget,
+  waitForChildFrameReady,
+} from "@/scraper/frame-target";
 import { createBrowserSession, type ProviderName } from "@/scraper/session";
 import { guardedObserve } from "@/scraper/stagehand-guard";
 import { filterByCallType, parseSamples } from "@/scripts/judge-llm-batch";
@@ -2002,6 +2006,15 @@ async function main(): Promise<void> {
       // to the main-frame target when `frameSelector` is null/unresolvable,
       // so this is a no-op for every flow that doesn't declare one.
       const frameTarget = await resolveFrameTarget(page, frameSelector);
+      // A child frame CDP has just attached to may still be sitting on
+      // about:blank (the moment right after Target.setAutoAttach fires and
+      // before the OOPIF's own navigation lands). waitForSpaReady above only
+      // re-gates on a TOP-document origin change, which never fires for a
+      // same-origin-top site whose wizard lives entirely inside an iframe
+      // (e.g. UCHealth stays on careers.uchealth.org throughout), so without
+      // this the cascade would probe an unnavigated frame and see 0 candidates.
+      // No-ops (zero delay) when frameTarget.frame is null.
+      await waitForChildFrameReady(frameTarget);
       try {
         const stepOutcome = await executeStepWithHealing({
           stagehand,

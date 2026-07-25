@@ -16,8 +16,8 @@ import type { Logger } from "@/types/logging";
  * `mainFrameTarget(page)` bound to the wrong document for a cross-origin
  * iframe wizard.
  *
- * Distinct from `flow-runner.frame-primitives.test.ts` (unit-tests the DOM
- * primitives directly, doesn't drive the cascade) and
+ * Distinct from `flow-runner.frame-primitive-helpers.test.ts` (unit-tests the
+ * DOM primitives directly, doesn't drive the cascade) and
  * `flow-runner.frame-threading.test.ts` (covers the pre-submit region of the
  * cascade). Mocks `@/scraper/frame-target` and `@/scraper/stagehand-guard` at
  * the module boundary (same style as `flow-runner.frame-threading.test.ts`)

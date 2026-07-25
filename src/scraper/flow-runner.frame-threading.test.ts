@@ -6,12 +6,14 @@ import type { FrameTarget } from "@/scraper/frame-target";
 import type { Logger } from "@/types/logging";
 
 /**
- * Regression coverage for `runHealingFlow`'s resolve-once-and-thread seam:
- * `deps.frameSelector` must reach `resolveFrameTarget` exactly once, and the
- * resulting `FrameTarget` must be the SAME object threaded into every guarded
- * Stagehand call for every step — not silently discarded (the gap this file
- * exists to catch: `frameTarget` appeared 0 times in flow-runner.ts even
- * though the `frameSelector` dep field was already accepted).
+ * Regression coverage for `runHealingFlow`'s per-step-resolve-and-thread seam:
+ * `deps.frameSelector` must reach `resolveFrameTarget` fresh for every step
+ * (so an iframe created mid-flow is picked up as soon as it attaches), and
+ * whatever `FrameTarget` a given step resolves must be the SAME object
+ * threaded into every guarded Stagehand call for that step — not silently
+ * discarded (the gap this file exists to catch: `frameTarget` appeared 0
+ * times in flow-runner.ts even though the `frameSelector` dep field was
+ * already accepted).
  *
  * Mocks `@/scraper/frame-target` and `@/scraper/stagehand-guard` at the
  * module boundary (rather than faking a `Page`/`Frame` shape) so the
@@ -176,7 +178,7 @@ describe("flow-runner/runHealingFlow — frameSelector -> FrameTarget threading"
     ]);
   });
 
-  it("resolves frameSelector into a FrameTarget exactly once and threads the SAME object into guardedObserve for every step", async () => {
+  it("re-resolves frameSelector into a FrameTarget once per step and threads the resolved object into guardedObserve for that step", async () => {
     const urls = { current: "https://apply.acme.example/jobs/1/apply" };
     const childTarget = makeChildFrameTarget("iframe#talemetry_apply_iframe", () => urls.current);
     resolveFrameTarget.mockResolvedValue(childTarget);
@@ -195,24 +197,66 @@ describe("flow-runner/runHealingFlow — frameSelector -> FrameTarget threading"
       frameSelector: "iframe#talemetry_apply_iframe",
     });
 
-    // The flow-level frameSelector is resolved exactly once, at the top of
-    // runHealingFlow — not re-resolved per step. (Other internal call sites
-    // separately call `resolveFrameTarget(page)` with no selector as a
-    // main-frame bridge; that's a distinct, pre-existing pattern this
-    // assertion does not concern itself with.)
+    // The flow-level frameSelector is re-resolved once PER STEP — not cached
+    // across the run — so an iframe that attaches mid-flow is picked up as
+    // soon as it's reachable. (Other internal call sites separately call
+    // `resolveFrameTarget(page)` with no selector as a main-frame bridge;
+    // that's a distinct, pre-existing pattern this assertion does not
+    // concern itself with.)
     const topLevelResolveCalls = resolveFrameTarget.mock.calls.filter(
       ([, selector]) => selector === "iframe#talemetry_apply_iframe"
     );
-    expect(topLevelResolveCalls).toHaveLength(1);
-    expect(topLevelResolveCalls[0]).toEqual([page, "iframe#talemetry_apply_iframe"]);
+    expect(topLevelResolveCalls).toHaveLength(2);
+    for (const call of topLevelResolveCalls) {
+      expect(call).toEqual([page, "iframe#talemetry_apply_iframe"]);
+    }
 
-    // Every guardedObserve call across both steps carries the SAME resolved
+    // Every guardedObserve call across both steps carries the resolved
     // FrameTarget instance as its trailing arg — proving it was threaded
-    // through executeStepWithHealing rather than re-resolved or dropped.
+    // through executeStepWithHealing rather than dropped.
     expect(guardedObserve.mock.calls.length).toBeGreaterThan(0);
     for (const call of guardedObserve.mock.calls) {
       expect(call.at(-1)).toBe(childTarget);
     }
+  });
+
+  it("resolves step 1 to the main frame and step 2+ to the child frame once it attaches mid-flow", async () => {
+    const urls = { current: "https://apply.acme.example/jobs/1/apply" };
+    const stagehand = makeStagehand();
+    const page = fakeFlowPage(() => urls.current);
+    const mainTarget = delegatingMainFrameTarget(page);
+    const childTarget = makeChildFrameTarget("iframe#talemetry_apply_iframe", () => urls.current);
+
+    // Models an iframe created mid-flow: `page.frames()` (proxied here via
+    // `resolveFrameTarget`'s own contract) has no match on the first call and
+    // the matching child frame from the second call onward — proving
+    // `runHealingFlow` re-resolves per step rather than freezing whatever the
+    // FIRST resolve returned.
+    resolveFrameTarget.mockResolvedValueOnce(mainTarget).mockResolvedValue(childTarget);
+
+    wireVerifiedGuardedAct(urls);
+
+    await runHealingFlow({
+      stagehand,
+      page,
+      steps: [step(), step()],
+      logger: testLogger,
+      anthropic: null,
+      resumeFixture: null,
+      frameSelector: "iframe#talemetry_apply_iframe",
+    });
+
+    expect(guardedObserve.mock.calls).toHaveLength(2);
+    const [firstStepObserveCall, secondStepObserveCall] = guardedObserve.mock.calls as [
+      unknown[],
+      unknown[],
+    ];
+    const firstStepTarget = firstStepObserveCall.at(-1) as FrameTarget;
+    const secondStepTarget = secondStepObserveCall.at(-1) as FrameTarget;
+    expect(firstStepTarget).toBe(mainTarget);
+    expect(firstStepTarget.frame).toBeNull();
+    expect(secondStepTarget).toBe(childTarget);
+    expect(secondStepTarget.frame).not.toBeNull();
   });
 
   it("waits for the resolved child frame to be ready before stepping", async () => {

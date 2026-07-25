@@ -1,344 +1,630 @@
-import { describe, expect, it, vi } from "vitest";
+import type { Page, Stagehand } from "@browserbasehq/stagehand";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import {
-  countNgInvalidContainers,
-  fillHtml5DateTimeInput,
-  pollEnumerate,
-  probeLeafInvalidContainers,
-  snapshotPage,
-  verifyFillReadback,
-} from "@/scraper/flow-runner";
-import { type FrameTarget, mainFrameTarget } from "@/scraper/frame-target";
+import { executeStepWithHealing } from "@/scraper/flow-runner";
+import type { FrameTarget } from "@/scraper/frame-target";
+import type { Logger } from "@/types/logging";
 
 /**
- * Minimal fake `FrameTarget`: each test scripts `evaluate` to return whatever
- * a real child-frame `evaluate` would answer for the expression the helper
- * under test builds, and `url`/`title` are fixed strings so assertions on
- * `snapshotPage`'s returned `url` field don't depend on a real Page.
+ * Regression coverage for the 8 selector-less `resolveFrameTarget(page)`
+ * call sites inside `executeStepWithHealing` that used to silently re-resolve
+ * to the main frame instead of reusing the already-resolved ambient
+ * `frameTarget` param: the upload-primitive target, the shared
+ * `selectFrameTarget` (select/checkbox/required-selects primitives), the
+ * pre-submit `probeFormValidityBeforeSubmit` target, the html5-date-fill +
+ * fill-readback target, the structured-click probe target, `verifyDomEffect`'s
+ * target, the submitted-state DOM probe target, and the n+16 native-click
+ * fallback target. Each was reachable once a frame-scoped step actually
+ * entered the iframe, so a mid-flow-mounted cross-origin iframe (the
+ * UCHealth/Talemetry shape) would silently fall back to the top document for
+ * every one of these primitives even though the enclosing step had already
+ * resolved the child frame.
+ *
+ * Distinct from `flow-runner.frame-primitive-helpers.test.ts` (unit-tests the
+ * DOM primitive helpers directly, doesn't drive the cascade),
+ * `flow-runner.step-frame-scope.test.ts` / `flow-runner.frame-threading.test.ts`
+ * (cover the attempt-1 pre-cascade sites that already correctly used
+ * `frameTarget ?? mainFrameTarget(page)`), and
+ * `flow-runner.submit-verify-frame-scope.test.ts` (covers the submit-verify
+ * region's OTHER six sites, already fixed). Mocks `@/scraper/frame-target` and
+ * `@/scraper/stagehand-guard` at the module boundary, same style as those
+ * sibling files, so assertions are about WHICH `FrameTarget` object crosses
+ * each call boundary — not about `resolveFrameTarget`'s own origin-matching.
  */
-function makeFakeTarget(
-  evaluateImpl: (expr: unknown) => Promise<unknown>,
-  overrides: Partial<FrameTarget> = {}
-): FrameTarget {
+
+const resolveFrameTarget = vi.fn();
+const mainFrameTarget = vi.fn();
+const guardedObserve = vi.fn();
+const guardedAct = vi.fn();
+
+vi.mock("@/scraper/frame-target", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/scraper/frame-target")>();
   return {
-    frame: {} as FrameTarget["frame"],
-    frameSelector: "iframe#talemetry_apply_iframe",
-    evaluate: evaluateImpl as FrameTarget["evaluate"],
-    locator: (selector: string) => ({ scope: "frame" as const, selector }) as never,
-    url: () => Promise.resolve("https://apply.talemetry.com/application/abc-123"),
-    title: () => Promise.resolve("main document title"),
+    ...actual,
+    resolveFrameTarget: (...args: unknown[]) => resolveFrameTarget(...args),
+    mainFrameTarget: (...args: unknown[]) => mainFrameTarget(...args),
+  };
+});
+
+vi.mock("@/scraper/stagehand-guard", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/scraper/stagehand-guard")>();
+  return {
+    ...actual,
+    guardedObserve: (...args: unknown[]) => guardedObserve(...args),
+    guardedAct: (...args: unknown[]) => guardedAct(...args),
+  };
+});
+
+const testLogger = {
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  debug: vi.fn(),
+} as unknown as Logger;
+
+const CHILD_ORIGIN = "https://apply.talemetry.com";
+const FRAME_SELECTOR = "iframe#talemetry_apply_iframe";
+
+/**
+ * Builds a main-frame `FrameTarget` delegating straight to `page`, matching
+ * `mainFrameTarget`'s real contract — the fallback half of every
+ * `frameTarget ?? mainFrameTarget(page)` shim, deliberately a DISTINCT object
+ * from `childTarget` so a call landing on it (instead of the resolved child)
+ * is detectable via `toBe`/`not.toHaveBeenCalled`.
+ */
+function delegatingMainFrameTarget(page: Page): FrameTarget {
+  return {
+    frame: null,
+    frameSelector: null,
+    evaluate: (pageFunctionOrExpression, arg) => page.evaluate(pageFunctionOrExpression, arg),
+    locator: (selector) => page.locator(selector),
+    url: () => Promise.resolve(page.url()),
+    title: () => page.title(),
+  };
+}
+
+/** Fake `Page`: only touched when a fix under test regresses back to `mainFrameTarget(page)`. */
+function fakePage(getUrl: () => string = () => `${CHILD_ORIGIN}/application/abc-123`): Page {
+  return {
+    evaluate: vi.fn().mockResolvedValue(null),
+    locator: vi.fn().mockReturnValue({
+      first: () => ({
+        setInputFiles: vi.fn().mockResolvedValue(undefined),
+        isChecked: vi.fn().mockResolvedValue(false),
+        inputValue: vi.fn().mockResolvedValue(""),
+      }),
+    }),
+    url: getUrl,
+    title: vi.fn().mockResolvedValue("Apply"),
+    waitForTimeout: vi.fn().mockResolvedValue(undefined),
+  } as unknown as Page;
+}
+
+function makeStagehand(): Stagehand {
+  return {} as unknown as Stagehand;
+}
+
+/** Shared params every scenario passes to `executeStepWithHealing`; each test overrides only what its path needs. */
+function baseParams(overrides: Record<string, unknown> = {}) {
+  return {
+    stagehand: makeStagehand(),
+    page: fakePage(),
+    step: "Fill in the middle name field",
+    optional: false,
+    upload: false,
+    submitStep: false,
+    stepIndex: 0,
+    totalSteps: () => 1,
+    phase: "flow",
+    signalCounter: { n: 0 },
+    recentCaptures: [],
+    recentCaptureMeta: [],
+    anthropic: null,
+    logger: testLogger,
+    resumeFixture: null,
+    isFinalStep: false,
+    submitEndpointPattern: null,
+    submittedStateSelectors: [],
+    requireSubmitEndpointMatch: false,
+    advanceTransitionBodyPattern: null,
+    successUrlFragments: [],
+    successPageTitleHints: [],
+    ownBackendHostnames: [],
+    knownErrorClassPrefixes: [],
+    wizardExitButtonLabels: [],
     ...overrides,
   };
 }
 
-/** Minimal fake `Page` for `mainFrameTarget(page)` — proves main-frame delegation. */
-function makeFakePage(evaluateImpl: (expr: unknown) => Promise<unknown>) {
-  return {
-    evaluate: vi.fn().mockImplementation(evaluateImpl),
-    locator: vi.fn().mockImplementation((selector: string) => ({ scope: "main", selector })),
-    url: () => "https://careers.uchealth.org/jobs/123",
-    title: async () => "main document title",
-    waitForTimeout: vi.fn().mockResolvedValue(undefined),
-  };
-}
+describe("flow-runner/executeStepWithHealing — upload/select primitive frame scoping", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mainFrameTarget.mockImplementation(delegatingMainFrameTarget);
+  });
 
-describe("flow-runner/snapshotPage", () => {
-  it("evaluates via the resolved child frame, not page.evaluate", async () => {
-    const targetEvaluate = vi.fn().mockResolvedValue({ html: 42, text: "5:hello" });
-    const target = makeFakeTarget(targetEvaluate);
-
-    const snapshot = await snapshotPage(target, { n: 3 });
-
-    expect(targetEvaluate).toHaveBeenCalledTimes(1);
-    expect(snapshot).toEqual({
-      networkCount: 3,
-      url: "https://apply.talemetry.com/application/abc-123",
-      bodyHtmlLength: 42,
-      visibleTextSignature: "5:hello",
+  it("threads the resolved child FrameTarget into tryUploadPrimitive's target, not mainFrameTarget(page)", async () => {
+    const childEvaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const src = String(expr);
+      if (src.includes("input[type=file]").valueOf() && src.includes("length")) return 1;
+      return null;
     });
+    const setInputFiles = vi.fn().mockRejectedValue(new Error("no real DOM in this fixture"));
+    const childTarget: FrameTarget = {
+      frame: {} as FrameTarget["frame"],
+      frameSelector: FRAME_SELECTOR,
+      evaluate: childEvaluate as FrameTarget["evaluate"],
+      locator: vi
+        .fn()
+        .mockReturnValue({ first: () => ({ setInputFiles }) }) as FrameTarget["locator"],
+      url: () => Promise.resolve(`${CHILD_ORIGIN}/application/abc-123`),
+      title: () => Promise.resolve("Apply"),
+    };
+    const page = fakePage();
+
+    // Probe-before-attempts finds no candidate, but the upload primitive runs
+    // BEFORE that probe unconditionally when `upload: true` — its own failure
+    // (setInputFiles throws) falls through to the cascade, which then
+    // legitimately fails; this test's only concern is which target the
+    // upload primitive itself touched.
+    guardedObserve.mockResolvedValue([]);
+
+    await expect(
+      executeStepWithHealing(
+        baseParams({
+          page,
+          upload: true,
+          resumeFixture: {
+            buffer: Buffer.from("pdf-bytes"),
+            name: "resume.pdf",
+            mimeType: "application/pdf",
+          },
+          frameTarget: childTarget,
+        }) as never
+      )
+    ).rejects.toThrow();
+
+    // resolveFrameTarget must never be called: a frameTarget was already
+    // threaded in, so the fixed code reuses it via `frameTarget ??
+    // mainFrameTarget(page)` rather than re-resolving blind.
+    expect(resolveFrameTarget).not.toHaveBeenCalled();
+    expect(mainFrameTarget).not.toHaveBeenCalled();
+    expect(childEvaluate).toHaveBeenCalled();
+    expect(setInputFiles).toHaveBeenCalled();
+    expect(page.evaluate).not.toHaveBeenCalled();
   });
 
-  it("behaves byte-identically for a main-frame target: delegates to page.evaluate", async () => {
-    const page = makeFakePage(async () => ({ html: 10, text: "3:abc" }));
-
-    const snapshot = await snapshotPage(mainFrameTarget(page as never), { n: 1 });
-
-    expect(page.evaluate).toHaveBeenCalledTimes(1);
-    expect(snapshot).toEqual({
-      networkCount: 1,
-      url: "https://careers.uchealth.org/jobs/123",
-      bodyHtmlLength: 10,
-      visibleTextSignature: "3:abc",
+  it("main-frame control: tryUploadPrimitive dispatches via page when frameTarget is undefined", async () => {
+    const page = fakePage();
+    guardedObserve.mockResolvedValue([]);
+    (page.locator as ReturnType<typeof vi.fn>).mockReturnValue({
+      first: () => ({ setInputFiles: vi.fn().mockRejectedValue(new Error("no real DOM")) }),
     });
+    (page.evaluate as ReturnType<typeof vi.fn>).mockImplementation(async (expr: unknown) => {
+      const src = String(expr);
+      if (src.includes("input[type=file]") && src.includes("length")) return 1;
+      return null;
+    });
+
+    await expect(
+      executeStepWithHealing(
+        baseParams({
+          page,
+          upload: true,
+          resumeFixture: {
+            buffer: Buffer.from("pdf-bytes"),
+            name: "resume.pdf",
+            mimeType: "application/pdf",
+          },
+          frameTarget: undefined,
+        }) as never
+      )
+    ).rejects.toThrow();
+
+    expect(mainFrameTarget).toHaveBeenCalledWith(page);
+    expect(page.evaluate).toHaveBeenCalled();
   });
 
-  it("defaults to 0/empty-string on evaluate failure, regardless of frame", async () => {
-    const target = makeFakeTarget(vi.fn().mockRejectedValue(new Error("detached")));
+  it("threads the resolved child FrameTarget into the shared selectFrameTarget (select-primitive enumerate), not mainFrameTarget(page)", async () => {
+    const childEvaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const src = String(expr);
+      if (src.includes("selectPresent")) return { selectPresent: false };
+      return null;
+    });
+    const childTarget: FrameTarget = {
+      frame: {} as FrameTarget["frame"],
+      frameSelector: FRAME_SELECTOR,
+      evaluate: childEvaluate as FrameTarget["evaluate"],
+      locator: vi.fn() as FrameTarget["locator"],
+      url: () => Promise.resolve(`${CHILD_ORIGIN}/application/abc-123`),
+      title: () => Promise.resolve("Apply"),
+    };
+    const page = fakePage();
+    guardedObserve.mockResolvedValue([]);
 
-    const snapshot = await snapshotPage(target, { n: 0 });
+    await expect(
+      executeStepWithHealing(
+        baseParams({
+          page,
+          step: "Select 'Yes' for 'Are you authorized to work in the US?'",
+          optional: true,
+          frameTarget: childTarget,
+        }) as never
+      )
+    ).resolves.toBe("skipped");
 
-    expect(snapshot.bodyHtmlLength).toBe(0);
-    expect(snapshot.visibleTextSignature).toBe("");
-  });
-
-  it("defaults to 0/empty-string when the evaluate result doesn't match the expected shape", async () => {
-    const target = makeFakeTarget(vi.fn().mockResolvedValue({ unexpected: true }));
-
-    const snapshot = await snapshotPage(target, { n: 0 });
-
-    expect(snapshot.bodyHtmlLength).toBe(0);
-    expect(snapshot.visibleTextSignature).toBe("");
+    expect(resolveFrameTarget).not.toHaveBeenCalled();
+    expect(mainFrameTarget).not.toHaveBeenCalled();
+    const enumerateCalls = childEvaluate.mock.calls.filter(([expr]) =>
+      String(expr).includes("selectPresent")
+    );
+    expect(enumerateCalls.length).toBeGreaterThan(0);
+    expect(page.evaluate).not.toHaveBeenCalled();
   });
 });
 
-describe("flow-runner/countNgInvalidContainers", () => {
-  it("evaluates via the resolved child frame, not page.evaluate", async () => {
-    const targetEvaluate = vi.fn().mockResolvedValue(2);
-    const target = makeFakeTarget(targetEvaluate);
-
-    const count = await countNgInvalidContainers(target);
-
-    expect(count).toBe(2);
-    expect(targetEvaluate).toHaveBeenCalledTimes(1);
+describe("flow-runner/executeStepWithHealing — pre-submit form-validity probe frame scoping", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mainFrameTarget.mockImplementation(delegatingMainFrameTarget);
   });
 
-  it("behaves byte-identically for a main-frame target: delegates to page.evaluate", async () => {
-    const page = makeFakePage(async () => 5);
+  it("threads the resolved child FrameTarget into probeFormValidityBeforeSubmit, not mainFrameTarget(page)", async () => {
+    const childEvaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const src = String(expr);
+      if (src.includes("selectPresent")) return { selectPresent: false };
+      if (src.includes("groupPresent")) return { groupPresent: false };
+      if (src.includes("MARKERS")) return [];
+      if (src.includes('querySelectorAll("[class],[aria-invalid]")')) return 0;
+      return null;
+    });
+    const childTarget: FrameTarget = {
+      frame: {} as FrameTarget["frame"],
+      frameSelector: FRAME_SELECTOR,
+      evaluate: childEvaluate as FrameTarget["evaluate"],
+      locator: vi.fn() as FrameTarget["locator"],
+      url: () => Promise.resolve(`${CHILD_ORIGIN}/application/abc-123`),
+      title: () => Promise.resolve("Apply"),
+    };
+    const page = fakePage();
+    // Pre-cascade probe (probeStepBeforeAttempts) must find a candidate so the
+    // step proceeds past the probe-absent guard and reaches the
+    // requireSubmitEndpoint-gated form-validity probe (which runs BEFORE the
+    // attempt loop). Attempts 1-5 then exhaust on empty observe results.
+    guardedObserve
+      .mockResolvedValueOnce([
+        { selector: "css=button#submit", description: "Submit button", method: "click" },
+      ])
+      .mockResolvedValue([]);
+    guardedAct.mockResolvedValue({
+      success: false,
+      message: "no candidates",
+      actionDescription: "",
+      actions: [],
+    });
 
-    const count = await countNgInvalidContainers(mainFrameTarget(page as never));
+    await expect(
+      executeStepWithHealing(
+        baseParams({
+          page,
+          step: "Click the Submit button",
+          submitStep: true,
+          submitEndpointPattern: "/gq",
+          frameTarget: childTarget,
+        }) as never
+      )
+    ).rejects.toThrow();
 
-    expect(count).toBe(5);
-    expect(page.evaluate).toHaveBeenCalledTimes(1);
-  });
-
-  it("returns 0 on evaluate failure", async () => {
-    const target = makeFakeTarget(vi.fn().mockRejectedValue(new Error("detached")));
-
-    expect(await countNgInvalidContainers(target)).toBe(0);
-  });
-
-  it("returns 0 when evaluate resolves a non-number", async () => {
-    const target = makeFakeTarget(vi.fn().mockResolvedValue("not-a-number"));
-
-    expect(await countNgInvalidContainers(target)).toBe(0);
+    expect(resolveFrameTarget).not.toHaveBeenCalled();
+    expect(mainFrameTarget).not.toHaveBeenCalled();
+    const probeCalls = childEvaluate.mock.calls.filter(([expr]) =>
+      String(expr).includes("MARKERS")
+    );
+    expect(probeCalls.length).toBeGreaterThan(0);
+    expect(page.evaluate).not.toHaveBeenCalled();
   });
 });
 
-describe("flow-runner/probeLeafInvalidContainers", () => {
-  const sampleField = {
-    xpath: "/html[1]/body[1]/div[2]/input[1]",
-    label: "First Name",
-    framework: "angular" as const,
-    markerClass: "ng-invalid ng-touched",
-    visibleErrorText: "This field is required",
-    inputTag: "input",
-  };
-
-  it("evaluates via the resolved child frame, not page.evaluate", async () => {
-    const targetEvaluate = vi.fn().mockResolvedValue([sampleField]);
-    const target = makeFakeTarget(targetEvaluate);
-
-    const fields = await probeLeafInvalidContainers(target);
-
-    expect(fields).toEqual([sampleField]);
-    expect(targetEvaluate).toHaveBeenCalledTimes(1);
+describe("flow-runner/executeStepWithHealing — html5 date-fill / fill-readback frame scoping", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mainFrameTarget.mockImplementation(delegatingMainFrameTarget);
+    guardedObserve.mockResolvedValue([
+      { selector: "css=button#submit", description: "Submit button", method: "click" },
+    ]);
   });
 
-  it("behaves byte-identically for a main-frame target: delegates to page.evaluate", async () => {
-    const page = makeFakePage(async () => [sampleField]);
+  it("threads the resolved child FrameTarget into fillHtml5DateTimeInput's target, not mainFrameTarget(page)", async () => {
+    const childEvaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const src = String(expr);
+      if (src.includes("selectPresent")) return { selectPresent: false };
+      if (src.includes("groupPresent")) return { groupPresent: false };
+      if (src.includes("HTMLInputElement.prototype")) {
+        return { filled: true, postValue: "2026-06-14", inputType: "date" };
+      }
+      return null;
+    });
+    const childTarget: FrameTarget = {
+      frame: {} as FrameTarget["frame"],
+      frameSelector: FRAME_SELECTOR,
+      evaluate: childEvaluate as FrameTarget["evaluate"],
+      locator: vi.fn() as FrameTarget["locator"],
+      url: () => Promise.resolve(`${CHILD_ORIGIN}/application/abc-123`),
+      title: () => Promise.resolve("Apply"),
+    };
+    const page = fakePage();
 
-    const fields = await probeLeafInvalidContainers(mainFrameTarget(page as never));
+    // Attempt 1 (act-string) resolves no action -> fast-skips to attempt 2
+    // (observe-act), which finds a fill-shaped candidate and routes into the
+    // html5-date-fallback branch under test.
+    guardedAct.mockResolvedValueOnce({
+      success: false,
+      message: "no candidates",
+      actionDescription: "",
+      actions: [],
+    });
+    guardedObserve
+      .mockResolvedValueOnce([
+        { selector: "css=button#submit", description: "Submit button", method: "click" },
+      ])
+      .mockResolvedValueOnce([
+        {
+          selector: "xpath=//input[@id='dob']",
+          description: "Date of birth",
+          method: "fill",
+          arguments: ["06-14-2026"],
+        },
+      ]);
+    guardedAct.mockResolvedValueOnce({
+      success: false,
+      message: "date fill failed via act",
+      actionDescription: "",
+      actions: [],
+    });
 
-    expect(fields).toEqual([sampleField]);
-    expect(page.evaluate).toHaveBeenCalledTimes(1);
-  });
+    await expect(
+      executeStepWithHealing(
+        baseParams({
+          page,
+          step: "Fill in the date of birth field",
+          frameTarget: childTarget,
+        }) as never
+      )
+    ).rejects.toThrow();
 
-  it("returns an empty array on evaluate failure (safe fallback to the Haiku judge)", async () => {
-    const target = makeFakeTarget(vi.fn().mockRejectedValue(new Error("CSP violation")));
-
-    expect(await probeLeafInvalidContainers(target)).toEqual([]);
-  });
-
-  it("returns an empty array when evaluate resolves a non-array", async () => {
-    const target = makeFakeTarget(vi.fn().mockResolvedValue(null));
-
-    expect(await probeLeafInvalidContainers(target)).toEqual([]);
+    expect(resolveFrameTarget).not.toHaveBeenCalled();
+    expect(mainFrameTarget).not.toHaveBeenCalled();
+    const dateFillCalls = childEvaluate.mock.calls.filter(([expr]) =>
+      String(expr).includes("HTMLInputElement.prototype")
+    );
+    expect(dateFillCalls.length).toBeGreaterThan(0);
+    expect(page.evaluate).not.toHaveBeenCalled();
   });
 });
 
-describe("flow-runner/fillHtml5DateTimeInput", () => {
-  it("evaluates via the resolved child frame, not page.evaluate", async () => {
-    const targetEvaluate = vi
-      .fn()
-      .mockResolvedValue({ filled: true, postValue: "2026-06-14", inputType: "date" });
-    const target = makeFakeTarget(targetEvaluate);
-
-    const result = await fillHtml5DateTimeInput(target, "/html/body/input[1]", "2026-06-14");
-
-    expect(result).toEqual({ filled: true, postValue: "2026-06-14", inputType: "date" });
-    expect(targetEvaluate).toHaveBeenCalledTimes(1);
+describe("flow-runner/executeStepWithHealing — structured-click probe frame scoping", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mainFrameTarget.mockImplementation(delegatingMainFrameTarget);
   });
 
-  it("behaves byte-identically for a main-frame target: delegates to page.evaluate", async () => {
-    const page = makeFakePage(async () => ({
-      filled: true,
-      postValue: "2026-06-14",
-      inputType: "date",
-    }));
+  it("threads the resolved child FrameTarget into the structured-click probe, not mainFrameTarget(page)", async () => {
+    const childEvaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const src = String(expr);
+      if (src.includes("groupPresent")) return { groupPresent: false };
+      if (src.includes("isCheckable")) {
+        return { resolved: true, isCheckable: false };
+      }
+      return null;
+    });
+    const childTarget: FrameTarget = {
+      frame: {} as FrameTarget["frame"],
+      frameSelector: FRAME_SELECTOR,
+      evaluate: childEvaluate as FrameTarget["evaluate"],
+      locator: vi.fn() as FrameTarget["locator"],
+      url: () => Promise.resolve(`${CHILD_ORIGIN}/application/abc-123`),
+      title: () => Promise.resolve("Apply"),
+    };
+    const page = fakePage();
 
-    const result = await fillHtml5DateTimeInput(
-      mainFrameTarget(page as never),
-      "/html/body/input[1]",
-      "06-14-2026"
+    // Attempt 1 and 2 resolve a click candidate with an xpath= selector but
+    // never verify (no network/url/dom signal), so the cascade reaches
+    // attempt 3 (structured-click) with a tried xpath= selector in scope.
+    guardedObserve.mockResolvedValue([
+      { selector: "xpath=//input[@id='agree']", description: "I agree", method: "click" },
+    ]);
+    guardedAct.mockResolvedValue({
+      success: true,
+      message: "clicked",
+      actionDescription: "I agree",
+      actions: [
+        { selector: "xpath=//input[@id='agree']", description: "I agree", method: "click" },
+      ],
+    });
+
+    await expect(
+      executeStepWithHealing(
+        baseParams({
+          page,
+          step: "Click the 'I agree' checkbox",
+          frameTarget: childTarget,
+        }) as never
+      )
+    ).rejects.toThrow();
+
+    expect(resolveFrameTarget).not.toHaveBeenCalled();
+    expect(mainFrameTarget).not.toHaveBeenCalled();
+    const structuredClickCalls = childEvaluate.mock.calls.filter(([expr]) =>
+      String(expr).includes("isCheckable")
     );
-
-    expect(result).toEqual({ filled: true, postValue: "2026-06-14", inputType: "date" });
-    expect(page.evaluate).toHaveBeenCalledTimes(1);
-  });
-
-  it("returns null when the resolved element isn't a recognized date/time input type", async () => {
-    const target = makeFakeTarget(
-      vi.fn().mockResolvedValue({ filled: false, postValue: "abc", inputType: "text" })
-    );
-
-    expect(await fillHtml5DateTimeInput(target, "/html/body/input[1]", "abc")).toBeNull();
-  });
-
-  it("returns null on evaluate failure", async () => {
-    const target = makeFakeTarget(vi.fn().mockRejectedValue(new Error("detached")));
-
-    expect(await fillHtml5DateTimeInput(target, "/html/body/input[1]", "2026-06-14")).toBeNull();
-  });
-
-  it("returns null when the xpath doesn't resolve to an element", async () => {
-    const target = makeFakeTarget(vi.fn().mockResolvedValue(null));
-
-    expect(await fillHtml5DateTimeInput(target, "/html/body/input[99]", "2026-06-14")).toBeNull();
+    expect(structuredClickCalls.length).toBeGreaterThan(0);
+    expect(page.evaluate).not.toHaveBeenCalled();
   });
 });
 
-describe("flow-runner/verifyFillReadback", () => {
-  it("evaluates via the resolved child frame, not page.evaluate", async () => {
-    const targetEvaluate = vi
-      .fn()
-      .mockResolvedValue({ outcome: "matched", postValue: "Jane", tag: "input" });
-    const target = makeFakeTarget(targetEvaluate);
-
-    const result = await verifyFillReadback(target, "/html/body/input[1]", "Jane");
-
-    expect(result).toEqual({ outcome: "matched", postValue: "Jane", tag: "input" });
-    expect(targetEvaluate).toHaveBeenCalledTimes(1);
+describe("flow-runner/executeStepWithHealing — verifyDomEffect frame scoping", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mainFrameTarget.mockImplementation(delegatingMainFrameTarget);
   });
 
-  it("behaves byte-identically for a main-frame target: delegates to page.evaluate", async () => {
-    const page = makeFakePage(async () => ({ outcome: "rejected", postValue: "", tag: "input" }));
+  it("threads the resolved child FrameTarget into verifyDomEffect, not mainFrameTarget(page)", async () => {
+    const childEvaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const src = String(expr);
+      if (src.includes("groupPresent")) return { groupPresent: false };
+      if (src.includes("el.type || null")) return "checkbox";
+      if (src.includes("el.checked")) return true;
+      return null;
+    });
+    const childTarget: FrameTarget = {
+      frame: {} as FrameTarget["frame"],
+      frameSelector: FRAME_SELECTOR,
+      evaluate: childEvaluate as FrameTarget["evaluate"],
+      locator: vi.fn().mockReturnValue({
+        first: () => ({ isChecked: vi.fn().mockResolvedValue(true) }),
+      }) as unknown as FrameTarget["locator"],
+      url: () => Promise.resolve(`${CHILD_ORIGIN}/application/abc-123`),
+      title: () => Promise.resolve("Apply"),
+    };
+    const page = fakePage();
 
-    const result = await verifyFillReadback(
-      mainFrameTarget(page as never),
-      "/html/body/input[1]",
-      "06-14-2026"
+    guardedObserve.mockResolvedValue([
+      { selector: "xpath=//input[@id='agree']", description: "I agree", method: "click" },
+    ]);
+    guardedAct.mockResolvedValue({
+      success: true,
+      message: "clicked",
+      actionDescription: "I agree",
+      actions: [
+        { selector: "xpath=//input[@id='agree']", description: "I agree", method: "click" },
+      ],
+    });
+
+    const outcome = await executeStepWithHealing(
+      baseParams({ page, step: "Click the 'I agree' checkbox", frameTarget: childTarget }) as never
     );
 
-    expect(result).toEqual({ outcome: "rejected", postValue: "", tag: "input" });
-    expect(page.evaluate).toHaveBeenCalledTimes(1);
-  });
-
-  it("reports 'differs' when the readback value is non-empty but not an exact match (masked input)", async () => {
-    const target = makeFakeTarget(
-      vi.fn().mockResolvedValue({ outcome: "differs", postValue: "(555) 123-4567", tag: "input" })
+    expect(outcome).toBe("completed");
+    expect(resolveFrameTarget).not.toHaveBeenCalled();
+    expect(mainFrameTarget).not.toHaveBeenCalled();
+    const verifyDomEffectCalls = childEvaluate.mock.calls.filter(([expr]) =>
+      String(expr).includes("el.type || null")
     );
-
-    const result = await verifyFillReadback(target, "/html/body/input[1]", "5551234567");
-
-    expect(result).toEqual({ outcome: "differs", postValue: "(555) 123-4567", tag: "input" });
-  });
-
-  it("returns null for a non-fillable element (caller skips the check)", async () => {
-    const target = makeFakeTarget(vi.fn().mockResolvedValue(null));
-
-    expect(await verifyFillReadback(target, "/html/body/div[1]", "Jane")).toBeNull();
-  });
-
-  it("returns null on evaluate failure", async () => {
-    const target = makeFakeTarget(vi.fn().mockRejectedValue(new Error("detached")));
-
-    expect(await verifyFillReadback(target, "/html/body/input[1]", "Jane")).toBeNull();
+    expect(verifyDomEffectCalls.length).toBeGreaterThan(0);
+    expect(page.evaluate).not.toHaveBeenCalled();
   });
 });
 
-describe("flow-runner/pollEnumerate (file-upload locator path)", () => {
-  const fileInputExpr = "document.querySelectorAll('input[type=file]').length";
-
-  it("evaluates via the resolved child frame, not page.evaluate — proves the upload widget's presence probe is frame-scoped", async () => {
-    const page = { waitForTimeout: vi.fn().mockResolvedValue(undefined) };
-    const targetEvaluate = vi.fn().mockResolvedValue(1);
-    const target = makeFakeTarget(targetEvaluate);
-
-    const count = await pollEnumerate<number>(
-      page as never,
-      target,
-      fileInputExpr,
-      (n) => (n ?? 0) > 0
-    );
-
-    expect(count).toBe(1);
-    expect(targetEvaluate).toHaveBeenCalledTimes(1);
-    expect(targetEvaluate).toHaveBeenCalledWith(fileInputExpr);
-    expect(page.waitForTimeout).not.toHaveBeenCalled();
+describe("flow-runner/executeStepWithHealing — submitted-state DOM probe frame scoping", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mainFrameTarget.mockImplementation(delegatingMainFrameTarget);
   });
 
-  it("behaves byte-identically for a main-frame target: delegates to page.evaluate", async () => {
-    const page = makeFakePage(async () => 1);
+  it("threads the resolved child FrameTarget into the top-level submitted-state DOM probe, not mainFrameTarget(page)", async () => {
+    const urls = { current: `${CHILD_ORIGIN}/application/abc-123` };
+    const childEvaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const src = String(expr);
+      if (src.includes("document.querySelector(sel)")) return "[data-testid=thank-you]";
+      if (src.includes('querySelectorAll("[class],[aria-invalid]")')) return 0;
+      return null;
+    });
+    const childTarget: FrameTarget = {
+      frame: {} as FrameTarget["frame"],
+      frameSelector: FRAME_SELECTOR,
+      evaluate: childEvaluate as FrameTarget["evaluate"],
+      locator: vi.fn() as FrameTarget["locator"],
+      url: () => Promise.resolve(urls.current),
+      title: () => Promise.resolve("Apply"),
+    };
+    const page = fakePage(() => urls.current);
 
-    const count = await pollEnumerate<number>(
-      page as never,
-      mainFrameTarget(page as never),
-      fileInputExpr,
-      (n) => (n ?? 0) > 0
+    guardedObserve.mockResolvedValue([
+      { selector: "css=button#submit", description: "Submit button", method: "click" },
+    ]);
+    guardedAct.mockImplementation(async () => {
+      urls.current = `${CHILD_ORIGIN}/application/abc-123/thank-you`;
+      return {
+        success: true,
+        message: "clicked",
+        actionDescription: "Submit button",
+        actions: [{ selector: "css=button#submit", description: "Submit button", method: "click" }],
+      };
+    });
+
+    const outcome = await executeStepWithHealing(
+      baseParams({
+        page,
+        step: "Click the Submit button",
+        submitStep: true,
+        isFinalStep: true,
+        submitEndpointPattern: "/gq",
+        submittedStateSelectors: ["[data-testid=thank-you]"],
+        frameTarget: childTarget,
+      }) as never
     );
 
-    expect(count).toBe(1);
-    expect(page.evaluate).toHaveBeenCalledTimes(1);
-    expect(page.evaluate).toHaveBeenCalledWith(fileInputExpr, undefined);
+    expect(outcome).toBe("completed");
+    expect(resolveFrameTarget).not.toHaveBeenCalled();
+    expect(mainFrameTarget).not.toHaveBeenCalled();
+    const submittedStateCalls = childEvaluate.mock.calls.filter(([expr]) =>
+      String(expr).includes("document.querySelector(sel)")
+    );
+    expect(submittedStateCalls.length).toBeGreaterThan(0);
+    expect(page.evaluate).not.toHaveBeenCalled();
+  });
+});
+
+describe("flow-runner/executeStepWithHealing — n+16 native-click fallback frame scoping", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mainFrameTarget.mockImplementation(delegatingMainFrameTarget);
   });
 
-  it("re-polls the child frame on its own evaluate until the input mounts, using page.waitForTimeout between attempts", async () => {
-    const page = { waitForTimeout: vi.fn().mockResolvedValue(undefined) };
-    const targetEvaluate = vi
-      .fn()
-      .mockResolvedValueOnce(0)
-      .mockResolvedValueOnce(0)
-      .mockResolvedValueOnce(1);
-    const target = makeFakeTarget(targetEvaluate);
+  it("threads the resolved child FrameTarget into the n+16 native-click fallback, not mainFrameTarget(page)", async () => {
+    const childEvaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const src = String(expr);
+      if (src.includes("groupPresent")) return { groupPresent: false };
+      if (src.includes("isCheckable")) return { resolved: true, isCheckable: false };
+      if (src.includes('el.click !== "function"')) return { fired: true, kind: "click" };
+      if (src.includes("isInvalid(node)")) return false;
+      if (src.includes('querySelectorAll("[class],[aria-invalid]")')) return 0;
+      return null;
+    });
+    const childTarget: FrameTarget = {
+      frame: {} as FrameTarget["frame"],
+      frameSelector: FRAME_SELECTOR,
+      evaluate: childEvaluate as FrameTarget["evaluate"],
+      locator: vi.fn() as FrameTarget["locator"],
+      url: () => Promise.resolve(`${CHILD_ORIGIN}/application/abc-123`),
+      title: () => Promise.resolve("Apply"),
+    };
+    const page = fakePage();
 
-    const count = await pollEnumerate<number>(
-      page as never,
-      target,
-      fileInputExpr,
-      (n) => (n ?? 0) > 0,
-      { attempts: 5, intervalMs: 10 }
+    // Attempt 1's resolved click carries an xpath= selector (required for the
+    // n+16 gate to arm) but never verifies (no network/url/dom signal), so
+    // the cascade falls into the n+16 el.click() fallback within attempt 1.
+    guardedObserve.mockResolvedValue([
+      { selector: "xpath=//button[@id='next']", description: "Next", method: "click" },
+    ]);
+    guardedAct.mockResolvedValue({
+      success: true,
+      message: "clicked",
+      actionDescription: "Next",
+      actions: [{ selector: "xpath=//button[@id='next']", description: "Next", method: "click" }],
+    });
+
+    await expect(
+      executeStepWithHealing(
+        baseParams({ page, step: "Click the Next button", frameTarget: childTarget }) as never
+      )
+    ).rejects.toThrow();
+
+    expect(resolveFrameTarget).not.toHaveBeenCalled();
+    expect(mainFrameTarget).not.toHaveBeenCalled();
+    const n16Calls = childEvaluate.mock.calls.filter(([expr]) =>
+      String(expr).includes('el.click !== "function"')
     );
-
-    expect(count).toBe(1);
-    expect(targetEvaluate).toHaveBeenCalledTimes(3);
-    expect(page.waitForTimeout).toHaveBeenCalledTimes(2);
-    expect(page.waitForTimeout).toHaveBeenCalledWith(10);
-  });
-
-  it("returns the last (absent) result once attempts are exhausted, so the caller falls through to click-to-surface", async () => {
-    const page = { waitForTimeout: vi.fn().mockResolvedValue(undefined) };
-    const targetEvaluate = vi.fn().mockResolvedValue(0);
-    const target = makeFakeTarget(targetEvaluate);
-
-    const count = await pollEnumerate<number>(
-      page as never,
-      target,
-      fileInputExpr,
-      (n) => (n ?? 0) > 0,
-      { attempts: 3, intervalMs: 5 }
-    );
-
-    expect(count).toBe(0);
-    expect(targetEvaluate).toHaveBeenCalledTimes(3);
+    expect(n16Calls.length).toBeGreaterThan(0);
+    expect(page.evaluate).not.toHaveBeenCalled();
   });
 });
