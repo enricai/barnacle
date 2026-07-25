@@ -119,6 +119,9 @@ function fakeFlowPage(getUrl: () => string): Page {
 /** Non-submit-shaped, non-select/checkbox/radio instruction — takes the attempt-1 `guardedAct(step, ...)` path. */
 const STEP_A = "Fill in the middle name field";
 
+/** Matches `parseSelectStep`, so `hasUnfilledRequiredControlForStep`'s probe-absent escalation check evaluates its target instead of short-circuiting on an unparsed instruction. */
+const SELECT_STEP = "Select 'Yes' for 'Are you legally authorized to work?'";
+
 function step(overrides: Partial<HealingFlowStep> = {}): HealingFlowStep {
   return { instruction: STEP_A, optional: false, upload: false, submitStep: false, ...overrides };
 }
@@ -159,13 +162,14 @@ describe("flow-runner/runHealingFlow — frameSelector -> FrameTarget threading"
     // `mainFrameTarget(page)` is the fallback half of every
     // `frameTarget ?? mainFrameTarget(page)` shim inside
     // executeStepWithHealing's DOM-direct probe helpers (snapshotPage,
-    // countNgInvalidContainers, ...). It must delegate straight to `page`
-    // (matching the real implementation's contract) so URL-flip
-    // verification still works, but it is DELIBERATELY a distinct object
-    // from any resolved child FrameTarget — the sentinel-object tests below
-    // assert the probes' `.evaluate` lands on the child, never on this
-    // fallback, which is what regresses if a `frameTarget ??` swap is ever
-    // dropped back to a bare `mainFrameTarget(page)`.
+    // countNgInvalidContainers, hasUnfilledRequiredControlForStep, ...). It
+    // must delegate straight to `page` (matching the real implementation's
+    // contract) so URL-flip verification still works, but it is
+    // DELIBERATELY a distinct object from any resolved child FrameTarget —
+    // the sentinel-object tests below assert the probes' `.evaluate` lands
+    // on the child, never on this fallback, which is what regresses if a
+    // `frameTarget ??` swap is ever dropped back to a bare
+    // `mainFrameTarget(page)`.
     mainFrameTarget.mockImplementation(delegatingMainFrameTarget);
     guardedObserve.mockResolvedValue([
       { selector: "input#mname", description: "middle name", method: "fill" },
@@ -290,6 +294,67 @@ describe("flow-runner/runHealingFlow — frameSelector -> FrameTarget threading"
     // they ran against the resolved child frame, not the mainFrameTarget(page)
     // fallback, is that the child's `evaluate` mock (not the fallback's
     // `page.evaluate`) was invoked.
+    expect(childTarget.evaluate).toHaveBeenCalled();
+    expect(page.evaluate).not.toHaveBeenCalled();
+  });
+
+  it("threads the resolved child FrameTarget into the probe-absent required-control escalation check, not the mainFrameTarget(page) shim", async () => {
+    const urls = { current: "https://apply.acme.example/jobs/1/apply" };
+    const childTarget = makeChildFrameTarget("iframe#talemetry_apply_iframe", () => urls.current);
+    resolveFrameTarget.mockResolvedValue(childTarget);
+    // An empty observe makes probeStepBeforeAttempts report "absent", which
+    // — for an `optional` step — routes into
+    // `hasUnfilledRequiredControlForStep(frameTarget ?? mainFrameTarget(page), step)`
+    // instead of the attempt cascade this suite's other cases exercise.
+    guardedObserve.mockResolvedValue([]);
+    const stagehand = makeStagehand();
+    const page = fakeFlowPage(() => urls.current);
+
+    await runHealingFlow({
+      stagehand,
+      page,
+      steps: [step({ instruction: SELECT_STEP, optional: true })],
+      logger: testLogger,
+      anthropic: null,
+      resumeFixture: null,
+      frameSelector: "iframe#talemetry_apply_iframe",
+    });
+
+    expect(childTarget.evaluate).toHaveBeenCalled();
+    expect(page.evaluate).not.toHaveBeenCalled();
+  });
+
+  it("threads the resolved child FrameTarget into the pre-submit ng-invalid count, not the mainFrameTarget(page) shim", async () => {
+    const urls = { current: "https://apply.acme.example/jobs/1/apply" };
+    const childTarget = makeChildFrameTarget("iframe#talemetry_apply_iframe", () => urls.current);
+    resolveFrameTarget.mockResolvedValue(childTarget);
+
+    // `submitEndpointPattern` set on a `submitStep` arms `requireSubmitEndpoint`,
+    // which gates the unconditional pre-attempt
+    // `countNgInvalidContainers(frameTarget ?? mainFrameTarget(page))` call —
+    // a distinct call site from the unconditional pre/post `snapshotPage`
+    // calls the DOM-direct-probe-helpers case above already covers. With no
+    // `anthropic` client and no `submittedStateSelectors` match, the final
+    // submit-verification judge can't confirm the step (real,
+    // unmocked-judge behavior) — irrelevant here since the pre-submit probe
+    // runs unconditionally, before the attempt loop even starts.
+    wireVerifiedGuardedAct(urls);
+    const stagehand = makeStagehand();
+    const page = fakeFlowPage(() => urls.current);
+
+    await expect(
+      runHealingFlow({
+        stagehand,
+        page,
+        steps: [step({ submitStep: true })],
+        logger: testLogger,
+        anthropic: null,
+        resumeFixture: null,
+        frameSelector: "iframe#talemetry_apply_iframe",
+        submitEndpointPattern: "apply\\.talemetry\\.com",
+      })
+    ).rejects.toThrow();
+
     expect(childTarget.evaluate).toHaveBeenCalled();
     expect(page.evaluate).not.toHaveBeenCalled();
   });
