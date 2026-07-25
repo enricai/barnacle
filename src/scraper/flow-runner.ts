@@ -39,6 +39,7 @@ import {
 } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
 import { type RunHealingFlowResult, StepVerificationError } from "@/scraper/errors";
+import { resolveFrameTarget, waitForChildFrameReady } from "@/scraper/frame-target";
 import { classifyPhantomClick, type PhantomClickVerdict } from "@/scraper/phantom-click";
 import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
 import {
@@ -6980,6 +6981,9 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
   let submitStepSkipped = false;
   let lastStepIndex = -1;
 
+  const frameTarget = await resolveFrameTarget(page, deps.frameSelector);
+  await waitForChildFrameReady(frameTarget);
+
   const stopCapture = wireSignalCapture(page, {
     counter,
     signalCounter,
@@ -7020,6 +7024,7 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
         anthropic,
         logger,
         resumeFixture,
+        frameTarget,
         isFinalStep: i === steps.length - 1,
         submitEndpointPattern: deps.submitEndpointPattern ?? null,
         submittedStateSelectors: deps.submittedStateSelectors ?? [],
