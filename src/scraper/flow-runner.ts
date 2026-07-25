@@ -39,6 +39,7 @@ import {
 } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
 import { type RunHealingFlowResult, StepVerificationError } from "@/scraper/errors";
+import type { FrameTarget } from "@/scraper/frame-target";
 import { classifyPhantomClick, type PhantomClickVerdict } from "@/scraper/phantom-click";
 import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
 import {
@@ -4549,13 +4550,17 @@ async function dispatchJqueryChangeEvent(page: Page, selector: string): Promise<
  * Re-read DOM state from the same selector Stagehand acted upon and compare
  * against what it tried to write. Falls back to `false` on any locator error
  * so the navigation-class signal is still the deciding vote when this returns.
+ *
+ * `target` scopes the locator/evaluate reads to the resolved frame (main or
+ * a cross-origin child); `page` is kept alongside only to satisfy the
+ * jQuery-change dispatch helper, which is main-frame-bound today.
  */
-async function verifyDomEffect(page: Page, action: Action): Promise<boolean> {
+async function verifyDomEffect(page: Page, target: FrameTarget, action: Action): Promise<boolean> {
   const selector = action.selector;
   const method = action.method;
   if (!selector || !method) return false;
   try {
-    const locator = page.locator(selector).first();
+    const locator = target.locator(selector).first();
     switch (method) {
       case "fill":
       case "type": {
@@ -4617,7 +4622,7 @@ async function verifyDomEffect(page: Page, action: Action): Promise<boolean> {
         const expr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); const el = r.singleNodeValue; if (!el || el.tagName !== "SELECT") return null; const opt = el.options[el.selectedIndex]; if (!opt) return { value: "", label: "", text: "" }; return { value: (opt.value || "").trim(), label: (opt.label || "").trim(), text: (opt.textContent || "").trim() }; })()`;
         let selected: { value: string; label: string; text: string } | null = null;
         try {
-          const result = await page.evaluate(expr);
+          const result = await target.evaluate(expr);
           if (
             result !== null &&
             typeof result === "object" &&
@@ -4659,7 +4664,7 @@ async function verifyDomEffect(page: Page, action: Action): Promise<boolean> {
           // Node-side typechecking doesn't choke on the browser globals
           // `document`/`XPathResult`.
           const expr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); const el = r.singleNodeValue; return el ? (el.type || null) : null; })()`;
-          const result = await page.evaluate(expr);
+          const result = await target.evaluate(expr);
           inputType = typeof result === "string" ? result : null;
         } catch {
           return false;
@@ -4691,7 +4696,7 @@ async function verifyDomEffect(page: Page, action: Action): Promise<boolean> {
           }
           return false;
         })()`;
-        const ancestorStillInvalid = await page.evaluate(ancestorInvalidExpr).catch(() => false);
+        const ancestorStillInvalid = await target.evaluate(ancestorInvalidExpr).catch(() => false);
         return !ancestorStillInvalid;
       }
       default:
@@ -5009,14 +5014,14 @@ export function formatStepPrefix(stepIndex: number, totalSteps?: () => number): 
 }
 
 async function probeFormValidityBeforeSubmit(params: {
-  page: Page;
+  target: FrameTarget;
   stepIndex: number;
   totalSteps?: () => number;
   logger: Logger;
 }): Promise<InvalidFormControl[]> {
-  const { page, stepIndex, totalSteps, logger } = params;
+  const { target, stepIndex, totalSteps, logger } = params;
   try {
-    const raw = await page.evaluate(FORM_VALIDITY_PROBE_EXPR);
+    const raw = await target.evaluate(FORM_VALIDITY_PROBE_EXPR);
     if (!Array.isArray(raw)) return [];
     const out: InvalidFormControl[] = [];
     for (const entry of raw) {
@@ -5052,6 +5057,10 @@ async function probeFormValidityBeforeSubmit(params: {
  * candidates for a declarative "Fill in X" step even when the field is present —
  * so a 0-candidate focused result falls back to an unfocused observe before the
  * step is declared "absent". Exported for tests.
+ *
+ * `frameTarget` scopes both observe calls to a resolved cross-origin child
+ * frame when the flow declared `frameSelector`; omitted (main frame) is
+ * byte-identical to today's unscoped calls.
  */
 export async function probeStepBeforeAttempts(params: {
   stagehand: Stagehand;
@@ -5060,14 +5069,16 @@ export async function probeStepBeforeAttempts(params: {
   totalSteps?: () => number;
   logger: Logger;
   captureFn?: CaptureFn;
+  frameTarget?: FrameTarget;
 }): Promise<"present" | "absent"> {
-  const { stagehand, step, stepIndex, totalSteps, logger, captureFn } = params;
+  const { stagehand, step, stepIndex, totalSteps, logger, captureFn, frameTarget } = params;
   try {
     const candidates = await guardedObserve(
       stagehand,
       step,
       { timeout: STEP_WATCHDOG_MS },
-      captureFn
+      captureFn,
+      frameTarget
     );
     if (candidates.length === 0) {
       // Focused observe under-returns on some controlled-component forms:
@@ -5085,7 +5096,8 @@ export async function probeStepBeforeAttempts(params: {
         stagehand,
         undefined,
         { timeout: STEP_WATCHDOG_MS },
-        captureFn
+        captureFn,
+        frameTarget
       );
       if (unfocused.length > 0) {
         logger.info(
