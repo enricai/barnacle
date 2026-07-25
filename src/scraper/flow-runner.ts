@@ -632,6 +632,24 @@ export async function snapshotPage(
  */
 
 /**
+ * Reads the title/url pair for a step-failure dump, scoped to whichever
+ * frame the step actually ran against — so a triager sees the same frame's
+ * body HTML and url instead of pairing a child frame's DOM with the top
+ * document's url. `title()` intentionally still reads the top document for
+ * a child frame (see `frame-target.ts`); `url()` is the frame discriminator.
+ */
+async function resolveDumpPageIdentity(
+  page: Page,
+  frameTarget: FrameTarget | undefined
+): Promise<{ pageTitle: string; pageUrl: string }> {
+  const pageTitle = await (frameTarget ?? page).title().catch(() => "");
+  const pageUrl = await (frameTarget ? frameTarget.url() : Promise.resolve(page.url())).catch(
+    () => page.url()
+  );
+  return { pageTitle, pageUrl };
+}
+
+/**
  * Detect whether the supplied capture-meta window contains a backend
  * 5xx response that matches the configured submit endpoint pattern.
  * The cascade can't heal a backend crash by retrying clicks or
@@ -5604,10 +5622,7 @@ export async function executeStepWithHealing(params: {
     // burns the replan budget in seconds. Embed `see <path>` in the
     // throw message so the existing regex at the dispatcher (`/see
     // (\/[^\s]+)$/`) extracts dumpPath for replanRemainingFlow.
-    const pageTitle = await (frameTarget ?? page).title().catch(() => "");
-    const pageUrl = await (frameTarget ? frameTarget.url() : Promise.resolve(page.url())).catch(
-      () => page.url()
-    );
+    const { pageTitle, pageUrl } = await resolveDumpPageIdentity(page, frameTarget);
     const bodyOuterHtmlRaw = await (frameTarget ?? page)
       .evaluate("document.body ? document.body.outerHTML : null")
       .catch(() => null);
@@ -6990,10 +7005,7 @@ export async function executeStepWithHealing(params: {
     captureFn,
     frameTarget
   ).catch(() => [] as Action[]);
-  const pageTitle = await (frameTarget ?? page).title().catch(() => "");
-  const pageUrl = await (frameTarget ? frameTarget.url() : Promise.resolve(page.url())).catch(() =>
-    page.url()
-  );
+  const { pageTitle, pageUrl } = await resolveDumpPageIdentity(page, frameTarget);
   // Discriminator data for "Stagehand sees nothing" failures: capture the raw
   // DOM and an unfocused observe so a triager can tell empty-page from
   // Stagehand-can't-see-it without reproducing the failure.
