@@ -5204,6 +5204,15 @@ export async function probeStepBeforeAttempts(params: {
 export async function executeStepWithHealing(params: {
   stagehand: Stagehand;
   page: Page;
+  /**
+   * Resolved cross-origin frame scope (see `resolveFrameTarget`). Every
+   * DOM-direct probe/fill/click in the cascade evaluates/locates against
+   * this instead of `page` directly, so a flow whose form lives inside a
+   * cross-origin `<iframe>` can be driven the same way as a top-frame flow.
+   * Omitted or main-frame-bound (`frame: null`) leaves every call
+   * byte-identical to today.
+   */
+  frameTarget?: FrameTarget;
   step: string;
   /**
    * When true and Stagehand's act+observe finds no candidates, the cascade
@@ -5353,6 +5362,7 @@ export async function executeStepWithHealing(params: {
   const {
     stagehand,
     page,
+    frameTarget,
     step,
     optional,
     upload,
@@ -5597,7 +5607,7 @@ export async function executeStepWithHealing(params: {
     // throw message so the existing regex at the dispatcher (`/see
     // (\/[^\s]+)$/`) extracts dumpPath for replanRemainingFlow.
     const pageTitle = await page.title().catch(() => "");
-    const bodyOuterHtmlRaw = await page
+    const bodyOuterHtmlRaw = await (frameTarget ?? page)
       .evaluate("document.body ? document.body.outerHTML : null")
       .catch(() => null);
     const bodyOuterHtml =
@@ -5606,7 +5616,8 @@ export async function executeStepWithHealing(params: {
       stagehand,
       undefined,
       { timeout: STEP_WATCHDOG_MS },
-      captureFn
+      captureFn,
+      frameTarget
     ).catch(() => [] as Action[]);
     const dumpPath =
       onStepFailure?.({
@@ -5837,7 +5848,9 @@ export async function executeStepWithHealing(params: {
         for (let deepAttempt = 1; deepAttempt <= 2; deepAttempt++) {
           let ranked: SubmitCandidate[];
           try {
-            ranked = (await page.evaluate(buildRankSubmitCandidatesExpr())) as SubmitCandidate[];
+            ranked = (await (frameTarget ?? page).evaluate(
+              buildRankSubmitCandidatesExpr()
+            )) as SubmitCandidate[];
           } catch (err) {
             // A thrown evaluate (page navigated away / frame detached) is not
             // a stale-index race — re-ranking a detached page will throw
@@ -5856,7 +5869,9 @@ export async function executeStepWithHealing(params: {
           triedSelectors.push(`deep-index:${top.deepIndex}`);
           let clickResult: { clicked: boolean };
           try {
-            clickResult = (await page.evaluate(buildClickByDeepIndexExpr(top.deepIndex))) as {
+            clickResult = (await (frameTarget ?? page).evaluate(
+              buildClickByDeepIndexExpr(top.deepIndex)
+            )) as {
               clicked: boolean;
             };
           } catch (err) {
@@ -5904,7 +5919,7 @@ export async function executeStepWithHealing(params: {
                   `deep-index:${runnerUp.deepIndex}`,
                 ];
                 triedSelectors.push(`deep-index:${runnerUp.deepIndex}`);
-                const runnerUpClickResult = (await page
+                const runnerUpClickResult = (await (frameTarget ?? page)
                   .evaluate(buildClickByDeepIndexExpr(runnerUp.deepIndex))
                   .catch(() => ({ clicked: false }))) as { clicked: boolean };
                 record.actResultSuccess = runnerUpClickResult.clicked;
@@ -5942,7 +5957,13 @@ export async function executeStepWithHealing(params: {
           attempt === 4 && triedSelectors.length > 0
             ? { ignoreSelectors: [...triedSelectors], timeout: STEP_WATCHDOG_MS }
             : { timeout: STEP_WATCHDOG_MS };
-        const candidates = await guardedObserve(stagehand, step, observeOptions, captureFn);
+        const candidates = await guardedObserve(
+          stagehand,
+          step,
+          observeOptions,
+          captureFn,
+          frameTarget
+        );
         if (candidates.length === 0) {
           record.errorMessage = "observe returned no candidates";
           // Optional-step short-circuit: when attempt 2 confirms no candidates
