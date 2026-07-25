@@ -96,6 +96,7 @@ import {
   waitForSpaReady,
   wireSignalCapture,
 } from "@/scraper/flow-runner";
+import { mainFrameTarget } from "@/scraper/frame-target";
 import { createBrowserSession, type ProviderName } from "@/scraper/session";
 import { guardedObserve } from "@/scraper/stagehand-guard";
 import { filterByCallType, parseSamples } from "@/scripts/judge-llm-batch";
@@ -2215,10 +2216,12 @@ async function main(): Promise<void> {
           throw new StepVerificationError(noProgressMessage, "replan-cycle-detected");
         }
 
-        const currentPageState = await snapshotPage(page, signalCounter).catch(() => ({
-          url: page.url(),
-          bodyHtmlLength: 0,
-        }));
+        const currentPageState = await snapshotPage(mainFrameTarget(page), signalCounter).catch(
+          () => ({
+            url: page.url(),
+            bodyHtmlLength: 0,
+          })
+        );
         if (
           isReplanCycle(replanEvents, newSteps, {
             url: currentPageState.url,
