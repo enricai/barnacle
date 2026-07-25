@@ -6271,7 +6271,8 @@ export async function executeStepWithHealing(params: {
             stagehand,
             step,
             { timeout: STEP_WATCHDOG_MS },
-            captureFn
+            captureFn,
+            frameTarget
           ).catch(() => [] as Action[]);
           // Fetch live-page evidence so the rephrase prompt can reason about
           // form state, not just observe candidates. Mirrors the same
@@ -6287,12 +6288,16 @@ export async function executeStepWithHealing(params: {
           );
           // Unfocused observe so the rephrase prompt can see ambient UI
           // like modal Save/Close buttons that the focused candidates
-          // (filtered by the failed step's instruction) would hide.
+          // (filtered by the failed step's instruction) would hide. Scoped to
+          // frameTarget: for a frame-scoped flow the ambient UI that matters
+          // (the wizard's own Save/Close controls) lives inside the iframe
+          // alongside the failed step, not in the top document.
           const unfocused = await guardedObserve(
             stagehand,
             undefined,
             { timeout: STEP_WATCHDOG_MS },
-            captureFn
+            captureFn,
+            frameTarget
           ).catch(() => [] as Action[]);
           const submitFailureList = extractSubmitFailureEvidence(
             recentCaptures,
@@ -6499,7 +6504,8 @@ export async function executeStepWithHealing(params: {
         stagehand,
         undefined,
         { timeout: STEP_WATCHDOG_MS },
-        captureFn
+        captureFn,
+        frameTarget
       ).catch(() => [] as Action[]);
 
       // Quick invalid-marker count (deterministic DOM querying — counting
