@@ -99,38 +99,27 @@ function originOf(url: string): string | null {
 }
 
 /**
- * Resolves the `FrameTarget` for `frameSelector` against `page`, falling
- * back to the main-frame target whenever resolution can't confidently
- * succeed rather than throwing:
- *
- * 1. `frameSelector` is `null`/`undefined` → main-frame target (today's
- *    behavior, unchanged).
- * 2. No element in the main document matches `frameSelector`, or it isn't
- *    an `<iframe>`/has no `src` → main-frame target.
- * 3. No frame in `page.frames()` has an origin matching the `<iframe>`
- *    element's `src` → main-frame target.
- * 4. Otherwise → a child-frame target bound to the first matching frame.
- *
- * Step 2 reads the `src` attribute (not `contentDocument`) via `page.evaluate`
- * on the main frame, which stays readable across the cross-origin boundary —
- * only same-origin script access to the child's document is blocked.
+ * Attempts one resolution pass: reads the `<iframe>` element's `src` (not
+ * `contentDocument`, which stays readable across the cross-origin boundary —
+ * only same-origin script access to the child's document is blocked), then
+ * looks for a `page.frames()` entry whose origin matches it. Returns `null`
+ * rather than a target so the caller can distinguish "not yet attached, keep
+ * polling" from a resolved target.
  */
-export async function resolveFrameTarget(
+async function tryResolveChildFrame(
   page: Page,
-  frameSelector?: string | null
-): Promise<FrameTarget> {
-  if (!frameSelector) return mainFrameTarget(page);
-
+  frameSelector: string
+): Promise<FrameTarget | null> {
   const iframeSrcExpr = `(() => {
     const el = document.querySelector(${JSON.stringify(frameSelector)});
     if (!el || el.tagName !== "IFRAME") return null;
     return el.getAttribute("src");
   })()`;
   const iframeSrc = await page.evaluate<string | null>(iframeSrcExpr);
-  if (!iframeSrc) return mainFrameTarget(page);
+  if (!iframeSrc) return null;
 
   const targetOrigin = originOf(iframeSrc);
-  if (!targetOrigin) return mainFrameTarget(page);
+  if (!targetOrigin) return null;
 
   const candidates = page.frames();
   for (const candidate of candidates) {
@@ -139,6 +128,54 @@ export async function resolveFrameTarget(
       return childFrameTarget(page, candidate, frameSelector);
     }
   }
+  return null;
+}
+
+/**
+ * Resolves the `FrameTarget` for `frameSelector` against `page`, polling for
+ * up to `FRAME_READY_TIMEOUT_MS` (at `FRAME_READY_POLL_MS` intervals) before
+ * falling back to the main-frame target rather than throwing:
+ *
+ * 1. `frameSelector` is `null`/`undefined` → main-frame target (today's
+ *    behavior, unchanged) — zero polling, zero delay.
+ * 2. Each poll: no element in the main document matches `frameSelector`, or
+ *    it isn't an `<iframe>`/has no `src`, or no `page.frames()` entry has a
+ *    matching origin yet → try again after `FRAME_READY_POLL_MS`.
+ * 3. A poll finds a matching frame → a child-frame target bound to it,
+ *    however many polls it took (an iframe created mid-flow by an earlier
+ *    step, e.g. after a click reveals it, resolves as soon as Stagehand's
+ *    CDP layer attaches to it instead of only when present at the first
+ *    poll).
+ * 4. Still unresolved once the deadline passes → main-frame target, with a
+ *    `warn` naming the selector so a silent revert-to-main-frame is
+ *    diagnosable from the log instead of invisible.
+ *
+ * `opts` overrides the poll timing for tests; production call sites rely on
+ * the `FRAME_READY_TIMEOUT_MS`/`FRAME_READY_POLL_MS` defaults.
+ */
+export async function resolveFrameTarget(
+  page: Page,
+  frameSelector?: string | null,
+  opts: { timeoutMs?: number; pollMs?: number } = {}
+): Promise<FrameTarget> {
+  if (!frameSelector) return mainFrameTarget(page);
+
+  const resolved = await tryResolveChildFrame(page, frameSelector);
+  if (resolved) return resolved;
+
+  const timeoutMs = opts.timeoutMs ?? FRAME_READY_TIMEOUT_MS;
+  const pollMs = opts.pollMs ?? FRAME_READY_POLL_MS;
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await sleep(pollMs);
+    const polled = await tryResolveChildFrame(page, frameSelector);
+    if (polled) return polled;
+  }
+
+  logger.warn(
+    `frame ${frameSelector} did not attach within ${timeoutMs}ms — falling back to main frame`
+  );
   return mainFrameTarget(page);
 }
 

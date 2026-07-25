@@ -1,5 +1,19 @@
 import type { Action, Stagehand } from "@browserbasehq/stagehand";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const { loggerStub } = vi.hoisted(() => ({
+  loggerStub: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    fatal: vi.fn(),
+    errorWithStack: vi.fn(),
+  },
+}));
+vi.mock("@/lib/logging", () => ({
+  getLogger: () => loggerStub,
+}));
 
 import { resolveFrameTarget } from "@/scraper/frame-target";
 import { guardedObserve } from "@/scraper/stagehand-guard";
@@ -95,7 +109,10 @@ describe("resolveFrameTarget (id-only and multi-candidate selectors)", () => {
       frames: [makeFakeFrame("https://apply.talemetry.com/application/abc-123")],
     });
 
-    const target = await resolveFrameTarget(page as never, "#not_an_iframe");
+    const target = await resolveFrameTarget(page as never, "#not_an_iframe", {
+      timeoutMs: 20,
+      pollMs: 5,
+    });
 
     expect(target.frame).toBeNull();
     expect(target.frameSelector).toBeNull();
@@ -108,7 +125,10 @@ describe("resolveFrameTarget (id-only and multi-candidate selectors)", () => {
       frames: [makeFakeFrame("https://apply.talemetry.com/application/abc-123")],
     });
 
-    const target = await resolveFrameTarget(page as never, "iframe#lazy");
+    const target = await resolveFrameTarget(page as never, "iframe#lazy", {
+      timeoutMs: 20,
+      pollMs: 5,
+    });
 
     expect(target.frame).toBeNull();
     expect(target.frameSelector).toBeNull();
@@ -250,5 +270,139 @@ describe("frame-resolution seam: resolveFrameTarget -> guardedObserve (Talemetry
     expect(observeSpy).toHaveBeenCalledWith("find the Manual Application button", {
       selector: "iframe#talemetry_apply_iframe >> *",
     });
+  });
+});
+
+/**
+ * Mutable-state fake `Page`: unlike `makeFakePage`, `elements`/`frames` are
+ * read fresh on every call via getters so a test can flip the iframe element
+ * or `frames()` list into existence partway through — modeling an OOPIF that
+ * attaches only after an earlier flow step (e.g. an "Apply now" click) runs.
+ */
+function makeMutableFakePage(options: {
+  mainUrl: string;
+  getElements: () => Record<string, { tag: string; src?: string | null }>;
+  getFrames: () => ReturnType<typeof makeFakeFrame>[];
+}) {
+  return {
+    url: () => options.mainUrl,
+    title: async () => "main document title",
+    evaluate: async (expr: unknown) => {
+      const match = /document\.querySelector\((.+?)\)/.exec(String(expr));
+      const selector = match?.[1] ? (JSON.parse(match[1]) as string) : null;
+      const elements = options.getElements();
+      if (!selector || !Object.hasOwn(elements, selector)) return null;
+      const el = elements[selector];
+      if (el?.tag !== "IFRAME") return null;
+      return el.src ?? null;
+    },
+    locator: (selector: string) => ({ scope: "main" as const, selector }),
+    frames: () => options.getFrames(),
+  };
+}
+
+describe("resolveFrameTarget (mid-flow iframe attachment: bounded retry + fallback logging)", () => {
+  beforeEach(() => {
+    loggerStub.warn.mockClear();
+  });
+
+  it("resolves to the child frame once frames() lists the matching frame on a later poll (K empty polls, then attached)", async () => {
+    const childFrame = makeFakeFrame("https://apply.talemetry.com/application/abc-123");
+    let pollCount = 0;
+    const ATTACH_ON_POLL = 3;
+    const page = makeMutableFakePage({
+      mainUrl: "https://careers.uchealth.org/jobs/123",
+      getElements: () => ({
+        "#talemetry_apply_iframe": {
+          tag: "IFRAME",
+          src: "https://apply.talemetry.com/application/abc-123",
+        },
+      }),
+      getFrames: () => {
+        pollCount += 1;
+        return pollCount >= ATTACH_ON_POLL ? [childFrame] : [];
+      },
+    });
+
+    const target = await resolveFrameTarget(page as never, "#talemetry_apply_iframe", {
+      timeoutMs: 500,
+      pollMs: 5,
+    });
+
+    expect(target.frame).toBe(childFrame);
+    expect(target.frameSelector).toBe("#talemetry_apply_iframe");
+    expect(pollCount).toBeGreaterThanOrEqual(ATTACH_ON_POLL);
+    expect(loggerStub.warn).not.toHaveBeenCalled();
+  });
+
+  it("resolves to the child frame once the #sel iframe element itself appears on a later poll", async () => {
+    const childFrame = makeFakeFrame("https://apply.talemetry.com/application/abc-123");
+    let pollCount = 0;
+    const ATTACH_ON_POLL = 3;
+    const page = makeMutableFakePage({
+      mainUrl: "https://careers.uchealth.org/jobs/123",
+      getElements: (): Record<string, { tag: string; src?: string | null }> => {
+        pollCount += 1;
+        return pollCount >= ATTACH_ON_POLL
+          ? {
+              "#talemetry_apply_iframe": {
+                tag: "IFRAME",
+                src: "https://apply.talemetry.com/application/abc-123",
+              },
+            }
+          : {};
+      },
+      getFrames: () => [childFrame],
+    });
+
+    const target = await resolveFrameTarget(page as never, "#talemetry_apply_iframe", {
+      timeoutMs: 500,
+      pollMs: 5,
+    });
+
+    expect(target.frame).toBe(childFrame);
+    expect(pollCount).toBeGreaterThanOrEqual(ATTACH_ON_POLL);
+    expect(loggerStub.warn).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the main-frame target within the bounded timeout and emits exactly one warn naming the selector when the frame never attaches", async () => {
+    const page = makeMutableFakePage({
+      mainUrl: "https://careers.uchealth.org/jobs/123",
+      getElements: () => ({}),
+      getFrames: () => [],
+    });
+
+    const target = await resolveFrameTarget(page as never, "#never_attaches", {
+      timeoutMs: 40,
+      pollMs: 10,
+    });
+
+    expect(target.frame).toBeNull();
+    expect(target.frameSelector).toBeNull();
+    expect(loggerStub.warn).toHaveBeenCalledTimes(1);
+    expect(loggerStub.warn).toHaveBeenCalledWith(expect.stringContaining("#never_attaches"));
+  });
+
+  it("returns the main-frame target with zero polling and zero delay when frameSelector is null/undefined", async () => {
+    const framesSpy = vi.fn().mockReturnValue([]);
+    const evaluateSpy = vi.fn().mockResolvedValue(null);
+    const page = {
+      url: () => "https://careers.uchealth.org/jobs/123",
+      title: async () => "main document title",
+      evaluate: evaluateSpy,
+      locator: (selector: string) => ({ scope: "main" as const, selector }),
+      frames: framesSpy,
+    };
+
+    const undefinedTarget = await resolveFrameTarget(page as never, undefined);
+    const nullTarget = await resolveFrameTarget(page as never, null);
+
+    expect(undefinedTarget.frame).toBeNull();
+    expect(undefinedTarget.frameSelector).toBeNull();
+    expect(nullTarget.frame).toBeNull();
+    expect(nullTarget.frameSelector).toBeNull();
+    expect(evaluateSpy).not.toHaveBeenCalled();
+    expect(framesSpy).not.toHaveBeenCalled();
+    expect(loggerStub.warn).not.toHaveBeenCalled();
   });
 });

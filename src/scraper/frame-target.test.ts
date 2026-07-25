@@ -113,7 +113,10 @@ describe("resolveFrameTarget", () => {
       frames: [makeFakeFrame("https://apply.talemetry.com/application/abc-123")],
     });
 
-    const target = await resolveFrameTarget(page as never, "iframe#does_not_exist");
+    const target = await resolveFrameTarget(page as never, "iframe#does_not_exist", {
+      timeoutMs: 20,
+      pollMs: 5,
+    });
 
     expect(target.frame).toBeNull();
     expect(target.frameSelector).toBeNull();
@@ -128,7 +131,10 @@ describe("resolveFrameTarget", () => {
       frames: [makeFakeFrame("https://unrelated-vendor.example.com/widget")],
     });
 
-    const target = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe");
+    const target = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe", {
+      timeoutMs: 20,
+      pollMs: 5,
+    });
 
     expect(target.frame).toBeNull();
     expect(target.frameSelector).toBeNull();
@@ -143,7 +149,10 @@ describe("resolveFrameTarget", () => {
       frames: [],
     });
 
-    const target = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe");
+    const target = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe", {
+      timeoutMs: 20,
+      pollMs: 5,
+    });
 
     expect(target.frame).toBeNull();
     expect(target.frameSelector).toBeNull();
