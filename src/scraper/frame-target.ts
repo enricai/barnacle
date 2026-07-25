@@ -49,9 +49,11 @@ export interface FrameTarget {
 /**
  * Builds the main-frame `FrameTarget`: every method delegates straight to
  * `Page`, matching today's behavior for every site whose ATS form never
- * leaves the top window.
+ * leaves the top window. Exported so call sites that have not yet resolved
+ * a `FrameTarget` from `deps.frameSelector` can still pass a target-shaped
+ * value to helpers that now require one.
  */
-function mainFrameTarget(page: Page): FrameTarget {
+export function mainFrameTarget(page: Page): FrameTarget {
   return {
     frame: null,
     frameSelector: null,

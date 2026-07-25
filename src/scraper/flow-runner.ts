@@ -40,6 +40,7 @@ import {
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
 import { type RunHealingFlowResult, StepVerificationError } from "@/scraper/errors";
 import type { FrameTarget } from "@/scraper/frame-target";
+import { mainFrameTarget } from "@/scraper/frame-target";
 import { classifyPhantomClick, type PhantomClickVerdict } from "@/scraper/phantom-click";
 import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
 import {
@@ -5519,7 +5520,9 @@ export async function executeStepWithHealing(params: {
   // form-validity auto-picker runs. The early-exit predicate compares this
   // to the post-attempt-1 count to detect "the click revealed NEW required
   // fields" — a state attempts 2-5 mathematically can't clear.
-  const preSubmitInvalidCount = requireSubmitEndpoint ? await countNgInvalidContainers(page) : 0;
+  const preSubmitInvalidCount = requireSubmitEndpoint
+    ? await countNgInvalidContainers(mainFrameTarget(page))
+    : 0;
   if (requireSubmitEndpoint) {
     const invalidControls = await probeFormValidityBeforeSubmit({
       page,
@@ -6321,7 +6324,9 @@ export async function executeStepWithHealing(params: {
       // Quick invalid-marker count (deterministic DOM querying — counting
       // structural ng-invalid containers is not fuzzy matching, just
       // observing existence).
-      const invalidMarkerCount = await countNgInvalidContainers(page).catch(() => 0);
+      const invalidMarkerCount = await countNgInvalidContainers(mainFrameTarget(page)).catch(
+        () => 0
+      );
 
       const pageTitle = await page.title().catch(() => "");
       const matchedSubmittedSelectors = domSubmittedMatch !== null ? [domSubmittedMatch] : [];
@@ -6502,7 +6507,8 @@ export async function executeStepWithHealing(params: {
           const clickWasDomOnly =
             probeResult.kind === "click" && !retryNetworkFired && !retryUrlChanged;
           const clickBlockedByInvalid =
-            clickWasDomOnly && (await countNgInvalidContainers(page).catch(() => 0)) > 0;
+            clickWasDomOnly &&
+            (await countNgInvalidContainers(mainFrameTarget(page)).catch(() => 0)) > 0;
           // Advance-transition gate (same as the primary verifier, applied to the
           // n+16 fallback). RC2: for a non-submit ADVANCE/"Next" step (per the
           // ORIGINAL instruction) the fallback's positive signals — a network POST
@@ -6582,7 +6588,9 @@ export async function executeStepWithHealing(params: {
               { timeout: STEP_WATCHDOG_MS },
               captureFn
             ).catch(() => [] as Action[]);
-            const invalidMarkerCount = await countNgInvalidContainers(page).catch(() => 0);
+            const invalidMarkerCount = await countNgInvalidContainers(mainFrameTarget(page)).catch(
+              () => 0
+            );
             const pageTitle = await page.title().catch(() => "");
             const matchedSubmittedSelectors = domSubmittedMatch !== null ? [domSubmittedMatch] : [];
 
@@ -6763,7 +6771,7 @@ export async function executeStepWithHealing(params: {
           `${formatStepPrefix(stepIndex, totalSteps)} phantom click detected on attempt 1 (${record.technique}): reported success with no network/url/dom change${suppressedCount !== undefined ? `; ${suppressedCount} AISDK elementId errors suppressed this session (corroborating, not causal)` : ""} — ${escalationTarget}`
         );
       }
-      const postAttemptInvalidCount = await countNgInvalidContainers(page);
+      const postAttemptInvalidCount = await countNgInvalidContainers(mainFrameTarget(page));
       const earlyExit = isSubmitRevealedInvalid({
         // Treat the canonical submit click as "final" for this predicate
         // even when it lives mid-flow. See requireSubmitEndpoint derivation
