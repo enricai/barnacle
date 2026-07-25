@@ -59,12 +59,18 @@ function makeFakePage(): Page {
       }),
     }),
     waitForTimeout: vi.fn().mockResolvedValue(undefined),
-    getSessionForFrame: vi.fn().mockReturnValue({ send: vi.fn().mockResolvedValue({}), on: vi.fn() }),
+    getSessionForFrame: vi
+      .fn()
+      .mockReturnValue({ send: vi.fn().mockResolvedValue({}), on: vi.fn() }),
     mainFrameId: vi.fn().mockReturnValue("main"),
   } as unknown as Page;
 }
 
-const fixture = { buffer: Buffer.from("pdf-bytes"), name: "resume.pdf", mimeType: "application/pdf" };
+const fixture = {
+  buffer: Buffer.from("pdf-bytes"),
+  name: "resume.pdf",
+  mimeType: "application/pdf",
+};
 
 describe("flow-runner/simulateDragDropUpload — frame targeting", () => {
   it("evaluates the drag-drop dispatch via the resolved child frame, not page.evaluate", async () => {
