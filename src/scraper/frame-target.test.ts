@@ -3,6 +3,7 @@ import type { FrameTarget } from "@/scraper/frame-target";
 import {
   buildHopSelector,
   resolveFrameTarget,
+  sleep as sleepMs,
   waitForChildFrameReady,
 } from "@/scraper/frame-target";
 
@@ -48,6 +49,40 @@ function makeFakePage(options: {
     },
     locator: (selector: string) => ({ scope: "main" as const, selector }),
     frames: () => frames,
+  };
+}
+
+/**
+ * Mutable variant of `makeFakePage`: `mountIframe`/`attachFrame` let a test
+ * change what `evaluate`/`frames()` report *between* `resolveFrameTarget`'s
+ * polls, scripting the exact mid-flow scenario from the bug report — an
+ * `<iframe>` (or its matching `frames()` entry) that doesn't exist at the
+ * first pass but appears once an earlier flow step mounts it.
+ */
+function makeMutableFakePage(options: {
+  mainUrl: string;
+  iframes?: Record<string, string>;
+  frames?: ReturnType<typeof makeFakeFrame>[];
+}) {
+  const iframes = { ...(options.iframes ?? {}) };
+  const frames = [...(options.frames ?? [])];
+  return {
+    url: () => options.mainUrl,
+    title: async () => "main document title",
+    evaluate: async (expr: unknown) => {
+      const match = /document\.querySelector\((.+?)\)/.exec(String(expr));
+      const selector = match?.[1] ? (JSON.parse(match[1]) as string) : null;
+      if (!selector || !Object.hasOwn(iframes, selector)) return null;
+      return iframes[selector] ?? null;
+    },
+    locator: (selector: string) => ({ scope: "main" as const, selector }),
+    frames: () => frames,
+    mountIframe: (selector: string, src: string): void => {
+      iframes[selector] = src;
+    },
+    attachFrame: (frame: ReturnType<typeof makeFakeFrame>): void => {
+      frames.push(frame);
+    },
   };
 }
 
@@ -142,6 +177,85 @@ describe("resolveFrameTarget", () => {
 
   it("falls back to the main-frame target when frames() is empty", async () => {
     const page = makeFakePage({
+      mainUrl: "https://careers.uchealth.org/jobs/123",
+      iframes: {
+        "iframe#talemetry_apply_iframe": "https://apply.talemetry.com/application/abc-123",
+      },
+      frames: [],
+    });
+
+    const target = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe", {
+      timeoutMs: 20,
+      pollMs: 5,
+    });
+
+    expect(target.frame).toBeNull();
+    expect(target.frameSelector).toBeNull();
+  });
+
+  it("resolves a childFrameTarget once the iframe element is mounted mid-flow, after being absent on the first poll", async () => {
+    const childFrame = makeFakeFrame("https://apply.talemetry.com/application/abc-123");
+    const page = makeMutableFakePage({
+      mainUrl: "https://careers.uchealth.org/jobs/123",
+      frames: [childFrame],
+    });
+
+    const target = resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe", {
+      timeoutMs: 1000,
+      pollMs: 5,
+    });
+
+    await sleepMs(15);
+    page.mountIframe(
+      "iframe#talemetry_apply_iframe",
+      "https://apply.talemetry.com/application/abc-123"
+    );
+
+    const resolved = await target;
+    expect(resolved.frame).toBe(childFrame);
+    expect(resolved.frameSelector).toBe("iframe#talemetry_apply_iframe");
+  });
+
+  it("resolves a childFrameTarget once a matching frames() entry attaches, after the iframe element already existed with no matching frame", async () => {
+    const page = makeMutableFakePage({
+      mainUrl: "https://careers.uchealth.org/jobs/123",
+      iframes: {
+        "iframe#talemetry_apply_iframe": "https://apply.talemetry.com/application/abc-123",
+      },
+      frames: [],
+    });
+
+    const target = resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe", {
+      timeoutMs: 1000,
+      pollMs: 5,
+    });
+
+    await sleepMs(15);
+    const childFrame = makeFakeFrame("https://apply.talemetry.com/application/abc-123");
+    page.attachFrame(childFrame);
+
+    const resolved = await target;
+    expect(resolved.frame).toBe(childFrame);
+    expect(resolved.frameSelector).toBe("iframe#talemetry_apply_iframe");
+  });
+
+  it("does not throw and falls back to the main-frame target when the iframe element never mounts before the retry budget expires", async () => {
+    const page = makeMutableFakePage({
+      mainUrl: "https://careers.uchealth.org/jobs/123",
+      frames: [],
+    });
+
+    const target = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe", {
+      timeoutMs: 20,
+      pollMs: 5,
+    });
+
+    expect(target.frame).toBeNull();
+    expect(target.frameSelector).toBeNull();
+  });
+
+  it("does not throw and falls back to the main-frame target when no matching frame attaches before the retry budget expires", async () => {
+    const page = makeMutableFakePage({
       mainUrl: "https://careers.uchealth.org/jobs/123",
       iframes: {
         "iframe#talemetry_apply_iframe": "https://apply.talemetry.com/application/abc-123",
