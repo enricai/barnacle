@@ -1,6 +1,8 @@
-import { describe, expect, it } from "vitest";
+import type { Action, Stagehand } from "@browserbasehq/stagehand";
+import { describe, expect, it, vi } from "vitest";
 
 import { resolveFrameTarget } from "@/scraper/frame-target";
+import { guardedObserve } from "@/scraper/stagehand-guard";
 
 /**
  * Fake `Frame`: `evaluate` answers `"location.href"` with the given url (or
@@ -201,5 +203,52 @@ describe("resolveFrameTarget (id-only and multi-candidate selectors)", () => {
     await expect(
       resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe >> inner")
     ).rejects.toThrow(/not a valid selector/);
+  });
+});
+
+describe("frame-resolution seam: resolveFrameTarget -> guardedObserve (Talemetry shape)", () => {
+  it("resolves the Talemetry child frame over an unrelated sibling and scopes guardedObserve with a '>>' hop selector", async () => {
+    const unrelatedSibling = makeFakeFrame("https://unrelated-vendor.example.com/widget");
+    const talemetryFrame = makeFakeFrame(
+      "https://apply.talemetry.com/application/abc-123?step=basic-info"
+    );
+    const page = makeFakePage({
+      mainUrl: "https://careers.uchealth.org/jobs/123-registered-nurse",
+      elements: {
+        "iframe#talemetry_apply_iframe": {
+          tag: "IFRAME",
+          src: "https://apply.talemetry.com/application/abc-123",
+        },
+      },
+      frames: [unrelatedSibling, talemetryFrame],
+    });
+
+    const target = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe");
+
+    expect(target.frame).toBe(talemetryFrame);
+    expect(target.frame).not.toBe(unrelatedSibling);
+    expect(target.frameSelector).toBe("iframe#talemetry_apply_iframe");
+
+    const manualApplicationAction: Action = {
+      selector: "xpath=//button[@id='manual_application']",
+      description: "Manual Application button",
+      method: "click",
+    };
+    const observeSpy = vi.fn().mockResolvedValue([manualApplicationAction]);
+    const stagehand = { observe: observeSpy } as unknown as Stagehand;
+    const captureFn = vi.fn().mockResolvedValue(undefined);
+
+    const actions = await guardedObserve(
+      stagehand,
+      "find the Manual Application button",
+      undefined,
+      captureFn,
+      target
+    );
+
+    expect(actions).toEqual([manualApplicationAction]);
+    expect(observeSpy).toHaveBeenCalledWith("find the Manual Application button", {
+      selector: "iframe#talemetry_apply_iframe >> *",
+    });
   });
 });
