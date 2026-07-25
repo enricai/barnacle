@@ -16,7 +16,7 @@ import { type FrameTarget, mainFrameTarget } from "@/scraper/frame-target";
  * FIELDS section.
  *
  * `probeLeafInvalidContainers`'s own DOM-probe logic is covered in
- * `flow-runner.frame-primitives.test.ts`; this file only asserts which
+ * `flow-runner.frame-primitive-helpers.test.ts`; this file only asserts which
  * target the CALLER hands it.
  */
 
