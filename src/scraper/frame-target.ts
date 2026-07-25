@@ -51,7 +51,7 @@ export interface FrameTarget {
  * `Page`, matching today's behavior for every site whose ATS form never
  * leaves the top window.
  */
-function mainFrameTarget(page: Page): FrameTarget {
+export function mainFrameTarget(page: Page): FrameTarget {
   return {
     frame: null,
     frameSelector: null,

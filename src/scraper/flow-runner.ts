@@ -40,6 +40,7 @@ import {
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
 import { type RunHealingFlowResult, StepVerificationError } from "@/scraper/errors";
 import type { FrameTarget } from "@/scraper/frame-target";
+import { mainFrameTarget } from "@/scraper/frame-target";
 import { classifyPhantomClick, type PhantomClickVerdict } from "@/scraper/phantom-click";
 import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
 import {
@@ -2861,7 +2862,7 @@ async function attachToSurfacedInput(params: {
     // a DataTransfer fires on the visible drop area — they don't observe
     // the hidden input's `files[]` mutations even with synthetic `change`
     // dispatches. This is the documented Playwright community workaround.
-    const dragDropOk = await simulateDragDropUpload(page, fixture, logger);
+    const dragDropOk = await simulateDragDropUpload(mainFrameTarget(page), fixture, logger);
     if (dragDropOk) {
       logger.info(
         `upload primitive: drag-drop fallback succeeded (name=${fixture.name}, size=${fixture.buffer.length}b)`
@@ -2936,7 +2937,7 @@ async function surfaceAndUpload(params: {
   // Strategy DZ: a synthetic drop is cheap, needs no click/chooser, and the
   // widget IS a dropzone. If it registers the file (upload POST or attached
   // input), we're done without touching CDP.
-  if (await simulateDragDropUpload(page, fixture, logger)) {
+  if (await simulateDragDropUpload(mainFrameTarget(page), fixture, logger)) {
     if (
       await waitForUploadNetworkSignal({ page, fixture, logger, signalCounter, recentCaptureMeta })
     ) {
@@ -3215,19 +3216,25 @@ const PRIMITIVE_ENUMERATE_RETRY_MS = 600;
  * `opts` overrides the attempt count / interval for callers that need a longer
  * window (the resume-upload widget can take 5s+ to mount); omitting it keeps the
  * default ~3s window so every existing caller is unchanged.
+ *
+ * `opts.evalTarget` scopes the enumerate expression itself to a resolved
+ * `FrameTarget` (defaults to `page`, byte-identical to today) — settle-retry
+ * timing always stays on `page.waitForTimeout`, which `FrameTarget` has no
+ * equivalent for.
  */
 export async function pollEnumerate<T>(
   page: Page,
   expr: string,
   isPresent: (result: T) => boolean,
-  opts?: { attempts?: number; intervalMs?: number }
+  opts?: { attempts?: number; intervalMs?: number; evalTarget?: FrameTarget }
 ): Promise<T> {
   const attempts = opts?.attempts ?? PRIMITIVE_ENUMERATE_ATTEMPTS;
   const intervalMs = opts?.intervalMs ?? PRIMITIVE_ENUMERATE_RETRY_MS;
-  let result = (await page.evaluate(expr)) as T;
+  const evalTarget = opts?.evalTarget ?? page;
+  let result = (await evalTarget.evaluate(expr)) as T;
   for (let attempt = 1; attempt < attempts && !isPresent(result); attempt++) {
     await page.waitForTimeout(intervalMs);
-    result = (await page.evaluate(expr)) as T;
+    result = (await evalTarget.evaluate(expr)) as T;
   }
   return result;
 }
@@ -4577,7 +4584,7 @@ async function verifyDomEffect(page: Page, action: Action): Promise<boolean> {
           // delegated handler) record the value
           // into their internal data model. Without this, the SPA's next
           // re-render wipes the typed value back to empty.
-          await dispatchJqueryChangeEvent(page, selector);
+          await dispatchJqueryChangeEvent(mainFrameTarget(page), selector);
 
           // Angular reactive forms (e.g. ADP WOTC questionnaire on tcs.adp.com)
           // don't pick up CDP Input.insertText OR dispatchEvent('input') —
@@ -5375,7 +5382,16 @@ export async function executeStepWithHealing(params: {
   // reach the observe cascade's el.click() fallback that fails to commit MUI/
   // React controlled state (the wizard ATS's Basic-Info Step-2 wall). No-op (falls
   // through) when there's no radio group or no confident option match.
-  if (await tryRadioPrimitive({ page, instruction: step, logger, anthropic, captureFn })) {
+  if (
+    await tryRadioPrimitive({
+      page,
+      target: mainFrameTarget(page),
+      instruction: step,
+      logger,
+      anthropic,
+      captureFn,
+    })
+  ) {
     logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by radio primitive`);
     trajectory?.push({ stepIndex, verifiedBy: "dom" });
     return "completed";
@@ -5418,7 +5434,7 @@ export async function executeStepWithHealing(params: {
       // control this step was meant to answer (SPA hydration lag / observe
       // can't resolve the widget) — skipping would leave a required field empty
       // and silently doom the later submit. Fall through to the cascade instead.
-      if (await hasUnfilledRequiredControlForStep(page, step)) {
+      if (await hasUnfilledRequiredControlForStep(mainFrameTarget(page), step)) {
         logger.info(
           `${formatStepPrefix(stepIndex, totalSteps)} probe-absent but a required unfilled control matches the question; NOT skipping (escalating to cascade)`
         );
@@ -5838,7 +5854,7 @@ export async function executeStepWithHealing(params: {
             // still-empty control matching this step's question is present,
             // don't fast-skip — let the healing cascade continue so the
             // required field gets answered instead of silently doomed.
-            if (await hasUnfilledRequiredControlForStep(page, step)) {
+            if (await hasUnfilledRequiredControlForStep(mainFrameTarget(page), step)) {
               logger.info(
                 `${formatStepPrefix(stepIndex, totalSteps)} no candidates after act+observe but a required unfilled control matches; NOT skipping (continuing cascade)`
               );
