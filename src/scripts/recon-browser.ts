@@ -1009,6 +1009,14 @@ async function readFailureDumpEvidence(
      * callers (replanRemainingFlow) always have `page` in scope and pass it.
      */
     page?: Page;
+    /**
+     * CSS selector of the flow's cross-origin iframe, forwarded to
+     * `resolveFrameTarget` so the live leaf probe queries the same document
+     * frame-scoped steps run against. `resolveFrameTarget` falls back to the
+     * main-frame target when this is null/undefined, so omitting it is a
+     * no-op for flows without a `frameSelector`.
+     */
+    frameSelector?: string | null;
   }
 ): Promise<{
   bodyExcerpt: string;
@@ -1030,13 +1038,18 @@ async function readFailureDumpEvidence(
     const knownErrorClassPrefixes = options?.knownErrorClassPrefixes ?? [];
     const captureFn = options?.captureFn;
     const page = options?.page;
+    const frameSelector = options?.frameSelector;
 
     // Deterministic-first when the live page is available: probe the LIVE
     // DOM for leaf invalid containers via CSS `:has()`. Falls back to the
     // dump-based Haiku judge only when the live probe returns empty or
     // when no page is in scope (tests). See `probeLeafInvalidContainers`
-    // docs for the rationale.
-    const leafFields = page ? await probeLeafInvalidContainers(await resolveFrameTarget(page)) : [];
+    // docs for the rationale. `resolveFrameTarget` is frame-scoped so a
+    // flow whose form lives inside a declared iframe probes that document
+    // instead of always querying the top document.
+    const leafFields = page
+      ? await probeLeafInvalidContainers(await resolveFrameTarget(page, frameSelector))
+      : [];
 
     const [unfocusedList, invalidVerdict, errorVerdict] = await Promise.all([
       renderUnfocusedObserve(dump.unfocusedObserve ?? [], { client, captureFn }),
@@ -1112,6 +1125,13 @@ async function replanRemainingFlow(params: {
   stagehand: Stagehand;
   captureFn?: CaptureFn;
   /**
+   * CSS selector of the flow's cross-origin iframe (see `flowSchema.frameSelector`).
+   * Forwarded to `readFailureDumpEvidence` so the live leaf-invalid-field probe
+   * queries the same document the frame-scoped steps run against instead of
+   * always the top document.
+   */
+  frameSelector?: string | null;
+  /**
    * Files in the run's captures dir recorded during the failed step's
    * attempt window. Used to surface structured server-side validation
    * errors to the replan LLM when a submit actually fired but was rejected.
@@ -1159,6 +1179,7 @@ async function replanRemainingFlow(params: {
     failureDumpPath,
     page,
     stagehand,
+    frameSelector = null,
     captureFn = captureLlmCall,
     recentCaptures = [],
     ownBackendHostnames = [],
@@ -1204,6 +1225,7 @@ async function replanRemainingFlow(params: {
       knownErrorClassPrefixes: replanKnownErrorClassPrefixes,
       captureFn,
       page,
+      frameSelector,
     });
   const failureReasonList = recentFailureReasons.map((r, i) => `${i + 1}. ${r}`).join("\n");
   const submitFailureList = extractSubmitFailureEvidence(recentCaptures, ownBackendHostnames);
@@ -2202,6 +2224,7 @@ async function main(): Promise<void> {
           failureDumpPath: dumpPath,
           page,
           stagehand,
+          frameSelector,
           captureFn,
           recentCaptures,
           ownBackendHostnames,
