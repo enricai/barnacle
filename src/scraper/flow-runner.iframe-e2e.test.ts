@@ -100,11 +100,13 @@ function makeFakeStagehand() {
  * `guardedAct(stagehand, target, ...)` is called with the resolved
  * `Action` once `observe` surfaces `MANUAL_APPLICATION_CANDIDATE` — that
  * `act` call must actually succeed (mirroring Stagehand having resolved a
- * concrete selector) and flip `page.url()` so the cascade's `urlChanged`
- * verification signal fires. `act(instruction: string, ...)` (attempt 1,
- * unresolved) stays the phantom-failure stub above.
+ * concrete selector) and flip the CHILD frame's `location.href` (a click on
+ * an in-iframe control navigates the iframe, not the top window) so the
+ * cascade's frame-scoped `urlChanged` verification signal fires.
+ * `act(instruction: string, ...)` (attempt 1, unresolved) stays the
+ * phantom-failure stub above.
  */
-function makeFakeStagehandWithResolvedAct(urls: { current: string }) {
+function makeFakeStagehandWithResolvedAct(childUrls: { current: string }) {
   const base = makeFakeStagehand();
   return {
     ...base,
@@ -115,7 +117,7 @@ function makeFakeStagehandWithResolvedAct(urls: { current: string }) {
         "selector" in input &&
         (input as { selector: unknown }).selector === MANUAL_APPLICATION_CANDIDATE.selector;
       if (isManualApplicationCandidate) {
-        urls.current = `${TOP_ORIGIN}/apply/manual`;
+        childUrls.current = `${CHILD_ORIGIN}/application/abc-123/basic-info`;
         return {
           success: true,
           message: "clicked",
@@ -146,14 +148,23 @@ function makeFakeStagehandWithResolvedAct(urls: { current: string }) {
 /**
  * Minimal fake `Frame`: reachable ONLY via `frame.evaluate`/`frame.locator`
  * (never `page.evaluate`), matching a real cross-origin OOPIF where
- * `contentDocument` is `null` from the top frame's script perspective. Its
- * `location.href` is the child origin, which is what `resolveFrameTarget`
- * matches the `<iframe>` element's `src` origin against.
+ * `contentDocument` is `null` from the top frame's script perspective.
+ * `location.href` backs onto its OWN mutable `childUrls` ref, starting at
+ * `CHILD_SRC` — `resolveFrameTarget` origin-matches this against the
+ * `<iframe>` element's `src`, so it must stay on the child origin, and a
+ * click on an in-iframe control navigates the iframe, not the top window,
+ * so it must be independent of the top page's URL. Required now that
+ * snapshotPage/countNgInvalidContainers read `frameTarget.url()` (which
+ * evaluates `location.href` against this frame) instead of `page.url()`
+ * for an in-iframe step (the fix under test): a static href here would
+ * make `pre.url === post.url` always, so the cascade's `urlChanged`
+ * verification signal could never fire and the step would spuriously
+ * exhaust its attempts.
  */
-function makeFakeChildFrame() {
+function makeFakeChildFrame(childUrls: { current: string }) {
   return {
     evaluate: async (expr: unknown) => {
-      if (expr === "location.href") return CHILD_SRC;
+      if (expr === "location.href") return childUrls.current;
       // verifyDomEffect's click-branch xpath probe never runs for this
       // candidate (selector isn't `xpath=`-prefixed, see MANUAL_APPLICATION_CANDIDATE),
       // but return a harmless default for any other frame-scoped evaluate.
@@ -177,10 +188,12 @@ function makeFakeChildFrame() {
  * mirroring the reported bug at the fixture level. Includes the CDP-session
  * plumbing `wireSignalCapture` requires (`getSessionForFrame`, `mainFrameId`,
  * `sendCDP`), matching the fake in `flow-runner.frame-threading.test.ts`.
+ * `topUrl` is a SEPARATE mutable ref from the child frame's — the top
+ * window never navigates when only the in-iframe control is clicked.
  */
-function makeFakeTopPage(urls: { current: string }) {
+function makeFakeTopPage(topUrl: { current: string }, childUrls: { current: string }) {
   const session = { on: () => {}, off: () => {} };
-  const childFrame = makeFakeChildFrame();
+  const childFrame = makeFakeChildFrame(childUrls);
   return {
     evaluate: async (expr: unknown) => {
       const iframeSrcMatch = /document\.querySelector\((.+?)\)/.exec(String(expr));
@@ -193,7 +206,7 @@ function makeFakeTopPage(urls: { current: string }) {
       // in-frame button never exists from this side of the boundary.
       return null;
     },
-    url: () => urls.current,
+    url: () => topUrl.current,
     title: async () => "UCHealth Careers",
     locator: () => ({
       first: () => ({
@@ -211,9 +224,10 @@ function makeFakeTopPage(urls: { current: string }) {
 
 describe("flow-runner iframe end-to-end (offline fixture, no network)", () => {
   it("resolves the cross-origin child frame and clicks the in-frame-only 'Manual Application' button when frameSelector is set", async () => {
-    const urls = { current: `${TOP_ORIGIN}/jobs/123/apply` };
-    const stagehand = makeFakeStagehandWithResolvedAct(urls);
-    const page = makeFakeTopPage(urls);
+    const topUrl = { current: `${TOP_ORIGIN}/jobs/123/apply` };
+    const childUrls = { current: CHILD_SRC };
+    const stagehand = makeFakeStagehandWithResolvedAct(childUrls);
+    const page = makeFakeTopPage(topUrl, childUrls);
 
     const result = await runHealingFlow({
       stagehand,
@@ -226,13 +240,14 @@ describe("flow-runner iframe end-to-end (offline fixture, no network)", () => {
     });
 
     expect(result.lastStepIndex).toBe(0);
-    expect(urls.current).toBe(`${TOP_ORIGIN}/apply/manual`);
+    expect(childUrls.current).toBe(`${CHILD_ORIGIN}/application/abc-123/basic-info`);
   });
 
   it("negative control: the SAME fixture WITHOUT frameSelector cannot find the in-frame button and the step fails", async () => {
-    const urls = { current: `${TOP_ORIGIN}/jobs/123/apply` };
-    const stagehand = makeFakeStagehandWithResolvedAct(urls);
-    const page = makeFakeTopPage(urls);
+    const topUrl = { current: `${TOP_ORIGIN}/jobs/123/apply` };
+    const childUrls = { current: CHILD_SRC };
+    const stagehand = makeFakeStagehandWithResolvedAct(childUrls);
+    const page = makeFakeTopPage(topUrl, childUrls);
 
     await expect(
       runHealingFlow({
@@ -246,9 +261,9 @@ describe("flow-runner iframe end-to-end (offline fixture, no network)", () => {
       })
     ).rejects.toThrow(/cascade|attempts|verification/i);
 
-    // The URL never changed — the top-frame-only observe/act never resolved
-    // the in-frame button, so the fixture actually discriminates instead of
-    // passing vacuously.
-    expect(urls.current).toBe(`${TOP_ORIGIN}/jobs/123/apply`);
+    // The child frame's URL never changed — the top-frame-only observe/act
+    // never resolved the in-frame button, so the fixture actually
+    // discriminates instead of passing vacuously.
+    expect(childUrls.current).toBe(CHILD_SRC);
   });
 });
