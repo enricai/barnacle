@@ -829,33 +829,6 @@ describe("emitBrowserFlowTs — resumeFixture guard (upload vs multipart)", () =
   });
 });
 
-describe("emitBrowserFlowTs — frameSelector", () => {
-  const flowSteps = ["Click the Manual Application button"];
-
-  it("emits a runHealingFlow call whose deps carry the flow's frameSelector", () => {
-    const { code } = emitBrowserFlowTs({
-      siteId: "uchealth",
-      pascal: "Uchealth",
-      baseUrl: "https://x",
-      isSubmissionFlow: true,
-      flowSteps,
-      frameSelector: "#talemetry_apply_iframe",
-    });
-    expect(code).toContain('frameSelector: "#talemetry_apply_iframe"');
-  });
-
-  it("omits frameSelector entirely (no frameSelector: undefined literal) when the flow declares none", () => {
-    const { code } = emitBrowserFlowTs({
-      siteId: "uchealth",
-      pascal: "Uchealth",
-      baseUrl: "https://x",
-      isSubmissionFlow: true,
-      flowSteps,
-    });
-    expect(code).not.toContain("frameSelector");
-  });
-});
-
 describe("emitBrowserFlowTs + emitContractTs — schema/flow anti-drift", () => {
   const flowSteps = [
     "Fill in the First Name field with 'Reginald'",

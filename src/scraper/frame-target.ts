@@ -167,7 +167,8 @@ export function buildHopSelector(
 const FRAME_READY_TIMEOUT_MS = 5_000;
 const FRAME_READY_POLL_MS = 100;
 
-function sleep(ms: number): Promise<void> {
+/** Shared delay helper — `FrameTarget` has no `waitForTimeout` since it isn't frame-scoped. */
+export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 

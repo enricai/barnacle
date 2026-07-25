@@ -43,6 +43,7 @@ import {
   type FrameTarget,
   mainFrameTarget,
   resolveFrameTarget,
+  sleep,
   waitForChildFrameReady,
 } from "@/scraper/frame-target";
 import { classifyPhantomClick, type PhantomClickVerdict } from "@/scraper/phantom-click";
@@ -4321,11 +4322,6 @@ async function tryRadioPrimitive(params: {
   }
 }
 
-/** Delay helper for post-commit settle waits — `FrameTarget` has no `waitForTimeout` since it isn't frame-scoped. */
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 /**
  * Commit a chosen radio and verify it STICKS. Tiered because synthetic events
  * set the DOM `checked` but don't flow through React/MUI's controlled-input
@@ -7179,11 +7175,7 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
         );
       }
       lastStepIndex = i;
-      // Built as a variable (not passed inline) so the frameTarget field —
-      // consumed only once the sibling region migrates executeStepWithHealing's
-      // DOM-direct helpers to it — doesn't trip excess-property checking
-      // against that function's not-yet-updated params type.
-      const stepArgs = {
+      const outcome = await executeStepWithHealing({
         stagehand,
         page,
         step: s.instruction,
@@ -7210,8 +7202,7 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
         ownBackendHostnames: deps.ownBackendHostnames ?? [],
         knownErrorClassPrefixes: deps.knownErrorClassPrefixes ?? [],
         wizardExitButtonLabels: deps.wizardExitButtonLabels ?? [],
-      };
-      const outcome = await executeStepWithHealing(stepArgs);
+      });
       if (s.submitStep) {
         if (outcome === "skipped") {
           submitStepSkipped = true;
