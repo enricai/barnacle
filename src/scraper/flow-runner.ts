@@ -1796,6 +1796,7 @@ export function selectBodyExcerpt(body: string): string {
 
 async function extractLivePageFormEvidence(
   page: Page,
+  target: FrameTarget,
   options?: {
     client?: Anthropic | null;
     knownErrorClassPrefixes?: readonly string[];
@@ -1808,7 +1809,9 @@ async function extractLivePageFormEvidence(
 }> {
   let body = "";
   try {
-    const raw = await page.evaluate("document.body ? document.body.outerHTML : null");
+    const raw = await target.evaluate<string | null>(
+      "document.body ? document.body.outerHTML : null"
+    );
     if (typeof raw === "string") body = raw;
   } catch {
     return { invalidFieldList: "", errorTextList: "", interactiveTargetsList: "" };
@@ -6104,7 +6107,7 @@ export async function executeStepWithHealing(params: {
           // Fetch live-page evidence so the rephrase prompt can reason about
           // form state, not just observe candidates. Mirrors the same
           // extraction the cascade-exhaust dump path already does.
-          const livePageEvidence = await extractLivePageFormEvidence(page, {
+          const livePageEvidence = await extractLivePageFormEvidence(page, mainFrameTarget(page), {
             client: anthropic,
             knownErrorClassPrefixes,
             captureFn,
@@ -6722,7 +6725,7 @@ export async function executeStepWithHealing(params: {
     // dumps in a 2026-06-10 survey had the paired touched+dirty + visible
     // error text pattern with 3 distinct rejection messages.
     if (record.resolvedMethod === "click" && (isFinalStep || submitStep)) {
-      const live = await extractLivePageFormEvidence(page, {
+      const live = await extractLivePageFormEvidence(page, mainFrameTarget(page), {
         client: anthropic,
         knownErrorClassPrefixes,
         captureFn,
