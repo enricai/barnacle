@@ -5544,6 +5544,7 @@ export async function executeStepWithHealing(params: {
     totalSteps,
     logger,
     captureFn,
+    frameTarget,
   });
   if (probeResult === "absent") {
     if (optional) {
