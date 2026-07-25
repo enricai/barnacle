@@ -301,22 +301,22 @@ describe("guardedObserve", () => {
     expect(captured[0]?.failureKind).toBe("schema-validation-failed");
   });
 
-  it("forwards a resolved frameTarget's frameSelector as ObserveOptions.selector", async () => {
+  it("forwards a resolved frameTarget's frameSelector as ObserveOptions.selector in hop notation", async () => {
     const stagehand = fakeStagehandObserve([VALID_ACTION]);
     const frameTarget = fakeChildFrameTarget("iframe#talemetry_apply_iframe");
     await guardedObserve(stagehand, "find something", undefined, undefined, frameTarget);
     expect(stagehand.observe).toHaveBeenCalledWith("find something", {
-      selector: "iframe#talemetry_apply_iframe",
+      selector: "iframe#talemetry_apply_iframe >> *",
     });
   });
 
-  it("merges frameTarget.frameSelector into existing options without a selector", async () => {
+  it("merges frameTarget.frameSelector into existing options without a selector, in hop notation", async () => {
     const stagehand = fakeStagehandObserve([VALID_ACTION]);
     const frameTarget = fakeChildFrameTarget("iframe#talemetry_apply_iframe");
     await guardedObserve(stagehand, "find something", { timeout: 5000 }, undefined, frameTarget);
     expect(stagehand.observe).toHaveBeenCalledWith("find something", {
       timeout: 5000,
-      selector: "iframe#talemetry_apply_iframe",
+      selector: "iframe#talemetry_apply_iframe >> *",
     });
   });
 
@@ -426,7 +426,7 @@ describe("guardedExtract", () => {
     expect(captured[0]?.failureKind).toBe("schema-validation-failed");
   });
 
-  it("forwards a resolved frameTarget's frameSelector as ExtractOptions.selector", async () => {
+  it("forwards a resolved frameTarget's frameSelector as ExtractOptions.selector in hop notation", async () => {
     const stagehand = fakeStagehandExtract({ name: "Alice", age: 30 });
     const frameTarget = fakeChildFrameTarget("iframe#talemetry_apply_iframe");
     await guardedExtract(
@@ -438,7 +438,7 @@ describe("guardedExtract", () => {
       frameTarget
     );
     expect(stagehand.extract).toHaveBeenCalledWith("extract person", PERSON_SCHEMA, {
-      selector: "iframe#talemetry_apply_iframe",
+      selector: "iframe#talemetry_apply_iframe >> *",
     });
   });
 

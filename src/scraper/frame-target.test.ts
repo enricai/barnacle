@@ -1,6 +1,10 @@
-import { describe, expect, it } from "vitest";
-
-import { resolveFrameTarget } from "@/scraper/frame-target";
+import { describe, expect, it, vi } from "vitest";
+import type { FrameTarget } from "@/scraper/frame-target";
+import {
+  buildHopSelector,
+  resolveFrameTarget,
+  waitForChildFrameReady,
+} from "@/scraper/frame-target";
 
 /**
  * Minimal fake `Frame`: just enough surface for `resolveFrameTarget` and the
@@ -158,5 +162,96 @@ describe("resolveFrameTarget", () => {
     const target = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe");
 
     expect(await target.title()).toBe("main document title");
+  });
+});
+
+describe("buildHopSelector", () => {
+  it("composes a frame selector and an inner selector with the hop separator", () => {
+    expect(buildHopSelector("#f", "#btn")).toBe("#f >> #btn");
+  });
+
+  it("returns the inner selector unchanged for a main-frame target (frameSelector null)", () => {
+    expect(buildHopSelector(null, "#btn")).toBe("#btn");
+  });
+
+  it("returns the inner selector unchanged for a main-frame target (frameSelector undefined)", () => {
+    expect(buildHopSelector(undefined, "#btn")).toBe("#btn");
+  });
+
+  it("does not double-append a hop when the frame selector already contains '>>'", () => {
+    expect(buildHopSelector("#f >> #nested", "#btn")).toBe("#f >> #nested >> #btn");
+  });
+});
+
+/**
+ * Minimal fake `FrameTarget`: `frame` is a truthy sentinel so
+ * `waitForChildFrameReady` doesn't take its main-frame no-op early return,
+ * and `evaluateImpl` lets each test script the readyState sequence returned
+ * across successive polls.
+ */
+function makeFakeTarget(evaluateImpl: () => Promise<string>): FrameTarget {
+  return {
+    frame: {} as FrameTarget["frame"],
+    frameSelector: "iframe#talemetry_apply_iframe",
+    evaluate: evaluateImpl as FrameTarget["evaluate"],
+    locator: (selector: string) => ({ scope: "frame" as const, selector }) as never,
+    url: () => Promise.resolve("https://apply.talemetry.com/application/abc-123"),
+    title: () => Promise.resolve("main document title"),
+  };
+}
+
+describe("waitForChildFrameReady", () => {
+  it("resolves immediately for a main-frame target (frame: null)", async () => {
+    const evaluate = vi.fn();
+    const target: FrameTarget = {
+      frame: null,
+      frameSelector: null,
+      evaluate,
+      locator: (selector: string) => ({ scope: "main" as const, selector }) as never,
+      url: () => Promise.resolve("https://careers.uchealth.org/jobs/123"),
+      title: () => Promise.resolve("main document title"),
+    };
+
+    await waitForChildFrameReady(target);
+
+    expect(evaluate).not.toHaveBeenCalled();
+  });
+
+  it("resolves on the first check when the frame document is already ready", async () => {
+    const evaluate = vi.fn().mockResolvedValue("complete");
+    const target = makeFakeTarget(evaluate);
+
+    await waitForChildFrameReady(target, { timeoutMs: 1000, pollMs: 10 });
+
+    expect(evaluate).toHaveBeenCalledTimes(1);
+  });
+
+  it("resolves once readyState transitions to interactive after polling", async () => {
+    const states = ["loading", "loading", "interactive"];
+    const evaluate = vi.fn().mockImplementation(() => Promise.resolve(states.shift()));
+    const target = makeFakeTarget(evaluate);
+
+    await waitForChildFrameReady(target, { timeoutMs: 1000, pollMs: 5 });
+
+    expect(evaluate).toHaveBeenCalledTimes(3);
+  });
+
+  it("resolves (does not reject) once the timeout elapses for a frame that never becomes ready", async () => {
+    const evaluate = vi.fn().mockResolvedValue("loading");
+    const target = makeFakeTarget(evaluate);
+
+    await expect(
+      waitForChildFrameReady(target, { timeoutMs: 30, pollMs: 10 })
+    ).resolves.toBeUndefined();
+    expect(evaluate.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it("treats a rejected evaluate (torn-down frame) as not-ready and still resolves within the timeout", async () => {
+    const evaluate = vi.fn().mockRejectedValue(new Error("frame detached"));
+    const target = makeFakeTarget(evaluate);
+
+    await expect(
+      waitForChildFrameReady(target, { timeoutMs: 30, pollMs: 10 })
+    ).resolves.toBeUndefined();
   });
 });

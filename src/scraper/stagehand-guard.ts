@@ -59,7 +59,7 @@ import {
   CALL_TYPE_STAGEHAND_EXTRACT,
   CALL_TYPE_STAGEHAND_OBSERVE,
 } from "@/lib/telemetry/call-types";
-import type { FrameTarget } from "@/scraper/frame-target";
+import { buildHopSelector, type FrameTarget } from "@/scraper/frame-target";
 
 /**
  * Injectable capture function — matches `captureLlmCall`'s signature. Same
@@ -152,17 +152,22 @@ function actInstructionOf(input: string | Action): string {
 
 /**
  * Merges `frameTarget.frameSelector` into `options.selector` for
- * `ObserveOptions`/`ExtractOptions`. Returns `options` untouched when
- * `frameTarget` is unresolved (main frame) or a caller-supplied `selector`
- * is already present — both cases must leave today's call sites
- * byte-identical.
+ * `ObserveOptions`/`ExtractOptions`, composed as Stagehand `">>"` hop
+ * notation (`buildHopSelector`) rather than the bare iframe selector —
+ * `resolveCssFocusFrameAndTail` only crosses into the child frame's own CDP
+ * session when the selector has a hop segment before `>>`; a bare selector
+ * performs zero hops and scopes to the (empty) `<iframe>` element itself.
+ * The inner segment defaults to `*` (whole-frame scope) since callers don't
+ * supply one here. Returns `options` untouched when `frameTarget` is
+ * unresolved (main frame) or a caller-supplied `selector` is already
+ * present — both cases must leave today's call sites byte-identical.
  */
 function frameScopedOptions<T extends { selector?: string }>(
   options: T | undefined,
   frameTarget: FrameTarget | undefined
 ): T | undefined {
   if (!frameTarget?.frameSelector || options?.selector !== undefined) return options;
-  return { ...options, selector: frameTarget.frameSelector } as T;
+  return { ...options, selector: buildHopSelector(frameTarget.frameSelector, "*") } as T;
 }
 
 /**

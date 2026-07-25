@@ -216,6 +216,38 @@ describe("buildConfigPlugin", () => {
     const deps = mockRunHealingFlow.mock.calls[0]?.[0] as { frameSelector?: string };
     expect(deps.frameSelector).toBeUndefined();
   });
+
+  it("round-trips a manifest-declared frameSelector through CONFIG_PLUGIN_MANIFEST parsing", async () => {
+    const manifest = baseManifest();
+    (manifest.spec as { flow: { frameSelector?: string } }).flow.frameSelector =
+      "#talemetry_apply_iframe";
+
+    const parsed = CONFIG_PLUGIN_MANIFEST.parse(manifest);
+    expect(parsed.spec.flow.frameSelector).toBe("#talemetry_apply_iframe");
+
+    const plugin = await buildConfigPlugin(manifest);
+    const { session, context } = mockExecuteDeps();
+    await plugin.execute({ FirstName: "J", Email: "e" }, session, context);
+
+    const deps = mockRunHealingFlow.mock.calls[0]?.[0] as { frameSelector?: string };
+    expect(deps.frameSelector).toBe("#talemetry_apply_iframe");
+  });
+
+  it("rejects a manifest with an empty-string frameSelector", async () => {
+    const manifest = baseManifest();
+    (manifest.spec as { flow: { frameSelector?: string } }).flow.frameSelector = "";
+
+    expect(CONFIG_PLUGIN_MANIFEST.safeParse(manifest).success).toBe(false);
+    await expect(buildConfigPlugin(manifest)).rejects.toThrow(/frameSelector/);
+  });
+
+  it("rejects a manifest with a non-string frameSelector", async () => {
+    const manifest = baseManifest();
+    (manifest.spec as { flow: { frameSelector?: unknown } }).flow.frameSelector = 123;
+
+    expect(CONFIG_PLUGIN_MANIFEST.safeParse(manifest).success).toBe(false);
+    await expect(buildConfigPlugin(manifest)).rejects.toThrow(/frameSelector/);
+  });
 });
 
 describe("CONFIG_PLUGIN_MANIFEST", () => {

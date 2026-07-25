@@ -39,6 +39,13 @@ import {
 } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
 import { type RunHealingFlowResult, StepVerificationError } from "@/scraper/errors";
+import {
+  type FrameTarget,
+  mainFrameTarget,
+  resolveFrameTarget,
+  sleep,
+  waitForChildFrameReady,
+} from "@/scraper/frame-target";
 import { classifyPhantomClick, type PhantomClickVerdict } from "@/scraper/phantom-click";
 import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
 import {
@@ -578,13 +585,13 @@ export interface AttemptRecord {
 const DOM_SNAPSHOT_EXPR = `(() => { const b = document.body; if (!b) return { html: 0, text: "" }; const t = b.innerText || ""; return { html: (b.outerHTML || "").length, text: t.length + ":" + t.slice(0, 200) }; })()`;
 
 export async function snapshotPage(
-  page: Page,
+  target: FrameTarget,
   signalCounter: { n: number }
 ): Promise<StepSnapshot> {
   let bodyHtmlLength = 0;
   let visibleTextSignature = "";
   try {
-    const result = await page.evaluate(DOM_SNAPSHOT_EXPR);
+    const result = await target.evaluate(DOM_SNAPSHOT_EXPR);
     if (
       result !== null &&
       typeof result === "object" &&
@@ -602,7 +609,7 @@ export async function snapshotPage(
   }
   return {
     networkCount: signalCounter.n,
-    url: page.url(),
+    url: await target.url(),
     bodyHtmlLength,
     visibleTextSignature,
   };
@@ -998,15 +1005,18 @@ export function isDomOnlyAdvanceVerified(params: {
 }
 
 /**
- * Read-only count of ng-invalid form controls on the page. Side-effect-free
+ * Read-only count of ng-invalid form controls on the resolved frame. Side-effect-free
  * counterpart to `probeFormValidityBeforeSubmit` (which also auto-fills
  * unselected radio groups via element.click()). Used by the cascade's
  * early-exit predicate to detect "the Submit click revealed new required
  * questions" — when this count grows from 0 (pre-submit) to ≥1 (post-attempt-1),
  * attempts 2-5 cannot succeed and the cascade should route to replan
- * immediately instead of burning Stagehand calls.
+ * immediately instead of burning Stagehand calls. Accepts a `FrameTarget` so a
+ * wizard embedded in a cross-origin iframe (e.g. UCHealth's Talemetry form) is
+ * scanned on its own frame; a main-frame target delegates straight to
+ * `page.evaluate`, matching today's behavior byte-for-byte.
  */
-export async function countNgInvalidContainers(page: Page): Promise<number> {
+export async function countNgInvalidContainers(target: FrameTarget): Promise<number> {
   const expr = `(() => {
     const isInvalid = ${INVALID_MARKER_EL_EXPR};
     let n = 0;
@@ -1016,7 +1026,7 @@ export async function countNgInvalidContainers(page: Page): Promise<number> {
     return n;
   })()`;
   try {
-    const raw = await page.evaluate(expr);
+    const raw = await target.evaluate(expr);
     return typeof raw === "number" ? raw : 0;
   } catch {
     return 0;
@@ -1787,6 +1797,7 @@ export function selectBodyExcerpt(body: string): string {
 
 async function extractLivePageFormEvidence(
   page: Page,
+  target: FrameTarget,
   options?: {
     client?: Anthropic | null;
     knownErrorClassPrefixes?: readonly string[];
@@ -1799,7 +1810,9 @@ async function extractLivePageFormEvidence(
 }> {
   let body = "";
   try {
-    const raw = await page.evaluate("document.body ? document.body.outerHTML : null");
+    const raw = await target.evaluate<string | null>(
+      "document.body ? document.body.outerHTML : null"
+    );
     if (typeof raw === "string") body = raw;
   } catch {
     return { invalidFieldList: "", errorTextList: "", interactiveTargetsList: "" };
@@ -1828,14 +1841,15 @@ async function extractLivePageFormEvidence(
   // LLM calls converged on "Click Continue" because no specific fillable
   // field was named in FORM FIELDS. Deterministic extraction gives the
   // LLM `"Address" <app-input> — error: "This field is required"` instead.
+  const frameTarget = await resolveFrameTarget(page);
   const [leafFields, errorVerdict, interactiveTargets] = await Promise.all([
-    probeLeafInvalidContainers(page),
+    probeLeafInvalidContainers(frameTarget),
     judgeErrorMessagesWithLLM({
       client,
       input: { bodyHtmlExcerpt: bodyExcerpt },
       captureFn,
     }),
-    extractInteractiveTargetsNearInvalid(page).catch(() => [] as string[]),
+    extractInteractiveTargetsNearInvalid(frameTarget).catch(() => [] as string[]),
   ]);
 
   // Probe is the primary signal. Judge only runs if probe is empty AND a
@@ -1923,13 +1937,13 @@ export interface LeafInvalidField {
  * LLM for fuzzy judgment, deterministic extraction for structurally-derivable
  * signals" — DOM tree walking is the latter.
  *
- * Returns up to 12 leaf records. Empty array on `page.evaluate` failure (safe
+ * Returns up to 12 leaf records. Empty array on evaluate failure (safe
  * fallback to the existing Haiku judge upstream). The `inputTag` and
  * `visibleErrorText` fields let the prompt distinguish a smart-address
  * autocomplete (where typing-only fails and the cascade needs dropdown
  * selection) from a plain text input.
  */
-export async function probeLeafInvalidContainers(page: Page): Promise<LeafInvalidField[]> {
+export async function probeLeafInvalidContainers(target: FrameTarget): Promise<LeafInvalidField[]> {
   const expr = `(() => {
     const SELECTOR =
       "[class*='ng-invalid']:not(:has([class*='ng-invalid'])), " +
@@ -2014,10 +2028,10 @@ export async function probeLeafInvalidContainers(page: Page): Promise<LeafInvali
     return out;
   })()`;
   try {
-    const result = await page.evaluate(expr);
+    const result = await target.evaluate(expr);
     return Array.isArray(result) ? (result as LeafInvalidField[]) : [];
   } catch {
-    // page.evaluate failure (navigation in-flight, CSP, browser detached)
+    // evaluate failure (navigation in-flight, CSP, browser detached)
     // is non-fatal — caller falls back to the Haiku judge.
     return [];
   }
@@ -2041,7 +2055,7 @@ export function renderLeafInvalidFields(fields: readonly LeafInvalidField[]): st
   return lines.join("\n");
 }
 
-async function extractInteractiveTargetsNearInvalid(page: Page): Promise<string[]> {
+async function extractInteractiveTargetsNearInvalid(target: FrameTarget): Promise<string[]> {
   const expr = `(() => {
     const out = [];
     const containers = document.querySelectorAll(
@@ -2097,7 +2111,7 @@ async function extractInteractiveTargetsNearInvalid(page: Page): Promise<string[
     }
     return out;
   })()`;
-  const result = await page.evaluate(expr);
+  const result = await target.evaluate(expr);
   return Array.isArray(result) ? (result as string[]) : [];
 }
 
@@ -2380,7 +2394,7 @@ export function normalizeDateValue(raw: string, inputType: string): string | nul
 }
 
 export async function fillHtml5DateTimeInput(
-  page: Page,
+  target: FrameTarget,
   xpath: string,
   value: string
 ): Promise<Html5DateFillResult | null> {
@@ -2388,7 +2402,7 @@ export async function fillHtml5DateTimeInput(
   // K'/H' Change 1: pre-normalize the value before dispatching to the page
   // evaluator. The HTML5 spec rejects programmatic .value writes that don't
   // match the canonical format — see normalizeDateValue TSDoc.
-  // We don't yet know the input type until the page.evaluate runs (we'd
+  // We don't yet know the input type until the evaluate runs (we'd
   // have to probe it first), so we try BOTH the raw value AND a normalized
   // pass: if raw works, fine; if raw fails (post-value mismatch), the
   // returned filled=false signal tells the caller to retry with a normalized
@@ -2417,7 +2431,7 @@ export async function fillHtml5DateTimeInput(
     return { filled: el.value === value, postValue: el.value || "", inputType };
   })()`;
   try {
-    const raw = await page.evaluate(expr);
+    const raw = await target.evaluate(expr);
     if (raw === null || typeof raw !== "object") return null;
     const r = raw as { filled?: unknown; postValue?: unknown; inputType?: unknown };
     if (typeof r.inputType !== "string") return null;
@@ -2466,7 +2480,7 @@ export interface VerifyFillReadbackResult {
  * (react-testing-library's `getByDisplayValue` does the same readback).
  */
 export async function verifyFillReadback(
-  page: Page,
+  target: FrameTarget,
   xpath: string,
   expectedValue: string
 ): Promise<VerifyFillReadbackResult | null> {
@@ -2492,7 +2506,7 @@ export async function verifyFillReadback(
     return { outcome, postValue: actual, tag };
   })()`;
   try {
-    const raw = await page.evaluate(expr);
+    const raw = await target.evaluate(expr);
     if (raw === null || typeof raw !== "object") return null;
     const r = raw as { outcome?: unknown; postValue?: unknown; tag?: unknown };
     if (r.outcome !== "matched" && r.outcome !== "rejected" && r.outcome !== "differs") return null;
@@ -2707,6 +2721,8 @@ export function writeFixtureToTempFile(fixture: { buffer: Buffer; name: string }
  */
 async function tryUploadPrimitive(params: {
   page: Page;
+  /** Frame the upload widget lives in — the main frame by default, or a resolved cross-origin child frame (e.g. an embedded Talemetry wizard). */
+  target: FrameTarget;
   /** Set from the flow file's `upload: true` field. Replaces the prior regex test. */
   isUploadStep: boolean;
   fixture: { buffer: Buffer; name: string; mimeType: string } | null;
@@ -2724,7 +2740,7 @@ async function tryUploadPrimitive(params: {
    */
   recentCaptureMeta: readonly { method: string; status: number; url: string }[];
 }): Promise<boolean> {
-  const { page, isUploadStep, fixture, logger, signalCounter, recentCaptureMeta } = params;
+  const { page, target, isUploadStep, fixture, logger, signalCounter, recentCaptureMeta } = params;
   if (!isUploadStep) {
     return false;
   }
@@ -2743,6 +2759,7 @@ async function tryUploadPrimitive(params: {
   try {
     inputCount = await pollEnumerate<number>(
       page,
+      target,
       "document.querySelectorAll('input[type=file]').length",
       (n) => (n ?? 0) > 0,
       { attempts: UPLOAD_WIDGET_RENDER_ATTEMPTS, intervalMs: UPLOAD_WIDGET_RENDER_INTERVAL_MS }
@@ -2760,6 +2777,7 @@ async function tryUploadPrimitive(params: {
     );
     const surfaced = await surfaceAndUpload({
       page,
+      target,
       fixture,
       logger,
       signalCounter,
@@ -2769,7 +2787,7 @@ async function tryUploadPrimitive(params: {
     logger.info("upload primitive: click-to-surface failed; falling through to cascade");
     return false;
   }
-  return attachToSurfacedInput({ page, fixture, logger, signalCounter, recentCaptureMeta });
+  return attachToSurfacedInput({ page, target, fixture, logger, signalCounter, recentCaptureMeta });
 }
 
 /**
@@ -2781,15 +2799,17 @@ async function tryUploadPrimitive(params: {
  */
 async function attachToSurfacedInput(params: {
   page: Page;
+  /** Frame the surfaced `<input type=file>` lives in. */
+  target: FrameTarget;
   fixture: ResumeFixture;
   logger: Logger;
   signalCounter: { n: number };
   recentCaptureMeta: readonly CaptureMeta[];
 }): Promise<boolean> {
-  const { page, fixture, logger, signalCounter, recentCaptureMeta } = params;
-  const target = page.locator("xpath=//input[@type='file']").first();
+  const { page, target, fixture, logger, signalCounter, recentCaptureMeta } = params;
+  const inputLocator = target.locator("xpath=//input[@type='file']").first();
   try {
-    await target.setInputFiles({
+    await inputLocator.setInputFiles({
       name: fixture.name,
       mimeType: fixture.mimeType,
       buffer: fixture.buffer,
@@ -2816,7 +2836,7 @@ async function attachToSurfacedInput(params: {
     // Industry-standard workaround documented across Playwright
     // community. Site-agnostic — works for any tenant with framework-
     // wrapped file inputs.
-    await page
+    await target
       .evaluate(
         "(() => { const els = document.querySelectorAll('input[type=file]'); for (const el of els) { if (el.files && el.files.length > 0) { el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); return true; } } return false; })()"
       )
@@ -2845,7 +2865,7 @@ async function attachToSurfacedInput(params: {
   // interpolation from external data, no risk of injecting attacker-controlled
   // values into the browser-side JS. Same trust posture as the type-probe
   // expression in verifyDomEffect's click case.
-  const attachedLength = await page
+  const attachedLength = await target
     .evaluate(
       "(() => { const els = document.querySelectorAll('input[type=file]'); for (const el of els) { if (el.files && el.files.length > 0) return el.files.length; } return 0; })()"
     )
@@ -2860,7 +2880,7 @@ async function attachToSurfacedInput(params: {
     // a DataTransfer fires on the visible drop area — they don't observe
     // the hidden input's `files[]` mutations even with synthetic `change`
     // dispatches. This is the documented Playwright community workaround.
-    const dragDropOk = await simulateDragDropUpload(page, fixture, logger);
+    const dragDropOk = await simulateDragDropUpload(mainFrameTarget(page), fixture, logger);
     if (dragDropOk) {
       logger.info(
         `upload primitive: drag-drop fallback succeeded (name=${fixture.name}, size=${fixture.buffer.length}b)`
@@ -2889,12 +2909,14 @@ async function attachToSurfacedInput(params: {
  */
 async function surfaceAndUpload(params: {
   page: Page;
+  /** Frame the upload widget lives in — its CDP session owns the native file-chooser interception below. */
+  target: FrameTarget;
   fixture: ResumeFixture;
   logger: Logger;
   signalCounter: { n: number };
   recentCaptureMeta: readonly CaptureMeta[];
 }): Promise<boolean> {
-  const { page, fixture, logger, signalCounter, recentCaptureMeta } = params;
+  const { page, target, fixture, logger, signalCounter, recentCaptureMeta } = params;
   // Render-gate: the input-less strategies below (drag-drop is one-shot, the
   // affordance click resolves what's in the DOM) all race the async widget
   // mount. Wait (bounded, same window as the raw-input probe) for ANY upload
@@ -2920,6 +2942,7 @@ async function surfaceAndUpload(params: {
   })()`;
   const gate = await pollEnumerate<{ present: boolean }>(
     page,
+    target,
     targetExpr,
     (r) => r?.present === true,
     {
@@ -2935,7 +2958,7 @@ async function surfaceAndUpload(params: {
   // Strategy DZ: a synthetic drop is cheap, needs no click/chooser, and the
   // widget IS a dropzone. If it registers the file (upload POST or attached
   // input), we're done without touching CDP.
-  if (await simulateDragDropUpload(page, fixture, logger)) {
+  if (await simulateDragDropUpload(mainFrameTarget(page), fixture, logger)) {
     if (
       await waitForUploadNetworkSignal({ page, fixture, logger, signalCounter, recentCaptureMeta })
     ) {
@@ -2943,7 +2966,12 @@ async function surfaceAndUpload(params: {
       return true;
     }
   }
-  const session = page.getSessionForFrame(page.mainFrameId());
+  // The file-chooser CDP interception below must run on the upload target's
+  // OWN session — an OOPIF (e.g. UCHealth's Talemetry wizard) has its own CDP
+  // target, and a chooser it opens is only observable via that frame's
+  // session, not the main session. Main-frame targets fall back to
+  // page.getSessionForFrame(page.mainFrameId()), matching today's behavior.
+  const session = target.frame ? target.frame.session : page.getSessionForFrame(page.mainFrameId());
   let chooserBackendNodeId: number | null = null;
   const onChooser = (paramsIn?: object): void => {
     const p = paramsIn as { backendNodeId?: number } | undefined;
@@ -2952,15 +2980,15 @@ async function surfaceAndUpload(params: {
   // ARM native-chooser interception BEFORE the click. Page.fileChooserOpened
   // only carries a backendNodeId while interception is enabled; without it a
   // chooser-opening click would pop a real OS dialog and hang the run.
-  await page.sendCDP("Page.enable").catch(() => {});
-  await page
-    .sendCDP("Page.setInterceptFileChooserDialog", { enabled: true })
+  await session.send("Page.enable").catch(() => {});
+  await session
+    .send("Page.setInterceptFileChooserDialog", { enabled: true })
     .catch((e: unknown) =>
       logger.warn(`upload primitive: chooser-intercept arm failed: ${toErrorMessage(e)}`)
     );
   session.on("Page.fileChooserOpened", onChooser);
   try {
-    if (!(await clickUploadAffordance(page, logger))) return false;
+    if (!(await clickUploadAffordance(page, target, logger))) return false;
     // Strategy 0: some MUI widgets XHR straight to attachment_upload_url on
     // click, no chooser, no input.
     if (
@@ -2972,13 +3000,21 @@ async function surfaceAndUpload(params: {
     // Strategy A: the click lazily mounted a hidden <input type=file>.
     const appeared = await pollEnumerate<number>(
       page,
+      target,
       "document.querySelectorAll('input[type=file]').length",
       (n) => (n ?? 0) > 0
     );
     if ((appeared ?? 0) > 0) {
       logger.info("upload primitive: click surfaced a hidden <input type=file>");
       if (
-        await attachToSurfacedInput({ page, fixture, logger, signalCounter, recentCaptureMeta })
+        await attachToSurfacedInput({
+          page,
+          target,
+          fixture,
+          logger,
+          signalCounter,
+          recentCaptureMeta,
+        })
       ) {
         return true;
       }
@@ -2990,6 +3026,7 @@ async function surfaceAndUpload(params: {
       );
       return setFilesViaCdp({
         page,
+        target,
         session,
         backendNodeId: chooserBackendNodeId,
         fixture,
@@ -3001,7 +3038,7 @@ async function surfaceAndUpload(params: {
     return false;
   } finally {
     session.off("Page.fileChooserOpened", onChooser);
-    await page.sendCDP("Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
+    await session.send("Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
   }
 }
 
@@ -3012,8 +3049,15 @@ async function surfaceAndUpload(params: {
  * upload vocabulary as {@link isUploadAffordanceLabel}, preferring controls
  * scoped inside an attachment/upload/resume container. Returns whether a
  * matching control was clicked.
+ *
+ * Takes both `page` (for `pollEnumerate`'s `waitForTimeout`) and `target`
+ * (the frame the enumerate/click runs against).
  */
-async function clickUploadAffordance(page: Page, logger: Logger): Promise<boolean> {
+async function clickUploadAffordance(
+  page: Page,
+  target: FrameTarget,
+  logger: Logger
+): Promise<boolean> {
   // The browser-side matcher mirrors isUploadAffordanceLabel; kept as a literal
   // so the enumerate is a static string (same trust posture as the other
   // primitives). No external interpolation.
@@ -3037,6 +3081,7 @@ async function clickUploadAffordance(page: Page, logger: Logger): Promise<boolea
   try {
     const result = (await pollEnumerate<{ clicked: boolean; text?: string }>(
       page,
+      target,
       expr,
       (r) => r?.clicked === true
     )) ?? { clicked: false };
@@ -3061,6 +3106,8 @@ async function clickUploadAffordance(page: Page, logger: Logger): Promise<boolea
  */
 async function setFilesViaCdp(params: {
   page: Page;
+  /** Frame the intercepted chooser's input lives in — scopes the filename-chip fallback check below. */
+  target: FrameTarget;
   session: ReturnType<Page["getSessionForFrame"]>;
   backendNodeId: number;
   fixture: ResumeFixture;
@@ -3068,8 +3115,16 @@ async function setFilesViaCdp(params: {
   signalCounter: { n: number };
   recentCaptureMeta: readonly CaptureMeta[];
 }): Promise<boolean> {
-  const { page, session, backendNodeId, fixture, logger, signalCounter, recentCaptureMeta } =
-    params;
+  const {
+    page,
+    target,
+    session,
+    backendNodeId,
+    fixture,
+    logger,
+    signalCounter,
+    recentCaptureMeta,
+  } = params;
   // CDP needs a filesystem path; the fixture is an in-memory buffer. Write it
   // to a temp file (tiny — a few KB) so the path is always valid regardless of
   // where the recon loaded the fixture from.
@@ -3088,7 +3143,7 @@ async function setFilesViaCdp(params: {
   // CDP-set files don't surface via input.files, so the DOM-attached-files
   // check can't confirm; treat a filename chip appearing in the DOM as the
   // secondary success signal (the MUI widget renders the chosen filename).
-  const nameShown = await page
+  const nameShown = await target
     .evaluate(
       `document.body && document.body.textContent && document.body.textContent.indexOf(${JSON.stringify(fixture.name)}) !== -1`
     )
@@ -3214,19 +3269,26 @@ const PRIMITIVE_ENUMERATE_RETRY_MS = 600;
  * `opts` overrides the attempt count / interval for callers that need a longer
  * window (the resume-upload widget can take 5s+ to mount); omitting it keeps the
  * default ~3s window so every existing caller is unchanged.
+ *
+ * Takes both `page` (for `waitForTimeout`, which `FrameTarget` has no
+ * equivalent of) and `target` (for the enumerate itself), so a widget
+ * rendered inside a resolved cross-origin child frame is polled on its own
+ * frame; a main-frame `target` delegates straight to `page.evaluate`,
+ * matching today's behavior byte-for-byte.
  */
 export async function pollEnumerate<T>(
   page: Page,
+  target: FrameTarget,
   expr: string,
   isPresent: (result: T) => boolean,
   opts?: { attempts?: number; intervalMs?: number }
 ): Promise<T> {
   const attempts = opts?.attempts ?? PRIMITIVE_ENUMERATE_ATTEMPTS;
   const intervalMs = opts?.intervalMs ?? PRIMITIVE_ENUMERATE_RETRY_MS;
-  let result = (await page.evaluate(expr)) as T;
+  let result = (await target.evaluate(expr)) as T;
   for (let attempt = 1; attempt < attempts && !isPresent(result); attempt++) {
     await page.waitForTimeout(intervalMs);
-    result = (await page.evaluate(expr)) as T;
+    result = (await target.evaluate(expr)) as T;
   }
   return result;
 }
@@ -3310,9 +3372,15 @@ export async function waitForTransitionBody(params: {
  * refuse to claim success on an uncommitted select, routing to the cascade/replan
  * instead of silently advancing. Walks ≤6 ancestors for the invalid marker, same
  * as the radio/checkbox primitives.
+ *
+ * Accepts a `FrameTarget` (plus the underlying `page` for `waitForTimeout`,
+ * which `FrameTarget` has no equivalent of) so a wizard embedded in a
+ * cross-origin iframe is set on its own frame; a main-frame target delegates
+ * straight to `page.evaluate`, matching today's behavior byte-for-byte.
  */
 async function applySelectValue(
   page: Page,
+  target: FrameTarget,
   selIdx: number,
   value: string
 ): Promise<{ ok: boolean; stillInvalid: boolean }> {
@@ -3326,7 +3394,7 @@ async function applySelectValue(
     sel.dispatchEvent(new Event("blur", { bubbles: true }));
     return { ok: sel.value === value };
   })(${JSON.stringify(selIdx)}, ${JSON.stringify(value)})`;
-  const setResult = (await page.evaluate(setExpr)) as { ok: boolean };
+  const setResult = (await target.evaluate(setExpr)) as { ok: boolean };
   if (!setResult?.ok) return { ok: false, stillInvalid: false };
   await page.waitForTimeout(SELECT_SETTLE_MS);
   const invalidExpr = `((selIdx) => {
@@ -3340,18 +3408,19 @@ async function applySelectValue(
     }
     return false;
   })(${JSON.stringify(selIdx)})`;
-  const stillInvalid = (await page.evaluate(invalidExpr).catch(() => false)) as boolean;
+  const stillInvalid = (await target.evaluate(invalidExpr).catch(() => false)) as boolean;
   return { ok: true, stillInvalid };
 }
 
 async function trySelectPrimitive(params: {
   page: Page;
+  target: FrameTarget;
   instruction: string;
   logger: Logger;
   anthropic: Anthropic | null;
   captureFn?: JudgeCaptureFn;
 }): Promise<boolean> {
-  const { page, instruction, logger, anthropic, captureFn } = params;
+  const { page, target, instruction, logger, anthropic, captureFn } = params;
   const parsed = parseSelectStep(instruction);
   if (!parsed) return false;
   const { option, questionLabel } = parsed;
@@ -3439,7 +3508,7 @@ async function trySelectPrimitive(params: {
       selectPresent: boolean;
       detMatch?: { selIdx: number; value: string; text: string };
       candidates?: { selIdx: number; label: string; options: { text: string; value: string }[] }[];
-    }>(page, enumerateExpr, (r) => r?.selectPresent === true);
+    }>(page, target, enumerateExpr, (r) => r?.selectPresent === true);
     // No <select> on the page at all (e.g. the question is a radio group) —
     // fall through to the cascade unchanged; the LLM picker can't help here.
     if (!enumResult?.selectPresent) {
@@ -3455,6 +3524,7 @@ async function trySelectPrimitive(params: {
     if (enumResult.detMatch) {
       const { ok, stillInvalid } = await applySelectValue(
         page,
+        target,
         enumResult.detMatch.selIdx,
         enumResult.detMatch.value
       );
@@ -3504,6 +3574,7 @@ async function trySelectPrimitive(params: {
     // same as the fast path.
     const { ok, stillInvalid } = await applySelectValue(
       page,
+      target,
       chosenCandidate.selIdx,
       chosenOption.value
     );
@@ -3576,12 +3647,13 @@ export function chooseRequiredSelectOption(options: readonly string[]): string |
  */
 async function tryFillRequiredSelectsPrimitive(params: {
   page: Page;
+  target: FrameTarget;
   instruction: string;
   logger: Logger;
   anthropic: Anthropic | null;
   captureFn?: JudgeCaptureFn;
 }): Promise<boolean> {
-  const { page, instruction, logger, anthropic, captureFn } = params;
+  const { page, target, instruction, logger, anthropic, captureFn } = params;
   // Gate: catch-all steps only. parseSelectStep returns null for these (its
   // `any remaining` guard), so this never collides with the single-target
   // trySelectPrimitive that owns concrete "select 'X'" steps.
@@ -3641,7 +3713,7 @@ async function tryFillRequiredSelectsPrimitive(params: {
   try {
     const enumResult = await pollEnumerate<{
       candidates: { selIdx: number; label: string; options: { text: string; value: string }[] }[];
-    }>(page, enumerateExpr, (r) => Array.isArray(r?.candidates));
+    }>(page, target, enumerateExpr, (r) => Array.isArray(r?.candidates));
     const candidates = enumResult?.candidates ?? [];
     if (candidates.length === 0) return false;
     logger.info(`required-select primitive: ${candidates.length} required-empty select(s) to fill`);
@@ -3676,7 +3748,7 @@ async function tryFillRequiredSelectsPrimitive(params: {
         allCommitted = false;
         continue;
       }
-      const { ok, stillInvalid } = await applySelectValue(page, cand.selIdx, chosen.value);
+      const { ok, stillInvalid } = await applySelectValue(page, target, cand.selIdx, chosen.value);
       if (ok && !stillInvalid) {
         logger.info(
           `required-select primitive: filled "${cand.label.slice(0, 40)}" with "${chosen.text.slice(0, 40)}"`
@@ -3722,12 +3794,13 @@ async function tryFillRequiredSelectsPrimitive(params: {
  */
 async function tryCheckboxPrimitive(params: {
   page: Page;
+  target: FrameTarget;
   instruction: string;
   logger: Logger;
   anthropic: Anthropic | null;
   captureFn?: JudgeCaptureFn;
 }): Promise<boolean> {
-  const { page, instruction, logger, anthropic, captureFn } = params;
+  const { page, target, instruction, logger, anthropic, captureFn } = params;
   const parsed = parseSelectStep(instruction);
   if (!parsed) return false;
   const { option, questionLabel } = parsed;
@@ -3817,7 +3890,7 @@ async function tryCheckboxPrimitive(params: {
       ok?: boolean;
       chosen?: string;
       groups?: { gi: number; label: string; options: { bi: number; text: string }[] }[];
-    }>(page, enumerateExpr, (r) => r?.groupPresent === true);
+    }>(page, target, enumerateExpr, (r) => r?.groupPresent === true);
     if (!enumResult?.groupPresent) return false; // no checkbox groups → cascade
     if (enumResult.applied && enumResult.ok) {
       logger.info(
@@ -3871,7 +3944,7 @@ async function tryCheckboxPrimitive(params: {
       }
       return { ok: cb.checked === true };
     })(${JSON.stringify(chosenGroup.gi)}, ${JSON.stringify(chosenOption.bi)})`;
-    const applyResult = (await page.evaluate(applyExpr)) as { ok: boolean };
+    const applyResult = (await target.evaluate(applyExpr)) as { ok: boolean };
     if (applyResult?.ok) {
       logger.info(
         `checkbox primitive: LLM checked "${chosenOption.text.slice(0, 40)}" for ${optLabel} (${verdict.reason.slice(0, 60)})`
@@ -4086,12 +4159,13 @@ export function selectRadioGroupOption(params: {
  */
 async function tryRadioPrimitive(params: {
   page: Page;
+  target: FrameTarget;
   instruction: string;
   logger: Logger;
   anthropic: Anthropic | null;
   captureFn?: JudgeCaptureFn;
 }): Promise<boolean> {
-  const { page, instruction, logger, anthropic, captureFn } = params;
+  const { page, target, instruction, logger, anthropic, captureFn } = params;
   const parsed = parseRadioStep(instruction);
   if (!parsed) return false;
   const { option, questionLabel } = parsed;
@@ -4166,7 +4240,7 @@ async function tryRadioPrimitive(params: {
     const enumResult = await pollEnumerate<{
       groupPresent: boolean;
       groups?: RadioGroupCandidate[];
-    }>(page, enumerateExpr, (r) => r?.groupPresent === true);
+    }>(page, target, enumerateExpr, (r) => r?.groupPresent === true);
     if (!enumResult?.groupPresent) return false; // no radio group → cascade
     const groups = enumResult.groups ?? [];
     if (groups.length === 0) return false;
@@ -4176,7 +4250,7 @@ async function tryRadioPrimitive(params: {
     const selection = selectRadioGroupOption({ groups, wantOption: option, questionLabel });
     if (selection !== null && selection !== "ambiguous") {
       const chosenOpt = groups[selection.gi]?.options.find((o) => o.ri === selection.ri);
-      const applied = await applyRadioSelection(page, selection.gi, selection.ri, {
+      const applied = await applyRadioSelection(target, selection.gi, selection.ri, {
         id: chosenOpt?.id ?? "",
         xpath: chosenOpt?.xpath ?? "",
       });
@@ -4229,7 +4303,7 @@ async function tryRadioPrimitive(params: {
     // biome-ignore lint/style/noNonNullAssertion: guarded above by the verdict.optionIndex === null early-return
     const chosenOption = chosenGroup.options[verdict.optionIndex]!;
     const applyResult = {
-      ok: await applyRadioSelection(page, chosenGroup.gi, chosenOption.ri, {
+      ok: await applyRadioSelection(target, chosenGroup.gi, chosenOption.ri, {
         id: chosenOption.id,
         xpath: chosenOption.xpath,
       }),
@@ -4266,7 +4340,7 @@ async function tryRadioPrimitive(params: {
  * Returns whether the commit stuck; false → caller falls through to the cascade.
  */
 async function applyRadioSelection(
-  page: Page,
+  target: FrameTarget,
   gi: number,
   ri: number,
   hint: { id: string; xpath: string }
@@ -4286,8 +4360,8 @@ async function applyRadioSelection(
       return { ok: true };
     })(${JSON.stringify(sel.id)}, ${JSON.stringify(sel.xpath)})`;
   const readback = async (): Promise<boolean> => {
-    await page.waitForTimeout(RADIO_SETTLE_MS);
-    const r = (await page.evaluate(readbackExpr(hint)).catch(() => ({ ok: false }))) as {
+    await sleep(RADIO_SETTLE_MS);
+    const r = (await target.evaluate(readbackExpr(hint)).catch(() => ({ ok: false }))) as {
       ok: boolean;
     };
     return r?.ok === true;
@@ -4297,7 +4371,7 @@ async function applyRadioSelection(
   const inputSel = hint.id ? buildRadioIdXPath(hint.id) : hint.xpath ? `xpath=${hint.xpath}` : null;
   if (inputSel) {
     try {
-      await page.locator(inputSel).first().click();
+      await target.locator(inputSel).first().click();
       if (await readback()) return true;
     } catch {
       // fall through to the next tier
@@ -4307,7 +4381,7 @@ async function applyRadioSelection(
   // Tier B — trusted click on the associated label (MUI hides the real input).
   if (hint.id) {
     try {
-      await page
+      await target
         .locator(`xpath=//label[@for=${JSON.stringify(hint.id)}]`)
         .first()
         .click();
@@ -4339,7 +4413,7 @@ async function applyRadioSelection(
       }
       return { ok: true };
     })(${JSON.stringify(gi)}, ${JSON.stringify(ri)})`;
-  await page.evaluate(applyExpr).catch(() => ({ ok: false }));
+  await target.evaluate(applyExpr).catch(() => ({ ok: false }));
   return await readback();
 }
 
@@ -4360,7 +4434,7 @@ async function applyRadioSelection(
  * fast-skip the comments call essential is preserved.
  */
 async function hasUnfilledRequiredControlForStep(
-  page: Page,
+  target: FrameTarget,
   instruction: string
 ): Promise<boolean> {
   const parsed = parseSelectStep(instruction);
@@ -4410,7 +4484,7 @@ async function hasUnfilledRequiredControlForStep(
     return false;
   })(${JSON.stringify(parsed.questionLabel)})`;
   try {
-    return (await page.evaluate(expr)) === true;
+    return (await target.evaluate(expr)) === true;
   } catch {
     return false;
   }
@@ -4433,7 +4507,7 @@ async function hasUnfilledRequiredControlForStep(
  * <uapp-upload>/<app-upload>, and any other drop-zone-based upload UI.
  */
 async function simulateDragDropUpload(
-  page: Page,
+  target: FrameTarget,
   fixture: { buffer: Buffer; name: string; mimeType: string },
   logger: Logger
 ): Promise<boolean> {
@@ -4482,7 +4556,7 @@ async function simulateDragDropUpload(
     }
   })()`;
   try {
-    const result = await page.evaluate(expr);
+    const result = await target.evaluate(expr);
     if (result && typeof result === "object" && "ok" in result && result.ok === true) {
       const tag = "dropZoneTag" in result ? String(result.dropZoneTag) : "(unknown)";
       logger.info(`upload primitive: drag-drop dispatched on <${tag}>`);
@@ -4519,7 +4593,7 @@ async function simulateDragDropUpload(
  * safely escapes it into a JS string literal. The expression body is a fixed
  * literal — no user-controlled JS execution.
  */
-async function dispatchJqueryChangeEvent(page: Page, selector: string): Promise<void> {
+async function dispatchJqueryChangeEvent(target: FrameTarget, selector: string): Promise<void> {
   const xpath = xpathBody(selector);
   if (!xpath) return;
   const expr = `(() => {
@@ -4537,7 +4611,7 @@ async function dispatchJqueryChangeEvent(page: Page, selector: string): Promise<
     }
   })()`;
   try {
-    await page.evaluate(expr);
+    await target.evaluate(expr);
   } catch {
     // best-effort: jQuery dispatch failure shouldn't fail the verifier
   }
@@ -4549,13 +4623,17 @@ async function dispatchJqueryChangeEvent(page: Page, selector: string): Promise<
  * Re-read DOM state from the same selector Stagehand acted upon and compare
  * against what it tried to write. Falls back to `false` on any locator error
  * so the navigation-class signal is still the deciding vote when this returns.
+ *
+ * `target` scopes the locator/evaluate reads to the resolved frame (main or
+ * a cross-origin child); `page` is kept alongside only to satisfy the
+ * jQuery-change dispatch helper, which is main-frame-bound today.
  */
-async function verifyDomEffect(page: Page, action: Action): Promise<boolean> {
+async function verifyDomEffect(page: Page, target: FrameTarget, action: Action): Promise<boolean> {
   const selector = action.selector;
   const method = action.method;
   if (!selector || !method) return false;
   try {
-    const locator = page.locator(selector).first();
+    const locator = target.locator(selector).first();
     switch (method) {
       case "fill":
       case "type": {
@@ -4570,7 +4648,7 @@ async function verifyDomEffect(page: Page, action: Action): Promise<boolean> {
           // delegated handler) record the value
           // into their internal data model. Without this, the SPA's next
           // re-render wipes the typed value back to empty.
-          await dispatchJqueryChangeEvent(page, selector);
+          await dispatchJqueryChangeEvent(mainFrameTarget(page), selector);
 
           // Angular reactive forms (e.g. ADP WOTC questionnaire on tcs.adp.com)
           // don't pick up CDP Input.insertText OR dispatchEvent('input') —
@@ -4617,7 +4695,7 @@ async function verifyDomEffect(page: Page, action: Action): Promise<boolean> {
         const expr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); const el = r.singleNodeValue; if (!el || el.tagName !== "SELECT") return null; const opt = el.options[el.selectedIndex]; if (!opt) return { value: "", label: "", text: "" }; return { value: (opt.value || "").trim(), label: (opt.label || "").trim(), text: (opt.textContent || "").trim() }; })()`;
         let selected: { value: string; label: string; text: string } | null = null;
         try {
-          const result = await page.evaluate(expr);
+          const result = await target.evaluate(expr);
           if (
             result !== null &&
             typeof result === "object" &&
@@ -4659,7 +4737,7 @@ async function verifyDomEffect(page: Page, action: Action): Promise<boolean> {
           // Node-side typechecking doesn't choke on the browser globals
           // `document`/`XPathResult`.
           const expr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); const el = r.singleNodeValue; return el ? (el.type || null) : null; })()`;
-          const result = await page.evaluate(expr);
+          const result = await target.evaluate(expr);
           inputType = typeof result === "string" ? result : null;
         } catch {
           return false;
@@ -4691,7 +4769,7 @@ async function verifyDomEffect(page: Page, action: Action): Promise<boolean> {
           }
           return false;
         })()`;
-        const ancestorStillInvalid = await page.evaluate(ancestorInvalidExpr).catch(() => false);
+        const ancestorStillInvalid = await target.evaluate(ancestorInvalidExpr).catch(() => false);
         return !ancestorStillInvalid;
       }
       default:
@@ -5009,14 +5087,14 @@ export function formatStepPrefix(stepIndex: number, totalSteps?: () => number): 
 }
 
 async function probeFormValidityBeforeSubmit(params: {
-  page: Page;
+  target: FrameTarget;
   stepIndex: number;
   totalSteps?: () => number;
   logger: Logger;
 }): Promise<InvalidFormControl[]> {
-  const { page, stepIndex, totalSteps, logger } = params;
+  const { target, stepIndex, totalSteps, logger } = params;
   try {
-    const raw = await page.evaluate(FORM_VALIDITY_PROBE_EXPR);
+    const raw = await target.evaluate(FORM_VALIDITY_PROBE_EXPR);
     if (!Array.isArray(raw)) return [];
     const out: InvalidFormControl[] = [];
     for (const entry of raw) {
@@ -5052,6 +5130,10 @@ async function probeFormValidityBeforeSubmit(params: {
  * candidates for a declarative "Fill in X" step even when the field is present —
  * so a 0-candidate focused result falls back to an unfocused observe before the
  * step is declared "absent". Exported for tests.
+ *
+ * `frameTarget` scopes both observe calls to a resolved cross-origin child
+ * frame when the flow declared `frameSelector`; omitted (main frame) is
+ * byte-identical to today's unscoped calls.
  */
 export async function probeStepBeforeAttempts(params: {
   stagehand: Stagehand;
@@ -5060,14 +5142,16 @@ export async function probeStepBeforeAttempts(params: {
   totalSteps?: () => number;
   logger: Logger;
   captureFn?: CaptureFn;
+  frameTarget?: FrameTarget;
 }): Promise<"present" | "absent"> {
-  const { stagehand, step, stepIndex, totalSteps, logger, captureFn } = params;
+  const { stagehand, step, stepIndex, totalSteps, logger, captureFn, frameTarget } = params;
   try {
     const candidates = await guardedObserve(
       stagehand,
       step,
       { timeout: STEP_WATCHDOG_MS },
-      captureFn
+      captureFn,
+      frameTarget
     );
     if (candidates.length === 0) {
       // Focused observe under-returns on some controlled-component forms:
@@ -5085,7 +5169,8 @@ export async function probeStepBeforeAttempts(params: {
         stagehand,
         undefined,
         { timeout: STEP_WATCHDOG_MS },
-        captureFn
+        captureFn,
+        frameTarget
       );
       if (unfocused.length > 0) {
         logger.info(
@@ -5115,6 +5200,15 @@ export async function probeStepBeforeAttempts(params: {
 export async function executeStepWithHealing(params: {
   stagehand: Stagehand;
   page: Page;
+  /**
+   * Resolved cross-origin frame scope (see `resolveFrameTarget`). Every
+   * DOM-direct probe/fill/click in the cascade evaluates/locates against
+   * this instead of `page` directly, so a flow whose form lives inside a
+   * cross-origin `<iframe>` can be driven the same way as a top-frame flow.
+   * Omitted or main-frame-bound (`frame: null`) leaves every call
+   * byte-identical to today.
+   */
+  frameTarget?: FrameTarget;
   step: string;
   /**
    * When true and Stagehand's act+observe finds no candidates, the cascade
@@ -5264,6 +5358,7 @@ export async function executeStepWithHealing(params: {
   const {
     stagehand,
     page,
+    frameTarget,
     step,
     optional,
     upload,
@@ -5327,6 +5422,7 @@ export async function executeStepWithHealing(params: {
   if (
     await tryUploadPrimitive({
       page,
+      target: await resolveFrameTarget(page),
       isUploadStep: upload,
       fixture: resumeFixture,
       logger,
@@ -5345,7 +5441,22 @@ export async function executeStepWithHealing(params: {
   // cascade would otherwise skip them ("no candidates") and leave a required
   // question unanswered. No-op (returns false → falls through) when the step
   // isn't a single-dropdown select or no option matches.
-  if (await trySelectPrimitive({ page, instruction: step, logger, anthropic, captureFn })) {
+  //
+  // resolveFrameTarget(page) resolves synchronously to the main-frame target
+  // when no frameSelector is set, so this bridge is behavior-identical for
+  // every existing site until the sibling subtask threads a resolved target
+  // through end-to-end.
+  const selectFrameTarget = await resolveFrameTarget(page);
+  if (
+    await trySelectPrimitive({
+      page,
+      target: selectFrameTarget,
+      instruction: step,
+      logger,
+      anthropic,
+      captureFn,
+    })
+  ) {
     logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by select primitive`);
     trajectory?.push({ stepIndex, verifiedBy: "dom" });
     return "completed";
@@ -5356,7 +5467,16 @@ export async function executeStepWithHealing(params: {
   // screening questions this way — answer it directly in the DOM. Runs AFTER
   // trySelectPrimitive (which handles <select> and no-ops on checkbox-only
   // pages). No-op (falls through) when there's no checkbox group or no match.
-  if (await tryCheckboxPrimitive({ page, instruction: step, logger, anthropic, captureFn })) {
+  if (
+    await tryCheckboxPrimitive({
+      page,
+      target: selectFrameTarget,
+      instruction: step,
+      logger,
+      anthropic,
+      captureFn,
+    })
+  ) {
     logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by checkbox primitive`);
     trajectory?.push({ stepIndex, verifiedBy: "dom" });
     return "completed";
@@ -5368,7 +5488,16 @@ export async function executeStepWithHealing(params: {
   // reach the observe cascade's el.click() fallback that fails to commit MUI/
   // React controlled state (the wizard ATS's Basic-Info Step-2 wall). No-op (falls
   // through) when there's no radio group or no confident option match.
-  if (await tryRadioPrimitive({ page, instruction: step, logger, anthropic, captureFn })) {
+  if (
+    await tryRadioPrimitive({
+      page,
+      target: mainFrameTarget(page),
+      instruction: step,
+      logger,
+      anthropic,
+      captureFn,
+    })
+  ) {
     logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by radio primitive`);
     trajectory?.push({ stepIndex, verifiedBy: "dom" });
     return "completed";
@@ -5381,7 +5510,14 @@ export async function executeStepWithHealing(params: {
   // catch-all (parseSelectStep returns null there, so trySelectPrimitive above
   // skipped it) and no-ops when the page has no required-empty select.
   if (
-    await tryFillRequiredSelectsPrimitive({ page, instruction: step, logger, anthropic, captureFn })
+    await tryFillRequiredSelectsPrimitive({
+      page,
+      target: selectFrameTarget,
+      instruction: step,
+      logger,
+      anthropic,
+      captureFn,
+    })
   ) {
     logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by required-select primitive`);
     trajectory?.push({ stepIndex, verifiedBy: "dom" });
@@ -5404,6 +5540,7 @@ export async function executeStepWithHealing(params: {
     totalSteps,
     logger,
     captureFn,
+    frameTarget,
   });
   if (probeResult === "absent") {
     if (optional) {
@@ -5411,7 +5548,7 @@ export async function executeStepWithHealing(params: {
       // control this step was meant to answer (SPA hydration lag / observe
       // can't resolve the widget) — skipping would leave a required field empty
       // and silently doom the later submit. Fall through to the cascade instead.
-      if (await hasUnfilledRequiredControlForStep(page, step)) {
+      if (await hasUnfilledRequiredControlForStep(mainFrameTarget(page), step)) {
         logger.info(
           `${formatStepPrefix(stepIndex, totalSteps)} probe-absent but a required unfilled control matches the question; NOT skipping (escalating to cascade)`
         );
@@ -5467,7 +5604,7 @@ export async function executeStepWithHealing(params: {
     // throw message so the existing regex at the dispatcher (`/see
     // (\/[^\s]+)$/`) extracts dumpPath for replanRemainingFlow.
     const pageTitle = await page.title().catch(() => "");
-    const bodyOuterHtmlRaw = await page
+    const bodyOuterHtmlRaw = await (frameTarget ?? page)
       .evaluate("document.body ? document.body.outerHTML : null")
       .catch(() => null);
     const bodyOuterHtml =
@@ -5476,7 +5613,8 @@ export async function executeStepWithHealing(params: {
       stagehand,
       undefined,
       { timeout: STEP_WATCHDOG_MS },
-      captureFn
+      captureFn,
+      frameTarget
     ).catch(() => [] as Action[]);
     const dumpPath =
       onStepFailure?.({
@@ -5515,10 +5653,12 @@ export async function executeStepWithHealing(params: {
   // form-validity auto-picker runs. The early-exit predicate compares this
   // to the post-attempt-1 count to detect "the click revealed NEW required
   // fields" — a state attempts 2-5 mathematically can't clear.
-  const preSubmitInvalidCount = requireSubmitEndpoint ? await countNgInvalidContainers(page) : 0;
+  const preSubmitInvalidCount = requireSubmitEndpoint
+    ? await countNgInvalidContainers(mainFrameTarget(page))
+    : 0;
   if (requireSubmitEndpoint) {
     const invalidControls = await probeFormValidityBeforeSubmit({
-      page,
+      target: await resolveFrameTarget(page),
       stepIndex,
       totalSteps,
       logger,
@@ -5623,7 +5763,7 @@ export async function executeStepWithHealing(params: {
       await page.waitForTimeout(attempt * ATTEMPT_BACKOFF_MS);
     }
 
-    const pre = await snapshotPage(page, signalCounter);
+    const pre = await snapshotPage(mainFrameTarget(page), signalCounter);
     // Snapshot the meta-tail length so the final-step pattern gate can scope
     // its URL scan to captures added DURING this attempt (not historical
     // tail from earlier steps).
@@ -5705,7 +5845,9 @@ export async function executeStepWithHealing(params: {
         for (let deepAttempt = 1; deepAttempt <= 2; deepAttempt++) {
           let ranked: SubmitCandidate[];
           try {
-            ranked = (await page.evaluate(buildRankSubmitCandidatesExpr())) as SubmitCandidate[];
+            ranked = (await (frameTarget ?? page).evaluate(
+              buildRankSubmitCandidatesExpr()
+            )) as SubmitCandidate[];
           } catch (err) {
             // A thrown evaluate (page navigated away / frame detached) is not
             // a stale-index race — re-ranking a detached page will throw
@@ -5724,7 +5866,9 @@ export async function executeStepWithHealing(params: {
           triedSelectors.push(`deep-index:${top.deepIndex}`);
           let clickResult: { clicked: boolean };
           try {
-            clickResult = (await page.evaluate(buildClickByDeepIndexExpr(top.deepIndex))) as {
+            clickResult = (await (frameTarget ?? page).evaluate(
+              buildClickByDeepIndexExpr(top.deepIndex)
+            )) as {
               clicked: boolean;
             };
           } catch (err) {
@@ -5756,7 +5900,7 @@ export async function executeStepWithHealing(params: {
             // burn the step budget probing all of them.
             const runnerUp = ranked[1];
             if (runnerUp) {
-              const midPost = await snapshotPage(page, signalCounter);
+              const midPost = await snapshotPage(mainFrameTarget(page), signalCounter);
               const topVerdict = classifyPhantomClick({
                 actResultSuccess: true,
                 pre,
@@ -5772,7 +5916,7 @@ export async function executeStepWithHealing(params: {
                   `deep-index:${runnerUp.deepIndex}`,
                 ];
                 triedSelectors.push(`deep-index:${runnerUp.deepIndex}`);
-                const runnerUpClickResult = (await page
+                const runnerUpClickResult = (await (frameTarget ?? page)
                   .evaluate(buildClickByDeepIndexExpr(runnerUp.deepIndex))
                   .catch(() => ({ clicked: false }))) as { clicked: boolean };
                 record.actResultSuccess = runnerUpClickResult.clicked;
@@ -5810,7 +5954,13 @@ export async function executeStepWithHealing(params: {
           attempt === 4 && triedSelectors.length > 0
             ? { ignoreSelectors: [...triedSelectors], timeout: STEP_WATCHDOG_MS }
             : { timeout: STEP_WATCHDOG_MS };
-        const candidates = await guardedObserve(stagehand, step, observeOptions, captureFn);
+        const candidates = await guardedObserve(
+          stagehand,
+          step,
+          observeOptions,
+          captureFn,
+          frameTarget
+        );
         if (candidates.length === 0) {
           record.errorMessage = "observe returned no candidates";
           // Optional-step short-circuit: when attempt 2 confirms no candidates
@@ -5831,7 +5981,7 @@ export async function executeStepWithHealing(params: {
             // still-empty control matching this step's question is present,
             // don't fast-skip — let the healing cascade continue so the
             // required field gets answered instead of silently doomed.
-            if (await hasUnfilledRequiredControlForStep(page, step)) {
+            if (await hasUnfilledRequiredControlForStep(mainFrameTarget(page), step)) {
               logger.info(
                 `${formatStepPrefix(stepIndex, totalSteps)} no candidates after act+observe but a required unfilled control matches; NOT skipping (continuing cascade)`
               );
@@ -5900,7 +6050,12 @@ export async function executeStepWithHealing(params: {
           ) {
             const fillValue = target.arguments[0];
             if (typeof fillValue === "string") {
-              const dateFill = await fillHtml5DateTimeInput(page, target.selector, fillValue);
+              const frameTarget = await resolveFrameTarget(page);
+              const dateFill = await fillHtml5DateTimeInput(
+                frameTarget,
+                target.selector,
+                fillValue
+              );
               if (dateFill !== null) {
                 record.errorMessage = dateFill.filled
                   ? `html5-date-fallback: filled ${dateFill.inputType}="${dateFill.postValue}"`
@@ -5919,7 +6074,7 @@ export async function executeStepWithHealing(params: {
                 // component rejection, masked-input library reformatting).
                 // Generic primitive that the verifier's existing signals
                 // (network/url/dom/htmlDelta/textChanged) miss.
-                const readback = await verifyFillReadback(page, target.selector, fillValue);
+                const readback = await verifyFillReadback(frameTarget, target.selector, fillValue);
                 if (readback !== null) {
                   if (readback.outcome === "rejected") {
                     record.errorMessage = `fill-value-rejected: tried "${fillValue.slice(0, 60)}" on <${readback.tag}>; element value remains empty (silent rejection — HTML5 type validation, framework controlled-component, or masked-input library)`;
@@ -6036,7 +6191,8 @@ export async function executeStepWithHealing(params: {
             return { resolved: true, isCheckable: true, checked: false, strategyUsed: null };
           })()`;
           try {
-            const result = await page.evaluate(probeExpr);
+            const structuredClickTarget = await resolveFrameTarget(page);
+            const result = await structuredClickTarget.evaluate(probeExpr);
             if (result !== null && typeof result === "object" && "resolved" in result) {
               const probe = result as {
                 resolved: boolean;
@@ -6093,7 +6249,7 @@ export async function executeStepWithHealing(params: {
           // Fetch live-page evidence so the rephrase prompt can reason about
           // form state, not just observe candidates. Mirrors the same
           // extraction the cascade-exhaust dump path already does.
-          const livePageEvidence = await extractLivePageFormEvidence(page, {
+          const livePageEvidence = await extractLivePageFormEvidence(page, mainFrameTarget(page), {
             client: anthropic,
             knownErrorClassPrefixes,
             captureFn,
@@ -6176,7 +6332,7 @@ export async function executeStepWithHealing(params: {
     }
 
     await page.waitForTimeout(STEP_PAUSE_MS);
-    const post = await snapshotPage(page, signalCounter);
+    const post = await snapshotPage(mainFrameTarget(page), signalCounter);
     record.post = post;
 
     if (resolvedAction) {
@@ -6197,7 +6353,7 @@ export async function executeStepWithHealing(params: {
     // decides those. Radios/checkboxes are click-but-no-network just like fills.
     const domVerified =
       resolvedAction !== null && (isStateClass || isClick)
-        ? await verifyDomEffect(page, resolvedAction)
+        ? await verifyDomEffect(page, await resolveFrameTarget(page), resolvedAction)
         : false;
     // Interior-advance transition gate (opt-in). On SPAs where a page advance
     // and a mere field-edit share one endpoint URL (the wizard ATS's `/gq`:
@@ -6297,7 +6453,8 @@ export async function executeStepWithHealing(params: {
             return null;
           })()`;
         try {
-          domSubmittedMatch = (await page.evaluate(probeExpr)) as string | null;
+          const submittedStateTarget = await resolveFrameTarget(page);
+          domSubmittedMatch = (await submittedStateTarget.evaluate(probeExpr)) as string | null;
         } catch (err) {
           logger.warn(
             `submitted-state DOM probe threw: ${toErrorMessage(err)} — judge will reason without it`
@@ -6317,7 +6474,9 @@ export async function executeStepWithHealing(params: {
       // Quick invalid-marker count (deterministic DOM querying — counting
       // structural ng-invalid containers is not fuzzy matching, just
       // observing existence).
-      const invalidMarkerCount = await countNgInvalidContainers(page).catch(() => 0);
+      const invalidMarkerCount = await countNgInvalidContainers(mainFrameTarget(page)).catch(
+        () => 0
+      );
 
       const pageTitle = await page.title().catch(() => "");
       const matchedSubmittedSelectors = domSubmittedMatch !== null ? [domSubmittedMatch] : [];
@@ -6443,7 +6602,8 @@ export async function executeStepWithHealing(params: {
           // reliably trigger that default action — same gap N+42 documented
           // for direct checkbox/radio clicks.
           const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); let el = r.singleNodeValue; if (!el || typeof el.click !== "function") return { fired: false }; if (el.tagName === "LABEL") { const wrapped = el.querySelector("input[type=checkbox], input[type=radio]"); if (wrapped) el = wrapped; } if (el.type === "checkbox" || el.type === "radio") { el.checked = true; el.dispatchEvent(new Event("click", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { fired: true, kind: "checkbox", checked: el.checked }; } el.click(); return { fired: true, kind: "click" }; })()`;
-          const probeResult = (await page.evaluate(clickExpr)) as {
+          const n16FallbackTarget = await resolveFrameTarget(page);
+          const probeResult = (await n16FallbackTarget.evaluate(clickExpr)) as {
             fired: boolean;
             kind?: string;
             checked?: boolean;
@@ -6470,7 +6630,7 @@ export async function executeStepWithHealing(params: {
               }
               return false;
             })()`;
-            ancestorStillInvalid = (await page
+            ancestorStillInvalid = (await n16FallbackTarget
               .evaluate(ancestorInvalidExpr)
               .catch(() => false)) as boolean;
           }
@@ -6479,7 +6639,7 @@ export async function executeStepWithHealing(params: {
             probeResult.checked === true &&
             !ancestorStillInvalid;
           await page.waitForTimeout(STEP_PAUSE_MS);
-          const retryPost = await snapshotPage(page, signalCounter);
+          const retryPost = await snapshotPage(mainFrameTarget(page), signalCounter);
           const retryNetworkFired = retryPost.networkCount > pre.networkCount;
           const retryUrlChanged = retryPost.url !== pre.url;
           const retryHtmlDelta = retryPost.bodyHtmlLength - pre.bodyHtmlLength;
@@ -6498,7 +6658,8 @@ export async function executeStepWithHealing(params: {
           const clickWasDomOnly =
             probeResult.kind === "click" && !retryNetworkFired && !retryUrlChanged;
           const clickBlockedByInvalid =
-            clickWasDomOnly && (await countNgInvalidContainers(page).catch(() => 0)) > 0;
+            clickWasDomOnly &&
+            (await countNgInvalidContainers(mainFrameTarget(page)).catch(() => 0)) > 0;
           // Advance-transition gate (same as the primary verifier, applied to the
           // n+16 fallback). RC2: for a non-submit ADVANCE/"Next" step (per the
           // ORIGINAL instruction) the fallback's positive signals — a network POST
@@ -6566,7 +6727,9 @@ export async function executeStepWithHealing(params: {
                   return null;
                 })()`;
               try {
-                domSubmittedMatch = (await page.evaluate(probeExpr)) as string | null;
+                domSubmittedMatch = (await (frameTarget ?? page).evaluate(probeExpr)) as
+                  | string
+                  | null;
               } catch (err) {
                 logger.warn(`n+16 submitted-state DOM probe threw: ${toErrorMessage(err)}`);
               }
@@ -6576,9 +6739,12 @@ export async function executeStepWithHealing(params: {
               stagehand,
               undefined,
               { timeout: STEP_WATCHDOG_MS },
-              captureFn
+              captureFn,
+              frameTarget
             ).catch(() => [] as Action[]);
-            const invalidMarkerCount = await countNgInvalidContainers(page).catch(() => 0);
+            const invalidMarkerCount = await countNgInvalidContainers(mainFrameTarget(page)).catch(
+              () => 0
+            );
             const pageTitle = await page.title().catch(() => "");
             const matchedSubmittedSelectors = domSubmittedMatch !== null ? [domSubmittedMatch] : [];
 
@@ -6706,7 +6872,7 @@ export async function executeStepWithHealing(params: {
     // dumps in a 2026-06-10 survey had the paired touched+dirty + visible
     // error text pattern with 3 distinct rejection messages.
     if (record.resolvedMethod === "click" && (isFinalStep || submitStep)) {
-      const live = await extractLivePageFormEvidence(page, {
+      const live = await extractLivePageFormEvidence(page, mainFrameTarget(page), {
         client: anthropic,
         knownErrorClassPrefixes,
         captureFn,
@@ -6759,7 +6925,7 @@ export async function executeStepWithHealing(params: {
           `${formatStepPrefix(stepIndex, totalSteps)} phantom click detected on attempt 1 (${record.technique}): reported success with no network/url/dom change${suppressedCount !== undefined ? `; ${suppressedCount} AISDK elementId errors suppressed this session (corroborating, not causal)` : ""} — ${escalationTarget}`
         );
       }
-      const postAttemptInvalidCount = await countNgInvalidContainers(page);
+      const postAttemptInvalidCount = await countNgInvalidContainers(mainFrameTarget(page));
       const earlyExit = isSubmitRevealedInvalid({
         // Treat the canonical submit click as "final" for this predicate
         // even when it lives mid-flow. See requireSubmitEndpoint derivation
@@ -6805,13 +6971,14 @@ export async function executeStepWithHealing(params: {
     stagehand,
     step,
     { timeout: STEP_WATCHDOG_MS },
-    captureFn
+    captureFn,
+    frameTarget
   ).catch(() => [] as Action[]);
   const pageTitle = await page.title().catch(() => "");
   // Discriminator data for "Stagehand sees nothing" failures: capture the raw
   // DOM and an unfocused observe so a triager can tell empty-page from
   // Stagehand-can't-see-it without reproducing the failure.
-  const bodyOuterHtmlRaw = await page
+  const bodyOuterHtmlRaw = await (frameTarget ?? page)
     .evaluate("document.body ? document.body.outerHTML : null")
     .catch(() => null);
   const bodyOuterHtml =
@@ -6820,7 +6987,8 @@ export async function executeStepWithHealing(params: {
     stagehand,
     undefined,
     { timeout: STEP_WATCHDOG_MS },
-    captureFn
+    captureFn,
+    frameTarget
   ).catch(() => [] as Action[]);
   const dumpPath =
     onStepFailure?.({
@@ -6980,6 +7148,9 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
   let submitStepSkipped = false;
   let lastStepIndex = -1;
 
+  const frameTarget = await resolveFrameTarget(page, deps.frameSelector);
+  await waitForChildFrameReady(frameTarget);
+
   const stopCapture = wireSignalCapture(page, {
     counter,
     signalCounter,
@@ -7020,6 +7191,7 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
         anthropic,
         logger,
         resumeFixture,
+        frameTarget,
         isFinalStep: i === steps.length - 1,
         submitEndpointPattern: deps.submitEndpointPattern ?? null,
         submittedStateSelectors: deps.submittedStateSelectors ?? [],

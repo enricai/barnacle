@@ -96,6 +96,7 @@ import {
   waitForSpaReady,
   wireSignalCapture,
 } from "@/scraper/flow-runner";
+import { mainFrameTarget, resolveFrameTarget } from "@/scraper/frame-target";
 import { createBrowserSession, type ProviderName } from "@/scraper/session";
 import { guardedObserve } from "@/scraper/stagehand-guard";
 import { filterByCallType, parseSamples } from "@/scripts/judge-llm-batch";
@@ -1031,7 +1032,7 @@ async function readFailureDumpEvidence(
     // dump-based Haiku judge only when the live probe returns empty or
     // when no page is in scope (tests). See `probeLeafInvalidContainers`
     // docs for the rationale.
-    const leafFields = page ? await probeLeafInvalidContainers(page) : [];
+    const leafFields = page ? await probeLeafInvalidContainers(await resolveFrameTarget(page)) : [];
 
     const [unfocusedList, invalidVerdict, errorVerdict] = await Promise.all([
       renderUnfocusedObserve(dump.unfocusedObserve ?? [], { client, captureFn }),
@@ -1530,6 +1531,7 @@ function parseCli(): {
   advancedStealth: boolean;
   dumpDomBeforeStep: number | null;
   allocateEmailEnvVar: string | null;
+  frameSelector: string | null;
   submitEndpointPattern: string | null;
   submittedStateSelectors: string[];
   requireSubmitEndpointMatch: boolean;
@@ -1625,6 +1627,7 @@ function parseCli(): {
       advancedStealth,
       dumpDomBeforeStep,
       allocateEmailEnvVar,
+      frameSelector: null,
       submitEndpointPattern: null,
       submittedStateSelectors: [],
       requireSubmitEndpointMatch: false,
@@ -1644,6 +1647,7 @@ function parseCli(): {
     process.exit(1);
   }
   const stepsRaw = Array.isArray(parsed.data) ? parsed.data : parsed.data.steps;
+  const frameSelector = Array.isArray(parsed.data) ? null : (parsed.data.frameSelector ?? null);
   const submitEndpointPattern = Array.isArray(parsed.data)
     ? null
     : (parsed.data.submitEndpointPattern ?? null);
@@ -1695,6 +1699,7 @@ function parseCli(): {
     advancedStealth,
     dumpDomBeforeStep,
     allocateEmailEnvVar,
+    frameSelector,
     submitEndpointPattern,
     submittedStateSelectors,
     requireSubmitEndpointMatch,
@@ -1747,6 +1752,7 @@ async function main(): Promise<void> {
     advancedStealth,
     dumpDomBeforeStep,
     allocateEmailEnvVar,
+    frameSelector,
     submitEndpointPattern,
     submittedStateSelectors,
     requireSubmitEndpointMatch,
@@ -1987,10 +1993,20 @@ async function main(): Promise<void> {
       // INDEX before the step so findWizardRestartSignal scans only URLs that
       // landed during THIS step's processing (eviction-proof disk scan).
       const preCaptureIdxBeforeStep = latestCaptureIndex(recentCaptures);
+      // Resolved fresh per step (not cached across the run) so a cross-origin
+      // iframe that attaches mid-flow (e.g. after an "Apply" click reveals a
+      // wizard embedded later in the DOM) is picked up as soon as it's
+      // reachable, and so a replan-appended step — spliced into `plan` after
+      // this loop already started — resolves the same frame instead of
+      // silently reverting to the main frame. `resolveFrameTarget` falls back
+      // to the main-frame target when `frameSelector` is null/unresolvable,
+      // so this is a no-op for every flow that doesn't declare one.
+      const frameTarget = await resolveFrameTarget(page, frameSelector);
       try {
         const stepOutcome = await executeStepWithHealing({
           stagehand,
           page,
+          frameTarget,
           step: step.instruction,
           optional: step.optional,
           upload: step.upload,
@@ -2215,10 +2231,12 @@ async function main(): Promise<void> {
           throw new StepVerificationError(noProgressMessage, "replan-cycle-detected");
         }
 
-        const currentPageState = await snapshotPage(page, signalCounter).catch(() => ({
-          url: page.url(),
-          bodyHtmlLength: 0,
-        }));
+        const currentPageState = await snapshotPage(mainFrameTarget(page), signalCounter).catch(
+          () => ({
+            url: page.url(),
+            bodyHtmlLength: 0,
+          })
+        );
         if (
           isReplanCycle(replanEvents, newSteps, {
             url: currentPageState.url,
@@ -2441,11 +2459,14 @@ export {
   writeFixtureToTempFile,
 } from "@/scraper/flow-runner";
 export type { NormalizedStep, ReplanEvent };
-// Test-only exports — allow unit tests to inject a fake capture sink without
-// touching the main() entry-point or the real browser session.
+// Test-only exports — `main` is never invoked automatically on import (guarded
+// by the process.argv[1] check below), so a test driving it end-to-end with a
+// mocked browser session cannot trigger a real recon run.
 export {
   dedupeConsecutiveIdentical,
   denormalizeStep,
+  main,
+  parseCli,
   persistReplannedFlow,
   readFailureDumpEvidence,
   replanRemainingFlow,
