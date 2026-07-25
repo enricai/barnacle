@@ -21,7 +21,9 @@ describe("emitBrowserFlowTs — frameSelector emission into runHealingFlow", () 
       frameSelector: "#talemetry_apply_iframe",
     });
 
-    expect(code).toMatch(/runHealingFlow\(\{[\s\S]*frameSelector: "#talemetry_apply_iframe",[\s\S]*\}\)/);
+    expect(code).toMatch(
+      /runHealingFlow\(\{[\s\S]*frameSelector: "#talemetry_apply_iframe",[\s\S]*\}\)/
+    );
   });
 
   it("omits the frameSelector key entirely when the flow declares none — byte-identical to today's output for every existing site", () => {
