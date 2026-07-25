@@ -523,10 +523,19 @@ const RECON_FLOW_SCHEMA = z.array(RECON_FLOW_STEP_SCHEMA).min(1);
  *
  * Both forms route through `parseReconFlow` into a shared internal record.
  */
-const RECON_FLOW_FILE_SCHEMA = z.union([
+export const RECON_FLOW_FILE_SCHEMA = z.union([
   RECON_FLOW_SCHEMA,
   z.object({
     steps: RECON_FLOW_SCHEMA,
+    /**
+     * CSS selector of a cross-origin `<iframe>` the flow's target elements
+     * live inside (e.g. a Talemetry wizard embedded rather than top-window
+     * navigated). Mirrors `flowSchema.frameSelector` in
+     * `src/plugins/config-plugin.ts` so a hand-authored recon flow file and
+     * a config-plugin manifest use the same declaration. Omitted (default)
+     * preserves today's behavior: the flow drives the main frame.
+     */
+    frameSelector: z.string().min(1).optional(),
     submitEndpointPattern: z.string().min(1).optional(),
     submittedStateSelectors: z.array(z.string().min(1)).optional(),
     /**
