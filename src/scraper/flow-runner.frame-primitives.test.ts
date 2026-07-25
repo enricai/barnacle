@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   countNgInvalidContainers,
   fillHtml5DateTimeInput,
+  pollEnumerate,
   probeLeafInvalidContainers,
   snapshotPage,
   verifyFillReadback,
@@ -37,6 +38,7 @@ function makeFakePage(evaluateImpl: (expr: unknown) => Promise<unknown>) {
     locator: vi.fn().mockImplementation((selector: string) => ({ scope: "main", selector })),
     url: () => "https://careers.uchealth.org/jobs/123",
     title: async () => "main document title",
+    waitForTimeout: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -261,5 +263,82 @@ describe("flow-runner/verifyFillReadback", () => {
     const target = makeFakeTarget(vi.fn().mockRejectedValue(new Error("detached")));
 
     expect(await verifyFillReadback(target, "/html/body/input[1]", "Jane")).toBeNull();
+  });
+});
+
+describe("flow-runner/pollEnumerate (file-upload locator path)", () => {
+  const fileInputExpr = "document.querySelectorAll('input[type=file]').length";
+
+  it("evaluates via the resolved child frame, not page.evaluate — proves the upload widget's presence probe is frame-scoped", async () => {
+    const page = { waitForTimeout: vi.fn().mockResolvedValue(undefined) };
+    const targetEvaluate = vi.fn().mockResolvedValue(1);
+    const target = makeFakeTarget(targetEvaluate);
+
+    const count = await pollEnumerate<number>(
+      page as never,
+      target,
+      fileInputExpr,
+      (n) => (n ?? 0) > 0
+    );
+
+    expect(count).toBe(1);
+    expect(targetEvaluate).toHaveBeenCalledTimes(1);
+    expect(targetEvaluate).toHaveBeenCalledWith(fileInputExpr);
+    expect(page.waitForTimeout).not.toHaveBeenCalled();
+  });
+
+  it("behaves byte-identically for a main-frame target: delegates to page.evaluate", async () => {
+    const page = makeFakePage(async () => 1);
+
+    const count = await pollEnumerate<number>(
+      page as never,
+      mainFrameTarget(page as never),
+      fileInputExpr,
+      (n) => (n ?? 0) > 0
+    );
+
+    expect(count).toBe(1);
+    expect(page.evaluate).toHaveBeenCalledTimes(1);
+    expect(page.evaluate).toHaveBeenCalledWith(fileInputExpr, undefined);
+  });
+
+  it("re-polls the child frame on its own evaluate until the input mounts, using page.waitForTimeout between attempts", async () => {
+    const page = { waitForTimeout: vi.fn().mockResolvedValue(undefined) };
+    const targetEvaluate = vi
+      .fn()
+      .mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(1);
+    const target = makeFakeTarget(targetEvaluate);
+
+    const count = await pollEnumerate<number>(
+      page as never,
+      target,
+      fileInputExpr,
+      (n) => (n ?? 0) > 0,
+      { attempts: 5, intervalMs: 10 }
+    );
+
+    expect(count).toBe(1);
+    expect(targetEvaluate).toHaveBeenCalledTimes(3);
+    expect(page.waitForTimeout).toHaveBeenCalledTimes(2);
+    expect(page.waitForTimeout).toHaveBeenCalledWith(10);
+  });
+
+  it("returns the last (absent) result once attempts are exhausted, so the caller falls through to click-to-surface", async () => {
+    const page = { waitForTimeout: vi.fn().mockResolvedValue(undefined) };
+    const targetEvaluate = vi.fn().mockResolvedValue(0);
+    const target = makeFakeTarget(targetEvaluate);
+
+    const count = await pollEnumerate<number>(
+      page as never,
+      target,
+      fileInputExpr,
+      (n) => (n ?? 0) > 0,
+      { attempts: 3, intervalMs: 5 }
+    );
+
+    expect(count).toBe(0);
+    expect(targetEvaluate).toHaveBeenCalledTimes(3);
   });
 });
