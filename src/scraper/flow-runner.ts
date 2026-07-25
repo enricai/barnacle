@@ -39,7 +39,11 @@ import {
 } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
 import { type RunHealingFlowResult, StepVerificationError } from "@/scraper/errors";
-import type { FrameTarget } from "@/scraper/frame-target";
+import {
+  type FrameTarget,
+  resolveFrameTarget,
+  waitForChildFrameReady,
+} from "@/scraper/frame-target";
 import { classifyPhantomClick, type PhantomClickVerdict } from "@/scraper/phantom-click";
 import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
 import {
@@ -6981,6 +6985,9 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
   let submitStepSkipped = false;
   let lastStepIndex = -1;
 
+  const frameTarget = await resolveFrameTarget(page, deps.frameSelector);
+  await waitForChildFrameReady(frameTarget);
+
   const stopCapture = wireSignalCapture(page, {
     counter,
     signalCounter,
@@ -7005,7 +7012,11 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
         );
       }
       lastStepIndex = i;
-      const outcome = await executeStepWithHealing({
+      // Built as a variable (not passed inline) so the frameTarget field —
+      // consumed only once the sibling region migrates executeStepWithHealing's
+      // DOM-direct helpers to it — doesn't trip excess-property checking
+      // against that function's not-yet-updated params type.
+      const stepArgs = {
         stagehand,
         page,
         step: s.instruction,
@@ -7021,6 +7032,7 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
         anthropic,
         logger,
         resumeFixture,
+        frameTarget,
         isFinalStep: i === steps.length - 1,
         submitEndpointPattern: deps.submitEndpointPattern ?? null,
         submittedStateSelectors: deps.submittedStateSelectors ?? [],
@@ -7031,7 +7043,8 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
         ownBackendHostnames: deps.ownBackendHostnames ?? [],
         knownErrorClassPrefixes: deps.knownErrorClassPrefixes ?? [],
         wizardExitButtonLabels: deps.wizardExitButtonLabels ?? [],
-      });
+      };
+      const outcome = await executeStepWithHealing(stepArgs);
       if (s.submitStep) {
         if (outcome === "skipped") {
           submitStepSkipped = true;
