@@ -148,7 +148,10 @@ describe("recon-browser CLI/main — frameSelector reaches executeStepWithHealin
       off: (): void => {},
     };
     const childFrame = {
-      evaluate: vi.fn().mockResolvedValue(opts.frameUrl ?? ""),
+      evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+        if (typeof expr === "string" && expr.includes("readyState")) return "complete";
+        return opts.frameUrl ?? "";
+      }),
     };
     const page = {
       goto: vi.fn().mockResolvedValue(undefined),
@@ -281,5 +284,173 @@ describe("recon-browser CLI/main — frameSelector reaches executeStepWithHealin
     expect(callArgs.frameTarget?.frame).toBeNull();
     expect(callArgs.frameTarget?.frameSelector).toBeNull();
     expect(callArgs.frameTarget?.frameSelector).not.toBe("");
+  });
+
+  it("forwards a child-bound FrameTarget for step 2 when the iframe only mounts mid-flow, after step 1 ran", async () => {
+    // Models the UCHealth repro: `#talemetry_apply_iframe` is absent from the
+    // DOM and from page.frames() while step 1 ("Apply now") runs against the
+    // main document, and only exists once step 1 has completed — proving the
+    // CLI's per-step resolveFrameTarget call (not merely a resolve-once-at-
+    // start) is what lands step 2 on the child frame.
+    let iframeMounted = false;
+    const session = {
+      on: (): void => {},
+      off: (): void => {},
+    };
+    const childFrame = {
+      evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+        if (typeof expr === "string" && expr.includes("readyState")) return "complete";
+        return "https://apply.talemetry.com/application/abc-123";
+      }),
+    };
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      url: (): string => "https://careers.uchealth.org/apply",
+      title: vi.fn().mockResolvedValue("Apply"),
+      evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+        if (typeof expr === "string" && expr.includes("document.body")) {
+          return 10_000;
+        }
+        if (typeof expr === "string" && expr.includes("querySelector")) {
+          return iframeMounted ? "https://apply.talemetry.com/application/abc-123" : null;
+        }
+        return null;
+      }),
+      frames: vi.fn().mockImplementation(() => (iframeMounted ? [childFrame] : [])),
+      getSessionForFrame: () => session,
+      mainFrameId: () => "main",
+      sendCDP: vi.fn().mockResolvedValue({ cookies: [] }),
+    } as unknown as Page;
+    const stagehand = {
+      context: { awaitActivePage: async (): Promise<Page> => page },
+    } as unknown as Stagehand;
+    vi.mocked(createBrowserSession).mockResolvedValue({
+      stagehand,
+      limiter: {} as never,
+      sessionId: "test-session",
+      provider: "browserbase",
+      close: vi.fn().mockResolvedValue(undefined),
+    } as never);
+    executeStepWithHealingStub.mockImplementation(async () => {
+      iframeMounted = true;
+      return "ok";
+    });
+
+    process.argv = [
+      "node",
+      "recon-browser.ts",
+      "--url",
+      "https://careers.uchealth.org/apply",
+      "--flow",
+      JSON.stringify({
+        steps: ["Click Apply now", "Click Manual Application"],
+        frameSelector: "#talemetry_apply_iframe",
+      }),
+    ];
+
+    await main();
+
+    expect(executeStepWithHealingStub).toHaveBeenCalledTimes(2);
+    const firstCallArgs = executeStepWithHealingStub.mock.calls[0]?.[0] as {
+      frameTarget?: FrameTarget;
+    };
+    const secondCallArgs = executeStepWithHealingStub.mock.calls[1]?.[0] as {
+      frameTarget?: FrameTarget;
+    };
+    expect(firstCallArgs.frameTarget?.frame).toBeNull();
+    expect(secondCallArgs.frameTarget?.frame).not.toBeNull();
+    expect(secondCallArgs.frameTarget?.frameSelector).toBe("#talemetry_apply_iframe");
+    // Proves the CLI actually awaited readiness on the resolved child frame
+    // (not merely resolved it) before handing it to executeStepWithHealing —
+    // the residual bug per the report was the resolve racing the iframe's
+    // own navigation, not a missing re-resolve.
+    const readyStateCalled = childFrame.evaluate.mock.calls.some(
+      (call) => typeof call[0] === "string" && call[0].includes("readyState")
+    );
+    expect(readyStateCalled).toBe(true);
+  });
+
+  it("does not enter the cascade against an unnavigated child frame — waits for readyState before step 2 runs", async () => {
+    // Same mid-flow mount as above, but the child frame sits on about:blank
+    // ("loading") for the first two readiness polls before its own
+    // navigation lands. This is the exact residual-bug window named in the
+    // report: the iframe is attached (page.frames() has it) at the instant
+    // resolveFrameTarget runs, but its document is not yet interactive, so a
+    // CLI that resolved and immediately proceeded would hand
+    // executeStepWithHealing a frame still showing 0 candidates.
+    let iframeMounted = false;
+    const session = {
+      on: (): void => {},
+      off: (): void => {},
+    };
+    const readyStates = ["loading", "loading", "complete"];
+    const childFrame = {
+      evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+        if (typeof expr === "string" && expr.includes("readyState")) {
+          return readyStates.shift() ?? "complete";
+        }
+        return "https://apply.talemetry.com/application/abc-123";
+      }),
+    };
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      url: (): string => "https://careers.uchealth.org/apply",
+      title: vi.fn().mockResolvedValue("Apply"),
+      evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+        if (typeof expr === "string" && expr.includes("document.body")) {
+          return 10_000;
+        }
+        if (typeof expr === "string" && expr.includes("querySelector")) {
+          return iframeMounted ? "https://apply.talemetry.com/application/abc-123" : null;
+        }
+        return null;
+      }),
+      frames: vi.fn().mockImplementation(() => (iframeMounted ? [childFrame] : [])),
+      getSessionForFrame: () => session,
+      mainFrameId: () => "main",
+      sendCDP: vi.fn().mockResolvedValue({ cookies: [] }),
+    } as unknown as Page;
+    const stagehand = {
+      context: { awaitActivePage: async (): Promise<Page> => page },
+    } as unknown as Stagehand;
+    vi.mocked(createBrowserSession).mockResolvedValue({
+      stagehand,
+      limiter: {} as never,
+      sessionId: "test-session",
+      provider: "browserbase",
+      close: vi.fn().mockResolvedValue(undefined),
+    } as never);
+    executeStepWithHealingStub.mockImplementation(async () => {
+      iframeMounted = true;
+      return "ok";
+    });
+
+    process.argv = [
+      "node",
+      "recon-browser.ts",
+      "--url",
+      "https://careers.uchealth.org/apply",
+      "--flow",
+      JSON.stringify({
+        steps: ["Click Apply now", "Click Manual Application"],
+        frameSelector: "#talemetry_apply_iframe",
+      }),
+    ];
+
+    await main();
+
+    expect(executeStepWithHealingStub).toHaveBeenCalledTimes(2);
+    const secondCallArgs = executeStepWithHealingStub.mock.calls[1]?.[0] as {
+      frameTarget?: FrameTarget;
+    };
+    expect(secondCallArgs.frameTarget?.frame).not.toBeNull();
+    // The cascade only ran once readyState actually reported "complete" —
+    // proving the CLI polled past the "loading"/about:blank window instead
+    // of racing straight into executeStepWithHealing on first attach.
+    expect(readyStates).toHaveLength(0);
+    const readyStateCalls = childFrame.evaluate.mock.calls.filter(
+      (call) => typeof call[0] === "string" && call[0].includes("readyState")
+    );
+    expect(readyStateCalls.length).toBeGreaterThanOrEqual(3);
   });
 });
