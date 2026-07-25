@@ -39,7 +39,7 @@ import {
 } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
 import { type RunHealingFlowResult, StepVerificationError } from "@/scraper/errors";
-import type { FrameTarget } from "@/scraper/frame-target";
+import { type FrameTarget, resolveFrameTarget } from "@/scraper/frame-target";
 import { classifyPhantomClick, type PhantomClickVerdict } from "@/scraper/phantom-click";
 import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
 import {
@@ -5530,7 +5530,7 @@ export async function executeStepWithHealing(params: {
   const preSubmitInvalidCount = requireSubmitEndpoint ? await countNgInvalidContainers(page) : 0;
   if (requireSubmitEndpoint) {
     const invalidControls = await probeFormValidityBeforeSubmit({
-      page,
+      target: await resolveFrameTarget(page),
       stepIndex,
       totalSteps,
       logger,
@@ -6209,7 +6209,7 @@ export async function executeStepWithHealing(params: {
     // decides those. Radios/checkboxes are click-but-no-network just like fills.
     const domVerified =
       resolvedAction !== null && (isStateClass || isClick)
-        ? await verifyDomEffect(page, resolvedAction)
+        ? await verifyDomEffect(page, await resolveFrameTarget(page), resolvedAction)
         : false;
     // Interior-advance transition gate (opt-in). On SPAs where a page advance
     // and a mere field-edit share one endpoint URL (the wizard ATS's `/gq`:
