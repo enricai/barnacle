@@ -118,6 +118,7 @@ import {
   probeLeafInvalidContainers,
   probeStepBeforeAttempts,
   type RadioGroupCandidate,
+  RECON_FLOW_FILE_SCHEMA,
   type ReplanEvent,
   readFailureDumpEvidence,
   renderLeafInvalidFields,
@@ -4588,5 +4589,74 @@ describe("recon-browser/runHealingFlow — phantom-submit escalation, end-to-end
     // attempt was made, so the caller can never mistake this for a real
     // (even if unverified) submit click.
     expect(stagehandAct).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("recon-browser/RECON_FLOW_FILE_SCHEMA — frameSelector", () => {
+  it("accepts an object-shape flow file with a frameSelector and carries it through unchanged", () => {
+    const result = RECON_FLOW_FILE_SCHEMA.safeParse({
+      steps: ["Click Manual Application"],
+      frameSelector: "#talemetry_apply_iframe",
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(Array.isArray(result.data)).toBe(false);
+    if (Array.isArray(result.data)) return;
+    expect(result.data.frameSelector).toBe("#talemetry_apply_iframe");
+  });
+
+  it("defaults frameSelector to undefined (top-frame) when the object-shape file omits it", () => {
+    const result = RECON_FLOW_FILE_SCHEMA.safeParse({
+      steps: ["Click Apply"],
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(Array.isArray(result.data)).toBe(false);
+    if (Array.isArray(result.data)) return;
+    expect(result.data.frameSelector).toBeUndefined();
+  });
+
+  it("rejects a non-string frameSelector with a validation error", () => {
+    const result = RECON_FLOW_FILE_SCHEMA.safeParse({
+      steps: ["Click Apply"],
+      frameSelector: 42,
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects an empty-string frameSelector with a validation error", () => {
+    const result = RECON_FLOW_FILE_SCHEMA.safeParse({
+      steps: ["Click Apply"],
+      frameSelector: "",
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("still parses the legacy bare-array flow shape unchanged", () => {
+    const result = RECON_FLOW_FILE_SCHEMA.safeParse(["Click Apply", "Fill First Name"]);
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data).toEqual(["Click Apply", "Fill First Name"]);
+  });
+
+  it("still parses an existing frame-less object-shape flow file with its other fields intact", () => {
+    const result = RECON_FLOW_FILE_SCHEMA.safeParse({
+      steps: ["Click Apply"],
+      submitEndpointPattern: "^https://example\\.com/api/submit$",
+      submittedStateSelectors: [".thank-you"],
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(Array.isArray(result.data)).toBe(false);
+    if (Array.isArray(result.data)) return;
+    expect(result.data.frameSelector).toBeUndefined();
+    expect(result.data.submitEndpointPattern).toBe("^https://example\\.com/api/submit$");
+    expect(result.data.submittedStateSelectors).toEqual([".thank-you"]);
   });
 });

@@ -505,8 +505,11 @@ const RECON_FLOW_SCHEMA = z.array(RECON_FLOW_STEP_SCHEMA).min(1);
  * Two on-disk shapes are accepted:
  *
  *  1. Legacy bare array — every existing site flow file uses this.
- *  2. Object form — adds optional `submitEndpointPattern` regex and
- *     optional `submittedStateSelectors` array.
+ *  2. Object form — adds optional `frameSelector`, `submitEndpointPattern`
+ *     regex, and `submittedStateSelectors` array.
+ *     - `frameSelector`: CSS selector of a cross-origin `<iframe>` the
+ *       flow's target elements live inside. Omitted (default) preserves
+ *       today's behavior: the flow drives the main frame.
  *     - `submitEndpointPattern`: the final step's verifier additionally
  *       requires at least one same-origin capture in its mutation window
  *       whose URL matches the pattern. Without that match `verified=false`,
@@ -523,10 +526,19 @@ const RECON_FLOW_SCHEMA = z.array(RECON_FLOW_STEP_SCHEMA).min(1);
  *
  * Both forms route through `parseReconFlow` into a shared internal record.
  */
-const RECON_FLOW_FILE_SCHEMA = z.union([
+export const RECON_FLOW_FILE_SCHEMA = z.union([
   RECON_FLOW_SCHEMA,
   z.object({
     steps: RECON_FLOW_SCHEMA,
+    /**
+     * CSS selector of a cross-origin `<iframe>` the flow's target elements
+     * live inside (e.g. a Talemetry wizard embedded rather than top-window
+     * navigated). Mirrors `flowSchema.frameSelector` in
+     * `src/plugins/config-plugin.ts` so a hand-authored recon flow file and
+     * a config-plugin manifest use the same declaration. Omitted (default)
+     * preserves today's behavior: the flow drives the main frame.
+     */
+    frameSelector: z.string().min(1).optional(),
     submitEndpointPattern: z.string().min(1).optional(),
     submittedStateSelectors: z.array(z.string().min(1)).optional(),
     /**
