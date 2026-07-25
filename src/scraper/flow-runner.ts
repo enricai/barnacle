@@ -2797,7 +2797,7 @@ async function tryUploadPrimitive(params: {
  * path share one setInputFiles + framework-change-dispatch + network/DOM verify
  * + drag-drop-fallback implementation.
  */
-async function attachToSurfacedInput(params: {
+export async function attachToSurfacedInput(params: {
   page: Page;
   /** Frame the surfaced `<input type=file>` lives in. */
   target: FrameTarget;
@@ -2880,7 +2880,7 @@ async function attachToSurfacedInput(params: {
     // a DataTransfer fires on the visible drop area — they don't observe
     // the hidden input's `files[]` mutations even with synthetic `change`
     // dispatches. This is the documented Playwright community workaround.
-    const dragDropOk = await simulateDragDropUpload(mainFrameTarget(page), fixture, logger);
+    const dragDropOk = await simulateDragDropUpload(target, fixture, logger);
     if (dragDropOk) {
       logger.info(
         `upload primitive: drag-drop fallback succeeded (name=${fixture.name}, size=${fixture.buffer.length}b)`
@@ -2907,7 +2907,7 @@ async function attachToSurfacedInput(params: {
  * Site-agnostic — benefits any MUI/React/chooser ATS. Returns whether a resume
  * was attached.
  */
-async function surfaceAndUpload(params: {
+export async function surfaceAndUpload(params: {
   page: Page;
   /** Frame the upload widget lives in — its CDP session owns the native file-chooser interception below. */
   target: FrameTarget;
@@ -2958,7 +2958,7 @@ async function surfaceAndUpload(params: {
   // Strategy DZ: a synthetic drop is cheap, needs no click/chooser, and the
   // widget IS a dropzone. If it registers the file (upload POST or attached
   // input), we're done without touching CDP.
-  if (await simulateDragDropUpload(mainFrameTarget(page), fixture, logger)) {
+  if (await simulateDragDropUpload(target, fixture, logger)) {
     if (
       await waitForUploadNetworkSignal({ page, fixture, logger, signalCounter, recentCaptureMeta })
     ) {
@@ -4506,7 +4506,7 @@ async function hasUnfilledRequiredControlForStep(
  * drag-and-drop API. Works on react-dropzone, Material Dropzone, custom
  * <uapp-upload>/<app-upload>, and any other drop-zone-based upload UI.
  */
-async function simulateDragDropUpload(
+export async function simulateDragDropUpload(
   target: FrameTarget,
   fixture: { buffer: Buffer; name: string; mimeType: string },
   logger: Logger
@@ -4593,7 +4593,10 @@ async function simulateDragDropUpload(
  * safely escapes it into a JS string literal. The expression body is a fixed
  * literal — no user-controlled JS execution.
  */
-async function dispatchJqueryChangeEvent(target: FrameTarget, selector: string): Promise<void> {
+export async function dispatchJqueryChangeEvent(
+  target: FrameTarget,
+  selector: string
+): Promise<void> {
   const xpath = xpathBody(selector);
   if (!xpath) return;
   const expr = `(() => {
@@ -4624,11 +4627,10 @@ async function dispatchJqueryChangeEvent(target: FrameTarget, selector: string):
  * against what it tried to write. Falls back to `false` on any locator error
  * so the navigation-class signal is still the deciding vote when this returns.
  *
- * `target` scopes the locator/evaluate reads to the resolved frame (main or
- * a cross-origin child); `page` is kept alongside only to satisfy the
- * jQuery-change dispatch helper, which is main-frame-bound today.
+ * `target` scopes both the locator/evaluate reads and the jQuery-change
+ * dispatch to the resolved frame (main or a cross-origin child).
  */
-async function verifyDomEffect(page: Page, target: FrameTarget, action: Action): Promise<boolean> {
+export async function verifyDomEffect(target: FrameTarget, action: Action): Promise<boolean> {
   const selector = action.selector;
   const method = action.method;
   if (!selector || !method) return false;
@@ -4648,7 +4650,7 @@ async function verifyDomEffect(page: Page, target: FrameTarget, action: Action):
           // delegated handler) record the value
           // into their internal data model. Without this, the SPA's next
           // re-render wipes the typed value back to empty.
-          await dispatchJqueryChangeEvent(mainFrameTarget(page), selector);
+          await dispatchJqueryChangeEvent(target, selector);
 
           // Angular reactive forms (e.g. ADP WOTC questionnaire on tcs.adp.com)
           // don't pick up CDP Input.insertText OR dispatchEvent('input') —
@@ -6362,7 +6364,7 @@ export async function executeStepWithHealing(params: {
     // decides those. Radios/checkboxes are click-but-no-network just like fills.
     const domVerified =
       resolvedAction !== null && (isStateClass || isClick)
-        ? await verifyDomEffect(page, await resolveFrameTarget(page), resolvedAction)
+        ? await verifyDomEffect(await resolveFrameTarget(page), resolvedAction)
         : false;
     // Interior-advance transition gate (opt-in). On SPAs where a page advance
     // and a mere field-edit share one endpoint URL (the wizard ATS's `/gq`:
