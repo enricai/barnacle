@@ -7179,9 +7179,6 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
   let submitStepSkipped = false;
   let lastStepIndex = -1;
 
-  const frameTarget = await resolveFrameTarget(page, deps.frameSelector);
-  await waitForChildFrameReady(frameTarget);
-
   const stopCapture = wireSignalCapture(page, {
     counter,
     signalCounter,
@@ -7206,6 +7203,14 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
         );
       }
       lastStepIndex = i;
+      // Resolved fresh per step (not cached across the run) so a cross-origin
+      // iframe that attaches mid-flow (e.g. after an "Apply" click reveals a
+      // wizard embedded later in the DOM) is picked up as soon as it's
+      // reachable, mirroring the recon CLI's per-step resolution. `resolveFrameTarget`
+      // falls back to the main-frame target when `frameSelector` is null/unresolvable,
+      // so this is a no-op for every flow that doesn't declare one.
+      const frameTarget = await resolveFrameTarget(page, deps.frameSelector);
+      await waitForChildFrameReady(frameTarget);
       const outcome = await executeStepWithHealing({
         stagehand,
         page,
