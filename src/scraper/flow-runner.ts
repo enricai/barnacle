@@ -5604,7 +5604,10 @@ export async function executeStepWithHealing(params: {
     // burns the replan budget in seconds. Embed `see <path>` in the
     // throw message so the existing regex at the dispatcher (`/see
     // (\/[^\s]+)$/`) extracts dumpPath for replanRemainingFlow.
-    const pageTitle = await page.title().catch(() => "");
+    const pageTitle = await (frameTarget ?? page).title().catch(() => "");
+    const pageUrl = await (frameTarget ? frameTarget.url() : Promise.resolve(page.url())).catch(
+      () => page.url()
+    );
     const bodyOuterHtmlRaw = await (frameTarget ?? page)
       .evaluate("document.body ? document.body.outerHTML : null")
       .catch(() => null);
@@ -5624,7 +5627,7 @@ export async function executeStepWithHealing(params: {
         originalStep: step,
         attempts: [],
         finalObserve: [],
-        pageUrl: page.url(),
+        pageUrl,
         pageTitle,
         recentCaptures,
         bodyOuterHtml,
@@ -6987,7 +6990,10 @@ export async function executeStepWithHealing(params: {
     captureFn,
     frameTarget
   ).catch(() => [] as Action[]);
-  const pageTitle = await page.title().catch(() => "");
+  const pageTitle = await (frameTarget ?? page).title().catch(() => "");
+  const pageUrl = await (frameTarget ? frameTarget.url() : Promise.resolve(page.url())).catch(() =>
+    page.url()
+  );
   // Discriminator data for "Stagehand sees nothing" failures: capture the raw
   // DOM and an unfocused observe so a triager can tell empty-page from
   // Stagehand-can't-see-it without reproducing the failure.
@@ -7010,7 +7016,7 @@ export async function executeStepWithHealing(params: {
       originalStep: step,
       attempts,
       finalObserve,
-      pageUrl: page.url(),
+      pageUrl,
       pageTitle,
       recentCaptures,
       bodyOuterHtml,
