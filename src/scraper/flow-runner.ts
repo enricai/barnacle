@@ -6566,7 +6566,7 @@ export async function executeStepWithHealing(params: {
                   return null;
                 })()`;
               try {
-                domSubmittedMatch = (await page.evaluate(probeExpr)) as string | null;
+                domSubmittedMatch = (await target.evaluate(probeExpr)) as string | null;
               } catch (err) {
                 logger.warn(`n+16 submitted-state DOM probe threw: ${toErrorMessage(err)}`);
               }
@@ -6576,7 +6576,8 @@ export async function executeStepWithHealing(params: {
               stagehand,
               undefined,
               { timeout: STEP_WATCHDOG_MS },
-              captureFn
+              captureFn,
+              target
             ).catch(() => [] as Action[]);
             const invalidMarkerCount = await countNgInvalidContainers(page).catch(() => 0);
             const pageTitle = await page.title().catch(() => "");
@@ -6805,13 +6806,14 @@ export async function executeStepWithHealing(params: {
     stagehand,
     step,
     { timeout: STEP_WATCHDOG_MS },
-    captureFn
+    captureFn,
+    target
   ).catch(() => [] as Action[]);
   const pageTitle = await page.title().catch(() => "");
   // Discriminator data for "Stagehand sees nothing" failures: capture the raw
   // DOM and an unfocused observe so a triager can tell empty-page from
   // Stagehand-can't-see-it without reproducing the failure.
-  const bodyOuterHtmlRaw = await page
+  const bodyOuterHtmlRaw = await target
     .evaluate("document.body ? document.body.outerHTML : null")
     .catch(() => null);
   const bodyOuterHtml =
@@ -6820,7 +6822,8 @@ export async function executeStepWithHealing(params: {
     stagehand,
     undefined,
     { timeout: STEP_WATCHDOG_MS },
-    captureFn
+    captureFn,
+    target
   ).catch(() => [] as Action[]);
   const dumpPath =
     onStepFailure?.({
@@ -6829,7 +6832,7 @@ export async function executeStepWithHealing(params: {
       originalStep: step,
       attempts,
       finalObserve,
-      pageUrl: page.url(),
+      pageUrl: await target.url().catch(() => page.url()),
       pageTitle,
       recentCaptures,
       bodyOuterHtml,
