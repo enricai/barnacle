@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   executeStepWithHealing,
+  extractLivePageFormEvidence,
   formatStepPrefix,
   type HealingFlowStep,
   pollEnumerate,
@@ -985,6 +986,62 @@ describe("flow-runner/runHealingFlow", () => {
       kind: "submit-skipped",
     });
     expect(stagehand.act).not.toHaveBeenCalled();
+  });
+});
+
+describe("flow-runner/extractLivePageFormEvidence", () => {
+  /** Angular-invalid markup with one leaf field and one clickable interactive target next to it. */
+  const IFRAME_INVALID_HTML =
+    '<div class="ng-invalid"><label class="question-title">State</label>' +
+    "<app-input></app-input><label>Colorado</label></div>";
+
+  it("probes the caller-supplied child FrameTarget instead of re-resolving the main frame", async () => {
+    const childEvaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const src = String(expr);
+      if (src.includes("document.body ? document.body.outerHTML")) return IFRAME_INVALID_HTML;
+      if (src.includes("errorTextFor")) {
+        return [
+          {
+            xpath: "/html[1]/body[1]/div[1]",
+            label: "State",
+            framework: "angular",
+            markerClass: "ng-invalid",
+            visibleErrorText: null,
+            inputTag: "app-input",
+          },
+        ];
+      }
+      if (src.includes("questionTitleOf")) {
+        return ["[State] label 'Colorado' — xpath=/html[1]/body[1]/div[1]/label[2]"];
+      }
+      return null;
+    });
+    const childTarget: FrameTarget = {
+      frame: {} as FrameTarget["frame"],
+      frameSelector: "iframe#talemetry_apply_iframe",
+      evaluate: childEvaluate,
+      locator: vi.fn(),
+      url: () => Promise.resolve("https://apply.talemetry.com/application/abc-123"),
+      title: () => Promise.resolve("Apply"),
+    };
+    const pageEvaluate = vi.fn().mockResolvedValue(null);
+    const page = { evaluate: pageEvaluate } as unknown as Page;
+
+    const evidence = await extractLivePageFormEvidence(page, childTarget);
+
+    expect(evidence.invalidFieldList).toContain("State");
+    expect(evidence.invalidFieldList).toContain("app-input");
+    expect(evidence.interactiveTargetsList).toContain("Colorado");
+    expect(pageEvaluate).not.toHaveBeenCalled();
+
+    const leafProbeCalls = childEvaluate.mock.calls.filter(([expr]) =>
+      String(expr).includes("errorTextFor")
+    );
+    expect(leafProbeCalls.length).toBe(1);
+    const interactiveProbeCalls = childEvaluate.mock.calls.filter(([expr]) =>
+      String(expr).includes("questionTitleOf")
+    );
+    expect(interactiveProbeCalls.length).toBe(1);
   });
 });
 
