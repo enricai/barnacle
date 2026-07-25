@@ -632,6 +632,24 @@ export async function snapshotPage(
  */
 
 /**
+ * Reads the title/url pair for a step-failure dump, scoped to whichever
+ * frame the step actually ran against — so a triager sees the same frame's
+ * body HTML and url instead of pairing a child frame's DOM with the top
+ * document's url. `title()` intentionally still reads the top document for
+ * a child frame (see `frame-target.ts`); `url()` is the frame discriminator.
+ */
+async function resolveDumpPageIdentity(
+  page: Page,
+  frameTarget: FrameTarget | undefined
+): Promise<{ pageTitle: string; pageUrl: string }> {
+  const pageTitle = await (frameTarget ?? page).title().catch(() => "");
+  const pageUrl = await (frameTarget ? frameTarget.url() : Promise.resolve(page.url())).catch(() =>
+    page.url()
+  );
+  return { pageTitle, pageUrl };
+}
+
+/**
  * Detect whether the supplied capture-meta window contains a backend
  * 5xx response that matches the configured submit endpoint pattern.
  * The cascade can't heal a backend crash by retrying clicks or
@@ -1795,8 +1813,8 @@ export function selectBodyExcerpt(body: string): string {
   return body.slice(start, start + BODY_EXCERPT_FORM_WINDOW);
 }
 
-async function extractLivePageFormEvidence(
-  page: Page,
+export async function extractLivePageFormEvidence(
+  _page: Page,
   target: FrameTarget,
   options?: {
     client?: Anthropic | null;
@@ -1841,15 +1859,14 @@ async function extractLivePageFormEvidence(
   // LLM calls converged on "Click Continue" because no specific fillable
   // field was named in FORM FIELDS. Deterministic extraction gives the
   // LLM `"Address" <app-input> — error: "This field is required"` instead.
-  const frameTarget = await resolveFrameTarget(page);
   const [leafFields, errorVerdict, interactiveTargets] = await Promise.all([
-    probeLeafInvalidContainers(frameTarget),
+    probeLeafInvalidContainers(target),
     judgeErrorMessagesWithLLM({
       client,
       input: { bodyHtmlExcerpt: bodyExcerpt },
       captureFn,
     }),
-    extractInteractiveTargetsNearInvalid(frameTarget).catch(() => [] as string[]),
+    extractInteractiveTargetsNearInvalid(target).catch(() => [] as string[]),
   ]);
 
   // Probe is the primary signal. Judge only runs if probe is empty AND a
@@ -2797,7 +2814,7 @@ async function tryUploadPrimitive(params: {
  * path share one setInputFiles + framework-change-dispatch + network/DOM verify
  * + drag-drop-fallback implementation.
  */
-async function attachToSurfacedInput(params: {
+export async function attachToSurfacedInput(params: {
   page: Page;
   /** Frame the surfaced `<input type=file>` lives in. */
   target: FrameTarget;
@@ -2880,7 +2897,7 @@ async function attachToSurfacedInput(params: {
     // a DataTransfer fires on the visible drop area — they don't observe
     // the hidden input's `files[]` mutations even with synthetic `change`
     // dispatches. This is the documented Playwright community workaround.
-    const dragDropOk = await simulateDragDropUpload(mainFrameTarget(page), fixture, logger);
+    const dragDropOk = await simulateDragDropUpload(target, fixture, logger);
     if (dragDropOk) {
       logger.info(
         `upload primitive: drag-drop fallback succeeded (name=${fixture.name}, size=${fixture.buffer.length}b)`
@@ -2907,7 +2924,7 @@ async function attachToSurfacedInput(params: {
  * Site-agnostic — benefits any MUI/React/chooser ATS. Returns whether a resume
  * was attached.
  */
-async function surfaceAndUpload(params: {
+export async function surfaceAndUpload(params: {
   page: Page;
   /** Frame the upload widget lives in — its CDP session owns the native file-chooser interception below. */
   target: FrameTarget;
@@ -2958,7 +2975,7 @@ async function surfaceAndUpload(params: {
   // Strategy DZ: a synthetic drop is cheap, needs no click/chooser, and the
   // widget IS a dropzone. If it registers the file (upload POST or attached
   // input), we're done without touching CDP.
-  if (await simulateDragDropUpload(mainFrameTarget(page), fixture, logger)) {
+  if (await simulateDragDropUpload(target, fixture, logger)) {
     if (
       await waitForUploadNetworkSignal({ page, fixture, logger, signalCounter, recentCaptureMeta })
     ) {
@@ -4506,7 +4523,7 @@ async function hasUnfilledRequiredControlForStep(
  * drag-and-drop API. Works on react-dropzone, Material Dropzone, custom
  * <uapp-upload>/<app-upload>, and any other drop-zone-based upload UI.
  */
-async function simulateDragDropUpload(
+export async function simulateDragDropUpload(
   target: FrameTarget,
   fixture: { buffer: Buffer; name: string; mimeType: string },
   logger: Logger
@@ -4593,7 +4610,10 @@ async function simulateDragDropUpload(
  * safely escapes it into a JS string literal. The expression body is a fixed
  * literal — no user-controlled JS execution.
  */
-async function dispatchJqueryChangeEvent(target: FrameTarget, selector: string): Promise<void> {
+export async function dispatchJqueryChangeEvent(
+  target: FrameTarget,
+  selector: string
+): Promise<void> {
   const xpath = xpathBody(selector);
   if (!xpath) return;
   const expr = `(() => {
@@ -4624,11 +4644,10 @@ async function dispatchJqueryChangeEvent(target: FrameTarget, selector: string):
  * against what it tried to write. Falls back to `false` on any locator error
  * so the navigation-class signal is still the deciding vote when this returns.
  *
- * `target` scopes the locator/evaluate reads to the resolved frame (main or
- * a cross-origin child); `page` is kept alongside only to satisfy the
- * jQuery-change dispatch helper, which is main-frame-bound today.
+ * `target` scopes both the locator/evaluate reads and the jQuery-change
+ * dispatch to the resolved frame (main or a cross-origin child).
  */
-async function verifyDomEffect(page: Page, target: FrameTarget, action: Action): Promise<boolean> {
+export async function verifyDomEffect(target: FrameTarget, action: Action): Promise<boolean> {
   const selector = action.selector;
   const method = action.method;
   if (!selector || !method) return false;
@@ -4648,7 +4667,7 @@ async function verifyDomEffect(page: Page, target: FrameTarget, action: Action):
           // delegated handler) record the value
           // into their internal data model. Without this, the SPA's next
           // re-render wipes the typed value back to empty.
-          await dispatchJqueryChangeEvent(mainFrameTarget(page), selector);
+          await dispatchJqueryChangeEvent(target, selector);
 
           // Angular reactive forms (e.g. ADP WOTC questionnaire on tcs.adp.com)
           // don't pick up CDP Input.insertText OR dispatchEvent('input') —
@@ -5491,7 +5510,7 @@ export async function executeStepWithHealing(params: {
   if (
     await tryRadioPrimitive({
       page,
-      target: mainFrameTarget(page),
+      target: frameTarget ?? mainFrameTarget(page),
       instruction: step,
       logger,
       anthropic,
@@ -5548,7 +5567,7 @@ export async function executeStepWithHealing(params: {
       // control this step was meant to answer (SPA hydration lag / observe
       // can't resolve the widget) — skipping would leave a required field empty
       // and silently doom the later submit. Fall through to the cascade instead.
-      if (await hasUnfilledRequiredControlForStep(mainFrameTarget(page), step)) {
+      if (await hasUnfilledRequiredControlForStep(frameTarget ?? mainFrameTarget(page), step)) {
         logger.info(
           `${formatStepPrefix(stepIndex, totalSteps)} probe-absent but a required unfilled control matches the question; NOT skipping (escalating to cascade)`
         );
@@ -5603,7 +5622,7 @@ export async function executeStepWithHealing(params: {
     // burns the replan budget in seconds. Embed `see <path>` in the
     // throw message so the existing regex at the dispatcher (`/see
     // (\/[^\s]+)$/`) extracts dumpPath for replanRemainingFlow.
-    const pageTitle = await page.title().catch(() => "");
+    const { pageTitle, pageUrl } = await resolveDumpPageIdentity(page, frameTarget);
     const bodyOuterHtmlRaw = await (frameTarget ?? page)
       .evaluate("document.body ? document.body.outerHTML : null")
       .catch(() => null);
@@ -5623,7 +5642,7 @@ export async function executeStepWithHealing(params: {
         originalStep: step,
         attempts: [],
         finalObserve: [],
-        pageUrl: page.url(),
+        pageUrl,
         pageTitle,
         recentCaptures,
         bodyOuterHtml,
@@ -5654,7 +5673,7 @@ export async function executeStepWithHealing(params: {
   // to the post-attempt-1 count to detect "the click revealed NEW required
   // fields" — a state attempts 2-5 mathematically can't clear.
   const preSubmitInvalidCount = requireSubmitEndpoint
-    ? await countNgInvalidContainers(mainFrameTarget(page))
+    ? await countNgInvalidContainers(frameTarget ?? mainFrameTarget(page))
     : 0;
   if (requireSubmitEndpoint) {
     const invalidControls = await probeFormValidityBeforeSubmit({
@@ -5763,7 +5782,7 @@ export async function executeStepWithHealing(params: {
       await page.waitForTimeout(attempt * ATTEMPT_BACKOFF_MS);
     }
 
-    const pre = await snapshotPage(mainFrameTarget(page), signalCounter);
+    const pre = await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter);
     // Snapshot the meta-tail length so the final-step pattern gate can scope
     // its URL scan to captures added DURING this attempt (not historical
     // tail from earlier steps).
@@ -5900,7 +5919,10 @@ export async function executeStepWithHealing(params: {
             // burn the step budget probing all of them.
             const runnerUp = ranked[1];
             if (runnerUp) {
-              const midPost = await snapshotPage(mainFrameTarget(page), signalCounter);
+              const midPost = await snapshotPage(
+                frameTarget ?? mainFrameTarget(page),
+                signalCounter
+              );
               const topVerdict = classifyPhantomClick({
                 actResultSuccess: true,
                 pre,
@@ -5981,7 +6003,9 @@ export async function executeStepWithHealing(params: {
             // still-empty control matching this step's question is present,
             // don't fast-skip — let the healing cascade continue so the
             // required field gets answered instead of silently doomed.
-            if (await hasUnfilledRequiredControlForStep(mainFrameTarget(page), step)) {
+            if (
+              await hasUnfilledRequiredControlForStep(frameTarget ?? mainFrameTarget(page), step)
+            ) {
               logger.info(
                 `${formatStepPrefix(stepIndex, totalSteps)} no candidates after act+observe but a required unfilled control matches; NOT skipping (continuing cascade)`
               );
@@ -6249,11 +6273,15 @@ export async function executeStepWithHealing(params: {
           // Fetch live-page evidence so the rephrase prompt can reason about
           // form state, not just observe candidates. Mirrors the same
           // extraction the cascade-exhaust dump path already does.
-          const livePageEvidence = await extractLivePageFormEvidence(page, mainFrameTarget(page), {
-            client: anthropic,
-            knownErrorClassPrefixes,
-            captureFn,
-          });
+          const livePageEvidence = await extractLivePageFormEvidence(
+            page,
+            frameTarget ?? mainFrameTarget(page),
+            {
+              client: anthropic,
+              knownErrorClassPrefixes,
+              captureFn,
+            }
+          );
           // Unfocused observe so the rephrase prompt can see ambient UI
           // like modal Save/Close buttons that the focused candidates
           // (filtered by the failed step's instruction) would hide.
@@ -6332,7 +6360,7 @@ export async function executeStepWithHealing(params: {
     }
 
     await page.waitForTimeout(STEP_PAUSE_MS);
-    const post = await snapshotPage(mainFrameTarget(page), signalCounter);
+    const post = await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter);
     record.post = post;
 
     if (resolvedAction) {
@@ -6353,7 +6381,7 @@ export async function executeStepWithHealing(params: {
     // decides those. Radios/checkboxes are click-but-no-network just like fills.
     const domVerified =
       resolvedAction !== null && (isStateClass || isClick)
-        ? await verifyDomEffect(page, await resolveFrameTarget(page), resolvedAction)
+        ? await verifyDomEffect(await resolveFrameTarget(page), resolvedAction)
         : false;
     // Interior-advance transition gate (opt-in). On SPAs where a page advance
     // and a mere field-edit share one endpoint URL (the wizard ATS's `/gq`:
@@ -6474,9 +6502,9 @@ export async function executeStepWithHealing(params: {
       // Quick invalid-marker count (deterministic DOM querying — counting
       // structural ng-invalid containers is not fuzzy matching, just
       // observing existence).
-      const invalidMarkerCount = await countNgInvalidContainers(mainFrameTarget(page)).catch(
-        () => 0
-      );
+      const invalidMarkerCount = await countNgInvalidContainers(
+        frameTarget ?? mainFrameTarget(page)
+      ).catch(() => 0);
 
       const pageTitle = await page.title().catch(() => "");
       const matchedSubmittedSelectors = domSubmittedMatch !== null ? [domSubmittedMatch] : [];
@@ -6639,7 +6667,7 @@ export async function executeStepWithHealing(params: {
             probeResult.checked === true &&
             !ancestorStillInvalid;
           await page.waitForTimeout(STEP_PAUSE_MS);
-          const retryPost = await snapshotPage(mainFrameTarget(page), signalCounter);
+          const retryPost = await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter);
           const retryNetworkFired = retryPost.networkCount > pre.networkCount;
           const retryUrlChanged = retryPost.url !== pre.url;
           const retryHtmlDelta = retryPost.bodyHtmlLength - pre.bodyHtmlLength;
@@ -6659,7 +6687,8 @@ export async function executeStepWithHealing(params: {
             probeResult.kind === "click" && !retryNetworkFired && !retryUrlChanged;
           const clickBlockedByInvalid =
             clickWasDomOnly &&
-            (await countNgInvalidContainers(mainFrameTarget(page)).catch(() => 0)) > 0;
+            (await countNgInvalidContainers(frameTarget ?? mainFrameTarget(page)).catch(() => 0)) >
+              0;
           // Advance-transition gate (same as the primary verifier, applied to the
           // n+16 fallback). RC2: for a non-submit ADVANCE/"Next" step (per the
           // ORIGINAL instruction) the fallback's positive signals — a network POST
@@ -6742,9 +6771,9 @@ export async function executeStepWithHealing(params: {
               captureFn,
               frameTarget
             ).catch(() => [] as Action[]);
-            const invalidMarkerCount = await countNgInvalidContainers(mainFrameTarget(page)).catch(
-              () => 0
-            );
+            const invalidMarkerCount = await countNgInvalidContainers(
+              frameTarget ?? mainFrameTarget(page)
+            ).catch(() => 0);
             const pageTitle = await page.title().catch(() => "");
             const matchedSubmittedSelectors = domSubmittedMatch !== null ? [domSubmittedMatch] : [];
 
@@ -6872,7 +6901,7 @@ export async function executeStepWithHealing(params: {
     // dumps in a 2026-06-10 survey had the paired touched+dirty + visible
     // error text pattern with 3 distinct rejection messages.
     if (record.resolvedMethod === "click" && (isFinalStep || submitStep)) {
-      const live = await extractLivePageFormEvidence(page, mainFrameTarget(page), {
+      const live = await extractLivePageFormEvidence(page, frameTarget ?? mainFrameTarget(page), {
         client: anthropic,
         knownErrorClassPrefixes,
         captureFn,
@@ -6925,7 +6954,9 @@ export async function executeStepWithHealing(params: {
           `${formatStepPrefix(stepIndex, totalSteps)} phantom click detected on attempt 1 (${record.technique}): reported success with no network/url/dom change${suppressedCount !== undefined ? `; ${suppressedCount} AISDK elementId errors suppressed this session (corroborating, not causal)` : ""} — ${escalationTarget}`
         );
       }
-      const postAttemptInvalidCount = await countNgInvalidContainers(mainFrameTarget(page));
+      const postAttemptInvalidCount = await countNgInvalidContainers(
+        frameTarget ?? mainFrameTarget(page)
+      );
       const earlyExit = isSubmitRevealedInvalid({
         // Treat the canonical submit click as "final" for this predicate
         // even when it lives mid-flow. See requireSubmitEndpoint derivation
@@ -6974,7 +7005,7 @@ export async function executeStepWithHealing(params: {
     captureFn,
     frameTarget
   ).catch(() => [] as Action[]);
-  const pageTitle = await page.title().catch(() => "");
+  const { pageTitle, pageUrl } = await resolveDumpPageIdentity(page, frameTarget);
   // Discriminator data for "Stagehand sees nothing" failures: capture the raw
   // DOM and an unfocused observe so a triager can tell empty-page from
   // Stagehand-can't-see-it without reproducing the failure.
@@ -6997,7 +7028,7 @@ export async function executeStepWithHealing(params: {
       originalStep: step,
       attempts,
       finalObserve,
-      pageUrl: page.url(),
+      pageUrl,
       pageTitle,
       recentCaptures,
       bodyOuterHtml,
