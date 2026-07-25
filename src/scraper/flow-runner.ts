@@ -5491,7 +5491,7 @@ export async function executeStepWithHealing(params: {
   if (
     await tryRadioPrimitive({
       page,
-      target: mainFrameTarget(page),
+      target: frameTarget ?? mainFrameTarget(page),
       instruction: step,
       logger,
       anthropic,
@@ -5548,7 +5548,7 @@ export async function executeStepWithHealing(params: {
       // control this step was meant to answer (SPA hydration lag / observe
       // can't resolve the widget) — skipping would leave a required field empty
       // and silently doom the later submit. Fall through to the cascade instead.
-      if (await hasUnfilledRequiredControlForStep(mainFrameTarget(page), step)) {
+      if (await hasUnfilledRequiredControlForStep(frameTarget ?? mainFrameTarget(page), step)) {
         logger.info(
           `${formatStepPrefix(stepIndex, totalSteps)} probe-absent but a required unfilled control matches the question; NOT skipping (escalating to cascade)`
         );
@@ -5654,7 +5654,7 @@ export async function executeStepWithHealing(params: {
   // to the post-attempt-1 count to detect "the click revealed NEW required
   // fields" — a state attempts 2-5 mathematically can't clear.
   const preSubmitInvalidCount = requireSubmitEndpoint
-    ? await countNgInvalidContainers(mainFrameTarget(page))
+    ? await countNgInvalidContainers(frameTarget ?? mainFrameTarget(page))
     : 0;
   if (requireSubmitEndpoint) {
     const invalidControls = await probeFormValidityBeforeSubmit({
@@ -5763,7 +5763,7 @@ export async function executeStepWithHealing(params: {
       await page.waitForTimeout(attempt * ATTEMPT_BACKOFF_MS);
     }
 
-    const pre = await snapshotPage(mainFrameTarget(page), signalCounter);
+    const pre = await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter);
     // Snapshot the meta-tail length so the final-step pattern gate can scope
     // its URL scan to captures added DURING this attempt (not historical
     // tail from earlier steps).
@@ -5900,7 +5900,10 @@ export async function executeStepWithHealing(params: {
             // burn the step budget probing all of them.
             const runnerUp = ranked[1];
             if (runnerUp) {
-              const midPost = await snapshotPage(mainFrameTarget(page), signalCounter);
+              const midPost = await snapshotPage(
+                frameTarget ?? mainFrameTarget(page),
+                signalCounter
+              );
               const topVerdict = classifyPhantomClick({
                 actResultSuccess: true,
                 pre,
@@ -5981,7 +5984,9 @@ export async function executeStepWithHealing(params: {
             // still-empty control matching this step's question is present,
             // don't fast-skip — let the healing cascade continue so the
             // required field gets answered instead of silently doomed.
-            if (await hasUnfilledRequiredControlForStep(mainFrameTarget(page), step)) {
+            if (
+              await hasUnfilledRequiredControlForStep(frameTarget ?? mainFrameTarget(page), step)
+            ) {
               logger.info(
                 `${formatStepPrefix(stepIndex, totalSteps)} no candidates after act+observe but a required unfilled control matches; NOT skipping (continuing cascade)`
               );
@@ -6249,11 +6254,15 @@ export async function executeStepWithHealing(params: {
           // Fetch live-page evidence so the rephrase prompt can reason about
           // form state, not just observe candidates. Mirrors the same
           // extraction the cascade-exhaust dump path already does.
-          const livePageEvidence = await extractLivePageFormEvidence(page, mainFrameTarget(page), {
-            client: anthropic,
-            knownErrorClassPrefixes,
-            captureFn,
-          });
+          const livePageEvidence = await extractLivePageFormEvidence(
+            page,
+            frameTarget ?? mainFrameTarget(page),
+            {
+              client: anthropic,
+              knownErrorClassPrefixes,
+              captureFn,
+            }
+          );
           // Unfocused observe so the rephrase prompt can see ambient UI
           // like modal Save/Close buttons that the focused candidates
           // (filtered by the failed step's instruction) would hide.
@@ -6332,7 +6341,7 @@ export async function executeStepWithHealing(params: {
     }
 
     await page.waitForTimeout(STEP_PAUSE_MS);
-    const post = await snapshotPage(mainFrameTarget(page), signalCounter);
+    const post = await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter);
     record.post = post;
 
     if (resolvedAction) {
@@ -6474,9 +6483,9 @@ export async function executeStepWithHealing(params: {
       // Quick invalid-marker count (deterministic DOM querying — counting
       // structural ng-invalid containers is not fuzzy matching, just
       // observing existence).
-      const invalidMarkerCount = await countNgInvalidContainers(mainFrameTarget(page)).catch(
-        () => 0
-      );
+      const invalidMarkerCount = await countNgInvalidContainers(
+        frameTarget ?? mainFrameTarget(page)
+      ).catch(() => 0);
 
       const pageTitle = await page.title().catch(() => "");
       const matchedSubmittedSelectors = domSubmittedMatch !== null ? [domSubmittedMatch] : [];
@@ -6639,7 +6648,7 @@ export async function executeStepWithHealing(params: {
             probeResult.checked === true &&
             !ancestorStillInvalid;
           await page.waitForTimeout(STEP_PAUSE_MS);
-          const retryPost = await snapshotPage(mainFrameTarget(page), signalCounter);
+          const retryPost = await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter);
           const retryNetworkFired = retryPost.networkCount > pre.networkCount;
           const retryUrlChanged = retryPost.url !== pre.url;
           const retryHtmlDelta = retryPost.bodyHtmlLength - pre.bodyHtmlLength;
@@ -6659,7 +6668,8 @@ export async function executeStepWithHealing(params: {
             probeResult.kind === "click" && !retryNetworkFired && !retryUrlChanged;
           const clickBlockedByInvalid =
             clickWasDomOnly &&
-            (await countNgInvalidContainers(mainFrameTarget(page)).catch(() => 0)) > 0;
+            (await countNgInvalidContainers(frameTarget ?? mainFrameTarget(page)).catch(() => 0)) >
+              0;
           // Advance-transition gate (same as the primary verifier, applied to the
           // n+16 fallback). RC2: for a non-submit ADVANCE/"Next" step (per the
           // ORIGINAL instruction) the fallback's positive signals — a network POST
@@ -6742,9 +6752,9 @@ export async function executeStepWithHealing(params: {
               captureFn,
               frameTarget
             ).catch(() => [] as Action[]);
-            const invalidMarkerCount = await countNgInvalidContainers(mainFrameTarget(page)).catch(
-              () => 0
-            );
+            const invalidMarkerCount = await countNgInvalidContainers(
+              frameTarget ?? mainFrameTarget(page)
+            ).catch(() => 0);
             const pageTitle = await page.title().catch(() => "");
             const matchedSubmittedSelectors = domSubmittedMatch !== null ? [domSubmittedMatch] : [];
 
@@ -6872,7 +6882,7 @@ export async function executeStepWithHealing(params: {
     // dumps in a 2026-06-10 survey had the paired touched+dirty + visible
     // error text pattern with 3 distinct rejection messages.
     if (record.resolvedMethod === "click" && (isFinalStep || submitStep)) {
-      const live = await extractLivePageFormEvidence(page, mainFrameTarget(page), {
+      const live = await extractLivePageFormEvidence(page, frameTarget ?? mainFrameTarget(page), {
         client: anthropic,
         knownErrorClassPrefixes,
         captureFn,
@@ -6925,7 +6935,9 @@ export async function executeStepWithHealing(params: {
           `${formatStepPrefix(stepIndex, totalSteps)} phantom click detected on attempt 1 (${record.technique}): reported success with no network/url/dom change${suppressedCount !== undefined ? `; ${suppressedCount} AISDK elementId errors suppressed this session (corroborating, not causal)` : ""} — ${escalationTarget}`
         );
       }
-      const postAttemptInvalidCount = await countNgInvalidContainers(mainFrameTarget(page));
+      const postAttemptInvalidCount = await countNgInvalidContainers(
+        frameTarget ?? mainFrameTarget(page)
+      );
       const earlyExit = isSubmitRevealedInvalid({
         // Treat the canonical submit click as "final" for this predicate
         // even when it lives mid-flow. See requireSubmitEndpoint derivation
