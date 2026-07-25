@@ -59,6 +59,7 @@ import {
   CALL_TYPE_STAGEHAND_EXTRACT,
   CALL_TYPE_STAGEHAND_OBSERVE,
 } from "@/lib/telemetry/call-types";
+import type { FrameTarget } from "@/scraper/frame-target";
 
 /**
  * Injectable capture function — matches `captureLlmCall`'s signature. Same
@@ -150,17 +151,45 @@ function actInstructionOf(input: string | Action): string {
 }
 
 /**
+ * Merges `frameTarget.frameSelector` into `options.selector` for
+ * `ObserveOptions`/`ExtractOptions`. Returns `options` untouched when
+ * `frameTarget` is unresolved (main frame) or a caller-supplied `selector`
+ * is already present — both cases must leave today's call sites
+ * byte-identical.
+ */
+function frameScopedOptions<T extends { selector?: string }>(
+  options: T | undefined,
+  frameTarget: FrameTarget | undefined
+): T | undefined {
+  if (!frameTarget?.frameSelector || options?.selector !== undefined) return options;
+  return { ...options, selector: frameTarget.frameSelector } as T;
+}
+
+/**
  * Schema-guarded wrapper around Stagehand's `act`. Same signature as the
  * underlying call: accepts either an instruction string or a structured
  * `Action` (from a prior `observe`). On the happy path, returns Stagehand's
  * `ActResult` verbatim. On envelope drift, throws `StagehandSchemaError`
  * and logs `failureKind: "schema-validation-failed"`.
+ *
+ * Accepts the same trailing `frameTarget` param as `guardedObserve`/
+ * `guardedExtract` for signature symmetry, but does not forward it into
+ * `ActOptions` — `ActOptions` has no `selector` field, and its `page`
+ * override only accepts a full Playwright/Puppeteer/Patchright/understudy
+ * `Page`, not the `Frame` handle `FrameTarget.frame` exposes (the
+ * understudy `Page` constructor is private, so there is no way to
+ * synthesize a frame-scoped `Page`). Scope `act` at the call site instead:
+ * pair a frame-scoped `guardedObserve` (whose returned `Action.selector`
+ * already targets the resolved frame's DOM) with `guardedAct` called on
+ * that `Action` — the `observe(...)[0] -> act(target)` pattern already used
+ * throughout `flow-runner.ts`.
  */
 export async function guardedAct(
   stagehand: Stagehand,
   input: string | Action,
   options?: ActOptions,
-  captureFn?: StagehandCaptureFn
+  captureFn?: StagehandCaptureFn,
+  _frameTarget?: FrameTarget
 ): Promise<ActResult> {
   const callId = randomUUID();
   const userContent = actInstructionOf(input);
@@ -237,25 +266,36 @@ export async function guardedAct(
  * Stagehand overloads: no args, options-only, instruction-only,
  * instruction + options. On envelope drift (the `Action[]` shape changes),
  * throws `StagehandSchemaError`.
+ *
+ * When `frameTarget` resolves to a cross-origin child frame, its
+ * `frameSelector` is merged into `ObserveOptions.selector` so Stagehand's
+ * snapshot/candidate search is scoped to that frame's DOM instead of only
+ * the top frame. A caller-supplied `options.selector` wins over
+ * `frameTarget.frameSelector` — the caller made an explicit choice. The
+ * main-frame target (`frameTarget` omitted, or its `frameSelector` is
+ * `null`) leaves `options` untouched, so every existing call site is
+ * byte-identical to today.
  */
 export async function guardedObserve(
   stagehand: Stagehand,
   instruction?: string,
   options?: ObserveOptions,
-  captureFn?: StagehandCaptureFn
+  captureFn?: StagehandCaptureFn,
+  frameTarget?: FrameTarget
 ): Promise<Action[]> {
   const callId = randomUUID();
   const userContent = instruction ?? "";
   const t0 = performance.now();
+  const scopedOptions = frameScopedOptions(options, frameTarget);
   try {
     // Match Stagehand's overloads: pass instruction only when defined, so
     // the SDK falls through to its no-arg/options-only path otherwise.
     const raw =
       instruction === undefined
-        ? options === undefined
+        ? scopedOptions === undefined
           ? await stagehand.observe()
-          : await stagehand.observe(options)
-        : await stagehand.observe(instruction, options);
+          : await stagehand.observe(scopedOptions)
+        : await stagehand.observe(instruction, scopedOptions);
     const latencyMs = performance.now() - t0;
     const parsed = z.array(ACTION_SCHEMA).safeParse(raw);
     if (!parsed.success) {
@@ -316,13 +356,20 @@ export async function guardedObserve(
  * caller's Zod schema is what Stagehand asks the LLM to satisfy AND what we
  * `safeParse` against caller-side. Refuse the 1-arg / 2-arg defaults; every
  * extract call in the codebase must enforce a schema.
+ *
+ * When `frameTarget` resolves to a cross-origin child frame, its
+ * `frameSelector` is merged into `ExtractOptions.selector` so Stagehand
+ * extracts from that frame's DOM instead of only the top frame. A
+ * caller-supplied `options.selector` wins over `frameTarget.frameSelector`.
+ * The main-frame target leaves `options` untouched.
  */
 export async function guardedExtract<T extends z.ZodTypeAny>(
   stagehand: Stagehand,
   instruction: string,
   schema: T,
   options?: ExtractOptions,
-  captureFn?: StagehandCaptureFn
+  captureFn?: StagehandCaptureFn,
+  frameTarget?: FrameTarget
 ): Promise<z.infer<T>> {
   const callId = randomUUID();
   const t0 = performance.now();
@@ -338,7 +385,7 @@ export async function guardedExtract<T extends z.ZodTypeAny>(
     const raw = await stagehand.extract(
       instruction,
       schema as unknown as Parameters<typeof stagehand.extract>[1],
-      options
+      frameScopedOptions(options, frameTarget)
     );
     const latencyMs = performance.now() - t0;
     const parsed = schema.safeParse(raw);

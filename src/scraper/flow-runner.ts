@@ -6873,6 +6873,15 @@ export interface RunHealingFlowDeps {
   logger: Logger;
   anthropic: Anthropic | null;
   resumeFixture: { buffer: Buffer; name: string; mimeType: string } | null;
+  /**
+   * CSS selector of a cross-origin `<iframe>` the flow's target elements live
+   * inside (e.g. a Talemetry wizard embedded rather than top-window
+   * navigated), for resolution via `resolveFrameTarget` and scoping of the
+   * cascade's `guardedObserve`/`guardedAct`/`guardedExtract` calls to that
+   * frame. Omitted (default) preserves today's behavior: the flow drives the
+   * main frame.
+   */
+  frameSelector?: string;
   submitEndpointPattern?: string | null;
   submittedStateSelectors?: string[];
   requireSubmitEndpointMatch?: boolean;

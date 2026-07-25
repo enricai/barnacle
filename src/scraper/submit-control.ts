@@ -94,13 +94,21 @@ const RANK_TIERS_EXPR = `((el, name) => {
  * re-runs the identical traversal and clicks the element at that index, so
  * the caller can locate once, decide which candidate to try, then click by
  * index without holding a live element handle across the two round trips.
+ *
+ * `root` overrides the traversal root expression (default `"document"`),
+ * interpolated verbatim into the generated code so a caller evaluating
+ * this expression via `Frame.evaluate` can pass `"document"` and still
+ * resolve that frame's own document — the expression never captures an
+ * outer `document` reference. {@link buildClickByDeepIndexExpr} must be
+ * given the same `root` so its re-run traversal produces the same
+ * `deepIndex` ordering as the one this call returned.
  */
-export function buildRankSubmitCandidatesExpr(): string {
+export function buildRankSubmitCandidatesExpr(root = "document"): string {
   return `(() => {
     const accessibleName = ${ACCESSIBLE_NAME_EXPR};
     const rankTier = ${RANK_TIERS_EXPR};
     const deepElements = ${DEEP_ELEMENTS_EXPR};
-    const all = deepElements(document);
+    const all = deepElements(${root});
     const ranked = [];
     for (let i = 0; i < all.length; i++) {
       const el = all[i];
@@ -127,11 +135,16 @@ export function buildRankSubmitCandidatesExpr(): string {
  * convention). Returns `{ clicked: false }` without throwing if the index is
  * out of range for the current DOM (e.g. the page changed between the
  * locate and click calls).
+ *
+ * `root` overrides the traversal root expression (default `"document"`)
+ * and must match the `root` passed to the {@link buildRankSubmitCandidatesExpr}
+ * call that produced `deepIndex`, or the re-run traversal order will not
+ * line up with the original ranking.
  */
-export function buildClickByDeepIndexExpr(deepIndex: number): string {
+export function buildClickByDeepIndexExpr(deepIndex: number, root = "document"): string {
   return `(() => {
     const deepElements = ${DEEP_ELEMENTS_EXPR};
-    const all = deepElements(document);
+    const all = deepElements(${root});
     const el = all[${JSON.stringify(deepIndex)}];
     if (!el) return { clicked: false };
     if (typeof el.focus === "function") { try { el.focus(); } catch (e) {} }
