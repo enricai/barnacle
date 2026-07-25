@@ -643,8 +643,8 @@ async function resolveDumpPageIdentity(
   frameTarget: FrameTarget | undefined
 ): Promise<{ pageTitle: string; pageUrl: string }> {
   const pageTitle = await (frameTarget ?? page).title().catch(() => "");
-  const pageUrl = await (frameTarget ? frameTarget.url() : Promise.resolve(page.url())).catch(
-    () => page.url()
+  const pageUrl = await (frameTarget ? frameTarget.url() : Promise.resolve(page.url())).catch(() =>
+    page.url()
   );
   return { pageTitle, pageUrl };
 }
