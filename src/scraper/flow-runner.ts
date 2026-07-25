@@ -39,7 +39,11 @@ import {
 } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
 import { type RunHealingFlowResult, StepVerificationError } from "@/scraper/errors";
-import { resolveFrameTarget, waitForChildFrameReady } from "@/scraper/frame-target";
+import {
+  type FrameTarget,
+  resolveFrameTarget,
+  waitForChildFrameReady,
+} from "@/scraper/frame-target";
 import { classifyPhantomClick, type PhantomClickVerdict } from "@/scraper/phantom-click";
 import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
 import {
@@ -5155,6 +5159,16 @@ export async function executeStepWithHealing(params: {
   logger: Logger;
   captureFn?: CaptureFn;
   resumeFixture: { buffer: Buffer; name: string; mimeType: string } | null;
+  /**
+   * The resolved frame the calling flow targets (main frame, or a
+   * cross-origin child resolved via `resolveFrameTarget`). Threaded in from
+   * {@link runHealingFlow} so this cascade's DOM-direct helpers can migrate
+   * to it call-site by call-site without changing this function's own
+   * signature again each time. Optional so existing callers that have not
+   * yet resolved a target (recon CLI, tests) keep compiling; omitted is
+   * equivalent to the main-frame target.
+   */
+  frameTarget?: FrameTarget;
   /**
    * Final-step gate: when both are set, the verifier additionally requires at
    * least one capture in `recentCaptureMeta` whose URL matches the pattern. Lets
