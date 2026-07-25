@@ -39,6 +39,7 @@ import {
 } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
 import { type RunHealingFlowResult, StepVerificationError } from "@/scraper/errors";
+import type { FrameTarget } from "@/scraper/frame-target";
 import { classifyPhantomClick, type PhantomClickVerdict } from "@/scraper/phantom-click";
 import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
 import {
@@ -1787,6 +1788,7 @@ export function selectBodyExcerpt(body: string): string {
 
 async function extractLivePageFormEvidence(
   page: Page,
+  target: FrameTarget,
   options?: {
     client?: Anthropic | null;
     knownErrorClassPrefixes?: readonly string[];
@@ -1799,7 +1801,9 @@ async function extractLivePageFormEvidence(
 }> {
   let body = "";
   try {
-    const raw = await page.evaluate("document.body ? document.body.outerHTML : null");
+    const raw = await target.evaluate<string | null>(
+      "document.body ? document.body.outerHTML : null"
+    );
     if (typeof raw === "string") body = raw;
   } catch {
     return { invalidFieldList: "", errorTextList: "", interactiveTargetsList: "" };
