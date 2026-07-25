@@ -222,6 +222,137 @@ function makeFakeTopPage(topUrl: { current: string }, childUrls: { current: stri
   } as unknown as import("@browserbasehq/stagehand").Page;
 }
 
+/**
+ * Mutable-state fake `Page` for the mid-flow-attach scenario: unlike
+ * `makeFakeTopPage`, the `#talemetry_apply_iframe` element and the matching
+ * `page.frames()` entry BOTH stay absent until `iframeAttached.current` flips
+ * true. Models the exact reported timeline — `careers.uchealth.org` mounts
+ * the Talemetry wizard iframe only once the "Apply now" step's click runs,
+ * so `resolveFrameTarget` has nothing to resolve for any step before that,
+ * and must resolve into the child frame for every step after it (bugfix-001's
+ * bounded per-poll retry, bugfix-002's per-step re-resolution, bugfix-003's
+ * CLI-side readiness gate, and bugfix-004's frame-scoped primitives compose to
+ * make this possible at all).
+ */
+function makeMidflowFakeTopPage(
+  topUrl: { current: string },
+  childUrls: { current: string },
+  iframeAttached: { current: boolean }
+) {
+  const session = { on: () => {}, off: () => {} };
+  const childFrame = makeFakeChildFrame(childUrls);
+  return {
+    evaluate: async (expr: unknown) => {
+      const iframeSrcMatch = /document\.querySelector\((.+?)\)/.exec(String(expr));
+      if (iframeSrcMatch) {
+        if (!iframeAttached.current) return null;
+        const selector = JSON.parse(iframeSrcMatch[1] as string) as string;
+        return selector === IFRAME_SELECTOR ? CHILD_SRC : null;
+      }
+      return null;
+    },
+    url: () => topUrl.current,
+    title: async () => "UCHealth Careers",
+    locator: () => ({
+      first: () => ({
+        isChecked: async () => false,
+        inputValue: async () => "",
+      }),
+    }),
+    waitForTimeout: async () => {},
+    getSessionForFrame: () => session,
+    mainFrameId: () => "main",
+    sendCDP: async () => ({ body: "{}", base64Encoded: false }),
+    frames: () => (iframeAttached.current ? [childFrame] : []),
+  } as unknown as import("@browserbasehq/stagehand").Page;
+}
+
+const APPLY_NOW_STEP = "Click the 'Apply now' button";
+const APPLY_NOW_CANDIDATE = {
+  selector: "css=button#apply-now",
+  description: "Apply now button",
+  method: "click",
+};
+
+/**
+ * The exact 1.6.8 repro signature ("focused probe found 0 candidates but
+ * unfocused observe found 65 candidates"), reproduced at fixture scale: an
+ * unscoped/top-frame observe surfaces 65 nav/share/Apply-now-adjacent
+ * candidates and never the in-frame "Manual Application" button.
+ */
+const SIXTY_FIVE_TOP_FRAME_CANDIDATES = Array.from({ length: 65 }, (_, index) => ({
+  selector: `css=.top-frame-control-${index}`,
+  description: `Top-frame-only control ${index}`,
+  method: "click",
+}));
+
+/**
+ * Fake Stagehand for the mid-flow timeline: step 1 ("Apply now") resolves
+ * directly on attempt 1 against the TOP frame (no hop prefix) and, as a side
+ * effect of that click, flips `iframeAttached` true and seeds `childUrls` —
+ * mirroring the click event that mounts the wizard iframe. Step 2 ("Manual
+ * Application") discriminates on `options.selector`'s hop prefix exactly like
+ * `makeFakeStagehand` above: frame-scoped observe finds the real candidate,
+ * unscoped/top-frame observe gets the 65-candidate wrong-document list, and
+ * `act` never itself resolves a candidate for either (forcing the cascade
+ * into the frame-scoped attempt-2 observe+act path).
+ */
+function makeFakeStagehandForMidflowAttach(
+  topUrl: { current: string },
+  childUrls: { current: string },
+  iframeAttached: { current: boolean }
+) {
+  const hopPrefix = `${IFRAME_SELECTOR} >> `;
+  return {
+    act: async (input: unknown) => {
+      if (input === APPLY_NOW_STEP) {
+        iframeAttached.current = true;
+        childUrls.current = CHILD_SRC;
+        // Same-origin path change (never a cross-origin top-window navigation
+        // — the top document stays on careers.uchealth.org throughout, per
+        // the reported timeline) is what flips classifyPhantomClick's
+        // urlChanged signal: a real "Apply now" click that mounts the wizard
+        // also updates the top page's own URL/history state.
+        topUrl.current = `${TOP_ORIGIN}/jobs/123/apply?applied=1`;
+        return {
+          success: true,
+          message: "clicked",
+          actionDescription: APPLY_NOW_STEP,
+          actions: [APPLY_NOW_CANDIDATE],
+        };
+      }
+      const isManualApplicationCandidate =
+        typeof input === "object" &&
+        input !== null &&
+        "selector" in input &&
+        (input as { selector: unknown }).selector === MANUAL_APPLICATION_CANDIDATE.selector;
+      if (isManualApplicationCandidate) {
+        childUrls.current = `${CHILD_ORIGIN}/application/abc-123/basic-info`;
+        return {
+          success: true,
+          message: "clicked",
+          actionDescription: MANUAL_APPLICATION_CANDIDATE.description,
+          actions: [MANUAL_APPLICATION_CANDIDATE],
+        };
+      }
+      // Attempt-1 act-string for any in-frame-only step: mirrors Stagehand
+      // failing to resolve content it structurally cannot see pre-fix.
+      return {
+        success: false,
+        message: "no actionable candidate",
+        actionDescription: String(input),
+        actions: [],
+      };
+    },
+    observe: async (instruction?: unknown, options?: { selector?: string }) => {
+      const isFrameScoped = options?.selector?.startsWith(hopPrefix) ?? false;
+      if (!isFrameScoped) return SIXTY_FIVE_TOP_FRAME_CANDIDATES;
+      if (instruction === CLICK_STEP) return [MANUAL_APPLICATION_CANDIDATE];
+      return [];
+    },
+  } as unknown as import("@browserbasehq/stagehand").Stagehand;
+}
+
 describe("flow-runner iframe end-to-end (offline fixture, no network)", () => {
   it("resolves the cross-origin child frame and clicks the in-frame-only 'Manual Application' button when frameSelector is set", async () => {
     const topUrl = { current: `${TOP_ORIGIN}/jobs/123/apply` };
@@ -265,5 +396,124 @@ describe("flow-runner iframe end-to-end (offline fixture, no network)", () => {
     // never resolved the in-frame button, so the fixture actually
     // discriminates instead of passing vacuously.
     expect(childUrls.current).toBe(CHILD_SRC);
+  });
+});
+
+/**
+ * The reported gap the two tests above cannot exercise: `flow-runner
+ * .frame-threading.test.ts`'s and this file's other fixtures all assume the
+ * `<iframe>` exists at flow start, which is precisely why 1.6.8 shipped
+ * believing frame-scoped steps worked in general. Here neither the
+ * `#talemetry_apply_iframe` element nor its matching `page.frames()` entry
+ * exists until step 1's ("Apply now") act runs — the flow must still resolve
+ * a LATER step into the frame that click creates.
+ */
+describe("flow-runner iframe end-to-end: mid-flow iframe attachment (offline fixture, no network)", () => {
+  it("step 1 (Apply now) succeeds against the top frame before the iframe exists, then step 2 (Manual Application) resolves into and stays scoped to the child frame it creates", async () => {
+    const topUrl = { current: `${TOP_ORIGIN}/jobs/123/apply` };
+    const childUrls = { current: "" };
+    const iframeAttached = { current: false };
+    const stagehand = makeFakeStagehandForMidflowAttach(topUrl, childUrls, iframeAttached);
+    const page = makeMidflowFakeTopPage(topUrl, childUrls, iframeAttached);
+
+    expect(iframeAttached.current).toBe(false);
+
+    const result = await runHealingFlow({
+      stagehand,
+      page,
+      steps: [
+        { instruction: APPLY_NOW_STEP, optional: false, upload: false, submitStep: false },
+        { instruction: CLICK_STEP, optional: false, upload: false, submitStep: false },
+      ],
+      logger: testLogger,
+      anthropic: null,
+      resumeFixture: null,
+      frameSelector: IFRAME_SELECTOR,
+    });
+
+    // Step 1 ran and succeeded entirely against the top frame — no iframe
+    // existed yet for resolveFrameTarget to find at that point.
+    expect(iframeAttached.current).toBe(true);
+    // Step 2 resolved into the child frame the click created and clicked the
+    // in-frame-only button there (not the 65-candidate top-frame observe).
+    expect(result.lastStepIndex).toBe(1);
+    expect(childUrls.current).toBe(`${CHILD_ORIGIN}/application/abc-123/basic-info`);
+  });
+
+  it("negative control: without frameSelector, the same mid-flow-attach timeline still cannot reach the in-frame step even though the iframe attaches", async () => {
+    const topUrl = { current: `${TOP_ORIGIN}/jobs/123/apply` };
+    const childUrls = { current: "" };
+    const iframeAttached = { current: false };
+    const stagehand = makeFakeStagehandForMidflowAttach(topUrl, childUrls, iframeAttached);
+    const page = makeMidflowFakeTopPage(topUrl, childUrls, iframeAttached);
+
+    await expect(
+      runHealingFlow({
+        stagehand,
+        page,
+        steps: [
+          { instruction: APPLY_NOW_STEP, optional: false, upload: false, submitStep: false },
+          { instruction: CLICK_STEP, optional: false, upload: false, submitStep: false },
+        ],
+        logger: testLogger,
+        anthropic: null,
+        resumeFixture: null,
+        // frameSelector deliberately omitted: today's (pre-fix) main-frame-only
+        // behavior — step 2 never scopes into the frame step 1's click
+        // created, so the cascade exhausts against the 65 top-frame-only
+        // candidates instead.
+      })
+    ).rejects.toThrow(/cascade|attempts|verification/i);
+
+    // The iframe still attaches (step 1's click runs on the top frame either
+    // way) but the child frame's URL never advances past its initial
+    // creation — proving the failure is "never entered the frame", not
+    // "the iframe never appeared".
+    expect(iframeAttached.current).toBe(true);
+    expect(childUrls.current).toBe(CHILD_SRC);
+  });
+
+  it("a no-frameSelector flow is unaffected by the mid-flow-attach machinery (plain top-frame-only flow still works)", async () => {
+    const topUrl = { current: `${TOP_ORIGIN}/jobs/123/apply` };
+    const stagehand = {
+      act: async (input: unknown) => {
+        topUrl.current = `${TOP_ORIGIN}/jobs/123/apply?applied=1`;
+        return {
+          success: true,
+          message: "clicked",
+          actionDescription: String(input),
+          actions: [APPLY_NOW_CANDIDATE],
+        };
+      },
+      observe: async () => [APPLY_NOW_CANDIDATE],
+    } as unknown as import("@browserbasehq/stagehand").Stagehand;
+    const session = { on: () => {}, off: () => {} };
+    const page = {
+      evaluate: async () => null,
+      url: () => topUrl.current,
+      title: async () => "UCHealth Careers",
+      locator: () => ({
+        first: () => ({
+          isChecked: async () => false,
+          inputValue: async () => "",
+        }),
+      }),
+      waitForTimeout: async () => {},
+      getSessionForFrame: () => session,
+      mainFrameId: () => "main",
+      sendCDP: async () => ({ body: "{}", base64Encoded: false }),
+      frames: () => [],
+    } as unknown as import("@browserbasehq/stagehand").Page;
+
+    const result = await runHealingFlow({
+      stagehand,
+      page,
+      steps: [{ instruction: APPLY_NOW_STEP, optional: false, upload: false, submitStep: false }],
+      logger: testLogger,
+      anthropic: null,
+      resumeFixture: null,
+    });
+
+    expect(result.lastStepIndex).toBe(0);
   });
 });
