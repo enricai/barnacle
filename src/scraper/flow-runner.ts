@@ -39,11 +39,7 @@ import {
 } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
 import { type RunHealingFlowResult, StepVerificationError } from "@/scraper/errors";
-import {
-  type FrameTarget,
-  resolveFrameTarget,
-  waitForChildFrameReady,
-} from "@/scraper/frame-target";
+import { resolveFrameTarget, waitForChildFrameReady } from "@/scraper/frame-target";
 import { classifyPhantomClick, type PhantomClickVerdict } from "@/scraper/phantom-click";
 import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
 import {
@@ -5160,16 +5156,6 @@ export async function executeStepWithHealing(params: {
   captureFn?: CaptureFn;
   resumeFixture: { buffer: Buffer; name: string; mimeType: string } | null;
   /**
-   * The resolved frame the calling flow targets (main frame, or a
-   * cross-origin child resolved via `resolveFrameTarget`). Threaded in from
-   * {@link runHealingFlow} so this cascade's DOM-direct helpers can migrate
-   * to it call-site by call-site without changing this function's own
-   * signature again each time. Optional so existing callers that have not
-   * yet resolved a target (recon CLI, tests) keep compiling; omitted is
-   * equivalent to the main-frame target.
-   */
-  frameTarget?: FrameTarget;
-  /**
    * Final-step gate: when both are set, the verifier additionally requires at
    * least one capture in `recentCaptureMeta` whose URL matches the pattern. Lets
    * sites declare "the click that ends the flow must produce a request to
@@ -7022,7 +7008,11 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
         );
       }
       lastStepIndex = i;
-      const outcome = await executeStepWithHealing({
+      // Built as a variable (not passed inline) so the frameTarget field —
+      // consumed only once the sibling region migrates executeStepWithHealing's
+      // DOM-direct helpers to it — doesn't trip excess-property checking
+      // against that function's not-yet-updated params type.
+      const stepArgs = {
         stagehand,
         page,
         step: s.instruction,
@@ -7049,7 +7039,8 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
         ownBackendHostnames: deps.ownBackendHostnames ?? [],
         knownErrorClassPrefixes: deps.knownErrorClassPrefixes ?? [],
         wizardExitButtonLabels: deps.wizardExitButtonLabels ?? [],
-      });
+      };
+      const outcome = await executeStepWithHealing(stepArgs);
       if (s.submitStep) {
         if (outcome === "skipped") {
           submitStepSkipped = true;
