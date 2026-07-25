@@ -3371,9 +3371,15 @@ export async function waitForTransitionBody(params: {
  * refuse to claim success on an uncommitted select, routing to the cascade/replan
  * instead of silently advancing. Walks ≤6 ancestors for the invalid marker, same
  * as the radio/checkbox primitives.
+ *
+ * Accepts a `FrameTarget` (plus the underlying `page` for `waitForTimeout`,
+ * which `FrameTarget` has no equivalent of) so a wizard embedded in a
+ * cross-origin iframe is set on its own frame; a main-frame target delegates
+ * straight to `page.evaluate`, matching today's behavior byte-for-byte.
  */
 async function applySelectValue(
   page: Page,
+  target: FrameTarget,
   selIdx: number,
   value: string
 ): Promise<{ ok: boolean; stillInvalid: boolean }> {
@@ -3387,7 +3393,7 @@ async function applySelectValue(
     sel.dispatchEvent(new Event("blur", { bubbles: true }));
     return { ok: sel.value === value };
   })(${JSON.stringify(selIdx)}, ${JSON.stringify(value)})`;
-  const setResult = (await page.evaluate(setExpr)) as { ok: boolean };
+  const setResult = (await target.evaluate(setExpr)) as { ok: boolean };
   if (!setResult?.ok) return { ok: false, stillInvalid: false };
   await page.waitForTimeout(SELECT_SETTLE_MS);
   const invalidExpr = `((selIdx) => {
@@ -3401,18 +3407,19 @@ async function applySelectValue(
     }
     return false;
   })(${JSON.stringify(selIdx)})`;
-  const stillInvalid = (await page.evaluate(invalidExpr).catch(() => false)) as boolean;
+  const stillInvalid = (await target.evaluate(invalidExpr).catch(() => false)) as boolean;
   return { ok: true, stillInvalid };
 }
 
 async function trySelectPrimitive(params: {
   page: Page;
+  target: FrameTarget;
   instruction: string;
   logger: Logger;
   anthropic: Anthropic | null;
   captureFn?: JudgeCaptureFn;
 }): Promise<boolean> {
-  const { page, instruction, logger, anthropic, captureFn } = params;
+  const { page, target, instruction, logger, anthropic, captureFn } = params;
   const parsed = parseSelectStep(instruction);
   if (!parsed) return false;
   const { option, questionLabel } = parsed;
@@ -3500,7 +3507,7 @@ async function trySelectPrimitive(params: {
       selectPresent: boolean;
       detMatch?: { selIdx: number; value: string; text: string };
       candidates?: { selIdx: number; label: string; options: { text: string; value: string }[] }[];
-    }>(page, await resolveFrameTarget(page), enumerateExpr, (r) => r?.selectPresent === true);
+    }>(page, target, enumerateExpr, (r) => r?.selectPresent === true);
     // No <select> on the page at all (e.g. the question is a radio group) —
     // fall through to the cascade unchanged; the LLM picker can't help here.
     if (!enumResult?.selectPresent) {
@@ -3516,6 +3523,7 @@ async function trySelectPrimitive(params: {
     if (enumResult.detMatch) {
       const { ok, stillInvalid } = await applySelectValue(
         page,
+        target,
         enumResult.detMatch.selIdx,
         enumResult.detMatch.value
       );
@@ -3565,6 +3573,7 @@ async function trySelectPrimitive(params: {
     // same as the fast path.
     const { ok, stillInvalid } = await applySelectValue(
       page,
+      target,
       chosenCandidate.selIdx,
       chosenOption.value
     );
@@ -3637,12 +3646,13 @@ export function chooseRequiredSelectOption(options: readonly string[]): string |
  */
 async function tryFillRequiredSelectsPrimitive(params: {
   page: Page;
+  target: FrameTarget;
   instruction: string;
   logger: Logger;
   anthropic: Anthropic | null;
   captureFn?: JudgeCaptureFn;
 }): Promise<boolean> {
-  const { page, instruction, logger, anthropic, captureFn } = params;
+  const { page, target, instruction, logger, anthropic, captureFn } = params;
   // Gate: catch-all steps only. parseSelectStep returns null for these (its
   // `any remaining` guard), so this never collides with the single-target
   // trySelectPrimitive that owns concrete "select 'X'" steps.
@@ -3702,7 +3712,7 @@ async function tryFillRequiredSelectsPrimitive(params: {
   try {
     const enumResult = await pollEnumerate<{
       candidates: { selIdx: number; label: string; options: { text: string; value: string }[] }[];
-    }>(page, await resolveFrameTarget(page), enumerateExpr, (r) => Array.isArray(r?.candidates));
+    }>(page, target, enumerateExpr, (r) => Array.isArray(r?.candidates));
     const candidates = enumResult?.candidates ?? [];
     if (candidates.length === 0) return false;
     logger.info(`required-select primitive: ${candidates.length} required-empty select(s) to fill`);
@@ -3737,7 +3747,7 @@ async function tryFillRequiredSelectsPrimitive(params: {
         allCommitted = false;
         continue;
       }
-      const { ok, stillInvalid } = await applySelectValue(page, cand.selIdx, chosen.value);
+      const { ok, stillInvalid } = await applySelectValue(page, target, cand.selIdx, chosen.value);
       if (ok && !stillInvalid) {
         logger.info(
           `required-select primitive: filled "${cand.label.slice(0, 40)}" with "${chosen.text.slice(0, 40)}"`
@@ -3783,12 +3793,13 @@ async function tryFillRequiredSelectsPrimitive(params: {
  */
 async function tryCheckboxPrimitive(params: {
   page: Page;
+  target: FrameTarget;
   instruction: string;
   logger: Logger;
   anthropic: Anthropic | null;
   captureFn?: JudgeCaptureFn;
 }): Promise<boolean> {
-  const { page, instruction, logger, anthropic, captureFn } = params;
+  const { page, target, instruction, logger, anthropic, captureFn } = params;
   const parsed = parseSelectStep(instruction);
   if (!parsed) return false;
   const { option, questionLabel } = parsed;
@@ -3878,7 +3889,7 @@ async function tryCheckboxPrimitive(params: {
       ok?: boolean;
       chosen?: string;
       groups?: { gi: number; label: string; options: { bi: number; text: string }[] }[];
-    }>(page, await resolveFrameTarget(page), enumerateExpr, (r) => r?.groupPresent === true);
+    }>(page, target, enumerateExpr, (r) => r?.groupPresent === true);
     if (!enumResult?.groupPresent) return false; // no checkbox groups → cascade
     if (enumResult.applied && enumResult.ok) {
       logger.info(
@@ -3932,7 +3943,7 @@ async function tryCheckboxPrimitive(params: {
       }
       return { ok: cb.checked === true };
     })(${JSON.stringify(chosenGroup.gi)}, ${JSON.stringify(chosenOption.bi)})`;
-    const applyResult = (await page.evaluate(applyExpr)) as { ok: boolean };
+    const applyResult = (await target.evaluate(applyExpr)) as { ok: boolean };
     if (applyResult?.ok) {
       logger.info(
         `checkbox primitive: LLM checked "${chosenOption.text.slice(0, 40)}" for ${optLabel} (${verdict.reason.slice(0, 60)})`
@@ -5407,7 +5418,22 @@ export async function executeStepWithHealing(params: {
   // cascade would otherwise skip them ("no candidates") and leave a required
   // question unanswered. No-op (returns false → falls through) when the step
   // isn't a single-dropdown select or no option matches.
-  if (await trySelectPrimitive({ page, instruction: step, logger, anthropic, captureFn })) {
+  //
+  // resolveFrameTarget(page) resolves synchronously to the main-frame target
+  // when no frameSelector is set, so this bridge is behavior-identical for
+  // every existing site until the sibling subtask threads a resolved target
+  // through end-to-end.
+  const selectFrameTarget = await resolveFrameTarget(page);
+  if (
+    await trySelectPrimitive({
+      page,
+      target: selectFrameTarget,
+      instruction: step,
+      logger,
+      anthropic,
+      captureFn,
+    })
+  ) {
     logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by select primitive`);
     trajectory?.push({ stepIndex, verifiedBy: "dom" });
     return "completed";
@@ -5418,7 +5444,16 @@ export async function executeStepWithHealing(params: {
   // screening questions this way — answer it directly in the DOM. Runs AFTER
   // trySelectPrimitive (which handles <select> and no-ops on checkbox-only
   // pages). No-op (falls through) when there's no checkbox group or no match.
-  if (await tryCheckboxPrimitive({ page, instruction: step, logger, anthropic, captureFn })) {
+  if (
+    await tryCheckboxPrimitive({
+      page,
+      target: selectFrameTarget,
+      instruction: step,
+      logger,
+      anthropic,
+      captureFn,
+    })
+  ) {
     logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by checkbox primitive`);
     trajectory?.push({ stepIndex, verifiedBy: "dom" });
     return "completed";
@@ -5443,7 +5478,14 @@ export async function executeStepWithHealing(params: {
   // catch-all (parseSelectStep returns null there, so trySelectPrimitive above
   // skipped it) and no-ops when the page has no required-empty select.
   if (
-    await tryFillRequiredSelectsPrimitive({ page, instruction: step, logger, anthropic, captureFn })
+    await tryFillRequiredSelectsPrimitive({
+      page,
+      target: selectFrameTarget,
+      instruction: step,
+      logger,
+      anthropic,
+      captureFn,
+    })
   ) {
     logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by required-select primitive`);
     trajectory?.push({ stepIndex, verifiedBy: "dom" });

@@ -5,10 +5,12 @@ import {
   executeStepWithHealing,
   formatStepPrefix,
   type HealingFlowStep,
+  pollEnumerate,
   runHealingFlow,
   waitForSpaReady,
   wireSignalCapture,
 } from "@/scraper/flow-runner";
+import { type FrameTarget, mainFrameTarget } from "@/scraper/frame-target";
 import type { SubmitCandidate } from "@/scraper/submit-control";
 import type { Capture } from "@/scripts/recon-shared";
 import type { Logger } from "@/types/logging";
@@ -97,6 +99,43 @@ describe("flow-runner/waitForSpaReady", () => {
     } as unknown as Page;
     await waitForSpaReady(page, testLogger, { minBodyLength: 5000, timeoutMs: 10_000, pollMs: 10 });
     expect(waitForTimeout).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("flow-runner/pollEnumerate", () => {
+  it("evaluates against page when the target is the main frame", async () => {
+    const { page } = fakePage([1]);
+    const result = await pollEnumerate<number>(page, mainFrameTarget(page), "1", (n) => n > 0);
+    expect(result).toBe(1);
+    expect(page.evaluate).toHaveBeenCalledTimes(1);
+  });
+
+  it("evaluates against the resolved FrameTarget, not the main page", async () => {
+    const { page } = fakePage([0]);
+    const targetEvaluate = vi.fn().mockResolvedValue(1);
+    const target = { evaluate: targetEvaluate } as unknown as FrameTarget;
+    const result = await pollEnumerate<number>(page, target, "1", (n) => n > 0);
+    expect(result).toBe(1);
+    expect(targetEvaluate).toHaveBeenCalledTimes(1);
+    expect(page.evaluate).not.toHaveBeenCalled();
+  });
+
+  it("retries the FrameTarget evaluate (not page.evaluate) while still using page.waitForTimeout for the delay", async () => {
+    const { page, waitForTimeout } = fakePage([0]);
+    let call = 0;
+    const targetEvaluate = vi.fn().mockImplementation(async () => {
+      call += 1;
+      return call >= 2 ? 1 : 0;
+    });
+    const target = { evaluate: targetEvaluate } as unknown as FrameTarget;
+    const result = await pollEnumerate<number>(page, target, "1", (n) => n > 0, {
+      attempts: 3,
+      intervalMs: 10,
+    });
+    expect(result).toBe(1);
+    expect(targetEvaluate).toHaveBeenCalledTimes(2);
+    expect(waitForTimeout).toHaveBeenCalledTimes(1);
+    expect(page.evaluate).not.toHaveBeenCalled();
   });
 });
 
