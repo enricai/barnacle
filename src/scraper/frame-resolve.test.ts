@@ -53,10 +53,10 @@ function makeFakePage(options: {
     evaluate: async (expr: unknown) => {
       const match = /document\.querySelector\((.+?)\)/.exec(String(expr));
       const selector = match?.[1] ? (JSON.parse(match[1]) as string) : null;
-      if (!selector || !Object.hasOwn(elements, selector)) return null;
+      if (!selector || !Object.hasOwn(elements, selector)) return { matched: false, src: null };
       const el = elements[selector];
-      if (el?.tag !== "IFRAME") return null;
-      return el.src ?? null;
+      if (el?.tag !== "IFRAME") return { matched: false, src: null };
+      return { matched: true, src: el.src ?? null };
     },
     locator: (selector: string) => ({ scope: "main" as const, selector }),
     frames: () => frames,
@@ -118,11 +118,47 @@ describe("resolveFrameTarget (id-only and multi-candidate selectors)", () => {
     expect(target.frameSelector).toBeNull();
   });
 
-  it("falls back to the main-frame target when the matched iframe has no src attribute", async () => {
+  it("resolves by element identity when the matched iframe has no src attribute but exactly one candidate frame exists", async () => {
+    const onlyCandidate = makeFakeFrame("https://apply.talemetry.com/application/abc-123");
     const page = makeFakePage({
       mainUrl: "https://careers.uchealth.org/jobs/123",
       elements: { "iframe#lazy": { tag: "IFRAME", src: null } },
-      frames: [makeFakeFrame("https://apply.talemetry.com/application/abc-123")],
+      frames: [onlyCandidate],
+    });
+
+    const target = await resolveFrameTarget(page as never, "iframe#lazy", {
+      timeoutMs: 20,
+      pollMs: 5,
+    });
+
+    expect(target.frame).toBe(onlyCandidate);
+    expect(target.frameSelector).toBe("iframe#lazy");
+  });
+
+  it("falls back to the main-frame target when the matched iframe has no src attribute and multiple candidate frames exist (ambiguous identity match)", async () => {
+    const page = makeFakePage({
+      mainUrl: "https://careers.uchealth.org/jobs/123",
+      elements: { "iframe#lazy": { tag: "IFRAME", src: null } },
+      frames: [
+        makeFakeFrame("https://apply.talemetry.com/application/abc-123"),
+        makeFakeFrame("https://unrelated-vendor.example.com/widget"),
+      ],
+    });
+
+    const target = await resolveFrameTarget(page as never, "iframe#lazy", {
+      timeoutMs: 20,
+      pollMs: 5,
+    });
+
+    expect(target.frame).toBeNull();
+    expect(target.frameSelector).toBeNull();
+  });
+
+  it("falls back to the main-frame target when the matched iframe has no src attribute and no candidate frames exist", async () => {
+    const page = makeFakePage({
+      mainUrl: "https://careers.uchealth.org/jobs/123",
+      elements: { "iframe#lazy": { tag: "IFRAME", src: null } },
+      frames: [],
     });
 
     const target = await resolveFrameTarget(page as never, "iframe#lazy", {
@@ -291,10 +327,10 @@ function makeMutableFakePage(options: {
       const match = /document\.querySelector\((.+?)\)/.exec(String(expr));
       const selector = match?.[1] ? (JSON.parse(match[1]) as string) : null;
       const elements = options.getElements();
-      if (!selector || !Object.hasOwn(elements, selector)) return null;
+      if (!selector || !Object.hasOwn(elements, selector)) return { matched: false, src: null };
       const el = elements[selector];
-      if (el?.tag !== "IFRAME") return null;
-      return el.src ?? null;
+      if (el?.tag !== "IFRAME") return { matched: false, src: null };
+      return { matched: true, src: el.src ?? null };
     },
     locator: (selector: string) => ({ scope: "main" as const, selector }),
     frames: () => options.getFrames(),

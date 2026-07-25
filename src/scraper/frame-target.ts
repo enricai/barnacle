@@ -105,6 +105,19 @@ function originOf(url: string): string | null {
  * looks for a `page.frames()` entry whose origin matches it. Returns `null`
  * rather than a target so the caller can distinguish "not yet attached, keep
  * polling" from a resolved target.
+ *
+ * The `src` attribute read can lose a same-tick race against the widget
+ * script that constructs the `<iframe>`: some ATS integrations (e.g.
+ * UCHealth's Talemetry wizard) assign `src` as a JS property immediately
+ * before `appendChild`, so a poll can observe the element already in the
+ * DOM with `src` still empty or not yet reflected to the attribute. Giving
+ * up in that case would depend on same-tick attribute reflection that isn't
+ * guaranteed. Instead, when the element is confirmed to be the matching
+ * `<iframe>` but its `src` can't be read, fall back to matching by element
+ * identity: if `page.frames()` has resolved exactly one candidate frame
+ * beyond the main frame, that frame must be the one CDP attached to for
+ * this iframe, so bind to it directly rather than degrading to the main
+ * frame.
  */
 async function tryResolveChildFrame(
   page: Page,
@@ -112,16 +125,24 @@ async function tryResolveChildFrame(
 ): Promise<FrameTarget | null> {
   const iframeSrcExpr = `(() => {
     const el = document.querySelector(${JSON.stringify(frameSelector)});
-    if (!el || el.tagName !== "IFRAME") return null;
-    return el.getAttribute("src");
+    if (!el || el.tagName !== "IFRAME") return { matched: false, src: null };
+    return { matched: true, src: el.getAttribute("src") };
   })()`;
-  const iframeSrc = await page.evaluate<string | null>(iframeSrcExpr);
-  if (!iframeSrc) return null;
-
-  const targetOrigin = originOf(iframeSrc);
-  if (!targetOrigin) return null;
+  const { matched, src: iframeSrc } = await page.evaluate<{
+    matched: boolean;
+    src: string | null;
+  }>(iframeSrcExpr);
+  if (!matched) return null;
 
   const candidates = page.frames();
+  const targetOrigin = iframeSrc ? originOf(iframeSrc) : null;
+  if (!targetOrigin) {
+    const [onlyCandidate] = candidates;
+    return candidates.length === 1 && onlyCandidate
+      ? childFrameTarget(page, onlyCandidate, frameSelector)
+      : null;
+  }
+
   for (const candidate of candidates) {
     const candidateUrl = await candidate.evaluate<string>("location.href").catch(() => null);
     if (candidateUrl && originOf(candidateUrl) === targetOrigin) {
@@ -139,8 +160,10 @@ async function tryResolveChildFrame(
  * 1. `frameSelector` is `null`/`undefined` → main-frame target (today's
  *    behavior, unchanged) — zero polling, zero delay.
  * 2. Each poll: no element in the main document matches `frameSelector`, or
- *    it isn't an `<iframe>`/has no `src`, or no `page.frames()` entry has a
- *    matching origin yet → try again after `FRAME_READY_POLL_MS`.
+ *    it isn't an `<iframe>`, or its `src` can't be read and more than one
+ *    `page.frames()` candidate exists (identity match is ambiguous), or no
+ *    `page.frames()` entry has a matching origin yet → try again after
+ *    `FRAME_READY_POLL_MS`.
  * 3. A poll finds a matching frame → a child-frame target bound to it,
  *    however many polls it took (an iframe created mid-flow by an earlier
  *    step, e.g. after a click reveals it, resolves as soon as Stagehand's

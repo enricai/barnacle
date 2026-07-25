@@ -81,8 +81,8 @@ function makeMidFlowFakePage(
     evaluate: vi.fn(async (expr: unknown) => {
       const match = /document\.querySelector\((.+?)\)/.exec(String(expr));
       const selector = match?.[1] ? (JSON.parse(match[1]) as string) : null;
-      if (selector !== FRAME_SELECTOR || !attached) return null;
-      return CHILD_ORIGIN_URL;
+      if (selector !== FRAME_SELECTOR || !attached) return { matched: false, src: null };
+      return { matched: true, src: CHILD_ORIGIN_URL };
     }),
     locator: vi.fn().mockReturnValue({
       first: () => ({
