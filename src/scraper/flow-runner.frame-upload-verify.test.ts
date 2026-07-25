@@ -119,14 +119,18 @@ describe("flow-runner/surfaceAndUpload — dropzone-strategy frame targeting", (
       .mockResolvedValueOnce({ ok: true, dropZoneTag: "uapp-upload" });
     const target = makeChildTarget(childEvaluate);
     const signalCounter = { n: 0 };
-    const recentCaptureMeta = [
-      { method: "POST", status: 200, url: "https://apply.talemetry.com/attachment_upload" },
-    ];
+    const recentCaptureMeta: { method: string; status: number; url: string }[] = [];
     // waitForUploadNetworkSignal polls via page.waitForTimeout; bump the
-    // signal counter on the first poll so the drag-drop-onto-dropzone success
-    // path resolves immediately instead of grinding out its full timeout.
+    // signal counter and append the matching capture on the first poll so
+    // the drag-drop-onto-dropzone success path resolves immediately instead
+    // of grinding out its full timeout.
     (page.waitForTimeout as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
       signalCounter.n = 1;
+      recentCaptureMeta.push({
+        method: "POST",
+        status: 200,
+        url: "https://apply.talemetry.com/attachment_upload",
+      });
     });
 
     const result = await surfaceAndUpload({
