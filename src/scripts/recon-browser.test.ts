@@ -4826,7 +4826,9 @@ describe("recon-browser/main — frameSelector reaches the cascade call", () => 
           return 10_000;
         }
         if (typeof expr === "string" && expr.includes("querySelector")) {
-          return opts.iframeSrc ?? null;
+          return opts.iframeSrc
+            ? { matched: true, src: opts.iframeSrc }
+            : { matched: false, src: null };
         }
         return null;
       }),
@@ -4945,7 +4947,7 @@ describe("recon-browser/main — frameSelector reaches the cascade call", () => 
           return 10_000;
         }
         if (typeof expr === "string" && expr.includes("querySelector")) {
-          return "https://apply.talemetry.com/application/abc-123";
+          return { matched: true, src: "https://apply.talemetry.com/application/abc-123" };
         }
         return null;
       }),
