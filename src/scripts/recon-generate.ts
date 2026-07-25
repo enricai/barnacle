@@ -3065,6 +3065,12 @@ export function emitBrowserFlowTs(opts: {
   isSubmissionFlow: boolean;
   hasMultipartStep?: boolean;
   vocabulary?: ReconVocabulary;
+  /** CSS selector of a cross-origin `<iframe>` the flow's target elements live
+   * inside, from the recon flow file's object-form `frameSelector`. Mirrors
+   * `spec.flow.frameSelector` in `src/plugins/config-plugin.ts` so a generated
+   * plugin keeps the same cross-origin iframe capability the recon flow used.
+   * Omitted (undefined) preserves today's main-frame-only generation. */
+  frameSelector?: string;
 }): { code: string; payloadFieldNames: Set<string> } {
   const {
     siteId,
@@ -3073,6 +3079,7 @@ export function emitBrowserFlowTs(opts: {
     isSubmissionFlow,
     hasMultipartStep = false,
     vocabulary,
+    frameSelector,
   } = opts;
 
   const payloadFieldNames = new Set<string>();
@@ -3176,7 +3183,7 @@ ${flowStepsBlock}
     steps: FLOW_STEPS,
     logger,
     anthropic: buildAnthropicClient(),
-    resumeFixture: ${resumeFixtureExpr},
+    resumeFixture: ${resumeFixtureExpr},${frameSelector !== undefined ? `\n    frameSelector: ${JSON.stringify(frameSelector)},` : ""}
   });
 
   // Schema-enforced extract via guardedExtract: Stagehand 3.4.0 accepts
@@ -3357,22 +3364,24 @@ async function main(): Promise<void> {
     }
   })();
 
-  const flowSteps = (() => {
+  const { flowSteps, frameSelector } = (() => {
     const flowFile = `src/sites/${siteId}/recon-flow.json`;
     try {
       const raw: unknown = JSON.parse(readFileSync(flowFile, "utf8"));
-      if (Array.isArray(raw)) return raw as FlowStepInput[];
+      if (Array.isArray(raw))
+        return { flowSteps: raw as FlowStepInput[], frameSelector: undefined };
       if (
         raw !== null &&
         typeof raw === "object" &&
         "steps" in raw &&
         Array.isArray((raw as { steps: unknown }).steps)
       ) {
-        return (raw as { steps: FlowStepInput[] }).steps;
+        const obj = raw as { steps: FlowStepInput[]; frameSelector?: string };
+        return { flowSteps: obj.steps, frameSelector: obj.frameSelector };
       }
-      return [] as string[];
+      return { flowSteps: [] as string[], frameSelector: undefined };
     } catch {
-      return [] as string[];
+      return { flowSteps: [] as string[], frameSelector: undefined };
     }
   })();
 
@@ -3709,6 +3718,7 @@ async function main(): Promise<void> {
     isSubmissionFlow,
     hasMultipartStep,
     vocabulary,
+    frameSelector,
   });
 
   writeFileSync(
