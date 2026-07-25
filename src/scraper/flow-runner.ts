@@ -1795,8 +1795,8 @@ export function selectBodyExcerpt(body: string): string {
   return body.slice(start, start + BODY_EXCERPT_FORM_WINDOW);
 }
 
-async function extractLivePageFormEvidence(
-  page: Page,
+export async function extractLivePageFormEvidence(
+  _page: Page,
   target: FrameTarget,
   options?: {
     client?: Anthropic | null;
@@ -1841,15 +1841,14 @@ async function extractLivePageFormEvidence(
   // LLM calls converged on "Click Continue" because no specific fillable
   // field was named in FORM FIELDS. Deterministic extraction gives the
   // LLM `"Address" <app-input> — error: "This field is required"` instead.
-  const frameTarget = await resolveFrameTarget(page);
   const [leafFields, errorVerdict, interactiveTargets] = await Promise.all([
-    probeLeafInvalidContainers(frameTarget),
+    probeLeafInvalidContainers(target),
     judgeErrorMessagesWithLLM({
       client,
       input: { bodyHtmlExcerpt: bodyExcerpt },
       captureFn,
     }),
-    extractInteractiveTargetsNearInvalid(frameTarget).catch(() => [] as string[]),
+    extractInteractiveTargetsNearInvalid(target).catch(() => [] as string[]),
   ]);
 
   // Probe is the primary signal. Judge only runs if probe is empty AND a
