@@ -5441,7 +5441,7 @@ export async function executeStepWithHealing(params: {
   if (
     await tryUploadPrimitive({
       page,
-      target: await resolveFrameTarget(page),
+      target: frameTarget ?? mainFrameTarget(page),
       isUploadStep: upload,
       fixture: resumeFixture,
       logger,
@@ -5461,11 +5461,10 @@ export async function executeStepWithHealing(params: {
   // question unanswered. No-op (returns false → falls through) when the step
   // isn't a single-dropdown select or no option matches.
   //
-  // resolveFrameTarget(page) resolves synchronously to the main-frame target
-  // when no frameSelector is set, so this bridge is behavior-identical for
-  // every existing site until the sibling subtask threads a resolved target
-  // through end-to-end.
-  const selectFrameTarget = await resolveFrameTarget(page);
+  // Reuse the already-resolved ambient frameTarget rather than re-resolving:
+  // falls back to the main-frame target when no frameSelector is set, so this
+  // bridge stays behavior-identical for every existing site.
+  const selectFrameTarget = frameTarget ?? mainFrameTarget(page);
   if (
     await trySelectPrimitive({
       page,
@@ -5677,7 +5676,7 @@ export async function executeStepWithHealing(params: {
     : 0;
   if (requireSubmitEndpoint) {
     const invalidControls = await probeFormValidityBeforeSubmit({
-      target: await resolveFrameTarget(page),
+      target: frameTarget ?? mainFrameTarget(page),
       stepIndex,
       totalSteps,
       logger,
@@ -6074,9 +6073,9 @@ export async function executeStepWithHealing(params: {
           ) {
             const fillValue = target.arguments[0];
             if (typeof fillValue === "string") {
-              const frameTarget = await resolveFrameTarget(page);
+              const dateFillTarget = frameTarget ?? mainFrameTarget(page);
               const dateFill = await fillHtml5DateTimeInput(
-                frameTarget,
+                dateFillTarget,
                 target.selector,
                 fillValue
               );
@@ -6098,7 +6097,11 @@ export async function executeStepWithHealing(params: {
                 // component rejection, masked-input library reformatting).
                 // Generic primitive that the verifier's existing signals
                 // (network/url/dom/htmlDelta/textChanged) miss.
-                const readback = await verifyFillReadback(frameTarget, target.selector, fillValue);
+                const readback = await verifyFillReadback(
+                  dateFillTarget,
+                  target.selector,
+                  fillValue
+                );
                 if (readback !== null) {
                   if (readback.outcome === "rejected") {
                     record.errorMessage = `fill-value-rejected: tried "${fillValue.slice(0, 60)}" on <${readback.tag}>; element value remains empty (silent rejection — HTML5 type validation, framework controlled-component, or masked-input library)`;
@@ -6215,7 +6218,7 @@ export async function executeStepWithHealing(params: {
             return { resolved: true, isCheckable: true, checked: false, strategyUsed: null };
           })()`;
           try {
-            const structuredClickTarget = await resolveFrameTarget(page);
+            const structuredClickTarget = frameTarget ?? mainFrameTarget(page);
             const result = await structuredClickTarget.evaluate(probeExpr);
             if (result !== null && typeof result === "object" && "resolved" in result) {
               const probe = result as {
@@ -6381,7 +6384,7 @@ export async function executeStepWithHealing(params: {
     // decides those. Radios/checkboxes are click-but-no-network just like fills.
     const domVerified =
       resolvedAction !== null && (isStateClass || isClick)
-        ? await verifyDomEffect(await resolveFrameTarget(page), resolvedAction)
+        ? await verifyDomEffect(frameTarget ?? mainFrameTarget(page), resolvedAction)
         : false;
     // Interior-advance transition gate (opt-in). On SPAs where a page advance
     // and a mere field-edit share one endpoint URL (the wizard ATS's `/gq`:
@@ -6481,7 +6484,7 @@ export async function executeStepWithHealing(params: {
             return null;
           })()`;
         try {
-          const submittedStateTarget = await resolveFrameTarget(page);
+          const submittedStateTarget = frameTarget ?? mainFrameTarget(page);
           domSubmittedMatch = (await submittedStateTarget.evaluate(probeExpr)) as string | null;
         } catch (err) {
           logger.warn(
@@ -6630,7 +6633,7 @@ export async function executeStepWithHealing(params: {
           // reliably trigger that default action — same gap N+42 documented
           // for direct checkbox/radio clicks.
           const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); let el = r.singleNodeValue; if (!el || typeof el.click !== "function") return { fired: false }; if (el.tagName === "LABEL") { const wrapped = el.querySelector("input[type=checkbox], input[type=radio]"); if (wrapped) el = wrapped; } if (el.type === "checkbox" || el.type === "radio") { el.checked = true; el.dispatchEvent(new Event("click", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { fired: true, kind: "checkbox", checked: el.checked }; } el.click(); return { fired: true, kind: "click" }; })()`;
-          const n16FallbackTarget = await resolveFrameTarget(page);
+          const n16FallbackTarget = frameTarget ?? mainFrameTarget(page);
           const probeResult = (await n16FallbackTarget.evaluate(clickExpr)) as {
             fired: boolean;
             kind?: string;
