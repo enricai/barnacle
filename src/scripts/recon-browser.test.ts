@@ -74,6 +74,7 @@ vi.mock("@/lib/telemetry/call-capture", async (importOriginal) => {
 import type { LlmCallInput } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE, CALL_TYPE_RECON_REPLAN } from "@/lib/telemetry/call-types";
 import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
+import type { FrameTarget } from "@/scraper/frame-target";
 import {
   buildRadioIdXPath,
   capturesAfterIndex,
@@ -1439,16 +1440,18 @@ describe("recon-browser/renderStepWindow", () => {
 });
 
 describe("recon-browser/probeLeafInvalidContainers", () => {
-  function fakePage(
-    payload: unknown,
-    opts?: { throw?: Error }
-  ): import("@browserbasehq/stagehand").Page {
+  function fakePage(payload: unknown, opts?: { throw?: Error }): FrameTarget {
     return {
+      frame: null,
+      frameSelector: null,
       evaluate: vi.fn().mockImplementation(async () => {
         if (opts?.throw) throw opts.throw;
         return payload;
       }),
-    } as unknown as import("@browserbasehq/stagehand").Page;
+      locator: vi.fn(),
+      url: vi.fn(),
+      title: vi.fn(),
+    } as unknown as FrameTarget;
   }
 
   it("returns empty when page.evaluate throws", async () => {
@@ -1580,16 +1583,18 @@ describe("recon-browser/renderLeafInvalidFields", () => {
 });
 
 describe("recon-browser/fillHtml5DateTimeInput", () => {
-  function fakePage(
-    payload: unknown,
-    opts?: { throw?: Error }
-  ): import("@browserbasehq/stagehand").Page {
+  function fakePage(payload: unknown, opts?: { throw?: Error }): FrameTarget {
     return {
+      frame: null,
+      frameSelector: null,
       evaluate: vi.fn().mockImplementation(async () => {
         if (opts?.throw) throw opts.throw;
         return payload;
       }),
-    } as unknown as import("@browserbasehq/stagehand").Page;
+      locator: vi.fn(),
+      url: vi.fn(),
+      title: vi.fn(),
+    } as unknown as FrameTarget;
   }
 
   it("returns null when page.evaluate returns null (xpath did not resolve)", async () => {
@@ -2925,32 +2930,39 @@ describe("recon-browser/verifyFillReadback (shape contract)", () => {
   // page.evaluate executing the closure — out of scope for unit tests
   // (would need playwright-test or similar). These tests validate the
   // type contract and that the helper does not throw on edge inputs.
+  function fakeTarget(evaluate: () => Promise<unknown>): FrameTarget {
+    return {
+      frame: null,
+      frameSelector: null,
+      evaluate,
+      locator: vi.fn(),
+      url: vi.fn(),
+      title: vi.fn(),
+    } as unknown as FrameTarget;
+  }
+
   it("returns null when page.evaluate throws", async () => {
-    const fakePage = {
-      evaluate: async () => {
-        throw new Error("page detached");
-      },
-    } as unknown as import("@browserbasehq/stagehand").Page;
+    const fakePage = fakeTarget(async () => {
+      throw new Error("page detached");
+    });
     const result = await verifyFillReadback(fakePage, "//input[@id='x']", "abc");
     expect(result).toBeNull();
   });
 
   it("returns null when page.evaluate returns non-object", async () => {
-    const fakePage = {
-      evaluate: async () => null,
-    } as unknown as import("@browserbasehq/stagehand").Page;
+    const fakePage = fakeTarget(async () => null);
     const result = await verifyFillReadback(fakePage, "//input[@id='x']", "abc");
     expect(result).toBeNull();
   });
 
   it("returns parsed result when page.evaluate returns a valid shape", async () => {
-    const fakePage = {
-      evaluate: async (): Promise<VerifyFillReadbackResult> => ({
+    const fakePage = fakeTarget(
+      async (): Promise<VerifyFillReadbackResult> => ({
         outcome: "matched",
         postValue: "abc",
         tag: "input",
-      }),
-    } as unknown as import("@browserbasehq/stagehand").Page;
+      })
+    );
     const result = await verifyFillReadback(fakePage, "//input[@id='x']", "abc");
     expect(result).not.toBeNull();
     expect(result?.outcome).toBe("matched");
@@ -2959,21 +2971,23 @@ describe("recon-browser/verifyFillReadback (shape contract)", () => {
   });
 
   it("returns null when outcome field is invalid (silent guard)", async () => {
-    const fakePage = {
-      evaluate: async () => ({ outcome: "invalid-outcome", postValue: "", tag: "input" }),
-    } as unknown as import("@browserbasehq/stagehand").Page;
+    const fakePage = fakeTarget(async () => ({
+      outcome: "invalid-outcome",
+      postValue: "",
+      tag: "input",
+    }));
     const result = await verifyFillReadback(fakePage, "//input[@id='x']", "abc");
     expect(result).toBeNull();
   });
 
   it("preserves rejected outcome (value silently rejected by element)", async () => {
-    const fakePage = {
-      evaluate: async (): Promise<VerifyFillReadbackResult> => ({
+    const fakePage = fakeTarget(
+      async (): Promise<VerifyFillReadbackResult> => ({
         outcome: "rejected",
         postValue: "",
         tag: "input",
-      }),
-    } as unknown as import("@browserbasehq/stagehand").Page;
+      })
+    );
     const result = await verifyFillReadback(fakePage, "//input[@type='date']", "06-14-2026");
     expect(result?.outcome).toBe("rejected");
     expect(result?.postValue).toBe("");

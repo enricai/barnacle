@@ -96,6 +96,7 @@ import {
   waitForSpaReady,
   wireSignalCapture,
 } from "@/scraper/flow-runner";
+import { resolveFrameTarget } from "@/scraper/frame-target";
 import { createBrowserSession, type ProviderName } from "@/scraper/session";
 import { guardedObserve } from "@/scraper/stagehand-guard";
 import { filterByCallType, parseSamples } from "@/scripts/judge-llm-batch";
@@ -1031,7 +1032,7 @@ async function readFailureDumpEvidence(
     // dump-based Haiku judge only when the live probe returns empty or
     // when no page is in scope (tests). See `probeLeafInvalidContainers`
     // docs for the rationale.
-    const leafFields = page ? await probeLeafInvalidContainers(page) : [];
+    const leafFields = page ? await probeLeafInvalidContainers(await resolveFrameTarget(page)) : [];
 
     const [unfocusedList, invalidVerdict, errorVerdict] = await Promise.all([
       renderUnfocusedObserve(dump.unfocusedObserve ?? [], { client, captureFn }),

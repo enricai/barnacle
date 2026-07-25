@@ -39,7 +39,7 @@ import {
 } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
 import { type RunHealingFlowResult, StepVerificationError } from "@/scraper/errors";
-import type { FrameTarget } from "@/scraper/frame-target";
+import { type FrameTarget, resolveFrameTarget } from "@/scraper/frame-target";
 import { classifyPhantomClick, type PhantomClickVerdict } from "@/scraper/phantom-click";
 import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
 import {
@@ -1829,14 +1829,15 @@ async function extractLivePageFormEvidence(
   // LLM calls converged on "Click Continue" because no specific fillable
   // field was named in FORM FIELDS. Deterministic extraction gives the
   // LLM `"Address" <app-input> — error: "This field is required"` instead.
+  const frameTarget = await resolveFrameTarget(page);
   const [leafFields, errorVerdict, interactiveTargets] = await Promise.all([
-    probeLeafInvalidContainers(page),
+    probeLeafInvalidContainers(frameTarget),
     judgeErrorMessagesWithLLM({
       client,
       input: { bodyHtmlExcerpt: bodyExcerpt },
       captureFn,
     }),
-    extractInteractiveTargetsNearInvalid(page).catch(() => [] as string[]),
+    extractInteractiveTargetsNearInvalid(frameTarget).catch(() => [] as string[]),
   ]);
 
   // Probe is the primary signal. Judge only runs if probe is empty AND a
@@ -5901,7 +5902,12 @@ export async function executeStepWithHealing(params: {
           ) {
             const fillValue = target.arguments[0];
             if (typeof fillValue === "string") {
-              const dateFill = await fillHtml5DateTimeInput(page, target.selector, fillValue);
+              const frameTarget = await resolveFrameTarget(page);
+              const dateFill = await fillHtml5DateTimeInput(
+                frameTarget,
+                target.selector,
+                fillValue
+              );
               if (dateFill !== null) {
                 record.errorMessage = dateFill.filled
                   ? `html5-date-fallback: filled ${dateFill.inputType}="${dateFill.postValue}"`
@@ -5920,7 +5926,7 @@ export async function executeStepWithHealing(params: {
                 // component rejection, masked-input library reformatting).
                 // Generic primitive that the verifier's existing signals
                 // (network/url/dom/htmlDelta/textChanged) miss.
-                const readback = await verifyFillReadback(page, target.selector, fillValue);
+                const readback = await verifyFillReadback(frameTarget, target.selector, fillValue);
                 if (readback !== null) {
                   if (readback.outcome === "rejected") {
                     record.errorMessage = `fill-value-rejected: tried "${fillValue.slice(0, 60)}" on <${readback.tag}>; element value remains empty (silent rejection — HTML5 type validation, framework controlled-component, or masked-input library)`;
