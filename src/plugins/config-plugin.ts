@@ -36,7 +36,7 @@ const jsonSchemaFragment = z.record(z.string(), z.unknown());
 
 const flowSchema = z.object({
   steps: z.array(RECON_FLOW_STEP_SCHEMA).min(1),
-  frameSelector: z.string().optional(),
+  frameSelector: z.string().min(1).optional(),
   submitEndpointPattern: z.string().nullish(),
   submittedStateSelectors: z.array(z.string()).optional(),
   requireSubmitEndpointMatch: z.boolean().optional(),
