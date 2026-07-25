@@ -908,7 +908,7 @@ describe("recon-browser/readFailureDumpEvidence", () => {
     return {
       evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
         if (typeof expr === "string" && expr.includes(JSON.stringify(iframeSelector))) {
-          return iframeSrc;
+          return { matched: true, src: iframeSrc };
         }
         return [];
       }),
