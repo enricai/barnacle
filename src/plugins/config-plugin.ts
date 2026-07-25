@@ -36,6 +36,7 @@ const jsonSchemaFragment = z.record(z.string(), z.unknown());
 
 const flowSchema = z.object({
   steps: z.array(RECON_FLOW_STEP_SCHEMA).min(1),
+  frameSelector: z.string().optional(),
   submitEndpointPattern: z.string().nullish(),
   submittedStateSelectors: z.array(z.string()).optional(),
   requireSubmitEndpointMatch: z.boolean().optional(),
@@ -240,6 +241,7 @@ export async function buildConfigPlugin(
         logger,
         anthropic,
         resumeFixture: buildResumeFixture(payload, hasUploadStep, spec.multipart ?? false),
+        frameSelector: spec.flow.frameSelector,
         submitEndpointPattern: spec.flow.submitEndpointPattern ?? null,
         submittedStateSelectors: spec.flow.submittedStateSelectors ?? [],
         requireSubmitEndpointMatch: spec.flow.requireSubmitEndpointMatch ?? false,

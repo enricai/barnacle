@@ -193,6 +193,29 @@ describe("buildConfigPlugin", () => {
       plugin.execute({ FirstName: "J", Email: "e" }, session, context)
     ).resolves.toBeDefined();
   });
+
+  it("forwards spec.flow.frameSelector into the runHealingFlow deps when set", async () => {
+    const manifest = baseManifest();
+    (manifest.spec as { flow: { frameSelector?: string } }).flow.frameSelector =
+      "#talemetry_apply_iframe";
+    const plugin = await buildConfigPlugin(manifest);
+    const { session, context } = mockExecuteDeps();
+
+    await plugin.execute({ FirstName: "J", Email: "e" }, session, context);
+
+    const deps = mockRunHealingFlow.mock.calls[0]?.[0] as { frameSelector?: string };
+    expect(deps.frameSelector).toBe("#talemetry_apply_iframe");
+  });
+
+  it("forwards undefined frameSelector when the manifest omits it (today's behavior)", async () => {
+    const plugin = await buildConfigPlugin(baseManifest());
+    const { session, context } = mockExecuteDeps();
+
+    await plugin.execute({ FirstName: "J", Email: "e" }, session, context);
+
+    const deps = mockRunHealingFlow.mock.calls[0]?.[0] as { frameSelector?: string };
+    expect(deps.frameSelector).toBeUndefined();
+  });
 });
 
 describe("CONFIG_PLUGIN_MANIFEST", () => {
