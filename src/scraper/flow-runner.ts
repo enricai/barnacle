@@ -1840,14 +1840,15 @@ async function extractLivePageFormEvidence(
   // LLM calls converged on "Click Continue" because no specific fillable
   // field was named in FORM FIELDS. Deterministic extraction gives the
   // LLM `"Address" <app-input> — error: "This field is required"` instead.
+  const frameTarget = await resolveFrameTarget(page);
   const [leafFields, errorVerdict, interactiveTargets] = await Promise.all([
-    probeLeafInvalidContainers(page),
+    probeLeafInvalidContainers(frameTarget),
     judgeErrorMessagesWithLLM({
       client,
       input: { bodyHtmlExcerpt: bodyExcerpt },
       captureFn,
     }),
-    extractInteractiveTargetsNearInvalid(page).catch(() => [] as string[]),
+    extractInteractiveTargetsNearInvalid(frameTarget).catch(() => [] as string[]),
   ]);
 
   // Probe is the primary signal. Judge only runs if probe is empty AND a
@@ -1935,13 +1936,13 @@ export interface LeafInvalidField {
  * LLM for fuzzy judgment, deterministic extraction for structurally-derivable
  * signals" — DOM tree walking is the latter.
  *
- * Returns up to 12 leaf records. Empty array on `page.evaluate` failure (safe
+ * Returns up to 12 leaf records. Empty array on evaluate failure (safe
  * fallback to the existing Haiku judge upstream). The `inputTag` and
  * `visibleErrorText` fields let the prompt distinguish a smart-address
  * autocomplete (where typing-only fails and the cascade needs dropdown
  * selection) from a plain text input.
  */
-export async function probeLeafInvalidContainers(page: Page): Promise<LeafInvalidField[]> {
+export async function probeLeafInvalidContainers(target: FrameTarget): Promise<LeafInvalidField[]> {
   const expr = `(() => {
     const SELECTOR =
       "[class*='ng-invalid']:not(:has([class*='ng-invalid'])), " +
@@ -2026,10 +2027,10 @@ export async function probeLeafInvalidContainers(page: Page): Promise<LeafInvali
     return out;
   })()`;
   try {
-    const result = await page.evaluate(expr);
+    const result = await target.evaluate(expr);
     return Array.isArray(result) ? (result as LeafInvalidField[]) : [];
   } catch {
-    // page.evaluate failure (navigation in-flight, CSP, browser detached)
+    // evaluate failure (navigation in-flight, CSP, browser detached)
     // is non-fatal — caller falls back to the Haiku judge.
     return [];
   }
@@ -2053,7 +2054,7 @@ export function renderLeafInvalidFields(fields: readonly LeafInvalidField[]): st
   return lines.join("\n");
 }
 
-async function extractInteractiveTargetsNearInvalid(page: Page): Promise<string[]> {
+async function extractInteractiveTargetsNearInvalid(target: FrameTarget): Promise<string[]> {
   const expr = `(() => {
     const out = [];
     const containers = document.querySelectorAll(
@@ -2109,7 +2110,7 @@ async function extractInteractiveTargetsNearInvalid(page: Page): Promise<string[
     }
     return out;
   })()`;
-  const result = await page.evaluate(expr);
+  const result = await target.evaluate(expr);
   return Array.isArray(result) ? (result as string[]) : [];
 }
 
@@ -2392,7 +2393,7 @@ export function normalizeDateValue(raw: string, inputType: string): string | nul
 }
 
 export async function fillHtml5DateTimeInput(
-  page: Page,
+  target: FrameTarget,
   xpath: string,
   value: string
 ): Promise<Html5DateFillResult | null> {
@@ -2400,7 +2401,7 @@ export async function fillHtml5DateTimeInput(
   // K'/H' Change 1: pre-normalize the value before dispatching to the page
   // evaluator. The HTML5 spec rejects programmatic .value writes that don't
   // match the canonical format — see normalizeDateValue TSDoc.
-  // We don't yet know the input type until the page.evaluate runs (we'd
+  // We don't yet know the input type until the evaluate runs (we'd
   // have to probe it first), so we try BOTH the raw value AND a normalized
   // pass: if raw works, fine; if raw fails (post-value mismatch), the
   // returned filled=false signal tells the caller to retry with a normalized
@@ -2429,7 +2430,7 @@ export async function fillHtml5DateTimeInput(
     return { filled: el.value === value, postValue: el.value || "", inputType };
   })()`;
   try {
-    const raw = await page.evaluate(expr);
+    const raw = await target.evaluate(expr);
     if (raw === null || typeof raw !== "object") return null;
     const r = raw as { filled?: unknown; postValue?: unknown; inputType?: unknown };
     if (typeof r.inputType !== "string") return null;
@@ -2478,7 +2479,7 @@ export interface VerifyFillReadbackResult {
  * (react-testing-library's `getByDisplayValue` does the same readback).
  */
 export async function verifyFillReadback(
-  page: Page,
+  target: FrameTarget,
   xpath: string,
   expectedValue: string
 ): Promise<VerifyFillReadbackResult | null> {
@@ -2504,7 +2505,7 @@ export async function verifyFillReadback(
     return { outcome, postValue: actual, tag };
   })()`;
   try {
-    const raw = await page.evaluate(expr);
+    const raw = await target.evaluate(expr);
     if (raw === null || typeof raw !== "object") return null;
     const r = raw as { outcome?: unknown; postValue?: unknown; tag?: unknown };
     if (r.outcome !== "matched" && r.outcome !== "rejected" && r.outcome !== "differs") return null;
@@ -5914,7 +5915,12 @@ export async function executeStepWithHealing(params: {
           ) {
             const fillValue = target.arguments[0];
             if (typeof fillValue === "string") {
-              const dateFill = await fillHtml5DateTimeInput(page, target.selector, fillValue);
+              const frameTarget = await resolveFrameTarget(page);
+              const dateFill = await fillHtml5DateTimeInput(
+                frameTarget,
+                target.selector,
+                fillValue
+              );
               if (dateFill !== null) {
                 record.errorMessage = dateFill.filled
                   ? `html5-date-fallback: filled ${dateFill.inputType}="${dateFill.postValue}"`
@@ -5933,7 +5939,7 @@ export async function executeStepWithHealing(params: {
                 // component rejection, masked-input library reformatting).
                 // Generic primitive that the verifier's existing signals
                 // (network/url/dom/htmlDelta/textChanged) miss.
-                const readback = await verifyFillReadback(page, target.selector, fillValue);
+                const readback = await verifyFillReadback(frameTarget, target.selector, fillValue);
                 if (readback !== null) {
                   if (readback.outcome === "rejected") {
                     record.errorMessage = `fill-value-rejected: tried "${fillValue.slice(0, 60)}" on <${readback.tag}>; element value remains empty (silent rejection — HTML5 type validation, framework controlled-component, or masked-input library)`;
