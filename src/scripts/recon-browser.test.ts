@@ -72,9 +72,24 @@ vi.mock("@/lib/telemetry/call-capture", async (importOriginal) => {
   };
 });
 
+// executeStepWithHealing spy for the main()/frameSelector wiring tests below —
+// every other export stays real so the rest of this file's tests (which call
+// exported flow-runner helpers directly) are unaffected.
+const { executeStepWithHealingStub } = vi.hoisted(() => ({
+  executeStepWithHealingStub: vi.fn(),
+}));
+vi.mock("@/scraper/flow-runner", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/scraper/flow-runner")>();
+  return {
+    ...actual,
+    executeStepWithHealing: executeStepWithHealingStub,
+  };
+});
+
 import type { LlmCallInput } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE, CALL_TYPE_RECON_REPLAN } from "@/lib/telemetry/call-types";
 import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
+import { createBrowserSession } from "@/scraper/session";
 import {
   buildRadioIdXPath,
   capturesAfterIndex,
@@ -107,11 +122,13 @@ import {
   type LeafInvalidField,
   latestCaptureIndex,
   logBillingErrorIfPresent,
+  main,
   type NormalizedStep,
   narrowInvalidFormControl,
   normalizeDateValue,
   pairInvalidWithErrors,
   parseCaptureIndex,
+  parseCli,
   parseRadioStep,
   parseSelectStep,
   persistReplannedFlow,
@@ -4729,5 +4746,179 @@ describe("recon-browser/RECON_FLOW_FILE_SCHEMA — frameSelector", () => {
     expect(result.data.frameSelector).toBeUndefined();
     expect(result.data.submitEndpointPattern).toBe("^https://example\\.com/api/submit$");
     expect(result.data.submittedStateSelectors).toEqual([".thank-you"]);
+  });
+});
+
+describe("recon-browser/parseCli — frameSelector", () => {
+  const ORIGINAL_ARGV = process.argv;
+
+  afterEach(() => {
+    process.argv = ORIGINAL_ARGV;
+  });
+
+  it("forwards frameSelector from an object-shape --flow arg", () => {
+    process.argv = [
+      "node",
+      "recon-browser.ts",
+      "--url",
+      "https://example.com",
+      "--flow",
+      JSON.stringify({
+        steps: ["Click Manual Application"],
+        frameSelector: "#talemetry_apply_iframe",
+      }),
+    ];
+
+    expect(parseCli().frameSelector).toBe("#talemetry_apply_iframe");
+  });
+
+  it("resolves frameSelector to null for a legacy bare-array --flow arg", () => {
+    process.argv = [
+      "node",
+      "recon-browser.ts",
+      "--url",
+      "https://example.com",
+      "--flow",
+      JSON.stringify(["Click Apply", "Fill First Name"]),
+    ];
+
+    expect(parseCli().frameSelector).toBeNull();
+  });
+
+  it("resolves frameSelector to null when the object-shape flow omits it", () => {
+    process.argv = [
+      "node",
+      "recon-browser.ts",
+      "--url",
+      "https://example.com",
+      "--flow",
+      JSON.stringify({ steps: ["Click Apply"] }),
+    ];
+
+    expect(parseCli().frameSelector).toBeNull();
+  });
+});
+
+describe("recon-browser/main — frameSelector reaches the cascade call", () => {
+  /**
+   * Minimal Page/Stagehand double: enough surface for main()'s pre-loop
+   * navigation/SPA-readiness gate, wireSignalCapture's CDP wiring, cookie-jar
+   * snapshots, and (when `iframeSrc` is set) resolveFrameTarget's iframe-src
+   * lookup + page.frames() scan.
+   */
+  function makeFakePage(opts: { iframeSrc?: string; frameUrl?: string } = {}): {
+    page: Page;
+    stagehand: Stagehand;
+  } {
+    const session = {
+      on: (): void => {},
+      off: (): void => {},
+    };
+    const childFrame = {
+      evaluate: vi.fn().mockResolvedValue(opts.frameUrl ?? ""),
+    };
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      url: (): string => "https://example.com/apply",
+      title: vi.fn().mockResolvedValue("Apply"),
+      evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+        if (typeof expr === "string" && expr.includes("document.body")) {
+          return 10_000;
+        }
+        if (typeof expr === "string" && expr.includes("querySelector")) {
+          return opts.iframeSrc ?? null;
+        }
+        return null;
+      }),
+      frames: vi.fn().mockReturnValue(opts.frameUrl ? [childFrame] : []),
+      getSessionForFrame: () => session,
+      mainFrameId: () => "main",
+      sendCDP: vi.fn().mockResolvedValue({ cookies: [] }),
+    } as unknown as Page;
+    const stagehand = {
+      context: { awaitActivePage: async (): Promise<Page> => page },
+    } as unknown as Stagehand;
+    return { page, stagehand };
+  }
+
+  const ORIGINAL_ARGV = process.argv;
+  let runsRoot: string;
+
+  beforeEach(() => {
+    runsRoot = mkdtempSync(join(tmpdir(), "recon-browser-main-"));
+    process.env.RECON_RUN_ID = "20260725-000000-main1";
+    process.env.RECON_OUT_DIR = runsRoot;
+    executeStepWithHealingStub.mockReset();
+    executeStepWithHealingStub.mockResolvedValue("ok");
+    vi.mocked(createBrowserSession).mockReset();
+  });
+
+  afterEach(() => {
+    process.argv = ORIGINAL_ARGV;
+    rmSync(runsRoot, { recursive: true, force: true });
+    delete process.env.RECON_RUN_ID;
+    delete process.env.RECON_OUT_DIR;
+    vi.restoreAllMocks();
+    executeStepWithHealingStub.mockReset();
+  });
+
+  it("resolves a declared frameSelector to a child FrameTarget and passes it to executeStepWithHealing", async () => {
+    const { stagehand } = makeFakePage({
+      iframeSrc: "https://apply.talemetry.com/application/abc-123",
+      frameUrl: "https://apply.talemetry.com/application/abc-123",
+    });
+    vi.mocked(createBrowserSession).mockResolvedValue({
+      stagehand,
+      limiter: {} as never,
+      sessionId: "test-session",
+      provider: "browserbase",
+      close: vi.fn().mockResolvedValue(undefined),
+    } as never);
+
+    process.argv = [
+      "node",
+      "recon-browser.ts",
+      "--url",
+      "https://example.com/apply",
+      "--flow",
+      JSON.stringify({
+        steps: ["Click Manual Application"],
+        frameSelector: "#talemetry_apply_iframe",
+      }),
+    ];
+
+    await main();
+
+    expect(executeStepWithHealingStub).toHaveBeenCalledTimes(1);
+    const callArgs = executeStepWithHealingStub.mock.calls[0]?.[0] as { frameTarget?: FrameTarget };
+    expect(callArgs.frameTarget?.frameSelector).toBe("#talemetry_apply_iframe");
+    expect(callArgs.frameTarget?.frame).not.toBeNull();
+  });
+
+  it("passes a main-frame FrameTarget (frame: null) for a legacy bare-array flow with no frameSelector", async () => {
+    const { stagehand } = makeFakePage();
+    vi.mocked(createBrowserSession).mockResolvedValue({
+      stagehand,
+      limiter: {} as never,
+      sessionId: "test-session",
+      provider: "browserbase",
+      close: vi.fn().mockResolvedValue(undefined),
+    } as never);
+
+    process.argv = [
+      "node",
+      "recon-browser.ts",
+      "--url",
+      "https://example.com/apply",
+      "--flow",
+      JSON.stringify(["Click Apply"]),
+    ];
+
+    await main();
+
+    expect(executeStepWithHealingStub).toHaveBeenCalledTimes(1);
+    const callArgs = executeStepWithHealingStub.mock.calls[0]?.[0] as { frameTarget?: FrameTarget };
+    expect(callArgs.frameTarget?.frame).toBeNull();
+    expect(callArgs.frameTarget?.frameSelector).toBeNull();
   });
 });
