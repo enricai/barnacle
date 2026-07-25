@@ -6194,7 +6194,8 @@ export async function executeStepWithHealing(params: {
             return { resolved: true, isCheckable: true, checked: false, strategyUsed: null };
           })()`;
           try {
-            const result = await page.evaluate(probeExpr);
+            const structuredClickTarget = await resolveFrameTarget(page);
+            const result = await structuredClickTarget.evaluate(probeExpr);
             if (result !== null && typeof result === "object" && "resolved" in result) {
               const probe = result as {
                 resolved: boolean;
@@ -6455,7 +6456,8 @@ export async function executeStepWithHealing(params: {
             return null;
           })()`;
         try {
-          domSubmittedMatch = (await page.evaluate(probeExpr)) as string | null;
+          const submittedStateTarget = await resolveFrameTarget(page);
+          domSubmittedMatch = (await submittedStateTarget.evaluate(probeExpr)) as string | null;
         } catch (err) {
           logger.warn(
             `submitted-state DOM probe threw: ${toErrorMessage(err)} — judge will reason without it`
@@ -6603,7 +6605,8 @@ export async function executeStepWithHealing(params: {
           // reliably trigger that default action — same gap N+42 documented
           // for direct checkbox/radio clicks.
           const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); let el = r.singleNodeValue; if (!el || typeof el.click !== "function") return { fired: false }; if (el.tagName === "LABEL") { const wrapped = el.querySelector("input[type=checkbox], input[type=radio]"); if (wrapped) el = wrapped; } if (el.type === "checkbox" || el.type === "radio") { el.checked = true; el.dispatchEvent(new Event("click", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { fired: true, kind: "checkbox", checked: el.checked }; } el.click(); return { fired: true, kind: "click" }; })()`;
-          const probeResult = (await page.evaluate(clickExpr)) as {
+          const n16FallbackTarget = await resolveFrameTarget(page);
+          const probeResult = (await n16FallbackTarget.evaluate(clickExpr)) as {
             fired: boolean;
             kind?: string;
             checked?: boolean;
@@ -6630,7 +6633,7 @@ export async function executeStepWithHealing(params: {
               }
               return false;
             })()`;
-            ancestorStillInvalid = (await page
+            ancestorStillInvalid = (await n16FallbackTarget
               .evaluate(ancestorInvalidExpr)
               .catch(() => false)) as boolean;
           }
