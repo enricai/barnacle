@@ -39,6 +39,7 @@ import {
 } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
 import { type RunHealingFlowResult, StepVerificationError } from "@/scraper/errors";
+import type { FrameTarget } from "@/scraper/frame-target";
 import { classifyPhantomClick, type PhantomClickVerdict } from "@/scraper/phantom-click";
 import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
 import {
@@ -578,13 +579,13 @@ export interface AttemptRecord {
 const DOM_SNAPSHOT_EXPR = `(() => { const b = document.body; if (!b) return { html: 0, text: "" }; const t = b.innerText || ""; return { html: (b.outerHTML || "").length, text: t.length + ":" + t.slice(0, 200) }; })()`;
 
 export async function snapshotPage(
-  page: Page,
+  target: FrameTarget,
   signalCounter: { n: number }
 ): Promise<StepSnapshot> {
   let bodyHtmlLength = 0;
   let visibleTextSignature = "";
   try {
-    const result = await page.evaluate(DOM_SNAPSHOT_EXPR);
+    const result = await target.evaluate(DOM_SNAPSHOT_EXPR);
     if (
       result !== null &&
       typeof result === "object" &&
@@ -602,7 +603,7 @@ export async function snapshotPage(
   }
   return {
     networkCount: signalCounter.n,
-    url: page.url(),
+    url: await target.url(),
     bodyHtmlLength,
     visibleTextSignature,
   };
