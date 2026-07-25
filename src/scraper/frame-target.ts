@@ -13,6 +13,10 @@
 
 import type { Page } from "@browserbasehq/stagehand";
 
+import { getLogger } from "@/lib/logging";
+
+const logger = getLogger({ name: "scraper/frame-target" });
+
 /** The frame handle type `Page.frames()` returns, without a deep import into Stagehand's understudy internals. */
 type StagehandFrame = ReturnType<Page["frames"]>[number];
 
@@ -134,4 +138,68 @@ export async function resolveFrameTarget(
     }
   }
   return mainFrameTarget(page);
+}
+
+const HOP_SEPARATOR = " >> ";
+
+/**
+ * Composes a Stagehand hop-notation scope string from a frame selector and an
+ * inner selector, for callers building `ObserveOptions.selector` /
+ * `ExtractOptions.selector` values — kept separate from `FrameTarget` itself
+ * so `resolveFrameTarget` keeps receiving only the bare iframe-id hop (the
+ * contract `frame-resolve.test.ts` pins) rather than a pre-composed string.
+ */
+export function buildHopSelector(
+  frameSelector: string | null | undefined,
+  innerSelector: string
+): string {
+  if (!frameSelector) return innerSelector;
+  const trimmedFrameSelector = frameSelector.trimEnd();
+  if (trimmedFrameSelector.endsWith(">>")) {
+    return `${trimmedFrameSelector} ${innerSelector.trimStart()}`;
+  }
+  return `${trimmedFrameSelector}${HOP_SEPARATOR}${innerSelector.trimStart()}`;
+}
+
+/** Readiness-wait defaults — cheap poll, short timeout: an attached-but-not-yet-navigated child frame should settle in well under a second. */
+const FRAME_READY_TIMEOUT_MS = 5_000;
+const FRAME_READY_POLL_MS = 100;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Blocks until a resolved child frame has a live document (`document.readyState`
+ * is `"interactive"` or `"complete"`), so callers do not observe/act against a
+ * frame that CDP has attached to but that has not yet navigated past `about:blank`
+ * — the state right after `Target.setAutoAttach` fires and before the OOPIF's own
+ * navigation lands. Best-effort like `waitForSpaReady`: never throws, just resolves
+ * once ready or once `timeoutMs` elapses, so a frame that never becomes ready
+ * degrades to "proceed anyway" rather than hanging the flow.
+ */
+export async function waitForChildFrameReady(
+  target: FrameTarget,
+  opts: { timeoutMs?: number; pollMs?: number } = {}
+): Promise<void> {
+  if (!target.frame) return;
+
+  const timeoutMs = opts.timeoutMs ?? FRAME_READY_TIMEOUT_MS;
+  const pollMs = opts.pollMs ?? FRAME_READY_POLL_MS;
+
+  const isReady = async (): Promise<boolean> => {
+    const readyState = await target.evaluate<string>("document.readyState").catch(() => null);
+    return readyState === "interactive" || readyState === "complete";
+  };
+
+  if (await isReady()) return;
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await sleep(pollMs);
+    if (await isReady()) return;
+  }
+  logger.warn(
+    `child frame ${target.frameSelector ?? "(unresolved)"} still not ready after ${timeoutMs}ms — proceeding anyway`
+  );
 }
