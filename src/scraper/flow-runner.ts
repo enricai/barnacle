@@ -39,6 +39,7 @@ import {
 } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
 import { type RunHealingFlowResult, StepVerificationError } from "@/scraper/errors";
+import type { FrameTarget } from "@/scraper/frame-target";
 import { classifyPhantomClick, type PhantomClickVerdict } from "@/scraper/phantom-click";
 import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
 import {
@@ -4086,12 +4087,13 @@ export function selectRadioGroupOption(params: {
  */
 async function tryRadioPrimitive(params: {
   page: Page;
+  target: FrameTarget;
   instruction: string;
   logger: Logger;
   anthropic: Anthropic | null;
   captureFn?: JudgeCaptureFn;
 }): Promise<boolean> {
-  const { page, instruction, logger, anthropic, captureFn } = params;
+  const { page, target, instruction, logger, anthropic, captureFn } = params;
   const parsed = parseRadioStep(instruction);
   if (!parsed) return false;
   const { option, questionLabel } = parsed;
@@ -4166,7 +4168,7 @@ async function tryRadioPrimitive(params: {
     const enumResult = await pollEnumerate<{
       groupPresent: boolean;
       groups?: RadioGroupCandidate[];
-    }>(page, enumerateExpr, (r) => r?.groupPresent === true);
+    }>(page, enumerateExpr, (r) => r?.groupPresent === true, { evalTarget: target });
     if (!enumResult?.groupPresent) return false; // no radio group → cascade
     const groups = enumResult.groups ?? [];
     if (groups.length === 0) return false;
@@ -4176,7 +4178,7 @@ async function tryRadioPrimitive(params: {
     const selection = selectRadioGroupOption({ groups, wantOption: option, questionLabel });
     if (selection !== null && selection !== "ambiguous") {
       const chosenOpt = groups[selection.gi]?.options.find((o) => o.ri === selection.ri);
-      const applied = await applyRadioSelection(page, selection.gi, selection.ri, {
+      const applied = await applyRadioSelection(target, selection.gi, selection.ri, {
         id: chosenOpt?.id ?? "",
         xpath: chosenOpt?.xpath ?? "",
       });
@@ -4229,7 +4231,7 @@ async function tryRadioPrimitive(params: {
     // biome-ignore lint/style/noNonNullAssertion: guarded above by the verdict.optionIndex === null early-return
     const chosenOption = chosenGroup.options[verdict.optionIndex]!;
     const applyResult = {
-      ok: await applyRadioSelection(page, chosenGroup.gi, chosenOption.ri, {
+      ok: await applyRadioSelection(target, chosenGroup.gi, chosenOption.ri, {
         id: chosenOption.id,
         xpath: chosenOption.xpath,
       }),
@@ -4246,6 +4248,11 @@ async function tryRadioPrimitive(params: {
     logger.warn(`radio primitive: evaluate threw: ${toErrorMessage(err)}; falling through`);
     return false;
   }
+}
+
+/** Delay helper for post-commit settle waits — `FrameTarget` has no `waitForTimeout` since it isn't frame-scoped. */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
@@ -4266,7 +4273,7 @@ async function tryRadioPrimitive(params: {
  * Returns whether the commit stuck; false → caller falls through to the cascade.
  */
 async function applyRadioSelection(
-  page: Page,
+  target: FrameTarget,
   gi: number,
   ri: number,
   hint: { id: string; xpath: string }
@@ -4286,8 +4293,8 @@ async function applyRadioSelection(
       return { ok: true };
     })(${JSON.stringify(sel.id)}, ${JSON.stringify(sel.xpath)})`;
   const readback = async (): Promise<boolean> => {
-    await page.waitForTimeout(RADIO_SETTLE_MS);
-    const r = (await page.evaluate(readbackExpr(hint)).catch(() => ({ ok: false }))) as {
+    await sleep(RADIO_SETTLE_MS);
+    const r = (await target.evaluate(readbackExpr(hint)).catch(() => ({ ok: false }))) as {
       ok: boolean;
     };
     return r?.ok === true;
@@ -4297,7 +4304,7 @@ async function applyRadioSelection(
   const inputSel = hint.id ? buildRadioIdXPath(hint.id) : hint.xpath ? `xpath=${hint.xpath}` : null;
   if (inputSel) {
     try {
-      await page.locator(inputSel).first().click();
+      await target.locator(inputSel).first().click();
       if (await readback()) return true;
     } catch {
       // fall through to the next tier
@@ -4307,7 +4314,7 @@ async function applyRadioSelection(
   // Tier B — trusted click on the associated label (MUI hides the real input).
   if (hint.id) {
     try {
-      await page
+      await target
         .locator(`xpath=//label[@for=${JSON.stringify(hint.id)}]`)
         .first()
         .click();
@@ -4339,7 +4346,7 @@ async function applyRadioSelection(
       }
       return { ok: true };
     })(${JSON.stringify(gi)}, ${JSON.stringify(ri)})`;
-  await page.evaluate(applyExpr).catch(() => ({ ok: false }));
+  await target.evaluate(applyExpr).catch(() => ({ ok: false }));
   return await readback();
 }
 
@@ -4360,7 +4367,7 @@ async function applyRadioSelection(
  * fast-skip the comments call essential is preserved.
  */
 async function hasUnfilledRequiredControlForStep(
-  page: Page,
+  target: FrameTarget,
   instruction: string
 ): Promise<boolean> {
   const parsed = parseSelectStep(instruction);
@@ -4410,7 +4417,7 @@ async function hasUnfilledRequiredControlForStep(
     return false;
   })(${JSON.stringify(parsed.questionLabel)})`;
   try {
-    return (await page.evaluate(expr)) === true;
+    return (await target.evaluate(expr)) === true;
   } catch {
     return false;
   }
@@ -4433,7 +4440,7 @@ async function hasUnfilledRequiredControlForStep(
  * <uapp-upload>/<app-upload>, and any other drop-zone-based upload UI.
  */
 async function simulateDragDropUpload(
-  page: Page,
+  target: FrameTarget,
   fixture: { buffer: Buffer; name: string; mimeType: string },
   logger: Logger
 ): Promise<boolean> {
@@ -4482,7 +4489,7 @@ async function simulateDragDropUpload(
     }
   })()`;
   try {
-    const result = await page.evaluate(expr);
+    const result = await target.evaluate(expr);
     if (result && typeof result === "object" && "ok" in result && result.ok === true) {
       const tag = "dropZoneTag" in result ? String(result.dropZoneTag) : "(unknown)";
       logger.info(`upload primitive: drag-drop dispatched on <${tag}>`);
@@ -4519,7 +4526,7 @@ async function simulateDragDropUpload(
  * safely escapes it into a JS string literal. The expression body is a fixed
  * literal — no user-controlled JS execution.
  */
-async function dispatchJqueryChangeEvent(page: Page, selector: string): Promise<void> {
+async function dispatchJqueryChangeEvent(target: FrameTarget, selector: string): Promise<void> {
   const xpath = xpathBody(selector);
   if (!xpath) return;
   const expr = `(() => {
@@ -4537,7 +4544,7 @@ async function dispatchJqueryChangeEvent(page: Page, selector: string): Promise<
     }
   })()`;
   try {
-    await page.evaluate(expr);
+    await target.evaluate(expr);
   } catch {
     // best-effort: jQuery dispatch failure shouldn't fail the verifier
   }
