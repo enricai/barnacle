@@ -84,6 +84,49 @@ instruction like "wait for the results to load" asks for no action, and the
 healing cascade will correctly report it as impossible. Settling is already
 handled by the navigation wait and `STEP_PAUSE_MS`.
 
+**Cross-origin iframe targets.** Some ATS integrations embed their entire
+application form in a cross-origin `<iframe>` rather than navigating the top
+window to it (e.g. UCHealth's careers site embeds the same Talemetry wizard
+HCA reaches by top-window navigation). `document`-rooted helpers can't reach
+across that boundary — `contentDocument` on a cross-origin iframe element is
+`null` from page script's perspective — so a flow whose target elements live
+inside such a frame must declare `frameSelector` in the object form of the
+flow file:
+
+```json
+{
+  "steps": [
+    "click the Apply button",
+    "click Manual Application",
+    "fill the First Name field with {{ .request.FirstName }}"
+  ],
+  "frameSelector": "iframe#talemetry_apply_iframe"
+}
+```
+
+The same field is available on a config-plugin manifest's `spec.flow`
+(`examples/plugins/acme-jobs.plugin.json` shows the sibling fields):
+
+```json
+"flow": {
+  "steps": [ "..." ],
+  "frameSelector": "iframe#talemetry_apply_iframe"
+}
+```
+
+**`frameSelector` is the bare CSS selector of the `<iframe>` element itself —
+never a Stagehand `>>` hop string.** The engine (`resolveFrameTarget` in
+`src/scraper/frame-target.ts`) resolves the iframe boundary from that bare
+selector and composes the `>>` hop internally (`buildHopSelector`) when it
+scopes Stagehand's own `observe`/`extract` calls. Passing a pre-composed hop
+selector (e.g. `"iframe#talemetry_apply_iframe >> input[name=firstName]"`)
+breaks resolution: `resolveFrameTarget`'s `document.querySelector` call
+receives the whole hop string, which isn't valid CSS, and throws rather than
+falling back — a deliberate fail-loud choice so a malformed selector doesn't
+silently degrade to "drive the main frame and see nothing." Omitting
+`frameSelector` (the default) preserves today's behavior: the flow drives the
+main frame.
+
 ---
 
 ## Phase 1 — Browser recon (`recon-browser.ts`)
