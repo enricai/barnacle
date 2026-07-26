@@ -82,7 +82,7 @@ function makeBeaconLine(overrides: Record<string, unknown> = {}): Record<string,
 }
 
 function ndjson(...lines: unknown[]): string {
-  return lines.map((l) => JSON.stringify(l)).join("\n") + "\n";
+  return `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`;
 }
 
 describe("parseReconciliationLines", () => {
