@@ -93,6 +93,11 @@ describe("lib/reconciliation-keys extractJobReference", () => {
     expect(extractJobReference({ jid: "job1" })).toBeNull();
   });
 
+  it("returns null when empId or jid is a non-string value", () => {
+    expect(extractJobReference({ empId: 1, jid: "job1" })).toBeNull();
+    expect(extractJobReference({ empId: "emp1", jid: 2 })).toBeNull();
+  });
+
   it("returns null when the TrackingUrl carries only one of empId/jid", () => {
     const payload = { TrackingUrl: "https://click.acme.example/t/abc?empId=emp9" };
     expect(extractJobReference(payload)).toBeNull();
