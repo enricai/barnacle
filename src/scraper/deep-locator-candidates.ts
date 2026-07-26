@@ -119,10 +119,10 @@ function scoreCandidate(
  * first, ties preserving original delegate/DOM order). Composes the hop
  * scope via `buildHopSelector` (owned by `frame-target.ts`) rather than
  * string-concatenating `>>` itself, so hop notation stays defined in exactly
- * one place. Never throws: a `count()`/`nth()`/`textContent()` failure
- * (detached frame, navigated-away element) degrades to `[]` so a caller
- * cascading through candidate sources can move on to the next technique
- * instead of crashing the step.
+ * one place. Never throws: a missing `page.deepLocator` or a
+ * `count()`/`nth()`/`textContent()` failure (detached frame, navigated-away
+ * element) degrades to `[]` so a caller cascading through candidate sources
+ * can move on to the next technique instead of crashing the step.
  *
  * Ranking exists because a hop like `"*"` matches every element inside a
  * wizard iframe (html, body, every div, ...) — DOM order alone almost always
@@ -138,7 +138,11 @@ export async function resolveDeepLocatorCandidates(
   instruction?: string | null
 ): Promise<DeepLocatorCandidate[]> {
   const hopSelector = buildHopSelector(frameSelector, innerSelector);
-  const delegate = page.deepLocator(hopSelector);
+  const delegate = typeof page.deepLocator === "function" ? page.deepLocator(hopSelector) : null;
+  if (!delegate) {
+    logger.warn(`deepLocator() is unavailable on this page for ${hopSelector}`);
+    return [];
+  }
 
   const count = await delegate.count().catch((err: unknown) => {
     logger.warn(`deepLocator count() threw for ${hopSelector}: ${toErrorMessage(err)}`);
