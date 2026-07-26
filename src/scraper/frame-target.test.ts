@@ -353,6 +353,30 @@ describe("buildHopSelector", () => {
   it("does not double-append a hop when the frame selector already contains '>>'", () => {
     expect(buildHopSelector("#f >> #nested", "#btn")).toBe("#f >> #nested >> #btn");
   });
+
+  it("composes a frame selector with an xpath-shaped inner selector without trimming its leading slashes", () => {
+    expect(
+      buildHopSelector(
+        "#talemetry_apply_iframe",
+        "//button[normalize-space()='Manual Application']"
+      )
+    ).toBe("#talemetry_apply_iframe >> //button[normalize-space()='Manual Application']");
+  });
+
+  it("does not double-append the separator when the frame selector already ends with '>>' and the inner selector is xpath-shaped", () => {
+    expect(
+      buildHopSelector(
+        "#talemetry_apply_iframe >>",
+        "//button[normalize-space()='Manual Application']"
+      )
+    ).toBe("#talemetry_apply_iframe >> //button[normalize-space()='Manual Application']");
+  });
+
+  it("returns an xpath-shaped inner selector unchanged for a main-frame target (frameSelector null)", () => {
+    expect(buildHopSelector(null, "//button[normalize-space()='Manual Application']")).toBe(
+      "//button[normalize-space()='Manual Application']"
+    );
+  });
 });
 
 /**

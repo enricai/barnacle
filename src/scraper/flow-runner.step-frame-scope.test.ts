@@ -3,6 +3,11 @@ import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { LlmCallInput } from "@/lib/telemetry/call-capture";
+import {
+  type FakeDeepLocatorFrame,
+  makeFakeDeepLocator,
+  registerDeepLocatorHop,
+} from "@/scraper/deep-locator-fake";
 import type { HealingFlowStep } from "@/scraper/flow-runner";
 import { resetBillingErrorFlagForTests, runHealingFlow } from "@/scraper/flow-runner";
 import type { FrameTarget } from "@/scraper/frame-target";
@@ -195,14 +200,23 @@ function makeChildFrameTarget(
  * evaluate/locator surface the fallback `mainFrameTarget(page)` shim would
  * touch if (and only if) the fix under test regressed. `getUrl` backs
  * `page.url()` with a mutable value so `guardedAct` can flip it for the
- * `urlChanged` verification signal.
+ * `urlChanged` verification signal. `deepLocator` resolves against
+ * `deepLocatorFrame`, which defaults to an empty registry (no hops
+ * registered, 0 candidates) — matching this suite's fixtures, which assert
+ * on today's pre-deepLocator "absent"/no-candidates behavior. Callers
+ * exercising the frame-scoped deepLocator fallback pass a pre-populated
+ * `FakeDeepLocatorFrame` instead.
  */
-function fakeFlowPage(getUrl: () => string): Page {
+function fakeFlowPage(
+  getUrl: () => string,
+  deepLocatorFrame: FakeDeepLocatorFrame = new Map()
+): Page {
   const session = { on: () => {}, off: () => {} };
   return {
     evaluate: vi.fn().mockResolvedValue(null),
     url: getUrl,
     title: vi.fn().mockResolvedValue("Apply"),
+    deepLocator: makeFakeDeepLocator(deepLocatorFrame),
     locator: vi.fn().mockReturnValue({
       first: () => ({
         isChecked: vi.fn().mockResolvedValue(false),
@@ -809,5 +823,182 @@ describe("flow-runner/executeStepWithHealing — attempt-2-cascade-reachable fra
       .filter(([expr]) => String(expr).includes("html:") && String(expr).includes("text:"));
     expect(snapshotCallsAfterRank.length).toBeGreaterThan(0);
     expect(page.evaluate).not.toHaveBeenCalled();
+  });
+
+  it("attempt 2: resolves and acts via deepLocator when observe is empty for a child frame, recording the observe-act technique and an xpath=-shaped resolvedAction", async () => {
+    const urls = { current: "https://apply.acme.example/jobs/1/apply" };
+    const deepLocatorFrame: FakeDeepLocatorFrame = new Map();
+    const hopSelector = "iframe#talemetry_apply_iframe >> *";
+    registerDeepLocatorHop(deepLocatorFrame, hopSelector, "Manual Application");
+
+    const childLocator = vi.fn().mockReturnValue({
+      first: () => ({
+        isChecked: vi.fn().mockResolvedValue(false),
+        inputValue: vi.fn().mockResolvedValue(""),
+      }),
+    });
+    const childTarget: FrameTarget = {
+      frame: {} as FrameTarget["frame"],
+      frameSelector: "iframe#talemetry_apply_iframe",
+      // Every DOM-direct probe (pre/post snapshotPage, the pre-submit
+      // baseline) answers the {html,text} snapshot shape so the cascade
+      // never throws on an un-mocked evaluate call; this fixture is not
+      // exercising those probes.
+      evaluate: vi.fn().mockResolvedValue({ html: 0, text: "0:" }),
+      locator: childLocator,
+      url: () => Promise.resolve(urls.current),
+      title: () => Promise.resolve("Apply"),
+    };
+    resolveFrameTarget.mockResolvedValue(childTarget);
+
+    const stagehand = makeStagehand();
+    const page = fakeFlowPage(() => urls.current, deepLocatorFrame);
+    // Wrap deepLocator's click so it also advances the URL, giving the
+    // cascade's urlChanged verification signal a real reason to fire — a
+    // plain click's DOM signal never fires (verifyDomEffect's click branch
+    // only verifies radio/checkbox inputs), so success here rests on
+    // urlChanged exactly like the real OOPIF click that inspired this fix.
+    const realDeepLocator = page.deepLocator;
+    page.deepLocator = ((selector: string) => {
+      const delegate = realDeepLocator(selector);
+      return {
+        ...delegate,
+        click: async () => {
+          await delegate.click();
+          urls.current = "https://apply.acme.example/jobs/1/apply/manual";
+        },
+        nth: (index: number) => {
+          const inner = delegate.nth(index);
+          return {
+            ...inner,
+            click: async () => {
+              await inner.click();
+              urls.current = "https://apply.acme.example/jobs/1/apply/manual";
+            },
+          };
+        },
+      };
+    }) as Page["deepLocator"];
+
+    // Both the focused and unfocused observe report zero candidates on
+    // every call (probe AND attempt 2), landing the cascade on attempt 2's
+    // observe-act branch after attempt 1 (act-string) also resolves
+    // nothing via guardedAct.
+    guardedObserve.mockResolvedValue([]);
+    guardedAct.mockResolvedValue({
+      success: false,
+      message: "no candidates",
+      actionDescription: "",
+      actions: [],
+    });
+
+    const result = await runHealingFlow({
+      stagehand,
+      page,
+      steps: [
+        {
+          instruction: "Click the Manual Application button",
+          optional: false,
+          upload: false,
+          submitStep: false,
+        },
+      ],
+      logger: testLogger,
+      anthropic: null,
+      resumeFixture: null,
+      frameSelector: "iframe#talemetry_apply_iframe",
+    });
+
+    expect(result.lastStepIndex).toBe(0);
+
+    // The fake delegate's click() was invoked exactly once — proving the
+    // cascade actuated through deepLocator rather than a phantom/no-op path.
+    const hop = deepLocatorFrame.get(hopSelector);
+    expect(hop?.clicks).toBe(1);
+
+    // The attempt record's technique reflects the deepLocator path: it
+    // reuses the SAME "observe-act" technique label attempt 2 always uses
+    // (deepLocator is a fallback candidate SOURCE within that branch, not a
+    // new technique), surfaced via the "succeeded on attempt 1" vs "healed
+    // on attempt N" log line this step's single-attempt success emits.
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining("healed on attempt 2 via observe-act")
+    );
+
+    // The pre-cascade probe fell through to the deepLocator resolver
+    // (observe found 0, deepLocator found 1) — proving the deepLocator
+    // candidate (not an observe-sourced one) is what's driving this step,
+    // not just that some technique produced a network/url signal.
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "observe found 0 candidates (focused and unfocused) but deepLocator found 1"
+      )
+    );
+
+    // resolvedAction.selector must be "xpath="-prefixed — verifyDomEffect's
+    // click branch (called with this exact selector) routes it straight
+    // into `target.locator(selector)`, so asserting on the child target's
+    // locator spy proves the selector shape without reaching into
+    // executeStepWithHealing's private state.
+    const locatorSelectors = childLocator.mock.calls.map(([selector]) => String(selector));
+    expect(locatorSelectors.length).toBeGreaterThan(0);
+    for (const selector of locatorSelectors) {
+      expect(selector.startsWith("xpath=")).toBe(true);
+    }
+  });
+
+  it("main-frame control: with the same empty observe, a frame: null run exhausts the cascade with no deepLocator call, exactly as today", async () => {
+    const urls = { current: "https://apply.acme.example/jobs/1/apply" };
+    const deepLocatorSpy = vi.fn();
+    const stagehand = makeStagehand();
+    const page = fakeFlowPage(() => urls.current);
+    page.deepLocator = deepLocatorSpy as unknown as Page["deepLocator"];
+
+    // No frameSelector -> resolveFrameTarget degrades to the real main-frame
+    // bridge, matching the sibling attempt-1 "main-frame control" test above.
+    const mainTarget = delegatingMainFrameTarget(page);
+    resolveFrameTarget.mockResolvedValue(mainTarget);
+
+    // Pre-cascade probe (probeStepBeforeAttempts) must find a candidate so
+    // the step proceeds into the attempt loop instead of fast-skipping via
+    // the probe-absent guard (owned by the attempt-1 describe block above).
+    // Attempt 1 (act-string) then resolves nothing, and attempt 2's observe
+    // also reports zero candidates — the exact "no candidates" precondition
+    // the deepLocator fallback gates on.
+    guardedObserve
+      .mockResolvedValueOnce([
+        {
+          selector: "select#work-auth",
+          description: "Are you authorized to work?",
+          method: "select",
+        },
+      ])
+      .mockResolvedValue([]);
+    guardedAct.mockResolvedValue({
+      success: false,
+      message: "no candidates",
+      actionDescription: "",
+      actions: [],
+    });
+
+    await expect(
+      runHealingFlow({
+        stagehand,
+        page,
+        steps: [step({ instruction: SELECT_STEP, optional: false })],
+        logger: testLogger,
+        anthropic: null,
+        resumeFixture: null,
+      })
+    ).rejects.toThrow(/failed verification after \d+ attempts/);
+
+    // frameTarget.frame is null on the main frame, so the deepLocator
+    // fallback's `frameTarget?.frame` guard never opens — deepLocator is
+    // never called, and the cascade exhausts exactly as it did before the
+    // deepLocator fallback was added.
+    expect(deepLocatorSpy).not.toHaveBeenCalled();
+    expect(testLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("observe returned no candidates")
+    );
   });
 });
