@@ -10,6 +10,7 @@ import type { DeepLocatorDelegate } from "@browserbasehq/stagehand/lib/v3/unders
 export interface FakeDeepLocatorHop {
   clicks: number;
   filledWith: string | null;
+  text: string;
 }
 
 /**
@@ -20,12 +21,17 @@ export interface FakeDeepLocatorHop {
  */
 export type FakeDeepLocatorFrame = Map<string, FakeDeepLocatorHop>;
 
-/** Registers a hop selector so a subsequent `deepLocator(selector).count()` resolves to 1. */
+/**
+ * Registers a hop selector so a subsequent `deepLocator(selector).count()`
+ * resolves to 1. `text` seeds `textContent()` — `resolveDeepLocatorCandidates`
+ * reads it to build a candidate's `accessibleText`.
+ */
 export function registerDeepLocatorHop(
   frame: FakeDeepLocatorFrame,
-  selector: string
+  selector: string,
+  text = ""
 ): FakeDeepLocatorHop {
-  const hop: FakeDeepLocatorHop = { clicks: 0, filledWith: null };
+  const hop: FakeDeepLocatorHop = { clicks: 0, filledWith: null, text };
   frame.set(selector, hop);
   return hop;
 }
@@ -33,15 +39,16 @@ export function registerDeepLocatorHop(
 /**
  * Only the methods `src/scraper/flow-runner.ts`'s deepLocator-routed call
  * sites (`observe-act`, rephrase evidence, the pre-cascade probe) actually
- * invoke: `count()` to check candidate existence, `click()`/`fill()` to act,
- * `first()`/`nth()` for the same chaining `buildHopSelector`-composed
- * multi-match selectors need. `hover`/`type`/`selectOption`/`isVisible`/
- * `isChecked`/`inputValue`/`textContent`/`innerHtml`/`innerText`/
- * `setInputFiles`/`scrollTo`/`centroid`/`backendNodeId`/`highlight`/
- * `sendClickEvent` are declared on the real `DeepLocatorDelegate` but no
- * planned call site routes through them, so they are omitted here — adding
- * one only when a call site actually needs it keeps this fake from drifting
- * out of sync with what's exercised.
+ * invoke, via `deep-locator-candidates.ts`: `count()` to check candidate
+ * existence, `click()`/`fill()` to act, `textContent()` to read
+ * `accessibleText`, `first()`/`nth()` for the same chaining
+ * `buildHopSelector`-composed multi-match selectors need. `hover`/`type`/
+ * `selectOption`/`isVisible`/`isChecked`/`inputValue`/`innerHtml`/
+ * `innerText`/`setInputFiles`/`scrollTo`/`centroid`/`backendNodeId`/
+ * `highlight`/`sendClickEvent` are declared on the real `DeepLocatorDelegate`
+ * but no planned call site routes through them, so they are omitted here —
+ * adding one only when a call site actually needs it keeps this fake from
+ * drifting out of sync with what's exercised.
  *
  * `first`/`nth` return `FakeDeepLocatorDelegate` (not the real
  * `DeepLocatorDelegate` class a `Pick` would demand) since a fake has no
@@ -53,6 +60,7 @@ export interface FakeDeepLocatorDelegate {
   click: DeepLocatorDelegate["click"];
   count: DeepLocatorDelegate["count"];
   fill: DeepLocatorDelegate["fill"];
+  textContent: DeepLocatorDelegate["textContent"];
   first(): FakeDeepLocatorDelegate;
   nth(index: number): FakeDeepLocatorDelegate;
 }
@@ -76,6 +84,11 @@ function buildFakeDelegate(frame: FakeDeepLocatorFrame, selector: string): FakeD
       const hop = frame.get(selector);
       if (!hop) throw new Error(`deepLocator: no element matches "${selector}"`);
       hop.filledWith = value;
+    },
+    textContent: async () => {
+      const hop = frame.get(selector);
+      if (!hop) throw new Error(`deepLocator: no element matches "${selector}"`);
+      return hop.text;
     },
     first: () => buildFakeDelegate(frame, selector),
     nth: () => buildFakeDelegate(frame, selector),
