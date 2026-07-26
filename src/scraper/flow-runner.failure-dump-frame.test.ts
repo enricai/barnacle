@@ -36,11 +36,7 @@ function fakePage(deepLocatorFrame?: FakeDeepLocatorFrame): Page {
     evaluate: vi.fn().mockResolvedValue("<body>top document</body>"),
     locator: vi.fn(),
     waitForTimeout: vi.fn().mockResolvedValue(undefined),
-    deepLocator: deepLocatorFrame
-      ? makeFakeDeepLocator(deepLocatorFrame)
-      : vi.fn(() => {
-          throw new Error("deepLocator should not be called for a main-frame run");
-        }),
+    deepLocator: makeFakeDeepLocator(deepLocatorFrame ?? new Map()),
   } as unknown as Page;
 }
 
@@ -128,8 +124,8 @@ describe("flow-runner/executeStepWithHealing — failure-dump frame scoping (pro
   });
 });
 
-describe("flow-runner/executeStepWithHealing — failure-dump deepLocator evidence (probe-absent path)", () => {
-  it("degrades unfocusedObserve to deepLocator candidates for a child frame when observe() is empty", async () => {
+describe("flow-runner/executeStepWithHealing — failure-dump deepLocator evidence (cascade-exhaust path)", () => {
+  it("degrades finalObserve/unfocusedObserve to deepLocator candidates for a child frame when observe() is empty", async () => {
     const deepLocatorFrame: FakeDeepLocatorFrame = new Map();
     const hopSelector = `${FRAME_SELECTOR} >> *`;
     registerDeepLocatorHopElements(deepLocatorFrame, hopSelector, ["Manual Application"]);
@@ -139,26 +135,29 @@ describe("flow-runner/executeStepWithHealing — failure-dump deepLocator eviden
     const onStepFailure = vi.fn().mockReturnValue("/tmp/dump.json");
     const params = { ...baseParams(page, fakeStagehand(), frameTarget), onStepFailure };
 
+    // With deepLocator candidates present, probeStepBeforeAttempts treats the
+    // step as "present" and hands off to the cascade, which exhausts (every
+    // observe/act call is stubbed empty/failing) and reaches the
+    // cascade-exhaust dump — the site whose finalObserve/unfocusedObserve
+    // this fix degrades to deepLocator evidence.
     await expect(executeStepWithHealing(params)).rejects.toMatchObject({
       name: "StepVerificationError",
     });
 
     expect(onStepFailure).toHaveBeenCalledTimes(1);
     const dump = onStepFailure.mock.calls[0]?.[0];
-    // The probe-absent dump fires before the cascade runs, so finalObserve
-    // stays the hardcoded [] regardless of frame scoping.
-    expect(dump.finalObserve).toEqual([]);
-    expect(dump.unfocusedObserve).toEqual([
-      {
-        selector: `deeplocator=${hopSelector} >> nth=0`,
-        description: "Manual Application",
-        method: "click",
-      },
-    ]);
+    const expectedCandidate = {
+      selector: `deeplocator=${hopSelector} >> nth=0`,
+      description: "Manual Application",
+      method: "click",
+    };
+    expect(dump.finalObserve).toEqual([expectedCandidate]);
+    expect(dump.unfocusedObserve).toEqual([expectedCandidate]);
   });
 
   it("never calls deepLocator and keeps finalObserve/unfocusedObserve empty for a main-frame run", async () => {
     const page = fakePage();
+    const deepLocatorSpy = vi.spyOn(page, "deepLocator");
     const onStepFailure = vi.fn().mockReturnValue("/tmp/dump.json");
     const params = {
       ...baseParams(page, fakeStagehand(), mainFrameTarget(page)),
@@ -173,6 +172,6 @@ describe("flow-runner/executeStepWithHealing — failure-dump deepLocator eviden
     const dump = onStepFailure.mock.calls[0]?.[0];
     expect(dump.finalObserve).toEqual([]);
     expect(dump.unfocusedObserve).toEqual([]);
-    expect(page.deepLocator).not.toHaveBeenCalled();
+    expect(deepLocatorSpy).not.toHaveBeenCalled();
   });
 });
