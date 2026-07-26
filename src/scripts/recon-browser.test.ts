@@ -3303,6 +3303,11 @@ describe("recon-browser/probeStepBeforeAttempts", () => {
     };
   }
 
+  // Never dereferenced by these fixtures: the unfocused observe always
+  // returns non-empty candidates before the deep-locator fallback would
+  // need `page`, or there is no frameTarget for the fallback to key on.
+  const fakeProbePage = {} as unknown as Page;
+
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -3311,6 +3316,7 @@ describe("recon-browser/probeStepBeforeAttempts", () => {
     const stagehand = makeProbeStagehand([], nonEmpty);
     const result = await probeStepBeforeAttempts({
       stagehand: stagehand as never,
+      page: fakeProbePage,
       step: "Fill in the First Name field with 'Reginald'",
       stepIndex: 5,
       logger: testLogger,
@@ -3326,6 +3332,7 @@ describe("recon-browser/probeStepBeforeAttempts", () => {
     const stagehand = makeProbeStagehand([], []);
     const result = await probeStepBeforeAttempts({
       stagehand: stagehand as never,
+      page: fakeProbePage,
       step: "Fill in the First Name field with 'Reginald'",
       stepIndex: 5,
       logger: testLogger,
@@ -3338,6 +3345,7 @@ describe("recon-browser/probeStepBeforeAttempts", () => {
     const stagehand = makeProbeStagehand(nonEmpty, nonEmpty);
     const result = await probeStepBeforeAttempts({
       stagehand: stagehand as never,
+      page: fakeProbePage,
       step: "Click the Apply button",
       stepIndex: 2,
       logger: testLogger,
@@ -3359,6 +3367,7 @@ describe("recon-browser/probeStepBeforeAttempts", () => {
     };
     await probeStepBeforeAttempts({
       stagehand: stagehand as never,
+      page: fakeProbePage,
       step: "Fill in the First Name field with 'Reginald'",
       stepIndex: 5,
       logger: testLogger,
