@@ -4,7 +4,7 @@ import {
   makeFakeDeepLocator,
   registerDeepLocatorHop,
 } from "@/scraper/deep-locator-fake";
-import { runHealingFlow } from "@/scraper/flow-runner";
+import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
 /**
@@ -651,6 +651,371 @@ describe("flow-runner iframe end-to-end: observe blind to the OOPIF, only deepLo
       })
     ).rejects.toThrow(/cascade|attempts|verification|candidates/i);
 
+    expect(childUrls.current).toBe(CHILD_SRC);
+  });
+});
+
+const FIRST_NAME_STEP = "Fill in First Name";
+const LAST_NAME_STEP = "Fill in Last Name";
+const UPLOAD_STEP = "Upload resume";
+const SUBMIT_STEP = "Click the final Submit button";
+const THANK_YOU_URL = `${CHILD_ORIGIN}/application/abc-123/thank-you`;
+const SUBMITTED_STATE_SELECTOR = "[data-testid=thank-you]";
+
+const FIRST_NAME_CANDIDATE = {
+  selector: "xpath=//input[@id='fname']",
+  description: "First Name",
+  method: "fill",
+  arguments: ["Jane"],
+};
+const LAST_NAME_CANDIDATE = {
+  selector: "xpath=//input[@id='lname']",
+  description: "Last Name",
+  method: "fill",
+  arguments: ["Doe"],
+};
+const SUBMIT_CANDIDATE = {
+  selector: "css=button#submit",
+  description: "Submit button",
+  method: "click",
+};
+
+/**
+ * In-memory model of the fields the acceptance sequence fills/uploads/submits
+ * inside the OOPIF, so the fixture can assert every in-frame effect actually
+ * landed (not just that the flow "completed"). Distinct from
+ * `FakeDeepLocatorFrame` (the click step's ONLY resolution path) — this
+ * backs the fill/upload/submit steps, which per the task's own analysis are
+ * already frameTarget-direct and must NOT be routed through deepLocator.
+ */
+interface AcceptanceSequenceState {
+  filledWith: Map<string, string>;
+  fileInputCount: number;
+  uploadedFileName: string | null;
+  submitted: boolean;
+}
+
+/**
+ * Child `Frame` fake for the full acceptance sequence: extends
+ * `makeFakeChildFrame`'s location.href contract with per-selector fill
+ * readback (`verifyDomEffect`'s fill branch calls `locator(selector)
+ * .first().inputValue()`), a file-input-count probe + `setInputFiles`
+ * (`tryUploadPrimitive`/`attachToSurfacedInput`), and a submitted-state DOM
+ * marker (the final-step submit-verify gate's `document.querySelector(sel)`
+ * probe). `evaluate` still discriminates on expression shape, matching every
+ * sibling fixture in this file, so unrelated probes (snapshotPage,
+ * countNgInvalidContainers, structured-click, n+16) see harmless defaults.
+ *
+ * The upload primitive verifies via `waitForUploadNetworkSignal` FIRST,
+ * falling back to a DOM-attached-file check only after that call's full
+ * `UPLOAD_NETWORK_TIMEOUT_MS` real-time window elapses (see
+ * `wireSignalCapture`'s module docblock: the CDP session it listens on is
+ * always `page.getSessionForFrame(page.mainFrameId())` — the MAIN frame's
+ * session — so a cross-origin OOPIF's own upload POST, fired on the
+ * iframe's own separate CDP target, never reaches those listeners
+ * regardless of same-origin filtering. The network-signal path is
+ * structurally unreachable for a cross-origin OOPIF upload; this fixture
+ * exercises the DOM-attached-file fallback that actually carries the OOPIF
+ * case in production today — a real gap, not a fixture shortcut, reported
+ * rather than routed around). `setInputFiles` marks the DOM-attached state
+ * this fallback reads.
+ */
+function makeAcceptanceChildFrame(childUrls: { current: string }, state: AcceptanceSequenceState) {
+  return {
+    evaluate: async (expr: unknown) => {
+      const src = String(expr);
+      if (src === "location.href") return childUrls.current;
+      if (src === "document.readyState") return "complete";
+      if (src.includes("outerHTML") && src.includes("innerText")) {
+        return { html: 500, text: "1:apply" };
+      }
+      if (src.includes('querySelectorAll("[class],[aria-invalid]")')) return 0;
+      if (src.includes("querySelectorAll('input[type=file]').length")) {
+        return state.fileInputCount;
+      }
+      // Framework-wrapper change-dispatch (post-setInputFiles): reports
+      // whether a file landed, matching the real expr's own files.length>0 check.
+      if (src.includes("el.files && el.files.length > 0) { el.dispatchEvent")) {
+        return state.uploadedFileName !== null;
+      }
+      // DOM-attached-file fallback check (the only path that verifies a
+      // cross-origin OOPIF upload — see the docblock above).
+      if (src.includes("el.files && el.files.length > 0) return el.files.length")) {
+        return state.uploadedFileName !== null ? 1 : 0;
+      }
+      if (src.includes("document.querySelector(sel)")) {
+        return state.submitted ? SUBMITTED_STATE_SELECTOR : null;
+      }
+      return null;
+    },
+    locator: (selector: string) => ({
+      first: () => ({
+        isChecked: async () => false,
+        inputValue: async () => state.filledWith.get(selector) ?? "",
+        setInputFiles: async (file: { name: string }) => {
+          state.uploadedFileName = file.name;
+        },
+      }),
+    }),
+  };
+}
+
+/**
+ * Fake two-frame `Page` for the full acceptance sequence: the iframe already
+ * exists at flow start (this suite's concern is threading frame scope across
+ * consecutive steps, not the mid-flow-attach timeline `describe` above
+ * already covers), plus `deepLocator` for the click step. `waitForTimeout`
+ * resolves instantly like every sibling fixture's — it backs the upload
+ * primitive's real-time `waitForUploadNetworkSignal` poll, which this
+ * fixture deliberately lets time out (see `makeAcceptanceChildFrame`'s
+ * docblock) so the DOM-attached-file fallback runs.
+ */
+function makeFakeTopPageForAcceptanceSequence(
+  topUrl: { current: string },
+  childUrls: { current: string },
+  deepLocatorFrame: FakeDeepLocatorFrame,
+  state: AcceptanceSequenceState
+) {
+  const session = { on: () => {}, off: () => {} };
+  const childFrame = makeAcceptanceChildFrame(childUrls, state);
+  const fakeDeepLocator = makeFakeDeepLocator(deepLocatorFrame);
+  const wrappedDeepLocator = (selector: string) => {
+    const delegate = fakeDeepLocator(selector);
+    return {
+      ...delegate,
+      click: async () => {
+        await delegate.click();
+        childUrls.current = `${CHILD_ORIGIN}/application/abc-123/basic-info`;
+      },
+      nth: () => wrappedDeepLocator(selector),
+    };
+  };
+  return {
+    evaluate: async (expr: unknown) => {
+      const iframeSrcMatch = /document\.querySelector\((.+?)\)/.exec(String(expr));
+      if (iframeSrcMatch) {
+        const selector = JSON.parse(iframeSrcMatch[1] as string) as string;
+        return selector === IFRAME_SELECTOR
+          ? { matched: true, src: CHILD_SRC }
+          : { matched: false, src: null };
+      }
+      return null;
+    },
+    url: () => topUrl.current,
+    title: async () => "UCHealth Careers",
+    locator: () => ({
+      first: () => ({
+        isChecked: async () => false,
+        inputValue: async () => "",
+      }),
+    }),
+    waitForTimeout: async () => {},
+    getSessionForFrame: () => session,
+    mainFrameId: () => "main",
+    sendCDP: async () => ({ body: "{}", base64Encoded: false }),
+    frames: () => [childFrame],
+    deepLocator: wrappedDeepLocator,
+  } as unknown as import("@browserbasehq/stagehand").Page;
+}
+
+/**
+ * Fake Stagehand for the full acceptance sequence: `observe()` is blind
+ * (returns `[]`) ONLY for the in-frame "Manual Application" click — the
+ * exact shape `makeFakeStagehandObserveBlind` reproduces above — forcing
+ * that single step through the `deepLocator` fallback under test. Every
+ * other frame-scoped step (First/Last Name fill, Submit) gets a normal
+ * frame-scoped candidate from `observe()`, per the task's own analysis that
+ * only the CLICK path routes through deepLocator — fill/upload/submit are
+ * already frameTarget-direct. `act(instruction: string)` (attempt 1) always
+ * phantom-fails for every step, mirroring real Stagehand's act-string path
+ * failing on content behind the OOPIF boundary and forcing every step
+ * through attempt 2's observe-act path.
+ */
+function makeFakeStagehandForAcceptanceSequence(
+  childUrls: { current: string },
+  state: AcceptanceSequenceState
+) {
+  const hopPrefix = `${IFRAME_SELECTOR} >> `;
+  return {
+    act: async (input: unknown) => {
+      if (typeof input === "object" && input !== null && "selector" in input) {
+        const candidate = input as { selector: unknown; method?: unknown };
+        if (candidate.selector === FIRST_NAME_CANDIDATE.selector) {
+          state.filledWith.set(FIRST_NAME_CANDIDATE.selector, "Jane");
+          return {
+            success: true,
+            message: "filled",
+            actionDescription: FIRST_NAME_CANDIDATE.description,
+            actions: [FIRST_NAME_CANDIDATE],
+          };
+        }
+        if (candidate.selector === LAST_NAME_CANDIDATE.selector) {
+          state.filledWith.set(LAST_NAME_CANDIDATE.selector, "Doe");
+          return {
+            success: true,
+            message: "filled",
+            actionDescription: LAST_NAME_CANDIDATE.description,
+            actions: [LAST_NAME_CANDIDATE],
+          };
+        }
+        if (candidate.selector === SUBMIT_CANDIDATE.selector) {
+          childUrls.current = THANK_YOU_URL;
+          state.submitted = true;
+          return {
+            success: true,
+            message: "clicked",
+            actionDescription: SUBMIT_CANDIDATE.description,
+            actions: [SUBMIT_CANDIDATE],
+          };
+        }
+      }
+      // Attempt 1 (act-string, every step): mirrors Stagehand failing to
+      // resolve content behind the OOPIF boundary via its own act-string path.
+      return {
+        success: false,
+        message: "no actionable candidate",
+        actionDescription: typeof input === "string" ? input : CLICK_STEP,
+        actions: [],
+      };
+    },
+    observe: async (instruction?: unknown, options?: { selector?: string }) => {
+      const isFrameScoped = options?.selector?.startsWith(hopPrefix) ?? false;
+      if (!isFrameScoped) return TOP_FRAME_CANDIDATES;
+      // The one step under test that observe() can NEVER see, by any
+      // scoping means — the OOPIF-blindness this whole file exists to
+      // reproduce. Every other frame-scoped step resolves normally.
+      if (instruction === CLICK_STEP) return [];
+      if (instruction === FIRST_NAME_STEP) return [FIRST_NAME_CANDIDATE];
+      if (instruction === LAST_NAME_STEP) return [LAST_NAME_CANDIDATE];
+      if (instruction === SUBMIT_STEP) return [SUBMIT_CANDIDATE];
+      return [];
+    },
+  } as unknown as import("@browserbasehq/stagehand").Stagehand;
+}
+
+/**
+ * The task's stated acceptance sequence, offline: one `runHealingFlow` call
+ * carrying frame scope across Manual Application (click, deepLocator-only) ->
+ * First/Last Name (fill) -> resume upload -> a verified Submit, with
+ * `observe()` blind to the OOPIF throughout — proving the frame scope
+ * survives across consecutive steps in a single flow run, not just in
+ * isolated single-step fixtures (`iframe-e2e.test.ts`'s own single-click
+ * suites above) or via helpers driven directly (the upload/fill/submit
+ * frame-scoping suites this file's docblock names).
+ */
+describe("flow-runner iframe end-to-end: full acceptance sequence through the OOPIF (offline fixture, no network)", () => {
+  it("carries frame scope across click -> fill -> upload -> submit in one runHealingFlow call, with observe() blind to the OOPIF throughout", async () => {
+    const topUrl = { current: `${TOP_ORIGIN}/jobs/123/apply` };
+    const childUrls = { current: CHILD_SRC };
+    const state: AcceptanceSequenceState = {
+      filledWith: new Map(),
+      // Pre-rendered <input type=file> (the raw-input path) — the render-wait
+      // poll finds it on its first check, so only the network-signal wait
+      // (deliberately timed out, see makeAcceptanceChildFrame's docblock)
+      // adds real wall-clock time to this test.
+      fileInputCount: 1,
+      uploadedFileName: null,
+      submitted: false,
+    };
+    const deepLocatorFrame = new Map();
+    registerDeepLocatorHop(deepLocatorFrame, `${IFRAME_SELECTOR} >> *`, "Manual Application");
+    const stagehand = makeFakeStagehandForAcceptanceSequence(childUrls, state);
+    const page = makeFakeTopPageForAcceptanceSequence(topUrl, childUrls, deepLocatorFrame, state);
+
+    const steps: HealingFlowStep[] = [
+      { instruction: CLICK_STEP, optional: false, upload: false, submitStep: false },
+      { instruction: FIRST_NAME_STEP, optional: false, upload: false, submitStep: false },
+      { instruction: LAST_NAME_STEP, optional: false, upload: false, submitStep: false },
+      { instruction: UPLOAD_STEP, optional: false, upload: true, submitStep: false },
+      { instruction: SUBMIT_STEP, optional: false, upload: false, submitStep: true },
+    ];
+
+    const result = await runHealingFlow({
+      stagehand,
+      page,
+      steps,
+      logger: testLogger,
+      anthropic: null,
+      resumeFixture: {
+        buffer: Buffer.from("pdf-bytes"),
+        name: "resume.pdf",
+        mimeType: "application/pdf",
+      },
+      frameSelector: IFRAME_SELECTOR,
+      submittedStateSelectors: [SUBMITTED_STATE_SELECTOR],
+    });
+
+    // The flow reached and completed its last step (the submit).
+    expect(result.lastStepIndex).toBe(steps.length - 1);
+    expect(result.submitStepSkipped).toBe(false);
+    expect(result.submitVerified).toBe(true);
+
+    // Step 1 (Manual Application): resolved ONLY via deepLocator, observe()
+    // never saw it — the hop's click count is the sole proof of causation.
+    const hop = deepLocatorFrame.get(`${IFRAME_SELECTOR} >> *`);
+    expect(hop?.clicks).toBeGreaterThan(0);
+    expect(childUrls.current).not.toBe(CHILD_SRC);
+
+    // Steps 2-3 (First/Last Name): each in-frame fill actually landed.
+    expect(state.filledWith.get(FIRST_NAME_CANDIDATE.selector)).toBe("Jane");
+    expect(state.filledWith.get(LAST_NAME_CANDIDATE.selector)).toBe("Doe");
+
+    // Step 4 (Upload resume): the fixture resume was attached in-frame.
+    expect(state.uploadedFileName).toBe("resume.pdf");
+
+    // Step 5 (Submit): the in-frame submit control was clicked, the child
+    // frame transitioned, and the submitted-state DOM marker is present.
+    expect(state.submitted).toBe(true);
+    expect(childUrls.current).toBe(THANK_YOU_URL);
+  });
+
+  it("negative control: with deepLocator empty, the click step never reaches the in-frame button and the whole sequence fails before fill/upload/submit run", async () => {
+    const topUrl = { current: `${TOP_ORIGIN}/jobs/123/apply` };
+    const childUrls = { current: CHILD_SRC };
+    const state: AcceptanceSequenceState = {
+      filledWith: new Map(),
+      fileInputCount: 0,
+      uploadedFileName: null,
+      submitted: false,
+    };
+    // Deliberately no registerDeepLocatorHop call: deepLocator resolves 0
+    // candidates, matching observe's blindness on the click step — nothing
+    // can see the in-frame "Manual Application" button, so the sequence
+    // must fail at step 0 and never reach fill/upload/submit.
+    const deepLocatorFrame = new Map();
+    const stagehand = makeFakeStagehandForAcceptanceSequence(childUrls, state);
+    const page = makeFakeTopPageForAcceptanceSequence(topUrl, childUrls, deepLocatorFrame, state);
+
+    const steps: HealingFlowStep[] = [
+      { instruction: CLICK_STEP, optional: false, upload: false, submitStep: false },
+      { instruction: FIRST_NAME_STEP, optional: false, upload: false, submitStep: false },
+      { instruction: LAST_NAME_STEP, optional: false, upload: false, submitStep: false },
+      { instruction: UPLOAD_STEP, optional: false, upload: true, submitStep: false },
+      { instruction: SUBMIT_STEP, optional: false, upload: false, submitStep: true },
+    ];
+
+    await expect(
+      runHealingFlow({
+        stagehand,
+        page,
+        steps,
+        logger: testLogger,
+        anthropic: null,
+        resumeFixture: {
+          buffer: Buffer.from("pdf-bytes"),
+          name: "resume.pdf",
+          mimeType: "application/pdf",
+        },
+        frameSelector: IFRAME_SELECTOR,
+        submittedStateSelectors: [SUBMITTED_STATE_SELECTOR],
+      })
+    ).rejects.toThrow(/cascade|attempts|verification|candidates/i);
+
+    // Attributable to the click step specifically: no fill, no upload, no
+    // submit ever ran, and the child frame never left its initial URL.
+    expect(state.filledWith.size).toBe(0);
+    expect(state.uploadedFileName).toBeNull();
+    expect(state.submitted).toBe(false);
     expect(childUrls.current).toBe(CHILD_SRC);
   });
 });
