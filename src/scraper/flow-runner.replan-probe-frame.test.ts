@@ -1,8 +1,10 @@
-import type { Page } from "@browserbasehq/stagehand";
+import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { describe, expect, it, vi } from "vitest";
 
-import { extractLivePageFormEvidence } from "@/scraper/flow-runner";
+import { makeFakeDeepLocator, registerDeepLocatorHop } from "@/scraper/deep-locator-fake";
+import { extractLivePageFormEvidence, probeStepBeforeAttempts } from "@/scraper/flow-runner";
 import { type FrameTarget, mainFrameTarget } from "@/scraper/frame-target";
+import type { Logger } from "@/types/logging";
 
 /**
  * Regression coverage for the leaf-invalid replan probe's frame scoping:
@@ -98,5 +100,95 @@ describe("flow-runner/extractLivePageFormEvidence — replan probe frame scoping
     const mainEvidence = await extractLivePageFormEvidence(mainPage, mainFrameTarget(mainPage));
 
     expect(childEvidence).toEqual(mainEvidence);
+  });
+});
+
+/**
+ * Regression coverage for `probeStepBeforeAttempts`'s pre-cascade
+ * reachability gate: on a cross-origin OOPIF, Stagehand's `observe()` is
+ * blind (returns `[]` for both a focused and an unfocused call — see
+ * `deep-locator-candidates.ts`'s module docblock for the measured proof),
+ * so the probe must fall back to `page.deepLocator()` before declaring a
+ * frame-scoped step "absent" and short-circuiting to replan ahead of the
+ * healing cascade.
+ */
+const guardedObserveEmpty = vi.fn().mockResolvedValue([]);
+
+vi.mock("@/scraper/stagehand-guard", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/scraper/stagehand-guard")>();
+  return {
+    ...actual,
+    guardedObserve: (...args: unknown[]) => guardedObserveEmpty(...args),
+  };
+});
+
+const PROBE_FRAME_SELECTOR = "iframe#talemetry_apply_iframe";
+
+const probeTestLogger = {
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  debug: vi.fn(),
+} as unknown as Logger;
+
+function makeProbeChildFrameTarget(): FrameTarget {
+  return {
+    frame: {} as FrameTarget["frame"],
+    frameSelector: PROBE_FRAME_SELECTOR,
+    evaluate: vi.fn().mockResolvedValue(null),
+    locator: vi.fn(),
+    url: () => Promise.resolve("https://apply.talemetry.com/application/abc-123"),
+    title: () => Promise.resolve("Apply"),
+  };
+}
+
+describe("flow-runner/probeStepBeforeAttempts — frame-scoped deepLocator fallback", () => {
+  it("resolves 'present' via deepLocator when focused and unfocused observe both return zero candidates on a child frame", async () => {
+    const frame = new Map();
+    registerDeepLocatorHop(frame, `${PROBE_FRAME_SELECTOR} >> *`);
+    const page = { deepLocator: makeFakeDeepLocator(frame) } as unknown as Page;
+
+    const result = await probeStepBeforeAttempts({
+      stagehand: {} as unknown as Stagehand,
+      page,
+      step: "Click Manual Application",
+      stepIndex: 0,
+      logger: probeTestLogger,
+      frameTarget: makeProbeChildFrameTarget(),
+    });
+
+    expect(result).toBe("present");
+  });
+
+  it("negative control: resolves 'absent' when observe AND deepLocator both find nothing (not via a thrown error)", async () => {
+    const page = { deepLocator: makeFakeDeepLocator(new Map()) } as unknown as Page;
+
+    const result = await probeStepBeforeAttempts({
+      stagehand: {} as unknown as Stagehand,
+      page,
+      step: "Click Manual Application",
+      stepIndex: 0,
+      logger: probeTestLogger,
+      frameTarget: makeProbeChildFrameTarget(),
+    });
+
+    expect(result).toBe("absent");
+  });
+
+  it("main-frame target (frame: null) never calls deepLocator, preserving today's behavior byte-for-byte", async () => {
+    const deepLocatorSpy = vi.fn();
+    const page = { deepLocator: deepLocatorSpy } as unknown as Page;
+
+    const result = await probeStepBeforeAttempts({
+      stagehand: {} as unknown as Stagehand,
+      page,
+      step: "Click Manual Application",
+      stepIndex: 0,
+      logger: probeTestLogger,
+      frameTarget: undefined,
+    });
+
+    expect(result).toBe("absent");
+    expect(deepLocatorSpy).not.toHaveBeenCalled();
   });
 });
