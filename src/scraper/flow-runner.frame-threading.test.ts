@@ -1,6 +1,7 @@
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { makeFakeDeepLocator } from "@/scraper/deep-locator-fake";
 import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import type { FrameTarget } from "@/scraper/frame-target";
 import type { Logger } from "@/types/logging";
@@ -105,6 +106,10 @@ function fakeFlowPage(getUrl: () => string): Page {
     evaluate: vi.fn().mockResolvedValue(null),
     url: getUrl,
     title: vi.fn().mockResolvedValue("Apply"),
+    // Empty registry (no hops registered) so deepLocator resolves 0
+    // candidates by default — this suite's fixtures assert on today's
+    // pre-deepLocator behavior, not the new frame-scoped fallback path.
+    deepLocator: makeFakeDeepLocator(new Map()),
     locator: vi.fn().mockReturnValue({
       first: () => ({
         isChecked: vi.fn().mockResolvedValue(false),

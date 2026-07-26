@@ -38,6 +38,10 @@ import {
   type LlmCallInput,
 } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
+import {
+  clickDeepLocatorCandidate,
+  resolveDeepLocatorCandidates,
+} from "@/scraper/deep-locator-candidates";
 import { type RunHealingFlowResult, StepVerificationError } from "@/scraper/errors";
 import {
   type FrameTarget,
@@ -5142,6 +5146,27 @@ async function probeFormValidityBeforeSubmit(params: {
 }
 
 /**
+ * Adapts `resolveDeepLocatorCandidates` results into `Action`-shaped
+ * evidence for `rephraseWithLLM`, which only knows about Stagehand's
+ * `Action` type. Never throws: `resolveDeepLocatorCandidates` itself
+ * degrades to `[]` on a resolver failure, so this only feeds the rephrase
+ * prompt richer evidence when available — a frame-scoped step whose
+ * observe AND deepLocator both come back empty just gets the same `[]`
+ * evidence it would have gotten before this fix.
+ */
+async function deepLocatorCandidatesAsActions(
+  page: Page,
+  frameSelector: string | null
+): Promise<Action[]> {
+  const candidates = await resolveDeepLocatorCandidates(page, frameSelector, "*");
+  return candidates.map((c) => ({
+    selector: c.selector,
+    description: c.accessibleText || "(no accessible text)",
+    method: "click",
+  }));
+}
+
+/**
  * Cheap pre-cascade reachability gate. Runs before the 5-attempt healing cascade
  * (and any global replan) so a step aimed at the wrong page state fails fast
  * instead of burning attempts and replan budget. A focused observe can
@@ -5152,10 +5177,17 @@ async function probeFormValidityBeforeSubmit(params: {
  *
  * `frameTarget` scopes both observe calls to a resolved cross-origin child
  * frame when the flow declared `frameSelector`; omitted (main frame) is
- * byte-identical to today's unscoped calls.
+ * byte-identical to today's unscoped calls. When `frameTarget.frame` is a
+ * resolved child frame, `observe()` is blind to it (measured against a
+ * cross-origin OOPIF — see `deep-locator-candidates.ts`'s module docblock),
+ * so a 0-candidate focused+unfocused observe pair additionally falls back to
+ * `resolveDeepLocatorCandidates` before declaring the step "absent" — a
+ * frame-scoped step must not short-circuit to replan before the cascade
+ * (which itself now routes through the same resolver) ever runs.
  */
 export async function probeStepBeforeAttempts(params: {
   stagehand: Stagehand;
+  page: Page;
   step: string;
   stepIndex: number;
   totalSteps?: () => number;
@@ -5163,7 +5195,7 @@ export async function probeStepBeforeAttempts(params: {
   captureFn?: CaptureFn;
   frameTarget?: FrameTarget;
 }): Promise<"present" | "absent"> {
-  const { stagehand, step, stepIndex, totalSteps, logger, captureFn, frameTarget } = params;
+  const { stagehand, page, step, stepIndex, totalSteps, logger, captureFn, frameTarget } = params;
   try {
     const candidates = await guardedObserve(
       stagehand,
@@ -5196,6 +5228,19 @@ export async function probeStepBeforeAttempts(params: {
           `${formatStepPrefix(stepIndex, totalSteps)}: focused probe found 0 candidates but unfocused observe found ${unfocused.length} — treating as present (let cascade resolve)`
         );
         return "present";
+      }
+      if (frameTarget?.frame) {
+        const deepLocatorCandidates = await resolveDeepLocatorCandidates(
+          page,
+          frameTarget.frameSelector,
+          "*"
+        );
+        if (deepLocatorCandidates.length > 0) {
+          logger.info(
+            `${formatStepPrefix(stepIndex, totalSteps)}: observe found 0 candidates (focused and unfocused) but deepLocator found ${deepLocatorCandidates.length} — treating as present (let cascade resolve)`
+          );
+          return "present";
+        }
       }
       logger.info(
         `${formatStepPrefix(stepIndex, totalSteps)}: probe found 0 candidates (focused and unfocused) — treating as absent (skip cascade, route to replan if required)`
@@ -5553,6 +5598,7 @@ export async function executeStepWithHealing(params: {
   // burning 4 attempts on a page that clearly isn't the right one.
   const probeResult = await probeStepBeforeAttempts({
     stagehand,
+    page,
     step,
     stepIndex,
     totalSteps,
@@ -5982,7 +6028,44 @@ export async function executeStepWithHealing(params: {
           captureFn,
           frameTarget
         );
-        if (candidates.length === 0) {
+        // observe() is blind to a cross-origin OOPIF (see
+        // deep-locator-candidates.ts's module docblock) — when the step is
+        // frame-scoped and observe came back empty, fall back to the deep
+        // locator resolver before declaring the attempt candidate-less.
+        // Attempt 4's ignoreSelectors has no deepLocator equivalent, so the
+        // exclusion is applied here by filtering resolved candidates against
+        // triedSelectors instead — otherwise attempt 4 would re-pick the same
+        // failed element and burn the attempt.
+        const deepLocatorCandidates =
+          candidates.length === 0 && frameTarget?.frame
+            ? (await resolveDeepLocatorCandidates(page, frameTarget.frameSelector, "*")).filter(
+                (c) => !triedSelectors.includes(c.selector)
+              )
+            : [];
+        if (candidates.length === 0 && deepLocatorCandidates.length > 0) {
+          const top = deepLocatorCandidates[0];
+          if (top) {
+            record.instruction = `deepLocator: ${top.accessibleText || "(no accessible text)"}`;
+            triedSelectors.push(top.selector);
+            record.triedSelectors = [top.selector];
+            try {
+              await clickDeepLocatorCandidate(page, frameTarget?.frameSelector, "*", top.index);
+              record.actResultSuccess = true;
+              record.actResultDescription = `deepLocator clicked "${top.accessibleText || top.selector}"`;
+              // Synthesize a click action so downstream verification (network
+              // / url / dom) treats this exactly like any other resolved
+              // click — same idiom as deep-submit-locator/structured-click.
+              resolvedAction = {
+                selector: top.selector,
+                description: record.actResultDescription,
+                method: "click",
+              };
+            } catch (err) {
+              record.actResultSuccess = false;
+              record.errorMessage = `deepLocator: click threw ${toErrorMessage(err)}`;
+            }
+          }
+        } else if (candidates.length === 0) {
           record.errorMessage = "observe returned no candidates";
           // Optional-step short-circuit: when attempt 2 confirms no candidates
           // match AND the step was marked optional in the flow, skip cleanly.
@@ -6267,13 +6350,22 @@ export async function executeStepWithHealing(params: {
           record.errorMessage =
             "anthropic billing exhausted (FATAL_BILLING already logged); skipping rephrase";
         } else {
-          const candidates = await guardedObserve(
+          const observedCandidates = await guardedObserve(
             stagehand,
             step,
             { timeout: STEP_WATCHDOG_MS },
             captureFn,
             frameTarget
           ).catch(() => [] as Action[]);
+          // observe() is blind to a cross-origin OOPIF, so a frame-scoped
+          // empty result degrades to the deep-locator resolver for prompt
+          // evidence rather than hard-failing — lower stakes than the
+          // attempt-2/4 click path since this only feeds the rephrase
+          // prompt, so a resolver error/empty result is fine to swallow.
+          const candidates =
+            observedCandidates.length === 0 && frameTarget?.frame
+              ? await deepLocatorCandidatesAsActions(page, frameTarget.frameSelector)
+              : observedCandidates;
           // Fetch live-page evidence so the rephrase prompt can reason about
           // form state, not just observe candidates. Mirrors the same
           // extraction the cascade-exhaust dump path already does.
@@ -6292,13 +6384,17 @@ export async function executeStepWithHealing(params: {
           // frameTarget: for a frame-scoped flow the ambient UI that matters
           // (the wizard's own Save/Close controls) lives inside the iframe
           // alongside the failed step, not in the top document.
-          const unfocused = await guardedObserve(
+          const observedUnfocused = await guardedObserve(
             stagehand,
             undefined,
             { timeout: STEP_WATCHDOG_MS },
             captureFn,
             frameTarget
           ).catch(() => [] as Action[]);
+          const unfocused =
+            observedUnfocused.length === 0 && frameTarget?.frame
+              ? await deepLocatorCandidatesAsActions(page, frameTarget.frameSelector)
+              : observedUnfocused;
           const submitFailureList = extractSubmitFailureEvidence(
             recentCaptures,
             ownBackendHostnames
