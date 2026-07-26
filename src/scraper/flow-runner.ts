@@ -5679,13 +5679,22 @@ export async function executeStepWithHealing(params: {
       .catch(() => null);
     const bodyOuterHtml =
       typeof bodyOuterHtmlRaw === "string" ? bodyOuterHtmlRaw.slice(0, 100_000) : null;
-    const unfocusedObserve = await guardedObserve(
+    const probeAbsentObservedUnfocused = await guardedObserve(
       stagehand,
       undefined,
       { timeout: STEP_WATCHDOG_MS },
       captureFn,
       frameTarget
     ).catch(() => [] as Action[]);
+    // observe() is blind to a cross-origin OOPIF, so a frame-scoped empty
+    // result degrades to the deep-locator resolver for dump evidence — this
+    // dump feeds replanRemainingFlow's diagnostic prompt, and an empty
+    // candidate list there returns "repeat the failed step", burning the
+    // replan budget on every frame-scoped probe-absent failure.
+    const unfocusedObserve =
+      probeAbsentObservedUnfocused.length === 0 && frameTarget?.frame
+        ? await deepLocatorCandidatesAsActions(page, frameTarget.frameSelector)
+        : probeAbsentObservedUnfocused;
     const dumpPath =
       onStepFailure?.({
         stepIndex,
@@ -6055,6 +6064,20 @@ export async function executeStepWithHealing(params: {
           const top = deepLocatorCandidates[0];
           if (top) {
             record.instruction = `deepLocator: ${top.accessibleText || "(no accessible text)"}`;
+            // Deny-list guard: mirrors the observe branch's refusal below —
+            // never act on a wizard-exit control regardless of which
+            // candidate source (observe vs. deepLocator) surfaced it.
+            if (isWizardExitAction(top.accessibleText, wizardExitButtonLabels)) {
+              record.errorMessage = `refused wizard-exit control: "${top.accessibleText.slice(0, 60)}"`;
+              triedSelectors.push(top.selector);
+              record.triedSelectors = [top.selector];
+              attempts.push(record);
+              failureReasons.push(record.errorMessage);
+              logger.info(
+                `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${record.errorMessage}`
+              );
+              continue;
+            }
             triedSelectors.push(top.selector);
             record.triedSelectors = [top.selector];
             try {
@@ -7112,13 +7135,22 @@ export async function executeStepWithHealing(params: {
     }
   }
 
-  const finalObserve = await guardedObserve(
+  const cascadeExhaustObservedFinal = await guardedObserve(
     stagehand,
     step,
     { timeout: STEP_WATCHDOG_MS },
     captureFn,
     frameTarget
   ).catch(() => [] as Action[]);
+  // observe() is blind to a cross-origin OOPIF, so a frame-scoped empty
+  // result degrades to the deep-locator resolver for dump evidence — this
+  // dump feeds replanRemainingFlow's diagnostic prompt, and an empty
+  // candidate list there returns "repeat the failed step", burning the
+  // replan budget on every frame-scoped cascade-exhaust failure.
+  const finalObserve =
+    cascadeExhaustObservedFinal.length === 0 && frameTarget?.frame
+      ? await deepLocatorCandidatesAsActions(page, frameTarget.frameSelector, step)
+      : cascadeExhaustObservedFinal;
   const { pageTitle, pageUrl } = await resolveDumpPageIdentity(page, frameTarget);
   // Discriminator data for "Stagehand sees nothing" failures: capture the raw
   // DOM and an unfocused observe so a triager can tell empty-page from
@@ -7128,13 +7160,17 @@ export async function executeStepWithHealing(params: {
     .catch(() => null);
   const bodyOuterHtml =
     typeof bodyOuterHtmlRaw === "string" ? bodyOuterHtmlRaw.slice(0, 100_000) : null;
-  const unfocusedObserve = await guardedObserve(
+  const cascadeExhaustObservedUnfocused = await guardedObserve(
     stagehand,
     undefined,
     { timeout: STEP_WATCHDOG_MS },
     captureFn,
     frameTarget
   ).catch(() => [] as Action[]);
+  const unfocusedObserve =
+    cascadeExhaustObservedUnfocused.length === 0 && frameTarget?.frame
+      ? await deepLocatorCandidatesAsActions(page, frameTarget.frameSelector)
+      : cascadeExhaustObservedUnfocused;
   const dumpPath =
     onStepFailure?.({
       stepIndex,

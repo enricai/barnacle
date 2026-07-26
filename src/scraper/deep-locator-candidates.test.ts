@@ -19,15 +19,20 @@ function makeFakeDelegate(options: {
   count: number | (() => Promise<number>);
   texts?: string[];
   clickSpy?: (index: number) => Promise<void>;
+  rejectTextContentAt?: number[];
 }) {
   const texts = options.texts ?? [];
   const clickSpy = options.clickSpy ?? vi.fn().mockResolvedValue(undefined);
+  const rejectTextContentAt = options.rejectTextContentAt ?? [];
   const countFn =
     typeof options.count === "function" ? options.count : async () => options.count as number;
   return {
     count: countFn,
     nth: (index: number) => ({
-      textContent: async () => texts[index] ?? "",
+      textContent: async () =>
+        rejectTextContentAt.includes(index)
+          ? Promise.reject(new Error("frame detached"))
+          : (texts[index] ?? ""),
       click: async () => clickSpy(index),
     }),
   };
@@ -113,6 +118,58 @@ describe("resolveDeepLocatorCandidates", () => {
     );
 
     expect(candidates).toEqual([]);
+  });
+
+  it("degrades a per-candidate textContent() rejection to an empty accessibleText instead of throwing, preserving a candidate for every index", async () => {
+    const delegate = makeFakeDelegate({
+      count: 2,
+      texts: [undefined as unknown as string, "Manual Application"],
+      rejectTextContentAt: [0],
+    });
+    const { page } = makeFakePage(delegate);
+
+    const candidates = await resolveDeepLocatorCandidates(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      page as any,
+      "#talemetry_apply_iframe",
+      "*"
+    );
+
+    expect(candidates).toEqual([
+      {
+        index: 0,
+        selector: "deeplocator=#talemetry_apply_iframe >> * >> nth=0",
+        accessibleText: "",
+      },
+      {
+        index: 1,
+        selector: "deeplocator=#talemetry_apply_iframe >> * >> nth=1",
+        accessibleText: "Manual Application",
+      },
+    ]);
+  });
+
+  it("ranks a textContent()-rejected candidate at score 0, below a genuine instruction match, rather than dropping or promoting it", async () => {
+    const delegate = makeFakeDelegate({
+      count: 2,
+      texts: [undefined as unknown as string, "Manual Application"],
+      rejectTextContentAt: [0],
+    });
+    const { page } = makeFakePage(delegate);
+
+    const candidates = await resolveDeepLocatorCandidates(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      page as any,
+      "#talemetry_apply_iframe",
+      "*",
+      "click the 'Manual Application' button"
+    );
+
+    expect(candidates).toHaveLength(2);
+    // biome-ignore lint/style/noNonNullAssertion: 2 candidates were registered, so index 0 is present
+    expect(candidates[0]!.accessibleText).toBe("Manual Application");
+    // biome-ignore lint/style/noNonNullAssertion: 2 candidates were registered, so index 1 is present
+    expect(candidates[1]!.accessibleText).toBe("");
   });
 
   it("composes an unscoped selector unchanged when frameSelector is null (buildHopSelector passthrough)", async () => {
