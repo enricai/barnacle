@@ -162,7 +162,9 @@ describe("recon-browser CLI/main — frameSelector reaches executeStepWithHealin
           return 10_000;
         }
         if (typeof expr === "string" && expr.includes("querySelector")) {
-          return opts.iframeSrc ?? null;
+          return opts.iframeSrc
+            ? { matched: true, src: opts.iframeSrc }
+            : { matched: false, src: null };
         }
         return null;
       }),
@@ -312,7 +314,9 @@ describe("recon-browser CLI/main — frameSelector reaches executeStepWithHealin
           return 10_000;
         }
         if (typeof expr === "string" && expr.includes("querySelector")) {
-          return iframeMounted ? "https://apply.talemetry.com/application/abc-123" : null;
+          return iframeMounted
+            ? { matched: true, src: "https://apply.talemetry.com/application/abc-123" }
+            : { matched: false, src: null };
         }
         return null;
       }),
@@ -401,7 +405,9 @@ describe("recon-browser CLI/main — frameSelector reaches executeStepWithHealin
           return 10_000;
         }
         if (typeof expr === "string" && expr.includes("querySelector")) {
-          return iframeMounted ? "https://apply.talemetry.com/application/abc-123" : null;
+          return iframeMounted
+            ? { matched: true, src: "https://apply.talemetry.com/application/abc-123" }
+            : { matched: false, src: null };
         }
         return null;
       }),

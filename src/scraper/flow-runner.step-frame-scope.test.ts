@@ -604,6 +604,115 @@ describe("flow-runner/executeStepWithHealing — attempt-2-cascade-reachable fra
     expect(page.evaluate).not.toHaveBeenCalled();
   });
 
+  it("threads the resolved child FrameTarget into every guardedObserve call on the llm-rephrase path (focused candidates + unfocused ambient-UI observe), not undefined", async () => {
+    const urls = { current: "https://apply.acme.example/jobs/1/apply" };
+    const childTarget = makeChildFrameTarget("iframe#talemetry_apply_iframe", () => urls.current);
+    resolveFrameTarget.mockResolvedValue(childTarget);
+
+    const stagehand = makeStagehand();
+    const page = fakeFlowPage(() => urls.current);
+
+    // Same fixture as the extractLivePageFormEvidence test above: reject
+    // messages.parse so rephraseWithLLM falls back to its documented
+    // outcome=impossible path without a real network call.
+    const messagesParse = vi.fn().mockRejectedValue(new Error("stub judge unavailable"));
+    const anthropic = { messages: { parse: messagesParse } } as unknown as Anthropic;
+
+    // Attempt 1 (act-string) resolves nothing; attempts 2/3/4 report no
+    // candidates / no prior selector and are skipped, landing the cascade on
+    // attempt 5 (llm-rephrase) — the branch under test at flow-runner.ts:6270
+    // (focused candidates) and :6295 (unfocused ambient-UI observe).
+    guardedObserve
+      .mockResolvedValueOnce([{ selector: "input#radio-yes", description: "Yes", method: "click" }])
+      .mockResolvedValue([]);
+    guardedAct.mockResolvedValue({
+      success: false,
+      message: "no candidates",
+      actionDescription: "",
+      actions: [],
+    });
+
+    await expect(
+      runHealingFlow({
+        stagehand,
+        page,
+        steps: [step({ instruction: RADIO_STEP, optional: false })],
+        logger: testLogger,
+        anthropic,
+        resumeFixture: null,
+        frameSelector: "iframe#talemetry_apply_iframe",
+      })
+    ).rejects.toThrow(/failed verification after \d+ attempts/);
+
+    // Every guardedObserve call across the whole cascade — including the two
+    // llm-rephrase-only calls (focused candidates, unfocused ambient-UI
+    // observe) — must carry the resolved child FrameTarget as its trailing
+    // arg, not undefined (which would fall through to the top document).
+    expect(guardedObserve.mock.calls.length).toBeGreaterThan(0);
+    for (const call of guardedObserve.mock.calls) {
+      expect(call.at(-1)).toBe(childTarget);
+    }
+  });
+
+  it("threads the resolved child FrameTarget into the unfocusedForJudge guardedObserve call feeding the success-state judge, not undefined", async () => {
+    const urls = { current: "https://apply.acme.example/jobs/1/apply" };
+    const childTarget = makeChildFrameTarget("iframe#talemetry_apply_iframe", () => urls.current, {
+      ngInvalidCount: 0,
+      submittedStateSelector: "[data-testid=thank-you]",
+    });
+    resolveFrameTarget.mockResolvedValue(childTarget);
+
+    // requireSubmitEndpoint (submitStep + submitEndpointPattern) gates the
+    // branch at flow-runner.ts:6471 that builds unfocusedForJudge — the site
+    // under test. The probe must find a candidate so attempt 1 proceeds past
+    // the probe-absent fast-skip (owned by sibling test-001-1-a).
+    guardedObserve.mockResolvedValue([
+      { selector: "button#submit", description: "Submit", method: "click" },
+    ]);
+    guardedAct.mockImplementation(async () => {
+      urls.current = "https://apply.acme.example/jobs/1/apply/thank-you";
+      return {
+        success: true,
+        message: "clicked",
+        actionDescription: "Click the Submit button",
+        actions: [{ selector: "button#submit", description: "Submit", method: "click" }],
+      };
+    });
+
+    const stagehand = makeStagehand();
+    const page = fakeFlowPage(() => urls.current);
+
+    const result = await runHealingFlow({
+      stagehand,
+      page,
+      steps: [
+        {
+          instruction: "Click the Submit button",
+          optional: false,
+          upload: false,
+          submitStep: true,
+        },
+      ],
+      logger: testLogger,
+      anthropic: null,
+      resumeFixture: null,
+      frameSelector: "iframe#talemetry_apply_iframe",
+      submitEndpointPattern: "/gq",
+      submittedStateSelectors: ["[data-testid=thank-you]"],
+    });
+
+    expect(result.lastStepIndex).toBe(0);
+
+    // unfocusedForJudge (flow-runner.ts:6503) runs unconditionally ahead of
+    // verifySubmitWithLLM, so it fires even with anthropic: null — every
+    // guardedObserve call across the attempt (including this one) must carry
+    // the resolved child FrameTarget as its trailing arg, not undefined.
+    expect(guardedObserve.mock.calls.length).toBeGreaterThan(0);
+    for (const call of guardedObserve.mock.calls) {
+      expect(call.at(-1)).toBe(childTarget);
+    }
+  });
+
   it("threads the resolved child FrameTarget into the deep-submit-locator runner-up mid-attempt snapshotPage capture, not mainFrameTarget(page)", async () => {
     const urls = { current: "https://apply.acme.example/jobs/1/apply" };
     const topCandidate = {

@@ -1082,7 +1082,11 @@ describe("flow-runner/runHealingFlow — frameSelector routes the cascade to the
     const session = { on: () => {}, off: () => {} };
     const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
       const src = String(expr);
-      if (src.includes(IFRAME_SRC_MARKER)) return params.iframeSrc ?? null;
+      if (src.includes(IFRAME_SRC_MARKER)) {
+        return params.iframeSrc
+          ? { matched: true, src: params.iframeSrc }
+          : { matched: false, src: null };
+      }
       if (src.includes("outerHTML")) return { html: 184186, text: "0:" };
       if (src.includes("isInvalid(el)")) return 0;
       return null;

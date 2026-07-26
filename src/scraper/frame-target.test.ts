@@ -44,8 +44,8 @@ function makeFakePage(options: {
     evaluate: async (expr: unknown) => {
       const match = /document\.querySelector\((.+?)\)/.exec(String(expr));
       const selector = match?.[1] ? (JSON.parse(match[1]) as string) : null;
-      if (!selector || !Object.hasOwn(iframes, selector)) return null;
-      return iframes[selector] ?? null;
+      if (!selector || !Object.hasOwn(iframes, selector)) return { matched: false, src: null };
+      return { matched: true, src: iframes[selector] ?? null };
     },
     locator: (selector: string) => ({ scope: "main" as const, selector }),
     frames: () => frames,
@@ -72,8 +72,8 @@ function makeMutableFakePage(options: {
     evaluate: async (expr: unknown) => {
       const match = /document\.querySelector\((.+?)\)/.exec(String(expr));
       const selector = match?.[1] ? (JSON.parse(match[1]) as string) : null;
-      if (!selector || !Object.hasOwn(iframes, selector)) return null;
-      return iframes[selector] ?? null;
+      if (!selector || !Object.hasOwn(iframes, selector)) return { matched: false, src: null };
+      return { matched: true, src: iframes[selector] ?? null };
     },
     locator: (selector: string) => ({ scope: "main" as const, selector }),
     frames: () => frames,
@@ -214,6 +214,55 @@ describe("resolveFrameTarget", () => {
     const resolved = await target;
     expect(resolved.frame).toBe(childFrame);
     expect(resolved.frameSelector).toBe("iframe#talemetry_apply_iframe");
+  });
+
+  it("resolves a childFrameTarget by origin match once the iframe's src is populated on a later poll, after the element existed with an empty src (and multiple ambiguous candidates) on the first poll", async () => {
+    const matchingFrame = makeFakeFrame("https://apply.talemetry.com/application/abc-123");
+    const unrelatedFrame = makeFakeFrame("https://unrelated-vendor.example.com/widget");
+    let src: string | null = null;
+    const page = {
+      url: () => "https://careers.uchealth.org/jobs/123",
+      title: async () => "main document title",
+      evaluate: async (expr: unknown) => {
+        const match = /document\.querySelector\((.+?)\)/.exec(String(expr));
+        const selector = match?.[1] ? (JSON.parse(match[1]) as string) : null;
+        if (selector !== "iframe#talemetry_apply_iframe") return { matched: false, src: null };
+        return { matched: true, src };
+      },
+      locator: (selector: string) => ({ scope: "main" as const, selector }),
+      frames: () => [unrelatedFrame, matchingFrame],
+    };
+
+    const target = resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe", {
+      timeoutMs: 1000,
+      pollMs: 5,
+    });
+
+    await sleepMs(15);
+    src = "https://apply.talemetry.com/application/abc-123";
+
+    const resolved = await target;
+    expect(resolved.frame).toBe(matchingFrame);
+    expect(resolved.frameSelector).toBe("iframe#talemetry_apply_iframe");
+  });
+
+  it("resolves a childFrameTarget by element identity on the very first poll when the iframe's src is unreadable but exactly one candidate frame exists", async () => {
+    const onlyCandidate = makeFakeFrame("https://apply.talemetry.com/application/abc-123");
+    const page = {
+      url: () => "https://careers.uchealth.org/jobs/123",
+      title: async () => "main document title",
+      evaluate: async () => ({ matched: true, src: null }),
+      locator: (selector: string) => ({ scope: "main" as const, selector }),
+      frames: () => [onlyCandidate],
+    };
+
+    const target = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe", {
+      timeoutMs: 1000,
+      pollMs: 5,
+    });
+
+    expect(target.frame).toBe(onlyCandidate);
+    expect(target.frameSelector).toBe("iframe#talemetry_apply_iframe");
   });
 
   it("resolves a childFrameTarget once a matching frames() entry attaches, after the iframe element already existed with no matching frame", async () => {

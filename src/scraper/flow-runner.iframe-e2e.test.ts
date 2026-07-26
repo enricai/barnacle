@@ -199,7 +199,9 @@ function makeFakeTopPage(topUrl: { current: string }, childUrls: { current: stri
       const iframeSrcMatch = /document\.querySelector\((.+?)\)/.exec(String(expr));
       if (iframeSrcMatch) {
         const selector = JSON.parse(iframeSrcMatch[1] as string) as string;
-        return selector === IFRAME_SELECTOR ? CHILD_SRC : null;
+        return selector === IFRAME_SELECTOR
+          ? { matched: true, src: CHILD_SRC }
+          : { matched: false, src: null };
       }
       // Any other top-frame evaluate (verifyDomEffect's xpath probe,
       // pre-cascade DOM-direct helpers) sees an empty top document — the
@@ -245,9 +247,11 @@ function makeMidflowFakeTopPage(
     evaluate: async (expr: unknown) => {
       const iframeSrcMatch = /document\.querySelector\((.+?)\)/.exec(String(expr));
       if (iframeSrcMatch) {
-        if (!iframeAttached.current) return null;
+        if (!iframeAttached.current) return { matched: false, src: null };
         const selector = JSON.parse(iframeSrcMatch[1] as string) as string;
-        return selector === IFRAME_SELECTOR ? CHILD_SRC : null;
+        return selector === IFRAME_SELECTOR
+          ? { matched: true, src: CHILD_SRC }
+          : { matched: false, src: null };
       }
       return null;
     },

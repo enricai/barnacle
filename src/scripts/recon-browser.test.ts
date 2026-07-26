@@ -887,6 +887,100 @@ describe("recon-browser/readFailureDumpEvidence", () => {
     const result = await readFailureDumpEvidence(dumpPath);
     expect(result.recentFailureReasons).toEqual(["real failure A", "real failure B"]);
   });
+
+  /**
+   * Builds a `Page` double whose top document exposes an `<iframe>` matching
+   * `frameSelector` and whose `frames()` includes a same-origin candidate —
+   * enough for `resolveFrameTarget` to resolve a real child `FrameTarget`
+   * without touching Playwright/Stagehand. The child frame's `evaluate`
+   * returns `childLeafFieldsPayload` (the leaf-invalid-container probe
+   * result); the top document's `evaluate` returns `[]` so a probe that
+   * queries the main document instead of the iframe observes no fields.
+   */
+  function makeIframePageStub(iframeSelector: string, childLeafFieldsPayload: unknown[]): Page {
+    const iframeSrc = "https://apply.talemetry.com/application/abc-123";
+    const childFrame = {
+      evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+        if (typeof expr === "string" && expr.includes("location.href")) return iframeSrc;
+        return childLeafFieldsPayload;
+      }),
+    };
+    return {
+      evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+        if (typeof expr === "string" && expr.includes(JSON.stringify(iframeSelector))) {
+          return { matched: true, src: iframeSrc };
+        }
+        return [];
+      }),
+      frames: vi.fn().mockReturnValue([childFrame]),
+      title: vi.fn().mockResolvedValue(""),
+      url: vi.fn().mockReturnValue("https://careers.uchealth.org/job/1"),
+    } as unknown as Page;
+  }
+
+  it("probes the child iframe (not the top document) when frameSelector resolves", async () => {
+    const iframeSelector = "#talemetry_apply_iframe";
+    const leafField = {
+      xpath: "/html[1]/body[1]/form[1]/input[1]",
+      label: "First Name",
+      framework: "angular" as const,
+      markerClass: "ng-invalid ng-touched",
+      visibleErrorText: "This field is required.",
+      inputTag: "input",
+    };
+    writeFileSync(dumpPath, JSON.stringify({ bodyOuterHtml: "<html></html>", attempts: [] }));
+
+    const page = makeIframePageStub(iframeSelector, [leafField]);
+    const result = await readFailureDumpEvidence(dumpPath, { page, frameSelector: iframeSelector });
+
+    expect(result.invalidFieldList).toContain("First Name");
+    expect(result.invalidFieldList).toContain("This field is required.");
+  });
+
+  it("finds nothing when frameSelector is omitted even though the iframe has the invalid field", async () => {
+    const iframeSelector = "#talemetry_apply_iframe";
+    const leafField = {
+      xpath: "/html[1]/body[1]/form[1]/input[1]",
+      label: "First Name",
+      framework: "angular" as const,
+      markerClass: "ng-invalid ng-touched",
+      visibleErrorText: "This field is required.",
+      inputTag: "input",
+    };
+    writeFileSync(dumpPath, JSON.stringify({ bodyOuterHtml: "<html></html>", attempts: [] }));
+
+    const page = makeIframePageStub(iframeSelector, [leafField]);
+    // No frameSelector passed — resolveFrameTarget(page) falls back to the
+    // main-frame target, whose evaluate() returns [] in this stub, mirroring
+    // the pre-fix call site that always queried the top document.
+    const result = await readFailureDumpEvidence(dumpPath, { page });
+
+    expect(result.invalidFieldList).toBe("");
+  });
+
+  it("still resolves to the main-frame target when frameSelector is null", async () => {
+    writeFileSync(dumpPath, JSON.stringify({ bodyOuterHtml: "<html></html>", attempts: [] }));
+    const mainFieldsPayload = [
+      {
+        xpath: "/html[1]/body[1]/form[1]/input[1]",
+        label: "Email",
+        framework: "aria" as const,
+        markerClass: "aria-invalid",
+        visibleErrorText: null,
+        inputTag: "input",
+      },
+    ];
+    const page = {
+      evaluate: vi.fn().mockResolvedValue(mainFieldsPayload),
+      frames: vi.fn().mockReturnValue([]),
+      title: vi.fn().mockResolvedValue(""),
+      url: vi.fn().mockReturnValue("https://example.com/apply"),
+    } as unknown as Page;
+
+    const result = await readFailureDumpEvidence(dumpPath, { page, frameSelector: null });
+
+    expect(result.invalidFieldList).toContain("Email");
+  });
 });
 
 describe("recon-browser/narrowInvalidFormControl", () => {
@@ -4826,7 +4920,9 @@ describe("recon-browser/main — frameSelector reaches the cascade call", () => 
           return 10_000;
         }
         if (typeof expr === "string" && expr.includes("querySelector")) {
-          return opts.iframeSrc ?? null;
+          return opts.iframeSrc
+            ? { matched: true, src: opts.iframeSrc }
+            : { matched: false, src: null };
         }
         return null;
       }),
@@ -4945,7 +5041,7 @@ describe("recon-browser/main — frameSelector reaches the cascade call", () => 
           return 10_000;
         }
         if (typeof expr === "string" && expr.includes("querySelector")) {
-          return "https://apply.talemetry.com/application/abc-123";
+          return { matched: true, src: "https://apply.talemetry.com/application/abc-123" };
         }
         return null;
       }),
