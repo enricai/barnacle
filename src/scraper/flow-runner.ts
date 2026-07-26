@@ -6055,6 +6055,20 @@ export async function executeStepWithHealing(params: {
           const top = deepLocatorCandidates[0];
           if (top) {
             record.instruction = `deepLocator: ${top.accessibleText || "(no accessible text)"}`;
+            // Deny-list guard: mirrors the observe branch's refusal below —
+            // never act on a wizard-exit control regardless of which
+            // candidate source (observe vs. deepLocator) surfaced it.
+            if (isWizardExitAction(top.accessibleText, wizardExitButtonLabels)) {
+              record.errorMessage = `refused wizard-exit control: "${top.accessibleText.slice(0, 60)}"`;
+              triedSelectors.push(top.selector);
+              record.triedSelectors = [top.selector];
+              attempts.push(record);
+              failureReasons.push(record.errorMessage);
+              logger.info(
+                `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${record.errorMessage}`
+              );
+              continue;
+            }
             triedSelectors.push(top.selector);
             record.triedSelectors = [top.selector];
             try {
