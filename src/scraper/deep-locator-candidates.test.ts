@@ -3,6 +3,11 @@ import {
   clickDeepLocatorCandidate,
   resolveDeepLocatorCandidates,
 } from "@/scraper/deep-locator-candidates";
+import {
+  type FakeDeepLocatorFrame,
+  makeFakeDeepLocator,
+  registerDeepLocatorHopElements,
+} from "@/scraper/deep-locator-fake";
 
 /**
  * Minimal fake `DeepLocatorDelegate`: `nth()` returns a scoped view over the
@@ -37,7 +42,7 @@ function makeFakePage(delegate: ReturnType<typeof makeFakeDelegate>) {
 }
 
 describe("resolveDeepLocatorCandidates", () => {
-  it("returns a ranked candidate per matched element, each xpath=-prefixed and hop-composed", async () => {
+  it("returns a candidate per matched element in delegate order, each deeplocator=-prefixed (not xpath=) and hop-composed, when no instruction is given", async () => {
     const delegate = makeFakeDelegate({ count: 2, texts: ["Manual Application", "Cancel"] });
     const { page, deepLocatorSpy } = makeFakePage(delegate);
 
@@ -51,16 +56,31 @@ describe("resolveDeepLocatorCandidates", () => {
     expect(candidates).toEqual([
       {
         index: 0,
-        selector: "xpath=#talemetry_apply_iframe >> button >> nth=0",
+        selector: "deeplocator=#talemetry_apply_iframe >> button >> nth=0",
         accessibleText: "Manual Application",
       },
       {
         index: 1,
-        selector: "xpath=#talemetry_apply_iframe >> button >> nth=1",
+        selector: "deeplocator=#talemetry_apply_iframe >> button >> nth=1",
         accessibleText: "Cancel",
       },
     ]);
     expect(deepLocatorSpy).toHaveBeenCalledWith("#talemetry_apply_iframe >> button");
+  });
+
+  it("never emits an xpath=-prefixed selector, since hop notation is not evaluable via document.evaluate on the top-level document", async () => {
+    const delegate = makeFakeDelegate({ count: 1, texts: ["Manual Application"] });
+    const { page } = makeFakePage(delegate);
+
+    const candidates = await resolveDeepLocatorCandidates(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      page as any,
+      "#talemetry_apply_iframe",
+      "*"
+    );
+
+    // biome-ignore lint/style/noNonNullAssertion: count() resolved 1, so index 0 is present
+    expect(candidates[0]!.selector.startsWith("xpath=")).toBe(false);
   });
 
   it("returns [] when count() resolves to 0", async () => {
@@ -103,6 +123,95 @@ describe("resolveDeepLocatorCandidates", () => {
     await resolveDeepLocatorCandidates(page as any, null, "button[type=submit]");
 
     expect(deepLocatorSpy).toHaveBeenCalledWith("button[type=submit]");
+  });
+
+  describe("instruction-relevance ranking", () => {
+    const ACCEPTANCE_INSTRUCTION =
+      "In the application widget, click the 'Manual Application' button to skip the resume-upload flow entirely. Do NOT click 'Upload a Resume/CV', 'Use LinkedIn Profile', 'Upload From Dropbox', or 'Upload From OneDrive'.";
+
+    function makeAcceptanceScenarioPage() {
+      const frame: FakeDeepLocatorFrame = new Map();
+      registerDeepLocatorHopElements(frame, "#talemetry_apply_iframe >> *", [
+        "",
+        "Upload a Resume/CV",
+        "Use LinkedIn Profile",
+        "Manual Application",
+      ]);
+      return { deepLocator: makeFakeDeepLocator(frame) } as unknown as {
+        deepLocator: (selector: string) => ReturnType<typeof makeFakeDeepLocator>;
+      };
+    }
+
+    it("ranks the instruction's intended control first even though it is last in DOM order, and does not rank any negated decoy above it", async () => {
+      const page = makeAcceptanceScenarioPage();
+
+      const candidates = await resolveDeepLocatorCandidates(
+        // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+        page as any,
+        "#talemetry_apply_iframe",
+        "*",
+        ACCEPTANCE_INSTRUCTION
+      );
+
+      // biome-ignore lint/style/noNonNullAssertion: 4 candidates were registered, so index 0 is present
+      expect(candidates[0]!.accessibleText).toBe("Manual Application");
+      const manualApplicationRank = candidates.findIndex(
+        (c) => c.accessibleText === "Manual Application"
+      );
+      const negatedTexts = ["Upload a Resume/CV", "Use LinkedIn Profile"];
+      for (const negatedText of negatedTexts) {
+        const negatedRank = candidates.findIndex((c) => c.accessibleText === negatedText);
+        expect(negatedRank).toBeGreaterThan(manualApplicationRank);
+      }
+    });
+
+    it("never ranks a candidate with no accessible text above one whose text matches the instruction", async () => {
+      const page = makeAcceptanceScenarioPage();
+
+      const candidates = await resolveDeepLocatorCandidates(
+        // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+        page as any,
+        "#talemetry_apply_iframe",
+        "*",
+        ACCEPTANCE_INSTRUCTION
+      );
+
+      const emptyTextRank = candidates.findIndex((c) => c.accessibleText === "");
+      const manualApplicationRank = candidates.findIndex(
+        (c) => c.accessibleText === "Manual Application"
+      );
+      expect(emptyTextRank).toBeGreaterThan(manualApplicationRank);
+    });
+
+    it("preserves DOM order for candidates tied on relevance (no phrases match either)", async () => {
+      const delegate = makeFakeDelegate({ count: 2, texts: ["Foo", "Bar"] });
+      const { page } = makeFakePage(delegate);
+
+      const candidates = await resolveDeepLocatorCandidates(
+        // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+        page as any,
+        "#talemetry_apply_iframe",
+        "*",
+        "click the 'Something Else' button"
+      );
+
+      expect(candidates.map((c) => c.accessibleText)).toEqual(["Foo", "Bar"]);
+    });
+
+    it("falls back to delegate order when the instruction has no quoted phrases", async () => {
+      const delegate = makeFakeDelegate({ count: 2, texts: ["Manual Application", "Cancel"] });
+      const { page } = makeFakePage(delegate);
+
+      const candidates = await resolveDeepLocatorCandidates(
+        // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+        page as any,
+        "#talemetry_apply_iframe",
+        "*",
+        "click the manual application button"
+      );
+
+      expect(candidates.map((c) => c.accessibleText)).toEqual(["Manual Application", "Cancel"]);
+    });
   });
 });
 
