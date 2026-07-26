@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { makeFakeDeepLocator, registerDeepLocatorHop } from "@/scraper/deep-locator-fake";
 import { runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
@@ -519,5 +520,133 @@ describe("flow-runner iframe end-to-end: mid-flow iframe attachment (offline fix
     });
 
     expect(result.lastStepIndex).toBe(0);
+  });
+});
+
+/**
+ * Fake Stagehand whose `observe()` returns `[]` UNCONDITIONALLY — for a
+ * hop-scoped selector, an unscoped call, and a top-frame-only call alike —
+ * reproducing the measured A/B/C/D probe against the live UCHealth/Talemetry
+ * OOPIF (`observe(instr, {selector: "#iframe >> *"})` => `[]`;
+ * `observe(instr, {selector: "iframe#... >> button"})` => `[]`; unscoped
+ * `observe(instr)` => `[]`; identical on Stagehand 3.7.0 and 3.7.1). Unlike
+ * `makeFakeStagehand` above (whose observe DOES resolve a hop-scoped
+ * selector — the very assumption this fixture exists to falsify), nothing
+ * here ever hands the cascade an observe-sourced candidate: the ONLY path to
+ * the in-frame button is `page.deepLocator()`. `act` mirrors the measured
+ * unresolved-instruction-string failure (Stagehand's act-string path can't
+ * resolve content its own observe can't see either) so attempt 1 always
+ * fails, forcing the cascade into attempt 2's observe-act branch — the one
+ * that owns the `resolveDeepLocatorCandidates` fallback under test.
+ */
+function makeFakeStagehandObserveBlind() {
+  return {
+    act: async () => ({
+      success: false,
+      message: "no actionable candidate",
+      actionDescription: CLICK_STEP,
+      actions: [],
+    }),
+    observe: async () => [],
+  } as unknown as import("@browserbasehq/stagehand").Stagehand;
+}
+
+/**
+ * `makeFakeTopPage`'s top-frame `Page`, plus a `deepLocator()` bound to
+ * `deepLocatorFrame` — the shared `deep-locator-fake.ts` harness resolving
+ * against an in-memory hop registry, mirroring `page.deepLocator()`
+ * (Stagehand's own deep-iframe resolver, measured to locate AND actuate
+ * elements inside the cross-origin OOPIF end-to-end). Wraps the fake
+ * delegate's `click()` to also advance `childUrls` — a real deepLocator
+ * click on the in-iframe button navigates the iframe, giving the cascade's
+ * frame-scoped `urlChanged` verification signal a genuine reason to fire.
+ */
+function makeFakeTopPageWithDeepLocator(
+  topUrl: { current: string },
+  childUrls: { current: string },
+  deepLocatorFrame: Map<string, { clicks: number; filledWith: string | null; text: string }>
+) {
+  const base = makeFakeTopPage(topUrl, childUrls);
+  const fakeDeepLocator = makeFakeDeepLocator(deepLocatorFrame);
+  const wrappedDeepLocator = (selector: string) => {
+    const delegate = fakeDeepLocator(selector);
+    return {
+      ...delegate,
+      click: async () => {
+        await delegate.click();
+        childUrls.current = `${CHILD_ORIGIN}/application/abc-123/basic-info`;
+      },
+      nth: () => wrappedDeepLocator(selector),
+    };
+  };
+  return {
+    ...base,
+    deepLocator: wrappedDeepLocator,
+  } as unknown as import("@browserbasehq/stagehand").Page;
+}
+
+/**
+ * The offline analogue of the task's acceptance test: `observe()` blind by
+ * every scoping means (the A/B/C/D probe result), `page.deepLocator()` the
+ * ONLY surface that can see the in-frame "Manual Application" control —
+ * proving `runHealingFlow`'s frame-scoped deepLocator fallback (the
+ * `resolveDeepLocatorCandidates`/`clickDeepLocatorCandidate` routing added to
+ * the observe-act branch) is what makes the step succeed, not any residual
+ * observe capability the `:360` suite's fixture (deliberately) still grants.
+ */
+describe("flow-runner iframe end-to-end: observe blind to the OOPIF, only deepLocator can see it (offline fixture, no network)", () => {
+  it("resolves the in-frame 'Manual Application' button via deepLocator and succeeds even though observe() returns [] for every scoping", async () => {
+    const topUrl = { current: `${TOP_ORIGIN}/jobs/123/apply` };
+    const childUrls = { current: CHILD_SRC };
+    const deepLocatorFrame = new Map();
+    registerDeepLocatorHop(deepLocatorFrame, `${IFRAME_SELECTOR} >> *`, "Manual Application");
+    const stagehand = makeFakeStagehandObserveBlind();
+    const page = makeFakeTopPageWithDeepLocator(topUrl, childUrls, deepLocatorFrame);
+
+    const result = await runHealingFlow({
+      stagehand,
+      page,
+      steps: [{ instruction: CLICK_STEP, optional: false, upload: false, submitStep: false }],
+      logger: testLogger,
+      anthropic: null,
+      resumeFixture: null,
+      frameSelector: IFRAME_SELECTOR,
+    });
+
+    expect(result.lastStepIndex).toBe(0);
+    expect(childUrls.current).toBe(`${CHILD_ORIGIN}/application/abc-123/basic-info`);
+    const hop = deepLocatorFrame.get(`${IFRAME_SELECTOR} >> *`);
+    expect(hop?.clicks).toBeGreaterThan(0);
+  });
+
+  it("negative control: with deepLocator ALSO empty, the step fails — the pass above is attributable to deepLocator, not residual observe behavior", async () => {
+    const topUrl = { current: `${TOP_ORIGIN}/jobs/123/apply` };
+    const childUrls = { current: CHILD_SRC };
+    const deepLocatorFrame = new Map();
+    // Deliberately no registerDeepLocatorHop call: deepLocator resolves 0
+    // candidates too, matching observe's blindness — nothing can see the
+    // in-frame button.
+    const stagehand = makeFakeStagehandObserveBlind();
+    const page = makeFakeTopPageWithDeepLocator(topUrl, childUrls, deepLocatorFrame);
+
+    // With BOTH observe and deepLocator empty, probeStepBeforeAttempts (the
+    // pre-cascade reachability gate) itself reports "absent" and
+    // short-circuits before the 5-attempt cascade ever runs — a step
+    // genuinely unreachable by any candidate source must fail fast, not
+    // burn cascade/replan budget. This is a distinct (and equally valid)
+    // failure mode from the cascade exhausting, so the match spans both.
+    await expect(
+      runHealingFlow({
+        stagehand,
+        page,
+        steps: [{ instruction: CLICK_STEP, optional: false, upload: false, submitStep: false }],
+        logger: testLogger,
+        anthropic: null,
+        resumeFixture: null,
+        frameSelector: IFRAME_SELECTOR,
+      })
+    ).rejects.toThrow(/cascade|attempts|verification|candidates/i);
+
+    expect(childUrls.current).toBe(CHILD_SRC);
   });
 });
