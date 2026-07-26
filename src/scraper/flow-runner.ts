@@ -5153,12 +5153,18 @@ async function probeFormValidityBeforeSubmit(params: {
  * prompt richer evidence when available — a frame-scoped step whose
  * observe AND deepLocator both come back empty just gets the same `[]`
  * evidence it would have gotten before this fix.
+ *
+ * `instruction` is forwarded to `resolveDeepLocatorCandidates` so the
+ * evidence list is ranked by relevance to the step, same as the act path —
+ * an unranked `[]`-then-DOM-order list would feed the rephrase LLM its
+ * worst evidence first instead of its best.
  */
 async function deepLocatorCandidatesAsActions(
   page: Page,
-  frameSelector: string | null
+  frameSelector: string | null,
+  instruction?: string | null
 ): Promise<Action[]> {
-  const candidates = await resolveDeepLocatorCandidates(page, frameSelector, "*");
+  const candidates = await resolveDeepLocatorCandidates(page, frameSelector, "*", instruction);
   return candidates.map((c) => ({
     selector: c.selector,
     description: c.accessibleText || "(no accessible text)",
@@ -6032,15 +6038,18 @@ export async function executeStepWithHealing(params: {
         // deep-locator-candidates.ts's module docblock) — when the step is
         // frame-scoped and observe came back empty, fall back to the deep
         // locator resolver before declaring the attempt candidate-less.
+        // Passing `step` ranks candidates by relevance to the instruction
+        // (see resolveDeepLocatorCandidates) so the top pick below is the
+        // element the step actually names, not just DOM order.
         // Attempt 4's ignoreSelectors has no deepLocator equivalent, so the
-        // exclusion is applied here by filtering resolved candidates against
-        // triedSelectors instead — otherwise attempt 4 would re-pick the same
-        // failed element and burn the attempt.
+        // exclusion is applied here by filtering resolved (already-ranked)
+        // candidates against triedSelectors instead — otherwise attempt 4
+        // would re-pick the same failed element and burn the attempt.
         const deepLocatorCandidates =
           candidates.length === 0 && frameTarget?.frame
-            ? (await resolveDeepLocatorCandidates(page, frameTarget.frameSelector, "*")).filter(
-                (c) => !triedSelectors.includes(c.selector)
-              )
+            ? (
+                await resolveDeepLocatorCandidates(page, frameTarget.frameSelector, "*", step)
+              ).filter((c) => !triedSelectors.includes(c.selector))
             : [];
         if (candidates.length === 0 && deepLocatorCandidates.length > 0) {
           const top = deepLocatorCandidates[0];
@@ -6364,7 +6373,7 @@ export async function executeStepWithHealing(params: {
           // prompt, so a resolver error/empty result is fine to swallow.
           const candidates =
             observedCandidates.length === 0 && frameTarget?.frame
-              ? await deepLocatorCandidatesAsActions(page, frameTarget.frameSelector)
+              ? await deepLocatorCandidatesAsActions(page, frameTarget.frameSelector, step)
               : observedCandidates;
           // Fetch live-page evidence so the rephrase prompt can reason about
           // form state, not just observe candidates. Mirrors the same
