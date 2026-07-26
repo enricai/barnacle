@@ -127,6 +127,14 @@ silently degrade to "drive the main frame and see nothing." Omitting
 `frameSelector` (the default) preserves today's behavior: the flow drives the
 main frame.
 
+**`observe()` cannot see into a cross-origin OOPIF at all** — measured against
+a live Talemetry wizard embed, every scoping form (`{selector: "iframe#... >>
+*"}`, `{page: childFrame}`, unscoped) returns zero candidates even though the
+frame is fully attached and its DOM is reachable via `frameTarget.evaluate`.
+For a frame-scoped step, the cascade and the pre-cascade probe fall back to
+`page.deepLocator()` (Stagehand's own hop-notation resolver, which does reach
+the OOPIF) whenever `observe()` comes back empty — see 1c.
+
 ---
 
 ## Phase 1 — Browser recon (`recon-browser.ts`)
@@ -241,13 +249,24 @@ techniques are, in order:
 2. **`observe()` + `act(Action)`** — Stagehand returns a list of candidate
    `Action` objects with `selector` + `description`. We pick the top candidate
    and call `act` on the structured object directly. Disambiguates without
-   needing rephrase.
+   needing rephrase. Frame-scoped exception: when the step declares
+   `frameSelector` and `observe()` comes back empty, `observe()` is blind to a
+   cross-origin OOPIF (see the cross-origin iframe note above), so this
+   attempt (and the pre-cascade probe, and the rephrase evidence gather)
+   additionally resolves candidates via `page.deepLocator()`
+   (`src/scraper/deep-locator-candidates.ts`) before giving up — the top
+   surviving candidate is clicked directly and a `xpath=`-shaped
+   `resolvedAction` is synthesized so verification proceeds exactly as it
+   would for an `observe()`-sourced candidate.
 3. **`observe(step, { ignoreSelectors: tried })` + `act(Action)`** — same as
    attempt 2, but we tell Stagehand to exclude the selectors we already tried.
    Addresses the "same wrong button twice" failure mode. When no selectors
    were captured from earlier attempts (rare — usually means both attempts
    found nothing actionable), attempt 3 degenerates to a plain `observe(step)`
-   and acts like a second pass of attempt 2.
+   and acts like a second pass of attempt 2. The frame-scoped `deepLocator`
+   fallback applies here too; since `DeepLocatorDelegate` has no
+   `ignoreSelectors` equivalent, the exclusion is applied by filtering
+   resolved candidates against `triedSelectors` before picking the top one.
 4. **Anthropic SDK rephrase** — final escape hatch. We call Claude directly
    with the original step, the failure reasons from attempts 1–3, the selectors
    already tried, and the first ~12 visible interactive elements from
