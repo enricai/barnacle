@@ -6,6 +6,7 @@ import {
   type FakeDeepLocatorFrame,
   makeFakeDeepLocator,
   registerDeepLocatorHop,
+  registerDeepLocatorHopElements,
 } from "@/scraper/deep-locator-fake";
 
 describe("deep-locator-fake", () => {
@@ -56,6 +57,41 @@ describe("deep-locator-fake", () => {
     await expect(second.count()).resolves.toBe(1);
     await first.click();
     expect(hop.clicks).toBe(1);
+  });
+
+  it("registerDeepLocatorHopElements models N indexed candidates: count() is N, and nth(i).textContent() resolves in registration order", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    registerDeepLocatorHopElements(frame, "iframe#talemetry_apply_iframe >> *", [
+      "container",
+      "Upload a Resume/CV",
+      "Manual Application",
+    ]);
+    const deepLocator = makeFakeDeepLocator(frame);
+
+    await expect(deepLocator("iframe#talemetry_apply_iframe >> *").count()).resolves.toBe(3);
+    await expect(
+      deepLocator("iframe#talemetry_apply_iframe >> *").nth(0).textContent()
+    ).resolves.toBe("container");
+    await expect(
+      deepLocator("iframe#talemetry_apply_iframe >> *").nth(1).textContent()
+    ).resolves.toBe("Upload a Resume/CV");
+    await expect(
+      deepLocator("iframe#talemetry_apply_iframe >> *").nth(2).textContent()
+    ).resolves.toBe("Manual Application");
+  });
+
+  it("nth(i).click() records the click against element i specifically, not the hop as a whole", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    const hop = registerDeepLocatorHopElements(frame, "iframe#talemetry_apply_iframe >> *", [
+      "container",
+      "Upload a Resume/CV",
+      "Manual Application",
+    ]);
+    const deepLocator = makeFakeDeepLocator(frame);
+
+    await deepLocator("iframe#talemetry_apply_iframe >> *").nth(2).click();
+
+    expect(hop.elements.map((element) => element.clicks)).toEqual([0, 0, 1]);
   });
 
   it("click() throws for an unregistered hop, matching a real deepLocator finding no element", async () => {
