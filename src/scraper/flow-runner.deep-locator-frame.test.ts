@@ -129,7 +129,7 @@ describe("flow-runner/runHealingFlow — OOPIF cascade regression (observe-blind
     resetBillingErrorFlagForTests();
   });
 
-  it("resolves and clicks the frame-scoped step via deepLocator when observe() finds nothing, and records an xpath=-shaped selector", async () => {
+  it("resolves and clicks the frame-scoped step via deepLocator when observe() finds nothing, and records a deeplocator=-shaped selector", async () => {
     const urls = { current: "https://apply.acme.example/jobs/1/apply" };
     const frame = new Map();
     const hopSelector = `${FRAME_SELECTOR} >> *`;
@@ -139,7 +139,7 @@ describe("flow-runner/runHealingFlow — OOPIF cascade regression (observe-blind
     // their hop scope via `page.deepLocator(hopSelector)` then chain
     // `.nth(index)` — capturing both the outer selector `deepLocator()` was
     // called with and the `index` that reached `.click()` reconstructs
-    // exactly the `xpath=<hop> >> nth=<i>` shape `candidateSelector()`
+    // exactly the `deeplocator=<hop> >> nth=<i>` shape `candidateSelector()`
     // synthesizes for the resolvedAction (pinned independently at the
     // resolver level in deep-locator-candidates.test.ts), without needing
     // flow-runner to leak its internal `AttemptRecord`. Also wraps `click()`
@@ -194,12 +194,12 @@ describe("flow-runner/runHealingFlow — OOPIF cascade regression (observe-blind
     expect(hop?.clicks).toBe(1);
     expect(deepLocatorSelectors).toContain(hopSelector);
     expect(clickedIndexes).toEqual([0]);
-    // The recorded resolvedAction selector is `xpath=${hopSelector} >>
+    // The recorded resolvedAction selector is `deeplocator=${hopSelector} >>
     // nth=${index}` — asserting the click landed on the hop scope at index 0
-    // proves the action synthesized for verification is this xpath=-shaped,
+    // proves the action synthesized for verification is this deeplocator=-shaped,
     // hop-composed selector rather than an observe()-style CSS/a11y selector.
-    const recordedSelector = `xpath=${hopSelector} >> nth=${clickedIndexes[0]}`;
-    expect(recordedSelector).toBe("xpath=iframe#talemetry_apply_iframe >> * >> nth=0");
+    const recordedSelector = `deeplocator=${hopSelector} >> nth=${clickedIndexes[0]}`;
+    expect(recordedSelector).toBe("deeplocator=iframe#talemetry_apply_iframe >> * >> nth=0");
   });
 
   it("control: a main-frame target with observe()=[] still yields the pre-existing absent/skip behavior and never calls deepLocator", async () => {

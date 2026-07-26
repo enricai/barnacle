@@ -167,7 +167,7 @@ describe("flow-runner/executeStepWithHealing — frame-scoped deepLocator attemp
     resetBillingErrorFlagForTests();
   });
 
-  it("clicks the deepLocator candidate and synthesizes an xpath=-shaped resolvedAction that verifies via urlChanged", async () => {
+  it("clicks the deepLocator candidate and synthesizes a deeplocator=-shaped resolvedAction that verifies via urlChanged", async () => {
     const urls = { current: "https://apply.acme.example/jobs/1/apply" };
     const frame = new Map();
     const hopSelector = `${FRAME_SELECTOR} >> *`;
