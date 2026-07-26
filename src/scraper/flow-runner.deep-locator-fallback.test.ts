@@ -1,7 +1,9 @@
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import * as deepLocatorCandidatesModule from "@/scraper/deep-locator-candidates";
 import {
+  type FakeDeepLocatorFrame,
   makeFakeDeepLocator,
   registerDeepLocatorHop,
   registerDeepLocatorHopElements,
@@ -98,6 +100,39 @@ describe("flow-runner/probeStepBeforeAttempts — frame-scoped deepLocator fallb
     });
 
     expect(result).toBe("present");
+  });
+
+  it("probes with no instruction argument, unlike the act/rephrase deepLocator call sites (deep-locator-candidates.ts:130-132: omitting instruction skips ranking, which is correct for a reachability-only check)", async () => {
+    guardedObserve.mockResolvedValue([]);
+    const frame: FakeDeepLocatorFrame = new Map();
+    // Text unrelated to the step instruction: ranking never filters
+    // candidates (only reorders — deep-locator-candidates.ts:161), so this
+    // alone can't distinguish "instruction omitted" from "instruction
+    // forwarded" via the `present`/`absent` outcome. The instruction-arg
+    // assertion below is what actually pins the contract; this proves the
+    // outcome is unaffected by text relevance either way.
+    registerDeepLocatorHopElements(frame, `${FRAME_SELECTOR} >> *`, [
+      "Upload a Resume/CV",
+      "Cancel",
+    ]);
+    const page = { deepLocator: makeFakeDeepLocator(frame) } as unknown as Page;
+    const resolveDeepLocatorCandidatesSpy = vi.spyOn(
+      deepLocatorCandidatesModule,
+      "resolveDeepLocatorCandidates"
+    );
+
+    const result = await probeStepBeforeAttempts({
+      stagehand: makeStagehand(),
+      page,
+      step: "Click Manual Application",
+      stepIndex: 0,
+      logger: testLogger,
+      frameTarget: makeChildFrameTarget(),
+    });
+
+    expect(result).toBe("present");
+    expect(resolveDeepLocatorCandidatesSpy).toHaveBeenCalledWith(page, FRAME_SELECTOR, "*");
+    resolveDeepLocatorCandidatesSpy.mockRestore();
   });
 
   it("returns absent when observe AND deepLocator both find nothing for a child frame", async () => {
