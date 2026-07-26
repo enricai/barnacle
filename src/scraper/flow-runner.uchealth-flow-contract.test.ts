@@ -74,4 +74,52 @@ describe("UCHealth recon flow artifact — structural contract", () => {
     if (!manualApplicationStep || typeof manualApplicationStep === "string") return;
     expect(manualApplicationStep.optional).toBe(false);
   });
+
+  it("flags the resume step as an upload and keeps the final Submit step non-optional", () => {
+    const result = RECON_FLOW_FILE_SCHEMA.safeParse(UCHEALTH_FLOW);
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    if (Array.isArray(result.data)) return;
+
+    const uploadStep = result.data.steps.find(
+      (s) => typeof s !== "string" && /upload resume/i.test(s.step)
+    );
+    const submitStep = result.data.steps.find(
+      (s) => typeof s !== "string" && /final submit/i.test(s.step)
+    );
+
+    expect(uploadStep).toBeDefined();
+    if (!uploadStep || typeof uploadStep === "string") return;
+    expect(uploadStep.upload).toBe(true);
+
+    expect(submitStep).toBeDefined();
+    if (!submitStep || typeof submitStep === "string") return;
+    expect(submitStep.optional).toBe(false);
+  });
+
+  it("runs the resume upload and final Submit steps after Manual Application", () => {
+    const result = RECON_FLOW_FILE_SCHEMA.safeParse(UCHEALTH_FLOW);
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    if (Array.isArray(result.data)) return;
+
+    const steps = result.data.steps;
+    const manualApplicationIndex = steps.findIndex(
+      (s) => typeof s !== "string" && /manual application/i.test(s.step)
+    );
+    const uploadIndex = steps.findIndex(
+      (s) => typeof s !== "string" && /upload resume/i.test(s.step)
+    );
+    const submitIndex = steps.findIndex(
+      (s) => typeof s !== "string" && /final submit/i.test(s.step)
+    );
+
+    expect(manualApplicationIndex).toBeGreaterThanOrEqual(0);
+    expect(uploadIndex).toBeGreaterThanOrEqual(0);
+    expect(submitIndex).toBeGreaterThanOrEqual(0);
+    expect(manualApplicationIndex).toBeLessThan(uploadIndex);
+    expect(manualApplicationIndex).toBeLessThan(submitIndex);
+  });
 });
