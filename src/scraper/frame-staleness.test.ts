@@ -36,8 +36,8 @@ function makeMutableFakePage(options: {
     evaluate: async (expr: unknown) => {
       const match = /document\.querySelector\((.+?)\)/.exec(String(expr));
       const selector = match?.[1] ? (JSON.parse(match[1]) as string) : null;
-      if (!selector || !Object.hasOwn(iframes, selector)) return null;
-      return iframes[selector] ?? null;
+      if (!selector || !Object.hasOwn(iframes, selector)) return { matched: false, src: null };
+      return { matched: true, src: iframes[selector] ?? null };
     },
     locator: (selector: string) => ({ scope: "main" as const, selector }),
     frames: () => frames,
