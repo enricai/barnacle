@@ -11,6 +11,7 @@
 
 import type { Page } from "@browserbasehq/stagehand";
 
+import { toErrorMessage } from "@/lib/errors";
 import { getLogger } from "@/lib/logging";
 import { buildHopSelector } from "@/scraper/frame-target";
 
@@ -62,7 +63,7 @@ export async function resolveDeepLocatorCandidates(
   const delegate = page.deepLocator(hopSelector);
 
   const count = await delegate.count().catch((err: unknown) => {
-    logger.warn(`deepLocator count() threw for ${hopSelector}: ${String(err)}`);
+    logger.warn(`deepLocator count() threw for ${hopSelector}: ${toErrorMessage(err)}`);
     return 0;
   });
   if (count === 0) return [];
