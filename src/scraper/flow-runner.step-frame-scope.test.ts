@@ -3,6 +3,7 @@ import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { LlmCallInput } from "@/lib/telemetry/call-capture";
+import { makeFakeDeepLocator } from "@/scraper/deep-locator-fake";
 import type { HealingFlowStep } from "@/scraper/flow-runner";
 import { resetBillingErrorFlagForTests, runHealingFlow } from "@/scraper/flow-runner";
 import type { FrameTarget } from "@/scraper/frame-target";
@@ -195,7 +196,10 @@ function makeChildFrameTarget(
  * evaluate/locator surface the fallback `mainFrameTarget(page)` shim would
  * touch if (and only if) the fix under test regressed. `getUrl` backs
  * `page.url()` with a mutable value so `guardedAct` can flip it for the
- * `urlChanged` verification signal.
+ * `urlChanged` verification signal. `deepLocator` resolves against an empty
+ * registry (no hops registered) so it reports 0 candidates by default,
+ * matching this suite's fixtures, which assert on today's pre-deepLocator
+ * "absent"/no-candidates behavior rather than the new fallback path.
  */
 function fakeFlowPage(getUrl: () => string): Page {
   const session = { on: () => {}, off: () => {} };
@@ -203,6 +207,7 @@ function fakeFlowPage(getUrl: () => string): Page {
     evaluate: vi.fn().mockResolvedValue(null),
     url: getUrl,
     title: vi.fn().mockResolvedValue("Apply"),
+    deepLocator: makeFakeDeepLocator(new Map()),
     locator: vi.fn().mockReturnValue({
       first: () => ({
         isChecked: vi.fn().mockResolvedValue(false),
