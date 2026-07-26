@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { makeFakeDeepLocator, registerDeepLocatorHop } from "@/scraper/deep-locator-fake";
+import {
+  type FakeDeepLocatorFrame,
+  makeFakeDeepLocator,
+  registerDeepLocatorHop,
+} from "@/scraper/deep-locator-fake";
 import { runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
@@ -564,7 +568,7 @@ function makeFakeStagehandObserveBlind() {
 function makeFakeTopPageWithDeepLocator(
   topUrl: { current: string },
   childUrls: { current: string },
-  deepLocatorFrame: Map<string, { clicks: number; filledWith: string | null; text: string }>
+  deepLocatorFrame: FakeDeepLocatorFrame
 ) {
   const base = makeFakeTopPage(topUrl, childUrls);
   const fakeDeepLocator = makeFakeDeepLocator(deepLocatorFrame);

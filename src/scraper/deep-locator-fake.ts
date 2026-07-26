@@ -1,16 +1,50 @@
 import type { DeepLocatorDelegate } from "@browserbasehq/stagehand/lib/v3/understudy/deepLocator.js";
 
 /**
+ * One candidate element registered at a hop selector. `registerDeepLocatorHop`
+ * seeds a single-element hop by constructing one of these; multi-candidate
+ * hops (`registerDeepLocatorHopElements`) hold an ordered array of them so
+ * `nth(i)` can resolve to a distinct element's own click/fill/text state
+ * instead of collapsing every index onto shared scalars.
+ */
+export interface FakeDeepLocatorElement {
+  clicks: number;
+  filledWith: string | null;
+  text: string;
+}
+
+/**
  * Shared, in-memory model of a `page.deepLocator()`-reachable hop: the
  * downstream fixtures register one entry per hop selector they need
  * `count()`/`click()` to resolve, and read `clicks`/`filledWith` back to
  * assert the fix actually routed through `deepLocator` rather than
- * `observe`/`act`.
+ * `observe`/`act`. `clicks`/`filledWith`/`text` mirror element 0 (getters
+ * delegating to `elements[0]`) so every existing single-element consumer —
+ * which only ever registers and clicks index 0 — keeps reading/observing the
+ * same fields it always has.
  */
 export interface FakeDeepLocatorHop {
-  clicks: number;
-  filledWith: string | null;
-  text: string;
+  readonly elements: FakeDeepLocatorElement[];
+  readonly clicks: number;
+  readonly filledWith: string | null;
+  readonly text: string;
+}
+
+function buildHop(elements: FakeDeepLocatorElement[]): FakeDeepLocatorHop {
+  const first = elements[0];
+  if (!first) throw new Error("deep-locator-fake: a hop needs at least one element");
+  return {
+    elements,
+    get clicks() {
+      return first.clicks;
+    },
+    get filledWith() {
+      return first.filledWith;
+    },
+    get text() {
+      return first.text;
+    },
+  };
 }
 
 /**
@@ -31,7 +65,25 @@ export function registerDeepLocatorHop(
   selector: string,
   text = ""
 ): FakeDeepLocatorHop {
-  const hop: FakeDeepLocatorHop = { clicks: 0, filledWith: null, text };
+  return registerDeepLocatorHopElements(frame, selector, [text]);
+}
+
+/**
+ * Registers a hop selector with N ordered candidate elements so
+ * `deepLocator(selector).count()` resolves to `texts.length` and
+ * `nth(i).textContent()`/`nth(i).click()`/`nth(i).fill()` act on element `i`
+ * specifically — the shape a real cross-origin OOPIF hop resolves to when
+ * more than one element matches the inner selector (e.g. `"*"` matching
+ * every node in the iframe), which the single-element
+ * {@link registerDeepLocatorHop} path can't model.
+ */
+export function registerDeepLocatorHopElements(
+  frame: FakeDeepLocatorFrame,
+  selector: string,
+  texts: string[]
+): FakeDeepLocatorHop {
+  const elements = texts.map((text) => ({ clicks: 0, filledWith: null, text }));
+  const hop = buildHop(elements);
   frame.set(selector, hop);
   return hop;
 }
@@ -66,32 +118,38 @@ export interface FakeDeepLocatorDelegate {
 }
 
 /**
- * Builds a `deepLocator()`-shaped delegate resolving against `frame`. Each
- * call re-reads `frame.get(selector)` (never caches), matching the real
- * delegate's re-resolve-on-every-call contract — a hop that attaches after
- * construction (the mid-flow-iframe scenario) still resolves once
- * registered.
+ * Builds a `deepLocator()`-shaped delegate resolving against `frame`, scoped
+ * to a single `elementIndex` (defaulting to 0, matching the real delegate's
+ * un-`nth()`-ed constructor default). Each call re-reads `frame.get(selector)`
+ * (never caches), matching the real delegate's re-resolve-on-every-call
+ * contract — a hop that attaches after construction (the mid-flow-iframe
+ * scenario) still resolves once registered. `count()` reports the hop's full
+ * `elements.length` regardless of `elementIndex`, mirroring the real
+ * delegate: `nth(i).count()` still reports the total match count, not `1`.
  */
-function buildFakeDelegate(frame: FakeDeepLocatorFrame, selector: string): FakeDeepLocatorDelegate {
+function buildFakeDelegate(
+  frame: FakeDeepLocatorFrame,
+  selector: string,
+  elementIndex = 0
+): FakeDeepLocatorDelegate {
+  const requireElement = (): FakeDeepLocatorElement => {
+    const hop = frame.get(selector);
+    const element = hop?.elements[elementIndex];
+    if (!element) throw new Error(`deepLocator: no element matches "${selector}"`);
+    return element;
+  };
+
   return {
-    count: async () => (frame.has(selector) ? 1 : 0),
+    count: async () => frame.get(selector)?.elements.length ?? 0,
     click: async () => {
-      const hop = frame.get(selector);
-      if (!hop) throw new Error(`deepLocator: no element matches "${selector}"`);
-      hop.clicks += 1;
+      requireElement().clicks += 1;
     },
     fill: async (value: string) => {
-      const hop = frame.get(selector);
-      if (!hop) throw new Error(`deepLocator: no element matches "${selector}"`);
-      hop.filledWith = value;
+      requireElement().filledWith = value;
     },
-    textContent: async () => {
-      const hop = frame.get(selector);
-      if (!hop) throw new Error(`deepLocator: no element matches "${selector}"`);
-      return hop.text;
-    },
-    first: () => buildFakeDelegate(frame, selector),
-    nth: () => buildFakeDelegate(frame, selector),
+    textContent: async () => requireElement().text,
+    first: () => buildFakeDelegate(frame, selector, 0),
+    nth: (index: number) => buildFakeDelegate(frame, selector, index),
   };
 }
 
