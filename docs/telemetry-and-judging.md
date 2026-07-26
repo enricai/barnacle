@@ -242,9 +242,19 @@ for jobId X on date Y, and did it succeed?" Each line carries:
 
 Kept on its own sink (not mixed into `calls.ndjson`) so the judge and
 self-heal readers — which Zod-parse every line of `calls.ndjson` as an
-`LlmCallSample` — stay untouched. Downstream consumption (querying by
-jobId, aggregating by site, replaying a payload) is an ETL concern; the
-file is the durable source-of-truth those pipelines read from.
+`LlmCallSample` — stay untouched.
+
+Two record kinds now flow through this sink, distinguished by `kind`
+(`reconciliationRecordSchema`, `src/lib/telemetry/reconciliation-record.ts`):
+a `"submit"` record — the envelope above plus named `vivclid`/`jobReference`
+join keys, defaulting to `"submit"` so pre-existing unkinded lines still
+parse — and a `"beacon"` record, appended later and independently once the
+conversion pixel fires. `readReconciliationRows`
+(`src/lib/telemetry/submission-reader.ts`) reads the sink and left-joins
+beacon records onto their submit record by `requestId`, producing one row
+per run with a `beaconStatus` of `"fired"`, `"failed"`, or `"not_fired"` —
+this is the in-repo read path for attribution to join runs against the
+Appcast CPA report without re-parsing raw NDJSON.
 
 ## File map
 
@@ -252,6 +262,8 @@ file is the durable source-of-truth those pipelines read from.
 |---------|------|
 | NDJSON capture sink + `LlmCallSample` type | `src/lib/telemetry/call-capture.ts` |
 | Submission-envelope sink + `SubmissionEnvelopeSample` type | `src/lib/telemetry/submission-capture.ts` |
+| Reconciliation record schemas (`submit` + `beacon` kinds) | `src/lib/telemetry/reconciliation-record.ts` |
+| Reconciliation reader (`readReconciliationRows`) | `src/lib/telemetry/submission-reader.ts` |
 | Call-type string constants | `src/lib/telemetry/call-types.ts` |
 | `llmCallSampleSchema`, `judgeVerdictSchema` | `src/api/schemas/telemetry.ts` |
 | Judge batch script (`pnpm judge:llm`) | `src/scripts/judge-llm-batch.ts` |
