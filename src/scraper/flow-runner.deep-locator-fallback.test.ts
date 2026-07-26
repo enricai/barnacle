@@ -1,7 +1,11 @@
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { makeFakeDeepLocator, registerDeepLocatorHop } from "@/scraper/deep-locator-fake";
+import {
+  makeFakeDeepLocator,
+  registerDeepLocatorHop,
+  registerDeepLocatorHopElements,
+} from "@/scraper/deep-locator-fake";
 import {
   probeStepBeforeAttempts,
   resetBillingErrorFlagForTests,
@@ -163,7 +167,7 @@ describe("flow-runner/executeStepWithHealing — frame-scoped deepLocator attemp
     resetBillingErrorFlagForTests();
   });
 
-  it("clicks the deepLocator candidate and synthesizes an xpath=-shaped resolvedAction that verifies via urlChanged", async () => {
+  it("clicks the deepLocator candidate and synthesizes a deeplocator=-shaped resolvedAction that verifies via urlChanged", async () => {
     const urls = { current: "https://apply.acme.example/jobs/1/apply" };
     const frame = new Map();
     const hopSelector = `${FRAME_SELECTOR} >> *`;
@@ -245,6 +249,105 @@ describe("flow-runner/executeStepWithHealing — frame-scoped deepLocator attemp
     expect(result.lastStepIndex).toBe(0);
     const hop = frame.get(hopSelector);
     expect(hop?.clicks).toBeGreaterThan(0);
+  });
+
+  it("clicks the instruction-relevant candidate, not index 0, when the child frame holds decoys plus the intended button", async () => {
+    const urls = { current: "https://apply.acme.example/jobs/1/apply" };
+    const frame = new Map();
+    const hopSelector = `${FRAME_SELECTOR} >> *`;
+    // Index 0 is an empty-text structural container (the "*" hop's realistic
+    // DOM-order top pick); "Manual Application" — the step's actual target —
+    // resolves last. Pre-bugfix-003, deepLocatorCandidates[0] would click the
+    // container; with instruction threaded through, ranking must put "Manual
+    // Application" first regardless of DOM position.
+    registerDeepLocatorHopElements(frame, hopSelector, [
+      "",
+      "Upload a Resume/CV",
+      "Manual Application",
+    ]);
+    const deepLocator = makeFakeDeepLocator(frame);
+    const wrappedDeepLocator = (selector: string) => {
+      const delegate = deepLocator(selector);
+      return {
+        ...delegate,
+        click: async () => {
+          await delegate.click();
+          urls.current = "https://apply.acme.example/jobs/1/apply/manual";
+        },
+        nth: (index: number) => {
+          const inner = deepLocator(selector);
+          const nthDelegate = inner.nth(index);
+          return {
+            ...nthDelegate,
+            click: async () => {
+              await nthDelegate.click();
+              urls.current = "https://apply.acme.example/jobs/1/apply/manual";
+            },
+          };
+        },
+      };
+    };
+    const page = {
+      evaluate: vi.fn().mockResolvedValue(null),
+      deepLocator: wrappedDeepLocator,
+      url: () => urls.current,
+      title: vi.fn().mockResolvedValue("Apply"),
+      locator: vi.fn().mockReturnValue({
+        first: () => ({
+          isChecked: vi.fn().mockResolvedValue(false),
+          inputValue: vi.fn().mockResolvedValue(""),
+        }),
+      }),
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
+      getSessionForFrame: () => ({ on: () => {}, off: () => {} }),
+      mainFrameId: () => "main",
+      sendCDP: vi.fn().mockResolvedValue({ body: "{}", base64Encoded: false }),
+    } as unknown as Page;
+    resolveFrameTarget.mockResolvedValue({
+      frame: {} as FrameTarget["frame"],
+      frameSelector: FRAME_SELECTOR,
+      evaluate: vi.fn().mockResolvedValue({ html: 0, text: "0:" }),
+      locator: vi.fn().mockReturnValue({
+        first: () => ({
+          isChecked: vi.fn().mockResolvedValue(false),
+          inputValue: vi.fn().mockResolvedValue(""),
+        }),
+      }),
+      url: () => Promise.resolve(urls.current),
+      title: () => Promise.resolve("Apply"),
+    } satisfies FrameTarget);
+
+    guardedObserve.mockResolvedValue([]);
+    guardedAct.mockResolvedValue({
+      success: false,
+      message: "no candidates",
+      actionDescription: "",
+      actions: [],
+    });
+
+    const result = await runHealingFlow({
+      stagehand: makeStagehand(),
+      page,
+      steps: [
+        {
+          instruction:
+            "Click 'Manual Application' to skip the resume-upload flow. Do NOT click 'Upload a Resume/CV'.",
+          optional: false,
+          upload: false,
+          submitStep: false,
+        },
+      ],
+      logger: testLogger,
+      anthropic: null,
+      resumeFixture: null,
+      frameSelector: FRAME_SELECTOR,
+    });
+
+    expect(result.lastStepIndex).toBe(0);
+    const hop = frame.get(hopSelector);
+    expect(hop?.elements[0]?.clicks).toBe(0);
+    expect(hop?.elements[1]?.clicks).toBe(0);
+    expect(hop?.elements[2]?.clicks).toBeGreaterThan(0);
   });
 
   it("excludes an already-tried deepLocator selector on attempt 4 instead of re-picking it", async () => {
