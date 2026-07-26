@@ -17,8 +17,8 @@ import { config } from "@/config";
 import { getLogger } from "@/lib/logging";
 import {
   type BeaconEvent,
-  reconciliationRecordSchema,
   type ReconciliationRecord,
+  reconciliationRecordSchema,
   type SubmitRecord,
 } from "@/lib/telemetry/reconciliation-record";
 
@@ -70,13 +70,17 @@ export function parseReconciliationLines(ndjsonContent: string): ReconciliationR
 
     const parsed = tryParseJson(line);
     if (parsed === undefined) {
-      logger.warn(`skipping malformed submissions ndjson line (invalid JSON): ${line.slice(0, 200)}`);
+      logger.warn(
+        `skipping malformed submissions ndjson line (invalid JSON): ${line.slice(0, 200)}`
+      );
       continue;
     }
 
     const result = reconciliationRecordSchema.safeParse(parsed);
     if (!result.success) {
-      logger.warn(`skipping malformed submissions ndjson line (schema mismatch): ${line.slice(0, 200)}`);
+      logger.warn(
+        `skipping malformed submissions ndjson line (schema mismatch): ${line.slice(0, 200)}`
+      );
       continue;
     }
 

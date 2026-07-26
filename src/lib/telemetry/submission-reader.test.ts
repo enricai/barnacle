@@ -155,7 +155,9 @@ describe("foldReconciliationRecords", () => {
   });
 
   it("does not synthesize a phantom row for an orphan beacon with no matching submit", () => {
-    const records = parseReconciliationLines(ndjson(makeBeaconLine({ requestId: "req-no-submit" })));
+    const records = parseReconciliationLines(
+      ndjson(makeBeaconLine({ requestId: "req-no-submit" }))
+    );
     const rows = foldReconciliationRecords(records);
     expect(rows).toHaveLength(0);
   });
