@@ -9,6 +9,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { isWithinInterval, parseISO } from "date-fns";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/config", () => ({
@@ -32,6 +33,7 @@ vi.mock("@/lib/logging", () => ({
 import {
   foldReconciliationRecords,
   parseReconciliationLines,
+  type ReconciliationRow,
   readReconciliationRows,
 } from "@/lib/telemetry/submission-reader";
 
@@ -230,5 +232,99 @@ describe("readReconciliationRows", () => {
     const rows = await readReconciliationRows({ sinkPath });
     expect(rows).toHaveLength(1);
     expect(rows[0]?.requestId).toBe("req-abc-123");
+  });
+});
+
+describe("querying reconciliation rows by join key, time window, and page bound", () => {
+  let tmpDir: string;
+  let sinkPath: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "submission-reader-query-test-"));
+    sinkPath = path.join(tmpDir, "submissions.ndjson");
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    vi.clearAllMocks();
+  });
+
+  async function readFixtureRows(): Promise<ReconciliationRow[]> {
+    const lines = [
+      makeSubmitLine({
+        requestId: "req-a",
+        vivclid: "v-100",
+        siteId: "ats-a",
+        jobReference: "111_jid-1",
+        ts: "2026-07-20T09:00:00.000Z",
+      }),
+      makeSubmitLine({
+        requestId: "req-b",
+        vivclid: "v-200",
+        siteId: "ats-b",
+        jobReference: "222_jid-2",
+        ts: "2026-07-20T10:00:00.000Z",
+      }),
+      makeSubmitLine({
+        requestId: "req-c",
+        vivclid: "v-300",
+        siteId: "ats-a",
+        jobReference: "333_jid-3",
+        ts: "2026-07-20T11:00:00.000Z",
+      }),
+      makeSubmitLine({
+        requestId: "req-d",
+        vivclid: "v-400",
+        siteId: "ats-b",
+        jobReference: "444_jid-4",
+        ts: "2026-07-20T12:00:00.000Z",
+      }),
+      makeSubmitLine({
+        requestId: "req-e",
+        vivclid: "v-500",
+        siteId: "ats-c",
+        jobReference: "555_jid-5",
+        ts: "2026-07-20T13:00:00.000Z",
+      }),
+    ];
+    fs.writeFileSync(sinkPath, ndjson(...lines), "utf8");
+    return readReconciliationRows({ sinkPath });
+  }
+
+  it("resolves an exact-match vivclid filter to its one row", async () => {
+    const rows = await readFixtureRows();
+    const matches = rows.filter((row) => row.vivclid === "v-300");
+    expect(matches).toHaveLength(1);
+    expect(matches[0]?.requestId).toBe("req-c");
+  });
+
+  it("resolves an exact-match siteId filter to every row for that cohort", async () => {
+    const rows = await readFixtureRows();
+    const matches = rows.filter((row) => row.siteId === "ats-a");
+    expect(matches.map((row) => row.requestId).sort()).toEqual(["req-a", "req-c"]);
+  });
+
+  it("resolves an exact-match jobReference filter to its one row", async () => {
+    const rows = await readFixtureRows();
+    const matches = rows.filter((row) => row.jobReference === "444_jid-4");
+    expect(matches).toHaveLength(1);
+    expect(matches[0]?.requestId).toBe("req-d");
+  });
+
+  it("includes both boundary rows in a ts time-window filter", async () => {
+    const rows = await readFixtureRows();
+    const window = {
+      start: parseISO("2026-07-20T10:00:00.000Z"),
+      end: parseISO("2026-07-20T12:00:00.000Z"),
+    };
+    const matches = rows.filter((row) => isWithinInterval(parseISO(row.ts), window));
+    expect(matches.map((row) => row.requestId).sort()).toEqual(["req-b", "req-c", "req-d"]);
+  });
+
+  it("caps the rows returned to a limit/offset page", async () => {
+    const rows = await readFixtureRows();
+    const sortedByTs = [...rows].sort((a, b) => a.ts.localeCompare(b.ts));
+    const page = sortedByTs.slice(1, 1 + 2);
+    expect(page.map((row) => row.requestId)).toEqual(["req-b", "req-c"]);
   });
 });
