@@ -183,10 +183,12 @@ async function resolveScanFrameTarget(
 ): Promise<FrameTarget | null> {
   if (timeoutOptions.frameTarget) return timeoutOptions.frameTarget;
   if (!frameSelector) return null;
-  const resolved = await resolveFrameTarget(page, frameSelector, { timeoutMs: 0 }).catch(
-    () => null
-  );
-  return resolved?.frame ? resolved : null;
+  try {
+    const resolved = await resolveFrameTarget(page, frameSelector, { timeoutMs: 0 });
+    return resolved?.frame ? resolved : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Narrows a batched-scan evaluate result to {@link FrameCandidateScanResult}'s shape, guarding against a non-conforming payload (Issue #2's degrade-to-legacy-loop contract). */
@@ -224,15 +226,17 @@ async function scanFrameCandidatesBatched(
   const frameTarget = await resolveScanFrameTarget(page, frameSelector, timeoutOptions);
   if (!frameTarget) return null;
 
-  const scanResults = await frameTarget
-    .evaluate<FrameCandidateScanResult[]>(buildScanFrameCandidatesExpr(innerSelector))
-    .catch((err: unknown) => {
-      logger.warn(
-        `deepLocator batched scan for ${hopSelector} failed, degrading to per-candidate enumeration: ${toErrorMessage(err)}`
-      );
-      return null;
-    });
-  if (scanResults === null) return null;
+  let scanResults: unknown;
+  try {
+    scanResults = await frameTarget.evaluate<FrameCandidateScanResult[]>(
+      buildScanFrameCandidatesExpr(innerSelector)
+    );
+  } catch (err) {
+    logger.warn(
+      `deepLocator batched scan for ${hopSelector} failed, degrading to per-candidate enumeration: ${toErrorMessage(err)}`
+    );
+    return null;
+  }
   if (!Array.isArray(scanResults) || !scanResults.every(isFrameCandidateScanResult)) {
     logger.warn(
       `deepLocator batched scan for ${hopSelector} returned a non-conforming payload, degrading to per-candidate enumeration`
