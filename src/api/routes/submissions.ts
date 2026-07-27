@@ -6,8 +6,9 @@ import type {
   SubmissionsQuerystring,
 } from "@/api/schemas/submissions";
 import { submissionsQuerystringSchema, submissionsResponseSchema } from "@/api/schemas/submissions";
+import { readDurableReconciliationRows } from "@/lib/telemetry/reconciliation-source";
 import { queryReconciliationRows } from "@/lib/telemetry/submission-query";
-import { type ReconciliationRow, readReconciliationRows } from "@/lib/telemetry/submission-reader";
+import type { ReconciliationRow } from "@/lib/telemetry/submission-reader";
 
 /**
  * Injectable options for `submissionsRoutes`. The sink path is passed in at
@@ -60,7 +61,11 @@ export async function submissionsRoutes(
     },
     async (request) => {
       const { limit, offset, ...filter } = request.query;
-      const rows = await readReconciliationRows({ sinkPath });
+      const rows = await readDurableReconciliationRows({
+        sinkPath,
+        from: filter.from,
+        to: filter.to,
+      });
       const matched = queryReconciliationRows(rows, filter);
       const paged = matched.slice(offset, offset + limit);
 
