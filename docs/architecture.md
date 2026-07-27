@@ -445,15 +445,19 @@ whether Appcast's tracking pixel actually recorded the click that Appcast
 pays on; that is a second, independent failure surface, resolved later, by a
 separate fire-and-forget navigation (`fireTrackingClick`,
 `src/lib/tracking-click.ts`) that runs *after* `dispatch()` has already
-returned and already appended its submit line. Recording `beaconStatus` as a
-mutation of that line would mean rewriting an already-flushed NDJSON row —
-breaking the append-only, crash-safe write model this section just argued
-for. Instead the beacon outcome is its own later `kind:"beacon"` line, and a
-reader folds it onto the matching submit line by `requestId`
-(`submission-reader.ts`) — so "submitted but the beacon never fired" becomes
-a directly queryable value (`beaconStatus: "not_fired"`, synthesized by the
-reader when no beacon line ever arrives) rather than something inferred from
-the absence of a Datadog counter increment.
+returned and already appended its submit line — except when there is no
+`TrackingUrl` to navigate to at all, in which case `dispatch()` writes a
+`beaconStatus: "skipped"` beacon line itself, synchronously, before
+returning, since there is nothing to fire-and-forget. Recording `beaconStatus`
+as a mutation of the submit line would mean rewriting an already-flushed
+NDJSON row — breaking the append-only, crash-safe write model this section
+just argued for. Instead the beacon outcome is its own later (or, for
+`"skipped"`, immediate) `kind:"beacon"` line, and a reader folds it onto the
+matching submit line by `requestId` (`submission-reader.ts`) — so "submitted
+but the beacon never fired" becomes a directly queryable value
+(`beaconStatus: "not_fired"`, synthesized by the reader when no beacon line
+ever arrives, distinct from the sink-written `"skipped"`) rather than
+something inferred from the absence of a Datadog counter increment.
 
 **Why a read path belongs in-repo, not deferred to ETL.** Reconciliation is
 not a periodic batch job — it runs continuously as cohort dollars accrue
