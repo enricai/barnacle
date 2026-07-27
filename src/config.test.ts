@@ -30,6 +30,9 @@ describe("config/loadConfig", () => {
     expect(cfg.scraper.anthropicTimeoutMs).toBe(120_000);
     expect(cfg.scraper.connectTimeoutMs).toBe(120_000);
     expect(cfg.scraper.steelSessionTimeoutMs).toBe(3_600_000);
+    expect(cfg.scraper.frameReadyTimeoutMs).toBe(20_000);
+    expect(cfg.scraper.frameDocumentReadyTimeoutMs).toBe(5_000);
+    expect(cfg.scraper.frameEvaluateTimeoutMs).toBe(30_000);
     // Default trustProxy=true matches the most common deploy shape
     // (behind an ALB/nginx/Cloudflare); bare-metal runners must opt out.
     expect(cfg.trustProxy).toBe(true);
@@ -47,6 +50,16 @@ describe("config/loadConfig", () => {
     expect(cfg.scraper.poolSize).toBe(10);
     expect(cfg.rateLimit.max).toBe(500);
     expect(cfg.scraper.anthropicTimeoutMs).toBe(30000);
+  });
+
+  it("overrides frame timeout budgets via env", () => {
+    process.env.FRAME_READY_TIMEOUT_MS = "15000";
+    process.env.FRAME_DOCUMENT_READY_TIMEOUT_MS = "8000";
+    process.env.FRAME_EVALUATE_TIMEOUT_MS = "45000";
+    const cfg = loadConfig();
+    expect(cfg.scraper.frameReadyTimeoutMs).toBe(15000);
+    expect(cfg.scraper.frameDocumentReadyTimeoutMs).toBe(8000);
+    expect(cfg.scraper.frameEvaluateTimeoutMs).toBe(45000);
   });
 
   it("parses boolean env vars", () => {
