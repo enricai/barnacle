@@ -29,6 +29,7 @@ import { MetricsCollector } from "@/lib/dispatch-metrics";
 import { toErrorMessage } from "@/lib/errors";
 import { extendLogger, getLogger } from "@/lib/logging";
 import { captureBeaconEvent } from "@/lib/telemetry/beacon-capture";
+import { recordBeaconOutcome } from "@/lib/telemetry/beacon-outcome";
 import { captureSubmissionEnvelope } from "@/lib/telemetry/submission-capture";
 import { fireTrackingClick } from "@/lib/tracking-click";
 import { BUILTIN_SITE_PLUGINS } from "@/plugins/discover";
@@ -209,6 +210,20 @@ async function emitBeaconSafely(input: Parameters<typeof captureBeaconEvent>[0])
   } catch (err) {
     logger.warn(`beacon event emit failed: ${toErrorMessage(err)}`);
   }
+}
+
+/**
+ * Builds the `recordBeaconOutcome` closure bound into a plugin's context.
+ * Binds `requestId`/`siteId` at construction (both are in scope at either
+ * call site below) so a plugin only ever supplies its own outcome,
+ * joinKeys, trackingUrl, and durationMs — never core's request/plugin
+ * identity.
+ */
+function buildRecordBeaconOutcome(
+  requestId: string,
+  siteId: string
+): SitePluginContext["recordBeaconOutcome"] {
+  return (input) => recordBeaconOutcome({ ...input, requestId, siteId });
 }
 
 /**
@@ -408,6 +423,7 @@ export async function registerRoutes(
           config: cfg,
           requestId: request.id,
           metricsCollector: new MetricsCollector(),
+          recordBeaconOutcome: buildRecordBeaconOutcome(request.id, plugin.meta.siteId),
         };
         const result = await dispatch(plugin, request.body, context, { forceFallback });
         return successEnvelope({
@@ -517,6 +533,7 @@ function registerExtraRoutes(
           config: cfg,
           requestId: request.id,
           metricsCollector: new MetricsCollector(),
+          recordBeaconOutcome: buildRecordBeaconOutcome(request.id, plugin.meta.siteId),
         };
         const result = await route.handler(
           {
