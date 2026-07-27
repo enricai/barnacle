@@ -127,6 +127,33 @@ describe("recordBeaconOutcome", () => {
     expect(parsed.trackingUrl).toBeNull();
   });
 
+  it("derives an ISO ts the caller never supplied", async () => {
+    await recordBeaconOutcome(
+      { requestId: "req-6", siteId: "ats-c", beaconStatus: "fired", joinKeys: null },
+      { sinkPath }
+    );
+
+    const line = fs.readFileSync(sinkPath, "utf-8").trim();
+    const parsed = reconciliationRecordSchema.parse(JSON.parse(line));
+    if (parsed.kind !== "beacon") throw new Error("expected a beacon record");
+    expect(typeof parsed.ts).toBe("string");
+    expect(parsed.ts).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it("round-trips a joinKeys bag with nested objects and null values deep-equal", async () => {
+    const joinKeys = { foo: { nested: 1 }, bar: null };
+
+    await recordBeaconOutcome(
+      { requestId: "req-7", siteId: "ats-c", beaconStatus: "fired", joinKeys },
+      { sinkPath }
+    );
+
+    const line = fs.readFileSync(sinkPath, "utf-8").trim();
+    const parsed = reconciliationRecordSchema.parse(JSON.parse(line));
+    if (parsed.kind !== "beacon") throw new Error("expected a beacon record");
+    expect(parsed.joinKeys).toEqual(joinKeys);
+  });
+
   it("defaults an omitted trackingUrl/durationMs to null/0", async () => {
     await recordBeaconOutcome(
       { requestId: "req-5", siteId: "ats-c", beaconStatus: "fired", joinKeys: null },
@@ -167,5 +194,18 @@ describe("recordBeaconOutcome", () => {
     ).resolves.toBeUndefined();
 
     expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("boom-reject"));
+  });
+
+  it("resolves without throwing when the sink path is unwritable", async () => {
+    const badSinkPath = path.join(tmpDir, "not-a-dir\0invalid", "submissions.ndjson");
+
+    await expect(
+      recordBeaconOutcome(
+        { requestId: "req-9", siteId: "ats-c", beaconStatus: "fired", joinKeys: null },
+        { sinkPath: badSinkPath }
+      )
+    ).resolves.toBeUndefined();
+
+    expect(fs.existsSync(badSinkPath)).toBe(false);
   });
 });
