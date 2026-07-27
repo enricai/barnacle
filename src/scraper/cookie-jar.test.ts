@@ -1,5 +1,5 @@
 import type { Page } from "@browserbasehq/stagehand";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { captureCookieJarSnapshot } from "@/scraper/cookie-jar";
 import type { CookieRecord } from "@/scripts/recon-shared";
@@ -67,5 +67,35 @@ describe("scraper/cookie-jar captureCookieJarSnapshot", () => {
     expect(snapshot.label).toBe("ats-c-apply");
     expect(snapshot.phase).toBe("post-apply");
     expect(snapshot.stepIndex).toBe(5);
+  });
+
+  describe("bounded against a wedged CDP session", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("resolves within the configured budget with an empty jar and a populated error when sendCDP never settles", async () => {
+      const sendCDP = vi.fn().mockReturnValue(new Promise(() => {}));
+      const page = makePage(sendCDP);
+
+      const snapshotPromise = captureCookieJarSnapshot(page, "ats-c-apply", "pre-step", 3, {
+        timeoutMs: 1_000,
+      });
+      const assertion = expect(snapshotPromise).resolves.toMatchObject({
+        label: "ats-c-apply",
+        phase: "pre-step",
+        stepIndex: 3,
+        cookies: [],
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      await assertion;
+
+      const snapshot = await snapshotPromise;
+      expect(snapshot.error).toContain("timed out after 1000ms");
+    });
   });
 });
