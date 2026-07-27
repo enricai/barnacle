@@ -132,11 +132,18 @@ describe("flow-runner/executeStepWithHealing — deepLocator hang (run 6 regress
           : []
       )
     );
+    // Attempt 1's act-string call resolves a candidate but doesn't verify
+    // (unlike the sibling deep-locator-fallback suite, which leaves
+    // `actions: []` to fast-skip attempt 1 without a logger call) so this
+    // suite's per-attempt log trail — the exact signal run 6's report says
+    // went silent — covers all 5 attempts, not just 2-5.
     guardedAct.mockResolvedValue({
       success: false,
-      message: "no candidates",
-      actionDescription: "",
-      actions: [],
+      message: "no observable effect",
+      actionDescription: "attempt 1 candidate click",
+      actions: [
+        { selector: "xpath=//body", description: "attempt 1 candidate click", method: "click" },
+      ],
     });
   });
 
@@ -182,10 +189,7 @@ describe("flow-runner/executeStepWithHealing — deepLocator hang (run 6 regress
     await assertion;
 
     const logged = allLoggedLines();
-    // Attempt 1 fast-skips without a logger call when act-string resolves no
-    // action (flow-runner.ts:6489) — an existing, unrelated optimization —
-    // so the observable per-attempt trail starts at attempt 2.
-    for (const attempt of [2, 3, 4, 5]) {
+    for (const attempt of [1, 2, 3, 4, 5]) {
       expect(logged).toMatch(new RegExp(`attempt ${attempt}\\b`));
     }
     expect(logged).toMatch(/observe returned no candidates/);
@@ -227,7 +231,7 @@ describe("flow-runner/executeStepWithHealing — deepLocator hang (run 6 regress
     await assertion;
 
     const logged = allLoggedLines();
-    for (const attempt of [2, 3, 4, 5]) {
+    for (const attempt of [1, 2, 3, 4, 5]) {
       expect(logged).toMatch(new RegExp(`attempt ${attempt}\\b`));
     }
     expect(logged).toMatch(/deepLocator: click threw/);
