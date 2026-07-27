@@ -565,6 +565,24 @@ describe("resolveFrameTarget: bounded against a never-settling evaluate", () => 
 
     expect(target.declaredFrameSelector).toBeNull();
   });
+
+  it("honors an explicit evaluateTimeoutMs on the no-selector fast path instead of the config default", async () => {
+    const page = {
+      url: () => "https://careers.uchealth.org/jobs/123",
+      title: async () => "main document title",
+      evaluate: () => new Promise(() => {}),
+      locator: (selector: string) => ({ scope: "main" as const, selector }),
+      frames: () => [],
+    };
+
+    const target = await resolveFrameTarget(page as never, null, { evaluateTimeoutMs: 10 });
+
+    const start = Date.now();
+    await expect(target.evaluate("document.title")).rejects.toMatchObject({
+      name: "WatchdogTimeoutError",
+    });
+    expect(Date.now() - start).toBeLessThan(1000);
+  });
 });
 
 describe("FrameTarget.evaluate/url: bounded against a never-settling underlying call", () => {

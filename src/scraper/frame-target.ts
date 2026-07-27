@@ -268,9 +268,9 @@ export async function resolveFrameTarget(
   frameSelector?: string | null,
   opts: { timeoutMs?: number; pollMs?: number; evaluateTimeoutMs?: number } = {}
 ): Promise<FrameTarget> {
-  if (!frameSelector) return mainFrameTarget(page);
-
   const evaluateTimeoutMs = opts.evaluateTimeoutMs ?? config.scraper.frameEvaluateTimeoutMs;
+  if (!frameSelector) return mainFrameTarget(page, { evaluateTimeoutMs });
+
   const resolved = await tryResolveChildFrame(page, frameSelector, evaluateTimeoutMs);
   if (resolved) return resolved;
 
