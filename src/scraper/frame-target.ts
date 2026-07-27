@@ -183,7 +183,11 @@ function originOf(url: string): string | null {
  * poll loop even starts (making an unclamped deadline unreachable) and a
  * page with several candidate frames would otherwise pay
  * `(1 + frames) * evaluateTimeoutMs` in one pass regardless of `deadline`.
- * The candidate loop also breaks as soon as no budget remains, rather than
+ * The candidate loop always probes its first candidate — mirroring the
+ * top-level probe's "runs once regardless of budget" guarantee, since a
+ * `timeoutMs: 0` re-resolution (`flow-runner.ts`'s `reresolveFrameTargetIfLost`)
+ * must still be able to pick up a frame that has already attached — but
+ * breaks before any further candidate once no budget remains, rather than
  * still issuing a zero-budget probe per remaining candidate. A timed-out
  * probe is treated as "no match, try again" (same as a `false` `matched`
  * result) so a poll that merely wedges degrades to a retry rather than
@@ -230,8 +234,8 @@ async function tryResolveChildFrame(
       : null;
   }
 
-  for (const candidate of candidates) {
-    if (remainingBudgetMs() <= 0) break;
+  for (const [index, candidate] of candidates.entries()) {
+    if (index > 0 && remainingBudgetMs() <= 0) break;
     const candidateUrl = await withWatchdog(() => candidate.evaluate<string>("location.href"), {
       timeoutMs: Math.min(evaluateTimeoutMs, remainingBudgetMs()),
       label: "frame-target: candidate frame location probe",
