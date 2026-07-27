@@ -283,18 +283,29 @@ click-tracking navigation core drove itself. Every key:
 | `durationMs` | Wall time of the tracking-click navigation itself, not the original dispatch. |
 | `ts` | ISO timestamp. |
 
-A `"fired"`/`"failed"` `"beacon"` record is written when the caller of
+A `"fired"`/`"failed"` `"beacon"` record is written one of two ways. For a
+plugin with no `extractJoinKeys`, it's written when the caller of
 `fireTrackingClick` supplies a `TrackingClickReconciliationContext`
 (`requestId` plus `joinKeys`) — the parameter is optional so existing call
 sites keep compiling. `dispatch()`'s call site supplies one on every
-tracking click it fires (i.e. only for a plugin with no `extractJoinKeys`),
-threading the same `joinKeys` bag it resolved for the submit record. A
-`"skipped"` `"beacon"` record is written by `dispatch()` itself, via the
-same `captureBeaconEvent`, when a successful submit's payload has no (or an
-empty-string) `TrackingUrl`, OR when the plugin declared `extractJoinKeys`
-(asserting it manages its own tracking nav) — `durationMs: 0` since no
-engine-driven tracking-click navigation ever ran in either case. The write
-path is additionally exercised directly by `beacon-capture.test.ts`.
+tracking click it fires, threading the same `joinKeys` bag it resolved for
+the submit record. For a plugin that declared `extractJoinKeys` and so
+manages its own tracking nav, the plugin instead calls
+`context.recordBeaconOutcome(...)` (`SitePluginContext`, `src/site-plugin.ts`)
+from inside `execute`/`executeHttp` — this binds `requestId`/`siteId` at
+context construction (`buildRecordBeaconOutcome`, `src/plugins/loader.ts`)
+and forwards to `recordBeaconOutcome` (`src/lib/telemetry/beacon-outcome.ts`),
+which wraps `captureBeaconEvent` with the same swallow-and-log never-throws
+contract. A `"skipped"` `"beacon"` record is written by `dispatch()` itself,
+via the same `captureBeaconEvent`, when a successful submit's payload has no
+(or an empty-string) `TrackingUrl`, OR when the plugin declared
+`extractJoinKeys` (asserting it manages its own tracking nav) — `durationMs:
+0` since no engine-driven tracking-click navigation ever ran in either case.
+This `"skipped"` write is unconditional even when the plugin goes on to call
+`recordBeaconOutcome` for the same `requestId`; the reader ranks a later
+`"fired"`/`"failed"` record above `"skipped"` when folding (see Reading,
+filtering, and querying reconciliation rows below). The write path is
+additionally exercised directly by `beacon-capture.test.ts`.
 
 ### Reading, filtering, and querying reconciliation rows
 
@@ -333,7 +344,9 @@ callers from having to re-parse) and renames the reader's internal
 | Submission-envelope sink + `SubmissionEnvelopeSample` type | `src/lib/telemetry/submission-capture.ts` |
 | Reconciliation record schemas (`submit` + `beacon` kinds) | `src/lib/telemetry/reconciliation-record.ts` |
 | Beacon-fire (conversion) event writer + `BeaconEventSample` type | `src/lib/telemetry/beacon-capture.ts` |
+| Plugin-callable beacon-outcome recorder (wraps `captureBeaconEvent`) | `src/lib/telemetry/beacon-outcome.ts` |
 | Plugin-owned join-key extraction hook | `SitePlugin.extractJoinKeys` in `src/site-plugin.ts` |
+| Plugin-facing `recordBeaconOutcome` context method + binding closure | `SitePluginContext.recordBeaconOutcome` in `src/site-plugin.ts`; `buildRecordBeaconOutcome` in `src/plugins/loader.ts` |
 | Reconciliation reader (`readReconciliationRows`) | `src/lib/telemetry/submission-reader.ts` |
 | Durable (local+S3) reconciliation source (`readDurableReconciliationRows`) | `src/lib/telemetry/reconciliation-source.ts` |
 | Reconciliation query/filter layer (`queryReconciliationRows`) | `src/lib/telemetry/submission-query.ts` |
