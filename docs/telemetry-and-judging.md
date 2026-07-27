@@ -280,27 +280,30 @@ Every key:
 | `siteId` | Same cohort dimension as the submit record. |
 | `vivclid` | Same join key as the submit record, threaded through by the caller of `fireTrackingClick`. |
 | `jobReference` | Same join key as the submit record, threaded through by the caller of `fireTrackingClick`. |
-| `beaconStatus` | `"fired"` or `"failed"` — the conversion/beacon-fire outcome, a field distinct from the submit record's `status`. This is what makes "submitted but the beacon did not fire" measurable, where previously `fireTrackingClick` was fire-and-forget with errors swallowed and only Datadog counters (`recordTrackingClickSuccess`/`recordTrackingClickFailure`) as evidence. |
+| `beaconStatus` | `"fired"`, `"failed"`, or `"skipped"` — the conversion/beacon-fire outcome, a field distinct from the submit record's `status`. This is what makes "submitted but the beacon did not fire" measurable, where previously `fireTrackingClick` was fire-and-forget with errors swallowed and only Datadog counters (`recordTrackingClickSuccess`/`recordTrackingClickFailure`) as evidence. `"skipped"` means no beacon was ever applicable for the run (no usable `TrackingUrl`), distinct from `"not_fired"` below (no beacon line arrived at all). |
 | `trackingUrl` | The vendor click-tracking URL that was navigated to, truncated to 120 characters; `null` if omitted. |
 | `durationMs` | Wall time of the tracking-click navigation itself, not the original dispatch. |
 | `ts` | ISO timestamp. |
 
-A `"beacon"` record is only written when the caller of `fireTrackingClick`
-supplies a `TrackingClickReconciliationContext` (`requestId` plus the join
-keys) — the parameter is optional so existing call sites keep compiling.
-`dispatch()`'s call site supplies one on every tracking click it fires,
-threading the same `vivclid`/`jobReference` pair it resolved for the submit
-record; the write path is additionally exercised directly by
-`beacon-capture.test.ts`.
+A `"fired"`/`"failed"` `"beacon"` record is written when the caller of
+`fireTrackingClick` supplies a `TrackingClickReconciliationContext`
+(`requestId` plus the join keys) — the parameter is optional so existing
+call sites keep compiling. `dispatch()`'s call site supplies one on every
+tracking click it fires, threading the same `vivclid`/`jobReference` pair it
+resolved for the submit record. A `"skipped"` `"beacon"` record is written
+by `dispatch()` itself, via the same `captureBeaconEvent`, when a successful
+submit's payload has no (or an empty-string) `TrackingUrl` — `durationMs: 0`
+since no tracking-click navigation ever ran. The write path is additionally
+exercised directly by `beacon-capture.test.ts`.
 
 ### Reading, filtering, and querying reconciliation rows
 
 `readReconciliationRows` (`src/lib/telemetry/submission-reader.ts`) reads the
 sink and left-joins `"beacon"` records onto their `"submit"` record by
 `requestId`, producing one `ReconciliationRow` per run with a `beaconStatus`
-of `"fired"`, `"failed"`, or `"not_fired"` — the sink itself only ever writes
-`"fired"`/`"failed"`; `"not_fired"` is synthesized by the reader when no
-beacon line ever arrived for a submit row. `GET /v1/submissions` instead
+of `"fired"`, `"failed"`, `"skipped"`, or `"not_fired"` — the sink writes the
+first three; `"not_fired"` is synthesized by the reader when no beacon line
+ever arrived for a submit row. `GET /v1/submissions` instead
 composes `readDurableReconciliationRows`
 (`src/lib/telemetry/reconciliation-source.ts`), which unions the local
 sink's raw records with its S3-mirrored records (the buffered S3 sink
