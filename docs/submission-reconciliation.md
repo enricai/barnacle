@@ -53,7 +53,7 @@ Two ways to run these recipes:
 
 - **`GET /v1/submissions`** (authenticated) — the queryable read path. Prefer
   this; it left-joins beacon rows onto submit rows and paginates for you.
-  Querystring params: `vivclid`, `siteId`, `jobReference`, `status`,
+  Querystring params: `vivclid`, `siteId`, `jobReference`, `requestId`, `status`,
   `beaconStatus` (`fired` / `failed` / `skipped` / `not_fired`), `from`/`to` (ISO-8601,
   inclusive), `limit` (max `1000`), `offset`. Schema:
   `src/api/schemas/submissions.ts`.
