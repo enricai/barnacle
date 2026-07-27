@@ -29,6 +29,7 @@ import { MetricsCollector } from "@/lib/dispatch-metrics";
 import { toErrorMessage } from "@/lib/errors";
 import { extendLogger, getLogger } from "@/lib/logging";
 import { extractReconciliationKeys } from "@/lib/reconciliation-keys";
+import { captureBeaconEvent } from "@/lib/telemetry/beacon-capture";
 import { captureSubmissionEnvelope } from "@/lib/telemetry/submission-capture";
 import { fireTrackingClick } from "@/lib/tracking-click";
 import { BUILTIN_SITE_PLUGINS } from "@/plugins/discover";
@@ -198,6 +199,20 @@ async function emitEnvelopeSafely(
 }
 
 /**
+ * Best-effort wrapper around `captureBeaconEvent`, matching `emitEnvelopeSafely`'s
+ * defense: `captureBeaconEvent` already swallows its own write errors, but a
+ * test double or unexpected synchronous throw must still never propagate into
+ * dispatch's success path.
+ */
+async function emitBeaconSafely(input: Parameters<typeof captureBeaconEvent>[0]): Promise<void> {
+  try {
+    await captureBeaconEvent(input);
+  } catch (err) {
+    logger.warn(`beacon event emit failed: ${toErrorMessage(err)}`);
+  }
+}
+
+/**
  * Runs a single plugin submission end-to-end. Tries the direct-HTTP hot path
  * first when the plugin supplies `executeHttp`; on `HttpSchemaError`,
  * `HttpBotChallengeError`, or `HttpServerError` falls back to the Stagehand
@@ -207,9 +222,12 @@ async function emitEnvelopeSafely(
  * submit for jobId X and did it succeed." Extracts the `vivclid`/`jobReference`
  * reconciliation keys from the inbound payload once and stamps them onto both
  * the submission envelope and the tracking click so a run's submit and
- * beacon-fire records can be joined. Maps scraper errors to the API error
- * hierarchy so callers receive typed, client-readable errors instead of raw
- * scraper internals.
+ * beacon-fire records can be joined. When a successful submit has no usable
+ * `TrackingUrl`, emits a `beaconStatus: "skipped"` record instead of firing
+ * the tracking click, so "no beacon was ever applicable" is distinguishable
+ * from "a beacon was attempted and never recorded an outcome." Maps scraper
+ * errors to the API error hierarchy so callers receive typed, client-readable
+ * errors instead of raw scraper internals.
  */
 export async function dispatch<TResult>(
   plugin: SitePlugin<unknown, unknown>,
@@ -262,6 +280,16 @@ export async function dispatch<TResult>(
         requestId: context.requestId,
         vivclid,
         jobReference,
+      });
+    } else {
+      await emitBeaconSafely({
+        requestId: context.requestId,
+        siteId: plugin.meta.siteId,
+        vivclid,
+        jobReference,
+        beaconStatus: "skipped",
+        trackingUrl: null,
+        durationMs: 0,
       });
     }
 

@@ -51,6 +51,11 @@ describe("lib/reconciliation-keys extractVivclid", () => {
   it("returns null when the payload key is present but empty", () => {
     expect(extractVivclid({ vivclid: "" })).toBeNull();
   });
+
+  it("matches the TrackingUrl query param case-insensitively", () => {
+    const payload = { TrackingUrl: "https://trk.appcast.io/click?VIVCLID=v1" };
+    expect(extractVivclid(payload)).toBe("v1");
+  });
 });
 
 describe("lib/reconciliation-keys extractJobReference", () => {
@@ -111,6 +116,11 @@ describe("lib/reconciliation-keys extractJobReference", () => {
     expect(extractJobReference({})).toBeNull();
   });
 
+  it("matches the TrackingUrl empId/jid query params case-insensitively", () => {
+    const payload = { TrackingUrl: "https://trk.appcast.io/click?EMPID=4471&JID=88214" };
+    expect(extractJobReference(payload)).toBe("4471_88214");
+  });
+
   it("returns null for a non-object payload", () => {
     expect(extractJobReference(null)).toBeNull();
     expect(extractJobReference(undefined)).toBeNull();
@@ -136,5 +146,15 @@ describe("lib/reconciliation-keys extractReconciliationKeys", () => {
 
   it("never throws on a non-object payload", () => {
     expect(extractReconciliationKeys(null)).toEqual({ vivclid: null, jobReference: null });
+  });
+
+  it("resolves both keys from a TrackingUrl with upper-case query param names", () => {
+    const payload = {
+      TrackingUrl: "https://trk.appcast.io/click?VIVCLID=v1&EMPID=4471&JID=88214",
+    };
+    expect(extractReconciliationKeys(payload)).toEqual({
+      vivclid: "v1",
+      jobReference: "4471_88214",
+    });
   });
 });

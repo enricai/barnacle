@@ -223,6 +223,33 @@ describe("routes/submissions GET /v1/submissions", () => {
     }
   });
 
+  it("filters to one run's row by requestId", async () => {
+    fs.writeFileSync(
+      sinkPath,
+      ndjson(
+        makeSubmitLine({ requestId: "req-target", vivclid: "v-target" }),
+        makeSubmitLine({ requestId: "req-other", vivclid: "v-other" })
+      ),
+      "utf8"
+    );
+    const app = await buildApp(sinkPath);
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/v1/submissions?requestId=req-target",
+        headers: { authorization: `Bearer ${VALID_KEY}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.submissions).toHaveLength(1);
+      expect(body.total).toBe(1);
+      expect(body.submissions[0]).toMatchObject({ requestId: "req-target", vivclid: "v-target" });
+    } finally {
+      await app.close();
+    }
+  });
+
   it("forwards the from/to date-range verbatim to the reader/query layer", async () => {
     fs.writeFileSync(
       sinkPath,

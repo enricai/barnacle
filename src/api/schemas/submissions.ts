@@ -1,7 +1,7 @@
 import { z } from "zod/v4";
 
 import { statusSchema } from "@/api/schemas/common";
-import { submitRecordSchema } from "@/lib/telemetry/reconciliation-record";
+import { beaconEventSchema, submitRecordSchema } from "@/lib/telemetry/reconciliation-record";
 
 /**
  * Upper bound on `limit` so a query can't ask the read path to serialize the
@@ -25,6 +25,18 @@ function blankToUndefined(value: unknown): unknown {
 const optionalTrimmedString = () => z.preprocess(blankToUndefined, z.string().optional());
 
 /**
+ * The read path's beacon-status fold: the record-layer `beaconStatus`
+ * options (`beaconEventSchema.shape.beaconStatus`) plus `"not_fired"`, the
+ * value `submission-reader.ts` folds in when no beacon line ever arrived.
+ * Derived rather than restated so a status added at the record layer can't
+ * silently drift from what this read path advertises.
+ */
+const reconciliationBeaconStatusSchema = z.enum([
+  ...beaconEventSchema.shape.beaconStatus.options,
+  "not_fired",
+]);
+
+/**
  * Querystring contract for the submissions read route. Every field is
  * optional so a caller can filter by any subset of the reconciliation join
  * keys, submit/beacon outcome, or a time window, and page through results.
@@ -33,8 +45,9 @@ export const submissionsQuerystringSchema = z.object({
   vivclid: optionalTrimmedString(),
   siteId: optionalTrimmedString(),
   jobReference: optionalTrimmedString(),
+  requestId: optionalTrimmedString(),
   status: z.preprocess(blankToUndefined, submitRecordSchema.shape.status.optional()),
-  beaconStatus: z.preprocess(blankToUndefined, z.enum(["fired", "failed", "not_fired"]).optional()),
+  beaconStatus: z.preprocess(blankToUndefined, reconciliationBeaconStatusSchema.optional()),
   from: z.preprocess(blankToUndefined, z.iso.datetime({ offset: true }).optional()),
   to: z.preprocess(blankToUndefined, z.iso.datetime({ offset: true }).optional()),
   limit: z.preprocess(
@@ -62,7 +75,7 @@ export type SubmissionsQuerystring = z.infer<typeof submissionsQuerystringSchema
 export const reconciliationRowSchema = submitRecordSchema
   .omit({ kind: true, inboundPayload: true, auditPayload: true })
   .extend({
-    beaconStatus: z.enum(["fired", "failed", "not_fired"]),
+    beaconStatus: reconciliationBeaconStatusSchema,
     trackingUrl: z.string().nullable(),
   });
 

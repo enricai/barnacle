@@ -582,17 +582,21 @@ Request arrives
 
 **Beacon-fire (conversion tracking):** the last two steps both come from
 `dispatch()` itself, after `runPluginPipeline` resolves — they run for the
-hot path and the browser fallback alike. `fireTrackingClick`
-(`src/lib/tracking-click.ts:130`) is fire-and-forget: `dispatch()` calls it
-and returns without awaiting, so the response reaches the caller before the
-click even starts. In the background it opens a short-lived Browserbase
-session, navigates to the plugin's `TrackingUrl` (30s timeout), waits 5s to
-let the vendor's beacon settle, then writes a separate `"beacon"`
-reconciliation record with `beaconStatus: "fired"` or `"failed"` — errors are
-swallowed and logged at `warn`, never surfaced to the request path. This is
-why beacon-fire needs its own durable record instead of being inferred from
-submit success: a submission can succeed while the beacon never fires (see
-§6B for how that shows up in metrics, and drain behavior on shutdown).
+hot path and the browser fallback alike. When the payload has a usable
+`TrackingUrl`, `fireTrackingClick` (`src/lib/tracking-click.ts:130`) is
+fire-and-forget: `dispatch()` calls it and returns without awaiting, so the
+response reaches the caller before the click even starts. In the background
+it opens a short-lived Browserbase session, navigates to the plugin's
+`TrackingUrl` (30s timeout), waits 5s to let the vendor's beacon settle, then
+writes a separate `"beacon"` reconciliation record with `beaconStatus:
+"fired"` or `"failed"` — errors are swallowed and logged at `warn`, never
+surfaced to the request path. When there is no `TrackingUrl` to navigate to
+at all, `dispatch()` skips `fireTrackingClick` entirely and instead writes a
+`beaconStatus: "skipped"` beacon record itself, synchronously, before
+returning. This is why beacon-fire needs its own durable record instead of
+being inferred from submit success: a submission can succeed while the
+beacon never fires (see §6B for how that shows up in metrics, and drain
+behavior on shutdown).
 
 **Cache deduplication:** `getOrCreateInFlight` coalesces concurrent misses on
 the same cache key into a single upstream call. If 10 identical requests arrive

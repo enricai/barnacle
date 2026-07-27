@@ -38,7 +38,7 @@ field here requires parsing `inboundPayload`. Full field-by-field reference:
 | Job cohort / site | `siteId` | The plugin that handled the request — always present, the cohort dimension for roll-ups. |
 | Job reference (Appcast's `<empId>_<jid>`) | `jobReference` | Nullable, but populated far more reliably than `vivclid`. Resolved by `extractJobReference` the same way — explicit field, then `empId`/`jid` pair, then the same pair in `TrackingUrl`'s query string. |
 | Apply outcome | `status` | `"submitted"` or `"error"` — whether Barnacle's own submit attempt succeeded, distinct from beacon fire. |
-| Conversion / beacon fire | `beaconStatus` | `"fired"`, `"failed"`, or `"not_fired"` — a dimension separate from `status`. `"not_fired"` means a submit row exists with no matching beacon line at all. |
+| Conversion / beacon fire | `beaconStatus` | `"fired"`, `"failed"`, `"skipped"`, or `"not_fired"` — a dimension separate from `status`. `"skipped"` means the submit had no `TrackingUrl` to fire in the first place (no beacon was ever applicable); `"not_fired"` means a submit row exists with no matching beacon line at all (a beacon was applicable but never recorded an outcome). |
 | Apply timestamp | `ts` | ISO-8601. Use with `from`/`to` to bound a CPA report's date window. |
 | Correlation ID (internal) | `requestId` | Joins a submit row to its beacon row; not an Appcast field, but useful when cross-referencing app logs. |
 
@@ -53,8 +53,8 @@ Two ways to run these recipes:
 
 - **`GET /v1/submissions`** (authenticated) — the queryable read path. Prefer
   this; it left-joins beacon rows onto submit rows and paginates for you.
-  Querystring params: `vivclid`, `siteId`, `jobReference`, `status`,
-  `beaconStatus` (`fired` / `failed` / `not_fired`), `from`/`to` (ISO-8601,
+  Querystring params: `vivclid`, `siteId`, `jobReference`, `requestId`, `status`,
+  `beaconStatus` (`fired` / `failed` / `skipped` / `not_fired`), `from`/`to` (ISO-8601,
   inclusive), `limit` (max `1000`), `offset`. Schema:
   `src/api/schemas/submissions.ts`.
 - **Raw NDJSON** (`.barnacle/submissions.ndjson`, path from
@@ -220,11 +220,13 @@ Output:
 
 The conversion/beacon-fire dimension is `beaconStatus`, distinct from submit
 `status` — a row can be `status: "submitted"` and still show
-`beaconStatus: "not_fired"` (no beacon line ever arrived) or
-`beaconStatus: "failed"` (the tracking-click navigation itself errored). Both
-are candidates for "why didn't this apply get credited," but `"not_fired"` is
-the one worth alerting on — it means the beacon fire never happened at all,
-not just that it failed.
+`beaconStatus: "not_fired"` (no beacon line ever arrived), `beaconStatus:
+"failed"` (the tracking-click navigation itself errored), or `beaconStatus:
+"skipped"` (the submit's payload never had a `TrackingUrl`, so no beacon
+was ever applicable to this run). All three are candidates for "why didn't
+this apply get credited," but `"not_fired"` is the one worth alerting on —
+unlike `"skipped"`, which is an expected, explained outcome, `"not_fired"`
+means a beacon was applicable and its outcome was simply never recorded.
 
 ```bash
 curl -s "http://localhost:3971/v1/submissions?status=submitted&beaconStatus=not_fired" \

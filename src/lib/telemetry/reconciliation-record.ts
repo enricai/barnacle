@@ -42,6 +42,11 @@ export type SubmitRecord = z.infer<typeof submitRecordSchema>;
  * Beacon/conversion-event record: fired independently of, and later than,
  * the submit record for the same `requestId`. Models "submitted but the
  * beacon did not fire" as a distinct dimension from submit outcome.
+ * `beaconStatus: "skipped"` means no beacon was ever applicable for this run
+ * (no usable TrackingUrl) — distinct from `"not_fired"` (the reader's fold
+ * default for a submit row with no matching beacon line at all), so
+ * "submitted but the beacon did not fire" excludes runs that never had a
+ * beacon to fire.
  */
 export const beaconEventSchema = z.object({
   kind: z.literal("beacon"),
@@ -49,7 +54,7 @@ export const beaconEventSchema = z.object({
   siteId: z.string(),
   vivclid: z.string().nullable(),
   jobReference: z.string().nullable(),
-  beaconStatus: z.enum(["fired", "failed"]),
+  beaconStatus: z.enum(["fired", "failed", "skipped"]),
   trackingUrl: z.string().nullable(),
   durationMs: z.number(),
   ts: z.string(),

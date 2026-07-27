@@ -27,6 +27,19 @@ function asNonEmptyString(value: unknown): string | null {
 }
 
 /**
+ * Case-insensitive counterpart to `URLSearchParams.get()` — vendor tracking
+ * URLs disagree on `vivclid`/`empId`/`jid` casing just as inbound payloads do,
+ * so query-param lookups need the same tolerance as `lookupCaseInsensitive`.
+ */
+function getParamCaseInsensitive(params: URLSearchParams, name: string): string | null {
+  const lower = name.toLowerCase();
+  for (const [key, value] of params.entries()) {
+    if (key.toLowerCase() === lower) return value;
+  }
+  return null;
+}
+
+/**
  * Parses a plugin's `TrackingUrl` into its query params, tolerating whatever
  * garbage an inbound payload throws at it — a malformed or absent URL is a
  * missing join key, not a crash.
@@ -53,7 +66,7 @@ export function extractVivclid(payload: unknown): string | null {
   if (direct) return direct;
 
   const params = trackingUrlParams(payload);
-  return params ? asNonEmptyString(params.get("vivclid")) : null;
+  return params ? asNonEmptyString(getParamCaseInsensitive(params, "vivclid")) : null;
 }
 
 /**
@@ -73,8 +86,8 @@ export function extractJobReference(payload: unknown): string | null {
   if (empId && jid) return `${empId}_${jid}`;
 
   const params = trackingUrlParams(payload);
-  const urlEmpId = params ? asNonEmptyString(params.get("empId")) : null;
-  const urlJid = params ? asNonEmptyString(params.get("jid")) : null;
+  const urlEmpId = params ? asNonEmptyString(getParamCaseInsensitive(params, "empId")) : null;
+  const urlJid = params ? asNonEmptyString(getParamCaseInsensitive(params, "jid")) : null;
   return urlEmpId && urlJid ? `${urlEmpId}_${urlJid}` : null;
 }
 
