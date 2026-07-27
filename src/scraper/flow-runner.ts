@@ -5278,10 +5278,21 @@ export async function probeStepBeforeAttempts(params: {
         ? await reresolveFrameTarget()
         : frameTarget;
       if (effectiveFrameTarget?.frame) {
+        // Pass the already-resolved `effectiveFrameTarget` so the batched
+        // evaluate reuses it instead of `resolveDeepLocatorCandidates`
+        // re-resolving via its own internal `resolveFrameTarget` fallback —
+        // same "reuse the ambient target" rule as every other frame-scoped
+        // call in this function. Innerselector stays "*": this probe only
+        // answers "does this frame have any content", and batching already
+        // makes that reachability check cheap (one evaluate over every
+        // node) — scoping to interactive elements would false-negative a
+        // frame with rendered content but no controls yet.
         const deepLocatorCandidates = await resolveDeepLocatorCandidates(
           page,
           effectiveFrameTarget.frameSelector,
-          "*"
+          "*",
+          undefined,
+          { frameTarget: effectiveFrameTarget }
         );
         if (deepLocatorCandidates.length > 0) {
           logger.info(

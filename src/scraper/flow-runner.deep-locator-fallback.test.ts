@@ -133,7 +133,17 @@ describe("flow-runner/probeStepBeforeAttempts — frame-scoped deepLocator fallb
     });
 
     expect(result).toBe("present");
-    expect(resolveDeepLocatorCandidatesSpy).toHaveBeenCalledWith(page, FRAME_SELECTOR, "*");
+    // Passes the already-resolved frameTarget (5th-arg { frameTarget }) so
+    // the batched evaluate reuses it instead of re-resolving internally —
+    // the instruction arg (4th) stays undefined, same reachability-only
+    // contract as before.
+    expect(resolveDeepLocatorCandidatesSpy).toHaveBeenCalledWith(
+      page,
+      FRAME_SELECTOR,
+      "*",
+      undefined,
+      { frameTarget: expect.objectContaining({ frameSelector: FRAME_SELECTOR }) }
+    );
     resolveDeepLocatorCandidatesSpy.mockRestore();
   });
 
