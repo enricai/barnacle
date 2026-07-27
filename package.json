@@ -108,6 +108,10 @@
       "types": "./dist/lib/phone.d.ts",
       "default": "./dist/lib/phone.js"
     },
+    "./lib/telemetry/beacon-outcome": {
+      "types": "./dist/lib/telemetry/beacon-outcome.d.ts",
+      "default": "./dist/lib/telemetry/beacon-outcome.js"
+    },
     "./lib/url-capture": {
       "types": "./dist/lib/url-capture.d.ts",
       "default": "./dist/lib/url-capture.js"
