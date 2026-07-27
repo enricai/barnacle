@@ -27,6 +27,7 @@ import { z } from "zod/v4";
 
 import authPlugin from "@/api/plugins/auth";
 import errorHandlerPlugin from "@/api/plugins/error-handler";
+import { submissionsRoutes } from "@/api/routes/submissions";
 import type { AppConfig } from "@/config";
 import { getLogger } from "@/lib/logging";
 import { readReconciliationRows } from "@/lib/telemetry/submission-reader";
@@ -137,5 +138,72 @@ describe("dispatch() telemetry end-to-end: real HTTP request to real NDJSON sink
     expect(row?.joinKeys).toEqual({ vivclid: "e2e-123", jobReference: "emp1_jid1" });
     expect(row?.beaconStatus).toBe("skipped");
     expect(row?.beaconTrackingUrl).toBe(trackingUrl);
+  });
+
+  it("folds a plugin-recorded fired beacon onto its submit row and surfaces it via GET /v1/submissions", async () => {
+    const selfManagedPlugin: SitePlugin<unknown, unknown> = {
+      extractJoinKeys: () => ({ vivclid: "e2e-self-managed-456" }),
+      meta: {
+        siteId: "e2e-self-managed",
+        displayName: "E2E Self-Managed Test",
+        bodySchema: z.object({}),
+        responseSchema: z.object({ verified: z.boolean() }),
+      },
+      execute: async (_payload, _session, context) => {
+        await context.recordBeaconOutcome({
+          beaconStatus: "fired",
+          joinKeys: { vivclid: "e2e-self-managed-456" },
+          trackingUrl: "https://click.e2e-test.example/self-managed",
+          durationMs: 42,
+        });
+        return { data: { verified: true } };
+      },
+    };
+
+    const app = Fastify({ loggerInstance: getLogger({ name: "dispatch-telemetry-e2e-test" }) });
+    app.setValidatorCompiler(validatorCompiler);
+    app.setSerializerCompiler(serializerCompiler);
+    await app.register(errorHandlerPlugin);
+    await app.register(authPlugin);
+    await registerRoutes(app, cfgStub, [selfManagedPlugin]);
+    await app.register(submissionsRoutes, { sinkPath });
+    await app.ready();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/e2e-self-managed/run",
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().verified).toBe(true);
+
+    const rawSink = fs.readFileSync(sinkPath, "utf8");
+    const rawLines = rawSink
+      .split("\n")
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line) as { kind: string; beaconStatus?: string });
+    const beaconLines = rawLines.filter((line) => line.kind === "beacon");
+    expect(beaconLines).toContainEqual(expect.objectContaining({ beaconStatus: "fired" }));
+    expect(beaconLines).toContainEqual(expect.objectContaining({ beaconStatus: "skipped" }));
+
+    const rows = await readReconciliationRows({ sinkPath });
+    const matching = rows.filter((row) => row.siteId === "e2e-self-managed");
+    expect(matching).toHaveLength(1);
+    const [row] = matching;
+    expect(row?.beaconStatus).toBe("fired");
+    expect(row?.joinKeys).toEqual({ vivclid: "e2e-self-managed-456" });
+
+    const submissionsResponse = await app.inject({
+      method: "GET",
+      url: `/v1/submissions?requestId=${row?.requestId}`,
+    });
+    expect(submissionsResponse.statusCode).toBe(200);
+    const submissionsBody = submissionsResponse.json();
+    expect(submissionsBody.submissions).toHaveLength(1);
+    expect(submissionsBody.submissions[0].beaconStatus).toBe("fired");
+    expect(submissionsBody.submissions[0].joinKeys).toEqual({ vivclid: "e2e-self-managed-456" });
+
+    await app.close();
   });
 });

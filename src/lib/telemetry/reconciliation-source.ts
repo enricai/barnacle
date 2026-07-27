@@ -12,7 +12,7 @@
  * The local sink and its S3 mirror both receive the exact same line for
  * every event (`appendSubmissionSinkLine` writes to disk and buffers to S3
  * in the same call), so an overlap between the two stores is an exact JSON
- * duplicate, never a conflicting value — deduping on `kind:requestId:ts` is
+ * duplicate, never a conflicting value — deduping on full record content is
  * therefore lossless.
  */
 
@@ -75,15 +75,25 @@ async function readS3Records(
   }
 }
 
-/** Dedupe key for a raw record: the same line written to both stores collapses to one. */
+/**
+ * Dedupe key for a raw record: the full record content, so only an exact
+ * JSON duplicate (the same line mirrored to both stores) collapses to one
+ * entry. `ts` alone (`formatISO`'s output has no millisecond component —
+ * `beacon-capture.ts`/`submission-capture.ts`) is not enough to key on: a
+ * plugin-recorded `fired` beacon and `dispatch()`'s automatic `skipped`
+ * beacon for the same `requestId` routinely land in the same wall-clock
+ * second, so `kind:requestId:ts` would collide two genuinely different
+ * events and let `foldReconciliationRecords`'s precedence never see the
+ * dropped one.
+ */
 function dedupeKey(record: ReconciliationRecord): string {
-  return `${record.kind}:${record.requestId}:${record.ts}`;
+  return JSON.stringify(record);
 }
 
 /**
- * Unions the two record sets, local first, and dedupes on
- * `kind:requestId:ts` — the same line written to both stores collapses to
- * one entry, so `foldReconciliationRecords` sees it exactly once.
+ * Unions the two record sets, local first, and dedupes on exact record
+ * content — the same line written to both stores collapses to one entry, so
+ * `foldReconciliationRecords` sees it exactly once.
  */
 function mergeRecords(
   localRecords: ReconciliationRecord[],
