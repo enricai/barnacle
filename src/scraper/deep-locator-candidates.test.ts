@@ -385,6 +385,21 @@ describe("watchdog-guarded awaits (deepLocator-direct hang bug)", () => {
     );
   });
 
+  it("a never-settling count() resolves resolveDeepLocatorCandidates to [] at the 10s default when timeoutOptions is omitted", async () => {
+    const delegate = makeHangingDelegate({ count: 0, hangCountForever: true });
+    const { page } = makeFakePage(delegate);
+
+    const promise = resolveDeepLocatorCandidates(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      page as any,
+      "#talemetry_apply_iframe",
+      "*"
+    );
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(promise).resolves.toEqual([]);
+  });
+
   it("a never-settling per-candidate textContent() degrades only that candidate to an empty accessibleText, still returning every other candidate", async () => {
     const delegate = makeHangingDelegate({
       count: 3,
@@ -427,6 +442,27 @@ describe("watchdog-guarded awaits (deepLocator-direct hang bug)", () => {
     const assertion = expect(promise).rejects.toMatchObject({ name: "WatchdogTimeoutError" });
 
     await vi.advanceTimersByTimeAsync(50);
+    await assertion;
+  });
+
+  it("a never-settling click() rejects clickDeepLocatorCandidate at the 10s default when timeoutOptions is omitted", async () => {
+    const delegate = makeHangingDelegate({
+      count: 1,
+      texts: ["Manual Application"],
+      hangClick: true,
+    });
+    const { page } = makeFakePage(delegate);
+
+    const promise = clickDeepLocatorCandidate(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      page as any,
+      "#talemetry_apply_iframe",
+      "button",
+      0
+    );
+    const assertion = expect(promise).rejects.toMatchObject({ name: "WatchdogTimeoutError" });
+
+    await vi.advanceTimersByTimeAsync(10_000);
     await assertion;
   });
 
