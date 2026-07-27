@@ -816,6 +816,8 @@ http/net/dns. Metrics have no such constraint.
 | `TELEMETRY_S3_PREFIX` | `telemetry` | Key prefix for uploaded NDJSON objects (`<prefix>/<calls\|submissions>/<date>/...`). |
 | `TELEMETRY_S3_FLUSH_INTERVAL_MS` | `60000` | How often buffered lines are flushed to S3. |
 | `TELEMETRY_S3_MAX_BUFFER_LINES` | `500` | Threshold-flush trigger — flush early if either buffer exceeds this many lines, ahead of the next scheduled interval. |
+| `TELEMETRY_S3_READ_MAX_OBJECTS` | `200` | Upper bound on the number of S3 objects a single reconciliation read-path query is allowed to scan. |
+| `TELEMETRY_S3_READ_CONCURRENCY` | `8` | Max concurrent object fetches for a single reconciliation read-path query. |
 
 ### LLM judging
 
