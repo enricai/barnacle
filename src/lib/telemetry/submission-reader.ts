@@ -130,9 +130,9 @@ export function foldReconciliationRecords(records: ReconciliationRecord[]): Reco
 
 /**
  * Reads the submissions sink and folds it into one reconciliation row per
- * run, so attribution can join runs to the Appcast CPA report without
- * re-parsing raw NDJSON. A missing sink file (nothing submitted yet) yields
- * an empty array rather than throwing.
+ * run, so a plugin can join runs to its own attribution provider's report
+ * without re-parsing raw NDJSON. A missing sink file (nothing submitted yet)
+ * yields an empty array rather than throwing.
  */
 export async function readReconciliationRows(
   opts: ReadReconciliationRowsOptions = {}

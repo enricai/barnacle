@@ -18,7 +18,6 @@ import {
 } from "@/lib/dd-metrics";
 import { toErrorMessage } from "@/lib/errors";
 import { getLogger } from "@/lib/logging";
-import type { ReconciliationKeys } from "@/lib/reconciliation-keys";
 import { captureBeaconEvent } from "@/lib/telemetry/beacon-capture";
 import { createBrowserbaseBrowserSession } from "@/scraper/session-browserbase";
 
@@ -31,13 +30,13 @@ const BROWSERBASE_SESSION_TIMEOUT_SECONDS = 300;
 const inFlightClicks = new Set<Promise<void>>();
 
 /**
- * The run's reconciliation join keys, threaded through so a beacon-fire
- * outcome can be correlated back to its submit record. Optional so existing
- * `fireTrackingClick` call sites keep compiling unchanged (feat-006 widens
- * the loader call site separately).
+ * The run's opaque reconciliation join keys, threaded through so a
+ * beacon-fire outcome can be correlated back to its submit record. Optional
+ * so existing `fireTrackingClick` call sites keep compiling unchanged.
  */
-export interface TrackingClickReconciliationContext extends ReconciliationKeys {
+export interface TrackingClickReconciliationContext {
   requestId: string;
+  joinKeys: Record<string, unknown> | null;
 }
 
 /**
@@ -88,8 +87,7 @@ async function executeTrackingClick(
       await captureBeaconOutcomeSafely({
         requestId: reconciliation.requestId,
         siteId,
-        vivclid: reconciliation.vivclid,
-        jobReference: reconciliation.jobReference,
+        joinKeys: reconciliation.joinKeys,
         beaconStatus: "fired",
         trackingUrl,
         durationMs: Date.now() - startedAt,
@@ -104,8 +102,7 @@ async function executeTrackingClick(
       await captureBeaconOutcomeSafely({
         requestId: reconciliation.requestId,
         siteId,
-        vivclid: reconciliation.vivclid,
-        jobReference: reconciliation.jobReference,
+        joinKeys: reconciliation.joinKeys,
         beaconStatus: "failed",
         trackingUrl,
         durationMs: Date.now() - startedAt,

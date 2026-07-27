@@ -12,8 +12,7 @@ function makeRow(overrides: Partial<ReconciliationRow> = {}): ReconciliationRow 
   return {
     siteId: "hca",
     requestId: "req-1",
-    vivclid: "viv-1",
-    jobReference: "emp1_jid1",
+    joinKeys: { vivclid: "viv-1", jobReference: "emp1_jid1" },
     inboundPayload: { jobId: "jid1" },
     status: "submitted",
     auditPayload: null,
@@ -29,32 +28,12 @@ function makeRow(overrides: Partial<ReconciliationRow> = {}): ReconciliationRow 
 }
 
 describe("queryReconciliationRows", () => {
-  it("filters by vivclid, returning only matching rows", () => {
-    const rows = [
-      makeRow({ requestId: "req-1", vivclid: "viv-a" }),
-      makeRow({ requestId: "req-2", vivclid: "viv-b" }),
-    ];
-    const result = queryReconciliationRows(rows, { vivclid: "viv-a" });
-    expect(result).toHaveLength(1);
-    expect(result[0]?.requestId).toBe("req-1");
-  });
-
   it("filters by siteId", () => {
     const rows = [
       makeRow({ requestId: "req-1", siteId: "hca" }),
       makeRow({ requestId: "req-2", siteId: "ats-c" }),
     ];
     const result = queryReconciliationRows(rows, { siteId: "ats-c" });
-    expect(result).toHaveLength(1);
-    expect(result[0]?.requestId).toBe("req-2");
-  });
-
-  it("filters by jobReference", () => {
-    const rows = [
-      makeRow({ requestId: "req-1", jobReference: "emp1_jid1" }),
-      makeRow({ requestId: "req-2", jobReference: "emp2_jid2" }),
-    ];
-    const result = queryReconciliationRows(rows, { jobReference: "emp2_jid2" });
     expect(result).toHaveLength(1);
     expect(result[0]?.requestId).toBe("req-2");
   });
@@ -87,19 +66,20 @@ describe("queryReconciliationRows", () => {
     expect(result[0]?.requestId).toBe("req-2");
   });
 
-  it("composes vivclid, siteId, and status filters as AND", () => {
+  it("composes requestId, siteId, and status filters as AND", () => {
     const rows = [
-      makeRow({ requestId: "req-1", vivclid: "viv-a", siteId: "hca", status: "submitted" }),
-      makeRow({ requestId: "req-2", vivclid: "viv-a", siteId: "hca", status: "error" }),
-      makeRow({ requestId: "req-3", vivclid: "viv-a", siteId: "ats-c", status: "submitted" }),
+      makeRow({ requestId: "req-1", siteId: "hca", status: "submitted" }),
+      makeRow({ requestId: "req-1", siteId: "hca", status: "error" }),
+      makeRow({ requestId: "req-1", siteId: "ats-c", status: "submitted" }),
     ];
     const result = queryReconciliationRows(rows, {
-      vivclid: "viv-a",
+      requestId: "req-1",
       siteId: "hca",
       status: "submitted",
     });
     expect(result).toHaveLength(1);
-    expect(result[0]?.requestId).toBe("req-1");
+    expect(result[0]?.siteId).toBe("hca");
+    expect(result[0]?.status).toBe("submitted");
   });
 
   it("filters on a from/to window inclusively", () => {
@@ -181,7 +161,7 @@ describe("queryReconciliationRows", () => {
   });
 
   it("returns an empty array when filtering an empty row array", () => {
-    const result = queryReconciliationRows([], { vivclid: "viv-a" });
+    const result = queryReconciliationRows([], { siteId: "hca" });
     expect(result).toEqual([]);
   });
 });

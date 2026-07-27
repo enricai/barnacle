@@ -16,8 +16,7 @@ function makeSubmitLine(): Record<string, unknown> {
     kind: "submit",
     siteId: "ats-c",
     requestId: "req-abc-123",
-    vivclid: "v-9981",
-    jobReference: "56793094457_jid-1",
+    joinKeys: { vivclid: "v-9981", jobReference: "56793094457_jid-1" },
     inboundPayload: { jobId: "56793094457", ClickUrl: "https://example.com/apply" },
     status: "submitted",
     auditPayload: { verified: true, applicationId: "app-xyz" },
@@ -45,8 +44,7 @@ function makeBeaconLine(): Record<string, unknown> {
     kind: "beacon",
     requestId: "req-abc-123",
     siteId: "ats-c",
-    vivclid: "v-9981",
-    jobReference: "56793094457_jid-1",
+    joinKeys: { vivclid: "v-9981", jobReference: "56793094457_jid-1" },
     beaconStatus: "fired",
     trackingUrl: "https://track.appcast.io/pixel?rid=req-abc-123",
     durationMs: 87,
@@ -55,23 +53,24 @@ function makeBeaconLine(): Record<string, unknown> {
 }
 
 describe("submitRecordSchema", () => {
-  it("accepts a record with named vivclid and jobReference", () => {
+  it("accepts a record with an opaque joinKeys bag", () => {
     const result = submitRecordSchema.safeParse(makeSubmitLine());
     expect(result.success).toBe(true);
     if (result.success) {
-      expect(result.data.vivclid).toBe("v-9981");
-      expect(result.data.jobReference).toBe("56793094457_jid-1");
+      expect(result.data.joinKeys).toEqual({
+        vivclid: "v-9981",
+        jobReference: "56793094457_jid-1",
+      });
       expect(result.data.kind).toBe("submit");
     }
   });
 
-  it("parses a pre-existing line with no kind and no vivclid/jobReference, defaulting them", () => {
+  it("parses a pre-existing line with no kind and no joinKeys, defaulting them", () => {
     const result = submitRecordSchema.safeParse(makeLegacySubmitLine());
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.kind).toBe("submit");
-      expect(result.data.vivclid).toBeNull();
-      expect(result.data.jobReference).toBeNull();
+      expect(result.data.joinKeys).toBeNull();
       expect(result.data.siteId).toBe("ats-c");
       expect(result.data.requestId).toBe("req-legacy-789");
     }
@@ -120,11 +119,10 @@ describe("beaconEventSchema", () => {
     }
   });
 
-  it("accepts nullable vivclid and jobReference", () => {
+  it("accepts a null joinKeys bag", () => {
     const result = beaconEventSchema.safeParse({
       ...makeBeaconLine(),
-      vivclid: null,
-      jobReference: null,
+      joinKeys: null,
     });
     expect(result.success).toBe(true);
   });
@@ -181,8 +179,7 @@ describe("reconciliationRecordSchema", () => {
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.kind).toBe("submit");
-      expect(result.data.vivclid).toBeNull();
-      expect(result.data.jobReference).toBeNull();
+      expect(result.data.joinKeys).toBeNull();
     }
   });
 

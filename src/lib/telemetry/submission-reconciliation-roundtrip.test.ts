@@ -63,8 +63,7 @@ describe("submission + beacon round-trip through the real writer and reader", ()
       {
         siteId: "hca",
         requestId: "req-fired-1",
-        vivclid: "viv-fired-1",
-        jobReference: "emp1_jid1",
+        joinKeys: { vivclid: "viv-fired-1", jobReference: "emp1_jid1" },
         inboundPayload: { jobId: "jid1", ClickUrl: "https://example.com/apply" },
         status: "submitted",
         auditPayload: { verified: true, applicationId: "app-1" },
@@ -77,8 +76,7 @@ describe("submission + beacon round-trip through the real writer and reader", ()
       {
         requestId: "req-fired-1",
         siteId: "hca",
-        vivclid: "viv-fired-1",
-        jobReference: "emp1_jid1",
+        joinKeys: { vivclid: "viv-fired-1", jobReference: "emp1_jid1" },
         beaconStatus: "fired",
         trackingUrl: "https://track.appcast.io/pixel?rid=req-fired-1",
         durationMs: 42,
@@ -87,19 +85,14 @@ describe("submission + beacon round-trip through the real writer and reader", ()
     );
 
     const rows = await readReconciliationRows({ sinkPath });
-    const byVivclid = queryReconciliationRows(rows, { vivclid: "viv-fired-1" });
+    const byRequestId = queryReconciliationRows(rows, { requestId: "req-fired-1" });
 
-    expect(byVivclid).toHaveLength(1);
-    const [row] = byVivclid;
-    expect(row?.vivclid).toBe("viv-fired-1");
+    expect(byRequestId).toHaveLength(1);
+    const [row] = byRequestId;
+    expect(row?.joinKeys).toEqual({ vivclid: "viv-fired-1", jobReference: "emp1_jid1" });
     expect(row?.siteId).toBe("hca");
-    expect(row?.jobReference).toBe("emp1_jid1");
     expect(row?.status).toBe("submitted");
     expect(row?.beaconStatus).toBe("fired");
-
-    const byJobReference = queryReconciliationRows(rows, { jobReference: "emp1_jid1" });
-    expect(byJobReference).toHaveLength(1);
-    expect(byJobReference[0]?.requestId).toBe(row?.requestId);
   });
 
   it("distinguishes a submitted-but-beacon-failed run from a submitted-and-beacon-fired run", async () => {
@@ -107,8 +100,7 @@ describe("submission + beacon round-trip through the real writer and reader", ()
       {
         siteId: "hca",
         requestId: "req-fired-2",
-        vivclid: "viv-fired-2",
-        jobReference: "emp2_jid2",
+        joinKeys: { vivclid: "viv-fired-2", jobReference: "emp2_jid2" },
         inboundPayload: { jobId: "jid2" },
         status: "submitted",
         auditPayload: { verified: true, applicationId: "app-2" },
@@ -121,8 +113,7 @@ describe("submission + beacon round-trip through the real writer and reader", ()
       {
         requestId: "req-fired-2",
         siteId: "hca",
-        vivclid: "viv-fired-2",
-        jobReference: "emp2_jid2",
+        joinKeys: { vivclid: "viv-fired-2", jobReference: "emp2_jid2" },
         beaconStatus: "fired",
         trackingUrl: "https://track.appcast.io/pixel?rid=req-fired-2",
         durationMs: 30,
@@ -134,8 +125,7 @@ describe("submission + beacon round-trip through the real writer and reader", ()
       {
         siteId: "hca",
         requestId: "req-failed-3",
-        vivclid: "viv-failed-3",
-        jobReference: "emp3_jid3",
+        joinKeys: { vivclid: "viv-failed-3", jobReference: "emp3_jid3" },
         inboundPayload: { jobId: "jid3" },
         status: "submitted",
         auditPayload: { verified: true, applicationId: "app-3" },
@@ -148,8 +138,7 @@ describe("submission + beacon round-trip through the real writer and reader", ()
       {
         requestId: "req-failed-3",
         siteId: "hca",
-        vivclid: "viv-failed-3",
-        jobReference: "emp3_jid3",
+        joinKeys: { vivclid: "viv-failed-3", jobReference: "emp3_jid3" },
         beaconStatus: "failed",
         trackingUrl: null,
         durationMs: 15,
@@ -159,8 +148,8 @@ describe("submission + beacon round-trip through the real writer and reader", ()
 
     const rows = await readReconciliationRows({ sinkPath });
 
-    const firedRow = queryReconciliationRows(rows, { vivclid: "viv-fired-2" })[0];
-    const failedRow = queryReconciliationRows(rows, { vivclid: "viv-failed-3" })[0];
+    const firedRow = queryReconciliationRows(rows, { requestId: "req-fired-2" })[0];
+    const failedRow = queryReconciliationRows(rows, { requestId: "req-failed-3" })[0];
 
     expect(firedRow?.status).toBe("submitted");
     expect(failedRow?.status).toBe("submitted");
@@ -172,5 +161,74 @@ describe("submission + beacon round-trip through the real writer and reader", ()
     const onlyFailed = queryReconciliationRows(rows, { beaconStatus: "failed" });
     expect(onlyFired.map((r) => r.requestId)).toEqual(["req-fired-2"]);
     expect(onlyFailed.map((r) => r.requestId)).toEqual(["req-failed-3"]);
+  });
+
+  it("round-trips a skipped beacon's trackingUrl distinctly for 'no URL was ever applicable' vs. 'a plugin managing its own tracking nav delegated it'", async () => {
+    await captureSubmissionEnvelope(
+      {
+        siteId: "appcast",
+        requestId: "req-skipped-delegated",
+        joinKeys: { vivclid: "viv-delegated", jobReference: "emp4_jid4" },
+        inboundPayload: { jobId: "jid4", TrackingUrl: "https://track.appcast.io/t/abc" },
+        status: "submitted",
+        auditPayload: { verified: true, applicationId: "app-4" },
+        errorMessage: null,
+        durationMs: 190,
+      },
+      { sinkPath }
+    );
+    await captureBeaconEvent(
+      {
+        requestId: "req-skipped-delegated",
+        siteId: "appcast",
+        joinKeys: { vivclid: "viv-delegated", jobReference: "emp4_jid4" },
+        beaconStatus: "skipped",
+        trackingUrl: "https://track.appcast.io/t/abc",
+        durationMs: 0,
+      },
+      { sinkPath }
+    );
+
+    await captureSubmissionEnvelope(
+      {
+        siteId: "hca",
+        requestId: "req-skipped-no-url",
+        joinKeys: null,
+        inboundPayload: { jobId: "jid5" },
+        status: "submitted",
+        auditPayload: { verified: true, applicationId: "app-5" },
+        errorMessage: null,
+        durationMs: 175,
+      },
+      { sinkPath }
+    );
+    await captureBeaconEvent(
+      {
+        requestId: "req-skipped-no-url",
+        siteId: "hca",
+        joinKeys: null,
+        beaconStatus: "skipped",
+        trackingUrl: null,
+        durationMs: 0,
+      },
+      { sinkPath }
+    );
+
+    const rows = await readReconciliationRows({ sinkPath });
+
+    const delegatedRow = queryReconciliationRows(rows, { requestId: "req-skipped-delegated" })[0];
+    const noUrlRow = queryReconciliationRows(rows, { requestId: "req-skipped-no-url" })[0];
+
+    expect(delegatedRow?.beaconStatus).toBe("skipped");
+    expect(delegatedRow?.beaconTrackingUrl).toBe("https://track.appcast.io/t/abc");
+
+    expect(noUrlRow?.beaconStatus).toBe("skipped");
+    expect(noUrlRow?.beaconTrackingUrl).toBeNull();
+
+    const onlySkipped = queryReconciliationRows(rows, { beaconStatus: "skipped" });
+    expect(onlySkipped.map((r) => r.requestId).sort()).toEqual([
+      "req-skipped-delegated",
+      "req-skipped-no-url",
+    ]);
   });
 });

@@ -1,8 +1,12 @@
 /**
  * Schemas for the durable per-run reconciliation record. Extends the submit
- * envelope with named `vivclid`/`jobReference` join keys and adds a distinct
- * beacon/conversion-event kind, so attribution can reconcile Appcast payment
- * per-run instead of only at the cohort level (see feat-002 task context).
+ * envelope with an opaque `joinKeys` bag and adds a distinct
+ * beacon/conversion-event kind, so a plugin can reconcile its own attribution
+ * provider's payment per-run instead of only at the cohort level. `joinKeys`
+ * is deliberately untyped `Record<string, unknown>` (matching
+ * `SitePluginResult.auditPayload`'s "opaque, plugin-owned shape" precedent in
+ * `src/site-plugin.ts`) — core has no business knowing what a given
+ * attribution vendor calls its join key.
  *
  * Both `submission-capture.ts` and `s3-sink.ts` are strictly append-only, so
  * the beacon outcome — which resolves after dispatch already returned and
@@ -18,16 +22,15 @@
 import { z } from "zod/v4";
 
 /**
- * Submit-side record: the existing submission envelope shape plus named
- * `vivclid`/`jobReference` join keys. Both are nullable-with-default so
- * pre-existing lines that never carried these fields still parse.
+ * Submit-side record: the existing submission envelope shape plus an opaque
+ * `joinKeys` bag. Nullable-with-default so pre-existing lines that never
+ * carried this field still parse.
  */
 export const submitRecordSchema = z.object({
   kind: z.literal("submit").default("submit"),
   siteId: z.string(),
   requestId: z.string(),
-  vivclid: z.string().nullable().default(null),
-  jobReference: z.string().nullable().default(null),
+  joinKeys: z.record(z.string(), z.unknown()).nullable().default(null),
   inboundPayload: z.unknown(),
   status: z.enum(["submitted", "error"]),
   auditPayload: z.unknown(),
@@ -43,17 +46,17 @@ export type SubmitRecord = z.infer<typeof submitRecordSchema>;
  * the submit record for the same `requestId`. Models "submitted but the
  * beacon did not fire" as a distinct dimension from submit outcome.
  * `beaconStatus: "skipped"` means no beacon was ever applicable for this run
- * (no usable TrackingUrl) — distinct from `"not_fired"` (the reader's fold
- * default for a submit row with no matching beacon line at all), so
- * "submitted but the beacon did not fire" excludes runs that never had a
- * beacon to fire.
+ * (no usable TrackingUrl, or the plugin manages its own beacon nav — see
+ * `dispatch()` in `src/plugins/loader.ts`) — distinct from `"not_fired"`
+ * (the reader's fold default for a submit row with no matching beacon line
+ * at all), so "submitted but the beacon did not fire" excludes runs that
+ * never had a beacon to fire.
  */
 export const beaconEventSchema = z.object({
   kind: z.literal("beacon"),
   requestId: z.string(),
   siteId: z.string(),
-  vivclid: z.string().nullable(),
-  jobReference: z.string().nullable(),
+  joinKeys: z.record(z.string(), z.unknown()).nullable(),
   beaconStatus: z.enum(["fired", "failed", "skipped"]),
   trackingUrl: z.string().nullable(),
   durationMs: z.number(),

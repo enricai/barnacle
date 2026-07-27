@@ -1,11 +1,11 @@
 /**
  * Append-only NDJSON sink for dispatch submission envelopes. One line per
  * plugin invocation captures the outcome — siteId, requestId, inbound payload,
- * status, audit payload, error message, duration, plus the named `vivclid`/
- * `jobReference` reconciliation keys and the `kind:"submit"` dimension — so
- * downstream tooling (ETL, jq, ad-hoc queries) can answer "what did we submit
- * for jobId X on date Y, and did it succeed?" without a database, and join
- * runs to the Appcast CPA report without re-parsing `inboundPayload`.
+ * status, audit payload, error message, duration, plus the opaque `joinKeys`
+ * bag and the `kind:"submit"` dimension — so downstream tooling (ETL, jq,
+ * ad-hoc queries) can answer "what did we submit for jobId X on date Y, and
+ * did it succeed?" without a database, and a plugin can join runs to its own
+ * attribution provider's report without re-parsing `inboundPayload`.
  *
  * Kept on a separate sink from calls.ndjson because the judge and self-heal
  * readers Zod-parse every calls.ndjson line as an LlmCallSample; mixing record
@@ -29,8 +29,8 @@ const logger = getLogger({ name: "telemetry/submission-capture" });
  * Validated shape of one submission envelope sample. Alias of
  * `submitRecordSchema` (feat-002) kept under its original export name so the
  * five existing test files that import it are unaffected — the reconciliation
- * schema is a strict superset (adds `kind`, `vivclid`, `jobReference`, all
- * defaulted) of the shape this module used to define standalone.
+ * schema is a strict superset (adds `kind`, `joinKeys`, both defaulted) of
+ * the shape this module used to define standalone.
  */
 export const submissionEnvelopeSampleSchema = submitRecordSchema;
 
@@ -38,16 +38,12 @@ export type SubmissionEnvelopeSample = z.infer<typeof submissionEnvelopeSampleSc
 
 /**
  * Input to `captureSubmissionEnvelope` — `ts` and `kind` are derived
- * internally so callers omit them. `vivclid`/`jobReference` are optional so
- * existing call sites that don't yet resolve a join key keep compiling
- * unchanged; omitted values are persisted as `null`, not left undefined.
+ * internally so callers omit them. `joinKeys` is optional so existing call
+ * sites that don't yet resolve join keys keep compiling unchanged; an
+ * omitted value is persisted as `null`, not left undefined.
  */
-export type SubmissionEnvelopeInput = Omit<
-  SubmissionEnvelopeSample,
-  "ts" | "kind" | "vivclid" | "jobReference"
-> & {
-  vivclid?: string | null;
-  jobReference?: string | null;
+export type SubmissionEnvelopeInput = Omit<SubmissionEnvelopeSample, "ts" | "kind" | "joinKeys"> & {
+  joinKeys?: Record<string, unknown> | null;
 };
 
 /** Options for `captureSubmissionEnvelope`. */
@@ -82,8 +78,7 @@ export async function captureSubmissionEnvelope(
   const sample: SubmissionEnvelopeSample = {
     ...input,
     kind: "submit",
-    vivclid: input.vivclid ?? null,
-    jobReference: input.jobReference ?? null,
+    joinKeys: input.joinKeys ?? null,
     ts: formatISO(new Date()),
   };
 

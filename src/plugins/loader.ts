@@ -28,7 +28,6 @@ import {
 import { MetricsCollector } from "@/lib/dispatch-metrics";
 import { toErrorMessage } from "@/lib/errors";
 import { extendLogger, getLogger } from "@/lib/logging";
-import { extractReconciliationKeys } from "@/lib/reconciliation-keys";
 import { captureBeaconEvent } from "@/lib/telemetry/beacon-capture";
 import { captureSubmissionEnvelope } from "@/lib/telemetry/submission-capture";
 import { fireTrackingClick } from "@/lib/tracking-click";
@@ -219,15 +218,23 @@ async function emitBeaconSafely(input: Parameters<typeof captureBeaconEvent>[0])
  * browser path. Records metrics on each branch so ops dashboards can alert on
  * rising fallback rates. Emits a `submission-envelope` telemetry record on
  * both success and failure — the durable source-of-truth for "what did we
- * submit for jobId X and did it succeed." Extracts the `vivclid`/`jobReference`
- * reconciliation keys from the inbound payload once and stamps them onto both
+ * submit for jobId X and did it succeed." Calls the plugin's own
+ * `extractJoinKeys` (if declared) once and stamps the opaque result onto both
  * the submission envelope and the tracking click so a run's submit and
- * beacon-fire records can be joined. When a successful submit has no usable
- * `TrackingUrl`, emits a `beaconStatus: "skipped"` record instead of firing
+ * beacon-fire records can be joined, without core knowing what the keys mean.
+ * A plugin that declares `extractJoinKeys` is asserting it manages its own
+ * post-submit attribution navigation, so core's automatic `TrackingUrl` fire
+ * is skipped for it — firing both would open two independent sessions
+ * against the same tracking URL, which can orphan the plugin's own
+ * click-to-session association with its attribution vendor. Either way — no
+ * usable `TrackingUrl`, or a plugin that manages its own nav — the skipped
+ * case still records a `beaconStatus: "skipped"` record instead of firing
  * the tracking click, so "no beacon was ever applicable" is distinguishable
- * from "a beacon was attempted and never recorded an outcome." Maps scraper
- * errors to the API error hierarchy so callers receive typed, client-readable
- * errors instead of raw scraper internals.
+ * from "a beacon was attempted and never recorded an outcome"; the record's
+ * `trackingUrl` field is preserved (not nulled) when a real URL was present
+ * but delegated, so the two skip reasons stay distinguishable from each
+ * other too. Maps scraper errors to the API error hierarchy so callers
+ * receive typed, client-readable errors instead of raw scraper internals.
  */
 export async function dispatch<TResult>(
   plugin: SitePlugin<unknown, unknown>,
@@ -239,7 +246,8 @@ export async function dispatch<TResult>(
   const hasHttpPath = !!plugin.executeHttp && !options.forceFallback;
   const pathTag: "http" | "browser" = hasHttpPath ? "http" : "browser";
   const ddTags = { site: plugin.meta.siteId, path: pathTag };
-  const { vivclid, jobReference } = extractReconciliationKeys(payload);
+  const joinKeys = plugin.extractJoinKeys?.(payload) ?? null;
+  const managesOwnTracking = !!plugin.extractJoinKeys;
 
   recordDdAttempt(ddTags);
 
@@ -265,8 +273,7 @@ export async function dispatch<TResult>(
     await emitEnvelopeSafely({
       siteId: plugin.meta.siteId,
       requestId: context.requestId,
-      vivclid,
-      jobReference,
+      joinKeys,
       inboundPayload: payload,
       status: "submitted",
       auditPayload: result.auditPayload ?? result.data,
@@ -274,21 +281,27 @@ export async function dispatch<TResult>(
       durationMs,
     });
 
-    const trackingUrl = (payload as Record<string, unknown>)?.TrackingUrl;
-    if (typeof trackingUrl === "string" && trackingUrl.length > 0) {
+    const rawTrackingUrl = (payload as Record<string, unknown>)?.TrackingUrl;
+    const trackingUrl =
+      typeof rawTrackingUrl === "string" && rawTrackingUrl.length > 0 ? rawTrackingUrl : null;
+    if (!managesOwnTracking && trackingUrl) {
       fireTrackingClick(trackingUrl, plugin.meta.siteId, {
         requestId: context.requestId,
-        vivclid,
-        jobReference,
+        joinKeys,
       });
     } else {
       await emitBeaconSafely({
         requestId: context.requestId,
         siteId: plugin.meta.siteId,
-        vivclid,
-        jobReference,
+        joinKeys,
         beaconStatus: "skipped",
-        trackingUrl: null,
+        // Preserved (not nulled) when the plugin manages its own tracking
+        // nav and a URL was present, so the sink can distinguish "no URL
+        // was ever applicable" (trackingUrl: null) from "a URL was present
+        // but a different, plugin-owned navigation used it instead"
+        // (trackingUrl: <the URL>) — both cases hit this branch, but only
+        // the latter had a real URL to report.
+        trackingUrl,
         durationMs: 0,
       });
     }
@@ -307,8 +320,7 @@ export async function dispatch<TResult>(
     await emitEnvelopeSafely({
       siteId: plugin.meta.siteId,
       requestId: context.requestId,
-      vivclid,
-      jobReference,
+      joinKeys,
       inboundPayload: payload,
       status: "error",
       auditPayload: null,

@@ -38,8 +38,7 @@ function makeSubmitLine(overrides: Record<string, unknown> = {}): Record<string,
     kind: "submit",
     siteId: "ats-a",
     requestId: "req-abc-123",
-    vivclid: "v-9981",
-    jobReference: "56793094457_jid-1",
+    joinKeys: { vivclid: "v-9981", jobReference: "56793094457_jid-1" },
     inboundPayload: { jobId: "56793094457" },
     status: "submitted",
     auditPayload: { verified: true },
@@ -55,8 +54,7 @@ function makeBeaconLine(overrides: Record<string, unknown> = {}): Record<string,
     kind: "beacon",
     requestId: "req-abc-123",
     siteId: "ats-a",
-    vivclid: "v-9981",
-    jobReference: "56793094457_jid-1",
+    joinKeys: { vivclid: "v-9981", jobReference: "56793094457_jid-1" },
     beaconStatus: "fired",
     trackingUrl: "https://track.appcast.io/pixel?rid=req-abc-123",
     durationMs: 87,
@@ -169,7 +167,11 @@ describe("routes/submissions GET /v1/submissions", () => {
       sinkPath,
       ndjson(
         makeSubmitLine({ requestId: "req-hca", siteId: "hca" }),
-        makeSubmitLine({ requestId: "req-ats-c", siteId: "ats-c", vivclid: "v-other" })
+        makeSubmitLine({
+          requestId: "req-ats-c",
+          siteId: "ats-c",
+          joinKeys: { vivclid: "v-other" },
+        })
       ),
       "utf8"
     );
@@ -190,45 +192,12 @@ describe("routes/submissions GET /v1/submissions", () => {
     }
   });
 
-  it("forwards jobReference verbatim to the reader/query layer", async () => {
-    fs.writeFileSync(
-      sinkPath,
-      ndjson(
-        makeSubmitLine({ requestId: "req-1", jobReference: "56793094457_jid-1" }),
-        makeSubmitLine({
-          requestId: "req-2",
-          jobReference: "56793094458_jid-2",
-          vivclid: "v-other",
-        })
-      ),
-      "utf8"
-    );
-    const app = await buildApp(sinkPath);
-    try {
-      const response = await app.inject({
-        method: "GET",
-        url: "/v1/submissions?jobReference=56793094458_jid-2",
-        headers: { authorization: `Bearer ${VALID_KEY}` },
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = response.json();
-      expect(body.submissions).toHaveLength(1);
-      expect(body.submissions[0]).toMatchObject({
-        requestId: "req-2",
-        jobReference: "56793094458_jid-2",
-      });
-    } finally {
-      await app.close();
-    }
-  });
-
   it("filters to one run's row by requestId", async () => {
     fs.writeFileSync(
       sinkPath,
       ndjson(
-        makeSubmitLine({ requestId: "req-target", vivclid: "v-target" }),
-        makeSubmitLine({ requestId: "req-other", vivclid: "v-other" })
+        makeSubmitLine({ requestId: "req-target", joinKeys: { vivclid: "v-target" } }),
+        makeSubmitLine({ requestId: "req-other", joinKeys: { vivclid: "v-other" } })
       ),
       "utf8"
     );
@@ -244,7 +213,10 @@ describe("routes/submissions GET /v1/submissions", () => {
       const body = response.json();
       expect(body.submissions).toHaveLength(1);
       expect(body.total).toBe(1);
-      expect(body.submissions[0]).toMatchObject({ requestId: "req-target", vivclid: "v-target" });
+      expect(body.submissions[0]).toMatchObject({
+        requestId: "req-target",
+        joinKeys: { vivclid: "v-target" },
+      });
     } finally {
       await app.close();
     }
@@ -257,12 +229,12 @@ describe("routes/submissions GET /v1/submissions", () => {
         makeSubmitLine({ requestId: "req-early", ts: "2026-07-01T00:00:00.000Z" }),
         makeSubmitLine({
           requestId: "req-in-range",
-          vivclid: "v-in-range",
+          joinKeys: { vivclid: "v-in-range" },
           ts: "2026-07-15T00:00:00.000Z",
         }),
         makeSubmitLine({
           requestId: "req-late",
-          vivclid: "v-late",
+          joinKeys: { vivclid: "v-late" },
           ts: "2026-08-01T00:00:00.000Z",
         })
       ),
@@ -285,13 +257,17 @@ describe("routes/submissions GET /v1/submissions", () => {
     }
   });
 
-  it("filters to one run's row by vivclid, including its folded beaconStatus", async () => {
+  it("includes the joinKeys bag and folded beaconStatus on a matched row", async () => {
     fs.writeFileSync(
       sinkPath,
       ndjson(
-        makeSubmitLine({ requestId: "req-1", vivclid: "v-1" }),
-        makeBeaconLine({ requestId: "req-1", vivclid: "v-1", beaconStatus: "fired" }),
-        makeSubmitLine({ requestId: "req-2", vivclid: "v-2" })
+        makeSubmitLine({ requestId: "req-1", joinKeys: { vivclid: "v-1" } }),
+        makeBeaconLine({
+          requestId: "req-1",
+          joinKeys: { vivclid: "v-1" },
+          beaconStatus: "fired",
+        }),
+        makeSubmitLine({ requestId: "req-2", joinKeys: { vivclid: "v-2" } })
       ),
       "utf8"
     );
@@ -299,7 +275,7 @@ describe("routes/submissions GET /v1/submissions", () => {
     try {
       const response = await app.inject({
         method: "GET",
-        url: "/v1/submissions?vivclid=v-1",
+        url: "/v1/submissions?requestId=req-1",
         headers: { authorization: `Bearer ${VALID_KEY}` },
       });
 
@@ -308,7 +284,7 @@ describe("routes/submissions GET /v1/submissions", () => {
       expect(body.submissions).toHaveLength(1);
       expect(body.submissions[0]).toMatchObject({
         requestId: "req-1",
-        vivclid: "v-1",
+        joinKeys: { vivclid: "v-1" },
         beaconStatus: "fired",
         trackingUrl: "https://track.appcast.io/pixel?rid=req-abc-123",
       });
@@ -323,7 +299,7 @@ describe("routes/submissions GET /v1/submissions", () => {
       ndjson(
         makeSubmitLine({ requestId: "req-fired" }),
         makeBeaconLine({ requestId: "req-fired", beaconStatus: "fired" }),
-        makeSubmitLine({ requestId: "req-unfired", vivclid: "v-unfired" })
+        makeSubmitLine({ requestId: "req-unfired", joinKeys: { vivclid: "v-unfired" } })
       ),
       "utf8"
     );
@@ -353,7 +329,11 @@ describe("routes/submissions GET /v1/submissions", () => {
       sinkPath,
       ndjson(
         makeSubmitLine({ requestId: "req-submitted", status: "submitted" }),
-        makeSubmitLine({ requestId: "req-error", vivclid: "v-error", status: "error" })
+        makeSubmitLine({
+          requestId: "req-error",
+          joinKeys: { vivclid: "v-error" },
+          status: "error",
+        })
       ),
       "utf8"
     );
@@ -378,9 +358,21 @@ describe("routes/submissions GET /v1/submissions", () => {
     fs.writeFileSync(
       sinkPath,
       ndjson(
-        makeSubmitLine({ requestId: "req-1", vivclid: "v-1", ts: "2026-07-01T00:00:00.000Z" }),
-        makeSubmitLine({ requestId: "req-2", vivclid: "v-2", ts: "2026-07-02T00:00:00.000Z" }),
-        makeSubmitLine({ requestId: "req-3", vivclid: "v-3", ts: "2026-07-03T00:00:00.000Z" })
+        makeSubmitLine({
+          requestId: "req-1",
+          joinKeys: { vivclid: "v-1" },
+          ts: "2026-07-01T00:00:00.000Z",
+        }),
+        makeSubmitLine({
+          requestId: "req-2",
+          joinKeys: { vivclid: "v-2" },
+          ts: "2026-07-02T00:00:00.000Z",
+        }),
+        makeSubmitLine({
+          requestId: "req-3",
+          joinKeys: { vivclid: "v-3" },
+          ts: "2026-07-03T00:00:00.000Z",
+        })
       ),
       "utf8"
     );
@@ -422,12 +414,12 @@ describe("routes/submissions GET /v1/submissions", () => {
   it("merges S3-mirrored rows into the response and counts them in total", async () => {
     fs.writeFileSync(
       sinkPath,
-      ndjson(makeSubmitLine({ requestId: "req-local", vivclid: "v-local" })),
+      ndjson(makeSubmitLine({ requestId: "req-local", joinKeys: { vivclid: "v-local" } })),
       "utf8"
     );
     listSubmissionsS3ObjectsMock.mockResolvedValue(["telemetry/submissions/2026-07-26/a.ndjson"]);
     fetchSubmissionsS3RecordsMock.mockResolvedValue([
-      makeSubmitLine({ requestId: "req-s3-only", vivclid: "v-s3-only" }),
+      makeSubmitLine({ requestId: "req-s3-only", joinKeys: { vivclid: "v-s3-only" } }),
     ]);
     const app = await buildApp(sinkPath);
     try {
@@ -451,12 +443,12 @@ describe("routes/submissions GET /v1/submissions", () => {
   });
 
   it("returns 200 with an empty array (not 404) when a filter matches no rows", async () => {
-    fs.writeFileSync(sinkPath, ndjson(makeSubmitLine({ vivclid: "v-9981" })), "utf8");
+    fs.writeFileSync(sinkPath, ndjson(makeSubmitLine({ requestId: "req-abc-123" })), "utf8");
     const app = await buildApp(sinkPath);
     try {
       const response = await app.inject({
         method: "GET",
-        url: "/v1/submissions?vivclid=no-such-vivclid",
+        url: "/v1/submissions?requestId=no-such-request",
         headers: { authorization: `Bearer ${VALID_KEY}` },
       });
 

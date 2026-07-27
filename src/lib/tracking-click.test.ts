@@ -139,8 +139,7 @@ describe("fireTrackingClick", () => {
   it("captures a fired beacon outcome correlated to the run after a successful navigation", async () => {
     fireTrackingClick("https://click.acme.example/t/abc?vivclid=123", "ats-c", {
       requestId: "req-1",
-      vivclid: "123",
-      jobReference: "emp1_job1",
+      joinKeys: { vivclid: "123", jobReference: "emp1_job1" },
     });
     await drainTrackingClicks();
 
@@ -149,8 +148,7 @@ describe("fireTrackingClick", () => {
       expect.objectContaining({
         requestId: "req-1",
         siteId: "ats-c",
-        vivclid: "123",
-        jobReference: "emp1_job1",
+        joinKeys: { vivclid: "123", jobReference: "emp1_job1" },
         beaconStatus: "fired",
         trackingUrl: "https://click.acme.example/t/abc?vivclid=123",
       })
@@ -161,8 +159,7 @@ describe("fireTrackingClick", () => {
     mockPage.goto.mockRejectedValueOnce(new Error("navigation timeout"));
     fireTrackingClick("https://click.acme.example/t/abc", "ats-c", {
       requestId: "req-2",
-      vivclid: null,
-      jobReference: null,
+      joinKeys: null,
     });
     await drainTrackingClicks();
 
@@ -180,8 +177,7 @@ describe("fireTrackingClick", () => {
     mockCreateSession.mockRejectedValueOnce(new Error("no API key"));
     fireTrackingClick("https://click.acme.example/t/abc", "ats-c", {
       requestId: "req-3",
-      vivclid: "999",
-      jobReference: null,
+      joinKeys: { vivclid: "999" },
     });
     await drainTrackingClicks();
 
@@ -190,8 +186,7 @@ describe("fireTrackingClick", () => {
       expect.objectContaining({
         requestId: "req-3",
         siteId: "ats-c",
-        vivclid: "999",
-        jobReference: null,
+        joinKeys: { vivclid: "999" },
         beaconStatus: "failed",
       })
     );
@@ -201,8 +196,7 @@ describe("fireTrackingClick", () => {
     mockCaptureBeaconEvent.mockRejectedValueOnce(new Error("sink write failed"));
     fireTrackingClick("https://click.acme.example/t/abc", "ats-c", {
       requestId: "req-4",
-      vivclid: null,
-      jobReference: null,
+      joinKeys: null,
     });
 
     await expect(drainTrackingClicks()).resolves.toBeUndefined();
@@ -218,8 +212,7 @@ describe("fireTrackingClick", () => {
 
     fireTrackingClick("https://click.acme.example/t/abc", "ats-c", {
       requestId: "req-5",
-      vivclid: null,
-      jobReference: null,
+      joinKeys: null,
     });
 
     const drainPromise = drainTrackingClicks(5_000);

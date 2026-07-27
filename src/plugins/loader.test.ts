@@ -173,7 +173,7 @@ describe("dispatch", () => {
     );
   });
 
-  it("emits vivclid and jobReference on the success envelope, derived from TrackingUrl", async () => {
+  it("emits null joinKeys on the success envelope when the plugin declares no extractJoinKeys", async () => {
     const payload = {
       TrackingUrl: "https://click.acme.example/t/abc?vivclid=123&empId=emp9&jid=job9",
     };
@@ -181,19 +181,27 @@ describe("dispatch", () => {
     expect(mockCaptureSubmissionEnvelope).toHaveBeenCalledWith(
       expect.objectContaining({
         status: "submitted",
-        vivclid: "123",
-        jobReference: "emp9_job9",
+        joinKeys: null,
       })
     );
   });
 
-  it("emits null vivclid and jobReference on the success envelope when the payload carries neither", async () => {
-    await dispatch(stubPlugin, { jobId: "job-1" }, stubContext);
+  it("emits the plugin's extractJoinKeys result on the success envelope", async () => {
+    const joinKeysPlugin: SitePlugin<unknown, unknown> = {
+      ...stubPlugin,
+      extractJoinKeys: (payload) => {
+        const { TrackingUrl } = payload as { TrackingUrl?: string };
+        return TrackingUrl ? { vivclid: "123", jobReference: "emp9_job9" } : null;
+      },
+    };
+    const payload = {
+      TrackingUrl: "https://click.acme.example/t/abc?vivclid=123&empId=emp9&jid=job9",
+    };
+    await dispatch(joinKeysPlugin, payload, stubContext);
     expect(mockCaptureSubmissionEnvelope).toHaveBeenCalledWith(
       expect.objectContaining({
         status: "submitted",
-        vivclid: null,
-        jobReference: null,
+        joinKeys: { vivclid: "123", jobReference: "emp9_job9" },
       })
     );
   });
@@ -263,14 +271,18 @@ describe("dispatch", () => {
     );
   });
 
-  it("emits vivclid, siteId, and jobReference on the error envelope, derived from TrackingUrl", async () => {
+  it("emits the plugin's extractJoinKeys result on the error envelope", async () => {
     mockPluginExecute.mockRejectedValueOnce(new CaptchaError("captcha hit"));
+    const joinKeysPlugin: SitePlugin<unknown, unknown> = {
+      ...stubPlugin,
+      extractJoinKeys: () => ({ vivclid: "999", jobReference: "emp1_job1" }),
+    };
     const payload = {
       TrackingUrl: "https://click.acme.example/t/abc?vivclid=999&empId=emp1&jid=job1",
     };
 
     try {
-      await dispatch(stubPlugin, payload, stubContext);
+      await dispatch(joinKeysPlugin, payload, stubContext);
     } catch {
       // expected — we only care that the envelope was emitted
     }
@@ -279,13 +291,12 @@ describe("dispatch", () => {
       expect.objectContaining({
         siteId: "test-site",
         status: "error",
-        vivclid: "999",
-        jobReference: "emp1_job1",
+        joinKeys: { vivclid: "999", jobReference: "emp1_job1" },
       })
     );
   });
 
-  it("emits null vivclid and jobReference on the error envelope when the payload carries neither", async () => {
+  it("emits null joinKeys on the error envelope when the plugin declares no extractJoinKeys", async () => {
     mockPluginExecute.mockRejectedValueOnce(new CaptchaError("captcha hit"));
 
     try {
@@ -297,8 +308,7 @@ describe("dispatch", () => {
     expect(mockCaptureSubmissionEnvelope).toHaveBeenCalledWith(
       expect.objectContaining({
         status: "error",
-        vivclid: null,
-        jobReference: null,
+        joinKeys: null,
       })
     );
   });
@@ -579,7 +589,7 @@ describe("dispatch — tracking click", () => {
     vi.clearAllMocks();
   });
 
-  it("calls fireTrackingClick with the URL, siteId, and reconciliation keys when payload contains TrackingUrl", async () => {
+  it("calls fireTrackingClick with the URL, siteId, and joinKeys when payload contains TrackingUrl", async () => {
     const payload = {
       TrackingUrl: "https://click.acme.example/t/abc?vivclid=123&empId=emp9&jid=job9",
     };
@@ -588,7 +598,39 @@ describe("dispatch — tracking click", () => {
     expect(mockFireTrackingClick).toHaveBeenCalledWith(
       "https://click.acme.example/t/abc?vivclid=123&empId=emp9&jid=job9",
       "test-site",
-      { requestId: "req-test-123", vivclid: "123", jobReference: "emp9_job9" }
+      { requestId: "req-test-123", joinKeys: null }
+    );
+  });
+
+  it("does not call fireTrackingClick when the plugin declares extractJoinKeys (it manages its own tracking)", async () => {
+    const joinKeysPlugin: SitePlugin<unknown, unknown> = {
+      ...stubPlugin,
+      extractJoinKeys: () => ({ vivclid: "123" }),
+    };
+    const payload = {
+      TrackingUrl: "https://click.acme.example/t/abc?vivclid=123&empId=emp9&jid=job9",
+    };
+    await dispatch(joinKeysPlugin, payload, stubContext);
+    expect(mockFireTrackingClick).not.toHaveBeenCalled();
+  });
+
+  it("preserves the real TrackingUrl on the skipped beacon record when a plugin with extractJoinKeys delegates tracking", async () => {
+    const joinKeysPlugin: SitePlugin<unknown, unknown> = {
+      ...stubPlugin,
+      extractJoinKeys: () => ({ vivclid: "123" }),
+    };
+    const trackingUrl = "https://click.acme.example/t/abc?vivclid=123&empId=emp9&jid=job9";
+    await dispatch(joinKeysPlugin, { TrackingUrl: trackingUrl }, stubContext);
+    expect(mockFireTrackingClick).not.toHaveBeenCalled();
+    expect(mockCaptureBeaconEvent).toHaveBeenCalledOnce();
+    expect(mockCaptureBeaconEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestId: "req-test-123",
+        siteId: "test-site",
+        joinKeys: { vivclid: "123" },
+        beaconStatus: "skipped",
+        trackingUrl,
+      })
     );
   });
 
@@ -620,8 +662,7 @@ describe("dispatch — tracking click", () => {
       expect.objectContaining({
         requestId: "req-test-123",
         siteId: "test-site",
-        vivclid: null,
-        jobReference: null,
+        joinKeys: null,
         beaconStatus: "skipped",
         trackingUrl: null,
       })

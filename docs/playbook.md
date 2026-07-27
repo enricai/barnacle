@@ -565,7 +565,7 @@ cent per call.
 
 ```
 Request arrives
-  → extract reconciliation keys (vivclid, jobReference)  [src/lib/reconciliation-keys.ts]
+  → plugin.extractJoinKeys(payload) → joinKeys   [opaque, plugin-owned; src/site-plugin.ts]
   → LRU cache check (getCachedResponse)         [src/cache/response-cache.ts]
   → cache hit → return immediately
   → cache miss → getOrCreateInFlight(key, fn)   [coalesces concurrent misses]
@@ -582,7 +582,8 @@ Request arrives
 
 **Beacon-fire (conversion tracking):** the last two steps both come from
 `dispatch()` itself, after `runPluginPipeline` resolves — they run for the
-hot path and the browser fallback alike. When the payload has a usable
+hot path and the browser fallback alike, but only for a plugin that has NOT
+declared `extractJoinKeys`. When such a plugin's payload has a usable
 `TrackingUrl`, `fireTrackingClick` (`src/lib/tracking-click.ts:130`) is
 fire-and-forget: `dispatch()` calls it and returns without awaiting, so the
 response reaches the caller before the click even starts. In the background
@@ -591,12 +592,14 @@ it opens a short-lived Browserbase session, navigates to the plugin's
 writes a separate `"beacon"` reconciliation record with `beaconStatus:
 "fired"` or `"failed"` — errors are swallowed and logged at `warn`, never
 surfaced to the request path. When there is no `TrackingUrl` to navigate to
-at all, `dispatch()` skips `fireTrackingClick` entirely and instead writes a
-`beaconStatus: "skipped"` beacon record itself, synchronously, before
-returning. This is why beacon-fire needs its own durable record instead of
-being inferred from submit success: a submission can succeed while the
-beacon never fires (see §6B for how that shows up in metrics, and drain
-behavior on shutdown).
+at all, or when the plugin declared `extractJoinKeys` (asserting it fires its
+own post-submit tracking nav itself, outside `dispatch()` — see §Reconciliation
+join keys in architecture.md), `dispatch()` skips `fireTrackingClick` entirely
+and instead writes a `beaconStatus: "skipped"` beacon record itself,
+synchronously, before returning. This is why beacon-fire needs its own
+durable record instead of being inferred from submit success: a submission
+can succeed while the beacon never fires (see §6B for how that shows up in
+metrics, and drain behavior on shutdown).
 
 **Cache deduplication:** `getOrCreateInFlight` coalesces concurrent misses on
 the same cache key into a single upstream call. If 10 identical requests arrive

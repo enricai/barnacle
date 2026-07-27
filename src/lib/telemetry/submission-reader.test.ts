@@ -42,8 +42,7 @@ function makeSubmitLine(overrides: Record<string, unknown> = {}): Record<string,
     kind: "submit",
     siteId: "ats-c",
     requestId: "req-abc-123",
-    vivclid: "v-9981",
-    jobReference: "56793094457_jid-1",
+    joinKeys: { vivclid: "v-9981", jobReference: "56793094457_jid-1" },
     inboundPayload: { jobId: "56793094457", ClickUrl: "https://example.com/apply" },
     status: "submitted",
     auditPayload: { verified: true, applicationId: "app-xyz" },
@@ -73,8 +72,7 @@ function makeBeaconLine(overrides: Record<string, unknown> = {}): Record<string,
     kind: "beacon",
     requestId: "req-abc-123",
     siteId: "ats-c",
-    vivclid: "v-9981",
-    jobReference: "56793094457_jid-1",
+    joinKeys: { vivclid: "v-9981", jobReference: "56793094457_jid-1" },
     beaconStatus: "fired",
     trackingUrl: "https://track.appcast.io/pixel?rid=req-abc-123",
     durationMs: 87,
@@ -96,15 +94,14 @@ describe("parseReconciliationLines", () => {
     expect(records[1]?.kind).toBe("beacon");
   });
 
-  it("parses a legacy line with no kind field, defaulting vivclid/jobReference to null", () => {
+  it("parses a legacy line with no kind field, defaulting joinKeys to null", () => {
     const content = ndjson(makeLegacySubmitLine());
     const records = parseReconciliationLines(content);
     expect(records).toHaveLength(1);
     const [record] = records;
     expect(record?.kind).toBe("submit");
     if (record?.kind === "submit") {
-      expect(record.vivclid).toBeNull();
-      expect(record.jobReference).toBeNull();
+      expect(record.joinKeys).toBeNull();
       expect(record.requestId).toBe("req-legacy-789");
     }
   });
@@ -164,12 +161,11 @@ describe("foldReconciliationRecords", () => {
     expect(rows).toHaveLength(0);
   });
 
-  it("keeps a legacy line with no kind as a first-class row with null vivclid/jobReference", () => {
+  it("keeps a legacy line with no kind as a first-class row with null joinKeys", () => {
     const records = parseReconciliationLines(ndjson(makeLegacySubmitLine()));
     const rows = foldReconciliationRecords(records);
     expect(rows).toHaveLength(1);
-    expect(rows[0]?.vivclid).toBeNull();
-    expect(rows[0]?.jobReference).toBeNull();
+    expect(rows[0]?.joinKeys).toBeNull();
     expect(rows[0]?.beaconStatus).toBe("not_fired");
   });
 
@@ -253,37 +249,32 @@ describe("querying reconciliation rows by join key, time window, and page bound"
     const lines = [
       makeSubmitLine({
         requestId: "req-a",
-        vivclid: "v-100",
+        joinKeys: { vivclid: "v-100", jobReference: "111_jid-1" },
         siteId: "ats-a",
-        jobReference: "111_jid-1",
         ts: "2026-07-20T09:00:00.000Z",
       }),
       makeSubmitLine({
         requestId: "req-b",
-        vivclid: "v-200",
+        joinKeys: { vivclid: "v-200", jobReference: "222_jid-2" },
         siteId: "ats-b",
-        jobReference: "222_jid-2",
         ts: "2026-07-20T10:00:00.000Z",
       }),
       makeSubmitLine({
         requestId: "req-c",
-        vivclid: "v-300",
+        joinKeys: { vivclid: "v-300", jobReference: "333_jid-3" },
         siteId: "ats-a",
-        jobReference: "333_jid-3",
         ts: "2026-07-20T11:00:00.000Z",
       }),
       makeSubmitLine({
         requestId: "req-d",
-        vivclid: "v-400",
+        joinKeys: { vivclid: "v-400", jobReference: "444_jid-4" },
         siteId: "ats-b",
-        jobReference: "444_jid-4",
         ts: "2026-07-20T12:00:00.000Z",
       }),
       makeSubmitLine({
         requestId: "req-e",
-        vivclid: "v-500",
+        joinKeys: { vivclid: "v-500", jobReference: "555_jid-5" },
         siteId: "ats-c",
-        jobReference: "555_jid-5",
         ts: "2026-07-20T13:00:00.000Z",
       }),
     ];
@@ -293,7 +284,7 @@ describe("querying reconciliation rows by join key, time window, and page bound"
 
   it("resolves an exact-match vivclid filter to its one row", async () => {
     const rows = await readFixtureRows();
-    const matches = rows.filter((row) => row.vivclid === "v-300");
+    const matches = rows.filter((row) => row.joinKeys?.vivclid === "v-300");
     expect(matches).toHaveLength(1);
     expect(matches[0]?.requestId).toBe("req-c");
   });
@@ -306,7 +297,7 @@ describe("querying reconciliation rows by join key, time window, and page bound"
 
   it("resolves an exact-match jobReference filter to its one row", async () => {
     const rows = await readFixtureRows();
-    const matches = rows.filter((row) => row.jobReference === "444_jid-4");
+    const matches = rows.filter((row) => row.joinKeys?.jobReference === "444_jid-4");
     expect(matches).toHaveLength(1);
     expect(matches[0]?.requestId).toBe("req-d");
   });
