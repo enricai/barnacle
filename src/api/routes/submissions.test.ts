@@ -305,6 +305,60 @@ describe("routes/submissions GET /v1/submissions", () => {
     }
   });
 
+  it("forwards status verbatim to the reader/query layer", async () => {
+    fs.writeFileSync(
+      sinkPath,
+      ndjson(
+        makeSubmitLine({ requestId: "req-submitted", status: "submitted" }),
+        makeSubmitLine({ requestId: "req-error", vivclid: "v-error", status: "error" })
+      ),
+      "utf8"
+    );
+    const app = await buildApp(sinkPath);
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/v1/submissions?status=error",
+        headers: { authorization: `Bearer ${VALID_KEY}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.submissions).toHaveLength(1);
+      expect(body.submissions[0]).toMatchObject({ requestId: "req-error", status: "error" });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("paginates via limit/offset while total reflects the full matched count", async () => {
+    fs.writeFileSync(
+      sinkPath,
+      ndjson(
+        makeSubmitLine({ requestId: "req-1", vivclid: "v-1", ts: "2026-07-01T00:00:00.000Z" }),
+        makeSubmitLine({ requestId: "req-2", vivclid: "v-2", ts: "2026-07-02T00:00:00.000Z" }),
+        makeSubmitLine({ requestId: "req-3", vivclid: "v-3", ts: "2026-07-03T00:00:00.000Z" })
+      ),
+      "utf8"
+    );
+    const app = await buildApp(sinkPath);
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/v1/submissions?limit=1&offset=1",
+        headers: { authorization: `Bearer ${VALID_KEY}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.total).toBe(3);
+      expect(body.submissions).toHaveLength(1);
+      expect(body.submissions[0]).toMatchObject({ requestId: "req-2" });
+    } finally {
+      await app.close();
+    }
+  });
+
   it("returns a 400 with an ERROR_CODES code for an invalid from", async () => {
     const app = await buildApp(sinkPath);
     try {
