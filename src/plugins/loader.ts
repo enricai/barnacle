@@ -28,6 +28,7 @@ import {
 import { MetricsCollector } from "@/lib/dispatch-metrics";
 import { toErrorMessage } from "@/lib/errors";
 import { extendLogger, getLogger } from "@/lib/logging";
+import { extractReconciliationKeys } from "@/lib/reconciliation-keys";
 import { captureSubmissionEnvelope } from "@/lib/telemetry/submission-capture";
 import { fireTrackingClick } from "@/lib/tracking-click";
 import { BUILTIN_SITE_PLUGINS } from "@/plugins/discover";
@@ -203,9 +204,12 @@ async function emitEnvelopeSafely(
  * browser path. Records metrics on each branch so ops dashboards can alert on
  * rising fallback rates. Emits a `submission-envelope` telemetry record on
  * both success and failure — the durable source-of-truth for "what did we
- * submit for jobId X and did it succeed." Maps scraper errors to the API
- * error hierarchy so callers receive typed, client-readable errors instead
- * of raw scraper internals.
+ * submit for jobId X and did it succeed." Extracts the `vivclid`/`jobReference`
+ * reconciliation keys from the inbound payload once and stamps them onto both
+ * the submission envelope and the tracking click so a run's submit and
+ * beacon-fire records can be joined. Maps scraper errors to the API error
+ * hierarchy so callers receive typed, client-readable errors instead of raw
+ * scraper internals.
  */
 export async function dispatch<TResult>(
   plugin: SitePlugin<unknown, unknown>,
@@ -217,6 +221,7 @@ export async function dispatch<TResult>(
   const hasHttpPath = !!plugin.executeHttp && !options.forceFallback;
   const pathTag: "http" | "browser" = hasHttpPath ? "http" : "browser";
   const ddTags = { site: plugin.meta.siteId, path: pathTag };
+  const { vivclid, jobReference } = extractReconciliationKeys(payload);
 
   recordDdAttempt(ddTags);
 
@@ -242,6 +247,8 @@ export async function dispatch<TResult>(
     await emitEnvelopeSafely({
       siteId: plugin.meta.siteId,
       requestId: context.requestId,
+      vivclid,
+      jobReference,
       inboundPayload: payload,
       status: "submitted",
       auditPayload: result.auditPayload ?? result.data,
@@ -251,7 +258,11 @@ export async function dispatch<TResult>(
 
     const trackingUrl = (payload as Record<string, unknown>)?.TrackingUrl;
     if (typeof trackingUrl === "string" && trackingUrl.length > 0) {
-      fireTrackingClick(trackingUrl, plugin.meta.siteId);
+      fireTrackingClick(trackingUrl, plugin.meta.siteId, {
+        requestId: context.requestId,
+        vivclid,
+        jobReference,
+      });
     }
 
     return result;
@@ -268,6 +279,8 @@ export async function dispatch<TResult>(
     await emitEnvelopeSafely({
       siteId: plugin.meta.siteId,
       requestId: context.requestId,
+      vivclid,
+      jobReference,
       inboundPayload: payload,
       status: "error",
       auditPayload: null,
