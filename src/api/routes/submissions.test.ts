@@ -98,11 +98,29 @@ describe("routes/submissions GET /v1/submissions", () => {
     else process.env.NODE_ENV = preserved.NODE_ENV;
   });
 
-  it("returns 401 without a bearer token", async () => {
+  it("returns 401 (AUTHORIZATION_ERROR) without a bearer token", async () => {
     const app = await buildApp(sinkPath);
     try {
       const response = await app.inject({ method: "GET", url: "/v1/submissions" });
       expect(response.statusCode).toBe(401);
+      const body = response.json();
+      expect(body.status.details[0].code).toBe(ERROR_CODES.AUTHORIZATION_ERROR);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 401 (AUTHORIZATION_ERROR) with an invalid bearer token", async () => {
+    const app = await buildApp(sinkPath);
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/v1/submissions",
+        headers: { authorization: "Bearer wrong-token-abc" },
+      });
+      expect(response.statusCode).toBe(401);
+      const body = response.json();
+      expect(body.status.details[0].code).toBe(ERROR_CODES.AUTHORIZATION_ERROR);
     } finally {
       await app.close();
     }
@@ -120,10 +138,105 @@ describe("routes/submissions GET /v1/submissions", () => {
 
       expect(response.statusCode).toBe(200);
       const body = response.json();
-      expect(body.status).toMatchObject({ httpStatus: "OK" });
+      expect(body.status).toMatchObject({ httpStatus: "OK", details: [] });
+      expect(typeof body.status.dateTime).toBe("string");
       expect(Array.isArray(body.submissions)).toBe(true);
       expect(body.submissions).toHaveLength(1);
       expect(body.total).toBe(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("forwards siteId verbatim to the reader/query layer", async () => {
+    fs.writeFileSync(
+      sinkPath,
+      ndjson(
+        makeSubmitLine({ requestId: "req-hca", siteId: "hca" }),
+        makeSubmitLine({ requestId: "req-ats-c", siteId: "ats-c", vivclid: "v-other" })
+      ),
+      "utf8"
+    );
+    const app = await buildApp(sinkPath);
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/v1/submissions?siteId=hca",
+        headers: { authorization: `Bearer ${VALID_KEY}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.submissions).toHaveLength(1);
+      expect(body.submissions[0]).toMatchObject({ requestId: "req-hca", siteId: "hca" });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("forwards jobReference verbatim to the reader/query layer", async () => {
+    fs.writeFileSync(
+      sinkPath,
+      ndjson(
+        makeSubmitLine({ requestId: "req-1", jobReference: "56793094457_jid-1" }),
+        makeSubmitLine({
+          requestId: "req-2",
+          jobReference: "56793094458_jid-2",
+          vivclid: "v-other",
+        })
+      ),
+      "utf8"
+    );
+    const app = await buildApp(sinkPath);
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/v1/submissions?jobReference=56793094458_jid-2",
+        headers: { authorization: `Bearer ${VALID_KEY}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.submissions).toHaveLength(1);
+      expect(body.submissions[0]).toMatchObject({
+        requestId: "req-2",
+        jobReference: "56793094458_jid-2",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("forwards the from/to date-range verbatim to the reader/query layer", async () => {
+    fs.writeFileSync(
+      sinkPath,
+      ndjson(
+        makeSubmitLine({ requestId: "req-early", ts: "2026-07-01T00:00:00.000Z" }),
+        makeSubmitLine({
+          requestId: "req-in-range",
+          vivclid: "v-in-range",
+          ts: "2026-07-15T00:00:00.000Z",
+        }),
+        makeSubmitLine({
+          requestId: "req-late",
+          vivclid: "v-late",
+          ts: "2026-08-01T00:00:00.000Z",
+        })
+      ),
+      "utf8"
+    );
+    const app = await buildApp(sinkPath);
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/v1/submissions?from=2026-07-10T00:00:00Z&to=2026-07-20T00:00:00Z",
+        headers: { authorization: `Bearer ${VALID_KEY}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.submissions).toHaveLength(1);
+      expect(body.submissions[0]).toMatchObject({ requestId: "req-in-range" });
     } finally {
       await app.close();
     }
@@ -204,6 +317,25 @@ describe("routes/submissions GET /v1/submissions", () => {
       expect(response.statusCode).toBe(400);
       const body = response.json();
       expect(body.status.details[0].code).toBe(ERROR_CODES.FIELD_VIOLATION);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 200 with an empty array (not 404) when a filter matches no rows", async () => {
+    fs.writeFileSync(sinkPath, ndjson(makeSubmitLine({ vivclid: "v-9981" })), "utf8");
+    const app = await buildApp(sinkPath);
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/v1/submissions?vivclid=no-such-vivclid",
+        headers: { authorization: `Bearer ${VALID_KEY}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.submissions).toEqual([]);
+      expect(body.total).toBe(0);
     } finally {
       await app.close();
     }
