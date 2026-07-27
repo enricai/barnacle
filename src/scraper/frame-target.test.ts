@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
  * Small stand-in for the real `config.scraper.*` frame timeouts, mocked so
@@ -17,12 +17,31 @@ const { mockScraperConfig } = vi.hoisted(() => ({
 vi.mock("@/config", () => ({ config: { scraper: mockScraperConfig } }));
 
 import type { FrameTarget } from "@/scraper/frame-target";
+
+const { loggerStub } = vi.hoisted(() => ({
+  loggerStub: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    fatal: vi.fn(),
+    errorWithStack: vi.fn(),
+  },
+}));
+vi.mock("@/lib/logging", () => ({
+  getLogger: () => loggerStub,
+}));
+
 import {
   buildHopSelector,
   resolveFrameTarget,
   sleep as sleepMs,
   waitForChildFrameReady,
 } from "@/scraper/frame-target";
+
+beforeEach(() => {
+  loggerStub.warn.mockClear();
+});
 
 /**
  * Minimal fake `Frame`: just enough surface for `resolveFrameTarget` and the
@@ -466,6 +485,36 @@ describe("waitForChildFrameReady", () => {
     await expect(
       waitForChildFrameReady(target, { timeoutMs: 30, pollMs: 10 })
     ).resolves.toBeUndefined();
+  });
+
+  it("polls until the configured default elapses (not a small hardcoded window) before proceeding when opts.timeoutMs is omitted, without wall-clocking it", async () => {
+    // The suite-wide mock keeps every other default-path case fast; this one
+    // has to observe a production-scale window, so it drives the knob to the
+    // real `config.scraper.frameDocumentReadyTimeoutMs` default and simulates
+    // its duration with fake timers rather than wall-clocking it.
+    const PRODUCTION_DOCUMENT_READY_TIMEOUT_MS = 5_000;
+    const mockedTimeoutMs = mockScraperConfig.frameDocumentReadyTimeoutMs;
+    mockScraperConfig.frameDocumentReadyTimeoutMs = PRODUCTION_DOCUMENT_READY_TIMEOUT_MS;
+    vi.useFakeTimers();
+    try {
+      const evaluate = vi.fn().mockResolvedValue("loading");
+      const target = makeFakeTarget(evaluate);
+
+      const readyPromise = waitForChildFrameReady(target);
+      await vi.advanceTimersByTimeAsync(120_000);
+      await readyPromise;
+
+      // Several polls, not just the pre-loop check — proves the loop actually
+      // ran for the configured default's duration instead of bailing immediately.
+      expect(evaluate.mock.calls.length).toBeGreaterThan(3);
+      expect(loggerStub.warn).toHaveBeenCalledTimes(1);
+      const [warnMessage] = loggerStub.warn.mock.calls[0] as [string];
+      const appliedDefaultMs = Number(/still not ready after (\d+)ms/.exec(warnMessage)?.[1]);
+      expect(appliedDefaultMs).toBe(PRODUCTION_DOCUMENT_READY_TIMEOUT_MS);
+    } finally {
+      vi.useRealTimers();
+      mockScraperConfig.frameDocumentReadyTimeoutMs = mockedTimeoutMs;
+    }
   });
 });
 
