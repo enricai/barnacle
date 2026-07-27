@@ -14,6 +14,7 @@ import authPlugin from "@/api/plugins/auth";
 import errorHandlerPlugin from "@/api/plugins/error-handler";
 import type { AppConfig } from "@/config";
 import { getLogger } from "@/lib/logging";
+import { recordBeaconOutcome } from "@/lib/telemetry/beacon-outcome";
 import { multipartJsonObject } from "@/lib/zod-multipart";
 import { BUILTIN_SITE_PLUGINS } from "@/plugins/discover";
 import { dispatch, registerRoutes, SITE_PLUGINS } from "@/plugins/loader";
@@ -636,6 +637,49 @@ describe("dispatch — tracking click", () => {
     );
   });
 
+  it("does not suppress the automatic skipped capture when a plugin with extractJoinKeys also self-records via context.recordBeaconOutcome", async () => {
+    const trackingUrl = "https://click.acme.example/t/abc?vivclid=123&empId=emp9&jid=job9";
+    const joinKeysPlugin: SitePlugin<unknown, unknown> = {
+      ...stubPlugin,
+      extractJoinKeys: () => ({ vivclid: "123" }),
+      execute: async (payload, session, context) => {
+        await context.recordBeaconOutcome({ beaconStatus: "fired", joinKeys: { vivclid: "123" } });
+        return mockPluginExecute(payload, session, context);
+      },
+    };
+    const selfRecordingContext: SitePluginContext = {
+      ...stubContext,
+      recordBeaconOutcome: (input) =>
+        recordBeaconOutcome({ ...input, requestId: stubContext.requestId, siteId: "test-site" }),
+    };
+    await dispatch(joinKeysPlugin, { TrackingUrl: trackingUrl }, selfRecordingContext);
+
+    // No meta flag suppresses dispatch()'s own "skipped" write for a plugin
+    // declaring extractJoinKeys — a plugin that also self-records ends up
+    // with both a "skipped" line (engine) and a "fired" line (plugin) for
+    // the same requestId. That double-line is resolved at fold time
+    // (fired/failed outranks skipped), not by suppression here.
+    expect(mockCaptureBeaconEvent).toHaveBeenCalledTimes(2);
+    // The plugin's self-record fires while runPluginPipeline is still
+    // awaiting execute(); dispatch()'s own "skipped" write happens after
+    // the pipeline resolves — hence fired-then-skipped call order.
+    const [firedCall, skippedCall] = mockCaptureBeaconEvent.mock.calls.map(([arg]) => arg) as {
+      beaconStatus: string;
+    }[];
+    expect(skippedCall).toMatchObject({
+      requestId: "req-test-123",
+      siteId: "test-site",
+      beaconStatus: "skipped",
+      trackingUrl,
+    });
+    expect(firedCall).toMatchObject({
+      requestId: "req-test-123",
+      siteId: "test-site",
+      beaconStatus: "fired",
+      joinKeys: { vivclid: "123" },
+    });
+  });
+
   it("does not call fireTrackingClick when TrackingUrl is absent", async () => {
     await dispatch(stubPlugin, {}, stubContext);
     expect(mockFireTrackingClick).not.toHaveBeenCalled();
@@ -701,6 +745,31 @@ describe("dispatch — tracking click", () => {
   it("resolves normally when the skipped beacon sink write fails (best-effort swallow)", async () => {
     mockCaptureBeaconEvent.mockRejectedValueOnce(new Error("disk full"));
     const result = await dispatch(stubPlugin, {}, stubContext);
+    expect(result.data).toEqual({ result: "ok" });
+  });
+
+  it("resolves normally when the plugin's own recordBeaconOutcome call rejects mid-execute", async () => {
+    mockCaptureBeaconEvent.mockRejectedValueOnce(new Error("sink unavailable"));
+    const selfRecordingPlugin: SitePlugin<unknown, unknown> = {
+      ...stubPlugin,
+      extractJoinKeys: () => ({ vivclid: "123" }),
+      execute: async (payload, session, context) => {
+        // recordBeaconOutcome's never-throws contract means a plugin can
+        // await it directly without its own try/catch — this asserts
+        // dispatch() still resolves normally even though the underlying
+        // sink write rejected.
+        await context.recordBeaconOutcome({ beaconStatus: "failed", joinKeys: { vivclid: "123" } });
+        return mockPluginExecute(payload, session, context);
+      },
+    };
+    const selfRecordingContext: SitePluginContext = {
+      ...stubContext,
+      recordBeaconOutcome: (input) =>
+        recordBeaconOutcome({ ...input, requestId: stubContext.requestId, siteId: "test-site" }),
+    };
+
+    const result = await dispatch(selfRecordingPlugin, {}, selfRecordingContext);
+
     expect(result.data).toEqual({ result: "ok" });
   });
 });
