@@ -6,6 +6,7 @@ import {
   registerDeepLocatorHangingHop,
   registerDeepLocatorHop,
 } from "@/scraper/deep-locator-fake";
+import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
 import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
@@ -605,6 +606,12 @@ describe("flow-runner iframe end-to-end: observe blind to the OOPIF, only deepLo
     const topUrl = { current: `${TOP_ORIGIN}/jobs/123/apply` };
     const childUrls = { current: CHILD_SRC };
     const deepLocatorFrame = new Map();
+    const interactiveHop = `${IFRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
+    registerDeepLocatorHop(deepLocatorFrame, interactiveHop, "Manual Application");
+    // probeStepBeforeAttempts deliberately keeps requesting "*" (a
+    // reachability gate, not the candidate set the cascade acts on — see
+    // deep-locator-candidates.ts's module docblock), so it needs its own hop
+    // registered to report "present" before the cascade runs.
     registerDeepLocatorHop(deepLocatorFrame, `${IFRAME_SELECTOR} >> *`, "Manual Application");
     const stagehand = makeFakeStagehandObserveBlind();
     const page = makeFakeTopPageWithDeepLocator(topUrl, childUrls, deepLocatorFrame);
@@ -621,7 +628,7 @@ describe("flow-runner iframe end-to-end: observe blind to the OOPIF, only deepLo
 
     expect(result.lastStepIndex).toBe(0);
     expect(childUrls.current).toBe(`${CHILD_ORIGIN}/application/abc-123/basic-info`);
-    const hop = deepLocatorFrame.get(`${IFRAME_SELECTOR} >> *`);
+    const hop = deepLocatorFrame.get(interactiveHop);
     expect(hop?.clicks).toBeGreaterThan(0);
   });
 
@@ -920,6 +927,12 @@ describe("flow-runner iframe end-to-end: full acceptance sequence through the OO
       submitted: false,
     };
     const deepLocatorFrame = new Map();
+    const interactiveHop = `${IFRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
+    registerDeepLocatorHop(deepLocatorFrame, interactiveHop, "Manual Application");
+    // probeStepBeforeAttempts deliberately keeps requesting "*" (a
+    // reachability gate, not the candidate set the cascade acts on — see
+    // deep-locator-candidates.ts's module docblock), so it needs its own hop
+    // registered to report "present" before the cascade runs.
     registerDeepLocatorHop(deepLocatorFrame, `${IFRAME_SELECTOR} >> *`, "Manual Application");
     const stagehand = makeFakeStagehandForAcceptanceSequence(childUrls, state);
     const page = makeFakeTopPageForAcceptanceSequence(topUrl, childUrls, deepLocatorFrame, state);
@@ -954,7 +967,7 @@ describe("flow-runner iframe end-to-end: full acceptance sequence through the OO
 
     // Step 1 (Manual Application): resolved ONLY via deepLocator, observe()
     // never saw it — the hop's click count is the sole proof of causation.
-    const hop = deepLocatorFrame.get(`${IFRAME_SELECTOR} >> *`);
+    const hop = deepLocatorFrame.get(interactiveHop);
     expect(hop?.clicks).toBeGreaterThan(0);
     expect(childUrls.current).not.toBe(CHILD_SRC);
 
@@ -1114,10 +1127,19 @@ describe("flow-runner iframe end-to-end: run-6 composite regression — late-att
     const childUrls = { current: topUrl.current };
     const iframeAttached = { current: false };
     const deepLocatorFrame: FakeDeepLocatorFrame = new Map();
-    hangingHop = registerDeepLocatorHangingHop(deepLocatorFrame, `${IFRAME_SELECTOR} >> *`, {
-      hangOn: "count",
-      text: "Manual Application",
-    });
+    // The cascade's attempt-2/4/cascade-exhaust-dump branches resolve
+    // candidates at the interactive-scoped hop (bugfix-005), not `"*"`; the
+    // probe never reaches deepLocator in this suite (see
+    // makeFakeStagehandForRun6Regression's unfocused-observe short-circuit),
+    // so only this hop needs the hang gate.
+    hangingHop = registerDeepLocatorHangingHop(
+      deepLocatorFrame,
+      `${IFRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`,
+      {
+        hangOn: "count",
+        text: "Manual Application",
+      }
+    );
     const stagehand = makeFakeStagehandForRun6Regression(iframeAttached);
     const page = {
       ...makeMidflowFakeTopPage(topUrl, childUrls, iframeAttached),

@@ -6,6 +6,7 @@ import {
   makeFakeDeepLocator,
   registerDeepLocatorHopElements,
 } from "@/scraper/deep-locator-fake";
+import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
 import { runHealingFlow } from "@/scraper/flow-runner";
 import type { FrameTarget } from "@/scraper/frame-target";
 import type { Logger } from "@/types/logging";
@@ -59,7 +60,10 @@ function makeStagehand(): Stagehand {
 }
 
 const FRAME_SELECTOR = "iframe#talemetry_apply_iframe";
-const HOP_SELECTOR = `${FRAME_SELECTOR} >> *`;
+/** The cascade's attempt-2/4 branch resolves candidates at the interactive-scoped hop (bugfix-005). */
+const HOP_SELECTOR = `${FRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
+/** `probeStepBeforeAttempts` deliberately keeps requesting `"*"` (a reachability gate, not the candidate set the cascade acts on — see `deep-locator-candidates.ts`'s module docblock); this suite's probe falls through to its own deepLocator check, so it needs a hop registered here too. */
+const PROBE_HOP_SELECTOR = `${FRAME_SELECTOR} >> *`;
 
 /** Fake `.locator()` surface every `FrameTarget` needs for the checkbox/select primitives that run before the probe. */
 function fakeLocator() {
@@ -119,6 +123,7 @@ describe("flow-runner — frame re-resolved right before the deepLocator probe (
       "Upload a Resume/CV",
       "Manual Application",
     ]);
+    registerDeepLocatorHopElements(frame, PROBE_HOP_SELECTOR, ["Manual Application"]);
     const deepLocator = makeFakeDeepLocator(frame);
     const wrappedDeepLocator = (selector: string) => {
       const delegate = deepLocator(selector);

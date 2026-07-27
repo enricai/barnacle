@@ -28,6 +28,7 @@ import {
   makeFakeDeepLocator,
   registerDeepLocatorHop,
 } from "@/scraper/deep-locator-fake";
+import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
 import { runHealingFlow } from "@/scraper/flow-runner";
 import * as frameTargetModule from "@/scraper/frame-target";
 import type { Logger } from "@/types/logging";
@@ -51,7 +52,8 @@ const TOP_ORIGIN = "https://careers.uchealth.org";
 const CHILD_ORIGIN = "https://apply.talemetry.com";
 const IFRAME_SELECTOR = "iframe#talemetry_apply_iframe";
 const CHILD_SRC = `${CHILD_ORIGIN}/application/abc-123`;
-const HOP_SELECTOR = `${IFRAME_SELECTOR} >> *`;
+/** The cascade's attempt-2/4 branch resolves candidates at the interactive-scoped hop (bugfix-005), not `"*"`; the probe never reaches deepLocator in this suite (see `makeFakeStagehandAttachingOnAct`'s unfocused-observe short-circuit). */
+const HOP_SELECTOR = `${IFRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
 const MANUAL_APPLICATION_STEP = "Click the 'Manual Application' button.";
 
 const testLogger = {
