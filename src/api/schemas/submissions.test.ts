@@ -9,7 +9,10 @@ import {
 } from "@/api/schemas/submissions";
 import { beaconEventSchema } from "@/lib/telemetry/reconciliation-record";
 
-const EXPECTED_BEACON_STATUS_OPTIONS = [...beaconEventSchema.shape.beaconStatus.options, "not_fired"];
+const EXPECTED_BEACON_STATUS_OPTIONS = [
+  ...beaconEventSchema.shape.beaconStatus.options,
+  "not_fired",
+];
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
 
