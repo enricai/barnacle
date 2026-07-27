@@ -108,6 +108,18 @@ describe("beaconEventSchema", () => {
     expect(result.success).toBe(true);
   });
 
+  it("accepts a beacon-skipped event with null trackingUrl", () => {
+    const result = beaconEventSchema.safeParse({
+      ...makeBeaconLine(),
+      beaconStatus: "skipped",
+      trackingUrl: null,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.beaconStatus).toBe("skipped");
+    }
+  });
+
   it("accepts nullable vivclid and jobReference", () => {
     const result = beaconEventSchema.safeParse({
       ...makeBeaconLine(),
@@ -145,6 +157,21 @@ describe("reconciliationRecordSchema", () => {
       expect(result.data.kind).toBe("beacon");
       if (result.data.kind === "beacon") {
         expect(result.data.beaconStatus).toBe("fired");
+      }
+    }
+  });
+
+  it("routes a beacon-skipped line to the beacon member", () => {
+    const result = reconciliationRecordSchema.safeParse({
+      ...makeBeaconLine(),
+      beaconStatus: "skipped",
+      trackingUrl: null,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.kind).toBe("beacon");
+      if (result.data.kind === "beacon") {
+        expect(result.data.beaconStatus).toBe("skipped");
       }
     }
   });
