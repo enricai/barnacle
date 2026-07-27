@@ -1130,6 +1130,7 @@ readinessProbe:
 - Recon playbook (step-by-step): [docs/playbook.md](./docs/playbook.md)
 - Testing guide: [docs/testing.md](./docs/testing.md)
 - Telemetry & LLM judging concept guide: [docs/telemetry-and-judging.md](./docs/telemetry-and-judging.md)
+- Submission reconciliation runbook (join Barnacle runs to the Appcast CPA report): [docs/submission-reconciliation.md](./docs/submission-reconciliation.md)
 - Per-site recon findings: [docs/target-recon.md](./docs/target-recon.md) (populated after first `pnpm run recon:summarize`)
 
 ## License

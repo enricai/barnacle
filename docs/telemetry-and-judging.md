@@ -260,11 +260,10 @@ and validated against `submitRecordSchema`, exported from that module as
 
 `vivclid`/`jobReference` are only as populated as the caller of
 `captureSubmissionEnvelope` resolves them. `dispatch()`
-(`src/plugins/loader.ts`), the sink's only production call site, does not
-currently call `extractReconciliationKeys` before emitting the envelope —
-both fields persist as `null` on every record it writes today. The
-extraction helpers exist and are unit-tested (`src/lib/reconciliation-keys.ts`),
-but wiring them into `dispatch()` is separate, not-yet-landed work.
+(`src/plugins/loader.ts`), the sink's only production call site, calls
+`extractReconciliationKeys` once per dispatch and stamps the result onto
+every envelope it emits — both fields are `null` only when the inbound
+payload and its `TrackingUrl` carry neither key.
 
 ### `"beacon"` records — the conversion/beacon-fire dimension, distinct from submit `status`
 
@@ -289,9 +288,10 @@ Every key:
 A `"beacon"` record is only written when the caller of `fireTrackingClick`
 supplies a `TrackingClickReconciliationContext` (`requestId` plus the join
 keys) — the parameter is optional so existing call sites keep compiling.
-`dispatch()`'s current call site does not supply one, so no `"beacon"`
-records are produced from production dispatch traffic today; the write path
-itself is exercised directly by `beacon-capture.test.ts`.
+`dispatch()`'s call site supplies one on every tracking click it fires,
+threading the same `vivclid`/`jobReference` pair it resolved for the submit
+record; the write path is additionally exercised directly by
+`beacon-capture.test.ts`.
 
 ### Reading, filtering, and querying reconciliation rows
 
