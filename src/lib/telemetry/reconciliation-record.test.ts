@@ -39,6 +39,21 @@ function makeLegacySubmitLine(): Record<string, unknown> {
   };
 }
 
+function makeLegacyVivclidSubmitLine(): Record<string, unknown> {
+  return {
+    siteId: "appcast",
+    requestId: "req-legacy-vivclid-1",
+    vivclid: "v-legacy-1",
+    jobReference: "emp1_jid1",
+    inboundPayload: { jobId: "22222222222" },
+    status: "submitted",
+    auditPayload: null,
+    errorMessage: null,
+    durationMs: 1800,
+    ts: "2026-07-26T21:00:00.000Z",
+  };
+}
+
 function makeBeaconLine(): Record<string, unknown> {
   return {
     kind: "beacon",
@@ -180,6 +195,31 @@ describe("reconciliationRecordSchema", () => {
     if (result.success) {
       expect(result.data.kind).toBe("submit");
       expect(result.data.joinKeys).toBeNull();
+    }
+  });
+
+  it("folds a pre-migration line's top-level vivclid/jobReference into joinKeys", () => {
+    const result = reconciliationRecordSchema.safeParse(makeLegacyVivclidSubmitLine());
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.kind).toBe("submit");
+      expect(result.data.joinKeys).toEqual({ vivclid: "v-legacy-1", jobReference: "emp1_jid1" });
+      expect(result.data).not.toHaveProperty("vivclid");
+      expect(result.data).not.toHaveProperty("jobReference");
+    }
+  });
+
+  it("leaves a current-shape line's joinKeys untouched even if legacy fields are also present", () => {
+    const result = reconciliationRecordSchema.safeParse({
+      ...makeSubmitLine(),
+      vivclid: "should-be-ignored",
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.joinKeys).toEqual({
+        vivclid: "v-9981",
+        jobReference: "56793094457_jid-1",
+      });
     }
   });
 

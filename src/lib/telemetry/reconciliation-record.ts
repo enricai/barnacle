@@ -17,6 +17,13 @@
  * `kind` defaults to `"submit"` because `.barnacle/submissions.ndjson`
  * already holds historical unkinded lines that `s3-sink.ts` has shipped to
  * S3 — a required `kind` would make every one of those lines unparseable.
+ *
+ * `reconciliationRecordSchema`'s preprocess step also folds a legacy
+ * top-level `vivclid`/`jobReference` shape into `joinKeys`: before the
+ * opaque `joinKeys` bag existed, those two fields were persisted as named
+ * top-level keys, and a plain `z.object()` silently drops unrecognized
+ * keys — reading an old line through the new schema would otherwise lose
+ * its join keys rather than surface them.
  */
 
 import { z } from "zod/v4";
@@ -66,18 +73,38 @@ export const beaconEventSchema = z.object({
 export type BeaconEvent = z.infer<typeof beaconEventSchema>;
 
 /**
+ * Folds a legacy top-level `vivclid`/`jobReference` shape into `joinKeys`
+ * for a line that doesn't already carry `joinKeys`, so historical lines
+ * from before the opaque `joinKeys` bag existed still surface their join
+ * keys instead of silently losing them to `z.object()`'s unrecognized-key
+ * drop. Only synthesizes a non-null bag when a legacy field was actually
+ * present, so lines with neither (e.g. sites that never had these fields)
+ * still fall through to `joinKeys`'s own `.default(null)`.
+ */
+function withLegacyJoinKeys(value: Record<string, unknown>): Record<string, unknown> {
+  if ("joinKeys" in value) return value;
+
+  const { vivclid, jobReference, ...rest } = value;
+  const legacyJoinKeys =
+    vivclid || jobReference
+      ? { vivclid: vivclid ?? null, jobReference: jobReference ?? null }
+      : null;
+  return { ...rest, joinKeys: legacyJoinKeys };
+}
+
+/**
  * Routes an NDJSON line to `submitRecordSchema` or `beaconEventSchema` by
  * `kind`. Injects `kind: "submit"` ahead of the discriminated union when the
  * field is absent, because `z.discriminatedUnion` reads the raw input's
  * discriminant directly and won't fall back to a member schema's default —
- * confirmed against zod/v4 3.25.76.
+ * confirmed against zod/v4 3.25.76. Also folds a legacy vivclid/jobReference
+ * shape into `joinKeys` (see `withLegacyJoinKeys`) before the union runs.
  */
 export const reconciliationRecordSchema = z.preprocess(
   (value) => {
-    if (typeof value === "object" && value !== null && !("kind" in value)) {
-      return { ...value, kind: "submit" };
-    }
-    return value;
+    if (typeof value !== "object" || value === null) return value;
+    const withKind = "kind" in value ? value : { ...value, kind: "submit" };
+    return withLegacyJoinKeys(withKind as Record<string, unknown>);
   },
   z.discriminatedUnion("kind", [submitRecordSchema, beaconEventSchema])
 );
