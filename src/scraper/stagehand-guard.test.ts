@@ -13,7 +13,7 @@
  */
 
 import type { Action, ActResult, Stagehand } from "@browserbasehq/stagehand";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod/v4";
 
 import type { LlmCallInput } from "@/lib/telemetry/call-capture";
@@ -53,6 +53,21 @@ function fakeStagehandObserve(result: unknown): Stagehand {
 
 function fakeStagehandExtract(result: unknown): Stagehand {
   return { extract: vi.fn().mockResolvedValue(result) } as unknown as Stagehand;
+}
+
+/** Fake Stagehand whose `act` never settles — simulates a wedged CDP call. */
+function fakeStagehandActHung(): Stagehand {
+  return { act: vi.fn(() => new Promise<never>(() => {})) } as unknown as Stagehand;
+}
+
+/** Fake Stagehand whose `observe` never settles — simulates a wedged CDP call. */
+function fakeStagehandObserveHung(): Stagehand {
+  return { observe: vi.fn(() => new Promise<never>(() => {})) } as unknown as Stagehand;
+}
+
+/** Fake Stagehand whose `extract` never settles — simulates a wedged CDP call. */
+function fakeStagehandExtractHung(): Stagehand {
+  return { extract: vi.fn(() => new Promise<never>(() => {})) } as unknown as Stagehand;
 }
 
 /**
@@ -506,5 +521,131 @@ describe("guardedExtract", () => {
       guardedExtract(stagehand, "extract person", PERSON_SCHEMA, undefined, undefined, frameTarget)
     ).rejects.toBeInstanceOf(StagehandSchemaError);
     expect(captured[0]?.failureKind).toBe("schema-validation-failed");
+  });
+});
+
+// Regression coverage for the deepLocator-hang signature: `STEP_WATCHDOG_MS`
+// is passed to Stagehand as an advisory `timeout`, but nothing previously
+// raced the await — a wedged act/observe/extract blocked the step forever.
+describe("guard timeouts", () => {
+  const PERSON_SCHEMA = z.object({
+    name: z.string(),
+    age: z.number().int().min(0),
+  });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("guardedAct rejects within options.timeout when stagehand.act never settles", async () => {
+    const stagehand = fakeStagehandActHung();
+    const assertion = expect(
+      guardedAct(stagehand, "click submit", { timeout: 5000 })
+    ).rejects.toMatchObject({ name: "WatchdogTimeoutError" });
+    await vi.advanceTimersByTimeAsync(5000);
+    await assertion;
+  });
+
+  it("guardedAct forwards the exact args to stagehand.act even though the call hangs", async () => {
+    const stagehand = fakeStagehandActHung();
+    const assertion = expect(
+      guardedAct(stagehand, "click submit", { timeout: 5000 })
+    ).rejects.toThrow();
+    await vi.advanceTimersByTimeAsync(5000);
+    await assertion;
+    expect(stagehand.act).toHaveBeenCalledWith("click submit", { timeout: 5000 });
+  });
+
+  it("guardedAct records the timeout as a failed call with a valid failureKind", async () => {
+    const stagehand = fakeStagehandActHung();
+    const assertion = expect(
+      guardedAct(stagehand, "click submit", { timeout: 5000 })
+    ).rejects.toThrow();
+    await vi.advanceTimersByTimeAsync(5000);
+    await assertion;
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.success).toBe(false);
+    expect(captured[0]?.parsedOk).toBe(false);
+    expect(captured[0]?.failureKind).toBe("exception-other");
+  });
+
+  it("guardedObserve rejects within options.timeout when stagehand.observe never settles", async () => {
+    const stagehand = fakeStagehandObserveHung();
+    const assertion = expect(
+      guardedObserve(stagehand, "find something", { timeout: 5000 })
+    ).rejects.toMatchObject({ name: "WatchdogTimeoutError" });
+    await vi.advanceTimersByTimeAsync(5000);
+    await assertion;
+  });
+
+  it("guardedObserve forwards the exact args to stagehand.observe even though the call hangs", async () => {
+    const stagehand = fakeStagehandObserveHung();
+    const assertion = expect(
+      guardedObserve(stagehand, "find something", { timeout: 5000 })
+    ).rejects.toThrow();
+    await vi.advanceTimersByTimeAsync(5000);
+    await assertion;
+    expect(stagehand.observe).toHaveBeenCalledWith("find something", { timeout: 5000 });
+  });
+
+  it("guardedObserve records the timeout as a failed call with a valid failureKind", async () => {
+    const stagehand = fakeStagehandObserveHung();
+    const assertion = expect(
+      guardedObserve(stagehand, "find something", { timeout: 5000 })
+    ).rejects.toThrow();
+    await vi.advanceTimersByTimeAsync(5000);
+    await assertion;
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.success).toBe(false);
+    expect(captured[0]?.parsedOk).toBe(false);
+    expect(captured[0]?.failureKind).toBe("exception-other");
+  });
+
+  it("guardedExtract rejects within options.timeout when stagehand.extract never settles", async () => {
+    const stagehand = fakeStagehandExtractHung();
+    const assertion = expect(
+      guardedExtract(stagehand, "extract person", PERSON_SCHEMA, { timeout: 5000 })
+    ).rejects.toMatchObject({ name: "WatchdogTimeoutError" });
+    await vi.advanceTimersByTimeAsync(5000);
+    await assertion;
+  });
+
+  it("guardedExtract forwards the exact args to stagehand.extract even though the call hangs", async () => {
+    const stagehand = fakeStagehandExtractHung();
+    const assertion = expect(
+      guardedExtract(stagehand, "extract person", PERSON_SCHEMA, { timeout: 5000 })
+    ).rejects.toThrow();
+    await vi.advanceTimersByTimeAsync(5000);
+    await assertion;
+    expect(stagehand.extract).toHaveBeenCalledWith("extract person", PERSON_SCHEMA, {
+      timeout: 5000,
+    });
+  });
+
+  it("guardedExtract records the timeout as a failed call with a valid failureKind", async () => {
+    const stagehand = fakeStagehandExtractHung();
+    const assertion = expect(
+      guardedExtract(stagehand, "extract person", PERSON_SCHEMA, { timeout: 5000 })
+    ).rejects.toThrow();
+    await vi.advanceTimersByTimeAsync(5000);
+    await assertion;
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.success).toBe(false);
+    expect(captured[0]?.parsedOk).toBe(false);
+    expect(captured[0]?.failureKind).toBe("exception-other");
+  });
+
+  it("falls back to DEFAULT_GUARD_TIMEOUT_MS when the caller passes no options.timeout", async () => {
+    const stagehand = fakeStagehandActHung();
+    const assertion = expect(guardedAct(stagehand, "click submit")).rejects.toMatchObject({
+      name: "WatchdogTimeoutError",
+      timeoutMs: 120_000,
+    });
+    await vi.advanceTimersByTimeAsync(120_000);
+    await assertion;
   });
 });
