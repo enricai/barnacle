@@ -22,7 +22,10 @@ import {
   NODE_NOT_ACTIONABLE_MESSAGE,
   registerDeepLocatorHopElements,
 } from "@/scraper/deep-locator-fake";
-import { buildScanFrameCandidatesExpr } from "@/scraper/deep-locator-scan";
+import {
+  buildScanFrameCandidatesExpr,
+  INTERACTIVE_CANDIDATE_SELECTOR,
+} from "@/scraper/deep-locator-scan";
 import { runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
@@ -49,9 +52,10 @@ const TOP_ORIGIN = "https://careers.uchealth.org";
 const CHILD_ORIGIN = "https://apply.talemetry.com";
 const IFRAME_SELECTOR = "iframe#talemetry_apply_iframe";
 const CHILD_SRC = `${CHILD_ORIGIN}/application/abc-123`;
-const HOP_SELECTOR = `${IFRAME_SELECTOR} >> *`;
-/** The exact evaluate expression `resolveDeepLocatorCandidates` issues for the cascade's unscoped `"*"` hop — matched verbatim so the fake can route it to the scan (and anything else, e.g. an unrelated body-dump probe, to `null`). */
-const SCAN_EXPR = buildScanFrameCandidatesExpr("*");
+/** The cascade's actual hop (`flow-runner.ts` scopes the observe-act fallback to `INTERACTIVE_CANDIDATE_SELECTOR`, not `"*"`) — must match so the fake's registered elements resolve at the same selector the cascade clicks through. */
+const HOP_SELECTOR = `${IFRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
+/** The exact evaluate expression `resolveDeepLocatorCandidates` issues for the cascade's interactive-scoped hop — matched verbatim so the fake can route it to the scan (and anything else, e.g. an unrelated body-dump probe, to `null`). */
+const SCAN_EXPR = buildScanFrameCandidatesExpr(INTERACTIVE_CANDIDATE_SELECTOR);
 
 /** Verbatim step instruction from the bug report's flow. */
 const MANUAL_APPLICATION_STEP =

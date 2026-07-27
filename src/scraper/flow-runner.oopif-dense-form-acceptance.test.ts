@@ -28,6 +28,7 @@ import {
   makeFakeFrameScan,
   registerDeepLocatorHopElements,
 } from "@/scraper/deep-locator-fake";
+import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
 import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
@@ -55,7 +56,8 @@ const TOP_ORIGIN = "https://careers.uchealth.org";
 const CHILD_ORIGIN = "https://apply.talemetry.com";
 const IFRAME_SELECTOR = "iframe#talemetry_apply_iframe";
 const CHILD_SRC = `${CHILD_ORIGIN}/application/abc-123`;
-const HOP_SELECTOR = `${IFRAME_SELECTOR} >> *`;
+/** The cascade's actual hop (`flow-runner.ts` scopes the observe-act fallback to `INTERACTIVE_CANDIDATE_SELECTOR`, not `"*"`) — must match so the fake's registered elements resolve at the same selector the cascade clicks through. */
+const HOP_SELECTOR = `${IFRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
 const THANK_YOU_URL = `${CHILD_ORIGIN}/application/abc-123/thank-you`;
 const SUBMITTED_STATE_SELECTOR = "[data-testid=thank-you]";
 
