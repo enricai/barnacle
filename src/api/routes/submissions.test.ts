@@ -4,7 +4,7 @@ import * as path from "node:path";
 
 import Fastify from "fastify";
 import { serializerCompiler, validatorCompiler } from "fastify-type-provider-zod";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import authPlugin from "@/api/plugins/auth";
 import errorHandlerPlugin from "@/api/plugins/error-handler";
@@ -15,8 +15,21 @@ import { ERROR_CODES } from "@/api/schemas/common";
  * Route tests for GET /v1/submissions. Auth is exercised via real authPlugin
  * registration (mirrors plugins-introspection.test.ts). The sink path is
  * injected through options so each test points at its own temp NDJSON file
- * instead of the real `.barnacle/submissions.ndjson`.
+ * instead of the real `.barnacle/submissions.ndjson`. The S3 half of the
+ * durable source (`reconciliation-source.ts`) is mocked at its two
+ * collaborator modules — mirrors `reconciliation-source.test.ts` — so the
+ * route's merge-in-production wiring is covered without a real bucket.
  */
+
+const listSubmissionsS3ObjectsMock = vi.fn();
+vi.mock("@/lib/telemetry/submissions-s3-objects", () => ({
+  listSubmissionsS3Objects: (...args: unknown[]) => listSubmissionsS3ObjectsMock(...args),
+}));
+
+const fetchSubmissionsS3RecordsMock = vi.fn();
+vi.mock("@/lib/telemetry/submissions-s3-reader", () => ({
+  fetchSubmissionsS3Records: (...args: unknown[]) => fetchSubmissionsS3RecordsMock(...args),
+}));
 
 const VALID_KEY = "test-key-for-submissions-route-99";
 
@@ -86,6 +99,9 @@ describe("routes/submissions GET /v1/submissions", () => {
 
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "submissions-route-test-"));
     sinkPath = path.join(tmpDir, "submissions.ndjson");
+
+    listSubmissionsS3ObjectsMock.mockReset().mockResolvedValue([]);
+    fetchSubmissionsS3RecordsMock.mockReset();
   });
 
   afterEach(async () => {
@@ -371,6 +387,37 @@ describe("routes/submissions GET /v1/submissions", () => {
       expect(response.statusCode).toBe(400);
       const body = response.json();
       expect(body.status.details[0].code).toBe(ERROR_CODES.FIELD_VIOLATION);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("merges S3-mirrored rows into the response and counts them in total", async () => {
+    fs.writeFileSync(
+      sinkPath,
+      ndjson(makeSubmitLine({ requestId: "req-local", vivclid: "v-local" })),
+      "utf8"
+    );
+    listSubmissionsS3ObjectsMock.mockResolvedValue(["telemetry/submissions/2026-07-26/a.ndjson"]);
+    fetchSubmissionsS3RecordsMock.mockResolvedValue([
+      makeSubmitLine({ requestId: "req-s3-only", vivclid: "v-s3-only" }),
+    ]);
+    const app = await buildApp(sinkPath);
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/v1/submissions",
+        headers: { authorization: `Bearer ${VALID_KEY}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.total).toBe(2);
+      expect(body.submissions).toHaveLength(2);
+      expect(body.submissions.map((row: { requestId: string }) => row.requestId).sort()).toEqual([
+        "req-local",
+        "req-s3-only",
+      ]);
     } finally {
       await app.close();
     }

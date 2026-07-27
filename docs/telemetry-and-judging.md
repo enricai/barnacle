@@ -300,7 +300,14 @@ sink and left-joins `"beacon"` records onto their `"submit"` record by
 `requestId`, producing one `ReconciliationRow` per run with a `beaconStatus`
 of `"fired"`, `"failed"`, or `"not_fired"` — the sink itself only ever writes
 `"fired"`/`"failed"`; `"not_fired"` is synthesized by the reader when no
-beacon line ever arrived for a submit row. `queryReconciliationRows`
+beacon line ever arrived for a submit row. `GET /v1/submissions` instead
+composes `readDurableReconciliationRows`
+(`src/lib/telemetry/reconciliation-source.ts`), which unions the local
+sink's raw records with its S3-mirrored records (the buffered S3 sink
+described above), dedupes exact duplicates, and folds the result the same
+way `readReconciliationRows` does — so a submit line written by one ECS
+task and its beacon line written by another still land in one row.
+`queryReconciliationRows`
 (`src/lib/telemetry/submission-query.ts`) then filters/sorts (newest-first)/
 paginates those rows by `vivclid`, `siteId`, `jobReference`, `requestId`,
 `status`, `beaconStatus`, or a `from`/`to` window. Both are composed behind
@@ -322,6 +329,7 @@ callers from having to re-parse) and renames the reader's internal
 | Beacon-fire (conversion) event writer + `BeaconEventSample` type | `src/lib/telemetry/beacon-capture.ts` |
 | `vivclid`/`jobReference` extraction from an inbound payload | `src/lib/reconciliation-keys.ts` |
 | Reconciliation reader (`readReconciliationRows`) | `src/lib/telemetry/submission-reader.ts` |
+| Durable (local+S3) reconciliation source (`readDurableReconciliationRows`) | `src/lib/telemetry/reconciliation-source.ts` |
 | Reconciliation query/filter layer (`queryReconciliationRows`) | `src/lib/telemetry/submission-query.ts` |
 | `GET /v1/submissions` route + querystring/response schemas | `src/api/routes/submissions.ts`, `src/api/schemas/submissions.ts` |
 | Call-type string constants | `src/lib/telemetry/call-types.ts` |
