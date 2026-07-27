@@ -25,6 +25,9 @@ vi.mock("@/config", () => ({
       model: "anthropic/claude-sonnet-4-6",
       proxyType: "residential",
       steelSessionTimeoutMs: 30000,
+      frameReadyTimeoutMs: 20_000,
+      frameDocumentReadyTimeoutMs: 5_000,
+      frameEvaluateTimeoutMs: 30_000,
     },
     telemetry: {
       callsNdjsonPath: ".barnacle/calls.ndjson",
