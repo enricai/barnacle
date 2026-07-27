@@ -295,15 +295,20 @@ parameter is optional so existing call sites keep compiling; `dispatch()`'s
 call site supplies one on every tracking click it fires (i.e. only for a
 plugin with no `extractJoinKeys`), threading the same `joinKeys` bag it
 resolved for the submit record. Or via `recordBeaconOutcome`
-(`src/lib/telemetry/beacon-outcome.ts`), called directly by a self-managing
-plugin (one that declares `extractJoinKeys`) with its own `requestId`,
-`siteId`, `beaconStatus` (narrowed to `"fired" | "failed"` — a plugin cannot
+(`src/lib/telemetry/beacon-outcome.ts`), which a self-managing plugin (one
+that declares `extractJoinKeys`) reaches through
+`context.recordBeaconOutcome(...)` (`SitePluginContext`,
+`src/site-plugin.ts`) from inside `execute`/`executeHttp`: core binds
+`requestId`/`siteId` at context construction
+(`buildRecordBeaconOutcome`, `src/plugins/loader.ts`), so the plugin supplies
+only its `beaconStatus` (narrowed to `"fired" | "failed"` — a plugin cannot
 report `"skipped"`, which stays engine-owned), the same opaque `joinKeys`
 bag it returns from `extractJoinKeys`, and an optional `trackingUrl` /
 `durationMs`. `recordBeaconOutcome` wraps `captureBeaconEvent` with the same
 defensive try/catch `fireTrackingClick`'s and `dispatch()`'s own private
 wrappers apply, so a misbehaving sink or a synchronous throw is caught and
-logged rather than breaking the plugin's apply flow. A `"skipped"` `"beacon"`
+logged rather than breaking the plugin's apply flow — the context method
+inherits that never-throws contract unchanged. A `"skipped"` `"beacon"`
 record is written by `dispatch()` itself, via the same `captureBeaconEvent`,
 when a successful submit's payload has no (or an empty-string) `TrackingUrl`,
 OR when the plugin declared `extractJoinKeys` (asserting it manages its own
@@ -312,7 +317,8 @@ navigation ever ran in either case. This `"skipped"` write happens
 unconditionally, independent of whether the plugin later calls
 `recordBeaconOutcome` for the same `requestId` — see the precedence rule
 below for how the two lines resolve. The write path is additionally
-exercised directly by `beacon-capture.test.ts` and `beacon-outcome.test.ts`.
+exercised directly by `beacon-capture.test.ts` and `beacon-outcome.test.ts`,
+and the context seam by `loader.test.ts`.
 
 ### Reading, filtering, and querying reconciliation rows
 
@@ -358,8 +364,9 @@ callers from having to re-parse) and renames the reader's internal
 | Submission-envelope sink + `SubmissionEnvelopeSample` type | `src/lib/telemetry/submission-capture.ts` |
 | Reconciliation record schemas (`submit` + `beacon` kinds) | `src/lib/telemetry/reconciliation-record.ts` |
 | Beacon-fire (conversion) event writer + `BeaconEventSample` type | `src/lib/telemetry/beacon-capture.ts` |
-| Plugin-callable beacon-outcome recorder (`recordBeaconOutcome`) | `src/lib/telemetry/beacon-outcome.ts` |
+| Plugin-callable beacon-outcome recorder (`recordBeaconOutcome`, wraps `captureBeaconEvent`) | `src/lib/telemetry/beacon-outcome.ts` |
 | Plugin-owned join-key extraction hook | `SitePlugin.extractJoinKeys` in `src/site-plugin.ts` |
+| Plugin-facing `recordBeaconOutcome` context method + binding closure | `SitePluginContext.recordBeaconOutcome` in `src/site-plugin.ts`; `buildRecordBeaconOutcome` in `src/plugins/loader.ts` |
 | Reconciliation reader (`readReconciliationRows`) | `src/lib/telemetry/submission-reader.ts` |
 | Durable (local+S3) reconciliation source (`readDurableReconciliationRows`) | `src/lib/telemetry/reconciliation-source.ts` |
 | Reconciliation query/filter layer (`queryReconciliationRows`) | `src/lib/telemetry/submission-query.ts` |

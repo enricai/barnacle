@@ -446,6 +446,15 @@ navs must share one browser session for a vendor's device-cookie
 attribution to work) and skips its own fire — firing both would open two
 independent sessions against the same URL.
 
+`dispatch()` still records that self-managed nav as `beaconStatus: "skipped"`
+by default, since core has no visibility into whether the plugin's own
+navigation actually fired. A plugin that wants its real outcome on record
+instead calls `context.recordBeaconOutcome({ beaconStatus, joinKeys,
+trackingUrl?, durationMs? })` after its own navigation resolves —
+`requestId`/`siteId` are bound by core, so the plugin only supplies what it
+alone knows. This never throws; a sink failure is logged and swallowed, same
+as core's own beacon writes.
+
 ### Static fixtures
 
 If Phase 3b (auxiliary fixture detection) found static JSON endpoints (markets, currencies, labels), `recon:generate` copies them to `src/sites/<id>/fixtures/`. Load them at module init via `loadFixture()` — zero per-request overhead, fails fast on deploy if the fixture is missing or stale:
