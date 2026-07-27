@@ -4,10 +4,22 @@ import { describe, expect, it } from "vitest";
 import {
   type FakeDeepLocatorDelegate,
   type FakeDeepLocatorFrame,
+  type HangingDeepLocatorMethod,
   makeFakeDeepLocator,
+  registerDeepLocatorHangingHop,
   registerDeepLocatorHop,
   registerDeepLocatorHopElements,
 } from "@/scraper/deep-locator-fake";
+
+const STILL_PENDING = Symbol("still-pending");
+
+/** Races `promise` against a 20ms timer resolving to a sentinel, the same shape a watchdog/timeout guard races a real deepLocator call against. */
+function raceAgainstTimer(promise: Promise<unknown>): Promise<unknown> {
+  return Promise.race([
+    promise,
+    new Promise((resolve) => setTimeout(() => resolve(STILL_PENDING), 20)),
+  ]);
+}
 
 describe("deep-locator-fake", () => {
   it("count() is 1 for a registered hop selector and 0 for an unregistered one", async () => {
@@ -101,6 +113,83 @@ describe("deep-locator-fake", () => {
     await expect(
       deepLocator("iframe#talemetry_apply_iframe >> button#missing").click()
     ).rejects.toThrow();
+  });
+
+  it("count()/nth(i).textContent()/nth(i).click() all never settle for a hop hanging on every method", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    const { release } = registerDeepLocatorHangingHop(frame, "iframe#a >> b", {
+      hangOn: ["count", "textContent", "click"],
+    });
+    const deepLocator = makeFakeDeepLocator(frame);
+
+    await expect(raceAgainstTimer(deepLocator("iframe#a >> b").count())).resolves.toBe(
+      STILL_PENDING
+    );
+    await expect(raceAgainstTimer(deepLocator("iframe#a >> b").nth(0).textContent())).resolves.toBe(
+      STILL_PENDING
+    );
+    await expect(raceAgainstTimer(deepLocator("iframe#a >> b").nth(0).click())).resolves.toBe(
+      STILL_PENDING
+    );
+
+    release();
+  });
+
+  it.each<HangingDeepLocatorMethod>(["count", "textContent", "click"])(
+    "hangOn: %s hangs only that method, leaving the other two to resolve normally",
+    async (hungMethod) => {
+      const frame: FakeDeepLocatorFrame = new Map();
+      const { hop, release } = registerDeepLocatorHangingHop(frame, "iframe#a >> b", {
+        hangOn: hungMethod,
+        text: "Manual Application",
+      });
+      const deepLocator = makeFakeDeepLocator(frame);
+      const callMethod = (method: HangingDeepLocatorMethod): Promise<unknown> => {
+        const delegate = deepLocator("iframe#a >> b").nth(0);
+        if (method === "count") return delegate.count();
+        if (method === "textContent") return delegate.textContent();
+        return delegate.click();
+      };
+
+      await expect(raceAgainstTimer(callMethod(hungMethod))).resolves.toBe(STILL_PENDING);
+
+      const restingMethods = (["count", "textContent", "click"] as const).filter(
+        (method) => method !== hungMethod
+      );
+      for (const method of restingMethods) {
+        await expect(raceAgainstTimer(callMethod(method))).resolves.not.toBe(STILL_PENDING);
+      }
+
+      expect(hop.clicks).toBe(hungMethod === "click" ? 0 : 1);
+      release();
+    }
+  );
+
+  it("release() settles the previously pending promise instead of leaving it hung forever", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    const { release } = registerDeepLocatorHangingHop(frame, "iframe#a >> b", {
+      hangOn: "count",
+    });
+    const deepLocator = makeFakeDeepLocator(frame);
+
+    const pendingCount = deepLocator("iframe#a >> b").count();
+    await expect(raceAgainstTimer(pendingCount)).resolves.toBe(STILL_PENDING);
+
+    release();
+
+    await expect(raceAgainstTimer(pendingCount)).resolves.toBe(1);
+  });
+
+  it("fill() is unaffected by a hop hanging on count/textContent/click", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    const { hop, release } = registerDeepLocatorHangingHop(frame, "iframe#a >> input", {
+      hangOn: ["count", "textContent", "click"],
+    });
+    const deepLocator = makeFakeDeepLocator(frame);
+
+    await deepLocator("iframe#a >> input").fill("Ada");
+    expect(hop.filledWith).toBe("Ada");
+    release();
   });
 
   it("type check: FakeDeepLocatorDelegate's modeled methods are assignable to the real DeepLocatorDelegate surface", () => {
