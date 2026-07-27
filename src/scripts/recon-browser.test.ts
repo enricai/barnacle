@@ -89,8 +89,10 @@ vi.mock("@/scraper/flow-runner", async (importOriginal) => {
   };
 });
 
+import { config } from "@/config";
 import type { LlmCallInput } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE, CALL_TYPE_RECON_REPLAN } from "@/lib/telemetry/call-types";
+import { StepVerificationError } from "@/scraper/errors";
 import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import { createBrowserSession } from "@/scraper/session";
 import {
@@ -2746,6 +2748,60 @@ describe("replanRemainingFlow — trajectory prompt section", () => {
   });
 });
 
+describe("replanRemainingFlow — bounded page.title() read (bugfix-004)", () => {
+  function makeReplanClient(): Anthropic {
+    return {
+      messages: {
+        parse: vi.fn().mockResolvedValue({
+          parsed_output: { outcome: "replan", steps: ["Click Submit"] },
+          content: [{ type: "text", text: "{}" }],
+          usage: { input_tokens: 100, output_tokens: 5 },
+        }),
+      },
+    } as unknown as Anthropic;
+  }
+
+  function makeStagehandStub(): { observe: ReturnType<typeof vi.fn> } {
+    return {
+      observe: vi.fn().mockResolvedValue([]),
+    };
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("falls back to an empty title within the frameEvaluateTimeoutMs budget instead of stalling when page.title() never settles", async () => {
+    const client = makeReplanClient();
+    const { fn, calls } = makeCaptureFn();
+    const titleFn = vi.fn().mockReturnValue(new Promise(() => {}));
+    const page = { url: () => "https://example.com/apply", title: titleFn };
+
+    const resultPromise = replanRemainingFlow({
+      client,
+      originalFlow: ["Step A"],
+      completedSteps: [],
+      failedStep: "Step A",
+      remainingSteps: [],
+      failureDumpPath: "/tmp/nonexistent-dump.json",
+      page: page as never,
+      stagehand: makeStagehandStub() as never,
+      captureFn: fn,
+    });
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    await resultPromise;
+
+    expect(titleFn).toHaveBeenCalledTimes(1);
+    const prompt = calls.find((c) => c.callType === CALL_TYPE_RECON_REPLAN)?.userContent ?? "";
+    expect(prompt).toContain("Title: \n");
+  });
+});
+
 describe("recon-browser/hasBillingErrorBeenLogged + billing-aware skip", () => {
   beforeEach(() => {
     resetBillingErrorFlagForTests();
@@ -5095,5 +5151,181 @@ describe("recon-browser/main — frameSelector reaches the cascade call", () => 
     expect(readyStateCalls.length).toBeGreaterThanOrEqual(2);
     const callArgs = executeStepWithHealingStub.mock.calls[0]?.[0] as { frameTarget?: FrameTarget };
     expect(callArgs.frameTarget?.frame).not.toBeNull();
+  });
+});
+
+describe("recon-browser/main — --dump-dom-before-step bounded against a never-settling evaluate (bugfix-004)", () => {
+  const ORIGINAL_ARGV = process.argv;
+  let runsRoot: string;
+
+  function makeFakePage(evaluateFn: ReturnType<typeof vi.fn>): {
+    page: Page;
+    stagehand: Stagehand;
+  } {
+    const session = {
+      on: (): void => {},
+      off: (): void => {},
+    };
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      url: (): string => "https://example.com/apply",
+      title: vi.fn().mockResolvedValue("Apply"),
+      evaluate: evaluateFn,
+      frames: vi.fn().mockReturnValue([]),
+      getSessionForFrame: () => session,
+      mainFrameId: () => "main",
+      sendCDP: vi.fn().mockResolvedValue({ cookies: [] }),
+    } as unknown as Page;
+    const stagehand = {
+      context: { awaitActivePage: async (): Promise<Page> => page },
+    } as unknown as Stagehand;
+    return { page, stagehand };
+  }
+
+  beforeEach(() => {
+    runsRoot = mkdtempSync(join(tmpdir(), "recon-browser-dom-dump-"));
+    process.env.RECON_RUN_ID = "20260725-000000-domdump1";
+    process.env.RECON_OUT_DIR = runsRoot;
+    executeStepWithHealingStub.mockReset();
+    executeStepWithHealingStub.mockResolvedValue("ok");
+    vi.mocked(createBrowserSession).mockReset();
+    loggerStub.warn.mockClear();
+  });
+
+  afterEach(() => {
+    process.argv = ORIGINAL_ARGV;
+    rmSync(runsRoot, { recursive: true, force: true });
+    delete process.env.RECON_RUN_ID;
+    delete process.env.RECON_OUT_DIR;
+    vi.restoreAllMocks();
+    executeStepWithHealingStub.mockReset();
+    vi.useRealTimers();
+  });
+
+  it("logs a warn and proceeds within the frameEvaluateTimeoutMs budget, instead of stalling, when the DOM dump's page.evaluate never settles", async () => {
+    const evaluateFn = vi.fn().mockImplementation(async (expr: unknown) => {
+      if (typeof expr === "string" && expr.includes("document.body")) return 10_000;
+      if (typeof expr === "string" && expr.includes("querySelector"))
+        return { matched: false, src: null };
+      if (typeof expr === "string" && expr.includes("outerHTML")) return new Promise(() => {});
+      return null;
+    });
+    const { stagehand } = makeFakePage(evaluateFn);
+    vi.mocked(createBrowserSession).mockResolvedValue({
+      stagehand,
+      limiter: {} as never,
+      sessionId: "test-session",
+      provider: "browserbase",
+      close: vi.fn().mockResolvedValue(undefined),
+    } as never);
+
+    process.argv = [
+      "node",
+      "recon-browser.ts",
+      "--url",
+      "https://example.com/apply",
+      "--flow",
+      JSON.stringify(["Click Apply"]),
+      "--dump-dom-before-step",
+      "1",
+    ];
+
+    vi.useFakeTimers();
+    const mainPromise = main();
+    await vi.advanceTimersByTimeAsync(30_000);
+    await mainPromise;
+
+    const outerHtmlCalls = evaluateFn.mock.calls.filter(
+      ([expr]) => typeof expr === "string" && expr.includes("outerHTML")
+    );
+    expect(outerHtmlCalls).toHaveLength(1);
+    expect(executeStepWithHealingStub).toHaveBeenCalledTimes(1);
+    expect(loggerStub.warn).toHaveBeenCalledWith(expect.stringContaining("DOM dump failed"));
+  });
+});
+
+describe("recon-browser/main — trailing-grace page title bounded against a never-settling page.title() (bugfix-004)", () => {
+  const ORIGINAL_ARGV = process.argv;
+  const ORIGINAL_ANTHROPIC_API_KEY = config.scraper.anthropicApiKey;
+  let runsRoot: string;
+
+  function makeFakePage(titleFn: ReturnType<typeof vi.fn>): { page: Page; stagehand: Stagehand } {
+    const session = {
+      on: (): void => {},
+      off: (): void => {},
+    };
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      url: (): string => "https://example.com/apply",
+      title: titleFn,
+      evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+        if (typeof expr === "string" && expr.includes("document.body")) return 10_000;
+        if (typeof expr === "string" && expr.includes("querySelector"))
+          return { matched: false, src: null };
+        return null;
+      }),
+      frames: vi.fn().mockReturnValue([]),
+      getSessionForFrame: () => session,
+      mainFrameId: () => "main",
+      sendCDP: vi.fn().mockResolvedValue({ cookies: [] }),
+    } as unknown as Page;
+    const stagehand = {
+      context: { awaitActivePage: async (): Promise<Page> => page },
+    } as unknown as Stagehand;
+    return { page, stagehand };
+  }
+
+  beforeEach(() => {
+    runsRoot = mkdtempSync(join(tmpdir(), "recon-browser-trailing-grace-"));
+    process.env.RECON_RUN_ID = "20260725-000000-trailgrace1";
+    process.env.RECON_OUT_DIR = runsRoot;
+    executeStepWithHealingStub.mockReset();
+    vi.mocked(createBrowserSession).mockReset();
+    // Forces buildAnthropicClient() to return null so verifySubmitWithLLM
+    // short-circuits without an outbound Anthropic call, isolating this test
+    // to the withWatchdog-bound page.title() read itself.
+    config.scraper.anthropicApiKey = undefined;
+  });
+
+  afterEach(() => {
+    process.argv = ORIGINAL_ARGV;
+    rmSync(runsRoot, { recursive: true, force: true });
+    delete process.env.RECON_RUN_ID;
+    delete process.env.RECON_OUT_DIR;
+    vi.restoreAllMocks();
+    executeStepWithHealingStub.mockReset();
+    config.scraper.anthropicApiKey = ORIGINAL_ANTHROPIC_API_KEY;
+    vi.useRealTimers();
+  });
+
+  it("reads an empty title within the frameEvaluateTimeoutMs budget instead of stalling when page.title() never settles on a failed trailing-optional step", async () => {
+    const titleFn = vi.fn().mockReturnValue(new Promise(() => {}));
+    const { stagehand } = makeFakePage(titleFn);
+    vi.mocked(createBrowserSession).mockResolvedValue({
+      stagehand,
+      limiter: {} as never,
+      sessionId: "test-session",
+      provider: "browserbase",
+      close: vi.fn().mockResolvedValue(undefined),
+    } as never);
+
+    const stepFailure = new StepVerificationError("no observable effect", "cascade-exhausted");
+    executeStepWithHealingStub.mockRejectedValue(stepFailure);
+
+    process.argv = [
+      "node",
+      "recon-browser.ts",
+      "--url",
+      "https://example.com/apply",
+      "--flow",
+      JSON.stringify({ steps: [{ instruction: "Click optional Continue", optional: true }] }),
+    ];
+
+    vi.useFakeTimers();
+    const mainPromise = main();
+    await vi.advanceTimersByTimeAsync(30_000);
+    await expect(mainPromise).rejects.toBe(stepFailure);
+
+    expect(titleFn).toHaveBeenCalledTimes(1);
   });
 });
