@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type FakeDeepLocatorFrame,
   makeFakeDeepLocator,
+  registerDeepLocatorHangingHop,
   registerDeepLocatorHopElements,
 } from "@/scraper/deep-locator-fake";
 import { resetBillingErrorFlagForTests, runHealingFlow } from "@/scraper/flow-runner";
@@ -236,4 +237,39 @@ describe("flow-runner/executeStepWithHealing — llm-rephrase deepLocatorCandida
     const rephrasePrompt = findRephrasePrompt(prompts);
     expect(rephrasePrompt).toContain("(no candidates returned by observe)");
   });
+
+  it("still issues the rephrase LLM call with empty deepLocator evidence, within the watchdog budget, when the child-frame deepLocator hop never settles", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    const hopSelector = `${FRAME_SELECTOR} >> *`;
+    const { release } = registerDeepLocatorHangingHop(frame, hopSelector, { hangOn: "count" });
+
+    resolveFrameTarget.mockResolvedValue(makeChildFrameTarget({} as FrameTarget["frame"]));
+    wireCascadeToRephrase();
+    const { anthropic, prompts } = makeCapturingAnthropic();
+
+    // deepLocatorCandidatesAsActions never threads a timeoutOptions override
+    // through to resolveDeepLocatorCandidates, so every count() on this hop
+    // rides out the resolver's real 10s default per-call watchdog before
+    // degrading to [] — this test's wall-clock cost is the guard actually
+    // proving itself, not a stand-in for it.
+    try {
+      await expect(
+        runHealingFlow({
+          stagehand: makeStagehand(),
+          page: fakeFlowPage(frame),
+          steps: [{ instruction: RADIO_STEP, optional: false, upload: false, submitStep: false }],
+          logger: testLogger,
+          anthropic,
+          resumeFixture: null,
+          frameSelector: FRAME_SELECTOR,
+        })
+      ).rejects.toThrow(/failed verification after \d+ attempts/);
+    } finally {
+      release();
+    }
+
+    expect(prompts.length).toBeGreaterThan(0);
+    const rephrasePrompt = findRephrasePrompt(prompts);
+    expect(rephrasePrompt).toContain("(no candidates returned by observe)");
+  }, 90_000);
 });

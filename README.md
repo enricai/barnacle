@@ -725,6 +725,9 @@ process to exit on missing values; optional ones have safe defaults.
 | `STAGEHAND_API_TIMEOUT_MS` | `120000` | No | Anthropic SDK request timeout (ms). Raise on slow network paths to `api.anthropic.com`. |
 | `STAGEHAND_CONNECT_TIMEOUT_MS` | `120000` | No | TCP connect timeout for all outbound fetch calls (ms). Raised from the undici default of 10 s to match `STAGEHAND_API_TIMEOUT_MS`. |
 | `STEEL_SESSION_TIMEOUT_MS` | `3600000` | No | Steel session wall-clock timeout (ms). Default is 1 hour; lower on plans that enforce shorter maximum session durations. |
+| `FRAME_READY_TIMEOUT_MS` | `20000` | No | How long `resolveFrameTarget` polls for a child iframe to attach before falling back to the main frame (ms). Raise further for cross-origin OOPIFs that attach slowly under advancedStealth + proxied CDP. |
+| `FRAME_DOCUMENT_READY_TIMEOUT_MS` | `5000` | No | How long `waitForChildFrameReady` polls a resolved child frame's `document.readyState` before proceeding anyway (ms). Independent of `FRAME_READY_TIMEOUT_MS` — this wait settles in well under a second once attached. |
+| `FRAME_EVALUATE_TIMEOUT_MS` | `30000` | No | Watchdog budget for a single frame-scoped evaluate/candidate-probe call (ms), so a call against a racy frame fails the attempt instead of hanging indefinitely. |
 
 ### AWS Bedrock (alternative LLM provider)
 

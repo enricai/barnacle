@@ -135,6 +135,16 @@ For a frame-scoped step, the cascade and the pre-cascade probe fall back to
 `page.deepLocator()` (Stagehand's own hop-notation resolver, which does reach
 the OOPIF) whenever `observe()` comes back empty — see 1c.
 
+**Frame-attach timing.** A racy cross-origin OOPIF can still be mid-attach
+when a step enters the cascade. `resolveFrameTarget` polls for up to
+`FRAME_READY_TIMEOUT_MS` (20s default) before falling back to the main frame,
+and the cascade re-resolves the frame target right before the `deepLocator`
+candidate probe (not only at step entry) so a frame that attaches mid-step is
+still reached instead of leaving the step stuck on a stale main-frame
+fallback. See [Environment variables](../README.md#environment-variables) for
+`FRAME_READY_TIMEOUT_MS` / `FRAME_DOCUMENT_READY_TIMEOUT_MS` /
+`FRAME_EVALUATE_TIMEOUT_MS`.
+
 ---
 
 ## Phase 1 — Browser recon (`recon-browser.ts`)
@@ -672,6 +682,13 @@ tearing down the broken session and starting a fresh one. The default is sized
 for long browser flows; shorten per-plugin via `SitePluginMeta.taskTimeoutMs`
 when a site's normal latency is well below it. This is a hang-recovery floor,
 not a p99 latency budget.
+
+Below that per-task floor, every individual `deepLocator`/frame-evaluate/
+Stagehand-guard await inside the cascade is itself bounded by `withWatchdog`
+(`src/scraper/watchdog.ts`) against `STEP_WATCHDOG_MS` (2min default) or the
+relevant `config.scraper.frame*TimeoutMs` budget, so a single wedged CDP call
+against a racy frame fails that attempt and lets self-heal proceed instead of
+pinning the whole task until `TASK_TIMEOUT_MS` finally kills it.
 
 On `SIGTERM` / `SIGINT`, `drainPool()` (`src/scraper/pool.ts`) pauses new intake,
 waits up to 20 seconds for in-flight tasks to finish their `finally` blocks and

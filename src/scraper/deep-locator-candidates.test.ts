@@ -1,4 +1,19 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const { loggerStub } = vi.hoisted(() => ({
+  loggerStub: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    fatal: vi.fn(),
+    errorWithStack: vi.fn(),
+  },
+}));
+vi.mock("@/lib/logging", () => ({
+  getLogger: () => loggerStub,
+}));
+
 import {
   clickDeepLocatorCandidate,
   resolveDeepLocatorCandidates,
@@ -43,6 +58,37 @@ function makeFakePage(delegate: ReturnType<typeof makeFakeDelegate>) {
   return {
     page: { deepLocator: deepLocatorSpy },
     deepLocatorSpy,
+  };
+}
+
+/**
+ * Fake `DeepLocatorDelegate` that can wedge specific calls forever (never
+ * resolving, never rejecting) — models the run-6 78-minute hang: a CDP
+ * round-trip against a racy OOPIF frame that just never comes back. Distinct
+ * from {@link makeFakeDelegate}'s `rejectTextContentAt` (which settles, just
+ * with a rejection) and from `deep-locator-fake.ts`'s hang harness (which
+ * hangs a method across every index of a hop, not one index in particular) —
+ * per-candidate hang modeling needs a promise that specific indices never
+ * settle while the rest resolve normally.
+ */
+function makeHangingDelegate(options: {
+  count: number;
+  texts?: string[];
+  hangCountForever?: boolean;
+  hangTextContentAt?: number[];
+  hangClick?: boolean;
+  clickSpy?: (index: number) => Promise<void>;
+}) {
+  const texts = options.texts ?? [];
+  const hangTextContentAt = options.hangTextContentAt ?? [];
+  const clickSpy = options.clickSpy ?? vi.fn().mockResolvedValue(undefined);
+  return {
+    count: async () => (options.hangCountForever ? new Promise<number>(() => {}) : options.count),
+    nth: (index: number) => ({
+      textContent: async () =>
+        hangTextContentAt.includes(index) ? new Promise<string>(() => {}) : (texts[index] ?? ""),
+      click: async () => (options.hangClick ? new Promise<void>(() => {}) : clickSpy(index)),
+    }),
   };
 }
 
@@ -306,5 +352,116 @@ describe("clickDeepLocatorCandidate", () => {
       // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
       clickDeepLocatorCandidate(page as any, "#talemetry_apply_iframe", "button", 0)
     ).rejects.toThrow("element not attached");
+  });
+});
+
+describe("watchdog-guarded awaits (deepLocator-direct hang bug)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    loggerStub.warn.mockClear();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("a never-settling count() resolves resolveDeepLocatorCandidates to [] within the call-timeout budget, with a warn", async () => {
+    const delegate = makeHangingDelegate({ count: 0, hangCountForever: true });
+    const { page } = makeFakePage(delegate);
+
+    const promise = resolveDeepLocatorCandidates(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      page as any,
+      "#talemetry_apply_iframe",
+      "*",
+      null,
+      { callTimeoutMs: 50 }
+    );
+
+    await vi.advanceTimersByTimeAsync(50);
+    await expect(promise).resolves.toEqual([]);
+    expect(loggerStub.warn).toHaveBeenCalledWith(
+      expect.stringContaining("deepLocator count() threw")
+    );
+  });
+
+  it("a never-settling per-candidate textContent() degrades only that candidate to an empty accessibleText, still returning every other candidate", async () => {
+    const delegate = makeHangingDelegate({
+      count: 3,
+      texts: ["Container", "Manual Application", "Cancel"],
+      hangTextContentAt: [1],
+    });
+    const { page } = makeFakePage(delegate);
+
+    const promise = resolveDeepLocatorCandidates(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      page as any,
+      "#talemetry_apply_iframe",
+      "*",
+      null,
+      { callTimeoutMs: 50, enumerationBudgetMs: 10_000 }
+    );
+
+    await vi.advanceTimersByTimeAsync(50);
+    const candidates = await promise;
+
+    expect(candidates.map((c) => c.accessibleText)).toEqual(["Container", "", "Cancel"]);
+  });
+
+  it("a never-settling click() rejects clickDeepLocatorCandidate within the call-timeout budget instead of hanging the caller", async () => {
+    const delegate = makeHangingDelegate({
+      count: 1,
+      texts: ["Manual Application"],
+      hangClick: true,
+    });
+    const { page } = makeFakePage(delegate);
+
+    const promise = clickDeepLocatorCandidate(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      page as any,
+      "#talemetry_apply_iframe",
+      "button",
+      0,
+      { callTimeoutMs: 50 }
+    );
+    const assertion = expect(promise).rejects.toMatchObject({ name: "WatchdogTimeoutError" });
+
+    await vi.advanceTimersByTimeAsync(50);
+    await assertion;
+  });
+
+  it("enumerating a hop with many slow-but-settling elements aborts on the total enumeration budget, returning only the candidates resolved before the deadline", async () => {
+    const perCandidateDelayMs = 20;
+    const texts = ["A", "B", "C", "D", "E"];
+    const delegate = {
+      count: async () => texts.length,
+      nth: (index: number) => ({
+        textContent: () =>
+          new Promise<string>((resolve) => {
+            setTimeout(() => resolve(texts[index] ?? ""), perCandidateDelayMs);
+          }),
+        click: async () => {},
+      }),
+    };
+    const { page } = makeFakePage(delegate);
+
+    const promise = resolveDeepLocatorCandidates(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      page as any,
+      "#talemetry_apply_iframe",
+      "*",
+      null,
+      { callTimeoutMs: 10_000, enumerationBudgetMs: 35 }
+    );
+
+    await vi.advanceTimersByTimeAsync(200);
+    const candidates = await promise;
+
+    expect(candidates.length).toBeGreaterThan(0);
+    expect(candidates.length).toBeLessThan(texts.length);
+    expect(candidates.map((c) => c.accessibleText)).toEqual(texts.slice(0, candidates.length));
+    expect(loggerStub.warn).toHaveBeenCalledWith(
+      expect.stringContaining("deepLocator enumeration")
+    );
   });
 });

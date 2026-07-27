@@ -5,6 +5,7 @@ import * as deepLocatorCandidatesModule from "@/scraper/deep-locator-candidates"
 import {
   type FakeDeepLocatorFrame,
   makeFakeDeepLocator,
+  registerDeepLocatorHangingHop,
   registerDeepLocatorHop,
   registerDeepLocatorHopElements,
 } from "@/scraper/deep-locator-fake";
@@ -149,6 +150,46 @@ describe("flow-runner/probeStepBeforeAttempts — frame-scoped deepLocator fallb
     });
 
     expect(result).toBe("absent");
+  });
+
+  it('resolves "absent" within the resolver\'s watchdog budget when the child-frame deepLocator hop hangs on count(), instead of hanging the probe (run-6 78-minute-hang regression)', async () => {
+    vi.useFakeTimers();
+    try {
+      guardedObserve.mockResolvedValue([]);
+      const frame: FakeDeepLocatorFrame = new Map();
+      const { release } = registerDeepLocatorHangingHop(frame, `${FRAME_SELECTOR} >> *`, {
+        hangOn: "count",
+      });
+      const page = { deepLocator: makeFakeDeepLocator(frame) } as unknown as Page;
+
+      const probePromise = probeStepBeforeAttempts({
+        stagehand: makeStagehand(),
+        page,
+        step: "Click Manual Application",
+        stepIndex: 0,
+        logger: testLogger,
+        frameTarget: makeChildFrameTarget(),
+      });
+
+      // Sentinel race: with count() still wedged and the fake clock
+      // untouched, the probe must not have settled yet — proves the
+      // assertion below actually exercises the watchdog timeout rather than
+      // some unrelated synchronous short-circuit.
+      const stillPending = Symbol("still-pending");
+      await expect(Promise.race([probePromise, Promise.resolve(stillPending)])).resolves.toBe(
+        stillPending
+      );
+
+      // Advances past deep-locator-candidates.ts's per-call watchdog budget
+      // (10s default), which degrades the wedged count() to 0 instead of
+      // hanging forever — the probe then falls through to "absent".
+      await vi.advanceTimersByTimeAsync(15_000);
+      await expect(probePromise).resolves.toBe("absent");
+
+      release();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not call deepLocator when frameTarget.frame is null (main-frame path stays byte-identical)", async () => {

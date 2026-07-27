@@ -60,6 +60,7 @@ import {
   CALL_TYPE_STAGEHAND_OBSERVE,
 } from "@/lib/telemetry/call-types";
 import { buildHopSelector, type FrameTarget } from "@/scraper/frame-target";
+import { withWatchdog } from "@/scraper/watchdog";
 
 /**
  * Injectable capture function — matches `captureLlmCall`'s signature. Same
@@ -69,6 +70,14 @@ import { buildHopSelector, type FrameTarget } from "@/scraper/frame-target";
  * lands in `.barnacle/calls.ndjson` instead of the per-URL run partition.
  */
 export type StagehandCaptureFn = (input: LlmCallInput) => Promise<void>;
+
+/**
+ * Fallback watchdog bound for a guarded call whose caller passes no
+ * `options.timeout`. Mirrors `STEP_WATCHDOG_MS` (`@/scraper/flow-runner`) by
+ * convention rather than by import — `flow-runner.ts` imports `guardedAct`/
+ * `guardedObserve` from this module, so importing back would cycle.
+ */
+const DEFAULT_GUARD_TIMEOUT_MS = 120_000;
 
 /**
  * Zod mirror of Stagehand's public `Action` shape (from
@@ -177,6 +186,11 @@ function frameScopedOptions<T extends { selector?: string }>(
  * `ActResult` verbatim. On envelope drift, throws `StagehandSchemaError`
  * and logs `failureKind: "schema-validation-failed"`.
  *
+ * The underlying `stagehand.act` call is raced against `options.timeout`
+ * (falling back to `DEFAULT_GUARD_TIMEOUT_MS`) via `withWatchdog` — Stagehand
+ * receives the same `timeout` as before, but a call that ignores it and hangs
+ * now fails the attempt instead of blocking the step forever.
+ *
  * Accepts the same trailing `frameTarget` param as `guardedObserve`/
  * `guardedExtract` for signature symmetry, but does not forward it into
  * `ActOptions` — `ActOptions` has no `selector` field, and its `page`
@@ -207,10 +221,11 @@ export async function guardedAct(
     // `stagehand.act` to a variable then calling it as a standalone function
     // loses `this` in strict mode, which crashes inside Stagehand's
     // `withInstanceLogContext(this.instanceId, ...)` wrapper on entry.
-    const raw =
-      typeof input === "string"
-        ? await stagehand.act(input, options)
-        : await stagehand.act(input, options);
+    const raw = await withWatchdog(
+      () =>
+        typeof input === "string" ? stagehand.act(input, options) : stagehand.act(input, options),
+      { timeoutMs: options?.timeout ?? DEFAULT_GUARD_TIMEOUT_MS, label: "stagehand-act" }
+    );
     const latencyMs = performance.now() - t0;
     const parsed = ACT_RESULT_SCHEMA.safeParse(raw);
     if (!parsed.success) {
@@ -280,6 +295,11 @@ export async function guardedAct(
  * main-frame target (`frameTarget` omitted, or its `frameSelector` is
  * `null`) leaves `options` untouched, so every existing call site is
  * byte-identical to today.
+ *
+ * The underlying `stagehand.observe` call is raced against `options.timeout`
+ * (falling back to `DEFAULT_GUARD_TIMEOUT_MS`) via `withWatchdog`, so a
+ * candidate search that never settles fails the attempt instead of hanging
+ * the step.
  */
 export async function guardedObserve(
   stagehand: Stagehand,
@@ -295,12 +315,15 @@ export async function guardedObserve(
   try {
     // Match Stagehand's overloads: pass instruction only when defined, so
     // the SDK falls through to its no-arg/options-only path otherwise.
-    const raw =
-      instruction === undefined
-        ? scopedOptions === undefined
-          ? await stagehand.observe()
-          : await stagehand.observe(scopedOptions)
-        : await stagehand.observe(instruction, scopedOptions);
+    const raw = await withWatchdog(
+      () =>
+        instruction === undefined
+          ? scopedOptions === undefined
+            ? stagehand.observe()
+            : stagehand.observe(scopedOptions)
+          : stagehand.observe(instruction, scopedOptions),
+      { timeoutMs: scopedOptions?.timeout ?? DEFAULT_GUARD_TIMEOUT_MS, label: "stagehand-observe" }
+    );
     const latencyMs = performance.now() - t0;
     const parsed = z.array(ACTION_SCHEMA).safeParse(raw);
     if (!parsed.success) {
@@ -367,6 +390,10 @@ export async function guardedObserve(
  * extracts from that frame's DOM instead of only the top frame. A
  * caller-supplied `options.selector` wins over `frameTarget.frameSelector`.
  * The main-frame target leaves `options` untouched.
+ *
+ * The underlying `stagehand.extract` call is raced against `options.timeout`
+ * (falling back to `DEFAULT_GUARD_TIMEOUT_MS`) via `withWatchdog`, so an
+ * extract that never settles fails the attempt instead of hanging the step.
  */
 export async function guardedExtract<T extends z.ZodTypeAny>(
   stagehand: Stagehand,
@@ -387,10 +414,14 @@ export async function guardedExtract<T extends z.ZodTypeAny>(
     // the cleanest public-API way to express "whatever overload-2 expects."
     // The `as unknown` step is needed because TS won't accept a single
     // direct cast across the entire overload set.
-    const raw = await stagehand.extract(
-      instruction,
-      schema as unknown as Parameters<typeof stagehand.extract>[1],
-      frameScopedOptions(options, frameTarget)
+    const raw = await withWatchdog(
+      () =>
+        stagehand.extract(
+          instruction,
+          schema as unknown as Parameters<typeof stagehand.extract>[1],
+          frameScopedOptions(options, frameTarget)
+        ),
+      { timeoutMs: options?.timeout ?? DEFAULT_GUARD_TIMEOUT_MS, label: "stagehand-extract" }
     );
     const latencyMs = performance.now() - t0;
     const parsed = schema.safeParse(raw);
