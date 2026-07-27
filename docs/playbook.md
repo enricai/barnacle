@@ -565,7 +565,7 @@ cent per call.
 
 ```
 Request arrives
-  → plugin.extractJoinKeys(payload) → joinKeys   [opaque, plugin-owned; src/site-plugin.ts]
+  → plugin.extractJoinKeys(payload) → joinKeys   [opaque, plugin-owned; src/site-plugin.ts — see Beacon-fire below for self-managed context.recordBeaconOutcome]
   → LRU cache check (getCachedResponse)         [src/cache/response-cache.ts]
   → cache hit → return immediately
   → cache miss → getOrCreateInFlight(key, fn)   [coalesces concurrent misses]
@@ -576,7 +576,7 @@ Request arrives
   → record hot-path latency
   → write cache entry
   → emit submission envelope (NDJSON)           [reconciliation "submit" record]
-  → fire beacon-fire tracking click              [background — not awaited; skipped + self-recordable, see below]
+  → fire beacon-fire tracking click              [background — not awaited]
   → return
 ```
 
@@ -584,7 +584,7 @@ Request arrives
 `dispatch()` itself, after `runPluginPipeline` resolves — they run for the
 hot path and the browser fallback alike, but only for a plugin that has NOT
 declared `extractJoinKeys`. When such a plugin's payload has a usable
-`TrackingUrl`, `fireTrackingClick` (`src/lib/tracking-click.ts:130`) is
+`TrackingUrl`, `fireTrackingClick` (`src/lib/tracking-click.ts`) is
 fire-and-forget: `dispatch()` calls it and returns without awaiting, so the
 response reaches the caller before the click even starts. In the background
 it opens a short-lived Browserbase session, navigates to the plugin's
@@ -596,33 +596,22 @@ at all, or when the plugin declared `extractJoinKeys` (asserting it fires its
 own post-submit tracking nav itself, outside `dispatch()` — see §Reconciliation
 join keys in architecture.md), `dispatch()` skips `fireTrackingClick` entirely
 and instead writes a `beaconStatus: "skipped"` beacon record itself,
-synchronously, before returning — unconditionally, whether or not the plugin
-ever reports a real outcome for the same run.
-
-A self-managing plugin is not stuck at that default, though. Once its own
-tracking nav resolves, it can call `context.recordBeaconOutcome({
-beaconStatus, joinKeys, trackingUrl?, durationMs? })` (`RecordBeaconOutcomeInput`
-in `src/site-plugin.ts`, bound per-request by `buildRecordBeaconOutcome` in
-`src/plugins/loader.ts`) to write a real `"fired"`/`"failed"` beacon record
-for the same `requestId` — core already knows `requestId`/`siteId` and binds
-both before the plugin ever sees the method, so the plugin supplies only the
-outcome, its own `joinKeys` bag, and optionally `trackingUrl`/`durationMs`.
-This is only meaningful for a plugin that declared `extractJoinKeys`, and it
-never throws, matching every other beacon write path in this section. Because
-`dispatch()`'s `"skipped"` write happens regardless of whether the plugin
-later calls `recordBeaconOutcome`, a self-managing plugin's run can end up
-with both a `"skipped"` line and a `"fired"`/`"failed"` line for the same
-`requestId`. `foldReconciliationRecords`
-(`src/lib/telemetry/submission-reader.ts`) resolves that by rank, not
-arrival order — `fired`/`failed` always outranks `skipped`, so a plugin that
-adopts `recordBeaconOutcome` gets its real outcome on record regardless of
-which line lands first; a plugin that never calls it is unaffected and stays
-at `skipped`.
-
-This is why beacon-fire needs its own durable record instead of being
-inferred from submit success: a submission can succeed while the beacon
-never fires (see §6B for how that shows up in metrics, and drain behavior on
-shutdown).
+synchronously, before returning. This remains the default outcome for a
+self-managing plugin, but it is not the whole story: such a plugin can call
+`context.recordBeaconOutcome({ beaconStatus: "fired" | "failed", joinKeys, ... })`
+(bound to the run's `requestId`/`siteId`, never-throwing, built on the same
+`captureBeaconEvent` writer) from `execute()`, `executeHttp()`, or an extra
+route, once it knows how its own tracking nav actually resolved. That
+`fired`/`failed` line outranks the automatic `skipped` line for the same
+`requestId` when the reader folds them together
+(`src/lib/telemetry/submission-reader.ts`), so a self-managing plugin is not
+structurally locked to `"skipped"` — it just needs to opt in. Full field
+detail and the call-site conventions live in
+[Reconciliation join keys](../README.md#reconciliation-join-keys-extractjoinkeys)
+in the README; this section only needs to know the escape hatch exists. This
+is why beacon-fire needs its own durable record instead of being inferred
+from submit success: a submission can succeed while the beacon never fires
+(see §6B for how that shows up in metrics, and drain behavior on shutdown).
 
 **Cache deduplication:** `getOrCreateInFlight` coalesces concurrent misses on
 the same cache key into a single upstream call. If 10 identical requests arrive
@@ -653,16 +642,13 @@ Hot path fails (schema mismatch, bot challenge, or 5xx)
       → Promise.race([plugin.execute(session), TASK_TIMEOUT_MS (60min default)])
     → session.close() in finally
   → emit submission envelope (NDJSON)           [reconciliation "submit" record]
-  → fire beacon-fire tracking click              [background — not awaited; skipped + self-recordable, see 5A]
+  → fire beacon-fire tracking click              [background — not awaited]
   → return
 ```
 
 Same tail as 5A: `emitEnvelopeSafely` and `fireTrackingClick` live in
 `dispatch()`, not in either pipeline branch, so both paths converge on the
-identical submit-record-then-beacon-fire sequence once a result comes back —
-including the `"skipped"` default and the `recordBeaconOutcome` override
-described above, since both are decided by `dispatch()` itself, not by
-which pipeline branch produced the result.
+identical submit-record-then-beacon-fire sequence once a result comes back.
 
 **`x-barnacle-execution: browser`** — sending this header on the incoming
 request bypasses the hot path entirely and goes directly to the browser path.

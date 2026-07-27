@@ -81,11 +81,12 @@ const TSC_DIAGNOSTIC_LINE = /^.+\(\d+,\d+\): error (TS\d+): (.+)$/;
  * standing in for the consumer having run the emitted checklist's
  * `pnpm add bottleneck zod`).
  *
- * The scratch dir MUST live inside REPO_ROOT (not `os.tmpdir()`) for that
- * last part to hold — Node's bare-specifier resolution walks up from the
- * checked files looking for `node_modules`, and an os.tmpdir() path has none
- * in its ancestry, so `zod/v4` etc. silently fail to resolve (mirrors the
- * same REPO_ROOT-relative-outDir requirement in recon-browser.build.test.ts).
+ * The scratch dir MUST live inside REPO_ROOT, not `os.tmpdir()` — Node's
+ * bare-specifier resolution walks up from the checked files looking for
+ * `node_modules`, and an os.tmpdir() path has none in its ancestry, so
+ * `zod/v4`/`bottleneck`/`@browserbasehq/stagehand` silently fail to resolve
+ * and every diagnostic below would be a false TS2307, not a real gap in the
+ * package's exports (matches recon-browser.build.test.ts's outDir precedent).
  */
 function typecheckGeneratedFiles(
   files: Record<string, string>
@@ -110,11 +111,11 @@ function typecheckGeneratedFiles(
         noEmit: true,
         // No `baseUrl` — TypeScript 7 removed it (TS5102), and a config-level
         // error aborts `tsc` before it checks a single file, which would make
-        // every diagnostics assertion below pass vacuously. `@/*` stands in
-        // for the internal cross-file aliases a real dist build would already
-        // have rewritten to relative paths by the time a consumer sees it —
-        // exports-map targets like site-plugin.ts are pulled in as raw src
-        // and still reference `@/config` etc. among themselves.
+        // every diagnostics assertion below pass vacuously regardless of what
+        // the generated sources import. `@/*` stands in for the internal
+        // cross-file aliases an exports-map target still carries as raw src
+        // (e.g. site-plugin.ts importing `@/config`) — a real dist build
+        // would already have rewritten those to relative paths.
         paths: {
           "@/sites/*": ["./sites/*"],
           "@/*": [path.join(REPO_ROOT, "src/*")],
@@ -307,21 +308,18 @@ describe("out-of-tree e2e — recon-generate output typechecks against the packa
   });
 });
 
-describe("out-of-tree plugin — recordBeaconOutcome is reachable from the declared public export surface", () => {
+describe("out-of-tree plugin — recordBeaconOutcome is reachable from the published SitePluginContext type", () => {
   /**
-   * A plugin managing its own beacon nav has exactly two supported ways to
-   * report the real outcome: the `recordBeaconOutcome` method core binds onto
-   * `SitePluginContext` (Option A), and the standalone `recordBeaconOutcome` /
-   * `PluginBeaconOutcomeInput` re-exported from the `./lib/telemetry/beacon-outcome`
-   * subpath (Option B) — this repo shipped both, so both need to typecheck
-   * against ONLY what `exports` declares, not against `@/lib/...` directly.
+   * A plugin managing its own beacon nav has exactly one supported way to
+   * report a real outcome: `context.recordBeaconOutcome` on `SitePluginContext`
+   * (Option A of the beacon-outcome-recorder report). If the recorder were
+   * wired internally but never surfaced on the exported type, this source
+   * would fail with TS2339 ("Property 'recordBeaconOutcome' does not exist")
+   * under the same exports-gated harness above — that is the failure signal
+   * this suite exists to guard, distinct from an unresolved import (TS2307).
    */
   const beaconOutcomeSource = `
 import type { SitePluginContext } from "@enricai/barnacle/site-plugin";
-import {
-  recordBeaconOutcome,
-  type PluginBeaconOutcomeInput,
-} from "@enricai/barnacle/lib/telemetry/beacon-outcome";
 
 export async function reportViaContext(context: SitePluginContext): Promise<void> {
   await context.recordBeaconOutcome({
@@ -331,28 +329,17 @@ export async function reportViaContext(context: SitePluginContext): Promise<void
     durationMs: 42,
   });
 }
-
-export async function reportViaTelemetrySubpath(requestId: string, siteId: string): Promise<void> {
-  const input: PluginBeaconOutcomeInput = {
-    requestId,
-    siteId,
-    beaconStatus: "failed",
-    joinKeys: null,
-  };
-  await recordBeaconOutcome(input);
-}
 `;
 
-  it("declares both the SitePluginContext seam and the telemetry subpath in package.json exports", () => {
+  it("declares the SitePluginContext seam in package.json exports", () => {
     expect(packageJson.exports["./site-plugin"]).toBeDefined();
-    expect(packageJson.exports["./lib/telemetry/beacon-outcome"]).toBeDefined();
   });
 
-  it("a plugin calling recordBeaconOutcome via SitePluginContext and the telemetry subpath produces zero TS2307/TS2532 diagnostics", () => {
+  it("a plugin calling context.recordBeaconOutcome produces zero TS2307/TS2339 diagnostics", () => {
     const diagnostics = typecheckGeneratedFiles({
       "beacon-outcome-plugin.ts": beaconOutcomeSource,
     });
-    const relevant = diagnostics.filter((d) => d.code === "TS2307" || d.code === "TS2532");
+    const relevant = diagnostics.filter((d) => d.code === "TS2307" || d.code === "TS2339");
     expect(relevant.map((d) => `${d.code}: ${d.message}`)).toEqual([]);
   });
 });

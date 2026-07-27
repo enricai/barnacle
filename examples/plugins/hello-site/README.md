@@ -70,18 +70,11 @@ curl -s http://localhost:3000/v1/plugins -H "Authorization: Bearer <your-api-key
   You can also omit `apiVersion` entirely to accept any version.
 - **Ship binary assets `__dirname`-relative**: `path.join(__dirname, "fixtures", …)`.
   cwd-relative paths break depending on where the server is launched.
-- **Recording your own beacon outcome needs an `execute` function.** A module
-  plugin that declares `extractJoinKeys` and fires its own tracking nav can
-  report the real outcome either via `context.recordBeaconOutcome({
-  beaconStatus, joinKeys, trackingUrl?, durationMs? })` from inside `execute`
-  (`requestId`/`siteId` are bound by core), or standalone via `recordBeaconOutcome`
-  / `PluginBeaconOutcomeInput` imported from the `@enricai/barnacle/lib/telemetry/beacon-outcome`
-  subpath, which takes `requestId`/`siteId` explicitly for call sites outside
-  `execute`'s scope. A config-only `*.plugin.json` manifest carries no
-  per-site TypeScript (its flow is data-driven through `runHealingFlow`), so it
-  has no call site for either form and stays on the engine's automatic
-  `"skipped"` default. See the repository README's **Reconciliation join
-  keys** section for the full contract and fold precedence.
+- **A plugin that manages its own post-submit tracking navigation must call
+  `context.recordBeaconOutcome`** — otherwise its beacon-fire telemetry stays
+  stuck at `beaconStatus: "skipped"`. See the repository README's
+  [Reconciliation join keys](../../../README.md#reconciliation-join-keys-extractjoinkeys)
+  section for the full contract.
 
 See the repository README's **Out-of-tree plugins** section for the full
 `BARNACLE_PLUGINS` / `BARNACLE_PLUGINS_STRICT` / `BARNACLE_PLUGINS_DIR` env-var

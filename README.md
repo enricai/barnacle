@@ -446,46 +446,50 @@ navs must share one browser session for a vendor's device-cookie
 attribution to work) and skips its own fire — firing both would open two
 independent sessions against the same URL.
 
-`dispatch()` still records that self-managed nav as `beaconStatus: "skipped"`
-by default, since core has no visibility into whether the plugin's own
-navigation actually fired. **A plugin that never calls the recorder below
-keeps that `"skipped"` default — nothing changes for it.** A plugin that
-wants its real outcome on record instead calls
-`context.recordBeaconOutcome()` after its own navigation resolves:
+By default a self-managing plugin's beacon-fire telemetry is stuck at
+`beaconStatus: "skipped"`, since core has no visibility into a navigation the
+plugin drives itself. To report the real outcome, call
+`context.recordBeaconOutcome` — passed on `SitePluginContext` alongside
+`baseUrl`/`logger`/`requestId`, bound to this run — from `execute()`,
+`executeHttp()`, or an extra-route handler:
 
 ```ts
-async execute(
-  payload: MySitePayload,
-  session: BrowserSession,
-  context: SitePluginContext
-): Promise<SitePluginResult<MySiteResponse>> {
-  const joinKeys = payload.someVendorClickId ? { vendorClickId: payload.someVendorClickId } : null;
-  const startedAt = Date.now();
-  const nav = await fireMySiteBeaconNav(session.stagehand, context.baseUrl);
+import type { SitePlugin, SitePluginContext } from "@/site-plugin";
 
-  await context.recordBeaconOutcome({
-    beaconStatus: nav.ok ? "fired" : "failed",
-    joinKeys,
-    trackingUrl: nav.trackingUrl,
-    durationMs: Date.now() - startedAt,
-  });
-
-  const raw = await runMySiteBrowserFlow(session.stagehand, context.baseUrl, payload.query);
-  return { data: raw };
-},
+export const myPlugin: SitePlugin<MyPayload, MyResponse> = {
+  extractJoinKeys: (payload) =>
+    payload.someVendorClickId ? { vendorClickId: payload.someVendorClickId } : null,
+  async execute(payload, session, context: SitePluginContext) {
+    const t0 = Date.now();
+    const fired = await runMySiteBeaconNav(session, payload.TrackingUrl);
+    await context.recordBeaconOutcome({
+      beaconStatus: fired ? "fired" : "failed",
+      joinKeys: { vendorClickId: payload.someVendorClickId },
+      trackingUrl: payload.TrackingUrl,
+      durationMs: Date.now() - t0,
+    });
+    // ...
+  },
+};
 ```
 
-`recordBeaconOutcome` (`SitePluginContext`, `src/site-plugin.ts`) takes
-`{ beaconStatus: "fired" | "failed", joinKeys: Record<string, unknown> |
-null, trackingUrl?: string | null, durationMs?: number }` — `requestId`/
-`siteId` are bound by core, so the plugin only supplies what it alone
-knows. `beaconStatus` is narrowed to `"fired" | "failed"` only;
-`"skipped"` stays engine-owned. If a `"skipped"` line was already written
-for this `requestId` and the plugin later reports a real `"fired"`/
-`"failed"` outcome, the fold in
-[Submission record schema](#submission-record-schema) prefers the real
-outcome over `"skipped"` regardless of arrival order. This never throws;
-a sink failure is logged and swallowed, same as core's own beacon writes.
+Core binds the run's `requestId` and the plugin's own `siteId` for you, so
+`recordBeaconOutcome`'s input carries only `beaconStatus` (`"fired"` |
+`"failed"` — `"skipped"` stays an engine-owned outcome), the opaque `joinKeys`
+bag (same shape returned from `extractJoinKeys`), and optional `trackingUrl`/
+`durationMs`. It never throws — a telemetry-sink hiccup cannot fail the
+request. A `fired`/`failed` line recorded this way outranks the automatic
+`skipped` line for the same `requestId` when the two are folded together
+(see [Telemetry & LLM judging](docs/telemetry-and-judging.md)). A plugin that
+never calls it keeps today's unchanged `skipped` default. Import
+`BeaconOutcomeInput` from `@/site-plugin` if you want to type the input
+object explicitly.
+
+**Config-only `*.plugin.json` manifests cannot record their own beacon
+outcome** — like `extractJoinKeys`, `recordBeaconOutcome` is only reachable
+from a module plugin's TypeScript `execute`/`executeHttp`/extra-route code; a
+pure-JSON manifest has no way to call it and stays on the automatic
+`fired`/`failed`/`skipped` outcomes `dispatch()` derives on its own.
 
 ### Static fixtures
 
@@ -720,12 +724,13 @@ in `src/lib/telemetry/reconciliation-record.ts`):
 | `ts` | `string` | ISO-8601 timestamp at write time. |
 
 A `"beacon"`-kind record shares the same sink to record a later, independent
-beacon-fire outcome for the same `requestId` — written either by core
-(`fireTrackingClick`, or the `"skipped"` default for a plugin that declares
-`extractJoinKeys`) or by the plugin itself, via
-[`context.recordBeaconOutcome`](#reconciliation-join-keys-extractjoinkeys),
-once its own tracking nav resolves. See
-[Submission-envelope sink](docs/telemetry-and-judging.md#submission-envelope-sink)
+beacon-fire outcome for the same `requestId`. Core writes one itself — either
+a `fired`/`failed` line once `fireTrackingClick` resolves, or a `skipped` line
+when there is no `TrackingUrl` to fire or the plugin declared
+`extractJoinKeys` — but a plugin managing its own tracking nav can also emit
+one directly via `context.recordBeaconOutcome` (see
+[Reconciliation join keys](#reconciliation-join-keys-extractjoinkeys) above).
+See [Submission-envelope sink](docs/telemetry-and-judging.md#submission-envelope-sink)
 for the full schema and the `GET /v1/submissions` read path.
 
 #### Tailing call samples with jq
@@ -868,7 +873,7 @@ http/net/dns. Metrics have no such constraint.
 | `TELEMETRY_ENABLED` | `true` | Master switch — set `false` to disable all NDJSON telemetry writes. |
 | `TELEMETRY_EVENTS_DIR` | `.barnacle/events` | Directory for per-run NDJSON event stream files (`<eventsDir>/<runId>.ndjson`). |
 | `CALLS_NDJSON_PATH` | `.barnacle/calls.ndjson` | Append-only NDJSON sink for LLM/Stagehand call samples. One line per call; feed to the judge and self-heal skills. |
-| `SUBMISSIONS_NDJSON_PATH` | `.barnacle/submissions.ndjson` | Append-only NDJSON sink for dispatch submission envelopes and beacon-fire outcomes. `kind:"submit"` lines (null/`"submit"`-defaulted on legacy lines) capture siteId, requestId, inbound payload, status, audit payload, and duration, plus the opaque `joinKeys` bag a plugin's `extractJoinKeys` hook resolved — the durable source-of-truth for "what did we submit for jobId X and did it succeed." `kind:"beacon"` lines record a later (or, for `beaconStatus: "skipped"`, immediate) independent beacon-fire outcome (`beaconStatus`: `fired`/`failed`/`skipped`, truncated `trackingUrl`) for the same `requestId`, so "submitted but the beacon did not fire" is measurable. Core writes the `"fired"`/`"failed"` line for its own automatic `TrackingUrl` fire, or the `"skipped"` default for a self-managing plugin; a plugin that declares `extractJoinKeys` and manages its own beacon nav can instead write its own `"fired"`/`"failed"` line via `context.recordBeaconOutcome` — see [Reconciliation join keys](#reconciliation-join-keys-extractjoinkeys). A reader folds both kinds together by `requestId`, preferring a real `fired`/`failed` outcome over `skipped` regardless of arrival order, so a plugin can join runs to its own attribution provider's report without re-parsing `inboundPayload`. |
+| `SUBMISSIONS_NDJSON_PATH` | `.barnacle/submissions.ndjson` | Append-only NDJSON sink for dispatch submission envelopes and beacon-fire outcomes. `kind:"submit"` lines (null/`"submit"`-defaulted on legacy lines) capture siteId, requestId, inbound payload, status, audit payload, and duration, plus the opaque `joinKeys` bag a plugin's `extractJoinKeys` hook resolved — the durable source-of-truth for "what did we submit for jobId X and did it succeed." `kind:"beacon"` lines record a later (or, for `beaconStatus: "skipped"`, immediate) independent beacon-fire outcome (`beaconStatus`: `fired`/`failed`/`skipped`, truncated `trackingUrl`) for the same `requestId`, so "submitted but the beacon did not fire" is measurable — the `skipped` line is always written by `dispatch()` itself, but a plugin managing its own tracking nav can call `context.recordBeaconOutcome` to append a real `fired`/`failed` line for the same `requestId`, which outranks `skipped` when the two are folded (see [Reconciliation join keys](#reconciliation-join-keys-extractjoinkeys)). A reader folds both kinds together by `requestId`, so a plugin can join runs to its own attribution provider's report without re-parsing `inboundPayload`. |
 | `TELEMETRY_MAX_FILE_SIZE_BYTES` | `104857600` (100 MB) | Rotate/drop the calls NDJSON once it exceeds this byte count. |
 | `TELEMETRY_MAX_RETENTION_MS` | `2592000000` (30 days) | Drop event-stream files older than this many milliseconds. |
 | `TELEMETRY_S3_BUCKET` | — | Optional — destination bucket for the buffered S3 telemetry mirror. Sink is entirely inert (no client, no network calls) when unset. Credentials/region resolve the same way as Bedrock (`AWS_REGION`, standard SDK credential order). |

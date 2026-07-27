@@ -28,7 +28,10 @@ const logger = getLogger({ name: "telemetry/submission-reader" });
  * One reconciliation row per run: the submit record's fields plus the
  * outcome of its beacon fire, distinct from submit status so "submitted but
  * the beacon did not fire" is measurable. `beaconStatus` defaults to
- * `"not_fired"` when no matching beacon line ever arrived.
+ * `"not_fired"` when no matching beacon line ever arrived. When a run has
+ * both a `"skipped"` line and a real `"fired"`/`"failed"` line, the real
+ * outcome wins the fold (see `foldReconciliationRecords`) regardless of
+ * which line was written first.
  */
 export interface ReconciliationRow extends Omit<SubmitRecord, "kind"> {
   beaconStatus: BeaconEvent["beaconStatus"] | "not_fired";
@@ -91,29 +94,25 @@ export function parseReconciliationLines(ndjsonContent: string): ReconciliationR
 }
 
 /**
- * Precedence for `beaconStatus`, highest wins when two beacon lines land on
- * the same `requestId`: a real `fired`/`failed` outcome always beats
- * `skipped`, because a plugin that manages its own beacon nav writes `fired`
- * during `execute()` — strictly before `dispatch()`'s post-submit block
- * writes its automatic `skipped` line (`loader.ts`) — so plain arrival order
- * would otherwise let the placeholder clobber the real outcome.
+ * Rank of a beacon outcome for fold precedence: a real `fired`/`failed`
+ * outcome always outranks `skipped`, because `dispatch()` writes `skipped`
+ * synchronously for any self-managing plugin (`loader.ts`) before that
+ * plugin's own later-recorded real outcome can arrive — write order alone
+ * is not a safe proxy for which line reflects reality. Equal-rank lines
+ * (e.g. a retried `fired`) fall through to array order, i.e. last one wins.
  */
-const BEACON_STATUS_RANK: Record<ReconciliationRow["beaconStatus"], number> = {
-  not_fired: 0,
-  skipped: 1,
-  fired: 2,
-  failed: 2,
-};
+function beaconRank(beaconStatus: BeaconEvent["beaconStatus"]): number {
+  return beaconStatus === "skipped" ? 0 : 1;
+}
 
 /**
  * Left-joins beacon events onto submit records by `requestId`. Submit rows
  * are the base — a beacon may arrive strictly after its submit line (or
  * never), so an orphan beacon with no matching submit row is dropped rather
  * than synthesizing a phantom row. Among beacon lines for the same
- * `requestId`, a higher-ranked outcome (see `BEACON_STATUS_RANK`) always
- * wins regardless of arrival order; a later line of equal rank (e.g. a
- * retried `fired`) still overwrites the earlier one, preserving last-wins
- * within a rank.
+ * `requestId`, the highest-`beaconRank` line wins regardless of write
+ * order; ties (equal rank) fall back to a later line overwriting an
+ * earlier one, so a duplicate/retry still resolves deterministically.
  */
 export function foldReconciliationRecords(records: ReconciliationRecord[]): ReconciliationRow[] {
   const rows = new Map<string, ReconciliationRow>();
@@ -130,17 +129,28 @@ export function foldReconciliationRecords(records: ReconciliationRecord[]): Reco
     });
   }
 
+  const winningBeacons = new Map<string, BeaconEvent>();
   for (const record of records) {
     if (record.kind !== "beacon") continue;
-    const row = rows.get(record.requestId);
+    const current = winningBeacons.get(record.requestId);
+    if (
+      current !== undefined &&
+      beaconRank(current.beaconStatus) > beaconRank(record.beaconStatus)
+    ) {
+      continue;
+    }
+    winningBeacons.set(record.requestId, record);
+  }
+
+  for (const [requestId, beacon] of winningBeacons) {
+    const row = rows.get(requestId);
     if (row === undefined) continue;
-    if (BEACON_STATUS_RANK[record.beaconStatus] < BEACON_STATUS_RANK[row.beaconStatus]) continue;
-    rows.set(record.requestId, {
+    rows.set(requestId, {
       ...row,
-      beaconStatus: record.beaconStatus,
-      beaconTrackingUrl: record.trackingUrl,
-      beaconTs: record.ts,
-      beaconDurationMs: record.durationMs,
+      beaconStatus: beacon.beaconStatus,
+      beaconTrackingUrl: beacon.trackingUrl,
+      beaconTs: beacon.ts,
+      beaconDurationMs: beacon.durationMs,
     });
   }
 

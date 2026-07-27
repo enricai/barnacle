@@ -21,11 +21,38 @@ export interface SitePluginMeta {
 }
 
 /**
+ * Minimal local mirror of the `BeaconOutcomeInput` argument to
+ * `context.recordBeaconOutcome` in Barnacle's `SitePluginContext`
+ * (`src/site-plugin.ts`). Kept field-for-field in sync with the shipped
+ * seam so a plugin copying this example sees the real call shape.
+ */
+export interface BeaconOutcomeInput {
+  beaconStatus: "fired" | "failed";
+  joinKeys: Record<string, unknown> | null;
+  trackingUrl?: string | null;
+  durationMs?: number;
+}
+
+/**
+ * Minimal local mirror of Barnacle's `SitePluginContext`, narrowed to the
+ * one seam a self-managing plugin needs: reporting a real `fired`/`failed`
+ * outcome for a beacon it navigates itself. See the repository README's
+ * Reconciliation join keys section for the full contract.
+ */
+export interface SitePluginContext {
+  recordBeaconOutcome(input: BeaconOutcomeInput): Promise<void>;
+}
+
+/**
  * Minimal local mirror of Barnacle's `SitePlugin`. `executeHttp` is the
  * direct-HTTP hot path (no browser); `execute` is the browser fallback.
  */
 export interface SitePlugin {
   meta: SitePluginMeta;
-  executeHttp?(payload: unknown, context?: unknown): Promise<{ data: unknown }>;
-  execute(payload: unknown, session?: unknown, context?: unknown): Promise<{ data: unknown }>;
+  executeHttp?(payload: unknown, context?: SitePluginContext): Promise<{ data: unknown }>;
+  execute(
+    payload: unknown,
+    session?: unknown,
+    context?: SitePluginContext
+  ): Promise<{ data: unknown }>;
 }
