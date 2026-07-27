@@ -7,6 +7,7 @@ import {
   makeFakeDeepLocator,
   registerDeepLocatorHangingHop,
 } from "@/scraper/deep-locator-fake";
+import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
 import { resetBillingErrorFlagForTests, runHealingFlow } from "@/scraper/flow-runner";
 import type { FrameTarget } from "@/scraper/frame-target";
 import type { Logger } from "@/types/logging";
@@ -68,7 +69,8 @@ function makeStagehand(): Stagehand {
 }
 
 const FRAME_SELECTOR = "iframe#talemetry_apply_iframe";
-const HOP_SELECTOR = `${FRAME_SELECTOR} >> *`;
+/** The cascade's attempt-2/4 branch resolves candidates at the interactive-scoped hop (bugfix-005), not `"*"`. */
+const HOP_SELECTOR = `${FRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
 
 function makeChildFrameTarget(urls: { current: string }): FrameTarget {
   return {

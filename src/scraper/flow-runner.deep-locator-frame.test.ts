@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { FakeDeepLocatorDelegate } from "@/scraper/deep-locator-fake";
 import { makeFakeDeepLocator, registerDeepLocatorHop } from "@/scraper/deep-locator-fake";
+import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
 import { resetBillingErrorFlagForTests, runHealingFlow } from "@/scraper/flow-runner";
 import type { FrameTarget } from "@/scraper/frame-target";
 import type { Logger } from "@/types/logging";
@@ -132,8 +133,13 @@ describe("flow-runner/runHealingFlow — OOPIF cascade regression (observe-blind
   it("resolves and clicks the frame-scoped step via deepLocator when observe() finds nothing, and records a deeplocator=-shaped selector", async () => {
     const urls = { current: "https://apply.acme.example/jobs/1/apply" };
     const frame = new Map();
-    const hopSelector = `${FRAME_SELECTOR} >> *`;
+    const hopSelector = `${FRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
     registerDeepLocatorHop(frame, hopSelector, "Manual Application");
+    // probeStepBeforeAttempts deliberately keeps requesting "*" (a
+    // reachability gate, not the candidate set the cascade acts on — see
+    // deep-locator-candidates.ts's module docblock), so it needs its own hop
+    // registered to report "present" before the cascade runs.
+    registerDeepLocatorHop(frame, `${FRAME_SELECTOR} >> *`, "Manual Application");
     const baseDeepLocator = makeFakeDeepLocator(frame);
     // `resolveDeepLocatorCandidates`/`clickDeepLocatorCandidate` both compose
     // their hop scope via `page.deepLocator(hopSelector)` then chain
@@ -199,7 +205,9 @@ describe("flow-runner/runHealingFlow — OOPIF cascade regression (observe-blind
     // proves the action synthesized for verification is this deeplocator=-shaped,
     // hop-composed selector rather than an observe()-style CSS/a11y selector.
     const recordedSelector = `deeplocator=${hopSelector} >> nth=${clickedIndexes[0]}`;
-    expect(recordedSelector).toBe("deeplocator=iframe#talemetry_apply_iframe >> * >> nth=0");
+    expect(recordedSelector).toBe(
+      `deeplocator=iframe#talemetry_apply_iframe >> ${INTERACTIVE_CANDIDATE_SELECTOR} >> nth=0`
+    );
   });
 
   it("control: a main-frame target with observe()=[] still yields the pre-existing absent/skip behavior and never calls deepLocator", async () => {
