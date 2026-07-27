@@ -7,6 +7,9 @@ import {
   submissionsQuerystringSchema,
   submissionsResponseSchema,
 } from "@/api/schemas/submissions";
+import { beaconEventSchema } from "@/lib/telemetry/reconciliation-record";
+
+const EXPECTED_BEACON_STATUS_OPTIONS = [...beaconEventSchema.shape.beaconStatus.options, "not_fired"];
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
 
@@ -104,8 +107,8 @@ describe("submissionsQuerystringSchema", () => {
     expect(result.success).toBe(false);
   });
 
-  it("accepts every beaconStatus fold value", () => {
-    for (const value of ["fired", "failed", "not_fired"]) {
+  it("accepts exactly the beaconEventSchema options plus the not_fired fold value", () => {
+    for (const value of EXPECTED_BEACON_STATUS_OPTIONS) {
       const result = submissionsQuerystringSchema.safeParse({ beaconStatus: value });
       expect(result.success).toBe(true);
     }
@@ -114,6 +117,16 @@ describe("submissionsQuerystringSchema", () => {
   it("rejects an unrecognized beaconStatus value", () => {
     const result = submissionsQuerystringSchema.safeParse({ beaconStatus: "bogus" });
     expect(result.success).toBe(false);
+  });
+
+  it("accepts a requestId filter", () => {
+    const result = submissionsQuerystringSchema.safeParse({ requestId: "req-abc-001" });
+    expect(result.success).toBe(true);
+  });
+
+  it("normalizes a blank requestId to undefined", () => {
+    const result = submissionsQuerystringSchema.parse({ requestId: "" });
+    expect(result.requestId).toBeUndefined();
   });
 
   it("rejects a negative offset", () => {
@@ -162,6 +175,13 @@ describe("reconciliationRowSchema", () => {
   it("rejects a row with an invalid beaconStatus", () => {
     const result = reconciliationRowSchema.safeParse({ ...makeValidRow(), beaconStatus: "bogus" });
     expect(result.success).toBe(false);
+  });
+
+  it("accepts exactly the beaconEventSchema options plus the not_fired fold value", () => {
+    for (const value of EXPECTED_BEACON_STATUS_OPTIONS) {
+      const result = reconciliationRowSchema.safeParse({ ...makeValidRow(), beaconStatus: value });
+      expect(result.success).toBe(true);
+    }
   });
 
   it("does not carry inboundPayload/auditPayload — the opaque blob is excluded", () => {
