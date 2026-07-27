@@ -54,6 +54,20 @@ function makeLegacyVivclidSubmitLine(): Record<string, unknown> {
   };
 }
 
+function makeLegacyVivclidBeaconLine(): Record<string, unknown> {
+  return {
+    kind: "beacon",
+    requestId: "req-legacy-vivclid-beacon-1",
+    siteId: "appcast",
+    vivclid: "v-legacy-beacon-1",
+    jobReference: "emp9_jid9",
+    beaconStatus: "fired",
+    trackingUrl: "https://track.appcast.io/pixel?rid=req-legacy-vivclid-beacon-1",
+    durationMs: 50,
+    ts: "2026-07-26T21:30:00.000Z",
+  };
+}
+
 function makeBeaconLine(): Record<string, unknown> {
   return {
     kind: "beacon",
@@ -220,6 +234,20 @@ describe("reconciliationRecordSchema", () => {
         vivclid: "v-9981",
         jobReference: "56793094457_jid-1",
       });
+    }
+  });
+
+  it("folds a pre-migration beacon line's top-level vivclid/jobReference into joinKeys", () => {
+    const result = reconciliationRecordSchema.safeParse(makeLegacyVivclidBeaconLine());
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.kind).toBe("beacon");
+      expect(result.data.joinKeys).toEqual({
+        vivclid: "v-legacy-beacon-1",
+        jobReference: "emp9_jid9",
+      });
+      expect(result.data).not.toHaveProperty("vivclid");
+      expect(result.data).not.toHaveProperty("jobReference");
     }
   });
 
