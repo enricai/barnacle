@@ -5200,8 +5200,28 @@ export async function probeStepBeforeAttempts(params: {
   logger: Logger;
   captureFn?: CaptureFn;
   frameTarget?: FrameTarget;
+  /**
+   * Gives the caller a chance to re-resolve a frame that lost the attach
+   * race at step entry right before this probe's own deepLocator gate
+   * consults `frameTarget.frame` — see `executeStepWithHealing`'s
+   * `reresolveFrameTargetIfLost`, which is what `executeStepWithHealing`
+   * passes here. Omitted (e.g. direct unit tests of this function) keeps
+   * today's behavior: the probe reads `frameTarget` exactly as passed in,
+   * with no re-resolution attempt.
+   */
+  reresolveFrameTarget?: () => Promise<FrameTarget | undefined>;
 }): Promise<"present" | "absent"> {
-  const { stagehand, page, step, stepIndex, totalSteps, logger, captureFn, frameTarget } = params;
+  const {
+    stagehand,
+    page,
+    step,
+    stepIndex,
+    totalSteps,
+    logger,
+    captureFn,
+    frameTarget,
+    reresolveFrameTarget,
+  } = params;
   try {
     const candidates = await guardedObserve(
       stagehand,
@@ -5235,10 +5255,13 @@ export async function probeStepBeforeAttempts(params: {
         );
         return "present";
       }
-      if (frameTarget?.frame) {
+      const effectiveFrameTarget = reresolveFrameTarget
+        ? await reresolveFrameTarget()
+        : frameTarget;
+      if (effectiveFrameTarget?.frame) {
         const deepLocatorCandidates = await resolveDeepLocatorCandidates(
           page,
-          frameTarget.frameSelector,
+          effectiveFrameTarget.frameSelector,
           "*"
         );
         if (deepLocatorCandidates.length > 0) {
@@ -5428,7 +5451,6 @@ export async function executeStepWithHealing(params: {
   const {
     stagehand,
     page,
-    frameTarget,
     step,
     optional,
     upload,
@@ -5457,6 +5479,43 @@ export async function executeStepWithHealing(params: {
     trajectory,
     onStepFailure,
   } = params;
+  // Mutable (not the destructured const above) so a lost frame-attach race
+  // can be upgraded in place once the OOPIF attaches later in the cascade —
+  // see reresolveFrameTargetIfLost below. Every existing reference in this
+  // function keeps reading `frameTarget` unchanged; only its declaration
+  // moved so it can be reassigned.
+  let frameTarget = params.frameTarget;
+  let frameReresolveAttempted = false;
+  /**
+   * Re-resolves a frame that lost the attach race at step entry —
+   * `resolveFrameTarget`'s per-step poll (called once in the runner's step
+   * loop, before `executeStepWithHealing` even starts) gives up and pins
+   * `frameTarget.frame` to `null` for the rest of the step, so every
+   * deepLocator gate below tests a stale "unresolved" handle even after the
+   * OOPIF actually attaches moments later (the run 5 vs. run 6 divergence in
+   * the bug report). Called just before each gate; re-checks with
+   * `timeoutMs: 0` — a single presence probe, no added poll delay — so a
+   * frame that has since attached is picked up without making the deadline
+   * that already elapsed matter again. Memoized (`frameReresolveAttempted`)
+   * so the cascade's several gates share one attempt instead of each
+   * re-checking; a target with no `declaredFrameSelector` (the frame was
+   * never declared, or resolution already succeeded) returns immediately
+   * without calling `resolveFrameTarget` at all, so main-frame-only flows do
+   * zero extra work.
+   */
+  const reresolveFrameTargetIfLost = async (): Promise<void> => {
+    if (frameReresolveAttempted) return;
+    frameReresolveAttempted = true;
+    if (frameTarget?.frame || !frameTarget?.declaredFrameSelector) return;
+    const reresolved = await resolveFrameTarget(page, frameTarget.declaredFrameSelector, {
+      timeoutMs: 0,
+    });
+    if (!reresolved.frame) return;
+    logger.info(
+      `${formatStepPrefix(stepIndex, totalSteps)} frame ${frameTarget.declaredFrameSelector} attached after step entry — re-resolved before deepLocator gate`
+    );
+    frameTarget = reresolved;
+  };
   // Read-once to suppress "unused" — knownErrorClassPrefixes is threaded
   // through executeStepWithHealing's signature so the cascade has it in
   // scope when the invalid-fields judge migration (Task #43) lands. The
@@ -5611,6 +5670,10 @@ export async function executeStepWithHealing(params: {
     logger,
     captureFn,
     frameTarget,
+    reresolveFrameTarget: async () => {
+      await reresolveFrameTargetIfLost();
+      return frameTarget;
+    },
   });
   if (probeResult === "absent") {
     if (optional) {
@@ -5691,6 +5754,7 @@ export async function executeStepWithHealing(params: {
     // dump feeds replanRemainingFlow's diagnostic prompt, and an empty
     // candidate list there returns "repeat the failed step", burning the
     // replan budget on every frame-scoped probe-absent failure.
+    await reresolveFrameTargetIfLost();
     const unfocusedObserve =
       probeAbsentObservedUnfocused.length === 0 && frameTarget?.frame
         ? await deepLocatorCandidatesAsActions(page, frameTarget.frameSelector)
@@ -6054,6 +6118,7 @@ export async function executeStepWithHealing(params: {
         // exclusion is applied here by filtering resolved (already-ranked)
         // candidates against triedSelectors instead — otherwise attempt 4
         // would re-pick the same failed element and burn the attempt.
+        await reresolveFrameTargetIfLost();
         const deepLocatorCandidates =
           candidates.length === 0 && frameTarget?.frame
             ? (
@@ -6394,6 +6459,7 @@ export async function executeStepWithHealing(params: {
           // evidence rather than hard-failing — lower stakes than the
           // attempt-2/4 click path since this only feeds the rephrase
           // prompt, so a resolver error/empty result is fine to swallow.
+          await reresolveFrameTargetIfLost();
           const candidates =
             observedCandidates.length === 0 && frameTarget?.frame
               ? await deepLocatorCandidatesAsActions(page, frameTarget.frameSelector, step)
@@ -7147,6 +7213,7 @@ export async function executeStepWithHealing(params: {
   // dump feeds replanRemainingFlow's diagnostic prompt, and an empty
   // candidate list there returns "repeat the failed step", burning the
   // replan budget on every frame-scoped cascade-exhaust failure.
+  await reresolveFrameTargetIfLost();
   const finalObserve =
     cascadeExhaustObservedFinal.length === 0 && frameTarget?.frame
       ? await deepLocatorCandidatesAsActions(page, frameTarget.frameSelector, step)
