@@ -42,8 +42,7 @@ function makeFiredInput(): Parameters<typeof captureBeaconEvent>[0] {
   return {
     requestId: "req-abc-123",
     siteId: "ats-c",
-    vivclid: "v-9981",
-    jobReference: "56793094457_jid-1",
+    joinKeys: { vivclid: "v-9981", jobReference: "56793094457_jid-1" },
     beaconStatus: "fired",
     trackingUrl: "https://track.appcast.io/pixel?rid=req-abc-123",
     durationMs: 842,
@@ -54,8 +53,7 @@ function makeFailedInput(): Parameters<typeof captureBeaconEvent>[0] {
   return {
     requestId: "req-def-456",
     siteId: "ats-c",
-    vivclid: null,
-    jobReference: null,
+    joinKeys: null,
     beaconStatus: "failed",
     trackingUrl: null,
     durationMs: 120,
@@ -108,7 +106,7 @@ describe("captureBeaconEvent", () => {
     expect(result.success).toBe(true);
   });
 
-  it("preserves requestId, siteId, vivclid, jobReference, and derives ts", async () => {
+  it("preserves requestId, siteId, joinKeys, and derives ts", async () => {
     const input = makeFiredInput();
     await captureBeaconEvent(input, { sinkPath });
 
@@ -116,19 +114,18 @@ describe("captureBeaconEvent", () => {
     const parsed = JSON.parse(line) as BeaconEventSample;
     expect(parsed.requestId).toBe(input.requestId);
     expect(parsed.siteId).toBe(input.siteId);
-    expect(parsed.vivclid).toBe(input.vivclid);
-    expect(parsed.jobReference).toBe(input.jobReference);
+    expect(parsed.joinKeys).toEqual(input.joinKeys);
     expect(parsed.durationMs).toBe(input.durationMs);
     expect(typeof parsed.ts).toBe("string");
     expect(parsed.ts).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
-  it("truncates trackingUrl to 120 characters but keeps vivclid in full", async () => {
+  it("truncates trackingUrl to 120 characters but keeps joinKeys in full", async () => {
     const longUrl = `https://track.appcast.io/pixel?rid=${"x".repeat(200)}`;
     const input = {
       ...makeFiredInput(),
       trackingUrl: longUrl,
-      vivclid: "v-".concat("y".repeat(200)),
+      joinKeys: { vivclid: "v-".concat("y".repeat(200)) },
     };
     await captureBeaconEvent(input, { sinkPath });
 
@@ -136,7 +133,7 @@ describe("captureBeaconEvent", () => {
     const parsed = JSON.parse(line) as BeaconEventSample;
     expect(parsed.trackingUrl).toBe(longUrl.slice(0, 120));
     expect(parsed.trackingUrl?.length).toBe(120);
-    expect(parsed.vivclid).toBe(input.vivclid);
+    expect(parsed.joinKeys).toEqual(input.joinKeys);
   });
 
   it("line is terminated by a newline character", async () => {

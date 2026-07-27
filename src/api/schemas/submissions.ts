@@ -38,13 +38,13 @@ const reconciliationBeaconStatusSchema = z.enum([
 
 /**
  * Querystring contract for the submissions read route. Every field is
- * optional so a caller can filter by any subset of the reconciliation join
- * keys, submit/beacon outcome, or a time window, and page through results.
+ * optional so a caller can filter by `siteId`/`requestId`, submit/beacon
+ * outcome, or a time window, and page through results. Site-specific join
+ * keys live in the opaque `joinKeys` bag on each row and are not filterable
+ * here — filter client-side, or on `siteId`/`requestId` first.
  */
 export const submissionsQuerystringSchema = z.object({
-  vivclid: optionalTrimmedString(),
   siteId: optionalTrimmedString(),
-  jobReference: optionalTrimmedString(),
   requestId: optionalTrimmedString(),
   status: z.preprocess(blankToUndefined, submitRecordSchema.shape.status.optional()),
   beaconStatus: z.preprocess(blankToUndefined, reconciliationBeaconStatusSchema.optional()),
@@ -63,7 +63,7 @@ export const submissionsQuerystringSchema = z.object({
 export type SubmissionsQuerystring = z.infer<typeof submissionsQuerystringSchema>;
 
 /**
- * One reconciled per-run row: the submit record's named join keys and
+ * One reconciled per-run row: the submit record's opaque `joinKeys` bag and
  * outcome, plus the beacon-fire dimension folded on by `requestId`. Derived
  * from `submitRecordSchema` (feat-002's durable record) rather than
  * restated, so a field added to the writer can't silently drift from what

@@ -37,12 +37,12 @@ function toResponseRow(row: ReconciliationRow): ReconciliationRowResponse {
 }
 
 /**
- * Exposes the reconciled submit+beacon rows behind authentication, so
- * attribution can join runs to the Appcast CPA report over HTTP instead of
- * re-parsing raw NDJSON. Kept out of `healthRoutes` because this payload
- * carries applicant-run identifiers (`vivclid`, job reference) — strictly
- * more sensitive than the plugin-load report `pluginsIntrospectionRoutes`
- * already gates behind auth.
+ * Exposes the reconciled submit+beacon rows behind authentication, so a
+ * plugin can join runs to its own attribution provider's report over HTTP
+ * instead of re-parsing raw NDJSON. Kept out of `healthRoutes` because this
+ * payload carries applicant-run identifiers (the opaque `joinKeys` bag) —
+ * strictly more sensitive than the plugin-load report
+ * `pluginsIntrospectionRoutes` already gates behind auth.
  */
 export async function submissionsRoutes(
   app: FastifyInstance,

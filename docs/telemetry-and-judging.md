@@ -249,8 +249,7 @@ and validated against `submitRecordSchema`, exported from that module as
 | `kind` | Always `"submit"`; defaults to `"submit"` so pre-existing lines written before this field existed still parse. |
 | `siteId` | Which plugin handled the request — the cohort dimension for reconciliation. |
 | `requestId` | The Fastify-issued correlation ID for the inbound request; joins a `"beacon"` record to this one. |
-| `vivclid` | Appcast's applicant-level click ID — a named, first-class field, not buried in `inboundPayload`. Resolved by `extractVivclid` (`src/lib/reconciliation-keys.ts`) from the inbound payload or its `TrackingUrl` query string; `null` when neither carries one. |
-| `jobReference` | The `<empId>_<jid>` job identifier — also named and first-class. Resolved by `extractJobReference` (`src/lib/reconciliation-keys.ts`) the same way; `null` when unresolved. |
+| `joinKeys` | Opaque `Record<string, unknown> \| null` — whatever the plugin's own `extractJoinKeys` hook resolved from the inbound payload. Core never inspects its contents; `null` when the plugin has no `extractJoinKeys` or it resolved nothing. |
 | `inboundPayload` | The request body the caller posted, unredacted (`z.unknown()` — no shape is enforced on it). |
 | `status` | Submit outcome: `"submitted"` or `"error"`. |
 | `auditPayload` | The same object plugins return via `SitePluginResult.auditPayload`; `null` on errors. Plugins that need to keep PII out of the sink redact it here, not on `inboundPayload`. |
@@ -258,43 +257,44 @@ and validated against `submitRecordSchema`, exported from that module as
 | `durationMs` | Total dispatch wall time. |
 | `ts` | ISO timestamp. |
 
-`vivclid`/`jobReference` are only as populated as the caller of
-`captureSubmissionEnvelope` resolves them. `dispatch()`
-(`src/plugins/loader.ts`), the sink's only production call site, calls
-`extractReconciliationKeys` once per dispatch and stamps the result onto
-every envelope it emits — both fields are `null` only when the inbound
-payload and its `TrackingUrl` carry neither key.
+`joinKeys` is only as populated as the plugin's own `extractJoinKeys` hook
+resolves it (`src/site-plugin.ts`). `dispatch()` (`src/plugins/loader.ts`),
+the sink's only production call site, calls `plugin.extractJoinKeys?.(payload) ?? null`
+once per dispatch and stamps the result onto every envelope it emits —
+`null` for a plugin that declares no `extractJoinKeys`, or when the plugin's
+hook resolves nothing.
 
 ### `"beacon"` records — the conversion/beacon-fire dimension, distinct from submit `status`
 
 Written by `captureBeaconEvent` (`src/lib/telemetry/beacon-capture.ts`) and
-validated against `beaconEventSchema`. Appended independently, strictly
-later than its matching `"submit"` record, once `fireTrackingClick`
-(`src/lib/tracking-click.ts`) resolves the vendor click-tracking navigation.
-Every key:
+validated against `beaconEventSchema`. For a plugin with no `extractJoinKeys`,
+appended independently, strictly later than its matching `"submit"` record,
+once `fireTrackingClick` (`src/lib/tracking-click.ts`) resolves the vendor
+click-tracking navigation core drove itself. Every key:
 
 | Field | Meaning |
 |-------|---------|
 | `kind` | Always `"beacon"`. |
 | `requestId` | Joins this record back to its `"submit"` record. |
 | `siteId` | Same cohort dimension as the submit record. |
-| `vivclid` | Same join key as the submit record, threaded through by the caller of `fireTrackingClick`. |
-| `jobReference` | Same join key as the submit record, threaded through by the caller of `fireTrackingClick`. |
-| `beaconStatus` | `"fired"`, `"failed"`, or `"skipped"` — the conversion/beacon-fire outcome, a field distinct from the submit record's `status`. This is what makes "submitted but the beacon did not fire" measurable, where previously `fireTrackingClick` was fire-and-forget with errors swallowed and only Datadog counters (`recordTrackingClickSuccess`/`recordTrackingClickFailure`) as evidence. `"skipped"` means no beacon was ever applicable for the run (no usable `TrackingUrl`), distinct from `"not_fired"` below (no beacon line arrived at all). |
-| `trackingUrl` | The vendor click-tracking URL that was navigated to, truncated to 120 characters; `null` if omitted. |
+| `joinKeys` | Same opaque bag as the submit record, threaded through by the caller of `fireTrackingClick`. |
+| `beaconStatus` | `"fired"`, `"failed"`, or `"skipped"` — the conversion/beacon-fire outcome, a field distinct from the submit record's `status`. This is what makes "submitted but the beacon did not fire" measurable, where previously `fireTrackingClick` was fire-and-forget with errors swallowed and only Datadog counters (`recordTrackingClickSuccess`/`recordTrackingClickFailure`) as evidence. `"skipped"` covers two distinct reasons, distinguished by `trackingUrl` below: no beacon was ever applicable for the run (no usable `TrackingUrl` — `trackingUrl: null`), or the plugin declared `extractJoinKeys` and so fires its own beacon nav outside `dispatch()` even though a `TrackingUrl` was present (`trackingUrl` carries the real, truncated URL). Either way `"skipped"` is distinct from `"not_fired"` below (no beacon line arrived at all). |
+| `trackingUrl` | The vendor click-tracking URL, truncated to 120 characters; `null` when none was present. For a `"skipped"` record this doubles as the two-reasons signal above — present means a URL existed but a plugin-owned navigation used it instead of core's `fireTrackingClick`. |
 | `durationMs` | Wall time of the tracking-click navigation itself, not the original dispatch. |
 | `ts` | ISO timestamp. |
 
 A `"fired"`/`"failed"` `"beacon"` record is written when the caller of
 `fireTrackingClick` supplies a `TrackingClickReconciliationContext`
-(`requestId` plus the join keys) — the parameter is optional so existing
-call sites keep compiling. `dispatch()`'s call site supplies one on every
-tracking click it fires, threading the same `vivclid`/`jobReference` pair it
-resolved for the submit record. A `"skipped"` `"beacon"` record is written
-by `dispatch()` itself, via the same `captureBeaconEvent`, when a successful
-submit's payload has no (or an empty-string) `TrackingUrl` — `durationMs: 0`
-since no tracking-click navigation ever ran. The write path is additionally
-exercised directly by `beacon-capture.test.ts`.
+(`requestId` plus `joinKeys`) — the parameter is optional so existing call
+sites keep compiling. `dispatch()`'s call site supplies one on every
+tracking click it fires (i.e. only for a plugin with no `extractJoinKeys`),
+threading the same `joinKeys` bag it resolved for the submit record. A
+`"skipped"` `"beacon"` record is written by `dispatch()` itself, via the
+same `captureBeaconEvent`, when a successful submit's payload has no (or an
+empty-string) `TrackingUrl`, OR when the plugin declared `extractJoinKeys`
+(asserting it manages its own tracking nav) — `durationMs: 0` since no
+engine-driven tracking-click navigation ever ran in either case. The write
+path is additionally exercised directly by `beacon-capture.test.ts`.
 
 ### Reading, filtering, and querying reconciliation rows
 
@@ -312,12 +312,15 @@ way `readReconciliationRows` does — so a submit line written by one ECS
 task and its beacon line written by another still land in one row.
 `queryReconciliationRows`
 (`src/lib/telemetry/submission-query.ts`) then filters/sorts (newest-first)/
-paginates those rows by `vivclid`, `siteId`, `jobReference`, `requestId`,
-`status`, `beaconStatus`, or a `from`/`to` window. Both are composed behind
+paginates those rows by `siteId`, `requestId`, `status`, `beaconStatus`, or a
+`from`/`to` window — the fields every reconciliation query needs regardless
+of plugin. `joinKeys`-specific filtering is not offered at this layer, since
+core doesn't know its shape; a caller filters on `joinKeys` client-side, or
+narrows by `siteId`/`requestId` first. Both are composed behind
 `GET /v1/submissions` (authenticated; `src/api/routes/submissions.ts`,
 querystring/response schemas in `src/api/schemas/submissions.ts`) — the
-queryable HTTP path for attribution to join runs against the Appcast CPA
-report without re-parsing raw NDJSON. The response row omits
+queryable HTTP path for a plugin to join runs against its own attribution
+provider's report without re-parsing raw NDJSON. The response row omits
 `inboundPayload`/`auditPayload` (the opaque blobs this route exists to stop
 callers from having to re-parse) and renames the reader's internal
 `beaconTrackingUrl` field to `trackingUrl`.
@@ -330,7 +333,7 @@ callers from having to re-parse) and renames the reader's internal
 | Submission-envelope sink + `SubmissionEnvelopeSample` type | `src/lib/telemetry/submission-capture.ts` |
 | Reconciliation record schemas (`submit` + `beacon` kinds) | `src/lib/telemetry/reconciliation-record.ts` |
 | Beacon-fire (conversion) event writer + `BeaconEventSample` type | `src/lib/telemetry/beacon-capture.ts` |
-| `vivclid`/`jobReference` extraction from an inbound payload | `src/lib/reconciliation-keys.ts` |
+| Plugin-owned join-key extraction hook | `SitePlugin.extractJoinKeys` in `src/site-plugin.ts` |
 | Reconciliation reader (`readReconciliationRows`) | `src/lib/telemetry/submission-reader.ts` |
 | Durable (local+S3) reconciliation source (`readDurableReconciliationRows`) | `src/lib/telemetry/reconciliation-source.ts` |
 | Reconciliation query/filter layer (`queryReconciliationRows`) | `src/lib/telemetry/submission-query.ts` |

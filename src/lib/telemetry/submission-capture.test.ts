@@ -56,8 +56,7 @@ function makeSuccessInput(): Parameters<typeof captureSubmissionEnvelope>[0] {
 function makeSuccessInputWithJoinKeys(): Parameters<typeof captureSubmissionEnvelope>[0] {
   return {
     ...makeSuccessInput(),
-    vivclid: "v-9981",
-    jobReference: "56793094457_jid-1",
+    joinKeys: { vivclid: "v-9981", jobReference: "56793094457_jid-1" },
   };
 }
 
@@ -171,14 +170,13 @@ describe("captureSubmissionEnvelope", () => {
     expect(bufferSubmissionLine).toHaveBeenCalledWith(line);
   });
 
-  it("writes vivclid, jobReference, and kind:submit as top-level named fields", async () => {
+  it("writes joinKeys and kind:submit as top-level fields", async () => {
     const input = makeSuccessInputWithJoinKeys();
     await captureSubmissionEnvelope(input, { sinkPath });
 
     const line = fs.readFileSync(sinkPath, "utf-8").trim();
     const parsed = JSON.parse(line) as SubmissionEnvelopeSample;
-    expect(parsed.vivclid).toBe(input.vivclid);
-    expect(parsed.jobReference).toBe(input.jobReference);
+    expect(parsed.joinKeys).toEqual(input.joinKeys);
     expect(parsed.siteId).toBe(input.siteId);
     expect(parsed.kind).toBe("submit");
 
@@ -186,15 +184,13 @@ describe("captureSubmissionEnvelope", () => {
     expect(result.success).toBe(true);
   });
 
-  it("writes null (not undefined/omitted) vivclid and jobReference when the input omits them", async () => {
+  it("writes null (not undefined/omitted) joinKeys when the input omits them", async () => {
     await captureSubmissionEnvelope(makeSuccessInput(), { sinkPath });
 
     const line = fs.readFileSync(sinkPath, "utf-8").trim();
     const parsed = JSON.parse(line) as Record<string, unknown>;
-    expect("vivclid" in parsed).toBe(true);
-    expect("jobReference" in parsed).toBe(true);
-    expect(parsed.vivclid).toBeNull();
-    expect(parsed.jobReference).toBeNull();
+    expect("joinKeys" in parsed).toBe(true);
+    expect(parsed.joinKeys).toBeNull();
   });
 
   it("submissionEnvelopeSampleSchema rejects a kind value other than submit", () => {
@@ -203,7 +199,7 @@ describe("captureSubmissionEnvelope", () => {
     expect(result.success).toBe(false);
   });
 
-  it("submissionEnvelopeSampleSchema still parses a legacy line with no kind/vivclid/jobReference", () => {
+  it("submissionEnvelopeSampleSchema still parses a legacy line with no kind/joinKeys", () => {
     const legacyLine = {
       siteId: "ats-c",
       requestId: "req-legacy-789",
@@ -219,19 +215,17 @@ describe("captureSubmissionEnvelope", () => {
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.kind).toBe("submit");
-      expect(result.data.vivclid).toBeNull();
-      expect(result.data.jobReference).toBeNull();
+      expect(result.data.joinKeys).toBeNull();
     }
   });
 
-  it("forwards a serialized line containing vivclid and jobReference to the S3 buffer", async () => {
+  it("forwards a serialized line containing joinKeys to the S3 buffer", async () => {
     const input = makeSuccessInputWithJoinKeys();
     await captureSubmissionEnvelope(input, { sinkPath });
 
     expect(bufferSubmissionLine).toHaveBeenCalledTimes(1);
     const forwardedLine = vi.mocked(bufferSubmissionLine).mock.calls[0]?.[0] ?? "";
-    expect(forwardedLine).toContain(`"vivclid":"${input.vivclid}"`);
-    expect(forwardedLine).toContain(`"jobReference":"${input.jobReference}"`);
+    expect(forwardedLine).toContain(`"vivclid":"${input.joinKeys?.vivclid}"`);
     expect(forwardedLine).toContain(`"kind":"submit"`);
   });
 });
@@ -241,8 +235,7 @@ function makeBaseParsedLine(): Record<string, unknown> {
     kind: "submit",
     siteId: "ats-c",
     requestId: "req-abc-123",
-    vivclid: "v-9981",
-    jobReference: "56793094457_jid-1",
+    joinKeys: { vivclid: "v-9981", jobReference: "56793094457_jid-1" },
     inboundPayload: { jobId: "56793094457" },
     status: "submitted",
     auditPayload: null,

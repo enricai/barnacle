@@ -411,25 +411,40 @@ return {
 
 When `auditPayload` is present, core writes it — not `data` — to the submission-envelope telemetry record. Use this to strip PII or large blobs from the audit trail while keeping the full response in the API reply. When absent, `data` is written as-is.
 
-### Reconciliation join keys (`vivclid` / `jobReference`)
+### Reconciliation join keys (`extractJoinKeys`)
 
-A plugin does not compute or forward these itself. `dispatch()`
-(`src/plugins/loader.ts`) extracts both from the inbound payload once, via
-`extractReconciliationKeys` (`src/lib/reconciliation-keys.ts`), and stamps
-the result onto the submission-envelope record and the tracking-click
-beacon-fire record. Resolution order (case-insensitive):
+Core has no opinion on what a reconciliation join key is named or how it's
+shaped — that's site-specific vocabulary (an attribution vendor's click ID,
+a job-reference composition rule, whatever the site needs). A plugin that
+needs its submission and beacon-fire telemetry to be joinable back to its own
+attribution provider declares an optional `extractJoinKeys` hook on its
+`SitePlugin`:
 
-1. A top-level `vivclid` / `jobReference` field on the payload, or an
-   `empId` + `jid` pair composed into `<empId>_<jid>`.
-2. The same-named query params on the payload's `TrackingUrl`, if present.
+```ts
+export const myPlugin: SitePlugin<MyPayload, MyResponse> = {
+  extractJoinKeys: (payload) =>
+    payload.someVendorClickId ? { vendorClickId: payload.someVendorClickId } : null,
+  // ...
+};
+```
 
-If the site returns a post-submission click-tracking URL, declare it on the
-plugin's `bodySchema` by composing `JobTrackingSchema`
-(`src/lib/job-tracking.ts`) — the single source of truth `dispatch()` and
-`fireTrackingClick` read `TrackingUrl` from site-agnostically — instead of
-adding a bespoke `TrackingUrl` field, e.g.
-`MySitePayloadSchema.extend(JobTrackingSchema.shape)`. Both join keys resolve
-to `null` when the site's payload and `TrackingUrl` carry neither.
+`dispatch()` (`src/plugins/loader.ts`) calls this once per submission and
+stamps the opaque `Record<string, unknown>` result onto the submission
+envelope and the beacon-fire record verbatim, under a `joinKeys` field —
+core never inspects its contents. A plugin with no reconciliation needs
+simply omits `extractJoinKeys`.
+
+**Declaring `extractJoinKeys` also opts the plugin out of core's automatic
+`TrackingUrl` fire.** If the site returns a post-submission click-tracking
+URL, declare it on the plugin's `bodySchema` by composing `JobTrackingSchema`
+(`src/lib/job-tracking.ts`) — `MySitePayloadSchema.extend(JobTrackingSchema.shape)`.
+When a plugin has no `extractJoinKeys`, `dispatch()` fires that `TrackingUrl`
+itself via `fireTrackingClick`, site-agnostically, after a successful submit.
+When a plugin *does* declare `extractJoinKeys`, core assumes the plugin fires
+its own post-submit tracking navigation (e.g. because the click and apply
+navs must share one browser session for a vendor's device-cookie
+attribution to work) and skips its own fire — firing both would open two
+independent sessions against the same URL.
 
 ### Static fixtures
 
@@ -655,8 +670,7 @@ in `src/lib/telemetry/reconciliation-record.ts`):
 | `kind` | `"submit"` | Discriminates this record from a `"beacon"` conversion-event record sharing the same sink; defaults to `"submit"` so lines written before this field existed still parse. |
 | `siteId` | `string` | Which plugin handled the request — the cohort dimension for reconciliation. |
 | `requestId` | `string` | Fastify-issued correlation ID; joins a later `"beacon"` record to this one by matching `requestId`. |
-| `vivclid` | `string \| null` | Appcast's applicant-level click ID, resolved from the inbound payload or its `TrackingUrl` query string by `extractVivclid` (`src/lib/reconciliation-keys.ts`); `null` when neither carries one. |
-| `jobReference` | `string \| null` | The `<empId>_<jid>` job identifier, resolved the same way by `extractJobReference`; `null` when unresolved. |
+| `joinKeys` | `Record<string, unknown> \| null` | Opaque, plugin-owned reconciliation join keys, resolved once by the plugin's `extractJoinKeys` hook (see [Reconciliation join keys](#reconciliation-join-keys-extractjoinkeys) above); `null` when the plugin has no `extractJoinKeys` or it resolved nothing. |
 | `inboundPayload` | `unknown` | The request body the caller posted, unredacted. |
 | `status` | `"submitted" \| "error"` | Submit outcome. |
 | `auditPayload` | `unknown` | The plugin's `SitePluginResult.auditPayload`, or `data` when absent; `null` on errors. |
@@ -809,7 +823,7 @@ http/net/dns. Metrics have no such constraint.
 | `TELEMETRY_ENABLED` | `true` | Master switch — set `false` to disable all NDJSON telemetry writes. |
 | `TELEMETRY_EVENTS_DIR` | `.barnacle/events` | Directory for per-run NDJSON event stream files (`<eventsDir>/<runId>.ndjson`). |
 | `CALLS_NDJSON_PATH` | `.barnacle/calls.ndjson` | Append-only NDJSON sink for LLM/Stagehand call samples. One line per call; feed to the judge and self-heal skills. |
-| `SUBMISSIONS_NDJSON_PATH` | `.barnacle/submissions.ndjson` | Append-only NDJSON sink for dispatch submission envelopes and beacon-fire outcomes. `kind:"submit"` lines (null/`"submit"`-defaulted on legacy lines) capture siteId, requestId, inbound payload, status, audit payload, and duration, plus the named `vivclid`/`jobReference` reconciliation keys — the durable source-of-truth for "what did we submit for jobId X and did it succeed." `kind:"beacon"` lines record a later (or, for `beaconStatus: "skipped"`, immediate) independent beacon-fire outcome (`beaconStatus`: `fired`/`failed`/`skipped`, truncated `trackingUrl`) for the same `requestId`, so "submitted but the beacon did not fire" is measurable. A reader folds both kinds together by `requestId`, joinable to the Appcast CPA report without re-parsing `inboundPayload`. |
+| `SUBMISSIONS_NDJSON_PATH` | `.barnacle/submissions.ndjson` | Append-only NDJSON sink for dispatch submission envelopes and beacon-fire outcomes. `kind:"submit"` lines (null/`"submit"`-defaulted on legacy lines) capture siteId, requestId, inbound payload, status, audit payload, and duration, plus the opaque `joinKeys` bag a plugin's `extractJoinKeys` hook resolved — the durable source-of-truth for "what did we submit for jobId X and did it succeed." `kind:"beacon"` lines record a later (or, for `beaconStatus: "skipped"`, immediate) independent beacon-fire outcome (`beaconStatus`: `fired`/`failed`/`skipped`, truncated `trackingUrl`) for the same `requestId`, so "submitted but the beacon did not fire" is measurable. A reader folds both kinds together by `requestId`, so a plugin can join runs to its own attribution provider's report without re-parsing `inboundPayload`. |
 | `TELEMETRY_MAX_FILE_SIZE_BYTES` | `104857600` (100 MB) | Rotate/drop the calls NDJSON once it exceeds this byte count. |
 | `TELEMETRY_MAX_RETENTION_MS` | `2592000000` (30 days) | Drop event-stream files older than this many milliseconds. |
 | `TELEMETRY_S3_BUCKET` | — | Optional — destination bucket for the buffered S3 telemetry mirror. Sink is entirely inert (no client, no network calls) when unset. Credentials/region resolve the same way as Bedrock (`AWS_REGION`, standard SDK credential order). |
@@ -1003,7 +1017,7 @@ Operational routes:
 - `GET /readyz`  — readiness probe (checks scraper credentials, queue depth)
 - `GET /docs`    — Swagger UI (when `ENABLE_DOCS=true`)
 - `GET /v1/plugins` — authenticated plugin load report (see [Out-of-tree plugins](#out-of-tree-plugins))
-- `GET /v1/submissions` — authenticated, queryable submit+beacon reconciliation rows (filter by `vivclid`, `siteId`, `jobReference`, `requestId`, `status`, `beaconStatus`, `from`/`to`; see [Submission-envelope sink](docs/telemetry-and-judging.md#submission-envelope-sink))
+- `GET /v1/submissions` — authenticated, queryable submit+beacon reconciliation rows (filter by `siteId`, `requestId`, `status`, `beaconStatus`, `from`/`to`; each row's opaque `joinKeys` bag is a plugin-owned field, not filterable at this layer; see [Submission-envelope sink](docs/telemetry-and-judging.md#submission-envelope-sink))
 
 ## Commands
 
@@ -1182,7 +1196,7 @@ readinessProbe:
 - Recon playbook (step-by-step): [docs/playbook.md](./docs/playbook.md)
 - Testing guide: [docs/testing.md](./docs/testing.md)
 - Telemetry & LLM judging concept guide: [docs/telemetry-and-judging.md](./docs/telemetry-and-judging.md)
-- Submission reconciliation runbook (join Barnacle runs to the Appcast CPA report): [docs/submission-reconciliation.md](./docs/submission-reconciliation.md)
+- Submission reconciliation runbook (join Barnacle runs to a plugin's own attribution provider's report): [docs/submission-reconciliation.md](./docs/submission-reconciliation.md)
 - Per-site recon findings: [docs/target-recon.md](./docs/target-recon.md) (populated after first `pnpm run recon:summarize`)
 
 ## License

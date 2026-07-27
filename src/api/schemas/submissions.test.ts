@@ -20,8 +20,7 @@ function makeValidRow(): ReconciliationRow {
   return {
     siteId: "hca",
     requestId: "req-abc-001",
-    vivclid: "viv-123",
-    jobReference: "emp1_jid1",
+    joinKeys: { vivclid: "viv-123", jobReference: "emp1_jid1" },
     status: "submitted",
     errorMessage: null,
     durationMs: 842,
@@ -36,9 +35,7 @@ function makeValidRow(): ReconciliationRow {
 describe("submissionsQuerystringSchema", () => {
   it("accepts every field present as an empty string", () => {
     const result = submissionsQuerystringSchema.safeParse({
-      vivclid: "",
       siteId: "",
-      jobReference: "",
       status: "",
       beaconStatus: "",
       from: "",
@@ -160,11 +157,10 @@ describe("reconciliationRowSchema", () => {
     expect(result.success).toBe(true);
   });
 
-  it("accepts null vivclid/jobReference for a legacy unkinded record", () => {
+  it("accepts a null joinKeys bag for a legacy unkinded record", () => {
     const result = reconciliationRowSchema.safeParse({
       ...makeValidRow(),
-      vivclid: null,
-      jobReference: null,
+      joinKeys: null,
     });
     expect(result.success).toBe(true);
   });

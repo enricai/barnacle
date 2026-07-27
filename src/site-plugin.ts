@@ -259,4 +259,16 @@ export interface SitePlugin<TPayload = unknown, TResult = Record<string, unknown
    * those abort paths bypass this hook entirely.
    */
   onRetry?: (error: ScraperError, attempt: number) => void | Promise<void>;
+  /**
+   * Optional site-specific join keys for the reconciliation telemetry sink,
+   * derived from the inbound payload. Opaque to core — written verbatim into
+   * the submit/beacon NDJSON record under a `joinKeys` bag, matching
+   * `SitePluginResult.auditPayload`'s "opaque, plugin-owned shape" precedent.
+   * Presence of this hook also signals that the plugin manages its own
+   * post-submit tracking navigation, so core's automatic `TrackingUrl` fire
+   * (`dispatch()` in `src/plugins/loader.ts`) is skipped for it — a plugin
+   * with no reconciliation needs omits this entirely and keeps today's
+   * auto-fire behavior.
+   */
+  extractJoinKeys?: (payload: TPayload) => Record<string, unknown> | null;
 }

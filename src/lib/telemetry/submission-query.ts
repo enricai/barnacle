@@ -1,9 +1,9 @@
 /**
  * Predicate composition over `ReconciliationRow[]` (feat-007's reader
  * output), so a caller can ask reconciliation-shaped questions — rows for a
- * given `vivclid`, `siteId` cohort, job reference, submit outcome, beacon
- * status, or date window — without re-parsing the submissions NDJSON. Pure
- * and I/O-free: the route layer composes `readDurableReconciliationRows`
+ * given `siteId` cohort, `requestId`, submit outcome, beacon status, or date
+ * window — without re-parsing the submissions NDJSON. Pure and I/O-free: the
+ * route layer composes `readDurableReconciliationRows`
  * (`src/lib/telemetry/reconciliation-source.ts`) then this module.
  */
 
@@ -18,9 +18,7 @@ import type { ReconciliationRow } from "@/lib/telemetry/submission-reader";
  * inclusively; `limit`/`offset` paginate the newest-first result.
  */
 export interface ReconciliationRowFilter {
-  vivclid?: string;
   siteId?: string;
-  jobReference?: string;
   requestId?: string;
   status?: SubmitRecord["status"];
   beaconStatus?: ReconciliationRow["beaconStatus"];
@@ -39,14 +37,10 @@ type ReconciliationRowPredicate = (row: ReconciliationRow) => boolean;
  * `isWithinInterval`, since either bound may be supplied without the other.
  */
 function buildPredicates(filter: ReconciliationRowFilter): ReconciliationRowPredicate[] {
-  const { vivclid, siteId, jobReference, requestId, status, beaconStatus, from, to } = filter;
+  const { siteId, requestId, status, beaconStatus, from, to } = filter;
 
   return [
-    vivclid === undefined ? null : (row: ReconciliationRow) => row.vivclid === vivclid,
     siteId === undefined ? null : (row: ReconciliationRow) => row.siteId === siteId,
-    jobReference === undefined
-      ? null
-      : (row: ReconciliationRow) => row.jobReference === jobReference,
     requestId === undefined ? null : (row: ReconciliationRow) => row.requestId === requestId,
     status === undefined ? null : (row: ReconciliationRow) => row.status === status,
     beaconStatus === undefined
@@ -61,8 +55,8 @@ function buildPredicates(filter: ReconciliationRowFilter): ReconciliationRowPred
 
 /**
  * Filters, sorts (newest-first by `ts`), and paginates reconciliation rows
- * so the CPA-report join a human pulls in pages is deterministic rather
- * than relying on the sink's append order.
+ * so the attribution-report join a human pulls in pages is deterministic
+ * rather than relying on the sink's append order.
  */
 export function queryReconciliationRows(
   rows: ReconciliationRow[],
