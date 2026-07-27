@@ -194,103 +194,131 @@ describe("foldReconciliationRecords", () => {
     expect(rows[0]?.beaconTrackingUrl).toBeNull();
   });
 
-  it("keeps a fired beacon that arrived before a later skipped beacon line", () => {
-    const records = parseReconciliationLines(
-      ndjson(
-        makeSubmitLine(),
-        makeBeaconLine({
-          beaconStatus: "fired",
-          trackingUrl: "https://track.appcast.io/pixel?rid=req-abc-123",
-          ts: "2026-07-26T10:00:05.000Z",
-          durationMs: 87,
-        }),
-        makeBeaconLine({
-          beaconStatus: "skipped",
-          trackingUrl: null,
-          ts: "2026-07-26T10:00:06.000Z",
-          durationMs: 0,
-        })
-      )
-    );
+  it("folds skipped-then-fired to fired, taking the fired line's fields", () => {
+    const skipped = makeBeaconLine({
+      beaconStatus: "skipped",
+      trackingUrl: null,
+      durationMs: 0,
+      ts: "2026-07-26T10:00:03.000Z",
+    });
+    const fired = makeBeaconLine({
+      beaconStatus: "fired",
+      trackingUrl: "https://track.example.com/pixel?rid=req-abc-123",
+      durationMs: 42,
+      ts: "2026-07-26T10:00:01.000Z",
+    });
+    const records = parseReconciliationLines(ndjson(makeSubmitLine(), skipped, fired));
     const rows = foldReconciliationRecords(records);
+    expect(rows).toHaveLength(1);
     expect(rows[0]?.beaconStatus).toBe("fired");
-    expect(rows[0]?.beaconTrackingUrl).toBe("https://track.appcast.io/pixel?rid=req-abc-123");
-    expect(rows[0]?.beaconTs).toBe("2026-07-26T10:00:05.000Z");
-    expect(rows[0]?.beaconDurationMs).toBe(87);
+    expect(rows[0]?.beaconTrackingUrl).toBe("https://track.example.com/pixel?rid=req-abc-123");
+    expect(rows[0]?.beaconTs).toBe("2026-07-26T10:00:01.000Z");
+    expect(rows[0]?.beaconDurationMs).toBe(42);
   });
 
-  it("lets a fired beacon win even when the skipped line arrives first", () => {
-    const records = parseReconciliationLines(
-      ndjson(
-        makeSubmitLine(),
-        makeBeaconLine({
-          beaconStatus: "skipped",
-          trackingUrl: null,
-          ts: "2026-07-26T10:00:01.000Z",
-          durationMs: 0,
-        }),
-        makeBeaconLine({
-          beaconStatus: "fired",
-          trackingUrl: "https://track.appcast.io/pixel?rid=req-abc-123",
-          ts: "2026-07-26T10:00:05.000Z",
-          durationMs: 87,
-        })
-      )
-    );
+  it("folds fired-then-skipped to the same fired row, order-independent", () => {
+    const skipped = makeBeaconLine({
+      beaconStatus: "skipped",
+      trackingUrl: null,
+      durationMs: 0,
+      ts: "2026-07-26T10:00:03.000Z",
+    });
+    const fired = makeBeaconLine({
+      beaconStatus: "fired",
+      trackingUrl: "https://track.example.com/pixel?rid=req-abc-123",
+      durationMs: 42,
+      ts: "2026-07-26T10:00:01.000Z",
+    });
+    const records = parseReconciliationLines(ndjson(makeSubmitLine(), fired, skipped));
     const rows = foldReconciliationRecords(records);
+    expect(rows).toHaveLength(1);
     expect(rows[0]?.beaconStatus).toBe("fired");
-    expect(rows[0]?.beaconTrackingUrl).toBe("https://track.appcast.io/pixel?rid=req-abc-123");
-    expect(rows[0]?.beaconTs).toBe("2026-07-26T10:00:05.000Z");
-    expect(rows[0]?.beaconDurationMs).toBe(87);
+    expect(rows[0]?.beaconTrackingUrl).toBe("https://track.example.com/pixel?rid=req-abc-123");
+    expect(rows[0]?.beaconTs).toBe("2026-07-26T10:00:01.000Z");
+    expect(rows[0]?.beaconDurationMs).toBe(42);
   });
 
-  it("lets a failed beacon win over a later skipped line, same as fired", () => {
-    const records = parseReconciliationLines(
-      ndjson(
-        makeSubmitLine(),
-        makeBeaconLine({
-          beaconStatus: "failed",
-          trackingUrl: null,
-          ts: "2026-07-26T10:00:05.000Z",
-          durationMs: 87,
-        }),
-        makeBeaconLine({
-          beaconStatus: "skipped",
-          trackingUrl: null,
-          ts: "2026-07-26T10:00:06.000Z",
-          durationMs: 0,
-        })
-      )
+  it("folds skipped-then-failed to failed, order-independent with failed-then-skipped", () => {
+    const skipped = makeBeaconLine({
+      beaconStatus: "skipped",
+      trackingUrl: null,
+      durationMs: 0,
+      ts: "2026-07-26T10:00:03.000Z",
+    });
+    const failed = makeBeaconLine({
+      beaconStatus: "failed",
+      trackingUrl: "https://track.example.com/pixel?rid=req-abc-123",
+      durationMs: 55,
+      ts: "2026-07-26T10:00:01.000Z",
+    });
+
+    const skippedFirst = foldReconciliationRecords(
+      parseReconciliationLines(ndjson(makeSubmitLine(), skipped, failed))
     );
+    const failedFirst = foldReconciliationRecords(
+      parseReconciliationLines(ndjson(makeSubmitLine(), failed, skipped))
+    );
+
+    for (const rows of [skippedFirst, failedFirst]) {
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.beaconStatus).toBe("failed");
+      expect(rows[0]?.beaconTrackingUrl).toBe("https://track.example.com/pixel?rid=req-abc-123");
+      expect(rows[0]?.beaconTs).toBe("2026-07-26T10:00:01.000Z");
+      expect(rows[0]?.beaconDurationMs).toBe(55);
+    }
+  });
+
+  it("keeps the later of two same-rank real outcomes (last-wins-among-real-outcomes)", () => {
+    const fired = makeBeaconLine({
+      beaconStatus: "fired",
+      trackingUrl: "https://track.example.com/pixel?rid=req-abc-123",
+      durationMs: 10,
+      ts: "2026-07-26T10:00:01.000Z",
+    });
+    const failed = makeBeaconLine({
+      beaconStatus: "failed",
+      trackingUrl: null,
+      durationMs: 20,
+      ts: "2026-07-26T10:00:02.000Z",
+    });
+    const records = parseReconciliationLines(ndjson(makeSubmitLine(), fired, failed));
     const rows = foldReconciliationRecords(records);
+    expect(rows).toHaveLength(1);
     expect(rows[0]?.beaconStatus).toBe("failed");
+    expect(rows[0]?.beaconTs).toBe("2026-07-26T10:00:02.000Z");
+    expect(rows[0]?.beaconDurationMs).toBe(20);
   });
 
-  it("still applies last-wins between two same-rank beacon lines (retry overwrite)", () => {
+  it("keeps the later ts among two same-rank fired lines", () => {
+    const firstFired = makeBeaconLine({
+      beaconStatus: "fired",
+      trackingUrl: "https://track.example.com/pixel?rid=req-abc-123&attempt=1",
+      durationMs: 10,
+      ts: "2026-07-26T10:00:01.000Z",
+    });
+    const laterFired = makeBeaconLine({
+      beaconStatus: "fired",
+      trackingUrl: "https://track.example.com/pixel?rid=req-abc-123&attempt=2",
+      durationMs: 15,
+      ts: "2026-07-26T10:00:09.000Z",
+    });
+    const records = parseReconciliationLines(ndjson(makeSubmitLine(), firstFired, laterFired));
+    const rows = foldReconciliationRecords(records);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.beaconStatus).toBe("fired");
+    expect(rows[0]?.beaconTs).toBe("2026-07-26T10:00:09.000Z");
+    expect(rows[0]?.beaconTrackingUrl).toBe(
+      "https://track.example.com/pixel?rid=req-abc-123&attempt=2"
+    );
+  });
+
+  it("still folds a submit with only a skipped line to skipped", () => {
     const records = parseReconciliationLines(
-      ndjson(
-        makeSubmitLine(),
-        makeBeaconLine({
-          beaconStatus: "fired",
-          trackingUrl: "https://track.appcast.io/pixel?rid=req-abc-123&attempt=1",
-          ts: "2026-07-26T10:00:05.000Z",
-          durationMs: 87,
-        }),
-        makeBeaconLine({
-          beaconStatus: "fired",
-          trackingUrl: "https://track.appcast.io/pixel?rid=req-abc-123&attempt=2",
-          ts: "2026-07-26T10:00:10.000Z",
-          durationMs: 120,
-        })
-      )
+      ndjson(makeSubmitLine(), makeBeaconLine({ beaconStatus: "skipped", trackingUrl: null }))
     );
     const rows = foldReconciliationRecords(records);
-    expect(rows[0]?.beaconStatus).toBe("fired");
-    expect(rows[0]?.beaconTrackingUrl).toBe(
-      "https://track.appcast.io/pixel?rid=req-abc-123&attempt=2"
-    );
-    expect(rows[0]?.beaconTs).toBe("2026-07-26T10:00:10.000Z");
-    expect(rows[0]?.beaconDurationMs).toBe(120);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.beaconStatus).toBe("skipped");
   });
 });
 

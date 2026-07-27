@@ -7,11 +7,9 @@
  */
 
 import { config } from "@/config";
-import { MetricsCollector } from "@/lib/dispatch-metrics";
 import { getLogger } from "@/lib/logging";
-import { recordBeaconOutcome } from "@/lib/telemetry/beacon-outcome";
-import { dispatch } from "@/plugins/loader";
-import type { SitePlugin, SitePluginContext, SitePluginResult } from "@/site-plugin";
+import { buildPluginContext, dispatch } from "@/plugins/loader";
+import type { SitePlugin, SitePluginResult } from "@/site-plugin";
 import {
   allocateTestmailInbox,
   type PollTestmailInboxOptions,
@@ -92,16 +90,13 @@ export async function runIntegrationJob<TResult = Record<string, unknown>>(
   const inbox = allocateTestmailInbox(inboxOptions);
   const payload = buildPayload(inbox);
 
-  const requestId = "integration-test";
-  const context: SitePluginContext = {
-    baseUrl,
+  const context = buildPluginContext({
+    plugin,
+    cfg: config,
+    requestId: "integration-test",
     logger,
-    config,
-    requestId,
-    metricsCollector: new MetricsCollector(),
-    recordBeaconOutcome: (input) =>
-      recordBeaconOutcome({ ...input, requestId, siteId: plugin.meta.siteId }),
-  };
+    baseUrl,
+  });
 
   const result = await dispatch<TResult>(plugin, payload, context);
 

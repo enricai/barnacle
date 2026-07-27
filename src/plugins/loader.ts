@@ -28,8 +28,7 @@ import {
 import { MetricsCollector } from "@/lib/dispatch-metrics";
 import { toErrorMessage } from "@/lib/errors";
 import { extendLogger, getLogger } from "@/lib/logging";
-import { captureBeaconEvent } from "@/lib/telemetry/beacon-capture";
-import { recordBeaconOutcome } from "@/lib/telemetry/beacon-outcome";
+import { captureBeaconEvent, createBeaconOutcomeRecorder } from "@/lib/telemetry/beacon-capture";
 import { captureSubmissionEnvelope } from "@/lib/telemetry/submission-capture";
 import { fireTrackingClick } from "@/lib/tracking-click";
 import { BUILTIN_SITE_PLUGINS } from "@/plugins/discover";
@@ -92,6 +91,39 @@ function toApiError(err: unknown): ApiError | undefined {
   if (err instanceof HttpUrlLockedError) return new UrlLockedError(err.message);
   if (err instanceof ScraperError) return new ScrapeFailureError(err.message);
   return undefined;
+}
+
+/** Input to `buildPluginContext` — one per construction site (the `/run` route, an extra route, or a test/integration harness). */
+export interface BuildPluginContextInput {
+  /** The plugin the context is being built for; supplies `siteId` for both `baseUrl` resolution and the bound beacon recorder. */
+  plugin: SitePlugin<unknown, unknown>;
+  /** Full app config; also used to resolve `baseUrl` when no override is given. */
+  cfg: AppConfig;
+  /** Correlation ID for this run, threaded into telemetry and the bound beacon recorder. */
+  requestId: string;
+  /** Request-scoped logger, already extended by the caller (`extendLogger` for real requests). */
+  logger: Logger;
+  /** Overrides the `cfg.scraper.siteBaseUrls` / `plugin.meta.defaultBaseUrl` resolution; used by the integration-test harness, which supplies its own job-derived `baseUrl`. */
+  baseUrl?: string;
+}
+
+/**
+ * Builds the `SitePluginContext` core injects into every plugin call. Single
+ * shared factory for all three construction sites (`/run` route, extra
+ * routes, `runIntegrationJob`) so a new context member is a one-line change
+ * here instead of three drifting literals.
+ */
+export function buildPluginContext(input: BuildPluginContextInput): SitePluginContext {
+  const { plugin, cfg, requestId, logger, baseUrl } = input;
+  return {
+    baseUrl:
+      baseUrl ?? cfg.scraper.siteBaseUrls[plugin.meta.siteId] ?? plugin.meta.defaultBaseUrl ?? "",
+    logger,
+    config: cfg,
+    requestId,
+    metricsCollector: new MetricsCollector(),
+    recordBeaconOutcome: createBeaconOutcomeRecorder({ requestId, siteId: plugin.meta.siteId }),
+  };
 }
 
 /**
@@ -210,20 +242,6 @@ async function emitBeaconSafely(input: Parameters<typeof captureBeaconEvent>[0])
   } catch (err) {
     logger.warn(`beacon event emit failed: ${toErrorMessage(err)}`);
   }
-}
-
-/**
- * Builds the `recordBeaconOutcome` closure bound into a plugin's context.
- * Binds `requestId`/`siteId` at construction (both are in scope at either
- * call site below) so a plugin only ever supplies its own outcome,
- * joinKeys, trackingUrl, and durationMs — never core's request/plugin
- * identity.
- */
-function buildRecordBeaconOutcome(
-  requestId: string,
-  siteId: string
-): SitePluginContext["recordBeaconOutcome"] {
-  return (input) => recordBeaconOutcome({ ...input, requestId, siteId });
 }
 
 /**
@@ -402,8 +420,6 @@ export async function registerRoutes(
 
   for (const plugin of plugins) {
     const routePath = plugin.meta.routeOverride ?? `/v1/${plugin.meta.siteId}/run`;
-    const baseUrl =
-      cfg.scraper.siteBaseUrls[plugin.meta.siteId] ?? plugin.meta.defaultBaseUrl ?? "";
 
     app.post(
       routePath,
@@ -417,14 +433,12 @@ export async function registerRoutes(
       },
       async (request) => {
         const forceFallback = request.headers["x-barnacle-execution"] === "browser";
-        const context: SitePluginContext = {
-          baseUrl,
-          logger: extendLogger(request.log as unknown as pino.Logger),
-          config: cfg,
+        const context = buildPluginContext({
+          plugin,
+          cfg,
           requestId: request.id,
-          metricsCollector: new MetricsCollector(),
-          recordBeaconOutcome: buildRecordBeaconOutcome(request.id, plugin.meta.siteId),
-        };
+          logger: extendLogger(request.log as unknown as pino.Logger),
+        });
         const result = await dispatch(plugin, request.body, context, { forceFallback });
         return successEnvelope({
           ...(result.data as object),
@@ -525,16 +539,12 @@ function registerExtraRoutes(
         // resolved plugin's own contract.
         const body =
           shared && route.bodySchema ? route.bodySchema.parse(request.body) : request.body;
-        const baseUrl =
-          cfg.scraper.siteBaseUrls[plugin.meta.siteId] ?? plugin.meta.defaultBaseUrl ?? "";
-        const context: SitePluginContext = {
-          baseUrl,
-          logger: extendLogger(request.log as unknown as pino.Logger),
-          config: cfg,
+        const context = buildPluginContext({
+          plugin,
+          cfg,
           requestId: request.id,
-          metricsCollector: new MetricsCollector(),
-          recordBeaconOutcome: buildRecordBeaconOutcome(request.id, plugin.meta.siteId),
-        };
+          logger: extendLogger(request.log as unknown as pino.Logger),
+        });
         const result = await route.handler(
           {
             body,

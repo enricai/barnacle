@@ -34,7 +34,11 @@ vi.mock("@/lib/telemetry/s3-sink", () => ({
   bufferSubmissionLine: vi.fn(),
 }));
 
-import { type BeaconEventSample, captureBeaconEvent } from "@/lib/telemetry/beacon-capture";
+import {
+  type BeaconEventSample,
+  captureBeaconEvent,
+  createBeaconOutcomeRecorder,
+} from "@/lib/telemetry/beacon-capture";
 import { beaconEventSchema } from "@/lib/telemetry/reconciliation-record";
 import { bufferSubmissionLine } from "@/lib/telemetry/s3-sink";
 
@@ -176,5 +180,91 @@ describe("captureBeaconEvent", () => {
     await expect(
       captureBeaconEvent(makeFiredInput(), { sinkPath: badSinkPath })
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("createBeaconOutcomeRecorder", () => {
+  it("appends exactly one line that parses under beaconEventSchema, with the bound requestId/siteId, an engine-derived ts, and defaulted trackingUrl/durationMs", async () => {
+    const record = createBeaconOutcomeRecorder({ requestId: "req-bound-1", siteId: "ats-c" });
+
+    await record({ beaconStatus: "fired", joinKeys: { anything: 1 } }, { sinkPath });
+
+    const content = fs.readFileSync(sinkPath, "utf-8");
+    const lines = content.split("\n").filter((l) => l.length > 0);
+    expect(lines).toHaveLength(1);
+
+    const parsed = JSON.parse(lines[0] ?? "{}") as BeaconEventSample;
+    const result = beaconEventSchema.safeParse(parsed);
+    expect(result.success).toBe(true);
+    expect(parsed.kind).toBe("beacon");
+    expect(parsed.requestId).toBe("req-bound-1");
+    expect(parsed.siteId).toBe("ats-c");
+    expect(parsed.joinKeys).toEqual({ anything: 1 });
+    expect(parsed.trackingUrl).toBeNull();
+    expect(parsed.durationMs).toBe(0);
+    expect(typeof parsed.ts).toBe("string");
+    expect(parsed.ts).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it("round-trips a nested/heterogeneous joinKeys bag byte-for-byte, uninterpreted", async () => {
+    const record = createBeaconOutcomeRecorder({ requestId: "req-bound-2", siteId: "ats-c" });
+    const joinKeys = {
+      vivclid: "v-9981",
+      nested: { jid: "56793094457_jid-1", depth: { deeper: true } },
+      count: 42,
+      missing: null,
+    };
+
+    await record({ beaconStatus: "failed", joinKeys }, { sinkPath });
+
+    const line = fs.readFileSync(sinkPath, "utf-8").trim();
+    const parsed = JSON.parse(line) as BeaconEventSample;
+    expect(parsed.beaconStatus).toBe("failed");
+    expect(parsed.joinKeys).toEqual(joinKeys);
+  });
+
+  it("truncates trackingUrl to 120 characters while leaving joinKeys full-length", async () => {
+    const record = createBeaconOutcomeRecorder({ requestId: "req-bound-3", siteId: "ats-c" });
+    const longUrl = `https://track.appcast.io/pixel?rid=${"x".repeat(200)}`;
+    const joinKeys = { vivclid: "v-".concat("y".repeat(200)) };
+
+    await record({ beaconStatus: "fired", joinKeys, trackingUrl: longUrl }, { sinkPath });
+
+    const line = fs.readFileSync(sinkPath, "utf-8").trim();
+    const parsed = JSON.parse(line) as BeaconEventSample;
+    expect(parsed.trackingUrl).toBe(longUrl.slice(0, 120));
+    expect(parsed.trackingUrl?.length).toBe(120);
+    expect(parsed.joinKeys).toEqual(joinKeys);
+  });
+
+  it("resolves without rejecting when the sink path is unwritable", async () => {
+    const record = createBeaconOutcomeRecorder({ requestId: "req-bound-4", siteId: "ats-c" });
+    const badSinkPath = path.join(tmpDir, "not-a-dir\0invalid", "submissions.ndjson");
+
+    await expect(
+      record({ beaconStatus: "fired", joinKeys: null }, { sinkPath: badSinkPath })
+    ).resolves.toBeUndefined();
+  });
+
+  it("resolves without rejecting when the delegated capture throws before its own try/catch opens", async () => {
+    const record = createBeaconOutcomeRecorder({ requestId: "req-bound-5", siteId: "ats-c" });
+
+    // `captureBeaconEvent` derives `sample` (including `trackingUrl?.slice(...)`)
+    // BEFORE its own internal try/catch opens, so a non-string trackingUrl —
+    // impossible through this type-checked call, but exactly what a raw test
+    // double or a plugin's own runtime bug could produce — throws ahead of
+    // that internal guard. Only the recorder's own belt-and-braces catches it.
+    await expect(
+      record(
+        {
+          beaconStatus: "fired",
+          joinKeys: null,
+          trackingUrl: { not: "a string" } as unknown as string,
+        },
+        { sinkPath }
+      )
+    ).resolves.toBeUndefined();
+
+    expect(fs.existsSync(sinkPath)).toBe(false);
   });
 });

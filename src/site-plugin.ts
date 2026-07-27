@@ -13,12 +13,14 @@ import type { ZodType } from "zod/v4";
 
 import type { AppConfig } from "@/config";
 import type { MetricsCollector } from "@/lib/dispatch-metrics";
-import type { PluginBeaconOutcomeInput } from "@/lib/telemetry/beacon-outcome";
+import type { BeaconOutcomeInput } from "@/lib/telemetry/beacon-capture";
 import type { ScraperError } from "@/scraper/errors";
 import type { BrowserSession } from "@/scraper/session";
 import type { BrowserbaseSessionCreateParams } from "@/scraper/session-shared";
 import type { DispatchMetrics } from "@/types/dispatch-metrics";
 import type { Logger } from "@/types/logging";
+
+export type { BeaconOutcomeInput } from "@/lib/telemetry/beacon-capture";
 
 /**
  * Minimal request surface exposed to extra-route handlers. Core passes a
@@ -156,14 +158,6 @@ export interface SitePluginMeta {
 }
 
 /**
- * Input a plugin passes to `SitePluginContext.recordBeaconOutcome`. Omits
- * `requestId`/`siteId` — core binds both from the current dispatch before
- * the plugin ever sees the method, so a plugin only supplies what it alone
- * knows about the beacon nav it fired itself.
- */
-export type RecordBeaconOutcomeInput = Omit<PluginBeaconOutcomeInput, "requestId" | "siteId">;
-
-/**
  * Runtime dependencies injected by core immediately before `execute()` is called.
  * Plugins receive this instead of importing config or loggers directly, which
  * keeps each plugin self-contained and testable without the full app wired up.
@@ -199,13 +193,13 @@ export interface SitePluginContext {
    */
   metricsCollector: MetricsCollector;
   /**
-   * Records a `fired`/`failed` beacon outcome for a post-submit navigation
-   * the plugin fired itself, with `requestId` and `siteId` already bound by
-   * core. Only meaningful for a plugin that declares `extractJoinKeys` (and
-   * so is asserting it manages its own tracking nav) — such a plugin's
-   * `dispatch()`-recorded outcome otherwise stays `skipped`. Never rejects.
+   * Records a `fired`/`failed` beacon outcome for a plugin that manages its
+   * own post-submit tracking navigation (i.e. declares `extractJoinKeys`).
+   * Bound to this run's `requestId` and the plugin's own `siteId` by core, so
+   * the plugin supplies neither — only `beaconStatus`, `joinKeys`, and
+   * optionally `trackingUrl`/`durationMs`. Never throws.
    */
-  recordBeaconOutcome(input: RecordBeaconOutcomeInput): Promise<void>;
+  recordBeaconOutcome: (input: BeaconOutcomeInput) => Promise<void>;
 }
 
 /**

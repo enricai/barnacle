@@ -57,7 +57,11 @@ export type SubmitRecord = z.infer<typeof submitRecordSchema>;
  * `dispatch()` in `src/plugins/loader.ts`) — distinct from `"not_fired"`
  * (the reader's fold default for a submit row with no matching beacon line
  * at all), so "submitted but the beacon did not fire" excludes runs that
- * never had a beacon to fire.
+ * never had a beacon to fire. `"skipped"` is not necessarily terminal for a
+ * self-managing plugin: if that plugin later records its own real `fired`/
+ * `failed` line for the same `requestId`, `foldReconciliationRecords` in
+ * `submission-reader.ts` ranks the real outcome above `"skipped"` and folds
+ * to that outcome regardless of which line was written first.
  */
 export const beaconEventSchema = z.object({
   kind: z.literal("beacon"),

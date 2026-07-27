@@ -12,8 +12,14 @@
  * The local sink and its S3 mirror both receive the exact same line for
  * every event (`appendSubmissionSinkLine` writes to disk and buffers to S3
  * in the same call), so an overlap between the two stores is an exact JSON
- * duplicate, never a conflicting value — deduping on full record content is
- * therefore lossless.
+ * duplicate, never a conflicting value — deduping on `kind:requestId:ts` is
+ * lossless for that mirror case. But `ts` is formatISO second-precision, so
+ * two *distinct* beacon lines for the same `requestId` (e.g. dispatch's
+ * automatic `skipped` line and a plugin's later self-recorded `fired` line)
+ * can land in the same wall-clock second — the dedupe key for beacon
+ * records also folds in `beaconStatus` and `trackingUrl` so non-identical
+ * beacon outcomes never collide, while submit records keep the plain
+ * `kind:requestId:ts` key.
  */
 
 import { existsSync } from "node:fs";
@@ -76,24 +82,24 @@ async function readS3Records(
 }
 
 /**
- * Dedupe key for a raw record: the full record content, so only an exact
- * JSON duplicate (the same line mirrored to both stores) collapses to one
- * entry. `ts` alone (`formatISO`'s output has no millisecond component —
- * `beacon-capture.ts`/`submission-capture.ts`) is not enough to key on: a
- * plugin-recorded `fired` beacon and `dispatch()`'s automatic `skipped`
- * beacon for the same `requestId` routinely land in the same wall-clock
- * second, so `kind:requestId:ts` would collide two genuinely different
- * events and let `foldReconciliationRecords`'s precedence never see the
- * dropped one.
+ * Dedupe key for a raw record: the same line written to both stores
+ * collapses to one. Beacon records also key on `beaconStatus` and
+ * `trackingUrl` — `ts` alone is second-precision, so a `skipped` line and a
+ * later `fired`/`failed` line for the same `requestId` can share a `ts` and
+ * must not be treated as the same line.
  */
 function dedupeKey(record: ReconciliationRecord): string {
-  return JSON.stringify(record);
+  if (record.kind === "beacon") {
+    return `${record.kind}:${record.requestId}:${record.ts}:${record.beaconStatus}:${record.trackingUrl ?? ""}`;
+  }
+  return `${record.kind}:${record.requestId}:${record.ts}`;
 }
 
 /**
- * Unions the two record sets, local first, and dedupes on exact record
- * content — the same line written to both stores collapses to one entry, so
- * `foldReconciliationRecords` sees it exactly once.
+ * Unions the two record sets, local first, and dedupes with `dedupeKey` —
+ * the same line written to both stores collapses to one entry, so
+ * `foldReconciliationRecords` sees it exactly once, while distinct beacon
+ * outcomes sharing a `requestId`/`ts` both survive.
  */
 function mergeRecords(
   localRecords: ReconciliationRecord[],

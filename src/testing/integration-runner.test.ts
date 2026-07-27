@@ -137,4 +137,24 @@ describe("runIntegrationJob", () => {
     expect(capturedCtx?.baseUrl).toBe("https://my-site.example.com");
     expect(capturedCtx?.metricsCollector).toBeDefined();
   });
+
+  it("builds a context whose recordBeaconOutcome resolves without throwing when the plugin calls it", async () => {
+    let capturedCtx: SitePluginContext | undefined;
+    const plugin = makeStubPlugin((_, ctx) => {
+      capturedCtx = ctx;
+    });
+
+    await runIntegrationJob({
+      plugin,
+      baseUrl: "https://example.com",
+      buildPayload: (inbox) => ({ Email: inbox.address }),
+      inboxOptions: { namespace: "test-ns" },
+      pollFn: async () => STUB_MESSAGE,
+    });
+
+    expect(capturedCtx?.recordBeaconOutcome).toBeTypeOf("function");
+    await expect(
+      capturedCtx?.recordBeaconOutcome({ beaconStatus: "fired", joinKeys: { k: 1 } })
+    ).resolves.toBeUndefined();
+  });
 });
