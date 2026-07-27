@@ -1,4 +1,21 @@
 import { describe, expect, it, vi } from "vitest";
+
+/**
+ * Small stand-in for the real `config.scraper.*` frame timeouts, mocked so
+ * default-path tests (no explicit `opts`) run fast and still prove the
+ * defaults are actually sourced from `@/config` rather than a hardcoded
+ * constant — a regression back to a hardcoded default would blow through
+ * these small budgets and fail the corresponding test's elapsed-time bound.
+ */
+const { mockScraperConfig } = vi.hoisted(() => ({
+  mockScraperConfig: {
+    frameReadyTimeoutMs: 40,
+    frameDocumentReadyTimeoutMs: 30,
+    frameEvaluateTimeoutMs: 15,
+  },
+}));
+vi.mock("@/config", () => ({ config: { scraper: mockScraperConfig } }));
+
 import type { FrameTarget } from "@/scraper/frame-target";
 import {
   buildHopSelector,
@@ -449,5 +466,214 @@ describe("waitForChildFrameReady", () => {
     await expect(
       waitForChildFrameReady(target, { timeoutMs: 30, pollMs: 10 })
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("resolveFrameTarget: bounded against a never-settling evaluate", () => {
+  it("falls back to the main-frame target and logs the warn within its configured timeout, instead of hanging, when the iframe-src evaluate never settles", async () => {
+    const evaluate = vi.fn().mockReturnValue(new Promise(() => {}));
+    const page = {
+      url: () => "https://careers.uchealth.org/jobs/123",
+      title: async () => "main document title",
+      evaluate,
+      locator: (selector: string) => ({ scope: "main" as const, selector }),
+      frames: () => [],
+    };
+
+    const start = Date.now();
+    const target = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe", {
+      timeoutMs: 40,
+      pollMs: 10,
+      evaluateTimeoutMs: 10,
+    });
+    const elapsed = Date.now() - start;
+
+    expect(target.frame).toBeNull();
+    expect(target.frameSelector).toBeNull();
+    expect(elapsed).toBeLessThan(1000);
+  });
+
+  it("still propagates a genuine (non-timeout) evaluate rejection from the top-level src probe unchanged", async () => {
+    const originalError = new Error("boom: not a valid selector");
+    const page = {
+      url: () => "https://careers.uchealth.org/jobs/123",
+      title: async () => "main document title",
+      evaluate: () => Promise.reject(originalError),
+      locator: (selector: string) => ({ scope: "main" as const, selector }),
+      frames: () => [],
+    };
+
+    await expect(
+      resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe", {
+        timeoutMs: 40,
+        pollMs: 10,
+        evaluateTimeoutMs: 10,
+      })
+    ).rejects.toBe(originalError);
+  });
+
+  it("defaults timeoutMs/evaluateTimeoutMs from config.scraper.* when opts is omitted, still returning the main-frame target instead of hanging on a never-settling evaluate", async () => {
+    const page = {
+      url: () => "https://careers.uchealth.org/jobs/123",
+      title: async () => "main document title",
+      evaluate: () => new Promise(() => {}),
+      locator: (selector: string) => ({ scope: "main" as const, selector }),
+      frames: () => [],
+    };
+
+    const start = Date.now();
+    const target = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe");
+    const elapsed = Date.now() - start;
+
+    expect(target.frame).toBeNull();
+    expect(target.frameSelector).toBeNull();
+    // Bounded near the mocked config.scraper.frameReadyTimeoutMs (40ms), not
+    // the production default (20_000ms) — proves the default is sourced
+    // from config rather than a hardcoded constant.
+    expect(elapsed).toBeLessThan(1000);
+  });
+
+  it("carries the declared frame selector on the main-frame target returned by a failed resolution, so a caller can retry resolution later", async () => {
+    const page = {
+      url: () => "https://careers.uchealth.org/jobs/123",
+      title: async () => "main document title",
+      evaluate: async () => ({ matched: false, src: null }),
+      locator: (selector: string) => ({ scope: "main" as const, selector }),
+      frames: () => [],
+    };
+
+    const target = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe", {
+      timeoutMs: 20,
+      pollMs: 5,
+    });
+
+    expect(target.frame).toBeNull();
+    expect(target.frameSelector).toBeNull();
+    expect(target.declaredFrameSelector).toBe("iframe#talemetry_apply_iframe");
+  });
+
+  it("does not set declaredFrameSelector when no frame was ever requested (frameSelector null/undefined)", async () => {
+    const page = {
+      url: () => "https://careers.uchealth.org/jobs/123",
+      title: async () => "main document title",
+      evaluate: vi.fn(),
+      locator: (selector: string) => ({ scope: "main" as const, selector }),
+      frames: () => [],
+    };
+
+    const target = await resolveFrameTarget(page as never, undefined);
+
+    expect(target.declaredFrameSelector).toBeNull();
+  });
+
+  it("honors an explicit evaluateTimeoutMs on the no-selector fast path instead of the config default", async () => {
+    const page = {
+      url: () => "https://careers.uchealth.org/jobs/123",
+      title: async () => "main document title",
+      evaluate: () => new Promise(() => {}),
+      locator: (selector: string) => ({ scope: "main" as const, selector }),
+      frames: () => [],
+    };
+
+    const target = await resolveFrameTarget(page as never, null, { evaluateTimeoutMs: 10 });
+
+    const start = Date.now();
+    await expect(target.evaluate("document.title")).rejects.toMatchObject({
+      name: "WatchdogTimeoutError",
+    });
+    expect(Date.now() - start).toBeLessThan(1000);
+  });
+});
+
+describe("FrameTarget.evaluate/url: bounded against a never-settling underlying call", () => {
+  it("rejects with a WatchdogTimeoutError within the evaluate budget, rather than blocking the caller, when the resolved child frame's evaluate never settles", async () => {
+    // Resolves "location.href" (needed for resolveFrameTarget's own origin
+    // match) but hangs on every other expression, modeling a frame that CDP
+    // attached to but that wedges on a later evaluate call.
+    const childFrame = {
+      evaluate: (expr: unknown) =>
+        expr === "location.href"
+          ? Promise.resolve("https://apply.talemetry.com/application/abc-123")
+          : new Promise(() => {}),
+      locator: (selector: string) => ({ scope: "frame" as const, selector }),
+    };
+    const page = makeFakePage({
+      mainUrl: "https://careers.uchealth.org/jobs/123",
+      iframes: {
+        "iframe#talemetry_apply_iframe": "https://apply.talemetry.com/application/abc-123",
+      },
+      frames: [childFrame as never],
+    });
+
+    const target = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe", {
+      evaluateTimeoutMs: 10,
+    });
+    expect(target.frame).toBe(childFrame);
+
+    const start = Date.now();
+    await expect(target.evaluate("document.title")).rejects.toMatchObject({
+      name: "WatchdogTimeoutError",
+    });
+    expect(Date.now() - start).toBeLessThan(1000);
+  });
+
+  it("rejects url() within the evaluate budget when the resolved child frame's location.href evaluate never settles on a later call", async () => {
+    // The first "location.href" call (resolution's own origin match)
+    // resolves; every subsequent call (target.url()) hangs, modeling a
+    // frame that attached fine but wedges on a later CDP round trip.
+    let locationHrefCalls = 0;
+    const childFrame = {
+      evaluate: (expr: unknown) => {
+        if (expr !== "location.href") return new Promise(() => {});
+        locationHrefCalls += 1;
+        return locationHrefCalls === 1
+          ? Promise.resolve("https://apply.talemetry.com/application/abc-123")
+          : new Promise(() => {});
+      },
+      locator: (selector: string) => ({ scope: "frame" as const, selector }),
+    };
+    const page = makeFakePage({
+      mainUrl: "https://careers.uchealth.org/jobs/123",
+      iframes: {
+        "iframe#talemetry_apply_iframe": "https://apply.talemetry.com/application/abc-123",
+      },
+      frames: [childFrame as never],
+    });
+
+    const target = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe", {
+      evaluateTimeoutMs: 10,
+    });
+    expect(target.frame).toBe(childFrame);
+
+    await expect(target.url()).rejects.toMatchObject({ name: "WatchdogTimeoutError" });
+  });
+
+  it("rejects a main-frame target's evaluate() within the evaluate budget when the underlying page.evaluate never settles", async () => {
+    const page = {
+      url: () => "https://careers.uchealth.org/jobs/123",
+      title: async () => "main document title",
+      evaluate: () => new Promise(() => {}),
+      locator: (selector: string) => ({ scope: "main" as const, selector }),
+      frames: () => [],
+    };
+
+    const target = await resolveFrameTarget(page as never, null);
+    // Main-frame targets from the no-selector path default evaluateTimeoutMs
+    // from the (mocked, small) config value.
+    await expect(target.evaluate("document.title")).rejects.toMatchObject({
+      name: "WatchdogTimeoutError",
+    });
+  });
+});
+
+describe("waitForChildFrameReady: bounded against a never-settling evaluate", () => {
+  it("still resolves within its own timeout, instead of hanging, when the frame's document.readyState evaluate never settles", async () => {
+    const target = makeFakeTarget(() => new Promise(() => {}));
+
+    const start = Date.now();
+    await expect(
+      waitForChildFrameReady(target, { timeoutMs: 30, pollMs: 10, evaluateTimeoutMs: 8 })
+    ).resolves.toBeUndefined();
+    expect(Date.now() - start).toBeLessThan(1000);
   });
 });
