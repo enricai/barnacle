@@ -1,11 +1,30 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { FrameTarget } from "@/scraper/frame-target";
+
+const { loggerStub } = vi.hoisted(() => ({
+  loggerStub: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    fatal: vi.fn(),
+    errorWithStack: vi.fn(),
+  },
+}));
+vi.mock("@/lib/logging", () => ({
+  getLogger: () => loggerStub,
+}));
+
 import {
   buildHopSelector,
   resolveFrameTarget,
   sleep as sleepMs,
   waitForChildFrameReady,
 } from "@/scraper/frame-target";
+
+beforeEach(() => {
+  loggerStub.warn.mockClear();
+});
 
 /**
  * Minimal fake `Frame`: just enough surface for `resolveFrameTarget` and the
@@ -449,5 +468,29 @@ describe("waitForChildFrameReady", () => {
     await expect(
       waitForChildFrameReady(target, { timeoutMs: 30, pollMs: 10 })
     ).resolves.toBeUndefined();
+  });
+
+  it("polls until the configured default elapses (not a small hardcoded window) before proceeding when opts.timeoutMs is omitted, without wall-clocking it", async () => {
+    vi.useFakeTimers();
+    try {
+      const evaluate = vi.fn().mockResolvedValue("loading");
+      const target = makeFakeTarget(evaluate);
+
+      const readyPromise = waitForChildFrameReady(target);
+      await vi.advanceTimersByTimeAsync(120_000);
+      await readyPromise;
+
+      // Several polls, not just the pre-loop check — proves the loop actually
+      // ran for the default's duration instead of bailing immediately.
+      expect(evaluate.mock.calls.length).toBeGreaterThan(3);
+      expect(loggerStub.warn).toHaveBeenCalledTimes(1);
+      const [warnMessage] = loggerStub.warn.mock.calls[0] as [string];
+      // Not pinned to a literal default value — only that the applied
+      // default is the real production one, not some small test-only window.
+      const appliedDefaultMs = Number(/still not ready after (\d+)ms/.exec(warnMessage)?.[1]);
+      expect(appliedDefaultMs).toBeGreaterThanOrEqual(5_000);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
