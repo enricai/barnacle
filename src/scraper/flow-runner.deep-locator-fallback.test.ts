@@ -9,6 +9,7 @@ import {
   registerDeepLocatorHop,
   registerDeepLocatorHopElements,
 } from "@/scraper/deep-locator-fake";
+import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
 import {
   probeStepBeforeAttempts,
   resetBillingErrorFlagForTests,
@@ -132,7 +133,17 @@ describe("flow-runner/probeStepBeforeAttempts — frame-scoped deepLocator fallb
     });
 
     expect(result).toBe("present");
-    expect(resolveDeepLocatorCandidatesSpy).toHaveBeenCalledWith(page, FRAME_SELECTOR, "*");
+    // Passes the already-resolved frameTarget (5th-arg { frameTarget }) so
+    // the batched evaluate reuses it instead of re-resolving internally —
+    // the instruction arg (4th) stays undefined, same reachability-only
+    // contract as before.
+    expect(resolveDeepLocatorCandidatesSpy).toHaveBeenCalledWith(
+      page,
+      FRAME_SELECTOR,
+      "*",
+      undefined,
+      { frameTarget: expect.objectContaining({ frameSelector: FRAME_SELECTOR }) }
+    );
     resolveDeepLocatorCandidatesSpy.mockRestore();
   });
 
@@ -246,8 +257,13 @@ describe("flow-runner/executeStepWithHealing — frame-scoped deepLocator attemp
   it("clicks the deepLocator candidate and synthesizes a deeplocator=-shaped resolvedAction that verifies via urlChanged", async () => {
     const urls = { current: "https://apply.acme.example/jobs/1/apply" };
     const frame = new Map();
-    const hopSelector = `${FRAME_SELECTOR} >> *`;
+    const hopSelector = `${FRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
     registerDeepLocatorHop(frame, hopSelector);
+    // probeStepBeforeAttempts deliberately keeps requesting "*" (a
+    // reachability gate, not the candidate set the cascade acts on), so it
+    // needs its own hop registered to report "present" before the cascade
+    // (which resolves candidates at the interactive-scoped hop above) runs.
+    registerDeepLocatorHop(frame, `${FRAME_SELECTOR} >> *`);
     const deepLocator = makeFakeDeepLocator(frame);
     // Wrap the fake delegate's click to also advance the URL, giving the
     // cascade's urlChanged verification signal a real reason to fire.
@@ -330,17 +346,20 @@ describe("flow-runner/executeStepWithHealing — frame-scoped deepLocator attemp
   it("clicks the instruction-relevant candidate, not index 0, when the child frame holds decoys plus the intended button", async () => {
     const urls = { current: "https://apply.acme.example/jobs/1/apply" };
     const frame = new Map();
-    const hopSelector = `${FRAME_SELECTOR} >> *`;
-    // Index 0 is an empty-text structural container (the "*" hop's realistic
-    // DOM-order top pick); "Manual Application" — the step's actual target —
-    // resolves last. Pre-bugfix-003, deepLocatorCandidates[0] would click the
-    // container; with instruction threaded through, ranking must put "Manual
-    // Application" first regardless of DOM position.
+    const hopSelector = `${FRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
+    // Index 0 is an empty-text structural container (the interactive-scoped
+    // hop's realistic DOM-order top pick); "Manual Application" — the step's
+    // actual target — resolves last. Pre-bugfix-003, deepLocatorCandidates[0]
+    // would click the container; with instruction threaded through, ranking
+    // must put "Manual Application" first regardless of DOM position.
     registerDeepLocatorHopElements(frame, hopSelector, [
       "",
       "Upload a Resume/CV",
       "Manual Application",
     ]);
+    // probeStepBeforeAttempts deliberately keeps requesting "*" — see the
+    // sibling test above.
+    registerDeepLocatorHop(frame, `${FRAME_SELECTOR} >> *`);
     const deepLocator = makeFakeDeepLocator(frame);
     const wrappedDeepLocator = (selector: string) => {
       const delegate = deepLocator(selector);
@@ -429,13 +448,16 @@ describe("flow-runner/executeStepWithHealing — frame-scoped deepLocator attemp
   it("excludes an already-tried deepLocator selector on attempt 4 instead of re-picking it", async () => {
     const urls = { current: "https://apply.acme.example/jobs/1/apply" };
     const frame = new Map();
-    const hopSelector = `${FRAME_SELECTOR} >> *`;
+    const hopSelector = `${FRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
     // Only ONE element resolves at this hop scope (index 0). Attempt 2 will
     // click it and fail to verify (URL never changes), so triedSelectors
     // carries its synthesized `xpath=...nth=0` selector into attempt 4 —
     // proving the exclusion filters it out rather than re-clicking the same
     // dead candidate.
     registerDeepLocatorHop(frame, hopSelector);
+    // probeStepBeforeAttempts deliberately keeps requesting "*" — see the
+    // first test in this describe block.
+    registerDeepLocatorHop(frame, `${FRAME_SELECTOR} >> *`);
     const clickSpy = vi.fn();
     const deepLocator = makeFakeDeepLocator(frame);
     const wrappedDeepLocator = (selector: string) => {

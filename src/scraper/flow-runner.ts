@@ -40,8 +40,11 @@ import {
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
 import {
   clickDeepLocatorCandidate,
+  type DeepLocatorCandidate,
   resolveDeepLocatorCandidates,
 } from "@/scraper/deep-locator-candidates";
+import { clickFirstActionableCandidate } from "@/scraper/deep-locator-click";
+import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
 import { type RunHealingFlowResult, StepVerificationError } from "@/scraper/errors";
 import {
   type FrameTarget,
@@ -5162,13 +5165,25 @@ async function probeFormValidityBeforeSubmit(params: {
  * evidence list is ranked by relevance to the step, same as the act path —
  * an unranked `[]`-then-DOM-order list would feed the rephrase LLM its
  * worst evidence first instead of its best.
+ *
+ * Scoped to `INTERACTIVE_CANDIDATE_SELECTOR` (not `"*"`) so a dense OOPIF
+ * form's candidate set is a handful of controls, not every structural node —
+ * and takes the caller's already-resolved `frameTarget` so
+ * `resolveDeepLocatorCandidates` uses the batched frame-scoped evaluate
+ * instead of re-resolving it internally.
  */
 async function deepLocatorCandidatesAsActions(
   page: Page,
-  frameSelector: string | null,
+  frameTarget: FrameTarget,
   instruction?: string | null
 ): Promise<Action[]> {
-  const candidates = await resolveDeepLocatorCandidates(page, frameSelector, "*", instruction);
+  const candidates = await resolveDeepLocatorCandidates(
+    page,
+    frameTarget.frameSelector,
+    INTERACTIVE_CANDIDATE_SELECTOR,
+    instruction,
+    { frameTarget }
+  );
   return candidates.map((c) => ({
     selector: c.selector,
     description: c.accessibleText || "(no accessible text)",
@@ -5263,10 +5278,21 @@ export async function probeStepBeforeAttempts(params: {
         ? await reresolveFrameTarget()
         : frameTarget;
       if (effectiveFrameTarget?.frame) {
+        // Pass the already-resolved `effectiveFrameTarget` so the batched
+        // evaluate reuses it instead of `resolveDeepLocatorCandidates`
+        // re-resolving via its own internal `resolveFrameTarget` fallback —
+        // same "reuse the ambient target" rule as every other frame-scoped
+        // call in this function. Innerselector stays "*": this probe only
+        // answers "does this frame have any content", and batching already
+        // makes that reachability check cheap (one evaluate over every
+        // node) — scoping to interactive elements would false-negative a
+        // frame with rendered content but no controls yet.
         const deepLocatorCandidates = await resolveDeepLocatorCandidates(
           page,
           effectiveFrameTarget.frameSelector,
-          "*"
+          "*",
+          undefined,
+          { frameTarget: effectiveFrameTarget }
         );
         if (deepLocatorCandidates.length > 0) {
           logger.info(
@@ -5761,7 +5787,7 @@ export async function executeStepWithHealing(params: {
     await reresolveFrameTargetIfLost();
     const unfocusedObserve =
       probeAbsentObservedUnfocused.length === 0 && frameTarget?.frame
-        ? await deepLocatorCandidatesAsActions(page, frameTarget.frameSelector)
+        ? await deepLocatorCandidatesAsActions(page, frameTarget)
         : probeAbsentObservedUnfocused;
     const dumpPath =
       onStepFailure?.({
@@ -6126,45 +6152,78 @@ export async function executeStepWithHealing(params: {
         const deepLocatorCandidates =
           candidates.length === 0 && frameTarget?.frame
             ? (
-                await resolveDeepLocatorCandidates(page, frameTarget.frameSelector, "*", step)
+                await resolveDeepLocatorCandidates(
+                  page,
+                  frameTarget.frameSelector,
+                  INTERACTIVE_CANDIDATE_SELECTOR,
+                  step,
+                  { frameTarget }
+                )
               ).filter((c) => !triedSelectors.includes(c.selector))
             : [];
         if (candidates.length === 0 && deepLocatorCandidates.length > 0) {
-          const top = deepLocatorCandidates[0];
-          if (top) {
-            record.instruction = `deepLocator: ${top.accessibleText || "(no accessible text)"}`;
-            // Deny-list guard: mirrors the observe branch's refusal below —
-            // never act on a wizard-exit control regardless of which
-            // candidate source (observe vs. deepLocator) surfaced it.
-            if (isWizardExitAction(top.accessibleText, wizardExitButtonLabels)) {
-              record.errorMessage = `refused wizard-exit control: "${top.accessibleText.slice(0, 60)}"`;
-              triedSelectors.push(top.selector);
-              record.triedSelectors = [top.selector];
-              attempts.push(record);
-              failureReasons.push(record.errorMessage);
+          // Actionable-candidate walk: a top pick that rejects with the CDP
+          // `-32000 Node does not have a layout object` error (an unrendered
+          // node) or is refused by the wizard-exit deny-list costs only that
+          // one candidate, not the whole attempt — the next ranked candidate
+          // is tried instead. `attemptTriedSelectors` mirrors the walk's own
+          // click attempts as they happen (not just on a successful return)
+          // so a click that throws a REAL error (e.g. a wedged
+          // `WatchdogTimeoutError`) still feeds attempt 4's exclusion filter.
+          const attemptTriedSelectors: string[] = [];
+          const denyCandidate = (candidate: DeepLocatorCandidate): boolean => {
+            const denied = isWizardExitAction(candidate.accessibleText, wizardExitButtonLabels);
+            if (denied) {
               logger.info(
-                `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${record.errorMessage}`
+                `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: refused wizard-exit control: "${candidate.accessibleText.slice(0, 60)}"`
               );
-              continue;
             }
-            triedSelectors.push(top.selector);
-            record.triedSelectors = [top.selector];
-            try {
-              await clickDeepLocatorCandidate(page, frameTarget?.frameSelector, "*", top.index);
-              record.actResultSuccess = true;
-              record.actResultDescription = `deepLocator clicked "${top.accessibleText || top.selector}"`;
-              // Synthesize a click action so downstream verification (network
-              // / url / dom) treats this exactly like any other resolved
-              // click — same idiom as deep-submit-locator/structured-click.
-              resolvedAction = {
-                selector: top.selector,
-                description: record.actResultDescription,
-                method: "click",
-              };
-            } catch (err) {
-              record.actResultSuccess = false;
-              record.errorMessage = `deepLocator: click threw ${toErrorMessage(err)}`;
-            }
+            return denied;
+          };
+          const cascadeResult = await clickFirstActionableCandidate(
+            deepLocatorCandidates,
+            async (candidate) => {
+              attemptTriedSelectors.push(candidate.selector);
+              await clickDeepLocatorCandidate(
+                page,
+                frameTarget?.frameSelector,
+                INTERACTIVE_CANDIDATE_SELECTOR,
+                candidate.index
+              );
+            },
+            { denyCandidate }
+          )
+            .then((outcome) => ({ outcome, error: null as unknown }))
+            .catch((error: unknown) => ({ outcome: null, error }));
+          triedSelectors.push(...attemptTriedSelectors);
+          record.triedSelectors = [...attemptTriedSelectors];
+          if (cascadeResult.outcome?.clicked && cascadeResult.outcome.candidate) {
+            const clicked = cascadeResult.outcome.candidate;
+            record.instruction = `deepLocator: ${clicked.accessibleText || "(no accessible text)"}`;
+            record.actResultSuccess = true;
+            record.actResultDescription = `deepLocator clicked "${clicked.accessibleText || clicked.selector}"`;
+            // Synthesize a click action so downstream verification (network
+            // / url / dom) treats this exactly like any other resolved
+            // click — same idiom as deep-submit-locator/structured-click.
+            resolvedAction = {
+              selector: clicked.selector,
+              description: record.actResultDescription,
+              method: "click",
+            };
+          } else {
+            const failureMessage = cascadeResult.error
+              ? `deepLocator: click threw ${toErrorMessage(cascadeResult.error)}`
+              : attemptTriedSelectors.length > 0
+                ? "deepLocator: no candidate was actionable"
+                : "deepLocator: every candidate refused by the wizard-exit deny-list";
+            record.actResultSuccess = false;
+            record.errorMessage = failureMessage;
+            attempts.push(record);
+            failureReasons.push(failureMessage);
+            logger.info(
+              `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${failureMessage}`
+            );
+            continue;
           }
         } else if (candidates.length === 0) {
           record.errorMessage = "observe returned no candidates";
@@ -6466,7 +6525,7 @@ export async function executeStepWithHealing(params: {
           await reresolveFrameTargetIfLost();
           const candidates =
             observedCandidates.length === 0 && frameTarget?.frame
-              ? await deepLocatorCandidatesAsActions(page, frameTarget.frameSelector, step)
+              ? await deepLocatorCandidatesAsActions(page, frameTarget, step)
               : observedCandidates;
           // Fetch live-page evidence so the rephrase prompt can reason about
           // form state, not just observe candidates. Mirrors the same
@@ -6495,7 +6554,7 @@ export async function executeStepWithHealing(params: {
           ).catch(() => [] as Action[]);
           const unfocused =
             observedUnfocused.length === 0 && frameTarget?.frame
-              ? await deepLocatorCandidatesAsActions(page, frameTarget.frameSelector)
+              ? await deepLocatorCandidatesAsActions(page, frameTarget)
               : observedUnfocused;
           const submitFailureList = extractSubmitFailureEvidence(
             recentCaptures,
@@ -7226,7 +7285,7 @@ export async function executeStepWithHealing(params: {
   await reresolveFrameTargetIfLost();
   const finalObserve =
     cascadeExhaustObservedFinal.length === 0 && frameTarget?.frame
-      ? await deepLocatorCandidatesAsActions(page, frameTarget.frameSelector, step)
+      ? await deepLocatorCandidatesAsActions(page, frameTarget, step)
       : cascadeExhaustObservedFinal;
   const { pageTitle, pageUrl } = await resolveDumpPageIdentity(page, frameTarget);
   // Discriminator data for "Stagehand sees nothing" failures: capture the raw
@@ -7246,7 +7305,7 @@ export async function executeStepWithHealing(params: {
   ).catch(() => [] as Action[]);
   const unfocusedObserve =
     cascadeExhaustObservedUnfocused.length === 0 && frameTarget?.frame
-      ? await deepLocatorCandidatesAsActions(page, frameTarget.frameSelector)
+      ? await deepLocatorCandidatesAsActions(page, frameTarget)
       : cascadeExhaustObservedUnfocused;
   const dumpPath =
     onStepFailure?.({
