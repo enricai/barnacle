@@ -50,6 +50,7 @@ const mockGetOrCreateInFlight = vi.hoisted(() =>
   vi.fn().mockImplementation((_key: string, producer: () => Promise<unknown>) => producer())
 );
 const mockFireTrackingClick = vi.hoisted(() => vi.fn());
+const mockCaptureBeaconEvent = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const mockRecordDdFailure = vi.hoisted(() => vi.fn());
 
 const mockRunWithSession = vi.hoisted(() =>
@@ -85,6 +86,10 @@ vi.mock("@/cache/response-cache", () => ({
 
 vi.mock("@/lib/tracking-click", () => ({
   fireTrackingClick: mockFireTrackingClick,
+}));
+
+vi.mock("@/lib/telemetry/beacon-capture", () => ({
+  captureBeaconEvent: mockCaptureBeaconEvent,
 }));
 
 vi.mock("@/lib/dd-metrics", () => ({
@@ -605,6 +610,55 @@ describe("dispatch — tracking click", () => {
       // expected
     }
     expect(mockFireTrackingClick).not.toHaveBeenCalled();
+  });
+
+  it("emits a skipped beacon record when a successful submit has no TrackingUrl", async () => {
+    const payload = { jobId: "job-1" };
+    await dispatch(stubPlugin, payload, stubContext);
+    expect(mockCaptureBeaconEvent).toHaveBeenCalledOnce();
+    expect(mockCaptureBeaconEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestId: "req-test-123",
+        siteId: "test-site",
+        vivclid: null,
+        jobReference: null,
+        beaconStatus: "skipped",
+        trackingUrl: null,
+      })
+    );
+  });
+
+  it("emits a skipped beacon record when a successful submit has an empty-string TrackingUrl", async () => {
+    await dispatch(stubPlugin, { TrackingUrl: "" }, stubContext);
+    expect(mockCaptureBeaconEvent).toHaveBeenCalledOnce();
+    expect(mockCaptureBeaconEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ beaconStatus: "skipped", trackingUrl: null })
+    );
+  });
+
+  it("does not emit a skipped beacon record when the payload has a TrackingUrl", async () => {
+    const payload = {
+      TrackingUrl: "https://click.acme.example/t/abc?vivclid=123&empId=emp9&jid=job9",
+    };
+    await dispatch(stubPlugin, payload, stubContext);
+    expect(mockFireTrackingClick).toHaveBeenCalledOnce();
+    expect(mockCaptureBeaconEvent).not.toHaveBeenCalled();
+  });
+
+  it("does not emit a skipped beacon record on dispatch failure", async () => {
+    mockPluginExecute.mockRejectedValueOnce(new CaptchaError("captcha hit"));
+    try {
+      await dispatch(stubPlugin, {}, stubContext);
+    } catch {
+      // expected
+    }
+    expect(mockCaptureBeaconEvent).not.toHaveBeenCalled();
+  });
+
+  it("resolves normally when the skipped beacon sink write fails (best-effort swallow)", async () => {
+    mockCaptureBeaconEvent.mockRejectedValueOnce(new Error("disk full"));
+    const result = await dispatch(stubPlugin, {}, stubContext);
+    expect(result.data).toEqual({ result: "ok" });
   });
 });
 
