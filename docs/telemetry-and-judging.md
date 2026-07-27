@@ -252,9 +252,13 @@ parse — and a `"beacon"` record, appended later and independently once the
 conversion pixel fires. `readReconciliationRows`
 (`src/lib/telemetry/submission-reader.ts`) reads the sink and left-joins
 beacon records onto their submit record by `requestId`, producing one row
-per run with a `beaconStatus` of `"fired"`, `"failed"`, or `"not_fired"` —
-this is the in-repo read path for attribution to join runs against the
-Appcast CPA report without re-parsing raw NDJSON.
+per run with a `beaconStatus` of `"fired"`, `"failed"`, or `"not_fired"`.
+`queryReconciliationRows` (`src/lib/telemetry/submission-query.ts`) then
+filters/sorts/paginates those rows by `vivclid`, `siteId`, `jobReference`,
+`status`, `beaconStatus`, or a `from`/`to` window. Both are composed behind
+`GET /v1/submissions` (authenticated; `src/api/routes/submissions.ts`), the
+queryable HTTP path for attribution to join runs against the Appcast CPA
+report without re-parsing raw NDJSON.
 
 ## File map
 
@@ -264,6 +268,8 @@ Appcast CPA report without re-parsing raw NDJSON.
 | Submission-envelope sink + `SubmissionEnvelopeSample` type | `src/lib/telemetry/submission-capture.ts` |
 | Reconciliation record schemas (`submit` + `beacon` kinds) | `src/lib/telemetry/reconciliation-record.ts` |
 | Reconciliation reader (`readReconciliationRows`) | `src/lib/telemetry/submission-reader.ts` |
+| Reconciliation query/filter layer (`queryReconciliationRows`) | `src/lib/telemetry/submission-query.ts` |
+| `GET /v1/submissions` route + querystring/response schemas | `src/api/routes/submissions.ts`, `src/api/schemas/submissions.ts` |
 | Call-type string constants | `src/lib/telemetry/call-types.ts` |
 | `llmCallSampleSchema`, `judgeVerdictSchema` | `src/api/schemas/telemetry.ts` |
 | Judge batch script (`pnpm judge:llm`) | `src/scripts/judge-llm-batch.ts` |
