@@ -10,10 +10,7 @@
 
 import { toErrorMessage } from "@/lib/errors";
 import { getLogger } from "@/lib/logging";
-import {
-  captureBeaconEvent,
-  type CaptureBeaconEventOptions,
-} from "@/lib/telemetry/beacon-capture";
+import { type CaptureBeaconEventOptions, captureBeaconEvent } from "@/lib/telemetry/beacon-capture";
 
 const logger = getLogger({ name: "telemetry/beacon-outcome" });
 

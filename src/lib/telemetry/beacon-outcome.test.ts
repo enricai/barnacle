@@ -40,10 +40,9 @@ vi.mock("@/lib/telemetry/s3-sink", () => ({
 }));
 
 vi.mock("@/lib/telemetry/beacon-capture", async () => {
-  const actual =
-    await vi.importActual<typeof import("@/lib/telemetry/beacon-capture")>(
-      "@/lib/telemetry/beacon-capture"
-    );
+  const actual = await vi.importActual<typeof import("@/lib/telemetry/beacon-capture")>(
+    "@/lib/telemetry/beacon-capture"
+  );
   return {
     ...actual,
     captureBeaconEvent: vi.fn(actual.captureBeaconEvent),
