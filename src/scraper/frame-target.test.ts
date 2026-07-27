@@ -713,6 +713,24 @@ describe("resolveFrameTarget: bounds the total attach budget across candidate pr
       vi.useRealTimers();
     }
   });
+
+  it("still resolves an already-attached candidate frame at timeoutMs: 0, matching flow-runner's reresolveFrameTargetIfLost re-check", async () => {
+    const page = makeFakePage({
+      mainUrl: "https://careers.uchealth.org/jobs/123",
+      iframes: {
+        "iframe#talemetry_apply_iframe": "https://apply.talemetry.com/application/abc-123",
+      },
+      frames: [makeFakeFrame("https://apply.talemetry.com/application/abc-123")],
+    });
+
+    const target = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe", {
+      timeoutMs: 0,
+      evaluateTimeoutMs: 100,
+    });
+
+    expect(target.frame).not.toBeNull();
+    expect(target.frameSelector).toBe("iframe#talemetry_apply_iframe");
+  });
 });
 
 describe("FrameTarget.evaluate/url: bounded against a never-settling underlying call", () => {
