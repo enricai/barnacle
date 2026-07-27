@@ -174,22 +174,32 @@ function originOf(url: string): string | null {
  * frame.
  *
  * Both `evaluate` calls (the top-level `<iframe>`-src probe and the
- * per-candidate `location.href` read) are bounded by `evaluateTimeoutMs`: a
- * wedged CDP call against a racy OOPIF must fail this one pass rather than
- * hanging it, since the top-level probe runs once *before*
- * `resolveFrameTarget`'s deadline loop even starts and would otherwise make
- * that deadline unreachable. A timed-out probe is treated as "no match, try
- * again" (same as a `false` `matched` result) so a poll that merely wedges
- * degrades to a retry rather than aborting resolution outright — a genuine
- * evaluate error (e.g. a caller passing an invalid selector) still
- * propagates unchanged, preserving the existing "rejects rather than
- * silently falling back" contract for real errors.
+ * per-candidate `location.href` read) are bounded by `evaluateTimeoutMs`,
+ * further clamped to whatever remains of `deadline` — `resolveFrameTarget`'s
+ * total attach budget — at the moment each probe starts: a wedged CDP call
+ * against a racy OOPIF must fail this one pass rather than hanging it, and
+ * the clamp keeps that true even for the *sum* of every probe a single pass
+ * makes, since the top-level probe runs once *before* `resolveFrameTarget`'s
+ * poll loop even starts (making an unclamped deadline unreachable) and a
+ * page with several candidate frames would otherwise pay
+ * `(1 + frames) * evaluateTimeoutMs` in one pass regardless of `deadline`.
+ * The candidate loop also breaks as soon as no budget remains, rather than
+ * still issuing a zero-budget probe per remaining candidate. A timed-out
+ * probe is treated as "no match, try again" (same as a `false` `matched`
+ * result) so a poll that merely wedges degrades to a retry rather than
+ * aborting resolution outright — a genuine evaluate error (e.g. a caller
+ * passing an invalid selector) still propagates unchanged, preserving the
+ * existing "rejects rather than silently falling back" contract for real
+ * errors.
  */
 async function tryResolveChildFrame(
   page: Page,
   frameSelector: string,
-  evaluateTimeoutMs: number
+  evaluateTimeoutMs: number,
+  deadline: number
 ): Promise<FrameTarget | null> {
+  const remainingBudgetMs = (): number => Math.max(0, deadline - Date.now());
+
   const iframeSrcExpr = `(() => {
     const el = document.querySelector(${JSON.stringify(frameSelector)});
     if (!el || el.tagName !== "IFRAME") return { matched: false, src: null };
@@ -201,7 +211,10 @@ async function tryResolveChildFrame(
         matched: boolean;
         src: string | null;
       }>(iframeSrcExpr),
-    { timeoutMs: evaluateTimeoutMs, label: "frame-target: iframe src probe" }
+    {
+      timeoutMs: Math.min(evaluateTimeoutMs, remainingBudgetMs()),
+      label: "frame-target: iframe src probe",
+    }
   ).catch((err: unknown) => {
     if (err instanceof WatchdogTimeoutError) return { matched: false, src: null };
     throw err;
@@ -218,8 +231,9 @@ async function tryResolveChildFrame(
   }
 
   for (const candidate of candidates) {
+    if (remainingBudgetMs() <= 0) break;
     const candidateUrl = await withWatchdog(() => candidate.evaluate<string>("location.href"), {
-      timeoutMs: evaluateTimeoutMs,
+      timeoutMs: Math.min(evaluateTimeoutMs, remainingBudgetMs()),
       label: "frame-target: candidate frame location probe",
     }).catch(() => null);
     if (candidateUrl && originOf(candidateUrl) === targetOrigin) {
@@ -252,11 +266,14 @@ async function tryResolveChildFrame(
  *    revert-to-main-frame is diagnosable from the log instead of invisible.
  *
  * Every `page`/`Frame` `evaluate` call this function (transitively) makes is
- * bounded by `evaluateTimeoutMs`, including the very first resolution
- * attempt made *before* the poll loop starts — without that bound, a single
- * wedged CDP call there hangs this function forever regardless of
- * `timeoutMs`, which is exactly what made the raised attach deadline
- * unenforceable.
+ * bounded by `evaluateTimeoutMs`, further clamped to whatever remains of the
+ * total attach `deadline` at the moment each probe starts — including the
+ * very first resolution attempt made *before* the poll loop starts. Without
+ * that clamp, a single wedged CDP call there hangs this function for up to
+ * `evaluateTimeoutMs`, and a page with several `page.frames()` candidates
+ * multiplies that by each candidate probed in the same pass, which is
+ * exactly what made the declared attach deadline (`timeoutMs`) unenforceable
+ * whenever `evaluateTimeoutMs` exceeded it.
  *
  * `opts` overrides the timing for tests; production call sites default from
  * `config.scraper.frameReadyTimeoutMs` / `frameEvaluateTimeoutMs` (poll
@@ -271,16 +288,16 @@ export async function resolveFrameTarget(
   const evaluateTimeoutMs = opts.evaluateTimeoutMs ?? config.scraper.frameEvaluateTimeoutMs;
   if (!frameSelector) return mainFrameTarget(page, { evaluateTimeoutMs });
 
-  const resolved = await tryResolveChildFrame(page, frameSelector, evaluateTimeoutMs);
-  if (resolved) return resolved;
-
   const timeoutMs = opts.timeoutMs ?? config.scraper.frameReadyTimeoutMs;
   const pollMs = opts.pollMs ?? FRAME_READY_POLL_MS;
-
   const deadline = Date.now() + timeoutMs;
+
+  const resolved = await tryResolveChildFrame(page, frameSelector, evaluateTimeoutMs, deadline);
+  if (resolved) return resolved;
+
   while (Date.now() < deadline) {
     await sleep(pollMs);
-    const polled = await tryResolveChildFrame(page, frameSelector, evaluateTimeoutMs);
+    const polled = await tryResolveChildFrame(page, frameSelector, evaluateTimeoutMs, deadline);
     if (polled) return polled;
   }
 

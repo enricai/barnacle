@@ -634,6 +634,87 @@ describe("resolveFrameTarget: bounded against a never-settling evaluate", () => 
   });
 });
 
+/**
+ * A candidate `page.frames()` entry whose `location.href` evaluate never
+ * settles — models an OOPIF whose CDP session is wedged, the trigger for the
+ * `(1 + frames) * evaluateTimeoutMs` blowout `resolveFrameTarget`'s total
+ * attach budget must stay bounded against.
+ */
+function makeHangingFrame() {
+  return {
+    evaluate: () => new Promise<never>(() => {}),
+    locator: (selector: string) => ({ scope: "frame" as const, selector }),
+  };
+}
+
+describe("resolveFrameTarget: bounds the total attach budget across candidate probes", () => {
+  it("keeps a single resolution pass near one evaluate budget when several page.frames() candidates never settle, instead of one evaluateTimeoutMs per candidate", async () => {
+    const page = makeFakePage({
+      mainUrl: "https://careers.uchealth.org/jobs/123",
+      iframes: {
+        "iframe#talemetry_apply_iframe": "https://apply.talemetry.com/application/abc-123",
+      },
+      frames: Array.from({ length: 5 }, () => makeHangingFrame()) as never,
+    });
+
+    const start = Date.now();
+    const target = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe", {
+      timeoutMs: 0,
+      evaluateTimeoutMs: 100,
+    });
+    const elapsed = Date.now() - start;
+
+    expect(target.frame).toBeNull();
+    expect(target.frameSelector).toBeNull();
+    expect(target.declaredFrameSelector).toBe("iframe#talemetry_apply_iframe");
+    // Unbounded, this pays 5 * evaluateTimeoutMs (~500ms) sequentially probing
+    // every hanging candidate before the caller ever sees a deadline check.
+    expect(elapsed).toBeLessThan(250);
+  });
+
+  it("stays within the attach budget plus at most one bounded probe when several candidates never settle across multiple polls", async () => {
+    vi.useFakeTimers();
+    try {
+      const page = makeFakePage({
+        mainUrl: "https://careers.uchealth.org/jobs/123",
+        iframes: {
+          "iframe#talemetry_apply_iframe": "https://apply.talemetry.com/application/abc-123",
+        },
+        frames: Array.from({ length: 5 }, () => makeHangingFrame()) as never,
+      });
+
+      const timeoutMs = 2000;
+      const evaluateTimeoutMs = 1000;
+      const start = Date.now();
+      let settledAt: number | null = null;
+      const targetPromise = resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe", {
+        timeoutMs,
+        pollMs: 100,
+        evaluateTimeoutMs,
+      }).then((resolved) => {
+        // Captured inside the .then microtask that fires as soon as the
+        // promise settles, mid-advance — reading Date.now() only after
+        // `advanceTimersByTimeAsync` fully returns would report the entire
+        // simulated window regardless of when resolution actually finished.
+        settledAt = Date.now();
+        return resolved;
+      });
+
+      await vi.advanceTimersByTimeAsync(timeoutMs + evaluateTimeoutMs + 500);
+      const target = await targetPromise;
+
+      expect(target.frame).toBeNull();
+      expect(target.declaredFrameSelector).toBe("iframe#talemetry_apply_iframe");
+      expect(settledAt).not.toBeNull();
+      expect((settledAt as unknown as number) - start).toBeLessThanOrEqual(
+        timeoutMs + evaluateTimeoutMs
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("FrameTarget.evaluate/url: bounded against a never-settling underlying call", () => {
   it("rejects with a WatchdogTimeoutError within the evaluate budget, rather than blocking the caller, when the resolved child frame's evaluate never settles", async () => {
     // Resolves "location.href" (needed for resolveFrameTarget's own origin
