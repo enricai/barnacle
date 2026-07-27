@@ -1,10 +1,12 @@
 /**
- * Append-only NDJSON writer for beacon-fire outcomes. Beacon-fire resolves
- * strictly after dispatch already returned and wrote its submit line (see
- * `tracking-click.ts`'s fire-and-forget click), so it is recorded as its own
- * later `kind:"beacon"` line rather than a mutation of the submit line — a
- * reader folds the two kinds together by `requestId` (see
- * `reconciliation-record.ts`, `submission-reader.ts`).
+ * Append-only NDJSON writer for beacon-fire outcomes. A `"fired"`/`"failed"`
+ * beacon resolves strictly after dispatch already returned and wrote its
+ * submit line (see `tracking-click.ts`'s fire-and-forget click); a
+ * `"skipped"` beacon is instead written synchronously by `dispatch()` itself,
+ * before it returns, when there is no `TrackingUrl` to fire-and-forget at
+ * all. Either way it is recorded as its own `kind:"beacon"` line rather than
+ * a mutation of the submit line — a reader folds the two kinds together by
+ * `requestId` (see `reconciliation-record.ts`, `submission-reader.ts`).
  *
  * Writes to the SAME sink as submit lines (`appendSubmissionSinkLine`,
  * feat-003), which is what lets the S3 mirror carry beacon lines for free
