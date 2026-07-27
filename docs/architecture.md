@@ -96,7 +96,7 @@ keys, a distinct beacon dimension, and an in-repo read path below.
 
 **Browser-execution escape hatch.** Sending `x-barnacle-execution: browser`
 on a plugin request causes `dispatch()` to skip `executeHttp` and route
-straight to the browser path (`src/plugins/loader.ts:341`). Used by the
+straight to the browser path (`src/plugins/loader.ts:364`). Used by the
 nightly smoke test (`src/scripts/smoke-test.ts`) to exercise the browser
 path even when the hot path is healthy, and available to on-call for
 diagnosis when the hot path is suspect. Header name is lowercase — Fastify

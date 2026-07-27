@@ -960,7 +960,7 @@ Every response — success or error — uses the same envelope shape so clients 
 
 Full definitions: `src/api/schemas/common.ts`.
 
-**How scraper exceptions map to API codes** (`src/plugins/loader.ts:149-153`):
+**How scraper exceptions map to API codes** (`src/plugins/loader.ts:88-92`):
 
 - `CaptchaError` → `2004 CAPTCHA_ENCOUNTERED`
 - `EmptyResultsError` → `2005 EMPTY_RESULTS`
