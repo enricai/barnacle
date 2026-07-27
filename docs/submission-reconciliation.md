@@ -26,7 +26,7 @@ core actually knows about.
 | `requestId` | Joins a submit row to its beacon row; also useful when cross-referencing app logs. |
 | `joinKeys` | Opaque `Record<string, unknown> \| null` — whatever the plugin's own `extractJoinKeys` hook resolved from the inbound payload (an attribution vendor's click ID, a job reference, or whatever that plugin's provider needs). Core does not know or validate its shape; `null` for a plugin with no `extractJoinKeys`, or when it resolved nothing for a given run. |
 | `status` | `"submitted"` or `"error"` — whether Barnacle's own submit attempt succeeded, distinct from beacon fire. |
-| `beaconStatus` | `"fired"`, `"failed"`, `"skipped"`, or `"not_fired"` — a dimension separate from `status`. `"skipped"` means core never fired a tracking click for this run — check `trackingUrl` to tell why: `null` means no usable `TrackingUrl` was ever present, a real URL means the plugin manages its own tracking nav outside `dispatch()` and used it instead. `"not_fired"` means a submit row exists with no matching beacon line at all (a beacon was applicable but never recorded an outcome). |
+| `beaconStatus` | `"fired"`, `"failed"`, `"skipped"`, or `"not_fired"` — a dimension separate from `status`. A self-managing plugin (one that declares `extractJoinKeys`) is not locked to `"skipped"`: it can call `recordBeaconOutcome` to report the real outcome of the nav it drove itself, and a real `"fired"`/`"failed"` always wins the fold over `"skipped"` for the same run, regardless of arrival order. So `"skipped"` now means the plugin did not opt into self-recording that outcome — check `trackingUrl` to tell why: `null` means no usable `TrackingUrl` was ever present, a real URL means the plugin manages its own tracking nav and hasn't (yet, or ever) reported a `fired`/`failed` outcome for it. `"not_fired"` means a submit row exists with no matching beacon line at all (a beacon was applicable but never recorded an outcome). |
 | `ts` | ISO-8601. Use with `from`/`to` to bound a report's date window. |
 
 `joinKeys` and `siteId` appear on both `"submit"` and `"beacon"` sink lines
@@ -104,13 +104,18 @@ further with `from`/`to`.
 The conversion/beacon-fire dimension is `beaconStatus`, distinct from submit
 `status` — a row can be `status: "submitted"` and still show
 `beaconStatus: "not_fired"` (no beacon line ever arrived), `beaconStatus:
-"failed"` (the tracking-click navigation itself errored), or `beaconStatus:
-"skipped"` (no beacon was ever applicable to this run — no `TrackingUrl`, or
-the plugin manages its own tracking nav outside `dispatch()`). All three are
-candidates for "why didn't this apply get credited," but `"not_fired"` is the
-one worth alerting on — unlike `"skipped"`, which is an expected, explained
-outcome, `"not_fired"` means a beacon was applicable and its outcome was
-simply never recorded.
+"failed"` (a tracking-click navigation errored — core's own, or a
+self-managing plugin's, reported via `recordBeaconOutcome`), or `beaconStatus:
+"skipped"` (no beacon was ever applicable to this run — no `TrackingUrl` — or
+the plugin manages its own tracking nav and hasn't reported an outcome for
+it). All three are candidates for "why didn't this apply get credited," but
+`"not_fired"` is the one worth alerting on unconditionally — `"skipped"` can
+still be worth alerting on for a plugin you *expect* to self-report, since it
+means that plugin hasn't called `recordBeaconOutcome` for this run yet (or
+never will); for a plugin with no `extractJoinKeys` at all, `"skipped"`
+remains the expected, explained default. `"not_fired"` always means a beacon
+was applicable and its outcome was simply never recorded, regardless of which
+kind of plugin handled the run.
 
 ```bash
 curl -s "http://localhost:3971/v1/submissions?status=submitted&beaconStatus=not_fired" \
@@ -242,6 +247,7 @@ logic (`readReconciliationRows`, `src/lib/telemetry/submission-reader.ts`).
 | Concern | File |
 |---|---|
 | Plugin-owned join-key extraction hook | `SitePlugin.extractJoinKeys` in `src/site-plugin.ts` |
+| Plugin-callable beacon-outcome recorder (self-managed `fired`/`failed`) | `SitePluginContext.recordBeaconOutcome` in `src/site-plugin.ts`; wraps `src/lib/telemetry/beacon-outcome.ts` |
 | Submit-record + beacon-event schemas | `src/lib/telemetry/reconciliation-record.ts` |
 | Sink read path (folds beacon onto submit by `requestId`) | `src/lib/telemetry/submission-reader.ts` |
 | Filter/sort/paginate layer | `src/lib/telemetry/submission-query.ts` |

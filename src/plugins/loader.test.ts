@@ -14,6 +14,7 @@ import authPlugin from "@/api/plugins/auth";
 import errorHandlerPlugin from "@/api/plugins/error-handler";
 import type { AppConfig } from "@/config";
 import { getLogger } from "@/lib/logging";
+import { recordBeaconOutcome } from "@/lib/telemetry/beacon-outcome";
 import { multipartJsonObject } from "@/lib/zod-multipart";
 import { BUILTIN_SITE_PLUGINS } from "@/plugins/discover";
 import { dispatch, registerRoutes, SITE_PLUGINS } from "@/plugins/loader";
@@ -52,6 +53,7 @@ const mockGetOrCreateInFlight = vi.hoisted(() =>
 const mockFireTrackingClick = vi.hoisted(() => vi.fn());
 const mockCaptureBeaconEvent = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const mockRecordDdFailure = vi.hoisted(() => vi.fn());
+const mockRecordBeaconOutcome = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 
 const mockRunWithSession = vi.hoisted(() =>
   vi.fn().mockImplementation((task: (s: null) => Promise<unknown>) => task(null))
@@ -121,6 +123,7 @@ const stubContext: SitePluginContext = {
   } as unknown as SitePluginContext["logger"],
   config: {} as SitePluginContext["config"],
   requestId: "req-test-123",
+  recordBeaconOutcome: mockRecordBeaconOutcome,
   metricsCollector: {
     startStep: vi.fn(),
     endStep: vi.fn(),
@@ -634,6 +637,49 @@ describe("dispatch — tracking click", () => {
     );
   });
 
+  it("does not suppress the automatic skipped capture when a plugin with extractJoinKeys also self-records via context.recordBeaconOutcome", async () => {
+    const trackingUrl = "https://click.acme.example/t/abc?vivclid=123&empId=emp9&jid=job9";
+    const joinKeysPlugin: SitePlugin<unknown, unknown> = {
+      ...stubPlugin,
+      extractJoinKeys: () => ({ vivclid: "123" }),
+      execute: async (payload, session, context) => {
+        await context.recordBeaconOutcome({ beaconStatus: "fired", joinKeys: { vivclid: "123" } });
+        return mockPluginExecute(payload, session, context);
+      },
+    };
+    const selfRecordingContext: SitePluginContext = {
+      ...stubContext,
+      recordBeaconOutcome: (input) =>
+        recordBeaconOutcome({ ...input, requestId: stubContext.requestId, siteId: "test-site" }),
+    };
+    await dispatch(joinKeysPlugin, { TrackingUrl: trackingUrl }, selfRecordingContext);
+
+    // No meta flag suppresses dispatch()'s own "skipped" write for a plugin
+    // declaring extractJoinKeys — a plugin that also self-records ends up
+    // with both a "skipped" line (engine) and a "fired" line (plugin) for
+    // the same requestId. That double-line is resolved at fold time
+    // (fired/failed outranks skipped), not by suppression here.
+    expect(mockCaptureBeaconEvent).toHaveBeenCalledTimes(2);
+    // The plugin's self-record fires while runPluginPipeline is still
+    // awaiting execute(); dispatch()'s own "skipped" write happens after
+    // the pipeline resolves — hence fired-then-skipped call order.
+    const [firedCall, skippedCall] = mockCaptureBeaconEvent.mock.calls.map(([arg]) => arg) as {
+      beaconStatus: string;
+    }[];
+    expect(skippedCall).toMatchObject({
+      requestId: "req-test-123",
+      siteId: "test-site",
+      beaconStatus: "skipped",
+      trackingUrl,
+    });
+    expect(firedCall).toMatchObject({
+      requestId: "req-test-123",
+      siteId: "test-site",
+      beaconStatus: "fired",
+      joinKeys: { vivclid: "123" },
+    });
+  });
+
   it("does not call fireTrackingClick when TrackingUrl is absent", async () => {
     await dispatch(stubPlugin, {}, stubContext);
     expect(mockFireTrackingClick).not.toHaveBeenCalled();
@@ -699,6 +745,31 @@ describe("dispatch — tracking click", () => {
   it("resolves normally when the skipped beacon sink write fails (best-effort swallow)", async () => {
     mockCaptureBeaconEvent.mockRejectedValueOnce(new Error("disk full"));
     const result = await dispatch(stubPlugin, {}, stubContext);
+    expect(result.data).toEqual({ result: "ok" });
+  });
+
+  it("resolves normally when the plugin's own recordBeaconOutcome call rejects mid-execute", async () => {
+    mockCaptureBeaconEvent.mockRejectedValueOnce(new Error("sink unavailable"));
+    const selfRecordingPlugin: SitePlugin<unknown, unknown> = {
+      ...stubPlugin,
+      extractJoinKeys: () => ({ vivclid: "123" }),
+      execute: async (payload, session, context) => {
+        // recordBeaconOutcome's never-throws contract means a plugin can
+        // await it directly without its own try/catch — this asserts
+        // dispatch() still resolves normally even though the underlying
+        // sink write rejected.
+        await context.recordBeaconOutcome({ beaconStatus: "failed", joinKeys: { vivclid: "123" } });
+        return mockPluginExecute(payload, session, context);
+      },
+    };
+    const selfRecordingContext: SitePluginContext = {
+      ...stubContext,
+      recordBeaconOutcome: (input) =>
+        recordBeaconOutcome({ ...input, requestId: stubContext.requestId, siteId: "test-site" }),
+    };
+
+    const result = await dispatch(selfRecordingPlugin, {}, selfRecordingContext);
+
     expect(result.data).toEqual({ result: "ok" });
   });
 });
@@ -1366,6 +1437,109 @@ describe("dispatch — needsUserInfo branch", () => {
     expect(data.missingFields).toHaveLength(1);
     expect(data.missingFields[0]?.field).toBe("educationLevel");
     expect(data.requiresOtp).toBe(false);
+  });
+});
+
+describe("registerRoutes — context.recordBeaconOutcome", () => {
+  const cfgStub = { scraper: { siteBaseUrls: {} } } as unknown as AppConfig;
+  const preservedEnv = {
+    DEV_BYPASS_AUTH: process.env.DEV_BYPASS_AUTH,
+    NODE_ENV: process.env.NODE_ENV,
+  };
+
+  beforeEach(() => {
+    process.env.DEV_BYPASS_AUTH = "true";
+    process.env.NODE_ENV = "test";
+    mockCaptureSubmissionEnvelope.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    if (preservedEnv.DEV_BYPASS_AUTH === undefined) delete process.env.DEV_BYPASS_AUTH;
+    else process.env.DEV_BYPASS_AUTH = preservedEnv.DEV_BYPASS_AUTH;
+    if (preservedEnv.NODE_ENV === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = preservedEnv.NODE_ENV;
+    vi.clearAllMocks();
+  });
+
+  async function buildAppWithPlugin(
+    plugin: SitePlugin<unknown, unknown>
+  ): Promise<Parameters<typeof registerRoutes>[0]> {
+    const app = Fastify({ loggerInstance: getLogger({ name: "loader-beacon-outcome-test" }) });
+    app.setValidatorCompiler(validatorCompiler);
+    app.setSerializerCompiler(serializerCompiler);
+    await app.register(errorHandlerPlugin);
+    await app.register(authPlugin);
+    await registerRoutes(app, cfgStub, [plugin]);
+    await app.ready();
+    return app;
+  }
+
+  function beaconPlugin(
+    execute: SitePlugin<unknown, unknown>["execute"]
+  ): SitePlugin<unknown, unknown> {
+    return {
+      meta: {
+        siteId: "beacon-outcome-test",
+        displayName: "Beacon Outcome Test",
+        bodySchema: z.object({}),
+        responseSchema: z.unknown(),
+      },
+      execute,
+    };
+  }
+
+  it("records a fired beacon outcome carrying the run's requestId and the plugin's siteId", async () => {
+    const plugin = beaconPlugin(async (_payload, _session, context) => {
+      await context.recordBeaconOutcome({
+        beaconStatus: "fired",
+        joinKeys: { k: 1 },
+        durationMs: 12,
+      });
+      return { data: { ok: true } };
+    });
+
+    const app = await buildAppWithPlugin(plugin);
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/beacon-outcome-test/run",
+      payload: {},
+    });
+    expect(response.statusCode).toBe(200);
+
+    const envelopeCall = mockCaptureSubmissionEnvelope.mock.calls[0]?.[0] as { requestId: string };
+    const firedCalls = mockCaptureBeaconEvent.mock.calls.filter(
+      ([arg]) => (arg as { beaconStatus: string }).beaconStatus === "fired"
+    );
+    expect(firedCalls).toHaveLength(1);
+    expect(firedCalls[0]?.[0]).toMatchObject({
+      requestId: envelopeCall.requestId,
+      siteId: "beacon-outcome-test",
+      joinKeys: { k: 1 },
+      durationMs: 12,
+    });
+
+    await app.close();
+  });
+
+  it("does not fail the dispatch when the underlying capture rejects", async () => {
+    mockCaptureBeaconEvent.mockRejectedValueOnce(new Error("sink down"));
+    const plugin = beaconPlugin(async (_payload, _session, context) => {
+      await context.recordBeaconOutcome({ beaconStatus: "failed", joinKeys: null });
+      return { data: { ok: true } };
+    });
+
+    const app = await buildAppWithPlugin(plugin);
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/beacon-outcome-test/run",
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body) as { ok: boolean };
+    expect(body.ok).toBe(true);
+
+    await app.close();
   });
 });
 

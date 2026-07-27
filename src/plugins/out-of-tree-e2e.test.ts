@@ -80,11 +80,17 @@ const TSC_DIAGNOSTIC_LINE = /^.+\(\d+,\d+\): error (TS\d+): (.+)$/;
  * ordinary node_modules packages (declared dependencies of this repo,
  * standing in for the consumer having run the emitted checklist's
  * `pnpm add bottleneck zod`).
+ *
+ * The scratch dir MUST live inside REPO_ROOT (not `os.tmpdir()`) for that
+ * last part to hold — Node's bare-specifier resolution walks up from the
+ * checked files looking for `node_modules`, and an os.tmpdir() path has none
+ * in its ancestry, so `zod/v4` etc. silently fail to resolve (mirrors the
+ * same REPO_ROOT-relative-outDir requirement in recon-browser.build.test.ts).
  */
 function typecheckGeneratedFiles(
   files: Record<string, string>
 ): Array<{ code: string; message: string }> {
-  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "barnacle-oot-typecheck-"));
+  const tmpDir = mkdtempSync(path.join(REPO_ROOT, "barnacle-oot-typecheck-"));
   try {
     for (const [relPath, content] of Object.entries(files)) {
       const absPath = path.join(tmpDir, relPath);
@@ -102,9 +108,16 @@ function typecheckGeneratedFiles(
         esModuleInterop: true,
         skipLibCheck: true,
         noEmit: true,
-        baseUrl: ".",
+        // No `baseUrl` — TypeScript 7 removed it (TS5102), and a config-level
+        // error aborts `tsc` before it checks a single file, which would make
+        // every diagnostics assertion below pass vacuously. `@/*` stands in
+        // for the internal cross-file aliases a real dist build would already
+        // have rewritten to relative paths by the time a consumer sees it —
+        // exports-map targets like site-plugin.ts are pulled in as raw src
+        // and still reference `@/config` etc. among themselves.
         paths: {
           "@/sites/*": ["./sites/*"],
+          "@/*": [path.join(REPO_ROOT, "src/*")],
           ...buildExportsPathsMap(),
         },
       },
@@ -291,6 +304,56 @@ describe("out-of-tree e2e — recon-generate output typechecks against the packa
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("out-of-tree plugin — recordBeaconOutcome is reachable from the declared public export surface", () => {
+  /**
+   * A plugin managing its own beacon nav has exactly two supported ways to
+   * report the real outcome: the `recordBeaconOutcome` method core binds onto
+   * `SitePluginContext` (Option A), and the standalone `recordBeaconOutcome` /
+   * `PluginBeaconOutcomeInput` re-exported from the `./lib/telemetry/beacon-outcome`
+   * subpath (Option B) — this repo shipped both, so both need to typecheck
+   * against ONLY what `exports` declares, not against `@/lib/...` directly.
+   */
+  const beaconOutcomeSource = `
+import type { SitePluginContext } from "@enricai/barnacle/site-plugin";
+import {
+  recordBeaconOutcome,
+  type PluginBeaconOutcomeInput,
+} from "@enricai/barnacle/lib/telemetry/beacon-outcome";
+
+export async function reportViaContext(context: SitePluginContext): Promise<void> {
+  await context.recordBeaconOutcome({
+    beaconStatus: "fired",
+    joinKeys: { applicationId: "abc-123" },
+    trackingUrl: "https://example.com/beacon",
+    durationMs: 42,
+  });
+}
+
+export async function reportViaTelemetrySubpath(requestId: string, siteId: string): Promise<void> {
+  const input: PluginBeaconOutcomeInput = {
+    requestId,
+    siteId,
+    beaconStatus: "failed",
+    joinKeys: null,
+  };
+  await recordBeaconOutcome(input);
+}
+`;
+
+  it("declares both the SitePluginContext seam and the telemetry subpath in package.json exports", () => {
+    expect(packageJson.exports["./site-plugin"]).toBeDefined();
+    expect(packageJson.exports["./lib/telemetry/beacon-outcome"]).toBeDefined();
+  });
+
+  it("a plugin calling recordBeaconOutcome via SitePluginContext and the telemetry subpath produces zero TS2307/TS2532 diagnostics", () => {
+    const diagnostics = typecheckGeneratedFiles({
+      "beacon-outcome-plugin.ts": beaconOutcomeSource,
+    });
+    const relevant = diagnostics.filter((d) => d.code === "TS2307" || d.code === "TS2532");
+    expect(relevant.map((d) => `${d.code}: ${d.message}`)).toEqual([]);
   });
 });
 

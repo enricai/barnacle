@@ -446,6 +446,47 @@ navs must share one browser session for a vendor's device-cookie
 attribution to work) and skips its own fire — firing both would open two
 independent sessions against the same URL.
 
+`dispatch()` still records that self-managed nav as `beaconStatus: "skipped"`
+by default, since core has no visibility into whether the plugin's own
+navigation actually fired. **A plugin that never calls the recorder below
+keeps that `"skipped"` default — nothing changes for it.** A plugin that
+wants its real outcome on record instead calls
+`context.recordBeaconOutcome()` after its own navigation resolves:
+
+```ts
+async execute(
+  payload: MySitePayload,
+  session: BrowserSession,
+  context: SitePluginContext
+): Promise<SitePluginResult<MySiteResponse>> {
+  const joinKeys = payload.someVendorClickId ? { vendorClickId: payload.someVendorClickId } : null;
+  const startedAt = Date.now();
+  const nav = await fireMySiteBeaconNav(session.stagehand, context.baseUrl);
+
+  await context.recordBeaconOutcome({
+    beaconStatus: nav.ok ? "fired" : "failed",
+    joinKeys,
+    trackingUrl: nav.trackingUrl,
+    durationMs: Date.now() - startedAt,
+  });
+
+  const raw = await runMySiteBrowserFlow(session.stagehand, context.baseUrl, payload.query);
+  return { data: raw };
+},
+```
+
+`recordBeaconOutcome` (`SitePluginContext`, `src/site-plugin.ts`) takes
+`{ beaconStatus: "fired" | "failed", joinKeys: Record<string, unknown> |
+null, trackingUrl?: string | null, durationMs?: number }` — `requestId`/
+`siteId` are bound by core, so the plugin only supplies what it alone
+knows. `beaconStatus` is narrowed to `"fired" | "failed"` only;
+`"skipped"` stays engine-owned. If a `"skipped"` line was already written
+for this `requestId` and the plugin later reports a real `"fired"`/
+`"failed"` outcome, the fold in
+[Submission record schema](#submission-record-schema) prefers the real
+outcome over `"skipped"` regardless of arrival order. This never throws;
+a sink failure is logged and swallowed, same as core's own beacon writes.
+
 ### Static fixtures
 
 If Phase 3b (auxiliary fixture detection) found static JSON endpoints (markets, currencies, labels), `recon:generate` copies them to `src/sites/<id>/fixtures/`. Load them at module init via `loadFixture()` — zero per-request overhead, fails fast on deploy if the fixture is missing or stale:
@@ -679,7 +720,11 @@ in `src/lib/telemetry/reconciliation-record.ts`):
 | `ts` | `string` | ISO-8601 timestamp at write time. |
 
 A `"beacon"`-kind record shares the same sink to record a later, independent
-beacon-fire outcome for the same `requestId` — see
+beacon-fire outcome for the same `requestId` — written either by core
+(`fireTrackingClick`, or the `"skipped"` default for a plugin that declares
+`extractJoinKeys`) or by the plugin itself, via
+[`context.recordBeaconOutcome`](#reconciliation-join-keys-extractjoinkeys),
+once its own tracking nav resolves. See
 [Submission-envelope sink](docs/telemetry-and-judging.md#submission-envelope-sink)
 for the full schema and the `GET /v1/submissions` read path.
 
@@ -823,7 +868,7 @@ http/net/dns. Metrics have no such constraint.
 | `TELEMETRY_ENABLED` | `true` | Master switch — set `false` to disable all NDJSON telemetry writes. |
 | `TELEMETRY_EVENTS_DIR` | `.barnacle/events` | Directory for per-run NDJSON event stream files (`<eventsDir>/<runId>.ndjson`). |
 | `CALLS_NDJSON_PATH` | `.barnacle/calls.ndjson` | Append-only NDJSON sink for LLM/Stagehand call samples. One line per call; feed to the judge and self-heal skills. |
-| `SUBMISSIONS_NDJSON_PATH` | `.barnacle/submissions.ndjson` | Append-only NDJSON sink for dispatch submission envelopes and beacon-fire outcomes. `kind:"submit"` lines (null/`"submit"`-defaulted on legacy lines) capture siteId, requestId, inbound payload, status, audit payload, and duration, plus the opaque `joinKeys` bag a plugin's `extractJoinKeys` hook resolved — the durable source-of-truth for "what did we submit for jobId X and did it succeed." `kind:"beacon"` lines record a later (or, for `beaconStatus: "skipped"`, immediate) independent beacon-fire outcome (`beaconStatus`: `fired`/`failed`/`skipped`, truncated `trackingUrl`) for the same `requestId`, so "submitted but the beacon did not fire" is measurable. A reader folds both kinds together by `requestId`, so a plugin can join runs to its own attribution provider's report without re-parsing `inboundPayload`. |
+| `SUBMISSIONS_NDJSON_PATH` | `.barnacle/submissions.ndjson` | Append-only NDJSON sink for dispatch submission envelopes and beacon-fire outcomes. `kind:"submit"` lines (null/`"submit"`-defaulted on legacy lines) capture siteId, requestId, inbound payload, status, audit payload, and duration, plus the opaque `joinKeys` bag a plugin's `extractJoinKeys` hook resolved — the durable source-of-truth for "what did we submit for jobId X and did it succeed." `kind:"beacon"` lines record a later (or, for `beaconStatus: "skipped"`, immediate) independent beacon-fire outcome (`beaconStatus`: `fired`/`failed`/`skipped`, truncated `trackingUrl`) for the same `requestId`, so "submitted but the beacon did not fire" is measurable. Core writes the `"fired"`/`"failed"` line for its own automatic `TrackingUrl` fire, or the `"skipped"` default for a self-managing plugin; a plugin that declares `extractJoinKeys` and manages its own beacon nav can instead write its own `"fired"`/`"failed"` line via `context.recordBeaconOutcome` — see [Reconciliation join keys](#reconciliation-join-keys-extractjoinkeys). A reader folds both kinds together by `requestId`, preferring a real `fired`/`failed` outcome over `skipped` regardless of arrival order, so a plugin can join runs to its own attribution provider's report without re-parsing `inboundPayload`. |
 | `TELEMETRY_MAX_FILE_SIZE_BYTES` | `104857600` (100 MB) | Rotate/drop the calls NDJSON once it exceeds this byte count. |
 | `TELEMETRY_MAX_RETENTION_MS` | `2592000000` (30 days) | Drop event-stream files older than this many milliseconds. |
 | `TELEMETRY_S3_BUCKET` | — | Optional — destination bucket for the buffered S3 telemetry mirror. Sink is entirely inert (no client, no network calls) when unset. Credentials/region resolve the same way as Bedrock (`AWS_REGION`, standard SDK credential order). |

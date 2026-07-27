@@ -193,6 +193,105 @@ describe("foldReconciliationRecords", () => {
     expect(rows[0]?.beaconStatus).toBe("failed");
     expect(rows[0]?.beaconTrackingUrl).toBeNull();
   });
+
+  it("keeps a fired beacon that arrived before a later skipped beacon line", () => {
+    const records = parseReconciliationLines(
+      ndjson(
+        makeSubmitLine(),
+        makeBeaconLine({
+          beaconStatus: "fired",
+          trackingUrl: "https://track.appcast.io/pixel?rid=req-abc-123",
+          ts: "2026-07-26T10:00:05.000Z",
+          durationMs: 87,
+        }),
+        makeBeaconLine({
+          beaconStatus: "skipped",
+          trackingUrl: null,
+          ts: "2026-07-26T10:00:06.000Z",
+          durationMs: 0,
+        })
+      )
+    );
+    const rows = foldReconciliationRecords(records);
+    expect(rows[0]?.beaconStatus).toBe("fired");
+    expect(rows[0]?.beaconTrackingUrl).toBe("https://track.appcast.io/pixel?rid=req-abc-123");
+    expect(rows[0]?.beaconTs).toBe("2026-07-26T10:00:05.000Z");
+    expect(rows[0]?.beaconDurationMs).toBe(87);
+  });
+
+  it("lets a fired beacon win even when the skipped line arrives first", () => {
+    const records = parseReconciliationLines(
+      ndjson(
+        makeSubmitLine(),
+        makeBeaconLine({
+          beaconStatus: "skipped",
+          trackingUrl: null,
+          ts: "2026-07-26T10:00:01.000Z",
+          durationMs: 0,
+        }),
+        makeBeaconLine({
+          beaconStatus: "fired",
+          trackingUrl: "https://track.appcast.io/pixel?rid=req-abc-123",
+          ts: "2026-07-26T10:00:05.000Z",
+          durationMs: 87,
+        })
+      )
+    );
+    const rows = foldReconciliationRecords(records);
+    expect(rows[0]?.beaconStatus).toBe("fired");
+    expect(rows[0]?.beaconTrackingUrl).toBe("https://track.appcast.io/pixel?rid=req-abc-123");
+    expect(rows[0]?.beaconTs).toBe("2026-07-26T10:00:05.000Z");
+    expect(rows[0]?.beaconDurationMs).toBe(87);
+  });
+
+  it("lets a failed beacon win over a later skipped line, same as fired", () => {
+    const records = parseReconciliationLines(
+      ndjson(
+        makeSubmitLine(),
+        makeBeaconLine({
+          beaconStatus: "failed",
+          trackingUrl: null,
+          ts: "2026-07-26T10:00:05.000Z",
+          durationMs: 87,
+        }),
+        makeBeaconLine({
+          beaconStatus: "skipped",
+          trackingUrl: null,
+          ts: "2026-07-26T10:00:06.000Z",
+          durationMs: 0,
+        })
+      )
+    );
+    const rows = foldReconciliationRecords(records);
+    expect(rows[0]?.beaconStatus).toBe("failed");
+  });
+
+  it("still applies last-wins between two same-rank beacon lines (retry overwrite)", () => {
+    const records = parseReconciliationLines(
+      ndjson(
+        makeSubmitLine(),
+        makeBeaconLine({
+          beaconStatus: "fired",
+          trackingUrl: "https://track.appcast.io/pixel?rid=req-abc-123&attempt=1",
+          ts: "2026-07-26T10:00:05.000Z",
+          durationMs: 87,
+        }),
+        makeBeaconLine({
+          beaconStatus: "fired",
+          trackingUrl: "https://track.appcast.io/pixel?rid=req-abc-123&attempt=2",
+          ts: "2026-07-26T10:00:10.000Z",
+          durationMs: 120,
+        })
+      )
+    );
+    const rows = foldReconciliationRecords(records);
+    expect(rows[0]?.beaconStatus).toBe("fired");
+    expect(rows[0]?.beaconTrackingUrl).toBe(
+      "https://track.appcast.io/pixel?rid=req-abc-123&attempt=2"
+    );
+    expect(rows[0]?.beaconTs).toBe("2026-07-26T10:00:10.000Z");
+    expect(rows[0]?.beaconDurationMs).toBe(120);
+  });
 });
 
 describe("readReconciliationRows", () => {

@@ -159,4 +159,103 @@ describe("readDurableReconciliationRows", () => {
 
     expect(rows).toEqual([]);
   });
+
+  it("lets a plugin-recorded fired beacon in the local sink beat a dispatch-written skipped line mirrored from S3", async () => {
+    fs.writeFileSync(
+      sinkPath,
+      ndjson(
+        makeSubmitLine(),
+        makeBeaconLine({
+          beaconStatus: "fired",
+          ts: "2026-07-26T10:00:05.000Z",
+        })
+      ),
+      "utf8"
+    );
+    listSubmissionsS3ObjectsMock.mockResolvedValue(["telemetry/submissions/2026-07-26/a.ndjson"]);
+    fetchSubmissionsS3RecordsMock.mockResolvedValue([
+      makeBeaconLine({
+        beaconStatus: "skipped",
+        trackingUrl: null,
+        ts: "2026-07-26T10:00:06.000Z",
+        durationMs: 0,
+      }),
+    ]);
+
+    const rows = await readDurableReconciliationRows({ sinkPath });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.beaconStatus).toBe("fired");
+  });
+
+  it("lets a plugin-recorded fired beacon mirrored from S3 beat a dispatch-written skipped line in the local sink", async () => {
+    fs.writeFileSync(
+      sinkPath,
+      ndjson(
+        makeSubmitLine(),
+        makeBeaconLine({
+          beaconStatus: "skipped",
+          trackingUrl: null,
+          ts: "2026-07-26T10:00:06.000Z",
+          durationMs: 0,
+        })
+      ),
+      "utf8"
+    );
+    listSubmissionsS3ObjectsMock.mockResolvedValue(["telemetry/submissions/2026-07-26/a.ndjson"]);
+    fetchSubmissionsS3RecordsMock.mockResolvedValue([
+      makeBeaconLine({
+        beaconStatus: "fired",
+        ts: "2026-07-26T10:00:05.000Z",
+      }),
+    ]);
+
+    const rows = await readDurableReconciliationRows({ sinkPath });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.beaconStatus).toBe("fired");
+  });
+
+  it("keeps a plugin-recorded fired beacon and dispatch's skipped beacon as distinct records when both land in the same wall-clock second", async () => {
+    fs.writeFileSync(
+      sinkPath,
+      ndjson(
+        makeSubmitLine(),
+        makeBeaconLine({
+          beaconStatus: "skipped",
+          trackingUrl: null,
+          durationMs: 0,
+          ts: "2026-07-26T10:00:05.000Z",
+        })
+      ),
+      "utf8"
+    );
+    listSubmissionsS3ObjectsMock.mockResolvedValue(["telemetry/submissions/2026-07-26/a.ndjson"]);
+    fetchSubmissionsS3RecordsMock.mockResolvedValue([
+      makeBeaconLine({
+        beaconStatus: "fired",
+        ts: "2026-07-26T10:00:05.000Z",
+      }),
+    ]);
+
+    const rows = await readDurableReconciliationRows({ sinkPath });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.beaconStatus).toBe("fired");
+  });
+
+  it("dedupes an exact-duplicate fired beacon line present in both stores without altering beaconStatus", async () => {
+    fs.writeFileSync(
+      sinkPath,
+      ndjson(makeSubmitLine(), makeBeaconLine({ beaconStatus: "fired" })),
+      "utf8"
+    );
+    listSubmissionsS3ObjectsMock.mockResolvedValue(["telemetry/submissions/2026-07-26/a.ndjson"]);
+    fetchSubmissionsS3RecordsMock.mockResolvedValue([makeBeaconLine({ beaconStatus: "fired" })]);
+
+    const rows = await readDurableReconciliationRows({ sinkPath });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.beaconStatus).toBe("fired");
+  });
 });

@@ -86,21 +86,25 @@ plugin's own `extractJoinKeys` hook (if declared) once, then stamps the
 opaque result onto both the submit envelope and — when the plugin has no
 `extractJoinKeys` — the tracking-click call that fires the conversion beacon
 (`src/plugins/loader.ts`). Core never inspects what's inside `joinKeys`; a
-plugin that needs reconciliation join keys owns their shape entirely. A
-plugin only ever sees its own request/response — it has no visibility into
-whether core's automatic beacon fired, since that navigation (when it
-happens) is kicked off *by* `dispatch()`, after the plugin's own work is
-already done. Declaring `extractJoinKeys` is also the plugin's signal that it
-manages its own post-submit tracking navigation itself, so `dispatch()`
-skips its own automatic fire for that plugin — this matters because some
-attribution schemes require the click and apply navigations to share one
-browser session (a device cookie minted per-session), which core's
-generic single-URL fire can't provide. The reconciliation record therefore
-spans two writers (submit, beacon-fire) that only core can see both of;
-putting the fold logic anywhere else would mean either duplicating it per
-plugin or losing the ability to join a run's submit and beacon outcomes at
-all. See §Why the reconciliation record has an opaque join-key bag, a
-distinct beacon dimension, and an in-repo read path below.
+plugin that needs reconciliation join keys owns their shape entirely.
+Declaring `extractJoinKeys` is also the plugin's signal that it manages its
+own post-submit tracking navigation itself, so `dispatch()` skips its own
+automatic fire for that plugin — this matters because some attribution
+schemes require the click and apply navigations to share one browser session
+(a device cookie minted per-session), which core's generic single-URL fire
+can't provide. A plugin that manages its own nav this way is not locked out
+of reporting what happened: `context.recordBeaconOutcome` (bound with the
+run's `requestId`/`siteId` at both `dispatch()` call sites, `src/plugins/loader.ts`)
+lets it report the real `fired`/`failed` outcome once its own navigation
+resolves, same as core reports its own automatic fire. See §Why the
+reconciliation record has an opaque join-key bag, a distinct beacon
+dimension, and an in-repo read path below for why that seam sits on the
+context object rather than a bare module export, and how its outcome is
+reconciled against `dispatch()`'s own automatic `"skipped"` write for the
+same run. The reconciliation record therefore spans two writers (submit,
+beacon-fire) that only core can see both of; putting the fold logic anywhere
+else would mean either duplicating it per plugin or losing the ability to
+join a run's submit and beacon outcomes at all.
 
 **Browser-execution escape hatch.** Sending `x-barnacle-execution: browser`
 on a plugin request causes `dispatch()` to skip `executeHttp` and route
@@ -427,7 +431,7 @@ per-run reconciliation record — what did we submit, did it succeed, and did
 the conversion beacon fire (`reconciliation-record.ts`, `submission-capture.ts`,
 `beacon-capture.ts`; full field reference in
 [telemetry-and-judging.md](./telemetry-and-judging.md#submission-envelope-sink)).
-Three decisions in that record's shape are load-bearing enough to justify
+Four decisions in that record's shape are load-bearing enough to justify
 here, not just describe there.
 
 **Why `joinKeys` is an opaque bag, not named fields.** `inboundPayload` is
@@ -468,18 +472,65 @@ returned and already appended its submit line — except when there is no
 `beaconStatus: "skipped"` beacon line itself, synchronously, before
 returning, since there is nothing to fire-and-forget. A plugin that declares
 `extractJoinKeys` fires its own beacon nav entirely outside `dispatch()` (see
-above); `dispatch()` still writes the `"skipped"` beacon line for it, so the
-reconciliation row exists even though core never drove a nav for that run.
-Recording `beaconStatus`
-as a mutation of the submit line would mean rewriting an already-flushed
-NDJSON row — breaking the append-only, crash-safe write model this section
-just argued for. Instead the beacon outcome is its own later (or, for
-`"skipped"`, immediate) `kind:"beacon"` line, and a reader folds it onto the
-matching submit line by `requestId` (`submission-reader.ts`) — so "submitted
-but the beacon never fired" becomes a directly queryable value
-(`beaconStatus: "not_fired"`, synthesized by the reader when no beacon line
-ever arrives, distinct from the sink-written `"skipped"`) rather than
-something inferred from the absence of a Datadog counter increment.
+above); `dispatch()` still writes the `"skipped"` beacon line for that run
+too, synchronously, before returning — a plugin's own nav can take
+arbitrarily long after `dispatch()` returns, and "no reconciliation row at
+all until the plugin gets around to reporting" would leave every self-managed
+run unqueryable in the interim. Recording `beaconStatus` as a mutation of the
+submit line would mean rewriting an already-flushed NDJSON row — breaking
+the append-only, crash-safe write model this section just argued for.
+Instead the beacon outcome is its own later (or, for `"skipped"`, immediate)
+`kind:"beacon"` line, and a reader folds it onto the matching submit line by
+`requestId` (`submission-reader.ts`) — so "submitted but the beacon never
+fired" becomes a directly queryable value (`beaconStatus: "not_fired"`,
+synthesized by the reader when no beacon line ever arrives, distinct from
+the sink-written `"skipped"`) rather than something inferred from the
+absence of a Datadog counter increment.
+
+**Why a self-managing plugin gets a recorder seam on the context object, and
+why its outcome outranks the automatic `"skipped"` line rather than
+suppressing it.** The immediate `"skipped"` write above was originally the
+*only* outcome a self-managing plugin could ever have on record — the
+plugin's own navigation happens entirely inside its `execute()`, in code
+core never calls into, so there was no path for it to report what actually
+happened. That is a real gap, not just an undocumented one: a plugin
+attributing spend against a vendor's CPA report cannot tell "the nav fired"
+from "the nav failed" if both collapse to the same `"skipped"` value.
+`recordBeaconOutcome` (`src/lib/telemetry/beacon-outcome.ts`) closes it by
+wrapping `captureBeaconEvent` behind the same never-throws guard
+(`emitBeaconSafely` in `src/plugins/loader.ts`) other beacon writers use, and
+is bound onto `SitePluginContext.recordBeaconOutcome` with `requestId`/
+`siteId` already fixed by core at both `dispatch()` call sites
+(`buildRecordBeaconOutcome`, `src/plugins/loader.ts`) — a plugin only ever
+supplies the outcome, `joinKeys`, and timing it alone knows, never the run
+identity that lets core join it back to the right submit line. The context
+method is the discoverable seam a plugin actually calls; the module is also
+published on the package's `exports` map (`./lib/telemetry/beacon-outcome`)
+purely so a plugin can import `PluginBeaconOutcomeInput`'s shape for its own
+helper code without reaching into `dist/lib` by hand, not as a second way to
+invoke the recorder. `joinKeys` stays `Record<string, unknown> | null` end to
+end — the same opaque-bag rule as `extractJoinKeys` above — so the engine
+never has to learn what a plugin's keys mean just to accept them.
+
+That leaves one interaction: since `dispatch()`'s own `"skipped"` write is
+synchronous and unconditional, a plugin that later calls
+`recordBeaconOutcome` produces **two** beacon lines for one `requestId` —
+`"skipped"`, then `"fired"` or `"failed"`. Suppressing the automatic write
+(e.g. behind an opt-in plugin flag) was rejected: it would make the
+immediate reconciliation row's existence conditional on a promise the
+plugin hasn't kept yet, reintroducing the "unqueryable until the plugin
+reports" gap the immediate write exists to prevent, and it would need a new
+per-plugin flag that has no other purpose. Instead `foldReconciliationRecords`
+(`src/lib/telemetry/submission-reader.ts`) ranks `beaconStatus` values
+(`not_fired < skipped < fired = failed`) and only overwrites a row's
+recorded status with an incoming beacon line of equal-or-higher rank — so a
+real `fired`/`failed` outcome always wins the fold over `"skipped"`
+regardless of which line lands in the NDJSON sink first (the plugin's own
+nav is not guaranteed to resolve, or be recorded, after `dispatch()`'s
+synchronous write), while a same-rank retry (a second `"fired"` line) still
+last-wins as before. `GET /v1/submissions` and every other reader need no
+special-casing: the precedence lives entirely in the fold, not in the
+writers.
 
 **Why a read path belongs in-repo, not deferred to ETL.** Reconciliation is
 not a periodic batch job — it runs continuously as cohort dollars accrue
@@ -725,6 +776,7 @@ maintenance loop.
 | Submission-envelope sink + `SubmissionEnvelopeSample` type | `src/lib/telemetry/submission-capture.ts` |
 | Reconciliation record schemas (`submit` + `beacon` kinds) | `src/lib/telemetry/reconciliation-record.ts` |
 | Beacon-fire (conversion) event writer + `BeaconEventSample` type | `src/lib/telemetry/beacon-capture.ts` |
+| Plugin-callable beacon-outcome recorder | `src/lib/telemetry/beacon-outcome.ts`; bound onto `SitePluginContext.recordBeaconOutcome` via `buildRecordBeaconOutcome` in `src/plugins/loader.ts` |
 | Plugin-owned join-key extraction hook | `SitePlugin.extractJoinKeys` in `src/site-plugin.ts` |
 | Reconciliation reader (`readReconciliationRows`) | `src/lib/telemetry/submission-reader.ts` |
 | Reconciliation query/filter layer (`queryReconciliationRows`) | `src/lib/telemetry/submission-query.ts` |
