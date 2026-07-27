@@ -6214,8 +6214,8 @@ export async function executeStepWithHealing(params: {
             const failureMessage = cascadeResult.error
               ? `deepLocator: click threw ${toErrorMessage(cascadeResult.error)}`
               : attemptTriedSelectors.length > 0
-                ? "deepLocator: no candidate was actionable"
-                : "deepLocator: every candidate refused by the wizard-exit deny-list";
+                ? `deepLocator: no actionable candidate (${attemptTriedSelectors.length} not-actionable)`
+                : "deepLocator: no actionable candidate (every candidate refused by the wizard-exit deny-list)";
             record.actResultSuccess = false;
             record.errorMessage = failureMessage;
             attempts.push(record);
