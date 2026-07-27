@@ -1,16 +1,35 @@
 import type { DeepLocatorDelegate } from "@browserbasehq/stagehand/lib/v3/understudy/deepLocator.js";
 
+import type { FrameCandidateScanResult } from "@/scraper/deep-locator-scan";
+
 /**
  * One candidate element registered at a hop selector. `registerDeepLocatorHop`
  * seeds a single-element hop by constructing one of these; multi-candidate
  * hops (`registerDeepLocatorHopElements`) hold an ordered array of them so
  * `nth(i)` can resolve to a distinct element's own click/fill/text state
- * instead of collapsing every index onto shared scalars.
+ * instead of collapsing every index onto shared scalars. `visible` models
+ * whether the element has a layout box — `false` reproduces the run-7 field
+ * condition of a candidate that exists in the DOM but has no rendered
+ * geometry (0x0 box, `display:none`), which a real click rejects against
+ * with the CDP `-32000 Node does not have a layout object` error
+ * ({@link NODE_NOT_ACTIONABLE_MESSAGE}).
  */
 export interface FakeDeepLocatorElement {
   clicks: number;
   filledWith: string | null;
   text: string;
+  visible: boolean;
+}
+
+/**
+ * Shorthand a caller can pass to {@link registerDeepLocatorHopElements}
+ * instead of a bare string when an element also needs non-default layout
+ * state — `visible` defaults to `true` (rendered) so every legacy
+ * string-only registration keeps behaving exactly as it always has.
+ */
+export interface FakeDeepLocatorElementSpec {
+  readonly text: string;
+  readonly visible?: boolean;
 }
 
 /**
@@ -70,20 +89,27 @@ export function registerDeepLocatorHop(
 
 /**
  * Registers a hop selector with N ordered candidate elements so
- * `deepLocator(selector).count()` resolves to `texts.length` and
+ * `deepLocator(selector).count()` resolves to `elements.length` and
  * `nth(i).textContent()`/`nth(i).click()`/`nth(i).fill()` act on element `i`
  * specifically — the shape a real cross-origin OOPIF hop resolves to when
  * more than one element matches the inner selector (e.g. `"*"` matching
  * every node in the iframe), which the single-element
- * {@link registerDeepLocatorHop} path can't model.
+ * {@link registerDeepLocatorHop} path can't model. Each entry is either a
+ * bare string (rendered, `visible: true`) or a
+ * {@link FakeDeepLocatorElementSpec} for a candidate that also needs
+ * non-default layout state — mixing both in one call models a hop where
+ * only some candidates have a layout box, same as a real dense OOPIF form.
  */
 export function registerDeepLocatorHopElements(
   frame: FakeDeepLocatorFrame,
   selector: string,
-  texts: string[]
+  elements: ReadonlyArray<string | FakeDeepLocatorElementSpec>
 ): FakeDeepLocatorHop {
-  const elements = texts.map((text) => ({ clicks: 0, filledWith: null, text }));
-  const hop = buildHop(elements);
+  const built = elements.map((entry) => {
+    const spec = typeof entry === "string" ? { text: entry } : entry;
+    return { clicks: 0, filledWith: null, text: spec.text, visible: spec.visible ?? true };
+  });
+  const hop = buildHop(built);
   frame.set(selector, hop);
   return hop;
 }
@@ -158,6 +184,57 @@ export function registerDeepLocatorHangingHop(
 }
 
 /**
+ * The delegate methods plus {@link makeFakeFrameScan}'s batched evaluate a
+ * hop's {@link registerDeepLocatorHopLatency} profile can delay.
+ */
+export type LatencyDeepLocatorMethod = HangingDeepLocatorMethod | "scan";
+
+export interface RegisterDeepLocatorHopLatencyOptions {
+  /** Which method(s) resolve after `delayMs` instead of immediately. */
+  readonly delayOn: LatencyDeepLocatorMethod | readonly LatencyDeepLocatorMethod[];
+  readonly delayMs: number;
+}
+
+interface LatencyGate {
+  readonly delayOn: ReadonlySet<LatencyDeepLocatorMethod>;
+  readonly delayMs: number;
+}
+
+/**
+ * Keyed by hop object (not selector), the same pattern {@link hangGates}
+ * uses, so a finite per-call delay travels with a hop's return value without
+ * widening {@link FakeDeepLocatorHop}'s public shape.
+ */
+const latencyGates = new WeakMap<FakeDeepLocatorHop, LatencyGate>();
+
+async function delayIfRegistered(
+  hop: FakeDeepLocatorHop | undefined,
+  method: LatencyDeepLocatorMethod
+): Promise<void> {
+  const gate = hop ? latencyGates.get(hop) : undefined;
+  if (!gate?.delayOn.has(method)) return;
+  await new Promise<void>((resolve) => setTimeout(resolve, gate.delayMs));
+}
+
+/**
+ * Attaches a finite per-call delay to an already-registered hop's `delayOn`
+ * methods, leaving every other method — and every other hop — immediate.
+ * This is the seam a test uses to prove the batched-scan fix collapses N
+ * serial round-trips into one: register the same `delayMs` against
+ * `"textContent"` (the legacy per-candidate path) and `"scan"` (the batched
+ * path) on the same hop, then compare how enumeration time scales with
+ * candidate count through each. Unlike {@link registerDeepLocatorHangingHop},
+ * calls resolve on their own after `delayMs` — there is no `release()`.
+ */
+export function registerDeepLocatorHopLatency(
+  hop: FakeDeepLocatorHop,
+  options: RegisterDeepLocatorHopLatencyOptions
+): void {
+  const delayOn = new Set(Array.isArray(options.delayOn) ? options.delayOn : [options.delayOn]);
+  latencyGates.set(hop, { delayOn, delayMs: options.delayMs });
+}
+
+/**
  * Only the methods `src/scraper/flow-runner.ts`'s deepLocator-routed call
  * sites (`observe-act`, rephrase evidence, the pre-cascade probe) actually
  * invoke, via `deep-locator-candidates.ts`: `count()` to check candidate
@@ -187,6 +264,15 @@ export interface FakeDeepLocatorDelegate {
 }
 
 /**
+ * The literal CDP error message a real `DOM.getBoxModel`/
+ * `DOM.scrollIntoViewIfNeeded` failure over "no layout object" arrives as
+ * (`understudy/cdp.js`) — exported so both this fake's click rejection and a
+ * consuming test assert against the same string bugfix-001's
+ * `isNodeNotActionableError` (`deep-locator-scan.ts`) matches.
+ */
+export const NODE_NOT_ACTIONABLE_MESSAGE = "-32000 Node does not have a layout object";
+
+/**
  * Builds a `deepLocator()`-shaped delegate resolving against `frame`, scoped
  * to a single `elementIndex` (defaulting to 0, matching the real delegate's
  * un-`nth()`-ed constructor default). Each call re-reads `frame.get(selector)`
@@ -195,6 +281,9 @@ export interface FakeDeepLocatorDelegate {
  * scenario) still resolves once registered. `count()` reports the hop's full
  * `elements.length` regardless of `elementIndex`, mirroring the real
  * delegate: `nth(i).count()` still reports the total match count, not `1`.
+ * `click()` rejects with {@link NODE_NOT_ACTIONABLE_MESSAGE} when the
+ * targeted element's `visible` is `false`, reproducing the CDP `-32000`
+ * click failure on an unrendered node.
  */
 function buildFakeDelegate(
   frame: FakeDeepLocatorFrame,
@@ -212,20 +301,27 @@ function buildFakeDelegate(
     const gate = hop ? hangGates.get(hop) : undefined;
     if (gate?.hangOn.has(method)) await gate.deferred.promise;
   };
+  const delayForMethod = (method: LatencyDeepLocatorMethod): Promise<void> =>
+    delayIfRegistered(frame.get(selector), method);
 
   return {
     count: async () => {
+      await delayForMethod("count");
       await awaitReleaseIfHungOn("count");
       return frame.get(selector)?.elements.length ?? 0;
     },
     click: async () => {
+      await delayForMethod("click");
       await awaitReleaseIfHungOn("click");
-      requireElement().clicks += 1;
+      const element = requireElement();
+      if (!element.visible) throw new Error(NODE_NOT_ACTIONABLE_MESSAGE);
+      element.clicks += 1;
     },
     fill: async (value: string) => {
       requireElement().filledWith = value;
     },
     textContent: async () => {
+      await delayForMethod("textContent");
       await awaitReleaseIfHungOn("textContent");
       return requireElement().text;
     },
@@ -244,4 +340,34 @@ export function makeFakeDeepLocator(
   frame: FakeDeepLocatorFrame
 ): (selector: string) => FakeDeepLocatorDelegate {
   return (selector: string) => buildFakeDelegate(frame, selector);
+}
+
+/**
+ * Fake frame-scoped batched evaluate bound to `selector` — models the seam
+ * `resolveDeepLocatorCandidates`'s batched-scan fix calls once per frame via
+ * `FrameTarget.evaluate(buildScanFrameCandidatesExpr(innerSelector))`
+ * (`deep-locator-scan.ts`). Ignores whatever expression string it's called
+ * with — a fake cannot execute browser-side code, and `deep-locator-scan.
+ * test.ts`'s `node:vm` test is what proves the expression itself is correct
+ * — and instead returns the hop registered at `selector` as
+ * `FrameCandidateScanResult[]`, in registration order: the exact payload
+ * shape a real `Frame.evaluate` call resolves to. Pass the result into a
+ * fake `FrameTarget`'s `evaluate` field so a caller that reads through
+ * `target.evaluate(...)` resolves against fixture state instead of a
+ * browser.
+ */
+export function makeFakeFrameScan(
+  frame: FakeDeepLocatorFrame,
+  selector: string
+): (expression?: unknown) => Promise<FrameCandidateScanResult[]> {
+  return async () => {
+    const hop = frame.get(selector);
+    await delayIfRegistered(hop, "scan");
+    if (!hop) return [];
+    return hop.elements.map((element, index) => ({
+      index,
+      text: element.text,
+      visible: element.visible,
+    }));
+  };
 }
