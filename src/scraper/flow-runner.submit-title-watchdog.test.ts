@@ -38,7 +38,10 @@ const testLogger = {
   debug: vi.fn(),
 } as unknown as Logger;
 
-function baseParams(page: Page, stagehand: Stagehand): Parameters<typeof executeStepWithHealing>[0] {
+function baseParams(
+  page: Page,
+  stagehand: Stagehand
+): Parameters<typeof executeStepWithHealing>[0] {
   return {
     stagehand,
     page,

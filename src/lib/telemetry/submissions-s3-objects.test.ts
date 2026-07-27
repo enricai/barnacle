@@ -6,7 +6,7 @@
  * pattern established in `s3-sink.test.ts`.
  */
 
-import { addDays, formatISO, subDays } from "date-fns";
+import { addDays, subDays } from "date-fns";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const sendMock = vi.fn();
@@ -83,7 +83,7 @@ async function loadModuleWithConfig(cfg: Config) {
 }
 
 function dayPrefix(date: Date, prefix = "telemetry"): string {
-  return `${prefix}/submissions/${formatISO(date, { representation: "date" })}/`;
+  return `${prefix}/submissions/${date.toISOString().slice(0, 10)}/`;
 }
 
 function extractPrefixes(): string[] {
@@ -131,6 +131,21 @@ describe("listSubmissionsS3Objects (bucket configured)", () => {
       "telemetry/submissions/2026-07-15/",
       "telemetry/submissions/2026-07-16/",
       "telemetry/submissions/2026-07-17/",
+    ]);
+  });
+
+  it("derives prefixes in UTC for a non-UTC-midnight offset input", async () => {
+    const mod = await loadModuleWithConfig(BUCKET_CONFIG);
+
+    await mod.listSubmissionsS3Objects({
+      from: "2026-07-14T23:30:00-05:00",
+      to: "2026-07-15T04:30:00Z",
+    });
+
+    expect(extractPrefixes()).toEqual([
+      "telemetry/submissions/2026-07-14/",
+      "telemetry/submissions/2026-07-15/",
+      "telemetry/submissions/2026-07-16/",
     ]);
   });
 

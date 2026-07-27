@@ -8,7 +8,7 @@
  */
 
 import { ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
-import { addDays, eachDayOfInterval, formatISO, parseISO, subDays } from "date-fns";
+import { parseISO, subDays } from "date-fns";
 
 import { config } from "@/config";
 import { getLogger } from "@/lib/logging";
@@ -16,6 +16,8 @@ import { getLogger } from "@/lib/logging";
 const logger = getLogger({ name: "telemetry/submissions-s3-objects" });
 
 const SUBMISSIONS_DIR = "submissions";
+
+const MS_PER_DAY = 86_400_000;
 
 /**
  * Bound on how far back an open-ended window reaches. Matches
@@ -52,20 +54,30 @@ function resolveWindow(opts: ListSubmissionsS3ObjectsOptions, now: Date): { from
   return { from, to };
 }
 
+/** UTC midnight (epoch ms) of the calendar day containing `d`. */
+function utcDayStart(d: Date): number {
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+}
+
 /**
  * Builds the day-partition prefixes to scan, widened by one day on each
- * side of the requested window. Day partitions are stamped at flush time
- * with `new Date()` (`s3-sink.ts`'s `buildObjectKey`), so a run whose `ts`
- * falls near a day boundary can land in the adjacent day's partition
- * relative to its own timestamp. The row-level `from`/`to` predicate in
- * `submission-query.ts` does the exact filtering; this only needs to not
- * miss a partition.
+ * side of the requested window. Day boundaries and prefix dates are computed
+ * in UTC (matching `s3-sink.ts`'s `buildObjectKey`) so enumeration is
+ * timezone-independent — a reader and writer in different zones agree on
+ * partition names. The widening covers runs whose `ts` falls near a day
+ * boundary and thus land in an adjacent day's partition; the row-level
+ * `from`/`to` predicate in `submission-query.ts` does the exact filtering,
+ * so this only needs to not miss a partition.
  */
 function dayPrefixes(from: Date, to: Date, prefix: string): string[] {
-  const days = eachDayOfInterval({ start: subDays(from, 1), end: addDays(to, 1) });
-  return days.map(
-    (day) => `${prefix}/${SUBMISSIONS_DIR}/${formatISO(day, { representation: "date" })}/`
-  );
+  const start = utcDayStart(from) - MS_PER_DAY;
+  const end = utcDayStart(to) + MS_PER_DAY;
+  const prefixes: string[] = [];
+  for (let t = start; t <= end; t += MS_PER_DAY) {
+    const day = new Date(t).toISOString().slice(0, 10);
+    prefixes.push(`${prefix}/${SUBMISSIONS_DIR}/${day}/`);
+  }
+  return prefixes;
 }
 
 /** Result of listing one day-prefix: the keys found and whether the budget cut the listing short. */

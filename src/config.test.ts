@@ -62,6 +62,16 @@ describe("config/loadConfig", () => {
     expect(cfg.scraper.frameEvaluateTimeoutMs).toBe(45000);
   });
 
+  it("falls back to frame timeout defaults when env values are unparseable", () => {
+    process.env.FRAME_READY_TIMEOUT_MS = "not-a-number";
+    process.env.FRAME_DOCUMENT_READY_TIMEOUT_MS = "not-a-number";
+    process.env.FRAME_EVALUATE_TIMEOUT_MS = "not-a-number";
+    const cfg = loadConfig();
+    expect(cfg.scraper.frameReadyTimeoutMs).toBe(20_000);
+    expect(cfg.scraper.frameDocumentReadyTimeoutMs).toBe(5_000);
+    expect(cfg.scraper.frameEvaluateTimeoutMs).toBe(30_000);
+  });
+
   it("parses boolean env vars", () => {
     process.env.ENABLE_DOCS = "true";
     process.env.DEV_BYPASS_AUTH = "yes";

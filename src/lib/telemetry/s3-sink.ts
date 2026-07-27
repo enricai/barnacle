@@ -13,7 +13,6 @@ import { randomUUID } from "node:crypto";
 import * as os from "node:os";
 
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import { formatISO } from "date-fns";
 
 import { config } from "@/config";
 import { toErrorMessage } from "@/lib/errors";
@@ -84,7 +83,7 @@ export function bufferSubmissionLine(line: string): void {
 
 /** Builds the S3 object key for one uploaded batch, partitioned by day for lifecycle policies and manual browsing. */
 function buildObjectKey(name: BufferName, prefix: string): string {
-  const datePartition = formatISO(new Date(), { representation: "date" });
+  const datePartition = new Date().toISOString().slice(0, 10);
   const hostname = os.hostname();
   const epochMs = Date.now();
   const shortUuid = randomUUID().slice(0, 8);
