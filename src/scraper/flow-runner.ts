@@ -57,6 +57,7 @@ import {
   buildRankSubmitCandidatesExpr,
   type SubmitCandidate,
 } from "@/scraper/submit-control";
+import { withWatchdog } from "@/scraper/watchdog";
 import { type Capture, resolveReconRunDir } from "@/scripts/recon-shared";
 import type { Logger } from "@/types/logging";
 
@@ -641,12 +642,15 @@ export async function snapshotPage(
  * body HTML and url instead of pairing a child frame's DOM with the top
  * document's url. `title()` intentionally still reads the top document for
  * a child frame (see `frame-target.ts`); `url()` is the frame discriminator.
+ * Routed through `mainFrameTarget(page)` (rather than a raw `page.title()`)
+ * when no `frameTarget` is resolved so this CDP read is watchdog-bounded the
+ * same way a resolved `FrameTarget`'s `title()` already is.
  */
 async function resolveDumpPageIdentity(
   page: Page,
   frameTarget: FrameTarget | undefined
 ): Promise<{ pageTitle: string; pageUrl: string }> {
-  const pageTitle = await (frameTarget ?? page).title().catch(() => "");
+  const pageTitle = await (frameTarget ?? mainFrameTarget(page)).title().catch(() => "");
   const pageUrl = await (frameTarget ? frameTarget.url() : Promise.resolve(page.url())).catch(() =>
     page.url()
   );
@@ -6709,7 +6713,10 @@ export async function executeStepWithHealing(params: {
         frameTarget ?? mainFrameTarget(page)
       ).catch(() => 0);
 
-      const pageTitle = await page.title().catch(() => "");
+      const pageTitle = await withWatchdog(() => page.title(), {
+        timeoutMs: config.scraper.frameEvaluateTimeoutMs,
+        label: "flow-runner: submit-verification page title probe",
+      }).catch(() => "");
       const matchedSubmittedSelectors = domSubmittedMatch !== null ? [domSubmittedMatch] : [];
 
       const judgeVerdict = await verifySubmitWithLLM({
@@ -6977,7 +6984,10 @@ export async function executeStepWithHealing(params: {
             const invalidMarkerCount = await countNgInvalidContainers(
               frameTarget ?? mainFrameTarget(page)
             ).catch(() => 0);
-            const pageTitle = await page.title().catch(() => "");
+            const pageTitle = await withWatchdog(() => page.title(), {
+              timeoutMs: config.scraper.frameEvaluateTimeoutMs,
+              label: "flow-runner: submit-verification retry page title probe",
+            }).catch(() => "");
             const matchedSubmittedSelectors = domSubmittedMatch !== null ? [domSubmittedMatch] : [];
 
             const judgeVerdict = await verifySubmitWithLLM({
@@ -7222,7 +7232,7 @@ export async function executeStepWithHealing(params: {
   // Discriminator data for "Stagehand sees nothing" failures: capture the raw
   // DOM and an unfocused observe so a triager can tell empty-page from
   // Stagehand-can't-see-it without reproducing the failure.
-  const bodyOuterHtmlRaw = await (frameTarget ?? page)
+  const bodyOuterHtmlRaw = await (frameTarget ?? mainFrameTarget(page))
     .evaluate("document.body ? document.body.outerHTML : null")
     .catch(() => null);
   const bodyOuterHtml =
@@ -7332,6 +7342,16 @@ const SPA_MIN_BODY_LENGTH = 5_000;
  * the entire flow. The recon CLI has this gate inline; generated plugins call it
  * here so they inherit the same behavior. Polls `document.body.outerHTML.length`
  * up to a threshold, then proceeds regardless (best-effort, never throws).
+ *
+ * Each `document.body.outerHTML.length` read is itself bounded by a watchdog
+ * (capped to one poll interval) and treated as "still 0 chars" on timeout —
+ * same pattern as `waitForChildFrameReady`'s `isReady()` probe. Without this,
+ * a single wedged CDP round-trip inside `readBodyLength` would pend forever
+ * and the `while (Date.now() < deadline)` loop below would never be
+ * re-entered, defeating the very deadline it exists to enforce.
+ * `page.waitForTimeout(pollMs)` is left unguarded: it is a plain delay (no
+ * DOM/network read whose response can be lost), so it does not carry the
+ * "wedged read" failure mode this fix targets.
  */
 export async function waitForSpaReady(
   page: Page,
@@ -7344,7 +7364,10 @@ export async function waitForSpaReady(
   const bodyLengthExpr = "document.body ? document.body.outerHTML.length : 0";
 
   const readBodyLength = async (): Promise<number> => {
-    const raw = await page.evaluate(bodyLengthExpr).catch(() => 0);
+    const raw = await withWatchdog(() => page.evaluate(bodyLengthExpr), {
+      timeoutMs: pollMs,
+      label: "flow-runner: spa readiness body-length probe",
+    }).catch(() => 0);
     return typeof raw === "number" ? raw : 0;
   };
 
