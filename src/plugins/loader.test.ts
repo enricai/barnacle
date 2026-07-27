@@ -168,6 +168,31 @@ describe("dispatch", () => {
     );
   });
 
+  it("emits vivclid and jobReference on the success envelope, derived from TrackingUrl", async () => {
+    const payload = {
+      TrackingUrl: "https://click.acme.example/t/abc?vivclid=123&empId=emp9&jid=job9",
+    };
+    await dispatch(stubPlugin, payload, stubContext);
+    expect(mockCaptureSubmissionEnvelope).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "submitted",
+        vivclid: "123",
+        jobReference: "emp9_job9",
+      })
+    );
+  });
+
+  it("emits null vivclid and jobReference on the success envelope when the payload carries neither", async () => {
+    await dispatch(stubPlugin, { jobId: "job-1" }, stubContext);
+    expect(mockCaptureSubmissionEnvelope).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "submitted",
+        vivclid: null,
+        jobReference: null,
+      })
+    );
+  });
+
   it("returns the SitePluginResult from execute() on success", async () => {
     const result = await dispatch(stubPlugin, {}, stubContext);
     expect(result.data).toEqual({ result: "ok" });
@@ -229,6 +254,46 @@ describe("dispatch", () => {
         status: "error",
         errorMessage: "captcha hit",
         auditPayload: null,
+      })
+    );
+  });
+
+  it("emits vivclid, siteId, and jobReference on the error envelope, derived from TrackingUrl", async () => {
+    mockPluginExecute.mockRejectedValueOnce(new CaptchaError("captcha hit"));
+    const payload = {
+      TrackingUrl: "https://click.acme.example/t/abc?vivclid=999&empId=emp1&jid=job1",
+    };
+
+    try {
+      await dispatch(stubPlugin, payload, stubContext);
+    } catch {
+      // expected — we only care that the envelope was emitted
+    }
+
+    expect(mockCaptureSubmissionEnvelope).toHaveBeenCalledWith(
+      expect.objectContaining({
+        siteId: "test-site",
+        status: "error",
+        vivclid: "999",
+        jobReference: "emp1_job1",
+      })
+    );
+  });
+
+  it("emits null vivclid and jobReference on the error envelope when the payload carries neither", async () => {
+    mockPluginExecute.mockRejectedValueOnce(new CaptchaError("captcha hit"));
+
+    try {
+      await dispatch(stubPlugin, {}, stubContext);
+    } catch {
+      // expected — we only care that the envelope was emitted
+    }
+
+    expect(mockCaptureSubmissionEnvelope).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "error",
+        vivclid: null,
+        jobReference: null,
       })
     );
   });
@@ -509,13 +574,16 @@ describe("dispatch — tracking click", () => {
     vi.clearAllMocks();
   });
 
-  it("calls fireTrackingClick with the URL and siteId when payload contains TrackingUrl", async () => {
-    const payload = { TrackingUrl: "https://click.acme.example/t/abc?vivclid=123" };
+  it("calls fireTrackingClick with the URL, siteId, and reconciliation keys when payload contains TrackingUrl", async () => {
+    const payload = {
+      TrackingUrl: "https://click.acme.example/t/abc?vivclid=123&empId=emp9&jid=job9",
+    };
     await dispatch(stubPlugin, payload, stubContext);
     expect(mockFireTrackingClick).toHaveBeenCalledOnce();
     expect(mockFireTrackingClick).toHaveBeenCalledWith(
-      "https://click.acme.example/t/abc?vivclid=123",
-      "test-site"
+      "https://click.acme.example/t/abc?vivclid=123&empId=emp9&jid=job9",
+      "test-site",
+      { requestId: "req-test-123", vivclid: "123", jobReference: "emp9_job9" }
     );
   });
 

@@ -227,24 +227,90 @@ All telemetry and judging knobs are in `src/config.ts` under the `telemetry`,
 
 ## Submission-envelope sink
 
-A separate append-only NDJSON file, `.barnacle/submissions.ndjson`, captures
-one record per dispatch outcome — the durable answer to "what did we submit
-for jobId X on date Y, and did it succeed?" Each line carries:
-
-- `siteId` — which plugin handled the request.
-- `requestId` — the Fastify-issued correlation ID for the inbound request.
-- `inboundPayload` — the request body the caller posted (PII-redacted).
-- `status` — `"submitted"` or `"error"`.
-- `auditPayload` — the same object plugins return via `SitePluginResult.auditPayload`; `null` on errors.
-- `errorMessage` — the failure message on errors; `null` on success.
-- `durationMs` — total dispatch wall time.
-- `ts` — ISO timestamp.
+A separate append-only NDJSON file, `.barnacle/submissions.ndjson`
+(`SUBMISSIONS_NDJSON_PATH`), is the canonical reconciliation record — the
+durable, queryable answer to "what did we submit for jobId X on date Y, did
+it succeed, and did the conversion beacon fire?" Two record kinds share the
+sink, discriminated by `kind`
+(`reconciliationRecordSchema`, `src/lib/telemetry/reconciliation-record.ts`).
 
 Kept on its own sink (not mixed into `calls.ndjson`) so the judge and
 self-heal readers — which Zod-parse every line of `calls.ndjson` as an
-`LlmCallSample` — stay untouched. Downstream consumption (querying by
-jobId, aggregating by site, replaying a payload) is an ETL concern; the
-file is the durable source-of-truth those pipelines read from.
+`LlmCallSample` — stay untouched.
+
+### `"submit"` records — one per dispatch outcome
+
+Written by `captureSubmissionEnvelope` (`src/lib/telemetry/submission-capture.ts`)
+and validated against `submitRecordSchema`, exported from that module as
+`submissionEnvelopeSampleSchema`. Every key of the schema:
+
+| Field | Meaning |
+|-------|---------|
+| `kind` | Always `"submit"`; defaults to `"submit"` so pre-existing lines written before this field existed still parse. |
+| `siteId` | Which plugin handled the request — the cohort dimension for reconciliation. |
+| `requestId` | The Fastify-issued correlation ID for the inbound request; joins a `"beacon"` record to this one. |
+| `vivclid` | Appcast's applicant-level click ID — a named, first-class field, not buried in `inboundPayload`. Resolved by `extractVivclid` (`src/lib/reconciliation-keys.ts`) from the inbound payload or its `TrackingUrl` query string; `null` when neither carries one. |
+| `jobReference` | The `<empId>_<jid>` job identifier — also named and first-class. Resolved by `extractJobReference` (`src/lib/reconciliation-keys.ts`) the same way; `null` when unresolved. |
+| `inboundPayload` | The request body the caller posted, unredacted (`z.unknown()` — no shape is enforced on it). |
+| `status` | Submit outcome: `"submitted"` or `"error"`. |
+| `auditPayload` | The same object plugins return via `SitePluginResult.auditPayload`; `null` on errors. Plugins that need to keep PII out of the sink redact it here, not on `inboundPayload`. |
+| `errorMessage` | The failure message on errors; `null` on success. |
+| `durationMs` | Total dispatch wall time. |
+| `ts` | ISO timestamp. |
+
+`vivclid`/`jobReference` are only as populated as the caller of
+`captureSubmissionEnvelope` resolves them. `dispatch()`
+(`src/plugins/loader.ts`), the sink's only production call site, calls
+`extractReconciliationKeys` once per dispatch and stamps the result onto
+every envelope it emits — both fields are `null` only when the inbound
+payload and its `TrackingUrl` carry neither key.
+
+### `"beacon"` records — the conversion/beacon-fire dimension, distinct from submit `status`
+
+Written by `captureBeaconEvent` (`src/lib/telemetry/beacon-capture.ts`) and
+validated against `beaconEventSchema`. Appended independently, strictly
+later than its matching `"submit"` record, once `fireTrackingClick`
+(`src/lib/tracking-click.ts`) resolves the vendor click-tracking navigation.
+Every key:
+
+| Field | Meaning |
+|-------|---------|
+| `kind` | Always `"beacon"`. |
+| `requestId` | Joins this record back to its `"submit"` record. |
+| `siteId` | Same cohort dimension as the submit record. |
+| `vivclid` | Same join key as the submit record, threaded through by the caller of `fireTrackingClick`. |
+| `jobReference` | Same join key as the submit record, threaded through by the caller of `fireTrackingClick`. |
+| `beaconStatus` | `"fired"` or `"failed"` — the conversion/beacon-fire outcome, a field distinct from the submit record's `status`. This is what makes "submitted but the beacon did not fire" measurable, where previously `fireTrackingClick` was fire-and-forget with errors swallowed and only Datadog counters (`recordTrackingClickSuccess`/`recordTrackingClickFailure`) as evidence. |
+| `trackingUrl` | The vendor click-tracking URL that was navigated to, truncated to 120 characters; `null` if omitted. |
+| `durationMs` | Wall time of the tracking-click navigation itself, not the original dispatch. |
+| `ts` | ISO timestamp. |
+
+A `"beacon"` record is only written when the caller of `fireTrackingClick`
+supplies a `TrackingClickReconciliationContext` (`requestId` plus the join
+keys) — the parameter is optional so existing call sites keep compiling.
+`dispatch()`'s call site supplies one on every tracking click it fires,
+threading the same `vivclid`/`jobReference` pair it resolved for the submit
+record; the write path is additionally exercised directly by
+`beacon-capture.test.ts`.
+
+### Reading, filtering, and querying reconciliation rows
+
+`readReconciliationRows` (`src/lib/telemetry/submission-reader.ts`) reads the
+sink and left-joins `"beacon"` records onto their `"submit"` record by
+`requestId`, producing one `ReconciliationRow` per run with a `beaconStatus`
+of `"fired"`, `"failed"`, or `"not_fired"` — the sink itself only ever writes
+`"fired"`/`"failed"`; `"not_fired"` is synthesized by the reader when no
+beacon line ever arrived for a submit row. `queryReconciliationRows`
+(`src/lib/telemetry/submission-query.ts`) then filters/sorts (newest-first)/
+paginates those rows by `vivclid`, `siteId`, `jobReference`, `requestId`,
+`status`, `beaconStatus`, or a `from`/`to` window. Both are composed behind
+`GET /v1/submissions` (authenticated; `src/api/routes/submissions.ts`,
+querystring/response schemas in `src/api/schemas/submissions.ts`) — the
+queryable HTTP path for attribution to join runs against the Appcast CPA
+report without re-parsing raw NDJSON. The response row omits
+`inboundPayload`/`auditPayload` (the opaque blobs this route exists to stop
+callers from having to re-parse) and renames the reader's internal
+`beaconTrackingUrl` field to `trackingUrl`.
 
 ## File map
 
@@ -252,6 +318,12 @@ file is the durable source-of-truth those pipelines read from.
 |---------|------|
 | NDJSON capture sink + `LlmCallSample` type | `src/lib/telemetry/call-capture.ts` |
 | Submission-envelope sink + `SubmissionEnvelopeSample` type | `src/lib/telemetry/submission-capture.ts` |
+| Reconciliation record schemas (`submit` + `beacon` kinds) | `src/lib/telemetry/reconciliation-record.ts` |
+| Beacon-fire (conversion) event writer + `BeaconEventSample` type | `src/lib/telemetry/beacon-capture.ts` |
+| `vivclid`/`jobReference` extraction from an inbound payload | `src/lib/reconciliation-keys.ts` |
+| Reconciliation reader (`readReconciliationRows`) | `src/lib/telemetry/submission-reader.ts` |
+| Reconciliation query/filter layer (`queryReconciliationRows`) | `src/lib/telemetry/submission-query.ts` |
+| `GET /v1/submissions` route + querystring/response schemas | `src/api/routes/submissions.ts`, `src/api/schemas/submissions.ts` |
 | Call-type string constants | `src/lib/telemetry/call-types.ts` |
 | `llmCallSampleSchema`, `judgeVerdictSchema` | `src/api/schemas/telemetry.ts` |
 | Judge batch script (`pnpm judge:llm`) | `src/scripts/judge-llm-batch.ts` |
