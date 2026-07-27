@@ -40,8 +40,10 @@ import {
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
 import {
   clickDeepLocatorCandidate,
+  type DeepLocatorCandidate,
   resolveDeepLocatorCandidates,
 } from "@/scraper/deep-locator-candidates";
+import { clickFirstActionableCandidate } from "@/scraper/deep-locator-click";
 import { type RunHealingFlowResult, StepVerificationError } from "@/scraper/errors";
 import {
   type FrameTarget,
@@ -6133,38 +6135,63 @@ export async function executeStepWithHealing(params: {
           const top = deepLocatorCandidates[0];
           if (top) {
             record.instruction = `deepLocator: ${top.accessibleText || "(no accessible text)"}`;
-            // Deny-list guard: mirrors the observe branch's refusal below —
-            // never act on a wizard-exit control regardless of which
-            // candidate source (observe vs. deepLocator) surfaced it.
-            if (isWizardExitAction(top.accessibleText, wizardExitButtonLabels)) {
-              record.errorMessage = `refused wizard-exit control: "${top.accessibleText.slice(0, 60)}"`;
-              triedSelectors.push(top.selector);
-              record.triedSelectors = [top.selector];
-              attempts.push(record);
-              failureReasons.push(record.errorMessage);
-              logger.info(
-                `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${record.errorMessage}`
-              );
-              continue;
-            }
-            triedSelectors.push(top.selector);
-            record.triedSelectors = [top.selector];
-            try {
-              await clickDeepLocatorCandidate(page, frameTarget?.frameSelector, "*", top.index);
+          }
+          // Deny-list guard: mirrors the observe branch's refusal below —
+          // never act on a wizard-exit control regardless of which candidate
+          // source (observe vs. deepLocator) surfaced it, or which rank it's
+          // at. Logged per-candidate (not just the top pick) so a denied
+          // runner-up leaves the same audit trail the old top-only check did.
+          const deniedSelectors: string[] = [];
+          const denyWizardExitCandidate = (candidate: DeepLocatorCandidate): boolean => {
+            if (!isWizardExitAction(candidate.accessibleText, wizardExitButtonLabels)) return false;
+            deniedSelectors.push(candidate.selector);
+            const reason = `refused wizard-exit control: "${candidate.accessibleText.slice(0, 60)}"`;
+            logger.info(`${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${reason}`);
+            return true;
+          };
+          // A top pick that turns out unrendered (CDP -32000, no layout
+          // object) used to be scored as the whole attempt's failure —
+          // clickFirstActionableCandidate walks the ranked list instead, so
+          // that rejection costs only the one candidate. Any other click
+          // rejection (frame detached, a wedged click's WatchdogTimeoutError)
+          // still rethrows out of the walk immediately, matching the old
+          // top-only behavior of ending the whole attempt.
+          try {
+            const cascadeOutcome = await clickFirstActionableCandidate(
+              deepLocatorCandidates,
+              (candidate) =>
+                clickDeepLocatorCandidate(page, frameTarget?.frameSelector, "*", candidate.index),
+              { denyCandidate: denyWizardExitCandidate }
+            );
+            triedSelectors.push(...cascadeOutcome.triedSelectors, ...deniedSelectors);
+            record.triedSelectors = [...cascadeOutcome.triedSelectors, ...deniedSelectors];
+            if (cascadeOutcome.clicked && cascadeOutcome.candidate) {
+              const clicked = cascadeOutcome.candidate;
+              record.instruction = `deepLocator: ${clicked.accessibleText || "(no accessible text)"}`;
               record.actResultSuccess = true;
-              record.actResultDescription = `deepLocator clicked "${top.accessibleText || top.selector}"`;
+              record.actResultDescription = `deepLocator clicked "${clicked.accessibleText || clicked.selector}"`;
               // Synthesize a click action so downstream verification (network
               // / url / dom) treats this exactly like any other resolved
               // click — same idiom as deep-submit-locator/structured-click.
               resolvedAction = {
-                selector: top.selector,
+                selector: clicked.selector,
                 description: record.actResultDescription,
                 method: "click",
               };
-            } catch (err) {
+            } else {
               record.actResultSuccess = false;
-              record.errorMessage = `deepLocator: click threw ${toErrorMessage(err)}`;
+              record.errorMessage =
+                cascadeOutcome.triedSelectors.length > 0
+                  ? `deepLocator: no actionable candidate (${cascadeOutcome.triedSelectors.length} not-actionable)`
+                  : top
+                    ? `refused wizard-exit control: "${top.accessibleText.slice(0, 60)}"`
+                    : "deepLocator: no actionable candidate";
             }
+          } catch (err) {
+            triedSelectors.push(...deniedSelectors);
+            record.triedSelectors = [...deniedSelectors];
+            record.actResultSuccess = false;
+            record.errorMessage = `deepLocator: click threw ${toErrorMessage(err)}`;
           }
         } else if (candidates.length === 0) {
           record.errorMessage = "observe returned no candidates";
