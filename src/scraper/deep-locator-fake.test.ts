@@ -6,10 +6,14 @@ import {
   type FakeDeepLocatorFrame,
   type HangingDeepLocatorMethod,
   makeFakeDeepLocator,
+  makeFakeFrameScan,
+  NODE_NOT_ACTIONABLE_MESSAGE,
   registerDeepLocatorHangingHop,
   registerDeepLocatorHop,
   registerDeepLocatorHopElements,
+  registerDeepLocatorHopLatency,
 } from "@/scraper/deep-locator-fake";
+import { isNodeNotActionableError } from "@/scraper/deep-locator-scan";
 
 const STILL_PENDING = Symbol("still-pending");
 
@@ -104,6 +108,99 @@ describe("deep-locator-fake", () => {
     await deepLocator("iframe#talemetry_apply_iframe >> *").nth(2).click();
 
     expect(hop.elements.map((element) => element.clicks)).toEqual([0, 0, 1]);
+  });
+
+  it("registerDeepLocatorHopElements accepts a per-element visible spec, defaulting bare strings to visible: true", () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    const hop = registerDeepLocatorHopElements(frame, "iframe#talemetry_apply_iframe >> *", [
+      "container",
+      { text: "Upload a Resume/CV", visible: false },
+      { text: "Manual Application" },
+    ]);
+
+    expect(hop.elements.map((element) => element.visible)).toEqual([true, false, true]);
+  });
+
+  it("makeFakeFrameScan returns the hop's elements as {index, text, visible} in registration order, ignoring the expression it's called with", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    registerDeepLocatorHopElements(frame, "iframe#talemetry_apply_iframe >> *", [
+      "container",
+      { text: "Upload a Resume/CV", visible: false },
+      { text: "Manual Application", visible: true },
+    ]);
+    const scan = makeFakeFrameScan(frame, "iframe#talemetry_apply_iframe >> *");
+
+    await expect(scan("() => { throw new Error('never executed by the fake'); }")).resolves.toEqual(
+      [
+        { index: 0, text: "container", visible: true },
+        { index: 1, text: "Upload a Resume/CV", visible: false },
+        { index: 2, text: "Manual Application", visible: true },
+      ]
+    );
+  });
+
+  it("makeFakeFrameScan resolves an empty array for an unregistered selector, and nth(i).textContent() still works for legacy consumers alongside it", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    registerDeepLocatorHopElements(frame, "iframe#talemetry_apply_iframe >> *", [
+      "container",
+      "Manual Application",
+    ]);
+    const deepLocator = makeFakeDeepLocator(frame);
+    const scan = makeFakeFrameScan(frame, "iframe#talemetry_apply_iframe >> *");
+
+    await expect(makeFakeFrameScan(frame, "iframe#missing >> *")()).resolves.toEqual([]);
+    await expect(scan()).resolves.toHaveLength(2);
+    await expect(
+      deepLocator("iframe#talemetry_apply_iframe >> *").nth(1).textContent()
+    ).resolves.toBe("Manual Application");
+  });
+
+  it("nth(i).click() on an element registered not-visible rejects with the CDP -32000 layout-object message, classified as not-actionable by isNodeNotActionableError", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    const hop = registerDeepLocatorHopElements(frame, "iframe#a >> button", [
+      { text: "Manual Application", visible: false },
+    ]);
+    const deepLocator = makeFakeDeepLocator(frame);
+
+    const click = deepLocator("iframe#a >> button").nth(0).click();
+
+    await expect(click).rejects.toThrow(NODE_NOT_ACTIONABLE_MESSAGE);
+    await click.catch((error: unknown) => {
+      expect(isNodeNotActionableError(error)).toBe(true);
+    });
+    expect(hop.elements[0]?.clicks).toBe(0);
+  });
+
+  it("registerDeepLocatorHopLatency delays only the method(s) it's registered against, leaving other methods and other hops immediate", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    const hop = registerDeepLocatorHop(frame, "iframe#a >> b", "Manual Application");
+    const otherHop = registerDeepLocatorHop(frame, "iframe#a >> c", "Upload a Resume/CV");
+    registerDeepLocatorHopLatency(hop, { delayOn: "textContent", delayMs: 50 });
+    const deepLocator = makeFakeDeepLocator(frame);
+
+    await expect(raceAgainstTimer(deepLocator("iframe#a >> b").nth(0).textContent())).resolves.toBe(
+      STILL_PENDING
+    );
+    await expect(raceAgainstTimer(deepLocator("iframe#a >> b").count())).resolves.not.toBe(
+      STILL_PENDING
+    );
+    await expect(
+      raceAgainstTimer(deepLocator("iframe#a >> c").nth(0).textContent())
+    ).resolves.not.toBe(STILL_PENDING);
+    expect(otherHop.text).toBe("Upload a Resume/CV");
+  });
+
+  it("registerDeepLocatorHopLatency on 'scan' delays makeFakeFrameScan but not nth(i).textContent() on the same hop", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    const hop = registerDeepLocatorHopElements(frame, "iframe#a >> *", ["Manual Application"]);
+    registerDeepLocatorHopLatency(hop, { delayOn: "scan", delayMs: 50 });
+    const deepLocator = makeFakeDeepLocator(frame);
+    const scan = makeFakeFrameScan(frame, "iframe#a >> *");
+
+    await expect(raceAgainstTimer(scan())).resolves.toBe(STILL_PENDING);
+    await expect(
+      raceAgainstTimer(deepLocator("iframe#a >> *").nth(0).textContent())
+    ).resolves.not.toBe(STILL_PENDING);
   });
 
   it("click() throws for an unregistered hop, matching a real deepLocator finding no element", async () => {
