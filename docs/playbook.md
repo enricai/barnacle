@@ -135,6 +135,16 @@ For a frame-scoped step, the cascade and the pre-cascade probe fall back to
 `page.deepLocator()` (Stagehand's own hop-notation resolver, which does reach
 the OOPIF) whenever `observe()` comes back empty — see 1c.
 
+**Frame-attach timing.** A racy cross-origin OOPIF can still be mid-attach
+when a step enters the cascade. `resolveFrameTarget` polls for up to
+`FRAME_READY_TIMEOUT_MS` (20s default) before falling back to the main frame,
+and the cascade re-resolves the frame target right before the `deepLocator`
+candidate probe (not only at step entry) so a frame that attaches mid-step is
+still reached instead of leaving the step stuck on a stale main-frame
+fallback. See [Environment variables](../README.md#environment-variables) for
+`FRAME_READY_TIMEOUT_MS` / `FRAME_DOCUMENT_READY_TIMEOUT_MS` /
+`FRAME_EVALUATE_TIMEOUT_MS`.
+
 ---
 
 ## Phase 1 — Browser recon (`recon-browser.ts`)
@@ -555,6 +565,7 @@ cent per call.
 
 ```
 Request arrives
+  → extract reconciliation keys (vivclid, jobReference)  [src/lib/reconciliation-keys.ts]
   → LRU cache check (getCachedResponse)         [src/cache/response-cache.ts]
   → cache hit → return immediately
   → cache miss → getOrCreateInFlight(key, fn)   [coalesces concurrent misses]
@@ -564,9 +575,24 @@ Request arrives
         → zod.parse(response)                   [drift detector]
   → record hot-path latency
   → write cache entry
-  → emit submission envelope (NDJSON)
+  → emit submission envelope (NDJSON)           [reconciliation "submit" record]
+  → fire beacon-fire tracking click              [background — not awaited]
   → return
 ```
+
+**Beacon-fire (conversion tracking):** the last two steps both come from
+`dispatch()` itself, after `runPluginPipeline` resolves — they run for the
+hot path and the browser fallback alike. `fireTrackingClick`
+(`src/lib/tracking-click.ts:130`) is fire-and-forget: `dispatch()` calls it
+and returns without awaiting, so the response reaches the caller before the
+click even starts. In the background it opens a short-lived Browserbase
+session, navigates to the plugin's `TrackingUrl` (30s timeout), waits 5s to
+let the vendor's beacon settle, then writes a separate `"beacon"`
+reconciliation record with `beaconStatus: "fired"` or `"failed"` — errors are
+swallowed and logged at `warn`, never surfaced to the request path. This is
+why beacon-fire needs its own durable record instead of being inferred from
+submit success: a submission can succeed while the beacon never fires (see
+§6B for how that shows up in metrics, and drain behavior on shutdown).
 
 **Cache deduplication:** `getOrCreateInFlight` coalesces concurrent misses on
 the same cache key into a single upstream call. If 10 identical requests arrive
@@ -596,9 +622,14 @@ Hot path fails (schema mismatch, bot challenge, or 5xx)
           → Stagehand.init() via CDP
       → Promise.race([plugin.execute(session), TASK_TIMEOUT_MS (60min default)])
     → session.close() in finally
-  → emit submission envelope (NDJSON)
+  → emit submission envelope (NDJSON)           [reconciliation "submit" record]
+  → fire beacon-fire tracking click              [background — not awaited]
   → return
 ```
+
+Same tail as 5A: `emitEnvelopeSafely` and `fireTrackingClick` live in
+`dispatch()`, not in either pipeline branch, so both paths converge on the
+identical submit-record-then-beacon-fire sequence once a result comes back.
 
 **`x-barnacle-execution: browser`** — sending this header on the incoming
 request bypasses the hot path entirely and goes directly to the browser path.
@@ -651,6 +682,13 @@ tearing down the broken session and starting a fresh one. The default is sized
 for long browser flows; shorten per-plugin via `SitePluginMeta.taskTimeoutMs`
 when a site's normal latency is well below it. This is a hang-recovery floor,
 not a p99 latency budget.
+
+Below that per-task floor, every individual `deepLocator`/frame-evaluate/
+Stagehand-guard await inside the cascade is itself bounded by `withWatchdog`
+(`src/scraper/watchdog.ts`) against `STEP_WATCHDOG_MS` (2min default) or the
+relevant `config.scraper.frame*TimeoutMs` budget, so a single wedged CDP call
+against a racy frame fails that attempt and lets self-heal proceed instead of
+pinning the whole task until `TASK_TIMEOUT_MS` finally kills it.
 
 On `SIGTERM` / `SIGINT`, `drainPool()` (`src/scraper/pool.ts`) pauses new intake,
 waits up to 20 seconds for in-flight tasks to finish their `finally` blocks and
@@ -742,7 +780,18 @@ The detection ladder — ordered by how early each signal fires:
    p95 doubling overnight means something shifted.
 4. **`rateLimitRejections` appear.** The site lowered its ceiling, or your IP
    is being throttled. Your Bottleneck config is now wrong.
-5. **Customer-reported — dead last.** If this is how you find out, drift
+5. **`tracking_click.failure` rises (Datadog, not `/readyz`).** Emitted by
+   `recordTrackingClickFailure` (`src/lib/dd-metrics.ts:62`), tagged by
+   `site` and `error_type`. Submits can be 100% healthy while this climbs —
+   it is the only signal for "submitted but the beacon did not fire," which
+   is exactly why the reconciliation record carries a separate `"beacon"`
+   line instead of inferring conversion from submit status. A graceful
+   shutdown is a real not-fired path too: `drainTrackingClicks`
+   (`src/lib/tracking-click.ts:145`) gives in-flight clicks only its own
+   timeout (default 20s) to finish before `onClose` proceeds, so a SIGTERM
+   that lands mid-navigation can still exit the process with the click
+   unresolved and no `"beacon"` line ever written for that run.
+6. **Customer-reported — dead last.** If this is how you find out, drift
    detection failed.
 
 ### 6C — Maintenance loop

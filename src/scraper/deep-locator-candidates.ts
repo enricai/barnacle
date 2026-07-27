@@ -14,8 +14,35 @@ import type { Page } from "@browserbasehq/stagehand";
 import { toErrorMessage } from "@/lib/errors";
 import { getLogger } from "@/lib/logging";
 import { buildHopSelector } from "@/scraper/frame-target";
+import { withWatchdog } from "@/scraper/watchdog";
 
 const logger = getLogger({ name: "scraper/deep-locator-candidates" });
+
+/**
+ * Per-CDP-call watchdog default: bounds a single `count()`/`nth().textContent()`/
+ * `nth().click()` round-trip. Owned locally (not imported from
+ * `flow-runner.ts`'s `STEP_WATCHDOG_MS`) to avoid the import cycle —
+ * `flow-runner.ts` imports this module.
+ */
+const DEFAULT_DEEP_LOCATOR_CALL_TIMEOUT_MS = 10_000;
+
+/**
+ * Total wall-clock budget for {@link resolveDeepLocatorCandidates}'s
+ * per-candidate `textContent()` enumeration loop. A hop like `"*"` can match
+ * dozens of elements (65 observed against a live OOPIF) — each individually
+ * fast but settling, not hanging — so a per-call timeout alone doesn't bound
+ * the loop's total cost. Roughly half of `flow-runner.ts`'s
+ * `STEP_WATCHDOG_MS` (120s), leaving headroom for the rest of the attempt.
+ */
+const DEFAULT_DEEP_LOCATOR_ENUMERATION_BUDGET_MS = 60_000;
+
+/** Overrides for the watchdog timeouts this module applies to every `deepLocator()` await; tests pass small values so cases don't burn wall-clock. */
+export interface DeepLocatorTimeoutOptions {
+  /** Per-call watchdog timeout for `count()`/`textContent()`/`click()`. Defaults to {@link DEFAULT_DEEP_LOCATOR_CALL_TIMEOUT_MS}. */
+  callTimeoutMs?: number;
+  /** Total budget for {@link resolveDeepLocatorCandidates}'s enumeration loop. Defaults to {@link DEFAULT_DEEP_LOCATOR_ENUMERATION_BUDGET_MS}. */
+  enumerationBudgetMs?: number;
+}
 
 /**
  * One candidate element `page.deepLocator()` resolved inside a scoped frame.
@@ -119,10 +146,13 @@ function scoreCandidate(
  * first, ties preserving original delegate/DOM order). Composes the hop
  * scope via `buildHopSelector` (owned by `frame-target.ts`) rather than
  * string-concatenating `>>` itself, so hop notation stays defined in exactly
- * one place. Never throws: a missing `page.deepLocator` or a
+ * one place. Never throws: a missing `page.deepLocator`, a
  * `count()`/`nth()`/`textContent()` failure (detached frame, navigated-away
- * element) degrades to `[]` so a caller cascading through candidate sources
- * can move on to the next technique instead of crashing the step.
+ * element), or either call exceeding its watchdog budget (a wedged CDP
+ * round-trip against a racy OOPIF frame — see the deepLocator-direct-hangs
+ * bug report) degrades to `[]`/an empty `accessibleText` so a caller
+ * cascading through candidate sources can move on to the next technique
+ * instead of hanging the step forever.
  *
  * Ranking exists because a hop like `"*"` matches every element inside a
  * wizard iframe (html, body, every div, ...) — DOM order alone almost always
@@ -130,13 +160,25 @@ function scoreCandidate(
  * actually names. Pass `instruction` as `null`/`undefined` (or omit it) to
  * skip ranking and get delegate order — e.g. for pre-cascade reachability
  * probes that only care whether the frame has ANY candidates.
+ *
+ * `count()` and each per-candidate `textContent()` are individually bounded
+ * by `timeoutOptions.callTimeoutMs` via {@link withWatchdog}; the enumeration
+ * loop as a whole is additionally bounded by `timeoutOptions.enumerationBudgetMs`
+ * so a hop with dozens of slow-but-settling elements (e.g. 65 candidates
+ * matched against a live OOPIF) can't rack up an unbounded total cost even
+ * when no single call hangs — the loop aborts early and returns whatever
+ * candidates it already resolved.
  */
 export async function resolveDeepLocatorCandidates(
   page: Page,
   frameSelector: string | null | undefined,
   innerSelector: string,
-  instruction?: string | null
+  instruction?: string | null,
+  timeoutOptions: DeepLocatorTimeoutOptions = {}
 ): Promise<DeepLocatorCandidate[]> {
+  const callTimeoutMs = timeoutOptions.callTimeoutMs ?? DEFAULT_DEEP_LOCATOR_CALL_TIMEOUT_MS;
+  const enumerationBudgetMs =
+    timeoutOptions.enumerationBudgetMs ?? DEFAULT_DEEP_LOCATOR_ENUMERATION_BUDGET_MS;
   const hopSelector = buildHopSelector(frameSelector, innerSelector);
   const delegate = typeof page.deepLocator === "function" ? page.deepLocator(hopSelector) : null;
   if (!delegate) {
@@ -144,18 +186,28 @@ export async function resolveDeepLocatorCandidates(
     return [];
   }
 
-  const count = await delegate.count().catch((err: unknown) => {
+  const count = await withWatchdog(() => delegate.count(), {
+    timeoutMs: callTimeoutMs,
+    label: `deepLocator count() for ${hopSelector}`,
+  }).catch((err: unknown) => {
     logger.warn(`deepLocator count() threw for ${hopSelector}: ${toErrorMessage(err)}`);
     return 0;
   });
   if (count === 0) return [];
 
   const candidates: DeepLocatorCandidate[] = [];
+  const enumerationDeadline = Date.now() + enumerationBudgetMs;
   for (let index = 0; index < count; index++) {
-    const accessibleText = await delegate
-      .nth(index)
-      .textContent()
-      .catch(() => "");
+    if (Date.now() >= enumerationDeadline) {
+      logger.warn(
+        `deepLocator enumeration for ${hopSelector} aborted after exceeding ${enumerationBudgetMs}ms budget at candidate ${index}/${count}`
+      );
+      break;
+    }
+    const accessibleText = await withWatchdog(() => delegate.nth(index).textContent(), {
+      timeoutMs: callTimeoutMs,
+      label: `deepLocator textContent() for ${hopSelector} nth=${index}`,
+    }).catch(() => "");
     candidates.push({
       index,
       selector: candidateSelector(hopSelector, index),
@@ -186,13 +238,22 @@ export async function resolveDeepLocatorCandidates(
  * success and rejects on failure — it never reports success via a return
  * value — so callers must infer the outcome from whether this call throws
  * plus their own downstream DOM verification, not from a returned boolean.
+ * A `click()` that exceeds `timeoutOptions.callTimeoutMs` (a wedged CDP
+ * round-trip against a racy OOPIF frame) rejects with a `WatchdogTimeoutError`
+ * the same as any other failure, preserving the "rejects on failure" contract
+ * instead of hanging the caller forever.
  */
 export async function clickDeepLocatorCandidate(
   page: Page,
   frameSelector: string | null | undefined,
   innerSelector: string,
-  index: number
+  index: number,
+  timeoutOptions: DeepLocatorTimeoutOptions = {}
 ): Promise<void> {
+  const callTimeoutMs = timeoutOptions.callTimeoutMs ?? DEFAULT_DEEP_LOCATOR_CALL_TIMEOUT_MS;
   const hopSelector = buildHopSelector(frameSelector, innerSelector);
-  await page.deepLocator(hopSelector).nth(index).click();
+  await withWatchdog(() => page.deepLocator(hopSelector).nth(index).click(), {
+    timeoutMs: callTimeoutMs,
+    label: `deepLocator click() for ${hopSelector} nth=${index}`,
+  });
 }

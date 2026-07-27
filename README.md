@@ -411,6 +411,26 @@ return {
 
 When `auditPayload` is present, core writes it — not `data` — to the submission-envelope telemetry record. Use this to strip PII or large blobs from the audit trail while keeping the full response in the API reply. When absent, `data` is written as-is.
 
+### Reconciliation join keys (`vivclid` / `jobReference`)
+
+A plugin does not compute or forward these itself. `dispatch()`
+(`src/plugins/loader.ts`) extracts both from the inbound payload once, via
+`extractReconciliationKeys` (`src/lib/reconciliation-keys.ts`), and stamps
+the result onto the submission-envelope record and the tracking-click
+beacon-fire record. Resolution order (case-insensitive):
+
+1. A top-level `vivclid` / `jobReference` field on the payload, or an
+   `empId` + `jid` pair composed into `<empId>_<jid>`.
+2. The same-named query params on the payload's `TrackingUrl`, if present.
+
+If the site returns a post-submission click-tracking URL, declare it on the
+plugin's `bodySchema` by composing `JobTrackingSchema`
+(`src/lib/job-tracking.ts`) — the single source of truth `dispatch()` and
+`fireTrackingClick` read `TrackingUrl` from site-agnostically — instead of
+adding a bespoke `TrackingUrl` field, e.g.
+`MySitePayloadSchema.extend(JobTrackingSchema.shape)`. Both join keys resolve
+to `null` when the site's payload and `TrackingUrl` carry neither.
+
 ### Static fixtures
 
 If Phase 3b (auxiliary fixture detection) found static JSON endpoints (markets, currencies, labels), `recon:generate` copies them to `src/sites/<id>/fixtures/`. Load them at module init via `loadFixture()` — zero per-request overhead, fails fast on deploy if the fixture is missing or stale:
@@ -585,12 +605,13 @@ See [docs/playbook.md](./docs/playbook.md#6b--metrics-signals-the-detection-ladd
 
 ### NDJSON telemetry files
 
-Barnacle writes two append-only NDJSON files alongside its metrics:
+Barnacle writes three append-only NDJSON files alongside its metrics:
 
 | File | Default path | Purpose |
 |------|-------------|---------|
 | LLM call samples | `.barnacle/calls.ndjson` | One line per LLM/Stagehand call; feed to the `judge:llm` and `slm-self-heal` skills |
 | Run event stream | `.barnacle/events/<runId>.ndjson` | Per-run event stream written by the event-stream subsystem; path surfaced in `/readyz` `telemetry.currentRunFile` |
+| Submission reconciliation records | `.barnacle/submissions.ndjson` | One line per dispatch submit outcome or beacon-fire event; the durable, queryable join-key record — see [Submission record schema](#submission-record-schema) below and `GET /v1/submissions` under [Endpoints](#endpoints) |
 
 #### LLM call sample schema
 
@@ -621,6 +642,32 @@ Every line in `.barnacle/calls.ndjson` is a JSON object with these fields (sourc
 | `recon-replan` | `src/scripts/recon-browser.ts` | Global replan after a step terminally fails — Claude rewrites the remaining flow tail |
 | `recon-flow-patch` | `src/scripts/recon-heal.ts` | Patch proposal from the recon-flow-patch-generator during the `recon-heal` self-healing loop |
 | `llm-prompt-patch` | `src/scripts/llm-heal.ts` | Patch proposal from the llm-call-patch-generator during the `llm-heal` self-healing loop |
+
+#### Submission record schema
+
+Every `"submit"`-kind line in `.barnacle/submissions.ndjson` is a JSON object
+validated against `submissionEnvelopeSampleSchema`
+(`src/lib/telemetry/submission-capture.ts`, an alias of `submitRecordSchema`
+in `src/lib/telemetry/reconciliation-record.ts`):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `kind` | `"submit"` | Discriminates this record from a `"beacon"` conversion-event record sharing the same sink; defaults to `"submit"` so lines written before this field existed still parse. |
+| `siteId` | `string` | Which plugin handled the request — the cohort dimension for reconciliation. |
+| `requestId` | `string` | Fastify-issued correlation ID; joins a later `"beacon"` record to this one by matching `requestId`. |
+| `vivclid` | `string \| null` | Appcast's applicant-level click ID, resolved from the inbound payload or its `TrackingUrl` query string by `extractVivclid` (`src/lib/reconciliation-keys.ts`); `null` when neither carries one. |
+| `jobReference` | `string \| null` | The `<empId>_<jid>` job identifier, resolved the same way by `extractJobReference`; `null` when unresolved. |
+| `inboundPayload` | `unknown` | The request body the caller posted, unredacted. |
+| `status` | `"submitted" \| "error"` | Submit outcome. |
+| `auditPayload` | `unknown` | The plugin's `SitePluginResult.auditPayload`, or `data` when absent; `null` on errors. |
+| `errorMessage` | `string \| null` | Failure message on errors; `null` on success. |
+| `durationMs` | `number` | Total dispatch wall time in milliseconds. |
+| `ts` | `string` | ISO-8601 timestamp at write time. |
+
+A `"beacon"`-kind record shares the same sink to record a later, independent
+beacon-fire outcome for the same `requestId` — see
+[Submission-envelope sink](docs/telemetry-and-judging.md#submission-envelope-sink)
+for the full schema and the `GET /v1/submissions` read path.
 
 #### Tailing call samples with jq
 
@@ -678,6 +725,9 @@ process to exit on missing values; optional ones have safe defaults.
 | `STAGEHAND_API_TIMEOUT_MS` | `120000` | No | Anthropic SDK request timeout (ms). Raise on slow network paths to `api.anthropic.com`. |
 | `STAGEHAND_CONNECT_TIMEOUT_MS` | `120000` | No | TCP connect timeout for all outbound fetch calls (ms). Raised from the undici default of 10 s to match `STAGEHAND_API_TIMEOUT_MS`. |
 | `STEEL_SESSION_TIMEOUT_MS` | `3600000` | No | Steel session wall-clock timeout (ms). Default is 1 hour; lower on plans that enforce shorter maximum session durations. |
+| `FRAME_READY_TIMEOUT_MS` | `20000` | No | How long `resolveFrameTarget` polls for a child iframe to attach before falling back to the main frame (ms). Raise further for cross-origin OOPIFs that attach slowly under advancedStealth + proxied CDP. |
+| `FRAME_DOCUMENT_READY_TIMEOUT_MS` | `5000` | No | How long `waitForChildFrameReady` polls a resolved child frame's `document.readyState` before proceeding anyway (ms). Independent of `FRAME_READY_TIMEOUT_MS` — this wait settles in well under a second once attached. |
+| `FRAME_EVALUATE_TIMEOUT_MS` | `30000` | No | Watchdog budget for a single frame-scoped evaluate/candidate-probe call (ms), so a call against a racy frame fails the attempt instead of hanging indefinitely. |
 
 ### AWS Bedrock (alternative LLM provider)
 
@@ -759,13 +809,15 @@ http/net/dns. Metrics have no such constraint.
 | `TELEMETRY_ENABLED` | `true` | Master switch — set `false` to disable all NDJSON telemetry writes. |
 | `TELEMETRY_EVENTS_DIR` | `.barnacle/events` | Directory for per-run NDJSON event stream files (`<eventsDir>/<runId>.ndjson`). |
 | `CALLS_NDJSON_PATH` | `.barnacle/calls.ndjson` | Append-only NDJSON sink for LLM/Stagehand call samples. One line per call; feed to the judge and self-heal skills. |
-| `SUBMISSIONS_NDJSON_PATH` | `.barnacle/submissions.ndjson` | Append-only NDJSON sink for dispatch submission envelopes. One line per plugin invocation captures siteId, requestId, inbound payload, status, audit payload, and duration — the durable source-of-truth for "what did we submit for jobId X and did it succeed." |
+| `SUBMISSIONS_NDJSON_PATH` | `.barnacle/submissions.ndjson` | Append-only NDJSON sink for dispatch submission envelopes and beacon-fire outcomes. `kind:"submit"` lines (null/`"submit"`-defaulted on legacy lines) capture siteId, requestId, inbound payload, status, audit payload, and duration, plus the named `vivclid`/`jobReference` reconciliation keys — the durable source-of-truth for "what did we submit for jobId X and did it succeed." `kind:"beacon"` lines record a later, independent beacon-fire outcome (`beaconStatus`, truncated `trackingUrl`) for the same `requestId`, so "submitted but the beacon did not fire" is measurable. A reader folds both kinds together by `requestId`, joinable to the Appcast CPA report without re-parsing `inboundPayload`. |
 | `TELEMETRY_MAX_FILE_SIZE_BYTES` | `104857600` (100 MB) | Rotate/drop the calls NDJSON once it exceeds this byte count. |
 | `TELEMETRY_MAX_RETENTION_MS` | `2592000000` (30 days) | Drop event-stream files older than this many milliseconds. |
 | `TELEMETRY_S3_BUCKET` | — | Optional — destination bucket for the buffered S3 telemetry mirror. Sink is entirely inert (no client, no network calls) when unset. Credentials/region resolve the same way as Bedrock (`AWS_REGION`, standard SDK credential order). |
 | `TELEMETRY_S3_PREFIX` | `telemetry` | Key prefix for uploaded NDJSON objects (`<prefix>/<calls\|submissions>/<date>/...`). |
 | `TELEMETRY_S3_FLUSH_INTERVAL_MS` | `60000` | How often buffered lines are flushed to S3. |
 | `TELEMETRY_S3_MAX_BUFFER_LINES` | `500` | Threshold-flush trigger — flush early if either buffer exceeds this many lines, ahead of the next scheduled interval. |
+| `TELEMETRY_S3_READ_MAX_OBJECTS` | `200` | Upper bound on the number of S3 objects a single reconciliation read-path query is allowed to scan. |
+| `TELEMETRY_S3_READ_CONCURRENCY` | `8` | Max concurrent object fetches for a single reconciliation read-path query. |
 
 ### LLM judging
 
@@ -913,7 +965,7 @@ Every response — success or error — uses the same envelope shape so clients 
 
 Full definitions: `src/api/schemas/common.ts`.
 
-**How scraper exceptions map to API codes** (`src/plugins/loader.ts:149-153`):
+**How scraper exceptions map to API codes** (`src/plugins/loader.ts:88-92`):
 
 - `CaptchaError` → `2004 CAPTCHA_ENCOUNTERED`
 - `EmptyResultsError` → `2005 EMPTY_RESULTS`
@@ -951,6 +1003,7 @@ Operational routes:
 - `GET /readyz`  — readiness probe (checks scraper credentials, queue depth)
 - `GET /docs`    — Swagger UI (when `ENABLE_DOCS=true`)
 - `GET /v1/plugins` — authenticated plugin load report (see [Out-of-tree plugins](#out-of-tree-plugins))
+- `GET /v1/submissions` — authenticated, queryable submit+beacon reconciliation rows (filter by `vivclid`, `siteId`, `jobReference`, `status`, `beaconStatus`, `from`/`to`; see [Submission-envelope sink](docs/telemetry-and-judging.md#submission-envelope-sink))
 
 ## Commands
 
@@ -1129,6 +1182,7 @@ readinessProbe:
 - Recon playbook (step-by-step): [docs/playbook.md](./docs/playbook.md)
 - Testing guide: [docs/testing.md](./docs/testing.md)
 - Telemetry & LLM judging concept guide: [docs/telemetry-and-judging.md](./docs/telemetry-and-judging.md)
+- Submission reconciliation runbook (join Barnacle runs to the Appcast CPA report): [docs/submission-reconciliation.md](./docs/submission-reconciliation.md)
 - Per-site recon findings: [docs/target-recon.md](./docs/target-recon.md) (populated after first `pnpm run recon:summarize`)
 
 ## License

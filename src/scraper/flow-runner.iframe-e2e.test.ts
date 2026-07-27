@@ -1,7 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type FakeDeepLocatorFrame,
+  type FakeDeepLocatorHangingHop,
   makeFakeDeepLocator,
+  registerDeepLocatorHangingHop,
   registerDeepLocatorHop,
 } from "@/scraper/deep-locator-fake";
 import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
@@ -1017,5 +1019,163 @@ describe("flow-runner iframe end-to-end: full acceptance sequence through the OO
     expect(state.uploadedFileName).toBeNull();
     expect(state.submitted).toBe(false);
     expect(childUrls.current).toBe(CHILD_SRC);
+  });
+});
+
+/**
+ * Fake `Stagehand` for the run-6 composite regression: `act()` (attempt 1's
+ * act-string call) mirrors the reported timeline exactly — the OOPIF does
+ * NOT exist yet when `runHealingFlow`'s step-entry `resolveFrameTarget` polls
+ * for it (so that poll exhausts and falls back to the main frame, the run 5
+ * vs. run 6 divergence), and only attaches as a side effect of THIS call,
+ * i.e. after step entry already gave up. `observe()` mirrors
+ * `makeFakeStagehandObserveBlind`/`makeFakeStagehandAttachingOnAct`: every
+ * FOCUSED call (an instruction string) is blind, forcing the cascade past
+ * attempt 1 and into attempt 2's observe-act branch — the one that owns the
+ * `reresolveFrameTargetIfLost`/deepLocator gate under test — while the
+ * UNFOCUSED call (no instruction) stays non-empty so `probeStepBeforeAttempts`
+ * declares the step "present" via its own unfocused-observe fallback without
+ * ever touching `frameTarget.frame` or `deepLocator` itself. Deliberately
+ * does NOT touch `childUrls` — the deepLocator gate's own `pre` snapshot is
+ * taken while `frameTarget` is still main-frame-bound (before
+ * `reresolveFrameTargetIfLost` runs), so if this side effect moved the CHILD
+ * frame's URL away from the top frame's, the mere act of re-resolving from
+ * main to child mid-attempt would itself look like `urlChanged` even with
+ * ZERO deepLocator candidates ever resolved — a false verification signal
+ * unrelated to the watchdog fix under test. Leaving `childUrls` at its
+ * caller-seeded value (matching `topUrl` — see the `it` block below) keeps
+ * `urlChanged` attributable ONLY to a genuine deepLocator click.
+ */
+function makeFakeStagehandForRun6Regression(iframeAttached: { current: boolean }) {
+  return {
+    act: async () => {
+      iframeAttached.current = true;
+      return {
+        success: false,
+        message: "no actionable candidate",
+        actionDescription: CLICK_STEP,
+        actions: [],
+      };
+    },
+    observe: async (instructionOrOptions?: unknown) =>
+      typeof instructionOrOptions === "string"
+        ? []
+        : [{ selector: "css=body", description: "page body", method: "click" }],
+  } as unknown as import("@browserbasehq/stagehand").Stagehand;
+}
+
+/**
+ * Composite offline regression for the exact run-6 divergence: run 5 vs.
+ * run 6 in the bug report differ only in whether step 3's first attempt won
+ * or lost the OOPIF attach race — this scenario reproduces the LOSING case
+ * (`makeMidflowFakeTopPage`'s late-attach timeline, reused from the
+ * mid-flow-attach suite above) composed with a `deepLocator().count()` that
+ * never settles (`registerDeepLocatorHangingHop`, reused from the
+ * observe-blind suite above and from `test-001`'s shared harness) once the
+ * frame re-resolves before the deepLocator gate
+ * (`flow-runner.frame-reresolve.test.ts`'s scenario). Unlike either sibling
+ * suite alone, this is the one shape that actually produced the reported
+ * ~78-minute hang: a lost attach race feeding a racy OOPIF whose deepLocator
+ * calls wedge. `deepLocator().count()` never settling on its own means
+ * `top` is never computed in the attempt-2/4 gate, so `clickDeepLocatorCandidate`
+ * is never reached — the fixture only needs the plain (unwrapped) fake
+ * delegate, not the click-advances-childUrls wrapping `makeFakeTopPageWithDeepLocator`
+ * needs for its succeeding siblings.
+ */
+describe("flow-runner iframe end-to-end: run-6 composite regression — late-attaching OOPIF whose deepLocator call stalls (offline fixture, no network)", () => {
+  let hangingHop: FakeDeepLocatorHangingHop | undefined;
+
+  beforeEach(() => {
+    // flow-runner.ts's deepLocator call sites don't pass `timeoutOptions`, so
+    // they always run against deep-locator-candidates.ts's un-overridable
+    // 10s default per-call watchdog, and the step-entry `resolveFrameTarget`
+    // poll runs against the real (unmocked) `config.scraper.frameReadyTimeoutMs`
+    // default (20s) — waiting either out for real would burn ~50s of
+    // wall-clock and risk flaking under CI load, so this suite (like
+    // `flow-runner.deep-locator-hang.test.ts`) uses fake timers instead of
+    // mocking `@/config` — scoped to just this describe block so the other
+    // suites in this file keep exercising the real production timeouts.
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    hangingHop?.release();
+    hangingHop = undefined;
+    vi.useRealTimers();
+  });
+
+  it("settles runHealingFlow to a definite outcome instead of hanging when the OOPIF attaches only after step-entry frame resolution AND the deepLocator gate stalls", async () => {
+    const topUrl = { current: `${TOP_ORIGIN}/jobs/123/apply` };
+    // Seeded to match `topUrl`, not `CHILD_SRC` — see
+    // `makeFakeStagehandForRun6Regression`'s docblock: a value that already
+    // differs from `topUrl` would make the deepLocator gate's mid-attempt
+    // main-to-child re-resolution alone look like `urlChanged`, independent
+    // of whether any deepLocator candidate ever resolved.
+    const childUrls = { current: topUrl.current };
+    const iframeAttached = { current: false };
+    const deepLocatorFrame: FakeDeepLocatorFrame = new Map();
+    hangingHop = registerDeepLocatorHangingHop(deepLocatorFrame, `${IFRAME_SELECTOR} >> *`, {
+      hangOn: "count",
+      text: "Manual Application",
+    });
+    const stagehand = makeFakeStagehandForRun6Regression(iframeAttached);
+    const page = {
+      ...makeMidflowFakeTopPage(topUrl, childUrls, iframeAttached),
+      deepLocator: makeFakeDeepLocator(deepLocatorFrame),
+    } as unknown as import("@browserbasehq/stagehand").Page;
+
+    expect(iframeAttached.current).toBe(false);
+
+    // Wrap success/failure into a resolved outcome instead of asserting
+    // `.resolves`/`.rejects` up front — the bug report's own minimum
+    // milestone is "step 3 never hangs — it either succeeds via deepLocator
+    // or fails-fast to the next attempt/replan within the watchdog window",
+    // so hard-coding one branch here would over-constrain the fix (see
+    // investigation_notes). Both branches are exercised elsewhere in this
+    // file (the observe-blind suite proves a healthy deepLocator succeeds;
+    // `flow-runner.deep-locator-hang.test.ts` proves a permanently-hung one
+    // rejects) — this composite scenario's own job is only to prove
+    // `runHealingFlow` SETTLES, inside the 30s testTimeout, once both bugs
+    // compose.
+    const settledPromise = runHealingFlow({
+      stagehand,
+      page,
+      steps: [{ instruction: CLICK_STEP, optional: false, upload: false, submitStep: false }],
+      logger: testLogger,
+      anthropic: null,
+      resumeFixture: null,
+      frameSelector: IFRAME_SELECTOR,
+    }).then(
+      (result) => ({ outcome: "success" as const, result }),
+      (error: unknown) => ({ outcome: "failure" as const, error })
+    );
+
+    // Advances past: the step-entry resolveFrameTarget poll exhausting its
+    // 20s deadline (the OOPIF isn't attached yet — it only attaches inside
+    // attempt 1's act(), AFTER that poll already gave up), then each
+    // attempt-2/4/cascade-exhaust-dump deepLocator gate's 10s count()
+    // watchdog (the hop's hang is never released within this test, so every
+    // gate that reaches it times out the same way). 6 x 10s is a generous
+    // superset of the ~50s actually needed; advancing past a promise with no
+    // pending timers left is a no-op.
+    for (let i = 0; i < 6; i++) {
+      await vi.advanceTimersByTimeAsync(10_000);
+    }
+
+    const settled = await settledPromise;
+
+    // Proves the "late attach" half of the composite actually happened —
+    // the OOPIF was absent at step entry and only attached mid-cascade, not
+    // present from the start (which would just be the observe-blind suite's
+    // scenario without the run 5 vs. run 6 divergence this test exists for).
+    expect(iframeAttached.current).toBe(true);
+
+    if (settled.outcome === "success") {
+      expect(settled.result.lastStepIndex).toBe(0);
+    } else {
+      expect(String((settled.error as Error).message)).toMatch(
+        /failed verification after \d+ attempts/
+      );
+    }
   });
 });

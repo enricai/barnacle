@@ -62,6 +62,28 @@ export interface AppConfig {
     connectTimeoutMs: number;
     /** Steel session wall-clock timeout in ms. Default is 1 hour; lower via STEEL_SESSION_TIMEOUT_MS on plans with shorter limits. */
     steelSessionTimeoutMs: number;
+    /**
+     * How long `resolveFrameTarget` polls `page.frames()` for a child iframe
+     * to attach before falling back to the main-frame target. Raised from a
+     * hardcoded 5 s default because cross-origin OOPIFs (e.g. Talemetry's
+     * apply iframe) regularly exceed 5 s to attach under advancedStealth +
+     * proxied CDP, even though a bare session attaches in ~3-4 s.
+     */
+    frameReadyTimeoutMs: number;
+    /**
+     * How long `waitForChildFrameReady` polls a resolved child frame's
+     * `document.readyState` before proceeding anyway. Kept separate from
+     * `frameReadyTimeoutMs` — this wait settles in well under a second once
+     * the frame has attached, so raising the attach budget must not stretch
+     * this one too.
+     */
+    frameDocumentReadyTimeoutMs: number;
+    /**
+     * Watchdog budget for a single frame-scoped `evaluate`/candidate-probe
+     * call (e.g. `deepLocator().count()`/`.click()`), so a call against a
+     * racy OOPIF fails the attempt instead of hanging the step indefinitely.
+     */
+    frameEvaluateTimeoutMs: number;
   };
   bedrock: {
     region: string;
@@ -135,6 +157,18 @@ export interface AppConfig {
       flushIntervalMs: number;
       /** `TELEMETRY_S3_MAX_BUFFER_LINES` — threshold-flush trigger per buffer. */
       maxBufferLines: number;
+      /**
+       * `TELEMETRY_S3_READ_MAX_OBJECTS` — upper bound on the number of S3
+       * objects a single reconciliation read-path query is allowed to scan,
+       * so a query spanning months of shipped NDJSON cannot fan out
+       * unbounded S3 GETs or blow the response budget.
+       */
+      readMaxObjects: number;
+      /**
+       * `TELEMETRY_S3_READ_CONCURRENCY` — max concurrent object fetches for
+       * a single reconciliation read-path query.
+       */
+      readConcurrency: number;
     };
   };
   judging: {
@@ -328,6 +362,9 @@ export function loadConfig(): AppConfig {
       anthropicTimeoutMs: getNumericEnv("STAGEHAND_API_TIMEOUT_MS", 120_000),
       connectTimeoutMs: getNumericEnv("STAGEHAND_CONNECT_TIMEOUT_MS", 120_000),
       steelSessionTimeoutMs: getNumericEnv("STEEL_SESSION_TIMEOUT_MS", 3_600_000),
+      frameReadyTimeoutMs: getNumericEnv("FRAME_READY_TIMEOUT_MS", 20_000),
+      frameDocumentReadyTimeoutMs: getNumericEnv("FRAME_DOCUMENT_READY_TIMEOUT_MS", 5_000),
+      frameEvaluateTimeoutMs: getNumericEnv("FRAME_EVALUATE_TIMEOUT_MS", 30_000),
     },
     bedrock: {
       region: getEnv("AWS_REGION", "us-east-1"),
@@ -359,6 +396,8 @@ export function loadConfig(): AppConfig {
         prefix: getEnv("TELEMETRY_S3_PREFIX", "telemetry"),
         flushIntervalMs: getNumericEnv("TELEMETRY_S3_FLUSH_INTERVAL_MS", 60_000),
         maxBufferLines: getNumericEnv("TELEMETRY_S3_MAX_BUFFER_LINES", 500),
+        readMaxObjects: getNumericEnv("TELEMETRY_S3_READ_MAX_OBJECTS", 200),
+        readConcurrency: getNumericEnv("TELEMETRY_S3_READ_CONCURRENCY", 8),
       },
     },
     judging: {

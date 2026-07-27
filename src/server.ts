@@ -16,6 +16,7 @@ import errorHandlerPlugin from "@/api/plugins/error-handler";
 import requestContextPlugin from "@/api/plugins/request-context";
 import { healthRoutes } from "@/api/routes/health";
 import { pluginsIntrospectionRoutes } from "@/api/routes/plugins-introspection";
+import { submissionsRoutes } from "@/api/routes/submissions";
 import { config as defaultConfig, loadConfig } from "@/config";
 import { toErrorMessage } from "@/lib/errors";
 import { configureHttpDispatcher } from "@/lib/http";
@@ -133,6 +134,7 @@ export async function buildServer(): Promise<
   await app.register(healthRoutes);
   await registerRoutes(app, cfg, plugins);
   await app.register(pluginsIntrospectionRoutes, { report });
+  await app.register(submissionsRoutes);
 
   startS3SinkTimer();
 

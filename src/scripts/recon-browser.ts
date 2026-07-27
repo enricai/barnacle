@@ -53,6 +53,7 @@ import type { Action, LoadState, Page, Stagehand } from "@browserbasehq/stagehan
 import { format, formatISO } from "date-fns";
 import { z } from "zod/v4";
 
+import { config } from "@/config";
 import { toErrorMessage } from "@/lib/errors";
 import { configureHttpDispatcher } from "@/lib/http";
 import { buildAnthropicClient } from "@/lib/llm/anthropic-client";
@@ -103,6 +104,7 @@ import {
 } from "@/scraper/frame-target";
 import { createBrowserSession, type ProviderName } from "@/scraper/session";
 import { guardedObserve } from "@/scraper/stagehand-guard";
+import { withWatchdog } from "@/scraper/watchdog";
 import { filterByCallType, parseSamples } from "@/scripts/judge-llm-batch";
 import { resolveReconRunDir } from "@/scripts/recon-shared";
 import { allocateTestmailInbox } from "@/testmail/client";
@@ -1214,7 +1216,10 @@ async function replanRemainingFlow(params: {
     captureFn
   ).catch(() => [] as Action[]);
   const candidateList = await renderUnfocusedObserve(candidates, { client, captureFn });
-  const pageTitle = await page.title().catch(() => "");
+  const pageTitle = await withWatchdog(() => page.title(), {
+    timeoutMs: config.scraper.frameEvaluateTimeoutMs,
+    label: "replan: page title",
+  }).catch(() => "");
 
   // Without raw DOM in the prompt, the LLM only sees stagehand.observe()'s
   // filtered candidate list and hallucinates about surrounding state
@@ -1995,8 +2000,13 @@ async function main(): Promise<void> {
       // re-running. One-shot per recon run via --dump-dom-before-step.
       if (dumpDomBeforeStep !== null && i + 1 === dumpDomBeforeStep) {
         try {
-          const html = await page.evaluate(
-            "document.documentElement ? document.documentElement.outerHTML : ''"
+          const html = await withWatchdog(
+            () =>
+              page.evaluate("document.documentElement ? document.documentElement.outerHTML : ''"),
+            {
+              timeoutMs: config.scraper.frameEvaluateTimeoutMs,
+              label: "dump-dom-before-step: evaluate",
+            }
           );
           if (typeof html === "string" && html.length > 0) {
             const dumpPath = join(runDir.root, `dom-dump-step-${i + 1}.html`);
@@ -2157,7 +2167,10 @@ async function main(): Promise<void> {
           // the recent capture history? Ask the same Haiku judge — it has
           // multi-signal reasoning to distinguish real submit POSTs from
           // analytics/tracking 2xx that look submission-shaped.
-          const pageTitle = await page.title().catch(() => "");
+          const pageTitle = await withWatchdog(() => page.title(), {
+            timeoutMs: config.scraper.frameEvaluateTimeoutMs,
+            label: "trailing-grace: page title",
+          }).catch(() => "");
           const trailingGraceVerdict = await verifySubmitWithLLM({
             client: anthropic,
             input: {

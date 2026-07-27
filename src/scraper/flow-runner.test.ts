@@ -101,6 +101,39 @@ describe("flow-runner/waitForSpaReady", () => {
     await waitForSpaReady(page, testLogger, { minBodyLength: 5000, timeoutMs: 10_000, pollMs: 10 });
     expect(waitForTimeout).toHaveBeenCalledTimes(1);
   });
+
+  it("resolves within its own budget (never hangs) when page.evaluate never settles", async () => {
+    vi.useFakeTimers();
+    try {
+      const waitForTimeout = vi.fn().mockResolvedValue(undefined);
+      const page = {
+        // Every readBodyLength probe hangs forever — without a per-probe
+        // watchdog this would pend waitForSpaReady indefinitely, since the
+        // `while (Date.now() < deadline)` loop is never re-entered.
+        evaluate: vi.fn().mockImplementation(() => new Promise(() => {})),
+        waitForTimeout,
+      } as unknown as Page;
+
+      const resultPromise = waitForSpaReady(page, testLogger, {
+        minBodyLength: 5000,
+        timeoutMs: 1000,
+        pollMs: 100,
+      });
+      const assertion = expect(resultPromise).resolves.toBeUndefined();
+
+      // Advance well past the 1000ms budget (each poll iteration itself
+      // costs one pollMs-bounded watchdog wait) so the deadline loop is
+      // guaranteed to have exited by the time this assertion checks it.
+      await vi.advanceTimersByTimeAsync(5000);
+      await assertion;
+
+      expect(testLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("proceeding with possibly incomplete page")
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("flow-runner/pollEnumerate", () => {

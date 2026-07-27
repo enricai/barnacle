@@ -419,6 +419,40 @@ describe("resolveFrameTarget (mid-flow iframe attachment: bounded retry + fallba
     expect(loggerStub.warn).toHaveBeenCalledWith(expect.stringContaining("#never_attaches"));
   });
 
+  it("polls until the configured default elapses (not a small hardcoded window) before falling back when opts.timeoutMs is omitted, without wall-clocking it", async () => {
+    vi.useFakeTimers();
+    try {
+      let pollCount = 0;
+      const page = makeMutableFakePage({
+        mainUrl: "https://careers.uchealth.org/jobs/123",
+        getElements: () => {
+          pollCount += 1;
+          return {};
+        },
+        getFrames: () => [],
+      });
+
+      const targetPromise = resolveFrameTarget(page as never, "#never_attaches");
+      await vi.advanceTimersByTimeAsync(120_000);
+      const target = await targetPromise;
+
+      expect(target.frame).toBeNull();
+      expect(target.frameSelector).toBeNull();
+      // Several polls, not just the pre-loop check — proves the loop actually
+      // ran for the default's duration instead of bailing immediately.
+      expect(pollCount).toBeGreaterThan(3);
+      expect(loggerStub.warn).toHaveBeenCalledTimes(1);
+      const [warnMessage] = loggerStub.warn.mock.calls[0] as [string];
+      // Not pinned to a literal default value (5_000 today, config-raised
+      // later) — only that the applied default is the real production one,
+      // not some small test-only window.
+      const appliedDefaultMs = Number(/did not attach within (\d+)ms/.exec(warnMessage)?.[1]);
+      expect(appliedDefaultMs).toBeGreaterThanOrEqual(5_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("returns the main-frame target with zero polling and zero delay when frameSelector is null/undefined", async () => {
     const framesSpy = vi.fn().mockReturnValue([]);
     const evaluateSpy = vi.fn().mockResolvedValue(null);
