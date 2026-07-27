@@ -167,6 +167,8 @@ describe("config/loadConfig", () => {
     expect(cfg.telemetry.s3.prefix).toBe("telemetry");
     expect(cfg.telemetry.s3.flushIntervalMs).toBe(60_000);
     expect(cfg.telemetry.s3.maxBufferLines).toBe(500);
+    expect(cfg.telemetry.s3.readMaxObjects).toBe(200);
+    expect(cfg.telemetry.s3.readConcurrency).toBe(8);
   });
 
   it("telemetry.s3 env overrides", () => {
@@ -174,11 +176,15 @@ describe("config/loadConfig", () => {
     process.env.TELEMETRY_S3_PREFIX = "custom-prefix";
     process.env.TELEMETRY_S3_FLUSH_INTERVAL_MS = "30000";
     process.env.TELEMETRY_S3_MAX_BUFFER_LINES = "1000";
+    process.env.TELEMETRY_S3_READ_MAX_OBJECTS = "50";
+    process.env.TELEMETRY_S3_READ_CONCURRENCY = "4";
     const cfg = loadConfig();
     expect(cfg.telemetry.s3.bucket).toBe("my-telemetry-bucket");
     expect(cfg.telemetry.s3.prefix).toBe("custom-prefix");
     expect(cfg.telemetry.s3.flushIntervalMs).toBe(30000);
     expect(cfg.telemetry.s3.maxBufferLines).toBe(1000);
+    expect(cfg.telemetry.s3.readMaxObjects).toBe(50);
+    expect(cfg.telemetry.s3.readConcurrency).toBe(4);
   });
 
   it("normalizes empty-string TELEMETRY_S3_BUCKET to undefined", () => {

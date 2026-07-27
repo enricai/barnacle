@@ -157,6 +157,18 @@ export interface AppConfig {
       flushIntervalMs: number;
       /** `TELEMETRY_S3_MAX_BUFFER_LINES` — threshold-flush trigger per buffer. */
       maxBufferLines: number;
+      /**
+       * `TELEMETRY_S3_READ_MAX_OBJECTS` — upper bound on the number of S3
+       * objects a single reconciliation read-path query is allowed to scan,
+       * so a query spanning months of shipped NDJSON cannot fan out
+       * unbounded S3 GETs or blow the response budget.
+       */
+      readMaxObjects: number;
+      /**
+       * `TELEMETRY_S3_READ_CONCURRENCY` — max concurrent object fetches for
+       * a single reconciliation read-path query.
+       */
+      readConcurrency: number;
     };
   };
   judging: {
@@ -384,6 +396,8 @@ export function loadConfig(): AppConfig {
         prefix: getEnv("TELEMETRY_S3_PREFIX", "telemetry"),
         flushIntervalMs: getNumericEnv("TELEMETRY_S3_FLUSH_INTERVAL_MS", 60_000),
         maxBufferLines: getNumericEnv("TELEMETRY_S3_MAX_BUFFER_LINES", 500),
+        readMaxObjects: getNumericEnv("TELEMETRY_S3_READ_MAX_OBJECTS", 200),
+        readConcurrency: getNumericEnv("TELEMETRY_S3_READ_CONCURRENCY", 8),
       },
     },
     judging: {

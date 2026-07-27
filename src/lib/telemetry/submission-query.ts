@@ -3,8 +3,8 @@
  * output), so a caller can ask reconciliation-shaped questions — rows for a
  * given `vivclid`, `siteId` cohort, job reference, submit outcome, beacon
  * status, or date window — without re-parsing the submissions NDJSON. Pure
- * and I/O-free: the route layer (feat-010) composes `readReconciliationRows`
- * then this module.
+ * and I/O-free: the route layer composes `readDurableReconciliationRows`
+ * (`src/lib/telemetry/reconciliation-source.ts`) then this module.
  */
 
 import { compareDesc, isAfter, isBefore, parseISO } from "date-fns";
