@@ -16,7 +16,6 @@ describe("withWatchdog", () => {
       timeoutMs: 1_000,
       label: "test-op",
     });
-    await vi.advanceTimersByTimeAsync(0);
     await expect(promise).resolves.toBe("ok");
   });
 
@@ -26,7 +25,6 @@ describe("withWatchdog", () => {
       timeoutMs: 1_000,
       label: "test-op",
     });
-    await vi.advanceTimersByTimeAsync(0);
     await expect(promise).rejects.toBe(original);
   });
 
@@ -59,7 +57,6 @@ describe("withWatchdog", () => {
       timeoutMs: 1_000,
       label: "test-op",
     });
-    await vi.advanceTimersByTimeAsync(0);
     await promise;
     expect(vi.getTimerCount()).toBe(0);
   });
@@ -69,8 +66,8 @@ describe("withWatchdog", () => {
       timeoutMs: 1_000,
       label: "test-op",
     });
-    await vi.advanceTimersByTimeAsync(0);
-    await promise.catch(() => {});
+    const settled = promise.catch(() => {});
+    await settled;
     expect(vi.getTimerCount()).toBe(0);
   });
 });

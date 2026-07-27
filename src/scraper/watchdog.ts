@@ -43,10 +43,7 @@ export interface WatchdogOptions {
  * matching how every other guarded call site in the scraper already shapes
  * its `Promise.race`.
  */
-export async function withWatchdog<T>(
-  op: () => Promise<T>,
-  options: WatchdogOptions
-): Promise<T> {
+export async function withWatchdog<T>(op: () => Promise<T>, options: WatchdogOptions): Promise<T> {
   const { timeoutMs, label } = options;
   let timer: NodeJS.Timeout | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
