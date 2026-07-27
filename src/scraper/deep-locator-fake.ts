@@ -89,6 +89,75 @@ export function registerDeepLocatorHopElements(
 }
 
 /**
+ * The `FakeDeepLocatorDelegate` methods `registerDeepLocatorHangingHop` can
+ * pin open, modeling a wedged OOPIF CDP call (the run-6 78-minute hang).
+ */
+export type HangingDeepLocatorMethod = "click" | "count" | "textContent";
+
+interface Deferred {
+  readonly promise: Promise<void>;
+  readonly resolve: () => void;
+}
+
+function createDeferred(): Deferred {
+  let resolve!: () => void;
+  const promise = new Promise<void>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
+interface HangGate {
+  readonly hangOn: ReadonlySet<HangingDeepLocatorMethod>;
+  readonly deferred: Deferred;
+}
+
+/**
+ * Keyed by hop object (not selector) so hang behavior travels with
+ * `registerDeepLocatorHangingHop`'s return value without widening
+ * {@link FakeDeepLocatorHop}'s public shape — every existing consumer that
+ * reads `clicks`/`filledWith`/`text` off a hop keeps seeing exactly that
+ * shape, hung or not.
+ */
+const hangGates = new WeakMap<FakeDeepLocatorHop, HangGate>();
+
+export interface RegisterDeepLocatorHangingHopOptions {
+  /** Which method(s) resolve to a never-settling promise until `release()` is called. */
+  readonly hangOn: HangingDeepLocatorMethod | readonly HangingDeepLocatorMethod[];
+  /** Seeds `textContent()`'s eventual resolved value, same as {@link registerDeepLocatorHop}'s `text`. */
+  readonly text?: string;
+}
+
+export interface FakeDeepLocatorHangingHop {
+  readonly hop: FakeDeepLocatorHop;
+  /**
+   * Settles every promise this hop's hung methods have returned (and any it
+   * returns afterward resolve immediately) — call in `afterEach` so a test
+   * that registered a hang doesn't leave an unsettled promise behind for
+   * the next test.
+   */
+  release(): void;
+}
+
+/**
+ * Registers a hop selector whose `hangOn` methods resolve to a promise that
+ * never settles on its own, while every other modeled method resolves
+ * normally — the seam a watchdog/timeout-guard test needs to reproduce a
+ * wedged `deepLocator().count()`/`.click()` CDP call without a real browser.
+ */
+export function registerDeepLocatorHangingHop(
+  frame: FakeDeepLocatorFrame,
+  selector: string,
+  options: RegisterDeepLocatorHangingHopOptions
+): FakeDeepLocatorHangingHop {
+  const hop = registerDeepLocatorHop(frame, selector, options.text);
+  const hangOn = new Set(Array.isArray(options.hangOn) ? options.hangOn : [options.hangOn]);
+  const deferred = createDeferred();
+  hangGates.set(hop, { hangOn, deferred });
+  return { hop, release: deferred.resolve };
+}
+
+/**
  * Only the methods `src/scraper/flow-runner.ts`'s deepLocator-routed call
  * sites (`observe-act`, rephrase evidence, the pre-cascade probe) actually
  * invoke, via `deep-locator-candidates.ts`: `count()` to check candidate
@@ -138,16 +207,28 @@ function buildFakeDelegate(
     if (!element) throw new Error(`deepLocator: no element matches "${selector}"`);
     return element;
   };
+  const awaitReleaseIfHungOn = async (method: HangingDeepLocatorMethod): Promise<void> => {
+    const hop = frame.get(selector);
+    const gate = hop ? hangGates.get(hop) : undefined;
+    if (gate?.hangOn.has(method)) await gate.deferred.promise;
+  };
 
   return {
-    count: async () => frame.get(selector)?.elements.length ?? 0,
+    count: async () => {
+      await awaitReleaseIfHungOn("count");
+      return frame.get(selector)?.elements.length ?? 0;
+    },
     click: async () => {
+      await awaitReleaseIfHungOn("click");
       requireElement().clicks += 1;
     },
     fill: async (value: string) => {
       requireElement().filledWith = value;
     },
-    textContent: async () => requireElement().text,
+    textContent: async () => {
+      await awaitReleaseIfHungOn("textContent");
+      return requireElement().text;
+    },
     first: () => buildFakeDelegate(frame, selector, 0),
     nth: (index: number) => buildFakeDelegate(frame, selector, index),
   };
