@@ -81,6 +81,19 @@ which path. This separation means:
   to `SITE_PLUGINS`.
 - The fallback logic is tested once, in one place.
 
+The submission envelope is one instance of this: `dispatch()` extracts the
+`vivclid`/`jobReference` reconciliation join keys from the inbound payload
+once, then stamps them onto both the submit envelope and the tracking-click
+call that fires the conversion beacon (`src/plugins/loader.ts:224,247-265`).
+A plugin only ever sees its own request/response — it has no visibility into
+whether the beacon fired, since that navigation is kicked off *by*
+`dispatch()`, after the plugin's own work is already done. The reconciliation
+record therefore spans two writers (submit, beacon-fire) that only core can
+see both of; putting the join-key extraction anywhere else would mean either
+duplicating it per plugin or losing the ability to join a run's submit and
+beacon outcomes at all. See §Why the reconciliation record has named join
+keys, a distinct beacon dimension, and an in-repo read path below.
+
 **Browser-execution escape hatch.** Sending `x-barnacle-execution: browser`
 on a plugin request causes `dispatch()` to skip `executeHttp` and route
 straight to the browser path (`src/plugins/loader.ts:341`). Used by the
@@ -399,6 +412,62 @@ Telemetry capture is fire-and-forget — errors are logged and swallowed so a di
 full or permission error never breaks the recon run. The capture is a diagnostic
 instrument, not a load-bearing path.
 
+### Why the reconciliation record has named join keys, a distinct beacon dimension, and an in-repo read path
+
+A separate sink, `.barnacle/submissions.ndjson`, captures the durable
+per-run reconciliation record — what did we submit, did it succeed, and did
+the conversion beacon fire (`reconciliation-record.ts`, `submission-capture.ts`,
+`beacon-capture.ts`; full field reference in
+[telemetry-and-judging.md](./telemetry-and-judging.md#submission-envelope-sink)).
+Three decisions in that record's shape are load-bearing enough to justify
+here, not just describe there.
+
+**Why `vivclid`/`jobReference` are named fields, not nested in `inboundPayload`.**
+`inboundPayload` is deliberately `z.unknown()` — every plugin's request body
+has a different shape, and core has no business validating it. But `vivclid`
+and `jobReference` are the two fields *every* reconciliation query needs to
+filter and join on, regardless of which plugin wrote the record. If they
+stayed wherever a given plugin's payload happens to put them, `submission-query.ts`'s
+filter predicates and `GET /v1/submissions`'s querystring would need
+per-`siteId` unnesting logic to find them — reintroducing exactly the
+site-specific branching that `dispatch()`/`registerRoutes()` are required to
+stay free of (see §Why `dispatch()` is in core, above). Naming them as
+top-level fields on `submitRecordSchema`, resolved once, site-agnostically,
+by `extractReconciliationKeys` (`src/lib/reconciliation-keys.ts`) before the
+plugin-specific payload is ever inspected, keeps that extraction a single
+core-owned step instead of something every consumer re-derives from the
+opaque blob.
+
+**Why beacon-fire is a dimension distinct from submit `status`, not a
+mutation of the submit record.** Submit `status` answers one question only —
+did `dispatch()`'s own HTTP/browser attempt complete. It says nothing about
+whether Appcast's tracking pixel actually recorded the click that Appcast
+pays on; that is a second, independent failure surface, resolved later, by a
+separate fire-and-forget navigation (`fireTrackingClick`,
+`src/lib/tracking-click.ts`) that runs *after* `dispatch()` has already
+returned and already appended its submit line. Recording `beaconStatus` as a
+mutation of that line would mean rewriting an already-flushed NDJSON row —
+breaking the append-only, crash-safe write model this section just argued
+for. Instead the beacon outcome is its own later `kind:"beacon"` line, and a
+reader folds it onto the matching submit line by `requestId`
+(`submission-reader.ts`) — so "submitted but the beacon never fired" becomes
+a directly queryable value (`beaconStatus: "not_fired"`, synthesized by the
+reader when no beacon line ever arrives) rather than something inferred from
+the absence of a Datadog counter increment.
+
+**Why a read path belongs in-repo, not deferred to ETL.** Reconciliation is
+not a periodic batch job — it runs continuously as cohort dollars accrue
+against Appcast's CPA report, and the write side (schemas, capture sinks)
+already lives in this repo. `submission-reader.ts` and `submission-query.ts`
+are a thin, I/O-light fold-and-filter layer over the exact same
+`reconciliationRecordSchema` the writers already validate against, and
+`GET /v1/submissions` (`src/api/routes/submissions.ts`) exposes it behind the
+same bearer-auth plugin every other route uses. Standing up separate ETL
+infrastructure to query a two-file append-only sink would mean duplicating
+the record schema in a second system and accepting a sync lag between what's
+on disk and what's queryable — for a read path that a few hundred lines of
+pure TypeScript already provide with zero new infrastructure.
+
 ### Why judging is offline over captured samples
 
 The judge (`pnpm run judge:llm`, `src/scripts/judge-llm-batch.ts`) reads the capture
@@ -627,6 +696,13 @@ maintenance loop.
 | Plugin contract interface (template for all site plugins) | `src/site-plugin.ts` |
 | Findings doc (generated) | `docs/target-recon.md` |
 | LLM call telemetry sink (NDJSON capture) | `src/lib/telemetry/call-capture.ts` |
+| Submission-envelope sink + `SubmissionEnvelopeSample` type | `src/lib/telemetry/submission-capture.ts` |
+| Reconciliation record schemas (`submit` + `beacon` kinds) | `src/lib/telemetry/reconciliation-record.ts` |
+| Beacon-fire (conversion) event writer + `BeaconEventSample` type | `src/lib/telemetry/beacon-capture.ts` |
+| `vivclid`/`jobReference` extraction from an inbound payload | `src/lib/reconciliation-keys.ts` |
+| Reconciliation reader (`readReconciliationRows`) | `src/lib/telemetry/submission-reader.ts` |
+| Reconciliation query/filter layer (`queryReconciliationRows`) | `src/lib/telemetry/submission-query.ts` |
+| `GET /v1/submissions` route + querystring/response schemas | `src/api/routes/submissions.ts`, `src/api/schemas/submissions.ts` |
 | Canonical call_type constants | `src/lib/telemetry/call-types.ts` |
 | Per-run telemetry state | `src/lib/telemetry/run-state.ts` |
 | LlmCallSample + JudgeVerdict schemas | `src/api/schemas/telemetry.ts` |
