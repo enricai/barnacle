@@ -91,11 +91,29 @@ export function parseReconciliationLines(ndjsonContent: string): ReconciliationR
 }
 
 /**
+ * Precedence for `beaconStatus`, highest wins when two beacon lines land on
+ * the same `requestId`: a real `fired`/`failed` outcome always beats
+ * `skipped`, because a plugin that manages its own beacon nav writes `fired`
+ * during `execute()` — strictly before `dispatch()`'s post-submit block
+ * writes its automatic `skipped` line (`loader.ts`) — so plain arrival order
+ * would otherwise let the placeholder clobber the real outcome.
+ */
+const BEACON_STATUS_RANK: Record<ReconciliationRow["beaconStatus"], number> = {
+  not_fired: 0,
+  skipped: 1,
+  fired: 2,
+  failed: 2,
+};
+
+/**
  * Left-joins beacon events onto submit records by `requestId`. Submit rows
  * are the base — a beacon may arrive strictly after its submit line (or
  * never), so an orphan beacon with no matching submit row is dropped rather
- * than synthesizing a phantom row. A later duplicate line (retry) overwrites
- * an earlier one for the same `requestId` and kind.
+ * than synthesizing a phantom row. Among beacon lines for the same
+ * `requestId`, a higher-ranked outcome (see `BEACON_STATUS_RANK`) always
+ * wins regardless of arrival order; a later line of equal rank (e.g. a
+ * retried `fired`) still overwrites the earlier one, preserving last-wins
+ * within a rank.
  */
 export function foldReconciliationRecords(records: ReconciliationRecord[]): ReconciliationRow[] {
   const rows = new Map<string, ReconciliationRow>();
@@ -116,6 +134,7 @@ export function foldReconciliationRecords(records: ReconciliationRecord[]): Reco
     if (record.kind !== "beacon") continue;
     const row = rows.get(record.requestId);
     if (row === undefined) continue;
+    if (BEACON_STATUS_RANK[record.beaconStatus] < BEACON_STATUS_RANK[row.beaconStatus]) continue;
     rows.set(record.requestId, {
       ...row,
       beaconStatus: record.beaconStatus,
