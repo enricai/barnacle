@@ -5207,7 +5207,8 @@ describe("recon-browser/main — --dump-dom-before-step bounded against a never-
       if (typeof expr === "string" && expr.includes("document.body")) return 10_000;
       if (typeof expr === "string" && expr.includes("querySelector"))
         return { matched: false, src: null };
-      if (typeof expr === "string" && expr.includes("outerHTML")) return new Promise(() => {});
+      if (typeof expr === "string" && expr.includes("documentElement"))
+        return new Promise(() => {});
       return null;
     });
     const { stagehand } = makeFakePage(evaluateFn);
@@ -5236,7 +5237,7 @@ describe("recon-browser/main — --dump-dom-before-step bounded against a never-
     await mainPromise;
 
     const outerHtmlCalls = evaluateFn.mock.calls.filter(
-      ([expr]) => typeof expr === "string" && expr.includes("outerHTML")
+      ([expr]) => typeof expr === "string" && expr.includes("documentElement")
     );
     expect(outerHtmlCalls).toHaveLength(1);
     expect(executeStepWithHealingStub).toHaveBeenCalledTimes(1);
@@ -5310,7 +5311,7 @@ describe("recon-browser/main — trailing-grace page title bounded against a nev
     } as never);
 
     const stepFailure = new StepVerificationError("no observable effect", "cascade-exhausted");
-    executeStepWithHealingStub.mockRejectedValue(stepFailure);
+    executeStepWithHealingStub.mockImplementation(() => Promise.reject(stepFailure));
 
     process.argv = [
       "node",
@@ -5318,13 +5319,14 @@ describe("recon-browser/main — trailing-grace page title bounded against a nev
       "--url",
       "https://example.com/apply",
       "--flow",
-      JSON.stringify({ steps: [{ instruction: "Click optional Continue", optional: true }] }),
+      JSON.stringify({ steps: [{ step: "Click optional Continue", optional: true }] }),
     ];
 
     vi.useFakeTimers();
     const mainPromise = main();
+    const assertion = expect(mainPromise).rejects.toBe(stepFailure);
     await vi.advanceTimersByTimeAsync(30_000);
-    await expect(mainPromise).rejects.toBe(stepFailure);
+    await assertion;
 
     expect(titleFn).toHaveBeenCalledTimes(1);
   });
