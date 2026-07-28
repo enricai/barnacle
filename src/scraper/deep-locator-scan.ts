@@ -15,10 +15,17 @@
  * empty for `input`/`select`/`textarea`) is what lets an `INTERACTIVE_CANDIDATE_SELECTOR`
  * match like a labelled `<input>` surface something the rephrase LLM and
  * `scoreCandidate` can actually compare against a step instruction.
- * {@link isNodeNotActionableError} is the companion predicate for Issue #2
- * (clicking an unrendered node) — both live here because a caller enumerates
- * with the first and needs the second to interpret a click failure against
- * whatever the scan already reported as `visible`.
+ * {@link buildClickFrameCandidateExpr} is the actuation half of Issue #2
+ * (clicking an unrendered node): a second one-round-trip evaluate call that
+ * re-runs the same `querySelectorAll(innerSelector)` resolution, clicks the
+ * element at a scan-derived `index`, and reports out-of-range /
+ * not-actionable outcomes as data instead of throwing a CDP `-32000` error.
+ * {@link isNodeNotActionableError} is the companion predicate for the case
+ * where a click is attempted through a different path (e.g. Stagehand's own
+ * `deepLocator().click()`) and throws anyway — both live here because a
+ * caller enumerates with the first and needs the second or third to
+ * interpret a click outcome against whatever the scan already reported as
+ * `visible`.
  */
 
 /**
@@ -162,12 +169,71 @@ export function buildScanFrameCandidatesExpr(innerSelector: string, root = "docu
 
 /** One candidate {@link buildScanFrameCandidatesExpr}'s evaluate call returns. */
 export interface FrameCandidateScanResult {
-  /** Position in `querySelectorAll(innerSelector)`'s match order — aligns with `deepLocator(hop).nth(index)`, subject to the shadow-piercing divergence documented on {@link buildScanFrameCandidatesExpr}. */
+  /** Position in `querySelectorAll(innerSelector)`'s match order — aligns with `deepLocator(hop).nth(index)` and with {@link buildClickFrameCandidateExpr}'s `index` argument, subject to the shadow-piercing divergence documented on {@link buildScanFrameCandidatesExpr}. */
   index: number;
   /** The element's derived accessible name (see {@link buildAccessibleNameExpr}'s precedence), untrimmed at the edges the precedence chain doesn't already trim — `deep-locator-candidates.ts`'s `scanFrameCandidatesBatched` `.trim()`s it before use. */
   text: string;
   /** `false` when the element has a 0x0 layout box or a computed `display:none`/`visibility:hidden` style — never actionable via a real click. */
   visible: boolean;
+}
+
+/**
+ * Builds a self-contained evaluate expression that re-runs the SAME
+ * `root.querySelectorAll(innerSelector)` resolution {@link buildScanFrameCandidatesExpr}
+ * uses and clicks the element at `index` (dispatching focus + bubbling
+ * mousedown/mouseup/click, matching `buildClickByDeepIndexExpr`'s
+ * (`submit-control.ts`) controlled-state click convention). This is the
+ * one-round-trip actuation half of the batched-scan fix: a caller that
+ * scanned via {@link buildScanFrameCandidatesExpr} can hand the chosen
+ * `index` straight to this builder without re-deriving the candidate set,
+ * because both builders resolve `querySelectorAll(innerSelector)` against
+ * the same frame document in the same match order.
+ *
+ * Reports out-of-range / not-actionable outcomes as data rather than by
+ * throwing, mirroring {@link isNodeNotActionableError}'s CDP-error-side
+ * contract from the DOM-observable side:
+ * - `index` no longer matches (e.g. the DOM changed between scan and click)
+ *   returns `{ clicked: false, reason: "out-of-range" }`.
+ * - the matched element fails {@link IS_VISIBLE_EXPR} — the same
+ *   visibility check {@link buildScanFrameCandidatesExpr} reports as
+ *   `visible: false` — returns `{ clicked: false, reason: "not-actionable" }`
+ *   instead of dispatching a click a real browser would reject with a
+ *   `-32000 Node does not have a layout object` CDP error.
+ *
+ * `root` overrides the traversal root expression (default `"document"`) and
+ * must match the `root` passed to the {@link buildScanFrameCandidatesExpr}
+ * call that produced `index`, or the re-run query will not resolve against
+ * the same document. Interpolated verbatim so a caller evaluating this
+ * expression via `Frame.evaluate` still resolves that frame's own document —
+ * the expression never captures an outer `document` reference.
+ */
+export function buildClickFrameCandidateExpr(
+  innerSelector: string,
+  index: number,
+  root = "document"
+): string {
+  return `(() => {
+    const isVisible = ${IS_VISIBLE_EXPR};
+    const matches = Array.from(${root}.querySelectorAll(${JSON.stringify(innerSelector)}));
+    const el = matches[${JSON.stringify(index)}];
+    if (!el) return { clicked: false, reason: "out-of-range" };
+    if (!isVisible(el)) return { clicked: false, reason: "not-actionable" };
+    if (typeof el.focus === "function") { try { el.focus(); } catch (e) {} }
+    el.dispatchEvent(new Event("mousedown", { bubbles: true }));
+    el.dispatchEvent(new Event("mouseup", { bubbles: true }));
+    el.dispatchEvent(new Event("click", { bubbles: true }));
+    return { clicked: true };
+  })()`;
+}
+
+/** Reason {@link buildClickFrameCandidateExpr} reports when it returns `{ clicked: false }` instead of throwing. */
+export type FrameCandidateClickSkipReason = "out-of-range" | "not-actionable";
+
+/** Result of {@link buildClickFrameCandidateExpr}'s evaluate call. */
+export interface FrameCandidateClickResult {
+  clicked: boolean;
+  /** Present only when `clicked` is `false` — distinguishes a stale index from an unrendered element. */
+  reason?: FrameCandidateClickSkipReason;
 }
 
 /**
