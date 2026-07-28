@@ -36,11 +36,16 @@ vi.mock("@/lib/telemetry/s3-sink", () => ({
 
 import {
   type BeaconEventSample,
+  type BeaconOutcomeInput,
   captureBeaconEvent,
   createBeaconOutcomeRecorder,
 } from "@/lib/telemetry/beacon-capture";
 import { beaconEventSchema } from "@/lib/telemetry/reconciliation-record";
 import { bufferSubmissionLine } from "@/lib/telemetry/s3-sink";
+import {
+  foldReconciliationRecords,
+  parseReconciliationLines,
+} from "@/lib/telemetry/submission-reader";
 
 function makeFiredInput(): Parameters<typeof captureBeaconEvent>[0] {
   return {
@@ -266,5 +271,46 @@ describe("createBeaconOutcomeRecorder", () => {
     ).resolves.toBeUndefined();
 
     expect(fs.existsSync(sinkPath)).toBe(false);
+  });
+
+  it("resolves without rejecting for an out-of-contract beaconStatus from an untyped plugin, and the reader drops that line without corrupting the neighbouring submit row", async () => {
+    const submitLine = {
+      kind: "submit",
+      siteId: "ats-c",
+      requestId: "req-oob-1",
+      joinKeys: null,
+      inboundPayload: { jobId: "1" },
+      status: "submitted",
+      auditPayload: null,
+      errorMessage: null,
+      durationMs: 4321,
+      ts: "2026-07-26T10:00:00.000Z",
+    };
+    fs.writeFileSync(sinkPath, `${JSON.stringify(submitLine)}\n`);
+
+    const record = createBeaconOutcomeRecorder({ requestId: "req-oob-1", siteId: "ats-c" });
+
+    await expect(
+      record(
+        {
+          beaconStatus: "bogus_status" as unknown as BeaconOutcomeInput["beaconStatus"],
+          joinKeys: { anything: 1 },
+        },
+        { sinkPath }
+      )
+    ).resolves.toBeUndefined();
+
+    const content = fs.readFileSync(sinkPath, "utf-8");
+    const lines = content.split("\n").filter((l) => l.length > 0);
+    expect(lines).toHaveLength(2);
+
+    const records = parseReconciliationLines(content);
+    expect(records).toHaveLength(1);
+    expect(records[0]?.kind).toBe("submit");
+
+    const rows = foldReconciliationRecords(records);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.requestId).toBe("req-oob-1");
+    expect(rows[0]?.beaconStatus).toBe("not_fired");
   });
 });
