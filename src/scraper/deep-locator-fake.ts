@@ -20,6 +20,16 @@ export interface FakeDeepLocatorElement {
   selectedWith: string[] | null;
   text: string;
   visible: boolean;
+  /**
+   * When set, `inputValue()` returns this instead of `filledWith` — models a
+   * write that doesn't stick (an SPA re-render normalizes/rejects the typed
+   * value) so a read-back-verified actuator
+   * (`fillDeepLocatorCandidate`/`selectDeepLocatorCandidateOption` in
+   * `deep-locator-actuate.ts`) has a fixture to prove it returns `false`
+   * rather than trusting the write blindly. Leave unset to have `inputValue()`
+   * mirror whatever was last written.
+   */
+  readBackValue?: string;
 }
 
 /**
@@ -128,8 +138,18 @@ export function registerDeepLocatorHopElements(
 /**
  * The `FakeDeepLocatorDelegate` methods `registerDeepLocatorHangingHop` can
  * pin open, modeling a wedged OOPIF CDP call (the run-6 78-minute hang).
+ * `fill`/`selectOption`/`inputValue` model the same wedge for
+ * `deep-locator-actuate.ts`'s write/read-back seam — e.g. a wedged `fill`
+ * proving `fillDeepLocatorCandidate` rejects via its watchdog instead of
+ * hanging.
  */
-export type HangingDeepLocatorMethod = "click" | "count" | "fill" | "selectOption" | "textContent";
+export type HangingDeepLocatorMethod =
+  | "click"
+  | "count"
+  | "textContent"
+  | "fill"
+  | "selectOption"
+  | "inputValue";
 
 interface Deferred {
   readonly promise: Promise<void>;
@@ -246,15 +266,15 @@ export function registerDeepLocatorHopLatency(
 }
 
 /**
- * Only the methods `deep-locator-candidates.ts`'s actuation seams exercise:
- * `count()` to check candidate existence, `click()` (routed through
- * `src/scraper/flow-runner.ts`'s deepLocator call sites — `observe-act`,
- * rephrase evidence, the pre-cascade probe) plus `fill()`/`selectOption()`
- * (the `fillDeepLocatorCandidate`/`selectDeepLocatorCandidateOption` seams —
- * not yet routed by any flow-runner call site) to act, `textContent()` to
- * read `accessibleText`, `first()`/`nth()` for the same chaining
- * `buildHopSelector`-composed multi-match selectors need. `hover`/`type`/
- * `isVisible`/`isChecked`/`inputValue`/`innerHtml`/`innerText`/
+ * Only the methods `src/scraper/flow-runner.ts`'s deepLocator-routed call
+ * sites (`observe-act`, rephrase evidence, the pre-cascade probe) actually
+ * invoke, via `deep-locator-candidates.ts`: `count()` to check candidate
+ * existence, `click()` to act, `textContent()` to read `accessibleText`,
+ * `first()`/`nth()` for the same chaining `buildHopSelector`-composed
+ * multi-match selectors need. `fill()`/`selectOption()`/`inputValue()` back
+ * `deep-locator-actuate.ts`'s fill/select actuation seam — the write
+ * primitives and the read-back that confirms a write stuck. `hover`/`type`/
+ * `isVisible`/`isChecked`/`innerHtml`/`innerText`/
  * `setInputFiles`/`scrollTo`/`centroid`/`backendNodeId`/`highlight`/
  * `sendClickEvent` are declared on the real `DeepLocatorDelegate` but no
  * planned call site routes through them, so they are omitted here — adding
@@ -271,6 +291,7 @@ export interface FakeDeepLocatorDelegate {
   click: DeepLocatorDelegate["click"];
   count: DeepLocatorDelegate["count"];
   fill: DeepLocatorDelegate["fill"];
+  inputValue: DeepLocatorDelegate["inputValue"];
   selectOption: DeepLocatorDelegate["selectOption"];
   textContent: DeepLocatorDelegate["textContent"];
   first(): FakeDeepLocatorDelegate;
@@ -347,6 +368,12 @@ function buildFakeDelegate(
       const selected = Array.isArray(values) ? values : [values];
       element.selectedWith = selected;
       return selected;
+    },
+    inputValue: async () => {
+      await delayForMethod("inputValue");
+      await awaitReleaseIfHungOn("inputValue");
+      const element = requireElement();
+      return element.readBackValue ?? element.selectedWith?.[0] ?? element.filledWith ?? "";
     },
     textContent: async () => {
       await delayForMethod("textContent");
