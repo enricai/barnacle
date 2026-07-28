@@ -17,12 +17,18 @@ import {
   isNodeNotActionableError,
 } from "@/scraper/deep-locator-scan";
 
+/** One `<select>` option a {@link FakeEl}'s `options` collection carries. */
+interface FakeOption {
+  value: string;
+  textContent: string;
+}
+
 /**
  * Minimal fake DOM element supporting exactly the surface the generated
  * expression touches (`textContent`, `getBoundingClientRect`, `getAttribute`,
- * `closest`) plus a `computedStyle` bag the fake global `getComputedStyle`
- * reads from — mirrors `submit-control.test.ts`'s fixture shape (real
- * generated expression string against a hand-built tree, not a
+ * `closest`, `value`, `options`) plus a `computedStyle` bag the fake global
+ * `getComputedStyle` reads from — mirrors `submit-control.test.ts`'s fixture
+ * shape (real generated expression string against a hand-built tree, not a
  * re-implementation of the traversal).
  */
 interface FakeEl {
@@ -34,6 +40,8 @@ interface FakeEl {
   parent: FakeEl | null;
   focused: boolean;
   dispatchedEvents: string[];
+  value: string;
+  options: FakeOption[];
   getBoundingClientRect(): { width: number; height: number };
   getAttribute(name: string): string | null;
   closest(selector: string): FakeEl | null;
@@ -55,6 +63,8 @@ function makeEl(
     tagName: string;
     attributes: Record<string, string>;
     parent: FakeEl | null;
+    value: string;
+    options: FakeOption[];
   }> = {}
 ): FakeEl {
   const rect = overrides.rect ?? { width: 100, height: 20 };
@@ -71,6 +81,8 @@ function makeEl(
     parent,
     focused: false,
     dispatchedEvents: [],
+    value: overrides.value ?? "",
+    options: overrides.options ?? [],
     getBoundingClientRect() {
       return rect;
     },
@@ -118,10 +130,40 @@ function makeRoot(elements: FakeEl[]): FakeRoot {
 }
 
 /**
+ * Fake native form-element prototype carrying only a `value` accessor whose
+ * setter assigns straight onto the element it's `.call`-bound to — this is
+ * what a REAL native value-setter (`Object.getOwnPropertyDescriptor(
+ * HTMLInputElement.prototype, "value").set`) does when reached via
+ * `descriptor.set.call(el, v)`: the assignment lands on `el` itself (a
+ * normal own `value` property here, the underlying DOM slot for real),
+ * exactly what a subsequent bare `el.value` read in the generated
+ * expression observes.
+ */
+function fakeNativeElementCtor(): { prototype: object } {
+  const ctor = { prototype: {} };
+  Object.defineProperty(ctor.prototype, "value", {
+    set(this: FakeEl, v: string) {
+      this.value = v;
+    },
+  });
+  return ctor;
+}
+
+/** The three fake globals every generated fill/select expression's native-setter branch resolves against. */
+function nativeElementGlobals(): Record<string, unknown> {
+  return {
+    HTMLInputElement: fakeNativeElementCtor(),
+    HTMLTextAreaElement: fakeNativeElementCtor(),
+    HTMLSelectElement: fakeNativeElementCtor(),
+  };
+}
+
+/**
  * Executes a generated expression string against a fake `document` bound as
  * global `document`, plus a fake `getComputedStyle` that reads each fake
- * element's own `computedStyle` bag — the generated expression's only two
- * globals.
+ * element's own `computedStyle` bag, and the fake native form-element
+ * prototypes the fill/select expressions' native-setter branch resolves
+ * against.
  */
 function evaluateInFakePage(expr: string, document: FakeRoot): unknown {
   return runInNewContext(expr, {
@@ -134,6 +176,7 @@ function evaluateInFakePage(expr: string, document: FakeRoot): unknown {
       }
     },
     console,
+    ...nativeElementGlobals(),
   });
 }
 
@@ -158,6 +201,7 @@ function evaluateInFakeFrame(expr: string, frameDocument: FakeRoot, outerRoot: F
       }
     },
     console,
+    ...nativeElementGlobals(),
   });
 }
 
@@ -626,7 +670,7 @@ describe("deep-locator-scan/buildClickFrameCandidateExpr", () => {
 });
 
 describe("deep-locator-scan/buildFillFrameCandidateExpr", () => {
-  it("fills the <input> at querySelectorAll(innerSelector)[index], dispatches input then change, and returns {written:true, readBack}", () => {
+  it("fills the <input> at querySelectorAll(innerSelector)[index], dispatches input/change/blur, and returns {written:true, readBack}", () => {
     const input = makeFakeDomElement("", { tagName: "input", value: "" });
     const root = makeSelectorAwareDomRoot([input]);
 
@@ -637,7 +681,7 @@ describe("deep-locator-scan/buildFillFrameCandidateExpr", () => {
 
     expect(result).toEqual({ written: true, readBack: "Ada" });
     expect(input.value).toBe("Ada");
-    expect(input.dispatchedEvents).toEqual(["input", "change"]);
+    expect(input.dispatchedEvents).toEqual(["input", "change", "blur"]);
   });
 
   it("fills a <textarea> the same way as an <input>, resolving its own native-class descriptor lookup", () => {
@@ -651,7 +695,7 @@ describe("deep-locator-scan/buildFillFrameCandidateExpr", () => {
 
     expect(result).toEqual({ written: true, readBack: "Cover letter text" });
     expect(textarea.value).toBe("Cover letter text");
-    expect(textarea.dispatchedEvents).toEqual(["input", "change"]);
+    expect(textarea.dispatchedEvents).toEqual(["input", "change", "blur"]);
   });
 
   it('returns {written:false, reason:"out-of-range"} when the index no longer matches, without throwing', () => {
@@ -761,21 +805,91 @@ describe("deep-locator-scan/buildFillFrameCandidateExpr", () => {
     expect(setCalls).toEqual(["Ada"]);
     expect(result).toEqual({ written: true, readBack: "Ada" });
   });
+
+  it("contains no bare `document` reference outside the interpolated root", () => {
+    const expr = buildFillFrameCandidateExpr("input", 0, "Ada", "myFrameRoot");
+
+    expect(expr).not.toMatch(/\bdocument\b/);
+  });
 });
 
 describe("deep-locator-scan/buildSelectFrameCandidateExpr", () => {
-  it("sets the <select> at querySelectorAll(innerSelector)[index], dispatches input then change, and returns {written:true, readBack}", () => {
-    const select = makeFakeDomElement("", { tagName: "select", value: "" });
+  it("matches an option by value, dispatches input/change/blur, and reports the matched value as readBack", () => {
+    const select = makeFakeDomElement("", {
+      tagName: "select",
+      value: "",
+      options: [
+        { value: "us", textContent: "United States" },
+        { value: "ca", textContent: "Canada" },
+      ],
+    });
     const root = makeSelectorAwareDomRoot([select]);
 
     const result = evaluateWriteInFakePage(
-      buildSelectFrameCandidateExpr("select", 0, "us"),
+      buildSelectFrameCandidateExpr("select", 0, "ca"),
+      root
+    ) as FrameCandidateWriteResult;
+
+    expect(result).toEqual({ written: true, readBack: "ca" });
+    expect(select.value).toBe("ca");
+    expect(select.dispatchedEvents).toEqual(["input", "change", "blur"]);
+  });
+
+  it("falls back to a trimmed option-label match when no option value equals the requested value", () => {
+    const select = makeFakeDomElement("", {
+      tagName: "select",
+      value: "",
+      options: [
+        { value: "us", textContent: " United States " },
+        { value: "ca", textContent: "Canada" },
+      ],
+    });
+    const root = makeSelectorAwareDomRoot([select]);
+
+    const result = evaluateWriteInFakePage(
+      buildSelectFrameCandidateExpr("select", 0, "United States"),
       root
     ) as FrameCandidateWriteResult;
 
     expect(result).toEqual({ written: true, readBack: "us" });
     expect(select.value).toBe("us");
-    expect(select.dispatchedEvents).toEqual(["input", "change"]);
+  });
+
+  it("prefers a value match over a label match when both are present on different options", () => {
+    const select = makeFakeDomElement("", {
+      tagName: "select",
+      value: "",
+      options: [
+        { value: "Canada", textContent: "Other" },
+        { value: "ca", textContent: "Canada" },
+      ],
+    });
+    const root = makeSelectorAwareDomRoot([select]);
+
+    const result = evaluateWriteInFakePage(
+      buildSelectFrameCandidateExpr("select", 0, "Canada"),
+      root
+    ) as FrameCandidateWriteResult;
+
+    expect(result).toEqual({ written: true, readBack: "Canada" });
+  });
+
+  it('returns {written:false, reason:"not-actionable"} when no option matches by value or label, without throwing', () => {
+    const select = makeFakeDomElement("", {
+      tagName: "select",
+      value: "",
+      options: [{ value: "us", textContent: "United States" }],
+    });
+    const root = makeSelectorAwareDomRoot([select]);
+
+    const result = evaluateWriteInFakePage(
+      buildSelectFrameCandidateExpr("select", 0, "Mexico"),
+      root
+    ) as FrameCandidateWriteResult;
+
+    expect(result).toEqual({ written: false, reason: "not-actionable" });
+    expect(select.value).toBe("");
+    expect(select.dispatchedEvents).toEqual([]);
   });
 
   it('returns {written:false, reason:"out-of-range"} when the index no longer matches, without throwing', () => {
@@ -798,6 +912,7 @@ describe("deep-locator-scan/buildSelectFrameCandidateExpr", () => {
       tagName: "select",
       rect: { width: 0, height: 0 },
       value: "",
+      options: [{ value: "us", textContent: "United States" }],
     });
     const root = makeSelectorAwareDomRoot([select]);
 
@@ -812,9 +927,17 @@ describe("deep-locator-scan/buildSelectFrameCandidateExpr", () => {
   });
 
   it("resolves against the injected root realm via the root arg, never an outer document", () => {
-    const outerSelect = makeFakeDomElement("", { tagName: "select", value: "" });
+    const outerSelect = makeFakeDomElement("", {
+      tagName: "select",
+      value: "",
+      options: [{ value: "outer", textContent: "Outer" }],
+    });
     const outerRoot = makeSelectorAwareDomRoot([outerSelect]);
-    const innerSelect = makeFakeDomElement("", { tagName: "select", value: "" });
+    const innerSelect = makeFakeDomElement("", {
+      tagName: "select",
+      value: "",
+      options: [{ value: "us", textContent: "United States" }],
+    });
     const innerRoot = makeSelectorAwareDomRoot([innerSelect]);
 
     const result = evaluateWriteInFakePage(
@@ -840,7 +963,11 @@ describe("deep-locator-scan/buildSelectFrameCandidateExpr", () => {
         (this as { value: string }).value = v;
       },
     });
-    const select = makeFakeDomElement("", { tagName: "select", value: "" });
+    const select = makeFakeDomElement("", {
+      tagName: "select",
+      value: "",
+      options: [{ value: "us", textContent: "United States" }],
+    });
     const root = makeSelectorAwareDomRoot([select]);
 
     const result = evaluateWriteInFakePage(buildSelectFrameCandidateExpr("select", 0, "us"), root, {
@@ -849,6 +976,12 @@ describe("deep-locator-scan/buildSelectFrameCandidateExpr", () => {
 
     expect(setCalls).toEqual(["us"]);
     expect(result).toEqual({ written: true, readBack: "us" });
+  });
+
+  it("contains no bare `document` reference outside the interpolated root", () => {
+    const expr = buildSelectFrameCandidateExpr("select", 0, "us", "myFrameRoot");
+
+    expect(expr).not.toMatch(/\bdocument\b/);
   });
 });
 

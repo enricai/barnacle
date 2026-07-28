@@ -253,9 +253,9 @@ export type FrameCandidateWriteSkipReason = "out-of-range" | "not-actionable";
 /** Result of {@link buildFillFrameCandidateExpr}'s or {@link buildSelectFrameCandidateExpr}'s evaluate call. */
 export interface FrameCandidateWriteResult {
   written: boolean;
-  /** Present only when `written` is `true` — `el.value` read back in the SAME evaluate call, so the caller can verify the write without a second round-trip. */
+  /** Present only when `written` is `true` — the value read back from the element immediately after the write, so a caller can compare it against what it asked for without a second round-trip. For the select expression this is the MATCHED option's `value`, not necessarily the (possibly label) string the caller passed in. */
   readBack?: string;
-  /** Present only when `written` is `false` — distinguishes a stale index from an unrendered element. */
+  /** Present only when `written` is `false` — distinguishes a stale index from an element the write could not land on. */
   reason?: FrameCandidateWriteSkipReason;
 }
 
@@ -274,11 +274,11 @@ export interface FrameCandidateWriteResult {
  * descriptor's setter explicitly restores native behavior, mirroring
  * `fillHtml5DateTimeInput`'s and `applySelectValue`'s identical workaround in
  * `flow-runner.ts`. Falls back to a bare assignment when no such descriptor
- * exists (a plain, unmanaged form control). Dispatches a bubbling `input`
- * then `change` — the sequence a controlled component's `onChange` listens
- * for — before reading `el.value` back into the returned payload, so the
- * caller gets write + verify in one round-trip instead of a second
- * `inputValue()` call.
+ * exists (a plain, unmanaged form control). Dispatches bubbling `input` then
+ * `change` then `blur` — the sequence a controlled component's `onChange`/
+ * `onBlur` listen for — before reading `el.value` back into the returned
+ * payload, so the caller gets write + verify in one round-trip instead of a
+ * second `inputValue()` call.
  *
  * `nativePrototypeExpr` is interpolated verbatim as a JS expression
  * evaluated inside the generated code (with `el` in scope) rather than
@@ -304,6 +304,7 @@ function buildWriteFrameCandidateExpr(
     if (descriptor && descriptor.set) { descriptor.set.call(el, value); } else { el.value = value; }
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
+    el.dispatchEvent(new Event("blur", { bubbles: true }));
     return { written: true, readBack: el.value };
   })()`;
 }
@@ -338,20 +339,30 @@ export function buildFillFrameCandidateExpr(
 }
 
 /**
- * Builds a self-contained evaluate expression that sets the `<select>` at
- * `root.querySelectorAll(innerSelector)[index]` to `value` — the
- * one-round-trip write half of
- * {@link selectDeepLocatorCandidateOption}'s (`deep-locator-actuate.ts`)
- * contract. See {@link buildWriteFrameCandidateExpr} for the shared write/
- * dispatch/read-back mechanism and out-of-range/not-actionable reporting.
- * Resolves the native value-setter descriptor off
- * `HTMLSelectElement.prototype`, mirroring `applySelectValue`'s identical
- * `desc.set.call(sel, value)` workaround in `flow-runner.ts`.
+ * Builds a self-contained evaluate expression that re-runs the SAME
+ * `root.querySelectorAll(innerSelector)` resolution and selects, on the
+ * `<select>`-shaped candidate at `index`, the option whose `value` — or,
+ * failing that, whose trimmed visible label — matches `value`. Matching by
+ * value first mirrors what a `<select>`'s own `value` property actually is
+ * (the matched option's `value` attribute); falling back to the trimmed
+ * label covers a flow instruction that quotes the option's VISIBLE label
+ * instead (`parseSelectStep`), which a `<select>`'s DOM `value` never is —
+ * the same value-then-label tolerance `trySelectPrimitive`'s deterministic
+ * match already applies across every `<select>` on the page
+ * (`flow-runner.ts:3576`), reproduced here inline because this expression
+ * matches options within one already-chosen candidate rather than
+ * enumerating the whole page. See {@link buildWriteFrameCandidateExpr} for
+ * the write/dispatch/read-back mechanism this reimplements to accommodate
+ * the option lookup — the shared helper alone can't express "write the
+ * MATCHED option's value, not the caller's raw string."
  *
  * `root` overrides the traversal root expression (default `"document"`) and
  * must match the `root` a prior {@link buildScanFrameCandidatesExpr} call
  * used to derive `index`, mirroring
- * {@link buildClickFrameCandidateExpr}'s `root` contract.
+ * {@link buildClickFrameCandidateExpr}'s `root` contract. A candidate with
+ * no option matching `value` by either value or label reports
+ * `{ written: false, reason: "not-actionable" }` — nothing on the page can
+ * satisfy the write.
  */
 export function buildSelectFrameCandidateExpr(
   innerSelector: string,
@@ -359,13 +370,26 @@ export function buildSelectFrameCandidateExpr(
   value: string,
   root = "document"
 ): string {
-  return buildWriteFrameCandidateExpr(
-    innerSelector,
-    index,
-    value,
-    "HTMLSelectElement.prototype",
-    root
-  );
+  return `(() => {
+    const isVisible = ${IS_VISIBLE_EXPR};
+    const matches = Array.from(${root}.querySelectorAll(${JSON.stringify(innerSelector)}));
+    const el = matches[${JSON.stringify(index)}];
+    if (!el) return { written: false, reason: "out-of-range" };
+    if (!isVisible(el)) return { written: false, reason: "not-actionable" };
+    const wanted = ${JSON.stringify(value)};
+    const wantedTrimmed = wanted.trim();
+    const options = Array.from(el.options || []);
+    const target =
+      options.find((o) => o.value === wanted) ||
+      options.find((o) => (o.textContent || "").trim() === wantedTrimmed);
+    if (!target) return { written: false, reason: "not-actionable" };
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value");
+    if (descriptor && descriptor.set) { descriptor.set.call(el, target.value); } else { el.value = target.value; }
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    el.dispatchEvent(new Event("blur", { bubbles: true }));
+    return { written: true, readBack: el.value };
+  })()`;
 }
 
 /**

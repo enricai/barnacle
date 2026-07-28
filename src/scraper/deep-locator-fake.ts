@@ -465,6 +465,8 @@ export interface FakeDomElement {
   readonly computedStyle: { readonly display: string; readonly visibility: string };
   readonly parent: FakeDomElement | null;
   value: string;
+  /** `<select>`-only: the `<option>` collection {@link buildSelectFrameCandidateExpr}'s (`deep-locator-scan.ts`) value-then-label match reads. Empty for every non-`<select>` fixture. */
+  readonly options: readonly { readonly value: string; readonly textContent: string }[];
   readonly dispatchedEvents: readonly string[];
   getBoundingClientRect(): { readonly width: number; readonly height: number };
   getAttribute(name: string): string | null;
@@ -488,6 +490,8 @@ export interface MakeFakeDomElementOptions {
   readonly parent?: FakeDomElement | null;
   /** Seeds `value` — the initial `.value` a write expression reads before overwriting it. Defaults to `""`, matching an unfilled `<input>`. */
   readonly value?: string;
+  /** Seeds `options` — a `<select>` fixture's option collection. Defaults to `[]`, matching every non-`<select>` element. */
+  readonly options?: readonly { readonly value: string; readonly textContent: string }[];
 }
 
 /** Parses one simple-selector clause — a bare tag, `[attr]`, or `[attr=value]` — the three shapes {@link INTERACTIVE_CANDIDATE_SELECTOR} composes via commas. No combinators, descendant selectors, or pseudo-classes: the generated expression only ever calls `querySelectorAll` with a flat, comma-joined clause list. */
@@ -540,6 +544,7 @@ export function makeFakeDomElement(
     computedStyle,
     parent,
     value: options.value ?? "",
+    options: options.options ?? [],
     dispatchedEvents,
     getBoundingClientRect() {
       return rect;
