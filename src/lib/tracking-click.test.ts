@@ -167,10 +167,11 @@ describe("fireTrackingClick", () => {
     });
     await drainTrackingClicks();
 
-    const ipOrder = mockGetOutboundIp.mock.invocationCallOrder[0];
-    const closeOrder = mockClose.mock.invocationCallOrder[0];
     expect(mockGetOutboundIp).toHaveBeenCalledTimes(1);
-    expect(ipOrder).toBeLessThan(closeOrder);
+    expect(mockClose).toHaveBeenCalledTimes(1);
+    const [ipOrder] = mockGetOutboundIp.mock.invocationCallOrder;
+    const [closeOrder] = mockClose.mock.invocationCallOrder;
+    expect(ipOrder).toBeLessThan(closeOrder as number);
   });
 
   it("captures a failed beacon outcome when page.goto rejects", async () => {
