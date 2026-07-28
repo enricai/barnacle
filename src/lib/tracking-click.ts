@@ -57,6 +57,24 @@ async function captureBeaconOutcomeSafely(
 }
 
 /**
+ * Resolves the given session's outbound IP for the beacon record. Never
+ * throws — a resolution failure (or a session/provider without the
+ * accessor) yields `null` rather than blocking the beacon write, matching
+ * the same never-throw contract `getOutboundIp` itself already applies.
+ */
+async function resolveSessionIp(
+  session: Awaited<ReturnType<typeof createBrowserbaseBrowserSession>> | undefined
+): Promise<string | null> {
+  if (!session?.getOutboundIp) return null;
+  try {
+    return await session.getOutboundIp();
+  } catch (err) {
+    logger.warn(`tracking click session IP resolution failed: ${toErrorMessage(err)}`);
+    return null;
+  }
+}
+
+/**
  * Navigates a Browserbase session to the tracking URL. Errors are logged
  * and swallowed — the apply already succeeded, so a failed tracking click
  * is a monitoring concern, not a runtime failure.
@@ -91,6 +109,7 @@ async function executeTrackingClick(
         beaconStatus: "fired",
         trackingUrl,
         durationMs: Date.now() - startedAt,
+        sessionIp: await resolveSessionIp(session),
       });
     }
   } catch (err) {
@@ -106,6 +125,7 @@ async function executeTrackingClick(
         beaconStatus: "failed",
         trackingUrl,
         durationMs: Date.now() - startedAt,
+        sessionIp: await resolveSessionIp(session),
       });
     }
   } finally {

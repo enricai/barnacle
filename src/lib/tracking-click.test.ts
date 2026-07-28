@@ -12,11 +12,13 @@ const mockStagehand = vi.hoisted(() => ({
 }));
 
 const mockClose = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const mockGetOutboundIp = vi.hoisted(() => vi.fn().mockResolvedValue("203.0.113.42"));
 const mockCreateSession = vi.hoisted(() =>
   vi.fn().mockResolvedValue({
     stagehand: mockStagehand,
     sessionId: "bb-test-session",
     close: mockClose,
+    getOutboundIp: mockGetOutboundIp,
   })
 );
 
@@ -49,10 +51,12 @@ describe("fireTrackingClick", () => {
       stagehand: mockStagehand,
       sessionId: "bb-test-session",
       close: mockClose,
+      getOutboundIp: mockGetOutboundIp,
     });
     mockPage.goto.mockResolvedValue(undefined);
     mockPage.waitForTimeout.mockResolvedValue(undefined);
     mockClose.mockResolvedValue(undefined);
+    mockGetOutboundIp.mockResolvedValue("203.0.113.42");
     mockStagehand.context.awaitActivePage.mockResolvedValue(mockPage);
   });
 
@@ -151,8 +155,22 @@ describe("fireTrackingClick", () => {
         joinKeys: { vivclid: "123", jobReference: "emp1_job1" },
         beaconStatus: "fired",
         trackingUrl: "https://click.acme.example/t/abc?vivclid=123",
+        sessionIp: "203.0.113.42",
       })
     );
+  });
+
+  it("resolves sessionIp before closing the session, on a fired beacon", async () => {
+    fireTrackingClick("https://click.acme.example/t/abc", "ats-c", {
+      requestId: "req-order",
+      joinKeys: null,
+    });
+    await drainTrackingClicks();
+
+    const ipOrder = mockGetOutboundIp.mock.invocationCallOrder[0];
+    const closeOrder = mockClose.mock.invocationCallOrder[0];
+    expect(mockGetOutboundIp).toHaveBeenCalledTimes(1);
+    expect(ipOrder).toBeLessThan(closeOrder);
   });
 
   it("captures a failed beacon outcome when page.goto rejects", async () => {
@@ -169,6 +187,7 @@ describe("fireTrackingClick", () => {
         requestId: "req-2",
         siteId: "ats-c",
         beaconStatus: "failed",
+        sessionIp: "203.0.113.42",
       })
     );
   });
@@ -188,8 +207,54 @@ describe("fireTrackingClick", () => {
         siteId: "ats-c",
         joinKeys: { vivclid: "999" },
         beaconStatus: "failed",
+        sessionIp: null,
       })
     );
+  });
+
+  it("emits sessionIp: null when the session has no getOutboundIp accessor", async () => {
+    mockCreateSession.mockResolvedValueOnce({
+      stagehand: mockStagehand,
+      sessionId: "bb-test-session",
+      close: mockClose,
+    });
+    fireTrackingClick("https://click.acme.example/t/abc", "ats-c", {
+      requestId: "req-no-accessor",
+      joinKeys: null,
+    });
+    await drainTrackingClicks();
+
+    expect(mockCaptureBeaconEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ beaconStatus: "fired", sessionIp: null })
+    );
+  });
+
+  it("emits sessionIp: null when getOutboundIp resolves null", async () => {
+    mockGetOutboundIp.mockResolvedValueOnce(null);
+    fireTrackingClick("https://click.acme.example/t/abc", "ats-c", {
+      requestId: "req-null-ip",
+      joinKeys: null,
+    });
+    await drainTrackingClicks();
+
+    expect(mockCaptureBeaconEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ beaconStatus: "fired", sessionIp: null })
+    );
+  });
+
+  it("emits sessionIp: null and still writes the beacon record when IP resolution rejects", async () => {
+    mockGetOutboundIp.mockRejectedValueOnce(new Error("echo navigation timed out"));
+    fireTrackingClick("https://click.acme.example/t/abc", "ats-c", {
+      requestId: "req-ip-fail",
+      joinKeys: null,
+    });
+
+    await expect(drainTrackingClicks()).resolves.toBeUndefined();
+    expect(mockCaptureBeaconEvent).toHaveBeenCalledTimes(1);
+    expect(mockCaptureBeaconEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ beaconStatus: "fired", sessionIp: null })
+    );
+    expect(mockClose).toHaveBeenCalledOnce();
   });
 
   it("does not throw when the capture sink itself rejects", async () => {
