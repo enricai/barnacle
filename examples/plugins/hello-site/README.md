@@ -75,6 +75,23 @@ curl -s http://localhost:3000/v1/plugins -H "Authorization: Bearer <your-api-key
   stuck at `beaconStatus: "skipped"`. See the repository README's
   [Reconciliation join keys](../../../README.md#reconciliation-join-keys-extractjoinkeys)
   section for the full contract.
+- **To attach a field only discovered mid-run** (something read off the page
+  after navigation, a token minted mid-flow, a value observed on a response —
+  anything `extractJoinKeys` can't see because it only ever runs against the
+  pre-run payload), call `context.telemetry.addJoinKeys({ ... })` from
+  `execute()` or `executeHttp()` at any point before returning. Core merges
+  the collector's snapshot over `extractJoinKeys(payload)`'s result before
+  writing the submission's `joinKeys` bag — run-discovered keys win on
+  collision. See the same
+  [Reconciliation join keys](../../../README.md#reconciliation-join-keys-extractjoinkeys)
+  section for the full contract.
+- **Config-only `*.plugin.json` manifests can only reach `context.telemetry`
+  through the `httpModule` escape hatch.** `executeHttp(payload, context)`
+  receives the same `SitePluginContext` a module plugin's does, so a manifest
+  with an `httpModule` can call `addJoinKeys()` from it. The manifest's own
+  declarative browser flow cannot — it's driven entirely by data through
+  `runHealingFlow`, with no imperative per-site code for a call like this to
+  live in.
 
 See the repository README's **Out-of-tree plugins** section for the full
 `BARNACLE_PLUGINS` / `BARNACLE_PLUGINS_STRICT` / `BARNACLE_PLUGINS_DIR` env-var
