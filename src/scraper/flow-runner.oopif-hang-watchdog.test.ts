@@ -99,10 +99,18 @@ function allLoggedLines(): string {
  * test files' forks (or unrelated host processes) are competing for CPU.
  * Raising only these two tests' budget (rather than the global
  * `testTimeout`) keeps every other test's hang-detection window tight. Set
- * well above the ~5s this loop needs standalone to survive heavy sibling
- * contention (measured: still real, not simulated, wall-clock cost).
+ * well above the ~5s this loop needs standalone: every real timer this
+ * helper advances past costs one genuine macrotask round-trip (sinon's
+ * `doTick` schedules via a real `setTimeout` per timer fired, regardless of
+ * whether the caller steps by a fixed time delta or one timer at a time —
+ * see the note on {@link advancePastDeepLocatorHangs}), so wall-clock cost
+ * is bounded by how many of those round-trips the host can service per
+ * second, which degrades under heavy sibling-process contention. 120s is
+ * a 4x margin over the ~30s blowup this file's investigation measured under
+ * this repo's own vitest fork-pool contention, and still under 3% of the
+ * ~78-minute production hang this suite guards against.
  */
-const DEEP_LOCATOR_HANG_TEST_TIMEOUT_MS = 180_000;
+const DEEP_LOCATOR_HANG_TEST_TIMEOUT_MS = 120_000;
 
 /**
  * Advances the fake clock well past every deepLocator per-call watchdog the
