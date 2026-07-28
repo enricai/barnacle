@@ -9,20 +9,28 @@ import {
 
 /**
  * Minimal fake DOM element supporting exactly the surface the generated
- * expression touches (`textContent`, `getBoundingClientRect`) plus a
- * `computedStyle` bag the fake global `getComputedStyle` reads from — mirrors
- * `submit-control.test.ts`'s fixture shape (real generated expression string
- * against a hand-built tree, not a re-implementation of the traversal).
+ * expression touches (`textContent`, `getBoundingClientRect`, `getAttribute`,
+ * `closest`) plus a `computedStyle` bag the fake global `getComputedStyle`
+ * reads from — mirrors `submit-control.test.ts`'s fixture shape (real
+ * generated expression string against a hand-built tree, not a
+ * re-implementation of the traversal).
  */
 interface FakeEl {
   textContent: string;
   rect: { width: number; height: number };
   computedStyle: { display: string; visibility: string };
+  tagName: string;
+  attributes: Record<string, string>;
+  parent: FakeEl | null;
   getBoundingClientRect(): { width: number; height: number };
+  getAttribute(name: string): string | null;
+  closest(selector: string): FakeEl | null;
 }
 
+/** Fake `document`/frame-document surface: tag-filtered `querySelectorAll` plus `getElementById`, the two lookups the accessible-name precedence chain needs beyond the matched candidate set itself. */
 interface FakeRoot {
   querySelectorAll(selector: string): FakeEl[];
+  getElementById(id: string): FakeEl | null;
 }
 
 function makeEl(
@@ -30,24 +38,59 @@ function makeEl(
   overrides: Partial<{
     rect: { width: number; height: number };
     computedStyle: { display: string; visibility: string };
+    tagName: string;
+    attributes: Record<string, string>;
+    parent: FakeEl | null;
   }> = {}
 ): FakeEl {
   const rect = overrides.rect ?? { width: 100, height: 20 };
   const computedStyle = overrides.computedStyle ?? { display: "block", visibility: "visible" };
-  return {
+  const tagName = overrides.tagName ?? "button";
+  const attributes = overrides.attributes ?? {};
+  const parent = overrides.parent ?? null;
+  const el: FakeEl = {
     textContent,
     rect,
     computedStyle,
+    tagName,
+    attributes,
+    parent,
     getBoundingClientRect() {
       return rect;
     },
+    getAttribute(name) {
+      return attributes[name] ?? null;
+    },
+    closest(selector) {
+      let node: FakeEl | null = el;
+      while (node) {
+        if (node.tagName === selector) return node;
+        node = node.parent;
+      }
+      return null;
+    },
   };
+  return el;
 }
 
-function makeRoot(matches: FakeEl[]): FakeRoot {
+/**
+ * `elements` is the full flat registry the fake root resolves against — the
+ * candidates a caller wants `querySelectorAll(innerSelector)` to match PLUS
+ * any other elements (a `<label>`, an `aria-labelledby` target) the
+ * accessible-name precedence chain looks up but the outer scan doesn't
+ * itself match. Both `querySelectorAll` and `getElementById` filter/search
+ * this same registry, mirroring how a real DOM has one tree underneath every
+ * lookup method.
+ */
+function makeRoot(elements: FakeEl[]): FakeRoot {
   return {
-    querySelectorAll() {
-      return matches;
+    querySelectorAll(selector) {
+      const tags = selector.split(",").map((s) => s.trim().toLowerCase());
+      if (tags.includes("*")) return elements;
+      return elements.filter((el) => tags.includes(el.tagName.toLowerCase()));
+    },
+    getElementById(id) {
+      return elements.find((el) => el.getAttribute("id") === id) ?? null;
     },
   };
 }
@@ -185,6 +228,140 @@ describe("deep-locator-scan/buildScanFrameCandidatesExpr", () => {
     ) as FrameCandidateScanResult[];
 
     expect(result).toEqual([{ index: 0, text: "Inner", visible: true }]);
+  });
+});
+
+describe("deep-locator-scan/buildScanFrameCandidatesExpr accessible-name derivation", () => {
+  it("derives text from aria-label when textContent is empty, as on an <input>", () => {
+    const input = makeEl("", { tagName: "input", attributes: { "aria-label": "First Name" } });
+    const document = makeRoot([input]);
+
+    const result = evaluateInFakePage(
+      buildScanFrameCandidatesExpr("input"),
+      document
+    ) as FrameCandidateScanResult[];
+
+    expect(result).toEqual([{ index: 0, text: "First Name", visible: true }]);
+  });
+
+  it("falls back to placeholder when there is no aria-label/labelledby/label and no textContent", () => {
+    const input = makeEl("", { tagName: "input", attributes: { placeholder: "Email Address" } });
+    const document = makeRoot([input]);
+
+    const result = evaluateInFakePage(
+      buildScanFrameCandidatesExpr("input"),
+      document
+    ) as FrameCandidateScanResult[];
+
+    expect(result).toEqual([{ index: 0, text: "Email Address", visible: true }]);
+  });
+
+  it("falls back to title for an icon-only button with no text, aria-label, or placeholder", () => {
+    const button = makeEl("", { tagName: "button", attributes: { title: "Close" } });
+    const document = makeRoot([button]);
+
+    const result = evaluateInFakePage(
+      buildScanFrameCandidatesExpr("button"),
+      document
+    ) as FrameCandidateScanResult[];
+
+    expect(result).toEqual([{ index: 0, text: "Close", visible: true }]);
+  });
+
+  it("still yields unchanged textContent for a text-bearing button (no regression)", () => {
+    const button = makeEl("Submit Application");
+    const document = makeRoot([button]);
+
+    const result = evaluateInFakePage(
+      buildScanFrameCandidatesExpr("button"),
+      document
+    ) as FrameCandidateScanResult[];
+
+    expect(result).toEqual([{ index: 0, text: "Submit Application", visible: true }]);
+  });
+
+  it("derives text from an associated label[for=id] when there is no aria-label/labelledby and no textContent", () => {
+    const input = makeEl("", { tagName: "input", attributes: { id: "fname" } });
+    const label = makeEl("First Name", { tagName: "label", attributes: { for: "fname" } });
+    const document = makeRoot([input, label]);
+
+    const result = evaluateInFakePage(
+      buildScanFrameCandidatesExpr("input"),
+      document
+    ) as FrameCandidateScanResult[];
+
+    expect(result).toEqual([{ index: 0, text: "First Name", visible: true }]);
+  });
+
+  it("derives text from the nearest ancestor <label> when the input has no id/for association", () => {
+    const label = makeEl("Last Name", { tagName: "label" });
+    const input = makeEl("", { tagName: "input", parent: label });
+    const document = makeRoot([input, label]);
+
+    const result = evaluateInFakePage(
+      buildScanFrameCandidatesExpr("input"),
+      document
+    ) as FrameCandidateScanResult[];
+
+    expect(result).toEqual([{ index: 0, text: "Last Name", visible: true }]);
+  });
+
+  it("derives text from aria-labelledby, resolving the referenced id against root", () => {
+    const input = makeEl("", {
+      tagName: "input",
+      attributes: { "aria-labelledby": "fname-label" },
+    });
+    const labelSpan = makeEl("First Name", { tagName: "span", attributes: { id: "fname-label" } });
+    const document = makeRoot([input, labelSpan]);
+
+    const result = evaluateInFakePage(
+      buildScanFrameCandidatesExpr("input"),
+      document
+    ) as FrameCandidateScanResult[];
+
+    expect(result).toEqual([{ index: 0, text: "First Name", visible: true }]);
+  });
+
+  it("falls back to value for an input[type=submit] with no other accessible-name signal", () => {
+    const submit = makeEl("", {
+      tagName: "input",
+      attributes: { type: "submit", value: "Send Application" },
+    });
+    const document = makeRoot([submit]);
+
+    const result = evaluateInFakePage(
+      buildScanFrameCandidatesExpr("input"),
+      document
+    ) as FrameCandidateScanResult[];
+
+    expect(result).toEqual([{ index: 0, text: "Send Application", visible: true }]);
+  });
+
+  it("prefers aria-label over placeholder/title/textContent when multiple signals are present", () => {
+    const input = makeEl("Ignored text", {
+      tagName: "input",
+      attributes: { "aria-label": "Preferred", placeholder: "Placeholder", title: "Title" },
+    });
+    const document = makeRoot([input]);
+
+    const result = evaluateInFakePage(
+      buildScanFrameCandidatesExpr("input"),
+      document
+    ) as FrameCandidateScanResult[];
+
+    expect(result).toEqual([{ index: 0, text: "Preferred", visible: true }]);
+  });
+
+  it("yields empty text for a structural element with no accessible-name signal at all", () => {
+    const div = makeEl("", { tagName: "div" });
+    const document = makeRoot([div]);
+
+    const result = evaluateInFakePage(
+      buildScanFrameCandidatesExpr("div"),
+      document
+    ) as FrameCandidateScanResult[];
+
+    expect(result).toEqual([{ index: 0, text: "", visible: true }]);
   });
 });
 

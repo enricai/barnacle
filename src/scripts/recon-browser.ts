@@ -805,6 +805,41 @@ export function isReplanReproposingFailedStep(
   return newSteps.every((s) => normalizeInstruction(s.instruction) === failedNorm);
 }
 
+/** Top-level keys `persistReplannedFlow` already threads explicitly (plus `steps`). */
+const MANAGED_FLOW_FILE_KEYS = new Set([
+  "steps",
+  "submitEndpointPattern",
+  "submittedStateSelectors",
+  "requireSubmitEndpointMatch",
+  "successUrlFragments",
+  "successPageTitleHints",
+  "ownBackendHostnames",
+  "knownErrorClassPrefixes",
+]);
+
+/**
+ * Recovers whatever top-level keys `RECON_FLOW_FILE_SCHEMA` accepts beyond
+ * the ones `persistReplannedFlow` explicitly threads (e.g. `frameSelector`,
+ * `wizardExitButtonLabels`) so write-back doesn't silently drop them. Reads
+ * from the ORIGINAL bytes rather than a passed-in param so new schema keys
+ * survive round-tripping without a caller/param change. A non-object
+ * original (bare array, or unparseable bytes) yields no extra keys — the
+ * caller's explicit params remain the sole source of truth in that case.
+ */
+function extractUnmanagedFlowFileKeys(originalBytes: Buffer): Record<string, unknown> {
+  try {
+    const parsed: unknown = JSON.parse(originalBytes.toString("utf8"));
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed as Record<string, unknown>).filter(
+        ([key]) => !MANAGED_FLOW_FILE_KEYS.has(key)
+      )
+    );
+  } catch {
+    return {};
+  }
+}
+
 /**
  * Write-back at the end of a successful recon: back up the original file
  * bytes verbatim (so a subtle denormalization bug can never lose the user's
@@ -898,6 +933,7 @@ function persistReplannedFlow(params: {
   const payload =
     originalShape === "object"
       ? {
+          ...extractUnmanagedFlowFileKeys(originalBytes),
           steps: dedupedSteps,
           ...(submitEndpointPattern !== null ? { submitEndpointPattern } : {}),
           ...(submittedStateSelectors.length > 0 ? { submittedStateSelectors } : {}),
