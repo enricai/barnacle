@@ -41,6 +41,7 @@ import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
 import {
   clickDeepLocatorCandidate,
   type DeepLocatorCandidate,
+  type DeepLocatorTimeoutOptions,
   resolveDeepLocatorCandidates,
 } from "@/scraper/deep-locator-candidates";
 import { clickFirstActionableCandidate } from "@/scraper/deep-locator-click";
@@ -5153,22 +5154,61 @@ async function probeFormValidityBeforeSubmit(params: {
 }
 
 /**
- * Adapts `resolveDeepLocatorCandidates` results into `Action`-shaped
- * evidence for `rephraseWithLLM`, which only knows about Stagehand's
- * `Action` type. Never throws: `resolveDeepLocatorCandidates` itself
- * degrades to `[]` on a resolver failure, so this only feeds the rephrase
- * prompt richer evidence when available — a frame-scoped step whose
- * observe AND deepLocator both come back empty just gets the same `[]`
- * evidence it would have gotten before this fix.
+ * Resolves deepLocator candidates scoped to `INTERACTIVE_CANDIDATE_SELECTOR`,
+ * widening once to the unscoped `"*"` hop when the scoped pass finds
+ * nothing. `INTERACTIVE_CANDIDATE_SELECTOR` is what makes a dense OOPIF
+ * form's candidate set tractable (371 nodes down to a handful — see
+ * `deep-locator-candidates.ts`'s module docblock), but it over-narrows a
+ * `div`/`span` tile that carries only a click handler — no `role`/
+ * `tabindex` — so a scoped-empty result would otherwise strand an attempt
+ * the pre-1.6.13 unscoped `"*"` hop still resolved. The widened pass only
+ * runs when the scoped one returns zero, so the dense-form fast path
+ * (`flow-runner.oopif-dense-form-budget.test.ts`) still costs a single
+ * resolve. Returns the `innerSelector` actually used alongside the
+ * candidates so a caller driving `clickDeepLocatorCandidate` re-derives the
+ * SAME hop the candidates were ranked/indexed against.
+ */
+async function resolveDeepLocatorCandidatesWithWidening(
+  page: Page,
+  frameSelector: string | null | undefined,
+  instruction: string | null | undefined,
+  timeoutOptions: DeepLocatorTimeoutOptions
+): Promise<{ candidates: DeepLocatorCandidate[]; innerSelector: string }> {
+  const scoped = await resolveDeepLocatorCandidates(
+    page,
+    frameSelector,
+    INTERACTIVE_CANDIDATE_SELECTOR,
+    instruction,
+    timeoutOptions
+  );
+  if (scoped.length > 0) {
+    return { candidates: scoped, innerSelector: INTERACTIVE_CANDIDATE_SELECTOR };
+  }
+  const widened = await resolveDeepLocatorCandidates(
+    page,
+    frameSelector,
+    "*",
+    instruction,
+    timeoutOptions
+  );
+  return { candidates: widened, innerSelector: "*" };
+}
+
+/**
+ * Adapts `resolveDeepLocatorCandidatesWithWidening` results into
+ * `Action`-shaped evidence for `rephraseWithLLM`, which only knows about
+ * Stagehand's `Action` type. Never throws: `resolveDeepLocatorCandidates`
+ * itself degrades to `[]` on a resolver failure, so this only feeds the
+ * rephrase prompt richer evidence when available — a frame-scoped step
+ * whose observe AND deepLocator (scoped, then widened) both come back
+ * empty just gets the same `[]` evidence it would have gotten before this
+ * fix.
  *
- * `instruction` is forwarded to `resolveDeepLocatorCandidates` so the
- * evidence list is ranked by relevance to the step, same as the act path —
- * an unranked `[]`-then-DOM-order list would feed the rephrase LLM its
- * worst evidence first instead of its best.
+ * `instruction` is forwarded so the evidence list is ranked by relevance to
+ * the step, same as the act path — an unranked `[]`-then-DOM-order list
+ * would feed the rephrase LLM its worst evidence first instead of its best.
  *
- * Scoped to `INTERACTIVE_CANDIDATE_SELECTOR` (not `"*"`) so a dense OOPIF
- * form's candidate set is a handful of controls, not every structural node —
- * and takes the caller's already-resolved `frameTarget` so
+ * Takes the caller's already-resolved `frameTarget` so
  * `resolveDeepLocatorCandidates` uses the batched frame-scoped evaluate
  * instead of re-resolving it internally.
  */
@@ -5177,10 +5217,9 @@ async function deepLocatorCandidatesAsActions(
   frameTarget: FrameTarget,
   instruction?: string | null
 ): Promise<Action[]> {
-  const candidates = await resolveDeepLocatorCandidates(
+  const { candidates } = await resolveDeepLocatorCandidatesWithWidening(
     page,
     frameTarget.frameSelector,
-    INTERACTIVE_CANDIDATE_SELECTOR,
     instruction,
     { frameTarget }
   );
@@ -6148,19 +6187,27 @@ export async function executeStepWithHealing(params: {
         // exclusion is applied here by filtering resolved (already-ranked)
         // candidates against triedSelectors instead — otherwise attempt 4
         // would re-pick the same failed element and burn the attempt.
+        // `resolveDeepLocatorCandidatesWithWidening` widens the hop to `"*"`
+        // once when the interactive-scoped pass finds nothing — a
+        // `div`/`span` tile with only a click handler (no role/tabindex)
+        // matches nothing scoped, so the widened pass is what still
+        // surfaces it — and reports which innerSelector actually resolved
+        // so the click below re-derives the same hop, not a stale one.
         await reresolveFrameTargetIfLost();
-        const deepLocatorCandidates =
+        const deepLocatorResolution =
           candidates.length === 0 && frameTarget?.frame
-            ? (
-                await resolveDeepLocatorCandidates(
-                  page,
-                  frameTarget.frameSelector,
-                  INTERACTIVE_CANDIDATE_SELECTOR,
-                  step,
-                  { frameTarget }
-                )
-              ).filter((c) => !triedSelectors.includes(c.selector))
-            : [];
+            ? await resolveDeepLocatorCandidatesWithWidening(
+                page,
+                frameTarget.frameSelector,
+                step,
+                { frameTarget }
+              )
+            : null;
+        const deepLocatorInnerSelector =
+          deepLocatorResolution?.innerSelector ?? INTERACTIVE_CANDIDATE_SELECTOR;
+        const deepLocatorCandidates = (deepLocatorResolution?.candidates ?? []).filter(
+          (c) => !triedSelectors.includes(c.selector)
+        );
         if (candidates.length === 0 && deepLocatorCandidates.length > 0) {
           // Actionable-candidate walk: a top pick that rejects with the CDP
           // `-32000 Node does not have a layout object` error (an unrendered
@@ -6187,7 +6234,7 @@ export async function executeStepWithHealing(params: {
               await clickDeepLocatorCandidate(
                 page,
                 frameTarget?.frameSelector,
-                INTERACTIVE_CANDIDATE_SELECTOR,
+                deepLocatorInnerSelector,
                 candidate.index
               );
             },
