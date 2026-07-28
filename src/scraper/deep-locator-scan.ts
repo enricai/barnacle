@@ -52,6 +52,32 @@ export const INTERACTIVE_CANDIDATE_SELECTOR =
   "button, a, input, select, textarea, [role=button], [tabindex]";
 
 /**
+ * Additional per-CDP-round-trip watchdog budget charged per candidate
+ * `index`, on top of a call's own `callTimeoutMs`, for every legacy
+ * `deepLocator(hop).nth(index)` delegate fallback — `clickDeepLocatorCandidate`
+ * (`deep-locator-candidates.ts`) and `fillDeepLocatorCandidate`/
+ * `selectDeepLocatorCandidateOption` (`deep-locator-actuate.ts`) alike.
+ * Stagehand's `FrameSelectorResolver.resolveAtIndex(query, i)` resolves
+ * `Locator.nth(i)` via `resolveAll(query, {limit: i + 1})`, whose
+ * `resolveCss` loops one serial `Runtime.evaluate` round-trip per index up
+ * to and including `i` (understudy/selectorResolver.js:70,79-115) before
+ * ANY `.nth(i)`-chained method (`click()`, `fill()`, `selectOption()`,
+ * `inputValue()`) ever dispatches — so acting at index `i` costs `i + 1`
+ * round-trips, not one, and a fixed `callTimeoutMs` (which only ever
+ * budgeted a single round-trip) starves any candidate past the index where
+ * `(i + 1) * measuredRoundTripMs` exceeds it (measured ~0.66s/round-trip
+ * through Browserbase's proxied CDP into a live cross-origin OOPIF — run-7:
+ * candidate 13 enumerated within a 60s budget, i.e. 91 cumulative
+ * round-trips). `callTimeoutMs` already covers the first round-trip; this
+ * constant is the budget added per each of the remaining `index` round-trips,
+ * rounded up from the measured cost to leave headroom for CDP jitter. Hoisted
+ * here (rather than left module-private to `deep-locator-candidates.ts`) so
+ * `deep-locator-actuate.ts` can reuse it without importing
+ * `deep-locator-candidates.ts` or `flow-runner.ts` (import-cycle risk).
+ */
+export const DEEP_LOCATOR_CLICK_INDEX_ROUND_TRIP_MS = 1_000;
+
+/**
  * Visibility check shared by every candidate the scan expression builds: a
  * node with a 0x0 layout box, or a computed `display:none`/
  * `visibility:hidden`, can never be the target of a real click — this is the

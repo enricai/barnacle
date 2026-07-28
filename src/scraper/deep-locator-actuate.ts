@@ -14,9 +14,10 @@
  * `.inputValue()` pair, which pays Stagehand's `index + 1` serial
  * `resolveAtIndex` round-trips per call — the same cost
  * `clickDeepLocatorCandidate` already batches away. The legacy fallback's
- * watchdog budget scales with `index` using the same per-round-trip constant
- * `clickDeepLocatorCandidate` uses, so a legitimately-reachable candidate
- * deep in a dense OOPIF form isn't killed by a budget sized for one
+ * watchdog budget scales with `index` using
+ * {@link DEEP_LOCATOR_CLICK_INDEX_ROUND_TRIP_MS} — the same per-round-trip
+ * constant `clickDeepLocatorCandidate` uses — so a legitimately-reachable
+ * candidate deep in a dense OOPIF form isn't killed by a budget sized for one
  * round-trip.
  */
 
@@ -27,6 +28,7 @@ import { getLogger } from "@/lib/logging";
 import {
   buildFillFrameCandidateExpr,
   buildSelectFrameCandidateExpr,
+  DEEP_LOCATOR_CLICK_INDEX_ROUND_TRIP_MS,
   type FrameCandidateWriteResult,
 } from "@/scraper/deep-locator-scan";
 import { buildHopSelector, type FrameTarget, resolveFrameTarget } from "@/scraper/frame-target";
@@ -43,18 +45,6 @@ const logger = getLogger({ name: "scraper/deep-locator-actuate" });
  * constant.
  */
 const DEFAULT_DEEP_LOCATOR_CALL_TIMEOUT_MS = 10_000;
-
-/**
- * Additional legacy-fallback watchdog budget charged per candidate `index`,
- * on top of `callTimeoutMs` — the identical per-round-trip cost
- * `DEEP_LOCATOR_CLICK_INDEX_ROUND_TRIP_MS` (`deep-locator-candidates.ts`)
- * charges `clickDeepLocatorCandidate`'s legacy click fallback, since
- * `fill()`/`selectOption()`/`inputValue()` resolve `.nth(index)` through the
- * exact same `resolveAtIndex` loop a `click()` does. Duplicated here (not
- * imported) rather than hoisted into a shared module, matching this file's
- * existing self-contained-leaf convention for `DEFAULT_DEEP_LOCATOR_CALL_TIMEOUT_MS`.
- */
-const DEEP_LOCATOR_INDEX_ROUND_TRIP_MS = 1_000;
 
 /** Overrides for the watchdog timeout this module applies to every `deepLocator()` await; tests pass small values so cases don't burn wall-clock. */
 export interface DeepLocatorActuateTimeoutOptions {
@@ -205,9 +195,9 @@ async function actuateCandidateBatched(
  * when that separate read-back equals `value`, and `false` — never a throw —
  * when the delegate rejects the fill/read-back or the read-back disagrees.
  * The legacy path's watchdog budget scales with `index`
- * ({@link DEEP_LOCATOR_INDEX_ROUND_TRIP_MS}, the same per-round-trip cost
- * `clickDeepLocatorCandidate`'s legacy fallback charges), so a candidate deep
- * in a dense OOPIF form isn't killed by a budget sized for a single
+ * ({@link DEEP_LOCATOR_CLICK_INDEX_ROUND_TRIP_MS}, the same per-round-trip
+ * cost `clickDeepLocatorCandidate`'s legacy fallback charges), so a candidate
+ * deep in a dense OOPIF form isn't killed by a budget sized for a single
  * round-trip. A wedged `fill()`/`inputValue()` call that still exceeds that
  * scaled budget rejects with a `WatchdogTimeoutError` instead of hanging the
  * caller, the same "rejects on a genuine hang" contract
@@ -236,7 +226,7 @@ export async function fillDeepLocatorCandidate(
   if (batchedResult?.written && batchedResult.readBack === value) return true;
   if (batchedResult?.reason === "not-actionable") return false;
 
-  const scaledCallTimeoutMs = callTimeoutMs + index * DEEP_LOCATOR_INDEX_ROUND_TRIP_MS;
+  const scaledCallTimeoutMs = callTimeoutMs + index * DEEP_LOCATOR_CLICK_INDEX_ROUND_TRIP_MS;
   return writeAndVerify(
     () =>
       withWatchdog(() => page.deepLocator(hopSelector).nth(index).fill(value), {
@@ -254,11 +244,16 @@ export async function fillDeepLocatorCandidate(
 
 /**
  * Selects `value` on the `<select>`-shaped candidate at `index` inside the
- * frame scoped by `frameSelector`, under the exact same re-derived-hop,
- * batched-first, read-back-verified, index-scaled-watchdog-guarded contract
- * as {@link fillDeepLocatorCandidate} — `selectOption()` is the legacy write,
+ * frame scoped by `frameSelector`, under the same re-derived-hop,
+ * batched-first, index-scaled-watchdog-guarded contract as
+ * {@link fillDeepLocatorCandidate} — `selectOption()` is the legacy write,
  * and `inputValue()` (which reads a `<select>`'s selected value the same as
- * any other form control) is the legacy confirmation.
+ * any other form control) is the legacy confirmation. Differs from
+ * `fillDeepLocatorCandidate` in one respect: a batched `written: true` result
+ * resolves `true` on its own, without comparing `readBack` to `value` —
+ * {@link buildSelectFrameCandidateExpr} matches an option by value OR trimmed
+ * label, so `readBack` (the MATCHED option's value) can legitimately differ
+ * from a caller-supplied label string even on a successful write.
  */
 export async function selectDeepLocatorCandidateOption(
   page: Page,
@@ -280,10 +275,10 @@ export async function selectDeepLocatorCandidateOption(
     buildSelectFrameCandidateExpr(innerSelector, index, value),
     "select"
   );
-  if (batchedResult?.written && batchedResult.readBack === value) return true;
+  if (batchedResult?.written) return true;
   if (batchedResult?.reason === "not-actionable") return false;
 
-  const scaledCallTimeoutMs = callTimeoutMs + index * DEEP_LOCATOR_INDEX_ROUND_TRIP_MS;
+  const scaledCallTimeoutMs = callTimeoutMs + index * DEEP_LOCATOR_CLICK_INDEX_ROUND_TRIP_MS;
   return writeAndVerify(
     () =>
       withWatchdog(() => page.deepLocator(hopSelector).nth(index).selectOption(value), {

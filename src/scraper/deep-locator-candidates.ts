@@ -16,6 +16,7 @@ import { getLogger } from "@/lib/logging";
 import {
   buildClickFrameCandidateExpr,
   buildScanFrameCandidatesExpr,
+  DEEP_LOCATOR_CLICK_INDEX_ROUND_TRIP_MS,
   type FrameCandidateClickResult,
   type FrameCandidateScanResult,
 } from "@/scraper/deep-locator-scan";
@@ -45,28 +46,6 @@ const DEFAULT_DEEP_LOCATOR_CALL_TIMEOUT_MS = 10_000;
  * this budget.
  */
 const DEFAULT_DEEP_LOCATOR_ENUMERATION_BUDGET_MS = 60_000;
-
-/**
- * Additional click-watchdog budget charged per candidate `index`, on top of
- * `callTimeoutMs`, for {@link clickDeepLocatorCandidate}'s legacy delegate
- * fallback (the path taken when no batched frame-scoped click evaluate is
- * available — see {@link scanFrameCandidatesBatched}'s click counterpart).
- * Stagehand's `FrameSelectorResolver.resolveAtIndex(query, i)` resolves
- * `Locator.nth(i)` via `resolveAll(query, {limit: i + 1})`, whose
- * `resolveCss` loops one serial `Runtime.evaluate` round-trip per index up
- * to and including `i`
- * (node_modules/@browserbasehq/stagehand/dist/esm/lib/v3/understudy/selectorResolver.js:70,79-115)
- * before the click itself ever dispatches — so a click at index `i` costs
- * `i + 1` round-trips, not one, and a fixed `callTimeoutMs` (which only ever
- * budgeted a single round-trip) starves any candidate past the index where
- * `(i + 1) * measuredRoundTripMs` exceeds it (measured ~0.66s/round-trip
- * through Browserbase's proxied CDP into a live cross-origin OOPIF — run-7:
- * candidate 13 enumerated within a 60s budget, i.e. 91 cumulative
- * round-trips). `callTimeoutMs` already covers the first round-trip; this
- * constant is the budget added per each of the remaining `index` round-trips,
- * rounded up from the measured cost to leave headroom for CDP jitter.
- */
-const DEEP_LOCATOR_CLICK_INDEX_ROUND_TRIP_MS = 1_000;
 
 /** Overrides for the watchdog timeouts this module applies to every `deepLocator()` await; tests pass small values so cases don't burn wall-clock. */
 export interface DeepLocatorTimeoutOptions {
