@@ -33,6 +33,24 @@ const ACCESSIBLE_NAME_EXPR = `((el) => {
 })`;
 
 /**
+ * Visibility check: a node with a 0x0 layout box, or a computed
+ * `display:none`/`visibility:hidden`, can never be the target of a real
+ * click. Duplicated from `deep-locator-scan.ts`'s private `IS_VISIBLE_EXPR`
+ * rather than imported — both are browser-context expression strings
+ * composed by string interpolation, matching the convention this module
+ * already follows for {@link DEEP_ELEMENTS_EXPR}. Applied both when ranking
+ * (so an unrendered node never outranks a rendered one) and when clicking
+ * (so a node that became hidden between the rank and click calls is
+ * reported as not-actionable instead of dispatching a no-op click).
+ */
+const IS_VISIBLE_EXPR = `((el) => {
+  const rect = el.getBoundingClientRect();
+  if (rect.width === 0 && rect.height === 0) return false;
+  const style = getComputedStyle(el);
+  return style.display !== "none" && style.visibility !== "hidden";
+})`;
+
+/**
  * Recursive open-shadow-root walker, identical in shape to `deep-query.ts`'s
  * private `DEEP_ELEMENTS_EXPR` (duplicated rather than imported because both
  * are browser-context expression strings composed by string interpolation,
@@ -87,7 +105,11 @@ const RANK_TIERS_EXPR = `((el, name) => {
  * highest first. Ties within a tier keep document order. Elements that
  * match no positive tier — including anything caught by
  * {@link NEGATIVE_TEXT_EXPR} — are excluded entirely rather than ranked
- * last, so the caller never has to guess where the "safe" cutoff is.
+ * last, so the caller never has to guess where the "safe" cutoff is. Same
+ * treatment for a node that fails {@link IS_VISIBLE_EXPR}: a hidden
+ * per-step submit button in a wizard (0x0 layout box, `display:none`) is
+ * dropped before ranking so it can never outrank the rendered one and win
+ * a click that would silently no-op.
  *
  * Each returned candidate carries `deepIndex`, the candidate's position in
  * this same deterministic deep-traversal order. {@link buildClickByDeepIndexExpr}
@@ -107,6 +129,7 @@ export function buildRankSubmitCandidatesExpr(root = "document"): string {
   return `(() => {
     const accessibleName = ${ACCESSIBLE_NAME_EXPR};
     const rankTier = ${RANK_TIERS_EXPR};
+    const isVisible = ${IS_VISIBLE_EXPR};
     const deepElements = ${DEEP_ELEMENTS_EXPR};
     const all = deepElements(${root});
     const ranked = [];
@@ -115,6 +138,7 @@ export function buildRankSubmitCandidatesExpr(root = "document"): string {
       const name = accessibleName(el);
       const tier = rankTier(el, name);
       if (tier === 0) continue;
+      if (!isVisible(el)) continue;
       ranked.push({
         deepIndex: i,
         tier,
@@ -134,7 +158,13 @@ export function buildRankSubmitCandidatesExpr(root = "document"): string {
  * mousedown/mouseup/click, matching `deep-query.ts`'s controlled-state click
  * convention). Returns `{ clicked: false }` without throwing if the index is
  * out of range for the current DOM (e.g. the page changed between the
- * locate and click calls).
+ * locate and click calls), and `{ clicked: false, reason: "not-actionable" }`
+ * without dispatching any event if the element at that index fails
+ * {@link IS_VISIBLE_EXPR} — a node with no layout box makes a real click
+ * throw a CDP `-32000 Node does not have a layout object` error, so this
+ * check reports the same outcome as data instead. `buildRankSubmitCandidatesExpr`
+ * already filters unrendered candidates out of its ranking, so this only
+ * fires when the DOM changed between the rank and click calls.
  *
  * `root` overrides the traversal root expression (default `"document"`)
  * and must match the `root` passed to the {@link buildRankSubmitCandidatesExpr}
@@ -143,10 +173,12 @@ export function buildRankSubmitCandidatesExpr(root = "document"): string {
  */
 export function buildClickByDeepIndexExpr(deepIndex: number, root = "document"): string {
   return `(() => {
+    const isVisible = ${IS_VISIBLE_EXPR};
     const deepElements = ${DEEP_ELEMENTS_EXPR};
     const all = deepElements(${root});
     const el = all[${JSON.stringify(deepIndex)}];
     if (!el) return { clicked: false };
+    if (!isVisible(el)) return { clicked: false, reason: "not-actionable" };
     if (typeof el.focus === "function") { try { el.focus(); } catch (e) {} }
     el.dispatchEvent(new Event("mousedown", { bubbles: true }));
     el.dispatchEvent(new Event("mouseup", { bubbles: true }));
@@ -170,4 +202,6 @@ export interface SubmitCandidate {
 /** Result of {@link buildClickByDeepIndexExpr}'s `page.evaluate` call. */
 export interface ClickByDeepIndexResult {
   clicked: boolean;
+  /** Present only when `clicked` is `false` and the element existed but had no layout box — distinguishes an unrendered element from a stale (out-of-range) index. */
+  reason?: "not-actionable";
 }
