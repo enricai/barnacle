@@ -212,14 +212,20 @@ function isFrameCandidateScanResult(entry: unknown): entry is FrameCandidateScan
  * round-trip replaces the legacy `count()` + N × `nth(i).textContent()` loop.
  * Returns `null` (never throws) when no frame seam is available, the
  * evaluate call rejects (missing seam, thrown error, or a watchdog timeout —
- * `frameTarget.evaluate` already carries its own watchdog), or the resolved
- * payload doesn't conform to {@link FrameCandidateScanResult}[] — every one
- * of those degrades the caller to the legacy loop instead of losing
- * candidates. Filters out `visible:false` entries (Issue #2: an unrendered
- * node can never be the target of a real click) before the caller ranks
- * what's left, logging at `warn` when candidates are dropped so a frame
- * whose every node reports unrendered doesn't silently look like an empty
- * frame.
+ * `frameTarget.evaluate` already carries its own watchdog), the resolved
+ * payload doesn't conform to {@link FrameCandidateScanResult}[], or the raw
+ * scan matched zero elements — every one of those degrades the caller to the
+ * legacy loop instead of losing candidates. A raw zero-match scan is treated
+ * as inconclusive rather than authoritative because the scan expression's
+ * light-DOM `querySelectorAll` can't see into a shadow root the way
+ * `page.deepLocator()` (used by the legacy loop) can, so it must not be
+ * confused with the *visibility* filter below, which legitimately produces
+ * an empty result when the scan *did* match elements but every one of them
+ * is unrendered. Filters out `visible:false` entries (Issue #2: an
+ * unrendered node can never be the target of a real click) before the
+ * caller ranks what's left, logging at `warn` when candidates are dropped
+ * so a frame whose every node reports unrendered doesn't silently look like
+ * an empty frame.
  */
 async function scanFrameCandidatesBatched(
   page: Page,
@@ -245,6 +251,12 @@ async function scanFrameCandidatesBatched(
   if (!Array.isArray(scanResults) || !scanResults.every(isFrameCandidateScanResult)) {
     logger.warn(
       `deepLocator batched scan for ${hopSelector} returned a non-conforming payload, degrading to per-candidate enumeration`
+    );
+    return null;
+  }
+  if (scanResults.length === 0) {
+    logger.warn(
+      `deepLocator batched scan for ${hopSelector} matched zero elements, degrading to per-candidate enumeration in case a shadow-DOM control was missed`
     );
     return null;
   }
@@ -329,8 +341,11 @@ async function enumerateCandidatesViaLegacyLoop(
  * `textContent()` round-trips that made a dense OOPIF form (371 candidates
  * measured live) unresolvable inside any reasonable budget — and falls back
  * to the legacy `count()` + per-candidate loop (see
- * {@link enumerateCandidatesViaLegacyLoop}) only when no frame seam is
- * available or the batched scan fails. Pass an already-resolved
+ * {@link enumerateCandidatesViaLegacyLoop}) when no frame seam is available,
+ * the batched scan fails, or the batched scan resolves to zero candidates —
+ * the batched expression's light-DOM `querySelectorAll` can't see into a
+ * shadow root the way `page.deepLocator()` can, so a zero-length scan is
+ * treated as inconclusive rather than authoritative. Pass an already-resolved
  * {@link DeepLocatorTimeoutOptions.frameTarget} to use the fast path without
  * paying for an internal re-resolution.
  *
