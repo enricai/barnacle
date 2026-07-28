@@ -324,6 +324,101 @@ describe("routes/submissions GET /v1/submissions", () => {
     }
   });
 
+  it("folds a later fired beacon line over an earlier skipped line for the same run", async () => {
+    fs.writeFileSync(
+      sinkPath,
+      ndjson(
+        makeSubmitLine({ requestId: "req-precedence", joinKeys: { vivclid: "v-precedence" } }),
+        makeBeaconLine({
+          requestId: "req-precedence",
+          joinKeys: { vivclid: "v-precedence" },
+          beaconStatus: "skipped",
+          trackingUrl: null,
+          ts: "2026-07-26T10:00:01.000Z",
+        }),
+        makeBeaconLine({
+          requestId: "req-precedence",
+          joinKeys: { vivclid: "v-precedence" },
+          beaconStatus: "fired",
+          trackingUrl: "https://track.appcast.io/pixel?rid=req-precedence",
+          ts: "2026-07-26T10:00:05.000Z",
+        })
+      ),
+      "utf8"
+    );
+    const app = await buildApp(sinkPath);
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/v1/submissions?requestId=req-precedence",
+        headers: { authorization: `Bearer ${VALID_KEY}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.submissions).toHaveLength(1);
+      expect(body.submissions[0]).toMatchObject({
+        requestId: "req-precedence",
+        joinKeys: { vivclid: "v-precedence" },
+        beaconStatus: "fired",
+        trackingUrl: "https://track.appcast.io/pixel?rid=req-precedence",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("filters to the fired-precedence row by beaconStatus=fired and excludes a skipped-only run", async () => {
+    fs.writeFileSync(
+      sinkPath,
+      ndjson(
+        makeSubmitLine({ requestId: "req-precedence", joinKeys: { vivclid: "v-precedence" } }),
+        makeBeaconLine({
+          requestId: "req-precedence",
+          joinKeys: { vivclid: "v-precedence" },
+          beaconStatus: "skipped",
+          trackingUrl: null,
+          ts: "2026-07-26T10:00:01.000Z",
+        }),
+        makeBeaconLine({
+          requestId: "req-precedence",
+          joinKeys: { vivclid: "v-precedence" },
+          beaconStatus: "fired",
+          trackingUrl: "https://track.appcast.io/pixel?rid=req-precedence",
+          ts: "2026-07-26T10:00:05.000Z",
+        }),
+        makeSubmitLine({ requestId: "req-skipped-only", joinKeys: { vivclid: "v-skipped-only" } }),
+        makeBeaconLine({
+          requestId: "req-skipped-only",
+          joinKeys: { vivclid: "v-skipped-only" },
+          beaconStatus: "skipped",
+          trackingUrl: null,
+        })
+      ),
+      "utf8"
+    );
+    const app = await buildApp(sinkPath);
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/v1/submissions?beaconStatus=fired",
+        headers: { authorization: `Bearer ${VALID_KEY}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.submissions).toHaveLength(1);
+      expect(body.total).toBe(1);
+      expect(body.submissions[0]).toMatchObject({
+        requestId: "req-precedence",
+        beaconStatus: "fired",
+        trackingUrl: "https://track.appcast.io/pixel?rid=req-precedence",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   it("forwards status verbatim to the reader/query layer", async () => {
     fs.writeFileSync(
       sinkPath,
