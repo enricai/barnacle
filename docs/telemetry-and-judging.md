@@ -64,6 +64,7 @@ verdicts are the measurement.
 ## What is captured?
 
 Each captured sample (`LlmCallSample`, defined in
+`src/lib/telemetry/call-capture.ts` and re-exported via
 `src/api/schemas/telemetry.ts`) carries:
 
 | Field | Meaning |
@@ -79,6 +80,8 @@ Each captured sample (`LlmCallSample`, defined in
 | `outputTokens` | Token count from the API response, or `null` |
 | `latencyMs` | Wall-clock milliseconds from request to response, or `null` |
 | `success` | `true` if the call site accepted and used the response |
+| `errorMessage` | The thrown error's message, or `null` on success |
+| `failureKind` | Categorical failure reason (`classifyLlmCallFailure`) — `"anthropic-billing"`, `"anthropic-rate-limit"`, `"anthropic-other"`, `"schema-validation-failed"`, `"response-empty"`, or `"exception-other"`; `null` on success |
 | `ts` | ISO-8601 timestamp when the line was written |
 
 ### Call types
