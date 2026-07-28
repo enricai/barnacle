@@ -7,12 +7,32 @@
  * to confirm the write, so both actuators here read the written value back
  * through the same delegate before reporting success — the caller gets a
  * trustworthy boolean instead of a downstream verifier that can never fire.
+ *
+ * Both actuators prefer one batched `frameTarget.evaluate(buildFillFrameCandidateExpr(...) |
+ * buildSelectFrameCandidateExpr(...))` round-trip (`deep-locator-scan.ts`) over
+ * the legacy `deepLocator(hop).nth(index).fill()`/`.selectOption()` +
+ * `.inputValue()` pair, which pays Stagehand's `index + 1` serial
+ * `resolveAtIndex` round-trips per call — the same cost
+ * `clickDeepLocatorCandidate` already batches away. The legacy fallback's
+ * watchdog budget scales with `index` using the same per-round-trip constant
+ * `clickDeepLocatorCandidate` uses, so a legitimately-reachable candidate
+ * deep in a dense OOPIF form isn't killed by a budget sized for one
+ * round-trip.
  */
 
 import type { Page } from "@browserbasehq/stagehand";
 
-import { buildHopSelector } from "@/scraper/frame-target";
+import { toErrorMessage } from "@/lib/errors";
+import { getLogger } from "@/lib/logging";
+import {
+  buildFillFrameCandidateExpr,
+  buildSelectFrameCandidateExpr,
+  type FrameCandidateWriteResult,
+} from "@/scraper/deep-locator-scan";
+import { buildHopSelector, type FrameTarget, resolveFrameTarget } from "@/scraper/frame-target";
 import { WatchdogTimeoutError, withWatchdog } from "@/scraper/watchdog";
+
+const logger = getLogger({ name: "scraper/deep-locator-actuate" });
 
 /**
  * Per-CDP-call watchdog default: bounds a single `fill()`/`selectOption()`/
@@ -24,10 +44,36 @@ import { WatchdogTimeoutError, withWatchdog } from "@/scraper/watchdog";
  */
 const DEFAULT_DEEP_LOCATOR_CALL_TIMEOUT_MS = 10_000;
 
+/**
+ * Additional legacy-fallback watchdog budget charged per candidate `index`,
+ * on top of `callTimeoutMs` — the identical per-round-trip cost
+ * `DEEP_LOCATOR_CLICK_INDEX_ROUND_TRIP_MS` (`deep-locator-candidates.ts`)
+ * charges `clickDeepLocatorCandidate`'s legacy click fallback, since
+ * `fill()`/`selectOption()`/`inputValue()` resolve `.nth(index)` through the
+ * exact same `resolveAtIndex` loop a `click()` does. Duplicated here (not
+ * imported) rather than hoisted into a shared module, matching this file's
+ * existing self-contained-leaf convention for `DEFAULT_DEEP_LOCATOR_CALL_TIMEOUT_MS`.
+ */
+const DEEP_LOCATOR_INDEX_ROUND_TRIP_MS = 1_000;
+
 /** Overrides for the watchdog timeout this module applies to every `deepLocator()` await; tests pass small values so cases don't burn wall-clock. */
 export interface DeepLocatorActuateTimeoutOptions {
   /** Per-call watchdog timeout for `fill()`/`selectOption()`/`inputValue()`. Defaults to {@link DEFAULT_DEEP_LOCATOR_CALL_TIMEOUT_MS}. */
   callTimeoutMs?: number;
+  /**
+   * Pre-resolved `FrameTarget` to actuate via one batched
+   * `evaluate(buildFillFrameCandidateExpr(...) | buildSelectFrameCandidateExpr(...))`
+   * round-trip instead of the legacy `nth(index)` delegate pair. When
+   * omitted, a single non-polling `resolveFrameTarget(page, frameSelector,
+   * { timeoutMs: 0 })` pass is attempted internally so existing call sites
+   * get the batched fast path for free; if that pass doesn't land a resolved
+   * child frame, the legacy delegate path runs unchanged — the same degrade
+   * contract `deep-locator-candidates.ts`'s `resolveScanFrameTarget` uses for
+   * the scan/click seam. A caller that already resolved a `FrameTarget`
+   * (e.g. `flow-runner.ts`'s per-step resolution) should pass it here to
+   * skip the redundant internal resolution pass.
+   */
+  frameTarget?: FrameTarget;
 }
 
 /**
@@ -60,18 +106,112 @@ async function writeAndVerify(
 }
 
 /**
+ * Resolves the `FrameTarget` a batched actuation evaluate should run
+ * against: `timeoutOptions.frameTarget` when the caller already resolved
+ * one, else a single non-polling `resolveFrameTarget` pass (`timeoutMs: 0`)
+ * so existing call sites — which pass only a `frameSelector` string — still
+ * get the batched fast path without themselves changing. Returns `null`
+ * (never throws) when `frameSelector` is unset, resolution rejects (e.g. a
+ * fake `Page` in a legacy-path test lacking `evaluate`/`frames`), or the
+ * pass lands on the main-frame fallback rather than an attached child frame
+ * — each of those means "no frame seam available", and the caller degrades
+ * to the legacy delegate path. Mirrors `deep-locator-candidates.ts`'s
+ * `resolveScanFrameTarget` exactly; duplicated (not imported) so this module
+ * stays a leaf that never depends on `deep-locator-candidates.ts`.
+ */
+async function resolveActuateFrameTarget(
+  page: Page,
+  frameSelector: string | null | undefined,
+  timeoutOptions: DeepLocatorActuateTimeoutOptions
+): Promise<FrameTarget | null> {
+  if (timeoutOptions.frameTarget) return timeoutOptions.frameTarget;
+  if (!frameSelector) return null;
+  try {
+    const resolved = await resolveFrameTarget(page, frameSelector, { timeoutMs: 0 });
+    return resolved?.frame ? resolved : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Narrows a batched fill/select evaluate result to {@link FrameCandidateWriteResult}'s shape, guarding against a non-conforming payload (the same degrade-to-legacy contract `deep-locator-candidates.ts`'s `isFrameCandidateScanResult`/`isFrameCandidateClickResult` enforce). */
+function isFrameCandidateWriteResult(entry: unknown): entry is FrameCandidateWriteResult {
+  if (typeof entry !== "object" || entry === null) return false;
+  const result = entry as Partial<FrameCandidateWriteResult>;
+  if (typeof result.written !== "boolean") return false;
+  if (result.written) return typeof result.readBack === "string";
+  return result.reason === "out-of-range" || result.reason === "not-actionable";
+}
+
+/**
+ * Batched fill/select fast path: one `frameTarget.evaluate(expression)`
+ * round-trip replaces the legacy `nth(index).fill()`/`.selectOption()` +
+ * `.inputValue()` pair. Returns `null` (never throws) when no frame seam is
+ * available, the evaluate call rejects, or the resolved payload doesn't
+ * conform to {@link FrameCandidateWriteResult} — every one of those degrades
+ * the caller to the legacy delegate path instead of losing the write,
+ * mirroring `clickCandidateBatched`'s degrade contract
+ * (`deep-locator-candidates.ts`).
+ */
+async function actuateCandidateBatched(
+  page: Page,
+  frameSelector: string | null | undefined,
+  hopSelector: string,
+  index: number,
+  timeoutOptions: DeepLocatorActuateTimeoutOptions,
+  expression: string,
+  actionLabel: "fill" | "select"
+): Promise<FrameCandidateWriteResult | null> {
+  const frameTarget = await resolveActuateFrameTarget(page, frameSelector, timeoutOptions);
+  if (!frameTarget) return null;
+
+  let result: unknown;
+  try {
+    result = await frameTarget.evaluate<FrameCandidateWriteResult>(expression);
+  } catch (err) {
+    logger.warn(
+      `deepLocator batched ${actionLabel} for ${hopSelector} nth=${index} failed, degrading to delegate ${actionLabel}: ${toErrorMessage(err)}`
+    );
+    return null;
+  }
+  if (!isFrameCandidateWriteResult(result)) {
+    logger.warn(
+      `deepLocator batched ${actionLabel} for ${hopSelector} nth=${index} returned a non-conforming payload, degrading to delegate ${actionLabel}`
+    );
+    return null;
+  }
+  return result;
+}
+
+/**
  * Fills the candidate at `index` inside the frame scoped by `frameSelector`
  * with `value`, re-deriving the same hop selector
  * `resolveDeepLocatorCandidates` used (`deep-locator-candidates.ts`) rather
  * than trusting a candidate's display `selector` (`deeplocator=`-prefixed,
- * deliberately not an xpath). Confirms the write by reading the value back
- * through `inputValue()` on the same delegate: returns `true` only when the
- * read-back equals `value`, and `false` — never a throw — when the delegate
- * rejects the fill/read-back or the read-back disagrees (e.g. an SPA
- * re-render normalized or wiped the typed value). A wedged `fill()`/
- * `inputValue()` call that exceeds `timeoutOptions.callTimeoutMs` rejects
- * with a `WatchdogTimeoutError` instead of hanging the caller, the same
- * "rejects on a genuine hang" contract `clickDeepLocatorCandidate` uses.
+ * deliberately not an xpath).
+ *
+ * Prefers the one-round-trip {@link actuateCandidateBatched} fast path when a
+ * frame seam is available: a `written: true` result whose inline `readBack`
+ * already matches `value` resolves `true` immediately (no second round-trip
+ * needed); a `reason: "not-actionable"` result (the matched element has no
+ * layout box) resolves `false` immediately — no delegate write against that
+ * same node could succeed either. Every other batched outcome — no frame
+ * seam, a rejecting or non-conforming evaluate, `reason: "out-of-range"`, or
+ * a `written: true` result whose inline `readBack` disagrees with `value`
+ * (e.g. a controlled component's `onChange` reverted the write on a tick the
+ * single synchronous evaluate call couldn't observe) — degrades to the
+ * legacy `deepLocator(hop).nth(index).fill()` + `.inputValue()` pair rather
+ * than trusting the batched call's verdict outright: returns `true` only
+ * when that separate read-back equals `value`, and `false` — never a throw —
+ * when the delegate rejects the fill/read-back or the read-back disagrees.
+ * The legacy path's watchdog budget scales with `index`
+ * ({@link DEEP_LOCATOR_INDEX_ROUND_TRIP_MS}, the same per-round-trip cost
+ * `clickDeepLocatorCandidate`'s legacy fallback charges), so a candidate deep
+ * in a dense OOPIF form isn't killed by a budget sized for a single
+ * round-trip. A wedged `fill()`/`inputValue()` call that still exceeds that
+ * scaled budget rejects with a `WatchdogTimeoutError` instead of hanging the
+ * caller, the same "rejects on a genuine hang" contract
+ * `clickDeepLocatorCandidate` uses.
  */
 export async function fillDeepLocatorCandidate(
   page: Page,
@@ -83,15 +223,29 @@ export async function fillDeepLocatorCandidate(
 ): Promise<boolean> {
   const callTimeoutMs = timeoutOptions.callTimeoutMs ?? DEFAULT_DEEP_LOCATOR_CALL_TIMEOUT_MS;
   const hopSelector = buildHopSelector(frameSelector, innerSelector);
+
+  const batchedResult = await actuateCandidateBatched(
+    page,
+    frameSelector,
+    hopSelector,
+    index,
+    timeoutOptions,
+    buildFillFrameCandidateExpr(innerSelector, index, value),
+    "fill"
+  );
+  if (batchedResult?.written && batchedResult.readBack === value) return true;
+  if (batchedResult?.reason === "not-actionable") return false;
+
+  const scaledCallTimeoutMs = callTimeoutMs + index * DEEP_LOCATOR_INDEX_ROUND_TRIP_MS;
   return writeAndVerify(
     () =>
       withWatchdog(() => page.deepLocator(hopSelector).nth(index).fill(value), {
-        timeoutMs: callTimeoutMs,
+        timeoutMs: scaledCallTimeoutMs,
         label: `deepLocator fill() for ${hopSelector} nth=${index}`,
       }),
     () =>
       withWatchdog(() => page.deepLocator(hopSelector).nth(index).inputValue(), {
-        timeoutMs: callTimeoutMs,
+        timeoutMs: scaledCallTimeoutMs,
         label: `deepLocator inputValue() for ${hopSelector} nth=${index}`,
       }),
     value
@@ -101,10 +255,10 @@ export async function fillDeepLocatorCandidate(
 /**
  * Selects `value` on the `<select>`-shaped candidate at `index` inside the
  * frame scoped by `frameSelector`, under the exact same re-derived-hop,
- * read-back-verified, watchdog-guarded contract as
- * {@link fillDeepLocatorCandidate} — `selectOption()` is the write, and
- * `inputValue()` (which reads a `<select>`'s selected value the same as any
- * other form control) is the confirmation.
+ * batched-first, read-back-verified, index-scaled-watchdog-guarded contract
+ * as {@link fillDeepLocatorCandidate} — `selectOption()` is the legacy write,
+ * and `inputValue()` (which reads a `<select>`'s selected value the same as
+ * any other form control) is the legacy confirmation.
  */
 export async function selectDeepLocatorCandidateOption(
   page: Page,
@@ -116,15 +270,29 @@ export async function selectDeepLocatorCandidateOption(
 ): Promise<boolean> {
   const callTimeoutMs = timeoutOptions.callTimeoutMs ?? DEFAULT_DEEP_LOCATOR_CALL_TIMEOUT_MS;
   const hopSelector = buildHopSelector(frameSelector, innerSelector);
+
+  const batchedResult = await actuateCandidateBatched(
+    page,
+    frameSelector,
+    hopSelector,
+    index,
+    timeoutOptions,
+    buildSelectFrameCandidateExpr(innerSelector, index, value),
+    "select"
+  );
+  if (batchedResult?.written && batchedResult.readBack === value) return true;
+  if (batchedResult?.reason === "not-actionable") return false;
+
+  const scaledCallTimeoutMs = callTimeoutMs + index * DEEP_LOCATOR_INDEX_ROUND_TRIP_MS;
   return writeAndVerify(
     () =>
       withWatchdog(() => page.deepLocator(hopSelector).nth(index).selectOption(value), {
-        timeoutMs: callTimeoutMs,
+        timeoutMs: scaledCallTimeoutMs,
         label: `deepLocator selectOption() for ${hopSelector} nth=${index}`,
       }),
     () =>
       withWatchdog(() => page.deepLocator(hopSelector).nth(index).inputValue(), {
-        timeoutMs: callTimeoutMs,
+        timeoutMs: scaledCallTimeoutMs,
         label: `deepLocator inputValue() for ${hopSelector} nth=${index}`,
       }),
     value
