@@ -366,6 +366,29 @@ describe("selectDeepLocatorCandidateOption batched frame-scoped select", () => {
     expect(deepLocatorSpy).not.toHaveBeenCalled();
   });
 
+  it("returns true, without a delegate call, when the frame seam matched by label and its readBack (the option's value) differs from the label passed in", async () => {
+    const deepLocatorSpy = vi.fn();
+    const page = { deepLocator: deepLocatorSpy };
+    const { frameTarget, evaluateSpy } = makeFakeFrameTarget(async () => ({
+      written: true,
+      readBack: "US",
+    }));
+
+    const result = await selectDeepLocatorCandidateOption(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      page as any,
+      FRAME_SELECTOR,
+      "select",
+      0,
+      "United States",
+      { frameTarget }
+    );
+
+    expect(result).toBe(true);
+    expect(evaluateSpy).toHaveBeenCalledTimes(1);
+    expect(deepLocatorSpy).not.toHaveBeenCalled();
+  });
+
   it("resolves false without a delegate call when the frame seam reports the candidate not-actionable", async () => {
     const deepLocatorSpy = vi.fn();
     const page = { deepLocator: deepLocatorSpy };
