@@ -4,6 +4,12 @@
 > [../CLAUDE.md](../CLAUDE.md). For architecture context, see
 > [architecture.md](./architecture.md).
 
+> **Not yet shipped:** the "Run-attached telemetry fields" guidance and the
+> `context.telemetry` stubbing example below describe a planned
+> engine-level feature (`feat-001`–`feat-007`) that has not landed on
+> `main` — `SitePluginContext` has no `telemetry` member in this tree yet.
+> Treat this guidance as forward-looking, not a pattern you can use today.
+
 ---
 
 ## Running tests
@@ -214,6 +220,14 @@ A new plugin needs tests for:
    only the fields you intend to write to the DB (no PII, right shape).
 4. **`onRetry` hook** — if your plugin implements `onRetry`, assert it is called
    with the correct `ScraperError` and attempt number on each retry cycle.
+5. **Run-attached telemetry fields** — if your plugin calls
+   `context.telemetry.addJoinKeys()` to attach a join key it only discovers
+   mid-run (something `extractJoinKeys` can't see because it only ever
+   resolves once against the inbound payload — a token minted mid-flow, a
+   value scraped off a confirmation page), stub `context.telemetry` on the
+   `SitePluginContext` you pass in and assert `addJoinKeys` was called with
+   the right fields at the point in `execute()`/`executeHttp()` where the
+   value becomes known.
 
 **Mock the wrapper, not the factory.** Plugins call `createHttpClient()` (or
 `createGraphqlClient()`) once at module scope and reuse the returned wrapper
@@ -250,6 +264,41 @@ it("hot path returns items from the GraphQL response", async () => {
   expect(result.data.data.items[0]?.id).toBe("1");
 });
 ```
+
+**Stub `context.telemetry`, not a module.** `SitePluginContext.telemetry` is
+bound by `buildPluginContext` (`src/plugins/loader.ts`) the same way
+`recordBeaconOutcome` is — it is a plain object your test constructs by hand
+as part of `SitePluginContext`, not something you `vi.mock()` a module for.
+Assert on the `addJoinKeys` spy directly rather than inspecting core's
+merged `joinKeys`; `dispatch()`'s own merge with `extractJoinKeys(payload)`
+is core's concern, not the plugin's.
+
+```ts
+// Example: asserting a mid-run join-key attachment
+const addJoinKeys = vi.fn();
+const stubContext = {
+  baseUrl: "https://my-site.com",
+  logger: mockLogger,
+  config: mockConfig,
+  requestId: "req-test-123",
+  metricsCollector: mockMetricsCollector,
+  recordBeaconOutcome: vi.fn().mockResolvedValue(undefined),
+  telemetry: { addJoinKeys },
+} as unknown as SitePluginContext;
+
+it("attaches the confirmation token discovered mid-run as a join key", async () => {
+  const session = makeSession();
+  await mySitePlugin.execute({ query: "widget" }, session, stubContext);
+
+  expect(addJoinKeys).toHaveBeenCalledWith({ confirmationToken: "abc123" });
+});
+```
+
+Build the stub with `as unknown as SitePluginContext` rather than a direct
+`: SitePluginContext` annotation — the direct annotation runs an excess-
+property check against every field on the interface (including ones added
+after this test was written), which is exactly the kind of churn a stub
+object shouldn't be exposed to.
 
 ---
 
