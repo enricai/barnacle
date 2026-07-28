@@ -6,16 +6,22 @@
 > companion to the operator runbook in [playbook.md](./playbook.md).
 
 > **Not yet shipped:** the mid-run join-key attach point
-> (`context.telemetry.addJoinKeys()` / `RunTelemetry`), the
-> `session`/`sessionIp` record fields, and the "Session-IP capture knobs"
-> below describe a planned engine-level feature (`feat-001`–`feat-007`).
-> That implementation has not landed on `main` — none of
-> `src/lib/telemetry/run-telemetry.ts`, `SitePluginContext.telemetry`, or the
-> `session`/`sessionIp` schema fields exist in this tree yet.
-> `src/scraper/session-ip.ts` (the standalone IP-echo resolver) has landed,
-> but it is not yet wired into `BrowserSession`/`getOutboundIp()` or config —
-> that wiring is still pending. This section documents the shipped design
-> once it lands; until then, treat it as a spec, not a current API reference.
+> (`context.telemetry.addJoinKeys()` / `RunTelemetry`) and the dispatch-level
+> session-IP wiring — `dispatch()` actually reading a session's outbound IP
+> and populating the `session`/`sessionIp` record fields below — describe a
+> planned engine-level feature (`feat-001`–`feat-007`). That implementation
+> has not landed on `main` — `src/lib/telemetry/run-telemetry.ts` exists as
+> a standalone module but `SitePluginContext.telemetry` does not, and
+> `dispatch()` never calls `session.getOutboundIp()`, so the `session`/
+> `sessionIp` schema fields below are always `null` in practice today even
+> though the fields themselves are defined. `getOutboundIp()` itself (the
+> memoized `BrowserSession` accessor around `resolveSessionOutboundIp`) and
+> the "Session-IP capture knobs" config have landed and are wired on
+> Browserbase sessions — only the `dispatch()` plumbing that reads the
+> accessor and stamps it onto a record remains outstanding. This section
+> documents the shipped design once that lands; until then, treat the
+> paragraphs describing dispatch-level recording as a spec, not a current
+> API reference.
 
 ---
 
