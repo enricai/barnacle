@@ -454,7 +454,7 @@ plugin drives itself. To report the real outcome, call
 `executeHttp()`, or an extra-route handler:
 
 ```ts
-import type { SitePlugin, SitePluginContext } from "@/site-plugin";
+import type { SitePlugin, SitePluginContext } from "@enricai/barnacle/site-plugin";
 
 export const myPlugin: SitePlugin<MyPayload, MyResponse> = {
   extractJoinKeys: (payload) =>
@@ -482,8 +482,10 @@ request. A `fired`/`failed` line recorded this way outranks the automatic
 `skipped` line for the same `requestId` when the two are folded together
 (see [Telemetry & LLM judging](docs/telemetry-and-judging.md)). A plugin that
 never calls it keeps today's unchanged `skipped` default. Import
-`BeaconOutcomeInput` from `@/site-plugin` if you want to type the input
-object explicitly.
+`BeaconOutcomeInput` from `@enricai/barnacle/site-plugin` if you want to type
+the input object explicitly — that's the published subpath an out-of-tree
+plugin resolves against its own `node_modules`; in-tree code under `src/`
+uses the `@/site-plugin` alias instead.
 
 **Config-only `*.plugin.json` manifests cannot record their own beacon
 outcome** — like `extractJoinKeys`, `recordBeaconOutcome` is only reachable
