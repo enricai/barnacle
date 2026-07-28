@@ -270,15 +270,15 @@ is core's concern, not the plugin's.
 ```ts
 // Example: asserting a mid-run join-key attachment
 const addJoinKeys = vi.fn();
-const stubContext: SitePluginContext = {
+const stubContext = {
   baseUrl: "https://my-site.com",
   logger: mockLogger,
   config: mockConfig,
   requestId: "req-test-123",
   metricsCollector: mockMetricsCollector,
   recordBeaconOutcome: vi.fn().mockResolvedValue(undefined),
-  telemetry: { addJoinKeys } as unknown as SitePluginContext["telemetry"],
-};
+  telemetry: { addJoinKeys },
+} as unknown as SitePluginContext;
 
 it("attaches the confirmation token discovered mid-run as a join key", async () => {
   const session = makeSession();
@@ -287,6 +287,12 @@ it("attaches the confirmation token discovered mid-run as a join key", async () 
   expect(addJoinKeys).toHaveBeenCalledWith({ confirmationToken: "abc123" });
 });
 ```
+
+Build the stub with `as unknown as SitePluginContext` rather than a direct
+`: SitePluginContext` annotation — the direct annotation runs an excess-
+property check against every field on the interface (including ones added
+after this test was written), which is exactly the kind of churn a stub
+object shouldn't be exposed to.
 
 ---
 
