@@ -89,6 +89,20 @@ function allLoggedLines(): string {
 }
 
 /**
+ * Per-test timeout override (vitest's documented third `it()` argument) for
+ * the two tests below that call {@link advancePastDeepLocatorHangs}. Each
+ * timer-advance step in that helper does real CPU work (draining the real
+ * `guardedObserve`/`guardedAct`/`resolveDeepLocatorCandidates` stack, not
+ * just the fake clock), so wall-clock cost scales with sibling-process
+ * contention under the full suite — comfortably under 1s standalone but
+ * capable of exceeding vitest's global 30s `testTimeout` when many other
+ * test files' forks (or unrelated host processes) are competing for CPU.
+ * Raising only these two tests' budget (rather than the global
+ * `testTimeout`) keeps every other test's hang-detection window tight.
+ */
+const DEEP_LOCATOR_HANG_TEST_TIMEOUT_MS = 90_000;
+
+/**
  * Advances the fake clock well past every deepLocator per-call watchdog the
  * cascade's 5 attempts could hit (10s default, `deep-locator-candidates.ts`),
  * in many small steps rather than a few large ones. Sinon's fake-clock
@@ -98,7 +112,13 @@ function allLoggedLines(): string {
  * `vi.mock`-based `flow-runner.deep-locator-hang.test.ts`) chains far more
  * awaits per attempt than that bound allows in one shot, so a handful of
  * 10s jumps stalls partway through — many 1s jumps give the queue enough
- * chances to fully drain between each timer step.
+ * chances to fully drain between each timer step. (Stepping one pending
+ * timer at a time via `advanceTimersToNextTimerAsync` was tried and
+ * measured slower, not faster: each step costs two real macrotask
+ * round-trips, and this loop's fixed 1s jumps already batch many of those
+ * round-trips into a single `tickAsync` call, so the fixed-step shape is
+ * kept — see `DEEP_LOCATOR_HANG_TEST_TIMEOUT_MS` for the actual contention
+ * fix.)
  */
 async function advancePastDeepLocatorHangs(): Promise<void> {
   for (let i = 0; i < 300; i++) {
@@ -217,74 +237,92 @@ describe("flow-runner OOPIF-bound deepLocator hang (offline acceptance test, rea
     vi.useRealTimers();
   });
 
-  it("fails fast to the next attempt/replan instead of hanging when a bound OOPIF's deepLocator count() never settles", async () => {
-    const topUrl = { current: `${TOP_ORIGIN}/jobs/123/apply` };
-    const childUrls = { current: CHILD_SRC };
-    const deepLocatorFrame: FakeDeepLocatorFrame = new Map();
-    hangingHop = registerDeepLocatorHangingHop(deepLocatorFrame, HOP_SELECTOR, {
-      hangOn: "count",
-    });
-    const stagehand = makeFakeStagehandObserveBlind();
-    const page = makeFakeTopPage(topUrl, childUrls, deepLocatorFrame);
+  it(
+    "fails fast to the next attempt/replan instead of hanging when a bound OOPIF's deepLocator count() never settles",
+    async () => {
+      const topUrl = { current: `${TOP_ORIGIN}/jobs/123/apply` };
+      const childUrls = { current: CHILD_SRC };
+      const deepLocatorFrame: FakeDeepLocatorFrame = new Map();
+      hangingHop = registerDeepLocatorHangingHop(deepLocatorFrame, HOP_SELECTOR, {
+        hangOn: "count",
+      });
+      const stagehand = makeFakeStagehandObserveBlind();
+      const page = makeFakeTopPage(topUrl, childUrls, deepLocatorFrame);
 
-    const resultPromise = runHealingFlow({
-      stagehand,
-      page,
-      steps: [
-        { instruction: MANUAL_APPLICATION_STEP, optional: false, upload: false, submitStep: false },
-      ],
-      logger: testLogger,
-      anthropic: null,
-      resumeFixture: null,
-      frameSelector: IFRAME_SELECTOR,
-    });
-    const assertion = expect(resultPromise).rejects.toThrow(
-      /failed verification after \d+ attempts/
-    );
+      const resultPromise = runHealingFlow({
+        stagehand,
+        page,
+        steps: [
+          {
+            instruction: MANUAL_APPLICATION_STEP,
+            optional: false,
+            upload: false,
+            submitStep: false,
+          },
+        ],
+        logger: testLogger,
+        anthropic: null,
+        resumeFixture: null,
+        frameSelector: IFRAME_SELECTOR,
+      });
+      const assertion = expect(resultPromise).rejects.toThrow(
+        /failed verification after \d+ attempts/
+      );
 
-    await advancePastDeepLocatorHangs();
-    await assertion;
+      await advancePastDeepLocatorHangs();
+      await assertion;
 
-    const logged = allLoggedLines();
-    for (const attempt of [1, 2, 3, 4, 5]) {
-      expect(logged).toMatch(new RegExp(`attempt ${attempt}\\b`));
-    }
-  });
+      const logged = allLoggedLines();
+      for (const attempt of [1, 2, 3, 4, 5]) {
+        expect(logged).toMatch(new RegExp(`attempt ${attempt}\\b`));
+      }
+    },
+    DEEP_LOCATOR_HANG_TEST_TIMEOUT_MS
+  );
 
-  it("fails fast to the next attempt/replan instead of hanging when a bound OOPIF's deepLocator click() never settles", async () => {
-    const topUrl = { current: `${TOP_ORIGIN}/jobs/123/apply` };
-    const childUrls = { current: CHILD_SRC };
-    const deepLocatorFrame: FakeDeepLocatorFrame = new Map();
-    hangingHop = registerDeepLocatorHangingHop(deepLocatorFrame, HOP_SELECTOR, {
-      hangOn: "click",
-      text: "Manual Application",
-    });
-    const stagehand = makeFakeStagehandObserveBlind();
-    const page = makeFakeTopPage(topUrl, childUrls, deepLocatorFrame);
+  it(
+    "fails fast to the next attempt/replan instead of hanging when a bound OOPIF's deepLocator click() never settles",
+    async () => {
+      const topUrl = { current: `${TOP_ORIGIN}/jobs/123/apply` };
+      const childUrls = { current: CHILD_SRC };
+      const deepLocatorFrame: FakeDeepLocatorFrame = new Map();
+      hangingHop = registerDeepLocatorHangingHop(deepLocatorFrame, HOP_SELECTOR, {
+        hangOn: "click",
+        text: "Manual Application",
+      });
+      const stagehand = makeFakeStagehandObserveBlind();
+      const page = makeFakeTopPage(topUrl, childUrls, deepLocatorFrame);
 
-    const resultPromise = runHealingFlow({
-      stagehand,
-      page,
-      steps: [
-        { instruction: MANUAL_APPLICATION_STEP, optional: false, upload: false, submitStep: false },
-      ],
-      logger: testLogger,
-      anthropic: null,
-      resumeFixture: null,
-      frameSelector: IFRAME_SELECTOR,
-    });
-    const assertion = expect(resultPromise).rejects.toThrow(
-      /failed verification after \d+ attempts/
-    );
+      const resultPromise = runHealingFlow({
+        stagehand,
+        page,
+        steps: [
+          {
+            instruction: MANUAL_APPLICATION_STEP,
+            optional: false,
+            upload: false,
+            submitStep: false,
+          },
+        ],
+        logger: testLogger,
+        anthropic: null,
+        resumeFixture: null,
+        frameSelector: IFRAME_SELECTOR,
+      });
+      const assertion = expect(resultPromise).rejects.toThrow(
+        /failed verification after \d+ attempts/
+      );
 
-    await advancePastDeepLocatorHangs();
-    await assertion;
+      await advancePastDeepLocatorHangs();
+      await assertion;
 
-    const logged = allLoggedLines();
-    for (const attempt of [1, 2, 3, 4, 5]) {
-      expect(logged).toMatch(new RegExp(`attempt ${attempt}\\b`));
-    }
-  });
+      const logged = allLoggedLines();
+      for (const attempt of [1, 2, 3, 4, 5]) {
+        expect(logged).toMatch(new RegExp(`attempt ${attempt}\\b`));
+      }
+    },
+    DEEP_LOCATOR_HANG_TEST_TIMEOUT_MS
+  );
 });
 
 describe("flow-runner frame-attach probe hang (offline acceptance test, real stack)", () => {
