@@ -122,13 +122,16 @@ const DEEP_LOCATOR_HANG_TEST_TIMEOUT_MS = 120_000;
  * `vi.mock`-based `flow-runner.deep-locator-hang.test.ts`) chains far more
  * awaits per attempt than that bound allows in one shot, so a handful of
  * 10s jumps stalls partway through — many 1s jumps give the queue enough
- * chances to fully drain between each timer step. (Stepping one pending
- * timer at a time via `advanceTimersToNextTimerAsync` was tried and
- * measured slower, not faster: each step costs two real macrotask
- * round-trips, and this loop's fixed 1s jumps already batch many of those
- * round-trips into a single `tickAsync` call, so the fixed-step shape is
- * kept — see `DEEP_LOCATOR_HANG_TEST_TIMEOUT_MS` for the actual contention
- * fix.)
+ * chances to fully drain between each timer step. (A `vi.getTimerCount() >
+ * 0`-gated loop stepping one pending timer at a time via
+ * `advanceTimersToNextTimerAsync` was tried: it measurably deadlocks
+ * instead — the timer count can read 0 between real fires even though the
+ * cascade's continuation hasn't yet scheduled its next watchdog, so the
+ * loop exits before every attempt has run and `await assertion` hangs
+ * forever waiting on a fake timer nothing is advancing anymore. The fixed
+ * 300-step loop sidesteps that by never trusting the timer count as an
+ * exit signal — see `DEEP_LOCATOR_HANG_TEST_TIMEOUT_MS` for the actual
+ * contention fix.)
  */
 async function advancePastDeepLocatorHangs(): Promise<void> {
   for (let i = 0; i < 300; i++) {
