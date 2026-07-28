@@ -22,6 +22,14 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import {
+  type NormalizedStep,
+  persistReplannedFlow,
+  RECON_FLOW_FILE_SCHEMA,
+  type ReplanEvent,
+} from "@/scripts/recon-browser";
+import type { Logger } from "@/types/logging";
+
 vi.mock("@/config", () => ({
   config: {
     scraper: {
@@ -52,14 +60,6 @@ const { loggerStub } = vi.hoisted(() => ({
     errorWithStack: vi.fn(),
   },
 }));
-
-import {
-  type NormalizedStep,
-  persistReplannedFlow,
-  RECON_FLOW_FILE_SCHEMA,
-  type ReplanEvent,
-} from "@/scripts/recon-browser";
-import type { Logger } from "@/types/logging";
 
 const testLogger = loggerStub as unknown as Logger;
 
