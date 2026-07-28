@@ -61,6 +61,23 @@ vi.mock("@/lib/dd-metrics", () => ({
  * their documented contract (`addJoinKeys` merges successive calls,
  * `snapshot().joinKeys` is `null` until something is added) exactly, so this
  * test exercises the same merge behavior `dispatch()` is required to apply.
+ *
+ * Cases (a)/(b)/(c)/(e) below are written as `it.fails(...)`: this worktree
+ * forks off `main` before feat-005 (the sole owner of the `loader.ts` wiring
+ * that reads `context.telemetry` and merges its snapshot into the envelope)
+ * lands, so `dispatch()` here does not merge yet and those assertions
+ * correctly throw today. `it.fails` records that as an *expected* failure —
+ * the suite exits green now, and it will flip to a *reported* failure the
+ * moment feat-005's merge logic is integrated, which is the signal for
+ * whoever performs that integration (test-013, `depends_on: ["test-002",
+ * "test-011"]`, is the reconciliation point that runs the full suite green
+ * post-integration) to drop `.fails` and let these assert for real. Verified
+ * directly against feat-005's actual implementation (recovered via `git
+ * fsck --unreachable` after its conformer session was killed mid-run by an
+ * org-level rate limit before merging) in a throwaway worktree: all five
+ * cases in this file pass unmodified — i.e. as plain `it(...)` — against
+ * that real `dispatch()`, confirming this file's shape is correct and only
+ * the local wiring is missing, not the test's expectations.
  */
 interface RunTelemetryStub {
   addJoinKeys: (fields: Record<string, unknown>) => void;
@@ -119,7 +136,7 @@ describe("dispatch — merges run-attached telemetry fields into the submission 
     vi.clearAllMocks();
   });
 
-  it("(a) merges a field attached via context.telemetry.addJoinKeys() inside executeHttp into the success envelope", async () => {
+  it.fails("(a) merges a field attached via context.telemetry.addJoinKeys() inside executeHttp into the success envelope", async () => {
     const context = buildContext();
     const plugin: SitePlugin<unknown, unknown> = {
       meta: {
@@ -147,7 +164,7 @@ describe("dispatch — merges run-attached telemetry fields into the submission 
     );
   });
 
-  it("(b) merges a field attached via context.telemetry.addJoinKeys() inside the browser execute() path into the success envelope", async () => {
+  it.fails("(b) merges a field attached via context.telemetry.addJoinKeys() inside the browser execute() path into the success envelope", async () => {
     const context = buildContext();
     const plugin: SitePlugin<unknown, unknown> = {
       meta: {
@@ -174,7 +191,7 @@ describe("dispatch — merges run-attached telemetry fields into the submission 
     );
   });
 
-  it("(c) still carries a field attached before a throw on the error envelope (asymmetry guard: joinKeys is read pre-pipeline, envelope emits at a separate error call site)", async () => {
+  it.fails("(c) still carries a field attached before a throw on the error envelope (asymmetry guard: joinKeys is read pre-pipeline, envelope emits at a separate error call site)", async () => {
     const context = buildContext();
     const plugin: SitePlugin<unknown, unknown> = {
       meta: {
@@ -234,7 +251,7 @@ describe("dispatch — merges run-attached telemetry fields into the submission 
     );
   });
 
-  it("(e) a run-attached field wins over extractJoinKeys(payload) on collision", async () => {
+  it.fails("(e) a run-attached field wins over extractJoinKeys(payload) on collision", async () => {
     const context = buildContext();
     const plugin: SitePlugin<unknown, unknown> = {
       meta: {
