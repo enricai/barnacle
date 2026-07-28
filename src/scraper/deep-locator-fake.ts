@@ -434,6 +434,213 @@ export function makeFakeDeepLocator(
 }
 
 /**
+ * Minimal fake DOM element supporting exactly the surface
+ * {@link buildScanFrameCandidatesExpr} (`deep-locator-scan.ts`) touches:
+ * `textContent`, `getBoundingClientRect`, `getAttribute`, `closest`, plus a
+ * `computedStyle` bag the fake global `getComputedStyle` reads from. Shared
+ * here (not duplicated per test file) so `deep-locator-scan.dense-form.
+ * test.ts` and Stagehand-contract tests can execute the SAME generated
+ * expression against the SAME fixture shape as `deep-locator-scan.test.ts`'s
+ * own hand-built fixture.
+ */
+export interface FakeDomElement {
+  readonly textContent: string;
+  readonly tagName: string;
+  readonly attributes: Readonly<Record<string, string>>;
+  readonly rect: { readonly width: number; readonly height: number };
+  readonly computedStyle: { readonly display: string; readonly visibility: string };
+  readonly parent: FakeDomElement | null;
+  getBoundingClientRect(): { readonly width: number; readonly height: number };
+  getAttribute(name: string): string | null;
+  closest(selector: string): FakeDomElement | null;
+}
+
+/** Fake `document`/frame-document surface: the two lookups the accessible-name precedence chain needs beyond the matched candidate set itself. */
+export interface FakeDomRoot {
+  querySelectorAll(selector: string): FakeDomElement[];
+  getElementById(id: string): FakeDomElement | null;
+}
+
+/** Optional overrides {@link makeFakeDomElement} accepts beyond its default rendered `div`. */
+export interface MakeFakeDomElementOptions {
+  readonly tagName?: string;
+  readonly attributes?: Record<string, string>;
+  readonly rect?: { readonly width: number; readonly height: number };
+  readonly computedStyle?: { readonly display: string; readonly visibility: string };
+  readonly parent?: FakeDomElement | null;
+}
+
+/** Parses one simple-selector clause — a bare tag, `[attr]`, or `[attr=value]` — the three shapes {@link INTERACTIVE_CANDIDATE_SELECTOR} composes via commas. No combinators, descendant selectors, or pseudo-classes: the generated expression only ever calls `querySelectorAll` with a flat, comma-joined clause list. */
+function parseSimpleSelectorClause(
+  clause: string
+): { readonly tag: string } | { readonly attr: string; readonly value: string | null } {
+  const trimmed = clause.trim();
+  const attrMatch = /^\[([a-zA-Z-]+)(?:=(.*))?\]$/.exec(trimmed);
+  if (!attrMatch) return { tag: trimmed.toLowerCase() };
+  const [, attr, rawValue] = attrMatch;
+  const value = rawValue === undefined ? null : rawValue.replace(/^["']|["']$/g, "");
+  return { attr: attr ?? "", value };
+}
+
+/** Matches `el` against one comma-separated clause of a selector — the attribute-aware step {@link makeSelectorAwareDomRoot}'s `querySelectorAll` and {@link makeFakeDomElement}'s `closest` both need beyond a bare tag-name comparison. */
+function matchesSelectorClause(el: FakeDomElement, clause: string): boolean {
+  const parsed = parseSimpleSelectorClause(clause);
+  if ("tag" in parsed) return el.tagName.toLowerCase() === parsed.tag;
+  const attrValue = el.getAttribute(parsed.attr);
+  if (attrValue === null) return false;
+  return parsed.value === null || attrValue === parsed.value;
+}
+
+/** `true` when `el` matches any comma-separated clause of `selector` — the full `querySelectorAll(selector)` predicate. */
+function matchesSelector(el: FakeDomElement, selector: string): boolean {
+  return selector.split(",").some((clause) => matchesSelectorClause(el, clause));
+}
+
+/**
+ * Builds one fake DOM element. Defaults model a rendered, tag-less `div`
+ * with no accessible-name signal — the "structural filler" shape a dense
+ * form fixture needs many of — so a caller building a large fixture only
+ * spells out the overrides that make a specific element interesting.
+ */
+export function makeFakeDomElement(
+  textContent = "",
+  options: MakeFakeDomElementOptions = {}
+): FakeDomElement {
+  const tagName = options.tagName ?? "div";
+  const attributes = options.attributes ?? {};
+  const rect = options.rect ?? { width: 100, height: 20 };
+  const computedStyle = options.computedStyle ?? { display: "block", visibility: "visible" };
+  const parent = options.parent ?? null;
+  const el: FakeDomElement = {
+    textContent,
+    tagName,
+    attributes,
+    rect,
+    computedStyle,
+    parent,
+    getBoundingClientRect() {
+      return rect;
+    },
+    getAttribute(name) {
+      return attributes[name] ?? null;
+    },
+    closest(selector) {
+      const found = (node: FakeDomElement | null): FakeDomElement | null => {
+        if (!node) return null;
+        return matchesSelector(node, selector) ? node : found(node.parent);
+      };
+      return found(el);
+    },
+  };
+  return el;
+}
+
+/**
+ * Builds a selector-aware fake `document` root: `querySelectorAll` supports
+ * the exact clause shapes {@link INTERACTIVE_CANDIDATE_SELECTOR} needs (a
+ * bare tag, `[attr]`, `[attr=value]`, comma-joined, or `"*"`) instead of
+ * `deep-locator-scan.test.ts`'s tag-only `makeRoot`, so a fixture exercising
+ * that constant's `[role=button]` / `[tabindex]` clauses actually selects
+ * against them.
+ */
+export function makeSelectorAwareDomRoot(elements: readonly FakeDomElement[]): FakeDomRoot {
+  return {
+    querySelectorAll(selector) {
+      if (selector.trim() === "*") return [...elements];
+      return elements.filter((el) => matchesSelector(el, selector));
+    },
+    getElementById(id) {
+      return elements.find((el) => el.getAttribute("id") === id) ?? null;
+    },
+  };
+}
+
+/** Total node count {@link buildDenseFormFixture} produces — the live-measured `#talemetry_apply_iframe >> *` match count from the uchealth-7 bug report. */
+export const DENSE_FORM_TOTAL_COUNT = 371;
+
+/** Accessible name {@link buildDenseFormFixture}'s icon-only target button resolves to — mirrors the live report's `button.c-SocialButton-button-25:has(svg[data-testid='EditIcon'])` control, modeled here as a plain icon-only `button` named via `aria-label` since `:has()` support is not what this fixture is for. */
+export const DENSE_FORM_TARGET_TEXT = "Manual Application";
+
+/** Accessible names of {@link buildDenseFormFixture}'s two unrendered decoys — one `display:none`, one a 0x0 layout box — the two shapes a real click rejects with the CDP `-32000 Node does not have a layout object` error. */
+export const DENSE_FORM_DECOY_TEXTS = ["Upload a Resume/CV", "Use LinkedIn Profile"] as const;
+
+/** {@link buildDenseFormFixture}'s return shape: the assembled root plus its flat element list, so a caller can assert against fixture composition (e.g. total count) without re-deriving it from the root. */
+export interface DenseFormFixture {
+  readonly root: FakeDomRoot;
+  readonly elements: readonly FakeDomElement[];
+}
+
+/**
+ * Builds the {@link DENSE_FORM_TOTAL_COUNT}-node dense-OOPIF-shaped fixture
+ * the uchealth-7 bug report measured (`#talemetry_apply_iframe >> *`
+ * matching 371 elements): mostly structural `div`/`span` filler, a handful
+ * of real form controls, an icon-only target button, and two unrendered
+ * decoys. Exported (not inlined per test file) so `test-002`'s Stagehand-
+ * resolver-contract pin can run the installed dependency's own resolver
+ * against the IDENTICAL fixture `deep-locator-scan.dense-form.test.ts`
+ * proves {@link buildScanFrameCandidatesExpr} against.
+ */
+export function buildDenseFormFixture(): DenseFormFixture {
+  const [uploadDecoyText, linkedinDecoyText] = DENSE_FORM_DECOY_TEXTS;
+  const structuralCount =
+    DENSE_FORM_TOTAL_COUNT -
+    6 /* firstName, country, coverLetter, learnMore, saveDraft, moreOptions */ -
+    1 /* target */ -
+    2 /* decoys */;
+  const structural = Array.from({ length: structuralCount }, (_, index) =>
+    makeFakeDomElement("", { tagName: index % 2 === 0 ? "div" : "span" })
+  );
+  const firstName = makeFakeDomElement("", {
+    tagName: "input",
+    attributes: { "aria-label": "First Name" },
+  });
+  const country = makeFakeDomElement("", {
+    tagName: "select",
+    attributes: { "aria-label": "Country" },
+  });
+  const coverLetter = makeFakeDomElement("", {
+    tagName: "textarea",
+    attributes: { "aria-label": "Cover Letter" },
+  });
+  const learnMore = makeFakeDomElement("Learn more", { tagName: "a", attributes: { href: "#" } });
+  const saveDraft = makeFakeDomElement("Save Draft", {
+    tagName: "div",
+    attributes: { role: "button" },
+  });
+  const moreOptions = makeFakeDomElement("More options", {
+    tagName: "div",
+    attributes: { tabindex: "0" },
+  });
+  const target = makeFakeDomElement("", {
+    tagName: "button",
+    attributes: { "aria-label": DENSE_FORM_TARGET_TEXT },
+  });
+  const uploadDecoy = makeFakeDomElement(uploadDecoyText, {
+    tagName: "button",
+    computedStyle: { display: "none", visibility: "visible" },
+  });
+  const linkedinDecoy = makeFakeDomElement(linkedinDecoyText, {
+    tagName: "button",
+    rect: { width: 0, height: 0 },
+  });
+
+  const elements = [
+    ...structural,
+    firstName,
+    country,
+    coverLetter,
+    learnMore,
+    saveDraft,
+    moreOptions,
+    uploadDecoy,
+    linkedinDecoy,
+    target,
+  ];
+
+  return { root: makeSelectorAwareDomRoot(elements), elements };
+}
+
+/**
  * Fake frame-scoped batched evaluate bound to `selector` — models the seam
  * `resolveDeepLocatorCandidates`'s batched-scan fix calls once per frame via
  * `FrameTarget.evaluate(buildScanFrameCandidatesExpr(innerSelector))`
