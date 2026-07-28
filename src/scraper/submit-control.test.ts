@@ -10,10 +10,12 @@ import {
 /**
  * Minimal fake DOM element supporting exactly the surface the generated
  * expressions touch (`tagName`, `getAttribute`, `textContent`,
- * `querySelectorAll`, `shadowRoot`, `focus`, `dispatchEvent`). Mirrors the
- * fixture in `deep-query.test.ts` so both modules exercise the real
- * generated expression strings against a hand-built tree rather than a
- * re-implementation of the traversal.
+ * `querySelectorAll`, `shadowRoot`, `focus`, `dispatchEvent`,
+ * `getBoundingClientRect`) plus a `computedStyle` bag the fake global
+ * `getComputedStyle` reads from. Mirrors the fixture in `deep-query.test.ts`
+ * and `deep-locator-scan.test.ts`'s visibility shape so all three modules
+ * exercise the real generated expression strings against a hand-built tree
+ * rather than a re-implementation of the traversal.
  */
 interface FakeEl {
   tagName: string;
@@ -21,10 +23,13 @@ interface FakeEl {
   textContent: string;
   children: FakeEl[];
   shadowRoot: FakeRoot | null;
+  rect: { width: number; height: number };
+  computedStyle: { display: string; visibility: string };
   clicked: boolean;
   focused: boolean;
   getAttribute(name: string): string | null;
   querySelectorAll(selector: "*"): FakeEl[];
+  getBoundingClientRect(): { width: number; height: number };
   focus(): void;
   dispatchEvent(evt: { type: string }): void;
 }
@@ -33,13 +38,25 @@ interface FakeRoot {
   querySelectorAll(selector: "*"): FakeEl[];
 }
 
-function makeEl(tagName: string, attrs: Record<string, string> = {}, textContent = ""): FakeEl {
+function makeEl(
+  tagName: string,
+  attrs: Record<string, string> = {},
+  textContent = "",
+  overrides: Partial<{
+    rect: { width: number; height: number };
+    computedStyle: { display: string; visibility: string };
+  }> = {}
+): FakeEl {
+  const rect = overrides.rect ?? { width: 100, height: 20 };
+  const computedStyle = overrides.computedStyle ?? { display: "block", visibility: "visible" };
   const el: FakeEl = {
     tagName: tagName.toUpperCase(),
     attrs,
     textContent,
     children: [],
     shadowRoot: null,
+    rect,
+    computedStyle,
     clicked: false,
     focused: false,
     getAttribute(name) {
@@ -47,6 +64,9 @@ function makeEl(tagName: string, attrs: Record<string, string> = {}, textContent
     },
     querySelectorAll() {
       return flattenDescendants(el.children);
+    },
+    getBoundingClientRect() {
+      return rect;
     },
     focus() {
       el.focused = true;
@@ -82,12 +102,14 @@ function makeRoot(topLevel: FakeEl[]): FakeRoot {
 
 /**
  * Executes a generated expression string against a fake `document` bound
- * as global `document`, plus a minimal `Event` constructor (the generated
- * click code only reads `.type` off it).
+ * as global `document`, plus a fake `getComputedStyle` that reads each fake
+ * element's own `computedStyle` bag, and a minimal `Event` constructor (the
+ * generated click code only reads `.type` off it).
  */
 function evaluateInFakePage(expr: string, document: FakeRoot): unknown {
   return runInNewContext(expr, {
     document,
+    getComputedStyle: (el: FakeEl) => el.computedStyle,
     Event: class {
       type: string;
       constructor(type: string) {
@@ -111,6 +133,7 @@ function evaluateInFakeFrame(expr: string, frameDocument: FakeRoot, outerRoot: F
   return runInNewContext(expr, {
     document: frameDocument,
     __outerDocumentNeverReferenced: outerRoot,
+    getComputedStyle: (el: FakeEl) => el.computedStyle,
     Event: class {
       type: string;
       constructor(type: string) {
@@ -322,6 +345,60 @@ describe("submit-control/buildRankSubmitCandidatesExpr", () => {
     expect(result[0]?.accessibleName).toBe("submit");
   });
 
+  it('excludes a type="submit" button with a 0x0 rect (hidden wizard step) while ranking a rendered sibling normally', () => {
+    const hiddenStepSubmit = makeEl("button", { type: "submit" }, "Submit", {
+      rect: { width: 0, height: 0 },
+    });
+    const renderedSubmit = makeEl("button", { type: "submit" }, "Submit");
+    const document = makeRoot([hiddenStepSubmit, renderedSubmit]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.tier).toBe(3);
+    expect(result[0]?.deepIndex).toBe(1);
+  });
+
+  it('excludes a type="submit" button with computed display:none while ranking a rendered sibling normally', () => {
+    const hiddenStepSubmit = makeEl("button", { type: "submit" }, "Submit", {
+      computedStyle: { display: "none", visibility: "visible" },
+    });
+    const renderedSubmit = makeEl("button", { type: "submit" }, "Submit");
+    const document = makeRoot([hiddenStepSubmit, renderedSubmit]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.tier).toBe(3);
+    expect(result[0]?.deepIndex).toBe(1);
+  });
+
+  it("does not shift a later candidate's deepIndex when an earlier candidate is excluded for being unrendered", () => {
+    const hiddenStepSubmit = makeEl("button", { type: "submit" }, "Submit", {
+      rect: { width: 0, height: 0 },
+    });
+    const decoy = makeEl("div", {}, "Not a candidate");
+    const renderedSubmit = makeEl("button", { type: "submit" }, "Submit");
+    const document = makeRoot([hiddenStepSubmit, decoy, renderedSubmit]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    // deepIndex is a position in the full deep-traversal order (hiddenStepSubmit=0,
+    // decoy=1, renderedSubmit=2), not in the filtered/ranked array, so excluding the
+    // hidden candidate must NOT renumber renderedSubmit down to 1.
+    expect(result[0]?.deepIndex).toBe(2);
+  });
+
   it("ranks candidates rooted in a frame-document-like tree via the root arg, ignoring the outer document", () => {
     const outerButton = makeEl("button", { type: "submit" }, "Outer Submit");
     const outerDocument = makeRoot([outerButton]);
@@ -399,6 +476,37 @@ describe("submit-control/buildClickByDeepIndexExpr", () => {
       };
       expect(result).toEqual({ clicked: false });
     }).not.toThrow();
+  });
+
+  it('returns {clicked:false, reason:"not-actionable"} without dispatching events when the node at deepIndex has no layout box', () => {
+    const unrendered = makeEl("button", { type: "submit" }, "Submit", {
+      rect: { width: 0, height: 0 },
+    });
+    const document = makeRoot([unrendered]);
+
+    const result = evaluateInFakePage(buildClickByDeepIndexExpr(0), document) as {
+      clicked: boolean;
+      reason?: string;
+    };
+
+    expect(result).toEqual({ clicked: false, reason: "not-actionable" });
+    expect(unrendered.clicked).toBe(false);
+    expect(unrendered.focused).toBe(false);
+  });
+
+  it('returns {clicked:false, reason:"not-actionable"} for a node with computed display:none', () => {
+    const unrendered = makeEl("button", { type: "submit" }, "Submit", {
+      computedStyle: { display: "none", visibility: "visible" },
+    });
+    const document = makeRoot([unrendered]);
+
+    const result = evaluateInFakePage(buildClickByDeepIndexExpr(0), document) as {
+      clicked: boolean;
+      reason?: string;
+    };
+
+    expect(result).toEqual({ clicked: false, reason: "not-actionable" });
+    expect(unrendered.clicked).toBe(false);
   });
 
   it("clicks the candidate in a frame-document-like tree via the root arg, ignoring the outer document", () => {
