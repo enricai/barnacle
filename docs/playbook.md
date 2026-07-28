@@ -174,6 +174,19 @@ constructs the Stagehand instance with two intentional flags:
   separate whole-flow retry via `withScraperRetry` in `src/scraper/retry.ts`,
   with Zod as the verifier.
 
+`createBrowserSession()` is the same factory the runtime dispatch path uses
+(`src/plugins/loader.ts` — see 5B/5D), so every Browserbase-backed session it
+returns, recon or runtime alike, also exposes an optional, memoized
+`getOutboundIp()` (`BrowserSession.getOutboundIp?`,
+`src/scraper/session-shared.ts` — Browserbase-only, absent on Steel). Neither
+the Browserbase SDK nor its session-create/get/log endpoints ever return a
+session's actual outbound IP, so the accessor's only option is to have the
+session itself navigate a separate tab to an IP-echo endpoint and read the
+result back — one extra tab load, bounded by `SCRAPER_SESSION_IP_TIMEOUT_MS`
+(~10s default). Gated by `SCRAPER_CAPTURE_SESSION_IP` (default `true`);
+recon-browser.ts never calls it — the accessor exists for the dispatch path's
+per-submission telemetry (5D), not recon output.
+
 ### 1b — CDP session-level network capture
 
 A single listener attaches to the page's main CDP session:
@@ -573,17 +586,18 @@ cent per call.
 
 ```
 Request arrives
-  → plugin.extractJoinKeys(payload) → joinKeys   [opaque, plugin-owned; src/site-plugin.ts — see Beacon-fire below for self-managed context.recordBeaconOutcome]
+  → plugin.extractJoinKeys(payload) → joinKeys   [opaque, plugin-owned; pre-run only — sees the inbound payload, not anything discovered mid-run; src/site-plugin.ts — see Beacon-fire below for self-managed context.recordBeaconOutcome]
   → LRU cache check (getCachedResponse)         [src/cache/response-cache.ts]
   → cache hit → return immediately
   → cache miss → getOrCreateInFlight(key, fn)   [coalesces concurrent misses]
-    → executeHttp(payload, context)              [plugin's hot path]
+    → executeHttp(payload, context)              [plugin's hot path; context.telemetry.addJoinKeys()/.recordSession() stay open for run-discovered fields — src/lib/telemetry/run-telemetry.ts]
       → bottleneck.schedule(fetch)              [per-plugin rate limit]
         → p-retry (2 retries on network errors)
         → zod.parse(response)                   [drift detector]
   → record hot-path latency
   → write cache entry
-  → emit submission envelope (NDJSON)           [reconciliation "submit" record]
+  → dispatch() merges context.telemetry.snapshot() over joinKeys (run-discovered keys win on collision) and stamps the session block [no live session on the hot path → session: null]
+  → emit submission envelope (NDJSON)           [reconciliation "submit" record — carries the merged joinKeys + session]
   → fire beacon-fire tracking click              [background — not awaited]
   → return
 ```
@@ -645,18 +659,21 @@ Hot path fails (schema mismatch, bot challenge, or 5xx)
     → p-queue (bounded concurrency = SESSION_POOL_SIZE)
     → withScraperRetry (up to 3 attempts)       [wraps everything below]
       → createBrowserSession()                  [src/scraper/session.ts]
-          → Steel.sessions.create (residential proxy, random viewport)
+          → Browserbase.sessions.create (residential proxy, random viewport)  [default provider; Steel is the opt-in fallback via SCRAPER_PROVIDER=steel]
           → Stagehand.init() via CDP
-      → Promise.race([plugin.execute(session), TASK_TIMEOUT_MS (60min default)])
-    → session.close() in finally
-  → emit submission envelope (NDJSON)           [reconciliation "submit" record]
+      → fn(session): Promise.race([plugin.execute(session), TASK_TIMEOUT_MS (60min default)])
+          → finally: best-effort session.getOutboundIp?.() → context.telemetry.recordSession(...)  [loader.ts wrapper; Browserbase-only, gated by SCRAPER_CAPTURE_SESSION_IP — runs while the session is still open]
+    → session.close() in finally                [src/scraper/pool.ts]
+  → dispatch() merges context.telemetry.snapshot() over joinKeys (run-discovered keys win on collision) and stamps the session block
+  → emit submission envelope (NDJSON)           [reconciliation "submit" record — carries the merged joinKeys + session]
   → fire beacon-fire tracking click              [background — not awaited]
   → return
 ```
 
 Same tail as 5A: `emitEnvelopeSafely` and `fireTrackingClick` live in
 `dispatch()`, not in either pipeline branch, so both paths converge on the
-identical submit-record-then-beacon-fire sequence once a result comes back.
+identical joinKeys/session-merge-then-submit-record-then-beacon-fire sequence
+once a result comes back.
 
 **`x-barnacle-execution: browser`** — sending this header on the incoming
 request bypasses the hot path entirely and goes directly to the browser path.
@@ -726,6 +743,21 @@ sessions billing until their own timeout.
 desktop viewport from a fixed set (`1280×720`, `1366×768`, `1440×900`,
 `1920×1080`). A fixed pixel size is an easy bot-detection signal; rotating it
 makes session fingerprints harder to cluster.
+
+**Outbound-IP capture** (`src/scraper/session-browserbase.ts`, gated by
+`SCRAPER_CAPTURE_SESSION_IP`, default `true`): Browserbase never returns a
+session's actual outbound IP through its SDK, session-create/get calls, logs,
+or recording endpoints, so the only way to learn it is to have the session
+itself navigate a separate short-lived tab to an IP-echo endpoint
+(`SCRAPER_SESSION_IP_ECHO_URL`, default ipify) and read the response back —
+`getOutboundIp()` on `BrowserSession` does this once, memoized, and is
+Browserbase-only (absent on Steel). The cost is one extra tab load, bounded by
+`SCRAPER_SESSION_IP_TIMEOUT_MS` (~10s default) via `withWatchdog`. It runs in
+the shared wrapper around both `runWithSession` call sites in
+`src/plugins/loader.ts`, in a `finally` after `plugin.execute()` resolves and
+before `pool.ts`'s own `session.close()` — as close to submit time as the
+pool allows, since `pool.ts` closes the session in its own `finally` and never
+surfaces it back to `dispatch()`.
 
 ### 5E — Per-site base URL overrides
 
