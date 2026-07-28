@@ -85,7 +85,12 @@ export interface DeepLocatorCandidate {
   index: number;
   /** `deeplocator=`-prefixed selector identifying this candidate for downstream `resolvedAction` synthesis; deliberately not `xpath=` (see {@link DeepLocatorCandidate} docs). */
   selector: string;
-  /** Accessible text read via the delegate's `textContent()`. */
+  /**
+   * Accessible text for this candidate: the derived accessible name (see
+   * {@link buildScanFrameCandidatesExpr}) on the batched-scan fast path,
+   * or the delegate's raw `textContent()` on the legacy per-candidate
+   * enumeration fallback.
+   */
   accessibleText: string;
 }
 
