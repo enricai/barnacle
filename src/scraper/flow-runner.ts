@@ -597,9 +597,17 @@ export interface AttemptRecord {
  */
 const DOM_SNAPSHOT_EXPR = `(() => { const b = document.body; if (!b) return { html: 0, text: "" }; const t = b.innerText || ""; return { html: (b.outerHTML || "").length, text: t.length + ":" + t.slice(0, 200) }; })()`;
 
+/**
+ * Captures the pre/post signal triple the submit-verify cascade diffs.
+ * Accepts the optional `page` so a resolved child `FrameTarget` whose
+ * `url()` rejects (OOPIF detached by the submit it just fired) can still
+ * report the main frame's post-navigation URL instead of throwing the
+ * whole attempt out of `executeStepWithHealing`.
+ */
 export async function snapshotPage(
   target: FrameTarget,
-  signalCounter: { n: number }
+  signalCounter: { n: number },
+  page?: Page
 ): Promise<StepSnapshot> {
   let bodyHtmlLength = 0;
   let visibleTextSignature = "";
@@ -620,9 +628,16 @@ export async function snapshotPage(
     // Snapshot is observational; on failure, defaults to 0/"" so the verifier
     // sees no delta. Real state-class checks already cover the verified path.
   }
+  // A resolved child FrameTarget's url() reads location.href off the CDP
+  // frame session (frame-target.ts's childFrameTarget), which rejects (or
+  // trips its watchdog) once the OOPIF detaches — most commonly right after
+  // a submit click tears down the wizard iframe. Falling back to page.url()
+  // lets the post-submit navigation still register as a urlChanged signal
+  // instead of throwing the whole step out of the cascade.
+  const url = page ? await target.url().catch(() => page.url()) : await target.url();
   return {
     networkCount: signalCounter.n,
-    url: await target.url(),
+    url,
     bodyHtmlLength,
     visibleTextSignature,
   };
@@ -6082,7 +6097,7 @@ export async function executeStepWithHealing(params: {
       await page.waitForTimeout(attempt * ATTEMPT_BACKOFF_MS);
     }
 
-    const pre = await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter);
+    const pre = await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter, page);
     // Snapshot the meta-tail length so the final-step pattern gate can scope
     // its URL scan to captures added DURING this attempt (not historical
     // tail from earlier steps).
@@ -6221,7 +6236,8 @@ export async function executeStepWithHealing(params: {
             if (runnerUp) {
               const midPost = await snapshotPage(
                 frameTarget ?? mainFrameTarget(page),
-                signalCounter
+                signalCounter,
+                page
               );
               const topVerdict = classifyPhantomClick({
                 actResultSuccess: true,
@@ -6913,7 +6929,7 @@ export async function executeStepWithHealing(params: {
     }
 
     await page.waitForTimeout(STEP_PAUSE_MS);
-    const post = await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter);
+    const post = await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter, page);
     record.post = post;
 
     if (resolvedAction) {
@@ -7224,7 +7240,11 @@ export async function executeStepWithHealing(params: {
             probeResult.checked === true &&
             !ancestorStillInvalid;
           await page.waitForTimeout(STEP_PAUSE_MS);
-          const retryPost = await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter);
+          const retryPost = await snapshotPage(
+            frameTarget ?? mainFrameTarget(page),
+            signalCounter,
+            page
+          );
           const retryNetworkFired = retryPost.networkCount > pre.networkCount;
           const retryUrlChanged = retryPost.url !== pre.url;
           const retryHtmlDelta = retryPost.bodyHtmlLength - pre.bodyHtmlLength;
