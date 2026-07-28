@@ -73,6 +73,10 @@ const CHILD_SRC = `${CHILD_ORIGIN}/application/abc-123`;
 const HOP_SELECTOR = `${IFRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
 const THANK_YOU_URL = `${CHILD_ORIGIN}/application/abc-123/thank-you`;
 const SUBMITTED_STATE_SELECTOR = "[data-testid=thank-you]";
+/** The report's real post-submit intermediate: the submit click lands the OOPIF on a GraphQL-style transition URL before it detaches, not directly on a child-origin thank-you page. */
+const GQ_URL = `${CHILD_ORIGIN}/application/abc-123/gq`;
+/** The report's real post-submit surface: the TOP window, not the child frame, ends up on the site's own thank-you page once the OOPIF tears down. */
+const TOP_THANK_YOU_URL = `${TOP_ORIGIN}/pages/thank-you`;
 
 /** Verbatim step instruction from the bug report's flow, naming the target and negating every decoy in one "Do NOT click" clause. */
 const MANUAL_APPLICATION_STEP =
@@ -200,15 +204,22 @@ interface AcceptanceSequenceState {
  * via `makeFakeFrameScan`, so `resolveDeepLocatorCandidates`'s batched-scan
  * fast path (bugfix-002, already shipped) actually runs against this
  * fixture's 371-element hop instead of falling back to the legacy loop.
+ * `detached` models the OOPIF tearing down right after a submit click:
+ * every `evaluate` call (including the `location.href` read `FrameTarget.url()`
+ * makes) rejects the same way a live cross-origin CDP frame session does once
+ * its frame detaches, exercising `snapshotPage`'s `page.url()` fallback
+ * (`flow-runner.submit-verify-frame-scope.test.ts` pins the same seam).
  */
 function makeDenseChildFrame(
   childUrls: { current: string },
   state: AcceptanceSequenceState,
-  deepLocatorFrame: FakeDeepLocatorFrame
+  deepLocatorFrame: FakeDeepLocatorFrame,
+  detached: { current: boolean }
 ) {
   const scan = makeFakeFrameScan(deepLocatorFrame, HOP_SELECTOR);
   return {
     evaluate: async (expr: unknown) => {
+      if (detached.current) throw new Error("Execution context was destroyed");
       const src = String(expr);
       if (src === "location.href") return childUrls.current;
       if (src === "document.readyState") return "complete";
@@ -244,6 +255,21 @@ function makeDenseChildFrame(
 }
 
 /**
+ * Models the report's real post-submit surface instead of a same-origin
+ * child thank-you page: the submit click first lands the OOPIF on an
+ * intermediate `.../gq` URL, then the child frame detaches (its `evaluate`
+ * calls start rejecting and it drops out of `page.frames()`) while the TOP
+ * window navigates to the site's own thank-you page. Omitted, the submit
+ * click takes the older direct child-origin-thank-you shortcut.
+ */
+interface PostSubmitDetachConfig {
+  /** Intermediate child-frame URL the submit lands on before the OOPIF tears down. */
+  gqUrl: string;
+  /** Top-window URL the site's real post-submit navigation lands on. */
+  topThankYouUrl: string;
+}
+
+/**
  * Fake two-frame `Page`. `deepLocator(...).nth(index).click()` only
  * navigates the child frame to the basic-info page when `index` is
  * `targetIndex` (the "Manual Application" button's position), and only
@@ -256,7 +282,10 @@ function makeDenseChildFrame(
  * "some click happened" (the gap the single-element `registerDeepLocatorHop`
  * fixtures elsewhere in this suite family don't need to close, since they
  * only ever register one candidate). `targetIndex: null` (the negative
- * control) means no index ever navigates to basic-info.
+ * control) means no index ever navigates to basic-info. When `postSubmitDetach`
+ * is set, the submit click drives the report's real sequence (`.../gq` +
+ * frame detach + top-window navigation) instead of a direct child-origin
+ * thank-you transition.
  *
  * `deepLocator(...).nth(index).fill(value)` records `value` on the fake
  * delegate's own per-element `filledWith` (bugfix-002's fake extension,
@@ -272,10 +301,12 @@ function makeDenseTopPage(
   deepLocatorFrame: FakeDeepLocatorFrame,
   state: AcceptanceSequenceState,
   targetIndex: number | null,
-  submitIndex: number
+  submitIndex: number,
+  postSubmitDetach: PostSubmitDetachConfig | null = null
 ) {
   const session = { on: () => {}, off: () => {} };
-  const childFrame = makeDenseChildFrame(childUrls, state, deepLocatorFrame);
+  const detached = { current: false };
+  const childFrame = makeDenseChildFrame(childUrls, state, deepLocatorFrame, detached);
   const fakeDeepLocator = makeFakeDeepLocator(deepLocatorFrame);
   const wrappedDeepLocator = (selector: string) => {
     const delegate = fakeDeepLocator(selector);
@@ -291,8 +322,14 @@ function makeDenseTopPage(
               childUrls.current = `${CHILD_ORIGIN}/application/abc-123/basic-info`;
             }
             if (index === submitIndex) {
-              childUrls.current = THANK_YOU_URL;
               state.submitted = true;
+              if (postSubmitDetach) {
+                childUrls.current = postSubmitDetach.gqUrl;
+                detached.current = true;
+                topUrl.current = postSubmitDetach.topThankYouUrl;
+              } else {
+                childUrls.current = THANK_YOU_URL;
+              }
             }
           },
           fill: async (value: string) => {
@@ -326,7 +363,7 @@ function makeDenseTopPage(
     getSessionForFrame: () => session,
     mainFrameId: () => "main",
     sendCDP: async () => ({ body: "{}", base64Encoded: false }),
-    frames: () => [childFrame],
+    frames: () => (detached.current ? [] : [childFrame]),
     deepLocator: wrappedDeepLocator,
   } as unknown as import("@browserbasehq/stagehand").Page;
 }
@@ -455,6 +492,95 @@ describe("flow-runner dense OOPIF acceptance regression (uchealth-7, offline fix
     // Issue #2: the two layout-less decoys were dropped by the resolver's
     // visibility filter BEFORE any click was attempted against them — proof
     // the -32000 "no layout object" failure never had a chance to fire.
+    expect(loggerStub.warn).toHaveBeenCalledWith(
+      expect.stringMatching(/dropped 2 unrendered candidate/)
+    );
+    expect(loggerStub.warn).not.toHaveBeenCalledWith(expect.stringMatching(/-32000/));
+  });
+
+  it("drives the same 371-candidate dense hop through to the report's real post-submit surface: an intermediate child '.../gq' URL, then the OOPIF detaches while the TOP window lands on the careers thank-you page", async () => {
+    const topUrl = { current: `${TOP_ORIGIN}/jobs/123/apply` };
+    const childUrls = { current: CHILD_SRC };
+    const state: AcceptanceSequenceState = {
+      filledWith: new Map(),
+      fileInputCount: 1,
+      uploadedFileName: null,
+      submitted: false,
+    };
+    const deepLocatorFrame: FakeDeepLocatorFrame = new Map();
+    const order = buildDenseHopOrder(true);
+    expect(order).toHaveLength(371);
+    const hop = registerDeepLocatorHopElements(deepLocatorFrame, HOP_SELECTOR, order);
+    const targetIndex = order.length - 1;
+    const firstNameIndex = findElementIndex(order, "First Name");
+    const lastNameIndex = findElementIndex(order, "Last Name");
+    const submitIndex = findElementIndex(order, "Submit");
+
+    const stagehand = makeDenseStagehand();
+    const page = makeDenseTopPage(
+      topUrl,
+      childUrls,
+      deepLocatorFrame,
+      state,
+      targetIndex,
+      submitIndex,
+      { gqUrl: GQ_URL, topThankYouUrl: TOP_THANK_YOU_URL }
+    );
+
+    const result = await runHealingFlow({
+      stagehand,
+      page,
+      steps: ACCEPTANCE_STEPS,
+      logger: SILENT_LOGGER,
+      anthropic: null,
+      resumeFixture: {
+        buffer: Buffer.from("pdf-bytes"),
+        name: "resume.pdf",
+        mimeType: "application/pdf",
+      },
+      frameSelector: IFRAME_SELECTOR,
+      submittedStateSelectors: [SUBMITTED_STATE_SELECTOR],
+    });
+
+    expect(result.lastStepIndex).toBe(ACCEPTANCE_STEPS.length - 1);
+    expect(result.submitStepSkipped).toBe(false);
+    expect(result.submitVerified).toBe(true);
+
+    // Same click/fill/upload attribution as the sibling case — this test
+    // isolates the post-submit surface, not the enumeration/actuation path
+    // those assertions already cover.
+    expect(hop.elements[targetIndex]?.clicks).toBeGreaterThan(0);
+    expect(hop.elements[submitIndex]?.clicks).toBeGreaterThan(0);
+    for (const [index, element] of hop.elements.entries()) {
+      if (index === targetIndex || index === submitIndex) continue;
+      expect(element.clicks).toBe(0);
+    }
+    expect(hop.elements[firstNameIndex]?.filledWith).toBe("Jane");
+    expect(hop.elements[lastNameIndex]?.filledWith).toBe("Doe");
+    expect(state.uploadedFileName).toBe("resume.pdf");
+    expect(state.submitted).toBe(true);
+
+    // The report's actual sequence: the child frame lands on the
+    // intermediate `.../gq` URL (never a child-origin thank-you page — that
+    // would be the fixture-convention shortcut this case exists to rule
+    // out), and the TOP window — not the child frame — is what reaches the
+    // real success surface.
+    expect(childUrls.current).toBe(GQ_URL);
+    expect(childUrls.current).not.toBe(THANK_YOU_URL);
+    expect(topUrl.current).toBe(TOP_THANK_YOU_URL);
+    // `page.url()` is exactly what `snapshotPage`'s `page` fallback reads
+    // once the resolved child `FrameTarget.url()` rejects on the detached
+    // OOPIF — asserting through it (not just the `topUrl` ref) proves the
+    // submit was verified via that fallback, not a stale pre-detach read.
+    expect(page.url()).toBe(TOP_THANK_YOU_URL);
+
+    // Issue #1/#2 regressions still hold with the report's real post-submit
+    // surface wired in: the batched scan still enumerates the full 371-node
+    // hop within budget, and the two layout-less decoys are still dropped
+    // before any click is attempted against them.
+    expect(loggerStub.warn).not.toHaveBeenCalledWith(
+      expect.stringMatching(/enumeration.*aborted/i)
+    );
     expect(loggerStub.warn).toHaveBeenCalledWith(
       expect.stringMatching(/dropped 2 unrendered candidate/)
     );
