@@ -5,24 +5,6 @@
 > accuracy rubric, and what a verdict artifact contains. It is the concept
 > companion to the operator runbook in [playbook.md](./playbook.md).
 
-> **Not yet shipped:** the mid-run join-key attach point
-> (`context.telemetry.addJoinKeys()` / `RunTelemetry`) and the dispatch-level
-> session-IP wiring — `dispatch()` actually reading a session's outbound IP
-> and populating the `session`/`sessionIp` record fields below — describe a
-> planned engine-level feature (`feat-001`–`feat-007`). That implementation
-> has not landed on `main` — `src/lib/telemetry/run-telemetry.ts` exists as
-> a standalone module but `SitePluginContext.telemetry` does not, and
-> `dispatch()` never calls `session.getOutboundIp()`, so the `session`/
-> `sessionIp` schema fields below are always `null` in practice today even
-> though the fields themselves are defined. `getOutboundIp()` itself (the
-> memoized `BrowserSession` accessor around `resolveSessionOutboundIp`) and
-> the "Session-IP capture knobs" config have landed and are wired on
-> Browserbase sessions — only the `dispatch()` plumbing that reads the
-> accessor and stamps it onto a record remains outstanding. This section
-> documents the shipped design once that lands; until then, treat the
-> paragraphs describing dispatch-level recording as a spec, not a current
-> API reference.
-
 ---
 
 ## Why capture at all?
@@ -398,12 +380,17 @@ provider's report without re-parsing raw NDJSON. The response row omits
 `inboundPayload`/`auditPayload` (the opaque blobs this route exists to stop
 callers from having to re-parse) and renames the reader's internal
 `beaconTrackingUrl` field to `trackingUrl`. The submit record's `session`
-block and the beacon record's `sessionIp` fold and serialize through
-unchanged — `ReconciliationRow` and `reconciliationRowSchema` both derive
-from `submitRecordSchema`/`beaconEventSchema` rather than restating fields,
-so a caller comparing runs against a third-party report's IP column reads
-`session.ip` (and, separately, the beacon's own `sessionIp`) straight off
-`GET /v1/submissions` without re-parsing raw NDJSON.
+block folds and serializes through unchanged, while the beacon record's
+`sessionIp` is renamed to `beaconSessionIp` (both on `ReconciliationRow`
+and on `reconciliationRowSchema`, derived off
+`beaconEventSchema.shape.sessionIp` rather than restated) so it reads as
+distinct from the submit line's own `session.ip` on the wire — the two are
+separate Browserbase sessions per run. `ReconciliationRow` and
+`reconciliationRowSchema` otherwise derive from
+`submitRecordSchema`/`beaconEventSchema` rather than restating fields, so
+a caller comparing runs against a third-party report's IP column reads
+`session.ip` (and, separately, the beacon's own `beaconSessionIp`) straight
+off `GET /v1/submissions` without re-parsing raw NDJSON.
 
 ## File map
 

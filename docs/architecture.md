@@ -8,20 +8,6 @@
 > For *how* to write a site plugin, see the Plugin Authoring Guide in
 > [../README.md](../README.md).
 
-> **Not yet shipped:** the rationale below for mid-run join-key attachment
-> (`context.telemetry.addJoinKeys()`, `RunTelemetry`) and for dispatch-level
-> session-IP wiring (recording the acquired session's IP onto the
-> reconciliation record) describes a planned engine-level feature
-> (`feat-001`–`feat-007`) that has not landed on `main` —
-> `src/lib/telemetry/run-telemetry.ts` doesn't exist in this tree yet, and
-> `dispatch()` does not yet read a session's outbound IP or stamp it onto
-> the envelope. `getOutboundIp()` (the memoized `BrowserSession` accessor
-> backed by `resolveSessionOutboundIp`) has landed and is wired on
-> Browserbase sessions (`src/scraper/session-browserbase.ts`); only its
-> consumption by `dispatch()`/telemetry remains outstanding. Treat the
-> paragraphs describing that consumption as design intent, not a
-> description of current code.
-
 ---
 
 ## Mental model

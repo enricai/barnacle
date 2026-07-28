@@ -11,23 +11,6 @@ import type { SitePlugin, SitePluginContext } from "@/site-plugin";
  * hoisted-mock scaffolding and assertion shapes of loader.test.ts:34-101 and
  * loader.test.ts:592-630 so this file is a drop-in sibling of the existing
  * "dispatch — tracking click" suite rather than a diverging convention.
- *
- * Both cases below are written as `it.fails(...)`: this worktree forks off
- * `main` before feat-005 (the sole owner of the `loader.ts` wiring that reads
- * `context.telemetry` and merges its snapshot into the envelope) lands, so
- * `dispatch()` here does not merge yet and these assertions correctly throw
- * today. `it.fails` records that as an *expected* failure — the suite exits
- * green now, and it will flip to a *reported* failure the moment feat-005's
- * merge logic is integrated, which is the signal for whoever performs that
- * integration (test-013, the reconciliation point that runs the full suite
- * green post-integration) to drop `.fails` and let these assert for real.
- * Verified directly against feat-005's actual implementation (recovered via
- * `git fsck --unreachable` after its conformer session was killed mid-run by
- * an org-level rate limit before merging, matching the precedent set on
- * loader.run-telemetry.test.ts by test-002) in a throwaway worktree: both
- * cases in this file pass unmodified — i.e. as plain `it(...)` — against
- * that real `dispatch()`, confirming this file's shape is correct and only
- * the local wiring is missing, not the test's expectations.
  */
 
 const mockCaptureSubmissionEnvelope = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));

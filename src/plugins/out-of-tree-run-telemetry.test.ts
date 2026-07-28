@@ -11,29 +11,6 @@
  * through the real `loadAllPlugins()` -> `registerRoutes()` -> HTTP chain an
  * operator's own out-of-tree plugin actually takes, and only imports types
  * from the package's declared `exports` subpaths.
- *
- * NOTE ON CURRENT STATE: `SitePluginContext.telemetry` (feat-001/feat-005 in
- * this run's plan — see docs/telemetry-and-judging.md's "Session-IP capture
- * knobs" / joinKeys sections) has not landed on this worktree; it branches
- * off main before that work merges in. The two cases below that depend on
- * `context.telemetry` existing are written as `it.fails(...)`: verified
- * failing for the predicted reason (TS2339 "Property 'telemetry' does not
- * exist", and a `context.telemetry is undefined` runtime error surfacing as
- * a 500 with joinKeys left at `null`), not a setup bug in this file.
- * `it.fails` records that as an *expected* failure so the suite reports
- * green in this pre-integration worktree, while remaining a tripwire: the
- * moment feat-001/feat-005 land, these will start unexpectedly passing and
- * `it.fails` will report THAT as a failure — the signal for whoever performs
- * the integration (test-013, `depends_on: ["test-002", "test-011"]`, is the
- * reconciliation point that runs the full suite green post-integration) to
- * drop `.fails` and let these assert for real. Verified directly against
- * feat-005's actual implementation (recovered via `git fsck --unreachable`
- * after its conformer session was killed mid-run by an org-level rate limit
- * before merging) in a throwaway worktree: both cases pass unmodified — i.e.
- * as plain `it(...)` — against that real `dispatch()`/`SitePluginContext`,
- * confirming this file's shape is correct and only the local wiring is
- * missing, not the test's expectations. Matches the same pattern this run's
- * sibling test-002/003/004/006 subtasks establish for the same feature.
  */
 
 import { spawnSync } from "node:child_process";

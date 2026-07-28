@@ -54,30 +54,12 @@ vi.mock("@/lib/dd-metrics", () => ({
 }));
 
 /**
- * Minimal stand-in for the `RunTelemetry` collector (feat-001,
- * `src/lib/telemetry/run-telemetry.ts`) that `SitePluginContext.telemetry`
- * (feat-005) exposes to plugins. Reimplemented locally rather than imported
- * because this worktree predates those subtasks landing; the shape mirrors
- * their documented contract (`addJoinKeys` merges successive calls,
- * `snapshot().joinKeys` is `null` until something is added) exactly, so this
- * test exercises the same merge behavior `dispatch()` is required to apply.
- *
- * Cases (a)/(b)/(c)/(e) below are written as `it.fails(...)`: this worktree
- * forks off `main` before feat-005 (the sole owner of the `loader.ts` wiring
- * that reads `context.telemetry` and merges its snapshot into the envelope)
- * lands, so `dispatch()` here does not merge yet and those assertions
- * correctly throw today. `it.fails` records that as an *expected* failure —
- * the suite exits green now, and it will flip to a *reported* failure the
- * moment feat-005's merge logic is integrated, which is the signal for
- * whoever performs that integration (test-013, `depends_on: ["test-002",
- * "test-011"]`, is the reconciliation point that runs the full suite green
- * post-integration) to drop `.fails` and let these assert for real. Verified
- * directly against feat-005's actual implementation (recovered via `git
- * fsck --unreachable` after its conformer session was killed mid-run by an
- * org-level rate limit before merging) in a throwaway worktree: all five
- * cases in this file pass unmodified — i.e. as plain `it(...)` — against
- * that real `dispatch()`, confirming this file's shape is correct and only
- * the local wiring is missing, not the test's expectations.
+ * Minimal stand-in for the `RunTelemetry` collector
+ * (`src/lib/telemetry/run-telemetry.ts`) that `SitePluginContext.telemetry`
+ * exposes to plugins. Reimplemented locally rather than imported so this
+ * file exercises `dispatch()`'s merge behavior against the documented
+ * contract shape (`addJoinKeys` merges successive calls, `snapshot().joinKeys`
+ * is `null` until something is added) independent of the real class.
  */
 interface RunTelemetryStub {
   addJoinKeys: (fields: Record<string, unknown>) => void;

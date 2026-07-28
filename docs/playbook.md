@@ -9,16 +9,6 @@ headers, with an AI-browser fallback, automated drift detection, and a body of
 captured evidence that justifies every design choice. Human time is front-loaded
 to one recon run and a small PR when things change.
 
-> **Not yet shipped:** the Phase 5 diagram annotations and prose below for
-> the mid-run telemetry attach point and dispatch-level session-IP wiring
-> describe a planned engine-level feature (`feat-001`–`feat-007`) that has
-> not landed on `main` yet — `SitePluginContext.telemetry` doesn't exist in
-> this tree, and `dispatch()` doesn't yet call `session.getOutboundIp?.()`
-> or stamp a `session` block onto the envelope. `getOutboundIp()` itself
-> (the memoized `BrowserSession` accessor, see 1a) has landed and is wired
-> on Browserbase sessions. Treat the Phase 5 annotations describing its
-> consumption as forward-looking, not the current runtime sequence.
-
 ---
 
 ## Mental model

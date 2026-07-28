@@ -63,8 +63,8 @@ vi.mock("@/lib/dd-metrics", () => ({
 }));
 
 /**
- * Local double for the mid-run join-keys accumulator core is expected to put
- * on `SitePluginContext` (Gap 1 in the run-telemetry plan: plugins need a way
+ * Local double for the mid-run join-keys accumulator `SitePluginContext`
+ * exposes to plugins (Gap 1 in the run-telemetry plan: plugins need a way
  * to attach fields discovered during execute()/executeHttp(), not just fields
  * derivable up front from the inbound payload via `extractJoinKeys`). Mirrors
  * the documented contract — successive `addJoinKeys()` calls merge with later
@@ -72,23 +72,8 @@ vi.mock("@/lib/dd-metrics", () => ({
  * `{}` so it composes cleanly with the existing `joinKeys: null` precedent in
  * loader.test.ts. Modeled as a standalone double (matching how this file's
  * sibling `stubContext.metricsCollector` is a hand-built double, not the real
- * `MetricsCollector`) because the real accumulator has not landed yet — this
- * file's own scope is only the lifecycle contract dispatch() must uphold once
- * it does.
- *
- * The three cases below that depend on dispatch() actually merging
- * `context.telemetry` into the envelope are written as `it.fails(...)`:
- * this worktree forks off `main` before the sole owner of that `loader.ts`
- * wiring lands, so `dispatch()` here doesn't merge yet and those assertions
- * correctly throw today. `it.fails` records that as an *expected* failure —
- * the suite exits green now, and will flip to a *reported* failure the
- * moment the merge logic is integrated, which is the signal to drop
- * `.fails` and let these assert for real. Verified directly against that
- * implementation (recovered via `git fsck --unreachable` after its
- * conformer session was interrupted before merging) in a throwaway
- * worktree: all five cases in this file pass unmodified against the real
- * `dispatch()`, confirming this file's shape is correct and only the local
- * wiring is missing.
+ * `MetricsCollector`) so this file exercises the lifecycle contract
+ * `dispatch()` must uphold independent of the real accumulator's internals.
  */
 interface RunTelemetryDouble {
   addJoinKeys(fields: Record<string, unknown>): void;
@@ -116,7 +101,7 @@ function createRunTelemetryDouble(): RunTelemetryDouble {
   };
 }
 
-/** `SitePluginContext` widened with the planned `telemetry` attach point. */
+/** Narrows `SitePluginContext.telemetry` to this file's local double type. */
 interface ContextWithTelemetry extends SitePluginContext {
   telemetry: RunTelemetryDouble;
 }
