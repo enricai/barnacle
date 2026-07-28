@@ -11,6 +11,8 @@ import {
 } from "@/scraper/deep-locator-fake";
 import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
 import {
+  type AttemptRecord,
+  executeStepWithHealing,
   probeStepBeforeAttempts,
   resetBillingErrorFlagForTests,
   runHealingFlow,
@@ -335,5 +337,245 @@ describe("flow-runner deepLocator call sites — scoped to interactive elements,
     );
 
     resolveDeepLocatorCandidatesSpy.mockRestore();
+  });
+});
+
+/**
+ * bugfix-003: the deepLocator attempt-2/4 branch used to hand every ranked
+ * candidate straight to `clickFirstActionableCandidate`'s click callback,
+ * even for a "Fill in the X field with 'Y'" or "Select 'Y' in the X
+ * dropdown" step — at best clicking the field and never filling/selecting
+ * it. These cases prove the branch now discriminates fill/select/click from
+ * the step's own prose (there is no Stagehand-resolved `target.method` to
+ * read here, unlike the observe path) and routes to the matching
+ * `deep-locator-candidates.ts` actuation seam.
+ *
+ * Every case below drives `executeStepWithHealing` directly (the function
+ * named in this subtask's acceptance criteria) with `observe()` blind for
+ * every attempt — the OOPIF condition this whole cascade exists for — so
+ * the deepLocator fallback is the only path that can ever resolve a
+ * candidate. None of these fixtures wire a URL/network change or a DOM
+ * readback that would satisfy `verifyDomEffect` (which cannot resolve a
+ * `deeplocator=`-prefixed selector via `target.locator()` — see
+ * `DeepLocatorCandidate`'s docs in `deep-locator-candidates.ts`), so the
+ * cascade always exhausts and the step rejects; what's under test is the
+ * ACTUATION that happened during the attempt, captured via the spied
+ * `deep-locator-candidates.ts` seams and the `onStepFailure` dump's
+ * `attempts[]` (same pattern the sibling rephrase-evidence test above
+ * uses).
+ */
+describe("flow-runner deepLocator actuation routing — fill/select/click discrimination (bugfix-003)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetBillingErrorFlagForTests();
+    guardedObserve.mockResolvedValue([]);
+    guardedAct.mockResolvedValue({
+      success: false,
+      message: "no candidates",
+      actionDescription: "",
+      actions: [],
+    });
+  });
+
+  function makeDeepLocatorPage(frame: FakeDeepLocatorFrame): Page {
+    return {
+      evaluate: vi.fn().mockResolvedValue(null),
+      deepLocator: makeFakeDeepLocator(frame),
+      url: () => "https://apply.acme.example/jobs/1/apply",
+      title: vi.fn().mockResolvedValue("Apply"),
+      locator: vi.fn().mockReturnValue({
+        first: () => ({
+          isChecked: vi.fn().mockResolvedValue(false),
+          inputValue: vi.fn().mockResolvedValue(""),
+        }),
+      }),
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
+      getSessionForFrame: () => ({ on: () => {}, off: () => {} }),
+      mainFrameId: () => "main",
+      sendCDP: vi.fn().mockResolvedValue({ body: "{}", base64Encoded: false }),
+    } as unknown as Page;
+  }
+
+  function runStep(page: Page, step: string, onFailureAttempts: AttemptRecord[][]) {
+    return executeStepWithHealing({
+      stagehand: makeStagehand(),
+      page,
+      frameTarget: makeChildFrameTarget(),
+      step,
+      optional: false,
+      upload: false,
+      submitStep: false,
+      stepIndex: 0,
+      totalSteps: () => 1,
+      phase: "flow",
+      signalCounter: { n: 0 },
+      recentCaptures: [],
+      recentCaptureMeta: [],
+      anthropic: null,
+      logger: testLogger,
+      resumeFixture: null,
+      isFinalStep: false,
+      submitEndpointPattern: null,
+      submittedStateSelectors: [],
+      requireSubmitEndpointMatch: false,
+      advanceTransitionBodyPattern: null,
+      successUrlFragments: [],
+      successPageTitleHints: [],
+      ownBackendHostnames: [],
+      knownErrorClassPrefixes: [],
+      wizardExitButtonLabels: [],
+      onStepFailure: ({ attempts }) => {
+        onFailureAttempts.push(attempts);
+        return null;
+      },
+    });
+  }
+
+  it("fill step: actuates fillDeepLocatorCandidate (not click), with the value parsed from the step, and synthesizes resolvedAction.method='fill'", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    const scopedHopSelector = `${FRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
+    registerDeepLocatorHopElements(frame, scopedHopSelector, ["First Name"]);
+    // The pre-cascade probe (`probeStepBeforeAttempts`) deliberately keeps
+    // requesting the unscoped "*" hop (see the sibling test above) — it
+    // needs a candidate registered there too, or it declares the step
+    // "absent" before the attempt loop (and this branch) ever runs.
+    registerDeepLocatorHop(frame, `${FRAME_SELECTOR} >> *`, "First Name");
+    const page = makeDeepLocatorPage(frame);
+
+    const fillSpy = vi.spyOn(deepLocatorCandidatesModule, "fillDeepLocatorCandidate");
+    const selectSpy = vi.spyOn(deepLocatorCandidatesModule, "selectDeepLocatorCandidateOption");
+    const clickSpy = vi.spyOn(deepLocatorCandidatesModule, "clickDeepLocatorCandidate");
+    const attemptsByFailure: AttemptRecord[][] = [];
+
+    await expect(
+      runStep(page, "Fill in the First Name field with 'Reginald'", attemptsByFailure)
+    ).rejects.toThrow(/failed verification after \d+ attempts/);
+
+    expect(fillSpy).toHaveBeenCalledWith(
+      page,
+      FRAME_SELECTOR,
+      INTERACTIVE_CANDIDATE_SELECTOR,
+      0,
+      "Reginald"
+    );
+    expect(selectSpy).not.toHaveBeenCalled();
+    expect(clickSpy).not.toHaveBeenCalled();
+
+    const attempts = attemptsByFailure[0] ?? [];
+    const deepLocatorAttempt = attempts.find((a) => a.resolvedMethod === "fill");
+    expect(deepLocatorAttempt?.actResultSuccess).toBe(true);
+    expect(deepLocatorAttempt?.resolvedArguments).toEqual(["Reginald"]);
+
+    expect(frame.get(scopedHopSelector)?.filledWith).toBe("Reginald");
+
+    fillSpy.mockRestore();
+    selectSpy.mockRestore();
+    clickSpy.mockRestore();
+  });
+
+  it("select step: actuates selectDeepLocatorCandidateOption (not click) with the option parsed from the step, and synthesizes resolvedAction.method='selectOption'", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    const scopedHopSelector = `${FRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
+    registerDeepLocatorHopElements(frame, scopedHopSelector, ["Country"]);
+    registerDeepLocatorHop(frame, `${FRAME_SELECTOR} >> *`, "Country");
+    const page = makeDeepLocatorPage(frame);
+
+    const fillSpy = vi.spyOn(deepLocatorCandidatesModule, "fillDeepLocatorCandidate");
+    const selectSpy = vi.spyOn(deepLocatorCandidatesModule, "selectDeepLocatorCandidateOption");
+    const clickSpy = vi.spyOn(deepLocatorCandidatesModule, "clickDeepLocatorCandidate");
+    const attemptsByFailure: AttemptRecord[][] = [];
+
+    await expect(
+      runStep(page, "Select 'United States' in the Country dropdown", attemptsByFailure)
+    ).rejects.toThrow(/failed verification after \d+ attempts/);
+
+    expect(selectSpy).toHaveBeenCalledWith(
+      page,
+      FRAME_SELECTOR,
+      INTERACTIVE_CANDIDATE_SELECTOR,
+      0,
+      "United States"
+    );
+    expect(fillSpy).not.toHaveBeenCalled();
+    expect(clickSpy).not.toHaveBeenCalled();
+
+    const attempts = attemptsByFailure[0] ?? [];
+    const deepLocatorAttempt = attempts.find((a) => a.resolvedMethod === "selectOption");
+    expect(deepLocatorAttempt?.actResultSuccess).toBe(true);
+    expect(deepLocatorAttempt?.resolvedArguments).toEqual(["United States"]);
+
+    expect(frame.get(scopedHopSelector)?.selectedWith).toEqual(["United States"]);
+
+    fillSpy.mockRestore();
+    selectSpy.mockRestore();
+    clickSpy.mockRestore();
+  });
+
+  it("a not-actionable (-32000) rejection on a fill still advances to the next ranked candidate, and the attempt itself is not scored a failure", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    const scopedHopSelector = `${FRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
+    // Element 0 has no layout box (unrendered) — the fake rejects fill()
+    // with NODE_NOT_ACTIONABLE_MESSAGE the same way a real -32000 CDP error
+    // would. Element 1 is rendered and should receive the fill instead.
+    registerDeepLocatorHopElements(frame, scopedHopSelector, [
+      { text: "First Name", visible: false },
+      { text: "First Name", visible: true },
+    ]);
+    registerDeepLocatorHop(frame, `${FRAME_SELECTOR} >> *`, "First Name");
+    const page = makeDeepLocatorPage(frame);
+
+    const fillSpy = vi.spyOn(deepLocatorCandidatesModule, "fillDeepLocatorCandidate");
+    const attemptsByFailure: AttemptRecord[][] = [];
+
+    await expect(
+      runStep(page, "Fill in the First Name field with 'Reginald'", attemptsByFailure)
+    ).rejects.toThrow(/failed verification after \d+ attempts/);
+
+    expect(fillSpy).toHaveBeenCalledTimes(2);
+    expect(fillSpy.mock.calls[0]?.[3]).toBe(0);
+    expect(fillSpy.mock.calls[1]?.[3]).toBe(1);
+
+    const hop = frame.get(scopedHopSelector);
+    expect(hop?.elements[0]?.filledWith).toBeNull();
+    expect(hop?.elements[1]?.filledWith).toBe("Reginald");
+
+    // The not-actionable candidate cost only itself — attempt 2 itself
+    // still recorded a successful fill via the next candidate, not a
+    // failed attempt.
+    const attempts = attemptsByFailure[0] ?? [];
+    const deepLocatorAttempt = attempts.find((a) => a.resolvedMethod === "fill");
+    expect(deepLocatorAttempt?.actResultSuccess).toBe(true);
+
+    fillSpy.mockRestore();
+  });
+
+  it("a plain click step (no fill/select verb) still routes to clickDeepLocatorCandidate unchanged", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    const scopedHopSelector = `${FRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
+    registerDeepLocatorHopElements(frame, scopedHopSelector, ["Manual Application"]);
+    registerDeepLocatorHop(frame, `${FRAME_SELECTOR} >> *`, "Manual Application");
+    const page = makeDeepLocatorPage(frame);
+
+    const fillSpy = vi.spyOn(deepLocatorCandidatesModule, "fillDeepLocatorCandidate");
+    const selectSpy = vi.spyOn(deepLocatorCandidatesModule, "selectDeepLocatorCandidateOption");
+    const clickSpy = vi.spyOn(deepLocatorCandidatesModule, "clickDeepLocatorCandidate");
+    const attemptsByFailure: AttemptRecord[][] = [];
+
+    await expect(
+      runStep(page, "Click the Manual Application button", attemptsByFailure)
+    ).rejects.toThrow(/failed verification after \d+ attempts/);
+
+    expect(clickSpy).toHaveBeenCalledWith(page, FRAME_SELECTOR, INTERACTIVE_CANDIDATE_SELECTOR, 0);
+    expect(fillSpy).not.toHaveBeenCalled();
+    expect(selectSpy).not.toHaveBeenCalled();
+
+    const attempts = attemptsByFailure[0] ?? [];
+    const deepLocatorAttempt = attempts.find((a) => a.resolvedMethod === "click");
+    expect(deepLocatorAttempt?.actResultSuccess).toBe(true);
+    expect(frame.get(scopedHopSelector)?.clicks).toBe(1);
+
+    fillSpy.mockRestore();
+    selectSpy.mockRestore();
+    clickSpy.mockRestore();
   });
 });
