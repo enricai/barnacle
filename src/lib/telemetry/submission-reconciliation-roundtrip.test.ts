@@ -231,4 +231,47 @@ describe("submission + beacon round-trip through the real writer and reader", ()
       "req-skipped-no-url",
     ]);
   });
+
+  it("round-trips a submitted envelope's session.ip and merged joinKeys bag through the real writer and reader", async () => {
+    const session = {
+      id: "bb-session-roundtrip",
+      provider: "browserbase",
+      ip: "203.0.113.77",
+      ipCapturedAt: "2026-07-26T10:00:01.000Z",
+    };
+    await captureSubmissionEnvelope(
+      {
+        siteId: "hca",
+        requestId: "req-session-roundtrip",
+        joinKeys: { vivclid: "viv-roundtrip", jobReference: "emp9_jid9" },
+        session,
+        inboundPayload: { jobId: "jid9" },
+        status: "submitted",
+        auditPayload: { verified: true, applicationId: "app-9" },
+        errorMessage: null,
+        durationMs: 250,
+      },
+      { sinkPath }
+    );
+    await captureBeaconEvent(
+      {
+        requestId: "req-session-roundtrip",
+        siteId: "hca",
+        joinKeys: { vivclid: "viv-roundtrip", jobReference: "emp9_jid9" },
+        beaconStatus: "fired",
+        trackingUrl: "https://track.appcast.io/pixel?rid=req-session-roundtrip",
+        durationMs: 12,
+        sessionIp: "198.51.100.77",
+      },
+      { sinkPath }
+    );
+
+    const rows = await readReconciliationRows({ sinkPath });
+    const [row] = queryReconciliationRows(rows, { requestId: "req-session-roundtrip" });
+
+    expect(row?.session).toEqual(session);
+    expect(row?.session?.ip).toBe("203.0.113.77");
+    expect(row?.joinKeys).toEqual({ vivclid: "viv-roundtrip", jobReference: "emp9_jid9" });
+    expect(row?.beaconSessionIp).toBe("198.51.100.77");
+  });
 });
