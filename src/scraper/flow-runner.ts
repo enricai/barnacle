@@ -597,6 +597,13 @@ export interface AttemptRecord {
  */
 const DOM_SNAPSHOT_EXPR = `(() => { const b = document.body; if (!b) return { html: 0, text: "" }; const t = b.innerText || ""; return { html: (b.outerHTML || "").length, text: t.length + ":" + t.slice(0, 200) }; })()`;
 
+/**
+ * Captures the pre/post signal triple the submit-verify cascade diffs.
+ * Accepts the optional `page` so a resolved child `FrameTarget` whose
+ * `url()` rejects (OOPIF detached by the submit it just fired) can still
+ * report the main frame's post-navigation URL instead of throwing the
+ * whole attempt out of `executeStepWithHealing`.
+ */
 export async function snapshotPage(
   target: FrameTarget,
   signalCounter: { n: number },
