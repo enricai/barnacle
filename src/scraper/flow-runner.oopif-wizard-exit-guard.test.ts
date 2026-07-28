@@ -155,7 +155,8 @@ describe("flow-runner/executeStepWithHealing — deepLocator branch honors the w
   it("pushes the refused candidate's selector to triedSelectors so attempt 4's exclusion surfaces the benign runner-up instead", async () => {
     const urls = { current: "https://apply.acme.example/jobs/1/apply" };
     const page = makeFakePage(urls);
-    resolveFrameTarget.mockResolvedValue(makeChildFrameTarget(urls));
+    const childFrameTarget = makeChildFrameTarget(urls);
+    resolveFrameTarget.mockResolvedValue(childFrameTarget);
     guardedObserve.mockResolvedValue([]);
     guardedAct.mockResolvedValue({
       success: false,
@@ -221,14 +222,16 @@ describe("flow-runner/executeStepWithHealing — deepLocator branch honors the w
       page,
       FRAME_SELECTOR,
       INTERACTIVE_CANDIDATE_SELECTOR,
-      benignCandidate.index
+      benignCandidate.index,
+      { frameTarget: childFrameTarget }
     );
   });
 
   it("control case: clicks the top-ranked deepLocator candidate when its accessible text is benign", async () => {
     const urls = { current: "https://apply.acme.example/jobs/1/apply" };
     const page = makeFakePage(urls);
-    resolveFrameTarget.mockResolvedValue(makeChildFrameTarget(urls));
+    const childFrameTarget = makeChildFrameTarget(urls);
+    resolveFrameTarget.mockResolvedValue(childFrameTarget);
     guardedObserve.mockResolvedValue([]);
     guardedAct.mockResolvedValue({
       success: false,
@@ -269,7 +272,8 @@ describe("flow-runner/executeStepWithHealing — deepLocator branch honors the w
       page,
       FRAME_SELECTOR,
       INTERACTIVE_CANDIDATE_SELECTOR,
-      benignCandidate.index
+      benignCandidate.index,
+      { frameTarget: childFrameTarget }
     );
   });
 });

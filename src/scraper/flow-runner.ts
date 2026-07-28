@@ -6458,7 +6458,8 @@ export async function executeStepWithHealing(params: {
                   page,
                   frameTarget?.frameSelector,
                   deepLocatorInnerSelector,
-                  candidate.index
+                  candidate.index,
+                  { frameTarget }
                 );
               }
             },
