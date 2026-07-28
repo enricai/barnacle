@@ -10,10 +10,12 @@
 > `session`/`sessionIp` record fields, and the "Session-IP capture knobs"
 > below describe a planned engine-level feature (`feat-001`–`feat-007`).
 > That implementation has not landed on `main` — none of
-> `src/lib/telemetry/run-telemetry.ts`, `src/scraper/session-ip.ts`,
-> `SitePluginContext.telemetry`, or the `session`/`sessionIp` schema fields
-> exist in this tree yet. This section documents the shipped design once it
-> lands; until then, treat it as a spec, not a current API reference.
+> `src/lib/telemetry/run-telemetry.ts`, `SitePluginContext.telemetry`, or the
+> `session`/`sessionIp` schema fields exist in this tree yet.
+> `src/scraper/session-ip.ts` (the standalone IP-echo resolver) has landed,
+> but it is not yet wired into `BrowserSession`/`getOutboundIp()` or config —
+> that wiring is still pending. This section documents the shipped design
+> once it lands; until then, treat it as a spec, not a current API reference.
 
 ---
 

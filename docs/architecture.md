@@ -12,9 +12,11 @@
 > (`context.telemetry.addJoinKeys()`, `RunTelemetry`) and for
 > session-IP capture (`resolveSessionOutboundIp`, `getOutboundIp()`)
 > describes a planned engine-level feature (`feat-001`–`feat-007`) that has
-> not landed on `main` — the cited files (`src/lib/telemetry/run-telemetry.ts`,
-> `src/scraper/session-ip.ts`) don't exist in this tree yet. Treat these
-> paragraphs as design intent, not a description of current code.
+> not landed on `main` — `src/lib/telemetry/run-telemetry.ts` doesn't exist
+> in this tree yet, and `getOutboundIp()` (the `BrowserSession` accessor) is
+> still unwired. `src/scraper/session-ip.ts` (`resolveSessionOutboundIp`)
+> has landed as a standalone, unwired module. Treat these paragraphs as
+> design intent, not a description of current code.
 
 ---
 
