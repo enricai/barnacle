@@ -39,11 +39,11 @@ export interface RunTelemetryHandle {
 
 /**
  * Accumulates run-discovered join keys and session telemetry for a single
- * dispatch invocation. Constructed per-request and threaded through
- * SitePluginContext (wiring lands separately) so a plugin can attach fields
- * it only learns mid-run — a token minted mid-flow, a value read from the
- * page after navigation — instead of being limited to `extractJoinKeys`'s
- * inbound-payload-only view.
+ * dispatch invocation. Constructed per-request in `buildPluginContext`
+ * (`src/plugins/loader.ts`) and threaded through `SitePluginContext.telemetry`
+ * so a plugin can attach fields it only learns mid-run — a token minted
+ * mid-flow, a value read from the page after navigation — instead of being
+ * limited to `extractJoinKeys`'s inbound-payload-only view.
  */
 export class RunTelemetry implements RunTelemetryHandle {
   private joinKeys: Record<string, unknown> | null = null;
