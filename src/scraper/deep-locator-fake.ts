@@ -246,10 +246,12 @@ export function registerDeepLocatorHopLatency(
 }
 
 /**
- * Only the methods `src/scraper/flow-runner.ts`'s deepLocator-routed call
- * sites (`observe-act`, rephrase evidence, the pre-cascade probe) actually
- * invoke, via `deep-locator-candidates.ts`: `count()` to check candidate
- * existence, `click()`/`fill()`/`selectOption()` to act, `textContent()` to
+ * Only the methods `deep-locator-candidates.ts`'s actuation seams exercise:
+ * `count()` to check candidate existence, `click()` (routed through
+ * `src/scraper/flow-runner.ts`'s deepLocator call sites — `observe-act`,
+ * rephrase evidence, the pre-cascade probe) plus `fill()`/`selectOption()`
+ * (the `fillDeepLocatorCandidate`/`selectDeepLocatorCandidateOption` seams —
+ * not yet routed by any flow-runner call site) to act, `textContent()` to
  * read `accessibleText`, `first()`/`nth()` for the same chaining
  * `buildHopSelector`-composed multi-match selectors need. `hover`/`type`/
  * `isVisible`/`isChecked`/`inputValue`/`innerHtml`/`innerText`/
