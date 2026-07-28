@@ -13,13 +13,17 @@ hand every time.
 Field-by-field reference for the generic (site-agnostic) rows this route
 returns: [telemetry-and-judging.md § Submission-envelope sink](./telemetry-and-judging.md#submission-envelope-sink).
 
-> **Partially shipped:** the submit-side `session` field below is live end to
-> end — `SitePluginContext.telemetry`, `dispatch()`'s outbound-IP capture, and
-> the schema have all landed. The beacon-side `sessionIp` field exists on
-> `beaconEventSchema` but is not yet populated: `fireTrackingClick`'s own
-> Browserbase session doesn't call `getOutboundIp()` yet, so every `sessionIp`
-> value is `null` today. Treat Recipe 4's cross-session IP comparison below as
-> a spec for when that lands, not a current field reference.
+> **Partially shipped:** the `session`/`sessionIp` schema fields and the
+> read path below are real and current. The beacon line's `sessionIp`
+> (Recipe 4) is populated in a real run — `fireTrackingClick`
+> (`src/lib/tracking-click.ts`) resolves its own short-lived session's
+> outbound IP and stamps it onto `"fired"`/`"failed"` beacon records. The
+> submit line's `session` block is not: `dispatch()` doesn't yet read a
+> session's outbound IP or stamp it onto the submit record, so `session`
+> is `null` on every submit row in a real run today. Treat the submit-side
+> `session` recipes below as a description of the intended shape, not
+> current behavior; the beacon-side `sessionIp` recipes (Recipe 4) are
+> current.
 For a worked example with real join-key recipes for a specific attribution
 provider, see that plugin's own docs — this runbook only covers the fields
 core actually knows about.
