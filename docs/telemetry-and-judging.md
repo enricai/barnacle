@@ -5,28 +5,6 @@
 > accuracy rubric, and what a verdict artifact contains. It is the concept
 > companion to the operator runbook in [playbook.md](./playbook.md).
 
-> **Not yet fully shipped:** the `session`/`sessionIp`/`beaconSessionIp`
-> schema fields, `src/lib/telemetry/run-telemetry.ts` (`RunTelemetry`), the
-> "Session-IP capture knobs" below, and `getOutboundIp()` (the memoized
-> `BrowserSession` accessor around `resolveSessionOutboundIp` in
-> `src/scraper/session-ip.ts`, wired on Browserbase sessions) have all
-> landed, and the reconciliation read path (`GET /v1/submissions`) now
-> folds and serializes those fields end to end. Still missing:
-> `SitePluginContext.telemetry` — the mid-run join-key attach point
-> (`context.telemetry.addJoinKeys()`) is not yet wired onto the plugin
-> context — and the `dispatch()` plumbing that reads
-> `session.getOutboundIp()` and stamps the result onto the **submit**
-> record's `session` block; with no writer wired to call the accessor on
-> that path, the submit record's `session` field is still `null` in a real
-> run today. The beacon side is not in that state: `fireTrackingClick`
-> (`src/lib/tracking-click.ts`) resolves its own short-lived session's
-> `getOutboundIp()` and stamps it onto the `"fired"`/`"failed"` beacon
-> record's `sessionIp` (surfaced as `beaconSessionIp` on the read path), so
-> that field IS populated in a real run. Treat the join-key-attach and
-> dispatch-level submit-`session`-recording paragraphs below as design
-> intent, not a description of current code; the schema, read-path,
-> capture-knob, and beacon-record paragraphs are current.
-
 ---
 
 ## Why capture at all?

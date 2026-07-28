@@ -8,27 +8,6 @@
 > For *how* to write a site plugin, see the Plugin Authoring Guide in
 > [../README.md](../README.md).
 
-> **Not yet fully shipped:** the rationale below for mid-run join-key
-> attachment (`context.telemetry.addJoinKeys()`) and for dispatch-level
-> session-IP wiring (recording the acquired session's IP onto the
-> submit record) still describes a planned wiring that has not
-> landed — `RunTelemetry` (`src/lib/telemetry/run-telemetry.ts`) exists but
-> is not yet attached to `SitePluginContext` as `context.telemetry`, and
-> `dispatch()` never reads a session's outbound IP or stamps it onto the
-> submit envelope, so the submit record's `session` value is `null` in a
-> real run today. The beacon record's `sessionIp` is a separate writer and
-> is not in that state: `fireTrackingClick` (`src/lib/tracking-click.ts`)
-> resolves its own short-lived session's outbound IP and stamps it onto
-> `"fired"`/`"failed"` beacon records, so `sessionIp` (and the read path's
-> `beaconSessionIp`) IS populated in a real run. What *has* landed:
-> `getOutboundIp()` (the memoized `BrowserSession` accessor backed by
-> `resolveSessionOutboundIp` in `src/scraper/session-ip.ts`), wired on
-> Browserbase sessions (`src/scraper/session-browserbase.ts`), and the
-> reconciliation schema fields and read path (`session`,
-> `sessionIp`/`beaconSessionIp`, `GET /v1/submissions`). Treat only the
-> submit-side `session` wiring point named above as design intent, not a
-> description of current code.
-
 ---
 
 ## Mental model
