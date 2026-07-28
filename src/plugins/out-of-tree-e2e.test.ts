@@ -344,6 +344,48 @@ export async function reportViaContext(context: SitePluginContext): Promise<void
   });
 });
 
+describe("out-of-tree plugin — hello-site's vendored BeaconOutcomeInput mirror stays in sync with the shipped seam", () => {
+  /**
+   * `examples/plugins/hello-site/src/types.ts` vendors its own narrowed
+   * `BeaconOutcomeInput` rather than importing from core (so the example
+   * builds with zero dependency on `src/`), but claims it is "kept
+   * field-for-field in sync with the shipped seam". Nothing enforced that
+   * claim. This probe compiles a bidirectional structural-equality check
+   * between the example's mirror and the real
+   * `Parameters<SitePluginContext["recordBeaconOutcome"]>[0]` shape under the
+   * same exports-gated `tsc` harness used above, so a field added, removed,
+   * or retyped on either side surfaces as a real `tsc` diagnostic instead of
+   * shipping unnoticed to the out-of-tree HCA/encompass plugins that copy
+   * this file. Bidirectional (not one-way `extends`) so a removed *optional*
+   * field — which a one-way assignability check would miss, since a missing
+   * optional property is still structurally assignable — is caught too.
+   */
+  const beaconMirrorCheckSource = `
+import type { SitePluginContext } from "@enricai/barnacle/site-plugin";
+import type { BeaconOutcomeInput as ExampleBeaconOutcomeInput } from "../examples/plugins/hello-site/src/types";
+
+type RealBeaconOutcomeInput = Parameters<SitePluginContext["recordBeaconOutcome"]>[0];
+
+type IfEquals<A, B, Yes = unknown, No = never> = (<T>() => T extends A ? 1 : 2) extends (
+  <T>() => T extends B ? 1 : 2
+)
+  ? Yes
+  : No;
+
+type AssertTrue<T extends true> = T;
+type _MirrorStaysInSyncWithShippedSeam = AssertTrue<
+  IfEquals<ExampleBeaconOutcomeInput, RealBeaconOutcomeInput, true, false>
+>;
+`;
+
+  it("hello-site's BeaconOutcomeInput is bidirectionally assignable with the real recordBeaconOutcome parameter", () => {
+    const diagnostics = typecheckGeneratedFiles({
+      "hello-site-beacon-mirror-check.ts": beaconMirrorCheckSource,
+    });
+    expect(diagnostics.map((d) => `${d.code}: ${d.message}`)).toEqual([]);
+  });
+});
+
 describe("out-of-tree plugin — end-to-end: loadPlugins → registerRoutes → /run", () => {
   const preservedEnv = {
     DEV_BYPASS_AUTH: process.env.DEV_BYPASS_AUTH,
