@@ -325,9 +325,9 @@ techniques are, in order:
    read-back pair (index-scaled watchdog budget) when no frame seam is
    available or the batched call degrades — `verifyDomEffect` can't resolve
    a `deeplocator=` selector, so the read-back itself is the only
-   verification signal available, recorded as `verifiedBy: "dom"` directly. No candidate naming the field at all is a
-   refusal, not a guess: the step fails that attempt rather than clicking
-   an unrelated control.
+   verification signal available, recorded as `verifiedBy: "dom"` directly.
+   No candidate naming the field at all is a refusal, not a guess: the step
+   fails that attempt rather than clicking an unrelated control.
 
    Only a step with no fill/select field-label match falls through to the
    click-only candidate walk. That walk still uses
