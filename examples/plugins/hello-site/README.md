@@ -78,9 +78,13 @@ curl -s http://localhost:3000/v1/plugins -H "Authorization: Bearer <your-api-key
   cwd-relative paths break depending on where the server is launched.
 - **A plugin that manages its own post-submit tracking navigation must call
   `context.recordBeaconOutcome`** — otherwise its beacon-fire telemetry stays
-  stuck at `beaconStatus: "skipped"`. See the repository README's
+  stuck at `beaconStatus: "skipped"`. A config-only `*.plugin.json` manifest
+  can reach it too, but only through the `spec.httpModule` escape hatch —
+  `executeHttp(payload, context)` receives the same `SitePluginContext` a
+  module plugin's does. See the repository README's
   [Reconciliation join keys](../../../README.md#reconciliation-join-keys-extractjoinkeys)
-  section for the full contract.
+  section for the full contract, including the fold-precedence consequence
+  of adopting it.
 - **To attach a field only discovered mid-run** (something read off the page
   after navigation, a token minted mid-flow, a value observed on a response —
   anything `extractJoinKeys` can't see because it only ever runs against the

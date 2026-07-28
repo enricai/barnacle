@@ -487,11 +487,21 @@ the input object explicitly — that's the published subpath an out-of-tree
 plugin resolves against its own `node_modules`; in-tree code under `src/`
 uses the `@/site-plugin` alias instead.
 
-**Config-only `*.plugin.json` manifests cannot record their own beacon
-outcome** — like `extractJoinKeys`, `recordBeaconOutcome` is only reachable
-from a module plugin's TypeScript `execute`/`executeHttp`/extra-route code; a
-pure-JSON manifest has no way to call it and stays on the automatic
-`fired`/`failed`/`skipped` outcomes `dispatch()` derives on its own.
+**A config-only `*.plugin.json` manifest can reach `context.recordBeaconOutcome`
+only through the `spec.httpModule` escape hatch** — `executeHttp(payload,
+context)` receives the same `SitePluginContext` a module plugin's does, so an
+`httpModule` can call it exactly like `execute()` does above. The manifest's
+declarative browser flow cannot: `runHealingFlow` is data-driven, with no
+imperative call site for a call like this to live in. One consequence to know
+before adopting it: `buildConfigPlugin` never synthesizes `extractJoinKeys`,
+so a config-only plugin is never `managesOwnTracking` — when the response
+carries a `TrackingUrl`, core still fires it itself via `fireTrackingClick`,
+and a manifest-recorded `fired`/`failed` line for that `requestId` ranks
+equal to core's own line under `beaconRank()`, so the fold resolves by write
+order (last line wins) rather than the manifest's line automatically
+outranking core's. Only when no `TrackingUrl` is present — so core's own
+write is the `skipped` default — does the manifest's recorded line
+deterministically outrank it.
 
 ### Static fixtures
 

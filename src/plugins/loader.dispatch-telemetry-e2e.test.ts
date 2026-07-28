@@ -210,4 +210,82 @@ describe("dispatch() telemetry end-to-end: real HTTP request to real NDJSON sink
     expect(row?.beaconStatus).toBe("fired");
     expect(row?.beaconTrackingUrl).toBe(trackingUrl);
   });
+
+  it("folds a plugin's richer self-recorded fired beacon over the engine's skipped beacon, keeping the submit line's narrow joinKeys and nulling the trackingUrl, dispatched over real HTTP", async () => {
+    const trackingUrl =
+      "https://click.e2e-test.example/t/divergent?vivclid=e2e-789&empId=emp3&jid=jid3";
+    const narrowJoinKeys = { vivclid: "e2e-789" };
+    const supersetJoinKeys = { vivclid: "e2e-789", jobReference: "emp3_jid3" };
+
+    const divergentPlugin: SitePlugin<unknown, unknown> = {
+      extractJoinKeys: (payload) => {
+        const { TrackingUrl } = payload as { TrackingUrl?: string };
+        return TrackingUrl ? narrowJoinKeys : null;
+      },
+      meta: {
+        siteId: "e2e-divergent",
+        displayName: "E2E Divergent",
+        bodySchema: z.object({ TrackingUrl: z.string().optional() }),
+        responseSchema: z.object({ verified: z.boolean() }),
+      },
+      execute: vi.fn(),
+      executeHttp: async (_payload, context): Promise<SitePluginResult<unknown>> => {
+        await context.recordBeaconOutcome({
+          beaconStatus: "fired",
+          joinKeys: supersetJoinKeys,
+        });
+        return { data: { verified: true } };
+      },
+    };
+
+    const app = Fastify({ loggerInstance: getLogger({ name: "dispatch-telemetry-e2e-test" }) });
+    app.setValidatorCompiler(validatorCompiler);
+    app.setSerializerCompiler(serializerCompiler);
+    await app.register(errorHandlerPlugin);
+    await app.register(authPlugin);
+    await registerRoutes(app, cfgStub, [divergentPlugin]);
+    await app.ready();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/e2e-divergent/run",
+      payload: { TrackingUrl: trackingUrl },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().verified).toBe(true);
+
+    await app.close();
+
+    const rawLines = fs
+      .readFileSync(sinkPath, "utf8")
+      .split("\n")
+      .filter((line) => line.trim().length > 0)
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            kind: string;
+            beaconStatus?: string;
+            joinKeys?: unknown;
+            trackingUrl?: string | null;
+          }
+      );
+    const beaconLines = rawLines.filter((line) => line.kind === "beacon");
+    expect(beaconLines).toHaveLength(2);
+    expect(beaconLines[0]?.beaconStatus).toBe("fired");
+    expect(beaconLines[0]?.joinKeys).toEqual(supersetJoinKeys);
+    expect(beaconLines[0]?.trackingUrl).toBeNull();
+    expect(beaconLines[1]?.beaconStatus).toBe("skipped");
+    expect(beaconLines[1]?.joinKeys).toEqual(narrowJoinKeys);
+    expect(beaconLines[1]?.trackingUrl).toBe(trackingUrl);
+
+    const rows = await readReconciliationRows({ sinkPath });
+    expect(rows).toHaveLength(1);
+    const [row] = rows;
+    expect(row?.siteId).toBe("e2e-divergent");
+    expect(row?.status).toBe("submitted");
+    expect(row?.beaconStatus).toBe("fired");
+    expect(row?.joinKeys).toEqual(narrowJoinKeys);
+    expect(row?.beaconTrackingUrl).toBeNull();
+  });
 });
