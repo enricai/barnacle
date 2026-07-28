@@ -268,7 +268,7 @@ and validated against `submitRecordSchema`, exported from that module as
 | `errorMessage` | The failure message on errors; `null` on success. |
 | `durationMs` | Total dispatch wall time. |
 | `ts` | ISO timestamp. |
-| `session` | `{ id, provider, ip, ipCapturedAt } \| null` — identity of the Browserbase session that served this run. `null` on the direct-HTTP hot path (`executeHttp`, no session acquired), when the provider exposes no outbound-IP accessor (Steel), or when session-IP capture is disabled (see [Configuration reference](#configuration-reference)). |
+| `session` | `{ id, provider, ip, ipCapturedAt } \| null` — identity of the Browserbase session that served this run. `null` only on the direct-HTTP hot path (`executeHttp`, no session ever acquired). Once a session is acquired, `id`/`provider` are always populated; `ip`/`ipCapturedAt` fall back to `null` when the provider exposes no outbound-IP accessor (Steel) or when session-IP capture is disabled (see [Configuration reference](#configuration-reference)). |
 
 `joinKeys` is populated from two sources merged together: the plugin's own
 `extractJoinKeys` hook (`src/site-plugin.ts`), resolved once from the inbound
@@ -288,14 +288,17 @@ keys win on collision) on both the success and error envelope paths —
 in a `finally` around the plugin's session-scoped work, core best-effort
 awaits the acquired `BrowserSession`'s optional `getOutboundIp()` accessor
 (`src/scraper/session-shared.ts`) and records `{ id: session.sessionId,
-provider: session.provider, ip, ipCapturedAt }`. `getOutboundIp()` is itself a
-memoized wrapper (`src/scraper/session-browserbase.ts`) around
-`resolveSessionOutboundIp` (`src/scraper/session-ip.ts`), which opens a
-separate, short-lived tab and navigates it to an IP-echo endpoint — the only
-way to learn a Browserbase session's actual outbound IP, since neither the
-Browserbase SDK nor `BrowserSession` otherwise exposes it. It never throws:
-capture failures, timeouts, and a disabled capture flag all yield `session:
-null` rather than interrupting the submission.
+provider: session.provider, ip, ipCapturedAt }` — `session` itself is only
+`null` when no `BrowserSession` was ever acquired (the `executeHttp` hot
+path). `getOutboundIp()` is itself a memoized wrapper
+(`src/scraper/session-browserbase.ts`) around `resolveSessionOutboundIp`
+(`src/scraper/session-ip.ts`), which opens a separate, short-lived tab and
+navigates it to an IP-echo endpoint — the only way to learn a Browserbase
+session's actual outbound IP, since neither the Browserbase SDK nor
+`BrowserSession` otherwise exposes it. It never throws: capture failures,
+timeouts, a missing accessor (Steel), and a disabled capture flag all yield
+`ip`/`ipCapturedAt: null` within an otherwise-populated `session` block,
+rather than interrupting the submission.
 
 ### `"beacon"` records — the conversion/beacon-fire dimension, distinct from submit `status`
 
