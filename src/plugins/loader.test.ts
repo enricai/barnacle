@@ -1526,6 +1526,128 @@ describe("registerRoutes — context.recordBeaconOutcome", () => {
   });
 });
 
+describe("registerRoutes — context.recordBeaconOutcome binding across concurrent dispatches", () => {
+  const cfgStub = { scraper: { siteBaseUrls: {} } } as unknown as AppConfig;
+  const preservedEnv = {
+    DEV_BYPASS_AUTH: process.env.DEV_BYPASS_AUTH,
+    NODE_ENV: process.env.NODE_ENV,
+  };
+
+  beforeEach(() => {
+    process.env.DEV_BYPASS_AUTH = "true";
+    process.env.NODE_ENV = "test";
+    mockCaptureSubmissionEnvelope.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    if (preservedEnv.DEV_BYPASS_AUTH === undefined) delete process.env.DEV_BYPASS_AUTH;
+    else process.env.DEV_BYPASS_AUTH = preservedEnv.DEV_BYPASS_AUTH;
+    if (preservedEnv.NODE_ENV === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = preservedEnv.NODE_ENV;
+    vi.clearAllMocks();
+  });
+
+  it("binds each concurrent run's recordBeaconOutcome to its own requestId — no cross-run requestId", async () => {
+    let reqCounter = 0;
+    const app = Fastify({
+      loggerInstance: getLogger({ name: "loader-recorder-concurrency-test" }),
+      genReqId: () => `req-concurrent-${++reqCounter}`,
+    });
+    app.setValidatorCompiler(validatorCompiler);
+    app.setSerializerCompiler(serializerCompiler);
+    await app.register(errorHandlerPlugin);
+    await app.register(authPlugin);
+
+    // Each run parks on its own gate before calling recordBeaconOutcome, so both
+    // requests are genuinely in-flight (context already built, closure already
+    // bound) at the moment we release them — this is what would catch a hoisted
+    // or memoized buildPluginContext call crossing the two runs' bindings.
+    const startedRuns = new Set<string>();
+    const gateResolvers = new Map<string, () => void>();
+    const gateFor = (run: string): Promise<void> => {
+      startedRuns.add(run);
+      return new Promise((resolve) => gateResolvers.set(run, resolve));
+    };
+
+    const plugin: SitePlugin<unknown, unknown> = {
+      meta: {
+        siteId: "recorder-concurrency-test",
+        displayName: "Recorder Concurrency Test",
+        bodySchema: z.object({ run: z.string() }),
+        responseSchema: z.unknown(),
+      },
+      execute: async (payload, _session, context) => {
+        const { run } = payload as { run: string };
+        await gateFor(run);
+        await context.recordBeaconOutcome({ beaconStatus: "fired", joinKeys: { run } });
+        return { data: { run, requestId: context.requestId } };
+      },
+    };
+
+    await registerRoutes(app, cfgStub, [plugin]);
+    await app.ready();
+
+    const firstResponse = app.inject({
+      method: "POST",
+      url: "/v1/recorder-concurrency-test/run",
+      payload: { run: "first" },
+    });
+    const secondResponse = app.inject({
+      method: "POST",
+      url: "/v1/recorder-concurrency-test/run",
+      payload: { run: "second" },
+    });
+
+    await vi.waitFor(() => {
+      expect(startedRuns.has("first")).toBe(true);
+      expect(startedRuns.has("second")).toBe(true);
+    });
+
+    // Release in reverse-of-arrival order so the run that started second is
+    // the one that finishes first — a shared/hoisted context would bind both
+    // runs' recorders to whichever requestId "wins" this race.
+    gateResolvers.get("second")?.();
+    gateResolvers.get("first")?.();
+
+    const [firstRes, secondRes] = await Promise.all([firstResponse, secondResponse]);
+    expect(firstRes.statusCode).toBe(200);
+    expect(secondRes.statusCode).toBe(200);
+
+    const firstRequestId = (firstRes.json() as { requestId: string }).requestId;
+    const secondRequestId = (secondRes.json() as { requestId: string }).requestId;
+    expect(firstRequestId).not.toBe(secondRequestId);
+
+    // dispatch() also emits its own automatic "skipped" beacon line per run
+    // (no extractJoinKeys, no TrackingUrl) through the same captured sink —
+    // isolate the plugin-triggered "fired" calls from that noise.
+    const firedCalls = mockCaptureBeaconEvent.mock.calls
+      .map(
+        ([call]) => call as { requestId: string; joinKeys: { run: string }; beaconStatus: string }
+      )
+      .filter((call) => call.beaconStatus === "fired");
+
+    expect(firedCalls).toHaveLength(2);
+    expect(firedCalls).toContainEqual(
+      expect.objectContaining({
+        requestId: firstRequestId,
+        siteId: "recorder-concurrency-test",
+        joinKeys: { run: "first" },
+        beaconStatus: "fired",
+      })
+    );
+    expect(firedCalls).toContainEqual(
+      expect.objectContaining({
+        requestId: secondRequestId,
+        siteId: "recorder-concurrency-test",
+        joinKeys: { run: "second" },
+        beaconStatus: "fired",
+      })
+    );
+
+    await app.close();
+  });
+});
+
 describe("dispatch — needsUserInfo branch", () => {
   const mockHttpExecute = vi.fn();
 
