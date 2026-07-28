@@ -3,9 +3,12 @@ import { runInNewContext } from "node:vm";
 import {
   locatorScriptBootstrap,
   locatorScriptGlobalRefs,
+  locatorScriptSources,
 } from "@browserbasehq/stagehand/lib/v3/dom/build/locatorScripts.generated.js";
+import type { Frame } from "@browserbasehq/stagehand/lib/v3/understudy/frame.js";
+import { Locator } from "@browserbasehq/stagehand/lib/v3/understudy/locator.js";
 import { FrameSelectorResolver } from "@browserbasehq/stagehand/lib/v3/understudy/selectorResolver.js";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   buildDenseFormFixture,
@@ -53,6 +56,91 @@ function resolveViaStagehand(selector: string, index: number, root: FakeDomRoot)
   const invocation = `${locatorScriptGlobalRefs.resolveCssSelector}(${JSON.stringify(selector)}, ${index})`;
   const expr = `(() => { ${locatorScriptBootstrap}; return ${invocation}; })()`;
   return evaluateInFakePage(expr, root);
+}
+
+const FAKE_FRAME_ID = "fake-frame-actuation-contract";
+const ISOLATED_WORLD_CONTEXT_ID = 4001;
+const MAIN_WORLD_CONTEXT_ID = 4002;
+
+/**
+ * Builds the `{ result: { value } }` `Runtime.callFunctionOn` reply
+ * `fill`/`selectOption`/`inputValue` each expect, keyed off the SAME
+ * `functionDeclaration` reference/inline-snippet the installed Locator
+ * actually sends — so a declaration change in a future Stagehand bump makes
+ * this throw instead of silently returning the wrong shape.
+ */
+function resolveCallFunctionOnResponse(params: unknown): { result: { value: unknown } } {
+  const { functionDeclaration } = params as { functionDeclaration: string };
+  if (functionDeclaration === locatorScriptSources.selectElementOptions) {
+    return { result: { value: ["pinned-option"] } };
+  }
+  if (functionDeclaration === locatorScriptSources.readElementInputValue) {
+    return { result: { value: "pinned-input-value" } };
+  }
+  if (functionDeclaration.includes(locatorScriptGlobalRefs.fillElementValue)) {
+    return { result: { value: { status: "done" } } };
+  }
+  throw new Error(
+    `unexpected Runtime.callFunctionOn declaration in actuation index-cost contract test: ${functionDeclaration.slice(0, 80)}`
+  );
+}
+
+/**
+ * A stub CDP session counting `Runtime.evaluate` sends — the round-trip
+ * `FrameSelectorResolver.resolveCss` (selectorResolver.js:79-115) issues once
+ * per index while scanning up to `limit`. `on()` delivers
+ * `Runtime.executionContextCreated` synchronously the moment
+ * `waitForMainWorld` subscribes (selectorResolver.js's own `ctxId` lookup,
+ * unconditionally awaited before the resolve loop even when the primary path
+ * never needs it), so the resolver never falls through to its 1000ms
+ * fallback timeout.
+ */
+interface CountingFrameSession {
+  send: (method: string, params?: unknown) => Promise<unknown>;
+  on: (event: string, handler: (params: unknown) => void) => void;
+  off: (event: string, handler: (params: unknown) => void) => void;
+}
+
+function makeCountingFrameSession(): {
+  session: CountingFrameSession;
+  evaluateCallCount: () => number;
+} {
+  let evaluateCalls = 0;
+  const send = async (method: string, params?: unknown): Promise<unknown> => {
+    switch (method) {
+      case "Runtime.enable":
+      case "DOM.enable":
+        return {};
+      case "Page.createIsolatedWorld":
+        return { executionContextId: ISOLATED_WORLD_CONTEXT_ID };
+      case "Runtime.evaluate":
+        evaluateCalls += 1;
+        return { result: { objectId: `resolved-node-${evaluateCalls}` } };
+      case "DOM.requestNode":
+        return { nodeId: evaluateCalls };
+      case "Runtime.callFunctionOn":
+        return resolveCallFunctionOnResponse(params);
+      case "Runtime.releaseObject":
+        return {};
+      default:
+        throw new Error(`unexpected CDP call in actuation index-cost contract test: ${method}`);
+    }
+  };
+  const on = (event: string, handler: (params: unknown) => void): void => {
+    if (event !== "Runtime.executionContextCreated") return;
+    handler({
+      context: { id: MAIN_WORLD_CONTEXT_ID, auxData: { isDefault: true, frameId: FAKE_FRAME_ID } },
+    });
+  };
+  return {
+    session: { send, on, off: () => {} },
+    evaluateCallCount: () => evaluateCalls,
+  };
+}
+
+/** Casts through `unknown` because the installed `Frame` class carries a private field, so no plain object is structurally assignable to it. */
+function makeFakeFrame(session: unknown): Frame {
+  return { session, frameId: FAKE_FRAME_ID, pageId: "fake-page" } as unknown as Frame;
 }
 
 describe(`Stagehand ${VERIFIED_STAGEHAND_VERSION} resolver contracts the batched-scan fix depends on`, () => {
@@ -125,4 +213,47 @@ describe(`Stagehand ${VERIFIED_STAGEHAND_VERSION} resolver contracts the batched
     });
     expect(parsed.value).not.toBe(hopNotation);
   });
+});
+
+describe(`Stagehand ${VERIFIED_STAGEHAND_VERSION} FrameSelectorResolver.resolveAtIndex pays index + 1 serial Runtime.evaluate round-trips`, () => {
+  it.each([0, 1, 5, 12])(
+    "resolveAtIndex(cssQuery, %i) issues exactly index + 1 Runtime.evaluate sends and resolves a node",
+    async (index) => {
+      const { session, evaluateCallCount } = makeCountingFrameSession();
+      const resolver = new FrameSelectorResolver(makeFakeFrame(session));
+      const query = FrameSelectorResolver.parseSelector(INTERACTIVE_CANDIDATE_SELECTOR);
+
+      const resolved = await resolver.resolveAtIndex(query, index);
+
+      expect(resolved).not.toBeNull();
+      expect(evaluateCallCount()).toBe(index + 1);
+    }
+  );
+});
+
+describe(`Stagehand ${VERIFIED_STAGEHAND_VERSION} Locator.fill/selectOption/inputValue route through resolveNode() -> FrameSelectorResolver.resolveAtIndex(query, index)`, () => {
+  it.each([
+    { method: "fill", index: 0 },
+    { method: "fill", index: 6 },
+    { method: "selectOption", index: 4 },
+    { method: "selectOption", index: 11 },
+    { method: "inputValue", index: 9 },
+  ] as const)(
+    "Locator.nth($index).$method() resolves via exactly one resolveNode() call, costing index + 1 Runtime.evaluate sends",
+    async ({ method, index }) => {
+      const { session, evaluateCallCount } = makeCountingFrameSession();
+      const resolveNodeSpy = vi.spyOn(Locator.prototype, "resolveNode");
+      const locator = new Locator(makeFakeFrame(session), INTERACTIVE_CANDIDATE_SELECTOR, {}).nth(
+        index
+      );
+
+      if (method === "fill") await locator.fill("pinned-value");
+      else if (method === "selectOption") await locator.selectOption("pinned-option");
+      else await locator.inputValue();
+
+      expect(resolveNodeSpy).toHaveBeenCalledTimes(1);
+      expect(evaluateCallCount()).toBe(index + 1);
+      resolveNodeSpy.mockRestore();
+    }
+  );
 });
