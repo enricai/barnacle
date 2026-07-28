@@ -2,10 +2,18 @@ import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 
 import {
+  type FakeDomRoot,
+  makeFakeDomElement,
+  makeSelectorAwareDomRoot,
+} from "@/scraper/deep-locator-fake";
+import {
   buildClickFrameCandidateExpr,
+  buildFillFrameCandidateExpr,
   buildScanFrameCandidatesExpr,
+  buildSelectFrameCandidateExpr,
   type FrameCandidateClickResult,
   type FrameCandidateScanResult,
+  type FrameCandidateWriteResult,
   isNodeNotActionableError,
 } from "@/scraper/deep-locator-scan";
 
@@ -149,6 +157,55 @@ function evaluateInFakeFrame(expr: string, frameDocument: FakeRoot, outerRoot: F
         this.type = type;
       }
     },
+    console,
+  });
+}
+
+/**
+ * Trivial stand-ins for the real DOM's `HTMLInputElement`/
+ * `HTMLTextAreaElement`/`HTMLSelectElement` globals `buildFillFrameCandidateExpr`/
+ * `buildSelectFrameCandidateExpr` reference: an empty prototype means
+ * `Object.getOwnPropertyDescriptor(...prototype, "value")` resolves to
+ * `undefined`, so the generated expression falls back to a bare
+ * `el.value = value` assignment against {@link makeFakeDomElement}'s plain
+ * writable `value` property — proving the fallback path works when no
+ * descriptor is present, same as an unmanaged (non-React) form control.
+ */
+function fakeNativeElementClasses(): Record<string, unknown> {
+  return {
+    HTMLInputElement: class {},
+    HTMLTextAreaElement: class {},
+    HTMLSelectElement: class {},
+  };
+}
+
+/**
+ * Executes a generated write expression string ({@link buildFillFrameCandidateExpr}/
+ * {@link buildSelectFrameCandidateExpr}) against a {@link makeSelectorAwareDomRoot}-built
+ * fake root, supplying the fake `HTMLInputElement`/`HTMLTextAreaElement`/
+ * `HTMLSelectElement` globals (see {@link fakeNativeElementClasses}) the write
+ * expression's descriptor lookup references, plus `Event`. `extraGlobals`
+ * lets a test override one of the native-element stand-ins with one carrying
+ * a real `value` accessor descriptor, to prove the write goes through
+ * `descriptor.set` rather than skipping straight to a bare assignment.
+ */
+function evaluateWriteInFakePage(
+  expr: string,
+  document: FakeDomRoot,
+  extraGlobals: Record<string, unknown> = {}
+): unknown {
+  return runInNewContext(expr, {
+    document,
+    getComputedStyle: (el: { computedStyle: { display: string; visibility: string } }) =>
+      el.computedStyle,
+    Event: class {
+      type: string;
+      constructor(type: string) {
+        this.type = type;
+      }
+    },
+    ...fakeNativeElementClasses(),
+    ...extraGlobals,
     console,
   });
 }
@@ -565,6 +622,233 @@ describe("deep-locator-scan/buildClickFrameCandidateExpr", () => {
     expect(result).toEqual({ clicked: true });
     expect(frameButton.dispatchedEvents).toEqual(["mousedown", "mouseup", "click"]);
     expect(outerButton.dispatchedEvents).toEqual([]);
+  });
+});
+
+describe("deep-locator-scan/buildFillFrameCandidateExpr", () => {
+  it("fills the <input> at querySelectorAll(innerSelector)[index], dispatches input then change, and returns {written:true, readBack}", () => {
+    const input = makeFakeDomElement("", { tagName: "input", value: "" });
+    const root = makeSelectorAwareDomRoot([input]);
+
+    const result = evaluateWriteInFakePage(
+      buildFillFrameCandidateExpr("input", 0, "Ada"),
+      root
+    ) as FrameCandidateWriteResult;
+
+    expect(result).toEqual({ written: true, readBack: "Ada" });
+    expect(input.value).toBe("Ada");
+    expect(input.dispatchedEvents).toEqual(["input", "change"]);
+  });
+
+  it("fills a <textarea> the same way as an <input>, resolving its own native-class descriptor lookup", () => {
+    const textarea = makeFakeDomElement("", { tagName: "textarea", value: "" });
+    const root = makeSelectorAwareDomRoot([textarea]);
+
+    const result = evaluateWriteInFakePage(
+      buildFillFrameCandidateExpr("textarea", 0, "Cover letter text"),
+      root
+    ) as FrameCandidateWriteResult;
+
+    expect(result).toEqual({ written: true, readBack: "Cover letter text" });
+    expect(textarea.value).toBe("Cover letter text");
+    expect(textarea.dispatchedEvents).toEqual(["input", "change"]);
+  });
+
+  it('returns {written:false, reason:"out-of-range"} when the index no longer matches, without throwing', () => {
+    const input = makeFakeDomElement("", { tagName: "input", value: "" });
+    const root = makeSelectorAwareDomRoot([input]);
+
+    expect(() => {
+      const result = evaluateWriteInFakePage(
+        buildFillFrameCandidateExpr("input", 5, "Ada"),
+        root
+      ) as FrameCandidateWriteResult;
+      expect(result).toEqual({ written: false, reason: "out-of-range" });
+    }).not.toThrow();
+    expect(input.value).toBe("");
+    expect(input.dispatchedEvents).toEqual([]);
+  });
+
+  it('returns {written:false, reason:"not-actionable"} for a 0x0 element without writing or dispatching anything', () => {
+    const input = makeFakeDomElement("", {
+      tagName: "input",
+      rect: { width: 0, height: 0 },
+      value: "",
+    });
+    const root = makeSelectorAwareDomRoot([input]);
+
+    const result = evaluateWriteInFakePage(
+      buildFillFrameCandidateExpr("input", 0, "Ada"),
+      root
+    ) as FrameCandidateWriteResult;
+
+    expect(result).toEqual({ written: false, reason: "not-actionable" });
+    expect(input.value).toBe("");
+    expect(input.dispatchedEvents).toEqual([]);
+  });
+
+  it('returns {written:false, reason:"not-actionable"} for a display:none element without writing or dispatching anything', () => {
+    const input = makeFakeDomElement("", {
+      tagName: "input",
+      computedStyle: { display: "none", visibility: "visible" },
+      value: "",
+    });
+    const root = makeSelectorAwareDomRoot([input]);
+
+    const result = evaluateWriteInFakePage(
+      buildFillFrameCandidateExpr("input", 0, "Ada"),
+      root
+    ) as FrameCandidateWriteResult;
+
+    expect(result).toEqual({ written: false, reason: "not-actionable" });
+    expect(input.value).toBe("");
+    expect(input.dispatchedEvents).toEqual([]);
+  });
+
+  it("resolves against the injected root realm via the root arg, never an outer document", () => {
+    const outerInput = makeFakeDomElement("", { tagName: "input", value: "" });
+    const outerRoot = makeSelectorAwareDomRoot([outerInput]);
+    const innerInput = makeFakeDomElement("", { tagName: "input", value: "" });
+    const innerRoot = makeSelectorAwareDomRoot([innerInput]);
+
+    const result = evaluateWriteInFakePage(
+      buildFillFrameCandidateExpr("input", 0, "Ada", "document"),
+      innerRoot,
+      { __outerDocumentNeverReferenced: outerRoot }
+    ) as FrameCandidateWriteResult;
+
+    expect(result).toEqual({ written: true, readBack: "Ada" });
+    expect(innerInput.value).toBe("Ada");
+    expect(outerInput.value).toBe("");
+  });
+
+  it("defaults to `document`, resolved from the executing realm (no root arg passed)", () => {
+    const outerInput = makeFakeDomElement("", { tagName: "input", value: "" });
+    const outerRoot = makeSelectorAwareDomRoot([outerInput]);
+    const innerInput = makeFakeDomElement("", { tagName: "input", value: "" });
+    const innerRoot = makeSelectorAwareDomRoot([innerInput]);
+
+    const result = evaluateWriteInFakePage(
+      buildFillFrameCandidateExpr("input", 0, "Ada"),
+      innerRoot,
+      { __outerDocumentNeverReferenced: outerRoot }
+    ) as FrameCandidateWriteResult;
+
+    expect(result).toEqual({ written: true, readBack: "Ada" });
+    expect(innerInput.value).toBe("Ada");
+    expect(outerInput.value).toBe("");
+  });
+
+  it("routes the write through a value descriptor's setter on the native element class when one is present, instead of silently skipping it", () => {
+    const setCalls: string[] = [];
+    class NativeInputWithTrackedSetter {}
+    Object.defineProperty(NativeInputWithTrackedSetter.prototype, "value", {
+      get() {
+        return (this as { value: string }).value;
+      },
+      set(v: string) {
+        setCalls.push(v);
+        (this as { value: string }).value = v;
+      },
+    });
+    const input = makeFakeDomElement("", { tagName: "input", value: "" });
+    const root = makeSelectorAwareDomRoot([input]);
+
+    const result = evaluateWriteInFakePage(buildFillFrameCandidateExpr("input", 0, "Ada"), root, {
+      HTMLInputElement: NativeInputWithTrackedSetter,
+    }) as FrameCandidateWriteResult;
+
+    expect(setCalls).toEqual(["Ada"]);
+    expect(result).toEqual({ written: true, readBack: "Ada" });
+  });
+});
+
+describe("deep-locator-scan/buildSelectFrameCandidateExpr", () => {
+  it("sets the <select> at querySelectorAll(innerSelector)[index], dispatches input then change, and returns {written:true, readBack}", () => {
+    const select = makeFakeDomElement("", { tagName: "select", value: "" });
+    const root = makeSelectorAwareDomRoot([select]);
+
+    const result = evaluateWriteInFakePage(
+      buildSelectFrameCandidateExpr("select", 0, "us"),
+      root
+    ) as FrameCandidateWriteResult;
+
+    expect(result).toEqual({ written: true, readBack: "us" });
+    expect(select.value).toBe("us");
+    expect(select.dispatchedEvents).toEqual(["input", "change"]);
+  });
+
+  it('returns {written:false, reason:"out-of-range"} when the index no longer matches, without throwing', () => {
+    const select = makeFakeDomElement("", { tagName: "select", value: "" });
+    const root = makeSelectorAwareDomRoot([select]);
+
+    expect(() => {
+      const result = evaluateWriteInFakePage(
+        buildSelectFrameCandidateExpr("select", 3, "us"),
+        root
+      ) as FrameCandidateWriteResult;
+      expect(result).toEqual({ written: false, reason: "out-of-range" });
+    }).not.toThrow();
+    expect(select.value).toBe("");
+    expect(select.dispatchedEvents).toEqual([]);
+  });
+
+  it('returns {written:false, reason:"not-actionable"} for an unrendered <select> without writing or dispatching anything', () => {
+    const select = makeFakeDomElement("", {
+      tagName: "select",
+      rect: { width: 0, height: 0 },
+      value: "",
+    });
+    const root = makeSelectorAwareDomRoot([select]);
+
+    const result = evaluateWriteInFakePage(
+      buildSelectFrameCandidateExpr("select", 0, "us"),
+      root
+    ) as FrameCandidateWriteResult;
+
+    expect(result).toEqual({ written: false, reason: "not-actionable" });
+    expect(select.value).toBe("");
+    expect(select.dispatchedEvents).toEqual([]);
+  });
+
+  it("resolves against the injected root realm via the root arg, never an outer document", () => {
+    const outerSelect = makeFakeDomElement("", { tagName: "select", value: "" });
+    const outerRoot = makeSelectorAwareDomRoot([outerSelect]);
+    const innerSelect = makeFakeDomElement("", { tagName: "select", value: "" });
+    const innerRoot = makeSelectorAwareDomRoot([innerSelect]);
+
+    const result = evaluateWriteInFakePage(
+      buildSelectFrameCandidateExpr("select", 0, "us", "document"),
+      innerRoot,
+      { __outerDocumentNeverReferenced: outerRoot }
+    ) as FrameCandidateWriteResult;
+
+    expect(result).toEqual({ written: true, readBack: "us" });
+    expect(innerSelect.value).toBe("us");
+    expect(outerSelect.value).toBe("");
+  });
+
+  it("routes the write through a value descriptor's setter on HTMLSelectElement when one is present, instead of silently skipping it", () => {
+    const setCalls: string[] = [];
+    class NativeSelectWithTrackedSetter {}
+    Object.defineProperty(NativeSelectWithTrackedSetter.prototype, "value", {
+      get() {
+        return (this as { value: string }).value;
+      },
+      set(v: string) {
+        setCalls.push(v);
+        (this as { value: string }).value = v;
+      },
+    });
+    const select = makeFakeDomElement("", { tagName: "select", value: "" });
+    const root = makeSelectorAwareDomRoot([select]);
+
+    const result = evaluateWriteInFakePage(buildSelectFrameCandidateExpr("select", 0, "us"), root, {
+      HTMLSelectElement: NativeSelectWithTrackedSetter,
+    }) as FrameCandidateWriteResult;
+
+    expect(setCalls).toEqual(["us"]);
+    expect(result).toEqual({ written: true, readBack: "us" });
   });
 });
 

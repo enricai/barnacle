@@ -319,13 +319,15 @@ techniques are, in order:
    substring match either direction otherwise). A match routes to the
    dedicated fill/select actuation seam
    (`fillDeepLocatorCandidate`/`selectDeepLocatorCandidateOption`,
-   `src/scraper/deep-locator-actuate.ts`), which writes the value through
-   `page.deepLocator()` and reads it back via `inputValue()` to confirm —
-   `verifyDomEffect` can't resolve a `deeplocator=` selector, so the
-   read-back itself is the only verification signal available, recorded as
-   `verifiedBy: "dom"` directly. No candidate naming the field at all is a
-   refusal, not a guess: the step fails that attempt rather than clicking
-   an unrelated control.
+   `src/scraper/deep-locator-actuate.ts`), which prefers one batched
+   `frameTarget.evaluate()` round-trip carrying an inline read-back, falling
+   back to the legacy `page.deepLocator()` write + separate `inputValue()`
+   read-back pair (index-scaled watchdog budget) when no frame seam is
+   available or the batched call degrades — `verifyDomEffect` can't resolve
+   a `deeplocator=` selector, so the read-back itself is the only
+   verification signal available, recorded as `verifiedBy: "dom"` directly.
+   No candidate naming the field at all is a refusal, not a guess: the step
+   fails that attempt rather than clicking an unrelated control.
 
    Only a step with no fill/select field-label match falls through to the
    click-only candidate walk. That walk still uses
