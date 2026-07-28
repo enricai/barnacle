@@ -282,7 +282,7 @@ const stubContext: SitePluginContext = {
 
 it("attaches the confirmation token discovered mid-run as a join key", async () => {
   const session = makeSession();
-  await mySitePlugin.execute!(session, stubContext);
+  await mySitePlugin.execute({ query: "widget" }, session, stubContext);
 
   expect(addJoinKeys).toHaveBeenCalledWith({ confirmationToken: "abc123" });
 });
