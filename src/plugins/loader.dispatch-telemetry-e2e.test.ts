@@ -27,11 +27,14 @@ import { z } from "zod/v4";
 
 import authPlugin from "@/api/plugins/auth";
 import errorHandlerPlugin from "@/api/plugins/error-handler";
+import { submissionsRoutes } from "@/api/routes/submissions";
 import type { AppConfig } from "@/config";
 import { getLogger } from "@/lib/logging";
 import { readReconciliationRows } from "@/lib/telemetry/submission-reader";
 import { registerRoutes } from "@/plugins/loader";
-import type { SitePlugin, SitePluginResult } from "@/site-plugin";
+import { runWithSession } from "@/scraper/pool";
+import type { BrowserSession } from "@/scraper/session";
+import type { SitePlugin, SitePluginContext, SitePluginResult } from "@/site-plugin";
 
 let tmpDir: string;
 let sinkPath: string;
@@ -287,5 +290,100 @@ describe("dispatch() telemetry end-to-end: real HTTP request to real NDJSON sink
     expect(row?.beaconStatus).toBe("fired");
     expect(row?.joinKeys).toEqual(narrowJoinKeys);
     expect(row?.beaconTrackingUrl).toBeNull();
+  });
+
+  it("merges context.telemetry.addJoinKeys() over extractJoinKeys and stamps the session's outbound IP, readable back via readReconciliationRows and GET /v1/submissions", async () => {
+    const knownIp = "203.0.113.201";
+    const fakeSession = {
+      stagehand: {},
+      limiter: {},
+      sessionId: "sess_e2e_telemetry_1",
+      provider: "browserbase" as const,
+      close: vi.fn().mockResolvedValue(undefined),
+      getOutboundIp: vi.fn().mockResolvedValue(knownIp),
+    };
+    vi.mocked(runWithSession).mockImplementationOnce(
+      (task: (session: BrowserSession) => Promise<unknown>) =>
+        task(fakeSession as unknown as BrowserSession)
+    );
+
+    const midRunPlugin: SitePlugin<unknown, unknown> = {
+      extractJoinKeys: (payload) => {
+        const { TrackingUrl } = payload as { TrackingUrl?: string };
+        return TrackingUrl ? { vivclid: "extracted-value", jobReference: "emp9_jid9" } : null;
+      },
+      meta: {
+        siteId: "e2e-mid-run-telemetry",
+        displayName: "E2E Mid-Run Telemetry",
+        bodySchema: z.object({ TrackingUrl: z.string().optional() }),
+        responseSchema: z.object({ verified: z.boolean() }),
+      },
+      execute: async (
+        _payload,
+        _session,
+        context: SitePluginContext
+      ): Promise<SitePluginResult<unknown>> => {
+        context.telemetry.addJoinKeys({ vivclid: "run-attached-value" });
+        return { data: { verified: true } };
+      },
+    };
+
+    const trackingUrl =
+      "https://click.e2e-test.example/t/mid-run?vivclid=extracted-value&empId=emp9&jid=jid9";
+
+    const app = Fastify({ loggerInstance: getLogger({ name: "dispatch-telemetry-e2e-test" }) });
+    app.setValidatorCompiler(validatorCompiler);
+    app.setSerializerCompiler(serializerCompiler);
+    await app.register(errorHandlerPlugin);
+    await app.register(authPlugin);
+    await registerRoutes(app, cfgStub, [midRunPlugin]);
+    await app.register(submissionsRoutes, { sinkPath });
+    await app.ready();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/e2e-mid-run-telemetry/run",
+      payload: { TrackingUrl: trackingUrl },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().verified).toBe(true);
+
+    const expectedJoinKeys = { vivclid: "run-attached-value", jobReference: "emp9_jid9" };
+
+    const rows = await readReconciliationRows({ sinkPath });
+    expect(rows).toHaveLength(1);
+    const [row] = rows;
+    expect(row?.siteId).toBe("e2e-mid-run-telemetry");
+    expect(row?.status).toBe("submitted");
+    expect(row?.joinKeys).toEqual(expectedJoinKeys);
+    expect(row?.session).toEqual({
+      id: "sess_e2e_telemetry_1",
+      provider: "browserbase",
+      ip: knownIp,
+      ipCapturedAt: expect.any(String),
+    });
+
+    const submissionsResponse = await app.inject({
+      method: "GET",
+      url: "/v1/submissions",
+    });
+
+    await app.close();
+
+    expect(submissionsResponse.statusCode).toBe(200);
+    const [submissionRow] = submissionsResponse.json().submissions as Array<{
+      siteId: string;
+      joinKeys: Record<string, unknown> | null;
+      session: {
+        id: string;
+        provider: string;
+        ip: string | null;
+        ipCapturedAt: string | null;
+      } | null;
+    }>;
+    expect(submissionRow?.siteId).toBe("e2e-mid-run-telemetry");
+    expect(submissionRow?.joinKeys).toEqual(expectedJoinKeys);
+    expect(submissionRow?.session?.ip).toBe(knownIp);
   });
 });
