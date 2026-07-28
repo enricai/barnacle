@@ -90,7 +90,7 @@ describe("selectDeepLocatorCandidateOption", () => {
     );
 
     expect(result).toBe(true);
-    expect(frame.get(`${FRAME_SELECTOR} >> select`)?.filledWith).toBe("US");
+    expect(frame.get(`${FRAME_SELECTOR} >> select`)?.selectedWith).toEqual(["US"]);
   });
 
   it("returns false, never throws, when the read-back disagrees with the selected option", async () => {

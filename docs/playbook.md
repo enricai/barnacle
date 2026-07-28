@@ -289,10 +289,13 @@ techniques are, in order:
    OOPIF form's candidate set to a handful of controls); when that scoped
    pass finds nothing, resolution widens once to the unscoped `"*"` hop so a
    `div`/`span` tile with only a click handler (no `role`/`tabindex`) can
-   still be reached. `clickFirstActionableCandidate`
-   (`src/scraper/deep-locator-click.ts`) walks the ranked candidates in order
-   and actuates the first one that actually succeeds — the step's own prose
-   (`parseSelectStep`/`parseFillStep` in `src/scraper/flow-runner.ts`) picks
+   still be reached. A fill/select step matched to a named field short-circuits
+   straight to the dedicated actuation seam described below; everything else
+   falls to `clickFirstActionableCandidate`
+   (`src/scraper/deep-locator-click.ts`), which walks the ranked candidates in
+   order and actuates the first one that actually succeeds — the step's own
+   prose (`parseSelectStep`/`parseFillStep` in `src/scraper/flow-runner.ts`,
+   via `resolveDeepLocatorActuation`) picks
    `selectDeepLocatorCandidateOption`/`fillDeepLocatorCandidate` for a
    select/fill-shaped step, falling back to `clickDeepLocatorCandidate` for
    everything else. An actuation rejecting with the CDP `-32000 Node does not
@@ -300,9 +303,45 @@ techniques are, in order:
    candidate, and the walk moves on to the next-ranked candidate instead of
    scoring the whole attempt as a failure. Any other rejection (a detached
    frame, a wedged call's `WatchdogTimeoutError`) still stops the walk
-   immediately, matching the old top-only behavior. The candidate that does
-   succeed is acted on directly and a `resolvedAction` matching the actuation
-   kind (`click`/`fill`/`selectOption`) is synthesized so verification
+   immediately, matching the old top-only behavior.
+
+   **Fill/select steps skip the candidate walk entirely.** Candidate
+   ranking scores by the instruction's quoted phrases, which for a fill
+   step is only the value being typed ("Fill in the First Name field with
+   'Reginald'" quotes just `'Reginald'`) — no control's accessible name
+   ever matches a person's name, so every candidate ties at score 0 and
+   DOM order would decide, clicking whatever happens to sit first (a
+   wizard's 'Close' button, in the bug report that motivated this). Before
+   the walk runs, `parseFillStep`/`parseSelectStep` (`src/scraper/flow-runner.ts`)
+   recover the step's target FIELD LABEL (e.g. "First Name") separately
+   from the value, and `findDeepLocatorCandidateByFieldLabel` matches it
+   directly against a candidate's accessible name (exact match first,
+   substring match either direction otherwise). A match routes to the
+   dedicated fill/select actuation seam
+   (`fillDeepLocatorCandidate`/`selectDeepLocatorCandidateOption`,
+   `src/scraper/deep-locator-actuate.ts`), which writes the value through
+   `page.deepLocator()` and reads it back via `inputValue()` to confirm —
+   `verifyDomEffect` can't resolve a `deeplocator=` selector, so the
+   read-back itself is the only verification signal available, recorded as
+   `verifiedBy: "dom"` directly. No candidate naming the field at all is a
+   refusal, not a guess: the step fails that attempt rather than clicking
+   an unrelated control.
+
+   Only a step with no fill/select field-label match falls through to the
+   click-only candidate walk. That walk still uses
+   `resolveDeepLocatorActuation` (`src/scraper/flow-runner.ts`) to infer
+   fill/select/click intent from the step's prose per attempt, so a
+   fill/select step that has no matching field label still actuates through
+   `fillDeepLocatorCandidate`/`selectDeepLocatorCandidateOption` rather than
+   only ever clicking — but since those actuators return a boolean (`true`
+   only when the read-back confirms the write) rather than throwing on an
+   ordinary failed write, the walk's per-candidate callback turns a `false`
+   result into a thrown `-32000` error itself, so
+   `clickFirstActionableCandidate` still treats a failed fill/select the
+   same as a not-actionable click: skip this candidate, try the next. The
+   candidate that does succeed — via the field-label fast path or the
+   click-only walk — has a `resolvedAction` matching the actuation kind
+   (`click`/`fill`/`selectOption`) synthesized so downstream verification
    proceeds exactly as it would for an `observe()`-sourced candidate.
 3. **`observe(step, { ignoreSelectors: tried })` + `act(Action)`** — same as
    attempt 2, but we tell Stagehand to exclude the selectors we already tried.

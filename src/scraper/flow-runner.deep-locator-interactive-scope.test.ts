@@ -349,21 +349,24 @@ describe("flow-runner deepLocator call sites — scoped to interactive elements,
  * it. These cases prove the branch now discriminates fill/select/click from
  * the step's own prose (there is no Stagehand-resolved `target.method` to
  * read here, unlike the observe path) and routes to the matching
- * `deep-locator-candidates.ts` actuation seam.
+ * actuation seam.
  *
  * Every case below drives `executeStepWithHealing` directly (the function
  * named in this subtask's acceptance criteria) with `observe()` blind for
  * every attempt — the OOPIF condition this whole cascade exists for — so
  * the deepLocator fallback is the only path that can ever resolve a
- * candidate. None of these fixtures wire a URL/network change or a DOM
- * readback that would satisfy `verifyDomEffect` (which cannot resolve a
- * `deeplocator=`-prefixed selector via `target.locator()` — see
- * `DeepLocatorCandidate`'s docs in `deep-locator-candidates.ts`), so the
- * cascade always exhausts and the step rejects; what's under test is the
- * ACTUATION that happened during the attempt, captured via the spied
- * `deep-locator-candidates.ts` seams and the `onStepFailure` dump's
- * `attempts[]` (same pattern the sibling rephrase-evidence test above
- * uses).
+ * candidate. A fill/select step matched to a named field routes through
+ * `findDeepLocatorCandidateByFieldLabel` straight to
+ * `deep-locator-actuate.ts`'s read-back-verified seam, which records
+ * `verifiedBy: "dom"` directly (`verifyDomEffect` can't resolve a
+ * `deeplocator=`-prefixed selector via `target.locator()`, so the read-back
+ * itself is the only verification signal available) — so a successful
+ * fill/select now resolves the step outright instead of exhausting the
+ * cascade. A plain click step has no such read-back signal, so it still
+ * exhausts and rejects; what's under test there is the ACTUATION that
+ * happened during the attempt, captured via the spied seams and the
+ * `onStepFailure` dump's `attempts[]` (same pattern the sibling
+ * rephrase-evidence test above uses).
  */
 describe("flow-runner deepLocator actuation routing — fill/select/click discrimination (bugfix-003)", () => {
   beforeEach(() => {
@@ -448,9 +451,13 @@ describe("flow-runner deepLocator actuation routing — fill/select/click discri
     const clickSpy = vi.spyOn(deepLocatorCandidatesModule, "clickDeepLocatorCandidate");
     const attemptsByFailure: AttemptRecord[][] = [];
 
+    // The field-label fast path (findDeepLocatorCandidateByFieldLabel) routes
+    // straight to the read-back-verified actuation seam, which records
+    // verifiedBy: "dom" on a successful write — so the step now resolves
+    // "completed" outright instead of exhausting the cascade.
     await expect(
       runStep(page, "Fill in the First Name field with 'Reginald'", attemptsByFailure)
-    ).rejects.toThrow(/failed verification after \d+ attempts/);
+    ).resolves.toBe("completed");
 
     expect(fillSpy).toHaveBeenCalledWith(
       page,
@@ -461,11 +468,6 @@ describe("flow-runner deepLocator actuation routing — fill/select/click discri
     );
     expect(selectSpy).not.toHaveBeenCalled();
     expect(clickSpy).not.toHaveBeenCalled();
-
-    const attempts = attemptsByFailure[0] ?? [];
-    const deepLocatorAttempt = attempts.find((a) => a.resolvedMethod === "fill");
-    expect(deepLocatorAttempt?.actResultSuccess).toBe(true);
-    expect(deepLocatorAttempt?.resolvedArguments).toEqual(["Reginald"]);
 
     expect(frame.get(scopedHopSelector)?.filledWith).toBe("Reginald");
 
@@ -512,12 +514,16 @@ describe("flow-runner deepLocator actuation routing — fill/select/click discri
     clickSpy.mockRestore();
   });
 
-  it("a not-actionable (-32000) rejection on a fill still advances to the next ranked candidate, and the attempt itself is not scored a failure", async () => {
+  it("a not-actionable (-32000) rejection on a fill still advances to the next ranked candidate across attempts, and the step ultimately completes", async () => {
     const frame: FakeDeepLocatorFrame = new Map();
     const scopedHopSelector = `${FRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
     // Element 0 has no layout box (unrendered) — the fake rejects fill()
     // with NODE_NOT_ACTIONABLE_MESSAGE the same way a real -32000 CDP error
     // would. Element 1 is rendered and should receive the fill instead.
+    // findDeepLocatorCandidateByFieldLabel picks one match per attempt (no
+    // in-attempt retry) — it's attempt 2 and 4's shared triedSelectors
+    // exclusion that lets attempt 4 pick element 1 after attempt 2's element
+    // 0 failed to verify.
     registerDeepLocatorHopElements(frame, scopedHopSelector, [
       { text: "First Name", visible: false },
       { text: "First Name", visible: true },
@@ -530,7 +536,7 @@ describe("flow-runner deepLocator actuation routing — fill/select/click discri
 
     await expect(
       runStep(page, "Fill in the First Name field with 'Reginald'", attemptsByFailure)
-    ).rejects.toThrow(/failed verification after \d+ attempts/);
+    ).resolves.toBe("completed");
 
     expect(fillSpy).toHaveBeenCalledTimes(2);
     expect(fillSpy.mock.calls[0]?.[3]).toBe(0);
@@ -539,13 +545,6 @@ describe("flow-runner deepLocator actuation routing — fill/select/click discri
     const hop = frame.get(scopedHopSelector);
     expect(hop?.elements[0]?.filledWith).toBeNull();
     expect(hop?.elements[1]?.filledWith).toBe("Reginald");
-
-    // The not-actionable candidate cost only itself — attempt 2 itself
-    // still recorded a successful fill via the next candidate, not a
-    // failed attempt.
-    const attempts = attemptsByFailure[0] ?? [];
-    const deepLocatorAttempt = attempts.find((a) => a.resolvedMethod === "fill");
-    expect(deepLocatorAttempt?.actResultSuccess).toBe(true);
 
     fillSpy.mockRestore();
   });
@@ -566,7 +565,13 @@ describe("flow-runner deepLocator actuation routing — fill/select/click discri
       runStep(page, "Click the Manual Application button", attemptsByFailure)
     ).rejects.toThrow(/failed verification after \d+ attempts/);
 
-    expect(clickSpy).toHaveBeenCalledWith(page, FRAME_SELECTOR, INTERACTIVE_CANDIDATE_SELECTOR, 0);
+    expect(clickSpy).toHaveBeenCalledWith(
+      page,
+      FRAME_SELECTOR,
+      INTERACTIVE_CANDIDATE_SELECTOR,
+      0,
+      expect.objectContaining({ frameTarget: expect.anything() })
+    );
     expect(fillSpy).not.toHaveBeenCalled();
     expect(selectSpy).not.toHaveBeenCalled();
 
