@@ -18,19 +18,14 @@ vi.mock("@/lib/logging", () => ({
 import {
   clickDeepLocatorCandidate,
   type DeepLocatorTimeoutOptions,
-  fillDeepLocatorCandidate,
   resolveDeepLocatorCandidates,
-  selectDeepLocatorCandidateOption,
 } from "@/scraper/deep-locator-candidates";
 import {
   type FakeDeepLocatorFrame,
   makeFakeDeepLocator,
   makeFakeFrameScan,
-  NODE_NOT_ACTIONABLE_MESSAGE,
-  registerDeepLocatorHangingHop,
   registerDeepLocatorHopElements,
 } from "@/scraper/deep-locator-fake";
-import { isNodeNotActionableError } from "@/scraper/deep-locator-scan";
 
 /**
  * Builds a `FrameTarget` whose `evaluate` resolves against `frame`'s
@@ -572,131 +567,9 @@ describe("clickDeepLocatorCandidate", () => {
   });
 });
 
-describe("fillDeepLocatorCandidate", () => {
-  it("re-derives the same hop selector as clickDeepLocatorCandidate and fills the delegate nth() of the selected candidate index", async () => {
-    const fillSpy = vi.fn().mockResolvedValue(undefined);
-    const delegate = makeFakeDelegate({ count: 2, texts: ["First Name", "Last Name"], fillSpy });
-    const { page, deepLocatorSpy } = makeFakePage(delegate);
-
-    await fillDeepLocatorCandidate(
-      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
-      page as any,
-      "#talemetry_apply_iframe",
-      "input",
-      1,
-      "Ada"
-    );
-
-    expect(deepLocatorSpy).toHaveBeenCalledWith("#talemetry_apply_iframe >> input");
-    expect(fillSpy).toHaveBeenCalledWith(1, "Ada");
-  });
-
-  it("composes an unscoped selector unchanged when frameSelector is null (buildHopSelector passthrough), same as clickDeepLocatorCandidate", async () => {
-    const fillSpy = vi.fn().mockResolvedValue(undefined);
-    const delegate = makeFakeDelegate({ count: 1, texts: ["Submit"], fillSpy });
-    const { page, deepLocatorSpy } = makeFakePage(delegate);
-
-    // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
-    await fillDeepLocatorCandidate(page as any, null, "input[type=text]", 0, "Ada");
-
-    expect(deepLocatorSpy).toHaveBeenCalledWith("input[type=text]");
-  });
-
-  it("propagates a fill() rejection rather than swallowing it", async () => {
-    const delegate = makeFakeDelegate({
-      count: 1,
-      texts: ["First Name"],
-      fillSpy: vi.fn().mockRejectedValue(new Error("element not attached")),
-    });
-    const { page } = makeFakePage(delegate);
-
-    await expect(
-      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
-      fillDeepLocatorCandidate(page as any, "#talemetry_apply_iframe", "input", 0, "Ada")
-    ).rejects.toThrow("element not attached");
-  });
-
-  it("propagates a -32000 Node does not have a layout object rejection unwrapped so isNodeNotActionableError still classifies it", async () => {
-    const frame: FakeDeepLocatorFrame = new Map();
-    registerDeepLocatorHopElements(frame, "#talemetry_apply_iframe >> input", [
-      { text: "First Name", visible: false },
-    ]);
-    const page = { deepLocator: makeFakeDeepLocator(frame) };
-
-    let caught: unknown;
-    try {
-      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
-      await fillDeepLocatorCandidate(page as any, "#talemetry_apply_iframe", "input", 0, "Ada");
-    } catch (error) {
-      caught = error;
-    }
-
-    expect(caught).toBeInstanceOf(Error);
-    expect((caught as Error).message).toBe(NODE_NOT_ACTIONABLE_MESSAGE);
-    expect(isNodeNotActionableError(caught)).toBe(true);
-  });
-});
-
-describe("selectDeepLocatorCandidateOption", () => {
-  it("re-derives the same hop selector as clickDeepLocatorCandidate, selects the delegate nth() of the selected candidate index, and returns the selected values", async () => {
-    const selectOptionSpy = vi.fn().mockResolvedValue(["CO"]);
-    const delegate = makeFakeDelegate({ count: 1, texts: ["State"], selectOptionSpy });
-    const { page, deepLocatorSpy } = makeFakePage(delegate);
-
-    const selected = await selectDeepLocatorCandidateOption(
-      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
-      page as any,
-      "#talemetry_apply_iframe",
-      "select",
-      0,
-      "CO"
-    );
-
-    expect(deepLocatorSpy).toHaveBeenCalledWith("#talemetry_apply_iframe >> select");
-    expect(selectOptionSpy).toHaveBeenCalledWith(0, "CO");
-    expect(selected).toEqual(["CO"]);
-  });
-
-  it("propagates a selectOption() rejection rather than swallowing it", async () => {
-    const delegate = makeFakeDelegate({
-      count: 1,
-      texts: ["State"],
-      selectOptionSpy: vi.fn().mockRejectedValue(new Error("element not attached")),
-    });
-    const { page } = makeFakePage(delegate);
-
-    await expect(
-      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
-      selectDeepLocatorCandidateOption(page as any, "#talemetry_apply_iframe", "select", 0, "CO")
-    ).rejects.toThrow("element not attached");
-  });
-
-  it("propagates a -32000 Node does not have a layout object rejection unwrapped so isNodeNotActionableError still classifies it", async () => {
-    const frame: FakeDeepLocatorFrame = new Map();
-    registerDeepLocatorHopElements(frame, "#talemetry_apply_iframe >> select", [
-      { text: "State", visible: false },
-    ]);
-    const page = { deepLocator: makeFakeDeepLocator(frame) };
-
-    let caught: unknown;
-    try {
-      await selectDeepLocatorCandidateOption(
-        // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
-        page as any,
-        "#talemetry_apply_iframe",
-        "select",
-        0,
-        "CO"
-      );
-    } catch (error) {
-      caught = error;
-    }
-
-    expect(caught).toBeInstanceOf(Error);
-    expect((caught as Error).message).toBe(NODE_NOT_ACTIONABLE_MESSAGE);
-    expect(isNodeNotActionableError(caught)).toBe(true);
-  });
-});
+// fillDeepLocatorCandidate/selectDeepLocatorCandidateOption moved to
+// deep-locator-actuate.ts (see this file's module docblock near the bottom);
+// their tests moved with them to deep-locator-actuate.test.ts.
 
 describe("watchdog-guarded awaits (deepLocator-direct hang bug)", () => {
   beforeEach(() => {
@@ -809,51 +682,8 @@ describe("watchdog-guarded awaits (deepLocator-direct hang bug)", () => {
     await assertion;
   });
 
-  it("a never-settling fill() rejects fillDeepLocatorCandidate within the call-timeout budget instead of hanging the caller", async () => {
-    const frame: FakeDeepLocatorFrame = new Map();
-    registerDeepLocatorHangingHop(frame, "#talemetry_apply_iframe >> input", {
-      hangOn: "fill",
-      text: "First Name",
-    });
-    const page = { deepLocator: makeFakeDeepLocator(frame) };
-
-    const promise = fillDeepLocatorCandidate(
-      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
-      page as any,
-      "#talemetry_apply_iframe",
-      "input",
-      0,
-      "Ada",
-      { callTimeoutMs: 50 }
-    );
-    const assertion = expect(promise).rejects.toMatchObject({ name: "WatchdogTimeoutError" });
-
-    await vi.advanceTimersByTimeAsync(50);
-    await assertion;
-  });
-
-  it("a never-settling selectOption() rejects selectDeepLocatorCandidateOption within the call-timeout budget instead of hanging the caller", async () => {
-    const frame: FakeDeepLocatorFrame = new Map();
-    registerDeepLocatorHangingHop(frame, "#talemetry_apply_iframe >> select", {
-      hangOn: "selectOption",
-      text: "State",
-    });
-    const page = { deepLocator: makeFakeDeepLocator(frame) };
-
-    const promise = selectDeepLocatorCandidateOption(
-      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
-      page as any,
-      "#talemetry_apply_iframe",
-      "select",
-      0,
-      "CO",
-      { callTimeoutMs: 50 }
-    );
-    const assertion = expect(promise).rejects.toMatchObject({ name: "WatchdogTimeoutError" });
-
-    await vi.advanceTimersByTimeAsync(50);
-    await assertion;
-  });
+  // fillDeepLocatorCandidate/selectDeepLocatorCandidateOption's watchdog
+  // coverage moved to deep-locator-actuate.test.ts along with the functions.
 
   it("enumerating a hop with many slow-but-settling elements aborts on the total enumeration budget, returning only the candidates resolved before the deadline", async () => {
     const perCandidateDelayMs = 20;

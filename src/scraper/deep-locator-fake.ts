@@ -20,6 +20,16 @@ export interface FakeDeepLocatorElement {
   selectedWith: string[] | null;
   text: string;
   visible: boolean;
+  /**
+   * When set, `inputValue()` returns this instead of `filledWith` — models a
+   * write that doesn't stick (an SPA re-render normalizes/rejects the typed
+   * value) so a read-back-verified actuator
+   * (`fillDeepLocatorCandidate`/`selectDeepLocatorCandidateOption` in
+   * `deep-locator-actuate.ts`) has a fixture to prove it returns `false`
+   * rather than trusting the write blindly. Leave unset to have `inputValue()`
+   * mirror whatever was last written.
+   */
+  readBackValue?: string;
 }
 
 /**
@@ -128,8 +138,18 @@ export function registerDeepLocatorHopElements(
 /**
  * The `FakeDeepLocatorDelegate` methods `registerDeepLocatorHangingHop` can
  * pin open, modeling a wedged OOPIF CDP call (the run-6 78-minute hang).
+ * `fill`/`selectOption`/`inputValue` model the same wedge for
+ * `deep-locator-actuate.ts`'s write/read-back seam — e.g. a wedged `fill`
+ * proving `fillDeepLocatorCandidate` rejects via its watchdog instead of
+ * hanging.
  */
-export type HangingDeepLocatorMethod = "click" | "count" | "fill" | "selectOption" | "textContent";
+export type HangingDeepLocatorMethod =
+  | "click"
+  | "count"
+  | "textContent"
+  | "fill"
+  | "selectOption"
+  | "inputValue";
 
 interface Deferred {
   readonly promise: Promise<void>;
@@ -195,10 +215,11 @@ export function registerDeepLocatorHangingHop(
 }
 
 /**
- * The delegate methods plus {@link makeFakeFrameScan}'s batched evaluate a
- * hop's {@link registerDeepLocatorHopLatency} profile can delay.
+ * The delegate methods plus {@link makeFakeFrameScan}'s batched evaluate and
+ * {@link makeFakeFrameClickByIndex}'s batched click a hop's
+ * {@link registerDeepLocatorHopLatency} profile can delay.
  */
-export type LatencyDeepLocatorMethod = HangingDeepLocatorMethod | "scan";
+export type LatencyDeepLocatorMethod = HangingDeepLocatorMethod | "scan" | "clickByIndex";
 
 export interface RegisterDeepLocatorHopLatencyOptions {
   /** Which method(s) resolve after `delayMs` instead of immediately. */
@@ -218,24 +239,37 @@ interface LatencyGate {
  */
 const latencyGates = new WeakMap<FakeDeepLocatorHop, LatencyGate>();
 
+/**
+ * Charges `repeats` sequential `delayMs` round-trips when `method` is
+ * registered against `hop`'s latency profile, immediate otherwise. `repeats`
+ * defaults to 1 (a flat per-call cost) — {@link buildFakeDelegate} passes
+ * `elementIndex + 1` for the methods that model Stagehand's per-index
+ * resolve cost (see {@link INDEXED_RESOLVE_METHODS}), everything else stays
+ * flat regardless of which index a caller chained `nth()` onto.
+ */
 async function delayIfRegistered(
   hop: FakeDeepLocatorHop | undefined,
-  method: LatencyDeepLocatorMethod
+  method: LatencyDeepLocatorMethod,
+  repeats = 1
 ): Promise<void> {
   const gate = hop ? latencyGates.get(hop) : undefined;
   if (!gate?.delayOn.has(method)) return;
-  await new Promise<void>((resolve) => setTimeout(resolve, gate.delayMs));
+  for (let call = 0; call < repeats; call += 1) {
+    await new Promise<void>((resolve) => setTimeout(resolve, gate.delayMs));
+  }
 }
 
 /**
  * Attaches a finite per-call delay to an already-registered hop's `delayOn`
  * methods, leaving every other method — and every other hop — immediate.
- * This is the seam a test uses to prove the batched-scan fix collapses N
- * serial round-trips into one: register the same `delayMs` against
- * `"textContent"` (the legacy per-candidate path) and `"scan"` (the batched
- * path) on the same hop, then compare how enumeration time scales with
- * candidate count through each. Unlike {@link registerDeepLocatorHangingHop},
- * calls resolve on their own after `delayMs` — there is no `release()`.
+ * This is the seam a test uses to prove a batched fix collapses N serial
+ * round-trips into one: register the same `delayMs` against `"textContent"`/
+ * `"click"` (the legacy per-index paths, charged `index + 1` times — see
+ * {@link INDEXED_RESOLVE_METHODS}) and `"scan"`/`"clickByIndex"` (the batched
+ * paths, always charged once) on the same hop, then compare how time scales
+ * with candidate count/index through each. Unlike
+ * {@link registerDeepLocatorHangingHop}, calls resolve on their own after
+ * `delayMs` — there is no `release()`.
  */
 export function registerDeepLocatorHopLatency(
   hop: FakeDeepLocatorHop,
@@ -246,15 +280,15 @@ export function registerDeepLocatorHopLatency(
 }
 
 /**
- * Only the methods `deep-locator-candidates.ts`'s actuation seams exercise:
- * `count()` to check candidate existence, `click()` (routed through
- * `src/scraper/flow-runner.ts`'s deepLocator call sites — `observe-act`,
- * rephrase evidence, the pre-cascade probe) plus `fill()`/`selectOption()`
- * (the `fillDeepLocatorCandidate`/`selectDeepLocatorCandidateOption` seams —
- * not yet routed by any flow-runner call site) to act, `textContent()` to
- * read `accessibleText`, `first()`/`nth()` for the same chaining
- * `buildHopSelector`-composed multi-match selectors need. `hover`/`type`/
- * `isVisible`/`isChecked`/`inputValue`/`innerHtml`/`innerText`/
+ * Only the methods `src/scraper/flow-runner.ts`'s deepLocator-routed call
+ * sites (`observe-act`, rephrase evidence, the pre-cascade probe) actually
+ * invoke, via `deep-locator-candidates.ts`: `count()` to check candidate
+ * existence, `click()` to act, `textContent()` to read `accessibleText`,
+ * `first()`/`nth()` for the same chaining `buildHopSelector`-composed
+ * multi-match selectors need. `fill()`/`selectOption()`/`inputValue()` back
+ * `deep-locator-actuate.ts`'s fill/select actuation seam — the write
+ * primitives and the read-back that confirms a write stuck. `hover`/`type`/
+ * `isVisible`/`isChecked`/`innerHtml`/`innerText`/
  * `setInputFiles`/`scrollTo`/`centroid`/`backendNodeId`/`highlight`/
  * `sendClickEvent` are declared on the real `DeepLocatorDelegate` but no
  * planned call site routes through them, so they are omitted here — adding
@@ -271,6 +305,7 @@ export interface FakeDeepLocatorDelegate {
   click: DeepLocatorDelegate["click"];
   count: DeepLocatorDelegate["count"];
   fill: DeepLocatorDelegate["fill"];
+  inputValue: DeepLocatorDelegate["inputValue"];
   selectOption: DeepLocatorDelegate["selectOption"];
   textContent: DeepLocatorDelegate["textContent"];
   first(): FakeDeepLocatorDelegate;
@@ -287,6 +322,21 @@ export interface FakeDeepLocatorDelegate {
 export const NODE_NOT_ACTIONABLE_MESSAGE = "-32000 Node does not have a layout object";
 
 /**
+ * The delegate methods whose real cost scales with the resolved index:
+ * Stagehand 3.7.0's `resolveAtIndex(query, index)` calls
+ * `resolveAll(query, {limit: index + 1})`, whose `resolveCss` runs
+ * `for (let i = 0; i < limit; i += 1) { await this.evaluateElement(...) }`
+ * (`selectorResolver.js`) — one serial CDP `Runtime.evaluate` per index, so
+ * `nth(k)` pays `k + 1` round-trips, not one. `count()` resolves the whole
+ * match set once regardless of which index a caller later chains `nth()`
+ * onto, so it — and every other modeled method — stays a flat one-call cost.
+ */
+const INDEXED_RESOLVE_METHODS: ReadonlySet<LatencyDeepLocatorMethod> = new Set([
+  "click",
+  "textContent",
+]);
+
+/**
  * Builds a `deepLocator()`-shaped delegate resolving against `frame`, scoped
  * to a single `elementIndex` (defaulting to 0, matching the real delegate's
  * un-`nth()`-ed constructor default). Each call re-reads `frame.get(selector)`
@@ -298,7 +348,10 @@ export const NODE_NOT_ACTIONABLE_MESSAGE = "-32000 Node does not have a layout o
  * `click()`/`fill()`/`selectOption()` each reject with
  * {@link NODE_NOT_ACTIONABLE_MESSAGE} when the targeted element's `visible`
  * is `false`, reproducing the CDP `-32000` actuation failure on an
- * unrendered node.
+ * unrendered node. `click()`/`textContent()` charge `elementIndex + 1` delay
+ * units under a registered latency profile (see
+ * {@link INDEXED_RESOLVE_METHODS}), modeling Stagehand's per-index resolve
+ * cost — every other method stays a flat one-call cost.
  */
 function buildFakeDelegate(
   frame: FakeDeepLocatorFrame,
@@ -317,7 +370,11 @@ function buildFakeDelegate(
     if (gate?.hangOn.has(method)) await gate.deferred.promise;
   };
   const delayForMethod = (method: LatencyDeepLocatorMethod): Promise<void> =>
-    delayIfRegistered(frame.get(selector), method);
+    delayIfRegistered(
+      frame.get(selector),
+      method,
+      INDEXED_RESOLVE_METHODS.has(method) ? elementIndex + 1 : 1
+    );
 
   return {
     count: async () => {
@@ -348,6 +405,12 @@ function buildFakeDelegate(
       element.selectedWith = selected;
       return selected;
     },
+    inputValue: async () => {
+      await delayForMethod("inputValue");
+      await awaitReleaseIfHungOn("inputValue");
+      const element = requireElement();
+      return element.readBackValue ?? element.selectedWith?.[0] ?? element.filledWith ?? "";
+    },
     textContent: async () => {
       await delayForMethod("textContent");
       await awaitReleaseIfHungOn("textContent");
@@ -368,6 +431,213 @@ export function makeFakeDeepLocator(
   frame: FakeDeepLocatorFrame
 ): (selector: string) => FakeDeepLocatorDelegate {
   return (selector: string) => buildFakeDelegate(frame, selector);
+}
+
+/**
+ * Minimal fake DOM element supporting exactly the surface
+ * {@link buildScanFrameCandidatesExpr} (`deep-locator-scan.ts`) touches:
+ * `textContent`, `getBoundingClientRect`, `getAttribute`, `closest`, plus a
+ * `computedStyle` bag the fake global `getComputedStyle` reads from. Shared
+ * here (not duplicated per test file) so `deep-locator-scan.dense-form.
+ * test.ts` and Stagehand-contract tests can execute the SAME generated
+ * expression against the SAME fixture shape as `deep-locator-scan.test.ts`'s
+ * own hand-built fixture.
+ */
+export interface FakeDomElement {
+  readonly textContent: string;
+  readonly tagName: string;
+  readonly attributes: Readonly<Record<string, string>>;
+  readonly rect: { readonly width: number; readonly height: number };
+  readonly computedStyle: { readonly display: string; readonly visibility: string };
+  readonly parent: FakeDomElement | null;
+  getBoundingClientRect(): { readonly width: number; readonly height: number };
+  getAttribute(name: string): string | null;
+  closest(selector: string): FakeDomElement | null;
+}
+
+/** Fake `document`/frame-document surface: the two lookups the accessible-name precedence chain needs beyond the matched candidate set itself. */
+export interface FakeDomRoot {
+  querySelectorAll(selector: string): FakeDomElement[];
+  getElementById(id: string): FakeDomElement | null;
+}
+
+/** Optional overrides {@link makeFakeDomElement} accepts beyond its default rendered `div`. */
+export interface MakeFakeDomElementOptions {
+  readonly tagName?: string;
+  readonly attributes?: Record<string, string>;
+  readonly rect?: { readonly width: number; readonly height: number };
+  readonly computedStyle?: { readonly display: string; readonly visibility: string };
+  readonly parent?: FakeDomElement | null;
+}
+
+/** Parses one simple-selector clause — a bare tag, `[attr]`, or `[attr=value]` — the three shapes {@link INTERACTIVE_CANDIDATE_SELECTOR} composes via commas. No combinators, descendant selectors, or pseudo-classes: the generated expression only ever calls `querySelectorAll` with a flat, comma-joined clause list. */
+function parseSimpleSelectorClause(
+  clause: string
+): { readonly tag: string } | { readonly attr: string; readonly value: string | null } {
+  const trimmed = clause.trim();
+  const attrMatch = /^\[([a-zA-Z-]+)(?:=(.*))?\]$/.exec(trimmed);
+  if (!attrMatch) return { tag: trimmed.toLowerCase() };
+  const [, attr, rawValue] = attrMatch;
+  const value = rawValue === undefined ? null : rawValue.replace(/^["']|["']$/g, "");
+  return { attr: attr ?? "", value };
+}
+
+/** Matches `el` against one comma-separated clause of a selector — the attribute-aware step {@link makeSelectorAwareDomRoot}'s `querySelectorAll` and {@link makeFakeDomElement}'s `closest` both need beyond a bare tag-name comparison. */
+function matchesSelectorClause(el: FakeDomElement, clause: string): boolean {
+  const parsed = parseSimpleSelectorClause(clause);
+  if ("tag" in parsed) return el.tagName.toLowerCase() === parsed.tag;
+  const attrValue = el.getAttribute(parsed.attr);
+  if (attrValue === null) return false;
+  return parsed.value === null || attrValue === parsed.value;
+}
+
+/** `true` when `el` matches any comma-separated clause of `selector` — the full `querySelectorAll(selector)` predicate. */
+function matchesSelector(el: FakeDomElement, selector: string): boolean {
+  return selector.split(",").some((clause) => matchesSelectorClause(el, clause));
+}
+
+/**
+ * Builds one fake DOM element. Defaults model a rendered, tag-less `div`
+ * with no accessible-name signal — the "structural filler" shape a dense
+ * form fixture needs many of — so a caller building a large fixture only
+ * spells out the overrides that make a specific element interesting.
+ */
+export function makeFakeDomElement(
+  textContent = "",
+  options: MakeFakeDomElementOptions = {}
+): FakeDomElement {
+  const tagName = options.tagName ?? "div";
+  const attributes = options.attributes ?? {};
+  const rect = options.rect ?? { width: 100, height: 20 };
+  const computedStyle = options.computedStyle ?? { display: "block", visibility: "visible" };
+  const parent = options.parent ?? null;
+  const el: FakeDomElement = {
+    textContent,
+    tagName,
+    attributes,
+    rect,
+    computedStyle,
+    parent,
+    getBoundingClientRect() {
+      return rect;
+    },
+    getAttribute(name) {
+      return attributes[name] ?? null;
+    },
+    closest(selector) {
+      const found = (node: FakeDomElement | null): FakeDomElement | null => {
+        if (!node) return null;
+        return matchesSelector(node, selector) ? node : found(node.parent);
+      };
+      return found(el);
+    },
+  };
+  return el;
+}
+
+/**
+ * Builds a selector-aware fake `document` root: `querySelectorAll` supports
+ * the exact clause shapes {@link INTERACTIVE_CANDIDATE_SELECTOR} needs (a
+ * bare tag, `[attr]`, `[attr=value]`, comma-joined, or `"*"`) instead of
+ * `deep-locator-scan.test.ts`'s tag-only `makeRoot`, so a fixture exercising
+ * that constant's `[role=button]` / `[tabindex]` clauses actually selects
+ * against them.
+ */
+export function makeSelectorAwareDomRoot(elements: readonly FakeDomElement[]): FakeDomRoot {
+  return {
+    querySelectorAll(selector) {
+      if (selector.trim() === "*") return [...elements];
+      return elements.filter((el) => matchesSelector(el, selector));
+    },
+    getElementById(id) {
+      return elements.find((el) => el.getAttribute("id") === id) ?? null;
+    },
+  };
+}
+
+/** Total node count {@link buildDenseFormFixture} produces — the live-measured `#talemetry_apply_iframe >> *` match count from the uchealth-7 bug report. */
+export const DENSE_FORM_TOTAL_COUNT = 371;
+
+/** Accessible name {@link buildDenseFormFixture}'s icon-only target button resolves to — mirrors the live report's `button.c-SocialButton-button-25:has(svg[data-testid='EditIcon'])` control, modeled here as a plain icon-only `button` named via `aria-label` since `:has()` support is not what this fixture is for. */
+export const DENSE_FORM_TARGET_TEXT = "Manual Application";
+
+/** Accessible names of {@link buildDenseFormFixture}'s two unrendered decoys — one `display:none`, one a 0x0 layout box — the two shapes a real click rejects with the CDP `-32000 Node does not have a layout object` error. */
+export const DENSE_FORM_DECOY_TEXTS = ["Upload a Resume/CV", "Use LinkedIn Profile"] as const;
+
+/** {@link buildDenseFormFixture}'s return shape: the assembled root plus its flat element list, so a caller can assert against fixture composition (e.g. total count) without re-deriving it from the root. */
+export interface DenseFormFixture {
+  readonly root: FakeDomRoot;
+  readonly elements: readonly FakeDomElement[];
+}
+
+/**
+ * Builds the {@link DENSE_FORM_TOTAL_COUNT}-node dense-OOPIF-shaped fixture
+ * the uchealth-7 bug report measured (`#talemetry_apply_iframe >> *`
+ * matching 371 elements): mostly structural `div`/`span` filler, a handful
+ * of real form controls, an icon-only target button, and two unrendered
+ * decoys. Exported (not inlined per test file) so `test-002`'s Stagehand-
+ * resolver-contract pin can run the installed dependency's own resolver
+ * against the IDENTICAL fixture `deep-locator-scan.dense-form.test.ts`
+ * proves {@link buildScanFrameCandidatesExpr} against.
+ */
+export function buildDenseFormFixture(): DenseFormFixture {
+  const [uploadDecoyText, linkedinDecoyText] = DENSE_FORM_DECOY_TEXTS;
+  const structuralCount =
+    DENSE_FORM_TOTAL_COUNT -
+    6 /* firstName, country, coverLetter, learnMore, saveDraft, moreOptions */ -
+    1 /* target */ -
+    2 /* decoys */;
+  const structural = Array.from({ length: structuralCount }, (_, index) =>
+    makeFakeDomElement("", { tagName: index % 2 === 0 ? "div" : "span" })
+  );
+  const firstName = makeFakeDomElement("", {
+    tagName: "input",
+    attributes: { "aria-label": "First Name" },
+  });
+  const country = makeFakeDomElement("", {
+    tagName: "select",
+    attributes: { "aria-label": "Country" },
+  });
+  const coverLetter = makeFakeDomElement("", {
+    tagName: "textarea",
+    attributes: { "aria-label": "Cover Letter" },
+  });
+  const learnMore = makeFakeDomElement("Learn more", { tagName: "a", attributes: { href: "#" } });
+  const saveDraft = makeFakeDomElement("Save Draft", {
+    tagName: "div",
+    attributes: { role: "button" },
+  });
+  const moreOptions = makeFakeDomElement("More options", {
+    tagName: "div",
+    attributes: { tabindex: "0" },
+  });
+  const target = makeFakeDomElement("", {
+    tagName: "button",
+    attributes: { "aria-label": DENSE_FORM_TARGET_TEXT },
+  });
+  const uploadDecoy = makeFakeDomElement(uploadDecoyText, {
+    tagName: "button",
+    computedStyle: { display: "none", visibility: "visible" },
+  });
+  const linkedinDecoy = makeFakeDomElement(linkedinDecoyText, {
+    tagName: "button",
+    rect: { width: 0, height: 0 },
+  });
+
+  const elements = [
+    ...structural,
+    firstName,
+    country,
+    coverLetter,
+    learnMore,
+    saveDraft,
+    moreOptions,
+    uploadDecoy,
+    linkedinDecoy,
+    target,
+  ];
+
+  return { root: makeSelectorAwareDomRoot(elements), elements };
 }
 
 /**
@@ -397,5 +667,50 @@ export function makeFakeFrameScan(
       text: element.text,
       visible: element.visible,
     }));
+  };
+}
+
+/**
+ * Result of the fake batched click-by-index seam
+ * ({@link makeFakeFrameClickByIndex}): `clicked` mirrors whether the click
+ * landed on a rendered node. `reason` is set instead of the fake throwing —
+ * a single batched evaluate call reports what it observed rather than
+ * surfacing a per-call CDP rejection — and carries
+ * {@link NODE_NOT_ACTIONABLE_MESSAGE} for the unrendered-node case so a
+ * caller can still classify it via {@link isNodeNotActionableError}
+ * (`deep-locator-scan.ts`).
+ */
+export interface FakeBatchedClickResult {
+  clicked: boolean;
+  reason?: string;
+}
+
+/**
+ * Fake frame-scoped batched click-by-index bound to `selector` — models the
+ * seam a click-by-index fix would call once per click via a single frame
+ * evaluate, instead of the legacy delegate's `nth(index).click()` walking
+ * `resolveAtIndex`'s serial per-index loop (see {@link INDEXED_RESOLVE_METHODS}).
+ * Same "ignore the expression string, resolve against the hop registry"
+ * contract as {@link makeFakeFrameScan}: a fake cannot execute browser-side
+ * code, so the `expression` argument is accepted (mirroring `evaluate`'s
+ * signature) but never inspected. Increments `elements[index].clicks` when
+ * the targeted element is registered and `visible`, so an assertion like
+ * `hop.elements[i]?.clicks` reads the same regardless of which click path a
+ * consumer routes through. Resolves `{ clicked: false, reason }` — never
+ * throws — when `index` doesn't resolve to a registered element (hop
+ * unregistered, or `index` out of range) or the element is `visible: false`.
+ */
+export function makeFakeFrameClickByIndex(
+  frame: FakeDeepLocatorFrame,
+  selector: string
+): (index: number, expression?: unknown) => Promise<FakeBatchedClickResult> {
+  return async (index: number) => {
+    const hop = frame.get(selector);
+    await delayIfRegistered(hop, "clickByIndex");
+    const element = hop?.elements[index];
+    if (!element) return { clicked: false, reason: `deepLocator: no element at index ${index}` };
+    if (!element.visible) return { clicked: false, reason: NODE_NOT_ACTIONABLE_MESSAGE };
+    element.clicks += 1;
+    return { clicked: true };
   };
 }

@@ -2,7 +2,9 @@ import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 
 import {
+  buildClickFrameCandidateExpr,
   buildScanFrameCandidatesExpr,
+  type FrameCandidateClickResult,
   type FrameCandidateScanResult,
   isNodeNotActionableError,
 } from "@/scraper/deep-locator-scan";
@@ -22,9 +24,13 @@ interface FakeEl {
   tagName: string;
   attributes: Record<string, string>;
   parent: FakeEl | null;
+  focused: boolean;
+  dispatchedEvents: string[];
   getBoundingClientRect(): { width: number; height: number };
   getAttribute(name: string): string | null;
   closest(selector: string): FakeEl | null;
+  focus(): void;
+  dispatchEvent(evt: { type: string }): void;
 }
 
 /** Fake `document`/frame-document surface: tag-filtered `querySelectorAll` plus `getElementById`, the two lookups the accessible-name precedence chain needs beyond the matched candidate set itself. */
@@ -55,6 +61,8 @@ function makeEl(
     tagName,
     attributes,
     parent,
+    focused: false,
+    dispatchedEvents: [],
     getBoundingClientRect() {
       return rect;
     },
@@ -68,6 +76,12 @@ function makeEl(
         node = node.parent;
       }
       return null;
+    },
+    focus() {
+      el.focused = true;
+    },
+    dispatchEvent(evt) {
+      el.dispatchedEvents.push(evt.type);
     },
   };
   return el;
@@ -105,6 +119,12 @@ function evaluateInFakePage(expr: string, document: FakeRoot): unknown {
   return runInNewContext(expr, {
     document,
     getComputedStyle: (el: FakeEl) => el.computedStyle,
+    Event: class {
+      type: string;
+      constructor(type: string) {
+        this.type = type;
+      }
+    },
     console,
   });
 }
@@ -123,6 +143,12 @@ function evaluateInFakeFrame(expr: string, frameDocument: FakeRoot, outerRoot: F
     document: frameDocument,
     __outerDocumentNeverReferenced: outerRoot,
     getComputedStyle: (el: FakeEl) => el.computedStyle,
+    Event: class {
+      type: string;
+      constructor(type: string) {
+        this.type = type;
+      }
+    },
     console,
   });
 }
@@ -417,6 +443,128 @@ describe("deep-locator-scan/buildScanFrameCandidatesExpr accessible-name derivat
     ) as FrameCandidateScanResult[];
 
     expect(result).toEqual([{ index: 0, text: "State", visible: true }]);
+  });
+});
+
+describe("deep-locator-scan/buildClickFrameCandidateExpr", () => {
+  it("clicks exactly the element at querySelectorAll(innerSelector)[index], not a sibling", () => {
+    const first = makeEl("First");
+    const second = makeEl("Second");
+    const third = makeEl("Third");
+    const document = makeRoot([first, second, third]);
+
+    const result = evaluateInFakePage(
+      buildClickFrameCandidateExpr("button", 1),
+      document
+    ) as FrameCandidateClickResult;
+
+    expect(result).toEqual({ clicked: true });
+    expect(second.focused).toBe(true);
+    expect(second.dispatchedEvents).toEqual(["mousedown", "mouseup", "click"]);
+    expect(first.dispatchedEvents).toEqual([]);
+    expect(third.dispatchedEvents).toEqual([]);
+  });
+
+  it('returns {clicked:false, reason:"not-actionable"} for a 0x0 element instead of throwing', () => {
+    const zeroSize = makeEl("Hidden", { rect: { width: 0, height: 0 } });
+    const document = makeRoot([zeroSize]);
+
+    expect(() => {
+      const result = evaluateInFakePage(
+        buildClickFrameCandidateExpr("button", 0),
+        document
+      ) as FrameCandidateClickResult;
+      expect(result).toEqual({ clicked: false, reason: "not-actionable" });
+    }).not.toThrow();
+    expect(zeroSize.dispatchedEvents).toEqual([]);
+  });
+
+  it('returns {clicked:false, reason:"not-actionable"} for a display:none element instead of throwing', () => {
+    const displayNone = makeEl("Hidden", {
+      computedStyle: { display: "none", visibility: "visible" },
+    });
+    const document = makeRoot([displayNone]);
+
+    const result = evaluateInFakePage(
+      buildClickFrameCandidateExpr("button", 0),
+      document
+    ) as FrameCandidateClickResult;
+
+    expect(result).toEqual({ clicked: false, reason: "not-actionable" });
+    expect(displayNone.dispatchedEvents).toEqual([]);
+  });
+
+  it('returns {clicked:false, reason:"not-actionable"} for a visibility:hidden element instead of throwing', () => {
+    const visibilityHidden = makeEl("Hidden", {
+      computedStyle: { display: "block", visibility: "hidden" },
+    });
+    const document = makeRoot([visibilityHidden]);
+
+    const result = evaluateInFakePage(
+      buildClickFrameCandidateExpr("button", 0),
+      document
+    ) as FrameCandidateClickResult;
+
+    expect(result).toEqual({ clicked: false, reason: "not-actionable" });
+    expect(visibilityHidden.dispatchedEvents).toEqual([]);
+  });
+
+  it('returns {clicked:false, reason:"out-of-range"} when the index no longer matches', () => {
+    const document = makeRoot([makeEl("First")]);
+
+    expect(() => {
+      const result = evaluateInFakePage(
+        buildClickFrameCandidateExpr("button", 5),
+        document
+      ) as FrameCandidateClickResult;
+      expect(result).toEqual({ clicked: false, reason: "out-of-range" });
+    }).not.toThrow();
+  });
+
+  it("distinguishes out-of-range from not-actionable for the same missing/unrendered index", () => {
+    const document = makeRoot([]);
+
+    const result = evaluateInFakePage(
+      buildClickFrameCandidateExpr("button", 0),
+      document
+    ) as FrameCandidateClickResult;
+
+    expect(result.reason).toBe("out-of-range");
+    expect(result.reason).not.toBe("not-actionable");
+  });
+
+  it("resolves against the injected root realm via the root arg, never an outer document", () => {
+    const outerButton = makeEl("Outer");
+    const outerDocument = makeRoot([outerButton]);
+    const frameButton = makeEl("Inner");
+    const frameDocument = makeRoot([frameButton]);
+
+    const result = evaluateInFakeFrame(
+      buildClickFrameCandidateExpr("button", 0, "document"),
+      frameDocument,
+      outerDocument
+    ) as FrameCandidateClickResult;
+
+    expect(result).toEqual({ clicked: true });
+    expect(frameButton.dispatchedEvents).toEqual(["mousedown", "mouseup", "click"]);
+    expect(outerButton.dispatchedEvents).toEqual([]);
+  });
+
+  it("defaults to `document`, resolved from the executing realm (no root arg passed)", () => {
+    const outerButton = makeEl("Outer");
+    const outerDocument = makeRoot([outerButton]);
+    const frameButton = makeEl("Inner");
+    const frameDocument = makeRoot([frameButton]);
+
+    const result = evaluateInFakeFrame(
+      buildClickFrameCandidateExpr("button", 0),
+      frameDocument,
+      outerDocument
+    ) as FrameCandidateClickResult;
+
+    expect(result).toEqual({ clicked: true });
+    expect(frameButton.dispatchedEvents).toEqual(["mousedown", "mouseup", "click"]);
+    expect(outerButton.dispatchedEvents).toEqual([]);
   });
 });
 
