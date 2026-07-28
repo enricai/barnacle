@@ -86,8 +86,8 @@ interface RunTelemetryDouble {
 // `withSessionTelemetry` wrapper in loader.ts calls it unconditionally
 // whenever `runWithSession` hands back a truthy session, so the double must
 // implement it (with the real `SessionTelemetry` param shape, matching
-// `RunTelemetryHandle` structurally) or dispatch() throws once feat-005's
-// wiring lands.
+// `RunTelemetryHandle` structurally) or dispatch() throws now that feat-005's
+// wiring has landed.
 function createRunTelemetryDouble(): RunTelemetryDouble {
   let joinKeys: Record<string, unknown> | null = null;
   return {

@@ -83,12 +83,11 @@ vi.mock("@/lib/dd-metrics", () => ({
 }));
 
 /**
- * Minimal shape of the mid-run telemetry attach point `SitePluginContext` is
- * planned to gain (`context.telemetry`, feat-001/feat-005 in this run's
- * plan — see `RunTelemetryCollector`'s recommended surface). Declared
- * locally rather than imported because the real module does not exist yet
- * in this worktree; this test targets the contract, not the not-yet-landed
- * implementation.
+ * Minimal shape of the mid-run telemetry attach point `SitePluginContext`
+ * exposes (`context.telemetry`, backed by `RunTelemetry` in
+ * `src/lib/telemetry/run-telemetry.ts`). Reimplemented locally rather than
+ * imported so this file exercises the documented contract shape
+ * independent of the real class.
  */
 interface RunTelemetryStub {
   addJoinKeys: (fields: Record<string, unknown>) => void;

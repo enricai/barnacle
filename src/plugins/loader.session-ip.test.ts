@@ -55,9 +55,8 @@ vi.mock("@/lib/dd-metrics", () => ({
 
 /**
  * Fake `BrowserSession` (`src/scraper/session-shared.ts`) carrying a known
- * outbound IP via the `getOutboundIp()` accessor feat-004 adds. Untyped
- * (no `: BrowserSession` annotation) because that field doesn't exist on
- * the interface in this worktree yet — `runWithSession` is fully mocked
+ * outbound IP via the `getOutboundIp()` accessor. Untyped (no
+ * `: BrowserSession` annotation) since `runWithSession` is fully mocked
  * below, so nothing here crosses a real type boundary.
  */
 function createFakeSession(ip: string | null = "203.0.113.42") {
@@ -276,8 +275,8 @@ describe("dispatch — records the acquired session's outbound IP on the submiss
 
     // Deliberately objectContaining, not full deep-equality: this subtask
     // (Gap 2, session-IP capture) adds an unrelated `session` key to this
-    // same envelope call once feat-004/feat-005 land. Asserting the full key
-    // set here would couple this regression guard to that sibling change.
+    // same envelope call. Asserting the full key set here would couple this
+    // regression guard to that sibling change.
     expect(mockCaptureSubmissionEnvelope).toHaveBeenCalledWith(
       expect.objectContaining({
         siteId: "test-site",
