@@ -320,6 +320,70 @@ describe("foldReconciliationRecords", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.beaconStatus).toBe("skipped");
   });
+
+  // Provenance rule: the row's `joinKeys` is ALWAYS the submit line's bag,
+  // never merged with a beacon line's — `foldReconciliationRecords` spreads
+  // only `submitFields` into the row and touches nothing but
+  // beaconStatus/beaconTrackingUrl/beaconTs/beaconDurationMs when a beacon
+  // wins the fold. A plugin-recorded beacon line carrying additional keys
+  // (e.g. `jid`) does NOT reach `GET /v1/submissions` through the row; the
+  // beacon record itself still carries its own full bag through
+  // `parseReconciliationLines`, it just never gets folded in.
+  it("keeps the submit line's joinKeys on the folded row when the winning beacon's joinKeys is a strict superset, while the beacon record itself retains its own full bag", () => {
+    const submitJoinKeys = { vivclid: "v-9981" };
+    const beaconJoinKeys = { vivclid: "v-9981", jid: "jid-555" };
+    const records = parseReconciliationLines(
+      ndjson(
+        makeSubmitLine({ joinKeys: submitJoinKeys }),
+        makeBeaconLine({ joinKeys: beaconJoinKeys })
+      )
+    );
+
+    const beaconRecord = records.find((r) => r.kind === "beacon");
+    expect(beaconRecord?.kind).toBe("beacon");
+    if (beaconRecord?.kind === "beacon") {
+      expect(beaconRecord.joinKeys).toEqual(beaconJoinKeys);
+    }
+
+    const rows = foldReconciliationRecords(records);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.joinKeys).toEqual(submitJoinKeys);
+  });
+
+  // Provenance rule: the winning beacon line's `trackingUrl` overwrites the
+  // row's `beaconTrackingUrl` verbatim, even when it is `null` and a
+  // lower-ranked `skipped` line carried a real URL — `beaconRank` picks the
+  // winner by status only, and the fold then takes ALL four beacon fields
+  // from that one winning line rather than backfilling from a loser. This
+  // means a real `fired`/`failed` outcome with no known URL nulls out a
+  // `skipped` line's URL rather than inheriting it, order-independent.
+  it("nulls the row's beaconTrackingUrl when the winning fired line has none, even though the losing skipped line carried a real URL", () => {
+    const skipped = makeBeaconLine({
+      beaconStatus: "skipped",
+      trackingUrl: "https://track.example.com/pixel?rid=req-abc-123",
+      durationMs: 0,
+      ts: "2026-07-26T10:00:03.000Z",
+    });
+    const fired = makeBeaconLine({
+      beaconStatus: "fired",
+      trackingUrl: null,
+      durationMs: 42,
+      ts: "2026-07-26T10:00:05.000Z",
+    });
+
+    const skippedFirst = foldReconciliationRecords(
+      parseReconciliationLines(ndjson(makeSubmitLine(), skipped, fired))
+    );
+    const firedFirst = foldReconciliationRecords(
+      parseReconciliationLines(ndjson(makeSubmitLine(), fired, skipped))
+    );
+
+    for (const rows of [skippedFirst, firedFirst]) {
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.beaconStatus).toBe("fired");
+      expect(rows[0]?.beaconTrackingUrl).toBeNull();
+    }
+  });
 });
 
 describe("readReconciliationRows", () => {
