@@ -556,6 +556,49 @@ describe("routes/submissions GET /v1/submissions", () => {
     }
   });
 
+  it("returns the submit session and folded beacon sessionIp in the serialized response body", async () => {
+    fs.writeFileSync(
+      sinkPath,
+      ndjson(
+        makeSubmitLine({
+          requestId: "req-session",
+          session: {
+            id: "bb-session-abc",
+            provider: "browserbase",
+            ip: "203.0.113.9",
+            ipCapturedAt: "2026-07-26T10:00:01.000Z",
+          },
+        }),
+        makeBeaconLine({ requestId: "req-session", sessionIp: "198.51.100.42" })
+      ),
+      "utf8"
+    );
+    const app = await buildApp(sinkPath);
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/v1/submissions?requestId=req-session",
+        headers: { authorization: `Bearer ${VALID_KEY}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.submissions).toHaveLength(1);
+      expect(body.submissions[0]).toMatchObject({
+        requestId: "req-session",
+        session: {
+          id: "bb-session-abc",
+          provider: "browserbase",
+          ip: "203.0.113.9",
+          ipCapturedAt: "2026-07-26T10:00:01.000Z",
+        },
+        beaconSessionIp: "198.51.100.42",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   it("returns 200 with an empty array when the sink file does not exist", async () => {
     const app = await buildApp(sinkPath);
     try {

@@ -77,6 +77,7 @@ export const reconciliationRowSchema = submitRecordSchema
   .extend({
     beaconStatus: reconciliationBeaconStatusSchema,
     trackingUrl: z.string().nullable(),
+    beaconSessionIp: beaconEventSchema.shape.sessionIp,
   });
 
 export type ReconciliationRow = z.infer<typeof reconciliationRowSchema>;

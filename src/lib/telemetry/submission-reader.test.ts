@@ -151,6 +151,28 @@ describe("foldReconciliationRecords", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.beaconStatus).toBe("not_fired");
     expect(rows[0]?.beaconTrackingUrl).toBeNull();
+    expect(rows[0]?.beaconSessionIp).toBeNull();
+  });
+
+  it("folds a submit line's session block and a beacon line's sessionIp onto one row, distinct fields", () => {
+    const records = parseReconciliationLines(
+      ndjson(
+        makeSubmitLine({
+          session: {
+            id: "bb-session-abc",
+            provider: "browserbase",
+            ip: "203.0.113.9",
+            ipCapturedAt: "2026-07-26T10:00:01.000Z",
+          },
+        }),
+        makeBeaconLine({ sessionIp: "198.51.100.42" })
+      )
+    );
+    const rows = foldReconciliationRecords(records);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.session?.ip).toBe("203.0.113.9");
+    expect(rows[0]?.beaconSessionIp).toBe("198.51.100.42");
+    expect(rows[0]?.beaconSessionIp).not.toBe(rows[0]?.session?.ip);
   });
 
   it("does not synthesize a phantom row for an orphan beacon with no matching submit", () => {

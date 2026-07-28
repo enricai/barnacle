@@ -31,13 +31,16 @@ const logger = getLogger({ name: "telemetry/submission-reader" });
  * `"not_fired"` when no matching beacon line ever arrived. When a run has
  * both a `"skipped"` line and a real `"fired"`/`"failed"` line, the real
  * outcome wins the fold (see `foldReconciliationRecords`) regardless of
- * which line was written first.
+ * which line was written first. `beaconSessionIp` is the tracking-click
+ * session's own outbound IP — distinct from the submit line's `session.ip`,
+ * since the two are separate Browserbase sessions per run.
  */
 export interface ReconciliationRow extends Omit<SubmitRecord, "kind"> {
   beaconStatus: BeaconEvent["beaconStatus"] | "not_fired";
   beaconTrackingUrl: string | null;
   beaconTs: string | null;
   beaconDurationMs: number | null;
+  beaconSessionIp: string | null;
 }
 
 /** Options for `readReconciliationRows`. */
@@ -126,6 +129,7 @@ export function foldReconciliationRecords(records: ReconciliationRecord[]): Reco
       beaconTrackingUrl: null,
       beaconTs: null,
       beaconDurationMs: null,
+      beaconSessionIp: null,
     });
   }
 
@@ -151,6 +155,7 @@ export function foldReconciliationRecords(records: ReconciliationRecord[]): Reco
       beaconTrackingUrl: beacon.trackingUrl,
       beaconTs: beacon.ts,
       beaconDurationMs: beacon.durationMs,
+      beaconSessionIp: beacon.sessionIp,
     });
   }
 

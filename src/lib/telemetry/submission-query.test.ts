@@ -24,6 +24,7 @@ function makeRow(overrides: Partial<ReconciliationRow> = {}): ReconciliationRow 
     beaconTrackingUrl: "https://track.example/beacon",
     beaconTs: "2026-07-14T10:00:05.000Z",
     beaconDurationMs: 42,
+    beaconSessionIp: null,
     ...overrides,
   };
 }
