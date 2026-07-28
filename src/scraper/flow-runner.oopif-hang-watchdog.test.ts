@@ -98,9 +98,11 @@ function allLoggedLines(): string {
  * capable of exceeding vitest's global 30s `testTimeout` when many other
  * test files' forks (or unrelated host processes) are competing for CPU.
  * Raising only these two tests' budget (rather than the global
- * `testTimeout`) keeps every other test's hang-detection window tight.
+ * `testTimeout`) keeps every other test's hang-detection window tight. Set
+ * well above the ~5s this loop needs standalone to survive heavy sibling
+ * contention (measured: still real, not simulated, wall-clock cost).
  */
-const DEEP_LOCATOR_HANG_TEST_TIMEOUT_MS = 90_000;
+const DEEP_LOCATOR_HANG_TEST_TIMEOUT_MS = 180_000;
 
 /**
  * Advances the fake clock well past every deepLocator per-call watchdog the
