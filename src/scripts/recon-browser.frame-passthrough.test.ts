@@ -7,14 +7,14 @@
  * file exercises only the CLI's parse->params->cascade-call assembly.
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { StepVerificationErrorKind } from "@/scraper/errors";
+import { StepVerificationError, type StepVerificationErrorKind } from "@/scraper/errors";
 import type { FrameTarget } from "@/scraper/frame-target";
 
 vi.mock("@/config", () => ({
@@ -69,6 +69,17 @@ vi.mock("@/lib/telemetry/call-capture", async (importOriginal) => {
   };
 });
 
+// buildAnthropicClient stub for the replan-driven write-back test — main()
+// bails out of the replan dispatcher when the client is null, so a non-null
+// stub is required to reach persistReplannedFlow at all. messages.parse is
+// exposed as a hoisted spy so individual tests can shape its response.
+const { anthropicMessagesParseStub } = vi.hoisted(() => ({
+  anthropicMessagesParseStub: vi.fn(),
+}));
+vi.mock("@/lib/llm/anthropic-client", () => ({
+  buildAnthropicClient: () => ({ messages: { parse: anthropicMessagesParseStub } }),
+}));
+
 // executeStepWithHealing spy so we can assert exactly what main() forwards
 // into the cascade call — every other flow-runner export stays real.
 const { executeStepWithHealingStub } = vi.hoisted(() => ({
@@ -83,7 +94,7 @@ vi.mock("@/scraper/flow-runner", async (importOriginal) => {
 });
 
 import { createBrowserSession } from "@/scraper/session";
-import { main, parseCli } from "@/scripts/recon-browser";
+import { main, parseCli, RECON_FLOW_FILE_SCHEMA } from "@/scripts/recon-browser";
 
 describe("recon-browser CLI/parseCli — frameSelector parsing", () => {
   const ORIGINAL_ARGV = process.argv;
@@ -192,6 +203,7 @@ describe("recon-browser CLI/main — frameSelector reaches executeStepWithHealin
     executeStepWithHealingStub.mockReset();
     executeStepWithHealingStub.mockResolvedValue("ok");
     vi.mocked(createBrowserSession).mockReset();
+    anthropicMessagesParseStub.mockReset();
   });
 
   afterEach(() => {
@@ -201,6 +213,87 @@ describe("recon-browser CLI/main — frameSelector reaches executeStepWithHealin
     delete process.env.RECON_OUT_DIR;
     vi.restoreAllMocks();
     executeStepWithHealingStub.mockReset();
+    anthropicMessagesParseStub.mockReset();
+  });
+
+  it("keeps a replan-driven write-back frame-scoped: rewritten flow file still declares frameSelector", async () => {
+    // Placed first among the main()-driving cases so resolveReconRunDir's
+    // module-level memoization (src/scripts/recon-shared.ts:67) latches onto
+    // THIS test's still-live runsRoot — dumpReplanRecord (recon-browser.ts,
+    // called from the replan branch this test is the only one to exercise)
+    // writeFileSync's into stepFailuresDir with no try/catch, so a stale
+    // memoized dir from an earlier-run test would throw ENOENT here.
+    const { stagehand } = makeFakePage({
+      iframeSrc: "https://apply.talemetry.com/application/abc-123",
+      frameUrl: "https://apply.talemetry.com/application/abc-123",
+    });
+    vi.mocked(createBrowserSession).mockResolvedValue({
+      stagehand,
+      limiter: {} as never,
+      sessionId: "test-session",
+      provider: "browserbase",
+      close: vi.fn().mockResolvedValue(undefined),
+    } as never);
+
+    const originalFlowFileContents = `${JSON.stringify(
+      {
+        steps: ["Click Manual Application"],
+        frameSelector: "#talemetry_apply_iframe",
+      },
+      null,
+      2
+    )}\n`;
+    const flowFilePath = join(runsRoot, "recon-flow.json");
+    writeFileSync(flowFilePath, originalFlowFileContents);
+
+    // First attempt terminally fails its healing cascade (replan-bearing
+    // kind); the replanned bridge step then succeeds, letting the run reach
+    // the finally block's write-back with exactly one replan event.
+    executeStepWithHealingStub
+      .mockRejectedValueOnce(
+        new StepVerificationError(
+          "cascade exhausted on Click Manual Application",
+          "cascade-exhausted"
+        )
+      )
+      .mockResolvedValue("ok");
+    anthropicMessagesParseStub.mockResolvedValue({
+      parsed_output: {
+        outcome: "replan",
+        steps: ["Click the fallback Manual Application control"],
+      },
+      content: [{ type: "text", text: "" }],
+      usage: { input_tokens: 0, output_tokens: 0 },
+    });
+
+    process.argv = [
+      "node",
+      "recon-browser.ts",
+      "--url",
+      "https://careers.uchealth.org/apply",
+      "--flow-file",
+      flowFilePath,
+    ];
+
+    await main();
+
+    expect(executeStepWithHealingStub).toHaveBeenCalledTimes(2);
+    expect(anthropicMessagesParseStub).toHaveBeenCalled();
+
+    const rewrittenBytes = readFileSync(flowFilePath, "utf8");
+    const rewritten: unknown = JSON.parse(rewrittenBytes);
+    const parsedSchema = RECON_FLOW_FILE_SCHEMA.safeParse(rewritten);
+    expect(parsedSchema.success).toBe(true);
+    if (!parsedSchema.success) return;
+    expect(Array.isArray(parsedSchema.data)).toBe(false);
+    const object = parsedSchema.data as { frameSelector?: string };
+    expect(object.frameSelector).toBe("#talemetry_apply_iframe");
+
+    const flowFileDir = dirname(flowFilePath);
+    const backupFiles = readdirSync(flowFileDir).filter((f) => f.endsWith(".bak.json"));
+    expect(backupFiles.length).toBeGreaterThanOrEqual(1);
+    const backupContents = readFileSync(join(flowFileDir, backupFiles[0]!), "utf8");
+    expect(backupContents).toBe(originalFlowFileContents);
   });
 
   it("forwards an object-shape flow's frameSelector as the exact resolved FrameTarget", async () => {
