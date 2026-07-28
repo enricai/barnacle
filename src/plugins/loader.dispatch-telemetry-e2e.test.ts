@@ -138,4 +138,76 @@ describe("dispatch() telemetry end-to-end: real HTTP request to real NDJSON sink
     expect(row?.beaconStatus).toBe("skipped");
     expect(row?.beaconTrackingUrl).toBe(trackingUrl);
   });
+
+  it("folds a plugin's self-recorded fired beacon over the engine's own skipped beacon, dispatched over real HTTP", async () => {
+    const trackingUrl =
+      "https://click.e2e-test.example/t/self-managed?vivclid=e2e-456&empId=emp2&jid=jid2";
+    const joinKeys = { vivclid: "e2e-456", jobReference: "emp2_jid2" };
+
+    const selfRecordingPlugin: SitePlugin<unknown, unknown> = {
+      extractJoinKeys: (payload) => {
+        const { TrackingUrl } = payload as { TrackingUrl?: string };
+        return TrackingUrl ? joinKeys : null;
+      },
+      meta: {
+        siteId: "e2e-self-recording",
+        displayName: "E2E Self Recording",
+        bodySchema: z.object({ TrackingUrl: z.string().optional() }),
+        responseSchema: z.object({ verified: z.boolean() }),
+      },
+      execute: vi.fn(),
+      executeHttp: async (_payload, context): Promise<SitePluginResult<unknown>> => {
+        await context.recordBeaconOutcome({
+          beaconStatus: "fired",
+          joinKeys,
+          trackingUrl,
+          durationMs: 42,
+        });
+        return { data: { verified: true } };
+      },
+    };
+
+    const app = Fastify({ loggerInstance: getLogger({ name: "dispatch-telemetry-e2e-test" }) });
+    app.setValidatorCompiler(validatorCompiler);
+    app.setSerializerCompiler(serializerCompiler);
+    await app.register(errorHandlerPlugin);
+    await app.register(authPlugin);
+    await registerRoutes(app, cfgStub, [selfRecordingPlugin]);
+    await app.ready();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/e2e-self-recording/run",
+      payload: { TrackingUrl: trackingUrl },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().verified).toBe(true);
+
+    await app.close();
+
+    const rawLines = fs
+      .readFileSync(sinkPath, "utf8")
+      .split("\n")
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line) as { kind: string; beaconStatus?: string });
+    const beaconLines = rawLines.filter((line) => line.kind === "beacon");
+    expect(beaconLines).toHaveLength(2);
+    // The plugin's `fired` write happens inside executeHttp, before
+    // runPluginPipeline returns; the engine's `skipped` write happens after
+    // (loader.ts's emitBeaconSafely call) — so `fired` lands first in the
+    // sink and only `beaconRank` (submission-reader.ts), not write order,
+    // makes it win the fold.
+    expect(beaconLines[0]?.beaconStatus).toBe("fired");
+    expect(beaconLines[1]?.beaconStatus).toBe("skipped");
+
+    const rows = await readReconciliationRows({ sinkPath });
+    expect(rows).toHaveLength(1);
+    const [row] = rows;
+    expect(row?.siteId).toBe("e2e-self-recording");
+    expect(row?.status).toBe("submitted");
+    expect(row?.joinKeys).toEqual(joinKeys);
+    expect(row?.beaconStatus).toBe("fired");
+    expect(row?.beaconTrackingUrl).toBe(trackingUrl);
+  });
 });
