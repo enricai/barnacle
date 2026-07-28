@@ -184,6 +184,62 @@ const delegatingPlugin: SitePlugin<unknown, unknown> = {
   }),
 };
 
+/**
+ * A plugin with no `extractJoinKeys` (core owns tracking) whose `execute`
+ * also self-records a beacon outcome via `context.recordBeaconOutcome`.
+ * Regression guard for the "existing plugins are unaffected" acceptance
+ * criterion: the recorder must add a line, never suppress or divert the
+ * engine's own `fireTrackingClick` branch (loader.ts:320-338).
+ */
+const nonSelfManagingRecordingPlugin: SitePlugin<unknown, unknown> = {
+  meta: {
+    siteId: "test-site",
+    displayName: "Test Site",
+    bodySchema: {} as never,
+    responseSchema: {} as never,
+  },
+  execute: vi.fn(async (_payload: unknown, _session, context: SitePluginContext) => {
+    await context.recordBeaconOutcome({ beaconStatus: "fired", joinKeys: { vivclid: "123" } });
+    return { data: { result: "ok" }, auditPayload: { redacted: true } };
+  }),
+};
+
+describe("dispatch — engine-fired tracking path when a non-self-managing plugin also self-records", () => {
+  beforeEach(() => {
+    mockCaptureSubmissionEnvelope.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("fires the engine's own tracking click exactly once, with the URL, siteId, and requestId, for a plugin with no extractJoinKeys", async () => {
+    const context = buildStubContext();
+    await dispatch(attachingPlugin, { TrackingUrl: TRACKING_URL }, context);
+
+    expect(mockFireTrackingClick).toHaveBeenCalledOnce();
+    expect(mockFireTrackingClick).toHaveBeenCalledWith(TRACKING_URL, "test-site", {
+      requestId: "req-test-123",
+      joinKeys: null,
+    });
+  });
+
+  it("still fires the tracking click exactly once and writes no automatic skipped beacon line when that plugin's execute also calls context.recordBeaconOutcome", async () => {
+    const context = buildStubContext();
+    await dispatch(nonSelfManagingRecordingPlugin, { TrackingUrl: TRACKING_URL }, context);
+
+    expect(mockFireTrackingClick).toHaveBeenCalledOnce();
+    expect(mockFireTrackingClick).toHaveBeenCalledWith(TRACKING_URL, "test-site", {
+      requestId: "req-test-123",
+      joinKeys: null,
+    });
+    expect(context.recordBeaconOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ beaconStatus: "fired" })
+    );
+    expect(mockCaptureBeaconEvent).not.toHaveBeenCalled();
+  });
+});
+
 describe("dispatch — run-attached fields on the beacon/tracking-click record", () => {
   beforeEach(() => {
     mockCaptureSubmissionEnvelope.mockResolvedValue(undefined);
