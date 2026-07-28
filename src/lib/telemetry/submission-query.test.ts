@@ -13,6 +13,7 @@ function makeRow(overrides: Partial<ReconciliationRow> = {}): ReconciliationRow 
     siteId: "hca",
     requestId: "req-1",
     joinKeys: { vivclid: "viv-1", jobReference: "emp1_jid1" },
+    session: null,
     inboundPayload: { jobId: "jid1" },
     status: "submitted",
     auditPayload: null,

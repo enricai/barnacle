@@ -24,9 +24,33 @@
  * top-level keys, and a plain `z.object()` silently drops unrecognized
  * keys — reading an old line through the new schema would otherwise lose
  * its join keys rather than surface them.
+ *
+ * `session` (on `submitRecordSchema`) and `sessionIp` (on `beaconEventSchema`)
+ * carry the Browserbase session's identity and outbound IP so it's durable
+ * per-run telemetry rather than only a log line — every plugin acquires its
+ * session the same engine-owned way, so this lands here rather than
+ * per-plugin. Both are nullable-with-default for the same reason `joinKeys`
+ * is: millions of already-shipped NDJSON lines (and their S3 mirror) never
+ * carried these fields and must keep parsing.
  */
 
 import { z } from "zod/v4";
+
+/**
+ * The Browserbase session identity and outbound IP a plugin's run used.
+ * `ip`/`ipCapturedAt` are nullable independently of `id`/`provider` because
+ * the IP is only known after a separate in-session IP-echo navigation, which
+ * may never resolve (a disabled capture, a provider with no IP accessor, a
+ * timeout) even when the session itself was acquired successfully.
+ */
+export const sessionTelemetrySchema = z.object({
+  id: z.string(),
+  provider: z.string(),
+  ip: z.string().nullable(),
+  ipCapturedAt: z.string().nullable(),
+});
+
+export type SessionTelemetry = z.infer<typeof sessionTelemetrySchema>;
 
 /**
  * Submit-side record: the existing submission envelope shape plus an opaque
@@ -38,6 +62,7 @@ export const submitRecordSchema = z.object({
   siteId: z.string(),
   requestId: z.string(),
   joinKeys: z.record(z.string(), z.unknown()).nullable().default(null),
+  session: sessionTelemetrySchema.nullable().default(null),
   inboundPayload: z.unknown(),
   status: z.enum(["submitted", "error"]),
   auditPayload: z.unknown(),
@@ -72,6 +97,7 @@ export const beaconEventSchema = z.object({
   trackingUrl: z.string().nullable(),
   durationMs: z.number(),
   ts: z.string(),
+  sessionIp: z.string().nullable().default(null),
 });
 
 export type BeaconEvent = z.infer<typeof beaconEventSchema>;

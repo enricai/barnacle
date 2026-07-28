@@ -21,6 +21,7 @@ function makeValidRow(): ReconciliationRow {
     siteId: "hca",
     requestId: "req-abc-001",
     joinKeys: { vivclid: "viv-123", jobReference: "emp1_jid1" },
+    session: null,
     status: "submitted",
     errorMessage: null,
     durationMs: 842,

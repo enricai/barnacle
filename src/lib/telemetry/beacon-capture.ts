@@ -34,9 +34,13 @@ export type BeaconEventSample = z.infer<typeof beaconEventSchema>;
 
 /**
  * Input to `captureBeaconEvent` — `ts` and `kind` are derived internally so
- * callers omit them.
+ * callers omit them. `sessionIp` is optional so existing call sites that
+ * don't yet resolve it keep compiling unchanged; an omitted value is
+ * persisted as `null`, not left undefined.
  */
-export type BeaconEventInput = Omit<BeaconEventSample, "ts" | "kind">;
+export type BeaconEventInput = Omit<BeaconEventSample, "ts" | "kind" | "sessionIp"> & {
+  sessionIp?: BeaconEventSample["sessionIp"];
+};
 
 /** Options for `captureBeaconEvent`. */
 export interface CaptureBeaconEventOptions {
@@ -60,6 +64,7 @@ export async function captureBeaconEvent(
     ...input,
     kind: "beacon",
     trackingUrl: input.trackingUrl?.slice(0, TRACKING_URL_MAX_LENGTH) ?? null,
+    sessionIp: input.sessionIp ?? null,
     ts: formatISO(new Date()),
   };
 

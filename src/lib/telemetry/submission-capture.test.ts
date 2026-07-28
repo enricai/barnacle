@@ -60,6 +60,18 @@ function makeSuccessInputWithJoinKeys(): Parameters<typeof captureSubmissionEnve
   };
 }
 
+function makeSuccessInputWithSession(): Parameters<typeof captureSubmissionEnvelope>[0] {
+  return {
+    ...makeSuccessInput(),
+    session: {
+      id: "sess-abc",
+      provider: "browserbase",
+      ip: "203.0.113.42",
+      ipCapturedAt: "2026-07-26T10:00:01.000Z",
+    },
+  };
+}
+
 function makeErrorInput(): Parameters<typeof captureSubmissionEnvelope>[0] {
   return {
     siteId: "ats-c",
@@ -191,6 +203,48 @@ describe("captureSubmissionEnvelope", () => {
     const parsed = JSON.parse(line) as Record<string, unknown>;
     expect("joinKeys" in parsed).toBe(true);
     expect(parsed.joinKeys).toBeNull();
+  });
+
+  it("writes session as a top-level field", async () => {
+    const input = makeSuccessInputWithSession();
+    await captureSubmissionEnvelope(input, { sinkPath });
+
+    const line = fs.readFileSync(sinkPath, "utf-8").trim();
+    const parsed = JSON.parse(line) as SubmissionEnvelopeSample;
+    expect(parsed.session).toEqual(input.session);
+
+    const result = submissionEnvelopeSampleSchema.safeParse(parsed);
+    expect(result.success).toBe(true);
+  });
+
+  it("writes null (not undefined/omitted) session when the input omits it", async () => {
+    await captureSubmissionEnvelope(makeSuccessInput(), { sinkPath });
+
+    const line = fs.readFileSync(sinkPath, "utf-8").trim();
+    const parsed = JSON.parse(line) as Record<string, unknown>;
+    expect("session" in parsed).toBe(true);
+    expect(parsed.session).toBeNull();
+  });
+
+  it("submissionEnvelopeSampleSchema still parses a legacy line with no session key, defaulting it to null", () => {
+    const legacyLine = {
+      kind: "submit",
+      siteId: "ats-c",
+      requestId: "req-legacy-789",
+      joinKeys: null,
+      inboundPayload: { jobId: "11111111111" },
+      status: "submitted",
+      auditPayload: null,
+      errorMessage: null,
+      durationMs: 1500,
+      ts: "2026-01-01T00:00:00.000Z",
+    };
+
+    const result = submissionEnvelopeSampleSchema.safeParse(legacyLine);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.session).toBeNull();
+    }
   });
 
   it("submissionEnvelopeSampleSchema rejects a kind value other than submit", () => {
