@@ -313,14 +313,29 @@ techniques are, in order:
    dedicated fill/select actuation seam
    (`fillDeepLocatorCandidate`/`selectDeepLocatorCandidateOption`,
    `src/scraper/deep-locator-actuate.ts`), which prefers one batched
-   `frameTarget.evaluate()` round-trip carrying an inline read-back, falling
-   back to the legacy `page.deepLocator()` write + separate `inputValue()`
-   read-back pair (index-scaled watchdog budget) when no frame seam is
-   available or the batched call degrades — `verifyDomEffect` can't resolve
-   a `deeplocator=` selector, so the read-back itself is the only
-   verification signal available, recorded as `verifiedBy: "dom"` directly.
-   No candidate naming the field at all is a refusal, not a guess: the step
-   fails that attempt rather than clicking an unrelated control.
+   `frameTarget.evaluate(buildFillFrameCandidateExpr(...) |
+   buildSelectFrameCandidateExpr(...))` round-trip
+   (`src/scraper/deep-locator-scan.ts`) over the legacy
+   `page.deepLocator().nth(index).fill()`/`.selectOption()` +
+   `.inputValue()` pair — Stagehand's `resolveAtIndex` pays `index + 1`
+   serial CDP round-trips per legacy call, so the batched expression is what
+   makes a fill/select survivable deep in a dense OOPIF form. The legacy
+   pair remains the degrade path when no frame seam is available or the
+   batched evaluate rejects/returns a non-conforming payload. Either way,
+   the write is read back (inline in the batched expression, or via
+   `inputValue()` on the legacy path) to confirm —
+   `verifyDomEffect` can't resolve a `deeplocator=` selector, so the
+   read-back itself is the only verification signal available, recorded as
+   `verifiedBy: "dom"` directly. `buildSelectFrameCandidateExpr` matches an
+   option by value first, falling back to its trimmed visible label, so a
+   step that quotes either one still lands. The hop re-derived for this
+   actuation always matches whichever selector actually produced the ranked
+   candidates (`INTERACTIVE_CANDIDATE_SELECTOR`, or the widened `"*"` when
+   the scoped pass found nothing), so a fill/select routed through a
+   widened hop still actuates against the right element instead of
+   re-resolving against the wrong candidate set. No candidate naming the
+   field at all is a refusal, not a guess: the step fails that attempt
+   rather than clicking an unrelated control.
 
    Only a step with no fill/select field-label match falls through to the
    click-only candidate walk. That walk still uses

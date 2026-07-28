@@ -8,7 +8,9 @@ import {
   makeFakeDeepLocator,
   makeFakeDomElement,
   makeFakeFrameClickByIndex,
+  makeFakeFrameFillByIndex,
   makeFakeFrameScan,
+  makeFakeFrameSelectByIndex,
   makeSelectorAwareDomRoot,
   NODE_NOT_ACTIONABLE_MESSAGE,
   registerDeepLocatorHangingHop,
@@ -382,7 +384,7 @@ describe("deep-locator-fake: nth(index) resolve cost model (Stagehand's O(index)
   );
 
   it.each([0, 1, 2, 4])(
-    "nth(%i).fill(v) settles only after (index + 1) delay units, not one flat delay unit",
+    "nth(%i).fill() settles only after (index + 1) delay units, not one flat delay unit",
     async (index) => {
       const frame: FakeDeepLocatorFrame = new Map();
       const hop = registerDeepLocatorHopElements(
@@ -411,7 +413,7 @@ describe("deep-locator-fake: nth(index) resolve cost model (Stagehand's O(index)
   );
 
   it.each([0, 1, 2, 4])(
-    "nth(%i).selectOption(v) settles only after (index + 1) delay units, not one flat delay unit",
+    "nth(%i).selectOption() settles only after (index + 1) delay units, not one flat delay unit",
     async (index) => {
       const frame: FakeDeepLocatorFrame = new Map();
       const hop = registerDeepLocatorHopElements(
@@ -425,7 +427,7 @@ describe("deep-locator-fake: nth(index) resolve cost model (Stagehand's O(index)
       let settled = false;
       deepLocator("iframe#a >> *")
         .nth(index)
-        .selectOption("us")
+        .selectOption("CA")
         .then(() => {
           settled = true;
         });
@@ -435,11 +437,11 @@ describe("deep-locator-fake: nth(index) resolve cost model (Stagehand's O(index)
 
       await vi.advanceTimersByTimeAsync(DELAY_MS);
       expect(settled).toBe(true);
-      expect(hop.elements[index]?.selectedWith).toEqual(["us"]);
+      expect(hop.elements[index]?.selectedWith).toEqual(["CA"]);
     }
   );
 
-  it.each([0, 1, 3])(
+  it.each([0, 1, 2, 4])(
     "nth(%i).inputValue() settles only after (index + 1) delay units, not one flat delay unit",
     async (index) => {
       const frame: FakeDeepLocatorFrame = new Map();
@@ -448,9 +450,11 @@ describe("deep-locator-fake: nth(index) resolve cost model (Stagehand's O(index)
         "iframe#a >> *",
         Array.from({ length: index + 1 }, (_, i) => `node-${i}`)
       );
+      const element = hop.elements[index];
+      if (!element) throw new Error("test setup: expected element at index");
+      element.readBackValue = `value-${index}`;
       registerDeepLocatorHopLatency(hop, { delayOn: "inputValue", delayMs: DELAY_MS });
       const deepLocator = makeFakeDeepLocator(frame);
-      await deepLocator("iframe#a >> *").nth(index).fill("Ada");
 
       let resolved: string | undefined;
       deepLocator("iframe#a >> *")
@@ -464,7 +468,7 @@ describe("deep-locator-fake: nth(index) resolve cost model (Stagehand's O(index)
       expect(resolved).toBeUndefined();
 
       await vi.advanceTimersByTimeAsync(DELAY_MS);
-      expect(resolved).toBe("Ada");
+      expect(resolved).toBe(`value-${index}`);
     }
   );
 
@@ -612,5 +616,115 @@ describe("makeFakeDomElement: writable form-control surface", () => {
 
     expect(input.value).toBe("Ada");
     expect(input.dispatchedEvents).toEqual(["focus"]);
+  });
+});
+
+describe.each([
+  {
+    label: "makeFakeFrameFillByIndex",
+    make: makeFakeFrameFillByIndex,
+    latencyMethod: "fillByIndex" as const,
+  },
+  {
+    label: "makeFakeFrameSelectByIndex",
+    make: makeFakeFrameSelectByIndex,
+    latencyMethod: "selectByIndex" as const,
+  },
+])("$label (batched write-by-index seam)", ({ make, latencyMethod }) => {
+  it("writes the value into elements[index].filledWith and resolves {written: true, readBack}, ignoring the expression argument", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    const hop = registerDeepLocatorHopElements(frame, "iframe#a >> *", ["a", "b", "c"]);
+    const writeByIndex = make(frame, "iframe#a >> *");
+
+    await expect(
+      writeByIndex(1, "First Name", "() => { throw new Error('never executed by the fake'); }")
+    ).resolves.toEqual({ written: true, readBack: "First Name" });
+    expect(hop.elements.map((element) => element.filledWith)).toEqual([null, "First Name", null]);
+  });
+
+  it("resolves {written: false, reason: 'not-actionable'} for a visible:false element, without throwing and without touching filledWith", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    const hop = registerDeepLocatorHopElements(frame, "iframe#a >> *", [
+      { text: "hidden", visible: false },
+    ]);
+    const writeByIndex = make(frame, "iframe#a >> *");
+
+    await expect(writeByIndex(0, "value")).resolves.toEqual({
+      written: false,
+      reason: "not-actionable",
+    });
+    expect(hop.elements[0]?.filledWith).toBeNull();
+  });
+
+  it("resolves {written: false, reason: 'out-of-range'} for an out-of-range index or an unregistered hop instead of throwing", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    registerDeepLocatorHopElements(frame, "iframe#a >> *", ["only-one"]);
+    const writeByIndex = make(frame, "iframe#a >> *");
+    const writeByIndexUnregistered = make(frame, "iframe#missing >> *");
+
+    await expect(writeByIndex(3, "value")).resolves.toEqual({
+      written: false,
+      reason: "out-of-range",
+    });
+    await expect(writeByIndexUnregistered(0, "value")).resolves.toEqual({
+      written: false,
+      reason: "out-of-range",
+    });
+  });
+
+  it("honors a readBackValue override the same way inputValue() does", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    const hop = registerDeepLocatorHopElements(frame, "iframe#a >> *", ["a"]);
+    const element = hop.elements[0];
+    if (!element) throw new Error("expected element at index 0");
+    element.readBackValue = "normalized";
+    const writeByIndex = make(frame, "iframe#a >> *");
+
+    await expect(writeByIndex(0, "raw")).resolves.toEqual({
+      written: true,
+      readBack: "normalized",
+    });
+    expect(hop.elements[0]?.filledWith).toBe("raw");
+  });
+
+  it(`costs exactly one delay unit under a registered '${latencyMethod}' latency profile, regardless of index`, async () => {
+    vi.useFakeTimers();
+    try {
+      const frame: FakeDeepLocatorFrame = new Map();
+      const hop = registerDeepLocatorHopElements(
+        frame,
+        "iframe#a >> *",
+        Array.from({ length: 5 }, (_, i) => `node-${i}`)
+      );
+      registerDeepLocatorHopLatency(hop, { delayOn: latencyMethod, delayMs: 100 });
+      const writeByIndex = make(frame, "iframe#a >> *");
+
+      let settled = false;
+      writeByIndex(4, "value").then(() => {
+        settled = true;
+      });
+
+      await vi.advanceTimersByTimeAsync(99);
+      expect(settled).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toBe(true);
+      expect(hop.elements[4]?.filledWith).toBe("value");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it(`registerDeepLocatorHopLatency on '${latencyMethod}' delays the batched write but not nth(i).fill()/selectOption() on the same hop`, async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    const hop = registerDeepLocatorHopElements(frame, "iframe#a >> *", ["First Name"]);
+    registerDeepLocatorHopLatency(hop, { delayOn: latencyMethod, delayMs: 50 });
+    const deepLocator = makeFakeDeepLocator(frame);
+    const writeByIndex = make(frame, "iframe#a >> *");
+
+    await deepLocator("iframe#a >> *").nth(0).fill("legacy-path");
+    expect(hop.elements[0]?.filledWith).toBe("legacy-path");
+
+    await expect(raceAgainstTimer(writeByIndex(0, "batched-path"))).resolves.toBe(STILL_PENDING);
   });
 });

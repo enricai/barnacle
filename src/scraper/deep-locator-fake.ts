@@ -1,6 +1,9 @@
 import type { DeepLocatorDelegate } from "@browserbasehq/stagehand/lib/v3/understudy/deepLocator.js";
 
-import type { FrameCandidateScanResult } from "@/scraper/deep-locator-scan";
+import type {
+  FrameCandidateScanResult,
+  FrameCandidateWriteResult,
+} from "@/scraper/deep-locator-scan";
 
 /**
  * One candidate element registered at a hop selector. `registerDeepLocatorHop`
@@ -215,11 +218,18 @@ export function registerDeepLocatorHangingHop(
 }
 
 /**
- * The delegate methods plus {@link makeFakeFrameScan}'s batched evaluate and
- * {@link makeFakeFrameClickByIndex}'s batched click a hop's
- * {@link registerDeepLocatorHopLatency} profile can delay.
+ * The delegate methods plus {@link makeFakeFrameScan}'s batched evaluate,
+ * {@link makeFakeFrameClickByIndex}'s batched click, and
+ * {@link makeFakeFrameFillByIndex}'s/{@link makeFakeFrameSelectByIndex}'s
+ * batched writes a hop's {@link registerDeepLocatorHopLatency} profile can
+ * delay.
  */
-export type LatencyDeepLocatorMethod = HangingDeepLocatorMethod | "scan" | "clickByIndex";
+export type LatencyDeepLocatorMethod =
+  | HangingDeepLocatorMethod
+  | "scan"
+  | "clickByIndex"
+  | "fillByIndex"
+  | "selectByIndex";
 
 export interface RegisterDeepLocatorHopLatencyOptions {
   /** Which method(s) resolve after `delayMs` instead of immediately. */
@@ -328,13 +338,18 @@ export const NODE_NOT_ACTIONABLE_MESSAGE = "-32000 Node does not have a layout o
  * `resolveAll(query, {limit: index + 1})`, whose `resolveCss` runs
  * `for (let i = 0; i < limit; i += 1) { await this.evaluateElement(...) }`
  * (`selectorResolver.js`) — one serial CDP `Runtime.evaluate` per index, so
- * `nth(k)` pays `k + 1` round-trips, not one. That resolve path is shared by
- * every `nth()`-scoped delegate method, not just `click`/`textContent` —
- * `fill`/`selectOption`/`inputValue` resolve the target element through the
- * exact same `resolveAtIndex` call before writing/reading it, so they pay the
- * identical `k + 1` cost. `count()` resolves the whole match set once
- * regardless of which index a caller later chains `nth()` onto, so it — and
- * every other modeled method — stays a flat one-call cost.
+ * `nth(k)` pays `k + 1` round-trips, not one. `click()`/`textContent()` call
+ * `resolveAtIndex` directly; `fill()`/`selectOption()`/`inputValue()` route
+ * through `Locator.resolveNode() -> resolveAtIndex(query, index)` the same
+ * way, paying the identical `index + 1` cost — pinned against the installed
+ * `@browserbasehq/stagehand` in
+ * `deep-locator-stagehand-contract.test.ts`'s `Locator.fill/selectOption/
+ * inputValue route through resolveNode()` suite. A write/read-back actuation
+ * (`fillDeepLocatorCandidate` in `deep-locator-actuate.ts`: `fill()` then
+ * `inputValue()`) therefore pays `2 * (index + 1)` round-trips total, not one
+ * flat cost. `count()` resolves the whole match set once regardless of which
+ * index a caller later chains `nth()` onto, so it — and the batched
+ * `scan`/`clickByIndex` seams — stay a flat one-call cost.
  */
 const INDEXED_RESOLVE_METHODS: ReadonlySet<LatencyDeepLocatorMethod> = new Set([
   "click",
@@ -359,8 +374,8 @@ const INDEXED_RESOLVE_METHODS: ReadonlySet<LatencyDeepLocatorMethod> = new Set([
  * unrendered node. `click()`/`textContent()`/`fill()`/`selectOption()`/
  * `inputValue()` charge `elementIndex + 1` delay units under a registered
  * latency profile (see {@link INDEXED_RESOLVE_METHODS}), modeling
- * Stagehand's per-index resolve cost — every other method stays a flat
- * one-call cost.
+ * Stagehand's per-index resolve cost — `count()` and the batched
+ * `scan`/`clickByIndex` seams stay a flat one-call cost.
  */
 function buildFakeDelegate(
   frame: FakeDeepLocatorFrame,
@@ -465,6 +480,8 @@ export interface FakeDomElement {
   readonly computedStyle: { readonly display: string; readonly visibility: string };
   readonly parent: FakeDomElement | null;
   value: string;
+  /** `<select>`-only: the `<option>` collection {@link buildSelectFrameCandidateExpr}'s (`deep-locator-scan.ts`) value-then-label match reads. Empty for every non-`<select>` fixture. */
+  readonly options: readonly { readonly value: string; readonly textContent: string }[];
   readonly dispatchedEvents: readonly string[];
   getBoundingClientRect(): { readonly width: number; readonly height: number };
   getAttribute(name: string): string | null;
@@ -488,6 +505,8 @@ export interface MakeFakeDomElementOptions {
   readonly parent?: FakeDomElement | null;
   /** Seeds `value` — the initial `.value` a write expression reads before overwriting it. Defaults to `""`, matching an unfilled `<input>`. */
   readonly value?: string;
+  /** Seeds `options` — a `<select>` fixture's option collection. Defaults to `[]`, matching every non-`<select>` element. */
+  readonly options?: readonly { readonly value: string; readonly textContent: string }[];
 }
 
 /** Parses one simple-selector clause — a bare tag, `[attr]`, or `[attr=value]` — the three shapes {@link INTERACTIVE_CANDIDATE_SELECTOR} composes via commas. No combinators, descendant selectors, or pseudo-classes: the generated expression only ever calls `querySelectorAll` with a flat, comma-joined clause list. */
@@ -540,6 +559,7 @@ export function makeFakeDomElement(
     computedStyle,
     parent,
     value: options.value ?? "",
+    options: options.options ?? [],
     dispatchedEvents,
     getBoundingClientRect() {
       return rect;
@@ -740,5 +760,82 @@ export function makeFakeFrameClickByIndex(
     if (!element.visible) return { clicked: false, reason: NODE_NOT_ACTIONABLE_MESSAGE };
     element.clicks += 1;
     return { clicked: true };
+  };
+}
+
+/**
+ * Resolves a batched write against `hop.elements[index]`, shared by
+ * {@link makeFakeFrameFillByIndex} and {@link makeFakeFrameSelectByIndex}:
+ * `{ written: false, reason: "out-of-range" }` for an unregistered hop or an
+ * out-of-range index, `{ written: false, reason: "not-actionable" }` for a
+ * `visible: false` element (never throws, mirroring
+ * {@link buildFillFrameCandidateExpr}'s/{@link buildSelectFrameCandidateExpr}'s
+ * data-not-exception contract), otherwise writes `value` into `filledWith`
+ * and resolves `{ written: true, readBack }` — `readBack` honors
+ * `readBackValue` when set, the same "write that doesn't stick" override
+ * {@link buildFakeDelegate}'s `inputValue()` already applies.
+ */
+function resolveFakeBatchedWrite(
+  hop: FakeDeepLocatorHop | undefined,
+  index: number,
+  value: string
+): FrameCandidateWriteResult {
+  const element = hop?.elements[index];
+  if (!element) return { written: false, reason: "out-of-range" };
+  if (!element.visible) return { written: false, reason: "not-actionable" };
+  element.filledWith = value;
+  return { written: true, readBack: element.readBackValue ?? value };
+}
+
+/**
+ * Fake frame-scoped batched fill-by-index bound to `selector` — models the
+ * seam a batched-fill fix would call once per fill via a single frame
+ * evaluate (`buildFillFrameCandidateExpr`, `deep-locator-scan.ts`), instead
+ * of the legacy delegate's `nth(index).fill()`. Same "ignore the expression
+ * string, resolve against the hop registry" contract as
+ * {@link makeFakeFrameClickByIndex}: the fake cannot execute browser-side
+ * code, so `expression` is accepted (mirroring the real seam's signature)
+ * but never inspected — `value` is passed explicitly since it's what a real
+ * expression bakes in rather than something the fake could read back out of
+ * a string it never parses. See {@link resolveFakeBatchedWrite} for the
+ * shared not-actionable/out-of-range/write contract.
+ */
+export function makeFakeFrameFillByIndex(
+  frame: FakeDeepLocatorFrame,
+  selector: string
+): (index: number, value: string, expression?: unknown) => Promise<FrameCandidateWriteResult> {
+  return async (index: number, value: string) => {
+    const hop = frame.get(selector);
+    await delayIfRegistered(hop, "fillByIndex");
+    return resolveFakeBatchedWrite(hop, index, value);
+  };
+}
+
+/**
+ * Fake frame-scoped batched select-by-index bound to `selector` — models the
+ * seam a batched-select fix would call once per select via a single frame
+ * evaluate (`buildSelectFrameCandidateExpr`, `deep-locator-scan.ts`),
+ * instead of the legacy delegate's `nth(index).selectOption()`. Writes
+ * `optionValue` into the same `filledWith` field {@link makeFakeFrameFillByIndex}
+ * does rather than `selectedWith` — the real expression matches and reports a
+ * single option `value` (`FrameCandidateWriteResult.readBack` is one string,
+ * not the delegate's array-shaped `selectedWith`/multi-value `selectOption()`),
+ * so this batched primitive models the same single-value write shape as fill.
+ * Same "ignore the expression string" contract as
+ * {@link makeFakeFrameClickByIndex}; see {@link resolveFakeBatchedWrite} for
+ * the shared not-actionable/out-of-range/write contract.
+ */
+export function makeFakeFrameSelectByIndex(
+  frame: FakeDeepLocatorFrame,
+  selector: string
+): (
+  index: number,
+  optionValue: string,
+  expression?: unknown
+) => Promise<FrameCandidateWriteResult> {
+  return async (index: number, optionValue: string) => {
+    const hop = frame.get(selector);
+    await delayIfRegistered(hop, "selectByIndex");
+    return resolveFakeBatchedWrite(hop, index, optionValue);
   };
 }

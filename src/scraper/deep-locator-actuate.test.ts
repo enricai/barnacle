@@ -168,6 +168,369 @@ describe("selectDeepLocatorCandidateOption", () => {
   });
 });
 
+describe("fillDeepLocatorCandidate batched frame-scoped fill", () => {
+  beforeEach(() => {
+    loggerStub.warn.mockClear();
+  });
+
+  it("returns true after exactly one evaluate call and zero delegate calls when the frame seam resolves a matching write", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    registerDeepLocatorHopElements(frame, `${FRAME_SELECTOR} >> input`, ["", ""]);
+    const deepLocatorSpy = vi.fn(makeFakeDeepLocator(frame));
+    const page = { deepLocator: deepLocatorSpy };
+    const { frameTarget, evaluateSpy } = makeFakeFrameTarget(async () => ({
+      written: true,
+      readBack: "Ada",
+    }));
+
+    const result = await fillDeepLocatorCandidate(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      page as any,
+      FRAME_SELECTOR,
+      "input",
+      1,
+      "Ada",
+      { frameTarget }
+    );
+
+    expect(result).toBe(true);
+    expect(evaluateSpy).toHaveBeenCalledTimes(1);
+    expect(deepLocatorSpy).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the delegate, rather than returning false outright, when the frame seam's write read-back disagrees with what was asked for", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    registerDeepLocatorHopElements(frame, `${FRAME_SELECTOR} >> input`, ["", ""]);
+    const deepLocatorSpy = vi.fn(makeFakeDeepLocator(frame));
+    const page = { deepLocator: deepLocatorSpy };
+    const { frameTarget } = makeFakeFrameTarget(async () => ({
+      written: true,
+      readBack: "Not Ada",
+    }));
+
+    const result = await fillDeepLocatorCandidate(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      page as any,
+      FRAME_SELECTOR,
+      "input",
+      1,
+      "Ada",
+      { frameTarget }
+    );
+
+    expect(result).toBe(true);
+    expect(deepLocatorSpy).toHaveBeenCalled();
+  });
+
+  it("resolves false without a delegate call when the frame seam reports the candidate not-actionable", async () => {
+    const deepLocatorSpy = vi.fn();
+    const page = { deepLocator: deepLocatorSpy };
+    const { frameTarget } = makeFakeFrameTarget(async () => ({
+      written: false,
+      reason: "not-actionable",
+    }));
+
+    const result = await fillDeepLocatorCandidate(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      page as any,
+      FRAME_SELECTOR,
+      "input",
+      0,
+      "Ada",
+      { frameTarget }
+    );
+
+    expect(result).toBe(false);
+    expect(deepLocatorSpy).not.toHaveBeenCalled();
+  });
+
+  it("degrades to the delegate path and still returns true when the frame seam's evaluate rejects", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    registerDeepLocatorHopElements(frame, `${FRAME_SELECTOR} >> input`, ["", ""]);
+    const page = makeFakePage(frame);
+    const { frameTarget } = makeFakeFrameTarget(async () => {
+      throw new Error("evaluate wedged");
+    });
+
+    const result = await fillDeepLocatorCandidate(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      page as any,
+      FRAME_SELECTOR,
+      "input",
+      1,
+      "Ada",
+      { frameTarget }
+    );
+
+    expect(result).toBe(true);
+    expect(frame.get(`${FRAME_SELECTOR} >> input`)?.elements[1]?.filledWith).toBe("Ada");
+    expect(loggerStub.warn).toHaveBeenCalledWith(
+      expect.stringContaining("deepLocator batched fill for")
+    );
+  });
+
+  it("degrades to the delegate path and still returns true when the frame seam resolves a non-conforming payload", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    registerDeepLocatorHopElements(frame, `${FRAME_SELECTOR} >> input`, ["", ""]);
+    const page = makeFakePage(frame);
+    // biome-ignore lint/suspicious/noExplicitAny: deliberately non-conforming payload shape under test
+    const { frameTarget } = makeFakeFrameTarget(async () => ({ nope: true }) as any);
+
+    const result = await fillDeepLocatorCandidate(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      page as any,
+      FRAME_SELECTOR,
+      "input",
+      1,
+      "Ada",
+      { frameTarget }
+    );
+
+    expect(result).toBe(true);
+    expect(frame.get(`${FRAME_SELECTOR} >> input`)?.elements[1]?.filledWith).toBe("Ada");
+    expect(loggerStub.warn).toHaveBeenCalledWith(expect.stringContaining("non-conforming payload"));
+  });
+
+  it("degrades to the delegate path when the frame seam reports a stale out-of-range index", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    registerDeepLocatorHopElements(frame, `${FRAME_SELECTOR} >> input`, ["", ""]);
+    const page = makeFakePage(frame);
+    const { frameTarget } = makeFakeFrameTarget(async () => ({
+      written: false,
+      reason: "out-of-range",
+    }));
+
+    const result = await fillDeepLocatorCandidate(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      page as any,
+      FRAME_SELECTOR,
+      "input",
+      1,
+      "Ada",
+      { frameTarget }
+    );
+
+    expect(result).toBe(true);
+    expect(frame.get(`${FRAME_SELECTOR} >> input`)?.elements[1]?.filledWith).toBe("Ada");
+  });
+
+  it("with no frameTarget supplied and no evaluate seam resolvable, behaves byte-identically to the pre-batched delegate path", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    registerDeepLocatorHopElements(frame, `${FRAME_SELECTOR} >> input`, ["", ""]);
+    const deepLocatorSpy = vi.fn(makeFakeDeepLocator(frame));
+    const page = { deepLocator: deepLocatorSpy };
+
+    const result = await fillDeepLocatorCandidate(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      page as any,
+      FRAME_SELECTOR,
+      "input",
+      1,
+      "Ada"
+    );
+
+    expect(result).toBe(true);
+    expect(deepLocatorSpy).toHaveBeenCalledWith(`${FRAME_SELECTOR} >> input`);
+    expect(frame.get(`${FRAME_SELECTOR} >> input`)?.elements[1]?.filledWith).toBe("Ada");
+    expect(loggerStub.warn).not.toHaveBeenCalled();
+  });
+});
+
+describe("selectDeepLocatorCandidateOption batched frame-scoped select", () => {
+  beforeEach(() => {
+    loggerStub.warn.mockClear();
+  });
+
+  it("returns true after exactly one evaluate call and zero delegate calls when the frame seam resolves a matching write", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    registerDeepLocatorHopElements(frame, `${FRAME_SELECTOR} >> select`, [""]);
+    const deepLocatorSpy = vi.fn(makeFakeDeepLocator(frame));
+    const page = { deepLocator: deepLocatorSpy };
+    const { frameTarget, evaluateSpy } = makeFakeFrameTarget(async () => ({
+      written: true,
+      readBack: "US",
+    }));
+
+    const result = await selectDeepLocatorCandidateOption(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      page as any,
+      FRAME_SELECTOR,
+      "select",
+      0,
+      "US",
+      { frameTarget }
+    );
+
+    expect(result).toBe(true);
+    expect(evaluateSpy).toHaveBeenCalledTimes(1);
+    expect(deepLocatorSpy).not.toHaveBeenCalled();
+  });
+
+  it("returns true, without a delegate call, when the frame seam matched by label and its readBack (the option's value) differs from the label passed in", async () => {
+    const deepLocatorSpy = vi.fn();
+    const page = { deepLocator: deepLocatorSpy };
+    const { frameTarget, evaluateSpy } = makeFakeFrameTarget(async () => ({
+      written: true,
+      readBack: "US",
+    }));
+
+    const result = await selectDeepLocatorCandidateOption(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      page as any,
+      FRAME_SELECTOR,
+      "select",
+      0,
+      "United States",
+      { frameTarget }
+    );
+
+    expect(result).toBe(true);
+    expect(evaluateSpy).toHaveBeenCalledTimes(1);
+    expect(deepLocatorSpy).not.toHaveBeenCalled();
+  });
+
+  it("resolves false without a delegate call when the frame seam reports the candidate not-actionable", async () => {
+    const deepLocatorSpy = vi.fn();
+    const page = { deepLocator: deepLocatorSpy };
+    const { frameTarget } = makeFakeFrameTarget(async () => ({
+      written: false,
+      reason: "not-actionable",
+    }));
+
+    const result = await selectDeepLocatorCandidateOption(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      page as any,
+      FRAME_SELECTOR,
+      "select",
+      0,
+      "US",
+      { frameTarget }
+    );
+
+    expect(result).toBe(false);
+    expect(deepLocatorSpy).not.toHaveBeenCalled();
+  });
+
+  it("degrades to the delegate path and still returns true when the frame seam's evaluate rejects", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    registerDeepLocatorHopElements(frame, `${FRAME_SELECTOR} >> select`, [""]);
+    const page = makeFakePage(frame);
+    const { frameTarget } = makeFakeFrameTarget(async () => {
+      throw new Error("evaluate wedged");
+    });
+
+    const result = await selectDeepLocatorCandidateOption(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      page as any,
+      FRAME_SELECTOR,
+      "select",
+      0,
+      "US",
+      { frameTarget }
+    );
+
+    expect(result).toBe(true);
+    expect(frame.get(`${FRAME_SELECTOR} >> select`)?.selectedWith).toEqual(["US"]);
+    expect(loggerStub.warn).toHaveBeenCalledWith(
+      expect.stringContaining("deepLocator batched select for")
+    );
+  });
+
+  it("degrades to the delegate path and still returns true when the frame seam resolves a non-conforming payload", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    registerDeepLocatorHopElements(frame, `${FRAME_SELECTOR} >> select`, [""]);
+    const page = makeFakePage(frame);
+    // biome-ignore lint/suspicious/noExplicitAny: deliberately non-conforming payload shape under test
+    const { frameTarget } = makeFakeFrameTarget(async () => ({ nope: true }) as any);
+
+    const result = await selectDeepLocatorCandidateOption(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      page as any,
+      FRAME_SELECTOR,
+      "select",
+      0,
+      "US",
+      { frameTarget }
+    );
+
+    expect(result).toBe(true);
+    expect(frame.get(`${FRAME_SELECTOR} >> select`)?.selectedWith).toEqual(["US"]);
+    expect(loggerStub.warn).toHaveBeenCalledWith(expect.stringContaining("non-conforming payload"));
+  });
+
+  it("with no frameTarget supplied and no evaluate seam resolvable, behaves byte-identically to the pre-batched delegate path", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    registerDeepLocatorHopElements(frame, `${FRAME_SELECTOR} >> select`, [""]);
+    const deepLocatorSpy = vi.fn(makeFakeDeepLocator(frame));
+    const page = { deepLocator: deepLocatorSpy };
+
+    const result = await selectDeepLocatorCandidateOption(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      page as any,
+      FRAME_SELECTOR,
+      "select",
+      0,
+      "US"
+    );
+
+    expect(result).toBe(true);
+    expect(deepLocatorSpy).toHaveBeenCalledWith(`${FRAME_SELECTOR} >> select`);
+    expect(frame.get(`${FRAME_SELECTOR} >> select`)?.selectedWith).toEqual(["US"]);
+    expect(loggerStub.warn).not.toHaveBeenCalled();
+  });
+});
+
+describe("legacy-fallback watchdog scales with candidate index (matches clickDeepLocatorCandidate)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("a wedged fill() at index 40 is not killed by the flat call-timeout budget, and rejects with WatchdogTimeoutError once the scaled budget elapses", async () => {
+    const TARGET_INDEX = 40;
+    const frame: FakeDeepLocatorFrame = new Map();
+    const { release } = registerDeepLocatorHangingHop(frame, `${FRAME_SELECTOR} >> input`, {
+      hangOn: "fill",
+    });
+    const page = makeFakePage(frame);
+
+    const promise = fillDeepLocatorCandidate(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      page as any,
+      FRAME_SELECTOR,
+      "input",
+      TARGET_INDEX,
+      "Ada",
+      { callTimeoutMs: 50 }
+    );
+    let settled = false;
+    promise.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      }
+    );
+
+    // The flat single-round-trip budget (50ms) elapses with no rejection —
+    // a fixed callTimeoutMs would have killed this fill were it not scaled.
+    await vi.advanceTimersByTimeAsync(50);
+    expect(settled).toBe(false);
+
+    // Scaled budget is 50 + 40 * DEEP_LOCATOR_CLICK_INDEX_ROUND_TRIP_MS
+    // (1_000ms/index) = 40_050ms — a genuinely wedged fill still rejects
+    // once that elapses, rather than hanging forever.
+    const assertion = expect(promise).rejects.toMatchObject({ name: "WatchdogTimeoutError" });
+    await vi.advanceTimersByTimeAsync(40_000);
+    await assertion;
+    release();
+  });
+});
+
 describe("watchdog-guarded awaits (wedged fill/select/read-back)", () => {
   beforeEach(() => {
     vi.useFakeTimers();

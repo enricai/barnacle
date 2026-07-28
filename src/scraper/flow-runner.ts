@@ -6373,14 +6373,14 @@ export async function executeStepWithHealing(params: {
                 ? await fillDeepLocatorCandidate(
                     page,
                     frameTarget?.frameSelector,
-                    INTERACTIVE_CANDIDATE_SELECTOR,
+                    deepLocatorInnerSelector,
                     matched.index,
                     fieldTarget.value
                   )
                 : await selectDeepLocatorCandidateOption(
                     page,
                     frameTarget?.frameSelector,
-                    INTERACTIVE_CANDIDATE_SELECTOR,
+                    deepLocatorInnerSelector,
                     matched.index,
                     fieldTarget.value
                   );
