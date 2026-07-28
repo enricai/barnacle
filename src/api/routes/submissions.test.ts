@@ -599,6 +599,52 @@ describe("routes/submissions GET /v1/submissions", () => {
     }
   });
 
+  it("returns session: null for a row read from a legacy line with no session field", async () => {
+    fs.writeFileSync(sinkPath, ndjson(makeSubmitLine({ requestId: "req-legacy" })), "utf8");
+    const app = await buildApp(sinkPath);
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/v1/submissions?requestId=req-legacy",
+        headers: { authorization: `Bearer ${VALID_KEY}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.submissions).toHaveLength(1);
+      expect(body.submissions[0]).toMatchObject({ requestId: "req-legacy", session: null });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("does not leak a beacon-side sessionIp key on the response row — only beaconSessionIp", async () => {
+    fs.writeFileSync(
+      sinkPath,
+      ndjson(
+        makeSubmitLine({ requestId: "req-no-leak" }),
+        makeBeaconLine({ requestId: "req-no-leak", sessionIp: "198.51.100.42" })
+      ),
+      "utf8"
+    );
+    const app = await buildApp(sinkPath);
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/v1/submissions?requestId=req-no-leak",
+        headers: { authorization: `Bearer ${VALID_KEY}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.submissions).toHaveLength(1);
+      expect(body.submissions[0]).not.toHaveProperty("sessionIp");
+      expect(body.submissions[0].beaconSessionIp).toBe("198.51.100.42");
+    } finally {
+      await app.close();
+    }
+  });
+
   it("returns 200 with an empty array when the sink file does not exist", async () => {
     const app = await buildApp(sinkPath);
     try {

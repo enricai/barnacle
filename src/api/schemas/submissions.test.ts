@@ -220,6 +220,11 @@ describe("reconciliationRowSchema", () => {
     expect(result.success).toBe(true);
     expect(result.data?.beaconSessionIp).toBeNull();
   });
+
+  it("strips a raw sessionIp key — the wire contract only exposes beaconSessionIp", () => {
+    const row = reconciliationRowSchema.parse({ ...makeValidRow(), sessionIp: "198.51.100.42" });
+    expect(row).not.toHaveProperty("sessionIp");
+  });
 });
 
 // ── submissionsResponseSchema ─────────────────────────────────────────────────
