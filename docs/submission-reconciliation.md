@@ -12,6 +12,12 @@ hand every time.
 
 Field-by-field reference for the generic (site-agnostic) rows this route
 returns: [telemetry-and-judging.md § Submission-envelope sink](./telemetry-and-judging.md#submission-envelope-sink).
+
+> **Not yet shipped:** the `session`/`sessionIp` field entries and the IP
+> lookup recipe below describe a planned engine-level feature
+> (`feat-001`–`feat-007`) that has not landed on `main` — those fields don't
+> exist in the shipped `submitRecordSchema`/`beaconEventSchema` yet. Treat
+> them as a spec for when that work lands, not a current field reference.
 For a worked example with real join-key recipes for a specific attribution
 provider, see that plugin's own docs — this runbook only covers the fields
 core actually knows about.

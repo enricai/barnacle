@@ -9,6 +9,13 @@ headers, with an AI-browser fallback, automated drift detection, and a body of
 captured evidence that justifies every design choice. Human time is front-loaded
 to one recon run and a small PR when things change.
 
+> **Not yet shipped:** the Phase 5 diagram annotations and prose below for
+> the mid-run telemetry attach point and session-IP capture describe a
+> planned engine-level feature (`feat-001`–`feat-007`) that has not landed
+> on `main` yet — `SitePluginContext.telemetry` and `getOutboundIp()` don't
+> exist in this tree. Treat those annotations as forward-looking, not the
+> current runtime sequence.
+
 ---
 
 ## Mental model

@@ -4,6 +4,12 @@
 > [../CLAUDE.md](../CLAUDE.md). For architecture context, see
 > [architecture.md](./architecture.md).
 
+> **Not yet shipped:** the "Run-attached telemetry fields" guidance and the
+> `context.telemetry` stubbing example below describe a planned
+> engine-level feature (`feat-001`–`feat-007`) that has not landed on
+> `main` — `SitePluginContext` has no `telemetry` member in this tree yet.
+> Treat this guidance as forward-looking, not a pattern you can use today.
+
 ---
 
 ## Running tests

@@ -5,6 +5,16 @@
 > accuracy rubric, and what a verdict artifact contains. It is the concept
 > companion to the operator runbook in [playbook.md](./playbook.md).
 
+> **Not yet shipped:** the mid-run join-key attach point
+> (`context.telemetry.addJoinKeys()` / `RunTelemetryCollector`), the
+> `session`/`sessionIp` record fields, and the "Session-IP capture knobs"
+> below describe a planned engine-level feature (`feat-001`–`feat-007`).
+> That implementation has not landed on `main` — none of
+> `src/lib/telemetry/run-telemetry.ts`, `src/scraper/session-ip.ts`,
+> `SitePluginContext.telemetry`, or the `session`/`sessionIp` schema fields
+> exist in this tree yet. This section documents the shipped design once it
+> lands; until then, treat it as a spec, not a current API reference.
+
 ---
 
 ## Why capture at all?

@@ -8,6 +8,14 @@
 > For *how* to write a site plugin, see the Plugin Authoring Guide in
 > [../README.md](../README.md).
 
+> **Not yet shipped:** the rationale below for mid-run join-key attachment
+> (`context.telemetry.addJoinKeys()`, `RunTelemetryCollector`) and for
+> session-IP capture (`resolveSessionOutboundIp`, `getOutboundIp()`)
+> describes a planned engine-level feature (`feat-001`–`feat-007`) that has
+> not landed on `main` — the cited files (`src/lib/telemetry/run-telemetry.ts`,
+> `src/scraper/session-ip.ts`) don't exist in this tree yet. Treat these
+> paragraphs as design intent, not a description of current code.
+
 ---
 
 ## Mental model
