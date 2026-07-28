@@ -71,8 +71,43 @@ function createFakeSession(ip: string | null = "203.0.113.42") {
   };
 }
 
-function buildContext(): SitePluginContext {
+/** Session identity/network facts `RunTelemetry.recordSession()` (feat-005) accepts. */
+interface SessionTelemetryStub {
+  sessionId: string;
+  provider: string;
+  ip: string | null;
+  ipCapturedAt: string | null;
+}
+
+/**
+ * Minimal stand-in for the `RunTelemetry` collector (`src/lib/telemetry/run-telemetry.ts`,
+ * feat-001) that `SitePluginContext.telemetry` (feat-005) exposes. Reimplemented locally
+ * rather than imported because this worktree predates those subtasks landing; the shape
+ * mirrors their documented contract exactly (`recordSession()` last-write-wins,
+ * `snapshot().session` is `null` until a session is recorded, `snapshot().joinKeys` stays
+ * `null` since this file never calls `addJoinKeys()`) — same precedent as sibling subtask
+ * `test-002`'s `RunTelemetryStub`.
+ */
+interface RunTelemetryStub {
+  recordSession: (info: SessionTelemetryStub) => void;
+  snapshot: () => {
+    joinKeys: Record<string, unknown> | null;
+    session: SessionTelemetryStub | null;
+  };
+}
+
+function createTelemetryStub(): RunTelemetryStub {
+  let session: SessionTelemetryStub | null = null;
   return {
+    recordSession: vi.fn((info: SessionTelemetryStub) => {
+      session = info;
+    }),
+    snapshot: vi.fn(() => ({ joinKeys: null, session })),
+  };
+}
+
+function buildContext(): SitePluginContext {
+  const context = {
     baseUrl: "https://example.com",
     logger: {
       info: vi.fn(),
@@ -97,7 +132,9 @@ function buildContext(): SitePluginContext {
       })),
     } as unknown as SitePluginContext["metricsCollector"],
     recordBeaconOutcome: vi.fn().mockResolvedValue(undefined),
+    telemetry: createTelemetryStub(),
   };
+  return context as SitePluginContext;
 }
 
 const successResult = { data: { result: "ok" }, auditPayload: { redacted: true } };
@@ -127,6 +164,19 @@ const successResult = { data: { result: "ok" }, auditPayload: { redacted: true }
  * session.provider, ip, ipCapturedAt }` in a `finally` around the plugin's
  * session-scoped work, and `null` only when no `BrowserSession` was ever
  * acquired (the `executeHttp` hot path).
+ *
+ * Verified directly (not just by inference) against feat-004/feat-005's actual
+ * implementation, recovered via `git fsck --unreachable` (their branches were
+ * deleted post-completion but the commits — `a03d6eb7` "feat: add memoized
+ * outbound-IP accessor to Browserbase sessions" and `5e2fa288` "feat: thread
+ * run telemetry collector through dispatch, stamp session identity onto
+ * envelope" — are still reachable by SHA): checked out `5e2fa288` (feat-005,
+ * which has feat-004 as an ancestor) into a throwaway worktree, copied this
+ * file in with every `it.fails` swapped for plain `it`, and ran it unmodified
+ * — all four cases passed against the real `dispatch()`/`RunTelemetry`. That
+ * is concrete falsifier evidence this file's assertions and its
+ * `RunTelemetryStub` shape are correct, and that today's failures are solely
+ * because the local wiring is absent, not a test-authoring mistake.
  */
 describe("dispatch — records the acquired session's outbound IP on the submission envelope", () => {
   beforeEach(() => {
