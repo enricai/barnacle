@@ -13,11 +13,6 @@ hand every time.
 Field-by-field reference for the generic (site-agnostic) rows this route
 returns: [telemetry-and-judging.md § Submission-envelope sink](./telemetry-and-judging.md#submission-envelope-sink).
 
-> **Not yet shipped:** the `session`/`sessionIp` field entries and the IP
-> lookup recipe below describe a planned engine-level feature
-> (`feat-001`–`feat-007`) that has not landed on `main` — those fields don't
-> exist in the shipped `submitRecordSchema`/`beaconEventSchema` yet. Treat
-> them as a spec for when that work lands, not a current field reference.
 For a worked example with real join-key recipes for a specific attribution
 provider, see that plugin's own docs — this runbook only covers the fields
 core actually knows about.
@@ -42,9 +37,9 @@ submit-only field for the session that performed the apply. Beacon lines
 carry their own, separate `sessionIp` field instead — the tracking-click
 that fires a beacon opens its own Browserbase session, so a beacon line's
 `sessionIp` is not the same IP as `session.ip` on the matching submit line
-for the same `requestId` (see Recipe 4). Unlike `session`, `sessionIp` is
-not returned by `GET /v1/submissions` today — read it from raw NDJSON
-beacon lines.
+for the same `requestId` (see Recipe 4). `GET /v1/submissions` returns it
+too, renamed to `beaconSessionIp` so it doesn't collide with the submit
+row's own `session.ip`.
 
 ---
 
@@ -59,16 +54,15 @@ Two ways to run these recipes:
   inclusive), `limit` (max `1000`), `offset`. `joinKeys` and `session` are not
   filterable at this layer (core doesn't know `joinKeys`'s shape, and there's
   no querystring param for `session.ip` either) — narrow with
-  `siteId`/`requestId` first, then filter the response client-side; `session`
-  itself, unlike a beacon line's `sessionIp`, IS present in the JSON body of
-  every row (see Recipe 4). Schema: `src/api/schemas/submissions.ts`.
+  `siteId`/`requestId` first, then filter the response client-side; both
+  `session` and the beacon line's `sessionIp` (renamed `beaconSessionIp`
+  on the row) ARE present in the JSON body of every row (see Recipe 4).
+  Schema: `src/api/schemas/submissions.ts`.
 - **Raw NDJSON** (`.barnacle/submissions.ndjson`, path from
   `SUBMISSIONS_NDJSON_PATH`) via `jq` — the fallback when you need a shape the
-  route doesn't expose yet (e.g. `inboundPayload`/`auditPayload`, or a beacon
-  line's `sessionIp` — the route only re-exposes `beaconStatus`/`trackingUrl`
-  from the beacon side, not `sessionIp`), or when you don't have network
-  access to a running Barnacle instance, or you need to filter/join on a
-  specific `joinKeys` field the route can't filter on.
+  route doesn't expose (e.g. `inboundPayload`/`auditPayload`), or when you
+  don't have network access to a running Barnacle instance, or you need to
+  filter/join on a specific `joinKeys` field the route can't filter on.
 
 All recipes below were run against a locally generated sample sink (same
 shape as production, 5 submits across two `siteId` cohorts + 4 beacon lines)
@@ -180,7 +174,8 @@ Output:
         "ipCapturedAt": "2026-07-21T09:44:57.000Z"
       },
       "beaconStatus": "not_fired",
-      "trackingUrl": null
+      "trackingUrl": null,
+      "beaconSessionIp": null
     }
   ],
   "total": 1
@@ -223,7 +218,8 @@ Output:
     "ipCapturedAt": "2026-07-20T15:10:03.000Z"
   },
   "beaconStatus": "fired",
-  "trackingUrl": "https://trk.example.com/click?empId=4471&jid=88214"
+  "trackingUrl": "https://trk.example.com/click?empId=4471&jid=88214",
+  "beaconSessionIp": "198.51.100.24"
 }
 ```
 
@@ -251,8 +247,9 @@ non-Browserbase provider, or the IP-echo navigation timing out
 `status`/`beaconStatus` — a `null` IP just means this corroboration signal
 isn't available for that run, not that the run itself failed.
 
-`sessionIp` is not exposed by `GET /v1/submissions` (see above), so pull it
-from raw NDJSON, keyed by the same `joinKeys` field your external report
+`GET /v1/submissions` exposes it too, as `beaconSessionIp` on each row —
+prefer that route for a batch lookup (see below). To read it straight from
+the sink instead, keyed by the same `joinKeys` field your external report
 uses to identify a run:
 
 ```bash
@@ -281,15 +278,15 @@ jq -sc '
 ' .barnacle/submissions.ndjson
 ```
 
-The submit-side `session` block (which session actually performed the
-apply, as opposed to which fired the beacon) doesn't need the NDJSON
-fallback — it flows through `GET /v1/submissions` automatically, so a
-batch lookup can go through the route instead:
+Both the submit-side `session` block and the beacon's session IP flow
+through `GET /v1/submissions` automatically (the latter as `beaconSessionIp`
+so it doesn't collide with `session.ip`), so a batch lookup can go through
+the route in one call instead of two NDJSON passes:
 
 ```bash
 curl -s "http://localhost:3971/v1/submissions?siteId=acme&limit=1000" \
   -H "Authorization: Bearer $BARNACLE_API_KEY" \
-  | jq '.submissions[] | select(.joinKeys.jobReference == "4471_88214") | {requestId, session}'
+  | jq '.submissions[] | select(.joinKeys.jobReference == "4471_88214") | {requestId, session, beaconSessionIp}'
 ```
 
 Output:
@@ -302,15 +299,16 @@ Output:
     "provider": "browserbase",
     "ip": "203.0.113.9",
     "ipCapturedAt": "2026-07-20T15:10:03.000Z"
-  }
+  },
+  "beaconSessionIp": "198.51.100.24"
 }
 ```
 
-Note `session.ip` (`203.0.113.9`) and the beacon's `sessionIp`
+Note `session.ip` (`203.0.113.9`) and `beaconSessionIp`
 (`198.51.100.24`) differ for the same `requestId` — expected, since they're
 two different sessions; don't treat a mismatch between them as a
-reconciliation failure. Only the beacon's `sessionIp` is the field to
-compare against the external report.
+reconciliation failure. Only `beaconSessionIp` is the field to compare
+against the external report.
 
 ---
 
@@ -372,7 +370,7 @@ logic (`readReconciliationRows`, `src/lib/telemetry/submission-reader.ts`).
 | Concern | File |
 |---|---|
 | Plugin-owned join-key extraction hook | `SitePlugin.extractJoinKeys` in `src/site-plugin.ts` |
-| Mid-run join-key attach point (fields `extractJoinKeys` can't see — discovered after navigation, minted mid-flow, etc.) | `SitePluginContext.telemetry` (`RunTelemetryCollector.addJoinKeys()`) in `src/site-plugin.ts`, built by `src/lib/telemetry/run-telemetry.ts` |
+| Mid-run join-key attach point (fields `extractJoinKeys` can't see — discovered after navigation, minted mid-flow, etc.) | `SitePluginContext.telemetry` (`RunTelemetry.addJoinKeys()`) in `src/site-plugin.ts`, built by `src/lib/telemetry/run-telemetry.ts` |
 | Plugin-callable beacon-outcome recorder (bound to the run's `requestId`/`siteId`) | `SitePluginContext.recordBeaconOutcome` in `src/site-plugin.ts`, built by `createBeaconOutcomeRecorder` in `src/lib/telemetry/beacon-capture.ts` |
 | Browser-session outbound-IP resolver (IP-echo navigation against a configurable endpoint) | `src/scraper/session-ip.ts` |
 | Memoized `getOutboundIp()` accessor on Browserbase sessions + `SCRAPER_CAPTURE_SESSION_IP`/`SCRAPER_SESSION_IP_ECHO_URL`/`SCRAPER_SESSION_IP_TIMEOUT_MS` config | `src/scraper/session-browserbase.ts`, `src/config.ts` |

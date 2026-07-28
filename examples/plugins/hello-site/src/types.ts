@@ -34,13 +34,25 @@ export interface BeaconOutcomeInput {
 }
 
 /**
+ * Minimal local mirror of the `RunTelemetryHandle` argument to
+ * `context.telemetry` in Barnacle's `SitePluginContext`
+ * (`src/lib/telemetry/run-telemetry.ts`). Narrowed to the one method this
+ * example's README documents: attaching a field only discovered mid-run.
+ */
+export interface RunTelemetryHandle {
+  addJoinKeys(fields: Record<string, unknown>): void;
+}
+
+/**
  * Minimal local mirror of Barnacle's `SitePluginContext`, narrowed to the
- * one seam a self-managing plugin needs: reporting a real `fired`/`failed`
- * outcome for a beacon it navigates itself. See the repository README's
- * Reconciliation join keys section for the full contract.
+ * two seams a self-managing plugin needs: reporting a real `fired`/`failed`
+ * outcome for a beacon it navigates itself, and attaching join keys it only
+ * discovers mid-run. See the repository README's Reconciliation join keys
+ * section for the full contract.
  */
 export interface SitePluginContext {
   recordBeaconOutcome(input: BeaconOutcomeInput): Promise<void>;
+  telemetry: RunTelemetryHandle;
 }
 
 /**

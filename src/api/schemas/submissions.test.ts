@@ -21,12 +21,14 @@ function makeValidRow(): ReconciliationRow {
     siteId: "hca",
     requestId: "req-abc-001",
     joinKeys: { vivclid: "viv-123", jobReference: "emp1_jid1" },
+    session: null,
     status: "submitted",
     errorMessage: null,
     durationMs: 842,
     ts: "2026-07-14T10:00:00.000Z",
     beaconStatus: "fired",
     trackingUrl: "https://track.example/beacon?vivclid=viv-123",
+    beaconSessionIp: null,
   };
 }
 
@@ -187,6 +189,41 @@ describe("reconciliationRowSchema", () => {
     const row = reconciliationRowSchema.parse(makeValidRow());
     expect(row).not.toHaveProperty("inboundPayload");
     expect(row).not.toHaveProperty("auditPayload");
+  });
+
+  it("accepts a row carrying the session block", () => {
+    const result = reconciliationRowSchema.safeParse({
+      ...makeValidRow(),
+      session: {
+        id: "bb-session-abc",
+        provider: "browserbase",
+        ip: "203.0.113.9",
+        ipCapturedAt: "2026-07-14T10:00:00.000Z",
+      },
+    });
+    expect(result.success).toBe(true);
+    expect(result.data?.session?.ip).toBe("203.0.113.9");
+  });
+
+  it("accepts a row carrying a non-null beaconSessionIp", () => {
+    const result = reconciliationRowSchema.safeParse({
+      ...makeValidRow(),
+      beaconSessionIp: "198.51.100.42",
+    });
+    expect(result.success).toBe(true);
+    expect(result.data?.beaconSessionIp).toBe("198.51.100.42");
+  });
+
+  it("defaults beaconSessionIp to null when omitted (never fired/no IP captured)", () => {
+    const { beaconSessionIp: _omit, ...incomplete } = makeValidRow();
+    const result = reconciliationRowSchema.safeParse(incomplete);
+    expect(result.success).toBe(true);
+    expect(result.data?.beaconSessionIp).toBeNull();
+  });
+
+  it("strips a raw sessionIp key — the wire contract only exposes beaconSessionIp", () => {
+    const row = reconciliationRowSchema.parse({ ...makeValidRow(), sessionIp: "198.51.100.42" });
+    expect(row).not.toHaveProperty("sessionIp");
   });
 });
 

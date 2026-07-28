@@ -5,16 +5,6 @@
 > accuracy rubric, and what a verdict artifact contains. It is the concept
 > companion to the operator runbook in [playbook.md](./playbook.md).
 
-> **Not yet shipped:** the mid-run join-key attach point
-> (`context.telemetry.addJoinKeys()` / `RunTelemetryCollector`), the
-> `session`/`sessionIp` record fields, and the "Session-IP capture knobs"
-> below describe a planned engine-level feature (`feat-001`–`feat-007`).
-> That implementation has not landed on `main` — none of
-> `src/lib/telemetry/run-telemetry.ts`, `src/scraper/session-ip.ts`,
-> `SitePluginContext.telemetry`, or the `session`/`sessionIp` schema fields
-> exist in this tree yet. This section documents the shipped design once it
-> lands; until then, treat it as a spec, not a current API reference.
-
 ---
 
 ## Why capture at all?
@@ -52,6 +42,7 @@ verdicts are the measurement.
 ## What is captured?
 
 Each captured sample (`LlmCallSample`, defined in
+`src/lib/telemetry/call-capture.ts` and re-exported via
 `src/api/schemas/telemetry.ts`) carries:
 
 | Field | Meaning |
@@ -67,6 +58,8 @@ Each captured sample (`LlmCallSample`, defined in
 | `outputTokens` | Token count from the API response, or `null` |
 | `latencyMs` | Wall-clock milliseconds from request to response, or `null` |
 | `success` | `true` if the call site accepted and used the response |
+| `errorMessage` | The thrown error's message, or `null` on success |
+| `failureKind` | Categorical failure reason (`classifyLlmCallFailure`) — `"anthropic-billing"`, `"anthropic-rate-limit"`, `"anthropic-other"`, `"schema-validation-failed"`, `"response-empty"`, or `"exception-other"`; `null` on success |
 | `ts` | ISO-8601 timestamp when the line was written |
 
 ### Call types
@@ -283,7 +276,7 @@ and validated against `submitRecordSchema`, exported from that module as
 `joinKeys` is populated from two sources merged together: the plugin's own
 `extractJoinKeys` hook (`src/site-plugin.ts`), resolved once from the inbound
 payload, and `context.telemetry.addJoinKeys()` — a mid-run attach point on
-`SitePluginContext` backed by a per-dispatch `RunTelemetryCollector`
+`SitePluginContext` backed by a per-dispatch `RunTelemetry`
 (`src/lib/telemetry/run-telemetry.ts`) that a plugin can call at any point
 during `execute()`/`executeHttp()` to attach a field it only discovers during
 the run (something read from the page, a token minted mid-flow, a value
@@ -390,12 +383,17 @@ provider's report without re-parsing raw NDJSON. The response row omits
 `inboundPayload`/`auditPayload` (the opaque blobs this route exists to stop
 callers from having to re-parse) and renames the reader's internal
 `beaconTrackingUrl` field to `trackingUrl`. The submit record's `session`
-block and the beacon record's `sessionIp` fold and serialize through
-unchanged — `ReconciliationRow` and `reconciliationRowSchema` both derive
-from `submitRecordSchema`/`beaconEventSchema` rather than restating fields,
-so a caller comparing runs against a third-party report's IP column reads
-`session.ip` (and, separately, the beacon's own `sessionIp`) straight off
-`GET /v1/submissions` without re-parsing raw NDJSON.
+block folds and serializes through unchanged, while the beacon record's
+`sessionIp` is renamed to `beaconSessionIp` (both on `ReconciliationRow`
+and on `reconciliationRowSchema`, derived off
+`beaconEventSchema.shape.sessionIp` rather than restated) so it reads as
+distinct from the submit line's own `session.ip` on the wire — the two are
+separate Browserbase sessions per run. `ReconciliationRow` and
+`reconciliationRowSchema` otherwise derive from
+`submitRecordSchema`/`beaconEventSchema` rather than restating fields, so
+a caller comparing runs against a third-party report's IP column reads
+`session.ip` (and, separately, the beacon's own `beaconSessionIp`) straight
+off `GET /v1/submissions` without re-parsing raw NDJSON.
 
 ## File map
 
@@ -407,7 +405,7 @@ so a caller comparing runs against a third-party report's IP column reads
 | Beacon-fire (conversion) event writer + `BeaconEventSample` type | `src/lib/telemetry/beacon-capture.ts` |
 | Plugin-callable beacon-outcome recorder | `createBeaconOutcomeRecorder` in `src/lib/telemetry/beacon-capture.ts`, bound onto `SitePluginContext.recordBeaconOutcome` by `buildPluginContext` in `src/plugins/loader.ts` |
 | Plugin-owned join-key extraction hook | `SitePlugin.extractJoinKeys` in `src/site-plugin.ts` |
-| Mid-run join-key attach point + per-dispatch collector | `SitePluginContext.telemetry` in `src/site-plugin.ts`, `RunTelemetryCollector` in `src/lib/telemetry/run-telemetry.ts` |
+| Mid-run join-key attach point + per-dispatch collector | `SitePluginContext.telemetry` in `src/site-plugin.ts`, `RunTelemetry` in `src/lib/telemetry/run-telemetry.ts` |
 | Browser-session outbound-IP resolver | `src/scraper/session-ip.ts` |
 | Reconciliation reader (`readReconciliationRows`) | `src/lib/telemetry/submission-reader.ts` |
 | Durable (local+S3) reconciliation source (`readDurableReconciliationRows`) | `src/lib/telemetry/reconciliation-source.ts` |

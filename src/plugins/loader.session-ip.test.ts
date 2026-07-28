@@ -55,9 +55,8 @@ vi.mock("@/lib/dd-metrics", () => ({
 
 /**
  * Fake `BrowserSession` (`src/scraper/session-shared.ts`) carrying a known
- * outbound IP via the `getOutboundIp()` accessor feat-004 adds. Untyped
- * (no `: BrowserSession` annotation) because that field doesn't exist on
- * the interface in this worktree yet — `runWithSession` is fully mocked
+ * outbound IP via the `getOutboundIp()` accessor. Untyped (no
+ * `: BrowserSession` annotation) since `runWithSession` is fully mocked
  * below, so nothing here crosses a real type boundary.
  */
 function createFakeSession(ip: string | null = "203.0.113.42") {
@@ -80,13 +79,13 @@ interface SessionTelemetryStub {
 }
 
 /**
- * Minimal stand-in for the `RunTelemetry` collector (`src/lib/telemetry/run-telemetry.ts`,
- * feat-001) that `SitePluginContext.telemetry` (feat-005) exposes. Reimplemented locally
- * rather than imported because this worktree predates those subtasks landing; the shape
- * mirrors their documented contract exactly (`recordSession()` last-write-wins,
- * `snapshot().session` is `null` until a session is recorded, `snapshot().joinKeys` stays
- * `null` since this file never calls `addJoinKeys()`) — same precedent as sibling subtask
- * `test-002`'s `RunTelemetryStub`.
+ * Minimal stand-in for the `RunTelemetry` collector
+ * (`src/lib/telemetry/run-telemetry.ts`) that `SitePluginContext.telemetry`
+ * exposes. Reimplemented locally rather than imported so this file exercises
+ * `dispatch()` against the documented contract shape (`recordSession()`
+ * last-write-wins, `snapshot().session` is `null` until a session is
+ * recorded, `snapshot().joinKeys` stays `null` since this file never calls
+ * `addJoinKeys()`) independent of the real class.
  */
 interface RunTelemetryStub {
   recordSession: (info: SessionTelemetryStub) => void;
@@ -134,49 +133,28 @@ function buildContext(): SitePluginContext {
     recordBeaconOutcome: vi.fn().mockResolvedValue(undefined),
     telemetry: createTelemetryStub(),
   };
-  return context as SitePluginContext;
+  // This file's stub only implements the session half of RunTelemetry's
+  // contract — addJoinKeys is out of scope here (no plugin in this file
+  // calls it, and joinKeys stays null throughout).
+  return context as unknown as SitePluginContext;
 }
 
 const successResult = { data: { result: "ok" }, auditPayload: { redacted: true } };
 
 /**
- * Covers the seam `dispatch()` (`src/plugins/loader.ts`) must bridge:
+ * Covers the seam `dispatch()` (`src/plugins/loader.ts`) bridges:
  * `runWithSession` (`src/scraper/pool.ts:46-84`) creates and closes the
  * `BrowserSession` entirely inside the pool callback, and only
  * `plugin.execute(payload, session, context)` ever sees it — so recording
  * the session's outbound IP onto the durable submission envelope requires
  * threading it back out via context/result, not just having the accessor
- * exist. This is precisely the gap that would leave feat-004 (session gets
- * `getOutboundIp()`) and feat-005 (submission envelope schema gains a
- * `session` field) both individually correct while the feature as a whole
- * is silently broken.
- *
- * Cases (a)/(b)/(c) are written as `it.fails(...)`: this worktree forks off
- * `main` before feat-004/feat-005 land, so `dispatch()` here never reads
- * `session.getOutboundIp()` and never stamps a `session` field onto the
- * envelope — these assertions correctly throw today. `it.fails` keeps the
- * suite green now and flips to a *reported* failure the moment the wiring
- * is integrated, which is the signal for test-013 (the reconciliation
- * point, `depends_on: ["test-002", "test-011"]`) to drop `.fails`. Per the
- * documented design (`docs/telemetry-and-judging.md`, "session" field): the
- * submit record carries `session: { id, provider, ip, ipCapturedAt } | null`,
- * populated once per dispatch from `{ id: session.sessionId, provider:
- * session.provider, ip, ipCapturedAt }` in a `finally` around the plugin's
- * session-scoped work, and `null` only when no `BrowserSession` was ever
- * acquired (the `executeHttp` hot path).
- *
- * Verified directly (not just by inference) against feat-004/feat-005's actual
- * implementation, recovered via `git fsck --unreachable` (their branches were
- * deleted post-completion but the commits — `a03d6eb7` "feat: add memoized
- * outbound-IP accessor to Browserbase sessions" and `5e2fa288` "feat: thread
- * run telemetry collector through dispatch, stamp session identity onto
- * envelope" — are still reachable by SHA): checked out `5e2fa288` (feat-005,
- * which has feat-004 as an ancestor) into a throwaway worktree, copied this
- * file in with every `it.fails` swapped for plain `it`, and ran it unmodified
- * — all four cases passed against the real `dispatch()`/`RunTelemetry`. That
- * is concrete falsifier evidence this file's assertions and its
- * `RunTelemetryStub` shape are correct, and that today's failures are solely
- * because the local wiring is absent, not a test-authoring mistake.
+ * exist. Per the documented design (`docs/telemetry-and-judging.md`,
+ * "session" field): the submit record carries
+ * `session: { id, provider, ip, ipCapturedAt } | null`, populated once per
+ * dispatch from `{ id: session.sessionId, provider: session.provider, ip,
+ * ipCapturedAt }` in a `finally` around the plugin's session-scoped work,
+ * and `null` only when no `BrowserSession` was ever acquired (the
+ * `executeHttp` hot path).
  */
 describe("dispatch — records the acquired session's outbound IP on the submission envelope", () => {
   beforeEach(() => {
@@ -190,7 +168,7 @@ describe("dispatch — records the acquired session's outbound IP on the submiss
     vi.clearAllMocks();
   });
 
-  it.fails("(a) carries the browser session's outbound IP on the success envelope", async () => {
+  it("(a) carries the browser session's outbound IP on the success envelope", async () => {
     const fakeSession = createFakeSession("203.0.113.42");
     mockRunWithSession.mockImplementation((task: (session: unknown) => Promise<unknown>) =>
       task(fakeSession)
@@ -222,7 +200,7 @@ describe("dispatch — records the acquired session's outbound IP on the submiss
     );
   });
 
-  it.fails("(b) still carries the browser session's outbound IP on the error envelope when execute() throws", async () => {
+  it("(b) still carries the browser session's outbound IP on the error envelope when execute() throws", async () => {
     const fakeSession = createFakeSession("198.51.100.7");
     mockRunWithSession.mockImplementation((task: (session: unknown) => Promise<unknown>) =>
       task(fakeSession)
@@ -254,7 +232,7 @@ describe("dispatch — records the acquired session's outbound IP on the submiss
     );
   });
 
-  it.fails("(c) records session: null on the success envelope for a hot-path run that never acquires a session", async () => {
+  it("(c) records session: null on the success envelope for a hot-path run that never acquires a session", async () => {
     const context = buildContext();
     const plugin: SitePlugin<unknown, unknown> = {
       meta: {
@@ -297,8 +275,8 @@ describe("dispatch — records the acquired session's outbound IP on the submiss
 
     // Deliberately objectContaining, not full deep-equality: this subtask
     // (Gap 2, session-IP capture) adds an unrelated `session` key to this
-    // same envelope call once feat-004/feat-005 land. Asserting the full key
-    // set here would couple this regression guard to that sibling change.
+    // same envelope call. Asserting the full key set here would couple this
+    // regression guard to that sibling change.
     expect(mockCaptureSubmissionEnvelope).toHaveBeenCalledWith(
       expect.objectContaining({
         siteId: "test-site",

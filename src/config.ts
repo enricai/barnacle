@@ -84,6 +84,23 @@ export interface AppConfig {
      * racy OOPIF fails the attempt instead of hanging the step indefinitely.
      */
     frameEvaluateTimeoutMs: number;
+    /**
+     * Master switch for the outbound-IP echo navigation. False yields
+     * `session: null` / `sessionIp: null` in the submit/beacon telemetry
+     * without disturbing the rest of the record.
+     */
+    captureSessionIp: boolean;
+    /**
+     * IP-echo endpoint the session's own short-lived tab navigates to.
+     * Overridable so operators can point this at a self-hosted echo
+     * endpoint instead of depending on a third party.
+     */
+    sessionIpEchoUrl: string;
+    /**
+     * Watchdog bound on the echo navigation; a page that never resolves is
+     * cut off and yields `null` rather than blocking the submission.
+     */
+    sessionIpTimeoutMs: number;
   };
   bedrock: {
     region: string;
@@ -365,6 +382,9 @@ export function loadConfig(): AppConfig {
       frameReadyTimeoutMs: getNumericEnv("FRAME_READY_TIMEOUT_MS", 20_000),
       frameDocumentReadyTimeoutMs: getNumericEnv("FRAME_DOCUMENT_READY_TIMEOUT_MS", 5_000),
       frameEvaluateTimeoutMs: getNumericEnv("FRAME_EVALUATE_TIMEOUT_MS", 30_000),
+      captureSessionIp: getBoolEnv("SCRAPER_CAPTURE_SESSION_IP", true),
+      sessionIpEchoUrl: getEnv("SCRAPER_SESSION_IP_ECHO_URL", "https://api.ipify.org?format=json"),
+      sessionIpTimeoutMs: getNumericEnv("SCRAPER_SESSION_IP_TIMEOUT_MS", 10_000),
     },
     bedrock: {
       region: getEnv("AWS_REGION", "us-east-1"),

@@ -8,14 +8,6 @@
 > For *how* to write a site plugin, see the Plugin Authoring Guide in
 > [../README.md](../README.md).
 
-> **Not yet shipped:** the rationale below for mid-run join-key attachment
-> (`context.telemetry.addJoinKeys()`, `RunTelemetryCollector`) and for
-> session-IP capture (`resolveSessionOutboundIp`, `getOutboundIp()`)
-> describes a planned engine-level feature (`feat-001`–`feat-007`) that has
-> not landed on `main` — the cited files (`src/lib/telemetry/run-telemetry.ts`,
-> `src/scraper/session-ip.ts`) don't exist in this tree yet. Treat these
-> paragraphs as design intent, not a description of current code.
-
 ---
 
 ## Mental model
@@ -489,7 +481,7 @@ scraped off a confirmation page, an ID a response only reveals partway
 through `execute()`. A per-plugin module-level variable can't stand in for
 that either — nothing makes it request-scoped, so it would leak across
 concurrent runs the moment two requests for the same plugin overlap.
-`RunTelemetryCollector` (`src/lib/telemetry/run-telemetry.ts`) is the
+`RunTelemetry` (`src/lib/telemetry/run-telemetry.ts`) is the
 generic answer: a small, request-scoped accumulator built fresh per
 request and threaded onto `SitePluginContext.telemetry` the same way
 `buildPluginContext` already builds `recordBeaconOutcome`, exposing

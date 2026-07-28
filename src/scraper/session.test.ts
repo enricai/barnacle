@@ -28,6 +28,9 @@ const { configRef } = vi.hoisted(() => ({
         solveCaptcha: true,
         anthropicTimeoutMs: 120000,
         steelSessionTimeoutMs: 3600000,
+        captureSessionIp: true,
+        sessionIpEchoUrl: "https://api.ipify.org?format=json",
+        sessionIpTimeoutMs: 10000,
       },
       bedrock: {
         region: "us-east-1",
@@ -91,6 +94,14 @@ vi.mock("@/scraper/throttle", () => ({
   })),
 }));
 
+const { resolveSessionOutboundIp } = vi.hoisted(() => ({
+  resolveSessionOutboundIp: vi.fn(),
+}));
+
+vi.mock("@/scraper/session-ip", () => ({
+  resolveSessionOutboundIp,
+}));
+
 const defaultConfig = (): typeof configRef.value => ({
   scraper: {
     provider: "browserbase",
@@ -104,6 +115,9 @@ const defaultConfig = (): typeof configRef.value => ({
     solveCaptcha: true,
     anthropicTimeoutMs: 120000,
     steelSessionTimeoutMs: 3600000,
+    captureSessionIp: true,
+    sessionIpEchoUrl: "https://api.ipify.org?format=json",
+    sessionIpTimeoutMs: 10000,
   },
   bedrock: {
     region: "us-east-1",
@@ -218,5 +232,60 @@ describe("scraper/session-steel required-key validation", () => {
     configRef.value.scraper.anthropicApiKey = undefined;
     configRef.value.scraper.useBedrock = false;
     await expect(createSteelBrowserSession()).rejects.toThrow(/ANTHROPIC_API_KEY/);
+  });
+});
+
+describe("BrowserSession.getOutboundIp", () => {
+  beforeEach(() => {
+    configRef.value = defaultConfig();
+    resolveSessionOutboundIp.mockReset();
+  });
+
+  it("is exposed on a Browserbase session returned by createBrowserbaseBrowserSession", async () => {
+    resolveSessionOutboundIp.mockResolvedValue("203.0.113.7");
+    const session = await createBrowserbaseBrowserSession();
+    expect(session.getOutboundIp).toBeTypeOf("function");
+  });
+
+  it("is absent on a Steel session — the field stays optional on BrowserSession", async () => {
+    const session = await createSteelBrowserSession();
+    expect(session.getOutboundIp).toBeUndefined();
+  });
+
+  it("invokes resolveSessionOutboundIp exactly once across N sequential calls", async () => {
+    resolveSessionOutboundIp.mockResolvedValue("203.0.113.7");
+    const session = await createBrowserbaseBrowserSession();
+
+    const first = await session.getOutboundIp?.();
+    const second = await session.getOutboundIp?.();
+    const third = await session.getOutboundIp?.();
+
+    expect(first).toBe("203.0.113.7");
+    expect(second).toBe("203.0.113.7");
+    expect(third).toBe("203.0.113.7");
+    expect(resolveSessionOutboundIp).toHaveBeenCalledOnce();
+  });
+
+  it("invokes resolveSessionOutboundIp exactly once across N concurrent calls (in-flight-promise race)", async () => {
+    resolveSessionOutboundIp.mockResolvedValue("203.0.113.7");
+    const session = await createBrowserbaseBrowserSession();
+
+    const results = await Promise.all([
+      session.getOutboundIp?.(),
+      session.getOutboundIp?.(),
+      session.getOutboundIp?.(),
+    ]);
+
+    expect(results).toEqual(["203.0.113.7", "203.0.113.7", "203.0.113.7"]);
+    expect(resolveSessionOutboundIp).toHaveBeenCalledOnce();
+  });
+
+  it("memoizes a null resolution too, per the accessor's TSDoc contract", async () => {
+    resolveSessionOutboundIp.mockResolvedValue(null);
+    const session = await createBrowserbaseBrowserSession();
+
+    expect(await session.getOutboundIp?.()).toBeNull();
+    expect(await session.getOutboundIp?.()).toBeNull();
+    expect(resolveSessionOutboundIp).toHaveBeenCalledOnce();
   });
 });

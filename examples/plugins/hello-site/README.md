@@ -5,12 +5,6 @@ starting point for your own out-of-tree plugin. The stock Barnacle server
 discovers, validates, and registers it at startup from the `BARNACLE_PLUGINS`
 env var — **no core edits required**.
 
-> **Not yet shipped:** the "attach a field only discovered mid-run"
-> guidance further below (`context.telemetry.addJoinKeys()`) describes a
-> planned engine-level feature (`feat-001`–`feat-007`) that has not landed
-> on `main` yet — `SitePluginContext` has no `telemetry` member in this
-> tree. Treat it as forward-looking, not a pattern you can use today.
-
 ## Build
 
 ```bash

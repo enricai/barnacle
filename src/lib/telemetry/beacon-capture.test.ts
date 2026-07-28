@@ -58,6 +58,13 @@ function makeFiredInput(): Parameters<typeof captureBeaconEvent>[0] {
   };
 }
 
+function makeFiredInputWithSessionIp(): Parameters<typeof captureBeaconEvent>[0] {
+  return {
+    ...makeFiredInput(),
+    sessionIp: "203.0.113.42",
+  };
+}
+
 function makeFailedInput(): Parameters<typeof captureBeaconEvent>[0] {
   return {
     requestId: "req-def-456",
@@ -127,6 +134,27 @@ describe("captureBeaconEvent", () => {
     expect(parsed.durationMs).toBe(input.durationMs);
     expect(typeof parsed.ts).toBe("string");
     expect(parsed.ts).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it("writes sessionIp as a top-level field", async () => {
+    const input = makeFiredInputWithSessionIp();
+    await captureBeaconEvent(input, { sinkPath });
+
+    const line = fs.readFileSync(sinkPath, "utf-8").trim();
+    const parsed = JSON.parse(line) as BeaconEventSample;
+    expect(parsed.sessionIp).toBe(input.sessionIp);
+
+    const result = beaconEventSchema.safeParse(parsed);
+    expect(result.success).toBe(true);
+  });
+
+  it("writes null (not undefined/omitted) sessionIp when the input omits it", async () => {
+    await captureBeaconEvent(makeFiredInput(), { sinkPath });
+
+    const line = fs.readFileSync(sinkPath, "utf-8").trim();
+    const parsed = JSON.parse(line) as Record<string, unknown>;
+    expect("sessionIp" in parsed).toBe(true);
+    expect(parsed.sessionIp).toBeNull();
   });
 
   it("truncates trackingUrl to 120 characters but keeps joinKeys in full", async () => {

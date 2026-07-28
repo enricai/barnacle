@@ -26,6 +26,18 @@ function makeSubmitLine(): Record<string, unknown> {
   };
 }
 
+function makeSubmitLineWithSession(): Record<string, unknown> {
+  return {
+    ...makeSubmitLine(),
+    session: {
+      id: "sess-abc",
+      provider: "browserbase",
+      ip: "203.0.113.42",
+      ipCapturedAt: "2026-07-26T10:00:01.000Z",
+    },
+  };
+}
+
 function makeLegacySubmitLine(): Record<string, unknown> {
   return {
     siteId: "ats-c",
@@ -102,6 +114,44 @@ describe("submitRecordSchema", () => {
       expect(result.data.joinKeys).toBeNull();
       expect(result.data.siteId).toBe("ats-c");
       expect(result.data.requestId).toBe("req-legacy-789");
+      expect(result.data.session).toBeNull();
+    }
+  });
+
+  it("defaults session to null when the key is absent", () => {
+    const result = submitRecordSchema.safeParse(makeSubmitLine());
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.session).toBeNull();
+    }
+  });
+
+  it("accepts a record carrying a populated session block", () => {
+    const result = submitRecordSchema.safeParse(makeSubmitLineWithSession());
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.session).toEqual({
+        id: "sess-abc",
+        provider: "browserbase",
+        ip: "203.0.113.42",
+        ipCapturedAt: "2026-07-26T10:00:01.000Z",
+      });
+    }
+  });
+
+  it("accepts a session block with a populated id/provider but null ip/ipCapturedAt", () => {
+    const result = submitRecordSchema.safeParse({
+      ...makeSubmitLine(),
+      session: { id: "sess-steel", provider: "steel", ip: null, ipCapturedAt: null },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.session).toEqual({
+        id: "sess-steel",
+        provider: "steel",
+        ip: null,
+        ipCapturedAt: null,
+      });
     }
   });
 
@@ -154,6 +204,25 @@ describe("beaconEventSchema", () => {
       joinKeys: null,
     });
     expect(result.success).toBe(true);
+  });
+
+  it("defaults sessionIp to null when the key is absent", () => {
+    const result = beaconEventSchema.safeParse(makeBeaconLine());
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.sessionIp).toBeNull();
+    }
+  });
+
+  it("accepts a record carrying sessionIp", () => {
+    const result = beaconEventSchema.safeParse({
+      ...makeBeaconLine(),
+      sessionIp: "203.0.113.42",
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.sessionIp).toBe("203.0.113.42");
+    }
   });
 
   it("rejects a record missing the kind discriminator", () => {
@@ -248,6 +317,47 @@ describe("reconciliationRecordSchema", () => {
       });
       expect(result.data).not.toHaveProperty("vivclid");
       expect(result.data).not.toHaveProperty("jobReference");
+    }
+  });
+
+  it("routes a submit line carrying a session block to the submit member and round-trips it", () => {
+    const result = reconciliationRecordSchema.safeParse(makeSubmitLineWithSession());
+    expect(result.success).toBe(true);
+    if (result.success && result.data.kind === "submit") {
+      expect(result.data.session).toEqual({
+        id: "sess-abc",
+        provider: "browserbase",
+        ip: "203.0.113.42",
+        ipCapturedAt: "2026-07-26T10:00:01.000Z",
+      });
+    }
+  });
+
+  it("routes a beacon line carrying sessionIp to the beacon member and round-trips it", () => {
+    const result = reconciliationRecordSchema.safeParse({
+      ...makeBeaconLine(),
+      sessionIp: "203.0.113.42",
+    });
+    expect(result.success).toBe(true);
+    if (result.success && result.data.kind === "beacon") {
+      expect(result.data.sessionIp).toBe("203.0.113.42");
+    }
+  });
+
+  it("folds legacy vivclid/jobReference into joinKeys on a submit line that also carries a session block", () => {
+    const result = reconciliationRecordSchema.safeParse({
+      ...makeLegacyVivclidSubmitLine(),
+      session: { id: "sess-legacy", provider: "browserbase", ip: null, ipCapturedAt: null },
+    });
+    expect(result.success).toBe(true);
+    if (result.success && result.data.kind === "submit") {
+      expect(result.data.joinKeys).toEqual({ vivclid: "v-legacy-1", jobReference: "emp1_jid1" });
+      expect(result.data.session).toEqual({
+        id: "sess-legacy",
+        provider: "browserbase",
+        ip: null,
+        ipCapturedAt: null,
+      });
     }
   });
 

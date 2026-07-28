@@ -43,6 +43,15 @@ export interface BrowserSession {
    * this upstream error (currently Browserbase); absent on Steel.
    */
   getSuppressedAisdkElementIdErrorCount?: () => number;
+  /**
+   * Lazily resolves and memoizes this session's outbound IP, so any caller
+   * (dispatch, tracking-click) can learn it once per session without
+   * repeating the echo navigation. Only present on providers where the
+   * proxied outbound IP is worth capturing (currently Browserbase); absent
+   * on Steel. Resolves to `null` when capture is disabled or resolution
+   * fails — never rejects.
+   */
+  getOutboundIp?: () => Promise<string | null>;
 }
 
 /**
