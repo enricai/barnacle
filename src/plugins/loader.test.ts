@@ -1473,6 +1473,57 @@ describe("registerRoutes — context.recordBeaconOutcome", () => {
 
     await app.close();
   });
+
+  it("writes both the automatic 'skipped' write and the plugin's own 'fired' write for the same requestId when a plugin declares extractJoinKeys and also calls context.recordBeaconOutcome", async () => {
+    const trackingUrl = "https://click.acme.example/t/abc?vivclid=456";
+    const plugin: SitePlugin<unknown, unknown> = {
+      meta: {
+        siteId: "recorder-coexist-test",
+        displayName: "Recorder Coexist Test",
+        bodySchema: z.object({ TrackingUrl: z.string().optional() }),
+        responseSchema: z.unknown(),
+      },
+      extractJoinKeys: () => ({ vivclid: "456" }),
+      execute: async (_payload, _session, context) => {
+        await context.recordBeaconOutcome({
+          beaconStatus: "fired",
+          joinKeys: { vivclid: "456", jid: "job1" },
+        });
+        return { data: { ok: true } };
+      },
+    };
+    const app = await buildAppWithPlugin(plugin);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/recorder-coexist-test/run",
+      payload: { TrackingUrl: trackingUrl },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockCaptureBeaconEvent).toHaveBeenCalledTimes(2);
+    expect(mockCaptureBeaconEvent).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        requestId: "req-recorder-fixed",
+        siteId: "recorder-coexist-test",
+        beaconStatus: "fired",
+        joinKeys: { vivclid: "456", jid: "job1" },
+      })
+    );
+    expect(mockCaptureBeaconEvent).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        requestId: "req-recorder-fixed",
+        siteId: "recorder-coexist-test",
+        beaconStatus: "skipped",
+        joinKeys: { vivclid: "456" },
+        trackingUrl,
+      })
+    );
+
+    await app.close();
+  });
 });
 
 describe("dispatch — needsUserInfo branch", () => {

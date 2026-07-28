@@ -270,7 +270,11 @@ Written by `captureBeaconEvent` (`src/lib/telemetry/beacon-capture.ts`) and
 validated against `beaconEventSchema`. For a plugin with no `extractJoinKeys`,
 appended independently, strictly later than its matching `"submit"` record,
 once `fireTrackingClick` (`src/lib/tracking-click.ts`) resolves the vendor
-click-tracking navigation core drove itself. Every key:
+click-tracking navigation core drove itself. A plugin that declares
+`extractJoinKeys` (and so manages its own beacon nav) can instead call
+`context.recordBeaconOutcome` — bound to the run's `requestId`/`siteId` by
+`buildPluginContext` (`src/plugins/loader.ts`) — once its own navigation
+resolves, giving it the same ability to report a real outcome. Every key:
 
 | Field | Meaning |
 |-------|---------|
@@ -278,23 +282,33 @@ click-tracking navigation core drove itself. Every key:
 | `requestId` | Joins this record back to its `"submit"` record. |
 | `siteId` | Same cohort dimension as the submit record. |
 | `joinKeys` | Same opaque bag as the submit record, threaded through by the caller of `fireTrackingClick`. |
-| `beaconStatus` | `"fired"`, `"failed"`, or `"skipped"` — the conversion/beacon-fire outcome, a field distinct from the submit record's `status`. This is what makes "submitted but the beacon did not fire" measurable, where previously `fireTrackingClick` was fire-and-forget with errors swallowed and only Datadog counters (`recordTrackingClickSuccess`/`recordTrackingClickFailure`) as evidence. `"skipped"` covers two distinct reasons, distinguished by `trackingUrl` below: no beacon was ever applicable for the run (no usable `TrackingUrl` — `trackingUrl: null`), or the plugin declared `extractJoinKeys` and so fires its own beacon nav outside `dispatch()` even though a `TrackingUrl` was present (`trackingUrl` carries the real, truncated URL). Either way `"skipped"` is distinct from `"not_fired"` below (no beacon line arrived at all). |
+| `beaconStatus` | `"fired"`, `"failed"`, or `"skipped"` — the conversion/beacon-fire outcome, a field distinct from the submit record's `status`. This is what makes "submitted but the beacon did not fire" measurable, where previously `fireTrackingClick` was fire-and-forget with errors swallowed and only Datadog counters (`recordTrackingClickSuccess`/`recordTrackingClickFailure`) as evidence. `"skipped"` covers two distinct reasons, distinguished by `trackingUrl` below: no beacon was ever applicable for the run (no usable `TrackingUrl` — `trackingUrl: null`), or the plugin declared `extractJoinKeys` and so fires its own beacon nav outside `dispatch()` even though a `TrackingUrl` was present (`trackingUrl` carries the real, truncated URL). Either way `"skipped"` is distinct from `"not_fired"` below (no beacon line arrived at all). If that self-managing plugin later calls `context.recordBeaconOutcome` to report a real `fired`/`failed` outcome for the same `requestId`, that line always outranks the earlier `"skipped"` line when folded, regardless of write order. |
 | `trackingUrl` | The vendor click-tracking URL, truncated to 120 characters; `null` when none was present. For a `"skipped"` record this doubles as the two-reasons signal above — present means a URL existed but a plugin-owned navigation used it instead of core's `fireTrackingClick`. |
 | `durationMs` | Wall time of the tracking-click navigation itself, not the original dispatch. |
 | `ts` | ISO timestamp. |
 
-A `"fired"`/`"failed"` `"beacon"` record is written when the caller of
-`fireTrackingClick` supplies a `TrackingClickReconciliationContext`
-(`requestId` plus `joinKeys`) — the parameter is optional so existing call
-sites keep compiling. `dispatch()`'s call site supplies one on every
-tracking click it fires (i.e. only for a plugin with no `extractJoinKeys`),
-threading the same `joinKeys` bag it resolved for the submit record. A
-`"skipped"` `"beacon"` record is written by `dispatch()` itself, via the
-same `captureBeaconEvent`, when a successful submit's payload has no (or an
-empty-string) `TrackingUrl`, OR when the plugin declared `extractJoinKeys`
-(asserting it manages its own tracking nav) — `durationMs: 0` since no
-engine-driven tracking-click navigation ever ran in either case. The write
-path is additionally exercised directly by `beacon-capture.test.ts`.
+A `"fired"`/`"failed"` `"beacon"` record is written by either of two
+sources. The first is `fireTrackingClick`, when its caller supplies a
+`TrackingClickReconciliationContext` (`requestId` plus `joinKeys`) — the
+parameter is optional so existing call sites keep compiling. `dispatch()`'s
+call site supplies one on every tracking click it fires (i.e. only for a
+plugin with no `extractJoinKeys`), threading the same `joinKeys` bag it
+resolved for the submit record. The second is
+`context.recordBeaconOutcome` (`SitePluginContext`, bound to the run's
+`requestId`/`siteId` by `buildPluginContext` in `src/plugins/loader.ts`) —
+a plugin-callable wrapper around `createBeaconOutcomeRecorder`
+(`src/lib/telemetry/beacon-capture.ts`), which a plugin that declares
+`extractJoinKeys` calls once its own beacon navigation resolves, to report
+the real outcome that `dispatch()` otherwise records as `"skipped"`. Like
+`captureBeaconEvent`, it never throws — errors are logged and swallowed.
+It defaults an omitted `trackingUrl`/`durationMs` to `null`/`0`, the same
+values `dispatch()`'s own `"skipped"` write uses. A `"skipped"` `"beacon"`
+record is written by `dispatch()` itself, via the same `captureBeaconEvent`,
+when a successful submit's payload has no (or an empty-string)
+`TrackingUrl`, OR when the plugin declared `extractJoinKeys` (asserting it
+manages its own tracking nav) — `durationMs: 0` since no engine-driven
+tracking-click navigation ever ran in either case. The write path is
+additionally exercised directly by `beacon-capture.test.ts`.
 
 ### Reading, filtering, and querying reconciliation rows
 
@@ -338,6 +352,7 @@ callers from having to re-parse) and renames the reader's internal
 | Submission-envelope sink + `SubmissionEnvelopeSample` type | `src/lib/telemetry/submission-capture.ts` |
 | Reconciliation record schemas (`submit` + `beacon` kinds) | `src/lib/telemetry/reconciliation-record.ts` |
 | Beacon-fire (conversion) event writer + `BeaconEventSample` type | `src/lib/telemetry/beacon-capture.ts` |
+| Plugin-callable beacon-outcome recorder | `createBeaconOutcomeRecorder` in `src/lib/telemetry/beacon-capture.ts`, bound onto `SitePluginContext.recordBeaconOutcome` by `buildPluginContext` in `src/plugins/loader.ts` |
 | Plugin-owned join-key extraction hook | `SitePlugin.extractJoinKeys` in `src/site-plugin.ts` |
 | Reconciliation reader (`readReconciliationRows`) | `src/lib/telemetry/submission-reader.ts` |
 | Durable (local+S3) reconciliation source (`readDurableReconciliationRows`) | `src/lib/telemetry/reconciliation-source.ts` |
