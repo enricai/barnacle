@@ -769,7 +769,7 @@ export function makeFakeFrameClickByIndex(
  * `{ written: false, reason: "out-of-range" }` for an unregistered hop or an
  * out-of-range index, `{ written: false, reason: "not-actionable" }` for a
  * `visible: false` element (never throws, mirroring
- * {@link buildFillFrameCandidateExpr}'s/{@link buildSelectFrameCandidateOptionExpr}'s
+ * {@link buildFillFrameCandidateExpr}'s/{@link buildSelectFrameCandidateExpr}'s
  * data-not-exception contract), otherwise writes `value` into `filledWith`
  * and resolves `{ written: true, readBack }` — `readBack` honors
  * `readBackValue` when set, the same "write that doesn't stick" override
@@ -814,7 +814,7 @@ export function makeFakeFrameFillByIndex(
 /**
  * Fake frame-scoped batched select-by-index bound to `selector` — models the
  * seam a batched-select fix would call once per select via a single frame
- * evaluate (`buildSelectFrameCandidateOptionExpr`, `deep-locator-scan.ts`),
+ * evaluate (`buildSelectFrameCandidateExpr`, `deep-locator-scan.ts`),
  * instead of the legacy delegate's `nth(index).selectOption()`. Writes
  * `optionValue` into the same `filledWith` field {@link makeFakeFrameFillByIndex}
  * does rather than `selectedWith` — the real expression matches and reports a

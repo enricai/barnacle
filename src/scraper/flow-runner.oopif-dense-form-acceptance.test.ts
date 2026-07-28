@@ -668,7 +668,7 @@ const FILL_VALUE_PATTERN = /const value = "([^"]*)";/;
  * shared deepLocator-fake's batched seams — the one-round-trip paths `deep-locator-candidates.ts`'s
  * `clickCandidateBatched` and `deep-locator-actuate.ts`'s `actuateCandidateBatched` take when a
  * frame seam is available, replacing the zero-cost `makeDenseChildFrame` above's page-level legacy
- * `nth(index).fill()`/`.click()` override. No `buildSelectFrameCandidateOptionExpr` routing: this
+ * `nth(index).fill()`/`.click()` override. No `buildSelectFrameCandidateExpr` routing: this
  * fixture has no `<select>` step, so wiring one would be dead code.
  */
 function makeBatchedChildFrame(

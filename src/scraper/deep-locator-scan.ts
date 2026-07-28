@@ -360,7 +360,7 @@ export function buildFillFrameCandidateExpr(
   root = "document"
 ): string {
   const nativePrototypeExpr =
-    '(el.tagName && el.tagName.toLowerCase() === "textarea" ? HTMLTextAreaElement : HTMLInputElement).prototype';
+    '(el.tagName && el.tagName.toLowerCase() === "textarea" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype)';
   return buildWriteFrameCandidateExpr(innerSelector, index, value, nativePrototypeExpr, root);
 }
 
