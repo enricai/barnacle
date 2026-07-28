@@ -6,8 +6,10 @@ import {
   type FakeDeepLocatorFrame,
   type HangingDeepLocatorMethod,
   makeFakeDeepLocator,
+  makeFakeDomElement,
   makeFakeFrameClickByIndex,
   makeFakeFrameScan,
+  makeSelectorAwareDomRoot,
   NODE_NOT_ACTIONABLE_MESSAGE,
   registerDeepLocatorHangingHop,
   registerDeepLocatorHop,
@@ -379,6 +381,93 @@ describe("deep-locator-fake: nth(index) resolve cost model (Stagehand's O(index)
     }
   );
 
+  it.each([0, 1, 2, 4])(
+    "nth(%i).fill(v) settles only after (index + 1) delay units, not one flat delay unit",
+    async (index) => {
+      const frame: FakeDeepLocatorFrame = new Map();
+      const hop = registerDeepLocatorHopElements(
+        frame,
+        "iframe#a >> *",
+        Array.from({ length: index + 1 }, (_, i) => `node-${i}`)
+      );
+      registerDeepLocatorHopLatency(hop, { delayOn: "fill", delayMs: DELAY_MS });
+      const deepLocator = makeFakeDeepLocator(frame);
+
+      let settled = false;
+      deepLocator("iframe#a >> *")
+        .nth(index)
+        .fill("Ada")
+        .then(() => {
+          settled = true;
+        });
+
+      await vi.advanceTimersByTimeAsync(index * DELAY_MS);
+      expect(settled).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(DELAY_MS);
+      expect(settled).toBe(true);
+      expect(hop.elements[index]?.filledWith).toBe("Ada");
+    }
+  );
+
+  it.each([0, 1, 2, 4])(
+    "nth(%i).selectOption(v) settles only after (index + 1) delay units, not one flat delay unit",
+    async (index) => {
+      const frame: FakeDeepLocatorFrame = new Map();
+      const hop = registerDeepLocatorHopElements(
+        frame,
+        "iframe#a >> *",
+        Array.from({ length: index + 1 }, (_, i) => `node-${i}`)
+      );
+      registerDeepLocatorHopLatency(hop, { delayOn: "selectOption", delayMs: DELAY_MS });
+      const deepLocator = makeFakeDeepLocator(frame);
+
+      let settled = false;
+      deepLocator("iframe#a >> *")
+        .nth(index)
+        .selectOption("us")
+        .then(() => {
+          settled = true;
+        });
+
+      await vi.advanceTimersByTimeAsync(index * DELAY_MS);
+      expect(settled).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(DELAY_MS);
+      expect(settled).toBe(true);
+      expect(hop.elements[index]?.selectedWith).toEqual(["us"]);
+    }
+  );
+
+  it.each([0, 1, 3])(
+    "nth(%i).inputValue() settles only after (index + 1) delay units, not one flat delay unit",
+    async (index) => {
+      const frame: FakeDeepLocatorFrame = new Map();
+      const hop = registerDeepLocatorHopElements(
+        frame,
+        "iframe#a >> *",
+        Array.from({ length: index + 1 }, (_, i) => `node-${i}`)
+      );
+      registerDeepLocatorHopLatency(hop, { delayOn: "inputValue", delayMs: DELAY_MS });
+      const deepLocator = makeFakeDeepLocator(frame);
+      await deepLocator("iframe#a >> *").nth(index).fill("Ada");
+
+      let resolved: string | undefined;
+      deepLocator("iframe#a >> *")
+        .nth(index)
+        .inputValue()
+        .then((value) => {
+          resolved = value;
+        });
+
+      await vi.advanceTimersByTimeAsync(index * DELAY_MS);
+      expect(resolved).toBeUndefined();
+
+      await vi.advanceTimersByTimeAsync(DELAY_MS);
+      expect(resolved).toBe("Ada");
+    }
+  );
+
   it("count() stays a flat one delay unit regardless of which index a caller chains nth() onto", async () => {
     const frame: FakeDeepLocatorFrame = new Map();
     const hop = registerDeepLocatorHopElements(frame, "iframe#a >> *", ["a", "b", "c", "d", "e"]);
@@ -479,5 +568,49 @@ describe("makeFakeFrameClickByIndex (batched click-by-index seam)", () => {
     expect(hop.elements[0]?.clicks).toBe(1);
 
     await expect(raceAgainstTimer(clickByIndex(0))).resolves.toBe(STILL_PENDING);
+  });
+});
+
+describe("makeFakeDomElement: writable form-control surface", () => {
+  it("models an <input> whose value is readable/writable and whose dispatched events are recorded", () => {
+    const input = makeFakeDomElement("", {
+      tagName: "input",
+      attributes: { "aria-label": "First Name" },
+      value: "",
+    });
+
+    expect(input.value).toBe("");
+
+    input.value = "Ada";
+    input.dispatchEvent({ type: "input" });
+    input.dispatchEvent({ type: "change" });
+    input.dispatchEvent({ type: "blur" });
+
+    expect(input.value).toBe("Ada");
+    expect(input.dispatchedEvents).toEqual(["input", "change", "blur"]);
+  });
+
+  it("seeds an initial value via MakeFakeDomElementOptions.value instead of always starting empty", () => {
+    const input = makeFakeDomElement("", { tagName: "input", value: "prefilled" });
+
+    expect(input.value).toBe("prefilled");
+  });
+
+  it("is selectable through makeSelectorAwareDomRoot alongside read-only elements, and its writes are visible through the root", () => {
+    const input = makeFakeDomElement("", {
+      tagName: "input",
+      attributes: { "aria-label": "First Name" },
+    });
+    const button = makeFakeDomElement("Submit", { tagName: "button" });
+    const root = makeSelectorAwareDomRoot([input, button]);
+
+    const [matched] = root.querySelectorAll("input");
+    expect(matched).toBe(input);
+
+    matched?.dispatchEvent({ type: "focus" });
+    if (matched) matched.value = "Ada";
+
+    expect(input.value).toBe("Ada");
+    expect(input.dispatchedEvents).toEqual(["focus"]);
   });
 });

@@ -264,9 +264,10 @@ async function delayIfRegistered(
  * methods, leaving every other method — and every other hop — immediate.
  * This is the seam a test uses to prove a batched fix collapses N serial
  * round-trips into one: register the same `delayMs` against `"textContent"`/
- * `"click"` (the legacy per-index paths, charged `index + 1` times — see
- * {@link INDEXED_RESOLVE_METHODS}) and `"scan"`/`"clickByIndex"` (the batched
- * paths, always charged once) on the same hop, then compare how time scales
+ * `"click"`/`"fill"`/`"selectOption"`/`"inputValue"` (the legacy per-index
+ * paths, charged `index + 1` times — see {@link INDEXED_RESOLVE_METHODS}) and
+ * `"scan"`/`"clickByIndex"` (the batched paths, always charged once) on the
+ * same hop, then compare how time scales
  * with candidate count/index through each. Unlike
  * {@link registerDeepLocatorHangingHop}, calls resolve on their own after
  * `delayMs` — there is no `release()`.
@@ -327,13 +328,20 @@ export const NODE_NOT_ACTIONABLE_MESSAGE = "-32000 Node does not have a layout o
  * `resolveAll(query, {limit: index + 1})`, whose `resolveCss` runs
  * `for (let i = 0; i < limit; i += 1) { await this.evaluateElement(...) }`
  * (`selectorResolver.js`) — one serial CDP `Runtime.evaluate` per index, so
- * `nth(k)` pays `k + 1` round-trips, not one. `count()` resolves the whole
- * match set once regardless of which index a caller later chains `nth()`
- * onto, so it — and every other modeled method — stays a flat one-call cost.
+ * `nth(k)` pays `k + 1` round-trips, not one. That resolve path is shared by
+ * every `nth()`-scoped delegate method, not just `click`/`textContent` —
+ * `fill`/`selectOption`/`inputValue` resolve the target element through the
+ * exact same `resolveAtIndex` call before writing/reading it, so they pay the
+ * identical `k + 1` cost. `count()` resolves the whole match set once
+ * regardless of which index a caller later chains `nth()` onto, so it — and
+ * every other modeled method — stays a flat one-call cost.
  */
 const INDEXED_RESOLVE_METHODS: ReadonlySet<LatencyDeepLocatorMethod> = new Set([
   "click",
   "textContent",
+  "fill",
+  "selectOption",
+  "inputValue",
 ]);
 
 /**
@@ -348,10 +356,11 @@ const INDEXED_RESOLVE_METHODS: ReadonlySet<LatencyDeepLocatorMethod> = new Set([
  * `click()`/`fill()`/`selectOption()` each reject with
  * {@link NODE_NOT_ACTIONABLE_MESSAGE} when the targeted element's `visible`
  * is `false`, reproducing the CDP `-32000` actuation failure on an
- * unrendered node. `click()`/`textContent()` charge `elementIndex + 1` delay
- * units under a registered latency profile (see
- * {@link INDEXED_RESOLVE_METHODS}), modeling Stagehand's per-index resolve
- * cost — every other method stays a flat one-call cost.
+ * unrendered node. `click()`/`textContent()`/`fill()`/`selectOption()`/
+ * `inputValue()` charge `elementIndex + 1` delay units under a registered
+ * latency profile (see {@link INDEXED_RESOLVE_METHODS}), modeling
+ * Stagehand's per-index resolve cost — every other method stays a flat
+ * one-call cost.
  */
 function buildFakeDelegate(
   frame: FakeDeepLocatorFrame,
@@ -441,7 +450,12 @@ export function makeFakeDeepLocator(
  * here (not duplicated per test file) so `deep-locator-scan.dense-form.
  * test.ts` and Stagehand-contract tests can execute the SAME generated
  * expression against the SAME fixture shape as `deep-locator-scan.test.ts`'s
- * own hand-built fixture.
+ * own hand-built fixture. `value`/`dispatchEvent`/`focus` model the write
+ * half of that same contract — a generated fill/select expression reads and
+ * writes `el.value` and fires bubbling `input`/`change`/`blur` events the
+ * same way `flow-runner.ts`'s existing `.value =` + `dispatchEvent` write
+ * paths do, so a fake candidate can stand in for a real writable `<input>`/
+ * `<select>` instead of only the read-only surface a click/scan needs.
  */
 export interface FakeDomElement {
   readonly textContent: string;
@@ -450,9 +464,13 @@ export interface FakeDomElement {
   readonly rect: { readonly width: number; readonly height: number };
   readonly computedStyle: { readonly display: string; readonly visibility: string };
   readonly parent: FakeDomElement | null;
+  value: string;
+  readonly dispatchedEvents: readonly string[];
   getBoundingClientRect(): { readonly width: number; readonly height: number };
   getAttribute(name: string): string | null;
   closest(selector: string): FakeDomElement | null;
+  dispatchEvent(event: { readonly type: string }): boolean;
+  focus(): void;
 }
 
 /** Fake `document`/frame-document surface: the two lookups the accessible-name precedence chain needs beyond the matched candidate set itself. */
@@ -468,6 +486,8 @@ export interface MakeFakeDomElementOptions {
   readonly rect?: { readonly width: number; readonly height: number };
   readonly computedStyle?: { readonly display: string; readonly visibility: string };
   readonly parent?: FakeDomElement | null;
+  /** Seeds `value` — the initial `.value` a write expression reads before overwriting it. Defaults to `""`, matching an unfilled `<input>`. */
+  readonly value?: string;
 }
 
 /** Parses one simple-selector clause — a bare tag, `[attr]`, or `[attr=value]` — the three shapes {@link INTERACTIVE_CANDIDATE_SELECTOR} composes via commas. No combinators, descendant selectors, or pseudo-classes: the generated expression only ever calls `querySelectorAll` with a flat, comma-joined clause list. */
@@ -511,6 +531,7 @@ export function makeFakeDomElement(
   const rect = options.rect ?? { width: 100, height: 20 };
   const computedStyle = options.computedStyle ?? { display: "block", visibility: "visible" };
   const parent = options.parent ?? null;
+  const dispatchedEvents: string[] = [];
   const el: FakeDomElement = {
     textContent,
     tagName,
@@ -518,6 +539,8 @@ export function makeFakeDomElement(
     rect,
     computedStyle,
     parent,
+    value: options.value ?? "",
+    dispatchedEvents,
     getBoundingClientRect() {
       return rect;
     },
@@ -531,6 +554,11 @@ export function makeFakeDomElement(
       };
       return found(el);
     },
+    dispatchEvent(event) {
+      dispatchedEvents.push(event.type);
+      return true;
+    },
+    focus() {},
   };
   return el;
 }
