@@ -338,13 +338,18 @@ export const NODE_NOT_ACTIONABLE_MESSAGE = "-32000 Node does not have a layout o
  * `resolveAll(query, {limit: index + 1})`, whose `resolveCss` runs
  * `for (let i = 0; i < limit; i += 1) { await this.evaluateElement(...) }`
  * (`selectorResolver.js`) — one serial CDP `Runtime.evaluate` per index, so
- * `nth(k)` pays `k + 1` round-trips, not one. That resolve path is shared by
- * every `nth()`-scoped delegate method, not just `click`/`textContent` —
- * `fill`/`selectOption`/`inputValue` resolve the target element through the
- * exact same `resolveAtIndex` call before writing/reading it, so they pay the
- * identical `k + 1` cost. `count()` resolves the whole match set once
- * regardless of which index a caller later chains `nth()` onto, so it — and
- * every other modeled method — stays a flat one-call cost.
+ * `nth(k)` pays `k + 1` round-trips, not one. `click()`/`textContent()` call
+ * `resolveAtIndex` directly; `fill()`/`selectOption()`/`inputValue()` route
+ * through `Locator.resolveNode() -> resolveAtIndex(query, index)` the same
+ * way, paying the identical `index + 1` cost — pinned against the installed
+ * `@browserbasehq/stagehand` in
+ * `deep-locator-stagehand-contract.test.ts`'s `Locator.fill/selectOption/
+ * inputValue route through resolveNode()` suite. A write/read-back actuation
+ * (`fillDeepLocatorCandidate` in `deep-locator-actuate.ts`: `fill()` then
+ * `inputValue()`) therefore pays `2 * (index + 1)` round-trips total, not one
+ * flat cost. `count()` resolves the whole match set once regardless of which
+ * index a caller later chains `nth()` onto, so it — and the batched
+ * `scan`/`clickByIndex` seams — stay a flat one-call cost.
  */
 const INDEXED_RESOLVE_METHODS: ReadonlySet<LatencyDeepLocatorMethod> = new Set([
   "click",
@@ -369,8 +374,8 @@ const INDEXED_RESOLVE_METHODS: ReadonlySet<LatencyDeepLocatorMethod> = new Set([
  * unrendered node. `click()`/`textContent()`/`fill()`/`selectOption()`/
  * `inputValue()` charge `elementIndex + 1` delay units under a registered
  * latency profile (see {@link INDEXED_RESOLVE_METHODS}), modeling
- * Stagehand's per-index resolve cost — every other method stays a flat
- * one-call cost.
+ * Stagehand's per-index resolve cost — `count()` and the batched
+ * `scan`/`clickByIndex` seams stay a flat one-call cost.
  */
 function buildFakeDelegate(
   frame: FakeDeepLocatorFrame,

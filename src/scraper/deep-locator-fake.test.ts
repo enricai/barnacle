@@ -384,7 +384,7 @@ describe("deep-locator-fake: nth(index) resolve cost model (Stagehand's O(index)
   );
 
   it.each([0, 1, 2, 4])(
-    "nth(%i).fill(v) settles only after (index + 1) delay units, not one flat delay unit",
+    "nth(%i).fill() settles only after (index + 1) delay units, not one flat delay unit",
     async (index) => {
       const frame: FakeDeepLocatorFrame = new Map();
       const hop = registerDeepLocatorHopElements(
@@ -413,7 +413,7 @@ describe("deep-locator-fake: nth(index) resolve cost model (Stagehand's O(index)
   );
 
   it.each([0, 1, 2, 4])(
-    "nth(%i).selectOption(v) settles only after (index + 1) delay units, not one flat delay unit",
+    "nth(%i).selectOption() settles only after (index + 1) delay units, not one flat delay unit",
     async (index) => {
       const frame: FakeDeepLocatorFrame = new Map();
       const hop = registerDeepLocatorHopElements(
@@ -427,7 +427,7 @@ describe("deep-locator-fake: nth(index) resolve cost model (Stagehand's O(index)
       let settled = false;
       deepLocator("iframe#a >> *")
         .nth(index)
-        .selectOption("us")
+        .selectOption("CA")
         .then(() => {
           settled = true;
         });
@@ -437,11 +437,11 @@ describe("deep-locator-fake: nth(index) resolve cost model (Stagehand's O(index)
 
       await vi.advanceTimersByTimeAsync(DELAY_MS);
       expect(settled).toBe(true);
-      expect(hop.elements[index]?.selectedWith).toEqual(["us"]);
+      expect(hop.elements[index]?.selectedWith).toEqual(["CA"]);
     }
   );
 
-  it.each([0, 1, 3])(
+  it.each([0, 1, 2, 4])(
     "nth(%i).inputValue() settles only after (index + 1) delay units, not one flat delay unit",
     async (index) => {
       const frame: FakeDeepLocatorFrame = new Map();
@@ -450,9 +450,11 @@ describe("deep-locator-fake: nth(index) resolve cost model (Stagehand's O(index)
         "iframe#a >> *",
         Array.from({ length: index + 1 }, (_, i) => `node-${i}`)
       );
+      const element = hop.elements[index];
+      if (!element) throw new Error("test setup: expected element at index");
+      element.readBackValue = `value-${index}`;
       registerDeepLocatorHopLatency(hop, { delayOn: "inputValue", delayMs: DELAY_MS });
       const deepLocator = makeFakeDeepLocator(frame);
-      await deepLocator("iframe#a >> *").nth(index).fill("Ada");
 
       let resolved: string | undefined;
       deepLocator("iframe#a >> *")
@@ -466,7 +468,7 @@ describe("deep-locator-fake: nth(index) resolve cost model (Stagehand's O(index)
       expect(resolved).toBeUndefined();
 
       await vi.advanceTimersByTimeAsync(DELAY_MS);
-      expect(resolved).toBe("Ada");
+      expect(resolved).toBe(`value-${index}`);
     }
   );
 
