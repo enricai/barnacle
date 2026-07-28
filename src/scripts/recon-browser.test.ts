@@ -687,6 +687,54 @@ describe("recon-browser/persistReplannedFlow", () => {
     });
   });
 
+  it("preserves top-level keys not threaded through explicit params (frameSelector, wizardExitButtonLabels, restartSignalUrlPatterns, advanceTransitionBodyPattern)", () => {
+    writeFileSync(
+      flowPath,
+      `${JSON.stringify(
+        {
+          steps: ["Step A"],
+          frameSelector: "#talemetry_apply_iframe",
+          wizardExitButtonLabels: ["Save & Exit"],
+          restartSignalUrlPatterns: ["init-apply"],
+          advanceTransitionBodyPattern: "TransitionWorklet",
+        },
+        null,
+        2
+      )}\n`
+    );
+    const finalPlan: NormalizedStep[] = [
+      { instruction: "Step A", optional: false, upload: false, origin: "original" },
+    ];
+    const replanEvents: ReplanEvent[] = [
+      {
+        replanIndex: 1,
+        cause: "probe-absent",
+        indexAtFailure: 0,
+        failedInstruction: "Step A",
+        replanSteps: finalPlan,
+        timestamp: "2026-06-03T20:00:00.000Z",
+        pageState: { url: "https://example.com/apply", htmlLength: 50000 },
+      },
+    ];
+
+    persistReplannedFlow({
+      flowFile: flowPath,
+      finalPlan,
+      replanEvents,
+      logger: testLogger,
+      originalShape: "object",
+    });
+
+    const parsed = JSON.parse(readFileSync(flowPath, "utf8"));
+    expect(parsed).toEqual({
+      frameSelector: "#talemetry_apply_iframe",
+      wizardExitButtonLabels: ["Save & Exit"],
+      restartSignalUrlPatterns: ["init-apply"],
+      advanceTransitionBodyPattern: "TransitionWorklet",
+      steps: ["Step A"],
+    });
+  });
+
   it("falls back to bare-array shape when originalShape is omitted (back-compat)", () => {
     writeFileSync(flowPath, '["X"]\n');
     const finalPlan: NormalizedStep[] = [
