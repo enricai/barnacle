@@ -372,7 +372,7 @@ logic (`readReconciliationRows`, `src/lib/telemetry/submission-reader.ts`).
 | Concern | File |
 |---|---|
 | Plugin-owned join-key extraction hook | `SitePlugin.extractJoinKeys` in `src/site-plugin.ts` |
-| Mid-run join-key attach point (fields `extractJoinKeys` can't see — discovered after navigation, minted mid-flow, etc.) | `SitePluginContext.telemetry` (`RunTelemetryCollector.addJoinKeys()`) in `src/site-plugin.ts`, built by `src/lib/telemetry/run-telemetry.ts` |
+| Mid-run join-key attach point (fields `extractJoinKeys` can't see — discovered after navigation, minted mid-flow, etc.) | `SitePluginContext.telemetry` (`RunTelemetry.addJoinKeys()`) in `src/site-plugin.ts`, built by `src/lib/telemetry/run-telemetry.ts` |
 | Plugin-callable beacon-outcome recorder (bound to the run's `requestId`/`siteId`) | `SitePluginContext.recordBeaconOutcome` in `src/site-plugin.ts`, built by `createBeaconOutcomeRecorder` in `src/lib/telemetry/beacon-capture.ts` |
 | Browser-session outbound-IP resolver (IP-echo navigation against a configurable endpoint) | `src/scraper/session-ip.ts` |
 | Memoized `getOutboundIp()` accessor on Browserbase sessions + `SCRAPER_CAPTURE_SESSION_IP`/`SCRAPER_SESSION_IP_ECHO_URL`/`SCRAPER_SESSION_IP_TIMEOUT_MS` config | `src/scraper/session-browserbase.ts`, `src/config.ts` |

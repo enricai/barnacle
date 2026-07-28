@@ -6,7 +6,7 @@
 > companion to the operator runbook in [playbook.md](./playbook.md).
 
 > **Not yet shipped:** the mid-run join-key attach point
-> (`context.telemetry.addJoinKeys()` / `RunTelemetryCollector`), the
+> (`context.telemetry.addJoinKeys()` / `RunTelemetry`), the
 > `session`/`sessionIp` record fields, and the "Session-IP capture knobs"
 > below describe a planned engine-level feature (`feat-001`–`feat-007`).
 > That implementation has not landed on `main` — none of
@@ -283,7 +283,7 @@ and validated against `submitRecordSchema`, exported from that module as
 `joinKeys` is populated from two sources merged together: the plugin's own
 `extractJoinKeys` hook (`src/site-plugin.ts`), resolved once from the inbound
 payload, and `context.telemetry.addJoinKeys()` — a mid-run attach point on
-`SitePluginContext` backed by a per-dispatch `RunTelemetryCollector`
+`SitePluginContext` backed by a per-dispatch `RunTelemetry`
 (`src/lib/telemetry/run-telemetry.ts`) that a plugin can call at any point
 during `execute()`/`executeHttp()` to attach a field it only discovers during
 the run (something read from the page, a token minted mid-flow, a value
@@ -407,7 +407,7 @@ so a caller comparing runs against a third-party report's IP column reads
 | Beacon-fire (conversion) event writer + `BeaconEventSample` type | `src/lib/telemetry/beacon-capture.ts` |
 | Plugin-callable beacon-outcome recorder | `createBeaconOutcomeRecorder` in `src/lib/telemetry/beacon-capture.ts`, bound onto `SitePluginContext.recordBeaconOutcome` by `buildPluginContext` in `src/plugins/loader.ts` |
 | Plugin-owned join-key extraction hook | `SitePlugin.extractJoinKeys` in `src/site-plugin.ts` |
-| Mid-run join-key attach point + per-dispatch collector | `SitePluginContext.telemetry` in `src/site-plugin.ts`, `RunTelemetryCollector` in `src/lib/telemetry/run-telemetry.ts` |
+| Mid-run join-key attach point + per-dispatch collector | `SitePluginContext.telemetry` in `src/site-plugin.ts`, `RunTelemetry` in `src/lib/telemetry/run-telemetry.ts` |
 | Browser-session outbound-IP resolver | `src/scraper/session-ip.ts` |
 | Reconciliation reader (`readReconciliationRows`) | `src/lib/telemetry/submission-reader.ts` |
 | Durable (local+S3) reconciliation source (`readDurableReconciliationRows`) | `src/lib/telemetry/reconciliation-source.ts` |
