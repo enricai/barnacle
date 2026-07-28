@@ -134,7 +134,10 @@ function buildContext(): SitePluginContext {
     recordBeaconOutcome: vi.fn().mockResolvedValue(undefined),
     telemetry: createTelemetryStub(),
   };
-  return context as SitePluginContext;
+  // This file's stub only implements the session half of RunTelemetry's
+  // contract — addJoinKeys is out of scope here (no plugin in this file
+  // calls it, and joinKeys stays null throughout).
+  return context as unknown as SitePluginContext;
 }
 
 const successResult = { data: { result: "ok" }, auditPayload: { redacted: true } };
@@ -190,7 +193,7 @@ describe("dispatch — records the acquired session's outbound IP on the submiss
     vi.clearAllMocks();
   });
 
-  it.fails("(a) carries the browser session's outbound IP on the success envelope", async () => {
+  it("(a) carries the browser session's outbound IP on the success envelope", async () => {
     const fakeSession = createFakeSession("203.0.113.42");
     mockRunWithSession.mockImplementation((task: (session: unknown) => Promise<unknown>) =>
       task(fakeSession)
@@ -222,7 +225,7 @@ describe("dispatch — records the acquired session's outbound IP on the submiss
     );
   });
 
-  it.fails("(b) still carries the browser session's outbound IP on the error envelope when execute() throws", async () => {
+  it("(b) still carries the browser session's outbound IP on the error envelope when execute() throws", async () => {
     const fakeSession = createFakeSession("198.51.100.7");
     mockRunWithSession.mockImplementation((task: (session: unknown) => Promise<unknown>) =>
       task(fakeSession)
@@ -254,7 +257,7 @@ describe("dispatch — records the acquired session's outbound IP on the submiss
     );
   });
 
-  it.fails("(c) records session: null on the success envelope for a hot-path run that never acquires a session", async () => {
+  it("(c) records session: null on the success envelope for a hot-path run that never acquires a session", async () => {
     const context = buildContext();
     const plugin: SitePlugin<unknown, unknown> = {
       meta: {

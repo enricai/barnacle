@@ -122,7 +122,12 @@ function buildContext(telemetry: RunTelemetryStub = createTelemetryStub()): Site
     recordBeaconOutcome: vi.fn().mockResolvedValue(undefined),
     telemetry,
   };
-  return context as SitePluginContext;
+  // This file's stub only implements the joinKeys half of RunTelemetry's
+  // contract (recordSession/session are out of scope — see the class doc
+  // comment above) — session capture is never exercised here since every
+  // runWithSession mock in this file hands back a null session, so
+  // withSessionTelemetry's guarded recordSession() call never fires.
+  return context as unknown as SitePluginContext;
 }
 
 const successResult = { data: { result: "ok" }, auditPayload: { redacted: true } };
@@ -136,7 +141,7 @@ describe("dispatch — merges run-attached telemetry fields into the submission 
     vi.clearAllMocks();
   });
 
-  it.fails("(a) merges a field attached via context.telemetry.addJoinKeys() inside executeHttp into the success envelope", async () => {
+  it("(a) merges a field attached via context.telemetry.addJoinKeys() inside executeHttp into the success envelope", async () => {
     const context = buildContext();
     const plugin: SitePlugin<unknown, unknown> = {
       meta: {
@@ -164,7 +169,7 @@ describe("dispatch — merges run-attached telemetry fields into the submission 
     );
   });
 
-  it.fails("(b) merges a field attached via context.telemetry.addJoinKeys() inside the browser execute() path into the success envelope", async () => {
+  it("(b) merges a field attached via context.telemetry.addJoinKeys() inside the browser execute() path into the success envelope", async () => {
     const context = buildContext();
     const plugin: SitePlugin<unknown, unknown> = {
       meta: {
@@ -191,7 +196,7 @@ describe("dispatch — merges run-attached telemetry fields into the submission 
     );
   });
 
-  it.fails("(c) still carries a field attached before a throw on the error envelope (asymmetry guard: joinKeys is read pre-pipeline, envelope emits at a separate error call site)", async () => {
+  it("(c) still carries a field attached before a throw on the error envelope (asymmetry guard: joinKeys is read pre-pipeline, envelope emits at a separate error call site)", async () => {
     const context = buildContext();
     const plugin: SitePlugin<unknown, unknown> = {
       meta: {
@@ -251,7 +256,7 @@ describe("dispatch — merges run-attached telemetry fields into the submission 
     );
   });
 
-  it.fails("(e) a run-attached field wins over extractJoinKeys(payload) on collision", async () => {
+  it("(e) a run-attached field wins over extractJoinKeys(payload) on collision", async () => {
     const context = buildContext();
     const plugin: SitePlugin<unknown, unknown> = {
       meta: {

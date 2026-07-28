@@ -14,6 +14,7 @@ import authPlugin from "@/api/plugins/auth";
 import errorHandlerPlugin from "@/api/plugins/error-handler";
 import type { AppConfig } from "@/config";
 import { getLogger } from "@/lib/logging";
+import { RunTelemetry } from "@/lib/telemetry/run-telemetry";
 import { multipartJsonObject } from "@/lib/zod-multipart";
 import { BUILTIN_SITE_PLUGINS } from "@/plugins/discover";
 import { dispatch, registerRoutes, SITE_PLUGINS } from "@/plugins/loader";
@@ -166,6 +167,7 @@ const stubContext: SitePluginContext = {
     })),
   } as unknown as SitePluginContext["metricsCollector"],
   recordBeaconOutcome: vi.fn().mockResolvedValue(undefined),
+  telemetry: new RunTelemetry(),
 };
 
 describe("dispatch", () => {

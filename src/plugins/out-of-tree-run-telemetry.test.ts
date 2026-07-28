@@ -155,7 +155,7 @@ export async function attachMidRunField(context: SitePluginContext): Promise<voi
     expect(packageJson.exports["./site-plugin"]).toBeDefined();
   });
 
-  it.fails("a plugin calling context.telemetry.addJoinKeys produces zero TS2307/TS2339 diagnostics", () => {
+  it("a plugin calling context.telemetry.addJoinKeys produces zero TS2307/TS2339 diagnostics", () => {
     const diagnostics = typecheckSnippet(addJoinKeysSource);
     const relevant = diagnostics.filter((d) => d.code === "TS2307" || d.code === "TS2339");
     expect(relevant.map((d) => `${d.code}: ${d.message}`)).toEqual([]);
@@ -203,7 +203,7 @@ describe("out-of-tree plugin — loadAllPlugins() -> registerRoutes() -> dispatc
     expect(plugin).toBeDefined();
   });
 
-  it.fails("a field attached via context.telemetry.addJoinKeys() during execute() lands in the emitted submission envelope's joinKeys", async () => {
+  it("a field attached via context.telemetry.addJoinKeys() during execute() lands in the emitted submission envelope's joinKeys", async () => {
     const { plugins } = await loadAllPlugins(cfgStub);
 
     const app = Fastify({ loggerInstance: getLogger({ name: "out-of-tree-run-telemetry-test" }) });

@@ -24,6 +24,20 @@ export interface RunTelemetrySnapshot {
 }
 
 /**
+ * Public surface `SitePluginContext.telemetry` exposes to plugins. Declared
+ * separately from the `RunTelemetry` class (rather than using the class
+ * itself as the field type) so consumers — including this repo's own test
+ * doubles — can satisfy the contract with a plain object; `RunTelemetry`'s
+ * private accumulator fields would otherwise make it structurally
+ * unsatisfiable by anything but the class itself.
+ */
+export interface RunTelemetryHandle {
+  addJoinKeys(fields: Record<string, unknown>): void;
+  recordSession(info: SessionTelemetry): void;
+  snapshot(): RunTelemetrySnapshot;
+}
+
+/**
  * Accumulates run-discovered join keys and session telemetry for a single
  * dispatch invocation. Constructed per-request and threaded through
  * SitePluginContext (wiring lands separately) so a plugin can attach fields
@@ -31,7 +45,7 @@ export interface RunTelemetrySnapshot {
  * page after navigation — instead of being limited to `extractJoinKeys`'s
  * inbound-payload-only view.
  */
-export class RunTelemetry {
+export class RunTelemetry implements RunTelemetryHandle {
   private joinKeys: Record<string, unknown> | null = null;
   private session: SessionTelemetry | null = null;
 

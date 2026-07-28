@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { SessionTelemetry } from "@/lib/telemetry/run-telemetry";
 import { dispatch } from "@/plugins/loader";
 import type { SitePlugin, SitePluginContext } from "@/site-plugin";
 
@@ -91,15 +92,17 @@ vi.mock("@/lib/dd-metrics", () => ({
  */
 interface RunTelemetryDouble {
   addJoinKeys(fields: Record<string, unknown>): void;
-  recordSession(info: Record<string, unknown>): void;
-  snapshot(): { joinKeys: Record<string, unknown> | null };
+  recordSession(info: SessionTelemetry): void;
+  snapshot(): { joinKeys: Record<string, unknown> | null; session: SessionTelemetry | null };
 }
 
 // recordSession() is a no-op here — session/IP capture (Gap 2) is out of
 // this file's scope (see success-criteria notes), but the real
 // `withSessionTelemetry` wrapper in loader.ts calls it unconditionally
 // whenever `runWithSession` hands back a truthy session, so the double must
-// implement it or dispatch() throws once feat-005's wiring lands.
+// implement it (with the real `SessionTelemetry` param shape, matching
+// `RunTelemetryHandle` structurally) or dispatch() throws once feat-005's
+// wiring lands.
 function createRunTelemetryDouble(): RunTelemetryDouble {
   let joinKeys: Record<string, unknown> | null = null;
   return {
@@ -108,7 +111,7 @@ function createRunTelemetryDouble(): RunTelemetryDouble {
     },
     recordSession() {},
     snapshot() {
-      return { joinKeys: joinKeys ? { ...joinKeys } : null };
+      return { joinKeys: joinKeys ? { ...joinKeys } : null, session: null };
     },
   };
 }
@@ -173,7 +176,7 @@ afterEach(() => {
 });
 
 describe("dispatch — run-telemetry per-request isolation", () => {
-  it.fails("does not leak fields attached via context.telemetry between two concurrent dispatches", async () => {
+  it("does not leak fields attached via context.telemetry between two concurrent dispatches", async () => {
     const contextA = buildContext("req-a");
     const contextB = buildContext("req-b");
 
@@ -215,7 +218,7 @@ describe("dispatch — run-telemetry per-request isolation", () => {
 });
 
 describe("dispatch — run-telemetry across a pool retry", () => {
-  it.fails("reflects only the final attempt's joinKeys, not a stale value from a failed attempt", async () => {
+  it("reflects only the final attempt's joinKeys, not a stale value from a failed attempt", async () => {
     const context = buildContext("req-retry");
 
     // Models runWithSession's own retry loop (src/scraper/pool.ts:64-84):
@@ -257,7 +260,7 @@ describe("dispatch — run-telemetry across a pool retry", () => {
     );
   });
 
-  it.fails("merges non-colliding keys added across attempts without duplicating them", async () => {
+  it("merges non-colliding keys added across attempts without duplicating them", async () => {
     const context = buildContext("req-retry-merge");
 
     mockRunWithSession.mockImplementationOnce(

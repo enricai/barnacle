@@ -124,7 +124,7 @@ function buildStubContext(): ContextWithTelemetry {
       joinKeys: Object.keys(collected).length > 0 ? { ...collected } : null,
     })),
   };
-  const base: SitePluginContext = {
+  const base: Omit<SitePluginContext, "telemetry"> = {
     baseUrl: "https://example.com",
     logger: {
       info: vi.fn(),
@@ -150,7 +150,10 @@ function buildStubContext(): ContextWithTelemetry {
     } as unknown as SitePluginContext["metricsCollector"],
     recordBeaconOutcome: vi.fn().mockResolvedValue(undefined),
   };
-  return { ...base, telemetry } as ContextWithTelemetry;
+  // This file's stub only implements the joinKeys half of RunTelemetry's
+  // contract — session capture is out of scope here (every runWithSession
+  // mock in this file hands back a null session).
+  return { ...base, telemetry } as unknown as ContextWithTelemetry;
 }
 
 const TRACKING_URL = "https://click.acme.example/t/abc?vivclid=123&empId=emp9&jid=job9";
@@ -218,9 +221,14 @@ describe("dispatch — engine-fired tracking path when a non-self-managing plugi
     await dispatch(attachingPlugin, { TrackingUrl: TRACKING_URL }, context);
 
     expect(mockFireTrackingClick).toHaveBeenCalledOnce();
+    // `attachingPlugin.execute` (shared with the describe block below) always
+    // attaches `midRunField` via `context.telemetry.addJoinKeys` — this test
+    // only cares about the URL/siteId/requestId triple, so it asserts the
+    // merged joinKeys value rather than the pre-merge `null` this suite
+    // predates.
     expect(mockFireTrackingClick).toHaveBeenCalledWith(TRACKING_URL, "test-site", {
       requestId: "req-test-123",
-      joinKeys: null,
+      joinKeys: { midRunField: "discovered-value" },
     });
   });
 
@@ -249,7 +257,7 @@ describe("dispatch — run-attached fields on the beacon/tracking-click record",
     vi.clearAllMocks();
   });
 
-  it.fails("includes mid-run attached fields in fireTrackingClick's reconciliation context when the plugin has no extractJoinKeys", async () => {
+  it("includes mid-run attached fields in fireTrackingClick's reconciliation context when the plugin has no extractJoinKeys", async () => {
     const context = buildStubContext();
     await dispatch(attachingPlugin, { TrackingUrl: TRACKING_URL }, context);
 
@@ -264,7 +272,7 @@ describe("dispatch — run-attached fields on the beacon/tracking-click record",
     );
   });
 
-  it.fails("emits a skipped beacon record with the merged fields, preserving trackingUrl, when the plugin declares extractJoinKeys and attaches mid-run", async () => {
+  it("emits a skipped beacon record with the merged fields, preserving trackingUrl, when the plugin declares extractJoinKeys and attaches mid-run", async () => {
     const context = buildStubContext();
     await dispatch(delegatingPlugin, { TrackingUrl: TRACKING_URL }, context);
 
