@@ -1,11 +1,12 @@
 import type { Page } from "@browserbasehq/stagehand";
 import type { DeepLocatorDelegate } from "@browserbasehq/stagehand/lib/v3/understudy/deepLocator.js";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type FakeDeepLocatorDelegate,
   type FakeDeepLocatorFrame,
   type HangingDeepLocatorMethod,
   makeFakeDeepLocator,
+  makeFakeFrameClickByIndex,
   makeFakeFrameScan,
   NODE_NOT_ACTIONABLE_MESSAGE,
   registerDeepLocatorHangingHop,
@@ -307,5 +308,176 @@ describe("deep-locator-fake", () => {
     >;
 
     expect(typeof page.deepLocator).toBe("function");
+  });
+});
+
+describe("deep-locator-fake: nth(index) resolve cost model (Stagehand's O(index) serial round-trips)", () => {
+  const DELAY_MS = 100;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it.each([0, 1, 2, 4])(
+    "nth(%i).click() settles only after (index + 1) delay units, not one flat delay unit",
+    async (index) => {
+      const frame: FakeDeepLocatorFrame = new Map();
+      const hop = registerDeepLocatorHopElements(
+        frame,
+        "iframe#a >> *",
+        Array.from({ length: index + 1 }, (_, i) => `node-${i}`)
+      );
+      registerDeepLocatorHopLatency(hop, { delayOn: "click", delayMs: DELAY_MS });
+      const deepLocator = makeFakeDeepLocator(frame);
+
+      let settled = false;
+      deepLocator("iframe#a >> *")
+        .nth(index)
+        .click()
+        .then(() => {
+          settled = true;
+        });
+
+      await vi.advanceTimersByTimeAsync(index * DELAY_MS);
+      expect(settled).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(DELAY_MS);
+      expect(settled).toBe(true);
+      expect(hop.elements[index]?.clicks).toBe(1);
+    }
+  );
+
+  it.each([0, 1, 3])(
+    "nth(%i).textContent() settles only after (index + 1) delay units, not one flat delay unit",
+    async (index) => {
+      const frame: FakeDeepLocatorFrame = new Map();
+      const hop = registerDeepLocatorHopElements(
+        frame,
+        "iframe#a >> *",
+        Array.from({ length: index + 1 }, (_, i) => `node-${i}`)
+      );
+      registerDeepLocatorHopLatency(hop, { delayOn: "textContent", delayMs: DELAY_MS });
+      const deepLocator = makeFakeDeepLocator(frame);
+
+      let resolved: string | undefined;
+      deepLocator("iframe#a >> *")
+        .nth(index)
+        .textContent()
+        .then((value) => {
+          resolved = value;
+        });
+
+      await vi.advanceTimersByTimeAsync(index * DELAY_MS);
+      expect(resolved).toBeUndefined();
+
+      await vi.advanceTimersByTimeAsync(DELAY_MS);
+      expect(resolved).toBe(`node-${index}`);
+    }
+  );
+
+  it("count() stays a flat one delay unit regardless of which index a caller chains nth() onto", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    const hop = registerDeepLocatorHopElements(frame, "iframe#a >> *", ["a", "b", "c", "d", "e"]);
+    registerDeepLocatorHopLatency(hop, { delayOn: "count", delayMs: DELAY_MS });
+    const deepLocator = makeFakeDeepLocator(frame);
+
+    let resolved: number | undefined;
+    deepLocator("iframe#a >> *")
+      .nth(4)
+      .count()
+      .then((value) => {
+        resolved = value;
+      });
+
+    await vi.advanceTimersByTimeAsync(DELAY_MS);
+    expect(resolved).toBe(5);
+  });
+});
+
+describe("makeFakeFrameClickByIndex (batched click-by-index seam)", () => {
+  it("increments the targeted element's clicks counter and resolves clicked: true, ignoring the expression argument", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    const hop = registerDeepLocatorHopElements(frame, "iframe#a >> *", ["a", "b", "c"]);
+    const clickByIndex = makeFakeFrameClickByIndex(frame, "iframe#a >> *");
+
+    await expect(
+      clickByIndex(2, "() => { throw new Error('never executed by the fake'); }")
+    ).resolves.toEqual({ clicked: true });
+    expect(hop.elements.map((element) => element.clicks)).toEqual([0, 0, 1]);
+  });
+
+  it("resolves clicked: false with the CDP layout-object reason for a not-visible element, without throwing and without incrementing clicks", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    const hop = registerDeepLocatorHopElements(frame, "iframe#a >> *", [
+      { text: "hidden", visible: false },
+    ]);
+    const clickByIndex = makeFakeFrameClickByIndex(frame, "iframe#a >> *");
+
+    await expect(clickByIndex(0)).resolves.toEqual({
+      clicked: false,
+      reason: NODE_NOT_ACTIONABLE_MESSAGE,
+    });
+    expect(hop.elements[0]?.clicks).toBe(0);
+  });
+
+  it("resolves clicked: false for an out-of-range index or an unregistered hop instead of throwing", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    registerDeepLocatorHopElements(frame, "iframe#a >> *", ["only-one"]);
+    const clickByIndex = makeFakeFrameClickByIndex(frame, "iframe#a >> *");
+    const clickByIndexUnregistered = makeFakeFrameClickByIndex(frame, "iframe#missing >> *");
+
+    await expect(clickByIndex(3)).resolves.toEqual({
+      clicked: false,
+      reason: expect.stringContaining("index 3"),
+    });
+    await expect(clickByIndexUnregistered(0)).resolves.toEqual({
+      clicked: false,
+      reason: expect.stringContaining("index 0"),
+    });
+  });
+
+  it("costs exactly one delay unit under a registered 'clickByIndex' latency profile, regardless of index", async () => {
+    vi.useFakeTimers();
+    try {
+      const frame: FakeDeepLocatorFrame = new Map();
+      const hop = registerDeepLocatorHopElements(
+        frame,
+        "iframe#a >> *",
+        Array.from({ length: 5 }, (_, i) => `node-${i}`)
+      );
+      registerDeepLocatorHopLatency(hop, { delayOn: "clickByIndex", delayMs: 100 });
+      const clickByIndex = makeFakeFrameClickByIndex(frame, "iframe#a >> *");
+
+      let settled = false;
+      clickByIndex(4).then(() => {
+        settled = true;
+      });
+
+      await vi.advanceTimersByTimeAsync(99);
+      expect(settled).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toBe(true);
+      expect(hop.elements[4]?.clicks).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("registerDeepLocatorHopLatency on 'clickByIndex' delays the batched click but not nth(i).click() on the same hop", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    const hop = registerDeepLocatorHopElements(frame, "iframe#a >> *", ["Manual Application"]);
+    registerDeepLocatorHopLatency(hop, { delayOn: "clickByIndex", delayMs: 50 });
+    const deepLocator = makeFakeDeepLocator(frame);
+    const clickByIndex = makeFakeFrameClickByIndex(frame, "iframe#a >> *");
+
+    await deepLocator("iframe#a >> *").nth(0).click();
+    expect(hop.elements[0]?.clicks).toBe(1);
+
+    await expect(raceAgainstTimer(clickByIndex(0))).resolves.toBe(STILL_PENDING);
   });
 });
