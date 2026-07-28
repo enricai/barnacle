@@ -59,7 +59,7 @@ function makeEl(
       return rect;
     },
     getAttribute(name) {
-      return Object.hasOwn(attributes, name) ? attributes[name] : null;
+      return attributes[name] ?? null;
     },
     closest(selector) {
       let node: FakeEl | null = el;
