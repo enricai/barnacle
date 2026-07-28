@@ -352,6 +352,34 @@ describe("deep-locator-scan/buildScanFrameCandidatesExpr accessible-name derivat
     expect(result).toEqual([{ index: 0, text: "Preferred", visible: true }]);
   });
 
+  it("derives text from an associated label[for=id] for a <select>, not its concatenated option text", () => {
+    const select = makeEl("United StatesCanadaMexico", {
+      tagName: "select",
+      attributes: { id: "country" },
+    });
+    const label = makeEl("Country", { tagName: "label", attributes: { for: "country" } });
+    const document = makeRoot([select, label]);
+
+    const result = evaluateInFakePage(
+      buildScanFrameCandidatesExpr("select"),
+      document
+    ) as FrameCandidateScanResult[];
+
+    expect(result).toEqual([{ index: 0, text: "Country", visible: true }]);
+  });
+
+  it("yields empty text for an unlabelled <select>, never falling back to its concatenated option text", () => {
+    const select = makeEl("United StatesCanadaMexico", { tagName: "select" });
+    const document = makeRoot([select]);
+
+    const result = evaluateInFakePage(
+      buildScanFrameCandidatesExpr("select"),
+      document
+    ) as FrameCandidateScanResult[];
+
+    expect(result).toEqual([{ index: 0, text: "", visible: true }]);
+  });
+
   it("yields empty text for a structural element with no accessible-name signal at all", () => {
     const div = makeEl("", { tagName: "div" });
     const document = makeRoot([div]);
