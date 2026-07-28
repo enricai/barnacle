@@ -59,8 +59,13 @@ const IS_VISIBLE_EXPR = `((el) => {
  * against `root`) → an associated `label` (`label[for=id]`, or the nearest
  * ancestor `label`) → `placeholder` → `title` → `alt` → non-empty
  * `textContent` → `value` (only for `input[type=button|submit]`, where
- * `value` IS the rendered label). `root`-relative so the generated code
- * never captures an outer `document` — the same contract
+ * `value` IS the rendered label). `<select>` skips the `textContent` tier
+ * entirely — a `<select>`'s `textContent` is every `<option>`'s text
+ * concatenated ("United StatesCanadaMexico…"), which can accidentally
+ * substring-match an unrelated step instruction and outrank the
+ * correctly-labelled field; an unlabelled `<select>` falls through to `""`
+ * (the caller's `|| ""` contract) instead. `root`-relative so the generated
+ * code never captures an outer `document` — the same contract
  * {@link buildScanFrameCandidatesExpr} itself honors.
  */
 function buildAccessibleNameExpr(root: string): string {
@@ -104,9 +109,11 @@ function buildAccessibleNameExpr(root: string): string {
     if (title) return title;
     const alt = clean(attr("alt"));
     if (alt) return alt;
-    const text = clean(el.textContent);
-    if (text) return text;
     const tag = (el.tagName || "").toLowerCase();
+    if (tag !== "select") {
+      const text = clean(el.textContent);
+      if (text) return text;
+    }
     const type = (attr("type") || "").toLowerCase();
     if (tag === "input" && (type === "button" || type === "submit")) {
       const value = clean(attr("value"));

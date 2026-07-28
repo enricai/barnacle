@@ -212,14 +212,20 @@ function isFrameCandidateScanResult(entry: unknown): entry is FrameCandidateScan
  * round-trip replaces the legacy `count()` + N × `nth(i).textContent()` loop.
  * Returns `null` (never throws) when no frame seam is available, the
  * evaluate call rejects (missing seam, thrown error, or a watchdog timeout —
- * `frameTarget.evaluate` already carries its own watchdog), or the resolved
- * payload doesn't conform to {@link FrameCandidateScanResult}[] — every one
- * of those degrades the caller to the legacy loop instead of losing
- * candidates. Filters out `visible:false` entries (Issue #2: an unrendered
- * node can never be the target of a real click) before the caller ranks
- * what's left, logging at `warn` when candidates are dropped so a frame
- * whose every node reports unrendered doesn't silently look like an empty
- * frame.
+ * `frameTarget.evaluate` already carries its own watchdog), the resolved
+ * payload doesn't conform to {@link FrameCandidateScanResult}[], or the raw
+ * scan matched zero elements — every one of those degrades the caller to the
+ * legacy loop instead of losing candidates. A raw zero-match scan is treated
+ * as inconclusive rather than authoritative because the scan expression's
+ * light-DOM `querySelectorAll` can't see into a shadow root the way
+ * `page.deepLocator()` (used by the legacy loop) can, so it must not be
+ * confused with the *visibility* filter below, which legitimately produces
+ * an empty result when the scan *did* match elements but every one of them
+ * is unrendered. Filters out `visible:false` entries (Issue #2: an
+ * unrendered node can never be the target of a real click) before the
+ * caller ranks what's left, logging at `warn` when candidates are dropped
+ * so a frame whose every node reports unrendered doesn't silently look like
+ * an empty frame.
  */
 async function scanFrameCandidatesBatched(
   page: Page,
@@ -245,6 +251,12 @@ async function scanFrameCandidatesBatched(
   if (!Array.isArray(scanResults) || !scanResults.every(isFrameCandidateScanResult)) {
     logger.warn(
       `deepLocator batched scan for ${hopSelector} returned a non-conforming payload, degrading to per-candidate enumeration`
+    );
+    return null;
+  }
+  if (scanResults.length === 0) {
+    logger.warn(
+      `deepLocator batched scan for ${hopSelector} matched zero elements, degrading to per-candidate enumeration in case a shadow-DOM control was missed`
     );
     return null;
   }
@@ -329,8 +341,11 @@ async function enumerateCandidatesViaLegacyLoop(
  * `textContent()` round-trips that made a dense OOPIF form (371 candidates
  * measured live) unresolvable inside any reasonable budget — and falls back
  * to the legacy `count()` + per-candidate loop (see
- * {@link enumerateCandidatesViaLegacyLoop}) only when no frame seam is
- * available or the batched scan fails. Pass an already-resolved
+ * {@link enumerateCandidatesViaLegacyLoop}) when no frame seam is available,
+ * the batched scan fails, or the batched scan resolves to zero candidates —
+ * the batched expression's light-DOM `querySelectorAll` can't see into a
+ * shadow root the way `page.deepLocator()` can, so a zero-length scan is
+ * treated as inconclusive rather than authoritative. Pass an already-resolved
  * {@link DeepLocatorTimeoutOptions.frameTarget} to use the fast path without
  * paying for an internal re-resolution.
  *
@@ -414,5 +429,62 @@ export async function clickDeepLocatorCandidate(
   await withWatchdog(() => page.deepLocator(hopSelector).nth(index).click(), {
     timeoutMs: callTimeoutMs,
     label: `deepLocator click() for ${hopSelector} nth=${index}`,
+  });
+}
+
+/**
+ * Fills the candidate at `index` inside the frame scoped by `frameSelector`
+ * with `value`, re-deriving the same hop selector
+ * {@link clickDeepLocatorCandidate} uses rather than trusting a
+ * caller-supplied `xpath=` string, so every deepLocator actuation seam stays
+ * in lockstep. `DeepLocatorDelegate.fill()` resolves `Promise<void>` on
+ * success and rejects on failure — same "rejects on failure, no boolean
+ * return" contract as `clickDeepLocatorCandidate` — and a `fill()` that
+ * exceeds `timeoutOptions.callTimeoutMs` rejects with a
+ * `WatchdogTimeoutError` the same way. A framework-controlled (React/Angular)
+ * input may not register a plain `fill()`; `fillHtml5DateTimeInput`
+ * (`flow-runner.ts`) is the repo's existing native-setter + dispatch-events
+ * escape hatch for that case, not this seam.
+ */
+export async function fillDeepLocatorCandidate(
+  page: Page,
+  frameSelector: string | null | undefined,
+  innerSelector: string,
+  index: number,
+  value: string,
+  timeoutOptions: DeepLocatorTimeoutOptions = {}
+): Promise<void> {
+  const callTimeoutMs = timeoutOptions.callTimeoutMs ?? DEFAULT_DEEP_LOCATOR_CALL_TIMEOUT_MS;
+  const hopSelector = buildHopSelector(frameSelector, innerSelector);
+  await withWatchdog(() => page.deepLocator(hopSelector).nth(index).fill(value), {
+    timeoutMs: callTimeoutMs,
+    label: `deepLocator fill() for ${hopSelector} nth=${index}`,
+  });
+}
+
+/**
+ * Selects `values` on the candidate at `index` inside the frame scoped by
+ * `frameSelector`, re-deriving the same hop selector
+ * {@link clickDeepLocatorCandidate} uses. `DeepLocatorDelegate.selectOption()`
+ * resolves with the option values actually selected and rejects on failure —
+ * the return value is passed through unchanged so a caller can verify the
+ * selection landed, the same way Playwright's own `selectOption()` reports
+ * back. A `selectOption()` that exceeds `timeoutOptions.callTimeoutMs`
+ * rejects with a `WatchdogTimeoutError`, matching every other seam in this
+ * module.
+ */
+export async function selectDeepLocatorCandidateOption(
+  page: Page,
+  frameSelector: string | null | undefined,
+  innerSelector: string,
+  index: number,
+  values: string | string[],
+  timeoutOptions: DeepLocatorTimeoutOptions = {}
+): Promise<string[]> {
+  const callTimeoutMs = timeoutOptions.callTimeoutMs ?? DEFAULT_DEEP_LOCATOR_CALL_TIMEOUT_MS;
+  const hopSelector = buildHopSelector(frameSelector, innerSelector);
+  return withWatchdog(() => page.deepLocator(hopSelector).nth(index).selectOption(values), {
+    timeoutMs: callTimeoutMs,
+    label: `deepLocator selectOption() for ${hopSelector} nth=${index}`,
   });
 }

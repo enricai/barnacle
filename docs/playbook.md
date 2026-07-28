@@ -284,18 +284,26 @@ techniques are, in order:
    cross-origin OOPIF (see the cross-origin iframe note above), so this
    attempt (and the pre-cascade probe, and the rephrase evidence gather)
    additionally resolves candidates via `page.deepLocator()`
-   (`src/scraper/deep-locator-candidates.ts`) before giving up —
-   `clickFirstActionableCandidate` (`src/scraper/deep-locator-click.ts`)
-   walks the ranked candidates in order and clicks the first one that
-   actually succeeds: a click rejecting with the CDP `-32000 Node does not
+   (`src/scraper/deep-locator-candidates.ts`) before giving up. Candidates are
+   resolved scoped to `INTERACTIVE_CANDIDATE_SELECTOR` first (keeps a dense
+   OOPIF form's candidate set to a handful of controls); when that scoped
+   pass finds nothing, resolution widens once to the unscoped `"*"` hop so a
+   `div`/`span` tile with only a click handler (no `role`/`tabindex`) can
+   still be reached. `clickFirstActionableCandidate`
+   (`src/scraper/deep-locator-click.ts`) walks the ranked candidates in order
+   and actuates the first one that actually succeeds — the step's own prose
+   (`parseSelectStep`/`parseFillStep` in `src/scraper/flow-runner.ts`) picks
+   `selectDeepLocatorCandidateOption`/`fillDeepLocatorCandidate` for a
+   select/fill-shaped step, falling back to `clickDeepLocatorCandidate` for
+   everything else. An actuation rejecting with the CDP `-32000 Node does not
    have a layout object` error (an unrendered node) costs only that one
    candidate, and the walk moves on to the next-ranked candidate instead of
-   scoring the whole attempt as a failed click. Any other click rejection
-   (a detached frame, a wedged click's `WatchdogTimeoutError`) still stops
-   the walk immediately, matching the old top-only behavior. The candidate
-   that does succeed is clicked directly and a `xpath=`-shaped
-   `resolvedAction` is synthesized so verification proceeds exactly as it
-   would for an `observe()`-sourced candidate.
+   scoring the whole attempt as a failure. Any other rejection (a detached
+   frame, a wedged call's `WatchdogTimeoutError`) still stops the walk
+   immediately, matching the old top-only behavior. The candidate that does
+   succeed is acted on directly and a `resolvedAction` matching the actuation
+   kind (`click`/`fill`/`selectOption`) is synthesized so verification
+   proceeds exactly as it would for an `observe()`-sourced candidate.
 3. **`observe(step, { ignoreSelectors: tried })` + `act(Action)`** — same as
    attempt 2, but we tell Stagehand to exclude the selectors we already tried.
    Addresses the "same wrong button twice" failure mode. When no selectors

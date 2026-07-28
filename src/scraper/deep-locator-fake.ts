@@ -17,6 +17,7 @@ import type { FrameCandidateScanResult } from "@/scraper/deep-locator-scan";
 export interface FakeDeepLocatorElement {
   clicks: number;
   filledWith: string | null;
+  selectedWith: string[] | null;
   text: string;
   visible: boolean;
 }
@@ -46,6 +47,7 @@ export interface FakeDeepLocatorHop {
   readonly elements: FakeDeepLocatorElement[];
   readonly clicks: number;
   readonly filledWith: string | null;
+  readonly selectedWith: string[] | null;
   readonly text: string;
 }
 
@@ -59,6 +61,9 @@ function buildHop(elements: FakeDeepLocatorElement[]): FakeDeepLocatorHop {
     },
     get filledWith() {
       return first.filledWith;
+    },
+    get selectedWith() {
+      return first.selectedWith;
     },
     get text() {
       return first.text;
@@ -107,7 +112,13 @@ export function registerDeepLocatorHopElements(
 ): FakeDeepLocatorHop {
   const built = elements.map((entry) => {
     const spec = typeof entry === "string" ? { text: entry } : entry;
-    return { clicks: 0, filledWith: null, text: spec.text, visible: spec.visible ?? true };
+    return {
+      clicks: 0,
+      filledWith: null,
+      selectedWith: null,
+      text: spec.text,
+      visible: spec.visible ?? true,
+    };
   });
   const hop = buildHop(built);
   frame.set(selector, hop);
@@ -118,7 +129,7 @@ export function registerDeepLocatorHopElements(
  * The `FakeDeepLocatorDelegate` methods `registerDeepLocatorHangingHop` can
  * pin open, modeling a wedged OOPIF CDP call (the run-6 78-minute hang).
  */
-export type HangingDeepLocatorMethod = "click" | "count" | "textContent";
+export type HangingDeepLocatorMethod = "click" | "count" | "fill" | "selectOption" | "textContent";
 
 interface Deferred {
   readonly promise: Promise<void>;
@@ -235,18 +246,20 @@ export function registerDeepLocatorHopLatency(
 }
 
 /**
- * Only the methods `src/scraper/flow-runner.ts`'s deepLocator-routed call
- * sites (`observe-act`, rephrase evidence, the pre-cascade probe) actually
- * invoke, via `deep-locator-candidates.ts`: `count()` to check candidate
- * existence, `click()`/`fill()` to act, `textContent()` to read
- * `accessibleText`, `first()`/`nth()` for the same chaining
+ * Only the methods `deep-locator-candidates.ts`'s actuation seams exercise:
+ * `count()` to check candidate existence, `click()` (routed through
+ * `src/scraper/flow-runner.ts`'s deepLocator call sites — `observe-act`,
+ * rephrase evidence, the pre-cascade probe) plus `fill()`/`selectOption()`
+ * (the `fillDeepLocatorCandidate`/`selectDeepLocatorCandidateOption` seams —
+ * not yet routed by any flow-runner call site) to act, `textContent()` to
+ * read `accessibleText`, `first()`/`nth()` for the same chaining
  * `buildHopSelector`-composed multi-match selectors need. `hover`/`type`/
- * `selectOption`/`isVisible`/`isChecked`/`inputValue`/`innerHtml`/
- * `innerText`/`setInputFiles`/`scrollTo`/`centroid`/`backendNodeId`/
- * `highlight`/`sendClickEvent` are declared on the real `DeepLocatorDelegate`
- * but no planned call site routes through them, so they are omitted here —
- * adding one only when a call site actually needs it keeps this fake from
- * drifting out of sync with what's exercised.
+ * `isVisible`/`isChecked`/`inputValue`/`innerHtml`/`innerText`/
+ * `setInputFiles`/`scrollTo`/`centroid`/`backendNodeId`/`highlight`/
+ * `sendClickEvent` are declared on the real `DeepLocatorDelegate` but no
+ * planned call site routes through them, so they are omitted here — adding
+ * one only when a call site actually needs it keeps this fake from drifting
+ * out of sync with what's exercised.
  *
  * `first`/`nth` return `FakeDeepLocatorDelegate` (not the real
  * `DeepLocatorDelegate` class a `Pick` would demand) since a fake has no
@@ -258,6 +271,7 @@ export interface FakeDeepLocatorDelegate {
   click: DeepLocatorDelegate["click"];
   count: DeepLocatorDelegate["count"];
   fill: DeepLocatorDelegate["fill"];
+  selectOption: DeepLocatorDelegate["selectOption"];
   textContent: DeepLocatorDelegate["textContent"];
   first(): FakeDeepLocatorDelegate;
   nth(index: number): FakeDeepLocatorDelegate;
@@ -281,9 +295,10 @@ export const NODE_NOT_ACTIONABLE_MESSAGE = "-32000 Node does not have a layout o
  * scenario) still resolves once registered. `count()` reports the hop's full
  * `elements.length` regardless of `elementIndex`, mirroring the real
  * delegate: `nth(i).count()` still reports the total match count, not `1`.
- * `click()` rejects with {@link NODE_NOT_ACTIONABLE_MESSAGE} when the
- * targeted element's `visible` is `false`, reproducing the CDP `-32000`
- * click failure on an unrendered node.
+ * `click()`/`fill()`/`selectOption()` each reject with
+ * {@link NODE_NOT_ACTIONABLE_MESSAGE} when the targeted element's `visible`
+ * is `false`, reproducing the CDP `-32000` actuation failure on an
+ * unrendered node.
  */
 function buildFakeDelegate(
   frame: FakeDeepLocatorFrame,
@@ -318,7 +333,20 @@ function buildFakeDelegate(
       element.clicks += 1;
     },
     fill: async (value: string) => {
-      requireElement().filledWith = value;
+      await delayForMethod("fill");
+      await awaitReleaseIfHungOn("fill");
+      const element = requireElement();
+      if (!element.visible) throw new Error(NODE_NOT_ACTIONABLE_MESSAGE);
+      element.filledWith = value;
+    },
+    selectOption: async (values: string | string[]) => {
+      await delayForMethod("selectOption");
+      await awaitReleaseIfHungOn("selectOption");
+      const element = requireElement();
+      if (!element.visible) throw new Error(NODE_NOT_ACTIONABLE_MESSAGE);
+      const selected = Array.isArray(values) ? values : [values];
+      element.selectedWith = selected;
+      return selected;
     },
     textContent: async () => {
       await delayForMethod("textContent");
