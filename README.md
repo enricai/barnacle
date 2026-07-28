@@ -805,6 +805,9 @@ process to exit on missing values; optional ones have safe defaults.
 | `FRAME_READY_TIMEOUT_MS` | `20000` | No | How long `resolveFrameTarget` polls for a child iframe to attach before falling back to the main frame (ms). Raise further for cross-origin OOPIFs that attach slowly under advancedStealth + proxied CDP. |
 | `FRAME_DOCUMENT_READY_TIMEOUT_MS` | `5000` | No | How long `waitForChildFrameReady` polls a resolved child frame's `document.readyState` before proceeding anyway (ms). Independent of `FRAME_READY_TIMEOUT_MS` — this wait settles in well under a second once attached. |
 | `FRAME_EVALUATE_TIMEOUT_MS` | `30000` | No | Watchdog budget for a single frame-scoped evaluate/candidate-probe call (ms), so a call against a racy frame fails the attempt instead of hanging indefinitely. |
+| `SCRAPER_CAPTURE_SESSION_IP` | `true` | No | Master switch for the outbound-IP echo navigation; `false` yields `session: null` / `sessionIp: null` everywhere without touching the rest of the submit/beacon record. |
+| `SCRAPER_SESSION_IP_ECHO_URL` | `https://api.ipify.org?format=json` | No | The IP-echo endpoint the session's own short-lived tab navigates to. Operators can point this at a self-hosted echo endpoint. |
+| `SCRAPER_SESSION_IP_TIMEOUT_MS` | `10000` | No | Watchdog bound on the echo navigation; a page that never resolves is cut off and yields `null` rather than blocking the submission. |
 
 ### AWS Bedrock (alternative LLM provider)
 
