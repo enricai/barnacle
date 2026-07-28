@@ -223,6 +223,18 @@ All telemetry and judging knobs are in `src/config.ts` under the `telemetry`,
 | `SELFHEAL_PLATEAU_DELTA` | `0.03` | Minimum meaningful pass-rate improvement |
 | `SELFHEAL_TIMEOUT_MS` | `60 000` | Per-replay LLM request timeout |
 
+### Session-IP capture knobs
+
+The submit record's `session.ip` (and the beacon record's `sessionIp`) are
+gated by knobs under `src/config.ts`'s `scraper` namespace, not `telemetry` —
+they govern the browser-session echo navigation, not the NDJSON sink itself:
+
+| Env var | Default | Meaning |
+|---------|---------|---------|
+| `SCRAPER_CAPTURE_SESSION_IP` | `true` | Master switch for the outbound-IP echo navigation; `false` yields `session: null` / `sessionIp: null` everywhere without touching the rest of the submit/beacon record. |
+| `SCRAPER_SESSION_IP_ECHO_URL` | `https://api.ipify.org?format=json` | The IP-echo endpoint the session's own short-lived tab navigates to. Operators can point this at a self-hosted echo endpoint. |
+| `SCRAPER_SESSION_IP_TIMEOUT_MS` | `10 000` | Watchdog bound on the echo navigation; a page that never resolves is cut off and yields `null` rather than blocking the submission. |
+
 ---
 
 ## Submission-envelope sink
@@ -249,20 +261,41 @@ and validated against `submitRecordSchema`, exported from that module as
 | `kind` | Always `"submit"`; defaults to `"submit"` so pre-existing lines written before this field existed still parse. |
 | `siteId` | Which plugin handled the request — the cohort dimension for reconciliation. |
 | `requestId` | The Fastify-issued correlation ID for the inbound request; joins a `"beacon"` record to this one. |
-| `joinKeys` | Opaque `Record<string, unknown> \| null` — whatever the plugin's own `extractJoinKeys` hook resolved from the inbound payload. Core never inspects its contents; `null` when the plugin has no `extractJoinKeys` or it resolved nothing. |
+| `joinKeys` | Opaque `Record<string, unknown> \| null` — the plugin's own `extractJoinKeys` hook resolved from the inbound payload, merged with any fields the plugin attached mid-run via `context.telemetry.addJoinKeys()` (run-discovered keys win on collision). Core never inspects its contents; `null` when neither source produced anything. |
 | `inboundPayload` | The request body the caller posted, unredacted (`z.unknown()` — no shape is enforced on it). |
 | `status` | Submit outcome: `"submitted"` or `"error"`. |
 | `auditPayload` | The same object plugins return via `SitePluginResult.auditPayload`; `null` on errors. Plugins that need to keep PII out of the sink redact it here, not on `inboundPayload`. |
 | `errorMessage` | The failure message on errors; `null` on success. |
 | `durationMs` | Total dispatch wall time. |
 | `ts` | ISO timestamp. |
+| `session` | `{ id, provider, ip, ipCapturedAt } \| null` — identity of the Browserbase session that served this run. `null` on the direct-HTTP hot path (`executeHttp`, no session acquired), when the provider exposes no outbound-IP accessor (Steel), or when session-IP capture is disabled (see [Configuration reference](#configuration-reference)). |
 
-`joinKeys` is only as populated as the plugin's own `extractJoinKeys` hook
-resolves it (`src/site-plugin.ts`). `dispatch()` (`src/plugins/loader.ts`),
-the sink's only production call site, calls `plugin.extractJoinKeys?.(payload) ?? null`
-once per dispatch and stamps the result onto every envelope it emits —
-`null` for a plugin that declares no `extractJoinKeys`, or when the plugin's
-hook resolves nothing.
+`joinKeys` is populated from two sources merged together: the plugin's own
+`extractJoinKeys` hook (`src/site-plugin.ts`), resolved once from the inbound
+payload, and `context.telemetry.addJoinKeys()` — a mid-run attach point on
+`SitePluginContext` backed by a per-dispatch `RunTelemetryCollector`
+(`src/lib/telemetry/run-telemetry.ts`) that a plugin can call at any point
+during `execute()`/`executeHttp()` to attach a field it only discovers during
+the run (something read from the page, a token minted mid-flow, a value
+observed on a response) — something `extractJoinKeys` cannot do since it only
+ever sees the pre-run payload. `dispatch()` (`src/plugins/loader.ts`), the
+sink's only production call site, calls `plugin.extractJoinKeys?.(payload) ?? null`
+once per dispatch, then merges the collector's snapshot over it (run-discovered
+keys win on collision) on both the success and error envelope paths —
+`null` when neither source produced anything.
+
+`session` is stamped by the same `dispatch()` call site: once per dispatch,
+in a `finally` around the plugin's session-scoped work, core best-effort
+awaits the acquired `BrowserSession`'s optional `getOutboundIp()` accessor
+(`src/scraper/session-shared.ts`) and records `{ id: session.sessionId,
+provider: session.provider, ip, ipCapturedAt }`. `getOutboundIp()` is itself a
+memoized wrapper (`src/scraper/session-browserbase.ts`) around
+`resolveSessionOutboundIp` (`src/scraper/session-ip.ts`), which opens a
+separate, short-lived tab and navigates it to an IP-echo endpoint — the only
+way to learn a Browserbase session's actual outbound IP, since neither the
+Browserbase SDK nor `BrowserSession` otherwise exposes it. It never throws:
+capture failures, timeouts, and a disabled capture flag all yield `session:
+null` rather than interrupting the submission.
 
 ### `"beacon"` records — the conversion/beacon-fire dimension, distinct from submit `status`
 
@@ -281,11 +314,12 @@ resolves, giving it the same ability to report a real outcome. Every key:
 | `kind` | Always `"beacon"`. |
 | `requestId` | Joins this record back to its `"submit"` record. |
 | `siteId` | Same cohort dimension as the submit record. |
-| `joinKeys` | Same opaque bag as the submit record, threaded through by the caller of `fireTrackingClick`. |
+| `joinKeys` | Same merged `extractJoinKeys`/`context.telemetry.addJoinKeys()` bag as the submit record, threaded through by the caller of `fireTrackingClick`. |
 | `beaconStatus` | `"fired"`, `"failed"`, or `"skipped"` — the conversion/beacon-fire outcome, a field distinct from the submit record's `status`. This is what makes "submitted but the beacon did not fire" measurable, where previously `fireTrackingClick` was fire-and-forget with errors swallowed and only Datadog counters (`recordTrackingClickSuccess`/`recordTrackingClickFailure`) as evidence. `"skipped"` covers two distinct reasons, distinguished by `trackingUrl` below: no beacon was ever applicable for the run (no usable `TrackingUrl` — `trackingUrl: null`), or the plugin declared `extractJoinKeys` and so fires its own beacon nav outside `dispatch()` even though a `TrackingUrl` was present (`trackingUrl` carries the real, truncated URL). Either way `"skipped"` is distinct from `"not_fired"` below (no beacon line arrived at all). If that self-managing plugin later calls `context.recordBeaconOutcome` to report a real `fired`/`failed` outcome for the same `requestId`, that line always outranks the earlier `"skipped"` line when folded, regardless of write order. |
 | `trackingUrl` | The vendor click-tracking URL, truncated to 120 characters; `null` when none was present. For a `"skipped"` record this doubles as the two-reasons signal above — present means a URL existed but a plugin-owned navigation used it instead of core's `fireTrackingClick`. |
 | `durationMs` | Wall time of the tracking-click navigation itself, not the original dispatch. |
 | `ts` | ISO timestamp. |
+| `sessionIp` | `string \| null`, defaulted so historical beacon lines without this key still parse. The outbound IP of `fireTrackingClick`'s own short-lived Browserbase session (`src/lib/tracking-click.ts`) — a **different** session than the one that served the original submit, so it can (and often will) carry a different IP than the submit record's `session.ip`. Resolved the same way (`getOutboundIp()`), and only present on `"fired"`/`"failed"` records; `null` on `"skipped"` records, since no engine-driven tracking-click session ever opens in that case. |
 
 A `"fired"`/`"failed"` `"beacon"` record is written by either of two
 sources. The first is `fireTrackingClick`, when its caller supplies a
@@ -342,7 +376,13 @@ queryable HTTP path for a plugin to join runs against its own attribution
 provider's report without re-parsing raw NDJSON. The response row omits
 `inboundPayload`/`auditPayload` (the opaque blobs this route exists to stop
 callers from having to re-parse) and renames the reader's internal
-`beaconTrackingUrl` field to `trackingUrl`.
+`beaconTrackingUrl` field to `trackingUrl`. The submit record's `session`
+block and the beacon record's `sessionIp` fold and serialize through
+unchanged — `ReconciliationRow` and `reconciliationRowSchema` both derive
+from `submitRecordSchema`/`beaconEventSchema` rather than restating fields,
+so a caller comparing runs against a third-party report's IP column reads
+`session.ip` (and, separately, the beacon's own `sessionIp`) straight off
+`GET /v1/submissions` without re-parsing raw NDJSON.
 
 ## File map
 
@@ -354,6 +394,8 @@ callers from having to re-parse) and renames the reader's internal
 | Beacon-fire (conversion) event writer + `BeaconEventSample` type | `src/lib/telemetry/beacon-capture.ts` |
 | Plugin-callable beacon-outcome recorder | `createBeaconOutcomeRecorder` in `src/lib/telemetry/beacon-capture.ts`, bound onto `SitePluginContext.recordBeaconOutcome` by `buildPluginContext` in `src/plugins/loader.ts` |
 | Plugin-owned join-key extraction hook | `SitePlugin.extractJoinKeys` in `src/site-plugin.ts` |
+| Mid-run join-key attach point + per-dispatch collector | `SitePluginContext.telemetry` in `src/site-plugin.ts`, `RunTelemetryCollector` in `src/lib/telemetry/run-telemetry.ts` |
+| Browser-session outbound-IP resolver | `src/scraper/session-ip.ts` |
 | Reconciliation reader (`readReconciliationRows`) | `src/lib/telemetry/submission-reader.ts` |
 | Durable (local+S3) reconciliation source (`readDurableReconciliationRows`) | `src/lib/telemetry/reconciliation-source.ts` |
 | Reconciliation query/filter layer (`queryReconciliationRows`) | `src/lib/telemetry/submission-query.ts` |
