@@ -205,11 +205,13 @@ function makeFakeTopPage(
     };
   };
   const deepLocatorSpy = vi.fn(wrapDelegate);
+  const iframeProbeSpy = vi.fn();
   const page = {
     evaluate: async (expr: unknown) => {
       const iframeSrcMatch = /document\.querySelector\((.+?)\)/.exec(String(expr));
       if (iframeSrcMatch) {
         const selector = JSON.parse(iframeSrcMatch[1] as string) as string;
+        if (selector === IFRAME_SELECTOR) iframeProbeSpy();
         return selector === IFRAME_SELECTOR
           ? { matched: true, src: CHILD_SRC }
           : { matched: false, src: null };
@@ -231,7 +233,7 @@ function makeFakeTopPage(
     frames: () => [childFrame],
     deepLocator: deepLocatorSpy,
   } as unknown as import("@browserbasehq/stagehand").Page;
-  return { page, scanSpy, clickByIndexSpy, legacyClickSpy, textContentSpy };
+  return { page, scanSpy, clickByIndexSpy, legacyClickSpy, textContentSpy, iframeProbeSpy };
 }
 
 describe("flow-runner cascade click actuation throughput (perf-004: batched click-by-index over the legacy per-index fallback)", () => {
@@ -258,11 +260,8 @@ describe("flow-runner cascade click actuation throughput (perf-004: batched clic
     const topUrl = { current: `${TOP_ORIGIN}/jobs/123/apply` };
     const childUrls = { current: CHILD_SRC };
     const stagehand = makeFakeStagehandObserveOnceThenBlind();
-    const { page, scanSpy, clickByIndexSpy, legacyClickSpy, textContentSpy } = makeFakeTopPage(
-      topUrl,
-      childUrls,
-      deepLocatorFrame
-    );
+    const { page, scanSpy, clickByIndexSpy, legacyClickSpy, textContentSpy, iframeProbeSpy } =
+      makeFakeTopPage(topUrl, childUrls, deepLocatorFrame);
 
     const startedAt = Date.now();
     const result = await runHealingFlow({
@@ -295,6 +294,17 @@ describe("flow-runner cascade click actuation throughput (perf-004: batched clic
     expect(clickByIndexSpy).toHaveBeenCalledWith(RENDERED_TARGET_INDEX);
     expect(textContentSpy).not.toHaveBeenCalled();
     expect(legacyClickSpy).not.toHaveBeenCalled();
+
+    // The iframe-src probe backing `resolveFrameTarget` fires exactly once —
+    // the per-step resolution `executeStepWithHealing` already did before
+    // the cascade ever ran. `clickCandidateBatched` (`deep-locator-
+    // candidates.ts`) re-resolves internally whenever its caller omits
+    // `timeoutOptions.frameTarget`, which would silently succeed via a
+    // SECOND probe here (the fake resolves instantly, masking the cost a
+    // real CDP round-trip would pay) — so this is the assertion that
+    // actually pins "the caller passed its own already-resolved
+    // frameTarget", not just "the click ended up batched somehow".
+    expect(iframeProbeSpy).toHaveBeenCalledTimes(1);
 
     // The rendered target was clicked; the hidden decoy sharing its text —
     // filtered out of the batched scan's own candidate set — never was.
