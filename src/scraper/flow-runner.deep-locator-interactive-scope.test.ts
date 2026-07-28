@@ -2,6 +2,7 @@ import type { Anthropic } from "@anthropic-ai/sdk";
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import * as deepLocatorActuateModule from "@/scraper/deep-locator-actuate";
 import * as deepLocatorCandidatesModule from "@/scraper/deep-locator-candidates";
 import {
   type FakeDeepLocatorFrame,
@@ -442,8 +443,8 @@ describe("flow-runner deepLocator actuation routing — fill/select/click discri
     registerDeepLocatorHop(frame, `${FRAME_SELECTOR} >> *`, "First Name");
     const page = makeDeepLocatorPage(frame);
 
-    const fillSpy = vi.spyOn(deepLocatorCandidatesModule, "fillDeepLocatorCandidate");
-    const selectSpy = vi.spyOn(deepLocatorCandidatesModule, "selectDeepLocatorCandidateOption");
+    const fillSpy = vi.spyOn(deepLocatorActuateModule, "fillDeepLocatorCandidate");
+    const selectSpy = vi.spyOn(deepLocatorActuateModule, "selectDeepLocatorCandidateOption");
     const clickSpy = vi.spyOn(deepLocatorCandidatesModule, "clickDeepLocatorCandidate");
     const attemptsByFailure: AttemptRecord[][] = [];
 
@@ -480,8 +481,8 @@ describe("flow-runner deepLocator actuation routing — fill/select/click discri
     registerDeepLocatorHop(frame, `${FRAME_SELECTOR} >> *`, "Country");
     const page = makeDeepLocatorPage(frame);
 
-    const fillSpy = vi.spyOn(deepLocatorCandidatesModule, "fillDeepLocatorCandidate");
-    const selectSpy = vi.spyOn(deepLocatorCandidatesModule, "selectDeepLocatorCandidateOption");
+    const fillSpy = vi.spyOn(deepLocatorActuateModule, "fillDeepLocatorCandidate");
+    const selectSpy = vi.spyOn(deepLocatorActuateModule, "selectDeepLocatorCandidateOption");
     const clickSpy = vi.spyOn(deepLocatorCandidatesModule, "clickDeepLocatorCandidate");
     const attemptsByFailure: AttemptRecord[][] = [];
 
@@ -524,7 +525,7 @@ describe("flow-runner deepLocator actuation routing — fill/select/click discri
     registerDeepLocatorHop(frame, `${FRAME_SELECTOR} >> *`, "First Name");
     const page = makeDeepLocatorPage(frame);
 
-    const fillSpy = vi.spyOn(deepLocatorCandidatesModule, "fillDeepLocatorCandidate");
+    const fillSpy = vi.spyOn(deepLocatorActuateModule, "fillDeepLocatorCandidate");
     const attemptsByFailure: AttemptRecord[][] = [];
 
     await expect(
@@ -556,8 +557,8 @@ describe("flow-runner deepLocator actuation routing — fill/select/click discri
     registerDeepLocatorHop(frame, `${FRAME_SELECTOR} >> *`, "Manual Application");
     const page = makeDeepLocatorPage(frame);
 
-    const fillSpy = vi.spyOn(deepLocatorCandidatesModule, "fillDeepLocatorCandidate");
-    const selectSpy = vi.spyOn(deepLocatorCandidatesModule, "selectDeepLocatorCandidateOption");
+    const fillSpy = vi.spyOn(deepLocatorActuateModule, "fillDeepLocatorCandidate");
+    const selectSpy = vi.spyOn(deepLocatorActuateModule, "selectDeepLocatorCandidateOption");
     const clickSpy = vi.spyOn(deepLocatorCandidatesModule, "clickDeepLocatorCandidate");
     const attemptsByFailure: AttemptRecord[][] = [];
 

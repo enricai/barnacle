@@ -39,12 +39,14 @@ import {
 } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
 import {
+  fillDeepLocatorCandidate,
+  selectDeepLocatorCandidateOption,
+} from "@/scraper/deep-locator-actuate";
+import {
   clickDeepLocatorCandidate,
   type DeepLocatorCandidate,
   type DeepLocatorTimeoutOptions,
-  fillDeepLocatorCandidate,
   resolveDeepLocatorCandidates,
-  selectDeepLocatorCandidateOption,
 } from "@/scraper/deep-locator-candidates";
 import { clickFirstActionableCandidate } from "@/scraper/deep-locator-click";
 import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
@@ -3232,6 +3234,41 @@ export function parseSelectStep(
 }
 
 /**
+ * Parse a declarative TEXT-FILL flow step into the field label to target and
+ * the value to type into it.
+ *
+ * Why this exists (sibling of `parseSelectStep`/`parseRadioStep`): the deep-
+ * locator cascade's candidate ranking (`resolveDeepLocatorCandidates`'s
+ * `scoreCandidate`) ranks by the instruction's quoted phrases, which for a
+ * fill step is only the VALUE ("Fill in the First Name field with
+ * 'Reginald'" quotes just `'Reginald'`) — no candidate's accessible name
+ * (e.g. "First Name") ever matches a person's name, so every candidate ties
+ * at score 0 and DOM order decides, clicking whatever happens to be first
+ * rather than filling the named field. This parser recovers the FIELD LABEL
+ * ("First Name") so the caller can match it directly against a candidate's
+ * accessible name instead of ranking by the value.
+ *
+ * Recognizes the flow's conventional phrasing (confirmed against
+ * `src/recon/fixtures/shipped-ats-flow-steps.json`):
+ *   "Fill in the First Name field with 'Reginald'",
+ *   "Fill the signature field with 'Name'",
+ *   "Fill in the Acme Non-Employee ID textbox with 'NA'".
+ * Returns null when the step doesn't match this shape (no "fill" verb, no
+ * field/input/textbox noun, or no quoted value) so the caller falls through
+ * to the normal cascade unchanged.
+ */
+export function parseFillStep(instruction: string): { fieldLabel: string; value: string } | null {
+  const match = instruction.match(
+    /\bfill(?:\s+in)?\s+(?:the\s+)?(.+?)\s+(?:field|input|textbox)\s+with\s+'([^']+)'/i
+  );
+  if (!match) return null;
+  const fieldLabel = match[1]?.trim();
+  const value = match[2]?.trim();
+  if (!fieldLabel || !value) return null;
+  return { fieldLabel, value };
+}
+
+/**
  * Parse a single-choice RADIO flow step into the option to click and (when
  * present) the question label that scopes which radio group it targets.
  *
@@ -3282,35 +3319,6 @@ export function parseRadioStep(
 }
 
 /**
- * Parse a text-field FILL flow step into the value to type.
- *
- * Why this exists (sibling of `parseSelectStep`/`parseRadioStep`): the
- * deepLocator branch (flow-runner.ts's attempt-2/4 OOPIF fallback) has no
- * Stagehand-resolved `target.arguments` to read a fill value from — unlike
- * the observe path, which reads `target.method === "fill"` and
- * `target.arguments[0]` directly off Stagehand's own resolved action — so
- * the value must be extracted from the human-readable step the same way
- * the select/radio option is.
- *
- * Recognizes the flow's conventional phrasing, quoted:
- *   "Fill in the First Name field with 'Reginald'",
- *   "Fill the Email field with 'a@b.com'".
- * Returns null for select/checkbox steps (routed to `parseSelectStep`
- * instead) and for any fill-shaped step missing the quoted value.
- */
-export function parseFillStep(instruction: string): { value: string } | null {
-  const lower = instruction.toLowerCase();
-  if (!/\bfill\b/.test(lower)) return null;
-  if (/\bselect(\s+or\s+check)?\b/.test(lower)) return null;
-  const withMatch = instruction.match(/\bwith\s+'([^']+)'/i);
-  if (!withMatch) return null;
-  // biome-ignore lint/style/noNonNullAssertion: capture group 1 is required by the pattern, so it is present on every match
-  const value = withMatch[1]!.trim();
-  if (value.length === 0) return null;
-  return { value };
-}
-
-/**
  * Which deepLocator actuation primitive (`clickDeepLocatorCandidate` /
  * `fillDeepLocatorCandidate` / `selectDeepLocatorCandidateOption`) a step's
  * prose calls for, plus the value to pass it. `parseSelectStep`/
@@ -3330,6 +3338,40 @@ function resolveDeepLocatorActuation(step: string): DeepLocatorActuation {
   const fillParsed = parseFillStep(step);
   if (fillParsed) return { kind: "fill", value: fillParsed.value };
   return { kind: "click" };
+}
+
+/** Whitespace-collapsed, lowercased comparison key for {@link findDeepLocatorCandidateByFieldLabel}. */
+function normalizeFieldLabel(text: string): string {
+  return text.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/**
+ * Finds the candidate whose accessible name identifies the named field —
+ * `fieldLabel` (from {@link parseFillStep}/{@link parseSelectStep}), NOT the
+ * value being written — among a frame's deepLocator candidates. Exact match
+ * wins first (a bare "First Name" input against a `fieldLabel` of "First
+ * Name"); otherwise a substring match either direction (a `fieldLabel` of
+ * "Acme Non-Employee ID" against an accessible name of "Non-Employee ID", or
+ * the reverse) so minor phrasing drift between the flow's field noun and the
+ * control's own label still resolves. Returns `null` — never a guess — when
+ * no candidate's accessible name relates to `fieldLabel` at all, so the
+ * caller can refuse to act rather than fill/click the wrong control.
+ */
+function findDeepLocatorCandidateByFieldLabel(
+  candidates: readonly DeepLocatorCandidate[],
+  fieldLabel: string
+): DeepLocatorCandidate | null {
+  const normalizedLabel = normalizeFieldLabel(fieldLabel);
+  if (!normalizedLabel) return null;
+  const named = candidates
+    .map((candidate) => ({ candidate, text: normalizeFieldLabel(candidate.accessibleText) }))
+    .filter((entry) => entry.text.length > 0);
+  const exact = named.find((entry) => entry.text === normalizedLabel);
+  if (exact) return exact.candidate;
+  const partial = named.find(
+    (entry) => entry.text.includes(normalizedLabel) || normalizedLabel.includes(entry.text)
+  );
+  return partial?.candidate ?? null;
 }
 
 /** Max settle-retry attempts for a primitive's DOM enumerate (see `pollEnumerate`). */
@@ -6274,6 +6316,88 @@ export async function executeStepWithHealing(params: {
           (c) => !triedSelectors.includes(c.selector)
         );
         if (candidates.length === 0 && deepLocatorCandidates.length > 0) {
+          // A fill/select step must actuate the NAMED FIELD through the
+          // fill/select seam, never the click-only walk below: candidate
+          // ranking scores by the instruction's quoted VALUE (see
+          // parseFillStep's docblock) — for "Fill in the First Name field
+          // with 'Reginald'" no control's accessible name is ever 'Reginald',
+          // so every candidate ties at score 0 and the click walk would fire
+          // on whatever sits first in DOM order (the bug report's wizard
+          // 'Close' mis-click). Detect that shape first and route
+          // deterministically to the candidate matching the field's own
+          // label, refusing to click when no candidate names that field.
+          const fillStep = parseFillStep(step);
+          const selectStep = fillStep ? null : parseSelectStep(step);
+          const fieldTarget: { kind: "fill" | "select"; fieldLabel: string; value: string } | null =
+            fillStep
+              ? { kind: "fill", fieldLabel: fillStep.fieldLabel, value: fillStep.value }
+              : selectStep?.questionLabel
+                ? { kind: "select", fieldLabel: selectStep.questionLabel, value: selectStep.option }
+                : null;
+          if (fieldTarget) {
+            const matched = findDeepLocatorCandidateByFieldLabel(
+              deepLocatorCandidates,
+              fieldTarget.fieldLabel
+            );
+            if (!matched) {
+              const failureMessage = `deepLocator: no candidate matched field "${fieldTarget.fieldLabel}" (refusing to click an unrelated control)`;
+              record.actResultSuccess = false;
+              record.errorMessage = failureMessage;
+              attempts.push(record);
+              failureReasons.push(failureMessage);
+              logger.info(
+                `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${failureMessage}`
+              );
+              continue;
+            }
+            triedSelectors.push(matched.selector);
+            record.triedSelectors = [matched.selector];
+            const actuated =
+              fieldTarget.kind === "fill"
+                ? await fillDeepLocatorCandidate(
+                    page,
+                    frameTarget?.frameSelector,
+                    INTERACTIVE_CANDIDATE_SELECTOR,
+                    matched.index,
+                    fieldTarget.value
+                  )
+                : await selectDeepLocatorCandidateOption(
+                    page,
+                    frameTarget?.frameSelector,
+                    INTERACTIVE_CANDIDATE_SELECTOR,
+                    matched.index,
+                    fieldTarget.value
+                  );
+            if (actuated) {
+              record.instruction = `deepLocator: ${matched.accessibleText || "(no accessible text)"}`;
+              record.actResultSuccess = true;
+              record.actResultDescription = `deepLocator ${fieldTarget.kind === "fill" ? "filled" : "selected"} "${matched.accessibleText || matched.selector}" with "${fieldTarget.value}"`;
+              // verifyDomEffect can't resolve a `deeplocator=` selector (see
+              // deep-locator-actuate.ts's module docblock: target.locator()
+              // has no meaning for cross-origin OOPIF hop notation) — the
+              // write + read-back fillDeepLocatorCandidate/
+              // selectDeepLocatorCandidateOption already performed IS the
+              // verification signal, so record it directly instead of
+              // synthesizing a resolvedAction that a verifier can only ever
+              // score false for.
+              record.verifiedBy = "dom";
+              attempts.push(record);
+              logger.info(
+                `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${record.actResultDescription}`
+              );
+              trajectory?.push({ stepIndex, verifiedBy: "dom" });
+              return "completed";
+            }
+            const failureMessage = `deepLocator: ${fieldTarget.kind} on "${matched.accessibleText || matched.selector}" did not verify (read-back mismatch or rejected write)`;
+            record.actResultSuccess = false;
+            record.errorMessage = failureMessage;
+            attempts.push(record);
+            failureReasons.push(failureMessage);
+            logger.info(
+              `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${failureMessage}`
+            );
+            continue;
+          }
           // Actionable-candidate walk: a top pick that rejects with the CDP
           // `-32000 Node does not have a layout object` error (an unrendered
           // node) or is refused by the wizard-exit deny-list costs only that
@@ -6305,21 +6429,30 @@ export async function executeStepWithHealing(params: {
             async (candidate) => {
               attemptTriedSelectors.push(candidate.selector);
               if (actuation.kind === "select") {
-                await selectDeepLocatorCandidateOption(
+                const verified = await selectDeepLocatorCandidateOption(
                   page,
                   frameTarget?.frameSelector,
                   deepLocatorInnerSelector,
                   candidate.index,
                   actuation.value
                 );
+                // selectDeepLocatorCandidateOption never throws on an ordinary
+                // failed write (see deep-locator-actuate.ts's writeAndVerify) —
+                // it resolves `false` for both a rejected selectOption() and a
+                // read-back mismatch. clickFirstActionableCandidate infers
+                // success from "didn't throw", so a `false` here must become a
+                // throw or the walk would wrongly report this candidate as
+                // actuated.
+                if (!verified) throw new Error("-32000 Node does not have a layout object");
               } else if (actuation.kind === "fill") {
-                await fillDeepLocatorCandidate(
+                const verified = await fillDeepLocatorCandidate(
                   page,
                   frameTarget?.frameSelector,
                   deepLocatorInnerSelector,
                   candidate.index,
                   actuation.value
                 );
+                if (!verified) throw new Error("-32000 Node does not have a layout object");
               } else {
                 await clickDeepLocatorCandidate(
                   page,

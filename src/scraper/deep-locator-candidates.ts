@@ -540,58 +540,11 @@ export async function clickDeepLocatorCandidate(
 }
 
 /**
- * Fills the candidate at `index` inside the frame scoped by `frameSelector`
- * with `value`, re-deriving the same hop selector
- * {@link clickDeepLocatorCandidate} uses rather than trusting a
- * caller-supplied `xpath=` string, so every deepLocator actuation seam stays
- * in lockstep. `DeepLocatorDelegate.fill()` resolves `Promise<void>` on
- * success and rejects on failure — same "rejects on failure, no boolean
- * return" contract as `clickDeepLocatorCandidate` — and a `fill()` that
- * exceeds `timeoutOptions.callTimeoutMs` rejects with a
- * `WatchdogTimeoutError` the same way. A framework-controlled (React/Angular)
- * input may not register a plain `fill()`; `fillHtml5DateTimeInput`
- * (`flow-runner.ts`) is the repo's existing native-setter + dispatch-events
- * escape hatch for that case, not this seam.
+ * `fillDeepLocatorCandidate`/`selectDeepLocatorCandidateOption` live in
+ * `deep-locator-actuate.ts`, not here — that module's `writeAndVerify` wraps
+ * the same `buildHopSelector`/`withWatchdog` contract this file's
+ * `clickDeepLocatorCandidate` uses, but additionally reads the write back
+ * through `inputValue()` before reporting success (`verifyDomEffect` can't
+ * resolve a `deeplocator=` selector, so the read-back is the only
+ * confirmation a fill/select actually landed).
  */
-export async function fillDeepLocatorCandidate(
-  page: Page,
-  frameSelector: string | null | undefined,
-  innerSelector: string,
-  index: number,
-  value: string,
-  timeoutOptions: DeepLocatorTimeoutOptions = {}
-): Promise<void> {
-  const callTimeoutMs = timeoutOptions.callTimeoutMs ?? DEFAULT_DEEP_LOCATOR_CALL_TIMEOUT_MS;
-  const hopSelector = buildHopSelector(frameSelector, innerSelector);
-  await withWatchdog(() => page.deepLocator(hopSelector).nth(index).fill(value), {
-    timeoutMs: callTimeoutMs,
-    label: `deepLocator fill() for ${hopSelector} nth=${index}`,
-  });
-}
-
-/**
- * Selects `values` on the candidate at `index` inside the frame scoped by
- * `frameSelector`, re-deriving the same hop selector
- * {@link clickDeepLocatorCandidate} uses. `DeepLocatorDelegate.selectOption()`
- * resolves with the option values actually selected and rejects on failure —
- * the return value is passed through unchanged so a caller can verify the
- * selection landed, the same way Playwright's own `selectOption()` reports
- * back. A `selectOption()` that exceeds `timeoutOptions.callTimeoutMs`
- * rejects with a `WatchdogTimeoutError`, matching every other seam in this
- * module.
- */
-export async function selectDeepLocatorCandidateOption(
-  page: Page,
-  frameSelector: string | null | undefined,
-  innerSelector: string,
-  index: number,
-  values: string | string[],
-  timeoutOptions: DeepLocatorTimeoutOptions = {}
-): Promise<string[]> {
-  const callTimeoutMs = timeoutOptions.callTimeoutMs ?? DEFAULT_DEEP_LOCATOR_CALL_TIMEOUT_MS;
-  const hopSelector = buildHopSelector(frameSelector, innerSelector);
-  return withWatchdog(() => page.deepLocator(hopSelector).nth(index).selectOption(values), {
-    timeoutMs: callTimeoutMs,
-    label: `deepLocator selectOption() for ${hopSelector} nth=${index}`,
-  });
-}
