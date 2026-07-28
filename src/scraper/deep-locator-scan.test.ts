@@ -363,6 +363,33 @@ describe("deep-locator-scan/buildScanFrameCandidatesExpr accessible-name derivat
 
     expect(result).toEqual([{ index: 0, text: "", visible: true }]);
   });
+
+  it("does not surface concatenated option text as the accessible name for an unlabelled <select>", () => {
+    const select = makeEl("Choose oneAlabamaAlaskaArizona", { tagName: "select" });
+    const document = makeRoot([select]);
+
+    const result = evaluateInFakePage(
+      buildScanFrameCandidatesExpr("select"),
+      document
+    ) as FrameCandidateScanResult[];
+
+    expect(result).toEqual([{ index: 0, text: "", visible: true }]);
+  });
+
+  it("still derives text from aria-label on a <select> whose textContent is concatenated option text", () => {
+    const select = makeEl("Choose oneAlabamaAlaskaArizona", {
+      tagName: "select",
+      attributes: { "aria-label": "State" },
+    });
+    const document = makeRoot([select]);
+
+    const result = evaluateInFakePage(
+      buildScanFrameCandidatesExpr("select"),
+      document
+    ) as FrameCandidateScanResult[];
+
+    expect(result).toEqual([{ index: 0, text: "State", visible: true }]);
+  });
 });
 
 describe("deep-locator-scan/isNodeNotActionableError", () => {

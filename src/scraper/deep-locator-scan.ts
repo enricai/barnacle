@@ -58,8 +58,10 @@ const IS_VISIBLE_EXPR = `((el) => {
  * control actually carries: `aria-label` → `aria-labelledby` (ids resolved
  * against `root`) → an associated `label` (`label[for=id]`, or the nearest
  * ancestor `label`) → `placeholder` → `title` → `alt` → non-empty
- * `textContent` → `value` (only for `input[type=button|submit]`, where
- * `value` IS the rendered label). `root`-relative so the generated code
+ * `textContent` (skipped for `select`, whose `textContent` is its
+ * concatenated option text, not a name) → `value` (only for
+ * `input[type=button|submit]`, where `value` IS the rendered label).
+ * `root`-relative so the generated code
  * never captures an outer `document` — the same contract
  * {@link buildScanFrameCandidatesExpr} itself honors.
  */
@@ -104,9 +106,11 @@ function buildAccessibleNameExpr(root: string): string {
     if (title) return title;
     const alt = clean(attr("alt"));
     if (alt) return alt;
-    const text = clean(el.textContent);
-    if (text) return text;
     const tag = (el.tagName || "").toLowerCase();
+    if (tag !== "select") {
+      const text = clean(el.textContent);
+      if (text) return text;
+    }
     const type = (attr("type") || "").toLowerCase();
     if (tag === "input" && (type === "button" || type === "submit")) {
       const value = clean(attr("value"));
