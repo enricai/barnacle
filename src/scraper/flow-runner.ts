@@ -42,7 +42,9 @@ import {
   clickDeepLocatorCandidate,
   type DeepLocatorCandidate,
   type DeepLocatorTimeoutOptions,
+  fillDeepLocatorCandidate,
   resolveDeepLocatorCandidates,
+  selectDeepLocatorCandidateOption,
 } from "@/scraper/deep-locator-candidates";
 import { clickFirstActionableCandidate } from "@/scraper/deep-locator-click";
 import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
@@ -3279,6 +3281,57 @@ export function parseRadioStep(
   return { option, questionLabel };
 }
 
+/**
+ * Parse a text-field FILL flow step into the value to type.
+ *
+ * Why this exists (sibling of `parseSelectStep`/`parseRadioStep`): the
+ * deepLocator branch (flow-runner.ts's attempt-2/4 OOPIF fallback) has no
+ * Stagehand-resolved `target.arguments` to read a fill value from — unlike
+ * the observe path, which reads `target.method === "fill"` and
+ * `target.arguments[0]` directly off Stagehand's own resolved action — so
+ * the value must be extracted from the human-readable step the same way
+ * the select/radio option is.
+ *
+ * Recognizes the flow's conventional phrasing, quoted:
+ *   "Fill in the First Name field with 'Reginald'",
+ *   "Fill the Email field with 'a@b.com'".
+ * Returns null for select/checkbox steps (routed to `parseSelectStep`
+ * instead) and for any fill-shaped step missing the quoted value.
+ */
+export function parseFillStep(instruction: string): { value: string } | null {
+  const lower = instruction.toLowerCase();
+  if (!/\bfill\b/.test(lower)) return null;
+  if (/\bselect(\s+or\s+check)?\b/.test(lower)) return null;
+  const withMatch = instruction.match(/\bwith\s+'([^']+)'/i);
+  if (!withMatch) return null;
+  // biome-ignore lint/style/noNonNullAssertion: capture group 1 is required by the pattern, so it is present on every match
+  const value = withMatch[1]!.trim();
+  if (value.length === 0) return null;
+  return { value };
+}
+
+/**
+ * Which deepLocator actuation primitive (`clickDeepLocatorCandidate` /
+ * `fillDeepLocatorCandidate` / `selectDeepLocatorCandidateOption`) a step's
+ * prose calls for, plus the value to pass it. `parseSelectStep`/
+ * `parseFillStep` are checked in that order — a select step's option is
+ * always quoted after the word "select", so it can never be mistaken for a
+ * fill — and any step that matches neither (clicks, radios, checkboxes)
+ * keeps today's click-only actuation.
+ */
+type DeepLocatorActuation =
+  | { kind: "select"; value: string }
+  | { kind: "fill"; value: string }
+  | { kind: "click" };
+
+function resolveDeepLocatorActuation(step: string): DeepLocatorActuation {
+  const selectParsed = parseSelectStep(step);
+  if (selectParsed) return { kind: "select", value: selectParsed.option };
+  const fillParsed = parseFillStep(step);
+  if (fillParsed) return { kind: "fill", value: fillParsed.value };
+  return { kind: "click" };
+}
+
 /** Max settle-retry attempts for a primitive's DOM enumerate (see `pollEnumerate`). */
 const PRIMITIVE_ENUMERATE_ATTEMPTS = 5;
 /** Delay between settle-retry attempts. Total cap ≈ ATTEMPTS × this. */
@@ -5207,6 +5260,13 @@ async function resolveDeepLocatorCandidatesWithWidening(
  * `instruction` is forwarded so the evidence list is ranked by relevance to
  * the step, same as the act path — an unranked `[]`-then-DOM-order list
  * would feed the rephrase LLM its worst evidence first instead of its best.
+ * It's also what {@link resolveDeepLocatorActuation} reads to pick the
+ * evidence's `method`/`arguments` — a rephrase evaluating a "Fill in the
+ * First Name field with 'Reginald'" step should see fill/"Reginald"
+ * evidence, not a hard-coded click, now that the cascade itself can
+ * actuate fill/select. Omitted (the unfocused-observe evidence list) falls
+ * back to `click` with no value, same as before this method inference
+ * existed.
  *
  * Takes the caller's already-resolved `frameTarget` so
  * `resolveDeepLocatorCandidates` uses the batched frame-scoped evaluate
@@ -5223,10 +5283,15 @@ async function deepLocatorCandidatesAsActions(
     instruction,
     { frameTarget }
   );
+  const actuation = instruction
+    ? resolveDeepLocatorActuation(instruction)
+    : { kind: "click" as const };
   return candidates.map((c) => ({
     selector: c.selector,
     description: c.accessibleText || "(no accessible text)",
-    method: "click",
+    method:
+      actuation.kind === "select" ? "selectOption" : actuation.kind === "fill" ? "fill" : "click",
+    ...(actuation.kind === "click" ? {} : { arguments: [actuation.value] }),
   }));
 }
 
@@ -6227,16 +6292,42 @@ export async function executeStepWithHealing(params: {
             }
             return denied;
           };
+          // Intent discrimination: observe()'s Stagehand-resolved action
+          // carries its own method + fill/select arguments (see attempt 1's
+          // `target.method === "fill"` handling above); the deepLocator
+          // fallback has no such resolved action, so the step prose is the
+          // only place the fill/select value can come from. Derived once per
+          // attempt (not per candidate) — every candidate in this walk is a
+          // guess at the SAME step's target, so they all actuate the same way.
+          const actuation = resolveDeepLocatorActuation(step);
           const cascadeResult = await clickFirstActionableCandidate(
             deepLocatorCandidates,
             async (candidate) => {
               attemptTriedSelectors.push(candidate.selector);
-              await clickDeepLocatorCandidate(
-                page,
-                frameTarget?.frameSelector,
-                deepLocatorInnerSelector,
-                candidate.index
-              );
+              if (actuation.kind === "select") {
+                await selectDeepLocatorCandidateOption(
+                  page,
+                  frameTarget?.frameSelector,
+                  deepLocatorInnerSelector,
+                  candidate.index,
+                  actuation.value
+                );
+              } else if (actuation.kind === "fill") {
+                await fillDeepLocatorCandidate(
+                  page,
+                  frameTarget?.frameSelector,
+                  deepLocatorInnerSelector,
+                  candidate.index,
+                  actuation.value
+                );
+              } else {
+                await clickDeepLocatorCandidate(
+                  page,
+                  frameTarget?.frameSelector,
+                  deepLocatorInnerSelector,
+                  candidate.index
+                );
+              }
             },
             { denyCandidate }
           )
@@ -6245,21 +6336,37 @@ export async function executeStepWithHealing(params: {
           triedSelectors.push(...attemptTriedSelectors);
           record.triedSelectors = [...attemptTriedSelectors];
           if (cascadeResult.outcome?.clicked && cascadeResult.outcome.candidate) {
-            const clicked = cascadeResult.outcome.candidate;
-            record.instruction = `deepLocator: ${clicked.accessibleText || "(no accessible text)"}`;
+            const acted = cascadeResult.outcome.candidate;
+            const verb =
+              actuation.kind === "select"
+                ? "selected"
+                : actuation.kind === "fill"
+                  ? "filled"
+                  : "clicked";
+            record.instruction = `deepLocator: ${acted.accessibleText || "(no accessible text)"}`;
             record.actResultSuccess = true;
-            record.actResultDescription = `deepLocator clicked "${clicked.accessibleText || clicked.selector}"`;
-            // Synthesize a click action so downstream verification (network
-            // / url / dom) treats this exactly like any other resolved
-            // click — same idiom as deep-submit-locator/structured-click.
-            resolvedAction = {
-              selector: clicked.selector,
-              description: record.actResultDescription,
-              method: "click",
-            };
+            record.actResultDescription = `deepLocator ${verb} "${acted.accessibleText || acted.selector}"`;
+            // Synthesize an action matching the actuation kind so downstream
+            // verification (network/url/dom — STATE_CLASS_METHODS treats
+            // fill/selectOption as DOM-verifiable, not click) treats this
+            // exactly like any other resolved action — same idiom as
+            // deep-submit-locator/structured-click.
+            resolvedAction =
+              actuation.kind === "click"
+                ? {
+                    selector: acted.selector,
+                    description: record.actResultDescription,
+                    method: "click",
+                  }
+                : {
+                    selector: acted.selector,
+                    description: record.actResultDescription,
+                    method: actuation.kind === "select" ? "selectOption" : "fill",
+                    arguments: [actuation.value],
+                  };
           } else {
             const failureMessage = cascadeResult.error
-              ? `deepLocator: click threw ${toErrorMessage(cascadeResult.error)}`
+              ? `deepLocator: ${actuation.kind} threw ${toErrorMessage(cascadeResult.error)}`
               : attemptTriedSelectors.length > 0
                 ? `deepLocator: no actionable candidate (${attemptTriedSelectors.length} not-actionable)`
                 : "deepLocator: no actionable candidate (every candidate refused by the wizard-exit deny-list)";
