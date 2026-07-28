@@ -734,6 +734,7 @@ in `src/lib/telemetry/reconciliation-record.ts`):
 | `errorMessage` | `string \| null` | Failure message on errors; `null` on success. |
 | `durationMs` | `number` | Total dispatch wall time in milliseconds. |
 | `ts` | `string` | ISO-8601 timestamp at write time. |
+| `session` | `{ id, provider, ip, ipCapturedAt } \| null` | Identity and outbound IP of the Browserbase session that served this run; `null` on the direct-HTTP hot path where no session is ever acquired. See [Submission-envelope sink](docs/telemetry-and-judging.md#submission-envelope-sink) for capture details. |
 
 A `"beacon"`-kind record shares the same sink to record a later, independent
 beacon-fire outcome for the same `requestId`. Core writes one itself — either
