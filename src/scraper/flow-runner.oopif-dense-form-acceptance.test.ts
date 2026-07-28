@@ -50,6 +50,19 @@ import type { Logger } from "@/types/logging";
  * DOM-order-last is deliberate: it is what makes a passing run attributable
  * to the ranked cascade rather than DOM-order luck (same falsifier the
  * candidate-ranking suite already uses).
+ *
+ * `observe()` is blind (`[]`) for EVERY frame-scoped instruction, not just the
+ * click — the field condition the whole deepLocator module exists for is that
+ * `observe()` cannot see into the cross-origin OOPIF at all, not selectively.
+ * The First/Last Name fill targets and the Submit control are therefore also
+ * elements of the SAME dense hop, actuated through `fillDeepLocatorCandidate`/
+ * `clickDeepLocatorCandidate` (bugfix-003's frame-scoped fill/select routing)
+ * rather than Stagehand's own resolved `act()`, with the fill readback
+ * flowing through the fake deepLocator delegate's `filledWith` recording
+ * (and, for `verifyDomEffect`'s own DOM re-read, through
+ * `state.filledWith` keyed by the exact `deeplocator=...>>nth=N` selector
+ * `resolvedAction.selector` carries) instead of the old object-form `act()`
+ * shortcut.
  */
 
 const TOP_ORIGIN = "https://careers.uchealth.org";
@@ -64,28 +77,36 @@ const SUBMITTED_STATE_SELECTOR = "[data-testid=thank-you]";
 /** Verbatim step instruction from the bug report's flow, naming the target and negating every decoy in one "Do NOT click" clause. */
 const MANUAL_APPLICATION_STEP =
   "In the application widget, click the 'Manual Application' button to skip the resume-upload flow entirely. Do NOT click 'Upload a Resume/CV', 'Use LinkedIn Profile', 'Upload From Dropbox', or 'Upload From OneDrive'.";
-const FIRST_NAME_STEP = "Fill in First Name";
-const LAST_NAME_STEP = "Fill in Last Name";
+/**
+ * The field label is quoted alongside the fill value so
+ * `resolveDeepLocatorCandidates`'s phrase-based ranking (`deep-locator-
+ * candidates.ts`'s `scoreCandidate`) has something to score the "First Name"
+ * candidate's accessible name against — with only the value quoted (as a
+ * bare "Fill in First Name" step would parse), every candidate in a dense
+ * hop ties at score 0 and the walk falls back to DOM order, which is exactly
+ * the DOM-order-luck this fixture's decoy design exists to rule out.
+ * `parseFillStep` (`flow-runner.ts`) still extracts the value correctly: its
+ * `with\s+'([^']+)'` match anchors on the LAST quoted phrase, so the extra
+ * leading quote doesn't change what gets typed.
+ */
+const FIRST_NAME_STEP = "Fill in the 'First Name' field with 'Jane'";
+const LAST_NAME_STEP = "Fill in the 'Last Name' field with 'Doe'";
 const UPLOAD_STEP = "Upload resume";
-const SUBMIT_STEP = "Click the final Submit button";
+const SUBMIT_STEP = "Click the final 'Submit' button";
 
-const FIRST_NAME_CANDIDATE = {
-  selector: "xpath=//input[@id='fname']",
-  description: "First Name",
-  method: "fill",
-  arguments: ["Jane"],
-};
-const LAST_NAME_CANDIDATE = {
-  selector: "xpath=//input[@id='lname']",
-  description: "Last Name",
-  method: "fill",
-  arguments: ["Doe"],
-};
-const SUBMIT_CANDIDATE = {
-  selector: "css=button#submit",
-  description: "Submit button",
-  method: "click",
-};
+/**
+ * Accessible names for the fill/submit targets living inside the SAME dense
+ * hop as "Manual Application" — a real `<input>`/`<button>` has empty
+ * `textContent` per the DOM spec, so in the live DOM these names would come
+ * from `aria-label`/an associated `<label>`/`placeholder`
+ * (`buildAccessibleNameExpr`, `deep-locator-scan.ts`), never from
+ * `textContent`. The fake's single `text` field already models the
+ * COMPUTED accessible name (see `FakeDeepLocatorElement`'s docstring), so no
+ * separate raw-textContent field is needed to keep that distinction real.
+ */
+const FIRST_NAME_ELEMENT: FakeDeepLocatorElementSpec = { text: "First Name" };
+const LAST_NAME_ELEMENT: FakeDeepLocatorElementSpec = { text: "Last Name" };
+const SUBMIT_ELEMENT: FakeDeepLocatorElementSpec = { text: "Submit" };
 
 /** Unscoped/top-frame observe result — never the right candidate for any frame-scoped step, matching every sibling fixture's "wrong list if scoping is lost" shape. */
 const TOP_FRAME_CANDIDATES = [
@@ -117,14 +138,29 @@ const DECOYS: FakeDeepLocatorElementSpec[] = [
   { text: "Upload From OneDrive", visible: false },
 ];
 
-/** Filler-block sizes (structural, empty-text, rendered nodes) that sum to 366 — with the 4 decoys and the real target, 371 total, matching the live-measured `"*"` match count. */
-const FILLER_BLOCK_SIZES = [100, 100, 100, 66];
+/** Filler-block sizes (structural, empty-text, rendered nodes) that sum to 363 — with the 4 decoys, the 3 fill/submit targets, and the real target, 371 total, matching the live-measured `"*"` match count. */
+const FILLER_BLOCK_SIZES = [99, 99, 99, 66];
+
+/**
+ * The First/Last Name fill targets and the Submit control, interspersed one
+ * per filler block (mirroring `DECOYS`' placement) rather than appended
+ * separately — they are genuinely part of the SAME 371-node hop the
+ * "Manual Application" click resolves against, not a distinct form the
+ * fixture models on its own. `undefined` for the last block keeps the total
+ * element count aligned with `DECOYS`' 4-entry placement.
+ */
+const FORM_FIELD_ELEMENTS: ReadonlyArray<FakeDeepLocatorElementSpec | undefined> = [
+  FIRST_NAME_ELEMENT,
+  LAST_NAME_ELEMENT,
+  SUBMIT_ELEMENT,
+  undefined,
+];
 
 /**
  * Builds the 371-element (370 without the target) DOM-order array a `"*"`
  * hop over the dense Talemetry wizard resolves to: filler blocks with the
- * four decoys interspersed between them, and — when `includeTarget` — the
- * real "Manual Application" button LAST.
+ * four decoys and the three fill/submit targets interspersed between them,
+ * and — when `includeTarget` — the real "Manual Application" button LAST.
  */
 function buildDenseHopOrder(includeTarget: boolean): Array<string | FakeDeepLocatorElementSpec> {
   const order: Array<string | FakeDeepLocatorElementSpec> = [];
@@ -132,9 +168,19 @@ function buildDenseHopOrder(includeTarget: boolean): Array<string | FakeDeepLoca
     order.push(...Array.from({ length: size }, () => ""));
     const decoy = DECOYS[index];
     if (decoy) order.push(decoy);
+    const formField = FORM_FIELD_ELEMENTS[index];
+    if (formField) order.push(formField);
   }
   if (includeTarget) order.push("Manual Application");
   return order;
+}
+
+/** Position of the first element whose accessible name is `text` — used to locate the First/Last Name/Submit targets within `buildDenseHopOrder`'s array without hand-tracking their index through the filler/decoy interleaving. */
+function findElementIndex(
+  order: ReadonlyArray<string | FakeDeepLocatorElementSpec>,
+  text: string
+): number {
+  return order.findIndex((entry) => typeof entry !== "string" && entry.text === text);
 }
 
 /** In-memory model of the fields the acceptance sequence fills/uploads/submits inside the OOPIF, mirroring `flow-runner.iframe-e2e.test.ts`'s `AcceptanceSequenceState`. */
@@ -200,23 +246,33 @@ function makeDenseChildFrame(
 /**
  * Fake two-frame `Page`. `deepLocator(...).nth(index).click()` only
  * navigates the child frame to the basic-info page when `index` is
- * `targetIndex` (the real button's position) — every other index (a decoy,
- * a layout-less duplicate, or filler) either throws
- * `NODE_NOT_ACTIONABLE_MESSAGE` (unrendered) or resolves as a no-op click
- * with zero downstream effect. That per-index discrimination is what makes
- * a passing "urlChanged" verification signal attributable to clicking the
- * CORRECT element, not just attributable to "some click happened" (the gap
- * the single-element `registerDeepLocatorHop` fixtures elsewhere in this
- * suite family don't need to close, since they only ever register one
- * candidate). `targetIndex: null` (the negative control) means no index
- * ever navigates.
+ * `targetIndex` (the "Manual Application" button's position), and only
+ * marks the run submitted (thank-you URL + `state.submitted`) when `index`
+ * is `submitIndex` — every other index (a decoy, a layout-less duplicate, or
+ * filler) either throws `NODE_NOT_ACTIONABLE_MESSAGE` (unrendered) or
+ * resolves as a no-op click with zero downstream effect. That per-index
+ * discrimination is what makes a passing "urlChanged" verification signal
+ * attributable to clicking the CORRECT element, not just attributable to
+ * "some click happened" (the gap the single-element `registerDeepLocatorHop`
+ * fixtures elsewhere in this suite family don't need to close, since they
+ * only ever register one candidate). `targetIndex: null` (the negative
+ * control) means no index ever navigates to basic-info.
+ *
+ * `deepLocator(...).nth(index).fill(value)` records `value` on the fake
+ * delegate's own per-element `filledWith` (bugfix-002's fake extension,
+ * `deep-locator-fake.ts`) AND on `state.filledWith`, keyed by the exact
+ * `deeplocator=...>>nth=N` selector `resolvedAction.selector` carries — the
+ * same key `makeDenseChildFrame`'s `locator(selector).first().inputValue()`
+ * reads back, so `flow-runner.ts`'s own `verifyDomEffect` (not just this
+ * test's assertions) sees the fill and marks the step verified.
  */
 function makeDenseTopPage(
   topUrl: { current: string },
   childUrls: { current: string },
   deepLocatorFrame: FakeDeepLocatorFrame,
   state: AcceptanceSequenceState,
-  targetIndex: number | null
+  targetIndex: number | null,
+  submitIndex: number
 ) {
   const session = { on: () => {}, off: () => {} };
   const childFrame = makeDenseChildFrame(childUrls, state, deepLocatorFrame);
@@ -234,6 +290,14 @@ function makeDenseTopPage(
             if (targetIndex !== null && index === targetIndex) {
               childUrls.current = `${CHILD_ORIGIN}/application/abc-123/basic-info`;
             }
+            if (index === submitIndex) {
+              childUrls.current = THANK_YOU_URL;
+              state.submitted = true;
+            }
+          },
+          fill: async (value: string) => {
+            await nthDelegate.fill(value);
+            state.filledWith.set(`deeplocator=${selector} >> nth=${index}`, value);
           },
         };
       },
@@ -268,66 +332,34 @@ function makeDenseTopPage(
 }
 
 /**
- * Fake `Stagehand`: `observe()` is blind (`[]`) for the "Manual Application"
- * click step across every scoping (focused, unfocused, and — via the
- * shared fallthrough — top-frame), forcing that one step through the
- * `resolveDeepLocatorCandidates` fallback under test; every other
- * frame-scoped step (First/Last Name fill, Submit) resolves normally,
- * mirroring `flow-runner.iframe-e2e.test.ts`'s
- * `makeFakeStagehandForAcceptanceSequence`. `act(instruction: string)`
- * (attempt 1, every step) always phantom-fails, forcing every step through
- * attempt 2's observe-act path.
+ * Fake `Stagehand`: `observe()` is blind (`[]`) for EVERY frame-scoped
+ * instruction — the "Manual Application" click, the First/Last Name fills,
+ * and the Submit click alike — across every scoping (focused, unfocused,
+ * and — via the shared fallthrough — top-frame), forcing every frame-scoped
+ * step through the `resolveDeepLocatorCandidates` fallback under test. That
+ * is the actual field condition the bug report names: `observe()` cannot
+ * see into the cross-origin OOPIF at all, not selectively for one step. A
+ * fixture where every OTHER frame-scoped step resolved normally via
+ * Stagehand's own `act()` would let a missing frame-scoped fill/select
+ * routing path go unnoticed — which is exactly what happened before
+ * bugfix-001–003 landed. `act(instruction: string)` (attempt 1, every step)
+ * always phantom-fails, forcing every step through attempt 2's
+ * observe-act/deepLocator path.
  */
-function makeDenseStagehand(childUrls: { current: string }, state: AcceptanceSequenceState) {
+function makeDenseStagehand() {
   const hopPrefix = `${IFRAME_SELECTOR} >> `;
   return {
-    act: async (input: unknown) => {
-      if (typeof input === "object" && input !== null && "selector" in input) {
-        const candidate = input as { selector: unknown };
-        if (candidate.selector === FIRST_NAME_CANDIDATE.selector) {
-          state.filledWith.set(FIRST_NAME_CANDIDATE.selector, "Jane");
-          return {
-            success: true,
-            message: "filled",
-            actionDescription: FIRST_NAME_CANDIDATE.description,
-            actions: [FIRST_NAME_CANDIDATE],
-          };
-        }
-        if (candidate.selector === LAST_NAME_CANDIDATE.selector) {
-          state.filledWith.set(LAST_NAME_CANDIDATE.selector, "Doe");
-          return {
-            success: true,
-            message: "filled",
-            actionDescription: LAST_NAME_CANDIDATE.description,
-            actions: [LAST_NAME_CANDIDATE],
-          };
-        }
-        if (candidate.selector === SUBMIT_CANDIDATE.selector) {
-          childUrls.current = THANK_YOU_URL;
-          state.submitted = true;
-          return {
-            success: true,
-            message: "clicked",
-            actionDescription: SUBMIT_CANDIDATE.description,
-            actions: [SUBMIT_CANDIDATE],
-          };
-        }
-      }
-      return {
-        success: false,
-        message: "no actionable candidate",
-        actionDescription: typeof input === "string" ? input : MANUAL_APPLICATION_STEP,
-        actions: [],
-      };
-    },
-    observe: async (instruction?: unknown, options?: { selector?: string }) => {
+    act: async (input: unknown) => ({
+      success: false,
+      message: "no actionable candidate",
+      actionDescription: typeof input === "string" ? input : MANUAL_APPLICATION_STEP,
+      actions: [],
+    }),
+    observe: async (_instruction?: unknown, options?: { selector?: string }) => {
       const isFrameScoped = options?.selector?.startsWith(hopPrefix) ?? false;
       if (!isFrameScoped) return TOP_FRAME_CANDIDATES;
-      if (instruction === FIRST_NAME_STEP) return [FIRST_NAME_CANDIDATE];
-      if (instruction === LAST_NAME_STEP) return [LAST_NAME_CANDIDATE];
-      if (instruction === SUBMIT_STEP) return [SUBMIT_CANDIDATE];
-      // "Manual Application" (both focused and unfocused) and any other
-      // instruction fall through here — blind, by design.
+      // Every frame-scoped instruction — focused, unfocused, click, fill,
+      // select alike — falls through here blind, by design.
       return [];
     },
   } as unknown as import("@browserbasehq/stagehand").Stagehand;
@@ -360,9 +392,19 @@ describe("flow-runner dense OOPIF acceptance regression (uchealth-7, offline fix
     expect(order).toHaveLength(371);
     const hop = registerDeepLocatorHopElements(deepLocatorFrame, HOP_SELECTOR, order);
     const targetIndex = order.length - 1;
+    const firstNameIndex = findElementIndex(order, "First Name");
+    const lastNameIndex = findElementIndex(order, "Last Name");
+    const submitIndex = findElementIndex(order, "Submit");
 
-    const stagehand = makeDenseStagehand(childUrls, state);
-    const page = makeDenseTopPage(topUrl, childUrls, deepLocatorFrame, state, targetIndex);
+    const stagehand = makeDenseStagehand();
+    const page = makeDenseTopPage(
+      topUrl,
+      childUrls,
+      deepLocatorFrame,
+      state,
+      targetIndex,
+      submitIndex
+    );
 
     const result = await runHealingFlow({
       stagehand,
@@ -383,16 +425,24 @@ describe("flow-runner dense OOPIF acceptance regression (uchealth-7, offline fix
     expect(result.submitStepSkipped).toBe(false);
     expect(result.submitVerified).toBe(true);
 
-    // Only the real, last-in-DOM-order button was ever clicked — not a
-    // decoy, not a layout-less duplicate, not a filler node.
+    // Only the real, last-in-DOM-order button and the Submit control were
+    // ever clicked — not a decoy, not a layout-less duplicate, not a filler
+    // node, and not the First/Last Name fields (those were filled, not
+    // clicked).
     expect(hop.elements[targetIndex]?.clicks).toBeGreaterThan(0);
+    expect(hop.elements[submitIndex]?.clicks).toBeGreaterThan(0);
     for (const [index, element] of hop.elements.entries()) {
-      if (index === targetIndex) continue;
+      if (index === targetIndex || index === submitIndex) continue;
       expect(element.clicks).toBe(0);
     }
 
-    expect(state.filledWith.get(FIRST_NAME_CANDIDATE.selector)).toBe("Jane");
-    expect(state.filledWith.get(LAST_NAME_CANDIDATE.selector)).toBe("Doe");
+    // Both name fields were filled via the deepLocator fill actuation path
+    // (`fillDeepLocatorCandidate`), not Stagehand's `act()` — the fake
+    // delegate's own `filledWith` recording proves the actuation, and
+    // `result.submitVerified`/`result.lastStepIndex` above already prove
+    // `verifyDomEffect`'s DOM re-read accepted it as verified.
+    expect(hop.elements[firstNameIndex]?.filledWith).toBe("Jane");
+    expect(hop.elements[lastNameIndex]?.filledWith).toBe("Doe");
     expect(state.uploadedFileName).toBe("resume.pdf");
     expect(state.submitted).toBe(true);
     expect(childUrls.current).toBe(THANK_YOU_URL);
@@ -424,11 +474,12 @@ describe("flow-runner dense OOPIF acceptance regression (uchealth-7, offline fix
     const order = buildDenseHopOrder(false);
     expect(order).toHaveLength(370);
     registerDeepLocatorHopElements(deepLocatorFrame, HOP_SELECTOR, order);
+    const submitIndex = findElementIndex(order, "Submit");
 
-    const stagehand = makeDenseStagehand(childUrls, state);
+    const stagehand = makeDenseStagehand();
     // No element ever matches "Manual Application", so no index should ever
     // be treated as the target — targetIndex: null makes every click a no-op.
-    const page = makeDenseTopPage(topUrl, childUrls, deepLocatorFrame, state, null);
+    const page = makeDenseTopPage(topUrl, childUrls, deepLocatorFrame, state, null, submitIndex);
 
     await expect(
       runHealingFlow({
