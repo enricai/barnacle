@@ -33,6 +33,9 @@ describe("config/loadConfig", () => {
     expect(cfg.scraper.frameReadyTimeoutMs).toBe(20_000);
     expect(cfg.scraper.frameDocumentReadyTimeoutMs).toBe(5_000);
     expect(cfg.scraper.frameEvaluateTimeoutMs).toBe(30_000);
+    expect(cfg.scraper.captureSessionIp).toBe(true);
+    expect(cfg.scraper.sessionIpEchoUrl).toBe("https://api.ipify.org?format=json");
+    expect(cfg.scraper.sessionIpTimeoutMs).toBe(10_000);
     // Default trustProxy=true matches the most common deploy shape
     // (behind an ALB/nginx/Cloudflare); bare-metal runners must opt out.
     expect(cfg.trustProxy).toBe(true);
@@ -82,6 +85,16 @@ describe("config/loadConfig", () => {
     // TRUST_PROXY=false is the bare-metal setting — flip it off so
     // X-Forwarded-For spoofing can't bypass IP-based rate limiting.
     expect(cfg.trustProxy).toBe(false);
+  });
+
+  it("overrides session-IP capture knobs via env", () => {
+    process.env.SCRAPER_CAPTURE_SESSION_IP = "false";
+    process.env.SCRAPER_SESSION_IP_ECHO_URL = "https://echo.internal/ip";
+    process.env.SCRAPER_SESSION_IP_TIMEOUT_MS = "5000";
+    const cfg = loadConfig();
+    expect(cfg.scraper.captureSessionIp).toBe(false);
+    expect(cfg.scraper.sessionIpEchoUrl).toBe("https://echo.internal/ip");
+    expect(cfg.scraper.sessionIpTimeoutMs).toBe(5000);
   });
 
   it("splits comma-separated API_KEYS_HASHED", () => {
