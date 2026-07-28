@@ -12,7 +12,11 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import { makeFilteredStagehandLogger, type StagehandLogLine } from "@/scraper/session-browserbase";
+import {
+  makeFilteredStagehandLogger,
+  makeOutboundIpAccessor,
+  type StagehandLogLine,
+} from "@/scraper/session-browserbase";
 import type { Logger } from "@/types/logging";
 
 function makeLoggerStub(): Logger {
@@ -201,5 +205,46 @@ describe("makeFilteredStagehandLogger", () => {
     reportSuppressed();
 
     expect(pinoLogger.info).not.toHaveBeenCalled();
+  });
+});
+
+describe("makeOutboundIpAccessor", () => {
+  it("triggers exactly one resolve for two concurrent calls and shares the result", async () => {
+    const resolve = vi.fn().mockResolvedValue("203.0.113.7");
+    const getOutboundIp = makeOutboundIpAccessor(resolve, { enabled: true });
+
+    const [first, second] = await Promise.all([getOutboundIp(), getOutboundIp()]);
+
+    expect(first).toBe("203.0.113.7");
+    expect(second).toBe("203.0.113.7");
+    expect(resolve).toHaveBeenCalledOnce();
+  });
+
+  it("returns the memoized value on a later call without re-resolving", async () => {
+    const resolve = vi.fn().mockResolvedValue("203.0.113.7");
+    const getOutboundIp = makeOutboundIpAccessor(resolve, { enabled: true });
+
+    await getOutboundIp();
+    expect(await getOutboundIp()).toBe("203.0.113.7");
+    expect(resolve).toHaveBeenCalledOnce();
+  });
+
+  it("resolves null without ever invoking the resolver when disabled", async () => {
+    const resolve = vi.fn().mockResolvedValue("203.0.113.7");
+    const getOutboundIp = makeOutboundIpAccessor(resolve, { enabled: false });
+
+    expect(await getOutboundIp()).toBeNull();
+    expect(await getOutboundIp()).toBeNull();
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a rejecting resolver as a resolved null, never a rejection", async () => {
+    const resolve = vi.fn().mockRejectedValue(new Error("echo navigation failed"));
+    const getOutboundIp = makeOutboundIpAccessor(resolve, { enabled: true });
+
+    await expect(getOutboundIp()).resolves.toBeNull();
+    // Memoizes the rejection-turned-null too — a second call doesn't retry.
+    await expect(getOutboundIp()).resolves.toBeNull();
+    expect(resolve).toHaveBeenCalledOnce();
   });
 });
