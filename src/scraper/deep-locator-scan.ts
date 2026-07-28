@@ -26,6 +26,17 @@
  * caller enumerates with the first and needs the second or third to
  * interpret a click outcome against whatever the scan already reported as
  * `visible`.
+ *
+ * {@link buildFillFrameCandidateExpr} and {@link buildSelectFrameCandidateExpr}
+ * extend the same one-round-trip actuation seam to the two write primitives
+ * `clickDeepLocatorCandidate` never needed: today
+ * `fillDeepLocatorCandidate`/`selectDeepLocatorCandidateOption`
+ * (`deep-locator-actuate.ts`) still pay a `deepLocator().nth(index).fill()`
+ * (or `.selectOption()`) round-trip PLUS a separate `.inputValue()`
+ * round-trip to confirm the write — each individually as expensive as
+ * `clickDeepLocatorCandidate`'s pre-fix per-index resolve. These two
+ * builders collapse write + read-back into the same evaluate call, out-of-
+ * range/not-actionable reported as data exactly like the click builder.
  */
 
 /**
@@ -234,6 +245,127 @@ export interface FrameCandidateClickResult {
   clicked: boolean;
   /** Present only when `clicked` is `false` — distinguishes a stale index from an unrendered element. */
   reason?: FrameCandidateClickSkipReason;
+}
+
+/** Reason {@link buildFillFrameCandidateExpr}/{@link buildSelectFrameCandidateExpr} report when they return `{ written: false }` instead of throwing — same two reasons {@link FrameCandidateClickSkipReason} reports for a click, since both re-run the identical resolve-and-check-visibility steps. */
+export type FrameCandidateWriteSkipReason = "out-of-range" | "not-actionable";
+
+/** Result of {@link buildFillFrameCandidateExpr}'s or {@link buildSelectFrameCandidateExpr}'s evaluate call. */
+export interface FrameCandidateWriteResult {
+  written: boolean;
+  /** Present only when `written` is `true` — `el.value` read back in the SAME evaluate call, so the caller can verify the write without a second round-trip. */
+  readBack?: string;
+  /** Present only when `written` is `false` — distinguishes a stale index from an unrendered element. */
+  reason?: FrameCandidateWriteSkipReason;
+}
+
+/**
+ * Builds the write body {@link buildFillFrameCandidateExpr} and
+ * {@link buildSelectFrameCandidateExpr} both interpolate: re-runs the SAME
+ * `root.querySelectorAll(innerSelector)` resolution
+ * {@link buildScanFrameCandidatesExpr}/{@link buildClickFrameCandidateExpr}
+ * use, guards out-of-range/not-actionable the same way as
+ * {@link buildClickFrameCandidateExpr}, then writes `value` through
+ * `nativePrototypeExpr`'s `value` setter descriptor rather than a bare
+ * `el.value = value` assignment — a React/Angular/Vue controlled component
+ * shadows the setter at the instance level, so a bare assignment can be
+ * silently absorbed by the framework's own value tracking while the DOM
+ * read-back still looks correct (a silent false positive); calling the
+ * descriptor's setter explicitly restores native behavior, mirroring
+ * `fillHtml5DateTimeInput`'s and `applySelectValue`'s identical workaround in
+ * `flow-runner.ts`. Falls back to a bare assignment when no such descriptor
+ * exists (a plain, unmanaged form control). Dispatches a bubbling `input`
+ * then `change` — the sequence a controlled component's `onChange` listens
+ * for — before reading `el.value` back into the returned payload, so the
+ * caller gets write + verify in one round-trip instead of a second
+ * `inputValue()` call.
+ *
+ * `nativePrototypeExpr` is interpolated verbatim as a JS expression
+ * evaluated inside the generated code (with `el` in scope) rather than
+ * passed as a resolved value, so {@link buildFillFrameCandidateExpr} can
+ * choose between `HTMLInputElement`/`HTMLTextAreaElement` based on the
+ * resolved element's own tag at evaluate-time.
+ */
+function buildWriteFrameCandidateExpr(
+  innerSelector: string,
+  index: number,
+  value: string,
+  nativePrototypeExpr: string,
+  root: string
+): string {
+  return `(() => {
+    const isVisible = ${IS_VISIBLE_EXPR};
+    const matches = Array.from(${root}.querySelectorAll(${JSON.stringify(innerSelector)}));
+    const el = matches[${JSON.stringify(index)}];
+    if (!el) return { written: false, reason: "out-of-range" };
+    if (!isVisible(el)) return { written: false, reason: "not-actionable" };
+    const value = ${JSON.stringify(value)};
+    const descriptor = Object.getOwnPropertyDescriptor(${nativePrototypeExpr}, "value");
+    if (descriptor && descriptor.set) { descriptor.set.call(el, value); } else { el.value = value; }
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return { written: true, readBack: el.value };
+  })()`;
+}
+
+/**
+ * Builds a self-contained evaluate expression that fills the `<input>`/
+ * `<textarea>` at `root.querySelectorAll(innerSelector)[index]` with
+ * `value` — the one-round-trip write half of
+ * {@link fillDeepLocatorCandidate}'s (`deep-locator-actuate.ts`) contract.
+ * See {@link buildWriteFrameCandidateExpr} for the shared write/dispatch/
+ * read-back mechanism and out-of-range/not-actionable reporting. Resolves
+ * the native value-setter descriptor off `HTMLTextAreaElement.prototype`
+ * when the matched element's own `tagName` is `"textarea"`, else
+ * `HTMLInputElement.prototype` — determined at evaluate-time (inside the
+ * generated code), since `innerSelector` may match a mix of input and
+ * textarea nodes (e.g. {@link INTERACTIVE_CANDIDATE_SELECTOR}).
+ *
+ * `root` overrides the traversal root expression (default `"document"`) and
+ * must match the `root` a prior {@link buildScanFrameCandidatesExpr} call
+ * used to derive `index`, mirroring
+ * {@link buildClickFrameCandidateExpr}'s `root` contract.
+ */
+export function buildFillFrameCandidateExpr(
+  innerSelector: string,
+  index: number,
+  value: string,
+  root = "document"
+): string {
+  const nativePrototypeExpr =
+    '(el.tagName && el.tagName.toLowerCase() === "textarea" ? HTMLTextAreaElement : HTMLInputElement).prototype';
+  return buildWriteFrameCandidateExpr(innerSelector, index, value, nativePrototypeExpr, root);
+}
+
+/**
+ * Builds a self-contained evaluate expression that sets the `<select>` at
+ * `root.querySelectorAll(innerSelector)[index]` to `value` — the
+ * one-round-trip write half of
+ * {@link selectDeepLocatorCandidateOption}'s (`deep-locator-actuate.ts`)
+ * contract. See {@link buildWriteFrameCandidateExpr} for the shared write/
+ * dispatch/read-back mechanism and out-of-range/not-actionable reporting.
+ * Resolves the native value-setter descriptor off
+ * `HTMLSelectElement.prototype`, mirroring `applySelectValue`'s identical
+ * `desc.set.call(sel, value)` workaround in `flow-runner.ts`.
+ *
+ * `root` overrides the traversal root expression (default `"document"`) and
+ * must match the `root` a prior {@link buildScanFrameCandidatesExpr} call
+ * used to derive `index`, mirroring
+ * {@link buildClickFrameCandidateExpr}'s `root` contract.
+ */
+export function buildSelectFrameCandidateExpr(
+  innerSelector: string,
+  index: number,
+  value: string,
+  root = "document"
+): string {
+  return buildWriteFrameCandidateExpr(
+    innerSelector,
+    index,
+    value,
+    "HTMLSelectElement.prototype",
+    root
+  );
 }
 
 /**
