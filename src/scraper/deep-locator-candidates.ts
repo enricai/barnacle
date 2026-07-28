@@ -14,7 +14,9 @@ import type { Page } from "@browserbasehq/stagehand";
 import { toErrorMessage } from "@/lib/errors";
 import { getLogger } from "@/lib/logging";
 import {
+  buildClickFrameCandidateExpr,
   buildScanFrameCandidatesExpr,
+  type FrameCandidateClickResult,
   type FrameCandidateScanResult,
 } from "@/scraper/deep-locator-scan";
 import { buildHopSelector, type FrameTarget, resolveFrameTarget } from "@/scraper/frame-target";
@@ -43,6 +45,28 @@ const DEFAULT_DEEP_LOCATOR_CALL_TIMEOUT_MS = 10_000;
  * this budget.
  */
 const DEFAULT_DEEP_LOCATOR_ENUMERATION_BUDGET_MS = 60_000;
+
+/**
+ * Additional click-watchdog budget charged per candidate `index`, on top of
+ * `callTimeoutMs`, for {@link clickDeepLocatorCandidate}'s legacy delegate
+ * fallback (the path taken when no batched frame-scoped click evaluate is
+ * available — see {@link scanFrameCandidatesBatched}'s click counterpart).
+ * Stagehand's `FrameSelectorResolver.resolveAtIndex(query, i)` resolves
+ * `Locator.nth(i)` via `resolveAll(query, {limit: i + 1})`, whose
+ * `resolveCss` loops one serial `Runtime.evaluate` round-trip per index up
+ * to and including `i`
+ * (node_modules/@browserbasehq/stagehand/dist/esm/lib/v3/understudy/selectorResolver.js:70,79-115)
+ * before the click itself ever dispatches — so a click at index `i` costs
+ * `i + 1` round-trips, not one, and a fixed `callTimeoutMs` (which only ever
+ * budgeted a single round-trip) starves any candidate past the index where
+ * `(i + 1) * measuredRoundTripMs` exceeds it (measured ~0.66s/round-trip
+ * through Browserbase's proxied CDP into a live cross-origin OOPIF — run-7:
+ * candidate 13 enumerated within a 60s budget, i.e. 91 cumulative
+ * round-trips). `callTimeoutMs` already covers the first round-trip; this
+ * constant is the budget added per each of the remaining `index` round-trips,
+ * rounded up from the measured cost to leave headroom for CDP jitter.
+ */
+const DEEP_LOCATOR_CLICK_INDEX_ROUND_TRIP_MS = 1_000;
 
 /** Overrides for the watchdog timeouts this module applies to every `deepLocator()` await; tests pass small values so cases don't burn wall-clock. */
 export interface DeepLocatorTimeoutOptions {
@@ -403,19 +427,85 @@ export async function resolveDeepLocatorCandidates(
     .map(({ candidate }) => candidate);
 }
 
+/** Narrows a batched-click evaluate result to {@link FrameCandidateClickResult}'s shape, guarding against a non-conforming payload (the same degrade-to-legacy-loop contract {@link isFrameCandidateScanResult} enforces for the scan side). */
+function isFrameCandidateClickResult(entry: unknown): entry is FrameCandidateClickResult {
+  if (typeof entry !== "object" || entry === null) return false;
+  const result = entry as Partial<FrameCandidateClickResult>;
+  if (typeof result.clicked !== "boolean") return false;
+  if (result.clicked) return true;
+  return result.reason === "out-of-range" || result.reason === "not-actionable";
+}
+
+/**
+ * Batched-click fast path: one `frameTarget.evaluate(buildClickFrameCandidateExpr(innerSelector, index))`
+ * round-trip replaces the legacy `nth(index).click()`, which (per
+ * {@link DEEP_LOCATOR_CLICK_INDEX_ROUND_TRIP_MS}'s docs) pays `index + 1`
+ * serial CDP round-trips through `resolveAtIndex`. Returns `null` (never
+ * throws) when no frame seam is available, the evaluate call rejects, or the
+ * resolved payload doesn't conform to {@link FrameCandidateClickResult} —
+ * every one of those degrades the caller to the legacy `nth(index).click()`
+ * path instead of losing the click, mirroring {@link scanFrameCandidatesBatched}'s
+ * degrade contract on the enumeration side.
+ */
+async function clickCandidateBatched(
+  page: Page,
+  frameSelector: string | null | undefined,
+  innerSelector: string,
+  index: number,
+  hopSelector: string,
+  timeoutOptions: DeepLocatorTimeoutOptions
+): Promise<FrameCandidateClickResult | null> {
+  const frameTarget = await resolveScanFrameTarget(page, frameSelector, timeoutOptions);
+  if (!frameTarget) return null;
+
+  let clickResult: unknown;
+  try {
+    clickResult = await frameTarget.evaluate<FrameCandidateClickResult>(
+      buildClickFrameCandidateExpr(innerSelector, index)
+    );
+  } catch (err) {
+    logger.warn(
+      `deepLocator batched click for ${hopSelector} nth=${index} failed, degrading to delegate click: ${toErrorMessage(err)}`
+    );
+    return null;
+  }
+  if (!isFrameCandidateClickResult(clickResult)) {
+    logger.warn(
+      `deepLocator batched click for ${hopSelector} nth=${index} returned a non-conforming payload, degrading to delegate click`
+    );
+    return null;
+  }
+  return clickResult;
+}
+
 /**
  * Clicks the candidate at `index` inside the frame scoped by `frameSelector`,
  * re-deriving the same hop selector `resolveDeepLocatorCandidates` used
  * rather than trusting a caller-supplied `xpath=` string, so the two stay in
  * lockstep even if a candidate's `selector` field is only ever used for
- * display/logging. `DeepLocatorDelegate.click()` resolves `Promise<void>` on
- * success and rejects on failure — it never reports success via a return
- * value — so callers must infer the outcome from whether this call throws
- * plus their own downstream DOM verification, not from a returned boolean.
- * A `click()` that exceeds `timeoutOptions.callTimeoutMs` (a wedged CDP
- * round-trip against a racy OOPIF frame) rejects with a `WatchdogTimeoutError`
- * the same as any other failure, preserving the "rejects on failure" contract
- * instead of hanging the caller forever.
+ * display/logging. Resolves on success and rejects on failure — the caller
+ * must infer the outcome from whether this call throws plus their own
+ * downstream DOM verification, not from a returned boolean.
+ *
+ * Prefers the one-round-trip {@link clickCandidateBatched} fast path when a
+ * frame seam is available (`timeoutOptions.frameTarget`, or one resolved
+ * internally the same way {@link scanFrameCandidatesBatched} does), falling
+ * back to the legacy `DeepLocatorDelegate.click()` — which never reports
+ * success via a return value, only via not rejecting — when no seam is
+ * available, the batched call fails/degrades, or it reports the index
+ * stale (`reason: "out-of-range"`). A batched `reason: "not-actionable"`
+ * result throws an error {@link isNodeNotActionableError} classifies, the
+ * same contract a real click against an unrendered node rejects with via the
+ * CDP `-32000 Node does not have a layout object` error, so a caller
+ * cascading through candidates treats both paths identically.
+ *
+ * The legacy fallback's watchdog scales with `index` (see
+ * {@link DEEP_LOCATOR_CLICK_INDEX_ROUND_TRIP_MS}) so a legitimately-reachable
+ * candidate isn't killed by a budget sized for a single round-trip. A
+ * `click()` that still exceeds that scaled budget (a wedged CDP round-trip
+ * against a racy OOPIF frame) rejects with a `WatchdogTimeoutError` the same
+ * as any other failure, preserving the "rejects on failure" contract instead
+ * of hanging the caller forever.
  */
 export async function clickDeepLocatorCandidate(
   page: Page,
@@ -426,8 +516,25 @@ export async function clickDeepLocatorCandidate(
 ): Promise<void> {
   const callTimeoutMs = timeoutOptions.callTimeoutMs ?? DEFAULT_DEEP_LOCATOR_CALL_TIMEOUT_MS;
   const hopSelector = buildHopSelector(frameSelector, innerSelector);
+
+  const batchedResult = await clickCandidateBatched(
+    page,
+    frameSelector,
+    innerSelector,
+    index,
+    hopSelector,
+    timeoutOptions
+  );
+  if (batchedResult?.clicked) return;
+  if (batchedResult?.reason === "not-actionable") {
+    throw new Error(
+      `deepLocator batched click for ${hopSelector} nth=${index}: node does not have a layout object`
+    );
+  }
+
+  const scaledCallTimeoutMs = callTimeoutMs + index * DEEP_LOCATOR_CLICK_INDEX_ROUND_TRIP_MS;
   await withWatchdog(() => page.deepLocator(hopSelector).nth(index).click(), {
-    timeoutMs: callTimeoutMs,
+    timeoutMs: scaledCallTimeoutMs,
     label: `deepLocator click() for ${hopSelector} nth=${index}`,
   });
 }
