@@ -117,6 +117,12 @@ function candidateSelector(hopSelector: string, index: number): string {
  */
 const NEGATION_MARKERS = /\b(?:do\s+not|don't|never|avoid)\b/gi;
 
+/** One quoted phrase from an instruction, tagged with whether a negation marker (`NEGATION_MARKERS`) governs it. See {@link extractTaggedPhrases}. */
+export interface TaggedPhrase {
+  text: string;
+  negated: boolean;
+}
+
 /**
  * Extracts every single-quoted phrase from `instruction`, tagging each as
  * negated when a negation marker (`NEGATION_MARKERS`) precedes it within the
@@ -126,9 +132,12 @@ const NEGATION_MARKERS = /\b(?:do\s+not|don't|never|avoid)\b/gi;
  * reach. Mirrors the quoted-phrase extraction convention in
  * `parseSelectStep`/`parseRadioStep` (`flow-runner.ts`) — same
  * `/'([^']+)'/g` shape — but here we need ALL quoted phrases plus their
- * polarity, not just one option/label pair.
+ * polarity, not just one option/label pair. Exported so `flow-runner.ts` can
+ * re-derive the exact same ranking {@link scoreCandidate} used to sort
+ * `deepLocatorCandidates`, to detect a tie for the top rank rather than
+ * duplicating this logic.
  */
-function extractTaggedPhrases(instruction: string): Array<{ text: string; negated: boolean }> {
+export function extractTaggedPhrases(instruction: string): TaggedPhrase[] {
   const negationStarts = [...instruction.matchAll(NEGATION_MARKERS)].map((m) => m.index);
   const quoted = [...instruction.matchAll(/'([^']+)'/g)];
   return quoted.map((m) => {
@@ -157,11 +166,11 @@ function normalize(text: string): string {
  * exact/substring match tiers, falling through to 0 for empty or
  * unrelated text so a structural container with no accessible text can
  * never outrank a candidate whose text actually matches the instruction.
+ * Exported so `flow-runner.ts` can detect a tie for the top rank among
+ * `resolveDeepLocatorCandidates`'s already-sorted output (see
+ * {@link extractTaggedPhrases}'s docblock).
  */
-function scoreCandidate(
-  accessibleText: string,
-  phrases: Array<{ text: string; negated: boolean }>
-): number {
+export function scoreCandidate(accessibleText: string, phrases: TaggedPhrase[]): number {
   const normalizedText = normalize(accessibleText);
   if (!normalizedText) return 0;
   const positives = phrases.filter((p) => !p.negated).map((p) => normalize(p.text));

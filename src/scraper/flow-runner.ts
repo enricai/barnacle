@@ -46,7 +46,9 @@ import {
   clickDeepLocatorCandidate,
   type DeepLocatorCandidate,
   type DeepLocatorTimeoutOptions,
+  extractTaggedPhrases,
   resolveDeepLocatorCandidates,
+  scoreCandidate,
 } from "@/scraper/deep-locator-candidates";
 import { clickFirstActionableCandidate } from "@/scraper/deep-locator-click";
 import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
@@ -6375,14 +6377,16 @@ export async function executeStepWithHealing(params: {
                     frameTarget?.frameSelector,
                     deepLocatorInnerSelector,
                     matched.index,
-                    fieldTarget.value
+                    fieldTarget.value,
+                    { frameTarget }
                   )
                 : await selectDeepLocatorCandidateOption(
                     page,
                     frameTarget?.frameSelector,
                     deepLocatorInnerSelector,
                     matched.index,
-                    fieldTarget.value
+                    fieldTarget.value,
+                    { frameTarget }
                   );
             if (actuated) {
               record.instruction = `deepLocator: ${matched.accessibleText || "(no accessible text)"}`;
@@ -6413,6 +6417,37 @@ export async function executeStepWithHealing(params: {
               `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${failureMessage}`
             );
             continue;
+          }
+          // A select step whose question is phrased un-quoted (parseSelectStep
+          // returns `questionLabel: null`) has no fieldLabel to route through
+          // findDeepLocatorCandidateByFieldLabel above, so ranking below falls
+          // back to the OPTION value alone — the same phrases
+          // resolveDeepLocatorCandidates already scored `deepLocatorCandidates`
+          // against. When more than one candidate ties for that top rank (e.g.
+          // two 'Yes'/'No' <select>s whose own accessible names never mention
+          // the option text), the click walk below would let DOM order silently
+          // decide, actuating a different screening question's <select> that
+          // happens to carry the same option. Refuse rather than guess; a
+          // unique top-ranked candidate (including the common single-<select>-
+          // in-frame case, where a tie is impossible) still reaches the walk.
+          if (selectStep && !selectStep.questionLabel) {
+            const optionPhrases = extractTaggedPhrases(step);
+            const optionScores = deepLocatorCandidates.map((candidate) =>
+              scoreCandidate(candidate.accessibleText, optionPhrases)
+            );
+            const topScore = Math.max(...optionScores);
+            const tiedForTop = optionScores.filter((score) => score === topScore).length;
+            if (tiedForTop > 1) {
+              const failureMessage = `deepLocator: select step's question is un-quoted and ${tiedForTop} candidates tie for relevance to "${selectStep.option}" (refusing to guess which control to select)`;
+              record.actResultSuccess = false;
+              record.errorMessage = failureMessage;
+              attempts.push(record);
+              failureReasons.push(failureMessage);
+              logger.info(
+                `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${failureMessage}`
+              );
+              continue;
+            }
           }
           // Actionable-candidate walk: a top pick that rejects with the CDP
           // `-32000 Node does not have a layout object` error (an unrendered
@@ -6450,7 +6485,8 @@ export async function executeStepWithHealing(params: {
                   frameTarget?.frameSelector,
                   deepLocatorInnerSelector,
                   candidate.index,
-                  actuation.value
+                  actuation.value,
+                  { frameTarget }
                 );
                 // selectDeepLocatorCandidateOption never throws on an ordinary
                 // failed write (see deep-locator-actuate.ts's writeAndVerify) —
@@ -6466,7 +6502,8 @@ export async function executeStepWithHealing(params: {
                   frameTarget?.frameSelector,
                   deepLocatorInnerSelector,
                   candidate.index,
-                  actuation.value
+                  actuation.value,
+                  { frameTarget }
                 );
                 if (!verified) throw new Error("-32000 Node does not have a layout object");
               } else {
