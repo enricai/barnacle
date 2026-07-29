@@ -28,10 +28,15 @@ import {
   makeFakeFrameClickByIndex,
   makeFakeFrameFillByIndex,
   makeFakeFrameScan,
+  makeFakeFrameSelectByIndex,
   registerDeepLocatorHopElements,
   registerDeepLocatorHopLatency,
 } from "@/scraper/deep-locator-fake";
-import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
+import {
+  buildSelectFrameCandidateExpr,
+  type FrameCandidateWriteResult,
+  INTERACTIVE_CANDIDATE_SELECTOR,
+} from "@/scraper/deep-locator-scan";
 import { advanceUntilSettled } from "@/scraper/fake-timer-advance";
 import { type HealingFlowStep, runHealingFlow, STEP_WATCHDOG_MS } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
@@ -67,6 +72,13 @@ import type { Logger } from "@/types/logging";
  * `state.filledWith` keyed by the exact `deeplocator=...>>nth=N` selector
  * `resolvedAction.selector` carries) instead of the old object-form `act()`
  * shortcut.
+ *
+ * The post-submit-surface test additionally sequences a `<select>` step
+ * (the GQ/general-questions page's screening question) into the same dense
+ * hop, alongside a same-option decoy `<select>` for a different question —
+ * pinning bugfix-001's frameTarget-threaded select actuation end to end
+ * through this real `runHealingFlow` stack, not just at the branch level
+ * `flow-runner.deep-locator-interactive-scope.test.ts` already covers.
  */
 
 const TOP_ORIGIN = "https://careers.uchealth.org";
@@ -102,6 +114,33 @@ const LAST_NAME_STEP = "Fill in the 'Last Name' field with 'Doe'";
 const UPLOAD_STEP = "Upload resume";
 const SUBMIT_STEP = "Click the final 'Submit' button";
 
+/** Option the GQ page's screening-question step selects. */
+const SCREENING_QUESTION_VALUE = "Yes";
+/**
+ * The GQ (general-questions) page's screening-question step. The question is
+ * QUOTED (unlike a bare "Select 'Yes' in the Country dropdown"), so
+ * `parseSelectStep` extracts a non-null `questionLabel` and the step routes
+ * through the deterministic field-label branch
+ * (`findDeepLocatorCandidateByFieldLabel`) — the same branch
+ * `FIRST_NAME_STEP`/`LAST_NAME_STEP` already exercise for fill, not the
+ * un-quoted-question ambiguity guard `flow-runner.deep-locator-interactive-
+ * scope.test.ts` already pins at branch level.
+ */
+const SCREENING_QUESTION_STEP = "Select 'Yes' in the 'Are you at least 18 years of age?' dropdown";
+/** Accessible name of the GQ page's genuine screening-question `<select>`. */
+const SCREENING_QUESTION_TEXT = "Are you at least 18 years of age?";
+/**
+ * A DIFFERENT screening question's `<select>` — the "same-option sibling"
+ * the bug report's ambiguity concern names: a real ATS renders more than one
+ * Yes/No dropdown on the GQ page, so a select actuation that picked by
+ * option value alone (rather than the question's own accessible name) could
+ * land on this decoy instead of the genuine target. Text reused verbatim
+ * from `flow-runner.deep-locator-interactive-scope.test.ts`'s un-quoted-
+ * select ambiguity fixture for consistency across the suite family.
+ */
+const SCREENING_QUESTION_DECOY_TEXT =
+  "Will you now or in the future require sponsorship to work legally in the US?";
+
 /**
  * Accessible names for the fill/submit targets living inside the SAME dense
  * hop as "Manual Application" — a real `<input>`/`<button>` has empty
@@ -115,6 +154,16 @@ const SUBMIT_STEP = "Click the final 'Submit' button";
 const FIRST_NAME_ELEMENT: FakeDeepLocatorElementSpec = { text: "First Name" };
 const LAST_NAME_ELEMENT: FakeDeepLocatorElementSpec = { text: "Last Name" };
 const SUBMIT_ELEMENT: FakeDeepLocatorElementSpec = { text: "Submit" };
+/** The GQ page's genuine screening-question `<select>` — `tagName: "select"` matches `buildSelectFrameCandidateExpr`'s `el.options || []` lookup, the same convention `deep-locator-fake.ts`'s `FakeDeepLocatorElement.tagName` docblock documents. */
+const SCREENING_QUESTION_ELEMENT: FakeDeepLocatorElementSpec = {
+  text: SCREENING_QUESTION_TEXT,
+  tagName: "select",
+};
+/** The same-option ("Yes"/"No") sibling `<select>` for a different screening question — see {@link SCREENING_QUESTION_DECOY_TEXT}. */
+const SCREENING_QUESTION_DECOY_ELEMENT: FakeDeepLocatorElementSpec = {
+  text: SCREENING_QUESTION_DECOY_TEXT,
+  tagName: "select",
+};
 
 /** Unscoped/top-frame observe result — never the right candidate for any frame-scoped step, matching every sibling fixture's "wrong list if scoping is lost" shape. */
 const TOP_FRAME_CANDIDATES = [
@@ -169,8 +218,19 @@ const FORM_FIELD_ELEMENTS: ReadonlyArray<FakeDeepLocatorElementSpec | undefined>
  * hop over the dense Talemetry wizard resolves to: filler blocks with the
  * four decoys and the three fill/submit targets interspersed between them,
  * and — when `includeTarget` — the real "Manual Application" button LAST.
+ *
+ * `includeScreeningQuestion` (default `false`, so every existing caller's
+ * element count/positions are unchanged) appends the GQ page's genuine
+ * screening-question `<select>` and its same-option decoy sibling just
+ * before the click target — 373 elements total with `includeTarget`, 372
+ * without — modeling the screening-questions leg of the acceptance path
+ * living in the SAME dense hop as the click/fill/submit targets, not a
+ * separate fixture.
  */
-function buildDenseHopOrder(includeTarget: boolean): Array<string | FakeDeepLocatorElementSpec> {
+function buildDenseHopOrder(
+  includeTarget: boolean,
+  includeScreeningQuestion = false
+): Array<string | FakeDeepLocatorElementSpec> {
   const order: Array<string | FakeDeepLocatorElementSpec> = [];
   for (const [index, size] of FILLER_BLOCK_SIZES.entries()) {
     order.push(...Array.from({ length: size }, () => ""));
@@ -178,6 +238,9 @@ function buildDenseHopOrder(includeTarget: boolean): Array<string | FakeDeepLoca
     if (decoy) order.push(decoy);
     const formField = FORM_FIELD_ELEMENTS[index];
     if (formField) order.push(formField);
+  }
+  if (includeScreeningQuestion) {
+    order.push(SCREENING_QUESTION_DECOY_ELEMENT, SCREENING_QUESTION_ELEMENT);
   }
   if (includeTarget) order.push("Manual Application");
   return order;
@@ -200,6 +263,34 @@ interface AcceptanceSequenceState {
 }
 
 /**
+ * Wiring the GQ page's screening-question select step needs beyond the
+ * sequence's other steps: the batched select-by-index seam it must route
+ * through, plus spies proving the legacy per-index `selectOption()`/
+ * `inputValue()` fallback never fires. `null` (every existing caller) wires
+ * no screening-question handling into the fixture at all — a `evaluate` call
+ * for a select step it doesn't expect would fall through to the shared `null`
+ * default, same as any other unrecognized expression.
+ */
+interface ScreeningSelectWiring {
+  /** Index of the screening question's OWN `<select>` inside the dense hop — the only index {@link selectByIndexSpy}/`buildSelectFrameCandidateExpr` should ever be called with. */
+  readonly index: number;
+  /** Wraps {@link makeFakeFrameSelectByIndex}'s fake — fires once per batched `buildSelectFrameCandidateExpr` evaluate this fixture answers. */
+  readonly selectByIndexSpy: ReturnType<
+    typeof vi.fn<
+      (
+        index: number,
+        optionValue: string,
+        expression?: unknown
+      ) => Promise<FrameCandidateWriteResult>
+    >
+  >;
+  /** Fires only on an actual per-index `nth(index).selectOption()` delegate invocation — asserted never called, the negative half of the batched-fast-path proof. */
+  readonly legacySelectSpy: ReturnType<typeof vi.fn<() => void>>;
+  /** Fires only on an actual per-index `nth(index).inputValue()` delegate invocation. */
+  readonly legacyInputValueSpy: ReturnType<typeof vi.fn<() => void>>;
+}
+
+/**
  * Child `Frame` fake: `location.href`/`document.readyState`/fill-readback/
  * upload/submitted-state probes mirror `flow-runner.iframe-e2e.test.ts`'s
  * `makeAcceptanceChildFrame` exactly, plus one addition — an `evaluate` call
@@ -213,20 +304,38 @@ interface AcceptanceSequenceState {
  * makes) rejects the same way a live cross-origin CDP frame session does once
  * its frame detaches, exercising `snapshotPage`'s `page.url()` fallback
  * (`flow-runner.submit-verify-frame-scope.test.ts` pins the same seam).
+ * `screeningSelect` (default `null`, every pre-existing caller) additionally
+ * routes the screening-question step's `buildSelectFrameCandidateExpr`
+ * evaluate — matched by exact string equality, the same convention
+ * `flow-runner.oopif-fill-throughput.test.ts`'s `SELECT_EXPR` uses — to
+ * {@link ScreeningSelectWiring.selectByIndexSpy} instead of falling through
+ * to the shared `null` default and forcing a degrade to the legacy delegate.
  */
 function makeDenseChildFrame(
   childUrls: { current: string },
   state: AcceptanceSequenceState,
   deepLocatorFrame: FakeDeepLocatorFrame,
-  detached: { current: boolean }
+  detached: { current: boolean },
+  screeningSelect: ScreeningSelectWiring | null = null
 ) {
   const scan = makeFakeFrameScan(deepLocatorFrame, HOP_SELECTOR);
+  const screeningSelectExpr = screeningSelect
+    ? buildSelectFrameCandidateExpr(
+        INTERACTIVE_CANDIDATE_SELECTOR,
+        screeningSelect.index,
+        SCREENING_QUESTION_VALUE
+      )
+    : null;
   return {
     evaluate: async (expr: unknown) => {
       if (detached.current) throw new Error("Execution context was destroyed");
       const src = String(expr);
       if (src === "location.href") return childUrls.current;
       if (src === "document.readyState") return "complete";
+      if (screeningSelectExpr !== null && src === screeningSelectExpr) {
+        // biome-ignore lint/style/noNonNullAssertion: screeningSelectExpr is only non-null when screeningSelect is set
+        return screeningSelect!.selectByIndexSpy(screeningSelect!.index, SCREENING_QUESTION_VALUE);
+      }
       if (src.includes("isVisible")) return scan();
       if (src.includes("outerHTML") && src.includes("innerText")) {
         return { html: 500, text: "1:apply" };
@@ -298,6 +407,11 @@ interface PostSubmitDetachConfig {
  * same key `makeDenseChildFrame`'s `locator(selector).first().inputValue()`
  * reads back, so `flow-runner.ts`'s own `verifyDomEffect` (not just this
  * test's assertions) sees the fill and marks the step verified.
+ *
+ * `screeningSelect` (default `null`) is threaded straight into
+ * {@link makeDenseChildFrame} and additionally wraps `nth(index).selectOption()`/
+ * `.inputValue()` here so the legacy per-index select spies fire only on an
+ * actual delegate invocation, never on the batched fast path.
  */
 function makeDenseTopPage(
   topUrl: { current: string },
@@ -306,11 +420,18 @@ function makeDenseTopPage(
   state: AcceptanceSequenceState,
   targetIndex: number | null,
   submitIndex: number,
-  postSubmitDetach: PostSubmitDetachConfig | null = null
+  postSubmitDetach: PostSubmitDetachConfig | null = null,
+  screeningSelect: ScreeningSelectWiring | null = null
 ) {
   const session = { on: () => {}, off: () => {} };
   const detached = { current: false };
-  const childFrame = makeDenseChildFrame(childUrls, state, deepLocatorFrame, detached);
+  const childFrame = makeDenseChildFrame(
+    childUrls,
+    state,
+    deepLocatorFrame,
+    detached,
+    screeningSelect
+  );
   const fakeDeepLocator = makeFakeDeepLocator(deepLocatorFrame);
   const wrappedDeepLocator = (selector: string) => {
     const delegate = fakeDeepLocator(selector);
@@ -339,6 +460,23 @@ function makeDenseTopPage(
           fill: async (value: string) => {
             await nthDelegate.fill(value);
             state.filledWith.set(`deeplocator=${selector} >> nth=${index}`, value);
+          },
+          selectOption: async (values: string | string[]) => {
+            if (screeningSelect && index === screeningSelect.index) {
+              screeningSelect.legacySelectSpy();
+            }
+            return nthDelegate.selectOption(values);
+          },
+          inputValue: async () => {
+            // Scoped to the screening-question's own index — the First/
+            // Last Name fill steps' legacy fallback also reads `inputValue()`
+            // (its own write/read-back pair, unrelated to the select
+            // actuation this spy exists to prove never degrades), and would
+            // otherwise be miscounted as a select-path delegate call.
+            if (screeningSelect && index === screeningSelect.index) {
+              screeningSelect.legacyInputValueSpy();
+            }
+            return nthDelegate.inputValue();
           },
         };
       },
@@ -423,6 +561,24 @@ const ACCEPTANCE_STEPS: HealingFlowStep[] = [
   { instruction: MANUAL_APPLICATION_STEP, optional: false, upload: false, submitStep: false },
   { instruction: FIRST_NAME_STEP, optional: false, upload: false, submitStep: false },
   { instruction: LAST_NAME_STEP, optional: false, upload: false, submitStep: false },
+  { instruction: UPLOAD_STEP, optional: false, upload: true, submitStep: false },
+  { instruction: SUBMIT_STEP, optional: false, upload: false, submitStep: true },
+];
+
+/**
+ * The full acceptance sequence PLUS the GQ page's screening-question select
+ * step, inserted after the name fields and before upload — the position a
+ * real ATS wizard's screening-questions page occupies between basic info and
+ * the résumé-upload step. Kept as its own array (rather than editing
+ * `ACCEPTANCE_STEPS` in place) so the click-cascade/visibility-filter
+ * regression tests above and the throughput describe block below stay
+ * exactly as measured, unaffected by a step neither exists to cover.
+ */
+const SCREENING_ACCEPTANCE_STEPS: HealingFlowStep[] = [
+  { instruction: MANUAL_APPLICATION_STEP, optional: false, upload: false, submitStep: false },
+  { instruction: FIRST_NAME_STEP, optional: false, upload: false, submitStep: false },
+  { instruction: LAST_NAME_STEP, optional: false, upload: false, submitStep: false },
+  { instruction: SCREENING_QUESTION_STEP, optional: false, upload: false, submitStep: false },
   { instruction: UPLOAD_STEP, optional: false, upload: true, submitStep: false },
   { instruction: SUBMIT_STEP, optional: false, upload: false, submitStep: true },
 ];
@@ -515,7 +671,7 @@ describe("flow-runner dense OOPIF acceptance regression (uchealth-7, offline fix
     expect(loggerStub.warn).not.toHaveBeenCalledWith(expect.stringMatching(/-32000/));
   });
 
-  it("drives the same 371-candidate dense hop through to the report's real post-submit surface: an intermediate child '.../gq' URL, then the OOPIF detaches while the TOP window lands on the careers thank-you page", async () => {
+  it("drives the same dense hop — plus the GQ page's screening-question select — through to the report's real post-submit surface: an intermediate child '.../gq' URL, then the OOPIF detaches while the TOP window lands on the careers thank-you page", async () => {
     const topUrl = { current: `${TOP_ORIGIN}/jobs/123/apply` };
     const childUrls = { current: CHILD_SRC };
     const state: AcceptanceSequenceState = {
@@ -525,15 +681,23 @@ describe("flow-runner dense OOPIF acceptance regression (uchealth-7, offline fix
       submitted: false,
     };
     const deepLocatorFrame: FakeDeepLocatorFrame = new Map();
-    const order = buildDenseHopOrder(true);
-    expect(order).toHaveLength(371);
+    const order = buildDenseHopOrder(true, true);
+    expect(order).toHaveLength(373);
     const hop = registerDeepLocatorHopElements(deepLocatorFrame, HOP_SELECTOR, order);
     const targetIndex = order.length - 1;
     const firstNameIndex = findElementIndex(order, "First Name");
     const lastNameIndex = findElementIndex(order, "Last Name");
     const submitIndex = findElementIndex(order, "Submit");
+    const screeningQuestionIndex = findElementIndex(order, SCREENING_QUESTION_TEXT);
+    const screeningDecoyIndex = findElementIndex(order, SCREENING_QUESTION_DECOY_TEXT);
 
     const stagehand = makeDenseStagehand();
+    const screeningSelect: ScreeningSelectWiring = {
+      index: screeningQuestionIndex,
+      selectByIndexSpy: vi.fn(makeFakeFrameSelectByIndex(deepLocatorFrame, HOP_SELECTOR)),
+      legacySelectSpy: vi.fn(),
+      legacyInputValueSpy: vi.fn(),
+    };
     const page = makeDenseTopPage(
       topUrl,
       childUrls,
@@ -541,13 +705,14 @@ describe("flow-runner dense OOPIF acceptance regression (uchealth-7, offline fix
       state,
       targetIndex,
       submitIndex,
-      { gqUrl: GQ_URL, topThankYouUrl: TOP_THANK_YOU_URL }
+      { gqUrl: GQ_URL, topThankYouUrl: TOP_THANK_YOU_URL },
+      screeningSelect
     );
 
     const result = await runHealingFlow({
       stagehand,
       page,
-      steps: ACCEPTANCE_STEPS,
+      steps: SCREENING_ACCEPTANCE_STEPS,
       logger: SILENT_LOGGER,
       anthropic: null,
       resumeFixture: {
@@ -559,7 +724,7 @@ describe("flow-runner dense OOPIF acceptance regression (uchealth-7, offline fix
       submittedStateSelectors: [SUBMITTED_STATE_SELECTOR],
     });
 
-    expect(result.lastStepIndex).toBe(ACCEPTANCE_STEPS.length - 1);
+    expect(result.lastStepIndex).toBe(SCREENING_ACCEPTANCE_STEPS.length - 1);
     expect(result.submitStepSkipped).toBe(false);
     expect(result.submitVerified).toBe(true);
 
@@ -576,6 +741,22 @@ describe("flow-runner dense OOPIF acceptance regression (uchealth-7, offline fix
     expect(hop.elements[lastNameIndex]?.filledWith).toBe("Doe");
     expect(state.uploadedFileName).toBe("resume.pdf");
     expect(state.submitted).toBe(true);
+
+    // GQ page's screening-question select: actuated the <select> whose OWN
+    // accessible name matches the quoted question, not the same-option
+    // ("Yes"/"No") sibling belonging to a different screening question —
+    // and did so via the one-round-trip batched `buildSelectFrameCandidateExpr`
+    // fast path, never the legacy per-index `selectOption()`/`inputValue()`
+    // delegate pair.
+    expect(screeningSelect.selectByIndexSpy).toHaveBeenCalledTimes(1);
+    expect(screeningSelect.selectByIndexSpy).toHaveBeenCalledWith(
+      screeningQuestionIndex,
+      SCREENING_QUESTION_VALUE
+    );
+    expect(screeningSelect.legacySelectSpy).not.toHaveBeenCalled();
+    expect(screeningSelect.legacyInputValueSpy).not.toHaveBeenCalled();
+    expect(hop.elements[screeningQuestionIndex]?.filledWith).toBe(SCREENING_QUESTION_VALUE);
+    expect(hop.elements[screeningDecoyIndex]?.filledWith).toBeNull();
 
     // The report's actual sequence: the child frame lands on the
     // intermediate `.../gq` URL (never a child-origin thank-you page — that
