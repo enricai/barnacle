@@ -1,3 +1,4 @@
+import { isValid, parseISO } from "date-fns";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { dispatch } from "@/plugins/loader";
@@ -190,14 +191,17 @@ describe("dispatch — records the acquired session's outbound IP on the submiss
     expect(mockCaptureSubmissionEnvelope).toHaveBeenCalledWith(
       expect.objectContaining({
         status: "submitted",
-        session: {
+        session: expect.objectContaining({
           id: "sess_abc123",
           provider: "browserbase",
           ip: "203.0.113.42",
-          ipCapturedAt: expect.any(String),
-        },
+        }),
       })
     );
+    const call = mockCaptureSubmissionEnvelope.mock.calls[0]?.[0] as {
+      session: { ipCapturedAt: string | null };
+    };
+    expect(isValid(parseISO(call.session.ipCapturedAt as string))).toBe(true);
   });
 
   it("(b) still carries the browser session's outbound IP on the error envelope when execute() throws", async () => {
@@ -227,6 +231,74 @@ describe("dispatch — records the acquired session's outbound IP on the submiss
           provider: "browserbase",
           ip: "198.51.100.7",
           ipCapturedAt: expect.any(String),
+        },
+      })
+    );
+  });
+
+  it("(e) pairs a null outbound IP with a null ipCapturedAt when getOutboundIp resolves null", async () => {
+    const fakeSession = createFakeSession(null);
+    mockRunWithSession.mockImplementation((task: (session: unknown) => Promise<unknown>) =>
+      task(fakeSession)
+    );
+    const context = buildContext();
+    const plugin: SitePlugin<unknown, unknown> = {
+      meta: {
+        siteId: "test-site",
+        displayName: "Test Site",
+        bodySchema: {} as never,
+        responseSchema: {} as never,
+      },
+      execute: vi.fn().mockResolvedValue(successResult),
+    };
+
+    await dispatch(plugin, {}, context);
+
+    expect(mockCaptureSubmissionEnvelope).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "submitted",
+        session: {
+          id: "sess_abc123",
+          provider: "browserbase",
+          ip: null,
+          ipCapturedAt: null,
+        },
+      })
+    );
+  });
+
+  it("(f) pairs a null outbound IP with a null ipCapturedAt for a session with no getOutboundIp accessor (Steel)", async () => {
+    const steelSession = {
+      stagehand: {},
+      limiter: {},
+      sessionId: "sess_steel_456",
+      provider: "steel" as const,
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    mockRunWithSession.mockImplementation((task: (session: unknown) => Promise<unknown>) =>
+      task(steelSession)
+    );
+    const context = buildContext();
+    const plugin: SitePlugin<unknown, unknown> = {
+      meta: {
+        siteId: "test-site",
+        displayName: "Test Site",
+        bodySchema: {} as never,
+        responseSchema: {} as never,
+      },
+      execute: vi.fn().mockResolvedValue(successResult),
+    };
+
+    await dispatch(plugin, {}, context);
+
+    expect(mockCaptureSubmissionEnvelope).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "submitted",
+        session: {
+          id: "sess_steel_456",
+          provider: "steel",
+          ip: null,
+          ipCapturedAt: null,
         },
       })
     );
