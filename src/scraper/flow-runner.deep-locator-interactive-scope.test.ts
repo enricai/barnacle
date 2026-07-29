@@ -725,6 +725,7 @@ describe("flow-runner deepLocator actuation — attempt-2/4 frameTarget reuse an
   it("select step with an un-quoted question label ('Select 'Yes' for the question about requiring visa sponsorship') refuses rather than actuating an option-value-ranked candidate, when two <select> candidates both tie for 'Yes' relevance", async () => {
     const frame: FakeDeepLocatorFrame = new Map();
     const scopedHopSelector = `${FRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
+    const selectScopedHopSelector = `${FRAME_SELECTOR} >> select`;
     // Neither candidate's own accessible name mentions "Yes" — both tie at
     // relevance score 0 against the step's only quoted phrase (the option),
     // the exact ranking-tie the bug report describes ("a different
@@ -732,6 +733,15 @@ describe("flow-runner deepLocator actuation — attempt-2/4 frameTarget reuse an
     // option"). DOM order would otherwise silently pick element 0 — the
     // WRONG question for this step's un-quoted "visa sponsorship" prose.
     registerDeepLocatorHopElements(frame, scopedHopSelector, [
+      "Are you at least 18 years of age?",
+      "Will you now or in the future require sponsorship to work legally in the US?",
+    ]);
+    // The tie check resolves a fresh "select"-only hop (see flow-runner.ts's
+    // un-quoted-select branch) so it can't be fooled by unrelated
+    // non-<select> candidates tying at the same score — both real targets
+    // here ARE <select>s, so they must be registered at this hop too, or the
+    // narrowed tie check would see zero candidates and never refuse.
+    registerDeepLocatorHopElements(frame, selectScopedHopSelector, [
       "Are you at least 18 years of age?",
       "Will you now or in the future require sponsorship to work legally in the US?",
     ]);
@@ -766,5 +776,72 @@ describe("flow-runner deepLocator actuation — attempt-2/4 frameTarget reuse an
     fillSpy.mockRestore();
     selectSpy.mockRestore();
     clickSpy.mockRestore();
+  });
+
+  it("select step with an un-quoted question label does NOT refuse on a dense form whose only tie is against unrelated non-<select> decoys (a 'First Name' input, a 'Submit Application' button) sharing the single genuine <select>'s score of 0 — the walk still reaches and selects the one true target", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    const scopedHopSelector = `${FRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
+    const selectScopedHopSelector = `${FRAME_SELECTOR} >> select`;
+    // None of the three interactive-scoped candidates' accessible names
+    // mention "Yes" — every ordinary dense form control (an unrelated text
+    // input, an unrelated submit button) ties at score 0 right alongside the
+    // genuine <select>, whose own accessible name ("Do you require visa
+    // sponsorship?") never restates the quoted option either. Only ONE of
+    // the three is actually a <select> (tagName below, and registration at
+    // the select-scoped hop) — the tie check must see just that one
+    // candidate and refuse to guess only among real <select>s, not among
+    // this whole decoy-heavy set.
+    registerDeepLocatorHopElements(frame, scopedHopSelector, [
+      { text: "First Name", tagName: "input" },
+      { text: "Submit Application", tagName: "button" },
+      { text: "Do you require visa sponsorship?", tagName: "select" },
+    ]);
+    registerDeepLocatorHopElements(frame, selectScopedHopSelector, [
+      "Do you require visa sponsorship?",
+    ]);
+    registerDeepLocatorHop(frame, `${FRAME_SELECTOR} >> *`, "First Name");
+    const page = makeDeepLocatorPage(frame);
+
+    const fillSpy = vi.spyOn(deepLocatorActuateModule, "fillDeepLocatorCandidate");
+    const selectSpy = vi.spyOn(deepLocatorActuateModule, "selectDeepLocatorCandidateOption");
+    const attemptsByFailure: AttemptRecord[][] = [];
+
+    // Same shape as the bugfix-003 "select step" walk test above: a
+    // deepLocator write has no downstream verification signal
+    // (`verifyDomEffect` can't resolve a `deeplocator=` selector), so the
+    // cascade as a whole still exhausts and rejects — what's under test here
+    // is that the un-quoted-question guard does NOT refuse before the walk
+    // ever runs, and that the walk lands on the one genuine <select>, not a
+    // decoy.
+    await expect(
+      runStep(
+        page,
+        "Select 'Yes' for the question about requiring visa sponsorship",
+        attemptsByFailure
+      )
+    ).rejects.toThrow(/failed verification after \d+ attempts/);
+
+    expect(fillSpy).not.toHaveBeenCalled();
+    expect(selectSpy).toHaveBeenCalledWith(
+      page,
+      FRAME_SELECTOR,
+      INTERACTIVE_CANDIDATE_SELECTOR,
+      2,
+      "Yes",
+      expect.objectContaining({ frameTarget: expect.anything() })
+    );
+
+    const attempts = attemptsByFailure[0] ?? [];
+    expect(attempts.some((a) => a.errorMessage?.includes("tie for relevance"))).toBe(false);
+    const deepLocatorAttempt = attempts.find((a) => a.resolvedMethod === "selectOption");
+    expect(deepLocatorAttempt?.actResultSuccess).toBe(true);
+    expect(deepLocatorAttempt?.resolvedArguments).toEqual(["Yes"]);
+
+    expect(frame.get(scopedHopSelector)?.elements[0]?.selectedWith).toBeNull();
+    expect(frame.get(scopedHopSelector)?.elements[1]?.selectedWith).toBeNull();
+    expect(frame.get(scopedHopSelector)?.elements[2]?.selectedWith).toEqual(["Yes"]);
+
+    fillSpy.mockRestore();
+    selectSpy.mockRestore();
   });
 });
