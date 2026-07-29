@@ -35,7 +35,7 @@ import {
   registerDeepLocatorHopLatency,
 } from "@/scraper/deep-locator-fake";
 import { isNodeNotActionableError } from "@/scraper/deep-locator-scan";
-import { resolveFrameTarget } from "@/scraper/frame-target";
+import { probeAttachedFrameTarget, resolveFrameTarget } from "@/scraper/frame-target";
 
 const STILL_PENDING = Symbol("still-pending");
 
@@ -794,34 +794,20 @@ describe("makeFakeFrameResolutionPage", () => {
     expect(target.frameSelector).toBeNull();
   });
 
-  /**
-   * The seed for this subtask asked this case to resolve through perf-001's
-   * `probeAttachedFrameTarget` (`frame-target.ts`) instead. `perf-001` is a
-   * sibling subtask with no `depends_on`/`requires` edge to this one, and its
-   * commit had not been merged into this branch at implementation time —
-   * importing it here would make this file fail to compile/run in isolation.
-   * This asserts the same underlying property (the fake genuinely settles
-   * after `probeDelayMs`, rather than hanging, once given an adequate real
-   * budget) via the existing polling `resolveFrameTarget` instead; see
-   * `criteria/perf-002.md` for the full rationale. Once both subtasks land on
-   * `main`, a follow-up can freely repoint this same assertion at
-   * `probeAttachedFrameTarget` with zero changes needed to the fake.
-   */
-  it("case (b, cont.): the same latency-realistic pair still resolves once resolveFrameTarget is given a real, non-zero attach budget covering the delay", async () => {
+  it("case (b, cont.): the same latency-realistic pair still resolves once probeAttachedFrameTarget is given a real, non-zero probe budget covering the delay", async () => {
     const { page } = makeFakeFrameResolutionPage({
       iframeSelector: IFRAME_SELECTOR,
       childSrc: CHILD_SRC,
       probeDelayMs: 5,
     });
 
-    const target = await resolveFrameTarget(page, IFRAME_SELECTOR, {
-      timeoutMs: 50,
-      pollMs: 5,
+    const target = await probeAttachedFrameTarget(page, IFRAME_SELECTOR, {
       evaluateTimeoutMs: 50,
+      probeFloorMs: 50,
     });
 
-    expect(target.frame).not.toBeNull();
-    expect(target.frameSelector).toBe(IFRAME_SELECTOR);
+    expect(target?.frame).not.toBeNull();
+    expect(target?.frameSelector).toBe(IFRAME_SELECTOR);
   });
 
   it("matches an iframeSelector containing its own parentheses (:not(...), :has(...), :nth-child(...)) instead of truncating at the first inner ')'", async () => {
