@@ -12,6 +12,7 @@ const { mockScraperConfig } = vi.hoisted(() => ({
     frameReadyTimeoutMs: 40,
     frameDocumentReadyTimeoutMs: 30,
     frameEvaluateTimeoutMs: 15,
+    framePresenceProbeFloorMs: 25,
   },
 }));
 vi.mock("@/config", () => ({ config: { scraper: mockScraperConfig } }));
@@ -34,6 +35,7 @@ vi.mock("@/lib/logging", () => ({
 
 import {
   buildHopSelector,
+  probeAttachedFrameTarget,
   resolveFrameTarget,
   sleep as sleepMs,
   waitForChildFrameReady,
@@ -730,6 +732,145 @@ describe("resolveFrameTarget: bounds the total attach budget across candidate pr
 
     expect(target.frame).not.toBeNull();
     expect(target.frameSelector).toBe("iframe#talemetry_apply_iframe");
+  });
+});
+
+/**
+ * `makeFakePage`/`makeFakeFrame` resolve their `evaluate` calls with no
+ * internal `await` (same-tick microtask), which is what lets a `timeoutMs: 0`
+ * zero-budget probe win by accident in the other describe blocks above. These
+ * variants insert a real `setTimeout`-based delay (`sleepMs`) before
+ * resolving — the shape a genuine CDP round-trip has — so a probe only wins
+ * the race if its watchdog is actually armed with a real budget.
+ */
+function makeDelayedFakePage(options: {
+  mainUrl: string;
+  delayMs: number;
+  iframes?: Record<string, string>;
+  frames?: ReturnType<typeof makeFakeFrame>[];
+}) {
+  const iframes = options.iframes ?? {};
+  const frames = options.frames ?? [];
+  return {
+    url: () => options.mainUrl,
+    title: async () => "main document title",
+    evaluate: async (expr: unknown) => {
+      await sleepMs(options.delayMs);
+      const match = /document\.querySelector\((.+?)\)/.exec(String(expr));
+      const selector = match?.[1] ? (JSON.parse(match[1]) as string) : null;
+      if (!selector || !Object.hasOwn(iframes, selector)) return { matched: false, src: null };
+      return { matched: true, src: iframes[selector] ?? null };
+    },
+    locator: (selector: string) => ({ scope: "main" as const, selector }),
+    frames: () => frames,
+  };
+}
+
+function makeDelayedFakeFrame(url: string, delayMs: number) {
+  return {
+    evaluate: async (expr: unknown) => {
+      await sleepMs(delayMs);
+      if (expr === "location.href") return url;
+      return `frame-evaluated:${String(expr)}`;
+    },
+    locator: (selector: string) => ({ scope: "frame" as const, selector }),
+  };
+}
+
+describe("probeAttachedFrameTarget", () => {
+  const IFRAME_SELECTOR = "iframe#talemetry_apply_iframe";
+  const IFRAME_SRC = "https://apply.talemetry.com/application/abc-123";
+  const PROBE_DELAY_MS = 5;
+
+  function makeRoundTripDelayedPage() {
+    return makeDelayedFakePage({
+      mainUrl: "https://careers.uchealth.org/jobs/123",
+      delayMs: PROBE_DELAY_MS,
+      iframes: { [IFRAME_SELECTOR]: IFRAME_SRC },
+      frames: [makeDelayedFakeFrame(IFRAME_SRC, PROBE_DELAY_MS)],
+    });
+  }
+
+  it("resolves a child-frame FrameTarget when each probe settles after a real timer tick, unlike resolveFrameTarget(..., { timeoutMs: 0 }) against the same fake", async () => {
+    const probed = await probeAttachedFrameTarget(
+      makeRoundTripDelayedPage() as never,
+      IFRAME_SELECTOR,
+      { probeFloorMs: 50, evaluateTimeoutMs: 200 }
+    );
+    expect(probed).not.toBeNull();
+    expect(probed?.frame).not.toBeNull();
+    expect(probed?.frameSelector).toBe(IFRAME_SELECTOR);
+
+    const zeroBudget = await resolveFrameTarget(
+      makeRoundTripDelayedPage() as never,
+      IFRAME_SELECTOR,
+      {
+        timeoutMs: 0,
+        evaluateTimeoutMs: 200,
+      }
+    );
+    expect(zeroBudget.frame).toBeNull();
+    expect(zeroBudget.frameSelector).toBeNull();
+  });
+
+  it("does not enter a poll loop — settles well under FRAME_READY_POLL_MS (100ms) even though each probe requires a real timer tick", async () => {
+    const start = Date.now();
+    const probed = await probeAttachedFrameTarget(
+      makeRoundTripDelayedPage() as never,
+      IFRAME_SELECTOR,
+      {
+        probeFloorMs: 50,
+        evaluateTimeoutMs: 200,
+      }
+    );
+    const elapsed = Date.now() - start;
+
+    expect(probed?.frame).not.toBeNull();
+    // A poll loop would add at least one full FRAME_READY_POLL_MS (100ms)
+    // interval on top of the two ~5ms probes; staying well under it proves
+    // this is a single non-polling pass.
+    expect(elapsed).toBeLessThan(50);
+  });
+
+  it("defaults probeFloorMs/evaluateTimeoutMs from config.scraper.* when opts is omitted", async () => {
+    const probed = await probeAttachedFrameTarget(
+      makeRoundTripDelayedPage() as never,
+      IFRAME_SELECTOR
+    );
+
+    expect(probed?.frame).not.toBeNull();
+  });
+
+  it("returns null (not a main-frame fallback) when nothing matches within the floor", async () => {
+    const page = makeFakePage({ mainUrl: "https://careers.uchealth.org/jobs/123", frames: [] });
+
+    const probed = await probeAttachedFrameTarget(page as never, "iframe#does_not_exist", {
+      probeFloorMs: 20,
+    });
+
+    expect(probed).toBeNull();
+  });
+
+  it("bounds a single pass near the floor (not floor x candidate count) when several page.frames() candidates never settle", async () => {
+    const page = makeFakePage({
+      mainUrl: "https://careers.uchealth.org/jobs/123",
+      iframes: { [IFRAME_SELECTOR]: IFRAME_SRC },
+      frames: Array.from({ length: 5 }, () => makeHangingFrame()) as never,
+    });
+
+    const start = Date.now();
+    const probed = await probeAttachedFrameTarget(page as never, IFRAME_SELECTOR, {
+      probeFloorMs: 30,
+      evaluateTimeoutMs: 1000,
+    });
+    const elapsed = Date.now() - start;
+
+    expect(probed).toBeNull();
+    // Unbounded, 5 hanging candidates would pay 5 * evaluateTimeoutMs (1s)
+    // sequentially; the per-probe floor plus the existing
+    // `index > 0 && remainingBudgetMs() <= 0` break caps this near one
+    // probeFloorMs (the top-level probe here resolves same-tick).
+    expect(elapsed).toBeLessThan(100);
   });
 });
 
