@@ -32,6 +32,7 @@ import {
   registerDeepLocatorHopLatency,
 } from "@/scraper/deep-locator-fake";
 import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
+import { advanceUntilSettled } from "@/scraper/fake-timer-advance";
 import { type HealingFlowStep, runHealingFlow, STEP_WATCHDOG_MS } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
@@ -372,22 +373,33 @@ function makeDenseTopPage(
 }
 
 /**
- * Fake `Stagehand`: `observe()` is blind (`[]`) for EVERY frame-scoped
- * instruction — the "Manual Application" click, the First/Last Name fills,
- * and the Submit click alike — across every scoping (focused, unfocused,
- * and — via the shared fallthrough — top-frame), forcing every frame-scoped
- * step through the `resolveDeepLocatorCandidates` fallback under test. That
- * is the actual field condition the bug report names: `observe()` cannot
- * see into the cross-origin OOPIF at all, not selectively for one step. A
- * fixture where every OTHER frame-scoped step resolved normally via
- * Stagehand's own `act()` would let a missing frame-scoped fill/select
- * routing path go unnoticed — which is exactly what happened before
- * bugfix-001–003 landed. `act(instruction: string)` (attempt 1, every step)
+ * Fake `Stagehand`: `act(instruction: string)` (attempt 1, every step)
  * always phantom-fails, forcing every step through attempt 2's
- * observe-act/deepLocator path.
+ * observe-act/deepLocator path — that is the actual field condition the
+ * bug report names: `observe()` cannot see into the cross-origin OOPIF at
+ * all, not selectively for one step. A fixture where every OTHER
+ * frame-scoped step resolved normally via Stagehand's own `act()` would let
+ * a missing frame-scoped fill/select routing path go unnoticed — which is
+ * exactly what happened before bugfix-001–003 landed.
+ *
+ * `observe()` is blind (`[]`) for every frame-scoped instruction on its
+ * SECOND and later call — in particular attempt 2/4's own observe, the one
+ * that actually decides whether the step's candidate resolution falls back
+ * to `resolveDeepLocatorCandidates` — so the deepLocator cascade under test
+ * still runs for every step. The FIRST frame-scoped call for a given
+ * instruction (`probeStepBeforeAttempts`'s own focused-observe reachability
+ * check, run once per step before the attempt loop) returns a single dummy
+ * candidate instead, the same "observe once then blind" shape
+ * `flow-runner.oopif-click-throughput.test.ts` and `flow-runner.oopif-dense-
+ * form-budget.test.ts` already use — without it, every step's probe falls
+ * through its own focused → unfocused → deepLocator("*") reachability
+ * cascade before the step's real attempt loop even starts, tripling the
+ * per-step round-trip cost this file's latency-charged describe block
+ * charges for nothing this fixture needs to prove.
  */
 function makeDenseStagehand() {
   const hopPrefix = `${IFRAME_SELECTOR} >> `;
+  const probedInstructions = new Set<string>();
   return {
     act: async (input: unknown) => ({
       success: false,
@@ -395,11 +407,13 @@ function makeDenseStagehand() {
       actionDescription: typeof input === "string" ? input : MANUAL_APPLICATION_STEP,
       actions: [],
     }),
-    observe: async (_instruction?: unknown, options?: { selector?: string }) => {
+    observe: async (instruction?: unknown, options?: { selector?: string }) => {
       const isFrameScoped = options?.selector?.startsWith(hopPrefix) ?? false;
       if (!isFrameScoped) return TOP_FRAME_CANDIDATES;
-      // Every frame-scoped instruction — focused, unfocused, click, fill,
-      // select alike — falls through here blind, by design.
+      if (typeof instruction === "string" && !probedInstructions.has(instruction)) {
+        probedInstructions.add(instruction);
+        return [{ selector: "xpath=//probe-presence", description: "probe-presence" }];
+      }
       return [];
     },
   } as unknown as import("@browserbasehq/stagehand").Stagehand;
@@ -644,11 +658,6 @@ describe("flow-runner dense OOPIF acceptance regression (uchealth-7, offline fix
  */
 const MEASURED_DELEGATE_ROUND_TRIP_MS = 4_600;
 
-/** Fake-timer advance granularity: many small ticks (not a few large jumps) so `advanceTimersByTimeAsync` — which only drains a bounded number of microtask turns per call — gives the real `runHealingFlow`/`resolveFrameTarget`/`resolveDeepLocatorCandidates` await chain enough chances to fully settle between each timer step, the same reason `flow-runner.oopif-hang-watchdog.test.ts` ticks in 1s increments rather than one large jump. */
-const ADVANCE_STEP_MS = 1_000;
-/** Matches `flow-runner.oopif-hang-watchdog.test.ts`'s `advancePastDeepLocatorHangs` budget — comfortably above the ~5 attempts-worth of round trips this fixture's steps (with retries) can accumulate. */
-const MAX_ADVANCE_ITERATIONS = 300;
-
 /** In-memory model of the fields the latency-charged run uploads/submits inside the OOPIF — no `filledWith` map needed here (unlike `AcceptanceSequenceState` above): the fill/select actuators' own write-then-read-back IS the verification signal for the deepLocator field-target branch (`flow-runner.ts`'s `verifyDomEffect` never resolves a `deeplocator=` selector), so the fake hop's own per-element `filledWith` (asserted below) is sufficient. */
 interface AcceptanceLatencyState {
   fileInputCount: number;
@@ -806,28 +815,6 @@ function makeBatchedTopPage(
   return { page, scanSpy, clickByIndexSpy, fillByIndexSpy };
 }
 
-/**
- * Advances the fake clock in small increments until `promise` settles (or
- * `MAX_ADVANCE_ITERATIONS` is exhausted), then stops — NOT a fixed number of
- * ticks. Over-advancing past settlement would inflate the `Date.now()`-based
- * elapsed measurements the test takes immediately after, since the fake clock
- * has no notion of "idle" and just keeps advancing however far it's told to.
- */
-async function advanceUntilSettled(promise: Promise<unknown>): Promise<void> {
-  let settled = false;
-  promise.then(
-    () => {
-      settled = true;
-    },
-    () => {
-      settled = true;
-    }
-  );
-  for (let i = 0; i < MAX_ADVANCE_ITERATIONS && !settled; i++) {
-    await vi.advanceTimersByTimeAsync(ADVANCE_STEP_MS);
-  }
-}
-
 /** Matches {@link formatStepPrefix}'s `step ${n}/${total}` output at the start of a flow log line. */
 const STEP_LOG_PREFIX_PATTERN = /^step (\d+)\/\d+/;
 
@@ -967,7 +954,9 @@ describe("flow-runner dense OOPIF acceptance regression under measured latency (
       submittedStateSelectors: [SUBMITTED_STATE_SELECTOR],
     });
 
-    await advanceUntilSettled(resultPromise);
+    await advanceUntilSettled(resultPromise, {
+      advanceTimersByTimeAsync: vi.advanceTimersByTimeAsync,
+    });
     const result = await resultPromise;
     const finishedAtMs = Date.now();
 
@@ -1012,5 +1001,5 @@ describe("flow-runner dense OOPIF acceptance regression under measured latency (
     expect(state.uploadedFileName).toBe("resume.pdf");
     expect(state.submitted).toBe(true);
     expect(childUrls.current).toBe(THANK_YOU_URL);
-  }, 120_000);
+  });
 });
