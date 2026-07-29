@@ -33,6 +33,7 @@ describe("config/loadConfig", () => {
     expect(cfg.scraper.frameReadyTimeoutMs).toBe(20_000);
     expect(cfg.scraper.frameDocumentReadyTimeoutMs).toBe(5_000);
     expect(cfg.scraper.frameEvaluateTimeoutMs).toBe(30_000);
+    expect(cfg.scraper.framePresenceProbeFloorMs).toBe(3_000);
     expect(cfg.scraper.captureSessionIp).toBe(true);
     expect(cfg.scraper.sessionIpEchoUrl).toBe("https://api.ipify.org?format=json");
     expect(cfg.scraper.sessionIpTimeoutMs).toBe(10_000);
@@ -59,20 +60,24 @@ describe("config/loadConfig", () => {
     process.env.FRAME_READY_TIMEOUT_MS = "15000";
     process.env.FRAME_DOCUMENT_READY_TIMEOUT_MS = "8000";
     process.env.FRAME_EVALUATE_TIMEOUT_MS = "45000";
+    process.env.FRAME_PRESENCE_PROBE_FLOOR_MS = "2500";
     const cfg = loadConfig();
     expect(cfg.scraper.frameReadyTimeoutMs).toBe(15000);
     expect(cfg.scraper.frameDocumentReadyTimeoutMs).toBe(8000);
     expect(cfg.scraper.frameEvaluateTimeoutMs).toBe(45000);
+    expect(cfg.scraper.framePresenceProbeFloorMs).toBe(2500);
   });
 
   it("falls back to frame timeout defaults when env values are unparseable", () => {
     process.env.FRAME_READY_TIMEOUT_MS = "not-a-number";
     process.env.FRAME_DOCUMENT_READY_TIMEOUT_MS = "not-a-number";
     process.env.FRAME_EVALUATE_TIMEOUT_MS = "not-a-number";
+    process.env.FRAME_PRESENCE_PROBE_FLOOR_MS = "not-a-number";
     const cfg = loadConfig();
     expect(cfg.scraper.frameReadyTimeoutMs).toBe(20_000);
     expect(cfg.scraper.frameDocumentReadyTimeoutMs).toBe(5_000);
     expect(cfg.scraper.frameEvaluateTimeoutMs).toBe(30_000);
+    expect(cfg.scraper.framePresenceProbeFloorMs).toBe(3_000);
   });
 
   it("parses boolean env vars", () => {
