@@ -288,4 +288,14 @@ describe("BrowserSession.getOutboundIp", () => {
     expect(await session.getOutboundIp?.()).toBeNull();
     expect(resolveSessionOutboundIp).toHaveBeenCalledOnce();
   });
+
+  it("threads config.scraper.captureSessionIp=false through to the accessor: returns null, never invokes the resolver", async () => {
+    configRef.value.scraper.captureSessionIp = false;
+    resolveSessionOutboundIp.mockResolvedValue("203.0.113.7");
+    const session = await createBrowserbaseBrowserSession();
+
+    expect(await session.getOutboundIp?.()).toBeNull();
+    expect(await session.getOutboundIp?.()).toBeNull();
+    expect(resolveSessionOutboundIp).not.toHaveBeenCalled();
+  });
 });
