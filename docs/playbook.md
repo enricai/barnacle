@@ -654,7 +654,7 @@ Request arrives
   → LRU cache check (getCachedResponse)         [src/cache/response-cache.ts]
   → cache hit → return immediately
   → cache miss → getOrCreateInFlight(key, fn)   [coalesces concurrent misses]
-    → executeHttp(payload, context)              [plugin's hot path; context.telemetry.addJoinKeys()/.recordSession() stay open for run-discovered fields — src/lib/telemetry/run-telemetry.ts]
+    → executeHttp(payload, context)              [plugin's hot path; context.telemetry.addJoinKeys() stays open for run-discovered fields — src/lib/telemetry/run-telemetry.ts. .recordSession() is also on the handle but is stamped only by the loader wrapper around a live session (see 5B/5D) — the hot path never acquires one, so it goes uncalled here]
       → bottleneck.schedule(fetch)              [per-plugin rate limit]
         → p-retry (2 retries on network errors)
         → zod.parse(response)                   [drift detector]
