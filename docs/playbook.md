@@ -337,6 +337,21 @@ techniques are, in order:
    field at all is a refusal, not a guess: the step fails that attempt
    rather than clicking an unrelated control.
 
+   A select step whose question is phrased without a quoted label
+   (`parseSelectStep` returns `questionLabel: null`, e.g. "Select 'Yes' for
+   the question about requiring visa sponsorship") has no field label to
+   match, so before falling through to the click-only walk below,
+   `executeStepWithHealing` re-resolves a `select`-only candidate set
+   (`resolveDeepLocatorCandidates(..., "select", ...)`) and scores it
+   against the step's quoted option the same way the walk's own ranking
+   does (`scoreCandidate`, exported from `src/scraper/deep-locator-candidates.ts`).
+   More than one `<select>` tying for the top score is refused outright
+   rather than guessed — DOM order would otherwise silently pick the wrong
+   screening question's control, exactly the ambiguity a bug report once
+   described. A unique top-ranked `<select>` (including the common
+   single-`<select>`-in-frame case, where a tie is impossible) still
+   proceeds to the walk unmodified.
+
    Only a step with no fill/select field-label match falls through to the
    click-only candidate walk. That walk still uses
    `resolveDeepLocatorActuation` (`src/scraper/flow-runner.ts`) to infer
