@@ -574,13 +574,15 @@ export interface AttemptRecord {
    * - `network`: same-origin POST counter advanced in the attempt window.
    * - `url`: page navigated to a new URL.
    * - `dom`: verifyDomEffect confirmed a structural change (radio/checkbox state).
+   * - `view-swap`: isClickViewSwapVerified credited a client-side DOM reveal
+   *   (≥5KB growth, zero network, not submit/final/advance-pattern step).
    * - `submitted-state-dom`: final-step DOM fallback fired — a flow-declared
    *   `submittedStateSelectors` entry matched live DOM, indicating the SPA
    *   reached its submitted state even though the network capture missed
    *   the submit POST within the attempt window.
    * - `null`: failure path.
    */
-  verifiedBy: "network" | "url" | "dom" | "submitted-state-dom" | null;
+  verifiedBy: "network" | "url" | "dom" | "view-swap" | "submitted-state-dom" | null;
   /**
    * {@link classifyPhantomClick}'s verdict for this attempt, computed from
    * the same pre/post snapshot pair `describeAttemptEffectSignals` already
@@ -1088,8 +1090,14 @@ export function isClickViewSwapVerified(params: {
   bytesDelta: number;
 }): boolean {
   const VIEW_SWAP_MIN_BYTES = 5000;
-  const { resolvedAction, isFinalStep, submitStep, isAdvanceWithPattern, networkDelta, bytesDelta } =
-    params;
+  const {
+    resolvedAction,
+    isFinalStep,
+    submitStep,
+    isAdvanceWithPattern,
+    networkDelta,
+    bytesDelta,
+  } = params;
   if (resolvedAction?.method !== "click") return false;
   if (isFinalStep || submitStep) return false;
   if (isAdvanceWithPattern) return false;
@@ -7119,7 +7127,8 @@ export async function executeStepWithHealing(params: {
       networkDelta: post.networkCount - pre.networkCount,
       bytesDelta: post.bodyHtmlLength - pre.bodyHtmlLength,
     });
-    let verified = networkIsRealAdvance || urlChanged || domVerifiedForStep || clickViewSwapVerified;
+    let verified =
+      networkIsRealAdvance || urlChanged || domVerifiedForStep || clickViewSwapVerified;
 
     // Final-step submit-verification gate. Replaces the deterministic
     // submitEndpointPattern regex with a Haiku 4.5 LLM judgment over
