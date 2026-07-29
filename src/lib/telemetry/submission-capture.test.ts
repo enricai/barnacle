@@ -282,6 +282,38 @@ describe("captureSubmissionEnvelope", () => {
     expect(forwardedLine).toContain(`"vivclid":"${input.joinKeys?.vivclid}"`);
     expect(forwardedLine).toContain(`"kind":"submit"`);
   });
+
+  it("drops the entire submit line (never rejects) when a plugin-attached joinKeys bag contains a circular reference", async () => {
+    const circular: Record<string, unknown> = { token: "abc" };
+    circular.self = circular;
+    const input = { ...makeSuccessInput(), joinKeys: circular };
+
+    await expect(captureSubmissionEnvelope(input, { sinkPath })).resolves.toBeUndefined();
+
+    expect(fs.existsSync(sinkPath)).toBe(false);
+    expect(bufferSubmissionLine).not.toHaveBeenCalled();
+  });
+
+  it("drops the entire submit line (never rejects) when a plugin-attached joinKeys bag contains a BigInt", async () => {
+    const input = { ...makeSuccessInput(), joinKeys: { minted: 9007199254740993n } };
+
+    await expect(captureSubmissionEnvelope(input, { sinkPath })).resolves.toBeUndefined();
+
+    expect(fs.existsSync(sinkPath)).toBe(false);
+    expect(bufferSubmissionLine).not.toHaveBeenCalled();
+  });
+
+  it("writes a line that parses under submissionEnvelopeSampleSchema with an undefined-valued joinKeys key absent", async () => {
+    const input = { ...makeSuccessInput(), joinKeys: { vivclid: "v-9981", jid: undefined } };
+    await captureSubmissionEnvelope(input, { sinkPath });
+
+    const line = fs.readFileSync(sinkPath, "utf-8").trim();
+    const parsed = JSON.parse(line) as SubmissionEnvelopeSample;
+    const result = submissionEnvelopeSampleSchema.safeParse(parsed);
+    expect(result.success).toBe(true);
+    expect(parsed.joinKeys).toEqual({ vivclid: "v-9981" });
+    expect(parsed.joinKeys && "jid" in parsed.joinKeys).toBe(false);
+  });
 });
 
 function makeBaseParsedLine(): Record<string, unknown> {
