@@ -824,6 +824,19 @@ describe("makeFakeFrameResolutionPage", () => {
     expect(target.frameSelector).toBe(IFRAME_SELECTOR);
   });
 
+  it("matches an iframeSelector containing its own parentheses (:not(...), :has(...), :nth-child(...)) instead of truncating at the first inner ')'", async () => {
+    const parenSelector = "iframe:not(.hidden)";
+    const { page } = makeFakeFrameResolutionPage({
+      iframeSelector: parenSelector,
+      childSrc: CHILD_SRC,
+    });
+
+    const target = await resolveFrameTarget(page, parenSelector, { timeoutMs: 0 });
+
+    expect(target.frame).not.toBeNull();
+    expect(target.frameSelector).toBe(parenSelector);
+  });
+
   it("routes an unmatched iframe selector to a non-matching probe result rather than throwing", async () => {
     const { page } = makeFakeFrameResolutionPage({
       iframeSelector: IFRAME_SELECTOR,

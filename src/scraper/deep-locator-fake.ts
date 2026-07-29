@@ -849,9 +849,13 @@ export function makeFakeFrameSelectByIndex(
  * browser-side code, so it reads the selector back out of the expression
  * string instead, the same technique
  * `deep-locator-candidates.internal-frame-resolution.test.ts`'s
- * `makeIframeSrcProbe` already uses.
+ * `makeIframeSrcProbe` already uses. The capture group matches a complete
+ * `JSON.stringify`-quoted string (escaped-char-or-non-quote, repeated) rather
+ * than a lazy `.+?` up to the first `)` — a selector containing its own
+ * parens (`:not(...)`, `:has(...)`, `:nth-child(...)`) would otherwise
+ * truncate the match at that inner `)` and leave unparsable JSON.
  */
-const IFRAME_SRC_PROBE_PATTERN = /document\.querySelector\((.+?)\)/;
+const IFRAME_SRC_PROBE_PATTERN = /document\.querySelector\(("(?:\\.|[^"\\])*")\)/;
 
 function parseIframeSrcSelector(expression: unknown): string | null {
   const match = IFRAME_SRC_PROBE_PATTERN.exec(String(expression));
