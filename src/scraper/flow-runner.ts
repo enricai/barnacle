@@ -1056,6 +1056,48 @@ export function isDomOnlyAdvanceVerified(params: {
 }
 
 /**
+ * Client-side view-swap verification gate. Credits a click that produces
+ * substantial DOM growth with zero network as a verified step outcome when
+ * the step is a plain client-side reveal (not a submit/final step, not an
+ * advance/'Next' step on a site with advanceTransitionBodyPattern configured).
+ *
+ * **Why this exists:** SPA/iframe wizards often swap visible screens
+ * (e.g. method-chooser → basic-info form) via client-side DOM manipulation
+ * with zero network requests. The existing verifyDomEffect (line 4866-4891)
+ * explicitly returns false for non-radio/checkbox clicks, routing those
+ * to the network/URL signal — which correctly verifies navigation but
+ * false-negatives client-side view swaps. This gate fills that gap.
+ *
+ * **Threshold rationale:** 5000B is 10× the trivial boundary (500B) and
+ * safely distinguishes real view swaps (measured case: +49518B) from
+ * validation-error reflows (typically < 2KB per codebase evidence at
+ * line 2040-2044: error text capped at 200 chars, container markup adds
+ * 150-350B per error, worst-case ~10 errors = ~3500B max).
+ *
+ * **Scope guards:** Excludes final/submit steps (those require real network
+ * per isSubmitRevealedInvalid + LLM submit judge) and advance-pattern steps
+ * (those require real transition per isDomOnlyAdvanceVerified/isAdvanceStalled
+ * to avoid wizard-ATS autosave-vs-transition ambiguity).
+ */
+export function isClickViewSwapVerified(params: {
+  resolvedAction: { method?: string | null } | null;
+  isFinalStep: boolean;
+  submitStep: boolean;
+  isAdvanceWithPattern: boolean;
+  networkDelta: number;
+  bytesDelta: number;
+}): boolean {
+  const VIEW_SWAP_MIN_BYTES = 5000;
+  const { resolvedAction, isFinalStep, submitStep, isAdvanceWithPattern, networkDelta, bytesDelta } =
+    params;
+  if (resolvedAction?.method !== "click") return false;
+  if (isFinalStep || submitStep) return false;
+  if (isAdvanceWithPattern) return false;
+  if (networkDelta !== 0) return false;
+  return bytesDelta >= VIEW_SWAP_MIN_BYTES;
+}
+
+/**
  * Read-only count of ng-invalid form controls on the resolved frame. Side-effect-free
  * counterpart to `probeFormValidityBeforeSubmit` (which also auto-fills
  * unselected radio groups via element.click()). Used by the cascade's
@@ -7065,7 +7107,19 @@ export async function executeStepWithHealing(params: {
         `${formatStepPrefix(stepIndex, totalSteps)} advance step succeeded only via DOM state change (field toggle / non-advancing POST), not a real transition; not treating as verified`
       );
     }
-    let verified = networkIsRealAdvance || urlChanged || domVerifiedForStep;
+    // Client-side view-swap gate: credit a click that produces substantial
+    // DOM growth (≥5KB) with zero network when it's NOT a submit/final step
+    // and NOT an advance-pattern step. Fixes the UCHealth "Manual Application"
+    // case where a +49KB DOM-only view swap was scored as "no observable effect".
+    const clickViewSwapVerified = isClickViewSwapVerified({
+      resolvedAction,
+      isFinalStep,
+      submitStep,
+      isAdvanceWithPattern: isAdvanceStep(step) && advanceTransitionBodyPattern !== null,
+      networkDelta: post.networkCount - pre.networkCount,
+      bytesDelta: post.bodyHtmlLength - pre.bodyHtmlLength,
+    });
+    let verified = networkIsRealAdvance || urlChanged || domVerifiedForStep || clickViewSwapVerified;
 
     // Final-step submit-verification gate. Replaces the deterministic
     // submitEndpointPattern regex with a Haiku 4.5 LLM judgment over
@@ -7202,7 +7256,13 @@ export async function executeStepWithHealing(params: {
     if (verified && record.verifiedBy === null) {
       // Preserve a richer verdict set earlier in this attempt (e.g.
       // "submitted-state-dom" from the final-step DOM fallback).
-      record.verifiedBy = urlChanged ? "url" : networkFired ? "network" : "dom";
+      record.verifiedBy = clickViewSwapVerified
+        ? "view-swap"
+        : urlChanged
+          ? "url"
+          : networkFired
+            ? "network"
+            : "dom";
     }
 
     // N+16 probe: Stagehand's CDP click sometimes lands on the button without
