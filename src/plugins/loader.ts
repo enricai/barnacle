@@ -155,7 +155,7 @@ async function withSessionTelemetry<T>(
         sessionId: session.sessionId,
         provider: session.provider,
         ip,
-        ipCapturedAt: formatISO(new Date()),
+        ipCapturedAt: ip ? formatISO(new Date()) : null,
       });
     }
   }
