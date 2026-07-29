@@ -15,42 +15,44 @@ vi.mock("@/lib/logging", () => ({
 }));
 
 import { resolveDeepLocatorCandidates } from "@/scraper/deep-locator-candidates";
+import { makeFakeFrameResolutionPage } from "@/scraper/deep-locator-fake";
 
 /**
  * Pins {@link resolveScanFrameTarget}'s (`deep-locator-candidates.ts`)
- * internal `resolveFrameTarget(page, frameSelector, { timeoutMs: 0 })` pass —
- * the seam a caller gets "for free" by passing only a `frameSelector`, with
- * no pre-resolved `timeoutOptions.frameTarget`. Every case in
- * `deep-locator-candidates.test.ts` either injects a ready-made `frameTarget`
- * (skipping this internal resolution entirely) or passes `frameSelector:
- * null` (short-circuiting it before any resolution attempt) — this file is
- * the only coverage of the internal pass actually running end to end.
+ * internal `probeAttachedFrameTarget(page, frameSelector)` pass (perf-003,
+ * `frame-target.ts`) — the seam a caller gets "for free" by passing only a
+ * `frameSelector`, with no pre-resolved `timeoutOptions.frameTarget`. Every
+ * case in `deep-locator-candidates.test.ts` either injects a ready-made
+ * `frameTarget` (skipping this internal resolution entirely) or passes
+ * `frameSelector: null` (short-circuiting it before any resolution attempt)
+ * — this file is the only coverage of the internal pass actually running end
+ * to end.
  *
- * `timeoutMs: 0` means `resolveFrameTarget`'s every `withWatchdog`-guarded
- * probe races the real operation against a `setTimeout(fn, 0)` timer. A
- * `setTimeout` callback is always a macrotask, so a fake `evaluate`/
- * `frames()[].evaluate` that resolves synchronously (no internal `await`,
- * settling as a microtask) still wins that race and lets the batched fast
- * path land — case (a) below. Under real CDP latency (a genuine async
- * round-trip, not a same-tick fake), this same zero-budget pass will always
- * lose the race and degrade to the legacy loop instead: that's a latency
- * property of the production Stagehand `Page`, not something a fake-Page
- * unit test can pin either way, so this file only asserts the *observable
- * contract* — never throws, degrades cleanly to the legacy loop, never polls
- * — and leaves the "does it win in production" question to the fix-owning
- * domain.
+ * Before perf-003, this seam ran `resolveFrameTarget(page, frameSelector,
+ * { timeoutMs: 0 })`, whose every `withWatchdog`-guarded probe races the real
+ * operation against a `setTimeout(fn, 0)` timer — a real CDP round-trip
+ * always loses that race, so the "for free" fast path could never actually
+ * land in production; only a same-tick fake `evaluate` could win it, which is
+ * exactly what made that property untestable here (see git history for the
+ * prior version of this docblock). `probeAttachedFrameTarget` closes that gap
+ * with a real per-probe budget (`config.scraper.framePresenceProbeFloorMs`),
+ * so case (a) below now proves the fast path lands against
+ * {@link makeFakeFrameResolutionPage}'s latency-realistic fixture (a genuine
+ * `setTimeout`-delayed probe, not a same-tick microtask) instead of only
+ * asserting the observable degrade contract.
  */
 describe("resolveDeepLocatorCandidates: internal resolveScanFrameTarget pass (no timeoutOptions.frameTarget)", () => {
   const FRAME_SELECTOR = "#talemetry_apply_iframe";
   const IFRAME_SRC = "https://apply.talemetry.com/application/abc-123";
+  const PROBE_DELAY_MS = 5;
 
   /**
    * Minimal fake `page.evaluate`: answers `tryResolveChildFrame`'s
    * "read the iframe's src" probe (`frame-target.ts`) by extracting the CSS
    * selector the expression string was built with, mirroring
    * `frame-target.test.ts`'s `makeFakePage`. Resolves with no internal
-   * `await` so it settles as a microtask, same-tick — required to win the
-   * `timeoutMs: 0` race at all (see the module docblock above).
+   * `await` so it settles as a microtask, same-tick — used by cases (b) and
+   * (c) below, whose degrade behavior doesn't depend on probe latency.
    */
   function makeIframeSrcProbe(iframes: Record<string, string>) {
     return async (expr: unknown) => {
@@ -61,50 +63,24 @@ describe("resolveDeepLocatorCandidates: internal resolveScanFrameTarget pass (no
     };
   }
 
-  /**
-   * Fake child `Frame`: `evaluate("location.href")` answers the frame-origin
-   * match `tryResolveChildFrame` performs while resolving, and any other
-   * expression (the batched scan's `buildScanFrameCandidatesExpr` call) is
-   * answered by `scanEvaluateSpy` so a test can assert the batched fast path
-   * ran exactly once, distinctly from the resolution-time `location.href`
-   * probe.
-   */
-  function makeFakeChildFrame(url: string, elements: Array<{ text: string; visible?: boolean }>) {
-    const scanEvaluateSpy = vi.fn().mockResolvedValue(
-      elements.map((element, index) => ({
-        index,
-        text: element.text,
-        visible: element.visible ?? true,
-      }))
-    );
-    return {
-      frame: {
-        evaluate: async (expr: unknown) => (expr === "location.href" ? url : scanEvaluateSpy(expr)),
-      },
-      scanEvaluateSpy,
-    };
-  }
-
-  it("case (a): a fake Page whose evaluate/frames() resolve the child frame within the zero-budget race takes the batched fast path — one frame evaluate, zero delegate.count()/nth() calls", async () => {
-    const { frame: childFrame, scanEvaluateSpy } = makeFakeChildFrame(IFRAME_SRC, [
-      { text: "Manual Application" },
-      { text: "Cancel" },
+  it("case (a): a latency-realistic Page whose iframe-src/location.href probes settle after a real timer tick (not same-tick) still takes the batched fast path via probeAttachedFrameTarget's real budget — one frame evaluate, zero delegate.count()/nth() calls", async () => {
+    const scanEvaluateSpy = vi.fn().mockResolvedValue([
+      { index: 0, text: "Manual Application", visible: true },
+      { index: 1, text: "Cancel", visible: true },
     ]);
     const countSpy = vi.fn();
     const nthSpy = vi.fn();
-    const page = {
-      evaluate: makeIframeSrcProbe({ [FRAME_SELECTOR]: IFRAME_SRC }),
-      frames: () => [childFrame],
-      deepLocator: vi.fn().mockReturnValue({ count: countSpy, nth: nthSpy }),
-    };
+    const { page } = makeFakeFrameResolutionPage({
+      iframeSelector: FRAME_SELECTOR,
+      childSrc: IFRAME_SRC,
+      probeDelayMs: PROBE_DELAY_MS,
+      onFrameEvaluate: scanEvaluateSpy,
+    });
+    // biome-ignore lint/suspicious/noExplicitAny: attaching a fake deepLocator beyond makeFakeFrameResolutionPage's Page surface
+    (page as any).deepLocator = vi.fn().mockReturnValue({ count: countSpy, nth: nthSpy });
 
     const start = Date.now();
-    const candidates = await resolveDeepLocatorCandidates(
-      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the resolveFrameTarget contract under test
-      page as any,
-      FRAME_SELECTOR,
-      "*"
-    );
+    const candidates = await resolveDeepLocatorCandidates(page, FRAME_SELECTOR, "*");
     const elapsed = Date.now() - start;
 
     expect(candidates).toEqual([
@@ -122,7 +98,7 @@ describe("resolveDeepLocatorCandidates: internal resolveScanFrameTarget pass (no
     expect(scanEvaluateSpy).toHaveBeenCalledTimes(1);
     expect(countSpy).not.toHaveBeenCalled();
     expect(nthSpy).not.toHaveBeenCalled();
-    // Proves the zero-budget internal resolution never enters resolveFrameTarget's poll loop.
+    // Proves the batched fast path lands well within the probe's budget, without entering resolveFrameTarget's poll loop.
     expect(elapsed).toBeLessThan(1000);
   });
 
