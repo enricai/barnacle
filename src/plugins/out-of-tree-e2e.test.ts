@@ -386,6 +386,46 @@ type _MirrorStaysInSyncWithShippedSeam = AssertTrue<
   });
 });
 
+describe("out-of-tree plugin — hello-site's vendored RunTelemetryHandle.addJoinKeys mirror stays in sync with the shipped seam", () => {
+  /**
+   * `examples/plugins/hello-site/src/types.ts` vendors its own narrowed
+   * `RunTelemetryHandle` (only `addJoinKeys` — `recordSession`/`snapshot` are
+   * engine-owned and deliberately omitted, see docs-001) but claims the one
+   * method it does mirror is "kept field-for-field in sync with the shipped
+   * seam". Nothing enforced that claim. This probe compiles a bidirectional
+   * structural-equality check between the example's `addJoinKeys` signature
+   * and the real `SitePluginContext["telemetry"]["addJoinKeys"]` signature
+   * under the same exports-gated `tsc` harness used above, so a parameter
+   * added, removed, or retyped on either side surfaces as a real `tsc`
+   * diagnostic instead of shipping unnoticed to plugins that copy this file.
+   */
+  const telemetryMirrorCheckSource = `
+import type { SitePluginContext } from "@enricai/barnacle/site-plugin";
+import type { RunTelemetryHandle as ExampleRunTelemetryHandle } from "../examples/plugins/hello-site/src/types";
+
+type RealAddJoinKeys = SitePluginContext["telemetry"]["addJoinKeys"];
+type ExampleAddJoinKeys = ExampleRunTelemetryHandle["addJoinKeys"];
+
+type IfEquals<A, B, Yes = unknown, No = never> = (<T>() => T extends A ? 1 : 2) extends (
+  <T>() => T extends B ? 1 : 2
+)
+  ? Yes
+  : No;
+
+type AssertTrue<T extends true> = T;
+type _AddJoinKeysMirrorStaysInSyncWithShippedSeam = AssertTrue<
+  IfEquals<ExampleAddJoinKeys, RealAddJoinKeys, true, false>
+>;
+`;
+
+  it("hello-site's RunTelemetryHandle.addJoinKeys is bidirectionally assignable with the real telemetry.addJoinKeys", () => {
+    const diagnostics = typecheckGeneratedFiles({
+      "hello-site-telemetry-mirror-check.ts": telemetryMirrorCheckSource,
+    });
+    expect(diagnostics.map((d) => `${d.code}: ${d.message}`)).toEqual([]);
+  });
+});
+
 describe("out-of-tree plugin — end-to-end: loadPlugins → registerRoutes → /run", () => {
   const preservedEnv = {
     DEV_BYPASS_AUTH: process.env.DEV_BYPASS_AUTH,
