@@ -7,10 +7,14 @@ import * as deepLocatorCandidatesModule from "@/scraper/deep-locator-candidates"
 import {
   type FakeDeepLocatorFrame,
   makeFakeDeepLocator,
+  makeFakeFrameFillByIndex,
   registerDeepLocatorHop,
   registerDeepLocatorHopElements,
 } from "@/scraper/deep-locator-fake";
-import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
+import {
+  buildFillFrameCandidateExpr,
+  INTERACTIVE_CANDIDATE_SELECTOR,
+} from "@/scraper/deep-locator-scan";
 import {
   type AttemptRecord,
   executeStepWithHealing,
@@ -368,6 +372,67 @@ describe("flow-runner deepLocator call sites — scoped to interactive elements,
  * `onStepFailure` dump's `attempts[]` (same pattern the sibling
  * rephrase-evidence test above uses).
  */
+/** Shared by both the bugfix-003 and bugfix-001 describe blocks below. */
+function makeDeepLocatorPage(frame: FakeDeepLocatorFrame): Page {
+  return {
+    evaluate: vi.fn().mockResolvedValue(null),
+    deepLocator: makeFakeDeepLocator(frame),
+    url: () => "https://apply.acme.example/jobs/1/apply",
+    title: vi.fn().mockResolvedValue("Apply"),
+    locator: vi.fn().mockReturnValue({
+      first: () => ({
+        isChecked: vi.fn().mockResolvedValue(false),
+        inputValue: vi.fn().mockResolvedValue(""),
+      }),
+    }),
+    waitForTimeout: vi.fn().mockResolvedValue(undefined),
+    getSessionForFrame: () => ({ on: () => {}, off: () => {} }),
+    mainFrameId: () => "main",
+    sendCDP: vi.fn().mockResolvedValue({ body: "{}", base64Encoded: false }),
+  } as unknown as Page;
+}
+
+/** Shared by both the bugfix-003 and bugfix-001 describe blocks below. `frameTarget` defaults to {@link makeChildFrameTarget}'s generic stub; pass one whose `evaluate` answers a specific batched-write expression to exercise the frame-scoped actuation seam. */
+function runStep(
+  page: Page,
+  step: string,
+  onFailureAttempts: AttemptRecord[][],
+  frameTarget: FrameTarget = makeChildFrameTarget()
+) {
+  return executeStepWithHealing({
+    stagehand: makeStagehand(),
+    page,
+    frameTarget,
+    step,
+    optional: false,
+    upload: false,
+    submitStep: false,
+    stepIndex: 0,
+    totalSteps: () => 1,
+    phase: "flow",
+    signalCounter: { n: 0 },
+    recentCaptures: [],
+    recentCaptureMeta: [],
+    anthropic: null,
+    logger: testLogger,
+    resumeFixture: null,
+    isFinalStep: false,
+    submitEndpointPattern: null,
+    submittedStateSelectors: [],
+    requireSubmitEndpointMatch: false,
+    advanceTransitionBodyPattern: null,
+    successUrlFragments: [],
+    successPageTitleHints: [],
+    ownBackendHostnames: [],
+    knownErrorClassPrefixes: [],
+    wizardExitButtonLabels: [],
+    onStepFailure: ({ attempts }) => {
+      onFailureAttempts.push(attempts);
+      return null;
+    },
+  });
+}
+
 describe("flow-runner deepLocator actuation routing — fill/select/click discrimination (bugfix-003)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -380,60 +445,6 @@ describe("flow-runner deepLocator actuation routing — fill/select/click discri
       actions: [],
     });
   });
-
-  function makeDeepLocatorPage(frame: FakeDeepLocatorFrame): Page {
-    return {
-      evaluate: vi.fn().mockResolvedValue(null),
-      deepLocator: makeFakeDeepLocator(frame),
-      url: () => "https://apply.acme.example/jobs/1/apply",
-      title: vi.fn().mockResolvedValue("Apply"),
-      locator: vi.fn().mockReturnValue({
-        first: () => ({
-          isChecked: vi.fn().mockResolvedValue(false),
-          inputValue: vi.fn().mockResolvedValue(""),
-        }),
-      }),
-      waitForTimeout: vi.fn().mockResolvedValue(undefined),
-      getSessionForFrame: () => ({ on: () => {}, off: () => {} }),
-      mainFrameId: () => "main",
-      sendCDP: vi.fn().mockResolvedValue({ body: "{}", base64Encoded: false }),
-    } as unknown as Page;
-  }
-
-  function runStep(page: Page, step: string, onFailureAttempts: AttemptRecord[][]) {
-    return executeStepWithHealing({
-      stagehand: makeStagehand(),
-      page,
-      frameTarget: makeChildFrameTarget(),
-      step,
-      optional: false,
-      upload: false,
-      submitStep: false,
-      stepIndex: 0,
-      totalSteps: () => 1,
-      phase: "flow",
-      signalCounter: { n: 0 },
-      recentCaptures: [],
-      recentCaptureMeta: [],
-      anthropic: null,
-      logger: testLogger,
-      resumeFixture: null,
-      isFinalStep: false,
-      submitEndpointPattern: null,
-      submittedStateSelectors: [],
-      requireSubmitEndpointMatch: false,
-      advanceTransitionBodyPattern: null,
-      successUrlFragments: [],
-      successPageTitleHints: [],
-      ownBackendHostnames: [],
-      knownErrorClassPrefixes: [],
-      wizardExitButtonLabels: [],
-      onStepFailure: ({ attempts }) => {
-        onFailureAttempts.push(attempts);
-        return null;
-      },
-    });
-  }
 
   it("fill step: actuates fillDeepLocatorCandidate (not click), with the value parsed from the step, and synthesizes resolvedAction.method='fill'", async () => {
     const frame: FakeDeepLocatorFrame = new Map();
@@ -464,7 +475,8 @@ describe("flow-runner deepLocator actuation routing — fill/select/click discri
       FRAME_SELECTOR,
       INTERACTIVE_CANDIDATE_SELECTOR,
       0,
-      "Reginald"
+      "Reginald",
+      expect.objectContaining({ frameTarget: expect.anything() })
     );
     expect(selectSpy).not.toHaveBeenCalled();
     expect(clickSpy).not.toHaveBeenCalled();
@@ -497,7 +509,8 @@ describe("flow-runner deepLocator actuation routing — fill/select/click discri
       FRAME_SELECTOR,
       INTERACTIVE_CANDIDATE_SELECTOR,
       0,
-      "United States"
+      "United States",
+      expect.objectContaining({ frameTarget: expect.anything() })
     );
     expect(fillSpy).not.toHaveBeenCalled();
     expect(clickSpy).not.toHaveBeenCalled();
@@ -583,5 +596,252 @@ describe("flow-runner deepLocator actuation routing — fill/select/click discri
     fillSpy.mockRestore();
     selectSpy.mockRestore();
     clickSpy.mockRestore();
+  });
+});
+
+/**
+ * bugfix-001: closes the two residual actuation defects the 1.6.13 fix set
+ * left in `executeStepWithHealing`'s deepLocator branch — see this file's
+ * module docblock's sibling suites for the fixes those releases already
+ * covered.
+ */
+describe("flow-runner deepLocator actuation — attempt-2/4 frameTarget reuse and select ambiguity refusal (bugfix-001)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetBillingErrorFlagForTests();
+    guardedObserve.mockResolvedValue([]);
+    guardedAct.mockResolvedValue({
+      success: false,
+      message: "no candidates",
+      actionDescription: "",
+      actions: [],
+    });
+  });
+
+  it("fill step: fillDeepLocatorCandidate's 6th argument carries the step's already-resolved frameTarget, so the batched write path is taken even though the internal zero-timeout resolveFrameTarget pass (page.evaluate resolving generically to null) would miss — zero legacy nth(index).fill()/.inputValue() delegate calls", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    const scopedHopSelector = `${FRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
+    registerDeepLocatorHopElements(frame, scopedHopSelector, ["First Name"]);
+    registerDeepLocatorHop(frame, `${FRAME_SELECTOR} >> *`, "First Name");
+
+    // page.evaluate resolves generically to `null` for every expression,
+    // including the iframe-src probe `resolveActuateFrameTarget`'s internal
+    // `resolveFrameTarget(page, sel, { timeoutMs: 0 })` pass would issue if
+    // it ran — destructuring `null` as `{ matched, src }` throws, caught by
+    // that pass's own try/catch, so the internal pass always misses here.
+    // `deepLocator()`'s `nth()` delegate is wrapped so a genuine legacy
+    // `fill()`/`inputValue()` call (the degrade path a miss forces without
+    // this subtask's fix) is observable independent of the batched path's
+    // own outcome.
+    const legacyFillSpy = vi.fn();
+    const legacyInputValueSpy = vi.fn();
+    const fakeDeepLocator = makeFakeDeepLocator(frame);
+    const wrapDelegate = (selector: string) => {
+      const delegate = fakeDeepLocator(selector);
+      return {
+        ...delegate,
+        nth: (index: number) => {
+          const inner = fakeDeepLocator(selector).nth(index);
+          return {
+            ...inner,
+            fill: async (value: string) => {
+              legacyFillSpy();
+              return inner.fill(value);
+            },
+            inputValue: async () => {
+              legacyInputValueSpy();
+              return inner.inputValue();
+            },
+          };
+        },
+      };
+    };
+    const page = {
+      evaluate: vi.fn().mockResolvedValue(null),
+      deepLocator: wrapDelegate,
+      url: () => "https://apply.acme.example/jobs/1/apply",
+      title: vi.fn().mockResolvedValue("Apply"),
+      locator: vi.fn().mockReturnValue({
+        first: () => ({
+          isChecked: vi.fn().mockResolvedValue(false),
+          inputValue: vi.fn().mockResolvedValue(""),
+        }),
+      }),
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
+      getSessionForFrame: () => ({ on: () => {}, off: () => {} }),
+      mainFrameId: () => "main",
+      sendCDP: vi.fn().mockResolvedValue({ body: "{}", base64Encoded: false }),
+    } as unknown as Page;
+
+    // The step-level frameTarget `executeStepWithHealing` already resolved —
+    // passed straight into `runStep` below (unlike the internal pass above,
+    // this one CAN resolve). Its own `evaluate` answers the exact batched
+    // fill expression `fillDeepLocatorCandidate` issues for index 0.
+    const fillExpr = buildFillFrameCandidateExpr(INTERACTIVE_CANDIDATE_SELECTOR, 0, "Reginald");
+    const fillByIndex = makeFakeFrameFillByIndex(frame, scopedHopSelector);
+    const stepFrameTarget: FrameTarget = {
+      frame: {} as FrameTarget["frame"],
+      frameSelector: FRAME_SELECTOR,
+      evaluate: vi.fn(async (expr: unknown) =>
+        expr === fillExpr ? fillByIndex(0, "Reginald") : { html: 0, text: "0:" }
+      ) as unknown as FrameTarget["evaluate"],
+      locator: vi.fn().mockReturnValue({
+        first: () => ({
+          isChecked: vi.fn().mockResolvedValue(false),
+          inputValue: vi.fn().mockResolvedValue(""),
+        }),
+      }),
+      url: () => Promise.resolve("https://apply.acme.example/jobs/1/apply"),
+      title: () => Promise.resolve("Apply"),
+    };
+
+    const fillSpy = vi.spyOn(deepLocatorActuateModule, "fillDeepLocatorCandidate");
+    const attemptsByFailure: AttemptRecord[][] = [];
+
+    await expect(
+      runStep(
+        page,
+        "Fill in the First Name field with 'Reginald'",
+        attemptsByFailure,
+        stepFrameTarget
+      )
+    ).resolves.toBe("completed");
+
+    expect(fillSpy).toHaveBeenCalledWith(
+      page,
+      FRAME_SELECTOR,
+      INTERACTIVE_CANDIDATE_SELECTOR,
+      0,
+      "Reginald",
+      { frameTarget: stepFrameTarget }
+    );
+    expect(legacyFillSpy).not.toHaveBeenCalled();
+    expect(legacyInputValueSpy).not.toHaveBeenCalled();
+    expect(frame.get(scopedHopSelector)?.elements[0]?.filledWith).toBe("Reginald");
+
+    fillSpy.mockRestore();
+  });
+
+  it("select step with an un-quoted question label ('Select 'Yes' for the question about requiring visa sponsorship') refuses rather than actuating an option-value-ranked candidate, when two <select> candidates both tie for 'Yes' relevance", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    const scopedHopSelector = `${FRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
+    const selectScopedHopSelector = `${FRAME_SELECTOR} >> select`;
+    // Neither candidate's own accessible name mentions "Yes" — both tie at
+    // relevance score 0 against the step's only quoted phrase (the option),
+    // the exact ranking-tie the bug report describes ("a different
+    // screening question's <select> that happens to carry the same
+    // option"). DOM order would otherwise silently pick element 0 — the
+    // WRONG question for this step's un-quoted "visa sponsorship" prose.
+    registerDeepLocatorHopElements(frame, scopedHopSelector, [
+      "Are you at least 18 years of age?",
+      "Will you now or in the future require sponsorship to work legally in the US?",
+    ]);
+    // The tie check resolves a fresh "select"-only hop (see flow-runner.ts's
+    // un-quoted-select branch) so it can't be fooled by unrelated
+    // non-<select> candidates tying at the same score — both real targets
+    // here ARE <select>s, so they must be registered at this hop too, or the
+    // narrowed tie check would see zero candidates and never refuse.
+    registerDeepLocatorHopElements(frame, selectScopedHopSelector, [
+      "Are you at least 18 years of age?",
+      "Will you now or in the future require sponsorship to work legally in the US?",
+    ]);
+    registerDeepLocatorHop(frame, `${FRAME_SELECTOR} >> *`, "Are you at least 18 years of age?");
+    const page = makeDeepLocatorPage(frame);
+
+    const fillSpy = vi.spyOn(deepLocatorActuateModule, "fillDeepLocatorCandidate");
+    const selectSpy = vi.spyOn(deepLocatorActuateModule, "selectDeepLocatorCandidateOption");
+    const clickSpy = vi.spyOn(deepLocatorCandidatesModule, "clickDeepLocatorCandidate");
+    const attemptsByFailure: AttemptRecord[][] = [];
+
+    await expect(
+      runStep(
+        page,
+        "Select 'Yes' for the question about requiring visa sponsorship",
+        attemptsByFailure
+      )
+    ).rejects.toThrow(/failed verification after \d+ attempts/);
+
+    expect(selectSpy).not.toHaveBeenCalled();
+    expect(fillSpy).not.toHaveBeenCalled();
+    expect(clickSpy).not.toHaveBeenCalled();
+
+    const attempts = attemptsByFailure[0] ?? [];
+    expect(attempts.length).toBeGreaterThan(0);
+    expect(attempts.every((a) => a.actResultSuccess !== true)).toBe(true);
+    expect(attempts.some((a) => a.errorMessage?.includes("tie for relevance"))).toBe(true);
+
+    expect(frame.get(scopedHopSelector)?.elements[0]?.selectedWith).toBeNull();
+    expect(frame.get(scopedHopSelector)?.elements[1]?.selectedWith).toBeNull();
+
+    fillSpy.mockRestore();
+    selectSpy.mockRestore();
+    clickSpy.mockRestore();
+  });
+
+  it("select step with an un-quoted question label does NOT refuse on a dense form whose only tie is against unrelated non-<select> decoys (a 'First Name' input, a 'Submit Application' button) sharing the single genuine <select>'s score of 0 — the walk still reaches and selects the one true target", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    const scopedHopSelector = `${FRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
+    const selectScopedHopSelector = `${FRAME_SELECTOR} >> select`;
+    // None of the three interactive-scoped candidates' accessible names
+    // mention "Yes" — every ordinary dense form control (an unrelated text
+    // input, an unrelated submit button) ties at score 0 right alongside the
+    // genuine <select>, whose own accessible name ("Do you require visa
+    // sponsorship?") never restates the quoted option either. Only ONE of
+    // the three is actually a <select> (tagName below, and registration at
+    // the select-scoped hop) — the tie check must see just that one
+    // candidate and refuse to guess only among real <select>s, not among
+    // this whole decoy-heavy set.
+    registerDeepLocatorHopElements(frame, scopedHopSelector, [
+      { text: "First Name", tagName: "input" },
+      { text: "Submit Application", tagName: "button" },
+      { text: "Do you require visa sponsorship?", tagName: "select" },
+    ]);
+    registerDeepLocatorHopElements(frame, selectScopedHopSelector, [
+      "Do you require visa sponsorship?",
+    ]);
+    registerDeepLocatorHop(frame, `${FRAME_SELECTOR} >> *`, "First Name");
+    const page = makeDeepLocatorPage(frame);
+
+    const fillSpy = vi.spyOn(deepLocatorActuateModule, "fillDeepLocatorCandidate");
+    const selectSpy = vi.spyOn(deepLocatorActuateModule, "selectDeepLocatorCandidateOption");
+    const attemptsByFailure: AttemptRecord[][] = [];
+
+    // Same shape as the bugfix-003 "select step" walk test above: a
+    // deepLocator write has no downstream verification signal
+    // (`verifyDomEffect` can't resolve a `deeplocator=` selector), so the
+    // cascade as a whole still exhausts and rejects — what's under test here
+    // is that the un-quoted-question guard does NOT refuse before the walk
+    // ever runs, and that the walk lands on the one genuine <select>, not a
+    // decoy.
+    await expect(
+      runStep(
+        page,
+        "Select 'Yes' for the question about requiring visa sponsorship",
+        attemptsByFailure
+      )
+    ).rejects.toThrow(/failed verification after \d+ attempts/);
+
+    expect(fillSpy).not.toHaveBeenCalled();
+    expect(selectSpy).toHaveBeenCalledWith(
+      page,
+      FRAME_SELECTOR,
+      INTERACTIVE_CANDIDATE_SELECTOR,
+      2,
+      "Yes",
+      expect.objectContaining({ frameTarget: expect.anything() })
+    );
+
+    const attempts = attemptsByFailure[0] ?? [];
+    expect(attempts.some((a) => a.errorMessage?.includes("tie for relevance"))).toBe(false);
+    const deepLocatorAttempt = attempts.find((a) => a.resolvedMethod === "selectOption");
+    expect(deepLocatorAttempt?.actResultSuccess).toBe(true);
+    expect(deepLocatorAttempt?.resolvedArguments).toEqual(["Yes"]);
+
+    expect(frame.get(scopedHopSelector)?.elements[0]?.selectedWith).toBeNull();
+    expect(frame.get(scopedHopSelector)?.elements[1]?.selectedWith).toBeNull();
+    expect(frame.get(scopedHopSelector)?.elements[2]?.selectedWith).toEqual(["Yes"]);
+
+    fillSpy.mockRestore();
+    selectSpy.mockRestore();
   });
 });

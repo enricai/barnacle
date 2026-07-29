@@ -35,6 +35,17 @@ export interface FakeDeepLocatorElement {
    * mirror whatever was last written.
    */
   readBackValue?: string;
+  /**
+   * When set to anything other than `"select"`, `selectOption()` rejects with
+   * {@link NODE_NOT_ACTIONABLE_MESSAGE} — mirrors `buildSelectFrameCandidateExpr`
+   * (`deep-locator-scan.ts`), whose real `el.options || []` lookup is always
+   * empty for a non-`<select>` element, so a real select-write against a
+   * decoy `input`/`button` candidate reports `not-actionable` rather than
+   * silently succeeding. Left unset (the legacy default), `selectOption()`
+   * always succeeds regardless of tag — every existing tag-agnostic
+   * registration keeps behaving exactly as it always has.
+   */
+  tagName?: string;
 }
 
 /**
@@ -46,6 +57,8 @@ export interface FakeDeepLocatorElement {
 export interface FakeDeepLocatorElementSpec {
   readonly text: string;
   readonly visible?: boolean;
+  /** See {@link FakeDeepLocatorElement.tagName}. Omit to keep `selectOption()` tag-agnostic. */
+  readonly tagName?: string;
 }
 
 /**
@@ -133,6 +146,7 @@ export function registerDeepLocatorHopElements(
       selectedWith: null,
       text: spec.text,
       visible: spec.visible ?? true,
+      tagName: spec.tagName,
     };
   });
   const hop = buildHop(built);
@@ -427,6 +441,9 @@ function buildFakeDelegate(
       await awaitReleaseIfHungOn("selectOption");
       const element = requireElement();
       if (!element.visible) throw new Error(NODE_NOT_ACTIONABLE_MESSAGE);
+      if (element.tagName !== undefined && element.tagName !== "select") {
+        throw new Error(NODE_NOT_ACTIONABLE_MESSAGE);
+      }
       const selected = Array.isArray(values) ? values : [values];
       element.selectedWith = selected;
       return selected;

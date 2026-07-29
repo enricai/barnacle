@@ -46,7 +46,9 @@ import {
   clickDeepLocatorCandidate,
   type DeepLocatorCandidate,
   type DeepLocatorTimeoutOptions,
+  extractTaggedPhrases,
   resolveDeepLocatorCandidates,
+  scoreCandidate,
 } from "@/scraper/deep-locator-candidates";
 import { clickFirstActionableCandidate } from "@/scraper/deep-locator-click";
 import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
@@ -6375,14 +6377,16 @@ export async function executeStepWithHealing(params: {
                     frameTarget?.frameSelector,
                     deepLocatorInnerSelector,
                     matched.index,
-                    fieldTarget.value
+                    fieldTarget.value,
+                    { frameTarget }
                   )
                 : await selectDeepLocatorCandidateOption(
                     page,
                     frameTarget?.frameSelector,
                     deepLocatorInnerSelector,
                     matched.index,
-                    fieldTarget.value
+                    fieldTarget.value,
+                    { frameTarget }
                   );
             if (actuated) {
               record.instruction = `deepLocator: ${matched.accessibleText || "(no accessible text)"}`;
@@ -6413,6 +6417,52 @@ export async function executeStepWithHealing(params: {
               `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${failureMessage}`
             );
             continue;
+          }
+          // A select step whose question is phrased un-quoted (parseSelectStep
+          // returns `questionLabel: null`) has no fieldLabel to route through
+          // findDeepLocatorCandidateByFieldLabel above, so ranking below falls
+          // back to the OPTION value alone. Scoring the full interactive-scoped
+          // `deepLocatorCandidates` here (buttons, inputs, links alongside any
+          // <select>) would refuse on virtually every dense form: an unrelated
+          // 'First Name' input or 'Submit Application' button never mentions
+          // the quoted option any more than the genuine <select> target does,
+          // so every one of them ties at score 0 right alongside it — not just
+          // the two genuinely ambiguous <select>s the guard exists to catch.
+          // A fresh resolve scoped to "select" narrows the tie check to only
+          // the candidates that could actually satisfy a select-write (a
+          // non-<select> candidate already reports "not-actionable" and is
+          // skipped by the walk below regardless — see
+          // buildSelectFrameCandidateExpr's `el.options || []` lookup), so
+          // this only refuses when two (or more) real <select>s tie for
+          // relevance, e.g. two 'Yes'/'No' controls whose own accessible names
+          // never mention the option text. A unique top-ranked <select>
+          // (including the common single-<select>-in-frame case, where a tie
+          // is impossible) still reaches the walk.
+          if (selectStep && !selectStep.questionLabel) {
+            const selectCandidates = await resolveDeepLocatorCandidates(
+              page,
+              frameTarget?.frameSelector,
+              "select",
+              null,
+              { frameTarget }
+            );
+            const optionPhrases = extractTaggedPhrases(step);
+            const optionScores = selectCandidates.map((candidate) =>
+              scoreCandidate(candidate.accessibleText, optionPhrases)
+            );
+            const topScore = optionScores.length > 0 ? Math.max(...optionScores) : 0;
+            const tiedForTop = optionScores.filter((score) => score === topScore).length;
+            if (tiedForTop > 1) {
+              const failureMessage = `deepLocator: select step's question is un-quoted and ${tiedForTop} candidates tie for relevance to "${selectStep.option}" (refusing to guess which control to select)`;
+              record.actResultSuccess = false;
+              record.errorMessage = failureMessage;
+              attempts.push(record);
+              failureReasons.push(failureMessage);
+              logger.info(
+                `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${failureMessage}`
+              );
+              continue;
+            }
           }
           // Actionable-candidate walk: a top pick that rejects with the CDP
           // `-32000 Node does not have a layout object` error (an unrendered
@@ -6450,7 +6500,8 @@ export async function executeStepWithHealing(params: {
                   frameTarget?.frameSelector,
                   deepLocatorInnerSelector,
                   candidate.index,
-                  actuation.value
+                  actuation.value,
+                  { frameTarget }
                 );
                 // selectDeepLocatorCandidateOption never throws on an ordinary
                 // failed write (see deep-locator-actuate.ts's writeAndVerify) —
@@ -6466,7 +6517,8 @@ export async function executeStepWithHealing(params: {
                   frameTarget?.frameSelector,
                   deepLocatorInnerSelector,
                   candidate.index,
-                  actuation.value
+                  actuation.value,
+                  { frameTarget }
                 );
                 if (!verified) throw new Error("-32000 Node does not have a layout object");
               } else {
