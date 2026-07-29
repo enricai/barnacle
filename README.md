@@ -1119,7 +1119,7 @@ Operational routes:
 - `GET /readyz`  — readiness probe (checks scraper credentials, queue depth)
 - `GET /docs`    — Swagger UI (when `ENABLE_DOCS=true`)
 - `GET /v1/plugins` — authenticated plugin load report (see [Out-of-tree plugins](#out-of-tree-plugins))
-- `GET /v1/submissions` — authenticated, queryable submit+beacon reconciliation rows (filter by `siteId`, `requestId`, `status`, `beaconStatus`, `from`/`to`; each row's opaque `joinKeys` bag is a plugin-owned field, not filterable at this layer; see [Submission-envelope sink](docs/telemetry-and-judging.md#submission-envelope-sink))
+- `GET /v1/submissions` — authenticated, queryable submit+beacon reconciliation rows (filter by `siteId`, `requestId`, `status`, `beaconStatus`, `from`/`to`; each row also carries the submit session block `session` (`{ id, provider, ip, ipCapturedAt }`) and the beacon-fire `beaconSessionIp`, neither of which is filterable at this layer, same as the opaque `joinKeys` bag; see [Submission-envelope sink](docs/telemetry-and-judging.md#submission-envelope-sink))
 
 ## Commands
 
