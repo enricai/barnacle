@@ -248,6 +248,40 @@ async function tryResolveChildFrame(
 }
 
 /**
+ * Single non-polling presence probe for a frame that may have already
+ * attached — the seam callers should use instead of hand-rolling
+ * `resolveFrameTarget(page, frameSelector, { timeoutMs: 0 })` for an
+ * "is it already there?" check (`deep-locator-actuate.ts`,
+ * `deep-locator-candidates.ts`, `flow-runner.ts`'s
+ * `reresolveFrameTargetIfLost`). That zero-budget pattern sets
+ * `tryResolveChildFrame`'s deadline to `Date.now() + 0`, so every probe
+ * clamps to `Math.min(evaluateTimeoutMs, remainingBudgetMs()) === 0` — a
+ * `setTimeout(reject, 0)` macrotask that always wins the race against a
+ * genuinely awaited CDP round-trip, so the probe can never observe an
+ * already-attached frame outside of a same-tick-resolving test fake. This
+ * probe's deadline instead starts `probeFloorMs` (config-backed via
+ * `config.scraper.framePresenceProbeFloorMs`) in the future, giving each
+ * `withWatchdog` call a real budget a CDP round-trip can land within.
+ *
+ * Still never polls: exactly one top-level iframe-src probe, plus — per
+ * `tryResolveChildFrame`'s existing `index > 0 && remainingBudgetMs() <= 0`
+ * bound — at most one further candidate probe, so a single call costs at
+ * most ~2x `probeFloorMs` regardless of how many `page.frames()` candidates
+ * exist. Returns `null` (never a main-frame fallback) when nothing attaches
+ * within the floor, so a caller can tell "not present yet" apart from a
+ * resolved target and keep its own fallback behavior.
+ */
+export async function probeAttachedFrameTarget(
+  page: Page,
+  frameSelector: string,
+  opts: { evaluateTimeoutMs?: number; probeFloorMs?: number } = {}
+): Promise<FrameTarget | null> {
+  const evaluateTimeoutMs = opts.evaluateTimeoutMs ?? config.scraper.frameEvaluateTimeoutMs;
+  const probeFloorMs = opts.probeFloorMs ?? config.scraper.framePresenceProbeFloorMs;
+  return tryResolveChildFrame(page, frameSelector, evaluateTimeoutMs, Date.now() + probeFloorMs);
+}
+
+/**
  * Resolves the `FrameTarget` for `frameSelector` against `page`, polling for
  * up to `timeoutMs` (at `pollMs` intervals) before falling back to the
  * main-frame target rather than throwing:

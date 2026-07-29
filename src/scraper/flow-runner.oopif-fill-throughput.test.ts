@@ -20,12 +20,14 @@ import {
   makeFakeDeepLocator,
   makeFakeFrameFillByIndex,
   makeFakeFrameScan,
+  makeFakeFrameSelectByIndex,
   registerDeepLocatorHopElements,
   registerDeepLocatorHopLatency,
 } from "@/scraper/deep-locator-fake";
 import {
   buildFillFrameCandidateExpr,
   buildScanFrameCandidatesExpr,
+  buildSelectFrameCandidateExpr,
   INTERACTIVE_CANDIDATE_SELECTOR,
 } from "@/scraper/deep-locator-scan";
 import { runHealingFlow, STEP_WATCHDOG_MS } from "@/scraper/flow-runner";
@@ -63,6 +65,13 @@ const FILL_VALUE = "Jane";
 /** Verbatim step instruction shape the flow's fill steps use — `parseFillStep` extracts `fieldLabel: "'First Name'"` and `value: "Jane"` from this. */
 const FIRST_NAME_STEP = "Fill in the 'First Name' field with 'Jane'";
 
+/** Option the step instruction asks to be chosen on the Country dropdown. */
+const SELECT_VALUE = "United States";
+/** Verbatim step instruction shape the flow's select steps use with a quoted question label — `parseSelectStep` extracts `option: "United States"` and `questionLabel: "Country"`, routing through the same deterministic field-label branch `FIRST_NAME_STEP` does (the select counterpart of `fillStep`'s `fieldTarget`). */
+const COUNTRY_STEP = "Select 'United States' in the 'Country' dropdown";
+/** The select branch's rendered-target accessible text — the select counterpart of `RENDERED_TARGET_TEXT`; shares the same {@link HIDDEN_DECOY_INDEX}/{@link RENDERED_TARGET_INDEX} shape via {@link buildDenseCandidateElements}. */
+const SELECT_TARGET_TEXT = "Country";
+
 /** Matches the uchealth-7 bug report's measured candidate count for `#talemetry_apply_iframe >> *`. */
 const TOTAL_CANDIDATES = 371;
 
@@ -79,6 +88,13 @@ const FILL_EXPR = buildFillFrameCandidateExpr(
   INTERACTIVE_CANDIDATE_SELECTOR,
   RENDERED_TARGET_INDEX,
   FILL_VALUE
+);
+
+/** The select counterpart of {@link FILL_EXPR}: the exact evaluate expression `selectDeepLocatorCandidateOption`'s batched fast path issues once the field-label branch resolves `matched.index`. */
+const SELECT_EXPR = buildSelectFrameCandidateExpr(
+  INTERACTIVE_CANDIDATE_SELECTOR,
+  RENDERED_TARGET_INDEX,
+  SELECT_VALUE
 );
 
 const testLogger = {
@@ -119,6 +135,28 @@ function makeFakeStagehandObserveOnceThenBlind() {
 /** Builds the 371-element hop's filler run: distinct, non-matching text so every filler scores 0 against the step's tagged field label and can never outrank the genuine text match. */
 function buildFillerRun(count: number, offset: number): string[] {
   return Array.from({ length: count }, (_, i) => `filler-node-${offset + i}`);
+}
+
+/**
+ * Builds the shared 371-candidate shape every test in this file drives:
+ * a hidden decoy sharing `targetText` at {@link HIDDEN_DECOY_INDEX} (filtered
+ * out of the batched scan's own candidate set — Issue #2's visibility
+ * filter), the genuine rendered target at {@link RENDERED_TARGET_INDEX}, and
+ * non-matching filler everywhere else so no other candidate can outrank the
+ * genuine text match.
+ */
+function buildDenseCandidateElements(
+  targetText: string
+): Array<string | { text: string; visible: boolean }> {
+  const elements = [
+    ...buildFillerRun(HIDDEN_DECOY_INDEX, 0),
+    { text: targetText, visible: false },
+    ...buildFillerRun(RENDERED_TARGET_INDEX - HIDDEN_DECOY_INDEX - 1, 100),
+    targetText,
+    ...buildFillerRun(TOTAL_CANDIDATES - RENDERED_TARGET_INDEX - 1, 200),
+  ];
+  expect(elements).toHaveLength(TOTAL_CANDIDATES);
+  return elements;
 }
 
 /**
@@ -173,13 +211,22 @@ function makeFakeChildFrame(
  * mirroring Stagehand's real `resolveAtIndex` cost) via
  * `registerDeepLocatorHopLatency` — a regression to the legacy fallback
  * would make this fixture's own delegate cost model the failure, not just an
- * unasserted side effect.
+ * unasserted side effect. `options.probeDelayMs` (default 0, matching every
+ * other OOPIF throughput fixture) delays the iframe-src probe's resolution
+ * the way `deep-locator-fake.ts`'s `makeFakeFrameResolutionPage` models
+ * production CDP latency at frame-RESOLUTION time: a zero-budget internal
+ * re-resolution (`resolveActuateFrameTarget`'s `{ timeoutMs: 0 }` pass) loses
+ * that race once delayed, unlike the zero-delay default, which — because it
+ * resolves same-tick — would let a wrongly-unthreaded `frameTarget` succeed
+ * via a second, undetected probe.
  */
 function makeFakeTopPage(
   topUrl: { current: string },
   childUrls: { current: string },
-  deepLocatorFrame: FakeDeepLocatorFrame
+  deepLocatorFrame: FakeDeepLocatorFrame,
+  options: { probeDelayMs?: number } = {}
 ) {
+  const probeDelayMs = options.probeDelayMs ?? 0;
   const session = { on: () => {}, off: () => {} };
   const {
     frame: childFrame,
@@ -210,11 +257,112 @@ function makeFakeTopPage(
     };
   };
   const deepLocatorSpy = vi.fn(wrapDelegate);
+  const iframeProbeSpy = vi.fn();
   const page = {
     evaluate: async (expr: unknown) => {
       const iframeSrcMatch = /document\.querySelector\((.+?)\)/.exec(String(expr));
       if (iframeSrcMatch) {
         const selector = JSON.parse(iframeSrcMatch[1] as string) as string;
+        if (selector === IFRAME_SELECTOR) iframeProbeSpy();
+        const resolved =
+          selector === IFRAME_SELECTOR
+            ? { matched: true, src: CHILD_SRC }
+            : { matched: false, src: null };
+        if (probeDelayMs <= 0) return resolved;
+        return new Promise((resolve) => setTimeout(() => resolve(resolved), probeDelayMs));
+      }
+      return null;
+    },
+    url: () => topUrl.current,
+    title: async () => "UCHealth Careers",
+    locator: () => ({
+      first: () => ({
+        isChecked: async () => false,
+        inputValue: async () => "",
+      }),
+    }),
+    waitForTimeout: async () => {},
+    getSessionForFrame: () => session,
+    mainFrameId: () => "main",
+    sendCDP: async () => ({ body: "{}", base64Encoded: false }),
+    frames: () => [childFrame],
+    deepLocator: deepLocatorSpy,
+  } as unknown as import("@browserbasehq/stagehand").Page;
+  return { page, scanSpy, fillByIndexSpy, legacyFillSpy, legacyInputValueSpy, iframeProbeSpy };
+}
+
+/** The select counterpart of {@link makeFakeChildFrame}: routes `SELECT_EXPR` to `makeFakeFrameSelectByIndex` instead of `FILL_EXPR` to `makeFakeFrameFillByIndex`. */
+function makeFakeChildFrameForSelect(
+  childUrls: { current: string },
+  deepLocatorFrame: FakeDeepLocatorFrame
+) {
+  const scan = makeFakeFrameScan(deepLocatorFrame, HOP_SELECTOR);
+  const scanSpy = vi.fn(scan);
+  const selectByIndex = makeFakeFrameSelectByIndex(deepLocatorFrame, HOP_SELECTOR);
+  const selectByIndexSpy = vi.fn(selectByIndex);
+  return {
+    frame: {
+      evaluate: async (expr: unknown) => {
+        if (expr === "location.href") return childUrls.current;
+        if (expr === SCAN_EXPR) return scanSpy();
+        if (expr === SELECT_EXPR) return selectByIndexSpy(RENDERED_TARGET_INDEX, SELECT_VALUE);
+        return null;
+      },
+      locator: () => ({
+        first: () => ({
+          isChecked: async () => false,
+          inputValue: async () => "",
+        }),
+      }),
+    },
+    scanSpy,
+    selectByIndexSpy,
+  };
+}
+
+/** The select counterpart of {@link makeFakeTopPage}: `nth()`'s returned delegate is wrapped so `legacySelectSpy`/`legacyInputValueSpy` fire only on an actual per-index `selectOption()`/`inputValue()` invocation, the two the legacy select fallback (and nothing else) drives. */
+function makeFakeTopPageForSelect(
+  topUrl: { current: string },
+  childUrls: { current: string },
+  deepLocatorFrame: FakeDeepLocatorFrame
+) {
+  const session = { on: () => {}, off: () => {} };
+  const {
+    frame: childFrame,
+    scanSpy,
+    selectByIndexSpy,
+  } = makeFakeChildFrameForSelect(childUrls, deepLocatorFrame);
+  const legacySelectSpy = vi.fn();
+  const legacyInputValueSpy = vi.fn();
+  const fakeDeepLocator = makeFakeDeepLocator(deepLocatorFrame);
+  const wrapDelegate = (selector: string) => {
+    const delegate = fakeDeepLocator(selector);
+    return {
+      ...delegate,
+      nth: (index: number) => {
+        const inner = fakeDeepLocator(selector).nth(index);
+        return {
+          ...inner,
+          selectOption: async (values: string | string[]) => {
+            legacySelectSpy();
+            return inner.selectOption(values);
+          },
+          inputValue: async () => {
+            legacyInputValueSpy();
+            return inner.inputValue();
+          },
+        };
+      },
+    };
+  };
+  const deepLocatorSpy = vi.fn(wrapDelegate);
+  const iframeProbeSpy = vi.fn();
+  const page = {
+    evaluate: async (expr: unknown) => {
+      const iframeSrcMatch = /document\.querySelector\((.+?)\)/.exec(String(expr));
+      if (iframeSrcMatch) {
+        const selector = JSON.parse(iframeSrcMatch[1] as string) as string;
+        if (selector === IFRAME_SELECTOR) iframeProbeSpy();
         return selector === IFRAME_SELECTOR
           ? { matched: true, src: CHILD_SRC }
           : { matched: false, src: null };
@@ -236,7 +384,7 @@ function makeFakeTopPage(
     frames: () => [childFrame],
     deepLocator: deepLocatorSpy,
   } as unknown as import("@browserbasehq/stagehand").Page;
-  return { page, scanSpy, fillByIndexSpy, legacyFillSpy, legacyInputValueSpy };
+  return { page, scanSpy, selectByIndexSpy, legacySelectSpy, legacyInputValueSpy, iframeProbeSpy };
 }
 
 describe("flow-runner cascade fill actuation throughput (batched fill-by-index over the legacy per-index fallback)", () => {
@@ -246,14 +394,7 @@ describe("flow-runner cascade fill actuation throughput (batched fill-by-index o
 
   it("fills a 371-candidate hop's target at index 40 via exactly one batched fill evaluate, inside STEP_WATCHDOG_MS, with zero per-index delegate resolves", async () => {
     const deepLocatorFrame: FakeDeepLocatorFrame = new Map();
-    const elements = [
-      ...buildFillerRun(HIDDEN_DECOY_INDEX, 0),
-      { text: RENDERED_TARGET_TEXT, visible: false },
-      ...buildFillerRun(RENDERED_TARGET_INDEX - HIDDEN_DECOY_INDEX - 1, 100),
-      RENDERED_TARGET_TEXT,
-      ...buildFillerRun(TOTAL_CANDIDATES - RENDERED_TARGET_INDEX - 1, 200),
-    ];
-    expect(elements).toHaveLength(TOTAL_CANDIDATES);
+    const elements = buildDenseCandidateElements(RENDERED_TARGET_TEXT);
     const hop = registerDeepLocatorHopElements(deepLocatorFrame, HOP_SELECTOR, elements);
     registerDeepLocatorHopLatency(hop, {
       delayOn: ["fill", "inputValue"],
@@ -263,11 +404,8 @@ describe("flow-runner cascade fill actuation throughput (batched fill-by-index o
     const topUrl = { current: `${TOP_ORIGIN}/jobs/123/apply` };
     const childUrls = { current: CHILD_SRC };
     const stagehand = makeFakeStagehandObserveOnceThenBlind();
-    const { page, scanSpy, fillByIndexSpy, legacyFillSpy, legacyInputValueSpy } = makeFakeTopPage(
-      topUrl,
-      childUrls,
-      deepLocatorFrame
-    );
+    const { page, scanSpy, fillByIndexSpy, legacyFillSpy, legacyInputValueSpy, iframeProbeSpy } =
+      makeFakeTopPage(topUrl, childUrls, deepLocatorFrame);
 
     const startedAt = Date.now();
     const result = await runHealingFlow({
@@ -306,6 +444,18 @@ describe("flow-runner cascade fill actuation throughput (batched fill-by-index o
     expect(legacyFillSpy).not.toHaveBeenCalled();
     expect(legacyInputValueSpy).not.toHaveBeenCalled();
 
+    // The iframe-src probe backing `resolveFrameTarget` fires exactly once —
+    // the per-step resolution `executeStepWithHealing` already did before
+    // the cascade ever ran. `fillDeepLocatorCandidate`'s `actuateCandidateBatched`
+    // (`deep-locator-actuate.ts`) re-resolves internally whenever its caller
+    // omits `timeoutOptions.frameTarget`, which would silently succeed via a
+    // SECOND probe here (the fake resolves instantly, masking the cost a
+    // real CDP round-trip would pay) — so this is the assertion that
+    // actually pins "the caller passed its own already-resolved
+    // frameTarget", not just "the fill ended up batched somehow". Mirrors
+    // `flow-runner.oopif-click-throughput.test.ts`'s identical assertion.
+    expect(iframeProbeSpy).toHaveBeenCalledTimes(1);
+
     // The rendered target was filled; the hidden decoy sharing its
     // accessible name — filtered out of the batched scan's own candidate
     // set — never was, and no other index was written.
@@ -315,5 +465,96 @@ describe("flow-runner cascade fill actuation throughput (batched fill-by-index o
       if (index === RENDERED_TARGET_INDEX) continue;
       expect(element.filledWith).toBeNull();
     }
+  });
+
+  it("fills the same 371-candidate target even when the step-level frame resolution pays realistic CDP latency (perf-002's latency-realistic probe, mirroring `deep-locator-fake.ts`'s `makeFakeFrameResolutionPage`) — still exactly one iframe probe, one batched fill evaluate, zero legacy delegate calls", async () => {
+    const deepLocatorFrame: FakeDeepLocatorFrame = new Map();
+    const elements = buildDenseCandidateElements(RENDERED_TARGET_TEXT);
+    const hop = registerDeepLocatorHopElements(deepLocatorFrame, HOP_SELECTOR, elements);
+    registerDeepLocatorHopLatency(hop, {
+      delayOn: ["fill", "inputValue"],
+      delayMs: MEASURED_DELEGATE_ROUND_TRIP_MS,
+    });
+
+    const topUrl = { current: `${TOP_ORIGIN}/jobs/123/apply` };
+    const childUrls = { current: CHILD_SRC };
+    const stagehand = makeFakeStagehandObserveOnceThenBlind();
+    const { page, scanSpy, fillByIndexSpy, legacyFillSpy, legacyInputValueSpy, iframeProbeSpy } =
+      makeFakeTopPage(topUrl, childUrls, deepLocatorFrame, {
+        // A zero-budget internal re-resolution (`resolveActuateFrameTarget`'s
+        // `{ timeoutMs: 0 }` pass) loses this race once the probe no longer
+        // resolves same-tick — unlike the sibling test above, where a
+        // wrongly-unthreaded `frameTarget` would still silently succeed via a
+        // second, undetected probe. This is the offline reproduction of the
+        // production degrade the bug report measured (a real CDP round-trip
+        // never resolves same-tick).
+        probeDelayMs: 50,
+      });
+
+    const result = await runHealingFlow({
+      stagehand,
+      page,
+      steps: [{ instruction: FIRST_NAME_STEP, optional: false, upload: false, submitStep: false }],
+      logger: testLogger,
+      anthropic: null,
+      resumeFixture: null,
+      frameSelector: IFRAME_SELECTOR,
+    });
+
+    expect(result.lastStepIndex).toBe(0);
+    expect(scanSpy).toHaveBeenCalledTimes(1);
+    expect(fillByIndexSpy).toHaveBeenCalledTimes(1);
+    expect(fillByIndexSpy).toHaveBeenCalledWith(RENDERED_TARGET_INDEX, FILL_VALUE);
+    expect(legacyFillSpy).not.toHaveBeenCalled();
+    expect(legacyInputValueSpy).not.toHaveBeenCalled();
+    expect(iframeProbeSpy).toHaveBeenCalledTimes(1);
+    expect(hop.elements[RENDERED_TARGET_INDEX]?.filledWith).toBe(FILL_VALUE);
+  });
+});
+
+describe("flow-runner cascade select actuation throughput (batched select-by-index over the legacy per-index fallback)", () => {
+  beforeEach(() => {
+    loggerStub.warn.mockClear();
+  });
+
+  it("selects the same 371-candidate hop's target at index 40 via exactly one batched select evaluate, with zero per-index delegate resolves — the select counterpart of the fill test above", async () => {
+    const deepLocatorFrame: FakeDeepLocatorFrame = new Map();
+    const elements = buildDenseCandidateElements(SELECT_TARGET_TEXT);
+    const hop = registerDeepLocatorHopElements(deepLocatorFrame, HOP_SELECTOR, elements);
+    registerDeepLocatorHopLatency(hop, {
+      delayOn: ["selectOption", "inputValue"],
+      delayMs: MEASURED_DELEGATE_ROUND_TRIP_MS,
+    });
+
+    const topUrl = { current: `${TOP_ORIGIN}/jobs/123/apply` };
+    const childUrls = { current: CHILD_SRC };
+    const stagehand = makeFakeStagehandObserveOnceThenBlind();
+    const {
+      page,
+      scanSpy,
+      selectByIndexSpy,
+      legacySelectSpy,
+      legacyInputValueSpy,
+      iframeProbeSpy,
+    } = makeFakeTopPageForSelect(topUrl, childUrls, deepLocatorFrame);
+
+    const result = await runHealingFlow({
+      stagehand,
+      page,
+      steps: [{ instruction: COUNTRY_STEP, optional: false, upload: false, submitStep: false }],
+      logger: testLogger,
+      anthropic: null,
+      resumeFixture: null,
+      frameSelector: IFRAME_SELECTOR,
+    });
+
+    expect(result.lastStepIndex).toBe(0);
+    expect(scanSpy).toHaveBeenCalledTimes(1);
+    expect(selectByIndexSpy).toHaveBeenCalledTimes(1);
+    expect(selectByIndexSpy).toHaveBeenCalledWith(RENDERED_TARGET_INDEX, SELECT_VALUE);
+    expect(legacySelectSpy).not.toHaveBeenCalled();
+    expect(legacyInputValueSpy).not.toHaveBeenCalled();
+    expect(iframeProbeSpy).toHaveBeenCalledTimes(1);
+    expect(hop.elements[RENDERED_TARGET_INDEX]?.filledWith).toBe(SELECT_VALUE);
   });
 });

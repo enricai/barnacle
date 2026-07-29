@@ -20,7 +20,11 @@ import {
   type FrameCandidateClickResult,
   type FrameCandidateScanResult,
 } from "@/scraper/deep-locator-scan";
-import { buildHopSelector, type FrameTarget, resolveFrameTarget } from "@/scraper/frame-target";
+import {
+  buildHopSelector,
+  type FrameTarget,
+  probeAttachedFrameTarget,
+} from "@/scraper/frame-target";
 import { withWatchdog } from "@/scraper/watchdog";
 
 const logger = getLogger({ name: "scraper/deep-locator-candidates" });
@@ -57,13 +61,18 @@ export interface DeepLocatorTimeoutOptions {
    * Pre-resolved `FrameTarget` to scan via one batched
    * `evaluate(buildScanFrameCandidatesExpr(innerSelector))` round-trip
    * instead of the legacy `count()` + per-candidate `textContent()` loop.
-   * When omitted, a single non-polling `resolveFrameTarget(page, frameSelector,
-   * { timeoutMs: 0 })` pass is attempted internally so existing call sites
-   * get the batched fast path for free; if that pass doesn't land a resolved
-   * child frame (not yet attached, or `frameSelector` is null/undefined), the
-   * legacy loop runs unchanged. A caller that already resolved a `FrameTarget`
-   * (e.g. `flow-runner.ts`'s per-step resolution) should pass it here to skip
-   * the redundant internal resolution pass.
+   * When omitted, a single non-polling `probeAttachedFrameTarget(page,
+   * frameSelector)` pass (`frame-target.ts`) is attempted internally so
+   * existing call sites get the batched fast path for free. Unlike a bare
+   * `resolveFrameTarget(page, frameSelector, { timeoutMs: 0 })` pass — which
+   * always loses the race against genuine CDP latency — this probe carries a
+   * real per-probe budget (`config.scraper.framePresenceProbeFloorMs`), so it
+   * can actually land against an already-attached frame under live latency.
+   * If the probe doesn't land a resolved child frame (not yet attached, or
+   * `frameSelector` is null/undefined), the legacy loop runs unchanged. A
+   * caller that already resolved a `FrameTarget` (e.g. `flow-runner.ts`'s
+   * per-step resolution) should pass it here to skip the redundant internal
+   * probe.
    */
   frameTarget?: FrameTarget;
 }
@@ -117,6 +126,12 @@ function candidateSelector(hopSelector: string, index: number): string {
  */
 const NEGATION_MARKERS = /\b(?:do\s+not|don't|never|avoid)\b/gi;
 
+/** One quoted phrase from an instruction, tagged with whether a negation marker (`NEGATION_MARKERS`) governs it. See {@link extractTaggedPhrases}. */
+export interface TaggedPhrase {
+  text: string;
+  negated: boolean;
+}
+
 /**
  * Extracts every single-quoted phrase from `instruction`, tagging each as
  * negated when a negation marker (`NEGATION_MARKERS`) precedes it within the
@@ -126,9 +141,12 @@ const NEGATION_MARKERS = /\b(?:do\s+not|don't|never|avoid)\b/gi;
  * reach. Mirrors the quoted-phrase extraction convention in
  * `parseSelectStep`/`parseRadioStep` (`flow-runner.ts`) — same
  * `/'([^']+)'/g` shape — but here we need ALL quoted phrases plus their
- * polarity, not just one option/label pair.
+ * polarity, not just one option/label pair. Exported so `flow-runner.ts` can
+ * re-derive the exact same ranking {@link scoreCandidate} used to sort
+ * `deepLocatorCandidates`, to detect a tie for the top rank rather than
+ * duplicating this logic.
  */
-function extractTaggedPhrases(instruction: string): Array<{ text: string; negated: boolean }> {
+export function extractTaggedPhrases(instruction: string): TaggedPhrase[] {
   const negationStarts = [...instruction.matchAll(NEGATION_MARKERS)].map((m) => m.index);
   const quoted = [...instruction.matchAll(/'([^']+)'/g)];
   return quoted.map((m) => {
@@ -157,11 +175,11 @@ function normalize(text: string): string {
  * exact/substring match tiers, falling through to 0 for empty or
  * unrelated text so a structural container with no accessible text can
  * never outrank a candidate whose text actually matches the instruction.
+ * Exported so `flow-runner.ts` can detect a tie for the top rank among
+ * `resolveDeepLocatorCandidates`'s already-sorted output (see
+ * {@link extractTaggedPhrases}'s docblock).
  */
-function scoreCandidate(
-  accessibleText: string,
-  phrases: Array<{ text: string; negated: boolean }>
-): number {
+export function scoreCandidate(accessibleText: string, phrases: TaggedPhrase[]): number {
   const normalizedText = normalize(accessibleText);
   if (!normalizedText) return 0;
   const positives = phrases.filter((p) => !p.negated).map((p) => normalize(p.text));
@@ -175,14 +193,17 @@ function scoreCandidate(
 /**
  * Resolves the `FrameTarget` the batched scan should evaluate against:
  * `timeoutOptions.frameTarget` when the caller already resolved one, else a
- * single non-polling `resolveFrameTarget` pass (`timeoutMs: 0`) so existing
- * call sites — which pass only a `frameSelector` string, not a `FrameTarget`
- * — still get the batched fast path without themselves changing. Returns
- * `null` (never throws) when `frameSelector` is unset, resolution rejects
- * (e.g. a fake `Page` in a legacy-path test lacking `evaluate`/`frames`), or
- * the pass lands on the main-frame fallback rather than an attached child
- * frame — each of those means "no frame seam available", and the caller
- * degrades to the legacy per-candidate loop.
+ * single non-polling `probeAttachedFrameTarget(page, frameSelector)` pass
+ * (`frame-target.ts`) so existing call sites — which pass only a
+ * `frameSelector` string, not a `FrameTarget` — still get the batched fast
+ * path without themselves changing. Unlike a bare `resolveFrameTarget(page,
+ * frameSelector, { timeoutMs: 0 })` pass, the probe carries a real per-probe
+ * budget, so it can land against an already-attached frame under genuine CDP
+ * latency instead of always losing a zero-budget race. Returns `null` (never
+ * throws) when `frameSelector` is unset, the probe rejects (e.g. a fake
+ * `Page` in a legacy-path test lacking `evaluate`/`frames`), or nothing
+ * attaches within the probe's budget — each of those means "no frame seam
+ * available", and the caller degrades to the legacy per-candidate loop.
  */
 async function resolveScanFrameTarget(
   page: Page,
@@ -192,8 +213,7 @@ async function resolveScanFrameTarget(
   if (timeoutOptions.frameTarget) return timeoutOptions.frameTarget;
   if (!frameSelector) return null;
   try {
-    const resolved = await resolveFrameTarget(page, frameSelector, { timeoutMs: 0 });
-    return resolved?.frame ? resolved : null;
+    return await probeAttachedFrameTarget(page, frameSelector);
   } catch {
     return null;
   }

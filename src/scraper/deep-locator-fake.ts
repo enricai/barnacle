@@ -1,4 +1,6 @@
+import type { Page } from "@browserbasehq/stagehand";
 import type { DeepLocatorDelegate } from "@browserbasehq/stagehand/lib/v3/understudy/deepLocator.js";
+import { vi } from "vitest";
 
 import type {
   FrameCandidateScanResult,
@@ -33,6 +35,17 @@ export interface FakeDeepLocatorElement {
    * mirror whatever was last written.
    */
   readBackValue?: string;
+  /**
+   * When set to anything other than `"select"`, `selectOption()` rejects with
+   * {@link NODE_NOT_ACTIONABLE_MESSAGE} — mirrors `buildSelectFrameCandidateExpr`
+   * (`deep-locator-scan.ts`), whose real `el.options || []` lookup is always
+   * empty for a non-`<select>` element, so a real select-write against a
+   * decoy `input`/`button` candidate reports `not-actionable` rather than
+   * silently succeeding. Left unset (the legacy default), `selectOption()`
+   * always succeeds regardless of tag — every existing tag-agnostic
+   * registration keeps behaving exactly as it always has.
+   */
+  tagName?: string;
 }
 
 /**
@@ -44,6 +57,8 @@ export interface FakeDeepLocatorElement {
 export interface FakeDeepLocatorElementSpec {
   readonly text: string;
   readonly visible?: boolean;
+  /** See {@link FakeDeepLocatorElement.tagName}. Omit to keep `selectOption()` tag-agnostic. */
+  readonly tagName?: string;
 }
 
 /**
@@ -131,6 +146,7 @@ export function registerDeepLocatorHopElements(
       selectedWith: null,
       text: spec.text,
       visible: spec.visible ?? true,
+      tagName: spec.tagName,
     };
   });
   const hop = buildHop(built);
@@ -425,6 +441,9 @@ function buildFakeDelegate(
       await awaitReleaseIfHungOn("selectOption");
       const element = requireElement();
       if (!element.visible) throw new Error(NODE_NOT_ACTIONABLE_MESSAGE);
+      if (element.tagName !== undefined && element.tagName !== "select") {
+        throw new Error(NODE_NOT_ACTIONABLE_MESSAGE);
+      }
       const selected = Array.isArray(values) ? values : [values];
       element.selectedWith = selected;
       return selected;
@@ -837,5 +856,142 @@ export function makeFakeFrameSelectByIndex(
     const hop = frame.get(selector);
     await delayIfRegistered(hop, "selectByIndex");
     return resolveFakeBatchedWrite(hop, index, optionValue);
+  };
+}
+
+/**
+ * Matches `tryResolveChildFrame`'s iframe-src probe expression
+ * (`frame-target.ts:207-211`, `document.querySelector(<selector>)`-shaped)
+ * and extracts the CSS selector it was built with — a fake cannot execute
+ * browser-side code, so it reads the selector back out of the expression
+ * string instead, the same technique
+ * `deep-locator-candidates.internal-frame-resolution.test.ts`'s
+ * `makeIframeSrcProbe` already uses. The capture group matches a complete
+ * `JSON.stringify`-quoted string (escaped-char-or-non-quote, repeated) rather
+ * than a lazy `.+?` up to the first `)` — a selector containing its own
+ * parens (`:not(...)`, `:has(...)`, `:nth-child(...)`) would otherwise
+ * truncate the match at that inner `)` and leave unparsable JSON.
+ */
+const IFRAME_SRC_PROBE_PATTERN = /document\.querySelector\(("(?:\\.|[^"\\])*")\)/;
+
+function parseIframeSrcSelector(expression: unknown): string | null {
+  const match = IFRAME_SRC_PROBE_PATTERN.exec(String(expression));
+  if (!match?.[1]) return null;
+  try {
+    return JSON.parse(match[1]) as string;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolves `value` immediately (same-tick, no internal `await`, settling as
+ * a microtask) when `probeDelayMs` is `0`, or after a real `setTimeout` when
+ * positive. This is the exact dial that decides whether a fake wins or
+ * loses a `{ timeoutMs: 0 }` watchdog race: `withWatchdog`'s `Promise.race`
+ * (`watchdog.ts`) arms its own reject timer BEFORE the raced operation even
+ * starts, so any macrotask-settling probe loses to a zero-delay watchdog
+ * regardless of how small its own delay is — only a same-tick microtask
+ * resolve can win.
+ */
+function resolveAfterProbeDelay<T>(value: T, probeDelayMs: number): Promise<T> {
+  if (probeDelayMs <= 0) return Promise.resolve(value);
+  return new Promise((resolve) => setTimeout(() => resolve(value), probeDelayMs));
+}
+
+/**
+ * Options for {@link makeFakeFrameResolutionPage}.
+ */
+export interface MakeFakeFrameResolutionPageOptions {
+  /** CSS selector of the `<iframe>` element in the top document — the exact `frameSelector` a caller passes to `resolveFrameTarget`. */
+  readonly iframeSelector: string;
+  /** Answers both the iframe's `src` attribute and the child frame's own `location.href` — same origin for both, matching every existing hand-rolled OOPIF throughput fixture (`flow-runner.oopif-*-throughput.test.ts`), which only needs the two to diverge post-navigation, not at resolution time. */
+  readonly childSrc: string;
+  /**
+   * Milliseconds each of `tryResolveChildFrame`'s two probes (the iframe-src
+   * read and the candidate `location.href` read) waits before resolving.
+   * `0` (default) resolves same-tick, matching every existing hand-rolled
+   * throughput fixture's fake `evaluate` exactly — which is what lets those
+   * fixtures' internal `resolveFrameTarget(..., { timeoutMs: 0 })` pass win
+   * a race it would always lose against genuine CDP latency in production
+   * (see `deep-locator-candidates.internal-frame-resolution.test.ts`'s
+   * docblock). A positive value reproduces that production loss offline —
+   * the dial the throughput-only fixtures never needed, but a fix for the
+   * zero-budget race itself does.
+   */
+  readonly probeDelayMs?: number;
+  /**
+   * Extra `childFrame.evaluate` handling beyond the `location.href` probe
+   * this factory already answers (e.g. a batched-scan/click/fill expression
+   * a consuming fixture needs) — tried, undelayed, after the probe, before
+   * the default `null` fallback. Omit for a bare resolution-only fixture.
+   */
+  readonly onFrameEvaluate?: (expression: unknown) => unknown | Promise<unknown>;
+}
+
+/** {@link makeFakeFrameResolutionPage}'s return shape. */
+export interface FakeFrameResolutionPage {
+  /** Fake top `Page`, castable straight into `resolveFrameTarget`'s `page` parameter. */
+  readonly page: Page;
+  /** The single child frame `page.frames()` resolves to. */
+  readonly childFrame: ReturnType<Page["frames"]>[number];
+  /** Fires once per iframe-src probe (`document.querySelector(<iframeSelector>)`-shaped evaluate) the fake page answers. */
+  readonly iframeProbeSpy: ReturnType<typeof vi.fn>;
+  /** Fires once per `"location.href"` probe the fake child frame answers. */
+  readonly locationProbeSpy: ReturnType<typeof vi.fn>;
+}
+
+/**
+ * Builds a fake top `Page` + single child `Frame` pair bound to
+ * `iframeSelector` — the shared instrument every OOPIF throughput fixture
+ * hand-rolls a variant of (`flow-runner.oopif-click-throughput.test.ts` et
+ * al.) but none of which can model production CDP latency at frame-
+ * RESOLUTION time: every one of those resolves both of
+ * `tryResolveChildFrame`'s probes with no internal `await`, a same-tick
+ * microtask that always wins a `{ timeoutMs: 0 }` watchdog race and
+ * therefore MASKS the production degrade this fake exists to make
+ * testable. `probeDelayMs: 0` (the default) reproduces those fixtures'
+ * timing exactly, so nothing that later adopts this factory sees a timing
+ * change; a positive value reproduces the production degrade those
+ * fixtures structurally cannot.
+ */
+export function makeFakeFrameResolutionPage(
+  options: MakeFakeFrameResolutionPageOptions
+): FakeFrameResolutionPage {
+  const probeDelayMs = options.probeDelayMs ?? 0;
+  const iframeProbeSpy = vi.fn();
+  const locationProbeSpy = vi.fn();
+
+  const childFrame = {
+    evaluate: async (expression: unknown) => {
+      if (expression === "location.href") {
+        locationProbeSpy(expression);
+        return resolveAfterProbeDelay(options.childSrc, probeDelayMs);
+      }
+      return (await options.onFrameEvaluate?.(expression)) ?? null;
+    },
+    locator: (selector: string) => ({ selector }),
+  };
+
+  const page = {
+    evaluate: async (expression: unknown) => {
+      iframeProbeSpy(expression);
+      const matched = parseIframeSrcSelector(expression) === options.iframeSelector;
+      return resolveAfterProbeDelay(
+        matched ? { matched: true, src: options.childSrc } : { matched: false, src: null },
+        probeDelayMs
+      );
+    },
+    url: () => "",
+    title: async () => "",
+    locator: (selector: string) => ({ selector }),
+    frames: () => [childFrame],
+  };
+
+  return {
+    page: page as unknown as Page,
+    childFrame: childFrame as unknown as ReturnType<Page["frames"]>[number],
+    iframeProbeSpy,
+    locationProbeSpy,
   };
 }

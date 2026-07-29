@@ -1,6 +1,21 @@
 import type { Page } from "@browserbasehq/stagehand";
 import type { DeepLocatorDelegate } from "@browserbasehq/stagehand/lib/v3/understudy/deepLocator.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const { loggerStub } = vi.hoisted(() => ({
+  loggerStub: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    fatal: vi.fn(),
+    errorWithStack: vi.fn(),
+  },
+}));
+vi.mock("@/lib/logging", () => ({
+  getLogger: () => loggerStub,
+}));
+
 import {
   type FakeDeepLocatorDelegate,
   type FakeDeepLocatorFrame,
@@ -9,6 +24,7 @@ import {
   makeFakeDomElement,
   makeFakeFrameClickByIndex,
   makeFakeFrameFillByIndex,
+  makeFakeFrameResolutionPage,
   makeFakeFrameScan,
   makeFakeFrameSelectByIndex,
   makeSelectorAwareDomRoot,
@@ -19,6 +35,7 @@ import {
   registerDeepLocatorHopLatency,
 } from "@/scraper/deep-locator-fake";
 import { isNodeNotActionableError } from "@/scraper/deep-locator-scan";
+import { probeAttachedFrameTarget, resolveFrameTarget } from "@/scraper/frame-target";
 
 const STILL_PENDING = Symbol("still-pending");
 
@@ -726,5 +743,108 @@ describe.each([
     expect(hop.elements[0]?.filledWith).toBe("legacy-path");
 
     await expect(raceAgainstTimer(writeByIndex(0, "batched-path"))).resolves.toBe(STILL_PENDING);
+  });
+});
+
+/**
+ * Pins {@link makeFakeFrameResolutionPage}'s core contract: the fake's
+ * `probeDelayMs` dial genuinely decides whether it wins or loses a
+ * `{ timeoutMs: 0 }` watchdog race, the same race every existing OOPIF
+ * throughput fixture's hand-rolled same-tick fake always wins regardless of
+ * production CDP latency (`deep-locator-candidates.internal-frame-
+ * resolution.test.ts`'s docblock). Without this, a fixture that always wins
+ * that race can't distinguish "the batched fast path is reachable" from
+ * "the batched fast path is reachable ONLY because the fake never models
+ * real latency" — exactly what masked the production degrade perf-001/
+ * perf-003/perf-004 address.
+ */
+describe("makeFakeFrameResolutionPage", () => {
+  const IFRAME_SELECTOR = "iframe#talemetry_apply_iframe";
+  const CHILD_SRC = "https://apply.talemetry.com/application/abc-123";
+
+  beforeEach(() => {
+    loggerStub.warn.mockClear();
+  });
+
+  it("case (a): probeDelayMs 0 resolves through resolveFrameTarget's zero-budget pass — a same-tick fake wins the watchdog race", async () => {
+    const { page, iframeProbeSpy, locationProbeSpy } = makeFakeFrameResolutionPage({
+      iframeSelector: IFRAME_SELECTOR,
+      childSrc: CHILD_SRC,
+      probeDelayMs: 0,
+    });
+
+    const target = await resolveFrameTarget(page, IFRAME_SELECTOR, { timeoutMs: 0 });
+
+    expect(target.frame).not.toBeNull();
+    expect(target.frameSelector).toBe(IFRAME_SELECTOR);
+    expect(iframeProbeSpy).toHaveBeenCalledTimes(1);
+    expect(locationProbeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("case (b): a positive probeDelayMs always loses resolveFrameTarget's zero-budget pass — reproducing the production degrade every same-tick throughput fixture masks", async () => {
+    const { page } = makeFakeFrameResolutionPage({
+      iframeSelector: IFRAME_SELECTOR,
+      childSrc: CHILD_SRC,
+      probeDelayMs: 5,
+    });
+
+    const target = await resolveFrameTarget(page, IFRAME_SELECTOR, { timeoutMs: 0 });
+
+    expect(target.frame).toBeNull();
+    expect(target.frameSelector).toBeNull();
+  });
+
+  it("case (b, cont.): the same latency-realistic pair still resolves once probeAttachedFrameTarget is given a real, non-zero probe budget covering the delay", async () => {
+    const { page } = makeFakeFrameResolutionPage({
+      iframeSelector: IFRAME_SELECTOR,
+      childSrc: CHILD_SRC,
+      probeDelayMs: 5,
+    });
+
+    const target = await probeAttachedFrameTarget(page, IFRAME_SELECTOR, {
+      evaluateTimeoutMs: 50,
+      probeFloorMs: 50,
+    });
+
+    expect(target?.frame).not.toBeNull();
+    expect(target?.frameSelector).toBe(IFRAME_SELECTOR);
+  });
+
+  it("matches an iframeSelector containing its own parentheses (:not(...), :has(...), :nth-child(...)) instead of truncating at the first inner ')'", async () => {
+    const parenSelector = "iframe:not(.hidden)";
+    const { page } = makeFakeFrameResolutionPage({
+      iframeSelector: parenSelector,
+      childSrc: CHILD_SRC,
+    });
+
+    const target = await resolveFrameTarget(page, parenSelector, { timeoutMs: 0 });
+
+    expect(target.frame).not.toBeNull();
+    expect(target.frameSelector).toBe(parenSelector);
+  });
+
+  it("routes an unmatched iframe selector to a non-matching probe result rather than throwing", async () => {
+    const { page } = makeFakeFrameResolutionPage({
+      iframeSelector: IFRAME_SELECTOR,
+      childSrc: CHILD_SRC,
+    });
+
+    const target = await resolveFrameTarget(page, "iframe#does-not-exist", { timeoutMs: 0 });
+
+    expect(target.frame).toBeNull();
+  });
+
+  it("falls through onFrameEvaluate for expressions other than the location.href probe", async () => {
+    const onFrameEvaluate = vi.fn().mockResolvedValue("custom-result");
+    const { childFrame } = makeFakeFrameResolutionPage({
+      iframeSelector: IFRAME_SELECTOR,
+      childSrc: CHILD_SRC,
+      onFrameEvaluate,
+    });
+
+    const result = await childFrame.evaluate("some-other-expression");
+
+    expect(result).toBe("custom-result");
+    expect(onFrameEvaluate).toHaveBeenCalledWith("some-other-expression");
   });
 });

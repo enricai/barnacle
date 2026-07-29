@@ -31,7 +31,11 @@ import {
   DEEP_LOCATOR_CLICK_INDEX_ROUND_TRIP_MS,
   type FrameCandidateWriteResult,
 } from "@/scraper/deep-locator-scan";
-import { buildHopSelector, type FrameTarget, resolveFrameTarget } from "@/scraper/frame-target";
+import {
+  buildHopSelector,
+  type FrameTarget,
+  probeAttachedFrameTarget,
+} from "@/scraper/frame-target";
 import { WatchdogTimeoutError, withWatchdog } from "@/scraper/watchdog";
 
 const logger = getLogger({ name: "scraper/deep-locator-actuate" });
@@ -54,14 +58,19 @@ export interface DeepLocatorActuateTimeoutOptions {
    * Pre-resolved `FrameTarget` to actuate via one batched
    * `evaluate(buildFillFrameCandidateExpr(...) | buildSelectFrameCandidateExpr(...))`
    * round-trip instead of the legacy `nth(index)` delegate pair. When
-   * omitted, a single non-polling `resolveFrameTarget(page, frameSelector,
-   * { timeoutMs: 0 })` pass is attempted internally so existing call sites
-   * get the batched fast path for free; if that pass doesn't land a resolved
-   * child frame, the legacy delegate path runs unchanged — the same degrade
-   * contract `deep-locator-candidates.ts`'s `resolveScanFrameTarget` uses for
-   * the scan/click seam. A caller that already resolved a `FrameTarget`
-   * (e.g. `flow-runner.ts`'s per-step resolution) should pass it here to
-   * skip the redundant internal resolution pass.
+   * omitted, a single non-polling `probeAttachedFrameTarget(page,
+   * frameSelector)` pass (`frame-target.ts`) is attempted internally so
+   * existing call sites get the batched fast path for free. Unlike a bare
+   * `resolveFrameTarget(page, frameSelector, { timeoutMs: 0 })` pass — which
+   * always loses the race against genuine CDP latency — this probe carries a
+   * real per-probe budget (`config.scraper.framePresenceProbeFloorMs`), so it
+   * can actually land against an already-attached frame under live latency.
+   * If the probe doesn't land a resolved child frame, the legacy delegate
+   * path runs unchanged — the same degrade contract
+   * `deep-locator-candidates.ts`'s `resolveScanFrameTarget` uses for the
+   * scan/click seam. A caller that already resolved a `FrameTarget` (e.g.
+   * `flow-runner.ts`'s per-step resolution) should pass it here to skip the
+   * redundant internal probe.
    */
   frameTarget?: FrameTarget;
 }
@@ -98,16 +107,20 @@ async function writeAndVerify(
 /**
  * Resolves the `FrameTarget` a batched actuation evaluate should run
  * against: `timeoutOptions.frameTarget` when the caller already resolved
- * one, else a single non-polling `resolveFrameTarget` pass (`timeoutMs: 0`)
- * so existing call sites — which pass only a `frameSelector` string — still
- * get the batched fast path without themselves changing. Returns `null`
- * (never throws) when `frameSelector` is unset, resolution rejects (e.g. a
- * fake `Page` in a legacy-path test lacking `evaluate`/`frames`), or the
- * pass lands on the main-frame fallback rather than an attached child frame
- * — each of those means "no frame seam available", and the caller degrades
- * to the legacy delegate path. Mirrors `deep-locator-candidates.ts`'s
- * `resolveScanFrameTarget` exactly; duplicated (not imported) so this module
- * stays a leaf that never depends on `deep-locator-candidates.ts`.
+ * one, else a single non-polling `probeAttachedFrameTarget(page,
+ * frameSelector)` pass (`frame-target.ts`) so existing call sites — which
+ * pass only a `frameSelector` string — still get the batched fast path
+ * without themselves changing. Unlike a bare `resolveFrameTarget(page,
+ * frameSelector, { timeoutMs: 0 })` pass, the probe carries a real per-probe
+ * budget, so it can land against an already-attached frame under genuine CDP
+ * latency instead of always losing a zero-budget race. Returns `null` (never
+ * throws) when `frameSelector` is unset, the probe rejects (e.g. a fake
+ * `Page` in a legacy-path test lacking `evaluate`/`frames`), or nothing
+ * attaches within the probe's budget — each of those means "no frame seam
+ * available", and the caller degrades to the legacy delegate path. Mirrors
+ * `deep-locator-candidates.ts`'s `resolveScanFrameTarget` exactly; duplicated
+ * (not imported) so this module stays a leaf that never depends on
+ * `deep-locator-candidates.ts`.
  */
 async function resolveActuateFrameTarget(
   page: Page,
@@ -117,8 +130,7 @@ async function resolveActuateFrameTarget(
   if (timeoutOptions.frameTarget) return timeoutOptions.frameTarget;
   if (!frameSelector) return null;
   try {
-    const resolved = await resolveFrameTarget(page, frameSelector, { timeoutMs: 0 });
-    return resolved?.frame ? resolved : null;
+    return await probeAttachedFrameTarget(page, frameSelector);
   } catch {
     return null;
   }
