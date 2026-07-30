@@ -336,6 +336,13 @@ function makeDenseChildFrame(
         // biome-ignore lint/style/noNonNullAssertion: screeningSelectExpr is only non-null when screeningSelect is set
         return screeningSelect!.selectByIndexSpy(screeningSelect!.index, SCREENING_QUESTION_VALUE);
       }
+      if (src.includes("isVisible") && !src.includes("accessibleName")) {
+        const indexMatch = CANDIDATE_INDEX_PATTERN.exec(src);
+        const element = indexMatch
+          ? deepLocatorFrame.get(HOP_SELECTOR)?.elements[Number(indexMatch[1])]
+          : undefined;
+        return element ? { value: element.filledWith ?? "" } : {};
+      }
       if (src.includes("isVisible")) return scan();
       if (src.includes("outerHTML") && src.includes("innerText")) {
         return { html: 500, text: "1:apply" };
@@ -909,6 +916,13 @@ function makeBatchedChildFrame(
           return indexMatch && value !== undefined
             ? fillByIndexSpy(Number(indexMatch[1]), value)
             : null;
+        }
+        if (src.includes("querySelectorAll") && !src.includes("dispatchEvent")) {
+          const indexMatch = CANDIDATE_INDEX_PATTERN.exec(src);
+          const element = indexMatch
+            ? deepLocatorFrame.get(HOP_SELECTOR)?.elements[Number(indexMatch[1])]
+            : undefined;
+          return element ? { value: element.filledWith ?? "" } : {};
         }
         if (src.includes("outerHTML") && src.includes("innerText")) {
           return { html: 500, text: "1:apply" };

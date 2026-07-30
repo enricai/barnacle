@@ -14,6 +14,7 @@ import {
 } from "@/scraper/deep-locator-fake";
 import {
   buildFillFrameCandidateExpr,
+  buildReadBackFrameCandidateExpr,
   INTERACTIVE_CANDIDATE_SELECTOR,
 } from "@/scraper/deep-locator-scan";
 import {
@@ -697,13 +698,16 @@ describe("flow-runner deepLocator actuation — attempt-2/4 frameTarget reuse an
     // this one CAN resolve). Its own `evaluate` answers the exact batched
     // fill expression `fillDeepLocatorCandidate` issues for index 0.
     const fillExpr = buildFillFrameCandidateExpr(INTERACTIVE_CANDIDATE_SELECTOR, 0, "Reginald");
+    const readBackExpr = buildReadBackFrameCandidateExpr(INTERACTIVE_CANDIDATE_SELECTOR, 0);
     const fillByIndex = makeFakeFrameFillByIndex(frame, scopedHopSelector);
     const stepFrameTarget: FrameTarget = {
       frame: {} as FrameTarget["frame"],
       frameSelector: FRAME_SELECTOR,
-      evaluate: vi.fn(async (expr: unknown) =>
-        expr === fillExpr ? fillByIndex(0, "Reginald") : { html: 0, text: "0:" }
-      ) as unknown as FrameTarget["evaluate"],
+      evaluate: vi.fn(async (expr: unknown) => {
+        if (expr === fillExpr) return fillByIndex(0, "Reginald");
+        if (expr === readBackExpr) return { value: "Reginald" };
+        return { html: 0, text: "0:" };
+      }) as unknown as FrameTarget["evaluate"],
       locator: vi.fn().mockReturnValue({
         first: () => ({
           isChecked: vi.fn().mockResolvedValue(false),
