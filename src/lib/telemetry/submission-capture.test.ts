@@ -45,6 +45,8 @@ function makeSuccessInput(): Parameters<typeof captureSubmissionEnvelope>[0] {
   return {
     siteId: "ats-c",
     requestId: "req-abc-123",
+    joinKeys: null,
+    session: null,
     inboundPayload: { jobId: "56793094457", ClickUrl: "https://example.com/apply" },
     status: "submitted",
     auditPayload: { verified: true, applicationId: "app-xyz" },
@@ -56,7 +58,7 @@ function makeSuccessInput(): Parameters<typeof captureSubmissionEnvelope>[0] {
 function makeSuccessInputWithJoinKeys(): Parameters<typeof captureSubmissionEnvelope>[0] {
   return {
     ...makeSuccessInput(),
-    joinKeys: { vivclid: "v-9981", jobReference: "56793094457_jid-1" },
+    joinKeys: { clickId: "v-9981", refId: "56793094457_jid-1" },
   };
 }
 
@@ -76,6 +78,8 @@ function makeErrorInput(): Parameters<typeof captureSubmissionEnvelope>[0] {
   return {
     siteId: "ats-c",
     requestId: "req-def-456",
+    joinKeys: null,
+    session: null,
     inboundPayload: { jobId: "99999999999" },
     status: "error",
     auditPayload: null,
@@ -196,7 +200,7 @@ describe("captureSubmissionEnvelope", () => {
     expect(result.success).toBe(true);
   });
 
-  it("writes null (not undefined/omitted) joinKeys when the input omits them", async () => {
+  it("writes a null joinKeys as an explicit top-level null, not omitted", async () => {
     await captureSubmissionEnvelope(makeSuccessInput(), { sinkPath });
 
     const line = fs.readFileSync(sinkPath, "utf-8").trim();
@@ -217,7 +221,7 @@ describe("captureSubmissionEnvelope", () => {
     expect(result.success).toBe(true);
   });
 
-  it("writes null (not undefined/omitted) session when the input omits it", async () => {
+  it("writes a null session as an explicit top-level null, not omitted", async () => {
     await captureSubmissionEnvelope(makeSuccessInput(), { sinkPath });
 
     const line = fs.readFileSync(sinkPath, "utf-8").trim();
@@ -226,12 +230,13 @@ describe("captureSubmissionEnvelope", () => {
     expect(parsed.session).toBeNull();
   });
 
-  it("submissionEnvelopeSampleSchema still parses a legacy line with no session key, defaulting it to null", () => {
-    const legacyLine = {
+  it("submissionEnvelopeSampleSchema accepts a null session", () => {
+    const line = {
       kind: "submit",
       siteId: "ats-c",
-      requestId: "req-legacy-789",
+      requestId: "req-789",
       joinKeys: null,
+      session: null,
       inboundPayload: { jobId: "11111111111" },
       status: "submitted",
       auditPayload: null,
@@ -240,7 +245,7 @@ describe("captureSubmissionEnvelope", () => {
       ts: "2026-01-01T00:00:00.000Z",
     };
 
-    const result = submissionEnvelopeSampleSchema.safeParse(legacyLine);
+    const result = submissionEnvelopeSampleSchema.safeParse(line);
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.session).toBeNull();
@@ -253,10 +258,12 @@ describe("captureSubmissionEnvelope", () => {
     expect(result.success).toBe(false);
   });
 
-  it("submissionEnvelopeSampleSchema still parses a legacy line with no kind/joinKeys", () => {
-    const legacyLine = {
+  it("submissionEnvelopeSampleSchema rejects a line with no kind field", () => {
+    const line = {
       siteId: "ats-c",
-      requestId: "req-legacy-789",
+      requestId: "req-789",
+      joinKeys: null,
+      session: null,
       inboundPayload: { jobId: "11111111111" },
       status: "submitted",
       auditPayload: null,
@@ -265,12 +272,8 @@ describe("captureSubmissionEnvelope", () => {
       ts: "2026-01-01T00:00:00.000Z",
     };
 
-    const result = submissionEnvelopeSampleSchema.safeParse(legacyLine);
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.kind).toBe("submit");
-      expect(result.data.joinKeys).toBeNull();
-    }
+    const result = submissionEnvelopeSampleSchema.safeParse(line);
+    expect(result.success).toBe(false);
   });
 
   it("forwards a serialized line containing joinKeys to the S3 buffer", async () => {
@@ -279,7 +282,7 @@ describe("captureSubmissionEnvelope", () => {
 
     expect(bufferSubmissionLine).toHaveBeenCalledTimes(1);
     const forwardedLine = vi.mocked(bufferSubmissionLine).mock.calls[0]?.[0] ?? "";
-    expect(forwardedLine).toContain(`"vivclid":"${input.joinKeys?.vivclid}"`);
+    expect(forwardedLine).toContain(`"clickId":"${input.joinKeys?.clickId}"`);
     expect(forwardedLine).toContain(`"kind":"submit"`);
   });
 
@@ -304,14 +307,14 @@ describe("captureSubmissionEnvelope", () => {
   });
 
   it("writes a line that parses under submissionEnvelopeSampleSchema with an undefined-valued joinKeys key absent", async () => {
-    const input = { ...makeSuccessInput(), joinKeys: { vivclid: "v-9981", jid: undefined } };
+    const input = { ...makeSuccessInput(), joinKeys: { clickId: "v-9981", jid: undefined } };
     await captureSubmissionEnvelope(input, { sinkPath });
 
     const line = fs.readFileSync(sinkPath, "utf-8").trim();
     const parsed = JSON.parse(line) as SubmissionEnvelopeSample;
     const result = submissionEnvelopeSampleSchema.safeParse(parsed);
     expect(result.success).toBe(true);
-    expect(parsed.joinKeys).toEqual({ vivclid: "v-9981" });
+    expect(parsed.joinKeys).toEqual({ clickId: "v-9981" });
     expect(parsed.joinKeys && "jid" in parsed.joinKeys).toBe(false);
   });
 });
@@ -321,7 +324,8 @@ function makeBaseParsedLine(): Record<string, unknown> {
     kind: "submit",
     siteId: "ats-c",
     requestId: "req-abc-123",
-    joinKeys: { vivclid: "v-9981", jobReference: "56793094457_jid-1" },
+    joinKeys: { clickId: "v-9981", refId: "56793094457_jid-1" },
+    session: null,
     inboundPayload: { jobId: "56793094457" },
     status: "submitted",
     auditPayload: null,

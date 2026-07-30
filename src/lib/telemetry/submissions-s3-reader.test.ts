@@ -72,8 +72,11 @@ function objectResponse(body: string): { Body: { transformToString: () => Promis
 
 function submitLine(requestId: string): string {
   return JSON.stringify({
+    kind: "submit",
     siteId: "acme",
     requestId,
+    joinKeys: null,
+    session: null,
     inboundPayload: {},
     status: "submitted",
     auditPayload: {},
@@ -87,11 +90,12 @@ const beaconLine = JSON.stringify({
   kind: "beacon",
   requestId: "r1",
   siteId: "acme",
-  joinKeys: { vivclid: "v1", jobReference: "e1_j1" },
+  joinKeys: { clickId: "v1", refId: "e1_j1" },
   beaconStatus: "fired",
   trackingUrl: "https://example.com/t",
   durationMs: 10,
   ts: "2026-07-14T00:00:01.000Z",
+  sessionIp: null,
 });
 
 beforeEach(() => {
@@ -120,7 +124,7 @@ describe("fetchSubmissionsS3Records (bucket not configured)", () => {
 });
 
 describe("fetchSubmissionsS3Records (bucket configured)", () => {
-  it("parses object bodies into ReconciliationRecord[], including legacy unkinded submit lines and beacon lines", async () => {
+  it("parses object bodies into ReconciliationRecord[], including submit lines and beacon lines", async () => {
     sendMock.mockResolvedValue(objectResponse(`${submitLine("r1")}\n${beaconLine}\n`));
     const mod = await loadModuleWithConfig(BUCKET_CONFIG);
 

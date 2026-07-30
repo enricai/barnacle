@@ -94,12 +94,12 @@ describe("dispatch() telemetry end-to-end: real HTTP request to real NDJSON sink
   });
 
   it("preserves a real TrackingUrl on the skipped beacon record when a plugin with extractJoinKeys is dispatched over real HTTP", async () => {
-    const trackingUrl = "https://click.e2e-test.example/t/abc?vivclid=e2e-123&empId=emp1&jid=jid1";
+    const trackingUrl = "https://click.e2e-test.example/t/abc?clickId=e2e-123&empId=emp1&jid=jid1";
 
     const joinKeysPlugin: SitePlugin<unknown, unknown> = {
       extractJoinKeys: (payload) => {
         const { TrackingUrl } = payload as { TrackingUrl?: string };
-        return TrackingUrl ? { vivclid: "e2e-123", jobReference: "emp1_jid1" } : null;
+        return TrackingUrl ? { clickId: "e2e-123", refId: "emp1_jid1" } : null;
       },
       meta: {
         siteId: "e2e-test",
@@ -137,15 +137,15 @@ describe("dispatch() telemetry end-to-end: real HTTP request to real NDJSON sink
     const [row] = rows;
     expect(row?.siteId).toBe("e2e-test");
     expect(row?.status).toBe("submitted");
-    expect(row?.joinKeys).toEqual({ vivclid: "e2e-123", jobReference: "emp1_jid1" });
+    expect(row?.joinKeys).toEqual({ clickId: "e2e-123", refId: "emp1_jid1" });
     expect(row?.beaconStatus).toBe("skipped");
     expect(row?.beaconTrackingUrl).toBe(trackingUrl);
   });
 
   it("folds a plugin's self-recorded fired beacon over the engine's own skipped beacon, dispatched over real HTTP", async () => {
     const trackingUrl =
-      "https://click.e2e-test.example/t/self-managed?vivclid=e2e-456&empId=emp2&jid=jid2";
-    const joinKeys = { vivclid: "e2e-456", jobReference: "emp2_jid2" };
+      "https://click.e2e-test.example/t/self-managed?clickId=e2e-456&empId=emp2&jid=jid2";
+    const joinKeys = { clickId: "e2e-456", refId: "emp2_jid2" };
 
     const selfRecordingPlugin: SitePlugin<unknown, unknown> = {
       extractJoinKeys: (payload) => {
@@ -216,9 +216,9 @@ describe("dispatch() telemetry end-to-end: real HTTP request to real NDJSON sink
 
   it("folds a plugin's richer self-recorded fired beacon over the engine's skipped beacon, keeping the submit line's narrow joinKeys and nulling the trackingUrl, dispatched over real HTTP", async () => {
     const trackingUrl =
-      "https://click.e2e-test.example/t/divergent?vivclid=e2e-789&empId=emp3&jid=jid3";
-    const narrowJoinKeys = { vivclid: "e2e-789" };
-    const supersetJoinKeys = { vivclid: "e2e-789", jobReference: "emp3_jid3" };
+      "https://click.e2e-test.example/t/divergent?clickId=e2e-789&empId=emp3&jid=jid3";
+    const narrowJoinKeys = { clickId: "e2e-789" };
+    const supersetJoinKeys = { clickId: "e2e-789", refId: "emp3_jid3" };
 
     const divergentPlugin: SitePlugin<unknown, unknown> = {
       extractJoinKeys: (payload) => {
@@ -310,7 +310,7 @@ describe("dispatch() telemetry end-to-end: real HTTP request to real NDJSON sink
     const midRunPlugin: SitePlugin<unknown, unknown> = {
       extractJoinKeys: (payload) => {
         const { TrackingUrl } = payload as { TrackingUrl?: string };
-        return TrackingUrl ? { vivclid: "extracted-value", jobReference: "emp9_jid9" } : null;
+        return TrackingUrl ? { clickId: "extracted-value", refId: "emp9_jid9" } : null;
       },
       meta: {
         siteId: "e2e-mid-run-telemetry",
@@ -323,13 +323,13 @@ describe("dispatch() telemetry end-to-end: real HTTP request to real NDJSON sink
         _session,
         context: SitePluginContext
       ): Promise<SitePluginResult<unknown>> => {
-        context.telemetry.addJoinKeys({ vivclid: "run-attached-value" });
+        context.telemetry.addJoinKeys({ clickId: "run-attached-value" });
         return { data: { verified: true } };
       },
     };
 
     const trackingUrl =
-      "https://click.e2e-test.example/t/mid-run?vivclid=extracted-value&empId=emp9&jid=jid9";
+      "https://click.e2e-test.example/t/mid-run?clickId=extracted-value&empId=emp9&jid=jid9";
 
     const app = Fastify({ loggerInstance: getLogger({ name: "dispatch-telemetry-e2e-test" }) });
     app.setValidatorCompiler(validatorCompiler);
@@ -349,7 +349,7 @@ describe("dispatch() telemetry end-to-end: real HTTP request to real NDJSON sink
     expect(response.statusCode).toBe(200);
     expect(response.json().verified).toBe(true);
 
-    const expectedJoinKeys = { vivclid: "run-attached-value", jobReference: "emp9_jid9" };
+    const expectedJoinKeys = { clickId: "run-attached-value", refId: "emp9_jid9" };
 
     const rows = await readReconciliationRows({ sinkPath });
     expect(rows).toHaveLength(1);

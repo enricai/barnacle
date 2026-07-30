@@ -73,54 +73,6 @@ function toPascalCase(siteId: string): string {
 }
 
 /**
- * The recruiting vocabulary the engine used to hardcode, kept only so consumers
- * who have not yet passed `--vocabulary` keep working through the 1.x line.
- *
- * @deprecated Pass `--vocabulary <specifier>` instead. The engine cannot know
- * what any site's forms mean, and guessing mis-fires on every non-recruiting
- * domain (a cruise site's "Select the departure port from the Country dropdown"
- * became `${payload.Country}`). Slated for deletion in 2.0.0, after which an
- * absent vocabulary on a spliceable flow is a hard error. See `src/recon/vocabulary.ts`.
- */
-const DEPRECATED_BUILTIN_ATS_VOCABULARY: ReconVocabulary = {
-  // Naming the subject is what separates "…select the test candidate's state"
-  // (fill with the caller's data) from "…the departure port from the Country
-  // dropdown" (a search facet that merely says Country).
-  subject: /\b(the\s+)?(test\s+)?(candidate|applicant)'?s\b/i,
-  exclusions: [
-    /reference\s*#?\s*\d/i,
-    /employment history/i,
-    /\bcompany (name|phone)\b/i,
-    /\bemployer\b/i,
-    /signature/i,
-    /\bfull name\b/i,
-    /today'?s date/i,
-    /school|institution|degree|major|education/i,
-    // Screening-question shapes: "For '<question>' select '<answer>'" and any
-    // step framed around a 'question'. Here the first quoted string is the
-    // question label, not a candidate value — a label word inside the question
-    // (e.g. "...licensed in this state?") must NOT trigger a splice that would
-    // overwrite the question quote. Candidate-fill steps say "fill in the X
-    // field with '...'" / "Select '...' from the X dropdown" instead.
-    /^\s*for\s+'/i,
-    /\bquestion\b/i,
-    // A secondary phone must not fill the primary MobilePhone field.
-    /\bsecondary\b[^.]*\bphone\b/i,
-  ],
-  table: [
-    [/\bfirst name\b/i, "FirstName"],
-    [/\blast name\b/i, "LastName"],
-    [/\b(e-?mail|email address)\b/i, "Email"],
-    [/\b(mobile phone|primary phone|phone number|mobile)\b/i, "MobilePhone"],
-    [/\b(street address|address line 1)\b/i, "AddressLine1"],
-    [/\bcity\b/i, "City"],
-    [/\b(state|province|state\/region)\b/i, "State"],
-    [/\b(zip|postal)\b/i, "PostalCode"],
-    [/\bcountry\b/i, "Country"],
-  ],
-};
-
-/**
  * Decide whether a flow step should splice a runtime `payload.<field>` value in
  * place of the frozen recon constant baked into its instruction. Exists so
  * generated browser-flows use the caller's real applicant identity instead of
@@ -132,15 +84,15 @@ const DEPRECATED_BUILTIN_ATS_VOCABULARY: ReconVocabulary = {
  * @param instruction the flow step's plain-English instruction
  * @param explicit an optional flow-authored `payloadField` override (wins outright)
  * @param forceNone when true, force a literal step (the `payloadFieldNone` opt-out)
- * @param vocabulary the consumer's domain vocabulary; defaults to the deprecated
- *   built-in recruiting table so 1.x consumers who pass nothing keep working
+ * @param vocabulary the consumer's domain vocabulary; defaults to {@link EMPTY_VOCABULARY}
+ *   (no splicing) when the caller passes none
  * @returns the PascalCase payload field name to splice, or null to keep literal
  */
 export function resolveStepPayloadField(
   instruction: string,
   explicit?: string,
   forceNone?: boolean,
-  vocabulary: ReconVocabulary = DEPRECATED_BUILTIN_ATS_VOCABULARY
+  vocabulary: ReconVocabulary = EMPTY_VOCABULARY
 ): string | null {
   if (forceNone) return null;
   if (explicit) return explicit;
@@ -3227,50 +3179,17 @@ export { ${camel}Plugin, ${camel}Plugin as plugin } from "@/sites/${siteId}/cont
 
 /**
  * Resolves the vocabulary for this run and reports which one is in play.
- *
- * The deprecation warning is the whole point of the 1.x window: removing a
- * built-in default that consumers silently depend on is only safe if the
- * transition is loud. It fires only when the built-in would actually change the
- * output — a flow with nothing to splice gets no nag it can't act on.
+ * Absent `--vocabulary`, no splicing happens: the engine cannot know what any
+ * site's forms mean, so it never guesses.
  */
-async function resolveVocabulary(
-  specifier: string,
-  flowSteps: FlowStepInput[]
-): Promise<ReconVocabulary> {
-  if (specifier) {
-    const vocabulary = await loadReconVocabulary(specifier, process.cwd());
-    logger.info(
-      `vocabulary: ${specifier === VOCABULARY_NONE ? "none (splicing disabled)" : `${vocabulary.table.length} row(s) from ${specifier}`}`
-    );
-    return vocabulary;
-  }
+async function resolveVocabulary(specifier: string): Promise<ReconVocabulary> {
+  if (!specifier) return EMPTY_VOCABULARY;
 
-  // Warn only when the built-in table itself changes the outcome. A step with an
-  // explicit payloadField resolves the same under any vocabulary, so nagging
-  // about it would send consumers to fix something that isn't broken.
-  const builtinChangesOutcome = flowSteps.some((step) => {
-    const isObj = typeof step !== "string";
-    const instruction = isObj ? step.step : step;
-    const explicit = isObj ? step.payloadField : undefined;
-    const forceNone = isObj ? step.payloadFieldNone : undefined;
-    const withBuiltin = resolveStepPayloadField(
-      instruction,
-      explicit,
-      forceNone,
-      DEPRECATED_BUILTIN_ATS_VOCABULARY
-    );
-    const withNothing = resolveStepPayloadField(instruction, explicit, forceNone, EMPTY_VOCABULARY);
-    return withBuiltin !== withNothing;
-  });
-  if (builtinChangesOutcome) {
-    logger.warn(
-      `DeprecationWarning: no --vocabulary given, falling back to the built-in recruiting table. ` +
-        `It is removed in 2.0.0, after which this is an error. Fix: create a vocabulary module ` +
-        `exporting a ReconVocabulary (see @enricai/barnacle/recon/vocabulary) and pass ` +
-        `--vocabulary ./src/recon/<name>.ts, or --vocabulary none if this site splices no caller data.`
-    );
-  }
-  return DEPRECATED_BUILTIN_ATS_VOCABULARY;
+  const vocabulary = await loadReconVocabulary(specifier, process.cwd());
+  logger.info(
+    `vocabulary: ${specifier === VOCABULARY_NONE ? "none (splicing disabled)" : `${vocabulary.table.length} row(s) from ${specifier}`}`
+  );
+  return vocabulary;
 }
 
 /**
@@ -3388,7 +3307,7 @@ async function main(): Promise<void> {
   // Resolved once and threaded down, never captured into a module const: a
   // module-level const would freeze at import time, which is the bug that makes
   // RECON_QUESTION_KEYWORDS silently inert for anyone setting it after load.
-  const vocabulary = await resolveVocabulary(vocabularySpecifier, flowSteps);
+  const vocabulary = await resolveVocabulary(vocabularySpecifier);
   // Consumer-supplied wire keys for ATS form-schema recovery, or null. When
   // null the recovery functions no-op — the engine hardcodes no vendor format.
   const formSchema = await resolveFormSchema(formSchemaSpecifier);

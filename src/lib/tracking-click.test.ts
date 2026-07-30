@@ -65,14 +65,14 @@ describe("fireTrackingClick", () => {
   });
 
   it("creates a Browserbase session with advancedStealth and navigates to the tracking URL", async () => {
-    fireTrackingClick("https://click.acme.example/t/abc?vivclid=123", "ats-c");
+    fireTrackingClick("https://click.acme.example/t/abc?clickId=123", "ats-c");
     await drainTrackingClicks();
 
     expect(mockCreateSession).toHaveBeenCalledWith({
       advancedStealth: true,
       browserbaseSessionCreateParams: { timeout: 300 },
     });
-    expect(mockPage.goto).toHaveBeenCalledWith("https://click.acme.example/t/abc?vivclid=123", {
+    expect(mockPage.goto).toHaveBeenCalledWith("https://click.acme.example/t/abc?clickId=123", {
       waitUntil: "domcontentloaded",
       timeoutMs: 30_000,
     });
@@ -141,9 +141,9 @@ describe("fireTrackingClick", () => {
   });
 
   it("captures a fired beacon outcome correlated to the run after a successful navigation", async () => {
-    fireTrackingClick("https://click.acme.example/t/abc?vivclid=123", "ats-c", {
+    fireTrackingClick("https://click.acme.example/t/abc?clickId=123", "ats-c", {
       requestId: "req-1",
-      joinKeys: { vivclid: "123", jobReference: "emp1_job1" },
+      joinKeys: { clickId: "123", refId: "emp1_job1" },
     });
     await drainTrackingClicks();
 
@@ -152,9 +152,9 @@ describe("fireTrackingClick", () => {
       expect.objectContaining({
         requestId: "req-1",
         siteId: "ats-c",
-        joinKeys: { vivclid: "123", jobReference: "emp1_job1" },
+        joinKeys: { clickId: "123", refId: "emp1_job1" },
         beaconStatus: "fired",
-        trackingUrl: "https://click.acme.example/t/abc?vivclid=123",
+        trackingUrl: "https://click.acme.example/t/abc?clickId=123",
         sessionIp: "203.0.113.42",
       })
     );
@@ -197,7 +197,7 @@ describe("fireTrackingClick", () => {
     mockCreateSession.mockRejectedValueOnce(new Error("no API key"));
     fireTrackingClick("https://click.acme.example/t/abc", "ats-c", {
       requestId: "req-3",
-      joinKeys: { vivclid: "999" },
+      joinKeys: { clickId: "999" },
     });
     await drainTrackingClicks();
 
@@ -206,7 +206,7 @@ describe("fireTrackingClick", () => {
       expect.objectContaining({
         requestId: "req-3",
         siteId: "ats-c",
-        joinKeys: { vivclid: "999" },
+        joinKeys: { clickId: "999" },
         beaconStatus: "failed",
         sessionIp: null,
       })

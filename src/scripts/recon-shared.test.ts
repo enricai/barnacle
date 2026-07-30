@@ -1,17 +1,10 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { CookieJarSnapshot } from "@/scripts/recon-shared";
-import {
-  AUX_DIR,
-  CAPTURES_DIR,
-  COOKIES_DIR,
-  REPLAYS_DIR,
-  STEP_FAILURES_DIR,
-} from "@/scripts/recon-shared";
 
 const RUN_ID_PATTERN = /^\d{8}-\d{6}-[a-z0-9]{4}$/;
 
@@ -30,27 +23,6 @@ afterEach(() => {
     rmSync(tmpDir, { recursive: true, force: true });
     tmpDir = null;
   }
-});
-
-describe("legacy back-compat dir constants", () => {
-  it("share one common default base dir", () => {
-    const defaultBase = dirname(CAPTURES_DIR);
-
-    expect(dirname(COOKIES_DIR)).toBe(defaultBase);
-    expect(dirname(REPLAYS_DIR)).toBe(defaultBase);
-    expect(dirname(AUX_DIR)).toBe(defaultBase);
-    expect(dirname(STEP_FAILURES_DIR)).toBe(defaultBase);
-  });
-
-  it("names each leaf after its subdirectory role", () => {
-    const defaultBase = dirname(CAPTURES_DIR);
-
-    expect(CAPTURES_DIR).toBe(join(defaultBase, "graphql"));
-    expect(COOKIES_DIR).toBe(join(defaultBase, "cookies"));
-    expect(REPLAYS_DIR).toBe(join(defaultBase, "replays"));
-    expect(AUX_DIR).toBe(join(defaultBase, "aux"));
-    expect(STEP_FAILURES_DIR).toBe(join(defaultBase, "step-failures"));
-  });
 });
 
 describe("CookieJarSnapshot shape", () => {

@@ -38,7 +38,8 @@ function makeSubmitLine(overrides: Record<string, unknown> = {}): Record<string,
     kind: "submit",
     siteId: "ats-a",
     requestId: "req-abc-123",
-    joinKeys: { vivclid: "v-9981", jobReference: "56793094457_jid-1" },
+    joinKeys: { clickId: "v-9981", refId: "56793094457_jid-1" },
+    session: null,
     inboundPayload: { jobId: "56793094457" },
     status: "submitted",
     auditPayload: { verified: true },
@@ -54,11 +55,12 @@ function makeBeaconLine(overrides: Record<string, unknown> = {}): Record<string,
     kind: "beacon",
     requestId: "req-abc-123",
     siteId: "ats-a",
-    joinKeys: { vivclid: "v-9981", jobReference: "56793094457_jid-1" },
+    joinKeys: { clickId: "v-9981", refId: "56793094457_jid-1" },
     beaconStatus: "fired",
-    trackingUrl: "https://track.appcast.io/pixel?rid=req-abc-123",
+    trackingUrl: "https://track.example.com/pixel?rid=req-abc-123",
     durationMs: 87,
     ts: "2026-07-26T10:00:05.000Z",
+    sessionIp: null,
     ...overrides,
   };
 }
@@ -170,7 +172,7 @@ describe("routes/submissions GET /v1/submissions", () => {
         makeSubmitLine({
           requestId: "req-ats-c",
           siteId: "ats-c",
-          joinKeys: { vivclid: "v-other" },
+          joinKeys: { clickId: "v-other" },
         })
       ),
       "utf8"
@@ -196,8 +198,8 @@ describe("routes/submissions GET /v1/submissions", () => {
     fs.writeFileSync(
       sinkPath,
       ndjson(
-        makeSubmitLine({ requestId: "req-target", joinKeys: { vivclid: "v-target" } }),
-        makeSubmitLine({ requestId: "req-other", joinKeys: { vivclid: "v-other" } })
+        makeSubmitLine({ requestId: "req-target", joinKeys: { clickId: "v-target" } }),
+        makeSubmitLine({ requestId: "req-other", joinKeys: { clickId: "v-other" } })
       ),
       "utf8"
     );
@@ -215,7 +217,7 @@ describe("routes/submissions GET /v1/submissions", () => {
       expect(body.total).toBe(1);
       expect(body.submissions[0]).toMatchObject({
         requestId: "req-target",
-        joinKeys: { vivclid: "v-target" },
+        joinKeys: { clickId: "v-target" },
       });
     } finally {
       await app.close();
@@ -229,12 +231,12 @@ describe("routes/submissions GET /v1/submissions", () => {
         makeSubmitLine({ requestId: "req-early", ts: "2026-07-01T00:00:00.000Z" }),
         makeSubmitLine({
           requestId: "req-in-range",
-          joinKeys: { vivclid: "v-in-range" },
+          joinKeys: { clickId: "v-in-range" },
           ts: "2026-07-15T00:00:00.000Z",
         }),
         makeSubmitLine({
           requestId: "req-late",
-          joinKeys: { vivclid: "v-late" },
+          joinKeys: { clickId: "v-late" },
           ts: "2026-08-01T00:00:00.000Z",
         })
       ),
@@ -261,13 +263,13 @@ describe("routes/submissions GET /v1/submissions", () => {
     fs.writeFileSync(
       sinkPath,
       ndjson(
-        makeSubmitLine({ requestId: "req-1", joinKeys: { vivclid: "v-1" } }),
+        makeSubmitLine({ requestId: "req-1", joinKeys: { clickId: "v-1" } }),
         makeBeaconLine({
           requestId: "req-1",
-          joinKeys: { vivclid: "v-1" },
+          joinKeys: { clickId: "v-1" },
           beaconStatus: "fired",
         }),
-        makeSubmitLine({ requestId: "req-2", joinKeys: { vivclid: "v-2" } })
+        makeSubmitLine({ requestId: "req-2", joinKeys: { clickId: "v-2" } })
       ),
       "utf8"
     );
@@ -284,9 +286,9 @@ describe("routes/submissions GET /v1/submissions", () => {
       expect(body.submissions).toHaveLength(1);
       expect(body.submissions[0]).toMatchObject({
         requestId: "req-1",
-        joinKeys: { vivclid: "v-1" },
+        joinKeys: { clickId: "v-1" },
         beaconStatus: "fired",
-        trackingUrl: "https://track.appcast.io/pixel?rid=req-abc-123",
+        trackingUrl: "https://track.example.com/pixel?rid=req-abc-123",
       });
     } finally {
       await app.close();
@@ -299,7 +301,7 @@ describe("routes/submissions GET /v1/submissions", () => {
       ndjson(
         makeSubmitLine({ requestId: "req-fired" }),
         makeBeaconLine({ requestId: "req-fired", beaconStatus: "fired" }),
-        makeSubmitLine({ requestId: "req-unfired", joinKeys: { vivclid: "v-unfired" } })
+        makeSubmitLine({ requestId: "req-unfired", joinKeys: { clickId: "v-unfired" } })
       ),
       "utf8"
     );
@@ -328,19 +330,19 @@ describe("routes/submissions GET /v1/submissions", () => {
     fs.writeFileSync(
       sinkPath,
       ndjson(
-        makeSubmitLine({ requestId: "req-precedence", joinKeys: { vivclid: "v-precedence" } }),
+        makeSubmitLine({ requestId: "req-precedence", joinKeys: { clickId: "v-precedence" } }),
         makeBeaconLine({
           requestId: "req-precedence",
-          joinKeys: { vivclid: "v-precedence" },
+          joinKeys: { clickId: "v-precedence" },
           beaconStatus: "skipped",
           trackingUrl: null,
           ts: "2026-07-26T10:00:01.000Z",
         }),
         makeBeaconLine({
           requestId: "req-precedence",
-          joinKeys: { vivclid: "v-precedence" },
+          joinKeys: { clickId: "v-precedence" },
           beaconStatus: "fired",
-          trackingUrl: "https://track.appcast.io/pixel?rid=req-precedence",
+          trackingUrl: "https://track.example.com/pixel?rid=req-precedence",
           ts: "2026-07-26T10:00:05.000Z",
         })
       ),
@@ -359,9 +361,9 @@ describe("routes/submissions GET /v1/submissions", () => {
       expect(body.submissions).toHaveLength(1);
       expect(body.submissions[0]).toMatchObject({
         requestId: "req-precedence",
-        joinKeys: { vivclid: "v-precedence" },
+        joinKeys: { clickId: "v-precedence" },
         beaconStatus: "fired",
-        trackingUrl: "https://track.appcast.io/pixel?rid=req-precedence",
+        trackingUrl: "https://track.example.com/pixel?rid=req-precedence",
       });
     } finally {
       await app.close();
@@ -372,25 +374,25 @@ describe("routes/submissions GET /v1/submissions", () => {
     fs.writeFileSync(
       sinkPath,
       ndjson(
-        makeSubmitLine({ requestId: "req-precedence", joinKeys: { vivclid: "v-precedence" } }),
+        makeSubmitLine({ requestId: "req-precedence", joinKeys: { clickId: "v-precedence" } }),
         makeBeaconLine({
           requestId: "req-precedence",
-          joinKeys: { vivclid: "v-precedence" },
+          joinKeys: { clickId: "v-precedence" },
           beaconStatus: "skipped",
           trackingUrl: null,
           ts: "2026-07-26T10:00:01.000Z",
         }),
         makeBeaconLine({
           requestId: "req-precedence",
-          joinKeys: { vivclid: "v-precedence" },
+          joinKeys: { clickId: "v-precedence" },
           beaconStatus: "fired",
-          trackingUrl: "https://track.appcast.io/pixel?rid=req-precedence",
+          trackingUrl: "https://track.example.com/pixel?rid=req-precedence",
           ts: "2026-07-26T10:00:05.000Z",
         }),
-        makeSubmitLine({ requestId: "req-skipped-only", joinKeys: { vivclid: "v-skipped-only" } }),
+        makeSubmitLine({ requestId: "req-skipped-only", joinKeys: { clickId: "v-skipped-only" } }),
         makeBeaconLine({
           requestId: "req-skipped-only",
-          joinKeys: { vivclid: "v-skipped-only" },
+          joinKeys: { clickId: "v-skipped-only" },
           beaconStatus: "skipped",
           trackingUrl: null,
         })
@@ -412,7 +414,7 @@ describe("routes/submissions GET /v1/submissions", () => {
       expect(body.submissions[0]).toMatchObject({
         requestId: "req-precedence",
         beaconStatus: "fired",
-        trackingUrl: "https://track.appcast.io/pixel?rid=req-precedence",
+        trackingUrl: "https://track.example.com/pixel?rid=req-precedence",
       });
     } finally {
       await app.close();
@@ -426,7 +428,7 @@ describe("routes/submissions GET /v1/submissions", () => {
         makeSubmitLine({ requestId: "req-submitted", status: "submitted" }),
         makeSubmitLine({
           requestId: "req-error",
-          joinKeys: { vivclid: "v-error" },
+          joinKeys: { clickId: "v-error" },
           status: "error",
         })
       ),
@@ -455,17 +457,17 @@ describe("routes/submissions GET /v1/submissions", () => {
       ndjson(
         makeSubmitLine({
           requestId: "req-1",
-          joinKeys: { vivclid: "v-1" },
+          joinKeys: { clickId: "v-1" },
           ts: "2026-07-01T00:00:00.000Z",
         }),
         makeSubmitLine({
           requestId: "req-2",
-          joinKeys: { vivclid: "v-2" },
+          joinKeys: { clickId: "v-2" },
           ts: "2026-07-02T00:00:00.000Z",
         }),
         makeSubmitLine({
           requestId: "req-3",
-          joinKeys: { vivclid: "v-3" },
+          joinKeys: { clickId: "v-3" },
           ts: "2026-07-03T00:00:00.000Z",
         })
       ),
@@ -509,12 +511,12 @@ describe("routes/submissions GET /v1/submissions", () => {
   it("merges S3-mirrored rows into the response and counts them in total", async () => {
     fs.writeFileSync(
       sinkPath,
-      ndjson(makeSubmitLine({ requestId: "req-local", joinKeys: { vivclid: "v-local" } })),
+      ndjson(makeSubmitLine({ requestId: "req-local", joinKeys: { clickId: "v-local" } })),
       "utf8"
     );
     listSubmissionsS3ObjectsMock.mockResolvedValue(["telemetry/submissions/2026-07-26/a.ndjson"]);
     fetchSubmissionsS3RecordsMock.mockResolvedValue([
-      makeSubmitLine({ requestId: "req-s3-only", joinKeys: { vivclid: "v-s3-only" } }),
+      makeSubmitLine({ requestId: "req-s3-only", joinKeys: { clickId: "v-s3-only" } }),
     ]);
     const app = await buildApp(sinkPath);
     try {

@@ -16,7 +16,8 @@ function makeSubmitLine(): Record<string, unknown> {
     kind: "submit",
     siteId: "ats-c",
     requestId: "req-abc-123",
-    joinKeys: { vivclid: "v-9981", jobReference: "56793094457_jid-1" },
+    joinKeys: { clickId: "v-9981", refId: "56793094457_jid-1" },
+    session: null,
     inboundPayload: { jobId: "56793094457", ClickUrl: "https://example.com/apply" },
     status: "submitted",
     auditPayload: { verified: true, applicationId: "app-xyz" },
@@ -38,58 +39,17 @@ function makeSubmitLineWithSession(): Record<string, unknown> {
   };
 }
 
-function makeLegacySubmitLine(): Record<string, unknown> {
-  return {
-    siteId: "ats-c",
-    requestId: "req-legacy-789",
-    inboundPayload: { jobId: "11111111111" },
-    status: "submitted",
-    auditPayload: null,
-    errorMessage: null,
-    durationMs: 1500,
-    ts: "2026-01-01T00:00:00.000Z",
-  };
-}
-
-function makeLegacyVivclidSubmitLine(): Record<string, unknown> {
-  return {
-    siteId: "appcast",
-    requestId: "req-legacy-vivclid-1",
-    vivclid: "v-legacy-1",
-    jobReference: "emp1_jid1",
-    inboundPayload: { jobId: "22222222222" },
-    status: "submitted",
-    auditPayload: null,
-    errorMessage: null,
-    durationMs: 1800,
-    ts: "2026-07-26T21:00:00.000Z",
-  };
-}
-
-function makeLegacyVivclidBeaconLine(): Record<string, unknown> {
-  return {
-    kind: "beacon",
-    requestId: "req-legacy-vivclid-beacon-1",
-    siteId: "appcast",
-    vivclid: "v-legacy-beacon-1",
-    jobReference: "emp9_jid9",
-    beaconStatus: "fired",
-    trackingUrl: "https://track.appcast.io/pixel?rid=req-legacy-vivclid-beacon-1",
-    durationMs: 50,
-    ts: "2026-07-26T21:30:00.000Z",
-  };
-}
-
 function makeBeaconLine(): Record<string, unknown> {
   return {
     kind: "beacon",
     requestId: "req-abc-123",
     siteId: "ats-c",
-    joinKeys: { vivclid: "v-9981", jobReference: "56793094457_jid-1" },
+    joinKeys: { clickId: "v-9981", refId: "56793094457_jid-1" },
     beaconStatus: "fired",
-    trackingUrl: "https://track.appcast.io/pixel?rid=req-abc-123",
+    trackingUrl: "https://track.example.com/pixel?rid=req-abc-123",
     durationMs: 87,
     ts: "2026-07-26T10:00:05.000Z",
+    sessionIp: null,
   };
 }
 
@@ -99,27 +59,33 @@ describe("submitRecordSchema", () => {
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.joinKeys).toEqual({
-        vivclid: "v-9981",
-        jobReference: "56793094457_jid-1",
+        clickId: "v-9981",
+        refId: "56793094457_jid-1",
       });
       expect(result.data.kind).toBe("submit");
     }
   });
 
-  it("parses a pre-existing line with no kind and no joinKeys, defaulting them", () => {
-    const result = submitRecordSchema.safeParse(makeLegacySubmitLine());
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.kind).toBe("submit");
-      expect(result.data.joinKeys).toBeNull();
-      expect(result.data.siteId).toBe("ats-c");
-      expect(result.data.requestId).toBe("req-legacy-789");
-      expect(result.data.session).toBeNull();
-    }
+  it("rejects a line with no kind field", () => {
+    const { kind: _kind, ...withoutKind } = makeSubmitLine();
+    const result = submitRecordSchema.safeParse(withoutKind);
+    expect(result.success).toBe(false);
   });
 
-  it("defaults session to null when the key is absent", () => {
-    const result = submitRecordSchema.safeParse(makeSubmitLine());
+  it("rejects a line with no joinKeys field", () => {
+    const { joinKeys: _joinKeys, ...withoutJoinKeys } = makeSubmitLine();
+    const result = submitRecordSchema.safeParse(withoutJoinKeys);
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a line with no session field", () => {
+    const { session: _session, ...withoutSession } = makeSubmitLine();
+    const result = submitRecordSchema.safeParse(withoutSession);
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts a null session", () => {
+    const result = submitRecordSchema.safeParse({ ...makeSubmitLine(), session: null });
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.session).toBeNull();
@@ -173,7 +139,7 @@ describe("beaconEventSchema", () => {
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.beaconStatus).toBe("fired");
-      expect(result.data.trackingUrl).toBe("https://track.appcast.io/pixel?rid=req-abc-123");
+      expect(result.data.trackingUrl).toBe("https://track.example.com/pixel?rid=req-abc-123");
     }
   });
 
@@ -206,8 +172,14 @@ describe("beaconEventSchema", () => {
     expect(result.success).toBe(true);
   });
 
-  it("defaults sessionIp to null when the key is absent", () => {
-    const result = beaconEventSchema.safeParse(makeBeaconLine());
+  it("rejects a line with no sessionIp field", () => {
+    const { sessionIp: _sessionIp, ...withoutSessionIp } = makeBeaconLine();
+    const result = beaconEventSchema.safeParse(withoutSessionIp);
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts a null sessionIp", () => {
+    const result = beaconEventSchema.safeParse({ ...makeBeaconLine(), sessionIp: null });
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.sessionIp).toBeNull();
@@ -272,52 +244,10 @@ describe("reconciliationRecordSchema", () => {
     }
   });
 
-  it("routes a legacy line with no kind field to the submit member without throwing", () => {
-    const result = reconciliationRecordSchema.safeParse(makeLegacySubmitLine());
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.kind).toBe("submit");
-      expect(result.data.joinKeys).toBeNull();
-    }
-  });
-
-  it("folds a pre-migration line's top-level vivclid/jobReference into joinKeys", () => {
-    const result = reconciliationRecordSchema.safeParse(makeLegacyVivclidSubmitLine());
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.kind).toBe("submit");
-      expect(result.data.joinKeys).toEqual({ vivclid: "v-legacy-1", jobReference: "emp1_jid1" });
-      expect(result.data).not.toHaveProperty("vivclid");
-      expect(result.data).not.toHaveProperty("jobReference");
-    }
-  });
-
-  it("leaves a current-shape line's joinKeys untouched even if legacy fields are also present", () => {
-    const result = reconciliationRecordSchema.safeParse({
-      ...makeSubmitLine(),
-      vivclid: "should-be-ignored",
-    });
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.joinKeys).toEqual({
-        vivclid: "v-9981",
-        jobReference: "56793094457_jid-1",
-      });
-    }
-  });
-
-  it("folds a pre-migration beacon line's top-level vivclid/jobReference into joinKeys", () => {
-    const result = reconciliationRecordSchema.safeParse(makeLegacyVivclidBeaconLine());
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.kind).toBe("beacon");
-      expect(result.data.joinKeys).toEqual({
-        vivclid: "v-legacy-beacon-1",
-        jobReference: "emp9_jid9",
-      });
-      expect(result.data).not.toHaveProperty("vivclid");
-      expect(result.data).not.toHaveProperty("jobReference");
-    }
+  it("rejects a line with no kind field", () => {
+    const { kind: _kind, ...withoutKind } = makeSubmitLine();
+    const result = reconciliationRecordSchema.safeParse(withoutKind);
+    expect(result.success).toBe(false);
   });
 
   it("routes a submit line carrying a session block to the submit member and round-trips it", () => {
@@ -341,23 +271,6 @@ describe("reconciliationRecordSchema", () => {
     expect(result.success).toBe(true);
     if (result.success && result.data.kind === "beacon") {
       expect(result.data.sessionIp).toBe("203.0.113.42");
-    }
-  });
-
-  it("folds legacy vivclid/jobReference into joinKeys on a submit line that also carries a session block", () => {
-    const result = reconciliationRecordSchema.safeParse({
-      ...makeLegacyVivclidSubmitLine(),
-      session: { id: "sess-legacy", provider: "browserbase", ip: null, ipCapturedAt: null },
-    });
-    expect(result.success).toBe(true);
-    if (result.success && result.data.kind === "submit") {
-      expect(result.data.joinKeys).toEqual({ vivclid: "v-legacy-1", jobReference: "emp1_jid1" });
-      expect(result.data.session).toEqual({
-        id: "sess-legacy",
-        provider: "browserbase",
-        ip: null,
-        ipCapturedAt: null,
-      });
     }
   });
 

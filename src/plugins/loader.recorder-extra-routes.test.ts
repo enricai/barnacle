@@ -101,7 +101,7 @@ describe("registerRoutes — recordBeaconOutcome binding in the extraRoutes cont
   });
 
   it("reaches captureBeaconEvent exactly once with this request's requestId, the plugin's siteId, and the verbatim joinKeys — no automatic 'skipped' line, since extra routes bypass dispatch()", async () => {
-    const joinKeys = { vivclid: "789", jid: "job-42" };
+    const joinKeys = { clickId: "789", jid: "job-42" };
     const extraHandler = vi.fn().mockImplementation(async (_request, context) => {
       await context.recordBeaconOutcome({ beaconStatus: "fired", joinKeys });
       return { done: true };
@@ -138,7 +138,7 @@ describe("registerRoutes — recordBeaconOutcome binding in the extraRoutes cont
   it("returns the handler's enveloped 200 response even when the recorder's underlying capture rejects", async () => {
     mockCaptureBeaconEvent.mockRejectedValueOnce(new Error("sink unavailable"));
     const extraHandler = vi.fn().mockImplementation(async (_request, context) => {
-      await context.recordBeaconOutcome({ beaconStatus: "failed", joinKeys: { vivclid: "789" } });
+      await context.recordBeaconOutcome({ beaconStatus: "failed", joinKeys: { clickId: "789" } });
       return { done: true };
     });
     const plugin = makePlugin("recorder-extra-reject", extraHandler);

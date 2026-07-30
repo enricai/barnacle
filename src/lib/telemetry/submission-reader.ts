@@ -62,10 +62,9 @@ function tryParseJson(line: string): unknown {
 }
 
 /**
- * Parses NDJSON sink content into typed reconciliation records. Every line
- * shape the sink has ever written (unkinded legacy submit lines, kinded
- * submit lines, beacon lines) is tolerated; a line that is invalid JSON or
- * fails schema validation is skipped with a warning, not fatal to the read.
+ * Parses NDJSON sink content into typed reconciliation records. A line that
+ * is invalid JSON or fails schema validation is skipped with a warning, not
+ * fatal to the read.
  */
 export function parseReconciliationLines(ndjsonContent: string): ReconciliationRecord[] {
   const records: ReconciliationRecord[] = [];

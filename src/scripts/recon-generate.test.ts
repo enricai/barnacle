@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { CONFIG_PLUGIN_API_VERSION, CONFIG_PLUGIN_KIND } from "@/plugins/plugin-manifest-envelope";
 import type { ReconFormSchema } from "@/recon/form-schema";
+import type { ReconVocabulary } from "@/recon/vocabulary";
 import {
   collectHeaderBindings,
   compileActionSteps,
@@ -686,6 +687,35 @@ describe("emitContractTs — non-multipart plugin does not import omitHeaderCase
   });
 });
 
+/** Recruiting-domain test vocabulary, exercised only by these unit tests. */
+const TEST_RECRUITING_VOCABULARY: ReconVocabulary = {
+  subject: /\b(the\s+)?(test\s+)?(candidate|applicant)'?s\b/i,
+  exclusions: [
+    /reference\s*#?\s*\d/i,
+    /employment history/i,
+    /\bcompany (name|phone)\b/i,
+    /\bemployer\b/i,
+    /signature/i,
+    /\bfull name\b/i,
+    /today'?s date/i,
+    /school|institution|degree|major|education/i,
+    /^\s*for\s+'/i,
+    /\bquestion\b/i,
+    /\bsecondary\b[^.]*\bphone\b/i,
+  ],
+  table: [
+    [/\bfirst name\b/i, "FirstName"],
+    [/\blast name\b/i, "LastName"],
+    [/\b(e-?mail|email address)\b/i, "Email"],
+    [/\b(mobile phone|primary phone|phone number|mobile)\b/i, "MobilePhone"],
+    [/\b(street address|address line 1)\b/i, "AddressLine1"],
+    [/\bcity\b/i, "City"],
+    [/\b(state|province|state\/region)\b/i, "State"],
+    [/\b(zip|postal)\b/i, "PostalCode"],
+    [/\bcountry\b/i, "Country"],
+  ],
+};
+
 describe("resolveStepPayloadField — wizard-ATS-shaped positives", () => {
   const cases: Array<[string, string]> = [
     ["Fill in the First Name field with 'Reginald'", "FirstName"],
@@ -700,7 +730,9 @@ describe("resolveStepPayloadField — wizard-ATS-shaped positives", () => {
   ];
   for (const [instruction, field] of cases) {
     it(`maps ${JSON.stringify(instruction)} → ${field}`, () => {
-      expect(resolveStepPayloadField(instruction)).toBe(field);
+      expect(
+        resolveStepPayloadField(instruction, undefined, false, TEST_RECRUITING_VOCABULARY)
+      ).toBe(field);
     });
   }
 });
@@ -723,7 +755,9 @@ describe("resolveStepPayloadField — trap negatives", () => {
   ];
   for (const instruction of traps) {
     it(`leaves ${JSON.stringify(instruction)} literal (null)`, () => {
-      expect(resolveStepPayloadField(instruction)).toBeNull();
+      expect(
+        resolveStepPayloadField(instruction, undefined, false, TEST_RECRUITING_VOCABULARY)
+      ).toBeNull();
     });
   }
 });
@@ -756,6 +790,7 @@ describe("emitBrowserFlowTs — payload splicing", () => {
       "Select 'Decline to self-identify' from the Gender dropdown",
       { step: "Click the Submit Application button", submitStep: true },
     ],
+    vocabulary: TEST_RECRUITING_VOCABULARY,
   });
 
   it("splices a payload.FirstName reference for the Reginald step", () => {
@@ -842,6 +877,7 @@ describe("emitBrowserFlowTs + emitContractTs — schema/flow anti-drift", () => 
     baseUrl: "https://example.com",
     isSubmissionFlow: true,
     flowSteps,
+    vocabulary: TEST_RECRUITING_VOCABULARY,
   });
   const contract = emitContractTs({
     ...BASE_OPTS,

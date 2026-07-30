@@ -33,7 +33,6 @@ import { captureBeaconEvent, createBeaconOutcomeRecorder } from "@/lib/telemetry
 import { RunTelemetry } from "@/lib/telemetry/run-telemetry";
 import { captureSubmissionEnvelope } from "@/lib/telemetry/submission-capture";
 import { fireTrackingClick } from "@/lib/tracking-click";
-import { BUILTIN_SITE_PLUGINS } from "@/plugins/discover";
 import {
   CaptchaError,
   EmptyResultsError,
@@ -70,14 +69,6 @@ const logger = getLogger({ name: "plugins/loader" });
  * the handler after the owning plugin is resolved.
  */
 const siteIdRouteParamsSchema = z.object({ siteId: z.string().min(1) });
-
-/**
- * Alias for `BUILTIN_SITE_PLUGINS` kept for backwards compatibility with
- * tests that import `SITE_PLUGINS` directly from this module. New code
- * should reference `BUILTIN_SITE_PLUGINS` from `discover.ts` directly or
- * call `loadAllPlugins` for the composed set.
- */
-export const SITE_PLUGINS = BUILTIN_SITE_PLUGINS;
 
 /**
  * Pure mapping from scraper-internal errors to the public ApiError hierarchy.

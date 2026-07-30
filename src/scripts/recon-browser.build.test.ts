@@ -89,9 +89,8 @@ describe("recon-browser — cookie-jar snapshot module reaches the built dist tr
       // CookieRecord/CookieJarSnapshot/resolveReconRunDir are the on-disk
       // contract a downstream consumer reads — pin that the declaration file
       // still carries them post-alias-rewrite, not just pre-build in src/.
-      // resolveReconRunDir is the run-scoped resolver recon-browser now uses
-      // exclusively to write cookie-jar snapshots (cookiesDir), replacing the
-      // old process-global COOKIES_DIR constant as the real write-path contract.
+      // resolveReconRunDir is the run-scoped resolver recon-browser uses
+      // exclusively to write cookie-jar snapshots (cookiesDir).
       const declaredTypes = readFileSync(path.join(outDir, "scripts", "recon-shared.d.ts"), "utf8");
       expect(declaredTypes).toContain("CookieRecord");
       expect(declaredTypes).toContain("CookieJarSnapshot");

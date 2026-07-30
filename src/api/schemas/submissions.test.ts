@@ -20,14 +20,14 @@ function makeValidRow(): ReconciliationRow {
   return {
     siteId: "hca",
     requestId: "req-abc-001",
-    joinKeys: { vivclid: "viv-123", jobReference: "emp1_jid1" },
+    joinKeys: { clickId: "viv-123", refId: "emp1_jid1" },
     session: null,
     status: "submitted",
     errorMessage: null,
     durationMs: 842,
     ts: "2026-07-14T10:00:00.000Z",
     beaconStatus: "fired",
-    trackingUrl: "https://track.example/beacon?vivclid=viv-123",
+    trackingUrl: "https://track.example/beacon?clickId=viv-123",
     beaconSessionIp: null,
   };
 }
@@ -159,7 +159,7 @@ describe("reconciliationRowSchema", () => {
     expect(result.success).toBe(true);
   });
 
-  it("accepts a null joinKeys bag for a legacy unkinded record", () => {
+  it("accepts a null joinKeys bag for a run with no join keys", () => {
     const result = reconciliationRowSchema.safeParse({
       ...makeValidRow(),
       joinKeys: null,
@@ -214,11 +214,16 @@ describe("reconciliationRowSchema", () => {
     expect(result.data?.beaconSessionIp).toBe("198.51.100.42");
   });
 
-  it("defaults beaconSessionIp to null when omitted (never fired/no IP captured)", () => {
-    const { beaconSessionIp: _omit, ...incomplete } = makeValidRow();
-    const result = reconciliationRowSchema.safeParse(incomplete);
+  it("accepts a null beaconSessionIp (never fired/no IP captured)", () => {
+    const result = reconciliationRowSchema.safeParse({ ...makeValidRow(), beaconSessionIp: null });
     expect(result.success).toBe(true);
     expect(result.data?.beaconSessionIp).toBeNull();
+  });
+
+  it("rejects a row with no beaconSessionIp field", () => {
+    const { beaconSessionIp: _omit, ...incomplete } = makeValidRow();
+    const result = reconciliationRowSchema.safeParse(incomplete);
+    expect(result.success).toBe(false);
   });
 
   it("strips a raw sessionIp key — the wire contract only exposes beaconSessionIp", () => {

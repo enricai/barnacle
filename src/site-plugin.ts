@@ -238,9 +238,9 @@ export interface SitePluginResult<TData = Record<string, unknown>> {
 
 /**
  * Contract every site plugin must satisfy. Core's dispatch layer types its
- * `SITE_PLUGINS` registry and `dispatch()` function against this interface so
- * adding a new site never requires changes to core — only a new file in
- * `src/sites/<id>/`.
+ * `BUILTIN_SITE_PLUGINS` registry and `dispatch()` function against this
+ * interface so adding a new site never requires changes to core — only a new
+ * file in `src/sites/<id>/`.
  */
 export interface SitePlugin<TPayload = unknown, TResult = Record<string, unknown>> {
   /** Static metadata used by the loader to register this plugin's Fastify route. */
