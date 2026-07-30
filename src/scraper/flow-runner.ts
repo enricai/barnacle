@@ -542,6 +542,15 @@ interface StepSnapshot {
    * moving anything the user perceives). Measurement-only.
    */
   visibleTextSignature: string;
+  /**
+   * Joined `value`/`checked` fingerprint of every visible input/textarea/select
+   * control (bounded to 2000 chars, same spirit as the 200-char text slice).
+   * `innerText` never reflects a plain `<input>`'s `value` property, so a
+   * fill with no secondary UI side effect (no toggle, no formatted display)
+   * left `visibleTextSignature` unchanged and was scored as "no observable
+   * effect". This closes that blind spot. Measurement-only.
+   */
+  formValueSignature: string;
 }
 
 /** One attempt's audit trail — included verbatim in the failure dump. */
@@ -581,9 +590,12 @@ export interface AttemptRecord {
    *   `submittedStateSelectors` entry matched live DOM, indicating the SPA
    *   reached its submitted state even though the network capture missed
    *   the submit POST within the attempt window.
+   * - `form-value`: formValueVerified credited a visible input/textarea/select
+   *   value diff with no other signal (plain-text-field fill, no secondary
+   *   UI side effect).
    * - `null`: failure path.
    */
-  verifiedBy: "network" | "url" | "dom" | "view-swap" | "submitted-state-dom" | null;
+  verifiedBy: "network" | "url" | "dom" | "view-swap" | "submitted-state-dom" | "form-value" | null;
   /**
    * {@link classifyPhantomClick}'s verdict for this attempt, computed from
    * the same pre/post snapshot pair `describeAttemptEffectSignals` already
@@ -600,7 +612,7 @@ export interface AttemptRecord {
  * means no injection surface. Runs in browser context and returns a typed-narrow
  * shape via Runtime.callFunctionOn.
  */
-const DOM_SNAPSHOT_EXPR = `(() => { const b = document.body; if (!b) return { html: 0, text: "" }; const t = b.innerText || ""; return { html: (b.outerHTML || "").length, text: t.length + ":" + t.slice(0, 200) }; })()`;
+const DOM_SNAPSHOT_EXPR = `(() => { const b = document.body; if (!b) return { html: 0, text: "", values: "" }; const t = b.innerText || ""; const controls = Array.from(b.querySelectorAll("input, textarea, select")).filter((el) => el.offsetParent !== null); const values = controls.map((el) => { if (el.type === "checkbox" || el.type === "radio") return el.checked ? "1" : "0"; return el.value || ""; }).join("|").slice(0, 2000); return { html: (b.outerHTML || "").length, text: t.length + ":" + t.slice(0, 200), values }; })()`;
 
 /**
  * Captures the pre/post signal triple the submit-verify cascade diffs.
@@ -616,6 +628,7 @@ export async function snapshotPage(
 ): Promise<StepSnapshot> {
   let bodyHtmlLength = 0;
   let visibleTextSignature = "";
+  let formValueSignature = "";
   try {
     const result = await target.evaluate(DOM_SNAPSHOT_EXPR);
     if (
@@ -628,6 +641,8 @@ export async function snapshotPage(
     ) {
       bodyHtmlLength = (result as { html: number }).html;
       visibleTextSignature = (result as { text: string }).text;
+      const rawValues = (result as Record<string, unknown>).values;
+      formValueSignature = typeof rawValues === "string" ? rawValues : "";
     }
   } catch {
     // Snapshot is observational; on failure, defaults to 0/"" so the verifier
@@ -645,6 +660,7 @@ export async function snapshotPage(
     url,
     bodyHtmlLength,
     visibleTextSignature,
+    formValueSignature,
   };
 }
 
@@ -1153,6 +1169,7 @@ export function describeAttemptEffectSignals(
   const bytesDelta = post.bodyHtmlLength - pre.bodyHtmlLength;
   const networkDelta = post.networkCount - pre.networkCount;
   const textChanged = post.visibleTextSignature !== pre.visibleTextSignature;
+  const valueChanged = post.formValueSignature !== pre.formValueSignature;
   const windowCaptures = recentCaptureMeta.slice(preMetaLength);
   const observations: string[] = [];
   if (networkDelta === 0 && bytesDelta >= 500) {
@@ -1171,6 +1188,11 @@ export function describeAttemptEffectSignals(
   if (textChanged && networkDelta === 0 && bytesDelta < 500) {
     observations.push(
       "visible-text-changed-without-network: page reflowed slightly (likely tooltip/focus state)"
+    );
+  }
+  if (valueChanged && !textChanged && networkDelta === 0) {
+    observations.push(
+      "form-value-changed-without-network: a visible input/textarea/select value changed with no other observable effect (plain field fill)"
     );
   }
   return observations.join(" | ");
@@ -6155,6 +6177,7 @@ export async function executeStepWithHealing(params: {
         url: page.url(),
         bodyHtmlLength: 0,
         visibleTextSignature: "",
+        formValueSignature: "",
       };
       attempts.push({
         attempt: 0,
@@ -7204,8 +7227,20 @@ export async function executeStepWithHealing(params: {
       networkDelta: post.networkCount - pre.networkCount,
       bytesDelta: post.bodyHtmlLength - pre.bodyHtmlLength,
     });
+    // Form-value-diff signal: `visibleTextSignature` never reflects a plain
+    // <input>/<textarea>/<select>'s `value` property, so a fill with no
+    // secondary UI side effect (no toggle, no formatted display) had ZERO
+    // verification signal — every cascade attempt reported "no observable
+    // effect" even though the value genuinely landed. Scoped to state-class
+    // actions (fill/check/etc.), same as domVerified, so it never lets an
+    // advance/submit step ride a stray value mutation elsewhere on the page.
+    const formValueVerified = isStateClass && post.formValueSignature !== pre.formValueSignature;
     let verified =
-      networkIsRealAdvance || urlChanged || domVerifiedForStep || clickViewSwapVerified;
+      networkIsRealAdvance ||
+      urlChanged ||
+      domVerifiedForStep ||
+      clickViewSwapVerified ||
+      formValueVerified;
 
     // Final-step submit-verification gate. Replaces the deterministic
     // submitEndpointPattern regex with a Haiku 4.5 LLM judgment over
@@ -7348,7 +7383,11 @@ export async function executeStepWithHealing(params: {
           ? "url"
           : networkFired
             ? "network"
-            : "dom";
+            : domVerifiedForStep
+              ? "dom"
+              : formValueVerified
+                ? "form-value"
+                : "dom";
     }
 
     // N+16 probe: Stagehand's CDP click sometimes lands on the button without
@@ -7447,6 +7486,7 @@ export async function executeStepWithHealing(params: {
           const retryUrlChanged = retryPost.url !== pre.url;
           const retryHtmlDelta = retryPost.bodyHtmlLength - pre.bodyHtmlLength;
           const retryTextChanged = retryPost.visibleTextSignature !== pre.visibleTextSignature;
+          const retryFormValueChanged = retryPost.formValueSignature !== pre.formValueSignature;
           // RC2: an advance/`kind=click` "Next" that only grew the DOM
           // (validation errors rendered) with NO network/URL change is a
           // validation-blocked no-op, not a real transition — but the
@@ -7508,6 +7548,7 @@ export async function executeStepWithHealing(params: {
               retryUrlChanged ||
               retryHtmlDelta !== 0 ||
               retryTextChanged ||
+              retryFormValueChanged ||
               checkboxStateVerified);
           // Apply the same submit-endpoint gate the primary verifier uses.
           // Without this, the n+16 fallback would still ride past a
@@ -7596,7 +7637,7 @@ export async function executeStepWithHealing(params: {
             }
           }
           logger.info(
-            `n+16 probe: step=${stepIndex + 1}/${totalSteps?.() ?? "?"} attempt=${attempt} el.click() fallback fired=${fired === true} kind=${probeResult.kind ?? "none"} checkboxStateVerified=${checkboxStateVerified} ancestorStillInvalid=${ancestorStillInvalid}; network=${retryNetworkFired} url=${retryUrlChanged} htmlDelta=${retryHtmlDelta} textChanged=${retryTextChanged} verified=${retryVerified}`
+            `n+16 probe: step=${stepIndex + 1}/${totalSteps?.() ?? "?"} attempt=${attempt} el.click() fallback fired=${fired === true} kind=${probeResult.kind ?? "none"} checkboxStateVerified=${checkboxStateVerified} ancestorStillInvalid=${ancestorStillInvalid}; network=${retryNetworkFired} url=${retryUrlChanged} htmlDelta=${retryHtmlDelta} textChanged=${retryTextChanged} formValueChanged=${retryFormValueChanged} verified=${retryVerified}`
           );
           if (retryVerified) {
             if (record.verifiedBy === null) {
