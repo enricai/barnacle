@@ -250,7 +250,7 @@ describe("flow-runner OOPIF-bound deepLocator hang (offline acceptance test, rea
       ],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      uploadFixture: null,
       frameSelector: IFRAME_SELECTOR,
     });
     const assertion = expect(resultPromise).rejects.toThrow(
@@ -290,7 +290,7 @@ describe("flow-runner OOPIF-bound deepLocator hang (offline acceptance test, rea
       ],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      uploadFixture: null,
       frameSelector: IFRAME_SELECTOR,
     });
     const assertion = expect(resultPromise).rejects.toThrow(
@@ -353,7 +353,7 @@ describe("flow-runner frame-attach probe hang (offline acceptance test, real sta
         ],
         logger: testLogger,
         anthropic: null,
-        resumeFixture: null,
+        uploadFixture: null,
         frameSelector: IFRAME_SELECTOR,
       })
     ).rejects.toThrow(/failed verification after \d+ attempts/);

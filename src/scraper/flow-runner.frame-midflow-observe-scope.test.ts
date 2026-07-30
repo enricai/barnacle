@@ -231,7 +231,7 @@ describe("flow-runner mid-flow iframe: guardedObserve's actual hop-scoped select
       ],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      uploadFixture: null,
       frameSelector: FRAME_SELECTOR,
     });
 
@@ -300,7 +300,7 @@ describe("flow-runner mid-flow iframe: guardedObserve's actual hop-scoped select
         ],
         logger: testLogger,
         anthropic: null,
-        resumeFixture: null,
+        uploadFixture: null,
         // frameSelector deliberately omitted: reproduces the pre-fix
         // top-frame-only behavior even though the iframe attaches.
       })

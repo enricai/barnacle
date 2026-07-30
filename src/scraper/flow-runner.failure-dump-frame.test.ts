@@ -70,7 +70,7 @@ function baseParams(page: Page, stagehand: Stagehand, frameTarget?: FrameTarget)
     anthropic: null,
     logger: testLogger,
     captureFn: vi.fn().mockResolvedValue(undefined),
-    resumeFixture: null,
+    uploadFixture: null,
     isFinalStep: false,
     submitEndpointPattern: null,
     submittedStateSelectors: [],

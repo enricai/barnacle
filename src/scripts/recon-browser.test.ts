@@ -4716,7 +4716,7 @@ describe("recon-browser/runHealingFlow — phantom-submit escalation, end-to-end
         steps: stepsWithSubmit(),
         logger: loggerStub as unknown as Logger,
         anthropic: null,
-        resumeFixture: null,
+        uploadFixture: null,
       })
     ).resolves.toMatchObject({
       submitVerified: true,
@@ -4772,7 +4772,7 @@ describe("recon-browser/runHealingFlow — phantom-submit escalation, end-to-end
         steps: stepsWithSubmit(),
         logger: loggerStub as unknown as Logger,
         anthropic: null,
-        resumeFixture: null,
+        uploadFixture: null,
       });
     } catch (err) {
       caught = err as { name?: string; kind?: string; message?: string };
@@ -4846,7 +4846,7 @@ describe("recon-browser/runHealingFlow — phantom-submit escalation, end-to-end
         steps: stepsWithSubmit(),
         logger: loggerStub as unknown as Logger,
         anthropic: null,
-        resumeFixture: null,
+        uploadFixture: null,
         maxFlowMs: 10,
       });
     } catch (err) {
@@ -4905,7 +4905,7 @@ describe("recon-browser/runHealingFlow — phantom-submit escalation, end-to-end
         steps: optionalSubmitSteps,
         logger: loggerStub as unknown as Logger,
         anthropic: null,
-        resumeFixture: null,
+        uploadFixture: null,
       });
     } catch (err) {
       caught = err as { name?: string; kind?: string; message?: string };

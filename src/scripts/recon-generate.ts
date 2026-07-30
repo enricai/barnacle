@@ -3107,14 +3107,14 @@ export function emitBrowserFlowTs(opts: {
       ? stepLiterals.join("\n")
       : `  // TODO: add flow steps from src/sites/${siteId}/recon-flow.json`;
 
-  // Wire a resumeFixture from the payload's Resume/ResumeFilename/
+  // Wire an uploadFixture from the payload's Resume/ResumeFilename/
   // ResumeContentType fields ONLY when the contract actually carries them
   // (hasMultipartStep) AND the flow uploads. When a flow has an upload step but
   // the captures weren't detected as multipart (e.g. a GraphQL site where
   // multipart detection is dropped), those payload fields don't exist yet — emit
   // a null + TODO so the generated module still typechecks; the operator adds
   // the multipart contract fields and wires the fixture during hand-finish.
-  const resumeFixtureExpr =
+  const uploadFixtureExpr =
     hasUploadStep && hasMultipartStep
       ? `{
     buffer: Buffer.from(payload.Resume ?? "", "base64"),
@@ -3183,7 +3183,7 @@ ${flowStepsBlock}
     steps: FLOW_STEPS,
     logger,
     anthropic: buildAnthropicClient(),
-    resumeFixture: ${resumeFixtureExpr},${frameSelector !== undefined ? `\n    frameSelector: ${JSON.stringify(frameSelector)},` : ""}
+    uploadFixture: ${uploadFixtureExpr},${frameSelector !== undefined ? `\n    frameSelector: ${JSON.stringify(frameSelector)},` : ""}
   });
 
   // Schema-enforced extract via guardedExtract: Stagehand 3.4.0 accepts

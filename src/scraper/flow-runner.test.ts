@@ -449,7 +449,7 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
       anthropic: null,
       logger: testLogger,
       captureFn: vi.fn().mockResolvedValue(undefined),
-      resumeFixture: null,
+      uploadFixture: null,
       isFinalStep: false,
       submitEndpointPattern: null,
       submittedStateSelectors: [],
@@ -898,7 +898,7 @@ describe("flow-runner/runHealingFlow", () => {
         steps: [step(), step()],
         logger: testLogger,
         anthropic: null,
-        resumeFixture: null,
+        uploadFixture: null,
         maxFlowMs: 10,
       })
     ).rejects.toMatchObject({
@@ -941,7 +941,7 @@ describe("flow-runner/runHealingFlow", () => {
       steps: [step({ submitStep: true, instruction: "Click the Submit button" })],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      uploadFixture: null,
     });
 
     expect(result).toMatchObject({
@@ -983,7 +983,7 @@ describe("flow-runner/runHealingFlow", () => {
       steps: [step(), step()],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      uploadFixture: null,
     });
 
     expect(result).toMatchObject({
@@ -1012,7 +1012,7 @@ describe("flow-runner/runHealingFlow", () => {
         steps: [step({ submitStep: true, optional: true, instruction: "Click the Submit button" })],
         logger: testLogger,
         anthropic: null,
-        resumeFixture: null,
+        uploadFixture: null,
       })
     ).rejects.toMatchObject({
       name: "StepVerificationError",
@@ -1199,7 +1199,7 @@ describe("flow-runner/runHealingFlow — frameSelector routes the cascade to the
         ],
         logger: testLogger,
         anthropic: null,
-        resumeFixture: null,
+        uploadFixture: null,
         frameSelector: "iframe#talemetry_apply_iframe",
       })
     ).rejects.toMatchObject({ name: "StepVerificationError" });
@@ -1257,7 +1257,7 @@ describe("flow-runner/runHealingFlow — frameSelector routes the cascade to the
         steps: [step({ instruction: NON_SUBMIT_STEP, submitStep: false })],
         logger: testLogger,
         anthropic: null,
-        resumeFixture: null,
+        uploadFixture: null,
         // frameSelector omitted
       })
     ).rejects.toMatchObject({ name: "StepVerificationError" });
@@ -1315,7 +1315,7 @@ describe("flow-runner/runHealingFlow — frameSelector routes the cascade to the
       steps: [step({ submitStep: true, instruction: "Click the Submit button" })],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      uploadFixture: null,
       frameSelector: "iframe#talemetry_apply_iframe",
     });
 

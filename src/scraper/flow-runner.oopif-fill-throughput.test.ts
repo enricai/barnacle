@@ -414,7 +414,7 @@ describe("flow-runner cascade fill actuation throughput (batched fill-by-index o
       steps: [{ instruction: FIRST_NAME_STEP, optional: false, upload: false, submitStep: false }],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      uploadFixture: null,
       frameSelector: IFRAME_SELECTOR,
     });
     const elapsedMs = Date.now() - startedAt;
@@ -497,7 +497,7 @@ describe("flow-runner cascade fill actuation throughput (batched fill-by-index o
       steps: [{ instruction: FIRST_NAME_STEP, optional: false, upload: false, submitStep: false }],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      uploadFixture: null,
       frameSelector: IFRAME_SELECTOR,
     });
 
@@ -544,7 +544,7 @@ describe("flow-runner cascade select actuation throughput (batched select-by-ind
       steps: [{ instruction: COUNTRY_STEP, optional: false, upload: false, submitStep: false }],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      uploadFixture: null,
       frameSelector: IFRAME_SELECTOR,
     });
 

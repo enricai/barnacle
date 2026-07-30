@@ -272,7 +272,7 @@ describe("flow-runner cascade click actuation throughput (perf-004: batched clic
       ],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      uploadFixture: null,
       frameSelector: IFRAME_SELECTOR,
     });
     const elapsedMs = Date.now() - startedAt;

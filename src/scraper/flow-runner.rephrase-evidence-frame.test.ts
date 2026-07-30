@@ -165,7 +165,7 @@ describe("flow-runner/executeStepWithHealing — llm-rephrase deepLocatorCandida
         steps: [{ instruction: RADIO_STEP, optional: false, upload: false, submitStep: false }],
         logger: testLogger,
         anthropic,
-        resumeFixture: null,
+        uploadFixture: null,
         frameSelector: FRAME_SELECTOR,
       })
     ).rejects.toThrow(/failed verification after \d+ attempts/);
@@ -193,7 +193,7 @@ describe("flow-runner/executeStepWithHealing — llm-rephrase deepLocatorCandida
         steps: [{ instruction: RADIO_STEP, optional: false, upload: false, submitStep: false }],
         logger: testLogger,
         anthropic,
-        resumeFixture: null,
+        uploadFixture: null,
         frameSelector: FRAME_SELECTOR,
       })
     ).rejects.toThrow(/failed verification after \d+ attempts/);
@@ -228,7 +228,7 @@ describe("flow-runner/executeStepWithHealing — llm-rephrase deepLocatorCandida
         steps: [{ instruction: RADIO_STEP, optional: false, upload: false, submitStep: false }],
         logger: testLogger,
         anthropic,
-        resumeFixture: null,
+        uploadFixture: null,
         frameSelector: FRAME_SELECTOR,
       })
     ).rejects.toThrow(/failed verification after \d+ attempts/);
@@ -261,7 +261,7 @@ describe("flow-runner/executeStepWithHealing — llm-rephrase deepLocatorCandida
           steps: [{ instruction: RADIO_STEP, optional: false, upload: false, submitStep: false }],
           logger: testLogger,
           anthropic,
-          resumeFixture: null,
+          uploadFixture: null,
           frameSelector: FRAME_SELECTOR,
         })
       ).rejects.toThrow(/failed verification after \d+ attempts/);

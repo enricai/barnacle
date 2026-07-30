@@ -131,11 +131,11 @@ function toHealingStep(
 }
 
 /**
- * Builds the resume fixture the browser flow uploads, mirroring the rule the
+ * Builds the upload fixture the browser flow uploads, mirroring the rule the
  * generator's `emitBrowserFlowTs` applies: only when a step uploads AND the
  * manifest declares itself multipart do the `Resume*` payload fields exist.
  */
-function buildResumeFixture(
+function buildUploadFixture(
   payload: Record<string, unknown>,
   hasUploadStep: boolean,
   multipart: boolean
@@ -240,7 +240,7 @@ export async function buildConfigPlugin(
         steps,
         logger,
         anthropic,
-        resumeFixture: buildResumeFixture(payload, hasUploadStep, spec.multipart ?? false),
+        uploadFixture: buildUploadFixture(payload, hasUploadStep, spec.multipart ?? false),
         frameSelector: spec.flow.frameSelector,
         submitEndpointPattern: spec.flow.submitEndpointPattern ?? null,
         submittedStateSelectors: spec.flow.submittedStateSelectors ?? [],

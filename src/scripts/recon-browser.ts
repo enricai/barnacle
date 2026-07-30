@@ -1586,14 +1586,14 @@ function dumpStepFailure(params: {
   return target;
 }
 
-const DEFAULT_RESUME_FIXTURE_PATH = "src/testing/fixtures/resume.pdf";
+const DEFAULT_UPLOAD_FIXTURE_PATH = "src/testing/fixtures/resume.pdf";
 
 function parseCli(): {
   url: string;
   flow: NormalizedStep[];
   flowFile: string | null;
   provider: ProviderName | undefined;
-  resumeFixturePath: string;
+  uploadFixturePath: string;
   saveReplan: boolean;
   advancedStealth: boolean;
   dumpDomBeforeStep: number | null;
@@ -1616,8 +1616,8 @@ function parseCli(): {
   let rawFlow: unknown = null;
   let flowFile: string | null = null;
   let provider: ProviderName | undefined;
-  // Precedence: --resume-fixture flag > RESUME_FIXTURE_PATH env > default path.
-  let resumeFixturePath = process.env.RESUME_FIXTURE_PATH || DEFAULT_RESUME_FIXTURE_PATH;
+  // Precedence: --upload-fixture flag > UPLOAD_FIXTURE_PATH env > default path.
+  let uploadFixturePath = process.env.UPLOAD_FIXTURE_PATH || DEFAULT_UPLOAD_FIXTURE_PATH;
   let saveReplan = true;
   let advancedStealth = false;
   let dumpDomBeforeStep: number | null = null;
@@ -1637,8 +1637,8 @@ function parseCli(): {
         process.exit(1);
       }
       provider = raw;
-    } else if (args[i] === "--resume-fixture" && args[i + 1]) {
-      resumeFixturePath = args[++i]!;
+    } else if (args[i] === "--upload-fixture" && args[i + 1]) {
+      uploadFixturePath = args[++i]!;
     } else if (args[i] === "--no-save-replan") {
       saveReplan = false;
     } else if (args[i] === "--advanced-stealth") {
@@ -1666,7 +1666,7 @@ function parseCli(): {
 
   if (!url) {
     logger.error(
-      'usage: recon-browser.ts --url <url> [--flow \'["step1","step2"]\'] [--flow-file <path>] [--provider browserbase|steel] [--resume-fixture <path>] [--no-save-replan] [--advanced-stealth] [--dump-dom-before-step <N>] [--allocate-email <ENV_VAR_NAME>]'
+      'usage: recon-browser.ts --url <url> [--flow \'["step1","step2"]\'] [--flow-file <path>] [--provider browserbase|steel] [--upload-fixture <path>] [--no-save-replan] [--advanced-stealth] [--dump-dom-before-step <N>] [--allocate-email <ENV_VAR_NAME>]'
     );
     process.exit(1);
   }
@@ -1689,7 +1689,7 @@ function parseCli(): {
       flow: [],
       flowFile,
       provider,
-      resumeFixturePath,
+      uploadFixturePath,
       saveReplan,
       advancedStealth,
       dumpDomBeforeStep,
@@ -1761,7 +1761,7 @@ function parseCli(): {
     flow: normalizeFlow(stepsRaw),
     flowFile,
     provider,
-    resumeFixturePath,
+    uploadFixturePath,
     saveReplan,
     advancedStealth,
     dumpDomBeforeStep,
@@ -1782,13 +1782,13 @@ function parseCli(): {
 }
 
 /**
- * Loads the resume fixture from disk at startup so the upload primitive
+ * Loads the upload fixture from disk at startup so the upload primitive
  * doesn't re-read the file from disk for every recon step. Returns null
  * when the file doesn't exist — the primitive then falls through to the
  * regular cascade and the recon continues unchanged (so flows that don't
- * involve resume uploads aren't affected by a missing fixture).
+ * involve an upload step aren't affected by a missing fixture).
  */
-function loadResumeFixture(
+function loadUploadFixture(
   path: string
 ): { buffer: Buffer; name: string; mimeType: string } | null {
   try {
@@ -1802,7 +1802,7 @@ function loadResumeFixture(
     return { buffer, name, mimeType };
   } catch (err) {
     logger.warn(
-      `resume fixture not loaded from ${path}: ${toErrorMessage(err)} — upload primitive will fall through`
+      `upload fixture not loaded from ${path}: ${toErrorMessage(err)} — upload primitive will fall through`
     );
     return null;
   }
@@ -1814,7 +1814,7 @@ async function main(): Promise<void> {
     flow: rawFlow,
     flowFile,
     provider,
-    resumeFixturePath,
+    uploadFixturePath,
     saveReplan,
     advancedStealth,
     dumpDomBeforeStep,
@@ -1848,7 +1848,7 @@ async function main(): Promise<void> {
   const flow = substituteFlowEnvVars(rawFlow);
 
   const runDir = resolveReconRunDir();
-  const resumeFixture = loadResumeFixture(resumeFixturePath);
+  const uploadFixture = loadUploadFixture(uploadFixturePath);
   // Per-URL partition under the flow file's site directory. Without a flow
   // file (inline --flow mode), telemetry has no durable home and is dropped
   // — captureFn becomes a no-op so dev one-offs don't crash and don't
@@ -1871,7 +1871,7 @@ async function main(): Promise<void> {
       ? (input) => captureLlmCall(input, { sinkPath: callsNdjsonPath })
       : async () => {};
   logger.info(
-    `recon-browser: target=${url} flow_steps=${flow.length} provider=${provider ?? "(config-default)"} advancedStealth=${advancedStealth} resume_fixture=${resumeFixture ? `${resumeFixturePath} (${resumeFixture.buffer.length}b)` : "(missing)"} runId=${runDir.runId} out=${runDir.root}`
+    `recon-browser: target=${url} flow_steps=${flow.length} provider=${provider ?? "(config-default)"} advancedStealth=${advancedStealth} upload_fixture=${uploadFixture ? `${uploadFixturePath} (${uploadFixture.buffer.length}b)` : "(missing)"} runId=${runDir.runId} out=${runDir.root}`
   );
 
   const session = await createBrowserSession({ provider, advancedStealth });
@@ -2100,7 +2100,7 @@ async function main(): Promise<void> {
           recentCaptureMeta,
           anthropic,
           logger,
-          resumeFixture,
+          uploadFixture,
           isFinalStep: i === plan.length - 1,
           submitEndpointPattern,
           submittedStateSelectors,
