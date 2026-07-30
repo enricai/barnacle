@@ -553,6 +553,7 @@ export interface AttemptRecord {
     | "structured-click"
     | "observe-act-exclude"
     | "deep-submit-locator"
+    | "deep-locator-field-label"
     | "llm-rephrase";
   instruction: string | null;
   triedSelectors: string[];
@@ -3412,6 +3413,26 @@ function normalizeFieldLabel(text: string): string {
   return text.replace(/\s+/g, " ").trim().toLowerCase();
 }
 
+type FieldLabelTarget = { kind: "fill" | "select"; fieldLabel: string; value: string };
+
+/**
+ * Parses a fill/select step into the field it names plus the value to write,
+ * or `null` for any other step shape (click, a select whose question is
+ * un-quoted, etc). Shared by both the observe-empty deepLocator fallback and
+ * the field-label-first routing ahead of Stagehand's own act()/observe()
+ * resolution — see `findDeepLocatorCandidateByFieldLabel`'s docblock for why
+ * the field LABEL (not the value) is what a caller matches candidates
+ * against.
+ */
+function parseFieldLabelTarget(step: string): FieldLabelTarget | null {
+  const fillStep = parseFillStep(step);
+  if (fillStep) return { kind: "fill", fieldLabel: fillStep.fieldLabel, value: fillStep.value };
+  const selectStep = parseSelectStep(step);
+  return selectStep?.questionLabel
+    ? { kind: "select", fieldLabel: selectStep.questionLabel, value: selectStep.option }
+    : null;
+}
+
 /**
  * Finds the candidate whose accessible name identifies the named field —
  * `fieldLabel` (from {@link parseFillStep}/{@link parseSelectStep}), NOT the
@@ -5356,6 +5377,67 @@ async function resolveDeepLocatorCandidatesWithWidening(
   return { candidates: widened, innerSelector: "*" };
 }
 
+type FieldLabelActuationOutcome =
+  | { kind: "actuated"; matched: DeepLocatorCandidate; fieldTarget: FieldLabelTarget }
+  | { kind: "actuation-failed"; matched: DeepLocatorCandidate; fieldTarget: FieldLabelTarget }
+  | { kind: "no-match"; fieldTarget: FieldLabelTarget }
+  | { kind: "not-fill-or-select" };
+
+/**
+ * Resolves and actuates a fill/select step's NAMED FIELD through the
+ * deterministic accessible-name match (`findDeepLocatorCandidateByFieldLabel`)
+ * against the frame's own deepLocator scan, independent of what Stagehand's
+ * `act()`/`observe()` resolved. A same-frame accessible-name label match
+ * cannot confuse a City input for an unrelated header search box the way
+ * Stagehand's semantic resolution can — Stagehand's own candidate is only a
+ * fallback for the caller to use when this returns `no-match` or
+ * `not-fill-or-select`, never the first attempt for a step that names a
+ * field. `triedSelectors` (already-attempted selectors from prior
+ * cascade attempts) is excluded so a step that already tried and failed on
+ * this candidate doesn't just re-pick it.
+ */
+async function tryDeterministicFieldLabelActuation(params: {
+  page: Page;
+  frameTarget: FrameTarget;
+  step: string;
+  triedSelectors: readonly string[];
+  timeoutOptions: DeepLocatorTimeoutOptions;
+}): Promise<FieldLabelActuationOutcome> {
+  const { page, frameTarget, step, triedSelectors, timeoutOptions } = params;
+  const fieldTarget = parseFieldLabelTarget(step);
+  if (!fieldTarget) return { kind: "not-fill-or-select" };
+  const { candidates, innerSelector } = await resolveDeepLocatorCandidatesWithWidening(
+    page,
+    frameTarget.frameSelector,
+    step,
+    timeoutOptions
+  );
+  const unexcluded = candidates.filter((c) => !triedSelectors.includes(c.selector));
+  const matched = findDeepLocatorCandidateByFieldLabel(unexcluded, fieldTarget.fieldLabel);
+  if (!matched) return { kind: "no-match", fieldTarget };
+  const actuated =
+    fieldTarget.kind === "fill"
+      ? await fillDeepLocatorCandidate(
+          page,
+          frameTarget.frameSelector,
+          innerSelector,
+          matched.index,
+          fieldTarget.value,
+          { frameTarget }
+        )
+      : await selectDeepLocatorCandidateOption(
+          page,
+          frameTarget.frameSelector,
+          innerSelector,
+          matched.index,
+          fieldTarget.value,
+          { frameTarget }
+        );
+  return actuated
+    ? { kind: "actuated", matched, fieldTarget }
+    : { kind: "actuation-failed", matched, fieldTarget };
+}
+
 /**
  * Adapts `resolveDeepLocatorCandidatesWithWidening` results into
  * `Action`-shaped evidence for `rephraseWithLLM`, which only knows about
@@ -6181,6 +6263,62 @@ export async function executeStepWithHealing(params: {
     let resolvedAction: Action | null = null;
 
     try {
+      // Field-label-first routing: for a frame-scoped fill/select step,
+      // Stagehand's own act()/observe() can resolve a real, in-DOM, plausible-
+      // looking control that is nonetheless the WRONG one (a City field
+      // resolving to an unrelated header search box whose accessible name
+      // overlaps semantically with "city/location" is the motivating case).
+      // A same-frame accessible-name match against the field's own label
+      // can't make that mistake, so it's tried BEFORE any Stagehand
+      // act/observe call for every attempt, not only once observe() has
+      // already come back empty (bugfix-001's finding: observe() returning a
+      // wrong-but-nonempty candidate was exactly what let the phantom-fill
+      // through the old empty-candidates-only gate). Falls through to the
+      // existing Stagehand-driven attempt when no candidate names the field
+      // at all — this only preempts Stagehand's resolution, it never expands
+      // what counts as a match.
+      const fieldLabelOutcome =
+        attempt !== 3 && frameTarget?.frame
+          ? await tryDeterministicFieldLabelActuation({
+              page,
+              frameTarget,
+              step,
+              triedSelectors,
+              timeoutOptions: { frameTarget },
+            })
+          : { kind: "not-fill-or-select" as const };
+      if (fieldLabelOutcome.kind === "actuated") {
+        record.technique = "deep-locator-field-label";
+        record.instruction = `deepLocator: ${fieldLabelOutcome.matched.accessibleText || "(no accessible text)"}`;
+        triedSelectors.push(fieldLabelOutcome.matched.selector);
+        record.triedSelectors = [fieldLabelOutcome.matched.selector];
+        record.actResultSuccess = true;
+        record.actResultDescription = `deepLocator ${fieldLabelOutcome.fieldTarget.kind === "fill" ? "filled" : "selected"} "${fieldLabelOutcome.matched.accessibleText || fieldLabelOutcome.matched.selector}" with "${fieldLabelOutcome.fieldTarget.value}"`;
+        // Same rationale as the pre-existing candidates===0 branch below:
+        // the write + read-back the actuation helper already performed IS
+        // the verification signal — no resolvedAction/network/url verifier
+        // can score a `deeplocator=` selector.
+        record.verifiedBy = "dom";
+        attempts.push(record);
+        logger.info(
+          `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${record.actResultDescription}`
+        );
+        trajectory?.push({ stepIndex, verifiedBy: "dom" });
+        return "completed";
+      }
+      if (fieldLabelOutcome.kind === "actuation-failed") {
+        triedSelectors.push(fieldLabelOutcome.matched.selector);
+        record.triedSelectors = [fieldLabelOutcome.matched.selector];
+        const failureMessage = `deepLocator: ${fieldLabelOutcome.fieldTarget.kind} on "${fieldLabelOutcome.matched.accessibleText || fieldLabelOutcome.matched.selector}" did not verify (read-back mismatch or rejected write)`;
+        record.actResultSuccess = false;
+        record.errorMessage = failureMessage;
+        attempts.push(record);
+        failureReasons.push(failureMessage);
+        logger.info(
+          `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${failureMessage}`
+        );
+        continue;
+      }
       if (attempt === 1) {
         record.technique = "act-string";
         record.instruction = step;
@@ -6384,90 +6522,13 @@ export async function executeStepWithHealing(params: {
           (c) => !triedSelectors.includes(c.selector)
         );
         if (candidates.length === 0 && deepLocatorCandidates.length > 0) {
-          // A fill/select step must actuate the NAMED FIELD through the
-          // fill/select seam, never the click-only walk below: candidate
-          // ranking scores by the instruction's quoted VALUE (see
-          // parseFillStep's docblock) — for "Fill in the First Name field
-          // with 'Reginald'" no control's accessible name is ever 'Reginald',
-          // so every candidate ties at score 0 and the click walk would fire
-          // on whatever sits first in DOM order (the bug report's wizard
-          // 'Close' mis-click). Detect that shape first and route
-          // deterministically to the candidate matching the field's own
-          // label, refusing to click when no candidate names that field.
-          const fillStep = parseFillStep(step);
-          const selectStep = fillStep ? null : parseSelectStep(step);
-          const fieldTarget: { kind: "fill" | "select"; fieldLabel: string; value: string } | null =
-            fillStep
-              ? { kind: "fill", fieldLabel: fillStep.fieldLabel, value: fillStep.value }
-              : selectStep?.questionLabel
-                ? { kind: "select", fieldLabel: selectStep.questionLabel, value: selectStep.option }
-                : null;
-          if (fieldTarget) {
-            const matched = findDeepLocatorCandidateByFieldLabel(
-              deepLocatorCandidates,
-              fieldTarget.fieldLabel
-            );
-            if (!matched) {
-              const failureMessage = `deepLocator: no candidate matched field "${fieldTarget.fieldLabel}" (refusing to click an unrelated control)`;
-              record.actResultSuccess = false;
-              record.errorMessage = failureMessage;
-              attempts.push(record);
-              failureReasons.push(failureMessage);
-              logger.info(
-                `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${failureMessage}`
-              );
-              continue;
-            }
-            triedSelectors.push(matched.selector);
-            record.triedSelectors = [matched.selector];
-            const actuated =
-              fieldTarget.kind === "fill"
-                ? await fillDeepLocatorCandidate(
-                    page,
-                    frameTarget?.frameSelector,
-                    deepLocatorInnerSelector,
-                    matched.index,
-                    fieldTarget.value,
-                    { frameTarget }
-                  )
-                : await selectDeepLocatorCandidateOption(
-                    page,
-                    frameTarget?.frameSelector,
-                    deepLocatorInnerSelector,
-                    matched.index,
-                    fieldTarget.value,
-                    { frameTarget }
-                  );
-            if (actuated) {
-              record.instruction = `deepLocator: ${matched.accessibleText || "(no accessible text)"}`;
-              record.actResultSuccess = true;
-              record.actResultDescription = `deepLocator ${fieldTarget.kind === "fill" ? "filled" : "selected"} "${matched.accessibleText || matched.selector}" with "${fieldTarget.value}"`;
-              // verifyDomEffect can't resolve a `deeplocator=` selector (see
-              // deep-locator-actuate.ts's module docblock: target.locator()
-              // has no meaning for cross-origin OOPIF hop notation) — the
-              // write + read-back fillDeepLocatorCandidate/
-              // selectDeepLocatorCandidateOption already performed IS the
-              // verification signal, so record it directly instead of
-              // synthesizing a resolvedAction that a verifier can only ever
-              // score false for.
-              record.verifiedBy = "dom";
-              attempts.push(record);
-              logger.info(
-                `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${record.actResultDescription}`
-              );
-              trajectory?.push({ stepIndex, verifiedBy: "dom" });
-              return "completed";
-            }
-            const failureMessage = `deepLocator: ${fieldTarget.kind} on "${matched.accessibleText || matched.selector}" did not verify (read-back mismatch or rejected write)`;
-            record.actResultSuccess = false;
-            record.errorMessage = failureMessage;
-            attempts.push(record);
-            failureReasons.push(failureMessage);
-            logger.info(
-              `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${failureMessage}`
-            );
-            continue;
-          }
+          // Field-label routing for a fill/select-shaped step already ran
+          // (and returned/continued) in the field-label-first pre-check
+          // above, before this attempt's own act/observe call — see
+          // `tryDeterministicFieldLabelActuation`. Reaching here means the
+          // step is click-shaped, or is a select step whose question is
+          // phrased un-quoted (no fieldLabel to route on).
+          const selectStep = parseSelectStep(step);
           // A select step whose question is phrased un-quoted (parseSelectStep
           // returns `questionLabel: null`) has no fieldLabel to route through
           // findDeepLocatorCandidateByFieldLabel above, so ranking below falls
