@@ -1237,19 +1237,19 @@
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' radio button for 'Are you a current employee at Sanford or Good Samaritan Society?'"
+    "instruction": "Click the 'No' radio button for 'Are you a current employee at Acme Health or Acme Samaritan Society?'"
   },
   {
     "site": "ats-c",
-    "instruction": "Select 'No' or the closest non-former-employee option in the 'Are you a former Sanford Health or Good Samaritan Society Employee?' dropdown"
+    "instruction": "Select 'No' or the closest non-former-employee option in the 'Are you a former Acme Health or Acme Samaritan Society Employee?' dropdown"
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' radio button for 'Have you applied to a Sanford Health or Good Samaritan Society position in the last 6 months?'"
+    "instruction": "Click the 'No' radio button for 'Have you applied to an Acme Health or Acme Samaritan Society position in the last 6 months?'"
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' radio button for 'Were you referred by a current Good Samaritan Society or Sanford Health employee?'"
+    "instruction": "Click the 'No' radio button for 'Were you referred by a current Acme Samaritan Society or Acme Health employee?'"
   },
   {
     "site": "ats-c",
