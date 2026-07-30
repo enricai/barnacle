@@ -25,6 +25,9 @@ importers:
       '@aws-sdk/client-s3':
         specifier: ^3.1085.0
         version: 3.1090.0
+      '@browserbasehq/sdk':
+        specifier: ^2.16.0
+        version: 2.16.0(patch_hash=b811b2520d933dc309d013f3cb20fffcd882eb86d5937639926701dbb1474315)
       '@browserbasehq/stagehand':
         specifier: ^3.6.0
         version: 3.7.0(patch_hash=bfdee0c01c7488d134c387a614d105dfd0f6574ec63d98724dfd525d35799a0c)(@cfworker/json-schema@4.1.1)(playwright-core@1.60.0)(zod@3.25.76)
