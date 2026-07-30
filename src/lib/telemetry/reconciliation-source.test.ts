@@ -48,7 +48,8 @@ function makeSubmitLine(overrides: Record<string, unknown> = {}): Record<string,
     kind: "submit",
     siteId: "ats-c",
     requestId: "req-abc-123",
-    joinKeys: { vivclid: "v-9981", jobReference: "56793094457_jid-1" },
+    joinKeys: { clickId: "v-9981", refId: "56793094457_jid-1" },
+    session: null,
     inboundPayload: { jobId: "56793094457" },
     status: "submitted",
     auditPayload: { verified: true },
@@ -64,11 +65,12 @@ function makeBeaconLine(overrides: Record<string, unknown> = {}): Record<string,
     kind: "beacon",
     requestId: "req-abc-123",
     siteId: "ats-c",
-    joinKeys: { vivclid: "v-9981", jobReference: "56793094457_jid-1" },
+    joinKeys: { clickId: "v-9981", refId: "56793094457_jid-1" },
     beaconStatus: "fired",
-    trackingUrl: "https://track.appcast.io/pixel?rid=req-abc-123",
+    trackingUrl: "https://track.example.com/pixel?rid=req-abc-123",
     durationMs: 87,
     ts: "2026-07-26T10:00:05.000Z",
+    sessionIp: null,
     ...overrides,
   };
 }
@@ -115,7 +117,7 @@ describe("readDurableReconciliationRows", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.requestId).toBe("req-abc-123");
     expect(rows[0]?.beaconStatus).toBe("fired");
-    expect(rows[0]?.beaconTrackingUrl).toBe("https://track.appcast.io/pixel?rid=req-abc-123");
+    expect(rows[0]?.beaconTrackingUrl).toBe("https://track.example.com/pixel?rid=req-abc-123");
   });
 
   it("keeps a skipped beacon and a fired beacon for the same requestId and ts as two distinct records", async () => {
@@ -172,7 +174,7 @@ describe("readDurableReconciliationRows", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.requestId).toBe("req-abc-123");
     expect(rows[0]?.beaconStatus).toBe("fired");
-    expect(rows[0]?.beaconTrackingUrl).toBe("https://track.appcast.io/pixel?rid=req-abc-123");
+    expect(rows[0]?.beaconTrackingUrl).toBe("https://track.example.com/pixel?rid=req-abc-123");
   });
 
   it("folds the mirrored arrangement — local fired beacon, S3-sourced skipped beacon — to the same fired row", async () => {
@@ -197,7 +199,7 @@ describe("readDurableReconciliationRows", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.requestId).toBe("req-abc-123");
     expect(rows[0]?.beaconStatus).toBe("fired");
-    expect(rows[0]?.beaconTrackingUrl).toBe("https://track.appcast.io/pixel?rid=req-abc-123");
+    expect(rows[0]?.beaconTrackingUrl).toBe("https://track.example.com/pixel?rid=req-abc-123");
   });
 
   it("still collapses an exact-duplicate beacon line present in both the local sink and an S3 object", async () => {
@@ -211,7 +213,7 @@ describe("readDurableReconciliationRows", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.requestId).toBe("req-abc-123");
     expect(rows[0]?.beaconStatus).toBe("fired");
-    expect(rows[0]?.beaconTrackingUrl).toBe("https://track.appcast.io/pixel?rid=req-abc-123");
+    expect(rows[0]?.beaconTrackingUrl).toBe("https://track.example.com/pixel?rid=req-abc-123");
   });
 
   it("matches readReconciliationRows byte-for-byte when the S3 source contributes nothing", async () => {

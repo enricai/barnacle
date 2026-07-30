@@ -261,7 +261,7 @@ and validated against `submitRecordSchema`, exported from that module as
 
 | Field | Meaning |
 |-------|---------|
-| `kind` | Always `"submit"`; defaults to `"submit"` so pre-existing lines written before this field existed still parse. |
+| `kind` | Always `"submit"`. |
 | `siteId` | Which plugin handled the request — the cohort dimension for reconciliation. |
 | `requestId` | The Fastify-issued correlation ID for the inbound request; joins a `"beacon"` record to this one. |
 | `joinKeys` | Opaque `Record<string, unknown> \| null` — the plugin's own `extractJoinKeys` hook resolved from the inbound payload, merged with any fields the plugin attached mid-run via `context.telemetry.addJoinKeys()` (run-discovered keys win on collision). Core never inspects its contents; `null` when neither source produced anything. |
@@ -325,7 +325,7 @@ resolves, giving it the same ability to report a real outcome. Every key:
 | `trackingUrl` | The vendor click-tracking URL, truncated to 120 characters; `null` when none was present. For a `"skipped"` record this doubles as the two-reasons signal above — present means a URL existed but a plugin-owned navigation used it instead of core's `fireTrackingClick`. |
 | `durationMs` | Wall time of the tracking-click navigation itself, not the original dispatch. |
 | `ts` | ISO timestamp. |
-| `sessionIp` | `string \| null`, defaulted so historical beacon lines without this key still parse. The outbound IP of `fireTrackingClick`'s own short-lived Browserbase session (`src/lib/tracking-click.ts`) — a **different** session than the one that served the original submit, so it can (and often will) carry a different IP than the submit record's `session.ip`. Resolved the same way (`getOutboundIp()`), and only present on `"fired"`/`"failed"` records; `null` on `"skipped"` records, since no engine-driven tracking-click session ever opens in that case. |
+| `sessionIp` | `string \| null`. The outbound IP of `fireTrackingClick`'s own short-lived Browserbase session (`src/lib/tracking-click.ts`) — a **different** session than the one that served the original submit, so it can (and often will) carry a different IP than the submit record's `session.ip`. Resolved the same way (`getOutboundIp()`), and only present on `"fired"`/`"failed"` records; `null` on `"skipped"` records, since no engine-driven tracking-click session ever opens in that case. |
 
 A `"fired"`/`"failed"` `"beacon"` record is written by either of two
 sources. The first is `fireTrackingClick`, when its caller supplies a

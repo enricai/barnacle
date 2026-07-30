@@ -51,9 +51,9 @@ function makeFiredInput(): Parameters<typeof captureBeaconEvent>[0] {
   return {
     requestId: "req-abc-123",
     siteId: "ats-c",
-    joinKeys: { vivclid: "v-9981", jobReference: "56793094457_jid-1" },
+    joinKeys: { clickId: "v-9981", refId: "56793094457_jid-1" },
     beaconStatus: "fired",
-    trackingUrl: "https://track.appcast.io/pixel?rid=req-abc-123",
+    trackingUrl: "https://track.example.com/pixel?rid=req-abc-123",
     durationMs: 842,
   };
 }
@@ -158,11 +158,11 @@ describe("captureBeaconEvent", () => {
   });
 
   it("truncates trackingUrl to 120 characters but keeps joinKeys in full", async () => {
-    const longUrl = `https://track.appcast.io/pixel?rid=${"x".repeat(200)}`;
+    const longUrl = `https://track.example.com/pixel?rid=${"x".repeat(200)}`;
     const input = {
       ...makeFiredInput(),
       trackingUrl: longUrl,
-      joinKeys: { vivclid: "v-".concat("y".repeat(200)) },
+      joinKeys: { clickId: "v-".concat("y".repeat(200)) },
     };
     await captureBeaconEvent(input, { sinkPath });
 
@@ -242,7 +242,7 @@ describe("createBeaconOutcomeRecorder", () => {
   it("round-trips a nested/heterogeneous joinKeys bag byte-for-byte, uninterpreted", async () => {
     const record = createBeaconOutcomeRecorder({ requestId: "req-bound-2", siteId: "ats-c" });
     const joinKeys = {
-      vivclid: "v-9981",
+      clickId: "v-9981",
       nested: { jid: "56793094457_jid-1", depth: { deeper: true } },
       count: 42,
       missing: null,
@@ -258,8 +258,8 @@ describe("createBeaconOutcomeRecorder", () => {
 
   it("truncates trackingUrl to 120 characters while leaving joinKeys full-length", async () => {
     const record = createBeaconOutcomeRecorder({ requestId: "req-bound-3", siteId: "ats-c" });
-    const longUrl = `https://track.appcast.io/pixel?rid=${"x".repeat(200)}`;
-    const joinKeys = { vivclid: "v-".concat("y".repeat(200)) };
+    const longUrl = `https://track.example.com/pixel?rid=${"x".repeat(200)}`;
+    const joinKeys = { clickId: "v-".concat("y".repeat(200)) };
 
     await record({ beaconStatus: "fired", joinKeys, trackingUrl: longUrl }, { sinkPath });
 
@@ -307,6 +307,7 @@ describe("createBeaconOutcomeRecorder", () => {
       siteId: "ats-c",
       requestId: "req-oob-1",
       joinKeys: null,
+      session: null,
       inboundPayload: { jobId: "1" },
       status: "submitted",
       auditPayload: null,

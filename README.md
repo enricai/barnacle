@@ -222,7 +222,7 @@ pnpm run recon:generate -- --site-id my-site --vocabulary ./src/recon/my-vocabul
 - Every regex must be free of the `g`/`y` flags and every field name must be a valid JS identifier — the loader rejects both. A stateful regex matches only every other step; a non-identifier emits `payload.<name>` as a syntax error.
 - Run the generator with a `.ts` vocabulary under `tsx`, or point it at compiled `.js` — plain `node` cannot import TypeScript before v22.18.
 
-> **Deprecated fallback:** omit `--vocabulary` and the generator falls back to a built-in recruiting table (first/last name, email, phone, address), warning as it does. That table is **removed in 2.0.0**, after which an absent vocabulary on a spliceable flow is an error. Supply one now.
+> Omitting `--vocabulary` disables splicing entirely — every step's recon constant is emitted literally, with no caller-data substitution.
 
 #### Telling the generator your ATS's form-schema wire keys
 
@@ -586,8 +586,6 @@ import { BUILTIN_SITE_PLUGINS } from "@/plugins/discover";
 
 BUILTIN_SITE_PLUGINS.push(mySitePlugin as SitePlugin<unknown, unknown>);
 ```
-
-`SITE_PLUGINS` in `src/plugins/loader.ts` is an alias for `BUILTIN_SITE_PLUGINS` kept for backwards compatibility; prefer the `discover.ts` import for new code.
 
 Core registers `POST /v1/my-site/run` automatically at startup.
 

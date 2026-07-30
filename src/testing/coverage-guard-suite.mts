@@ -1,10 +1,10 @@
 /**
  * Provides a registry-driven structural coverage guard for site plugins.
- * Mirrors the registry-first design of the loader: iterates SITE_PLUGINS (or a
- * caller-supplied stub) and asserts that each registered plugin has its required
- * co-located test file — without hardcoding any site name. Safe to run on main
- * where SITE_PLUGINS ships empty (0 iterations → trivially green); branches that
- * populate the registry gain coverage automatically.
+ * Mirrors the registry-first design of the loader: iterates BUILTIN_SITE_PLUGINS
+ * (or a caller-supplied stub) and asserts that each registered plugin has its
+ * required co-located test file — without hardcoding any site name. Safe to run
+ * on main where BUILTIN_SITE_PLUGINS ships empty (0 iterations → trivially
+ * green); branches that populate the registry gain coverage automatically.
  */
 
 import { existsSync } from "node:fs";
@@ -21,8 +21,8 @@ export interface CoverageGuardSuiteOptions {
   /** Human-readable suite name, passed to `describe`. */
   suiteName: string;
   /**
-   * Registry of plugins to guard. Pass `SITE_PLUGINS` from the loader for
-   * production coverage, or a stub array in unit tests.
+   * Registry of plugins to guard. Pass `BUILTIN_SITE_PLUGINS` from
+   * `discover.ts` for production coverage, or a stub array in unit tests.
    */
   plugins: CoverageGuardPlugin[];
   /**

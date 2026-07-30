@@ -1069,6 +1069,11 @@ describe("flow-runner dense OOPIF acceptance regression under measured latency (
     vi.useRealTimers();
   });
 
+  // Real wall-clock headroom: advanceUntilSettled ticks fake time through a
+  // full runHealingFlow cascade (up to 300 iterations), which under parallel
+  // worker contention can exceed the default 30s real-time budget even
+  // though the STEP_WATCHDOG_MS assertions below are virtual-time-based and
+  // unaffected by this.
   it("clicks 'Manual Application', fills both name fields, and reaches a verified submit with every step's own round trips staying inside STEP_WATCHDOG_MS", async () => {
     const topUrl = { current: `${TOP_ORIGIN}/jobs/123/apply` };
     const childUrls = { current: CHILD_SRC };
@@ -1182,5 +1187,5 @@ describe("flow-runner dense OOPIF acceptance regression under measured latency (
     expect(state.uploadedFileName).toBe("resume.pdf");
     expect(state.submitted).toBe(true);
     expect(childUrls.current).toBe(THANK_YOU_URL);
-  });
+  }, 60_000);
 });

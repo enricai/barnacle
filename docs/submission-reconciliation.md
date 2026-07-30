@@ -70,7 +70,7 @@ with a real Barnacle instance on `localhost:3971` and `DEV_BYPASS_AUTH=true`,
 and the output is shown verbatim.
 
 Sample rows used (`kind: "submit"` / `kind: "beacon"` lines, abbreviated —
-`joinKeys` here happens to carry a `vivclid`/`jobReference` pair, but the
+`joinKeys` here happens to carry a `clickId`/`refId` pair, but the
 route treats it as an opaque bag regardless of what's inside). `session.ip`
 is the submit session's own outbound IP; `beacon sessionIp` is the
 *different*, tracking-click session's outbound IP, present only on rows with
@@ -78,12 +78,12 @@ a beacon line:
 
 | `requestId` | `siteId` | `joinKeys` | `status` | `session.ip` | beacon | beacon `sessionIp` |
 |---|---|---|---|---|---|---|
-| `req-1001` | `acme` | `{vivclid: "vc-9f3a21", jobReference: "4471_88213"}` | `submitted` | `203.0.113.7` | `fired` | `198.51.100.23` |
-| `req-1002` | `acme` | `{jobReference: "4471_88214"}` | `submitted` | `203.0.113.9` | `fired` | `198.51.100.24` |
-| `req-1003` | `acme` | `{jobReference: "4471_88215"}` | `submitted` | `203.0.113.11` | _(no beacon line)_ | — |
-| `req-1004` | `acme` | `{vivclid: "vc-1120bb", jobReference: "4471_88216"}` | `error` | `203.0.113.13` | _(no beacon line)_ | — |
-| `req-1005` | `other-site` | `{jobReference: "5502_11029"}` | `submitted` | `203.0.113.15` | `fired` | `198.51.100.26` |
-| `req-1006` | `acme` | `{jobReference: "4471_88217"}` | `submitted` | `203.0.113.17` | `failed` | `198.51.100.27` |
+| `req-1001` | `acme` | `{clickId: "vc-9f3a21", refId: "4471_88213"}` | `submitted` | `203.0.113.7` | `fired` | `198.51.100.23` |
+| `req-1002` | `acme` | `{refId: "4471_88214"}` | `submitted` | `203.0.113.9` | `fired` | `198.51.100.24` |
+| `req-1003` | `acme` | `{refId: "4471_88215"}` | `submitted` | `203.0.113.11` | _(no beacon line)_ | — |
+| `req-1004` | `acme` | `{clickId: "vc-1120bb", refId: "4471_88216"}` | `error` | `203.0.113.13` | _(no beacon line)_ | — |
+| `req-1005` | `other-site` | `{refId: "5502_11029"}` | `submitted` | `203.0.113.15` | `fired` | `198.51.100.26` |
+| `req-1006` | `acme` | `{refId: "4471_88217"}` | `submitted` | `203.0.113.17` | `failed` | `198.51.100.27` |
 
 Replace the sample host/port and query values with your own before running
 these against a real environment.
@@ -162,7 +162,7 @@ Output:
     {
       "siteId": "acme",
       "requestId": "req-1003",
-      "joinKeys": { "jobReference": "4471_88215" },
+      "joinKeys": { "refId": "4471_88215" },
       "status": "submitted",
       "errorMessage": null,
       "durationMs": 9021,
@@ -197,7 +197,7 @@ the response client-side:
 ```bash
 curl -s "http://localhost:3971/v1/submissions?siteId=acme&limit=1000" \
   -H "Authorization: Bearer $BARNACLE_API_KEY" \
-  | jq '.submissions[] | select(.joinKeys.jobReference == "4471_88214")'
+  | jq '.submissions[] | select(.joinKeys.refId == "4471_88214")'
 ```
 
 Output:
@@ -206,7 +206,7 @@ Output:
 {
   "siteId": "acme",
   "requestId": "req-1002",
-  "joinKeys": { "jobReference": "4471_88214" },
+  "joinKeys": { "refId": "4471_88214" },
   "status": "submitted",
   "errorMessage": null,
   "durationMs": 7650,
@@ -253,10 +253,10 @@ the sink instead, keyed by the same `joinKeys` field your external report
 uses to identify a run:
 
 ```bash
-# Beacon session IP for a run identified by the report's jobReference column
+# Beacon session IP for a run identified by the report's refId column
 jq -c '
   select(.kind == "beacon")
-  | select(.joinKeys.jobReference == "4471_88214")
+  | select(.joinKeys.refId == "4471_88214")
   | {requestId, siteId, joinKeys, sessionIp, beaconStatus, ts}
 ' .barnacle/submissions.ndjson
 ```
@@ -264,12 +264,12 @@ jq -c '
 Output:
 
 ```
-{"requestId":"req-1002","siteId":"acme","joinKeys":{"jobReference":"4471_88214"},"sessionIp":"198.51.100.24","beaconStatus":"fired","ts":"2026-07-20T15:10:20.000Z"}
+{"requestId":"req-1002","siteId":"acme","joinKeys":{"refId":"4471_88214"},"sessionIp":"198.51.100.24","beaconStatus":"fired","ts":"2026-07-20T15:10:20.000Z"}
 ```
 
 Compare `sessionIp` above against the corresponding row of the external
 report. For a batch of runs rather than a one-off lookup, drop the
-`joinKeys.jobReference` filter and fold over every beacon line:
+`joinKeys.refId` filter and fold over every beacon line:
 
 ```bash
 jq -sc '
@@ -286,7 +286,7 @@ the route in one call instead of two NDJSON passes:
 ```bash
 curl -s "http://localhost:3971/v1/submissions?siteId=acme&limit=1000" \
   -H "Authorization: Bearer $BARNACLE_API_KEY" \
-  | jq '.submissions[] | select(.joinKeys.jobReference == "4471_88214") | {requestId, session, beaconSessionIp}'
+  | jq '.submissions[] | select(.joinKeys.refId == "4471_88214") | {requestId, session, beaconSessionIp}'
 ```
 
 Output:
@@ -317,28 +317,26 @@ against the external report.
 When you can't reach a running Barnacle instance, or you need
 `inboundPayload`/`auditPayload` that `GET /v1/submissions` deliberately omits,
 or you need to filter on a `joinKeys` field the route can't filter on, read
-`.barnacle/submissions.ndjson` directly. `"submit"` lines written before
-`kind` existed have no `kind` field at all (see
-[telemetry-and-judging.md](./telemetry-and-judging.md#submission-envelope-sink));
-the `select` below tolerates both. Mirrors the jq-recipe style already used
-for `calls.ndjson` in [README.md](../README.md#tailing-call-samples-with-jq).
+`.barnacle/submissions.ndjson` directly. Every line carries `kind`. Mirrors
+the jq-recipe style already used for `calls.ndjson` in
+[README.md](../README.md#tailing-call-samples-with-jq).
 
 ```bash
-# Per-run lookup by a joinKeys field (only matches kinded or legacy-unkinded submit lines)
-jq -c 'select(.kind == "submit" or (.kind == null and has("inboundPayload")))
-       | select(.joinKeys.jobReference == "4471_88214")' .barnacle/submissions.ndjson
+# Per-run lookup by a joinKeys field
+jq -c 'select(.kind == "submit")
+       | select(.joinKeys.refId == "4471_88214")' .barnacle/submissions.ndjson
 ```
 
 Output (against the same sample sink):
 
 ```
-{"kind":"submit","siteId":"acme","requestId":"req-1002","joinKeys":{"jobReference":"4471_88214"},"inboundPayload":{"empId":"4471","jid":"88214"},"status":"submitted","auditPayload":{"confirmationId":"CNF-1002"},"errorMessage":null,"durationMs":7650,"ts":"2026-07-20T15:10:03.000Z","session":{"id":"sess_71b4","provider":"browserbase","ip":"203.0.113.9","ipCapturedAt":"2026-07-20T15:10:03.000Z"}}
+{"kind":"submit","siteId":"acme","requestId":"req-1002","joinKeys":{"refId":"4471_88214"},"inboundPayload":{"empId":"4471","jid":"88214"},"status":"submitted","auditPayload":{"confirmationId":"CNF-1002"},"errorMessage":null,"durationMs":7650,"ts":"2026-07-20T15:10:03.000Z","session":{"id":"sess_71b4","provider":"browserbase","ip":"203.0.113.9","ipCapturedAt":"2026-07-20T15:10:03.000Z"}}
 ```
 
 ```bash
 # Submitted-but-beacon-not-fired, computed by hand: submit requestIds with no matching beacon line
 jq -s '
-  [.[] | select(.kind == "submit" or (.kind == null and has("inboundPayload")))] as $submits |
+  [.[] | select(.kind == "submit")] as $submits |
   [.[] | select(.kind == "beacon") | .requestId] as $beaconIds |
   [$submits[] | select(.status == "submitted")
               | select(.requestId as $r | $beaconIds | index($r) | not)
@@ -353,7 +351,7 @@ Output:
   {
     "requestId": "req-1003",
     "siteId": "acme",
-    "joinKeys": { "jobReference": "4471_88215" },
+    "joinKeys": { "refId": "4471_88215" },
     "ts": "2026-07-21T09:44:57.000Z"
   }
 ]

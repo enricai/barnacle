@@ -42,7 +42,8 @@ function makeSubmitLine(overrides: Record<string, unknown> = {}): Record<string,
     kind: "submit",
     siteId: "ats-c",
     requestId: "req-abc-123",
-    joinKeys: { vivclid: "v-9981", jobReference: "56793094457_jid-1" },
+    joinKeys: { clickId: "v-9981", refId: "56793094457_jid-1" },
+    session: null,
     inboundPayload: { jobId: "56793094457", ClickUrl: "https://example.com/apply" },
     status: "submitted",
     auditPayload: { verified: true, applicationId: "app-xyz" },
@@ -53,30 +54,17 @@ function makeSubmitLine(overrides: Record<string, unknown> = {}): Record<string,
   };
 }
 
-function makeLegacySubmitLine(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    siteId: "ats-c",
-    requestId: "req-legacy-789",
-    inboundPayload: { jobId: "11111111111" },
-    status: "submitted",
-    auditPayload: null,
-    errorMessage: null,
-    durationMs: 1500,
-    ts: "2026-01-01T00:00:00.000Z",
-    ...overrides,
-  };
-}
-
 function makeBeaconLine(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     kind: "beacon",
     requestId: "req-abc-123",
     siteId: "ats-c",
-    joinKeys: { vivclid: "v-9981", jobReference: "56793094457_jid-1" },
+    joinKeys: { clickId: "v-9981", refId: "56793094457_jid-1" },
     beaconStatus: "fired",
-    trackingUrl: "https://track.appcast.io/pixel?rid=req-abc-123",
+    trackingUrl: "https://track.example.com/pixel?rid=req-abc-123",
     durationMs: 87,
     ts: "2026-07-26T10:00:05.000Z",
+    sessionIp: null,
     ...overrides,
   };
 }
@@ -92,18 +80,6 @@ describe("parseReconciliationLines", () => {
     expect(records).toHaveLength(2);
     expect(records[0]?.kind).toBe("submit");
     expect(records[1]?.kind).toBe("beacon");
-  });
-
-  it("parses a legacy line with no kind field, defaulting joinKeys to null", () => {
-    const content = ndjson(makeLegacySubmitLine());
-    const records = parseReconciliationLines(content);
-    expect(records).toHaveLength(1);
-    const [record] = records;
-    expect(record?.kind).toBe("submit");
-    if (record?.kind === "submit") {
-      expect(record.joinKeys).toBeNull();
-      expect(record.requestId).toBe("req-legacy-789");
-    }
   });
 
   it("skips a truncated/malformed JSON line without aborting the read", () => {
@@ -141,7 +117,7 @@ describe("foldReconciliationRecords", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.requestId).toBe("req-abc-123");
     expect(rows[0]?.beaconStatus).toBe("fired");
-    expect(rows[0]?.beaconTrackingUrl).toBe("https://track.appcast.io/pixel?rid=req-abc-123");
+    expect(rows[0]?.beaconTrackingUrl).toBe("https://track.example.com/pixel?rid=req-abc-123");
     expect(rows[0]?.status).toBe("submitted");
   });
 
@@ -188,13 +164,6 @@ describe("foldReconciliationRecords", () => {
     expect(rows[0]?.session).toEqual(session);
   });
 
-  it("folds a legacy submit line with no session key to session: null", () => {
-    const records = parseReconciliationLines(ndjson(makeLegacySubmitLine()));
-    const rows = foldReconciliationRecords(records);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.session).toBeNull();
-  });
-
   it("keeps the submit row's session unchanged when a real beacon outcome outranks a skipped line, order-independent", () => {
     const session = {
       id: "bb-session-xyz",
@@ -234,14 +203,6 @@ describe("foldReconciliationRecords", () => {
     );
     const rows = foldReconciliationRecords(records);
     expect(rows).toHaveLength(0);
-  });
-
-  it("keeps a legacy line with no kind as a first-class row with null joinKeys", () => {
-    const records = parseReconciliationLines(ndjson(makeLegacySubmitLine()));
-    const rows = foldReconciliationRecords(records);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.joinKeys).toBeNull();
-    expect(rows[0]?.beaconStatus).toBe("not_fired");
   });
 
   it("folds multiple independent runs into separate rows keyed by requestId", () => {
@@ -405,8 +366,8 @@ describe("foldReconciliationRecords", () => {
   // beacon record itself still carries its own full bag through
   // `parseReconciliationLines`, it just never gets folded in.
   it("keeps the submit line's joinKeys on the folded row when the winning beacon's joinKeys is a strict superset, while the beacon record itself retains its own full bag", () => {
-    const submitJoinKeys = { vivclid: "v-9981" };
-    const beaconJoinKeys = { vivclid: "v-9981", jid: "jid-555" };
+    const submitJoinKeys = { clickId: "v-9981" };
+    const beaconJoinKeys = { clickId: "v-9981", jid: "jid-555" };
     const records = parseReconciliationLines(
       ndjson(
         makeSubmitLine({ joinKeys: submitJoinKeys }),
@@ -515,31 +476,31 @@ describe("querying reconciliation rows by join key, time window, and page bound"
     const lines = [
       makeSubmitLine({
         requestId: "req-a",
-        joinKeys: { vivclid: "v-100", jobReference: "111_jid-1" },
+        joinKeys: { clickId: "v-100", refId: "111_jid-1" },
         siteId: "ats-a",
         ts: "2026-07-20T09:00:00.000Z",
       }),
       makeSubmitLine({
         requestId: "req-b",
-        joinKeys: { vivclid: "v-200", jobReference: "222_jid-2" },
+        joinKeys: { clickId: "v-200", refId: "222_jid-2" },
         siteId: "ats-b",
         ts: "2026-07-20T10:00:00.000Z",
       }),
       makeSubmitLine({
         requestId: "req-c",
-        joinKeys: { vivclid: "v-300", jobReference: "333_jid-3" },
+        joinKeys: { clickId: "v-300", refId: "333_jid-3" },
         siteId: "ats-a",
         ts: "2026-07-20T11:00:00.000Z",
       }),
       makeSubmitLine({
         requestId: "req-d",
-        joinKeys: { vivclid: "v-400", jobReference: "444_jid-4" },
+        joinKeys: { clickId: "v-400", refId: "444_jid-4" },
         siteId: "ats-b",
         ts: "2026-07-20T12:00:00.000Z",
       }),
       makeSubmitLine({
         requestId: "req-e",
-        joinKeys: { vivclid: "v-500", jobReference: "555_jid-5" },
+        joinKeys: { clickId: "v-500", refId: "555_jid-5" },
         siteId: "ats-c",
         ts: "2026-07-20T13:00:00.000Z",
       }),
@@ -548,9 +509,9 @@ describe("querying reconciliation rows by join key, time window, and page bound"
     return readReconciliationRows({ sinkPath });
   }
 
-  it("resolves an exact-match vivclid filter to its one row", async () => {
+  it("resolves an exact-match clickId filter to its one row", async () => {
     const rows = await readFixtureRows();
-    const matches = rows.filter((row) => row.joinKeys?.vivclid === "v-300");
+    const matches = rows.filter((row) => row.joinKeys?.clickId === "v-300");
     expect(matches).toHaveLength(1);
     expect(matches[0]?.requestId).toBe("req-c");
   });
@@ -561,9 +522,9 @@ describe("querying reconciliation rows by join key, time window, and page bound"
     expect(matches.map((row) => row.requestId).sort()).toEqual(["req-a", "req-c"]);
   });
 
-  it("resolves an exact-match jobReference filter to its one row", async () => {
+  it("resolves an exact-match refId filter to its one row", async () => {
     const rows = await readFixtureRows();
-    const matches = rows.filter((row) => row.joinKeys?.jobReference === "444_jid-4");
+    const matches = rows.filter((row) => row.joinKeys?.refId === "444_jid-4");
     expect(matches).toHaveLength(1);
     expect(matches[0]?.requestId).toBe("req-d");
   });

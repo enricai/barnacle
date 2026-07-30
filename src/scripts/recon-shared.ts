@@ -14,17 +14,6 @@ import { getScriptLogger } from "@/lib/logging";
 
 const logger = getScriptLogger("recon-shared");
 
-/**
- * Legacy process-global paths, kept exported for back-compat since
- * `recon-shared` is a published package subpath. New callers should use
- * {@link resolveReconRunDir} instead — these do not get per-run namespacing.
- */
-export const CAPTURES_DIR = "/tmp/recon/graphql";
-export const REPLAYS_DIR = "/tmp/recon/replays";
-export const AUX_DIR = "/tmp/recon/aux";
-export const STEP_FAILURES_DIR = "/tmp/recon/step-failures";
-export const COOKIES_DIR = "/tmp/recon/cookies";
-
 /** Subdirectory names created under every resolved recon run root. */
 const RUN_SUBDIRS = ["graphql", "cookies", "replays", "aux", "step-failures"] as const;
 
