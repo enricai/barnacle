@@ -191,7 +191,7 @@ function baseParams(overrides: Record<string, unknown> = {}) {
     recentCaptureMeta: [],
     anthropic: null,
     logger: testLogger,
-    resumeFixture: null,
+    uploadFixture: null,
     isFinalStep: true,
     submitEndpointPattern: "/gq",
     submittedStateSelectors: ["uapp-universal-submitted-page"],

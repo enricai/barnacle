@@ -798,10 +798,10 @@ describe("emitBrowserFlowTs — payload splicing", () => {
   });
 });
 
-describe("emitBrowserFlowTs — resumeFixture guard (upload vs multipart)", () => {
+describe("emitBrowserFlowTs — uploadFixture guard (upload vs multipart)", () => {
   const uploadFlow = [{ step: "Upload the resume PDF using the upload control", upload: true }];
 
-  it("wires a Buffer-based resumeFixture when the contract is multipart", () => {
+  it("wires a Buffer-based uploadFixture when the contract is multipart", () => {
     const { code } = emitBrowserFlowTs({
       siteId: "s",
       pascal: "S",
@@ -824,7 +824,7 @@ describe("emitBrowserFlowTs — resumeFixture guard (upload vs multipart)", () =
       hasMultipartStep: false,
     });
     expect(code).not.toContain("payload.Resume");
-    expect(code).toContain("resumeFixture: null");
+    expect(code).toContain("uploadFixture: null");
     expect(code).toContain("TODO: this flow uploads");
   });
 });

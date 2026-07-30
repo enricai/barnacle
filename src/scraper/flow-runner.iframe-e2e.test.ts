@@ -378,7 +378,7 @@ describe("flow-runner iframe end-to-end (offline fixture, no network)", () => {
       steps: [{ instruction: CLICK_STEP, optional: false, upload: false, submitStep: false }],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      uploadFixture: null,
       frameSelector: IFRAME_SELECTOR,
     });
 
@@ -399,7 +399,7 @@ describe("flow-runner iframe end-to-end (offline fixture, no network)", () => {
         steps: [{ instruction: CLICK_STEP, optional: false, upload: false, submitStep: false }],
         logger: testLogger,
         anthropic: null,
-        resumeFixture: null,
+        uploadFixture: null,
         // frameSelector deliberately omitted: today's (pre-fix) main-frame-only behavior.
       })
     ).rejects.toThrow(/cascade|attempts|verification/i);
@@ -439,7 +439,7 @@ describe("flow-runner iframe end-to-end: mid-flow iframe attachment (offline fix
       ],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      uploadFixture: null,
       frameSelector: IFRAME_SELECTOR,
     });
 
@@ -469,7 +469,7 @@ describe("flow-runner iframe end-to-end: mid-flow iframe attachment (offline fix
         ],
         logger: testLogger,
         anthropic: null,
-        resumeFixture: null,
+        uploadFixture: null,
         // frameSelector deliberately omitted: today's (pre-fix) main-frame-only
         // behavior — step 2 never scopes into the frame step 1's click
         // created, so the cascade exhausts against the 65 top-frame-only
@@ -523,7 +523,7 @@ describe("flow-runner iframe end-to-end: mid-flow iframe attachment (offline fix
       steps: [{ instruction: APPLY_NOW_STEP, optional: false, upload: false, submitStep: false }],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      uploadFixture: null,
     });
 
     expect(result.lastStepIndex).toBe(0);
@@ -622,7 +622,7 @@ describe("flow-runner iframe end-to-end: observe blind to the OOPIF, only deepLo
       steps: [{ instruction: CLICK_STEP, optional: false, upload: false, submitStep: false }],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      uploadFixture: null,
       frameSelector: IFRAME_SELECTOR,
     });
 
@@ -655,7 +655,7 @@ describe("flow-runner iframe end-to-end: observe blind to the OOPIF, only deepLo
         steps: [{ instruction: CLICK_STEP, optional: false, upload: false, submitStep: false }],
         logger: testLogger,
         anthropic: null,
-        resumeFixture: null,
+        uploadFixture: null,
         frameSelector: IFRAME_SELECTOR,
       })
     ).rejects.toThrow(/cascade|attempts|verification|candidates/i);
@@ -951,7 +951,7 @@ describe("flow-runner iframe end-to-end: full acceptance sequence through the OO
       steps,
       logger: testLogger,
       anthropic: null,
-      resumeFixture: {
+      uploadFixture: {
         buffer: Buffer.from("pdf-bytes"),
         name: "resume.pdf",
         mimeType: "application/pdf",
@@ -1016,7 +1016,7 @@ describe("flow-runner iframe end-to-end: full acceptance sequence through the OO
         steps,
         logger: testLogger,
         anthropic: null,
-        resumeFixture: {
+        uploadFixture: {
           buffer: Buffer.from("pdf-bytes"),
           name: "resume.pdf",
           mimeType: "application/pdf",
@@ -1165,7 +1165,7 @@ describe("flow-runner iframe end-to-end: run-6 composite regression — late-att
       steps: [{ instruction: CLICK_STEP, optional: false, upload: false, submitStep: false }],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      uploadFixture: null,
       frameSelector: IFRAME_SELECTOR,
     }).then(
       (result) => ({ outcome: "success" as const, result }),

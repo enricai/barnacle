@@ -212,7 +212,7 @@ describe("flow-runner deepLocator call sites — scoped to interactive elements,
       ],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      uploadFixture: null,
       frameSelector: FRAME_SELECTOR,
     });
     expect(result.lastStepIndex).toBe(0);
@@ -314,7 +314,7 @@ describe("flow-runner deepLocator call sites — scoped to interactive elements,
         ],
         logger: testLogger,
         anthropic,
-        resumeFixture: null,
+        uploadFixture: null,
         frameSelector: FRAME_SELECTOR,
       })
     ).rejects.toThrow(/failed verification after \d+ attempts/);
@@ -415,7 +415,7 @@ function runStep(
     recentCaptureMeta: [],
     anthropic: null,
     logger: testLogger,
-    resumeFixture: null,
+    uploadFixture: null,
     isFinalStep: false,
     submitEndpointPattern: null,
     submittedStateSelectors: [],

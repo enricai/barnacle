@@ -126,7 +126,7 @@ function baseParams(overrides: Record<string, unknown> = {}) {
     recentCaptureMeta: [],
     anthropic: null,
     logger: testLogger,
-    resumeFixture: null,
+    uploadFixture: null,
     isFinalStep: false,
     submitEndpointPattern: null,
     submittedStateSelectors: [],
@@ -178,7 +178,7 @@ describe("flow-runner/executeStepWithHealing — upload/select primitive frame s
         baseParams({
           page,
           upload: true,
-          resumeFixture: {
+          uploadFixture: {
             buffer: Buffer.from("pdf-bytes"),
             name: "resume.pdf",
             mimeType: "application/pdf",
@@ -215,7 +215,7 @@ describe("flow-runner/executeStepWithHealing — upload/select primitive frame s
         baseParams({
           page,
           upload: true,
-          resumeFixture: {
+          uploadFixture: {
             buffer: Buffer.from("pdf-bytes"),
             name: "resume.pdf",
             mimeType: "application/pdf",

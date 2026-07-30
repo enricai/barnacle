@@ -304,7 +304,7 @@ describe("flow-runner/executeStepWithHealing — attempt-1 pre-cascade frame-sco
         steps: [step({ instruction: RADIO_STEP, optional: false })],
         logger: testLogger,
         anthropic: null,
-        resumeFixture: null,
+        uploadFixture: null,
         frameSelector: "iframe#talemetry_apply_iframe",
       })
     ).rejects.toThrow(/probe found no candidates/);
@@ -356,7 +356,7 @@ describe("flow-runner/executeStepWithHealing — attempt-1 pre-cascade frame-sco
         steps: [step({ instruction: SELECT_STEP, optional: true })],
         logger: testLogger,
         anthropic: null,
-        resumeFixture: null,
+        uploadFixture: null,
         frameSelector: "iframe#talemetry_apply_iframe",
       })
     ).rejects.toThrow(/probe found no candidates/);
@@ -413,7 +413,7 @@ describe("flow-runner/executeStepWithHealing — attempt-1 pre-cascade frame-sco
       ],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      uploadFixture: null,
       frameSelector: "iframe#talemetry_apply_iframe",
       submitEndpointPattern: "/gq",
       submittedStateSelectors: ["[data-testid=thank-you]"],
@@ -461,7 +461,7 @@ describe("flow-runner/executeStepWithHealing — attempt-1 pre-cascade frame-sco
         steps: [step({ instruction: RADIO_STEP, optional: false })],
         logger: testLogger,
         anthropic: null,
-        resumeFixture: null,
+        uploadFixture: null,
       })
     ).rejects.toThrow(/probe found no candidates/);
 
@@ -531,7 +531,7 @@ describe("flow-runner/executeStepWithHealing — attempt-2-cascade-reachable fra
         steps: [step({ instruction: SELECT_STEP, optional: true })],
         logger: testLogger,
         anthropic: null,
-        resumeFixture: null,
+        uploadFixture: null,
         frameSelector: "iframe#talemetry_apply_iframe",
       })
     ).rejects.toThrow(/failed verification after \d+ attempts/);
@@ -597,7 +597,7 @@ describe("flow-runner/executeStepWithHealing — attempt-2-cascade-reachable fra
         steps: [step({ instruction: RADIO_STEP, optional: false })],
         logger: testLogger,
         anthropic,
-        resumeFixture: null,
+        uploadFixture: null,
         frameSelector: "iframe#talemetry_apply_iframe",
       })
     ).rejects.toThrow(/failed verification after \d+ attempts/);
@@ -649,7 +649,7 @@ describe("flow-runner/executeStepWithHealing — attempt-2-cascade-reachable fra
         steps: [step({ instruction: RADIO_STEP, optional: false })],
         logger: testLogger,
         anthropic,
-        resumeFixture: null,
+        uploadFixture: null,
         frameSelector: "iframe#talemetry_apply_iframe",
       })
     ).rejects.toThrow(/failed verification after \d+ attempts/);
@@ -705,7 +705,7 @@ describe("flow-runner/executeStepWithHealing — attempt-2-cascade-reachable fra
       ],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      uploadFixture: null,
       frameSelector: "iframe#talemetry_apply_iframe",
       submitEndpointPattern: "/gq",
       submittedStateSelectors: ["[data-testid=thank-you]"],
@@ -792,7 +792,7 @@ describe("flow-runner/executeStepWithHealing — attempt-2-cascade-reachable fra
         ],
         logger: testLogger,
         anthropic: null,
-        resumeFixture: null,
+        uploadFixture: null,
         frameSelector: "iframe#talemetry_apply_iframe",
       })
     ).rejects.toThrow(/failed verification after \d+ attempts/);

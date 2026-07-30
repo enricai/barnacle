@@ -2725,7 +2725,7 @@ const UPLOAD_URL_PATTERNS = ["/upload", "/resume", "/file", "/attachment", "/doc
 type CaptureMeta = { method: string; status: number; url: string };
 
 /** Fixture shape carried by the upload helpers (never null past the guard). */
-type ResumeFixture = { buffer: Buffer; name: string; mimeType: string };
+type UploadFixture = { buffer: Buffer; name: string; mimeType: string };
 
 /**
  * Poll the recent-capture window for an upload-related POST after a file has
@@ -2736,7 +2736,7 @@ type ResumeFixture = { buffer: Buffer; name: string; mimeType: string };
  */
 async function waitForUploadNetworkSignal(params: {
   page: Page;
-  fixture: ResumeFixture;
+  fixture: UploadFixture;
   logger: Logger;
   signalCounter: { n: number };
   recentCaptureMeta: readonly CaptureMeta[];
@@ -2784,7 +2784,7 @@ export function isUploadAffordanceLabel(label: string): boolean {
 }
 
 /**
- * Materialize the in-memory resume fixture to a temp file so CDP
+ * Materialize the in-memory upload fixture to a temp file so CDP
  * `DOM.setFileInputFiles` (which requires a filesystem path, unlike
  * Playwright's `locator.setInputFiles`) can reference it. Only used as a
  * fallback when the on-disk fixture path is unavailable. Process-scoped — the
@@ -2901,7 +2901,7 @@ export async function attachToSurfacedInput(params: {
   page: Page;
   /** Frame the surfaced `<input type=file>` lives in. */
   target: FrameTarget;
-  fixture: ResumeFixture;
+  fixture: UploadFixture;
   logger: Logger;
   signalCounter: { n: number };
   recentCaptureMeta: readonly CaptureMeta[];
@@ -3011,7 +3011,7 @@ export async function surfaceAndUpload(params: {
   page: Page;
   /** Frame the upload widget lives in — its CDP session owns the native file-chooser interception below. */
   target: FrameTarget;
-  fixture: ResumeFixture;
+  fixture: UploadFixture;
   logger: Logger;
   signalCounter: { n: number };
   recentCaptureMeta: readonly CaptureMeta[];
@@ -3210,7 +3210,7 @@ async function setFilesViaCdp(params: {
   target: FrameTarget;
   session: ReturnType<Page["getSessionForFrame"]>;
   backendNodeId: number;
-  fixture: ResumeFixture;
+  fixture: UploadFixture;
   logger: Logger;
   signalCounter: { n: number };
   recentCaptureMeta: readonly CaptureMeta[];
@@ -5583,7 +5583,7 @@ export async function executeStepWithHealing(params: {
   anthropic: Anthropic | null;
   logger: Logger;
   captureFn?: CaptureFn;
-  resumeFixture: { buffer: Buffer; name: string; mimeType: string } | null;
+  uploadFixture: { buffer: Buffer; name: string; mimeType: string } | null;
   /**
    * Final-step gate: when both are set, the verifier additionally requires at
    * least one capture in `recentCaptureMeta` whose URL matches the pattern. Lets
@@ -5707,7 +5707,7 @@ export async function executeStepWithHealing(params: {
     anthropic,
     logger,
     captureFn,
-    resumeFixture,
+    uploadFixture,
     isFinalStep,
     submitEndpointPattern,
     submittedStateSelectors,
@@ -5796,7 +5796,7 @@ export async function executeStepWithHealing(params: {
       page,
       target: frameTarget ?? mainFrameTarget(page),
       isUploadStep: upload,
-      fixture: resumeFixture,
+      fixture: uploadFixture,
       logger,
       signalCounter,
       recentCaptureMeta,
@@ -7760,7 +7760,7 @@ export async function executeStepWithHealing(params: {
   );
 }
 
-/** Default resume fixture path; overridable via --resume-fixture or RESUME_FIXTURE_PATH. */
+/** Default upload fixture path; overridable via --upload-fixture or UPLOAD_FIXTURE_PATH. */
 
 /**
  * One flow step in the shape a generated plugin hands to {@link runHealingFlow}.
@@ -7786,7 +7786,7 @@ export interface RunHealingFlowDeps {
   steps: HealingFlowStep[];
   logger: Logger;
   anthropic: Anthropic | null;
-  resumeFixture: { buffer: Buffer; name: string; mimeType: string } | null;
+  uploadFixture: { buffer: Buffer; name: string; mimeType: string } | null;
   /**
    * CSS selector of a cross-origin `<iframe>` the flow's target elements live
    * inside (e.g. a Talemetry wizard embedded rather than top-window
@@ -7897,7 +7897,7 @@ export async function waitForSpaReady(
  * than let the flow report phantom success.
  */
 export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHealingFlowResult> {
-  const { stagehand, page, steps, logger, anthropic, resumeFixture, maxFlowMs } = deps;
+  const { stagehand, page, steps, logger, anthropic, uploadFixture, maxFlowMs } = deps;
   const counter = { n: 0 };
   const signalCounter = { n: 0 };
   const recentCaptures: string[] = [];
@@ -7954,7 +7954,7 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
         recentCaptureMeta,
         anthropic,
         logger,
-        resumeFixture,
+        uploadFixture,
         frameTarget,
         isFinalStep: i === steps.length - 1,
         submitEndpointPattern: deps.submitEndpointPattern ?? null,

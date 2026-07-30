@@ -57,7 +57,7 @@ function baseParams(
     anthropic: null,
     logger: testLogger,
     captureFn: vi.fn().mockResolvedValue(undefined),
-    resumeFixture: null,
+    uploadFixture: null,
     isFinalStep: false,
     // Non-null so `requireSubmitEndpoint` is true and the cascade enters the
     // submit-verification branch that reads `page.title()`.
