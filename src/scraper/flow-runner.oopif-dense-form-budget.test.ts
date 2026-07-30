@@ -251,6 +251,7 @@ async function runManualApplicationStep(
     ],
     logger: testLogger,
     anthropic: null,
+    rephraseModel: null,
     uploadFixture: null,
     frameSelector: IFRAME_SELECTOR,
   });

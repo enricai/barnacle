@@ -161,6 +161,7 @@ describe("flow-runner/runHealingFlow — resolves a mid-flow iframe per step", (
       steps: [step({ instruction: "Apply now" }), step({ instruction: "Manual Application" })],
       logger: testLogger,
       anthropic: null,
+      rephraseModel: null,
       uploadFixture: null,
       frameSelector: FRAME_SELECTOR,
     });

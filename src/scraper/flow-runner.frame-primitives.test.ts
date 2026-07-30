@@ -125,6 +125,7 @@ function baseParams(overrides: Record<string, unknown> = {}) {
     recentCaptures: [],
     recentCaptureMeta: [],
     anthropic: null,
+    rephraseModel: null,
     logger: testLogger,
     uploadFixture: null,
     isFinalStep: false,

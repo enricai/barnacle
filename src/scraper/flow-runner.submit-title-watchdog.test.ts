@@ -55,6 +55,7 @@ function baseParams(
     recentCaptures: [] as string[],
     recentCaptureMeta: [] as { method: string; status: number; url: string }[],
     anthropic: null,
+    rephraseModel: null,
     logger: testLogger,
     captureFn: vi.fn().mockResolvedValue(undefined),
     uploadFixture: null,

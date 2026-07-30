@@ -19,10 +19,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type Anthropic from "@anthropic-ai/sdk";
-import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import type { Action, Page, Stagehand } from "@browserbasehq/stagehand";
+import { generateObject } from "ai";
 
 import { config } from "@/config";
+import type { StagehandModel } from "@/lib/bedrock";
 import { toErrorMessage } from "@/lib/errors";
 import type { JudgeCaptureFn } from "@/lib/llm/judge";
 import { judgeErrorMessagesWithLLM } from "@/lib/llm/judges/error-messages";
@@ -1453,7 +1454,7 @@ const REPHRASE_SYSTEM_PROMPT =
  * so tests can inject a fake capture sink without touching the browser session.
  */
 export async function rephraseWithLLM(
-  client: Anthropic,
+  client: StagehandModel,
   originalStep: string,
   triedSelectors: string[],
   observeCandidates: Action[],
@@ -1516,14 +1517,22 @@ export async function rephraseWithLLM(
    * "click harder" into "fill the actually-missing field." Telemetry
    * the engine already captures but never showed the LLM until now.
    */
-  gaEventEvidence?: string
+  gaEventEvidence?: string,
+  /**
+   * Anthropic client for the modal-priority judge inside
+   * `renderUnfocusedObserve`. Separate from `client` (the ai-SDK model used
+   * for the rephrase call itself) because that judge pipeline is unrelated
+   * to which provider generates the rephrase, and null on a Bedrock-only
+   * deployment falls back to `renderUnfocusedObserve`'s source-order default.
+   */
+  judgeClient?: Anthropic | null
 ): Promise<string | null> {
   const candidateList = observeCandidates
     .slice(0, 12)
     .map((a, i) => `${i + 1}. ${a.description} — ${a.selector}`)
     .join("\n");
   const unfocusedList = unfocusedObserve
-    ? await renderUnfocusedObserve(unfocusedObserve, { client, captureFn })
+    ? await renderUnfocusedObserve(unfocusedObserve, { client: judgeClient, captureFn })
     : "";
   const triedList = triedSelectors.length > 0 ? triedSelectors.join("\n") : "(none)";
   const reasonList = failureReasons.map((r, i) => `attempt ${i + 1}: ${r}`).join("\n");
@@ -1601,25 +1610,18 @@ ${gaEventEvidence || "(none)"}
 
 Rewrite the instruction so a Stagehand act() call can resolve it unambiguously to a different element than the ones already tried. Keep it short — one sentence, natural language, no quotes around it. If the invalid-fields section above names a field AND the interactive-targets section below lists clickable options inside that same container, your rewrite picks one of those options (e.g. for a yes/no question rendered as two radio labels, choose the candidate-favorable answer — 'No' for "do you have a non-compete", 'Yes' for "are you authorized to work", 'Prefer not to say' for demographic disclosures) rather than retrying the original click. If the unfocused observe section shows an open modal/dialog with a Save or Close action, your rewrite invokes that action so the underlying form can clear its blocking state. Set outcome to "impossible" with a one-line reason only when the original instruction's element does not exist on the current page and no redirect target is available.`;
 
-  const model = anthropicModelName();
+  const model = client.modelId;
   const t0 = performance.now();
   try {
-    const response = await client.messages.parse({
-      model,
-      max_tokens: 400,
+    const response = await generateObject({
+      model: client,
+      maxOutputTokens: 400,
       system: REPHRASE_SYSTEM_PROMPT,
-      messages: [{ role: "user", content: prompt }],
-      output_config: {
-        format: zodOutputFormat(REPHRASE_RESPONSE_SCHEMA),
-      },
+      prompt,
+      schema: REPHRASE_RESPONSE_SCHEMA,
     });
     const latencyMs = performance.now() - t0;
-    const parsed = response.parsed_output;
-    if (parsed === null) {
-      throw new Error("structured-output enabled but parsed_output is null");
-    }
-    const textBlock = response.content.find((b) => b.type === "text");
-    const rawText = textBlock?.type === "text" ? textBlock.text : "";
+    const parsed = response.object;
 
     await captureFn({
       callId: randomUUID(),
@@ -1627,10 +1629,10 @@ Rewrite the instruction so a Stagehand act() call can resolve it unambiguously t
       model,
       systemPrompt: REPHRASE_SYSTEM_PROMPT,
       userContent: prompt,
-      responseContent: rawText,
+      responseContent: JSON.stringify(parsed),
       parsedOk: true,
-      inputTokens: response.usage?.input_tokens ?? null,
-      outputTokens: response.usage?.output_tokens ?? null,
+      inputTokens: response.usage.inputTokens ?? null,
+      outputTokens: response.usage.outputTokens ?? null,
       latencyMs,
       success: true,
       errorMessage: null,
@@ -5663,6 +5665,14 @@ export async function executeStepWithHealing(params: {
   recentCaptures: string[];
   recentCaptureMeta: { method: string; status: number; url: string }[];
   anthropic: Anthropic | null;
+  /**
+   * Provider-agnostic ai-SDK model for attempt-5's `rephraseWithLLM`
+   * (Anthropic-direct or Bedrock-backed per config). Independent of
+   * `anthropic` above — a Bedrock-only deployment has `anthropic: null`
+   * but still gets a non-null `rephraseModel`, so the rephrase tier runs
+   * on both deployment shapes.
+   */
+  rephraseModel: StagehandModel | null;
   logger: Logger;
   captureFn?: CaptureFn;
   uploadFixture: { buffer: Buffer; name: string; mimeType: string } | null;
@@ -5787,6 +5797,7 @@ export async function executeStepWithHealing(params: {
     recentCaptures,
     recentCaptureMeta,
     anthropic,
+    rephraseModel,
     logger,
     captureFn,
     uploadFixture,
@@ -6981,8 +6992,8 @@ export async function executeStepWithHealing(params: {
         }
       } else {
         record.technique = "llm-rephrase";
-        if (!anthropic) {
-          record.errorMessage = "no anthropic client (bedrock-only deployment); skipping rephrase";
+        if (!rephraseModel) {
+          record.errorMessage = "no rephrase model configured; skipping rephrase";
         } else if (hasBillingErrorBeenLogged()) {
           // Telemetry-driven skip: when Anthropic billing has already been
           // flagged FATAL for this process, every subsequent rephrase call
@@ -7050,7 +7061,7 @@ export async function executeStepWithHealing(params: {
             verdict: a.errorMessage ?? failureReasons[i] ?? null,
           }));
           const rephrased = await rephraseWithLLM(
-            anthropic,
+            rephraseModel,
             step,
             triedSelectors,
             candidates,
@@ -7060,7 +7071,8 @@ export async function executeStepWithHealing(params: {
             unfocused,
             submitFailureList,
             priorAttemptsForPrompt,
-            gaEventList
+            gaEventList,
+            anthropic
           );
           if (!rephrased) {
             record.errorMessage = "llm declined to rephrase or returned outcome=impossible";
@@ -7863,6 +7875,13 @@ export interface RunHealingFlowDeps {
   steps: HealingFlowStep[];
   logger: Logger;
   anthropic: Anthropic | null;
+  /**
+   * Provider-agnostic ai-SDK model for attempt-5's `rephraseWithLLM` — see
+   * {@link RunHealingFlowDeps.anthropic} for why this is a separate field.
+   * Callers typically resolve both via `buildAnthropicClient()` /
+   * `buildRephraseModel()` from `@/lib/llm/anthropic-client`.
+   */
+  rephraseModel: StagehandModel | null;
   uploadFixture: { buffer: Buffer; name: string; mimeType: string } | null;
   /**
    * CSS selector of a cross-origin `<iframe>` the flow's target elements live
@@ -7974,7 +7993,8 @@ export async function waitForSpaReady(
  * than let the flow report phantom success.
  */
 export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHealingFlowResult> {
-  const { stagehand, page, steps, logger, anthropic, uploadFixture, maxFlowMs } = deps;
+  const { stagehand, page, steps, logger, anthropic, rephraseModel, uploadFixture, maxFlowMs } =
+    deps;
   const counter = { n: 0 };
   const signalCounter = { n: 0 };
   const recentCaptures: string[] = [];
@@ -8030,6 +8050,7 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
         recentCaptures,
         recentCaptureMeta,
         anthropic,
+        rephraseModel,
         logger,
         uploadFixture,
         frameTarget,

@@ -2,12 +2,23 @@ import type { Anthropic } from "@anthropic-ai/sdk";
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { StagehandModel } from "@/lib/bedrock";
 import type { LlmCallInput } from "@/lib/telemetry/call-capture";
 import { type FakeDeepLocatorFrame, makeFakeDeepLocator } from "@/scraper/deep-locator-fake";
 import type { HealingFlowStep } from "@/scraper/flow-runner";
 import { resetBillingErrorFlagForTests, runHealingFlow } from "@/scraper/flow-runner";
 import type { FrameTarget } from "@/scraper/frame-target";
 import type { Logger } from "@/types/logging";
+
+const generateObject = vi.fn();
+
+vi.mock("ai", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("ai")>();
+  return {
+    ...actual,
+    generateObject: (...args: unknown[]) => generateObject(...args),
+  };
+});
 
 /**
  * Regression coverage for the attempt-1 / pre-cascade sites inside
@@ -304,6 +315,7 @@ describe("flow-runner/executeStepWithHealing — attempt-1 pre-cascade frame-sco
         steps: [step({ instruction: RADIO_STEP, optional: false })],
         logger: testLogger,
         anthropic: null,
+        rephraseModel: null,
         uploadFixture: null,
         frameSelector: "iframe#talemetry_apply_iframe",
       })
@@ -356,6 +368,7 @@ describe("flow-runner/executeStepWithHealing — attempt-1 pre-cascade frame-sco
         steps: [step({ instruction: SELECT_STEP, optional: true })],
         logger: testLogger,
         anthropic: null,
+        rephraseModel: null,
         uploadFixture: null,
         frameSelector: "iframe#talemetry_apply_iframe",
       })
@@ -413,6 +426,7 @@ describe("flow-runner/executeStepWithHealing — attempt-1 pre-cascade frame-sco
       ],
       logger: testLogger,
       anthropic: null,
+      rephraseModel: null,
       uploadFixture: null,
       frameSelector: "iframe#talemetry_apply_iframe",
       submitEndpointPattern: "/gq",
@@ -461,6 +475,7 @@ describe("flow-runner/executeStepWithHealing — attempt-1 pre-cascade frame-sco
         steps: [step({ instruction: RADIO_STEP, optional: false })],
         logger: testLogger,
         anthropic: null,
+        rephraseModel: null,
         uploadFixture: null,
       })
     ).rejects.toThrow(/probe found no candidates/);
@@ -531,6 +546,7 @@ describe("flow-runner/executeStepWithHealing — attempt-2-cascade-reachable fra
         steps: [step({ instruction: SELECT_STEP, optional: true })],
         logger: testLogger,
         anthropic: null,
+        rephraseModel: null,
         uploadFixture: null,
         frameSelector: "iframe#talemetry_apply_iframe",
       })
@@ -570,6 +586,8 @@ describe("flow-runner/executeStepWithHealing — attempt-2-cascade-reachable fra
     // module-level billing flag other tests rely on being false.
     const messagesParse = vi.fn().mockRejectedValue(new Error("stub judge unavailable"));
     const anthropic = { messages: { parse: messagesParse } } as unknown as Anthropic;
+    generateObject.mockRejectedValue(new Error("stub rephrase model unavailable"));
+    const rephraseModel = { modelId: "test-model" } as unknown as StagehandModel;
 
     // Pre-cascade probe (probeStepBeforeAttempts) must find a candidate so
     // the step proceeds into the attempt loop instead of fast-skipping via
@@ -597,6 +615,7 @@ describe("flow-runner/executeStepWithHealing — attempt-2-cascade-reachable fra
         steps: [step({ instruction: RADIO_STEP, optional: false })],
         logger: testLogger,
         anthropic,
+        rephraseModel,
         uploadFixture: null,
         frameSelector: "iframe#talemetry_apply_iframe",
       })
@@ -627,6 +646,8 @@ describe("flow-runner/executeStepWithHealing — attempt-2-cascade-reachable fra
     // outcome=impossible path without a real network call.
     const messagesParse = vi.fn().mockRejectedValue(new Error("stub judge unavailable"));
     const anthropic = { messages: { parse: messagesParse } } as unknown as Anthropic;
+    generateObject.mockRejectedValue(new Error("stub rephrase model unavailable"));
+    const rephraseModel = { modelId: "test-model" } as unknown as StagehandModel;
 
     // Attempt 1 (act-string) resolves nothing; attempts 2/3/4 report no
     // candidates / no prior selector and are skipped, landing the cascade on
@@ -649,6 +670,7 @@ describe("flow-runner/executeStepWithHealing — attempt-2-cascade-reachable fra
         steps: [step({ instruction: RADIO_STEP, optional: false })],
         logger: testLogger,
         anthropic,
+        rephraseModel,
         uploadFixture: null,
         frameSelector: "iframe#talemetry_apply_iframe",
       })
@@ -705,6 +727,7 @@ describe("flow-runner/executeStepWithHealing — attempt-2-cascade-reachable fra
       ],
       logger: testLogger,
       anthropic: null,
+      rephraseModel: null,
       uploadFixture: null,
       frameSelector: "iframe#talemetry_apply_iframe",
       submitEndpointPattern: "/gq",
@@ -792,6 +815,7 @@ describe("flow-runner/executeStepWithHealing — attempt-2-cascade-reachable fra
         ],
         logger: testLogger,
         anthropic: null,
+        rephraseModel: null,
         uploadFixture: null,
         frameSelector: "iframe#talemetry_apply_iframe",
       })

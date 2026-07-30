@@ -176,6 +176,7 @@ async function runManualApplicationStep(elements: Array<{ text: string; visible?
     ],
     logger: testLogger,
     anthropic: null,
+    rephraseModel: null,
     uploadFixture: null,
     frameSelector: IFRAME_SELECTOR,
   });

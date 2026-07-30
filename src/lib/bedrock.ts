@@ -3,7 +3,8 @@ import type { AISdkClient } from "@browserbasehq/stagehand";
 
 import type { AppConfig } from "@/config";
 
-type StagehandModel = ConstructorParameters<typeof AISdkClient>[0]["model"];
+/** AI SDK `LanguageModel` shape Stagehand's `AISdkClient` accepts. */
+export type StagehandModel = ConstructorParameters<typeof AISdkClient>[0]["model"];
 
 /**
  * Builds an AI SDK language model backed by AWS Bedrock for injection into

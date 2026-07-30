@@ -3092,7 +3092,7 @@ export function emitBrowserFlowTs(opts: {
 import type { Stagehand } from "@browserbasehq/stagehand";
 import { z } from "zod/v4";
 
-import { buildAnthropicClient } from "${ENGINE_PKG}/lib/llm/anthropic-client";
+import { buildAnthropicClient, buildRephraseModel } from "${ENGINE_PKG}/lib/llm/anthropic-client";
 import { getLogger } from "${ENGINE_PKG}/lib/logging";
 import { type HealingFlowStep, runHealingFlow, waitForSpaReady } from "${ENGINE_PKG}/scraper/flow-runner";
 import { guardedExtract } from "${ENGINE_PKG}/scraper/stagehand-guard";
@@ -3126,15 +3126,17 @@ export async function run${pascal}BrowserFlow(
 ${flowStepsBlock}
   ];
 
-  // buildAnthropicClient() enables the cascade's attempt-5 rephrase + replan to
-  // recover a stuck step; null on a Bedrock-only deployment, where the cascade
-  // degrades to its deterministic DOM primitives.
+  // buildAnthropicClient() feeds the judge techniques and is null on a
+  // Bedrock-only deployment; buildRephraseModel() feeds attempt-5's rephrase
+  // and resolves to the Bedrock-backed model in that case, so the cascade
+  // keeps full rephrase parity regardless of deployment shape.
   await runHealingFlow({
     stagehand,
     page,
     steps: FLOW_STEPS,
     logger,
     anthropic: buildAnthropicClient(),
+    rephraseModel: buildRephraseModel(),
     uploadFixture: ${uploadFixtureExpr},${frameSelector !== undefined ? `\n    frameSelector: ${JSON.stringify(frameSelector)},` : ""}
   });
 

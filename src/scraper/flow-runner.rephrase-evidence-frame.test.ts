@@ -1,7 +1,7 @@
 import type { Anthropic } from "@anthropic-ai/sdk";
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-
+import type { StagehandModel } from "@/lib/bedrock";
 import {
   type FakeDeepLocatorFrame,
   makeFakeDeepLocator,
@@ -12,6 +12,16 @@ import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
 import { resetBillingErrorFlagForTests, runHealingFlow } from "@/scraper/flow-runner";
 import type { FrameTarget } from "@/scraper/frame-target";
 import type { Logger } from "@/types/logging";
+
+const generateObject = vi.fn();
+
+vi.mock("ai", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("ai")>();
+  return {
+    ...actual,
+    generateObject: (...args: unknown[]) => generateObject(...args),
+  };
+});
 
 /**
  * Coverage for `deepLocatorCandidatesAsActions` (flow-runner.ts:5162), the
@@ -135,6 +145,20 @@ function makeCapturingAnthropic(): { anthropic: Anthropic; prompts: string[] } {
   return { anthropic: { messages: { parse: messagesParse } } as unknown as Anthropic, prompts };
 }
 
+/**
+ * Wires the `ai` package's `generateObject` (rephraseWithLLM's own call,
+ * distinct from the judges' `messages.parse` calls captured above) to
+ * record the rendered prompt and reject, so the cascade falls back to its
+ * documented outcome=impossible path just like the Anthropic-SDK stub did.
+ */
+function wireRephraseModel(prompts: string[]): StagehandModel {
+  generateObject.mockImplementation(async (req: { prompt: string }) => {
+    prompts.push(req.prompt);
+    throw new Error("stub rephrase model unavailable");
+  });
+  return { modelId: "test-model" } as unknown as StagehandModel;
+}
+
 function findRephrasePrompt(prompts: string[]): string {
   const rephrasePrompt = prompts.find((p) => p.includes("ORIGINAL INSTRUCTION:"));
   if (rephrasePrompt === undefined) {
@@ -157,6 +181,7 @@ describe("flow-runner/executeStepWithHealing — llm-rephrase deepLocatorCandida
     resolveFrameTarget.mockResolvedValue(makeChildFrameTarget({} as FrameTarget["frame"]));
     wireCascadeToRephrase();
     const { anthropic, prompts } = makeCapturingAnthropic();
+    const rephraseModel = wireRephraseModel(prompts);
 
     await expect(
       runHealingFlow({
@@ -165,6 +190,7 @@ describe("flow-runner/executeStepWithHealing — llm-rephrase deepLocatorCandida
         steps: [{ instruction: RADIO_STEP, optional: false, upload: false, submitStep: false }],
         logger: testLogger,
         anthropic,
+        rephraseModel,
         uploadFixture: null,
         frameSelector: FRAME_SELECTOR,
       })
@@ -185,6 +211,7 @@ describe("flow-runner/executeStepWithHealing — llm-rephrase deepLocatorCandida
     resolveFrameTarget.mockResolvedValue(makeChildFrameTarget({} as FrameTarget["frame"]));
     wireCascadeToRephrase();
     const { anthropic, prompts } = makeCapturingAnthropic();
+    const rephraseModel = wireRephraseModel(prompts);
 
     await expect(
       runHealingFlow({
@@ -193,6 +220,7 @@ describe("flow-runner/executeStepWithHealing — llm-rephrase deepLocatorCandida
         steps: [{ instruction: RADIO_STEP, optional: false, upload: false, submitStep: false }],
         logger: testLogger,
         anthropic,
+        rephraseModel,
         uploadFixture: null,
         frameSelector: FRAME_SELECTOR,
       })
@@ -217,6 +245,7 @@ describe("flow-runner/executeStepWithHealing — llm-rephrase deepLocatorCandida
     } satisfies FrameTarget);
     wireCascadeToRephrase();
     const { anthropic, prompts } = makeCapturingAnthropic();
+    const rephraseModel = wireRephraseModel(prompts);
 
     const page = fakeFlowPage(new Map());
     (page as unknown as { deepLocator: unknown }).deepLocator = deepLocatorSpy;
@@ -228,6 +257,7 @@ describe("flow-runner/executeStepWithHealing — llm-rephrase deepLocatorCandida
         steps: [{ instruction: RADIO_STEP, optional: false, upload: false, submitStep: false }],
         logger: testLogger,
         anthropic,
+        rephraseModel,
         uploadFixture: null,
         frameSelector: FRAME_SELECTOR,
       })
@@ -247,6 +277,7 @@ describe("flow-runner/executeStepWithHealing — llm-rephrase deepLocatorCandida
     resolveFrameTarget.mockResolvedValue(makeChildFrameTarget({} as FrameTarget["frame"]));
     wireCascadeToRephrase();
     const { anthropic, prompts } = makeCapturingAnthropic();
+    const rephraseModel = wireRephraseModel(prompts);
 
     // deepLocatorCandidatesAsActions never threads a timeoutOptions override
     // through to resolveDeepLocatorCandidates, so every count() on this hop
@@ -261,6 +292,7 @@ describe("flow-runner/executeStepWithHealing — llm-rephrase deepLocatorCandida
           steps: [{ instruction: RADIO_STEP, optional: false, upload: false, submitStep: false }],
           logger: testLogger,
           anthropic,
+          rephraseModel,
           uploadFixture: null,
           frameSelector: FRAME_SELECTOR,
         })
