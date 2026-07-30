@@ -156,19 +156,22 @@ describe("flow-runner field-label-first routing over a nonempty Stagehand resolu
     expect(lastNameEl!.filledWith).toBeNull();
   });
 
-  it("falls back to Stagehand's own resolution when no deep-locator candidate names the field", async () => {
+  it("falls back to Stagehand's own resolution (not a refusal) when no deep-locator candidate names the field", async () => {
     // No candidate in CANDIDATE_SET is "Middle Name" — the field-label
     // pre-check must report no-match and let the existing act()/observe()
-    // path (Stagehand's wrong-but-only resolution) run, rather than
-    // refusing outright the way the observe-empty branch does when it finds
-    // no field-label match.
+    // path run instead of refusing outright the way the observe-empty
+    // branch does when IT finds no field-label match. This fixture's fake
+    // Stagehand never wires a verifiable side effect for its own
+    // resolution, so the cascade exhausts and throws — proving control
+    // passed through the fallback path (never touching the deep-locator
+    // seam) rather than asserting a success this fixture can't model.
     const { run, hop } = await runSingleStep("Fill in the Middle Name field with 'Q'");
 
-    const result = await run();
+    await expect(run()).rejects.toThrow(/failed verification after \d+ attempts/);
 
-    expect(result.lastStepIndex).toBe(0);
     for (const el of hop.elements) {
       expect(el.filledWith).toBeNull();
+      expect(el.clicks).toBe(0);
     }
   });
 });

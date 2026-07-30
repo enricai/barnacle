@@ -6523,11 +6523,27 @@ export async function executeStepWithHealing(params: {
         );
         if (candidates.length === 0 && deepLocatorCandidates.length > 0) {
           // Field-label routing for a fill/select-shaped step already ran
-          // (and returned/continued) in the field-label-first pre-check
-          // above, before this attempt's own act/observe call — see
-          // `tryDeterministicFieldLabelActuation`. Reaching here means the
-          // step is click-shaped, or is a select step whose question is
-          // phrased un-quoted (no fieldLabel to route on).
+          // (and returned/continued on a MATCH) in the field-label-first
+          // pre-check above, before this attempt's own act/observe call —
+          // see `tryDeterministicFieldLabelActuation`. Reaching this
+          // `if (fieldTarget)` means the pre-check found no candidate
+          // naming the field either — the walk below scores by the
+          // instruction's quoted VALUE (see parseFillStep's docblock), so
+          // every candidate ties at score 0 and it would otherwise click
+          // whichever sits first in DOM order (the bug report's wizard
+          // 'Close' mis-click). Refuse instead of guessing.
+          const fieldTarget = parseFieldLabelTarget(step);
+          if (fieldTarget) {
+            const failureMessage = `deepLocator: no candidate matched field "${fieldTarget.fieldLabel}" (refusing to click an unrelated control)`;
+            record.actResultSuccess = false;
+            record.errorMessage = failureMessage;
+            attempts.push(record);
+            failureReasons.push(failureMessage);
+            logger.info(
+              `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${failureMessage}`
+            );
+            continue;
+          }
           const selectStep = parseSelectStep(step);
           // A select step whose question is phrased un-quoted (parseSelectStep
           // returns `questionLabel: null`) has no fieldLabel to route through
