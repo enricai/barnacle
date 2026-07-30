@@ -10,11 +10,14 @@ type StagehandModel = ConstructorParameters<typeof AISdkClient>[0]["model"];
  * Stagehand's `llmClient`. Centralises all @ai-sdk/amazon-bedrock imports here
  * so no other module touches the AWS SDK.
  *
- * Bedrock v4 emits a `LanguageModelV3` (provider spec v3) but Stagehand's
- * `AISdkClient` still types its `model` as `LanguageModelV2`. The two specs
- * are runtime-compatible for Stagehand's use, so we cast at this single
- * boundary rather than letting the version mismatch leak into call sites.
- * Remove the cast once Stagehand accepts `LanguageModelV3`.
+ * Pinned to the @ai-sdk/amazon-bedrock 3.x line, not the latest 5.x: 5.x
+ * emits `LanguageModelV4`, but the `ai` version Stagehand's `AISdkClient`
+ * depends on only accepts `specificationVersion: "v2"` and throws
+ * `AI_UnsupportedModelVersionError` otherwise. 3.x emits `LanguageModelV2`,
+ * matching both Stagehand's dependency and `ai`'s runtime check exactly —
+ * the same provider-spec version Stagehand itself pins as an optional
+ * dependency. Bump past 3.x only once Stagehand's `ai` dependency accepts
+ * newer provider specs.
  *
  * When accessKeyId/secretAccessKey are set, uses explicit static credentials.
  * When omitted, region-only config lets the SDK fall through to its default
@@ -36,5 +39,5 @@ export function createBedrockModel(bedrockConfig: AppConfig["bedrock"]): Stageha
       : {}),
   });
 
-  return provider(bedrockConfig.model) as unknown as StagehandModel;
+  return provider(bedrockConfig.model);
 }
