@@ -167,6 +167,7 @@ describe("flow-runner City-field diagnostic replay (uchealth-11 step-9, offline 
       steps: [{ instruction: FILL_CITY_STEP, optional: false, upload: false, submitStep: false }],
       logger: testLogger,
       anthropic: null,
+      rephraseModel: null,
       uploadFixture: null,
       frameSelector: IFRAME_SELECTOR,
     });

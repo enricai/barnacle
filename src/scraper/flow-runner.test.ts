@@ -447,6 +447,7 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
       recentCaptures: [],
       recentCaptureMeta: [],
       anthropic: null,
+      rephraseModel: null,
       logger: testLogger,
       captureFn: vi.fn().mockResolvedValue(undefined),
       uploadFixture: null,
@@ -898,6 +899,7 @@ describe("flow-runner/runHealingFlow", () => {
         steps: [step(), step()],
         logger: testLogger,
         anthropic: null,
+        rephraseModel: null,
         uploadFixture: null,
         maxFlowMs: 10,
       })
@@ -941,6 +943,7 @@ describe("flow-runner/runHealingFlow", () => {
       steps: [step({ submitStep: true, instruction: "Click the Submit button" })],
       logger: testLogger,
       anthropic: null,
+      rephraseModel: null,
       uploadFixture: null,
     });
 
@@ -983,6 +986,7 @@ describe("flow-runner/runHealingFlow", () => {
       steps: [step(), step()],
       logger: testLogger,
       anthropic: null,
+      rephraseModel: null,
       uploadFixture: null,
     });
 
@@ -1012,6 +1016,7 @@ describe("flow-runner/runHealingFlow", () => {
         steps: [step({ submitStep: true, optional: true, instruction: "Click the Submit button" })],
         logger: testLogger,
         anthropic: null,
+        rephraseModel: null,
         uploadFixture: null,
       })
     ).rejects.toMatchObject({
@@ -1199,6 +1204,7 @@ describe("flow-runner/runHealingFlow — frameSelector routes the cascade to the
         ],
         logger: testLogger,
         anthropic: null,
+        rephraseModel: null,
         uploadFixture: null,
         frameSelector: "iframe#talemetry_apply_iframe",
       })
@@ -1257,6 +1263,7 @@ describe("flow-runner/runHealingFlow — frameSelector routes the cascade to the
         steps: [step({ instruction: NON_SUBMIT_STEP, submitStep: false })],
         logger: testLogger,
         anthropic: null,
+        rephraseModel: null,
         uploadFixture: null,
         // frameSelector omitted
       })
@@ -1315,6 +1322,7 @@ describe("flow-runner/runHealingFlow — frameSelector routes the cascade to the
       steps: [step({ submitStep: true, instruction: "Click the Submit button" })],
       logger: testLogger,
       anthropic: null,
+      rephraseModel: null,
       uploadFixture: null,
       frameSelector: "iframe#talemetry_apply_iframe",
     });

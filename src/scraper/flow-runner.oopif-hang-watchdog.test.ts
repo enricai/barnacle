@@ -250,6 +250,7 @@ describe("flow-runner OOPIF-bound deepLocator hang (offline acceptance test, rea
       ],
       logger: testLogger,
       anthropic: null,
+      rephraseModel: null,
       uploadFixture: null,
       frameSelector: IFRAME_SELECTOR,
     });
@@ -290,6 +291,7 @@ describe("flow-runner OOPIF-bound deepLocator hang (offline acceptance test, rea
       ],
       logger: testLogger,
       anthropic: null,
+      rephraseModel: null,
       uploadFixture: null,
       frameSelector: IFRAME_SELECTOR,
     });
@@ -353,6 +355,7 @@ describe("flow-runner frame-attach probe hang (offline acceptance test, real sta
         ],
         logger: testLogger,
         anthropic: null,
+        rephraseModel: null,
         uploadFixture: null,
         frameSelector: IFRAME_SELECTOR,
       })

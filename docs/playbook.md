@@ -238,7 +238,7 @@ flow step "X"
   │              → act(topAction)
   │     └── verify: same signals
   │
-  ├── attempt 4: Anthropic SDK rephrase("X", page, tried, candidates)
+  ├── attempt 4: LLM rephrase("X", page, tried, candidates)
   │              → stagehand.act(rephrased)
   │     └── verify: same signals
   │
@@ -377,12 +377,14 @@ techniques are, in order:
    fallback applies here too; since `DeepLocatorDelegate` has no
    `ignoreSelectors` equivalent, the exclusion is applied by filtering
    resolved candidates against `triedSelectors` before picking the top one.
-4. **Anthropic SDK rephrase** — final escape hatch. We call Claude directly
-   with the original step, the failure reasons from attempts 1–3, the selectors
+4. **LLM rephrase** — final escape hatch. We call Claude, via the ai-SDK
+   model abstraction (Anthropic-direct or Bedrock-backed, per config), with
+   the original step, the failure reasons from attempts 1–3, the selectors
    already tried, and the first ~12 visible interactive elements from
    `stagehand.observe()`. Claude returns a rephrased instruction; we `act` on
-   it. On Bedrock-only deployments this attempt is skipped (no Anthropic key);
-   the cascade ends at attempt 3 with a startup warn.
+   it. This attempt runs on both Anthropic-direct and Bedrock-only
+   deployments; it is skipped only when neither an Anthropic key nor Bedrock
+   is configured at all.
 
 Backoff between attempts: linear `attempt * 1000ms`. Verification is OR'd
 across network + URL; the network counter is the primary signal because recon
@@ -1207,7 +1209,7 @@ not availability.
 
 **Recon-time self-healing.** When a recon flow step misses, recon-browser does
 not give up. Each step runs through a 4-attempt cascade (act → observe+act →
-observe+act with `ignoreSelectors` → Anthropic-SDK rephrase), verified by
+observe+act with `ignoreSelectors` → LLM rephrase), verified by
 network-counter delta or URL change. On terminal cascade failure the script's
 `main()` loop also attempts up to two global flow replans, where Claude
 rewrites the remaining flow tail given the failure context. The aim is that a

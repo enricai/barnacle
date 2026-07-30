@@ -17,9 +17,12 @@
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { createAnthropic } from "@ai-sdk/anthropic";
 import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod/v4";
 
+import type { AppConfig } from "@/config";
+import { createBedrockModel, type StagehandModel } from "@/lib/bedrock";
 import { RECON_FLOW_STEP_SCHEMA } from "@/lib/llm/schemas";
 import { getLogger } from "@/lib/logging";
 import { jsonSchemaToZod } from "@/plugins/json-schema-to-zod";
@@ -131,6 +134,23 @@ function toHealingStep(
 }
 
 /**
+ * Context-scoped sibling to `buildRephraseModel` (`@/lib/llm/anthropic-client`):
+ * that helper reads the process-wide `config` singleton, but config-plugin
+ * flows resolve their model from the per-request `SitePluginContext.config`
+ * instead, so it can't be reused directly.
+ */
+function buildRephraseModelForContext(appConfig: AppConfig): StagehandModel | null {
+  if (appConfig.scraper.useBedrock) return createBedrockModel(appConfig.bedrock);
+  if (!appConfig.scraper.anthropicApiKey) return null;
+  const provider = createAnthropic({ apiKey: appConfig.scraper.anthropicApiKey });
+  const rawModel = appConfig.scraper.model;
+  const modelId = rawModel.startsWith("anthropic/")
+    ? rawModel.slice("anthropic/".length)
+    : rawModel;
+  return provider.languageModel(modelId);
+}
+
+/**
  * Builds the upload fixture the browser flow uploads, mirroring the rule the
  * generator's `emitBrowserFlowTs` applies: only when a step uploads AND the
  * manifest declares itself multipart do the `Resume*` payload fields exist.
@@ -233,6 +253,7 @@ export async function buildConfigPlugin(
       const anthropic = context.config.scraper.anthropicApiKey
         ? new Anthropic({ apiKey: context.config.scraper.anthropicApiKey })
         : null;
+      const rephraseModel = buildRephraseModelForContext(context.config);
 
       const flowResult = await runHealingFlow({
         stagehand,
@@ -240,6 +261,7 @@ export async function buildConfigPlugin(
         steps,
         logger,
         anthropic,
+        rephraseModel,
         uploadFixture: buildUploadFixture(payload, hasUploadStep, spec.multipart ?? false),
         frameSelector: spec.flow.frameSelector,
         submitEndpointPattern: spec.flow.submitEndpointPattern ?? null,

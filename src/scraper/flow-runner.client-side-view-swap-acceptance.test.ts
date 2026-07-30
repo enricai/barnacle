@@ -350,6 +350,7 @@ describe("flow-runner client-side view-swap acceptance regression (uchealth-8, o
       steps: VIEW_SWAP_STEPS,
       logger: SILENT_LOGGER,
       anthropic: null,
+      rephraseModel: null,
       uploadFixture: null,
       frameSelector: IFRAME_SELECTOR,
     });
@@ -414,6 +415,7 @@ describe("flow-runner client-side view-swap acceptance regression (uchealth-8, o
         steps: VIEW_SWAP_STEPS,
         logger: SILENT_LOGGER,
         anthropic: null,
+        rephraseModel: null,
         uploadFixture: null,
         frameSelector: IFRAME_SELECTOR,
       })

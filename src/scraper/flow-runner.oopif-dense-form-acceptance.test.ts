@@ -622,6 +622,7 @@ describe("flow-runner dense OOPIF acceptance regression (uchealth-7, offline fix
       steps: ACCEPTANCE_STEPS,
       logger: SILENT_LOGGER,
       anthropic: null,
+      rephraseModel: null,
       uploadFixture: {
         buffer: Buffer.from("pdf-bytes"),
         name: "resume.pdf",
@@ -715,6 +716,7 @@ describe("flow-runner dense OOPIF acceptance regression (uchealth-7, offline fix
       steps: SCREENING_ACCEPTANCE_STEPS,
       logger: SILENT_LOGGER,
       anthropic: null,
+      rephraseModel: null,
       uploadFixture: {
         buffer: Buffer.from("pdf-bytes"),
         name: "resume.pdf",
@@ -812,6 +814,7 @@ describe("flow-runner dense OOPIF acceptance regression (uchealth-7, offline fix
         steps: ACCEPTANCE_STEPS,
         logger: SILENT_LOGGER,
         anthropic: null,
+        rephraseModel: null,
         uploadFixture: {
           buffer: Buffer.from("pdf-bytes"),
           name: "resume.pdf",
@@ -1131,6 +1134,7 @@ describe("flow-runner dense OOPIF acceptance regression under measured latency (
         debug: () => {},
       } as unknown as Logger,
       anthropic: null,
+      rephraseModel: null,
       uploadFixture: {
         buffer: Buffer.from("pdf-bytes"),
         name: "resume.pdf",

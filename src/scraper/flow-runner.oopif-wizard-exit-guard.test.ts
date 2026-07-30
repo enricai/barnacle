@@ -141,6 +141,7 @@ describe("flow-runner/executeStepWithHealing — deepLocator branch honors the w
         ],
         logger: testLogger,
         anthropic: null,
+        rephraseModel: null,
         uploadFixture: null,
         frameSelector: FRAME_SELECTOR,
       })
@@ -204,6 +205,7 @@ describe("flow-runner/executeStepWithHealing — deepLocator branch honors the w
       ],
       logger: testLogger,
       anthropic: null,
+      rephraseModel: null,
       uploadFixture: null,
       frameSelector: FRAME_SELECTOR,
     });
@@ -263,6 +265,7 @@ describe("flow-runner/executeStepWithHealing — deepLocator branch honors the w
       ],
       logger: testLogger,
       anthropic: null,
+      rephraseModel: null,
       uploadFixture: null,
       frameSelector: FRAME_SELECTOR,
     });
