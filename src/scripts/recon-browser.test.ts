@@ -1938,17 +1938,20 @@ describe("recon-browser/describeAttemptEffectSignals", () => {
       url: string;
       bodyHtmlLength: number;
       visibleTextSignature: string;
+      formValueSignature: string;
     }>
   ): {
     networkCount: number;
     url: string;
     bodyHtmlLength: number;
     visibleTextSignature: string;
+    formValueSignature: string;
   } => ({
     networkCount: 0,
     url: "https://example.com",
     bodyHtmlLength: 1000,
     visibleTextSignature: "1000:hello",
+    formValueSignature: "",
     ...overrides,
   });
 

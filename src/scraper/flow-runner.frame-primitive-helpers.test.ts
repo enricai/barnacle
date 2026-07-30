@@ -55,6 +55,7 @@ describe("flow-runner/snapshotPage", () => {
       url: "https://apply.talemetry.com/application/abc-123",
       bodyHtmlLength: 42,
       visibleTextSignature: "5:hello",
+      formValueSignature: "",
     });
   });
 
@@ -69,6 +70,7 @@ describe("flow-runner/snapshotPage", () => {
       url: "https://careers.uchealth.org/jobs/123",
       bodyHtmlLength: 10,
       visibleTextSignature: "3:abc",
+      formValueSignature: "",
     });
   });
 
