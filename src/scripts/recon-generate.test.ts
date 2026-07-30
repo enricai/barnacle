@@ -820,11 +820,12 @@ describe("emitBrowserFlowTs — payload splicing", () => {
     expect(code).toContain("await waitForSpaReady(page, logger);");
   });
 
-  it("wires the shared Anthropic client so the cascade can rephrase/replan", () => {
+  it("wires the shared Anthropic client and rephrase model so the cascade can rephrase/replan", () => {
     expect(code).toContain(
-      'import { buildAnthropicClient } from "@enricai/barnacle/lib/llm/anthropic-client"'
+      'import { buildAnthropicClient, buildRephraseModel } from "@enricai/barnacle/lib/llm/anthropic-client"'
     );
     expect(code).toContain("anthropic: buildAnthropicClient(),");
+    expect(code).toContain("rephraseModel: buildRephraseModel(),");
     expect(code).not.toContain("anthropic: null");
   });
 
