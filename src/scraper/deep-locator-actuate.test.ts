@@ -173,15 +173,18 @@ describe("fillDeepLocatorCandidate batched frame-scoped fill", () => {
     loggerStub.warn.mockClear();
   });
 
-  it("returns true after exactly one evaluate call and zero delegate calls when the frame seam resolves a matching write", async () => {
+  it("returns true after exactly two evaluate calls (write + stuck-confirm) and zero delegate calls when the frame seam resolves a matching write that stays stuck", async () => {
     const frame: FakeDeepLocatorFrame = new Map();
     registerDeepLocatorHopElements(frame, `${FRAME_SELECTOR} >> input`, ["", ""]);
     const deepLocatorSpy = vi.fn(makeFakeDeepLocator(frame));
     const page = { deepLocator: deepLocatorSpy };
-    const { frameTarget, evaluateSpy } = makeFakeFrameTarget(async () => ({
-      written: true,
-      readBack: "Ada",
-    }));
+    const { frameTarget, evaluateSpy } = makeFakeFrameTarget(async (expression: unknown) =>
+      typeof expression === "string" &&
+      expression.includes("querySelectorAll") &&
+      !expression.includes("dispatchEvent")
+        ? { value: "Ada" }
+        : { written: true, readBack: "Ada" }
+    );
 
     const result = await fillDeepLocatorCandidate(
       // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
@@ -194,8 +197,37 @@ describe("fillDeepLocatorCandidate batched frame-scoped fill", () => {
     );
 
     expect(result).toBe(true);
-    expect(evaluateSpy).toHaveBeenCalledTimes(1);
+    expect(evaluateSpy).toHaveBeenCalledTimes(2);
     expect(deepLocatorSpy).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the delegate when the write's inline readBack matches but the stuck-confirm re-check later disagrees (a controlled component reverting on a later tick)", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    registerDeepLocatorHopElements(frame, `${FRAME_SELECTOR} >> input`, ["", ""]);
+    const deepLocatorSpy = vi.fn(makeFakeDeepLocator(frame));
+    const page = { deepLocator: deepLocatorSpy };
+    const { frameTarget, evaluateSpy } = makeFakeFrameTarget(async (expression: unknown) =>
+      typeof expression === "string" &&
+      expression.includes("querySelectorAll") &&
+      !expression.includes("dispatchEvent")
+        ? { value: "" }
+        : { written: true, readBack: "Ada" }
+    );
+
+    const result = await fillDeepLocatorCandidate(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      page as any,
+      FRAME_SELECTOR,
+      "input",
+      1,
+      "Ada",
+      { frameTarget }
+    );
+
+    expect(result).toBe(true);
+    expect(evaluateSpy).toHaveBeenCalledTimes(2);
+    expect(deepLocatorSpy).toHaveBeenCalled();
+    expect(frame.get(`${FRAME_SELECTOR} >> input`)?.elements[1]?.filledWith).toBe("Ada");
   });
 
   it("falls back to the delegate, rather than returning false outright, when the frame seam's write read-back disagrees with what was asked for", async () => {
@@ -341,15 +373,18 @@ describe("selectDeepLocatorCandidateOption batched frame-scoped select", () => {
     loggerStub.warn.mockClear();
   });
 
-  it("returns true after exactly one evaluate call and zero delegate calls when the frame seam resolves a matching write", async () => {
+  it("returns true after exactly two evaluate calls (write + stuck-confirm) and zero delegate calls when the frame seam resolves a matching write that stays stuck", async () => {
     const frame: FakeDeepLocatorFrame = new Map();
     registerDeepLocatorHopElements(frame, `${FRAME_SELECTOR} >> select`, [""]);
     const deepLocatorSpy = vi.fn(makeFakeDeepLocator(frame));
     const page = { deepLocator: deepLocatorSpy };
-    const { frameTarget, evaluateSpy } = makeFakeFrameTarget(async () => ({
-      written: true,
-      readBack: "US",
-    }));
+    const { frameTarget, evaluateSpy } = makeFakeFrameTarget(async (expression: unknown) =>
+      typeof expression === "string" &&
+      expression.includes("querySelectorAll") &&
+      !expression.includes("dispatchEvent")
+        ? { value: "US" }
+        : { written: true, readBack: "US" }
+    );
 
     const result = await selectDeepLocatorCandidateOption(
       // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
@@ -362,17 +397,20 @@ describe("selectDeepLocatorCandidateOption batched frame-scoped select", () => {
     );
 
     expect(result).toBe(true);
-    expect(evaluateSpy).toHaveBeenCalledTimes(1);
+    expect(evaluateSpy).toHaveBeenCalledTimes(2);
     expect(deepLocatorSpy).not.toHaveBeenCalled();
   });
 
-  it("returns true, without a delegate call, when the frame seam matched by label and its readBack (the option's value) differs from the label passed in", async () => {
+  it("returns true, without a delegate call, when the frame seam matched by label and its readBack (the option's value) differs from the label passed in, and the stuck-confirm re-check agrees with that readBack", async () => {
     const deepLocatorSpy = vi.fn();
     const page = { deepLocator: deepLocatorSpy };
-    const { frameTarget, evaluateSpy } = makeFakeFrameTarget(async () => ({
-      written: true,
-      readBack: "US",
-    }));
+    const { frameTarget, evaluateSpy } = makeFakeFrameTarget(async (expression: unknown) =>
+      typeof expression === "string" &&
+      expression.includes("querySelectorAll") &&
+      !expression.includes("dispatchEvent")
+        ? { value: "US" }
+        : { written: true, readBack: "US" }
+    );
 
     const result = await selectDeepLocatorCandidateOption(
       // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
@@ -385,7 +423,7 @@ describe("selectDeepLocatorCandidateOption batched frame-scoped select", () => {
     );
 
     expect(result).toBe(true);
-    expect(evaluateSpy).toHaveBeenCalledTimes(1);
+    expect(evaluateSpy).toHaveBeenCalledTimes(2);
     expect(deepLocatorSpy).not.toHaveBeenCalled();
   });
 
@@ -653,12 +691,15 @@ describe("fillDeepLocatorCandidate/selectDeepLocatorCandidateOption batched actu
     return { hop, page, deepLocatorSpy };
   }
 
-  it("filling a candidate at index 40 costs exactly one frame evaluate and zero delegate nth() resolves, given a frameTarget", async () => {
+  it("filling a candidate at index 40 costs exactly two frame evaluates (write + stuck-confirm) and zero delegate nth() resolves, given a frameTarget", async () => {
     const { page, deepLocatorSpy } = buildHopWithTarget();
-    const { frameTarget, evaluateSpy } = makeFakeFrameTarget(async () => ({
-      written: true,
-      readBack: "Ada",
-    }));
+    const { frameTarget, evaluateSpy } = makeFakeFrameTarget(async (expression: unknown) =>
+      typeof expression === "string" &&
+      expression.includes("querySelectorAll") &&
+      !expression.includes("dispatchEvent")
+        ? { value: "Ada" }
+        : { written: true, readBack: "Ada" }
+    );
 
     const result = await fillDeepLocatorCandidate(
       // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
@@ -671,7 +712,7 @@ describe("fillDeepLocatorCandidate/selectDeepLocatorCandidateOption batched actu
     );
 
     expect(result).toBe(true);
-    expect(evaluateSpy).toHaveBeenCalledTimes(1);
+    expect(evaluateSpy).toHaveBeenCalledTimes(2);
     expect(deepLocatorSpy).not.toHaveBeenCalled();
   });
 
@@ -782,7 +823,7 @@ describe("fillDeepLocatorCandidate/selectDeepLocatorCandidateOption batched actu
     expect(hop.elements[TARGET_INDEX]?.filledWith).toBe("Ada");
   });
 
-  it("selecting an option at index 40 costs exactly one frame evaluate and zero delegate nth() resolves, given a frameTarget", async () => {
+  it("selecting an option at index 40 costs exactly two frame evaluates (write + stuck-confirm) and zero delegate nth() resolves, given a frameTarget", async () => {
     const selectHopSelector = `${FRAME_SELECTOR} >> select`;
     const frame: FakeDeepLocatorFrame = new Map();
     registerDeepLocatorHopElements(
@@ -792,10 +833,13 @@ describe("fillDeepLocatorCandidate/selectDeepLocatorCandidateOption batched actu
     );
     const deepLocatorSpy = vi.fn(makeFakeDeepLocator(frame));
     const page = { deepLocator: deepLocatorSpy };
-    const { frameTarget, evaluateSpy } = makeFakeFrameTarget(async () => ({
-      written: true,
-      readBack: "US",
-    }));
+    const { frameTarget, evaluateSpy } = makeFakeFrameTarget(async (expression: unknown) =>
+      typeof expression === "string" &&
+      expression.includes("querySelectorAll") &&
+      !expression.includes("dispatchEvent")
+        ? { value: "US" }
+        : { written: true, readBack: "US" }
+    );
 
     const result = await selectDeepLocatorCandidateOption(
       // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
@@ -808,7 +852,7 @@ describe("fillDeepLocatorCandidate/selectDeepLocatorCandidateOption batched actu
     );
 
     expect(result).toBe(true);
-    expect(evaluateSpy).toHaveBeenCalledTimes(1);
+    expect(evaluateSpy).toHaveBeenCalledTimes(2);
     expect(deepLocatorSpy).not.toHaveBeenCalled();
   });
 });

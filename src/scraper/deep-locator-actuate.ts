@@ -27,8 +27,10 @@ import { toErrorMessage } from "@/lib/errors";
 import { getLogger } from "@/lib/logging";
 import {
   buildFillFrameCandidateExpr,
+  buildReadBackFrameCandidateExpr,
   buildSelectFrameCandidateExpr,
   DEEP_LOCATOR_CLICK_INDEX_ROUND_TRIP_MS,
+  type FrameCandidateReadBackResult,
   type FrameCandidateWriteResult,
 } from "@/scraper/deep-locator-scan";
 import {
@@ -146,6 +148,36 @@ function isFrameCandidateWriteResult(entry: unknown): entry is FrameCandidateWri
 }
 
 /**
+ * Re-reads the candidate's CURRENT value through a second batched
+ * `frameTarget.evaluate(buildReadBackFrameCandidateExpr(...))` round-trip,
+ * confirming a batched write whose inline `readBack` already agreed with
+ * `expected` actually stuck. The initial write expression's `readBack` is
+ * read in the SAME synchronous evaluate call as the write, so it can never
+ * observe a controlled component reverting the value on a later tick (a
+ * `setState` inside `onChange` that re-renders after the writing evaluate
+ * already returned) — exactly the duplicate-node "phantom commit" shape the
+ * bug report flags as a lead. Returns `false` (never throws) on a rejecting
+ * evaluate or a non-conforming/empty payload — every one of those means "the
+ * confirmation couldn't be trusted", so the caller falls back to the legacy
+ * delegate's own separate `.inputValue()` read-back rather than reporting a
+ * false `true`.
+ */
+async function confirmBatchedWriteStuck(
+  frameTarget: FrameTarget,
+  expression: string,
+  expected: string
+): Promise<boolean> {
+  let result: unknown;
+  try {
+    result = await frameTarget.evaluate<FrameCandidateReadBackResult>(expression);
+  } catch {
+    return false;
+  }
+  if (typeof result !== "object" || result === null) return false;
+  return (result as Partial<FrameCandidateReadBackResult>).value === expected;
+}
+
+/**
  * Batched fill/select fast path: one `frameTarget.evaluate(expression)`
  * round-trip replaces the legacy `nth(index).fill()`/`.selectOption()` +
  * `.inputValue()` pair. Returns `null` (never throws) when no frame seam is
@@ -192,20 +224,25 @@ async function actuateCandidateBatched(
  * than trusting a candidate's display `selector` (`deeplocator=`-prefixed,
  * deliberately not an xpath).
  *
- * Prefers the one-round-trip {@link actuateCandidateBatched} fast path when a
- * frame seam is available: a `written: true` result whose inline `readBack`
- * already matches `value` resolves `true` immediately (no second round-trip
- * needed); a `reason: "not-actionable"` result (the matched element has no
- * layout box) resolves `false` immediately — no delegate write against that
- * same node could succeed either. Every other batched outcome — no frame
- * seam, a rejecting or non-conforming evaluate, `reason: "out-of-range"`, or
- * a `written: true` result whose inline `readBack` disagrees with `value`
- * (e.g. a controlled component's `onChange` reverted the write on a tick the
- * single synchronous evaluate call couldn't observe) — degrades to the
- * legacy `deepLocator(hop).nth(index).fill()` + `.inputValue()` pair rather
- * than trusting the batched call's verdict outright: returns `true` only
- * when that separate read-back equals `value`, and `false` — never a throw —
- * when the delegate rejects the fill/read-back or the read-back disagrees.
+ * Prefers the {@link actuateCandidateBatched} fast path when a frame seam is
+ * available: a `written: true` result whose inline `readBack` already
+ * matches `value` is confirmed with one further
+ * {@link confirmBatchedWriteStuck} round-trip — a read-only re-check of the
+ * SAME element's CURRENT value — before resolving `true`, so a controlled
+ * component that reverts the write on a LATER tick (e.g. a `setState` inside
+ * `onChange` that re-renders after the writing evaluate call already
+ * returned, which its own synchronous inline `readBack` can never observe)
+ * is still caught. A `reason: "not-actionable"` result (the matched element
+ * has no layout box) resolves `false` immediately — no delegate write against
+ * that same node could succeed either. Every other batched outcome — no
+ * frame seam, a rejecting or non-conforming evaluate, `reason:
+ * "out-of-range"`, a `written: true` result whose inline `readBack`
+ * disagrees with `value`, or a `written: true` result whose confirmation
+ * re-check disagrees — degrades to the legacy
+ * `deepLocator(hop).nth(index).fill()` + `.inputValue()` pair rather than
+ * trusting the batched call's verdict outright: returns `true` only when
+ * that separate read-back equals `value`, and `false` — never a throw — when
+ * the delegate rejects the fill/read-back or the read-back disagrees.
  * The legacy path's watchdog budget scales with `index`
  * ({@link DEEP_LOCATOR_CLICK_INDEX_ROUND_TRIP_MS}, the same per-round-trip
  * cost `clickDeepLocatorCandidate`'s legacy fallback charges), so a candidate
@@ -226,16 +263,30 @@ export async function fillDeepLocatorCandidate(
   const callTimeoutMs = timeoutOptions.callTimeoutMs ?? DEFAULT_DEEP_LOCATOR_CALL_TIMEOUT_MS;
   const hopSelector = buildHopSelector(frameSelector, innerSelector);
 
-  const batchedResult = await actuateCandidateBatched(
-    page,
-    frameSelector,
-    hopSelector,
-    index,
-    timeoutOptions,
-    buildFillFrameCandidateExpr(innerSelector, index, value),
-    "fill"
-  );
-  if (batchedResult?.written && batchedResult.readBack === value) return true;
+  const frameTarget = await resolveActuateFrameTarget(page, frameSelector, timeoutOptions);
+  const batchedResult = frameTarget
+    ? await actuateCandidateBatched(
+        page,
+        frameSelector,
+        hopSelector,
+        index,
+        { ...timeoutOptions, frameTarget },
+        buildFillFrameCandidateExpr(innerSelector, index, value),
+        "fill"
+      )
+    : null;
+  if (
+    frameTarget &&
+    batchedResult?.written &&
+    batchedResult.readBack === value &&
+    (await confirmBatchedWriteStuck(
+      frameTarget,
+      buildReadBackFrameCandidateExpr(innerSelector, index),
+      value
+    ))
+  ) {
+    return true;
+  }
   if (batchedResult?.reason === "not-actionable") return false;
 
   const scaledCallTimeoutMs = callTimeoutMs + index * DEEP_LOCATOR_CLICK_INDEX_ROUND_TRIP_MS;
@@ -257,15 +308,15 @@ export async function fillDeepLocatorCandidate(
 /**
  * Selects `value` on the `<select>`-shaped candidate at `index` inside the
  * frame scoped by `frameSelector`, under the same re-derived-hop,
- * batched-first, index-scaled-watchdog-guarded contract as
+ * batched-first, index-scaled-watchdog-guarded, confirm-then-trust contract as
  * {@link fillDeepLocatorCandidate} — `selectOption()` is the legacy write,
  * and `inputValue()` (which reads a `<select>`'s selected value the same as
  * any other form control) is the legacy confirmation. Differs from
  * `fillDeepLocatorCandidate` in one respect: a batched `written: true` result
- * resolves `true` on its own, without comparing `readBack` to `value` —
- * {@link buildSelectFrameCandidateExpr} matches an option by value OR trimmed
- * label, so `readBack` (the MATCHED option's value) can legitimately differ
- * from a caller-supplied label string even on a successful write.
+ * is confirmed against its OWN `readBack` (the matched option's value)
+ * rather than against the caller's `value` — {@link buildSelectFrameCandidateExpr}
+ * matches an option by value OR trimmed label, so `readBack` can legitimately
+ * differ from a caller-supplied label string even on a successful write.
  */
 export async function selectDeepLocatorCandidateOption(
   page: Page,
@@ -278,16 +329,29 @@ export async function selectDeepLocatorCandidateOption(
   const callTimeoutMs = timeoutOptions.callTimeoutMs ?? DEFAULT_DEEP_LOCATOR_CALL_TIMEOUT_MS;
   const hopSelector = buildHopSelector(frameSelector, innerSelector);
 
-  const batchedResult = await actuateCandidateBatched(
-    page,
-    frameSelector,
-    hopSelector,
-    index,
-    timeoutOptions,
-    buildSelectFrameCandidateExpr(innerSelector, index, value),
-    "select"
-  );
-  if (batchedResult?.written) return true;
+  const frameTarget = await resolveActuateFrameTarget(page, frameSelector, timeoutOptions);
+  const batchedResult = frameTarget
+    ? await actuateCandidateBatched(
+        page,
+        frameSelector,
+        hopSelector,
+        index,
+        { ...timeoutOptions, frameTarget },
+        buildSelectFrameCandidateExpr(innerSelector, index, value),
+        "select"
+      )
+    : null;
+  if (
+    frameTarget &&
+    batchedResult?.written &&
+    (await confirmBatchedWriteStuck(
+      frameTarget,
+      buildReadBackFrameCandidateExpr(innerSelector, index),
+      batchedResult.readBack ?? ""
+    ))
+  ) {
+    return true;
+  }
   if (batchedResult?.reason === "not-actionable") return false;
 
   const scaledCallTimeoutMs = callTimeoutMs + index * DEEP_LOCATOR_CLICK_INDEX_ROUND_TRIP_MS;
