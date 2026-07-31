@@ -179,7 +179,24 @@ describe("flow-runner/executeStepWithHealing — observe-act overrides method fo
   it("overrides observe candidate method='click' to method='selectOption' with arguments=['California'] for a select step", async () => {
     const urls = { current: "https://apply.acme.example/jobs/1/apply" };
     const page = makeFakePage(urls);
-    const childFrameTarget = makeChildFrameTarget(urls);
+    // Create a custom frame target that returns "California" for inputValue to satisfy verification
+    let snapshotCount = 0;
+    const childFrameTarget = {
+      frame: {} as FrameTarget["frame"],
+      frameSelector: FRAME_SELECTOR,
+      evaluate: vi.fn().mockImplementation(async () => {
+        snapshotCount++;
+        return { html: snapshotCount, text: `${snapshotCount}:value-${snapshotCount}` };
+      }),
+      locator: vi.fn().mockReturnValue({
+        first: () => ({
+          isChecked: vi.fn().mockResolvedValue(false),
+          inputValue: vi.fn().mockResolvedValue("California"),
+        }),
+      }),
+      url: () => Promise.resolve(urls.current),
+      title: () => Promise.resolve("Apply"),
+    };
     resolveFrameTarget.mockResolvedValue(childFrameTarget);
 
     guardedObserve.mockResolvedValue([
