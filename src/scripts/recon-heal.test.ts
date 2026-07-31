@@ -48,7 +48,14 @@ vi.mock("@/lib/logging", () => ({
   getScriptLogger: () => loggerStub,
 }));
 
+vi.mock("@/lib/telemetry/call-capture", () => ({
+  captureLlmCall: vi.fn().mockResolvedValue(undefined),
+}));
+
+import type { LlmCallInput } from "@/lib/telemetry/call-capture";
+import { CALL_TYPE_RECON_FLOW_PATCH } from "@/lib/telemetry/call-types";
 import type {
+  CaptureFn,
   FlowPatch,
   HealState,
   IterationRecord,
@@ -677,5 +684,169 @@ describe("phaseHeal", () => {
 
     // With dryRun=true anthropic=null, requestPatch returns null → BUDGET_EXHAUSTED.
     expect(["SUCCESS", "BUDGET_EXHAUSTED", "PLATEAUED", "REGRESSED"]).toContain(verdict);
+  });
+});
+
+// ── requestPatch — capture instrumentation ────────────────────────────────────
+
+describe("requestPatch — capture instrumentation", () => {
+  function makeAnthropicClient(
+    responseText: string,
+    inputTokens = 40,
+    outputTokens = 12
+  ): Anthropic {
+    return {
+      messages: {
+        create: vi.fn().mockResolvedValue({
+          content: [{ type: "text", text: responseText }],
+          usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+        }),
+      },
+    } as unknown as Anthropic;
+  }
+
+  function makeCaptureFn(): { fn: CaptureFn; calls: LlmCallInput[] } {
+    const calls: LlmCallInput[] = [];
+    return {
+      fn: async (input: LlmCallInput): Promise<void> => {
+        calls.push(input);
+      },
+      calls,
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("emits one capture with callType=recon-flow-patch on a successful patch", async () => {
+    const client = makeAnthropicClient(JSON.stringify(VALID_PATCH));
+    const { fn, calls } = makeCaptureFn();
+
+    const result = await requestPatch({
+      client,
+      currentFlow: THREE_STEP_FLOW,
+      failingSteps: [THREE_STEP_FLOW[1]!],
+      iterN: 1,
+      priorAttempts: [],
+      captureFn: fn,
+    });
+
+    expect(result).not.toBeNull();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.callType).toBe(CALL_TYPE_RECON_FLOW_PATCH);
+    expect(calls[0]?.parsedOk).toBe(true);
+    expect(calls[0]?.success).toBe(true);
+  });
+
+  it("sets model to the bare model name from config", async () => {
+    const client = makeAnthropicClient(JSON.stringify(VALID_PATCH));
+    const { fn, calls } = makeCaptureFn();
+
+    await requestPatch({
+      client,
+      currentFlow: THREE_STEP_FLOW,
+      failingSteps: [THREE_STEP_FLOW[1]!],
+      iterN: 1,
+      priorAttempts: [],
+      captureFn: fn,
+    });
+
+    expect(calls[0]?.model).toBe("claude-sonnet-4-6");
+  });
+
+  it("records parsedOk=false when the model response is not valid JSON", async () => {
+    const client = makeAnthropicClient("not json at all");
+    const { fn, calls } = makeCaptureFn();
+
+    const result = await requestPatch({
+      client,
+      currentFlow: THREE_STEP_FLOW,
+      failingSteps: [THREE_STEP_FLOW[1]!],
+      iterN: 1,
+      priorAttempts: [],
+      captureFn: fn,
+    });
+
+    expect(result).toBeNull();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.callType).toBe(CALL_TYPE_RECON_FLOW_PATCH);
+    expect(calls[0]?.parsedOk).toBe(false);
+    expect(calls[0]?.success).toBe(false);
+  });
+
+  it("records parsedOk=false when anchor is not found in current flow", async () => {
+    const client = makeAnthropicClient(JSON.stringify(MISMATCHED_PATCH));
+    const { fn, calls } = makeCaptureFn();
+
+    const result = await requestPatch({
+      client,
+      currentFlow: THREE_STEP_FLOW,
+      failingSteps: [THREE_STEP_FLOW[1]!],
+      iterN: 1,
+      priorAttempts: [],
+      captureFn: fn,
+    });
+
+    expect(result).toBeNull();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.parsedOk).toBe(false);
+  });
+
+  it("records parsedOk=false and does not throw when the API call throws", async () => {
+    const client = {
+      messages: {
+        create: vi.fn().mockRejectedValue(new Error("API error")),
+      },
+    } as unknown as Anthropic;
+    const { fn, calls } = makeCaptureFn();
+
+    const result = await requestPatch({
+      client,
+      currentFlow: THREE_STEP_FLOW,
+      failingSteps: [THREE_STEP_FLOW[1]!],
+      iterN: 1,
+      priorAttempts: [],
+      captureFn: fn,
+    });
+
+    expect(result).toBeNull();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.parsedOk).toBe(false);
+    expect(calls[0]?.responseContent).toBeNull();
+  });
+
+  it("captures input/output token counts from the response usage", async () => {
+    const client = makeAnthropicClient(JSON.stringify(VALID_PATCH), 80, 25);
+    const { fn, calls } = makeCaptureFn();
+
+    await requestPatch({
+      client,
+      currentFlow: THREE_STEP_FLOW,
+      failingSteps: [THREE_STEP_FLOW[1]!],
+      iterN: 1,
+      priorAttempts: [],
+      captureFn: fn,
+    });
+
+    expect(calls[0]?.inputTokens).toBe(80);
+    expect(calls[0]?.outputTokens).toBe(25);
+  });
+
+  it("includes a non-empty callId string", async () => {
+    const client = makeAnthropicClient(JSON.stringify(VALID_PATCH));
+    const { fn, calls } = makeCaptureFn();
+
+    await requestPatch({
+      client,
+      currentFlow: THREE_STEP_FLOW,
+      failingSteps: [THREE_STEP_FLOW[1]!],
+      iterN: 1,
+      priorAttempts: [],
+      captureFn: fn,
+    });
+
+    expect(typeof calls[0]?.callId).toBe("string");
+    expect((calls[0]?.callId ?? "").length).toBeGreaterThan(0);
   });
 });

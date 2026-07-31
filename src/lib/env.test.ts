@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { getBoolEnv, getEnv, getNodeEnv, getNumericEnv } from "@/lib/env";
+import { getBoolEnv, getEnv, getFloatEnv, getNodeEnv, getNumericEnv } from "@/lib/env";
 
 /**
  * The env readers feed every field of the config singleton. A silent
@@ -124,5 +124,31 @@ describe("lib/env getNumericEnv", () => {
 
   it("falls back when unset", () => {
     expect(getNumericEnv(KEY, 99)).toBe(99);
+  });
+});
+
+describe("lib/env getFloatEnv", () => {
+  const KEY = "BARNACLE_TEST_FLOAT";
+  const preserved = process.env[KEY];
+  beforeEach(() => {
+    delete process.env[KEY];
+  });
+  afterEach(() => {
+    if (preserved === undefined) delete process.env[KEY];
+    else process.env[KEY] = preserved;
+  });
+
+  it("parses a valid float", () => {
+    process.env[KEY] = "0.7";
+    expect(getFloatEnv(KEY, 1.0)).toBe(0.7);
+  });
+
+  it("falls back when the value is not numeric", () => {
+    process.env[KEY] = "not-a-number";
+    expect(getFloatEnv(KEY, 0.5)).toBe(0.5);
+  });
+
+  it("falls back when unset", () => {
+    expect(getFloatEnv(KEY, 0.9)).toBe(0.9);
   });
 });

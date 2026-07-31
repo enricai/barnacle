@@ -36,6 +36,7 @@
  * per act; healing and replans push the upper bound higher on flaky sites).
  */
 
+import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
@@ -47,8 +48,10 @@ import { config } from "@/config";
 import { toErrorMessage } from "@/lib/errors";
 import { configureHttpDispatcher } from "@/lib/http";
 import { getScriptLogger } from "@/lib/logging";
+import { captureLlmCall, type LlmCallInput } from "@/lib/telemetry/call-capture";
+import { CALL_TYPE_RECON_REPHRASE, CALL_TYPE_RECON_REPLAN } from "@/lib/telemetry/call-types";
 import { StepVerificationError } from "@/scraper/errors";
-import { createBrowserSession } from "@/scraper/session";
+import { createBrowserSession, type ProviderName } from "@/scraper/session";
 import { CAPTURES_DIR, type Capture, STEP_FAILURES_DIR } from "@/scripts/recon-shared";
 import type { Logger } from "@/types/logging";
 
@@ -279,6 +282,16 @@ interface AttemptRecord {
   errorMessage: string | null;
   pre: StepSnapshot;
   post: StepSnapshot;
+  /**
+   * Stagehand-resolved action method (`fill`, `click`, etc.) that the verifier
+   * used to decide signal type. Null when no action was resolved (observe
+   * returned no candidates) or when Stagehand returned an empty actions[].
+   */
+  resolvedMethod: string | null;
+  /** Args Stagehand passed to the resolved action — what we expect to see post-fill. */
+  resolvedArguments: string[] | null;
+  /** Which verification signal carried the attempt: `network`, `url`, `dom`, or null on failure. */
+  verifiedBy: "network" | "url" | "dom" | null;
 }
 
 function snapshotPage(page: Page, counter: { n: number }): StepSnapshot {
@@ -305,18 +318,21 @@ function anthropicModelName(): string {
   return raw.startsWith("anthropic/") ? raw.slice("anthropic/".length) : raw;
 }
 
+/** Injectable capture function — matches `captureLlmCall`'s signature. */
+type CaptureFn = (input: LlmCallInput) => Promise<void>;
+
 /**
- * Asks Claude for a rephrased instruction given the original step, the
- * candidates Stagehand could see, and the selectors we already tried. Returns
- * null if the SDK is unavailable or the call fails — the caller dumps and
- * throws in that case.
+ * Attempt-4 of the step-healing cascade: when three mechanical retry variations
+ * all fail, this is the last resort before the step is declared terminal. Exported
+ * so tests can inject a fake capture sink without touching the browser session.
  */
 async function rephraseWithLLM(
   client: Anthropic,
   originalStep: string,
   triedSelectors: string[],
   observeCandidates: Action[],
-  failureReasons: string[]
+  failureReasons: string[],
+  captureFn: CaptureFn = captureLlmCall
 ): Promise<string | null> {
   const candidateList = observeCandidates
     .slice(0, 12)
@@ -341,18 +357,49 @@ ${candidateList || "(no candidates returned by observe)"}
 
 Rewrite the instruction so a Stagehand act() call can resolve it unambiguously to a different element than the ones already tried. Keep it short — one sentence, natural language, no quotes around it. If the original instruction is itself impossible on the current page (the element does not exist), reply with the literal string IMPOSSIBLE so the caller can stop trying.`;
 
+  const model = anthropicModelName();
+  const t0 = performance.now();
   try {
     const response = await client.messages.create({
-      model: anthropicModelName(),
+      model,
       max_tokens: 200,
       messages: [{ role: "user", content: prompt }],
     });
+    const latencyMs = performance.now() - t0;
     const block = response.content.find((b) => b.type === "text");
-    if (!block || block.type !== "text") return null;
-    const text = block.text.trim();
-    if (text === "IMPOSSIBLE" || text.length === 0) return null;
+    const text = block?.type === "text" ? block.text.trim() : "";
+    const parsedOk = text.length > 0 && text !== "IMPOSSIBLE";
+
+    await captureFn({
+      callId: randomUUID(),
+      callType: CALL_TYPE_RECON_REPHRASE,
+      model,
+      systemPrompt: null,
+      userContent: prompt,
+      responseContent: text || null,
+      parsedOk,
+      inputTokens: response.usage?.input_tokens ?? null,
+      outputTokens: response.usage?.output_tokens ?? null,
+      latencyMs,
+      success: parsedOk,
+    });
+
+    if (!parsedOk) return null;
     return text;
   } catch {
+    await captureFn({
+      callId: randomUUID(),
+      callType: CALL_TYPE_RECON_REPHRASE,
+      model,
+      systemPrompt: null,
+      userContent: prompt,
+      responseContent: null,
+      parsedOk: false,
+      inputTokens: null,
+      outputTokens: null,
+      latencyMs: performance.now() - t0,
+      success: false,
+    });
     return null;
   }
 }
@@ -360,10 +407,37 @@ Rewrite the instruction so a Stagehand act() call can resolve it unambiguously t
 const REPLAN_RESPONSE_SCHEMA = z.array(z.string().min(1)).min(1).max(REPLAN_MAX_STEPS);
 
 /**
- * Asks Claude to rewrite the remaining steps of a flow when one step
- * terminally failed. Already-completed steps are held fixed — we only revise
- * the tail. Returns the new step array or null when Claude says IMPOSSIBLE,
- * the JSON doesn't parse, or the call errors.
+ * Pull the raw-DOM and unfocused-observe evidence out of an on-disk failure
+ * dump so the replanner prompt can include ground truth, not just stagehand's
+ * LLM-filtered candidate list. The dump file is a trust boundary (anything
+ * could be on disk), so the body field is type-narrowed before slicing.
+ */
+function readFailureDumpEvidence(failureDumpPath: string): {
+  bodyExcerpt: string;
+  unfocusedList: string;
+} {
+  try {
+    const dump = JSON.parse(readFileSync(failureDumpPath, "utf8")) as {
+      bodyOuterHtml?: string | null;
+      unfocusedObserve?: Action[];
+    };
+    const rawBody = dump.bodyOuterHtml;
+    const bodyExcerpt = typeof rawBody === "string" ? rawBody.slice(0, 8000) : "";
+    const unfocusedList = (dump.unfocusedObserve ?? [])
+      .slice(0, 12)
+      .map((a, i) => `${i + 1}. ${a.description} — ${a.selector}`)
+      .join("\n");
+    return { bodyExcerpt, unfocusedList };
+  } catch {
+    // Swallowed by design: a missing dump must not fail the replan.
+    return { bodyExcerpt: "", unfocusedList: "" };
+  }
+}
+
+/**
+ * Global fallback after a step terminally fails all healing attempts: rewrites
+ * only the un-run tail of the flow so already-verified steps are not disturbed.
+ * Exported so tests can inject a fake capture sink without a live browser.
  */
 async function replanRemainingFlow(params: {
   client: Anthropic;
@@ -374,6 +448,7 @@ async function replanRemainingFlow(params: {
   failureDumpPath: string;
   page: Page;
   stagehand: Stagehand;
+  captureFn?: CaptureFn;
 }): Promise<string[] | null> {
   const {
     client,
@@ -384,6 +459,7 @@ async function replanRemainingFlow(params: {
     failureDumpPath,
     page,
     stagehand,
+    captureFn = captureLlmCall,
   } = params;
   const candidates = await stagehand.observe().catch(() => [] as Action[]);
   const candidateList = candidates
@@ -391,6 +467,11 @@ async function replanRemainingFlow(params: {
     .map((a, i) => `${i + 1}. ${a.description} — ${a.selector}`)
     .join("\n");
   const pageTitle = await page.title().catch(() => "");
+
+  // Without raw DOM in the prompt, the LLM only sees stagehand.observe()'s
+  // filtered candidate list and hallucinates about surrounding state
+  // (auth-wall reset, closed-message interstitial, etc.).
+  const { bodyExcerpt, unfocusedList } = readFailureDumpEvidence(failureDumpPath);
 
   const prompt = `You are helping a browser automation agent recover from a failed flow step.
 
@@ -410,10 +491,16 @@ CURRENT BROWSER STATE:
 URL: ${page.url()}
 Title: ${pageTitle}
 
-ELEMENTS CURRENTLY VISIBLE ON THE PAGE:
+ELEMENTS CURRENTLY VISIBLE ON THE PAGE (stagehand.observe with the failed instruction):
 ${candidateList || "(no candidates returned by observe)"}
 
-DIAGNOSTIC DUMP OF THE FAILED STEP:
+UNFOCUSED OBSERVE (what Stagehand sees on the page without any instruction filter):
+${unfocusedList || "(none)"}
+
+PAGE BODY HTML AT FAILURE (truncated to 8KB — use this to detect interstitials, error messages, auth walls, or unexpected page states that the observe lists miss):
+${bodyExcerpt || "(missing)"}
+
+DIAGNOSTIC DUMP FILE (for reference):
 ${failureDumpPath}
 
 Rewrite the remaining flow so the agent can reach the user's original intent from where it is now. You may:
@@ -428,26 +515,88 @@ Constraints:
 - If the user's intent is unreachable from this page state, reply with the literal string IMPOSSIBLE.
 - Maximum ${REPLAN_MAX_STEPS} steps.`;
 
+  const model = anthropicModelName();
+  const t0 = performance.now();
   try {
     const response = await client.messages.create({
-      model: anthropicModelName(),
+      model,
       max_tokens: 2000,
       messages: [{ role: "user", content: prompt }],
     });
+    const latencyMs = performance.now() - t0;
     const block = response.content.find((b) => b.type === "text");
-    if (!block || block.type !== "text") return null;
-    const text = block.text.trim();
-    if (text === "IMPOSSIBLE" || text.length === 0) return null;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
+    const rawText = block?.type === "text" ? block.text.trim() : "";
+
+    if (rawText === "IMPOSSIBLE" || rawText.length === 0) {
+      await captureFn({
+        callId: randomUUID(),
+        callType: CALL_TYPE_RECON_REPLAN,
+        model,
+        systemPrompt: null,
+        userContent: prompt,
+        responseContent: rawText || null,
+        parsedOk: false,
+        inputTokens: response.usage?.input_tokens ?? null,
+        outputTokens: response.usage?.output_tokens ?? null,
+        latencyMs,
+        success: false,
+      });
       return null;
     }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(rawText);
+    } catch {
+      await captureFn({
+        callId: randomUUID(),
+        callType: CALL_TYPE_RECON_REPLAN,
+        model,
+        systemPrompt: null,
+        userContent: prompt,
+        responseContent: rawText,
+        parsedOk: false,
+        inputTokens: response.usage?.input_tokens ?? null,
+        outputTokens: response.usage?.output_tokens ?? null,
+        latencyMs,
+        success: false,
+      });
+      return null;
+    }
+
     const validated = REPLAN_RESPONSE_SCHEMA.safeParse(parsed);
-    if (!validated.success) return null;
+    const parsedOk = validated.success;
+
+    await captureFn({
+      callId: randomUUID(),
+      callType: CALL_TYPE_RECON_REPLAN,
+      model,
+      systemPrompt: null,
+      userContent: prompt,
+      responseContent: rawText,
+      parsedOk,
+      inputTokens: response.usage?.input_tokens ?? null,
+      outputTokens: response.usage?.output_tokens ?? null,
+      latencyMs,
+      success: parsedOk,
+    });
+
+    if (!parsedOk) return null;
     return validated.data;
   } catch {
+    await captureFn({
+      callId: randomUUID(),
+      callType: CALL_TYPE_RECON_REPLAN,
+      model,
+      systemPrompt: null,
+      userContent: prompt,
+      responseContent: null,
+      parsedOk: false,
+      inputTokens: null,
+      outputTokens: null,
+      latencyMs: performance.now() - t0,
+      success: false,
+    });
     return null;
   }
 }
@@ -492,6 +641,18 @@ function dumpStepFailure(params: {
   pageUrl: string;
   pageTitle: string;
   recentCaptures: string[];
+  /**
+   * Ground-truth DOM at failure time, truncated to 100 KB. `finalObserve` is
+   * filtered through Stagehand's LLM-aware observer; this is the raw body so a
+   * triager can tell "the page is empty / interstitial" from "the page has
+   * content but Stagehand can't see it." Null when the page evaluate fails.
+   */
+  bodyOuterHtml: string | null;
+  /**
+   * `stagehand.observe()` with no instruction — what Stagehand sees on the
+   * page unprompted. Complements `finalObserve` (which is observe-with-step).
+   */
+  unfocusedObserve: Action[];
 }): string {
   mkdirSync(STEP_FAILURES_DIR, { recursive: true });
   const idx = String(params.stepIndex).padStart(3, "0");
@@ -505,11 +666,107 @@ function dumpStepFailure(params: {
     pageTitle: params.pageTitle,
     attempts: params.attempts,
     finalObserve: params.finalObserve,
+    unfocusedObserve: params.unfocusedObserve,
+    bodyOuterHtml: params.bodyOuterHtml,
     recentCaptures: params.recentCaptures.slice(-5),
   };
   const target = join(STEP_FAILURES_DIR, filename);
   writeFileSync(target, JSON.stringify(bundle, null, 2));
   return target;
+}
+
+/** Stagehand action methods that mutate DOM state without firing a request. */
+const STATE_CLASS_METHODS = new Set([
+  "fill",
+  "type",
+  "selectOption",
+  "check",
+  "uncheck",
+  "setInputFiles",
+]);
+
+/**
+ * Strip Stagehand's `xpath=` prefix so the body can be composed into a page
+ * `evaluate` expression or wrapped in further xpath. Returns null for
+ * css/role/text selectors so callers fall back to a non-xpath code path.
+ */
+function xpathBody(selector: string): string | null {
+  return selector.startsWith("xpath=") ? selector.slice("xpath=".length) : null;
+}
+
+/**
+ * For state-class Stagehand actions (`fill`, `check`, etc.) the network/URL
+ * heuristic is meaningless — typing into an input never fires a request.
+ * Re-read DOM state from the same selector Stagehand acted upon and compare
+ * against what it tried to write. Falls back to `false` on any locator error
+ * so the navigation-class signal is still the deciding vote when this returns.
+ */
+async function verifyDomEffect(page: Page, action: Action): Promise<boolean> {
+  const selector = action.selector;
+  const method = action.method;
+  if (!selector || !method) {
+    return false;
+  }
+  try {
+    const locator = page.locator(selector).first();
+    switch (method) {
+      case "fill":
+      case "type": {
+        const expected = action.arguments?.[0];
+        if (typeof expected !== "string" || expected.length === 0) {
+          return false;
+        }
+        const current = await locator.inputValue();
+        return current.includes(expected);
+      }
+      case "check": {
+        return await locator.isChecked();
+      }
+      case "uncheck": {
+        return !(await locator.isChecked());
+      }
+      case "selectOption":
+      case "setInputFiles":
+        // Stagehand reports success; we don't have a cheap DOM equivalent
+        // for either of these without re-resolving the option/file. Trust
+        // its `actResultSuccess` upstream — caller composes signals.
+        return true;
+      case "click": {
+        // Clicks on radios and checkboxes toggle `:checked` without firing a
+        // network request — same false-fail class as fill. For every other
+        // click (buttons, links, custom toggles) return false so the verifier
+        // falls back to the network/URL signal, which is the right signal there.
+        const xpath = xpathBody(selector);
+        if (!xpath) {
+          return false;
+        }
+        let inputType: string | null = null;
+        try {
+          // Trust boundary: xpath comes from Stagehand's own resolved selector
+          // (not URL/user input). JSON.stringify produces a safe JS string
+          // literal even for content with quotes/backslashes, so composing
+          // this expression cannot exfiltrate or inject behavior through the
+          // xpath content alone. We use a string expression rather than a
+          // function so Node-side typechecking doesn't choke on the browser
+          // globals `document`/`XPathResult`.
+          const expr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); const el = r.singleNodeValue; return el ? (el.type || null) : null; })()`;
+          const result = await page.evaluate(expr);
+          inputType = typeof result === "string" ? result : null;
+        } catch {
+          return false;
+        }
+        if (inputType !== "radio" && inputType !== "checkbox") {
+          // Real button/link click — let network/URL signal decide.
+          return false;
+        }
+        return await locator.isChecked();
+      }
+      default:
+        return false;
+    }
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -528,9 +785,20 @@ async function executeStepWithHealing(params: {
   recentCaptures: string[];
   anthropic: Anthropic | null;
   logger: Logger;
+  captureFn?: CaptureFn;
 }): Promise<void> {
-  const { stagehand, page, step, stepIndex, phase, counter, recentCaptures, anthropic, logger } =
-    params;
+  const {
+    stagehand,
+    page,
+    step,
+    stepIndex,
+    phase,
+    counter,
+    recentCaptures,
+    anthropic,
+    logger,
+    captureFn,
+  } = params;
   const attempts: AttemptRecord[] = [];
   const triedSelectors: string[] = [];
   const failureReasons: string[] = [];
@@ -551,7 +819,15 @@ async function executeStepWithHealing(params: {
       errorMessage: null,
       pre,
       post: pre,
+      resolvedMethod: null,
+      resolvedArguments: null,
+      verifiedBy: null,
     };
+
+    // First resolved action from Stagehand's `act` result — used to decide
+    // whether this attempt's signal should come from the network/URL pair or
+    // from DOM re-read. Captured here so both branches of the cascade write to it.
+    let resolvedAction: Action | null = null;
 
     try {
       if (attempt === 1) {
@@ -562,6 +838,7 @@ async function executeStepWithHealing(params: {
         record.actResultDescription = result.actionDescription;
         for (const action of result.actions ?? []) {
           if (action.selector) triedSelectors.push(action.selector);
+          if (!resolvedAction) resolvedAction = action;
         }
       } else if (attempt === 2 || attempt === 3) {
         record.technique = attempt === 2 ? "observe-act" : "observe-act-exclude";
@@ -582,6 +859,9 @@ async function executeStepWithHealing(params: {
           const result = await stagehand.act(target);
           record.actResultSuccess = result.success;
           record.actResultDescription = result.actionDescription;
+          // observe(...)[0] is what Stagehand acted on; use it directly when
+          // result.actions[] is empty (some Stagehand paths don't echo it back).
+          resolvedAction = result.actions?.[0] ?? target;
         }
       } else {
         record.technique = "llm-rephrase";
@@ -594,7 +874,8 @@ async function executeStepWithHealing(params: {
             step,
             triedSelectors,
             candidates,
-            failureReasons
+            failureReasons,
+            captureFn
           );
           if (!rephrased) {
             record.errorMessage = "llm declined to rephrase or returned IMPOSSIBLE";
@@ -605,6 +886,7 @@ async function executeStepWithHealing(params: {
             record.actResultDescription = result.actionDescription;
             for (const action of result.actions ?? []) {
               if (action.selector) triedSelectors.push(action.selector);
+              if (!resolvedAction) resolvedAction = action;
             }
           }
         }
@@ -618,22 +900,45 @@ async function executeStepWithHealing(params: {
     const post = snapshotPage(page, counter);
     record.post = post;
 
+    if (resolvedAction) {
+      record.resolvedMethod = resolvedAction.method ?? null;
+      record.resolvedArguments = (resolvedAction.arguments ?? []).map(String);
+    }
+
     const networkFired = post.networkCount > pre.networkCount;
     const urlChanged = post.url !== pre.url;
-    const verified = networkFired || urlChanged;
+    const isStateClass =
+      resolvedAction !== null && STATE_CLASS_METHODS.has(resolvedAction.method ?? "");
+    const isClick = resolvedAction !== null && resolvedAction.method === "click";
+    // State-class actions (fill/check/etc.) never move the network counter or URL,
+    // so the legacy heuristic false-negatived every form fill. Re-read DOM state
+    // for those; keep the navigation signal authoritative for clicks/links —
+    // but ALSO route clicks through verifyDomEffect, which internally returns
+    // false for non-radio/non-checkbox clicks so the network/URL signal still
+    // decides those. Radios/checkboxes are click-but-no-network just like fills.
+    const domVerified =
+      resolvedAction !== null && (isStateClass || isClick)
+        ? await verifyDomEffect(page, resolvedAction)
+        : false;
+    const verified = networkFired || urlChanged || domVerified;
 
+    if (verified) {
+      record.verifiedBy = urlChanged ? "url" : networkFired ? "network" : "dom";
+    }
     attempts.push(record);
 
     if (verified) {
       if (attempt > 1) {
         logger.info(
-          `step ${stepIndex + 1} healed on attempt ${attempt} via ${record.technique} (network=${networkFired} url=${urlChanged})`
+          `step ${stepIndex + 1} healed on attempt ${attempt} via ${record.technique} (network=${networkFired} url=${urlChanged} dom=${domVerified})`
         );
       }
       return;
     }
 
-    failureReasons.push(record.errorMessage ?? "no observable effect (no network or url change)");
+    failureReasons.push(
+      record.errorMessage ?? "no observable effect (no network, url, or dom change)"
+    );
     logger.warn(
       `step ${stepIndex + 1} attempt ${attempt} (${record.technique}) produced no observable effect — ${failureReasons[failureReasons.length - 1]}`
     );
@@ -641,6 +946,15 @@ async function executeStepWithHealing(params: {
 
   const finalObserve = await stagehand.observe(step).catch(() => [] as Action[]);
   const pageTitle = await page.title().catch(() => "");
+  // Discriminator data for "Stagehand sees nothing" failures: capture the raw
+  // DOM and an unfocused observe so a triager can tell empty-page from
+  // Stagehand-can't-see-it without reproducing the failure.
+  const bodyOuterHtmlRaw = await page
+    .evaluate("document.body ? document.body.outerHTML : null")
+    .catch(() => null);
+  const bodyOuterHtml =
+    typeof bodyOuterHtmlRaw === "string" ? bodyOuterHtmlRaw.slice(0, 100_000) : null;
+  const unfocusedObserve = await stagehand.observe().catch(() => [] as Action[]);
   const dumpPath = dumpStepFailure({
     stepIndex,
     phase,
@@ -650,6 +964,8 @@ async function executeStepWithHealing(params: {
     pageUrl: page.url(),
     pageTitle,
     recentCaptures,
+    bodyOuterHtml,
+    unfocusedObserve,
   });
   logger.error(
     `step ${stepIndex + 1} failed after ${MAX_STEP_ATTEMPTS} attempts; diagnostic bundle: ${dumpPath}`
@@ -659,12 +975,18 @@ async function executeStepWithHealing(params: {
   );
 }
 
-function parseCli(): { url: string; flow: string[]; captureAll: boolean } {
+function parseCli(): {
+  url: string;
+  flow: string[];
+  captureAll: boolean;
+  provider: ProviderName | undefined;
+} {
   const args = process.argv.slice(2);
   let url = "";
   let flow: string[] = [];
   let flowFile: string | null = null;
   let captureAll = false;
+  let provider: ProviderName | undefined;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--url" && args[i + 1]) {
@@ -675,12 +997,19 @@ function parseCli(): { url: string; flow: string[]; captureAll: boolean } {
       flowFile = resolve(args[++i]!);
     } else if (args[i] === "--capture-all") {
       captureAll = true;
+    } else if (args[i] === "--provider" && args[i + 1]) {
+      const raw = args[++i]!.toLowerCase();
+      if (raw !== "browserbase" && raw !== "steel") {
+        logger.error(`--provider must be "browserbase" or "steel" (got ${JSON.stringify(raw)})`);
+        process.exit(1);
+      }
+      provider = raw;
     }
   }
 
   if (!url) {
     logger.error(
-      'usage: recon-browser.ts --url <url> [--flow \'["step1","step2"]\'] [--flow-file <path>] [--capture-all]'
+      'usage: recon-browser.ts --url <url> [--flow \'["step1","step2"]\'] [--flow-file <path>] [--capture-all] [--provider browserbase|steel]'
     );
     process.exit(1);
   }
@@ -697,18 +1026,18 @@ function parseCli(): { url: string; flow: string[]; captureAll: boolean } {
     }
   }
 
-  return { url, flow, captureAll };
+  return { url, flow, captureAll, provider };
 }
 
 async function main(): Promise<void> {
-  const { url, flow, captureAll } = parseCli();
+  const { url, flow, captureAll, provider } = parseCli();
 
   mkdirSync(CAPTURES_DIR, { recursive: true });
   logger.info(
-    `recon-browser: target=${url} flow_steps=${flow.length} capture_all=${captureAll} out=${CAPTURES_DIR}`
+    `recon-browser: target=${url} flow_steps=${flow.length} capture_all=${captureAll} provider=${provider ?? "(config-default)"} out=${CAPTURES_DIR}`
   );
 
-  const session = await createBrowserSession();
+  const session = await createBrowserSession({ provider });
   const counter = { n: 0 };
   const recentCaptures: string[] = [];
 
@@ -820,11 +1149,20 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err) => {
-  // StagehandDefaultError wraps the real cause with a verbose "Hey! We're sorry..." banner.
-  // Unwrap it so the log shows just the meaningful error message.
-  const message =
-    err instanceof Error && err.cause instanceof Error ? err.cause.message : toErrorMessage(err);
-  logger.error(`recon-browser failed: ${message}`);
-  process.exit(1);
-});
+if (
+  process.argv[1] !== undefined &&
+  (process.argv[1].endsWith("recon-browser.ts") || process.argv[1].endsWith("recon-browser.js"))
+) {
+  main().catch((err) => {
+    // StagehandDefaultError wraps the real cause with a verbose "Hey! We're sorry..." banner.
+    // Unwrap it so the log shows just the meaningful error message.
+    const message =
+      err instanceof Error && err.cause instanceof Error ? err.cause.message : toErrorMessage(err);
+    logger.error(`recon-browser failed: ${message}`);
+    process.exit(1);
+  });
+}
+
+// Test-only exports — allow unit tests to inject a fake capture sink without
+// touching the main() entry-point or the real browser session.
+export { rephraseWithLLM, replanRemainingFlow };

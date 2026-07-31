@@ -734,6 +734,157 @@ principle: the tool produces evidence, the human applies judgment. A patch that
 improved the pass rate in the heal environment still needs human review before it
 ships to `main` — the operator is the last verifier, not the loop.
 
+> **LLM prompt self-healing is different from recon-flow self-healing.** `pnpm run recon:heal` (this section) heals natural-language flow-step strings in `recon-flow.json`. `pnpm run heal:llm` heals the TypeScript prompt templates used by the LLM call sites (rephrase, replan, recon-flow-patch, llm-prompt-patch). See [docs/telemetry-and-judging.md](./telemetry-and-judging.md) for the judging rubric and the `heal:llm` self-heal loop.
+
+---
+
+### 6E — LLM judging and prompt self-healing
+
+> See [docs/telemetry-and-judging.md](./telemetry-and-judging.md) for the
+> conceptual background — what is captured, the three-dimensional rubric, and
+> how the self-heal loop works. This section is the operator runbook: what
+> commands to run, what files they produce, and how to read the results.
+
+Barnacle captures every LLM call to `.barnacle/calls.ndjson` during recon and
+heal runs. When you want to check whether the call sites are producing accurate
+output — before or after a prompt change, after a model upgrade, or on a regular
+quality cadence — run the judge over the accumulating capture file, then (if
+needed) run the self-heal loop to find a prompt improvement.
+
+#### Step 1 — Run the judge
+
+```bash
+pnpm run judge:llm -- \
+  --calls-ndjson .barnacle/calls.ndjson \
+  --call-type <callType> \
+  [--batch-index <N>] \
+  [--judge-model <model>] \
+  [--out-dir judge-out] \
+  [--dry-run]
+```
+
+`--call-type` is one of: `recon-rephrase`, `recon-replan`, `recon-flow-patch`,
+`llm-prompt-patch`. Run the command once per call type you want to evaluate.
+
+If zero samples exist for the requested call type the script exits cleanly —
+this is not an error. The `--dry-run` flag stubs the scorer with deterministic
+pass-all values and makes no API calls; use it in CI.
+
+#### Step 2 — Read the verdict
+
+The judge writes one file per invocation:
+
+```
+judge-out/
+  verdict-<callType>-<batchIndex>.json
+```
+
+Open that file. The `aggregate` block tells you the pass rate per dimension:
+
+| Field | What it measures |
+|-------|-----------------|
+| `schemaPass / n` | Fraction of samples whose response matched the expected output shape |
+| `factualPass / n` | Fraction of samples whose response was consistent with the grounding context |
+| `hallucinationFreePass / n` | Fraction of samples that contained no invented URLs, selectors, or field names |
+| `overallPass / n` | Fraction that passed all three dimensions simultaneously |
+
+A low `schemaPass` ratio points to output-format issues. A low `factualPass`
+ratio points to grounding issues. A low `hallucinationFreePass` ratio points to
+fabrication. If `overallPass / n ≥ 0.9` (the default threshold) there is
+nothing to heal — the call site is performing well.
+
+#### Step 3 — Run the self-heal loop (when pass rate is below threshold)
+
+```bash
+pnpm run heal:llm -- \
+  --verdict-path judge-out/verdict-<callType>-<batchIndex>.json \
+  --call-type <callType> \
+  [--max-iterations <N>] \
+  [--n-replays <N>] \
+  [--success-threshold <0..1>] \
+  [--plateau-delta <0..1>] \
+  [--plateau-window <N>] \
+  [--out-dir llm-heal-out] \
+  [--judge-model <model>] \
+  [--dry-run]
+```
+
+Defaults: 5 iterations, 5 replays per arm, success threshold 0.9. Add
+`--dry-run` to stub both the scorer and the patch generator without making any
+API calls (exercises loop mechanics only, exits BUDGET_EXHAUSTED).
+
+**Before running:** the loop makes `failures × n_replays × max_iterations`
+Anthropic API calls. For 10 failing samples with the defaults that is up to
+250 calls — confirm you are comfortable with the cost before proceeding.
+
+#### Step 4 — Review the heal report
+
+When the loop finishes it writes:
+
+```
+llm-heal-out/<callType>/
+  healing-<callType>.md    ← verdict, best patch, iteration table
+  state.json               ← full convergence history
+  iter-<N>/
+    patch-response.json    ← llm-call-patch-generator output for this iteration
+    patched-prompt.txt     ← prompt text after applying the patch
+    scores.json            ← pass/fail counts for this iteration's arm
+```
+
+Open `llm-heal-out/<callType>/healing-<callType>.md`. It shows:
+
+- **Verdict**: one of the five convergence outcomes below
+- **Best patch**: the `anchor` (verbatim substring of the prompt template) and
+  its `replacement` (the proposed new text), plus the measured pass-rate
+  improvement
+- **Iteration table**: pass-rate delta per iteration
+
+**Convergence verdicts:**
+
+| Verdict | Meaning |
+|---------|---------|
+| `SUCCESS` | Pass rate reached or exceeded the success threshold |
+| `PLATEAUED` | No meaningful improvement (`< plateauDelta`) across `plateauWindow` consecutive iterations |
+| `BUDGET_EXHAUSTED` | Hit `maxIterations` without converging |
+| `TIMEOUT` | An individual iteration exceeded the per-replay timeout |
+| `REGRESSED` | Pass rate fell below the baseline after patching |
+
+#### Step 5 — Manually apply the patch
+
+The heal loop never modifies any source file — the operator owns the source of
+truth. After reviewing the report, locate the relevant call site and apply the
+patch by hand:
+
+| `callType` | Source file |
+|------------|------------|
+| `recon-rephrase` | `src/scripts/recon-browser.ts` |
+| `recon-replan` | `src/scripts/recon-browser.ts` |
+| `recon-flow-patch` | `src/scripts/recon-heal.ts` |
+| `llm-prompt-patch` | `src/scripts/llm-heal.ts` |
+
+The report gives you the exact `anchor` substring and its `replacement`. Open
+the source file, find the anchor, and substitute:
+
+```bash
+$EDITOR src/scripts/<source-file>.ts
+# find: anchor="<old text>"
+# replace with: replacement="<new text>"
+```
+
+Then re-run the judge to confirm the patch raised the pass rate:
+
+```bash
+pnpm run judge:llm -- \
+  --calls-ndjson .barnacle/calls.ndjson \
+  --call-type <callType> \
+  --batch-index 1
+```
+
+**The manual-apply discipline** — prompt templates stay under human control;
+the loop proposes patches backed by measured replay evidence rather than
+modifying source directly. A patch that improved the pass rate in the heal
+environment still needs human review before it ships to `main`.
+
 ---
 
 ## What changes, how you find out, how fast you fix it
@@ -888,5 +1039,13 @@ script is re-runnable — that's our maintenance loop.
 | Phase 4f — plugin skeleton generator | `src/scripts/recon-generate.ts` |
 | Phase 4e — findings doc generator | `src/scripts/recon-summarize.ts` |
 | Shared recon types + utilities | `src/scripts/recon-shared.ts` |
+| Recon flow self-heal loop | `src/scripts/recon-heal.ts` |
 | Smoke test | `src/scripts/smoke-test.ts` |
+| LLM call telemetry sink (NDJSON capture) | `src/lib/telemetry/call-capture.ts` |
+| Canonical call_type constants | `src/lib/telemetry/call-types.ts` |
+| Per-run telemetry state | `src/lib/telemetry/run-state.ts` |
+| LlmCallSample + JudgeVerdict schemas | `src/api/schemas/telemetry.ts` |
+| LLM batch judge (`pnpm judge:llm`) | `src/scripts/judge-llm-batch.ts` |
+| LLM prompt self-heal loop (`pnpm heal:llm`) | `src/scripts/llm-heal.ts` |
 | Findings doc (generated) | `docs/target-recon.md` |
+| Telemetry & LLM judging concept guide | `docs/telemetry-and-judging.md` |

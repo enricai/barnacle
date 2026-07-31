@@ -53,3 +53,17 @@ export function getNumericEnv(key: string, defaultValue: number): number {
   const parsed = Number.parseInt(value, 10);
   return Number.isNaN(parsed) ? defaultValue : parsed;
 }
+
+/**
+ * Parses fractional env vars (e.g. LLM sampling temperature, confidence
+ * thresholds). Non-numeric input falls back to `defaultValue` so a typo
+ * never crashes the process.
+ */
+export function getFloatEnv(key: string, defaultValue: number): number {
+  const value = process.env[key];
+  if (!value) {
+    return defaultValue;
+  }
+  const parsed = Number.parseFloat(value);
+  return Number.isNaN(parsed) ? defaultValue : parsed;
+}

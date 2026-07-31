@@ -24,6 +24,9 @@ src/sites/*
 # workspace
 /tmp
 
+# Barnacle telemetry runtime output (NDJSON events, judge/heal artifacts)
+/.barnacle/
+
 # misc
 .DS_Store
 *.pem
