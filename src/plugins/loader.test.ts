@@ -1,4 +1,7 @@
+import Fastify from "fastify";
+import { serializerCompiler, validatorCompiler } from "fastify-type-provider-zod";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod/v4";
 
 import {
   CaptchaEncounteredError,
@@ -6,7 +9,11 @@ import {
   ScrapeFailureError,
   ThrottledRequestError,
 } from "@/api/errors";
-import { dispatch } from "@/plugins/loader";
+import authPlugin from "@/api/plugins/auth";
+import errorHandlerPlugin from "@/api/plugins/error-handler";
+import type { AppConfig } from "@/config";
+import { getLogger } from "@/lib/logging";
+import { dispatch, registerRoutes, SITE_PLUGINS } from "@/plugins/loader";
 import {
   CaptchaError,
   EmptyResultsError,
@@ -406,5 +413,150 @@ describe("dispatch — forceFallback option", () => {
       // expected — we only care that recordFallbackActivation was called
     }
     expect(mockRecordFallbackActivation).toHaveBeenCalledWith("http-site");
+  });
+});
+
+/**
+ * Covers the wire-to-payload boundary for multipart-flagged plugins. The hot
+ * path was verified live against ClearCompany at ship time; these tests guard
+ * against silent regressions in the registration logic (e.g. someone removing
+ * the `attachFieldsToBody: "keyValues"` option, or moving the
+ * `@fastify/multipart` register call after the route loop).
+ */
+describe("registerRoutes — multipart flag", () => {
+  // Minimal AppConfig satisfying registerRoutes' only field access: cfg.scraper.siteBaseUrls.
+  // Cast to AppConfig so the rest of the (deep) shape stays unmocked.
+  const cfgStub = { scraper: { siteBaseUrls: {} } } as unknown as AppConfig;
+  const preservedSitePlugins = SITE_PLUGINS.slice();
+  const preservedEnv = {
+    DEV_BYPASS_AUTH: process.env.DEV_BYPASS_AUTH,
+    NODE_ENV: process.env.NODE_ENV,
+  };
+
+  beforeEach(() => {
+    process.env.DEV_BYPASS_AUTH = "true";
+    process.env.NODE_ENV = "test";
+    SITE_PLUGINS.length = 0;
+    // dispatch() writes a SiteSubmission audit row; the prisma mock at module
+    // scope handles that. executeHttp returns a payload we can assert on.
+    mockCreate.mockResolvedValue({ id: "stub-id" });
+  });
+
+  afterEach(() => {
+    // Reset before push so the final after-block state matches the pre-block
+    // state; beforeEach also clears, but only the next test's beforeEach runs
+    // — after the last test, this is the only thing keeping the array clean.
+    SITE_PLUGINS.length = 0;
+    SITE_PLUGINS.push(...preservedSitePlugins);
+    if (preservedEnv.DEV_BYPASS_AUTH === undefined) delete process.env.DEV_BYPASS_AUTH;
+    else process.env.DEV_BYPASS_AUTH = preservedEnv.DEV_BYPASS_AUTH;
+    if (preservedEnv.NODE_ENV === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = preservedEnv.NODE_ENV;
+    vi.clearAllMocks();
+  });
+
+  // Return type mirrors registerRoutes' app parameter so the FastifyInstance
+  // generic (custom Logger, etc.) lines up — `FastifyInstance` without
+  // generics defaults to FastifyBaseLogger, which doesn't have errorWithStack.
+  async function buildAppWithPlugin(
+    plugin: SitePlugin<unknown, unknown>
+  ): Promise<Parameters<typeof registerRoutes>[0]> {
+    SITE_PLUGINS.push(plugin);
+    // loggerInstance carries the project's custom Logger (pino + errorWithStack)
+    // so the resulting FastifyInstance generic matches registerRoutes' signature.
+    const app = Fastify({ loggerInstance: getLogger({ name: "loader-test" }) });
+    app.setValidatorCompiler(validatorCompiler);
+    app.setSerializerCompiler(serializerCompiler);
+    await app.register(errorHandlerPlugin);
+    await app.register(authPlugin);
+    await registerRoutes(app, cfgStub);
+    await app.ready();
+    return app;
+  }
+
+  it("parses multipart text + file parts into payload when meta.multipart=true", async () => {
+    const capturedPayload = vi.fn();
+    const multipartPlugin: SitePlugin<unknown, unknown> = {
+      meta: {
+        siteId: "mp-test",
+        displayName: "Multipart Test",
+        bodySchema: z.object({
+          Greeting: z.string(),
+          Resume: z.instanceof(Buffer),
+        }),
+        responseSchema: z.unknown(),
+        multipart: true,
+      },
+      execute: vi.fn(),
+      executeHttp: async (payload) => {
+        capturedPayload(payload);
+        return { data: { ok: true } };
+      },
+    };
+
+    const app = await buildAppWithPlugin(multipartPlugin);
+
+    // Build multipart/form-data body by hand: light-my-request's payload type
+    // is `string | object | Buffer | ReadableStream` — no native FormData
+    // support — so we hand-craft the wire bytes with a fixed boundary.
+    const boundary = "----barnacleTestBoundary";
+    const body = Buffer.concat([
+      Buffer.from(`--${boundary}\r\n`),
+      Buffer.from(`Content-Disposition: form-data; name="Greeting"\r\n\r\n`),
+      Buffer.from(`hello\r\n`),
+      Buffer.from(`--${boundary}\r\n`),
+      Buffer.from(
+        `Content-Disposition: form-data; name="Resume"; filename="r.pdf"\r\n` +
+          `Content-Type: application/pdf\r\n\r\n`
+      ),
+      Buffer.from("PDF-BYTES"),
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ]);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/mp-test/run",
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+      payload: body,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(capturedPayload).toHaveBeenCalledTimes(1);
+    const received = capturedPayload.mock.calls[0]?.[0] as { Greeting: string; Resume: Buffer };
+    expect(received.Greeting).toBe("hello");
+    expect(Buffer.isBuffer(received.Resume)).toBe(true);
+    expect(received.Resume.toString()).toBe("PDF-BYTES");
+
+    await app.close();
+  });
+
+  it("keeps JSON parsing on routes whose plugin does not set meta.multipart", async () => {
+    const capturedPayload = vi.fn();
+    const jsonPlugin: SitePlugin<unknown, unknown> = {
+      meta: {
+        siteId: "json-test",
+        displayName: "JSON Test",
+        bodySchema: z.object({ Field: z.string() }),
+        responseSchema: z.unknown(),
+      },
+      execute: vi.fn(),
+      executeHttp: async (payload) => {
+        capturedPayload(payload);
+        return { data: { ok: true } };
+      },
+    };
+
+    const app = await buildAppWithPlugin(jsonPlugin);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/json-test/run",
+      payload: { Field: "value" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(capturedPayload).toHaveBeenCalledWith({ Field: "value" });
+
+    await app.close();
   });
 });

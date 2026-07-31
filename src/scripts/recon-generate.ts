@@ -54,14 +54,26 @@ function toPascalCase(siteId: string): string {
  * Caps recursion at 4 levels to avoid generating unwieldy output for deeply
  * nested API responses — deeper fields collapse to z.unknown().
  */
-function inferZodSchema(value: unknown, depth = 0, indent = ""): string {
+function inferZodSchema(
+  value: unknown,
+  depth = 0,
+  indent = "",
+  opts: { multipartCoerce?: boolean } = {}
+): string {
   if (depth > 4) return "z.unknown()";
   if (value === null) return "z.null()";
   if (typeof value === "string") return "z.string()";
-  if (typeof value === "number") return "z.number()";
-  if (typeof value === "boolean") return "z.boolean()";
+  if (typeof value === "number") return opts.multipartCoerce ? "z.coerce.number()" : "z.number()";
+  if (typeof value === "boolean") {
+    // multipart/form-data encodes booleans as the strings "true"/"false". The
+    // contract emitter (emitContractTs) prepends a MULTIPART_BOOL constant
+    // wrapping z.preprocess + z.boolean() when any field needs this coercion;
+    // we just reference it here to keep each field declaration short and DRY.
+    return opts.multipartCoerce ? "MULTIPART_BOOL" : "z.boolean()";
+  }
   if (Array.isArray(value)) {
-    const item = value.length > 0 ? inferZodSchema(value[0], depth + 1, indent) : "z.unknown()";
+    const item =
+      value.length > 0 ? inferZodSchema(value[0], depth + 1, indent, opts) : "z.unknown()";
     return `z.array(${item})`;
   }
   if (typeof value === "object") {
@@ -73,7 +85,7 @@ function inferZodSchema(value: unknown, depth = 0, indent = ""): string {
     const fields = entries
       .map(
         ([k, v]) =>
-          `${inner}${isValidJsIdentifier(k) ? k : JSON.stringify(k)}: ${inferZodSchema(v, depth + 1, inner)}`
+          `${inner}${isValidJsIdentifier(k) ? k : JSON.stringify(k)}: ${inferZodSchema(v, depth + 1, inner, opts)}`
       )
       .join(",\n");
     return `z.object({\n${fields},\n${indent}})`;
@@ -305,14 +317,464 @@ function* walkStringLeaves(
   }
 }
 
+/**
+ * Yields every primitive leaf (string, number, boolean, null) in the JSON
+ * value with its path. Used by the body-literal substitution pass to find
+ * JSON-keyed values whose key matches a payload field name — for example,
+ * `"FutureConsideration":true` becomes `"FutureConsideration":${payload.FutureConsideration}`.
+ * Unlike walkStringLeaves this includes non-string primitives, so boolean
+ * and number payload fields get parameterized too.
+ */
+function* walkAllPrimitiveLeaves(
+  value: unknown,
+  path: string[] = []
+): Generator<{ value: string | number | boolean | null; path: string[] }, void, unknown> {
+  if (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean" ||
+    value === null
+  ) {
+    yield { value, path };
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      yield* walkAllPrimitiveLeaves(value[i], [...path, String(i)]);
+    }
+    return;
+  }
+  if (typeof value === "object") {
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      yield* walkAllPrimitiveLeaves(v, [...path, k]);
+    }
+  }
+}
+
 /** Minimum length for a string leaf to be indexed as a potential state value.
  * Shorter strings (1-7 chars) are rarely meaningful auth tokens / IDs and
  * inflate the index without contributing to state threading. */
 const MIN_STATE_VALUE_LENGTH = 8;
 
+/**
+ * Documented enum of common HTTP-API error-reporting key names. Closed set
+ * (per the no-regex-open-sets feedback): when an API returns 200 with an
+ * error payload, it almost always uses one of these key names at the top of
+ * the body. Matched case-insensitively so `Message`/`message`/`Error`/`error`
+ * all detect.
+ */
+const KNOWN_TOP_LEVEL_ERROR_KEYS = new Set(["message", "error", "errormessage"]);
+
+/**
+ * Suffixes that mark a JSON key as carrying validation/data errors when its
+ * value is non-null. Case-sensitive because real APIs use mixed-case in the
+ * exact form they ship (e.g. ClearCompany's `ResponseValidationErrors`).
+ */
+const NESTED_ERROR_KEY_SUFFIXES = ["ValidationErrors", "DataErrors", "ValidationError"];
+
+interface ErrorSignals {
+  /** Top-level string-valued key whose presence in a response signals an
+   * error. Emitted by the generator as a `typeof obj.X === "string"` guard. */
+  stringMessageKey: string | null;
+  /** JSON paths whose non-null value signals an error. The `parentPath` walks
+   * to the parent object and `errorKey` is the leaf property name. Emitted as
+   * `obj.<parentPath>.<errorKey> != null` guards. */
+  nestedErrorPaths: Array<{ parentPath: string[]; errorKey: string }>;
+}
+
+/**
+ * Detects which error-reporting key names this site's recon uses. Scans
+ * successful action-step response bodies for the well-known key shapes; only
+ * emits guards for keys that NEVER appear as non-null values in success
+ * responses (so legitimate success-only fields like `Name` aren't false-
+ * flagged as errors).
+ *
+ * Site-agnostic: ClearCompany uses `Message`/`Sections.ResponseValidationErrors`
+ * /`Sections.DataValidationErrors`; a different ATS using `error`/`errors[]`
+ * would emit guards for those instead.
+ */
+function detectErrorSignals(actions: ActionStep[]): ErrorSignals {
+  const candidateTopLevelKeys = new Map<string, { presentInSuccess: boolean }>();
+  const candidateNestedPaths = new Map<
+    string,
+    { parentPath: string[]; errorKey: string; presentInSuccess: boolean }
+  >();
+
+  for (const step of actions) {
+    const body = step.capture.responseBody;
+    if (body === null || typeof body !== "object" || Array.isArray(body)) continue;
+
+    for (const [k, v] of Object.entries(body as Record<string, unknown>)) {
+      if (KNOWN_TOP_LEVEL_ERROR_KEYS.has(k.toLowerCase())) {
+        const existing = candidateTopLevelKeys.get(k) ?? { presentInSuccess: false };
+        if (typeof v === "string" && v.length > 0) existing.presentInSuccess = true;
+        candidateTopLevelKeys.set(k, existing);
+      }
+    }
+
+    walkForNestedErrorKeys(body, [], candidateNestedPaths);
+  }
+
+  const successKeys = new Set<string>();
+  for (const [k, info] of candidateTopLevelKeys) {
+    if (info.presentInSuccess) successKeys.add(k);
+  }
+  const stringMessageKey =
+    [...candidateTopLevelKeys.keys()].find((k) => !successKeys.has(k)) ?? null;
+
+  const nestedErrorPaths: ErrorSignals["nestedErrorPaths"] = [];
+  for (const info of candidateNestedPaths.values()) {
+    if (!info.presentInSuccess) {
+      nestedErrorPaths.push({ parentPath: info.parentPath, errorKey: info.errorKey });
+    }
+  }
+
+  return { stringMessageKey, nestedErrorPaths };
+}
+
+function walkForNestedErrorKeys(
+  value: unknown,
+  path: string[],
+  candidates: Map<string, { parentPath: string[]; errorKey: string; presentInSuccess: boolean }>
+): void {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return;
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (NESTED_ERROR_KEY_SUFFIXES.some((suffix) => k.endsWith(suffix))) {
+      const dedupeKey = `${path.join(".")}::${k}`;
+      const existing = candidates.get(dedupeKey) ?? {
+        parentPath: path,
+        errorKey: k,
+        presentInSuccess: false,
+      };
+      if (v !== null) existing.presentInSuccess = true;
+      candidates.set(dedupeKey, existing);
+    }
+    walkForNestedErrorKeys(v, [...path, k], candidates);
+  }
+}
+
+/**
+ * Canonical UUID-shape test. Closed-form regex per the no-regex-open-sets
+ * feedback: matches the dash-delimited 8-4-4-4-12 hex format universally used
+ * by Microsoft/RFC4122 UUIDs. Used to distinguish schema identifiers (UUIDs
+ * that the API uses as stable structural keys) from semantic strings.
+ */
+const UUID_REGEX = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+
+/**
+ * Map from form-schema FieldId UUIDs to PascalCase payload field names. Used
+ * by emitMultiStepExecuteHttp to substitute Responses[].Value literals with
+ * caller payload references. Empty when the recon doesn't include a form
+ * schema (no-op for those sites).
+ */
+type FieldNameMap = Map<string, string>;
+
+/**
+ * Per-OptionId-using field: an ordered list of {semanticValue, optionId}
+ * pairs derived from the form schema's FieldOptions[]. The generator emits
+ * each as an OPT_<FieldName> constant + z.enum payload field; the body emit
+ * pass rewrites `OptionId: "<uuid>"` slots to `OptionId: ${OPT_X[payload.X]}`.
+ *
+ * Only populated for fields whose options all have a non-empty Value (i.e.
+ * SystemFieldOption-tagged options). Custom options without a semantic
+ * label are skipped — the field's OptionIds stay baked.
+ */
+interface FieldOptionsMapping {
+  semanticName: string;
+  options: Array<{ value: string; optionId: string }>;
+}
+type FieldOptionsMap = Map<string, FieldOptionsMapping>;
+
+/**
+ * Converts a FieldSourceCode like "contact.first.name" or "address.country.subdivision"
+ * to PascalCase: "ContactFirstName", "AddressCountrySubdivision". Site-agnostic:
+ * operates only on the input string. Returns null for inputs that don't
+ * produce a valid JS identifier.
+ */
+function sourceCodeToPascalCase(sourceCode: string): string | null {
+  const parts = sourceCode.split(/[.\-_\s]+/).filter((p) => p.length > 0);
+  if (parts.length === 0) return null;
+  const pascal = parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()).join("");
+  return isValidJsIdentifier(pascal) ? pascal : null;
+}
+
+/**
+ * Converts a free-form FieldName like "Reference #1 First Name" or "Email" to
+ * PascalCase, stripping punctuation in a way that preserves position (so
+ * "Reference #1 First Name" → "Reference1FirstName" via a section-heading
+ * prefix). Site-agnostic: operates only on input strings.
+ */
+function fieldNameToPascalCase(fieldName: string, prefix: string | null): string | null {
+  const cleaned = fieldName.replace(/[^a-zA-Z0-9\s]/g, " ").trim();
+  if (cleaned === "") return null;
+  const parts = cleaned.split(/\s+/).filter((p) => p.length > 0);
+  if (parts.length === 0) return null;
+  const pascal = parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()).join("");
+  const withPrefix = prefix ? `${prefix}${pascal}` : pascal;
+  return isValidJsIdentifier(withPrefix) ? withPrefix : null;
+}
+
+/**
+ * Recon-driven detection of form-schema captures. Scans all response bodies
+ * for arrays whose objects look like SectionField (UUID-shaped FieldId plus
+ * FieldName or FieldSourceCode). Builds FieldId → PascalCase name map.
+ *
+ * Site-agnostic: identifies form-schema captures by structural fingerprint,
+ * not by URL or site name. Any ATS exposing a similar schema would match.
+ */
+function detectFormSchemaFieldNames(captures: Capture[]): {
+  fieldNameMap: FieldNameMap;
+  fieldOptionsMap: FieldOptionsMap;
+} {
+  const fieldNameMap: FieldNameMap = new Map();
+  const fieldOptionsMap: FieldOptionsMap = new Map();
+  for (const capture of captures) {
+    walkForSectionFieldsArrays(capture.responseBody, fieldNameMap, fieldOptionsMap);
+  }
+  return { fieldNameMap, fieldOptionsMap };
+}
+
+function walkForSectionFieldsArrays(
+  value: unknown,
+  fieldNameMap: FieldNameMap,
+  fieldOptionsMap: FieldOptionsMap
+): void {
+  if (value === null || typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    if (looksLikeSectionFieldsArray(value)) {
+      assignFieldNamesFromArray(
+        value as Array<Record<string, unknown>>,
+        fieldNameMap,
+        fieldOptionsMap
+      );
+    }
+    for (const item of value) walkForSectionFieldsArrays(item, fieldNameMap, fieldOptionsMap);
+    return;
+  }
+  for (const v of Object.values(value as Record<string, unknown>)) {
+    walkForSectionFieldsArrays(v, fieldNameMap, fieldOptionsMap);
+  }
+}
+
+/**
+ * Structural fingerprint: array of objects, at least half of which have a
+ * UUID-shaped FieldId AND at least one of FieldName/FieldSourceCode.
+ */
+function looksLikeSectionFieldsArray(arr: unknown[]): boolean {
+  if (arr.length === 0) return false;
+  let matches = 0;
+  for (const item of arr) {
+    if (item === null || typeof item !== "object") continue;
+    const obj = item as Record<string, unknown>;
+    const fieldIdRaw = obj.FieldId;
+    if (typeof fieldIdRaw !== "string") continue;
+    if (!UUID_REGEX.test(fieldIdRaw)) continue;
+    if (typeof obj.FieldName === "string" || typeof obj.FieldSourceCode === "string") {
+      matches++;
+    }
+  }
+  return matches >= Math.max(1, Math.floor(arr.length * 0.5));
+}
+
+function assignFieldNamesFromArray(
+  arr: Array<Record<string, unknown>>,
+  fieldNameMap: FieldNameMap,
+  fieldOptionsMap: FieldOptionsMap
+): void {
+  let currentPrefix: string | null = null;
+  const usedNames = new Set<string>([...fieldNameMap.values()]);
+  for (const obj of arr) {
+    const fieldId = obj.FieldId;
+    if (typeof fieldId !== "string") continue;
+
+    const sourceCode = obj.FieldSourceCode;
+    const name = obj.FieldName;
+
+    let semantic: string | null = null;
+    if (typeof sourceCode === "string" && sourceCode.trim().length > 0) {
+      semantic = sourceCodeToPascalCase(sourceCode);
+      currentPrefix = null;
+    } else if (typeof name === "string" && name.trim().length > 0 && name.length < 80) {
+      const hasNoSourceCode = typeof sourceCode !== "string" || sourceCode.trim().length === 0;
+      // Section-heading heuristic: short FieldName, no SourceCode, MOSTLY
+      // uppercase letters (>= 70% of alphabetic chars) OR contains '#'.
+      // Whole-name uppercase ratio avoids false positives like "MM/DD/YYYY"
+      // appearing as a format hint inside a normal field label.
+      const letters = name.replace(/[^a-zA-Z]/g, "");
+      const upperLetters = name.replace(/[^A-Z]/g, "");
+      const isMostlyUppercase = letters.length >= 3 && upperLetters.length / letters.length >= 0.7;
+      const isSectionHeading = hasNoSourceCode && (isMostlyUppercase || name.includes("#"));
+      if (isSectionHeading) {
+        const headingPrefix = fieldNameToPascalCase(name, null);
+        if (headingPrefix !== null) {
+          currentPrefix = headingPrefix;
+        }
+        continue;
+      }
+      semantic = fieldNameToPascalCase(name, currentPrefix);
+    }
+
+    if (semantic !== null && !fieldNameMap.has(fieldId)) {
+      let unique = semantic;
+      let suffix = 2;
+      while (usedNames.has(unique)) {
+        unique = `${semantic}${suffix}`;
+        suffix++;
+      }
+      fieldNameMap.set(fieldId, unique);
+      usedNames.add(unique);
+
+      // Capture FieldOptions when present and ALL options have non-empty
+      // semantic Values (SystemFieldOption-tagged). Custom options with empty
+      // Value are skipped — they have no semantic label, so we can't generate
+      // a meaningful enum and leave the field's OptionId baked.
+      const optionsRaw = obj.FieldOptions;
+      if (Array.isArray(optionsRaw) && optionsRaw.length > 0) {
+        const options: Array<{ value: string; optionId: string }> = [];
+        let allSemantic = true;
+        for (const optRaw of optionsRaw) {
+          if (optRaw === null || typeof optRaw !== "object") {
+            allSemantic = false;
+            break;
+          }
+          const opt = optRaw as Record<string, unknown>;
+          const optId = opt.Id;
+          const optValue = opt.Value;
+          if (
+            typeof optId !== "string" ||
+            typeof optValue !== "string" ||
+            optValue.trim().length === 0
+          ) {
+            allSemantic = false;
+            break;
+          }
+          options.push({ value: optValue, optionId: optId });
+        }
+        if (allSemantic && options.length > 0 && !fieldOptionsMap.has(fieldId)) {
+          fieldOptionsMap.set(fieldId, { semanticName: unique, options });
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Substitutes Responses[].Value literals with payload accessors based on the
+ * field-name map from the form schema. Operates on the body string before
+ * state interpolation so already-substituted state values (e.g. ${firstName})
+ * are preserved.
+ *
+ * Closed-set substring matching: both FieldId and the literal Value come from
+ * the generator's own input (recon).
+ */
+function applyFormSchemaSubstitutions(
+  rawBody: string,
+  fieldNameMap: FieldNameMap,
+  outDiscoveredFields: Set<string>
+): string {
+  if (fieldNameMap.size === 0) return rawBody;
+  let result = rawBody;
+  for (const [fieldId, semanticName] of fieldNameMap) {
+    const fieldIdMarker = `"FieldId":"${fieldId}"`;
+    let cursor = 0;
+    while (true) {
+      const idx = result.indexOf(fieldIdMarker, cursor);
+      if (idx === -1) break;
+      const objEnd = result.indexOf("}", idx);
+      if (objEnd === -1) break;
+      const segment = result.slice(idx, objEnd);
+      const valueMarker = `"Value":"`;
+      const valueIdx = segment.indexOf(valueMarker);
+      if (valueIdx === -1) {
+        cursor = objEnd;
+        continue;
+      }
+      const valueStart = idx + valueIdx + valueMarker.length;
+      const valueEnd = result.indexOf(`"`, valueStart);
+      if (valueEnd === -1 || valueEnd > objEnd) {
+        cursor = objEnd;
+        continue;
+      }
+      const currentValue = result.slice(valueStart, valueEnd);
+      if (currentValue.includes("${")) {
+        cursor = objEnd;
+        continue;
+      }
+      const replacement = `\${payload.${semanticName}}`;
+      result = result.slice(0, valueStart) + replacement + result.slice(valueEnd);
+      outDiscoveredFields.add(semanticName);
+      cursor = valueStart + replacement.length;
+    }
+  }
+  return result;
+}
+
+/**
+ * Substitutes Responses[].OptionId literals with payload-driven enum lookups.
+ * Operates on the body string before state interpolation. For each FieldId
+ * with a captured FieldOptionsMapping, find `"FieldId":"<uuid>"` and rewrite
+ * the matching `"OptionId":"<uuid>"` to `"OptionId":"${OPT_<Name>[payload.<Name>]}"`.
+ *
+ * Order-insensitive: matches `"OptionId":"<uuid>"` anywhere within the same
+ * JSON object as the FieldId (which is between this FieldId marker and the
+ * closing `}`). Closed-set substring matching: both FieldId and OptionId
+ * come from the generator's own input.
+ */
+function applyFormSchemaOptionIdSubstitutions(
+  rawBody: string,
+  fieldOptionsMap: FieldOptionsMap,
+  outDiscoveredOptionFields: Set<string>
+): string {
+  if (fieldOptionsMap.size === 0) return rawBody;
+  let result = rawBody;
+  for (const [fieldId, mapping] of fieldOptionsMap) {
+    const fieldIdMarker = `"FieldId":"${fieldId}"`;
+    let cursor = 0;
+    while (true) {
+      const idx = result.indexOf(fieldIdMarker, cursor);
+      if (idx === -1) break;
+      const objEnd = result.indexOf("}", idx);
+      if (objEnd === -1) break;
+      const segment = result.slice(idx, objEnd);
+      const optionIdMarker = `"OptionId":"`;
+      const optionIdLocal = segment.indexOf(optionIdMarker);
+      if (optionIdLocal === -1) {
+        cursor = objEnd;
+        continue;
+      }
+      const optionStart = idx + optionIdLocal + optionIdMarker.length;
+      const optionEnd = result.indexOf(`"`, optionStart);
+      if (optionEnd === -1 || optionEnd > objEnd) {
+        cursor = objEnd;
+        continue;
+      }
+      const currentOptionId = result.slice(optionStart, optionEnd);
+      if (currentOptionId.includes("${")) {
+        cursor = objEnd;
+        continue;
+      }
+      const replacement = `\${OPT_${mapping.semanticName}[payload.${mapping.semanticName}]}`;
+      result = result.slice(0, optionStart) + replacement + result.slice(optionEnd);
+      outDiscoveredOptionFields.add(mapping.semanticName);
+      cursor = optionStart + replacement.length;
+    }
+  }
+  return result;
+}
+
 /** Maximum length to guard against indexing massive blobs (HTML fragments,
  * embedded base64 images, etc.) that aren't candidates for state threading. */
 const MAX_STATE_VALUE_LENGTH = 256;
+
+/** Canonical "uninitialized" sentinel values that some REST APIs return as
+ * placeholders before a downstream call populates the real identifier.
+ * ClearCompany's `/user/create` returns these for CandidateId/ApplicationId/
+ * ApplyProcessId, then `/user/start` returns the real values. Indexing the
+ * placeholder would lock the generated plugin's `${candidateId}` binding to
+ * the all-zero UUID — every downstream call would then 404 with "candidate
+ * does not exist". Closed set, literal-string match — never expand to
+ * pattern-based detection (would trip the no-regex-on-open-sets rule). */
+const PLACEHOLDER_STATE_VALUES = new Set(["00000000-0000-0000-0000-000000000000"]);
 
 /**
  * Walks every capture's response (including GETs — formHistoryId-style values
@@ -325,15 +787,37 @@ const MAX_STATE_VALUE_LENGTH = 256;
  * web. Authoritative filtering happens downstream in `compileActionSteps`,
  * which only emits produces[] entries for values that ALSO appear in some
  * downstream URL/headers/body (i.e. real cross-step reuse).
+ *
+ * Exception: values in `PLACEHOLDER_STATE_VALUES` are skipped entirely so
+ * the LATER non-placeholder occurrence at the same JSON path becomes the
+ * canonical binding instead.
  */
-function indexStateValues(captures: Capture[]): Map<string, StateValue> {
+function indexStateValues(
+  captures: Capture[],
+  shieldedUuids: Set<string> = new Set()
+): Map<string, StateValue> {
   const index = new Map<string, StateValue>();
   for (let i = 0; i < captures.length; i++) {
     const c = captures[i]!;
     if (c.responseBody === undefined || c.responseBody === null) continue;
+    // For GET captures, only index UUID-shaped strings. GET captures (today,
+    // only the form-schema fetch inserted as an action step) surface stable
+    // structural identifiers — UUIDs that downstream POSTs need to thread.
+    // Short non-UUID strings ("candidate", "unlocked") from GET responses are
+    // noise and create substring-collision bugs in length-descending replace:
+    // e.g. "candidate" as a state value gets substituted INSIDE an already-
+    // emitted ${candidateId} interpolation, producing ${${entityTypeCode}Id}.
+    const isGet = c.method === "GET";
     for (const { value, path } of walkStringLeaves(c.responseBody)) {
       if (value.length < MIN_STATE_VALUE_LENGTH) continue;
       if (value.length > MAX_STATE_VALUE_LENGTH) continue;
+      if (PLACEHOLDER_STATE_VALUES.has(value)) continue;
+      // Schema-identifier UUIDs (FieldId, OptionId) are stable anchors that
+      // T2/T3 substitution depends on remaining literal in body templates.
+      // Indexing them would let state-threading rewrite the anchors and
+      // corrupt T2/T3's already-substituted Values.
+      if (shieldedUuids.has(value)) continue;
+      if (isGet && !UUID_REGEX.test(value)) continue;
       if (!index.has(value)) {
         index.set(value, { value, originIndex: i, path });
       }
@@ -521,6 +1005,51 @@ function interpolateStateValues(
   return result;
 }
 
+/**
+ * Substitutes literal JSON key/value pairs in a body template with payload
+ * interpolations. Catches short strings (e.g. Culture: "en"), booleans
+ * (FutureConsideration: true), and numbers that interpolateStateValues skips
+ * because they're below the state-value length threshold or non-string.
+ *
+ * Site-agnostic: only consults the recon's first POST body shape, doesn't
+ * reference any site-specific key names.
+ *
+ * Substitution is **JSON-key-aware** — only fires on `"key":value` patterns
+ * with the exact recon-captured value. Closed-set matching per the
+ * no-regex-open-sets feedback: both the key and the value come from the
+ * generator's own input. No risk of substring false positives because the
+ * key-prefix anchors the match to a JSON object property.
+ */
+function applyPayloadKeyValueSubstitutions(template: string, inputBody: unknown): string {
+  if (
+    inputBody === undefined ||
+    inputBody === null ||
+    typeof inputBody !== "object" ||
+    Array.isArray(inputBody)
+  ) {
+    return template;
+  }
+  let result = template;
+  for (const { value, path } of walkAllPrimitiveLeaves(inputBody)) {
+    // Only top-level fields map to caller payload fields; nested keys are
+    // structural artifacts of the body shape, not caller-supplied values.
+    if (path.length !== 1) continue;
+    const key = path[0]!;
+    if (!isValidJsIdentifier(key)) continue;
+    const accessor = `payload.${key}`;
+    if (typeof value === "string") {
+      const target = `"${key}":${JSON.stringify(value)}`;
+      const replacement = `"${key}":"\${${accessor}}"`;
+      result = result.split(target).join(replacement);
+    } else if (typeof value === "boolean" || typeof value === "number") {
+      const target = `"${key}":${JSON.stringify(value)}`;
+      const replacement = `"${key}":\${${accessor}}`;
+      result = result.split(target).join(replacement);
+    }
+  }
+  return result;
+}
+
 /** Builds the multi-step `executeHttp` body as a single template-literal string.
  *
  * Two-pass design avoids emitting unused bindings (which would trip Biome's
@@ -531,7 +1060,75 @@ function interpolateStateValues(
  *      referenced AND isn't the terminal var (needed for `return { data }`).
  *      Skip produces[] entries whose name isn't referenced anywhere downstream.
  */
-function emitMultiStepExecuteHttp(actions: ActionStep[], inputBody: unknown): string {
+/**
+ * Emits per-step `throw new Error(...)` lines for each detected error signal.
+ * Returns lines indented to sit inside the `if (typeof X === "object" && X !==
+ * null)` wrapper that `emitMultiStepExecuteHttp` writes.
+ */
+function emitErrorSignalGuards(varName: string, urlPath: string, signals: ErrorSignals): string[] {
+  const out: string[] = [];
+
+  if (signals.stringMessageKey !== null) {
+    const k = signals.stringMessageKey;
+    out.push(
+      `      if (typeof (${varName} as { ${k}?: unknown }).${k} === "string") throw new Error(\`step ${varName} (${urlPath}) returned error: \${(${varName} as { ${k}: string }).${k}}\`);`
+    );
+  }
+
+  const nestedByParent = new Map<string, Array<{ errorKey: string }>>();
+  for (const { parentPath, errorKey } of signals.nestedErrorPaths) {
+    const key = parentPath.join(".");
+    const existing = nestedByParent.get(key) ?? [];
+    existing.push({ errorKey });
+    nestedByParent.set(key, existing);
+  }
+
+  for (const [parentPathStr, errorKeys] of nestedByParent) {
+    if (parentPathStr === "") {
+      for (const { errorKey } of errorKeys) {
+        out.push(
+          `      if ((${varName} as { ${errorKey}?: unknown }).${errorKey} != null) throw new Error(\`step ${varName} ${errorKey.toLowerCase()}: \${JSON.stringify((${varName} as { ${errorKey}: unknown }).${errorKey})}\`);`
+        );
+      }
+      continue;
+    }
+    const parentSegments = parentPathStr.split(".");
+    const parentVar = `${varName}_${parentSegments[parentSegments.length - 1]!.toLowerCase()}`;
+    const parentAccessor = parentSegments.join("?.");
+    const parentTypeAssertion = errorKeys.map(({ errorKey }) => `${errorKey}?: unknown`).join("; ");
+    const parentObjType = parentSegments
+      .reverse()
+      .reduce((inner, seg) => `${seg}?: { ${inner} }`, parentTypeAssertion);
+    parentSegments.reverse();
+    out.push(`      const ${parentVar} = (${varName} as { ${parentObjType} }).${parentAccessor};`);
+    for (const { errorKey } of errorKeys) {
+      const label =
+        errorKey === "ResponseValidationErrors"
+          ? "validation errors"
+          : errorKey === "DataValidationErrors"
+            ? "data errors"
+            : errorKey
+                .replace(/([A-Z])/g, " $1")
+                .trim()
+                .toLowerCase();
+      out.push(
+        `      if (${parentVar} != null && ${parentVar}.${errorKey} != null) throw new Error(\`step ${varName} ${label}: \${JSON.stringify(${parentVar}.${errorKey})}\`);`
+      );
+    }
+  }
+
+  return out;
+}
+
+function emitMultiStepExecuteHttp(
+  actions: ActionStep[],
+  inputBody: unknown,
+  errorSignals: ErrorSignals,
+  fieldNameMap: FieldNameMap,
+  outDiscoveredFields: Set<string>,
+  fieldOptionsMap: FieldOptionsMap,
+  outDiscoveredOptionFields: Set<string>
+): string {
   interface Rendered {
     url: string;
     method: string;
@@ -566,8 +1163,23 @@ function emitMultiStepExecuteHttp(actions: ActionStep[], inputBody: unknown): st
     const cap = step.capture;
     const prior = actions.slice(0, i);
     const url = interpolateStateValues(cap.url, prior, payloadAccessorByValue);
-    const bodyTemplate = cap.requestPostData
-      ? interpolateStateValues(cap.requestPostData, prior, payloadAccessorByValue)
+    // Form-schema substitution runs first on the raw recon body so its
+    // FieldId-anchored matches see the original JSON. State-threading and
+    // payload key-value passes then run on top. OptionId substitution runs
+    // here too: same closed-set FieldId anchor; rewrites "OptionId":"<uuid>"
+    // slots to "${OPT_X[payload.X]}" lookups.
+    const rawBodyWithFormSubs = cap.requestPostData
+      ? applyFormSchemaOptionIdSubstitutions(
+          applyFormSchemaSubstitutions(cap.requestPostData, fieldNameMap, outDiscoveredFields),
+          fieldOptionsMap,
+          outDiscoveredOptionFields
+        )
+      : "";
+    const bodyTemplate = rawBodyWithFormSubs
+      ? applyPayloadKeyValueSubstitutions(
+          interpolateStateValues(rawBodyWithFormSubs, prior, payloadAccessorByValue),
+          inputBody
+        )
       : "";
 
     const perCallHeaders: Record<string, string> = {};
@@ -629,23 +1241,51 @@ function emitMultiStepExecuteHttp(actions: ActionStep[], inputBody: unknown): st
 
     if (step.isMultipart) {
       // Bypasses httpClient because its typed string-body interface can't
-      // carry a FormData payload. The next call goes back through httpClient
-      // for rate-limit + Zod parsing.
+      // carry a FormData payload. We splice in BASE_HEADERS (minus
+      // Content-Type, which FormData sets to multipart/form-data with the
+      // boundary it generates) so site-required custom headers like
+      // API-Realm/API-AppType/etc. are carried over. The next call goes
+      // back through httpClient for rate-limit + Zod parsing.
+      //
+      // Binary asset (file Buffer + content-type + filename) is required on
+      // the payload. The plugin route is registered with @fastify/multipart's
+      // `attachFieldsToBody: 'keyValues'` so callers POST these fields as
+      // standard multipart/form-data — no base64-in-JSON, no fixtures.
       const fdVar = `fd_${step.varName}`;
-      const bufVar = `buf_${step.varName}`;
       const respVar = `resp_${step.varName}`;
+      const headersVar = `headers_${step.varName}`;
+      // Extract just the per-call header overrides (API-Token etc.) from the
+      // rendered headers expression to merge with BASE_HEADERS.
+      const perCallHeaderEntries: string[] = [];
+      for (const [k, v] of Object.entries(cap.requestHeaders)) {
+        const lower = k.toLowerCase();
+        if (lower === "api-token" || lower === "authorization") {
+          perCallHeaderEntries.push(
+            `${JSON.stringify(k)}: \`${interpolateStateValues(v, actions.slice(0, i), payloadAccessorByValue)}\``
+          );
+        }
+      }
+      const perCallHeadersLit = perCallHeaderEntries.length
+        ? `, ${perCallHeaderEntries.join(", ")}`
+        : "";
+      // Buffer-to-Blob coercion in the emitted line below: Node's Buffer is a
+      // Uint8Array subclass, but its TS type lists ArrayBufferLike (which
+      // includes SharedArrayBuffer), so it isn't assignable to BlobPart
+      // directly. Uint8Array.from copies the bytes into a fresh
+      // ArrayBuffer-backed view that satisfies BlobPart.
       lines.push(
         `    // Expected response shape: ${JSON.stringify(summariseResponseShape(cap.responseBody))}`,
-        `    const ${bufVar} = readFileSync(resolve(__dirname, "..", "_shared", "fixtures", "resume.pdf"));`,
         `    const ${fdVar} = new FormData();`,
-        `    ${fdVar}.append("files[]", new Blob([${bufVar}], { type: "application/pdf" }), "resume.pdf");`,
+        `    const ${fdVar}_bytes = Uint8Array.from(payload.Resume);`,
+        `    ${fdVar}.append("files[]", new Blob([${fdVar}_bytes], { type: payload.ResumeContentType }), payload.ResumeFilename);`,
+        `    const ${headersVar} = { ...Object.fromEntries(Object.entries(BASE_HEADERS).filter(([k]) => k.toLowerCase() !== "content-type"))${perCallHeadersLit} };`,
         `    const ${respVar} = await fetch(\`${r.url}\`, {`,
-        `      method: "POST",`
+        `      method: "POST",`,
+        `      headers: ${headersVar},`,
+        `      body: ${fdVar},`,
+        `    });`,
+        `    if (!${respVar}.ok) throw new Error(\`step ${step.varName} (multipart upload) failed: HTTP \${${respVar}.status}\`);`
       );
-      if (r.headersExpr !== "") {
-        lines.push(`      ${r.headersExpr}`);
-      }
-      lines.push(`      body: ${fdVar},`, `    });`);
       if (bindResponse) {
         lines.push(
           `    const ${step.varName} = (await ${respVar}.json()) as Record<string, unknown>;`
@@ -654,15 +1294,29 @@ function emitMultiStepExecuteHttp(actions: ActionStep[], inputBody: unknown): st
         lines.push(`    await ${respVar}.json();`);
       }
     } else {
-      const lhs = bindResponse ? `const ${step.varName} = (await ` : "await ";
-      const rhsSuffix = bindResponse ? `)) as Record<string, unknown>;` : `);`;
-      lines.push(`    ${lhs}httpClient(\`${r.url}\`, {`);
+      // Always bind the response so we can emit a validation check that
+      // turns 200-with-error-body responses into thrown errors instead of
+      // silently chaining to downstream calls with bad state.
+      lines.push(`    const ${step.varName} = (await httpClient(\`${r.url}\`, {`);
       lines.push(`      method: ${JSON.stringify(r.method)},`);
       const joined = [r.headersExpr, r.bodyArg].filter((s) => s !== "").join(" ");
       if (joined !== "") {
         lines.push(`      ${joined}`);
       }
-      lines.push(`    }${rhsSuffix}`);
+      lines.push(`    })) as Record<string, unknown>;`);
+      // Structural error-shape check — signals come from `errorSignals`,
+      // which `detectErrorSignals` derived from this site's actual recon
+      // (closed-set key-name detection: known top-level error keys like
+      // `Message`/`error`, plus nested keys ending in `ValidationErrors`
+      // etc.). Guard on `typeof obj === "object" && obj !== null` first
+      // because some endpoints return `null` for an ack-without-data success.
+      const urlPath = cap.url.split("/").slice(3).join("/").split("?")[0] ?? "";
+      const guardLines = emitErrorSignalGuards(step.varName, urlPath, errorSignals);
+      if (guardLines.length > 0) {
+        lines.push(`    if (typeof ${step.varName} === "object" && ${step.varName} !== null) {`);
+        for (const line of guardLines) lines.push(line);
+        lines.push(`    }`);
+      }
     }
 
     for (const p of step.produces) {
@@ -711,6 +1365,20 @@ function emitContractTs(opts: {
   multiStepBody?: string;
   /** First action capture's request body — used to infer the payload schema for submission flows. */
   inputBody?: unknown;
+  /** Whether the flow has a multipart upload step — derived from actionSteps at the call site. */
+  hasMultipartStep?: boolean;
+  /** PascalCase payload-field names discovered by walking the form schema and
+   * substituting Responses[].Value literals. Added to the payload schema so
+   * the caller can supply real values for them. */
+  discoveredFormFields?: Set<string>;
+  /** Full FieldOptions map (FieldId → semanticName + options). Only the
+   * entries whose semanticName is in `discoveredOptionFields` will get emitted
+   * — those are the fields where applyFormSchemaOptionIdSubstitutions actually
+   * rewrote an OptionId slot. */
+  fieldOptionsMap?: FieldOptionsMap;
+  /** Semantic names whose OptionId slots were rewritten by the generator —
+   * each gets an OPT_<Name> constant and a z.enum payload field. */
+  discoveredOptionFields?: Set<string>;
 }): string {
   const {
     siteId,
@@ -726,15 +1394,93 @@ function emitContractTs(opts: {
     auxFiles,
     multiStepBody,
     inputBody,
+    hasMultipartStep = false,
+    discoveredFormFields,
+    fieldOptionsMap,
+    discoveredOptionFields,
   } = opts;
 
   // Multi-step plugins thread responses through many different shapes that a
   // single Zod schema can't cover — use z.unknown() so each per-step access
   // compiles cleanly. Single-endpoint plugins keep the inferred schema.
   const responseSchemaExpr = multiStepBody ? `z.unknown()` : inferZodSchema(responseBody);
-  const payloadSchemaExpr = inputBody
-    ? inferZodSchema(inputBody)
+  // Multi-step flows that include a multipart upload need the binary asset
+  // on the payload. Add Resume/ResumeContentType/ResumeFilename as required
+  // fields so the @fastify/multipart-populated request body has everything
+  // the upload step needs. Site-agnostic: works for any flow with a multipart
+  // step, regardless of which step in the sequence it is. The hasMultipartStep
+  // flag is computed once at the call site from actionSteps.some(s.isMultipart).
+  //
+  // multipart/form-data wire format encodes every text field as a string, so
+  // pass multipartCoerce so inferZodSchema emits MULTIPART_BOOL references for
+  // booleans and z.coerce.number() for numbers at the source rather than via
+  // brittle post-process string substitution. Site-agnostic: only flips on
+  // when meta.multipart is true.
+  const basePayloadSchemaExpr = inputBody
+    ? inferZodSchema(inputBody, 0, "", { multipartCoerce: hasMultipartStep })
     : `z.object({\n  query: z.string().min(1),\n})`;
+  // Form-schema-discovered fields (e.g. AddressLine1, UserSsn, Reference1FirstName)
+  // are added to the payload as required strings. Site-agnostic: the set is
+  // populated by applyFormSchemaSubstitutions when the recon includes a
+  // detectable form schema; empty for sites without one.
+  const formFieldsExtension =
+    discoveredFormFields && discoveredFormFields.size > 0
+      ? `.extend({\n${[...discoveredFormFields]
+          .sort()
+          .map((name) => `  ${name}: z.string(),`)
+          .join("\n")}\n})`
+      : "";
+
+  // Build per-field OPT_<Name> constant declarations + payload-schema enum
+  // entries from the form schema's FieldOptions. Only fields whose OptionId
+  // slots were actually rewritten in the body (i.e. that appear in
+  // discoveredOptionFields) get emitted; the rest leave their schema entries
+  // unused. Computed BEFORE payloadSchemaExpr so the extension string is
+  // available for the final schema concat.
+  const emittedOptionMappings: FieldOptionsMapping[] = [];
+  if (fieldOptionsMap && discoveredOptionFields && discoveredOptionFields.size > 0) {
+    for (const mapping of fieldOptionsMap.values()) {
+      if (discoveredOptionFields.has(mapping.semanticName)) {
+        emittedOptionMappings.push(mapping);
+      }
+    }
+    emittedOptionMappings.sort((a, b) => a.semanticName.localeCompare(b.semanticName));
+  }
+  const optionDecls = emittedOptionMappings
+    .map((mapping) => {
+      const entries = mapping.options
+        .map(
+          ({ value, optionId }) =>
+            `  ${isValidJsIdentifier(value) ? value : JSON.stringify(value)}: ${JSON.stringify(optionId)},`
+        )
+        .join("\n");
+      return `\nconst OPT_${mapping.semanticName} = {\n${entries}\n} as const;\n`;
+    })
+    .join("");
+  const optionSchemaExtension =
+    emittedOptionMappings.length > 0
+      ? `.extend({\n${emittedOptionMappings
+          .map(
+            (m) =>
+              `  ${m.semanticName}: z.enum([${m.options.map((o) => JSON.stringify(o.value)).join(", ")}]),`
+          )
+          .join("\n")}\n})`
+      : "";
+
+  // optionSchemaExtension is appended LAST so option enums show up at the
+  // end of the payload type — the section ordering (base, multipart fields,
+  // form-schema fields, option enums) mirrors the body emit order and keeps
+  // the generated payload type readable.
+  const payloadSchemaExpr = hasMultipartStep
+    ? `${basePayloadSchemaExpr}.extend({\n  Resume: z.instanceof(Buffer),\n  ResumeContentType: z.string(),\n  ResumeFilename: z.string(),\n})${formFieldsExtension}${optionSchemaExtension}`
+    : `${basePayloadSchemaExpr}${formFieldsExtension}${optionSchemaExtension}`;
+  // When the payload schema needs the MULTIPART_BOOL reference, emit its
+  // declaration once at the top of the contract file so each boolean field
+  // stays short (SmsOptIn: MULTIPART_BOOL,) and the preprocess expression
+  // isn't duplicated per field.
+  const multipartBoolDecl = hasMultipartStep
+    ? `\nconst MULTIPART_BOOL = z.preprocess(\n  (v) => (v === "true" ? true : v === "false" ? false : v),\n  z.boolean(),\n);\n`
+    : "";
   // Emit identifier-shaped keys unquoted so Biome's formatter doesn't rewrite
   // the generated file on first lint:fix.
   const headersLiteral = Object.entries(baseHeaders)
@@ -804,12 +1550,6 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
     ? `\n *   [ ] Trim UI-only fields from ${pascal.toUpperCase()}_QUERY (keep only fields you need)`
     : "";
 
-  // Multi-step flows that include a multipart upload need node:fs + node:path
-  // for inlining the resume fixture at runtime. Single-endpoint plugins don't.
-  const nodeBuiltinImports = multiStepBody?.includes("readFileSync(resolve(__dirname")
-    ? `\nimport { readFileSync } from "node:fs";\nimport { resolve } from "node:path";\n`
-    : "";
-
   return `/**
  * Generated by recon-generate.ts — review before shipping.
  *
@@ -818,7 +1558,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
  *   [ ] Adjust ${pascal}PayloadSchema to your actual request parameters
  *   [ ] Verify BASE_HEADERS — remove any that aren't load-bearing
  */
-${nodeBuiltinImports}
+
 import Bottleneck from "bottleneck";
 import { z } from "zod/v4";
 
@@ -839,7 +1579,7 @@ const ${pascal}ResponseSchema = ${responseSchemaExpr};
 export type ${pascal}Response = z.infer<typeof ${pascal}ResponseSchema>;
 
 export default ${pascal}ResponseSchema;
-
+${multipartBoolDecl}${optionDecls}
 const ${pascal}PayloadSchema = ${payloadSchemaExpr};
 
 export type ${pascal}Payload = z.infer<typeof ${pascal}PayloadSchema>;
@@ -854,7 +1594,7 @@ export const ${siteId.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase())}Pl
     displayName: ${JSON.stringify(pascal.replace(/([A-Z])/g, " $1").trim())},
     bodySchema: ${pascal}PayloadSchema,
     responseSchema: ${pascal}ResponseSchema,
-    defaultBaseUrl: ${JSON.stringify(baseUrl)},
+    defaultBaseUrl: ${JSON.stringify(baseUrl)},${hasMultipartStep ? "\n    multipart: true," : ""}
   },
 
   /** Hot path: direct HTTP — no browser, no LLM tokens. */
@@ -1031,8 +1771,20 @@ async function main(): Promise<void> {
   // checkout, etc.). When the action sequence has 2+ POSTs, switch the
   // contract template to emit a state-threaded executeHttp.
   const actionCaptures = gql ? [] : extractActionSequence(captures, baseUrl);
+  // Form-schema detection runs BEFORE state-indexing so the FieldId/OptionId
+  // UUIDs can be shielded from indexing — those UUIDs are stable schema
+  // anchors that T2/T3 substitution depends on remaining literal in body
+  // templates.
+  const { fieldNameMap, fieldOptionsMap } = detectFormSchemaFieldNames(captures);
+  const shieldedUuids = new Set<string>();
+  for (const fieldId of fieldNameMap.keys()) shieldedUuids.add(fieldId);
+  for (const mapping of fieldOptionsMap.values()) {
+    for (const { optionId } of mapping.options) shieldedUuids.add(optionId);
+  }
   const stateIndex =
-    actionCaptures.length > 1 ? indexStateValues(captures) : new Map<string, StateValue>();
+    actionCaptures.length > 1
+      ? indexStateValues(captures, shieldedUuids)
+      : new Map<string, StateValue>();
   const actionSteps =
     actionCaptures.length > 1 ? compileActionSteps(actionCaptures, stateIndex) : [];
   const isSubmissionFlow = actionSteps.length > 1;
@@ -1046,9 +1798,21 @@ async function main(): Promise<void> {
         }
       })()
     : undefined;
+  const errorSignals = detectErrorSignals(actionSteps);
+  const discoveredFormFields = new Set<string>();
+  const discoveredOptionFields = new Set<string>();
   const multiStepBody = isSubmissionFlow
-    ? emitMultiStepExecuteHttp(actionSteps, inputBody)
+    ? emitMultiStepExecuteHttp(
+        actionSteps,
+        inputBody,
+        errorSignals,
+        fieldNameMap,
+        discoveredFormFields,
+        fieldOptionsMap,
+        discoveredOptionFields
+      )
     : undefined;
+  const hasMultipartStep = actionSteps.some((s) => s.isMultipart);
   // For submission flows the final action's response body is the most useful
   // shape inference target (it's the terminal success signal). Fall back to
   // the replay body for single-endpoint sites.
@@ -1078,6 +1842,10 @@ async function main(): Promise<void> {
       auxFiles,
       multiStepBody,
       inputBody,
+      hasMultipartStep,
+      discoveredFormFields,
+      fieldOptionsMap,
+      discoveredOptionFields,
     })
   );
   logger.info(`wrote ${outDir}/contract.ts`);
