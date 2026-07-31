@@ -41,6 +41,7 @@ import { join, resolve } from "node:path";
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import type { Action, Page, Stagehand } from "@browserbasehq/stagehand";
+import { format, formatISO } from "date-fns";
 import { z } from "zod/v4";
 
 import { config } from "@/config";
@@ -96,6 +97,25 @@ type InFlightRequest = {
   responseStatus: number;
   responseHeaders: Record<string, string>;
 };
+
+/**
+ * Per-replan record kept so the end-of-run write-back can emit a summary
+ * log block listing each replanned span. `failedInstruction` is the verbatim
+ * instruction string that triggered the replan (probe-absent or cascade
+ * exhausted), and `replanSteps` is the LLM-produced bridge that took its
+ * place. The numeric `indexAtFailure` is the position in the in-memory plan
+ * at the time of failure — meaningful for "step 12 of the plan failed" but
+ * not directly mappable to the original flow.json once multiple replans
+ * have rewritten the plan ahead of it.
+ */
+interface ReplanEvent {
+  replanIndex: number;
+  cause: "probe-absent" | "cascade-exhausted";
+  indexAtFailure: number;
+  failedInstruction: string;
+  replanSteps: NormalizedStep[];
+  timestamp: string;
+}
 
 /** Cap on the rolling capture-filename window held in memory for failure dumps. */
 const RECENT_CAPTURES_WINDOW = 20;
@@ -267,16 +287,32 @@ function wireNetworkCapture(
 }
 
 /** Max attempts inside the self-healing cascade for a single flow step. */
-const MAX_STEP_ATTEMPTS = 4;
+const MAX_STEP_ATTEMPTS = 5;
 /** Per-attempt linear backoff base; sleep = attempt * BACKOFF_MS. */
 const ATTEMPT_BACKOFF_MS = 1_000;
 /**
- * Max global replans per recon run. Each replan asks Claude to rewrite the
- * remaining tail of the flow when a step terminally fails. Two is enough
- * room to recover from one unexpected UI shift without burning budget on a
- * fundamentally unsolvable flow.
+ * Per-step watchdog passed as Stagehand's native `timeout` on every
+ * `act()`/`observe()`. Stagehand's `ensureTimeRemaining()` checks the
+ * deadline between work units and throws `ActTimeoutError` cleanly on
+ * expiry — the healing cascade catches it as just another attempt failure.
+ * Matches `GOTO_TIMEOUT_MS` precedent so a hung Stagehand call can't pin
+ * the recon for hours.
  */
-const MAX_REPLANS = 2;
+const STEP_WATCHDOG_MS = 120_000;
+/**
+ * Replans triggered by the pre-step page-state probe (cheap: ~1 observe +
+ * 1 LLM call). Spent when the probe sees zero candidates for a required
+ * step's instruction, indicating the page state has drifted from what the
+ * flow expects (e.g. previous step advanced past where the flow expected).
+ */
+const MAX_PROBE_REPLANS = 5;
+/**
+ * Replans triggered by the full self-healing cascade exhausting all 4
+ * attempts (expensive: 4 attempts × backoff + LLM rephrase + observe
+ * calls). Counted separately from probe replans so cheap recoveries don't
+ * consume the budget reserved for expensive recoveries.
+ */
+const MAX_CASCADE_REPLANS = 5;
 /** Guardrail on the size of an LLM-produced revised flow tail. */
 const REPLAN_MAX_STEPS = 30;
 /**
@@ -312,7 +348,12 @@ interface StepSnapshot {
 /** One attempt's audit trail — included verbatim in the failure dump. */
 interface AttemptRecord {
   attempt: number;
-  technique: "act-string" | "observe-act" | "observe-act-exclude" | "llm-rephrase";
+  technique:
+    | "act-string"
+    | "observe-act"
+    | "structured-click"
+    | "observe-act-exclude"
+    | "llm-rephrase";
   instruction: string | null;
   triedSelectors: string[];
   actResultSuccess: boolean | null;
@@ -522,6 +563,87 @@ function normalizeFlow(steps: z.infer<typeof RECON_FLOW_SCHEMA>): NormalizedStep
   );
 }
 
+/**
+ * Inverse of normalizeFlow: maps an internal `NormalizedStep` back to the
+ * on-disk union shape. Bare string for the common case (required,
+ * non-upload); object with only the truthy flags otherwise. Round-trip is
+ * lossless against `RECON_FLOW_SCHEMA` for any value the parser accepted.
+ */
+function denormalizeStep(
+  step: NormalizedStep
+): string | { step: string; optional?: true; upload?: true } {
+  if (!step.optional && !step.upload) return step.instruction;
+  const out: { step: string; optional?: true; upload?: true } = { step: step.instruction };
+  if (step.optional) out.optional = true;
+  if (step.upload) out.upload = true;
+  return out;
+}
+
+/**
+ * Write-back at the end of a successful recon: back up the original file
+ * bytes verbatim (so a subtle denormalization bug can never lose the user's
+ * hand-authored flow), then write the in-memory plan back out and log a
+ * summary of each replan event. No-op when `--no-save-replan` was passed or
+ * when no replans fired.
+ *
+ * Backup path encodes the timestamp + .bak so accumulated backups are easy
+ * to sort and prune. Uses synchronous writes — the recon is single-purpose
+ * and we want the failure mode "write the bytes, then exit" rather than
+ * "exit with the write half-flushed."
+ */
+function persistReplannedFlow(params: {
+  flowFile: string;
+  finalPlan: NormalizedStep[];
+  replanEvents: ReplanEvent[];
+  logger: Logger;
+}): void {
+  const { flowFile, finalPlan, replanEvents, logger } = params;
+  // Timestamp format chosen to be filesystem-safe (no colons or dots that
+  // break common tooling on macOS/Windows).
+  const timestamp = format(new Date(), "yyyy-MM-dd'T'HH-mm-ss");
+  const backupPath = flowFile.replace(/\.json$/, `.${timestamp}.bak.json`);
+
+  // Read ORIGINAL bytes from disk (not a re-serialization of the parsed
+  // structure) so the backup is byte-identical to whatever the user had.
+  let originalBytes: Buffer;
+  try {
+    originalBytes = readFileSync(flowFile);
+  } catch (err) {
+    logger.error(
+      `persistReplannedFlow: failed to read original ${flowFile}: ${toErrorMessage(err)} — skipping write-back (${replanEvents.length} replan event(s) left in memory)`
+    );
+    return;
+  }
+  writeFileSync(backupPath, originalBytes);
+
+  const denormalized = finalPlan.map(denormalizeStep);
+  // 2-space indent + trailing newline matches the existing on-disk style
+  // (verified against clearcompany/appcast/getgreatcareers recon-flow.json).
+  writeFileSync(flowFile, `${JSON.stringify(denormalized, null, 2)}\n`);
+
+  // Summary log block — emit each line through the Pino logger so the dev
+  // transport renders it nicely and the prod JSON output stays structured.
+  // Lines call out the failed instruction string verbatim + the bridge that
+  // took its place so a reviewer can diff intent without opening both files.
+  logger.info("── flow.json updated ──────────────────────────────────────");
+  logger.info(`original backed up: ${backupPath}`);
+  logger.info(`replacements (${replanEvents.length}):`);
+  for (const ev of replanEvents) {
+    logger.info(
+      `  - replan #${ev.replanIndex} (${ev.cause}) at step ${ev.indexAtFailure + 1} @ ${ev.timestamp}`
+    );
+    logger.info(`      failed: ${ev.failedInstruction}`);
+    logger.info(`      replaced with ${ev.replanSteps.length} step(s):`);
+    for (const s of ev.replanSteps) {
+      logger.info(
+        `        • ${s.instruction}${s.optional ? " (optional)" : ""}${s.upload ? " (upload)" : ""}`
+      );
+    }
+  }
+  logger.info(`run \`diff ${backupPath} ${flowFile}\` to inspect.`);
+  logger.info("───────────────────────────────────────────────────────────");
+}
+
 const REPLAN_RESPONSE_SCHEMA = z.discriminatedUnion("outcome", [
   z.object({
     outcome: z.literal("replan"),
@@ -588,7 +710,9 @@ async function replanRemainingFlow(params: {
     stagehand,
     captureFn = captureLlmCall,
   } = params;
-  const candidates = await stagehand.observe().catch(() => [] as Action[]);
+  const candidates = await stagehand
+    .observe({ timeout: STEP_WATCHDOG_MS })
+    .catch(() => [] as Action[]);
   const candidateList = candidates
     .slice(0, 12)
     .map((a, i) => `${i + 1}. ${a.description} — ${a.selector}`)
@@ -1167,6 +1291,49 @@ async function verifyDomEffect(page: Page, action: Action): Promise<boolean> {
  * StepVerificationError after all attempts have been exhausted; the
  * diagnostic bundle on disk has everything the human needs to fix the flow.
  */
+/**
+ * Cheap page-state check run BEFORE the self-healing cascade. Asks Stagehand
+ * to observe the page filtered by the step's instruction; returns "absent"
+ * when zero candidates come back. Treat any thrown error (incl. timeout) as
+ * "present" — we don't want a flaky observe call to short-circuit into a
+ * replan when the cascade might still succeed; the cascade has its own
+ * timeouts and dump path.
+ *
+ * The cascade does this same call as attempt 2 today (line ~1278). Running
+ * it ahead of attempt 1 catches the failure mode confirmed by step-failures
+ * dumps 008 + 086: page state had drifted (e.g. flow expected the form page
+ * but the SPA was still on the resume-upload screen), so attempt 1's
+ * `stagehand.act(step)` chewed up an LLM call producing nothing useful. The
+ * probe lets us fail fast and feed the replanner a clean "no candidates"
+ * signal instead of "all 4 attempts failed."
+ */
+async function probeStepBeforeAttempts(params: {
+  stagehand: Stagehand;
+  step: string;
+  stepIndex: number;
+  logger: Logger;
+}): Promise<"present" | "absent"> {
+  const { stagehand, step, stepIndex, logger } = params;
+  try {
+    const candidates = await stagehand.observe(step, { timeout: STEP_WATCHDOG_MS });
+    if (candidates.length === 0) {
+      logger.info(
+        `step ${stepIndex + 1}: probe found 0 candidates — treating as absent (skip cascade, route to replan if required)`
+      );
+      return "absent";
+    }
+    logger.info(`step ${stepIndex + 1}: probe found ${candidates.length} candidate(s)`);
+    return "present";
+  } catch (err) {
+    // Bias toward the existing behavior on errors: don't trigger a spurious
+    // replan when the probe itself is the broken thing.
+    logger.warn(
+      `step ${stepIndex + 1}: probe threw ${toErrorMessage(err)} — treating as present (cascade will run)`
+    );
+    return "present";
+  }
+}
+
 async function executeStepWithHealing(params: {
   stagehand: Stagehand;
   page: Page;
@@ -1230,6 +1397,22 @@ async function executeStepWithHealing(params: {
     return;
   }
 
+  // Page-state probe BEFORE the cascade. When the page doesn't have any
+  // candidate matching the step's instruction we either skip cleanly
+  // (optional) or escalate straight to replan (required) — far cheaper than
+  // burning 4 attempts on a page that clearly isn't the right one.
+  const probeResult = await probeStepBeforeAttempts({ stagehand, step, stepIndex, logger });
+  if (probeResult === "absent") {
+    if (optional) {
+      logger.info(`step ${stepIndex + 1} skipped (optional, probe found no candidates)`);
+      return;
+    }
+    throw new StepVerificationError(
+      `step ${stepIndex + 1} (${step.slice(0, 60)}) probe found no candidates on page`,
+      "probe-absent"
+    );
+  }
+
   for (let attempt = 1; attempt <= MAX_STEP_ATTEMPTS; attempt++) {
     if (attempt > 1) {
       await page.waitForTimeout(attempt * ATTEMPT_BACKOFF_MS);
@@ -1260,22 +1443,20 @@ async function executeStepWithHealing(params: {
       if (attempt === 1) {
         record.technique = "act-string";
         record.instruction = step;
-        const result = await stagehand.act(step);
+        const result = await stagehand.act(step, { timeout: STEP_WATCHDOG_MS });
         record.actResultSuccess = result.success;
         record.actResultDescription = result.actionDescription;
         for (const action of result.actions ?? []) {
           if (action.selector) triedSelectors.push(action.selector);
           if (!resolvedAction) resolvedAction = action;
         }
-      } else if (attempt === 2 || attempt === 3) {
+      } else if (attempt === 2 || attempt === 4) {
         record.technique = attempt === 2 ? "observe-act" : "observe-act-exclude";
         const observeOptions =
-          attempt === 3 && triedSelectors.length > 0
-            ? { ignoreSelectors: [...triedSelectors] }
-            : undefined;
-        const candidates = observeOptions
-          ? await stagehand.observe(step, observeOptions)
-          : await stagehand.observe(step);
+          attempt === 4 && triedSelectors.length > 0
+            ? { ignoreSelectors: [...triedSelectors], timeout: STEP_WATCHDOG_MS }
+            : { timeout: STEP_WATCHDOG_MS };
+        const candidates = await stagehand.observe(step, observeOptions);
         if (candidates.length === 0) {
           record.errorMessage = "observe returned no candidates";
           // Optional-step short-circuit: when attempt 2 confirms no candidates
@@ -1297,19 +1478,143 @@ async function executeStepWithHealing(params: {
           record.instruction = target.description;
           triedSelectors.push(target.selector);
           record.triedSelectors = [target.selector];
-          const result = await stagehand.act(target);
+          const result = await stagehand.act(target, { timeout: STEP_WATCHDOG_MS });
           record.actResultSuccess = result.success;
           record.actResultDescription = result.actionDescription;
           // observe(...)[0] is what Stagehand acted on; use it directly when
           // result.actions[] is empty (some Stagehand paths don't echo it back).
           resolvedAction = result.actions?.[0] ?? target;
         }
+      } else if (attempt === 3) {
+        // Structured-click cascade. Site-agnostic recovery for steps where
+        // Stagehand's CDP click landed on the visible UI but the underlying
+        // checkable <input> didn't actually toggle — the common case is a
+        // <label>-wrapped HIDDEN <input type="radio|checkbox">, where the
+        // browser's default label-click action does NOT toggle .checked for
+        // hidden inputs (Bootstrap, Tailwind, plain HTML labels-control,
+        // Angular Material's mat-radio-button, PrimeNG's p-radioButton, and
+        // custom Angular components like AppCast's app-radio-button all fit
+        // this shape). The framework's FormControl/state listens on the
+        // input's `change` event, which never fires when the visible click
+        // never reaches a clickable input — so the form stays invalid even
+        // though the visual state looks correct.
+        //
+        // Strategy: take the most-recently-tried selector, walk to a nearby
+        // checkable input (descendant / closest('label') / closest(framework
+        // wrapper)), then try three CLICK targets in order — label[for=id],
+        // closest('label'), closest(framework-wrapper) — checking
+        // input.checked after each. The clicks fire via DOM element.click()
+        // (not CDP) so they go through the page's own event pipeline and
+        // engage framework reactivity in zone/synthetic-event handlers.
+        //
+        // No-op when the resolved selector doesn't map to a checkable input
+        // shape (real button/link clicks, fills, etc.) — those steps fall
+        // through to attempts 4 + 5 with the cascade attempt slot "wasted"
+        // only in the sense of a fast skip + STEP_PAUSE_MS.
+        record.technique = "structured-click";
+        // resolvedAction is declared `Action | null` outside this branch
+        // (line above the for-loop). TS narrows it to `null` inside the
+        // attempt-3 branch because no code path within this attempt's
+        // try-block has assigned to it yet — explicit cast keeps the read
+        // type-safe without restructuring the outer declaration.
+        const prior = resolvedAction as Action | null;
+        const lastSelector = triedSelectors[triedSelectors.length - 1] ?? prior?.selector ?? null;
+        const xpath = lastSelector ? xpathBody(lastSelector) : null;
+        if (!xpath) {
+          record.errorMessage = "structured-click: no xpath from prior attempt";
+        } else {
+          // Trust boundary: xpath comes from Stagehand's own resolved
+          // selector during a prior attempt of THIS step, not from URL
+          // / user input. JSON.stringify produces a safe JS string literal
+          // for the composed page.evaluate expression.
+          const probeExpr = `(() => {
+            const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+            const start = r.singleNodeValue;
+            if (!start) return { resolved: false };
+            const isCheckable = (n) => n && n.tagName === "INPUT" && (n.type === "radio" || n.type === "checkbox");
+            // Find the checkable input reachable from the start element.
+            // Order: itself → ancestor label → ancestor framework wrapper →
+            // first descendant.
+            let input = isCheckable(start) ? start : null;
+            if (!input) {
+              const ancLabel = start.closest ? start.closest("label") : null;
+              if (ancLabel) input = ancLabel.querySelector('input[type="radio"], input[type="checkbox"]');
+            }
+            if (!input) {
+              const ancWrapper = start.closest ? start.closest("app-radio-button, app-checkbox, mat-radio-button, mat-checkbox, p-radioButton, p-checkbox, [role='radiogroup'], fieldset") : null;
+              if (ancWrapper) input = ancWrapper.querySelector('input[type="radio"], input[type="checkbox"]');
+            }
+            if (!input && start.querySelector) {
+              input = start.querySelector('input[type="radio"], input[type="checkbox"]');
+            }
+            if (!input) return { resolved: true, isCheckable: false };
+            // Strategy 1: label[for=id]
+            if (input.id) {
+              const lbl = document.querySelector('label[for="' + CSS.escape(input.id) + '"]');
+              if (lbl && lbl.scrollIntoView) {
+                lbl.scrollIntoView({ block: "center", inline: "center" });
+                lbl.click();
+                if (input.checked === true) return { resolved: true, isCheckable: true, checked: true, strategyUsed: "label-for" };
+              }
+            }
+            // Strategy 2: input.closest("label")
+            const parentLbl = input.closest("label");
+            if (parentLbl && parentLbl.scrollIntoView) {
+              parentLbl.scrollIntoView({ block: "center", inline: "center" });
+              parentLbl.click();
+              if (input.checked === true) return { resolved: true, isCheckable: true, checked: true, strategyUsed: "parent-label" };
+            }
+            // Strategy 3: closest framework wrapper
+            const wrap = input.closest("app-radio-button, app-checkbox, mat-radio-button, mat-checkbox, p-radioButton, p-checkbox");
+            if (wrap && wrap.scrollIntoView) {
+              wrap.scrollIntoView({ block: "center", inline: "center" });
+              wrap.click();
+              if (input.checked === true) return { resolved: true, isCheckable: true, checked: true, strategyUsed: "wrapper" };
+            }
+            return { resolved: true, isCheckable: true, checked: false, strategyUsed: null };
+          })()`;
+          try {
+            const result = await page.evaluate(probeExpr);
+            if (result !== null && typeof result === "object" && "resolved" in result) {
+              const probe = result as {
+                resolved: boolean;
+                isCheckable?: boolean;
+                checked?: boolean;
+                strategyUsed?: string | null;
+              };
+              if (probe.resolved !== true || probe.isCheckable !== true) {
+                record.errorMessage =
+                  "structured-click: no checkable input reachable from prior selector";
+              } else if (probe.checked === true && probe.strategyUsed) {
+                record.instruction = `structured-click via ${probe.strategyUsed}`;
+                record.actResultSuccess = true;
+                record.actResultDescription = `structured-click cascade clicked ${probe.strategyUsed} → input.checked=true`;
+                // Synthesize a click action so verifyDomEffect downstream
+                // routes through its radio/checkbox isChecked() path.
+                resolvedAction = {
+                  selector: lastSelector!,
+                  description: "structured-click",
+                  method: "click",
+                };
+              } else {
+                record.errorMessage =
+                  "structured-click: cascade exhausted (no strategy left input.checked)";
+              }
+            } else {
+              record.errorMessage = "structured-click: probe returned unexpected shape";
+            }
+          } catch (err) {
+            record.errorMessage = `structured-click: probe threw ${toErrorMessage(err)}`;
+          }
+        }
       } else {
         record.technique = "llm-rephrase";
         if (!anthropic) {
           record.errorMessage = "no anthropic client (bedrock-only deployment); skipping rephrase";
         } else {
-          const candidates = await stagehand.observe(step).catch(() => [] as Action[]);
+          const candidates = await stagehand
+            .observe(step, { timeout: STEP_WATCHDOG_MS })
+            .catch(() => [] as Action[]);
           const rephrased = await rephraseWithLLM(
             anthropic,
             step,
@@ -1322,7 +1627,7 @@ async function executeStepWithHealing(params: {
             record.errorMessage = "llm declined to rephrase or returned IMPOSSIBLE";
           } else {
             record.instruction = rephrased;
-            const result = await stagehand.act(rephrased);
+            const result = await stagehand.act(rephrased, { timeout: STEP_WATCHDOG_MS });
             record.actResultSuccess = result.success;
             record.actResultDescription = result.actionDescription;
             for (const action of result.actions ?? []) {
@@ -1470,7 +1775,9 @@ async function executeStepWithHealing(params: {
     );
   }
 
-  const finalObserve = await stagehand.observe(step).catch(() => [] as Action[]);
+  const finalObserve = await stagehand
+    .observe(step, { timeout: STEP_WATCHDOG_MS })
+    .catch(() => [] as Action[]);
   const pageTitle = await page.title().catch(() => "");
   // Discriminator data for "Stagehand sees nothing" failures: capture the raw
   // DOM and an unfocused observe so a triager can tell empty-page from
@@ -1480,7 +1787,9 @@ async function executeStepWithHealing(params: {
     .catch(() => null);
   const bodyOuterHtml =
     typeof bodyOuterHtmlRaw === "string" ? bodyOuterHtmlRaw.slice(0, 100_000) : null;
-  const unfocusedObserve = await stagehand.observe().catch(() => [] as Action[]);
+  const unfocusedObserve = await stagehand
+    .observe({ timeout: STEP_WATCHDOG_MS })
+    .catch(() => [] as Action[]);
   const dumpPath = dumpStepFailure({
     stepIndex,
     phase,
@@ -1497,7 +1806,8 @@ async function executeStepWithHealing(params: {
     `step ${stepIndex + 1} failed after ${MAX_STEP_ATTEMPTS} attempts; diagnostic bundle: ${dumpPath}`
   );
   throw new StepVerificationError(
-    `step ${stepIndex + 1} (${step.slice(0, 60)}) failed verification after ${MAX_STEP_ATTEMPTS} attempts; see ${dumpPath}`
+    `step ${stepIndex + 1} (${step.slice(0, 60)}) failed verification after ${MAX_STEP_ATTEMPTS} attempts; see ${dumpPath}`,
+    "cascade-exhausted"
   );
 }
 
@@ -1507,8 +1817,12 @@ const DEFAULT_RESUME_FIXTURE_PATH = "src/sites/_shared/fixtures/resume.pdf";
 function parseCli(): {
   url: string;
   flow: NormalizedStep[];
+  flowFile: string | null;
   provider: ProviderName | undefined;
   resumeFixturePath: string;
+  saveReplan: boolean;
+  advancedStealth: boolean;
+  dumpDomBeforeStep: number | null;
 } {
   const args = process.argv.slice(2);
   let url = "";
@@ -1517,6 +1831,9 @@ function parseCli(): {
   let provider: ProviderName | undefined;
   // Precedence: --resume-fixture flag > RESUME_FIXTURE_PATH env > default path.
   let resumeFixturePath = process.env.RESUME_FIXTURE_PATH || DEFAULT_RESUME_FIXTURE_PATH;
+  let saveReplan = true;
+  let advancedStealth = false;
+  let dumpDomBeforeStep: number | null = null;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--url" && args[i + 1]) {
@@ -1534,12 +1851,25 @@ function parseCli(): {
       provider = raw;
     } else if (args[i] === "--resume-fixture" && args[i + 1]) {
       resumeFixturePath = args[++i]!;
+    } else if (args[i] === "--no-save-replan") {
+      saveReplan = false;
+    } else if (args[i] === "--advanced-stealth") {
+      advancedStealth = true;
+    } else if (args[i] === "--dump-dom-before-step" && args[i + 1]) {
+      const n = Number.parseInt(args[++i]!, 10);
+      if (!Number.isInteger(n) || n < 1) {
+        logger.error(
+          `--dump-dom-before-step must be a positive integer (got ${JSON.stringify(args[i])})`
+        );
+        process.exit(1);
+      }
+      dumpDomBeforeStep = n;
     }
   }
 
   if (!url) {
     logger.error(
-      'usage: recon-browser.ts --url <url> [--flow \'["step1","step2"]\'] [--flow-file <path>] [--provider browserbase|steel] [--resume-fixture <path>]'
+      'usage: recon-browser.ts --url <url> [--flow \'["step1","step2"]\'] [--flow-file <path>] [--provider browserbase|steel] [--resume-fixture <path>] [--no-save-replan] [--advanced-stealth] [--dump-dom-before-step <N>]'
     );
     process.exit(1);
   }
@@ -1557,7 +1887,16 @@ function parseCli(): {
   }
 
   if (rawFlow === null) {
-    return { url, flow: [], provider, resumeFixturePath };
+    return {
+      url,
+      flow: [],
+      flowFile,
+      provider,
+      resumeFixturePath,
+      saveReplan,
+      advancedStealth,
+      dumpDomBeforeStep,
+    };
   }
   const parsed = RECON_FLOW_SCHEMA.safeParse(rawFlow);
   if (!parsed.success) {
@@ -1567,8 +1906,12 @@ function parseCli(): {
   return {
     url,
     flow: normalizeFlow(parsed.data),
+    flowFile,
     provider,
     resumeFixturePath,
+    saveReplan,
+    advancedStealth,
+    dumpDomBeforeStep,
   };
 }
 
@@ -1600,15 +1943,24 @@ function loadResumeFixture(
 }
 
 async function main(): Promise<void> {
-  const { url, flow, provider, resumeFixturePath } = parseCli();
+  const {
+    url,
+    flow,
+    flowFile,
+    provider,
+    resumeFixturePath,
+    saveReplan,
+    advancedStealth,
+    dumpDomBeforeStep,
+  } = parseCli();
 
   mkdirSync(CAPTURES_DIR, { recursive: true });
   const resumeFixture = loadResumeFixture(resumeFixturePath);
   logger.info(
-    `recon-browser: target=${url} flow_steps=${flow.length} provider=${provider ?? "(config-default)"} resume_fixture=${resumeFixture ? `${resumeFixturePath} (${resumeFixture.buffer.length}b)` : "(missing)"} out=${CAPTURES_DIR}`
+    `recon-browser: target=${url} flow_steps=${flow.length} provider=${provider ?? "(config-default)"} advancedStealth=${advancedStealth} resume_fixture=${resumeFixture ? `${resumeFixturePath} (${resumeFixture.buffer.length}b)` : "(missing)"} out=${CAPTURES_DIR}`
   );
 
-  const session = await createBrowserSession({ provider });
+  const session = await createBrowserSession({ provider, advancedStealth });
   // `counter` indexes captures on disk (filenames must stay unique).
   // `signalCounter` drives the verifier — only non-GET methods increment
   // it so coincident polling/page-load GETs don't falsely "verify" a
@@ -1655,7 +2007,9 @@ async function main(): Promise<void> {
 
     const plan: NormalizedStep[] = [...flow];
     const completedSteps: string[] = [];
-    let replansUsed = 0;
+    let probeReplansUsed = 0;
+    let cascadeReplansUsed = 0;
+    const replanEvents: ReplanEvent[] = [];
 
     for (let i = 0; i < plan.length; i++) {
       const step = plan[i]!;
@@ -1668,6 +2022,25 @@ async function main(): Promise<void> {
       logger.info(
         `step ${i + 1}/${plan.length} [${currentPhase}]${step.optional ? " (optional)" : ""}: ${step.instruction}`
       );
+      // Debug: dump the full DOM right before this step's cascade runs. Lets
+      // a triager see the page state exactly as the cascade sees it, without
+      // re-running. One-shot per recon run via --dump-dom-before-step.
+      if (dumpDomBeforeStep !== null && i + 1 === dumpDomBeforeStep) {
+        try {
+          const html = await page.evaluate(
+            "document.documentElement ? document.documentElement.outerHTML : ''"
+          );
+          if (typeof html === "string" && html.length > 0) {
+            const dumpPath = join(CAPTURES_DIR, `..`, `dom-dump-step-${i + 1}.html`);
+            writeFileSync(dumpPath, html);
+            logger.info(`step ${i + 1}: wrote DOM dump (${html.length} bytes) to ${dumpPath}`);
+          } else {
+            logger.warn(`step ${i + 1}: DOM dump returned empty content; skipping write`);
+          }
+        } catch (err) {
+          logger.warn(`step ${i + 1}: DOM dump failed: ${toErrorMessage(err)}`);
+        }
+      }
       try {
         await executeStepWithHealing({
           stagehand,
@@ -1708,14 +2081,29 @@ async function main(): Promise<void> {
           }
         }
 
-        if (!anthropic || replansUsed >= MAX_REPLANS) throw err;
+        if (!anthropic) throw err;
 
-        replansUsed++;
+        // Cause-based replan budget. Probe replans are cheap (one observe +
+        // one LLM call to detect "wrong page"), cascade replans are expensive
+        // (four attempts × backoff + observe + LLM rephrase before we know
+        // the step is unrecoverable). Separate budgets so cheap recoveries
+        // don't eat into the budget reserved for expensive ones.
+        const isProbe = err.kind === "probe-absent";
+        const budget = isProbe ? MAX_PROBE_REPLANS : MAX_CASCADE_REPLANS;
+        const usedSoFar = isProbe ? probeReplansUsed : cascadeReplansUsed;
+        if (usedSoFar >= budget) {
+          logger.error(
+            `step ${i + 1} ${err.kind} replan budget exhausted (${usedSoFar}/${budget}); aborting`
+          );
+          throw err;
+        }
+
+        const replanIndex = replanEvents.length + 1;
         const originalRemaining = plan.slice(i + 1);
         const dumpMatch = err.message.match(/see (\/[^\s]+)$/);
         const dumpPath = dumpMatch ? dumpMatch[1]! : "";
         logger.warn(
-          `step ${i + 1} terminally failed; attempting global replan #${replansUsed}/${MAX_REPLANS}`
+          `step ${i + 1} terminally failed (${err.kind}); attempting global replan #${replanIndex} (${isProbe ? "probe" : "cascade"} budget ${usedSoFar + 1}/${budget})`
         );
 
         const newSteps = await replanRemainingFlow({
@@ -1731,21 +2119,35 @@ async function main(): Promise<void> {
 
         if (!newSteps) {
           logger.error(
-            `replan #${replansUsed} returned IMPOSSIBLE or unparseable output; aborting`
+            `replan #${replanIndex} returned IMPOSSIBLE or unparseable output; aborting`
           );
           throw err;
         }
 
+        if (isProbe) {
+          probeReplansUsed++;
+        } else {
+          cascadeReplansUsed++;
+        }
+        replanEvents.push({
+          replanIndex,
+          cause: err.kind,
+          indexAtFailure: i,
+          failedInstruction: step.instruction,
+          replanSteps: newSteps,
+          timestamp: formatISO(new Date()),
+        });
+
         const replanPath = dumpReplanRecord({
           stepIndex: i,
           phase: currentPhase,
-          replanIndex: replansUsed,
+          replanIndex,
           completedSteps,
           originalRemaining: originalRemaining.map((s) => s.instruction),
           newRemaining: newSteps.map((s) => s.instruction),
         });
         logger.info(
-          `replan #${replansUsed} produced ${newSteps.length} new step(s); resuming (record: ${replanPath})`
+          `replan #${replanIndex} produced ${newSteps.length} new step(s); resuming (record: ${replanPath})`
         );
         for (const [j, s] of newSteps.entries()) {
           logger.info(
@@ -1767,6 +2169,25 @@ async function main(): Promise<void> {
 
     stopCapture();
     logger.info(`recon complete — ${counter.n} captures written to ${CAPTURES_DIR}`);
+
+    // Replay-the-discovered-path: if any replan fired and the user provided a
+    // flow file, write the improved plan back so the next run starts where
+    // this one ended up. Skipped on --no-save-replan (diagnostic dry-runs)
+    // and when --flow was used inline (no file to write back to).
+    if (replanEvents.length > 0) {
+      if (!saveReplan) {
+        logger.info(
+          `run completed with ${replanEvents.length} replan event(s); --no-save-replan, leaving flow.json unchanged`
+        );
+      } else if (!flowFile) {
+        logger.info(
+          `run completed with ${replanEvents.length} replan event(s); --flow used (no file to write back to)`
+        );
+      } else {
+        logger.info(`run completed; writing flow.json with ${replanEvents.length} replan event(s)`);
+        persistReplannedFlow({ flowFile, finalPlan: plan, replanEvents, logger });
+      }
+    }
   } finally {
     await session.close();
   }
@@ -1786,6 +2207,7 @@ if (
   });
 }
 
+export type { NormalizedStep, ReplanEvent };
 // Test-only exports — allow unit tests to inject a fake capture sink without
 // touching the main() entry-point or the real browser session.
-export { rephraseWithLLM, replanRemainingFlow };
+export { denormalizeStep, persistReplannedFlow, rephraseWithLLM, replanRemainingFlow };

@@ -83,15 +83,30 @@ export class UnknownScraperError extends ScraperError {
 }
 
 /**
- * Recon-only: a flow step in recon-browser.ts exhausted its self-healing
- * retry cascade without producing an observable effect (no network call,
- * no URL change). Non-retryable — the recon-browser loop itself owns the
- * four-attempt cascade, so by the time this throws the human needs to
- * edit the flow text. The runtime path never sees this.
+ * Recon-only: a flow step in recon-browser.ts could not be acted on. Two
+ * variants per `kind`:
+ *
+ *   - "cascade-exhausted": the full 4-attempt self-healing cascade ran and
+ *     none of the attempts produced an observable effect. Expensive (the
+ *     cascade burned its full LLM/observe budget) — counted against the
+ *     cascade replan budget.
+ *   - "probe-absent": the cheap page-state probe ran BEFORE the cascade
+ *     and observed zero candidates for the step's instruction. We skip the
+ *     cascade and ask for a replan immediately because the page state is
+ *     clearly off (e.g. flow expected the form-fill page but the SPA is
+ *     still on the resume-upload screen). Cheap (~1 observe + 1 LLM call)
+ *     — counted against the probe replan budget.
+ *
+ * Non-retryable — the runtime path never sees this.
  */
 export class StepVerificationError extends ScraperError {
-  constructor(message = "recon step failed verification after all heal attempts") {
+  readonly kind: "cascade-exhausted" | "probe-absent";
+  constructor(
+    message = "recon step failed verification after all heal attempts",
+    kind: "cascade-exhausted" | "probe-absent" = "cascade-exhausted"
+  ) {
     super(message, false);
+    this.kind = kind;
   }
 }
 
