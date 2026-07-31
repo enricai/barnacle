@@ -25,6 +25,9 @@ export const TEST_PERSONA = {
     /** Full state name for forms that want the long form (e.g. ClearCompany). */
     StateName: "Texas",
     PostalCode: "78701",
+    /** Texas county for Austin. Required by tenants (Encompass Health, etc.)
+     * that nest a County field inside the Address group. */
+    County: "Travis County",
     /** Long-form for `<select>`s that show country names. */
     CountryName: "United States",
     /** Two-letter code for ISO-3166-style inputs. */

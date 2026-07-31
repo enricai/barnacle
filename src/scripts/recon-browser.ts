@@ -134,8 +134,9 @@ function wireNetworkCapture(
   counter: { n: number },
   signalCounter: { n: number },
   recentCaptures: string[],
-  recentCaptureMeta: { method: string; status: number }[],
-  getCurrentPhase: () => string
+  recentCaptureMeta: { method: string; status: number; url: string }[],
+  getCurrentPhase: () => string,
+  getCurrentPageOrigin: () => string
 ): () => void {
   const session = page.getSessionForFrame(page.mainFrameId());
   const inFlight = new Map<string, InFlightRequest>();
@@ -213,19 +214,33 @@ function wireNetworkCapture(
     const idx = String(counter.n++).padStart(3, "0");
     // The verifier reads `signalCounter` (not `counter`) so background polls
     // and page-load chrome don't poison the "did this action cause something"
-    // signal. We approximate "action-driven" with "non-GET method": real form
-    // submits, uploads, and state-change calls are POST/PUT/PATCH/DELETE.
-    // GETs are page-load chrome, polls, and idle prefetches — none of which
-    // are caused by the user step we just executed.
+    // signal. We approximate "action-driven" with two closed-set
+    // discriminators:
+    //   1. Non-GET method (real form submits/uploads/state-changes are
+    //      POST/PUT/PATCH/DELETE; GETs are page-load chrome and polls).
+    //   2. Same-origin as the page. Cross-origin POSTs are tracking-pixel
+    //      beacons (analytics, ad networks, bot-protection telemetry) that
+    //      fire on any click. Counting them poisons the verifier: a
+    //      submit-button click that fired only telemetry would be
+    //      indistinguishable from one that fired the real submit XHR, and
+    //      the cascade would silently declare victory while no actual
+    //      submission happened.
     //
-    // This replaces a prior URL-shape regex (POLLING_URL_PATTERNS) that
-    // misclassified jQuery-cache-busted page-load GETs as polls. See
-    // feedback_no_regex_open_sets — URL classification is an open-set
-    // problem; HTTP method is a closed-set discriminator.
+    // The method discriminator replaces a prior URL-shape regex
+    // (POLLING_URL_PATTERNS) that misclassified jQuery-cache-busted
+    // page-load GETs as polls. See feedback_no_regex_open_sets — URL
+    // classification is an open-set problem; HTTP method and origin
+    // are closed-set discriminators.
     //
-    // Filename indexing stays on `counter` so polls still get unique
-    // filenames on disk.
-    if (req.method !== "GET") {
+    // Filename indexing stays on `counter` so polls and cross-origin
+    // captures still get unique filenames on disk.
+    let sameOrigin = false;
+    try {
+      sameOrigin = new URL(req.url).origin === getCurrentPageOrigin();
+    } catch {
+      // Opaque CDP URLs (data:, blob:, malformed) — treat as not same-origin.
+    }
+    if (req.method !== "GET" && sameOrigin) {
       signalCounter.n++;
     }
     const opLabel = operationName ?? new URL(req.url).pathname.split("/").pop() ?? "unknown";
@@ -261,13 +276,18 @@ function wireNetworkCapture(
     if (recentCaptures.length > RECENT_CAPTURES_WINDOW) {
       recentCaptures.splice(0, recentCaptures.length - RECENT_CAPTURES_WINDOW);
     }
-    // GETs are static asset chunks, polls, and idle prefetches — none are
-    // user-action signals. Filter them out at the source so Tier 1's mutation
-    // window (size RECENT_CAPTURES_WINDOW) doesn't get washed out by SPA
-    // chunk loads between meaningful mutations. Same discriminator signalCounter
+    // GETs are static asset chunks, polls, and idle prefetches; cross-origin
+    // captures are tracking-pixel beacons. Neither is a user-action signal.
+    // Filter both at the source so Tier 1's mutation window (size
+    // RECENT_CAPTURES_WINDOW) doesn't get washed out by SPA chunk loads or GA
+    // pings between meaningful mutations. Same discriminator signalCounter
     // uses for the per-step verifier.
-    if (capture.method !== "GET") {
-      recentCaptureMeta.push({ method: capture.method, status: capture.status });
+    if (capture.method !== "GET" && sameOrigin) {
+      recentCaptureMeta.push({
+        method: capture.method,
+        status: capture.status,
+        url: capture.url,
+      });
       if (recentCaptureMeta.length > RECENT_CAPTURES_WINDOW) {
         recentCaptureMeta.splice(0, recentCaptureMeta.length - RECENT_CAPTURES_WINDOW);
       }
@@ -443,14 +463,39 @@ async function rephraseWithLLM(
   triedSelectors: string[],
   observeCandidates: Action[],
   failureReasons: string[],
-  captureFn: CaptureFn = captureLlmCall
+  captureFn: CaptureFn = captureLlmCall,
+  /**
+   * Optional live-page form evidence extracted by the caller (typically by
+   * fetching document.body.outerHTML and running extractClassMatchedText on
+   * it). When non-empty, surfaces ng-invalid form fields and visible error
+   * messages so the rephrase LLM can propose corrective fills instead of
+   * just "click harder" — the previous limitation observed in the
+   * telemetry of the appcast Encompass run (every rephrase converged on
+   * "Click Submit Application using JavaScript" because the prompt had no
+   * signal that the form was invalid).
+   */
+  pageEvidence?: { invalidFieldList: string; errorTextList: string },
+  /**
+   * Optional unfocused observe list. The default `observeCandidates` is
+   * Stagehand's observe filtered by the FAILED STEP'S INSTRUCTION — when
+   * that step is "click submit," candidates collapse to "Submit button"
+   * and any modals/dialogs blocking submit stay invisible to the LLM.
+   * Pass an unfocused observe (stagehand.observe() with no instruction)
+   * here so the rephrase prompt can see ambient UI like modal Save/Close
+   * buttons that the failed step's instruction filter hid. Modal entries
+   * are prioritized to the top by `renderUnfocusedObserve`.
+   */
+  unfocusedObserve?: Action[]
 ): Promise<string | null> {
   const candidateList = observeCandidates
     .slice(0, 12)
     .map((a, i) => `${i + 1}. ${a.description} — ${a.selector}`)
     .join("\n");
+  const unfocusedList = unfocusedObserve ? renderUnfocusedObserve(unfocusedObserve) : "";
   const triedList = triedSelectors.length > 0 ? triedSelectors.join("\n") : "(none)";
   const reasonList = failureReasons.map((r, i) => `attempt ${i + 1}: ${r}`).join("\n");
+  const invalidFieldList = pageEvidence?.invalidFieldList ?? "";
+  const errorTextList = pageEvidence?.errorTextList ?? "";
 
   const prompt = `You are helping a browser automation agent recover from a failed step in a recon flow.
 
@@ -463,10 +508,19 @@ ${reasonList}
 SELECTORS ALREADY TRIED (avoid these):
 ${triedList}
 
-ELEMENTS CURRENTLY VISIBLE ON THE PAGE:
+ELEMENTS CURRENTLY VISIBLE ON THE PAGE (filtered by the failed instruction):
 ${candidateList || "(no candidates returned by observe)"}
 
-Rewrite the instruction so a Stagehand act() call can resolve it unambiguously to a different element than the ones already tried. Keep it short — one sentence, natural language, no quotes around it. If the original instruction is itself impossible on the current page (the element does not exist), reply with the literal string IMPOSSIBLE so the caller can stop trying.`;
+UNFOCUSED OBSERVE (what Stagehand sees on the page without any instruction filter — modal/dialog/overlay/popup entries are prioritized; use this to detect blocking UI like open modals with Save buttons that the focused observe above hid):
+${unfocusedList || "(none)"}
+
+FORM FIELDS CURRENTLY MARKED INVALID (text + class signature for any element whose class matches the framework-agnostic invalid pattern — ng-invalid, mat-form-field-invalid, is-invalid, etc. — use this to detect "filled a field, then a downstream re-render wiped it" patterns where the verifier reports no observable effect but the form is actually invalid):
+${invalidFieldList || "(none)"}
+
+VISIBLE ERROR / REQUIRED-FIELD MESSAGES ON THE PAGE (extracted text from error-class containers):
+${errorTextList || "(none)"}
+
+Rewrite the instruction so a Stagehand act() call can resolve it unambiguously to a different element than the ones already tried. Keep it short — one sentence, natural language, no quotes around it. If the invalid-fields section above names a field, your rewrite SHOULD address that field (e.g. re-fill it) rather than retrying the original click. If the unfocused observe section shows an open modal/dialog with a Save or Close action, your rewrite SHOULD invoke that action so the underlying form can clear its blocking state. If the original instruction is itself impossible on the current page (the element does not exist), reply with the literal string IMPOSSIBLE so the caller can stop trying.`;
 
   const model = anthropicModelName();
   const t0 = performance.now();
@@ -549,6 +603,28 @@ const RECON_FLOW_STEP_SCHEMA = z.union([
 ]);
 const RECON_FLOW_SCHEMA = z.array(RECON_FLOW_STEP_SCHEMA).min(1);
 
+/**
+ * Two on-disk shapes are accepted:
+ *
+ *  1. Legacy bare array — every existing site flow file uses this.
+ *  2. Object form — adds an optional `submitEndpointPattern` regex. When
+ *     set, the final flow step's verifier additionally requires at least
+ *     one same-origin capture in its mutation window whose URL matches the
+ *     pattern. Without that match `verified=false`, even if the click
+ *     produced a DOM mutation — which is the only way the self-healing
+ *     cascade can detect "the click fired tracking but not the real
+ *     submit XHR."
+ *
+ * Both forms route through `parseReconFlow` into a shared internal record.
+ */
+const RECON_FLOW_FILE_SCHEMA = z.union([
+  RECON_FLOW_SCHEMA,
+  z.object({
+    steps: RECON_FLOW_SCHEMA,
+    submitEndpointPattern: z.string().min(1).optional(),
+  }),
+]);
+
 /** Internal normalized step shape. Source-flow strings normalize with all flags false. */
 interface NormalizedStep {
   instruction: string;
@@ -602,6 +678,37 @@ function denormalizeStep(
 }
 
 /**
+ * Collapse any consecutive run of structurally-identical denormalized
+ * steps into a single entry. Used by `persistReplannedFlow` before write-
+ * back so cumulative-replan noise (each cascade-exhausted replan adds the
+ * same recovery bridge to the tail; after 5 replans the persisted file
+ * carries 5 stacked copies) doesn't pollute the on-disk flow.
+ *
+ * Comparison is structural via JSON-stringify equality:
+ * - Two strings with the same value collapse.
+ * - Two objects with the same {step, optional, upload} collapse.
+ * - A string and an object with the same instruction do NOT collapse — they
+ *   are semantically different (bare = required, object = could be optional
+ *   or upload).
+ *
+ * Only CONSECUTIVE duplicates collapse. A non-adjacent repeat is preserved
+ * since flow authors sometimes intentionally re-fill a field after a
+ * downstream interaction (e.g. re-fill First Name after the resume upload
+ * triggers an Angular re-render). Adjacent duplicates are almost always
+ * accumulation noise from successive replans converging on the same idea.
+ */
+function dedupeConsecutiveIdentical<T>(items: T[]): T[] {
+  if (items.length < 2) return [...items];
+  const out: T[] = [items[0]!];
+  for (let i = 1; i < items.length; i++) {
+    const prev = JSON.stringify(out[out.length - 1]);
+    const curr = JSON.stringify(items[i]);
+    if (prev !== curr) out.push(items[i]!);
+  }
+  return out;
+}
+
+/**
  * Write-back at the end of a successful recon: back up the original file
  * bytes verbatim (so a subtle denormalization bug can never lose the user's
  * hand-authored flow), then write the in-memory plan back out and log a
@@ -618,8 +725,24 @@ function persistReplannedFlow(params: {
   finalPlan: NormalizedStep[];
   replanEvents: ReplanEvent[];
   logger: Logger;
+  /**
+   * Preserves the user's on-disk shape — bare array stays bare array,
+   * object form stays object form. Defaults to "array" for back-compat with
+   * older callers (tests, internal scripts) that don't know about the
+   * object form yet.
+   */
+  originalShape?: "array" | "object";
+  /** Carried through when the original file declared a submit pattern. */
+  submitEndpointPattern?: string | null;
 }): void {
-  const { flowFile, finalPlan, replanEvents, logger } = params;
+  const {
+    flowFile,
+    finalPlan,
+    replanEvents,
+    logger,
+    originalShape = "array",
+    submitEndpointPattern = null,
+  } = params;
   // Timestamp format chosen to be filesystem-safe (no colons or dots that
   // break common tooling on macOS/Windows).
   const timestamp = format(new Date(), "yyyy-MM-dd'T'HH-mm-ss");
@@ -638,10 +761,27 @@ function persistReplannedFlow(params: {
   }
   writeFileSync(backupPath, originalBytes);
 
-  const denormalized = finalPlan.map(denormalizeStep);
+  const denormalizedSteps = finalPlan.map(denormalizeStep);
+  // Cumulative-replan dedupe: each cascade-exhausted replan appends a
+  // recovery bridge to the tail; after several replans the persisted flow
+  // would carry stacked copies of the same bridge. Collapse them so the
+  // user reviewing the diff sees only the distinct LLM-discovered steps.
+  const dedupedSteps = dedupeConsecutiveIdentical(denormalizedSteps);
   // 2-space indent + trailing newline matches the existing on-disk style
-  // (verified against clearcompany/appcast/getgreatcareers recon-flow.json).
-  writeFileSync(flowFile, `${JSON.stringify(denormalized, null, 2)}\n`);
+  // (verified against site recon-flow.json files).
+  const payload =
+    originalShape === "object"
+      ? {
+          steps: dedupedSteps,
+          ...(submitEndpointPattern !== null ? { submitEndpointPattern } : {}),
+        }
+      : dedupedSteps;
+  writeFileSync(flowFile, `${JSON.stringify(payload, null, 2)}\n`);
+  if (dedupedSteps.length !== denormalizedSteps.length) {
+    logger.info(
+      `dedupe collapsed ${denormalizedSteps.length - dedupedSteps.length} consecutive identical step(s) before write-back`
+    );
+  }
 
   // Summary log block — emit each line through the Pino logger so the dev
   // transport renders it nicely and the prod JSON output stays structured.
@@ -683,25 +823,202 @@ const REPLAN_RESPONSE_SCHEMA = z.discriminatedUnion("outcome", [
  * LLM-filtered candidate list. The dump file is a trust boundary (anything
  * could be on disk), so the body field is type-narrowed before slicing.
  */
+/** Cap on per-list entries we feed back into the LLM prompt — keeps the
+ * prompt token budget bounded even on pathological pages with many invalid
+ * fields. Matches the existing `unfocusedList` slice for visual symmetry. */
+const EVIDENCE_LIST_CAP = 12;
+
+/** Cap on character-length of an evidence entry's text content. The point is
+ * the *label* and *error signature*, not a paragraph. Anything longer is
+ * almost certainly a layout container that swept up siblings. */
+const EVIDENCE_ENTRY_MAX_CHARS = 200;
+
+/**
+ * Strip HTML tags and condense whitespace. Cheap-and-cheerful — we only need
+ * a readable label, not faithful rendering. Decodes the handful of named
+ * entities that show up in form error messages.
+ */
+function stripHtml(html: string): string {
+  return html
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Cap on the unfocused-observe list rendered into LLM-recovery prompts. */
+const UNFOCUSED_OBSERVE_CAP = 30;
+
+/** Pattern matching the most actionable structural UI affordances — modals,
+ * dialogs, popups, overlays. Stagehand's observe describes elements in
+ * natural language using these terms, and the LLM-cascade gains the most
+ * leverage from seeing them surfaced because they usually indicate a
+ * pending interaction (Save/Close/Confirm) the cascade must complete
+ * before the form's enclosing validity clears. */
+const MODAL_PRIORITY_RX = /(modal|dialog|popup|overlay|drawer)/i;
+
+/**
+ * Render an unfocused-observe array into a numbered string the prompt can
+ * consume, prioritizing any modal/dialog/overlay/popup entries to the top
+ * regardless of their index in the raw list. Without this prefix, modals
+ * that Stagehand observes at index 70+ (verified against the prior run's
+ * dump — 11 modal entries lived at positions 64-79 of 80) get truncated
+ * away by the cap and the LLM-replan can't propose to save/close them.
+ */
+function renderUnfocusedObserve(
+  observations: Action[],
+  cap: number = UNFOCUSED_OBSERVE_CAP
+): string {
+  const modalHits: Action[] = [];
+  const others: Action[] = [];
+  for (const a of observations) {
+    const desc = a.description || "";
+    if (MODAL_PRIORITY_RX.test(desc)) {
+      modalHits.push(a);
+    } else {
+      others.push(a);
+    }
+  }
+  const combined = [...modalHits, ...others].slice(0, cap);
+  return combined.map((a, i) => `${i + 1}. ${a.description} — ${a.selector}`).join("\n");
+}
+
+/**
+ * Scan the page body HTML for opening tags whose class attribute matches a
+ * marker pattern. Returns a short text snippet from each match's
+ * immediately-following content (capped at EVIDENCE_ENTRY_MAX_CHARS) tagged
+ * with the relevant class signature.
+ *
+ * Pure string scan; no DOM parser. Intentionally only checks the class on
+ * each *opening tag* (not "this element's full subtree class signature") so
+ * nested invalid descendants don't get attributed to an outer valid parent
+ * via greedy matching of an outer-tag close. False positives are acceptable
+ * in an advisory evidence section — extra noise is strictly better than the
+ * current zero signal.
+ */
+function extractClassMatchedText(html: string, classPattern: RegExp, cap: number): string[] {
+  // Match each opening tag with a class attribute. No closing-tag anchor —
+  // we just look at content following the tag, up to a bounded window.
+  const tagPattern = /<([a-zA-Z][a-zA-Z0-9-]*)\b[^>]*?\bclass=("[^"]*"|'[^']*')[^>]*?>/g;
+  const entries: string[] = [];
+  let m: RegExpExecArray | null;
+  m = tagPattern.exec(html);
+  while (m !== null) {
+    const classValue = m[2]!.slice(1, -1);
+    if (classPattern.test(classValue)) {
+      // Look at up to 600 chars of HTML following this opening tag — enough
+      // to capture the label / first error-message text but bounded so a
+      // single match doesn't sweep up half the page.
+      const followingWindow = html.slice(m.index + m[0].length, m.index + m[0].length + 600);
+      const text = stripHtml(followingWindow).slice(0, EVIDENCE_ENTRY_MAX_CHARS);
+      if (text.length > 0) {
+        // Tag a short class fingerprint so the LLM can correlate signature
+        // patterns (e.g. "ng-invalid + ng-touched" = user-interacted invalid).
+        const classFingerprint = classValue
+          .split(/\s+/)
+          .filter((c) => classPattern.test(c) || /(invalid|error|required)/i.test(c))
+          .slice(0, 4)
+          .join(" ");
+        entries.push(`${text}${classFingerprint ? `  [${classFingerprint}]` : ""}`);
+        if (entries.length >= cap) break;
+      }
+    }
+    m = tagPattern.exec(html);
+  }
+  return entries;
+}
+
+/**
+ * Live-page sibling to `readFailureDumpEvidence` — fetches the current
+ * page body and runs the same framework-agnostic class scans. Used by the
+ * cascade's per-attempt rephrase path, which fires BEFORE the failure dump
+ * is written (the dump only happens after the whole cascade exhausts) and
+ * therefore can't read from disk.
+ *
+ * Returns empty strings on any failure (page.evaluate threw, body missing,
+ * etc.) — evidence is advisory, never load-bearing.
+ */
+async function extractLivePageFormEvidence(
+  page: Page
+): Promise<{ invalidFieldList: string; errorTextList: string }> {
+  let body = "";
+  try {
+    const raw = await page.evaluate("document.body ? document.body.outerHTML : null");
+    if (typeof raw === "string") body = raw;
+  } catch {
+    return { invalidFieldList: "", errorTextList: "" };
+  }
+  const invalidPattern =
+    /(ng-invalid|mat-form-field-invalid|is-invalid|field-invalid|input-invalid|form-invalid)/;
+  const errorPattern =
+    /(error-message|mat-error|field-error|validation-error|required-message|invalid-feedback|form-error|help-block-error)/;
+  const invalidEntries = extractClassMatchedText(body, invalidPattern, EVIDENCE_LIST_CAP);
+  const errorEntries = extractClassMatchedText(body, errorPattern, EVIDENCE_LIST_CAP);
+  return {
+    invalidFieldList: invalidEntries.map((e, i) => `${i + 1}. ${e}`).join("\n"),
+    errorTextList: errorEntries.map((e, i) => `${i + 1}. ${e}`).join("\n"),
+  };
+}
+
 function readFailureDumpEvidence(failureDumpPath: string): {
   bodyExcerpt: string;
   unfocusedList: string;
+  invalidFieldList: string;
+  errorTextList: string;
+  recentFailureReasons: string[];
 } {
   try {
     const dump = JSON.parse(readFileSync(failureDumpPath, "utf8")) as {
       bodyOuterHtml?: string | null;
       unfocusedObserve?: Action[];
+      attempts?: { errorMessage?: string | null }[];
     };
     const rawBody = dump.bodyOuterHtml;
     const bodyExcerpt = typeof rawBody === "string" ? rawBody.slice(0, 8000) : "";
-    const unfocusedList = (dump.unfocusedObserve ?? [])
-      .slice(0, 12)
-      .map((a, i) => `${i + 1}. ${a.description} — ${a.selector}`)
-      .join("\n");
-    return { bodyExcerpt, unfocusedList };
+    const unfocusedList = renderUnfocusedObserve(dump.unfocusedObserve ?? []);
+
+    const fullBody = typeof rawBody === "string" ? rawBody : "";
+    // Framework-agnostic invalid-state markers. Covers Angular (`ng-invalid`,
+    // `mat-form-field-invalid`), Bootstrap (`is-invalid`), and the generic
+    // `*-invalid` / `field-invalid` patterns most form libraries adopt.
+    const invalidPattern =
+      /(ng-invalid|mat-form-field-invalid|is-invalid|field-invalid|input-invalid|form-invalid)/;
+    const invalidEntries = extractClassMatchedText(fullBody, invalidPattern, EVIDENCE_LIST_CAP);
+    const invalidFieldList = invalidEntries.map((e, i) => `${i + 1}. ${e}`).join("\n");
+
+    // Visible error/required-message containers. The class-pattern union
+    // catches the common naming conventions across Material, Bootstrap,
+    // custom Angular forms, and React form libraries.
+    const errorPattern =
+      /(error-message|mat-error|field-error|validation-error|required-message|invalid-feedback|form-error|help-block-error)/;
+    const errorEntries = extractClassMatchedText(fullBody, errorPattern, EVIDENCE_LIST_CAP);
+    const errorTextList = errorEntries.map((e, i) => `${i + 1}. ${e}`).join("\n");
+
+    // Trailing slice of attempt error messages. The dump's per-attempt
+    // errorMessage carries the verifier's structured reason (e.g.
+    // `submit-endpoint-not-matched: pattern …`), which currently only the
+    // rephrase prompt sees. Surfacing them here gives the replan LLM the
+    // same context.
+    const recentFailureReasons = (dump.attempts ?? [])
+      .map((a) => (typeof a.errorMessage === "string" ? a.errorMessage.trim() : ""))
+      .filter((r): r is string => r.length > 0)
+      .slice(-5);
+
+    return { bodyExcerpt, unfocusedList, invalidFieldList, errorTextList, recentFailureReasons };
   } catch {
     // Swallowed by design: a missing dump must not fail the replan.
-    return { bodyExcerpt: "", unfocusedList: "" };
+    return {
+      bodyExcerpt: "",
+      unfocusedList: "",
+      invalidFieldList: "",
+      errorTextList: "",
+      recentFailureReasons: [],
+    };
   }
 }
 
@@ -735,16 +1052,15 @@ async function replanRemainingFlow(params: {
   const candidates = await stagehand
     .observe({ timeout: STEP_WATCHDOG_MS })
     .catch(() => [] as Action[]);
-  const candidateList = candidates
-    .slice(0, 12)
-    .map((a, i) => `${i + 1}. ${a.description} — ${a.selector}`)
-    .join("\n");
+  const candidateList = renderUnfocusedObserve(candidates);
   const pageTitle = await page.title().catch(() => "");
 
   // Without raw DOM in the prompt, the LLM only sees stagehand.observe()'s
   // filtered candidate list and hallucinates about surrounding state
   // (auth-wall reset, closed-message interstitial, etc.).
-  const { bodyExcerpt, unfocusedList } = readFailureDumpEvidence(failureDumpPath);
+  const { bodyExcerpt, unfocusedList, invalidFieldList, errorTextList, recentFailureReasons } =
+    readFailureDumpEvidence(failureDumpPath);
+  const failureReasonList = recentFailureReasons.map((r, i) => `${i + 1}. ${r}`).join("\n");
 
   const prompt = `You are helping a browser automation agent recover from a failed flow step.
 
@@ -763,6 +1079,15 @@ ${remainingSteps.length > 0 ? remainingSteps.map((s, i) => `${i + 1}. ${s}`).joi
 CURRENT BROWSER STATE:
 URL: ${page.url()}
 Title: ${pageTitle}
+
+WHY VERIFICATION FAILED (latest attempt reasons from the cascade — read these carefully, they explain WHY the step is being declared failed):
+${failureReasonList || "(none)"}
+
+FORM FIELDS CURRENTLY MARKED INVALID (text + class signature for any element whose class matches the framework-agnostic invalid pattern — ng-invalid, mat-form-field-invalid, is-invalid, etc.):
+${invalidFieldList || "(none)"}
+
+VISIBLE ERROR / REQUIRED-FIELD MESSAGES ON THE PAGE (extracted text from error-class containers — error-message, mat-error, field-error, validation-error, invalid-feedback, etc.):
+${errorTextList || "(none)"}
 
 ELEMENTS CURRENTLY VISIBLE ON THE PAGE (stagehand.observe with the failed instruction):
 ${candidateList || "(no candidates returned by observe)"}
@@ -1329,6 +1654,286 @@ async function verifyDomEffect(page: Page, action: Action): Promise<boolean> {
  * probe lets us fail fast and feed the replanner a clean "no candidates"
  * signal instead of "all 4 attempts failed."
  */
+/** One entry per ng-invalid form control found by the pre-submit probe. */
+interface InvalidFormControl {
+  /** Human-readable label associated with the field — element's nearest
+   * `<label>` text, or the value of `aria-label` / `data-id` / `name`. */
+  label: string;
+  /** Compact class signature naming the framework-specific marker that
+   * matched, e.g. `ng-invalid ng-touched`. Helps the LLM correlate
+   * "user-interacted + still invalid" patterns. */
+  classSignature: string;
+  /** True when the underlying control is *empty* (text input value is "",
+   * radio/checkbox is unchecked, select has no chosen option). False
+   * means the field is non-empty but still marked invalid (e.g. wrong
+   * format). The cascade's pre-submit warning surfaces the empty ones
+   * loudly because they are almost always Stagehand re-render victims. */
+  emptyOrUnchecked: boolean;
+  /** Set by the probe when it auto-picked a value to clear the
+   * ng-invalid state. Identifies WHAT action was taken so the cascade
+   * can surface a self-heal hint ("the probe auto-picked X for you;
+   * consider adding an explicit step to the flow file"). `null` when no
+   * auto-pick fired (either the control was already valid, or the probe
+   * couldn't find a sensible default). */
+  autoFilled: {
+    action: "selected-radio" | "checked-checkbox" | "filled-text" | "selected-option";
+    value: string;
+  } | null;
+}
+
+/**
+ * Trust boundary: static string literal, no interpolation. Runs in browser
+ * context. Returns a JSON-serializable shape that the caller type-narrows.
+ *
+ * Two phases:
+ *   1. SCAN — query each element whose class attribute matches the closed-set
+ *      of framework-agnostic invalid markers (ng-invalid, mat-form-field-invalid,
+ *      is-invalid, field-invalid). For each one, walk DOWN to find an
+ *      `<input>` / `<select>` / `<textarea>` descendant (forms wrap controls
+ *      in Angular-style `<app-input>` / `<mat-form-field>` containers), then
+ *      test whether that descendant is empty or unchecked.
+ *   2. AUTO-PICK — for each empty/unchecked control, take the cheapest action
+ *      that clears the ng-invalid state:
+ *        - radio: click the FIRST radio in the group (any choice is better
+ *          than blocking submit). Dispatches `input`+`change` so Angular's
+ *          FormControl picks up the change.
+ *        - checkbox: click the first available checkbox.
+ *        - text/textarea: set value to "NA" + dispatch `input`+`change`+`blur`.
+ *        - select: pick the first non-empty option.
+ *      Each auto-pick is recorded so the cascade can surface a self-heal
+ *      warning ("you auto-picked X; consider adding an explicit step").
+ *
+ * Label resolution checks (in order) the nearest `<label>`, `aria-label`,
+ * `data-id`, and `name`.
+ */
+const FORM_VALIDITY_PROBE_EXPR = `(() => {
+  const INVALID_CLASS_RX = /(ng-invalid|mat-form-field-invalid|is-invalid|field-invalid|input-invalid)/;
+  const MARKERS = ["ng-invalid", "mat-form-field-invalid", "is-invalid", "field-invalid", "input-invalid", "ng-touched", "ng-dirty"];
+  function fire(el, ev) {
+    try { el.dispatchEvent(new Event(ev, { bubbles: true })); } catch (e) {}
+  }
+  // Iterate innermost-first: querySelectorAll is document order (outer →
+  // inner), but our dedupe (below) wants to record the most-specific
+  // invalid descendant and skip its outer ancestors. Reversing the order
+  // means the inner <li> lands in \`out\` first, then when the outer
+  // <form> shows up the contains check fires and skips it correctly.
+  // Without this reversal the iteration would record both: when the outer
+  // is hit first \`out\` is empty so it lands; the inner then lands too
+  // because the inner does NOT contain the outer. Confirmed via the
+  // 20:23-21:42 telemetry where the invalidFieldList included 4-6
+  // redundant nested entries that should have been deduped.
+  const allEls = Array.from(document.querySelectorAll("[class]")).reverse();
+  const out = [];
+  for (const el of allEls) {
+    const cls = el.getAttribute("class") || "";
+    if (!INVALID_CLASS_RX.test(cls)) continue;
+    // De-dupe: skip the current el when it CONTAINS any already-recorded
+    // element — i.e. \`el\` is an outer ancestor and we already have its
+    // more-specific descendant in \`out\`. Combined with the inner-first
+    // iteration above, this records only the innermost invalid form
+    // control per nested hierarchy.
+    if (out.some((e) => e._el && el.contains(e._el))) continue;
+    const ctrl = el.matches("input,select,textarea") ? el : el.querySelector("input,select,textarea");
+    if (!ctrl) continue;
+    // Accept two distinct invalid signatures:
+    //
+    // 1. Leaf-invalid (Angular reactive forms decorating the <input>):
+    //    the control's OWN class carries ng-invalid.
+    //
+    // 2. Wrapper-only invalid (Material/Angular custom wrappers like
+    //    <mat-form-field>, <app-input uappaddresssearch>): the wrapper
+    //    carries the marker but the inner <input> stays ng-pristine
+    //    ng-untouched because the user has never focused it. This is
+    //    the structural pattern for required-but-unfilled fields in
+    //    Material/AppCast forms. The pre-submit probe was structurally
+    //    blind to these — verified by run bu15gcpy2 where GA's
+    //    validationErrorsCount=1 fired from the very first submit at
+    //    05:29 yet the probe reported "no ng-invalid form controls".
+    //
+    // The wrapper-only branch must ALSO require the inner control to
+    // be empty/unset — without that the outer <ol class="questions-
+    // container ng-invalid"> case re-enters as a false positive
+    // (already-filled First Name input under an ng-invalid <ol>
+    // because a sibling field is invalid).
+    const ctrlClass = ctrl.getAttribute("class") || "";
+    const leafInvalid = INVALID_CLASS_RX.test(ctrlClass);
+    const wrapperOnlyInvalid =
+      !leafInvalid &&
+      el !== ctrl &&
+      (ctrl.value === "" || ctrl.value == null) &&
+      /(ng-pristine|ng-untouched)/.test(ctrlClass);
+    if (!leafInvalid && !wrapperOnlyInvalid) continue;
+    let label = "";
+    let scan = el;
+    for (let i = 0; i < 4 && scan && !label; i++) {
+      const lbl = scan.querySelector("label");
+      if (lbl && lbl.textContent) label = lbl.textContent.trim();
+      scan = scan.parentElement;
+    }
+    if (!label) label = el.getAttribute("aria-label") || el.getAttribute("data-id") || ctrl.getAttribute("name") || ctrl.getAttribute("id") || "(unlabeled)";
+    label = label.replace(/\\s+/g, " ").slice(0, 80);
+    const classSignature = cls.split(/\\s+/).filter((c) => MARKERS.includes(c)).slice(0, 4).join(" ");
+    let emptyOrUnchecked = false;
+    let autoFilled = null;
+    const tag = ctrl.tagName.toLowerCase();
+    if (tag === "input") {
+      const type = (ctrl.getAttribute("type") || "text").toLowerCase();
+      if (type === "radio") {
+        emptyOrUnchecked = !ctrl.checked;
+        if (emptyOrUnchecked) {
+          // Click the first radio in this group (radio groups share a name
+          // OR live under a common ng-invalid container). Prefer the
+          // container's first radio descendant so labeled groups stay
+          // intact.
+          const firstRadio = el.querySelector('input[type="radio"]') || ctrl;
+          try {
+            firstRadio.click();
+            fire(firstRadio, "input");
+            fire(firstRadio, "change");
+            const rlbl = (firstRadio.getAttribute("aria-label") || firstRadio.value || "first option").toString();
+            autoFilled = { action: "selected-radio", value: rlbl.slice(0, 60) };
+          } catch (e) {}
+        }
+      } else if (type === "checkbox") {
+        emptyOrUnchecked = !ctrl.checked;
+        if (emptyOrUnchecked) {
+          try {
+            ctrl.click();
+            fire(ctrl, "input");
+            fire(ctrl, "change");
+            autoFilled = { action: "checked-checkbox", value: "true" };
+          } catch (e) {}
+        }
+      } else {
+        emptyOrUnchecked = !ctrl.value;
+        if (emptyOrUnchecked) {
+          try {
+            ctrl.value = "NA";
+            fire(ctrl, "input");
+            fire(ctrl, "change");
+            fire(ctrl, "blur");
+            autoFilled = { action: "filled-text", value: "NA" };
+          } catch (e) {}
+        }
+      }
+    } else if (tag === "select") {
+      emptyOrUnchecked = !ctrl.value;
+      if (emptyOrUnchecked) {
+        try {
+          const firstOption = Array.from(ctrl.options || []).find((o) => o.value);
+          if (firstOption) {
+            ctrl.value = firstOption.value;
+            fire(ctrl, "input");
+            fire(ctrl, "change");
+            autoFilled = { action: "selected-option", value: (firstOption.textContent || firstOption.value).slice(0, 60) };
+          }
+        } catch (e) {}
+      }
+    } else if (tag === "textarea") {
+      emptyOrUnchecked = !ctrl.value;
+      if (emptyOrUnchecked) {
+        try {
+          ctrl.value = "NA";
+          fire(ctrl, "input");
+          fire(ctrl, "change");
+          fire(ctrl, "blur");
+          autoFilled = { action: "filled-text", value: "NA" };
+        } catch (e) {}
+      }
+    }
+    out.push({ label, classSignature, emptyOrUnchecked, autoFilled, _el: el });
+  }
+  // Strip the DOM reference before serialization.
+  return out.slice(0, 12).map((e) => ({ label: e.label, classSignature: e.classSignature, emptyOrUnchecked: e.emptyOrUnchecked, autoFilled: e.autoFilled }));
+})()`;
+
+/**
+ * Runs ONLY on the cascade's final step when a submitEndpointPattern is
+ * declared. Surfaces ng-invalid form controls (and whether each is empty)
+ * BEFORE the first click attempt, so the cascade's first failure reason
+ * names the real blocker instead of "no observable effect." Empty + invalid
+ * is the signature of "Stagehand filled this earlier but a downstream
+ * Angular/React re-render wiped it" — the issue the LLM-replan cannot
+ * diagnose from observe-list alone.
+ *
+ * Returns the list (potentially empty) so callers can both log it AND
+ * inject structured warnings into the cascade's failureReasons array.
+ * Pure read — no side effects on the page.
+ */
+/**
+ * Type-narrow a raw page.evaluate payload entry into a typed
+ * `InvalidFormControl`. Exported for unit testing — the browser-context
+ * expression is hard to unit-test directly, but the narrowing happens on
+ * the Node side and is the source of any bugs that would silently coerce
+ * a malformed entry into a valid record.
+ *
+ * Returns null when the entry is missing required fields or has the wrong
+ * shape. Defensive about `autoFilled` (allowed to be null OR a typed
+ * action+value object; anything else becomes null).
+ */
+function narrowInvalidFormControl(entry: unknown): InvalidFormControl | null {
+  if (
+    entry === null ||
+    typeof entry !== "object" ||
+    !("label" in entry) ||
+    !("classSignature" in entry) ||
+    !("emptyOrUnchecked" in entry) ||
+    typeof (entry as { label: unknown }).label !== "string" ||
+    typeof (entry as { classSignature: unknown }).classSignature !== "string" ||
+    typeof (entry as { emptyOrUnchecked: unknown }).emptyOrUnchecked !== "boolean"
+  ) {
+    return null;
+  }
+  const af = (entry as { autoFilled?: unknown }).autoFilled;
+  const narrowedAutoFilled =
+    af !== null &&
+    typeof af === "object" &&
+    af !== undefined &&
+    "action" in af &&
+    "value" in af &&
+    typeof (af as { action: unknown }).action === "string" &&
+    typeof (af as { value: unknown }).value === "string"
+      ? (af as InvalidFormControl["autoFilled"])
+      : null;
+  return {
+    ...(entry as Omit<InvalidFormControl, "autoFilled">),
+    autoFilled: narrowedAutoFilled,
+  };
+}
+
+async function probeFormValidityBeforeSubmit(params: {
+  page: Page;
+  stepIndex: number;
+  logger: Logger;
+}): Promise<InvalidFormControl[]> {
+  const { page, stepIndex, logger } = params;
+  try {
+    const raw = await page.evaluate(FORM_VALIDITY_PROBE_EXPR);
+    if (!Array.isArray(raw)) return [];
+    const out: InvalidFormControl[] = [];
+    for (const entry of raw) {
+      const narrowed = narrowInvalidFormControl(entry);
+      if (narrowed !== null) {
+        out.push(narrowed);
+      }
+    }
+    const autoCount = out.filter((e) => e.autoFilled !== null).length;
+    if (out.length > 0) {
+      logger.info(
+        `step ${stepIndex + 1} pre-submit probe: ${out.length} ng-invalid form control(s) detected; empty=${out.filter((e) => e.emptyOrUnchecked).length}; auto-picked=${autoCount}`
+      );
+    } else {
+      logger.info(`step ${stepIndex + 1} pre-submit probe: no ng-invalid form controls detected`);
+    }
+    return out;
+  } catch (err) {
+    logger.warn(
+      `step ${stepIndex + 1} pre-submit probe threw: ${toErrorMessage(err)} — proceeding without pre-flight evidence`
+    );
+    return [];
+  }
+}
+
 async function probeStepBeforeAttempts(params: {
   stagehand: Stagehand;
   step: string;
@@ -1377,10 +1982,21 @@ async function executeStepWithHealing(params: {
   phase: string;
   signalCounter: { n: number };
   recentCaptures: string[];
+  recentCaptureMeta: { method: string; status: number; url: string }[];
   anthropic: Anthropic | null;
   logger: Logger;
   captureFn?: CaptureFn;
   resumeFixture: { buffer: Buffer; name: string; mimeType: string } | null;
+  /**
+   * Final-step gate: when both are set, the verifier additionally requires at
+   * least one capture in `recentCaptureMeta` whose URL matches the pattern. Lets
+   * sites declare "the click that ends the flow must produce a request to
+   * /api/.../submit" so the cascade can detect tracking-pixel-only clicks as
+   * verification failures and engage the rephrase/replan recovery path
+   * instead of declaring victory.
+   */
+  isFinalStep: boolean;
+  submitEndpointPattern: string | null;
 }): Promise<void> {
   const {
     stagehand,
@@ -1392,11 +2008,16 @@ async function executeStepWithHealing(params: {
     phase,
     signalCounter,
     recentCaptures,
+    recentCaptureMeta,
     anthropic,
     logger,
     captureFn,
     resumeFixture,
+    isFinalStep,
+    submitEndpointPattern,
   } = params;
+  const requireSubmitEndpoint = isFinalStep && submitEndpointPattern !== null;
+  const compiledSubmitPattern = requireSubmitEndpoint ? new RegExp(submitEndpointPattern!) : null;
   const attempts: AttemptRecord[] = [];
   const triedSelectors: string[] = [];
   const failureReasons: string[] = [];
@@ -1435,12 +2056,85 @@ async function executeStepWithHealing(params: {
     );
   }
 
+  // Pre-submit form-validity probe. Only fires on the final flow step when
+  // the flow declared a submitEndpointPattern (the gate signal for "this
+  // is the submission step"). Finds form controls still marked ng-invalid
+  // (or similar framework markers) and surfaces them as structured
+  // failureReasons before attempt 1. The cascade still runs — the probe
+  // is evidence-only — but the LLM-rephrase and LLM-replan prompts now
+  // start with a concrete diagnosis instead of having to reverse-engineer
+  // "no observable effect."
+  //
+  // The classic trigger: a downstream step's network call causes a
+  // framework re-render that wipes an earlier-filled value back to empty.
+  // The submit click then silently fails validation and the cascade can't
+  // tell what's wrong from the DOM excerpt alone.
+  if (requireSubmitEndpoint) {
+    const invalidControls = await probeFormValidityBeforeSubmit({
+      page,
+      stepIndex,
+      logger,
+    });
+    for (const c of invalidControls) {
+      let reason: string;
+      if (c.autoFilled !== null) {
+        // The probe took action — surface what it did so the cascade's
+        // self-heal can persist this as an explicit flow step on the
+        // next replan. This is the signal the user explicitly asked
+        // for: "surface any missing values so that recon can self heal
+        // the recon-flow.json too."
+        reason = `auto-filled: '${c.label}' ${c.autoFilled.action} → '${c.autoFilled.value}' to clear ng-invalid state — consider adding an explicit step in the flow file for this field`;
+      } else {
+        const emptyMarker = c.emptyOrUnchecked ? "empty/unchecked" : "non-empty but invalid";
+        reason = `pre-submit: '${c.label}' is ${emptyMarker} (${c.classSignature || "ng-invalid"}); fill or correct before clicking submit`;
+      }
+      failureReasons.push(reason);
+      // Synthesize a pre-attempt record so the dump's `attempts[]` array
+      // (which readFailureDumpEvidence reads to build recentFailureReasons)
+      // includes the warning even when no actual attempt has run yet.
+      // Snapshot fields are best-effort: pre/post are the same since no
+      // action ran. resolvedMethod=null marks this as evidence-only.
+      const emptyPre: StepSnapshot = {
+        networkCount: signalCounter.n,
+        url: page.url(),
+        bodyHtmlLength: 0,
+        visibleTextSignature: "",
+      };
+      attempts.push({
+        attempt: 0,
+        technique: "act-string",
+        instruction: null,
+        triedSelectors: [],
+        actResultSuccess: null,
+        actResultDescription: null,
+        errorMessage: reason,
+        pre: emptyPre,
+        post: emptyPre,
+        resolvedMethod: null,
+        resolvedArguments: null,
+        verifiedBy: null,
+      });
+    }
+    // Brief settle window after auto-picks so Angular's change-detection
+    // and any downstream API calls (postal_code_geocoder, interruption_check,
+    // ...) finish before the cascade clicks submit. Empirically zone.js
+    // change detection completes in <250ms after a programmatic value+change
+    // dispatch; 500ms covers the long tail including downstream XHRs.
+    if (invalidControls.some((c) => c.autoFilled !== null)) {
+      await page.waitForTimeout(500);
+    }
+  }
+
   for (let attempt = 1; attempt <= MAX_STEP_ATTEMPTS; attempt++) {
     if (attempt > 1) {
       await page.waitForTimeout(attempt * ATTEMPT_BACKOFF_MS);
     }
 
     const pre = await snapshotPage(page, signalCounter);
+    // Snapshot the meta-tail length so the final-step pattern gate can scope
+    // its URL scan to captures added DURING this attempt (not historical
+    // tail from earlier steps).
+    const preMetaLength = recentCaptureMeta.length;
     const record: AttemptRecord = {
       attempt,
       technique: "act-string",
@@ -1567,7 +2261,26 @@ async function executeStepWithHealing(params: {
               if (ancWrapper) input = ancWrapper.querySelector('input[type="radio"], input[type="checkbox"]');
             }
             if (!input && start.querySelector) {
-              input = start.querySelector('input[type="radio"], input[type="checkbox"]');
+              // Bound the descendant search to the nearest single-question
+              // container so a broad start (form, <ol>, <fieldset> wrapping
+              // the whole form) cannot reach the FIRST radio anywhere in
+              // the form — which is almost always "Yes" of some unrelated
+              // question. Verified against run bu15gcpy2 dump-048
+              // chronology: cascade replan #5's step 48 ("fill any invalid
+              // field") healed via structured-click + htmlDelta=1167
+              // between dumps 045 (no follow-up textbox) and 048 (follow-
+              // up textbox present), flipping RelatedToEmployee No → Yes
+              // and mounting an empty conditional textbox that became the
+              // run's 2nd validation error (GA validationErrorsCount
+              // jumped 1 → 2 at exactly 05:49:23). If the bounded scope
+              // returns null the probe falls through to safer cascade
+              // techniques rather than picking a wrong target.
+              const scope = start.closest
+                ? start.closest("li, app-radio-group, app-checkbox-group, mat-radio-group, fieldset[role='radiogroup'], [role='radiogroup']")
+                : null;
+              if (scope) {
+                input = scope.querySelector('input[type="radio"], input[type="checkbox"]');
+              }
             }
             if (!input) return { resolved: true, isCheckable: false };
             // Strategy 1: label[for=id]
@@ -1637,13 +2350,25 @@ async function executeStepWithHealing(params: {
           const candidates = await stagehand
             .observe(step, { timeout: STEP_WATCHDOG_MS })
             .catch(() => [] as Action[]);
+          // Fetch live-page evidence so the rephrase prompt can reason about
+          // form state, not just observe candidates. Mirrors the same
+          // extraction the cascade-exhaust dump path already does.
+          const livePageEvidence = await extractLivePageFormEvidence(page);
+          // Unfocused observe so the rephrase prompt can see ambient UI
+          // like modal Save/Close buttons that the focused candidates
+          // (filtered by the failed step's instruction) would hide.
+          const unfocused = await stagehand
+            .observe({ timeout: STEP_WATCHDOG_MS })
+            .catch(() => [] as Action[]);
           const rephrased = await rephraseWithLLM(
             anthropic,
             step,
             triedSelectors,
             candidates,
             failureReasons,
-            captureFn
+            captureFn,
+            livePageEvidence,
+            unfocused
           );
           if (!rephrased) {
             record.errorMessage = "llm declined to rephrase or returned IMPOSSIBLE";
@@ -1688,7 +2413,30 @@ async function executeStepWithHealing(params: {
       resolvedAction !== null && (isStateClass || isClick)
         ? await verifyDomEffect(page, resolvedAction)
         : false;
-    const verified = networkFired || urlChanged || domVerified;
+    let verified = networkFired || urlChanged || domVerified;
+
+    // Final-step pattern gate. When the flow declared a submit endpoint
+    // pattern, we additionally require at least one same-origin POST in this
+    // attempt's mutation window whose URL matches the pattern. Without this,
+    // clicks that only fire client-side handlers (e.g. analytics beacons that
+    // sneak past same-origin filtering, or clicks that bump htmlDelta via a
+    // disabled-button tooltip) get a false-positive verified=true.
+    if (verified && requireSubmitEndpoint && compiledSubmitPattern) {
+      // Cap the scan from preMetaLength so we don't accept a historical
+      // submit-shaped capture from an earlier step as proof for this one.
+      const tail = recentCaptureMeta.slice(preMetaLength);
+      const matched = tail.some((m) => compiledSubmitPattern.test(m.url));
+      if (!matched) {
+        verified = false;
+        record.errorMessage =
+          (record.errorMessage ?? "") +
+          (record.errorMessage ? "; " : "") +
+          `submit-endpoint-not-matched: pattern ${submitEndpointPattern!} did not match any of ${tail.length} attempt-window capture(s)`;
+        failureReasons.push(
+          `submit-endpoint-not-matched: ${tail.length} capture(s) seen, none matched ${submitEndpointPattern!}`
+        );
+      }
+    }
 
     if (verified) {
       record.verifiedBy = urlChanged ? "url" : networkFired ? "network" : "dom";
@@ -1750,12 +2498,26 @@ async function executeStepWithHealing(params: {
           const retryUrlChanged = retryPost.url !== pre.url;
           const retryHtmlDelta = retryPost.bodyHtmlLength - pre.bodyHtmlLength;
           const retryTextChanged = retryPost.visibleTextSignature !== pre.visibleTextSignature;
-          const retryVerified =
+          let retryVerified =
             retryNetworkFired ||
             retryUrlChanged ||
             retryHtmlDelta !== 0 ||
             retryTextChanged ||
             checkboxStateVerified;
+          // Apply the same submit-endpoint gate the primary verifier uses.
+          // Without this, the n+16 fallback would still ride past a
+          // tracking-pixel-only click on the final step (DOM mutates via a
+          // disabled-button tooltip, htmlDelta != 0, fallback declares victory).
+          if (retryVerified && requireSubmitEndpoint && compiledSubmitPattern) {
+            const tail = recentCaptureMeta.slice(preMetaLength);
+            const matched = tail.some((m) => compiledSubmitPattern.test(m.url));
+            if (!matched) {
+              retryVerified = false;
+              failureReasons.push(
+                `n+16 fallback: submit-endpoint-not-matched: ${tail.length} capture(s) seen, none matched ${submitEndpointPattern!}`
+              );
+            }
+          }
           logger.info(
             `n+16 probe: step=${stepIndex + 1} attempt=${attempt} el.click() fallback fired=${fired === true} kind=${probeResult.kind ?? "none"} checkboxStateVerified=${checkboxStateVerified}; network=${retryNetworkFired} url=${retryUrlChanged} htmlDelta=${retryHtmlDelta} textChanged=${retryTextChanged} verified=${retryVerified}`
           );
@@ -1846,6 +2608,8 @@ function parseCli(): {
   advancedStealth: boolean;
   dumpDomBeforeStep: number | null;
   allocateEmailEnvVar: string | null;
+  submitEndpointPattern: string | null;
+  originalShape: "array" | "object";
 } {
   const args = process.argv.slice(2);
   let url = "";
@@ -1930,16 +2694,33 @@ function parseCli(): {
       advancedStealth,
       dumpDomBeforeStep,
       allocateEmailEnvVar,
+      submitEndpointPattern: null,
+      originalShape: "array",
     };
   }
-  const parsed = RECON_FLOW_SCHEMA.safeParse(rawFlow);
+  const parsed = RECON_FLOW_FILE_SCHEMA.safeParse(rawFlow);
   if (!parsed.success) {
     logger.error(`flow file/arg failed schema validation: ${parsed.error.message}`);
     process.exit(1);
   }
+  const stepsRaw = Array.isArray(parsed.data) ? parsed.data : parsed.data.steps;
+  const submitEndpointPattern = Array.isArray(parsed.data)
+    ? null
+    : (parsed.data.submitEndpointPattern ?? null);
+  const isArrayShape = Array.isArray(parsed.data);
+  // Validate regex compiles eagerly so a malformed pattern fails the run
+  // at startup, not deep in a per-step verifier.
+  if (submitEndpointPattern !== null) {
+    try {
+      new RegExp(submitEndpointPattern);
+    } catch (err) {
+      logger.error(`flow file: submitEndpointPattern is not a valid regex: ${toErrorMessage(err)}`);
+      process.exit(1);
+    }
+  }
   return {
     url,
-    flow: normalizeFlow(parsed.data),
+    flow: normalizeFlow(stepsRaw),
     flowFile,
     provider,
     resumeFixturePath,
@@ -1947,6 +2728,8 @@ function parseCli(): {
     advancedStealth,
     dumpDomBeforeStep,
     allocateEmailEnvVar,
+    submitEndpointPattern,
+    originalShape: isArrayShape ? "array" : "object",
   };
 }
 
@@ -1988,6 +2771,8 @@ async function main(): Promise<void> {
     advancedStealth,
     dumpDomBeforeStep,
     allocateEmailEnvVar,
+    submitEndpointPattern,
+    originalShape,
   } = parseCli();
 
   // Allocate a fresh testmail.app inbox + bind it to the requested env var
@@ -2027,7 +2812,16 @@ async function main(): Promise<void> {
   // file may have included for sites where it's actually needed). GETs are
   // filtered at the push site so the window isn't washed out by SPA chunk
   // loads — see the comment in wireNetworkCapture's onFinished.
-  const recentCaptureMeta: { method: string; status: number }[] = [];
+  const recentCaptureMeta: { method: string; status: number; url: string }[] = [];
+
+  // Hoisted out of the try block so the finally can run the replan
+  // write-back even when the cascade throws — replan-discovered steps
+  // accumulated up to the failure point should survive a cascade-exhausted
+  // exit so the user can review them and the next run starts where this
+  // one left off. The "only on success" gate before was the reason most
+  // recon discoveries got thrown away on failed runs.
+  const plan: NormalizedStep[] = [];
+  const replanEvents: ReplanEvent[] = [];
 
   try {
     const stagehand = session.stagehand;
@@ -2042,7 +2836,18 @@ async function main(): Promise<void> {
       signalCounter,
       recentCaptures,
       recentCaptureMeta,
-      () => currentPhase
+      () => currentPhase,
+      () => {
+        // Live read so SPA history navigation between captures stays accurate.
+        // Fallback to the initial url on parse failure (e.g. about:blank early
+        // in the goto cycle) so we don't accidentally mark a capture as
+        // cross-origin and miss the user-action signal.
+        try {
+          return new URL(page.url()).origin;
+        } catch {
+          return new URL(url).origin;
+        }
+      }
     );
 
     logger.info(`navigating to ${url}`);
@@ -2055,11 +2860,10 @@ async function main(): Promise<void> {
       );
     }
 
-    const plan: NormalizedStep[] = [...flow];
+    plan.push(...flow);
     const completedSteps: string[] = [];
     let probeReplansUsed = 0;
     let cascadeReplansUsed = 0;
-    const replanEvents: ReplanEvent[] = [];
 
     for (let i = 0; i < plan.length; i++) {
       const step = plan[i]!;
@@ -2102,9 +2906,12 @@ async function main(): Promise<void> {
           phase: currentPhase,
           signalCounter,
           recentCaptures,
+          recentCaptureMeta,
           anthropic,
           logger,
           resumeFixture,
+          isFinalStep: i === plan.length - 1,
+          submitEndpointPattern,
         });
         completedSteps.push(step.instruction);
       } catch (err) {
@@ -2219,26 +3026,42 @@ async function main(): Promise<void> {
 
     stopCapture();
     logger.info(`recon complete — ${counter.n} captures written to ${CAPTURES_DIR}`);
-
-    // Replay-the-discovered-path: if any replan fired and the user provided a
-    // flow file, write the improved plan back so the next run starts where
-    // this one ended up. Skipped on --no-save-replan (diagnostic dry-runs)
-    // and when --flow was used inline (no file to write back to).
+  } finally {
+    // Replay-the-discovered-path: if any replan fired and the user provided
+    // a flow file, write the improved plan back so the next run starts
+    // where this one ended up. Runs INSIDE finally so the cascade's
+    // discoveries survive cascade-exhausted exits too — the persistence
+    // mechanism is the way recon self-heals the flow across runs, so it
+    // needs to fire on failure as much as on success. Skipped on
+    // --no-save-replan (diagnostic dry-runs) and when --flow was used
+    // inline (no file to write back to).
     if (replanEvents.length > 0) {
       if (!saveReplan) {
         logger.info(
-          `run completed with ${replanEvents.length} replan event(s); --no-save-replan, leaving flow.json unchanged`
+          `run done with ${replanEvents.length} replan event(s); --no-save-replan, leaving flow.json unchanged`
         );
       } else if (!flowFile) {
         logger.info(
-          `run completed with ${replanEvents.length} replan event(s); --flow used (no file to write back to)`
+          `run done with ${replanEvents.length} replan event(s); --flow used (no file to write back to)`
         );
       } else {
-        logger.info(`run completed; writing flow.json with ${replanEvents.length} replan event(s)`);
-        persistReplannedFlow({ flowFile, finalPlan: plan, replanEvents, logger });
+        logger.info(`run done; writing flow.json with ${replanEvents.length} replan event(s)`);
+        try {
+          persistReplannedFlow({
+            flowFile,
+            finalPlan: plan,
+            replanEvents,
+            logger,
+            originalShape,
+            submitEndpointPattern,
+          });
+        } catch (err) {
+          // Persistence is best-effort in the finally block — a write
+          // failure here must not eat the original cascade error.
+          logger.error(`persistReplannedFlow threw in finally: ${toErrorMessage(err)}`);
+        }
       }
     }
-  } finally {
     await session.close();
   }
 }
@@ -2257,7 +3080,16 @@ if (
   });
 }
 
-export type { NormalizedStep, ReplanEvent };
+export type { InvalidFormControl, NormalizedStep, ReplanEvent };
 // Test-only exports — allow unit tests to inject a fake capture sink without
 // touching the main() entry-point or the real browser session.
-export { denormalizeStep, persistReplannedFlow, rephraseWithLLM, replanRemainingFlow };
+export {
+  dedupeConsecutiveIdentical,
+  denormalizeStep,
+  narrowInvalidFormControl,
+  persistReplannedFlow,
+  readFailureDumpEvidence,
+  renderUnfocusedObserve,
+  rephraseWithLLM,
+  replanRemainingFlow,
+};
