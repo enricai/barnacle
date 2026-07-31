@@ -5235,7 +5235,7 @@ async function executeStepWithHealing(params: {
 }
 
 /** Default resume fixture path; overridable via --resume-fixture or RESUME_FIXTURE_PATH. */
-const DEFAULT_RESUME_FIXTURE_PATH = "src/sites/_shared/fixtures/resume.pdf";
+const DEFAULT_RESUME_FIXTURE_PATH = "src/testing/fixtures/resume.pdf";
 
 function parseCli(): {
   url: string;

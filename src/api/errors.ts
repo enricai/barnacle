@@ -56,7 +56,10 @@ export function httpStatusForCode(code: ErrorCode): number {
     case ERROR_CODES.EXTRA_DETAIL:
     case ERROR_CODES.SCRAPE_FAILURE:
     case ERROR_CODES.CAPTCHA_ENCOUNTERED:
+    case ERROR_CODES.VERIFICATION_TRIGGER_FAILED:
       return StatusCodes.INTERNAL_SERVER_ERROR;
+    case ERROR_CODES.RESUME_INVALID_OTP:
+      return StatusCodes.BAD_REQUEST;
     default:
       return StatusCodes.INTERNAL_SERVER_ERROR;
   }
@@ -128,6 +131,18 @@ export class CaptchaEncounteredError extends ApiError {
 export class EmptyResultsApiError extends ApiError {
   constructor(message = "scrape completed but returned no results") {
     super(ERROR_CODES.EMPTY_RESULTS, message);
+  }
+}
+
+/**
+ * The OTP a candidate supplied to /resume was rejected by Oracle HCM, which
+ * surfaces as a 401/403 on the first AccessCode-authed call. Distinct from a
+ * generic scrape failure so the consumer can re-prompt for the code rather than
+ * treating the resume as terminally failed.
+ */
+export class InvalidOtpError extends ApiError {
+  constructor(message = "provided OTP was rejected by Oracle HCM") {
+    super(ERROR_CODES.RESUME_INVALID_OTP, message);
   }
 }
 

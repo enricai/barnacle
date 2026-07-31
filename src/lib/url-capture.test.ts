@@ -20,6 +20,22 @@ describe("matchUrlCaptureGroup", () => {
     expect(result).not.toBe("j-AbCd123");
   });
 
+  it("captures jobId from URL without trailing slash (query-string terminated)", () => {
+    const url = "https://apply.appcast.io/jobs/44654507943?cs=sy3&exch=7t&jg=6rf0";
+    const result = matchUrlCaptureGroup(url, /\/jobs\/(\d+)/, () => {
+      throw new Error("should not be called");
+    });
+    expect(result).toBe("44654507943");
+  });
+
+  it("captures jobId from URL with trailing slash", () => {
+    const url = "https://apply.appcast.io/jobs/123456/applyboard/apply";
+    const result = matchUrlCaptureGroup(url, /\/jobs\/(\d+)/, () => {
+      throw new Error("should not be called");
+    });
+    expect(result).toBe("123456");
+  });
+
   it("invokes onMiss when the pattern does not match", () => {
     const url = "https://example.com/no-match-here";
     class SentinelError extends Error {}

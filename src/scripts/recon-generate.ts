@@ -1568,7 +1568,9 @@ function emitErrorSignalGuards(varName: string, urlPath: string, signals: ErrorS
   return out;
 }
 
-function emitMultiStepExecuteHttp(
+/** Exported for unit testing — lets tests drive the multipart-upload code path directly
+ * without going through the full emitContractTs pipeline. */
+export function emitMultiStepExecuteHttp(
   actions: ActionStep[],
   inputBody: unknown,
   errorSignals: ErrorSignals,
@@ -1827,7 +1829,7 @@ function emitMultiStepExecuteHttp(
         `    const ${fdVar} = new FormData();`,
         `    const ${fdVar}_bytes = Uint8Array.from(payload.Resume);`,
         `    ${fdVar}.append("files[]", new Blob([${fdVar}_bytes], { type: payload.ResumeContentType }), payload.ResumeFilename);`,
-        `    const ${headersVar} = { ...Object.fromEntries(Object.entries(BASE_HEADERS).filter(([k]) => k.toLowerCase() !== "content-type"))${perCallHeadersLit} };`,
+        `    const ${headersVar} = { ...omitHeaderCaseInsensitive(BASE_HEADERS, "Content-Type")${perCallHeadersLit} };`,
         `    const ${respVar} = await fetch(\`${r.url}\`, {`,
         `      method: "POST",`,
         `      headers: ${headersVar},`,
@@ -2090,6 +2092,10 @@ export function emitContractTs(opts: {
   const multipartBoolImport = hasMultipartStep
     ? `import { multipartBoolean } from "@/lib/zod-multipart";\n`
     : "";
+  // Content-Type must be absent from multipart fetch calls so FormData can inject the boundary.
+  const caseInsensitiveHeadersImport = hasMultipartStep
+    ? `import { omitHeaderCaseInsensitive } from "@/lib/case-insensitive-headers";\n`
+    : "";
   // Emit identifier-shaped keys unquoted so Biome's formatter doesn't rewrite
   // the generated file on first lint:fix.
   const headersLiteral = Object.entries(baseHeaders)
@@ -2171,7 +2177,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
 import Bottleneck from "bottleneck";
 import { z } from "zod/v4";
 
-${fixtureImport}${multipartBoolImport}${clientImport}
+${fixtureImport}${caseInsensitiveHeadersImport}${multipartBoolImport}${clientImport}
 import type { BrowserSession } from "@/scraper/session";
 import type { SitePlugin, SitePluginContext, SitePluginResult } from "@/site-plugin";
 import { run${pascal}BrowserFlow } from "@/sites/${siteId}/flows/browser-flow";

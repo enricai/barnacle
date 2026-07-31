@@ -565,6 +565,10 @@ in each `contract.ts` for outbound rate limits to target sites.
 | `SUBMISSIONS_NDJSON_PATH` | `.barnacle/submissions.ndjson` | Append-only NDJSON sink for dispatch submission envelopes. One line per plugin invocation captures siteId, requestId, inbound payload, status, audit payload, and duration — the durable source-of-truth for "what did we submit for jobId X and did it succeed." |
 | `TELEMETRY_MAX_FILE_SIZE_BYTES` | `104857600` (100 MB) | Rotate/drop the calls NDJSON once it exceeds this byte count. |
 | `TELEMETRY_MAX_RETENTION_MS` | `2592000000` (30 days) | Drop event-stream files older than this many milliseconds. |
+| `TELEMETRY_S3_BUCKET` | — | Optional — destination bucket for the buffered S3 telemetry mirror. Sink is entirely inert (no client, no network calls) when unset. Credentials/region resolve the same way as Bedrock (`AWS_REGION`, standard SDK credential order). |
+| `TELEMETRY_S3_PREFIX` | `telemetry` | Key prefix for uploaded NDJSON objects (`<prefix>/<calls\|submissions>/<date>/...`). |
+| `TELEMETRY_S3_FLUSH_INTERVAL_MS` | `60000` | How often buffered lines are flushed to S3. |
+| `TELEMETRY_S3_MAX_BUFFER_LINES` | `500` | Threshold-flush trigger — flush early if either buffer exceeds this many lines, ahead of the next scheduled interval. |
 
 ### LLM judging
 
@@ -688,6 +692,8 @@ Every response — success or error — uses the same envelope shape so clients 
 | 2003 | `SCRAPE_FAILURE` | Browser automation failed after retries |
 | 2004 | `CAPTCHA_ENCOUNTERED` | CAPTCHA challenge could not be resolved |
 | 2005 | `EMPTY_RESULTS` | Scrape succeeded but returned no data |
+| 2006 | `VERIFICATION_TRIGGER_FAILED` | OTP trigger to Oracle HCM failed |
+| 2007 | `RESUME_INVALID_OTP` | Provided OTP was rejected by Oracle HCM |
 
 Full definitions: `src/api/schemas/common.ts`.
 
@@ -763,6 +769,8 @@ src/
 │   ├── metrics.ts             # drift-detection counters
 │   ├── fixtures.ts            # static JSON fixture loader
 │   ├── navigate.ts            # shared awaitActivePage + goto(networkidle) helper
+│   ├── behavioral-signals.ts  # CDP synthetic mouse-move + scroll dispatcher for bot-detection warmup
+│   ├── session-warmup.ts      # generic pRetry browser-session runner: acquire → callback → close, with caller-supplied exhaustion mapping
 │   └── require-response-field.ts # shared helpers for extracting required fields from HTTP response objects (HttpSchemaError on missing/null)
 ├── cache/
 │   ├── response-cache.ts      # lru-cache wrapper for deduplicating concurrent identical scraper requests

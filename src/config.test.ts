@@ -147,6 +147,33 @@ describe("config/loadConfig", () => {
     expect(cfg.telemetry.maxRetentionMs).toBe(86400000);
   });
 
+  it("telemetry.s3 defaults when TELEMETRY_S3_BUCKET is unset", () => {
+    process.env = {};
+    const cfg = loadConfig();
+    expect(cfg.telemetry.s3.bucket).toBeUndefined();
+    expect(cfg.telemetry.s3.prefix).toBe("telemetry");
+    expect(cfg.telemetry.s3.flushIntervalMs).toBe(60_000);
+    expect(cfg.telemetry.s3.maxBufferLines).toBe(500);
+  });
+
+  it("telemetry.s3 env overrides", () => {
+    process.env.TELEMETRY_S3_BUCKET = "my-telemetry-bucket";
+    process.env.TELEMETRY_S3_PREFIX = "custom-prefix";
+    process.env.TELEMETRY_S3_FLUSH_INTERVAL_MS = "30000";
+    process.env.TELEMETRY_S3_MAX_BUFFER_LINES = "1000";
+    const cfg = loadConfig();
+    expect(cfg.telemetry.s3.bucket).toBe("my-telemetry-bucket");
+    expect(cfg.telemetry.s3.prefix).toBe("custom-prefix");
+    expect(cfg.telemetry.s3.flushIntervalMs).toBe(30000);
+    expect(cfg.telemetry.s3.maxBufferLines).toBe(1000);
+  });
+
+  it("normalizes empty-string TELEMETRY_S3_BUCKET to undefined", () => {
+    process.env.TELEMETRY_S3_BUCKET = "";
+    const cfg = loadConfig();
+    expect(cfg.telemetry.s3.bucket).toBeUndefined();
+  });
+
   it("judging defaults", () => {
     process.env = {};
     const cfg = loadConfig();

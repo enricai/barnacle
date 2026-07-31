@@ -1,7 +1,7 @@
 /**
  * Shared Zod schema for the integrated-questions yes/no + free-text answer
  * block that AppCast-powered ATS plugins require on every submission. Both
- * Appcast and Encompass Health declare the same 19 fields; this module is the
+ * Appcast and Encompass Health declare the same 20 fields; this module is the
  * single source of truth so a field-type change propagates everywhere.
  *
  * Callers wrap this with `multipartJsonObject()` when the parent payload is
@@ -68,6 +68,10 @@ export const ApplicationAnswersSchema = z.object({
    * don't break. Threshold varies by tenant — Lifespace asks 16, ClearCompany
    * asks 18 — so the field is threshold-agnostic. */
   MeetsMinimumAge: z.enum(["Yes", "No"]).default("Yes"),
+  /** "Have you applied to a Sanford Health or Good Samaritan Society
+   * position in the last 6 months?" Tenant-specific question for Sanford /
+   * Good Samaritan jobs routed through AppCast. Default "No". */
+  AppliedToSanfordOrGoodSamaritanLast6Months: z.enum(["Yes", "No"]).default("No"),
 });
 
 export type ApplicationAnswers = z.infer<typeof ApplicationAnswersSchema>;

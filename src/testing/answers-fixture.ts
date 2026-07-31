@@ -1,6 +1,6 @@
 /**
  * Canonical ApplicationAnswers fixture for all plugin tests. Centralised so
- * a 19-field answer block is defined once and downstream consumers spread +
+ * a 20-field answer block is defined once and downstream consumers spread +
  * override the handful of fields they assert differently — a field-type change
  * or new tenant default is a one-edit propagation.
  *
@@ -31,4 +31,5 @@ export const TEST_ANSWERS: ApplicationAnswers = {
   EducationLevel: "Bachelor's Degree",
   SignatureFullName: "Reginald Reconaldo",
   MeetsMinimumAge: "Yes",
+  AppliedToSanfordOrGoodSamaritanLast6Months: "No",
 };
