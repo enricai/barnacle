@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod/v4";
 
-import { HttpSchemaError } from "@/scraper/errors";
+import { HttpSchemaError, HttpUrlLockedError } from "@/scraper/errors";
 import { parseJsonResponse } from "@/scraper/parse-json-response";
 
 const LABEL = "test/endpoint";
@@ -23,6 +23,36 @@ describe("parseJsonResponse", () => {
       const raw = JSON.stringify({ id: "x", count: 1, extra: "ignored" });
       const result = parseJsonResponse(raw, SimpleSchema, LABEL);
       expect(result).toEqual({ id: "x", count: 1 });
+    });
+  });
+
+  describe("locked Oracle sentinel body", () => {
+    it("throws HttpUrlLockedError for ORA_URL_LOCKED", () => {
+      expect(() => parseJsonResponse("ORA_URL_LOCKED", SimpleSchema, LABEL)).toThrow(
+        HttpUrlLockedError
+      );
+    });
+
+    it("throws HttpUrlLockedError for ORA_URL_LOCKED with surrounding whitespace", () => {
+      expect(() => parseJsonResponse("  ORA_URL_LOCKED\n", SimpleSchema, LABEL)).toThrow(
+        HttpUrlLockedError
+      );
+    });
+
+    it("does NOT throw HttpSchemaError for ORA_URL_LOCKED", () => {
+      expect(() => parseJsonResponse("ORA_URL_LOCKED", SimpleSchema, LABEL)).not.toThrow(
+        HttpSchemaError
+      );
+    });
+
+    it("throws HttpSchemaError (not HttpUrlLockedError) for a transient ORA_IRC_* sentinel", () => {
+      // classifyOracleSentinel returns "transient" for ORA_IRC_* — only "locked" maps to HttpUrlLockedError.
+      expect(() => parseJsonResponse("ORA_IRC_TOKEN_EXPIRED", SimpleSchema, LABEL)).toThrow(
+        HttpSchemaError
+      );
+      expect(() => parseJsonResponse("ORA_IRC_TOKEN_EXPIRED", SimpleSchema, LABEL)).not.toThrow(
+        HttpUrlLockedError
+      );
     });
   });
 

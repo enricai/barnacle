@@ -32,6 +32,7 @@ import { formatISO } from "date-fns";
 
 import { type JudgeVerdict, judgeVerdictSchema, type LlmCallSample } from "@/api/schemas/telemetry";
 import { config } from "@/config";
+import { buildAnthropicClient } from "@/lib/llm/anthropic-client";
 import { PATCH_RESPONSE_SCHEMA } from "@/lib/llm/schemas";
 import { getScriptLogger } from "@/lib/logging";
 import {
@@ -129,15 +130,7 @@ export interface LlmHealResult {
   state: LlmHealState;
 }
 
-// ── Anthropic client ──────────────────────────────────────────────────────────
-
-/**
- * Returns the Anthropic client, or null when the deployment is Bedrock-only.
- */
-export function buildAnthropicClient(): Anthropic | null {
-  if (config.scraper.useBedrock || !config.scraper.anthropicApiKey) return null;
-  return new Anthropic({ apiKey: config.scraper.anthropicApiKey });
-}
+export { buildAnthropicClient };
 
 function anthropicModelName(judgeModel?: string): string {
   if (judgeModel) return judgeModel;

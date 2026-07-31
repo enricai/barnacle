@@ -1,0 +1,14 @@
+{
+  "apiVersion": "barnacle.dev/v1",
+  "kind": "SitePlugin",
+  "metadata": { "siteId": "fixture-malformed-config", "displayName": "Fixture Malformed Config" },
+  "spec": {
+    "request": {
+      "type": "object",
+      "properties": { "Field": { "type": "not-a-real-json-schema-type" } }
+    },
+    "response": { "type": "object", "properties": {} },
+    "flow": { "steps": ["click apply"] },
+    "extract": { "instruction": "extract", "schema": { "type": "object", "properties": {} } }
+  }
+}

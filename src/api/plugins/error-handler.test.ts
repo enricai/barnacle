@@ -9,6 +9,7 @@ import {
   ScrapeFailureError,
   ThrottledRequestError,
   UnauthorizedError,
+  UrlLockedError,
 } from "@/api/errors";
 import errorHandlerPlugin from "@/api/plugins/error-handler";
 import { CaptchaError, SelectorFailureError, SessionTimeoutError } from "@/scraper/errors";
@@ -43,6 +44,9 @@ async function makeApp() {
   });
   app.get("/throw/rate-limit", async () => {
     throw new ThrottledRequestError();
+  });
+  app.get("/throw/url-locked", async () => {
+    throw new UrlLockedError();
   });
   app.get("/throw/raw", async () => {
     throw new Error("internal detail that should not leak");
@@ -157,6 +161,21 @@ describe("error-handler plugin", () => {
     const response = await app().inject({ method: "GET", url: "/throw/rate-limit" });
     expect(response.statusCode).toBe(429);
     expect(response.json().status.details[0].code).toBe(1010);
+  });
+
+  it("emits 429 + code 2008 envelope for UrlLockedError (distinct from 2003 SCRAPE_FAILURE)", async () => {
+    // Verifies the wire contract: a locked-URL condition surfaces a distinct
+    // non-2003 code and non-500 status so nursefly-web can distinguish it
+    // from a generic scrape failure and choose "retry later" instead of
+    // browser-fallback.
+    const response = await app().inject({ method: "GET", url: "/throw/url-locked" });
+    expect(response.statusCode).toBe(429);
+    const body = response.json();
+    expect(body.status.httpStatus).toBe("TOO_MANY_REQUESTS");
+    expect(body.status.httpStatus).not.toBe("INTERNAL_SERVER_ERROR");
+    expect(body.status.details[0].code).toBe(2008);
+    expect(body.status.details[0].code).not.toBe(2003);
+    expect(body.status.details[0].codeDescription).toBe("URL_LOCKED");
   });
 
   it("maps scraper CaptchaError (not ApiError) to code 2004 envelope", async () => {

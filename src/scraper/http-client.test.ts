@@ -7,6 +7,7 @@ import {
   HttpRateLimitError,
   HttpSchemaError,
   HttpServerError,
+  HttpUrlLockedError,
   UnknownScraperError,
 } from "@/scraper/errors";
 import type { HttpResponseInfo } from "@/scraper/http-client";
@@ -169,6 +170,53 @@ describe("scraper/http-client createHttpClient", () => {
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
   });
 
+  it("throws HttpUrlLockedError on ORA_URL_LOCKED body — does NOT retry", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        status: 200,
+        ok: true,
+        text: vi.fn().mockResolvedValue("ORA_URL_LOCKED"),
+        headers: new Headers(),
+      })
+    );
+    const client = makeClient();
+    await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(HttpUrlLockedError);
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+  });
+
+  it("throws HttpUrlLockedError on ORA_URL_LOCKED body with trailing whitespace — does NOT retry", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        status: 200,
+        ok: true,
+        text: vi.fn().mockResolvedValue("ORA_URL_LOCKED\n"),
+        headers: new Headers(),
+      })
+    );
+    const client = makeClient();
+    await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(HttpUrlLockedError);
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries on unknown ORA_* prefix (not IRC, not URL_LOCKED) — falls through to JSON parse", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        status: 200,
+        ok: true,
+        text: vi.fn().mockResolvedValue("ORA_SOME_FUTURE_CODE"),
+        headers: new Headers(),
+      })
+    );
+    const client = makeClient();
+    await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(
+      UnknownScraperError
+    );
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(3);
+  });
+
   it("merges init headers on top of baseHeaders", async () => {
     mockFetch(200, { id: "1", name: "Widget" });
     const client = makeClient();
@@ -262,5 +310,37 @@ describe("scraper/http-client onResponse hook", () => {
       UnknownScraperError
     );
     expect(captured).toHaveLength(0);
+  });
+
+  it("fires onResponse before throwing HttpUrlLockedError on ORA_URL_LOCKED", async () => {
+    // onResponse fires at the HTTP layer (after fetch resolves) before sentinel
+    // classification — callers that audit response headers still see the 200 even
+    // when Oracle returns a locked-URL body.
+    const responseHeaders = new Headers({ "x-oracle-request-id": "lock-42" });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        status: 200,
+        ok: true,
+        text: vi.fn().mockResolvedValue("ORA_URL_LOCKED"),
+        headers: responseHeaders,
+      })
+    );
+
+    const captured: HttpResponseInfo[] = [];
+    const client = createHttpClient<Item>({
+      schema: ItemSchema,
+      bottleneck: passThruLimiter,
+      baseHeaders: BASE_HEADERS,
+      onResponse: (info) => captured.push(info),
+    });
+
+    await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(HttpUrlLockedError);
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.status).toBe(200);
+    expect(captured[0]?.url).toBe("https://example.com/api/item");
+    expect(captured[0]?.headers.get("x-oracle-request-id")).toBe("lock-42");
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
   });
 });

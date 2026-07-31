@@ -10,6 +10,7 @@ import {
   ScrapeFailureError,
   ThrottledRequestError,
   UnauthorizedError,
+  UrlLockedError,
 } from "@/api/errors";
 import { ERROR_CODES, statusSchema } from "@/api/schemas/common";
 
@@ -24,6 +25,7 @@ describe("api/errors", () => {
       [ERROR_CODES.RESOURCE_NOT_FOUND, 404],
       [ERROR_CODES.INDEX_NOT_FOUND, 404],
       [ERROR_CODES.THROTTLED_REQUEST, 429],
+      [ERROR_CODES.URL_LOCKED, 429],
       [ERROR_CODES.TIME_OUT, 504],
       [ERROR_CODES.CLIENT_CALL_ERROR, 500],
       [ERROR_CODES.EXTRA_DETAIL, 500],
@@ -91,6 +93,7 @@ describe("api/errors", () => {
       expect(new UnauthorizedError().code).toBe(ERROR_CODES.AUTHORIZATION_ERROR);
       expect(new FieldViolationError("x").code).toBe(ERROR_CODES.FIELD_VIOLATION);
       expect(new ThrottledRequestError().code).toBe(ERROR_CODES.THROTTLED_REQUEST);
+      expect(new UrlLockedError().code).toBe(ERROR_CODES.URL_LOCKED);
       expect(new ScrapeFailureError().code).toBe(ERROR_CODES.SCRAPE_FAILURE);
       expect(new CaptchaEncounteredError().code).toBe(ERROR_CODES.CAPTCHA_ENCOUNTERED);
     });

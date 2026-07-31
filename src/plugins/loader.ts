@@ -10,6 +10,7 @@ import {
   EmptyResultsApiError,
   ScrapeFailureError,
   ThrottledRequestError,
+  UrlLockedError,
 } from "@/api/errors";
 import { successEnvelope } from "@/api/helpers/envelope";
 import { getCachedResponse, getOrCreateInFlight } from "@/cache/response-cache";
@@ -36,6 +37,7 @@ import {
   HttpRateLimitError,
   HttpSchemaError,
   HttpServerError,
+  HttpUrlLockedError,
   type NeedsUserInfoResult,
   ScraperError,
 } from "@/scraper/errors";
@@ -72,6 +74,7 @@ function toApiError(err: unknown): ApiError | undefined {
   if (err instanceof CaptchaError) return new CaptchaEncounteredError(err.message);
   if (err instanceof EmptyResultsError) return new EmptyResultsApiError(err.message);
   if (err instanceof HttpRateLimitError) return new ThrottledRequestError(err.message);
+  if (err instanceof HttpUrlLockedError) return new UrlLockedError(err.message);
   if (err instanceof ScraperError) return new ScrapeFailureError(err.message);
   return undefined;
 }
@@ -143,6 +146,11 @@ async function runPluginPipeline<TResult>(
       );
       recordRateLimitRejection(plugin.meta.siteId);
       recordDdRateLimit(plugin.meta.siteId);
+    }
+    if (httpErr instanceof HttpUrlLockedError) {
+      logger.warn(
+        `hot path url-locked for ${plugin.meta.siteId}: ${httpErr.message} — not falling back`
+      );
     }
     throw httpErr;
   }
@@ -258,6 +266,7 @@ export async function dispatch<TResult>(
 function classifyDispatchError(err: unknown): string {
   if (err instanceof HttpBotChallengeError) return "bot_challenge";
   if (err instanceof HttpRateLimitError) return "rate_limit";
+  if (err instanceof HttpUrlLockedError) return "url_locked";
   if (err instanceof HttpSchemaError) return "schema_drift";
   if (err instanceof HttpServerError) return "server_error";
   if (err instanceof CaptchaError) return "captcha";

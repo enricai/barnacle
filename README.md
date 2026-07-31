@@ -200,28 +200,15 @@ interface SitePlugin<TPayload, TResult> {
 
 ### Full plugin skeleton (hot path + browser fallback)
 
-`pnpm run recon:generate` produces this structure automatically. Use `createHttpClient()` for REST endpoints and `createGraphqlClient()` for GraphQL endpoints — `recon:generate` selects the right one based on what it captured. The skeleton below illustrates the REST hot-path pattern; for GraphQL sites, `recon-generate` uses `createGraphqlClient` instead and inlines the captured query as a constant.
+`pnpm run recon:generate` produces this structure automatically. Use `createRateLimitedJsonClient()` for REST endpoints that send Chromium client-hint headers (the common case) and `createGraphqlClient()` for GraphQL endpoints — `recon:generate` selects the right one based on what it captured. The skeleton below illustrates the REST hot-path pattern; for GraphQL sites, `recon-generate` uses `createGraphqlClient` instead and inlines the captured query as a constant.
 
 ```ts
 // src/sites/my-site/contract.ts
-import Bottleneck from "bottleneck";
 import { z } from "zod/v4";
-import { createHttpClient } from "@/scraper/http-client";
+import { createRateLimitedJsonClient } from "@/scraper/rate-limited-json-client";
 import type { BrowserSession } from "@/scraper/session";
 import type { SitePlugin, SitePluginContext, SitePluginResult } from "@/site-plugin";
 import { runMySiteBrowserFlow } from "@/sites/my-site/flows/browser-flow";
-
-// Generated: load-bearing request headers from recon — review and remove anything decorative.
-const BASE_HEADERS: Record<string, string> = {
-  "Content-Type": "application/json",
-  Accept: "application/json, */*",
-  Origin: "https://my-site.com",
-  Referer: "https://my-site.com/",
-  "User-Agent": "Mozilla/5.0 ...",
-};
-
-// Generated: Bottleneck ceiling from Phase 3 rate-limit probe — verify before shipping.
-const limiter = new Bottleneck({ minTime: 200 }); // 5 rps safe ceiling
 
 // Generated: Zod schemas inferred from captured JSON — tighten z.unknown() fields as needed.
 const MySiteResponseSchema = z.object({ data: z.object({ items: z.array(z.object({ id: z.string() })) }) });
@@ -230,7 +217,19 @@ const MySitePayloadSchema = z.object({ query: z.string().min(1) });
 type MySitePayload = z.infer<typeof MySitePayloadSchema>;
 type MySiteResponse = z.infer<typeof MySiteResponseSchema>;
 
-const httpClient = createHttpClient({ schema: MySiteResponseSchema, bottleneck: limiter, baseHeaders: BASE_HEADERS });
+// Generated: rate-limit ceiling (5 rps) + Chromium hints + site-specific headers from recon.
+// Use createHttpClient() directly only when you need manual Bottleneck or header control.
+const httpClient = createRateLimitedJsonClient({
+  minTimeMs: 200,
+  userAgent: "Mozilla/5.0 ...",
+  secChUa: '"Chromium";v="..."',
+  platform: "Linux",
+  extraHeaders: {
+    "Content-Type": "application/json",
+    Accept: "application/json, */*",
+  },
+  schema: MySiteResponseSchema,
+});
 
 export const mySitePlugin: SitePlugin<MySitePayload, MySiteResponse> = {
   meta: {
@@ -294,7 +293,19 @@ See [docs/playbook.md — Phase 3b](./docs/playbook.md#3b--auxiliary-fixture-det
 BARNACLE_PLUGINS=./plugins/my-site/dist/index.js pnpm start
 ```
 
-Barnacle validates the export at startup and registers `POST /v1/my-site/run` automatically. See the [Out-of-tree plugins](#out-of-tree-plugins) env var table for `BARNACLE_PLUGINS_STRICT` and `BARNACLE_PLUGINS_DIR`.
+Barnacle validates the export at startup and registers `POST /v1/my-site/run` automatically. See the [Out-of-tree plugins](#out-of-tree-plugins) env var table for `BARNACLE_PLUGINS_STRICT` and `BARNACLE_PLUGINS_DIR`. A copyable, runnable template lives at [`examples/plugins/hello-site/`](./examples/plugins/hello-site/).
+
+**Config-only (no TypeScript, no compile step):** a browser-flow plugin can be a single JSON manifest. Point `BARNACLE_PLUGINS` at a `*.plugin.json` file, or drop manifests into a directory named by `BARNACLE_PLUGINS_CONFIG_DIR`:
+
+```bash
+BARNACLE_PLUGINS=./plugins/acme-jobs.plugin.json pnpm start
+# or, for directory-drop discovery of every *.plugin.json:
+BARNACLE_PLUGINS_CONFIG_DIR=./plugins pnpm start
+```
+
+The manifest wears the Kubernetes-style `apiVersion` / `kind` / `metadata` / `spec` envelope, declares its request/response/extract shapes as **JSON Schema**, and lists the browser flow as data (the same self-heal step format the recon toolchain authors). Core reads it at startup and registers `POST /v1/acme-jobs/run` — no per-site code. A site needing the direct-HTTP hot path can reference a compiled `executeHttp` module via `spec.httpModule`. A copyable manifest lives at [`examples/plugins/acme-jobs.plugin.json`](./examples/plugins/acme-jobs.plugin.json).
+
+The JSON Schema converter accepts a deliberately small subset — `object`, `string`, `number`, `integer`, `boolean`, `array` (with `items`), string `enum`, and `required` — and rejects anything else (e.g. `pattern`, `minLength`, `$ref`, `format` constraints) at load time. Flow steps interpolate request values with `{{ .request.FieldName }}`; a reference to a field the request schema does not declare fails loudly, while an optional declared field the caller omits splices as an empty string.
 
 **In-tree (bundled built-ins only):** push to `BUILTIN_SITE_PLUGINS` in `src/plugins/discover.ts`:
 
@@ -349,6 +360,7 @@ When the smoke test fails: re-run `pnpm run recon:browser` → diff `/tmp/recon/
 | `HttpBotChallengeError` | 401 / 403 | **Yes** | Residential proxy IP may get through |
 | `HttpServerError` | 5xx | **Yes** | Server-side outage; recovery strategy is the same |
 | `HttpRateLimitError` | 429 | **No** | A 429 means the configured rps ceiling is too high. Routing to the browser path would just hit the same ceiling and waste a Steel session. The right response is to lower the Bottleneck `minTime` in `contract.ts` and re-deploy. |
+| `HttpUrlLockedError` | 429 | **No** | Oracle HCM returned `ORA_URL_LOCKED` — the requisition URL is locked at Oracle's end. Neither a retry nor a browser session can succeed; the caller must back off and surface a "retry later" state. |
 | `UnknownScraperError` | Any | **No** | Transient network failure or non-JSON sentinel (e.g. Oracle HCM `ORA_IRC_*`). `createHttpClient` retries up to 2 times internally; if all attempts fail, the error propagates as `ScrapeFailureError`. |
 
 ### Cache deduplication
@@ -617,6 +629,7 @@ BARNACLE_SITE_MY_SHOP_BASE_URL="https://staging.my-shop.com"  # overrides plugin
 | `BARNACLE_PLUGINS` | `""` | Comma-separated list of plugin specifiers to load at startup — relative paths (`./plugins/acme`) or package names (`@acme/barnacle-plugin`). Empty by default (built-ins only). |
 | `BARNACLE_PLUGINS_STRICT` | `false` | When `true`, any plugin that fails to load aborts the process instead of producing a disabled record. |
 | `BARNACLE_PLUGINS_DIR` | `process.cwd()` | Base directory used to resolve relative specifiers and locate the operator's `node_modules`. Defaults to wherever the binary is run — not the installed Barnacle package root. |
+| `BARNACLE_PLUGINS_CONFIG_DIR` | _(unset)_ | Directory scanned at startup for `*.plugin.json` config manifests, each loaded as a config-only plugin. Lets operators register sites by dropping a JSON file in a directory instead of editing `BARNACLE_PLUGINS`. An unreadable directory is logged and skipped — it never crashes boot. |
 
 **Resolution rule:** a specifier starting with `.` or `/` is treated as a filesystem path resolved relative to `BARNACLE_PLUGINS_DIR`. Anything else is treated as an npm package name and resolved via `require.resolve` against the operator's own `node_modules` inside `BARNACLE_PLUGINS_DIR`.
 
@@ -721,6 +734,7 @@ Every response — success or error — uses the same envelope shape so clients 
 | 2005 | `EMPTY_RESULTS` | Scrape succeeded but returned no data |
 | 2006 | `VERIFICATION_TRIGGER_FAILED` | OTP trigger to Oracle HCM failed |
 | 2007 | `RESUME_INVALID_OTP` | Provided OTP was rejected by Oracle HCM |
+| 2008 | `URL_LOCKED` | Upstream vendor locked the target URL; back off and retry later |
 
 Full definitions: `src/api/schemas/common.ts`.
 
@@ -729,6 +743,7 @@ Full definitions: `src/api/schemas/common.ts`.
 - `CaptchaError` → `2004 CAPTCHA_ENCOUNTERED`
 - `EmptyResultsError` → `2005 EMPTY_RESULTS`
 - `HttpRateLimitError` → `1010 THROTTLED_REQUEST` (no browser fallback)
+- `HttpUrlLockedError` → `2008 URL_LOCKED` (no browser fallback; distinct from rate-limit for metrics)
 - Any other `ScraperError` → `2003 SCRAPE_FAILURE`
 - Task exceeded `TASK_TIMEOUT_MS` → `1011 TIME_OUT`
 
@@ -800,6 +815,7 @@ src/
 │   ├── retry.ts               # p-retry + failure classification
 │   ├── errors.ts              # typed scraper error hierarchy
 │   ├── http-client.ts         # typed fetch wrapper (hot path)
+│   ├── rate-limited-json-client.ts # factory: Bottleneck + chromiumClientHints + createHttpClient in one call — prefer this over the three-step scaffold for Chromium-hint plugins
 │   ├── http-status-classifier.ts # pure status→ScraperError classifier for raw-fetch callers
 │   ├── raw-fetch.ts           # site-agnostic undici scaffold: network-error wrap, onResponse hook, optional classifyHttpStatus (skipClassify for callers that classify manually)
 │   ├── graphql-client.ts      # GraphQL POST wrapper

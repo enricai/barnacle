@@ -36,6 +36,18 @@ describe("ERROR_CODES — new verification codes", () => {
     const status = httpStatusForCode(ERROR_CODES.VERIFICATION_TRIGGER_FAILED);
     expect(typeof status).toBe("number");
   });
+
+  it("URL_LOCKED is 2008", () => {
+    expect(ERROR_CODES.URL_LOCKED).toBe(2008);
+  });
+
+  it("URL_LOCKED appears in ERROR_CODE_DESCRIPTIONS", () => {
+    expect(ERROR_CODE_DESCRIPTIONS[ERROR_CODES.URL_LOCKED]).toBe("URL_LOCKED");
+  });
+
+  it("httpStatusForCode returns 429 for URL_LOCKED", () => {
+    expect(httpStatusForCode(ERROR_CODES.URL_LOCKED)).toBe(429);
+  });
 });
 
 const validStatus = {

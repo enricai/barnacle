@@ -8,6 +8,7 @@ import {
   EmptyResultsApiError,
   ScrapeFailureError,
   ThrottledRequestError,
+  UrlLockedError,
 } from "@/api/errors";
 import authPlugin from "@/api/plugins/auth";
 import errorHandlerPlugin from "@/api/plugins/error-handler";
@@ -22,6 +23,7 @@ import {
   HttpRateLimitError,
   HttpSchemaError,
   HttpServerError,
+  HttpUrlLockedError,
   SelectorFailureError,
 } from "@/scraper/errors";
 import { resetMetrics } from "@/scraper/metrics";
@@ -47,6 +49,7 @@ const mockGetOrCreateInFlight = vi.hoisted(() =>
   vi.fn().mockImplementation((_key: string, producer: () => Promise<unknown>) => producer())
 );
 const mockFireTrackingClick = vi.hoisted(() => vi.fn());
+const mockRecordDdFailure = vi.hoisted(() => vi.fn());
 
 const mockRunWithSession = vi.hoisted(() =>
   vi.fn().mockImplementation((task: (s: null) => Promise<unknown>) => task(null))
@@ -81,6 +84,15 @@ vi.mock("@/cache/response-cache", () => ({
 
 vi.mock("@/lib/tracking-click", () => ({
   fireTrackingClick: mockFireTrackingClick,
+}));
+
+vi.mock("@/lib/dd-metrics", () => ({
+  recordDdAttempt: vi.fn(),
+  recordDdSuccess: vi.fn(),
+  recordDdFailure: mockRecordDdFailure,
+  recordDdDuration: vi.fn(),
+  recordDdFallback: vi.fn(),
+  recordDdRateLimit: vi.fn(),
 }));
 
 const stubPlugin: SitePlugin<unknown, unknown> = {
@@ -278,6 +290,25 @@ describe("dispatch — executeHttp hot-path branches", () => {
     expect(mockRecordRateLimitRejection).toHaveBeenCalledWith("http-site");
     expect(mockPluginExecute).not.toHaveBeenCalled();
     expect(mockRecordFallbackActivation).not.toHaveBeenCalled();
+  });
+
+  it("throws UrlLockedError and does NOT invoke browser execute() on HttpUrlLockedError", async () => {
+    mockHttpExecute.mockRejectedValueOnce(new HttpUrlLockedError("ORA_URL_LOCKED"));
+    await expect(dispatch(httpPlugin, {}, stubContext)).rejects.toBeInstanceOf(UrlLockedError);
+    expect(mockPluginExecute).not.toHaveBeenCalled();
+    expect(mockRecordFallbackActivation).not.toHaveBeenCalled();
+    expect(mockRecordRateLimitRejection).not.toHaveBeenCalled();
+  });
+
+  it("records dispatch.failure with error_type=url_locked (not rate_limit) on HttpUrlLockedError", async () => {
+    mockHttpExecute.mockRejectedValueOnce(new HttpUrlLockedError("ORA_URL_LOCKED"));
+    await expect(dispatch(httpPlugin, {}, stubContext)).rejects.toBeInstanceOf(UrlLockedError);
+    expect(mockRecordDdFailure).toHaveBeenCalledWith(
+      expect.objectContaining({ error_type: "url_locked" })
+    );
+    expect(mockRecordDdFailure).not.toHaveBeenCalledWith(
+      expect.objectContaining({ error_type: "rate_limit" })
+    );
   });
 
   it("re-throws unrelated errors without fallback or metrics", async () => {

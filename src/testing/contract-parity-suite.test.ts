@@ -19,7 +19,7 @@ import {
 
 const StubBodySchema = z.object({
   JobId: z.string(),
-  Email: z.string().email(),
+  Email: z.email(),
   Gender: z.enum(["M", "F", "U"]),
 });
 

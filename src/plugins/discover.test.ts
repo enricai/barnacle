@@ -22,6 +22,8 @@ const FIXTURE = {
   malformedBodySchema: path.join(FIXTURES_DIR, "malformed-bodyschema-not-zod.js"),
   apiVersionMismatch: path.join(FIXTURES_DIR, "apiversion-mismatch.js"),
   duplicateSiteId: path.join(FIXTURES_DIR, "duplicate-siteid.js"),
+  validConfig: path.join(FIXTURES_DIR, "valid-config.plugin.json"),
+  malformedConfig: path.join(FIXTURES_DIR, "malformed-config.plugin.json"),
 };
 
 // ---------------------------------------------------------------------------
@@ -114,6 +116,48 @@ describe("loadPlugins — named { plugin } export normalization", () => {
     expect(plugins).toHaveLength(1);
     expect(report[0]?.status).toBe("loaded");
     expect(report[0]?.siteId).toBe("fixture-named");
+  });
+});
+
+describe("loadPlugins — config manifest (.plugin.json)", () => {
+  it("loads a valid config manifest into a SitePlugin with no compile step", async () => {
+    const { plugins, report } = await loadPlugins([FIXTURE.validConfig], {
+      baseDir: process.cwd(),
+      strict: false,
+      seenSiteIds: freshSeen(),
+    });
+
+    expect(plugins).toHaveLength(1);
+    expect(report[0]?.status).toBe("loaded");
+    expect(report[0]?.siteId).toBe("fixture-config");
+    expect(report[0]?.route).toBe("/v1/fixture-config/run");
+    // The synthesized plugin carries real Zod schemas and a browser execute().
+    const plugin = plugins[0];
+    expect(plugin?.meta.bodySchema.safeParse({ FirstName: "J", Email: "e" }).success).toBe(true);
+    expect(typeof plugin?.execute).toBe("function");
+    expect(plugin?.executeHttp).toBeUndefined();
+  });
+
+  it("produces a disabled record (non-strict) for a malformed manifest", async () => {
+    const { plugins, report } = await loadPlugins([FIXTURE.malformedConfig], {
+      baseDir: process.cwd(),
+      strict: false,
+      seenSiteIds: freshSeen(),
+    });
+
+    expect(plugins).toHaveLength(0);
+    expect(report[0]?.status).toBe("disabled");
+    expect(report[0]?.reason).toBeTruthy();
+  });
+
+  it("throws in strict mode for a malformed manifest", async () => {
+    await expect(
+      loadPlugins([FIXTURE.malformedConfig], {
+        baseDir: process.cwd(),
+        strict: true,
+        seenSiteIds: freshSeen(),
+      })
+    ).rejects.toThrow();
   });
 });
 
@@ -255,5 +299,23 @@ describe("loadAllPlugins", () => {
       // Restore the array to its original empty state.
       BUILTIN_SITE_PLUGINS.length = 0;
     }
+  });
+
+  it("discovers *.plugin.json manifests from configDir", async () => {
+    const { report } = await loadAllPlugins(makeConfig({ configDir: FIXTURES_DIR }));
+
+    // FIXTURES_DIR holds valid-config.plugin.json and malformed-config.plugin.json;
+    // the valid one loads, the malformed one is disabled (non-strict) — neither crashes boot.
+    const loaded = report.find((r) => r.siteId === "fixture-config");
+    expect(loaded?.status).toBe("loaded");
+    const bad = report.find((r) => r.specifier.endsWith("malformed-config.plugin.json"));
+    expect(bad?.status).toBe("disabled");
+  });
+
+  it("does not crash when configDir is unreadable", async () => {
+    const { report } = await loadAllPlugins(
+      makeConfig({ configDir: path.join(FIXTURES_DIR, "no-such-dir") })
+    );
+    expect(report).toHaveLength(BUILTIN_SITE_PLUGINS.length);
   });
 });

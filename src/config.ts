@@ -242,6 +242,13 @@ export interface AppConfig {
      * binary — NOT the installed Barnacle package root.
      */
     baseDir: string;
+    /**
+     * Optional directory scanned at startup for `*.plugin.json` manifests, each
+     * loaded as a config-only plugin. Lets operators register sites by dropping
+     * a file in a directory instead of editing `BARNACLE_PLUGINS`. Parsed from
+     * `BARNACLE_PLUGINS_CONFIG_DIR`; unset means no directory scan.
+     */
+    configDir: string | undefined;
   };
 }
 
@@ -375,6 +382,7 @@ export function loadConfig(): AppConfig {
       specifiers: parseList(getEnv("BARNACLE_PLUGINS", "")),
       strict: getBoolEnv("BARNACLE_PLUGINS_STRICT", false),
       baseDir: getEnv("BARNACLE_PLUGINS_DIR", process.cwd()),
+      configDir: process.env.BARNACLE_PLUGINS_CONFIG_DIR || undefined,
     },
   };
 }
