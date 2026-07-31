@@ -68,8 +68,13 @@ function inferZodSchema(value: unknown, depth = 0, indent = ""): string {
     const entries = Object.entries(value as Record<string, unknown>);
     if (entries.length === 0) return "z.record(z.string(), z.unknown())";
     const inner = `${indent}  `;
+    // Emit identifier-shaped keys unquoted so Biome's formatter doesn't rewrite
+    // the generated file on first lint:fix.
     const fields = entries
-      .map(([k, v]) => `${inner}${JSON.stringify(k)}: ${inferZodSchema(v, depth + 1, inner)}`)
+      .map(
+        ([k, v]) =>
+          `${inner}${isValidJsIdentifier(k) ? k : JSON.stringify(k)}: ${inferZodSchema(v, depth + 1, inner)}`
+      )
       .join(",\n");
     return `z.object({\n${fields},\n${indent}})`;
   }
@@ -110,6 +115,15 @@ const IGNORE_REQUEST_HEADERS = new Set([
  * during recon, filtered to those present in every capture whose endpoint
  * replayed successfully. Always includes the standard Content-Type / Accept /
  * Origin / Referer / User-Agent baseline regardless of presence count.
+ *
+ * Fallback: when no replays succeeded (typical for auth-gated multi-step
+ * flows where every request after `/user/create` requires a token the
+ * stateless replay phase can't thread), derive headers from the meaningful
+ * action POSTs instead — same `extractActionSequence` definition used by
+ * the submission-flow detector. This catches load-bearing site-specific
+ * headers (Workday's `X-CSRF-Token`, Greenhouse's `Job-Boards-API-Token`,
+ * ClearCompany's `API-ShortName`, etc.) without the generator needing to
+ * know about any particular site.
  */
 function deriveRequestHeaders(
   captures: Capture[],
@@ -129,7 +143,15 @@ function deriveRequestHeaders(
       })
   );
 
-  const relevantCaptures = captures.filter((c) => {
+  // Prefer ACTION captures (non-GET 2xx to baseUrl host, non-telemetry) as
+  // the authoritative header source. Replay-matched static-asset GETs lack
+  // the API-specific headers that REST endpoints require, so falling back
+  // to those produces a degenerate baseline-only header set. When action
+  // captures exist (multi-step submission flows), use them. For sites
+  // where the flow is a single REST call (no detectable action sequence),
+  // fall back to the replay-matched captures.
+  const actionCaptures = extractActionSequence(captures, baseUrl).map((a) => a.capture);
+  const replayMatchedCaptures = captures.filter((c) => {
     try {
       const u = new URL(c.url);
       return successfulUrls.has(`${u.origin}${u.pathname}`);
@@ -137,6 +159,8 @@ function deriveRequestHeaders(
       return false;
     }
   });
+
+  const relevantCaptures = actionCaptures.length > 0 ? actionCaptures : replayMatchedCaptures;
 
   const counts = new Map<string, number>();
   for (const c of relevantCaptures) {
@@ -196,6 +220,479 @@ function firstEndpointPath(captures: Capture[]): string {
   return "/api/search";
 }
 
+// ── multi-step "submission flow" detection ────────────────────────────────────
+//
+// For transactional sites (apply forms, multi-step checkout, etc.) the captures
+// form an ordered sequence of POSTs that thread state values through subsequent
+// requests (auth tokens, candidate IDs, application IDs). Single-endpoint
+// sites (job search, pricing APIs) have one action capture and skip this path.
+
+/** Path elements we always treat as noise (analytics, logging). */
+const TELEMETRY_URL_PATTERNS = [
+  "/util/logging/vweb/message",
+  "/blank/page",
+  "stats.g.doubleclick.net",
+  "google-analytics.com",
+  "click.appcast.io",
+];
+
+interface ActionCapture {
+  capture: Capture;
+  index: number;
+}
+
+/**
+ * Extracts the ordered sequence of meaningful POSTs that represent the
+ * transactional flow. Filters out GETs, telemetry, asset hits, and non-2xx.
+ */
+function extractActionSequence(captures: Capture[], baseUrl: string): ActionCapture[] {
+  let host: string;
+  try {
+    host = new URL(baseUrl).host;
+  } catch {
+    host = "";
+  }
+
+  return captures
+    .map((capture, index) => ({ capture, index }))
+    .filter(({ capture }) => {
+      if (capture.method === "GET") return false;
+      if (capture.status < 200 || capture.status >= 300) return false;
+      let captureHost: string;
+      try {
+        captureHost = new URL(capture.url).host;
+      } catch {
+        return false;
+      }
+      if (captureHost !== host) return false;
+      if (TELEMETRY_URL_PATTERNS.some((p) => capture.url.includes(p))) return false;
+      return true;
+    });
+}
+
+interface StateValue {
+  /** The raw string that appears in some response and is reused downstream. */
+  value: string;
+  /** Index of the capture whose response is the EARLIEST origin of this value. */
+  originIndex: number;
+  /** JSON path within the origin response (e.g. ["Auth", "Token"]). */
+  path: string[];
+}
+
+/**
+ * Recursively walks a JSON value and yields every string leaf, paired with its
+ * JSON path. Numbers/booleans/nulls are skipped — only string leaves are
+ * candidates for state values (auth tokens, UUIDs, IDs).
+ */
+function* walkStringLeaves(
+  value: unknown,
+  path: string[] = []
+): Generator<{ value: string; path: string[] }, void, unknown> {
+  if (typeof value === "string") {
+    yield { value, path };
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      yield* walkStringLeaves(value[i], [...path, String(i)]);
+    }
+    return;
+  }
+  if (value !== null && typeof value === "object") {
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      yield* walkStringLeaves(v, [...path, k]);
+    }
+  }
+}
+
+/** Minimum length for a string leaf to be indexed as a potential state value.
+ * Shorter strings (1-7 chars) are rarely meaningful auth tokens / IDs and
+ * inflate the index without contributing to state threading. */
+const MIN_STATE_VALUE_LENGTH = 8;
+
+/** Maximum length to guard against indexing massive blobs (HTML fragments,
+ * embedded base64 images, etc.) that aren't candidates for state threading. */
+const MAX_STATE_VALUE_LENGTH = 256;
+
+/**
+ * Walks every capture's response (including GETs — formHistoryId-style values
+ * may originate in a state-load GET, not a POST). Indexes every string leaf
+ * whose length is in [MIN, MAX], recording the EARLIEST capture index that
+ * produced it. Later occurrences of the same value reuse the earliest origin.
+ *
+ * The index is intentionally permissive — it doesn't try to shape-match
+ * "what looks like a token" because token shapes are an open set across the
+ * web. Authoritative filtering happens downstream in `compileActionSteps`,
+ * which only emits produces[] entries for values that ALSO appear in some
+ * downstream URL/headers/body (i.e. real cross-step reuse).
+ */
+function indexStateValues(captures: Capture[]): Map<string, StateValue> {
+  const index = new Map<string, StateValue>();
+  for (let i = 0; i < captures.length; i++) {
+    const c = captures[i]!;
+    if (c.responseBody === undefined || c.responseBody === null) continue;
+    for (const { value, path } of walkStringLeaves(c.responseBody)) {
+      if (value.length < MIN_STATE_VALUE_LENGTH) continue;
+      if (value.length > MAX_STATE_VALUE_LENGTH) continue;
+      if (!index.has(value)) {
+        index.set(value, { value, originIndex: i, path });
+      }
+    }
+  }
+  return index;
+}
+
+interface ActionStep {
+  /** The capture this step corresponds to. */
+  capture: Capture;
+  /** Local variable name to assign the response to (e.g. "r101"). */
+  varName: string;
+  /** Camelcase state values this step's response produces, ready for destructure.
+   * `path` is the JSON path inside the response (used by the emitter to build
+   * a narrow per-binding assertion type so the emitted access stays `any`-free). */
+  produces: Array<{ name: string; pathExpr: string; path: string[] }>;
+  /** Whether the request body is multipart (body bytes not in capture). */
+  isMultipart: boolean;
+  /** True when the capture's host differs from the immediately-preceding action. */
+  isCrossDomain: boolean;
+}
+
+/** Matches strings that are valid JavaScript identifiers (start with letter/$/_,
+ * followed by letters/digits/$/_). Used by the code emitter to decide between
+ * dot-access vs bracket-access and quoted vs unquoted object keys. */
+function isValidJsIdentifier(s: string): boolean {
+  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(s);
+}
+
+/** Converts a path like ["Auth","Token"] to a JS access expression ".Auth.Token". */
+function pathToAccessor(path: string[]): string {
+  return path.map((p) => (isValidJsIdentifier(p) ? `.${p}` : `[${JSON.stringify(p)}]`)).join("");
+}
+
+/**
+ * Builds a nested TypeScript assertion type matching a JSON path. e.g.
+ *   ["Auth","Token"] -> `{ Auth: { Token: string } }`
+ *   ["Sections","SectionIds","0"] -> `{ Sections: { SectionIds: { "0": string } } }`
+ * The leaf is always `string` because produces[] entries are only emitted for
+ * string leaves (see compileActionSteps + walkStringLeaves). Used to keep
+ * emitted code free of `any` casts while still letting nested-path access
+ * compile against `Record<string, unknown>`-typed response variables.
+ */
+function pathToAssertionType(path: string[]): string {
+  if (path.length === 0) return "string";
+  const segment = path[0]!;
+  const key = isValidJsIdentifier(segment) ? segment : JSON.stringify(segment);
+  return `{ ${key}: ${pathToAssertionType(path.slice(1))} }`;
+}
+
+/** Suggests a JS-camelCase variable name for a state value path. Falls back
+ * up the path if the tail is numeric or not a valid JS identifier. */
+function pathToVarName(path: string[]): string {
+  for (let i = path.length - 1; i >= 0; i--) {
+    const segment = path[i]!;
+    if (isValidJsIdentifier(segment)) {
+      return segment.charAt(0).toLowerCase() + segment.slice(1);
+    }
+  }
+  return "value";
+}
+
+/**
+ * Walks the action sequence and decorates each step with: a unique response
+ * var name, the state values its response produces (used by downstream steps),
+ * and a multipart flag (request body bytes not captured).
+ */
+function compileActionSteps(
+  actions: ActionCapture[],
+  stateIndex: Map<string, StateValue>
+): ActionStep[] {
+  const usedValues = new Set<string>();
+  // Pre-scan: collect all state values referenced by ANY action's URL/headers/body
+  // so we only "produce" the values that are actually consumed downstream.
+  for (const { capture } of actions) {
+    const haystacks: string[] = [capture.url];
+    for (const v of Object.values(capture.requestHeaders)) haystacks.push(v);
+    if (capture.requestPostData) haystacks.push(capture.requestPostData);
+    for (const sv of stateIndex.values()) {
+      if (haystacks.some((h) => h.includes(sv.value))) usedValues.add(sv.value);
+    }
+  }
+
+  let lastHost: string | null = null;
+  return actions.map(({ capture, index }, i) => {
+    const varName = `r${i}`;
+    const produces: ActionStep["produces"] = [];
+    const seenNames = new Set<string>();
+
+    if (capture.responseBody !== undefined && capture.responseBody !== null) {
+      for (const { value, path } of walkStringLeaves(capture.responseBody)) {
+        if (!usedValues.has(value)) continue;
+        const sv = stateIndex.get(value);
+        // Only PRODUCE values whose earliest origin is this very capture.
+        if (!sv || sv.originIndex !== index) continue;
+        let name = pathToVarName(path);
+        let suffix = 1;
+        while (seenNames.has(name)) {
+          suffix++;
+          name = `${pathToVarName(path)}${suffix}`;
+        }
+        seenNames.add(name);
+        produces.push({ name, pathExpr: `${varName}${pathToAccessor(path)}`, path });
+      }
+    }
+
+    const ct = Object.entries(capture.requestHeaders).find(
+      ([k]) => k.toLowerCase() === "content-type"
+    );
+    const isMultipart =
+      (ct?.[1] ?? "").toLowerCase().includes("multipart/") && capture.requestPostData === null;
+
+    let currentHost: string | null = null;
+    try {
+      currentHost = new URL(capture.url).host;
+    } catch {
+      currentHost = null;
+    }
+    const isCrossDomain = lastHost !== null && currentHost !== null && lastHost !== currentHost;
+    lastHost = currentHost;
+
+    return { capture, varName, produces, isMultipart, isCrossDomain };
+  });
+}
+
+/**
+ * Replaces occurrences of state values in `template` with `${varName}`
+ * interpolations. Returns a JS template-literal string fragment (no backticks).
+ *
+ * Algorithm: walk the producing steps' response bodies in order, harvest each
+ * produced value's concrete string, and map it to the produces[].name. Then
+ * scan the template for those strings and replace with ${varName}. Length-
+ * descending order avoids prefix conflicts (e.g. an 8-char prefix of a
+ * 36-char UUID).
+ */
+function interpolateStateValues(
+  template: string,
+  priorSteps: ActionStep[],
+  payloadAccessorByValue: Map<string, string> = new Map()
+): string {
+  const varNameByValue = new Map<string, string>();
+  for (const step of priorSteps) {
+    for (const p of step.produces) {
+      let cursor: unknown = step.capture.responseBody;
+      for (const segment of p.path) {
+        if (
+          cursor !== null &&
+          typeof cursor === "object" &&
+          segment in (cursor as Record<string, unknown>)
+        ) {
+          cursor = (cursor as Record<string, unknown>)[segment];
+        } else {
+          cursor = null;
+          break;
+        }
+      }
+      if (typeof cursor === "string") varNameByValue.set(cursor, p.name);
+    }
+  }
+
+  let result = template;
+
+  // Pass 1: substitute state values (length-descending to avoid prefix
+  // conflicts). `\$` is a literal dollar sign (NOT an interpolation);
+  // `${varName}` interpolates the binding name at code-generation time so
+  // the resulting string contains a template-literal placeholder like
+  // `${candidateId}`.
+  const sortedState = [...varNameByValue.entries()].sort((a, b) => b[0].length - a[0].length);
+  for (const [value, varName] of sortedState) {
+    result = result.split(value).join(`\${${varName}}`);
+  }
+
+  // Pass 2: substitute payload values that survived the state pass. Same
+  // length-descending order. The payload pass only fires on remaining
+  // literal occurrences, so state substitutions win on collisions
+  // (e.g., when an Auth.UserName response value contains the user's email).
+  const sortedPayload = [...payloadAccessorByValue.entries()].sort(
+    (a, b) => b[0].length - a[0].length
+  );
+  for (const [value, accessor] of sortedPayload) {
+    result = result.split(value).join(`\${${accessor}}`);
+  }
+
+  return result;
+}
+
+/** Builds the multi-step `executeHttp` body as a single template-literal string.
+ *
+ * Two-pass design avoids emitting unused bindings (which would trip Biome's
+ * `noUnusedVariables`):
+ *   1. Render URL / headers / body for each step and collect the set of
+ *      `${name}` substrings actually referenced by emitted text.
+ *   2. Emit. Skip per-step response bindings whose response var isn't
+ *      referenced AND isn't the terminal var (needed for `return { data }`).
+ *      Skip produces[] entries whose name isn't referenced anywhere downstream.
+ */
+function emitMultiStepExecuteHttp(actions: ActionStep[], inputBody: unknown): string {
+  interface Rendered {
+    url: string;
+    method: string;
+    headersExpr: string;
+    bodyArg: string;
+  }
+
+  // Walk the first action's request body to map each leaf string value to its
+  // `payload.<accessor>` expression. The emit's second interpolation pass uses
+  // this to substitute literal occurrences (e.g. "Reginald") with their
+  // payload references (e.g. ${payload.FirstName}) — so the generated plugin
+  // actually uses the runtime payload instead of the recon's frozen identity.
+  //
+  // Same MIN_STATE_VALUE_LENGTH threshold as state values: short values
+  // (e.g. `"en"` for Culture, `"US"` for country) collide with arbitrary
+  // substrings in URLs/bodies ("token", "entities", "Australia") and would
+  // produce nonsense substitutions. Values below the threshold stay literal
+  // in the emitted template — fine for short enum-like fields that rarely
+  // need to vary at runtime.
+  const payloadAccessorByValue = new Map<string, string>();
+  if (inputBody !== undefined && inputBody !== null) {
+    for (const { value, path } of walkStringLeaves(inputBody)) {
+      if (value.length < MIN_STATE_VALUE_LENGTH) continue;
+      payloadAccessorByValue.set(value, `payload${pathToAccessor(path)}`);
+    }
+  }
+
+  // Pass 1: render every step's emitted strings; collect referenced var names.
+  const rendered: Rendered[] = [];
+  for (let i = 0; i < actions.length; i++) {
+    const step = actions[i]!;
+    const cap = step.capture;
+    const prior = actions.slice(0, i);
+    const url = interpolateStateValues(cap.url, prior, payloadAccessorByValue);
+    const bodyTemplate = cap.requestPostData
+      ? interpolateStateValues(cap.requestPostData, prior, payloadAccessorByValue)
+      : "";
+
+    const perCallHeaders: Record<string, string> = {};
+    for (const [k, v] of Object.entries(cap.requestHeaders)) {
+      const lower = k.toLowerCase();
+      if (lower === "api-token" || lower === "authorization") {
+        perCallHeaders[k] = interpolateStateValues(v, prior, payloadAccessorByValue);
+      }
+    }
+    const headersExpr = Object.keys(perCallHeaders).length
+      ? `headers: { ${Object.entries(perCallHeaders)
+          .map(([k, v]) => `${JSON.stringify(k)}: \`${v}\``)
+          .join(", ")} },`
+      : "";
+    const bodyArg = bodyTemplate ? `body: \`${bodyTemplate}\`,` : "";
+
+    rendered.push({ url, method: cap.method, headersExpr, bodyArg });
+  }
+
+  // Identifier scan against the rendered text — captures `${foo}`, `${foo.bar}`,
+  // etc. The first segment (anchored at `${`) is the binding's name. Closed
+  // grammar (template-literal syntax we generated ourselves).
+  // For multipart steps the bodyArg isn't emitted (the body is a FormData
+  // built inline), but the URL and headers ARE in executable code — scan
+  // only those two haystacks for multipart.
+  const referencedNames = new Set<string>();
+  for (let i = 0; i < rendered.length; i++) {
+    const r = rendered[i]!;
+    const haystacks = actions[i]!.isMultipart
+      ? [r.url, r.headersExpr]
+      : [r.url, r.headersExpr, r.bodyArg];
+    for (const haystack of haystacks) {
+      for (const match of haystack.matchAll(/\$\{([A-Za-z_$][A-Za-z0-9_$]*)/g)) {
+        referencedNames.add(match[1]!);
+      }
+    }
+  }
+  // The last step's var is also referenced by the closing `return { data }`.
+  if (actions.length > 0) referencedNames.add(actions[actions.length - 1]!.varName);
+
+  // Pass 2: emit. Skip response bindings that aren't referenced; skip
+  // produces[] entries whose name isn't referenced. A step's response var
+  // is still needed when at least one of its produces[] entries IS
+  // referenced — the produces line dereferences it.
+  const lines: string[] = [];
+  const declaredNames = new Set<string>();
+  for (let i = 0; i < actions.length; i++) {
+    const step = actions[i]!;
+    const cap = step.capture;
+    const r = rendered[i]!;
+    const hasReferencedProduce = step.produces.some((p) => referencedNames.has(p.name));
+    const bindResponse = referencedNames.has(step.varName) || hasReferencedProduce;
+
+    if (step.isCrossDomain) {
+      lines.push(
+        `    // TODO: cross-domain redirect detected (${cap.url.split("/")[2]}) — likely needs browser fallback for this step.`
+      );
+    }
+
+    if (step.isMultipart) {
+      // Bypasses httpClient because its typed string-body interface can't
+      // carry a FormData payload. The next call goes back through httpClient
+      // for rate-limit + Zod parsing.
+      const fdVar = `fd_${step.varName}`;
+      const bufVar = `buf_${step.varName}`;
+      const respVar = `resp_${step.varName}`;
+      lines.push(
+        `    // Expected response shape: ${JSON.stringify(summariseResponseShape(cap.responseBody))}`,
+        `    const ${bufVar} = readFileSync(resolve(__dirname, "..", "_shared", "fixtures", "resume.pdf"));`,
+        `    const ${fdVar} = new FormData();`,
+        `    ${fdVar}.append("files[]", new Blob([${bufVar}], { type: "application/pdf" }), "resume.pdf");`,
+        `    const ${respVar} = await fetch(\`${r.url}\`, {`,
+        `      method: "POST",`
+      );
+      if (r.headersExpr !== "") {
+        lines.push(`      ${r.headersExpr}`);
+      }
+      lines.push(`      body: ${fdVar},`, `    });`);
+      if (bindResponse) {
+        lines.push(
+          `    const ${step.varName} = (await ${respVar}.json()) as Record<string, unknown>;`
+        );
+      } else {
+        lines.push(`    await ${respVar}.json();`);
+      }
+    } else {
+      const lhs = bindResponse ? `const ${step.varName} = (await ` : "await ";
+      const rhsSuffix = bindResponse ? `)) as Record<string, unknown>;` : `);`;
+      lines.push(`    ${lhs}httpClient(\`${r.url}\`, {`);
+      lines.push(`      method: ${JSON.stringify(r.method)},`);
+      const joined = [r.headersExpr, r.bodyArg].filter((s) => s !== "").join(" ");
+      if (joined !== "") {
+        lines.push(`      ${joined}`);
+      }
+      lines.push(`    }${rhsSuffix}`);
+    }
+
+    for (const p of step.produces) {
+      if (declaredNames.has(p.name)) continue;
+      if (!referencedNames.has(p.name)) continue;
+      declaredNames.add(p.name);
+      const assertion = pathToAssertionType(p.path);
+      lines.push(
+        `    const ${p.name} = (${step.varName} as ${assertion})${pathToAccessor(p.path)};`
+      );
+    }
+    lines.push("");
+  }
+
+  const lastVar = actions.length > 0 ? actions[actions.length - 1]!.varName : "undefined";
+  lines.push(`    return { data: ${lastVar} };`);
+
+  return lines.join("\n");
+}
+
+function summariseResponseShape(value: unknown): unknown {
+  if (value === null || typeof value !== "object") return typeof value;
+  if (Array.isArray(value)) return `array(${value.length})`;
+  const obj: Record<string, string> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    obj[k] = v === null ? "null" : typeof v;
+  }
+  return obj;
+}
+
 // ── code emitters ─────────────────────────────────────────────────────────────
 
 function emitContractTs(opts: {
@@ -210,6 +707,10 @@ function emitContractTs(opts: {
   gqlQuery: string | null;
   endpointPath: string;
   auxFiles: string[];
+  /** Multi-step submission flow body — when set, replaces the default single-endpoint hot path. */
+  multiStepBody?: string;
+  /** First action capture's request body — used to infer the payload schema for submission flows. */
+  inputBody?: unknown;
 }): string {
   const {
     siteId,
@@ -223,11 +724,21 @@ function emitContractTs(opts: {
     gqlQuery,
     endpointPath,
     auxFiles,
+    multiStepBody,
+    inputBody,
   } = opts;
 
-  const responseSchemaExpr = inferZodSchema(responseBody);
+  // Multi-step plugins thread responses through many different shapes that a
+  // single Zod schema can't cover — use z.unknown() so each per-step access
+  // compiles cleanly. Single-endpoint plugins keep the inferred schema.
+  const responseSchemaExpr = multiStepBody ? `z.unknown()` : inferZodSchema(responseBody);
+  const payloadSchemaExpr = inputBody
+    ? inferZodSchema(inputBody)
+    : `z.object({\n  query: z.string().min(1),\n})`;
+  // Emit identifier-shaped keys unquoted so Biome's formatter doesn't rewrite
+  // the generated file on first lint:fix.
   const headersLiteral = Object.entries(baseHeaders)
-    .map(([k, v]) => `  ${JSON.stringify(k)}: ${JSON.stringify(v)}`)
+    .map(([k, v]) => `  ${isValidJsIdentifier(k) ? k : JSON.stringify(k)}: ${JSON.stringify(v)}`)
     .join(",\n");
 
   const fixtureImport =
@@ -266,10 +777,12 @@ function getGql(baseUrl: string): GqlFn {
 const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottleneck: limiter, baseHeaders: BASE_HEADERS });
 `;
 
-  const executeHttpBody = gql
-    ? `    const data = await getGql(context.baseUrl)(${JSON.stringify(`${pascal}Search`)}, ${pascal.toUpperCase()}_QUERY, { q: payload.query });
+  const executeHttpBody = multiStepBody
+    ? multiStepBody
+    : gql
+      ? `    const data = await getGql(context.baseUrl)(${JSON.stringify(`${pascal}Search`)}, ${pascal.toUpperCase()}_QUERY, { q: payload.query });
     return { data };`
-    : `    const data = await httpClient(\`\${context.baseUrl}${endpointPath}\`, {
+      : `    const data = await httpClient(\`\${context.baseUrl}${endpointPath}\`, {
       method: "POST",
       body: JSON.stringify({ query: payload.query }),
     });
@@ -291,6 +804,12 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
     ? `\n *   [ ] Trim UI-only fields from ${pascal.toUpperCase()}_QUERY (keep only fields you need)`
     : "";
 
+  // Multi-step flows that include a multipart upload need node:fs + node:path
+  // for inlining the resume fixture at runtime. Single-endpoint plugins don't.
+  const nodeBuiltinImports = multiStepBody?.includes("readFileSync(resolve(__dirname")
+    ? `\nimport { readFileSync } from "node:fs";\nimport { resolve } from "node:path";\n`
+    : "";
+
   return `/**
  * Generated by recon-generate.ts — review before shipping.
  *
@@ -299,7 +818,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
  *   [ ] Adjust ${pascal}PayloadSchema to your actual request parameters
  *   [ ] Verify BASE_HEADERS — remove any that aren't load-bearing
  */
-
+${nodeBuiltinImports}
 import Bottleneck from "bottleneck";
 import { z } from "zod/v4";
 
@@ -321,9 +840,7 @@ export type ${pascal}Response = z.infer<typeof ${pascal}ResponseSchema>;
 
 export default ${pascal}ResponseSchema;
 
-const ${pascal}PayloadSchema = z.object({
-  query: z.string().min(1),
-});
+const ${pascal}PayloadSchema = ${payloadSchemaExpr};
 
 export type ${pascal}Payload = z.infer<typeof ${pascal}PayloadSchema>;
 ${queryConst}${gqlCacheBlock}${fixtureComments}
@@ -354,7 +871,7 @@ ${executeHttpBody}
     session: BrowserSession,
     context: SitePluginContext
   ): Promise<SitePluginResult<${pascal}Response>> {
-    const raw = await run${pascal}BrowserFlow(session.stagehand, context.baseUrl, payload.query);
+    const raw = await run${pascal}BrowserFlow(session.stagehand, context.baseUrl, payload);
     return { data: raw as ${pascal}Response };
   },
 };
@@ -365,13 +882,19 @@ function emitBrowserFlowTs(opts: {
   siteId: string;
   pascal: string;
   baseUrl: string;
-  flowSteps: string[];
+  flowSteps: Array<string | { step: string; optional?: boolean; upload?: boolean }>;
+  isSubmissionFlow: boolean;
 }): string {
-  const { siteId, pascal, flowSteps } = opts;
+  const { siteId, pascal, flowSteps, isSubmissionFlow } = opts;
 
   const actCalls =
     flowSteps.length > 0
-      ? flowSteps.map((step) => `  await stagehand.act(${JSON.stringify(step)});`).join("\n")
+      ? flowSteps
+          .map((step) => {
+            const instruction = typeof step === "string" ? step : step.step;
+            return `  await stagehand.act(${JSON.stringify(instruction)});`;
+          })
+          .join("\n")
       : `  // TODO: add flow steps from src/sites/${siteId}/recon-flow.json`;
 
   return `/**
@@ -383,7 +906,7 @@ function emitBrowserFlowTs(opts: {
 import type { Stagehand } from "@browserbasehq/stagehand";
 import { z } from "zod/v4";
 
-import type { ${pascal}Response } from "@/sites/${siteId}/contract";
+import type { ${pascal}Payload, ${pascal}Response } from "@/sites/${siteId}/contract";
 
 const ${pascal}BrowserSchema = z.object({
   // TODO: define the fields you need — align with ${pascal}Response
@@ -397,7 +920,7 @@ const ${pascal}BrowserSchema = z.object({
 export async function run${pascal}BrowserFlow(
   stagehand: Stagehand,
   baseUrl: string,
-  query: string
+  payload: ${pascal}Payload
 ): Promise<${pascal}Response> {
   const page = await stagehand.context.awaitActivePage();
 
@@ -405,9 +928,13 @@ export async function run${pascal}BrowserFlow(
 
 ${actCalls}
 
+  // Uses Stagehand's default extraction schema ({ extraction: string }) — matches
+  // ${pascal}BrowserSchema's shape exactly. Replace this call with the
+  // 4-arg overload (extract(instruction, schema, options)) once you've
+  // widened the schema, but note Stagehand v3 expects a Zod v3 schema there
+  // (this codebase uses zod/v4 everywhere else).
   const result = await stagehand.extract(
-    \`extract results matching query: \${query}\`,
-    ${pascal}BrowserSchema
+    ${isSubmissionFlow ? `\`drove the ${siteId} submission flow for payload \${JSON.stringify(payload)}\`` : `\`extract results matching query: \${payload.query}\``}
   );
 
   return result as unknown as ${pascal}Response;
@@ -482,7 +1009,9 @@ async function main(): Promise<void> {
   const flowSteps = (() => {
     const flowFile = `src/sites/${siteId}/recon-flow.json`;
     try {
-      return JSON.parse(readFileSync(flowFile, "utf8")) as string[];
+      return JSON.parse(readFileSync(flowFile, "utf8")) as Array<
+        string | { step: string; optional?: boolean; upload?: boolean }
+      >;
     } catch {
       return [] as string[];
     }
@@ -498,7 +1027,38 @@ async function main(): Promise<void> {
   const gqlQuery = firstGraphQLQuery(captures);
   const endpointPath = firstEndpointPath(captures);
 
-  logger.info(`generating plugin for ${siteId} (${gql ? "GraphQL" : "REST"}, baseUrl: ${baseUrl})`);
+  // Detect a multi-step submission flow (transactional sites like apply forms,
+  // checkout, etc.). When the action sequence has 2+ POSTs, switch the
+  // contract template to emit a state-threaded executeHttp.
+  const actionCaptures = gql ? [] : extractActionSequence(captures, baseUrl);
+  const stateIndex =
+    actionCaptures.length > 1 ? indexStateValues(captures) : new Map<string, StateValue>();
+  const actionSteps =
+    actionCaptures.length > 1 ? compileActionSteps(actionCaptures, stateIndex) : [];
+  const isSubmissionFlow = actionSteps.length > 1;
+
+  const inputBody = isSubmissionFlow
+    ? (() => {
+        try {
+          return JSON.parse(actionSteps[0]!.capture.requestPostData ?? "null") as unknown;
+        } catch {
+          return null;
+        }
+      })()
+    : undefined;
+  const multiStepBody = isSubmissionFlow
+    ? emitMultiStepExecuteHttp(actionSteps, inputBody)
+    : undefined;
+  // For submission flows the final action's response body is the most useful
+  // shape inference target (it's the terminal success signal). Fall back to
+  // the replay body for single-endpoint sites.
+  const effectiveResponseBody = isSubmissionFlow
+    ? (actionSteps[actionSteps.length - 1]!.capture.responseBody ?? responseBody)
+    : responseBody;
+
+  logger.info(
+    `generating plugin for ${siteId} (${gql ? "GraphQL" : isSubmissionFlow ? `submission flow, ${actionSteps.length} steps` : "single-endpoint REST"}, baseUrl: ${baseUrl})`
+  );
 
   mkdirSync(`${outDir}/flows`, { recursive: true });
 
@@ -511,18 +1071,20 @@ async function main(): Promise<void> {
       baseHeaders,
       minTime,
       safeRps,
-      responseBody,
+      responseBody: effectiveResponseBody,
       gql,
       gqlQuery,
       endpointPath,
       auxFiles,
+      multiStepBody,
+      inputBody,
     })
   );
   logger.info(`wrote ${outDir}/contract.ts`);
 
   writeFileSync(
     `${outDir}/flows/browser-flow.ts`,
-    emitBrowserFlowTs({ siteId, pascal, baseUrl, flowSteps })
+    emitBrowserFlowTs({ siteId, pascal, baseUrl, flowSteps, isSubmissionFlow })
   );
   logger.info(`wrote ${outDir}/flows/browser-flow.ts`);
 
