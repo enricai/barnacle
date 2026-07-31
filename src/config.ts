@@ -137,6 +137,18 @@ export interface AppConfig {
      */
     timeoutMs: number;
   };
+  /**
+   * testmail.app — fresh inboxes for recon runs + integration tests.
+   * Both fields nullable so a missing API key doesn't break unrelated
+   * config loads; the testmail helpers throw clear errors when called
+   * without configuration.
+   */
+  testmail: {
+    /** `TESTMAIL_API_KEY` — get from https://testmail.app/console */
+    apiKey: string | undefined;
+    /** `TESTMAIL_NAMESPACE` — the subdomain piece (e.g. "abc12" for `abc12.{tag}@inbox.testmail.app`). */
+    namespace: string | undefined;
+  };
   selfheal: {
     /**
      * Maximum patch→replay→score iterations before giving up with
@@ -270,6 +282,10 @@ export function loadConfig(): AppConfig {
       temperature: getFloatEnv("JUDGE_TEMPERATURE", 0.2),
       batchSize: getNumericEnv("JUDGE_BATCH_SIZE", 10),
       timeoutMs: getNumericEnv("JUDGE_TIMEOUT_MS", 120_000),
+    },
+    testmail: {
+      apiKey: process.env.TESTMAIL_API_KEY,
+      namespace: process.env.TESTMAIL_NAMESPACE,
     },
     selfheal: {
       maxIterations: getNumericEnv("SELFHEAL_MAX_ITERATIONS", 5),
