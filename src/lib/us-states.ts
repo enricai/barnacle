@@ -1,6 +1,6 @@
 /**
  * Shared US state and territory name→abbreviation map. Extracted from
- * site-specific copies in appcast and encompasshealth so any plugin can
+ * site-specific copies in multiple plugins so any plugin can
  * resolve a full state name (or a 2-letter code) to an uppercase abbreviation
  * without duplicating this data.
  *

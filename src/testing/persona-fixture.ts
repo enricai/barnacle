@@ -2,8 +2,8 @@
  * Standard test persona used by recon runs + integration tests. Centralised
  * so every plugin uses the same identity (helps cross-site audit-log
  * correlation) and so we change it in one place when a field gets rejected
- * by a new validator (e.g. the 555 → 310 phone-number swap during the
- * AppCast recon investigation).
+ * by a new validator (e.g. the 555 → 310 phone-number swap during a
+ * recon investigation).
  *
  * The Email field is intentionally omitted — callers should compose the
  * payload by combining this fixture with a freshly allocated testmail.app
@@ -31,8 +31,8 @@ export const TEST_PERSONA = {
     /** Full state name for forms that want the long form. */
     StateName: "Texas",
     PostalCode: "78701",
-    /** Texas county for Austin. Required by tenants (Encompass Health, etc.)
-     * that nest a County field inside the Address group. */
+    /** Texas county for Austin. Required by tenants that nest a County
+     * field inside the Address group. */
     County: "Travis County",
     /** Long-form for `<select>`s that show country names. */
     CountryName: "United States",

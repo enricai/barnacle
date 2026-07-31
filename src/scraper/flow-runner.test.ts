@@ -363,7 +363,9 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
       step: STEP,
       optional: false,
       upload: false,
-      submitStep: false,
+      // Every test in this describe block exercises the deep-submit-locator
+      // escalation, which now only fires on submit-shaped steps.
+      submitStep: true,
       stepIndex: 76,
       phase: "apply",
       signalCounter: { n: 0 },
@@ -394,7 +396,7 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
     // ranked candidate; its network effect (simulated via onDeepClick bumping
     // the shared counter) verifies the step.
     const { page, evaluate } = fakePage({
-      url: "https://apply.appcast.io/jobs/1/applyboard/apply",
+      url: "https://apply.acme.example/jobs/1/apply-portal/apply",
       bodyHtmlLength: 184186,
       onDeepClick: () => {
         signalCounter.n += 1;
@@ -417,7 +419,7 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
 
   it("succeeds on attempt 1 via the existing path when the click is verified, with no deep-locator call", async () => {
     const { page, evaluate } = fakePage({
-      url: "https://apply.appcast.io/jobs/1/applyboard/apply",
+      url: "https://apply.acme.example/jobs/1/apply-portal/apply",
       bodyHtmlLength: 184186,
     });
     const signalCounter = { n: 0 };
@@ -454,7 +456,7 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
     // exhausts in 3 recorded attempts (1, 2, 5) — strictly fewer than the
     // 5-attempt ceiling this replaces.
     const { page, evaluate } = fakePage({
-      url: "https://apply.appcast.io/jobs/1/applyboard/apply",
+      url: "https://apply.acme.example/jobs/1/apply-portal/apply",
       bodyHtmlLength: 184186,
       deepIndexClicked: -1,
     });
@@ -495,7 +497,7 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
     });
     const page = {
       evaluate,
-      url: () => "https://apply.appcast.io/jobs/1/applyboard/apply",
+      url: () => "https://apply.acme.example/jobs/1/apply-portal/apply",
       title: vi.fn().mockResolvedValue("Registered Nurse"),
       locator: vi.fn().mockReturnValue({
         first: () => ({
@@ -539,7 +541,7 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
     // errorMessage, and let the cascade continue rather than looping or
     // throwing here.
     const { page, evaluate } = fakePage({
-      url: "https://apply.appcast.io/jobs/1/applyboard/apply",
+      url: "https://apply.acme.example/jobs/1/apply-portal/apply",
       bodyHtmlLength: 184186,
       deepIndexClicked: -1,
     });
@@ -603,7 +605,7 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
     });
     const page = {
       evaluate,
-      url: () => "https://apply.appcast.io/jobs/1/applyboard/apply",
+      url: () => "https://apply.acme.example/jobs/1/apply-portal/apply",
       title: vi.fn().mockResolvedValue("Registered Nurse"),
       locator: vi.fn().mockReturnValue({
         first: () => ({
@@ -653,7 +655,7 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
     });
     const page = {
       evaluate,
-      url: () => "https://apply.appcast.io/jobs/1/applyboard/apply",
+      url: () => "https://apply.acme.example/jobs/1/apply-portal/apply",
       title: vi.fn().mockResolvedValue("Registered Nurse"),
       locator: vi.fn().mockReturnValue({
         first: () => ({
@@ -681,13 +683,54 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
     expect(clickByIndexCalls).toEqual([7, 12]);
   });
 
+  it("leaves the structured-click/observe-act-exclude ladder intact for a non-submit phantom click instead of routing to the deep-submit-locator", async () => {
+    // Mirrors the bug report's step 38 (`Click the 'No' label for 'Are you
+    // currently a Contingent Worker?'`): a non-submit radio-style step whose
+    // attempt 1 phantom-clicks (Stagehand reports success, zero observable
+    // effect). submitStep:false + isFinalStep:false means submitShapedStep
+    // is false, so shouldSkipTechnique must NOT skip attempts 3/4 and attempt
+    // 2 must run observe-act (calling stagehand.observe + stagehand.act
+    // again) instead of the deep-submit-locator — proving the runner's
+    // attempt-2 routing (not just the pure predicate) is scoped correctly.
+    const { page, evaluate } = fakePage({
+      url: "https://apply.acme.example/jobs/1/apply-portal/apply",
+      bodyHtmlLength: 184186,
+    });
+    const stagehandAct = vi.fn().mockResolvedValue(actResult());
+    const params = {
+      ...baseParams(page, stagehandAct),
+      step: "Click the 'No' label for 'Are you currently a Contingent Worker?'",
+      optional: false,
+      submitStep: false,
+      isFinalStep: false,
+      signalCounter: { n: 0 },
+    };
+    const stagehandObserve = (params.stagehand as unknown as { observe: ReturnType<typeof vi.fn> })
+      .observe;
+
+    await expect(executeStepWithHealing(params)).rejects.toMatchObject({
+      name: "StepVerificationError",
+    });
+
+    // The deep-submit-locator's ranking expression must never be evaluated —
+    // it ranks submit-shaped candidates only and would be a guaranteed no-op
+    // on a radio control, so a non-submit phantom must never route there.
+    const rankCalls = evaluate.mock.calls.filter(([expr]) => String(expr).includes("ranked.sort"));
+    expect(rankCalls.length).toBe(0);
+    // Attempt 1 (act-string) + attempt 2 (observe-act, NOT skipped) both call
+    // stagehand.act — proving the cascade actually reached the light-DOM
+    // fallback instead of short-circuiting to the submit-only locator.
+    expect(stagehandAct.mock.calls.length).toBeGreaterThan(1);
+    expect(stagehandObserve).toHaveBeenCalled();
+  });
+
   it("falls through to the existing light-DOM techniques when only one deep candidate exists and it phantoms (control case)", async () => {
     // Same shape as the runner-up test, but with a single ranked candidate
     // — there is no ranked[1] to retry, so the branch must not attempt to
     // index past the array and must let the cascade continue to
     // structured-click / observe-act-exclude / llm-rephrase as before.
     const { page, evaluate } = fakePage({
-      url: "https://apply.appcast.io/jobs/1/applyboard/apply",
+      url: "https://apply.acme.example/jobs/1/apply-portal/apply",
       bodyHtmlLength: 184186,
       rankedCandidates: [{ deepIndex: 7, tier: 3, tag: "button", accessibleName: "submit" }],
     });

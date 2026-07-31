@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { CONFIG_PLUGIN_API_VERSION, CONFIG_PLUGIN_KIND } from "@/plugins/plugin-manifest-envelope";
 import type { ReconFormSchema } from "@/recon/form-schema";
 import {
+  collectHeaderBindings,
   compileActionSteps,
   detectFormSchemaFieldNames,
   emitBrowserFlowTs,
@@ -14,8 +15,14 @@ import {
   inferZodSchemaFromSamples,
   loadQuestionPromptKeywords,
   resolveStepPayloadField,
+  selectEffectiveResponseBody,
   selectPayloadAction,
+  selectReturnAction,
 } from "@/scripts/recon-generate";
+import {
+  buildMulticallHeterogeneousActionSteps,
+  buildMulticallHeterogeneousActionStepsWithDrillDown,
+} from "@/scripts/recon-generate-multicall-fixture";
 
 /** The recon env-var token for the applicant email, built by concatenation so
  * Biome's noTemplateCurlyInString rule doesn't flag the literal `${...}`. */
@@ -520,6 +527,138 @@ describe("compileActionSteps — Set-Cookie state binding (disneycruise-style to
   });
 });
 
+describe("collectHeaderBindings — multi-cookie regression (disneycruise __pa first-wins bug)", () => {
+  /** Step 0: the feature-toggle call mints three geo/analytics cookies (all
+   * later threaded back on the `Cookie` request header) plus a conversation
+   * id threaded back on a distinct `X-Conversation-Id` header. */
+  const toggleCapture = {
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action",
+    method: "GET",
+    url: "https://api.example.com/toggles/product-avail",
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: null,
+    responseHeaders: {
+      "set-cookie": [
+        "latestWDPROGeoIP=US-TX-AUSTIN-1; Path=/",
+        "WDPROGeoIP=US-TX-AUSTIN-2; Path=/",
+        "bm_sv=BMSVSESSIONVALUE1; Path=/; HttpOnly; Secure",
+        "Conversation_UUID=conv-uuid-abcdefgh; Path=/",
+      ].join("\n"),
+    },
+    responseBody: {},
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  };
+
+  /** Step 1: the auth call — mints `__pa` LAST among the Cookie-targeting
+   * cookies, which is exactly the ordering that trips first-wins. */
+  const authzCapture = {
+    timestamp: "2024-01-01T00:00:01Z",
+    phase: "action",
+    method: "POST",
+    url: "https://api.example.com/dcl-apps-productavail-vas/authz/private",
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: "{}",
+    responseHeaders: { "set-cookie": "__pa=eyJhbGciOiJIUzI1NiJ9.payload.sig; Path=/; HttpOnly" },
+    responseBody: {},
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  };
+
+  /** Step 2: the stateful call that 401s without `__pa` — carries every
+   * minted cookie back as a `Cookie` request header, plus the conversation
+   * id back as `X-Conversation-Id`, exactly as the browser sent them. */
+  const availableProductsCapture = {
+    timestamp: "2024-01-01T00:00:02Z",
+    phase: "action",
+    method: "GET",
+    url: "https://api.example.com/dcl-apps-productavail-vas/available-products/",
+    status: 200,
+    requestHeaders: {
+      "Content-Type": "application/json",
+      Cookie:
+        "latestWDPROGeoIP=US-TX-AUSTIN-1; WDPROGeoIP=US-TX-AUSTIN-2; bm_sv=BMSVSESSIONVALUE1; __pa=eyJhbGciOiJIUzI1NiJ9.payload.sig",
+      "X-Conversation-Id": "conv-uuid-abcdefgh",
+    },
+    requestPostData: null,
+    responseHeaders: { "content-type": "application/json" },
+    responseBody: { products: [{ productId: "p1" }] },
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  };
+
+  const captures = [toggleCapture, authzCapture, availableProductsCapture];
+  const actionCaptures = captures.map((capture, index) => ({ capture, index }));
+  const stateIndex = indexStateValues(captures);
+  const actionSteps = compileActionSteps(actionCaptures, stateIndex);
+  const headerBindings = collectHeaderBindings(actionSteps);
+
+  it("indexes __pa with a header origin on the authz/private capture", () => {
+    const sv = stateIndex.get("eyJhbGciOiJIUzI1NiJ9.payload.sig");
+    expect(sv).toBeDefined();
+    expect(sv?.headerOrigin).toEqual({ sourceHeader: "set-cookie", cookieName: "__pa" });
+  });
+
+  it("produces a header-kind binding for __pa on the authz/private step, not just the toggle step", () => {
+    const [, authzStep] = actionSteps;
+    const pa = authzStep?.produces.find((p) => p.kind === "header" && p.cookieName === "__pa");
+    expect(pa).toBeDefined();
+    expect(pa).toMatchObject({ kind: "header", cookieName: "__pa", targetHeader: "Cookie" });
+  });
+
+  it("collectHeaderBindings returns all four Cookie-targeting bindings, __pa included — does not drop it in favour of latestWDPROGeoIP", () => {
+    const cookieBindings = headerBindings.filter((b) => b.targetHeader === "Cookie");
+    expect(cookieBindings.map((b) => b.cookieName).sort()).toEqual(
+      ["WDPROGeoIP", "__pa", "bm_sv", "latestWDPROGeoIP"].sort()
+    );
+    expect(cookieBindings.some((b) => b.cookieName === "__pa")).toBe(true);
+  });
+
+  it("returns exactly one X-Conversation-Id binding", () => {
+    const conversationBindings = headerBindings.filter(
+      (b) => b.targetHeader === "X-Conversation-Id"
+    );
+    expect(conversationBindings).toHaveLength(1);
+    expect(conversationBindings[0]).toMatchObject({
+      cookieName: "Conversation_UUID",
+      targetHeader: "X-Conversation-Id",
+    });
+  });
+
+  it("emits a bind entry for __pa in the generated contract source", () => {
+    const contract = emitContractTs({
+      ...BASE_OPTS,
+      inputBody: {},
+      multiStepBody: emitMultiStepExecuteHttp(
+        actionSteps,
+        {},
+        { stringMessageKey: null, nestedErrorPaths: [] },
+        new Map(),
+        new Set(),
+        new Map(),
+        new Set(),
+        new Map(),
+        new Map(),
+        "https://api.example.com",
+        new Map(),
+        new Map()
+      ),
+      headerBindings,
+    });
+
+    expect(contract).toContain('cookieName: "__pa"');
+  });
+});
+
 describe("emitContractTs — multipart plugin imports omitHeaderCaseInsensitive", () => {
   const source = emitContractTs({
     ...BASE_OPTS,
@@ -547,7 +686,7 @@ describe("emitContractTs — non-multipart plugin does not import omitHeaderCase
   });
 });
 
-describe("resolveStepPayloadField — HCA-shaped positives", () => {
+describe("resolveStepPayloadField — wizard-ATS-shaped positives", () => {
   const cases: Array<[string, string]> = [
     ["Fill in the First Name field with 'Reginald'", "FirstName"],
     ["Fill in the Last Name field with 'Barrington'", "LastName"],
@@ -576,7 +715,7 @@ describe("resolveStepPayloadField — trap negatives", () => {
     "Type '5125550000' into the Secondary Phone Number field",
     // Screening questions: a candidate-label word ("state", "city") inside the
     // QUESTION text must not splice — the first quote is the question, not a
-    // value. This is the real HCA step 42 shape (regression: "state" matched
+    // value. This is a real wizard-ATS step 42 shape (regression: "state" matched
     // the State label and corrupted the question quote into ${payload.State}).
     "For 'Are you currently licensed to work as a Registered Nurse in this state?' select 'Yes'",
     "For 'In which settings have you worked as a Registered Nurse during the past three years?' select 'Hospital'",
@@ -797,6 +936,351 @@ describe("selectPayloadAction", () => {
 
   it("returns null when there are no actions to choose from", () => {
     expect(selectPayloadAction([])).toBeNull();
+  });
+});
+
+describe("selectReturnAction", () => {
+  /** Minimal action step — only the fields selection reads. */
+  const step = (url: string, requestPostData: string | null, responseBody: unknown) => ({
+    capture: { url, requestPostData, responseBody } as unknown as Parameters<
+      typeof selectReturnAction
+    >[0][number]["capture"],
+  });
+
+  it("prefers the re-queried search endpoint's last call over a terminal drill-down (G1)", () => {
+    // The reported disneycruise shape: toggles (once) → authz mint (once) →
+    // available-products/ re-queried with varying filters → a drill-down
+    // into one itinerary fires last. The search result is the flow's
+    // subject, not the drill-down's single-itinerary body.
+    const steps = [
+      step("https://dcl.test/toggles/product-avail", '["a"]', [{ name: "a" }]),
+      step("https://dcl.test/authz/private", "{}", { result: "ok", successful: true }),
+      step("https://dcl.test/available-products/", '{"filters":[]}', {
+        totalAvailableCruises: 699,
+        products: [{ id: "p1" }],
+      }),
+      step("https://dcl.test/available-products/", '{"filters":["7-night"]}', {
+        totalAvailableCruises: 151,
+        products: [{ id: "p2" }],
+      }),
+      step("https://dcl.test/available-sailings/", '{"itineraryId":"i1"}', {
+        sailings: [{ id: "s1" }],
+        exchangeRate: 1,
+      }),
+    ];
+    expect(selectReturnAction(steps)).toBe(steps[3]);
+  });
+
+  it("falls through to the terminal call for a genuine single-pass submission flow", () => {
+    // Every endpoint fires exactly once — nothing is re-queried, so the
+    // fallback must be the LAST action (the terminal success signal), not
+    // the FIRST (that's selectPayloadAction's fallback).
+    const steps = [
+      step("https://ats.test/api/application/create", '{"FirstName":"Reginald"}', { id: "a1" }),
+      step("https://ats.test/api/form-schema", '{"jobId":"9"}', { sections: [{ fields: [] }] }),
+      step("https://ats.test/api/application/a1/submit", '{"confirm":true}', { success: true }),
+    ];
+    expect(selectReturnAction(steps)).toBe(steps[2]);
+  });
+
+  it("ignores a chattering endpoint that returns nothing, even when it fires last", () => {
+    const steps = [
+      step("https://shop.test/config", '{"k":"v"}', { config: 1 }),
+      step("https://shop.test/error", '{"msg":"boom"}', null),
+      step("https://shop.test/error", '{"msg":"other"}', null),
+    ];
+    expect(selectReturnAction(steps)).toBe(steps[2]);
+  });
+
+  it("returns the single action for a one-call flow", () => {
+    const steps = [step("https://shop.test/search", '{"q":"a"}', { total: 1 })];
+    expect(selectReturnAction(steps)).toBe(steps[0]);
+  });
+
+  it("returns null when there are no actions to choose from", () => {
+    expect(selectReturnAction([])).toBeNull();
+  });
+});
+
+describe("emitMultiStepExecuteHttp — relevance-selected return value (G1)", () => {
+  const capture = (
+    url: string,
+    requestPostData: string | null,
+    responseBody: unknown,
+    varName: string
+  ) => ({
+    capture: {
+      timestamp: "2024-01-01T00:00:00Z",
+      phase: "action" as const,
+      method: "POST",
+      url,
+      status: 200,
+      requestHeaders: { "Content-Type": "application/json" },
+      requestPostData,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody,
+      operationName: null,
+      query: null,
+      variables: null,
+      decodedParams: null,
+    },
+    varName,
+    produces: [],
+    isMultipart: false,
+    isCrossDomain: false,
+  });
+
+  it("returns the re-queried search call's var, not the terminal drill-down's, when they differ", () => {
+    const steps = [
+      capture("https://dcl.test/toggles", '["a"]', [{ name: "a" }], "r0"),
+      capture("https://dcl.test/authz/private", "{}", { successful: true }, "r1"),
+      capture(
+        "https://dcl.test/available-products/",
+        '{"filters":[]}',
+        { totalAvailableCruises: 699, products: [{ id: "p1" }] },
+        "r2"
+      ),
+      capture(
+        "https://dcl.test/available-products/",
+        '{"filters":["7-night"]}',
+        { totalAvailableCruises: 151, products: [{ id: "p2" }] },
+        "r3"
+      ),
+      capture(
+        "https://dcl.test/available-sailings/",
+        '{"itineraryId":"i1"}',
+        { sailings: [{ id: "s1" }], exchangeRate: 1 },
+        "r4"
+      ),
+    ];
+    const body = emitMultiStepExecuteHttp(
+      steps,
+      null,
+      { stringMessageKey: null, nestedErrorPaths: [] },
+      new Map(),
+      new Set(),
+      new Map(),
+      new Set(),
+      new Map(),
+      new Map(),
+      "https://dcl.test",
+      new Map(),
+      new Map()
+    );
+
+    expect(body).toContain("return { data: r3 };");
+    expect(body).not.toContain("return { data: r4 };");
+    // The selected var's `const` must actually be declared — otherwise the
+    // emitted code references an undeclared variable.
+    expect(body).toContain("const r3 = (await httpClient(");
+  });
+
+  it("returns the terminal call's var for a genuine single-pass submission flow", () => {
+    const steps = [
+      capture(
+        "https://ats.test/api/application/create",
+        '{"FirstName":"Reginald"}',
+        { id: "a1" },
+        "r0"
+      ),
+      capture("https://ats.test/api/form-schema", '{"jobId":"9"}', { sections: [] }, "r1"),
+      capture(
+        "https://ats.test/api/application/a1/submit",
+        '{"confirm":true}',
+        { success: true },
+        "r2"
+      ),
+    ];
+    const body = emitMultiStepExecuteHttp(
+      steps,
+      null,
+      { stringMessageKey: null, nestedErrorPaths: [] },
+      new Map(),
+      new Set(),
+      new Map(),
+      new Set(),
+      new Map(),
+      new Map(),
+      "https://ats.test",
+      new Map(),
+      new Map()
+    );
+
+    expect(body).toContain("return { data: r2 };");
+    expect(body).toContain("const r2 = (await httpClient(");
+  });
+});
+
+describe("emitMultiStepExecuteHttp — per-call response schema override (G2)", () => {
+  const steps = buildMulticallHeterogeneousActionSteps();
+  // MulticallFixtureStep.produces is typed unknown[] (its own module doesn't
+  // export recon-generate.ts's internal Produce type — see the fixture's
+  // docstring); every step's produces is [] at runtime, which structurally
+  // satisfies ActionStep.produces: Produce[].
+  const body = emitMultiStepExecuteHttp(
+    steps as Parameters<typeof emitMultiStepExecuteHttp>[0],
+    null,
+    { stringMessageKey: null, nestedErrorPaths: [] },
+    new Map(),
+    new Set(),
+    new Map(),
+    new Set(),
+    new Map(),
+    new Map(),
+    "https://api.example.com",
+    new Map(),
+    new Map()
+  );
+  const callBlocks = body
+    .split(/(?=(?:const \w+ = )?\(?await httpClient\()/)
+    .filter((b) => b.includes("await httpClient("));
+
+  function callBlockForUrl(urlSubstring: string): string {
+    const block = callBlocks.find((b) => b.includes(urlSubstring));
+    if (!block)
+      throw new Error(`no httpClient call block found for URL containing ${urlSubstring}`);
+    return block;
+  }
+
+  it("emits a distinct per-call schema for the toggles array response", () => {
+    const block = callBlockForUrl("toggles/product-avail");
+    expect(block).toMatch(/schema:\s*z\.array\(/);
+    expect(block).toContain("name: z.string()");
+    expect(block).toContain("enabled: z.boolean()");
+  });
+
+  it("emits a distinct per-call schema for the {result,successful} auth-mint response", () => {
+    const block = callBlockForUrl("authz/private");
+    expect(block).toContain("result: z.string()");
+    expect(block).toContain("successful: z.boolean()");
+    expect(block).not.toContain("totalPages");
+  });
+
+  it("emits the inventory shape's own schema on the available-products call, not the toggles shape", () => {
+    // r2's varying `page` field is threaded to `payload.page` (selectPayloadAction's
+    // re-query signature), distinguishing its block from r3's literal `body:
+    // \`{"page":2}\``.
+    const block = callBlockForUrl("payload.page");
+    expect(block).toContain("totalPages: z.number()");
+    expect(block).toContain("totalAvailableCruises: z.number()");
+    expect(block).toContain("products: z.array(");
+    expect(block).not.toMatch(/schema:\s*z\.array\(z\.object/);
+  });
+
+  it("the toggles call's schema is not the products/inventory schema (the G2 reproduction)", () => {
+    const togglesBlock = callBlockForUrl("toggles/product-avail");
+    expect(togglesBlock).not.toContain("totalPages");
+    expect(togglesBlock).not.toContain("totalAvailableCruises");
+  });
+
+  it("every httpClient(...) call carries its own schema: override rather than relying on the client default", () => {
+    const httpClientCallCount = (body.match(/await httpClient\(/g) ?? []).length;
+    const schemaOverrideCount = (body.match(/\n\s*schema: /g) ?? []).length;
+    expect(schemaOverrideCount).toBe(httpClientCallCount);
+  });
+
+  it("the client-level ResponseSchema is not referenced by any per-call schema, so narrowing it leaves non-terminal calls' schemas unchanged (the G2 reproduction)", () => {
+    // emitContractTs emits `${pascal}ResponseSchema = z.unknown()` for every
+    // multi-step flow and hands the author the `[ ] Narrow ResponseSchema`
+    // checklist item — the report's repro is the author following that item
+    // by hand-substituting the narrowed available-products/ shape (the same
+    // shape r2's own per-call schema below already carries) in place of
+    // z.unknown(), exactly as they would in the emitted file.
+    const contract = emitContractTs({ ...BASE_OPTS, multiStepBody: body });
+    expect(contract).toContain("const TestSiteResponseSchema = z.unknown();");
+    const narrowedContract = contract.replace(
+      "const TestSiteResponseSchema = z.unknown();",
+      "const TestSiteResponseSchema = z.object({\n  totalPages: z.number(),\n  totalAvailableCruises: z.number(),\n  products: z.array(z.object({ productId: z.string() })),\n});"
+    );
+
+    // Pre-fix (no per-call override), the toggles call had no `schema:` of
+    // its own and validated against the client's TestSiteResponseSchema —
+    // narrowing it here would have applied the products shape to the toggles
+    // call. Post-fix, the toggles call carries its own inferred `schema:`
+    // literal, so the narrowed client schema is unreferenced by it.
+    const togglesBlock = callBlockForUrl("toggles/product-avail");
+    expect(togglesBlock).toMatch(/schema:\s*z\.array\(/);
+    expect(togglesBlock).not.toContain("schema: TestSiteResponseSchema");
+    expect(togglesBlock).not.toContain("totalPages");
+    expect(narrowedContract).toContain("totalPages: z.number()");
+  });
+});
+
+describe("selectEffectiveResponseBody — shape source agrees with the return value (G1)", () => {
+  it("derives from the re-queried search call, not the terminal drill-down, for the drill-down-terminal fixture", () => {
+    const steps = buildMulticallHeterogeneousActionStepsWithDrillDown();
+
+    const shapeSource = selectEffectiveResponseBody(true, steps, null);
+    const returnAction = selectReturnAction(steps);
+
+    // The search call (r3, the second available-products/ query) is what
+    // executeHttp returns — assert the inferred shape comes from that SAME
+    // call, not the terminal available-sailings/ drill-down (r4).
+    expect(returnAction?.varName).toBe("r3");
+    expect(shapeSource).toEqual(returnAction?.capture.responseBody);
+    expect(shapeSource).toEqual({
+      totalPages: 5,
+      totalAvailableCruises: 699,
+      products: [{ productId: "p2" }],
+    });
+    expect(shapeSource).not.toEqual({
+      sailings: [{ sailingId: "s1" }],
+      exchangeRate: 1.0,
+    });
+  });
+
+  it("derives from the terminal call for a genuine single-pass submission flow, agreeing with the return value", () => {
+    const steps = [
+      {
+        capture: {
+          timestamp: "2024-01-01T00:00:00Z",
+          phase: "action" as const,
+          method: "POST",
+          url: "https://ats.test/api/application/create",
+          status: 200,
+          requestHeaders: { "Content-Type": "application/json" },
+          requestPostData: '{"FirstName":"Reginald"}',
+          responseHeaders: { "content-type": "application/json" },
+          responseBody: { id: "a1" },
+          operationName: null,
+          query: null,
+          variables: null,
+          decodedParams: null,
+        },
+        varName: "r0",
+        produces: [],
+        isMultipart: false,
+        isCrossDomain: false,
+      },
+      {
+        capture: {
+          timestamp: "2024-01-01T00:00:01Z",
+          phase: "action" as const,
+          method: "POST",
+          url: "https://ats.test/api/application/a1/submit",
+          status: 200,
+          requestHeaders: { "Content-Type": "application/json" },
+          requestPostData: '{"confirm":true}',
+          responseHeaders: { "content-type": "application/json" },
+          responseBody: { success: true },
+          operationName: null,
+          query: null,
+          variables: null,
+          decodedParams: null,
+        },
+        varName: "r1",
+        produces: [],
+        isMultipart: false,
+        isCrossDomain: false,
+      },
+    ];
+
+    const shapeSource = selectEffectiveResponseBody(true, steps, null);
+    const returnAction = selectReturnAction(steps);
+
+    expect(returnAction?.varName).toBe("r1");
+    expect(shapeSource).toEqual(returnAction?.capture.responseBody);
+    expect(shapeSource).toEqual({ success: true });
   });
 });
 

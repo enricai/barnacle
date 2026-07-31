@@ -105,14 +105,14 @@ describe("lib/option-matcher matchToOptions", () => {
     expect(matchToOptions("associates", opts)).toBe("Associate's Degree/College Diploma");
   });
 
-  it("not coupled to AppCast payload shape — works with arbitrary plugin option sets", () => {
+  it("not coupled to any one plugin's payload shape — works with arbitrary plugin option sets", () => {
     // Boolean options; the helper must resolve without
     // any knowledge of the originating plugin's schema.
     const boolOpts = ["true", "false"];
     expect(matchToOptions("true", boolOpts)).toBe("true");
     expect(matchToOptions("false", boolOpts)).toBe("false");
 
-    // Encompass-style enum with unrelated domain vocabulary.
+    // Production-style enum with unrelated domain vocabulary.
     const shiftOpts = ["Day Shift", "Night Shift", "Rotating Shift"];
     expect(matchToOptions("day shift", shiftOpts)).toBe("Day Shift");
     expect(matchToOptions("Night", shiftOpts)).toBe("Night Shift");

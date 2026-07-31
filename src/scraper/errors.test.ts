@@ -6,7 +6,6 @@ import {
   HttpUrlLockedError,
   MissingFormMapKeyError,
   type NeedsUserInfoResult,
-  OracleTokenExpiredError,
   ScraperError,
   StepVerificationError,
   UnknownScraperError,
@@ -21,29 +20,12 @@ describe("HttpUrlLockedError", () => {
     expect(err.message).toBe("requisition url locked");
     expect(err).not.toBeInstanceOf(HttpRateLimitError);
     expect(err).not.toBeInstanceOf(HttpSchemaError);
-    expect(err).not.toBeInstanceOf(OracleTokenExpiredError);
+    expect(err).not.toBeInstanceOf(UnknownScraperError);
   });
 
   it("accepts a custom message", () => {
     const err = new HttpUrlLockedError("url locked on j-12345");
     expect(err.message).toBe("url locked on j-12345");
-  });
-});
-
-describe("OracleTokenExpiredError", () => {
-  it("is retryable, instanceof ScraperError, and distinct from sibling errors", () => {
-    const err = new OracleTokenExpiredError();
-    expect(err).toBeInstanceOf(ScraperError);
-    expect(err.retryable).toBe(true);
-    expect(err.name).toBe("OracleTokenExpiredError");
-    expect(err.message).toBe("oracle token expired (ORA_IRC_TOKEN_EXPIRED)");
-    expect(err).not.toBeInstanceOf(HttpUrlLockedError);
-    expect(err).not.toBeInstanceOf(UnknownScraperError);
-  });
-
-  it("accepts a custom message", () => {
-    const err = new OracleTokenExpiredError("ORA_IRC_TOKEN_EXPIRED on j-99999");
-    expect(err.message).toBe("ORA_IRC_TOKEN_EXPIRED on j-99999");
   });
 });
 

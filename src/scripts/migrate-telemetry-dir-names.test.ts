@@ -186,9 +186,9 @@ describe("parseArgs", () => {
   });
 
   it("captures --site <name>", () => {
-    expect(parseArgs(["node", "script.ts", "--site", "appcast", "--apply"])).toEqual({
+    expect(parseArgs(["node", "script.ts", "--site", "ats-c", "--apply"])).toEqual({
       apply: true,
-      siteFilter: "appcast",
+      siteFilter: "ats-c",
     });
   });
 });

@@ -2,8 +2,8 @@
  * Cookie-jar snapshot capture via CDP `Network.getAllCookies`. `document.cookie`
  * and Stagehand's own cookie helpers can't see HttpOnly cookies, and
  * `Page.getCookies`/`Network.getCookies` only return cookies scoped to the
- * current frame's URLs — a journey that navigated click.appcast.io ->
- * apply.appcast.io would miss the click-domain cookies once on the apply
+ * current frame's URLs — a journey that navigated a click-tracking domain ->
+ * an apply domain would miss the click-domain cookies once on the apply
  * page. `Network.getAllCookies` returns the whole-browser jar regardless of
  * the page's current URL, which is what attribution analysis needs.
  */

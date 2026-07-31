@@ -5,7 +5,7 @@
  * the caller-supplied pRetry options. On exhaustion, wraps the last error in
  * the caller-supplied `exhaustionError`.
  *
- * Extracted from appcast/tokens/warmup.ts so any future recon→generate warmup
+ * Extracted from a plugin's token warmup so any future recon→generate warmup
  * flow can reuse the session-lifecycle shell without re-hand-rolling pRetry +
  * finally-close + error-mapping each time.
  */

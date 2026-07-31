@@ -294,7 +294,7 @@ describe("dispatch — executeHttp hot-path branches", () => {
   });
 
   it("throws UrlLockedError and does NOT invoke browser execute() on HttpUrlLockedError", async () => {
-    mockHttpExecute.mockRejectedValueOnce(new HttpUrlLockedError("ORA_URL_LOCKED"));
+    mockHttpExecute.mockRejectedValueOnce(new HttpUrlLockedError("URL_LOCKED"));
     await expect(dispatch(httpPlugin, {}, stubContext)).rejects.toBeInstanceOf(UrlLockedError);
     expect(mockPluginExecute).not.toHaveBeenCalled();
     expect(mockRecordFallbackActivation).not.toHaveBeenCalled();
@@ -303,7 +303,7 @@ describe("dispatch — executeHttp hot-path branches", () => {
 
   it("throws EmptyResultsApiError and does NOT invoke browser execute() on EmptyResultsError", async () => {
     mockHttpExecute.mockRejectedValueOnce(
-      new EmptyResultsError("hca http-flow: job_expired — The job is no longer available.")
+      new EmptyResultsError("ats-a http-flow: job_expired — The job is no longer available.")
     );
     await expect(dispatch(httpPlugin, {}, stubContext)).rejects.toBeInstanceOf(
       EmptyResultsApiError
@@ -313,7 +313,7 @@ describe("dispatch — executeHttp hot-path branches", () => {
   });
 
   it("records dispatch.failure with error_type=url_locked (not rate_limit) on HttpUrlLockedError", async () => {
-    mockHttpExecute.mockRejectedValueOnce(new HttpUrlLockedError("ORA_URL_LOCKED"));
+    mockHttpExecute.mockRejectedValueOnce(new HttpUrlLockedError("URL_LOCKED"));
     await expect(dispatch(httpPlugin, {}, stubContext)).rejects.toBeInstanceOf(UrlLockedError);
     expect(mockRecordDdFailure).toHaveBeenCalledWith(
       expect.objectContaining({ error_type: "url_locked" })
@@ -467,11 +467,11 @@ describe("dispatch — tracking click", () => {
   });
 
   it("calls fireTrackingClick with the URL and siteId when payload contains TrackingUrl", async () => {
-    const payload = { TrackingUrl: "https://click.appcast.io/t/abc?vivclid=123" };
+    const payload = { TrackingUrl: "https://click.acme.example/t/abc?vivclid=123" };
     await dispatch(stubPlugin, payload, stubContext);
     expect(mockFireTrackingClick).toHaveBeenCalledOnce();
     expect(mockFireTrackingClick).toHaveBeenCalledWith(
-      "https://click.appcast.io/t/abc?vivclid=123",
+      "https://click.acme.example/t/abc?vivclid=123",
       "test-site"
     );
   });
@@ -489,7 +489,7 @@ describe("dispatch — tracking click", () => {
   it("does not call fireTrackingClick on dispatch failure", async () => {
     mockPluginExecute.mockRejectedValueOnce(new CaptchaError("captcha hit"));
     try {
-      await dispatch(stubPlugin, { TrackingUrl: "https://click.appcast.io/t/abc" }, stubContext);
+      await dispatch(stubPlugin, { TrackingUrl: "https://click.acme.example/t/abc" }, stubContext);
     } catch {
       // expected
     }
@@ -1019,7 +1019,7 @@ describe("registerRoutes — extraRoutes loop", () => {
     await app.close();
   });
 
-  // Regression: the PROD config — appcast + encompasshealth both register the
+  // Regression: the PROD config — two sibling plugins both register the
   // SAME multipart :siteId/resume route. The shared-route path skips Fastify's
   // schema.body and validates via manual route.bodySchema.parse(); this asserts
   // that path still runs the schema's z.preprocess coercion (multipartJsonObject)

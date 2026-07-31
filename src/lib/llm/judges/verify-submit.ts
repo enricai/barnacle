@@ -7,7 +7,7 @@
  * Empirically validated 2026-06-11 on two production failure cases:
  *  - Case A (was wrongly flagged as failure by the regex): verdict=true,
  *    correctly identified dom_signal="uapp-universal-submitted-page" and
- *    url_signal="/applyboard/applied".
+ *    url_signal="/&lt;vendor&gt;/applied".
  *  - Case B (genuinely stuck, 10 ng-invalid markers, no success DOM):
  *    verdict=false with a coherent reason about why submission failed.
  *

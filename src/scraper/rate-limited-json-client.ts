@@ -46,7 +46,7 @@ export interface RateLimitedJsonClientOptions<TResponse> {
  */
 export function createRateLimitedJsonClient<TResponse>(
   opts: RateLimitedJsonClientOptions<TResponse>
-): (url: string, init?: HttpRequestInit) => Promise<TResponse> {
+): <TOverride = TResponse>(url: string, init?: HttpRequestInit<TOverride>) => Promise<TOverride> {
   const bottleneck = new Bottleneck({ minTime: opts.minTimeMs });
   const baseHeaders: Record<string, string> = {
     ...chromiumClientHints({

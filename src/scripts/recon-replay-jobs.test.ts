@@ -99,9 +99,61 @@ describe("recon-replay-jobs — run-scoped capture dir", () => {
       })
     );
 
-    const outcome = readJobOutcome(capturesBefore, runDir.graphqlDir);
+    const outcome = readJobOutcome(capturesBefore, runDir.graphqlDir, []);
     expect(outcome.integratedApply200).toBe(true);
     expect(outcome.serverRejected).toBe(false);
+  });
+
+  describe("readJobOutcome — terminalUrl from flow-configured successUrlFragments", () => {
+    const writeCapture = async (url: string): Promise<{ graphqlDir: string }> => {
+      const { resolveReconRunDir } = await import("@/scripts/recon-shared.js");
+      const runDir = resolveReconRunDir();
+      mkdirSync(runDir.graphqlDir, { recursive: true });
+      writeFileSync(
+        join(runDir.graphqlDir, "001-terminal.json"),
+        JSON.stringify({ url, status: 200, responseBody: { ok: true } })
+      );
+      return { graphqlDir: runDir.graphqlDir };
+    };
+
+    it("sets terminalUrl when a capture URL contains a configured fragment", async () => {
+      const { readJobOutcome } = await import("@/scripts/recon-replay-jobs.js");
+      const url = "https://apply.acme.example/jobs/1/apply-portal/applied";
+      const { graphqlDir } = await writeCapture(url);
+
+      const outcome = readJobOutcome(new Set<string>(), graphqlDir, [
+        "/apply-portal/applied",
+        "/apply/confirmation",
+      ]);
+      expect(outcome.terminalUrl).toBe(url);
+    });
+
+    it("leaves terminalUrl null when no fragment is configured", async () => {
+      const { readJobOutcome } = await import("@/scripts/recon-replay-jobs.js");
+      const { graphqlDir } = await writeCapture(
+        "https://apply.acme.example/jobs/1/apply-portal/applied"
+      );
+
+      const outcome = readJobOutcome(new Set<string>(), graphqlDir, []);
+      expect(outcome.terminalUrl).toBeNull();
+    });
+
+    it("leaves terminalUrl null when no capture matches any configured fragment", async () => {
+      const { readJobOutcome } = await import("@/scripts/recon-replay-jobs.js");
+      const { graphqlDir } = await writeCapture("https://apply.acme.example/jobs/1/still-editing");
+
+      const outcome = readJobOutcome(new Set<string>(), graphqlDir, ["/apply-portal/applied"]);
+      expect(outcome.terminalUrl).toBeNull();
+    });
+
+    it("treats fragments as literal substrings, not regexes", async () => {
+      const { readJobOutcome } = await import("@/scripts/recon-replay-jobs.js");
+      // `.` in a fragment must NOT match an arbitrary character the way a regex would.
+      const { graphqlDir } = await writeCapture("https://apply.acme.example/jobs/1/aXapplied");
+
+      const outcome = readJobOutcome(new Set<string>(), graphqlDir, ["a.applied"]);
+      expect(outcome.terminalUrl).toBeNull();
+    });
   });
 
   it("passes RECON_RUN_ID equal to the parent's resolved runId in the child's spawn env", async () => {

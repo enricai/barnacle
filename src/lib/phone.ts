@@ -1,6 +1,6 @@
 /**
  * Parses a US phone string into area code and subscriber number.
- * Oracle HCM requires the phone split into `areaCode` (first 3 digits) and
+ * Some ATS backends require the phone split into `areaCode` (first 3 digits) and
  * `number` (remaining digits). Inputs shorter than 10 digits get an empty
  * `areaCode` so the partial number is still submitted as-is.
  */

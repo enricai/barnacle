@@ -34,7 +34,7 @@ export const CALL_TYPE_STAGEHAND_EXTRACT = "stagehand-extract";
 /**
  * Haiku 4.5 judge for submit-success verification. Replaces the per-site
  * regex (`submitEndpointPattern`) that mislabeled successful submits as
- * failures whenever AppCast used a different POST URL than the regex
+ * failures whenever a site used a different POST URL than the regex
  * expected. The judge receives evidence (recent network captures, page
  * URL/title, unfocused observe, site criteria) and returns a discriminated
  * verdict — verified=true requires multi-signal corroboration to prevent

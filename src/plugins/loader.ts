@@ -372,8 +372,8 @@ export async function registerRoutes(
 
 /**
  * Fastify registers each `method+url` exactly once, but several plugins declare
- * the SAME parameterized extra route (e.g. `POST /v1/:siteId/resume` for both
- * appcast and encompasshealth). Registering per-plugin throws
+ * the SAME parameterized extra route (e.g. `POST /v1/:siteId/resume` for two
+ * or more sibling plugins). Registering per-plugin throws
  * `FST_ERR_DUPLICATED_ROUTE` and crashes boot.
  *
  * We group extra routes by `method+path` and register each unique path once.

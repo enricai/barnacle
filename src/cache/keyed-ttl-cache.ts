@@ -3,8 +3,8 @@ import { LRUCache } from "lru-cache";
 /**
  * Generic per-key TTL cache factory with single-flight warmup coalescing.
  *
- * Why this exists: both `src/cache/response-cache.ts` and
- * `src/sites/appcast/tokens/cache.ts` independently hand-roll the same
+ * Why this exists: both `src/cache/response-cache.ts` and a plugin's
+ * `tokens/cache.ts` independently hand-roll the same
  * inFlight Map + LRUCache wiring. Any future site needing a per-key token
  * or session cache would copy it a third time. This factory captures the
  * shared invariant — promise registered synchronously before any yield so
@@ -38,8 +38,8 @@ export interface KeyedTtlCache<T extends object> {
  * in-flight promise is written to the map *synchronously* — before any
  * microtask yield — guaranteeing that every concurrent caller for the same
  * key awaits the same promise instead of kicking off a duplicate warmup.
- * See the same pattern at `response-cache.ts:108-111` and
- * `appcast/tokens/cache.ts:124-125`.
+ * See the same pattern at `response-cache.ts:108-111` and a plugin's
+ * `tokens/cache.ts:124-125`.
  *
  * `getOrWarm` returns `{ ...value }` (a shallow copy) to each caller so
  * that an in-place mutation of the master cache entry (e.g. rotating a

@@ -51,15 +51,18 @@ interface ShippedStep {
 }
 
 /**
- * Replays every step of the three SHIPPED ATS plugins (hca, appcast,
- * encompasshealth) through the splice resolver.
+ * Replays every step of three representative shipped ATS flow shapes through the
+ * splice resolver.
  *
  * This is the gate the 21 hand-written unit tests are not: it runs on real
- * production flow data. An earlier attempt to "simplify" the dropdown clause
+ * production flow shapes. An earlier attempt to "simplify" the dropdown clause
  * passed all 21 unit tests and would still have silently dropped the caller's
- * state and country on every appcast apply — this replay is what caught it.
- * Fixture is distilled from autoapply's recon-flow.json files so the check is
- * reproducible in CI without that repo checked out.
+ * state and country on every apply through the JSON-envelope flow — this replay is
+ * what caught it. The fixture is distilled from a consumer's recon-flow.json files
+ * and anonymized (site ids, employer names, and the recon persona are synthetic),
+ * so the check is reproducible in CI without that repo checked out. Anonymization
+ * is resolver-neutral by construction: the vocabulary below matches field LABELS,
+ * never proper nouns, so renaming employers cannot move a splice decision.
  */
 describe("shipped ATS flows — splice replay", () => {
   const steps = shippedSteps as ShippedStep[];
@@ -83,9 +86,9 @@ describe("shipped ATS flows — splice replay", () => {
   });
 
   it("keeps the two dropdown steps that carry no quoted constant", () => {
-    // These splice ONLY via the subject-scoped dropdown clause. They are live at
-    // appcast/flows/browser-flow.ts:143,149. Deleting that clause drops the
-    // caller's state/country on every appcast apply, and no unit test notices.
+    // These splice ONLY via the subject-scoped dropdown clause — they carry no
+    // quoted constant for the label table to match. Deleting that clause drops the
+    // caller's state/country on every apply, and no unit test notices.
     const state = resolved.find((r) =>
       r.instruction.startsWith("If a State or Province dropdown is visible")
     );

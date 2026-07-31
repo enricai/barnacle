@@ -197,25 +197,11 @@ export class HttpRateLimitError extends ScraperError {
  * HTTP request nor a fresh Stagehand browser session can succeed. The caller must
  * back off and surface a "retry later" state rather than burning a Steel session.
  * Kept distinct from HttpRateLimitError so metrics/logs (classifyDispatchError)
- * can tell a requisition lock apart from a self-inflicted 429 rate limit.
+ * can tell a resource lock apart from a self-inflicted 429 rate limit.
  */
 export class HttpUrlLockedError extends ScraperError {
   constructor(message = "requisition url locked") {
     super(message, false);
-  }
-}
-
-/**
- * @deprecated Removed in 2.0.0. Oracle-specific and no longer thrown by the
- * engine — response-body sentinel detection now lives in the plugin via
- * `HttpClientOptions.classifyResponseBody`. A plugin that needs a retryable
- * token-expiry signal should define its own `ScraperError` subclass (see the
- * encompasshealth plugin). Retained only so existing importers of
- * `@enricai/barnacle/scraper/errors` keep resolving under a minor release.
- */
-export class OracleTokenExpiredError extends ScraperError {
-  constructor(message = "oracle token expired (ORA_IRC_TOKEN_EXPIRED)") {
-    super(message, true);
   }
 }
 

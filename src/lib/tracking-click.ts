@@ -1,9 +1,11 @@
 /**
- * Fire-and-forget background click for Appcast vivclid tracking URLs.
+ * Fire-and-forget background click for vendor click-tracking URLs.
  * After a successful submission, Barnacle navigates to the tracking URL
- * in a short-lived Browserbase session so Appcast records the Click event.
+ * in a short-lived Browserbase session so the tracking vendor records the
+ * Click event.
  *
- * Navigation pattern is proven against click.appcast.io with advancedStealth.
+ * Navigation pattern is proven against production click-tracking domains
+ * with advancedStealth.
  * No CDP behavioral signals are needed; those are only required when extracting
  * DataDome tokens for subsequent Node HTTP requests.
  */

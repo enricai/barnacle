@@ -43,7 +43,7 @@ import {
 
 function makeSuccessInput(): Parameters<typeof captureSubmissionEnvelope>[0] {
   return {
-    siteId: "appcast",
+    siteId: "ats-c",
     requestId: "req-abc-123",
     inboundPayload: { jobId: "56793094457", ClickUrl: "https://example.com/apply" },
     status: "submitted",
@@ -55,12 +55,12 @@ function makeSuccessInput(): Parameters<typeof captureSubmissionEnvelope>[0] {
 
 function makeErrorInput(): Parameters<typeof captureSubmissionEnvelope>[0] {
   return {
-    siteId: "appcast",
+    siteId: "ats-c",
     requestId: "req-def-456",
     inboundPayload: { jobId: "99999999999" },
     status: "error",
     auditPayload: null,
-    errorMessage: "HttpServerError: 503 from appcast",
+    errorMessage: "HttpServerError: 503 from ats-c",
     durationMs: 1234,
   };
 }

@@ -1,7 +1,7 @@
 /**
  * Site-agnostic fetch scaffold shared by plugins that cannot use
  * `createHttpClient` — typically because they need multipart Buffer bodies
- * or per-response header rotation (appcast token churn). Owns the
+ * or per-response header rotation (per-site token churn). Owns the
  * try/catch network-error conversion, the onResponse hook, and the
  * classifyHttpStatus call so callers only supply the what (URL, headers,
  * body) and the where (their token-rotation / audit hook and context label).
@@ -51,7 +51,7 @@ export interface RawFetchOptions {
   onResponse: (headers: Headers) => void;
   /**
    * Short label used in error messages from `classifyHttpStatus`, e.g.
-   * `"appcast /integrated_questions"`. Should identify the endpoint so
+   * `"<site> /integrated_questions"`. Should identify the endpoint so
    * logs and error surfaces are actionable.
    */
   contextLabel: string;

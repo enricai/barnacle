@@ -65,7 +65,17 @@ export interface HttpResponseBinding {
    * whose raw value is bound as-is.
    */
   cookieName?: string;
-  /** Outbound request header to populate on subsequent calls, e.g. `"Cookie"`. */
+  /**
+   * Outbound request header to populate on subsequent calls, e.g. `"Cookie"`.
+   * Compared case-insensitively (HTTP header names are), so bindings whose
+   * `targetHeader` differs only by casing (e.g. `"Cookie"` vs `"cookie"`)
+   * are treated as the same target. Multiple bindings with a `cookieName`
+   * may share the same `targetHeader` (the `Cookie` header carries many
+   * cookies) — each is tracked separately and materialized joined by `"; "`.
+   * Bindings without `cookieName` bind a raw header value as-is and keep
+   * overwrite semantics: a second such binding sharing a `targetHeader`
+   * replaces the first.
+   */
   targetHeader: string;
 }
 
@@ -115,8 +125,12 @@ export interface HttpClientOptions<TResponse> {
  * the browser `RequestInit` API — keeps the interface portable and prevents
  * callers from bypassing the Bottleneck or Zod layers by passing raw fetch
  * options that the client doesn't know about.
+ *
+ * `TOverride` defaults to `unknown` for callers that don't need the per-call
+ * `schema` escape hatch — `HttpRequestInit` (no type argument) still behaves
+ * exactly as before.
  */
-export interface HttpRequestInit {
+export interface HttpRequestInit<TOverride = unknown> {
   method?: string;
   headers?: Record<string, string>;
   body?: string;
@@ -129,6 +143,14 @@ export interface HttpRequestInit {
    * until the server closes it (~15min for testmail livequery).
    */
   signal?: AbortSignal;
+  /**
+   * Validates this call's response against `schema` instead of the client's
+   * default schema — the escape hatch a multi-call chain with heterogeneous
+   * response shapes needs, since `createHttpClient`'s `schema` option is a
+   * single client-wide default (see `HttpClientOptions.schema`). Omitted
+   * calls keep validating against the client default exactly as before.
+   */
+  schema?: ZodType<TOverride>;
 }
 
 /**
@@ -163,6 +185,65 @@ function extractCookieValue(setCookieHeaders: string[], cookieName: string): str
     }
   }
   return undefined;
+}
+
+/**
+ * Finds a header's value by case-insensitive key lookup — `baseHeaders` and
+ * `init.headers` are operator-supplied with arbitrary casing (unlike
+ * `boundHeaders`, which is normalized via `targetHeaderCasing`), so a plain
+ * `headers["Cookie"]` lookup would miss a `"cookie"` or `"COOKIE"` key.
+ */
+function findHeaderCaseInsensitive(
+  headers: Record<string, string>,
+  name: string
+): string | undefined {
+  const lower = name.toLowerCase();
+  const key = Object.keys(headers).find((k) => k.toLowerCase() === lower);
+  return key === undefined ? undefined : headers[key];
+}
+
+/**
+ * Parses a `name=value; name=value` Cookie header string into per-cookie
+ * entries, mirroring the pair-splitting `extractCookieValue` already does
+ * for `Set-Cookie`. Skips malformed segments (no `=`) rather than throwing —
+ * an operator-authored `baseHeaders` or per-call `init.headers` Cookie value
+ * is untrusted input, not a value this module produced.
+ */
+function parseCookiePairs(cookieHeader: string): Array<[string, string]> {
+  return cookieHeader
+    .split(";")
+    .map((pair) => pair.trim())
+    .filter(Boolean)
+    .flatMap((pair) => {
+      const eq = pair.indexOf("=");
+      return eq === -1 ? [] : [[pair.slice(0, eq).trim(), pair.slice(eq + 1).trim()] as const];
+    });
+}
+
+/**
+ * Merges the Cookie header across `baseHeaders`, the live `boundHeaders`
+ * accumulator, and per-call `init.headers` by individual cookie name instead
+ * of the last-wins overwrite plain object spread gives every other header —
+ * see the http-client.ts module docblock and CLAUDE.md "battle-tested
+ * libraries only" for why the Cookie header specifically needs pair-level
+ * merging. Precedence on a name collision: a freshly bound value (the live
+ * session state a response just handed back) wins over a per-call override,
+ * which wins over the plugin's static default — bound values are the most
+ * current source of truth for a cookie in active rotation.
+ */
+function mergeCookieHeader(
+  baseHeaders: Record<string, string>,
+  boundHeaders: Record<string, string>,
+  initHeaders: Record<string, string>
+): string | undefined {
+  const merged = new Map<string, string>();
+  for (const source of [baseHeaders, initHeaders, boundHeaders]) {
+    const cookieHeader = findHeaderCaseInsensitive(source, "Cookie");
+    if (cookieHeader === undefined) continue;
+    for (const [name, value] of parseCookiePairs(cookieHeader)) merged.set(name, value);
+  }
+  if (merged.size === 0) return undefined;
+  return [...merged.entries()].map(([name, value]) => `${name}=${value}`).join("; ");
 }
 
 /**
@@ -204,19 +285,50 @@ function resolveBinding(binding: HttpResponseBinding, headers: Headers): string 
  */
 export function createHttpClient<TResponse>(
   options: HttpClientOptions<TResponse>
-): (url: string, init?: HttpRequestInit) => Promise<TResponse> {
+): <TOverride = TResponse>(url: string, init?: HttpRequestInit<TOverride>) => Promise<TOverride> {
   const { schema, bottleneck, baseHeaders, onResponse, bind = [], classifyResponseBody } = options;
   // Values bound from prior responses (e.g. a minted auth cookie), keyed by
   // targetHeader. Lives for the lifetime of this client instance so a later
   // call can pick up what an earlier call captured — see HttpResponseBinding.
   const boundHeaders: Record<string, string> = {};
+  // Per-cookie values for targetHeaders that carry multiple cookies (e.g.
+  // "Cookie"), keyed by targetHeader.toLowerCase() then cookieName so
+  // several bindings sharing one targetHeader — even across differing
+  // casing, since HTTP header names are case-insensitive — accumulate
+  // instead of overwriting or splitting into two outbound headers — see
+  // HttpResponseBinding.targetHeader. Materialized into boundHeaders
+  // (joined by "; ") whenever an entry changes.
+  const boundCookiesByTarget = new Map<string, Map<string, string>>();
+  // Canonical (first-seen) casing of each targetHeader, keyed by
+  // targetHeader.toLowerCase() — lets both branches below write
+  // boundHeaders under one stable key regardless of which casing a later
+  // binding declares.
+  const targetHeaderCasing = new Map<string, string>();
 
-  return async (url: string, init: HttpRequestInit = {}): Promise<TResponse> => {
+  return async <TOverride = TResponse>(
+    url: string,
+    init: HttpRequestInit<TOverride> = {}
+  ): Promise<TOverride> => {
+    // A per-call `init.schema` supersedes the client-level default for this
+    // call only — see HttpRequestInit.schema for why a multi-call chain with
+    // heterogeneous response shapes needs this escape hatch.
+    const activeSchema = init.schema ?? (schema as unknown as ZodType<TOverride>);
     return bottleneck.schedule(() =>
       pRetry(
         async () => {
           const method = init.method ?? "GET";
-          const headers = { ...baseHeaders, ...boundHeaders, ...(init.headers ?? {}) };
+          const initHeaders = init.headers ?? {};
+          const mergedCookie = mergeCookieHeader(baseHeaders, boundHeaders, initHeaders);
+          const headers: Record<string, string> = {
+            ...baseHeaders,
+            ...boundHeaders,
+            ...initHeaders,
+          };
+          if (mergedCookie !== undefined) {
+            const cookieKey =
+              Object.keys(headers).find((k) => k.toLowerCase() === "cookie") ?? "Cookie";
+            headers[cookieKey] = mergedCookie;
+          }
 
           let response: Response;
           try {
@@ -247,9 +359,20 @@ export function createHttpClient<TResponse>(
             // clearing it — and if nothing has ever been bound, the target
             // header stays absent from `boundHeaders` entirely, so later
             // requests never send it as an empty string.
-            if (value !== undefined) {
-              boundHeaders[binding.targetHeader] = value;
+            if (value === undefined) continue;
+            const targetKey = binding.targetHeader.toLowerCase();
+            const canonicalTarget = targetHeaderCasing.get(targetKey) ?? binding.targetHeader;
+            targetHeaderCasing.set(targetKey, canonicalTarget);
+            if (binding.cookieName === undefined) {
+              boundHeaders[canonicalTarget] = value;
+              continue;
             }
+            const cookies = boundCookiesByTarget.get(targetKey) ?? new Map<string, string>();
+            cookies.set(binding.cookieName, value);
+            boundCookiesByTarget.set(targetKey, cookies);
+            boundHeaders[canonicalTarget] = [...cookies.entries()]
+              .map(([name, cookieValue]) => `${name}=${cookieValue}`)
+              .join("; ");
           }
 
           if (response.status === 401 || response.status === 403) {
@@ -322,7 +445,7 @@ export function createHttpClient<TResponse>(
 
           const body = parseJsonOrThrowRetryable(rawText, url);
 
-          const parsed = schema.safeParse(body);
+          const parsed = activeSchema.safeParse(body);
           if (!parsed.success) {
             logger.warn(
               `http schema mismatch from ${url}: ${parsed.error.issues.map((i) => i.message).join("; ")}`
