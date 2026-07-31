@@ -17,7 +17,8 @@ must follow these patterns and rules. Code reviews will reference sections in th
 - Lint: `pnpm run lint` or `pnpm run lint:fix` (Biome)
 - Format: `pnpm run format` (Biome)
 - Typecheck: `pnpm run typecheck` (tsc --noEmit)
-- Tests: `pnpm run test` (Vitest)
+- Tests: `pnpm run test` (Vitest) — single file: `pnpm test src/scraper/fixtures.test.ts`
+- **NEVER use `--` before filter args** — `pnpm test -- <filter>` silently runs the entire suite. Always use `pnpm test <filter>` directly.
 - Clean: `pnpm run clean`
 - Prisma: `pnpm run db:push` (apply schema to DB), `pnpm run db:generate` (regenerate client after schema changes), `pnpm run db:studio` (local DB browser UI)
 
@@ -142,7 +143,7 @@ BEFORE marking ANY task complete:
 
 1. `pnpm run lint:fix` — MUST pass with no errors.
 2. `pnpm run typecheck` — MUST pass.
-3. `pnpm run test` — relevant tests MUST pass.
+3. `pnpm test <relevant-file>` — relevant tests MUST pass (NEVER use `--` before the filter).
 4. Verify `@/` alias usage for all src imports.
 5. Confirm TypeScript strict-mode compliance (explicit return types on exported functions).
 6. Confirm TSDoc/JSDoc on all exported functions (explain *why*, not *what*).

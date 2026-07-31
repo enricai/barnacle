@@ -71,7 +71,12 @@ import {
 } from "@/lib/telemetry/telemetry-paths";
 import { StepVerificationError } from "@/scraper/errors";
 import { createBrowserSession, type ProviderName } from "@/scraper/session";
-import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
+import {
+  guardedAct,
+  guardedObserve,
+  newObserveCache,
+  type ObserveCache,
+} from "@/scraper/stagehand-guard";
 import { filterByCallType, parseSamples } from "@/scripts/judge-llm-batch";
 import { CAPTURES_DIR, type Capture, STEP_FAILURES_DIR } from "@/scripts/recon-shared";
 import { allocateTestmailInbox } from "@/testmail/client";
@@ -963,7 +968,17 @@ async function rephraseWithLLM(
     technique: string;
     instruction: string | null;
     verdict: string | null;
-  }[]
+  }[],
+  /**
+   * Optional rendered Google Analytics Measurement Protocol event list
+   * (output of `extractGaEventEvidence`). When non-empty, surfaces SPA-
+   * internal page transitions (view_secondPage), success signals
+   * (view_thankYouPage), and the site's own validator counts
+   * (epn.validationErrorsCount) so the rephrase LLM can pivot off
+   * "click harder" into "fill the actually-missing field." Telemetry
+   * the engine already captures but never showed the LLM until now.
+   */
+  gaEventEvidence?: string
 ): Promise<string | null> {
   const candidateList = observeCandidates
     .slice(0, 12)
@@ -1042,6 +1057,9 @@ ${interactiveTargetsList || "(none)"}
 
 STRUCTURED SERVER-SIDE VALIDATION ERRORS (parsed from captured 4xx responses to the configured submit endpoint — when this is populated, the form's submit DID fire and the server rejected it with specific field-level feedback; use these field+message pairs to decide which input needs correcting):
 ${submitFailureList || "(none)"}
+
+PAGE TRANSITION + VALIDATOR TELEMETRY (parsed from Google Analytics Measurement Protocol beacons (POSTs to google-analytics.com/g/collect) captured during the failed step's attempt window — the SPA's own telemetry. Watch for: en=view_secondPage / en=view_thirdPage = the SPA advanced to a later form page WITHOUT firing Page.frameNavigated (URL stays the same but the questions changed); en=view_thankYouPage = the application SUBMITTED SUCCESSFULLY (a stronger success signal than network captures because /integrated_apply POSTs are sometimes debounced); epn.validationErrorsCount=N = the site's own client validator counts N unfilled required fields. When validationErrorsCount > 0, prefer targeting an unfilled field over re-clicking Submit/Continue. When view_thankYouPage appears, the form already submitted — emit outcome=impossible because there is nothing left to click):
+${gaEventEvidence || "(none)"}
 
 Rewrite the instruction so a Stagehand act() call can resolve it unambiguously to a different element than the ones already tried. Keep it short — one sentence, natural language, no quotes around it. If the invalid-fields section above names a field AND the interactive-targets section below lists clickable options inside that same container, your rewrite picks one of those options (e.g. for a yes/no question rendered as two radio labels, choose the candidate-favorable answer — 'No' for "do you have a non-compete", 'Yes' for "are you authorized to work", 'Prefer not to say' for demographic disclosures) rather than retrying the original click. If the unfocused observe section shows an open modal/dialog with a Save or Close action, your rewrite invokes that action so the underlying form can clear its blocking state. Set outcome to "impossible" with a one-line reason only when the original instruction's element does not exist on the current page and no redirect target is available.`;
 
@@ -1594,6 +1612,50 @@ export function formatValidationRejectedReason(pair: ValidationRejectionPair): s
   return `validation-rejected: '${pair.fieldLabel}' rejected with '${pair.errorText}'; propose a different value or return impossible`;
 }
 
+const BODY_EXCERPT_DEFAULT_CAP = 8_000;
+const BODY_EXCERPT_FORM_WINDOW = 32_000;
+
+/**
+ * Pick a window of `body` that's likely to contain the form's structural
+ * evidence (ng-invalid markers, error messages, question labels) that the
+ * downstream Haiku judges need to populate the replan/rephrase prompt's
+ * FORM FIELDS section.
+ *
+ * Default: first 8KB. That window held for tenants whose form was at the
+ * top of the page (early sweeps in 2026-06).
+ *
+ * For pages where the form HTML lives below 8KB (verified on AppCast's
+ * applyboard SPA: ng-invalid first appears at byte ~15,500 after a header
+ * of Angular hydration JS + chrome), the 8KB cap silently produced
+ * "FORM FIELDS CURRENTLY MARKED INVALID: (none)" in the replan prompt,
+ * leaving the LLM with no evidence and causing it to hallucinate steps
+ * from the existing flow's tenant content. The smart path: when an
+ * `ng-invalid` or `<form` token appears beyond the default cap, return a
+ * window of FORM_WINDOW bytes centered on the marker so the judge sees
+ * the actual form structure.
+ *
+ * Site-agnostic: the markers we look for (ng-invalid, mat-form-field-
+ * invalid, is-invalid, <form) are framework-level CSS-class conventions
+ * used across countless SPAs, not AppCast-specific.
+ */
+export function selectBodyExcerpt(body: string): string {
+  if (body.length <= BODY_EXCERPT_DEFAULT_CAP) return body;
+  const defaultExcerpt = body.slice(0, BODY_EXCERPT_DEFAULT_CAP);
+  if (
+    /ng-invalid|mat-form-field-invalid|is-invalid|<form\b|questions-container/.test(defaultExcerpt)
+  ) {
+    return defaultExcerpt;
+  }
+  const searchFrom = BODY_EXCERPT_DEFAULT_CAP;
+  const markerIndex = body
+    .slice(searchFrom)
+    .search(/ng-invalid|mat-form-field-invalid|is-invalid|<form\b|questions-container/);
+  if (markerIndex < 0) return defaultExcerpt;
+  const absoluteIndex = searchFrom + markerIndex;
+  const start = Math.max(0, absoluteIndex - BODY_EXCERPT_FORM_WINDOW / 4);
+  return body.slice(start, start + BODY_EXCERPT_FORM_WINDOW);
+}
+
 async function extractLivePageFormEvidence(
   page: Page,
   options?: {
@@ -1614,11 +1676,12 @@ async function extractLivePageFormEvidence(
     return { invalidFieldList: "", errorTextList: "", interactiveTargetsList: "" };
   }
 
-  // Truncate the body to keep Haiku TTFT in budget. The first 8KB carries
-  // the form structure with high fidelity; below-fold content rarely
-  // includes new invalid markers since the cascade interacts with
-  // above-fold form fields first.
-  const bodyExcerpt = body.slice(0, 8000);
+  // Pick a body excerpt that's likely to contain the form's invalid-field
+  // markers. Default 8KB cap unless the body has ng-invalid / <form past
+  // the cap (typical of AppCast applyboard SPA, where the form starts
+  // ~15KB into a page of Angular hydration scaffolding). See
+  // selectBodyExcerpt for details.
+  const bodyExcerpt = selectBodyExcerpt(body);
 
   const client = options?.client ?? null;
   const knownErrorClassPrefixes = options?.knownErrorClassPrefixes ?? [];
@@ -1802,6 +1865,80 @@ export function extractSubmitFailureEvidence(
 }
 
 /**
+ * Surface Google Analytics Measurement Protocol events captured during a
+ * step's attempt window. AppCast (and most GA4-instrumented SPAs) emit
+ * `view_secondPage`, `view_thankYouPage`, `form_submit` and similar events
+ * via `https://www.google-analytics.com/g/collect` — the engine already
+ * stores these in `recentCaptures[]` but no code reads them. Without
+ * surfacing them the LLM cannot tell that a Submit click actually advanced
+ * the SPA to page 2 (because `pre.url === post.url` under SPA routing), nor
+ * that the site's own validator (`epn.validationErrorsCount`) reports N
+ * unfilled required fields, nor that the application reached the
+ * thank-you page (the canonical SUCCESS signal when `/integrated_apply`
+ * POSTs are debounced or missed).
+ *
+ * Returns a numbered evidence list. Empty string when no GA collect
+ * captures are present. Advisory — never load-bearing.
+ */
+export function extractGaEventEvidence(
+  recentCaptureFilenames: readonly string[],
+  capturesDir: string = CAPTURES_DIR
+): string {
+  if (recentCaptureFilenames.length === 0) return "";
+  const records: string[] = [];
+  const seen = new Set<string>();
+  for (const filename of recentCaptureFilenames.slice(-20)) {
+    if (seen.has(filename)) continue;
+    seen.add(filename);
+    try {
+      const path = join(capturesDir, filename);
+      const raw = readFileSync(path, "utf8");
+      const capture = JSON.parse(raw) as Partial<Capture>;
+      if (typeof capture.url !== "string") continue;
+      let url: URL;
+      try {
+        url = new URL(capture.url);
+      } catch {
+        continue;
+      }
+      if (url.hostname !== "www.google-analytics.com") continue;
+      if (!url.pathname.startsWith("/g/collect")) continue;
+      const params = url.searchParams;
+      const eventName = params.get("en");
+      if (!eventName) continue;
+      const documentLocation = params.get("dl") ?? "";
+      const pageTitle = params.get("dt") ?? "";
+      const pagePath = ((): string => {
+        if (documentLocation.length === 0) return "";
+        try {
+          return new URL(documentLocation).pathname;
+        } catch {
+          return documentLocation.slice(0, 80);
+        }
+      })();
+      const detailParts: string[] = [];
+      params.forEach((value, key) => {
+        if (key.startsWith("epn.")) {
+          detailParts.push(`${key.slice(4)}=${value}`);
+        } else if (key.startsWith("ep.")) {
+          detailParts.push(`${key.slice(3)}=${value}`);
+        }
+      });
+      const detail = detailParts.slice(0, 8).join("; ");
+      const locationHint = pagePath || pageTitle || "(no page hint)";
+      records.push(
+        detail.length > 0
+          ? `${eventName} @ ${locationHint} — ${detail}`
+          : `${eventName} @ ${locationHint}`
+      );
+    } catch {
+      // capture file missing or malformed — skip
+    }
+  }
+  return records.map((r, i) => `${i + 1}. ${r}`).join("\n");
+}
+
+/**
  * Pull field-level errors out of an arbitrary JSON response body. Walks a
  * few of the conventional ATS shapes; falls through to `[]` so the caller
  * can decide whether to emit a fallback summary.
@@ -1863,7 +2000,7 @@ async function readFailureDumpEvidence(
       attempts?: { errorMessage?: string | null }[];
     };
     const rawBody = dump.bodyOuterHtml;
-    const bodyExcerpt = typeof rawBody === "string" ? rawBody.slice(0, 8000) : "";
+    const bodyExcerpt = typeof rawBody === "string" ? selectBodyExcerpt(rawBody) : "";
 
     const client = options?.client ?? null;
     const knownErrorClassPrefixes = options?.knownErrorClassPrefixes ?? [];
@@ -2033,6 +2170,7 @@ async function replanRemainingFlow(params: {
     });
   const failureReasonList = recentFailureReasons.map((r, i) => `${i + 1}. ${r}`).join("\n");
   const submitFailureList = extractSubmitFailureEvidence(recentCaptures, ownBackendHostnames);
+  const gaEventList = extractGaEventEvidence(recentCaptures);
 
   const prompt = `You are helping a browser automation agent recover from a failed flow step.
 
@@ -2054,6 +2192,9 @@ Title: ${pageTitle}
 
 WHY VERIFICATION FAILED (latest attempt reasons from the cascade — read these carefully, they explain WHY the step is being declared failed):
 ${failureReasonList || "(none)"}
+
+PAGE TRANSITION + VALIDATOR TELEMETRY (parsed from Google Analytics Measurement Protocol beacons (POSTs to google-analytics.com/g/collect) captured during the failed step's attempt window — this is the SPA's own telemetry telling you what state it thinks it's in. Watch for: en=view_secondPage / en=view_thirdPage indicating the SPA advanced to a later form page WITHOUT firing Page.frameNavigated (so URL stays the same but questions changed); en=view_thankYouPage indicating the application SUBMITTED SUCCESSFULLY (a stronger success signal than network captures because the /integrated_apply POST is sometimes debounced); epn.validationErrorsCount=N indicating the site's own client validator counts N unfilled required fields. When validationErrorsCount > 0, prefer steps that target unfilled fields over re-clicking Submit/Continue. When view_thankYouPage appears, the application already submitted — do not propose more form-fill steps):
+${gaEventList || "(none)"}
 
 FORM FIELDS CURRENTLY MARKED INVALID (text + class signature for any element whose class matches the framework-agnostic invalid pattern — ng-invalid, mat-form-field-invalid, is-invalid, etc.):
 ${invalidFieldList || "(none)"}
@@ -2965,14 +3106,16 @@ async function probeStepBeforeAttempts(params: {
   stepIndex: number;
   logger: Logger;
   captureFn?: CaptureFn;
+  observeCache?: ObserveCache;
 }): Promise<"present" | "absent"> {
-  const { stagehand, step, stepIndex, logger, captureFn } = params;
+  const { stagehand, step, stepIndex, logger, captureFn, observeCache } = params;
   try {
     const candidates = await guardedObserve(
       stagehand,
       step,
       { timeout: STEP_WATCHDOG_MS },
-      captureFn
+      captureFn,
+      observeCache
     );
     if (candidates.length === 0) {
       logger.info(
@@ -3080,6 +3223,15 @@ async function executeStepWithHealing(params: {
    * additive instrumentation.
    */
   trajectory?: { stepIndex: number; verifiedBy: AttemptRecord["verifiedBy"] }[];
+  /**
+   * Per-run observe cache. When supplied, the cascade's per-step probe and
+   * attempt-2/4 observe-act calls reuse a prior observe result keyed by
+   * instruction string instead of paying the ~4s of DOM extraction + LLM
+   * inference each time. `guardedAct` evicts entries by selector on
+   * successful action so radio/checkbox state changes propagate. When
+   * omitted, cascade behaves identically — purely additive optimization.
+   */
+  observeCache?: ObserveCache;
 }): Promise<void> {
   const {
     stagehand,
@@ -3105,6 +3257,7 @@ async function executeStepWithHealing(params: {
     ownBackendHostnames,
     knownErrorClassPrefixes,
     trajectory,
+    observeCache,
   } = params;
   // Read-once to suppress "unused" — knownErrorClassPrefixes is threaded
   // through executeStepWithHealing's signature so the cascade has it in
@@ -3157,6 +3310,7 @@ async function executeStepWithHealing(params: {
     stepIndex,
     logger,
     captureFn,
+    observeCache,
   });
   if (probeResult === "absent") {
     if (optional) {
@@ -3375,7 +3529,13 @@ async function executeStepWithHealing(params: {
       if (attempt === 1) {
         record.technique = "act-string";
         record.instruction = step;
-        const result = await guardedAct(stagehand, step, { timeout: STEP_WATCHDOG_MS }, captureFn);
+        const result = await guardedAct(
+          stagehand,
+          step,
+          { timeout: STEP_WATCHDOG_MS },
+          captureFn,
+          observeCache
+        );
         record.actResultSuccess = result.success;
         record.actResultDescription = result.actionDescription;
         for (const action of result.actions ?? []) {
@@ -3388,7 +3548,13 @@ async function executeStepWithHealing(params: {
           attempt === 4 && triedSelectors.length > 0
             ? { ignoreSelectors: [...triedSelectors], timeout: STEP_WATCHDOG_MS }
             : { timeout: STEP_WATCHDOG_MS };
-        const candidates = await guardedObserve(stagehand, step, observeOptions, captureFn);
+        const candidates = await guardedObserve(
+          stagehand,
+          step,
+          observeOptions,
+          captureFn,
+          observeCache
+        );
         if (candidates.length === 0) {
           record.errorMessage = "observe returned no candidates";
           // Optional-step short-circuit: when attempt 2 confirms no candidates
@@ -3414,7 +3580,8 @@ async function executeStepWithHealing(params: {
             stagehand,
             target,
             { timeout: STEP_WATCHDOG_MS },
-            captureFn
+            captureFn,
+            observeCache
           );
           record.actResultSuccess = result.success;
           record.actResultDescription = result.actionDescription;
@@ -3575,7 +3742,8 @@ async function executeStepWithHealing(params: {
             stagehand,
             step,
             { timeout: STEP_WATCHDOG_MS },
-            captureFn
+            captureFn,
+            observeCache
           ).catch(() => [] as Action[]);
           // Fetch live-page evidence so the rephrase prompt can reason about
           // form state, not just observe candidates. Mirrors the same
@@ -3598,6 +3766,7 @@ async function executeStepWithHealing(params: {
             recentCaptures,
             ownBackendHostnames
           );
+          const gaEventList = extractGaEventEvidence(recentCaptures);
           const priorAttemptsForPrompt = attempts.map((a, i) => ({
             technique: a.technique,
             instruction: a.instruction,
@@ -3613,7 +3782,8 @@ async function executeStepWithHealing(params: {
             livePageEvidence,
             unfocused,
             submitFailureList,
-            priorAttemptsForPrompt
+            priorAttemptsForPrompt,
+            gaEventList
           );
           if (!rephrased) {
             record.errorMessage = "llm declined to rephrase or returned outcome=impossible";
@@ -3623,7 +3793,8 @@ async function executeStepWithHealing(params: {
               stagehand,
               rephrased,
               { timeout: STEP_WATCHDOG_MS },
-              captureFn
+              captureFn,
+              observeCache
             );
             record.actResultSuccess = result.success;
             record.actResultDescription = result.actionDescription;
@@ -3638,6 +3809,26 @@ async function executeStepWithHealing(params: {
       const cause = err instanceof Error && err.cause instanceof Error ? err.cause.message : null;
       record.errorMessage = `${toErrorMessage(err)}${cause ? ` (cause: ${cause})` : ""}`;
       logBillingErrorIfPresent(err);
+    }
+
+    // Fast-skip: attempt 1 (act-string) failed to resolve any actionable
+    // element — either Stagehand threw and our catch above stored the
+    // errorMessage, or Stagehand returned `{success: false, actions: []}`
+    // without throwing (its internal self-heal couldn't recover, typically
+    // when Haiku's elementId response fails the regex schema at
+    // node_modules/.../stagehand/dist/esm/lib/inference.js:147 + :240).
+    // In either case resolvedAction is null, so the rest of this attempt
+    // body — snapshotPage, verifyDomEffect, the verifier gates below —
+    // cannot produce a positive signal: verified is forced false and the
+    // cascade always falls through to attempt 2. Skip the wasted ~2-3s
+    // of timeout + snapshot work and let the cascade try observe-act.
+    if (attempt === 1 && resolvedAction === null) {
+      attempts.push(record);
+      const reason = record.errorMessage
+        ? `attempt 1 fast-skipped (no resolved action): ${record.errorMessage}`
+        : "attempt 1 fast-skipped (no resolved action; Stagehand returned no candidates)";
+      failureReasons.push(reason);
+      continue;
     }
 
     await page.waitForTimeout(STEP_PAUSE_MS);
@@ -4407,6 +4598,10 @@ async function main(): Promise<void> {
   // recon discoveries got thrown away on failed runs.
   const plan: NormalizedStep[] = [];
   const replanEvents: ReplanEvent[] = [];
+  // Per-run observe cache. Declared outside the try block so the finally
+  // can log its stats whether the run succeeded or threw. Engine-level
+  // optimization; see ObserveCache in stagehand-guard.ts for details.
+  const observeCache = newObserveCache();
 
   try {
     const stagehand = session.stagehand;
@@ -4506,6 +4701,7 @@ async function main(): Promise<void> {
           knownErrorClassPrefixes,
           trajectory,
           captureFn,
+          observeCache,
         });
         completedSteps.push(step.instruction);
       } catch (err) {
@@ -4732,6 +4928,14 @@ async function main(): Promise<void> {
 
     logger.info(`recon complete — ${counter.n} captures written to ${CAPTURES_DIR}`);
   } finally {
+    // Observe-cache stats: surfaces how often the per-run cache (cascade's
+    // probe + attempt 2/4 + cross-step revisits sharing the same
+    // instruction string) skipped Stagehand's DOM-snapshot + LLM call.
+    // Empirically ~60% hit rate across the AppCast applyboard flow (319
+    // observes / 112 unique instructions in a measured Job 1 run).
+    logger.info(
+      `observe-cache stats: hits=${observeCache.stats.hits} misses=${observeCache.stats.misses} invalidations=${observeCache.stats.invalidations}`
+    );
     // Replay-the-discovered-path: if any replan fired and the user provided
     // a flow file, write the improved plan back so the next run starts
     // where this one ended up. Runs INSIDE finally so the cascade's
