@@ -275,7 +275,12 @@ techniques are, in order:
 2. **`observe()` + `act(Action)`** — Stagehand returns a list of candidate
    `Action` objects with `selector` + `description`. We pick the top candidate
    and call `act` on the structured object directly. Disambiguates without
-   needing rephrase. Frame-scoped exception: when the step declares
+   needing rephrase. For fill/select steps, if `observe()` returns a candidate
+   with `method='click'` (which can happen when Stagehand misclassifies a text
+   input or dropdown), the engine overrides the candidate's `method` and
+   `arguments` with the correct values derived from the step text before calling
+   `act()` — ensuring a "Fill in the Zip field with '78701'" step actuates as
+   `fill('78701')`, not `click()`. Frame-scoped exception: when the step declares
    `frameSelector` and `observe()` comes back empty, `observe()` is blind to a
    cross-origin OOPIF (see the cross-origin iframe note above), so this
    attempt (and the pre-cascade probe, and the rephrase evidence gather)

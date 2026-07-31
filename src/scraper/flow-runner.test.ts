@@ -920,9 +920,7 @@ describe("flow-runner/executeStepWithHealing — observe-act method override for
       act: stagehandAct,
       observe: vi
         .fn()
-        .mockResolvedValue([
-          { selector: "input", description: "Zip Code *", method: "click" },
-        ]),
+        .mockResolvedValue([{ selector: "input", description: "Zip Code *", method: "click" }]),
     } as unknown as Stagehand;
     return {
       stagehand,
@@ -961,10 +959,11 @@ describe("flow-runner/executeStepWithHealing — observe-act method override for
       bodyHtmlLength: 184186,
     });
 
-    let capturedTarget: { method?: string; arguments?: unknown[] } | null = null;
+    type CapturedTarget = { method?: string; arguments?: unknown[] };
+    let capturedTarget: CapturedTarget | null = null;
     const stagehandAct = vi.fn().mockImplementation(async (target) => {
       if (typeof target === "object" && target !== null && "method" in target) {
-        capturedTarget = target as { method: string; arguments: unknown[] };
+        capturedTarget = target as CapturedTarget;
         signalCounter.n += 1;
       }
       return actResult();
@@ -975,8 +974,9 @@ describe("flow-runner/executeStepWithHealing — observe-act method override for
 
     expect(result).toBe("completed");
     expect(capturedTarget).not.toBeNull();
-    expect(capturedTarget?.method).toBe("fill");
-    expect(capturedTarget?.arguments).toEqual(["78701"]);
+    const target = capturedTarget as unknown as CapturedTarget;
+    expect(target.method).toBe("fill");
+    expect(target.arguments).toEqual(["78701"]);
   });
 });
 
