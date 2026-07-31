@@ -25,46 +25,6 @@ A nightly smoke test tells you the moment a contract drifts. When it fires, you
 re-run the same recon command you ran the first time and diff the captures.
 Human involvement is one recon run up front and a small PR when things change.
 
-### The workflow, end to end
-
-The same recon pipeline runs twice: once when you onboard a site (Phases 0–4),
-and again unattended whenever the nightly smoke test catches drift. In
-between, the runtime serves real traffic from the codified contract and only
-falls back to the browser when the hot path classifies an error worth
-retrying through it.
-
-```mermaid
-flowchart TD
-  subgraph Setup["Setup — Phases 0–4 (per site, then on drift)"]
-    P0["Phase 0<br/>write recon-flow.json<br/><i>human, once</i>"] --> P1
-    P1["Phase 1 · recon:browser<br/>Stagehand on Steel<br/>per-step heal cascade + global replan"] --> P2
-    P2["Phase 2–3 · recon:http<br/>replay without a browser<br/>+ rate-limit probe"] --> P3
-    P3["Phase 4 · recon:generate<br/>Zod schemas + headers + client"] --> P4["Human PR<br/>src/sites/&lt;id&gt;/contract.ts"]
-  end
-
-  subgraph Runtime["Runtime — Phase 5 (every request)"]
-    R0["POST /v1/&lt;site&gt;/run"] --> R1{"dispatch()<br/>src/plugins/loader.ts"}
-    R1 --> R2["response-cache<br/>+ in-flight coalescing"]
-    R2 -- hit --> R5["response envelope"]
-    R2 -- miss --> R3["hot path · executeHttp<br/>fetch + bottleneck throttle"]
-    R3 -- ok --> R4["cache + return"] --> R5
-  end
-
-  subgraph Heal["Heal — Phase 6 (on error + nightly)"]
-    R3 -- "SchemaError /<br/>BotChallenge / 5xx" --> H1["browser fallback<br/>withScraperRetry · 3 attempts"]
-    R3 -- "RateLimitError (429)" --> H2["no fallback<br/>return 429"]
-    H1 -- ok --> R5
-    N1["nightly smoke-test.ts<br/>full Zod validation"] -- "drift detected" --> P1
-  end
-
-  P4 -. deploys .-> R1
-```
-
-The dashed `deploys` edge is the human-in-the-loop step. The solid edge from
-`nightly smoke-test.ts` back into Phase 1 is the self-healing loop: when the
-contract drifts, recon reruns unattended (~20–40 min) and the next PR is a
-diff of captures, not a hand-rewrite.
-
 ### The pipeline at a glance
 
 | Phase | What runs | What you get |
@@ -188,6 +148,12 @@ See **[Plugin Authoring Guide → Register the plugin](#register-the-plugin)** b
 See **[Plugin Authoring Guide → Wire up the nightly smoke test](#wire-up-the-nightly-smoke-test)** below for the CI step that runs the smoke test nightly.
 
 See [docs/playbook.md](./docs/playbook.md#phase-6--drift-detection) for the full detection ladder and maintenance loop.
+
+### The whole loop, in one picture
+
+![Barnacle end-to-end workflow: Setup (recon) feeds a dashed Deploys edge into Runtime (dispatch + cache + hot path), Heal catches errors and runs nightly drift detection, and a solid orange arrow sweeps back from smoke-test.ts into Phase 1 to close the self-healing loop.](docs/images/workflow.svg)
+
+The dashed `deploys` edge is the human-in-the-loop step (the contract PR merges and ships to Runtime). The solid orange edge from `smoke-test.ts` back into Phase 1 is the self-healing loop: when the contract drifts, recon reruns unattended (~20–40 min) and the next PR is a diff of captures, not a hand-rewrite. See [docs/architecture.md](./docs/architecture.md) for the design rationale behind each lane.
 
 ## Plugin Authoring Guide
 
