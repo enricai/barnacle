@@ -6,14 +6,12 @@ Thanks for your interest in contributing. Barnacle is MIT-licensed; by submittin
 
 - Node.js `>= 22` (see `.nvmrc`)
 - pnpm `>= 10`
-- A Postgres database for local development
 
 ## Setup
 
 ```bash
 pnpm install
 cp .env.example .env   # then fill in the required values
-pnpm run db:push       # apply the Prisma schema
 ```
 
 ## Dev loop

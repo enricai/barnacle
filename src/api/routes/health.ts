@@ -4,8 +4,6 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 
 import { cacheStats as defaultCacheStats } from "@/cache/response-cache";
 import { config as defaultConfig } from "@/config";
-import { prisma } from "@/lib/db/client";
-import { toErrorMessage } from "@/lib/errors";
 import { getLogger } from "@/lib/logging";
 import { getTelemetryState, type RunState } from "@/lib/telemetry/run-state";
 import { allMetrics, type SiteMetrics } from "@/scraper/metrics";
@@ -33,7 +31,6 @@ interface HealSummary {
 interface ReadinessReport {
   status: "ready" | "degraded";
   checks: {
-    database: DependencyStatus;
     scraperCredentials: DependencyStatus;
     scraperPool: DependencyStatus;
   };
@@ -64,7 +61,6 @@ interface ReadinessReport {
  * churn beyond these fields.
  */
 export interface HealthConfig {
-  databaseUrl: string | undefined;
   scraper: {
     steelApiKey: string | undefined;
     anthropicApiKey: string | undefined;
@@ -91,41 +87,6 @@ interface HealthRoutesOptions {
    * Defaults to process.cwd().
    */
   healOutRoot?: string;
-}
-
-const DB_CHECK_TIMEOUT_MS = 1500;
-
-/**
- * Pings the database with a trivial `SELECT 1` under a short timeout.
- * We avoid any Prisma model query — the readiness probe must not hold
- * connections or contend with real traffic.
- *
- * When DATABASE_URL is unset (e.g. local dev without a DB), the check
- * is treated as disabled rather than failed — the server still starts
- * and routes that don't touch Prisma keep working.
- */
-async function checkDatabase(cfg: HealthConfig): Promise<DependencyStatus> {
-  if (!cfg.databaseUrl) {
-    return { ok: true, detail: "DATABASE_URL unset — skipped" };
-  }
-  // Clear the timeout when prisma resolves so setTimeout can't keep the
-  // event loop alive past shutdown, and unref() the timer so a hanging
-  // query can't block process.exit during ops drills. The original
-  // Promise.race left the timeout live on the happy path and pinned
-  // the event loop on the sad path.
-  let timer: NodeJS.Timeout | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error("timeout")), DB_CHECK_TIMEOUT_MS);
-    timer.unref();
-  });
-  try {
-    await Promise.race([prisma.$queryRawUnsafe("SELECT 1"), timeout]);
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, detail: toErrorMessage(err).slice(0, 200) };
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
 }
 
 /**
@@ -243,15 +204,12 @@ export async function healthRoutes(
   const healOutRoot = options.healOutRoot ?? process.cwd();
 
   app.get("/readyz", async (_request, reply: FastifyReply) => {
-    const [database, scraperCredentials, scraperPool] = await Promise.all([
-      checkDatabase(cfg),
-      Promise.resolve(checkScraperCredentials(cfg)),
-      Promise.resolve(checkScraperPool(cfg, poolStatsFn)),
-    ]);
-    const allOk = database.ok && scraperCredentials.ok && scraperPool.ok;
+    const scraperCredentials = checkScraperCredentials(cfg);
+    const scraperPool = checkScraperPool(cfg, poolStatsFn);
+    const allOk = scraperCredentials.ok && scraperPool.ok;
     const report: ReadinessReport = {
       status: allOk ? "ready" : "degraded",
-      checks: { database, scraperCredentials, scraperPool },
+      checks: { scraperCredentials, scraperPool },
       stats: {
         scraperPool: poolStatsFn(),
         cache: cacheStatsFn(),
@@ -262,7 +220,7 @@ export async function healthRoutes(
     };
     if (!allOk) {
       logger.warn(
-        `readyz degraded: db=${database.ok ? "ok" : database.detail} scraperCreds=${scraperCredentials.ok ? "ok" : scraperCredentials.detail} pool=${scraperPool.ok ? "ok" : scraperPool.detail}`
+        `readyz degraded: scraperCreds=${scraperCredentials.ok ? "ok" : scraperCredentials.detail} pool=${scraperPool.ok ? "ok" : scraperPool.detail}`
       );
       reply.code(503);
     }

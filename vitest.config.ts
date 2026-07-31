@@ -12,8 +12,6 @@ export default defineConfig({
       exclude: [
         "src/**/*.d.ts",
         "src/**/*.test.ts",
-        // Prisma-generated client — regenerated on every `db:generate`.
-        "src/generated/**",
         // Pure interface files — no executable code to cover.
         "src/types/**",
         // Steel SDK + Stagehand wiring — testing it means booting a

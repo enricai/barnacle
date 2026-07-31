@@ -265,7 +265,7 @@ return {
 };
 ```
 
-When `auditPayload` is present, core writes it — not `data` — to the `SiteSubmission` audit row. Use this to strip PII or large blobs from the audit log while keeping the full response in the API reply. When absent, `data` is written as-is.
+When `auditPayload` is present, core writes it — not `data` — to the submission-envelope telemetry record. Use this to strip PII or large blobs from the audit trail while keeping the full response in the API reply. When absent, `data` is written as-is.
 
 ### Static fixtures
 
@@ -491,12 +491,6 @@ process to exit on missing values; optional ones have safe defaults.
 | `HOST` | `0.0.0.0` | No | HTTP listen address |
 | `LOG_LEVEL` | `info` | No | Pino log level (`debug`, `info`, `warn`, `error`) |
 
-### Database
-
-| Variable | Default | Required | Purpose |
-|----------|---------|----------|---------|
-| `DATABASE_URL` | — | No | PostgreSQL connection string. Audit persistence is disabled when absent — the server still starts and processes requests. The `/readyz` database check reports `ok: true` with `"DATABASE_URL unset — skipped"` (not a failure) when this var is missing. |
-
 ### Auth
 
 | Variable | Default | Required | Purpose |
@@ -568,6 +562,7 @@ in each `contract.ts` for outbound rate limits to target sites.
 | `TELEMETRY_ENABLED` | `true` | Master switch — set `false` to disable all NDJSON telemetry writes. |
 | `TELEMETRY_EVENTS_DIR` | `.barnacle/events` | Directory for per-run NDJSON event stream files (`<eventsDir>/<runId>.ndjson`). |
 | `CALLS_NDJSON_PATH` | `.barnacle/calls.ndjson` | Append-only NDJSON sink for LLM/Stagehand call samples. One line per call; feed to the judge and self-heal skills. |
+| `SUBMISSIONS_NDJSON_PATH` | `.barnacle/submissions.ndjson` | Append-only NDJSON sink for dispatch submission envelopes. One line per plugin invocation captures siteId, requestId, inbound payload, status, audit payload, and duration — the durable source-of-truth for "what did we submit for jobId X and did it succeed." |
 | `TELEMETRY_MAX_FILE_SIZE_BYTES` | `104857600` (100 MB) | Rotate/drop the calls NDJSON once it exceeds this byte count. |
 | `TELEMETRY_MAX_RETENTION_MS` | `2592000000` (30 days) | Drop event-stream files older than this many milliseconds. |
 
@@ -608,7 +603,6 @@ BARNACLE_SITE_MY_SHOP_BASE_URL="https://staging.my-shop.com"  # overrides plugin
 
 - Node.js 22+
 - pnpm 10.4.1
-- PostgreSQL (for submission history; optional — server starts without it)
 - A Steel account (`STEEL_API_KEY`) for managed browser sessions
 - An Anthropic key (`ANTHROPIC_API_KEY`) for Stagehand's LLM calls, **or** AWS Bedrock (`USE_BEDROCK=true` + AWS credentials) — see `.env.example` for details
 
@@ -617,7 +611,6 @@ BARNACLE_SITE_MY_SHOP_BASE_URL="https://staging.my-shop.com"  # overrides plugin
 ```bash
 pnpm install
 cp .env.example .env   # fill in STEEL_API_KEY and either ANTHROPIC_API_KEY or Bedrock creds
-pnpm run db:push       # create tables (optional — server starts without a DB)
 ```
 
 ### Generating an API key
@@ -713,7 +706,7 @@ Each registered plugin exposes a POST route following the default convention:
 
 Operational routes:
 - `GET /healthz` — liveness probe
-- `GET /readyz`  — readiness probe (checks DB, scraper credentials, queue depth)
+- `GET /readyz`  — readiness probe (checks scraper credentials, queue depth)
 - `GET /docs`    — Swagger UI (when `ENABLE_DOCS=true`)
 
 ## Commands
@@ -730,9 +723,6 @@ Operational routes:
 | `pnpm run test:watch` | Vitest in watch mode (re-runs on file changes) |
 | `pnpm run test:coverage` | Vitest with v8 coverage report |
 | `pnpm run format` | Biome format write |
-| `pnpm run db:push` | Apply `prisma/schema.prisma` to the database (dev) |
-| `pnpm run db:generate` | Regenerate the Prisma client after editing `schema.prisma` |
-| `pnpm run db:studio` | Open Prisma Studio (local DB browser UI) |
 | `pnpm run recon:browser` | Phase 1 — drive browser + capture API calls |
 | `pnpm run recon:http` | Phases 2–3 — replay, introspect, probe rate limits |
 | `pnpm run recon:generate -- --site-id <id>` | Phase 4 — generate complete plugin from artifacts |
@@ -800,7 +790,6 @@ ENABLE_DOCS=false         # never expose Swagger in prod
 TRUST_PROXY=true          # set false if deploying directly to the internet (no ALB/nginx)
 DEV_BYPASS_AUTH=false     # this is the default — confirm it's not set to true
 API_KEYS_HASHED="<bcrypt-hash>,<bcrypt-hash>"  # at least one key
-DATABASE_URL="postgresql://..."  # recommended for audit trail
 STEEL_API_KEY="..."
 ANTHROPIC_API_KEY="..."   # or USE_BEDROCK=true + AWS creds
 ```
@@ -853,7 +842,7 @@ readinessProbe:
 ```
 
 `/readyz` returns 503 when the scraper pool queue is saturated (depth >
-`READINESS_QUEUE_THRESHOLD`) or when required credentials are missing.
+`READINESS_QUEUE_THRESHOLD`) or when required scraper credentials are missing.
 
 ---
 
@@ -865,7 +854,6 @@ readinessProbe:
 | `useProxy rejected` / `402` from Steel | Free-tier plan doesn't support residential proxies | Set `SCRAPER_PROXY_TYPE=none` and `SCRAPER_SOLVE_CAPTCHA=false` |
 | `401 Unauthorized` on every request | No API key configured or wrong plaintext key | Verify `API_KEYS_HASHED` is set; double-check the plaintext key. For dev, set `DEV_BYPASS_AUTH=true` |
 | Stagehand throws `model not found` | Wrong model name format | Use the `anthropic/` prefix: `STAGEHAND_MODEL=anthropic/claude-sonnet-4-6` |
-| Audit rows missing from DB | `DATABASE_URL` not set | Set `DATABASE_URL`; the server starts without it but audit persistence is disabled |
 | `/readyz` returns 503 on `scraperCredentials` | `STEEL_API_KEY` or LLM key missing | Set the missing credential |
 | Build succeeds but `dist/sites/` is empty | `tsc` ran but `cp -r src/sites dist/sites` was skipped | Run `pnpm run build` (not `tsc` directly) — the build script copies site sources after compilation |
 
