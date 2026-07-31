@@ -25,6 +25,7 @@ import { getLogger } from "@/lib/logging";
 import { jsonSchemaToZod } from "@/plugins/json-schema-to-zod";
 import { PLUGIN_API_VERSION } from "@/plugins/plugin-api-version";
 import { CONFIG_PLUGIN_API_VERSION, CONFIG_PLUGIN_KIND } from "@/plugins/plugin-manifest-envelope";
+import { StepVerificationError } from "@/scraper/errors";
 import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import { navigateActivePage } from "@/scraper/navigate";
 import { guardedExtract } from "@/scraper/stagehand-guard";
@@ -196,6 +197,7 @@ export async function buildConfigPlugin(
   const executeHttp = spec.httpModule ? await loadHttpModule(spec.httpModule, baseDir) : undefined;
 
   const hasUploadStep = spec.flow.steps.some((s) => typeof s !== "string" && s.upload === true);
+  const hasSubmitStep = spec.flow.steps.some((s) => typeof s !== "string" && s.submitStep === true);
   const declaredFields = new Set(Object.keys((spec.request.properties as object) ?? {}));
 
   const plugin: SitePlugin<unknown, unknown> = {
@@ -229,7 +231,7 @@ export async function buildConfigPlugin(
         ? new Anthropic({ apiKey: context.config.scraper.anthropicApiKey })
         : null;
 
-      await runHealingFlow({
+      const flowResult = await runHealingFlow({
         stagehand,
         page,
         steps,
@@ -246,6 +248,13 @@ export async function buildConfigPlugin(
         knownErrorClassPrefixes: spec.flow.knownErrorClassPrefixes ?? [],
         wizardExitButtonLabels: spec.flow.wizardExitButtonLabels ?? [],
       });
+
+      if (hasSubmitStep && !flowResult.submitVerified) {
+        throw new StepVerificationError(
+          `${metadata.siteId} config plugin: submitStep was not verified (skipped=${flowResult.submitStepSkipped}) — refusing to report success`,
+          "submit-skipped"
+        );
+      }
 
       const data = await guardedExtract(stagehand, spec.extract.instruction, extractSchema);
       return { data };

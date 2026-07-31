@@ -4,7 +4,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { buildConfigPlugin, CONFIG_PLUGIN_MANIFEST } from "@/plugins/config-plugin";
 
-const mockRunHealingFlow = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const mockRunHealingFlow = vi.hoisted(() =>
+  vi.fn().mockResolvedValue({ submitVerified: false, submitStepSkipped: false, lastStepIndex: -1 })
+);
 const mockGuardedExtract = vi.hoisted(() => vi.fn().mockResolvedValue({ confirmationId: "X" }));
 
 vi.mock("@/scraper/flow-runner", () => ({ runHealingFlow: mockRunHealingFlow }));
@@ -143,6 +145,53 @@ describe("buildConfigPlugin", () => {
 
     const steps = mockRunHealingFlow.mock.calls[0]?.[0]?.steps as { instruction: string }[];
     expect(steps[0]?.instruction).toBe("fill the Phone field with ");
+  });
+
+  it("surfaces a failure when the flow's submitStep was skipped rather than verified", async () => {
+    mockRunHealingFlow.mockResolvedValueOnce({
+      submitVerified: false,
+      submitStepSkipped: true,
+      lastStepIndex: 1,
+    });
+    const manifest = baseManifest();
+    (manifest.spec as { flow: { steps: unknown[] } }).flow.steps = [
+      "click apply",
+      { step: "submit the application", submitStep: true },
+    ];
+    const plugin = await buildConfigPlugin(manifest);
+    const { session, context } = mockExecuteDeps();
+
+    await expect(plugin.execute({ FirstName: "J", Email: "e" }, session, context)).rejects.toThrow(
+      /submitStep was not verified/
+    );
+    expect(mockGuardedExtract).not.toHaveBeenCalled();
+  });
+
+  it("returns data when the flow's submitStep verifies", async () => {
+    mockRunHealingFlow.mockResolvedValueOnce({
+      submitVerified: true,
+      submitStepSkipped: false,
+      lastStepIndex: 1,
+    });
+    const manifest = baseManifest();
+    (manifest.spec as { flow: { steps: unknown[] } }).flow.steps = [
+      "click apply",
+      { step: "submit the application", submitStep: true },
+    ];
+    const plugin = await buildConfigPlugin(manifest);
+    const { session, context } = mockExecuteDeps();
+
+    const result = await plugin.execute({ FirstName: "J", Email: "e" }, session, context);
+    expect((result.data as { confirmationId?: string }).confirmationId).toBe("X");
+  });
+
+  it("does not require submit verification when the flow has no submitStep", async () => {
+    const plugin = await buildConfigPlugin(baseManifest());
+    const { session, context } = mockExecuteDeps();
+
+    await expect(
+      plugin.execute({ FirstName: "J", Email: "e" }, session, context)
+    ).resolves.toBeDefined();
   });
 });
 

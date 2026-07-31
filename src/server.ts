@@ -26,11 +26,28 @@ import { drainTrackingClicks } from "@/lib/tracking-click";
 import { loadAllPlugins } from "@/plugins/discover";
 import { registerRoutes } from "@/plugins/loader";
 import { drainPool } from "@/scraper/pool";
+import type { SitePlugin } from "@/site-plugin";
 import type { Logger } from "@/types/logging";
 
 const logger = getLogger({ name: "server" });
 
+const PLUGIN_SHUTDOWN_TIMEOUT_MS = 30_000;
+
 configureHttpDispatcher();
+
+/**
+ * Awaits a single plugin's onShutdown, bounded so a hanging plugin cannot
+ * stall the rest of the shutdown sequence — mirrors drainTrackingClicks's
+ * own Promise.race guard.
+ */
+async function drainPlugin(plugin: SitePlugin<unknown, unknown>, timeoutMs: number): Promise<void> {
+  const onShutdown = plugin.meta.onShutdown;
+  if (!onShutdown) return;
+  await Promise.race([
+    onShutdown(),
+    new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+  ]);
+}
 
 /**
  * Builds a configured (but not-yet-listening) Fastify instance. Split out
@@ -134,6 +151,15 @@ export async function buildServer(): Promise<
       logger.warn(
         `drainTrackingClicks failed during shutdown: ${toErrorMessage(err).slice(0, 200)}`
       );
+    }
+    for (const plugin of plugins) {
+      try {
+        await drainPlugin(plugin, PLUGIN_SHUTDOWN_TIMEOUT_MS);
+      } catch (err) {
+        logger.warn(
+          `plugin onShutdown failed during shutdown site=${plugin.meta.siteId}: ${toErrorMessage(err).slice(0, 200)}`
+        );
+      }
     }
     try {
       await shutdownStatsD();

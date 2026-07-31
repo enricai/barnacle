@@ -6,6 +6,7 @@ import {
   HttpUrlLockedError,
   MissingFormMapKeyError,
   type NeedsUserInfoResult,
+  type RunHealingFlowResult,
   ScraperError,
   StepVerificationError,
   UnknownScraperError,
@@ -71,6 +72,27 @@ describe("StepVerificationError", () => {
     expect(phantomClick.name).toBe(cascadeExhausted.name);
     expect(phantomClick.kind).not.toBe(cascadeExhausted.kind);
   });
+
+  it("constructs with kind flow-timeout, non-retryable, kind round-trips", () => {
+    const err = new StepVerificationError(
+      "flow exceeded maxFlowMs budget at step 3",
+      "flow-timeout"
+    );
+    expect(err).toBeInstanceOf(StepVerificationError);
+    expect(err).toBeInstanceOf(ScraperError);
+    expect(err.retryable).toBe(false);
+    expect(err.name).toBe("StepVerificationError");
+    expect(err.kind).toBe("flow-timeout");
+  });
+
+  it("constructs with kind submit-skipped, non-retryable, kind round-trips", () => {
+    const err = new StepVerificationError("submitStep was skipped, not verified", "submit-skipped");
+    expect(err).toBeInstanceOf(StepVerificationError);
+    expect(err).toBeInstanceOf(ScraperError);
+    expect(err.retryable).toBe(false);
+    expect(err.name).toBe("StepVerificationError");
+    expect(err.kind).toBe("submit-skipped");
+  });
 });
 
 describe("NeedsUserInfoResult", () => {
@@ -91,5 +113,20 @@ describe("NeedsUserInfoResult", () => {
       { field: "educationLevel", question: "What is your highest level of education?" },
     ]);
     expect(result.requiresOtp).toBe(true);
+  });
+});
+
+describe("RunHealingFlowResult", () => {
+  it("type-checks as a runHealingFlow outcome and reads back at runtime", () => {
+    // Compile-time shape guard: the assignment below fails tsc if the type drifts.
+    const result: RunHealingFlowResult = {
+      submitVerified: true,
+      submitStepSkipped: false,
+      lastStepIndex: 4,
+    };
+
+    expect(result.submitVerified).toBe(true);
+    expect(result.submitStepSkipped).toBe(false);
+    expect(result.lastStepIndex).toBe(4);
   });
 });

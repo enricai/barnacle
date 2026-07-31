@@ -87,10 +87,12 @@ export type StepVerificationErrorKind =
   | "probe-absent"
   | "backend-error-unrecoverable"
   | "replan-cycle-detected"
-  | "wizard-regression";
+  | "wizard-regression"
+  | "flow-timeout"
+  | "submit-skipped";
 
 /**
- * Recon-only: a flow step in recon-browser.ts could not be acted on. Six
+ * Recon-only: a flow step in recon-browser.ts could not be acted on. Eight
  * variants per `kind`:
  *
  *   - "cascade-exhausted": the full 4-attempt self-healing cascade ran and
@@ -130,6 +132,16 @@ export type StepVerificationErrorKind =
  *     replanning against the restarted wizard — is futile. The main loop
  *     bypasses the replan dispatcher and propagates out, like
  *     backend-error-unrecoverable.
+ *   - "flow-timeout": runHealingFlow's per-run deadline (`maxFlowMs`) elapsed
+ *     while stepping through the flow. Distinct from {@link SessionTimeoutError},
+ *     which means the Steel session/browser itself died — this means the
+ *     browser is fine but the flow overran its own budget, so the caller can
+ *     fail fast well under the coarser pool-level `taskTimeoutMs` ceiling
+ *     instead of grinding for the full session lifetime.
+ *   - "submit-skipped": a step flagged `submitStep:true` was skipped
+ *     (optional step, no candidate resolved) rather than run and verified. A
+ *     flow that never submitted must never be reported as successful, so
+ *     this is thrown instead of letting the flow complete silently.
  *
  * Non-retryable — the runtime path never sees this.
  */
@@ -240,4 +252,15 @@ export class MissingFormMapKeyError extends ScraperError {
     this.missingKeys = missingKeys;
     this.context = context;
   }
+}
+
+/**
+ * Outcome of a `runHealingFlow` run, returned instead of `void` so the caller
+ * can tell "submitted and verified" apart from "every step ran but the
+ * submit step was skipped" — the phantom-success gap a `void` return hides.
+ */
+export interface RunHealingFlowResult {
+  submitVerified: boolean;
+  submitStepSkipped: boolean;
+  lastStepIndex: number;
 }

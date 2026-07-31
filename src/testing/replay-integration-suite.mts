@@ -68,21 +68,25 @@ export function defineReplayIntegrationSuite<TJob extends object>(
       : (JSON.parse(readFileSync(resolve(source.dirname, source.jobsPath), "utf8")) as TJob[]);
 
   describe.skipIf(process.env.INTEGRATION !== "true")(suiteName, () => {
-    it.each(jobs)(`submits job and receives confirmation email`, {
-      timeout: DEFAULT_TIMEOUT_MS,
-    }, async (job) => {
-      const { message } = await runIntegrationJob({
-        plugin: plugin as unknown as SitePlugin<unknown, unknown>,
-        baseUrl: (job as Record<string, unknown>).baseUrl as string,
-        buildPayload: (inbox) => buildPayload(job, inbox),
-        ...(pollFn ? { pollFn } : {}),
-      });
+    it.each(jobs)(
+      `submits job and receives confirmation email`,
+      {
+        timeout: DEFAULT_TIMEOUT_MS,
+      },
+      async (job) => {
+        const { message } = await runIntegrationJob({
+          plugin: plugin as unknown as SitePlugin<unknown, unknown>,
+          baseUrl: (job as Record<string, unknown>).baseUrl as string,
+          buildPayload: (inbox) => buildPayload(job, inbox),
+          ...(pollFn ? { pollFn } : {}),
+        });
 
-      if (assertMessage) {
-        assertMessage(message, job);
-      } else {
-        expect(message.subject).toBeTruthy();
+        if (assertMessage) {
+          assertMessage(message, job);
+        } else {
+          expect(message.subject).toBeTruthy();
+        }
       }
-    });
+    );
   });
 }

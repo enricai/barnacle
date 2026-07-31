@@ -18,28 +18,20 @@ describe("ApplicantAddressSchema", () => {
     expect(result.success).toBe(true);
   });
 
-  it.each([
-    "AddressLine",
-    "City",
-    "State",
-    "PostalCode",
-    "Country",
-    "County",
-  ] as const)("rejects an empty string for %s", (field) => {
-    const result = ApplicantAddressSchema.safeParse({ ...VALID_ADDRESS, [field]: "" });
-    expect(result.success).toBe(false);
-  });
+  it.each(["AddressLine", "City", "State", "PostalCode", "Country", "County"] as const)(
+    "rejects an empty string for %s",
+    (field) => {
+      const result = ApplicantAddressSchema.safeParse({ ...VALID_ADDRESS, [field]: "" });
+      expect(result.success).toBe(false);
+    }
+  );
 
-  it.each([
-    "AddressLine",
-    "City",
-    "State",
-    "PostalCode",
-    "Country",
-    "County",
-  ] as const)("rejects a missing %s field", (field) => {
-    const { [field]: _removed, ...rest } = VALID_ADDRESS;
-    const result = ApplicantAddressSchema.safeParse(rest);
-    expect(result.success).toBe(false);
-  });
+  it.each(["AddressLine", "City", "State", "PostalCode", "Country", "County"] as const)(
+    "rejects a missing %s field",
+    (field) => {
+      const { [field]: _removed, ...rest } = VALID_ADDRESS;
+      const result = ApplicantAddressSchema.safeParse(rest);
+      expect(result.success).toBe(false);
+    }
+  );
 });
