@@ -917,7 +917,11 @@ function makeBatchedChildFrame(
             ? fillByIndexSpy(Number(indexMatch[1]), value)
             : null;
         }
-        if (src.includes("querySelectorAll") && !src.includes("dispatchEvent")) {
+        if (
+          src.includes("querySelectorAll") &&
+          src.includes("isVisible(el)") &&
+          !src.includes("dispatchEvent")
+        ) {
           const indexMatch = CANDIDATE_INDEX_PATTERN.exec(src);
           const element = indexMatch
             ? deepLocatorFrame.get(HOP_SELECTOR)?.elements[Number(indexMatch[1])]
