@@ -21,6 +21,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import Anthropic from "@anthropic-ai/sdk";
+import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { formatISO } from "date-fns";
 import {
   type JudgeAggregate,
@@ -31,6 +32,7 @@ import {
   llmCallSampleSchema,
 } from "@/api/schemas/telemetry";
 import { config } from "@/config";
+import { JUDGE_VERDICT_SCHEMA } from "@/lib/llm/schemas";
 import { getScriptLogger } from "@/lib/logging";
 
 const logger = getScriptLogger("judge-llm-batch");
@@ -207,7 +209,7 @@ function anthropicModelName(): string {
   return raw.startsWith("anthropic/") ? raw.slice("anthropic/".length) : raw;
 }
 
-const SCORE_SYSTEM_PROMPT = `You are a quality judge for LLM call outputs. You evaluate each sample on three dimensions:
+const SCORE_SYSTEM_PROMPT = `You are a quality judge for LLM call outputs. Evaluate each sample on three dimensions:
 
 1. SCHEMA_OK: Did the model's response match the expected output structure?
    - true if responseContent is valid JSON that matches the callType's expected schema
@@ -221,16 +223,7 @@ const SCORE_SYSTEM_PROMPT = `You are a quality judge for LLM call outputs. You e
    - true if the response contains no fabricated facts, URLs, entities, or values
    - false if it invents information not implied by the prompt
 
-Return ONLY a single JSON object — no prose, no markdown, no code fences:
-{
-  "schemaOk": <boolean>,
-  "schemaRationale": "<one sentence>",
-  "factuallyGrounded": <boolean>,
-  "factualRationale": "<one sentence>",
-  "hallucinationFree": <boolean>,
-  "hallucinationRationale": "<one sentence>",
-  "worstOffender": "<optional: the specific text fragment that is the worst violation, omit if all pass>"
-}`;
+Set worstOffender to one of "schema", "factual", or "hallucination" naming the worst-failing dimension, or null when all three pass. Each rationale is one short sentence.`;
 
 /**
  * Real LLM scorer: sends each sample to the Anthropic API for judgment.
@@ -251,50 +244,34 @@ export function makeAnthropicScorer(client: Anthropic, judgeModel?: string): Sco
     ].join("\n");
 
     try {
-      const response = await client.messages.create({
+      const response = await client.messages.parse({
         model,
         max_tokens: 512,
         system: SCORE_SYSTEM_PROMPT,
         messages: [{ role: "user", content: userMessage }],
+        output_config: {
+          format: zodOutputFormat(JUDGE_VERDICT_SCHEMA),
+        },
       });
-
-      const block = response.content.find((b) => b.type === "text");
-      if (block?.type !== "text") {
-        return fallbackScore("no text block in model response");
+      const parsed = response.parsed_output;
+      if (parsed === null) {
+        return fallbackScore("structured-output enabled but parsed_output is null");
       }
-
-      let raw: unknown;
-      try {
-        raw = JSON.parse(block.text.trim());
-      } catch {
-        return fallbackScore("model response was not valid JSON");
-      }
-
-      if (typeof raw !== "object" || raw === null) {
-        return fallbackScore("model response was not a JSON object");
-      }
-
-      const r = raw as Record<string, unknown>;
       return {
-        schemaOk: typeof r.schemaOk === "boolean" ? r.schemaOk : false,
-        schemaRationale:
-          typeof r.schemaRationale === "string"
-            ? r.schemaRationale
-            : "could not parse schemaRationale from model",
-        factuallyGrounded: typeof r.factuallyGrounded === "boolean" ? r.factuallyGrounded : false,
-        factualRationale:
-          typeof r.factualRationale === "string"
-            ? r.factualRationale
-            : "could not parse factualRationale from model",
-        hallucinationFree: typeof r.hallucinationFree === "boolean" ? r.hallucinationFree : false,
-        hallucinationRationale:
-          typeof r.hallucinationRationale === "string"
-            ? r.hallucinationRationale
-            : "could not parse hallucinationRationale from model",
-        ...(typeof r.worstOffender === "string" ? { worstOffender: r.worstOffender } : {}),
+        schemaOk: parsed.schemaOk,
+        schemaRationale: parsed.schemaRationale,
+        factuallyGrounded: parsed.factuallyGrounded,
+        factualRationale: parsed.factualRationale,
+        hallucinationFree: parsed.hallucinationFree,
+        hallucinationRationale: parsed.hallucinationRationale,
+        ...(typeof parsed.worstOffender === "string"
+          ? { worstOffender: parsed.worstOffender }
+          : {}),
       };
-    } catch {
-      return fallbackScore("API call threw an error");
+    } catch (err) {
+      return fallbackScore(
+        `API call threw an error: ${err instanceof Error ? err.message : String(err)}`
+      );
     }
   };
 }

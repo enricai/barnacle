@@ -63,23 +63,23 @@ vi.mock("@/lib/telemetry/call-capture", async (importOriginal) => {
 });
 
 import type { LlmCallInput } from "@/lib/telemetry/call-capture";
-import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
+import { CALL_TYPE_RECON_REPHRASE, CALL_TYPE_RECON_REPLAN } from "@/lib/telemetry/call-types";
 import {
   dedupeConsecutiveIdentical,
   denormalizeStep,
   describeAttemptEffectSignals,
-  extractFillTargetFieldName,
   extractSubmitFailureEvidence,
   findRecentBackendError,
   findRecentPageTransition,
+  formatValidationRejectedReason,
   hasBillingErrorBeenLogged,
   type InvalidFormControl,
-  invalidListContainsField,
   isReplanCycle,
   isSubmitRevealedInvalid,
   logBillingErrorIfPresent,
   type NormalizedStep,
   narrowInvalidFormControl,
+  pairInvalidWithErrors,
   persistReplannedFlow,
   type ReplanEvent,
   readFailureDumpEvidence,
@@ -89,16 +89,39 @@ import {
   resetBillingErrorFlagForTests,
   shouldSkipTechnique,
   summarizeReplanFailureKinds,
+  type ValidationRejectionPair,
 } from "@/scripts/recon-browser";
 import type { Logger } from "@/types/logging";
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
 
+/**
+ * Make a rephrase-mocking Anthropic stub.
+ *
+ * `responseText` overloads meaning per the new structured-output schema:
+ *  - "IMPOSSIBLE" or "" returns outcome=impossible (back-compat for tests
+ *    written against the previous magic-string contract)
+ *  - any other string returns outcome=rewrite with that text as the
+ *    instruction field
+ *
+ * The `content` field carries the JSON serialization the SDK would have
+ * received so capture instrumentation that records `responseContent` keeps
+ * working unchanged.
+ */
 function makeAnthropicClient(responseText: string, inputTokens = 50, outputTokens = 10): Anthropic {
+  const trimmed = responseText.trim();
+  const parsed =
+    trimmed.length === 0 || trimmed === "IMPOSSIBLE"
+      ? { outcome: "impossible" as const, reason: "no different element resolvable on this page" }
+      : {
+          outcome: "rewrite" as const,
+          instruction: responseText,
+        };
   return {
     messages: {
-      create: vi.fn().mockResolvedValue({
-        content: [{ type: "text", text: responseText }],
+      parse: vi.fn().mockResolvedValue({
+        parsed_output: parsed,
+        content: [{ type: "text", text: JSON.stringify(parsed) }],
         usage: { input_tokens: inputTokens, output_tokens: outputTokens },
       }),
     },
@@ -154,7 +177,10 @@ describe("rephraseWithLLM — capture instrumentation", () => {
     expect(calls[0]?.model).toBe("claude-sonnet-4-6");
   });
 
-  it("records parsedOk=false when the model replies IMPOSSIBLE", async () => {
+  it("returns null when the model emits outcome=impossible (schema-valid)", async () => {
+    // The new structured-output schema accepts outcome=impossible as a valid
+    // response. parsedOk=true reflects that the schema parsed cleanly; the
+    // caller still gets back null because there's no instruction to retry.
     const client = makeAnthropicClient("IMPOSSIBLE");
     const { fn, calls } = makeCaptureFn();
 
@@ -170,24 +196,14 @@ describe("rephraseWithLLM — capture instrumentation", () => {
     expect(result).toBeNull();
     expect(calls).toHaveLength(1);
     expect(calls[0]?.callType).toBe(CALL_TYPE_RECON_REPHRASE);
-    expect(calls[0]?.parsedOk).toBe(false);
-    expect(calls[0]?.success).toBe(false);
-  });
-
-  it("records parsedOk=false when the model returns an empty string", async () => {
-    const client = makeAnthropicClient("   ");
-    const { fn, calls } = makeCaptureFn();
-
-    const result = await rephraseWithLLM(client, "click the login button", [], [], [], fn);
-
-    expect(result).toBeNull();
-    expect(calls[0]?.parsedOk).toBe(false);
+    expect(calls[0]?.parsedOk).toBe(true);
+    expect(calls[0]?.success).toBe(true);
   });
 
   it("records parsedOk=false and does not throw when the API call throws", async () => {
     const client = {
       messages: {
-        create: vi.fn().mockRejectedValue(new Error("network error")),
+        parse: vi.fn().mockRejectedValue(new Error("network error")),
       },
     } as unknown as Anthropic;
     const { fn, calls } = makeCaptureFn();
@@ -261,6 +277,103 @@ describe("rephraseWithLLM — capture instrumentation", () => {
     expect(prompt).toContain("FORM FIELDS CURRENTLY MARKED INVALID");
     expect(prompt).toMatch(/FORM FIELDS CURRENTLY MARKED INVALID[^\n]*\n[^\n]*\(none\)/);
     expect(prompt).toContain("VISIBLE ERROR / REQUIRED-FIELD MESSAGES");
+  });
+
+  // V4-C structural-fix coverage. The empirical finding (3/3 PIVOT vs 3/3
+  // FIXATE in offline A/B against claude-opus-4-7) is that putting any
+  // meaningful content above ORIGINAL INSTRUCTION breaks the LLM's anchor
+  // to the failed instruction and lets it act on the redirect evidence.
+  it("V4-C: prepends a redirect block above ORIGINAL INSTRUCTION when invalid + interactive evidence both exist", async () => {
+    const client = makeAnthropicClient("Click the No radio for the current employee question");
+    const { fn, calls } = makeCaptureFn();
+
+    await rephraseWithLLM(
+      client,
+      "Click the date picker for earliest available start date",
+      [],
+      [],
+      ["no observable effect"],
+      fn,
+      {
+        invalidFieldList: "1. Are you a current employee? <!---- [ng-invalid]",
+        errorTextList: "1. This field is required.",
+        interactiveTargetsList:
+          "1. [Are you a current employee?] label 'No' — xpath=/html[1]/body[1]/...",
+      }
+    );
+
+    const prompt = calls[0]?.userContent ?? "";
+    // The top redirect block exists.
+    expect(prompt).toContain("Important context: the form is currently blocked by OTHER fields");
+    // And it sits ABOVE the ORIGINAL INSTRUCTION anchor.
+    const redirectIdx = prompt.indexOf("Important context: the form is currently blocked");
+    const originalIdx = prompt.indexOf("ORIGINAL INSTRUCTION:");
+    expect(redirectIdx).toBeGreaterThanOrEqual(0);
+    expect(originalIdx).toBeGreaterThan(redirectIdx);
+  });
+
+  it("V4-C: does NOT prepend the redirect block when only invalid fields exist (no interactive targets)", async () => {
+    const client = makeAnthropicClient("Click the No radio for the current employee question");
+    const { fn, calls } = makeCaptureFn();
+
+    await rephraseWithLLM(
+      client,
+      "Click the date picker for earliest available start date",
+      [],
+      [],
+      ["no observable effect"],
+      fn,
+      {
+        invalidFieldList: "1. Are you a current employee? <!---- [ng-invalid]",
+        errorTextList: "1. This field is required.",
+        interactiveTargetsList: "",
+      }
+    );
+
+    const prompt = calls[0]?.userContent ?? "";
+    // Without clickable redirect targets, the LLM can see the field is
+    // invalid but has nowhere to redirect — so V4-C stays silent.
+    expect(prompt).not.toContain(
+      "Important context: the form is currently blocked by OTHER fields"
+    );
+  });
+
+  it("V4-C: does NOT prepend the redirect block when only interactive targets exist (no invalid fields)", async () => {
+    const client = makeAnthropicClient("Click the No radio for the current employee question");
+    const { fn, calls } = makeCaptureFn();
+
+    await rephraseWithLLM(
+      client,
+      "Click the date picker for earliest available start date",
+      [],
+      [],
+      ["no observable effect"],
+      fn,
+      {
+        invalidFieldList: "",
+        errorTextList: "",
+        interactiveTargetsList:
+          "1. [Are you a current employee?] label 'No' — xpath=/html[1]/body[1]/...",
+      }
+    );
+
+    const prompt = calls[0]?.userContent ?? "";
+    expect(prompt).not.toContain(
+      "Important context: the form is currently blocked by OTHER fields"
+    );
+  });
+
+  it("V4-C: records the system prompt on captures (rule moved out of user prompt)", async () => {
+    const client = makeAnthropicClient("Click the alternative submit element");
+    const { fn, calls } = makeCaptureFn();
+
+    await rephraseWithLLM(client, "Click Submit", [], [], ["no observable effect"], fn);
+
+    // Per Anthropic guidance, the durable "target a different element OR
+    // return outcome=impossible" rule lives in `system`, not buried at the
+    // bottom of the user prompt.
+    expect(calls[0]?.systemPrompt).toBeTruthy();
+    expect(calls[0]?.systemPrompt).toContain("targets a different element");
   });
 });
 
@@ -626,8 +739,8 @@ describe("recon-browser/readFailureDumpEvidence", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("returns empty fields when the dump file is missing", () => {
-    const result = readFailureDumpEvidence(join(tmpDir, "does-not-exist.json"));
+  it("returns empty fields when the dump file is missing", async () => {
+    const result = await readFailureDumpEvidence(join(tmpDir, "does-not-exist.json"));
     expect(result).toEqual({
       bodyExcerpt: "",
       unfocusedList: "",
@@ -637,68 +750,30 @@ describe("recon-browser/readFailureDumpEvidence", () => {
     });
   });
 
-  it("flags fields with ng-invalid class and surfaces the field label", () => {
-    // Angular reactive-form snippet: a labelled input with the ng-invalid +
-    // ng-touched class signature that means "user interacted, field is empty
-    // / wrong format." This is the smoking-gun pattern the replan prompt was
-    // missing.
+  it("returns empty judge-driven fields when no client is supplied", async () => {
+    // Without a Haiku client the judges short-circuit to null and the caller
+    // renders empty strings. Verifies the safe-fallback contract — judge
+    // failures must NEVER cascade into errors in the replan path.
     const body = `<form class="ng-valid">
       <li class="question ng-invalid ng-dirty ng-touched">
         <label>County</label>
-        <input class="ng-invalid ng-dirty ng-touched" value=""/>
-      </li>
-      <li class="question ng-valid">
-        <label>State</label>
-        <input class="ng-valid" value="TX"/>
+        <input class="ng-invalid" value=""/>
       </li>
     </form>`;
     writeFileSync(dumpPath, JSON.stringify({ bodyOuterHtml: body, attempts: [] }));
-    const result = readFailureDumpEvidence(dumpPath);
-    // Signal contract: County (the invalid field) must be present with its
-    // ng-invalid class fingerprint. The 600-char following-window may bleed
-    // sibling text in by design — fine for an advisory LLM prompt section.
-    expect(result.invalidFieldList).toContain("County");
-    expect(result.invalidFieldList).toContain("ng-invalid");
-  });
-
-  it("does not flag a ng-valid form root just because its subtree contains invalid descendants", () => {
-    // Regression guard: the prior balanced-tag regex matched the outer
-    // <form> first and attributed the entire subtree to its ng-valid class,
-    // wrongly listing nothing as invalid. The opening-tag scan should
-    // produce at least one invalid entry from the inner ng-invalid <li>.
-    const body = `<form class="ng-valid">
-      <li class="question ng-invalid"><label>County</label></li>
-    </form>`;
-    writeFileSync(dumpPath, JSON.stringify({ bodyOuterHtml: body, attempts: [] }));
-    const result = readFailureDumpEvidence(dumpPath);
-    expect(result.invalidFieldList.length).toBeGreaterThan(0);
-    expect(result.invalidFieldList).toContain("County");
-  });
-
-  it("extracts visible error message text from error-class containers", () => {
-    const body = `<form>
-      <div class="error-message">This field is required.</div>
-      <div class="mat-error">Please provide correct phone number.</div>
-    </form>`;
-    writeFileSync(dumpPath, JSON.stringify({ bodyOuterHtml: body, attempts: [] }));
-    const result = readFailureDumpEvidence(dumpPath);
-    expect(result.errorTextList).toContain("This field is required");
-    expect(result.errorTextList).toContain("Please provide correct phone number");
-  });
-
-  it("ignores text inside an unrelated class when no error-pattern marker is present", () => {
-    const body = `<div class="some-other-class">Job title at Encompass Health</div>`;
-    writeFileSync(dumpPath, JSON.stringify({ bodyOuterHtml: body, attempts: [] }));
-    const result = readFailureDumpEvidence(dumpPath);
+    const result = await readFailureDumpEvidence(dumpPath);
+    expect(result.bodyExcerpt).toContain("County");
+    expect(result.invalidFieldList).toBe("");
     expect(result.errorTextList).toBe("");
+    expect(result.unfocusedList).toBe("");
   });
 
-  it("recentFailureReasons surfaces the trailing 5 attempt errorMessage values", () => {
+  it("recentFailureReasons surfaces the trailing 5 attempt errorMessage values", async () => {
     const attempts = Array.from({ length: 8 }, (_, i) => ({
       errorMessage: `attempt-${i + 1}: reason`,
     }));
     writeFileSync(dumpPath, JSON.stringify({ bodyOuterHtml: null, attempts }));
-    const result = readFailureDumpEvidence(dumpPath);
+    const result = await readFailureDumpEvidence(dumpPath);
     expect(result.recentFailureReasons).toEqual([
       "attempt-4: reason",
       "attempt-5: reason",
@@ -708,7 +783,7 @@ describe("recon-browser/readFailureDumpEvidence", () => {
     ]);
   });
 
-  it("skips attempts with null/empty errorMessage when collecting reasons", () => {
+  it("skips attempts with null/empty errorMessage when collecting reasons", async () => {
     const attempts = [
       { errorMessage: "real failure A" },
       { errorMessage: null },
@@ -716,21 +791,8 @@ describe("recon-browser/readFailureDumpEvidence", () => {
       { errorMessage: "real failure B" },
     ];
     writeFileSync(dumpPath, JSON.stringify({ bodyOuterHtml: null, attempts }));
-    const result = readFailureDumpEvidence(dumpPath);
+    const result = await readFailureDumpEvidence(dumpPath);
     expect(result.recentFailureReasons).toEqual(["real failure A", "real failure B"]);
-  });
-
-  it("caps both extracted lists at the EVIDENCE_LIST_CAP", () => {
-    // Build a body with 20 invalid fields. Cap is 12 by current contract.
-    const items = Array.from(
-      { length: 20 },
-      (_, i) => `<li class="ng-invalid"><label>Field-${i}</label></li>`
-    ).join("");
-    const body = `<form>${items}</form>`;
-    writeFileSync(dumpPath, JSON.stringify({ bodyOuterHtml: body, attempts: [] }));
-    const result = readFailureDumpEvidence(dumpPath);
-    const lines = result.invalidFieldList.split("\n");
-    expect(lines.length).toBeLessThanOrEqual(12);
   });
 });
 
@@ -879,77 +941,45 @@ describe("recon-browser/renderUnfocusedObserve", () => {
     selector: `xpath=//placeholder/${description.replace(/\s+/g, "-")}`,
   });
 
-  it("returns empty string for empty input", () => {
-    expect(renderUnfocusedObserve([])).toBe("");
+  it("returns empty string for empty input", async () => {
+    expect(await renderUnfocusedObserve([])).toBe("");
   });
 
-  it("renders entries as numbered description + selector lines", () => {
+  it("renders entries as numbered description + selector lines (null-client fallback path)", async () => {
     const observations = [make("First Name input"), make("Submit button")];
-    const out = renderUnfocusedObserve(observations);
+    const out = await renderUnfocusedObserve(observations);
     expect(out).toContain("1. First Name input");
     expect(out).toContain("2. Submit button");
   });
 
-  it("prioritizes entries with 'modal' in description to the top regardless of position", () => {
-    // Build a list with 80 dummy entries; place modal entries at indices 70-77.
-    const observations = [
-      ...Array.from({ length: 70 }, (_, i) => make(`form field ${i}`)),
-      make("Save button in education modal (first modal)"),
-      make("Close button in education modal (first modal)"),
-      make("Degree dropdown in education modal (first modal)"),
-      make("Education level dropdown in education modal (first modal)"),
-      make("Save button in education modal (second modal)"),
-      make("Close button in education modal (second modal)"),
-      make("Degree dropdown in education modal (second modal)"),
-      make("Education level dropdown in education modal (second modal)"),
-    ];
-    const out = renderUnfocusedObserve(observations);
-    expect(out).toContain("Save button in education modal (first modal)");
-    expect(out).toContain("Save button in education modal (second modal)");
-    expect(out.indexOf("Save button in education modal (first modal)")).toBeLessThan(
-      out.indexOf("form field 0")
-    );
+  it("preserves source order when no Haiku client is supplied (safe-fallback)", async () => {
+    // Without a judge client, modal-priority migration leaves order untouched.
+    // This is the documented fallback: judge-failure must never corrupt the
+    // baseline. Stagehand's emitted descriptions already cluster modals
+    // near the top, so the unsorted output isn't catastrophic.
+    const observations = [make("form field 0"), make("Save in modal"), make("form field 1")];
+    const out = await renderUnfocusedObserve(observations);
+    expect(out.indexOf("form field 0")).toBeLessThan(out.indexOf("Save in modal"));
   });
 
-  it("also catches 'dialog', 'popup', 'overlay', 'drawer' as modal-shaped UI", () => {
-    const observations = [
-      ...Array.from({ length: 30 }, (_, i) => make(`form field ${i}`)),
-      make("Save button in confirmation dialog"),
-      make("Close button in popup window"),
-      make("Cancel button in side overlay"),
-      make("Submit button in nav drawer"),
-    ];
-    const out = renderUnfocusedObserve(observations);
-    expect(out).toContain("confirmation dialog");
-    expect(out).toContain("popup window");
-    expect(out).toContain("side overlay");
-    expect(out).toContain("nav drawer");
-  });
-
-  it("caps the rendered list at the default cap (30)", () => {
+  it("caps the rendered list at the default cap (30)", async () => {
     const observations = Array.from({ length: 60 }, (_, i) => make(`item ${i}`));
-    const out = renderUnfocusedObserve(observations);
+    const out = await renderUnfocusedObserve(observations);
     const lines = out.split("\n");
     expect(lines.length).toBeLessThanOrEqual(30);
   });
 
-  it("honors an explicit cap override", () => {
+  it("honors an explicit cap override via options", async () => {
     const observations = Array.from({ length: 60 }, (_, i) => make(`item ${i}`));
-    const out = renderUnfocusedObserve(observations, 5);
+    const out = await renderUnfocusedObserve(observations, { cap: 5 });
     const lines = out.split("\n");
     expect(lines.length).toBeLessThanOrEqual(5);
-  });
-
-  it("modal matching is case-insensitive", () => {
-    const observations = [make("Submit button"), make("Save action inside MODAL container")];
-    const out = renderUnfocusedObserve(observations);
-    expect(out.indexOf("MODAL container")).toBeLessThan(out.indexOf("Submit button"));
   });
 });
 
 describe("recon-browser/extractSubmitFailureEvidence", () => {
   let tmpDir: string;
-  const submitRx = /^https:\/\/example\.com\/api\/apply$/;
+  const ownHosts = ["example.com"];
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "recon-submit-fail-"));
@@ -963,8 +993,8 @@ describe("recon-browser/extractSubmitFailureEvidence", () => {
     writeFileSync(join(tmpDir, filename), JSON.stringify(body));
   }
 
-  it("returns empty when the submit pattern is null", () => {
-    expect(extractSubmitFailureEvidence(["capture-1.json"], null, tmpDir)).toBe("");
+  it("returns empty when ownBackendHostnames is empty", () => {
+    expect(extractSubmitFailureEvidence(["capture-1.json"], [], tmpDir)).toBe("");
   });
 
   it("returns empty when no recent captures match the submit endpoint", () => {
@@ -973,7 +1003,7 @@ describe("recon-browser/extractSubmitFailureEvidence", () => {
       status: 200,
       responseBody: { ok: true },
     });
-    expect(extractSubmitFailureEvidence(["capture-1.json"], submitRx, tmpDir)).toBe("");
+    expect(extractSubmitFailureEvidence(["capture-1.json"], ownHosts, tmpDir)).toBe("");
   });
 
   it("returns empty when the submit-endpoint capture succeeded (2xx)", () => {
@@ -982,7 +1012,7 @@ describe("recon-browser/extractSubmitFailureEvidence", () => {
       status: 200,
       responseBody: { ok: true },
     });
-    expect(extractSubmitFailureEvidence(["capture-1.json"], submitRx, tmpDir)).toBe("");
+    expect(extractSubmitFailureEvidence(["capture-1.json"], ownHosts, tmpDir)).toBe("");
   });
 
   it("parses the { errors: [{ field, message }] } shape on a 4xx", () => {
@@ -996,7 +1026,7 @@ describe("recon-browser/extractSubmitFailureEvidence", () => {
         ],
       },
     });
-    const out = extractSubmitFailureEvidence(["capture-1.json"], submitRx, tmpDir);
+    const out = extractSubmitFailureEvidence(["capture-1.json"], ownHosts, tmpDir);
     expect(out).toContain("422 https://example.com/api/apply");
     expect(out).toContain("email: Invalid format");
     expect(out).toContain("phone: Required");
@@ -1008,7 +1038,7 @@ describe("recon-browser/extractSubmitFailureEvidence", () => {
       status: 400,
       responseBody: { validation: { firstName: "must be present" } },
     });
-    const out = extractSubmitFailureEvidence(["capture-1.json"], submitRx, tmpDir);
+    const out = extractSubmitFailureEvidence(["capture-1.json"], ownHosts, tmpDir);
     expect(out).toContain("firstName: must be present");
   });
 
@@ -1018,12 +1048,12 @@ describe("recon-browser/extractSubmitFailureEvidence", () => {
       status: 500,
       responseBody: { message: "Internal server error" },
     });
-    const out = extractSubmitFailureEvidence(["capture-1.json"], submitRx, tmpDir);
+    const out = extractSubmitFailureEvidence(["capture-1.json"], ownHosts, tmpDir);
     expect(out).toContain("Internal server error");
   });
 
   it("skips missing capture files silently", () => {
-    expect(extractSubmitFailureEvidence(["missing.json"], submitRx, tmpDir)).toBe("");
+    expect(extractSubmitFailureEvidence(["missing.json"], ownHosts, tmpDir)).toBe("");
   });
 });
 
@@ -1645,7 +1675,7 @@ describe("recon-browser/findRecentPageTransition", () => {
 
 describe("recon-browser/extractSubmitFailureEvidence — any-4xx mode", () => {
   let tmpDir: string;
-  const submitRx = /^https:\/\/example\.com\/api\/apply$/;
+  const ownHosts = ["example.com"];
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "recon-anyfourxx-"));
@@ -1659,24 +1689,24 @@ describe("recon-browser/extractSubmitFailureEvidence — any-4xx mode", () => {
     writeFileSync(join(tmpDir, filename), JSON.stringify(body));
   }
 
-  it("strict mode (default) ignores 4xx whose URL does not match the pattern", () => {
+  it("strict mode ignores 4xx whose hostname is not on ownBackendHostnames (third-party CDN noise)", () => {
     writeCapture("c1.json", {
-      url: "https://example.com/api/errors",
+      url: "https://cdn.thirdparty.net/api/errors",
       status: 422,
       responseBody: { errors: [{ field: "email", message: "Invalid format" }] },
     });
-    const out = extractSubmitFailureEvidence(["c1.json"], submitRx, tmpDir);
+    const out = extractSubmitFailureEvidence(["c1.json"], ownHosts, tmpDir);
     expect(out).toBe("");
   });
 
-  it("any-4xx mode parses a 4xx whose URL does NOT match the configured pattern", () => {
+  it("any-4xx mode parses a 4xx whose hostname is not on ownBackendHostnames", () => {
     writeCapture("c1.json", {
-      url: "https://example.com/api/errors",
+      url: "https://cdn.thirdparty.net/api/errors",
       status: 422,
       responseBody: { errors: [{ field: "email", message: "Invalid format" }] },
     });
-    const out = extractSubmitFailureEvidence(["c1.json"], null, tmpDir, "any-4xx");
-    expect(out).toContain("422 https://example.com/api/errors");
+    const out = extractSubmitFailureEvidence(["c1.json"], [], tmpDir, "any-4xx");
+    expect(out).toContain("422 https://cdn.thirdparty.net/api/errors");
     expect(out).toContain("email: Invalid format");
   });
 
@@ -1686,7 +1716,7 @@ describe("recon-browser/extractSubmitFailureEvidence — any-4xx mode", () => {
       status: 200,
       responseBody: { ok: true },
     });
-    const out = extractSubmitFailureEvidence(["c1.json"], null, tmpDir, "any-4xx");
+    const out = extractSubmitFailureEvidence(["c1.json"], [], tmpDir, "any-4xx");
     expect(out).toBe("");
   });
 
@@ -1696,7 +1726,7 @@ describe("recon-browser/extractSubmitFailureEvidence — any-4xx mode", () => {
       status: 200,
       responseBody: { ok: true },
     });
-    const out = extractSubmitFailureEvidence(["c1.json"], null, tmpDir, "any-4xx");
+    const out = extractSubmitFailureEvidence(["c1.json"], [], tmpDir, "any-4xx");
     expect(out).toBe("");
   });
 });
@@ -1745,7 +1775,7 @@ describe("replanRemainingFlow — trajectory prompt section", () => {
       stagehand: makeStagehandStub() as never,
       captureFn: fn,
     });
-    const prompt = calls[0]?.userContent ?? "";
+    const prompt = calls.find((c) => c.callType === CALL_TYPE_RECON_REPLAN)?.userContent ?? "";
     expect(prompt).toContain("PRIOR STEP TRAJECTORY");
     expect(prompt).toMatch(/PRIOR STEP TRAJECTORY[^\n]*\):\n\(none\)/);
   });
@@ -1769,7 +1799,7 @@ describe("replanRemainingFlow — trajectory prompt section", () => {
         { stepIndex: 2, verifiedBy: "url" },
       ],
     });
-    const prompt = calls[0]?.userContent ?? "";
+    const prompt = calls.find((c) => c.callType === CALL_TYPE_RECON_REPLAN)?.userContent ?? "";
     expect(prompt).toContain("PRIOR STEP TRAJECTORY");
     expect(prompt).toContain("step 1 verified via network");
     expect(prompt).toContain("step 2 verified via submitted-state-dom");
@@ -1795,7 +1825,7 @@ describe("replanRemainingFlow — trajectory prompt section", () => {
       captureFn: fn,
       trajectory,
     });
-    const prompt = calls[0]?.userContent ?? "";
+    const prompt = calls.find((c) => c.callType === CALL_TYPE_RECON_REPLAN)?.userContent ?? "";
     expect(prompt).toContain("step 4 verified via network");
     expect(prompt).toContain("step 8 verified via network");
     expect(prompt).not.toContain("step 1 verified");
@@ -1817,7 +1847,7 @@ describe("replanRemainingFlow — trajectory prompt section", () => {
       captureFn: fn,
       trajectory: [{ stepIndex: 4, verifiedBy: null }],
     });
-    const prompt = calls[0]?.userContent ?? "";
+    const prompt = calls.find((c) => c.callType === CALL_TYPE_RECON_REPLAN)?.userContent ?? "";
     expect(prompt).toContain("step 5 verified via (no signal recorded)");
   });
 });
@@ -1855,14 +1885,14 @@ describe("recon-browser/hasBillingErrorBeenLogged + billing-aware skip", () => {
 });
 
 describe("recon-browser/findRecentBackendError", () => {
-  const submitRx = /^https:\/\/example\.com\/api\/apply$/;
+  const ownHosts = ["example.com"];
 
-  it("returns null when the submit pattern is null", () => {
+  it("returns null when ownBackendHostnames is empty", () => {
     expect(
       findRecentBackendError({
         recentCaptureMeta: [{ method: "POST", status: 500, url: "https://example.com/api/apply" }],
         preMetaLength: 0,
-        submitEndpointPattern: null,
+        ownBackendHostnames: [],
       })
     ).toBeNull();
   });
@@ -1872,7 +1902,7 @@ describe("recon-browser/findRecentBackendError", () => {
       findRecentBackendError({
         recentCaptureMeta: [],
         preMetaLength: 0,
-        submitEndpointPattern: submitRx,
+        ownBackendHostnames: ownHosts,
       })
     ).toBeNull();
   });
@@ -1882,29 +1912,29 @@ describe("recon-browser/findRecentBackendError", () => {
       findRecentBackendError({
         recentCaptureMeta: [{ method: "POST", status: 500, url: "https://example.com/api/apply" }],
         preMetaLength: 1,
-        submitEndpointPattern: submitRx,
+        ownBackendHostnames: ownHosts,
       })
     ).toBeNull();
   });
 
-  it("returns the matched URL for a 5xx hitting the submit endpoint", () => {
+  it("returns the matched URL for a 5xx hitting the site's own backend", () => {
     expect(
       findRecentBackendError({
         recentCaptureMeta: [{ method: "POST", status: 500, url: "https://example.com/api/apply" }],
         preMetaLength: 0,
-        submitEndpointPattern: submitRx,
+        ownBackendHostnames: ownHosts,
       })
     ).toBe("https://example.com/api/apply");
   });
 
-  it("ignores 5xx on URLs that do not match the submit pattern (analytics noise)", () => {
+  it("ignores 5xx on URLs from third-party hosts (analytics noise)", () => {
     expect(
       findRecentBackendError({
         recentCaptureMeta: [
           { method: "POST", status: 503, url: "https://googleads.g.doubleclick.net/pixel" },
         ],
         preMetaLength: 0,
-        submitEndpointPattern: submitRx,
+        ownBackendHostnames: ownHosts,
       })
     ).toBeNull();
   });
@@ -1917,58 +1947,102 @@ describe("recon-browser/findRecentBackendError", () => {
           { method: "POST", status: 200, url: "https://example.com/api/apply" },
         ],
         preMetaLength: 0,
-        submitEndpointPattern: submitRx,
+        ownBackendHostnames: ownHosts,
       })
     ).toBeNull();
   });
 
-  it("matches any 5xx code (500-599) on the submit endpoint", () => {
+  it("matches any 5xx code (500-599) on the site's own backend", () => {
     for (const status of [500, 502, 503, 504, 599]) {
       expect(
         findRecentBackendError({
           recentCaptureMeta: [{ method: "POST", status, url: "https://example.com/api/apply" }],
           preMetaLength: 0,
-          submitEndpointPattern: submitRx,
+          ownBackendHostnames: ownHosts,
         })
       ).toBe("https://example.com/api/apply");
     }
   });
 });
 
-describe("recon-browser/extractFillTargetFieldName", () => {
-  it("extracts the field name from 'Fill in the X field with Y' instructions", () => {
-    expect(extractFillTargetFieldName("Fill in the Legal First Name field with 'Reginald'")).toBe(
-      "Legal First Name"
-    );
-    expect(extractFillTargetFieldName("Fill the Postal Code field with '83646'")).toBe(
-      "Postal Code"
-    );
+describe("recon-browser/pairInvalidWithErrors", () => {
+  it("pairs positionally-adjacent invalid + error when the invalid container is touched+dirty", () => {
+    const invalidList =
+      '1. Phone <uapp-phone-input class="question-control ng-touched ng-dirty ng-invalid">';
+    const errorList = "1. Please provide correct phone number.";
+    const pairs = pairInvalidWithErrors(invalidList, errorList);
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0]?.errorText).toBe("Please provide correct phone number.");
+    expect(pairs[0]?.fieldLabel).toContain("Phone");
   });
 
-  it("returns null for clicks, selects, and other non-fill instructions", () => {
-    expect(extractFillTargetFieldName("Click the Continue button")).toBeNull();
-    expect(extractFillTargetFieldName("Select 'Day' in the Shift dropdown")).toBeNull();
+  it("skips invalid entries that lack ng-touched (pristine empty required fields)", () => {
+    const invalidList =
+      '1. First Name <app-input class="question-control ng-pristine ng-untouched ng-invalid">';
+    const errorList = "1. This field is required.";
+    expect(pairInvalidWithErrors(invalidList, errorList)).toEqual([]);
+  });
+
+  it("skips invalid entries that lack ng-dirty (touched but never typed into)", () => {
+    const invalidList =
+      '1. Field <app-input class="question-control ng-touched ng-pristine ng-invalid">';
+    const errorList = "1. Required.";
+    expect(pairInvalidWithErrors(invalidList, errorList)).toEqual([]);
+  });
+
+  it("returns empty array when either list is empty", () => {
+    expect(pairInvalidWithErrors("", "1. Error")).toEqual([]);
+    expect(pairInvalidWithErrors("1. Field [ng-touched ng-dirty ng-invalid]", "")).toEqual([]);
+    expect(pairInvalidWithErrors("", "")).toEqual([]);
+  });
+
+  it("pairs multiple invalids with multiple errors positionally", () => {
+    const invalidList = [
+      '1. Phone <input class="ng-touched ng-dirty ng-invalid">',
+      '2. Salary <input class="ng-touched ng-dirty ng-invalid">',
+    ].join("\n");
+    const errorList = ["1. Please provide correct phone number.", "2. Enter a valid amount."].join(
+      "\n"
+    );
+    const pairs = pairInvalidWithErrors(invalidList, errorList);
+    expect(pairs).toHaveLength(2);
+    expect(pairs[0]?.errorText).toBe("Please provide correct phone number.");
+    expect(pairs[1]?.errorText).toBe("Enter a valid amount.");
+  });
+
+  it("truncates very long field labels and error texts to 200 chars", () => {
+    const longLabel = "x".repeat(500);
+    const longError = "y".repeat(500);
+    const invalidList = `1. ${longLabel} [ng-touched ng-dirty ng-invalid]`;
+    const errorList = `1. ${longError}`;
+    const pairs = pairInvalidWithErrors(invalidList, errorList);
+    expect(pairs).toHaveLength(1);
+    expect((pairs[0]?.fieldLabel ?? "").length).toBeLessThanOrEqual(200);
+    expect((pairs[0]?.errorText ?? "").length).toBeLessThanOrEqual(200);
+  });
+
+  it("only pairs up to min(invalid.length, errors.length) — extras of either are dropped silently", () => {
+    const invalidList = [
+      '1. A <input class="ng-touched ng-dirty ng-invalid">',
+      '2. B <input class="ng-touched ng-dirty ng-invalid">',
+    ].join("\n");
+    const errorList = "1. Just one error";
+    const pairs = pairInvalidWithErrors(invalidList, errorList);
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0]?.errorText).toBe("Just one error");
   });
 });
 
-describe("recon-browser/invalidListContainsField", () => {
-  it("matches when the field name appears in any invalidFieldList entry", () => {
-    const list = "1. Legal First Name <app-input  [ng-invalid]\n2. Phone <input  [ng-invalid]";
-    expect(invalidListContainsField(list, "Legal First Name")).toBe(true);
-  });
-
-  it("is case-insensitive", () => {
-    const list = "1. LEGAL FIRST NAME <app-input  [ng-invalid]";
-    expect(invalidListContainsField(list, "legal first name")).toBe(true);
-  });
-
-  it("returns false when the field is not in the list", () => {
-    const list = "1. Phone <input  [ng-invalid]";
-    expect(invalidListContainsField(list, "Legal First Name")).toBe(false);
-  });
-
-  it("returns false on empty inputs", () => {
-    expect(invalidListContainsField("", "Foo")).toBe(false);
-    expect(invalidListContainsField("1. Foo [ng-invalid]", "")).toBe(false);
+describe("recon-browser/formatValidationRejectedReason", () => {
+  it("formats a pair into a single imperative-style failureReason line", () => {
+    const pair: ValidationRejectionPair = {
+      fieldLabel: "Phone",
+      errorText: "Please provide correct phone number.",
+    };
+    const reason = formatValidationRejectedReason(pair);
+    expect(reason).toContain("validation-rejected");
+    expect(reason).toContain("'Phone'");
+    expect(reason).toContain("'Please provide correct phone number.'");
+    expect(reason).toContain("propose a different value or return impossible");
   });
 });

@@ -17,8 +17,8 @@ importers:
         specifier: ^4.0.112
         version: 4.0.112(zod@3.25.76)
       '@anthropic-ai/sdk':
-        specifier: ^0.100.1
-        version: 0.100.1(zod@3.25.76)
+        specifier: ^0.104.1
+        version: 0.104.1(zod@3.25.76)
       '@browserbasehq/stagehand':
         specifier: ^3.4.0
         version: 3.4.0(patch_hash=bfdee0c01c7488d134c387a614d105dfd0f6574ec63d98724dfd525d35799a0c)(@cfworker/json-schema@4.1.1)(@opentelemetry/api@1.9.0)(deepmerge@4.3.1)(playwright-core@1.60.0)(zod@3.25.76)
@@ -274,8 +274,8 @@ packages:
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  '@anthropic-ai/sdk@0.100.1':
-    resolution: {integrity: sha512-RANcEe7LpiLczkKGOwoXOTuFdPhuubS0i4xaAKOMpcqc55YO0mukgxppV7eygx3DXNjxWT6RYOLPyOy0aIAmwg==}
+  '@anthropic-ai/sdk@0.104.1':
+    resolution: {integrity: sha512-gGACa/+IaiXzRRmF96aOhamoBgapKRBiFWbmmTFP8aMkpaEcuStF+Q61bjo4vPxBM7gqWJNZqsngslRdnLHv0Q==}
     hasBin: true
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
@@ -3111,7 +3111,7 @@ snapshots:
       zod: 3.25.76
     optional: true
 
-  '@anthropic-ai/sdk@0.100.1(zod@3.25.76)':
+  '@anthropic-ai/sdk@0.104.1(zod@3.25.76)':
     dependencies:
       json-schema-to-ts: 3.1.1
       standardwebhooks: 1.0.0

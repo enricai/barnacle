@@ -262,7 +262,8 @@ describe("requestPatch", () => {
   it("parses a valid patch response from the model", async () => {
     const mockClient = {
       messages: {
-        create: vi.fn().mockResolvedValue({
+        parse: vi.fn().mockResolvedValue({
+          parsed_output: VALID_PATCH,
           content: [{ type: "text", text: JSON.stringify(VALID_PATCH) }],
         }),
       },
@@ -281,12 +282,12 @@ describe("requestPatch", () => {
     expect(result?.replacement).toBe(VALID_PATCH.replacement);
   });
 
-  it("returns null when the model response is not valid JSON", async () => {
+  it("returns null when the API throws a schema-validation error", async () => {
+    // Under structured output, SDK enforcement throws on malformed JSON
+    // — the production code's catch branch returns null.
     const mockClient = {
       messages: {
-        create: vi.fn().mockResolvedValue({
-          content: [{ type: "text", text: "not json at all" }],
-        }),
+        parse: vi.fn().mockRejectedValue(new Error("schema-validation-failed: malformed JSON")),
       },
     } as unknown as Anthropic;
 
@@ -304,7 +305,8 @@ describe("requestPatch", () => {
   it("returns null when anchor is not found verbatim in current flow", async () => {
     const mockClient = {
       messages: {
-        create: vi.fn().mockResolvedValue({
+        parse: vi.fn().mockResolvedValue({
+          parsed_output: MISMATCHED_PATCH,
           content: [{ type: "text", text: JSON.stringify(MISMATCHED_PATCH) }],
         }),
       },
@@ -324,7 +326,7 @@ describe("requestPatch", () => {
   it("returns null when the API call throws", async () => {
     const mockClient = {
       messages: {
-        create: vi.fn().mockRejectedValue(new Error("API error")),
+        parse: vi.fn().mockRejectedValue(new Error("API error")),
       },
     } as unknown as Anthropic;
 
@@ -698,17 +700,35 @@ describe("phaseHeal", () => {
 // ── requestPatch — capture instrumentation ────────────────────────────────────
 
 describe("requestPatch — capture instrumentation", () => {
+  /**
+   * Mock the structured-output rephrase contract. `responseText` is the raw
+   * JSON the model would have emitted; we both parse it (for parsed_output)
+   * and surface it verbatim in the content block (for responseContent
+   * capture). Tests that want to simulate a malformed response can pass a
+   * non-JSON string — the SDK simulator throws, which the production code
+   * handles via the catch branch (parsedOk=false).
+   */
   function makeAnthropicClient(
     responseText: string,
     inputTokens = 40,
     outputTokens = 12
   ): Anthropic {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(responseText);
+    } catch {
+      parsed = null;
+    }
     return {
       messages: {
-        create: vi.fn().mockResolvedValue({
-          content: [{ type: "text", text: responseText }],
-          usage: { input_tokens: inputTokens, output_tokens: outputTokens },
-        }),
+        parse:
+          parsed === null
+            ? vi.fn().mockRejectedValue(new Error("schema-validation-failed: not JSON"))
+            : vi.fn().mockResolvedValue({
+                parsed_output: parsed,
+                content: [{ type: "text", text: responseText }],
+                usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+              }),
       },
     } as unknown as Anthropic;
   }
@@ -804,7 +824,7 @@ describe("requestPatch — capture instrumentation", () => {
   it("records parsedOk=false and does not throw when the API call throws", async () => {
     const client = {
       messages: {
-        create: vi.fn().mockRejectedValue(new Error("API error")),
+        parse: vi.fn().mockRejectedValue(new Error("API error")),
       },
     } as unknown as Anthropic;
     const { fn, calls } = makeCaptureFn();

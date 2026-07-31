@@ -1999,7 +1999,7 @@ function emitBrowserFlowTs(opts: {
       ? flowSteps
           .map((step) => {
             const instruction = typeof step === "string" ? step : step.step;
-            return `  await stagehand.act(${JSON.stringify(instruction)});`;
+            return `  await guardedAct(stagehand, ${JSON.stringify(instruction)});`;
           })
           .join("\n")
       : `  // TODO: add flow steps from src/sites/${siteId}/recon-flow.json`;
@@ -2013,6 +2013,7 @@ function emitBrowserFlowTs(opts: {
 import type { Stagehand } from "@browserbasehq/stagehand";
 import { z } from "zod/v4";
 
+import { guardedAct, guardedExtract } from "@/scraper/stagehand-guard";
 import type { ${pascal}Payload, ${pascal}Response } from "@/sites/${siteId}/contract";
 
 const ${pascal}BrowserSchema = z.object({
@@ -2035,13 +2036,15 @@ export async function run${pascal}BrowserFlow(
 
 ${actCalls}
 
-  // Uses Stagehand's default extraction schema ({ extraction: string }) — matches
-  // ${pascal}BrowserSchema's shape exactly. Replace this call with the
-  // 4-arg overload (extract(instruction, schema, options)) once you've
-  // widened the schema, but note Stagehand v3 expects a Zod v3 schema there
-  // (this codebase uses zod/v4 everywhere else).
-  const result = await stagehand.extract(
-    ${isSubmissionFlow ? `\`drove the ${siteId} submission flow for payload \${JSON.stringify(payload)}\`` : `\`extract results matching query: \${payload.query}\``}
+  // Schema-enforced extract via guardedExtract: Stagehand 3.4.0 accepts
+  // both Zod v3 and v4 schemas natively (StagehandZodSchema union since
+  // 2.4.3 / PR #944), and the caller-side safeParse defends against SDK
+  // contract drift. Widen ${pascal}BrowserSchema as needed to match the
+  // fields the recon flow actually surfaces.
+  const result = await guardedExtract(
+    stagehand,
+    ${isSubmissionFlow ? `\`drove the ${siteId} submission flow for payload \${JSON.stringify(payload)}\`` : `\`extract results matching query: \${payload.query}\``},
+    ${pascal}BrowserSchema
   );
 
   return result as unknown as ${pascal}Response;
