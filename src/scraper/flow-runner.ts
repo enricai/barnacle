@@ -6849,9 +6849,35 @@ export async function executeStepWithHealing(params: {
           record.instruction = target.description;
           triedSelectors.push(target.selector);
           record.triedSelectors = [target.selector];
+          // Override observe candidate method for fill/select steps: when
+          // Stagehand observe() returns a candidate with method='click' for a
+          // fill or select step, override the candidate's method and arguments
+          // with the values derived from the step text via
+          // resolveDeepLocatorActuation() before calling guardedAct(). This
+          // ensures a text input on a 'Fill in X with Y' step is actuated as
+          // fill('Y'), not click(), even when Stagehand's observe returned
+          // method='click'.
+          const fieldTarget = parseFieldLabelTarget(step);
+          let overriddenTarget = target;
+          if (fieldTarget) {
+            const actuation = resolveDeepLocatorActuation(step);
+            if (actuation.kind === "select") {
+              overriddenTarget = {
+                ...target,
+                method: "selectOption",
+                arguments: [actuation.value],
+              };
+            } else if (actuation.kind === "fill") {
+              overriddenTarget = {
+                ...target,
+                method: "fill",
+                arguments: [actuation.value],
+              };
+            }
+          }
           const result = await guardedAct(
             stagehand,
-            target,
+            overriddenTarget,
             { timeout: STEP_WATCHDOG_MS },
             captureFn
           );
@@ -6859,7 +6885,7 @@ export async function executeStepWithHealing(params: {
           record.actResultDescription = result.actionDescription;
           // observe(...)[0] is what Stagehand acted on; use it directly when
           // result.actions[] is empty (some Stagehand paths don't echo it back).
-          resolvedAction = result.actions?.[0] ?? target;
+          resolvedAction = result.actions?.[0] ?? overriddenTarget;
 
           // Stagehand bug #1249 (OPEN as of 2026-06-14): act("fill") on
           // HTML5 <input type="date|time|datetime-local|month|week">
@@ -6874,20 +6900,21 @@ export async function executeStepWithHealing(params: {
           // Today's smoke (run 1781485435455, step 251) showed Stagehand
           // returns success=false on date inputs because its internal
           // Haiku LLM hits AI_TypeValidationError when formulating the
-          // fill action — but `target` (the observe-resolved candidate)
-          // still has the right xpath + arguments. Use `target` directly
-          // so the helper fires even when guardedAct technically failed.
+          // fill action — but `overriddenTarget` (the observe-resolved
+          // candidate) still has the right xpath + arguments. Use
+          // `overriddenTarget` directly so the helper fires even when
+          // guardedAct technically failed.
           if (
-            target.method === "fill" &&
-            Array.isArray(target.arguments) &&
-            target.arguments.length > 0
+            overriddenTarget.method === "fill" &&
+            Array.isArray(overriddenTarget.arguments) &&
+            overriddenTarget.arguments.length > 0
           ) {
-            const fillValue = target.arguments[0];
+            const fillValue = overriddenTarget.arguments[0];
             if (typeof fillValue === "string") {
               const dateFillTarget = frameTarget ?? mainFrameTarget(page);
               const dateFill = await fillHtml5DateTimeInput(
                 dateFillTarget,
-                target.selector,
+                overriddenTarget.selector,
                 fillValue
               );
               if (dateFill !== null) {
@@ -6899,7 +6926,7 @@ export async function executeStepWithHealing(params: {
                 // failure mode by writing directly via the native setter.
                 if (dateFill.filled) {
                   record.actResultSuccess = true;
-                  resolvedAction = target;
+                  resolvedAction = overriddenTarget;
                 }
               } else {
                 // Fix I: not a date input — verify the regular fill landed.
@@ -6910,7 +6937,7 @@ export async function executeStepWithHealing(params: {
                 // (network/url/dom/htmlDelta/textChanged) miss.
                 const readback = await verifyFillReadback(
                   dateFillTarget,
-                  target.selector,
+                  overriddenTarget.selector,
                   fillValue
                 );
                 if (readback !== null) {
