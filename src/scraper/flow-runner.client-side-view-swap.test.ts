@@ -15,7 +15,8 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,
-      bytesDelta: 49518, // UCHealth "Manual Application" measured delta
+      bytesDelta: 49518,
+      textChanged: false, // UCHealth "Manual Application" measured delta
     });
     expect(result).toBe(true);
   });
@@ -32,6 +33,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
       isAdvanceWithPattern: false,
       networkDelta: 0,
       bytesDelta: 49518,
+      textChanged: false,
     });
     expect(result).toBe(false);
   });
@@ -44,6 +46,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
       isAdvanceWithPattern: false,
       networkDelta: 0,
       bytesDelta: 49518,
+      textChanged: false,
     });
     expect(result).toBe(false);
   });
@@ -60,6 +63,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
       isAdvanceWithPattern: true, // advanceTransitionBodyPattern is non-null
       networkDelta: 0,
       bytesDelta: 49518,
+      textChanged: false,
     });
     expect(result).toBe(false);
   });
@@ -76,7 +80,8 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,
-      bytesDelta: 499, // Below TRIVIAL_DOM_DELTA_BYTES (500B)
+      bytesDelta: 499,
+      textChanged: false, // Below TRIVIAL_DOM_DELTA_BYTES (500B)
     });
     expect(result).toBe(false);
   });
@@ -89,6 +94,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
       isAdvanceWithPattern: false,
       networkDelta: 0,
       bytesDelta: 500,
+      textChanged: false,
     });
     expect(result).toBe(false);
   });
@@ -101,6 +107,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
       isAdvanceWithPattern: false,
       networkDelta: 0,
       bytesDelta: 4999,
+      textChanged: false,
     });
     expect(result).toBe(false);
   });
@@ -113,6 +120,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
       isAdvanceWithPattern: false,
       networkDelta: 0,
       bytesDelta: 5000,
+      textChanged: false,
     });
     expect(result).toBe(true);
   });
@@ -128,6 +136,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
       isAdvanceWithPattern: false,
       networkDelta: 0,
       bytesDelta: 49518,
+      textChanged: false,
     });
     expect(result).toBe(false);
   });
@@ -140,6 +149,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
       isAdvanceWithPattern: false,
       networkDelta: 0,
       bytesDelta: 49518,
+      textChanged: false,
     });
     expect(result).toBe(false);
   });
@@ -155,6 +165,94 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
       isAdvanceWithPattern: false,
       networkDelta: 1, // At least one network request
       bytesDelta: 49518,
+      textChanged: false,
+    });
+    expect(result).toBe(false);
+  });
+
+  /**
+   * Small-delta reveal credit: a validation-triggered section reveal
+   * (UCHealth's Work-History gate message, measured +789B with visible text
+   * change and zero network) is credited even though it never clears the
+   * 5000B full-swap threshold — the exact signal shape logged at
+   * uchealth-recon-20.log:341. Mirrors the DESCRIBE_ATTEMPT_EFFECT_SIGNALS
+   * dom-grew-without-network diagnostic that used to be this step's only
+   * output before it cascaded to a 5-attempt failure and global replan.
+   */
+  it("credits a small text-changing reveal (+789B, UCHealth Work-History gate) below VIEW_SWAP_MIN_BYTES", () => {
+    const result = isClickViewSwapVerified({
+      resolvedAction: { method: "click" },
+      isFinalStep: false,
+      submitStep: false,
+      isAdvanceWithPattern: false,
+      networkDelta: 0,
+      bytesDelta: 789,
+      textChanged: true,
+    });
+    expect(result).toBe(true);
+  });
+
+  it("credits a reveal at exactly the VIEW_SWAP_REVEAL_MIN_BYTES threshold (500B) with text change", () => {
+    const result = isClickViewSwapVerified({
+      resolvedAction: { method: "click" },
+      isFinalStep: false,
+      submitStep: false,
+      isAdvanceWithPattern: false,
+      networkDelta: 0,
+      bytesDelta: 500,
+      textChanged: true,
+    });
+    expect(result).toBe(true);
+  });
+
+  it("rejects a small delta (789B) with no visible text change (trivial reflow, not a reveal)", () => {
+    const result = isClickViewSwapVerified({
+      resolvedAction: { method: "click" },
+      isFinalStep: false,
+      submitStep: false,
+      isAdvanceWithPattern: false,
+      networkDelta: 0,
+      bytesDelta: 789,
+      textChanged: false,
+    });
+    expect(result).toBe(false);
+  });
+
+  it("rejects a text-changing delta below VIEW_SWAP_REVEAL_MIN_BYTES (499B)", () => {
+    const result = isClickViewSwapVerified({
+      resolvedAction: { method: "click" },
+      isFinalStep: false,
+      submitStep: false,
+      isAdvanceWithPattern: false,
+      networkDelta: 0,
+      bytesDelta: 499,
+      textChanged: true,
+    });
+    expect(result).toBe(false);
+  });
+
+  it("rejects a small text-changing reveal on a final step (submit verification requires real network)", () => {
+    const result = isClickViewSwapVerified({
+      resolvedAction: { method: "click" },
+      isFinalStep: true,
+      submitStep: false,
+      isAdvanceWithPattern: false,
+      networkDelta: 0,
+      bytesDelta: 789,
+      textChanged: true,
+    });
+    expect(result).toBe(false);
+  });
+
+  it("rejects a small text-changing reveal on an advance-pattern step", () => {
+    const result = isClickViewSwapVerified({
+      resolvedAction: { method: "click" },
+      isFinalStep: false,
+      submitStep: false,
+      isAdvanceWithPattern: true,
+      networkDelta: 0,
+      bytesDelta: 789,
+      textChanged: true,
     });
     expect(result).toBe(false);
   });
@@ -167,6 +265,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
       isAdvanceWithPattern: false,
       networkDelta: 5,
       bytesDelta: 49518,
+      textChanged: false,
     });
     expect(result).toBe(false);
   });

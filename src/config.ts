@@ -75,6 +75,21 @@ export interface AppConfig {
      */
     viewSwapMinBytesThreshold: number;
     /**
+     * Minimum DOM-growth byte delta for `isClickViewSwapVerified` to credit a
+     * network-free click as a verified "reveal" — a section unhiding within
+     * an already-loaded page, distinct from a full `viewSwapMinBytesThreshold`
+     * screen swap. Only applies when the growth ALSO changed visible text
+     * (`textChanged`), which a trivial reflow/tooltip does not do — see
+     * `describeAttemptEffectSignals`'s own 500B floor for that same
+     * text-changed distinction. Default of 500 matches that floor: below it,
+     * `describeAttemptEffectSignals` itself classifies the delta as a mere
+     * reflow, not a reveal. Measured case: UCHealth's Work-History gate
+     * message rendered +789B with text change and zero network. Lower via
+     * `VIEW_SWAP_REVEAL_MIN_BYTES` per-deployment if a site's reveal is even
+     * smaller.
+     */
+    viewSwapRevealMinBytesThreshold: number;
+    /**
      * Poll attempts for the upload primitive's wait on the async upload
      * widget (and its lazily-mounted `<input type=file>`) to render, at
      * `UPLOAD_WIDGET_RENDER_INTERVAL_MS` apart. Default of 17 (~10.2s total)
@@ -419,6 +434,7 @@ export function loadConfig(): AppConfig {
       connectTimeoutMs: getNumericEnv("STAGEHAND_CONNECT_TIMEOUT_MS", 120_000),
       steelSessionTimeoutMs: getNumericEnv("STEEL_SESSION_TIMEOUT_MS", 3_600_000),
       viewSwapMinBytesThreshold: getNumericEnv("VIEW_SWAP_MIN_BYTES", 5000),
+      viewSwapRevealMinBytesThreshold: getNumericEnv("VIEW_SWAP_REVEAL_MIN_BYTES", 500),
       uploadWidgetRenderAttempts: getNumericEnv("UPLOAD_WIDGET_RENDER_ATTEMPTS", 17),
       frameReadyTimeoutMs: getNumericEnv("FRAME_READY_TIMEOUT_MS", 20_000),
       frameDocumentReadyTimeoutMs: getNumericEnv("FRAME_DOCUMENT_READY_TIMEOUT_MS", 5_000),

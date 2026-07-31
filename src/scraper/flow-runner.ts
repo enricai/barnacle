@@ -586,7 +586,8 @@ export interface AttemptRecord {
    * - `url`: page navigated to a new URL.
    * - `dom`: verifyDomEffect confirmed a structural change (radio/checkbox state).
    * - `view-swap`: isClickViewSwapVerified credited a client-side DOM reveal
-   *   (≥5KB growth, zero network, not submit/final/advance-pattern step).
+   *   (≥5KB growth, or ≥500B with visible text change, zero network, not
+   *   submit/final/advance-pattern step).
    * - `submitted-state-dom`: final-step DOM fallback fired — a flow-declared
    *   `submittedStateSelectors` entry matched live DOM, indicating the SPA
    *   reached its submitted state even though the network capture missed
@@ -1102,6 +1103,17 @@ export function isDomOnlyAdvanceVerified(params: {
  * per isSubmitRevealedInvalid + LLM submit judge) and advance-pattern steps
  * (those require real transition per isDomOnlyAdvanceVerified/isAdvanceStalled
  * to avoid wizard-ATS autosave-vs-transition ambiguity).
+ *
+ * **Small-delta reveal credit:** a sub-section unhiding within an
+ * already-loaded page (e.g. a validation-triggered "Work History requirement"
+ * gate message) grows the DOM by far less than a full screen swap — measured
+ * case: +789B on UCHealth, ~63x below the 5000B full-swap default. Below
+ * `viewSwapMinBytesThreshold`, credit the click anyway when the growth ALSO
+ * changed visible text (`textChanged`) and clears the lower
+ * `viewSwapRevealMinBytesThreshold` floor (default 500B, matching
+ * `describeAttemptEffectSignals`'s own reflow-vs-reveal boundary). Requiring
+ * `textChanged` keeps a trivial reflow/tooltip (DOM churn with no new visible
+ * content) from being credited — those still cascade to failure as before.
  */
 export function isClickViewSwapVerified(params: {
   resolvedAction: { method?: string | null } | null;
@@ -1110,8 +1122,10 @@ export function isClickViewSwapVerified(params: {
   isAdvanceWithPattern: boolean;
   networkDelta: number;
   bytesDelta: number;
+  textChanged: boolean;
 }): boolean {
   const VIEW_SWAP_MIN_BYTES = config.scraper.viewSwapMinBytesThreshold;
+  const VIEW_SWAP_REVEAL_MIN_BYTES = config.scraper.viewSwapRevealMinBytesThreshold;
   const {
     resolvedAction,
     isFinalStep,
@@ -1119,12 +1133,14 @@ export function isClickViewSwapVerified(params: {
     isAdvanceWithPattern,
     networkDelta,
     bytesDelta,
+    textChanged,
   } = params;
   if (resolvedAction?.method !== "click") return false;
   if (isFinalStep || submitStep) return false;
   if (isAdvanceWithPattern) return false;
   if (networkDelta !== 0) return false;
-  return bytesDelta >= VIEW_SWAP_MIN_BYTES;
+  if (bytesDelta >= VIEW_SWAP_MIN_BYTES) return true;
+  return textChanged && bytesDelta >= VIEW_SWAP_REVEAL_MIN_BYTES;
 }
 
 /**
@@ -7309,6 +7325,9 @@ export async function executeStepWithHealing(params: {
     // DOM growth (≥5KB) with zero network when it's NOT a submit/final step
     // and NOT an advance-pattern step. Fixes the UCHealth "Manual Application"
     // case where a +49KB DOM-only view swap was scored as "no observable effect".
+    // Below that threshold, also credits a smaller text-changing reveal (≥500B) —
+    // fixes the UCHealth Work-History gate-message reveal (+789B) that used to
+    // cascade to a 5-attempt failure and global replan.
     const clickViewSwapVerified = isClickViewSwapVerified({
       resolvedAction,
       isFinalStep,
@@ -7316,6 +7335,7 @@ export async function executeStepWithHealing(params: {
       isAdvanceWithPattern: isAdvanceStep(step) && advanceTransitionBodyPattern !== null,
       networkDelta: post.networkCount - pre.networkCount,
       bytesDelta: post.bodyHtmlLength - pre.bodyHtmlLength,
+      textChanged: post.visibleTextSignature !== pre.visibleTextSignature,
     });
     // Form-value-diff signal: `visibleTextSignature` never reflects a plain
     // <input>/<textarea>/<select>'s `value` property, so a fill with no
