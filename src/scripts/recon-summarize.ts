@@ -5,11 +5,15 @@
  *
  * Usage:
  *   pnpm tsx src/scripts/recon-summarize.ts \
- *     [--site-id <id>] [--out docs/target-recon.md]
+ *     [--site-id <id>] [--out docs/target-recon.md] [--run-dir <path>]
  *
  * When --site-id is provided, path placeholders in the output (src/sites/<id>/...)
  * are replaced with the real site ID and the default output path becomes
  * docs/<site-id>-recon.md.
+ *
+ * --run-dir selects which run root to read; defaults to the most recently
+ * modified run root under the recon output base dir (see
+ * {@link resolveLatestReconRunRoot}).
  */
 
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -18,13 +22,11 @@ import { dirname, join } from "node:path";
 import { toErrorMessage } from "@/lib/errors";
 import { getScriptLogger } from "@/lib/logging";
 import {
-  AUX_DIR,
-  CAPTURES_DIR,
   type Capture,
   type RateLimitFinding,
-  REPLAYS_DIR,
   type ReplayResult,
   readJsonDir,
+  resolveLatestReconRunRoot,
   tallyResponseHeaders,
 } from "@/scripts/recon-shared";
 
@@ -45,22 +47,30 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2);
   let siteId = PLACEHOLDER_ID;
   let outPath: string | null = null;
+  let runDir: string | undefined;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--site-id" && args[i + 1]) siteId = args[++i]!;
     else if (args[i] === "--out" && args[i + 1]) outPath = args[++i]!;
+    else if (args[i] === "--run-dir" && args[i + 1]) runDir = args[++i]!;
   }
   // Default output path is scoped to site ID when one is provided.
   outPath ??= siteId !== PLACEHOLDER_ID ? `docs/${siteId}-recon.md` : DEFAULT_OUT;
 
-  const captures = readJsonDir<Capture>(CAPTURES_DIR);
-  const replays = readJsonDir<ReplayResult>(REPLAYS_DIR, [
+  const runRoot = resolveLatestReconRunRoot(runDir);
+  logger.info(`reading recon artifacts from ${runRoot}`);
+  const capturesDir = join(runRoot, "graphql");
+  const replaysDir = join(runRoot, "replays");
+  const auxDir = join(runRoot, "aux");
+
+  const captures = readJsonDir<Capture>(capturesDir);
+  const replays = readJsonDir<ReplayResult>(replaysDir, [
     "rate-limit.json",
     "introspection-schema.json",
   ]);
   const rateLimitRaw = (() => {
     try {
       return JSON.parse(
-        readFileSync(join(REPLAYS_DIR, "rate-limit.json"), "utf8")
+        readFileSync(join(replaysDir, "rate-limit.json"), "utf8")
       ) as RateLimitFinding[];
     } catch {
       return [] as RateLimitFinding[];
@@ -69,7 +79,7 @@ async function main(): Promise<void> {
 
   const auxFiles = (() => {
     try {
-      return readdirSync(AUX_DIR)
+      return readdirSync(auxDir)
         .filter((f) => f.endsWith(".json"))
         .sort();
     } catch {
@@ -227,7 +237,7 @@ async function main(): Promise<void> {
     auxFiles.length === 0
       ? "_No auxiliary fixtures detected. Run Phase 3B (recon-http.ts) to probe static endpoints._"
       : [
-          `_Downloaded to \`${AUX_DIR}\` — commit each as a static fixture in \`src/sites/<id>/fixtures/\`._`,
+          `_Downloaded to \`${auxDir}\` — commit each as a static fixture in \`src/sites/<id>/fixtures/\`._`,
           ``,
           ...auxFiles.map((f) => `- \`${f}\` — commit as \`src/sites/<id>/fixtures/${f}\``),
         ].join("\n"),
@@ -240,7 +250,7 @@ async function main(): Promise<void> {
     `## Maintenance`,
     ``,
     `When smoke test fails: re-run \`pnpm tsx src/scripts/recon-browser.ts\` → diff`,
-    `\`/tmp/recon/graphql/*<operationName>*.json\` against \`src/sites/<id>/contract.ts\``,
+    `\`${capturesDir}/*<operationName>*.json\` against \`src/sites/<id>/contract.ts\``,
     `→ update query / headers / Zod schema → ship.`,
     ``,
     `---`,

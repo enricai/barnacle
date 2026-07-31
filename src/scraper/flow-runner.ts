@@ -39,8 +39,14 @@ import {
 } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
 import { StepVerificationError } from "@/scraper/errors";
+import { classifyPhantomClick, type PhantomClickVerdict } from "@/scraper/phantom-click";
 import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
-import { CAPTURES_DIR, type Capture } from "@/scripts/recon-shared";
+import {
+  buildClickByDeepIndexExpr,
+  buildRankSubmitCandidatesExpr,
+  type SubmitCandidate,
+} from "@/scraper/submit-control";
+import { type Capture, resolveReconRunDir } from "@/scripts/recon-shared";
 import type { Logger } from "@/types/logging";
 
 const logger = getLogger({ name: "scraper/flow-runner" });
@@ -110,6 +116,12 @@ export function wireSignalCapture(
   // into the capture once, in `onFinished` (the only place a Capture is built).
   // See mergeResponseHeaders.
   const extraResponseHeaders = new Map<string, Record<string, string>>();
+  // Cookie (and other extra-info-only request headers) keyed by requestId.
+  // Mirrors extraResponseHeaders: Network.requestWillBeSent omits the outgoing
+  // Cookie header by design, and requestWillBeSentExtraInfo — which carries it —
+  // can race requestWillBeSent in either order. Buffered here and folded into
+  // the capture once, in `onFinished`. See mergeResponseHeaders.
+  const extraRequestHeaders = new Map<string, Record<string, string>>();
   // One-shot per-run warning state for the GA `ep.isExpired=true` beacon.
   // Defensive instrumentation: across 5,542 captures surveyed 2026-06-15,
   // every observation was `false` — but if a future job ever ships in the
@@ -128,6 +140,10 @@ export function wireSignalCapture(
     response: { status: number; headers: Record<string, string> };
   };
   type ResponseReceivedExtraInfoEvent = {
+    requestId: string;
+    headers: Record<string, string>;
+  };
+  type RequestWillBeSentExtraInfoEvent = {
     requestId: string;
     headers: Record<string, string>;
   };
@@ -163,6 +179,17 @@ export function wireSignalCapture(
     extraResponseHeaders.set(params.requestId, merged);
   };
 
+  const onRequestExtraInfo = (params: RequestWillBeSentExtraInfoEvent): void => {
+    // Accumulate — can race requestWillBeSent in either order, and a redirect
+    // fires this more than once per requestId. The fold into the capture
+    // happens once, in onFinished, so order with requestWillBeSent never matters.
+    const merged = mergeResponseHeaders(
+      extraRequestHeaders.get(params.requestId) ?? {},
+      params.headers
+    );
+    extraRequestHeaders.set(params.requestId, merged);
+  };
+
   const onFinished = async (params: LoadingFinishedEvent): Promise<void> => {
     const req = inFlight.get(params.requestId);
     if (!req) return;
@@ -175,6 +202,13 @@ export function wireSignalCapture(
       extraResponseHeaders.get(params.requestId)
     );
     extraResponseHeaders.delete(params.requestId);
+    // Same fold, request side: recovers the outgoing Cookie header that
+    // requestWillBeSent omits by design.
+    req.requestHeaders = mergeResponseHeaders(
+      req.requestHeaders,
+      extraRequestHeaders.get(params.requestId)
+    );
+    extraRequestHeaders.delete(params.requestId);
 
     const phase = getCurrentPhase();
     let responseBody: unknown = null;
@@ -313,12 +347,14 @@ export function wireSignalCapture(
   };
 
   session.on("Network.requestWillBeSent", onRequest);
+  session.on("Network.requestWillBeSentExtraInfo", onRequestExtraInfo);
   session.on("Network.responseReceived", onResponse);
   session.on("Network.responseReceivedExtraInfo", onResponseExtraInfo);
   session.on("Network.loadingFinished", onFinished);
 
   return (): void => {
     session.off("Network.requestWillBeSent", onRequest);
+    session.off("Network.requestWillBeSentExtraInfo", onRequestExtraInfo);
     session.off("Network.responseReceived", onResponse);
     session.off("Network.responseReceivedExtraInfo", onResponseExtraInfo);
     session.off("Network.loadingFinished", onFinished);
@@ -494,6 +530,7 @@ export interface AttemptRecord {
     | "observe-act"
     | "structured-click"
     | "observe-act-exclude"
+    | "deep-submit-locator"
     | "llm-rephrase";
   instruction: string | null;
   triedSelectors: string[];
@@ -522,6 +559,15 @@ export interface AttemptRecord {
    * - `null`: failure path.
    */
   verifiedBy: "network" | "url" | "dom" | "submitted-state-dom" | null;
+  /**
+   * {@link classifyPhantomClick}'s verdict for this attempt, computed from
+   * the same pre/post snapshot pair `describeAttemptEffectSignals` already
+   * renders — `null` until the no-observable-effect branch runs (verified
+   * attempts never reach it). `"phantom"` (Stagehand claimed success but
+   * nothing observably happened) is what escalates the next attempt to
+   * `deep-submit-locator` instead of repeating a light-DOM technique.
+   */
+  phantomClickVerdict: PhantomClickVerdict | null;
 }
 
 /**
@@ -820,7 +866,7 @@ export function windowHasTransitionBody(params: {
 }): boolean {
   const { preIdx, advanceTransitionBodyPattern } = params;
   if (!advanceTransitionBodyPattern) return false;
-  const capturesDir = params.capturesDir ?? CAPTURES_DIR;
+  const capturesDir = params.capturesDir ?? resolveReconRunDir().graphqlDir;
   let rx: RegExp;
   try {
     rx = new RegExp(advanceTransitionBodyPattern);
@@ -864,7 +910,7 @@ export function windowHasAdvanceTransition(params: {
 }): boolean {
   const { preIdx, advanceTransitionBodyPattern } = params;
   if (!advanceTransitionBodyPattern) return false;
-  const capturesDir = params.capturesDir ?? CAPTURES_DIR;
+  const capturesDir = params.capturesDir ?? resolveReconRunDir().graphqlDir;
   let rx: RegExp;
   try {
     rx = new RegExp(advanceTransitionBodyPattern);
@@ -1043,6 +1089,7 @@ export function shouldSkipTechnique(params: {
     | "observe-act"
     | "structured-click"
     | "observe-act-exclude"
+    | "deep-submit-locator"
     | "llm-rephrase";
   priorAttempts: readonly {
     technique: string;
@@ -1055,8 +1102,19 @@ export function shouldSkipTechnique(params: {
    * effect at all. Optional so existing callers are unchanged.
    */
   advanceUnmovedAfterAttempt1?: boolean;
+  /**
+   * True when attempt 1 reported success but the pre/post snapshot shows zero
+   * observable effect (see {@link classifyPhantomClick}) — a phantom click.
+   * Re-observing/re-clicking the light DOM will no-op identically (the target
+   * is almost certainly unreachable via `document.querySelectorAll`, e.g.
+   * inside a shadow root), so skip straight to the deep submit-control locator
+   * instead of burning attempts 2-4 repeating the same no-op. Optional so
+   * existing callers are unchanged.
+   */
+  phantomClickAfterAttempt1?: boolean;
 }): { skip: boolean; reason: string } {
-  const { technique, priorAttempts, advanceUnmovedAfterAttempt1 } = params;
+  const { technique, priorAttempts, advanceUnmovedAfterAttempt1, phantomClickAfterAttempt1 } =
+    params;
   // Unmoved-advance short-circuit (measured: attempts 2-4 recovered a stuck
   // advance 0 times in 289 steps). When attempt-1's act-string clicked the Next
   // and the wizard did NOT move forward (non-advancing POST, or no effect),
@@ -1078,6 +1136,28 @@ export function shouldSkipTechnique(params: {
       skip: true,
       reason:
         "advance step did not move the wizard on attempt 1; re-observe/re-click cannot advance it — skipping to rephrase/replan",
+    };
+  }
+  // Phantom-click short-circuit: attempt 1 clicked something Stagehand
+  // believes exists, but pre/post shows zero network, zero URL change, and
+  // no real DOM growth — the click almost certainly landed on nothing (the
+  // recon-submit-phantom-click bug report's light-DOM resolver can't see
+  // into a shadow root / web component). Repeating observe-act /
+  // structured-click / observe-act-exclude re-resolves the SAME
+  // light-DOM-only view of the page and would no-op identically, so skip
+  // straight to deep-submit-locator (attempt 2) instead. llm-rephrase
+  // (attempt 5) is never skipped — a differently-worded instruction is still
+  // a distinct attempt worth trying if the deep locator also fails.
+  if (
+    phantomClickAfterAttempt1 === true &&
+    (technique === "observe-act" ||
+      technique === "structured-click" ||
+      technique === "observe-act-exclude")
+  ) {
+    return {
+      skip: true,
+      reason:
+        "attempt 1 was a phantom click (reported success, zero observable effect); re-observe/re-click cannot reach a target the light-DOM resolver can't see — escalating to the deep submit-control locator",
     };
   }
   if (technique === "structured-click") {
@@ -1997,8 +2077,9 @@ async function extractInteractiveTargetsNearInvalid(page: Page): Promise<string[
 /**
  * Scan recent capture files for failed submit-endpoint requests and pull
  * out structured field-level errors from the response body. The cascade
- * already saves every captured request to `CAPTURES_DIR` with its parsed
- * `responseBody`; this helper reads those files back, filters to captures
+ * already saves every captured request to the run's graphql capture dir
+ * (see {@link resolveReconRunDir}) with its parsed `responseBody`; this
+ * helper reads those files back, filters to captures
  * matching the configured submit pattern with status >= 400, and walks
  * common error-shape conventions (`{ errors: [{ field, message }] }`,
  * `{ validation/fieldErrors: { … } }`, `{ message }`).
@@ -2017,7 +2098,7 @@ export function extractSubmitFailureEvidence(
    * the host filter and returns any 4xx in the window.
    */
   ownBackendHostnames: readonly string[],
-  capturesDir: string = CAPTURES_DIR,
+  capturesDir: string = resolveReconRunDir().graphqlDir,
   mode: "strict" | "any-4xx" = "strict"
 ): string {
   if (recentCaptureFilenames.length === 0) return "";
@@ -2110,7 +2191,7 @@ export function extractSubmitFailureEvidence(
  */
 export function extractGaEventEvidence(
   recentCaptureFilenames: readonly string[],
-  capturesDir: string = CAPTURES_DIR
+  capturesDir: string = resolveReconRunDir().graphqlDir
 ): string {
   if (recentCaptureFilenames.length === 0) return "";
   const records: string[] = [];
@@ -2494,7 +2575,7 @@ const UPLOAD_WIDGET_RENDER_ATTEMPTS = 17;
  * URL substrings that mark a POST as an actual resume/attachment upload rather
  * than coincidental traffic (analytics beacons, `/interruption_check`,
  * geocoders). Talemetry posts the resume to an `attachment_upload_url` that
- * matches `/attachment`; the others cover AppCast/ClearCompany/Oracle. Module-
+ * matches `/attachment`; the others cover the other ATS upload sinks. Module-
  * level so both the raw-input path and the click-to-surface path share one list.
  */
 const UPLOAD_URL_PATTERNS = ["/upload", "/resume", "/file", "/attachment", "/document"] as const;
@@ -2730,7 +2811,7 @@ async function attachToSurfacedInput(params: {
   }
   // Fallback: some widgets defer the upload to a separate Save click. For
   // those the DOM still has the attached File — verify there. Widgets that
-  // clear input.files on upload trigger (ClearCompany's jQuery File Upload)
+  // clear input.files on upload trigger (a jQuery File Upload widget)
   // would fail this check, but they should have fired a network call above.
   //
   // Trust boundary: the evaluate expression is a static string literal — no
@@ -4397,8 +4478,9 @@ async function simulateDragDropUpload(
  * page context. Stagehand's `fill` for regular text inputs types via CDP
  * `Input.insertText` which fires `input` per keystroke but never fires `change`
  * — `change` only fires on blur, and Stagehand never blurs. Many jQuery /
- * Backbone forms (e.g. ClearCompany's formField.js) bind their input handlers
- * to the native `change` event via event delegation; without `change` firing,
+ * Backbone forms (e.g. a delegated `formField.js`-style handler) bind their
+ * input handlers to the native `change` event via event delegation; without
+ * `change` firing,
  * the form's internal data model never records the typed value, so when the
  * SPA re-renders the form the value is wiped back to empty.
  *
@@ -4457,8 +4539,8 @@ async function verifyDomEffect(page: Page, action: Action): Promise<boolean> {
         if (hit) {
           // Stagehand typed via CDP Input.insertText which fires `input` per
           // keystroke but never fires `change`. Dispatch change here so jQuery/
-          // Backbone forms (e.g. ClearCompany formField.js's "change
-          // .field-dropdown,.form-input" delegated handler) record the value
+          // Backbone forms (e.g. a `"change .field-dropdown,.form-input"`
+          // delegated handler) record the value
           // into their internal data model. Without this, the SPA's next
           // re-render wipes the typed value back to empty.
           await dispatchJqueryChangeEvent(page, selector);
@@ -4883,12 +4965,29 @@ export function narrowInvalidFormControl(entry: unknown): InvalidFormControl | n
   };
 }
 
+/**
+ * Single source of truth for step-line prefixes. Exists because the cascade
+ * here has only ever received `stepIndex`, while the orchestrator loop in
+ * recon-browser owns the plan array — so half the step lines in a run printed
+ * a `N/total` denominator and half printed a bare `N`.
+ *
+ * Takes a getter rather than a number: a global replan splices new steps into
+ * the live plan array mid-run, so the total must be read when the line is
+ * emitted, not when the step started. Callers with no total omit it and get
+ * the bare form.
+ */
+export function formatStepPrefix(stepIndex: number, totalSteps?: () => number): string {
+  const total = totalSteps?.();
+  return total === undefined ? `step ${stepIndex + 1}` : `step ${stepIndex + 1}/${total}`;
+}
+
 async function probeFormValidityBeforeSubmit(params: {
   page: Page;
   stepIndex: number;
+  totalSteps?: () => number;
   logger: Logger;
 }): Promise<InvalidFormControl[]> {
-  const { page, stepIndex, logger } = params;
+  const { page, stepIndex, totalSteps, logger } = params;
   try {
     const raw = await page.evaluate(FORM_VALIDITY_PROBE_EXPR);
     if (!Array.isArray(raw)) return [];
@@ -4902,15 +5001,17 @@ async function probeFormValidityBeforeSubmit(params: {
     const autoCount = out.filter((e) => e.autoFilled !== null).length;
     if (out.length > 0) {
       logger.info(
-        `step ${stepIndex + 1} pre-submit probe: ${out.length} ng-invalid form control(s) detected; empty=${out.filter((e) => e.emptyOrUnchecked).length}; auto-picked=${autoCount}`
+        `${formatStepPrefix(stepIndex, totalSteps)} pre-submit probe: ${out.length} ng-invalid form control(s) detected; empty=${out.filter((e) => e.emptyOrUnchecked).length}; auto-picked=${autoCount}`
       );
     } else {
-      logger.info(`step ${stepIndex + 1} pre-submit probe: no ng-invalid form controls detected`);
+      logger.info(
+        `${formatStepPrefix(stepIndex, totalSteps)} pre-submit probe: no ng-invalid form controls detected`
+      );
     }
     return out;
   } catch (err) {
     logger.warn(
-      `step ${stepIndex + 1} pre-submit probe threw: ${toErrorMessage(err)} — proceeding without pre-flight evidence`
+      `${formatStepPrefix(stepIndex, totalSteps)} pre-submit probe threw: ${toErrorMessage(err)} — proceeding without pre-flight evidence`
     );
     return [];
   }
@@ -4929,10 +5030,11 @@ export async function probeStepBeforeAttempts(params: {
   stagehand: Stagehand;
   step: string;
   stepIndex: number;
+  totalSteps?: () => number;
   logger: Logger;
   captureFn?: CaptureFn;
 }): Promise<"present" | "absent"> {
-  const { stagehand, step, stepIndex, logger, captureFn } = params;
+  const { stagehand, step, stepIndex, totalSteps, logger, captureFn } = params;
   try {
     const candidates = await guardedObserve(
       stagehand,
@@ -4960,22 +5062,24 @@ export async function probeStepBeforeAttempts(params: {
       );
       if (unfocused.length > 0) {
         logger.info(
-          `step ${stepIndex + 1}: focused probe found 0 candidates but unfocused observe found ${unfocused.length} — treating as present (let cascade resolve)`
+          `${formatStepPrefix(stepIndex, totalSteps)}: focused probe found 0 candidates but unfocused observe found ${unfocused.length} — treating as present (let cascade resolve)`
         );
         return "present";
       }
       logger.info(
-        `step ${stepIndex + 1}: probe found 0 candidates (focused and unfocused) — treating as absent (skip cascade, route to replan if required)`
+        `${formatStepPrefix(stepIndex, totalSteps)}: probe found 0 candidates (focused and unfocused) — treating as absent (skip cascade, route to replan if required)`
       );
       return "absent";
     }
-    logger.info(`step ${stepIndex + 1}: probe found ${candidates.length} candidate(s)`);
+    logger.info(
+      `${formatStepPrefix(stepIndex, totalSteps)}: probe found ${candidates.length} candidate(s)`
+    );
     return "present";
   } catch (err) {
     // Bias toward the existing behavior on errors: don't trigger a spurious
     // replan when the probe itself is the broken thing.
     logger.warn(
-      `step ${stepIndex + 1}: probe threw ${toErrorMessage(err)} — treating as present (cascade will run)`
+      `${formatStepPrefix(stepIndex, totalSteps)}: probe threw ${toErrorMessage(err)} — treating as present (cascade will run)`
     );
     return "present";
   }
@@ -5009,6 +5113,12 @@ export async function executeStepWithHealing(params: {
    */
   submitStep: boolean;
   stepIndex: number;
+  /**
+   * Getter, not a number: a global replan splices new steps into the live plan
+   * array mid-run, so the denominator must be read at log time or every line
+   * after a replan prints a stale total.
+   */
+  totalSteps?: () => number;
   phase: string;
   signalCounter: { n: number };
   recentCaptures: string[];
@@ -5083,6 +5193,17 @@ export async function executeStepWithHealing(params: {
    */
   wizardExitButtonLabels: string[];
   /**
+   * Live accessor for the running count of suppressed Stagehand AISDK
+   * elementId-regex errors this session (see
+   * `BrowserSession.getSuppressedAisdkElementIdErrorCount`). Corroborating
+   * evidence only when a phantom click is detected — logged alongside the
+   * escalation, never a trigger by itself (a nonzero count alone is too weak
+   * a signal across a whole run). Omitted or absent on providers that don't
+   * expose it (e.g. Steel); the phantom-click detection is unaffected either
+   * way since it is keyed on the pre/post snapshot delta.
+   */
+  getSuppressedAisdkElementIdErrorCount?: () => number;
+  /**
    * Optional accumulator the cascade pushes onto when this step verifies.
    * Lets the main loop maintain a short cross-step trajectory of `verifiedBy`
    * signals (network / url / dom / submitted-state-dom) which is then
@@ -5121,6 +5242,7 @@ export async function executeStepWithHealing(params: {
     upload,
     submitStep,
     stepIndex,
+    totalSteps,
     phase,
     signalCounter,
     recentCaptures,
@@ -5139,6 +5261,7 @@ export async function executeStepWithHealing(params: {
     ownBackendHostnames,
     knownErrorClassPrefixes,
     wizardExitButtonLabels,
+    getSuppressedAisdkElementIdErrorCount,
     trajectory,
     onStepFailure,
   } = params;
@@ -5184,7 +5307,7 @@ export async function executeStepWithHealing(params: {
       recentCaptureMeta,
     })
   ) {
-    logger.info(`step ${stepIndex + 1} resolved by upload primitive`);
+    logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by upload primitive`);
     trajectory?.push({ stepIndex, verifiedBy: "network" });
     return "completed";
   }
@@ -5196,7 +5319,7 @@ export async function executeStepWithHealing(params: {
   // question unanswered. No-op (returns false → falls through) when the step
   // isn't a single-dropdown select or no option matches.
   if (await trySelectPrimitive({ page, instruction: step, logger, anthropic, captureFn })) {
-    logger.info(`step ${stepIndex + 1} resolved by select primitive`);
+    logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by select primitive`);
     trajectory?.push({ stepIndex, verifiedBy: "dom" });
     return "completed";
   }
@@ -5207,7 +5330,7 @@ export async function executeStepWithHealing(params: {
   // trySelectPrimitive (which handles <select> and no-ops on checkbox-only
   // pages). No-op (falls through) when there's no checkbox group or no match.
   if (await tryCheckboxPrimitive({ page, instruction: step, logger, anthropic, captureFn })) {
-    logger.info(`step ${stepIndex + 1} resolved by checkbox primitive`);
+    logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by checkbox primitive`);
     trajectory?.push({ stepIndex, verifiedBy: "dom" });
     return "completed";
   }
@@ -5219,7 +5342,7 @@ export async function executeStepWithHealing(params: {
   // React controlled state (the HCA Basic-Info Step-2 wall). No-op (falls
   // through) when there's no radio group or no confident option match.
   if (await tryRadioPrimitive({ page, instruction: step, logger, anthropic, captureFn })) {
-    logger.info(`step ${stepIndex + 1} resolved by radio primitive`);
+    logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by radio primitive`);
     trajectory?.push({ stepIndex, verifiedBy: "dom" });
     return "completed";
   }
@@ -5233,7 +5356,7 @@ export async function executeStepWithHealing(params: {
   if (
     await tryFillRequiredSelectsPrimitive({ page, instruction: step, logger, anthropic, captureFn })
   ) {
-    logger.info(`step ${stepIndex + 1} resolved by required-select primitive`);
+    logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by required-select primitive`);
     trajectory?.push({ stepIndex, verifiedBy: "dom" });
     return "completed";
   }
@@ -5251,6 +5374,7 @@ export async function executeStepWithHealing(params: {
     stagehand,
     step,
     stepIndex,
+    totalSteps,
     logger,
     captureFn,
   });
@@ -5262,10 +5386,12 @@ export async function executeStepWithHealing(params: {
       // and silently doom the later submit. Fall through to the cascade instead.
       if (await hasUnfilledRequiredControlForStep(page, step)) {
         logger.info(
-          `step ${stepIndex + 1} probe-absent but a required unfilled control matches the question; NOT skipping (escalating to cascade)`
+          `${formatStepPrefix(stepIndex, totalSteps)} probe-absent but a required unfilled control matches the question; NOT skipping (escalating to cascade)`
         );
       } else {
-        logger.info(`step ${stepIndex + 1} skipped (optional, probe found no candidates)`);
+        logger.info(
+          `${formatStepPrefix(stepIndex, totalSteps)} skipped (optional, probe found no candidates)`
+        );
         return "skipped";
       }
     }
@@ -5281,7 +5407,7 @@ export async function executeStepWithHealing(params: {
     });
     if (transitionUrl !== null) {
       logger.info(
-        `step ${stepIndex + 1} skipped (probe absent but recent transition detected: ${transitionUrl})`
+        `${formatStepPrefix(stepIndex, totalSteps)} skipped (probe absent but recent transition detected: ${transitionUrl})`
       );
       trajectory?.push({ stepIndex, verifiedBy: "url" });
       return "completed";
@@ -5298,10 +5424,10 @@ export async function executeStepWithHealing(params: {
     });
     if (backendErrorUrl !== null) {
       logger.error(
-        `step ${stepIndex + 1} backend error detected (submit endpoint returned 5xx: ${backendErrorUrl}); aborting cascade`
+        `${formatStepPrefix(stepIndex, totalSteps)} backend error detected (submit endpoint returned 5xx: ${backendErrorUrl}); aborting cascade`
       );
       throw new StepVerificationError(
-        `step ${stepIndex + 1} (${step.slice(0, 60)}) backend 5xx at ${backendErrorUrl} — unrecoverable`,
+        `${formatStepPrefix(stepIndex, totalSteps)} (${step.slice(0, 60)}) backend 5xx at ${backendErrorUrl} — unrecoverable`,
         "backend-error-unrecoverable"
       );
     }
@@ -5339,7 +5465,7 @@ export async function executeStepWithHealing(params: {
         unfocusedObserve,
       }) ?? null;
     throw new StepVerificationError(
-      `step ${stepIndex + 1} (${step.slice(0, 60)}) probe found no candidates on page${dumpPath ? `; see ${dumpPath}` : ""}`,
+      `${formatStepPrefix(stepIndex, totalSteps)} (${step.slice(0, 60)}) probe found no candidates on page${dumpPath ? `; see ${dumpPath}` : ""}`,
       "probe-absent"
     );
   }
@@ -5367,6 +5493,7 @@ export async function executeStepWithHealing(params: {
     const invalidControls = await probeFormValidityBeforeSubmit({
       page,
       stepIndex,
+      totalSteps,
       logger,
     });
     for (const c of invalidControls) {
@@ -5407,6 +5534,7 @@ export async function executeStepWithHealing(params: {
         resolvedMethod: null,
         resolvedArguments: null,
         verifiedBy: null,
+        phantomClickVerdict: null,
       });
     }
     // Brief settle window after auto-picks so Angular's change-detection
@@ -5423,6 +5551,11 @@ export async function executeStepWithHealing(params: {
   // NOT move the wizard forward. Read at the top of attempts 2-4 to skip the
   // proven-dead re-observe/re-click techniques (see shouldSkipTechnique).
   let advanceUnmovedAfterAttempt1 = false;
+  // Set after attempt 1: Stagehand reported success but pre/post shows zero
+  // observable effect (see classifyPhantomClick). Reroutes attempt 2 to
+  // deep-submit-locator instead of observe-act, since re-resolving via the
+  // same light-DOM view cannot reach a target the resolver can't see.
+  let phantomClickAfterAttempt1 = false;
   for (let attempt = 1; attempt <= MAX_STEP_ATTEMPTS; attempt++) {
     // Telemetry-driven technique-skip: when a cascade technique's
     // preconditions cannot be met by the prior attempts' state, running
@@ -5432,7 +5565,9 @@ export async function executeStepWithHealing(params: {
     if (attempt > 1) {
       const wouldBeTechnique: AttemptRecord["technique"] =
         attempt === 2
-          ? "observe-act"
+          ? phantomClickAfterAttempt1
+            ? "deep-submit-locator"
+            : "observe-act"
           : attempt === 3
             ? "structured-click"
             : attempt === 4
@@ -5446,10 +5581,11 @@ export async function executeStepWithHealing(params: {
           errorMessage: a.errorMessage,
         })),
         advanceUnmovedAfterAttempt1,
+        phantomClickAfterAttempt1,
       });
       if (decision.skip) {
         logger.info(
-          `step ${stepIndex + 1} attempt ${attempt} (${wouldBeTechnique}) skipped: ${decision.reason}`
+          `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt} (${wouldBeTechnique}) skipped: ${decision.reason}`
         );
         failureReasons.push(`attempt ${attempt} skipped: ${decision.reason}`);
         continue;
@@ -5482,6 +5618,7 @@ export async function executeStepWithHealing(params: {
       resolvedMethod: null,
       resolvedArguments: null,
       verifiedBy: null,
+      phantomClickVerdict: null,
     };
 
     // First resolved action from Stagehand's `act` result — used to decide
@@ -5517,6 +5654,128 @@ export async function executeStepWithHealing(params: {
             if (!resolvedAction) resolvedAction = action;
           }
         }
+      } else if (attempt === 2 && phantomClickAfterAttempt1) {
+        // Deep submit-control locator: attempt 1 phantom-clicked (Stagehand
+        // reported success but pre/post showed zero effect), so the target is
+        // almost certainly unreachable via document.querySelectorAll — most
+        // likely rendered inside an open shadow root by a web-component /
+        // framework-native submit control (see recon-submit-phantom-click bug
+        // report). Rank every submit-shaped candidate the deep traversal can
+        // reach and click the top-ranked one; the ranking already excludes
+        // Back/Cancel/Save-draft-shaped controls, so a false-positive submit
+        // click cannot fire.
+        //
+        // Rank and click are two separate page.evaluate round trips over a
+        // live Angular page, so any re-render between them shifts every
+        // deepIndex — the click then lands on nothing (`{clicked: false}`),
+        // not because the page is broken but because the snapshot the index
+        // was computed from is already gone. That's a transient, self-clearing
+        // condition, so re-rank against the CURRENT DOM and click once more
+        // before giving up. Capped at one retry (two rank+click rounds total)
+        // so a page re-rendering on every tick can't turn this into a loop.
+        record.technique = "deep-submit-locator";
+        for (let deepAttempt = 1; deepAttempt <= 2; deepAttempt++) {
+          let ranked: SubmitCandidate[];
+          try {
+            ranked = (await page.evaluate(buildRankSubmitCandidatesExpr())) as SubmitCandidate[];
+          } catch (err) {
+            // A thrown evaluate (page navigated away / frame detached) is not
+            // a stale-index race — re-ranking a detached page will throw
+            // again, so don't retry; record it and let the cascade move on.
+            record.errorMessage = `deep-submit-locator: rank evaluate threw ${toErrorMessage(err)}`;
+            break;
+          }
+          if (ranked.length === 0) {
+            record.errorMessage = "deep-submit-locator: no submit-shaped candidate found";
+            break;
+          }
+          // biome-ignore lint/style/noNonNullAssertion: guarded by the length check above
+          const top = ranked[0]!;
+          record.instruction = `deep-submit-locator: ${top.tag} "${top.accessibleName}" (tier ${top.tier})`;
+          record.triedSelectors = [`deep-index:${top.deepIndex}`];
+          triedSelectors.push(`deep-index:${top.deepIndex}`);
+          let clickResult: { clicked: boolean };
+          try {
+            clickResult = (await page.evaluate(buildClickByDeepIndexExpr(top.deepIndex))) as {
+              clicked: boolean;
+            };
+          } catch (err) {
+            record.errorMessage = `deep-submit-locator: click evaluate threw ${toErrorMessage(err)}`;
+            break;
+          }
+          record.actResultSuccess = clickResult.clicked;
+          record.actResultDescription = clickResult.clicked
+            ? `deep-submit-locator clicked ${top.tag} "${top.accessibleName}"`
+            : "deep-submit-locator: candidate vanished before click (deepIndex stale)";
+          if (clickResult.clicked) {
+            // Synthesize a click action so downstream verification (network /
+            // url / dom) treats this exactly like any other resolved click.
+            resolvedAction = {
+              selector: `deep-index:${top.deepIndex}`,
+              description: record.actResultDescription,
+              method: "click",
+            };
+
+            // Runner-up retry: the top pick can itself phantom-click (a
+            // second web-component / shadow-root control that LOOKS
+            // submit-shaped but doesn't wire a real handler — see
+            // submit-control.ts's module docblock). Re-snapshot right here
+            // and re-classify with the same classifyPhantomClick primitive
+            // that escalated attempt 1, so a phantom top pick doesn't fall
+            // through to attempt 3's structured-click, which can't reach a
+            // shadow-root control either. Cap at ranked[1] only (not the
+            // full list) so a page with many submit-shaped candidates can't
+            // burn the step budget probing all of them.
+            const runnerUp = ranked[1];
+            if (runnerUp) {
+              const midPost = await snapshotPage(page, signalCounter);
+              const topVerdict = classifyPhantomClick({
+                actResultSuccess: true,
+                pre,
+                post: midPost,
+              });
+              if (topVerdict === "phantom") {
+                logger.info(
+                  `${formatStepPrefix(stepIndex, totalSteps)} deep-submit-locator top pick (${top.tag} "${top.accessibleName}") phantom-clicked; retrying runner-up ${runnerUp.tag} "${runnerUp.accessibleName}" (tier ${runnerUp.tier})`
+                );
+                record.instruction = `deep-submit-locator: ${runnerUp.tag} "${runnerUp.accessibleName}" (tier ${runnerUp.tier}), runner-up after top pick ${top.tag} "${top.accessibleName}" phantomed`;
+                record.triedSelectors = [
+                  `deep-index:${top.deepIndex}`,
+                  `deep-index:${runnerUp.deepIndex}`,
+                ];
+                triedSelectors.push(`deep-index:${runnerUp.deepIndex}`);
+                const runnerUpClickResult = (await page
+                  .evaluate(buildClickByDeepIndexExpr(runnerUp.deepIndex))
+                  .catch(() => ({ clicked: false }))) as { clicked: boolean };
+                record.actResultSuccess = runnerUpClickResult.clicked;
+                record.actResultDescription = runnerUpClickResult.clicked
+                  ? `deep-submit-locator clicked runner-up ${runnerUp.tag} "${runnerUp.accessibleName}" after top pick phantomed`
+                  : "deep-submit-locator: runner-up candidate vanished before click (deepIndex stale)";
+                resolvedAction = runnerUpClickResult.clicked
+                  ? {
+                      selector: `deep-index:${runnerUp.deepIndex}`,
+                      description: record.actResultDescription,
+                      method: "click",
+                    }
+                  : null;
+                if (!runnerUpClickResult.clicked) {
+                  record.errorMessage = record.actResultDescription;
+                }
+              }
+            }
+            // The top pick (or its runner-up) was reached and clicked. A
+            // runner-up that itself vanished is not the stale-index race the
+            // re-rank exists for — the rank was fresh enough to click the top
+            // pick — so exit either way and let the cascade classify.
+            break;
+          }
+          record.errorMessage = record.actResultDescription;
+          if (deepAttempt === 1) {
+            logger.info(
+              `${formatStepPrefix(stepIndex, totalSteps)} deep-submit-locator: deepIndex stale on first click, re-ranking once`
+            );
+          }
+        }
       } else if (attempt === 2 || attempt === 4) {
         record.technique = attempt === 2 ? "observe-act" : "observe-act-exclude";
         const observeOptions =
@@ -5546,13 +5805,13 @@ export async function executeStepWithHealing(params: {
             // required field gets answered instead of silently doomed.
             if (await hasUnfilledRequiredControlForStep(page, step)) {
               logger.info(
-                `step ${stepIndex + 1} no candidates after act+observe but a required unfilled control matches; NOT skipping (continuing cascade)`
+                `${formatStepPrefix(stepIndex, totalSteps)} no candidates after act+observe but a required unfilled control matches; NOT skipping (continuing cascade)`
               );
             } else {
               record.verifiedBy = null;
               attempts.push(record);
               logger.info(
-                `step ${stepIndex + 1} skipped (optional, no candidates after act+observe)`
+                `${formatStepPrefix(stepIndex, totalSteps)} skipped (optional, no candidates after act+observe)`
               );
               return "skipped";
             }
@@ -5570,7 +5829,9 @@ export async function executeStepWithHealing(params: {
             record.triedSelectors = [target.selector];
             attempts.push(record);
             failureReasons.push(record.errorMessage);
-            logger.info(`step ${stepIndex + 1} attempt ${attempt}: ${record.errorMessage}`);
+            logger.info(
+              `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${record.errorMessage}`
+            );
             continue;
           }
           record.instruction = target.description;
@@ -5637,7 +5898,7 @@ export async function executeStepWithHealing(params: {
                     record.actResultSuccess = false;
                   } else if (readback.outcome === "differs") {
                     logger.info(
-                      `step ${stepIndex + 1} fill-value-differs: tried "${fillValue.slice(0, 60)}" got "${readback.postValue.slice(0, 60)}" (framework reformatted)`
+                      `${formatStepPrefix(stepIndex, totalSteps)} fill-value-differs: tried "${fillValue.slice(0, 60)}" got "${readback.postValue.slice(0, 60)}" (framework reformatted)`
                     );
                   }
                 }
@@ -5940,7 +6201,7 @@ export async function executeStepWithHealing(params: {
         });
     if (advanceGateActive && !networkIsRealAdvance) {
       logger.info(
-        `step ${stepIndex + 1} network fired but no advance-transition (type=next) body matched within ${ADVANCE_TRANSITION_POLL_MS}ms poll (non-advancing POST); not treating as verified`
+        `${formatStepPrefix(stepIndex, totalSteps)} network fired but no advance-transition (type=next) body matched within ${ADVANCE_TRANSITION_POLL_MS}ms poll (non-advancing POST); not treating as verified`
       );
     }
     // DOM-only-advance veto (opt-in). A rephrase can turn an advance/"Next" step
@@ -5968,7 +6229,7 @@ export async function executeStepWithHealing(params: {
       : false;
     if (domVerified && !domVerifiedForStep) {
       logger.info(
-        `step ${stepIndex + 1} advance step succeeded only via DOM state change (field toggle / non-advancing POST), not a real transition; not treating as verified`
+        `${formatStepPrefix(stepIndex, totalSteps)} advance step succeeded only via DOM state change (field toggle / non-advancing POST), not a real transition; not treating as verified`
       );
     }
     let verified = networkIsRealAdvance || urlChanged || domVerifiedForStep;
@@ -6089,7 +6350,7 @@ export async function executeStepWithHealing(params: {
         const fallbackEvidence = extractSubmitFailureEvidence(
           recentCaptures.slice(-tail.length),
           [],
-          CAPTURES_DIR,
+          resolveReconRunDir().graphqlDir,
           "any-4xx"
         );
         if (fallbackEvidence.length > 0) {
@@ -6134,8 +6395,8 @@ export async function executeStepWithHealing(params: {
           // expression cannot inject behavior through the xpath content.
           // For checkbox/radio inputs, Stagehand's isolated-world page.evaluate
           // may not trigger the browser's native default action that toggles
-          // .checked. ClearCompany's formField.js delegated "click .form-checkbox"
-          // handler (optionSelected) reads state via .is(':checked') — if the
+          // .checked. A delegated `"click .form-checkbox"` handler
+          // (optionSelected-style) reads state via .is(':checked') — if the
           // default action didn't fire, it sees unchecked and treats the click as
           // "deselect this option" rather than "select it". Force the state and
           // dispatch both events (click for optionSelected, change for inputChanged)
@@ -6244,7 +6505,7 @@ export async function executeStepWithHealing(params: {
           });
           if (fallbackDomOnlyAdvance) {
             logger.info(
-              `step ${stepIndex + 1} n+16 fallback advanced but no real transition (non-advancing POST / field toggle); not treating as verified`
+              `${formatStepPrefix(stepIndex, totalSteps)} n+16 fallback advanced but no real transition (non-advancing POST / field toggle); not treating as verified`
             );
           }
           let retryVerified =
@@ -6334,7 +6595,7 @@ export async function executeStepWithHealing(params: {
             }
           }
           logger.info(
-            `n+16 probe: step=${stepIndex + 1} attempt=${attempt} el.click() fallback fired=${fired === true} kind=${probeResult.kind ?? "none"} checkboxStateVerified=${checkboxStateVerified} ancestorStillInvalid=${ancestorStillInvalid}; network=${retryNetworkFired} url=${retryUrlChanged} htmlDelta=${retryHtmlDelta} textChanged=${retryTextChanged} verified=${retryVerified}`
+            `n+16 probe: step=${stepIndex + 1}/${totalSteps?.() ?? "?"} attempt=${attempt} el.click() fallback fired=${fired === true} kind=${probeResult.kind ?? "none"} checkboxStateVerified=${checkboxStateVerified} ancestorStillInvalid=${ancestorStillInvalid}; network=${retryNetworkFired} url=${retryUrlChanged} htmlDelta=${retryHtmlDelta} textChanged=${retryTextChanged} verified=${retryVerified}`
           );
           if (retryVerified) {
             if (record.verifiedBy === null) {
@@ -6344,11 +6605,11 @@ export async function executeStepWithHealing(params: {
             attempts.push(record);
             if (attempt > 1) {
               logger.info(
-                `step ${stepIndex + 1} healed on attempt ${attempt} via ${record.technique} + el.click() fallback`
+                `${formatStepPrefix(stepIndex, totalSteps)} healed on attempt ${attempt} via ${record.technique} + el.click() fallback`
               );
             } else {
               logger.info(
-                `step ${stepIndex + 1} succeeded on attempt 1 via ${record.technique} + el.click() fallback`
+                `${formatStepPrefix(stepIndex, totalSteps)} succeeded on attempt 1 via ${record.technique} + el.click() fallback`
               );
             }
             trajectory?.push({ stepIndex, verifiedBy: record.verifiedBy });
@@ -6356,7 +6617,7 @@ export async function executeStepWithHealing(params: {
           }
         } catch (probeErr) {
           logger.warn(
-            `n+16 probe: step=${stepIndex + 1} attempt=${attempt} el.click() fallback threw: ${toErrorMessage(probeErr)}`
+            `n+16 probe: step=${stepIndex + 1}/${totalSteps?.() ?? "?"} attempt=${attempt} el.click() fallback threw: ${toErrorMessage(probeErr)}`
           );
         }
       }
@@ -6367,7 +6628,7 @@ export async function executeStepWithHealing(params: {
     if (verified) {
       if (attempt > 1) {
         logger.info(
-          `step ${stepIndex + 1} healed on attempt ${attempt} via ${record.technique} (network=${networkFired} url=${urlChanged} dom=${domVerified})`
+          `${formatStepPrefix(stepIndex, totalSteps)} healed on attempt ${attempt} via ${record.technique} (network=${networkFired} url=${urlChanged} dom=${domVerified})`
         );
       } else {
         // Why log first-try wins explicitly: prior to this change, attempt-1
@@ -6378,7 +6639,7 @@ export async function executeStepWithHealing(params: {
         // 32 successful Stagehand acts. Surfacing attempt-1 wins lets the
         // log match telemetry and prevents the same false alarm.
         logger.info(
-          `step ${stepIndex + 1} succeeded on attempt 1 via ${record.technique} (network=${networkFired} url=${urlChanged} dom=${domVerified})`
+          `${formatStepPrefix(stepIndex, totalSteps)} succeeded on attempt 1 via ${record.technique} (network=${networkFired} url=${urlChanged} dom=${domVerified})`
         );
       }
       trajectory?.push({ stepIndex, verifiedBy: record.verifiedBy });
@@ -6386,6 +6647,16 @@ export async function executeStepWithHealing(params: {
     }
 
     const effectSignals = describeAttemptEffectSignals(pre, post, recentCaptureMeta, preMetaLength);
+    // Phantom-click verdict, computed from the SAME pre/post pair
+    // describeAttemptEffectSignals just rendered — not recomputed deltas.
+    // Recorded on every unverified attempt (not just attempt 1) so the
+    // failure dump's attempts[] always carries the classification; only
+    // attempt 1's verdict drives the escalation flag below.
+    record.phantomClickVerdict = classifyPhantomClick({
+      actResultSuccess: record.actResultSuccess,
+      pre,
+      post,
+    });
     const reason = record.errorMessage
       ? effectSignals
         ? `${record.errorMessage}; ${effectSignals}`
@@ -6393,7 +6664,7 @@ export async function executeStepWithHealing(params: {
       : effectSignals || "no observable effect (no network, url, or dom change)";
     failureReasons.push(reason);
     logger.warn(
-      `step ${stepIndex + 1} attempt ${attempt} (${record.technique}) produced no observable effect — ${reason}`
+      `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt} (${record.technique}) produced no observable effect — ${reason}`
     );
 
     // One additive strategy among many: when a click on a final-step
@@ -6420,7 +6691,7 @@ export async function executeStepWithHealing(params: {
       for (const p of pairs) {
         const validationReason = formatValidationRejectedReason(p);
         failureReasons.push(validationReason);
-        logger.warn(`step ${stepIndex + 1} ${validationReason}`);
+        logger.warn(`${formatStepPrefix(stepIndex, totalSteps)} ${validationReason}`);
       }
     }
 
@@ -6443,6 +6714,19 @@ export async function executeStepWithHealing(params: {
         isAdvanceStep(step) &&
         !urlChanged &&
         !networkIsRealAdvance;
+      // Attempt 1 phantom-clicked: Stagehand reported success but pre/post
+      // shows zero observable effect. The zero-effect delta is the primary
+      // signal (classifyPhantomClick above); the live AISDK elementId
+      // suppression counter is corroborating evidence only — logged, never
+      // gating, since a nonzero count alone is too weak a signal on a run
+      // that sees dozens of suppressions across hundreds of unrelated steps.
+      phantomClickAfterAttempt1 = record.phantomClickVerdict === "phantom";
+      if (phantomClickAfterAttempt1) {
+        const suppressedCount = getSuppressedAisdkElementIdErrorCount?.();
+        logger.warn(
+          `${formatStepPrefix(stepIndex, totalSteps)} phantom click detected on attempt 1 (${record.technique}): reported success with no network/url/dom change${suppressedCount !== undefined ? `; ${suppressedCount} AISDK elementId errors suppressed this session (corroborating, not causal)` : ""} — escalating attempt 2 to deep-submit-locator`
+        );
+      }
       const postAttemptInvalidCount = await countNgInvalidContainers(page);
       const earlyExit = isSubmitRevealedInvalid({
         // Treat the canonical submit click as "final" for this predicate
@@ -6458,7 +6742,7 @@ export async function executeStepWithHealing(params: {
       if (earlyExit) {
         const exitReason = `submit-revealed-invalid: click surfaced ${postAttemptInvalidCount - preSubmitInvalidCount} new ng-invalid container(s) (was ${preSubmitInvalidCount}, now ${postAttemptInvalidCount}); attempts 2-${MAX_STEP_ATTEMPTS} cannot heal a form that needs answers — routing to replan`;
         failureReasons.push(exitReason);
-        logger.warn(`step ${stepIndex + 1} ${exitReason}`);
+        logger.warn(`${formatStepPrefix(stepIndex, totalSteps)} ${exitReason}`);
         break;
       }
 
@@ -6479,7 +6763,7 @@ export async function executeStepWithHealing(params: {
       if (advanceStalled) {
         const exitReason = `advance-stalled: the Next click fired network but no real transition (type=next) landed within the poll window; attempts 2-${MAX_STEP_ATTEMPTS} would only re-bounce the wizard — routing to replan`;
         failureReasons.push(exitReason);
-        logger.warn(`step ${stepIndex + 1} ${exitReason}`);
+        logger.warn(`${formatStepPrefix(stepIndex, totalSteps)} ${exitReason}`);
         break;
       }
     }
@@ -6521,12 +6805,12 @@ export async function executeStepWithHealing(params: {
     }) ?? null;
   if (dumpPath !== null) {
     logger.error(
-      `step ${stepIndex + 1} failed after ${MAX_STEP_ATTEMPTS} attempts; diagnostic bundle: ${dumpPath}`
+      `${formatStepPrefix(stepIndex, totalSteps)} failed after ${MAX_STEP_ATTEMPTS} attempts; diagnostic bundle: ${dumpPath}`
     );
   }
   throw new StepVerificationError(
-    `step ${stepIndex + 1} (${step.slice(0, 60)}) failed verification after ${MAX_STEP_ATTEMPTS} attempts${dumpPath ? `; see ${dumpPath}` : ""}`,
-    "cascade-exhausted"
+    `${formatStepPrefix(stepIndex, totalSteps)} (${step.slice(0, 60)}) failed verification after ${MAX_STEP_ATTEMPTS} attempts${dumpPath ? `; see ${dumpPath}` : ""}`,
+    phantomClickAfterAttempt1 ? "phantom-click-exhausted" : "cascade-exhausted"
   );
 }
 
@@ -6662,6 +6946,7 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<void> {
         upload: s.upload,
         submitStep: s.submitStep,
         stepIndex: i,
+        totalSteps: () => steps.length,
         phase: "flow",
         signalCounter,
         recentCaptures,

@@ -28,7 +28,7 @@ export const TEST_PERSONA = {
     City: "Austin",
     /** Two-letter region code for forms that want abbreviations. */
     StateAbbreviation: "TX",
-    /** Full state name for forms that want the long form (e.g. ClearCompany). */
+    /** Full state name for forms that want the long form. */
     StateName: "Texas",
     PostalCode: "78701",
     /** Texas county for Austin. Required by tenants (Encompass Health, etc.)
@@ -56,7 +56,7 @@ export const TEST_PERSONA = {
     PositionDescription:
       "Designed and executed automated browser testing workflows for healthcare application portals",
   },
-  /** Three reference rows used by ClearCompany and similar ATSes that ask for them. */
+  /** Three reference rows used by ATSes that ask for professional references. */
   References: [
     {
       FirstName: "Pat",

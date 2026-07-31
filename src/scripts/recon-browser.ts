@@ -1,17 +1,26 @@
 /**
  * Phase 1 recon: drives a real browser through a user-defined flow while
- * wiretapping every network response. Captures are written to
- * /tmp/recon/graphql/<NNN>-<phase>-<operationName>.json — one file per call,
- * diffable and greppable.
+ * wiretapping every network response. Every artifact is rooted under one
+ * run-scoped directory resolved once at startup via
+ * {@link resolveReconRunDir} (default `/tmp/recon/<runId>`, override with
+ * `RECON_OUT_DIR`/`RECON_RUN_ID`) so concurrent or repeated runs cannot
+ * intermix files. Captures are written to
+ * `<runDir>/graphql/<NNN>-<phase>-<operationName>.json` — one file per call,
+ * diffable and greppable. The browser's full cookie jar is snapshotted at
+ * each phase boundary (initial goto, pre-step, post-step, run completion) and
+ * written to `<runDir>/cookies/<NNN>-<label>-<phase>.json`, so the jar state
+ * can be diffed across the journey (e.g. what a click-tracker traversal
+ * establishes vs. what a later step adds).
  *
  * Recovery model — each flow step runs through a 4-attempt self-healing cascade
  * (act → observe+act → observe+act with ignoreSelectors → Anthropic-SDK rephrase),
  * verified by "did the network counter advance OR did the URL change". On terminal
- * cascade failure the step is dumped to /tmp/recon/step-failures/ and the script's
- * main() loop attempts up to MAX_REPLANS=2 global replans, where Claude rewrites
- * the remaining flow tail given the failure context. Bedrock-only deployments
- * skip the LLM-rephrase attempt and the replan loop with a startup warn. See
- * docs/playbook.md sections 1c–1e for the full design.
+ * cascade failure the step is dumped to `<runDir>/step-failures/` and the
+ * script's main() loop attempts up to MAX_REPLANS=2 global replans, where
+ * Claude rewrites the remaining flow tail given the failure context.
+ * Bedrock-only deployments skip the LLM-rephrase attempt and the replan loop
+ * with a startup warn. See docs/playbook.md sections 1c–1e for the full
+ * design.
  *
  * Usage:
  *   pnpm tsx src/scripts/recon-browser.ts \
@@ -63,6 +72,7 @@ import {
   resolveRunUrlPath,
   resolveSiteTelemetryDir,
 } from "@/lib/telemetry/telemetry-paths";
+import { captureCookieJarSnapshot } from "@/scraper/cookie-jar";
 import { StepVerificationError } from "@/scraper/errors";
 import {
   type AttemptRecord,
@@ -72,6 +82,7 @@ import {
   executeStepWithHealing,
   extractGaEventEvidence,
   extractSubmitFailureEvidence,
+  formatStepPrefix,
   GOTO_TIMEOUT_MS,
   latestCaptureIndex,
   logBillingErrorIfPresent,
@@ -88,7 +99,7 @@ import {
 import { createBrowserSession, type ProviderName } from "@/scraper/session";
 import { guardedObserve } from "@/scraper/stagehand-guard";
 import { filterByCallType, parseSamples } from "@/scripts/judge-llm-batch";
-import { CAPTURES_DIR, STEP_FAILURES_DIR } from "@/scripts/recon-shared";
+import { resolveReconRunDir } from "@/scripts/recon-shared";
 import { allocateTestmailInbox } from "@/testmail/client";
 import type { Logger } from "@/types/logging";
 
@@ -133,10 +144,11 @@ const HTML_STATIC_TOLERANCE = 100;
 
 /**
  * Thin CLI wrapper over {@link wireSignalCapture}: owns the on-disk capture
- * layout (writes each capture — and its decoded-params sidecar — under
- * `CAPTURES_DIR`) while delegating all in-memory capture bookkeeping to the
- * shared flow-runner engine. Kept here so the persistence policy stays with
- * the recon entry-point and `flow-runner.ts` remains filesystem-agnostic.
+ * layout (writes each capture — and its decoded-params sidecar — under the
+ * resolved run dir's `graphql` subdir) while delegating all in-memory
+ * capture bookkeeping to the shared flow-runner engine. Kept here so the
+ * persistence policy stays with the recon entry-point and `flow-runner.ts`
+ * remains filesystem-agnostic.
  */
 function wireNetworkCapture(
   page: Page,
@@ -147,6 +159,7 @@ function wireNetworkCapture(
   getCurrentPhase: () => string,
   getCurrentPageOrigin: () => string
 ): () => void {
+  const { graphqlDir } = resolveReconRunDir();
   return wireSignalCapture(page, {
     counter,
     signalCounter,
@@ -160,11 +173,11 @@ function wireNetworkCapture(
       // and let the cascade continue. The capture is forensic-only — the
       // happy-path doesn't read these files until something else fails.
       try {
-        writeFileSync(join(CAPTURES_DIR, filename), JSON.stringify(capture, null, 2));
+        writeFileSync(join(graphqlDir, filename), JSON.stringify(capture, null, 2));
         if (capture.decodedParams !== null && capture.decodedParams !== capture.requestPostData) {
           const decodedFilename = filename.replace(/\.json$/, ".decoded.json");
           writeFileSync(
-            join(CAPTURES_DIR, decodedFilename),
+            join(graphqlDir, decodedFilename),
             JSON.stringify(capture.decodedParams, null, 2)
           );
         }
@@ -175,6 +188,34 @@ function wireNetworkCapture(
       }
     },
   });
+}
+
+/**
+ * Reads the browser's full cookie jar for the given phase and writes it under
+ * the resolved run dir's `cookies` subdir, so a run's snapshots land in the
+ * same append-only, diffable layout as `wireNetworkCapture`'s network
+ * captures. `counter` indexes filenames chronologically (zero-padded, shared
+ * convention with flow-runner's capture counter) so snapshots sort in the
+ * order the phases actually occurred. Never throws — cookie telemetry is
+ * best-effort, matching the existing capture-write behavior: a write failure
+ * logs a warning and the recon run continues.
+ */
+async function snapshotAndPersistCookieJar(
+  page: Page,
+  counter: { n: number },
+  label: string,
+  phase: string,
+  stepIndex: number
+): Promise<void> {
+  const snapshot = await captureCookieJarSnapshot(page, label, phase, stepIndex);
+  const idx = String(counter.n++).padStart(3, "0");
+  const filename = `${idx}-${label}-${phase}.json`;
+  const { cookiesDir } = resolveReconRunDir();
+  try {
+    writeFileSync(join(cookiesDir, filename), JSON.stringify(snapshot, null, 2));
+  } catch (err) {
+    logger.warn(`cookie-snapshot-write skipped for ${filename}: ${toErrorMessage(err)}`);
+  }
 }
 
 const MAX_PROBE_REPLANS = 5;
@@ -377,7 +418,7 @@ export function findWizardRestartSignal(params: {
 }): string | null {
   const { preIdx, restartSignalUrlPatterns } = params;
   if (restartSignalUrlPatterns.length === 0) return null;
-  const capturesDir = params.capturesDir ?? CAPTURES_DIR;
+  const capturesDir = params.capturesDir ?? resolveReconRunDir().graphqlDir;
   for (const filename of capturesAfterIndex(preIdx, capturesDir)) {
     let url: string;
     try {
@@ -505,8 +546,7 @@ const RECON_FLOW_FILE_SCHEMA = z.union([
      * URL after the click contains any of these, that's one of the strong
      * signals required for verified=true. Examples: ["/applied",
      * "/applyboard/applied", "/confirmation", "/thank-you"]. Site-specific
-     * since URL conventions vary across AppCast tenants and ClearCompany
-     * tenants.
+     * since URL conventions vary across ATS tenants.
      */
     successUrlFragments: z.array(z.string().min(1)).optional(),
     /**
@@ -523,8 +563,8 @@ const RECON_FLOW_FILE_SCHEMA = z.union([
      * hostnames as a corroborating network signal — anything else (e.g.
      * analytics, third-party trackers, CDNs) is ignored. Without this
      * list the judge falls back to the URL alone, which is weaker.
-     * Examples: ["apply.appcast.io"], ["careers.clearcompany.com",
-     * "<tenant>.clearcompany.com"].
+     * Examples: ["apply.appcast.io"], ["careers.<ats>.com",
+     * "<tenant>.<ats>.com"].
      */
     ownBackendHostnames: z.array(z.string().min(1)).optional(),
     /**
@@ -1055,9 +1095,9 @@ async function replanRemainingFlow(params: {
   stagehand: Stagehand;
   captureFn?: CaptureFn;
   /**
-   * Files in `CAPTURES_DIR` recorded during the failed step's attempt
-   * window. Used to surface structured server-side validation errors
-   * to the replan LLM when a submit actually fired but was rejected.
+   * Files in the run's captures dir recorded during the failed step's
+   * attempt window. Used to surface structured server-side validation
+   * errors to the replan LLM when a submit actually fired but was rejected.
    */
   recentCaptures?: readonly string[];
   /**
@@ -1400,10 +1440,10 @@ function dumpReplanRecord(params: {
   originalRemaining: string[];
   newRemaining: string[];
 }): string {
-  mkdirSync(STEP_FAILURES_DIR, { recursive: true });
+  const { stepFailuresDir } = resolveReconRunDir();
   const idx = String(params.stepIndex).padStart(3, "0");
   const filename = `${idx}-${params.phase}.replan.json`;
-  const target = join(STEP_FAILURES_DIR, filename);
+  const target = join(stepFailuresDir, filename);
   writeFileSync(
     target,
     JSON.stringify(
@@ -1445,7 +1485,7 @@ function dumpStepFailure(params: {
    */
   unfocusedObserve: Action[];
 }): string {
-  mkdirSync(STEP_FAILURES_DIR, { recursive: true });
+  const { stepFailuresDir } = resolveReconRunDir();
   const idx = String(params.stepIndex).padStart(3, "0");
   const filename = `${idx}-${params.phase}.json`;
   const bundle = {
@@ -1461,7 +1501,7 @@ function dumpStepFailure(params: {
     bodyOuterHtml: params.bodyOuterHtml,
     recentCaptures: params.recentCaptures.slice(-5),
   };
-  const target = join(STEP_FAILURES_DIR, filename);
+  const target = join(stepFailuresDir, filename);
   writeFileSync(target, JSON.stringify(bundle, null, 2));
   return target;
 }
@@ -1722,7 +1762,7 @@ async function main(): Promise<void> {
 
   const flow = substituteFlowEnvVars(rawFlow);
 
-  mkdirSync(CAPTURES_DIR, { recursive: true });
+  const runDir = resolveReconRunDir();
   const resumeFixture = loadResumeFixture(resumeFixturePath);
   // Per-URL partition under the flow file's site directory. Without a flow
   // file (inline --flow mode), telemetry has no durable home and is dropped
@@ -1746,7 +1786,7 @@ async function main(): Promise<void> {
       ? (input) => captureLlmCall(input, { sinkPath: callsNdjsonPath })
       : async () => {};
   logger.info(
-    `recon-browser: target=${url} flow_steps=${flow.length} provider=${provider ?? "(config-default)"} advancedStealth=${advancedStealth} resume_fixture=${resumeFixture ? `${resumeFixturePath} (${resumeFixture.buffer.length}b)` : "(missing)"} out=${CAPTURES_DIR}`
+    `recon-browser: target=${url} flow_steps=${flow.length} provider=${provider ?? "(config-default)"} advancedStealth=${advancedStealth} resume_fixture=${resumeFixture ? `${resumeFixturePath} (${resumeFixture.buffer.length}b)` : "(missing)"} runId=${runDir.runId} out=${runDir.root}`
   );
 
   const session = await createBrowserSession({ provider, advancedStealth });
@@ -1757,6 +1797,10 @@ async function main(): Promise<void> {
   // wireNetworkCapture for the rationale.
   const counter = { n: 0 };
   const signalCounter = { n: 0 };
+  // Indexes cookie-jar snapshot filenames chronologically, separate from
+  // `counter` (network captures) so a phase with zero network activity still
+  // gets a snapshot without skipping capture indices.
+  const jarCounter = { n: 0 };
   const recentCaptures: string[] = [];
   // Parallel tracker of recent non-GET captures' method + status. Used by
   // the Tier 1 trailing-optional-step grace: a verification failure on an
@@ -1817,6 +1861,7 @@ async function main(): Promise<void> {
         `navigation wait (${GOTO_WAIT_UNTIL}) did not settle: ${toErrorMessage(err)} — continuing; the SPA readiness probe below decides whether the page is usable`
       );
     }
+    await snapshotAndPersistCookieJar(page, jarCounter, "goto", currentPhase, -1);
 
     const SPA_READINESS_TIMEOUT_MS = 15_000;
     const SPA_READINESS_POLL_MS = 500;
@@ -1886,8 +1931,9 @@ async function main(): Promise<void> {
           .replace(/^-|-$/g, "")
           .slice(0, 24) || `step-${i}`;
       logger.info(
-        `step ${i + 1}/${plan.length} [${currentPhase}]${step.optional ? " (optional)" : ""}: ${step.instruction}`
+        `${formatStepPrefix(i, () => plan.length)} [${currentPhase}]${step.optional ? " (optional)" : ""}: ${step.instruction}`
       );
+      await snapshotAndPersistCookieJar(page, jarCounter, "pre-step", currentPhase, i);
       // Re-gate on SPA hydration when the origin changed since the last step —
       // the wizard SPA (e.g. apply.talemetry.com after the Apply click) boots on
       // a new origin the initial-goto readiness gate never covered, so wait for
@@ -1909,14 +1955,20 @@ async function main(): Promise<void> {
             "document.documentElement ? document.documentElement.outerHTML : ''"
           );
           if (typeof html === "string" && html.length > 0) {
-            const dumpPath = join(CAPTURES_DIR, `..`, `dom-dump-step-${i + 1}.html`);
+            const dumpPath = join(runDir.root, `dom-dump-step-${i + 1}.html`);
             writeFileSync(dumpPath, html);
-            logger.info(`step ${i + 1}: wrote DOM dump (${html.length} bytes) to ${dumpPath}`);
+            logger.info(
+              `${formatStepPrefix(i, () => plan.length)}: wrote DOM dump (${html.length} bytes) to ${dumpPath}`
+            );
           } else {
-            logger.warn(`step ${i + 1}: DOM dump returned empty content; skipping write`);
+            logger.warn(
+              `${formatStepPrefix(i, () => plan.length)}: DOM dump returned empty content; skipping write`
+            );
           }
         } catch (err) {
-          logger.warn(`step ${i + 1}: DOM dump failed: ${toErrorMessage(err)}`);
+          logger.warn(
+            `${formatStepPrefix(i, () => plan.length)}: DOM dump failed: ${toErrorMessage(err)}`
+          );
         }
       }
       // Baseline for wizard-restart detection: capture the highest capture
@@ -1932,6 +1984,7 @@ async function main(): Promise<void> {
           upload: step.upload,
           submitStep: step.submitStep === true,
           stepIndex: i,
+          totalSteps: () => plan.length,
           phase: currentPhase,
           signalCounter,
           recentCaptures,
@@ -1949,10 +2002,12 @@ async function main(): Promise<void> {
           ownBackendHostnames,
           knownErrorClassPrefixes,
           wizardExitButtonLabels,
+          getSuppressedAisdkElementIdErrorCount: session.getSuppressedAisdkElementIdErrorCount,
           trajectory,
           captureFn,
           onStepFailure: dumpStepFailure,
         });
+        await snapshotAndPersistCookieJar(page, jarCounter, "post-step", currentPhase, i);
 
         // Wizard-restart detection: if a configured restart-signal URL (e.g.
         // Talemetry's `init-apply?...&application_canceled=true`) landed during
@@ -1965,7 +2020,7 @@ async function main(): Promise<void> {
         });
         if (restartUrl !== null) {
           throw new StepVerificationError(
-            `step ${i + 1} (${step.instruction.slice(0, 60)}) triggered a wizard restart (${restartUrl.slice(0, 120)}) — the application reset to the first page; aborting`,
+            `${formatStepPrefix(i, () => plan.length)} (${step.instruction.slice(0, 60)}) triggered a wizard restart (${restartUrl.slice(0, 120)}) — the application reset to the first page; aborting`,
             "wizard-regression"
           );
         }
@@ -1982,7 +2037,7 @@ async function main(): Promise<void> {
             );
             consecutiveStaleSkips = 0;
             throw new StepVerificationError(
-              `step ${i + 1} (${step.instruction.slice(0, 60)}) stuck: ${STUCK_SKIP_THRESHOLD}+ consecutive optional skips with stagnant page`,
+              `${formatStepPrefix(i, () => plan.length)} (${step.instruction.slice(0, 60)}) stuck: ${STUCK_SKIP_THRESHOLD}+ consecutive optional skips with stagnant page`,
               "probe-absent"
             );
           }
@@ -2057,7 +2112,7 @@ async function main(): Promise<void> {
           });
           if (trailingGraceVerdict?.verified) {
             logger.info(
-              `step ${i + 1} optional + trailing position; judge verified recent submit (${trailingGraceVerdict.rationale}) — treating verification failure as benign no-op; recon complete`
+              `${formatStepPrefix(i, () => plan.length)} optional + trailing position; judge verified recent submit (${trailingGraceVerdict.rationale}) — treating verification failure as benign no-op; recon complete`
             );
             break;
           }
@@ -2084,7 +2139,7 @@ async function main(): Promise<void> {
               : "";
           const kindsSuffix = kindsSummary ? ` — ${kindsSummary}` : "";
           logger.error(
-            `step ${i + 1} ${err.kind} replan budget exhausted (${usedSoFar}/${budget}); aborting${kindsSuffix}`
+            `${formatStepPrefix(i, () => plan.length)} ${err.kind} replan budget exhausted (${usedSoFar}/${budget}); aborting${kindsSuffix}`
           );
           throw err;
         }
@@ -2094,7 +2149,7 @@ async function main(): Promise<void> {
         const dumpMatch = err.message.match(/see (\/[^\s]+)$/);
         const dumpPath = dumpMatch ? dumpMatch[1]! : "";
         logger.warn(
-          `step ${i + 1} terminally failed (${err.kind}); attempting global replan #${replanIndex} (${isProbe ? "probe" : "cascade"} budget ${usedSoFar + 1}/${budget})`
+          `${formatStepPrefix(i, () => plan.length)} terminally failed (${err.kind}); attempting global replan #${replanIndex} (${isProbe ? "probe" : "cascade"} budget ${usedSoFar + 1}/${budget})`
         );
 
         const rawNewSteps = await replanRemainingFlow({
@@ -2233,7 +2288,7 @@ async function main(): Promise<void> {
     if (requireSubmitEndpointMatch && ownBackendHostnames.length > 0) {
       const { auditFailed, rejectionReason } = auditFinalSubmitMatch({
         ownBackendHostnames,
-        capturesDir: CAPTURES_DIR,
+        capturesDir: runDir.graphqlDir,
         logger,
       });
       if (auditFailed) {
@@ -2250,7 +2305,15 @@ async function main(): Promise<void> {
       );
     }
 
-    logger.info(`recon complete — ${counter.n} captures written to ${CAPTURES_DIR}`);
+    await snapshotAndPersistCookieJar(
+      page,
+      jarCounter,
+      "run-complete",
+      currentPhase,
+      plan.length - 1
+    );
+
+    logger.info(`recon complete — ${counter.n} captures written to ${runDir.root}`);
   } finally {
     // Replay-the-discovered-path: if any replan fired and the user provided
     // a flow file, write the improved plan back so the next run starts
@@ -2374,4 +2437,5 @@ export {
   persistReplannedFlow,
   readFailureDumpEvidence,
   replanRemainingFlow,
+  snapshotAndPersistCookieJar,
 };

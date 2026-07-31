@@ -20,7 +20,7 @@ const logger = getLogger({ name: "scraper/session-browserbase" });
  * We declare a minimal local subset rather than importing from Stagehand
  * because the type isn't re-exported from the package's top-level entrypoint.
  */
-interface StagehandLogLine {
+export interface StagehandLogLine {
   message: string;
   category?: string;
   level?: number;
@@ -49,13 +49,16 @@ interface StagehandLogLine {
  * upstream Stagehand bug is universal across tenants.
  *
  * Returns the callback + a `reportSuppressed` function that the
- * session teardown calls to log the final suppression count — keeps
- * the noise out of the running log while preserving the diagnostic
- * for run-completion summary.
+ * session teardown calls to log the final suppression count, plus a
+ * `getSuppressedCount` live accessor so callers can read the running
+ * total while a step is still executing — e.g. treating "resolver
+ * threw on this step" as evidence a reported-success click was
+ * phantom, without waiting for teardown.
  */
-function makeFilteredStagehandLogger(pinoLogger: Logger): {
+export function makeFilteredStagehandLogger(pinoLogger: Logger): {
   callback: (line: StagehandLogLine) => void;
   reportSuppressed: () => void;
+  getSuppressedCount: () => number;
 } {
   let suppressedCount = 0;
   const callback = (line: StagehandLogLine): void => {
@@ -83,7 +86,8 @@ function makeFilteredStagehandLogger(pinoLogger: Logger): {
       );
     }
   };
-  return { callback, reportSuppressed };
+  const getSuppressedCount = (): number => suppressedCount;
+  return { callback, reportSuppressed, getSuppressedCount };
 }
 
 /**
@@ -107,6 +111,12 @@ function makeFilteredStagehandLogger(pinoLogger: Logger): {
  * Proxies: `proxies: true` enables Browserbase's residential proxy pool. The
  * boolean form takes Browserbase's default region; per-region routing is
  * available via the array form (not used here — out of scope until needed).
+ *
+ * Non-finding (recorded so it is not re-investigated): a Queue-it virtual-waiting-
+ * room interstitial has never blocked a Browserbase run in practice. It gates the
+ * HTML/browser path for every locale tried but not the underlying JSON API path,
+ * and across the runs observed it simply never appeared. Treat a Queue-it page as
+ * a site-path signal (prefer the API), not a Browserbase capability gap.
  */
 /**
  * `advancedStealth` opts into Browserbase's Scale Plan stealth profile. When
@@ -175,8 +185,11 @@ export async function createBrowserbaseBrowserSession(
       }
     : baseFingerprint;
 
-  const { callback: stagehandLoggerCallback, reportSuppressed: reportSuppressedAisdkErrors } =
-    makeFilteredStagehandLogger(logger);
+  const {
+    callback: stagehandLoggerCallback,
+    reportSuppressed: reportSuppressedAisdkErrors,
+    getSuppressedCount: getSuppressedAisdkElementIdErrorCount,
+  } = makeFilteredStagehandLogger(logger);
 
   let stagehand: Stagehand | undefined;
   try {
@@ -244,5 +257,6 @@ export async function createBrowserbaseBrowserSession(
     sessionId,
     provider: "browserbase",
     close,
+    getSuppressedAisdkElementIdErrorCount,
   };
 }

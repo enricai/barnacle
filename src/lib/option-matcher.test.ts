@@ -106,7 +106,7 @@ describe("lib/option-matcher matchToOptions", () => {
   });
 
   it("not coupled to AppCast payload shape — works with arbitrary plugin option sets", () => {
-    // Clearcompany-style boolean options; the helper must resolve without
+    // Boolean options; the helper must resolve without
     // any knowledge of the originating plugin's schema.
     const boolOpts = ["true", "false"];
     expect(matchToOptions("true", boolOpts)).toBe("true");

@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { CONFIG_PLUGIN_API_VERSION, CONFIG_PLUGIN_KIND } from "@/plugins/plugin-manifest-envelope";
+import type { ReconFormSchema } from "@/recon/form-schema";
 import {
   compileActionSteps,
+  detectFormSchemaFieldNames,
   emitBrowserFlowTs,
   emitConfigManifest,
   emitContractTs,
@@ -225,6 +227,184 @@ describe("extractActionSequence — error-reporting sinks never reach the emitte
     ).map((a) => new URL(a.capture.url).pathname);
 
     expect(kept).toEqual(["/api/error-codes", "/api/terrorism-screening"]);
+  });
+});
+
+describe("detectFormSchemaFieldNames — consumer-supplied wire keys (#57)", () => {
+  const UUID_A = "11111111-1111-1111-1111-111111111111";
+  const UUID_B = "22222222-2222-2222-2222-222222222222";
+
+  const capture = (responseBody: unknown) => ({
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action" as const,
+    method: "GET",
+    url: "https://example.com/schema",
+    status: 200,
+    requestHeaders: {},
+    requestPostData: null,
+    responseHeaders: {},
+    responseBody,
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  });
+
+  /** The wire format the engine used to hardcode, now supplied as data. */
+  const HISTORICAL: ReconFormSchema = {
+    fieldIdKey: "FieldId",
+    fieldNameKeys: ["FieldSourceCode", "FieldName"],
+    fieldOptionsKey: "FieldOptions",
+    optionIdKey: "Id",
+    optionValueKey: "Value",
+    responseValueKey: "Value",
+    responseOptionIdKey: "OptionId",
+  };
+
+  it("recovers a field from the historical wire keys", () => {
+    const body = [
+      { FieldId: UUID_A, FieldSourceCode: "contact.first.name" },
+      { FieldId: UUID_B, FieldSourceCode: "contact.email" },
+    ];
+    const { fieldNameMap } = detectFormSchemaFieldNames([capture(body)], HISTORICAL);
+    expect(fieldNameMap.get(UUID_A)).toBe("ContactFirstName");
+    expect(fieldNameMap.get(UUID_B)).toBe("ContactEmail");
+  });
+
+  it("recovers the SAME field from a differing vendor's wire keys — the whole point of #57", () => {
+    // A vendor that lowercases its keys and uses hyphenated option keys.
+    const vendor: ReconFormSchema = {
+      fieldIdKey: "field-id",
+      fieldNameKeys: ["source-code"],
+      fieldOptionsKey: "options",
+      optionIdKey: "id",
+      optionValueKey: "label",
+      responseValueKey: "value",
+      responseOptionIdKey: "option-id",
+    };
+    const body = [
+      { "field-id": UUID_A, "source-code": "contact.first.name" },
+      { "field-id": UUID_B, "source-code": "contact.email" },
+    ];
+    const { fieldNameMap } = detectFormSchemaFieldNames([capture(body)], vendor);
+    expect(fieldNameMap.get(UUID_A)).toBe("ContactFirstName");
+    expect(fieldNameMap.get(UUID_B)).toBe("ContactEmail");
+  });
+
+  it("recovers option enums via the schema's option keys", () => {
+    const body = [
+      {
+        FieldId: UUID_A,
+        FieldSourceCode: "contact.state",
+        FieldOptions: [
+          { Id: "opt-tx", Value: "Texas" },
+          { Id: "opt-ca", Value: "California" },
+        ],
+      },
+    ];
+    const { fieldOptionsMap } = detectFormSchemaFieldNames([capture(body)], HISTORICAL);
+    expect(fieldOptionsMap.get(UUID_A)?.options.map((o) => o.value)).toEqual([
+      "Texas",
+      "California",
+    ]);
+  });
+
+  it("recovers nothing when no form-schema is supplied — the engine hardcodes no vendor format", () => {
+    const body = [{ FieldId: UUID_A, FieldSourceCode: "contact.first.name" }];
+    const { fieldNameMap, allSchemaUuids } = detectFormSchemaFieldNames([capture(body)], null);
+    expect(fieldNameMap.size).toBe(0);
+    expect(allSchemaUuids.size).toBe(0);
+  });
+});
+
+describe("indexStateValues — cookie-origin values get a separate, more permissive length cap", () => {
+  /** A 272-char JWT, long enough to exceed MAX_STATE_VALUE_LENGTH (256) but
+   * still under the cookie-specific cap. */
+  const longJwt = [
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+    "eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyLCJyb2xlIjoiYWRtaW4iLCJzY29wZSI6InJlYWQ6d3JpdGUiLCJvcmciOiJhY21lLWNvcnAiLCJzZXNzaW9uIjoiYWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoifQ",
+    "dozjgNryPQwerty1234567890abcdefghijk",
+  ].join(".");
+
+  const tokenMintCapture = {
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action",
+    method: "POST",
+    url: "https://api.example.com/authz/private",
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: "{}",
+    responseHeaders: {
+      "set-cookie": [
+        "ADRUM_BTa=R:0|g:abc123; Path=/; HttpOnly",
+        "ADRUM_BTa=R:1|g:def456; Path=/; HttpOnly",
+        "ADRUM_BT1=R:0; Path=/",
+        "ADRUM_BT1=R:1; Path=/",
+        "ADRUM_BT1=R:2; Path=/",
+        `__pa=${longJwt}; Path=/; HttpOnly; Secure`,
+        "bm_sv=ABCDEF1234567890; Path=/; HttpOnly; Secure",
+      ].join("\n"),
+    },
+    responseBody: {},
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  };
+
+  const statefulCallCapture = {
+    timestamp: "2024-01-01T00:00:01Z",
+    phase: "action",
+    method: "POST",
+    url: "https://api.example.com/available-products/",
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json", Cookie: `__pa=${longJwt}` },
+    requestPostData: "{}",
+    responseHeaders: { "content-type": "application/json" },
+    responseBody: { products: [{ productId: "p1" }] },
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  };
+
+  it("indexes the 272-char JWT cookie value despite exceeding MAX_STATE_VALUE_LENGTH", () => {
+    expect(longJwt.length).toBe(272);
+    const stateIndex = indexStateValues([tokenMintCapture, statefulCallCapture]);
+    const sv = stateIndex.get(longJwt);
+    expect(sv).toBeDefined();
+    expect(sv?.headerOrigin).toEqual({ sourceHeader: "set-cookie", cookieName: "__pa" });
+  });
+
+  it("still excludes a 300-char body-origin string — the exemption is scoped to cookie origins only", () => {
+    const longBodyString = "x".repeat(300);
+    const bodyCapture = {
+      ...statefulCallCapture,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { blob: longBodyString },
+    };
+    const stateIndex = indexStateValues([tokenMintCapture, bodyCapture]);
+    expect(stateIndex.has(longBodyString)).toBe(false);
+  });
+
+  it("still applies MIN_STATE_VALUE_LENGTH to cookie-origin values — the raised ceiling doesn't drop the floor", () => {
+    const shortCookieCapture = {
+      ...tokenMintCapture,
+      responseHeaders: { "set-cookie": "sid=abc; Path=/; HttpOnly" },
+    };
+    const stateIndex = indexStateValues([shortCookieCapture, statefulCallCapture]);
+    expect(stateIndex.has("abc")).toBe(false);
+  });
+
+  it("still skips PLACEHOLDER_STATE_VALUES for cookie-origin values — the raised ceiling doesn't bypass the placeholder gate", () => {
+    const placeholderCookieCapture = {
+      ...tokenMintCapture,
+      responseHeaders: {
+        "set-cookie": "sid=00000000-0000-0000-0000-000000000000; Path=/; HttpOnly",
+      },
+    };
+    const stateIndex = indexStateValues([placeholderCookieCapture, statefulCallCapture]);
+    expect(stateIndex.has("00000000-0000-0000-0000-000000000000")).toBe(false);
   });
 });
 
@@ -798,6 +978,31 @@ describe("emitConfigManifest — recovered request contract", () => {
       })
     ) as { spec: { request: { properties: Record<string, { type: string }> } } };
     expect(overlapped.spec.request.properties.page).toEqual({ type: "number" });
+  });
+
+  it("emits a spec.httpModule reference when a direct-HTTP path exists", () => {
+    const withHttp = JSON.parse(
+      emitConfigManifest({
+        siteId: "acme-demo",
+        displayName: "AcmeDemo",
+        baseUrl: "https://apply.acme.example",
+        flowSteps: [],
+        httpModulePath: "./acme-demo.http.js",
+      })
+    ) as { spec: { httpModule?: string } };
+    expect(withHttp.spec.httpModule).toBe("./acme-demo.http.js");
+  });
+
+  it("omits spec.httpModule for a browser-only site", () => {
+    const browserOnly = JSON.parse(
+      emitConfigManifest({
+        siteId: "acme-demo",
+        displayName: "AcmeDemo",
+        baseUrl: "https://apply.acme.example",
+        flowSteps: [],
+      })
+    ) as { spec: { httpModule?: string } };
+    expect(browserOnly.spec.httpModule).toBeUndefined();
   });
 });
 

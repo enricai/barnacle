@@ -2,7 +2,7 @@ import Bottleneck from "bottleneck";
 import type { ZodType } from "zod/v4";
 
 import { chromiumClientHints } from "@/lib/chromium-client-hints";
-import type { HttpRequestInit } from "@/scraper/http-client";
+import type { HttpClientOptions, HttpRequestInit } from "@/scraper/http-client";
 import { createHttpClient } from "@/scraper/http-client";
 
 /**
@@ -28,6 +28,13 @@ export interface RateLimitedJsonClientOptions<TResponse> {
   extraHeaders?: Record<string, string>;
   /** Zod schema that validates and narrows each response body. */
   schema: ZodType<TResponse>;
+  /**
+   * Optional plugin-supplied response-body classifier, forwarded verbatim to
+   * {@link createHttpClient} — lets a plugin recognize a vendor sentinel body
+   * (e.g. a plain-text token) without the engine knowing that vendor's wire
+   * format. See {@link HttpClientOptions.classifyResponseBody}.
+   */
+  classifyResponseBody?: HttpClientOptions<TResponse>["classifyResponseBody"];
 }
 
 /**
@@ -49,5 +56,10 @@ export function createRateLimitedJsonClient<TResponse>(
     }),
     ...(opts.extraHeaders ?? {}),
   };
-  return createHttpClient({ schema: opts.schema, bottleneck, baseHeaders });
+  return createHttpClient({
+    schema: opts.schema,
+    bottleneck,
+    baseHeaders,
+    classifyResponseBody: opts.classifyResponseBody,
+  });
 }

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { chromiumClientHints } from "@/lib/chromium-client-hints";
 
 describe("lib/chromium-client-hints chromiumClientHints", () => {
-  it("reproduces clearcompany BASE_HEADERS client-hint quartet exactly", () => {
+  it("reproduces a real site's BASE_HEADERS client-hint quartet exactly", () => {
     const result = chromiumClientHints({
       userAgent:
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",

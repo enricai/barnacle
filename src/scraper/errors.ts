@@ -83,19 +83,29 @@ export class UnknownScraperError extends ScraperError {
 /** Discriminator for {@link StepVerificationError}. See the class TSDoc for the per-variant semantics. */
 export type StepVerificationErrorKind =
   | "cascade-exhausted"
+  | "phantom-click-exhausted"
   | "probe-absent"
   | "backend-error-unrecoverable"
   | "replan-cycle-detected"
   | "wizard-regression";
 
 /**
- * Recon-only: a flow step in recon-browser.ts could not be acted on. Four
+ * Recon-only: a flow step in recon-browser.ts could not be acted on. Six
  * variants per `kind`:
  *
  *   - "cascade-exhausted": the full 4-attempt self-healing cascade ran and
  *     none of the attempts produced an observable effect. Expensive (the
  *     cascade burned its full LLM/observe budget) — counted against the
  *     cascade replan budget.
+ *   - "phantom-click-exhausted": attempt 1 phantom-clicked (Stagehand
+ *     reported success with zero network/url/DOM effect) and the cascade
+ *     escalated straight to the deep submit-control locator on attempt 2,
+ *     but every attempt through {@link MAX_STEP_ATTEMPTS} still produced no
+ *     observable effect — the submit control is unreachable by any
+ *     resolution strategy the cascade has, not just the light-DOM one.
+ *     Distinguished from "cascade-exhausted" so a replan/triager can skip
+ *     straight to a structural fix (e.g. a new locator strategy) instead of
+ *     re-trying the same techniques.
  *   - "probe-absent": the cheap page-state probe ran BEFORE the cascade
  *     and observed zero candidates for the step's instruction. We skip the
  *     cascade and ask for a replan immediately because the page state is
@@ -180,28 +190,28 @@ export class HttpRateLimitError extends ScraperError {
 }
 
 /**
- * Oracle HCM returned a plain-text `ORA_URL_LOCKED` sentinel body, meaning the
- * requisition URL has been locked by Oracle after repeated requests. Non-retryable
- * and NOT a browser-fallback trigger — the URL is locked at Oracle's end, so
- * neither a retry of the identical HTTP request nor a fresh Stagehand browser
- * session can succeed. The caller must back off and surface a "retry later"
- * state rather than burning a Steel session. Kept distinct from HttpRateLimitError
- * so metrics/logs (classifyDispatchError) can tell an Oracle requisition lock
- * apart from a self-inflicted 429 rate limit.
+ * A backend has locked the requested URL — a terminal "come back later" signal a
+ * plugin raises (e.g. via `classifyResponseBody`) when the target refuses the
+ * resource after repeated requests. Non-retryable and NOT a browser-fallback
+ * trigger — the lock is at the target's end, so neither a retry of the identical
+ * HTTP request nor a fresh Stagehand browser session can succeed. The caller must
+ * back off and surface a "retry later" state rather than burning a Steel session.
+ * Kept distinct from HttpRateLimitError so metrics/logs (classifyDispatchError)
+ * can tell a requisition lock apart from a self-inflicted 429 rate limit.
  */
 export class HttpUrlLockedError extends ScraperError {
-  constructor(message = "oracle requisition url locked (ORA_URL_LOCKED)") {
+  constructor(message = "requisition url locked") {
     super(message, false);
   }
 }
 
 /**
- * Oracle HCM returned a plain-text `ORA_IRC_TOKEN_EXPIRED` sentinel body during
- * a burst / rate-limit / token-expiry window. Retryable so pRetry keeps retrying,
- * but kept distinct from the generic {@link UnknownScraperError} so the encompass
- * http-flow can catch exactly this class and re-mint the AccessCode before
- * retrying — replaying the same stale token would produce the same sentinel
- * indefinitely. Distinct from {@link HttpUrlLockedError} which is terminal.
+ * @deprecated Removed in 2.0.0. Oracle-specific and no longer thrown by the
+ * engine — response-body sentinel detection now lives in the plugin via
+ * `HttpClientOptions.classifyResponseBody`. A plugin that needs a retryable
+ * token-expiry signal should define its own `ScraperError` subclass (see the
+ * encompasshealth plugin). Retained only so existing importers of
+ * `@enricai/barnacle/scraper/errors` keep resolving under a minor release.
  */
 export class OracleTokenExpiredError extends ScraperError {
   constructor(message = "oracle token expired (ORA_IRC_TOKEN_EXPIRED)") {

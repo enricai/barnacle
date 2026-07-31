@@ -1,6 +1,6 @@
 {
   "name": "@enricai/barnacle",
-  "version": "1.5.0",
+  "version": "1.6.2",
   "description": "Site-agnostic browser automation engine. POST a structured payload to a typed endpoint; Barnacle drives a Steel + Stagehand session through the target site and returns a structured result.",
   "license": "MIT",
   "author": "Enricai",
@@ -124,9 +124,17 @@
       "types": "./dist/plugins/loader.d.ts",
       "default": "./dist/plugins/loader.js"
     },
+    "./recon/form-schema": {
+      "types": "./dist/recon/form-schema.d.ts",
+      "default": "./dist/recon/form-schema.js"
+    },
     "./recon/vocabulary": {
       "types": "./dist/recon/vocabulary.d.ts",
       "default": "./dist/recon/vocabulary.js"
+    },
+    "./scraper/cookie-jar": {
+      "types": "./dist/scraper/cookie-jar.d.ts",
+      "default": "./dist/scraper/cookie-jar.js"
     },
     "./scraper/errors": {
       "types": "./dist/scraper/errors.d.ts",
@@ -183,6 +191,10 @@
     "./scraper/stagehand-guard": {
       "types": "./dist/scraper/stagehand-guard.d.ts",
       "default": "./dist/scraper/stagehand-guard.js"
+    },
+    "./scripts/recon-shared": {
+      "types": "./dist/scripts/recon-shared.d.ts",
+      "default": "./dist/scripts/recon-shared.js"
     },
     "./site-plugin": {
       "types": "./dist/site-plugin.d.ts",

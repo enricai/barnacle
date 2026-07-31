@@ -4,11 +4,20 @@
  * network calls or Steel sessions occur.
  */
 
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import type Anthropic from "@anthropic-ai/sdk";
+import type { ActResult, Page, Stagehand } from "@browserbasehq/stagehand";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { StepVerificationErrorKind } from "@/scraper/errors";
@@ -64,6 +73,7 @@ vi.mock("@/lib/telemetry/call-capture", async (importOriginal) => {
 
 import type { LlmCallInput } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE, CALL_TYPE_RECON_REPLAN } from "@/lib/telemetry/call-types";
+import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import {
   buildRadioIdXPath,
   capturesAfterIndex,
@@ -121,6 +131,7 @@ import {
   selectRadioGroupOption,
   shouldSkipTechnique,
   shouldVetoFallbackAdvance,
+  type snapshotAndPersistCookieJar,
   summarizeReplanFailureKinds,
   type ValidationRejectionPair,
   type VerifyFillReadbackResult,
@@ -4070,5 +4081,365 @@ describe("recon-browser/pollEnumerate — settle-retry", () => {
     const page = { evaluate, waitForTimeout } as unknown as Parameters<typeof pollEnumerate>[0];
     await pollEnumerate<{ present: boolean }>(page, "expr", (r) => r.present, { intervalMs: 42 });
     expect(waitForTimeout).toHaveBeenCalledWith(42);
+  });
+});
+
+describe("recon-browser/snapshotAndPersistCookieJar", () => {
+  function makeCookiePage(cookies: unknown[]): { sendCDP: ReturnType<typeof vi.fn> } {
+    return { sendCDP: vi.fn().mockResolvedValue({ cookies }) };
+  }
+
+  // `resolveReconRunDir` memoizes per process, so the run dir must be pinned
+  // via env vars BEFORE the first call in this file (this describe block is
+  // the only caller) and reset via `vi.resetModules` per test so distinct
+  // RECON_RUN_ID values actually produce distinct, non-colliding roots.
+  let cookiesDir: string;
+
+  async function loadCookieJarFn(runId: string): Promise<typeof snapshotAndPersistCookieJar> {
+    process.env.RECON_RUN_ID = runId;
+    process.env.RECON_OUT_DIR = runsRoot;
+    vi.resetModules();
+    const mod = await import("@/scripts/recon-browser.js");
+    const { resolveReconRunDir } = await import("@/scripts/recon-shared.js");
+    cookiesDir = resolveReconRunDir().cookiesDir;
+    return mod.snapshotAndPersistCookieJar;
+  }
+
+  let runsRoot: string;
+
+  beforeEach(() => {
+    runsRoot = mkdtempSync(join(tmpdir(), "recon-browser-cookie-jar-"));
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    rmSync(runsRoot, { recursive: true, force: true });
+    delete process.env.RECON_RUN_ID;
+    delete process.env.RECON_OUT_DIR;
+    vi.restoreAllMocks();
+  });
+
+  it("writes three ordered, labelled snapshot files across three phases with parseable bodies", async () => {
+    const persist = await loadCookieJarFn("20260718-000000-aaaa");
+    const page = makeCookiePage([
+      { name: "a", value: "1", domain: ".appcast.io", path: "/", httpOnly: true },
+    ]);
+    const counter = { n: 0 };
+
+    await persist(page as never, counter, "jar-persist-test-click", "post-click", 0);
+    await persist(page as never, counter, "jar-persist-test-apply-pre", "pre-apply", 1);
+    await persist(page as never, counter, "jar-persist-test-apply-post", "post-apply", 1);
+
+    const written = readdirSync(cookiesDir)
+      .filter((f) => f.includes("jar-persist-test"))
+      .sort();
+
+    expect(written).toEqual([
+      "000-jar-persist-test-click-post-click.json",
+      "001-jar-persist-test-apply-pre-pre-apply.json",
+      "002-jar-persist-test-apply-post-post-apply.json",
+    ]);
+
+    for (const [i, filename] of written.entries()) {
+      const body = JSON.parse(readFileSync(join(cookiesDir, filename), "utf8"));
+      expect(body.label).toContain("jar-persist-test");
+      expect(Array.isArray(body.cookies)).toBe(true);
+      expect(typeof body.timestamp).toBe("string");
+      expect(body.stepIndex).toBe(i === 0 ? 0 : 1);
+    }
+    expect(counter.n).toBe(3);
+  });
+
+  it("logs a warning and does not throw when the write fails", async () => {
+    const persist = await loadCookieJarFn("20260718-000000-bbbb");
+    const page = makeCookiePage([]);
+    const counter = { n: 0 };
+    // Force a real fs failure (EISDIR) instead of mocking node:fs — Vitest
+    // can't spy on node:fs exports under ESM ("Module namespace is not
+    // configurable"). A directory pre-created at the exact computed target
+    // path makes writeFileSync throw for the same reason a real disk error
+    // would: the write target is unusable.
+    const collisionPath = join(cookiesDir, "000-jar-persist-test-fail-post-click.json");
+    mkdirSync(collisionPath, { recursive: true });
+
+    await expect(
+      persist(page as never, counter, "jar-persist-test-fail", "post-click", 0)
+    ).resolves.toBeUndefined();
+
+    expect(loggerStub.warn).toHaveBeenCalledWith(
+      expect.stringContaining("cookie-snapshot-write skipped")
+    );
+  });
+
+  it("two resolver runs with distinct RECON_RUN_ID values produce non-colliding 000-<label>.json files", async () => {
+    const persistA = await loadCookieJarFn("20260718-000000-cccc");
+    const dirA = cookiesDir;
+    const page = makeCookiePage([]);
+    await persistA(page as never, { n: 0 }, "run-a", "post-click", 0);
+
+    const persistB = await loadCookieJarFn("20260718-000000-dddd");
+    const dirB = cookiesDir;
+    await persistB(page as never, { n: 0 }, "run-b", "post-click", 0);
+
+    expect(dirA).not.toBe(dirB);
+    expect(readdirSync(dirA)).toEqual(["000-run-a-post-click.json"]);
+    expect(readdirSync(dirB)).toEqual(["000-run-b-post-click.json"]);
+  });
+
+  it("two concurrently-constructed writers with distinct run dirs writing the SAME logical filename do not collide", async () => {
+    const filename = "000-jar-persist-test-post-click.json";
+
+    const persistA = await loadCookieJarFn("20260718-000000-eeee");
+    const dirA = cookiesDir;
+    const pageA = makeCookiePage([
+      { name: "run", value: "a", domain: ".example.com", path: "/", httpOnly: false },
+    ]);
+    await persistA(pageA as never, { n: 0 }, "jar-persist-test", "post-click", 0);
+
+    const persistB = await loadCookieJarFn("20260718-000000-ffff");
+    const dirB = cookiesDir;
+    const pageB = makeCookiePage([
+      { name: "run", value: "b", domain: ".example.com", path: "/", httpOnly: false },
+    ]);
+    await persistB(pageB as never, { n: 0 }, "jar-persist-test", "post-click", 0);
+
+    expect(dirA).not.toBe(dirB);
+    expect(join(dirA, filename)).not.toBe(join(dirB, filename));
+    expect(existsSync(join(dirA, filename))).toBe(true);
+    expect(existsSync(join(dirB, filename))).toBe(true);
+
+    const bodyA = JSON.parse(readFileSync(join(dirA, filename), "utf8"));
+    const bodyB = JSON.parse(readFileSync(join(dirB, filename), "utf8"));
+    expect(bodyA.cookies).toEqual([expect.objectContaining({ name: "run", value: "a" })]);
+    expect(bodyB.cookies).toEqual([expect.objectContaining({ name: "run", value: "b" })]);
+  });
+});
+
+// ── runHealingFlow — phantom-submit end-to-end regression (bug report anchor) ─
+
+describe("recon-browser/runHealingFlow — phantom-submit escalation, end-to-end", () => {
+  /** Minimal ActResult envelope satisfying stagehand-guard's ACT_RESULT_SCHEMA. */
+  function actResult(overrides: Partial<ActResult> = {}): ActResult {
+    return {
+      success: true,
+      message: "clicked",
+      actionDescription: "Click the Submit button",
+      actions: [
+        {
+          selector: "button#submit",
+          description: "Click the Submit button",
+          method: "click",
+        },
+      ],
+      ...overrides,
+    };
+  }
+
+  /**
+   * Fake page combining the CDP session stubs `wireSignalCapture` needs (it
+   * wires up Network listeners on every `runHealingFlow` call) with the
+   * `evaluate`/`title`/`locator` dispatch the phantom-click cascade and deep
+   * submit-control locator drive. `bodyHtmlLength` is what the DOM-snapshot
+   * expression reports pre/post each attempt, so a byte-identical value
+   * across attempts reproduces the bug report's zero-observable-effect click.
+   * `url` is a getter (not a fixed string) so the two fill steps ahead of
+   * submit can each advance it — the URL-change signal `executeStepWithHealing`
+   * reads from `page.url()` pre/post — while the submit step's attempts keep
+   * it static, matching the bug report's zero-observable-effect phantom click.
+   */
+  function fakePage(params: {
+    getUrl: () => string;
+    bodyHtmlLength: number;
+    deepIndexClicked?: number;
+    onDeepClick?: () => void;
+  }): Page {
+    const { deepIndexClicked, onDeepClick, getUrl } = params;
+    const session = { on: () => {}, off: () => {} };
+    const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const src = String(expr);
+      if (src.includes("ranked.sort")) {
+        return [{ deepIndex: 7, tier: 3, tag: "button", accessibleName: "submit" }];
+      }
+      if (src.includes('dispatchEvent(new Event("click"')) {
+        const requestedIndex = Number(src.match(/all\[(\d+)\]/)?.[1]);
+        const clicked = requestedIndex === (deepIndexClicked ?? 7);
+        if (clicked) onDeepClick?.();
+        return { clicked };
+      }
+      if (src.includes("outerHTML")) {
+        return { html: params.bodyHtmlLength, text: "0:" };
+      }
+      if (src.includes("isInvalid(el)")) {
+        return 0;
+      }
+      return null;
+    });
+    return {
+      evaluate,
+      url: () => getUrl(),
+      title: vi.fn().mockResolvedValue("Registered Nurse"),
+      locator: vi.fn().mockReturnValue({
+        first: () => ({
+          isChecked: vi.fn().mockResolvedValue(false),
+          inputValue: vi.fn().mockResolvedValue(""),
+        }),
+      }),
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
+      getSessionForFrame: () => session,
+      mainFrameId: () => "main",
+      sendCDP: vi.fn().mockResolvedValue({ body: "{}", base64Encoded: false }),
+    } as unknown as Page;
+  }
+
+  /** Two fill steps ahead of the submit step, mirroring the bug report's form-then-submit shape. */
+  function stepsWithSubmit(): HealingFlowStep[] {
+    return [
+      {
+        instruction: "Fill in the first name field",
+        optional: false,
+        upload: false,
+        submitStep: false,
+      },
+      {
+        instruction: "Fill in the last name field",
+        optional: false,
+        upload: false,
+        submitStep: false,
+      },
+      {
+        instruction: "Click the Submit button to submit the application form",
+        optional: false,
+        upload: false,
+        submitStep: true,
+      },
+    ];
+  }
+
+  it("reaches and completes the submit step when attempt 1 phantom-clicks but the deep locator resolves it", async () => {
+    // Reproduces the bug report end-to-end: the two fill steps ahead of
+    // submit succeed normally (each advances the page URL, the same
+    // navigation signal a real field-then-continue wizard would produce),
+    // but the submit step's attempt 1 is a phantom click: Stagehand reports
+    // success, yet pre/post snapshots are byte-identical (no network/url/dom
+    // delta) — the same shape as the bug report's diagnostic bundle. Prior
+    // to the escalation fix this run would exhaust the 5-attempt cascade on
+    // step 3 and never reach a completed submit.
+    const BASE_URL = "https://apply.appcast.io/jobs/1/applyboard/apply";
+    let stepsCompleted = 0;
+    const page = fakePage({
+      getUrl: () => `${BASE_URL}?step=${stepsCompleted}`,
+      bodyHtmlLength: 184186,
+      onDeepClick: () => {
+        stepsCompleted += 1;
+      },
+    });
+    const stagehandAct = vi.fn().mockImplementation(async () => {
+      // Fill steps 1 and 2 (calls 1-2) each advance the URL, verifying via
+      // the same navigation signal a real wizard "Continue" would produce.
+      // Call 3 is the submit step's attempt 1 — left as a phantom click by
+      // NOT advancing the URL; the deep locator's onDeepClick (above) is
+      // what verifies the submit instead, matching the bug report exactly.
+      if (stagehandAct.mock.calls.length <= 2) stepsCompleted += 1;
+      return actResult();
+    });
+    const stagehand = {
+      act: stagehandAct,
+      observe: vi
+        .fn()
+        .mockResolvedValue([
+          { selector: "button#submit", description: "Click the Submit button", method: "click" },
+        ]),
+    } as unknown as Stagehand;
+
+    await expect(
+      runHealingFlow({
+        stagehand,
+        page,
+        steps: stepsWithSubmit(),
+        logger: loggerStub as unknown as Logger,
+        anthropic: null,
+        resumeFixture: null,
+      })
+    ).resolves.toBeUndefined();
+
+    // All three steps' act() calls happened exactly once each: the fill
+    // steps succeed on attempt 1 normally, and the submit step's attempt 1
+    // phantom-clicks but escalates straight to the deep locator on attempt 2
+    // instead of repeating the dead light-DOM techniques — so stagehand.act
+    // itself is invoked exactly 3 times total (once per step), never the
+    // 5-attempt-per-step ceiling this replaces.
+    expect(stagehandAct).toHaveBeenCalledTimes(3);
+  });
+
+  it("fails fast with a phantom-click-specific reason, in strictly fewer than 5 attempts, when the submit control is unreachable by any resolver", async () => {
+    // Attempt 1 (act-string) phantom-clicks; attempt 2 (deep submit-control
+    // locator) finds a ranked candidate but its click never lands either
+    // (deepIndexClicked set to an index nothing requests) — the submit
+    // control is unreachable by any resolution strategy the cascade has, not
+    // just the light-DOM one. shouldSkipTechnique then skips attempts 3-4
+    // (structured-click / observe-act-exclude — proven dead once the phantom
+    // flag is set), leaving only attempt 5 (llm-rephrase, a no-op here since
+    // `anthropic: null` short-circuits it before any LLM call).
+    const BASE_URL = "https://apply.appcast.io/jobs/1/applyboard/apply";
+    let stepsCompleted = 0;
+    const page = fakePage({
+      getUrl: () => `${BASE_URL}?step=${stepsCompleted}`,
+      bodyHtmlLength: 184186,
+      deepIndexClicked: -1,
+    });
+    const stagehandAct = vi.fn().mockImplementation(async () => {
+      // Fill steps 1 and 2 each advance the URL and verify normally; call 3
+      // (submit, attempt 1) leaves the URL static — the phantom click.
+      if (stagehandAct.mock.calls.length <= 2) stepsCompleted += 1;
+      return actResult();
+    });
+    const stagehand = {
+      act: stagehandAct,
+      observe: vi
+        .fn()
+        .mockResolvedValue([
+          { selector: "button#submit", description: "Click the Submit button", method: "click" },
+        ]),
+    } as unknown as Stagehand;
+
+    let caught: { name?: string; kind?: string; message?: string } | undefined;
+    try {
+      await runHealingFlow({
+        stagehand,
+        page,
+        steps: stepsWithSubmit(),
+        logger: loggerStub as unknown as Logger,
+        anthropic: null,
+        resumeFixture: null,
+      });
+    } catch (err) {
+      caught = err as { name?: string; kind?: string; message?: string };
+    }
+
+    // The surfaced failure names the phantom-click cause via its `kind`
+    // discriminator rather than being flattened into an undifferentiated
+    // "failed verification after 5 attempts" (the bug report's diagnostic
+    // named this as the operator-facing symptom) — recon-browser.ts's main()
+    // loop logs `err.kind` verbatim at both the "terminally failed (...)"
+    // and "replan budget exhausted (...)" log lines, so a distinct kind here
+    // is what lets an operator (or a downstream replan dispatcher) tell
+    // "target unreachable by any resolver" apart from ordinary cascade
+    // exhaustion, instead of every submit failure reading identically.
+    expect(caught?.kind).toBe("phantom-click-exhausted");
+    expect(caught?.kind).not.toBe("cascade-exhausted");
+    expect(caught?.message).toContain("failed verification after 5 attempts");
+
+    // The two fill steps succeeded on attempt 1 (act() calls 1-2); the
+    // submit step's attempt 1 (act() call 3) phantom-clicked and attempt 2
+    // (deep-submit-locator) resolves via a raw page.evaluate dispatch, not
+    // stagehand.act — attempts 3-4 never ran (skipped by the phantom
+    // short-circuit), and attempt 5 (llm-rephrase) short-circuits before
+    // touching stagehand.act since `anthropic: null`. So stagehand.act was
+    // invoked 3 times total: strictly fewer than the 2 (fill steps) + 5
+    // (submit step's full per-step ceiling) = 7 calls an unescalated run
+    // would have burned reaching the same terminal failure — i.e. the run
+    // fails fast rather than replanning against an unclickable control
+    // after exhausting the full local attempt budget.
+    expect(stagehandAct).toHaveBeenCalledTimes(3);
   });
 });

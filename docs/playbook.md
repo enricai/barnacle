@@ -131,7 +131,7 @@ during navigation, before any page-level handler could be wired up. We pair
 we only fetch the response body after it's fully received.
 
 Every network response is captured — there is no URL-shape filter, so a site
-with non-standard API paths cannot be missed. Grep `/tmp/recon/graphql/` when
+with non-standard API paths cannot be missed. Grep `<run-dir>/graphql/` when
 you only care about specific endpoints.
 
 Each capture records, untruncated:
@@ -171,6 +171,20 @@ flow step "X"
   └── all exhausted → dumpStepFailure() + throw StepVerificationError
 ```
 
+Phantom-click escalation: if attempt 1 reports `actResultSuccess: true` but the
+pre/post snapshot shows zero network delta, zero URL change, and no real DOM
+growth, `classifyPhantomClick` (`src/scraper/phantom-click.ts`) marks the
+attempt `"phantom"` — Stagehand believes it clicked something, but the click
+landed on nothing (typically a submit control rendered inside a shadow root /
+web component that the light-DOM resolver can't see). When that happens,
+attempt 2 is rerouted from `observe-act` to `deep-submit-locator`
+(`src/scraper/submit-control.ts`): it ranks every submit-shaped candidate
+reachable via a deep DOM traversal (including shadow roots) and clicks the
+top-ranked one directly by index, skipping the light-DOM re-observe/re-click
+attempts that would otherwise no-op identically. `llm-rephrase` is never
+skipped by this escalation. See `shouldSkipTechnique` in
+`src/scraper/flow-runner.ts` for the skip logic.
+
 The recon script calls `stagehand.act()` (not `page.act()`); the four
 techniques are, in order:
 
@@ -200,15 +214,16 @@ exists to capture API calls.
 ### 1d — Step failure dump
 
 When the cascade exhausts, the executor writes a diagnostic bundle to
-`/tmp/recon/step-failures/<NNN>-<phase>.json` and throws `StepVerificationError`
+`<run-dir>/step-failures/<NNN>-<phase>.json` and throws `StepVerificationError`
 (`src/scraper/errors.ts`). The bundle has top-level keys:
 
 - `timestamp`, `stepIndex`, `phase`, `originalStep`
 - `pageUrl`, `pageTitle`
 - `attempts[]` — every attempt's `technique` (one of `act-string`,
-  `observe-act`, `observe-act-exclude`, `llm-rephrase`), `instruction`,
-  `triedSelectors`, `actResultSuccess`, `actResultDescription`, `errorMessage`,
-  `pre`/`post` snapshots
+  `observe-act`, `structured-click`, `observe-act-exclude`,
+  `deep-submit-locator`, `llm-rephrase`), `instruction`, `triedSelectors`,
+  `actResultSuccess`, `actResultDescription`, `errorMessage`,
+  `phantomClickVerdict`, `pre`/`post` snapshots
 - `finalObserve[]` — what Stagehand could see at the point of giving up
 - `recentCaptures[]` — the last 5 capture filenames (helps locate what API
   calls *did* fire just before the broken step)
@@ -271,7 +286,7 @@ If Claude returns the literal `IMPOSSIBLE` or the response fails to parse, the
 loop rethrows the original `StepVerificationError`.
 
 When replan succeeds it writes a sibling audit record at
-`/tmp/recon/step-failures/<NNN>-<phase>.replan.json` with `{ timestamp,
+`<run-dir>/step-failures/<NNN>-<phase>.replan.json` with `{ timestamp,
 stepIndex, phase, replanIndex, completedSteps, originalRemaining,
 newRemaining }`, then splices the new tail into the live plan and resumes
 execution. The `--flow-file` on disk is *not* modified — humans still own the
@@ -282,8 +297,8 @@ canonical source.
 Each captured response is written to its own numbered JSON file:
 
 ```
-/tmp/recon/graphql/000-home-productSearch_Products.json
-/tmp/recon/graphql/007-detail-product_Detail.json
+<run-dir>/graphql/000-home-productSearch_Products.json
+<run-dir>/graphql/007-detail-product_Detail.json
 ```
 
 One file per call keeps captures diffable and greppable. `git diff` on a
@@ -308,7 +323,7 @@ pnpm run recon:http
 browser was on the other end, or will it answer anyone who sends the right bytes?*
 
 No Stagehand, no Steel, no Playwright. The script walks
-`/tmp/recon/graphql/*.json`, deduplicates by `url|operationName|variables`, and
+`<run-dir>/graphql/*.json`, deduplicates by `url|operationName|variables`, and
 reissues each capture via Node's built-in `fetch()`.
 
 ### The minimal header set (RC_HEADERS)
@@ -328,7 +343,7 @@ public endpoints. Adding them makes it harder to isolate which headers actually
 matter. If a replay fails, add headers one at a time until it passes — the
 header you just added was load-bearing.
 
-Each replay is saved to `/tmp/recon/replays/` with status, headers, body, and a
+Each replay is saved to `<run-dir>/replays/` with status, headers, body, and a
 link back to the source capture.
 
 **Every replay returning 200 with a matching shape proves the browser is
@@ -663,8 +678,8 @@ The detection ladder — ordered by how early each signal fires:
 
 ```
 Smoke test fails (nightly, automated)
-  → Re-run recon:browser      → fresh /tmp/recon/graphql/*.json
-  → Re-run recon:http         → fresh /tmp/recon/replays/
+  → Re-run recon:browser      → fresh <run-dir>/graphql/*.json
+  → Re-run recon:http         → fresh <run-dir>/replays/
   → Human reviews diff:       captured shape vs. contract.ts
   → Update query / headers / Zod schema / throttle config
   → Re-run recon:summarize    → updated docs/target-recon.md
@@ -1025,8 +1040,8 @@ script is re-runnable — that's our maintenance loop.
 
 **Four verifications:**
 - `pnpm run smoke` — exercises the direct-HTTP hot path end-to-end
-- Open `/tmp/recon/graphql/*.json` after a recon run — these are real captures
-- Diff `src/sites/<id>/contract.ts` against `/tmp/recon/graphql/*<operationName>*.json` — the committed query should be a lean subset of the captured one (trim any UI-only fields)
+- Open `<run-dir>/graphql/*.json` after a recon run — these are real captures
+- Diff `src/sites/<id>/contract.ts` against `<run-dir>/graphql/*<operationName>*.json` — the committed query should be a lean subset of the captured one (trim any UI-only fields)
 - `docs/target-recon.md` is the human rollup from Phase 4e
 
 ---

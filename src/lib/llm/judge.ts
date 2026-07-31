@@ -3,7 +3,7 @@
  * routes through this — submit-verification, invalid-field detection, modal-
  * priority ranking, error-message extraction. Replaces deterministic regexes
  * that silently miss patterns outside what we've happened to observe across
- * AppCast + ClearCompany (both Angular).
+ * the Angular-based ATS sites.
  *
  * Why a separate primitive instead of inlining into each call site:
  *  - Single chokepoint for telemetry, error classification, and latency
