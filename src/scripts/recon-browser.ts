@@ -192,6 +192,14 @@ function wireNetworkCapture(
 ): () => void {
   const session = page.getSessionForFrame(page.mainFrameId());
   const inFlight = new Map<string, InFlightRequest>();
+  // One-shot per-run warning state for the GA `ep.isExpired=true` beacon.
+  // Defensive instrumentation: across 5,542 captures surveyed 2026-06-15,
+  // every observation was `false` — but if a future job ever ships in the
+  // "expired" state, the cascade should surface it loudly rather than burn
+  // a full run trying to submit against a closed application. Stays
+  // site-agnostic: any GA4-instrumented site that publishes the same
+  // `ep.isExpired` event parameter benefits without engine changes.
+  let isExpiredWarned = false;
 
   type RequestWillBeSentEvent = {
     requestId: string;
@@ -342,6 +350,18 @@ function wireNetworkCapture(
     } catch (err) {
       logger.warn(
         `capture-write skipped for ${req.url.slice(0, 80)}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+    // GA `ep.isExpired=true` early-warning: when the site's own analytics
+    // says the job is expired, attempting to submit is dead work. Emit a
+    // loud one-shot warning so the run summary surfaces this state instead
+    // of letting the cascade burn budget on an unsolvable form. URL-only
+    // scan (no body parse) keeps the cost bounded; the parameter is a top-
+    // level URL param on `*google-analytics.com/g/collect` beacons.
+    if (!isExpiredWarned && /[?&]ep\.isExpired=true(?:&|$)/.test(capture.url)) {
+      isExpiredWarned = true;
+      logger.warn(
+        `EXPIRED_JOB_DETECTED: site analytics reported ep.isExpired=true on ${capture.url.slice(0, 120)} — the job posting has expired; submit attempts will likely fail or be rejected silently. Verify the resolved URL is still active before continuing this run.`
       );
     }
     // GETs are static asset chunks, polls, and idle prefetches; cross-origin
@@ -506,16 +526,103 @@ async function snapshotPage(page: Page, signalCounter: { n: number }): Promise<S
 }
 
 /**
+ * Detect whether a 2xx response body indicates the server REJECTED the
+ * application despite returning a 2xx HTTP status. Many ATSs use a "200 OK
+ * with rejection envelope" pattern instead of a 4xx: AppCast returns
+ * `{not_qualified: true, error: "Not qualified reason: <field>"}`,
+ * Greenhouse uses `{rejected: true, reason: "..."}`, Lever uses
+ * `{qualified: false, reason: "..."}`, Workday uses
+ * `{status: "rejected"}`. Empirically verified on AppCast: 4/6 historical
+ * /integrated_apply 200s on this codebase had `not_qualified: true` and
+ * we treated them as wins because the audit only checked HTTP status.
+ *
+ * Site-agnostic: the helper checks for the union of common rejection
+ * envelope shapes. New ATSs can be added by extending the recognized
+ * keys; the existing ones cover the four most common patterns.
+ */
+export function detectRejectionInResponseBody(body: unknown): {
+  rejected: boolean;
+  reason: string | null;
+} {
+  if (!body || typeof body !== "object") return { rejected: false, reason: null };
+  const rec = body as Record<string, unknown>;
+  if (rec.not_qualified === true) {
+    return {
+      rejected: true,
+      reason: typeof rec.error === "string" ? rec.error : "not_qualified",
+    };
+  }
+  if (rec.rejected === true) {
+    return {
+      rejected: true,
+      reason: typeof rec.reason === "string" ? rec.reason : "rejected",
+    };
+  }
+  if (rec.qualified === false) {
+    return {
+      rejected: true,
+      reason: typeof rec.reason === "string" ? rec.reason : "qualified=false",
+    };
+  }
+  if (typeof rec.status === "string" && rec.status === "rejected") {
+    return {
+      rejected: true,
+      reason: typeof rec.reason === "string" ? rec.reason : "status=rejected",
+    };
+  }
+  return { rejected: false, reason: null };
+}
+
+/**
+ * Normalize a capture's responseBody to the parsed-object shape that
+ * `detectRejectionInResponseBody` expects. Capture writer at
+ * recon-browser.ts:240 stores the field as either:
+ *   - a parsed OBJECT (the common case — JSON.parse succeeded at capture time)
+ *   - a STRING (fallback when JSON.parse failed — raw text body)
+ *   - null (CDP body fetch failed; binary; unavailable)
+ *
+ * Previous version of this helper assumed string-only and returned null for
+ * the object case — causing Q1's audit to miss 100% of rejection envelopes
+ * because AppCast (and any JSON-serving ATS) lands in the object case.
+ * Verified 2026-06-15 against capture 122-...-a4ab5256.json:
+ * `jq '.responseBody | type'` returned `"object"`, the broken helper
+ * returned null, the audit declared "PASSED" while the body contained
+ * `{"not_qualified": true}`.
+ *
+ * Site-agnostic: every JSON-serving REST endpoint produces the object
+ * case; the string-as-JSON fallback covers rare cases where the capture
+ * writer stored a parseable JSON string for some reason.
+ */
+function normalizeResponseBodyForAudit(data: { responseBody?: unknown }): unknown {
+  const body = data.responseBody;
+  if (body && typeof body === "object") return body;
+  if (typeof body === "string") {
+    try {
+      return JSON.parse(body);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
  * End-of-run audit: scan ALL captures written by this run for any 2xx
- * whose URL matches the flow's submitEndpointPattern. Returns true when
- * NO match is found — i.e. the run completed without an actual
- * submission landing. Caller exits non-zero so silent-pass states
- * surface as real failures.
+ * whose URL matches the flow's submitEndpointPattern AND whose response
+ * body does NOT indicate a rejection envelope. Returns true when NO clean
+ * 2xx match is found — i.e. the run completed without an accepted
+ * submission landing. Caller exits non-zero so silent-pass states surface
+ * as real failures.
  *
  * The audit is independent of the per-step verifier — the verifier may
  * have accepted a DOM-fallback or URL-change signal as proof, but if
- * the configured submit endpoint never returned 2xx, the application
- * data didn't actually reach the server.
+ * the configured submit endpoint never returned 2xx, OR returned 2xx
+ * with a rejection envelope (e.g. AppCast's `not_qualified: true`), the
+ * application data didn't actually reach the employer's ATS.
+ *
+ * Site-agnostic: rejection detection is via `detectRejectionInResponseBody`
+ * which knows the union of common ATS rejection-envelope shapes
+ * (AppCast/Greenhouse/Lever/Workday). New ATSs extend the union.
  *
  * Pre-existing AppCast-specific equivalent: readJobOutcome in
  * recon-replay-jobs.ts. This is the agnostic engine-side version using
@@ -533,9 +640,9 @@ function auditFinalSubmitMatch(params: {
   ownBackendHostnames: readonly string[];
   capturesDir: string;
   logger: Logger;
-}): boolean {
+}): { auditFailed: boolean; rejectionReason: string | null } {
   const { ownBackendHostnames, capturesDir, logger } = params;
-  if (ownBackendHostnames.length === 0) return true;
+  if (ownBackendHostnames.length === 0) return { auditFailed: true, rejectionReason: null };
   let entries: string[];
   try {
     entries = readdirSync(capturesDir);
@@ -543,15 +650,19 @@ function auditFinalSubmitMatch(params: {
     logger.warn(
       `end-of-run audit: could not read captures dir ${capturesDir}: ${toErrorMessage(err)}`
     );
-    // Without captures to scan we can't make the determination; treat as
-    // failed so the caller decides whether to retry.
-    return true;
+    return { auditFailed: true, rejectionReason: null };
   }
+  // Collect the most recent rejection reason in case we don't find a clean
+  // 2xx — surfaces "we DID submit but the server rejected" rather than
+  // "we never submitted" so the operator knows whether to fix the engine
+  // or fix the application content.
+  let lastRejectionReason: string | null = null;
   for (const f of entries) {
     try {
       const data = JSON.parse(readFileSync(join(capturesDir, f), "utf8")) as {
         status?: number;
         url?: string;
+        responseBody?: unknown;
       };
       if (
         typeof data.url === "string" &&
@@ -565,16 +676,21 @@ function auditFinalSubmitMatch(params: {
         } catch {
           continue;
         }
-        if (ownBackendHostnames.includes(hostname)) {
-          return false;
+        if (!ownBackendHostnames.includes(hostname)) continue;
+        const parsedBody = normalizeResponseBodyForAudit(data);
+        const rejection = detectRejectionInResponseBody(parsedBody);
+        if (rejection.rejected) {
+          lastRejectionReason = rejection.reason;
+          continue;
         }
+        return { auditFailed: false, rejectionReason: null };
       }
     } catch {
       // Ignore unparseable capture files — they're either malformed or
       // a different shape (e.g. resource captures that don't have status/url).
     }
   }
-  return true;
+  return { auditFailed: true, rejectionReason: lastRejectionReason };
 }
 
 /**
@@ -1257,6 +1373,13 @@ interface NormalizedStep {
   instruction: string;
   optional: boolean;
   upload: boolean;
+  // See RECON_FLOW_STEP_SCHEMA in src/lib/llm/schemas.ts for why this exists:
+  // engine gates the pre-submit DOM probe and final-step submit verifier on
+  // (isFinalStep || submitStep), not on isFinalStep alone, so flows whose
+  // canonical submit click lives mid-flow can still mark it explicitly.
+  // Optional in the type so existing test fixtures + call sites that predate
+  // the flag don't need to be touched — absence is treated as false.
+  submitStep?: boolean;
   origin: "original" | "replan";
 }
 
@@ -1264,7 +1387,13 @@ function normalizeFlow(steps: z.infer<typeof RECON_FLOW_SCHEMA>): NormalizedStep
   return steps.map((s) =>
     typeof s === "string"
       ? { instruction: s, optional: false, upload: false, origin: "original" }
-      : { instruction: s.step, optional: s.optional, upload: s.upload, origin: "original" }
+      : {
+          instruction: s.step,
+          optional: s.optional,
+          upload: s.upload,
+          submitStep: s.submitStep,
+          origin: "original",
+        }
   );
 }
 
@@ -1297,11 +1426,14 @@ function substituteFlowEnvVars(steps: NormalizedStep[]): NormalizedStep[] {
  */
 function denormalizeStep(
   step: NormalizedStep
-): string | { step: string; optional?: true; upload?: true } {
-  if (!step.optional && !step.upload) return step.instruction;
-  const out: { step: string; optional?: true; upload?: true } = { step: step.instruction };
+): string | { step: string; optional?: true; upload?: true; submitStep?: true } {
+  if (!step.optional && !step.upload && !step.submitStep) return step.instruction;
+  const out: { step: string; optional?: true; upload?: true; submitStep?: true } = {
+    step: step.instruction,
+  };
   if (step.optional) out.optional = true;
   if (step.upload) out.upload = true;
+  if (step.submitStep) out.submitStep = true;
   return out;
 }
 
@@ -1687,16 +1819,20 @@ async function extractLivePageFormEvidence(
   const knownErrorClassPrefixes = options?.knownErrorClassPrefixes ?? [];
   const captureFn = options?.captureFn;
 
-  // Run the two Haiku judges in parallel. Each returns null when the
-  // client is unavailable (Bedrock-only deployment) — callers fall back
-  // to the empty-string default, same as if no invalid markers had been
-  // present. No more regex-on-fuzzy-data anywhere in this codepath.
-  const [invalidVerdict, errorVerdict, interactiveTargets] = await Promise.all([
-    judgeInvalidFieldsWithLLM({
-      client,
-      input: { bodyHtmlExcerpt: bodyExcerpt, knownErrorClassPrefixes },
-      captureFn,
-    }),
+  // Deterministic-first: run the DOM probe synchronously alongside the
+  // error-messages judge + interactive-targets extraction. The probe uses
+  // CSS `:has()` to find only LEAF invalid containers — bubbled parents
+  // (Angular's `<ol class="ng-invalid">` matching because a descendant is
+  // invalid) are filtered out structurally. Falls back to the Haiku
+  // invalid-fields judge ONLY when the probe returns empty (truly novel
+  // framework convention the selector list doesn't cover). Reason for
+  // the inversion: today's smoke (run 1781478440322) showed Haiku
+  // surfaced `(unlabeled) <ol>` for 3 replans + 4 rephrases, and all 7
+  // LLM calls converged on "Click Continue" because no specific fillable
+  // field was named in FORM FIELDS. Deterministic extraction gives the
+  // LLM `"Address" <app-input> — error: "This field is required"` instead.
+  const [leafFields, errorVerdict, interactiveTargets] = await Promise.all([
+    probeLeafInvalidContainers(page),
     judgeErrorMessagesWithLLM({
       client,
       input: { bodyHtmlExcerpt: bodyExcerpt },
@@ -1705,11 +1841,25 @@ async function extractLivePageFormEvidence(
     extractInteractiveTargetsNearInvalid(page).catch(() => [] as string[]),
   ]);
 
-  const invalidLines =
-    invalidVerdict?.fields.map((f) => {
-      const label = f.label ?? "(unlabeled)";
-      return `${label}  [${f.framework} ${f.markerKind}] ${f.containerXpath}`;
-    }) ?? [];
+  // Probe is the primary signal. Judge only runs if probe is empty AND a
+  // client is available — so the fallback semantics match today's behavior
+  // exactly when the deterministic path returns nothing.
+  const invalidFieldList =
+    leafFields.length > 0
+      ? renderLeafInvalidFields(leafFields)
+      : await (async (): Promise<string> => {
+          const verdict = await judgeInvalidFieldsWithLLM({
+            client,
+            input: { bodyHtmlExcerpt: bodyExcerpt, knownErrorClassPrefixes },
+            captureFn,
+          });
+          const lines =
+            verdict?.fields.map((f) => {
+              const label = f.label ?? "(unlabeled)";
+              return `${label}  [${f.framework} ${f.markerKind}] ${f.containerXpath}`;
+            }) ?? [];
+          return lines.map((e, i) => `${i + 1}. ${e}`).join("\n");
+        })();
 
   const errorLines =
     errorVerdict?.messages.map((m) => {
@@ -1718,7 +1868,7 @@ async function extractLivePageFormEvidence(
     }) ?? [];
 
   return {
-    invalidFieldList: invalidLines.map((e, i) => `${i + 1}. ${e}`).join("\n"),
+    invalidFieldList,
     errorTextList: errorLines.map((e, i) => `${i + 1}. ${e}`).join("\n"),
     interactiveTargetsList: interactiveTargets.map((e, i) => `${i + 1}. ${e}`).join("\n"),
   };
@@ -1733,6 +1883,167 @@ async function extractLivePageFormEvidence(
  * radio/option that would clear it — so the LLM proposes "click Submit
  * harder" instead of "answer field X with Yes/No".
  */
+/**
+ * Structured leaf-invalid-container record emitted by `probeLeafInvalidContainers`.
+ * Replaces the LLM-judge's `{ containerXpath, label, framework, markerKind }` shape
+ * with a deterministic-only record carrying everything the prompt needs to surface
+ * a specific actionable target ("the Address field, an Angular smart-address
+ * autocomplete component, error text 'This field is required'").
+ */
+export interface LeafInvalidField {
+  /** Best-effort xpath of the leaf invalid container itself. */
+  xpath: string;
+  /** Nearest discoverable label text walking up from the container, null if not findable. */
+  label: string | null;
+  /** Which framework convention triggered the leaf match. */
+  framework: "angular" | "material" | "bootstrap" | "aria" | "other";
+  /** The actual class signature on the container that matched (debug aid). */
+  markerClass: string;
+  /** Any visible error/required-message text in an adjacent error container. */
+  visibleErrorText: string | null;
+  /** Tag of the input element inside the container (input, app-input, etc.). */
+  inputTag: string;
+}
+
+/**
+ * Deterministic DOM probe for LEAF invalid form containers, replacing the
+ * LLM-judge's stochastic "prefer the deepest container" heuristic. Uses the
+ * native CSS `:has()` selector — universally supported as of 2023 (Chrome 105+,
+ * we run Chrome 149) — to query only containers whose `ng-invalid` /
+ * `mat-form-field-invalid` / `is-invalid` / `aria-invalid` marker is NOT
+ * shadowed by a same-marker descendant. That's the exact definition of "leaf"
+ * in Angular's invalidity-bubbling model: a `<ol class="ng-invalid">` parent
+ * matches `ng-invalid` because of bubbling, but its child `<app-input
+ * class="ng-invalid">` ALSO matches; `:not(:has(...))` filters out the parent.
+ *
+ * Today's Encompass-Fitchburg smoke (run 1781478440322) showed E1's prompt
+ * instruction ("prefer the leaf, not the bubbled parent") only got Haiku from
+ * 5 wrong fields → 1 wrong field — still surfaced `(unlabeled) <ol>` instead
+ * of `<app-input autocomplete="zip-code">` at byte 95,033. All 3 replans + 4
+ * rephrases then converged on "Click Continue" because the FORM FIELDS section
+ * never named a specific fillable target. Switching to deterministic extraction
+ * is industry-standard: Anthropic's prompt-engineering guidance says "use the
+ * LLM for fuzzy judgment, deterministic extraction for structurally-derivable
+ * signals" — DOM tree walking is the latter.
+ *
+ * Returns up to 12 leaf records. Empty array on `page.evaluate` failure (safe
+ * fallback to the existing Haiku judge upstream). The `inputTag` and
+ * `visibleErrorText` fields let the prompt distinguish a smart-address
+ * autocomplete (where typing-only fails and the cascade needs dropdown
+ * selection) from a plain text input.
+ */
+export async function probeLeafInvalidContainers(page: Page): Promise<LeafInvalidField[]> {
+  const expr = `(() => {
+    const SELECTOR =
+      "[class*='ng-invalid']:not(:has([class*='ng-invalid'])), " +
+      "[class*='mat-form-field-invalid']:not(:has([class*='mat-form-field-invalid'])), " +
+      "[class*='is-invalid']:not(:has([class*='is-invalid'])), " +
+      "[class*='field-invalid']:not(:has([class*='field-invalid'])), " +
+      "[aria-invalid='true']:not(:has([aria-invalid='true']))";
+    const containers = document.querySelectorAll(SELECTOR);
+    const out = [];
+    const seen = new Set();
+    function xpathOf(node) {
+      const parts = [];
+      while (node && node.nodeType === 1 && node !== document.body) {
+        const tag = node.nodeName.toLowerCase();
+        let idx = 1;
+        let sib = node.previousElementSibling;
+        while (sib) {
+          if (sib.nodeName.toLowerCase() === tag) idx++;
+          sib = sib.previousElementSibling;
+        }
+        parts.unshift(tag + "[" + idx + "]");
+        node = node.parentElement;
+      }
+      return "/html[1]/body[1]/" + parts.join("/");
+    }
+    function labelFor(container) {
+      let n = container;
+      for (let i = 0; i < 6 && n; i++) {
+        const cand = n.querySelector
+          ? n.querySelector(".uapp-html-markup, .question-title, .question-label, .group-title, label")
+          : null;
+        if (cand && cand.textContent) {
+          const t = cand.textContent.trim().replace(/\\s+/g, " ");
+          if (t.length > 1 && t.length < 200) return t;
+        }
+        n = n.parentElement;
+      }
+      return null;
+    }
+    function errorTextFor(container) {
+      let n = container;
+      for (let i = 0; i < 4 && n; i++) {
+        const cand = n.querySelector
+          ? n.querySelector("app-control-errors p, mat-error, .error-message, .field-error, .validation-error, .invalid-feedback, [class*='error']:not([class*='boundary'])")
+          : null;
+        if (cand && cand.textContent) {
+          const t = cand.textContent.trim().replace(/\\s+/g, " ");
+          if (t.length > 3 && t.length < 200 && !/^\\s*$/.test(t)) return t;
+        }
+        n = n.parentElement;
+      }
+      return null;
+    }
+    function frameworkFor(cls, ariaInv) {
+      if (cls.indexOf("mat-form-field-invalid") >= 0) return "material";
+      if (cls.indexOf("ng-invalid") >= 0) return "angular";
+      if (cls.indexOf("is-invalid") >= 0) return "bootstrap";
+      if (cls.indexOf("field-invalid") >= 0) return "other";
+      if (ariaInv) return "aria";
+      return "other";
+    }
+    for (const c of containers) {
+      if (out.length >= 12) break;
+      const xp = xpathOf(c);
+      if (seen.has(xp)) continue;
+      seen.add(xp);
+      const cls = (c.getAttribute("class") || "").slice(0, 200);
+      const ariaInv = c.getAttribute("aria-invalid") === "true";
+      const inputEl = c.tagName.toLowerCase() === "input"
+        ? c
+        : c.querySelector("input, textarea, select, app-input, app-dropdown, app-autocomplete, uapp-phone-input, uapp-resume-upload, uapp-upload");
+      const inputTag = inputEl ? inputEl.tagName.toLowerCase() : c.tagName.toLowerCase();
+      out.push({
+        xpath: xp,
+        label: labelFor(c),
+        framework: frameworkFor(cls, ariaInv),
+        markerClass: cls,
+        visibleErrorText: errorTextFor(c),
+        inputTag: inputTag,
+      });
+    }
+    return out;
+  })()`;
+  try {
+    const result = await page.evaluate(expr);
+    return Array.isArray(result) ? (result as LeafInvalidField[]) : [];
+  } catch {
+    // page.evaluate failure (navigation in-flight, CSP, browser detached)
+    // is non-fatal — caller falls back to the Haiku judge.
+    return [];
+  }
+}
+
+/**
+ * Render a list of structured leaf-invalid records as the numbered evidence
+ * lines the prompt's FORM FIELDS section expects. Surfaces label + framework
+ * + input tag + visible error text in one line so the LLM can disambiguate
+ * a smart-address autocomplete from a plain text input (separate widget
+ * interaction patterns) and target the field by its real name instead of
+ * the `(unlabeled) <ol>` bubble parent the LLM-judge surfaced today.
+ */
+export function renderLeafInvalidFields(fields: readonly LeafInvalidField[]): string {
+  if (fields.length === 0) return "";
+  const lines = fields.map((f, i) => {
+    const label = f.label ?? "(unlabeled)";
+    const err = f.visibleErrorText ? ` — error: "${f.visibleErrorText}"` : "";
+    return `${i + 1}. "${label}" [${f.framework}] <${f.inputTag}>${err} at ${f.xpath}`;
+  });
+  return lines.join("\n");
+}
+
 async function extractInteractiveTargetsNearInvalid(page: Page): Promise<string[]> {
   const expr = `(() => {
     const out = [];
@@ -1850,12 +2161,39 @@ export function extractSubmitFailureEvidence(
             ? body.slice(0, 240)
             : body && typeof body === "object" && "message" in body
               ? String((body as { message?: unknown }).message ?? "").slice(0, 240)
-              : `(status ${status}; no structured error body)`;
+              : body && typeof body === "object" && "error" in body
+                ? String((body as { error?: unknown }).error ?? "").slice(0, 240)
+                : `(status ${status}; no structured error body)`;
         records.push(`${status} ${capture.url}: ${fallback}`);
         continue;
       }
       for (const e of errors.slice(0, 8)) {
         records.push(`${status} ${capture.url} — ${e}`);
+      }
+      // K'3: when the submit failure mentions "resume" or "file" or
+      // "attachment" AND the request body is multipart form-data but does
+      // NOT contain an apply[resume] / file part, surface a hint. This
+      // catches the exact pattern from today's smoke (run 1781485435455):
+      // 10/10 422 responses said "Resume is blank" while the multipart
+      // body had 53 question fields but ZERO resume part — the framework
+      // wrapper never registered the file. The hint helps the replan LLM
+      // propose "re-upload the resume" instead of cycling on form fields.
+      const submitFailureText = errors.join(" ").toLowerCase();
+      const mentionsResume =
+        submitFailureText.includes("resume") ||
+        submitFailureText.includes("file") ||
+        submitFailureText.includes("attachment");
+      const requestBody = capture.requestPostData;
+      if (
+        mentionsResume &&
+        typeof requestBody === "string" &&
+        requestBody.includes("multipart/form-data") === false && // body itself isn't the boundary marker
+        !/name="(apply\[resume\]|resume|file|attachment)"/i.test(requestBody) &&
+        /name="apply\[/.test(requestBody) // confirm this IS the submit (apply[*] field shape)
+      ) {
+        records.push(
+          `${status} ${capture.url} — HINT: server reports resume/file missing AND the multipart request body had no resume/file part — upload primitive likely failed to register the file in the framework wrapper's state. Re-try the upload step OR find the resume upload widget and use a different fill mechanism.`
+        );
       }
     } catch {
       // capture file missing or malformed — skip
@@ -1939,6 +2277,296 @@ export function extractGaEventEvidence(
 }
 
 /**
+ * Render a long step list as a small head + tail window with an elision
+ * marker. Replan prompts grew to ~114KB on the AppCast 331-step flow
+ * (verified Fitchburg 2026-06-14 run), causing Sonnet 4.6 to TTFT-stall
+ * out at 187s with `APIConnectionTimeoutError: Request timed out.` —
+ * the ONLY non-API-quota replan failure across ~30+ historical calls.
+ *
+ * Empirically, replans at ≤65K chars complete in 3-13s; the 114K case
+ * was 15x slower than the worst clean run. Trimming the THREE step
+ * blocks (THE ORIGINAL FLOW + STEPS ALREADY SUCCESSFULLY COMPLETED +
+ * REMAINING UNEXECUTED STEPS) eliminates ~80% of the bloat without
+ * losing replan-relevant context: the LLM's job is to bridge from the
+ * failed step back into the remaining tail, not enumerate every step.
+ *
+ * Configurable head/tail caps so callers can keep relevant boundaries
+ * (e.g. completed tail = the last few steps that just succeeded;
+ * remaining head = what to bridge into).
+ */
+export function renderStepWindow(
+  steps: readonly string[],
+  options: { head?: number; tail?: number } = {}
+): string {
+  const { head = 0, tail = 10 } = options;
+  if (steps.length === 0) return "(none)";
+  const headSteps = head > 0 ? steps.slice(0, head) : [];
+  const tailSteps = tail > 0 ? steps.slice(-tail) : [];
+  const elided = steps.length - headSteps.length - tailSteps.length;
+  const lines: string[] = [];
+  for (const [i, s] of headSteps.entries()) {
+    lines.push(`${i + 1}. ${s}`);
+  }
+  if (elided > 0) {
+    lines.push(`... (${elided} steps elided for prompt budget) ...`);
+  }
+  const tailStart = steps.length - tailSteps.length + 1;
+  for (const [i, s] of tailSteps.entries()) {
+    lines.push(`${tailStart + i}. ${s}`);
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Detect a "false-premise loop" — the current cascade-exhausted step
+ * shares a slug-prefix with at least N prior replans' failed steps,
+ * suggesting the flow's element model for THIS widget family doesn't
+ * match the actual DOM. Slug derivation mirrors the `currentPhase`
+ * pattern at recon-browser.ts:5001 (24-char alphanumeric prefix of
+ * normalized instruction). When the threshold is exceeded, callers
+ * inject an ELEMENT MODEL CHECK section into the replan prompt so the
+ * LLM is nudged to reconsider whether the failed-step's element
+ * description matches anything on the page.
+ *
+ * Research grounding: Reflexion (Shinn et al., 2023) demonstrates +22%
+ * improvement on AlfWorld via verbal-reinforcement feedback on prior
+ * failures. Our existing replan prompt's PRIOR REPLAN HISTORY section
+ * is Reflexion-style; this helper adds a quantified meta-signal when
+ * the same element pattern fails N+ times in a row.
+ */
+export function countSlugPrefixMatches(
+  currentFailedStep: string,
+  priorReplans: readonly ReplanEvent[]
+): number {
+  const slugOf = (s: string): string =>
+    s
+      .replace(/[^a-z0-9]+/gi, "-")
+      .toLowerCase()
+      .replace(/^-|-$/g, "")
+      .slice(0, 24);
+  const currentSlug = slugOf(currentFailedStep);
+  if (currentSlug.length === 0) return 0;
+  let matches = 0;
+  for (const ev of priorReplans) {
+    if (slugOf(ev.failedInstruction) === currentSlug) matches++;
+  }
+  return matches;
+}
+
+/**
+ * Outcome of attempting to fill an HTML5 date/time input via the
+ * native-setter + dispatch-events workaround. `null` when the target
+ * isn't a date/time input (caller falls back to the normal cascade).
+ */
+export interface Html5DateFillResult {
+  /** Whether the value actually landed in the DOM after dispatch. */
+  filled: boolean;
+  /** What the input's value is now (for verifier signal). */
+  postValue: string;
+  /** The input's type attribute, for the verifier and prompt context. */
+  inputType: string;
+}
+
+/**
+ * Deterministic fill for HTML5 `<input type="date|time|datetime-local|month|week">`
+ * elements. Bypasses Stagehand bug #1249 (locator.fill() and act({method: 'fill'})
+ * resolve without error but the value reads back as empty string — confirmed
+ * OPEN as of 2026-06-14 in browserbase/stagehand). The fix follows the
+ * industry-standard React/Angular controlled-component pattern, also
+ * documented as the verified workaround in the Stagehand issue itself.
+ *
+ * Mechanism:
+ *  1. Walk the input value setter on `HTMLInputElement.prototype` to bypass
+ *     framework value-setter interception (React, Angular Forms, Vue v-model
+ *     all override the setter at instance level — calling the prototype
+ *     descriptor's setter restores the native behavior).
+ *  2. Dispatch synthesized `input` and `change` events with `bubbles: true`
+ *     so the framework's reactivity hooks fire and the form-control state
+ *     updates (mark dirty / mark touched / clear ng-pristine).
+ *
+ * Returns `null` when the xpath doesn't resolve OR the resolved element
+ * isn't a date/time input — caller falls back to the normal cascade path.
+ *
+ * Site-agnostic: the bug + workaround are universal across any tenant
+ * using HTML5 date/time inputs.
+ */
+/**
+ * Normalize a date/time string to the format the HTML5 spec requires for
+ * the given input type. The HTML5 spec REJECTS programmatic .value writes
+ * that don't match the canonical format, regardless of how the browser
+ * DISPLAYS the date (locale only affects display formatting).
+ *
+ * - type="date": YYYY-MM-DD
+ * - type="time": HH:MM (or HH:MM:SS)
+ * - type="month": YYYY-MM
+ * - type="week": YYYY-Www
+ * - type="datetime-local": YYYY-MM-DDTHH:MM
+ *
+ * Today's smoke surfaced this gap: flow text passed "06-14-2026" (MM-DD-YYYY)
+ * to a `<input type="date">`. Even if Stagehand had fired the fill correctly,
+ * the value would have been silently rejected by the input's setter. K'2's
+ * dispatchEvent and Fix I's verifyFillReadback both catch the consequence,
+ * but normalizing the value here lets the cascade WORK on first try.
+ *
+ * Returns null when the input format is unrecognized — caller knows to
+ * either pass-through (the value might be correct as-is) or skip.
+ */
+export function normalizeDateValue(raw: string, inputType: string): string | null {
+  const t = inputType.toLowerCase();
+  if (t === "date") {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+    // MM-DD-YYYY or MM/DD/YYYY → YYYY-MM-DD (US convention)
+    const usMatch = raw.match(/^(\d{2})[-/](\d{2})[-/](\d{4})$/);
+    if (usMatch) return `${usMatch[3]}-${usMatch[1]}-${usMatch[2]}`;
+    return null;
+  }
+  if (t === "month") {
+    if (/^\d{4}-\d{2}$/.test(raw)) return raw;
+    return null;
+  }
+  if (t === "week") {
+    if (/^\d{4}-W\d{2}$/.test(raw)) return raw;
+    return null;
+  }
+  if (t === "time") {
+    if (/^\d{2}:\d{2}(:\d{2})?$/.test(raw)) return raw;
+    return null;
+  }
+  if (t === "datetime-local") {
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(raw)) return raw;
+    return null;
+  }
+  return null;
+}
+
+export async function fillHtml5DateTimeInput(
+  page: Page,
+  xpath: string,
+  value: string
+): Promise<Html5DateFillResult | null> {
+  const HTML5_DATE_TYPES = new Set(["date", "time", "datetime-local", "month", "week"]);
+  // K'/H' Change 1: pre-normalize the value before dispatching to the page
+  // evaluator. The HTML5 spec rejects programmatic .value writes that don't
+  // match the canonical format — see normalizeDateValue TSDoc.
+  // We don't yet know the input type until the page.evaluate runs (we'd
+  // have to probe it first), so we try BOTH the raw value AND a normalized
+  // pass: if raw works, fine; if raw fails (post-value mismatch), the
+  // returned filled=false signal tells the caller to retry with a normalized
+  // candidate. Today's known fix: try YYYY-MM-DD if raw is MM-DD-YYYY.
+  const normalizedDate = normalizeDateValue(value, "date");
+  const valueToTry = normalizedDate ?? value;
+  const expr = `(() => {
+    const xpath = ${JSON.stringify(xpath)};
+    const value = ${JSON.stringify(valueToTry)};
+    const result = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+    const el = result.singleNodeValue;
+    if (!el || el.tagName !== "INPUT") return null;
+    const inputType = (el.getAttribute("type") || "text").toLowerCase();
+    if (!["date", "time", "datetime-local", "month", "week"].includes(inputType)) {
+      return { filled: false, postValue: el.value || "", inputType };
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+    if (descriptor && descriptor.set) {
+      descriptor.set.call(el, value);
+    } else {
+      el.value = value;
+    }
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    el.dispatchEvent(new Event("blur", { bubbles: true }));
+    return { filled: el.value === value, postValue: el.value || "", inputType };
+  })()`;
+  try {
+    const raw = await page.evaluate(expr);
+    if (raw === null || typeof raw !== "object") return null;
+    const r = raw as { filled?: unknown; postValue?: unknown; inputType?: unknown };
+    if (typeof r.inputType !== "string") return null;
+    if (!HTML5_DATE_TYPES.has(r.inputType)) return null;
+    return {
+      filled: r.filled === true,
+      postValue: typeof r.postValue === "string" ? r.postValue : "",
+      inputType: r.inputType,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Outcome of verifying that a fill action's value actually landed in the
+ * target element. Used by the cascade verifier to catch silent-value-rejection
+ * cases (HTML5 type validation, framework-controlled-component rejection,
+ * masked-input library reformatting).
+ */
+export interface VerifyFillReadbackResult {
+  /** "matched" = element.value === expectedValue; "rejected" = element.value === "" after a non-empty fill; "differs" = element value is non-empty but different (masked / reformatted) */
+  outcome: "matched" | "rejected" | "differs";
+  /** Actual value read back from the element after the fill. */
+  postValue: string;
+  /** Tag of the target element (input/textarea/contenteditable). */
+  tag: string;
+}
+
+/**
+ * Read back an element's value after a fill action and compare to the
+ * expected value. Catches silent-value-rejection cases that the verifier's
+ * existing signals (network/url/dom/htmlDelta/textChanged) miss:
+ *  - HTML5 type validation rejecting bad format (date with MM-DD-YYYY,
+ *    number with letters, email without @, url without protocol, etc.)
+ *  - Framework-controlled-component (Angular [(ngModel)], React useState)
+ *    silently rejecting values that don't pass internal validation
+ *  - Masked-input libraries (phone, currency, date formatters) reformatting
+ *    the value as it's typed
+ *
+ * Returns null for non-fillable elements (clicks, selects, etc.) — caller
+ * knows to skip the check.
+ *
+ * Site-agnostic: works on any <input>, <textarea>, or [contenteditable]
+ * element regardless of framework wrapping. Industry-standard pattern
+ * (react-testing-library's `getByDisplayValue` does the same readback).
+ */
+export async function verifyFillReadback(
+  page: Page,
+  xpath: string,
+  expectedValue: string
+): Promise<VerifyFillReadbackResult | null> {
+  const expr = `(() => {
+    const xpath = ${JSON.stringify(xpath)};
+    const expected = ${JSON.stringify(expectedValue)};
+    const result = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+    const el = result.singleNodeValue;
+    if (!el) return null;
+    const tag = el.tagName ? el.tagName.toLowerCase() : "";
+    let actual = "";
+    if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
+      actual = el.value || "";
+    } else if (el.isContentEditable) {
+      actual = el.textContent || "";
+    } else {
+      return null;
+    }
+    let outcome;
+    if (actual === expected) outcome = "matched";
+    else if (actual === "" && expected !== "") outcome = "rejected";
+    else outcome = "differs";
+    return { outcome, postValue: actual, tag };
+  })()`;
+  try {
+    const raw = await page.evaluate(expr);
+    if (raw === null || typeof raw !== "object") return null;
+    const r = raw as { outcome?: unknown; postValue?: unknown; tag?: unknown };
+    if (r.outcome !== "matched" && r.outcome !== "rejected" && r.outcome !== "differs") return null;
+    return {
+      outcome: r.outcome,
+      postValue: typeof r.postValue === "string" ? r.postValue : "",
+      tag: typeof r.tag === "string" ? r.tag : "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Pull field-level errors out of an arbitrary JSON response body. Walks a
  * few of the conventional ATS shapes; falls through to `[]` so the caller
  * can decide whether to emit a fallback summary.
@@ -1947,6 +2575,17 @@ function harvestFieldErrors(body: unknown): string[] {
   if (!body || typeof body !== "object") return [];
   const out: string[] = [];
   const rec = body as Record<string, unknown>;
+  // Singular `{error: "message"}` shape used by AppCast, Lever, Greenhouse,
+  // and any REST API following the {error:string} terse-error convention.
+  // Verified on AppCast Encompass-Fitchburg: /integrated_apply 422 body is
+  // exactly {"error":"Resume is blank"} — no `errors`, no `message`. Before
+  // J', this was caught by neither the array branch below nor the
+  // extractSubmitFailureEvidence fallback at line 2028, resulting in
+  // `(status 422; no structured error body)` reaching the replan LLM
+  // instead of the actual cause.
+  if (typeof rec.error === "string" && rec.error.length > 0) {
+    out.push(rec.error);
+  }
   const errorsArr = rec.errors;
   if (Array.isArray(errorsArr)) {
     for (const e of errorsArr) {
@@ -1985,6 +2624,14 @@ async function readFailureDumpEvidence(
     client?: Anthropic | null;
     knownErrorClassPrefixes?: readonly string[];
     captureFn?: CaptureFn;
+    /**
+     * Live page from the running session. When provided, the deterministic
+     * `:has()`-based leaf probe runs against the LIVE DOM (authoritative)
+     * before falling back to the dump-based Haiku judge. Optional because
+     * tests inject a dump path without a Playwright session; production
+     * callers (replanRemainingFlow) always have `page` in scope and pass it.
+     */
+    page?: Page;
   }
 ): Promise<{
   bodyExcerpt: string;
@@ -2005,17 +2652,24 @@ async function readFailureDumpEvidence(
     const client = options?.client ?? null;
     const knownErrorClassPrefixes = options?.knownErrorClassPrefixes ?? [];
     const captureFn = options?.captureFn;
+    const page = options?.page;
 
-    // Run the modal-priority, invalid-fields, and error-messages judges in
-    // parallel. Each returns null when client is unavailable (Bedrock-only)
-    // or when the API call fails — callers fall back to empty strings.
+    // Deterministic-first when the live page is available: probe the LIVE
+    // DOM for leaf invalid containers via CSS `:has()`. Falls back to the
+    // dump-based Haiku judge only when the live probe returns empty or
+    // when no page is in scope (tests). See `probeLeafInvalidContainers`
+    // docs for the rationale.
+    const leafFields = page ? await probeLeafInvalidContainers(page) : [];
+
     const [unfocusedList, invalidVerdict, errorVerdict] = await Promise.all([
       renderUnfocusedObserve(dump.unfocusedObserve ?? [], { client, captureFn }),
-      judgeInvalidFieldsWithLLM({
-        client,
-        input: { bodyHtmlExcerpt: bodyExcerpt, knownErrorClassPrefixes },
-        captureFn,
-      }),
+      leafFields.length > 0
+        ? Promise.resolve(null)
+        : judgeInvalidFieldsWithLLM({
+            client,
+            input: { bodyHtmlExcerpt: bodyExcerpt, knownErrorClassPrefixes },
+            captureFn,
+          }),
       judgeErrorMessagesWithLLM({
         client,
         input: { bodyHtmlExcerpt: bodyExcerpt },
@@ -2023,12 +2677,17 @@ async function readFailureDumpEvidence(
       }),
     ]);
 
-    const invalidLines =
-      invalidVerdict?.fields.map((f) => {
-        const label = f.label ?? "(unlabeled)";
-        return `${label}  [${f.framework} ${f.markerKind}] ${f.containerXpath}`;
-      }) ?? [];
-    const invalidFieldList = invalidLines.map((e, i) => `${i + 1}. ${e}`).join("\n");
+    const invalidFieldList =
+      leafFields.length > 0
+        ? renderLeafInvalidFields(leafFields)
+        : (() => {
+            const invalidLines =
+              invalidVerdict?.fields.map((f) => {
+                const label = f.label ?? "(unlabeled)";
+                return `${label}  [${f.framework} ${f.markerKind}] ${f.containerXpath}`;
+              }) ?? [];
+            return invalidLines.map((e, i) => `${i + 1}. ${e}`).join("\n");
+          })();
 
     const errorLines =
       errorVerdict?.messages.map((m) => {
@@ -2167,30 +2826,44 @@ async function replanRemainingFlow(params: {
       client,
       knownErrorClassPrefixes: replanKnownErrorClassPrefixes,
       captureFn,
+      page,
     });
   const failureReasonList = recentFailureReasons.map((r, i) => `${i + 1}. ${r}`).join("\n");
   const submitFailureList = extractSubmitFailureEvidence(recentCaptures, ownBackendHostnames);
   const gaEventList = extractGaEventEvidence(recentCaptures);
 
+  // False-premise meta-signal: when 2+ prior replans failed on a step
+  // sharing the same 24-char slug-prefix as the current failed step,
+  // inject an ELEMENT MODEL CHECK section. Reflexion-grounded
+  // (verbal-reinforcement on repeated failures); intended to break the
+  // degenerate "Click Continue" / "Fill Address" loop the smoke run
+  // showed when the cascade got anchored to a non-existent element
+  // ("Click the Year spinbutton" steps targeting an HTML5 <input
+  // type='date'>).
+  const slugPriorMatches = countSlugPrefixMatches(failedStep, priorReplans);
+  const elementModelCheck =
+    slugPriorMatches >= 2
+      ? `ELEMENT MODEL CHECK — The cascade has now failed ${slugPriorMatches + 1} times on steps matching the same element pattern. When the same element family fails repeatedly, the failed-step's element description may NOT match the actual DOM (e.g. the step asks for "spinbutton" but the page only has <input type="date">; asks for "Select dropdown" but the page has a custom autocomplete; asks for a "Click" target that's a label-only with no clickable child). Inspect PAGE BODY HTML AT FAILURE: if the actual widget in the DOM differs from the failed step's element description, propose a STRUCTURALLY DIFFERENT recovery that targets the actual widget visible on the page (e.g. "Fill in the date input field with today's date" instead of "Click the Month spinbutton") rather than restating the failed step's premise.`
+      : "";
+
   const prompt = `You are helping a browser automation agent recover from a failed flow step.
 
-THE ORIGINAL FLOW (as the user wrote it):
-${originalFlow.map((s, i) => `${i + 1}. ${s}`).join("\n")}
+ORIGINAL FLOW SUMMARY: ${originalFlow.length} total steps; ${completedSteps.length} executed, ${remainingSteps.length} remaining after the failed step. The completed-tail and remaining-head windows below give you the local context — that's the only flow context replan needs.
 
-STEPS ALREADY SUCCESSFULLY COMPLETED (do not re-run these):
-${completedSteps.length > 0 ? completedSteps.map((s, i) => `${i + 1}. ${s}`).join("\n") : "(none)"}
+STEPS RECENTLY COMPLETED (last few that just succeeded; do not re-run):
+${renderStepWindow(completedSteps, { tail: 10 })}
 
 THE STEP THAT JUST FAILED (after exhausting its per-step healing cascade):
 ${failedStep}
 
-REMAINING UNEXECUTED STEPS (after the failed one):
-${remainingSteps.length > 0 ? remainingSteps.map((s, i) => `${i + 1}. ${s}`).join("\n") : "(none)"}
+REMAINING UNEXECUTED STEPS (head of what comes after the failed step; the driver will auto-append the FULL remaining tail after your bridge so do not re-emit these):
+${renderStepWindow(remainingSteps, { head: 15, tail: 0 })}
 
 CURRENT BROWSER STATE:
 URL: ${page.url()}
 Title: ${pageTitle}
 
-WHY VERIFICATION FAILED (latest attempt reasons from the cascade — read these carefully, they explain WHY the step is being declared failed):
+${elementModelCheck ? `${elementModelCheck}\n\n` : ""}WHY VERIFICATION FAILED (latest attempt reasons from the cascade — read these carefully, they explain WHY the step is being declared failed):
 ${failureReasonList || "(none)"}
 
 PAGE TRANSITION + VALIDATOR TELEMETRY (parsed from Google Analytics Measurement Protocol beacons (POSTs to google-analytics.com/g/collect) captured during the failed step's attempt window — this is the SPA's own telemetry telling you what state it thinks it's in. Watch for: en=view_secondPage / en=view_thirdPage indicating the SPA advanced to a later form page WITHOUT firing Page.frameNavigated (so URL stays the same but questions changed); en=view_thankYouPage indicating the application SUBMITTED SUCCESSFULLY (a stronger success signal than network captures because the /integrated_apply POST is sometimes debounced); epn.validationErrorsCount=N indicating the site's own client validator counts N unfilled required fields. When validationErrorsCount > 0, prefer steps that target unfilled fields over re-clicking Submit/Continue. When view_thankYouPage appears, the application already submitted — do not propose more form-fill steps):
@@ -2510,8 +3183,19 @@ async function tryUploadPrimitive(params: {
   fixture: { buffer: Buffer; name: string; mimeType: string } | null;
   logger: Logger;
   signalCounter: { n: number };
+  /**
+   * Tail of the recent-capture-meta window. Used to verify the post-upload
+   * network signal is actually an upload-related POST (URL contains
+   * /upload, /resume, /file, /attachment OR body has section:"resume"),
+   * not coincidental traffic like /interruption_check, /postal_code_geocoder,
+   * or analytics beacons. Today's smoke (run 1781485435455) declared upload
+   * success on a /interruption_check POST that did NOT register the file
+   * in AppCast's framework state — false positive. K'1 catches this by
+   * filtering the network signal by URL keyword.
+   */
+  recentCaptureMeta: readonly { method: string; status: number; url: string }[];
 }): Promise<boolean> {
-  const { page, isUploadStep, fixture, logger, signalCounter } = params;
+  const { page, isUploadStep, fixture, logger, signalCounter, recentCaptureMeta } = params;
   if (!isUploadStep) {
     return false;
   }
@@ -2541,21 +3225,69 @@ async function tryUploadPrimitive(params: {
       mimeType: fixture.mimeType,
       buffer: fixture.buffer,
     });
+    // Framework-wrapper reactivity: Angular/React/Vue components that wrap
+    // <input type="file"> typically register the dropped file via a
+    // (change) binding on a parent <uapp-upload> / <app-upload> element,
+    // not on the raw input. Playwright's setInputFiles populates
+    // input.files[0] AND fires `change` on the input itself, but Angular's
+    // ControlValueAccessor binds at the wrapper level — and the wrapper's
+    // change handler doesn't observe input.files mutations directly.
+    //
+    // Verified on AppCast Encompass-Fitchburg today: setInputFiles
+    // populated input.files but the subsequent /integrated_apply submit
+    // had no `apply[resume]` multipart field — the framework wrapper
+    // never registered the file in its internal state. Server returned
+    // 10/10 "Resume is blank" 422s.
+    //
+    // Re-dispatching `change` + `input` on the input bubbles the events
+    // up through the DOM tree so any parent component listening for
+    // `change`/`input` fires its handler and updates state. We use
+    // page.evaluate rather than Playwright's locator.dispatchEvent
+    // because Stagehand's Locator subset doesn't expose dispatchEvent.
+    // Industry-standard workaround documented across Playwright
+    // community. Site-agnostic — works for any tenant with framework-
+    // wrapped file inputs.
+    await page
+      .evaluate(
+        "(() => { const els = document.querySelectorAll('input[type=file]'); for (const el of els) { if (el.files && el.files.length > 0) { el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); return true; } } return false; })()"
+      )
+      .catch((err: unknown) => {
+        logger.warn(`upload primitive: change dispatch failed: ${toErrorMessage(err)}`);
+      });
   } catch (err) {
     logger.warn(`upload primitive: setInputFiles threw: ${toErrorMessage(err)}`);
     return false;
   }
-  // Primary signal: wait for a non-poll POST to fire. Widgets that upload
-  // immediately on setInputFiles (the common case — ClearCompany, AppCast,
-  // most ATS file widgets) trigger one within milliseconds. signalCounter
-  // already excludes background polls, so a single bump here is the upload.
+  // Primary signal: wait for an UPLOAD-RELATED POST to fire (URL contains
+  // /upload, /resume, /file, /attachment, OR a non-upload URL whose body
+  // includes the `section:"resume"` marker that AppCast and similar ATSs
+  // use for resume-as-base64 inline uploads). Before K'1, ANY network bump
+  // was treated as upload success — but today's smoke captured
+  // /interruption_check + analytics POSTs after setInputFiles and falsely
+  // declared upload-done. The URL filter is generic (works for any ATS
+  // that names its upload endpoint conventionally), with the body-shape
+  // check as a fallback for inline-base64 upload schemes.
+  const captureMetaCountBefore = recentCaptureMeta.length;
+  const UPLOAD_URL_PATTERNS = ["/upload", "/resume", "/file", "/attachment"];
   const startedAt = performance.now();
   while (performance.now() - startedAt < UPLOAD_NETWORK_TIMEOUT_MS) {
     if (signalCounter.n > networkCountBefore) {
-      logger.info(
-        `upload primitive: network activity detected post-setInputFiles (name=${fixture.name}, size=${fixture.buffer.length}b)`
-      );
-      return true;
+      const newCaptures = recentCaptureMeta.slice(captureMetaCountBefore);
+      const uploadCapture = newCaptures.find((cap) => {
+        if (cap.method === "GET") return false;
+        const lowerUrl = cap.url.toLowerCase();
+        return UPLOAD_URL_PATTERNS.some((p) => lowerUrl.includes(p));
+      });
+      if (uploadCapture) {
+        logger.info(
+          `upload primitive: upload POST detected post-setInputFiles (name=${fixture.name}, size=${fixture.buffer.length}b, url=${uploadCapture.url.slice(0, 100)})`
+        );
+        return true;
+      }
+      // Fall through: a non-upload-URL POST fired (e.g. AppCast's
+      // /interruption_check). Don't declare success on this signal alone;
+      // continue polling for the upload POST OR fall through to the
+      // DOM-attached-files check below.
     }
     await page.waitForTimeout(UPLOAD_NETWORK_POLL_INTERVAL_MS);
   }
@@ -2574,13 +3306,109 @@ async function tryUploadPrimitive(params: {
     )
     .catch(() => 0);
   if (typeof attachedLength !== "number" || attachedLength === 0) {
-    logger.warn("upload primitive: no network activity within timeout and no file attached in DOM");
+    logger.warn(
+      "upload primitive: no network activity within timeout and no file attached in DOM; attempting drag-drop fallback"
+    );
+    // K'4: fall back to simulated drag-drop on the most-likely drop zone.
+    // Some custom upload widgets (Material Dropzone, react-dropzone, custom
+    // <uapp-upload> wrappers) only register files when a `drop` event with
+    // a DataTransfer fires on the visible drop area — they don't observe
+    // the hidden input's `files[]` mutations even with synthetic `change`
+    // dispatches. This is the documented Playwright community workaround.
+    const dragDropOk = await simulateDragDropUpload(page, fixture, logger);
+    if (dragDropOk) {
+      logger.info(
+        `upload primitive: drag-drop fallback succeeded (name=${fixture.name}, size=${fixture.buffer.length}b)`
+      );
+      return true;
+    }
     return false;
   }
   logger.info(
     `upload primitive: file attached in DOM after setInputFiles (deferred-upload widget; name=${fixture.name}, filesLength=${attachedLength})`
   );
   return true;
+}
+
+/**
+ * Synthesize a drag-drop event sequence on the most-likely upload drop
+ * zone using DataTransfer + DragEvent. Used as K'4 fallback when
+ * setInputFiles + change-event dispatch don't trigger the framework's
+ * file-registration handler (some custom upload widgets only listen
+ * for `drop` events on a wrapper element, not for `change` on the
+ * underlying input).
+ *
+ * Drop zone detection is keyword-based: searches for elements with
+ * upload/dropzone/file-related class or tag names. Tries multiple
+ * candidates in order. Returns true on first success.
+ *
+ * Site-agnostic — DataTransfer + DragEvent dispatch is universal HTML5
+ * drag-and-drop API. Works on react-dropzone, Material Dropzone, custom
+ * <uapp-upload>/<app-upload>, and any other drop-zone-based upload UI.
+ */
+async function simulateDragDropUpload(
+  page: Page,
+  fixture: { buffer: Buffer; name: string; mimeType: string },
+  logger: Logger
+): Promise<boolean> {
+  const base64 = fixture.buffer.toString("base64");
+  const expr = `(async () => {
+    const fileName = ${JSON.stringify(fixture.name)};
+    const fileType = ${JSON.stringify(fixture.mimeType)};
+    const base64 = ${JSON.stringify(base64)};
+    const dropZoneSelectors = [
+      "uapp-upload",
+      "app-upload",
+      "uapp-resume-upload",
+      "[class*='dropzone']",
+      "[class*='drop-zone']",
+      "[class*='file-drop']",
+      "[class*='upload-zone']",
+      "[class*='uapp-upload']",
+    ];
+    let dropZone = null;
+    for (const sel of dropZoneSelectors) {
+      const el = document.querySelector(sel);
+      if (el) { dropZone = el; break; }
+    }
+    if (!dropZone) return { ok: false, reason: "no drop zone found" };
+    try {
+      const binStr = atob(base64);
+      const bytes = new Uint8Array(binStr.length);
+      for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
+      const file = new File([bytes], fileName, { type: fileType });
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      for (const evtName of ["dragenter", "dragover", "drop"]) {
+        const evt = new DragEvent(evtName, {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer: dt,
+        });
+        dropZone.dispatchEvent(evt);
+      }
+      return { ok: true, dropZoneTag: dropZone.tagName.toLowerCase() };
+    } catch (e) {
+      return { ok: false, reason: e instanceof Error ? e.message : String(e) };
+    }
+  })()`;
+  try {
+    const result = await page.evaluate(expr);
+    if (result && typeof result === "object" && "ok" in result && result.ok === true) {
+      const tag = "dropZoneTag" in result ? String(result.dropZoneTag) : "(unknown)";
+      logger.info(`upload primitive: drag-drop dispatched on <${tag}>`);
+      return true;
+    }
+    const reason =
+      result && typeof result === "object" && "reason" in result
+        ? String(result.reason)
+        : "(unknown)";
+    logger.warn(`upload primitive: drag-drop fallback skipped: ${reason}`);
+    return false;
+  } catch (err) {
+    logger.warn(`upload primitive: drag-drop fallback threw: ${toErrorMessage(err)}`);
+    return false;
+  }
 }
 
 /**
@@ -3152,6 +3980,16 @@ async function executeStepWithHealing(params: {
    * buttons Stagehand can't click. Set from the flow file's `upload: true`.
    */
   upload: boolean;
+  /**
+   * When true, treat this step as the canonical submit click for the
+   * `submitEndpointPattern` verifier even if it is NOT the last step in
+   * the flow. Set from the flow file's `submitStep: true`. AppCast's flow
+   * has its Submit click at index 55/328 — without this flag, the pre-
+   * submit DOM probe (gated on isFinalStep alone) never fires on the real
+   * Submit, so unfilled required fields produce silent submit failures.
+   * Site-agnostic: any flow whose canonical submit is mid-list can opt in.
+   */
+  submitStep: boolean;
   stepIndex: number;
   phase: string;
   signalCounter: { n: number };
@@ -3239,6 +4077,7 @@ async function executeStepWithHealing(params: {
     step,
     optional,
     upload,
+    submitStep,
     stepIndex,
     phase,
     signalCounter,
@@ -3265,13 +4104,23 @@ async function executeStepWithHealing(params: {
   // judges already exist (src/lib/llm/judges/invalid-fields.ts); the
   // remaining work is wiring them into extractLivePageFormEvidence.
   void knownErrorClassPrefixes;
-  // requireSubmitEndpoint gates the Haiku verifySubmit judge. We retain the
+  // requireSubmitEndpoint gates the Haiku verifySubmit judge AND the pre-
+  // submit DOM probe (probeFormValidityBeforeSubmit). We retain the
   // submitEndpointPattern field as a hint (some downstream code paths still
   // read the original pattern to feed extractSubmitFailureEvidence with a
   // submit-specific filter), but the verifier itself no longer treats the
   // pattern as a hard regex check — verifySubmitWithLLM reasons over
   // multi-signal evidence with strict prompting instead.
-  const requireSubmitEndpoint = isFinalStep && submitEndpointPattern !== null;
+  //
+  // Gate accepts (isFinalStep || submitStep): flows whose canonical Submit
+  // click lives mid-list (e.g. AppCast's flow has Submit at step 55/328 with
+  // 273 post-submit verification steps) opt in via the per-step
+  // `submitStep: true` flag in the flow file. Without this opt-in, the pre-
+  // submit DOM probe gated solely on `isFinalStep` never fires on the real
+  // Submit, and unfilled required fields produce silent submit failures
+  // (verified 2026-06-15 on UVA Verona telemetry). Site-agnostic: any flow
+  // whose submit is mid-list can mark its submit step explicitly.
+  const requireSubmitEndpoint = (isFinalStep || submitStep) && submitEndpointPattern !== null;
   const attempts: AttemptRecord[] = [];
   const triedSelectors: string[] = [];
   const failureReasons: string[] = [];
@@ -3288,6 +4137,7 @@ async function executeStepWithHealing(params: {
       fixture: resumeFixture,
       logger,
       signalCounter,
+      recentCaptureMeta,
     })
   ) {
     logger.info(`step ${stepIndex + 1} resolved by upload primitive`);
@@ -3391,9 +4241,10 @@ async function executeStepWithHealing(params: {
     );
   }
 
-  // Pre-submit form-validity probe. Only fires on the final flow step when
-  // the flow declared a submitEndpointPattern (the gate signal for "this
-  // is the submission step"). Finds form controls still marked ng-invalid
+  // Pre-submit form-validity probe. Fires on the canonical submit step
+  // (either the final flow step OR a step explicitly flagged `submitStep:
+  // true` in the flow file) when the flow declared a submitEndpointPattern.
+  // Finds form controls still marked ng-invalid
   // (or similar framework markers) and surfaces them as structured
   // failureReasons before attempt 1. The cascade still runs — the probe
   // is evidence-only — but the LLM-rephrase and LLM-replan prompts now
@@ -3588,6 +4439,63 @@ async function executeStepWithHealing(params: {
           // observe(...)[0] is what Stagehand acted on; use it directly when
           // result.actions[] is empty (some Stagehand paths don't echo it back).
           resolvedAction = result.actions?.[0] ?? target;
+
+          // Stagehand bug #1249 (OPEN as of 2026-06-14): act("fill") on
+          // HTML5 <input type="date|time|datetime-local|month|week">
+          // returns success but the value doesn't actually land in the
+          // DOM. Standard React/Angular controlled-component workaround:
+          // set the value via the native HTMLInputElement.prototype
+          // setter + dispatch input/change events. Helper returns null
+          // for non-date inputs (no-op), so the happy path for regular
+          // inputs is byte-identical to today.
+          //
+          // H' Change 2: drop the `result.success === true` precondition.
+          // Today's smoke (run 1781485435455, step 251) showed Stagehand
+          // returns success=false on date inputs because its internal
+          // Haiku LLM hits AI_TypeValidationError when formulating the
+          // fill action — but `target` (the observe-resolved candidate)
+          // still has the right xpath + arguments. Use `target` directly
+          // so the helper fires even when guardedAct technically failed.
+          if (
+            target.method === "fill" &&
+            Array.isArray(target.arguments) &&
+            target.arguments.length > 0
+          ) {
+            const fillValue = target.arguments[0];
+            if (typeof fillValue === "string") {
+              const dateFill = await fillHtml5DateTimeInput(page, target.selector, fillValue);
+              if (dateFill !== null) {
+                record.errorMessage = dateFill.filled
+                  ? `html5-date-fallback: filled ${dateFill.inputType}="${dateFill.postValue}"`
+                  : `html5-date-fallback: failed to fill ${dateFill.inputType} (post=${dateFill.postValue})`;
+                // Override the act result based on the deterministic fill
+                // outcome — the helper bypasses Stagehand's schema-error
+                // failure mode by writing directly via the native setter.
+                if (dateFill.filled) {
+                  record.actResultSuccess = true;
+                  resolvedAction = target;
+                }
+              } else {
+                // Fix I: not a date input — verify the regular fill landed.
+                // Catches silent-value-rejection cases (HTML5 type validation
+                // on number/email/url/tel inputs, framework-controlled-
+                // component rejection, masked-input library reformatting).
+                // Generic primitive that the verifier's existing signals
+                // (network/url/dom/htmlDelta/textChanged) miss.
+                const readback = await verifyFillReadback(page, target.selector, fillValue);
+                if (readback !== null) {
+                  if (readback.outcome === "rejected") {
+                    record.errorMessage = `fill-value-rejected: tried "${fillValue.slice(0, 60)}" on <${readback.tag}>; element value remains empty (silent rejection — HTML5 type validation, framework controlled-component, or masked-input library)`;
+                    record.actResultSuccess = false;
+                  } else if (readback.outcome === "differs") {
+                    logger.info(
+                      `step ${stepIndex + 1} fill-value-differs: tried "${fillValue.slice(0, 60)}" got "${readback.postValue.slice(0, 60)}" (framework reformatted)`
+                    );
+                  }
+                }
+              }
+            }
+          }
         }
       } else if (attempt === 3) {
         // Structured-click cascade. Site-agnostic recovery for steps where
@@ -4177,6 +5085,10 @@ async function executeStepWithHealing(params: {
               logger.info(
                 `step ${stepIndex + 1} healed on attempt ${attempt} via ${record.technique} + el.click() fallback`
               );
+            } else {
+              logger.info(
+                `step ${stepIndex + 1} succeeded on attempt 1 via ${record.technique} + el.click() fallback`
+              );
             }
             trajectory?.push({ stepIndex, verifiedBy: record.verifiedBy });
             return;
@@ -4195,6 +5107,17 @@ async function executeStepWithHealing(params: {
       if (attempt > 1) {
         logger.info(
           `step ${stepIndex + 1} healed on attempt ${attempt} via ${record.technique} (network=${networkFired} url=${urlChanged} dom=${domVerified})`
+        );
+      } else {
+        // Why log first-try wins explicitly: prior to this change, attempt-1
+        // successes were silent — only attempts 2+ emitted "healed on attempt
+        // N" lines. That under-reporting caused a 2026-06-15 telemetry-vs-log
+        // contradiction where UVA Verona's run looked like a "cascade
+        // collapse" (log showed 2 heals) but telemetry calls.ndjson showed
+        // 32 successful Stagehand acts. Surfacing attempt-1 wins lets the
+        // log match telemetry and prevents the same false alarm.
+        logger.info(
+          `step ${stepIndex + 1} succeeded on attempt 1 via ${record.technique} (network=${networkFired} url=${urlChanged} dom=${domVerified})`
         );
       }
       trajectory?.push({ stepIndex, verifiedBy: record.verifiedBy });
@@ -4222,7 +5145,7 @@ async function executeStepWithHealing(params: {
     // Empirically grounded: 22 of 22 AppCast Continue/Submit step-failure
     // dumps in a 2026-06-10 survey had the paired touched+dirty + visible
     // error text pattern with 3 distinct rejection messages.
-    if (record.resolvedMethod === "click" && isFinalStep) {
+    if (record.resolvedMethod === "click" && (isFinalStep || submitStep)) {
       const live = await extractLivePageFormEvidence(page, {
         client: anthropic,
         knownErrorClassPrefixes,
@@ -4250,7 +5173,10 @@ async function executeStepWithHealing(params: {
     if (attempt === 1) {
       const postAttemptInvalidCount = await countNgInvalidContainers(page);
       const earlyExit = isSubmitRevealedInvalid({
-        isFinalStep,
+        // Treat the canonical submit click as "final" for this predicate
+        // even when it lives mid-flow. See requireSubmitEndpoint derivation
+        // above for the same gate-widening rationale.
+        isFinalStep: isFinalStep || submitStep,
         requireSubmitEndpoint,
         resolvedMethod: record.resolvedMethod,
         effectSignals,
@@ -4683,6 +5609,7 @@ async function main(): Promise<void> {
           step: step.instruction,
           optional: step.optional,
           upload: step.upload,
+          submitStep: step.submitStep === true,
           stepIndex: i,
           phase: currentPhase,
           signalCounter,
@@ -4908,21 +5835,22 @@ async function main(): Promise<void> {
     // 06-09: per-step verifier accepted DOM-fallback as proof; run-level
     // audit catches that the network proof never actually arrived.
     if (requireSubmitEndpointMatch && ownBackendHostnames.length > 0) {
-      const auditFailed = auditFinalSubmitMatch({
+      const { auditFailed, rejectionReason } = auditFinalSubmitMatch({
         ownBackendHostnames,
         capturesDir: CAPTURES_DIR,
         logger,
       });
       if (auditFailed) {
-        logger.error(
-          `end-of-run audit FAILED: no captured 2xx had hostname in ${JSON.stringify(ownBackendHostnames)} — submission did not land despite verifier success`
-        );
+        const reasonSuffix = rejectionReason
+          ? ` — server REJECTED submission with rejection envelope (reason: "${rejectionReason}"); HTTP layer succeeded but application was not accepted`
+          : ` — no captured 2xx had hostname in ${JSON.stringify(ownBackendHostnames)} — submission did not land despite verifier success`;
+        logger.error(`end-of-run audit FAILED${reasonSuffix}`);
         // Exit non-zero so the runner counts this as a real failure rather
         // than rolling silent-pass forward as success.
         process.exit(1);
       }
       logger.info(
-        `end-of-run audit PASSED: at least one captured 2xx matched submitEndpointPattern`
+        `end-of-run audit PASSED: at least one captured 2xx matched submitEndpointPattern with clean response body`
       );
     }
 
