@@ -714,7 +714,7 @@ Operational routes:
 | Command | What it does |
 |---------|--------------|
 | `pnpm run dev` | `tsx watch --env-file=.env src/server.ts` with hot reload |
-| `pnpm run build` | compile to `dist/` (tsc + path alias rewriting + copy `src/sites/`) |
+| `pnpm run build` | compile to `dist/` (tsc + path alias rewriting + copy `src/sites/` fixtures and `src/testing/fixtures`) |
 | `pnpm start` | `node dist/server.js` |
 | `pnpm run typecheck` | strict TS noEmit |
 | `pnpm run lint` / `lint:fix` | Biome |
@@ -741,7 +741,9 @@ src/
 ├── config.ts                  # frozen env-typed config singleton
 ├── plugins/
 │   └── loader.ts              # SITE_PLUGINS registry, dispatch(), registerRoutes()
-├── sites/                     # one directory per registered plugin
+├── sites/
+│   ├── _shared/               # branch-local cross-plugin guards (coverage-expectations.test.ts)
+│   └── <site-id>/             # one directory per registered plugin
 ├── api/
 │   ├── plugins/               # auth, error-handler, request-context
 │   ├── routes/                # health
@@ -755,12 +757,26 @@ src/
 │   ├── retry.ts               # p-retry + failure classification
 │   ├── errors.ts              # typed scraper error hierarchy
 │   ├── http-client.ts         # typed fetch wrapper (hot path)
+│   ├── http-status-classifier.ts # pure status→ScraperError classifier for raw-fetch callers
+│   ├── raw-fetch.ts           # site-agnostic undici scaffold: network-error wrap, onResponse hook, optional classifyHttpStatus (skipClassify for callers that classify manually)
 │   ├── graphql-client.ts      # GraphQL POST wrapper
 │   ├── metrics.ts             # drift-detection counters
-│   └── fixtures.ts            # static JSON fixture loader
-├── cache/response-cache.ts    # lru-cache wrapper
-├── lib/                       # logging, env, bedrock, db client, telemetry/
+│   ├── fixtures.ts            # static JSON fixture loader
+│   ├── navigate.ts            # shared awaitActivePage + goto(networkidle) helper
+│   └── require-response-field.ts # shared helpers for extracting required fields from HTTP response objects (HttpSchemaError on missing/null)
+├── cache/
+│   ├── response-cache.ts      # lru-cache wrapper for deduplicating concurrent identical scraper requests
+│   └── keyed-ttl-cache.ts     # generic per-key TTL + single-flight coalescing cache factory
+├── lib/                       # logging, env, bedrock, db client, multipart, option-matcher, chromium-client-hints, telemetry/
 ├── scripts/                   # recon-browser, recon-http, recon-generate, recon-summarize, recon-heal, recon-shared, smoke-test, judge-llm-batch, llm-heal
+├── testing/
+│   ├── integration-runner.ts              # site-agnostic scaffold for integration tests (allocate inbox → dispatch → poll)
+│   ├── mock-fetch-response.ts             # shared undici-compatible Response stub factory for flow tests that mock fetch
+│   ├── replay-integration-suite.ts        # generic describe.skipIf/it.each scaffold; eliminates per-site integration boilerplate
+│   ├── contract-parity-suite.ts           # offline schema-parity scaffold; one-call drop-in for accept + rejection-case coverage
+│   ├── coverage-guard-suite.ts            # registry-driven structural guard; asserts contract.parity.test.ts exists per registered plugin
+│   ├── batch-email-confirmation.ts        # two-phase batch runner: submit jobs → poll inboxes (site-agnostic)
+│   └── batch-report.ts                    # markdown table renderer for batch-test verdicts
 └── types/
 ```
 

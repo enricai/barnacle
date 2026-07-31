@@ -27,6 +27,10 @@ src/sites/*
 # Barnacle telemetry runtime output (NDJSON events, judge/heal artifacts)
 /.barnacle/
 
+# Recon artifacts (per-site telemetry runs and pre-replan backups)
+src/sites/*/telemetry/
+*.bak.json
+
 # misc
 .DS_Store
 *.pem

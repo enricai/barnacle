@@ -4070,7 +4070,7 @@ async function executeStepWithHealing(params: {
    * omitted, cascade behaves identically — purely additive optimization.
    */
   observeCache?: ObserveCache;
-}): Promise<void> {
+}): Promise<"completed" | "skipped"> {
   const {
     stagehand,
     page,
@@ -4142,7 +4142,7 @@ async function executeStepWithHealing(params: {
   ) {
     logger.info(`step ${stepIndex + 1} resolved by upload primitive`);
     trajectory?.push({ stepIndex, verifiedBy: "network" });
-    return;
+    return "completed";
   }
 
   // Snapshot the capture-meta tail length at step entry. The probe-absent
@@ -4165,7 +4165,7 @@ async function executeStepWithHealing(params: {
   if (probeResult === "absent") {
     if (optional) {
       logger.info(`step ${stepIndex + 1} skipped (optional, probe found no candidates)`);
-      return;
+      return "skipped";
     }
     // Telemetry-driven legitimate-transition detection. When the page
     // already advanced (a 3xx redirect or successful non-tracking POST
@@ -4182,7 +4182,7 @@ async function executeStepWithHealing(params: {
         `step ${stepIndex + 1} skipped (probe absent but recent transition detected: ${transitionUrl})`
       );
       trajectory?.push({ stepIndex, verifiedBy: "url" });
-      return;
+      return "completed";
     }
     // Telemetry-driven backend-error detection. If the same-window capture
     // meta contains a 5xx response from the configured submit endpoint,
@@ -4420,7 +4420,7 @@ async function executeStepWithHealing(params: {
             logger.info(
               `step ${stepIndex + 1} skipped (optional, no candidates after act+observe)`
             );
-            return;
+            return "skipped";
           }
         } else {
           const target = candidates[0]!;
@@ -5091,7 +5091,7 @@ async function executeStepWithHealing(params: {
               );
             }
             trajectory?.push({ stepIndex, verifiedBy: record.verifiedBy });
-            return;
+            return "completed";
           }
         } catch (probeErr) {
           logger.warn(
@@ -5121,7 +5121,7 @@ async function executeStepWithHealing(params: {
         );
       }
       trajectory?.push({ stepIndex, verifiedBy: record.verifiedBy });
-      return;
+      return "completed";
     }
 
     const effectSignals = describeAttemptEffectSignals(pre, post, recentCaptureMeta, preMetaLength);
@@ -5557,7 +5557,35 @@ async function main(): Promise<void> {
     );
 
     logger.info(`navigating to ${url}`);
-    await page.goto(url, { waitUntil: "domcontentloaded", timeoutMs: GOTO_TIMEOUT_MS });
+    await page.goto(url, { waitUntil: "networkidle", timeoutMs: GOTO_TIMEOUT_MS });
+
+    const SPA_READINESS_TIMEOUT_MS = 15_000;
+    const SPA_READINESS_POLL_MS = 500;
+    const SPA_MIN_BODY_LENGTH = 5_000;
+    const spaDeadline = Date.now() + SPA_READINESS_TIMEOUT_MS;
+    let bodyLength = await page
+      .evaluate("document.body ? document.body.outerHTML.length : 0")
+      .catch(() => 0);
+    if (typeof bodyLength === "number" && bodyLength < SPA_MIN_BODY_LENGTH) {
+      logger.info(
+        `spa readiness: body ${bodyLength} chars < ${SPA_MIN_BODY_LENGTH} threshold — waiting for SPA to render`
+      );
+      while (Date.now() < spaDeadline) {
+        await new Promise((r) => setTimeout(r, SPA_READINESS_POLL_MS));
+        bodyLength = await page
+          .evaluate("document.body ? document.body.outerHTML.length : 0")
+          .catch(() => 0);
+        if (typeof bodyLength === "number" && bodyLength >= SPA_MIN_BODY_LENGTH) {
+          logger.info(`spa readiness: body grew to ${bodyLength} chars — SPA rendered`);
+          break;
+        }
+      }
+      if (typeof bodyLength === "number" && bodyLength < SPA_MIN_BODY_LENGTH) {
+        logger.warn(
+          `spa readiness: body still ${bodyLength} chars after ${SPA_READINESS_TIMEOUT_MS}ms — proceeding with possibly incomplete page`
+        );
+      }
+    }
 
     const anthropic = buildAnthropicClient();
     if (!anthropic) {
@@ -5571,6 +5599,11 @@ async function main(): Promise<void> {
     const trajectory: { stepIndex: number; verifiedBy: AttemptRecord["verifiedBy"] }[] = [];
     let probeReplansUsed = 0;
     let cascadeReplansUsed = 0;
+
+    const STUCK_SKIP_THRESHOLD = 5;
+    let consecutiveStaleSkips = 0;
+    let lastSuccessNetworkCount = signalCounter.n;
+    let lastSuccessUrl = page.url();
 
     for (let i = 0; i < plan.length; i++) {
       const step = plan[i]!;
@@ -5603,7 +5636,7 @@ async function main(): Promise<void> {
         }
       }
       try {
-        await executeStepWithHealing({
+        const stepOutcome = await executeStepWithHealing({
           stagehand,
           page,
           step: step.instruction,
@@ -5630,6 +5663,29 @@ async function main(): Promise<void> {
           captureFn,
           observeCache,
         });
+
+        if (stepOutcome === "skipped") {
+          const pageStagnant =
+            signalCounter.n === lastSuccessNetworkCount && page.url() === lastSuccessUrl;
+          if (pageStagnant) {
+            consecutiveStaleSkips++;
+          }
+          if (consecutiveStaleSkips >= STUCK_SKIP_THRESHOLD) {
+            logger.warn(
+              `stuck detection: ${consecutiveStaleSkips} consecutive optional steps skipped with no page advancement (url=${lastSuccessUrl}, networkCount=${lastSuccessNetworkCount}) — treating as probe-absent failure to trigger replan`
+            );
+            consecutiveStaleSkips = 0;
+            throw new StepVerificationError(
+              `step ${i + 1} (${step.instruction.slice(0, 60)}) stuck: ${STUCK_SKIP_THRESHOLD}+ consecutive optional skips with stagnant page`,
+              "probe-absent"
+            );
+          }
+        } else {
+          consecutiveStaleSkips = 0;
+          lastSuccessNetworkCount = signalCounter.n;
+          lastSuccessUrl = page.url();
+        }
+
         completedSteps.push(step.instruction);
       } catch (err) {
         if (!(err instanceof StepVerificationError)) throw err;

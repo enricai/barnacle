@@ -19,6 +19,8 @@ import { config as defaultConfig, loadConfig } from "@/config";
 import { toErrorMessage } from "@/lib/errors";
 import { configureHttpDispatcher } from "@/lib/http";
 import { getLogger } from "@/lib/logging";
+import { shutdownStatsD } from "@/lib/statsd";
+import { drainTrackingClicks } from "@/lib/tracking-click";
 import { registerRoutes } from "@/plugins/loader";
 import { drainPool } from "@/scraper/pool";
 import type { Logger } from "@/types/logging";
@@ -118,6 +120,18 @@ export async function buildServer(): Promise<
       await drainPool();
     } catch (err) {
       logger.warn(`drainPool failed during shutdown: ${toErrorMessage(err).slice(0, 200)}`);
+    }
+    try {
+      await drainTrackingClicks();
+    } catch (err) {
+      logger.warn(
+        `drainTrackingClicks failed during shutdown: ${toErrorMessage(err).slice(0, 200)}`
+      );
+    }
+    try {
+      await shutdownStatsD();
+    } catch (err) {
+      logger.warn(`shutdownStatsD failed during shutdown: ${toErrorMessage(err).slice(0, 200)}`);
     }
   });
 

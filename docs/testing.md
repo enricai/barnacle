@@ -161,7 +161,7 @@ A new plugin needs tests for:
 `createGraphqlClient()`) once at module scope and reuse the returned wrapper
 inside `executeHttp`. Both factories return a **plain callable function**, not
 an object with method names — `createHttpClient` returns
-`(url, init) => Promise<TResponse>` (`src/scraper/http-client.ts:64-66`);
+`(url, init) => Promise<TResponse>` (`src/scraper/http-client.ts:103-105`);
 `createGraphqlClient` returns
 `(operationName, query, variables) => Promise<TResponse>`
 (`src/scraper/graphql-client.ts:28-34`). Your mock must be a callable with the
@@ -192,6 +192,126 @@ it("hot path returns items from the GraphQL response", async () => {
   expect(result.data.data.items[0]?.id).toBe("1");
 });
 ```
+
+---
+
+## Integration-test scaffold
+
+`src/testing/integration-runner.ts` exports `runIntegrationJob` — a
+site-agnostic orchestrator for end-to-end integration tests that verify a
+plugin submission by polling a [testmail.app](https://testmail.app) inbox.
+
+Each plugin's integration test owns only the per-job payload mapping; the
+generic steps (inbox allocation, context construction, `dispatch()`, inbox
+poll) live in the helper:
+
+```ts
+import { runIntegrationJob } from "@/testing/integration-runner";
+import { myPlugin } from "@/sites/my-site";
+
+const { result, message } = await runIntegrationJob({
+  plugin: myPlugin as SitePlugin<unknown, unknown>,
+  baseUrl: "https://my-site.com",
+  buildPayload: (inbox) => ({ Email: inbox.address, JobId: "42" }),
+  pollTimeoutMs: 120_000,
+});
+
+expect(message.subject).toBeTruthy();
+```
+
+In unit tests, pass a stub `pollFn` to avoid real network calls — see
+`src/testing/integration-runner.test.ts` for the full pattern.
+
+---
+
+## Batch-test harness
+
+`src/testing/batch-email-confirmation.ts` exports `runBatchEmailConfirmation` — a
+site-agnostic two-phase batch runner used by scripts that submit many jobs and
+then verify each one via a confirmation email. Phase 1 submits all jobs (with
+configurable concurrency via `p-queue`); phase 2 polls each inbox serially to
+stay within testmail's rate limit.
+
+All site-specific behaviour is injected via callbacks (`allocateInbox`,
+`submit`, `pollEmail`, `mapVerdict`), so the harness owns only the loop:
+
+```ts
+import { runBatchEmailConfirmation } from "@/testing/batch-email-confirmation";
+
+const verdicts = await runBatchEmailConfirmation(jobs, {
+  allocateInbox: () => allocateTestmailInbox(),
+  submit: async (job, inbox) => { /* returns SubmitOutcome */ },
+  pollEmail: async (inbox) => { /* returns PollOutcome */ },
+  mapVerdict: (job, submitOutcome, pollOutcome) => ({ ... }),
+  concurrency: 3,
+});
+```
+
+`src/testing/batch-report.ts` exports `renderBatchReport` — a pure function
+that converts a `BatchJobVerdict[]` into a markdown table with a `Net: N/M`
+summary line. Callers decide how to emit the string (stdout, file, logger).
+
+---
+
+## Shared test fixtures
+
+`src/testing/resume-fixture.ts` and `src/testing/persona-fixture.ts` export the
+canonical test persona and resume used across all site tests so every test submits
+the same data and a future swap is a one-file change.
+
+- `loadTestResume()` — reads `src/testing/fixtures/resume.pdf` and returns a
+  `TestResume` with `buffer`, `contentType`, `filename`, and `base64` fields.
+- `resumePayloadFields(resume)` — maps a `TestResume` to the four payload field
+  names every resume-accepting site shares (`Resume`, `ResumeContentType`,
+  `ResumeFilename`, `ResumeBase64`). Spread into the payload object instead of
+  repeating the mapping at every call site.
+- `TEST_PERSONA` — a static `PersonaFixture` object with pre-filled applicant
+  contact fields (name, phone, address) sourced from `persona-fixture.ts`.
+
+```ts
+import { loadTestResume, resumePayloadFields } from "@/testing/resume-fixture";
+import { TEST_PERSONA } from "@/testing/persona-fixture";
+
+const resume = loadTestResume();
+const payload = {
+  Email: "test@example.com",
+  FirstName: TEST_PERSONA.FirstName,
+  ...resumePayloadFields(resume),
+};
+```
+
+---
+
+## Structural coverage guard
+
+`src/testing/coverage-guard-suite.ts` exports `defineCoverageGuardSuite` — a
+registry-driven helper that asserts each registered plugin has a co-located
+`contract.parity.test.ts` without hardcoding any site name. On `main` where
+`SITE_PLUGINS` is empty the guard runs zero iterations (trivially green); any
+branch that populates the registry gains the check automatically.
+
+```ts
+import { defineCoverageGuardSuite } from "@/testing/coverage-guard-suite";
+import { SITE_PLUGINS } from "@/plugins/loader";
+import { resolve } from "node:path";
+
+defineCoverageGuardSuite({
+  suiteName: "plugin structural coverage guard",
+  plugins: SITE_PLUGINS,
+  sitesDir: resolve(__dirname, "../sites"),
+});
+```
+
+Pass a stub array of `{ meta: { siteId } }` objects in unit tests — no real
+plugin imports needed. The optional `extraAssertions(pluginDir, siteId)` callback
+lets callers register additional per-plugin `it` blocks (replay fixture presence,
+etc.) without baking site-specific logic into the engine helper.
+
+The live cross-plugin guard for the site branch lives in
+`src/sites/_shared/coverage-expectations.test.ts`. It drives
+`defineCoverageGuardSuite` with the real `SITE_PLUGINS` registry, locks the
+replay-fixture asymmetry, and pins per-plugin bodySchema rejection baselines —
+keeping `src/testing/contract-parity-suite.test.ts` free of site imports.
 
 ---
 

@@ -45,6 +45,7 @@ const mockGetCachedResponse = vi.hoisted(() =>
 const mockGetOrCreateInFlight = vi.hoisted(() =>
   vi.fn().mockImplementation((_key: string, producer: () => Promise<unknown>) => producer())
 );
+const mockFireTrackingClick = vi.hoisted(() => vi.fn());
 
 const mockRunWithSession = vi.hoisted(() =>
   vi.fn().mockImplementation((task: (s: null) => Promise<unknown>) => task(null))
@@ -77,6 +78,10 @@ vi.mock("@/cache/response-cache", () => ({
   getOrCreateInFlight: mockGetOrCreateInFlight,
 }));
 
+vi.mock("@/lib/tracking-click", () => ({
+  fireTrackingClick: mockFireTrackingClick,
+}));
+
 const stubPlugin: SitePlugin<unknown, unknown> = {
   meta: {
     siteId: "test-site",
@@ -97,6 +102,20 @@ const stubContext: SitePluginContext = {
   } as unknown as SitePluginContext["logger"],
   config: {} as SitePluginContext["config"],
   requestId: "req-test-123",
+  metricsCollector: {
+    startStep: vi.fn(),
+    endStep: vi.fn(),
+    markRetry: vi.fn(),
+    finalize: vi.fn(() => ({
+      totalDurationMs: 0,
+      path: "http" as const,
+      steps: [],
+      attemptCount: 1,
+      startedAt: "",
+      endedAt: "",
+      recordedAt: "",
+    })),
+  } as unknown as SitePluginContext["metricsCollector"],
 };
 
 describe("dispatch", () => {
@@ -363,6 +382,50 @@ describe("dispatch — cache integration", () => {
     await dispatch(httpPlugin, {}, stubContext);
     expect(mockPluginExecute).toHaveBeenCalledTimes(1);
     expect(mockRecordFallbackActivation).toHaveBeenCalledWith("http-site");
+  });
+});
+
+describe("dispatch — tracking click", () => {
+  beforeEach(() => {
+    mockCaptureSubmissionEnvelope.mockResolvedValue(undefined);
+    mockPluginExecute.mockResolvedValue({
+      data: { result: "ok" },
+      auditPayload: { redacted: true },
+    });
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("calls fireTrackingClick with the URL and siteId when payload contains TrackingUrl", async () => {
+    const payload = { TrackingUrl: "https://click.appcast.io/t/abc?vivclid=123" };
+    await dispatch(stubPlugin, payload, stubContext);
+    expect(mockFireTrackingClick).toHaveBeenCalledOnce();
+    expect(mockFireTrackingClick).toHaveBeenCalledWith(
+      "https://click.appcast.io/t/abc?vivclid=123",
+      "test-site"
+    );
+  });
+
+  it("does not call fireTrackingClick when TrackingUrl is absent", async () => {
+    await dispatch(stubPlugin, {}, stubContext);
+    expect(mockFireTrackingClick).not.toHaveBeenCalled();
+  });
+
+  it("does not call fireTrackingClick when TrackingUrl is an empty string", async () => {
+    await dispatch(stubPlugin, { TrackingUrl: "" }, stubContext);
+    expect(mockFireTrackingClick).not.toHaveBeenCalled();
+  });
+
+  it("does not call fireTrackingClick on dispatch failure", async () => {
+    mockPluginExecute.mockRejectedValueOnce(new CaptchaError("captcha hit"));
+    try {
+      await dispatch(stubPlugin, { TrackingUrl: "https://click.appcast.io/t/abc" }, stubContext);
+    } catch {
+      // expected
+    }
+    expect(mockFireTrackingClick).not.toHaveBeenCalled();
   });
 });
 

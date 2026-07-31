@@ -9,6 +9,7 @@ import {
   HttpServerError,
   UnknownScraperError,
 } from "@/scraper/errors";
+import type { HttpResponseInfo } from "@/scraper/http-client";
 import { createHttpClient } from "@/scraper/http-client";
 
 const passThruLimiter = new Bottleneck({ maxConcurrent: 1, minTime: 0 });
@@ -32,14 +33,19 @@ function makeClient() {
   });
 }
 
-function mockFetch(status: number, body: unknown, ok = status >= 200 && status < 300): void {
+function mockFetch(
+  status: number,
+  body: unknown,
+  ok = status >= 200 && status < 300,
+  responseHeaders?: Headers
+): void {
   vi.stubGlobal(
     "fetch",
     vi.fn().mockResolvedValue({
       status,
       ok,
       json: vi.fn().mockResolvedValue(body),
-      headers: new Headers(),
+      headers: responseHeaders ?? new Headers(),
     })
   );
 }
@@ -146,5 +152,86 @@ describe("scraper/http-client createHttpClient", () => {
     const headers = (call?.[1] as RequestInit)?.headers as Record<string, string>;
     expect(headers["X-Custom"]).toBe("yes");
     expect(headers["Content-Type"]).toBe("application/json");
+  });
+});
+
+describe("scraper/http-client onResponse hook", () => {
+  it("fires with correct status, headers, and url on a 200 response", async () => {
+    const responseHeaders = new Headers({ "x-request-id": "abc123" });
+    mockFetch(200, { id: "1", name: "Widget" }, true, responseHeaders);
+
+    const captured: HttpResponseInfo[] = [];
+    const client = createHttpClient<Item>({
+      schema: ItemSchema,
+      bottleneck: passThruLimiter,
+      baseHeaders: BASE_HEADERS,
+      onResponse: (info) => captured.push(info),
+    });
+
+    await client("https://example.com/api/item");
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.status).toBe(200);
+    expect(captured[0]?.url).toBe("https://example.com/api/item");
+    expect(captured[0]?.headers.get("x-request-id")).toBe("abc123");
+  });
+
+  it("fires with correct status, headers, and url on a 403 response before throwing", async () => {
+    const responseHeaders = new Headers({ "www-authenticate": "Bearer" });
+    mockFetch(403, {}, false, responseHeaders);
+
+    const captured: HttpResponseInfo[] = [];
+    const client = createHttpClient<Item>({
+      schema: ItemSchema,
+      bottleneck: passThruLimiter,
+      baseHeaders: BASE_HEADERS,
+      onResponse: (info) => captured.push(info),
+    });
+
+    await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(
+      HttpBotChallengeError
+    );
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.status).toBe(403);
+    expect(captured[0]?.url).toBe("https://example.com/api/item");
+    expect(captured[0]?.headers.get("www-authenticate")).toBe("Bearer");
+  });
+
+  it("fires with correct status, headers, and url on a 500 response before throwing", async () => {
+    const responseHeaders = new Headers({ "retry-after": "60" });
+    mockFetch(500, {}, false, responseHeaders);
+
+    const captured: HttpResponseInfo[] = [];
+    const client = createHttpClient<Item>({
+      schema: ItemSchema,
+      bottleneck: passThruLimiter,
+      baseHeaders: BASE_HEADERS,
+      onResponse: (info) => captured.push(info),
+    });
+
+    await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(HttpServerError);
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.status).toBe(500);
+    expect(captured[0]?.url).toBe("https://example.com/api/item");
+    expect(captured[0]?.headers.get("retry-after")).toBe("60");
+  });
+
+  it("does not invoke onResponse when fetch throws a network error", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("network failure")));
+
+    const captured: HttpResponseInfo[] = [];
+    const client = createHttpClient<Item>({
+      schema: ItemSchema,
+      bottleneck: passThruLimiter,
+      baseHeaders: BASE_HEADERS,
+      onResponse: (info) => captured.push(info),
+    });
+
+    await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(
+      UnknownScraperError
+    );
+    expect(captured).toHaveLength(0);
   });
 });
