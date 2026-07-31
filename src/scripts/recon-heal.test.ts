@@ -13,6 +13,8 @@ import * as path from "node:path";
 import Anthropic from "@anthropic-ai/sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { StepVerificationErrorKind } from "@/scraper/errors";
+
 vi.mock("@/config", () => ({
   config: {
     scraper: {
@@ -28,8 +30,10 @@ vi.mock("@/lib/http", () => ({ configureHttpDispatcher: vi.fn() }));
 vi.mock("@/scraper/session", () => ({ createBrowserSession: vi.fn() }));
 vi.mock("@/scraper/errors", () => ({
   StepVerificationError: class StepVerificationError extends Error {
-    constructor(message = "step failed") {
+    readonly kind: StepVerificationErrorKind;
+    constructor(message = "step failed", kind: StepVerificationErrorKind = "cascade-exhausted") {
       super(message);
+      this.kind = kind;
     }
   },
 }));
@@ -48,9 +52,13 @@ vi.mock("@/lib/logging", () => ({
   getScriptLogger: () => loggerStub,
 }));
 
-vi.mock("@/lib/telemetry/call-capture", () => ({
-  captureLlmCall: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock("@/lib/telemetry/call-capture", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/telemetry/call-capture")>();
+  return {
+    ...actual,
+    captureLlmCall: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
 import type { LlmCallInput } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_FLOW_PATCH } from "@/lib/telemetry/call-types";

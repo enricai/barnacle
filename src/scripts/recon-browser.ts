@@ -48,10 +48,16 @@ import { config } from "@/config";
 import { toErrorMessage } from "@/lib/errors";
 import { configureHttpDispatcher } from "@/lib/http";
 import { getScriptLogger } from "@/lib/logging";
-import { captureLlmCall, type LlmCallInput } from "@/lib/telemetry/call-capture";
+import {
+  ANTHROPIC_BILLING_RX,
+  captureLlmCall,
+  classifyLlmCallFailure,
+  type LlmCallInput,
+} from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE, CALL_TYPE_RECON_REPLAN } from "@/lib/telemetry/call-types";
 import { StepVerificationError } from "@/scraper/errors";
 import { createBrowserSession, type ProviderName } from "@/scraper/session";
+import { filterByCallType, parseSamples } from "@/scripts/judge-llm-batch";
 import { CAPTURES_DIR, type Capture, STEP_FAILURES_DIR } from "@/scripts/recon-shared";
 import { allocateTestmailInbox } from "@/testmail/client";
 import type { Logger } from "@/types/logging";
@@ -390,8 +396,18 @@ interface AttemptRecord {
   resolvedMethod: string | null;
   /** Args Stagehand passed to the resolved action — what we expect to see post-fill. */
   resolvedArguments: string[] | null;
-  /** Which verification signal carried the attempt: `network`, `url`, `dom`, or null on failure. */
-  verifiedBy: "network" | "url" | "dom" | null;
+  /**
+   * Which verification signal carried the attempt:
+   * - `network`: same-origin POST counter advanced in the attempt window.
+   * - `url`: page navigated to a new URL.
+   * - `dom`: verifyDomEffect confirmed a structural change (radio/checkbox state).
+   * - `submitted-state-dom`: final-step DOM fallback fired — a flow-declared
+   *   `submittedStateSelectors` entry matched live DOM, indicating the SPA
+   *   reached its submitted state even though the network capture missed
+   *   the submit POST within the attempt window.
+   * - `null`: failure path.
+   */
+  verifiedBy: "network" | "url" | "dom" | "submitted-state-dom" | null;
 }
 
 /**
@@ -427,6 +443,263 @@ async function snapshotPage(page: Page, signalCounter: { n: number }): Promise<S
     bodyHtmlLength,
     visibleTextSignature,
   };
+}
+
+/**
+ * Detect whether the supplied capture-meta window contains a backend
+ * 5xx response that matches the configured submit endpoint pattern.
+ * The cascade can't heal a backend crash by retrying clicks or
+ * rephrasing instructions; surfacing this signal lets the caller
+ * fail-fast instead of burning replan budget on an unrecoverable
+ * server state.
+ *
+ * Conservative: requires both `submitEndpointPattern` to match (5xx
+ * from analytics/tracking URLs is noise, not a real backend failure)
+ * AND a 5xx status. Returns the matched URL when found; null otherwise.
+ */
+export function findRecentBackendError(params: {
+  recentCaptureMeta: readonly { method: string; status: number; url: string }[];
+  preMetaLength: number;
+  submitEndpointPattern: RegExp | null;
+}): string | null {
+  const { recentCaptureMeta, preMetaLength, submitEndpointPattern } = params;
+  if (!submitEndpointPattern) return null;
+  const window = recentCaptureMeta.slice(preMetaLength);
+  for (const m of window) {
+    if (m.status < 500 || m.status >= 600) continue;
+    if (!submitEndpointPattern.test(m.url)) continue;
+    return m.url;
+  }
+  return null;
+}
+
+/**
+ * Detect whether the page legitimately transitioned within the supplied
+ * capture-meta window — a 3xx redirect or a same-origin non-GET capture
+ * that returned 2xx and looks like a flow-progression URL (not a tracking
+ * beacon). `preMetaLength` is the caller's chosen window start (typically
+ * captured at step entry, so the scan covers everything that landed since
+ * this step began processing). When a transition is detected, a probe-
+ * absent escalation to replan is unnecessary noise — the form auto-
+ * advanced and the next probe naturally sees zero candidates for the OLD
+ * step.
+ *
+ * Conservative: returns null when the signal is ambiguous so the cascade
+ * keeps its existing replan path. Returns the matched URL string when a
+ * transition is detected, which the caller logs as the reason for the
+ * clean skip.
+ */
+export function findRecentPageTransition(params: {
+  recentCaptureMeta: readonly { method: string; status: number; url: string }[];
+  preMetaLength: number;
+}): string | null {
+  const { recentCaptureMeta, preMetaLength } = params;
+  const window = recentCaptureMeta.slice(preMetaLength);
+  if (window.length === 0) return null;
+  for (const m of window) {
+    if (m.status >= 300 && m.status < 400) return m.url;
+  }
+  for (const m of window) {
+    if (m.method === "GET") continue;
+    if (m.status < 200 || m.status >= 300) continue;
+    if (/(googleads|doubleclick|gtm\.js|analytics|pixel|airbrake|sentry|rmkt)/i.test(m.url))
+      continue;
+    return m.url;
+  }
+  return null;
+}
+
+/**
+ * Read-only count of ng-invalid form controls on the page. Side-effect-free
+ * counterpart to `probeFormValidityBeforeSubmit` (which also auto-fills
+ * unselected radio groups via element.click()). Used by the cascade's
+ * early-exit predicate to detect "the Submit click revealed new required
+ * questions" — when this count grows from 0 (pre-submit) to ≥1 (post-attempt-1),
+ * attempts 2-5 cannot succeed and the cascade should route to replan
+ * immediately instead of burning Stagehand calls.
+ */
+export async function countNgInvalidContainers(page: Page): Promise<number> {
+  const expr = `(() => {
+    const rx = /(ng-invalid|mat-form-field-invalid|is-invalid|field-invalid|input-invalid|form-invalid)/;
+    let n = 0;
+    for (const el of document.querySelectorAll("[class]")) {
+      const cls = el.getAttribute("class") || "";
+      if (rx.test(cls)) n++;
+    }
+    return n;
+  })()`;
+  try {
+    const raw = await page.evaluate(expr);
+    return typeof raw === "number" ? raw : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Translate the pre/post snapshot delta + same-window captures into a short
+ * diagnostic phrase that goes into `failureReasons[]`. Surfaces patterns the
+ * verifier itself discards: e.g. "DOM grew but no submit-shaped network
+ * request" (client-side validation blocked the form), or "analytics beacon
+ * fired but no same-origin submit" (third-party tracking, not real signal).
+ * The rephrase + replan LLMs read these strings to choose between "retry the
+ * click" and "fill an unanswered required field".
+ */
+export function describeAttemptEffectSignals(
+  pre: StepSnapshot,
+  post: StepSnapshot,
+  recentCaptureMeta: readonly { method: string; status: number; url: string }[],
+  preMetaLength: number
+): string {
+  const bytesDelta = post.bodyHtmlLength - pre.bodyHtmlLength;
+  const networkDelta = post.networkCount - pre.networkCount;
+  const textChanged = post.visibleTextSignature !== pre.visibleTextSignature;
+  const windowCaptures = recentCaptureMeta.slice(preMetaLength);
+  const observations: string[] = [];
+  if (networkDelta === 0 && bytesDelta >= 500) {
+    observations.push(
+      `dom-grew-without-network: body +${bytesDelta}B, ${textChanged ? "visible text changed" : "visible text unchanged"}, 0 same-origin non-GET requests (likely client-side validation rendered errors instead of submitting)`
+    );
+  }
+  if (networkDelta > 0 && windowCaptures.length > 0) {
+    const sameOriginNonGet = windowCaptures.filter((m) => m.method !== "GET");
+    if (sameOriginNonGet.length === 0) {
+      observations.push(
+        `network-fired-but-only-tracking: ${windowCaptures.length} requests captured but none were non-GET same-origin (analytics beacons / third-party tracking, not a form submit)`
+      );
+    }
+  }
+  if (textChanged && networkDelta === 0 && bytesDelta < 500) {
+    observations.push(
+      "visible-text-changed-without-network: page reflowed slightly (likely tooltip/focus state)"
+    );
+  }
+  return observations.join(" | ");
+}
+
+/**
+ * Decide whether a cascade technique's preconditions cannot be met by the
+ * prior attempts' state, so running it would burn the attempt slot without
+ * exercising new behaviour. Conservative: returns true ONLY when the
+ * predicate can prove the technique is mathematically unable to succeed;
+ * anything ambiguous falls through to "run the attempt" so the cascade
+ * keeps healing opportunistically.
+ */
+export function shouldSkipTechnique(params: {
+  technique:
+    | "act-string"
+    | "observe-act"
+    | "structured-click"
+    | "observe-act-exclude"
+    | "llm-rephrase";
+  priorAttempts: readonly {
+    technique: string;
+    triedSelectors: readonly string[];
+    errorMessage: string | null;
+  }[];
+}): { skip: boolean; reason: string } {
+  const { technique, priorAttempts } = params;
+  if (technique === "structured-click") {
+    const anyXpathResolved = priorAttempts.some((a) => a.triedSelectors.length > 0);
+    if (!anyXpathResolved) {
+      return {
+        skip: true,
+        reason:
+          "structured-click needs a prior xpath; no attempt has resolved a selector yet — skipping to next technique",
+      };
+    }
+  }
+  if (technique === "observe-act-exclude") {
+    const observeAct2 = priorAttempts.find((a) => a.technique === "observe-act");
+    if (
+      observeAct2 &&
+      observeAct2.errorMessage === "observe returned no candidates" &&
+      observeAct2.triedSelectors.length === 0
+    ) {
+      return {
+        skip: true,
+        reason:
+          "observe-act-exclude re-runs the same observe with exclusions; prior observe-act returned 0 candidates — no new candidates to surface, skipping",
+      };
+    }
+  }
+  return { skip: false, reason: "" };
+}
+
+/**
+ * Bucket the recent `recon-replan` LLM calls by `failureKind` and produce a
+ * single diagnostic phrase the runner can surface when the cascade aborts
+ * its replan budget. Lets the operator distinguish transient
+ * (anthropic-rate-limit) from permanent (schema-validation-failed,
+ * response-empty) failure modes without having to grep calls.ndjson.
+ *
+ * Reads the most recent N entries from the configured calls path, filters
+ * to the matching callType, and tallies their failureKind. Empty string
+ * when no relevant failures are present.
+ */
+export function summarizeReplanFailureKinds(params: {
+  callsNdjsonPath: string;
+  callType: string;
+  tailCount?: number;
+}): string {
+  const { callsNdjsonPath, callType, tailCount = 10 } = params;
+  let ndjsonContent: string;
+  try {
+    ndjsonContent = readFileSync(callsNdjsonPath, "utf8");
+  } catch {
+    return "";
+  }
+  const matching = filterByCallType(parseSamples(ndjsonContent), callType);
+  const failures = matching.filter((s) => s.success === false).slice(-tailCount);
+  if (failures.length === 0) return "";
+  const counts: Record<string, number> = {};
+  for (const s of failures) {
+    const kind = s.failureKind ?? "unknown";
+    counts[kind] = (counts[kind] ?? 0) + 1;
+  }
+  const parts = Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([kind, n]) => `${n}× ${kind}`);
+  return `${failures.length} recent ${callType} failure(s): ${parts.join(", ")}`;
+}
+
+/**
+ * Decide whether attempt 1 on a final-Submit click revealed new required
+ * questions that mathematically can't be cleared by retrying the same
+ * click. When true, the cascade should break out of its attempt loop and
+ * route directly to global replan, which already reads the failure dump's
+ * ng-invalid + interactive-target lists and produces follow-up steps.
+ *
+ * Strict 5-condition predicate: the click must be on the final flow step
+ * with a configured submit endpoint, the resolved action must be a click,
+ * the pre/post snapshot delta must produce the dom-grew-without-network
+ * signal, AND the ng-invalid container count must have grown. When any
+ * condition fails, the full cascade runs as usual — keeping the predicate
+ * from false-positiving on ordinary state changes (network-fired
+ * navigations, partial DOM reflows, etc.).
+ */
+export function isSubmitRevealedInvalid(params: {
+  isFinalStep: boolean;
+  requireSubmitEndpoint: boolean;
+  resolvedMethod: string | null;
+  effectSignals: string;
+  preSubmitInvalidCount: number;
+  postAttemptInvalidCount: number;
+}): boolean {
+  const {
+    isFinalStep,
+    requireSubmitEndpoint,
+    resolvedMethod,
+    effectSignals,
+    preSubmitInvalidCount,
+    postAttemptInvalidCount,
+  } = params;
+  if (!isFinalStep) return false;
+  if (!requireSubmitEndpoint) return false;
+  if (resolvedMethod !== "click") return false;
+  if (!effectSignals.includes("dom-grew-without-network")) return false;
+  if (postAttemptInvalidCount <= preSubmitInvalidCount) return false;
+  return true;
 }
 
 /**
@@ -474,7 +747,11 @@ async function rephraseWithLLM(
    * "Click Submit Application using JavaScript" because the prompt had no
    * signal that the form was invalid).
    */
-  pageEvidence?: { invalidFieldList: string; errorTextList: string },
+  pageEvidence?: {
+    invalidFieldList: string;
+    errorTextList: string;
+    interactiveTargetsList: string;
+  },
   /**
    * Optional unfocused observe list. The default `observeCandidates` is
    * Stagehand's observe filtered by the FAILED STEP'S INSTRUCTION — when
@@ -485,7 +762,28 @@ async function rephraseWithLLM(
    * buttons that the failed step's instruction filter hid. Modal entries
    * are prioritized to the top by `renderUnfocusedObserve`.
    */
-  unfocusedObserve?: Action[]
+  unfocusedObserve?: Action[],
+  /**
+   * Optional list of structured server-side validation errors harvested
+   * from any failed submit-endpoint captures in the recent window. Lets
+   * the rephrase LLM see "the form did POST and got back '{field: email,
+   * message: Invalid format}' from the server" — a signal the verifier
+   * alone hides behind "no observable effect".
+   */
+  submitFailureList?: string,
+  /**
+   * Optional verbatim instructions sent by prior cascade attempts. The
+   * SELECTORS ALREADY TRIED section tells the LLM which xpaths failed,
+   * but not which natural-language strategies it (or earlier observe
+   * branches) already proposed. Surfacing the prior instruction text
+   * prevents the rephrase LLM from cycling on near-synonyms of a
+   * wording the cascade has already proven ineffective.
+   */
+  priorAttempts?: readonly {
+    technique: string;
+    instruction: string | null;
+    verdict: string | null;
+  }[]
 ): Promise<string | null> {
   const candidateList = observeCandidates
     .slice(0, 12)
@@ -496,6 +794,14 @@ async function rephraseWithLLM(
   const reasonList = failureReasons.map((r, i) => `attempt ${i + 1}: ${r}`).join("\n");
   const invalidFieldList = pageEvidence?.invalidFieldList ?? "";
   const errorTextList = pageEvidence?.errorTextList ?? "";
+  const interactiveTargetsList = pageEvidence?.interactiveTargetsList ?? "";
+  const priorInstructionList = (priorAttempts ?? [])
+    .filter((a) => typeof a.instruction === "string" && a.instruction.trim().length > 0)
+    .map(
+      (a, i) =>
+        `${i + 1}. [${a.technique}] "${a.instruction}" → ${a.verdict ?? "(no verdict captured)"}`
+    )
+    .join("\n");
 
   const prompt = `You are helping a browser automation agent recover from a failed step in a recon flow.
 
@@ -507,6 +813,9 @@ ${reasonList}
 
 SELECTORS ALREADY TRIED (avoid these):
 ${triedList}
+
+INSTRUCTION TEXT ALREADY TRIED (do not re-propose these wordings or near-synonyms — they all produced the verdict shown after the arrow):
+${priorInstructionList || "(none)"}
 
 ELEMENTS CURRENTLY VISIBLE ON THE PAGE (filtered by the failed instruction):
 ${candidateList || "(no candidates returned by observe)"}
@@ -520,7 +829,13 @@ ${invalidFieldList || "(none)"}
 VISIBLE ERROR / REQUIRED-FIELD MESSAGES ON THE PAGE (extracted text from error-class containers):
 ${errorTextList || "(none)"}
 
-Rewrite the instruction so a Stagehand act() call can resolve it unambiguously to a different element than the ones already tried. Keep it short — one sentence, natural language, no quotes around it. If the invalid-fields section above names a field, your rewrite SHOULD address that field (e.g. re-fill it) rather than retrying the original click. If the unfocused observe section shows an open modal/dialog with a Save or Close action, your rewrite SHOULD invoke that action so the underlying form can clear its blocking state. If the original instruction is itself impossible on the current page (the element does not exist), reply with the literal string IMPOSSIBLE so the caller can stop trying.`;
+INTERACTIVE TARGETS NEAR INVALID FIELDS (radio labels, dropdown options, inputs found UNDER each ng-invalid / mat-form-field-invalid / is-invalid container — these are the elements you can click/fill to clear the corresponding invalid state; the bracketed [Question Title] is the parent question text when one was discoverable):
+${interactiveTargetsList || "(none)"}
+
+STRUCTURED SERVER-SIDE VALIDATION ERRORS (parsed from captured 4xx responses to the configured submit endpoint — when this is populated, the form's submit DID fire and the server rejected it with specific field-level feedback; use these field+message pairs to decide which input needs correcting):
+${submitFailureList || "(none)"}
+
+Rewrite the instruction so a Stagehand act() call can resolve it unambiguously to a different element than the ones already tried. Keep it short — one sentence, natural language, no quotes around it. If the invalid-fields section above names a field AND the interactive-targets section below lists clickable options inside that same container, your rewrite SHOULD pick one of those options (e.g. for a yes/no question rendered as two radio labels, choose the candidate-favorable answer — 'No' for "do you have a non-compete", 'Yes' for "are you authorized to work", 'Prefer not to say' for demographic disclosures) rather than retrying the original click. If the unfocused observe section shows an open modal/dialog with a Save or Close action, your rewrite SHOULD invoke that action so the underlying form can clear its blocking state. If the original instruction is itself impossible on the current page (the element does not exist), reply with the literal string IMPOSSIBLE so the caller can stop trying.`;
 
   const model = anthropicModelName();
   const t0 = performance.now();
@@ -547,11 +862,19 @@ Rewrite the instruction so a Stagehand act() call can resolve it unambiguously t
       outputTokens: response.usage?.output_tokens ?? null,
       latencyMs,
       success: parsedOk,
+      errorMessage: parsedOk
+        ? null
+        : text === "IMPOSSIBLE"
+          ? "model replied IMPOSSIBLE — original instruction not resolvable on current page"
+          : "model returned empty text block",
+      failureKind: parsedOk ? null : "response-empty",
     });
 
     if (!parsedOk) return null;
     return text;
-  } catch {
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logBillingErrorIfPresent(message);
     await captureFn({
       callId: randomUUID(),
       callType: CALL_TYPE_RECON_REPHRASE,
@@ -564,9 +887,52 @@ Rewrite the instruction so a Stagehand act() call can resolve it unambiguously t
       outputTokens: null,
       latencyMs: performance.now() - t0,
       success: false,
+      errorMessage: message,
+      failureKind: classifyLlmCallFailure(err),
     });
     return null;
   }
+}
+
+/**
+ * Detect terminal Anthropic API errors that the cascade can't possibly
+ * recover from (credit/billing exhaustion). Logs a single FATAL banner
+ * the first time per-process so the runner script can scan stdout and
+ * short-circuit a multi-job sweep instead of burning more browser
+ * sessions on jobs that will fail identically.
+ */
+let billingErrorLoggedThisProcess = false;
+
+/**
+ * Getter for the module-private billing-exhausted flag. Exported so the
+ * cascade's attempt-5 guard can read it without coupling to module-level
+ * state directly; also lets tests reset / observe the flag without
+ * mutating shared globals.
+ */
+export function hasBillingErrorBeenLogged(): boolean {
+  return billingErrorLoggedThisProcess;
+}
+
+/**
+ * Test-only reset. Tests that exercise the billing-exhausted path need to
+ * clear the per-process flag between cases; production code never resets it.
+ */
+export function resetBillingErrorFlagForTests(): void {
+  billingErrorLoggedThisProcess = false;
+}
+
+export function logBillingErrorIfPresent(errorMessage: string): boolean {
+  if (!ANTHROPIC_BILLING_RX.test(errorMessage)) return false;
+  if (billingErrorLoggedThisProcess) return true;
+  billingErrorLoggedThisProcess = true;
+  // FATAL_BILLING is a machine marker, not prose — the recon-replay-jobs
+  // runner regex-greps child stdout for this literal to short-circuit
+  // multi-job sweeps on Anthropic credit exhaustion. The uppercase is
+  // load-bearing; do not lowercase it.
+  logger.fatal(
+    "FATAL_BILLING: Anthropic API rejected the call due to insufficient credit balance. Cascade cannot heal further. Top up at https://console.anthropic.com/billing then re-run."
+  );
+  return true;
 }
 
 /**
@@ -607,13 +973,21 @@ const RECON_FLOW_SCHEMA = z.array(RECON_FLOW_STEP_SCHEMA).min(1);
  * Two on-disk shapes are accepted:
  *
  *  1. Legacy bare array — every existing site flow file uses this.
- *  2. Object form — adds an optional `submitEndpointPattern` regex. When
- *     set, the final flow step's verifier additionally requires at least
- *     one same-origin capture in its mutation window whose URL matches the
- *     pattern. Without that match `verified=false`, even if the click
- *     produced a DOM mutation — which is the only way the self-healing
- *     cascade can detect "the click fired tracking but not the real
- *     submit XHR."
+ *  2. Object form — adds optional `submitEndpointPattern` regex and
+ *     optional `submittedStateSelectors` array.
+ *     - `submitEndpointPattern`: the final step's verifier additionally
+ *       requires at least one same-origin capture in its mutation window
+ *       whose URL matches the pattern. Without that match `verified=false`,
+ *       even if the click produced a DOM mutation — which is the only way
+ *       the self-healing cascade can detect "the click fired tracking but
+ *       not the real submit XHR."
+ *     - `submittedStateSelectors`: DOM-level fallback when the submit POST
+ *       lands outside the per-attempt capture window. SPAs (e.g. AppCast)
+ *       can swap the form for a thank-you component (`<uapp-universal-
+ *       submitted-page>`) faster than the network capture pipeline records
+ *       the POST. If any selector in this list matches via
+ *       document.querySelector at verifier time, the submit is treated as
+ *       verified-by-DOM regardless of the network capture.
  *
  * Both forms route through `parseReconFlow` into a shared internal record.
  */
@@ -622,6 +996,7 @@ const RECON_FLOW_FILE_SCHEMA = z.union([
   z.object({
     steps: RECON_FLOW_SCHEMA,
     submitEndpointPattern: z.string().min(1).optional(),
+    submittedStateSelectors: z.array(z.string().min(1)).optional(),
   }),
 ]);
 
@@ -734,6 +1109,8 @@ function persistReplannedFlow(params: {
   originalShape?: "array" | "object";
   /** Carried through when the original file declared a submit pattern. */
   submitEndpointPattern?: string | null;
+  /** Carried through when the original file declared submitted-state DOM selectors. */
+  submittedStateSelectors?: string[];
 }): void {
   const {
     flowFile,
@@ -742,6 +1119,7 @@ function persistReplannedFlow(params: {
     logger,
     originalShape = "array",
     submitEndpointPattern = null,
+    submittedStateSelectors = [],
   } = params;
   // Timestamp format chosen to be filesystem-safe (no colons or dots that
   // break common tooling on macOS/Windows).
@@ -774,6 +1152,7 @@ function persistReplannedFlow(params: {
       ? {
           steps: dedupedSteps,
           ...(submitEndpointPattern !== null ? { submitEndpointPattern } : {}),
+          ...(submittedStateSelectors.length > 0 ? { submittedStateSelectors } : {}),
         }
       : dedupedSteps;
   writeFileSync(flowFile, `${JSON.stringify(payload, null, 2)}\n`);
@@ -943,15 +1322,17 @@ function extractClassMatchedText(html: string, classPattern: RegExp, cap: number
  * Returns empty strings on any failure (page.evaluate threw, body missing,
  * etc.) — evidence is advisory, never load-bearing.
  */
-async function extractLivePageFormEvidence(
-  page: Page
-): Promise<{ invalidFieldList: string; errorTextList: string }> {
+async function extractLivePageFormEvidence(page: Page): Promise<{
+  invalidFieldList: string;
+  errorTextList: string;
+  interactiveTargetsList: string;
+}> {
   let body = "";
   try {
     const raw = await page.evaluate("document.body ? document.body.outerHTML : null");
     if (typeof raw === "string") body = raw;
   } catch {
-    return { invalidFieldList: "", errorTextList: "" };
+    return { invalidFieldList: "", errorTextList: "", interactiveTargetsList: "" };
   }
   const invalidPattern =
     /(ng-invalid|mat-form-field-invalid|is-invalid|field-invalid|input-invalid|form-invalid)/;
@@ -959,10 +1340,179 @@ async function extractLivePageFormEvidence(
     /(error-message|mat-error|field-error|validation-error|required-message|invalid-feedback|form-error|help-block-error)/;
   const invalidEntries = extractClassMatchedText(body, invalidPattern, EVIDENCE_LIST_CAP);
   const errorEntries = extractClassMatchedText(body, errorPattern, EVIDENCE_LIST_CAP);
+  const interactiveTargets = await extractInteractiveTargetsNearInvalid(page).catch(
+    () => [] as string[]
+  );
   return {
     invalidFieldList: invalidEntries.map((e, i) => `${i + 1}. ${e}`).join("\n"),
     errorTextList: errorEntries.map((e, i) => `${i + 1}. ${e}`).join("\n"),
+    interactiveTargetsList: interactiveTargets.map((e, i) => `${i + 1}. ${e}`).join("\n"),
   };
+}
+
+/**
+ * For each container marked invalid by the framework's validity classes,
+ * walk the DOM tree under it and surface clickable descendants (radio
+ * labels, dropdown options, text inputs) with an xpath the rephrase LLM
+ * can hand directly to Stagehand's act(). Closes the gap where the
+ * rephrase prompt carries "field X is invalid" but no selector for the
+ * radio/option that would clear it — so the LLM proposes "click Submit
+ * harder" instead of "answer field X with Yes/No".
+ */
+async function extractInteractiveTargetsNearInvalid(page: Page): Promise<string[]> {
+  const expr = `(() => {
+    const out = [];
+    const containers = document.querySelectorAll(
+      "[class*='ng-invalid'], [class*='mat-form-field-invalid'], [class*='is-invalid'], [class*='field-invalid'], [class*='input-invalid'], [class*='form-invalid']"
+    );
+    const seen = new Set();
+    function xpathOf(node) {
+      const parts = [];
+      while (node && node.nodeType === 1 && node !== document.body) {
+        const tag = node.nodeName.toLowerCase();
+        let idx = 1;
+        let sib = node.previousElementSibling;
+        while (sib) {
+          if (sib.nodeName.toLowerCase() === tag) idx++;
+          sib = sib.previousElementSibling;
+        }
+        parts.unshift(tag + "[" + idx + "]");
+        node = node.parentElement;
+      }
+      return "/html[1]/body[1]/" + parts.join("/");
+    }
+    function questionTitleOf(container) {
+      let n = container;
+      for (let i = 0; i < 6 && n; i++) {
+        const title = n.querySelector
+          ? n.querySelector(".group-title, .question-title, .question-label, label")
+          : null;
+        if (title && title.textContent) {
+          const t = title.textContent.trim().replace(/\\s+/g, " ");
+          if (t.length > 5 && t.length < 200) return t;
+        }
+        n = n.parentElement;
+      }
+      return null;
+    }
+    for (const c of containers) {
+      if (out.length >= 12) break;
+      const title = questionTitleOf(c);
+      const clickables = c.querySelectorAll(
+        "label, button, app-radio-button, select option, input[type='radio'], input[type='checkbox']"
+      );
+      for (const el of clickables) {
+        if (out.length >= 12) break;
+        const text = (el.textContent || "").trim().replace(/\\s+/g, " ").slice(0, 60);
+        if (!text) continue;
+        const xp = xpathOf(el);
+        const key = xp;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const q = title ? "[" + title.slice(0, 80) + "] " : "";
+        out.push(q + (el.tagName.toLowerCase()) + " '" + text + "' — xpath=" + xp);
+      }
+    }
+    return out;
+  })()`;
+  const result = await page.evaluate(expr);
+  return Array.isArray(result) ? (result as string[]) : [];
+}
+
+/**
+ * Scan recent capture files for failed submit-endpoint requests and pull
+ * out structured field-level errors from the response body. The cascade
+ * already saves every captured request to `CAPTURES_DIR` with its parsed
+ * `responseBody`; this helper reads those files back, filters to captures
+ * matching the configured submit pattern with status >= 400, and walks
+ * common error-shape conventions (`{ errors: [{ field, message }] }`,
+ * `{ validation/fieldErrors: { … } }`, `{ message }`).
+ *
+ * Returns a short bullet list ready to drop into a prompt; empty string
+ * when no failed submit was found. Advisory — never load-bearing.
+ */
+export function extractSubmitFailureEvidence(
+  recentCaptureFilenames: readonly string[],
+  submitEndpointPattern: RegExp | null,
+  capturesDir: string = CAPTURES_DIR,
+  mode: "strict" | "any-4xx" = "strict"
+): string {
+  if (recentCaptureFilenames.length === 0) return "";
+  if (mode === "strict" && !submitEndpointPattern) return "";
+  const records: string[] = [];
+  const seen = new Set<string>();
+  for (const filename of recentCaptureFilenames.slice(-20)) {
+    if (seen.has(filename)) continue;
+    seen.add(filename);
+    try {
+      const path = join(capturesDir, filename);
+      const raw = readFileSync(path, "utf8");
+      const capture = JSON.parse(raw) as Partial<Capture>;
+      if (typeof capture.url !== "string") continue;
+      if (mode === "strict" && !submitEndpointPattern!.test(capture.url)) continue;
+      const status = typeof capture.status === "number" ? capture.status : 0;
+      if (status < 400) continue;
+      const body = capture.responseBody;
+      const errors = harvestFieldErrors(body);
+      if (errors.length === 0) {
+        const fallback =
+          typeof body === "string"
+            ? body.slice(0, 240)
+            : body && typeof body === "object" && "message" in body
+              ? String((body as { message?: unknown }).message ?? "").slice(0, 240)
+              : `(status ${status}; no structured error body)`;
+        records.push(`${status} ${capture.url}: ${fallback}`);
+        continue;
+      }
+      for (const e of errors.slice(0, 8)) {
+        records.push(`${status} ${capture.url} — ${e}`);
+      }
+    } catch {
+      // capture file missing or malformed — skip
+    }
+  }
+  return records.map((r, i) => `${i + 1}. ${r}`).join("\n");
+}
+
+/**
+ * Pull field-level errors out of an arbitrary JSON response body. Walks a
+ * few of the conventional ATS shapes; falls through to `[]` so the caller
+ * can decide whether to emit a fallback summary.
+ */
+function harvestFieldErrors(body: unknown): string[] {
+  if (!body || typeof body !== "object") return [];
+  const out: string[] = [];
+  const rec = body as Record<string, unknown>;
+  const errorsArr = rec.errors;
+  if (Array.isArray(errorsArr)) {
+    for (const e of errorsArr) {
+      if (typeof e === "string") out.push(e);
+      else if (e && typeof e === "object") {
+        const fr = e as Record<string, unknown>;
+        const field = typeof fr.field === "string" ? fr.field : null;
+        const message =
+          typeof fr.message === "string"
+            ? fr.message
+            : typeof fr.error === "string"
+              ? fr.error
+              : null;
+        if (field && message) out.push(`${field}: ${message}`);
+        else if (message) out.push(message);
+        else if (field) out.push(field);
+      }
+    }
+  }
+  const fieldBags = [rec.validation, rec.fieldErrors, rec.field_errors];
+  for (const bag of fieldBags) {
+    if (bag && typeof bag === "object" && !Array.isArray(bag)) {
+      for (const [field, msg] of Object.entries(bag as Record<string, unknown>)) {
+        if (typeof msg === "string") out.push(`${field}: ${msg}`);
+        else if (Array.isArray(msg))
+          for (const m of msg) if (typeof m === "string") out.push(`${field}: ${m}`);
+      }
+    }
+  }
+  return out;
 }
 
 function readFailureDumpEvidence(failureDumpPath: string): {
@@ -1037,6 +1587,24 @@ async function replanRemainingFlow(params: {
   page: Page;
   stagehand: Stagehand;
   captureFn?: CaptureFn;
+  /**
+   * Files in `CAPTURES_DIR` recorded during the failed step's attempt
+   * window. Used to surface structured server-side validation errors
+   * to the replan LLM when a submit actually fired but was rejected.
+   */
+  recentCaptures?: readonly string[];
+  /** Compiled submit-endpoint regex from the flow file, when defined. */
+  submitEndpointPattern?: RegExp | null;
+  /**
+   * Optional short tail of prior steps' verification signals (network,
+   * url, dom, submitted-state-dom). When provided, the prompt gets a
+   * PRIOR STEP TRAJECTORY section so the LLM can distinguish "page has
+   * been visibly transitioning (URL changes / submitted-state markers)"
+   * from "page has been static (network signals + DOM-only updates)".
+   * Helps the replanner avoid proposing regression steps when the form
+   * has already advanced.
+   */
+  trajectory?: readonly { stepIndex: number; verifiedBy: AttemptRecord["verifiedBy"] }[];
 }): Promise<NormalizedStep[] | null> {
   const {
     client,
@@ -1048,7 +1616,19 @@ async function replanRemainingFlow(params: {
     page,
     stagehand,
     captureFn = captureLlmCall,
+    recentCaptures = [],
+    submitEndpointPattern = null,
+    trajectory = [],
   } = params;
+  const trajectoryList =
+    trajectory.length > 0
+      ? trajectory
+          .slice(-5)
+          .map(
+            (t) => `step ${t.stepIndex + 1} verified via ${t.verifiedBy ?? "(no signal recorded)"}`
+          )
+          .join("; ")
+      : "";
   const candidates = await stagehand
     .observe({ timeout: STEP_WATCHDOG_MS })
     .catch(() => [] as Action[]);
@@ -1061,6 +1641,7 @@ async function replanRemainingFlow(params: {
   const { bodyExcerpt, unfocusedList, invalidFieldList, errorTextList, recentFailureReasons } =
     readFailureDumpEvidence(failureDumpPath);
   const failureReasonList = recentFailureReasons.map((r, i) => `${i + 1}. ${r}`).join("\n");
+  const submitFailureList = extractSubmitFailureEvidence(recentCaptures, submitEndpointPattern);
 
   const prompt = `You are helping a browser automation agent recover from a failed flow step.
 
@@ -1088,6 +1669,12 @@ ${invalidFieldList || "(none)"}
 
 VISIBLE ERROR / REQUIRED-FIELD MESSAGES ON THE PAGE (extracted text from error-class containers — error-message, mat-error, field-error, validation-error, invalid-feedback, etc.):
 ${errorTextList || "(none)"}
+
+STRUCTURED SERVER-SIDE VALIDATION ERRORS (parsed from captured 4xx responses to the submit endpoint — when populated, the form's submit DID fire and the server rejected it with specific feedback):
+${submitFailureList || "(none)"}
+
+PRIOR STEP TRAJECTORY (how the last few completed steps verified — url / submitted-state-dom signal pages that visibly transitioned; network / dom signal pages that stayed static. Use this to distinguish "page has been advancing through the flow" from "page has been static and the form is still in front of us"; avoid proposing regression-style steps if the trajectory shows recent transitions):
+${trajectoryList || "(none)"}
 
 ELEMENTS CURRENTLY VISIBLE ON THE PAGE (stagehand.observe with the failed instruction):
 ${candidateList || "(no candidates returned by observe)"}
@@ -1226,11 +1813,15 @@ but that's rare — most upload steps are required.`;
       outputTokens: response.usage?.output_tokens ?? null,
       latencyMs,
       success: true,
+      errorMessage: null,
+      failureKind: null,
     });
 
     if (parsed.outcome === "replan") return normalizeFlow(parsed.steps);
     return null;
-  } catch {
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logBillingErrorIfPresent(message);
     await captureFn({
       callId: randomUUID(),
       callType: CALL_TYPE_RECON_REPLAN,
@@ -1243,6 +1834,8 @@ but that's rare — most upload steps are required.`;
       outputTokens: null,
       latencyMs: performance.now() - t0,
       success: false,
+      errorMessage: message,
+      failureKind: classifyLlmCallFailure(err),
     });
     return null;
   }
@@ -1622,7 +2215,32 @@ async function verifyDomEffect(page: Page, action: Action): Promise<boolean> {
           // Real button/link click — let network/URL signal decide.
           return false;
         }
-        return await locator.isChecked();
+        const isCheckedNow = await locator.isChecked();
+        if (!isCheckedNow) return false;
+        // Vacuous-click guard. On multi-page Angular paginators an input
+        // can exist in the DOM while its containing component is on a
+        // hidden paginator page; CDP click + locator.isChecked both
+        // return true because the DOM property updated, but Angular's
+        // FormControl on the hidden component never re-validates. The
+        // FormControl's container keeps its ng-invalid marker. If any
+        // ancestor within 6 levels still carries a framework-agnostic
+        // invalid marker after the click, treat the click as vacuous so
+        // the cascade routes to rephrase/replan instead of advancing
+        // past a step that didn't actually change the form state.
+        const ancestorInvalidExpr = `(() => {
+          const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+          let node = r.singleNodeValue;
+          if (!node) return false;
+          const rx = /(ng-invalid|mat-form-field-invalid|is-invalid|field-invalid|input-invalid)/;
+          for (let depth = 0; depth < 6 && node; depth++) {
+            const cls = node.getAttribute && node.getAttribute("class");
+            if (cls && rx.test(cls)) return true;
+            node = node.parentElement;
+          }
+          return false;
+        })()`;
+        const ancestorStillInvalid = await page.evaluate(ancestorInvalidExpr).catch(() => false);
+        return !ancestorStillInvalid;
       }
       default:
         return false;
@@ -1737,24 +2355,21 @@ const FORM_VALIDITY_PROBE_EXPR = `(() => {
     if (!ctrl) continue;
     // Accept two distinct invalid signatures:
     //
-    // 1. Leaf-invalid (Angular reactive forms decorating the <input>):
-    //    the control's OWN class carries ng-invalid.
+    // 1. Leaf-invalid: the control's own class carries ng-invalid
+    //    (Angular reactive forms decorating the <input> directly).
     //
-    // 2. Wrapper-only invalid (Material/Angular custom wrappers like
-    //    <mat-form-field>, <app-input uappaddresssearch>): the wrapper
-    //    carries the marker but the inner <input> stays ng-pristine
-    //    ng-untouched because the user has never focused it. This is
-    //    the structural pattern for required-but-unfilled fields in
-    //    Material/AppCast forms. The pre-submit probe was structurally
-    //    blind to these — verified by run bu15gcpy2 where GA's
-    //    validationErrorsCount=1 fired from the very first submit at
-    //    05:29 yet the probe reported "no ng-invalid form controls".
+    // 2. Wrapper-only invalid: an outer wrapper (<mat-form-field>,
+    //    custom <app-*> widgets) carries the marker while the inner
+    //    control stays ng-pristine ng-untouched — the structural
+    //    pattern for required-but-unfilled fields under Material /
+    //    Angular custom widgets.
     //
-    // The wrapper-only branch must ALSO require the inner control to
-    // be empty/unset — without that the outer <ol class="questions-
-    // container ng-invalid"> case re-enters as a false positive
-    // (already-filled First Name input under an ng-invalid <ol>
-    // because a sibling field is invalid).
+    // The wrapper-only branch MUST also require the inner control to
+    // be empty. Without that constraint, an outer container's
+    // ng-invalid (propagated from a sibling field) would mark its
+    // first descendant input as invalid even when that input is
+    // already filled — re-introducing the false positive the leaf-
+    // only check was originally added to eliminate.
     const ctrlClass = ctrl.getAttribute("class") || "";
     const leafInvalid = INVALID_CLASS_RX.test(ctrlClass);
     const wrapperOnlyInvalid =
@@ -1997,6 +2612,26 @@ async function executeStepWithHealing(params: {
    */
   isFinalStep: boolean;
   submitEndpointPattern: string | null;
+  /**
+   * DOM-level fallback for the final-step submit gate. If the network
+   * capture didn't match `submitEndpointPattern` within the attempt
+   * window, the verifier also probes the live DOM for any of these
+   * selectors — a match indicates the SPA has reached its submitted /
+   * thank-you state even though the underlying POST landed outside the
+   * verifier's capture window (debounced submits, batched requests,
+   * SPAs that swap the form before the network event records).
+   */
+  submittedStateSelectors: string[];
+  /**
+   * Optional accumulator the cascade pushes onto when this step verifies.
+   * Lets the main loop maintain a short cross-step trajectory of `verifiedBy`
+   * signals (network / url / dom / submitted-state-dom) which is then
+   * surfaced to the replan prompt as "PRIOR STEP TRAJECTORY" so the LLM
+   * can tell whether the page has been visibly transitioning vs. staying
+   * static. When omitted, the cascade behaves identically — purely
+   * additive instrumentation.
+   */
+  trajectory?: { stepIndex: number; verifiedBy: AttemptRecord["verifiedBy"] }[];
 }): Promise<void> {
   const {
     stagehand,
@@ -2015,6 +2650,8 @@ async function executeStepWithHealing(params: {
     resumeFixture,
     isFinalStep,
     submitEndpointPattern,
+    submittedStateSelectors,
+    trajectory,
   } = params;
   const requireSubmitEndpoint = isFinalStep && submitEndpointPattern !== null;
   const compiledSubmitPattern = requireSubmitEndpoint ? new RegExp(submitEndpointPattern!) : null;
@@ -2037,8 +2674,14 @@ async function executeStepWithHealing(params: {
     })
   ) {
     logger.info(`step ${stepIndex + 1} resolved by upload primitive`);
+    trajectory?.push({ stepIndex, verifiedBy: "network" });
     return;
   }
+
+  // Snapshot the capture-meta tail length at step entry. The probe-absent
+  // legitimate-transition check (below) scans captures landed during THIS
+  // step's processing — earlier-step transitions don't count.
+  const stepStartMetaLength = recentCaptureMeta.length;
 
   // Page-state probe BEFORE the cascade. When the page doesn't have any
   // candidate matching the step's instruction we either skip cleanly
@@ -2050,8 +2693,73 @@ async function executeStepWithHealing(params: {
       logger.info(`step ${stepIndex + 1} skipped (optional, probe found no candidates)`);
       return;
     }
+    // Telemetry-driven legitimate-transition detection. When the page
+    // already advanced (a 3xx redirect or successful non-tracking POST
+    // landed in the same-window capture meta), the step's "absent" state
+    // reflects expected progress, not a failure — replan would just be
+    // noise. Skip cleanly and let the next iteration probe the post-
+    // transition page.
+    const transitionUrl = findRecentPageTransition({
+      recentCaptureMeta,
+      preMetaLength: stepStartMetaLength,
+    });
+    if (transitionUrl !== null) {
+      logger.info(
+        `step ${stepIndex + 1} skipped (probe absent but recent transition detected: ${transitionUrl})`
+      );
+      trajectory?.push({ stepIndex, verifiedBy: "url" });
+      return;
+    }
+    // Telemetry-driven backend-error detection. If the same-window capture
+    // meta contains a 5xx response from the configured submit endpoint,
+    // the backend errored — no rephrase or replan can heal a server crash.
+    // Fail-fast so the runner surfaces the diagnostic instead of burning
+    // budget on retries that will fail identically.
+    const backendErrorUrl = findRecentBackendError({
+      recentCaptureMeta,
+      preMetaLength: stepStartMetaLength,
+      submitEndpointPattern: submitEndpointPattern ? new RegExp(submitEndpointPattern) : null,
+    });
+    if (backendErrorUrl !== null) {
+      logger.error(
+        `step ${stepIndex + 1} backend error detected (submit endpoint returned 5xx: ${backendErrorUrl}); aborting cascade`
+      );
+      throw new StepVerificationError(
+        `step ${stepIndex + 1} (${step.slice(0, 60)}) backend 5xx at ${backendErrorUrl} — unrecoverable`,
+        "backend-error-unrecoverable"
+      );
+    }
+    // Capture diagnostics + write a failure dump BEFORE throwing so the
+    // global replan path's `readFailureDumpEvidence` can populate the
+    // prompt's CURRENTLY VISIBLE / UNFOCUSED OBSERVE / PAGE BODY HTML
+    // sections. Without this, the LLM-replan receives empty diagnostic
+    // data, returns "repeat the failed step", and the next probe-absent
+    // burns the replan budget in seconds. Embed `see <path>` in the
+    // throw message so the existing regex at the dispatcher (`/see
+    // (\/[^\s]+)$/`) extracts dumpPath for replanRemainingFlow.
+    const pageTitle = await page.title().catch(() => "");
+    const bodyOuterHtmlRaw = await page
+      .evaluate("document.body ? document.body.outerHTML : null")
+      .catch(() => null);
+    const bodyOuterHtml =
+      typeof bodyOuterHtmlRaw === "string" ? bodyOuterHtmlRaw.slice(0, 100_000) : null;
+    const unfocusedObserve = await stagehand
+      .observe({ timeout: STEP_WATCHDOG_MS })
+      .catch(() => [] as Action[]);
+    const dumpPath = dumpStepFailure({
+      stepIndex,
+      phase,
+      originalStep: step,
+      attempts: [],
+      finalObserve: [],
+      pageUrl: page.url(),
+      pageTitle,
+      recentCaptures,
+      bodyOuterHtml,
+      unfocusedObserve,
+    });
     throw new StepVerificationError(
-      `step ${stepIndex + 1} (${step.slice(0, 60)}) probe found no candidates on page`,
+      `step ${stepIndex + 1} (${step.slice(0, 60)}) probe found no candidates on page; see ${dumpPath}`,
       "probe-absent"
     );
   }
@@ -2069,6 +2777,11 @@ async function executeStepWithHealing(params: {
   // framework re-render that wipes an earlier-filled value back to empty.
   // The submit click then silently fails validation and the cascade can't
   // tell what's wrong from the DOM excerpt alone.
+  // Pre-submit ng-invalid count: side-effect-free baseline read BEFORE the
+  // form-validity auto-picker runs. The early-exit predicate compares this
+  // to the post-attempt-1 count to detect "the click revealed NEW required
+  // fields" — a state attempts 2-5 mathematically can't clear.
+  const preSubmitInvalidCount = requireSubmitEndpoint ? await countNgInvalidContainers(page) : 0;
   if (requireSubmitEndpoint) {
     const invalidControls = await probeFormValidityBeforeSubmit({
       page,
@@ -2126,6 +2839,36 @@ async function executeStepWithHealing(params: {
   }
 
   for (let attempt = 1; attempt <= MAX_STEP_ATTEMPTS; attempt++) {
+    // Telemetry-driven technique-skip: when a cascade technique's
+    // preconditions cannot be met by the prior attempts' state, running
+    // it would burn the attempt slot without exercising new behaviour.
+    // Skip to the next iteration so the cascade reaches its higher-value
+    // techniques faster.
+    if (attempt > 1) {
+      const wouldBeTechnique: AttemptRecord["technique"] =
+        attempt === 2
+          ? "observe-act"
+          : attempt === 3
+            ? "structured-click"
+            : attempt === 4
+              ? "observe-act-exclude"
+              : "llm-rephrase";
+      const decision = shouldSkipTechnique({
+        technique: wouldBeTechnique,
+        priorAttempts: attempts.map((a) => ({
+          technique: a.technique,
+          triedSelectors: a.triedSelectors,
+          errorMessage: a.errorMessage,
+        })),
+      });
+      if (decision.skip) {
+        logger.info(
+          `step ${stepIndex + 1} attempt ${attempt} (${wouldBeTechnique}) skipped: ${decision.reason}`
+        );
+        failureReasons.push(`attempt ${attempt} skipped: ${decision.reason}`);
+        continue;
+      }
+    }
     if (attempt > 1) {
       await page.waitForTimeout(attempt * ATTEMPT_BACKOFF_MS);
     }
@@ -2262,19 +3005,13 @@ async function executeStepWithHealing(params: {
             }
             if (!input && start.querySelector) {
               // Bound the descendant search to the nearest single-question
-              // container so a broad start (form, <ol>, <fieldset> wrapping
-              // the whole form) cannot reach the FIRST radio anywhere in
-              // the form — which is almost always "Yes" of some unrelated
-              // question. Verified against run bu15gcpy2 dump-048
-              // chronology: cascade replan #5's step 48 ("fill any invalid
-              // field") healed via structured-click + htmlDelta=1167
-              // between dumps 045 (no follow-up textbox) and 048 (follow-
-              // up textbox present), flipping RelatedToEmployee No → Yes
-              // and mounting an empty conditional textbox that became the
-              // run's 2nd validation error (GA validationErrorsCount
-              // jumped 1 → 2 at exactly 05:49:23). If the bounded scope
-              // returns null the probe falls through to safer cascade
-              // techniques rather than picking a wrong target.
+              // container so a broad start element (form, <ol>, fieldset
+              // wrapping the whole form) cannot reach the first radio
+              // anywhere in the form — which is almost always "Yes" of an
+              // unrelated question, and would silently flip a previously-
+              // answered radio with an unrelated instruction. If the
+              // bounded scope returns null the cascade falls through to
+              // safer techniques rather than picking a wrong target.
               const scope = start.closest
                 ? start.closest("li, app-radio-group, app-checkbox-group, mat-radio-group, fieldset[role='radiogroup'], [role='radiogroup']")
                 : null;
@@ -2346,6 +3083,15 @@ async function executeStepWithHealing(params: {
         record.technique = "llm-rephrase";
         if (!anthropic) {
           record.errorMessage = "no anthropic client (bedrock-only deployment); skipping rephrase";
+        } else if (hasBillingErrorBeenLogged()) {
+          // Telemetry-driven skip: when Anthropic billing has already been
+          // flagged FATAL for this process, every subsequent rephrase call
+          // will fail identically. Skip the observe + evidence-extraction
+          // + LLM round-trip and let the cascade exhaust cleanly so the
+          // global replan path can decide whether replans are still viable
+          // (the replan helper has the same guard via its own catch path).
+          record.errorMessage =
+            "anthropic billing exhausted (FATAL_BILLING already logged); skipping rephrase";
         } else {
           const candidates = await stagehand
             .observe(step, { timeout: STEP_WATCHDOG_MS })
@@ -2360,6 +3106,15 @@ async function executeStepWithHealing(params: {
           const unfocused = await stagehand
             .observe({ timeout: STEP_WATCHDOG_MS })
             .catch(() => [] as Action[]);
+          const submitFailureList = extractSubmitFailureEvidence(
+            recentCaptures,
+            submitEndpointPattern ? new RegExp(submitEndpointPattern) : null
+          );
+          const priorAttemptsForPrompt = attempts.map((a, i) => ({
+            technique: a.technique,
+            instruction: a.instruction,
+            verdict: a.errorMessage ?? failureReasons[i] ?? null,
+          }));
           const rephrased = await rephraseWithLLM(
             anthropic,
             step,
@@ -2368,7 +3123,9 @@ async function executeStepWithHealing(params: {
             failureReasons,
             captureFn,
             livePageEvidence,
-            unfocused
+            unfocused,
+            submitFailureList,
+            priorAttemptsForPrompt
           );
           if (!rephrased) {
             record.errorMessage = "llm declined to rephrase or returned IMPOSSIBLE";
@@ -2387,6 +3144,7 @@ async function executeStepWithHealing(params: {
     } catch (err) {
       const cause = err instanceof Error && err.cause instanceof Error ? err.cause.message : null;
       record.errorMessage = `${toErrorMessage(err)}${cause ? ` (cause: ${cause})` : ""}`;
+      logBillingErrorIfPresent(record.errorMessage);
     }
 
     await page.waitForTimeout(STEP_PAUSE_MS);
@@ -2427,18 +3185,75 @@ async function executeStepWithHealing(params: {
       const tail = recentCaptureMeta.slice(preMetaLength);
       const matched = tail.some((m) => compiledSubmitPattern.test(m.url));
       if (!matched) {
-        verified = false;
-        record.errorMessage =
-          (record.errorMessage ?? "") +
-          (record.errorMessage ? "; " : "") +
-          `submit-endpoint-not-matched: pattern ${submitEndpointPattern!} did not match any of ${tail.length} attempt-window capture(s)`;
-        failureReasons.push(
-          `submit-endpoint-not-matched: ${tail.length} capture(s) seen, none matched ${submitEndpointPattern!}`
-        );
+        // DOM-state fallback. Some SPAs swap the form for a thank-you
+        // component faster than the network capture pipeline records the
+        // submit POST — the verifier sees zero matching captures even
+        // though the submit went through. If the flow declared any
+        // submittedStateSelectors and ANY is present in the DOM right
+        // now, treat the submit as verified via the DOM marker.
+        let domSubmittedMatch: string | null = null;
+        if (submittedStateSelectors.length > 0) {
+          // page.evaluate via template string keeps the DOM globals out of
+          // the Node TS scope. Each selector is JSON-stringified so an
+          // accidental quote/backslash in the flow file can't break out
+          // of the inlined JS expression.
+          const selectorsJson = JSON.stringify(submittedStateSelectors);
+          const probeExpr = `(() => {
+            const sels = ${selectorsJson};
+            for (const sel of sels) {
+              try {
+                if (document.querySelector(sel)) return sel;
+              } catch (_e) {}
+            }
+            return null;
+          })()`;
+          try {
+            domSubmittedMatch = (await page.evaluate(probeExpr)) as string | null;
+          } catch (err) {
+            logger.warn(
+              `submitted-state DOM probe threw: ${toErrorMessage(err)} — falling back to network-only verdict`
+            );
+          }
+        }
+        if (domSubmittedMatch !== null) {
+          logger.info(
+            `submit verified via submitted-state DOM selector '${domSubmittedMatch}' (network capture missed the attempt window)`
+          );
+          record.verifiedBy = "submitted-state-dom";
+        } else {
+          verified = false;
+          record.errorMessage =
+            (record.errorMessage ?? "") +
+            (record.errorMessage ? "; " : "") +
+            `submit-endpoint-not-matched: pattern ${submitEndpointPattern!} did not match any of ${tail.length} attempt-window capture(s)`;
+          failureReasons.push(
+            `submit-endpoint-not-matched: ${tail.length} capture(s) seen, none matched ${submitEndpointPattern!}`
+          );
+          // Any-4xx fallback. When the configured submit pattern didn't
+          // match BUT some same-window capture returned a 4xx (CSRF
+          // redirect to /errors, generic CDN error page, etc.), the
+          // structured field-level error JSON in that 4xx body is still
+          // actionable for the rephrase prompt. Surface it as a separate
+          // failureReason so the LLM sees the server's actual rejection
+          // reason instead of just "endpoint pattern didn't match".
+          const fallbackEvidence = extractSubmitFailureEvidence(
+            recentCaptures.slice(-tail.length),
+            null,
+            CAPTURES_DIR,
+            "any-4xx"
+          );
+          if (fallbackEvidence.length > 0) {
+            failureReasons.push(
+              `any-4xx fallback: ${fallbackEvidence.split("\n")[0]}`.slice(0, 240)
+            );
+          }
+        }
       }
     }
 
-    if (verified) {
+    if (verified && record.verifiedBy === null) {
+      // Preserve a richer verdict set earlier in this attempt (e.g.
+      // "submitted-state-dom" from the final-step DOM fallback).
       record.verifiedBy = urlChanged ? "url" : networkFired ? "network" : "dom";
     }
 
@@ -2449,8 +3264,16 @@ async function executeStepWithHealing(params: {
     // native HTMLElement.click() through the JS event pipeline as a fallback;
     // that path is guaranteed to fire registered click handlers. If it produces
     // an observable effect, treat this attempt as healed.
+    // Telemetry-driven short-circuit: if a prior attempt already verified
+    // via DOM state inspection (`verifiedBy === "dom"`), the checkbox/radio
+    // is already in the correct state. Re-running the n+16 fallback would
+    // re-dispatch click + input + change events on an already-settled
+    // element, wasting STEP_PAUSE_MS + observe latency on a known-good
+    // state. Skip the fallback when this evidence is already in the record.
+    const priorDomVerified = attempts.some((a) => a.verifiedBy === "dom");
     if (
       !verified &&
+      !priorDomVerified &&
       record.actResultSuccess === true &&
       resolvedAction?.method === "click" &&
       resolvedAction.selector
@@ -2490,8 +3313,36 @@ async function executeStepWithHealing(params: {
             checked?: boolean;
           };
           const fired = probeResult.fired;
+          // Vacuous-click guard for the n+16 fallback. Same rationale as
+          // verifyDomEffect's click case: a checkbox/radio input's .checked
+          // property can flip true via CDP click even when the input lives on
+          // a hidden Angular paginator page; the FormControl bound to that
+          // input doesn't re-validate, so the container's ng-invalid marker
+          // persists. Reading el.checked alone declares victory; routing the
+          // ancestor-invalid signal through prevents the cascade from
+          // advancing past a vacuous click.
+          let ancestorStillInvalid = false;
+          if (probeResult.kind === "checkbox" && probeResult.checked === true) {
+            const ancestorInvalidExpr = `(() => {
+              const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+              let node = r.singleNodeValue;
+              if (!node) return false;
+              const rx = /(ng-invalid|mat-form-field-invalid|is-invalid|field-invalid|input-invalid)/;
+              for (let depth = 0; depth < 6 && node; depth++) {
+                const cls = node.getAttribute && node.getAttribute("class");
+                if (cls && rx.test(cls)) return true;
+                node = node.parentElement;
+              }
+              return false;
+            })()`;
+            ancestorStillInvalid = (await page
+              .evaluate(ancestorInvalidExpr)
+              .catch(() => false)) as boolean;
+          }
           const checkboxStateVerified =
-            probeResult.kind === "checkbox" && probeResult.checked === true;
+            probeResult.kind === "checkbox" &&
+            probeResult.checked === true &&
+            !ancestorStillInvalid;
           await page.waitForTimeout(STEP_PAUSE_MS);
           const retryPost = await snapshotPage(page, signalCounter);
           const retryNetworkFired = retryPost.networkCount > pre.networkCount;
@@ -2512,17 +3363,47 @@ async function executeStepWithHealing(params: {
             const tail = recentCaptureMeta.slice(preMetaLength);
             const matched = tail.some((m) => compiledSubmitPattern.test(m.url));
             if (!matched) {
-              retryVerified = false;
-              failureReasons.push(
-                `n+16 fallback: submit-endpoint-not-matched: ${tail.length} capture(s) seen, none matched ${submitEndpointPattern!}`
-              );
+              // Same submitted-state DOM fallback as the primary verifier:
+              // accept SPA thank-you transitions when the network capture
+              // misses the submit POST within the attempt window.
+              let domSubmittedMatch: string | null = null;
+              if (submittedStateSelectors.length > 0) {
+                const selectorsJson = JSON.stringify(submittedStateSelectors);
+                const probeExpr = `(() => {
+                  const sels = ${selectorsJson};
+                  for (const sel of sels) {
+                    try {
+                      if (document.querySelector(sel)) return sel;
+                    } catch (_e) {}
+                  }
+                  return null;
+                })()`;
+                try {
+                  domSubmittedMatch = (await page.evaluate(probeExpr)) as string | null;
+                } catch (err) {
+                  logger.warn(`n+16 submitted-state DOM probe threw: ${toErrorMessage(err)}`);
+                }
+              }
+              if (domSubmittedMatch !== null) {
+                logger.info(
+                  `n+16 fallback submit verified via submitted-state DOM selector '${domSubmittedMatch}'`
+                );
+                record.verifiedBy = "submitted-state-dom";
+              } else {
+                retryVerified = false;
+                failureReasons.push(
+                  `n+16 fallback: submit-endpoint-not-matched: ${tail.length} capture(s) seen, none matched ${submitEndpointPattern!}`
+                );
+              }
             }
           }
           logger.info(
-            `n+16 probe: step=${stepIndex + 1} attempt=${attempt} el.click() fallback fired=${fired === true} kind=${probeResult.kind ?? "none"} checkboxStateVerified=${checkboxStateVerified}; network=${retryNetworkFired} url=${retryUrlChanged} htmlDelta=${retryHtmlDelta} textChanged=${retryTextChanged} verified=${retryVerified}`
+            `n+16 probe: step=${stepIndex + 1} attempt=${attempt} el.click() fallback fired=${fired === true} kind=${probeResult.kind ?? "none"} checkboxStateVerified=${checkboxStateVerified} ancestorStillInvalid=${ancestorStillInvalid}; network=${retryNetworkFired} url=${retryUrlChanged} htmlDelta=${retryHtmlDelta} textChanged=${retryTextChanged} verified=${retryVerified}`
           );
           if (retryVerified) {
-            record.verifiedBy = retryUrlChanged ? "url" : retryNetworkFired ? "network" : "dom";
+            if (record.verifiedBy === null) {
+              record.verifiedBy = retryUrlChanged ? "url" : retryNetworkFired ? "network" : "dom";
+            }
             record.post = retryPost;
             attempts.push(record);
             if (attempt > 1) {
@@ -2530,6 +3411,7 @@ async function executeStepWithHealing(params: {
                 `step ${stepIndex + 1} healed on attempt ${attempt} via ${record.technique} + el.click() fallback`
               );
             }
+            trajectory?.push({ stepIndex, verifiedBy: record.verifiedBy });
             return;
           }
         } catch (probeErr) {
@@ -2548,15 +3430,45 @@ async function executeStepWithHealing(params: {
           `step ${stepIndex + 1} healed on attempt ${attempt} via ${record.technique} (network=${networkFired} url=${urlChanged} dom=${domVerified})`
         );
       }
+      trajectory?.push({ stepIndex, verifiedBy: record.verifiedBy });
       return;
     }
 
-    failureReasons.push(
-      record.errorMessage ?? "no observable effect (no network, url, or dom change)"
-    );
+    const effectSignals = describeAttemptEffectSignals(pre, post, recentCaptureMeta, preMetaLength);
+    const reason = record.errorMessage
+      ? effectSignals
+        ? `${record.errorMessage}; ${effectSignals}`
+        : record.errorMessage
+      : effectSignals || "no observable effect (no network, url, or dom change)";
+    failureReasons.push(reason);
     logger.warn(
-      `step ${stepIndex + 1} attempt ${attempt} (${record.technique}) produced no observable effect — ${failureReasons[failureReasons.length - 1]}`
+      `step ${stepIndex + 1} attempt ${attempt} (${record.technique}) produced no observable effect — ${reason}`
     );
+
+    // Telemetry-driven early-exit: when attempt 1 on a final-Submit click
+    // reveals new ng-invalid containers, attempts 2-N cannot succeed (the
+    // form will keep blocking the POST until the new questions are answered).
+    // Break out of the attempt loop so the dump runs and the step raises
+    // terminal failure → replan triggers immediately, saving the cascade
+    // budget that would otherwise burn on identical retries of a click the
+    // page is structurally rejecting.
+    if (attempt === 1) {
+      const postAttemptInvalidCount = await countNgInvalidContainers(page);
+      const earlyExit = isSubmitRevealedInvalid({
+        isFinalStep,
+        requireSubmitEndpoint,
+        resolvedMethod: record.resolvedMethod,
+        effectSignals,
+        preSubmitInvalidCount,
+        postAttemptInvalidCount,
+      });
+      if (earlyExit) {
+        const exitReason = `submit-revealed-invalid: click surfaced ${postAttemptInvalidCount - preSubmitInvalidCount} new ng-invalid container(s) (was ${preSubmitInvalidCount}, now ${postAttemptInvalidCount}); attempts 2-${MAX_STEP_ATTEMPTS} cannot heal a form that needs answers — routing to replan`;
+        failureReasons.push(exitReason);
+        logger.warn(`step ${stepIndex + 1} ${exitReason}`);
+        break;
+      }
+    }
   }
 
   const finalObserve = await stagehand
@@ -2609,6 +3521,7 @@ function parseCli(): {
   dumpDomBeforeStep: number | null;
   allocateEmailEnvVar: string | null;
   submitEndpointPattern: string | null;
+  submittedStateSelectors: string[];
   originalShape: "array" | "object";
 } {
   const args = process.argv.slice(2);
@@ -2695,6 +3608,7 @@ function parseCli(): {
       dumpDomBeforeStep,
       allocateEmailEnvVar,
       submitEndpointPattern: null,
+      submittedStateSelectors: [],
       originalShape: "array",
     };
   }
@@ -2707,6 +3621,9 @@ function parseCli(): {
   const submitEndpointPattern = Array.isArray(parsed.data)
     ? null
     : (parsed.data.submitEndpointPattern ?? null);
+  const submittedStateSelectors = Array.isArray(parsed.data)
+    ? []
+    : (parsed.data.submittedStateSelectors ?? []);
   const isArrayShape = Array.isArray(parsed.data);
   // Validate regex compiles eagerly so a malformed pattern fails the run
   // at startup, not deep in a per-step verifier.
@@ -2729,6 +3646,7 @@ function parseCli(): {
     dumpDomBeforeStep,
     allocateEmailEnvVar,
     submitEndpointPattern,
+    submittedStateSelectors,
     originalShape: isArrayShape ? "array" : "object",
   };
 }
@@ -2772,6 +3690,7 @@ async function main(): Promise<void> {
     dumpDomBeforeStep,
     allocateEmailEnvVar,
     submitEndpointPattern,
+    submittedStateSelectors,
     originalShape,
   } = parseCli();
 
@@ -2862,6 +3781,7 @@ async function main(): Promise<void> {
 
     plan.push(...flow);
     const completedSteps: string[] = [];
+    const trajectory: { stepIndex: number; verifiedBy: AttemptRecord["verifiedBy"] }[] = [];
     let probeReplansUsed = 0;
     let cascadeReplansUsed = 0;
 
@@ -2912,10 +3832,24 @@ async function main(): Promise<void> {
           resumeFixture,
           isFinalStep: i === plan.length - 1,
           submitEndpointPattern,
+          submittedStateSelectors,
+          trajectory,
         });
         completedSteps.push(step.instruction);
       } catch (err) {
         if (!(err instanceof StepVerificationError)) throw err;
+
+        // Unrecoverable backend-error short-circuit. When the cascade
+        // detected a same-window 5xx on the submit endpoint, no amount of
+        // replan or rephrase can heal a server crash. Propagate the error
+        // out of the flow loop so main()'s outer try/catch reports the
+        // diagnostic — bypasses the trailing-grace and replan paths
+        // entirely. (The cascade-exhausted and probe-absent kinds fall
+        // through to the existing dispatcher below.)
+        if (err.kind === "backend-error-unrecoverable") {
+          logger.error(`backend error unrecoverable: ${err.message}; aborting run`);
+          throw err;
+        }
 
         // Tier 1 — trailing-optional-step grace: when an OPTIONAL step at
         // trailing position fails verification AND a recent non-GET capture
@@ -2949,8 +3883,14 @@ async function main(): Promise<void> {
         const budget = isProbe ? MAX_PROBE_REPLANS : MAX_CASCADE_REPLANS;
         const usedSoFar = isProbe ? probeReplansUsed : cascadeReplansUsed;
         if (usedSoFar >= budget) {
+          const kindsSummary = summarizeReplanFailureKinds({
+            callsNdjsonPath: config.telemetry.callsNdjsonPath,
+            callType: CALL_TYPE_RECON_REPLAN,
+            tailCount: budget * 2,
+          });
+          const kindsSuffix = kindsSummary ? ` — ${kindsSummary}` : "";
           logger.error(
-            `step ${i + 1} ${err.kind} replan budget exhausted (${usedSoFar}/${budget}); aborting`
+            `step ${i + 1} ${err.kind} replan budget exhausted (${usedSoFar}/${budget}); aborting${kindsSuffix}`
           );
           throw err;
         }
@@ -2972,6 +3912,9 @@ async function main(): Promise<void> {
           failureDumpPath: dumpPath,
           page,
           stagehand,
+          recentCaptures,
+          submitEndpointPattern: submitEndpointPattern ? new RegExp(submitEndpointPattern) : null,
+          trajectory,
         });
 
         if (!newSteps) {
@@ -3054,6 +3997,7 @@ async function main(): Promise<void> {
             logger,
             originalShape,
             submitEndpointPattern,
+            submittedStateSelectors,
           });
         } catch (err) {
           // Persistence is best-effort in the finally block — a write

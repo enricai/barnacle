@@ -4,14 +4,12 @@
  * errors (via src/api/errors.ts) before they reach the client.
  *
  * Why: each class encodes a distinct recovery policy that p-retry and the
- * session pool key off of. CaptchaError aborts the whole call (the scraper
- * can't self-resolve one — Steel handles it upstream, and if we still see
- * a captcha downstream there's nothing a retry can do). EmptyResultsError
- * is "success but no data" and also aborts. SelectorFailureError is the
- * most common — the target page UI drifted, Stagehand's action cache got stale —
- * and a fresh AI-resolution retry usually fixes it. SessionTimeoutError
- * needs a brand-new session, so retry.ts invokes its onRestart callback
- * before the next attempt.
+ * session pool key off of. Some failures abort the whole call (no retry
+ * can resolve them); others are retryable in place because a fresh AI
+ * resolution or DOM re-settle usually fixes them; some need a brand-new
+ * Steel session before retrying, in which case retry.ts invokes its
+ * onRestart callback. See each class's TSDoc for its specific policy
+ * and the diagnostic it represents.
  */
 
 /**
@@ -82,8 +80,14 @@ export class UnknownScraperError extends ScraperError {
   }
 }
 
+/** Discriminator for {@link StepVerificationError}. See the class TSDoc for the per-variant semantics. */
+export type StepVerificationErrorKind =
+  | "cascade-exhausted"
+  | "probe-absent"
+  | "backend-error-unrecoverable";
+
 /**
- * Recon-only: a flow step in recon-browser.ts could not be acted on. Two
+ * Recon-only: a flow step in recon-browser.ts could not be acted on. Three
  * variants per `kind`:
  *
  *   - "cascade-exhausted": the full 4-attempt self-healing cascade ran and
@@ -96,14 +100,19 @@ export class UnknownScraperError extends ScraperError {
  *     clearly off (e.g. flow expected the form-fill page but the SPA is
  *     still on the resume-upload screen). Cheap (~1 observe + 1 LLM call)
  *     — counted against the probe replan budget.
+ *   - "backend-error-unrecoverable": the cascade detected a same-window
+ *     5xx response from the configured submit endpoint. No amount of
+ *     retry or replan can heal a server crash — the main flow loop
+ *     special-cases this kind to bypass the replan dispatcher and
+ *     propagate the error out, terminating the run with the diagnostic.
  *
  * Non-retryable — the runtime path never sees this.
  */
 export class StepVerificationError extends ScraperError {
-  readonly kind: "cascade-exhausted" | "probe-absent";
+  readonly kind: StepVerificationErrorKind;
   constructor(
     message = "recon step failed verification after all heal attempts",
-    kind: "cascade-exhausted" | "probe-absent" = "cascade-exhausted"
+    kind: StepVerificationErrorKind = "cascade-exhausted"
   ) {
     super(message, false);
     this.kind = kind;

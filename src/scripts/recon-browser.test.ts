@@ -11,6 +11,8 @@ import { join } from "node:path";
 import type Anthropic from "@anthropic-ai/sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { StepVerificationErrorKind } from "@/scraper/errors";
+
 vi.mock("@/config", () => ({
   config: {
     scraper: {
@@ -29,8 +31,10 @@ vi.mock("@/lib/http", () => ({ configureHttpDispatcher: vi.fn() }));
 vi.mock("@/scraper/session", () => ({ createBrowserSession: vi.fn() }));
 vi.mock("@/scraper/errors", () => ({
   StepVerificationError: class StepVerificationError extends Error {
-    constructor(message = "step failed") {
+    readonly kind: StepVerificationErrorKind;
+    constructor(message = "step failed", kind: StepVerificationErrorKind = "cascade-exhausted") {
       super(message);
+      this.kind = kind;
     }
   },
 }));
@@ -41,6 +45,7 @@ const { loggerStub } = vi.hoisted(() => ({
     warn: vi.fn(),
     error: vi.fn(),
     debug: vi.fn(),
+    fatal: vi.fn(),
     errorWithStack: vi.fn(),
   },
 }));
@@ -49,16 +54,27 @@ vi.mock("@/lib/logging", () => ({
   getScriptLogger: () => loggerStub,
 }));
 
-vi.mock("@/lib/telemetry/call-capture", () => ({
-  captureLlmCall: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock("@/lib/telemetry/call-capture", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/telemetry/call-capture")>();
+  return {
+    ...actual,
+    captureLlmCall: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
 import type { LlmCallInput } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
 import {
   dedupeConsecutiveIdentical,
   denormalizeStep,
+  describeAttemptEffectSignals,
+  extractSubmitFailureEvidence,
+  findRecentBackendError,
+  findRecentPageTransition,
+  hasBillingErrorBeenLogged,
   type InvalidFormControl,
+  isSubmitRevealedInvalid,
+  logBillingErrorIfPresent,
   type NormalizedStep,
   narrowInvalidFormControl,
   persistReplannedFlow,
@@ -66,6 +82,10 @@ import {
   readFailureDumpEvidence,
   renderUnfocusedObserve,
   rephraseWithLLM,
+  replanRemainingFlow,
+  resetBillingErrorFlagForTests,
+  shouldSkipTechnique,
+  summarizeReplanFailureKinds,
 } from "@/scripts/recon-browser";
 import type { Logger } from "@/types/logging";
 
@@ -213,6 +233,7 @@ describe("rephraseWithLLM — capture instrumentation", () => {
       {
         invalidFieldList: "1. Legal First Name <app-input>  [ng-invalid]",
         errorTextList: "1. This field is required.",
+        interactiveTargetsList: "1. [Legal First Name] input '' — xpath=/html[1]/body[1]/input[1]",
       }
     );
 
@@ -221,6 +242,8 @@ describe("rephraseWithLLM — capture instrumentation", () => {
     expect(prompt).toContain("Legal First Name");
     expect(prompt).toContain("VISIBLE ERROR / REQUIRED-FIELD MESSAGES");
     expect(prompt).toContain("This field is required");
+    expect(prompt).toContain("INTERACTIVE TARGETS NEAR INVALID FIELDS");
+    expect(prompt).toContain("Legal First Name");
   });
 
   it("renders the new evidence sections as '(none)' when no pageEvidence is supplied (back-compat)", async () => {
@@ -824,5 +847,895 @@ describe("recon-browser/renderUnfocusedObserve", () => {
     const observations = [make("Submit button"), make("Save action inside MODAL container")];
     const out = renderUnfocusedObserve(observations);
     expect(out.indexOf("MODAL container")).toBeLessThan(out.indexOf("Submit button"));
+  });
+});
+
+describe("recon-browser/extractSubmitFailureEvidence", () => {
+  let tmpDir: string;
+  const submitRx = /^https:\/\/example\.com\/api\/apply$/;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "recon-submit-fail-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function writeCapture(filename: string, body: object): void {
+    writeFileSync(join(tmpDir, filename), JSON.stringify(body));
+  }
+
+  it("returns empty when the submit pattern is null", () => {
+    expect(extractSubmitFailureEvidence(["capture-1.json"], null, tmpDir)).toBe("");
+  });
+
+  it("returns empty when no recent captures match the submit endpoint", () => {
+    writeCapture("capture-1.json", {
+      url: "https://example.com/api/other",
+      status: 200,
+      responseBody: { ok: true },
+    });
+    expect(extractSubmitFailureEvidence(["capture-1.json"], submitRx, tmpDir)).toBe("");
+  });
+
+  it("returns empty when the submit-endpoint capture succeeded (2xx)", () => {
+    writeCapture("capture-1.json", {
+      url: "https://example.com/api/apply",
+      status: 200,
+      responseBody: { ok: true },
+    });
+    expect(extractSubmitFailureEvidence(["capture-1.json"], submitRx, tmpDir)).toBe("");
+  });
+
+  it("parses the { errors: [{ field, message }] } shape on a 4xx", () => {
+    writeCapture("capture-1.json", {
+      url: "https://example.com/api/apply",
+      status: 422,
+      responseBody: {
+        errors: [
+          { field: "email", message: "Invalid format" },
+          { field: "phone", message: "Required" },
+        ],
+      },
+    });
+    const out = extractSubmitFailureEvidence(["capture-1.json"], submitRx, tmpDir);
+    expect(out).toContain("422 https://example.com/api/apply");
+    expect(out).toContain("email: Invalid format");
+    expect(out).toContain("phone: Required");
+  });
+
+  it("parses the { validation: { field: message } } shape", () => {
+    writeCapture("capture-1.json", {
+      url: "https://example.com/api/apply",
+      status: 400,
+      responseBody: { validation: { firstName: "must be present" } },
+    });
+    const out = extractSubmitFailureEvidence(["capture-1.json"], submitRx, tmpDir);
+    expect(out).toContain("firstName: must be present");
+  });
+
+  it("falls back to top-level { message } when no field errors are present", () => {
+    writeCapture("capture-1.json", {
+      url: "https://example.com/api/apply",
+      status: 500,
+      responseBody: { message: "Internal server error" },
+    });
+    const out = extractSubmitFailureEvidence(["capture-1.json"], submitRx, tmpDir);
+    expect(out).toContain("Internal server error");
+  });
+
+  it("skips missing capture files silently", () => {
+    expect(extractSubmitFailureEvidence(["missing.json"], submitRx, tmpDir)).toBe("");
+  });
+});
+
+describe("recon-browser/describeAttemptEffectSignals", () => {
+  const baseSnapshot = (
+    overrides: Partial<{
+      networkCount: number;
+      url: string;
+      bodyHtmlLength: number;
+      visibleTextSignature: string;
+    }>
+  ): {
+    networkCount: number;
+    url: string;
+    bodyHtmlLength: number;
+    visibleTextSignature: string;
+  } => ({
+    networkCount: 0,
+    url: "https://example.com",
+    bodyHtmlLength: 1000,
+    visibleTextSignature: "1000:hello",
+    ...overrides,
+  });
+
+  it("flags dom-grew-without-network when body grew but no requests fired", () => {
+    const pre = baseSnapshot({ bodyHtmlLength: 1000, visibleTextSignature: "1000:foo" });
+    const post = baseSnapshot({ bodyHtmlLength: 1500, visibleTextSignature: "1500:bar" });
+    const reason = describeAttemptEffectSignals(pre, post, [], 0);
+    expect(reason).toContain("dom-grew-without-network");
+    expect(reason).toContain("+500B");
+    expect(reason).toContain("visible text changed");
+  });
+
+  it("flags network-fired-but-only-tracking when only GET / cross-origin captures land", () => {
+    const pre = baseSnapshot({ networkCount: 0 });
+    const post = baseSnapshot({ networkCount: 1 });
+    const reason = describeAttemptEffectSignals(
+      pre,
+      post,
+      [{ method: "GET", status: 200, url: "https://googleads.g.doubleclick.net/pixel" }],
+      0
+    );
+    expect(reason).toContain("network-fired-but-only-tracking");
+  });
+
+  it("returns empty string when there are no notable signals", () => {
+    const snap = baseSnapshot({});
+    expect(describeAttemptEffectSignals(snap, snap, [], 0)).toBe("");
+  });
+
+  it("only counts captures in the window starting at preMetaLength", () => {
+    const pre = baseSnapshot({ networkCount: 0 });
+    const post = baseSnapshot({ networkCount: 1 });
+    const meta = [
+      { method: "POST", status: 200, url: "https://example.com/old-submit" },
+      { method: "GET", status: 200, url: "https://example.com/tracking" },
+    ];
+    const reason = describeAttemptEffectSignals(pre, post, meta, 1);
+    expect(reason).toContain("network-fired-but-only-tracking");
+  });
+});
+
+describe("recon-browser/isSubmitRevealedInvalid", () => {
+  const revealedInvalidSignature = {
+    isFinalStep: true,
+    requireSubmitEndpoint: true,
+    resolvedMethod: "click",
+    effectSignals:
+      "dom-grew-without-network: body +1024B, visible text changed, 0 same-origin non-GET requests",
+    preSubmitInvalidCount: 0,
+    postAttemptInvalidCount: 3,
+  };
+
+  it("fires when a final-Submit click reveals new ng-invalid containers", () => {
+    expect(isSubmitRevealedInvalid(revealedInvalidSignature)).toBe(true);
+  });
+
+  it("does not fire when the step is not the final step", () => {
+    expect(isSubmitRevealedInvalid({ ...revealedInvalidSignature, isFinalStep: false })).toBe(
+      false
+    );
+  });
+
+  it("does not fire when the flow declared no submit endpoint", () => {
+    expect(
+      isSubmitRevealedInvalid({ ...revealedInvalidSignature, requireSubmitEndpoint: false })
+    ).toBe(false);
+  });
+
+  it("does not fire on non-click resolved actions", () => {
+    expect(isSubmitRevealedInvalid({ ...revealedInvalidSignature, resolvedMethod: "fill" })).toBe(
+      false
+    );
+    expect(isSubmitRevealedInvalid({ ...revealedInvalidSignature, resolvedMethod: null })).toBe(
+      false
+    );
+  });
+
+  it("does not fire without the dom-grew-without-network signal", () => {
+    expect(
+      isSubmitRevealedInvalid({
+        ...revealedInvalidSignature,
+        effectSignals: "no observable effect (no network, url, or dom change)",
+      })
+    ).toBe(false);
+    expect(
+      isSubmitRevealedInvalid({
+        ...revealedInvalidSignature,
+        effectSignals: "network-fired-but-only-tracking: 5 requests",
+      })
+    ).toBe(false);
+  });
+
+  it("does not fire when the ng-invalid count did not grow", () => {
+    expect(
+      isSubmitRevealedInvalid({
+        ...revealedInvalidSignature,
+        preSubmitInvalidCount: 3,
+        postAttemptInvalidCount: 3,
+      })
+    ).toBe(false);
+    expect(
+      isSubmitRevealedInvalid({
+        ...revealedInvalidSignature,
+        preSubmitInvalidCount: 5,
+        postAttemptInvalidCount: 3,
+      })
+    ).toBe(false);
+  });
+
+  it("fires when ng-invalid count grew from non-zero (e.g. partial fills missed by pre-probe)", () => {
+    expect(
+      isSubmitRevealedInvalid({
+        ...revealedInvalidSignature,
+        preSubmitInvalidCount: 2,
+        postAttemptInvalidCount: 5,
+      })
+    ).toBe(true);
+  });
+});
+
+describe("recon-browser/shouldSkipTechnique", () => {
+  it("skips structured-click when no prior attempt has resolved an xpath", () => {
+    const decision = shouldSkipTechnique({
+      technique: "structured-click",
+      priorAttempts: [
+        { technique: "act-string", triedSelectors: [], errorMessage: null },
+        {
+          technique: "observe-act",
+          triedSelectors: [],
+          errorMessage: "observe returned no candidates",
+        },
+      ],
+    });
+    expect(decision.skip).toBe(true);
+    expect(decision.reason).toContain("no attempt has resolved a selector");
+  });
+
+  it("runs structured-click when a prior attempt resolved a selector", () => {
+    const decision = shouldSkipTechnique({
+      technique: "structured-click",
+      priorAttempts: [
+        { technique: "act-string", triedSelectors: [], errorMessage: null },
+        {
+          technique: "observe-act",
+          triedSelectors: ["xpath=/html/body/button"],
+          errorMessage: null,
+        },
+      ],
+    });
+    expect(decision.skip).toBe(false);
+  });
+
+  it("skips observe-act-exclude when prior observe-act returned zero candidates", () => {
+    const decision = shouldSkipTechnique({
+      technique: "observe-act-exclude",
+      priorAttempts: [
+        { technique: "act-string", triedSelectors: [], errorMessage: null },
+        {
+          technique: "observe-act",
+          triedSelectors: [],
+          errorMessage: "observe returned no candidates",
+        },
+        {
+          technique: "structured-click",
+          triedSelectors: [],
+          errorMessage: "structured-click: no xpath from prior attempt",
+        },
+      ],
+    });
+    expect(decision.skip).toBe(true);
+    expect(decision.reason).toContain("observe-act-exclude re-runs the same observe");
+  });
+
+  it("runs observe-act-exclude when prior observe-act DID find candidates", () => {
+    const decision = shouldSkipTechnique({
+      technique: "observe-act-exclude",
+      priorAttempts: [
+        { technique: "act-string", triedSelectors: [], errorMessage: null },
+        {
+          technique: "observe-act",
+          triedSelectors: ["xpath=/html/body/button"],
+          errorMessage: null,
+        },
+      ],
+    });
+    expect(decision.skip).toBe(false);
+  });
+
+  it("never skips act-string (attempt 1 has no prior state to evaluate)", () => {
+    const decision = shouldSkipTechnique({
+      technique: "act-string",
+      priorAttempts: [],
+    });
+    expect(decision.skip).toBe(false);
+  });
+
+  it("never skips llm-rephrase (attempt 5 is the final-fallback recovery)", () => {
+    const decision = shouldSkipTechnique({
+      technique: "llm-rephrase",
+      priorAttempts: [
+        { technique: "act-string", triedSelectors: [], errorMessage: null },
+        {
+          technique: "observe-act",
+          triedSelectors: [],
+          errorMessage: "observe returned no candidates",
+        },
+      ],
+    });
+    expect(decision.skip).toBe(false);
+  });
+});
+
+describe("recon-browser/summarizeReplanFailureKinds", () => {
+  let tmpDir: string;
+  let ndjsonPath: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "recon-replan-summary-"));
+    ndjsonPath = join(tmpDir, "calls.ndjson");
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function writeEntries(
+    entries: { callType: string; success: boolean; failureKind: string | null }[]
+  ): void {
+    // parseSamples runs every line through llmCallSampleSchema, so the
+    // fixture must produce schema-conformant rows. Fill the required
+    // fields with neutral defaults; the predicate only consults
+    // callType, success, and failureKind.
+    const lines = entries.map((e, i) =>
+      JSON.stringify({
+        callId: `call-${i}`,
+        callType: e.callType,
+        model: "test-model",
+        systemPrompt: null,
+        userContent: "",
+        responseContent: null,
+        parsedOk: false,
+        inputTokens: null,
+        outputTokens: null,
+        latencyMs: null,
+        success: e.success,
+        errorMessage: null,
+        failureKind: e.failureKind,
+        ts: "2026-01-01T00:00:00Z",
+      })
+    );
+    writeFileSync(ndjsonPath, `${lines.join("\n")}\n`);
+  }
+
+  it("returns empty when the file is missing", () => {
+    expect(
+      summarizeReplanFailureKinds({
+        callsNdjsonPath: join(tmpDir, "missing.ndjson"),
+        callType: "recon-replan",
+      })
+    ).toBe("");
+  });
+
+  it("returns empty when no entries match the callType", () => {
+    writeEntries([{ callType: "other-call", success: false, failureKind: "anthropic-billing" }]);
+    expect(
+      summarizeReplanFailureKinds({ callsNdjsonPath: ndjsonPath, callType: "recon-replan" })
+    ).toBe("");
+  });
+
+  it("returns empty when matching entries all succeeded", () => {
+    writeEntries([
+      { callType: "recon-replan", success: true, failureKind: null },
+      { callType: "recon-replan", success: true, failureKind: null },
+    ]);
+    expect(
+      summarizeReplanFailureKinds({ callsNdjsonPath: ndjsonPath, callType: "recon-replan" })
+    ).toBe("");
+  });
+
+  it("buckets by failureKind, sorted by frequency descending", () => {
+    writeEntries([
+      { callType: "recon-replan", success: false, failureKind: "anthropic-rate-limit" },
+      { callType: "recon-replan", success: false, failureKind: "anthropic-rate-limit" },
+      { callType: "recon-replan", success: false, failureKind: "anthropic-rate-limit" },
+      { callType: "recon-replan", success: false, failureKind: "anthropic-rate-limit" },
+      { callType: "recon-replan", success: false, failureKind: "schema-validation-failed" },
+    ]);
+    const summary = summarizeReplanFailureKinds({
+      callsNdjsonPath: ndjsonPath,
+      callType: "recon-replan",
+    });
+    expect(summary).toContain("5 recent recon-replan failure(s)");
+    expect(summary).toContain("4× anthropic-rate-limit");
+    expect(summary).toContain("1× schema-validation-failed");
+    expect(summary.indexOf("4×")).toBeLessThan(summary.indexOf("1×"));
+  });
+
+  it("ignores unrelated callTypes in the same NDJSON file", () => {
+    writeEntries([
+      { callType: "recon-rephrase", success: false, failureKind: "response-empty" },
+      { callType: "recon-replan", success: false, failureKind: "anthropic-billing" },
+    ]);
+    const summary = summarizeReplanFailureKinds({
+      callsNdjsonPath: ndjsonPath,
+      callType: "recon-replan",
+    });
+    expect(summary).toContain("1 recent recon-replan");
+    expect(summary).toContain("anthropic-billing");
+    expect(summary).not.toContain("response-empty");
+  });
+
+  it("treats null failureKind as 'unknown'", () => {
+    writeEntries([{ callType: "recon-replan", success: false, failureKind: null }]);
+    expect(
+      summarizeReplanFailureKinds({ callsNdjsonPath: ndjsonPath, callType: "recon-replan" })
+    ).toContain("1× unknown");
+  });
+
+  it("only inspects the most recent tailCount entries", () => {
+    const entries = Array.from({ length: 20 }, (_, i) => ({
+      callType: "recon-replan" as const,
+      success: false,
+      failureKind: i < 10 ? "anthropic-billing" : "anthropic-rate-limit",
+    }));
+    writeEntries(entries);
+    const summary = summarizeReplanFailureKinds({
+      callsNdjsonPath: ndjsonPath,
+      callType: "recon-replan",
+      tailCount: 10,
+    });
+    expect(summary).toContain("10× anthropic-rate-limit");
+    expect(summary).not.toContain("anthropic-billing");
+  });
+
+  it("survives malformed NDJSON lines", () => {
+    writeEntries([
+      { callType: "recon-replan", success: false, failureKind: "anthropic-billing" },
+      { callType: "recon-replan", success: false, failureKind: "anthropic-billing" },
+    ]);
+    // Inject a malformed line + an empty line between the valid entries.
+    // parseSamples returns a makeMalformedSample row for the bad JSON and
+    // skips the empty one, neither of which matches the "recon-replan"
+    // callType filter — so the summary still tallies the two valid rows.
+    const current = readFileSync(ndjsonPath, "utf8");
+    const lines = current.split("\n").filter((l) => l.length > 0);
+    writeFileSync(ndjsonPath, [lines[0]!, "{not-json}", lines[1]!, ""].join("\n"));
+    expect(
+      summarizeReplanFailureKinds({ callsNdjsonPath: ndjsonPath, callType: "recon-replan" })
+    ).toContain("2× anthropic-billing");
+  });
+});
+
+describe("rephraseWithLLM — instruction history (priorAttempts)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("includes INSTRUCTION TEXT ALREADY TRIED when priorAttempts is supplied", async () => {
+    const client = makeAnthropicClient("click the Yes radio button label");
+    const { fn, calls } = makeCaptureFn();
+
+    await rephraseWithLLM(
+      client,
+      "Click the Submit button",
+      ["xpath=/html/body/button[1]"],
+      [],
+      ["no observable effect"],
+      fn,
+      undefined,
+      undefined,
+      undefined,
+      [
+        {
+          technique: "act-string",
+          instruction: "Click the Submit button",
+          verdict: "no observable effect",
+        },
+        {
+          technique: "observe-act",
+          instruction: "Submit application button at the bottom of the form",
+          verdict: "no observable effect",
+        },
+      ]
+    );
+
+    const prompt = calls[0]?.userContent ?? "";
+    expect(prompt).toContain("INSTRUCTION TEXT ALREADY TRIED");
+    expect(prompt).toContain("act-string");
+    expect(prompt).toContain("Click the Submit button");
+    expect(prompt).toContain("observe-act");
+    expect(prompt).toContain("Submit application button");
+  });
+
+  it("renders (none) when priorAttempts is empty or undefined", async () => {
+    const client = makeAnthropicClient("click the Yes radio button label");
+    const { fn, calls } = makeCaptureFn();
+
+    await rephraseWithLLM(client, "Click the Submit button", [], [], ["no observable effect"], fn);
+
+    const prompt = calls[0]?.userContent ?? "";
+    expect(prompt).toContain("INSTRUCTION TEXT ALREADY TRIED");
+    expect(prompt).toMatch(/INSTRUCTION TEXT ALREADY TRIED[^\n]*\):\n\(none\)/);
+  });
+
+  it("filters out attempts whose instruction is null or empty", async () => {
+    const client = makeAnthropicClient("click the Yes label");
+    const { fn, calls } = makeCaptureFn();
+
+    await rephraseWithLLM(
+      client,
+      "Click the Submit button",
+      [],
+      [],
+      ["no observable effect"],
+      fn,
+      undefined,
+      undefined,
+      undefined,
+      [
+        { technique: "act-string", instruction: null, verdict: "no observable effect" },
+        { technique: "structured-click", instruction: "   ", verdict: "no xpath" },
+        { technique: "observe-act", instruction: "Click the No radio", verdict: "ok" },
+      ]
+    );
+
+    const prompt = calls[0]?.userContent ?? "";
+    expect(prompt).toContain("Click the No radio");
+    expect(prompt).not.toContain("act-string");
+    expect(prompt).not.toContain("structured-click");
+  });
+});
+
+describe("recon-browser/findRecentPageTransition", () => {
+  it("returns null when the window is empty", () => {
+    expect(findRecentPageTransition({ recentCaptureMeta: [], preMetaLength: 0 })).toBeNull();
+  });
+
+  it("returns null when only earlier-step captures exist (preMetaLength gate)", () => {
+    expect(
+      findRecentPageTransition({
+        recentCaptureMeta: [{ method: "POST", status: 302, url: "https://example.com/redirect" }],
+        preMetaLength: 1,
+      })
+    ).toBeNull();
+  });
+
+  it("detects a 3xx redirect within the window", () => {
+    expect(
+      findRecentPageTransition({
+        recentCaptureMeta: [
+          { method: "GET", status: 200, url: "https://example.com/old" },
+          { method: "POST", status: 302, url: "https://example.com/thank-you" },
+        ],
+        preMetaLength: 0,
+      })
+    ).toBe("https://example.com/thank-you");
+  });
+
+  it("detects a successful non-GET non-tracking capture as a transition", () => {
+    expect(
+      findRecentPageTransition({
+        recentCaptureMeta: [{ method: "POST", status: 200, url: "https://example.com/submit" }],
+        preMetaLength: 0,
+      })
+    ).toBe("https://example.com/submit");
+  });
+
+  it("ignores tracking beacons even when they returned 200", () => {
+    expect(
+      findRecentPageTransition({
+        recentCaptureMeta: [
+          { method: "POST", status: 200, url: "https://googleads.g.doubleclick.net/pixel" },
+          { method: "GET", status: 200, url: "https://www.google.com/pagead/conversion" },
+        ],
+        preMetaLength: 0,
+      })
+    ).toBeNull();
+  });
+
+  it("ignores GET requests when searching for non-redirect transitions", () => {
+    expect(
+      findRecentPageTransition({
+        recentCaptureMeta: [{ method: "GET", status: 200, url: "https://example.com/poll" }],
+        preMetaLength: 0,
+      })
+    ).toBeNull();
+  });
+
+  it("prefers a 3xx over a same-window 2xx non-tracking POST", () => {
+    const transition = findRecentPageTransition({
+      recentCaptureMeta: [
+        { method: "POST", status: 200, url: "https://example.com/api/save" },
+        { method: "POST", status: 302, url: "https://example.com/next-page" },
+      ],
+      preMetaLength: 0,
+    });
+    expect(transition).toBe("https://example.com/next-page");
+  });
+});
+
+describe("recon-browser/extractSubmitFailureEvidence — any-4xx mode", () => {
+  let tmpDir: string;
+  const submitRx = /^https:\/\/example\.com\/api\/apply$/;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "recon-anyfourxx-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function writeCapture(filename: string, body: object): void {
+    writeFileSync(join(tmpDir, filename), JSON.stringify(body));
+  }
+
+  it("strict mode (default) ignores 4xx whose URL does not match the pattern", () => {
+    writeCapture("c1.json", {
+      url: "https://example.com/api/errors",
+      status: 422,
+      responseBody: { errors: [{ field: "email", message: "Invalid format" }] },
+    });
+    const out = extractSubmitFailureEvidence(["c1.json"], submitRx, tmpDir);
+    expect(out).toBe("");
+  });
+
+  it("any-4xx mode parses a 4xx whose URL does NOT match the configured pattern", () => {
+    writeCapture("c1.json", {
+      url: "https://example.com/api/errors",
+      status: 422,
+      responseBody: { errors: [{ field: "email", message: "Invalid format" }] },
+    });
+    const out = extractSubmitFailureEvidence(["c1.json"], null, tmpDir, "any-4xx");
+    expect(out).toContain("422 https://example.com/api/errors");
+    expect(out).toContain("email: Invalid format");
+  });
+
+  it("any-4xx mode still requires status >= 400 (ignores 2xx)", () => {
+    writeCapture("c1.json", {
+      url: "https://example.com/api/track",
+      status: 200,
+      responseBody: { ok: true },
+    });
+    const out = extractSubmitFailureEvidence(["c1.json"], null, tmpDir, "any-4xx");
+    expect(out).toBe("");
+  });
+
+  it("any-4xx mode returns empty when no 4xx exists in the window", () => {
+    writeCapture("c1.json", {
+      url: "https://example.com/api/save",
+      status: 200,
+      responseBody: { ok: true },
+    });
+    const out = extractSubmitFailureEvidence(["c1.json"], null, tmpDir, "any-4xx");
+    expect(out).toBe("");
+  });
+});
+
+describe("replanRemainingFlow — trajectory prompt section", () => {
+  function makeReplanClient(): Anthropic {
+    return {
+      messages: {
+        parse: vi.fn().mockResolvedValue({
+          parsed_output: { outcome: "replan", steps: ["Click Submit"] },
+          content: [{ type: "text", text: "{}" }],
+          usage: { input_tokens: 100, output_tokens: 5 },
+        }),
+      },
+    } as unknown as Anthropic;
+  }
+
+  function makePageStub(): { url: () => string; title: () => Promise<string> } {
+    return {
+      url: () => "https://example.com/apply",
+      title: vi.fn().mockResolvedValue("Application Form"),
+    };
+  }
+
+  function makeStagehandStub(): { observe: ReturnType<typeof vi.fn> } {
+    return {
+      observe: vi.fn().mockResolvedValue([]),
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("renders (none) when trajectory is empty or undefined", async () => {
+    const client = makeReplanClient();
+    const { fn, calls } = makeCaptureFn();
+    await replanRemainingFlow({
+      client,
+      originalFlow: ["Step A"],
+      completedSteps: [],
+      failedStep: "Step A",
+      remainingSteps: [],
+      failureDumpPath: "/tmp/nonexistent-dump.json",
+      page: makePageStub() as never,
+      stagehand: makeStagehandStub() as never,
+      captureFn: fn,
+    });
+    const prompt = calls[0]?.userContent ?? "";
+    expect(prompt).toContain("PRIOR STEP TRAJECTORY");
+    expect(prompt).toMatch(/PRIOR STEP TRAJECTORY[^\n]*\):\n\(none\)/);
+  });
+
+  it("renders supplied trajectory entries with their verifiedBy signals", async () => {
+    const client = makeReplanClient();
+    const { fn, calls } = makeCaptureFn();
+    await replanRemainingFlow({
+      client,
+      originalFlow: ["Step A"],
+      completedSteps: [],
+      failedStep: "Step A",
+      remainingSteps: [],
+      failureDumpPath: "/tmp/nonexistent-dump.json",
+      page: makePageStub() as never,
+      stagehand: makeStagehandStub() as never,
+      captureFn: fn,
+      trajectory: [
+        { stepIndex: 0, verifiedBy: "network" },
+        { stepIndex: 1, verifiedBy: "submitted-state-dom" },
+        { stepIndex: 2, verifiedBy: "url" },
+      ],
+    });
+    const prompt = calls[0]?.userContent ?? "";
+    expect(prompt).toContain("PRIOR STEP TRAJECTORY");
+    expect(prompt).toContain("step 1 verified via network");
+    expect(prompt).toContain("step 2 verified via submitted-state-dom");
+    expect(prompt).toContain("step 3 verified via url");
+  });
+
+  it("caps the trajectory section to the last 5 entries", async () => {
+    const client = makeReplanClient();
+    const { fn, calls } = makeCaptureFn();
+    const trajectory = Array.from({ length: 8 }, (_, i) => ({
+      stepIndex: i,
+      verifiedBy: "network" as const,
+    }));
+    await replanRemainingFlow({
+      client,
+      originalFlow: ["Step A"],
+      completedSteps: [],
+      failedStep: "Step A",
+      remainingSteps: [],
+      failureDumpPath: "/tmp/nonexistent-dump.json",
+      page: makePageStub() as never,
+      stagehand: makeStagehandStub() as never,
+      captureFn: fn,
+      trajectory,
+    });
+    const prompt = calls[0]?.userContent ?? "";
+    expect(prompt).toContain("step 4 verified via network");
+    expect(prompt).toContain("step 8 verified via network");
+    expect(prompt).not.toContain("step 1 verified");
+    expect(prompt).not.toContain("step 3 verified");
+  });
+
+  it("renders '(no signal recorded)' for trajectory entries with null verifiedBy", async () => {
+    const client = makeReplanClient();
+    const { fn, calls } = makeCaptureFn();
+    await replanRemainingFlow({
+      client,
+      originalFlow: ["Step A"],
+      completedSteps: [],
+      failedStep: "Step A",
+      remainingSteps: [],
+      failureDumpPath: "/tmp/nonexistent-dump.json",
+      page: makePageStub() as never,
+      stagehand: makeStagehandStub() as never,
+      captureFn: fn,
+      trajectory: [{ stepIndex: 4, verifiedBy: null }],
+    });
+    const prompt = calls[0]?.userContent ?? "";
+    expect(prompt).toContain("step 5 verified via (no signal recorded)");
+  });
+});
+
+describe("recon-browser/hasBillingErrorBeenLogged + billing-aware skip", () => {
+  beforeEach(() => {
+    resetBillingErrorFlagForTests();
+  });
+
+  afterEach(() => {
+    resetBillingErrorFlagForTests();
+  });
+
+  it("returns false initially", () => {
+    expect(hasBillingErrorBeenLogged()).toBe(false);
+  });
+
+  it("returns true after logBillingErrorIfPresent matches the billing regex", () => {
+    expect(hasBillingErrorBeenLogged()).toBe(false);
+    logBillingErrorIfPresent("Your credit balance is too low to make this call");
+    expect(hasBillingErrorBeenLogged()).toBe(true);
+  });
+
+  it("stays false when the error message does not match the billing regex", () => {
+    logBillingErrorIfPresent("transient network error: ETIMEDOUT");
+    expect(hasBillingErrorBeenLogged()).toBe(false);
+  });
+
+  it("resetBillingErrorFlagForTests clears the flag", () => {
+    logBillingErrorIfPresent("insufficient_quota");
+    expect(hasBillingErrorBeenLogged()).toBe(true);
+    resetBillingErrorFlagForTests();
+    expect(hasBillingErrorBeenLogged()).toBe(false);
+  });
+});
+
+describe("recon-browser/findRecentBackendError", () => {
+  const submitRx = /^https:\/\/example\.com\/api\/apply$/;
+
+  it("returns null when the submit pattern is null", () => {
+    expect(
+      findRecentBackendError({
+        recentCaptureMeta: [{ method: "POST", status: 500, url: "https://example.com/api/apply" }],
+        preMetaLength: 0,
+        submitEndpointPattern: null,
+      })
+    ).toBeNull();
+  });
+
+  it("returns null when the window is empty", () => {
+    expect(
+      findRecentBackendError({
+        recentCaptureMeta: [],
+        preMetaLength: 0,
+        submitEndpointPattern: submitRx,
+      })
+    ).toBeNull();
+  });
+
+  it("returns null when only earlier-step captures exist", () => {
+    expect(
+      findRecentBackendError({
+        recentCaptureMeta: [{ method: "POST", status: 500, url: "https://example.com/api/apply" }],
+        preMetaLength: 1,
+        submitEndpointPattern: submitRx,
+      })
+    ).toBeNull();
+  });
+
+  it("returns the matched URL for a 5xx hitting the submit endpoint", () => {
+    expect(
+      findRecentBackendError({
+        recentCaptureMeta: [{ method: "POST", status: 500, url: "https://example.com/api/apply" }],
+        preMetaLength: 0,
+        submitEndpointPattern: submitRx,
+      })
+    ).toBe("https://example.com/api/apply");
+  });
+
+  it("ignores 5xx on URLs that do not match the submit pattern (analytics noise)", () => {
+    expect(
+      findRecentBackendError({
+        recentCaptureMeta: [
+          { method: "POST", status: 503, url: "https://googleads.g.doubleclick.net/pixel" },
+        ],
+        preMetaLength: 0,
+        submitEndpointPattern: submitRx,
+      })
+    ).toBeNull();
+  });
+
+  it("ignores 4xx and 2xx responses (only 5xx is backend-error)", () => {
+    expect(
+      findRecentBackendError({
+        recentCaptureMeta: [
+          { method: "POST", status: 422, url: "https://example.com/api/apply" },
+          { method: "POST", status: 200, url: "https://example.com/api/apply" },
+        ],
+        preMetaLength: 0,
+        submitEndpointPattern: submitRx,
+      })
+    ).toBeNull();
+  });
+
+  it("matches any 5xx code (500-599) on the submit endpoint", () => {
+    for (const status of [500, 502, 503, 504, 599]) {
+      expect(
+        findRecentBackendError({
+          recentCaptureMeta: [{ method: "POST", status, url: "https://example.com/api/apply" }],
+          preMetaLength: 0,
+          submitEndpointPattern: submitRx,
+        })
+      ).toBe("https://example.com/api/apply");
+    }
   });
 });
