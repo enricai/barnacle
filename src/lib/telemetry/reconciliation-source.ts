@@ -13,7 +13,13 @@
  * every event (`appendSubmissionSinkLine` writes to disk and buffers to S3
  * in the same call), so an overlap between the two stores is an exact JSON
  * duplicate, never a conflicting value — deduping on `kind:requestId:ts` is
- * therefore lossless.
+ * lossless for that mirror case. But `ts` is formatISO second-precision, so
+ * two *distinct* beacon lines for the same `requestId` (e.g. dispatch's
+ * automatic `skipped` line and a plugin's later self-recorded `fired` line)
+ * can land in the same wall-clock second — the dedupe key for beacon
+ * records also folds in `beaconStatus` and `trackingUrl` so non-identical
+ * beacon outcomes never collide, while submit records keep the plain
+ * `kind:requestId:ts` key.
  */
 
 import { existsSync } from "node:fs";
@@ -75,15 +81,25 @@ async function readS3Records(
   }
 }
 
-/** Dedupe key for a raw record: the same line written to both stores collapses to one. */
+/**
+ * Dedupe key for a raw record: the same line written to both stores
+ * collapses to one. Beacon records also key on `beaconStatus` and
+ * `trackingUrl` — `ts` alone is second-precision, so a `skipped` line and a
+ * later `fired`/`failed` line for the same `requestId` can share a `ts` and
+ * must not be treated as the same line.
+ */
 function dedupeKey(record: ReconciliationRecord): string {
+  if (record.kind === "beacon") {
+    return `${record.kind}:${record.requestId}:${record.ts}:${record.beaconStatus}:${record.trackingUrl ?? ""}`;
+  }
   return `${record.kind}:${record.requestId}:${record.ts}`;
 }
 
 /**
- * Unions the two record sets, local first, and dedupes on
- * `kind:requestId:ts` — the same line written to both stores collapses to
- * one entry, so `foldReconciliationRecords` sees it exactly once.
+ * Unions the two record sets, local first, and dedupes with `dedupeKey` —
+ * the same line written to both stores collapses to one entry, so
+ * `foldReconciliationRecords` sees it exactly once, while distinct beacon
+ * outcomes sharing a `requestId`/`ts` both survive.
  */
 function mergeRecords(
   localRecords: ReconciliationRecord[],

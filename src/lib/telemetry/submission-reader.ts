@@ -28,13 +28,19 @@ const logger = getLogger({ name: "telemetry/submission-reader" });
  * One reconciliation row per run: the submit record's fields plus the
  * outcome of its beacon fire, distinct from submit status so "submitted but
  * the beacon did not fire" is measurable. `beaconStatus` defaults to
- * `"not_fired"` when no matching beacon line ever arrived.
+ * `"not_fired"` when no matching beacon line ever arrived. When a run has
+ * both a `"skipped"` line and a real `"fired"`/`"failed"` line, the real
+ * outcome wins the fold (see `foldReconciliationRecords`) regardless of
+ * which line was written first. `beaconSessionIp` is the tracking-click
+ * session's own outbound IP — distinct from the submit line's `session.ip`,
+ * since the two are separate Browserbase sessions per run.
  */
 export interface ReconciliationRow extends Omit<SubmitRecord, "kind"> {
   beaconStatus: BeaconEvent["beaconStatus"] | "not_fired";
   beaconTrackingUrl: string | null;
   beaconTs: string | null;
   beaconDurationMs: number | null;
+  beaconSessionIp: string | null;
 }
 
 /** Options for `readReconciliationRows`. */
@@ -91,11 +97,25 @@ export function parseReconciliationLines(ndjsonContent: string): ReconciliationR
 }
 
 /**
+ * Rank of a beacon outcome for fold precedence: a real `fired`/`failed`
+ * outcome always outranks `skipped`, because `dispatch()` writes `skipped`
+ * synchronously for any self-managing plugin (`loader.ts`) before that
+ * plugin's own later-recorded real outcome can arrive — write order alone
+ * is not a safe proxy for which line reflects reality. Equal-rank lines
+ * (e.g. a retried `fired`) fall through to array order, i.e. last one wins.
+ */
+function beaconRank(beaconStatus: BeaconEvent["beaconStatus"]): number {
+  return beaconStatus === "skipped" ? 0 : 1;
+}
+
+/**
  * Left-joins beacon events onto submit records by `requestId`. Submit rows
  * are the base — a beacon may arrive strictly after its submit line (or
  * never), so an orphan beacon with no matching submit row is dropped rather
- * than synthesizing a phantom row. A later duplicate line (retry) overwrites
- * an earlier one for the same `requestId` and kind.
+ * than synthesizing a phantom row. Among beacon lines for the same
+ * `requestId`, the highest-`beaconRank` line wins regardless of write
+ * order; ties (equal rank) fall back to a later line overwriting an
+ * earlier one, so a duplicate/retry still resolves deterministically.
  */
 export function foldReconciliationRecords(records: ReconciliationRecord[]): ReconciliationRow[] {
   const rows = new Map<string, ReconciliationRow>();
@@ -109,19 +129,33 @@ export function foldReconciliationRecords(records: ReconciliationRecord[]): Reco
       beaconTrackingUrl: null,
       beaconTs: null,
       beaconDurationMs: null,
+      beaconSessionIp: null,
     });
   }
 
+  const winningBeacons = new Map<string, BeaconEvent>();
   for (const record of records) {
     if (record.kind !== "beacon") continue;
-    const row = rows.get(record.requestId);
+    const current = winningBeacons.get(record.requestId);
+    if (
+      current !== undefined &&
+      beaconRank(current.beaconStatus) > beaconRank(record.beaconStatus)
+    ) {
+      continue;
+    }
+    winningBeacons.set(record.requestId, record);
+  }
+
+  for (const [requestId, beacon] of winningBeacons) {
+    const row = rows.get(requestId);
     if (row === undefined) continue;
-    rows.set(record.requestId, {
+    rows.set(requestId, {
       ...row,
-      beaconStatus: record.beaconStatus,
-      beaconTrackingUrl: record.trackingUrl,
-      beaconTs: record.ts,
-      beaconDurationMs: record.durationMs,
+      beaconStatus: beacon.beaconStatus,
+      beaconTrackingUrl: beacon.trackingUrl,
+      beaconTs: beacon.ts,
+      beaconDurationMs: beacon.durationMs,
+      beaconSessionIp: beacon.sessionIp,
     });
   }
 

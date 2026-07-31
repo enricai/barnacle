@@ -27,11 +27,14 @@ import { z } from "zod/v4";
 
 import authPlugin from "@/api/plugins/auth";
 import errorHandlerPlugin from "@/api/plugins/error-handler";
+import { submissionsRoutes } from "@/api/routes/submissions";
 import type { AppConfig } from "@/config";
 import { getLogger } from "@/lib/logging";
 import { readReconciliationRows } from "@/lib/telemetry/submission-reader";
 import { registerRoutes } from "@/plugins/loader";
-import type { SitePlugin, SitePluginResult } from "@/site-plugin";
+import { runWithSession } from "@/scraper/pool";
+import type { BrowserSession } from "@/scraper/session";
+import type { SitePlugin, SitePluginContext, SitePluginResult } from "@/site-plugin";
 
 let tmpDir: string;
 let sinkPath: string;
@@ -137,5 +140,250 @@ describe("dispatch() telemetry end-to-end: real HTTP request to real NDJSON sink
     expect(row?.joinKeys).toEqual({ vivclid: "e2e-123", jobReference: "emp1_jid1" });
     expect(row?.beaconStatus).toBe("skipped");
     expect(row?.beaconTrackingUrl).toBe(trackingUrl);
+  });
+
+  it("folds a plugin's self-recorded fired beacon over the engine's own skipped beacon, dispatched over real HTTP", async () => {
+    const trackingUrl =
+      "https://click.e2e-test.example/t/self-managed?vivclid=e2e-456&empId=emp2&jid=jid2";
+    const joinKeys = { vivclid: "e2e-456", jobReference: "emp2_jid2" };
+
+    const selfRecordingPlugin: SitePlugin<unknown, unknown> = {
+      extractJoinKeys: (payload) => {
+        const { TrackingUrl } = payload as { TrackingUrl?: string };
+        return TrackingUrl ? joinKeys : null;
+      },
+      meta: {
+        siteId: "e2e-self-recording",
+        displayName: "E2E Self Recording",
+        bodySchema: z.object({ TrackingUrl: z.string().optional() }),
+        responseSchema: z.object({ verified: z.boolean() }),
+      },
+      execute: vi.fn(),
+      executeHttp: async (_payload, context): Promise<SitePluginResult<unknown>> => {
+        await context.recordBeaconOutcome({
+          beaconStatus: "fired",
+          joinKeys,
+          trackingUrl,
+          durationMs: 42,
+        });
+        return { data: { verified: true } };
+      },
+    };
+
+    const app = Fastify({ loggerInstance: getLogger({ name: "dispatch-telemetry-e2e-test" }) });
+    app.setValidatorCompiler(validatorCompiler);
+    app.setSerializerCompiler(serializerCompiler);
+    await app.register(errorHandlerPlugin);
+    await app.register(authPlugin);
+    await registerRoutes(app, cfgStub, [selfRecordingPlugin]);
+    await app.ready();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/e2e-self-recording/run",
+      payload: { TrackingUrl: trackingUrl },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().verified).toBe(true);
+
+    await app.close();
+
+    const rawLines = fs
+      .readFileSync(sinkPath, "utf8")
+      .split("\n")
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line) as { kind: string; beaconStatus?: string });
+    const beaconLines = rawLines.filter((line) => line.kind === "beacon");
+    expect(beaconLines).toHaveLength(2);
+    // The plugin's `fired` write happens inside executeHttp, before
+    // runPluginPipeline returns; the engine's `skipped` write happens after
+    // (loader.ts's emitBeaconSafely call) — so `fired` lands first in the
+    // sink and only `beaconRank` (submission-reader.ts), not write order,
+    // makes it win the fold.
+    expect(beaconLines[0]?.beaconStatus).toBe("fired");
+    expect(beaconLines[1]?.beaconStatus).toBe("skipped");
+
+    const rows = await readReconciliationRows({ sinkPath });
+    expect(rows).toHaveLength(1);
+    const [row] = rows;
+    expect(row?.siteId).toBe("e2e-self-recording");
+    expect(row?.status).toBe("submitted");
+    expect(row?.joinKeys).toEqual(joinKeys);
+    expect(row?.beaconStatus).toBe("fired");
+    expect(row?.beaconTrackingUrl).toBe(trackingUrl);
+  });
+
+  it("folds a plugin's richer self-recorded fired beacon over the engine's skipped beacon, keeping the submit line's narrow joinKeys and nulling the trackingUrl, dispatched over real HTTP", async () => {
+    const trackingUrl =
+      "https://click.e2e-test.example/t/divergent?vivclid=e2e-789&empId=emp3&jid=jid3";
+    const narrowJoinKeys = { vivclid: "e2e-789" };
+    const supersetJoinKeys = { vivclid: "e2e-789", jobReference: "emp3_jid3" };
+
+    const divergentPlugin: SitePlugin<unknown, unknown> = {
+      extractJoinKeys: (payload) => {
+        const { TrackingUrl } = payload as { TrackingUrl?: string };
+        return TrackingUrl ? narrowJoinKeys : null;
+      },
+      meta: {
+        siteId: "e2e-divergent",
+        displayName: "E2E Divergent",
+        bodySchema: z.object({ TrackingUrl: z.string().optional() }),
+        responseSchema: z.object({ verified: z.boolean() }),
+      },
+      execute: vi.fn(),
+      executeHttp: async (_payload, context): Promise<SitePluginResult<unknown>> => {
+        await context.recordBeaconOutcome({
+          beaconStatus: "fired",
+          joinKeys: supersetJoinKeys,
+        });
+        return { data: { verified: true } };
+      },
+    };
+
+    const app = Fastify({ loggerInstance: getLogger({ name: "dispatch-telemetry-e2e-test" }) });
+    app.setValidatorCompiler(validatorCompiler);
+    app.setSerializerCompiler(serializerCompiler);
+    await app.register(errorHandlerPlugin);
+    await app.register(authPlugin);
+    await registerRoutes(app, cfgStub, [divergentPlugin]);
+    await app.ready();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/e2e-divergent/run",
+      payload: { TrackingUrl: trackingUrl },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().verified).toBe(true);
+
+    await app.close();
+
+    const rawLines = fs
+      .readFileSync(sinkPath, "utf8")
+      .split("\n")
+      .filter((line) => line.trim().length > 0)
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            kind: string;
+            beaconStatus?: string;
+            joinKeys?: unknown;
+            trackingUrl?: string | null;
+          }
+      );
+    const beaconLines = rawLines.filter((line) => line.kind === "beacon");
+    expect(beaconLines).toHaveLength(2);
+    expect(beaconLines[0]?.beaconStatus).toBe("fired");
+    expect(beaconLines[0]?.joinKeys).toEqual(supersetJoinKeys);
+    expect(beaconLines[0]?.trackingUrl).toBeNull();
+    expect(beaconLines[1]?.beaconStatus).toBe("skipped");
+    expect(beaconLines[1]?.joinKeys).toEqual(narrowJoinKeys);
+    expect(beaconLines[1]?.trackingUrl).toBe(trackingUrl);
+
+    const rows = await readReconciliationRows({ sinkPath });
+    expect(rows).toHaveLength(1);
+    const [row] = rows;
+    expect(row?.siteId).toBe("e2e-divergent");
+    expect(row?.status).toBe("submitted");
+    expect(row?.beaconStatus).toBe("fired");
+    expect(row?.joinKeys).toEqual(narrowJoinKeys);
+    expect(row?.beaconTrackingUrl).toBeNull();
+  });
+
+  it("merges context.telemetry.addJoinKeys() over extractJoinKeys and stamps the session's outbound IP, readable back via readReconciliationRows and GET /v1/submissions", async () => {
+    const knownIp = "203.0.113.201";
+    const fakeSession = {
+      stagehand: {},
+      limiter: {},
+      sessionId: "sess_e2e_telemetry_1",
+      provider: "browserbase" as const,
+      close: vi.fn().mockResolvedValue(undefined),
+      getOutboundIp: vi.fn().mockResolvedValue(knownIp),
+    };
+    vi.mocked(runWithSession).mockImplementationOnce(
+      (task: (session: BrowserSession) => Promise<unknown>) =>
+        task(fakeSession as unknown as BrowserSession)
+    );
+
+    const midRunPlugin: SitePlugin<unknown, unknown> = {
+      extractJoinKeys: (payload) => {
+        const { TrackingUrl } = payload as { TrackingUrl?: string };
+        return TrackingUrl ? { vivclid: "extracted-value", jobReference: "emp9_jid9" } : null;
+      },
+      meta: {
+        siteId: "e2e-mid-run-telemetry",
+        displayName: "E2E Mid-Run Telemetry",
+        bodySchema: z.object({ TrackingUrl: z.string().optional() }),
+        responseSchema: z.object({ verified: z.boolean() }),
+      },
+      execute: async (
+        _payload,
+        _session,
+        context: SitePluginContext
+      ): Promise<SitePluginResult<unknown>> => {
+        context.telemetry.addJoinKeys({ vivclid: "run-attached-value" });
+        return { data: { verified: true } };
+      },
+    };
+
+    const trackingUrl =
+      "https://click.e2e-test.example/t/mid-run?vivclid=extracted-value&empId=emp9&jid=jid9";
+
+    const app = Fastify({ loggerInstance: getLogger({ name: "dispatch-telemetry-e2e-test" }) });
+    app.setValidatorCompiler(validatorCompiler);
+    app.setSerializerCompiler(serializerCompiler);
+    await app.register(errorHandlerPlugin);
+    await app.register(authPlugin);
+    await registerRoutes(app, cfgStub, [midRunPlugin]);
+    await app.register(submissionsRoutes, { sinkPath });
+    await app.ready();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/e2e-mid-run-telemetry/run",
+      payload: { TrackingUrl: trackingUrl },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().verified).toBe(true);
+
+    const expectedJoinKeys = { vivclid: "run-attached-value", jobReference: "emp9_jid9" };
+
+    const rows = await readReconciliationRows({ sinkPath });
+    expect(rows).toHaveLength(1);
+    const [row] = rows;
+    expect(row?.siteId).toBe("e2e-mid-run-telemetry");
+    expect(row?.status).toBe("submitted");
+    expect(row?.joinKeys).toEqual(expectedJoinKeys);
+    expect(row?.session).toEqual({
+      id: "sess_e2e_telemetry_1",
+      provider: "browserbase",
+      ip: knownIp,
+      ipCapturedAt: expect.any(String),
+    });
+
+    const submissionsResponse = await app.inject({
+      method: "GET",
+      url: "/v1/submissions",
+    });
+
+    await app.close();
+
+    expect(submissionsResponse.statusCode).toBe(200);
+    const [submissionRow] = submissionsResponse.json().submissions as Array<{
+      siteId: string;
+      joinKeys: Record<string, unknown> | null;
+      session: {
+        id: string;
+        provider: string;
+        ip: string | null;
+        ipCapturedAt: string | null;
+      } | null;
+    }>;
+    expect(submissionRow?.siteId).toBe("e2e-mid-run-telemetry");
+    expect(submissionRow?.joinKeys).toEqual(expectedJoinKeys);
+    expect(submissionRow?.session?.ip).toBe(knownIp);
   });
 });

@@ -8,6 +8,7 @@ import {
   registerDeepLocatorHangingHop,
   registerDeepLocatorHopElements,
 } from "@/scraper/deep-locator-fake";
+import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
 import { resetBillingErrorFlagForTests, runHealingFlow } from "@/scraper/flow-runner";
 import type { FrameTarget } from "@/scraper/frame-target";
 import type { Logger } from "@/types/logging";
@@ -150,7 +151,7 @@ describe("flow-runner/executeStepWithHealing — llm-rephrase deepLocatorCandida
 
   it("populates rephrase evidence from deepLocator candidates, shaped as click Actions, when observe is empty for a child frame", async () => {
     const frame: FakeDeepLocatorFrame = new Map();
-    const hopSelector = `${FRAME_SELECTOR} >> *`;
+    const hopSelector = `${FRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
     registerDeepLocatorHopElements(frame, hopSelector, ["Manual Application"]);
 
     resolveFrameTarget.mockResolvedValue(makeChildFrameTarget({} as FrameTarget["frame"]));
@@ -178,7 +179,7 @@ describe("flow-runner/executeStepWithHealing — llm-rephrase deepLocatorCandida
 
   it("falls back to the literal '(no accessible text)' description for a deepLocator candidate with blank text", async () => {
     const frame: FakeDeepLocatorFrame = new Map();
-    const hopSelector = `${FRAME_SELECTOR} >> *`;
+    const hopSelector = `${FRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
     registerDeepLocatorHopElements(frame, hopSelector, [""]);
 
     resolveFrameTarget.mockResolvedValue(makeChildFrameTarget({} as FrameTarget["frame"]));
@@ -240,7 +241,7 @@ describe("flow-runner/executeStepWithHealing — llm-rephrase deepLocatorCandida
 
   it("still issues the rephrase LLM call with empty deepLocator evidence, within the watchdog budget, when the child-frame deepLocator hop never settles", async () => {
     const frame: FakeDeepLocatorFrame = new Map();
-    const hopSelector = `${FRAME_SELECTOR} >> *`;
+    const hopSelector = `${FRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
     const { release } = registerDeepLocatorHangingHop(frame, hopSelector, { hangOn: "count" });
 
     resolveFrameTarget.mockResolvedValue(makeChildFrameTarget({} as FrameTarget["frame"]));

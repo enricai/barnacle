@@ -38,12 +38,16 @@ export type SubmissionEnvelopeSample = z.infer<typeof submissionEnvelopeSampleSc
 
 /**
  * Input to `captureSubmissionEnvelope` — `ts` and `kind` are derived
- * internally so callers omit them. `joinKeys` is optional so existing call
- * sites that don't yet resolve join keys keep compiling unchanged; an
- * omitted value is persisted as `null`, not left undefined.
+ * internally so callers omit them. `joinKeys`/`session` are optional so
+ * existing call sites that don't yet resolve them keep compiling unchanged;
+ * an omitted value is persisted as `null`, not left undefined.
  */
-export type SubmissionEnvelopeInput = Omit<SubmissionEnvelopeSample, "ts" | "kind" | "joinKeys"> & {
+export type SubmissionEnvelopeInput = Omit<
+  SubmissionEnvelopeSample,
+  "ts" | "kind" | "joinKeys" | "session"
+> & {
   joinKeys?: Record<string, unknown> | null;
+  session?: SubmissionEnvelopeSample["session"];
 };
 
 /** Options for `captureSubmissionEnvelope`. */
@@ -79,6 +83,7 @@ export async function captureSubmissionEnvelope(
     ...input,
     kind: "submit",
     joinKeys: input.joinKeys ?? null,
+    session: input.session ?? null,
     ts: formatISO(new Date()),
   };
 

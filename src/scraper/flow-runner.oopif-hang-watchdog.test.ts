@@ -60,6 +60,8 @@ import {
   makeFakeDeepLocator,
   registerDeepLocatorHangingHop,
 } from "@/scraper/deep-locator-fake";
+import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
+import { advanceUntilSettled } from "@/scraper/fake-timer-advance";
 import { runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
@@ -67,7 +69,8 @@ const TOP_ORIGIN = "https://careers.uchealth.org";
 const CHILD_ORIGIN = "https://apply.talemetry.com";
 const IFRAME_SELECTOR = "iframe#talemetry_apply_iframe";
 const CHILD_SRC = `${CHILD_ORIGIN}/application/abc-123`;
-const HOP_SELECTOR = `${IFRAME_SELECTOR} >> *`;
+/** The cascade's attempt-2/4 branch resolves candidates at the interactive-scoped hop (bugfix-005), not `"*"`; the pre-cascade probe never reaches deepLocator in this suite (see `makeFakeStagehandObserveBlind`'s unfocused-observe short-circuit), so only this hop needs the hang gate. */
+const HOP_SELECTOR = `${IFRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
 const MANUAL_APPLICATION_STEP = "Click the 'Manual Application' button.";
 
 const loggerInfo = vi.fn();
@@ -89,19 +92,28 @@ function allLoggedLines(): string {
 /**
  * Advances the fake clock well past every deepLocator per-call watchdog the
  * cascade's 5 attempts could hit (10s default, `deep-locator-candidates.ts`),
- * in many small steps rather than a few large ones. Sinon's fake-clock
- * `tickAsync` (which `advanceTimersByTimeAsync` wraps) only drains a bounded
- * number of microtask turns per call; the real `guardedObserve`/`guardedAct`/
- * `resolveDeepLocatorCandidates` stack this suite drives (unlike the
- * `vi.mock`-based `flow-runner.deep-locator-hang.test.ts`) chains far more
- * awaits per attempt than that bound allows in one shot, so a handful of
- * 10s jumps stalls partway through — many 1s jumps give the queue enough
- * chances to fully drain between each timer step.
+ * in many small steps rather than a few large ones, stopping as soon as
+ * `resultPromise` settles instead of always running the full tick budget
+ * (`@/scraper/fake-timer-advance`'s `advanceUntilSettled`). Sinon's
+ * fake-clock `tickAsync` (which `advanceTimersByTimeAsync` wraps) only
+ * drains a bounded number of microtask turns per call; the real
+ * `guardedObserve`/`guardedAct`/`resolveDeepLocatorCandidates` stack this
+ * suite drives (unlike the `vi.mock`-based
+ * `flow-runner.deep-locator-hang.test.ts`) chains far more awaits per
+ * attempt than that bound allows in one shot, so a handful of 10s jumps
+ * stalls partway through — many 1s jumps give the queue enough chances to
+ * fully drain between each timer step. (A `vi.getTimerCount() > 0`-gated
+ * loop stepping one pending timer at a time via
+ * `advanceTimersToNextTimerAsync` was tried: it measurably deadlocks
+ * instead — the timer count can read 0 between real fires even though the
+ * cascade's continuation hasn't yet scheduled its next watchdog, so the
+ * loop exits before every attempt has run and `await assertion` hangs
+ * forever waiting on a fake timer nothing is advancing anymore.)
  */
-async function advancePastDeepLocatorHangs(): Promise<void> {
-  for (let i = 0; i < 300; i++) {
-    await vi.advanceTimersByTimeAsync(1_000);
-  }
+async function advancePastDeepLocatorHangs(resultPromise: Promise<unknown>): Promise<void> {
+  await advanceUntilSettled(resultPromise, {
+    advanceTimersByTimeAsync: vi.advanceTimersByTimeAsync,
+  });
 }
 
 /**
@@ -229,7 +241,12 @@ describe("flow-runner OOPIF-bound deepLocator hang (offline acceptance test, rea
       stagehand,
       page,
       steps: [
-        { instruction: MANUAL_APPLICATION_STEP, optional: false, upload: false, submitStep: false },
+        {
+          instruction: MANUAL_APPLICATION_STEP,
+          optional: false,
+          upload: false,
+          submitStep: false,
+        },
       ],
       logger: testLogger,
       anthropic: null,
@@ -240,7 +257,7 @@ describe("flow-runner OOPIF-bound deepLocator hang (offline acceptance test, rea
       /failed verification after \d+ attempts/
     );
 
-    await advancePastDeepLocatorHangs();
+    await advancePastDeepLocatorHangs(resultPromise);
     await assertion;
 
     const logged = allLoggedLines();
@@ -264,7 +281,12 @@ describe("flow-runner OOPIF-bound deepLocator hang (offline acceptance test, rea
       stagehand,
       page,
       steps: [
-        { instruction: MANUAL_APPLICATION_STEP, optional: false, upload: false, submitStep: false },
+        {
+          instruction: MANUAL_APPLICATION_STEP,
+          optional: false,
+          upload: false,
+          submitStep: false,
+        },
       ],
       logger: testLogger,
       anthropic: null,
@@ -275,7 +297,7 @@ describe("flow-runner OOPIF-bound deepLocator hang (offline acceptance test, rea
       /failed verification after \d+ attempts/
     );
 
-    await advancePastDeepLocatorHangs();
+    await advancePastDeepLocatorHangs(resultPromise);
     await assertion;
 
     const logged = allLoggedLines();

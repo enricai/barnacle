@@ -7,9 +7,8 @@
  */
 
 import { config } from "@/config";
-import { MetricsCollector } from "@/lib/dispatch-metrics";
 import { getLogger } from "@/lib/logging";
-import { dispatch } from "@/plugins/loader";
+import { buildPluginContext, dispatch } from "@/plugins/loader";
 import type { SitePlugin, SitePluginResult } from "@/site-plugin";
 import {
   allocateTestmailInbox,
@@ -91,13 +90,13 @@ export async function runIntegrationJob<TResult = Record<string, unknown>>(
   const inbox = allocateTestmailInbox(inboxOptions);
   const payload = buildPayload(inbox);
 
-  const context = {
-    baseUrl,
-    logger,
-    config,
+  const context = buildPluginContext({
+    plugin,
+    cfg: config,
     requestId: "integration-test",
-    metricsCollector: new MetricsCollector(),
-  };
+    logger,
+    baseUrl,
+  });
 
   const result = await dispatch<TResult>(plugin, payload, context);
 

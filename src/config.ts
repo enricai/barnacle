@@ -84,6 +84,39 @@ export interface AppConfig {
      * racy OOPIF fails the attempt instead of hanging the step indefinitely.
      */
     frameEvaluateTimeoutMs: number;
+    /**
+     * Per-probe watchdog floor for `probeAttachedFrameTarget`'s single
+     * non-polling presence check (`frame-target.ts`). That probe's deadline
+     * is `Date.now() + framePresenceProbeFloorMs`, not `Date.now() + 0` —
+     * `resolveFrameTarget(page, sel, { timeoutMs: 0 })`'s zero-budget pass
+     * clamps every probe to `Math.min(evaluateTimeoutMs, remainingBudgetMs())
+     * === 0`, so a `setTimeout(reject, 0)` macrotask always wins the race
+     * against a genuinely awaited CDP round-trip and the probe can never
+     * observe an already-attached frame in production. Kept well under
+     * `frameReadyTimeoutMs` since the probe never polls — at most two
+     * round-trips (the top-level iframe-src read plus one candidate
+     * `location.href` read, per `tryResolveChildFrame`'s existing
+     * `index > 0 && remainingBudgetMs() <= 0` bound) — so a single call costs
+     * at most ~2x this floor.
+     */
+    framePresenceProbeFloorMs: number;
+    /**
+     * Master switch for the outbound-IP echo navigation. False yields
+     * `session: null` / `sessionIp: null` in the submit/beacon telemetry
+     * without disturbing the rest of the record.
+     */
+    captureSessionIp: boolean;
+    /**
+     * IP-echo endpoint the session's own short-lived tab navigates to.
+     * Overridable so operators can point this at a self-hosted echo
+     * endpoint instead of depending on a third party.
+     */
+    sessionIpEchoUrl: string;
+    /**
+     * Watchdog bound on the echo navigation; a page that never resolves is
+     * cut off and yields `null` rather than blocking the submission.
+     */
+    sessionIpTimeoutMs: number;
   };
   bedrock: {
     region: string;
@@ -365,6 +398,10 @@ export function loadConfig(): AppConfig {
       frameReadyTimeoutMs: getNumericEnv("FRAME_READY_TIMEOUT_MS", 20_000),
       frameDocumentReadyTimeoutMs: getNumericEnv("FRAME_DOCUMENT_READY_TIMEOUT_MS", 5_000),
       frameEvaluateTimeoutMs: getNumericEnv("FRAME_EVALUATE_TIMEOUT_MS", 30_000),
+      framePresenceProbeFloorMs: getNumericEnv("FRAME_PRESENCE_PROBE_FLOOR_MS", 3_000),
+      captureSessionIp: getBoolEnv("SCRAPER_CAPTURE_SESSION_IP", true),
+      sessionIpEchoUrl: getEnv("SCRAPER_SESSION_IP_ECHO_URL", "https://api.ipify.org?format=json"),
+      sessionIpTimeoutMs: getNumericEnv("SCRAPER_SESSION_IP_TIMEOUT_MS", 10_000),
     },
     bedrock: {
       region: getEnv("AWS_REGION", "us-east-1"),

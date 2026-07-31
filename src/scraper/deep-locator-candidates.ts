@@ -13,7 +13,18 @@ import type { Page } from "@browserbasehq/stagehand";
 
 import { toErrorMessage } from "@/lib/errors";
 import { getLogger } from "@/lib/logging";
-import { buildHopSelector } from "@/scraper/frame-target";
+import {
+  buildClickFrameCandidateExpr,
+  buildScanFrameCandidatesExpr,
+  DEEP_LOCATOR_CLICK_INDEX_ROUND_TRIP_MS,
+  type FrameCandidateClickResult,
+  type FrameCandidateScanResult,
+} from "@/scraper/deep-locator-scan";
+import {
+  buildHopSelector,
+  type FrameTarget,
+  probeAttachedFrameTarget,
+} from "@/scraper/frame-target";
 import { withWatchdog } from "@/scraper/watchdog";
 
 const logger = getLogger({ name: "scraper/deep-locator-candidates" });
@@ -27,12 +38,16 @@ const logger = getLogger({ name: "scraper/deep-locator-candidates" });
 const DEFAULT_DEEP_LOCATOR_CALL_TIMEOUT_MS = 10_000;
 
 /**
- * Total wall-clock budget for {@link resolveDeepLocatorCandidates}'s
- * per-candidate `textContent()` enumeration loop. A hop like `"*"` can match
+ * Total wall-clock budget for {@link resolveDeepLocatorCandidates}'s legacy
+ * per-candidate `textContent()` enumeration loop — the fallback path taken
+ * when no batched frame-scoped scan is available (see
+ * {@link DeepLocatorTimeoutOptions.frameTarget}). A hop like `"*"` can match
  * dozens of elements (65 observed against a live OOPIF) — each individually
  * fast but settling, not hanging — so a per-call timeout alone doesn't bound
  * the loop's total cost. Roughly half of `flow-runner.ts`'s
  * `STEP_WATCHDOG_MS` (120s), leaving headroom for the rest of the attempt.
+ * The batched scan path completes in one round-trip and is never gated by
+ * this budget.
  */
 const DEFAULT_DEEP_LOCATOR_ENUMERATION_BUDGET_MS = 60_000;
 
@@ -40,9 +55,30 @@ const DEFAULT_DEEP_LOCATOR_ENUMERATION_BUDGET_MS = 60_000;
 export interface DeepLocatorTimeoutOptions {
   /** Per-call watchdog timeout for `count()`/`textContent()`/`click()`. Defaults to {@link DEFAULT_DEEP_LOCATOR_CALL_TIMEOUT_MS}. */
   callTimeoutMs?: number;
-  /** Total budget for {@link resolveDeepLocatorCandidates}'s enumeration loop. Defaults to {@link DEFAULT_DEEP_LOCATOR_ENUMERATION_BUDGET_MS}. */
+  /** Total budget for {@link resolveDeepLocatorCandidates}'s legacy enumeration loop. Defaults to {@link DEFAULT_DEEP_LOCATOR_ENUMERATION_BUDGET_MS}. */
   enumerationBudgetMs?: number;
+  /**
+   * Pre-resolved `FrameTarget` to scan via one batched
+   * `evaluate(buildScanFrameCandidatesExpr(innerSelector))` round-trip
+   * instead of the legacy `count()` + per-candidate `textContent()` loop.
+   * When omitted, a single non-polling `probeAttachedFrameTarget(page,
+   * frameSelector)` pass (`frame-target.ts`) is attempted internally so
+   * existing call sites get the batched fast path for free. Unlike a bare
+   * `resolveFrameTarget(page, frameSelector, { timeoutMs: 0 })` pass — which
+   * always loses the race against genuine CDP latency — this probe carries a
+   * real per-probe budget (`config.scraper.framePresenceProbeFloorMs`), so it
+   * can actually land against an already-attached frame under live latency.
+   * If the probe doesn't land a resolved child frame (not yet attached, or
+   * `frameSelector` is null/undefined), the legacy loop runs unchanged. A
+   * caller that already resolved a `FrameTarget` (e.g. `flow-runner.ts`'s
+   * per-step resolution) should pass it here to skip the redundant internal
+   * probe.
+   */
+  frameTarget?: FrameTarget;
 }
+
+/** `page.deepLocator()`'s return type, without importing Stagehand's understudy internals directly. */
+type DeepLocatorInstance = ReturnType<NonNullable<Page["deepLocator"]>>;
 
 /**
  * One candidate element `page.deepLocator()` resolved inside a scoped frame.
@@ -61,7 +97,12 @@ export interface DeepLocatorCandidate {
   index: number;
   /** `deeplocator=`-prefixed selector identifying this candidate for downstream `resolvedAction` synthesis; deliberately not `xpath=` (see {@link DeepLocatorCandidate} docs). */
   selector: string;
-  /** Accessible text read via the delegate's `textContent()`. */
+  /**
+   * Accessible text for this candidate: the derived accessible name (see
+   * {@link buildScanFrameCandidatesExpr}) on the batched-scan fast path,
+   * or the delegate's raw `textContent()` on the legacy per-candidate
+   * enumeration fallback.
+   */
   accessibleText: string;
 }
 
@@ -85,6 +126,12 @@ function candidateSelector(hopSelector: string, index: number): string {
  */
 const NEGATION_MARKERS = /\b(?:do\s+not|don't|never|avoid)\b/gi;
 
+/** One quoted phrase from an instruction, tagged with whether a negation marker (`NEGATION_MARKERS`) governs it. See {@link extractTaggedPhrases}. */
+export interface TaggedPhrase {
+  text: string;
+  negated: boolean;
+}
+
 /**
  * Extracts every single-quoted phrase from `instruction`, tagging each as
  * negated when a negation marker (`NEGATION_MARKERS`) precedes it within the
@@ -94,9 +141,12 @@ const NEGATION_MARKERS = /\b(?:do\s+not|don't|never|avoid)\b/gi;
  * reach. Mirrors the quoted-phrase extraction convention in
  * `parseSelectStep`/`parseRadioStep` (`flow-runner.ts`) — same
  * `/'([^']+)'/g` shape — but here we need ALL quoted phrases plus their
- * polarity, not just one option/label pair.
+ * polarity, not just one option/label pair. Exported so `flow-runner.ts` can
+ * re-derive the exact same ranking {@link scoreCandidate} used to sort
+ * `deepLocatorCandidates`, to detect a tie for the top rank rather than
+ * duplicating this logic.
  */
-function extractTaggedPhrases(instruction: string): Array<{ text: string; negated: boolean }> {
+export function extractTaggedPhrases(instruction: string): TaggedPhrase[] {
   const negationStarts = [...instruction.matchAll(NEGATION_MARKERS)].map((m) => m.index);
   const quoted = [...instruction.matchAll(/'([^']+)'/g)];
   return quoted.map((m) => {
@@ -125,11 +175,11 @@ function normalize(text: string): string {
  * exact/substring match tiers, falling through to 0 for empty or
  * unrelated text so a structural container with no accessible text can
  * never outrank a candidate whose text actually matches the instruction.
+ * Exported so `flow-runner.ts` can detect a tie for the top rank among
+ * `resolveDeepLocatorCandidates`'s already-sorted output (see
+ * {@link extractTaggedPhrases}'s docblock).
  */
-function scoreCandidate(
-  accessibleText: string,
-  phrases: Array<{ text: string; negated: boolean }>
-): number {
+export function scoreCandidate(accessibleText: string, phrases: TaggedPhrase[]): number {
   const normalizedText = normalize(accessibleText);
   if (!normalizedText) return 0;
   const positives = phrases.filter((p) => !p.negated).map((p) => normalize(p.text));
@@ -141,51 +191,129 @@ function scoreCandidate(
 }
 
 /**
- * Enumerates every element `page.deepLocator()` matches inside the frame
- * scoped by `frameSelector`, ranked by relevance to `instruction` (highest
- * first, ties preserving original delegate/DOM order). Composes the hop
- * scope via `buildHopSelector` (owned by `frame-target.ts`) rather than
- * string-concatenating `>>` itself, so hop notation stays defined in exactly
- * one place. Never throws: a missing `page.deepLocator`, a
- * `count()`/`nth()`/`textContent()` failure (detached frame, navigated-away
- * element), or either call exceeding its watchdog budget (a wedged CDP
- * round-trip against a racy OOPIF frame — see the deepLocator-direct-hangs
- * bug report) degrades to `[]`/an empty `accessibleText` so a caller
- * cascading through candidate sources can move on to the next technique
- * instead of hanging the step forever.
- *
- * Ranking exists because a hop like `"*"` matches every element inside a
- * wizard iframe (html, body, every div, ...) — DOM order alone almost always
- * puts a structural container first, not the control the step instruction
- * actually names. Pass `instruction` as `null`/`undefined` (or omit it) to
- * skip ranking and get delegate order — e.g. for pre-cascade reachability
- * probes that only care whether the frame has ANY candidates.
- *
- * `count()` and each per-candidate `textContent()` are individually bounded
- * by `timeoutOptions.callTimeoutMs` via {@link withWatchdog}; the enumeration
- * loop as a whole is additionally bounded by `timeoutOptions.enumerationBudgetMs`
- * so a hop with dozens of slow-but-settling elements (e.g. 65 candidates
- * matched against a live OOPIF) can't rack up an unbounded total cost even
- * when no single call hangs — the loop aborts early and returns whatever
- * candidates it already resolved.
+ * Resolves the `FrameTarget` the batched scan should evaluate against:
+ * `timeoutOptions.frameTarget` when the caller already resolved one, else a
+ * single non-polling `probeAttachedFrameTarget(page, frameSelector)` pass
+ * (`frame-target.ts`) so existing call sites — which pass only a
+ * `frameSelector` string, not a `FrameTarget` — still get the batched fast
+ * path without themselves changing. Unlike a bare `resolveFrameTarget(page,
+ * frameSelector, { timeoutMs: 0 })` pass, the probe carries a real per-probe
+ * budget, so it can land against an already-attached frame under genuine CDP
+ * latency instead of always losing a zero-budget race. Returns `null` (never
+ * throws) when `frameSelector` is unset, the probe rejects (e.g. a fake
+ * `Page` in a legacy-path test lacking `evaluate`/`frames`), or nothing
+ * attaches within the probe's budget — each of those means "no frame seam
+ * available", and the caller degrades to the legacy per-candidate loop.
  */
-export async function resolveDeepLocatorCandidates(
+async function resolveScanFrameTarget(
+  page: Page,
+  frameSelector: string | null | undefined,
+  timeoutOptions: DeepLocatorTimeoutOptions
+): Promise<FrameTarget | null> {
+  if (timeoutOptions.frameTarget) return timeoutOptions.frameTarget;
+  if (!frameSelector) return null;
+  try {
+    return await probeAttachedFrameTarget(page, frameSelector);
+  } catch {
+    return null;
+  }
+}
+
+/** Narrows a batched-scan evaluate result to {@link FrameCandidateScanResult}'s shape, guarding against a non-conforming payload (Issue #2's degrade-to-legacy-loop contract). */
+function isFrameCandidateScanResult(entry: unknown): entry is FrameCandidateScanResult {
+  if (typeof entry !== "object" || entry === null) return false;
+  const candidate = entry as Partial<FrameCandidateScanResult>;
+  return (
+    typeof candidate.index === "number" &&
+    typeof candidate.text === "string" &&
+    typeof candidate.visible === "boolean"
+  );
+}
+
+/**
+ * Batched-scan fast path: one `frameTarget.evaluate(buildScanFrameCandidatesExpr(innerSelector))`
+ * round-trip replaces the legacy `count()` + N × `nth(i).textContent()` loop.
+ * Returns `null` (never throws) when no frame seam is available, the
+ * evaluate call rejects (missing seam, thrown error, or a watchdog timeout —
+ * `frameTarget.evaluate` already carries its own watchdog), the resolved
+ * payload doesn't conform to {@link FrameCandidateScanResult}[], or the raw
+ * scan matched zero elements — every one of those degrades the caller to the
+ * legacy loop instead of losing candidates. A raw zero-match scan is treated
+ * as inconclusive rather than authoritative because the scan expression's
+ * light-DOM `querySelectorAll` can't see into a shadow root the way
+ * `page.deepLocator()` (used by the legacy loop) can, so it must not be
+ * confused with the *visibility* filter below, which legitimately produces
+ * an empty result when the scan *did* match elements but every one of them
+ * is unrendered. Filters out `visible:false` entries (Issue #2: an
+ * unrendered node can never be the target of a real click) before the
+ * caller ranks what's left, logging at `warn` when candidates are dropped
+ * so a frame whose every node reports unrendered doesn't silently look like
+ * an empty frame.
+ */
+async function scanFrameCandidatesBatched(
   page: Page,
   frameSelector: string | null | undefined,
   innerSelector: string,
-  instruction?: string | null,
-  timeoutOptions: DeepLocatorTimeoutOptions = {}
-): Promise<DeepLocatorCandidate[]> {
-  const callTimeoutMs = timeoutOptions.callTimeoutMs ?? DEFAULT_DEEP_LOCATOR_CALL_TIMEOUT_MS;
-  const enumerationBudgetMs =
-    timeoutOptions.enumerationBudgetMs ?? DEFAULT_DEEP_LOCATOR_ENUMERATION_BUDGET_MS;
-  const hopSelector = buildHopSelector(frameSelector, innerSelector);
-  const delegate = typeof page.deepLocator === "function" ? page.deepLocator(hopSelector) : null;
-  if (!delegate) {
-    logger.warn(`deepLocator() is unavailable on this page for ${hopSelector}`);
-    return [];
+  hopSelector: string,
+  timeoutOptions: DeepLocatorTimeoutOptions
+): Promise<DeepLocatorCandidate[] | null> {
+  const frameTarget = await resolveScanFrameTarget(page, frameSelector, timeoutOptions);
+  if (!frameTarget) return null;
+
+  let scanResults: unknown;
+  try {
+    scanResults = await frameTarget.evaluate<FrameCandidateScanResult[]>(
+      buildScanFrameCandidatesExpr(innerSelector)
+    );
+  } catch (err) {
+    logger.warn(
+      `deepLocator batched scan for ${hopSelector} failed, degrading to per-candidate enumeration: ${toErrorMessage(err)}`
+    );
+    return null;
+  }
+  if (!Array.isArray(scanResults) || !scanResults.every(isFrameCandidateScanResult)) {
+    logger.warn(
+      `deepLocator batched scan for ${hopSelector} returned a non-conforming payload, degrading to per-candidate enumeration`
+    );
+    return null;
+  }
+  if (scanResults.length === 0) {
+    logger.warn(
+      `deepLocator batched scan for ${hopSelector} matched zero elements, degrading to per-candidate enumeration in case a shadow-DOM control was missed`
+    );
+    return null;
   }
 
+  const visibleResults = scanResults.filter((entry) => entry.visible);
+  if (visibleResults.length < scanResults.length) {
+    logger.warn(
+      `deepLocator batched scan for ${hopSelector} dropped ${scanResults.length - visibleResults.length} unrendered candidate(s)`
+    );
+  }
+  return visibleResults.map((entry) => ({
+    index: entry.index,
+    selector: candidateSelector(hopSelector, entry.index),
+    accessibleText: entry.text.trim(),
+  }));
+}
+
+/**
+ * Legacy fallback: `count()` then one `nth(index).textContent()` round-trip
+ * per candidate, individually bounded by `callTimeoutMs` via
+ * {@link withWatchdog} and collectively bounded by `enumerationBudgetMs` so a
+ * hop with dozens of slow-but-settling elements (e.g. 65 candidates matched
+ * against a live OOPIF) can't rack up an unbounded total cost even when no
+ * single call hangs — the loop aborts early and returns whatever candidates
+ * it already resolved. Never throws: a `count()`/`textContent()` failure
+ * (detached frame, navigated-away element) or either call exceeding its
+ * watchdog budget degrades to `[]`/an empty `accessibleText`.
+ */
+async function enumerateCandidatesViaLegacyLoop(
+  delegate: DeepLocatorInstance,
+  hopSelector: string,
+  callTimeoutMs: number,
+  enumerationBudgetMs: number
+): Promise<DeepLocatorCandidate[]> {
   const count = await withWatchdog(() => delegate.count(), {
     timeoutMs: callTimeoutMs,
     label: `deepLocator count() for ${hopSelector}`,
@@ -214,6 +342,75 @@ export async function resolveDeepLocatorCandidates(
       accessibleText: accessibleText.trim(),
     });
   }
+  return candidates;
+}
+
+/**
+ * Enumerates every element `page.deepLocator()` matches inside the frame
+ * scoped by `frameSelector`, ranked by relevance to `instruction` (highest
+ * first, ties preserving original delegate/DOM order). Composes the hop
+ * scope via `buildHopSelector` (owned by `frame-target.ts`) rather than
+ * string-concatenating `>>` itself, so hop notation stays defined in exactly
+ * one place. Never throws: a missing `page.deepLocator`, a
+ * `count()`/`nth()`/`textContent()` failure (detached frame, navigated-away
+ * element), or either call exceeding its watchdog budget (a wedged CDP
+ * round-trip against a racy OOPIF frame — see the deepLocator-direct-hangs
+ * bug report) degrades to `[]`/an empty `accessibleText` so a caller
+ * cascading through candidate sources can move on to the next technique
+ * instead of hanging the step forever.
+ *
+ * Prefers a single batched `evaluate` round-trip over the frame
+ * (see {@link scanFrameCandidatesBatched}) — collapsing the O(n) per-candidate
+ * `textContent()` round-trips that made a dense OOPIF form (371 candidates
+ * measured live) unresolvable inside any reasonable budget — and falls back
+ * to the legacy `count()` + per-candidate loop (see
+ * {@link enumerateCandidatesViaLegacyLoop}) when no frame seam is available,
+ * the batched scan fails, or the batched scan resolves to zero candidates —
+ * the batched expression's light-DOM `querySelectorAll` can't see into a
+ * shadow root the way `page.deepLocator()` can, so a zero-length scan is
+ * treated as inconclusive rather than authoritative. Pass an already-resolved
+ * {@link DeepLocatorTimeoutOptions.frameTarget} to use the fast path without
+ * paying for an internal re-resolution.
+ *
+ * Ranking exists because a hop like `"*"` matches every element inside a
+ * wizard iframe (html, body, every div, ...) — DOM order alone almost always
+ * puts a structural container first, not the control the step instruction
+ * actually names. Pass `instruction` as `null`/`undefined` (or omit it) to
+ * skip ranking and get delegate order — e.g. for pre-cascade reachability
+ * probes that only care whether the frame has ANY candidates.
+ */
+export async function resolveDeepLocatorCandidates(
+  page: Page,
+  frameSelector: string | null | undefined,
+  innerSelector: string,
+  instruction?: string | null,
+  timeoutOptions: DeepLocatorTimeoutOptions = {}
+): Promise<DeepLocatorCandidate[]> {
+  const callTimeoutMs = timeoutOptions.callTimeoutMs ?? DEFAULT_DEEP_LOCATOR_CALL_TIMEOUT_MS;
+  const enumerationBudgetMs =
+    timeoutOptions.enumerationBudgetMs ?? DEFAULT_DEEP_LOCATOR_ENUMERATION_BUDGET_MS;
+  const hopSelector = buildHopSelector(frameSelector, innerSelector);
+  const delegate = typeof page.deepLocator === "function" ? page.deepLocator(hopSelector) : null;
+  if (!delegate) {
+    logger.warn(`deepLocator() is unavailable on this page for ${hopSelector}`);
+    return [];
+  }
+
+  const batchedCandidates = await scanFrameCandidatesBatched(
+    page,
+    frameSelector,
+    innerSelector,
+    hopSelector,
+    timeoutOptions
+  );
+  const candidates =
+    batchedCandidates ??
+    (await enumerateCandidatesViaLegacyLoop(
+      delegate,
+      hopSelector,
+      callTimeoutMs,
+      enumerationBudgetMs
+    ));
   if (!instruction) return candidates;
 
   const phrases = extractTaggedPhrases(instruction);
@@ -229,19 +426,85 @@ export async function resolveDeepLocatorCandidates(
     .map(({ candidate }) => candidate);
 }
 
+/** Narrows a batched-click evaluate result to {@link FrameCandidateClickResult}'s shape, guarding against a non-conforming payload (the same degrade-to-legacy-loop contract {@link isFrameCandidateScanResult} enforces for the scan side). */
+function isFrameCandidateClickResult(entry: unknown): entry is FrameCandidateClickResult {
+  if (typeof entry !== "object" || entry === null) return false;
+  const result = entry as Partial<FrameCandidateClickResult>;
+  if (typeof result.clicked !== "boolean") return false;
+  if (result.clicked) return true;
+  return result.reason === "out-of-range" || result.reason === "not-actionable";
+}
+
+/**
+ * Batched-click fast path: one `frameTarget.evaluate(buildClickFrameCandidateExpr(innerSelector, index))`
+ * round-trip replaces the legacy `nth(index).click()`, which (per
+ * {@link DEEP_LOCATOR_CLICK_INDEX_ROUND_TRIP_MS}'s docs) pays `index + 1`
+ * serial CDP round-trips through `resolveAtIndex`. Returns `null` (never
+ * throws) when no frame seam is available, the evaluate call rejects, or the
+ * resolved payload doesn't conform to {@link FrameCandidateClickResult} —
+ * every one of those degrades the caller to the legacy `nth(index).click()`
+ * path instead of losing the click, mirroring {@link scanFrameCandidatesBatched}'s
+ * degrade contract on the enumeration side.
+ */
+async function clickCandidateBatched(
+  page: Page,
+  frameSelector: string | null | undefined,
+  innerSelector: string,
+  index: number,
+  hopSelector: string,
+  timeoutOptions: DeepLocatorTimeoutOptions
+): Promise<FrameCandidateClickResult | null> {
+  const frameTarget = await resolveScanFrameTarget(page, frameSelector, timeoutOptions);
+  if (!frameTarget) return null;
+
+  let clickResult: unknown;
+  try {
+    clickResult = await frameTarget.evaluate<FrameCandidateClickResult>(
+      buildClickFrameCandidateExpr(innerSelector, index)
+    );
+  } catch (err) {
+    logger.warn(
+      `deepLocator batched click for ${hopSelector} nth=${index} failed, degrading to delegate click: ${toErrorMessage(err)}`
+    );
+    return null;
+  }
+  if (!isFrameCandidateClickResult(clickResult)) {
+    logger.warn(
+      `deepLocator batched click for ${hopSelector} nth=${index} returned a non-conforming payload, degrading to delegate click`
+    );
+    return null;
+  }
+  return clickResult;
+}
+
 /**
  * Clicks the candidate at `index` inside the frame scoped by `frameSelector`,
  * re-deriving the same hop selector `resolveDeepLocatorCandidates` used
  * rather than trusting a caller-supplied `xpath=` string, so the two stay in
  * lockstep even if a candidate's `selector` field is only ever used for
- * display/logging. `DeepLocatorDelegate.click()` resolves `Promise<void>` on
- * success and rejects on failure — it never reports success via a return
- * value — so callers must infer the outcome from whether this call throws
- * plus their own downstream DOM verification, not from a returned boolean.
- * A `click()` that exceeds `timeoutOptions.callTimeoutMs` (a wedged CDP
- * round-trip against a racy OOPIF frame) rejects with a `WatchdogTimeoutError`
- * the same as any other failure, preserving the "rejects on failure" contract
- * instead of hanging the caller forever.
+ * display/logging. Resolves on success and rejects on failure — the caller
+ * must infer the outcome from whether this call throws plus their own
+ * downstream DOM verification, not from a returned boolean.
+ *
+ * Prefers the one-round-trip {@link clickCandidateBatched} fast path when a
+ * frame seam is available (`timeoutOptions.frameTarget`, or one resolved
+ * internally the same way {@link scanFrameCandidatesBatched} does), falling
+ * back to the legacy `DeepLocatorDelegate.click()` — which never reports
+ * success via a return value, only via not rejecting — when no seam is
+ * available, the batched call fails/degrades, or it reports the index
+ * stale (`reason: "out-of-range"`). A batched `reason: "not-actionable"`
+ * result throws an error {@link isNodeNotActionableError} classifies, the
+ * same contract a real click against an unrendered node rejects with via the
+ * CDP `-32000 Node does not have a layout object` error, so a caller
+ * cascading through candidates treats both paths identically.
+ *
+ * The legacy fallback's watchdog scales with `index` (see
+ * {@link DEEP_LOCATOR_CLICK_INDEX_ROUND_TRIP_MS}) so a legitimately-reachable
+ * candidate isn't killed by a budget sized for a single round-trip. A
+ * `click()` that still exceeds that scaled budget (a wedged CDP round-trip
+ * against a racy OOPIF frame) rejects with a `WatchdogTimeoutError` the same
+ * as any other failure, preserving the "rejects on failure" contract instead
+ * of hanging the caller forever.
  */
 export async function clickDeepLocatorCandidate(
   page: Page,
@@ -252,8 +515,35 @@ export async function clickDeepLocatorCandidate(
 ): Promise<void> {
   const callTimeoutMs = timeoutOptions.callTimeoutMs ?? DEFAULT_DEEP_LOCATOR_CALL_TIMEOUT_MS;
   const hopSelector = buildHopSelector(frameSelector, innerSelector);
+
+  const batchedResult = await clickCandidateBatched(
+    page,
+    frameSelector,
+    innerSelector,
+    index,
+    hopSelector,
+    timeoutOptions
+  );
+  if (batchedResult?.clicked) return;
+  if (batchedResult?.reason === "not-actionable") {
+    throw new Error(
+      `deepLocator batched click for ${hopSelector} nth=${index}: node does not have a layout object`
+    );
+  }
+
+  const scaledCallTimeoutMs = callTimeoutMs + index * DEEP_LOCATOR_CLICK_INDEX_ROUND_TRIP_MS;
   await withWatchdog(() => page.deepLocator(hopSelector).nth(index).click(), {
-    timeoutMs: callTimeoutMs,
+    timeoutMs: scaledCallTimeoutMs,
     label: `deepLocator click() for ${hopSelector} nth=${index}`,
   });
 }
+
+/**
+ * `fillDeepLocatorCandidate`/`selectDeepLocatorCandidateOption` live in
+ * `deep-locator-actuate.ts`, not here — that module's `writeAndVerify` wraps
+ * the same `buildHopSelector`/`withWatchdog` contract this file's
+ * `clickDeepLocatorCandidate` uses, but additionally reads the write back
+ * through `inputValue()` before reporting success (`verifyDomEffect` can't
+ * resolve a `deeplocator=` selector, so the read-back is the only
+ * confirmation a fill/select actually landed).
+ */

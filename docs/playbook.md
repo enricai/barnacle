@@ -174,6 +174,19 @@ constructs the Stagehand instance with two intentional flags:
   separate whole-flow retry via `withScraperRetry` in `src/scraper/retry.ts`,
   with Zod as the verifier.
 
+`createBrowserSession()` is the same factory the runtime dispatch path uses
+(`src/plugins/loader.ts` — see 5B/5D), so every Browserbase-backed session it
+returns, recon or runtime alike, also exposes an optional, memoized
+`getOutboundIp()` (`BrowserSession.getOutboundIp?`,
+`src/scraper/session-shared.ts` — Browserbase-only, absent on Steel). Neither
+the Browserbase SDK nor its session-create/get/log endpoints ever return a
+session's actual outbound IP, so the accessor's only option is to have the
+session itself navigate a separate tab to an IP-echo endpoint and read the
+result back — one extra tab load, bounded by `SCRAPER_SESSION_IP_TIMEOUT_MS`
+(~10s default). Gated by `SCRAPER_CAPTURE_SESSION_IP` (default `true`);
+recon-browser.ts never calls it — the accessor exists for the dispatch path's
+per-submission telemetry (5D), not recon output.
+
 ### 1b — CDP session-level network capture
 
 A single listener attaches to the page's main CDP session:
@@ -264,10 +277,97 @@ techniques are, in order:
    cross-origin OOPIF (see the cross-origin iframe note above), so this
    attempt (and the pre-cascade probe, and the rephrase evidence gather)
    additionally resolves candidates via `page.deepLocator()`
-   (`src/scraper/deep-locator-candidates.ts`) before giving up — the top
-   surviving candidate is clicked directly and a `xpath=`-shaped
-   `resolvedAction` is synthesized so verification proceeds exactly as it
-   would for an `observe()`-sourced candidate.
+   (`src/scraper/deep-locator-candidates.ts`) before giving up. Candidates are
+   resolved scoped to `INTERACTIVE_CANDIDATE_SELECTOR` first (keeps a dense
+   OOPIF form's candidate set to a handful of controls); when that scoped
+   pass finds nothing, resolution widens once to the unscoped `"*"` hop so a
+   `div`/`span` tile with only a click handler (no `role`/`tabindex`) can
+   still be reached. A fill/select step matched to a named field short-circuits
+   straight to the dedicated actuation seam described below; everything else
+   falls to `clickFirstActionableCandidate`
+   (`src/scraper/deep-locator-click.ts`), which walks the ranked candidates in
+   order and actuates the first one that actually succeeds — the step's own
+   prose (`parseSelectStep`/`parseFillStep` in `src/scraper/flow-runner.ts`,
+   via `resolveDeepLocatorActuation`) picks
+   `selectDeepLocatorCandidateOption`/`fillDeepLocatorCandidate` for a
+   select/fill-shaped step, falling back to `clickDeepLocatorCandidate` for
+   everything else. An actuation rejecting with the CDP `-32000 Node does not
+   have a layout object` error (an unrendered node) costs only that one
+   candidate, and the walk moves on to the next-ranked candidate instead of
+   scoring the whole attempt as a failure. Any other rejection (a detached
+   frame, a wedged call's `WatchdogTimeoutError`) still stops the walk
+   immediately, matching the old top-only behavior.
+
+   **Fill/select steps skip the candidate walk entirely.** Candidate
+   ranking scores by the instruction's quoted phrases, which for a fill
+   step is only the value being typed ("Fill in the First Name field with
+   'Reginald'" quotes just `'Reginald'`) — no control's accessible name
+   ever matches a person's name, so every candidate ties at score 0 and
+   DOM order would decide, clicking whatever happens to sit first (a
+   wizard's 'Close' button, in the bug report that motivated this). Before
+   the walk runs, `parseFillStep`/`parseSelectStep` (`src/scraper/flow-runner.ts`)
+   recover the step's target FIELD LABEL (e.g. "First Name") separately
+   from the value, and `findDeepLocatorCandidateByFieldLabel` matches it
+   directly against a candidate's accessible name (exact match first,
+   substring match either direction otherwise). A match routes to the
+   dedicated fill/select actuation seam
+   (`fillDeepLocatorCandidate`/`selectDeepLocatorCandidateOption`,
+   `src/scraper/deep-locator-actuate.ts`), which prefers one batched
+   `frameTarget.evaluate(buildFillFrameCandidateExpr(...) |
+   buildSelectFrameCandidateExpr(...))` round-trip
+   (`src/scraper/deep-locator-scan.ts`) over the legacy
+   `page.deepLocator().nth(index).fill()`/`.selectOption()` +
+   `.inputValue()` pair — Stagehand's `resolveAtIndex` pays `index + 1`
+   serial CDP round-trips per legacy call, so the batched expression is what
+   makes a fill/select survivable deep in a dense OOPIF form. The legacy
+   pair remains the degrade path when no frame seam is available or the
+   batched evaluate rejects/returns a non-conforming payload. Either way,
+   the write is read back (inline in the batched expression, or via
+   `inputValue()` on the legacy path) to confirm —
+   `verifyDomEffect` can't resolve a `deeplocator=` selector, so the
+   read-back itself is the only verification signal available, recorded as
+   `verifiedBy: "dom"` directly. `buildSelectFrameCandidateExpr` matches an
+   option by value first, falling back to its trimmed visible label, so a
+   step that quotes either one still lands. The hop re-derived for this
+   actuation always matches whichever selector actually produced the ranked
+   candidates (`INTERACTIVE_CANDIDATE_SELECTOR`, or the widened `"*"` when
+   the scoped pass found nothing), so a fill/select routed through a
+   widened hop still actuates against the right element instead of
+   re-resolving against the wrong candidate set. No candidate naming the
+   field at all is a refusal, not a guess: the step fails that attempt
+   rather than clicking an unrelated control.
+
+   A select step whose question is phrased without a quoted label
+   (`parseSelectStep` returns `questionLabel: null`, e.g. "Select 'Yes' for
+   the question about requiring visa sponsorship") has no field label to
+   match, so before falling through to the click-only walk below,
+   `executeStepWithHealing` re-resolves a `select`-only candidate set
+   (`resolveDeepLocatorCandidates(..., "select", ...)`) and scores it
+   against the step's quoted option the same way the walk's own ranking
+   does (`scoreCandidate`, exported from `src/scraper/deep-locator-candidates.ts`).
+   More than one `<select>` tying for the top score is refused outright
+   rather than guessed — DOM order would otherwise silently pick the wrong
+   screening question's control, exactly the ambiguity a bug report once
+   described. A unique top-ranked `<select>` (including the common
+   single-`<select>`-in-frame case, where a tie is impossible) still
+   proceeds to the walk unmodified.
+
+   Only a step with no fill/select field-label match falls through to the
+   click-only candidate walk. That walk still uses
+   `resolveDeepLocatorActuation` (`src/scraper/flow-runner.ts`) to infer
+   fill/select/click intent from the step's prose per attempt, so a
+   fill/select step that has no matching field label still actuates through
+   `fillDeepLocatorCandidate`/`selectDeepLocatorCandidateOption` rather than
+   only ever clicking — but since those actuators return a boolean (`true`
+   only when the read-back confirms the write) rather than throwing on an
+   ordinary failed write, the walk's per-candidate callback turns a `false`
+   result into a thrown `-32000` error itself, so
+   `clickFirstActionableCandidate` still treats a failed fill/select the
+   same as a not-actionable click: skip this candidate, try the next. The
+   candidate that does succeed — via the field-label fast path or the
+   click-only walk — has a `resolvedAction` matching the actuation kind
+   (`click`/`fill`/`selectOption`) synthesized so downstream verification
+   proceeds exactly as it would for an `observe()`-sourced candidate.
 3. **`observe(step, { ignoreSelectors: tried })` + `act(Action)`** — same as
    attempt 2, but we tell Stagehand to exclude the selectors we already tried.
    Addresses the "same wrong button twice" failure mode. When no selectors
@@ -565,17 +665,18 @@ cent per call.
 
 ```
 Request arrives
-  → plugin.extractJoinKeys(payload) → joinKeys   [opaque, plugin-owned; src/site-plugin.ts]
+  → plugin.extractJoinKeys(payload) → joinKeys   [opaque, plugin-owned; pre-run only — sees the inbound payload, not anything discovered mid-run; src/site-plugin.ts — see Beacon-fire below for self-managed context.recordBeaconOutcome]
   → LRU cache check (getCachedResponse)         [src/cache/response-cache.ts]
   → cache hit → return immediately
   → cache miss → getOrCreateInFlight(key, fn)   [coalesces concurrent misses]
-    → executeHttp(payload, context)              [plugin's hot path]
+    → executeHttp(payload, context)              [plugin's hot path; context.telemetry.addJoinKeys() stays open for run-discovered fields — src/lib/telemetry/run-telemetry.ts. .recordSession() is also on the handle but is stamped only by the loader wrapper around a live session (see 5B/5D) — the hot path never acquires one, so it goes uncalled here]
       → bottleneck.schedule(fetch)              [per-plugin rate limit]
         → p-retry (2 retries on network errors)
         → zod.parse(response)                   [drift detector]
   → record hot-path latency
   → write cache entry
-  → emit submission envelope (NDJSON)           [reconciliation "submit" record]
+  → dispatch() merges context.telemetry.snapshot() over joinKeys (run-discovered keys win on collision) and stamps the session block [no live session on the hot path → session: null]
+  → emit submission envelope (NDJSON)           [reconciliation "submit" record — carries the merged joinKeys + session]
   → fire beacon-fire tracking click              [background — not awaited]
   → return
 ```
@@ -584,7 +685,7 @@ Request arrives
 `dispatch()` itself, after `runPluginPipeline` resolves — they run for the
 hot path and the browser fallback alike, but only for a plugin that has NOT
 declared `extractJoinKeys`. When such a plugin's payload has a usable
-`TrackingUrl`, `fireTrackingClick` (`src/lib/tracking-click.ts:130`) is
+`TrackingUrl`, `fireTrackingClick` (`src/lib/tracking-click.ts`) is
 fire-and-forget: `dispatch()` calls it and returns without awaiting, so the
 response reaches the caller before the click even starts. In the background
 it opens a short-lived Browserbase session, navigates to the plugin's
@@ -596,10 +697,22 @@ at all, or when the plugin declared `extractJoinKeys` (asserting it fires its
 own post-submit tracking nav itself, outside `dispatch()` — see §Reconciliation
 join keys in architecture.md), `dispatch()` skips `fireTrackingClick` entirely
 and instead writes a `beaconStatus: "skipped"` beacon record itself,
-synchronously, before returning. This is why beacon-fire needs its own
-durable record instead of being inferred from submit success: a submission
-can succeed while the beacon never fires (see §6B for how that shows up in
-metrics, and drain behavior on shutdown).
+synchronously, before returning. This remains the default outcome for a
+self-managing plugin, but it is not the whole story: such a plugin can call
+`context.recordBeaconOutcome({ beaconStatus: "fired" | "failed", joinKeys, ... })`
+(bound to the run's `requestId`/`siteId`, never-throwing, built on the same
+`captureBeaconEvent` writer) from `execute()`, `executeHttp()`, or an extra
+route, once it knows how its own tracking nav actually resolved. That
+`fired`/`failed` line outranks the automatic `skipped` line for the same
+`requestId` when the reader folds them together
+(`src/lib/telemetry/submission-reader.ts`), so a self-managing plugin is not
+structurally locked to `"skipped"` — it just needs to opt in. Full field
+detail and the call-site conventions live in
+[Reconciliation join keys](../README.md#reconciliation-join-keys-extractjoinkeys)
+in the README; this section only needs to know the escape hatch exists. This
+is why beacon-fire needs its own durable record instead of being inferred
+from submit success: a submission can succeed while the beacon never fires
+(see §6B for how that shows up in metrics, and drain behavior on shutdown).
 
 **Cache deduplication:** `getOrCreateInFlight` coalesces concurrent misses on
 the same cache key into a single upstream call. If 10 identical requests arrive
@@ -625,18 +738,21 @@ Hot path fails (schema mismatch, bot challenge, or 5xx)
     → p-queue (bounded concurrency = SESSION_POOL_SIZE)
     → withScraperRetry (up to 3 attempts)       [wraps everything below]
       → createBrowserSession()                  [src/scraper/session.ts]
-          → Steel.sessions.create (residential proxy, random viewport)
+          → Browserbase.sessions.create (residential proxy, random viewport)  [default provider; Steel is the opt-in fallback via SCRAPER_PROVIDER=steel]
           → Stagehand.init() via CDP
-      → Promise.race([plugin.execute(session), TASK_TIMEOUT_MS (60min default)])
-    → session.close() in finally
-  → emit submission envelope (NDJSON)           [reconciliation "submit" record]
+      → fn(session): Promise.race([plugin.execute(session), TASK_TIMEOUT_MS (60min default)])
+          → finally: best-effort session.getOutboundIp?.() → context.telemetry.recordSession(...)  [loader.ts wrapper; Browserbase-only, gated by SCRAPER_CAPTURE_SESSION_IP — runs while the session is still open]
+    → session.close() in finally                [src/scraper/pool.ts]
+  → dispatch() merges context.telemetry.snapshot() over joinKeys (run-discovered keys win on collision) and stamps the session block
+  → emit submission envelope (NDJSON)           [reconciliation "submit" record — carries the merged joinKeys + session]
   → fire beacon-fire tracking click              [background — not awaited]
   → return
 ```
 
 Same tail as 5A: `emitEnvelopeSafely` and `fireTrackingClick` live in
 `dispatch()`, not in either pipeline branch, so both paths converge on the
-identical submit-record-then-beacon-fire sequence once a result comes back.
+identical joinKeys/session-merge-then-submit-record-then-beacon-fire sequence
+once a result comes back.
 
 **`x-barnacle-execution: browser`** — sending this header on the incoming
 request bypasses the hot path entirely and goes directly to the browser path.
@@ -706,6 +822,21 @@ sessions billing until their own timeout.
 desktop viewport from a fixed set (`1280×720`, `1366×768`, `1440×900`,
 `1920×1080`). A fixed pixel size is an easy bot-detection signal; rotating it
 makes session fingerprints harder to cluster.
+
+**Outbound-IP capture** (`src/scraper/session-browserbase.ts`, gated by
+`SCRAPER_CAPTURE_SESSION_IP`, default `true`): Browserbase never returns a
+session's actual outbound IP through its SDK, session-create/get calls, logs,
+or recording endpoints, so the only way to learn it is to have the session
+itself navigate a separate short-lived tab to an IP-echo endpoint
+(`SCRAPER_SESSION_IP_ECHO_URL`, default ipify) and read the response back —
+`getOutboundIp()` on `BrowserSession` does this once, memoized, and is
+Browserbase-only (absent on Steel). The cost is one extra tab load, bounded by
+`SCRAPER_SESSION_IP_TIMEOUT_MS` (~10s default) via `withWatchdog`. It runs in
+the shared wrapper around both `runWithSession` call sites in
+`src/plugins/loader.ts`, in a `finally` after `plugin.execute()` resolves and
+before `pool.ts`'s own `session.close()` — as close to submit time as the
+pool allows, since `pool.ts` closes the session in its own `finally` and never
+surfaces it back to `dispatch()`.
 
 ### 5E — Per-site base URL overrides
 

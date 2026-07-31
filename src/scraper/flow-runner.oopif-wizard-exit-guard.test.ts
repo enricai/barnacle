@@ -2,6 +2,7 @@ import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { DeepLocatorCandidate } from "@/scraper/deep-locator-candidates";
+import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
 import { resetBillingErrorFlagForTests, runHealingFlow } from "@/scraper/flow-runner";
 import type { FrameTarget } from "@/scraper/frame-target";
 import type { Logger } from "@/types/logging";
@@ -119,7 +120,7 @@ describe("flow-runner/executeStepWithHealing — deepLocator branch honors the w
 
     const wizardExitCandidate: DeepLocatorCandidate = {
       index: 0,
-      selector: "deeplocator=iframe#talemetry_apply_iframe >> * >> nth=0",
+      selector: `deeplocator=iframe#talemetry_apply_iframe >> ${INTERACTIVE_CANDIDATE_SELECTOR} >> nth=0`,
       accessibleText: "Save & Exit",
     };
     // Ranked first, mirroring the bug report's scenario where relevance
@@ -154,7 +155,8 @@ describe("flow-runner/executeStepWithHealing — deepLocator branch honors the w
   it("pushes the refused candidate's selector to triedSelectors so attempt 4's exclusion surfaces the benign runner-up instead", async () => {
     const urls = { current: "https://apply.acme.example/jobs/1/apply" };
     const page = makeFakePage(urls);
-    resolveFrameTarget.mockResolvedValue(makeChildFrameTarget(urls));
+    const childFrameTarget = makeChildFrameTarget(urls);
+    resolveFrameTarget.mockResolvedValue(childFrameTarget);
     guardedObserve.mockResolvedValue([]);
     guardedAct.mockResolvedValue({
       success: false,
@@ -165,12 +167,12 @@ describe("flow-runner/executeStepWithHealing — deepLocator branch honors the w
 
     const wizardExitCandidate: DeepLocatorCandidate = {
       index: 0,
-      selector: "deeplocator=iframe#talemetry_apply_iframe >> * >> nth=0",
+      selector: `deeplocator=iframe#talemetry_apply_iframe >> ${INTERACTIVE_CANDIDATE_SELECTOR} >> nth=0`,
       accessibleText: "Save & Exit",
     };
     const benignCandidate: DeepLocatorCandidate = {
       index: 1,
-      selector: "deeplocator=iframe#talemetry_apply_iframe >> * >> nth=1",
+      selector: `deeplocator=iframe#talemetry_apply_iframe >> ${INTERACTIVE_CANDIDATE_SELECTOR} >> nth=1`,
       accessibleText: "Manual Application",
     };
     // The real resolveDeepLocatorCandidates ranks the destructive control
@@ -213,21 +215,23 @@ describe("flow-runner/executeStepWithHealing — deepLocator branch honors the w
     expect(clickDeepLocatorCandidate).not.toHaveBeenCalledWith(
       page,
       FRAME_SELECTOR,
-      "*",
+      INTERACTIVE_CANDIDATE_SELECTOR,
       wizardExitCandidate.index
     );
     expect(clickDeepLocatorCandidate).toHaveBeenCalledWith(
       page,
       FRAME_SELECTOR,
-      "*",
-      benignCandidate.index
+      INTERACTIVE_CANDIDATE_SELECTOR,
+      benignCandidate.index,
+      { frameTarget: childFrameTarget }
     );
   });
 
   it("control case: clicks the top-ranked deepLocator candidate when its accessible text is benign", async () => {
     const urls = { current: "https://apply.acme.example/jobs/1/apply" };
     const page = makeFakePage(urls);
-    resolveFrameTarget.mockResolvedValue(makeChildFrameTarget(urls));
+    const childFrameTarget = makeChildFrameTarget(urls);
+    resolveFrameTarget.mockResolvedValue(childFrameTarget);
     guardedObserve.mockResolvedValue([]);
     guardedAct.mockResolvedValue({
       success: false,
@@ -238,7 +242,7 @@ describe("flow-runner/executeStepWithHealing — deepLocator branch honors the w
 
     const benignCandidate: DeepLocatorCandidate = {
       index: 0,
-      selector: "deeplocator=iframe#talemetry_apply_iframe >> * >> nth=0",
+      selector: `deeplocator=iframe#talemetry_apply_iframe >> ${INTERACTIVE_CANDIDATE_SELECTOR} >> nth=0`,
       accessibleText: "Manual Application",
     };
     resolveDeepLocatorCandidates.mockResolvedValue([benignCandidate]);
@@ -267,8 +271,9 @@ describe("flow-runner/executeStepWithHealing — deepLocator branch honors the w
     expect(clickDeepLocatorCandidate).toHaveBeenCalledWith(
       page,
       FRAME_SELECTOR,
-      "*",
-      benignCandidate.index
+      INTERACTIVE_CANDIDATE_SELECTOR,
+      benignCandidate.index,
+      { frameTarget: childFrameTarget }
     );
   });
 });

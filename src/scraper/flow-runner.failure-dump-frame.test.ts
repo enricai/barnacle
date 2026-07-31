@@ -6,6 +6,7 @@ import {
   makeFakeDeepLocator,
   registerDeepLocatorHopElements,
 } from "@/scraper/deep-locator-fake";
+import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
 import { executeStepWithHealing } from "@/scraper/flow-runner";
 import { type FrameTarget, mainFrameTarget } from "@/scraper/frame-target";
 import type { Logger } from "@/types/logging";
@@ -127,8 +128,15 @@ describe("flow-runner/executeStepWithHealing — failure-dump frame scoping (pro
 describe("flow-runner/executeStepWithHealing — failure-dump deepLocator evidence (cascade-exhaust path)", () => {
   it("degrades finalObserve/unfocusedObserve to deepLocator candidates for a child frame when observe() is empty", async () => {
     const deepLocatorFrame: FakeDeepLocatorFrame = new Map();
-    const hopSelector = `${FRAME_SELECTOR} >> *`;
+    const hopSelector = `${FRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
     registerDeepLocatorHopElements(deepLocatorFrame, hopSelector, ["Manual Application"]);
+    // probeStepBeforeAttempts deliberately keeps requesting "*" (a
+    // reachability gate, not the candidate set the dump evidence degrades
+    // to — see deep-locator-candidates.ts's module docblock), so it needs
+    // its own hop registered to report "present" before the cascade runs.
+    registerDeepLocatorHopElements(deepLocatorFrame, `${FRAME_SELECTOR} >> *`, [
+      "Manual Application",
+    ]);
 
     const page = fakePage(deepLocatorFrame);
     const frameTarget = fakeChildFrameTarget();

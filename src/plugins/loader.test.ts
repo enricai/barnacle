@@ -14,6 +14,7 @@ import authPlugin from "@/api/plugins/auth";
 import errorHandlerPlugin from "@/api/plugins/error-handler";
 import type { AppConfig } from "@/config";
 import { getLogger } from "@/lib/logging";
+import { RunTelemetry } from "@/lib/telemetry/run-telemetry";
 import { multipartJsonObject } from "@/lib/zod-multipart";
 import { BUILTIN_SITE_PLUGINS } from "@/plugins/discover";
 import { dispatch, registerRoutes, SITE_PLUGINS } from "@/plugins/loader";
@@ -88,8 +89,38 @@ vi.mock("@/lib/tracking-click", () => ({
   fireTrackingClick: mockFireTrackingClick,
 }));
 
+// createBeaconOutcomeRecorder's mock double replicates the real factory's
+// binding + never-throw wrapping around captureBeaconEvent, so tests can
+// assert on mockCaptureBeaconEvent's fully-merged call args regardless of
+// which layer (dispatch's own emitBeaconSafely, or a plugin's bound
+// recordBeaconOutcome) produced them. It is re-implemented here rather than
+// vi.importActual'd because the production closure over captureBeaconEvent is
+// a same-module reference, not an import — the actual module would bypass
+// mockCaptureBeaconEvent entirely and hit the real sink.
 vi.mock("@/lib/telemetry/beacon-capture", () => ({
   captureBeaconEvent: mockCaptureBeaconEvent,
+  createBeaconOutcomeRecorder: vi.fn(
+    (binding: { requestId: string; siteId: string }) =>
+      async (input: {
+        beaconStatus: string;
+        joinKeys: unknown;
+        trackingUrl?: string | null;
+        durationMs?: number;
+      }) => {
+        try {
+          await mockCaptureBeaconEvent({
+            requestId: binding.requestId,
+            siteId: binding.siteId,
+            joinKeys: input.joinKeys,
+            beaconStatus: input.beaconStatus,
+            trackingUrl: input.trackingUrl ?? null,
+            durationMs: input.durationMs ?? 0,
+          });
+        } catch {
+          // swallow, matching the real factory's never-throw contract
+        }
+      }
+  ),
 }));
 
 vi.mock("@/lib/dd-metrics", () => ({
@@ -135,6 +166,8 @@ const stubContext: SitePluginContext = {
       recordedAt: "",
     })),
   } as unknown as SitePluginContext["metricsCollector"],
+  recordBeaconOutcome: vi.fn().mockResolvedValue(undefined),
+  telemetry: new RunTelemetry(),
 };
 
 describe("dispatch", () => {
@@ -1296,6 +1329,322 @@ describe("registerRoutes — extraRoutes loop", () => {
     // The JSON string was decoded by the schema preprocessor through the manual
     // shared-route parse — proves coercion is preserved off the Fastify path.
     expect(received.Answers).toEqual({ a: "yes" });
+
+    await app.close();
+  });
+});
+
+describe("registerRoutes — context.recordBeaconOutcome", () => {
+  const cfgStub = { scraper: { siteBaseUrls: {} } } as unknown as AppConfig;
+  const preservedEnv = {
+    DEV_BYPASS_AUTH: process.env.DEV_BYPASS_AUTH,
+    NODE_ENV: process.env.NODE_ENV,
+  };
+
+  beforeEach(() => {
+    process.env.DEV_BYPASS_AUTH = "true";
+    process.env.NODE_ENV = "test";
+    mockCaptureSubmissionEnvelope.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    if (preservedEnv.DEV_BYPASS_AUTH === undefined) delete process.env.DEV_BYPASS_AUTH;
+    else process.env.DEV_BYPASS_AUTH = preservedEnv.DEV_BYPASS_AUTH;
+    if (preservedEnv.NODE_ENV === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = preservedEnv.NODE_ENV;
+    vi.clearAllMocks();
+  });
+
+  async function buildAppWithPlugin(
+    plugin: SitePlugin<unknown, unknown>
+  ): Promise<Parameters<typeof registerRoutes>[0]> {
+    const app = Fastify({
+      loggerInstance: getLogger({ name: "loader-recorder-test" }),
+      genReqId: () => "req-recorder-fixed",
+    });
+    app.setValidatorCompiler(validatorCompiler);
+    app.setSerializerCompiler(serializerCompiler);
+    await app.register(errorHandlerPlugin);
+    await app.register(authPlugin);
+    await registerRoutes(app, cfgStub, [plugin]);
+    await app.ready();
+    return app;
+  }
+
+  it("reaches captureBeaconEvent with this run's requestId and the plugin's siteId when execute calls context.recordBeaconOutcome, without the plugin supplying either", async () => {
+    const plugin: SitePlugin<unknown, unknown> = {
+      meta: {
+        siteId: "recorder-run-test",
+        displayName: "Recorder Run Test",
+        bodySchema: z.object({}),
+        responseSchema: z.unknown(),
+      },
+      execute: async (_payload, _session, context) => {
+        await context.recordBeaconOutcome({ beaconStatus: "fired", joinKeys: { k: 1 } });
+        return { data: { ok: true } };
+      },
+    };
+    const app = await buildAppWithPlugin(plugin);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/recorder-run-test/run",
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockCaptureBeaconEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestId: "req-recorder-fixed",
+        siteId: "recorder-run-test",
+        joinKeys: { k: 1 },
+        beaconStatus: "fired",
+      })
+    );
+
+    await app.close();
+  });
+
+  it("does not fail the route when the recorder's underlying capture rejects — the route still returns 200 with the plugin's data", async () => {
+    mockCaptureBeaconEvent.mockRejectedValueOnce(new Error("sink unavailable"));
+    const plugin: SitePlugin<unknown, unknown> = {
+      meta: {
+        siteId: "recorder-reject-test",
+        displayName: "Recorder Reject Test",
+        bodySchema: z.object({}),
+        responseSchema: z.unknown(),
+      },
+      execute: async (_payload, _session, context) => {
+        await context.recordBeaconOutcome({ beaconStatus: "failed", joinKeys: { k: 2 } });
+        return { data: { ok: true } };
+      },
+    };
+    const app = await buildAppWithPlugin(plugin);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/recorder-reject-test/run",
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body) as { ok: boolean };
+    expect(body.ok).toBe(true);
+
+    await app.close();
+  });
+
+  it("is present on the context built for an extra route, bound to that request's requestId and the owning plugin's siteId", async () => {
+    const extraHandler = vi.fn().mockImplementation(async (_request, context) => {
+      await context.recordBeaconOutcome({ beaconStatus: "fired", joinKeys: { k: 3 } });
+      return { done: true };
+    });
+    const plugin: SitePlugin<unknown, unknown> = {
+      meta: {
+        siteId: "recorder-extra-test",
+        displayName: "Recorder Extra Test",
+        bodySchema: z.object({}),
+        responseSchema: z.unknown(),
+        extraRoutes: [
+          {
+            method: "post",
+            path: "/v1/recorder-extra-test/action",
+            handler: extraHandler,
+          },
+        ],
+      },
+      execute: vi.fn(),
+    };
+    const app = await buildAppWithPlugin(plugin);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/recorder-extra-test/action",
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockCaptureBeaconEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestId: "req-recorder-fixed",
+        siteId: "recorder-extra-test",
+        joinKeys: { k: 3 },
+        beaconStatus: "fired",
+      })
+    );
+
+    await app.close();
+  });
+
+  it("writes both the automatic 'skipped' write and the plugin's own 'fired' write for the same requestId when a plugin declares extractJoinKeys and also calls context.recordBeaconOutcome", async () => {
+    const trackingUrl = "https://click.acme.example/t/abc?vivclid=456";
+    const plugin: SitePlugin<unknown, unknown> = {
+      meta: {
+        siteId: "recorder-coexist-test",
+        displayName: "Recorder Coexist Test",
+        bodySchema: z.object({ TrackingUrl: z.string().optional() }),
+        responseSchema: z.unknown(),
+      },
+      extractJoinKeys: () => ({ vivclid: "456" }),
+      execute: async (_payload, _session, context) => {
+        await context.recordBeaconOutcome({
+          beaconStatus: "fired",
+          joinKeys: { vivclid: "456", jid: "job1" },
+        });
+        return { data: { ok: true } };
+      },
+    };
+    const app = await buildAppWithPlugin(plugin);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/recorder-coexist-test/run",
+      payload: { TrackingUrl: trackingUrl },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockCaptureBeaconEvent).toHaveBeenCalledTimes(2);
+    expect(mockCaptureBeaconEvent).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        requestId: "req-recorder-fixed",
+        siteId: "recorder-coexist-test",
+        beaconStatus: "fired",
+        joinKeys: { vivclid: "456", jid: "job1" },
+      })
+    );
+    expect(mockCaptureBeaconEvent).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        requestId: "req-recorder-fixed",
+        siteId: "recorder-coexist-test",
+        beaconStatus: "skipped",
+        joinKeys: { vivclid: "456" },
+        trackingUrl,
+      })
+    );
+
+    await app.close();
+  });
+});
+
+describe("registerRoutes — context.recordBeaconOutcome binding across concurrent dispatches", () => {
+  const cfgStub = { scraper: { siteBaseUrls: {} } } as unknown as AppConfig;
+  const preservedEnv = {
+    DEV_BYPASS_AUTH: process.env.DEV_BYPASS_AUTH,
+    NODE_ENV: process.env.NODE_ENV,
+  };
+
+  beforeEach(() => {
+    process.env.DEV_BYPASS_AUTH = "true";
+    process.env.NODE_ENV = "test";
+    mockCaptureSubmissionEnvelope.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    if (preservedEnv.DEV_BYPASS_AUTH === undefined) delete process.env.DEV_BYPASS_AUTH;
+    else process.env.DEV_BYPASS_AUTH = preservedEnv.DEV_BYPASS_AUTH;
+    if (preservedEnv.NODE_ENV === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = preservedEnv.NODE_ENV;
+    vi.clearAllMocks();
+  });
+
+  it("binds each concurrent run's recordBeaconOutcome to its own requestId — no cross-run requestId", async () => {
+    let reqCounter = 0;
+    const app = Fastify({
+      loggerInstance: getLogger({ name: "loader-recorder-concurrency-test" }),
+      genReqId: () => `req-concurrent-${++reqCounter}`,
+    });
+    app.setValidatorCompiler(validatorCompiler);
+    app.setSerializerCompiler(serializerCompiler);
+    await app.register(errorHandlerPlugin);
+    await app.register(authPlugin);
+
+    // Each run parks on its own gate before calling recordBeaconOutcome, so both
+    // requests are genuinely in-flight (context already built, closure already
+    // bound) at the moment we release them — this is what would catch a hoisted
+    // or memoized buildPluginContext call crossing the two runs' bindings.
+    const startedRuns = new Set<string>();
+    const gateResolvers = new Map<string, () => void>();
+    const gateFor = (run: string): Promise<void> => {
+      startedRuns.add(run);
+      return new Promise((resolve) => gateResolvers.set(run, resolve));
+    };
+
+    const plugin: SitePlugin<unknown, unknown> = {
+      meta: {
+        siteId: "recorder-concurrency-test",
+        displayName: "Recorder Concurrency Test",
+        bodySchema: z.object({ run: z.string() }),
+        responseSchema: z.unknown(),
+      },
+      execute: async (payload, _session, context) => {
+        const { run } = payload as { run: string };
+        await gateFor(run);
+        await context.recordBeaconOutcome({ beaconStatus: "fired", joinKeys: { run } });
+        return { data: { run, requestId: context.requestId } };
+      },
+    };
+
+    await registerRoutes(app, cfgStub, [plugin]);
+    await app.ready();
+
+    const firstResponse = app.inject({
+      method: "POST",
+      url: "/v1/recorder-concurrency-test/run",
+      payload: { run: "first" },
+    });
+    const secondResponse = app.inject({
+      method: "POST",
+      url: "/v1/recorder-concurrency-test/run",
+      payload: { run: "second" },
+    });
+
+    await vi.waitFor(() => {
+      expect(startedRuns.has("first")).toBe(true);
+      expect(startedRuns.has("second")).toBe(true);
+    });
+
+    // Release in reverse-of-arrival order so the run that started second is
+    // the one that finishes first — a shared/hoisted context would bind both
+    // runs' recorders to whichever requestId "wins" this race.
+    gateResolvers.get("second")?.();
+    gateResolvers.get("first")?.();
+
+    const [firstRes, secondRes] = await Promise.all([firstResponse, secondResponse]);
+    expect(firstRes.statusCode).toBe(200);
+    expect(secondRes.statusCode).toBe(200);
+
+    const firstRequestId = (firstRes.json() as { requestId: string }).requestId;
+    const secondRequestId = (secondRes.json() as { requestId: string }).requestId;
+    expect(firstRequestId).not.toBe(secondRequestId);
+
+    // dispatch() also emits its own automatic "skipped" beacon line per run
+    // (no extractJoinKeys, no TrackingUrl) through the same captured sink —
+    // isolate the plugin-triggered "fired" calls from that noise.
+    const firedCalls = mockCaptureBeaconEvent.mock.calls
+      .map(
+        ([call]) => call as { requestId: string; joinKeys: { run: string }; beaconStatus: string }
+      )
+      .filter((call) => call.beaconStatus === "fired");
+
+    expect(firedCalls).toHaveLength(2);
+    expect(firedCalls).toContainEqual(
+      expect.objectContaining({
+        requestId: firstRequestId,
+        siteId: "recorder-concurrency-test",
+        joinKeys: { run: "first" },
+        beaconStatus: "fired",
+      })
+    );
+    expect(firedCalls).toContainEqual(
+      expect.objectContaining({
+        requestId: secondRequestId,
+        siteId: "recorder-concurrency-test",
+        joinKeys: { run: "second" },
+        beaconStatus: "fired",
+      })
+    );
 
     await app.close();
   });

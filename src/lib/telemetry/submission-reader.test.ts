@@ -151,6 +151,81 @@ describe("foldReconciliationRecords", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.beaconStatus).toBe("not_fired");
     expect(rows[0]?.beaconTrackingUrl).toBeNull();
+    expect(rows[0]?.beaconSessionIp).toBeNull();
+  });
+
+  it("folds a submit line's session block and a beacon line's sessionIp onto one row, distinct fields", () => {
+    const records = parseReconciliationLines(
+      ndjson(
+        makeSubmitLine({
+          session: {
+            id: "bb-session-abc",
+            provider: "browserbase",
+            ip: "203.0.113.9",
+            ipCapturedAt: "2026-07-26T10:00:01.000Z",
+          },
+        }),
+        makeBeaconLine({ sessionIp: "198.51.100.42" })
+      )
+    );
+    const rows = foldReconciliationRecords(records);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.session?.ip).toBe("203.0.113.9");
+    expect(rows[0]?.beaconSessionIp).toBe("198.51.100.42");
+    expect(rows[0]?.beaconSessionIp).not.toBe(rows[0]?.session?.ip);
+  });
+
+  it("carries a submit line's full session block onto its row unchanged", () => {
+    const session = {
+      id: "bb-session-abc",
+      provider: "browserbase",
+      ip: "203.0.113.9",
+      ipCapturedAt: "2026-07-26T10:00:01.000Z",
+    };
+    const records = parseReconciliationLines(ndjson(makeSubmitLine({ session })));
+    const rows = foldReconciliationRecords(records);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.session).toEqual(session);
+  });
+
+  it("folds a legacy submit line with no session key to session: null", () => {
+    const records = parseReconciliationLines(ndjson(makeLegacySubmitLine()));
+    const rows = foldReconciliationRecords(records);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.session).toBeNull();
+  });
+
+  it("keeps the submit row's session unchanged when a real beacon outcome outranks a skipped line, order-independent", () => {
+    const session = {
+      id: "bb-session-xyz",
+      provider: "browserbase",
+      ip: "203.0.113.50",
+      ipCapturedAt: "2026-07-26T10:00:01.000Z",
+    };
+    const skipped = makeBeaconLine({
+      beaconStatus: "skipped",
+      trackingUrl: null,
+      sessionIp: "198.51.100.1",
+    });
+    const fired = makeBeaconLine({
+      beaconStatus: "fired",
+      trackingUrl: "https://track.example.com/pixel?rid=req-abc-123",
+      sessionIp: "198.51.100.2",
+    });
+
+    const skippedFirst = foldReconciliationRecords(
+      parseReconciliationLines(ndjson(makeSubmitLine({ session }), skipped, fired))
+    );
+    const firedFirst = foldReconciliationRecords(
+      parseReconciliationLines(ndjson(makeSubmitLine({ session }), fired, skipped))
+    );
+
+    for (const rows of [skippedFirst, firedFirst]) {
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.beaconStatus).toBe("fired");
+      expect(rows[0]?.session).toEqual(session);
+      expect(rows[0]?.beaconSessionIp).toBe("198.51.100.2");
+    }
   });
 
   it("does not synthesize a phantom row for an orphan beacon with no matching submit", () => {
@@ -192,6 +267,197 @@ describe("foldReconciliationRecords", () => {
     const rows = foldReconciliationRecords(records);
     expect(rows[0]?.beaconStatus).toBe("failed");
     expect(rows[0]?.beaconTrackingUrl).toBeNull();
+  });
+
+  it("folds skipped-then-fired to fired, taking the fired line's fields", () => {
+    const skipped = makeBeaconLine({
+      beaconStatus: "skipped",
+      trackingUrl: null,
+      durationMs: 0,
+      ts: "2026-07-26T10:00:03.000Z",
+    });
+    const fired = makeBeaconLine({
+      beaconStatus: "fired",
+      trackingUrl: "https://track.example.com/pixel?rid=req-abc-123",
+      durationMs: 42,
+      ts: "2026-07-26T10:00:01.000Z",
+    });
+    const records = parseReconciliationLines(ndjson(makeSubmitLine(), skipped, fired));
+    const rows = foldReconciliationRecords(records);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.beaconStatus).toBe("fired");
+    expect(rows[0]?.beaconTrackingUrl).toBe("https://track.example.com/pixel?rid=req-abc-123");
+    expect(rows[0]?.beaconTs).toBe("2026-07-26T10:00:01.000Z");
+    expect(rows[0]?.beaconDurationMs).toBe(42);
+  });
+
+  it("folds fired-then-skipped to the same fired row, order-independent", () => {
+    const skipped = makeBeaconLine({
+      beaconStatus: "skipped",
+      trackingUrl: null,
+      durationMs: 0,
+      ts: "2026-07-26T10:00:03.000Z",
+    });
+    const fired = makeBeaconLine({
+      beaconStatus: "fired",
+      trackingUrl: "https://track.example.com/pixel?rid=req-abc-123",
+      durationMs: 42,
+      ts: "2026-07-26T10:00:01.000Z",
+    });
+    const records = parseReconciliationLines(ndjson(makeSubmitLine(), fired, skipped));
+    const rows = foldReconciliationRecords(records);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.beaconStatus).toBe("fired");
+    expect(rows[0]?.beaconTrackingUrl).toBe("https://track.example.com/pixel?rid=req-abc-123");
+    expect(rows[0]?.beaconTs).toBe("2026-07-26T10:00:01.000Z");
+    expect(rows[0]?.beaconDurationMs).toBe(42);
+  });
+
+  it("folds skipped-then-failed to failed, order-independent with failed-then-skipped", () => {
+    const skipped = makeBeaconLine({
+      beaconStatus: "skipped",
+      trackingUrl: null,
+      durationMs: 0,
+      ts: "2026-07-26T10:00:03.000Z",
+    });
+    const failed = makeBeaconLine({
+      beaconStatus: "failed",
+      trackingUrl: "https://track.example.com/pixel?rid=req-abc-123",
+      durationMs: 55,
+      ts: "2026-07-26T10:00:01.000Z",
+    });
+
+    const skippedFirst = foldReconciliationRecords(
+      parseReconciliationLines(ndjson(makeSubmitLine(), skipped, failed))
+    );
+    const failedFirst = foldReconciliationRecords(
+      parseReconciliationLines(ndjson(makeSubmitLine(), failed, skipped))
+    );
+
+    for (const rows of [skippedFirst, failedFirst]) {
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.beaconStatus).toBe("failed");
+      expect(rows[0]?.beaconTrackingUrl).toBe("https://track.example.com/pixel?rid=req-abc-123");
+      expect(rows[0]?.beaconTs).toBe("2026-07-26T10:00:01.000Z");
+      expect(rows[0]?.beaconDurationMs).toBe(55);
+    }
+  });
+
+  it("keeps the later of two same-rank real outcomes (last-wins-among-real-outcomes)", () => {
+    const fired = makeBeaconLine({
+      beaconStatus: "fired",
+      trackingUrl: "https://track.example.com/pixel?rid=req-abc-123",
+      durationMs: 10,
+      ts: "2026-07-26T10:00:01.000Z",
+    });
+    const failed = makeBeaconLine({
+      beaconStatus: "failed",
+      trackingUrl: null,
+      durationMs: 20,
+      ts: "2026-07-26T10:00:02.000Z",
+    });
+    const records = parseReconciliationLines(ndjson(makeSubmitLine(), fired, failed));
+    const rows = foldReconciliationRecords(records);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.beaconStatus).toBe("failed");
+    expect(rows[0]?.beaconTs).toBe("2026-07-26T10:00:02.000Z");
+    expect(rows[0]?.beaconDurationMs).toBe(20);
+  });
+
+  it("keeps the later ts among two same-rank fired lines", () => {
+    const firstFired = makeBeaconLine({
+      beaconStatus: "fired",
+      trackingUrl: "https://track.example.com/pixel?rid=req-abc-123&attempt=1",
+      durationMs: 10,
+      ts: "2026-07-26T10:00:01.000Z",
+    });
+    const laterFired = makeBeaconLine({
+      beaconStatus: "fired",
+      trackingUrl: "https://track.example.com/pixel?rid=req-abc-123&attempt=2",
+      durationMs: 15,
+      ts: "2026-07-26T10:00:09.000Z",
+    });
+    const records = parseReconciliationLines(ndjson(makeSubmitLine(), firstFired, laterFired));
+    const rows = foldReconciliationRecords(records);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.beaconStatus).toBe("fired");
+    expect(rows[0]?.beaconTs).toBe("2026-07-26T10:00:09.000Z");
+    expect(rows[0]?.beaconTrackingUrl).toBe(
+      "https://track.example.com/pixel?rid=req-abc-123&attempt=2"
+    );
+  });
+
+  it("still folds a submit with only a skipped line to skipped", () => {
+    const records = parseReconciliationLines(
+      ndjson(makeSubmitLine(), makeBeaconLine({ beaconStatus: "skipped", trackingUrl: null }))
+    );
+    const rows = foldReconciliationRecords(records);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.beaconStatus).toBe("skipped");
+  });
+
+  // Provenance rule: the row's `joinKeys` is ALWAYS the submit line's bag,
+  // never merged with a beacon line's — `foldReconciliationRecords` spreads
+  // only `submitFields` into the row and touches nothing but
+  // beaconStatus/beaconTrackingUrl/beaconTs/beaconDurationMs when a beacon
+  // wins the fold. A plugin-recorded beacon line carrying additional keys
+  // (e.g. `jid`) does NOT reach `GET /v1/submissions` through the row; the
+  // beacon record itself still carries its own full bag through
+  // `parseReconciliationLines`, it just never gets folded in.
+  it("keeps the submit line's joinKeys on the folded row when the winning beacon's joinKeys is a strict superset, while the beacon record itself retains its own full bag", () => {
+    const submitJoinKeys = { vivclid: "v-9981" };
+    const beaconJoinKeys = { vivclid: "v-9981", jid: "jid-555" };
+    const records = parseReconciliationLines(
+      ndjson(
+        makeSubmitLine({ joinKeys: submitJoinKeys }),
+        makeBeaconLine({ joinKeys: beaconJoinKeys })
+      )
+    );
+
+    const beaconRecord = records.find((r) => r.kind === "beacon");
+    expect(beaconRecord?.kind).toBe("beacon");
+    if (beaconRecord?.kind === "beacon") {
+      expect(beaconRecord.joinKeys).toEqual(beaconJoinKeys);
+    }
+
+    const rows = foldReconciliationRecords(records);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.joinKeys).toEqual(submitJoinKeys);
+  });
+
+  // Provenance rule: the winning beacon line's `trackingUrl` overwrites the
+  // row's `beaconTrackingUrl` verbatim, even when it is `null` and a
+  // lower-ranked `skipped` line carried a real URL — `beaconRank` picks the
+  // winner by status only, and the fold then takes ALL four beacon fields
+  // from that one winning line rather than backfilling from a loser. This
+  // means a real `fired`/`failed` outcome with no known URL nulls out a
+  // `skipped` line's URL rather than inheriting it, order-independent.
+  it("nulls the row's beaconTrackingUrl when the winning fired line has none, even though the losing skipped line carried a real URL", () => {
+    const skipped = makeBeaconLine({
+      beaconStatus: "skipped",
+      trackingUrl: "https://track.example.com/pixel?rid=req-abc-123",
+      durationMs: 0,
+      ts: "2026-07-26T10:00:03.000Z",
+    });
+    const fired = makeBeaconLine({
+      beaconStatus: "fired",
+      trackingUrl: null,
+      durationMs: 42,
+      ts: "2026-07-26T10:00:05.000Z",
+    });
+
+    const skippedFirst = foldReconciliationRecords(
+      parseReconciliationLines(ndjson(makeSubmitLine(), skipped, fired))
+    );
+    const firedFirst = foldReconciliationRecords(
+      parseReconciliationLines(ndjson(makeSubmitLine(), fired, skipped))
+    );
+
+    for (const rows of [skippedFirst, firedFirst]) {
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.beaconStatus).toBe("fired");
+      expect(rows[0]?.beaconTrackingUrl).toBeNull();
+    }
   });
 });
 

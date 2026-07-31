@@ -1,6 +1,6 @@
 import { z } from "zod/v4";
 
-import type { SitePlugin } from "./types";
+import type { SitePlugin, SitePluginContext } from "./types";
 
 const HelloPayloadSchema = z.object({ name: z.string().min(1) });
 const HelloResponseSchema = z.object({ greeting: z.string() });
@@ -28,8 +28,9 @@ const helloSitePlugin: SitePlugin = {
     responseSchema: HelloResponseSchema,
     apiVersion: "1.0.0",
   },
-  async executeHttp(payload): Promise<{ data: { greeting: string } }> {
+  async executeHttp(payload, context?: SitePluginContext): Promise<{ data: { greeting: string } }> {
     const { name } = payload as HelloPayload;
+    context?.telemetry.addJoinKeys({ greetedAt: new Date().toISOString() });
     return { data: { greeting: `hello, ${name}` } };
   },
   async execute(): Promise<{ data: { greeting: string } }> {

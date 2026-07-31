@@ -12,9 +12,10 @@ import {
  * anchor scenario: a light DOM with no `type="submit"` and no literal
  * "Submit" text, because the actual control is rendered inside a web
  * component's shadow root (Angular Elements / Stencil). Mirrors the fake-DOM
- * fixture shape from `submit-control.test.ts` and `deep-query.test.ts` so
- * these tests execute the real generated expression strings, not a
- * re-implementation of the traversal.
+ * fixture shape from `submit-control.test.ts` and `deep-query.test.ts`
+ * (including the `getBoundingClientRect`/`getComputedStyle` surface the
+ * visibility check reads) so these tests execute the real generated
+ * expression strings, not a re-implementation of the traversal.
  */
 interface FakeEl {
   tagName: string;
@@ -26,6 +27,7 @@ interface FakeEl {
   focused: boolean;
   getAttribute(name: string): string | null;
   querySelectorAll(selector: "*"): FakeEl[];
+  getBoundingClientRect(): { width: number; height: number };
   focus(): void;
   dispatchEvent(evt: { type: string }): void;
 }
@@ -48,6 +50,9 @@ function makeEl(tagName: string, attrs: Record<string, string> = {}, textContent
     },
     querySelectorAll() {
       return flattenDescendants(el.children);
+    },
+    getBoundingClientRect() {
+      return { width: 100, height: 20 };
     },
     focus() {
       el.focused = true;
@@ -79,6 +84,7 @@ function makeRoot(topLevel: FakeEl[]): FakeRoot {
 function evaluateInFakePage(expr: string, document: FakeRoot): unknown {
   return runInNewContext(expr, {
     document,
+    getComputedStyle: () => ({ display: "block", visibility: "visible" }),
     Event: class {
       type: string;
       constructor(type: string) {

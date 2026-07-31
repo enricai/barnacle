@@ -260,6 +260,69 @@ describe("flow-runner/executeStepWithHealing — submit-verify frame scoping", (
     );
   });
 
+  it("falls back to page.url() when the resolved child FrameTarget's url() rejects on the post-click snapshot (OOPIF detached by submit)", async () => {
+    const urls = { current: `${CHILD_ORIGIN}/application/abc-123` };
+    const childTarget = makeChildTarget(urls, {
+      invalidCount: () => 0,
+      n16ClickResult: () => ({ fired: false }),
+    });
+    resolveFrameTarget.mockResolvedValue(childTarget);
+
+    // Submit tears the OOPIF out of the DOM: the child frame's own url()
+    // (frame-target.ts's `evaluateOnFrame("location.href")`) rejects once
+    // the frame detaches, same as a live cross-origin CDP session going
+    // away mid-attempt — snapshotPage's post-snapshot must fall back to
+    // page.url() instead of letting the rejection escape the cascade.
+    let frameDetached = false;
+    const rejectingUrl = (): Promise<string> =>
+      frameDetached
+        ? Promise.reject(new Error("Execution context was destroyed"))
+        : Promise.resolve(urls.current);
+    childTarget.url = rejectingUrl;
+
+    const page = fakePage(() =>
+      frameDetached
+        ? `${CHILD_ORIGIN}/application/abc-123/thank-you`
+        : `${CHILD_ORIGIN}/application/abc-123`
+    );
+
+    guardedAct.mockImplementation(async () => {
+      frameDetached = true;
+      return {
+        success: true,
+        message: "clicked",
+        actionDescription: "Submit button",
+        actions: [{ selector: "css=button#submit", description: "Submit button", method: "click" }],
+      };
+    });
+    verifySubmitWithLLM.mockResolvedValue({
+      verified: true,
+      reason: null,
+      dom_signal: null,
+      url_signal: "/thank-you",
+      rationale: "URL transitioned to the thank-you page",
+    });
+
+    const trajectory: { stepIndex: number; verifiedBy: string | null }[] = [];
+    const outcome = await executeStepWithHealing(
+      baseParams({ page, frameTarget: childTarget, trajectory }) as never
+    );
+
+    expect(outcome).toBe("completed");
+    expect(verifySubmitWithLLM).toHaveBeenCalledTimes(1);
+    // pageUrl fed to the judge is page.url()'s post-detach value, not the
+    // rejected child target's — proving the fallback (not a stale pre-detach
+    // read) supplied it.
+    expect(verifySubmitWithLLM).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({
+          pageUrl: `${CHILD_ORIGIN}/application/abc-123/thank-you`,
+        }),
+      })
+    );
+    expect(trajectory).toEqual([{ stepIndex: 0, verifiedBy: "url" }]);
+  });
+
   it("threads the resolved child FrameTarget into the n+16 replan-retry submit verify (retry snapshotPage, clickWasDomOnly countNgInvalidContainers, and the retry-verified countNgInvalidContainers feeding verifySubmitWithLLM)", async () => {
     const urls = { current: `${CHILD_ORIGIN}/application/abc-123` };
     // Attempt 1's resolved action carries an xpath= selector (required for

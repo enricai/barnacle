@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { FrameTarget } from "@/scraper/frame-target";
 
 const { loggerStub } = vi.hoisted(() => ({
   loggerStub: {
@@ -16,13 +17,43 @@ vi.mock("@/lib/logging", () => ({
 
 import {
   clickDeepLocatorCandidate,
+  type DeepLocatorTimeoutOptions,
   resolveDeepLocatorCandidates,
 } from "@/scraper/deep-locator-candidates";
 import {
   type FakeDeepLocatorFrame,
   makeFakeDeepLocator,
+  makeFakeFrameScan,
   registerDeepLocatorHopElements,
 } from "@/scraper/deep-locator-fake";
+
+/**
+ * Builds a `FrameTarget` whose `evaluate` resolves against `frame`'s
+ * registered hop via {@link makeFakeFrameScan} — the seam
+ * `resolveDeepLocatorCandidates`'s batched-scan fast path reads through when
+ * `timeoutOptions.frameTarget` is supplied directly (bypassing the internal
+ * `resolveFrameTarget` re-resolution pass so these tests don't need a real
+ * `Page.frames()`/`Page.evaluate()` surface). `evaluate` is wrapped in
+ * `vi.fn` so a test can assert call count (one batched round-trip) directly.
+ */
+function makeFakeFrameTarget(
+  frame: FakeDeepLocatorFrame,
+  selector: string
+): { frameTarget: FrameTarget; evaluateSpy: ReturnType<typeof vi.fn> } {
+  const evaluateSpy = vi.fn(makeFakeFrameScan(frame, selector));
+  const frameTarget: FrameTarget = {
+    frame: {} as unknown as FrameTarget["frame"],
+    frameSelector: selector,
+    declaredFrameSelector: selector,
+    evaluate: evaluateSpy as unknown as FrameTarget["evaluate"],
+    locator: () => {
+      throw new Error("locator() is not used by resolveDeepLocatorCandidates");
+    },
+    url: async () => "",
+    title: async () => "",
+  };
+  return { frameTarget, evaluateSpy };
+}
 
 /**
  * Minimal fake `DeepLocatorDelegate`: `nth()` returns a scoped view over the
@@ -34,10 +65,14 @@ function makeFakeDelegate(options: {
   count: number | (() => Promise<number>);
   texts?: string[];
   clickSpy?: (index: number) => Promise<void>;
+  fillSpy?: (index: number, value: string) => Promise<void>;
+  selectOptionSpy?: (index: number, values: string | string[]) => Promise<string[]>;
   rejectTextContentAt?: number[];
 }) {
   const texts = options.texts ?? [];
   const clickSpy = options.clickSpy ?? vi.fn().mockResolvedValue(undefined);
+  const fillSpy = options.fillSpy ?? vi.fn().mockResolvedValue(undefined);
+  const selectOptionSpy = options.selectOptionSpy ?? vi.fn().mockResolvedValue([]);
   const rejectTextContentAt = options.rejectTextContentAt ?? [];
   const countFn =
     typeof options.count === "function" ? options.count : async () => options.count as number;
@@ -49,6 +84,8 @@ function makeFakeDelegate(options: {
           ? Promise.reject(new Error("frame detached"))
           : (texts[index] ?? ""),
       click: async () => clickSpy(index),
+      fill: async (value: string) => fillSpy(index, value),
+      selectOption: async (values: string | string[]) => selectOptionSpy(index, values),
     }),
   };
 }
@@ -88,6 +125,8 @@ function makeHangingDelegate(options: {
       textContent: async () =>
         hangTextContentAt.includes(index) ? new Promise<string>(() => {}) : (texts[index] ?? ""),
       click: async () => (options.hangClick ? new Promise<void>(() => {}) : clickSpy(index)),
+      fill: async () => {},
+      selectOption: async () => [],
     }),
   };
 }
@@ -318,6 +357,179 @@ describe("resolveDeepLocatorCandidates", () => {
   });
 });
 
+describe("resolveDeepLocatorCandidates batched frame-scoped scan", () => {
+  beforeEach(() => {
+    loggerStub.warn.mockClear();
+  });
+
+  it("resolves a 371-candidate frame with exactly one evaluate call and zero delegate count()/nth() calls, within budget", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    const elements = Array.from({ length: 371 }, (_, index) =>
+      index === 200 ? "Manual Application" : `node-${index}`
+    );
+    registerDeepLocatorHopElements(frame, "#talemetry_apply_iframe >> *", elements);
+    const { frameTarget, evaluateSpy } = makeFakeFrameTarget(frame, "#talemetry_apply_iframe >> *");
+    const countSpy = vi.fn();
+    const nthSpy = vi.fn();
+    const deepLocatorSpy = vi.fn().mockReturnValue({ count: countSpy, nth: nthSpy });
+
+    const candidates = await resolveDeepLocatorCandidates(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      { deepLocator: deepLocatorSpy } as any,
+      "#talemetry_apply_iframe",
+      "*",
+      null,
+      { frameTarget }
+    );
+
+    expect(candidates).toHaveLength(371);
+    expect(evaluateSpy).toHaveBeenCalledTimes(1);
+    expect(countSpy).not.toHaveBeenCalled();
+    expect(nthSpy).not.toHaveBeenCalled();
+    expect(loggerStub.warn).not.toHaveBeenCalledWith(
+      expect.stringContaining("aborted after exceeding")
+    );
+  });
+
+  it("keeps each candidate's index aligned with clickDeepLocatorCandidate's nth(), even after visibility filtering drops an earlier index", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    const hop = registerDeepLocatorHopElements(frame, "#talemetry_apply_iframe >> *", [
+      { text: "Hidden Decoy", visible: false },
+      { text: "Manual Application", visible: true },
+    ]);
+    const { frameTarget } = makeFakeFrameTarget(frame, "#talemetry_apply_iframe >> *");
+    const page = { deepLocator: makeFakeDeepLocator(frame) };
+    const timeoutOptions: DeepLocatorTimeoutOptions = { frameTarget };
+
+    const candidates = await resolveDeepLocatorCandidates(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      page as any,
+      "#talemetry_apply_iframe",
+      "*",
+      null,
+      timeoutOptions
+    );
+
+    expect(candidates).toEqual([
+      {
+        index: 1,
+        selector: "deeplocator=#talemetry_apply_iframe >> * >> nth=1",
+        accessibleText: "Manual Application",
+      },
+    ]);
+
+    await clickDeepLocatorCandidate(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      page as any,
+      "#talemetry_apply_iframe",
+      "*",
+      // biome-ignore lint/style/noNonNullAssertion: exactly one candidate survived filtering
+      candidates[0]!.index,
+      timeoutOptions
+    );
+
+    expect(hop.elements[1]?.clicks).toBe(1);
+    expect(hop.elements[0]?.clicks).toBe(0);
+  });
+
+  it("drops visible:false entries while keeping laid-out siblings, ranking a visible instruction match above a visible non-match", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    registerDeepLocatorHopElements(frame, "#talemetry_apply_iframe >> *", [
+      { text: "Manual Application", visible: false },
+      { text: "Cancel", visible: true },
+      { text: "Manual Application", visible: true },
+    ]);
+    const { frameTarget } = makeFakeFrameTarget(frame, "#talemetry_apply_iframe >> *");
+    const page = { deepLocator: makeFakeDeepLocator(frame) };
+
+    const candidates = await resolveDeepLocatorCandidates(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      page as any,
+      "#talemetry_apply_iframe",
+      "*",
+      "click the 'Manual Application' button",
+      { frameTarget }
+    );
+
+    expect(candidates.map((c) => ({ index: c.index, accessibleText: c.accessibleText }))).toEqual([
+      { index: 2, accessibleText: "Manual Application" },
+      { index: 1, accessibleText: "Cancel" },
+    ]);
+    expect(loggerStub.warn).toHaveBeenCalledWith(
+      expect.stringContaining("dropped 1 unrendered candidate")
+    );
+  });
+
+  it("falls back to the legacy per-candidate loop when the frame seam's evaluate rejects", async () => {
+    const delegate = makeFakeDelegate({ count: 2, texts: ["A", "B"] });
+    const { page } = makeFakePage(delegate);
+    const frameTarget: FrameTarget = {
+      frame: {} as unknown as FrameTarget["frame"],
+      frameSelector: "#f",
+      declaredFrameSelector: "#f",
+      evaluate: vi.fn().mockRejectedValue(new Error("evaluate wedged")),
+      locator: () => {
+        throw new Error("locator() is not used by resolveDeepLocatorCandidates");
+      },
+      url: async () => "",
+      title: async () => "",
+    };
+
+    const candidates = await resolveDeepLocatorCandidates(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      page as any,
+      "#f",
+      "*",
+      null,
+      { frameTarget }
+    );
+
+    expect(candidates.map((c) => c.accessibleText)).toEqual(["A", "B"]);
+    expect(loggerStub.warn).toHaveBeenCalledWith(
+      expect.stringContaining("deepLocator batched scan for")
+    );
+  });
+
+  it("falls back to the legacy per-candidate loop when the frame seam returns a non-conforming payload", async () => {
+    const delegate = makeFakeDelegate({ count: 1, texts: ["Manual Application"] });
+    const { page } = makeFakePage(delegate);
+    const frameTarget: FrameTarget = {
+      frame: {} as unknown as FrameTarget["frame"],
+      frameSelector: "#f",
+      declaredFrameSelector: "#f",
+      // biome-ignore lint/suspicious/noExplicitAny: deliberately non-conforming payload shape under test
+      evaluate: vi.fn().mockResolvedValue([{ nope: true }] as any),
+      locator: () => {
+        throw new Error("locator() is not used by resolveDeepLocatorCandidates");
+      },
+      url: async () => "",
+      title: async () => "",
+    };
+
+    const candidates = await resolveDeepLocatorCandidates(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      page as any,
+      "#f",
+      "*",
+      null,
+      { frameTarget }
+    );
+
+    expect(candidates.map((c) => c.accessibleText)).toEqual(["Manual Application"]);
+    expect(loggerStub.warn).toHaveBeenCalledWith(expect.stringContaining("non-conforming payload"));
+  });
+
+  it("falls back to the legacy per-candidate loop when no frameTarget is supplied and frameSelector is null", async () => {
+    const delegate = makeFakeDelegate({ count: 1, texts: ["Submit"] });
+    const { page } = makeFakePage(delegate);
+
+    // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+    const candidates = await resolveDeepLocatorCandidates(page as any, null, "button[type=submit]");
+
+    expect(candidates.map((c) => c.accessibleText)).toEqual(["Submit"]);
+  });
+});
+
 describe("clickDeepLocatorCandidate", () => {
   it("invokes click() on the delegate nth() of the selected candidate index", async () => {
     const clickSpy = vi.fn().mockResolvedValue(undefined);
@@ -354,6 +566,10 @@ describe("clickDeepLocatorCandidate", () => {
     ).rejects.toThrow("element not attached");
   });
 });
+
+// fillDeepLocatorCandidate/selectDeepLocatorCandidateOption moved to
+// deep-locator-actuate.ts (see this file's module docblock near the bottom);
+// their tests moved with them to deep-locator-actuate.test.ts.
 
 describe("watchdog-guarded awaits (deepLocator-direct hang bug)", () => {
   beforeEach(() => {
@@ -466,6 +682,9 @@ describe("watchdog-guarded awaits (deepLocator-direct hang bug)", () => {
     await assertion;
   });
 
+  // fillDeepLocatorCandidate/selectDeepLocatorCandidateOption's watchdog
+  // coverage moved to deep-locator-actuate.test.ts along with the functions.
+
   it("enumerating a hop with many slow-but-settling elements aborts on the total enumeration budget, returning only the candidates resolved before the deadline", async () => {
     const perCandidateDelayMs = 20;
     const texts = ["A", "B", "C", "D", "E"];
@@ -477,6 +696,8 @@ describe("watchdog-guarded awaits (deepLocator-direct hang bug)", () => {
             setTimeout(() => resolve(texts[index] ?? ""), perCandidateDelayMs);
           }),
         click: async () => {},
+        fill: async () => {},
+        selectOption: async () => [],
       }),
     };
     const { page } = makeFakePage(delegate);

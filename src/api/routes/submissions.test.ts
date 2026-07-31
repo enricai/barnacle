@@ -324,6 +324,101 @@ describe("routes/submissions GET /v1/submissions", () => {
     }
   });
 
+  it("folds a later fired beacon line over an earlier skipped line for the same run", async () => {
+    fs.writeFileSync(
+      sinkPath,
+      ndjson(
+        makeSubmitLine({ requestId: "req-precedence", joinKeys: { vivclid: "v-precedence" } }),
+        makeBeaconLine({
+          requestId: "req-precedence",
+          joinKeys: { vivclid: "v-precedence" },
+          beaconStatus: "skipped",
+          trackingUrl: null,
+          ts: "2026-07-26T10:00:01.000Z",
+        }),
+        makeBeaconLine({
+          requestId: "req-precedence",
+          joinKeys: { vivclid: "v-precedence" },
+          beaconStatus: "fired",
+          trackingUrl: "https://track.appcast.io/pixel?rid=req-precedence",
+          ts: "2026-07-26T10:00:05.000Z",
+        })
+      ),
+      "utf8"
+    );
+    const app = await buildApp(sinkPath);
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/v1/submissions?requestId=req-precedence",
+        headers: { authorization: `Bearer ${VALID_KEY}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.submissions).toHaveLength(1);
+      expect(body.submissions[0]).toMatchObject({
+        requestId: "req-precedence",
+        joinKeys: { vivclid: "v-precedence" },
+        beaconStatus: "fired",
+        trackingUrl: "https://track.appcast.io/pixel?rid=req-precedence",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("filters to the fired-precedence row by beaconStatus=fired and excludes a skipped-only run", async () => {
+    fs.writeFileSync(
+      sinkPath,
+      ndjson(
+        makeSubmitLine({ requestId: "req-precedence", joinKeys: { vivclid: "v-precedence" } }),
+        makeBeaconLine({
+          requestId: "req-precedence",
+          joinKeys: { vivclid: "v-precedence" },
+          beaconStatus: "skipped",
+          trackingUrl: null,
+          ts: "2026-07-26T10:00:01.000Z",
+        }),
+        makeBeaconLine({
+          requestId: "req-precedence",
+          joinKeys: { vivclid: "v-precedence" },
+          beaconStatus: "fired",
+          trackingUrl: "https://track.appcast.io/pixel?rid=req-precedence",
+          ts: "2026-07-26T10:00:05.000Z",
+        }),
+        makeSubmitLine({ requestId: "req-skipped-only", joinKeys: { vivclid: "v-skipped-only" } }),
+        makeBeaconLine({
+          requestId: "req-skipped-only",
+          joinKeys: { vivclid: "v-skipped-only" },
+          beaconStatus: "skipped",
+          trackingUrl: null,
+        })
+      ),
+      "utf8"
+    );
+    const app = await buildApp(sinkPath);
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/v1/submissions?beaconStatus=fired",
+        headers: { authorization: `Bearer ${VALID_KEY}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.submissions).toHaveLength(1);
+      expect(body.total).toBe(1);
+      expect(body.submissions[0]).toMatchObject({
+        requestId: "req-precedence",
+        beaconStatus: "fired",
+        trackingUrl: "https://track.appcast.io/pixel?rid=req-precedence",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   it("forwards status verbatim to the reader/query layer", async () => {
     fs.writeFileSync(
       sinkPath,
@@ -456,6 +551,95 @@ describe("routes/submissions GET /v1/submissions", () => {
       const body = response.json();
       expect(body.submissions).toEqual([]);
       expect(body.total).toBe(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns the submit session and folded beacon sessionIp in the serialized response body", async () => {
+    fs.writeFileSync(
+      sinkPath,
+      ndjson(
+        makeSubmitLine({
+          requestId: "req-session",
+          session: {
+            id: "bb-session-abc",
+            provider: "browserbase",
+            ip: "203.0.113.9",
+            ipCapturedAt: "2026-07-26T10:00:01.000Z",
+          },
+        }),
+        makeBeaconLine({ requestId: "req-session", sessionIp: "198.51.100.42" })
+      ),
+      "utf8"
+    );
+    const app = await buildApp(sinkPath);
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/v1/submissions?requestId=req-session",
+        headers: { authorization: `Bearer ${VALID_KEY}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.submissions).toHaveLength(1);
+      expect(body.submissions[0]).toMatchObject({
+        requestId: "req-session",
+        session: {
+          id: "bb-session-abc",
+          provider: "browserbase",
+          ip: "203.0.113.9",
+          ipCapturedAt: "2026-07-26T10:00:01.000Z",
+        },
+        beaconSessionIp: "198.51.100.42",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns session: null for a row read from a legacy line with no session field", async () => {
+    fs.writeFileSync(sinkPath, ndjson(makeSubmitLine({ requestId: "req-legacy" })), "utf8");
+    const app = await buildApp(sinkPath);
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/v1/submissions?requestId=req-legacy",
+        headers: { authorization: `Bearer ${VALID_KEY}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.submissions).toHaveLength(1);
+      expect(body.submissions[0]).toMatchObject({ requestId: "req-legacy", session: null });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("does not leak a beacon-side sessionIp key on the response row — only beaconSessionIp", async () => {
+    fs.writeFileSync(
+      sinkPath,
+      ndjson(
+        makeSubmitLine({ requestId: "req-no-leak" }),
+        makeBeaconLine({ requestId: "req-no-leak", sessionIp: "198.51.100.42" })
+      ),
+      "utf8"
+    );
+    const app = await buildApp(sinkPath);
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/v1/submissions?requestId=req-no-leak",
+        headers: { authorization: `Bearer ${VALID_KEY}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.submissions).toHaveLength(1);
+      expect(body.submissions[0]).not.toHaveProperty("sessionIp");
+      expect(body.submissions[0].beaconSessionIp).toBe("198.51.100.42");
     } finally {
       await app.close();
     }

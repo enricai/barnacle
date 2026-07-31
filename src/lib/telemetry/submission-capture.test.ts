@@ -60,6 +60,18 @@ function makeSuccessInputWithJoinKeys(): Parameters<typeof captureSubmissionEnve
   };
 }
 
+function makeSuccessInputWithSession(): Parameters<typeof captureSubmissionEnvelope>[0] {
+  return {
+    ...makeSuccessInput(),
+    session: {
+      id: "sess-abc",
+      provider: "browserbase",
+      ip: "203.0.113.42",
+      ipCapturedAt: "2026-07-26T10:00:01.000Z",
+    },
+  };
+}
+
 function makeErrorInput(): Parameters<typeof captureSubmissionEnvelope>[0] {
   return {
     siteId: "ats-c",
@@ -193,6 +205,48 @@ describe("captureSubmissionEnvelope", () => {
     expect(parsed.joinKeys).toBeNull();
   });
 
+  it("writes session as a top-level field", async () => {
+    const input = makeSuccessInputWithSession();
+    await captureSubmissionEnvelope(input, { sinkPath });
+
+    const line = fs.readFileSync(sinkPath, "utf-8").trim();
+    const parsed = JSON.parse(line) as SubmissionEnvelopeSample;
+    expect(parsed.session).toEqual(input.session);
+
+    const result = submissionEnvelopeSampleSchema.safeParse(parsed);
+    expect(result.success).toBe(true);
+  });
+
+  it("writes null (not undefined/omitted) session when the input omits it", async () => {
+    await captureSubmissionEnvelope(makeSuccessInput(), { sinkPath });
+
+    const line = fs.readFileSync(sinkPath, "utf-8").trim();
+    const parsed = JSON.parse(line) as Record<string, unknown>;
+    expect("session" in parsed).toBe(true);
+    expect(parsed.session).toBeNull();
+  });
+
+  it("submissionEnvelopeSampleSchema still parses a legacy line with no session key, defaulting it to null", () => {
+    const legacyLine = {
+      kind: "submit",
+      siteId: "ats-c",
+      requestId: "req-legacy-789",
+      joinKeys: null,
+      inboundPayload: { jobId: "11111111111" },
+      status: "submitted",
+      auditPayload: null,
+      errorMessage: null,
+      durationMs: 1500,
+      ts: "2026-01-01T00:00:00.000Z",
+    };
+
+    const result = submissionEnvelopeSampleSchema.safeParse(legacyLine);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.session).toBeNull();
+    }
+  });
+
   it("submissionEnvelopeSampleSchema rejects a kind value other than submit", () => {
     const invalid = { ...makeBaseParsedLine(), kind: "beacon" };
     const result = submissionEnvelopeSampleSchema.safeParse(invalid);
@@ -227,6 +281,38 @@ describe("captureSubmissionEnvelope", () => {
     const forwardedLine = vi.mocked(bufferSubmissionLine).mock.calls[0]?.[0] ?? "";
     expect(forwardedLine).toContain(`"vivclid":"${input.joinKeys?.vivclid}"`);
     expect(forwardedLine).toContain(`"kind":"submit"`);
+  });
+
+  it("drops the entire submit line (never rejects) when a plugin-attached joinKeys bag contains a circular reference", async () => {
+    const circular: Record<string, unknown> = { token: "abc" };
+    circular.self = circular;
+    const input = { ...makeSuccessInput(), joinKeys: circular };
+
+    await expect(captureSubmissionEnvelope(input, { sinkPath })).resolves.toBeUndefined();
+
+    expect(fs.existsSync(sinkPath)).toBe(false);
+    expect(bufferSubmissionLine).not.toHaveBeenCalled();
+  });
+
+  it("drops the entire submit line (never rejects) when a plugin-attached joinKeys bag contains a BigInt", async () => {
+    const input = { ...makeSuccessInput(), joinKeys: { minted: 9007199254740993n } };
+
+    await expect(captureSubmissionEnvelope(input, { sinkPath })).resolves.toBeUndefined();
+
+    expect(fs.existsSync(sinkPath)).toBe(false);
+    expect(bufferSubmissionLine).not.toHaveBeenCalled();
+  });
+
+  it("writes a line that parses under submissionEnvelopeSampleSchema with an undefined-valued joinKeys key absent", async () => {
+    const input = { ...makeSuccessInput(), joinKeys: { vivclid: "v-9981", jid: undefined } };
+    await captureSubmissionEnvelope(input, { sinkPath });
+
+    const line = fs.readFileSync(sinkPath, "utf-8").trim();
+    const parsed = JSON.parse(line) as SubmissionEnvelopeSample;
+    const result = submissionEnvelopeSampleSchema.safeParse(parsed);
+    expect(result.success).toBe(true);
+    expect(parsed.joinKeys).toEqual({ vivclid: "v-9981" });
+    expect(parsed.joinKeys && "jid" in parsed.joinKeys).toBe(false);
   });
 });
 

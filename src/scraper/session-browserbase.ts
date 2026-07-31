@@ -4,6 +4,7 @@ import { config } from "@/config";
 import { createBedrockModel } from "@/lib/bedrock";
 import { toErrorMessage } from "@/lib/errors";
 import { getLogger } from "@/lib/logging";
+import { resolveSessionOutboundIp } from "@/scraper/session-ip";
 import {
   type BrowserSession,
   type BrowserSessionOptions,
@@ -88,6 +89,30 @@ export function makeFilteredStagehandLogger(pinoLogger: Logger): {
   };
   const getSuppressedCount = (): number => suppressedCount;
   return { callback, reportSuppressed, getSuppressedCount };
+}
+
+/**
+ * Wraps a session's outbound-IP resolver so it fires the echo navigation at
+ * most once per session and memoizes the result — two concurrent callers
+ * (e.g. dispatch and tracking-click) share one in-flight resolution instead
+ * of each triggering their own tab load. Gated on `enabled` so a disabled
+ * capture flag short-circuits before ever invoking `resolve`, and `resolve`
+ * failures are swallowed to `null` so a caller can never observe a rejection
+ * from this accessor, matching the never-throw contract `resolveSessionOutboundIp`
+ * already holds for the underlying navigation.
+ */
+export function makeOutboundIpAccessor(
+  resolve: () => Promise<string | null>,
+  opts: { enabled: boolean }
+): () => Promise<string | null> {
+  let inFlight: Promise<string | null> | undefined;
+  return (): Promise<string | null> => {
+    if (!opts.enabled) return Promise.resolve(null);
+    if (!inFlight) {
+      inFlight = resolve().catch(() => null);
+    }
+    return inFlight;
+  };
 }
 
 /**
@@ -241,6 +266,16 @@ export async function createBrowserbaseBrowserSession(
 
   const limiter = createSessionLimiter();
 
+  const getOutboundIp = makeOutboundIpAccessor(
+    () =>
+      resolveSessionOutboundIp(() => stagehand.context.newPage(), {
+        echoUrl: config.scraper.sessionIpEchoUrl,
+        timeoutMs: config.scraper.sessionIpTimeoutMs,
+        logger,
+      }),
+    { enabled: config.scraper.captureSessionIp }
+  );
+
   const close = async (): Promise<void> => {
     try {
       await stagehand.close();
@@ -258,5 +293,6 @@ export async function createBrowserbaseBrowserSession(
     provider: "browserbase",
     close,
     getSuppressedAisdkElementIdErrorCount,
+    getOutboundIp,
   };
 }

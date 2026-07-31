@@ -13,6 +13,7 @@ function makeRow(overrides: Partial<ReconciliationRow> = {}): ReconciliationRow 
     siteId: "hca",
     requestId: "req-1",
     joinKeys: { vivclid: "viv-1", jobReference: "emp1_jid1" },
+    session: null,
     inboundPayload: { jobId: "jid1" },
     status: "submitted",
     auditPayload: null,
@@ -23,6 +24,7 @@ function makeRow(overrides: Partial<ReconciliationRow> = {}): ReconciliationRow 
     beaconTrackingUrl: "https://track.example/beacon",
     beaconTs: "2026-07-14T10:00:05.000Z",
     beaconDurationMs: 42,
+    beaconSessionIp: null,
     ...overrides,
   };
 }

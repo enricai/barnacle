@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   type FakeDeepLocatorFrame,
   makeFakeDeepLocator,
+  registerDeepLocatorHop,
   registerDeepLocatorHopElements,
 } from "@/scraper/deep-locator-fake";
+import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
 import { runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
@@ -31,7 +33,10 @@ const TOP_ORIGIN = "https://careers.uchealth.org";
 const CHILD_ORIGIN = "https://apply.talemetry.com";
 const IFRAME_SELECTOR = "iframe#talemetry_apply_iframe";
 const CHILD_SRC = `${CHILD_ORIGIN}/application/abc-123`;
-const HOP_SELECTOR = `${IFRAME_SELECTOR} >> *`;
+/** Interactive-scoped hop the attempt-2/4 cascade actually resolves candidates/clicks against (see bugfix-005). */
+const HOP_SELECTOR = `${IFRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
+/** `probeStepBeforeAttempts` deliberately keeps requesting `"*"` (a reachability gate, not the candidate set the cascade acts on — see `deep-locator-candidates.ts`'s module docblock) — registered separately with a single reachability element so the probe reports "present" before the cascade ever runs. */
+const PROBE_HOP_SELECTOR = `${IFRAME_SELECTOR} >> *`;
 
 /**
  * Verbatim step instruction from the bug report's flow: names the intended
@@ -170,6 +175,7 @@ async function runManualApplicationStep(decoyOrder: string[]) {
   const childUrls = { current: CHILD_SRC };
   const deepLocatorFrame: FakeDeepLocatorFrame = new Map();
   registerDeepLocatorHopElements(deepLocatorFrame, HOP_SELECTOR, decoyOrder);
+  registerDeepLocatorHop(deepLocatorFrame, PROBE_HOP_SELECTOR, "reachability probe candidate");
   const stagehand = makeFakeStagehandObserveBlind();
   const page = makeFakeTopPage(topUrl, childUrls, deepLocatorFrame);
 

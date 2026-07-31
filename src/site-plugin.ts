@@ -13,11 +13,15 @@ import type { ZodType } from "zod/v4";
 
 import type { AppConfig } from "@/config";
 import type { MetricsCollector } from "@/lib/dispatch-metrics";
+import type { BeaconOutcomeInput } from "@/lib/telemetry/beacon-capture";
+import type { RunTelemetryHandle } from "@/lib/telemetry/run-telemetry";
 import type { ScraperError } from "@/scraper/errors";
 import type { BrowserSession } from "@/scraper/session";
 import type { BrowserbaseSessionCreateParams } from "@/scraper/session-shared";
 import type { DispatchMetrics } from "@/types/dispatch-metrics";
 import type { Logger } from "@/types/logging";
+
+export type { BeaconOutcomeInput } from "@/lib/telemetry/beacon-capture";
 
 /**
  * Minimal request surface exposed to extra-route handlers. Core passes a
@@ -189,6 +193,23 @@ export interface SitePluginContext {
    * core finalizes and attaches the result to the response envelope.
    */
   metricsCollector: MetricsCollector;
+  /**
+   * Records a `fired`/`failed` beacon outcome for a plugin that manages its
+   * own post-submit tracking navigation (i.e. declares `extractJoinKeys`).
+   * Bound to this run's `requestId` and the plugin's own `siteId` by core, so
+   * the plugin supplies neither — only `beaconStatus`, `joinKeys`, and
+   * optionally `trackingUrl`/`durationMs`. Never throws.
+   */
+  recordBeaconOutcome: (input: BeaconOutcomeInput) => Promise<void>;
+  /**
+   * Per-dispatch accumulator for fields a plugin only discovers mid-run —
+   * something read from the page, a token minted mid-flow, a value observed
+   * on a response — rather than derivable up front from `extractJoinKeys`'s
+   * inbound-payload-only view. Core merges its snapshot over
+   * `extractJoinKeys(payload)` (run-discovered keys win on collision) into
+   * the submission envelope and the tracking-click/skipped-beacon record.
+   */
+  telemetry: RunTelemetryHandle;
 }
 
 /**

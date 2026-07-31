@@ -80,11 +80,18 @@ const TSC_DIAGNOSTIC_LINE = /^.+\(\d+,\d+\): error (TS\d+): (.+)$/;
  * ordinary node_modules packages (declared dependencies of this repo,
  * standing in for the consumer having run the emitted checklist's
  * `pnpm add bottleneck zod`).
+ *
+ * The scratch dir MUST live inside REPO_ROOT, not `os.tmpdir()` — Node's
+ * bare-specifier resolution walks up from the checked files looking for
+ * `node_modules`, and an os.tmpdir() path has none in its ancestry, so
+ * `zod/v4`/`bottleneck`/`@browserbasehq/stagehand` silently fail to resolve
+ * and every diagnostic below would be a false TS2307, not a real gap in the
+ * package's exports (matches recon-browser.build.test.ts's outDir precedent).
  */
 function typecheckGeneratedFiles(
   files: Record<string, string>
 ): Array<{ code: string; message: string }> {
-  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "barnacle-oot-typecheck-"));
+  const tmpDir = mkdtempSync(path.join(REPO_ROOT, "barnacle-oot-typecheck-"));
   try {
     for (const [relPath, content] of Object.entries(files)) {
       const absPath = path.join(tmpDir, relPath);
@@ -102,9 +109,16 @@ function typecheckGeneratedFiles(
         esModuleInterop: true,
         skipLibCheck: true,
         noEmit: true,
-        baseUrl: ".",
+        // No `baseUrl` — TypeScript 7 removed it (TS5102), and a config-level
+        // error aborts `tsc` before it checks a single file, which would make
+        // every diagnostics assertion below pass vacuously regardless of what
+        // the generated sources import. `@/*` stands in for the internal
+        // cross-file aliases an exports-map target still carries as raw src
+        // (e.g. site-plugin.ts importing `@/config`) — a real dist build
+        // would already have rewritten those to relative paths.
         paths: {
           "@/sites/*": ["./sites/*"],
+          "@/*": [path.join(REPO_ROOT, "src/*")],
           ...buildExportsPathsMap(),
         },
       },
@@ -291,6 +305,124 @@ describe("out-of-tree e2e — recon-generate output typechecks against the packa
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("out-of-tree plugin — recordBeaconOutcome is reachable from the published SitePluginContext type", () => {
+  /**
+   * A plugin managing its own beacon nav has exactly one supported way to
+   * report a real outcome: `context.recordBeaconOutcome` on `SitePluginContext`
+   * (Option A of the beacon-outcome-recorder report). If the recorder were
+   * wired internally but never surfaced on the exported type, this source
+   * would fail with TS2339 ("Property 'recordBeaconOutcome' does not exist")
+   * under the same exports-gated harness above — that is the failure signal
+   * this suite exists to guard, distinct from an unresolved import (TS2307).
+   */
+  const beaconOutcomeSource = `
+import type { SitePluginContext } from "@enricai/barnacle/site-plugin";
+
+export async function reportViaContext(context: SitePluginContext): Promise<void> {
+  await context.recordBeaconOutcome({
+    beaconStatus: "fired",
+    joinKeys: { applicationId: "abc-123" },
+    trackingUrl: "https://example.com/beacon",
+    durationMs: 42,
+  });
+}
+`;
+
+  it("declares the SitePluginContext seam in package.json exports", () => {
+    expect(packageJson.exports["./site-plugin"]).toBeDefined();
+  });
+
+  it("a plugin calling context.recordBeaconOutcome produces zero TS2307/TS2339 diagnostics", () => {
+    const diagnostics = typecheckGeneratedFiles({
+      "beacon-outcome-plugin.ts": beaconOutcomeSource,
+    });
+    const relevant = diagnostics.filter((d) => d.code === "TS2307" || d.code === "TS2339");
+    expect(relevant.map((d) => `${d.code}: ${d.message}`)).toEqual([]);
+  });
+});
+
+describe("out-of-tree plugin — hello-site's vendored BeaconOutcomeInput mirror stays in sync with the shipped seam", () => {
+  /**
+   * `examples/plugins/hello-site/src/types.ts` vendors its own narrowed
+   * `BeaconOutcomeInput` rather than importing from core (so the example
+   * builds with zero dependency on `src/`), but claims it is "kept
+   * field-for-field in sync with the shipped seam". Nothing enforced that
+   * claim. This probe compiles a bidirectional structural-equality check
+   * between the example's mirror and the real
+   * `Parameters<SitePluginContext["recordBeaconOutcome"]>[0]` shape under the
+   * same exports-gated `tsc` harness used above, so a field added, removed,
+   * or retyped on either side surfaces as a real `tsc` diagnostic instead of
+   * shipping unnoticed to the out-of-tree HCA/encompass plugins that copy
+   * this file. Bidirectional (not one-way `extends`) so a removed *optional*
+   * field — which a one-way assignability check would miss, since a missing
+   * optional property is still structurally assignable — is caught too.
+   */
+  const beaconMirrorCheckSource = `
+import type { SitePluginContext } from "@enricai/barnacle/site-plugin";
+import type { BeaconOutcomeInput as ExampleBeaconOutcomeInput } from "../examples/plugins/hello-site/src/types";
+
+type RealBeaconOutcomeInput = Parameters<SitePluginContext["recordBeaconOutcome"]>[0];
+
+type IfEquals<A, B, Yes = unknown, No = never> = (<T>() => T extends A ? 1 : 2) extends (
+  <T>() => T extends B ? 1 : 2
+)
+  ? Yes
+  : No;
+
+type AssertTrue<T extends true> = T;
+type _MirrorStaysInSyncWithShippedSeam = AssertTrue<
+  IfEquals<ExampleBeaconOutcomeInput, RealBeaconOutcomeInput, true, false>
+>;
+`;
+
+  it("hello-site's BeaconOutcomeInput is bidirectionally assignable with the real recordBeaconOutcome parameter", () => {
+    const diagnostics = typecheckGeneratedFiles({
+      "hello-site-beacon-mirror-check.ts": beaconMirrorCheckSource,
+    });
+    expect(diagnostics.map((d) => `${d.code}: ${d.message}`)).toEqual([]);
+  });
+});
+
+describe("out-of-tree plugin — hello-site's vendored RunTelemetryHandle.addJoinKeys mirror stays in sync with the shipped seam", () => {
+  /**
+   * `examples/plugins/hello-site/src/types.ts` vendors its own narrowed
+   * `RunTelemetryHandle` (only `addJoinKeys` — `recordSession`/`snapshot` are
+   * engine-owned and deliberately omitted, see docs-001) but claims the one
+   * method it does mirror is "kept field-for-field in sync with the shipped
+   * seam". Nothing enforced that claim. This probe compiles a bidirectional
+   * structural-equality check between the example's `addJoinKeys` signature
+   * and the real `SitePluginContext["telemetry"]["addJoinKeys"]` signature
+   * under the same exports-gated `tsc` harness used above, so a parameter
+   * added, removed, or retyped on either side surfaces as a real `tsc`
+   * diagnostic instead of shipping unnoticed to plugins that copy this file.
+   */
+  const telemetryMirrorCheckSource = `
+import type { SitePluginContext } from "@enricai/barnacle/site-plugin";
+import type { RunTelemetryHandle as ExampleRunTelemetryHandle } from "../examples/plugins/hello-site/src/types";
+
+type RealAddJoinKeys = SitePluginContext["telemetry"]["addJoinKeys"];
+type ExampleAddJoinKeys = ExampleRunTelemetryHandle["addJoinKeys"];
+
+type IfEquals<A, B, Yes = unknown, No = never> = (<T>() => T extends A ? 1 : 2) extends (
+  <T>() => T extends B ? 1 : 2
+)
+  ? Yes
+  : No;
+
+type AssertTrue<T extends true> = T;
+type _AddJoinKeysMirrorStaysInSyncWithShippedSeam = AssertTrue<
+  IfEquals<ExampleAddJoinKeys, RealAddJoinKeys, true, false>
+>;
+`;
+
+  it("hello-site's RunTelemetryHandle.addJoinKeys is bidirectionally assignable with the real telemetry.addJoinKeys", () => {
+    const diagnostics = typecheckGeneratedFiles({
+      "hello-site-telemetry-mirror-check.ts": telemetryMirrorCheckSource,
+    });
+    expect(diagnostics.map((d) => `${d.code}: ${d.message}`)).toEqual([]);
   });
 });
 

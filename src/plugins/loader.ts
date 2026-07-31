@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import fastifyMultipart from "@fastify/multipart";
+import { formatISO } from "date-fns";
 import type { FastifyInstance, RawServerDefault } from "fastify";
 import type pino from "pino";
 import { z } from "zod/v4";
@@ -28,7 +29,8 @@ import {
 import { MetricsCollector } from "@/lib/dispatch-metrics";
 import { toErrorMessage } from "@/lib/errors";
 import { extendLogger, getLogger } from "@/lib/logging";
-import { captureBeaconEvent } from "@/lib/telemetry/beacon-capture";
+import { captureBeaconEvent, createBeaconOutcomeRecorder } from "@/lib/telemetry/beacon-capture";
+import { RunTelemetry } from "@/lib/telemetry/run-telemetry";
 import { captureSubmissionEnvelope } from "@/lib/telemetry/submission-capture";
 import { fireTrackingClick } from "@/lib/tracking-click";
 import { BUILTIN_SITE_PLUGINS } from "@/plugins/discover";
@@ -50,6 +52,7 @@ import {
   recordRateLimitRejection,
 } from "@/scraper/metrics";
 import { runWithSession } from "@/scraper/pool";
+import type { BrowserSession } from "@/scraper/session";
 import type {
   SitePlugin,
   SitePluginContext,
@@ -93,6 +96,71 @@ function toApiError(err: unknown): ApiError | undefined {
   return undefined;
 }
 
+/** Input to `buildPluginContext` — one per construction site (the `/run` route, an extra route, or a test/integration harness). */
+export interface BuildPluginContextInput {
+  /** The plugin the context is being built for; supplies `siteId` for both `baseUrl` resolution and the bound beacon recorder. */
+  plugin: SitePlugin<unknown, unknown>;
+  /** Full app config; also used to resolve `baseUrl` when no override is given. */
+  cfg: AppConfig;
+  /** Correlation ID for this run, threaded into telemetry and the bound beacon recorder. */
+  requestId: string;
+  /** Request-scoped logger, already extended by the caller (`extendLogger` for real requests). */
+  logger: Logger;
+  /** Overrides the `cfg.scraper.siteBaseUrls` / `plugin.meta.defaultBaseUrl` resolution; used by the integration-test harness, which supplies its own job-derived `baseUrl`. */
+  baseUrl?: string;
+}
+
+/**
+ * Builds the `SitePluginContext` core injects into every plugin call. Single
+ * shared factory for all three construction sites (`/run` route, extra
+ * routes, `runIntegrationJob`) so a new context member is a one-line change
+ * here instead of three drifting literals.
+ */
+export function buildPluginContext(input: BuildPluginContextInput): SitePluginContext {
+  const { plugin, cfg, requestId, logger, baseUrl } = input;
+  return {
+    baseUrl:
+      baseUrl ?? cfg.scraper.siteBaseUrls[plugin.meta.siteId] ?? plugin.meta.defaultBaseUrl ?? "",
+    logger,
+    config: cfg,
+    requestId,
+    metricsCollector: new MetricsCollector(),
+    recordBeaconOutcome: createBeaconOutcomeRecorder({ requestId, siteId: plugin.meta.siteId }),
+    telemetry: new RunTelemetry(),
+  };
+}
+
+/**
+ * Wraps a session-scoped plugin call so the acquired session's identity and
+ * outbound IP are recorded onto `context.telemetry` regardless of whether the
+ * call succeeds or throws. `runWithSession` (`src/scraper/pool.ts`) creates
+ * and closes the `BrowserSession` entirely inside its own callback — this is
+ * the only place still holding a reference to it, so it is the only place
+ * that can still query `getOutboundIp()` before the session is gone.
+ * Tolerates a null/absent session (the hot path never acquires one; some
+ * pool test doubles pass null) and an absent `getOutboundIp` (Steel has no
+ * accessor) by recording `ip: null, ipCapturedAt: null` in either case.
+ */
+async function withSessionTelemetry<T>(
+  session: BrowserSession | null,
+  context: SitePluginContext,
+  run: () => Promise<T>
+): Promise<T> {
+  try {
+    return await run();
+  } finally {
+    if (session) {
+      const ip = (await session.getOutboundIp?.()) ?? null;
+      context.telemetry.recordSession({
+        sessionId: session.sessionId,
+        provider: session.provider,
+        ip,
+        ipCapturedAt: ip ? formatISO(new Date()) : null,
+      });
+    }
+  }
+}
+
 /**
  * Runs the hot path (when available) + fallback pipeline for a single
  * submission. Extracted so dispatch() reads as a linear "run pipeline,
@@ -111,7 +179,8 @@ async function runPluginPipeline<TResult>(
       recordDdFallback(plugin.meta.siteId);
     }
     return (await runWithSession(
-      (session) => plugin.execute(payload, session, context),
+      (session) =>
+        withSessionTelemetry(session, context, () => plugin.execute(payload, session, context)),
       { onRetry: plugin.onRetry, maxAttempts: plugin.meta.maxAttempts },
       plugin.meta.taskTimeoutMs,
       {
@@ -153,7 +222,8 @@ async function runPluginPipeline<TResult>(
       recordFallbackActivation(plugin.meta.siteId);
       recordDdFallback(plugin.meta.siteId);
       return (await runWithSession(
-        (session) => plugin.execute(payload, session, context),
+        (session) =>
+          withSessionTelemetry(session, context, () => plugin.execute(payload, session, context)),
         { onRetry: plugin.onRetry, maxAttempts: plugin.meta.maxAttempts },
         plugin.meta.taskTimeoutMs,
         {
@@ -212,6 +282,38 @@ async function emitBeaconSafely(input: Parameters<typeof captureBeaconEvent>[0])
 }
 
 /**
+ * Merges a plugin's pre-run `extractJoinKeys(payload)` result with whatever
+ * it attached mid-run via `context.telemetry.addJoinKeys()`, run-attached
+ * fields winning on collision. Stays `null` (not `{}`) when both sources are
+ * empty so the envelope's `joinKeys: null` precedent holds for a plugin that
+ * uses neither mechanism.
+ */
+function mergeJoinKeys(
+  extracted: Record<string, unknown> | null,
+  attached: Record<string, unknown> | null
+): Record<string, unknown> | null {
+  if (!extracted && !attached) return null;
+  return { ...extracted, ...attached };
+}
+
+/**
+ * Maps `RunTelemetry`'s collector-shaped session record (`sessionId`) onto
+ * the durable envelope's persisted shape (`id`) documented in
+ * `docs/telemetry-and-judging.md`'s "session" field.
+ */
+function toEnvelopeSession(
+  session: ReturnType<SitePluginContext["telemetry"]["snapshot"]>["session"]
+): { id: string; provider: string; ip: string | null; ipCapturedAt: string | null } | null {
+  if (!session) return null;
+  return {
+    id: session.sessionId,
+    provider: session.provider,
+    ip: session.ip,
+    ipCapturedAt: session.ipCapturedAt,
+  };
+}
+
+/**
  * Runs a single plugin submission end-to-end. Tries the direct-HTTP hot path
  * first when the plugin supplies `executeHttp`; on `HttpSchemaError`,
  * `HttpBotChallengeError`, or `HttpServerError` falls back to the Stagehand
@@ -246,7 +348,7 @@ export async function dispatch<TResult>(
   const hasHttpPath = !!plugin.executeHttp && !options.forceFallback;
   const pathTag: "http" | "browser" = hasHttpPath ? "http" : "browser";
   const ddTags = { site: plugin.meta.siteId, path: pathTag };
-  const joinKeys = plugin.extractJoinKeys?.(payload) ?? null;
+  const extractedJoinKeys = plugin.extractJoinKeys?.(payload) ?? null;
   const managesOwnTracking = !!plugin.extractJoinKeys;
 
   recordDdAttempt(ddTags);
@@ -270,10 +372,14 @@ export async function dispatch<TResult>(
     const metrics = context.metricsCollector.finalize(pathTag);
     result.metrics = metrics;
 
+    const successSnapshot = context.telemetry.snapshot();
+    const joinKeys = mergeJoinKeys(extractedJoinKeys, successSnapshot.joinKeys);
+
     await emitEnvelopeSafely({
       siteId: plugin.meta.siteId,
       requestId: context.requestId,
       joinKeys,
+      session: toEnvelopeSession(successSnapshot.session),
       inboundPayload: payload,
       status: "submitted",
       auditPayload: result.auditPayload ?? result.data,
@@ -317,10 +423,14 @@ export async function dispatch<TResult>(
 
     const metrics = context.metricsCollector.finalize(pathTag);
 
+    const errorSnapshot = context.telemetry.snapshot();
+    const joinKeys = mergeJoinKeys(extractedJoinKeys, errorSnapshot.joinKeys);
+
     await emitEnvelopeSafely({
       siteId: plugin.meta.siteId,
       requestId: context.requestId,
       joinKeys,
+      session: toEnvelopeSession(errorSnapshot.session),
       inboundPayload: payload,
       status: "error",
       auditPayload: null,
@@ -387,8 +497,6 @@ export async function registerRoutes(
 
   for (const plugin of plugins) {
     const routePath = plugin.meta.routeOverride ?? `/v1/${plugin.meta.siteId}/run`;
-    const baseUrl =
-      cfg.scraper.siteBaseUrls[plugin.meta.siteId] ?? plugin.meta.defaultBaseUrl ?? "";
 
     app.post(
       routePath,
@@ -402,13 +510,12 @@ export async function registerRoutes(
       },
       async (request) => {
         const forceFallback = request.headers["x-barnacle-execution"] === "browser";
-        const context: SitePluginContext = {
-          baseUrl,
-          logger: extendLogger(request.log as unknown as pino.Logger),
-          config: cfg,
+        const context = buildPluginContext({
+          plugin,
+          cfg,
           requestId: request.id,
-          metricsCollector: new MetricsCollector(),
-        };
+          logger: extendLogger(request.log as unknown as pino.Logger),
+        });
         const result = await dispatch(plugin, request.body, context, { forceFallback });
         return successEnvelope({
           ...(result.data as object),
@@ -509,15 +616,12 @@ function registerExtraRoutes(
         // resolved plugin's own contract.
         const body =
           shared && route.bodySchema ? route.bodySchema.parse(request.body) : request.body;
-        const baseUrl =
-          cfg.scraper.siteBaseUrls[plugin.meta.siteId] ?? plugin.meta.defaultBaseUrl ?? "";
-        const context: SitePluginContext = {
-          baseUrl,
-          logger: extendLogger(request.log as unknown as pino.Logger),
-          config: cfg,
+        const context = buildPluginContext({
+          plugin,
+          cfg,
           requestId: request.id,
-          metricsCollector: new MetricsCollector(),
-        };
+          logger: extendLogger(request.log as unknown as pino.Logger),
+        });
         const result = await route.handler(
           {
             body,
