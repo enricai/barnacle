@@ -59,9 +59,11 @@ function makeStagehand(): Stagehand {
 
 const FRAME_SELECTOR = "iframe#talemetry_apply_iframe";
 
-function makeChildFrameTarget(urls: { current: string }, fieldValues: Map<string, string>): FrameTarget {
+function makeChildFrameTarget(
+  urls: { current: string },
+  fieldValues: Map<string, string>
+): FrameTarget {
   let snapshotCount = 0;
-  let currentField = "";
   return {
     frame: {} as FrameTarget["frame"],
     frameSelector: FRAME_SELECTOR,
@@ -74,7 +76,6 @@ function makeChildFrameTarget(urls: { current: string }, fieldValues: Map<string
       // Extract the field from the selector to return the correct value
       for (const [field, value] of fieldValues.entries()) {
         if (selector.includes(field)) {
-          currentField = field;
           return {
             first: () => ({
               isChecked: vi.fn().mockResolvedValue(false),
