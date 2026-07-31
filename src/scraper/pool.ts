@@ -39,14 +39,15 @@ const queue = new PQueue({ concurrency: config.scraper.poolSize });
 export async function runWithSession<T>(
   task: (session: BrowserSession) => Promise<T>,
   retryOptions: Omit<RetryOptions, "onSessionRestart"> = {},
-  taskTimeoutMs = TASK_TIMEOUT_MS
+  taskTimeoutMs = TASK_TIMEOUT_MS,
+  sessionOpts: { advancedStealth?: boolean } = {}
 ): Promise<T> {
   return queue.add(async () => {
     const sessionRef: { session: BrowserSession | null } = { session: null };
 
     const ensureSession = async (): Promise<BrowserSession> => {
       if (!sessionRef.session) {
-        sessionRef.session = await createBrowserSession();
+        sessionRef.session = await createBrowserSession(sessionOpts);
       }
       return sessionRef.session;
     };

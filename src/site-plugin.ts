@@ -54,6 +54,14 @@ export interface SitePluginMeta {
    * Generator emits this for flows whose recon includes a binary upload step.
    */
   multipart?: boolean;
+  /**
+   * When true, sessions allocated for this plugin's browser fallback opt
+   * into Browserbase's Scale Plan stealth profile (Windows desktop fingerprint
+   * + solveCaptchas). DataDome-protected flows (notably apply.appcast.io
+   * postings) need this to clear the silent fingerprint wall. Defaults to
+   * false to avoid the cost penalty on plugins that don't need it.
+   */
+  advancedStealth?: boolean;
 }
 
 /**

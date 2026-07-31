@@ -118,7 +118,8 @@ async function runPluginPipeline<TResult>(
     return (await runWithSession(
       (session) => plugin.execute(payload, session, context),
       { onRetry: plugin.onRetry },
-      plugin.meta.taskTimeoutMs
+      plugin.meta.taskTimeoutMs,
+      { advancedStealth: plugin.meta.advancedStealth }
     )) as SitePluginResult<TResult>;
   }
 
@@ -153,7 +154,8 @@ async function runPluginPipeline<TResult>(
       return (await runWithSession(
         (session) => plugin.execute(payload, session, context),
         { onRetry: plugin.onRetry },
-        plugin.meta.taskTimeoutMs
+        plugin.meta.taskTimeoutMs,
+        { advancedStealth: plugin.meta.advancedStealth }
       )) as SitePluginResult<TResult>;
     }
     if (httpErr instanceof HttpRateLimitError) {

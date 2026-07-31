@@ -4564,7 +4564,7 @@ async function main(): Promise<void> {
             },
             captureFn,
           });
-          if (trailingGraceVerdict !== null && trailingGraceVerdict.verified) {
+          if (trailingGraceVerdict?.verified) {
             logger.info(
               `step ${i + 1} optional + trailing position; judge verified recent submit (${trailingGraceVerdict.rationale}) — treating verification failure as benign no-op; recon complete`
             );
