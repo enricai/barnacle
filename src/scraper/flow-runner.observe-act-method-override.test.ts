@@ -171,7 +171,7 @@ describe("flow-runner/executeStepWithHealing — observe-act overrides method fo
       (call) => typeof call[1] === "object" && call[1] !== null && "method" in call[1]
     );
     expect(targetCall).toBeDefined();
-    const target = targetCall![1] as { method: string; arguments: unknown[] };
+    const target = targetCall?.[1] as { method: string; arguments: unknown[] };
     expect(target.method).toBe("fill");
     expect(target.arguments).toEqual(["Alice"]);
   });
@@ -234,7 +234,7 @@ describe("flow-runner/executeStepWithHealing — observe-act overrides method fo
       (call) => typeof call[1] === "object" && call[1] !== null && "method" in call[1]
     );
     expect(targetCall).toBeDefined();
-    const target = targetCall![1] as { method: string; arguments: unknown[] };
+    const target = targetCall?.[1] as { method: string; arguments: unknown[] };
     expect(target.method).toBe("selectOption");
     expect(target.arguments).toEqual(["California"]);
   });
@@ -299,7 +299,7 @@ describe("flow-runner/executeStepWithHealing — observe-act overrides method fo
       (call) => typeof call[1] === "object" && call[1] !== null && "method" in call[1]
     );
     expect(targetCall).toBeDefined();
-    const target = targetCall![1] as { method: string; arguments: unknown[] };
+    const target = targetCall?.[1] as { method: string; arguments: unknown[] };
     expect(target.method).toBe("click");
     expect(target.arguments).toEqual([]);
   });
