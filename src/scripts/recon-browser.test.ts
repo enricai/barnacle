@@ -68,11 +68,14 @@ import {
   dedupeConsecutiveIdentical,
   denormalizeStep,
   describeAttemptEffectSignals,
+  extractFillTargetFieldName,
   extractSubmitFailureEvidence,
   findRecentBackendError,
   findRecentPageTransition,
   hasBillingErrorBeenLogged,
   type InvalidFormControl,
+  invalidListContainsField,
+  isReplanCycle,
   isSubmitRevealedInvalid,
   logBillingErrorIfPresent,
   type NormalizedStep,
@@ -270,13 +273,20 @@ const testLogger = loggerStub as unknown as Logger;
 
 describe("recon-browser/denormalizeStep", () => {
   it("returns bare string for default flags (required, non-upload)", () => {
-    expect(denormalizeStep({ instruction: "Click Continue", optional: false, upload: false })).toBe(
-      "Click Continue"
-    );
+    expect(
+      denormalizeStep({
+        instruction: "Click Continue",
+        optional: false,
+        upload: false,
+        origin: "original",
+      })
+    ).toBe("Click Continue");
   });
 
   it("emits object form with optional flag only when optional=true", () => {
-    expect(denormalizeStep({ instruction: "Skip me", optional: true, upload: false })).toEqual({
+    expect(
+      denormalizeStep({ instruction: "Skip me", optional: true, upload: false, origin: "original" })
+    ).toEqual({
       step: "Skip me",
       optional: true,
     });
@@ -284,12 +294,24 @@ describe("recon-browser/denormalizeStep", () => {
 
   it("emits object form with upload flag only when upload=true", () => {
     expect(
-      denormalizeStep({ instruction: "Upload resume", optional: false, upload: true })
+      denormalizeStep({
+        instruction: "Upload resume",
+        optional: false,
+        upload: true,
+        origin: "original",
+      })
     ).toEqual({ step: "Upload resume", upload: true });
   });
 
   it("emits both flags when both are set (schema supports it)", () => {
-    expect(denormalizeStep({ instruction: "Maybe upload", optional: true, upload: true })).toEqual({
+    expect(
+      denormalizeStep({
+        instruction: "Maybe upload",
+        optional: true,
+        upload: true,
+        origin: "original",
+      })
+    ).toEqual({
       step: "Maybe upload",
       optional: true,
       upload: true,
@@ -323,9 +345,9 @@ describe("recon-browser/persistReplannedFlow", () => {
     writeFileSync(flowPath, originalBytes);
 
     const finalPlan: NormalizedStep[] = [
-      { instruction: "Step A", optional: false, upload: false },
-      { instruction: "Bridge X", optional: false, upload: false },
-      { instruction: "Step B", optional: false, upload: false },
+      { instruction: "Step A", optional: false, upload: false, origin: "original" },
+      { instruction: "Bridge X", optional: false, upload: false, origin: "original" },
+      { instruction: "Step B", optional: false, upload: false, origin: "original" },
     ];
     const replanEvents: ReplanEvent[] = [
       {
@@ -333,8 +355,11 @@ describe("recon-browser/persistReplannedFlow", () => {
         cause: "probe-absent",
         indexAtFailure: 1,
         failedInstruction: "Step B",
-        replanSteps: [{ instruction: "Bridge X", optional: false, upload: false }],
+        replanSteps: [
+          { instruction: "Bridge X", optional: false, upload: false, origin: "original" },
+        ],
         timestamp: "2026-06-03T20:00:00.000Z",
+        pageState: { url: "https://example.com/apply", htmlLength: 50000 },
       },
     ];
 
@@ -355,9 +380,9 @@ describe("recon-browser/persistReplannedFlow", () => {
     writeFileSync(flowPath, '["Step A"]\n');
 
     const finalPlan: NormalizedStep[] = [
-      { instruction: "Required", optional: false, upload: false },
-      { instruction: "Maybe", optional: true, upload: false },
-      { instruction: "File", optional: false, upload: true },
+      { instruction: "Required", optional: false, upload: false, origin: "original" },
+      { instruction: "Maybe", optional: true, upload: false, origin: "original" },
+      { instruction: "File", optional: false, upload: true, origin: "original" },
     ];
     const replanEvents: ReplanEvent[] = [
       {
@@ -367,6 +392,7 @@ describe("recon-browser/persistReplannedFlow", () => {
         failedInstruction: "Step A",
         replanSteps: finalPlan,
         timestamp: "2026-06-03T20:00:00.000Z",
+        pageState: { url: "https://example.com/apply", htmlLength: 50000 },
       },
     ];
 
@@ -384,15 +410,20 @@ describe("recon-browser/persistReplannedFlow", () => {
   it("prints a logger.info summary block describing each replan event", () => {
     writeFileSync(flowPath, '["Step A"]\n');
 
-    const finalPlan: NormalizedStep[] = [{ instruction: "Bridge", optional: false, upload: false }];
+    const finalPlan: NormalizedStep[] = [
+      { instruction: "Bridge", optional: false, upload: false, origin: "original" },
+    ];
     const replanEvents: ReplanEvent[] = [
       {
         replanIndex: 1,
         cause: "probe-absent",
         indexAtFailure: 0,
         failedInstruction: "Step A",
-        replanSteps: [{ instruction: "Bridge", optional: false, upload: false }],
+        replanSteps: [
+          { instruction: "Bridge", optional: false, upload: false, origin: "original" },
+        ],
         timestamp: "2026-06-03T20:00:00.000Z",
+        pageState: { url: "https://example.com/apply", htmlLength: 50000 },
       },
     ];
 
@@ -413,7 +444,9 @@ describe("recon-browser/persistReplannedFlow", () => {
     // + a pattern. The new file should be an object with steps[] + pattern,
     // not a bare array.
     writeFileSync(flowPath, '["Step A"]\n');
-    const finalPlan: NormalizedStep[] = [{ instruction: "Step A", optional: false, upload: false }];
+    const finalPlan: NormalizedStep[] = [
+      { instruction: "Step A", optional: false, upload: false, origin: "original" },
+    ];
     const replanEvents: ReplanEvent[] = [
       {
         replanIndex: 1,
@@ -422,6 +455,7 @@ describe("recon-browser/persistReplannedFlow", () => {
         failedInstruction: "Step A",
         replanSteps: finalPlan,
         timestamp: "2026-06-03T20:00:00.000Z",
+        pageState: { url: "https://example.com/apply", htmlLength: 50000 },
       },
     ];
 
@@ -444,7 +478,9 @@ describe("recon-browser/persistReplannedFlow", () => {
 
   it("falls back to bare-array shape when originalShape is omitted (back-compat)", () => {
     writeFileSync(flowPath, '["X"]\n');
-    const finalPlan: NormalizedStep[] = [{ instruction: "X", optional: false, upload: false }];
+    const finalPlan: NormalizedStep[] = [
+      { instruction: "X", optional: false, upload: false, origin: "original" },
+    ];
     const replanEvents: ReplanEvent[] = [
       {
         replanIndex: 1,
@@ -453,6 +489,7 @@ describe("recon-browser/persistReplannedFlow", () => {
         failedInstruction: "X",
         replanSteps: finalPlan,
         timestamp: "2026-06-03T20:00:00.000Z",
+        pageState: { url: "https://example.com/apply", htmlLength: 50000 },
       },
     ];
 
@@ -464,7 +501,9 @@ describe("recon-browser/persistReplannedFlow", () => {
 
   it("omits submitEndpointPattern from object-shape output when pattern is null", () => {
     writeFileSync(flowPath, '{"steps":["X"]}\n');
-    const finalPlan: NormalizedStep[] = [{ instruction: "X", optional: false, upload: false }];
+    const finalPlan: NormalizedStep[] = [
+      { instruction: "X", optional: false, upload: false, origin: "original" },
+    ];
     const replanEvents: ReplanEvent[] = [
       {
         replanIndex: 1,
@@ -473,6 +512,7 @@ describe("recon-browser/persistReplannedFlow", () => {
         failedInstruction: "X",
         replanSteps: finalPlan,
         timestamp: "2026-06-03T20:00:00.000Z",
+        pageState: { url: "https://example.com/apply", htmlLength: 50000 },
       },
     ];
 
@@ -495,7 +535,7 @@ describe("recon-browser/persistReplannedFlow", () => {
     // logs an error and returns without writing the new flow.json. This
     // protects the user's data when something external removed the file.
     const finalPlan: NormalizedStep[] = [
-      { instruction: "Whatever", optional: false, upload: false },
+      { instruction: "Whatever", optional: false, upload: false, origin: "original" },
     ];
     const replanEvents: ReplanEvent[] = [
       {
@@ -505,6 +545,7 @@ describe("recon-browser/persistReplannedFlow", () => {
         failedInstruction: "X",
         replanSteps: finalPlan,
         timestamp: "2026-06-03T20:00:00.000Z",
+        pageState: { url: "https://example.com/apply", htmlLength: 50000 },
       },
     ];
 
@@ -513,6 +554,62 @@ describe("recon-browser/persistReplannedFlow", () => {
     ).not.toThrow();
     expect(existsSync(flowPath)).toBe(false);
     expect(loggerStub.error).toHaveBeenCalled();
+  });
+
+  it("coerces replan-origin steps to optional on write-back even when they came in as required", () => {
+    // Regression: a cross-employer sweep had job N persist employer-specific
+    // replanned steps as REQUIRED bare strings, then job N+1 (different
+    // employer) cascade-exhausted trying to fill questions that don't exist
+    // on the new employer's form. Auto-coercion to optional means replanned
+    // steps probe-absent-skip on non-matching employers.
+    writeFileSync(flowPath, '["Step A"]\n');
+    const finalPlan: NormalizedStep[] = [
+      { instruction: "Hand-authored required", optional: false, upload: false, origin: "original" },
+      { instruction: "LLM-discovered required", optional: false, upload: false, origin: "replan" },
+    ];
+    const replanEvents: ReplanEvent[] = [
+      {
+        replanIndex: 1,
+        cause: "cascade-exhausted",
+        indexAtFailure: 0,
+        failedInstruction: "Step A",
+        replanSteps: [finalPlan[1]!],
+        timestamp: "2026-06-03T20:00:00.000Z",
+        pageState: { url: "https://example.com/apply", htmlLength: 50000 },
+      },
+    ];
+
+    persistReplannedFlow({ flowFile: flowPath, finalPlan, replanEvents, logger: testLogger });
+
+    const parsed = JSON.parse(readFileSync(flowPath, "utf8")) as unknown[];
+    expect(parsed).toEqual([
+      "Hand-authored required",
+      { step: "LLM-discovered required", optional: true },
+    ]);
+  });
+
+  it("leaves an already-optional replan step alone (no-op coercion)", () => {
+    writeFileSync(flowPath, '["Step A"]\n');
+    const finalPlan: NormalizedStep[] = [
+      { instruction: "Replan-optional", optional: true, upload: false, origin: "replan" },
+    ];
+    const replanEvents: ReplanEvent[] = [
+      {
+        replanIndex: 1,
+        cause: "probe-absent",
+        indexAtFailure: 0,
+        failedInstruction: "Step A",
+        replanSteps: finalPlan,
+        timestamp: "2026-06-03T20:00:00.000Z",
+        pageState: { url: "https://example.com/apply", htmlLength: 50000 },
+      },
+    ];
+
+    persistReplannedFlow({ flowFile: flowPath, finalPlan, replanEvents, logger: testLogger });
+
+    expect(JSON.parse(readFileSync(flowPath, "utf8"))).toEqual([
+      { step: "Replan-optional", optional: true },
+    ]);
   });
 });
 
@@ -1160,6 +1257,104 @@ describe("recon-browser/shouldSkipTechnique", () => {
   });
 });
 
+describe("recon-browser/isReplanCycle", () => {
+  function makeEvent(
+    replanIndex: number,
+    proposals: string[],
+    pageState: { url: string; htmlLength: number }
+  ): ReplanEvent {
+    return {
+      replanIndex,
+      cause: "cascade-exhausted",
+      indexAtFailure: 0,
+      failedInstruction: "Click submit",
+      replanSteps: proposals.map((p) => ({
+        instruction: p,
+        optional: false,
+        upload: false,
+        origin: "original",
+      })),
+      timestamp: "2026-06-09T00:00:00.000Z",
+      pageState,
+    };
+  }
+  const url = "https://example.com/apply";
+
+  it("returns false when fewer than threshold prior replans", () => {
+    const newSteps: NormalizedStep[] = [
+      { instruction: "Fill phone", optional: false, upload: false, origin: "original" },
+    ];
+    expect(isReplanCycle([], newSteps, { url, htmlLength: 50000 })).toBe(false);
+    expect(
+      isReplanCycle([makeEvent(1, ["Fill phone"], { url, htmlLength: 50000 })], newSteps, {
+        url,
+        htmlLength: 50000,
+      })
+    ).toBe(false);
+  });
+
+  it("returns true when threshold identical proposals under static page state", () => {
+    const proposals = ["Fill phone", "Click submit"];
+    const priors = [
+      makeEvent(1, proposals, { url, htmlLength: 50000 }),
+      makeEvent(2, proposals, { url, htmlLength: 50010 }),
+      makeEvent(3, proposals, { url, htmlLength: 50020 }),
+    ];
+    const newSteps: NormalizedStep[] = proposals.map((p) => ({
+      instruction: p,
+      optional: false,
+      upload: false,
+      origin: "original",
+    }));
+    expect(isReplanCycle(priors, newSteps, { url, htmlLength: 50030 })).toBe(true);
+  });
+
+  it("returns false when URL changed between replans", () => {
+    const proposals = ["Fill phone"];
+    const priors = [
+      makeEvent(1, proposals, { url, htmlLength: 50000 }),
+      makeEvent(2, proposals, { url: "https://example.com/apply/page2", htmlLength: 50000 }),
+      makeEvent(3, proposals, { url, htmlLength: 50000 }),
+    ];
+    const newSteps: NormalizedStep[] = proposals.map((p) => ({
+      instruction: p,
+      optional: false,
+      upload: false,
+      origin: "original",
+    }));
+    expect(isReplanCycle(priors, newSteps, { url, htmlLength: 50000 })).toBe(false);
+  });
+
+  it("returns false when HTML length changed beyond tolerance (page advanced)", () => {
+    const proposals = ["Fill phone"];
+    const priors = [
+      makeEvent(1, proposals, { url, htmlLength: 50000 }),
+      makeEvent(2, proposals, { url, htmlLength: 50000 }),
+      makeEvent(3, proposals, { url, htmlLength: 50000 }),
+    ];
+    const newSteps: NormalizedStep[] = proposals.map((p) => ({
+      instruction: p,
+      optional: false,
+      upload: false,
+      origin: "original",
+    }));
+    expect(isReplanCycle(priors, newSteps, { url, htmlLength: 52000 })).toBe(false);
+  });
+
+  it("returns false when proposals differ in instructions or order", () => {
+    const priors = [
+      makeEvent(1, ["Fill phone", "Click submit"], { url, htmlLength: 50000 }),
+      makeEvent(2, ["Fill phone", "Click submit"], { url, htmlLength: 50000 }),
+      makeEvent(3, ["Click submit", "Fill phone"], { url, htmlLength: 50000 }),
+    ];
+    const newSteps: NormalizedStep[] = [
+      { instruction: "Fill phone", optional: false, upload: false, origin: "original" },
+      { instruction: "Click submit", optional: false, upload: false, origin: "original" },
+    ];
+    expect(isReplanCycle(priors, newSteps, { url, htmlLength: 50000 })).toBe(false);
+  });
+});
+
 describe("recon-browser/summarizeReplanFailureKinds", () => {
   let tmpDir: string;
   let ndjsonPath: string;
@@ -1737,5 +1932,43 @@ describe("recon-browser/findRecentBackendError", () => {
         })
       ).toBe("https://example.com/api/apply");
     }
+  });
+});
+
+describe("recon-browser/extractFillTargetFieldName", () => {
+  it("extracts the field name from 'Fill in the X field with Y' instructions", () => {
+    expect(extractFillTargetFieldName("Fill in the Legal First Name field with 'Reginald'")).toBe(
+      "Legal First Name"
+    );
+    expect(extractFillTargetFieldName("Fill the Postal Code field with '83646'")).toBe(
+      "Postal Code"
+    );
+  });
+
+  it("returns null for clicks, selects, and other non-fill instructions", () => {
+    expect(extractFillTargetFieldName("Click the Continue button")).toBeNull();
+    expect(extractFillTargetFieldName("Select 'Day' in the Shift dropdown")).toBeNull();
+  });
+});
+
+describe("recon-browser/invalidListContainsField", () => {
+  it("matches when the field name appears in any invalidFieldList entry", () => {
+    const list = "1. Legal First Name <app-input  [ng-invalid]\n2. Phone <input  [ng-invalid]";
+    expect(invalidListContainsField(list, "Legal First Name")).toBe(true);
+  });
+
+  it("is case-insensitive", () => {
+    const list = "1. LEGAL FIRST NAME <app-input  [ng-invalid]";
+    expect(invalidListContainsField(list, "legal first name")).toBe(true);
+  });
+
+  it("returns false when the field is not in the list", () => {
+    const list = "1. Phone <input  [ng-invalid]";
+    expect(invalidListContainsField(list, "Legal First Name")).toBe(false);
+  });
+
+  it("returns false on empty inputs", () => {
+    expect(invalidListContainsField("", "Foo")).toBe(false);
+    expect(invalidListContainsField("1. Foo [ng-invalid]", "")).toBe(false);
   });
 });

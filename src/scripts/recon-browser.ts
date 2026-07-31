@@ -35,8 +35,8 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
@@ -49,12 +49,16 @@ import { toErrorMessage } from "@/lib/errors";
 import { configureHttpDispatcher } from "@/lib/http";
 import { getScriptLogger } from "@/lib/logging";
 import {
-  ANTHROPIC_BILLING_RX,
   captureLlmCall,
   classifyLlmCallFailure,
   type LlmCallInput,
 } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE, CALL_TYPE_RECON_REPLAN } from "@/lib/telemetry/call-types";
+import {
+  resolveRunCallsPath,
+  resolveRunUrlPath,
+  resolveSiteTelemetryDir,
+} from "@/lib/telemetry/telemetry-paths";
 import { StepVerificationError } from "@/scraper/errors";
 import { createBrowserSession, type ProviderName } from "@/scraper/session";
 import { filterByCallType, parseSamples } from "@/scripts/judge-llm-batch";
@@ -122,7 +126,33 @@ interface ReplanEvent {
   failedInstruction: string;
   replanSteps: NormalizedStep[];
   timestamp: string;
+  /**
+   * Page state at the moment this replan was constructed. Used by
+   * isReplanCycle to distinguish "same proposal under static page" (true
+   * cycle) from "same proposal but page state advanced" (legitimate retry
+   * under new conditions). Cheap signals: url equality + a permissive
+   * htmlLength delta. See HTML_STATIC_TOLERANCE for the threshold rationale.
+   */
+  pageState: { url: string; htmlLength: number };
 }
+
+/**
+ * Identical-proposal threshold for {@link isReplanCycle}. Set to a value
+ * high enough that one repeat plus one retry under the page-state guard
+ * doesn't trip — only a sustained fixed point should. Below 3, legitimate
+ * "same proposal under slightly-different state" retries can produce false
+ * cycle detections.
+ */
+const REPLAN_CYCLE_THRESHOLD = 3;
+
+/**
+ * Maximum bodyHtmlLength delta (in chars) at which two replan attempts are
+ * treated as targeting the same page state. Separates incidental DOM churn
+ * (framework attribute updates, focus rings, single-element re-renders;
+ * typically single-to-low-double-digit char deltas) from real page
+ * transitions (typically kilobyte-scale once new sections render).
+ */
+const HTML_STATIC_TOLERANCE = 100;
 
 /** Cap on the rolling capture-filename window held in memory for failure dumps. */
 const RECENT_CAPTURES_WINDOW = 20;
@@ -446,6 +476,63 @@ async function snapshotPage(page: Page, signalCounter: { n: number }): Promise<S
 }
 
 /**
+ * End-of-run audit: scan ALL captures written by this run for any 2xx
+ * whose URL matches the flow's submitEndpointPattern. Returns true when
+ * NO match is found — i.e. the run completed without an actual
+ * submission landing. Caller exits non-zero so silent-pass states
+ * surface as real failures.
+ *
+ * The audit is independent of the per-step verifier — the verifier may
+ * have accepted a DOM-fallback or URL-change signal as proof, but if
+ * the configured submit endpoint never returned 2xx, the application
+ * data didn't actually reach the server.
+ *
+ * Pre-existing AppCast-specific equivalent: readJobOutcome in
+ * recon-replay-jobs.ts. This is the agnostic engine-side version using
+ * the flow file's declared pattern.
+ */
+function auditFinalSubmitMatch(params: {
+  submitEndpointPattern: string;
+  capturesDir: string;
+  logger: Logger;
+}): boolean {
+  const { submitEndpointPattern, capturesDir, logger } = params;
+  const compiled = new RegExp(submitEndpointPattern);
+  let entries: string[];
+  try {
+    entries = readdirSync(capturesDir);
+  } catch (err) {
+    logger.warn(
+      `end-of-run audit: could not read captures dir ${capturesDir}: ${toErrorMessage(err)}`
+    );
+    // Without captures to scan we can't make the determination; treat as
+    // failed so the caller decides whether to retry.
+    return true;
+  }
+  for (const f of entries) {
+    try {
+      const data = JSON.parse(readFileSync(join(capturesDir, f), "utf8")) as {
+        status?: number;
+        url?: string;
+      };
+      if (
+        typeof data.url === "string" &&
+        compiled.test(data.url) &&
+        typeof data.status === "number" &&
+        data.status >= 200 &&
+        data.status < 300
+      ) {
+        return false;
+      }
+    } catch {
+      // Ignore unparseable capture files — they're either malformed or
+      // a different shape (e.g. resource captures that don't have status/url).
+    }
+  }
+  return true;
+}
+
+/**
  * Detect whether the supplied capture-meta window contains a backend
  * 5xx response that matches the configured submit endpoint pattern.
  * The cascade can't heal a backend crash by retrying clicks or
@@ -534,6 +621,35 @@ export async function countNgInvalidContainers(page: Page): Promise<number> {
   } catch {
     return 0;
   }
+}
+
+/**
+ * Extract the field-name token from a "Fill … field …" instruction. Closes
+ * the gap where the replan LLM has no signal that its prior fill on field X
+ * did not clear X's `ng-invalid` state — without this, it keeps re-emitting
+ * "Fill X with Y" against a form silently rejecting the value (hidden
+ * validator, masked input, format constraint, stale model binding).
+ *
+ * Returns the trimmed field name, or null when the instruction shape does
+ * not match (e.g. clicks, selects, conditionals where the failed target
+ * isn't a fill).
+ */
+export function extractFillTargetFieldName(instruction: string): string | null {
+  const m = instruction.match(/\bfill\s+(?:in\s+)?(?:the\s+)?(.+?)\s+field\b/i);
+  if (!m?.[1]) return null;
+  return m[1].trim();
+}
+
+/**
+ * True when `fieldName` appears (case-insensitive substring) in any entry of
+ * the framework-agnostic invalidFieldList (the "Legal First Name <app-input …
+ * [ng-invalid]" style lines `extractLivePageFormEvidence` and
+ * `readFailureDumpEvidence` produce).
+ */
+export function invalidListContainsField(invalidFieldList: string, fieldName: string): boolean {
+  if (invalidFieldList.length === 0 || fieldName.length === 0) return false;
+  const needle = fieldName.toLowerCase();
+  return invalidFieldList.toLowerCase().includes(needle);
 }
 
 /**
@@ -661,6 +777,33 @@ export function summarizeReplanFailureKinds(params: {
     .sort((a, b) => b[1] - a[1])
     .map(([kind, n]) => `${n}× ${kind}`);
   return `${failures.length} recent ${callType} failure(s): ${parts.join(", ")}`;
+}
+
+/**
+ * Detect a true replan cycle: the same multi-step instruction sequence
+ * proposed REPLAN_CYCLE_THRESHOLD times in a row under page state that
+ * hasn't materially advanced. The page-state guard (URL equality + bounded
+ * htmlLength delta) is essential — a re-proposal under genuinely different
+ * page state is a valid retry, not a cycle. Without the guard we'd block
+ * legitimate "the page advanced; the same step now works" recoveries.
+ */
+export function isReplanCycle(
+  priorReplans: readonly ReplanEvent[],
+  newSteps: readonly NormalizedStep[],
+  currentState: { url: string; htmlLength: number }
+): boolean {
+  if (priorReplans.length < REPLAN_CYCLE_THRESHOLD) return false;
+  const newSig = newSteps.map((s) => s.instruction).join("|||");
+  let identicalCount = 0;
+  for (const prior of priorReplans) {
+    const priorSig = prior.replanSteps.map((s) => s.instruction).join("|||");
+    if (priorSig !== newSig) continue;
+    const urlSame = prior.pageState.url === currentState.url;
+    const htmlStatic =
+      Math.abs(prior.pageState.htmlLength - currentState.htmlLength) < HTML_STATIC_TOLERANCE;
+    if (urlSame && htmlStatic) identicalCount++;
+  }
+  return identicalCount >= REPLAN_CYCLE_THRESHOLD;
 }
 
 /**
@@ -874,7 +1017,7 @@ Rewrite the instruction so a Stagehand act() call can resolve it unambiguously t
     return text;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    logBillingErrorIfPresent(message);
+    logBillingErrorIfPresent(err);
     await captureFn({
       callId: randomUUID(),
       callType: CALL_TYPE_RECON_REPHRASE,
@@ -921,8 +1064,8 @@ export function resetBillingErrorFlagForTests(): void {
   billingErrorLoggedThisProcess = false;
 }
 
-export function logBillingErrorIfPresent(errorMessage: string): boolean {
-  if (!ANTHROPIC_BILLING_RX.test(errorMessage)) return false;
+export function logBillingErrorIfPresent(err: unknown): boolean {
+  if (classifyLlmCallFailure(err) !== "anthropic-billing") return false;
   if (billingErrorLoggedThisProcess) return true;
   billingErrorLoggedThisProcess = true;
   // FATAL_BILLING is a machine marker, not prose — the recon-replay-jobs
@@ -997,21 +1140,40 @@ const RECON_FLOW_FILE_SCHEMA = z.union([
     steps: RECON_FLOW_SCHEMA,
     submitEndpointPattern: z.string().min(1).optional(),
     submittedStateSelectors: z.array(z.string().min(1)).optional(),
+    /**
+     * When true, the final-step verifier accepts ONLY a `submitEndpointPattern`
+     * network capture as proof of submission — `submittedStateSelectors` DOM
+     * matches become a tiebreaker, not a standalone fallback. Use this for
+     * SPAs where the success-route component renders optimistically even if
+     * the server-side submit was blocked (e.g. by a bot-management WAF), so
+     * the DOM marker would otherwise false-positive a failed submission.
+     * Default false preserves the lenient pre-existing behavior for sites
+     * that genuinely rely on DOM-only verification.
+     */
+    requireSubmitEndpointMatch: z.boolean().optional(),
   }),
 ]);
 
-/** Internal normalized step shape. Source-flow strings normalize with all flags false. */
+/**
+ * Internal normalized step shape. Source-flow strings normalize with all flags
+ * false. `origin` distinguishes hand-authored steps from steps the LLM
+ * replanner appended at cascade-exhausted recovery points — persistReplannedFlow
+ * uses it to force replan-origin steps to optional on write-back, preventing
+ * cross-employer regressions when a Presbyterian-specific replanned question
+ * gets persisted and the next run is on Encompass.
+ */
 interface NormalizedStep {
   instruction: string;
   optional: boolean;
   upload: boolean;
+  origin: "original" | "replan";
 }
 
 function normalizeFlow(steps: z.infer<typeof RECON_FLOW_SCHEMA>): NormalizedStep[] {
   return steps.map((s) =>
     typeof s === "string"
-      ? { instruction: s, optional: false, upload: false }
-      : { instruction: s.step, optional: s.optional, upload: s.upload }
+      ? { instruction: s, optional: false, upload: false, origin: "original" }
+      : { instruction: s.step, optional: s.optional, upload: s.upload, origin: "original" }
   );
 }
 
@@ -1111,6 +1273,8 @@ function persistReplannedFlow(params: {
   submitEndpointPattern?: string | null;
   /** Carried through when the original file declared submitted-state DOM selectors. */
   submittedStateSelectors?: string[];
+  /** Carried through when the original file opted into network-authoritative verification. */
+  requireSubmitEndpointMatch?: boolean;
 }): void {
   const {
     flowFile,
@@ -1120,6 +1284,7 @@ function persistReplannedFlow(params: {
     originalShape = "array",
     submitEndpointPattern = null,
     submittedStateSelectors = [],
+    requireSubmitEndpointMatch = false,
   } = params;
   // Timestamp format chosen to be filesystem-safe (no colons or dots that
   // break common tooling on macOS/Windows).
@@ -1139,7 +1304,18 @@ function persistReplannedFlow(params: {
   }
   writeFileSync(backupPath, originalBytes);
 
-  const denormalizedSteps = finalPlan.map(denormalizeStep);
+  // Coerce replan-origin steps to optional before persistence: when a job
+  // cascade-exhausts on an employer-specific field, the replan emits a
+  // recovery bridge tied to that employer. Persisting it as required would
+  // cascade-exhaust every subsequent run on a different employer trying to
+  // fill a question that doesn't exist. Optional means the probe-absent-
+  // skip path handles employers where the question isn't on the form;
+  // cascade still fires for the original employer when the persisted flow
+  // is replayed. Required to keep cross-employer sweeps from regressing
+  // across runs.
+  const denormalizedSteps = finalPlan.map((step) =>
+    denormalizeStep(step.origin === "replan" && !step.optional ? { ...step, optional: true } : step)
+  );
   // Cumulative-replan dedupe: each cascade-exhausted replan appends a
   // recovery bridge to the tail; after several replans the persisted flow
   // would carry stacked copies of the same bridge. Collapse them so the
@@ -1153,6 +1329,7 @@ function persistReplannedFlow(params: {
           steps: dedupedSteps,
           ...(submitEndpointPattern !== null ? { submitEndpointPattern } : {}),
           ...(submittedStateSelectors.length > 0 ? { submittedStateSelectors } : {}),
+          ...(requireSubmitEndpointMatch ? { requireSubmitEndpointMatch } : {}),
         }
       : dedupedSteps;
   writeFileSync(flowFile, `${JSON.stringify(payload, null, 2)}\n`);
@@ -1605,6 +1782,14 @@ async function replanRemainingFlow(params: {
    * has already advanced.
    */
   trajectory?: readonly { stepIndex: number; verifiedBy: AttemptRecord["verifiedBy"] }[];
+  /**
+   * Previous replans constructed for this run. Rendered into a PRIOR REPLAN
+   * HISTORY section as graduated discouragement — re-proposing a sequence
+   * that already failed is unlikely to converge, but is not forbidden because
+   * intervening cascade steps may have advanced the page since the prior
+   * attempt. The deterministic isReplanCycle predicate is the safety net.
+   */
+  priorReplans?: readonly ReplanEvent[];
 }): Promise<NormalizedStep[] | null> {
   const {
     client,
@@ -1619,6 +1804,7 @@ async function replanRemainingFlow(params: {
     recentCaptures = [],
     submitEndpointPattern = null,
     trajectory = [],
+    priorReplans = [],
   } = params;
   const trajectoryList =
     trajectory.length > 0
@@ -1628,6 +1814,17 @@ async function replanRemainingFlow(params: {
             (t) => `step ${t.stepIndex + 1} verified via ${t.verifiedBy ?? "(no signal recorded)"}`
           )
           .join("; ")
+      : "";
+  const priorReplanList =
+    priorReplans.length > 0
+      ? priorReplans
+          .map(
+            (ev) =>
+              `replan #${ev.replanIndex} (failed on: ${ev.failedInstruction})\nproposed:\n${ev.replanSteps
+                .map((s, i) => `  ${i + 1}. ${s.instruction}`)
+                .join("\n")}`
+          )
+          .join("\n\n")
       : "";
   const candidates = await stagehand
     .observe({ timeout: STEP_WATCHDOG_MS })
@@ -1672,6 +1869,9 @@ ${errorTextList || "(none)"}
 
 STRUCTURED SERVER-SIDE VALIDATION ERRORS (parsed from captured 4xx responses to the submit endpoint — when populated, the form's submit DID fire and the server rejected it with specific feedback):
 ${submitFailureList || "(none)"}
+
+PRIOR REPLAN HISTORY (proposals from previous replans for this same failure; the cascade executed each one and verification still failed at the time it ran. Between replans, the page may have advanced — a step that failed earlier could potentially work now if intervening steps filled missing prerequisites or dismissed blockers. See the HARD CONSTRAINT in the Constraints block below for the no-repetition rule):
+${priorReplanList || "(none)"}
 
 PRIOR STEP TRAJECTORY (how the last few completed steps verified — url / submitted-state-dom signal pages that visibly transitioned; network / dom signal pages that stayed static. Use this to distinguish "page has been advancing through the flow" from "page has been static and the form is still in front of us"; avoid proposing regression-style steps if the trajectory shows recent transitions):
 ${trajectoryList || "(none)"}
@@ -1721,15 +1921,15 @@ WRONG (multi-action — DO NOT emit steps like these):
   "Fill the signature field with 'Name'; check the I agree box; click Submit"
 
 RIGHT (single-action — emit steps like these):
-  "Fill in the First Name field with 'Reginald'"
-  "Fill in the Last Name field with 'Reconaldo'"
-  "Fill in the Email field with '...'"
-  "If a Street Address field is visible, fill it with '123 Test Lane'"
-  "If a City field is visible, fill it with 'Austin'"
-  "Click the Continue button"
-  "Fill the signature field with 'Name'"
-  "Check the I agree checkbox"
-  "Click the Submit button"
+  "Fill the Postal Code field with '83646'"
+  "Fill the Years of Experience field with '5'"
+  "Select 'Bachelor's Degree' in the Highest Education dropdown"
+  "Select 'Day shift' in the Shift Preference dropdown"
+  "If a Cover Letter textarea is visible, fill it with 'See attached resume.'"
+  "Click the Show More link to expand the job description"
+  "Check the 'Currently employed here' checkbox"
+  "Upload the resume PDF when the upload widget appears"
+  "Click the Save button to commit the education entry"
 
 A step CAN combine ONE conditional + ONE action ("If X is visible, do Y") — that
 counts as single-action because the conditional only gates whether the action
@@ -1743,6 +1943,7 @@ Constraints:
 - If the user's intent is unreachable from this page state, return outcome="impossible" with a brief reason.
 - Maximum ${REPLAN_MAX_STEPS} bridge steps.
 - Each step is a single DOM action (see CRITICAL section above).
+- HARD CONSTRAINT — no repeating prior proposals: do NOT emit a steps array whose joined instruction signature matches any entry in PRIOR REPLAN HISTORY. The cascade already executed each prior proposal against this same failure and verification still failed. If the only recovery you can name is one already in PRIOR REPLAN HISTORY, return outcome="impossible" with a reason instead — the engine routes "impossible" to the next strategy rather than burning another replan budget slot on a known-failing sequence.
 
 OPTIONAL STEPS:
 Each step entry can be a bare string (required step — cascade fails if the
@@ -1821,7 +2022,7 @@ but that's rare — most upload steps are required.`;
     return null;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    logBillingErrorIfPresent(message);
+    logBillingErrorIfPresent(err);
     await captureFn({
       callId: randomUUID(),
       callType: CALL_TYPE_RECON_REPLAN,
@@ -2372,10 +2573,22 @@ const FORM_VALIDITY_PROBE_EXPR = `(() => {
     // only check was originally added to eliminate.
     const ctrlClass = ctrl.getAttribute("class") || "";
     const leafInvalid = INVALID_CLASS_RX.test(ctrlClass);
+    // A <select> whose currently-selected option is .disabled is the
+    // Angular "Please select..." placeholder state. Some custom-element
+    // dropdowns (e.g. AppCast's app-dropdown) bind a truthy sentinel value
+    // like "0: null" to the disabled placeholder, so ctrl.value !== ""
+    // even though no real option is chosen. Without this branch the empty
+    // check below silently drops every such wrapper and the pre-submit
+    // probe reports "no ng-invalid form controls detected" on a form
+    // that's actually waiting on unfilled dropdowns.
+    const selectPlaceholderOpen =
+      ctrl.tagName.toLowerCase() === "select" &&
+      ctrl.selectedOptions[0] &&
+      ctrl.selectedOptions[0].disabled;
     const wrapperOnlyInvalid =
       !leafInvalid &&
       el !== ctrl &&
-      (ctrl.value === "" || ctrl.value == null) &&
+      (ctrl.value === "" || ctrl.value == null || selectPlaceholderOpen) &&
       /(ng-pristine|ng-untouched)/.test(ctrlClass);
     if (!leafInvalid && !wrapperOnlyInvalid) continue;
     let label = "";
@@ -2432,10 +2645,14 @@ const FORM_VALIDITY_PROBE_EXPR = `(() => {
         }
       }
     } else if (tag === "select") {
-      emptyOrUnchecked = !ctrl.value;
+      // Treat a select stuck on a .disabled placeholder option as empty
+      // even when ctrl.value is a truthy string (see the app-dropdown
+      // note above on the wrapperOnlyInvalid branch).
+      emptyOrUnchecked =
+        !ctrl.value || (ctrl.selectedOptions[0] && ctrl.selectedOptions[0].disabled);
       if (emptyOrUnchecked) {
         try {
-          const firstOption = Array.from(ctrl.options || []).find((o) => o.value);
+          const firstOption = Array.from(ctrl.options || []).find((o) => o.value && !o.disabled);
           if (firstOption) {
             ctrl.value = firstOption.value;
             fire(ctrl, "input");
@@ -2623,6 +2840,13 @@ async function executeStepWithHealing(params: {
    */
   submittedStateSelectors: string[];
   /**
+   * When true, the final-step verifier accepts ONLY a `submitEndpointPattern`
+   * network capture as proof of submission — DOM-state matches become a
+   * tiebreaker, not a standalone fallback. See `RECON_FLOW_FILE_SCHEMA` for
+   * the rationale + the SPA failure mode this guards against.
+   */
+  requireSubmitEndpointMatch: boolean;
+  /**
    * Optional accumulator the cascade pushes onto when this step verifies.
    * Lets the main loop maintain a short cross-step trajectory of `verifiedBy`
    * signals (network / url / dom / submitted-state-dom) which is then
@@ -2651,6 +2875,7 @@ async function executeStepWithHealing(params: {
     isFinalStep,
     submitEndpointPattern,
     submittedStateSelectors,
+    requireSubmitEndpointMatch,
     trajectory,
   } = params;
   const requireSubmitEndpoint = isFinalStep && submitEndpointPattern !== null;
@@ -3144,7 +3369,7 @@ async function executeStepWithHealing(params: {
     } catch (err) {
       const cause = err instanceof Error && err.cause instanceof Error ? err.cause.message : null;
       record.errorMessage = `${toErrorMessage(err)}${cause ? ` (cause: ${cause})` : ""}`;
-      logBillingErrorIfPresent(record.errorMessage);
+      logBillingErrorIfPresent(err);
     }
 
     await page.waitForTimeout(STEP_PAUSE_MS);
@@ -3191,8 +3416,13 @@ async function executeStepWithHealing(params: {
         // though the submit went through. If the flow declared any
         // submittedStateSelectors and ANY is present in the DOM right
         // now, treat the submit as verified via the DOM marker.
+        //
+        // When the flow declares `requireSubmitEndpointMatch: true`, this
+        // fallback is suppressed — sites that opt in are saying "the
+        // network capture is the source of truth for me; do NOT accept
+        // an optimistic SPA navigation as proof of submission."
         let domSubmittedMatch: string | null = null;
-        if (submittedStateSelectors.length > 0) {
+        if (!requireSubmitEndpointMatch && submittedStateSelectors.length > 0) {
           // page.evaluate via template string keeps the DOM globals out of
           // the Node TS scope. Each selector is JSON-stringified so an
           // accidental quote/backslash in the flow file can't break out
@@ -3366,8 +3596,9 @@ async function executeStepWithHealing(params: {
               // Same submitted-state DOM fallback as the primary verifier:
               // accept SPA thank-you transitions when the network capture
               // misses the submit POST within the attempt window.
+              // Suppressed when the flow opted into `requireSubmitEndpointMatch`.
               let domSubmittedMatch: string | null = null;
-              if (submittedStateSelectors.length > 0) {
+              if (!requireSubmitEndpointMatch && submittedStateSelectors.length > 0) {
                 const selectorsJson = JSON.stringify(submittedStateSelectors);
                 const probeExpr = `(() => {
                   const sels = ${selectorsJson};
@@ -3444,6 +3675,32 @@ async function executeStepWithHealing(params: {
     logger.warn(
       `step ${stepIndex + 1} attempt ${attempt} (${record.technique}) produced no observable effect — ${reason}`
     );
+
+    // Differential signal for the replan LLM: when a fill action "succeeded"
+    // from Stagehand's view (no errorMessage) but the post-snapshot still
+    // shows the target field in an ng-invalid container, the form is
+    // silently rejecting the value (hidden validator, masked input, format
+    // constraint, stale Angular model binding). Without this line, the
+    // failureReasons list only reports the *click* failures; the LLM
+    // reasonably concludes "I clicked too early, let me fill more fields"
+    // and locks into byte-identical replan proposals until cycle detection
+    // bails it out. Surfacing this tells the LLM the fill itself is the
+    // dead-end — pivot to a different action class or return impossible.
+    if (record.resolvedMethod === "fill" && record.instruction !== null) {
+      const fieldName = extractFillTargetFieldName(record.instruction);
+      if (fieldName !== null) {
+        const livePageEvidence = await extractLivePageFormEvidence(page).catch(() => ({
+          invalidFieldList: "",
+          errorTextList: "",
+          interactiveTargetsList: "",
+        }));
+        if (invalidListContainsField(livePageEvidence.invalidFieldList, fieldName)) {
+          const fillReason = `fill-did-not-clear-invalidity: target='${fieldName}' remained in ng-invalid after fill — the page is rejecting the value (hidden validator, masked input, format constraint, or stale model binding); a different action class is required (clear+retype, focus event, format adjustment, or return impossible if no recovery is plausible)`;
+          failureReasons.push(fillReason);
+          logger.warn(`step ${stepIndex + 1} ${fillReason}`);
+        }
+      }
+    }
 
     // Telemetry-driven early-exit: when attempt 1 on a final-Submit click
     // reveals new ng-invalid containers, attempts 2-N cannot succeed (the
@@ -3522,6 +3779,7 @@ function parseCli(): {
   allocateEmailEnvVar: string | null;
   submitEndpointPattern: string | null;
   submittedStateSelectors: string[];
+  requireSubmitEndpointMatch: boolean;
   originalShape: "array" | "object";
 } {
   const args = process.argv.slice(2);
@@ -3609,6 +3867,7 @@ function parseCli(): {
       allocateEmailEnvVar,
       submitEndpointPattern: null,
       submittedStateSelectors: [],
+      requireSubmitEndpointMatch: false,
       originalShape: "array",
     };
   }
@@ -3624,6 +3883,9 @@ function parseCli(): {
   const submittedStateSelectors = Array.isArray(parsed.data)
     ? []
     : (parsed.data.submittedStateSelectors ?? []);
+  const requireSubmitEndpointMatch = Array.isArray(parsed.data)
+    ? false
+    : (parsed.data.requireSubmitEndpointMatch ?? false);
   const isArrayShape = Array.isArray(parsed.data);
   // Validate regex compiles eagerly so a malformed pattern fails the run
   // at startup, not deep in a per-step verifier.
@@ -3647,6 +3909,7 @@ function parseCli(): {
     allocateEmailEnvVar,
     submitEndpointPattern,
     submittedStateSelectors,
+    requireSubmitEndpointMatch,
     originalShape: isArrayShape ? "array" : "object",
   };
 }
@@ -3691,6 +3954,7 @@ async function main(): Promise<void> {
     allocateEmailEnvVar,
     submitEndpointPattern,
     submittedStateSelectors,
+    requireSubmitEndpointMatch,
     originalShape,
   } = parseCli();
 
@@ -3710,6 +3974,24 @@ async function main(): Promise<void> {
 
   mkdirSync(CAPTURES_DIR, { recursive: true });
   const resumeFixture = loadResumeFixture(resumeFixturePath);
+  // Per-URL partition under the flow file's site directory. Without a flow
+  // file (inline --flow mode), telemetry has no durable home and is dropped
+  // — captureFn becomes a no-op so dev one-offs don't crash and don't
+  // pollute the global sink.
+  const siteTelemetryDir = resolveSiteTelemetryDir(flowFile);
+  const callsNdjsonPath =
+    siteTelemetryDir !== null ? resolveRunCallsPath(siteTelemetryDir, url) : null;
+  if (siteTelemetryDir !== null && callsNdjsonPath !== null) {
+    mkdirSync(dirname(callsNdjsonPath), { recursive: true });
+    writeFileSync(resolveRunUrlPath(siteTelemetryDir, url), `${url}\n`);
+    logger.info(`telemetry: per-URL partition at ${callsNdjsonPath}`);
+  } else {
+    logger.info("telemetry: no flow file path — call capture disabled for this run");
+  }
+  const captureFn: CaptureFn =
+    callsNdjsonPath !== null
+      ? (input) => captureLlmCall(input, { sinkPath: callsNdjsonPath })
+      : async () => {};
   logger.info(
     `recon-browser: target=${url} flow_steps=${flow.length} provider=${provider ?? "(config-default)"} advancedStealth=${advancedStealth} resume_fixture=${resumeFixture ? `${resumeFixturePath} (${resumeFixture.buffer.length}b)` : "(missing)"} out=${CAPTURES_DIR}`
   );
@@ -3833,7 +4115,9 @@ async function main(): Promise<void> {
           isFinalStep: i === plan.length - 1,
           submitEndpointPattern,
           submittedStateSelectors,
+          requireSubmitEndpointMatch,
           trajectory,
+          captureFn,
         });
         completedSteps.push(step.instruction);
       } catch (err) {
@@ -3860,13 +4144,29 @@ async function main(): Promise<void> {
         // already ended, final Continue when the Submit button is in
         // "Saving..." state). Uses only flow-position metadata + capture HTTP
         // metadata — no content matching, no open-set patterns.
+        //
+        // When the flow declares submitEndpointPattern, the "recent 2xx" must
+        // match it. Without this gate, the heuristic latches onto every
+        // non-GET 2xx — including pre-submit interruption_check POSTs and
+        // third-party analytics tracking pixels (Google Analytics, DoubleClick,
+        // googletagmanager) that fire on form interaction events. Those look
+        // exactly like real submissions by HTTP signal but don't represent the
+        // actual application landing. Verified by reading captures from
+        // /tmp/recon/graphql/ during a sweep: Presbyterian jobs hit this exact
+        // failure — only interruption_check + GA tracking POSTs fired, no
+        // integrated_apply, yet trailing-grace declared success.
         if (step.optional && i >= plan.length - TRAILING_GRACE_WINDOW) {
+          const compiledPattern = submitEndpointPattern ? new RegExp(submitEndpointPattern) : null;
           const recentMutationSucceeded = recentCaptureMeta.some(
-            (m) => m.method !== "GET" && m.status >= 200 && m.status < 300
+            (m) =>
+              m.method !== "GET" &&
+              m.status >= 200 &&
+              m.status < 300 &&
+              (compiledPattern === null || compiledPattern.test(m.url))
           );
           if (recentMutationSucceeded) {
             logger.info(
-              `step ${i + 1} optional + trailing position; recent non-GET 2xx captured — treating verification failure as benign no-op; recon complete`
+              `step ${i + 1} optional + trailing position; recent submit-endpoint 2xx captured — treating verification failure as benign no-op; recon complete`
             );
             break;
           }
@@ -3883,11 +4183,14 @@ async function main(): Promise<void> {
         const budget = isProbe ? MAX_PROBE_REPLANS : MAX_CASCADE_REPLANS;
         const usedSoFar = isProbe ? probeReplansUsed : cascadeReplansUsed;
         if (usedSoFar >= budget) {
-          const kindsSummary = summarizeReplanFailureKinds({
-            callsNdjsonPath: config.telemetry.callsNdjsonPath,
-            callType: CALL_TYPE_RECON_REPLAN,
-            tailCount: budget * 2,
-          });
+          const kindsSummary =
+            callsNdjsonPath !== null
+              ? summarizeReplanFailureKinds({
+                  callsNdjsonPath,
+                  callType: CALL_TYPE_RECON_REPLAN,
+                  tailCount: budget * 2,
+                })
+              : "";
           const kindsSuffix = kindsSummary ? ` — ${kindsSummary}` : "";
           logger.error(
             `step ${i + 1} ${err.kind} replan budget exhausted (${usedSoFar}/${budget}); aborting${kindsSuffix}`
@@ -3912,9 +4215,11 @@ async function main(): Promise<void> {
           failureDumpPath: dumpPath,
           page,
           stagehand,
+          captureFn,
           recentCaptures,
           submitEndpointPattern: submitEndpointPattern ? new RegExp(submitEndpointPattern) : null,
           trajectory,
+          priorReplans: replanEvents,
         });
 
         if (!newSteps) {
@@ -3924,18 +4229,41 @@ async function main(): Promise<void> {
           throw err;
         }
 
+        const currentPageState = await snapshotPage(page, signalCounter).catch(() => ({
+          url: page.url(),
+          bodyHtmlLength: 0,
+        }));
+        if (
+          isReplanCycle(replanEvents, newSteps, {
+            url: currentPageState.url,
+            htmlLength: currentPageState.bodyHtmlLength,
+          })
+        ) {
+          const cycleMessage = `replan cycle detected: identical proposal × ${REPLAN_CYCLE_THRESHOLD} under static page state; aborting`;
+          logger.error(cycleMessage);
+          throw new StepVerificationError(cycleMessage, "replan-cycle-detected");
+        }
+
         if (isProbe) {
           probeReplansUsed++;
         } else {
           cascadeReplansUsed++;
         }
+        // err.kind narrowed to the two replan-bearing variants here: the
+        // backend-error-unrecoverable dispatcher above throws out, and the
+        // cycle-detected variant is only constructed at the throw site just
+        // above this push — never caught back here.
         replanEvents.push({
           replanIndex,
-          cause: err.kind,
+          cause: err.kind as "probe-absent" | "cascade-exhausted",
           indexAtFailure: i,
           failedInstruction: step.instruction,
           replanSteps: newSteps,
           timestamp: formatISO(new Date()),
+          pageState: {
+            url: currentPageState.url,
+            htmlLength: currentPageState.bodyHtmlLength,
+          },
         });
 
         const replanPath = dumpReplanRecord({
@@ -3962,12 +4290,46 @@ async function main(): Promise<void> {
         // the original intent (page-0 Continue, page-1 sections, resume
         // upload, final submit) intact instead of replacing them with the
         // replanner's necessarily-truncated tail (capped at REPLAN_MAX_STEPS).
-        plan.splice(i, plan.length - i, ...newSteps, ...originalRemaining);
+        // Tag replan-discovered steps with origin so persistReplannedFlow
+        // can force them optional on write-back. originalRemaining keeps its
+        // origin: "original" — that's what protects the canonical final
+        // submit from being silently demoted to optional across replans.
+        const taggedNewSteps = newSteps.map((s) => ({ ...s, origin: "replan" as const }));
+        plan.splice(i, plan.length - i, ...taggedNewSteps, ...originalRemaining);
         i--;
       }
     }
 
     stopCapture();
+
+    // End-of-run audit: when the flow declared submitEndpointPattern AND
+    // opted into requireSubmitEndpointMatch=true, scan ALL captures from
+    // this run for a pattern-matching 200 before declaring success. If no
+    // match, the run "succeeded" by the verifier's lights but the actual
+    // submission didn't land. Exit non-zero so the caller (test harness,
+    // CI, or production runner) can distinguish silent-pass from real
+    // success. This closes the loop the silent-pass bug exposed on 2026-
+    // 06-09: per-step verifier accepted DOM-fallback as proof; run-level
+    // audit catches that the network proof never actually arrived.
+    if (requireSubmitEndpointMatch && submitEndpointPattern) {
+      const auditFailed = auditFinalSubmitMatch({
+        submitEndpointPattern,
+        capturesDir: CAPTURES_DIR,
+        logger,
+      });
+      if (auditFailed) {
+        logger.error(
+          `end-of-run audit FAILED: no captured 2xx matched submitEndpointPattern '${submitEndpointPattern}' — submission did not land despite verifier success`
+        );
+        // Exit non-zero so the runner counts this as a real failure rather
+        // than rolling silent-pass forward as success.
+        process.exit(1);
+      }
+      logger.info(
+        `end-of-run audit PASSED: at least one captured 2xx matched submitEndpointPattern`
+      );
+    }
+
     logger.info(`recon complete — ${counter.n} captures written to ${CAPTURES_DIR}`);
   } finally {
     // Replay-the-discovered-path: if any replan fired and the user provided
@@ -3998,6 +4360,7 @@ async function main(): Promise<void> {
             originalShape,
             submitEndpointPattern,
             submittedStateSelectors,
+            requireSubmitEndpointMatch,
           });
         } catch (err) {
           // Persistence is best-effort in the finally block — a write
