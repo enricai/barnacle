@@ -1276,9 +1276,9 @@ export function shouldSkipTechnique(params: {
   // and the wizard did NOT move forward (non-advancing POST, or no effect),
   // re-observing/re-clicking the same button cannot move it — only a rephrase (a
   // different action) or the terminal replan can. So skip observe-act /
-  // structured-click / observe-act-exclude and let the cascade reach attempt-4
+  // structured-click / observe-act-exclude and let the cascade reach attempt-5
   // rephrase (kept — the ONE attempt that has ever recovered an advance) or fail
-  // fast to replan. act-string (attempt 1) and llm-rephrase (attempt 4) are never
+  // fast to replan. act-string (attempt 1) and llm-rephrase (attempt 5) are never
   // skipped here. (The `isAdvanceStalled` early-exit already handles the
   // network-fired subcase by breaking to replan; this also covers the
   // no-effect-at-all subcase, where that early-exit does not fire.)
@@ -1442,8 +1442,8 @@ export function isAdvanceStalled(params: {
 }
 
 /**
- * Lazy Anthropic client for attempt 4's rephrase. Returns null when the
- * deployment is Bedrock-only (no ANTHROPIC_API_KEY) — attempt 4 then becomes
+ * Lazy Anthropic client for attempt 5's rephrase. Returns null when the
+ * deployment is Bedrock-only (no ANTHROPIC_API_KEY) — attempt 5 then becomes
  * a no-op and the executor escalates straight to the failure dump. The other
  * three attempts already cover the lion's share of recovery.
  */
@@ -1471,7 +1471,7 @@ const REPHRASE_SYSTEM_PROMPT =
   "You rewrite a failed Stagehand act() instruction so the next attempt targets a different element than those already tried. If no different element exists on the page that could plausibly unblock the flow, return outcome=impossible. Never re-propose a selector or wording from the lists labeled SELECTORS ALREADY TRIED or INSTRUCTION TEXT ALREADY TRIED.";
 
 /**
- * Attempt-4 of the step-healing cascade: when three mechanical retry variations
+ * Attempt-5 of the step-healing cascade: when three mechanical retry variations
  * all fail, this is the last resort before the step is declared terminal. Exported
  * so tests can inject a fake capture sink without touching the browser session.
  */
@@ -1696,7 +1696,7 @@ let billingErrorLoggedThisProcess = false;
 
 /**
  * Getter for the module-private billing-exhausted flag. Exported so the
- * cascade's attempt-4 guard can read it without coupling to module-level
+ * cascade's attempt-5 guard can read it without coupling to module-level
  * state directly; also lets tests reset / observe the flag without
  * mutating shared globals.
  */
@@ -7760,7 +7760,7 @@ export async function executeStepWithHealing(params: {
       // Attempt 1 of an interior advance step didn't verify (we're past the
       // `if (verified) return` above): the wizard didn't move forward. Mark it so
       // attempts 2-4 skip the proven-dead re-observe/re-click techniques and the
-      // cascade goes straight to attempt-4 rephrase / replan.
+      // cascade goes straight to attempt-5 rephrase / replan.
       advanceUnmovedAfterAttempt1 =
         advanceTransitionBodyPattern !== null &&
         !isFinalStep &&
