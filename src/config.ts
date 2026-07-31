@@ -63,6 +63,29 @@ export interface AppConfig {
     /** Steel session wall-clock timeout in ms. Default is 1 hour; lower via STEEL_SESSION_TIMEOUT_MS on plans with shorter limits. */
     steelSessionTimeoutMs: number;
     /**
+     * Minimum DOM-growth byte delta (`outerHTML.length`) for
+     * `isClickViewSwapVerified` to credit a network-free click as a verified
+     * client-side view swap. Default of 5000 sits 10× above the trivial-delta
+     * boundary and above typical validation-error reflow sizes. Some sites
+     * render much smaller popups/comboboxes (a few hundred bytes) whose
+     * open-click would never clear the default — lower this per-deployment
+     * via `VIEW_SWAP_MIN_BYTES` rather than lowering the shared default,
+     * since a smaller global threshold risks crediting trivial reflows on
+     * unrelated sites.
+     */
+    viewSwapMinBytesThreshold: number;
+    /**
+     * Poll attempts for the upload primitive's wait on the async upload
+     * widget (and its lazily-mounted `<input type=file>`) to render, at
+     * `UPLOAD_WIDGET_RENDER_INTERVAL_MS` apart. Default of 17 (~10.2s total)
+     * covers the common ~5s mount delay with margin. Some sites mount the
+     * upload field conditionally — only after a prior step commits — and can
+     * need a longer window; raise via `UPLOAD_WIDGET_RENDER_ATTEMPTS` rather
+     * than the shared default, since the poll exits on first success and
+     * costs nothing extra for sites that mount promptly.
+     */
+    uploadWidgetRenderAttempts: number;
+    /**
      * How long `resolveFrameTarget` polls `page.frames()` for a child iframe
      * to attach before falling back to the main-frame target. Raised from a
      * hardcoded 5 s default because cross-origin OOPIFs (e.g. Talemetry's
@@ -395,6 +418,8 @@ export function loadConfig(): AppConfig {
       anthropicTimeoutMs: getNumericEnv("STAGEHAND_API_TIMEOUT_MS", 120_000),
       connectTimeoutMs: getNumericEnv("STAGEHAND_CONNECT_TIMEOUT_MS", 120_000),
       steelSessionTimeoutMs: getNumericEnv("STEEL_SESSION_TIMEOUT_MS", 3_600_000),
+      viewSwapMinBytesThreshold: getNumericEnv("VIEW_SWAP_MIN_BYTES", 5000),
+      uploadWidgetRenderAttempts: getNumericEnv("UPLOAD_WIDGET_RENDER_ATTEMPTS", 17),
       frameReadyTimeoutMs: getNumericEnv("FRAME_READY_TIMEOUT_MS", 20_000),
       frameDocumentReadyTimeoutMs: getNumericEnv("FRAME_DOCUMENT_READY_TIMEOUT_MS", 5_000),
       frameEvaluateTimeoutMs: getNumericEnv("FRAME_EVALUATE_TIMEOUT_MS", 30_000),
