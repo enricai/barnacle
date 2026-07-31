@@ -1088,11 +1088,15 @@ export function isDomOnlyAdvanceVerified(params: {
  * to the network/URL signal — which correctly verifies navigation but
  * false-negatives client-side view swaps. This gate fills that gap.
  *
- * **Threshold rationale:** 5000B is 10× the trivial boundary (500B) and
- * safely distinguishes real view swaps (measured case: +49518B) from
+ * **Threshold rationale:** default 5000B is 10× the trivial boundary (500B)
+ * and safely distinguishes real view swaps (measured case: +49518B) from
  * validation-error reflows (typically < 2KB per codebase evidence at
  * line 2040-2044: error text capped at 200 chars, container markup adds
- * 150-350B per error, worst-case ~10 errors = ~3500B max).
+ * 150-350B per error, worst-case ~10 errors = ~3500B max). Some sites render
+ * much smaller popups/comboboxes whose open-click grows the DOM by only a
+ * few hundred bytes; `config.scraper.viewSwapMinBytesThreshold`
+ * (`VIEW_SWAP_MIN_BYTES` env var) lets a deployment lower the threshold
+ * without regressing the shared default for other sites.
  *
  * **Scope guards:** Excludes final/submit steps (those require real network
  * per isSubmitRevealedInvalid + LLM submit judge) and advance-pattern steps
@@ -1107,7 +1111,7 @@ export function isClickViewSwapVerified(params: {
   networkDelta: number;
   bytesDelta: number;
 }): boolean {
-  const VIEW_SWAP_MIN_BYTES = 5000;
+  const VIEW_SWAP_MIN_BYTES = config.scraper.viewSwapMinBytesThreshold;
   const {
     resolvedAction,
     isFinalStep,
@@ -2734,9 +2738,13 @@ const UPLOAD_NETWORK_POLL_INTERVAL_MS = 250;
  * wizard lands on the Apply page, so a single probe races that mount and the
  * primitive wrongly falls into the click-to-surface path (or skips). Only
  * reached on `upload:true` steps, so it never slows a page with no upload step.
+ * The poll exits on first success, so raising the attempt count via
+ * `config.scraper.uploadWidgetRenderAttempts` (`UPLOAD_WIDGET_RENDER_ATTEMPTS`
+ * env var) costs nothing extra for sites that mount promptly — only sites
+ * whose upload field mounts conditionally (e.g. only after a prior step
+ * commits) and needs a longer window should override the default.
  */
 const UPLOAD_WIDGET_RENDER_INTERVAL_MS = 600;
-const UPLOAD_WIDGET_RENDER_ATTEMPTS = 17;
 /**
  * URL substrings that mark a POST as an actual resume/attachment upload rather
  * than coincidental traffic (analytics beacons, `/interruption_check`,
@@ -2887,7 +2895,10 @@ async function tryUploadPrimitive(params: {
       target,
       "document.querySelectorAll('input[type=file]').length",
       (n) => (n ?? 0) > 0,
-      { attempts: UPLOAD_WIDGET_RENDER_ATTEMPTS, intervalMs: UPLOAD_WIDGET_RENDER_INTERVAL_MS }
+      {
+        attempts: config.scraper.uploadWidgetRenderAttempts,
+        intervalMs: UPLOAD_WIDGET_RENDER_INTERVAL_MS,
+      }
     );
   } catch (err) {
     logger.warn(`upload primitive: file-input probe threw: ${toErrorMessage(err)}`);
@@ -3071,7 +3082,7 @@ export async function surfaceAndUpload(params: {
     targetExpr,
     (r) => r?.present === true,
     {
-      attempts: UPLOAD_WIDGET_RENDER_ATTEMPTS,
+      attempts: config.scraper.uploadWidgetRenderAttempts,
       intervalMs: UPLOAD_WIDGET_RENDER_INTERVAL_MS,
     }
   );
@@ -4407,15 +4418,15 @@ async function tryRadioPrimitive(params: {
   const { option, questionLabel } = parsed;
   const optLabel = `option "${option.slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
   // Phase 1 (browser): find radio GROUPS and their options. A group is a
-  // `<fieldset>` / `[role=radiogroup]` / `[class*='RadioGroup']` container with
-  // radios. Question label = the group's legend / associated label; each option
+  // `<fieldset>` / `[role=radiogroup]` / `[role=group]` / `[class*='RadioGroup']`
+  // container with radios. Question label = the group's legend / associated label; each option
   // = the `<label for=radio-id>` text. Deterministic unique option-text match
   // commits immediately (no LLM). Else return groups for the LLM picker.
   // `commit` uses the React-safe native `checked` setter so MUI/React registers
   // the change, then reports `ok` = post-commit `radio.checked && !invalid`.
   const enumerateExpr = `((option) => {
     const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
-    let groupEls = Array.from(document.querySelectorAll("fieldset,[role='radiogroup'],[class*='RadioGroup']"))
+    const groupEls = Array.from(document.querySelectorAll("fieldset,[role='radiogroup'],[role='group'],[class*='RadioGroup']"))
       .filter((g) => g.querySelector("input[type=radio]"));
     if (groupEls.length === 0) return { groupPresent: false };
     const groupLabel = (g) => {
@@ -4630,7 +4641,7 @@ async function applyRadioSelection(
   // Tier C — legacy synthetic-events backstop (native setter + bubbling events).
   const applyExpr = `((gi, ri) => {
       const isInvalid = ${INVALID_MARKER_EL_EXPR};
-      const groupEls = Array.from(document.querySelectorAll("fieldset,[role='radiogroup'],[class*='RadioGroup']"))
+      const groupEls = Array.from(document.querySelectorAll("fieldset,[role='radiogroup'],[role='group'],[class*='RadioGroup']"))
         .filter((g) => g.querySelector("input[type=radio]"));
       const grp = groupEls[gi];
       if (!grp) return { ok: false };
@@ -4930,10 +4941,15 @@ export async function verifyDomEffect(target: FrameTarget, action: Action): Prom
         // Same trust-boundary rationale as the click case below: xpath is from
         // Stagehand's resolved selector, JSON.stringify produces a safe JS string
         // literal, and the expression cannot inject behavior through xpath content.
-        const expr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); const el = r.singleNodeValue; if (!el || el.tagName !== "SELECT") return null; const opt = el.options[el.selectedIndex]; if (!opt) return { value: "", label: "", text: "" }; return { value: (opt.value || "").trim(), label: (opt.label || "").trim(), text: (opt.textContent || "").trim() }; })()`;
+        // Custom (non-native-<select>) comboboxes — MUI/React-Select/Radix/Headless
+        // UI-style widgets — always fail the native-<select>-only check below,
+        // misreporting genuinely-successful selections as unverified. Fall back to
+        // reading the combobox's own displayed/aria value when the resolved element
+        // isn't a real <select>, mirroring what a real ARIA combobox exposes.
+        const exprNative = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); const el = r.singleNodeValue; if (!el || el.tagName !== "SELECT") return null; const opt = el.options[el.selectedIndex]; if (!opt) return { value: "", label: "", text: "" }; return { value: (opt.value || "").trim(), label: (opt.label || "").trim(), text: (opt.textContent || "").trim() }; })()`;
         let selected: { value: string; label: string; text: string } | null = null;
         try {
-          const result = await target.evaluate(expr);
+          const result = await target.evaluate(exprNative);
           if (
             result !== null &&
             typeof result === "object" &&
@@ -4945,6 +4961,41 @@ export async function verifyDomEffect(target: FrameTarget, action: Action): Prom
           }
         } catch {
           return false;
+        }
+        if (!selected) {
+          // MUI-style comboboxes render role="combobox" on a wrapper element with a
+          // nested (often hidden/readonly) `<input value="...">` carrying the real
+          // selected value — neither the wrapper nor the resolved element necessarily
+          // has a usable `.value` itself, so search the element, its combobox
+          // ancestor, and — since some resolved xpaths land on a sibling label rather
+          // than the combobox itself — the nearest combobox within the same
+          // field-group container, for a nested input value, falling back to visible
+          // text or an aria label/valuetext.
+          const exprCustom = `(() => {
+            const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+            const el = r.singleNodeValue;
+            if (!el) return null;
+            let combo = (el.closest && el.closest('[role="combobox"]')) || null;
+            if (!combo) {
+              const container = el.closest && (el.closest('[class*="Container"]') || el.parentElement);
+              combo = container && container.querySelector && container.querySelector('[role="combobox"]');
+            }
+            combo = combo || el;
+            const nestedInput = combo.querySelector && combo.querySelector('input');
+            const value = (nestedInput && nestedInput.value) || el.value || "";
+            const text = (combo.textContent || el.textContent || "").trim();
+            const ariaText = (el.getAttribute && (el.getAttribute('aria-label') || el.getAttribute('aria-valuetext'))) || "";
+            return { value: String(value).trim(), text: String(text || ariaText).trim() };
+          })()`;
+          try {
+            const customResult = await target.evaluate(exprCustom);
+            if (customResult !== null && typeof customResult === "object") {
+              const custom = customResult as { value?: string; text?: string };
+              selected = { value: custom.value ?? "", label: "", text: custom.text ?? "" };
+            }
+          } catch {
+            return false;
+          }
         }
         if (!selected) return false;
         const want = expected.toLowerCase();
