@@ -8,6 +8,6 @@
     "incremental": false,
     "tsBuildInfoFile": null
   },
-  "include": ["src/**/*.ts"],
+  "include": ["src/**/*.ts", "src/**/*.mts"],
   "exclude": ["node_modules", "dist", "src/**/*.test.ts"]
 }

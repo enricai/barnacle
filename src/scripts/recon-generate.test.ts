@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { CONFIG_PLUGIN_API_VERSION, CONFIG_PLUGIN_KIND } from "@/plugins/plugin-manifest-envelope";
 import {
@@ -6,6 +6,7 @@ import {
   emitConfigManifest,
   emitContractTs,
   emitMultiStepExecuteHttp,
+  loadQuestionPromptKeywords,
   resolveStepPayloadField,
 } from "@/scripts/recon-generate";
 
@@ -361,5 +362,35 @@ describe("emitConfigManifest — config-only plugin emission", () => {
     );
     expect(objectSteps.some((s) => s.submitStep === true)).toBe(true);
     expect(objectSteps.some((s) => s.upload === true && s.optional === true)).toBe(true);
+  });
+});
+
+describe("loadQuestionPromptKeywords", () => {
+  const original = process.env.RECON_QUESTION_KEYWORDS;
+  afterEach(() => {
+    if (original === undefined) delete process.env.RECON_QUESTION_KEYWORDS;
+    else process.env.RECON_QUESTION_KEYWORDS = original;
+  });
+
+  it("defaults to empty so the engine ships no product's question vocabulary", () => {
+    delete process.env.RECON_QUESTION_KEYWORDS;
+    expect(loadQuestionPromptKeywords()).toEqual({});
+  });
+
+  it("takes the operator's field-to-keyword map from the env", () => {
+    process.env.RECON_QUESTION_KEYWORDS = JSON.stringify({
+      RelatedToEmployee: ["related", "employee"],
+      VisaSponsorship: ["visa", "sponsor"],
+    });
+    expect(loadQuestionPromptKeywords()).toEqual({
+      RelatedToEmployee: ["related", "employee"],
+      VisaSponsorship: ["visa", "sponsor"],
+    });
+  });
+
+  it("degrades to empty on malformed JSON rather than killing the run", () => {
+    process.env.RECON_QUESTION_KEYWORDS = "{not-json";
+    expect(() => loadQuestionPromptKeywords()).not.toThrow();
+    expect(loadQuestionPromptKeywords()).toEqual({});
   });
 });

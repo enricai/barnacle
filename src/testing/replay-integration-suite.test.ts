@@ -12,7 +12,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { SitePlugin, SitePluginContext, SitePluginResult } from "@/site-plugin";
 import { runIntegrationJob } from "@/testing/integration-runner";
-import { defineReplayIntegrationSuite } from "@/testing/replay-integration-suite";
+import { defineReplayIntegrationSuite } from "@/testing/replay-integration-suite.mjs";
 import type { TestmailInbox, TestmailMessage } from "@/testmail/client";
 
 interface StubJob {

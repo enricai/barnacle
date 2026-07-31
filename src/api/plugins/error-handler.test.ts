@@ -165,8 +165,8 @@ describe("error-handler plugin", () => {
 
   it("emits 429 + code 2008 envelope for UrlLockedError (distinct from 2003 SCRAPE_FAILURE)", async () => {
     // Verifies the wire contract: a locked-URL condition surfaces a distinct
-    // non-2003 code and non-500 status so nursefly-web can distinguish it
-    // from a generic scrape failure and choose "retry later" instead of
+    // non-2003 code and non-500 status so a caller can distinguish it from a
+    // generic scrape failure and choose "retry later" instead of
     // browser-fallback.
     const response = await app().inject({ method: "GET", url: "/throw/url-locked" });
     expect(response.statusCode).toBe(429);

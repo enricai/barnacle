@@ -110,10 +110,10 @@ function makeFilteredStagehandLogger(pinoLogger: Logger): {
 /**
  * `advancedStealth` opts into Browserbase's Scale Plan stealth profile. When
  * enabled we also force `solveCaptchas: true` (explicit; Browserbase defaults
- * it on) and pin a Windows desktop fingerprint — DataDome-protected sites
- * (notably `apply.appcast.io`) react significantly better to Windows OS
- * signals than the default mac/linux mix. Pattern mirrors nursefly-web's
- * production preset at `server/jobs/ingest/scraped/browserbase/stagehand.config.ts`.
+ * it on) and pin a Windows desktop fingerprint — DataDome-protected sites react
+ * significantly better to Windows OS signals than the default mac/linux mix.
+ * The combination mirrors a production Stagehand preset validated against such
+ * sites, not Browserbase's defaults.
  */
 export async function createBrowserbaseBrowserSession(opts?: {
   advancedStealth?: boolean;

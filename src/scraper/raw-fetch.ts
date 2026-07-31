@@ -19,12 +19,30 @@ export interface RawFetchResult {
   rawBody: string;
 }
 
+/**
+ * Fetch signature this module depends on — the subset of undici's `fetch` that
+ * {@link rawFetch} actually uses. Declared structurally so callers can supply a
+ * stand-in without importing undici's types.
+ */
+export type FetchImpl = (
+  url: string,
+  init: { method: string; headers: Record<string, string>; body?: Buffer | string }
+) => Promise<{ status: number; headers: Headers; text: () => Promise<string> }>;
+
 /** Input options for {@link rawFetch}. */
 export interface RawFetchOptions {
   method: string;
   headers: Record<string, string>;
   /** Optional request body — pass `undefined` for GET requests. */
   body?: Buffer | string;
+  /**
+   * Overrides the fetch implementation. Defaults to undici's. Exists because
+   * this module is consumed from a published package: `undici` is bound here at
+   * module load, so a downstream test cannot intercept it by mocking the
+   * `undici` specifier from its own module graph — the pre-built engine already
+   * holds the real reference. Injecting the double is the supported seam.
+   */
+  fetchImpl?: FetchImpl;
   /**
    * Called with the response `Headers` on every fetch outcome, including
    * non-2xx. Fires before `classifyHttpStatus` so the caller can harvest
@@ -55,11 +73,19 @@ export interface RawFetchOptions {
  * same error hierarchy as classification errors.
  */
 export async function rawFetch(url: string, options: RawFetchOptions): Promise<RawFetchResult> {
-  const { method, headers, body, onResponse, contextLabel, skipClassify = false } = options;
+  const {
+    method,
+    headers,
+    body,
+    onResponse,
+    contextLabel,
+    skipClassify = false,
+    fetchImpl = undiciFetch as unknown as FetchImpl,
+  } = options;
 
-  let response: Awaited<ReturnType<typeof undiciFetch>>;
+  let response: Awaited<ReturnType<FetchImpl>>;
   try {
-    response = await undiciFetch(url, { method, headers, body });
+    response = await fetchImpl(url, { method, headers, body });
   } catch (err) {
     throw new HttpServerError(`${contextLabel} network error: ${toErrorMessage(err)}`);
   }

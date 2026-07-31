@@ -3,10 +3,9 @@
  * After a successful submission, Barnacle navigates to the tracking URL
  * in a short-lived Browserbase session so Appcast records the Click event.
  *
- * Navigation pattern mirrors src/scripts/resolve-appcast-urls.ts — proven
- * against click.appcast.io with advancedStealth. No CDP behavioral signals
- * are needed; those are only required when extracting DataDome tokens for
- * subsequent Node HTTP requests.
+ * Navigation pattern is proven against click.appcast.io with advancedStealth.
+ * No CDP behavioral signals are needed; those are only required when extracting
+ * DataDome tokens for subsequent Node HTTP requests.
  */
 
 import {

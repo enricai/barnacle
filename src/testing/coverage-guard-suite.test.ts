@@ -14,7 +14,7 @@ import {
   type CoverageGuardPlugin,
   type CoverageGuardSuiteOptions,
   defineCoverageGuardSuite,
-} from "@/testing/coverage-guard-suite";
+} from "@/testing/coverage-guard-suite.mjs";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

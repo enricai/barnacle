@@ -1,6 +1,6 @@
 {
-  "name": "barnacle",
-  "version": "1.0.0",
+  "name": "@enricai/barnacle",
+  "version": "1.1.0",
   "description": "Site-agnostic browser automation engine. POST a structured payload to a typed endpoint; Barnacle drives a Steel + Stagehand session through the target site and returns a structured result.",
   "license": "MIT",
   "author": "Enricai",
@@ -24,6 +24,9 @@
     "README.md",
     "LICENSE"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "packageManager": "pnpm@10.4.1",
   "engines": {
     "node": ">=22.0.0"
@@ -62,10 +65,6 @@
     "./lib/applicant-payload": {
       "types": "./dist/lib/applicant-payload.d.ts",
       "default": "./dist/lib/applicant-payload.js"
-    },
-    "./lib/application-answers": {
-      "types": "./dist/lib/application-answers.d.ts",
-      "default": "./dist/lib/application-answers.js"
     },
     "./lib/case-insensitive-headers": {
       "types": "./dist/lib/case-insensitive-headers.d.ts",
@@ -171,13 +170,17 @@
       "types": "./dist/site-plugin.d.ts",
       "default": "./dist/site-plugin.js"
     },
-    "./testing/answers-fixture": {
-      "types": "./dist/testing/answers-fixture.d.ts",
-      "default": "./dist/testing/answers-fixture.js"
+    "./testing/batch-email-confirmation": {
+      "types": "./dist/testing/batch-email-confirmation.d.ts",
+      "default": "./dist/testing/batch-email-confirmation.js"
+    },
+    "./testing/batch-report": {
+      "types": "./dist/testing/batch-report.d.ts",
+      "default": "./dist/testing/batch-report.js"
     },
     "./testing/contract-parity-suite": {
-      "types": "./dist/testing/contract-parity-suite.d.ts",
-      "default": "./dist/testing/contract-parity-suite.js"
+      "types": "./dist/testing/contract-parity-suite.d.mts",
+      "default": "./dist/testing/contract-parity-suite.mjs"
     },
     "./testing/mock-fetch-response": {
       "types": "./dist/testing/mock-fetch-response.d.ts",
@@ -188,12 +191,16 @@
       "default": "./dist/testing/persona-fixture.js"
     },
     "./testing/replay-integration-suite": {
-      "types": "./dist/testing/replay-integration-suite.d.ts",
-      "default": "./dist/testing/replay-integration-suite.js"
+      "types": "./dist/testing/replay-integration-suite.d.mts",
+      "default": "./dist/testing/replay-integration-suite.mjs"
     },
     "./testing/resume-fixture": {
       "types": "./dist/testing/resume-fixture.d.ts",
       "default": "./dist/testing/resume-fixture.js"
+    },
+    "./testmail/client": {
+      "types": "./dist/testmail/client.d.ts",
+      "default": "./dist/testmail/client.js"
     },
     "./types/logging": {
       "types": "./dist/types/logging.d.ts",
@@ -226,9 +233,9 @@
     "probe:warmup": "tsx --env-file=.env src/scripts/probe-warmup-reliability.ts"
   },
   "dependencies": {
-    "@ai-sdk/amazon-bedrock": "^5.0.14",
-    "@anthropic-ai/sdk": "^0.110.0",
-    "@aws-sdk/client-s3": "^3.1083.0",
+    "@ai-sdk/amazon-bedrock": "^5.0.17",
+    "@anthropic-ai/sdk": "^0.111.0",
+    "@aws-sdk/client-s3": "^3.1085.0",
     "@browserbasehq/stagehand": "^3.6.0",
     "@fastify/compress": "^9.0.0",
     "@fastify/helmet": "^13.1.0",
@@ -239,33 +246,49 @@
     "bcryptjs": "^3.0.3",
     "bottleneck": "^2.19.5",
     "date-fns": "^4.4.0",
-    "dd-trace": "^6",
     "dotenv": "^17.4.2",
     "fastify": "^5.10.0",
     "fastify-plugin": "^6.0.0",
     "fastify-type-provider-zod": "^5.0.2",
-    "hot-shots": "^16",
     "http-status-codes": "^2.3.0",
     "lru-cache": "^11.5.2",
-    "nanoid": "^5.1.16",
+    "nanoid": "^6.0.0",
     "normalize-url": "^9.0.1",
     "p-queue": "^9.3.1",
     "p-retry": "^8.0.0",
     "pino": "^10.3.1",
     "steel-sdk": "^0.18.0",
-    "typescript": "^6.0.3",
+    "typescript": "^7.0.2",
     "undici": "8",
     "zod": "^3.23.8"
+  },
+  "peerDependencies": {
+    "dd-trace": "^6",
+    "hot-shots": "^17",
+    "vitest": "^4.1.10"
+  },
+  "peerDependenciesMeta": {
+    "dd-trace": {
+      "optional": true
+    },
+    "hot-shots": {
+      "optional": true
+    },
+    "vitest": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.2",
     "@types/bcryptjs": "^3.0.0",
     "@types/node": "^26.1.0",
     "@vitest/coverage-v8": "^4.1.10",
+    "dd-trace": "^6",
+    "hot-shots": "^17",
     "husky": "^9.1.6",
     "pino-pretty": "^13.0.0",
     "tsc-alias": "^1.9.0",
-    "tsx": "^4.23.0",
+    "tsx": "^4.23.1",
     "vitest": "^4.1.10"
   },
   "pnpm": {

@@ -205,8 +205,17 @@ export interface AppConfig {
     timeoutMs: number;
   };
   datadog: {
-    /** Master switch — dd-trace only initializes when true. */
+    /**
+     * Enables APM tracing. Requires the optional `dd-trace` peer dependency;
+     * when it is absent the tracer stays off and a warning is emitted.
+     */
     traceEnabled: boolean;
+    /**
+     * Enables DogStatsD metrics. Independent of `traceEnabled` so a deployment
+     * can ship metrics without APM (or vice versa). Requires the optional
+     * `hot-shots` peer dependency; when it is absent metric calls are no-ops.
+     */
+    metricsEnabled: boolean;
     /** Hostname of the DD agent sidecar (localhost in ECS Fargate). */
     agentHost: string;
     /** DogStatsD UDP port on the agent host. */
@@ -372,6 +381,7 @@ export function loadConfig(): AppConfig {
     },
     datadog: {
       traceEnabled: getBoolEnv("DD_TRACE_ENABLED", false),
+      metricsEnabled: getBoolEnv("DD_METRICS_ENABLED", false),
       agentHost: getEnv("DD_AGENT_HOST", "localhost"),
       statsdPort: getNumericEnv("DD_DOGSTATSD_PORT", 8125),
       service: getEnv("DD_SERVICE", "barnacle"),

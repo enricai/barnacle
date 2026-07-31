@@ -131,6 +131,25 @@ Reads every artifact from Phases 1–3 — `/tmp/recon/graphql/*.json` (captures
 
 Then review the generated files: trim UI-only fields from the GraphQL query, narrow any `z.unknown()` entries in the schema you care about, and verify the headers. If you need to regenerate after making changes to the recon flow, pass `--force`.
 
+#### Mapping the site's screening questions
+
+If the site asks screening questions, tell the generator which payload field answers each one. Barnacle ships no vocabulary of its own — it cannot know what your site asks or what your payload calls things — so this map is yours to supply:
+
+| Env var | Default | Description |
+| --- | --- | --- |
+| `RECON_QUESTION_KEYWORDS` | `{}` | JSON object mapping a payload field name to the keywords that identify its question. A question must match **at least 2** keywords to map. |
+| `RECON_TELEMETRY_URL_PATTERNS` | *(empty)* | Comma-separated extra URL fragments to treat as analytics noise, on top of the built-in list. Put your site's trackers here. |
+
+```bash
+RECON_QUESTION_KEYWORDS='{
+  "VisaSponsorship":       ["visa", "sponsor"],
+  "RelatedToEmployee":     ["related", "employee"],
+  "CanPerformJobFunctions":["perform", "job functions", "duties"]
+}' pnpm run recon:generate -- --site-id my-site
+```
+
+Any question that matches no field is **logged by prompt** rather than skipped — an unmapped required question is how a generated plugin ends up submitting nothing for it. Read those warnings and either add keywords or accept that the question goes unanswered. Malformed JSON logs a warning and is treated as empty, so a typo cannot kill a recon run mid-flight.
+
 Optionally generate the human-readable findings doc alongside:
 
 ```bash
@@ -577,6 +596,38 @@ in each `contract.ts` for outbound rate limits to target sites.
 |----------|---------|---------|
 | `READINESS_QUEUE_THRESHOLD` | `20` | `/readyz` returns 503 when scraper queue depth exceeds this. Lets orchestrators shed load before the pool is saturated. |
 | `ENABLE_DOCS` | `false` | Serve Swagger UI at `/docs`. Disable in production. |
+
+### Datadog (opt-in)
+
+APM tracing and DogStatsD metrics are **opt-in**: `dd-trace` and `hot-shots` are
+optional peer dependencies, so a plain `npm i @enricai/barnacle` installs neither
+and Barnacle runs without them. Enable either half independently — install the
+package and flip its flag. If a flag is on but the package is missing, Barnacle
+warns and carries on with that feature disabled; it never fails to boot.
+
+```bash
+# APM tracing
+pnpm add dd-trace
+DD_TRACE_ENABLED=true node --import dd-trace/initialize dist/server.js
+
+# DogStatsD metrics
+pnpm add hot-shots
+DD_METRICS_ENABLED=true node dist/server.js
+```
+
+Tracing needs `--import dd-trace/initialize` for full auto-instrumentation:
+Datadog requires the tracer to load before any other module so it can patch
+http/net/dns. Metrics have no such constraint.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `DD_TRACE_ENABLED` | `false` | Enable APM tracing. Requires the `dd-trace` peer dependency. |
+| `DD_METRICS_ENABLED` | `false` | Enable DogStatsD metrics. Requires the `hot-shots` peer dependency. Independent of `DD_TRACE_ENABLED`. |
+| `DD_AGENT_HOST` | `localhost` | Datadog agent hostname (the sidecar, in ECS Fargate). |
+| `DD_DOGSTATSD_PORT` | `8125` | DogStatsD UDP port on the agent host. |
+| `DD_SERVICE` | `barnacle` | Service name tagged on spans and metrics. |
+| `DD_ENV` | `NODE_ENV` | Deployment environment tag. |
+| `DD_VERSION` | `0.1.0` | Application version tag — git SHA or package version. |
 
 ### Telemetry
 
