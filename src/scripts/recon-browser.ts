@@ -47,9 +47,11 @@ import { z } from "zod/v4";
 import { config } from "@/config";
 import { toErrorMessage } from "@/lib/errors";
 import { configureHttpDispatcher } from "@/lib/http";
+import type { JudgeCaptureFn } from "@/lib/llm/judge";
 import { judgeErrorMessagesWithLLM } from "@/lib/llm/judges/error-messages";
 import { judgeInvalidFieldsWithLLM } from "@/lib/llm/judges/invalid-fields";
 import { judgeModalPriorityWithLLM } from "@/lib/llm/judges/modal-priority";
+import { judgeSelectOptionWithLLM } from "@/lib/llm/judges/select-option";
 import { verifySubmitWithLLM } from "@/lib/llm/judges/verify-submit";
 import {
   RECON_FLOW_STEP_SCHEMA,
@@ -423,6 +425,37 @@ const MAX_PROBE_REPLANS = 5;
  */
 const MAX_CASCADE_REPLANS = 5;
 /**
+ * Framework-agnostic invalid/required-unfilled marker source, shared across
+ * every DOM invalid-detection path so they stay uniform. Exported as a raw
+ * pattern string (not a RegExp) because most consumers interpolate it into a
+ * browser-context `page.evaluate` expression string, where a Node RegExp can't
+ * cross the boundary.
+ *
+ * Why the additions beyond the original Angular/Bootstrap set: HCA's Talemetry
+ * wizard mixes Angular pages AND Material-UI (React) pages (Review, self-ID,
+ * COMPENSATION). MUI marks invalid controls with `Mui-error` (class) +
+ * `aria-invalid="true"` (attribute), NONE of which the ng-only regex matched —
+ * so the engine was structurally blind to MUI required-field validation and
+ * silently advanced past unfilled MUI forms. Confirmed on real captures: a
+ * Review dump had 0 ng-invalid but 18 `Mui-error` + 12 `aria-invalid`.
+ */
+const INVALID_MARKER_CLASS_SOURCE =
+  "ng-invalid|mat-form-field-invalid|is-invalid|field-invalid|input-invalid|form-invalid|Mui-error";
+/**
+ * Browser-context predicate string: given an element `el` in scope, is it a
+ * required-unfilled / invalid control? Covers the class markers above AND the
+ * MUI/React attribute signature (`aria-invalid="true"`, or a required control
+ * still empty). Interpolate into a `page.evaluate` expr where `el` is bound.
+ * Kept as an IIFE-free expression so it composes inside larger exprs.
+ */
+const INVALID_MARKER_EL_EXPR = `((el) => {
+  const rx = /(${INVALID_MARKER_CLASS_SOURCE})/;
+  const cls = (el.getAttribute && el.getAttribute("class")) || "";
+  if (rx.test(cls)) return true;
+  if (el.getAttribute && el.getAttribute("aria-invalid") === "true") return true;
+  return false;
+})`;
+/**
  * How many steps from the end of the flow are considered "trailing" for the
  * Tier 1 grace path. A verification failure on an optional step within this
  * window is treated as a benign no-op exit when a recent non-GET capture also
@@ -773,6 +806,149 @@ export function findRecentPageTransition(params: {
 }
 
 /**
+ * Wizard-exit action labels: controls that ABANDON / restart a multi-page
+ * wizard rather than advance it. When a flow's "advance / click Next" step
+ * resolves the LLM's `act` onto one of these, acting on it can save-and-exit,
+ * cancel, or restart the application — silently sending the run backward. The
+ * cascade rejects a resolved action whose description matches one of these so
+ * an advance step never fires a destructive control. Deliberately narrow: only
+ * unambiguously-destructive labels, NEVER bare "continue"/"next"/"apply"/
+ * "accept" (those are legitimate advance controls on many ATSes).
+ */
+const WIZARD_EXIT_ACTION_LABELS: readonly string[] = [
+  "continue later",
+  "save & exit",
+  "save and exit",
+  "save for later",
+  "cancel application",
+  "cancel and exit",
+  "start over",
+  "delete application",
+  "discard",
+];
+
+/**
+ * True when a resolved action's description names a wizard-exit control (a
+ * save-and-exit / cancel / restart button) rather than a forward action.
+ * Matched case-insensitively as a substring against the built-in list plus any
+ * site-supplied `extraLabels`. Bare "cancel"/"back" are intentionally NOT in the
+ * default list (too many false positives, e.g. "cancel changes to this field",
+ * "background"); a site can add them via `wizardExitButtonLabels` if its wizard
+ * uses them destructively.
+ */
+export function isWizardExitAction(
+  description: string | null | undefined,
+  extraLabels: readonly string[] = []
+): boolean {
+  if (!description) return false;
+  const haystack = description.toLowerCase();
+  for (const label of [...WIZARD_EXIT_ACTION_LABELS, ...extraLabels]) {
+    if (haystack.includes(label.toLowerCase())) return true;
+  }
+  return false;
+}
+
+/**
+ * Phrases (in the ORIGINAL flow instruction) that mark a step whose intent is to
+ * ADVANCE the wizard to the next page — a "Next"/"Continue" click — as opposed
+ * to a field-answer step (fill / select / click a radio). Matched against the
+ * step text, not a resolved element description.
+ */
+const ADVANCE_STEP_PHRASES: readonly string[] = [
+  "'next' button",
+  "next button",
+  "click the next",
+  "click 'next'",
+  "continue to the next",
+  "proceed to the next",
+  "advance to the next",
+];
+
+/**
+ * Is this flow step an advance/"Next" click (move to the next wizard page),
+ * rather than a field-answer? Used to veto a DOM-only "success" (a field toggle)
+ * from counting as an advance: toggling a control never moves the wizard, so an
+ * advance step must be verified by a real transition (network/URL), not a DOM
+ * state change. Keyed on the ORIGINAL step instruction so a rephrase that
+ * resolves "Next" to a radio click can't launder a field toggle into a passed
+ * advance. Pure; unit-testable seam mirroring `isWizardExitAction`.
+ */
+export function isAdvanceStep(instruction: string | null | undefined): boolean {
+  if (!instruction) return false;
+  const haystack = instruction.toLowerCase();
+  return ADVANCE_STEP_PHRASES.some((p) => haystack.includes(p));
+}
+
+/**
+ * Detects a multi-page-wizard RESTART / backward navigation by scanning the
+ * recent full-URL capture list for a configured restart-signal pattern (e.g.
+ * `init-apply`, `application_canceled=true`). Scans `recentCaptures` — NOT
+ * `recentCaptureMeta`, which drops GETs — because the restart signal is often a
+ * plain GET (Talemetry's `GET .../init-apply?...&application_canceled=true`).
+ * Returns the matching URL (for the diagnostic) or null. No-op when the flow
+ * declares no `restartSignalUrlPatterns`.
+ */
+export function findWizardRestartSignal(params: {
+  recentCaptures: readonly string[];
+  preLength: number;
+  restartSignalUrlPatterns: readonly string[];
+}): string | null {
+  const { recentCaptures, preLength, restartSignalUrlPatterns } = params;
+  if (restartSignalUrlPatterns.length === 0) return null;
+  const window = recentCaptures.slice(preLength);
+  for (const url of window) {
+    for (const pattern of restartSignalUrlPatterns) {
+      if (url.includes(pattern)) return url;
+    }
+  }
+  return null;
+}
+
+/**
+ * Does any same-window network capture's REQUEST BODY match the configured
+ * transition pattern? Proves an interior "advance"/"Next" step really moved the
+ * wizard forward when advance and non-advance mutations share one endpoint URL
+ * (e.g. Talemetry `/gq`: a real advance is a `TransitionWorklet` mutation, a
+ * field edit is `EditQuestionItem` — same URL, only the body differs, so a
+ * URL/meta-based check can't tell them apart). Reads the capture files by name
+ * from `capturesDir` (mirrors `extractSubmitFailureEvidence`). Returns false
+ * when no pattern is configured (opt-in) or nothing in the window matches.
+ */
+export function windowHasTransitionBody(params: {
+  recentCaptures: readonly string[];
+  preLength: number;
+  advanceTransitionBodyPattern: string | null;
+  capturesDir?: string;
+}): boolean {
+  const { recentCaptures, preLength, advanceTransitionBodyPattern } = params;
+  if (!advanceTransitionBodyPattern) return false;
+  const capturesDir = params.capturesDir ?? CAPTURES_DIR;
+  let rx: RegExp;
+  try {
+    rx = new RegExp(advanceTransitionBodyPattern);
+  } catch {
+    return false;
+  }
+  const window = recentCaptures.slice(preLength);
+  for (const filename of window) {
+    // Skip decoded sidecars; the raw capture carries requestPostData.
+    if (filename.endsWith(".decoded.json")) continue;
+    try {
+      const raw = readFileSync(join(capturesDir, filename), "utf8");
+      const capture = JSON.parse(raw) as Partial<Capture> & { requestPostData?: unknown };
+      const body =
+        typeof capture.requestPostData === "string"
+          ? capture.requestPostData
+          : JSON.stringify(capture.requestPostData ?? "");
+      if (rx.test(body)) return true;
+    } catch {
+      // Unreadable/absent capture — ignore, keep scanning.
+    }
+  }
+  return false;
+}
+
+/**
  * Read-only count of ng-invalid form controls on the page. Side-effect-free
  * counterpart to `probeFormValidityBeforeSubmit` (which also auto-fills
  * unselected radio groups via element.click()). Used by the cascade's
@@ -783,11 +959,10 @@ export function findRecentPageTransition(params: {
  */
 export async function countNgInvalidContainers(page: Page): Promise<number> {
   const expr = `(() => {
-    const rx = /(ng-invalid|mat-form-field-invalid|is-invalid|field-invalid|input-invalid|form-invalid)/;
+    const isInvalid = ${INVALID_MARKER_EL_EXPR};
     let n = 0;
-    for (const el of document.querySelectorAll("[class]")) {
-      const cls = el.getAttribute("class") || "";
-      if (rx.test(cls)) n++;
+    for (const el of document.querySelectorAll("[class],[aria-invalid]")) {
+      if (isInvalid(el)) n++;
     }
     return n;
   })()`;
@@ -838,6 +1013,26 @@ export function describeAttemptEffectSignals(
     );
   }
   return observations.join(" | ");
+}
+
+/**
+ * Was the failed step *structurally* unresolvable — i.e. no cascade attempt ever
+ * resolved a selector/control for it — as opposed to a control that WAS found but
+ * failed to verify? True only when every attempt resolved nothing
+ * (`triedSelectors` empty) and none carried a verification signal. The replan
+ * prompt uses this to stop merely rewording a step whose target the engine has no
+ * driver for (e.g. a custom widget), and instead propose a different path or mark
+ * impossible. Conservative: any attempt that resolved a selector or verified makes
+ * this false (that step is resolvable; rewording may still help).
+ */
+export function isStructurallyBlocked(
+  attempts: readonly {
+    triedSelectors: readonly string[];
+    verifiedBy: string | null;
+  }[]
+): boolean {
+  if (attempts.length === 0) return false;
+  return attempts.every((a) => a.triedSelectors.length === 0 && a.verifiedBy === null);
 }
 
 /**
@@ -1358,6 +1553,35 @@ const RECON_FLOW_FILE_SCHEMA = z.union([
      * conventions alone.
      */
     knownErrorClassPrefixes: z.array(z.string().min(1)).optional(),
+    /**
+     * Optional site-specific labels for wizard-exit controls (save-and-exit,
+     * cancel, restart) — appended to the engine's built-in
+     * WIZARD_EXIT_ACTION_LABELS. An "advance / click Next" step whose resolved
+     * action description matches one of these is rejected so the cascade never
+     * clicks a destructive control. Only add unambiguously-destructive labels.
+     */
+    wizardExitButtonLabels: z.array(z.string().min(1)).optional(),
+    /**
+     * Optional URL substrings that signal a multi-page wizard RESTART / backward
+     * navigation (e.g. `init-apply`, `application_canceled=true`). When any
+     * recent capture URL matches after a step, the run aborts with a
+     * `wizard-regression` error instead of running later steps against the reset
+     * page or replanning against the restarted wizard.
+     */
+    restartSignalUrlPatterns: z.array(z.string().min(1)).optional(),
+    /**
+     * Optional regex matched against the REQUEST BODY of same-window network
+     * captures to prove an interior (non-submit) "advance"/"Next" step actually
+     * moved the wizard forward — not merely fired some other same-origin POST.
+     * Needed for SPAs where advance and non-advance mutations share one endpoint
+     * URL (e.g. Talemetry's `/gq`: a real page advance is a `TransitionWorklet`
+     * mutation, while `EditQuestionItem` is just a field edit — byte-identical
+     * URLs, only the body differs). When set, an advance step's `networkFired`
+     * signal is trusted ONLY if a capture body in the step's window matches this
+     * pattern. Opt-in: sites that don't set it keep today's behavior (any
+     * network/url/dom signal verifies), so no cross-site regression.
+     */
+    advanceTransitionBodyPattern: z.string().min(1).optional(),
   }),
 ]);
 
@@ -1466,6 +1690,24 @@ function dedupeConsecutiveIdentical<T>(items: T[]): T[] {
     if (prev !== curr) out.push(items[i]!);
   }
   return out;
+}
+
+/**
+ * Resume-from-failure filter for replan output. The global replanner should emit
+ * only a recovery BRIDGE from the failure point (the original remaining tail is
+ * re-appended by the driver), but it sometimes re-emits already-completed steps
+ * — re-filling name/email/etc. after a later step fails — which inflates the
+ * plan and wastes wall-clock + replan budget re-doing done work. Drop any bridge
+ * step whose instruction matches a completed step, EXCEPT a re-emission of the
+ * failed step itself (a legitimate no-op bridge the replan prompt allows).
+ */
+export function filterCompletedFromReplan(
+  newSteps: readonly NormalizedStep[],
+  completedSteps: readonly string[],
+  failedStep: string
+): NormalizedStep[] {
+  const completed = new Set(completedSteps);
+  return newSteps.filter((s) => s.instruction === failedStep || !completed.has(s.instruction));
 }
 
 /**
@@ -1774,14 +2016,16 @@ export function selectBodyExcerpt(body: string): string {
   if (body.length <= BODY_EXCERPT_DEFAULT_CAP) return body;
   const defaultExcerpt = body.slice(0, BODY_EXCERPT_DEFAULT_CAP);
   if (
-    /ng-invalid|mat-form-field-invalid|is-invalid|<form\b|questions-container/.test(defaultExcerpt)
+    /ng-invalid|mat-form-field-invalid|is-invalid|Mui-error|<form\b|questions-container/.test(
+      defaultExcerpt
+    )
   ) {
     return defaultExcerpt;
   }
   const searchFrom = BODY_EXCERPT_DEFAULT_CAP;
   const markerIndex = body
     .slice(searchFrom)
-    .search(/ng-invalid|mat-form-field-invalid|is-invalid|<form\b|questions-container/);
+    .search(/ng-invalid|mat-form-field-invalid|is-invalid|Mui-error|<form\b|questions-container/);
   if (markerIndex < 0) return defaultExcerpt;
   const absoluteIndex = searchFrom + markerIndex;
   const start = Math.max(0, absoluteIndex - BODY_EXCERPT_FORM_WINDOW / 4);
@@ -2846,12 +3090,35 @@ async function replanRemainingFlow(params: {
       ? `ELEMENT MODEL CHECK — The cascade has now failed ${slugPriorMatches + 1} times on steps matching the same element pattern. When the same element family fails repeatedly, the failed-step's element description may NOT match the actual DOM (e.g. the step asks for "spinbutton" but the page only has <input type="date">; asks for "Select dropdown" but the page has a custom autocomplete; asks for a "Click" target that's a label-only with no clickable child). Inspect PAGE BODY HTML AT FAILURE: if the actual widget in the DOM differs from the failed step's element description, propose a STRUCTURALLY DIFFERENT recovery that targets the actual widget visible on the page (e.g. "Fill in the date input field with today's date" instead of "Click the Month spinbutton") rather than restating the failed step's premise.`
       : "";
 
+  // Structural-block meta-signal: when NO attempt ever resolved a selector for
+  // the failed step (every attempt found nothing to act on), the step's target
+  // widget/control was never present-and-drivable — rewording the same premise
+  // will fail identically. Tell the LLM to change approach or mark impossible,
+  // not paraphrase. Read the persisted attempt records from the failure dump.
+  const structurallyBlocked = (() => {
+    try {
+      const dump = JSON.parse(readFileSync(failureDumpPath, "utf8")) as {
+        attempts?: { triedSelectors?: string[]; verifiedBy?: string | null }[];
+      };
+      const attempts = (dump.attempts ?? []).map((a) => ({
+        triedSelectors: a.triedSelectors ?? [],
+        verifiedBy: a.verifiedBy ?? null,
+      }));
+      return isStructurallyBlocked(attempts);
+    } catch {
+      return false;
+    }
+  })();
+  const structuralBlockCheck = structurallyBlocked
+    ? `STRUCTURAL BLOCK — Every cascade attempt on the failed step resolved NO element (observe found no candidate; nothing was clicked or filled). The step's target is not present-and-drivable on this page as described. Do NOT merely reword or paraphrase the same premise — it will fail identically. Either (a) propose a STRUCTURALLY DIFFERENT step targeting a control that actually exists in PAGE BODY HTML AT FAILURE / the observed candidates, or (b) if the required control genuinely isn't reachable, return outcome=impossible rather than a cosmetic rewrite.`
+    : "";
+
   const prompt = `You are helping a browser automation agent recover from a failed flow step.
 
 ORIGINAL FLOW SUMMARY: ${originalFlow.length} total steps; ${completedSteps.length} executed, ${remainingSteps.length} remaining after the failed step. The completed-tail and remaining-head windows below give you the local context — that's the only flow context replan needs.
 
-STEPS RECENTLY COMPLETED (last few that just succeeded; do not re-run):
-${renderStepWindow(completedSteps, { tail: 10 })}
+STEPS ALREADY COMPLETED (these succeeded — do NOT re-emit any of them; the head shows early fills like name/email so you don't repeat them):
+${renderStepWindow(completedSteps, { head: 8, tail: 10 })}
 
 THE STEP THAT JUST FAILED (after exhausting its per-step healing cascade):
 ${failedStep}
@@ -2863,7 +3130,7 @@ CURRENT BROWSER STATE:
 URL: ${page.url()}
 Title: ${pageTitle}
 
-${elementModelCheck ? `${elementModelCheck}\n\n` : ""}WHY VERIFICATION FAILED (latest attempt reasons from the cascade — read these carefully, they explain WHY the step is being declared failed):
+${elementModelCheck ? `${elementModelCheck}\n\n` : ""}${structuralBlockCheck ? `${structuralBlockCheck}\n\n` : ""}WHY VERIFICATION FAILED (latest attempt reasons from the cascade — read these carefully, they explain WHY the step is being declared failed):
 ${failureReasonList || "(none)"}
 
 PAGE TRANSITION + VALIDATOR TELEMETRY (parsed from Google Analytics Measurement Protocol beacons (POSTs to google-analytics.com/g/collect) captured during the failed step's attempt window — this is the SPA's own telemetry telling you what state it thinks it's in. Watch for: en=view_secondPage / en=view_thirdPage indicating the SPA advanced to a later form page WITHOUT firing Page.frameNavigated (so URL stays the same but questions changed); en=view_thankYouPage indicating the application SUBMITTED SUCCESSFULLY (a stronger success signal than network captures because the /integrated_apply POST is sometimes debounced); epn.validationErrorsCount=N indicating the site's own client validator counts N unfilled required fields. When validationErrorsCount > 0, prefer steps that target unfilled fields over re-clicking Submit/Continue. When view_thankYouPage appears, the application already submitted — do not propose more form-fill steps):
@@ -3331,6 +3598,546 @@ async function tryUploadPrimitive(params: {
 }
 
 /**
+ * Parse a select/dropdown flow step into the option to choose and (when
+ * present) the question label that scopes which dropdown it targets.
+ *
+ * Why: HCA/Talemetry render dropdowns as `MuiNativeSelect` native `<select>`
+ * with `tabindex="-1"` — removed from the accessibility tree, so Stagehand
+ * observe returns `[]` and the cascade can never select an option. The select
+ * primitive answers these directly from the DOM, but needs the target option
+ * text (and, to disambiguate multiple dropdowns on one page, the question
+ * label) extracted from the human-readable step.
+ *
+ * Recognizes the flow's conventional phrasings, all quoted:
+ *   "select 'Yes'", "select or check 'BLS'",
+ *   "for 'What is your highest level…?' select 'BSN completed'",
+ *   "select 'Texas' in the State/Region dropdown".
+ * Returns null when the step is not a single-dropdown select (e.g. generic
+ * "for any remaining question…" catch-alls, or radio/checkbox-only steps) so
+ * the caller falls through to the normal cascade.
+ */
+export function parseSelectStep(
+  instruction: string
+): { option: string; questionLabel: string | null } | null {
+  const lower = instruction.toLowerCase();
+  // Must look like a dropdown selection, not a radio/checkbox click. "select
+  // or check" is allowed (some option lists render as either). A bare
+  // "click the 'Yes' answer" is a radio and handled by the cascade.
+  const mentionsSelect = /\bselect(\s+or\s+check)?\b/.test(lower);
+  if (!mentionsSelect) return null;
+  // Catch-all steps ("for any remaining…") have no concrete single target.
+  if (/\bany\s+remaining\b/.test(lower)) return null;
+  const quoted = [...instruction.matchAll(/'([^']+)'/g)].map((m) => m[1]!);
+  if (quoted.length === 0) return null;
+  // The OPTION is the quoted string immediately following the word "select".
+  const selMatch = instruction.match(/\bselect(?:\s+or\s+check)?\s+'([^']+)'/i);
+  if (!selMatch) return null;
+  const option = selMatch[1]!.trim();
+  // The QUESTION LABEL, when present, is a DIFFERENT quoted string — the one
+  // introduced by "for '…'" or "in the '…' dropdown". Pick the first quoted
+  // string that is not the option.
+  const questionLabel = quoted.find((q) => q.trim() !== option)?.trim() ?? null;
+  return { option, questionLabel };
+}
+
+/** Max settle-retry attempts for a primitive's DOM enumerate (see `pollEnumerate`). */
+const PRIMITIVE_ENUMERATE_ATTEMPTS = 5;
+/** Delay between settle-retry attempts. Total cap ≈ ATTEMPTS × this. */
+const PRIMITIVE_ENUMERATE_RETRY_MS = 600;
+
+/**
+ * Run a primitive's read-only DOM enumerate with a bounded settle-retry. SPA
+ * wizards (Talemetry) frequently render the target widget a beat AFTER the flow
+ * step fires — the first evaluate sees an empty page, so the primitive would
+ * give up even though the widget appears moments later. Re-run the enumerate up
+ * to `PRIMITIVE_ENUMERATE_ATTEMPTS` times, waiting `PRIMITIVE_ENUMERATE_RETRY_MS`
+ * between tries, returning as soon as `isPresent(result)` is true; otherwise
+ * return the last (absent) result so the caller falls through to the cascade
+ * unchanged. Only wraps the ENUMERATE (which is read-only when nothing matches);
+ * the apply/mutate paths are untouched. Site-agnostic render-lag mitigation.
+ */
+export async function pollEnumerate<T>(
+  page: Page,
+  expr: string,
+  isPresent: (result: T) => boolean
+): Promise<T> {
+  let result = (await page.evaluate(expr)) as T;
+  for (let attempt = 1; attempt < PRIMITIVE_ENUMERATE_ATTEMPTS && !isPresent(result); attempt++) {
+    await page.waitForTimeout(PRIMITIVE_ENUMERATE_RETRY_MS);
+    result = (await page.evaluate(expr)) as T;
+  }
+  return result;
+}
+
+/**
+ * Site-agnostic select primitive: answer a native `<select>` dropdown by
+ * directly setting its value in the DOM, bypassing Stagehand observe/act.
+ *
+ * Why this exists (parallels `tryUploadPrimitive`): Talemetry/MUI dropdowns are
+ * `MuiNativeSelect` native `<select>` elements carrying `tabindex="-1"`, which
+ * removes them from the accessibility tree. Stagehand observe returns `[]` for
+ * them, so the cascade's `selectOption` (which needs a resolved locator) never
+ * fires — the required question stays unanswered, "Next" no-ops on client-side
+ * validation, and every run caps at the questions pages. This primitive finds
+ * the `<select>` by raw DOM (including tabindex=-1), matches the requested
+ * option by text/value/normalized label, and sets it via the React-safe native
+ * value setter + bubbling `change` (the same technique the codebase already
+ * uses for text inputs and file inputs), so React/MUI's value tracker
+ * registers the change.
+ *
+ * When the flow's hardcoded option text doesn't exist in THIS requisition's
+ * option list (per-req screening-question variance — e.g. an ER answer on a
+ * Cardiac job), it enumerates the target select's real options and asks an LLM
+ * judge to pick the best available one, then applies that. Deterministic
+ * matches never invoke the LLM (fast path); the LLM fires only on a
+ * present-but-unmatched select. A page with no `<select>` (radio group /
+ * absent) falls through to the cascade unchanged.
+ *
+ * Returns true when an option was selected (deterministic or LLM) and its
+ * value set (cascade is skipped); false when the step isn't a select, there's
+ * no select on the page, or no option fits (fall through to the cascade).
+ */
+async function trySelectPrimitive(params: {
+  page: Page;
+  instruction: string;
+  logger: Logger;
+  anthropic: Anthropic | null;
+  captureFn?: JudgeCaptureFn;
+}): Promise<boolean> {
+  const { page, instruction, logger, anthropic, captureFn } = params;
+  const parsed = parseSelectStep(instruction);
+  if (!parsed) return false;
+  const { option, questionLabel } = parsed;
+  const optLabel = `option "${option.slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
+  // Phase 1 (browser, no mutation): find the target select — the one whose
+  // nearby text matches the question label (or, when no label, any select).
+  // Try a deterministic option match first; if it hits, apply immediately (no
+  // LLM). Otherwise return the target select's real option list so the Node
+  // side can ask the LLM to pick the best available option (per-req variance:
+  // the flow's hardcoded answer may not exist in THIS requisition's options).
+  //
+  // Trust boundary: option/questionLabel come from the committed flow file
+  // (operator-authored); JSON.stringify anyway so quotes can't break the expr.
+  const enumerateExpr = `((option) => {
+    const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
+    const wantOpt = norm(option);
+    // All native selects, INCLUDING tabindex=-1 (MuiNativeSelect) which the
+    // a11y tree — and therefore Stagehand observe — never surfaces.
+    const selects = Array.from(document.querySelectorAll("select"));
+    if (selects.length === 0) return { selectPresent: false };
+    const applySet = (sel, value) => {
+      const desc = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value");
+      if (desc && desc.set) { desc.set.call(sel, value); } else { sel.value = value; }
+      sel.dispatchEvent(new Event("input", { bubbles: true }));
+      sel.dispatchEvent(new Event("change", { bubbles: true }));
+      sel.dispatchEvent(new Event("blur", { bubbles: true }));
+      return sel.value === value;
+    };
+    // FAST PATH — deterministic option match: exactly one select has an option
+    // matching the flow's answer text. Unambiguous (the option text itself
+    // identifies the dropdown), so no LLM needed. Requires a UNIQUE match to
+    // avoid picking the wrong dropdown when two share an option (e.g. "Yes").
+    let detMatches = [];
+    for (const sel of selects) {
+      const opts = Array.from(sel.options || []);
+      const m = opts.find((o) => norm(o.textContent) === wantOpt || norm(o.value) === wantOpt);
+      if (m) detMatches.push({ sel, value: m.value, text: m.textContent });
+    }
+    if (detMatches.length === 1) {
+      const ok = applySet(detMatches[0].sel, detMatches[0].value);
+      return { selectPresent: true, applied: true, ok, chosen: detMatches[0].text };
+    }
+    // LLM PATH — return every UNFILLED select (placeholder / empty value) with
+    // its label + real options, in DOM order (index-aligned). The LLM decides
+    // WHICH dropdown answers the question AND which option — offloading the
+    // brittle label→select matching that string heuristics get wrong.
+    const selLabelText = (sel) => {
+      const parts = [];
+      if (sel.id) {
+        try {
+          const esc = (window.CSS && CSS.escape) ? CSS.escape(sel.id) : sel.id;
+          const lf = document.querySelector('label[for="' + esc + '"]');
+          if (lf) parts.push(lf.textContent);
+        } catch (e) {}
+      }
+      const alb = sel.getAttribute("aria-labelledby");
+      if (alb) for (const id of alb.split(/\\s+/)) { const el = document.getElementById(id); if (el) parts.push(el.textContent); }
+      const al = sel.getAttribute("aria-label");
+      if (al) parts.push(al);
+      // Fallback: nearest small ancestor's text (question-item wrapper).
+      if (parts.length === 0) {
+        let node = sel.parentElement;
+        for (let d = 0; d < 5 && node; d++) {
+          if (node.querySelectorAll("select,input,textarea").length > 2) break;
+          const t = (node.textContent || "").trim();
+          if (t) { parts.push(t); break; }
+          node = node.parentElement;
+        }
+      }
+      return (parts.join(" ") || "").replace(/\\s+/g, " ").trim().slice(0, 120);
+    };
+    const isUnfilled = (sel) => {
+      const so = sel.selectedOptions && sel.selectedOptions[0];
+      return !sel.value || sel.value === "" || (so && so.disabled);
+    };
+    const candidates = [];
+    for (let i = 0; i < selects.length; i++) {
+      const sel = selects[i];
+      if (!isUnfilled(sel)) continue;
+      const options = Array.from(sel.options || [])
+        .filter((o) => !o.disabled && (o.value || (o.textContent || "").trim()))
+        .map((o) => ({ text: (o.textContent || "").replace(/\\s+/g, " ").trim(), value: o.value }));
+      if (options.length > 0) candidates.push({ selIdx: i, label: selLabelText(sel), options });
+    }
+    if (candidates.length === 0) return { selectPresent: true, candidates: [] };
+    return { selectPresent: true, candidates };
+  })(${JSON.stringify(option)})`;
+  try {
+    // Settle-retry: the <select> may render a beat after the step fires (SPA
+    // render-lag); poll until it appears or the cap is hit.
+    const enumResult = await pollEnumerate<{
+      selectPresent: boolean;
+      applied?: boolean;
+      ok?: boolean;
+      chosen?: string;
+      candidates?: { selIdx: number; label: string; options: { text: string; value: string }[] }[];
+    }>(page, enumerateExpr, (r) => r?.selectPresent === true);
+    // No <select> on the page at all (e.g. the question is a radio group) —
+    // fall through to the cascade unchanged; the LLM picker can't help here.
+    if (!enumResult?.selectPresent) {
+      logger.info(
+        `select primitive: no <select> on page for ${optLabel}; falling through to cascade`
+      );
+      return false;
+    }
+    // Deterministic unique-option match applied.
+    if (enumResult.applied && enumResult.ok) {
+      logger.info(
+        `select primitive: set dropdown to "${(enumResult.chosen || "").trim().slice(0, 40)}" (${optLabel})`
+      );
+      return true;
+    }
+    const candidates = enumResult.candidates ?? [];
+    if (anthropic === null || candidates.length === 0) {
+      logger.info(
+        `select primitive: no unique option match for ${optLabel}${anthropic === null ? " (no LLM client)" : ""}; falling through to cascade`
+      );
+      return false;
+    }
+    // LLM picks WHICH dropdown answers the question and which option in it.
+    const verdict = await judgeSelectOptionWithLLM({
+      client: anthropic,
+      input: {
+        questionLabel,
+        desiredHint: option,
+        candidates: candidates.map((c) => ({
+          label: c.label || null,
+          options: c.options.map((o) => o.text),
+        })),
+      },
+      captureFn,
+    });
+    if (!verdict || verdict.selectIndex === null || verdict.optionIndex === null) {
+      logger.info(
+        `select primitive: LLM found no matching dropdown for ${optLabel}${verdict ? ` (${verdict.reason})` : ""}; falling through to cascade`
+      );
+      return false;
+    }
+    const chosenCandidate = candidates[verdict.selectIndex]!;
+    const chosenOption = chosenCandidate.options[verdict.optionIndex]!;
+    // Apply pass: set the chosen select (by its ORIGINAL DOM index) to the
+    // chosen option's value.
+    const applyExpr = `((selIdx, value) => {
+      const selects = Array.from(document.querySelectorAll("select"));
+      const sel = selects[selIdx];
+      if (!sel) return { ok: false };
+      const desc = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value");
+      if (desc && desc.set) { desc.set.call(sel, value); } else { sel.value = value; }
+      sel.dispatchEvent(new Event("input", { bubbles: true }));
+      sel.dispatchEvent(new Event("change", { bubbles: true }));
+      sel.dispatchEvent(new Event("blur", { bubbles: true }));
+      return { ok: sel.value === value };
+    })(${JSON.stringify(chosenCandidate.selIdx)}, ${JSON.stringify(chosenOption.value)})`;
+    const applyResult = (await page.evaluate(applyExpr)) as { ok: boolean };
+    if (applyResult?.ok) {
+      logger.info(
+        `select primitive: LLM chose "${chosenOption.text.slice(0, 40)}" for ${optLabel} (${verdict.reason.slice(0, 60)})`
+      );
+      return true;
+    }
+    logger.info(
+      `select primitive: LLM-chosen value did not stick for ${optLabel}; falling through`
+    );
+    return false;
+  } catch (err) {
+    logger.warn(`select primitive: evaluate threw: ${toErrorMessage(err)}; falling through`);
+    return false;
+  }
+}
+
+/**
+ * Site-agnostic checkbox primitive: answer a multi-select checkbox-group
+ * question by directly checking the matching option in the DOM, bypassing
+ * Stagehand observe/act.
+ *
+ * Why this exists (parallels `trySelectPrimitive`): HCA/Talemetry render
+ * multi-select screening questions ("In which settings have you worked…",
+ * certifications) as `c-MultiCheckboxInput` groups — a `<fieldset>`/`<legend>`
+ * question with `<input type=checkbox>` options, each tied to its text by a
+ * canonical `<label for="checkbox-id">Option</label>`. Stagehand observe can't
+ * reliably resolve "select 'Hospital'" against these, so the required question
+ * goes unanswered, "Next" no-ops on validation, and the run caps at the
+ * question pages. This primitive enumerates the checkbox groups (bypassing
+ * observe), matches the requested option deterministically (or via the LLM
+ * picker when the flow's hint doesn't exist in this requisition's options),
+ * and checks it via the React-safe click + bubbling change.
+ *
+ * The flow names ONE option per step ("select 'Hospital'"), so this checks a
+ * single option per call. Returns true when a matching option was checked
+ * (cascade skipped); false when the step isn't a select-style step, there are
+ * no checkbox groups, or no option fits (fall through to the cascade — which is
+ * also where `<select>`-only pages go, since trySelectPrimitive runs first).
+ */
+async function tryCheckboxPrimitive(params: {
+  page: Page;
+  instruction: string;
+  logger: Logger;
+  anthropic: Anthropic | null;
+  captureFn?: JudgeCaptureFn;
+}): Promise<boolean> {
+  const { page, instruction, logger, anthropic, captureFn } = params;
+  const parsed = parseSelectStep(instruction);
+  if (!parsed) return false;
+  const { option, questionLabel } = parsed;
+  const optLabel = `option "${option.slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
+  // Phase 1 (browser, no mutation): find checkbox GROUPS and their options.
+  // A group is a `c-MultiCheckboxInput` container or a `<fieldset>` containing
+  // checkboxes. Question label = the group's legend / associated label; each
+  // option = the `<label for=checkbox-id>` text (canonical association). Try a
+  // deterministic option-text match first; if unique, check it (no LLM). Else
+  // return the groups so the LLM picks which group + which option.
+  const enumerateExpr = `((option) => {
+    const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
+    const wantOpt = norm(option);
+    // Collect groups: c-MultiCheckboxInput roots, else fieldsets with checkboxes.
+    let groupEls = Array.from(document.querySelectorAll("[class*='MultiCheckboxInput'],[class*='c-MultiCheckboxInput-root']"));
+    if (groupEls.length === 0) {
+      groupEls = Array.from(document.querySelectorAll("fieldset")).filter(
+        (f) => f.querySelector("input[type=checkbox]")
+      );
+    }
+    if (groupEls.length === 0) return { groupPresent: false };
+    const groupLabel = (g) => {
+      const leg = g.querySelector("legend");
+      if (leg && leg.textContent) return leg.textContent.replace(/\\s+/g, " ").trim();
+      const al = g.getAttribute("aria-label") || g.getAttribute("label");
+      if (al) return al.replace(/\\s+/g, " ").trim();
+      const alb = g.getAttribute("aria-labelledby");
+      if (alb) { const el = document.getElementById(alb.split(/\\s+/)[0]); if (el) return (el.textContent||"").replace(/\\s+/g," ").trim(); }
+      return "";
+    };
+    // For a checkbox, its option text = <label for=id>, else nearest label text.
+    const cbLabel = (cb) => {
+      if (cb.id) {
+        try {
+          const esc = (window.CSS && CSS.escape) ? CSS.escape(cb.id) : cb.id;
+          const lf = document.querySelector('label[for="' + esc + '"]');
+          if (lf && lf.textContent) return lf.textContent.replace(/\\s+/g, " ").trim();
+        } catch (e) {}
+      }
+      const al = cb.getAttribute("aria-label");
+      if (al) return al.replace(/\\s+/g, " ").trim();
+      const p = cb.closest("label");
+      if (p && p.textContent) return p.textContent.replace(/\\s+/g, " ").trim();
+      return "";
+    };
+    const setChecked = (cb) => {
+      if (!cb.checked) {
+        cb.checked = true;
+        cb.dispatchEvent(new Event("click", { bubbles: true }));
+        cb.dispatchEvent(new Event("input", { bubbles: true }));
+        cb.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      return cb.checked === true;
+    };
+    // Build group list with per-option labels; track DOM index for apply.
+    const groups = [];
+    for (let gi = 0; gi < groupEls.length; gi++) {
+      const boxes = Array.from(groupEls[gi].querySelectorAll("input[type=checkbox]"));
+      if (boxes.length === 0) continue;
+      const options = boxes.map((cb, bi) => ({ bi, text: cbLabel(cb) })).filter((o) => o.text);
+      groups.push({ gi, label: groupLabel(groupEls[gi]), options });
+    }
+    if (groups.length === 0) return { groupPresent: false };
+    // Deterministic: exactly one option across all groups equals wantOpt.
+    let detHits = [];
+    for (const grp of groups) {
+      for (const o of grp.options) {
+        if (norm(o.text) === wantOpt) detHits.push({ gi: grp.gi, bi: o.bi, text: o.text });
+      }
+    }
+    if (detHits.length === 1) {
+      const h = detHits[0];
+      const grpEl = groupEls[h.gi];
+      const cb = grpEl.querySelectorAll("input[type=checkbox]")[h.bi];
+      const ok = cb ? setChecked(cb) : false;
+      return { groupPresent: true, applied: true, ok, chosen: h.text };
+    }
+    // LLM path: return groups (label + option texts) for the picker.
+    return { groupPresent: true, applied: false, groups: groups.map((g) => ({ gi: g.gi, label: g.label, options: g.options })) };
+  })(${JSON.stringify(option)})`;
+  try {
+    // Settle-retry: the checkbox group may render a beat after the step fires
+    // (SPA render-lag); poll until it appears or the cap is hit.
+    const enumResult = await pollEnumerate<{
+      groupPresent: boolean;
+      applied?: boolean;
+      ok?: boolean;
+      chosen?: string;
+      groups?: { gi: number; label: string; options: { bi: number; text: string }[] }[];
+    }>(page, enumerateExpr, (r) => r?.groupPresent === true);
+    if (!enumResult?.groupPresent) return false; // no checkbox groups → cascade
+    if (enumResult.applied && enumResult.ok) {
+      logger.info(
+        `checkbox primitive: checked "${(enumResult.chosen || "").trim().slice(0, 40)}" (${optLabel})`
+      );
+      return true;
+    }
+    const groups = enumResult.groups ?? [];
+    if (anthropic === null || groups.length === 0) {
+      logger.info(
+        `checkbox primitive: no unique option match for ${optLabel}${anthropic === null ? " (no LLM client)" : ""}; falling through to cascade`
+      );
+      return false;
+    }
+    // LLM picks which group answers the question + which option. Reuse the
+    // select-option judge (candidate "dropdowns" == checkbox groups here).
+    const verdict = await judgeSelectOptionWithLLM({
+      client: anthropic,
+      input: {
+        questionLabel,
+        desiredHint: option,
+        candidates: groups.map((g) => ({
+          label: g.label || null,
+          options: g.options.map((o) => o.text),
+        })),
+      },
+      captureFn,
+    });
+    if (!verdict || verdict.selectIndex === null || verdict.optionIndex === null) {
+      logger.info(
+        `checkbox primitive: LLM found no matching group for ${optLabel}${verdict ? ` (${verdict.reason})` : ""}; falling through to cascade`
+      );
+      return false;
+    }
+    const chosenGroup = groups[verdict.selectIndex]!;
+    const chosenOption = chosenGroup.options[verdict.optionIndex]!;
+    const applyExpr = `((gi, bi) => {
+      let groupEls = Array.from(document.querySelectorAll("[class*='MultiCheckboxInput'],[class*='c-MultiCheckboxInput-root']"));
+      if (groupEls.length === 0) groupEls = Array.from(document.querySelectorAll("fieldset")).filter((f) => f.querySelector("input[type=checkbox]"));
+      const grp = groupEls[gi];
+      if (!grp) return { ok: false };
+      const cb = grp.querySelectorAll("input[type=checkbox]")[bi];
+      if (!cb) return { ok: false };
+      if (!cb.checked) {
+        cb.checked = true;
+        cb.dispatchEvent(new Event("click", { bubbles: true }));
+        cb.dispatchEvent(new Event("input", { bubbles: true }));
+        cb.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      return { ok: cb.checked === true };
+    })(${JSON.stringify(chosenGroup.gi)}, ${JSON.stringify(chosenOption.bi)})`;
+    const applyResult = (await page.evaluate(applyExpr)) as { ok: boolean };
+    if (applyResult?.ok) {
+      logger.info(
+        `checkbox primitive: LLM checked "${chosenOption.text.slice(0, 40)}" for ${optLabel} (${verdict.reason.slice(0, 60)})`
+      );
+      return true;
+    }
+    logger.info(
+      `checkbox primitive: LLM-chosen checkbox did not stick for ${optLabel}; falling through`
+    );
+    return false;
+  } catch (err) {
+    logger.warn(`checkbox primitive: evaluate threw: ${toErrorMessage(err)}; falling through`);
+    return false;
+  }
+}
+
+/**
+ * Guard for the optional-step fast-skip: is there a REQUIRED, still-empty (or
+ * aria-invalid) form control on the page whose nearby label matches this step's
+ * question? A `parseSelectStep`-style optional step that "found no candidates"
+ * would normally skip cleanly — but when the page plainly has a required control
+ * the step was meant to answer (SPA hydration lag, or a driver gap where observe
+ * can't resolve the widget), skipping leaves a required field empty and silently
+ * dooms the later submit. Returns true → the caller should NOT fast-skip and
+ * should fall through to the cascade/replan instead.
+ *
+ * Conservative by construction: returns false unless the step parses as a
+ * select/answer step AND a required-and-unsatisfied control with a
+ * label-matching the question is actually present. A genuinely-absent optional
+ * step (e.g. "dismiss modal" on a modal-less page) has no such control, so the
+ * fast-skip the comments call essential is preserved.
+ */
+async function hasUnfilledRequiredControlForStep(
+  page: Page,
+  instruction: string
+): Promise<boolean> {
+  const parsed = parseSelectStep(instruction);
+  if (!parsed?.questionLabel) return false;
+  const expr = `((label) => {
+    const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
+    const want = norm(label);
+    if (!want) return false;
+    const isInvalid = ${INVALID_MARKER_EL_EXPR};
+    // Required markers: the control itself, or a required-asterisk label nearby.
+    const isRequired = (el) => {
+      if (!el || !el.getAttribute) return false;
+      if (el.hasAttribute("required")) return true;
+      if (el.getAttribute("aria-required") === "true") return true;
+      return false;
+    };
+    const isEmptyish = (el) => {
+      if (!el) return false;
+      if (el.getAttribute && el.getAttribute("aria-invalid") === "true") return true;
+      if (isInvalid(el)) return true;
+      const v = ("value" in el) ? el.value : "";
+      return !v || String(v).trim() === "";
+    };
+    // Scan form controls; for each required+empty one, check whether a nearby
+    // label (ancestor label/legend, or [aria-labelledby], or preceding label)
+    // contains the question text.
+    const controls = Array.from(document.querySelectorAll(
+      "input,select,textarea,[role=combobox],[role=listbox],.bb-custom-select-container,[class*='MultiCheckboxInput']"
+    ));
+    for (const el of controls) {
+      if (!isRequired(el) && !(el.querySelector && el.querySelector("[required],[aria-required=true]"))) {
+        // container widgets carry required on an inner element; allow those
+        if (!/bb-custom-select-container|MultiCheckboxInput/.test((el.getAttribute && el.getAttribute("class")) || "")) continue;
+      }
+      // is it empty/invalid?
+      const emptyOrInvalid = isEmptyish(el) || (el.querySelector && !!el.querySelector("[aria-invalid=true]"));
+      if (!emptyOrInvalid) continue;
+      // does a nearby label match the question?
+      let node = el;
+      for (let d = 0; d < 6 && node; d++) {
+        const lbl = node.querySelector && node.querySelector("label,legend");
+        const txt = lbl && lbl.textContent ? norm(lbl.textContent) : "";
+        if (txt && (txt.includes(want) || want.includes(txt))) return true;
+        node = node.parentElement;
+      }
+    }
+    return false;
+  })(${JSON.stringify(parsed.questionLabel)})`;
+  try {
+    return (await page.evaluate(expr)) === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Synthesize a drag-drop event sequence on the most-likely upload drop
  * zone using DataTransfer + DragEvent. Used as K'4 fallback when
  * setInputFiles + change-event dispatch don't trigger the framework's
@@ -3591,13 +4398,12 @@ async function verifyDomEffect(page: Page, action: Action): Promise<boolean> {
         // the cascade routes to rephrase/replan instead of advancing
         // past a step that didn't actually change the form state.
         const ancestorInvalidExpr = `(() => {
+          const isInvalid = ${INVALID_MARKER_EL_EXPR};
           const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
           let node = r.singleNodeValue;
           if (!node) return false;
-          const rx = /(ng-invalid|mat-form-field-invalid|is-invalid|field-invalid|input-invalid)/;
           for (let depth = 0; depth < 6 && node; depth++) {
-            const cls = node.getAttribute && node.getAttribute("class");
-            if (cls && rx.test(cls)) return true;
+            if (node.getAttribute && isInvalid(node)) return true;
             node = node.parentElement;
           }
           return false;
@@ -3688,8 +4494,8 @@ interface InvalidFormControl {
  * `data-id`, and `name`.
  */
 const FORM_VALIDITY_PROBE_EXPR = `(() => {
-  const INVALID_CLASS_RX = /(ng-invalid|mat-form-field-invalid|is-invalid|field-invalid|input-invalid)/;
-  const MARKERS = ["ng-invalid", "mat-form-field-invalid", "is-invalid", "field-invalid", "input-invalid", "ng-touched", "ng-dirty"];
+  const INVALID_CLASS_RX = /(${INVALID_MARKER_CLASS_SOURCE})/;
+  const MARKERS = ["ng-invalid", "mat-form-field-invalid", "is-invalid", "field-invalid", "input-invalid", "Mui-error", "ng-touched", "ng-dirty"];
   function fire(el, ev) {
     try { el.dispatchEvent(new Event(ev, { bubbles: true })); } catch (e) {}
   }
@@ -3747,11 +4553,19 @@ const FORM_VALIDITY_PROBE_EXPR = `(() => {
       ctrl.tagName.toLowerCase() === "select" &&
       ctrl.selectedOptions[0] &&
       ctrl.selectedOptions[0].disabled;
+    // MUI/React signature: the wrapper (FormControl/FormLabel) carries
+    // Mui-error while the native control is empty and/or aria-invalid="true".
+    // MUI has no ng-pristine/ng-untouched, so the Angular wrapper branch below
+    // would skip these — accept the MUI marker (wrapper class or the control's
+    // aria-invalid) as an equivalent required-unfilled signal.
+    const muiInvalid =
+      (/Mui-error/.test(cls) || ctrl.getAttribute("aria-invalid") === "true") &&
+      (ctrl.value === "" || ctrl.value == null || selectPlaceholderOpen);
     const wrapperOnlyInvalid =
       !leafInvalid &&
       el !== ctrl &&
       (ctrl.value === "" || ctrl.value == null || selectPlaceholderOpen) &&
-      /(ng-pristine|ng-untouched)/.test(ctrlClass);
+      (/(ng-pristine|ng-untouched)/.test(ctrlClass) || muiInvalid);
     if (!leafInvalid && !wrapperOnlyInvalid) continue;
     let label = "";
     let scan = el;
@@ -3928,6 +4742,15 @@ async function probeFormValidityBeforeSubmit(params: {
   }
 }
 
+/**
+ * Cheap pre-cascade reachability gate. Runs before the 5-attempt healing cascade
+ * (and any global replan) so a step aimed at the wrong page state fails fast
+ * instead of burning attempts and replan budget. A focused observe can
+ * under-return on controlled-component (React/MUI) forms — returning zero
+ * candidates for a declarative "Fill in X" step even when the field is present —
+ * so a 0-candidate focused result falls back to an unfocused observe before the
+ * step is declared "absent". Exported for tests.
+ */
 async function probeStepBeforeAttempts(params: {
   stagehand: Stagehand;
   step: string;
@@ -3946,8 +4769,31 @@ async function probeStepBeforeAttempts(params: {
       observeCache
     );
     if (candidates.length === 0) {
+      // Focused observe under-returns on some controlled-component forms:
+      // Stagehand's instruction-scoped observe can resolve zero candidates for a
+      // declarative "Fill in the X field with 'Y'" step even when the field is
+      // present and actionable (confirmed on HCA's MUI/React Talemetry form — an
+      // unfocused observe enumerated every field and a direct act filled them).
+      // Treating focused-empty as hard "absent" skips the whole cascade and burns
+      // a global replan per step. Fall back to an UNFOCUSED observe as a
+      // reachability check: if the page clearly has actionable content, hand off
+      // to the cascade (its observe-act / rephrase attempts recover the field
+      // without spending the scarce replan budget). Only genuinely blank pages —
+      // where the unfocused observe is also empty — stay "absent".
+      const unfocused = await guardedObserve(
+        stagehand,
+        undefined,
+        { timeout: STEP_WATCHDOG_MS },
+        captureFn
+      );
+      if (unfocused.length > 0) {
+        logger.info(
+          `step ${stepIndex + 1}: focused probe found 0 candidates but unfocused observe found ${unfocused.length} — treating as present (let cascade resolve)`
+        );
+        return "present";
+      }
       logger.info(
-        `step ${stepIndex + 1}: probe found 0 candidates — treating as absent (skip cascade, route to replan if required)`
+        `step ${stepIndex + 1}: probe found 0 candidates (focused and unfocused) — treating as absent (skip cascade, route to replan if required)`
       );
       return "absent";
     }
@@ -4027,6 +4873,13 @@ async function executeStepWithHealing(params: {
    */
   requireSubmitEndpointMatch: boolean;
   /**
+   * Opt-in regex matched against same-window capture request BODIES to trust an
+   * interior advance/"Next" step's network signal (see `RECON_FLOW_FILE_SCHEMA`
+   * `advanceTransitionBodyPattern`). Null/empty = today's behavior (any
+   * network/url/dom signal verifies an advance).
+   */
+  advanceTransitionBodyPattern: string | null;
+  /**
    * URL path fragments that indicate a successful submit transition.
    * Surfaced to the Haiku verifySubmit judge as one of the strong
    * corroborating signals (DOM/URL/title) required for verified=true.
@@ -4051,6 +4904,12 @@ async function executeStepWithHealing(params: {
    * structural evidence. Empty array = framework-conventional only.
    */
   knownErrorClassPrefixes: string[];
+  /**
+   * Site + engine wizard-exit labels. When a "click / advance" step's resolved
+   * action names one of these (via isWizardExitAction), the cascade rejects it
+   * so an advance step never fires a save-and-exit / cancel / restart control.
+   */
+  wizardExitButtonLabels: string[];
   /**
    * Optional accumulator the cascade pushes onto when this step verifies.
    * Lets the main loop maintain a short cross-step trajectory of `verifiedBy`
@@ -4091,10 +4950,12 @@ async function executeStepWithHealing(params: {
     submitEndpointPattern,
     submittedStateSelectors,
     requireSubmitEndpointMatch,
+    advanceTransitionBodyPattern,
     successUrlFragments,
     successPageTitleHints,
     ownBackendHostnames,
     knownErrorClassPrefixes,
+    wizardExitButtonLabels,
     trajectory,
     observeCache,
   } = params;
@@ -4145,6 +5006,29 @@ async function executeStepWithHealing(params: {
     return "completed";
   }
 
+  // When the step is a native-<select> dropdown selection, answer it directly
+  // in the DOM ahead of the cascade. Critical for MuiNativeSelect/tabindex=-1
+  // dropdowns (HCA/Talemetry) that Stagehand observe can't surface — the
+  // cascade would otherwise skip them ("no candidates") and leave a required
+  // question unanswered. No-op (returns false → falls through) when the step
+  // isn't a single-dropdown select or no option matches.
+  if (await trySelectPrimitive({ page, instruction: step, logger, anthropic, captureFn })) {
+    logger.info(`step ${stepIndex + 1} resolved by select primitive`);
+    trajectory?.push({ stepIndex, verifiedBy: "dom" });
+    return "completed";
+  }
+
+  // When the step is a "select 'X'" against a multi-select CHECKBOX group
+  // (c-MultiCheckboxInput) rather than a <select> — Talemetry renders some
+  // screening questions this way — answer it directly in the DOM. Runs AFTER
+  // trySelectPrimitive (which handles <select> and no-ops on checkbox-only
+  // pages). No-op (falls through) when there's no checkbox group or no match.
+  if (await tryCheckboxPrimitive({ page, instruction: step, logger, anthropic, captureFn })) {
+    logger.info(`step ${stepIndex + 1} resolved by checkbox primitive`);
+    trajectory?.push({ stepIndex, verifiedBy: "dom" });
+    return "completed";
+  }
+
   // Snapshot the capture-meta tail length at step entry. The probe-absent
   // legitimate-transition check (below) scans captures landed during THIS
   // step's processing — earlier-step transitions don't count.
@@ -4164,8 +5048,18 @@ async function executeStepWithHealing(params: {
   });
   if (probeResult === "absent") {
     if (optional) {
-      logger.info(`step ${stepIndex + 1} skipped (optional, probe found no candidates)`);
-      return "skipped";
+      // Don't fast-skip when the page plainly has a required, still-empty
+      // control this step was meant to answer (SPA hydration lag / observe
+      // can't resolve the widget) — skipping would leave a required field empty
+      // and silently doom the later submit. Fall through to the cascade instead.
+      if (await hasUnfilledRequiredControlForStep(page, step)) {
+        logger.info(
+          `step ${stepIndex + 1} probe-absent but a required unfilled control matches the question; NOT skipping (escalating to cascade)`
+        );
+      } else {
+        logger.info(`step ${stepIndex + 1} skipped (optional, probe found no candidates)`);
+        return "skipped";
+      }
     }
     // Telemetry-driven legitimate-transition detection. When the page
     // already advanced (a 3xx redirect or successful non-tracking POST
@@ -4356,6 +5250,9 @@ async function executeStepWithHealing(params: {
     // its URL scan to captures added DURING this attempt (not historical
     // tail from earlier steps).
     const preMetaLength = recentCaptureMeta.length;
+    // Same idea for the interior-advance body gate, but against the capture
+    // FILE-PATH array (recentCaptures) since body inspection reads capture files.
+    const preCapturesLength = recentCaptures.length;
     const record: AttemptRecord = {
       attempt,
       technique: "act-string",
@@ -4389,9 +5286,26 @@ async function executeStepWithHealing(params: {
         );
         record.actResultSuccess = result.success;
         record.actResultDescription = result.actionDescription;
-        for (const action of result.actions ?? []) {
-          if (action.selector) triedSelectors.push(action.selector);
-          if (!resolvedAction) resolvedAction = action;
+        // Deny-list guard (post-hoc): attempt-1 act resolves internally, so we
+        // can't block the click, but we refuse to COUNT a wizard-exit control as
+        // success — don't set resolvedAction, force failure — so the cascade
+        // doesn't treat "clicked Cancel/Continue-Later" as a completed step.
+        // (If the click already restarted the wizard, the loop's restart-signal
+        // detection aborts the run regardless.)
+        if (
+          isWizardExitAction(result.actionDescription, wizardExitButtonLabels) ||
+          result.actions?.some((a) => isWizardExitAction(a.description, wizardExitButtonLabels))
+        ) {
+          record.errorMessage = `refused wizard-exit control: "${result.actionDescription.slice(0, 60)}"`;
+          record.actResultSuccess = false;
+          for (const action of result.actions ?? []) {
+            if (action.selector) triedSelectors.push(action.selector);
+          }
+        } else {
+          for (const action of result.actions ?? []) {
+            if (action.selector) triedSelectors.push(action.selector);
+            if (!resolvedAction) resolvedAction = action;
+          }
         }
       } else if (attempt === 2 || attempt === 4) {
         record.technique = attempt === 2 ? "observe-act" : "observe-act-exclude";
@@ -4414,16 +5328,47 @@ async function executeStepWithHealing(params: {
           // selector — `triedSelectors` only fills when act/observe resolved
           // something) so an optional step that did find a target but failed
           // to verify still runs the full healing cascade.
+          //
+          // This fast-skip is essential: a genuinely-absent optional step
+          // (e.g. a "dismiss modal" step on a page with no modal) must NOT run
+          // the full 5-attempt cascade + a global replan — that wastes minutes
+          // and drains the replan budget. The cache fix (guardedObserve no
+          // longer replays a stale empty result) makes attempt-1 act resolve
+          // present fields on its own, so present-but-hard fields succeed at
+          // attempt 1 and don't rely on suppressing this skip.
           if (optional && attempt === 2 && triedSelectors.length === 0) {
-            record.verifiedBy = null;
-            attempts.push(record);
-            logger.info(
-              `step ${stepIndex + 1} skipped (optional, no candidates after act+observe)`
-            );
-            return "skipped";
+            // Same escalation guard as the probe-absent skip: if a required,
+            // still-empty control matching this step's question is present,
+            // don't fast-skip — let the healing cascade continue so the
+            // required field gets answered instead of silently doomed.
+            if (await hasUnfilledRequiredControlForStep(page, step)) {
+              logger.info(
+                `step ${stepIndex + 1} no candidates after act+observe but a required unfilled control matches; NOT skipping (continuing cascade)`
+              );
+            } else {
+              record.verifiedBy = null;
+              attempts.push(record);
+              logger.info(
+                `step ${stepIndex + 1} skipped (optional, no candidates after act+observe)`
+              );
+              return "skipped";
+            }
           }
         } else {
           const target = candidates[0]!;
+          // Deny-list guard: never act on a wizard-exit control (save-and-exit,
+          // cancel, restart) for a click/advance step. Record it as tried (so a
+          // re-observe with ignoreSelectors surfaces a different candidate) and
+          // fail this attempt instead of firing a destructive click.
+          if (isWizardExitAction(target.description, wizardExitButtonLabels)) {
+            record.errorMessage = `refused wizard-exit control: "${target.description.slice(0, 60)}"`;
+            triedSelectors.push(target.selector);
+            record.triedSelectors = [target.selector];
+            attempts.push(record);
+            failureReasons.push(record.errorMessage);
+            logger.info(`step ${stepIndex + 1} attempt ${attempt}: ${record.errorMessage}`);
+            continue;
+          }
           record.instruction = target.description;
           triedSelectors.push(target.selector);
           record.triedSelectors = [target.selector];
@@ -4763,7 +5708,53 @@ async function executeStepWithHealing(params: {
       resolvedAction !== null && (isStateClass || isClick)
         ? await verifyDomEffect(page, resolvedAction)
         : false;
-    let verified = networkFired || urlChanged || domVerified;
+    // Interior-advance transition gate (opt-in). On SPAs where a page advance
+    // and a mere field-edit share one endpoint URL (Talemetry `/gq`:
+    // TransitionWorklet vs EditQuestionItem — identical URLs, only the body
+    // differs), a `networkFired` signal on an interior "Next" can be a
+    // non-advancing POST. When the flow configures `advanceTransitionBodyPattern`
+    // and THIS is a non-submit step whose ONLY positive signal is networkFired
+    // (no url/dom change), require a same-window capture body to match the
+    // transition pattern before trusting it. Final/submit steps keep their own
+    // (stronger) submit-verification gate below; sites without the pattern are
+    // unaffected.
+    const isAdvanceOnlyNetwork = networkFired && !urlChanged && !domVerified;
+    const networkIsRealAdvance =
+      advanceTransitionBodyPattern === null || !isAdvanceOnlyNetwork || isFinalStep || submitStep
+        ? networkFired
+        : windowHasTransitionBody({
+            recentCaptures,
+            preLength: preCapturesLength,
+            advanceTransitionBodyPattern,
+          });
+    if (advanceTransitionBodyPattern !== null && isAdvanceOnlyNetwork && !networkIsRealAdvance) {
+      logger.info(
+        `step ${stepIndex + 1} network fired but no advance-transition body matched (non-advancing POST); not treating as verified`
+      );
+    }
+    // DOM-only-advance veto (opt-in). A rephrase can turn an advance/"Next" step
+    // into a field click (e.g. "click the Yes radio for '18?' then Next"), which
+    // `verifyDomEffect` legitimately reports as dom=true — but toggling a field
+    // never moves the wizard. So for a non-submit ADVANCE step (per the ORIGINAL
+    // instruction) whose ONLY signal is that DOM state change, do NOT count it
+    // verified: an advance requires a real transition (network/URL). Field-answer
+    // steps are not advance steps, so their DOM verification is untouched; sites
+    // without `advanceTransitionBodyPattern` are unaffected.
+    const isDomOnlyAdvance =
+      advanceTransitionBodyPattern !== null &&
+      !isFinalStep &&
+      !submitStep &&
+      domVerified &&
+      !networkFired &&
+      !urlChanged &&
+      isAdvanceStep(step);
+    if (isDomOnlyAdvance) {
+      logger.info(
+        `step ${stepIndex + 1} advance step succeeded only via DOM state change (field toggle), not a real transition; not treating as verified`
+      );
+    }
+    const domVerifiedForStep = isDomOnlyAdvance ? false : domVerified;
+    let verified = networkIsRealAdvance || urlChanged || domVerifiedForStep;
 
     // Final-step submit-verification gate. Replaces the deterministic
     // submitEndpointPattern regex with a Haiku 4.5 LLM judgment over
@@ -4963,13 +5954,12 @@ async function executeStepWithHealing(params: {
           let ancestorStillInvalid = false;
           if (probeResult.kind === "checkbox" && probeResult.checked === true) {
             const ancestorInvalidExpr = `(() => {
+              const isInvalid = ${INVALID_MARKER_EL_EXPR};
               const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
               let node = r.singleNodeValue;
               if (!node) return false;
-              const rx = /(ng-invalid|mat-form-field-invalid|is-invalid|field-invalid|input-invalid)/;
               for (let depth = 0; depth < 6 && node; depth++) {
-                const cls = node.getAttribute && node.getAttribute("class");
-                if (cls && rx.test(cls)) return true;
+                if (node.getAttribute && isInvalid(node)) return true;
                 node = node.parentElement;
               }
               return false;
@@ -4988,12 +5978,28 @@ async function executeStepWithHealing(params: {
           const retryUrlChanged = retryPost.url !== pre.url;
           const retryHtmlDelta = retryPost.bodyHtmlLength - pre.bodyHtmlLength;
           const retryTextChanged = retryPost.visibleTextSignature !== pre.visibleTextSignature;
+          // RC2: an advance/`kind=click` "Next" that only grew the DOM
+          // (validation errors rendered) with NO network/URL change is a
+          // validation-blocked no-op, not a real transition — but the
+          // dom-delta/text-change signals below would score it verified and
+          // advance the wizard past an unfilled required page. Mirror the
+          // checkbox vacuous-click guard: when a click produced no network/URL
+          // change AND the page still has required-invalid controls (MUI-aware
+          // via countNgInvalidContainers), treat the DOM-only signal as NOT
+          // verifying so the cascade routes to the fill-invalid-fields replan.
+          // Confirmed no-op signature on HCA COMPENSATION (network=false
+          // url=false htmlDelta>0 textChanged) mis-scored verified=true(dom).
+          const clickWasDomOnly =
+            probeResult.kind === "click" && !retryNetworkFired && !retryUrlChanged;
+          const clickBlockedByInvalid =
+            clickWasDomOnly && (await countNgInvalidContainers(page).catch(() => 0)) > 0;
           let retryVerified =
-            retryNetworkFired ||
-            retryUrlChanged ||
-            retryHtmlDelta !== 0 ||
-            retryTextChanged ||
-            checkboxStateVerified;
+            !clickBlockedByInvalid &&
+            (retryNetworkFired ||
+              retryUrlChanged ||
+              retryHtmlDelta !== 0 ||
+              retryTextChanged ||
+              checkboxStateVerified);
           // Apply the same submit-endpoint gate the primary verifier uses.
           // Without this, the n+16 fallback would still ride past a
           // tracking-pixel-only click on the final step. Same Haiku LLM
@@ -5250,10 +6256,13 @@ function parseCli(): {
   submitEndpointPattern: string | null;
   submittedStateSelectors: string[];
   requireSubmitEndpointMatch: boolean;
+  advanceTransitionBodyPattern: string | null;
   successUrlFragments: string[];
   successPageTitleHints: string[];
   ownBackendHostnames: string[];
   knownErrorClassPrefixes: string[];
+  wizardExitButtonLabels: string[];
+  restartSignalUrlPatterns: string[];
   originalShape: "array" | "object";
 } {
   const args = process.argv.slice(2);
@@ -5342,10 +6351,13 @@ function parseCli(): {
       submitEndpointPattern: null,
       submittedStateSelectors: [],
       requireSubmitEndpointMatch: false,
+      advanceTransitionBodyPattern: null,
       successUrlFragments: [],
       successPageTitleHints: [],
       ownBackendHostnames: [],
       knownErrorClassPrefixes: [],
+      wizardExitButtonLabels: [],
+      restartSignalUrlPatterns: [],
       originalShape: "array",
     };
   }
@@ -5364,6 +6376,9 @@ function parseCli(): {
   const requireSubmitEndpointMatch = Array.isArray(parsed.data)
     ? false
     : (parsed.data.requireSubmitEndpointMatch ?? false);
+  const advanceTransitionBodyPattern = Array.isArray(parsed.data)
+    ? null
+    : (parsed.data.advanceTransitionBodyPattern ?? null);
   const successUrlFragments = Array.isArray(parsed.data)
     ? []
     : (parsed.data.successUrlFragments ?? []);
@@ -5376,6 +6391,12 @@ function parseCli(): {
   const knownErrorClassPrefixes = Array.isArray(parsed.data)
     ? []
     : (parsed.data.knownErrorClassPrefixes ?? []);
+  const wizardExitButtonLabels = Array.isArray(parsed.data)
+    ? []
+    : (parsed.data.wizardExitButtonLabels ?? []);
+  const restartSignalUrlPatterns = Array.isArray(parsed.data)
+    ? []
+    : (parsed.data.restartSignalUrlPatterns ?? []);
   const isArrayShape = Array.isArray(parsed.data);
   // Validate regex compiles eagerly so a malformed pattern fails the run
   // at startup, not deep in a per-step verifier.
@@ -5400,10 +6421,13 @@ function parseCli(): {
     submitEndpointPattern,
     submittedStateSelectors,
     requireSubmitEndpointMatch,
+    advanceTransitionBodyPattern,
     successUrlFragments,
     successPageTitleHints,
     ownBackendHostnames,
     knownErrorClassPrefixes,
+    wizardExitButtonLabels,
+    restartSignalUrlPatterns,
     originalShape: isArrayShape ? "array" : "object",
   };
 }
@@ -5449,10 +6473,13 @@ async function main(): Promise<void> {
     submitEndpointPattern,
     submittedStateSelectors,
     requireSubmitEndpointMatch,
+    advanceTransitionBodyPattern,
     successUrlFragments,
     successPageTitleHints,
     ownBackendHostnames,
     knownErrorClassPrefixes,
+    wizardExitButtonLabels,
+    restartSignalUrlPatterns,
     originalShape,
   } = parseCli();
 
@@ -5635,6 +6662,10 @@ async function main(): Promise<void> {
           logger.warn(`step ${i + 1}: DOM dump failed: ${toErrorMessage(err)}`);
         }
       }
+      // Baseline for wizard-restart detection: capture the recentCaptures
+      // length before the step so findWizardRestartSignal scans only URLs that
+      // landed during THIS step's processing.
+      const recentCapturesLenBeforeStep = recentCaptures.length;
       try {
         const stepOutcome = await executeStepWithHealing({
           stagehand,
@@ -5655,14 +6686,33 @@ async function main(): Promise<void> {
           submitEndpointPattern,
           submittedStateSelectors,
           requireSubmitEndpointMatch,
+          advanceTransitionBodyPattern,
           successUrlFragments,
           successPageTitleHints,
           ownBackendHostnames,
           knownErrorClassPrefixes,
+          wizardExitButtonLabels,
           trajectory,
           captureFn,
           observeCache,
         });
+
+        // Wizard-restart detection: if a configured restart-signal URL (e.g.
+        // Talemetry's `init-apply?...&application_canceled=true`) landed during
+        // this step, the multi-page wizard reset to page 1. Remaining steps now
+        // target a reset page and replanning against the restarted wizard is
+        // futile — abort with a diagnostic instead of silently cycling.
+        const restartUrl = findWizardRestartSignal({
+          recentCaptures,
+          preLength: recentCapturesLenBeforeStep,
+          restartSignalUrlPatterns,
+        });
+        if (restartUrl !== null) {
+          throw new StepVerificationError(
+            `step ${i + 1} (${step.instruction.slice(0, 60)}) triggered a wizard restart (${restartUrl.slice(0, 120)}) — the application reset to the first page; aborting`,
+            "wizard-regression"
+          );
+        }
 
         if (stepOutcome === "skipped") {
           const pageStagnant =
@@ -5699,6 +6749,12 @@ async function main(): Promise<void> {
         // through to the existing dispatcher below.)
         if (err.kind === "backend-error-unrecoverable") {
           logger.error(`backend error unrecoverable: ${err.message}; aborting run`);
+          throw err;
+        }
+        if (err.kind === "wizard-regression") {
+          // The wizard restarted; replanning against a reset page cannot recover
+          // the lost progress. Bypass the replan dispatcher and abort.
+          logger.error(`wizard regression: ${err.message}; aborting run`);
           throw err;
         }
 
@@ -5785,7 +6841,7 @@ async function main(): Promise<void> {
           `step ${i + 1} terminally failed (${err.kind}); attempting global replan #${replanIndex} (${isProbe ? "probe" : "cascade"} budget ${usedSoFar + 1}/${budget})`
         );
 
-        const newSteps = await replanRemainingFlow({
+        const rawNewSteps = await replanRemainingFlow({
           client: anthropic,
           originalFlow: flow.map((s) => s.instruction),
           completedSteps,
@@ -5801,9 +6857,26 @@ async function main(): Promise<void> {
           priorReplans: replanEvents,
         });
 
-        if (!newSteps) {
+        if (!rawNewSteps) {
           logger.error(
             `replan #${replanIndex} returned outcome=impossible or unparseable output; aborting`
+          );
+          throw err;
+        }
+
+        // Resume-from-failure: drop any replan bridge step that re-runs an
+        // already-completed step (see filterCompletedFromReplan). Keeps the
+        // failed step's re-emission. originalRemaining is re-appended below.
+        const newSteps = filterCompletedFromReplan(rawNewSteps, completedSteps, step.instruction);
+        const droppedCompleted = rawNewSteps.length - newSteps.length;
+        if (droppedCompleted > 0) {
+          logger.info(
+            `replan #${replanIndex}: dropped ${droppedCompleted} bridge step(s) that re-ran already-completed steps`
+          );
+        }
+        if (newSteps.length === 0) {
+          logger.error(
+            `replan #${replanIndex} produced only already-completed steps (nothing new to bridge); aborting`
           );
           throw err;
         }
@@ -5987,6 +7060,7 @@ export {
   denormalizeStep,
   narrowInvalidFormControl,
   persistReplannedFlow,
+  probeStepBeforeAttempts,
   readFailureDumpEvidence,
   renderUnfocusedObserve,
   rephraseWithLLM,

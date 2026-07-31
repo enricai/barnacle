@@ -332,7 +332,12 @@ export async function guardedObserve(
   // fall through to fresh observe and get populated post-parse below.
   if (cache && instruction !== undefined && !options?.ignoreSelectors?.length) {
     const cached = cache.byInstruction.get(userContent);
-    if (cached) {
+    // Only a NON-EMPTY cached result is a hit. An empty [] must never satisfy
+    // a lookup: `if ([])` is truthy in JS, so without the length guard a probe
+    // whose focused observe returned [] would replay that stale [] to every
+    // later observe of the same instruction (e.g. the cascade's attempt-2),
+    // which then never re-observes the live DOM. Empties always re-run fresh.
+    if (cached && cached.length > 0) {
       cache.stats.hits += 1;
       await captureCall(
         {
@@ -398,7 +403,17 @@ export async function guardedObserve(
     // Populate cache on miss. Same gating as the lookup above: only store
     // focused observes (instruction set) without `ignoreSelectors`, since
     // those are the only calls that benefit from being replayed verbatim.
-    if (cache && instruction !== undefined && !options?.ignoreSelectors?.length) {
+    // NEVER cache an empty result: an [] entry is never invalidated
+    // (invalidateObserveCacheForSelector only evicts entries containing a
+    // matching selector) and would poison every later observe of the same
+    // instruction. Under-returning observes (React/MUI focused-observe misses)
+    // must always re-run fresh so a later attempt can resolve the element.
+    if (
+      cache &&
+      instruction !== undefined &&
+      !options?.ignoreSelectors?.length &&
+      parsed.data.length > 0
+    ) {
       cache.byInstruction.set(userContent, parsed.data);
     }
     return parsed.data;

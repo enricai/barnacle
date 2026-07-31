@@ -39,12 +39,13 @@ function mockFetch(
   ok = status >= 200 && status < 300,
   responseHeaders?: Headers
 ): void {
+  const json = JSON.stringify(body);
   vi.stubGlobal(
     "fetch",
     vi.fn().mockResolvedValue({
       status,
       ok,
-      json: vi.fn().mockResolvedValue(body),
+      text: vi.fn().mockResolvedValue(json),
       headers: responseHeaders ?? new Headers(),
     })
   );
@@ -92,18 +93,46 @@ describe("scraper/http-client createHttpClient", () => {
     await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(HttpSchemaError);
   });
 
-  it("throws HttpSchemaError when response body is not valid JSON", async () => {
+  it("retries on non-JSON body (ORA_IRC_* sentinel) and throws UnknownScraperError when all attempts fail", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({
         status: 200,
         ok: true,
-        json: vi.fn().mockRejectedValue(new SyntaxError("Unexpected token")),
+        text: vi.fn().mockResolvedValue("ORA_IRC_TOKEN_EXPIRED"),
         headers: new Headers(),
       })
     );
     const client = makeClient();
-    await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(HttpSchemaError);
+    await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(
+      UnknownScraperError
+    );
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(3);
+  });
+
+  it("retries on ORA_IRC_* sentinel body and resolves when second attempt returns valid JSON", async () => {
+    const validJson = JSON.stringify({ id: "1", name: "Widget" });
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce({
+          status: 200,
+          ok: true,
+          text: vi.fn().mockResolvedValue("ORA_IRC_TOKEN_EXPIRED"),
+          headers: new Headers(),
+        })
+        .mockResolvedValueOnce({
+          status: 200,
+          ok: true,
+          text: vi.fn().mockResolvedValue(validJson),
+          headers: new Headers(),
+        })
+    );
+    const client = makeClient();
+    const result = await client("https://example.com/api/item");
+    expect(result).toEqual({ id: "1", name: "Widget" });
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
   });
 
   it("retries on network-level failures (UnknownScraperError) and eventually throws", async () => {

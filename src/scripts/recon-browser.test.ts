@@ -73,22 +73,30 @@ import {
   extractGaEventEvidence,
   extractSubmitFailureEvidence,
   fillHtml5DateTimeInput,
+  filterCompletedFromReplan,
   findRecentBackendError,
   findRecentPageTransition,
+  findWizardRestartSignal,
   formatValidationRejectedReason,
   type Html5DateFillResult,
   hasBillingErrorBeenLogged,
   type InvalidFormControl,
+  isAdvanceStep,
   isReplanCycle,
+  isStructurallyBlocked,
   isSubmitRevealedInvalid,
+  isWizardExitAction,
   type LeafInvalidField,
   logBillingErrorIfPresent,
   type NormalizedStep,
   narrowInvalidFormControl,
   normalizeDateValue,
   pairInvalidWithErrors,
+  parseSelectStep,
   persistReplannedFlow,
+  pollEnumerate,
   probeLeafInvalidContainers,
+  probeStepBeforeAttempts,
   type ReplanEvent,
   readFailureDumpEvidence,
   renderLeafInvalidFields,
@@ -103,6 +111,7 @@ import {
   type ValidationRejectionPair,
   type VerifyFillReadbackResult,
   verifyFillReadback,
+  windowHasTransitionBody,
 } from "@/scripts/recon-browser";
 import type { Logger } from "@/types/logging";
 
@@ -944,6 +953,105 @@ describe("recon-browser/dedupeConsecutiveIdentical", () => {
     const out = dedupeConsecutiveIdentical(input);
     expect(out).not.toBe(input);
     expect(out).toEqual(input);
+  });
+});
+
+describe("recon-browser/filterCompletedFromReplan", () => {
+  const mk = (instruction: string): NormalizedStep => ({
+    instruction,
+    optional: false,
+    upload: false,
+    origin: "replan",
+  });
+
+  it("drops bridge steps that re-run already-completed steps", () => {
+    const raw = [
+      mk("Fill in the First Name field with 'Reginald'"),
+      mk("Fill in the Email field with 'x@y.z'"),
+      mk("Click the NEXT button to proceed"),
+    ];
+    const completed = [
+      "Fill in the First Name field with 'Reginald'",
+      "Fill in the Email field with 'x@y.z'",
+    ];
+    const out = filterCompletedFromReplan(raw, completed, "Fill in the Address field");
+    expect(out.map((s) => s.instruction)).toEqual(["Click the NEXT button to proceed"]);
+  });
+
+  it("keeps a re-emission of the failed step itself (legitimate no-op bridge)", () => {
+    const raw = [mk("Fill in the Address field"), mk("Click NEXT")];
+    const completed = ["Fill in the First Name field"];
+    const out = filterCompletedFromReplan(raw, completed, "Fill in the Address field");
+    expect(out.map((s) => s.instruction)).toEqual(["Fill in the Address field", "Click NEXT"]);
+  });
+
+  it("returns all steps unchanged when none are completed", () => {
+    const raw = [mk("Step A"), mk("Step B")];
+    const out = filterCompletedFromReplan(raw, [], "Step failed");
+    expect(out).toEqual(raw);
+  });
+});
+
+describe("recon-browser/isWizardExitAction", () => {
+  it("matches unambiguous wizard-exit labels (case-insensitive substring)", () => {
+    expect(isWizardExitAction("Continue Later button")).toBe(true);
+    expect(isWizardExitAction("Save & Exit")).toBe(true);
+    expect(isWizardExitAction("CANCEL APPLICATION link")).toBe(true);
+    expect(isWizardExitAction("Start Over")).toBe(true);
+  });
+
+  it("does NOT match legitimate advance controls", () => {
+    expect(isWizardExitAction("Continue button to proceed")).toBe(false);
+    expect(isWizardExitAction("NEXT button to advance to the next page")).toBe(false);
+    expect(isWizardExitAction("Apply link to advance to the job application page")).toBe(false);
+    expect(isWizardExitAction("I ACCEPT button which serves as the Continue/Next action")).toBe(
+      false
+    );
+    expect(isWizardExitAction("Submit Application")).toBe(false);
+  });
+
+  it("respects site-supplied extra labels and handles null/empty", () => {
+    expect(isWizardExitAction("Return to dashboard", ["return to dashboard"])).toBe(true);
+    expect(isWizardExitAction("Return to dashboard")).toBe(false);
+    expect(isWizardExitAction(null)).toBe(false);
+    expect(isWizardExitAction("")).toBe(false);
+  });
+});
+
+describe("recon-browser/findWizardRestartSignal", () => {
+  it("returns the matching URL when a restart-signal pattern appears in the step window", () => {
+    const captures = [
+      "https://apply.talemetry.com/application/abc/gq",
+      "https://apply.talemetry.com/init-apply/x/job/id/1?application_canceled=true",
+    ];
+    const hit = findWizardRestartSignal({
+      recentCaptures: captures,
+      preLength: 1,
+      restartSignalUrlPatterns: ["application_canceled=true"],
+    });
+    expect(hit).toContain("application_canceled=true");
+  });
+
+  it("ignores matches that landed BEFORE the step (preLength window)", () => {
+    const captures = [
+      "https://apply.talemetry.com/init-apply/x?application_canceled=true",
+      "https://apply.talemetry.com/application/abc/gq",
+    ];
+    const hit = findWizardRestartSignal({
+      recentCaptures: captures,
+      preLength: 1,
+      restartSignalUrlPatterns: ["application_canceled=true"],
+    });
+    expect(hit).toBeNull();
+  });
+
+  it("returns null when no patterns are configured (feature off)", () => {
+    const hit = findWizardRestartSignal({
+      recentCaptures: ["https://x/init-apply?application_canceled=true"],
+      preLength: 0,
+      restartSignalUrlPatterns: [],
+    });
+    expect(hit).toBeNull();
   });
 });
 
@@ -2832,5 +2940,365 @@ describe("recon-browser/Q1B — capture-shape integration (responseBody can be o
       },
     };
     expect(detectFromCaptureLike(capture)).toEqual({ rejected: false, reason: null });
+  });
+});
+
+// ─── probeStepBeforeAttempts (focused → unfocused observe fallback) ───────────
+
+describe("recon-browser/probeStepBeforeAttempts", () => {
+  // guardedObserve dispatches to stagehand.observe(instruction, options) for the
+  // FOCUSED probe (first arg is the step string) and stagehand.observe(options)
+  // for the UNFOCUSED fallback (first arg is the options object). We branch the
+  // mock on `typeof args[0]` to control each independently.
+  const nonEmpty = [
+    { selector: "xpath=/html/body/input", description: "First Name field", method: "fill" },
+  ];
+
+  function makeProbeStagehand(
+    focused: unknown[],
+    unfocused: unknown[]
+  ): {
+    observe: ReturnType<typeof vi.fn>;
+  } {
+    return {
+      observe: vi
+        .fn()
+        .mockImplementation((...args: unknown[]) =>
+          Promise.resolve(typeof args[0] === "string" ? focused : unfocused)
+        ),
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns present when focused observe is empty but unfocused observe finds candidates", async () => {
+    const stagehand = makeProbeStagehand([], nonEmpty);
+    const result = await probeStepBeforeAttempts({
+      stagehand: stagehand as never,
+      step: "Fill in the First Name field with 'Reginald'",
+      stepIndex: 5,
+      logger: testLogger,
+    });
+    expect(result).toBe("present");
+    // focused probe + unfocused fallback = two observe calls.
+    expect(stagehand.observe).toHaveBeenCalledTimes(2);
+    expect(typeof stagehand.observe.mock.calls[0]?.[0]).toBe("string");
+    expect(typeof stagehand.observe.mock.calls[1]?.[0]).not.toBe("string");
+  });
+
+  it("returns absent when both focused and unfocused observe are empty", async () => {
+    const stagehand = makeProbeStagehand([], []);
+    const result = await probeStepBeforeAttempts({
+      stagehand: stagehand as never,
+      step: "Fill in the First Name field with 'Reginald'",
+      stepIndex: 5,
+      logger: testLogger,
+    });
+    expect(result).toBe("absent");
+    expect(stagehand.observe).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns present without the unfocused fallback when the focused observe finds candidates", async () => {
+    const stagehand = makeProbeStagehand(nonEmpty, nonEmpty);
+    const result = await probeStepBeforeAttempts({
+      stagehand: stagehand as never,
+      step: "Click the Apply button",
+      stepIndex: 2,
+      logger: testLogger,
+    });
+    expect(result).toBe("present");
+    // Happy path: only the focused probe runs; no wasted unfocused observe.
+    expect(stagehand.observe).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("recon-browser/parseSelectStep", () => {
+  it("extracts the option from a bare select step", () => {
+    expect(parseSelectStep("Select 'Texas' in the State or State/Region dropdown")).toEqual({
+      option: "Texas",
+      questionLabel: null,
+    });
+  });
+
+  it("extracts option AND question label when the step scopes a question", () => {
+    expect(
+      parseSelectStep(
+        "On the COMPENSATION / Job-Related Questions page, for 'What is your highest level of nursing education?' select 'Bachelors of Science in Nursing completed'"
+      )
+    ).toEqual({
+      option: "Bachelors of Science in Nursing completed",
+      questionLabel: "What is your highest level of nursing education?",
+    });
+  });
+
+  it("handles 'select or check' phrasing", () => {
+    expect(
+      parseSelectStep(
+        "For 'Which of the following certifications do you currently possess?' select or check 'Basic Life Support (BLS)'"
+      )
+    ).toEqual({
+      option: "Basic Life Support (BLS)",
+      questionLabel: "Which of the following certifications do you currently possess?",
+    });
+  });
+
+  it("parses the multi-select CHECKBOX question steps (tryCheckboxPrimitive entry contract)", () => {
+    // These Talemetry questions render as c-MultiCheckboxInput groups, not
+    // <select>; tryCheckboxPrimitive reuses parseSelectStep to extract the
+    // option + question label, so these must parse to {option, questionLabel}.
+    expect(
+      parseSelectStep(
+        "For 'In which settings have you worked as a Registered Nurse during the past three years?' select 'Hospital'"
+      )
+    ).toEqual({
+      option: "Hospital",
+      questionLabel:
+        "In which settings have you worked as a Registered Nurse during the past three years?",
+    });
+    expect(
+      parseSelectStep(
+        "For 'Which best describes your current or most recent experience?' select 'Emergency Department'"
+      )
+    ).toEqual({
+      option: "Emergency Department",
+      questionLabel: "Which best describes your current or most recent experience?",
+    });
+  });
+
+  it("returns null for generic catch-all steps (no single target)", () => {
+    expect(
+      parseSelectStep(
+        "For any remaining self-identification, EEO, or voluntary question with a dropdown or radio, select 'I do not wish to answer' or 'Prefer not to answer'"
+      )
+    ).toBeNull();
+  });
+
+  it("returns null for non-select steps (radio click / Next)", () => {
+    expect(
+      parseSelectStep("Click the 'Yes' answer for the question 'Are you at least 18?'")
+    ).toBeNull();
+    expect(
+      parseSelectStep("Click the 'Next' button to leave the Basic Information page")
+    ).toBeNull();
+  });
+
+  it("returns null when there is no quoted option to select", () => {
+    expect(parseSelectStep("Select an appropriate value in the dropdown")).toBeNull();
+  });
+});
+
+describe("recon-browser/isAdvanceStep", () => {
+  it("is true for the HCA flow's real 'Next' advance steps", () => {
+    expect(
+      isAdvanceStep(
+        "Click the 'Next' button to leave the Basic Information page. Click ONLY the primary 'Next' button — do NOT click 'Back', 'Cancel', or 'Continue Later'."
+      )
+    ).toBe(true);
+    expect(
+      isAdvanceStep(
+        "On the COMPENSATION landing page, click the 'Next' button to continue to the Job-Related Questions page"
+      )
+    ).toBe(true);
+  });
+
+  it("is false for field-answer steps (fill / select / radio)", () => {
+    expect(isAdvanceStep("Fill in the First Name field with 'Reginald'")).toBe(false);
+    expect(
+      isAdvanceStep(
+        "For 'Are you currently licensed to work as a Registered Nurse in this state?' select 'Yes'"
+      )
+    ).toBe(false);
+    expect(
+      isAdvanceStep("Click the 'Yes' answer for the question 'Are you at least 18 years of age?'")
+    ).toBe(false);
+  });
+
+  it("is false for the final submit step", () => {
+    expect(
+      isAdvanceStep(
+        "Click the final submit control to submit the application: 'Submit' or 'Submit Application'."
+      )
+    ).toBe(false);
+  });
+
+  it("is false for null/empty", () => {
+    expect(isAdvanceStep(null)).toBe(false);
+    expect(isAdvanceStep("")).toBe(false);
+  });
+});
+
+describe("recon-browser/isStructurallyBlocked", () => {
+  it("is true when every attempt resolved no selector and never verified", () => {
+    expect(
+      isStructurallyBlocked([
+        { triedSelectors: [], verifiedBy: null },
+        { triedSelectors: [], verifiedBy: null },
+        { triedSelectors: [], verifiedBy: null },
+      ])
+    ).toBe(true);
+  });
+
+  it("is false when any attempt resolved a selector (control was found)", () => {
+    expect(
+      isStructurallyBlocked([
+        { triedSelectors: [], verifiedBy: null },
+        { triedSelectors: ["xpath=/html/body/input"], verifiedBy: null },
+      ])
+    ).toBe(false);
+  });
+
+  it("is false when any attempt carried a verification signal", () => {
+    expect(
+      isStructurallyBlocked([
+        { triedSelectors: [], verifiedBy: null },
+        { triedSelectors: [], verifiedBy: "dom" },
+      ])
+    ).toBe(false);
+  });
+
+  it("is false for an empty attempts array (no evidence either way)", () => {
+    expect(isStructurallyBlocked([])).toBe(false);
+  });
+});
+
+describe("recon-browser/windowHasTransitionBody", () => {
+  let dir: string;
+  const writeCapture = (name: string, requestPostData: unknown): void => {
+    writeFileSync(join(dir, name), JSON.stringify({ url: "https://x/gq", requestPostData }));
+  };
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "recon-adv-gate-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("returns false when no pattern is configured (opt-in)", () => {
+    writeCapture("0-x.json", '{"query":"mutation TransitionWorklet"}');
+    expect(
+      windowHasTransitionBody({
+        recentCaptures: ["0-x.json"],
+        preLength: 0,
+        advanceTransitionBodyPattern: null,
+        capturesDir: dir,
+      })
+    ).toBe(false);
+  });
+
+  it("returns true when a body in the window matches the pattern (real advance)", () => {
+    writeCapture("0-a.json", '{"query":"mutation TransitionWorklet(...)"}');
+    expect(
+      windowHasTransitionBody({
+        recentCaptures: ["0-a.json"],
+        preLength: 0,
+        advanceTransitionBodyPattern: "TransitionWorklet",
+        capturesDir: dir,
+      })
+    ).toBe(true);
+  });
+
+  it("returns false when the only same-endpoint POST is a non-advance mutation", () => {
+    // The exact false-heal case: EditQuestionItem shares the /gq URL but must NOT
+    // count as an advance.
+    writeCapture(
+      "0-edit.json",
+      '{"query":"mutation questionItemEditMutation { EditQuestionItem }"}'
+    );
+    expect(
+      windowHasTransitionBody({
+        recentCaptures: ["0-edit.json"],
+        preLength: 0,
+        advanceTransitionBodyPattern: "TransitionWorklet",
+        capturesDir: dir,
+      })
+    ).toBe(false);
+  });
+
+  it("only scans captures added after preLength (this step's window)", () => {
+    writeCapture("0-old.json", '{"query":"mutation TransitionWorklet"}');
+    writeCapture("1-new.json", '{"query":"mutation EditQuestionItem"}');
+    // preLength=1 → only "1-new.json" is in-window → no transition match.
+    expect(
+      windowHasTransitionBody({
+        recentCaptures: ["0-old.json", "1-new.json"],
+        preLength: 1,
+        advanceTransitionBodyPattern: "TransitionWorklet",
+        capturesDir: dir,
+      })
+    ).toBe(false);
+  });
+
+  it("skips .decoded.json sidecars and tolerates unreadable captures", () => {
+    writeCapture("0-a.json", '{"query":"EditQuestionItem"}');
+    // decoded sidecar with a matching string must be ignored (only raw counts)
+    writeFileSync(join(dir, "0-a.decoded.json"), '"mutation TransitionWorklet"');
+    expect(
+      windowHasTransitionBody({
+        recentCaptures: ["0-a.json", "0-a.decoded.json", "missing.json"],
+        preLength: 0,
+        advanceTransitionBodyPattern: "TransitionWorklet",
+        capturesDir: dir,
+      })
+    ).toBe(false);
+  });
+});
+
+describe("recon-browser/selectBodyExcerpt — MUI marker (RC1)", () => {
+  it("centers the excerpt on a Mui-error marker past the default cap", () => {
+    const filler = "x".repeat(50_000);
+    const body = `${filler}<div class="MuiFormControl-root Mui-error"><label>State/Region *</label></div>${"y".repeat(50_000)}`;
+    const excerpt = selectBodyExcerpt(body);
+    // The MUI marker (past the default cap) must appear in the returned window;
+    // an ng-only matcher would have returned the head slice without it.
+    expect(excerpt).toContain("Mui-error");
+  });
+});
+
+describe("recon-browser/pollEnumerate — settle-retry", () => {
+  it("returns immediately when the widget is present on the first evaluate", async () => {
+    const evaluate = vi.fn().mockResolvedValue({ present: true, n: 1 });
+    const waitForTimeout = vi.fn().mockResolvedValue(undefined);
+    const page = { evaluate, waitForTimeout } as unknown as Parameters<typeof pollEnumerate>[0];
+    const result = await pollEnumerate<{ present: boolean; n: number }>(
+      page,
+      "expr",
+      (r) => r.present
+    );
+    expect(result).toEqual({ present: true, n: 1 });
+    expect(evaluate).toHaveBeenCalledTimes(1);
+    expect(waitForTimeout).not.toHaveBeenCalled();
+  });
+
+  it("re-polls until the widget appears (render-lag), then returns it", async () => {
+    // Empty on the first two tries (widget not rendered yet), present on the third.
+    const evaluate = vi
+      .fn()
+      .mockResolvedValueOnce({ present: false })
+      .mockResolvedValueOnce({ present: false })
+      .mockResolvedValueOnce({ present: true, n: 3 });
+    const waitForTimeout = vi.fn().mockResolvedValue(undefined);
+    const page = { evaluate, waitForTimeout } as unknown as Parameters<typeof pollEnumerate>[0];
+    const result = await pollEnumerate<{ present: boolean; n?: number }>(
+      page,
+      "expr",
+      (r) => r.present
+    );
+    expect(result).toEqual({ present: true, n: 3 });
+    expect(evaluate).toHaveBeenCalledTimes(3);
+    expect(waitForTimeout).toHaveBeenCalledTimes(2);
+  });
+
+  it("gives up after the attempt cap and returns the last absent result", async () => {
+    const evaluate = vi.fn().mockResolvedValue({ present: false });
+    const waitForTimeout = vi.fn().mockResolvedValue(undefined);
+    const page = { evaluate, waitForTimeout } as unknown as Parameters<typeof pollEnumerate>[0];
+    const result = await pollEnumerate<{ present: boolean }>(page, "expr", (r) => r.present);
+    expect(result).toEqual({ present: false });
+    // Capped at PRIMITIVE_ENUMERATE_ATTEMPTS (5) evaluates, 4 waits between them.
+    expect(evaluate).toHaveBeenCalledTimes(5);
+    expect(waitForTimeout).toHaveBeenCalledTimes(4);
   });
 });

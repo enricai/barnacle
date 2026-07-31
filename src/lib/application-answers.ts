@@ -1,7 +1,7 @@
 /**
  * Shared Zod schema for the integrated-questions yes/no + free-text answer
  * block that AppCast-powered ATS plugins require on every submission. Both
- * Appcast and Encompass Health declare the same 20 fields; this module is the
+ * Appcast and Encompass Health declare the same 21 fields; this module is the
  * single source of truth so a field-type change propagates everywhere.
  *
  * Callers wrap this with `multipartJsonObject()` when the parent payload is
@@ -72,6 +72,11 @@ export const ApplicationAnswersSchema = z.object({
    * position in the last 6 months?" Tenant-specific question for Sanford /
    * Good Samaritan jobs routed through AppCast. Default "No". */
   AppliedToSanfordOrGoodSamaritanLast6Months: z.enum(["Yes", "No"]).default("No"),
+  /** "Do you have or do you plan to obtain the state license or credential?"
+   * Appcast job 57238731502 (question id 15271). Default "Yes" is
+   * candidate-favorable — assumes the applicant holds or will obtain the
+   * required credential. */
+  HasOrWillObtainLicense: z.enum(["Yes", "No"]).default("Yes"),
 });
 
 export type ApplicationAnswers = z.infer<typeof ApplicationAnswersSchema>;

@@ -43,7 +43,7 @@ function mockFetch(status: number, body: unknown): void {
     vi.fn().mockResolvedValue({
       status,
       ok: status >= 200 && status < 300,
-      json: vi.fn().mockResolvedValue(body),
+      text: vi.fn().mockResolvedValue(JSON.stringify(body)),
       headers: new Headers(),
     })
   );

@@ -43,7 +43,7 @@ function mockFetchOnce(body: unknown, status = 200): void {
       status,
       ok: status >= 200 && status < 300,
       headers: { get: vi.fn().mockReturnValue(null) },
-      json: vi.fn().mockResolvedValue(body),
+      text: vi.fn().mockResolvedValue(JSON.stringify(body)),
     })
   );
 }
@@ -55,7 +55,7 @@ function mockFetchSequence(bodies: unknown[]): void {
       status: 200,
       ok: true,
       headers: { get: vi.fn().mockReturnValue(null) },
-      json: vi.fn().mockResolvedValue(body),
+      text: vi.fn().mockResolvedValue(JSON.stringify(body)),
     });
   }
   vi.stubGlobal("fetch", fetchFn);
@@ -232,16 +232,18 @@ describe("pollTestmailInbox", () => {
         status: 200,
         ok: true,
         headers: { get: vi.fn().mockReturnValue(null) },
-        json: vi.fn().mockResolvedValue({
-          data: {
-            inbox: {
-              result: "success",
-              message: null,
-              count: 0,
-              emails: [],
+        text: vi.fn().mockResolvedValue(
+          JSON.stringify({
+            data: {
+              inbox: {
+                result: "success",
+                message: null,
+                count: 0,
+                emails: [],
+              },
             },
-          },
-        }),
+          })
+        ),
       })
     );
 
@@ -263,11 +265,13 @@ describe("pollTestmailInbox", () => {
         status: 200,
         ok: true,
         headers: { get: vi.fn().mockReturnValue(null) },
-        json: vi.fn().mockResolvedValue({
-          data: {
-            inbox: { result: "success", message: null, count: 0, emails: [] },
-          },
-        }),
+        text: vi.fn().mockResolvedValue(
+          JSON.stringify({
+            data: {
+              inbox: { result: "success", message: null, count: 0, emails: [] },
+            },
+          })
+        ),
       })
     );
 

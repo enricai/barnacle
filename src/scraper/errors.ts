@@ -85,7 +85,8 @@ export type StepVerificationErrorKind =
   | "cascade-exhausted"
   | "probe-absent"
   | "backend-error-unrecoverable"
-  | "replan-cycle-detected";
+  | "replan-cycle-detected"
+  | "wizard-regression";
 
 /**
  * Recon-only: a flow step in recon-browser.ts could not be acted on. Four
@@ -111,6 +112,14 @@ export type StepVerificationErrorKind =
  *     N times in a row (default 3). Further replans on this trajectory
  *     cannot converge — the main loop short-circuits to terminate the run
  *     instead of burning the remaining replan budget on a known fixed point.
+ *   - "wizard-regression": a multi-page wizard navigated BACKWARD / restarted
+ *     mid-flow (e.g. a mis-clicked control fired a save-and-restart, resetting
+ *     the app to page 1). Detected via a configured restart-signal URL pattern
+ *     in the recent captures (e.g. `init-apply` with `application_canceled`).
+ *     The remaining flow steps now target a reset page, so continuing — or
+ *     replanning against the restarted wizard — is futile. The main loop
+ *     bypasses the replan dispatcher and propagates out, like
+ *     backend-error-unrecoverable.
  *
  * Non-retryable — the runtime path never sees this.
  */

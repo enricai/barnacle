@@ -66,3 +66,11 @@ export const CALL_TYPE_JUDGE_MODAL_PRIORITY = "judge-modal-priority";
  * messages with field hints and severity, skipping placeholder/help text.
  */
 export const CALL_TYPE_JUDGE_ERROR_MESSAGES = "judge-error-messages";
+
+/**
+ * Haiku 4.5 judge that picks the best AVAILABLE option for a required
+ * dropdown when the flow's hardcoded answer text doesn't exist in this
+ * requisition's option list (per-req screening-question variance). Used by
+ * `trySelectPrimitive`'s LLM fallback.
+ */
+export const CALL_TYPE_JUDGE_SELECT_OPTION = "judge-select-option";
