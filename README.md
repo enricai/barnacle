@@ -744,7 +744,7 @@ Every line in `.barnacle/calls.ndjson` is a JSON object with these fields (sourc
 
 | `callType` | Source | When emitted |
 |------------|--------|--------------|
-| `recon-rephrase` | `src/scripts/recon-browser.ts` | Attempt-4 rephrase inside the recon-browser step-healing cascade — Anthropic SDK is asked to reword the failing step |
+| `recon-rephrase` | `src/scripts/recon-browser.ts` | Attempt-5 rephrase inside the recon-browser step-healing cascade — the ai-SDK model (Anthropic-direct or Bedrock-backed) is asked to reword the failing step |
 | `recon-replan` | `src/scripts/recon-browser.ts` | Global replan after a step terminally fails — Claude rewrites the remaining flow tail |
 | `recon-flow-patch` | `src/scripts/recon-heal.ts` | Patch proposal from the recon-flow-patch-generator during the `recon-heal` self-healing loop |
 | `llm-prompt-patch` | `src/scripts/llm-heal.ts` | Patch proposal from the llm-call-patch-generator during the `llm-heal` self-healing loop |
