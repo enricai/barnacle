@@ -116,6 +116,7 @@ import {
   rephraseWithLLM,
   replanRemainingFlow,
   resetBillingErrorFlagForTests,
+  resolveGotoWaitUntil,
   selectBodyExcerpt,
   selectRadioGroupOption,
   shouldSkipTechnique,
@@ -421,6 +422,30 @@ describe("rephraseWithLLM — capture instrumentation", () => {
 // param wants the full Logger interface. The cast is safe because the function
 // only calls .info / .warn / .error, all of which the stub provides.
 const testLogger = loggerStub as unknown as Logger;
+
+describe("recon-browser/resolveGotoWaitUntil", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("defaults to domcontentloaded so ad-heavy sites are not gated on a network that never idles", () => {
+    expect(resolveGotoWaitUntil(undefined, testLogger)).toBe("domcontentloaded");
+    expect(resolveGotoWaitUntil("", testLogger)).toBe("domcontentloaded");
+    expect(resolveGotoWaitUntil("   ", testLogger)).toBe("domcontentloaded");
+  });
+
+  it("honours each valid stagehand load state so a form-heavy ATS can opt back into networkidle", () => {
+    expect(resolveGotoWaitUntil("networkidle", testLogger)).toBe("networkidle");
+    expect(resolveGotoWaitUntil("load", testLogger)).toBe("load");
+    expect(resolveGotoWaitUntil("domcontentloaded", testLogger)).toBe("domcontentloaded");
+    expect(resolveGotoWaitUntil("  networkidle  ", testLogger)).toBe("networkidle");
+  });
+
+  it("warns and falls back rather than passing an unsupported state to stagehand", () => {
+    expect(resolveGotoWaitUntil("commit", testLogger)).toBe("domcontentloaded");
+    expect(loggerStub.warn).toHaveBeenCalledWith(expect.stringContaining("RECON_GOTO_WAIT_UNTIL"));
+  });
+});
 
 describe("recon-browser/denormalizeStep", () => {
   it("returns bare string for default flags (required, non-upload)", () => {

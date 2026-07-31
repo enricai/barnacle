@@ -40,7 +40,7 @@ import { dirname, join, resolve } from "node:path";
 
 import type Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
-import type { Action, Page, Stagehand } from "@browserbasehq/stagehand";
+import type { Action, LoadState, Page, Stagehand } from "@browserbasehq/stagehand";
 import { format, formatISO } from "date-fns";
 import { z } from "zod/v4";
 
@@ -185,6 +185,37 @@ const MAX_PROBE_REPLANS = 5;
  * consume the budget reserved for expensive recoveries.
  */
 const MAX_CASCADE_REPLANS = 5;
+
+/**
+ * Validates the RECON_GOTO_WAIT_UNTIL override before it reaches Stagehand,
+ * which accepts a narrower set of load states than Playwright does — `commit`
+ * is valid in Playwright and rejected here. A typo warns and falls back rather
+ * than failing the run at navigation.
+ */
+export function resolveGotoWaitUntil(raw: string | undefined, log: Logger = logger): LoadState {
+  const value = raw?.trim();
+  if (!value) return "domcontentloaded";
+  if (value === "load" || value === "domcontentloaded" || value === "networkidle") return value;
+  log.warn(
+    `RECON_GOTO_WAIT_UNTIL=${JSON.stringify(value)} is not a valid load state — falling back to "domcontentloaded"`
+  );
+  return "domcontentloaded";
+}
+
+/**
+ * Navigation wait condition for the initial goto.
+ *
+ * Defaults to `domcontentloaded` rather than `networkidle` because recon's
+ * targets are no longer only ATS forms. Ad-heavy commercial sites keep
+ * analytics and session-replay beacons on timers, so the network never falls
+ * idle for the required 500ms and `networkidle` can never resolve — Playwright
+ * marks it DISCOURAGED for exactly this reason and points at readiness
+ * assertions instead, which is what the SPA probe after the goto already does.
+ *
+ * Override with RECON_GOTO_WAIT_UNTIL for a site that genuinely needs the
+ * stricter wait (e.g. a form whose scripts must settle before step 1).
+ */
+const GOTO_WAIT_UNTIL: LoadState = resolveGotoWaitUntil(process.env.RECON_GOTO_WAIT_UNTIL);
 
 export function detectRejectionInResponseBody(body: unknown): {
   rejected: boolean;
@@ -1772,8 +1803,20 @@ async function main(): Promise<void> {
       }
     );
 
-    logger.info(`navigating to ${url}`);
-    await page.goto(url, { waitUntil: "networkidle", timeoutMs: GOTO_TIMEOUT_MS });
+    logger.info(`navigating to ${url} (waitUntil: ${GOTO_WAIT_UNTIL})`);
+    // A navigation wait that never resolves must not discard the run. Ad-heavy
+    // commercial sites (analytics/session-replay beacons on timers) never reach
+    // `networkidle`, so the wait burns GOTO_TIMEOUT_MS and throws — after the
+    // captures we came for are already on disk. Warn and press on: readiness is
+    // established by the SPA probe below, and the flow steps fail loudly on
+    // their own if the page really is unusable.
+    try {
+      await page.goto(url, { waitUntil: GOTO_WAIT_UNTIL, timeoutMs: GOTO_TIMEOUT_MS });
+    } catch (err) {
+      logger.warn(
+        `navigation wait (${GOTO_WAIT_UNTIL}) did not settle: ${toErrorMessage(err)} — continuing; the SPA readiness probe below decides whether the page is usable`
+      );
+    }
 
     const SPA_READINESS_TIMEOUT_MS = 15_000;
     const SPA_READINESS_POLL_MS = 500;

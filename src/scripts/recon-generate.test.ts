@@ -6,8 +6,10 @@ import {
   emitConfigManifest,
   emitContractTs,
   emitMultiStepExecuteHttp,
+  inferZodSchemaFromSamples,
   loadQuestionPromptKeywords,
   resolveStepPayloadField,
+  selectPayloadAction,
 } from "@/scripts/recon-generate";
 
 /** The recon env-var token for the applicant email, built by concatenation so
@@ -314,6 +316,172 @@ describe("emitBrowserFlowTs + emitContractTs — schema/flow anti-drift", () => 
       const decl = field === "Email" ? `${field}: z.email()` : `${field}: z.string()`;
       expect(contract).toContain(decl);
     }
+  });
+});
+
+describe("selectPayloadAction", () => {
+  /** Minimal action step — only the fields selection reads. */
+  const step = (url: string, requestPostData: string | null, responseBody: unknown) => ({
+    capture: { url, requestPostData, responseBody } as unknown as Parameters<
+      typeof selectPayloadAction
+    >[0][number]["capture"],
+  });
+
+  it("keeps the first action for a transactional flow, where each endpoint is hit once", () => {
+    // The regression that matters: an apply flow puts the caller's data in the
+    // opening POST, and later steps only carry the transaction forward.
+    const steps = [
+      step("https://ats.test/api/application/create", '{"FirstName":"Reginald"}', { id: "a1" }),
+      step("https://ats.test/api/form-schema", '{"jobId":"9"}', { sections: [{ fields: [] }] }),
+      step("https://ats.test/api/application/a1/submit", '{"confirm":true}', { success: true }),
+    ];
+    expect(selectPayloadAction(steps)).toBe(steps[0]);
+  });
+
+  it("prefers an endpoint re-issued with a different body over whatever fired first", () => {
+    // A search page re-queries on every filter change; the toggle fetch that
+    // happened to load first is incidental.
+    const steps = [
+      step("https://shop.test/toggles", '{"flags":["a"]}', { featureA: true }),
+      step("https://shop.test/search", '{"page":1,"filters":[]}', { total: 699 }),
+      step("https://shop.test/search", '{"page":1,"filters":["7-night"]}', { total: 151 }),
+    ];
+    expect(selectPayloadAction(steps)).toBe(steps[1]);
+  });
+
+  it("ignores a chattering endpoint that returns nothing", () => {
+    // Client-side error reporting re-posts with varying bodies and an empty
+    // response — repetition alone must not make it look like the subject.
+    const steps = [
+      step("https://shop.test/config", '{"k":"v"}', { config: 1 }),
+      step("https://shop.test/error", '{"msg":"boom"}', null),
+      step("https://shop.test/error", '{"msg":"other"}', null),
+    ];
+    expect(selectPayloadAction(steps)).toBe(steps[0]);
+  });
+
+  it("keeps the first action when the same endpoint repeats with an identical body", () => {
+    // A retry is not a re-query: nothing varies, so nothing is learned.
+    const steps = [
+      step("https://shop.test/a", '{"x":1}', { ok: true }),
+      step("https://shop.test/b", '{"y":2}', { ok: true }),
+      step("https://shop.test/b", '{"y":2}', { ok: true }),
+    ];
+    expect(selectPayloadAction(steps)).toBe(steps[0]);
+  });
+
+  it("treats query strings on the same endpoint as one endpoint", () => {
+    const steps = [
+      step("https://shop.test/toggles", '{"f":1}', { on: true }),
+      step("https://shop.test/search?page=1", '{"page":1}', { total: 9 }),
+      step("https://shop.test/search?page=2", '{"page":2}', { total: 9 }),
+    ];
+    expect(selectPayloadAction(steps)).toBe(steps[1]);
+  });
+
+  it("prefers a re-issued draft over an opening call that carries none of the caller's data", () => {
+    // A transactional flow can re-issue an endpoint too: an applicant record is
+    // built up across several writes while the call that opened the flow only
+    // ever sent a job id. Selection lands on the writes, which is where the
+    // caller's fields actually are.
+    const steps = [
+      step("https://ats.test/hcm/sourceTrackings", '{"jobId":"1"}', { items: [{ id: 1 }] }),
+      step("https://ats.test/hcm/applicationDrafts", '{"FirstName":"Reginald"}', { draftId: "d1" }),
+      step("https://ats.test/hcm/applicationDrafts", '{"MobilePhone":"5125550123"}', {
+        draftId: "d1",
+      }),
+    ];
+    expect(selectPayloadAction(steps)).toBe(steps[1]);
+  });
+
+  it("returns null when there are no actions to choose from", () => {
+    expect(selectPayloadAction([])).toBeNull();
+  });
+});
+
+describe("inferZodSchemaFromSamples", () => {
+  it("marks a key absent from some samples optional rather than requiring it of every response", () => {
+    const schema = inferZodSchemaFromSamples([{ a: 1, b: "x" }, { a: 2 }]);
+    expect(schema).toContain("b: z.string().optional()");
+    expect(schema).toContain("a: z.number()");
+  });
+
+  it("treats a field seen as null in one sample and a string in another as nullable, not z.null()", () => {
+    const schema = inferZodSchemaFromSamples([{ p: null }, { p: "str" }]);
+    expect(schema).toContain("p: z.string().nullable()");
+    expect(schema).not.toContain("z.null()");
+  });
+
+  it("stays permissive when every observation of a field is null", () => {
+    // A z.null() here would reject the string the endpoint returns tomorrow.
+    expect(inferZodSchemaFromSamples([{ p: null }])).toContain("p: z.unknown()");
+  });
+
+  it("merges every array element so a field missing from element 0 is still discovered", () => {
+    const schema = inferZodSchemaFromSamples([[{ x: 1 }, { x: 2, y: 3 }]]);
+    expect(schema).toContain("y: z.number().optional()");
+  });
+
+  it("falls back to unknown for a field whose type varies across samples", () => {
+    expect(inferZodSchemaFromSamples([{ v: "s" }, { v: 1 }])).toContain("v: z.unknown()");
+  });
+
+  it("infers past four levels so deeply nested inventory fields survive", () => {
+    // products[].itineraries[].sailings[].price.summary.total — the shape real
+    // cruise inventory arrives in; a depth-4 cap erases exactly this.
+    const deep = {
+      products: [
+        {
+          itineraries: [
+            { sailings: [{ sailingId: "DD1522", price: { summary: { total: 1402 } } }] },
+          ],
+        },
+      ],
+    };
+    const schema = inferZodSchemaFromSamples([deep]);
+    expect(schema).toContain("sailingId: z.string()");
+    expect(schema).toContain("total: z.number()");
+  });
+
+  it("collapses to unknown past the configured depth so pathological payloads stay bounded", () => {
+    const deep = { a: { b: { c: { d: { e: "too far" } } } } };
+    expect(inferZodSchemaFromSamples([deep], 0, "", { maxDepth: 2 })).toContain("z.unknown()");
+  });
+});
+
+describe("emitBrowserFlowTs + emitContractTs — read-flow payload", () => {
+  // A read flow (no submission POSTs) reaches emitContractTs with inputBody
+  // undefined. The flow emitter and the contract emitter must still agree on
+  // the payload shape: the flow's extract instruction interpolates payload
+  // fields, and every one it names has to exist in the contract's bodySchema
+  // or the generated site fails to compile.
+  const { code } = emitBrowserFlowTs({
+    siteId: "read-site",
+    pascal: "ReadSite",
+    baseUrl: "https://example.com",
+    isSubmissionFlow: false,
+    flowSteps: ["Open the results list"],
+  });
+
+  it("keeps the flow's payload references and the contract's schema keys in sync with no inputBody", () => {
+    const contract = emitContractTs({ ...BASE_OPTS, inputBody: undefined });
+    const referenced = [...code.matchAll(/\$\{payload\.([A-Za-z0-9_]+)\}/g)].map((m) => m[1]!);
+    expect(referenced.length).toBeGreaterThan(0);
+    for (const field of referenced) {
+      expect(contract).toContain(`${field}:`);
+    }
+  });
+
+  it("derives the payload schema from a captured request body when one is available", () => {
+    // Real read-flow endpoints take a structured JSON body, not a search string.
+    const contract = emitContractTs({
+      ...BASE_OPTS,
+      inputBody: { page: 1, region: "INTL", filters: [], sorts: [{ criteria: "RECOMMENDED" }] },
+    });
+    expect(contract).toContain("page:");
+    expect(contract).toContain("region:");
+    expect(contract).toContain("sorts:");
+    expect(contract).not.toContain("query: z.string().min(1)");
   });
 });
 

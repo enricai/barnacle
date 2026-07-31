@@ -132,51 +132,173 @@ export function resolveStepPayloadField(
 }
 
 /**
- * Recursively infers a Zod schema expression string from a JSON value.
- * Caps recursion at 4 levels to avoid generating unwieldy output for deeply
- * nested API responses — deeper fields collapse to z.unknown().
+ * How deep to infer before collapsing to z.unknown(). Deep enough to reach the
+ * fields that carry meaning on real inventory APIs — a cruise sailing's price
+ * summary sits ~11 levels down inside products[].itineraries[].sailings[] —
+ * while still bounding output for pathological payloads.
  */
-function inferZodSchema(
-  value: unknown,
+const DEFAULT_MAX_INFER_DEPTH = 12;
+
+interface InferOpts {
+  multipartCoerce?: boolean;
+  maxDepth?: number;
+}
+
+/**
+ * Infers a Zod schema expression string from every observed sample of a value,
+ * not just the first.
+ *
+ * Single-sample inference is wrong in ways that only surface in production: a
+ * field that is null in the sample becomes z.null() and then rejects the string
+ * it holds on the next page; a key absent from one array element is still
+ * emitted as required; heterogeneous unions collapse to whichever shape landed
+ * first. Folding over all samples lets presence counts drive .optional() and
+ * observed type variety drive nullable/union, so the generated contract matches
+ * what the endpoint actually returns rather than what one capture happened to
+ * show.
+ */
+export function inferZodSchemaFromSamples(
+  samples: readonly unknown[],
   depth = 0,
   indent = "",
-  opts: { multipartCoerce?: boolean } = {}
+  opts: InferOpts = {}
 ): string {
-  if (depth > 4) return "z.unknown()";
-  if (value === null) return "z.null()";
-  if (typeof value === "string") return "z.string()";
-  if (typeof value === "number") return opts.multipartCoerce ? "z.coerce.number()" : "z.number()";
-  if (typeof value === "boolean") {
+  const maxDepth = opts.maxDepth ?? DEFAULT_MAX_INFER_DEPTH;
+  if (depth > maxDepth) return "z.unknown()";
+
+  const present = samples.filter((s) => s !== undefined);
+  if (present.length === 0) return "z.unknown()";
+
+  const nonNull = present.filter((s) => s !== null);
+  const nullable = nonNull.length < present.length;
+  // Every observation was null: the true type is unknowable from this data, so
+  // stay permissive rather than pinning a z.null() the endpoint will violate.
+  if (nonNull.length === 0) return "z.unknown()";
+
+  const wrap = (expr: string): string => (nullable ? `${expr}.nullable()` : expr);
+
+  const kindOf = (v: unknown): string =>
+    Array.isArray(v) ? "array" : v === null ? "null" : typeof v;
+  const kinds = new Set(nonNull.map(kindOf));
+  // Mixed primitives (e.g. sometimes string, sometimes number) have no single
+  // honest Zod expression here; z.unknown() beats a schema that rejects half
+  // the real responses.
+  if (kinds.size > 1) return wrap("z.unknown()");
+
+  const kind = [...kinds][0];
+
+  if (kind === "string") return wrap("z.string()");
+  if (kind === "number") return wrap(opts.multipartCoerce ? "z.coerce.number()" : "z.number()");
+  if (kind === "boolean") {
     // multipart/form-data encodes booleans as "true"/"false". The contract
     // emitter imports the shared multipartBoolean() helper from @/lib/zod-multipart
     // when any field needs this coercion; we call it here to keep field declarations short.
-    return opts.multipartCoerce ? "multipartBoolean()" : "z.boolean()";
+    return wrap(opts.multipartCoerce ? "multipartBoolean()" : "z.boolean()");
   }
-  if (Array.isArray(value)) {
-    const item =
-      value.length > 0 ? inferZodSchema(value[0], depth + 1, indent, opts) : "z.unknown()";
-    return `z.array(${item})`;
+
+  if (kind === "array") {
+    // Merge across every element of every sample so optional/among-elements
+    // fields are discovered instead of being decided by element [0].
+    const items = (nonNull as unknown[][]).flat();
+    if (items.length === 0) return wrap("z.array(z.unknown())");
+    return wrap(`z.array(${inferZodSchemaFromSamples(items, depth + 1, indent, opts)})`);
   }
-  if (typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>);
-    if (entries.length === 0) return "z.record(z.string(), z.unknown())";
+
+  if (kind === "object") {
+    const objects = nonNull as Record<string, unknown>[];
+    const keys = [...new Set(objects.flatMap((o) => Object.keys(o)))];
+    if (keys.length === 0) return wrap("z.record(z.string(), z.unknown())");
     const inner = `${indent}  `;
     // Emit identifier-shaped keys unquoted so Biome's formatter doesn't rewrite
     // the generated file on first lint:fix.
-    const fields = entries
-      .map(
-        ([k, v]) =>
-          `${inner}${isValidJsIdentifier(k) ? k : JSON.stringify(k)}: ${inferZodSchema(v, depth + 1, inner, opts)}`
-      )
+    const fields = keys
+      .map((k) => {
+        const valuesForKey = objects.filter((o) => k in o).map((o) => o[k]);
+        const expr = inferZodSchemaFromSamples(valuesForKey, depth + 1, inner, opts);
+        // Seen on some samples but not others: the endpoint omits it sometimes,
+        // so requiring it would reject valid responses.
+        const optional = valuesForKey.length < objects.length ? `${expr}.optional()` : expr;
+        return `${inner}${isValidJsIdentifier(k) ? k : JSON.stringify(k)}: ${optional}`;
+      })
       .join(",\n");
-    return `z.object({\n${fields},\n${indent}})`;
+    return wrap(`z.object({\n${fields},\n${indent}})`);
   }
-  return "z.unknown()";
+
+  return wrap("z.unknown()");
+}
+
+/**
+ * Single-sample convenience wrapper preserving the original call signature.
+ */
+function inferZodSchema(value: unknown, depth = 0, indent = "", opts: InferOpts = {}): string {
+  return inferZodSchemaFromSamples([value], depth, indent, opts);
 }
 
 function deriveMinTime(rateLimits: RateLimitFinding[]): number {
   const first = rateLimits.find((f) => f.safeRps !== null);
   return first?.safeRps ? Math.floor(1000 / first.safeRps) : 200;
+}
+
+/**
+ * Identity of the endpoint a URL addresses, ignoring query strings so the same
+ * endpoint paged or filtered differently still collapses to one key. Matching
+ * captures to replays depends on both sides deriving this the same way.
+ */
+function endpointKey(url: string): string {
+  try {
+    const u = new URL(url);
+    return `${u.origin}${u.pathname}`;
+  } catch {
+    return url;
+  }
+}
+
+/** Empty or absent response bodies carry no evidence of an endpoint's purpose. */
+function isVoidResponse(body: unknown): boolean {
+  if (body === null || body === undefined || body === "") return true;
+  if (typeof body !== "object") return false;
+  if (Array.isArray(body)) return body.length === 0;
+  return Object.keys(body).length === 0;
+}
+
+/**
+ * Picks the action whose request body should define the payload schema.
+ *
+ * Defaults to the first action, which is right for a transactional flow: the
+ * caller's data goes in with the opening POST and later steps only carry the
+ * transaction forward. It is wrong when the flow's real subject is a query the
+ * page issues repeatedly — a search or inventory endpoint is re-hit on every
+ * filter change, while whatever happened to fire first was incidental (a
+ * feature-toggle fetch, a config read). Re-issuing the same endpoint with a
+ * different body is the signature of the parameters a caller would want to
+ * control, so that wins. Anything less clear-cut falls through to first-action
+ * behavior rather than guessing.
+ *
+ * A transactional flow can re-issue an endpoint too — an applicant record built
+ * up across several writes — and lands on those writes for the same reason: the
+ * call that merely opened the flow carries none of the caller's fields.
+ */
+export function selectPayloadAction<T extends { capture: Capture }>(steps: readonly T[]): T | null {
+  const first = steps[0];
+  if (!first) return null;
+
+  const bodiesByEndpoint = new Map<string, Set<string>>();
+  for (const step of steps) {
+    const key = endpointKey(step.capture.url);
+    const bodies = bodiesByEndpoint.get(key) ?? new Set<string>();
+    bodies.add(step.capture.requestPostData ?? "");
+    bodiesByEndpoint.set(key, bodies);
+  }
+
+  const requeried = steps.filter((step) => {
+    const bodies = bodiesByEndpoint.get(endpointKey(step.capture.url));
+    if (!bodies || bodies.size < 2) return false;
+    // An endpoint re-hit with varying bodies but nothing to show for it is
+    // chatter — client-side error reporting, beacons — not the flow's subject.
+    return !isVoidResponse(step.capture.responseBody);
+  });
+
+  return requeried[0] ?? first;
 }
 
 function deriveBaseUrl(captures: Capture[]): string {
@@ -223,18 +345,7 @@ function deriveRequestHeaders(
   replays: ReplayResult[],
   baseUrl: string
 ): Record<string, string> {
-  const successfulUrls = new Set(
-    replays
-      .filter((r) => r.success)
-      .map((r) => {
-        try {
-          const u = new URL(r.url);
-          return `${u.origin}${u.pathname}`;
-        } catch {
-          return r.url;
-        }
-      })
-  );
+  const successfulUrls = new Set(replays.filter((r) => r.success).map((r) => endpointKey(r.url)));
 
   // Prefer ACTION captures (non-GET 2xx to baseUrl host, non-telemetry) as
   // the authoritative header source. Replay-matched static-asset GETs lack
@@ -244,14 +355,7 @@ function deriveRequestHeaders(
   // where the flow is a single REST call (no detectable action sequence),
   // fall back to the replay-matched captures.
   const actionCaptures = extractActionSequence(captures, baseUrl).map((a) => a.capture);
-  const replayMatchedCaptures = captures.filter((c) => {
-    try {
-      const u = new URL(c.url);
-      return successfulUrls.has(`${u.origin}${u.pathname}`);
-    } catch {
-      return false;
-    }
-  });
+  const replayMatchedCaptures = captures.filter((c) => successfulUrls.has(endpointKey(c.url)));
 
   const relevantCaptures = actionCaptures.length > 0 ? actionCaptures : replayMatchedCaptures;
 
@@ -2814,7 +2918,8 @@ async function main(): Promise<void> {
   const inputBody = isSubmissionFlow
     ? (() => {
         try {
-          return JSON.parse(actionSteps[0]!.capture.requestPostData ?? "null") as unknown;
+          const payloadAction = selectPayloadAction(actionSteps);
+          return JSON.parse(payloadAction?.capture.requestPostData ?? "null") as unknown;
         } catch {
           return null;
         }

@@ -909,7 +909,7 @@ src/
 
 **Per-site base URL overrides:** set `BARNACLE_SITE_<UPPERCASE_SITE_ID>_BASE_URL` to override a plugin's `defaultBaseUrl` without source changes. Underscores in the env key map to hyphens in the `siteId` (e.g. `BARNACLE_SITE_MY_SHOP_BASE_URL` → plugin `my-shop`).
 
-**Bypass header:** send `x-barnacle-force-fallback: true` on any plugin request to skip the hot path and go directly to the Stagehand browser path. Useful for debugging or when you know the hot path is broken. (Fastify lowercases incoming header keys; the dispatcher reads `request.headers["x-barnacle-force-fallback"]` — supply lowercase to match.)
+**Execution header:** send `x-barnacle-execution: browser` on any plugin request to skip the hot path and go directly to the Stagehand browser path. Omit the header (or send any other value) to use the default hot path. Useful for debugging or when you know the hot path is broken. (Fastify lowercases incoming header keys; the dispatcher reads `request.headers["x-barnacle-execution"]` — supply lowercase to match.)
 
 ---
 

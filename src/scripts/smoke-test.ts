@@ -206,7 +206,7 @@ async function main(): Promise<void> {
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${apiKey}`,
-          "X-Barnacle-Force-Fallback": "true",
+          "X-Barnacle-Execution": "browser",
         },
         body: JSON.stringify(payload),
         signal: fallbackController.signal,

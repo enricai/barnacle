@@ -338,7 +338,7 @@ export async function registerRoutes(
         },
       },
       async (request) => {
-        const forceFallback = request.headers["x-barnacle-force-fallback"] === "true";
+        const forceFallback = request.headers["x-barnacle-execution"] === "browser";
         const context: SitePluginContext = {
           baseUrl,
           logger: extendLogger(request.log as unknown as pino.Logger),
