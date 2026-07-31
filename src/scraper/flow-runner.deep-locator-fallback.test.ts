@@ -334,6 +334,7 @@ describe("flow-runner/executeStepWithHealing — frame-scoped deepLocator attemp
       ],
       logger: testLogger,
       anthropic: null,
+      rephraseModel: null,
       uploadFixture: null,
       frameSelector: FRAME_SELECTOR,
     });
@@ -434,6 +435,7 @@ describe("flow-runner/executeStepWithHealing — frame-scoped deepLocator attemp
       ],
       logger: testLogger,
       anthropic: null,
+      rephraseModel: null,
       uploadFixture: null,
       frameSelector: FRAME_SELECTOR,
     });
@@ -525,6 +527,7 @@ describe("flow-runner/executeStepWithHealing — frame-scoped deepLocator attemp
         ],
         logger: testLogger,
         anthropic: null,
+        rephraseModel: null,
         uploadFixture: null,
         frameSelector: FRAME_SELECTOR,
       })

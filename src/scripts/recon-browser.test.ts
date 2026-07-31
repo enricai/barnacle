@@ -20,6 +20,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import type { ActResult, Page, Stagehand } from "@browserbasehq/stagehand";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { StagehandModel } from "@/lib/bedrock";
 import type { StepVerificationErrorKind } from "@/scraper/errors";
 import type { FrameTarget } from "@/scraper/frame-target";
 
@@ -72,6 +73,15 @@ vi.mock("@/lib/telemetry/call-capture", async (importOriginal) => {
   return {
     ...actual,
     captureLlmCall: vi.fn().mockResolvedValue(undefined),
+  };
+});
+
+const { generateObjectStub } = vi.hoisted(() => ({ generateObjectStub: vi.fn() }));
+vi.mock("ai", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("ai")>();
+  return {
+    ...actual,
+    generateObject: generateObjectStub,
   };
 });
 
@@ -170,19 +180,20 @@ import type { Logger } from "@/types/logging";
 // ── fixtures ──────────────────────────────────────────────────────────────────
 
 /**
- * Make a rephrase-mocking Anthropic stub.
+ * Wires `generateObject` (the ai-SDK call `rephraseWithLLM` now makes) and
+ * returns a fake `StagehandModel` to pass as its `client` param.
  *
- * `responseText` overloads meaning per the new structured-output schema:
+ * `responseText` overloads meaning per the structured-output schema:
  *  - "IMPOSSIBLE" or "" returns outcome=impossible (back-compat for tests
  *    written against the previous magic-string contract)
  *  - any other string returns outcome=rewrite with that text as the
  *    instruction field
- *
- * The `content` field carries the JSON serialization the SDK would have
- * received so capture instrumentation that records `responseContent` keeps
- * working unchanged.
  */
-function makeAnthropicClient(responseText: string, inputTokens = 50, outputTokens = 10): Anthropic {
+function makeRephraseModel(
+  responseText: string,
+  inputTokens = 50,
+  outputTokens = 10
+): StagehandModel {
   const trimmed = responseText.trim();
   const parsed =
     trimmed.length === 0 || trimmed === "IMPOSSIBLE"
@@ -191,15 +202,11 @@ function makeAnthropicClient(responseText: string, inputTokens = 50, outputToken
           outcome: "rewrite" as const,
           instruction: responseText,
         };
-  return {
-    messages: {
-      parse: vi.fn().mockResolvedValue({
-        parsed_output: parsed,
-        content: [{ type: "text", text: JSON.stringify(parsed) }],
-        usage: { input_tokens: inputTokens, output_tokens: outputTokens },
-      }),
-    },
-  } as unknown as Anthropic;
+  generateObjectStub.mockResolvedValue({
+    object: parsed,
+    usage: { inputTokens, outputTokens },
+  });
+  return { modelId: "claude-sonnet-4-6" } as unknown as StagehandModel;
 }
 
 function makeCaptureFn(): {
@@ -223,7 +230,7 @@ describe("rephraseWithLLM — capture instrumentation", () => {
   });
 
   it("emits one capture with callType=recon-rephrase on a successful rephrase", async () => {
-    const client = makeAnthropicClient("click the submit button instead");
+    const client = makeRephraseModel("click the submit button instead");
     const { fn, calls } = makeCaptureFn();
 
     const result = await rephraseWithLLM(
@@ -243,7 +250,7 @@ describe("rephraseWithLLM — capture instrumentation", () => {
   });
 
   it("sets model to the bare model name from config", async () => {
-    const client = makeAnthropicClient("use the sign-in link at the top");
+    const client = makeRephraseModel("use the sign-in link at the top");
     const { fn, calls } = makeCaptureFn();
 
     await rephraseWithLLM(client, "click login", [], [], [], fn);
@@ -255,7 +262,7 @@ describe("rephraseWithLLM — capture instrumentation", () => {
     // The new structured-output schema accepts outcome=impossible as a valid
     // response. parsedOk=true reflects that the schema parsed cleanly; the
     // caller still gets back null because there's no instruction to retry.
-    const client = makeAnthropicClient("IMPOSSIBLE");
+    const client = makeRephraseModel("IMPOSSIBLE");
     const { fn, calls } = makeCaptureFn();
 
     const result = await rephraseWithLLM(
@@ -275,11 +282,8 @@ describe("rephraseWithLLM — capture instrumentation", () => {
   });
 
   it("records parsedOk=false and does not throw when the API call throws", async () => {
-    const client = {
-      messages: {
-        parse: vi.fn().mockRejectedValue(new Error("network error")),
-      },
-    } as unknown as Anthropic;
+    generateObjectStub.mockRejectedValue(new Error("network error"));
+    const client = { modelId: "claude-sonnet-4-6" } as unknown as StagehandModel;
     const { fn, calls } = makeCaptureFn();
 
     const result = await rephraseWithLLM(client, "click the login button", [], [], [], fn);
@@ -291,7 +295,7 @@ describe("rephraseWithLLM — capture instrumentation", () => {
   });
 
   it("captures input/output token counts from the response usage", async () => {
-    const client = makeAnthropicClient("try the header link", 120, 7);
+    const client = makeRephraseModel("try the header link", 120, 7);
     const { fn, calls } = makeCaptureFn();
 
     await rephraseWithLLM(client, "click login", [], [], [], fn);
@@ -301,7 +305,7 @@ describe("rephraseWithLLM — capture instrumentation", () => {
   });
 
   it("includes the callId as a non-empty string", async () => {
-    const client = makeAnthropicClient("try the header nav link");
+    const client = makeRephraseModel("try the header nav link");
     const { fn, calls } = makeCaptureFn();
 
     await rephraseWithLLM(client, "click login", [], [], [], fn);
@@ -311,7 +315,7 @@ describe("rephraseWithLLM — capture instrumentation", () => {
   });
 
   it("includes the ng-invalid evidence section when pageEvidence is supplied", async () => {
-    const client = makeAnthropicClient(
+    const client = makeRephraseModel(
       "Re-fill the Legal First Name field with the candidate's first name"
     );
     const { fn, calls } = makeCaptureFn();
@@ -340,7 +344,7 @@ describe("rephraseWithLLM — capture instrumentation", () => {
   });
 
   it("renders the new evidence sections as '(none)' when no pageEvidence is supplied (back-compat)", async () => {
-    const client = makeAnthropicClient("Click the Submit button using the form's submit handler");
+    const client = makeRephraseModel("Click the Submit button using the form's submit handler");
     const { fn, calls } = makeCaptureFn();
 
     await rephraseWithLLM(client, "Click Submit", [], [], ["no observable effect"], fn);
@@ -358,7 +362,7 @@ describe("rephraseWithLLM — capture instrumentation", () => {
   // meaningful content above ORIGINAL INSTRUCTION breaks the LLM's anchor
   // to the failed instruction and lets it act on the redirect evidence.
   it("V4-C: prepends a redirect block above ORIGINAL INSTRUCTION when invalid + interactive evidence both exist", async () => {
-    const client = makeAnthropicClient("Click the No radio for the current employee question");
+    const client = makeRephraseModel("Click the No radio for the current employee question");
     const { fn, calls } = makeCaptureFn();
 
     await rephraseWithLLM(
@@ -387,7 +391,7 @@ describe("rephraseWithLLM — capture instrumentation", () => {
   });
 
   it("V4-C: does NOT prepend the redirect block when only invalid fields exist (no interactive targets)", async () => {
-    const client = makeAnthropicClient("Click the No radio for the current employee question");
+    const client = makeRephraseModel("Click the No radio for the current employee question");
     const { fn, calls } = makeCaptureFn();
 
     await rephraseWithLLM(
@@ -413,7 +417,7 @@ describe("rephraseWithLLM — capture instrumentation", () => {
   });
 
   it("V4-C: does NOT prepend the redirect block when only interactive targets exist (no invalid fields)", async () => {
-    const client = makeAnthropicClient("Click the No radio for the current employee question");
+    const client = makeRephraseModel("Click the No radio for the current employee question");
     const { fn, calls } = makeCaptureFn();
 
     await rephraseWithLLM(
@@ -438,7 +442,7 @@ describe("rephraseWithLLM — capture instrumentation", () => {
   });
 
   it("V4-C: records the system prompt on captures (rule moved out of user prompt)", async () => {
-    const client = makeAnthropicClient("Click the alternative submit element");
+    const client = makeRephraseModel("Click the alternative submit element");
     const { fn, calls } = makeCaptureFn();
 
     await rephraseWithLLM(client, "Click Submit", [], [], ["no observable effect"], fn);
@@ -1938,17 +1942,20 @@ describe("recon-browser/describeAttemptEffectSignals", () => {
       url: string;
       bodyHtmlLength: number;
       visibleTextSignature: string;
+      formValueSignature: string;
     }>
   ): {
     networkCount: number;
     url: string;
     bodyHtmlLength: number;
     visibleTextSignature: string;
+    formValueSignature: string;
   } => ({
     networkCount: 0,
     url: "https://example.com",
     bodyHtmlLength: 1000,
     visibleTextSignature: "1000:hello",
+    formValueSignature: "",
     ...overrides,
   });
 
@@ -2506,7 +2513,7 @@ describe("rephraseWithLLM — instruction history (priorAttempts)", () => {
   });
 
   it("includes INSTRUCTION TEXT ALREADY TRIED when priorAttempts is supplied", async () => {
-    const client = makeAnthropicClient("click the Yes radio button label");
+    const client = makeRephraseModel("click the Yes radio button label");
     const { fn, calls } = makeCaptureFn();
 
     await rephraseWithLLM(
@@ -2542,7 +2549,7 @@ describe("rephraseWithLLM — instruction history (priorAttempts)", () => {
   });
 
   it("renders (none) when priorAttempts is empty or undefined", async () => {
-    const client = makeAnthropicClient("click the Yes radio button label");
+    const client = makeRephraseModel("click the Yes radio button label");
     const { fn, calls } = makeCaptureFn();
 
     await rephraseWithLLM(client, "Click the Submit button", [], [], ["no observable effect"], fn);
@@ -2553,7 +2560,7 @@ describe("rephraseWithLLM — instruction history (priorAttempts)", () => {
   });
 
   it("filters out attempts whose instruction is null or empty", async () => {
-    const client = makeAnthropicClient("click the Yes label");
+    const client = makeRephraseModel("click the Yes label");
     const { fn, calls } = makeCaptureFn();
 
     await rephraseWithLLM(
@@ -4716,6 +4723,7 @@ describe("recon-browser/runHealingFlow — phantom-submit escalation, end-to-end
         steps: stepsWithSubmit(),
         logger: loggerStub as unknown as Logger,
         anthropic: null,
+        rephraseModel: null,
         uploadFixture: null,
       })
     ).resolves.toMatchObject({
@@ -4772,6 +4780,7 @@ describe("recon-browser/runHealingFlow — phantom-submit escalation, end-to-end
         steps: stepsWithSubmit(),
         logger: loggerStub as unknown as Logger,
         anthropic: null,
+        rephraseModel: null,
         uploadFixture: null,
       });
     } catch (err) {
@@ -4846,6 +4855,7 @@ describe("recon-browser/runHealingFlow — phantom-submit escalation, end-to-end
         steps: stepsWithSubmit(),
         logger: loggerStub as unknown as Logger,
         anthropic: null,
+        rephraseModel: null,
         uploadFixture: null,
         maxFlowMs: 10,
       });
@@ -4905,6 +4915,7 @@ describe("recon-browser/runHealingFlow — phantom-submit escalation, end-to-end
         steps: optionalSubmitSteps,
         logger: loggerStub as unknown as Logger,
         anthropic: null,
+        rephraseModel: null,
         uploadFixture: null,
       });
     } catch (err) {

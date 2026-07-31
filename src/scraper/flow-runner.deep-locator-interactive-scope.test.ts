@@ -2,6 +2,7 @@ import type { Anthropic } from "@anthropic-ai/sdk";
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { StagehandModel } from "@/lib/bedrock";
 import * as deepLocatorActuateModule from "@/scraper/deep-locator-actuate";
 import * as deepLocatorCandidatesModule from "@/scraper/deep-locator-candidates";
 import {
@@ -24,6 +25,16 @@ import {
 } from "@/scraper/flow-runner";
 import type { FrameTarget } from "@/scraper/frame-target";
 import type { Logger } from "@/types/logging";
+
+const generateObject = vi.fn();
+
+vi.mock("ai", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("ai")>();
+  return {
+    ...actual,
+    generateObject: (...args: unknown[]) => generateObject(...args),
+  };
+});
 
 /**
  * Positive, argument-level coverage that every flow-runner call site which
@@ -212,6 +223,7 @@ describe("flow-runner deepLocator call sites — scoped to interactive elements,
       ],
       logger: testLogger,
       anthropic: null,
+      rephraseModel: null,
       uploadFixture: null,
       frameSelector: FRAME_SELECTOR,
     });
@@ -277,6 +289,11 @@ describe("flow-runner deepLocator call sites — scoped to interactive elements,
         }),
       },
     } as unknown as Anthropic;
+    generateObject.mockImplementation(async (req: { prompt: string }) => {
+      prompts.push(req.prompt);
+      throw new Error("stub rephrase model unavailable");
+    });
+    const rephraseModel = { modelId: "test-model" } as unknown as StagehandModel;
 
     const resolveDeepLocatorCandidatesSpy = vi.spyOn(
       deepLocatorCandidatesModule,
@@ -314,6 +331,7 @@ describe("flow-runner deepLocator call sites — scoped to interactive elements,
         ],
         logger: testLogger,
         anthropic,
+        rephraseModel,
         uploadFixture: null,
         frameSelector: FRAME_SELECTOR,
       })
@@ -414,6 +432,7 @@ function runStep(
     recentCaptures: [],
     recentCaptureMeta: [],
     anthropic: null,
+    rephraseModel: null,
     logger: testLogger,
     uploadFixture: null,
     isFinalStep: false,

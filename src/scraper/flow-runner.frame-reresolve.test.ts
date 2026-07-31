@@ -198,6 +198,7 @@ describe("flow-runner frame re-resolution before the deepLocator gate", () => {
       ],
       logger: testLogger,
       anthropic: null,
+      rephraseModel: null,
       uploadFixture: null,
       frameSelector: IFRAME_SELECTOR,
     });
@@ -254,6 +255,7 @@ describe("flow-runner frame re-resolution — no declared frameSelector is a no-
       steps: [{ instruction: "Click Apply", optional: false, upload: false, submitStep: false }],
       logger: testLogger,
       anthropic: null,
+      rephraseModel: null,
       uploadFixture: null,
     });
 

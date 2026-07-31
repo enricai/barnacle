@@ -13,14 +13,15 @@
  * establishes vs. what a later step adds).
  *
  * Recovery model — each flow step runs through a 4-attempt self-healing cascade
- * (act → observe+act → observe+act with ignoreSelectors → Anthropic-SDK rephrase),
+ * (act → observe+act → observe+act with ignoreSelectors → ai-SDK-model rephrase),
  * verified by "did the network counter advance OR did the URL change". On terminal
  * cascade failure the step is dumped to `<runDir>/step-failures/` and the
  * script's main() loop attempts up to MAX_REPLANS=2 global replans, where
  * Claude rewrites the remaining flow tail given the failure context.
- * Bedrock-only deployments skip the LLM-rephrase attempt and the replan loop
- * with a startup warn. See docs/playbook.md sections 1c–1e for the full
- * design.
+ * Bedrock-only deployments run the LLM-rephrase attempt on the Bedrock-backed
+ * model (parity with Anthropic-direct) but skip the replan loop, which is
+ * still hardcoded to the raw Anthropic SDK client, with a startup warn. See
+ * docs/playbook.md sections 1c–1e for the full design.
  *
  * Usage:
  *   pnpm tsx src/scripts/recon-browser.ts \
@@ -56,7 +57,7 @@ import { z } from "zod/v4";
 import { config } from "@/config";
 import { toErrorMessage } from "@/lib/errors";
 import { configureHttpDispatcher } from "@/lib/http";
-import { buildAnthropicClient } from "@/lib/llm/anthropic-client";
+import { buildAnthropicClient, buildRephraseModel } from "@/lib/llm/anthropic-client";
 import { judgeErrorMessagesWithLLM } from "@/lib/llm/judges/error-messages";
 import { judgeInvalidFieldsWithLLM } from "@/lib/llm/judges/invalid-fields";
 import { verifySubmitWithLLM } from "@/lib/llm/judges/verify-submit";
@@ -1977,9 +1978,10 @@ async function main(): Promise<void> {
     }
 
     const anthropic = buildAnthropicClient();
+    const rephraseModel = buildRephraseModel();
     if (!anthropic) {
       logger.warn(
-        "bedrock-only deployment: attempt-4 llm rephrase and global replan will be skipped on step failures"
+        "bedrock-only deployment: global replan will be skipped on step failures (attempt-5 llm rephrase still runs on the Bedrock-backed model)"
       );
     }
 
@@ -2099,6 +2101,7 @@ async function main(): Promise<void> {
           recentCaptures,
           recentCaptureMeta,
           anthropic,
+          rephraseModel,
           logger,
           uploadFixture,
           isFinalStep: i === plan.length - 1,

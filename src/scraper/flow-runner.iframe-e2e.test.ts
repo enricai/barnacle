@@ -378,6 +378,7 @@ describe("flow-runner iframe end-to-end (offline fixture, no network)", () => {
       steps: [{ instruction: CLICK_STEP, optional: false, upload: false, submitStep: false }],
       logger: testLogger,
       anthropic: null,
+      rephraseModel: null,
       uploadFixture: null,
       frameSelector: IFRAME_SELECTOR,
     });
@@ -399,6 +400,7 @@ describe("flow-runner iframe end-to-end (offline fixture, no network)", () => {
         steps: [{ instruction: CLICK_STEP, optional: false, upload: false, submitStep: false }],
         logger: testLogger,
         anthropic: null,
+        rephraseModel: null,
         uploadFixture: null,
         // frameSelector deliberately omitted: today's (pre-fix) main-frame-only behavior.
       })
@@ -439,6 +441,7 @@ describe("flow-runner iframe end-to-end: mid-flow iframe attachment (offline fix
       ],
       logger: testLogger,
       anthropic: null,
+      rephraseModel: null,
       uploadFixture: null,
       frameSelector: IFRAME_SELECTOR,
     });
@@ -469,6 +472,7 @@ describe("flow-runner iframe end-to-end: mid-flow iframe attachment (offline fix
         ],
         logger: testLogger,
         anthropic: null,
+        rephraseModel: null,
         uploadFixture: null,
         // frameSelector deliberately omitted: today's (pre-fix) main-frame-only
         // behavior — step 2 never scopes into the frame step 1's click
@@ -523,6 +527,7 @@ describe("flow-runner iframe end-to-end: mid-flow iframe attachment (offline fix
       steps: [{ instruction: APPLY_NOW_STEP, optional: false, upload: false, submitStep: false }],
       logger: testLogger,
       anthropic: null,
+      rephraseModel: null,
       uploadFixture: null,
     });
 
@@ -622,6 +627,7 @@ describe("flow-runner iframe end-to-end: observe blind to the OOPIF, only deepLo
       steps: [{ instruction: CLICK_STEP, optional: false, upload: false, submitStep: false }],
       logger: testLogger,
       anthropic: null,
+      rephraseModel: null,
       uploadFixture: null,
       frameSelector: IFRAME_SELECTOR,
     });
@@ -655,6 +661,7 @@ describe("flow-runner iframe end-to-end: observe blind to the OOPIF, only deepLo
         steps: [{ instruction: CLICK_STEP, optional: false, upload: false, submitStep: false }],
         logger: testLogger,
         anthropic: null,
+        rephraseModel: null,
         uploadFixture: null,
         frameSelector: IFRAME_SELECTOR,
       })
@@ -951,6 +958,7 @@ describe("flow-runner iframe end-to-end: full acceptance sequence through the OO
       steps,
       logger: testLogger,
       anthropic: null,
+      rephraseModel: null,
       uploadFixture: {
         buffer: Buffer.from("pdf-bytes"),
         name: "resume.pdf",
@@ -1016,6 +1024,7 @@ describe("flow-runner iframe end-to-end: full acceptance sequence through the OO
         steps,
         logger: testLogger,
         anthropic: null,
+        rephraseModel: null,
         uploadFixture: {
           buffer: Buffer.from("pdf-bytes"),
           name: "resume.pdf",
@@ -1165,6 +1174,7 @@ describe("flow-runner iframe end-to-end: run-6 composite regression — late-att
       steps: [{ instruction: CLICK_STEP, optional: false, upload: false, submitStep: false }],
       logger: testLogger,
       anthropic: null,
+      rephraseModel: null,
       uploadFixture: null,
       frameSelector: IFRAME_SELECTOR,
     }).then(

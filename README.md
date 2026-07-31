@@ -102,7 +102,7 @@ Drives a real Stagehand + Steel browser through your flow. Captures are wired vi
 
 Captures every network call matching `/graph`, `/api/`, `/graphql`, `/v1/`, or `*.json` to `<run-dir>/graphql/<NNN>-<phase>-<operationName>.json` — one file per call, diffable and greppable. Use `--capture-all` for sites with non-standard API paths; it captures every response, producing more noise but missing nothing. Omitting both `--flow` and `--flow-file` runs zero interaction steps and captures only the network activity that fires during page navigation — useful for pure GET-style SPAs that fetch everything they need on load.
 
-Each step runs through a self-healing cascade (`act` → `observe + act` → `observe + act` with `ignoreSelectors` → Anthropic-SDK rephrase) verified by network-counter delta or URL change. The script's `main()` attempts up to two global flow replans before giving up; terminal failures dump a diagnostic bundle to `<run-dir>/step-failures/`. See [docs/playbook.md#1c--self-healing-cascade](./docs/playbook.md#1c--self-healing-cascade) for the full design.
+Each step runs through a self-healing cascade (`act` → `observe + act` → `observe + act` with `ignoreSelectors` → LLM rephrase) verified by network-counter delta or URL change. The script's `main()` attempts up to two global flow replans before giving up; terminal failures dump a diagnostic bundle to `<run-dir>/step-failures/`. See [docs/playbook.md#1c--self-healing-cascade](./docs/playbook.md#1c--self-healing-cascade) for the full design.
 
 Total runtime: 20–40 minutes for a typical flow (longer if healing or replans fire), fully unattended.
 
@@ -744,7 +744,7 @@ Every line in `.barnacle/calls.ndjson` is a JSON object with these fields (sourc
 
 | `callType` | Source | When emitted |
 |------------|--------|--------------|
-| `recon-rephrase` | `src/scripts/recon-browser.ts` | Attempt-4 rephrase inside the recon-browser step-healing cascade — Anthropic SDK is asked to reword the failing step |
+| `recon-rephrase` | `src/scripts/recon-browser.ts` | Attempt-5 rephrase inside the recon-browser step-healing cascade — the ai-SDK model (Anthropic-direct or Bedrock-backed) is asked to reword the failing step |
 | `recon-replan` | `src/scripts/recon-browser.ts` | Global replan after a step terminally fails — Claude rewrites the remaining flow tail |
 | `recon-flow-patch` | `src/scripts/recon-heal.ts` | Patch proposal from the recon-flow-patch-generator during the `recon-heal` self-healing loop |
 | `llm-prompt-patch` | `src/scripts/llm-heal.ts` | Patch proposal from the llm-call-patch-generator during the `llm-heal` self-healing loop |

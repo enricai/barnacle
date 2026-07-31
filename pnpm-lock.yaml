@@ -19,6 +19,9 @@ importers:
       '@ai-sdk/amazon-bedrock':
         specifier: ^3.0.112
         version: 3.0.112(zod@3.25.76)
+      '@ai-sdk/anthropic':
+        specifier: ^2.0.92
+        version: 2.0.92(zod@3.25.76)
       '@anthropic-ai/sdk':
         specifier: ^0.112.3
         version: 0.112.3(zod@3.25.76)
@@ -49,6 +52,9 @@ importers:
       '@fastify/swagger-ui':
         specifier: ^6.1.0
         version: 6.1.0
+      ai:
+        specifier: ^5.0.216
+        version: 5.0.216(zod@3.25.76)
       bcryptjs:
         specifier: ^3.0.3
         version: 3.0.3
@@ -3239,7 +3245,7 @@ snapshots:
       zod-to-json-schema: 3.25.2(zod@3.25.76)
     optionalDependencies:
       '@ai-sdk/amazon-bedrock': 3.0.112(zod@3.25.76)
-      '@ai-sdk/anthropic': 2.0.87(zod@3.25.76)
+      '@ai-sdk/anthropic': 2.0.92(zod@3.25.76)
       '@ai-sdk/azure': 2.0.119(zod@3.25.76)
       '@ai-sdk/cerebras': 1.0.51(zod@3.25.76)
       '@ai-sdk/deepseek': 1.0.48(zod@3.25.76)
@@ -4907,7 +4913,7 @@ snapshots:
   ollama-ai-provider-v2@1.5.5(zod@3.25.76):
     dependencies:
       '@ai-sdk/provider': 2.0.3
-      '@ai-sdk/provider-utils': 3.0.30(zod@3.25.76)
+      '@ai-sdk/provider-utils': 3.0.31(zod@3.25.76)
       zod: 3.25.76
     optional: true
 

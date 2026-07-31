@@ -175,6 +175,7 @@ describe("flow-runner/executeStepWithHealing — deepLocator hang (run 6 regress
       ],
       logger: testLogger,
       anthropic: null,
+      rephraseModel: null,
       uploadFixture: null,
       frameSelector: FRAME_SELECTOR,
     });
@@ -217,6 +218,7 @@ describe("flow-runner/executeStepWithHealing — deepLocator hang (run 6 regress
       ],
       logger: testLogger,
       anthropic: null,
+      rephraseModel: null,
       uploadFixture: null,
       frameSelector: FRAME_SELECTOR,
     });
