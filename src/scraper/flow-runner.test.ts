@@ -872,6 +872,114 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
   });
 });
 
+describe("flow-runner/executeStepWithHealing — observe-act method override for fill steps", () => {
+  const STEP = "Fill in the Zip field with '78701'";
+
+  function actResult(overrides: Partial<ActResult> = {}): ActResult {
+    return {
+      success: true,
+      message: "filled",
+      actionDescription: "filled Zip",
+      actions: [],
+      ...overrides,
+    };
+  }
+
+  function fakePage(params: { url: string; bodyHtmlLength: number }): {
+    page: Page;
+    evaluate: ReturnType<typeof vi.fn>;
+  } {
+    const url = params.url;
+    const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const src = String(expr);
+      if (src.includes("outerHTML")) {
+        return { html: params.bodyHtmlLength, text: `0:` };
+      }
+      if (src.includes("isInvalid(el)")) {
+        return 0;
+      }
+      return null;
+    });
+    const page = {
+      evaluate,
+      url: () => url,
+      title: vi.fn().mockResolvedValue("Apply"),
+      locator: vi.fn().mockReturnValue({
+        first: () => ({
+          isChecked: vi.fn().mockResolvedValue(false),
+          inputValue: vi.fn().mockResolvedValue("78701"),
+        }),
+      }),
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
+    } as unknown as Page;
+    return { page, evaluate };
+  }
+
+  function baseParams(page: Page, stagehandAct: ReturnType<typeof vi.fn>) {
+    const stagehand = {
+      act: stagehandAct,
+      observe: vi
+        .fn()
+        .mockResolvedValue([{ selector: "input", description: "Zip Code *", method: "click" }]),
+    } as unknown as Stagehand;
+    return {
+      stagehand,
+      page,
+      step: STEP,
+      optional: false,
+      upload: false,
+      submitStep: false,
+      stepIndex: 11,
+      phase: "apply",
+      signalCounter: { n: 0 },
+      recentCaptures: [],
+      recentCaptureMeta: [],
+      anthropic: null,
+      rephraseModel: null,
+      logger: testLogger,
+      captureFn: vi.fn().mockResolvedValue(undefined),
+      uploadFixture: null,
+      isFinalStep: false,
+      submitEndpointPattern: null,
+      submittedStateSelectors: [],
+      requireSubmitEndpointMatch: false,
+      advanceTransitionBodyPattern: null,
+      successUrlFragments: [],
+      successPageTitleHints: [],
+      ownBackendHostnames: [],
+      knownErrorClassPrefixes: [],
+      wizardExitButtonLabels: [],
+    };
+  }
+
+  it("overrides observe candidate method='click' to method='fill' with arguments=['78701'] before calling act", async () => {
+    const signalCounter = { n: 0 };
+    const { page } = fakePage({
+      url: "https://careers.uchealth.org/jobs/123/apply",
+      bodyHtmlLength: 184186,
+    });
+
+    type CapturedTarget = { method?: string; arguments?: unknown[] };
+    let capturedTarget: CapturedTarget | null = null;
+    const stagehandAct = vi.fn().mockImplementation(async (target) => {
+      if (typeof target === "object" && target !== null && "method" in target) {
+        capturedTarget = target as CapturedTarget;
+        signalCounter.n += 1;
+      }
+      return actResult();
+    });
+    const params = { ...baseParams(page, stagehandAct), signalCounter };
+
+    const result = await executeStepWithHealing(params);
+
+    expect(result).toBe("completed");
+    expect(capturedTarget).not.toBeNull();
+    const target = capturedTarget as unknown as CapturedTarget;
+    expect(target.method).toBe("fill");
+    expect(target.arguments).toEqual(["78701"]);
+  });
+});
+
 describe("flow-runner/runHealingFlow", () => {
   /**
    * Fake page satisfying `wireSignalCapture`'s CDP plumbing plus the plain
