@@ -212,7 +212,8 @@ async function runManualApplicationStep(
     steps: [{ instruction, optional: false, upload: false, submitStep: false }],
     logger: testLogger,
     anthropic: null,
-    resumeFixture: null,
+    rephraseModel: null,
+    uploadFixture: null,
     frameSelector: IFRAME_SELECTOR,
   });
 

@@ -336,6 +336,13 @@ function makeDenseChildFrame(
         // biome-ignore lint/style/noNonNullAssertion: screeningSelectExpr is only non-null when screeningSelect is set
         return screeningSelect!.selectByIndexSpy(screeningSelect!.index, SCREENING_QUESTION_VALUE);
       }
+      if (src.includes("isVisible") && !src.includes("accessibleName")) {
+        const indexMatch = CANDIDATE_INDEX_PATTERN.exec(src);
+        const element = indexMatch
+          ? deepLocatorFrame.get(HOP_SELECTOR)?.elements[Number(indexMatch[1])]
+          : undefined;
+        return element ? { value: element.filledWith ?? "" } : {};
+      }
       if (src.includes("isVisible")) return scan();
       if (src.includes("outerHTML") && src.includes("innerText")) {
         return { html: 500, text: "1:apply" };
@@ -622,7 +629,8 @@ describe("flow-runner dense OOPIF acceptance regression (uchealth-7, offline fix
       steps: ACCEPTANCE_STEPS,
       logger: SILENT_LOGGER,
       anthropic: null,
-      resumeFixture: {
+      rephraseModel: null,
+      uploadFixture: {
         buffer: Buffer.from("pdf-bytes"),
         name: "resume.pdf",
         mimeType: "application/pdf",
@@ -715,7 +723,8 @@ describe("flow-runner dense OOPIF acceptance regression (uchealth-7, offline fix
       steps: SCREENING_ACCEPTANCE_STEPS,
       logger: SILENT_LOGGER,
       anthropic: null,
-      resumeFixture: {
+      rephraseModel: null,
+      uploadFixture: {
         buffer: Buffer.from("pdf-bytes"),
         name: "resume.pdf",
         mimeType: "application/pdf",
@@ -812,7 +821,8 @@ describe("flow-runner dense OOPIF acceptance regression (uchealth-7, offline fix
         steps: ACCEPTANCE_STEPS,
         logger: SILENT_LOGGER,
         anthropic: null,
-        resumeFixture: {
+        rephraseModel: null,
+        uploadFixture: {
           buffer: Buffer.from("pdf-bytes"),
           name: "resume.pdf",
           mimeType: "application/pdf",
@@ -906,6 +916,17 @@ function makeBatchedChildFrame(
           return indexMatch && value !== undefined
             ? fillByIndexSpy(Number(indexMatch[1]), value)
             : null;
+        }
+        if (
+          src.includes("querySelectorAll") &&
+          src.includes("isVisible(el)") &&
+          !src.includes("dispatchEvent")
+        ) {
+          const indexMatch = CANDIDATE_INDEX_PATTERN.exec(src);
+          const element = indexMatch
+            ? deepLocatorFrame.get(HOP_SELECTOR)?.elements[Number(indexMatch[1])]
+            : undefined;
+          return element ? { value: element.filledWith ?? "" } : {};
         }
         if (src.includes("outerHTML") && src.includes("innerText")) {
           return { html: 500, text: "1:apply" };
@@ -1069,6 +1090,11 @@ describe("flow-runner dense OOPIF acceptance regression under measured latency (
     vi.useRealTimers();
   });
 
+  // Real wall-clock headroom: advanceUntilSettled ticks fake time through a
+  // full runHealingFlow cascade (up to 300 iterations), which under parallel
+  // worker contention can exceed the default 30s real-time budget even
+  // though the STEP_WATCHDOG_MS assertions below are virtual-time-based and
+  // unaffected by this.
   it("clicks 'Manual Application', fills both name fields, and reaches a verified submit with every step's own round trips staying inside STEP_WATCHDOG_MS", async () => {
     const topUrl = { current: `${TOP_ORIGIN}/jobs/123/apply` };
     const childUrls = { current: CHILD_SRC };
@@ -1126,7 +1152,8 @@ describe("flow-runner dense OOPIF acceptance regression under measured latency (
         debug: () => {},
       } as unknown as Logger,
       anthropic: null,
-      resumeFixture: {
+      rephraseModel: null,
+      uploadFixture: {
         buffer: Buffer.from("pdf-bytes"),
         name: "resume.pdf",
         mimeType: "application/pdf",
@@ -1182,5 +1209,5 @@ describe("flow-runner dense OOPIF acceptance regression under measured latency (
     expect(state.uploadedFileName).toBe("resume.pdf");
     expect(state.submitted).toBe(true);
     expect(childUrls.current).toBe(THANK_YOU_URL);
-  });
+  }, 60_000);
 });

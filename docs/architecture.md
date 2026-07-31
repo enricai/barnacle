@@ -78,7 +78,7 @@ which path. This separation means:
 - Plugins can't accidentally bypass the cache, skip metrics, or forget to
   emit the submission envelope.
 - Adding a new site requires zero changes to core — one import + one push
-  to `SITE_PLUGINS`.
+  to `BUILTIN_SITE_PLUGINS`.
 - The fallback logic is tested once, in one place.
 
 The submission envelope is one instance of this: `dispatch()` calls the

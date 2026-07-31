@@ -13,14 +13,15 @@
  * establishes vs. what a later step adds).
  *
  * Recovery model — each flow step runs through a 4-attempt self-healing cascade
- * (act → observe+act → observe+act with ignoreSelectors → Anthropic-SDK rephrase),
+ * (act → observe+act → observe+act with ignoreSelectors → ai-SDK-model rephrase),
  * verified by "did the network counter advance OR did the URL change". On terminal
  * cascade failure the step is dumped to `<runDir>/step-failures/` and the
  * script's main() loop attempts up to MAX_REPLANS=2 global replans, where
  * Claude rewrites the remaining flow tail given the failure context.
- * Bedrock-only deployments skip the LLM-rephrase attempt and the replan loop
- * with a startup warn. See docs/playbook.md sections 1c–1e for the full
- * design.
+ * Bedrock-only deployments run the LLM-rephrase attempt on the Bedrock-backed
+ * model (parity with Anthropic-direct) but skip the replan loop, which is
+ * still hardcoded to the raw Anthropic SDK client, with a startup warn. See
+ * docs/playbook.md sections 1c–1e for the full design.
  *
  * Usage:
  *   pnpm tsx src/scripts/recon-browser.ts \
@@ -56,7 +57,7 @@ import { z } from "zod/v4";
 import { config } from "@/config";
 import { toErrorMessage } from "@/lib/errors";
 import { configureHttpDispatcher } from "@/lib/http";
-import { buildAnthropicClient } from "@/lib/llm/anthropic-client";
+import { buildAnthropicClient, buildRephraseModel } from "@/lib/llm/anthropic-client";
 import { judgeErrorMessagesWithLLM } from "@/lib/llm/judges/error-messages";
 import { judgeInvalidFieldsWithLLM } from "@/lib/llm/judges/invalid-fields";
 import { verifySubmitWithLLM } from "@/lib/llm/judges/verify-submit";
@@ -1586,14 +1587,14 @@ function dumpStepFailure(params: {
   return target;
 }
 
-const DEFAULT_RESUME_FIXTURE_PATH = "src/testing/fixtures/resume.pdf";
+const DEFAULT_UPLOAD_FIXTURE_PATH = "src/testing/fixtures/resume.pdf";
 
 function parseCli(): {
   url: string;
   flow: NormalizedStep[];
   flowFile: string | null;
   provider: ProviderName | undefined;
-  resumeFixturePath: string;
+  uploadFixturePath: string;
   saveReplan: boolean;
   advancedStealth: boolean;
   dumpDomBeforeStep: number | null;
@@ -1616,8 +1617,8 @@ function parseCli(): {
   let rawFlow: unknown = null;
   let flowFile: string | null = null;
   let provider: ProviderName | undefined;
-  // Precedence: --resume-fixture flag > RESUME_FIXTURE_PATH env > default path.
-  let resumeFixturePath = process.env.RESUME_FIXTURE_PATH || DEFAULT_RESUME_FIXTURE_PATH;
+  // Precedence: --upload-fixture flag > UPLOAD_FIXTURE_PATH env > default path.
+  let uploadFixturePath = process.env.UPLOAD_FIXTURE_PATH || DEFAULT_UPLOAD_FIXTURE_PATH;
   let saveReplan = true;
   let advancedStealth = false;
   let dumpDomBeforeStep: number | null = null;
@@ -1637,8 +1638,8 @@ function parseCli(): {
         process.exit(1);
       }
       provider = raw;
-    } else if (args[i] === "--resume-fixture" && args[i + 1]) {
-      resumeFixturePath = args[++i]!;
+    } else if (args[i] === "--upload-fixture" && args[i + 1]) {
+      uploadFixturePath = args[++i]!;
     } else if (args[i] === "--no-save-replan") {
       saveReplan = false;
     } else if (args[i] === "--advanced-stealth") {
@@ -1666,7 +1667,7 @@ function parseCli(): {
 
   if (!url) {
     logger.error(
-      'usage: recon-browser.ts --url <url> [--flow \'["step1","step2"]\'] [--flow-file <path>] [--provider browserbase|steel] [--resume-fixture <path>] [--no-save-replan] [--advanced-stealth] [--dump-dom-before-step <N>] [--allocate-email <ENV_VAR_NAME>]'
+      'usage: recon-browser.ts --url <url> [--flow \'["step1","step2"]\'] [--flow-file <path>] [--provider browserbase|steel] [--upload-fixture <path>] [--no-save-replan] [--advanced-stealth] [--dump-dom-before-step <N>] [--allocate-email <ENV_VAR_NAME>]'
     );
     process.exit(1);
   }
@@ -1689,7 +1690,7 @@ function parseCli(): {
       flow: [],
       flowFile,
       provider,
-      resumeFixturePath,
+      uploadFixturePath,
       saveReplan,
       advancedStealth,
       dumpDomBeforeStep,
@@ -1761,7 +1762,7 @@ function parseCli(): {
     flow: normalizeFlow(stepsRaw),
     flowFile,
     provider,
-    resumeFixturePath,
+    uploadFixturePath,
     saveReplan,
     advancedStealth,
     dumpDomBeforeStep,
@@ -1782,13 +1783,13 @@ function parseCli(): {
 }
 
 /**
- * Loads the resume fixture from disk at startup so the upload primitive
+ * Loads the upload fixture from disk at startup so the upload primitive
  * doesn't re-read the file from disk for every recon step. Returns null
  * when the file doesn't exist — the primitive then falls through to the
  * regular cascade and the recon continues unchanged (so flows that don't
- * involve resume uploads aren't affected by a missing fixture).
+ * involve an upload step aren't affected by a missing fixture).
  */
-function loadResumeFixture(
+function loadUploadFixture(
   path: string
 ): { buffer: Buffer; name: string; mimeType: string } | null {
   try {
@@ -1802,7 +1803,7 @@ function loadResumeFixture(
     return { buffer, name, mimeType };
   } catch (err) {
     logger.warn(
-      `resume fixture not loaded from ${path}: ${toErrorMessage(err)} — upload primitive will fall through`
+      `upload fixture not loaded from ${path}: ${toErrorMessage(err)} — upload primitive will fall through`
     );
     return null;
   }
@@ -1814,7 +1815,7 @@ async function main(): Promise<void> {
     flow: rawFlow,
     flowFile,
     provider,
-    resumeFixturePath,
+    uploadFixturePath,
     saveReplan,
     advancedStealth,
     dumpDomBeforeStep,
@@ -1848,7 +1849,7 @@ async function main(): Promise<void> {
   const flow = substituteFlowEnvVars(rawFlow);
 
   const runDir = resolveReconRunDir();
-  const resumeFixture = loadResumeFixture(resumeFixturePath);
+  const uploadFixture = loadUploadFixture(uploadFixturePath);
   // Per-URL partition under the flow file's site directory. Without a flow
   // file (inline --flow mode), telemetry has no durable home and is dropped
   // — captureFn becomes a no-op so dev one-offs don't crash and don't
@@ -1871,7 +1872,7 @@ async function main(): Promise<void> {
       ? (input) => captureLlmCall(input, { sinkPath: callsNdjsonPath })
       : async () => {};
   logger.info(
-    `recon-browser: target=${url} flow_steps=${flow.length} provider=${provider ?? "(config-default)"} advancedStealth=${advancedStealth} resume_fixture=${resumeFixture ? `${resumeFixturePath} (${resumeFixture.buffer.length}b)` : "(missing)"} runId=${runDir.runId} out=${runDir.root}`
+    `recon-browser: target=${url} flow_steps=${flow.length} provider=${provider ?? "(config-default)"} advancedStealth=${advancedStealth} upload_fixture=${uploadFixture ? `${uploadFixturePath} (${uploadFixture.buffer.length}b)` : "(missing)"} runId=${runDir.runId} out=${runDir.root}`
   );
 
   const session = await createBrowserSession({ provider, advancedStealth });
@@ -1977,9 +1978,10 @@ async function main(): Promise<void> {
     }
 
     const anthropic = buildAnthropicClient();
+    const rephraseModel = buildRephraseModel();
     if (!anthropic) {
       logger.warn(
-        "bedrock-only deployment: attempt-4 llm rephrase and global replan will be skipped on step failures"
+        "bedrock-only deployment: global replan will be skipped on step failures (attempt-5 llm rephrase still runs on the Bedrock-backed model)"
       );
     }
 
@@ -2099,8 +2101,9 @@ async function main(): Promise<void> {
           recentCaptures,
           recentCaptureMeta,
           anthropic,
+          rephraseModel,
           logger,
-          resumeFixture,
+          uploadFixture,
           isFinalStep: i === plan.length - 1,
           submitEndpointPattern,
           submittedStateSelectors,

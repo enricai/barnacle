@@ -19,10 +19,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type Anthropic from "@anthropic-ai/sdk";
-import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import type { Action, Page, Stagehand } from "@browserbasehq/stagehand";
+import { generateObject } from "ai";
 
 import { config } from "@/config";
+import type { StagehandModel } from "@/lib/bedrock";
 import { toErrorMessage } from "@/lib/errors";
 import type { JudgeCaptureFn } from "@/lib/llm/judge";
 import { judgeErrorMessagesWithLLM } from "@/lib/llm/judges/error-messages";
@@ -542,6 +543,15 @@ interface StepSnapshot {
    * moving anything the user perceives). Measurement-only.
    */
   visibleTextSignature: string;
+  /**
+   * Joined `value`/`checked` fingerprint of every visible input/textarea/select
+   * control (bounded to 2000 chars, same spirit as the 200-char text slice).
+   * `innerText` never reflects a plain `<input>`'s `value` property, so a
+   * fill with no secondary UI side effect (no toggle, no formatted display)
+   * left `visibleTextSignature` unchanged and was scored as "no observable
+   * effect". This closes that blind spot. Measurement-only.
+   */
+  formValueSignature: string;
 }
 
 /** One attempt's audit trail — included verbatim in the failure dump. */
@@ -553,6 +563,7 @@ export interface AttemptRecord {
     | "structured-click"
     | "observe-act-exclude"
     | "deep-submit-locator"
+    | "deep-locator-field-label"
     | "llm-rephrase";
   instruction: string | null;
   triedSelectors: string[];
@@ -574,13 +585,18 @@ export interface AttemptRecord {
    * - `network`: same-origin POST counter advanced in the attempt window.
    * - `url`: page navigated to a new URL.
    * - `dom`: verifyDomEffect confirmed a structural change (radio/checkbox state).
+   * - `view-swap`: isClickViewSwapVerified credited a client-side DOM reveal
+   *   (≥5KB growth, zero network, not submit/final/advance-pattern step).
    * - `submitted-state-dom`: final-step DOM fallback fired — a flow-declared
    *   `submittedStateSelectors` entry matched live DOM, indicating the SPA
    *   reached its submitted state even though the network capture missed
    *   the submit POST within the attempt window.
+   * - `form-value`: formValueVerified credited a visible input/textarea/select
+   *   value diff with no other signal (plain-text-field fill, no secondary
+   *   UI side effect).
    * - `null`: failure path.
    */
-  verifiedBy: "network" | "url" | "dom" | "submitted-state-dom" | null;
+  verifiedBy: "network" | "url" | "dom" | "view-swap" | "submitted-state-dom" | "form-value" | null;
   /**
    * {@link classifyPhantomClick}'s verdict for this attempt, computed from
    * the same pre/post snapshot pair `describeAttemptEffectSignals` already
@@ -597,7 +613,7 @@ export interface AttemptRecord {
  * means no injection surface. Runs in browser context and returns a typed-narrow
  * shape via Runtime.callFunctionOn.
  */
-const DOM_SNAPSHOT_EXPR = `(() => { const b = document.body; if (!b) return { html: 0, text: "" }; const t = b.innerText || ""; return { html: (b.outerHTML || "").length, text: t.length + ":" + t.slice(0, 200) }; })()`;
+const DOM_SNAPSHOT_EXPR = `(() => { const b = document.body; if (!b) return { html: 0, text: "", values: "" }; const t = b.innerText || ""; const controls = Array.from(b.querySelectorAll("input, textarea, select")).filter((el) => el.offsetParent !== null); const values = controls.map((el) => { if (el.type === "checkbox" || el.type === "radio") return el.checked ? "1" : "0"; return el.value || ""; }).join("|").slice(0, 2000); return { html: (b.outerHTML || "").length, text: t.length + ":" + t.slice(0, 200), values }; })()`;
 
 /**
  * Captures the pre/post signal triple the submit-verify cascade diffs.
@@ -613,6 +629,7 @@ export async function snapshotPage(
 ): Promise<StepSnapshot> {
   let bodyHtmlLength = 0;
   let visibleTextSignature = "";
+  let formValueSignature = "";
   try {
     const result = await target.evaluate(DOM_SNAPSHOT_EXPR);
     if (
@@ -625,6 +642,8 @@ export async function snapshotPage(
     ) {
       bodyHtmlLength = (result as { html: number }).html;
       visibleTextSignature = (result as { text: string }).text;
+      const rawValues = (result as Record<string, unknown>).values;
+      formValueSignature = typeof rawValues === "string" ? rawValues : "";
     }
   } catch {
     // Snapshot is observational; on failure, defaults to 0/"" so the verifier
@@ -642,6 +661,7 @@ export async function snapshotPage(
     url,
     bodyHtmlLength,
     visibleTextSignature,
+    formValueSignature,
   };
 }
 
@@ -1056,6 +1076,54 @@ export function isDomOnlyAdvanceVerified(params: {
 }
 
 /**
+ * Client-side view-swap verification gate. Credits a click that produces
+ * substantial DOM growth with zero network as a verified step outcome when
+ * the step is a plain client-side reveal (not a submit/final step, not an
+ * advance/'Next' step on a site with advanceTransitionBodyPattern configured).
+ *
+ * **Why this exists:** SPA/iframe wizards often swap visible screens
+ * (e.g. method-chooser → basic-info form) via client-side DOM manipulation
+ * with zero network requests. The existing verifyDomEffect (line 4866-4891)
+ * explicitly returns false for non-radio/checkbox clicks, routing those
+ * to the network/URL signal — which correctly verifies navigation but
+ * false-negatives client-side view swaps. This gate fills that gap.
+ *
+ * **Threshold rationale:** 5000B is 10× the trivial boundary (500B) and
+ * safely distinguishes real view swaps (measured case: +49518B) from
+ * validation-error reflows (typically < 2KB per codebase evidence at
+ * line 2040-2044: error text capped at 200 chars, container markup adds
+ * 150-350B per error, worst-case ~10 errors = ~3500B max).
+ *
+ * **Scope guards:** Excludes final/submit steps (those require real network
+ * per isSubmitRevealedInvalid + LLM submit judge) and advance-pattern steps
+ * (those require real transition per isDomOnlyAdvanceVerified/isAdvanceStalled
+ * to avoid wizard-ATS autosave-vs-transition ambiguity).
+ */
+export function isClickViewSwapVerified(params: {
+  resolvedAction: { method?: string | null } | null;
+  isFinalStep: boolean;
+  submitStep: boolean;
+  isAdvanceWithPattern: boolean;
+  networkDelta: number;
+  bytesDelta: number;
+}): boolean {
+  const VIEW_SWAP_MIN_BYTES = 5000;
+  const {
+    resolvedAction,
+    isFinalStep,
+    submitStep,
+    isAdvanceWithPattern,
+    networkDelta,
+    bytesDelta,
+  } = params;
+  if (resolvedAction?.method !== "click") return false;
+  if (isFinalStep || submitStep) return false;
+  if (isAdvanceWithPattern) return false;
+  if (networkDelta !== 0) return false;
+  return bytesDelta >= VIEW_SWAP_MIN_BYTES;
+}
+
+/**
  * Read-only count of ng-invalid form controls on the resolved frame. Side-effect-free
  * counterpart to `probeFormValidityBeforeSubmit` (which also auto-fills
  * unselected radio groups via element.click()). Used by the cascade's
@@ -1102,6 +1170,7 @@ export function describeAttemptEffectSignals(
   const bytesDelta = post.bodyHtmlLength - pre.bodyHtmlLength;
   const networkDelta = post.networkCount - pre.networkCount;
   const textChanged = post.visibleTextSignature !== pre.visibleTextSignature;
+  const valueChanged = post.formValueSignature !== pre.formValueSignature;
   const windowCaptures = recentCaptureMeta.slice(preMetaLength);
   const observations: string[] = [];
   if (networkDelta === 0 && bytesDelta >= 500) {
@@ -1120,6 +1189,11 @@ export function describeAttemptEffectSignals(
   if (textChanged && networkDelta === 0 && bytesDelta < 500) {
     observations.push(
       "visible-text-changed-without-network: page reflowed slightly (likely tooltip/focus state)"
+    );
+  }
+  if (valueChanged && !textChanged && networkDelta === 0) {
+    observations.push(
+      "form-value-changed-without-network: a visible input/textarea/select value changed with no other observable effect (plain field fill)"
     );
   }
   return observations.join(" | ");
@@ -1228,7 +1302,7 @@ export function shouldSkipTechnique(params: {
   // structured-click / observe-act-exclude re-resolves the SAME
   // light-DOM-only view of the page and would no-op identically, so skip
   // straight to deep-submit-locator (attempt 2) instead. llm-rephrase
-  // (attempt 5) is never skipped — a differently-worded instruction is still
+  // (attempt 4) is never skipped — a differently-worded instruction is still
   // a distinct attempt worth trying if the deep locator also fails. Gated on
   // submitShapedStep: the deep submit-control locator ranks submit-shaped
   // candidates only, so on a non-submit control (e.g. a radio/checkbox) it
@@ -1368,8 +1442,8 @@ export function isAdvanceStalled(params: {
 }
 
 /**
- * Lazy Anthropic client for attempt 4's rephrase. Returns null when the
- * deployment is Bedrock-only (no ANTHROPIC_API_KEY) — attempt 4 then becomes
+ * Lazy Anthropic client for attempt 5's rephrase. Returns null when the
+ * deployment is Bedrock-only (no ANTHROPIC_API_KEY) — attempt 5 then becomes
  * a no-op and the executor escalates straight to the failure dump. The other
  * three attempts already cover the lion's share of recovery.
  */
@@ -1397,12 +1471,12 @@ const REPHRASE_SYSTEM_PROMPT =
   "You rewrite a failed Stagehand act() instruction so the next attempt targets a different element than those already tried. If no different element exists on the page that could plausibly unblock the flow, return outcome=impossible. Never re-propose a selector or wording from the lists labeled SELECTORS ALREADY TRIED or INSTRUCTION TEXT ALREADY TRIED.";
 
 /**
- * Attempt-4 of the step-healing cascade: when three mechanical retry variations
+ * Attempt-5 of the step-healing cascade: when three mechanical retry variations
  * all fail, this is the last resort before the step is declared terminal. Exported
  * so tests can inject a fake capture sink without touching the browser session.
  */
 export async function rephraseWithLLM(
-  client: Anthropic,
+  client: StagehandModel,
   originalStep: string,
   triedSelectors: string[],
   observeCandidates: Action[],
@@ -1465,14 +1539,22 @@ export async function rephraseWithLLM(
    * "click harder" into "fill the actually-missing field." Telemetry
    * the engine already captures but never showed the LLM until now.
    */
-  gaEventEvidence?: string
+  gaEventEvidence?: string,
+  /**
+   * Anthropic client for the modal-priority judge inside
+   * `renderUnfocusedObserve`. Separate from `client` (the ai-SDK model used
+   * for the rephrase call itself) because that judge pipeline is unrelated
+   * to which provider generates the rephrase, and null on a Bedrock-only
+   * deployment falls back to `renderUnfocusedObserve`'s source-order default.
+   */
+  judgeClient?: Anthropic | null
 ): Promise<string | null> {
   const candidateList = observeCandidates
     .slice(0, 12)
     .map((a, i) => `${i + 1}. ${a.description} — ${a.selector}`)
     .join("\n");
   const unfocusedList = unfocusedObserve
-    ? await renderUnfocusedObserve(unfocusedObserve, { client, captureFn })
+    ? await renderUnfocusedObserve(unfocusedObserve, { client: judgeClient, captureFn })
     : "";
   const triedList = triedSelectors.length > 0 ? triedSelectors.join("\n") : "(none)";
   const reasonList = failureReasons.map((r, i) => `attempt ${i + 1}: ${r}`).join("\n");
@@ -1550,25 +1632,18 @@ ${gaEventEvidence || "(none)"}
 
 Rewrite the instruction so a Stagehand act() call can resolve it unambiguously to a different element than the ones already tried. Keep it short — one sentence, natural language, no quotes around it. If the invalid-fields section above names a field AND the interactive-targets section below lists clickable options inside that same container, your rewrite picks one of those options (e.g. for a yes/no question rendered as two radio labels, choose the candidate-favorable answer — 'No' for "do you have a non-compete", 'Yes' for "are you authorized to work", 'Prefer not to say' for demographic disclosures) rather than retrying the original click. If the unfocused observe section shows an open modal/dialog with a Save or Close action, your rewrite invokes that action so the underlying form can clear its blocking state. Set outcome to "impossible" with a one-line reason only when the original instruction's element does not exist on the current page and no redirect target is available.`;
 
-  const model = anthropicModelName();
+  const model = client.modelId;
   const t0 = performance.now();
   try {
-    const response = await client.messages.parse({
-      model,
-      max_tokens: 400,
+    const response = await generateObject({
+      model: client,
+      maxOutputTokens: 400,
       system: REPHRASE_SYSTEM_PROMPT,
-      messages: [{ role: "user", content: prompt }],
-      output_config: {
-        format: zodOutputFormat(REPHRASE_RESPONSE_SCHEMA),
-      },
+      prompt,
+      schema: REPHRASE_RESPONSE_SCHEMA,
     });
     const latencyMs = performance.now() - t0;
-    const parsed = response.parsed_output;
-    if (parsed === null) {
-      throw new Error("structured-output enabled but parsed_output is null");
-    }
-    const textBlock = response.content.find((b) => b.type === "text");
-    const rawText = textBlock?.type === "text" ? textBlock.text : "";
+    const parsed = response.object;
 
     await captureFn({
       callId: randomUUID(),
@@ -1576,10 +1651,10 @@ Rewrite the instruction so a Stagehand act() call can resolve it unambiguously t
       model,
       systemPrompt: REPHRASE_SYSTEM_PROMPT,
       userContent: prompt,
-      responseContent: rawText,
+      responseContent: JSON.stringify(parsed),
       parsedOk: true,
-      inputTokens: response.usage?.input_tokens ?? null,
-      outputTokens: response.usage?.output_tokens ?? null,
+      inputTokens: response.usage.inputTokens ?? null,
+      outputTokens: response.usage.outputTokens ?? null,
       latencyMs,
       success: true,
       errorMessage: null,
@@ -2675,7 +2750,7 @@ const UPLOAD_URL_PATTERNS = ["/upload", "/resume", "/file", "/attachment", "/doc
 type CaptureMeta = { method: string; status: number; url: string };
 
 /** Fixture shape carried by the upload helpers (never null past the guard). */
-type ResumeFixture = { buffer: Buffer; name: string; mimeType: string };
+type UploadFixture = { buffer: Buffer; name: string; mimeType: string };
 
 /**
  * Poll the recent-capture window for an upload-related POST after a file has
@@ -2686,7 +2761,7 @@ type ResumeFixture = { buffer: Buffer; name: string; mimeType: string };
  */
 async function waitForUploadNetworkSignal(params: {
   page: Page;
-  fixture: ResumeFixture;
+  fixture: UploadFixture;
   logger: Logger;
   signalCounter: { n: number };
   recentCaptureMeta: readonly CaptureMeta[];
@@ -2734,7 +2809,7 @@ export function isUploadAffordanceLabel(label: string): boolean {
 }
 
 /**
- * Materialize the in-memory resume fixture to a temp file so CDP
+ * Materialize the in-memory upload fixture to a temp file so CDP
  * `DOM.setFileInputFiles` (which requires a filesystem path, unlike
  * Playwright's `locator.setInputFiles`) can reference it. Only used as a
  * fallback when the on-disk fixture path is unavailable. Process-scoped — the
@@ -2851,7 +2926,7 @@ export async function attachToSurfacedInput(params: {
   page: Page;
   /** Frame the surfaced `<input type=file>` lives in. */
   target: FrameTarget;
-  fixture: ResumeFixture;
+  fixture: UploadFixture;
   logger: Logger;
   signalCounter: { n: number };
   recentCaptureMeta: readonly CaptureMeta[];
@@ -2961,7 +3036,7 @@ export async function surfaceAndUpload(params: {
   page: Page;
   /** Frame the upload widget lives in — its CDP session owns the native file-chooser interception below. */
   target: FrameTarget;
-  fixture: ResumeFixture;
+  fixture: UploadFixture;
   logger: Logger;
   signalCounter: { n: number };
   recentCaptureMeta: readonly CaptureMeta[];
@@ -3160,7 +3235,7 @@ async function setFilesViaCdp(params: {
   target: FrameTarget;
   session: ReturnType<Page["getSessionForFrame"]>;
   backendNodeId: number;
-  fixture: ResumeFixture;
+  fixture: UploadFixture;
   logger: Logger;
   signalCounter: { n: number };
   recentCaptureMeta: readonly CaptureMeta[];
@@ -3360,6 +3435,26 @@ function resolveDeepLocatorActuation(step: string): DeepLocatorActuation {
 /** Whitespace-collapsed, lowercased comparison key for {@link findDeepLocatorCandidateByFieldLabel}. */
 function normalizeFieldLabel(text: string): string {
   return text.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+type FieldLabelTarget = { kind: "fill" | "select"; fieldLabel: string; value: string };
+
+/**
+ * Parses a fill/select step into the field it names plus the value to write,
+ * or `null` for any other step shape (click, a select whose question is
+ * un-quoted, etc). Shared by both the observe-empty deepLocator fallback and
+ * the field-label-first routing ahead of Stagehand's own act()/observe()
+ * resolution — see `findDeepLocatorCandidateByFieldLabel`'s docblock for why
+ * the field LABEL (not the value) is what a caller matches candidates
+ * against.
+ */
+function parseFieldLabelTarget(step: string): FieldLabelTarget | null {
+  const fillStep = parseFillStep(step);
+  if (fillStep) return { kind: "fill", fieldLabel: fillStep.fieldLabel, value: fillStep.value };
+  const selectStep = parseSelectStep(step);
+  return selectStep?.questionLabel
+    ? { kind: "select", fieldLabel: selectStep.questionLabel, value: selectStep.option }
+    : null;
 }
 
 /**
@@ -5306,6 +5401,67 @@ async function resolveDeepLocatorCandidatesWithWidening(
   return { candidates: widened, innerSelector: "*" };
 }
 
+type FieldLabelActuationOutcome =
+  | { kind: "actuated"; matched: DeepLocatorCandidate; fieldTarget: FieldLabelTarget }
+  | { kind: "actuation-failed"; matched: DeepLocatorCandidate; fieldTarget: FieldLabelTarget }
+  | { kind: "no-match"; fieldTarget: FieldLabelTarget }
+  | { kind: "not-fill-or-select" };
+
+/**
+ * Resolves and actuates a fill/select step's NAMED FIELD through the
+ * deterministic accessible-name match (`findDeepLocatorCandidateByFieldLabel`)
+ * against the frame's own deepLocator scan, independent of what Stagehand's
+ * `act()`/`observe()` resolved. A same-frame accessible-name label match
+ * cannot confuse a City input for an unrelated header search box the way
+ * Stagehand's semantic resolution can — Stagehand's own candidate is only a
+ * fallback for the caller to use when this returns `no-match` or
+ * `not-fill-or-select`, never the first attempt for a step that names a
+ * field. `triedSelectors` (already-attempted selectors from prior
+ * cascade attempts) is excluded so a step that already tried and failed on
+ * this candidate doesn't just re-pick it.
+ */
+async function tryDeterministicFieldLabelActuation(params: {
+  page: Page;
+  frameTarget: FrameTarget;
+  step: string;
+  triedSelectors: readonly string[];
+  timeoutOptions: DeepLocatorTimeoutOptions;
+}): Promise<FieldLabelActuationOutcome> {
+  const { page, frameTarget, step, triedSelectors, timeoutOptions } = params;
+  const fieldTarget = parseFieldLabelTarget(step);
+  if (!fieldTarget) return { kind: "not-fill-or-select" };
+  const { candidates, innerSelector } = await resolveDeepLocatorCandidatesWithWidening(
+    page,
+    frameTarget.frameSelector,
+    step,
+    timeoutOptions
+  );
+  const unexcluded = candidates.filter((c) => !triedSelectors.includes(c.selector));
+  const matched = findDeepLocatorCandidateByFieldLabel(unexcluded, fieldTarget.fieldLabel);
+  if (!matched) return { kind: "no-match", fieldTarget };
+  const actuated =
+    fieldTarget.kind === "fill"
+      ? await fillDeepLocatorCandidate(
+          page,
+          frameTarget.frameSelector,
+          innerSelector,
+          matched.index,
+          fieldTarget.value,
+          { frameTarget }
+        )
+      : await selectDeepLocatorCandidateOption(
+          page,
+          frameTarget.frameSelector,
+          innerSelector,
+          matched.index,
+          fieldTarget.value,
+          { frameTarget }
+        );
+  return actuated
+    ? { kind: "actuated", matched, fieldTarget }
+    : { kind: "actuation-failed", matched, fieldTarget };
+}
+
 /**
  * Adapts `resolveDeepLocatorCandidatesWithWidening` results into
  * `Action`-shaped evidence for `rephraseWithLLM`, which only knows about
@@ -5531,9 +5687,17 @@ export async function executeStepWithHealing(params: {
   recentCaptures: string[];
   recentCaptureMeta: { method: string; status: number; url: string }[];
   anthropic: Anthropic | null;
+  /**
+   * Provider-agnostic ai-SDK model for attempt-5's `rephraseWithLLM`
+   * (Anthropic-direct or Bedrock-backed per config). Independent of
+   * `anthropic` above — a Bedrock-only deployment has `anthropic: null`
+   * but still gets a non-null `rephraseModel`, so the rephrase tier runs
+   * on both deployment shapes.
+   */
+  rephraseModel: StagehandModel | null;
   logger: Logger;
   captureFn?: CaptureFn;
-  resumeFixture: { buffer: Buffer; name: string; mimeType: string } | null;
+  uploadFixture: { buffer: Buffer; name: string; mimeType: string } | null;
   /**
    * Final-step gate: when both are set, the verifier additionally requires at
    * least one capture in `recentCaptureMeta` whose URL matches the pattern. Lets
@@ -5655,9 +5819,10 @@ export async function executeStepWithHealing(params: {
     recentCaptures,
     recentCaptureMeta,
     anthropic,
+    rephraseModel,
     logger,
     captureFn,
-    resumeFixture,
+    uploadFixture,
     isFinalStep,
     submitEndpointPattern,
     submittedStateSelectors,
@@ -5746,7 +5911,7 @@ export async function executeStepWithHealing(params: {
       page,
       target: frameTarget ?? mainFrameTarget(page),
       isUploadStep: upload,
-      fixture: resumeFixture,
+      fixture: uploadFixture,
       logger,
       signalCounter,
       recentCaptureMeta,
@@ -6023,6 +6188,7 @@ export async function executeStepWithHealing(params: {
         url: page.url(),
         bodyHtmlLength: 0,
         visibleTextSignature: "",
+        formValueSignature: "",
       };
       attempts.push({
         attempt: 0,
@@ -6131,6 +6297,62 @@ export async function executeStepWithHealing(params: {
     let resolvedAction: Action | null = null;
 
     try {
+      // Field-label-first routing: for a frame-scoped fill/select step,
+      // Stagehand's own act()/observe() can resolve a real, in-DOM, plausible-
+      // looking control that is nonetheless the WRONG one (a City field
+      // resolving to an unrelated header search box whose accessible name
+      // overlaps semantically with "city/location" is the motivating case).
+      // A same-frame accessible-name match against the field's own label
+      // can't make that mistake, so it's tried BEFORE any Stagehand
+      // act/observe call for every attempt, not only once observe() has
+      // already come back empty (bugfix-001's finding: observe() returning a
+      // wrong-but-nonempty candidate was exactly what let the phantom-fill
+      // through the old empty-candidates-only gate). Falls through to the
+      // existing Stagehand-driven attempt when no candidate names the field
+      // at all — this only preempts Stagehand's resolution, it never expands
+      // what counts as a match.
+      const fieldLabelOutcome =
+        attempt !== 3 && frameTarget?.frame
+          ? await tryDeterministicFieldLabelActuation({
+              page,
+              frameTarget,
+              step,
+              triedSelectors,
+              timeoutOptions: { frameTarget },
+            })
+          : { kind: "not-fill-or-select" as const };
+      if (fieldLabelOutcome.kind === "actuated") {
+        record.technique = "deep-locator-field-label";
+        record.instruction = `deepLocator: ${fieldLabelOutcome.matched.accessibleText || "(no accessible text)"}`;
+        triedSelectors.push(fieldLabelOutcome.matched.selector);
+        record.triedSelectors = [fieldLabelOutcome.matched.selector];
+        record.actResultSuccess = true;
+        record.actResultDescription = `deepLocator ${fieldLabelOutcome.fieldTarget.kind === "fill" ? "filled" : "selected"} "${fieldLabelOutcome.matched.accessibleText || fieldLabelOutcome.matched.selector}" with "${fieldLabelOutcome.fieldTarget.value}"`;
+        // Same rationale as the pre-existing candidates===0 branch below:
+        // the write + read-back the actuation helper already performed IS
+        // the verification signal — no resolvedAction/network/url verifier
+        // can score a `deeplocator=` selector.
+        record.verifiedBy = "dom";
+        attempts.push(record);
+        logger.info(
+          `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${record.actResultDescription}`
+        );
+        trajectory?.push({ stepIndex, verifiedBy: "dom" });
+        return "completed";
+      }
+      if (fieldLabelOutcome.kind === "actuation-failed") {
+        triedSelectors.push(fieldLabelOutcome.matched.selector);
+        record.triedSelectors = [fieldLabelOutcome.matched.selector];
+        const failureMessage = `deepLocator: ${fieldLabelOutcome.fieldTarget.kind} on "${fieldLabelOutcome.matched.accessibleText || fieldLabelOutcome.matched.selector}" did not verify (read-back mismatch or rejected write)`;
+        record.actResultSuccess = false;
+        record.errorMessage = failureMessage;
+        attempts.push(record);
+        failureReasons.push(failureMessage);
+        logger.info(
+          `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${failureMessage}`
+        );
+        continue;
+      }
       if (attempt === 1) {
         record.technique = "act-string";
         record.instruction = step;
@@ -6334,81 +6556,19 @@ export async function executeStepWithHealing(params: {
           (c) => !triedSelectors.includes(c.selector)
         );
         if (candidates.length === 0 && deepLocatorCandidates.length > 0) {
-          // A fill/select step must actuate the NAMED FIELD through the
-          // fill/select seam, never the click-only walk below: candidate
-          // ranking scores by the instruction's quoted VALUE (see
-          // parseFillStep's docblock) — for "Fill in the First Name field
-          // with 'Reginald'" no control's accessible name is ever 'Reginald',
-          // so every candidate ties at score 0 and the click walk would fire
-          // on whatever sits first in DOM order (the bug report's wizard
-          // 'Close' mis-click). Detect that shape first and route
-          // deterministically to the candidate matching the field's own
-          // label, refusing to click when no candidate names that field.
-          const fillStep = parseFillStep(step);
-          const selectStep = fillStep ? null : parseSelectStep(step);
-          const fieldTarget: { kind: "fill" | "select"; fieldLabel: string; value: string } | null =
-            fillStep
-              ? { kind: "fill", fieldLabel: fillStep.fieldLabel, value: fillStep.value }
-              : selectStep?.questionLabel
-                ? { kind: "select", fieldLabel: selectStep.questionLabel, value: selectStep.option }
-                : null;
+          // Field-label routing for a fill/select-shaped step already ran
+          // (and returned/continued on a MATCH) in the field-label-first
+          // pre-check above, before this attempt's own act/observe call —
+          // see `tryDeterministicFieldLabelActuation`. Reaching this
+          // `if (fieldTarget)` means the pre-check found no candidate
+          // naming the field either — the walk below scores by the
+          // instruction's quoted VALUE (see parseFillStep's docblock), so
+          // every candidate ties at score 0 and it would otherwise click
+          // whichever sits first in DOM order (the bug report's wizard
+          // 'Close' mis-click). Refuse instead of guessing.
+          const fieldTarget = parseFieldLabelTarget(step);
           if (fieldTarget) {
-            const matched = findDeepLocatorCandidateByFieldLabel(
-              deepLocatorCandidates,
-              fieldTarget.fieldLabel
-            );
-            if (!matched) {
-              const failureMessage = `deepLocator: no candidate matched field "${fieldTarget.fieldLabel}" (refusing to click an unrelated control)`;
-              record.actResultSuccess = false;
-              record.errorMessage = failureMessage;
-              attempts.push(record);
-              failureReasons.push(failureMessage);
-              logger.info(
-                `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${failureMessage}`
-              );
-              continue;
-            }
-            triedSelectors.push(matched.selector);
-            record.triedSelectors = [matched.selector];
-            const actuated =
-              fieldTarget.kind === "fill"
-                ? await fillDeepLocatorCandidate(
-                    page,
-                    frameTarget?.frameSelector,
-                    deepLocatorInnerSelector,
-                    matched.index,
-                    fieldTarget.value,
-                    { frameTarget }
-                  )
-                : await selectDeepLocatorCandidateOption(
-                    page,
-                    frameTarget?.frameSelector,
-                    deepLocatorInnerSelector,
-                    matched.index,
-                    fieldTarget.value,
-                    { frameTarget }
-                  );
-            if (actuated) {
-              record.instruction = `deepLocator: ${matched.accessibleText || "(no accessible text)"}`;
-              record.actResultSuccess = true;
-              record.actResultDescription = `deepLocator ${fieldTarget.kind === "fill" ? "filled" : "selected"} "${matched.accessibleText || matched.selector}" with "${fieldTarget.value}"`;
-              // verifyDomEffect can't resolve a `deeplocator=` selector (see
-              // deep-locator-actuate.ts's module docblock: target.locator()
-              // has no meaning for cross-origin OOPIF hop notation) — the
-              // write + read-back fillDeepLocatorCandidate/
-              // selectDeepLocatorCandidateOption already performed IS the
-              // verification signal, so record it directly instead of
-              // synthesizing a resolvedAction that a verifier can only ever
-              // score false for.
-              record.verifiedBy = "dom";
-              attempts.push(record);
-              logger.info(
-                `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${record.actResultDescription}`
-              );
-              trajectory?.push({ stepIndex, verifiedBy: "dom" });
-              return "completed";
-            }
-            const failureMessage = `deepLocator: ${fieldTarget.kind} on "${matched.accessibleText || matched.selector}" did not verify (read-back mismatch or rejected write)`;
+            const failureMessage = `deepLocator: no candidate matched field "${fieldTarget.fieldLabel}" (refusing to click an unrelated control)`;
             record.actResultSuccess = false;
             record.errorMessage = failureMessage;
             attempts.push(record);
@@ -6418,6 +6578,7 @@ export async function executeStepWithHealing(params: {
             );
             continue;
           }
+          const selectStep = parseSelectStep(step);
           // A select step whose question is phrased un-quoted (parseSelectStep
           // returns `questionLabel: null`) has no fieldLabel to route through
           // findDeepLocatorCandidateByFieldLabel above, so ranking below falls
@@ -6854,8 +7015,8 @@ export async function executeStepWithHealing(params: {
         }
       } else {
         record.technique = "llm-rephrase";
-        if (!anthropic) {
-          record.errorMessage = "no anthropic client (bedrock-only deployment); skipping rephrase";
+        if (!rephraseModel) {
+          record.errorMessage = "no rephrase model configured; skipping rephrase";
         } else if (hasBillingErrorBeenLogged()) {
           // Telemetry-driven skip: when Anthropic billing has already been
           // flagged FATAL for this process, every subsequent rephrase call
@@ -6923,7 +7084,7 @@ export async function executeStepWithHealing(params: {
             verdict: a.errorMessage ?? failureReasons[i] ?? null,
           }));
           const rephrased = await rephraseWithLLM(
-            anthropic,
+            rephraseModel,
             step,
             triedSelectors,
             candidates,
@@ -6933,7 +7094,8 @@ export async function executeStepWithHealing(params: {
             unfocused,
             submitFailureList,
             priorAttemptsForPrompt,
-            gaEventList
+            gaEventList,
+            anthropic
           );
           if (!rephrased) {
             record.errorMessage = "llm declined to rephrase or returned outcome=impossible";
@@ -7065,7 +7227,32 @@ export async function executeStepWithHealing(params: {
         `${formatStepPrefix(stepIndex, totalSteps)} advance step succeeded only via DOM state change (field toggle / non-advancing POST), not a real transition; not treating as verified`
       );
     }
-    let verified = networkIsRealAdvance || urlChanged || domVerifiedForStep;
+    // Client-side view-swap gate: credit a click that produces substantial
+    // DOM growth (≥5KB) with zero network when it's NOT a submit/final step
+    // and NOT an advance-pattern step. Fixes the UCHealth "Manual Application"
+    // case where a +49KB DOM-only view swap was scored as "no observable effect".
+    const clickViewSwapVerified = isClickViewSwapVerified({
+      resolvedAction,
+      isFinalStep,
+      submitStep,
+      isAdvanceWithPattern: isAdvanceStep(step) && advanceTransitionBodyPattern !== null,
+      networkDelta: post.networkCount - pre.networkCount,
+      bytesDelta: post.bodyHtmlLength - pre.bodyHtmlLength,
+    });
+    // Form-value-diff signal: `visibleTextSignature` never reflects a plain
+    // <input>/<textarea>/<select>'s `value` property, so a fill with no
+    // secondary UI side effect (no toggle, no formatted display) had ZERO
+    // verification signal — every cascade attempt reported "no observable
+    // effect" even though the value genuinely landed. Scoped to state-class
+    // actions (fill/check/etc.), same as domVerified, so it never lets an
+    // advance/submit step ride a stray value mutation elsewhere on the page.
+    const formValueVerified = isStateClass && post.formValueSignature !== pre.formValueSignature;
+    let verified =
+      networkIsRealAdvance ||
+      urlChanged ||
+      domVerifiedForStep ||
+      clickViewSwapVerified ||
+      formValueVerified;
 
     // Final-step submit-verification gate. Replaces the deterministic
     // submitEndpointPattern regex with a Haiku 4.5 LLM judgment over
@@ -7202,7 +7389,17 @@ export async function executeStepWithHealing(params: {
     if (verified && record.verifiedBy === null) {
       // Preserve a richer verdict set earlier in this attempt (e.g.
       // "submitted-state-dom" from the final-step DOM fallback).
-      record.verifiedBy = urlChanged ? "url" : networkFired ? "network" : "dom";
+      record.verifiedBy = clickViewSwapVerified
+        ? "view-swap"
+        : urlChanged
+          ? "url"
+          : networkFired
+            ? "network"
+            : domVerifiedForStep
+              ? "dom"
+              : formValueVerified
+                ? "form-value"
+                : "dom";
     }
 
     // N+16 probe: Stagehand's CDP click sometimes lands on the button without
@@ -7301,6 +7498,7 @@ export async function executeStepWithHealing(params: {
           const retryUrlChanged = retryPost.url !== pre.url;
           const retryHtmlDelta = retryPost.bodyHtmlLength - pre.bodyHtmlLength;
           const retryTextChanged = retryPost.visibleTextSignature !== pre.visibleTextSignature;
+          const retryFormValueChanged = retryPost.formValueSignature !== pre.formValueSignature;
           // RC2: an advance/`kind=click` "Next" that only grew the DOM
           // (validation errors rendered) with NO network/URL change is a
           // validation-blocked no-op, not a real transition — but the
@@ -7362,6 +7560,7 @@ export async function executeStepWithHealing(params: {
               retryUrlChanged ||
               retryHtmlDelta !== 0 ||
               retryTextChanged ||
+              retryFormValueChanged ||
               checkboxStateVerified);
           // Apply the same submit-endpoint gate the primary verifier uses.
           // Without this, the n+16 fallback would still ride past a
@@ -7450,7 +7649,7 @@ export async function executeStepWithHealing(params: {
             }
           }
           logger.info(
-            `n+16 probe: step=${stepIndex + 1}/${totalSteps?.() ?? "?"} attempt=${attempt} el.click() fallback fired=${fired === true} kind=${probeResult.kind ?? "none"} checkboxStateVerified=${checkboxStateVerified} ancestorStillInvalid=${ancestorStillInvalid}; network=${retryNetworkFired} url=${retryUrlChanged} htmlDelta=${retryHtmlDelta} textChanged=${retryTextChanged} verified=${retryVerified}`
+            `n+16 probe: step=${stepIndex + 1}/${totalSteps?.() ?? "?"} attempt=${attempt} el.click() fallback fired=${fired === true} kind=${probeResult.kind ?? "none"} checkboxStateVerified=${checkboxStateVerified} ancestorStillInvalid=${ancestorStillInvalid}; network=${retryNetworkFired} url=${retryUrlChanged} htmlDelta=${retryHtmlDelta} textChanged=${retryTextChanged} formValueChanged=${retryFormValueChanged} verified=${retryVerified}`
           );
           if (retryVerified) {
             if (record.verifiedBy === null) {
@@ -7691,7 +7890,7 @@ export async function executeStepWithHealing(params: {
   );
 }
 
-/** Default resume fixture path; overridable via --resume-fixture or RESUME_FIXTURE_PATH. */
+/** Default upload fixture path; overridable via --upload-fixture or UPLOAD_FIXTURE_PATH. */
 
 /**
  * One flow step in the shape a generated plugin hands to {@link runHealingFlow}.
@@ -7717,7 +7916,14 @@ export interface RunHealingFlowDeps {
   steps: HealingFlowStep[];
   logger: Logger;
   anthropic: Anthropic | null;
-  resumeFixture: { buffer: Buffer; name: string; mimeType: string } | null;
+  /**
+   * Provider-agnostic ai-SDK model for attempt-5's `rephraseWithLLM` — see
+   * {@link RunHealingFlowDeps.anthropic} for why this is a separate field.
+   * Callers typically resolve both via `buildAnthropicClient()` /
+   * `buildRephraseModel()` from `@/lib/llm/anthropic-client`.
+   */
+  rephraseModel: StagehandModel | null;
+  uploadFixture: { buffer: Buffer; name: string; mimeType: string } | null;
   /**
    * CSS selector of a cross-origin `<iframe>` the flow's target elements live
    * inside (e.g. a Talemetry wizard embedded rather than top-window
@@ -7828,7 +8034,8 @@ export async function waitForSpaReady(
  * than let the flow report phantom success.
  */
 export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHealingFlowResult> {
-  const { stagehand, page, steps, logger, anthropic, resumeFixture, maxFlowMs } = deps;
+  const { stagehand, page, steps, logger, anthropic, rephraseModel, uploadFixture, maxFlowMs } =
+    deps;
   const counter = { n: 0 };
   const signalCounter = { n: 0 };
   const recentCaptures: string[] = [];
@@ -7884,8 +8091,9 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
         recentCaptures,
         recentCaptureMeta,
         anthropic,
+        rephraseModel,
         logger,
-        resumeFixture,
+        uploadFixture,
         frameTarget,
         isFinalStep: i === steps.length - 1,
         submitEndpointPattern: deps.submitEndpointPattern ?? null,

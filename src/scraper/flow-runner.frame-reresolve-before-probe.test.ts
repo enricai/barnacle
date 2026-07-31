@@ -192,7 +192,8 @@ describe("flow-runner — frame re-resolved right before the deepLocator probe (
       ],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      rephraseModel: null,
+      uploadFixture: null,
       frameSelector: FRAME_SELECTOR,
     });
 

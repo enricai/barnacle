@@ -2,6 +2,7 @@ import type { Anthropic } from "@anthropic-ai/sdk";
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { StagehandModel } from "@/lib/bedrock";
 import * as deepLocatorActuateModule from "@/scraper/deep-locator-actuate";
 import * as deepLocatorCandidatesModule from "@/scraper/deep-locator-candidates";
 import {
@@ -13,6 +14,7 @@ import {
 } from "@/scraper/deep-locator-fake";
 import {
   buildFillFrameCandidateExpr,
+  buildReadBackFrameCandidateExpr,
   INTERACTIVE_CANDIDATE_SELECTOR,
 } from "@/scraper/deep-locator-scan";
 import {
@@ -24,6 +26,16 @@ import {
 } from "@/scraper/flow-runner";
 import type { FrameTarget } from "@/scraper/frame-target";
 import type { Logger } from "@/types/logging";
+
+const generateObject = vi.fn();
+
+vi.mock("ai", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("ai")>();
+  return {
+    ...actual,
+    generateObject: (...args: unknown[]) => generateObject(...args),
+  };
+});
 
 /**
  * Positive, argument-level coverage that every flow-runner call site which
@@ -212,7 +224,8 @@ describe("flow-runner deepLocator call sites — scoped to interactive elements,
       ],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      rephraseModel: null,
+      uploadFixture: null,
       frameSelector: FRAME_SELECTOR,
     });
     expect(result.lastStepIndex).toBe(0);
@@ -277,6 +290,11 @@ describe("flow-runner deepLocator call sites — scoped to interactive elements,
         }),
       },
     } as unknown as Anthropic;
+    generateObject.mockImplementation(async (req: { prompt: string }) => {
+      prompts.push(req.prompt);
+      throw new Error("stub rephrase model unavailable");
+    });
+    const rephraseModel = { modelId: "test-model" } as unknown as StagehandModel;
 
     const resolveDeepLocatorCandidatesSpy = vi.spyOn(
       deepLocatorCandidatesModule,
@@ -314,7 +332,8 @@ describe("flow-runner deepLocator call sites — scoped to interactive elements,
         ],
         logger: testLogger,
         anthropic,
-        resumeFixture: null,
+        rephraseModel,
+        uploadFixture: null,
         frameSelector: FRAME_SELECTOR,
       })
     ).rejects.toThrow(/failed verification after \d+ attempts/);
@@ -414,8 +433,9 @@ function runStep(
     recentCaptures: [],
     recentCaptureMeta: [],
     anthropic: null,
+    rephraseModel: null,
     logger: testLogger,
-    resumeFixture: null,
+    uploadFixture: null,
     isFinalStep: false,
     submitEndpointPattern: null,
     submittedStateSelectors: [],
@@ -678,13 +698,16 @@ describe("flow-runner deepLocator actuation — attempt-2/4 frameTarget reuse an
     // this one CAN resolve). Its own `evaluate` answers the exact batched
     // fill expression `fillDeepLocatorCandidate` issues for index 0.
     const fillExpr = buildFillFrameCandidateExpr(INTERACTIVE_CANDIDATE_SELECTOR, 0, "Reginald");
+    const readBackExpr = buildReadBackFrameCandidateExpr(INTERACTIVE_CANDIDATE_SELECTOR, 0);
     const fillByIndex = makeFakeFrameFillByIndex(frame, scopedHopSelector);
     const stepFrameTarget: FrameTarget = {
       frame: {} as FrameTarget["frame"],
       frameSelector: FRAME_SELECTOR,
-      evaluate: vi.fn(async (expr: unknown) =>
-        expr === fillExpr ? fillByIndex(0, "Reginald") : { html: 0, text: "0:" }
-      ) as unknown as FrameTarget["evaluate"],
+      evaluate: vi.fn(async (expr: unknown) => {
+        if (expr === fillExpr) return fillByIndex(0, "Reginald");
+        if (expr === readBackExpr) return { value: "Reginald" };
+        return { html: 0, text: "0:" };
+      }) as unknown as FrameTarget["evaluate"],
       locator: vi.fn().mockReturnValue({
         first: () => ({
           isChecked: vi.fn().mockResolvedValue(false),

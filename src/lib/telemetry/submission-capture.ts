@@ -29,8 +29,8 @@ const logger = getLogger({ name: "telemetry/submission-capture" });
  * Validated shape of one submission envelope sample. Alias of
  * `submitRecordSchema` (feat-002) kept under its original export name so the
  * five existing test files that import it are unaffected — the reconciliation
- * schema is a strict superset (adds `kind`, `joinKeys`, both defaulted) of
- * the shape this module used to define standalone.
+ * schema is a strict superset (adds `kind`, `joinKeys`, `session`) of the
+ * shape this module used to define standalone.
  */
 export const submissionEnvelopeSampleSchema = submitRecordSchema;
 
@@ -38,17 +38,9 @@ export type SubmissionEnvelopeSample = z.infer<typeof submissionEnvelopeSampleSc
 
 /**
  * Input to `captureSubmissionEnvelope` — `ts` and `kind` are derived
- * internally so callers omit them. `joinKeys`/`session` are optional so
- * existing call sites that don't yet resolve them keep compiling unchanged;
- * an omitted value is persisted as `null`, not left undefined.
+ * internally so callers omit them.
  */
-export type SubmissionEnvelopeInput = Omit<
-  SubmissionEnvelopeSample,
-  "ts" | "kind" | "joinKeys" | "session"
-> & {
-  joinKeys?: Record<string, unknown> | null;
-  session?: SubmissionEnvelopeSample["session"];
-};
+export type SubmissionEnvelopeInput = Omit<SubmissionEnvelopeSample, "ts" | "kind">;
 
 /** Options for `captureSubmissionEnvelope`. */
 export interface CaptureSubmissionOptions {
@@ -82,8 +74,6 @@ export async function captureSubmissionEnvelope(
   const sample: SubmissionEnvelopeSample = {
     ...input,
     kind: "submit",
-    joinKeys: input.joinKeys ?? null,
-    session: input.session ?? null,
     ts: formatISO(new Date()),
   };
 

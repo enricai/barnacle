@@ -217,8 +217,8 @@ Each capture records, untruncated:
 
 ### 1c — Self-healing cascade
 
-Each flow step runs through `executeStepWithHealing` (`src/scripts/recon-browser.ts`),
-which is a 4-attempt escalating cascade. We stop the moment an attempt is
+Each flow step runs through `executeStepWithHealing` (`src/scraper/flow-runner.ts`),
+which is a 5-attempt escalating cascade. We stop the moment an attempt is
 verified successful; the verifier is "did the network counter advance OR did the
 URL change" (DOM-state verification was tried and removed — see the source
 comments for why).
@@ -234,11 +234,14 @@ flow step "X"
   ├── attempt 2: stagehand.observe("X") → act(topAction)
   │     └── verify: same signals
   │
-  ├── attempt 3: stagehand.observe("X", { ignoreSelectors: tried })
+  ├── attempt 3: structured-click resolution
+  │     └── verify: same signals
+  │
+  ├── attempt 4: stagehand.observe("X", { ignoreSelectors: tried })
   │              → act(topAction)
   │     └── verify: same signals
   │
-  ├── attempt 4: Anthropic SDK rephrase("X", page, tried, candidates)
+  ├── attempt 5: LLM rephrase("X", page, tried, candidates)
   │              → stagehand.act(rephrased)
   │     └── verify: same signals
   │
@@ -368,21 +371,29 @@ techniques are, in order:
    click-only walk — has a `resolvedAction` matching the actuation kind
    (`click`/`fill`/`selectOption`) synthesized so downstream verification
    proceeds exactly as it would for an `observe()`-sourced candidate.
-3. **`observe(step, { ignoreSelectors: tried })` + `act(Action)`** — same as
+3. **Structured click** — re-resolves a checkable input (radio/checkbox) from
+   the prior attempt's selector via xpath, then tries three CLICK targets in
+   order — `label[for=id]`, the closest `<label>`, the closest framework
+   wrapper — checking `input.checked` after each. Skipped (no xpath to reuse)
+   when no prior attempt resolved a selector, or when the resolved element
+   isn't a checkable input; those steps fall through to attempts 4 and 5.
+4. **`observe(step, { ignoreSelectors: tried })` + `act(Action)`** — same as
    attempt 2, but we tell Stagehand to exclude the selectors we already tried.
    Addresses the "same wrong button twice" failure mode. When no selectors
    were captured from earlier attempts (rare — usually means both attempts
-   found nothing actionable), attempt 3 degenerates to a plain `observe(step)`
+   found nothing actionable), attempt 4 degenerates to a plain `observe(step)`
    and acts like a second pass of attempt 2. The frame-scoped `deepLocator`
    fallback applies here too; since `DeepLocatorDelegate` has no
    `ignoreSelectors` equivalent, the exclusion is applied by filtering
    resolved candidates against `triedSelectors` before picking the top one.
-4. **Anthropic SDK rephrase** — final escape hatch. We call Claude directly
-   with the original step, the failure reasons from attempts 1–3, the selectors
+5. **LLM rephrase** — final escape hatch. We call Claude, via the ai-SDK
+   model abstraction (Anthropic-direct or Bedrock-backed, per config), with
+   the original step, the failure reasons from attempts 1–4, the selectors
    already tried, and the first ~12 visible interactive elements from
    `stagehand.observe()`. Claude returns a rephrased instruction; we `act` on
-   it. On Bedrock-only deployments this attempt is skipped (no Anthropic key);
-   the cascade ends at attempt 3 with a startup warn.
+   it. This attempt runs on both Anthropic-direct and Bedrock-only
+   deployments; it is skipped only when neither an Anthropic key nor Bedrock
+   is configured at all.
 
 Backoff between attempts: linear `attempt * 1000ms`. Verification is OR'd
 across network + URL; the network counter is the primary signal because recon
@@ -1206,8 +1217,9 @@ the hot path dies — it already exists. Site changes degrade cost and latency,
 not availability.
 
 **Recon-time self-healing.** When a recon flow step misses, recon-browser does
-not give up. Each step runs through a 4-attempt cascade (act → observe+act →
-observe+act with `ignoreSelectors` → Anthropic-SDK rephrase), verified by
+not give up. Each step runs through a 5-attempt cascade (act → observe+act →
+structured-click → observe+act with `ignoreSelectors` → LLM rephrase),
+verified by
 network-counter delta or URL change. On terminal cascade failure the script's
 `main()` loop also attempts up to two global flow replans, where Claude
 rewrites the remaining flow tail given the failure context. The aim is that a

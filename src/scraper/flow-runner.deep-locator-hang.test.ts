@@ -175,7 +175,8 @@ describe("flow-runner/executeStepWithHealing — deepLocator hang (run 6 regress
       ],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      rephraseModel: null,
+      uploadFixture: null,
       frameSelector: FRAME_SELECTOR,
     });
     const assertion = expect(resultPromise).rejects.toThrow(
@@ -217,7 +218,8 @@ describe("flow-runner/executeStepWithHealing — deepLocator hang (run 6 regress
       ],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      rephraseModel: null,
+      uploadFixture: null,
       frameSelector: FRAME_SELECTOR,
     });
     const assertion = expect(resultPromise).rejects.toThrow(

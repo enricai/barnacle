@@ -34,9 +34,10 @@ export type BeaconEventSample = z.infer<typeof beaconEventSchema>;
 
 /**
  * Input to `captureBeaconEvent` — `ts` and `kind` are derived internally so
- * callers omit them. `sessionIp` is optional so existing call sites that
- * don't yet resolve it keep compiling unchanged; an omitted value is
- * persisted as `null`, not left undefined.
+ * callers omit them. `sessionIp` is optional because a plugin-managed beacon
+ * outcome (`createBeaconOutcomeRecorder`) has no engine-owned tracking-click
+ * session to report an IP for; an omitted value is persisted as `null`, not
+ * left undefined.
  */
 export type BeaconEventInput = Omit<BeaconEventSample, "ts" | "kind" | "sessionIp"> & {
   sessionIp?: BeaconEventSample["sessionIp"];

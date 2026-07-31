@@ -1,6 +1,6 @@
 {
   "name": "@enricai/barnacle",
-  "version": "1.6.12",
+  "version": "1.6.14",
   "description": "Site-agnostic browser automation engine. POST a structured payload to a typed endpoint; Barnacle drives a Steel + Stagehand session through the target site and returns a structured result.",
   "license": "MIT",
   "author": "Enricai",
@@ -264,9 +264,11 @@
     "probe:warmup": "tsx --env-file=.env src/scripts/probe-warmup-reliability.ts"
   },
   "dependencies": {
-    "@ai-sdk/amazon-bedrock": "^5.0.17",
+    "@ai-sdk/amazon-bedrock": "^3.0.112",
+    "@ai-sdk/anthropic": "^2.0.92",
     "@anthropic-ai/sdk": "^0.112.3",
     "@aws-sdk/client-s3": "^3.1085.0",
+    "@browserbasehq/sdk": "^2.16.0",
     "@browserbasehq/stagehand": "^3.6.0",
     "@fastify/compress": "^9.0.0",
     "@fastify/helmet": "^13.1.0",
@@ -274,6 +276,7 @@
     "@fastify/rate-limit": "^11.1.0",
     "@fastify/swagger": "^9.8.0",
     "@fastify/swagger-ui": "^6.1.0",
+    "ai": "^5.0.216",
     "bcryptjs": "^3.0.3",
     "bottleneck": "^2.19.5",
     "date-fns": "^4.4.0",

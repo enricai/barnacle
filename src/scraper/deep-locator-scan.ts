@@ -418,6 +418,41 @@ export function buildSelectFrameCandidateExpr(
   })()`;
 }
 
+/** Result of {@link buildReadBackFrameCandidateExpr}'s evaluate call. */
+export interface FrameCandidateReadBackResult {
+  /** `undefined` when the index is out of range or the element has no layout box — the caller can't distinguish those from a genuine revert, so it degrades to the legacy delegate path exactly as it would for any other non-conforming batched outcome. */
+  value?: string;
+}
+
+/**
+ * Builds a read-only re-check expression: re-runs the SAME
+ * `root.querySelectorAll(innerSelector)` resolution as
+ * {@link buildWriteFrameCandidateExpr} and returns the element's CURRENT
+ * `.value`, without writing anything. {@link fillDeepLocatorCandidate}/
+ * {@link selectDeepLocatorCandidateOption} (`deep-locator-actuate.ts`) call
+ * this in a second `evaluate` round-trip, after the initial batched write's
+ * inline `readBack` already agreed with the caller's value, to catch a
+ * controlled component that reverts the write on a later tick (e.g. a
+ * `setState` inside `onChange` that re-renders after the writing evaluate
+ * call already returned) — a revert the write expression's own synchronous
+ * inline read-back can never observe, since it reads `el.value` in the same
+ * task as the write.
+ */
+export function buildReadBackFrameCandidateExpr(
+  innerSelector: string,
+  index: number,
+  root = "document"
+): string {
+  return `(() => {
+    const isVisible = ${IS_VISIBLE_EXPR};
+    const matches = Array.from(${root}.querySelectorAll(${JSON.stringify(innerSelector)}));
+    const el = matches[${JSON.stringify(index)}];
+    if (!el) return {};
+    if (!isVisible(el)) return {};
+    return { value: el.value };
+  })()`;
+}
+
 /**
  * Detects the CDP "node is not actionable" failure shape so a caller
  * cascading through candidates can treat it as "skip this candidate, try the

@@ -63,7 +63,8 @@ describe("submission + beacon round-trip through the real writer and reader", ()
       {
         siteId: "hca",
         requestId: "req-fired-1",
-        joinKeys: { vivclid: "viv-fired-1", jobReference: "emp1_jid1" },
+        joinKeys: { clickId: "viv-fired-1", refId: "emp1_jid1" },
+        session: null,
         inboundPayload: { jobId: "jid1", ClickUrl: "https://example.com/apply" },
         status: "submitted",
         auditPayload: { verified: true, applicationId: "app-1" },
@@ -76,9 +77,9 @@ describe("submission + beacon round-trip through the real writer and reader", ()
       {
         requestId: "req-fired-1",
         siteId: "hca",
-        joinKeys: { vivclid: "viv-fired-1", jobReference: "emp1_jid1" },
+        joinKeys: { clickId: "viv-fired-1", refId: "emp1_jid1" },
         beaconStatus: "fired",
-        trackingUrl: "https://track.appcast.io/pixel?rid=req-fired-1",
+        trackingUrl: "https://track.example.com/pixel?rid=req-fired-1",
         durationMs: 42,
       },
       { sinkPath }
@@ -89,7 +90,7 @@ describe("submission + beacon round-trip through the real writer and reader", ()
 
     expect(byRequestId).toHaveLength(1);
     const [row] = byRequestId;
-    expect(row?.joinKeys).toEqual({ vivclid: "viv-fired-1", jobReference: "emp1_jid1" });
+    expect(row?.joinKeys).toEqual({ clickId: "viv-fired-1", refId: "emp1_jid1" });
     expect(row?.siteId).toBe("hca");
     expect(row?.status).toBe("submitted");
     expect(row?.beaconStatus).toBe("fired");
@@ -100,7 +101,8 @@ describe("submission + beacon round-trip through the real writer and reader", ()
       {
         siteId: "hca",
         requestId: "req-fired-2",
-        joinKeys: { vivclid: "viv-fired-2", jobReference: "emp2_jid2" },
+        joinKeys: { clickId: "viv-fired-2", refId: "emp2_jid2" },
+        session: null,
         inboundPayload: { jobId: "jid2" },
         status: "submitted",
         auditPayload: { verified: true, applicationId: "app-2" },
@@ -113,9 +115,9 @@ describe("submission + beacon round-trip through the real writer and reader", ()
       {
         requestId: "req-fired-2",
         siteId: "hca",
-        joinKeys: { vivclid: "viv-fired-2", jobReference: "emp2_jid2" },
+        joinKeys: { clickId: "viv-fired-2", refId: "emp2_jid2" },
         beaconStatus: "fired",
-        trackingUrl: "https://track.appcast.io/pixel?rid=req-fired-2",
+        trackingUrl: "https://track.example.com/pixel?rid=req-fired-2",
         durationMs: 30,
       },
       { sinkPath }
@@ -125,7 +127,8 @@ describe("submission + beacon round-trip through the real writer and reader", ()
       {
         siteId: "hca",
         requestId: "req-failed-3",
-        joinKeys: { vivclid: "viv-failed-3", jobReference: "emp3_jid3" },
+        joinKeys: { clickId: "viv-failed-3", refId: "emp3_jid3" },
+        session: null,
         inboundPayload: { jobId: "jid3" },
         status: "submitted",
         auditPayload: { verified: true, applicationId: "app-3" },
@@ -138,7 +141,7 @@ describe("submission + beacon round-trip through the real writer and reader", ()
       {
         requestId: "req-failed-3",
         siteId: "hca",
-        joinKeys: { vivclid: "viv-failed-3", jobReference: "emp3_jid3" },
+        joinKeys: { clickId: "viv-failed-3", refId: "emp3_jid3" },
         beaconStatus: "failed",
         trackingUrl: null,
         durationMs: 15,
@@ -168,8 +171,9 @@ describe("submission + beacon round-trip through the real writer and reader", ()
       {
         siteId: "appcast",
         requestId: "req-skipped-delegated",
-        joinKeys: { vivclid: "viv-delegated", jobReference: "emp4_jid4" },
-        inboundPayload: { jobId: "jid4", TrackingUrl: "https://track.appcast.io/t/abc" },
+        joinKeys: { clickId: "viv-delegated", refId: "emp4_jid4" },
+        session: null,
+        inboundPayload: { jobId: "jid4", TrackingUrl: "https://track.example.com/t/abc" },
         status: "submitted",
         auditPayload: { verified: true, applicationId: "app-4" },
         errorMessage: null,
@@ -181,9 +185,9 @@ describe("submission + beacon round-trip through the real writer and reader", ()
       {
         requestId: "req-skipped-delegated",
         siteId: "appcast",
-        joinKeys: { vivclid: "viv-delegated", jobReference: "emp4_jid4" },
+        joinKeys: { clickId: "viv-delegated", refId: "emp4_jid4" },
         beaconStatus: "skipped",
-        trackingUrl: "https://track.appcast.io/t/abc",
+        trackingUrl: "https://track.example.com/t/abc",
         durationMs: 0,
       },
       { sinkPath }
@@ -194,6 +198,7 @@ describe("submission + beacon round-trip through the real writer and reader", ()
         siteId: "hca",
         requestId: "req-skipped-no-url",
         joinKeys: null,
+        session: null,
         inboundPayload: { jobId: "jid5" },
         status: "submitted",
         auditPayload: { verified: true, applicationId: "app-5" },
@@ -220,7 +225,7 @@ describe("submission + beacon round-trip through the real writer and reader", ()
     const noUrlRow = queryReconciliationRows(rows, { requestId: "req-skipped-no-url" })[0];
 
     expect(delegatedRow?.beaconStatus).toBe("skipped");
-    expect(delegatedRow?.beaconTrackingUrl).toBe("https://track.appcast.io/t/abc");
+    expect(delegatedRow?.beaconTrackingUrl).toBe("https://track.example.com/t/abc");
 
     expect(noUrlRow?.beaconStatus).toBe("skipped");
     expect(noUrlRow?.beaconTrackingUrl).toBeNull();
@@ -243,7 +248,7 @@ describe("submission + beacon round-trip through the real writer and reader", ()
       {
         siteId: "hca",
         requestId: "req-session-roundtrip",
-        joinKeys: { vivclid: "viv-roundtrip", jobReference: "emp9_jid9" },
+        joinKeys: { clickId: "viv-roundtrip", refId: "emp9_jid9" },
         session,
         inboundPayload: { jobId: "jid9" },
         status: "submitted",
@@ -257,9 +262,9 @@ describe("submission + beacon round-trip through the real writer and reader", ()
       {
         requestId: "req-session-roundtrip",
         siteId: "hca",
-        joinKeys: { vivclid: "viv-roundtrip", jobReference: "emp9_jid9" },
+        joinKeys: { clickId: "viv-roundtrip", refId: "emp9_jid9" },
         beaconStatus: "fired",
-        trackingUrl: "https://track.appcast.io/pixel?rid=req-session-roundtrip",
+        trackingUrl: "https://track.example.com/pixel?rid=req-session-roundtrip",
         durationMs: 12,
         sessionIp: "198.51.100.77",
       },
@@ -271,7 +276,7 @@ describe("submission + beacon round-trip through the real writer and reader", ()
 
     expect(row?.session).toEqual(session);
     expect(row?.session?.ip).toBe("203.0.113.77");
-    expect(row?.joinKeys).toEqual({ vivclid: "viv-roundtrip", jobReference: "emp9_jid9" });
+    expect(row?.joinKeys).toEqual({ clickId: "viv-roundtrip", refId: "emp9_jid9" });
     expect(row?.beaconSessionIp).toBe("198.51.100.77");
   });
 });

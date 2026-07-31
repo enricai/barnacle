@@ -138,7 +138,7 @@ function buildStubContext(): ContextWithTelemetry {
   return { ...base, telemetry } as unknown as ContextWithTelemetry;
 }
 
-const TRACKING_URL = "https://click.acme.example/t/abc?vivclid=123&empId=emp9&jid=job9";
+const TRACKING_URL = "https://click.acme.example/t/abc?clickId=123&empId=emp9&jid=job9";
 
 /** A plugin with no `extractJoinKeys` (core owns tracking) that attaches a field mid-run. */
 const attachingPlugin: SitePlugin<unknown, unknown> = {
@@ -162,7 +162,7 @@ const delegatingPlugin: SitePlugin<unknown, unknown> = {
     bodySchema: {} as never,
     responseSchema: {} as never,
   },
-  extractJoinKeys: () => ({ vivclid: "123" }),
+  extractJoinKeys: () => ({ clickId: "123" }),
   execute: vi.fn(async (_payload: unknown, _session, context: SitePluginContext) => {
     (context as ContextWithTelemetry).telemetry.addJoinKeys({ midRunField: "discovered-value" });
     return { data: { result: "ok" }, auditPayload: { redacted: true } };
@@ -184,7 +184,7 @@ const nonSelfManagingRecordingPlugin: SitePlugin<unknown, unknown> = {
     responseSchema: {} as never,
   },
   execute: vi.fn(async (_payload: unknown, _session, context: SitePluginContext) => {
-    await context.recordBeaconOutcome({ beaconStatus: "fired", joinKeys: { vivclid: "123" } });
+    await context.recordBeaconOutcome({ beaconStatus: "fired", joinKeys: { clickId: "123" } });
     return { data: { result: "ok" }, auditPayload: { redacted: true } };
   }),
 };
@@ -267,7 +267,7 @@ describe("dispatch — run-attached fields on the beacon/tracking-click record",
         beaconStatus: "skipped",
         trackingUrl: TRACKING_URL,
         joinKeys: expect.objectContaining({
-          vivclid: "123",
+          clickId: "123",
           midRunField: "discovered-value",
         }),
       })

@@ -55,9 +55,10 @@ function baseParams(
     recentCaptures: [] as string[],
     recentCaptureMeta: [] as { method: string; status: number; url: string }[],
     anthropic: null,
+    rephraseModel: null,
     logger: testLogger,
     captureFn: vi.fn().mockResolvedValue(undefined),
-    resumeFixture: null,
+    uploadFixture: null,
     isFinalStep: false,
     // Non-null so `requireSubmitEndpoint` is true and the cascade enters the
     // submit-verification branch that reads `page.title()`.

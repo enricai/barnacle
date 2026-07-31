@@ -26,6 +26,7 @@ import {
 } from "@/scraper/deep-locator-fake";
 import {
   buildFillFrameCandidateExpr,
+  buildReadBackFrameCandidateExpr,
   buildScanFrameCandidatesExpr,
   buildSelectFrameCandidateExpr,
   INTERACTIVE_CANDIDATE_SELECTOR,
@@ -95,6 +96,12 @@ const SELECT_EXPR = buildSelectFrameCandidateExpr(
   INTERACTIVE_CANDIDATE_SELECTOR,
   RENDERED_TARGET_INDEX,
   SELECT_VALUE
+);
+
+/** The stuck-confirm re-check expression `confirmBatchedWriteStuck` issues (`deep-locator-actuate.ts`) after a batched write's inline `readBack` already matched — both fill and select route through the same read-only `buildReadBackFrameCandidateExpr` re-check against the resolved index. */
+const READ_BACK_EXPR = buildReadBackFrameCandidateExpr(
+  INTERACTIVE_CANDIDATE_SELECTOR,
+  RENDERED_TARGET_INDEX
 );
 
 const testLogger = {
@@ -183,6 +190,7 @@ function makeFakeChildFrame(
         if (expr === "location.href") return childUrls.current;
         if (expr === SCAN_EXPR) return scanSpy();
         if (expr === FILL_EXPR) return fillByIndexSpy(RENDERED_TARGET_INDEX, FILL_VALUE);
+        if (expr === READ_BACK_EXPR) return { value: FILL_VALUE };
         return null;
       },
       locator: () => ({
@@ -306,6 +314,7 @@ function makeFakeChildFrameForSelect(
         if (expr === "location.href") return childUrls.current;
         if (expr === SCAN_EXPR) return scanSpy();
         if (expr === SELECT_EXPR) return selectByIndexSpy(RENDERED_TARGET_INDEX, SELECT_VALUE);
+        if (expr === READ_BACK_EXPR) return { value: SELECT_VALUE };
         return null;
       },
       locator: () => ({
@@ -414,7 +423,8 @@ describe("flow-runner cascade fill actuation throughput (batched fill-by-index o
       steps: [{ instruction: FIRST_NAME_STEP, optional: false, upload: false, submitStep: false }],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      rephraseModel: null,
+      uploadFixture: null,
       frameSelector: IFRAME_SELECTOR,
     });
     const elapsedMs = Date.now() - startedAt;
@@ -497,7 +507,8 @@ describe("flow-runner cascade fill actuation throughput (batched fill-by-index o
       steps: [{ instruction: FIRST_NAME_STEP, optional: false, upload: false, submitStep: false }],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      rephraseModel: null,
+      uploadFixture: null,
       frameSelector: IFRAME_SELECTOR,
     });
 
@@ -544,7 +555,8 @@ describe("flow-runner cascade select actuation throughput (batched select-by-ind
       steps: [{ instruction: COUNTRY_STEP, optional: false, upload: false, submitStep: false }],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      rephraseModel: null,
+      uploadFixture: null,
       frameSelector: IFRAME_SELECTOR,
     });
 

@@ -388,17 +388,17 @@ const payload = {
 `src/testing/coverage-guard-suite.ts` exports `defineCoverageGuardSuite` — a
 registry-driven helper that asserts each registered plugin has a co-located
 `contract.parity.test.ts` without hardcoding any site name. On `main` where
-`SITE_PLUGINS` is empty the guard runs zero iterations (trivially green); any
-branch that populates the registry gains the check automatically.
+`BUILTIN_SITE_PLUGINS` is empty the guard runs zero iterations (trivially
+green); any branch that populates the registry gains the check automatically.
 
 ```ts
 import { defineCoverageGuardSuite } from "@/testing/coverage-guard-suite";
-import { SITE_PLUGINS } from "@/plugins/loader";
+import { BUILTIN_SITE_PLUGINS } from "@/plugins/discover";
 import { resolve } from "node:path";
 
 defineCoverageGuardSuite({
   suiteName: "plugin structural coverage guard",
-  plugins: SITE_PLUGINS,
+  plugins: BUILTIN_SITE_PLUGINS,
   sitesDir: resolve(__dirname, "../sites"),
 });
 ```
@@ -410,9 +410,10 @@ etc.) without baking site-specific logic into the engine helper.
 
 The live cross-plugin guard for the site branch lives in
 `src/sites/_shared/coverage-expectations.test.ts`. It drives
-`defineCoverageGuardSuite` with the real `SITE_PLUGINS` registry, locks the
-replay-fixture asymmetry, and pins per-plugin bodySchema rejection baselines —
-keeping `src/testing/contract-parity-suite.test.ts` free of site imports.
+`defineCoverageGuardSuite` with the real `BUILTIN_SITE_PLUGINS` registry,
+locks the replay-fixture asymmetry, and pins per-plugin bodySchema rejection
+baselines — keeping `src/testing/contract-parity-suite.test.ts` free of site
+imports.
 
 ---
 

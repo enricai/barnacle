@@ -141,7 +141,8 @@ describe("flow-runner/executeStepWithHealing — deepLocator branch honors the w
         ],
         logger: testLogger,
         anthropic: null,
-        resumeFixture: null,
+        rephraseModel: null,
+        uploadFixture: null,
         frameSelector: FRAME_SELECTOR,
       })
     ).rejects.toThrow(/failed verification after \d+ attempts/);
@@ -204,7 +205,8 @@ describe("flow-runner/executeStepWithHealing — deepLocator branch honors the w
       ],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      rephraseModel: null,
+      uploadFixture: null,
       frameSelector: FRAME_SELECTOR,
     });
 
@@ -263,7 +265,8 @@ describe("flow-runner/executeStepWithHealing — deepLocator branch honors the w
       ],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      rephraseModel: null,
+      uploadFixture: null,
       frameSelector: FRAME_SELECTOR,
     });
 

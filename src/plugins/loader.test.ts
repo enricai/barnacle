@@ -16,8 +16,7 @@ import type { AppConfig } from "@/config";
 import { getLogger } from "@/lib/logging";
 import { RunTelemetry } from "@/lib/telemetry/run-telemetry";
 import { multipartJsonObject } from "@/lib/zod-multipart";
-import { BUILTIN_SITE_PLUGINS } from "@/plugins/discover";
-import { dispatch, registerRoutes, SITE_PLUGINS } from "@/plugins/loader";
+import { dispatch, registerRoutes } from "@/plugins/loader";
 import {
   CaptchaError,
   EmptyResultsError,
@@ -208,7 +207,7 @@ describe("dispatch", () => {
 
   it("emits null joinKeys on the success envelope when the plugin declares no extractJoinKeys", async () => {
     const payload = {
-      TrackingUrl: "https://click.acme.example/t/abc?vivclid=123&empId=emp9&jid=job9",
+      TrackingUrl: "https://click.acme.example/t/abc?clickId=123&empId=emp9&jid=job9",
     };
     await dispatch(stubPlugin, payload, stubContext);
     expect(mockCaptureSubmissionEnvelope).toHaveBeenCalledWith(
@@ -224,17 +223,17 @@ describe("dispatch", () => {
       ...stubPlugin,
       extractJoinKeys: (payload) => {
         const { TrackingUrl } = payload as { TrackingUrl?: string };
-        return TrackingUrl ? { vivclid: "123", jobReference: "emp9_job9" } : null;
+        return TrackingUrl ? { clickId: "123", refId: "emp9_job9" } : null;
       },
     };
     const payload = {
-      TrackingUrl: "https://click.acme.example/t/abc?vivclid=123&empId=emp9&jid=job9",
+      TrackingUrl: "https://click.acme.example/t/abc?clickId=123&empId=emp9&jid=job9",
     };
     await dispatch(joinKeysPlugin, payload, stubContext);
     expect(mockCaptureSubmissionEnvelope).toHaveBeenCalledWith(
       expect.objectContaining({
         status: "submitted",
-        joinKeys: { vivclid: "123", jobReference: "emp9_job9" },
+        joinKeys: { clickId: "123", refId: "emp9_job9" },
       })
     );
   });
@@ -308,10 +307,10 @@ describe("dispatch", () => {
     mockPluginExecute.mockRejectedValueOnce(new CaptchaError("captcha hit"));
     const joinKeysPlugin: SitePlugin<unknown, unknown> = {
       ...stubPlugin,
-      extractJoinKeys: () => ({ vivclid: "999", jobReference: "emp1_job1" }),
+      extractJoinKeys: () => ({ clickId: "999", refId: "emp1_job1" }),
     };
     const payload = {
-      TrackingUrl: "https://click.acme.example/t/abc?vivclid=999&empId=emp1&jid=job1",
+      TrackingUrl: "https://click.acme.example/t/abc?clickId=999&empId=emp1&jid=job1",
     };
 
     try {
@@ -324,7 +323,7 @@ describe("dispatch", () => {
       expect.objectContaining({
         siteId: "test-site",
         status: "error",
-        joinKeys: { vivclid: "999", jobReference: "emp1_job1" },
+        joinKeys: { clickId: "999", refId: "emp1_job1" },
       })
     );
   });
@@ -624,12 +623,12 @@ describe("dispatch — tracking click", () => {
 
   it("calls fireTrackingClick with the URL, siteId, and joinKeys when payload contains TrackingUrl", async () => {
     const payload = {
-      TrackingUrl: "https://click.acme.example/t/abc?vivclid=123&empId=emp9&jid=job9",
+      TrackingUrl: "https://click.acme.example/t/abc?clickId=123&empId=emp9&jid=job9",
     };
     await dispatch(stubPlugin, payload, stubContext);
     expect(mockFireTrackingClick).toHaveBeenCalledOnce();
     expect(mockFireTrackingClick).toHaveBeenCalledWith(
-      "https://click.acme.example/t/abc?vivclid=123&empId=emp9&jid=job9",
+      "https://click.acme.example/t/abc?clickId=123&empId=emp9&jid=job9",
       "test-site",
       { requestId: "req-test-123", joinKeys: null }
     );
@@ -638,10 +637,10 @@ describe("dispatch — tracking click", () => {
   it("does not call fireTrackingClick when the plugin declares extractJoinKeys (it manages its own tracking)", async () => {
     const joinKeysPlugin: SitePlugin<unknown, unknown> = {
       ...stubPlugin,
-      extractJoinKeys: () => ({ vivclid: "123" }),
+      extractJoinKeys: () => ({ clickId: "123" }),
     };
     const payload = {
-      TrackingUrl: "https://click.acme.example/t/abc?vivclid=123&empId=emp9&jid=job9",
+      TrackingUrl: "https://click.acme.example/t/abc?clickId=123&empId=emp9&jid=job9",
     };
     await dispatch(joinKeysPlugin, payload, stubContext);
     expect(mockFireTrackingClick).not.toHaveBeenCalled();
@@ -650,9 +649,9 @@ describe("dispatch — tracking click", () => {
   it("preserves the real TrackingUrl on the skipped beacon record when a plugin with extractJoinKeys delegates tracking", async () => {
     const joinKeysPlugin: SitePlugin<unknown, unknown> = {
       ...stubPlugin,
-      extractJoinKeys: () => ({ vivclid: "123" }),
+      extractJoinKeys: () => ({ clickId: "123" }),
     };
-    const trackingUrl = "https://click.acme.example/t/abc?vivclid=123&empId=emp9&jid=job9";
+    const trackingUrl = "https://click.acme.example/t/abc?clickId=123&empId=emp9&jid=job9";
     await dispatch(joinKeysPlugin, { TrackingUrl: trackingUrl }, stubContext);
     expect(mockFireTrackingClick).not.toHaveBeenCalled();
     expect(mockCaptureBeaconEvent).toHaveBeenCalledOnce();
@@ -660,7 +659,7 @@ describe("dispatch — tracking click", () => {
       expect.objectContaining({
         requestId: "req-test-123",
         siteId: "test-site",
-        joinKeys: { vivclid: "123" },
+        joinKeys: { clickId: "123" },
         beaconStatus: "skipped",
         trackingUrl,
       })
@@ -712,7 +711,7 @@ describe("dispatch — tracking click", () => {
 
   it("does not emit a skipped beacon record when the payload has a TrackingUrl", async () => {
     const payload = {
-      TrackingUrl: "https://click.acme.example/t/abc?vivclid=123&empId=emp9&jid=job9",
+      TrackingUrl: "https://click.acme.example/t/abc?clickId=123&empId=emp9&jid=job9",
     };
     await dispatch(stubPlugin, payload, stubContext);
     expect(mockFireTrackingClick).toHaveBeenCalledOnce();
@@ -1477,7 +1476,7 @@ describe("registerRoutes — context.recordBeaconOutcome", () => {
   });
 
   it("writes both the automatic 'skipped' write and the plugin's own 'fired' write for the same requestId when a plugin declares extractJoinKeys and also calls context.recordBeaconOutcome", async () => {
-    const trackingUrl = "https://click.acme.example/t/abc?vivclid=456";
+    const trackingUrl = "https://click.acme.example/t/abc?clickId=456";
     const plugin: SitePlugin<unknown, unknown> = {
       meta: {
         siteId: "recorder-coexist-test",
@@ -1485,11 +1484,11 @@ describe("registerRoutes — context.recordBeaconOutcome", () => {
         bodySchema: z.object({ TrackingUrl: z.string().optional() }),
         responseSchema: z.unknown(),
       },
-      extractJoinKeys: () => ({ vivclid: "456" }),
+      extractJoinKeys: () => ({ clickId: "456" }),
       execute: async (_payload, _session, context) => {
         await context.recordBeaconOutcome({
           beaconStatus: "fired",
-          joinKeys: { vivclid: "456", jid: "job1" },
+          joinKeys: { clickId: "456", jid: "job1" },
         });
         return { data: { ok: true } };
       },
@@ -1510,7 +1509,7 @@ describe("registerRoutes — context.recordBeaconOutcome", () => {
         requestId: "req-recorder-fixed",
         siteId: "recorder-coexist-test",
         beaconStatus: "fired",
-        joinKeys: { vivclid: "456", jid: "job1" },
+        joinKeys: { clickId: "456", jid: "job1" },
       })
     );
     expect(mockCaptureBeaconEvent).toHaveBeenNthCalledWith(
@@ -1519,7 +1518,7 @@ describe("registerRoutes — context.recordBeaconOutcome", () => {
         requestId: "req-recorder-fixed",
         siteId: "recorder-coexist-test",
         beaconStatus: "skipped",
-        joinKeys: { vivclid: "456" },
+        joinKeys: { clickId: "456" },
         trackingUrl,
       })
     );
@@ -1715,15 +1714,5 @@ describe("dispatch — needsUserInfo branch", () => {
     expect(data.missingFields).toHaveLength(1);
     expect(data.missingFields[0]?.field).toBe("educationLevel");
     expect(data.requiresOtp).toBe(false);
-  });
-});
-
-describe("SITE_PLUGINS alias", () => {
-  it("is the same array reference as BUILTIN_SITE_PLUGINS from discover.ts", () => {
-    expect(SITE_PLUGINS).toBe(BUILTIN_SITE_PLUGINS);
-  });
-
-  it("is empty on the engine branch — site plugins load via BARNACLE_PLUGINS", () => {
-    expect(SITE_PLUGINS).toEqual([]);
   });
 });

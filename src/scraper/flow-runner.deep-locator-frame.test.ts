@@ -191,7 +191,8 @@ describe("flow-runner/runHealingFlow — OOPIF cascade regression (observe-blind
       ],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      rephraseModel: null,
+      uploadFixture: null,
       frameSelector: FRAME_SELECTOR,
     });
 
@@ -238,7 +239,8 @@ describe("flow-runner/runHealingFlow — OOPIF cascade regression (observe-blind
         ],
         logger: testLogger,
         anthropic: null,
-        resumeFixture: null,
+        rephraseModel: null,
+        uploadFixture: null,
         frameSelector: undefined,
       })
     ).rejects.toThrow(/probe found no candidates/);

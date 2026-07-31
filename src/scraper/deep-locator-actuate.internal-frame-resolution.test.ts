@@ -47,8 +47,14 @@ describe("fillDeepLocatorCandidate/selectDeepLocatorCandidateOption: internal re
   const TARGET_INDEX = 1;
   const PROBE_DELAY_MS = 5;
 
-  it("fillDeepLocatorCandidate: a latency-realistic Page whose iframe-src/location.href probes settle after a real timer tick still takes the batched fast path via probeAttachedFrameTarget's real budget — one frame evaluate, zero delegate nth() calls", async () => {
-    const fillEvaluateSpy = vi.fn().mockResolvedValue({ written: true, readBack: "Ada" });
+  it("fillDeepLocatorCandidate: a latency-realistic Page whose iframe-src/location.href probes settle after a real timer tick still takes the batched fast path via probeAttachedFrameTarget's real budget — two frame evaluates (write + stuck-confirm), zero delegate nth() calls", async () => {
+    const fillEvaluateSpy = vi.fn(async (expression: unknown) =>
+      typeof expression === "string" &&
+      expression.includes("querySelectorAll") &&
+      !expression.includes("dispatchEvent")
+        ? { value: "Ada" }
+        : { written: true, readBack: "Ada" }
+    );
     const nthSpy = vi.fn();
     const { page } = makeFakeFrameResolutionPage({
       iframeSelector: FRAME_SELECTOR,
@@ -70,14 +76,20 @@ describe("fillDeepLocatorCandidate/selectDeepLocatorCandidateOption: internal re
     const elapsed = Date.now() - start;
 
     expect(result).toBe(true);
-    expect(fillEvaluateSpy).toHaveBeenCalledTimes(1);
+    expect(fillEvaluateSpy).toHaveBeenCalledTimes(2);
     expect(nthSpy).not.toHaveBeenCalled();
     // Proves the batched fast path lands well within the probe's budget, without entering resolveFrameTarget's poll loop.
     expect(elapsed).toBeLessThan(1000);
   });
 
-  it("selectDeepLocatorCandidateOption: a latency-realistic Page whose iframe-src/location.href probes settle after a real timer tick still takes the batched fast path via probeAttachedFrameTarget's real budget — one frame evaluate, zero delegate nth() calls", async () => {
-    const selectEvaluateSpy = vi.fn().mockResolvedValue({ written: true, readBack: "US" });
+  it("selectDeepLocatorCandidateOption: a latency-realistic Page whose iframe-src/location.href probes settle after a real timer tick still takes the batched fast path via probeAttachedFrameTarget's real budget — two frame evaluates (write + stuck-confirm), zero delegate nth() calls", async () => {
+    const selectEvaluateSpy = vi.fn(async (expression: unknown) =>
+      typeof expression === "string" &&
+      expression.includes("querySelectorAll") &&
+      !expression.includes("dispatchEvent")
+        ? { value: "US" }
+        : { written: true, readBack: "US" }
+    );
     const nthSpy = vi.fn();
     const { page } = makeFakeFrameResolutionPage({
       iframeSelector: FRAME_SELECTOR,
@@ -99,7 +111,7 @@ describe("fillDeepLocatorCandidate/selectDeepLocatorCandidateOption: internal re
     const elapsed = Date.now() - start;
 
     expect(result).toBe(true);
-    expect(selectEvaluateSpy).toHaveBeenCalledTimes(1);
+    expect(selectEvaluateSpy).toHaveBeenCalledTimes(2);
     expect(nthSpy).not.toHaveBeenCalled();
     expect(elapsed).toBeLessThan(1000);
   });

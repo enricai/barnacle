@@ -78,6 +78,7 @@ const { anthropicMessagesParseStub } = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/llm/anthropic-client", () => ({
   buildAnthropicClient: () => ({ messages: { parse: anthropicMessagesParseStub } }),
+  buildRephraseModel: () => null,
 }));
 
 // executeStepWithHealing spy so we can assert exactly what main() forwards

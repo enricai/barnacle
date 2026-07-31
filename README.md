@@ -102,7 +102,7 @@ Drives a real Stagehand + Steel browser through your flow. Captures are wired vi
 
 Captures every network call matching `/graph`, `/api/`, `/graphql`, `/v1/`, or `*.json` to `<run-dir>/graphql/<NNN>-<phase>-<operationName>.json` — one file per call, diffable and greppable. Use `--capture-all` for sites with non-standard API paths; it captures every response, producing more noise but missing nothing. Omitting both `--flow` and `--flow-file` runs zero interaction steps and captures only the network activity that fires during page navigation — useful for pure GET-style SPAs that fetch everything they need on load.
 
-Each step runs through a self-healing cascade (`act` → `observe + act` → `observe + act` with `ignoreSelectors` → Anthropic-SDK rephrase) verified by network-counter delta or URL change. The script's `main()` attempts up to two global flow replans before giving up; terminal failures dump a diagnostic bundle to `<run-dir>/step-failures/`. See [docs/playbook.md#1c--self-healing-cascade](./docs/playbook.md#1c--self-healing-cascade) for the full design.
+Each step runs through a self-healing cascade (`act` → `observe + act` → `observe + act` with `ignoreSelectors` → LLM rephrase) verified by network-counter delta or URL change. The script's `main()` attempts up to two global flow replans before giving up; terminal failures dump a diagnostic bundle to `<run-dir>/step-failures/`. See [docs/playbook.md#1c--self-healing-cascade](./docs/playbook.md#1c--self-healing-cascade) for the full design.
 
 Total runtime: 20–40 minutes for a typical flow (longer if healing or replans fire), fully unattended.
 
@@ -222,7 +222,7 @@ pnpm run recon:generate -- --site-id my-site --vocabulary ./src/recon/my-vocabul
 - Every regex must be free of the `g`/`y` flags and every field name must be a valid JS identifier — the loader rejects both. A stateful regex matches only every other step; a non-identifier emits `payload.<name>` as a syntax error.
 - Run the generator with a `.ts` vocabulary under `tsx`, or point it at compiled `.js` — plain `node` cannot import TypeScript before v22.18.
 
-> **Deprecated fallback:** omit `--vocabulary` and the generator falls back to a built-in recruiting table (first/last name, email, phone, address), warning as it does. That table is **removed in 2.0.0**, after which an absent vocabulary on a spliceable flow is an error. Supply one now.
+> Omitting `--vocabulary` disables splicing entirely — every step's recon constant is emitted literally, with no caller-data substitution.
 
 #### Telling the generator your ATS's form-schema wire keys
 
@@ -587,8 +587,6 @@ import { BUILTIN_SITE_PLUGINS } from "@/plugins/discover";
 BUILTIN_SITE_PLUGINS.push(mySitePlugin as SitePlugin<unknown, unknown>);
 ```
 
-`SITE_PLUGINS` in `src/plugins/loader.ts` is an alias for `BUILTIN_SITE_PLUGINS` kept for backwards compatibility; prefer the `discover.ts` import for new code.
-
 Core registers `POST /v1/my-site/run` automatically at startup.
 
 ### Wire up the nightly smoke test
@@ -746,7 +744,7 @@ Every line in `.barnacle/calls.ndjson` is a JSON object with these fields (sourc
 
 | `callType` | Source | When emitted |
 |------------|--------|--------------|
-| `recon-rephrase` | `src/scripts/recon-browser.ts` | Attempt-4 rephrase inside the recon-browser step-healing cascade — Anthropic SDK is asked to reword the failing step |
+| `recon-rephrase` | `src/scripts/recon-browser.ts` | Attempt-5 rephrase inside the recon-browser step-healing cascade — the ai-SDK model (Anthropic-direct or Bedrock-backed) is asked to reword the failing step |
 | `recon-replan` | `src/scripts/recon-browser.ts` | Global replan after a step terminally fails — Claude rewrites the remaining flow tail |
 | `recon-flow-patch` | `src/scripts/recon-heal.ts` | Patch proposal from the recon-flow-patch-generator during the `recon-heal` self-healing loop |
 | `llm-prompt-patch` | `src/scripts/llm-heal.ts` | Patch proposal from the llm-call-patch-generator during the `llm-heal` self-healing loop |

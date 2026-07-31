@@ -125,7 +125,7 @@ describe("dispatch — recordBeaconOutcome binding through executeHttp and its b
       executeHttp: async (_payload, context) => {
         await context.recordBeaconOutcome({
           beaconStatus: "fired",
-          joinKeys: { vivclid: "abc", jobReference: "emp1_job1" },
+          joinKeys: { clickId: "abc", refId: "emp1_job1" },
         });
         return { data: { ok: true, path: "http" } };
       },
@@ -144,7 +144,7 @@ describe("dispatch — recordBeaconOutcome binding through executeHttp and its b
       expect.objectContaining({
         requestId: "req-http-path-fixed",
         siteId: "recorder-http-hot-test",
-        joinKeys: { vivclid: "abc", jobReference: "emp1_job1" },
+        joinKeys: { clickId: "abc", refId: "emp1_job1" },
         beaconStatus: "fired",
       })
     );

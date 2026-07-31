@@ -198,7 +198,8 @@ describe("flow-runner/runHealingFlow — frameSelector -> FrameTarget threading"
       steps: [step(), step()],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      rephraseModel: null,
+      uploadFixture: null,
       frameSelector: "iframe#talemetry_apply_iframe",
     });
 
@@ -247,7 +248,8 @@ describe("flow-runner/runHealingFlow — frameSelector -> FrameTarget threading"
       steps: [step(), step()],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      rephraseModel: null,
+      uploadFixture: null,
       frameSelector: "iframe#talemetry_apply_iframe",
     });
 
@@ -279,7 +281,8 @@ describe("flow-runner/runHealingFlow — frameSelector -> FrameTarget threading"
       steps: [step()],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      rephraseModel: null,
+      uploadFixture: null,
       frameSelector: "iframe#talemetry_apply_iframe",
     });
 
@@ -301,7 +304,8 @@ describe("flow-runner/runHealingFlow — frameSelector -> FrameTarget threading"
       steps: [step()],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      rephraseModel: null,
+      uploadFixture: null,
     });
 
     // The flow-level call (2 args: page + deps.frameSelector, explicitly
@@ -335,7 +339,8 @@ describe("flow-runner/runHealingFlow — frameSelector -> FrameTarget threading"
       steps: [step({ submitStep: true })],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      rephraseModel: null,
+      uploadFixture: null,
       frameSelector: "iframe#talemetry_apply_iframe",
     });
 
@@ -365,7 +370,8 @@ describe("flow-runner/runHealingFlow — frameSelector -> FrameTarget threading"
       steps: [step({ instruction: SELECT_STEP, optional: true })],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      rephraseModel: null,
+      uploadFixture: null,
       frameSelector: "iframe#talemetry_apply_iframe",
     });
 
@@ -398,7 +404,8 @@ describe("flow-runner/runHealingFlow — frameSelector -> FrameTarget threading"
         steps: [step({ submitStep: true })],
         logger: testLogger,
         anthropic: null,
-        resumeFixture: null,
+        rephraseModel: null,
+        uploadFixture: null,
         frameSelector: "iframe#talemetry_apply_iframe",
         submitEndpointPattern: "apply\\.talemetry\\.com",
       })
@@ -427,7 +434,8 @@ describe("flow-runner/runHealingFlow — frameSelector -> FrameTarget threading"
         steps: [step()],
         logger: testLogger,
         anthropic: null,
-        resumeFixture: null,
+        rephraseModel: null,
+        uploadFixture: null,
         frameSelector: "iframe#stale-selector-not-on-page",
       })
     ).resolves.toMatchObject({ lastStepIndex: 0 });

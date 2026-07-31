@@ -1,6 +1,12 @@
 import type { ActResult, Page, Stagehand } from "@browserbasehq/stagehand";
 import { describe, expect, it, vi } from "vitest";
 
+const { generateObjectMock } = vi.hoisted(() => ({ generateObjectMock: vi.fn() }));
+vi.mock("ai", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("ai")>();
+  return { ...actual, generateObject: generateObjectMock };
+});
+
 import {
   executeStepWithHealing,
   extractLivePageFormEvidence,
@@ -447,9 +453,10 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
       recentCaptures: [],
       recentCaptureMeta: [],
       anthropic: null,
+      rephraseModel: null,
       logger: testLogger,
       captureFn: vi.fn().mockResolvedValue(undefined),
-      resumeFixture: null,
+      uploadFixture: null,
       isFinalStep: false,
       submitEndpointPattern: null,
       submittedStateSelectors: [],
@@ -552,6 +559,48 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
     // retry is exhausted (not looped) and the attempt is recorded failed.
     const rankCalls = evaluate.mock.calls.filter(([expr]) => String(expr).includes("ranked.sort"));
     expect(rankCalls.length).toBe(2);
+  });
+
+  it("reaches rephraseWithLLM instead of the rephrase-skip path on a Bedrock-only config (anthropic: null, rephraseModel set)", async () => {
+    // Same phantom-click shape as the previous test (attempt 1 phantom-clicks,
+    // attempt 2's deep locator also phantom-clicks) so the cascade again lands
+    // on attempt 5 (llm-rephrase). The only difference is `rephraseModel` is
+    // a fake ai-SDK model instead of null — simulating a Bedrock-only
+    // deployment (no ANTHROPIC_API_KEY, so `anthropic: null`, but
+    // buildRephraseModel() still returns a Bedrock-backed model). Proves
+    // attempt-5 rephrase runs on this config rather than hitting the
+    // "no rephrase model configured; skipping rephrase" short-circuit.
+    generateObjectMock.mockResolvedValueOnce({
+      object: { instruction: "Click the alternate Submit control", outcome: "rewritten" },
+      usage: { inputTokens: 10, outputTokens: 5 },
+    });
+    const fakeRephraseModel = { modelId: "bedrock-claude-fake" } as unknown as Parameters<
+      typeof executeStepWithHealing
+    >[0]["rephraseModel"];
+
+    const { page } = fakePage({
+      url: "https://apply.acme.example/jobs/1/apply-portal/apply",
+      bodyHtmlLength: 184186,
+      deepIndexClicked: -1,
+    });
+    const stagehandAct = vi.fn().mockResolvedValue(actResult());
+    const params = {
+      ...baseParams(page, stagehandAct),
+      signalCounter: { n: 0 },
+      anthropic: null,
+      rephraseModel: fakeRephraseModel,
+    };
+
+    await expect(executeStepWithHealing(params)).rejects.toMatchObject({
+      name: "StepVerificationError",
+    });
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+    expect(generateObjectMock).toHaveBeenCalledWith(
+      expect.objectContaining({ model: fakeRephraseModel })
+    );
+    // attempt 5's rephrased instruction feeds a second stagehand.act call
+    // (attempt 1 + the rephrase-driven retry).
+    expect(stagehandAct).toHaveBeenCalledTimes(2);
   });
 
   it("records a ranked-empty deep-locator attempt and continues the cascade instead of throwing synchronously", async () => {
@@ -898,7 +947,8 @@ describe("flow-runner/runHealingFlow", () => {
         steps: [step(), step()],
         logger: testLogger,
         anthropic: null,
-        resumeFixture: null,
+        rephraseModel: null,
+        uploadFixture: null,
         maxFlowMs: 10,
       })
     ).rejects.toMatchObject({
@@ -941,7 +991,8 @@ describe("flow-runner/runHealingFlow", () => {
       steps: [step({ submitStep: true, instruction: "Click the Submit button" })],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      rephraseModel: null,
+      uploadFixture: null,
     });
 
     expect(result).toMatchObject({
@@ -983,7 +1034,8 @@ describe("flow-runner/runHealingFlow", () => {
       steps: [step(), step()],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      rephraseModel: null,
+      uploadFixture: null,
     });
 
     expect(result).toMatchObject({
@@ -1012,7 +1064,8 @@ describe("flow-runner/runHealingFlow", () => {
         steps: [step({ submitStep: true, optional: true, instruction: "Click the Submit button" })],
         logger: testLogger,
         anthropic: null,
-        resumeFixture: null,
+        rephraseModel: null,
+        uploadFixture: null,
       })
     ).rejects.toMatchObject({
       name: "StepVerificationError",
@@ -1199,7 +1252,8 @@ describe("flow-runner/runHealingFlow — frameSelector routes the cascade to the
         ],
         logger: testLogger,
         anthropic: null,
-        resumeFixture: null,
+        rephraseModel: null,
+        uploadFixture: null,
         frameSelector: "iframe#talemetry_apply_iframe",
       })
     ).rejects.toMatchObject({ name: "StepVerificationError" });
@@ -1257,7 +1311,8 @@ describe("flow-runner/runHealingFlow — frameSelector routes the cascade to the
         steps: [step({ instruction: NON_SUBMIT_STEP, submitStep: false })],
         logger: testLogger,
         anthropic: null,
-        resumeFixture: null,
+        rephraseModel: null,
+        uploadFixture: null,
         // frameSelector omitted
       })
     ).rejects.toMatchObject({ name: "StepVerificationError" });
@@ -1315,7 +1370,8 @@ describe("flow-runner/runHealingFlow — frameSelector routes the cascade to the
       steps: [step({ submitStep: true, instruction: "Click the Submit button" })],
       logger: testLogger,
       anthropic: null,
-      resumeFixture: null,
+      rephraseModel: null,
+      uploadFixture: null,
       frameSelector: "iframe#talemetry_apply_iframe",
     });
 
