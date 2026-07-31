@@ -143,6 +143,64 @@ keeping the dispatch logic itself un-mocked.
 
 ---
 
+## Testing out-of-tree plugins
+
+Out-of-tree plugin tests exercise the full load→register→dispatch path without
+any static imports. Use a `.js` fixture under `src/plugins/__fixtures__/` so
+the test loads the plugin the same way an operator's runtime module would be
+loaded.
+
+```ts
+import path from "node:path";
+import Fastify from "fastify";
+import { serializerCompiler, validatorCompiler } from "fastify-type-provider-zod";
+import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import authPlugin from "@/api/plugins/auth";
+import errorHandlerPlugin from "@/api/plugins/error-handler";
+import type { AppConfig } from "@/config";
+import { getLogger } from "@/lib/logging";
+import { loadPlugins } from "@/plugins/discover";
+import { registerRoutes } from "@/plugins/loader";
+
+vi.mock("@/scraper/pool", () => ({
+  runWithSession: vi.fn().mockImplementation((task: (s: null) => Promise<unknown>) => task(null)),
+}));
+vi.mock("@/lib/telemetry/submission-capture", () => ({
+  captureSubmissionEnvelope: vi.fn().mockResolvedValue(undefined),
+}));
+
+const FIXTURE_PATH = path.join(__dirname, "__fixtures__", "my-plugin.js");
+const cfgStub = { scraper: { siteBaseUrls: {} } } as unknown as AppConfig;
+
+it("serves POST /v1/<siteId>/run with the canned response", async () => {
+  const { plugins } = await loadPlugins([FIXTURE_PATH], {
+    baseDir: process.cwd(),
+    strict: false,
+    seenSiteIds: new Set(),
+  });
+
+  const app = Fastify({ loggerInstance: getLogger({ name: "test" }) });
+  app.setValidatorCompiler(validatorCompiler);
+  app.setSerializerCompiler(serializerCompiler);
+  await app.register(errorHandlerPlugin);
+  await app.register(authPlugin);
+  await registerRoutes(app, cfgStub, plugins);
+  await app.ready();
+
+  const response = await app.inject({ method: "POST", url: "/v1/my-plugin/run", payload: { query: "test" } });
+  expect(response.statusCode).toBe(200);
+  await app.close();
+});
+```
+
+Set `DEV_BYPASS_AUTH=true` and `NODE_ENV=test` in `beforeEach` (and restore in
+`afterEach`) so the auth plugin passes without a real bearer token. The fixture
+module must be CJS (`module.exports = plugin`) so Node can `require("zod/v4")`
+without ESM complications — see `src/plugins/__fixtures__/e2e-plugin.js` for
+the canonical example.
+
+---
+
 ## Testing a new site plugin
 
 A new plugin needs tests for:

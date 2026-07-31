@@ -6,7 +6,7 @@
 
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import type Anthropic from "@anthropic-ai/sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -65,6 +65,9 @@ vi.mock("@/lib/telemetry/call-capture", async (importOriginal) => {
 import type { LlmCallInput } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE, CALL_TYPE_RECON_REPLAN } from "@/lib/telemetry/call-types";
 import {
+  buildRadioIdXPath,
+  capturesAfterIndex,
+  chooseRequiredSelectOption,
   countSlugPrefixMatches,
   dedupeConsecutiveIdentical,
   denormalizeStep,
@@ -81,22 +84,30 @@ import {
   type Html5DateFillResult,
   hasBillingErrorBeenLogged,
   type InvalidFormControl,
+  isAdvanceStalled,
   isAdvanceStep,
+  isDomOnlyAdvanceVerified,
   isReplanCycle,
+  isReplanReproposingFailedStep,
   isStructurallyBlocked,
   isSubmitRevealedInvalid,
+  isUploadAffordanceLabel,
   isWizardExitAction,
   type LeafInvalidField,
+  latestCaptureIndex,
   logBillingErrorIfPresent,
   type NormalizedStep,
   narrowInvalidFormControl,
   normalizeDateValue,
   pairInvalidWithErrors,
+  parseCaptureIndex,
+  parseRadioStep,
   parseSelectStep,
   persistReplannedFlow,
   pollEnumerate,
   probeLeafInvalidContainers,
   probeStepBeforeAttempts,
+  type RadioGroupCandidate,
   type ReplanEvent,
   readFailureDumpEvidence,
   renderLeafInvalidFields,
@@ -106,12 +117,17 @@ import {
   replanRemainingFlow,
   resetBillingErrorFlagForTests,
   selectBodyExcerpt,
+  selectRadioGroupOption,
   shouldSkipTechnique,
+  shouldVetoFallbackAdvance,
   summarizeReplanFailureKinds,
   type ValidationRejectionPair,
   type VerifyFillReadbackResult,
   verifyFillReadback,
+  waitForTransitionBody,
+  windowHasAdvanceTransition,
   windowHasTransitionBody,
+  writeFixtureToTempFile,
 } from "@/scripts/recon-browser";
 import type { Logger } from "@/types/logging";
 
@@ -992,6 +1008,46 @@ describe("recon-browser/filterCompletedFromReplan", () => {
   });
 });
 
+describe("recon-browser/isReplanReproposingFailedStep", () => {
+  const mk = (instruction: string): NormalizedStep => ({
+    instruction,
+    optional: false,
+    upload: false,
+    origin: "replan",
+  });
+
+  it("fires when the only bridge step is the just-failed step (guaranteed re-fail)", () => {
+    expect(
+      isReplanReproposingFailedStep(
+        [mk("Click Next to leave Basic Information")],
+        "Click Next to leave Basic Information"
+      )
+    ).toBe(true);
+  });
+
+  it("fires despite whitespace/case differences (normalized compare)", () => {
+    expect(
+      isReplanReproposingFailedStep(
+        [mk("  click NEXT   to leave Basic   Information ")],
+        "Click Next to leave Basic Information"
+      )
+    ).toBe(true);
+  });
+
+  it("does not fire when the bridge adds a genuinely new step", () => {
+    expect(
+      isReplanReproposingFailedStep(
+        [mk("Fill the Address field"), mk("Click Next to leave Basic Information")],
+        "Click Next to leave Basic Information"
+      )
+    ).toBe(false);
+  });
+
+  it("does not fire on an empty bridge (handled separately upstream)", () => {
+    expect(isReplanReproposingFailedStep([], "Click Next")).toBe(false);
+  });
+});
+
 describe("recon-browser/isWizardExitAction", () => {
   it("matches unambiguous wizard-exit labels (case-insensitive substring)", () => {
     expect(isWizardExitAction("Continue Later button")).toBe(true);
@@ -1019,36 +1075,51 @@ describe("recon-browser/isWizardExitAction", () => {
 });
 
 describe("recon-browser/findWizardRestartSignal", () => {
+  let dir: string;
+  const writeCapture = (name: string, url: string): void => {
+    writeFileSync(join(dir, name), JSON.stringify({ url }));
+  };
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "recon-restart-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   it("returns the matching URL when a restart-signal pattern appears in the step window", () => {
-    const captures = [
-      "https://apply.talemetry.com/application/abc/gq",
-      "https://apply.talemetry.com/init-apply/x/job/id/1?application_canceled=true",
-    ];
+    writeCapture("000-apply-1-a.json", "https://apply.talemetry.com/application/abc/gq");
+    writeCapture(
+      "001-apply-2-b.json",
+      "https://apply.talemetry.com/init-apply/x/job/id/1?application_canceled=true"
+    );
     const hit = findWizardRestartSignal({
-      recentCaptures: captures,
-      preLength: 1,
+      preIdx: 0,
+      capturesDir: dir,
       restartSignalUrlPatterns: ["application_canceled=true"],
     });
     expect(hit).toContain("application_canceled=true");
   });
 
-  it("ignores matches that landed BEFORE the step (preLength window)", () => {
-    const captures = [
-      "https://apply.talemetry.com/init-apply/x?application_canceled=true",
-      "https://apply.talemetry.com/application/abc/gq",
-    ];
+  it("ignores matches that landed BEFORE the step (preIdx window)", () => {
+    writeCapture(
+      "000-apply-1-a.json",
+      "https://apply.talemetry.com/init-apply/x?application_canceled=true"
+    );
+    writeCapture("001-apply-2-b.json", "https://apply.talemetry.com/application/abc/gq");
+    // preIdx=0 → only index 1 is in-window → the canceled URL (index 0) is excluded.
     const hit = findWizardRestartSignal({
-      recentCaptures: captures,
-      preLength: 1,
+      preIdx: 0,
+      capturesDir: dir,
       restartSignalUrlPatterns: ["application_canceled=true"],
     });
     expect(hit).toBeNull();
   });
 
   it("returns null when no patterns are configured (feature off)", () => {
+    writeCapture("000-x-1-a.json", "https://x/init-apply?application_canceled=true");
     const hit = findWizardRestartSignal({
-      recentCaptures: ["https://x/init-apply?application_canceled=true"],
-      preLength: 0,
+      preIdx: -1,
+      capturesDir: dir,
       restartSignalUrlPatterns: [],
     });
     expect(hit).toBeNull();
@@ -1761,6 +1832,50 @@ describe("recon-browser/isSubmitRevealedInvalid", () => {
   });
 });
 
+describe("recon-browser/isAdvanceStalled", () => {
+  const stalledSignature = {
+    isAdvance: true,
+    isFinalOrSubmit: false,
+    hasPattern: true,
+    clickFired: true,
+    networkFired: true,
+    networkIsRealAdvance: false,
+    urlChanged: false,
+  };
+
+  it("fires when an advance click fired network but no real transition landed", () => {
+    expect(isAdvanceStalled(stalledSignature)).toBe(true);
+  });
+
+  it("does not fire for a non-advance (field) step", () => {
+    expect(isAdvanceStalled({ ...stalledSignature, isAdvance: false })).toBe(false);
+  });
+
+  it("does not fire on the final/submit step (owned by isSubmitRevealedInvalid)", () => {
+    expect(isAdvanceStalled({ ...stalledSignature, isFinalOrSubmit: true })).toBe(false);
+  });
+
+  it("does not fire on a site without the transition-body pattern", () => {
+    expect(isAdvanceStalled({ ...stalledSignature, hasPattern: false })).toBe(false);
+  });
+
+  it("does not fire when the click never fired (let the cascade try other techniques)", () => {
+    expect(isAdvanceStalled({ ...stalledSignature, clickFired: false })).toBe(false);
+  });
+
+  it("does not fire when the transition WAS real (a genuine advance)", () => {
+    expect(isAdvanceStalled({ ...stalledSignature, networkIsRealAdvance: true })).toBe(false);
+  });
+
+  it("does not fire when the URL changed (navigated for real)", () => {
+    expect(isAdvanceStalled({ ...stalledSignature, urlChanged: true })).toBe(false);
+  });
+
+  it("does not fire when no network fired at all (click may not have registered)", () => {
+    expect(isAdvanceStalled({ ...stalledSignature, networkFired: false })).toBe(false);
+  });
+});
+
 describe("recon-browser/shouldSkipTechnique", () => {
   it("skips structured-click when no prior attempt has resolved an xpath", () => {
     const decision = shouldSkipTechnique({
@@ -1848,6 +1963,35 @@ describe("recon-browser/shouldSkipTechnique", () => {
           errorMessage: "observe returned no candidates",
         },
       ],
+    });
+    expect(decision.skip).toBe(false);
+  });
+
+  it("skips observe-act / structured-click / observe-act-exclude when an advance step did not move on attempt 1", () => {
+    for (const technique of ["observe-act", "structured-click", "observe-act-exclude"] as const) {
+      const decision = shouldSkipTechnique({
+        technique,
+        priorAttempts: [{ technique: "act-string", triedSelectors: [], errorMessage: null }],
+        advanceUnmovedAfterAttempt1: true,
+      });
+      expect(decision.skip).toBe(true);
+      expect(decision.reason).toContain("did not move the wizard");
+    }
+  });
+
+  it("still runs llm-rephrase for an unmoved advance (the one attempt that can recover it)", () => {
+    const decision = shouldSkipTechnique({
+      technique: "llm-rephrase",
+      priorAttempts: [{ technique: "act-string", triedSelectors: [], errorMessage: null }],
+      advanceUnmovedAfterAttempt1: true,
+    });
+    expect(decision.skip).toBe(false);
+  });
+
+  it("does NOT skip when advanceUnmovedAfterAttempt1 is false/absent (non-advance steps unaffected)", () => {
+    const decision = shouldSkipTechnique({
+      technique: "observe-act",
+      priorAttempts: [{ technique: "act-string", triedSelectors: [], errorMessage: null }],
     });
     expect(decision.skip).toBe(false);
   });
@@ -2643,7 +2787,7 @@ describe("recon-browser/selectBodyExcerpt", () => {
     const trailing = "w".repeat(50_000);
     const body = chrome + formRegion + trailing;
     const excerpt = selectBodyExcerpt(body);
-    expect(excerpt.length).toBe(32_000);
+    expect(excerpt.length).toBe(16_000);
     expect(excerpt).toContain("ng-invalid");
     expect(excerpt).toContain("First Name required");
   });
@@ -2658,14 +2802,14 @@ describe("recon-browser/selectBodyExcerpt", () => {
   it("detects mat-form-field-invalid (Material UI)", () => {
     const body = `${"x".repeat(10_000)}mat-form-field-invalid${"y".repeat(50_000)}`;
     const excerpt = selectBodyExcerpt(body);
-    expect(excerpt.length).toBe(32_000);
+    expect(excerpt.length).toBe(16_000);
     expect(excerpt).toContain("mat-form-field-invalid");
   });
 
   it("detects <form tag when invalid markers are absent", () => {
     const body = `${"x".repeat(10_000)}<form action='/submit'>${"y".repeat(50_000)}`;
     const excerpt = selectBodyExcerpt(body);
-    expect(excerpt.length).toBe(32_000);
+    expect(excerpt.length).toBe(16_000);
     expect(excerpt).toContain("<form action");
   });
 });
@@ -3014,6 +3158,36 @@ describe("recon-browser/probeStepBeforeAttempts", () => {
   });
 });
 
+describe("recon-browser/chooseRequiredSelectOption", () => {
+  it("picks the first substantive (non-decline) option", () => {
+    expect(
+      chooseRequiredSelectOption(["None", "Less than one year", "1-2 Years", "5-7 Years"])
+    ).toBe("None");
+  });
+
+  it("skips decline/placeholder-style options in favor of a real answer", () => {
+    expect(chooseRequiredSelectOption(["Prefer not to answer", "Yes", "No"])).toBe("Yes");
+    expect(
+      chooseRequiredSelectOption(["I do not wish to disclose", "Bachelors of Science in Nursing"])
+    ).toBe("Bachelors of Science in Nursing");
+  });
+
+  it("falls back to the first option when EVERY option is a decline", () => {
+    expect(
+      chooseRequiredSelectOption(["Prefer not to answer", "I do not wish to disclose", "Withhold"])
+    ).toBe("Prefer not to answer");
+  });
+
+  it("ignores blank/whitespace-only options and trims", () => {
+    expect(chooseRequiredSelectOption(["", "  ", "  Yes  "])).toBe("Yes");
+  });
+
+  it("returns null when there is nothing selectable", () => {
+    expect(chooseRequiredSelectOption([])).toBeNull();
+    expect(chooseRequiredSelectOption(["", "   "])).toBeNull();
+  });
+});
+
 describe("recon-browser/parseSelectStep", () => {
   it("extracts the option from a bare select step", () => {
     expect(parseSelectStep("Select 'Texas' in the State or State/Region dropdown")).toEqual({
@@ -3086,6 +3260,287 @@ describe("recon-browser/parseSelectStep", () => {
 
   it("returns null when there is no quoted option to select", () => {
     expect(parseSelectStep("Select an appropriate value in the dropdown")).toBeNull();
+  });
+});
+
+describe("recon-browser/parseRadioStep", () => {
+  it("parses a radio answer with a quoted question label", () => {
+    expect(
+      parseRadioStep("Click the 'Yes' answer for the question 'Are you at least 18 years of age?'")
+    ).toEqual({ option: "Yes", questionLabel: "Are you at least 18 years of age?" });
+  });
+
+  it("parses a 'radio button' phrasing", () => {
+    expect(
+      parseRadioStep(
+        "Click the 'Yes' radio button for the 'Are you currently licensed to work as a Registered Nurse in this state?' question"
+      )
+    ).toEqual({
+      option: "Yes",
+      questionLabel: "Are you currently licensed to work as a Registered Nurse in this state?",
+    });
+  });
+
+  it("parses a radio answer whose question is phrased un-quoted (label null)", () => {
+    expect(
+      parseRadioStep(
+        "Click the 'No' answer for the question about requiring visa sponsorship (H-1B, O-1, E-3, TN) to work legally in the US"
+      )
+    ).toEqual({ option: "No", questionLabel: null });
+  });
+
+  it("returns null for <select>/checkbox steps (owned by select/checkbox primitives)", () => {
+    expect(parseRadioStep("Select 'Texas' in the State or State/Region dropdown")).toBeNull();
+    expect(
+      parseRadioStep(
+        "For 'Which of the following certifications do you currently possess?' select or check 'Basic Life Support (BLS)'"
+      )
+    ).toBeNull();
+  });
+
+  it("returns null for the 'any remaining' catch-all", () => {
+    expect(
+      parseRadioStep(
+        "For any remaining required job-related, screening, EEO, or self-identification question, provide a reasonable answer or check the acknowledgement box"
+      )
+    ).toBeNull();
+  });
+
+  it("returns null for a Next/advance click (no 'answer'/'radio')", () => {
+    expect(
+      parseRadioStep("Click the 'Next' button to leave the Basic Information page")
+    ).toBeNull();
+  });
+
+  it("returns null when there is no quoted option", () => {
+    expect(parseRadioStep("Click the appropriate answer for the question")).toBeNull();
+  });
+});
+
+describe("recon-browser/selectRadioGroupOption", () => {
+  const grp = (
+    gi: number,
+    label: string,
+    opts: string[],
+    alreadyChecked = false
+  ): RadioGroupCandidate => ({
+    gi,
+    label,
+    options: opts.map((text, ri) => ({ ri, text, id: "", xpath: "" })),
+    alreadyChecked,
+  });
+
+  it("picks the single genuinely-labeled group that offers the option", () => {
+    const groups = [
+      grp(0, "Are you at least 18 years of age?", ["Yes", "No"]),
+      grp(1, "Have you served in the US Military?", ["Yes", "No"]),
+    ];
+    expect(
+      selectRadioGroupOption({
+        groups,
+        wantOption: "No",
+        questionLabel: "Have you served in a branch of the US Military?",
+      })
+    ).toEqual({ gi: 1, ri: 1 });
+  });
+
+  it("answers two identical UNLABELED groups positionally across consecutive steps", () => {
+    // Step 1: both unlabeled, neither answered → first unlabeled group (DOM order).
+    const groups1 = [grp(0, "", ["Yes", "No"]), grp(1, "", ["Yes", "No"])];
+    expect(
+      selectRadioGroupOption({ groups: groups1, wantOption: "No", questionLabel: null })
+    ).toEqual({ gi: 0, ri: 1 });
+    // Step 2: group 0 now answered → the NEXT unanswered unlabeled group.
+    const groups2 = [grp(0, "", ["Yes", "No"], true), grp(1, "", ["Yes", "No"])];
+    expect(
+      selectRadioGroupOption({ groups: groups2, wantOption: "No", questionLabel: null })
+    ).toEqual({ gi: 1, ri: 1 });
+  });
+
+  it("uses positional pick when the question is labeled but the DOM groups are unlabeled", () => {
+    // The flow step has a question label, but the DOM group has none — must NOT
+    // treat the empty label as a universal match; falls to positional.
+    const groups = [grp(0, "", ["Yes", "No"], true), grp(1, "", ["Yes", "No"])];
+    expect(
+      selectRadioGroupOption({
+        groups,
+        wantOption: "No",
+        questionLabel: "common domicile with any employee",
+      })
+    ).toEqual({ gi: 1, ri: 1 });
+  });
+
+  it("returns 'ambiguous' only when multiple genuinely-labeled groups match", () => {
+    const groups = [
+      grp(0, "Years of experience", ["Yes", "No"]),
+      grp(1, "Years of experience (RN)", ["Yes", "No"]),
+    ];
+    expect(
+      selectRadioGroupOption({ groups, wantOption: "Yes", questionLabel: "Years of experience" })
+    ).toBe("ambiguous");
+  });
+
+  it("returns null when no group offers the wanted option", () => {
+    const groups = [grp(0, "Some question", ["Maybe", "Unsure"])];
+    expect(selectRadioGroupOption({ groups, wantOption: "No", questionLabel: null })).toBeNull();
+  });
+
+  it("excludes already-answered groups from a labeled match (defers rather than mis-picks)", () => {
+    const groups = [grp(0, "Are you 18?", ["Yes", "No"], true)];
+    expect(
+      selectRadioGroupOption({ groups, wantOption: "Yes", questionLabel: "Are you 18?" })
+    ).toBeNull();
+  });
+});
+
+describe("recon-browser/buildRadioIdXPath", () => {
+  it("emits a plain quoted-literal predicate for a normal (base64-ish) id", () => {
+    expect(buildRadioIdXPath("radio-question_itemV29ya2xldEl0ZW0=-yes")).toBe(
+      'xpath=//input[@id="radio-question_itemV29ya2xldEl0ZW0=-yes"]'
+    );
+  });
+
+  it("falls back to concat() when the id contains a double-quote", () => {
+    const xp = buildRadioIdXPath('a"b');
+    expect(xp).toBe(`xpath=//input[@id=concat("a", '"', "b")]`);
+  });
+});
+
+describe("recon-browser/shouldVetoFallbackAdvance", () => {
+  const base = {
+    hasPattern: true,
+    isFinalOrSubmit: false,
+    isAdvance: true,
+    retryUrlChanged: false,
+    retryNetworkIsRealAdvance: false,
+  };
+
+  it("vetoes an advance step whose network fired but was NOT a real transition", () => {
+    expect(shouldVetoFallbackAdvance(base)).toBe(true);
+  });
+
+  it("does NOT veto when the network body matched the transition pattern", () => {
+    expect(shouldVetoFallbackAdvance({ ...base, retryNetworkIsRealAdvance: true })).toBe(false);
+  });
+
+  it("does NOT veto when the URL changed (a real navigation)", () => {
+    expect(shouldVetoFallbackAdvance({ ...base, retryUrlChanged: true })).toBe(false);
+  });
+
+  it("does NOT veto sites without the transition pattern", () => {
+    expect(shouldVetoFallbackAdvance({ ...base, hasPattern: false })).toBe(false);
+  });
+
+  it("does NOT veto final/submit steps (their own submit gate applies)", () => {
+    expect(shouldVetoFallbackAdvance({ ...base, isFinalOrSubmit: true })).toBe(false);
+  });
+
+  it("does NOT veto non-advance (field-answer) steps", () => {
+    expect(shouldVetoFallbackAdvance({ ...base, isAdvance: false })).toBe(false);
+  });
+});
+
+describe("recon-browser/isDomOnlyAdvanceVerified", () => {
+  const base = {
+    hasPattern: true,
+    isFinalOrSubmit: false,
+    isAdvance: true,
+    domVerified: true,
+    networkIsRealAdvance: false,
+    urlChanged: false,
+  };
+
+  it("VETOES a DOM-only advance when no real transition fired (the desync bug)", () => {
+    // dom=true but no type=next and no URL change → must NOT verify, even if a
+    // non-advancing autosave POST fired (which this predicate deliberately ignores).
+    expect(isDomOnlyAdvanceVerified(base)).toBe(false);
+  });
+
+  it("allows the DOM signal when a real type=next transition fired", () => {
+    expect(isDomOnlyAdvanceVerified({ ...base, networkIsRealAdvance: true })).toBe(true);
+  });
+
+  it("allows the DOM signal when the URL changed (real navigation)", () => {
+    expect(isDomOnlyAdvanceVerified({ ...base, urlChanged: true })).toBe(true);
+  });
+
+  it("returns false when there is no DOM signal at all", () => {
+    expect(isDomOnlyAdvanceVerified({ ...base, domVerified: false })).toBe(false);
+  });
+
+  it("does NOT gate non-advance (field-answer) steps — DOM stands", () => {
+    expect(isDomOnlyAdvanceVerified({ ...base, isAdvance: false })).toBe(true);
+  });
+
+  it("does NOT gate sites without the transition pattern — DOM stands", () => {
+    expect(isDomOnlyAdvanceVerified({ ...base, hasPattern: false })).toBe(true);
+  });
+
+  it("does NOT gate final/submit steps — their own submit gate applies", () => {
+    expect(isDomOnlyAdvanceVerified({ ...base, isFinalOrSubmit: true })).toBe(true);
+  });
+});
+
+describe("recon-browser/isUploadAffordanceLabel", () => {
+  it("matches the common upload-affordance labels (case/whitespace-insensitive)", () => {
+    for (const label of [
+      "Upload a Resume/CV",
+      "Browse",
+      "Select File",
+      "Choose File",
+      "Attach",
+      "Upload",
+      "Add resume",
+      "Add a file",
+      "  UPLOAD  ",
+      "Click here to upload a resume",
+    ]) {
+      expect(isUploadAffordanceLabel(label)).toBe(true);
+    }
+  });
+
+  it("rejects skip/decline/submit lookalikes and empty labels", () => {
+    for (const label of [
+      "Upload later",
+      "No file selected",
+      "Skip",
+      "Apply without a resume",
+      "Remove",
+      "Delete file",
+      "Cancel",
+      "Submit application",
+      "Save",
+      "Next",
+      "",
+      "   ",
+    ]) {
+      expect(isUploadAffordanceLabel(label)).toBe(false);
+    }
+  });
+});
+
+describe("recon-browser/writeFixtureToTempFile", () => {
+  const written: string[] = [];
+  afterEach(() => {
+    for (const p of written.splice(0)) {
+      rmSync(dirname(p), { recursive: true, force: true });
+    }
+  });
+
+  it("writes the fixture buffer to a real temp path with the fixture name", () => {
+    const buffer = Buffer.from("%PDF-1.4 fake resume bytes");
+    const path = writeFixtureToTempFile({ buffer, name: "resume.pdf" });
+    written.push(path);
+    expect(existsSync(path)).toBe(true);
+    expect(path.endsWith("resume.pdf")).toBe(true);
+    expect(readFileSync(path).equals(buffer)).toBe(true);
+  });
+
+  it("returns a unique dir per call so concurrent uploads don't collide", () => {
+    const a = writeFixtureToTempFile({ buffer: Buffer.from("a"), name: "resume.pdf" });
+    const b = writeFixtureToTempFile({ buffer: Buffer.from("b"), name: "resume.pdf" });
+    written.push(a, b);
+    expect(dirname(a)).not.toBe(dirname(b));
   });
 });
 
@@ -3163,6 +3618,69 @@ describe("recon-browser/isStructurallyBlocked", () => {
   });
 });
 
+describe("recon-browser/parseCaptureIndex", () => {
+  it("parses the leading zero-padded counter from a capture filename", () => {
+    expect(parseCaptureIndex("003-apply-1700000000000-deadbeef.json")).toBe(3);
+    expect(parseCaptureIndex("200-consent-1-a.json")).toBe(200);
+    expect(parseCaptureIndex("0-x.json")).toBe(0);
+  });
+  it("returns null for a name with no leading integer", () => {
+    expect(parseCaptureIndex("missing.json")).toBeNull();
+    expect(parseCaptureIndex("abc-1.json")).toBeNull();
+    expect(parseCaptureIndex("")).toBeNull();
+  });
+});
+
+describe("recon-browser/latestCaptureIndex", () => {
+  it("returns the index of the last parseable entry (the high-water mark)", () => {
+    expect(latestCaptureIndex(["18-a.json", "19-b.json", "20-c.json"])).toBe(20);
+  });
+  it("skips a trailing non-parseable entry", () => {
+    expect(latestCaptureIndex(["19-b.json", "20-c.json", "sidecar.json"])).toBe(20);
+  });
+  it("returns -1 for an empty array (so index 0 is in-window)", () => {
+    expect(latestCaptureIndex([])).toBe(-1);
+  });
+});
+
+describe("recon-browser/capturesAfterIndex", () => {
+  let dir: string;
+  const write = (name: string): void => {
+    writeFileSync(join(dir, name), "{}");
+  };
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "recon-caps-after-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("returns only files indexed strictly after preIdx, sorted by index", () => {
+    write("0-a.json");
+    write("1-b.json");
+    write("2-c.json");
+    expect(capturesAfterIndex(0, dir)).toEqual(["1-b.json", "2-c.json"]);
+  });
+  it("preIdx=-1 includes index 0", () => {
+    write("0-a.json");
+    expect(capturesAfterIndex(-1, dir)).toEqual(["0-a.json"]);
+  });
+  it("excludes .decoded.json sidecars and non-indexed files", () => {
+    write("0-a.json");
+    write("0-a.decoded.json");
+    write("notes.txt");
+    write("sidecar.json");
+    expect(capturesAfterIndex(-1, dir)).toEqual(["0-a.json"]);
+  });
+  it("is eviction-proof: finds a high-index file with no low-index files present", () => {
+    write("200-next.json");
+    expect(capturesAfterIndex(189, dir)).toEqual(["200-next.json"]);
+  });
+  it("returns [] for an unreadable dir instead of throwing", () => {
+    expect(capturesAfterIndex(0, join(dir, "nope"))).toEqual([]);
+  });
+});
+
 describe("recon-browser/windowHasTransitionBody", () => {
   let dir: string;
   const writeCapture = (name: string, requestPostData: unknown): void => {
@@ -3180,8 +3698,7 @@ describe("recon-browser/windowHasTransitionBody", () => {
     writeCapture("0-x.json", '{"query":"mutation TransitionWorklet"}');
     expect(
       windowHasTransitionBody({
-        recentCaptures: ["0-x.json"],
-        preLength: 0,
+        preIdx: -1,
         advanceTransitionBodyPattern: null,
         capturesDir: dir,
       })
@@ -3192,8 +3709,7 @@ describe("recon-browser/windowHasTransitionBody", () => {
     writeCapture("0-a.json", '{"query":"mutation TransitionWorklet(...)"}');
     expect(
       windowHasTransitionBody({
-        recentCaptures: ["0-a.json"],
-        preLength: 0,
+        preIdx: -1,
         advanceTransitionBodyPattern: "TransitionWorklet",
         capturesDir: dir,
       })
@@ -3209,40 +3725,244 @@ describe("recon-browser/windowHasTransitionBody", () => {
     );
     expect(
       windowHasTransitionBody({
-        recentCaptures: ["0-edit.json"],
-        preLength: 0,
+        preIdx: -1,
         advanceTransitionBodyPattern: "TransitionWorklet",
         capturesDir: dir,
       })
     ).toBe(false);
   });
 
-  it("only scans captures added after preLength (this step's window)", () => {
+  it("only scans captures indexed after preIdx (this step's window)", () => {
     writeCapture("0-old.json", '{"query":"mutation TransitionWorklet"}');
     writeCapture("1-new.json", '{"query":"mutation EditQuestionItem"}');
-    // preLength=1 → only "1-new.json" is in-window → no transition match.
+    // preIdx=0 → only index 1 ("1-new.json") is in-window → no transition match.
     expect(
       windowHasTransitionBody({
-        recentCaptures: ["0-old.json", "1-new.json"],
-        preLength: 1,
+        preIdx: 0,
         advanceTransitionBodyPattern: "TransitionWorklet",
         capturesDir: dir,
       })
     ).toBe(false);
   });
 
-  it("skips .decoded.json sidecars and tolerates unreadable captures", () => {
+  it("is eviction-proof: finds a transition indexed far past RECENT_CAPTURES_WINDOW", () => {
+    // Simulate a step where >20 captures flooded the window: the transition is at
+    // index 200, and the in-memory array would have long since evicted it. The
+    // disk scan still finds it because it reads by filename index, not array slot.
+    for (let i = 190; i < 200; i++) {
+      writeCapture(`${i}-noise.json`, '{"query":"mutation EditQuestionItem"}');
+    }
+    writeCapture("200-next.json", '{"query":"mutation TransitionWorklet"}');
+    expect(
+      windowHasTransitionBody({
+        preIdx: 189,
+        advanceTransitionBodyPattern: "TransitionWorklet",
+        capturesDir: dir,
+      })
+    ).toBe(true);
+  });
+
+  it("skips .decoded.json sidecars and tolerates an unreadable dir", () => {
     writeCapture("0-a.json", '{"query":"EditQuestionItem"}');
     // decoded sidecar with a matching string must be ignored (only raw counts)
     writeFileSync(join(dir, "0-a.decoded.json"), '"mutation TransitionWorklet"');
     expect(
       windowHasTransitionBody({
-        recentCaptures: ["0-a.json", "0-a.decoded.json", "missing.json"],
-        preLength: 0,
+        preIdx: -1,
         advanceTransitionBodyPattern: "TransitionWorklet",
         capturesDir: dir,
       })
     ).toBe(false);
+    // A non-existent dir yields no captures rather than throwing.
+    expect(
+      windowHasTransitionBody({
+        preIdx: -1,
+        advanceTransitionBodyPattern: "TransitionWorklet",
+        capturesDir: join(dir, "does-not-exist"),
+      })
+    ).toBe(false);
+  });
+});
+
+describe("recon-browser/windowHasAdvanceTransition — type=next gate", () => {
+  let dir: string;
+  const writeCapture = (name: string, requestPostData: string, variables: unknown): void => {
+    writeFileSync(
+      join(dir, name),
+      JSON.stringify({ url: "https://x/gq", requestPostData, variables })
+    );
+  };
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "recon-adv-next-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("true when body matches AND variables.input.type === 'next' (real advance)", () => {
+    writeCapture("0-next.json", '{"query":"mutation TransitionWorklet"}', {
+      input: { type: "next", is_next: false },
+    });
+    expect(
+      windowHasAdvanceTransition({
+        preIdx: -1,
+        advanceTransitionBodyPattern: "TransitionWorklet",
+        capturesDir: dir,
+      })
+    ).toBe(true);
+  });
+
+  it("false for a 'back' transition even though its body contains the pattern", () => {
+    // The latent bug: a back bounce IS a TransitionWorklet mutation. is_next is
+    // inverted here (back carries is_next=true) — type is the reliable signal.
+    writeCapture("0-back.json", '{"query":"mutation TransitionWorklet"}', {
+      input: { type: "back", is_next: true },
+    });
+    expect(
+      windowHasAdvanceTransition({
+        preIdx: -1,
+        advanceTransitionBodyPattern: "TransitionWorklet",
+        capturesDir: dir,
+      })
+    ).toBe(false);
+  });
+
+  it("false for the WorkletPayload autosave (no variables.input.type)", () => {
+    writeCapture("0-autosave.json", '{"query":"mutation WorkletPayload"}', { input: {} });
+    expect(
+      windowHasAdvanceTransition({
+        preIdx: -1,
+        advanceTransitionBodyPattern: "TransitionWorklet",
+        capturesDir: dir,
+      })
+    ).toBe(false);
+  });
+
+  it("false when no pattern is configured (opt-in)", () => {
+    writeCapture("0-next.json", '{"query":"mutation TransitionWorklet"}', {
+      input: { type: "next" },
+    });
+    expect(
+      windowHasAdvanceTransition({
+        preIdx: -1,
+        advanceTransitionBodyPattern: null,
+        capturesDir: dir,
+      })
+    ).toBe(false);
+  });
+
+  it("only scans captures indexed after preIdx (this step's window)", () => {
+    writeCapture("0-old-next.json", '{"query":"mutation TransitionWorklet"}', {
+      input: { type: "next" },
+    });
+    writeCapture("1-back.json", '{"query":"mutation TransitionWorklet"}', {
+      input: { type: "back" },
+    });
+    // preIdx=0 → the real 'next' at index 0 is excluded; only the index-1 'back'
+    // remains → not an advance.
+    expect(
+      windowHasAdvanceTransition({
+        preIdx: 0,
+        advanceTransitionBodyPattern: "TransitionWorklet",
+        capturesDir: dir,
+      })
+    ).toBe(false);
+  });
+});
+
+describe("recon-browser/waitForTransitionBody — poll", () => {
+  let dir: string;
+  const writeNext = (name: string): void => {
+    writeFileSync(
+      join(dir, name),
+      JSON.stringify({
+        url: "https://x/gq",
+        requestPostData: '{"query":"mutation TransitionWorklet"}',
+        variables: { input: { type: "next" } },
+      })
+    );
+  };
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "recon-adv-poll-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("returns true immediately without polling when the advance is already in-window", async () => {
+    writeNext("0-next.json");
+    const waitForTimeout = vi.fn().mockResolvedValue(undefined);
+    const page = { waitForTimeout } as unknown as Parameters<
+      typeof waitForTransitionBody
+    >[0]["page"];
+    const ok = await waitForTransitionBody({
+      page,
+      preIdx: -1,
+      advanceTransitionBodyPattern: "TransitionWorklet",
+      timeoutMs: 4000,
+      intervalMs: 50,
+      capturesDir: dir,
+    });
+    expect(ok).toBe(true);
+    expect(waitForTimeout).not.toHaveBeenCalled();
+  });
+
+  it("polls and returns true once the transition POST lands late", async () => {
+    // The transition capture lands on the 2nd poll wait (mimics the late POST):
+    // each poll iteration re-scans disk, so the newly-written file is found.
+    let ticks = 0;
+    const waitForTimeout = vi.fn().mockImplementation(async () => {
+      ticks++;
+      if (ticks === 2) {
+        writeNext("0-next.json");
+      }
+    });
+    const page = { waitForTimeout } as unknown as Parameters<
+      typeof waitForTransitionBody
+    >[0]["page"];
+    const ok = await waitForTransitionBody({
+      page,
+      preIdx: -1,
+      advanceTransitionBodyPattern: "TransitionWorklet",
+      timeoutMs: 4000,
+      intervalMs: 10,
+      capturesDir: dir,
+    });
+    expect(ok).toBe(true);
+    expect(waitForTimeout.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("returns false on timeout when no advance transition ever lands", async () => {
+    const waitForTimeout = vi.fn().mockResolvedValue(undefined);
+    const page = { waitForTimeout } as unknown as Parameters<
+      typeof waitForTransitionBody
+    >[0]["page"];
+    const ok = await waitForTransitionBody({
+      page,
+      preIdx: -1,
+      advanceTransitionBodyPattern: "TransitionWorklet",
+      timeoutMs: 30,
+      intervalMs: 10,
+      capturesDir: dir,
+    });
+    expect(ok).toBe(false);
+  });
+
+  it("returns false immediately when no pattern is configured", async () => {
+    const waitForTimeout = vi.fn().mockResolvedValue(undefined);
+    const page = { waitForTimeout } as unknown as Parameters<
+      typeof waitForTransitionBody
+    >[0]["page"];
+    const ok = await waitForTransitionBody({
+      page,
+      preIdx: -1,
+      advanceTransitionBodyPattern: null,
+      timeoutMs: 4000,
+      intervalMs: 10,
+      capturesDir: dir,
+    });
+    expect(ok).toBe(false);
+    expect(waitForTimeout).not.toHaveBeenCalled();
   });
 });
 
@@ -3300,5 +4020,30 @@ describe("recon-browser/pollEnumerate — settle-retry", () => {
     // Capped at PRIMITIVE_ENUMERATE_ATTEMPTS (5) evaluates, 4 waits between them.
     expect(evaluate).toHaveBeenCalledTimes(5);
     expect(waitForTimeout).toHaveBeenCalledTimes(4);
+  });
+
+  it("honors an opts.attempts override (longer window for slow widgets)", async () => {
+    const evaluate = vi.fn().mockResolvedValue({ present: false });
+    const waitForTimeout = vi.fn().mockResolvedValue(undefined);
+    const page = { evaluate, waitForTimeout } as unknown as Parameters<typeof pollEnumerate>[0];
+    const result = await pollEnumerate<{ present: boolean }>(page, "expr", (r) => r.present, {
+      attempts: 3,
+      intervalMs: 10,
+    });
+    expect(result).toEqual({ present: false });
+    // The override drives the loop, not the default 5.
+    expect(evaluate).toHaveBeenCalledTimes(3);
+    expect(waitForTimeout).toHaveBeenCalledTimes(2);
+  });
+
+  it("passes opts.intervalMs to waitForTimeout", async () => {
+    const evaluate = vi
+      .fn()
+      .mockResolvedValueOnce({ present: false })
+      .mockResolvedValueOnce({ present: true });
+    const waitForTimeout = vi.fn().mockResolvedValue(undefined);
+    const page = { evaluate, waitForTimeout } as unknown as Parameters<typeof pollEnumerate>[0];
+    await pollEnumerate<{ present: boolean }>(page, "expr", (r) => r.present, { intervalMs: 42 });
+    expect(waitForTimeout).toHaveBeenCalledWith(42);
   });
 });

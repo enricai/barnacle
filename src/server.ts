@@ -15,6 +15,7 @@ import authPlugin from "@/api/plugins/auth";
 import errorHandlerPlugin from "@/api/plugins/error-handler";
 import requestContextPlugin from "@/api/plugins/request-context";
 import { healthRoutes } from "@/api/routes/health";
+import { pluginsIntrospectionRoutes } from "@/api/routes/plugins-introspection";
 import { config as defaultConfig, loadConfig } from "@/config";
 import { toErrorMessage } from "@/lib/errors";
 import { configureHttpDispatcher } from "@/lib/http";
@@ -22,6 +23,7 @@ import { getLogger } from "@/lib/logging";
 import { shutdownStatsD } from "@/lib/statsd";
 import { shutdownS3Sink, startS3SinkTimer } from "@/lib/telemetry/s3-sink";
 import { drainTrackingClicks } from "@/lib/tracking-click";
+import { loadAllPlugins } from "@/plugins/discover";
 import { registerRoutes } from "@/plugins/loader";
 import { drainPool } from "@/scraper/pool";
 import type { Logger } from "@/types/logging";
@@ -110,8 +112,10 @@ export async function buildServer(): Promise<
     await app.register(fastifySwaggerUi, { routePrefix: "/docs" });
   }
 
+  const { plugins, report } = await loadAllPlugins(cfg);
   await app.register(healthRoutes);
-  await registerRoutes(app, cfg);
+  await registerRoutes(app, cfg, plugins);
+  await app.register(pluginsIntrospectionRoutes, { report });
 
   startS3SinkTimer();
 

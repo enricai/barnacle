@@ -218,6 +218,31 @@ export interface AppConfig {
     /** Application version tag — git SHA or package version. */
     version: string;
   };
+  /**
+   * Out-of-tree plugin loading. Operators point `BARNACLE_PLUGINS` at their
+   * own compiled plugin modules; core discovers, validates, and registers them
+   * at startup without any source change.
+   */
+  plugins: {
+    /**
+     * Comma-separated list of plugin specifiers — relative paths
+     * (`./plugins/acme`) or package names (`@acme/barnacle-plugin`).
+     * Parsed from `BARNACLE_PLUGINS`; empty by default (built-ins only).
+     */
+    specifiers: readonly string[];
+    /**
+     * When true, any plugin that fails to load aborts the process.
+     * When false (default), failures produce a disabled record and a warn log.
+     */
+    strict: boolean;
+    /**
+     * Base directory used to resolve relative plugin specifiers and to locate
+     * the operator's `node_modules` for package-name specifiers. Defaults to
+     * `process.cwd()` so paths are relative to wherever the operator runs the
+     * binary — NOT the installed Barnacle package root.
+     */
+    baseDir: string;
+  };
 }
 
 /**
@@ -345,6 +370,11 @@ export function loadConfig(): AppConfig {
       service: getEnv("DD_SERVICE", "barnacle"),
       env: getEnv("DD_ENV", getNodeEnv()),
       version: getEnv("DD_VERSION", "0.1.0"),
+    },
+    plugins: {
+      specifiers: parseList(getEnv("BARNACLE_PLUGINS", "")),
+      strict: getBoolEnv("BARNACLE_PLUGINS_STRICT", false),
+      baseDir: getEnv("BARNACLE_PLUGINS_DIR", process.cwd()),
     },
   };
 }

@@ -35,7 +35,8 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -73,12 +74,7 @@ import {
 } from "@/lib/telemetry/telemetry-paths";
 import { StepVerificationError } from "@/scraper/errors";
 import { createBrowserSession, type ProviderName } from "@/scraper/session";
-import {
-  guardedAct,
-  guardedObserve,
-  newObserveCache,
-  type ObserveCache,
-} from "@/scraper/stagehand-guard";
+import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
 import { filterByCallType, parseSamples } from "@/scripts/judge-llm-batch";
 import { CAPTURES_DIR, type Capture, STEP_FAILURES_DIR } from "@/scripts/recon-shared";
 import { allocateTestmailInbox } from "@/testmail/client";
@@ -92,6 +88,36 @@ const logger = getScriptLogger("recon-browser");
 const GOTO_TIMEOUT_MS = 120_000;
 /** Post-action pause between flow steps — gives the page time to settle. */
 const STEP_PAUSE_MS = 2_000;
+/**
+ * Settle window after committing a radio before re-reading its validity. MUI's
+ * controlled-form validation re-flags `required` a beat AFTER the value change,
+ * so an immediate readback sees stale pre-validation state (the fs4 "18 years"
+ * bug: `checked=1` + `Mui-error` at once). One tick (~400ms) lets the async
+ * re-validation land; far below `STEP_PAUSE_MS` so it barely affects run time.
+ */
+const RADIO_SETTLE_MS = 400;
+/**
+ * Same async-revalidation tick as {@link RADIO_SETTLE_MS}, for native `<select>`
+ * commits. After a synthetic value-set on a MUI `NativeSelect`, the wrapping
+ * FormControl re-runs its required-validation a beat later; reading `aria-invalid`
+ * immediately sees stale (pre-validation) state. Waiting one tick lets the
+ * `Mui-error`/`aria-invalid` marker settle so the primitive can HONESTLY report
+ * whether the value committed (cleared the required flag) vs merely set the DOM
+ * value that a later worklet re-render will wipe.
+ */
+const SELECT_SETTLE_MS = 400;
+/**
+ * Extra bounded poll window for a network-only advance whose real
+ * `TransitionWorklet(type="next")` POST lands AFTER the `STEP_PAUSE_MS`
+ * snapshot. HCA/Talemetry's "Next" click fires a fast `WorkletPayload` autosave
+ * first, then the actual transition ~0.6-2s+ later — so a one-shot check
+ * false-negatives the advance, retries the click, and the stale retry fires a
+ * `back` that bounces the wizard. Additive to `STEP_PAUSE_MS`; only spent on an
+ * advance-only-network step whose transition body hasn't landed yet.
+ */
+const ADVANCE_TRANSITION_POLL_MS = 4_000;
+/** Poll interval for {@link ADVANCE_TRANSITION_POLL_MS}. */
+const ADVANCE_TRANSITION_POLL_INTERVAL_MS = 350;
 
 /**
  * Attempts to decode opaque request parameters: tries JSON parse, then
@@ -880,23 +906,93 @@ export function isAdvanceStep(instruction: string | null | undefined): boolean {
 }
 
 /**
+ * Parse the monotonic capture index from a capture filename. Every capture is
+ * written as `<idx>-<phase>-<unix-ms>-<hash>.json` where `<idx>` is a
+ * zero-padded, never-reused counter (`counter.n++`). Returns the numeric prefix,
+ * or null when the name has no leading integer. Pure; the seam the window
+ * helpers use to scope a step's captures by INDEX rather than by array position.
+ */
+export function parseCaptureIndex(filename: string): number | null {
+  const m = /^(\d+)-/.exec(filename);
+  const digits = m?.[1];
+  if (digits === undefined) return null;
+  const n = Number.parseInt(digits, 10);
+  return Number.isNaN(n) ? null : n;
+}
+
+/**
+ * The highest capture index currently known, read from the LIVE `recentCaptures`
+ * array's last entry (captures are appended in index order, so the tail always
+ * carries the high-water mark even after the array is front-evicted to
+ * `RECENT_CAPTURES_WINDOW`). Snapshotting THIS before a step, then asking the
+ * window helpers for captures with a greater index, scopes the scan to the
+ * step's own captures WITHOUT depending on the capped array holding them — the
+ * eviction-proof replacement for the old `recentCaptures.length` slice index.
+ * Returns -1 when nothing has been captured yet (so index 0 is in-window).
+ */
+export function latestCaptureIndex(recentCaptures: readonly string[]): number {
+  for (let i = recentCaptures.length - 1; i >= 0; i--) {
+    const name = recentCaptures[i];
+    if (name === undefined) continue;
+    const idx = parseCaptureIndex(name);
+    if (idx !== null) return idx;
+  }
+  return -1;
+}
+
+/**
+ * Filenames of the raw captures written AFTER `preIdx` (this step's window),
+ * read straight from `capturesDir` — NOT from the in-memory `recentCaptures`
+ * array, which is front-evicted to `RECENT_CAPTURES_WINDOW` and therefore drops
+ * a step's transition when >20 captures flood during the step (measured 43
+ * across one HCA cascade). Scanning disk by filename index is eviction-proof:
+ * the transition file is always on disk regardless of array churn. `.decoded.json`
+ * sidecars are excluded (the raw file carries `requestPostData`). Sorted by index
+ * so callers scan in capture order. Returns [] when the dir is unreadable.
+ */
+export function capturesAfterIndex(preIdx: number, capturesDir: string): string[] {
+  let entries: string[];
+  try {
+    entries = readdirSync(capturesDir);
+  } catch {
+    return [];
+  }
+  return entries
+    .filter((f) => f.endsWith(".json") && !f.endsWith(".decoded.json"))
+    .map((f) => ({ f, idx: parseCaptureIndex(f) }))
+    .filter((e): e is { f: string; idx: number } => e.idx !== null && e.idx > preIdx)
+    .sort((a, b) => a.idx - b.idx)
+    .map((e) => e.f);
+}
+
+/**
  * Detects a multi-page-wizard RESTART / backward navigation by scanning the
- * recent full-URL capture list for a configured restart-signal pattern (e.g.
- * `init-apply`, `application_canceled=true`). Scans `recentCaptures` — NOT
- * `recentCaptureMeta`, which drops GETs — because the restart signal is often a
- * plain GET (Talemetry's `GET .../init-apply?...&application_canceled=true`).
- * Returns the matching URL (for the diagnostic) or null. No-op when the flow
- * declares no `restartSignalUrlPatterns`.
+ * captures written during this step for a configured restart-signal pattern
+ * (e.g. `init-apply`, `application_canceled=true`). The restart signal is often
+ * a plain GET (Talemetry's `GET .../init-apply?...&application_canceled=true`),
+ * so it scans the raw capture files' `url` field (GETs are written to disk even
+ * though they're dropped from `recentCaptureMeta`). Window scoped by
+ * `preIdx` via {@link capturesAfterIndex} (eviction-proof). Returns the matching
+ * URL (for the diagnostic) or null. No-op when no `restartSignalUrlPatterns`.
  */
 export function findWizardRestartSignal(params: {
-  recentCaptures: readonly string[];
-  preLength: number;
+  preIdx: number;
+  capturesDir?: string;
   restartSignalUrlPatterns: readonly string[];
 }): string | null {
-  const { recentCaptures, preLength, restartSignalUrlPatterns } = params;
+  const { preIdx, restartSignalUrlPatterns } = params;
   if (restartSignalUrlPatterns.length === 0) return null;
-  const window = recentCaptures.slice(preLength);
-  for (const url of window) {
+  const capturesDir = params.capturesDir ?? CAPTURES_DIR;
+  for (const filename of capturesAfterIndex(preIdx, capturesDir)) {
+    let url: string;
+    try {
+      const raw = readFileSync(join(capturesDir, filename), "utf8");
+      const capture = JSON.parse(raw) as { url?: unknown };
+      if (typeof capture.url !== "string") continue;
+      url = capture.url;
+    } catch {
+      continue;
+    }
     for (const pattern of restartSignalUrlPatterns) {
       if (url.includes(pattern)) return url;
     }
@@ -910,17 +1006,17 @@ export function findWizardRestartSignal(params: {
  * wizard forward when advance and non-advance mutations share one endpoint URL
  * (e.g. Talemetry `/gq`: a real advance is a `TransitionWorklet` mutation, a
  * field edit is `EditQuestionItem` — same URL, only the body differs, so a
- * URL/meta-based check can't tell them apart). Reads the capture files by name
- * from `capturesDir` (mirrors `extractSubmitFailureEvidence`). Returns false
+ * URL/meta-based check can't tell them apart). Window scoped by `preIdx` via
+ * {@link capturesAfterIndex} (disk-scan by filename index — eviction-proof, so a
+ * transition isn't lost when >20 captures flood during the step). Returns false
  * when no pattern is configured (opt-in) or nothing in the window matches.
  */
 export function windowHasTransitionBody(params: {
-  recentCaptures: readonly string[];
-  preLength: number;
+  preIdx: number;
   advanceTransitionBodyPattern: string | null;
   capturesDir?: string;
 }): boolean {
-  const { recentCaptures, preLength, advanceTransitionBodyPattern } = params;
+  const { preIdx, advanceTransitionBodyPattern } = params;
   if (!advanceTransitionBodyPattern) return false;
   const capturesDir = params.capturesDir ?? CAPTURES_DIR;
   let rx: RegExp;
@@ -929,10 +1025,7 @@ export function windowHasTransitionBody(params: {
   } catch {
     return false;
   }
-  const window = recentCaptures.slice(preLength);
-  for (const filename of window) {
-    // Skip decoded sidecars; the raw capture carries requestPostData.
-    if (filename.endsWith(".decoded.json")) continue;
+  for (const filename of capturesAfterIndex(preIdx, capturesDir)) {
     try {
       const raw = readFileSync(join(capturesDir, filename), "utf8");
       const capture = JSON.parse(raw) as Partial<Capture> & { requestPostData?: unknown };
@@ -946,6 +1039,114 @@ export function windowHasTransitionBody(params: {
     }
   }
   return false;
+}
+
+/**
+ * Stricter sibling of {@link windowHasTransitionBody}: a same-window capture
+ * whose request body matches the transition pattern AND whose parsed
+ * `variables.input.type === "next"`. The mutation NAME alone is a weak
+ * distinguisher — on Talemetry a `back` bounce is ALSO a `TransitionWorklet`
+ * mutation (its body contains the pattern too) and would wrongly count as an
+ * advance; and the fast `WorkletPayload` autosave that precedes the real
+ * transition is a different mutation with no `input.type`. Requiring the parsed
+ * `type==="next"` isolates a genuine FORWARD advance. Deliberately does NOT use
+ * `input.is_next` — it is inverted/unreliable on this ATS (a real `next` carries
+ * `is_next:false`, a `back` carries `is_next:true`). Window scoped by `preIdx`
+ * via {@link capturesAfterIndex} (eviction-proof disk-scan). Opt-in /
+ * site-agnostic: returns false when no pattern is configured.
+ */
+export function windowHasAdvanceTransition(params: {
+  preIdx: number;
+  advanceTransitionBodyPattern: string | null;
+  capturesDir?: string;
+}): boolean {
+  const { preIdx, advanceTransitionBodyPattern } = params;
+  if (!advanceTransitionBodyPattern) return false;
+  const capturesDir = params.capturesDir ?? CAPTURES_DIR;
+  let rx: RegExp;
+  try {
+    rx = new RegExp(advanceTransitionBodyPattern);
+  } catch {
+    return false;
+  }
+  for (const filename of capturesAfterIndex(preIdx, capturesDir)) {
+    try {
+      const raw = readFileSync(join(capturesDir, filename), "utf8");
+      const capture = JSON.parse(raw) as Partial<Capture> & { requestPostData?: unknown };
+      const body =
+        typeof capture.requestPostData === "string"
+          ? capture.requestPostData
+          : JSON.stringify(capture.requestPostData ?? "");
+      if (!rx.test(body)) continue;
+      const input = (capture.variables as { input?: { type?: unknown } } | null | undefined)?.input;
+      if (input && input.type === "next") return true;
+    } catch {
+      // Unreadable/absent capture — ignore, keep scanning.
+    }
+  }
+  return false;
+}
+
+/**
+ * Decide whether the n+16 `el.click()` fallback's "advance" signals should be
+ * VETOED — i.e. NOT counted as verifying a wizard transition. Pure + exported so
+ * the RC2 gate is unit-testable.
+ *
+ * An interior "Next" on an SPA where an advance and a mere field-edit share one
+ * endpoint (Talemetry `/gq`: TransitionWorklet vs EditQuestionItem — same URL,
+ * different body) can fire a network POST that is NOT a real advance; the
+ * fallback's htmlDelta/textChanged/checked-radio signals are then validation
+ * re-renders / field toggles that don't move the wizard. So for an opted-in
+ * (`hasPattern`) non-final/non-submit ADVANCE step, a real advance requires a URL
+ * change OR a same-window capture body matching the transition pattern
+ * (`retryNetworkIsRealAdvance`); anything less is vetoed. Non-advance/field-answer
+ * steps and sites without the pattern are never vetoed here.
+ */
+export function shouldVetoFallbackAdvance(params: {
+  hasPattern: boolean;
+  isFinalOrSubmit: boolean;
+  isAdvance: boolean;
+  retryUrlChanged: boolean;
+  retryNetworkIsRealAdvance: boolean;
+}): boolean {
+  const { hasPattern, isFinalOrSubmit, isAdvance, retryUrlChanged, retryNetworkIsRealAdvance } =
+    params;
+  if (!hasPattern || isFinalOrSubmit || !isAdvance) return false;
+  // Advance step with the pattern configured: veto unless a real transition fired.
+  return !(retryUrlChanged || retryNetworkIsRealAdvance);
+}
+
+/**
+ * Whether a DOM-verified signal should count as verifying an interior ADVANCE
+ * step (the PRIMARY verifier's counterpart to {@link shouldVetoFallbackAdvance}).
+ * Pure + exported so the RC2-on-the-DOM-branch gate is unit-testable.
+ *
+ * An advance/"Next" on a pattern-configured SPA is only real when a genuine
+ * transition fired — a URL change OR a real `type=next` (`networkIsRealAdvance`).
+ * A DOM change alone is a validation re-render / field toggle that never moves
+ * the wizard. Crucially this must veto even when a NON-advancing network POST
+ * fired (Talemetry's `WorkletPayload` autosave): keying the veto on "no network
+ * at all" let a rephrase that triggered an autosave + DOM reflow false-verify an
+ * advance, desyncing the flow from the wizard. Returns whether the DOM signal is
+ * ALLOWED to verify: false = veto it. Non-advance/field steps, sites without the
+ * pattern, and final/submit steps are never vetoed here (DOM stands).
+ */
+export function isDomOnlyAdvanceVerified(params: {
+  hasPattern: boolean;
+  isFinalOrSubmit: boolean;
+  isAdvance: boolean;
+  domVerified: boolean;
+  networkIsRealAdvance: boolean;
+  urlChanged: boolean;
+}): boolean {
+  const { hasPattern, isFinalOrSubmit, isAdvance, domVerified, networkIsRealAdvance, urlChanged } =
+    params;
+  if (!domVerified) return false;
+  // Only advance steps on pattern-configured, non-final pages are gated.
+  if (!hasPattern || isFinalOrSubmit || !isAdvance) return true;
+  // An advance requires a REAL transition; a bare DOM change (even alongside a
+  // non-advancing POST) does not verify it.
+  return networkIsRealAdvance || urlChanged;
 }
 
 /**
@@ -1055,8 +1256,37 @@ export function shouldSkipTechnique(params: {
     triedSelectors: readonly string[];
     errorMessage: string | null;
   }[];
+  /**
+   * True when the step is a wizard ADVANCE ("Next") whose attempt-1 produced no
+   * real forward transition — either a non-advancing POST or no observable
+   * effect at all. Optional so existing callers are unchanged.
+   */
+  advanceUnmovedAfterAttempt1?: boolean;
 }): { skip: boolean; reason: string } {
-  const { technique, priorAttempts } = params;
+  const { technique, priorAttempts, advanceUnmovedAfterAttempt1 } = params;
+  // Unmoved-advance short-circuit (measured: attempts 2-4 recovered a stuck
+  // advance 0 times in 289 steps). When attempt-1's act-string clicked the Next
+  // and the wizard did NOT move forward (non-advancing POST, or no effect),
+  // re-observing/re-clicking the same button cannot move it — only a rephrase (a
+  // different action) or the terminal replan can. So skip observe-act /
+  // structured-click / observe-act-exclude and let the cascade reach attempt-5
+  // rephrase (kept — the ONE attempt that has ever recovered an advance) or fail
+  // fast to replan. act-string (attempt 1) and llm-rephrase (attempt 5) are never
+  // skipped here. (The `isAdvanceStalled` early-exit already handles the
+  // network-fired subcase by breaking to replan; this also covers the
+  // no-effect-at-all subcase, where that early-exit does not fire.)
+  if (
+    advanceUnmovedAfterAttempt1 === true &&
+    (technique === "observe-act" ||
+      technique === "structured-click" ||
+      technique === "observe-act-exclude")
+  ) {
+    return {
+      skip: true,
+      reason:
+        "advance step did not move the wizard on attempt 1; re-observe/re-click cannot advance it — skipping to rephrase/replan",
+    };
+  }
   if (technique === "structured-click") {
     const anyXpathResolved = priorAttempts.some((a) => a.triedSelectors.length > 0);
     if (!anyXpathResolved) {
@@ -1185,6 +1415,47 @@ export function isSubmitRevealedInvalid(params: {
   if (!effectSignals.includes("dom-grew-without-network")) return false;
   if (postAttemptInvalidCount <= preSubmitInvalidCount) return false;
   return true;
+}
+
+/**
+ * Decide whether attempt 1 on an interior wizard-ADVANCE step already proved
+ * that clicking cannot move the wizard, so attempts 2-N are dead work. When the
+ * step is an advance step on a site with the transition-body gate configured,
+ * the click DID fire (Stagehand resolved and clicked a button — `clickFired`)
+ * and network traffic happened, yet no real `TransitionWorklet(type="next")`
+ * landed within the poll window (`networkIsRealAdvance` false), the button works
+ * but the wizard is refusing to advance (a precondition isn't met, e.g. a
+ * required field the flow answers on a LATER step). Re-clicking the same button
+ * only re-fires the autosave / a `back` bounce — measured across HCA runs as the
+ * next→back oscillation. Break to replan instead, which can reorder a later step
+ * forward. Conservative: any condition unmet → run the full cascade as before.
+ * Never fires on final/submit steps (they own `isSubmitRevealedInvalid`) or on
+ * sites without the pattern.
+ */
+export function isAdvanceStalled(params: {
+  isAdvance: boolean;
+  isFinalOrSubmit: boolean;
+  hasPattern: boolean;
+  clickFired: boolean;
+  networkFired: boolean;
+  networkIsRealAdvance: boolean;
+  urlChanged: boolean;
+}): boolean {
+  const {
+    isAdvance,
+    isFinalOrSubmit,
+    hasPattern,
+    clickFired,
+    networkFired,
+    networkIsRealAdvance,
+    urlChanged,
+  } = params;
+  if (!isAdvance || isFinalOrSubmit || !hasPattern) return false;
+  if (!clickFired) return false;
+  if (urlChanged || networkIsRealAdvance) return false;
+  // The button clicked and something hit the network, but it wasn't a real
+  // forward transition — the wizard is stalled, not the click technique.
+  return networkFired;
 }
 
 /**
@@ -1710,6 +1981,31 @@ export function filterCompletedFromReplan(
   return newSteps.filter((s) => s.instruction === failedStep || !completed.has(s.instruction));
 }
 
+/** Whitespace/case-insensitive normalization for comparing step instructions. */
+function normalizeInstruction(instruction: string): string {
+  return instruction.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/**
+ * Detect a replan that only re-proposes the step that JUST terminally failed —
+ * i.e. after {@link filterCompletedFromReplan} the sole surviving bridge step is
+ * byte-identical (whitespace/case-normalized) to the failed instruction. The
+ * replan prompt allows a no-op re-emission of the failed step, but a bridge that
+ * is NOTHING but the failed step is a guaranteed re-fail: resuming re-runs the
+ * whole 5-attempt cascade on the exact click that just exhausted it (~1m40s
+ * wasted) before the cycle detector — which needs REPLAN_CYCLE_THRESHOLD repeats
+ * under a static page — even engages. This catches it on the FIRST occurrence.
+ * Pure; returns false whenever the bridge adds any genuinely new step.
+ */
+export function isReplanReproposingFailedStep(
+  newSteps: readonly NormalizedStep[],
+  failedStep: string
+): boolean {
+  if (newSteps.length === 0) return false;
+  const failedNorm = normalizeInstruction(failedStep);
+  return newSteps.every((s) => normalizeInstruction(s.instruction) === failedNorm);
+}
+
 /**
  * Write-back at the end of a successful recon: back up the original file
  * bytes verbatim (so a subtle denormalization bug can never lose the user's
@@ -1987,7 +2283,13 @@ export function formatValidationRejectedReason(pair: ValidationRejectionPair): s
 }
 
 const BODY_EXCERPT_DEFAULT_CAP = 8_000;
-const BODY_EXCERPT_FORM_WINDOW = 32_000;
+// Window of HTML handed to the invalid-fields / error-messages haiku judges,
+// centered on the first form/error marker (start = marker − WINDOW/4). Measured
+// from telemetry: the invalid marker the judge needs sits ~WINDOW/4 into the
+// window every time, so 16KB keeps it centered (±4KB) while halving the prompt
+// (the removed tail is markup the judge doesn't use). Larger triggers judge.ts's
+// "large prompt; consider trimming for latency" warning.
+const BODY_EXCERPT_FORM_WINDOW = 16_000;
 
 /**
  * Pick a window of `body` that's likely to contain the form's structural
@@ -3420,6 +3722,100 @@ function xpathBody(selector: string): string | null {
 const UPLOAD_NETWORK_TIMEOUT_MS = 5_000;
 /** Polling interval while waiting for the upload's network signal. */
 const UPLOAD_NETWORK_POLL_INTERVAL_MS = 250;
+/**
+ * How long the upload primitive waits for the async ResumeUpload widget (and its
+ * lazily-mounted `<input type=file>`) to render before deciding the input is
+ * absent. HCA/Talemetry mounts the MUI/react-dropzone widget ~5s after the
+ * wizard lands on the Apply page, so a single probe races that mount and the
+ * primitive wrongly falls into the click-to-surface path (or skips). Only
+ * reached on `upload:true` steps, so it never slows a page with no upload step.
+ */
+const UPLOAD_WIDGET_RENDER_INTERVAL_MS = 600;
+const UPLOAD_WIDGET_RENDER_ATTEMPTS = 17;
+/**
+ * URL substrings that mark a POST as an actual resume/attachment upload rather
+ * than coincidental traffic (analytics beacons, `/interruption_check`,
+ * geocoders). Talemetry posts the resume to an `attachment_upload_url` that
+ * matches `/attachment`; the others cover AppCast/ClearCompany/Oracle. Module-
+ * level so both the raw-input path and the click-to-surface path share one list.
+ */
+const UPLOAD_URL_PATTERNS = ["/upload", "/resume", "/file", "/attachment", "/document"] as const;
+
+/** One entry of the recent-network-capture window shared across upload helpers. */
+type CaptureMeta = { method: string; status: number; url: string };
+
+/** Fixture shape carried by the upload helpers (never null past the guard). */
+type ResumeFixture = { buffer: Buffer; name: string; mimeType: string };
+
+/**
+ * Poll the recent-capture window for an upload-related POST after a file has
+ * been attached. Extracted from `tryUploadPrimitive` so the raw-input path,
+ * the click-to-surface path, and the CDP native-chooser path all verify the
+ * same way. Returns true as soon as a non-GET capture whose URL matches
+ * {@link UPLOAD_URL_PATTERNS} lands; false if the timeout elapses first.
+ */
+async function waitForUploadNetworkSignal(params: {
+  page: Page;
+  fixture: ResumeFixture;
+  logger: Logger;
+  signalCounter: { n: number };
+  recentCaptureMeta: readonly CaptureMeta[];
+}): Promise<boolean> {
+  const { page, fixture, logger, signalCounter, recentCaptureMeta } = params;
+  const networkCountBefore = signalCounter.n;
+  const captureMetaCountBefore = recentCaptureMeta.length;
+  const startedAt = performance.now();
+  while (performance.now() - startedAt < UPLOAD_NETWORK_TIMEOUT_MS) {
+    if (signalCounter.n > networkCountBefore) {
+      const newCaptures = recentCaptureMeta.slice(captureMetaCountBefore);
+      const uploadCapture = newCaptures.find((cap) => {
+        if (cap.method === "GET") return false;
+        const lowerUrl = cap.url.toLowerCase();
+        return UPLOAD_URL_PATTERNS.some((p) => lowerUrl.includes(p));
+      });
+      if (uploadCapture) {
+        logger.info(
+          `upload primitive: upload POST detected (name=${fixture.name}, size=${fixture.buffer.length}b, url=${uploadCapture.url.slice(0, 100)})`
+        );
+        return true;
+      }
+    }
+    await page.waitForTimeout(UPLOAD_NETWORK_POLL_INTERVAL_MS);
+  }
+  return false;
+}
+
+/**
+ * True when a control's text/aria-label denotes a resume-upload affordance
+ * (the button that surfaces a hidden `<input type=file>` or opens a chooser).
+ * Pure + exported for unit tests; the vocabulary is intentionally generic so it
+ * benefits any MUI/React/dropzone ATS, not just Talemetry. Rejects negative
+ * lookalikes ("upload later", "no file", a bare "submit") so the click-to-
+ * surface path never fires a skip/decline/submit control.
+ */
+export function isUploadAffordanceLabel(label: string): boolean {
+  const norm = label.replace(/\s+/g, " ").trim().toLowerCase();
+  if (norm.length === 0) return false;
+  if (/\b(later|skip|without|remove|delete|cancel)\b/.test(norm)) return false;
+  if (/\bno file\b/.test(norm)) return false;
+  return /\b(upload|browse|select file|choose file|attach|add (a )?(resume|cv|file)|resume\/cv)\b/.test(
+    norm
+  );
+}
+
+/**
+ * Materialize the in-memory resume fixture to a temp file so CDP
+ * `DOM.setFileInputFiles` (which requires a filesystem path, unlike
+ * Playwright's `locator.setInputFiles`) can reference it. Only used as a
+ * fallback when the on-disk fixture path is unavailable. Process-scoped — the
+ * recon run is ephemeral, so no explicit cleanup. Returns the absolute path.
+ */
+export function writeFixtureToTempFile(fixture: { buffer: Buffer; name: string }): string {
+  const dir = mkdtempSync(join(tmpdir(), "recon-upload-"));
+  const path = join(dir, fixture.name);
+  writeFileSync(path, fixture.buffer);
+  return path;
+}
 
 /**
  * Site-agnostic file-upload primitive that bypasses Stagehand's click-and-act
@@ -3469,23 +3865,63 @@ async function tryUploadPrimitive(params: {
   if (!fixture) {
     return false;
   }
-  // Raw-DOM xpath: matches `<input type="file">` even when accessibility-tree
-  // observers miss it (the common pattern when sites style the input invisible
-  // and overlay a button on top of it).
-  const fileInputSelector = "xpath=//input[@type='file']";
-  let count = 0;
+  // Wait (bounded) for the widget to render before deciding the input is absent.
+  // The ResumeUpload widget mounts its <input type=file> ~5s after arrival; a
+  // single probe races that mount and wrongly drops into click-to-surface. Poll
+  // up to the render window (matches `document.querySelectorAll` even when the
+  // accessibility tree / a Playwright locator misses a styled-invisible input)
+  // and take the proven raw-input path the moment the input exists. The loop
+  // exits on the first evaluate when the input is already present, so pages that
+  // already rendered it pay nothing.
+  let inputCount = 0;
   try {
-    count = await page.locator(fileInputSelector).count();
+    inputCount = await pollEnumerate<number>(
+      page,
+      "document.querySelectorAll('input[type=file]').length",
+      (n) => (n ?? 0) > 0,
+      { attempts: UPLOAD_WIDGET_RENDER_ATTEMPTS, intervalMs: UPLOAD_WIDGET_RENDER_INTERVAL_MS }
+    );
   } catch (err) {
     logger.warn(`upload primitive: file-input probe threw: ${toErrorMessage(err)}`);
     return false;
   }
-  if (count === 0) {
-    logger.info("upload primitive: no <input type=file> on page; falling through to cascade");
+  if ((inputCount ?? 0) === 0) {
+    // Talemetry/MUI and other react-dropzone widgets can render NO <input type=file>
+    // at all (a click surfaces it, or a native chooser opens). Try to surface it
+    // (click-to-mount or CDP native-chooser interception) before giving up.
+    logger.info(
+      "upload primitive: no <input type=file> after render wait; attempting click-to-surface"
+    );
+    const surfaced = await surfaceAndUpload({
+      page,
+      fixture,
+      logger,
+      signalCounter,
+      recentCaptureMeta,
+    });
+    if (surfaced) return true;
+    logger.info("upload primitive: click-to-surface failed; falling through to cascade");
     return false;
   }
-  const target = page.locator(fileInputSelector).first();
-  const networkCountBefore = signalCounter.n;
+  return attachToSurfacedInput({ page, fixture, logger, signalCounter, recentCaptureMeta });
+}
+
+/**
+ * Attach the fixture to an already-surfaced `<input type=file>` (raw or freshly
+ * mounted after a click) and verify. Extracted verbatim from the original
+ * `tryUploadPrimitive` body so the raw-input path and the click-to-surface
+ * path share one setInputFiles + framework-change-dispatch + network/DOM verify
+ * + drag-drop-fallback implementation.
+ */
+async function attachToSurfacedInput(params: {
+  page: Page;
+  fixture: ResumeFixture;
+  logger: Logger;
+  signalCounter: { n: number };
+  recentCaptureMeta: readonly CaptureMeta[];
+}): Promise<boolean> {
+  const { page, fixture, logger, signalCounter, recentCaptureMeta } = params;
+  const target = page.locator("xpath=//input[@type='file']").first();
   try {
     await target.setInputFiles({
       name: fixture.name,
@@ -3525,38 +3961,14 @@ async function tryUploadPrimitive(params: {
     logger.warn(`upload primitive: setInputFiles threw: ${toErrorMessage(err)}`);
     return false;
   }
-  // Primary signal: wait for an UPLOAD-RELATED POST to fire (URL contains
-  // /upload, /resume, /file, /attachment, OR a non-upload URL whose body
-  // includes the `section:"resume"` marker that AppCast and similar ATSs
-  // use for resume-as-base64 inline uploads). Before K'1, ANY network bump
-  // was treated as upload success — but today's smoke captured
+  // Primary signal: wait for an UPLOAD-RELATED POST to fire. Before K'1, ANY
+  // network bump was treated as upload success — but a smoke run captured
   // /interruption_check + analytics POSTs after setInputFiles and falsely
-  // declared upload-done. The URL filter is generic (works for any ATS
-  // that names its upload endpoint conventionally), with the body-shape
-  // check as a fallback for inline-base64 upload schemes.
-  const captureMetaCountBefore = recentCaptureMeta.length;
-  const UPLOAD_URL_PATTERNS = ["/upload", "/resume", "/file", "/attachment"];
-  const startedAt = performance.now();
-  while (performance.now() - startedAt < UPLOAD_NETWORK_TIMEOUT_MS) {
-    if (signalCounter.n > networkCountBefore) {
-      const newCaptures = recentCaptureMeta.slice(captureMetaCountBefore);
-      const uploadCapture = newCaptures.find((cap) => {
-        if (cap.method === "GET") return false;
-        const lowerUrl = cap.url.toLowerCase();
-        return UPLOAD_URL_PATTERNS.some((p) => lowerUrl.includes(p));
-      });
-      if (uploadCapture) {
-        logger.info(
-          `upload primitive: upload POST detected post-setInputFiles (name=${fixture.name}, size=${fixture.buffer.length}b, url=${uploadCapture.url.slice(0, 100)})`
-        );
-        return true;
-      }
-      // Fall through: a non-upload-URL POST fired (e.g. AppCast's
-      // /interruption_check). Don't declare success on this signal alone;
-      // continue polling for the upload POST OR fall through to the
-      // DOM-attached-files check below.
-    }
-    await page.waitForTimeout(UPLOAD_NETWORK_POLL_INTERVAL_MS);
+  // declared upload-done. waitForUploadNetworkSignal filters by URL keyword.
+  if (
+    await waitForUploadNetworkSignal({ page, fixture, logger, signalCounter, recentCaptureMeta })
+  ) {
+    return true;
   }
   // Fallback: some widgets defer the upload to a separate Save click. For
   // those the DOM still has the attached File — verify there. Widgets that
@@ -3595,6 +4007,231 @@ async function tryUploadPrimitive(params: {
     `upload primitive: file attached in DOM after setInputFiles (deferred-upload widget; name=${fixture.name}, filesLength=${attachedLength})`
   );
   return true;
+}
+
+/**
+ * Recover an upload for widgets that mount NO `<input type=file>` until a button
+ * is clicked (Talemetry/MUI `ResumeUpload`, react-dropzone). Ordered cheapest-
+ * first: (DZ) a synthetic drag-drop on the dropzone; then, arming CDP native-
+ * chooser interception BEFORE any click (a chooser-opening click with no
+ * interception blocks the run — the single biggest risk), click the upload
+ * affordance and resolve via the first of: (0) an immediate upload POST, (A) a
+ * lazily-mounted hidden input, or (B) an intercepted native chooser handled via
+ * CDP `DOM.setFileInputFiles`. Interception is always disabled in a finally.
+ * Site-agnostic — benefits any MUI/React/chooser ATS. Returns whether a resume
+ * was attached.
+ */
+async function surfaceAndUpload(params: {
+  page: Page;
+  fixture: ResumeFixture;
+  logger: Logger;
+  signalCounter: { n: number };
+  recentCaptureMeta: readonly CaptureMeta[];
+}): Promise<boolean> {
+  const { page, fixture, logger, signalCounter, recentCaptureMeta } = params;
+  // Render-gate: the input-less strategies below (drag-drop is one-shot, the
+  // affordance click resolves what's in the DOM) all race the async widget
+  // mount. Wait (bounded, same window as the raw-input probe) for ANY upload
+  // target to appear — a dropzone, an upload-affordance button, or an
+  // <input type=file> — so every downstream strategy runs against a rendered
+  // widget. Static evaluate literal (no interpolation); dropzone list mirrors
+  // simulateDragDropUpload and the button matcher mirrors clickUploadAffordance.
+  const targetExpr = `(() => {
+    const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
+    const isUpload = (raw) => {
+      const t = norm(raw);
+      if (!t) return false;
+      if (/\\b(later|skip|without|remove|delete|cancel)\\b/.test(t)) return false;
+      if (/\\bno file\\b/.test(t)) return false;
+      return /\\b(upload|browse|select file|choose file|attach|add (a )?(resume|cv|file)|resume\\/cv)\\b/.test(t);
+    };
+    if (document.querySelector("input[type=file]")) return { present: true };
+    const dz = document.querySelector("[class*='dropzone'],[class*='drop-zone'],[class*='file-drop'],[class*='upload-zone'],[class*='ResumeUpload'],[class*='resumeUpload'],[class*='resume-upload'],uapp-upload,app-upload");
+    if (dz) return { present: true };
+    const btns = Array.from(document.querySelectorAll("button,[role='button'],a"));
+    if (btns.some((el) => isUpload(el.getAttribute("aria-label") || el.textContent || ""))) return { present: true };
+    return { present: false };
+  })()`;
+  const gate = await pollEnumerate<{ present: boolean }>(
+    page,
+    targetExpr,
+    (r) => r?.present === true,
+    {
+      attempts: UPLOAD_WIDGET_RENDER_ATTEMPTS,
+      intervalMs: UPLOAD_WIDGET_RENDER_INTERVAL_MS,
+    }
+  );
+  if (!gate?.present) {
+    // Fall through anyway — the strategies below are individually cheap and safe;
+    // this just logs that we waited out the full render window without a target.
+    logger.info("upload primitive: no upload widget rendered within render window");
+  }
+  // Strategy DZ: a synthetic drop is cheap, needs no click/chooser, and the
+  // widget IS a dropzone. If it registers the file (upload POST or attached
+  // input), we're done without touching CDP.
+  if (await simulateDragDropUpload(page, fixture, logger)) {
+    if (
+      await waitForUploadNetworkSignal({ page, fixture, logger, signalCounter, recentCaptureMeta })
+    ) {
+      logger.info("upload primitive: resolved via drag-drop onto dropzone");
+      return true;
+    }
+  }
+  const session = page.getSessionForFrame(page.mainFrameId());
+  let chooserBackendNodeId: number | null = null;
+  const onChooser = (paramsIn?: object): void => {
+    const p = paramsIn as { backendNodeId?: number } | undefined;
+    if (p && typeof p.backendNodeId === "number") chooserBackendNodeId = p.backendNodeId;
+  };
+  // ARM native-chooser interception BEFORE the click. Page.fileChooserOpened
+  // only carries a backendNodeId while interception is enabled; without it a
+  // chooser-opening click would pop a real OS dialog and hang the run.
+  await page.sendCDP("Page.enable").catch(() => {});
+  await page
+    .sendCDP("Page.setInterceptFileChooserDialog", { enabled: true })
+    .catch((e: unknown) =>
+      logger.warn(`upload primitive: chooser-intercept arm failed: ${toErrorMessage(e)}`)
+    );
+  session.on("Page.fileChooserOpened", onChooser);
+  try {
+    if (!(await clickUploadAffordance(page, logger))) return false;
+    // Strategy 0: some MUI widgets XHR straight to attachment_upload_url on
+    // click, no chooser, no input.
+    if (
+      await waitForUploadNetworkSignal({ page, fixture, logger, signalCounter, recentCaptureMeta })
+    ) {
+      logger.info("upload primitive: resolved via click → immediate upload POST");
+      return true;
+    }
+    // Strategy A: the click lazily mounted a hidden <input type=file>.
+    const appeared = await pollEnumerate<number>(
+      page,
+      "document.querySelectorAll('input[type=file]').length",
+      (n) => (n ?? 0) > 0
+    );
+    if ((appeared ?? 0) > 0) {
+      logger.info("upload primitive: click surfaced a hidden <input type=file>");
+      if (
+        await attachToSurfacedInput({ page, fixture, logger, signalCounter, recentCaptureMeta })
+      ) {
+        return true;
+      }
+    }
+    // Strategy B: the click opened a native chooser we intercepted.
+    if (chooserBackendNodeId !== null) {
+      logger.info(
+        `upload primitive: native file chooser intercepted (backendNodeId=${chooserBackendNodeId}); setting files via CDP`
+      );
+      return setFilesViaCdp({
+        page,
+        session,
+        backendNodeId: chooserBackendNodeId,
+        fixture,
+        logger,
+        signalCounter,
+        recentCaptureMeta,
+      });
+    }
+    return false;
+  } finally {
+    session.off("Page.fileChooserOpened", onChooser);
+    await page.sendCDP("Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
+  }
+}
+
+/**
+ * Locate and click the resume-upload affordance in the page DOM. Uses a DOM
+ * enumerate (NOT Stagehand observe, which returns [] for these MUI buttons)
+ * over `button`/`[role=button]`/`a`, matching text/aria-label via the same
+ * upload vocabulary as {@link isUploadAffordanceLabel}, preferring controls
+ * scoped inside an attachment/upload/resume container. Returns whether a
+ * matching control was clicked.
+ */
+async function clickUploadAffordance(page: Page, logger: Logger): Promise<boolean> {
+  // The browser-side matcher mirrors isUploadAffordanceLabel; kept as a literal
+  // so the enumerate is a static string (same trust posture as the other
+  // primitives). No external interpolation.
+  const expr = `(() => {
+    const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
+    const isUpload = (raw) => {
+      const t = norm(raw);
+      if (!t) return false;
+      if (/\\b(later|skip|without|remove|delete|cancel)\\b/.test(t)) return false;
+      if (/\\bno file\\b/.test(t)) return false;
+      return /\\b(upload|browse|select file|choose file|attach|add (a )?(resume|cv|file)|resume\\/cv)\\b/.test(t);
+    };
+    const els = Array.from(document.querySelectorAll("button,[role='button'],a"));
+    const scoped = (el) => !!el.closest("[class*='ttachment'],[class*='pload'],[class*='esume']");
+    const matches = els.filter((el) => isUpload(el.getAttribute("aria-label") || el.textContent || ""));
+    if (matches.length === 0) return { clicked: false };
+    const chosen = matches.find(scoped) || matches[0];
+    chosen.click();
+    return { clicked: true, text: norm(chosen.getAttribute("aria-label") || chosen.textContent || "").slice(0, 50) };
+  })()`;
+  try {
+    const result = (await pollEnumerate<{ clicked: boolean; text?: string }>(
+      page,
+      expr,
+      (r) => r?.clicked === true
+    )) ?? { clicked: false };
+    if (result.clicked) {
+      logger.info(`upload primitive: clicked upload affordance "${result.text ?? ""}"`);
+      return true;
+    }
+    logger.info("upload primitive: no upload affordance button found in DOM");
+    return false;
+  } catch (err) {
+    logger.warn(`upload primitive: affordance click threw: ${toErrorMessage(err)}`);
+    return false;
+  }
+}
+
+/**
+ * Complete a native-chooser upload the recon intercepted via CDP. CDP's
+ * `DOM.setFileInputFiles` takes filesystem PATHS (not buffers), so it uses the
+ * on-disk fixture path when available and otherwise writes the buffer to a temp
+ * file. Targets the intercepted input by `backendNodeId`, then verifies via the
+ * shared upload-network signal.
+ */
+async function setFilesViaCdp(params: {
+  page: Page;
+  session: ReturnType<Page["getSessionForFrame"]>;
+  backendNodeId: number;
+  fixture: ResumeFixture;
+  logger: Logger;
+  signalCounter: { n: number };
+  recentCaptureMeta: readonly CaptureMeta[];
+}): Promise<boolean> {
+  const { page, session, backendNodeId, fixture, logger, signalCounter, recentCaptureMeta } =
+    params;
+  // CDP needs a filesystem path; the fixture is an in-memory buffer. Write it
+  // to a temp file (tiny — a few KB) so the path is always valid regardless of
+  // where the recon loaded the fixture from.
+  const path = writeFixtureToTempFile(fixture);
+  try {
+    await session.send("DOM.setFileInputFiles", { files: [path], backendNodeId });
+  } catch (err) {
+    logger.warn(`upload primitive: CDP setFileInputFiles threw: ${toErrorMessage(err)}`);
+    return false;
+  }
+  if (
+    await waitForUploadNetworkSignal({ page, fixture, logger, signalCounter, recentCaptureMeta })
+  ) {
+    return true;
+  }
+  // CDP-set files don't surface via input.files, so the DOM-attached-files
+  // check can't confirm; treat a filename chip appearing in the DOM as the
+  // secondary success signal (the MUI widget renders the chosen filename).
+  const nameShown = await page
+    .evaluate(
+      `document.body && document.body.textContent && document.body.textContent.indexOf(${JSON.stringify(fixture.name)}) !== -1`
+    )
+    .catch(() => false);
+  if (nameShown === true) {
+    logger.info(`upload primitive: CDP upload confirmed by filename in DOM (name=${fixture.name})`);
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -3640,6 +4277,54 @@ export function parseSelectStep(
   return { option, questionLabel };
 }
 
+/**
+ * Parse a single-choice RADIO flow step into the option to click and (when
+ * present) the question label that scopes which radio group it targets.
+ *
+ * Why this exists (sibling of `parseSelectStep`): `parseSelectStep`
+ * deliberately excludes bare radio steps ("a bare 'click the Yes answer' is a
+ * radio"), leaving radios with no DOM-direct primitive — they fall to the
+ * observe cascade, which on HCA/Talemetry's MUI radio markup resolves the step
+ * to a wrapper `<div>`/`<span>` (not the `<input type=radio>`) and commits via
+ * a bare `el.click()` that never triggers React's controlled-state `onChange`.
+ * The field stays `Mui-error` "required", Next no-ops, and the wizard walls at
+ * Step 2 of 10. `tryRadioPrimitive` needs the option/question text extracted
+ * from the human-readable step to answer the radio group directly.
+ *
+ * Recognizes the flow's conventional radio phrasings, all quoted:
+ *   "Click the 'Yes' answer for the question 'Are you at least 18 years…?'",
+ *   "Click the 'No' answer for the question about requiring visa sponsorship…",
+ *   "Click the 'Yes' radio button for the 'Are you currently licensed…' question".
+ * Returns null for select/checkbox steps (`select`/`check` verbs — those route
+ * to the select/checkbox primitives) and for the "for any remaining…" catch-all.
+ */
+export function parseRadioStep(
+  instruction: string
+): { option: string; questionLabel: string | null } | null {
+  const lower = instruction.toLowerCase();
+  // Select/checkbox steps belong to trySelect/tryCheckbox; skip them here so a
+  // single step never resolves through two primitives.
+  if (/\bselect(\s+or\s+check)?\b/.test(lower)) return null;
+  // Must be a radio-style click: "click the 'X' answer/radio…".
+  if (!/\bclick\b/.test(lower)) return null;
+  if (!/\b(answer|radio)\b/.test(lower)) return null;
+  // Catch-all steps ("for any remaining…") have no concrete single target.
+  if (/\bany\s+remaining\b/.test(lower)) return null;
+  const quoted = [...instruction.matchAll(/'([^']+)'/g)].map((m) => m[1]!);
+  if (quoted.length === 0) return null;
+  // The OPTION is the quoted string immediately after "click the".
+  const optMatch = instruction.match(/\bclick\s+the\s+'([^']+)'/i);
+  if (!optMatch) return null;
+  const option = optMatch[1]!.trim();
+  // The QUESTION LABEL, when present, is a DIFFERENT quoted string — the one
+  // introduced by "for the question '…'" / "for the '…' question". Some steps
+  // phrase the question un-quoted ("…about requiring visa sponsorship"); in
+  // that case there is no second quoted string and questionLabel stays null,
+  // which the primitive handles via LLM group-matching.
+  const questionLabel = quoted.find((q) => q.trim() !== option)?.trim() ?? null;
+  return { option, questionLabel };
+}
+
 /** Max settle-retry attempts for a primitive's DOM enumerate (see `pollEnumerate`). */
 const PRIMITIVE_ENUMERATE_ATTEMPTS = 5;
 /** Delay between settle-retry attempts. Total cap ≈ ATTEMPTS × this. */
@@ -3655,18 +4340,65 @@ const PRIMITIVE_ENUMERATE_RETRY_MS = 600;
  * return the last (absent) result so the caller falls through to the cascade
  * unchanged. Only wraps the ENUMERATE (which is read-only when nothing matches);
  * the apply/mutate paths are untouched. Site-agnostic render-lag mitigation.
+ *
+ * `opts` overrides the attempt count / interval for callers that need a longer
+ * window (the resume-upload widget can take 5s+ to mount); omitting it keeps the
+ * default ~3s window so every existing caller is unchanged.
  */
 export async function pollEnumerate<T>(
   page: Page,
   expr: string,
-  isPresent: (result: T) => boolean
+  isPresent: (result: T) => boolean,
+  opts?: { attempts?: number; intervalMs?: number }
 ): Promise<T> {
+  const attempts = opts?.attempts ?? PRIMITIVE_ENUMERATE_ATTEMPTS;
+  const intervalMs = opts?.intervalMs ?? PRIMITIVE_ENUMERATE_RETRY_MS;
   let result = (await page.evaluate(expr)) as T;
-  for (let attempt = 1; attempt < PRIMITIVE_ENUMERATE_ATTEMPTS && !isPresent(result); attempt++) {
-    await page.waitForTimeout(PRIMITIVE_ENUMERATE_RETRY_MS);
+  for (let attempt = 1; attempt < attempts && !isPresent(result); attempt++) {
+    await page.waitForTimeout(intervalMs);
     result = (await page.evaluate(expr)) as T;
   }
   return result;
+}
+
+/**
+ * Bounded poll for the real advance-transition POST to appear in this step's
+ * capture window. The verifiers snapshot once after `STEP_PAUSE_MS`, but the
+ * genuine `TransitionWorklet(type="next")` POST can land hundreds of ms to 2s+
+ * AFTER that snapshot (HCA fires a fast `WorkletPayload` autosave first). A
+ * one-shot check false-negatives the advance, retries the click, and the stale
+ * retry fires a `back` — a next→back oscillation that never leaves the page.
+ * Re-check {@link windowHasAdvanceTransition} every `intervalMs` until it matches
+ * or `timeoutMs` elapses; returns true the moment a real advance lands.
+ *
+ * Each poll iteration re-scans `capturesDir` for files indexed after `preIdx`
+ * (via {@link capturesAfterIndex}), so a POST that lands on disk AFTER the first
+ * check enters the scanned window on the next iteration. `preIdx` scopes the
+ * window to THIS step, so a later step's transition can't satisfy it.
+ */
+export async function waitForTransitionBody(params: {
+  page: Page;
+  preIdx: number;
+  advanceTransitionBodyPattern: string | null;
+  timeoutMs: number;
+  intervalMs: number;
+  capturesDir?: string;
+}): Promise<boolean> {
+  const { page, preIdx, advanceTransitionBodyPattern, timeoutMs, intervalMs } = params;
+  if (!advanceTransitionBodyPattern) return false;
+  const check = (): boolean =>
+    windowHasAdvanceTransition({
+      preIdx,
+      advanceTransitionBodyPattern,
+      capturesDir: params.capturesDir,
+    });
+  if (check()) return true;
+  const deadline = performance.now() + timeoutMs;
+  while (performance.now() < deadline) {
+    await page.waitForTimeout(intervalMs);
+    if (check()) return true;
+  }
+  return false;
 }
 
 /**
@@ -3697,6 +4429,51 @@ export async function pollEnumerate<T>(
  * value set (cascade is skipped); false when the step isn't a select, there's
  * no select on the page, or no option fits (fall through to the cascade).
  */
+/**
+ * Set a native `<select>` (by DOM index) to `value`, then settle and read back
+ * whether the field is STILL invalid. Split out from the enumerate expr so the
+ * validation tick can be awaited: MUI `NativeSelect` re-runs required-validation
+ * a beat after the synthetic `change`, so an immediate `sel.value === value`
+ * readback passes even when the FormControl still flags the field required (and
+ * a later worklet re-render then wipes the DOM-only value — the exact HCA
+ * Job-Related failure). Returns `stillInvalid` so {@link trySelectPrimitive} can
+ * refuse to claim success on an uncommitted select, routing to the cascade/replan
+ * instead of silently advancing. Walks ≤6 ancestors for the invalid marker, same
+ * as the radio/checkbox primitives.
+ */
+async function applySelectValue(
+  page: Page,
+  selIdx: number,
+  value: string
+): Promise<{ ok: boolean; stillInvalid: boolean }> {
+  const setExpr = `((selIdx, value) => {
+    const sel = Array.from(document.querySelectorAll("select"))[selIdx];
+    if (!sel) return { ok: false };
+    const desc = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value");
+    if (desc && desc.set) { desc.set.call(sel, value); } else { sel.value = value; }
+    sel.dispatchEvent(new Event("input", { bubbles: true }));
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    sel.dispatchEvent(new Event("blur", { bubbles: true }));
+    return { ok: sel.value === value };
+  })(${JSON.stringify(selIdx)}, ${JSON.stringify(value)})`;
+  const setResult = (await page.evaluate(setExpr)) as { ok: boolean };
+  if (!setResult?.ok) return { ok: false, stillInvalid: false };
+  await page.waitForTimeout(SELECT_SETTLE_MS);
+  const invalidExpr = `((selIdx) => {
+    const isInvalid = ${INVALID_MARKER_EL_EXPR};
+    const sel = Array.from(document.querySelectorAll("select"))[selIdx];
+    if (!sel) return false;
+    let node = sel;
+    for (let depth = 0; depth < 6 && node; depth++) {
+      if (node.getAttribute && isInvalid(node)) return true;
+      node = node.parentElement;
+    }
+    return false;
+  })(${JSON.stringify(selIdx)})`;
+  const stillInvalid = (await page.evaluate(invalidExpr).catch(() => false)) as boolean;
+  return { ok: true, stillInvalid };
+}
+
 async function trySelectPrimitive(params: {
   page: Page;
   instruction: string;
@@ -3725,27 +4502,20 @@ async function trySelectPrimitive(params: {
     // a11y tree — and therefore Stagehand observe — never surfaces.
     const selects = Array.from(document.querySelectorAll("select"));
     if (selects.length === 0) return { selectPresent: false };
-    const applySet = (sel, value) => {
-      const desc = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value");
-      if (desc && desc.set) { desc.set.call(sel, value); } else { sel.value = value; }
-      sel.dispatchEvent(new Event("input", { bubbles: true }));
-      sel.dispatchEvent(new Event("change", { bubbles: true }));
-      sel.dispatchEvent(new Event("blur", { bubbles: true }));
-      return sel.value === value;
-    };
     // FAST PATH — deterministic option match: exactly one select has an option
     // matching the flow's answer text. Unambiguous (the option text itself
     // identifies the dropdown), so no LLM needed. Requires a UNIQUE match to
     // avoid picking the wrong dropdown when two share an option (e.g. "Yes").
+    // NOTE: detection only — the actual value-set happens in Node (applySelectValue)
+    // so it can settle + read back the invalid marker asynchronously.
     let detMatches = [];
-    for (const sel of selects) {
-      const opts = Array.from(sel.options || []);
+    for (let i = 0; i < selects.length; i++) {
+      const opts = Array.from(selects[i].options || []);
       const m = opts.find((o) => norm(o.textContent) === wantOpt || norm(o.value) === wantOpt);
-      if (m) detMatches.push({ sel, value: m.value, text: m.textContent });
+      if (m) detMatches.push({ selIdx: i, value: m.value, text: m.textContent });
     }
     if (detMatches.length === 1) {
-      const ok = applySet(detMatches[0].sel, detMatches[0].value);
-      return { selectPresent: true, applied: true, ok, chosen: detMatches[0].text };
+      return { selectPresent: true, detMatch: detMatches[0] };
     }
     // LLM PATH — return every UNFILLED select (placeholder / empty value) with
     // its label + real options, in DOM order (index-aligned). The LLM decides
@@ -3797,9 +4567,7 @@ async function trySelectPrimitive(params: {
     // render-lag); poll until it appears or the cap is hit.
     const enumResult = await pollEnumerate<{
       selectPresent: boolean;
-      applied?: boolean;
-      ok?: boolean;
-      chosen?: string;
+      detMatch?: { selIdx: number; value: string; text: string };
       candidates?: { selIdx: number; label: string; options: { text: string; value: string }[] }[];
     }>(page, enumerateExpr, (r) => r?.selectPresent === true);
     // No <select> on the page at all (e.g. the question is a radio group) —
@@ -3810,12 +4578,26 @@ async function trySelectPrimitive(params: {
       );
       return false;
     }
-    // Deterministic unique-option match applied.
-    if (enumResult.applied && enumResult.ok) {
-      logger.info(
-        `select primitive: set dropdown to "${(enumResult.chosen || "").trim().slice(0, 40)}" (${optLabel})`
+    // Deterministic unique-option match: set it, settle, and confirm it committed
+    // (cleared the required/invalid marker). A set that doesn't clear the marker
+    // is uncommitted (a later worklet re-render will wipe it) — refuse to claim
+    // success so the cascade/replan can retry rather than silently advancing.
+    if (enumResult.detMatch) {
+      const { ok, stillInvalid } = await applySelectValue(
+        page,
+        enumResult.detMatch.selIdx,
+        enumResult.detMatch.value
       );
-      return true;
+      if (ok && !stillInvalid) {
+        logger.info(
+          `select primitive: set dropdown to "${enumResult.detMatch.text.trim().slice(0, 40)}" (${optLabel})`
+        );
+        return true;
+      }
+      logger.info(
+        `select primitive: dropdown value for ${optLabel} did not commit (ok=${ok} stillInvalid=${stillInvalid}); falling through to cascade`
+      );
+      return false;
     }
     const candidates = enumResult.candidates ?? [];
     if (anthropic === null || candidates.length === 0) {
@@ -3845,32 +4627,200 @@ async function trySelectPrimitive(params: {
     }
     const chosenCandidate = candidates[verdict.selectIndex]!;
     const chosenOption = chosenCandidate.options[verdict.optionIndex]!;
-    // Apply pass: set the chosen select (by its ORIGINAL DOM index) to the
-    // chosen option's value.
-    const applyExpr = `((selIdx, value) => {
-      const selects = Array.from(document.querySelectorAll("select"));
-      const sel = selects[selIdx];
-      if (!sel) return { ok: false };
-      const desc = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value");
-      if (desc && desc.set) { desc.set.call(sel, value); } else { sel.value = value; }
-      sel.dispatchEvent(new Event("input", { bubbles: true }));
-      sel.dispatchEvent(new Event("change", { bubbles: true }));
-      sel.dispatchEvent(new Event("blur", { bubbles: true }));
-      return { ok: sel.value === value };
-    })(${JSON.stringify(chosenCandidate.selIdx)}, ${JSON.stringify(chosenOption.value)})`;
-    const applyResult = (await page.evaluate(applyExpr)) as { ok: boolean };
-    if (applyResult?.ok) {
+    // Apply pass (set + settle + invalid-readback): set the chosen select by its
+    // ORIGINAL DOM index, then confirm it committed (cleared the invalid marker),
+    // same as the fast path.
+    const { ok, stillInvalid } = await applySelectValue(
+      page,
+      chosenCandidate.selIdx,
+      chosenOption.value
+    );
+    if (ok && !stillInvalid) {
       logger.info(
         `select primitive: LLM chose "${chosenOption.text.slice(0, 40)}" for ${optLabel} (${verdict.reason.slice(0, 60)})`
       );
       return true;
     }
     logger.info(
-      `select primitive: LLM-chosen value did not stick for ${optLabel}; falling through`
+      `select primitive: LLM-chosen value for ${optLabel} did not commit (ok=${ok} stillInvalid=${stillInvalid}); falling through`
     );
     return false;
   } catch (err) {
     logger.warn(`select primitive: evaluate threw: ${toErrorMessage(err)}; falling through`);
+    return false;
+  }
+}
+
+/** Option texts that answer a required select without volunteering info — used
+ * only as a LAST resort when a required question offers nothing better. */
+const DECLINE_OPTION_MARKERS = [
+  "prefer not",
+  "decline",
+  "do not wish",
+  "don't wish",
+  "not to answer",
+  "not to disclose",
+  "withhold",
+  "choose not",
+];
+
+/**
+ * Pick an option to satisfy a REQUIRED select on a catch-all step, from the
+ * select's option TEXTS (placeholder already excluded upstream). Policy: take
+ * the first non-decline option (a plausible substantive answer — the operator
+ * accepts LLM-plausible answers reaching HCA prod); fall back to the first
+ * option only if every option is a decline/placeholder. Returns null when there
+ * is nothing selectable. Pure + exported so the policy is unit-testable; the LLM
+ * path ({@link judgeSelectOptionWithLLM}) is preferred when a client is present,
+ * this is the deterministic fallback.
+ */
+export function chooseRequiredSelectOption(options: readonly string[]): string | null {
+  const cleaned = options.map((o) => o.trim()).filter((o) => o.length > 0);
+  if (cleaned.length === 0) return null;
+  const isDecline = (t: string): boolean => {
+    const low = t.toLowerCase();
+    return DECLINE_OPTION_MARKERS.some((m) => low.includes(m));
+  };
+  return cleaned.find((o) => !isDecline(o)) ?? cleaned[0] ?? null;
+}
+
+/**
+ * Catch-all primitive: fill EVERY required-but-empty native `<select>` on the
+ * page, regardless of whether it shows a visible invalid marker.
+ *
+ * Why this exists: a required MuiNativeSelect (`tabindex=-1`, so invisible to
+ * Stagehand observe) can block the worklet's server-side advance while the flow
+ * has no step targeting it — requisition-specific specialty questions vary per
+ * posting ("years in Med Surg Services" / "…Emergency Room…" / ICU / OR …), so
+ * per-question flow steps can't cover them. `trySelectPrimitive` only handles a
+ * single concrete "select 'X'" target and `parseSelectStep` deliberately returns
+ * null for the catch-all step, so those unmarked required selects reach only the
+ * cascade, which can't see them. This runs ONLY on a catch-all step ("for any
+ * remaining … question") and fills each required-empty select with a sensible
+ * option (LLM-picked when a client is present, else {@link chooseRequiredSelectOption}),
+ * committing through {@link applySelectValue} (settle + invalid-marker readback).
+ * No-op (returns false → cascade) when the step isn't a catch-all or no
+ * required-empty select is present, so radio/checkbox catch-alls are unaffected.
+ */
+async function tryFillRequiredSelectsPrimitive(params: {
+  page: Page;
+  instruction: string;
+  logger: Logger;
+  anthropic: Anthropic | null;
+  captureFn?: JudgeCaptureFn;
+}): Promise<boolean> {
+  const { page, instruction, logger, anthropic, captureFn } = params;
+  // Gate: catch-all steps only. parseSelectStep returns null for these (its
+  // `any remaining` guard), so this never collides with the single-target
+  // trySelectPrimitive that owns concrete "select 'X'" steps.
+  if (!/\bany\s+remaining\b/i.test(instruction) || parseSelectStep(instruction) !== null) {
+    return false;
+  }
+  // Enumerate required-and-empty selects with their labels + real options.
+  // Required detection: the HTML `required` attr OR aria-required OR aria-invalid
+  // (MUI marks NativeSelect via any of these). Reuses the isUnfilled / selLabelText
+  // shape from trySelectPrimitive.
+  const enumerateExpr = `(() => {
+    const selects = Array.from(document.querySelectorAll("select"));
+    if (selects.length === 0) return { candidates: [] };
+    const selLabelText = (sel) => {
+      const parts = [];
+      if (sel.id) {
+        try {
+          const esc = (window.CSS && CSS.escape) ? CSS.escape(sel.id) : sel.id;
+          const lf = document.querySelector('label[for="' + esc + '"]');
+          if (lf) parts.push(lf.textContent);
+        } catch (e) {}
+      }
+      const alb = sel.getAttribute("aria-labelledby");
+      if (alb) for (const id of alb.split(/\\s+/)) { const el = document.getElementById(id); if (el) parts.push(el.textContent); }
+      const al = sel.getAttribute("aria-label");
+      if (al) parts.push(al);
+      if (parts.length === 0) {
+        let node = sel.parentElement;
+        for (let d = 0; d < 5 && node; d++) {
+          if (node.querySelectorAll("select,input,textarea").length > 2) break;
+          const t = (node.textContent || "").trim();
+          if (t) { parts.push(t); break; }
+          node = node.parentElement;
+        }
+      }
+      return (parts.join(" ") || "").replace(/\\s+/g, " ").trim().slice(0, 120);
+    };
+    const isUnfilled = (sel) => {
+      const so = sel.selectedOptions && sel.selectedOptions[0];
+      return !sel.value || sel.value === "" || (so && so.disabled);
+    };
+    const isRequired = (sel) =>
+      sel.required === true ||
+      sel.getAttribute("aria-required") === "true" ||
+      sel.getAttribute("aria-invalid") === "true";
+    const candidates = [];
+    for (let i = 0; i < selects.length; i++) {
+      const sel = selects[i];
+      if (!isRequired(sel) || !isUnfilled(sel)) continue;
+      const options = Array.from(sel.options || [])
+        .filter((o) => !o.disabled && (o.value || (o.textContent || "").trim()))
+        .map((o) => ({ text: (o.textContent || "").replace(/\\s+/g, " ").trim(), value: o.value }));
+      if (options.length > 0) candidates.push({ selIdx: i, label: selLabelText(sel), options });
+    }
+    return { candidates };
+  })()`;
+  try {
+    const enumResult = await pollEnumerate<{
+      candidates: { selIdx: number; label: string; options: { text: string; value: string }[] }[];
+    }>(page, enumerateExpr, (r) => Array.isArray(r?.candidates));
+    const candidates = enumResult?.candidates ?? [];
+    if (candidates.length === 0) return false;
+    logger.info(`required-select primitive: ${candidates.length} required-empty select(s) to fill`);
+    let allCommitted = true;
+    for (const cand of candidates) {
+      // Prefer an LLM pick (plausible, non-decline); fall back to the pure policy.
+      const llmVerdict =
+        anthropic !== null
+          ? await judgeSelectOptionWithLLM({
+              client: anthropic,
+              input: {
+                questionLabel: cand.label || null,
+                desiredHint:
+                  "a reasonable, truthful answer; prefer a substantive option over 'decline'/'prefer not to answer' unless declining is the only choice",
+                candidates: [
+                  { label: cand.label || null, options: cand.options.map((o) => o.text) },
+                ],
+              },
+              captureFn,
+            }).catch(() => null)
+          : null;
+      const chosenText =
+        llmVerdict && llmVerdict.optionIndex !== null
+          ? (cand.options[llmVerdict.optionIndex]?.text ?? null)
+          : chooseRequiredSelectOption(cand.options.map((o) => o.text));
+      if (chosenText === null) {
+        allCommitted = false;
+        continue;
+      }
+      const chosen = cand.options.find((o) => o.text === chosenText);
+      if (!chosen) {
+        allCommitted = false;
+        continue;
+      }
+      const { ok, stillInvalid } = await applySelectValue(page, cand.selIdx, chosen.value);
+      if (ok && !stillInvalid) {
+        logger.info(
+          `required-select primitive: filled "${cand.label.slice(0, 40)}" with "${chosen.text.slice(0, 40)}"`
+        );
+      } else {
+        allCommitted = false;
+        logger.info(
+          `required-select primitive: "${cand.label.slice(0, 40)}" did not commit (ok=${ok} stillInvalid=${stillInvalid})`
+        );
+      }
+    }
+    return allCommitted;
+  } catch (err) {
+    logger.warn(
+      `required-select primitive: evaluate threw: ${toErrorMessage(err)}; falling through`
+    );
     return false;
   }
 }
@@ -4064,6 +5014,454 @@ async function tryCheckboxPrimitive(params: {
   }
 }
 
+/** One radio group enumerated from the DOM for `selectRadioGroupOption`. */
+export type RadioGroupCandidate = {
+  /** Index into the DOM's radio-group list (stable across the enumerate/apply pair). */
+  gi: number;
+  /** The group's legend/label text; empty string when the group is unlabeled. */
+  label: string;
+  /**
+   * The group's radio options. `ri` is the raw radio DOM index within the group;
+   * `id`/`xpath` are stable locator hints threaded to the trusted-click commit
+   * (`applyRadioSelection`) — `id` preferred, `xpath` the no-id fallback.
+   */
+  options: { ri: number; text: string; id: string; xpath: string }[];
+  /** True when the group already has a checked radio (answered by an earlier step). */
+  alreadyChecked: boolean;
+};
+
+/**
+ * Build an XPath predicate that matches an `<input>` by its `id`, safe for any
+ * id value. MUI/Talemetry radio ids are base64-ish (no double-quote), so a plain
+ * quoted literal suffices — but if an id ever contains a `"`, fall back to
+ * `concat(...)` so the XPath stays valid. Pure + exported for unit tests.
+ */
+export function buildRadioIdXPath(id: string): string {
+  if (!id.includes('"')) return `xpath=//input[@id="${id}"]`;
+  const parts = id.split('"').map((seg) => `"${seg}"`);
+  return `xpath=//input[@id=concat(${parts.join(", '\"', ")})]`;
+}
+
+/**
+ * Choose which radio group + option answers a flow step, deterministically and
+ * positionally. Pure (no DOM/LLM) so it is unit-testable — the crux of the
+ * unlabeled-radio disambiguation.
+ *
+ * Why this exists: HCA/Talemetry Basic Info has multiple UNLABELED yes/no groups
+ * (visa-sponsorship, common-domicile), answered by consecutive flow steps. The
+ * old in-browser matcher treated an unlabeled group (`label===""`) as matching
+ * ANY question (`"".includes(q)`/`q.includes("")===0`), so two unlabeled "No"
+ * groups both matched → ambiguous → an LLM guess that could answer one group
+ * twice and leave the other required-blank. This picks the k-th unanswered
+ * unlabeled group for the k-th unlabeled step instead.
+ *
+ * Resolution order (already-answered groups — `alreadyChecked` — are excluded
+ * throughout, since a prior step leaves its group's radio checked):
+ *  1. exactly one unanswered group whose NON-empty label genuinely matches the
+ *     question (substring either way) AND offers the wanted option → pick it;
+ *  2. more than one such labeled match → `"ambiguous"` (caller uses the LLM);
+ *  3. else (no labeled match — the question is unlabeled-in-DOM) → the FIRST
+ *     unanswered group in DOM order that offers the wanted option → pick it
+ *     (positional: k-th unlabeled step → k-th unlabeled group);
+ *  4. nothing offers the wanted option → `null` (caller falls through).
+ */
+export function selectRadioGroupOption(params: {
+  groups: readonly RadioGroupCandidate[];
+  wantOption: string;
+  questionLabel: string | null;
+}): { gi: number; ri: number } | null | "ambiguous" {
+  const { groups, wantOption, questionLabel } = params;
+  const norm = (s: string | null | undefined): string =>
+    (s ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+  const wantOpt = norm(wantOption);
+  const normQ = norm(questionLabel);
+  const optionRi = (g: RadioGroupCandidate): number | null => {
+    const hit = g.options.find((o) => norm(o.text) === wantOpt);
+    return hit ? hit.ri : null;
+  };
+  // Significant-token overlap: robust to phrasing variance between the flow's
+  // question and the DOM legend ("...served in a branch of the US Military?" vs
+  // "...served in the US Military?"). Stop-words are dropped so overlap reflects
+  // content words. A shared-token ratio (over the shorter side) ≥ 0.5 counts as
+  // a genuine label match — stricter than substring (which missed the variance)
+  // but tolerant of small wording differences.
+  const STOP = new Set([
+    "a",
+    "an",
+    "the",
+    "of",
+    "to",
+    "in",
+    "on",
+    "at",
+    "for",
+    "and",
+    "or",
+    "is",
+    "are",
+    "you",
+    "your",
+    "have",
+    "has",
+    "do",
+    "does",
+    "did",
+    "with",
+    "any",
+    "this",
+    "that",
+    "as",
+    "be",
+    "been",
+    "was",
+    "were",
+    "will",
+    "would",
+    "can",
+    "us",
+  ]);
+  const tokens = (s: string): Set<string> =>
+    new Set(s.split(/[^a-z0-9]+/).filter((t) => t.length > 1 && !STOP.has(t)));
+  const overlapRatio = (gl: string): number => {
+    const a = tokens(gl);
+    const b = tokens(normQ);
+    if (a.size === 0 || b.size === 0) return 0;
+    let shared = 0;
+    for (const t of a) if (b.has(t)) shared++;
+    return shared / Math.min(a.size, b.size);
+  };
+  const unanswered = groups.filter((g) => !g.alreadyChecked);
+  // (1)/(2) labeled match: among unanswered groups that OFFER the option and have
+  // a non-empty label, score token-overlap with the question; a genuine match is
+  // ratio ≥ 0.5. Empty labels never count as a label match (→ positional below).
+  if (normQ) {
+    const scored = unanswered
+      .filter((g) => norm(g.label) && optionRi(g) !== null)
+      .map((g) => ({ g, score: overlapRatio(norm(g.label)) }))
+      .filter((x) => x.score >= 0.5)
+      .sort((a, b) => b.score - a.score);
+    if (scored.length === 1) {
+      const g = scored[0]!.g;
+      return { gi: g.gi, ri: optionRi(g)! };
+    }
+    if (scored.length > 1) {
+      // A clearly-best match (strictly higher than the runner-up) is not
+      // ambiguous; only a tie defers to the LLM.
+      if (scored[0]!.score > scored[1]!.score) {
+        const g = scored[0]!.g;
+        return { gi: g.gi, ri: optionRi(g)! };
+      }
+      return "ambiguous";
+    }
+    // No labeled group matched the question. If any unanswered group HAS a
+    // (non-matching) label, this question's group may just be phrased
+    // differently OR be one of several — don't positional-pick a labeled group
+    // meant for another question. Only positional-pick among UNLABELED groups.
+  }
+  // (3) positional: first unanswered UNLABELED group (DOM order) offering the
+  // option — the k-th unlabeled step answers the k-th unlabeled group. Applies
+  // when the question is unlabeled, or when no labeled group matched and the
+  // remaining candidates are unlabeled (the identical-unlabeled-groups case).
+  for (const g of unanswered) {
+    if (norm(g.label)) continue; // never positional-pick a labeled group
+    const ri = optionRi(g);
+    if (ri !== null) return { gi: g.gi, ri };
+  }
+  // (4) Fallback: if the question is unlabeled and there are no unlabeled groups
+  // left but a labeled group offers the option, take the first such (best effort).
+  if (!normQ) {
+    for (const g of unanswered) {
+      const ri = optionRi(g);
+      if (ri !== null) return { gi: g.gi, ri };
+    }
+  }
+  // (5) nothing offers the option / no safe pick.
+  return null;
+}
+
+/**
+ * Site-agnostic RADIO primitive: answer a single-choice radio-group question by
+ * directly selecting the matching option in the DOM, bypassing Stagehand
+ * observe/act.
+ *
+ * Why this exists (parallels `trySelectPrimitive`/`tryCheckboxPrimitive`):
+ * HCA/Talemetry render eligibility/screening questions as MUI radio groups.
+ * Stagehand observe resolves the step to a wrapper `<div>`/`<span>`, not the
+ * `<input type=radio>`, so the cascade's `el.click()` fallback fires on the
+ * wrapper (or sets `.checked` without triggering React's `onChange`) and the
+ * controlled value never commits — the field stays `Mui-error` "required", Next
+ * no-ops, and the wizard walls (measured on HCA: the "Are you at least 18?"
+ * radio was the sole unfilled field blocking Basic Information → Step 2 of 10).
+ * This primitive finds the radio group by raw DOM, matches the requested option
+ * by its `<label for>` text, and commits via the React-safe native `checked`
+ * setter + bubbling `click`/`input`/`change` (the same technique the select
+ * primitive uses for `<select>.value`), so React/MUI's value tracker registers
+ * the change. It then verifies the input is actually `checked` AND the group is
+ * no longer invalid before claiming success; otherwise it falls through to the
+ * cascade unchanged.
+ *
+ * When the flow's hardcoded option text isn't uniquely present (per-req
+ * variance), it enumerates the groups' real options and asks the same
+ * select-option LLM judge to pick group+option. A page with no radio group
+ * (checkbox/select/absent) falls through to the cascade.
+ */
+async function tryRadioPrimitive(params: {
+  page: Page;
+  instruction: string;
+  logger: Logger;
+  anthropic: Anthropic | null;
+  captureFn?: JudgeCaptureFn;
+}): Promise<boolean> {
+  const { page, instruction, logger, anthropic, captureFn } = params;
+  const parsed = parseRadioStep(instruction);
+  if (!parsed) return false;
+  const { option, questionLabel } = parsed;
+  const optLabel = `option "${option.slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
+  // Phase 1 (browser): find radio GROUPS and their options. A group is a
+  // `<fieldset>` / `[role=radiogroup]` / `[class*='RadioGroup']` container with
+  // radios. Question label = the group's legend / associated label; each option
+  // = the `<label for=radio-id>` text. Deterministic unique option-text match
+  // commits immediately (no LLM). Else return groups for the LLM picker.
+  // `commit` uses the React-safe native `checked` setter so MUI/React registers
+  // the change, then reports `ok` = post-commit `radio.checked && !invalid`.
+  const enumerateExpr = `((option) => {
+    const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
+    let groupEls = Array.from(document.querySelectorAll("fieldset,[role='radiogroup'],[class*='RadioGroup']"))
+      .filter((g) => g.querySelector("input[type=radio]"));
+    if (groupEls.length === 0) return { groupPresent: false };
+    const groupLabel = (g) => {
+      const leg = g.querySelector("legend");
+      if (leg && leg.textContent) return leg.textContent.replace(/\\s+/g, " ").trim();
+      const al = g.getAttribute("aria-label") || g.getAttribute("label");
+      if (al) return al.replace(/\\s+/g, " ").trim();
+      const alb = g.getAttribute("aria-labelledby");
+      if (alb) { const el = document.getElementById(alb.split(/\\s+/)[0]); if (el) return (el.textContent||"").replace(/\\s+/g," ").trim(); }
+      return "";
+    };
+    const rbLabel = (rb) => {
+      if (rb.id) {
+        try {
+          const esc = (window.CSS && CSS.escape) ? CSS.escape(rb.id) : rb.id;
+          const lf = document.querySelector('label[for="' + esc + '"]');
+          if (lf && lf.textContent) return lf.textContent.replace(/\\s+/g, " ").trim();
+        } catch (e) {}
+      }
+      const al = rb.getAttribute("aria-label");
+      if (al) return al.replace(/\\s+/g, " ").trim();
+      const p = rb.closest("label");
+      if (p && p.textContent) return p.textContent.replace(/\\s+/g, " ").trim();
+      return "";
+    };
+    // Enumerate only (no selection/commit here — TS's selectRadioGroupOption
+    // decides, so the disambiguation is deterministic + unit-testable). Per
+    // group, report whether it already has a checked radio so answered groups
+    // (from earlier steps) are excluded → positional pick of the k-th unlabeled
+    // group for the k-th unlabeled step.
+    const groups = [];
+    for (let gi = 0; gi < groupEls.length; gi++) {
+      const radios = Array.from(groupEls[gi].querySelectorAll("input[type=radio]"));
+      if (radios.length === 0) continue;
+      // NOTE: ri is the raw radio DOM index (assigned in .map BEFORE .filter), so
+      // it stays aligned with the group's Nth <input type=radio> for the xpath
+      // fallback below. Do NOT reorder map/filter or ri↔DOM index will drift.
+      const options = radios
+        .map((rb, ri) => ({
+          ri,
+          text: rbLabel(rb),
+          id: rb.id || "",
+          xpath:
+            "(//fieldset|//*[@role='radiogroup']|//*[contains(@class,'RadioGroup')])[" +
+            (gi + 1) +
+            "]//input[@type='radio'][" +
+            (ri + 1) +
+            "]",
+        }))
+        .filter((o) => o.text);
+      const alreadyChecked = radios.some((rb) => rb.checked === true);
+      groups.push({ gi, label: groupLabel(groupEls[gi]), options, alreadyChecked });
+    }
+    if (groups.length === 0) return { groupPresent: false };
+    return { groupPresent: true, groups };
+  })(${JSON.stringify(option)})`;
+  try {
+    const enumResult = await pollEnumerate<{
+      groupPresent: boolean;
+      groups?: RadioGroupCandidate[];
+    }>(page, enumerateExpr, (r) => r?.groupPresent === true);
+    if (!enumResult?.groupPresent) return false; // no radio group → cascade
+    const groups = enumResult.groups ?? [];
+    if (groups.length === 0) return false;
+    // Deterministic + positional selection (excludes already-answered groups,
+    // fixes the empty-label universal-match bug). Only genuine labeled ambiguity
+    // defers to the LLM.
+    const selection = selectRadioGroupOption({ groups, wantOption: option, questionLabel });
+    if (selection !== null && selection !== "ambiguous") {
+      const chosenOpt = groups[selection.gi]?.options.find((o) => o.ri === selection.ri);
+      const applied = await applyRadioSelection(page, selection.gi, selection.ri, {
+        id: chosenOpt?.id ?? "",
+        xpath: chosenOpt?.xpath ?? "",
+      });
+      if (applied) {
+        logger.info(
+          `radio primitive: selected "${(chosenOpt?.text ?? "").trim().slice(0, 40)}" (${optLabel})`
+        );
+        return true;
+      }
+      logger.info(`radio primitive: chosen radio did not stick for ${optLabel}; falling through`);
+      return false;
+    }
+    if (selection === null) {
+      logger.info(
+        `radio primitive: no group offers option for ${optLabel}; falling through to cascade`
+      );
+      return false;
+    }
+    // selection === "ambiguous": multiple labeled groups match → let the LLM pick.
+    if (anthropic === null) {
+      logger.info(
+        `radio primitive: ambiguous labeled match for ${optLabel} (no LLM client); falling through to cascade`
+      );
+      return false;
+    }
+    // LLM picks which group answers the question + which option. Reuse the
+    // select-option judge (candidate "dropdowns" == radio groups here). Only
+    // unanswered groups are offered so the LLM can't re-answer a done group.
+    const llmGroups = groups.filter((g) => !g.alreadyChecked);
+    const verdict = await judgeSelectOptionWithLLM({
+      client: anthropic,
+      input: {
+        questionLabel,
+        desiredHint: option,
+        candidates: llmGroups.map((g) => ({
+          label: g.label || null,
+          options: g.options.map((o) => o.text),
+        })),
+      },
+      captureFn,
+    });
+    if (!verdict || verdict.selectIndex === null || verdict.optionIndex === null) {
+      logger.info(
+        `radio primitive: LLM found no matching group for ${optLabel}${verdict ? ` (${verdict.reason})` : ""}; falling through to cascade`
+      );
+      return false;
+    }
+    const chosenGroup = llmGroups[verdict.selectIndex]!;
+    const chosenOption = chosenGroup.options[verdict.optionIndex]!;
+    const applyResult = {
+      ok: await applyRadioSelection(page, chosenGroup.gi, chosenOption.ri, {
+        id: chosenOption.id,
+        xpath: chosenOption.xpath,
+      }),
+    };
+    if (applyResult?.ok) {
+      logger.info(
+        `radio primitive: LLM selected "${chosenOption.text.slice(0, 40)}" for ${optLabel} (${verdict.reason.slice(0, 60)})`
+      );
+      return true;
+    }
+    logger.info(`radio primitive: LLM-chosen radio did not stick for ${optLabel}; falling through`);
+    return false;
+  } catch (err) {
+    logger.warn(`radio primitive: evaluate threw: ${toErrorMessage(err)}; falling through`);
+    return false;
+  }
+}
+
+/**
+ * Commit a chosen radio and verify it STICKS. Tiered because synthetic events
+ * set the DOM `checked` but don't flow through React/MUI's controlled-input
+ * `onChange`, so the form model never records the value and MUI re-flags the
+ * group `required` a beat later (the fs4 "18 years" bug: `checked=1` + `Mui-error`
+ * at once). Each tier commits, waits `RADIO_SETTLE_MS` for MUI's async
+ * re-validation, then re-reads BOTH signals (input checked AND no invalid
+ * ancestor). Ordered most-faithful-first:
+ *   A. trusted hit-tested CDP click on the input by id (the real user gesture
+ *      React honors) — MUI's opacity:0 `PrivateSwitchBase-input` overlays the
+ *      control so real clicks land on it;
+ *   B. trusted click on the associated `<label for=id>` (when the hidden input
+ *      isn't hit-testable — common on MUI);
+ *   C. the legacy isolated-world synthetic-events path (backstop for no-id /
+ *      detached / non-MUI radios that already commit that way).
+ * Returns whether the commit stuck; false → caller falls through to the cascade.
+ */
+async function applyRadioSelection(
+  page: Page,
+  gi: number,
+  ri: number,
+  hint: { id: string; xpath: string }
+): Promise<boolean> {
+  // Post-settle readback for the input identified by id (preferred) or xpath:
+  // checked===true AND no INVALID_MARKER_EL_EXPR ancestor within 6 hops.
+  const readbackExpr = (sel: { id: string; xpath: string }): string => `((id, xp) => {
+      const isInvalid = ${INVALID_MARKER_EL_EXPR};
+      let rb = id ? document.getElementById(id) : null;
+      if (!rb && xp) { const r = document.evaluate(xp, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); rb = r.singleNodeValue; }
+      if (!rb || rb.checked !== true) return { ok: false };
+      let node = rb;
+      for (let depth = 0; depth < 6 && node; depth++) {
+        if (node.getAttribute && isInvalid(node)) return { ok: false };
+        node = node.parentElement;
+      }
+      return { ok: true };
+    })(${JSON.stringify(sel.id)}, ${JSON.stringify(sel.xpath)})`;
+  const readback = async (): Promise<boolean> => {
+    await page.waitForTimeout(RADIO_SETTLE_MS);
+    const r = (await page.evaluate(readbackExpr(hint)).catch(() => ({ ok: false }))) as {
+      ok: boolean;
+    };
+    return r?.ok === true;
+  };
+
+  // Tier A — trusted hit-tested click on the input by id (or xpath).
+  const inputSel = hint.id ? buildRadioIdXPath(hint.id) : hint.xpath ? `xpath=${hint.xpath}` : null;
+  if (inputSel) {
+    try {
+      await page.locator(inputSel).first().click();
+      if (await readback()) return true;
+    } catch {
+      // fall through to the next tier
+    }
+  }
+
+  // Tier B — trusted click on the associated label (MUI hides the real input).
+  if (hint.id) {
+    try {
+      await page
+        .locator(`xpath=//label[@for=${JSON.stringify(hint.id)}]`)
+        .first()
+        .click();
+      if (await readback()) return true;
+    } catch {
+      // fall through to the synthetic backstop
+    }
+  }
+
+  // Tier C — legacy synthetic-events backstop (native setter + bubbling events).
+  const applyExpr = `((gi, ri) => {
+      const isInvalid = ${INVALID_MARKER_EL_EXPR};
+      const groupEls = Array.from(document.querySelectorAll("fieldset,[role='radiogroup'],[class*='RadioGroup']"))
+        .filter((g) => g.querySelector("input[type=radio]"));
+      const grp = groupEls[gi];
+      if (!grp) return { ok: false };
+      const rb = grp.querySelectorAll("input[type=radio]")[ri];
+      if (!rb) return { ok: false };
+      const desc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "checked");
+      if (desc && desc.set) { desc.set.call(rb, true); } else { rb.checked = true; }
+      rb.dispatchEvent(new Event("click", { bubbles: true }));
+      rb.dispatchEvent(new Event("input", { bubbles: true }));
+      rb.dispatchEvent(new Event("change", { bubbles: true }));
+      if (rb.checked !== true) return { ok: false };
+      let node = rb;
+      for (let depth = 0; depth < 6 && node; depth++) {
+        if (node.getAttribute && isInvalid(node)) return { ok: false };
+        node = node.parentElement;
+      }
+      return { ok: true };
+    })(${JSON.stringify(gi)}, ${JSON.stringify(ri)})`;
+  await page.evaluate(applyExpr).catch(() => ({ ok: false }));
+  return await readback();
+}
+
 /**
  * Guard for the optional-step fast-skip: is there a REQUIRED, still-empty (or
  * aria-invalid) form control on the page whose nearby label matches this step's
@@ -4172,6 +5570,9 @@ async function simulateDragDropUpload(
       "[class*='file-drop']",
       "[class*='upload-zone']",
       "[class*='uapp-upload']",
+      "[class*='ResumeUpload']",
+      "[class*='resumeUpload']",
+      "[class*='resume-upload']",
     ];
     let dropZone = null;
     for (const sel of dropZoneSelectors) {
@@ -4757,16 +6158,14 @@ async function probeStepBeforeAttempts(params: {
   stepIndex: number;
   logger: Logger;
   captureFn?: CaptureFn;
-  observeCache?: ObserveCache;
 }): Promise<"present" | "absent"> {
-  const { stagehand, step, stepIndex, logger, captureFn, observeCache } = params;
+  const { stagehand, step, stepIndex, logger, captureFn } = params;
   try {
     const candidates = await guardedObserve(
       stagehand,
       step,
       { timeout: STEP_WATCHDOG_MS },
-      captureFn,
-      observeCache
+      captureFn
     );
     if (candidates.length === 0) {
       // Focused observe under-returns on some controlled-component forms:
@@ -4920,15 +6319,6 @@ async function executeStepWithHealing(params: {
    * additive instrumentation.
    */
   trajectory?: { stepIndex: number; verifiedBy: AttemptRecord["verifiedBy"] }[];
-  /**
-   * Per-run observe cache. When supplied, the cascade's per-step probe and
-   * attempt-2/4 observe-act calls reuse a prior observe result keyed by
-   * instruction string instead of paying the ~4s of DOM extraction + LLM
-   * inference each time. `guardedAct` evicts entries by selector on
-   * successful action so radio/checkbox state changes propagate. When
-   * omitted, cascade behaves identically — purely additive optimization.
-   */
-  observeCache?: ObserveCache;
 }): Promise<"completed" | "skipped"> {
   const {
     stagehand,
@@ -4957,7 +6347,6 @@ async function executeStepWithHealing(params: {
     knownErrorClassPrefixes,
     wizardExitButtonLabels,
     trajectory,
-    observeCache,
   } = params;
   // Read-once to suppress "unused" — knownErrorClassPrefixes is threaded
   // through executeStepWithHealing's signature so the cascade has it in
@@ -5029,6 +6418,32 @@ async function executeStepWithHealing(params: {
     return "completed";
   }
 
+  // When the step is a single-choice RADIO answer ("Click the 'Yes' answer for
+  // the question '…'"), commit it directly in the DOM. Runs AFTER select/
+  // checkbox (which own their verbs) and BEFORE the cascade, so radios never
+  // reach the observe cascade's el.click() fallback that fails to commit MUI/
+  // React controlled state (the HCA Basic-Info Step-2 wall). No-op (falls
+  // through) when there's no radio group or no confident option match.
+  if (await tryRadioPrimitive({ page, instruction: step, logger, anthropic, captureFn })) {
+    logger.info(`step ${stepIndex + 1} resolved by radio primitive`);
+    trajectory?.push({ stepIndex, verifiedBy: "dom" });
+    return "completed";
+  }
+
+  // On a CATCH-ALL step ("for any remaining … question"), fill every
+  // required-but-empty native <select> — including MuiNativeSelect dropdowns
+  // (tabindex=-1) that Stagehand observe can't see and that no concrete flow
+  // step targets (requisition-specific specialty questions). Runs only on the
+  // catch-all (parseSelectStep returns null there, so trySelectPrimitive above
+  // skipped it) and no-ops when the page has no required-empty select.
+  if (
+    await tryFillRequiredSelectsPrimitive({ page, instruction: step, logger, anthropic, captureFn })
+  ) {
+    logger.info(`step ${stepIndex + 1} resolved by required-select primitive`);
+    trajectory?.push({ stepIndex, verifiedBy: "dom" });
+    return "completed";
+  }
+
   // Snapshot the capture-meta tail length at step entry. The probe-absent
   // legitimate-transition check (below) scans captures landed during THIS
   // step's processing — earlier-step transitions don't count.
@@ -5044,7 +6459,6 @@ async function executeStepWithHealing(params: {
     stepIndex,
     logger,
     captureFn,
-    observeCache,
   });
   if (probeResult === "absent") {
     if (optional) {
@@ -5210,6 +6624,10 @@ async function executeStepWithHealing(params: {
     }
   }
 
+  // Set after attempt 1: this is a wizard-advance step whose first attempt did
+  // NOT move the wizard forward. Read at the top of attempts 2-4 to skip the
+  // proven-dead re-observe/re-click techniques (see shouldSkipTechnique).
+  let advanceUnmovedAfterAttempt1 = false;
   for (let attempt = 1; attempt <= MAX_STEP_ATTEMPTS; attempt++) {
     // Telemetry-driven technique-skip: when a cascade technique's
     // preconditions cannot be met by the prior attempts' state, running
@@ -5232,6 +6650,7 @@ async function executeStepWithHealing(params: {
           triedSelectors: a.triedSelectors,
           errorMessage: a.errorMessage,
         })),
+        advanceUnmovedAfterAttempt1,
       });
       if (decision.skip) {
         logger.info(
@@ -5250,9 +6669,11 @@ async function executeStepWithHealing(params: {
     // its URL scan to captures added DURING this attempt (not historical
     // tail from earlier steps).
     const preMetaLength = recentCaptureMeta.length;
-    // Same idea for the interior-advance body gate, but against the capture
-    // FILE-PATH array (recentCaptures) since body inspection reads capture files.
-    const preCapturesLength = recentCaptures.length;
+    // Same idea for the interior-advance body gate, but scoped by the monotonic
+    // capture INDEX (not the array length): the body gate scans capture files on
+    // disk for entries indexed after this point, which is eviction-proof when
+    // >RECENT_CAPTURES_WINDOW captures flood during the step.
+    const preCaptureIdx = latestCaptureIndex(recentCaptures);
     const record: AttemptRecord = {
       attempt,
       technique: "act-string",
@@ -5277,13 +6698,7 @@ async function executeStepWithHealing(params: {
       if (attempt === 1) {
         record.technique = "act-string";
         record.instruction = step;
-        const result = await guardedAct(
-          stagehand,
-          step,
-          { timeout: STEP_WATCHDOG_MS },
-          captureFn,
-          observeCache
-        );
+        const result = await guardedAct(stagehand, step, { timeout: STEP_WATCHDOG_MS }, captureFn);
         record.actResultSuccess = result.success;
         record.actResultDescription = result.actionDescription;
         // Deny-list guard (post-hoc): attempt-1 act resolves internally, so we
@@ -5313,13 +6728,7 @@ async function executeStepWithHealing(params: {
           attempt === 4 && triedSelectors.length > 0
             ? { ignoreSelectors: [...triedSelectors], timeout: STEP_WATCHDOG_MS }
             : { timeout: STEP_WATCHDOG_MS };
-        const candidates = await guardedObserve(
-          stagehand,
-          step,
-          observeOptions,
-          captureFn,
-          observeCache
-        );
+        const candidates = await guardedObserve(stagehand, step, observeOptions, captureFn);
         if (candidates.length === 0) {
           record.errorMessage = "observe returned no candidates";
           // Optional-step short-circuit: when attempt 2 confirms no candidates
@@ -5332,10 +6741,9 @@ async function executeStepWithHealing(params: {
           // This fast-skip is essential: a genuinely-absent optional step
           // (e.g. a "dismiss modal" step on a page with no modal) must NOT run
           // the full 5-attempt cascade + a global replan — that wastes minutes
-          // and drains the replan budget. The cache fix (guardedObserve no
-          // longer replays a stale empty result) makes attempt-1 act resolve
-          // present fields on its own, so present-but-hard fields succeed at
-          // attempt 1 and don't rely on suppressing this skip.
+          // and drains the replan budget. Present-but-hard fields succeed at
+          // attempt 1 (act-string / the DOM-direct primitives) on their own, so
+          // they don't rely on suppressing this skip.
           if (optional && attempt === 2 && triedSelectors.length === 0) {
             // Same escalation guard as the probe-absent skip: if a required,
             // still-empty control matching this step's question is present,
@@ -5376,8 +6784,7 @@ async function executeStepWithHealing(params: {
             stagehand,
             target,
             { timeout: STEP_WATCHDOG_MS },
-            captureFn,
-            observeCache
+            captureFn
           );
           record.actResultSuccess = result.success;
           record.actResultDescription = result.actionDescription;
@@ -5595,8 +7002,7 @@ async function executeStepWithHealing(params: {
             stagehand,
             step,
             { timeout: STEP_WATCHDOG_MS },
-            captureFn,
-            observeCache
+            captureFn
           ).catch(() => [] as Action[]);
           // Fetch live-page evidence so the rephrase prompt can reason about
           // form state, not just observe candidates. Mirrors the same
@@ -5646,8 +7052,7 @@ async function executeStepWithHealing(params: {
               stagehand,
               rephrased,
               { timeout: STEP_WATCHDOG_MS },
-              captureFn,
-              observeCache
+              captureFn
             );
             record.actResultSuccess = result.success;
             record.actResultDescription = result.actionDescription;
@@ -5719,17 +7124,26 @@ async function executeStepWithHealing(params: {
     // (stronger) submit-verification gate below; sites without the pattern are
     // unaffected.
     const isAdvanceOnlyNetwork = networkFired && !urlChanged && !domVerified;
-    const networkIsRealAdvance =
-      advanceTransitionBodyPattern === null || !isAdvanceOnlyNetwork || isFinalStep || submitStep
-        ? networkFired
-        : windowHasTransitionBody({
-            recentCaptures,
-            preLength: preCapturesLength,
-            advanceTransitionBodyPattern,
-          });
-    if (advanceTransitionBodyPattern !== null && isAdvanceOnlyNetwork && !networkIsRealAdvance) {
+    const advanceGateActive =
+      advanceTransitionBodyPattern !== null && isAdvanceOnlyNetwork && !isFinalStep && !submitStep;
+    // Advance-only-network step: the real TransitionWorklet(type="next") POST
+    // often lands AFTER the STEP_PAUSE_MS snapshot (a WorkletPayload autosave
+    // fires first), so poll for it — an immediate one-shot check false-negatives
+    // the advance and triggers a retry that bounces the wizard back. The poll
+    // short-circuits when the transition is already in-window (zero added latency
+    // on the common path). Scoped by preCaptureIdx via an eviction-proof disk scan.
+    const networkIsRealAdvance = !advanceGateActive
+      ? networkFired
+      : await waitForTransitionBody({
+          page,
+          preIdx: preCaptureIdx,
+          advanceTransitionBodyPattern,
+          timeoutMs: ADVANCE_TRANSITION_POLL_MS,
+          intervalMs: ADVANCE_TRANSITION_POLL_INTERVAL_MS,
+        });
+    if (advanceGateActive && !networkIsRealAdvance) {
       logger.info(
-        `step ${stepIndex + 1} network fired but no advance-transition body matched (non-advancing POST); not treating as verified`
+        `step ${stepIndex + 1} network fired but no advance-transition (type=next) body matched within ${ADVANCE_TRANSITION_POLL_MS}ms poll (non-advancing POST); not treating as verified`
       );
     }
     // DOM-only-advance veto (opt-in). A rephrase can turn an advance/"Next" step
@@ -5737,23 +7151,29 @@ async function executeStepWithHealing(params: {
     // `verifyDomEffect` legitimately reports as dom=true — but toggling a field
     // never moves the wizard. So for a non-submit ADVANCE step (per the ORIGINAL
     // instruction) whose ONLY signal is that DOM state change, do NOT count it
-    // verified: an advance requires a real transition (network/URL). Field-answer
-    // steps are not advance steps, so their DOM verification is untouched; sites
-    // without `advanceTransitionBodyPattern` are unaffected.
-    const isDomOnlyAdvance =
-      advanceTransitionBodyPattern !== null &&
-      !isFinalStep &&
-      !submitStep &&
-      domVerified &&
-      !networkFired &&
-      !urlChanged &&
-      isAdvanceStep(step);
-    if (isDomOnlyAdvance) {
+    // verified: an advance requires a REAL transition (a `type=next` per
+    // `networkIsRealAdvance`, or a URL change). Keyed on `networkIsRealAdvance`,
+    // NOT `!networkFired` — a non-advancing autosave POST (Talemetry
+    // `WorkletPayload`) fires network=true while the wizard doesn't move, and the
+    // old `!networkFired` guard let a rephrase ride that autosave + a DOM reflow
+    // to a FALSE advance, desyncing the flow from the wizard. Field-answer steps
+    // are not advance steps, so their DOM verification is untouched; sites without
+    // `advanceTransitionBodyPattern` are unaffected.
+    const domVerifiedForStep = isDomOnlyAdvanceVerified({
+      hasPattern: advanceTransitionBodyPattern !== null,
+      isFinalOrSubmit: isFinalStep || submitStep,
+      isAdvance: isAdvanceStep(step),
+      domVerified,
+      networkIsRealAdvance,
+      urlChanged,
+    })
+      ? domVerified
+      : false;
+    if (domVerified && !domVerifiedForStep) {
       logger.info(
-        `step ${stepIndex + 1} advance step succeeded only via DOM state change (field toggle), not a real transition; not treating as verified`
+        `step ${stepIndex + 1} advance step succeeded only via DOM state change (field toggle / non-advancing POST), not a real transition; not treating as verified`
       );
     }
-    const domVerifiedForStep = isDomOnlyAdvance ? false : domVerified;
     let verified = networkIsRealAdvance || urlChanged || domVerifiedForStep;
 
     // Final-step submit-verification gate. Replaces the deterministic
@@ -5993,8 +7413,46 @@ async function executeStepWithHealing(params: {
             probeResult.kind === "click" && !retryNetworkFired && !retryUrlChanged;
           const clickBlockedByInvalid =
             clickWasDomOnly && (await countNgInvalidContainers(page).catch(() => 0)) > 0;
+          // Advance-transition gate (same as the primary verifier, applied to the
+          // n+16 fallback). RC2: for a non-submit ADVANCE/"Next" step (per the
+          // ORIGINAL instruction) the fallback's positive signals — a network POST
+          // that is NOT a real transition (EditQuestionItem autosave, not
+          // TransitionWorklet), plus html/text deltas (validation re-renders) or a
+          // checked radio (field toggle) — do NOT move the wizard. Require a REAL
+          // transition: a URL change OR a same-window capture body matching
+          // `advanceTransitionBodyPattern`. Without this, a non-advancing POST
+          // (retryNetworkFired=true) both satisfied retryVerified AND disarmed the
+          // old !retryNetworkFired-gated veto, so the fallback rode past a
+          // validation-blocked Next while the page stayed put (HCA Basic Info
+          // stage1d). Only arms when the site opted into the pattern; field-answer
+          // (non-advance) steps keep their checkboxStateVerified/DOM path.
+          // Poll for the real TransitionWorklet(type="next") like the primary
+          // verifier — the transition POST can land after this snapshot, and a
+          // one-shot check would false-negative and retry into a back-bounce.
+          const retryNetworkIsRealAdvance =
+            retryNetworkFired &&
+            (await waitForTransitionBody({
+              page,
+              preIdx: preCaptureIdx,
+              advanceTransitionBodyPattern,
+              timeoutMs: ADVANCE_TRANSITION_POLL_MS,
+              intervalMs: ADVANCE_TRANSITION_POLL_INTERVAL_MS,
+            }));
+          const fallbackDomOnlyAdvance = shouldVetoFallbackAdvance({
+            hasPattern: advanceTransitionBodyPattern !== null,
+            isFinalOrSubmit: isFinalStep || submitStep,
+            isAdvance: isAdvanceStep(step),
+            retryUrlChanged,
+            retryNetworkIsRealAdvance,
+          });
+          if (fallbackDomOnlyAdvance) {
+            logger.info(
+              `step ${stepIndex + 1} n+16 fallback advanced but no real transition (non-advancing POST / field toggle); not treating as verified`
+            );
+          }
           let retryVerified =
             !clickBlockedByInvalid &&
+            !fallbackDomOnlyAdvance &&
             (retryNetworkFired ||
               retryUrlChanged ||
               retryHtmlDelta !== 0 ||
@@ -6177,6 +7635,17 @@ async function executeStepWithHealing(params: {
     // budget that would otherwise burn on identical retries of a click the
     // page is structurally rejecting.
     if (attempt === 1) {
+      // Attempt 1 of an interior advance step didn't verify (we're past the
+      // `if (verified) return` above): the wizard didn't move forward. Mark it so
+      // attempts 2-4 skip the proven-dead re-observe/re-click techniques and the
+      // cascade goes straight to attempt-5 rephrase / replan.
+      advanceUnmovedAfterAttempt1 =
+        advanceTransitionBodyPattern !== null &&
+        !isFinalStep &&
+        !submitStep &&
+        isAdvanceStep(step) &&
+        !urlChanged &&
+        !networkIsRealAdvance;
       const postAttemptInvalidCount = await countNgInvalidContainers(page);
       const earlyExit = isSubmitRevealedInvalid({
         // Treat the canonical submit click as "final" for this predicate
@@ -6191,6 +7660,27 @@ async function executeStepWithHealing(params: {
       });
       if (earlyExit) {
         const exitReason = `submit-revealed-invalid: click surfaced ${postAttemptInvalidCount - preSubmitInvalidCount} new ng-invalid container(s) (was ${preSubmitInvalidCount}, now ${postAttemptInvalidCount}); attempts 2-${MAX_STEP_ATTEMPTS} cannot heal a form that needs answers — routing to replan`;
+        failureReasons.push(exitReason);
+        logger.warn(`step ${stepIndex + 1} ${exitReason}`);
+        break;
+      }
+
+      // Telemetry-driven early-exit for interior ADVANCE steps: if the Next
+      // click fired and hit the network but produced no real forward
+      // transition, attempts 2-N only re-fire the autosave / bounce the wizard
+      // back (the measured HCA next→back oscillation). Route to replan — which
+      // can reorder a later step forward — instead of burning the cascade.
+      const advanceStalled = isAdvanceStalled({
+        isAdvance: isAdvanceStep(step),
+        isFinalOrSubmit: isFinalStep || submitStep,
+        hasPattern: advanceTransitionBodyPattern !== null,
+        clickFired: record.resolvedMethod === "click" && record.actResultSuccess === true,
+        networkFired,
+        networkIsRealAdvance,
+        urlChanged,
+      });
+      if (advanceStalled) {
+        const exitReason = `advance-stalled: the Next click fired network but no real transition (type=next) landed within the poll window; attempts 2-${MAX_STEP_ATTEMPTS} would only re-bounce the wizard — routing to replan`;
         failureReasons.push(exitReason);
         logger.warn(`step ${stepIndex + 1} ${exitReason}`);
         break;
@@ -6551,11 +8041,6 @@ async function main(): Promise<void> {
   // recon discoveries got thrown away on failed runs.
   const plan: NormalizedStep[] = [];
   const replanEvents: ReplanEvent[] = [];
-  // Per-run observe cache. Declared outside the try block so the finally
-  // can log its stats whether the run succeeded or threw. Engine-level
-  // optimization; see ObserveCache in stagehand-guard.ts for details.
-  const observeCache = newObserveCache();
-
   try {
     const stagehand = session.stagehand;
     const page = await stagehand.context.awaitActivePage();
@@ -6662,10 +8147,10 @@ async function main(): Promise<void> {
           logger.warn(`step ${i + 1}: DOM dump failed: ${toErrorMessage(err)}`);
         }
       }
-      // Baseline for wizard-restart detection: capture the recentCaptures
-      // length before the step so findWizardRestartSignal scans only URLs that
-      // landed during THIS step's processing.
-      const recentCapturesLenBeforeStep = recentCaptures.length;
+      // Baseline for wizard-restart detection: capture the highest capture
+      // INDEX before the step so findWizardRestartSignal scans only URLs that
+      // landed during THIS step's processing (eviction-proof disk scan).
+      const preCaptureIdxBeforeStep = latestCaptureIndex(recentCaptures);
       try {
         const stepOutcome = await executeStepWithHealing({
           stagehand,
@@ -6694,7 +8179,6 @@ async function main(): Promise<void> {
           wizardExitButtonLabels,
           trajectory,
           captureFn,
-          observeCache,
         });
 
         // Wizard-restart detection: if a configured restart-signal URL (e.g.
@@ -6703,8 +8187,7 @@ async function main(): Promise<void> {
         // target a reset page and replanning against the restarted wizard is
         // futile — abort with a diagnostic instead of silently cycling.
         const restartUrl = findWizardRestartSignal({
-          recentCaptures,
-          preLength: recentCapturesLenBeforeStep,
+          preIdx: preCaptureIdxBeforeStep,
           restartSignalUrlPatterns,
         });
         if (restartUrl !== null) {
@@ -6881,6 +8364,17 @@ async function main(): Promise<void> {
           throw err;
         }
 
+        // Immediate no-progress guard: if the replan's only bridge is a
+        // re-emission of the step that just failed, resuming re-runs the whole
+        // cascade on the identical click that just exhausted it. Abort now
+        // instead of waiting REPLAN_CYCLE_THRESHOLD repeats for the cycle
+        // detector — that many dead cascades cost minutes of wall-clock.
+        if (isReplanReproposingFailedStep(newSteps, step.instruction)) {
+          const noProgressMessage = `replan #${replanIndex} re-proposed only the just-failed step ("${step.instruction.slice(0, 60)}") with no new bridge; resuming would re-fail identically — aborting`;
+          logger.error(noProgressMessage);
+          throw new StepVerificationError(noProgressMessage, "replan-cycle-detected");
+        }
+
         const currentPageState = await snapshotPage(page, signalCounter).catch(() => ({
           url: page.url(),
           bodyHtmlLength: 0,
@@ -6985,14 +8479,6 @@ async function main(): Promise<void> {
 
     logger.info(`recon complete — ${counter.n} captures written to ${CAPTURES_DIR}`);
   } finally {
-    // Observe-cache stats: surfaces how often the per-run cache (cascade's
-    // probe + attempt 2/4 + cross-step revisits sharing the same
-    // instruction string) skipped Stagehand's DOM-snapshot + LLM call.
-    // Empirically ~60% hit rate across the AppCast applyboard flow (319
-    // observes / 112 unique instructions in a measured Job 1 run).
-    logger.info(
-      `observe-cache stats: hits=${observeCache.stats.hits} misses=${observeCache.stats.misses} invalidations=${observeCache.stats.invalidations}`
-    );
     // Replay-the-discovered-path: if any replan fired and the user provided
     // a flow file, write the improved plan back so the next run starts
     // where this one ended up. Runs INSIDE finally so the cascade's
