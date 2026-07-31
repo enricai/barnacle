@@ -196,6 +196,20 @@ export class HttpUrlLockedError extends ScraperError {
 }
 
 /**
+ * Oracle HCM returned a plain-text `ORA_IRC_TOKEN_EXPIRED` sentinel body during
+ * a burst / rate-limit / token-expiry window. Retryable so pRetry keeps retrying,
+ * but kept distinct from the generic {@link UnknownScraperError} so the encompass
+ * http-flow can catch exactly this class and re-mint the AccessCode before
+ * retrying — replaying the same stale token would produce the same sentinel
+ * indefinitely. Distinct from {@link HttpUrlLockedError} which is terminal.
+ */
+export class OracleTokenExpiredError extends ScraperError {
+  constructor(message = "oracle token expired (ORA_IRC_TOKEN_EXPIRED)") {
+    super(message, true);
+  }
+}
+
+/**
  * Structured result returned (not thrown) by the hot path when it cannot
  * complete the application because the user must supply additional data.
  * Assignable as the `data` payload of a `SitePluginResult` so dispatch can

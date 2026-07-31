@@ -70,10 +70,13 @@ export const US_STATE_NAMES: Record<string, string> = {
 
 /**
  * Converts a US state/territory name or existing 2-letter code to its
- * uppercase abbreviation. Already-abbreviated 2-letter inputs pass through
- * uppercased; unrecognised inputs are returned as-is (identity fallback).
+ * uppercase abbreviation. Input is trimmed before matching so surrounding
+ * whitespace never causes a spurious identity fallback. Already-abbreviated
+ * 2-letter inputs pass through uppercased; unrecognised inputs are returned
+ * trimmed but otherwise unchanged (identity fallback).
  */
 export function stateToCode(state: string): string {
-  if (state.length === 2) return state.toUpperCase();
-  return US_STATE_NAMES[state.toLowerCase()] ?? state;
+  const trimmed = state.trim();
+  if (/^[A-Za-z]{2}$/.test(trimmed)) return trimmed.toUpperCase();
+  return US_STATE_NAMES[trimmed.toLowerCase()] ?? trimmed;
 }

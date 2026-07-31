@@ -12,6 +12,7 @@ import {
   HttpSchemaError,
   HttpServerError,
   HttpUrlLockedError,
+  OracleTokenExpiredError,
   UnknownScraperError,
 } from "@/scraper/errors";
 import { classifyOracleSentinel } from "@/scraper/oracle-sentinels";
@@ -82,12 +83,11 @@ export interface HttpRequestInit {
 }
 
 /**
- * Parses `rawText` as JSON. Oracle HCM occasionally returns plaintext
- * `ORA_IRC_*` sentinels (e.g. `ORA_IRC_TOKEN_EXPIRED`) during burst /
- * rate-limit windows — these are transient and handled upstream before this
- * call. On any JSON parse failure for a non-sentinel body, logs the first
- * 200 chars and throws `UnknownScraperError` (retryable) so p-retry
- * re-issues the request rather than hard-aborting with `HttpSchemaError`.
+ * Parses `rawText` as JSON. Oracle HCM `ORA_IRC_*` transient sentinels are
+ * caught before this call and thrown as {@link OracleTokenExpiredError}.
+ * On any JSON parse failure for a non-sentinel body, logs the first 200 chars
+ * and throws `UnknownScraperError` (retryable) so p-retry re-issues the
+ * request rather than hard-aborting with `HttpSchemaError`.
  */
 function parseJsonOrThrowRetryable(rawText: string, url: string): unknown {
   try {
@@ -218,6 +218,14 @@ export function createHttpClient<TResponse>(
             // Oracle has locked the requisition URL — retrying cannot succeed.
             throw new AbortError(
               new HttpUrlLockedError(`oracle url locked (ORA_URL_LOCKED) from ${url}`)
+            );
+          }
+          if (sentinelKind === "transient") {
+            // Oracle returned an ORA_IRC_* token-expiry sentinel — retryable,
+            // but kept distinct from UnknownScraperError so the encompass flow
+            // can catch exactly this class and re-mint the AccessCode.
+            throw new OracleTokenExpiredError(
+              `oracle token expired from ${url}: ${rawText.trim().slice(0, 200)}`
             );
           }
 

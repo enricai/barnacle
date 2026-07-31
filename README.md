@@ -361,7 +361,8 @@ When the smoke test fails: re-run `pnpm run recon:browser` → diff `/tmp/recon/
 | `HttpServerError` | 5xx | **Yes** | Server-side outage; recovery strategy is the same |
 | `HttpRateLimitError` | 429 | **No** | A 429 means the configured rps ceiling is too high. Routing to the browser path would just hit the same ceiling and waste a Steel session. The right response is to lower the Bottleneck `minTime` in `contract.ts` and re-deploy. |
 | `HttpUrlLockedError` | 429 | **No** | Oracle HCM returned `ORA_URL_LOCKED` — the requisition URL is locked at Oracle's end. Neither a retry nor a browser session can succeed; the caller must back off and surface a "retry later" state. |
-| `UnknownScraperError` | Any | **No** | Transient network failure or non-JSON sentinel (e.g. Oracle HCM `ORA_IRC_*`). `createHttpClient` retries up to 2 times internally; if all attempts fail, the error propagates as `ScrapeFailureError`. |
+| `OracleTokenExpiredError` | Any | **No** | Oracle HCM returned a plain-text `ORA_IRC_TOKEN_EXPIRED` sentinel. Retryable so p-retry keeps retrying, but distinct from `UnknownScraperError` so the encompass http-flow can catch exactly this class and re-mint the AccessCode before retrying. |
+| `UnknownScraperError` | Any | **No** | Transient network failure or unclassified non-JSON response. `createHttpClient` retries up to 2 times internally; if all attempts fail, the error propagates as `ScrapeFailureError`. |
 
 ### Cache deduplication
 
@@ -756,9 +757,14 @@ a repeat-applicant OTP challenge, `/run` returns HTTP 200 with
 `{ needsUserInfo: true, missingFields: [{ field, question }], requiresOtp }`
 instead of a submission result, so the consumer can collect the gaps and hand back.
 
-Encompass Health-specific routes (registered outside the generic loop):
+Plugin-specific extra routes (registered via `meta.extraRoutes` in each plugin):
+
+Encompass Health:
 - `POST /v1/encompasshealth/trigger-otp` — body `{ offerId, email }`; triggers Oracle HCM to email an OTP to a repeat applicant; returns `{ success: true }` or a `2006 VERIFICATION_TRIGGER_FAILED` error envelope
 - `POST /v1/encompasshealth/resume` — body = the full original candidate payload plus `collectedData` and `otpCode`; re-runs the hot path with the collected answers and/or OTP; returns the same `{ verified }` envelope as `/run`, or `2007 RESUME_INVALID_OTP` if the OTP is rejected
+
+Appcast:
+- `POST /v1/appcast/resume` — body = the full original candidate payload plus `collectedData` (no `otpCode` — Appcast has no OTP challenge); re-runs the hot path with the chat-collected answers merged in; returns the same `{ verified, response }` envelope as `/run`
 
 Operational routes:
 - `GET /healthz` — liveness probe

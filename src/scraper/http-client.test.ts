@@ -8,6 +8,7 @@ import {
   HttpSchemaError,
   HttpServerError,
   HttpUrlLockedError,
+  OracleTokenExpiredError,
   UnknownScraperError,
 } from "@/scraper/errors";
 import type { HttpResponseInfo } from "@/scraper/http-client";
@@ -94,7 +95,7 @@ describe("scraper/http-client createHttpClient", () => {
     await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(HttpSchemaError);
   });
 
-  it("retries on non-JSON body (ORA_IRC_* sentinel) and throws UnknownScraperError when all attempts fail", async () => {
+  it("retries on ORA_IRC_* sentinel body and throws OracleTokenExpiredError when all attempts fail", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({
@@ -105,9 +106,9 @@ describe("scraper/http-client createHttpClient", () => {
       })
     );
     const client = makeClient();
-    await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(
-      UnknownScraperError
-    );
+    const rejection = client("https://example.com/api/item");
+    await expect(rejection).rejects.toBeInstanceOf(OracleTokenExpiredError);
+    await expect(rejection).rejects.not.toBeInstanceOf(HttpSchemaError);
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(3);
   });
 

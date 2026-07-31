@@ -46,4 +46,10 @@ describe("lib/us-states stateToCode", () => {
     expect(stateToCode("Unknown Territory")).toBe("Unknown Territory");
     expect(stateToCode("XY")).toBe("XY");
   });
+
+  it("trims surrounding whitespace before matching", () => {
+    expect(stateToCode(" ny ")).toBe("NY");
+    expect(stateToCode("  pennsylvania  ")).toBe("PA");
+    expect(stateToCode(" Unknown ")).toBe("Unknown");
+  });
 });

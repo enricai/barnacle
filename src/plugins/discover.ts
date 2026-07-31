@@ -42,8 +42,11 @@ export interface LoadPluginsResult {
 }
 
 /**
- * In-tree plugins bundled with Barnacle. Ships as an empty array; operators
- * extend the registry exclusively via `BARNACLE_PLUGINS`.
+ * Statically-registered in-tree plugins. Empty by default: this engine branch
+ * ships no site plugins, so operators register every plugin at runtime via
+ * `BARNACLE_PLUGINS` (compiled module specifiers) or `*.plugin.json` config
+ * manifests. Kept as a mutable array so tests can push a fixture builtin and so
+ * a downstream branch that vendors sites in-tree can repopulate it.
  *
  * @see loadAllPlugins for how built-ins and out-of-tree plugins are composed.
  */
