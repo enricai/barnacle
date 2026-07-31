@@ -98,6 +98,29 @@ function evaluateInFakePage(expr: string, document: FakeRoot): unknown {
   });
 }
 
+/**
+ * Executes a generated expression string with `frameDocument` bound as
+ * global `document` and the outer page's own fake root bound under a
+ * different global name, simulating what `Frame.evaluate` does for real:
+ * `document` resolves to the executing frame's document, never to some
+ * outer captured reference. If a builder ever referenced an outer
+ * `document` instead of the supplied `root`, this fixture would surface
+ * it by finding the outer page's elements instead of the frame's.
+ */
+function evaluateInFakeFrame(expr: string, frameDocument: FakeRoot, outerRoot: FakeRoot): unknown {
+  return runInNewContext(expr, {
+    document: frameDocument,
+    __outerDocumentNeverReferenced: outerRoot,
+    Event: class {
+      type: string;
+      constructor(type: string) {
+        this.type = type;
+      }
+    },
+    console,
+  });
+}
+
 describe("submit-control/buildRankSubmitCandidatesExpr", () => {
   it('ranks a type="submit" element inside a shadow root above weaker matches', () => {
     const shadowSubmit = makeEl("button", { type: "submit" }, "Continue");
@@ -281,6 +304,43 @@ describe("submit-control/buildRankSubmitCandidatesExpr", () => {
     expect(result[0]?.tier).toBe(2);
     expect(result[0]?.accessibleName).toBe("submit");
   });
+
+  it("defaults to `document`, resolved from the executing realm (no root arg passed)", () => {
+    const outerButton = makeEl("button", { type: "submit" }, "Outer Submit");
+    const outerDocument = makeRoot([outerButton]);
+    const frameButton = makeEl("button", { type: "submit" }, "Submit");
+    const frameDocument = makeRoot([frameButton]);
+
+    const result = evaluateInFakeFrame(
+      buildRankSubmitCandidatesExpr(),
+      frameDocument,
+      outerDocument
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.tag).toBe("button");
+    expect(result[0]?.accessibleName).toBe("submit");
+  });
+
+  it("ranks candidates rooted in a frame-document-like tree via the root arg, ignoring the outer document", () => {
+    const outerButton = makeEl("button", { type: "submit" }, "Outer Submit");
+    const outerDocument = makeRoot([outerButton]);
+
+    const frameSubmit = makeEl("button", { type: "submit" }, "Continue");
+    const frameShadowRoot = makeRoot([frameSubmit]);
+    const frameHost = makeEl("app-form-actions");
+    frameHost.shadowRoot = frameShadowRoot;
+    const frameDocument = makeRoot([frameHost]);
+
+    const result = evaluateInFakeFrame(
+      buildRankSubmitCandidatesExpr("document"),
+      frameDocument,
+      outerDocument
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.tier).toBe(3);
+  });
 });
 
 describe("submit-control/buildClickByDeepIndexExpr", () => {
@@ -339,6 +399,31 @@ describe("submit-control/buildClickByDeepIndexExpr", () => {
       };
       expect(result).toEqual({ clicked: false });
     }).not.toThrow();
+  });
+
+  it("clicks the candidate in a frame-document-like tree via the root arg, ignoring the outer document", () => {
+    const outerButton = makeEl("button", { type: "submit" }, "Outer Submit");
+    const outerDocument = makeRoot([outerButton]);
+
+    const frameSubmit = makeEl("button", { type: "submit" }, "Submit");
+    const frameDocument = makeRoot([frameSubmit]);
+
+    const ranked = evaluateInFakeFrame(
+      buildRankSubmitCandidatesExpr("document"),
+      frameDocument,
+      outerDocument
+    ) as SubmitCandidate[];
+    expect(ranked).toHaveLength(1);
+
+    const clickResult = evaluateInFakeFrame(
+      buildClickByDeepIndexExpr(ranked[0]?.deepIndex as number, "document"),
+      frameDocument,
+      outerDocument
+    ) as { clicked: boolean };
+
+    expect(clickResult).toEqual({ clicked: true });
+    expect(frameSubmit.clicked).toBe(true);
+    expect(outerButton.clicked).toBe(false);
   });
 });
 

@@ -96,6 +96,11 @@ import {
   waitForSpaReady,
   wireSignalCapture,
 } from "@/scraper/flow-runner";
+import {
+  mainFrameTarget,
+  resolveFrameTarget,
+  waitForChildFrameReady,
+} from "@/scraper/frame-target";
 import { createBrowserSession, type ProviderName } from "@/scraper/session";
 import { guardedObserve } from "@/scraper/stagehand-guard";
 import { filterByCallType, parseSamples } from "@/scripts/judge-llm-batch";
@@ -505,8 +510,11 @@ const RECON_FLOW_SCHEMA = z.array(RECON_FLOW_STEP_SCHEMA).min(1);
  * Two on-disk shapes are accepted:
  *
  *  1. Legacy bare array — every existing site flow file uses this.
- *  2. Object form — adds optional `submitEndpointPattern` regex and
- *     optional `submittedStateSelectors` array.
+ *  2. Object form — adds optional `frameSelector`, `submitEndpointPattern`
+ *     regex, and `submittedStateSelectors` array.
+ *     - `frameSelector`: CSS selector of a cross-origin `<iframe>` the
+ *       flow's target elements live inside. Omitted (default) preserves
+ *       today's behavior: the flow drives the main frame.
  *     - `submitEndpointPattern`: the final step's verifier additionally
  *       requires at least one same-origin capture in its mutation window
  *       whose URL matches the pattern. Without that match `verified=false`,
@@ -523,10 +531,19 @@ const RECON_FLOW_SCHEMA = z.array(RECON_FLOW_STEP_SCHEMA).min(1);
  *
  * Both forms route through `parseReconFlow` into a shared internal record.
  */
-const RECON_FLOW_FILE_SCHEMA = z.union([
+export const RECON_FLOW_FILE_SCHEMA = z.union([
   RECON_FLOW_SCHEMA,
   z.object({
     steps: RECON_FLOW_SCHEMA,
+    /**
+     * CSS selector of a cross-origin `<iframe>` the flow's target elements
+     * live inside (e.g. a Talemetry wizard embedded rather than top-window
+     * navigated). Mirrors `flowSchema.frameSelector` in
+     * `src/plugins/config-plugin.ts` so a hand-authored recon flow file and
+     * a config-plugin manifest use the same declaration. Omitted (default)
+     * preserves today's behavior: the flow drives the main frame.
+     */
+    frameSelector: z.string().min(1).optional(),
     submitEndpointPattern: z.string().min(1).optional(),
     submittedStateSelectors: z.array(z.string().min(1)).optional(),
     /**
@@ -992,6 +1009,14 @@ async function readFailureDumpEvidence(
      * callers (replanRemainingFlow) always have `page` in scope and pass it.
      */
     page?: Page;
+    /**
+     * CSS selector of the flow's cross-origin iframe, forwarded to
+     * `resolveFrameTarget` so the live leaf probe queries the same document
+     * frame-scoped steps run against. `resolveFrameTarget` falls back to the
+     * main-frame target when this is null/undefined, so omitting it is a
+     * no-op for flows without a `frameSelector`.
+     */
+    frameSelector?: string | null;
   }
 ): Promise<{
   bodyExcerpt: string;
@@ -1013,13 +1038,18 @@ async function readFailureDumpEvidence(
     const knownErrorClassPrefixes = options?.knownErrorClassPrefixes ?? [];
     const captureFn = options?.captureFn;
     const page = options?.page;
+    const frameSelector = options?.frameSelector;
 
     // Deterministic-first when the live page is available: probe the LIVE
     // DOM for leaf invalid containers via CSS `:has()`. Falls back to the
     // dump-based Haiku judge only when the live probe returns empty or
     // when no page is in scope (tests). See `probeLeafInvalidContainers`
-    // docs for the rationale.
-    const leafFields = page ? await probeLeafInvalidContainers(page) : [];
+    // docs for the rationale. `resolveFrameTarget` is frame-scoped so a
+    // flow whose form lives inside a declared iframe probes that document
+    // instead of always querying the top document.
+    const leafFields = page
+      ? await probeLeafInvalidContainers(await resolveFrameTarget(page, frameSelector))
+      : [];
 
     const [unfocusedList, invalidVerdict, errorVerdict] = await Promise.all([
       renderUnfocusedObserve(dump.unfocusedObserve ?? [], { client, captureFn }),
@@ -1095,6 +1125,13 @@ async function replanRemainingFlow(params: {
   stagehand: Stagehand;
   captureFn?: CaptureFn;
   /**
+   * CSS selector of the flow's cross-origin iframe (see `flowSchema.frameSelector`).
+   * Forwarded to `readFailureDumpEvidence` so the live leaf-invalid-field probe
+   * queries the same document the frame-scoped steps run against instead of
+   * always the top document.
+   */
+  frameSelector?: string | null;
+  /**
    * Files in the run's captures dir recorded during the failed step's
    * attempt window. Used to surface structured server-side validation
    * errors to the replan LLM when a submit actually fired but was rejected.
@@ -1142,6 +1179,7 @@ async function replanRemainingFlow(params: {
     failureDumpPath,
     page,
     stagehand,
+    frameSelector = null,
     captureFn = captureLlmCall,
     recentCaptures = [],
     ownBackendHostnames = [],
@@ -1187,6 +1225,7 @@ async function replanRemainingFlow(params: {
       knownErrorClassPrefixes: replanKnownErrorClassPrefixes,
       captureFn,
       page,
+      frameSelector,
     });
   const failureReasonList = recentFailureReasons.map((r, i) => `${i + 1}. ${r}`).join("\n");
   const submitFailureList = extractSubmitFailureEvidence(recentCaptures, ownBackendHostnames);
@@ -1518,6 +1557,7 @@ function parseCli(): {
   advancedStealth: boolean;
   dumpDomBeforeStep: number | null;
   allocateEmailEnvVar: string | null;
+  frameSelector: string | null;
   submitEndpointPattern: string | null;
   submittedStateSelectors: string[];
   requireSubmitEndpointMatch: boolean;
@@ -1613,6 +1653,7 @@ function parseCli(): {
       advancedStealth,
       dumpDomBeforeStep,
       allocateEmailEnvVar,
+      frameSelector: null,
       submitEndpointPattern: null,
       submittedStateSelectors: [],
       requireSubmitEndpointMatch: false,
@@ -1632,6 +1673,7 @@ function parseCli(): {
     process.exit(1);
   }
   const stepsRaw = Array.isArray(parsed.data) ? parsed.data : parsed.data.steps;
+  const frameSelector = Array.isArray(parsed.data) ? null : (parsed.data.frameSelector ?? null);
   const submitEndpointPattern = Array.isArray(parsed.data)
     ? null
     : (parsed.data.submitEndpointPattern ?? null);
@@ -1683,6 +1725,7 @@ function parseCli(): {
     advancedStealth,
     dumpDomBeforeStep,
     allocateEmailEnvVar,
+    frameSelector,
     submitEndpointPattern,
     submittedStateSelectors,
     requireSubmitEndpointMatch,
@@ -1735,6 +1778,7 @@ async function main(): Promise<void> {
     advancedStealth,
     dumpDomBeforeStep,
     allocateEmailEnvVar,
+    frameSelector,
     submitEndpointPattern,
     submittedStateSelectors,
     requireSubmitEndpointMatch,
@@ -1975,10 +2019,29 @@ async function main(): Promise<void> {
       // INDEX before the step so findWizardRestartSignal scans only URLs that
       // landed during THIS step's processing (eviction-proof disk scan).
       const preCaptureIdxBeforeStep = latestCaptureIndex(recentCaptures);
+      // Resolved fresh per step (not cached across the run) so a cross-origin
+      // iframe that attaches mid-flow (e.g. after an "Apply" click reveals a
+      // wizard embedded later in the DOM) is picked up as soon as it's
+      // reachable, and so a replan-appended step — spliced into `plan` after
+      // this loop already started — resolves the same frame instead of
+      // silently reverting to the main frame. `resolveFrameTarget` falls back
+      // to the main-frame target when `frameSelector` is null/unresolvable,
+      // so this is a no-op for every flow that doesn't declare one.
+      const frameTarget = await resolveFrameTarget(page, frameSelector);
+      // A child frame CDP has just attached to may still be sitting on
+      // about:blank (the moment right after Target.setAutoAttach fires and
+      // before the OOPIF's own navigation lands). waitForSpaReady above only
+      // re-gates on a TOP-document origin change, which never fires for a
+      // same-origin-top site whose wizard lives entirely inside an iframe
+      // (e.g. UCHealth stays on careers.uchealth.org throughout), so without
+      // this the cascade would probe an unnavigated frame and see 0 candidates.
+      // No-ops (zero delay) when frameTarget.frame is null.
+      await waitForChildFrameReady(frameTarget);
       try {
         const stepOutcome = await executeStepWithHealing({
           stagehand,
           page,
+          frameTarget,
           step: step.instruction,
           optional: step.optional,
           upload: step.upload,
@@ -2161,6 +2224,7 @@ async function main(): Promise<void> {
           failureDumpPath: dumpPath,
           page,
           stagehand,
+          frameSelector,
           captureFn,
           recentCaptures,
           ownBackendHostnames,
@@ -2203,10 +2267,12 @@ async function main(): Promise<void> {
           throw new StepVerificationError(noProgressMessage, "replan-cycle-detected");
         }
 
-        const currentPageState = await snapshotPage(page, signalCounter).catch(() => ({
-          url: page.url(),
-          bodyHtmlLength: 0,
-        }));
+        const currentPageState = await snapshotPage(mainFrameTarget(page), signalCounter).catch(
+          () => ({
+            url: page.url(),
+            bodyHtmlLength: 0,
+          })
+        );
         if (
           isReplanCycle(replanEvents, newSteps, {
             url: currentPageState.url,
@@ -2429,11 +2495,14 @@ export {
   writeFixtureToTempFile,
 } from "@/scraper/flow-runner";
 export type { NormalizedStep, ReplanEvent };
-// Test-only exports — allow unit tests to inject a fake capture sink without
-// touching the main() entry-point or the real browser session.
+// Test-only exports — `main` is never invoked automatically on import (guarded
+// by the process.argv[1] check below), so a test driving it end-to-end with a
+// mocked browser session cannot trigger a real recon run.
 export {
   dedupeConsecutiveIdentical,
   denormalizeStep,
+  main,
+  parseCli,
   persistReplannedFlow,
   readFailureDumpEvidence,
   replanRemainingFlow,

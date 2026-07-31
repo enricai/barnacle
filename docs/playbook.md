@@ -84,6 +84,57 @@ instruction like "wait for the results to load" asks for no action, and the
 healing cascade will correctly report it as impossible. Settling is already
 handled by the navigation wait and `STEP_PAUSE_MS`.
 
+**Cross-origin iframe targets.** Some ATS integrations embed their entire
+application form in a cross-origin `<iframe>` rather than navigating the top
+window to it (e.g. UCHealth's careers site embeds the same Talemetry wizard
+HCA reaches by top-window navigation). `document`-rooted helpers can't reach
+across that boundary — `contentDocument` on a cross-origin iframe element is
+`null` from page script's perspective — so a flow whose target elements live
+inside such a frame must declare `frameSelector` in the object form of the
+flow file:
+
+```json
+{
+  "steps": [
+    "click the Apply button",
+    "click Manual Application",
+    "fill the First Name field with {{ .request.FirstName }}"
+  ],
+  "frameSelector": "iframe#talemetry_apply_iframe"
+}
+```
+
+The same field is available on a config-plugin manifest's `spec.flow`
+(`examples/plugins/acme-jobs.plugin.json` shows the sibling fields):
+
+```json
+"flow": {
+  "steps": [ "..." ],
+  "frameSelector": "iframe#talemetry_apply_iframe"
+}
+```
+
+**`frameSelector` is the bare CSS selector of the `<iframe>` element itself —
+never a Stagehand `>>` hop string.** The engine (`resolveFrameTarget` in
+`src/scraper/frame-target.ts`) resolves the iframe boundary from that bare
+selector and composes the `>>` hop internally (`buildHopSelector`) when it
+scopes Stagehand's own `observe`/`extract` calls. Passing a pre-composed hop
+selector (e.g. `"iframe#talemetry_apply_iframe >> input[name=firstName]"`)
+breaks resolution: `resolveFrameTarget`'s `document.querySelector` call
+receives the whole hop string, which isn't valid CSS, and throws rather than
+falling back — a deliberate fail-loud choice so a malformed selector doesn't
+silently degrade to "drive the main frame and see nothing." Omitting
+`frameSelector` (the default) preserves today's behavior: the flow drives the
+main frame.
+
+**`observe()` cannot see into a cross-origin OOPIF at all** — measured against
+a live Talemetry wizard embed, every scoping form (`{selector: "iframe#... >>
+*"}`, `{page: childFrame}`, unscoped) returns zero candidates even though the
+frame is fully attached and its DOM is reachable via `frameTarget.evaluate`.
+For a frame-scoped step, the cascade and the pre-cascade probe fall back to
+`page.deepLocator()` (Stagehand's own hop-notation resolver, which does reach
+the OOPIF) whenever `observe()` comes back empty — see 1c.
+
 ---
 
 ## Phase 1 — Browser recon (`recon-browser.ts`)
@@ -198,13 +249,24 @@ techniques are, in order:
 2. **`observe()` + `act(Action)`** — Stagehand returns a list of candidate
    `Action` objects with `selector` + `description`. We pick the top candidate
    and call `act` on the structured object directly. Disambiguates without
-   needing rephrase.
+   needing rephrase. Frame-scoped exception: when the step declares
+   `frameSelector` and `observe()` comes back empty, `observe()` is blind to a
+   cross-origin OOPIF (see the cross-origin iframe note above), so this
+   attempt (and the pre-cascade probe, and the rephrase evidence gather)
+   additionally resolves candidates via `page.deepLocator()`
+   (`src/scraper/deep-locator-candidates.ts`) before giving up — the top
+   surviving candidate is clicked directly and a `xpath=`-shaped
+   `resolvedAction` is synthesized so verification proceeds exactly as it
+   would for an `observe()`-sourced candidate.
 3. **`observe(step, { ignoreSelectors: tried })` + `act(Action)`** — same as
    attempt 2, but we tell Stagehand to exclude the selectors we already tried.
    Addresses the "same wrong button twice" failure mode. When no selectors
    were captured from earlier attempts (rare — usually means both attempts
    found nothing actionable), attempt 3 degenerates to a plain `observe(step)`
-   and acts like a second pass of attempt 2.
+   and acts like a second pass of attempt 2. The frame-scoped `deepLocator`
+   fallback applies here too; since `DeepLocatorDelegate` has no
+   `ignoreSelectors` equivalent, the exclusion is applied by filtering
+   resolved candidates against `triedSelectors` before picking the top one.
 4. **Anthropic SDK rephrase** — final escape hatch. We call Claude directly
    with the original step, the failure reasons from attempts 1–3, the selectors
    already tried, and the first ~12 visible interactive elements from
@@ -553,14 +615,18 @@ supply lowercase to match.)
 |-------|--------|--------|
 | `CaptchaError` | Stagehand flow | **Abort immediately** — surface to humans, don't burn sessions |
 | `EmptyResultsError` | Plugin logic | **Abort** — query-shape bug, not transient |
-| `SessionTimeoutError` | Per-task hang ceiling (`TASK_TIMEOUT_MS`, 60min default) | Kill session → create fresh → retry up to `maxAttempts` (restart happens at most once) |
+| `SessionTimeoutError` | Per-task hang ceiling (`TASK_TIMEOUT_MS`, 60min default) | Kill session → create fresh → retry up to `maxAttempts` (restart happens before every retry, not just the first) |
 | `SelectorFailureError` | Stagehand can't find element | Retry up to `maxAttempts` (default 3) with exponential backoff |
 | `UnknownScraperError` | Unclassified | Retry up to `maxAttempts` |
 
 Concrete settings (`src/scraper/retry.ts`): `factor: 2`, `minTimeout: 500ms`,
-`maxTimeout: 5000ms`, `randomize: true`, default `maxAttempts: 3`.
-`EmptyResultsError` and abort signals short-circuit retries;
-`SessionTimeoutError` triggers a one-time session restart between attempts.
+`maxTimeout: 5000ms`, `randomize: true`, default `maxAttempts: 3` — a plugin
+can override this via `SitePluginMeta.maxAttempts` so the per-run ceiling is
+`maxAttempts × taskTimeoutMs` under its own control instead of a fixed 3×.
+`EmptyResultsError`, `CaptchaError`, and `StepVerificationError` short-circuit
+retries (a deterministic verification failure won't resolve by re-running the
+whole flow); `SessionTimeoutError` triggers a session restart before every
+retry attempt, not just the first.
 
 Hot-path error → fallback decision (in `dispatch()`):
 

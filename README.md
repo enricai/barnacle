@@ -336,6 +336,7 @@ interface SitePlugin<TPayload, TResult> {
 | `routeOverride?` | `string` | Override the full route path (legacy compatibility only) |
 | `defaultBaseUrl?` | `string` | Fallback base URL when `config.scraper.siteBaseUrls[siteId]` is absent |
 | `taskTimeoutMs?` | `number` | Override the pool's 60-minute per-task hang ceiling for this plugin only — set when the site's normal latency is well below the default and a faster failure is preferable |
+| `maxAttempts?` | `number` | Override the retry policy's default of 3 attempts (including the first try). Without this, the per-run ceiling is `3 × taskTimeoutMs`; set to `1` so `taskTimeoutMs` is the real per-run cap |
 | `apiVersion?` | `string` | Semver range targeting a plugin API version (e.g. `"^1.0.0"`); core disables the plugin on a major-version mismatch. Absent means "accept any version." |
 | `extraRoutes?` | `readonly SitePluginExtraRoute[]` | Extra non-run routes (OTP trigger, resume, etc.) that core registers as authenticated Fastify routes at startup. See `SitePluginExtraRoute` in `src/site-plugin.ts`. |
 | `onShutdown?` | `() => Promise<void>` | Optional cleanup for background work the plugin launched fire-and-forget, awaited during graceful shutdown so in-flight work is not abandoned and sessions are not leaked. Mirrors the engine's own drain functions. Bounded by a per-plugin timeout, so a hanging drain cannot stall shutdown. Module plugins only — config-only `*.plugin.json` manifests are pure JSON and cannot declare a function. |
@@ -517,7 +518,7 @@ Cache key: `<endpoint>:<sha256(canonical payload)[:32]>` — the endpoint is a l
 
 **Per-task hang ceiling:** each queued task races against `TASK_TIMEOUT_MS` (`src/scraper/pool.ts`, **60 minutes** by default). A hung `execute()` — frozen CDP connection, infinite network wait — converts to `SessionTimeoutError`, which the retry policy handles by tearing down the broken session and creating a fresh one. The default is sized for long browser flows; shorten per-plugin via `SitePluginMeta.taskTimeoutMs`. This is a hang-recovery floor, not a p99 latency budget.
 
-**Retry policy:** `withScraperRetry` (`src/scraper/retry.ts`) uses p-retry with `factor: 2`, `minTimeout: 500ms`, `maxTimeout: 5000ms`, `randomize: true`, and default `maxAttempts: 3`. `EmptyResultsError` and abort signals short-circuit retries; `SessionTimeoutError` triggers a one-time session restart between attempts.
+**Retry policy:** `withScraperRetry` (`src/scraper/retry.ts`) uses p-retry with `factor: 2`, `minTimeout: 500ms`, `maxTimeout: 5000ms`, `randomize: true`, and default `maxAttempts: 3`. `EmptyResultsError`, `CaptchaError`, and `StepVerificationError` short-circuit retries (abort after the first attempt — a deterministic verification failure won't resolve by re-running the whole flow); `SessionTimeoutError` triggers a session restart before every retry attempt, not just the first.
 
 **Graceful shutdown:** `drainPool()` is called during graceful shutdown — `SIGTERM`/`SIGINT` triggers `app.close()`, which fires Fastify's `onClose` hook, which calls `drainPool()`. It pauses new intake, waits up to 20 seconds for in-flight tasks to close their Steel sessions, then resolves. Without this, process exit leaves live sessions billing until Steel's own timeout.
 

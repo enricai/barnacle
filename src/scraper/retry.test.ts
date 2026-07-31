@@ -5,6 +5,7 @@ import {
   EmptyResultsError,
   SelectorFailureError,
   SessionTimeoutError,
+  StepVerificationError,
   UnknownScraperError,
 } from "@/scraper/errors";
 import { classifyScraperError, withScraperRetry } from "@/scraper/retry";
@@ -92,6 +93,20 @@ describe("scraper/retry", () => {
       expect(counter.n).toBe(1);
     });
 
+    it("aborts immediately on StepVerificationError without retrying", async () => {
+      const counter = { n: 0 };
+      await expect(
+        withScraperRetry(
+          async () => {
+            counter.n += 1;
+            throw new StepVerificationError();
+          },
+          { maxAttempts: 3 }
+        )
+      ).rejects.toThrow(/verification/);
+      expect(counter.n).toBe(1);
+    });
+
     it("retries SelectorFailureError up to maxAttempts", async () => {
       const counter = { n: 0 };
       await expect(
@@ -106,7 +121,7 @@ describe("scraper/retry", () => {
       expect(counter.n).toBe(3);
     });
 
-    it("invokes onSessionRestart once for SessionTimeoutError", async () => {
+    it("invokes onSessionRestart for every SessionTimeoutError attempt", async () => {
       const restarted = { n: 0 };
       const counter = { n: 0 };
       await expect(
@@ -123,7 +138,7 @@ describe("scraper/retry", () => {
           }
         )
       ).rejects.toThrow();
-      expect(restarted.n).toBe(1);
+      expect(restarted.n).toBe(3);
       expect(counter.n).toBe(3);
     });
 
@@ -164,7 +179,7 @@ describe("scraper/retry", () => {
       expect(calls.map((c) => c.attempt)).toEqual([1, 2]);
     });
 
-    it("onSessionRestart fires at most once even across multiple timeouts", async () => {
+    it("onSessionRestart fires once per timeout across multiple attempts", async () => {
       const restarted = { n: 0 };
       await expect(
         withScraperRetry(
@@ -179,7 +194,7 @@ describe("scraper/retry", () => {
           }
         )
       ).rejects.toThrow();
-      expect(restarted.n).toBe(1);
+      expect(restarted.n).toBe(3);
     });
 
     it("wraps non-ScraperError throws as UnknownScraperError before retrying", async () => {

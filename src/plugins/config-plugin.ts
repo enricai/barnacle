@@ -36,6 +36,7 @@ const jsonSchemaFragment = z.record(z.string(), z.unknown());
 
 const flowSchema = z.object({
   steps: z.array(RECON_FLOW_STEP_SCHEMA).min(1),
+  frameSelector: z.string().min(1).optional(),
   submitEndpointPattern: z.string().nullish(),
   submittedStateSelectors: z.array(z.string()).optional(),
   requireSubmitEndpointMatch: z.boolean().optional(),
@@ -66,6 +67,7 @@ export const CONFIG_PLUGIN_MANIFEST = z.object({
     advancedStealth: z.boolean().optional(),
     browserbaseSessionCreateParams: z.record(z.string(), z.unknown()).optional(),
     taskTimeoutMs: z.number().optional(),
+    maxAttempts: z.number().optional(),
     request: jsonSchemaFragment,
     response: jsonSchemaFragment,
     flow: flowSchema,
@@ -210,6 +212,7 @@ export async function buildConfigPlugin(
       ...(spec.routeOverride !== undefined && { routeOverride: spec.routeOverride }),
       ...(spec.defaultBaseUrl !== undefined && { defaultBaseUrl: spec.defaultBaseUrl }),
       ...(spec.taskTimeoutMs !== undefined && { taskTimeoutMs: spec.taskTimeoutMs }),
+      ...(spec.maxAttempts !== undefined && { maxAttempts: spec.maxAttempts }),
       ...(spec.multipart !== undefined && { multipart: spec.multipart }),
       ...(spec.advancedStealth !== undefined && { advancedStealth: spec.advancedStealth }),
       ...(spec.browserbaseSessionCreateParams !== undefined && {
@@ -238,6 +241,7 @@ export async function buildConfigPlugin(
         logger,
         anthropic,
         resumeFixture: buildResumeFixture(payload, hasUploadStep, spec.multipart ?? false),
+        frameSelector: spec.flow.frameSelector,
         submitEndpointPattern: spec.flow.submitEndpointPattern ?? null,
         submittedStateSelectors: spec.flow.submittedStateSelectors ?? [],
         requireSubmitEndpointMatch: spec.flow.requireSubmitEndpointMatch ?? false,

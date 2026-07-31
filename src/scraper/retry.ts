@@ -8,6 +8,7 @@ import {
   ScraperError,
   SelectorFailureError,
   SessionTimeoutError,
+  StepVerificationError,
   UnknownScraperError,
 } from "@/scraper/errors";
 
@@ -31,8 +32,8 @@ export interface RetryOptions {
  * Wraps a scraper task with p-retry and a classification policy aligned
  * with our ScraperError hierarchy:
  *
- * - CaptchaError + EmptyResultsError → AbortError, no retry.
- * - SessionTimeoutError → invoke onSessionRestart once (guarded by sessionRestartEntry.done), then retry up to maxAttempts.
+ * - CaptchaError + EmptyResultsError + StepVerificationError → AbortError, no retry.
+ * - SessionTimeoutError → invoke onSessionRestart before every retry, then retry up to maxAttempts.
  * - SelectorFailureError + UnknownScraperError → retry up to maxAttempts.
  * - Anything non-ScraperError → wrap in UnknownScraperError and retry.
  *
@@ -44,7 +45,6 @@ export async function withScraperRetry<T>(
   options: RetryOptions = {}
 ): Promise<T> {
   const maxAttempts = options.maxAttempts ?? 3;
-  const sessionRestartEntry: { done: boolean } = { done: false };
 
   return pRetry(
     async () => {
@@ -64,12 +64,15 @@ export async function withScraperRetry<T>(
           logger.warn(`scraper returned empty results — aborting retry: ${err.message}`);
           throw new AbortError(err.message);
         }
+        if (err instanceof StepVerificationError) {
+          logger.warn(
+            `step verification failed deterministically — aborting retry: ${err.message}`
+          );
+          throw new AbortError(err.message);
+        }
 
-        if (err instanceof SessionTimeoutError && !sessionRestartEntry.done) {
-          sessionRestartEntry.done = true;
-          if (options.onSessionRestart) {
-            await options.onSessionRestart();
-          }
+        if (err instanceof SessionTimeoutError && options.onSessionRestart) {
+          await options.onSessionRestart();
         }
 
         throw err;

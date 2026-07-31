@@ -21,6 +21,7 @@ import type { ActResult, Page, Stagehand } from "@browserbasehq/stagehand";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { StepVerificationErrorKind } from "@/scraper/errors";
+import type { FrameTarget } from "@/scraper/frame-target";
 
 vi.mock("@/config", () => ({
   config: {
@@ -71,9 +72,24 @@ vi.mock("@/lib/telemetry/call-capture", async (importOriginal) => {
   };
 });
 
+// executeStepWithHealing spy for the main()/frameSelector wiring tests below —
+// every other export stays real so the rest of this file's tests (which call
+// exported flow-runner helpers directly) are unaffected.
+const { executeStepWithHealingStub } = vi.hoisted(() => ({
+  executeStepWithHealingStub: vi.fn(),
+}));
+vi.mock("@/scraper/flow-runner", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/scraper/flow-runner")>();
+  return {
+    ...actual,
+    executeStepWithHealing: executeStepWithHealingStub,
+  };
+});
+
 import type { LlmCallInput } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE, CALL_TYPE_RECON_REPLAN } from "@/lib/telemetry/call-types";
 import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
+import { createBrowserSession } from "@/scraper/session";
 import {
   buildRadioIdXPath,
   capturesAfterIndex,
@@ -106,11 +122,13 @@ import {
   type LeafInvalidField,
   latestCaptureIndex,
   logBillingErrorIfPresent,
+  main,
   type NormalizedStep,
   narrowInvalidFormControl,
   normalizeDateValue,
   pairInvalidWithErrors,
   parseCaptureIndex,
+  parseCli,
   parseRadioStep,
   parseSelectStep,
   persistReplannedFlow,
@@ -118,6 +136,7 @@ import {
   probeLeafInvalidContainers,
   probeStepBeforeAttempts,
   type RadioGroupCandidate,
+  RECON_FLOW_FILE_SCHEMA,
   type ReplanEvent,
   readFailureDumpEvidence,
   renderLeafInvalidFields,
@@ -868,6 +887,100 @@ describe("recon-browser/readFailureDumpEvidence", () => {
     const result = await readFailureDumpEvidence(dumpPath);
     expect(result.recentFailureReasons).toEqual(["real failure A", "real failure B"]);
   });
+
+  /**
+   * Builds a `Page` double whose top document exposes an `<iframe>` matching
+   * `frameSelector` and whose `frames()` includes a same-origin candidate —
+   * enough for `resolveFrameTarget` to resolve a real child `FrameTarget`
+   * without touching Playwright/Stagehand. The child frame's `evaluate`
+   * returns `childLeafFieldsPayload` (the leaf-invalid-container probe
+   * result); the top document's `evaluate` returns `[]` so a probe that
+   * queries the main document instead of the iframe observes no fields.
+   */
+  function makeIframePageStub(iframeSelector: string, childLeafFieldsPayload: unknown[]): Page {
+    const iframeSrc = "https://apply.talemetry.com/application/abc-123";
+    const childFrame = {
+      evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+        if (typeof expr === "string" && expr.includes("location.href")) return iframeSrc;
+        return childLeafFieldsPayload;
+      }),
+    };
+    return {
+      evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+        if (typeof expr === "string" && expr.includes(JSON.stringify(iframeSelector))) {
+          return { matched: true, src: iframeSrc };
+        }
+        return [];
+      }),
+      frames: vi.fn().mockReturnValue([childFrame]),
+      title: vi.fn().mockResolvedValue(""),
+      url: vi.fn().mockReturnValue("https://careers.uchealth.org/job/1"),
+    } as unknown as Page;
+  }
+
+  it("probes the child iframe (not the top document) when frameSelector resolves", async () => {
+    const iframeSelector = "#talemetry_apply_iframe";
+    const leafField = {
+      xpath: "/html[1]/body[1]/form[1]/input[1]",
+      label: "First Name",
+      framework: "angular" as const,
+      markerClass: "ng-invalid ng-touched",
+      visibleErrorText: "This field is required.",
+      inputTag: "input",
+    };
+    writeFileSync(dumpPath, JSON.stringify({ bodyOuterHtml: "<html></html>", attempts: [] }));
+
+    const page = makeIframePageStub(iframeSelector, [leafField]);
+    const result = await readFailureDumpEvidence(dumpPath, { page, frameSelector: iframeSelector });
+
+    expect(result.invalidFieldList).toContain("First Name");
+    expect(result.invalidFieldList).toContain("This field is required.");
+  });
+
+  it("finds nothing when frameSelector is omitted even though the iframe has the invalid field", async () => {
+    const iframeSelector = "#talemetry_apply_iframe";
+    const leafField = {
+      xpath: "/html[1]/body[1]/form[1]/input[1]",
+      label: "First Name",
+      framework: "angular" as const,
+      markerClass: "ng-invalid ng-touched",
+      visibleErrorText: "This field is required.",
+      inputTag: "input",
+    };
+    writeFileSync(dumpPath, JSON.stringify({ bodyOuterHtml: "<html></html>", attempts: [] }));
+
+    const page = makeIframePageStub(iframeSelector, [leafField]);
+    // No frameSelector passed — resolveFrameTarget(page) falls back to the
+    // main-frame target, whose evaluate() returns [] in this stub, mirroring
+    // the pre-fix call site that always queried the top document.
+    const result = await readFailureDumpEvidence(dumpPath, { page });
+
+    expect(result.invalidFieldList).toBe("");
+  });
+
+  it("still resolves to the main-frame target when frameSelector is null", async () => {
+    writeFileSync(dumpPath, JSON.stringify({ bodyOuterHtml: "<html></html>", attempts: [] }));
+    const mainFieldsPayload = [
+      {
+        xpath: "/html[1]/body[1]/form[1]/input[1]",
+        label: "Email",
+        framework: "aria" as const,
+        markerClass: "aria-invalid",
+        visibleErrorText: null,
+        inputTag: "input",
+      },
+    ];
+    const page = {
+      evaluate: vi.fn().mockResolvedValue(mainFieldsPayload),
+      frames: vi.fn().mockReturnValue([]),
+      title: vi.fn().mockResolvedValue(""),
+      url: vi.fn().mockReturnValue("https://example.com/apply"),
+    } as unknown as Page;
+
+    const result = await readFailureDumpEvidence(dumpPath, { page, frameSelector: null });
+
+    expect(result.invalidFieldList).toContain("Email");
+  });
 });
 
 describe("recon-browser/narrowInvalidFormControl", () => {
@@ -1438,16 +1551,18 @@ describe("recon-browser/renderStepWindow", () => {
 });
 
 describe("recon-browser/probeLeafInvalidContainers", () => {
-  function fakePage(
-    payload: unknown,
-    opts?: { throw?: Error }
-  ): import("@browserbasehq/stagehand").Page {
+  function fakePage(payload: unknown, opts?: { throw?: Error }): FrameTarget {
     return {
+      frame: null,
+      frameSelector: null,
       evaluate: vi.fn().mockImplementation(async () => {
         if (opts?.throw) throw opts.throw;
         return payload;
       }),
-    } as unknown as import("@browserbasehq/stagehand").Page;
+      locator: vi.fn(),
+      url: vi.fn(),
+      title: vi.fn(),
+    } as unknown as FrameTarget;
   }
 
   it("returns empty when page.evaluate throws", async () => {
@@ -1579,16 +1694,18 @@ describe("recon-browser/renderLeafInvalidFields", () => {
 });
 
 describe("recon-browser/fillHtml5DateTimeInput", () => {
-  function fakePage(
-    payload: unknown,
-    opts?: { throw?: Error }
-  ): import("@browserbasehq/stagehand").Page {
+  function fakePage(payload: unknown, opts?: { throw?: Error }): FrameTarget {
     return {
+      frame: null,
+      frameSelector: null,
       evaluate: vi.fn().mockImplementation(async () => {
         if (opts?.throw) throw opts.throw;
         return payload;
       }),
-    } as unknown as import("@browserbasehq/stagehand").Page;
+      locator: vi.fn(),
+      url: vi.fn(),
+      title: vi.fn(),
+    } as unknown as FrameTarget;
   }
 
   it("returns null when page.evaluate returns null (xpath did not resolve)", async () => {
@@ -2924,32 +3041,39 @@ describe("recon-browser/verifyFillReadback (shape contract)", () => {
   // page.evaluate executing the closure — out of scope for unit tests
   // (would need playwright-test or similar). These tests validate the
   // type contract and that the helper does not throw on edge inputs.
+  function fakeTarget(evaluate: () => Promise<unknown>): FrameTarget {
+    return {
+      frame: null,
+      frameSelector: null,
+      evaluate,
+      locator: vi.fn(),
+      url: vi.fn(),
+      title: vi.fn(),
+    } as unknown as FrameTarget;
+  }
+
   it("returns null when page.evaluate throws", async () => {
-    const fakePage = {
-      evaluate: async () => {
-        throw new Error("page detached");
-      },
-    } as unknown as import("@browserbasehq/stagehand").Page;
+    const fakePage = fakeTarget(async () => {
+      throw new Error("page detached");
+    });
     const result = await verifyFillReadback(fakePage, "//input[@id='x']", "abc");
     expect(result).toBeNull();
   });
 
   it("returns null when page.evaluate returns non-object", async () => {
-    const fakePage = {
-      evaluate: async () => null,
-    } as unknown as import("@browserbasehq/stagehand").Page;
+    const fakePage = fakeTarget(async () => null);
     const result = await verifyFillReadback(fakePage, "//input[@id='x']", "abc");
     expect(result).toBeNull();
   });
 
   it("returns parsed result when page.evaluate returns a valid shape", async () => {
-    const fakePage = {
-      evaluate: async (): Promise<VerifyFillReadbackResult> => ({
+    const fakePage = fakeTarget(
+      async (): Promise<VerifyFillReadbackResult> => ({
         outcome: "matched",
         postValue: "abc",
         tag: "input",
-      }),
-    } as unknown as import("@browserbasehq/stagehand").Page;
+      })
+    );
     const result = await verifyFillReadback(fakePage, "//input[@id='x']", "abc");
     expect(result).not.toBeNull();
     expect(result?.outcome).toBe("matched");
@@ -2958,21 +3082,23 @@ describe("recon-browser/verifyFillReadback (shape contract)", () => {
   });
 
   it("returns null when outcome field is invalid (silent guard)", async () => {
-    const fakePage = {
-      evaluate: async () => ({ outcome: "invalid-outcome", postValue: "", tag: "input" }),
-    } as unknown as import("@browserbasehq/stagehand").Page;
+    const fakePage = fakeTarget(async () => ({
+      outcome: "invalid-outcome",
+      postValue: "",
+      tag: "input",
+    }));
     const result = await verifyFillReadback(fakePage, "//input[@id='x']", "abc");
     expect(result).toBeNull();
   });
 
   it("preserves rejected outcome (value silently rejected by element)", async () => {
-    const fakePage = {
-      evaluate: async (): Promise<VerifyFillReadbackResult> => ({
+    const fakePage = fakeTarget(
+      async (): Promise<VerifyFillReadbackResult> => ({
         outcome: "rejected",
         postValue: "",
         tag: "input",
-      }),
-    } as unknown as import("@browserbasehq/stagehand").Page;
+      })
+    );
     const result = await verifyFillReadback(fakePage, "//input[@type='date']", "06-14-2026");
     expect(result?.outcome).toBe("rejected");
     expect(result?.postValue).toBe("");
@@ -3177,6 +3303,11 @@ describe("recon-browser/probeStepBeforeAttempts", () => {
     };
   }
 
+  // Never dereferenced by these fixtures: the unfocused observe always
+  // returns non-empty candidates before the deep-locator fallback would
+  // need `page`, or there is no frameTarget for the fallback to key on.
+  const fakeProbePage = {} as unknown as Page;
+
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -3185,6 +3316,7 @@ describe("recon-browser/probeStepBeforeAttempts", () => {
     const stagehand = makeProbeStagehand([], nonEmpty);
     const result = await probeStepBeforeAttempts({
       stagehand: stagehand as never,
+      page: fakeProbePage,
       step: "Fill in the First Name field with 'Reginald'",
       stepIndex: 5,
       logger: testLogger,
@@ -3200,6 +3332,7 @@ describe("recon-browser/probeStepBeforeAttempts", () => {
     const stagehand = makeProbeStagehand([], []);
     const result = await probeStepBeforeAttempts({
       stagehand: stagehand as never,
+      page: fakeProbePage,
       step: "Fill in the First Name field with 'Reginald'",
       stepIndex: 5,
       logger: testLogger,
@@ -3212,6 +3345,7 @@ describe("recon-browser/probeStepBeforeAttempts", () => {
     const stagehand = makeProbeStagehand(nonEmpty, nonEmpty);
     const result = await probeStepBeforeAttempts({
       stagehand: stagehand as never,
+      page: fakeProbePage,
       step: "Click the Apply button",
       stepIndex: 2,
       logger: testLogger,
@@ -3219,6 +3353,33 @@ describe("recon-browser/probeStepBeforeAttempts", () => {
     expect(result).toBe("present");
     // Happy path: only the focused probe runs; no wasted unfocused observe.
     expect(stagehand.observe).toHaveBeenCalledTimes(1);
+  });
+
+  it("scopes both the focused and unfocused observe to a resolved child frame", async () => {
+    const stagehand = makeProbeStagehand([], nonEmpty);
+    const frameTarget: FrameTarget = {
+      frame: {} as FrameTarget["frame"],
+      frameSelector: "iframe#talemetry_apply_iframe",
+      evaluate: vi.fn() as FrameTarget["evaluate"],
+      locator: vi.fn() as FrameTarget["locator"],
+      url: () => Promise.resolve("https://apply.talemetry.com/application/abc-123"),
+      title: () => Promise.resolve("main document title"),
+    };
+    await probeStepBeforeAttempts({
+      stagehand: stagehand as never,
+      page: fakeProbePage,
+      step: "Fill in the First Name field with 'Reginald'",
+      stepIndex: 5,
+      logger: testLogger,
+      frameTarget,
+    });
+    // Both the focused (instruction, options) and unfocused (options-only)
+    // observe calls carry the hop-notation selector scoping the call to the
+    // resolved child frame.
+    const focusedCall = stagehand.observe.mock.calls[0] as [string, { selector?: string }];
+    const unfocusedCall = stagehand.observe.mock.calls[1] as [{ selector?: string }];
+    expect(focusedCall[1].selector).toBe("iframe#talemetry_apply_iframe >> *");
+    expect(unfocusedCall[0].selector).toBe("iframe#talemetry_apply_iframe >> *");
   });
 });
 
@@ -4042,12 +4203,25 @@ describe("recon-browser/selectBodyExcerpt — MUI marker (RC1)", () => {
 });
 
 describe("recon-browser/pollEnumerate — settle-retry", () => {
+  function fakeTarget(evaluate: ReturnType<typeof vi.fn>): FrameTarget {
+    return {
+      frame: null,
+      frameSelector: null,
+      evaluate,
+      locator: vi.fn(),
+      url: vi.fn(),
+      title: vi.fn(),
+    } as unknown as FrameTarget;
+  }
+
   it("returns immediately when the widget is present on the first evaluate", async () => {
     const evaluate = vi.fn().mockResolvedValue({ present: true, n: 1 });
     const waitForTimeout = vi.fn().mockResolvedValue(undefined);
-    const page = { evaluate, waitForTimeout } as unknown as Parameters<typeof pollEnumerate>[0];
+    const page = { waitForTimeout } as unknown as Parameters<typeof pollEnumerate>[0];
+    const target = fakeTarget(evaluate);
     const result = await pollEnumerate<{ present: boolean; n: number }>(
       page,
+      target,
       "expr",
       (r) => r.present
     );
@@ -4064,9 +4238,11 @@ describe("recon-browser/pollEnumerate — settle-retry", () => {
       .mockResolvedValueOnce({ present: false })
       .mockResolvedValueOnce({ present: true, n: 3 });
     const waitForTimeout = vi.fn().mockResolvedValue(undefined);
-    const page = { evaluate, waitForTimeout } as unknown as Parameters<typeof pollEnumerate>[0];
+    const page = { waitForTimeout } as unknown as Parameters<typeof pollEnumerate>[0];
+    const target = fakeTarget(evaluate);
     const result = await pollEnumerate<{ present: boolean; n?: number }>(
       page,
+      target,
       "expr",
       (r) => r.present
     );
@@ -4078,8 +4254,14 @@ describe("recon-browser/pollEnumerate — settle-retry", () => {
   it("gives up after the attempt cap and returns the last absent result", async () => {
     const evaluate = vi.fn().mockResolvedValue({ present: false });
     const waitForTimeout = vi.fn().mockResolvedValue(undefined);
-    const page = { evaluate, waitForTimeout } as unknown as Parameters<typeof pollEnumerate>[0];
-    const result = await pollEnumerate<{ present: boolean }>(page, "expr", (r) => r.present);
+    const page = { waitForTimeout } as unknown as Parameters<typeof pollEnumerate>[0];
+    const target = fakeTarget(evaluate);
+    const result = await pollEnumerate<{ present: boolean }>(
+      page,
+      target,
+      "expr",
+      (r) => r.present
+    );
     expect(result).toEqual({ present: false });
     // Capped at PRIMITIVE_ENUMERATE_ATTEMPTS (5) evaluates, 4 waits between them.
     expect(evaluate).toHaveBeenCalledTimes(5);
@@ -4089,11 +4271,18 @@ describe("recon-browser/pollEnumerate — settle-retry", () => {
   it("honors an opts.attempts override (longer window for slow widgets)", async () => {
     const evaluate = vi.fn().mockResolvedValue({ present: false });
     const waitForTimeout = vi.fn().mockResolvedValue(undefined);
-    const page = { evaluate, waitForTimeout } as unknown as Parameters<typeof pollEnumerate>[0];
-    const result = await pollEnumerate<{ present: boolean }>(page, "expr", (r) => r.present, {
-      attempts: 3,
-      intervalMs: 10,
-    });
+    const page = { waitForTimeout } as unknown as Parameters<typeof pollEnumerate>[0];
+    const target = fakeTarget(evaluate);
+    const result = await pollEnumerate<{ present: boolean }>(
+      page,
+      target,
+      "expr",
+      (r) => r.present,
+      {
+        attempts: 3,
+        intervalMs: 10,
+      }
+    );
     expect(result).toEqual({ present: false });
     // The override drives the loop, not the default 5.
     expect(evaluate).toHaveBeenCalledTimes(3);
@@ -4106,8 +4295,11 @@ describe("recon-browser/pollEnumerate — settle-retry", () => {
       .mockResolvedValueOnce({ present: false })
       .mockResolvedValueOnce({ present: true });
     const waitForTimeout = vi.fn().mockResolvedValue(undefined);
-    const page = { evaluate, waitForTimeout } as unknown as Parameters<typeof pollEnumerate>[0];
-    await pollEnumerate<{ present: boolean }>(page, "expr", (r) => r.present, { intervalMs: 42 });
+    const page = { waitForTimeout } as unknown as Parameters<typeof pollEnumerate>[0];
+    const target = fakeTarget(evaluate);
+    await pollEnumerate<{ present: boolean }>(page, target, "expr", (r) => r.present, {
+      intervalMs: 42,
+    });
     expect(waitForTimeout).toHaveBeenCalledWith(42);
   });
 });
@@ -4588,5 +4780,317 @@ describe("recon-browser/runHealingFlow — phantom-submit escalation, end-to-end
     // attempt was made, so the caller can never mistake this for a real
     // (even if unverified) submit click.
     expect(stagehandAct).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("recon-browser/RECON_FLOW_FILE_SCHEMA — frameSelector", () => {
+  it("accepts an object-shape flow file with a frameSelector and carries it through unchanged", () => {
+    const result = RECON_FLOW_FILE_SCHEMA.safeParse({
+      steps: ["Click Manual Application"],
+      frameSelector: "#talemetry_apply_iframe",
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(Array.isArray(result.data)).toBe(false);
+    if (Array.isArray(result.data)) return;
+    expect(result.data.frameSelector).toBe("#talemetry_apply_iframe");
+  });
+
+  it("defaults frameSelector to undefined (top-frame) when the object-shape file omits it", () => {
+    const result = RECON_FLOW_FILE_SCHEMA.safeParse({
+      steps: ["Click Apply"],
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(Array.isArray(result.data)).toBe(false);
+    if (Array.isArray(result.data)) return;
+    expect(result.data.frameSelector).toBeUndefined();
+  });
+
+  it("rejects a non-string frameSelector with a validation error", () => {
+    const result = RECON_FLOW_FILE_SCHEMA.safeParse({
+      steps: ["Click Apply"],
+      frameSelector: 42,
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects an empty-string frameSelector with a validation error", () => {
+    const result = RECON_FLOW_FILE_SCHEMA.safeParse({
+      steps: ["Click Apply"],
+      frameSelector: "",
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("still parses the legacy bare-array flow shape unchanged", () => {
+    const result = RECON_FLOW_FILE_SCHEMA.safeParse(["Click Apply", "Fill First Name"]);
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data).toEqual(["Click Apply", "Fill First Name"]);
+  });
+
+  it("still parses an existing frame-less object-shape flow file with its other fields intact", () => {
+    const result = RECON_FLOW_FILE_SCHEMA.safeParse({
+      steps: ["Click Apply"],
+      submitEndpointPattern: "^https://example\\.com/api/submit$",
+      submittedStateSelectors: [".thank-you"],
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(Array.isArray(result.data)).toBe(false);
+    if (Array.isArray(result.data)) return;
+    expect(result.data.frameSelector).toBeUndefined();
+    expect(result.data.submitEndpointPattern).toBe("^https://example\\.com/api/submit$");
+    expect(result.data.submittedStateSelectors).toEqual([".thank-you"]);
+  });
+});
+
+describe("recon-browser/parseCli — frameSelector", () => {
+  const ORIGINAL_ARGV = process.argv;
+
+  afterEach(() => {
+    process.argv = ORIGINAL_ARGV;
+  });
+
+  it("forwards frameSelector from an object-shape --flow arg", () => {
+    process.argv = [
+      "node",
+      "recon-browser.ts",
+      "--url",
+      "https://example.com",
+      "--flow",
+      JSON.stringify({
+        steps: ["Click Manual Application"],
+        frameSelector: "#talemetry_apply_iframe",
+      }),
+    ];
+
+    expect(parseCli().frameSelector).toBe("#talemetry_apply_iframe");
+  });
+
+  it("resolves frameSelector to null for a legacy bare-array --flow arg", () => {
+    process.argv = [
+      "node",
+      "recon-browser.ts",
+      "--url",
+      "https://example.com",
+      "--flow",
+      JSON.stringify(["Click Apply", "Fill First Name"]),
+    ];
+
+    expect(parseCli().frameSelector).toBeNull();
+  });
+
+  it("resolves frameSelector to null when the object-shape flow omits it", () => {
+    process.argv = [
+      "node",
+      "recon-browser.ts",
+      "--url",
+      "https://example.com",
+      "--flow",
+      JSON.stringify({ steps: ["Click Apply"] }),
+    ];
+
+    expect(parseCli().frameSelector).toBeNull();
+  });
+});
+
+describe("recon-browser/main — frameSelector reaches the cascade call", () => {
+  /**
+   * Minimal Page/Stagehand double: enough surface for main()'s pre-loop
+   * navigation/SPA-readiness gate, wireSignalCapture's CDP wiring, cookie-jar
+   * snapshots, and (when `iframeSrc` is set) resolveFrameTarget's iframe-src
+   * lookup + page.frames() scan.
+   */
+  function makeFakePage(opts: { iframeSrc?: string; frameUrl?: string } = {}): {
+    page: Page;
+    stagehand: Stagehand;
+  } {
+    const session = {
+      on: (): void => {},
+      off: (): void => {},
+    };
+    const childFrame = {
+      evaluate: vi.fn().mockResolvedValue(opts.frameUrl ?? ""),
+    };
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      url: (): string => "https://example.com/apply",
+      title: vi.fn().mockResolvedValue("Apply"),
+      evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+        if (typeof expr === "string" && expr.includes("document.body")) {
+          return 10_000;
+        }
+        if (typeof expr === "string" && expr.includes("querySelector")) {
+          return opts.iframeSrc
+            ? { matched: true, src: opts.iframeSrc }
+            : { matched: false, src: null };
+        }
+        return null;
+      }),
+      frames: vi.fn().mockReturnValue(opts.frameUrl ? [childFrame] : []),
+      getSessionForFrame: () => session,
+      mainFrameId: () => "main",
+      sendCDP: vi.fn().mockResolvedValue({ cookies: [] }),
+    } as unknown as Page;
+    const stagehand = {
+      context: { awaitActivePage: async (): Promise<Page> => page },
+    } as unknown as Stagehand;
+    return { page, stagehand };
+  }
+
+  const ORIGINAL_ARGV = process.argv;
+  let runsRoot: string;
+
+  beforeEach(() => {
+    runsRoot = mkdtempSync(join(tmpdir(), "recon-browser-main-"));
+    process.env.RECON_RUN_ID = "20260725-000000-main1";
+    process.env.RECON_OUT_DIR = runsRoot;
+    executeStepWithHealingStub.mockReset();
+    executeStepWithHealingStub.mockResolvedValue("ok");
+    vi.mocked(createBrowserSession).mockReset();
+  });
+
+  afterEach(() => {
+    process.argv = ORIGINAL_ARGV;
+    rmSync(runsRoot, { recursive: true, force: true });
+    delete process.env.RECON_RUN_ID;
+    delete process.env.RECON_OUT_DIR;
+    vi.restoreAllMocks();
+    executeStepWithHealingStub.mockReset();
+  });
+
+  it("resolves a declared frameSelector to a child FrameTarget and passes it to executeStepWithHealing", async () => {
+    const { stagehand } = makeFakePage({
+      iframeSrc: "https://apply.talemetry.com/application/abc-123",
+      frameUrl: "https://apply.talemetry.com/application/abc-123",
+    });
+    vi.mocked(createBrowserSession).mockResolvedValue({
+      stagehand,
+      limiter: {} as never,
+      sessionId: "test-session",
+      provider: "browserbase",
+      close: vi.fn().mockResolvedValue(undefined),
+    } as never);
+
+    process.argv = [
+      "node",
+      "recon-browser.ts",
+      "--url",
+      "https://example.com/apply",
+      "--flow",
+      JSON.stringify({
+        steps: ["Click Manual Application"],
+        frameSelector: "#talemetry_apply_iframe",
+      }),
+    ];
+
+    await main();
+
+    expect(executeStepWithHealingStub).toHaveBeenCalledTimes(1);
+    const callArgs = executeStepWithHealingStub.mock.calls[0]?.[0] as { frameTarget?: FrameTarget };
+    expect(callArgs.frameTarget?.frameSelector).toBe("#talemetry_apply_iframe");
+    expect(callArgs.frameTarget?.frame).not.toBeNull();
+  });
+
+  it("passes a main-frame FrameTarget (frame: null) for a legacy bare-array flow with no frameSelector", async () => {
+    const { stagehand } = makeFakePage();
+    vi.mocked(createBrowserSession).mockResolvedValue({
+      stagehand,
+      limiter: {} as never,
+      sessionId: "test-session",
+      provider: "browserbase",
+      close: vi.fn().mockResolvedValue(undefined),
+    } as never);
+
+    process.argv = [
+      "node",
+      "recon-browser.ts",
+      "--url",
+      "https://example.com/apply",
+      "--flow",
+      JSON.stringify(["Click Apply"]),
+    ];
+
+    await main();
+
+    expect(executeStepWithHealingStub).toHaveBeenCalledTimes(1);
+    const callArgs = executeStepWithHealingStub.mock.calls[0]?.[0] as { frameTarget?: FrameTarget };
+    expect(callArgs.frameTarget?.frame).toBeNull();
+    expect(callArgs.frameTarget?.frameSelector).toBeNull();
+  });
+
+  it("awaits child-frame readiness before invoking executeStepWithHealing when the resolved frame starts on about:blank", async () => {
+    const readyStates = ["loading", "complete"];
+    let lastReadyState = "loading";
+    const childFrameEvaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      if (typeof expr === "string" && expr.includes("readyState")) {
+        lastReadyState = readyStates.length > 0 ? readyStates.shift()! : lastReadyState;
+        return lastReadyState;
+      }
+      return "https://apply.talemetry.com/application/abc-123";
+    });
+    const session = {
+      on: (): void => {},
+      off: (): void => {},
+    };
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      url: (): string => "https://example.com/apply",
+      title: vi.fn().mockResolvedValue("Apply"),
+      evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+        if (typeof expr === "string" && expr.includes("document.body")) {
+          return 10_000;
+        }
+        if (typeof expr === "string" && expr.includes("querySelector")) {
+          return { matched: true, src: "https://apply.talemetry.com/application/abc-123" };
+        }
+        return null;
+      }),
+      frames: vi.fn().mockReturnValue([{ evaluate: childFrameEvaluate }]),
+      getSessionForFrame: () => session,
+      mainFrameId: () => "main",
+      sendCDP: vi.fn().mockResolvedValue({ cookies: [] }),
+    } as unknown as Page;
+    const stagehand = {
+      context: { awaitActivePage: async (): Promise<Page> => page },
+    } as unknown as Stagehand;
+    vi.mocked(createBrowserSession).mockResolvedValue({
+      stagehand,
+      limiter: {} as never,
+      sessionId: "test-session",
+      provider: "browserbase",
+      close: vi.fn().mockResolvedValue(undefined),
+    } as never);
+
+    process.argv = [
+      "node",
+      "recon-browser.ts",
+      "--url",
+      "https://example.com/apply",
+      "--flow",
+      JSON.stringify({
+        steps: ["Click Manual Application"],
+        frameSelector: "#talemetry_apply_iframe",
+      }),
+    ];
+
+    await main();
+
+    expect(readyStates).toHaveLength(0);
+    expect(executeStepWithHealingStub).toHaveBeenCalledTimes(1);
+    const readyStateCalls = childFrameEvaluate.mock.calls.filter(
+      ([expr]) => typeof expr === "string" && expr.includes("readyState")
+    );
+    expect(readyStateCalls.length).toBeGreaterThanOrEqual(2);
+    const callArgs = executeStepWithHealingStub.mock.calls[0]?.[0] as { frameTarget?: FrameTarget };
+    expect(callArgs.frameTarget?.frame).not.toBeNull();
   });
 });
