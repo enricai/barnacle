@@ -1,7 +1,8 @@
 import type { Page } from "@browserbasehq/stagehand";
 import { describe, expect, it, vi } from "vitest";
 
-import { waitForSpaReady } from "@/scraper/flow-runner";
+import { waitForSpaReady, wireSignalCapture } from "@/scraper/flow-runner";
+import type { Capture } from "@/scripts/recon-shared";
 import type { Logger } from "@/types/logging";
 
 const testLogger = {
@@ -70,5 +71,105 @@ describe("flow-runner/waitForSpaReady", () => {
     } as unknown as Page;
     await waitForSpaReady(page, testLogger, { minBodyLength: 5000, timeoutMs: 10_000, pollMs: 10 });
     expect(waitForTimeout).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * Fake CDP session that records the handlers `wireSignalCapture` registers so a
+ * test can fire Network events in any order — the whole point, since
+ * `responseReceivedExtraInfo` races `responseReceived`. `sendCDP` returns an
+ * empty body so `onFinished` completes without a real browser.
+ */
+function fakeCapturePage(): {
+  page: Page;
+  emit: (event: string, params: unknown) => void | Promise<void>;
+} {
+  const handlers = new Map<string, (params: unknown) => void | Promise<void>>();
+  const session = {
+    on: (event: string, handler: (params: unknown) => void | Promise<void>) => {
+      handlers.set(event, handler);
+    },
+    off: () => {},
+  };
+  const page = {
+    getSessionForFrame: () => session,
+    mainFrameId: () => "main",
+    sendCDP: vi.fn().mockResolvedValue({ body: "{}", base64Encoded: false }),
+  } as unknown as Page;
+  const emit = (event: string, params: unknown): void | Promise<void> =>
+    handlers.get(event)?.(params);
+  return { page, emit };
+}
+
+describe("flow-runner/wireSignalCapture — Set-Cookie from responseReceivedExtraInfo", () => {
+  const REQ = "req-1";
+  const REQ_URL = "https://api.example.com/authz/private";
+
+  /**
+   * Drives a single request through wireSignalCapture, firing the given Network
+   * events (requestWillBeSent and loadingFinished are added around them) and
+   * returning the resulting capture. `events` is emitted in order, so a test
+   * chooses whether extraInfo lands before or after responseReceived.
+   */
+  async function captureWith(events: Array<[string, unknown]>): Promise<Capture> {
+    const { page, emit } = fakeCapturePage();
+    const captured: Capture[] = [];
+    const teardown = wireSignalCapture(page, {
+      counter: { n: 0 },
+      signalCounter: { n: 0 },
+      recentCaptures: [],
+      recentCaptureMeta: [],
+      getCurrentPhase: () => "action",
+      getCurrentPageOrigin: () => "https://api.example.com",
+      onCapture: (capture) => captured.push(capture),
+    });
+    emit("Network.requestWillBeSent", {
+      requestId: REQ,
+      request: { url: REQ_URL, method: "POST", headers: {}, postData: "{}" },
+    });
+    for (const [event, params] of events) emit(event, params);
+    await emit("Network.loadingFinished", { requestId: REQ });
+    teardown();
+    const cap = captured[0];
+    if (!cap) throw new Error("no capture emitted");
+    return cap;
+  }
+
+  const responseReceived: [string, unknown] = [
+    "Network.responseReceived",
+    { requestId: REQ, response: { status: 200, headers: { "content-type": "application/json" } } },
+  ];
+  const cookieExtraInfo: [string, unknown] = [
+    "Network.responseReceivedExtraInfo",
+    { requestId: REQ, headers: { "set-cookie": "__pa=SECRET; Path=/" } },
+  ];
+
+  it("captures set-cookie when extraInfo arrives AFTER responseReceived", async () => {
+    const cap = await captureWith([responseReceived, cookieExtraInfo]);
+    expect(cap.responseHeaders["set-cookie"]).toBe("__pa=SECRET; Path=/");
+  });
+
+  it("captures set-cookie when extraInfo arrives BEFORE responseReceived (the race)", async () => {
+    const cap = await captureWith([cookieExtraInfo, responseReceived]);
+    expect(cap.responseHeaders["set-cookie"]).toBe("__pa=SECRET; Path=/");
+  });
+
+  it("merges multiple extraInfo events for one requestId (redirect case)", async () => {
+    const cap = await captureWith([
+      [
+        "Network.responseReceivedExtraInfo",
+        { requestId: REQ, headers: { "set-cookie": "first=A" } },
+      ],
+      responseReceived,
+      ["Network.responseReceivedExtraInfo", { requestId: REQ, headers: { "x-second": "B" } }],
+    ]);
+    expect(cap.responseHeaders["set-cookie"]).toBe("first=A");
+    expect(cap.responseHeaders["x-second"]).toBe("B");
+  });
+
+  it("preserves responseReceived headers when no extraInfo fires", async () => {
+    const cap = await captureWith([responseReceived]);
+    expect(cap.responseHeaders["content-type"]).toBe("application/json");
+    expect(cap.responseHeaders["set-cookie"]).toBeUndefined();
   });
 });

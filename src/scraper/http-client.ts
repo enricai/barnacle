@@ -41,6 +41,37 @@ export interface HttpResponseInfo {
 }
 
 /**
+ * Declares a single named value to capture from a response and echo back as
+ * a request header on later calls made by the same client instance. Models
+ * the disneycruise-style pattern where one call mints a bearer via
+ * `Set-Cookie` and a later stateful call 401s without it — extends the
+ * response-body state-threading the emitter already speaks (`produces`) to
+ * response headers, instead of a general cookie jar (see http-client.ts
+ * module docblock and CLAUDE.md "battle-tested libraries only": a real jar
+ * with domain/path/expiry matching belongs to a library like tough-cookie,
+ * not a hand-rolled one, and the sites this closes only need a single opaque
+ * value echoed back verbatim).
+ */
+export interface HttpResponseBinding {
+  /**
+   * Response header to read from. Use `"set-cookie"` (case-insensitive) to
+   * read from `Set-Cookie` specifically — multiple `Set-Cookie` entries are
+   * read via `Headers.getSetCookie()` so they aren't comma-joined the way
+   * `Headers.get()` joins ordinary repeated headers.
+   */
+  sourceHeader: string;
+  /**
+   * For `sourceHeader: "set-cookie"`, the cookie name to extract (e.g.
+   * `"__pa"`) — the binding reads that cookie's value out of whichever
+   * `Set-Cookie` entry defines it. Ignored for non-cookie source headers,
+   * whose raw value is bound as-is.
+   */
+  cookieName?: string;
+  /** Outbound request header to populate on subsequent calls, e.g. `"Cookie"`. */
+  targetHeader: string;
+}
+
+/**
  * Static configuration passed to `createHttpClient` once per plugin. Bundles
  * the Zod response schema, the Bottleneck rate limiter, and the load-bearing
  * headers discovered during recon so each per-call invocation only needs the
@@ -59,6 +90,17 @@ export interface HttpClientOptions<TResponse> {
    * or capture audit data without bypassing the core client.
    */
   onResponse?: (info: HttpResponseInfo) => void;
+  /**
+   * Named response-header/cookie values to capture on one call and forward as
+   * a request header on subsequent calls from the same client instance (e.g.
+   * a token-mint call's `Set-Cookie` echoed back on the next stateful call).
+   * Evaluated at the same point as `onResponse` — every fetch outcome,
+   * including non-2xx. A binding whose source is absent from a given
+   * response leaves any previously-bound value untouched; if nothing has
+   * ever been bound, the target header is simply omitted from later
+   * requests rather than sent empty.
+   */
+  bind?: HttpResponseBinding[];
 }
 
 /**
@@ -99,6 +141,40 @@ function parseJsonOrThrowRetryable(rawText: string, url: string): unknown {
 }
 
 /**
+ * Extracts one cookie's value from a set of raw `Set-Cookie` header strings.
+ * Reads via `Headers.getSetCookie()` (not `.get("set-cookie")`, which joins
+ * multiple entries with commas and would corrupt the individual cookie-pair
+ * boundaries) so multi-cookie responses resolve correctly.
+ */
+function extractCookieValue(setCookieHeaders: string[], cookieName: string): string | undefined {
+  for (const entry of setCookieHeaders) {
+    const pair = entry.split(";", 1)[0] ?? "";
+    const eq = pair.indexOf("=");
+    if (eq === -1) continue;
+    if (pair.slice(0, eq).trim() === cookieName) {
+      return pair.slice(eq + 1).trim();
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Resolves one {@link HttpResponseBinding} against a response's headers.
+ * Returns `undefined` on a miss (source header/cookie absent) so the caller
+ * can leave a previously-bound value untouched instead of overwriting it
+ * with an empty string — see `HttpClientOptions.bind` for why a miss must
+ * not fabricate a value.
+ */
+function resolveBinding(binding: HttpResponseBinding, headers: Headers): string | undefined {
+  if (binding.sourceHeader.toLowerCase() === "set-cookie") {
+    return binding.cookieName
+      ? extractCookieValue(headers.getSetCookie(), binding.cookieName)
+      : (headers.getSetCookie()[0] ?? undefined);
+  }
+  return headers.get(binding.sourceHeader) ?? undefined;
+}
+
+/**
  * Factory that creates a typed direct-HTTP request function pre-wired with
  * the plugin's Bottleneck limiter, p-retry for transient network failures,
  * and Zod response schema. This is the hot-path runtime: no browser, no LLM
@@ -122,14 +198,18 @@ function parseJsonOrThrowRetryable(rawText: string, url: string): unknown {
 export function createHttpClient<TResponse>(
   options: HttpClientOptions<TResponse>
 ): (url: string, init?: HttpRequestInit) => Promise<TResponse> {
-  const { schema, bottleneck, baseHeaders, onResponse } = options;
+  const { schema, bottleneck, baseHeaders, onResponse, bind = [] } = options;
+  // Values bound from prior responses (e.g. a minted auth cookie), keyed by
+  // targetHeader. Lives for the lifetime of this client instance so a later
+  // call can pick up what an earlier call captured — see HttpResponseBinding.
+  const boundHeaders: Record<string, string> = {};
 
   return async (url: string, init: HttpRequestInit = {}): Promise<TResponse> => {
     return bottleneck.schedule(() =>
       pRetry(
         async () => {
           const method = init.method ?? "GET";
-          const headers = { ...baseHeaders, ...(init.headers ?? {}) };
+          const headers = { ...baseHeaders, ...boundHeaders, ...(init.headers ?? {}) };
 
           let response: Response;
           try {
@@ -153,6 +233,17 @@ export function createHttpClient<TResponse>(
           }
 
           onResponse?.({ status: response.status, headers: response.headers, url });
+
+          for (const binding of bind) {
+            const value = resolveBinding(binding, response.headers);
+            // A miss leaves any previously-bound value in place rather than
+            // clearing it — and if nothing has ever been bound, the target
+            // header stays absent from `boundHeaders` entirely, so later
+            // requests never send it as an empty string.
+            if (value !== undefined) {
+              boundHeaders[binding.targetHeader] = value;
+            }
+          }
 
           if (response.status === 401 || response.status === 403) {
             // Bot challenge / auth wall — not a transient failure, abort retry.

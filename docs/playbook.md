@@ -447,14 +447,16 @@ Plugins should not write raw `fetch` / `undici` calls. The generated
 `contract.ts` wires up two factories — keep them when you edit:
 
 - `createHttpClient(opts)` (`src/scraper/http-client.ts`) — typed fetch
-  wrapper with cookie jar, header normalization, response Zod validation, and
-  retry-aware error classes (`HttpRateLimitError`, `HttpBotChallengeError`,
-  `HttpSchemaError`, `HttpServerError`) that the dispatcher knows how to
-  classify.
+  wrapper with header normalization, response-header/cookie binding (`opts.bind`
+  — echoes a named value from one call's response, e.g. `Set-Cookie`, back as
+  a request header on later calls from the same client instance), response
+  Zod validation, and retry-aware error classes (`HttpRateLimitError`,
+  `HttpBotChallengeError`, `HttpSchemaError`, `HttpServerError`) that the
+  dispatcher knows how to classify.
 - `createGraphqlClient(opts)` (`src/scraper/graphql-client.ts`) — same
   conventions for GraphQL endpoints.
 
-Instantiate each at module scope so cookie jars persist across invocations;
+Instantiate each at module scope so bound values persist across invocations;
 call the returned wrapper inside `executeHttp`. Tests should stub the
 **wrapper**, not the factory — see `docs/testing.md`.
 

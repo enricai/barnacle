@@ -11,7 +11,7 @@ import {
   OracleTokenExpiredError,
   UnknownScraperError,
 } from "@/scraper/errors";
-import type { HttpResponseInfo } from "@/scraper/http-client";
+import type { HttpResponseBinding, HttpResponseInfo } from "@/scraper/http-client";
 import { createHttpClient } from "@/scraper/http-client";
 
 const passThruLimiter = new Bottleneck({ maxConcurrent: 1, minTime: 0 });
@@ -343,5 +343,89 @@ describe("scraper/http-client onResponse hook", () => {
     expect(captured[0]?.url).toBe("https://example.com/api/item");
     expect(captured[0]?.headers.get("x-oracle-request-id")).toBe("lock-42");
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("scraper/http-client response-header binding", () => {
+  const AUTH_COOKIE_BINDING: HttpResponseBinding = {
+    sourceHeader: "set-cookie",
+    cookieName: "__pa",
+    targetHeader: "Cookie",
+  };
+
+  it("forwards a value bound from call 1's Set-Cookie as a request header on call 2", async () => {
+    const tokenResponseHeaders = new Headers();
+    tokenResponseHeaders.append("Set-Cookie", "__pa=abc.def.ghi; Path=/; HttpOnly");
+
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce({
+          status: 200,
+          ok: true,
+          text: vi.fn().mockResolvedValue(JSON.stringify({ id: "1", name: "Widget" })),
+          headers: tokenResponseHeaders,
+        })
+        .mockResolvedValueOnce({
+          status: 200,
+          ok: true,
+          text: vi.fn().mockResolvedValue(JSON.stringify({ id: "2", name: "Gadget" })),
+          headers: new Headers(),
+        })
+    );
+
+    const client = createHttpClient<Item>({
+      schema: ItemSchema,
+      bottleneck: passThruLimiter,
+      baseHeaders: BASE_HEADERS,
+      bind: [AUTH_COOKIE_BINDING],
+    });
+
+    await client("https://example.com/authz/private", { method: "POST" });
+    await client("https://example.com/available-products", { method: "POST" });
+
+    const secondCall = vi.mocked(fetch).mock.calls[1];
+    const secondCallHeaders = (secondCall?.[1] as RequestInit)?.headers as Record<string, string>;
+    expect(secondCallHeaders.Cookie).toBe("abc.def.ghi");
+
+    const firstCall = vi.mocked(fetch).mock.calls[0];
+    const firstCallHeaders = (firstCall?.[1] as RequestInit)?.headers as Record<string, string>;
+    expect(firstCallHeaders.Cookie).toBeUndefined();
+  });
+
+  it("does not fabricate an empty header when the bind source is absent from call 1's response", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce({
+          status: 200,
+          ok: true,
+          text: vi.fn().mockResolvedValue(JSON.stringify({ id: "1", name: "Widget" })),
+          headers: new Headers(),
+        })
+        .mockResolvedValueOnce({
+          status: 200,
+          ok: true,
+          text: vi.fn().mockResolvedValue(JSON.stringify({ id: "2", name: "Gadget" })),
+          headers: new Headers(),
+        })
+    );
+
+    const client = createHttpClient<Item>({
+      schema: ItemSchema,
+      bottleneck: passThruLimiter,
+      baseHeaders: BASE_HEADERS,
+      bind: [AUTH_COOKIE_BINDING],
+    });
+
+    await client("https://example.com/authz/private", { method: "POST" });
+    await client("https://example.com/available-products", { method: "POST" });
+
+    const secondCall = vi.mocked(fetch).mock.calls[1];
+    const secondCallHeaders = (secondCall?.[1] as RequestInit)?.headers as Record<string, string>;
+    expect(secondCallHeaders.Cookie).toBeUndefined();
+    expect("Cookie" in secondCallHeaders).toBe(false);
   });
 });

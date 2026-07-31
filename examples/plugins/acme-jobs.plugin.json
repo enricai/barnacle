@@ -9,6 +9,7 @@
     "defaultBaseUrl": "https://apply.acme.example",
     "multipart": false,
     "advancedStealth": false,
+    "browserbaseSessionCreateParams": { "timeout": 300 },
 
     "request": {
       "type": "object",

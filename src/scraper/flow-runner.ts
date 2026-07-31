@@ -49,6 +49,25 @@ const logger = getLogger({ name: "scraper/flow-runner" });
 const RECENT_CAPTURES_WINDOW = 20;
 
 /**
+ * Folds a request's `Network.responseReceivedExtraInfo` headers over its
+ * `responseReceived` headers. Exists because CDP splits response headers across
+ * two events: `responseReceived` omits `Set-Cookie` (so a token-minting call's
+ * cookie is invisible to it), while `responseReceivedExtraInfo` carries the raw
+ * on-the-wire set. `extra`'s keys override `base`'s on an exact-key match;
+ * headers that differ only in case survive as separate entries — harmless here
+ * because the one extra-only header we depend on (`Set-Cookie`) has no
+ * `responseReceived` counterpart to collide with, and consumers read headers
+ * case-insensitively.
+ */
+export function mergeResponseHeaders(
+  base: Record<string, string>,
+  extra: Record<string, string> | undefined
+): Record<string, string> {
+  if (!extra) return base;
+  return { ...base, ...extra };
+}
+
+/**
  * Wires CDP Network event listeners onto the page's main session and returns
  * a cleanup function. Stagehand V3 already enables the Network domain
  * internally, so we only need to attach our own listeners.
@@ -85,6 +104,12 @@ export function wireSignalCapture(
   } = params;
   const session = page.getSessionForFrame(page.mainFrameId());
   const inFlight = new Map<string, InFlightRequest>();
+  // Set-Cookie (and other extra-info-only headers) keyed by requestId. Held
+  // separately because `responseReceivedExtraInfo` can fire before the request
+  // is in `inFlight` and more than once per request; accumulated here and folded
+  // into the capture once, in `onFinished` (the only place a Capture is built).
+  // See mergeResponseHeaders.
+  const extraResponseHeaders = new Map<string, Record<string, string>>();
   // One-shot per-run warning state for the GA `ep.isExpired=true` beacon.
   // Defensive instrumentation: across 5,542 captures surveyed 2026-06-15,
   // every observation was `false` — but if a future job ever ships in the
@@ -101,6 +126,10 @@ export function wireSignalCapture(
   type ResponseReceivedEvent = {
     requestId: string;
     response: { status: number; headers: Record<string, string> };
+  };
+  type ResponseReceivedExtraInfoEvent = {
+    requestId: string;
+    headers: Record<string, string>;
   };
   type LoadingFinishedEvent = { requestId: string };
   type GetResponseBodyResponse = { body: string; base64Encoded: boolean };
@@ -123,10 +152,29 @@ export function wireSignalCapture(
     req.responseHeaders = params.response.headers as Record<string, string>;
   };
 
+  const onResponseExtraInfo = (params: ResponseReceivedExtraInfoEvent): void => {
+    // Accumulate — a redirect fires this more than once per requestId. The fold
+    // into the capture happens once, in onFinished, so order with responseReceived
+    // never matters.
+    const merged = mergeResponseHeaders(
+      extraResponseHeaders.get(params.requestId) ?? {},
+      params.headers
+    );
+    extraResponseHeaders.set(params.requestId, merged);
+  };
+
   const onFinished = async (params: LoadingFinishedEvent): Promise<void> => {
     const req = inFlight.get(params.requestId);
     if (!req) return;
     inFlight.delete(params.requestId);
+    // Fold the accumulated extra-info headers in, once, regardless of the order
+    // they raced responseReceived in. Delete the buffer entry unconditionally so
+    // it can't leak per run.
+    req.responseHeaders = mergeResponseHeaders(
+      req.responseHeaders,
+      extraResponseHeaders.get(params.requestId)
+    );
+    extraResponseHeaders.delete(params.requestId);
 
     const phase = getCurrentPhase();
     let responseBody: unknown = null;
@@ -266,11 +314,13 @@ export function wireSignalCapture(
 
   session.on("Network.requestWillBeSent", onRequest);
   session.on("Network.responseReceived", onResponse);
+  session.on("Network.responseReceivedExtraInfo", onResponseExtraInfo);
   session.on("Network.loadingFinished", onFinished);
 
   return (): void => {
     session.off("Network.requestWillBeSent", onRequest);
     session.off("Network.responseReceived", onResponse);
+    session.off("Network.responseReceivedExtraInfo", onResponseExtraInfo);
     session.off("Network.loadingFinished", onFinished);
   };
 }

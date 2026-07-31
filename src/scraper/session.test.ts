@@ -5,6 +5,8 @@
  * module boundary, so the only behaviors exercised are config wiring and the
  * pre-flight guard clauses.
  */
+
+import { Stagehand } from "@browserbasehq/stagehand";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createBrowserSession } from "@/scraper/session";
@@ -159,6 +161,46 @@ describe("scraper/session-browserbase required-key validation", () => {
     configRef.value.scraper.anthropicApiKey = undefined;
     configRef.value.scraper.useBedrock = false;
     await expect(createBrowserbaseBrowserSession()).rejects.toThrow(/ANTHROPIC_API_KEY/);
+  });
+
+  it("forwards custom Browserbase session params while preserving managed settings", async () => {
+    await createBrowserbaseBrowserSession({
+      advancedStealth: true,
+      browserbaseSessionCreateParams: {
+        timeout: 300,
+        projectId: "caller-project",
+        proxies: false,
+        browserSettings: { locale: "en-US" },
+      },
+    });
+
+    const stagehandArg = vi.mocked(Stagehand).mock.calls.at(-1)?.[0] as {
+      browserbaseSessionCreateParams: {
+        projectId: string;
+        proxies: boolean;
+        timeout?: number;
+        browserSettings: Record<string, unknown>;
+      };
+    };
+
+    expect(stagehandArg.browserbaseSessionCreateParams).toEqual(
+      expect.objectContaining({
+        projectId: "bb-project",
+        proxies: true,
+        timeout: 300,
+      })
+    );
+    expect(stagehandArg.browserbaseSessionCreateParams.browserSettings).toEqual(
+      expect.objectContaining({
+        locale: "en-US",
+        advancedStealth: true,
+        solveCaptchas: true,
+        fingerprint: expect.objectContaining({
+          devices: ["desktop"],
+          operatingSystems: ["windows"],
+        }),
+      })
+    );
   });
 });
 

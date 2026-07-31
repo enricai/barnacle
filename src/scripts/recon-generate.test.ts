@@ -2,10 +2,13 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { CONFIG_PLUGIN_API_VERSION, CONFIG_PLUGIN_KIND } from "@/plugins/plugin-manifest-envelope";
 import {
+  compileActionSteps,
   emitBrowserFlowTs,
   emitConfigManifest,
   emitContractTs,
   emitMultiStepExecuteHttp,
+  extractActionSequence,
+  indexStateValues,
   inferZodSchemaFromSamples,
   loadQuestionPromptKeywords,
   resolveStepPayloadField,
@@ -43,8 +46,10 @@ describe("emitContractTs — multipart plugin", () => {
     multiStepBody: `    return { data: {} as unknown };`,
   });
 
-  it("imports multipartBoolean from @/lib/zod-multipart", () => {
-    expect(source).toContain('import { multipartBoolean } from "@/lib/zod-multipart"');
+  it("imports multipartBoolean from the package subpath, not the @/ alias", () => {
+    expect(source).toContain(
+      'import { multipartBoolean } from "@enricai/barnacle/lib/zod-multipart"'
+    );
   });
 
   it("uses multipartBoolean() at boolean payload fields", () => {
@@ -121,6 +126,220 @@ describe("emitMultiStepExecuteHttp — multipart upload step", () => {
   });
 });
 
+/** Second action step whose URL echoes an inputBody array element, forcing
+ * the payload-accessor substitution pass to emit a bracket-indexed path. */
+const ARRAY_PAYLOAD_ACTION_STEP = {
+  capture: {
+    timestamp: "2024-01-01T00:00:01Z",
+    phase: "action",
+    method: "GET",
+    url: "https://api.example.com/search?criteria=longcriteriavalue",
+    status: 200,
+    requestHeaders: { Accept: "application/json" },
+    requestPostData: null,
+    responseHeaders: { "content-type": "application/json" },
+    responseBody: { results: [] },
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  },
+  varName: "r1",
+  produces: [],
+  isMultipart: false,
+  isCrossDomain: false,
+};
+
+describe("emitMultiStepExecuteHttp — payload accessor through an array-indexed path", () => {
+  const body = emitMultiStepExecuteHttp(
+    [MULTIPART_ACTION_STEP, ARRAY_PAYLOAD_ACTION_STEP],
+    { sorts: ["longcriteriavalue"] },
+    { stringMessageKey: null, nestedErrorPaths: [] },
+    new Map(),
+    new Set(),
+    new Map(),
+    new Set(),
+    new Map(),
+    new Map(),
+    "https://api.example.com",
+    new Map(),
+    new Map()
+  );
+
+  it("emits a non-null-asserted bracket accessor for the array element", () => {
+    expect(body).toContain(`$${'{payload.sorts["0"]!}'}`);
+  });
+});
+
+describe("extractActionSequence — error-reporting sinks never reach the emitted flow", () => {
+  const capture = (url: string, body: string) => ({
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action" as const,
+    method: "POST",
+    url,
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: body,
+    responseHeaders: {},
+    responseBody: {},
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  });
+
+  const BASE = "https://disneycruise.example.com";
+  // The real shape: a browser's Angular error handler posting a frozen crash —
+  // a stack trace and a recon-time timestamp that a replayed plugin would send
+  // to the site as a fabricated error report on every invocation.
+  const errorReport = capture(
+    `${BASE}/dcl-apps-productavail-spa/error`,
+    '[["Error logged by WDPR RA Angular Error handler service","{\\"timestamp\\":1784247853926,\\"message\\":\\"Script load error for //connect.facebook.net/en_US/fbevents.js\\"}"]]'
+  );
+
+  it("drops error sinks while keeping the calls that carry the flow", () => {
+    const kept = extractActionSequence(
+      [
+        capture(`${BASE}/dcl-apps-productavail-vas/authz/private`, "{}"),
+        errorReport,
+        capture(`${BASE}/dcl-apps-productavail-vas/available-products/`, '{"page":1}'),
+        errorReport,
+      ],
+      BASE
+    ).map((a) => new URL(a.capture.url).pathname);
+
+    expect(kept).toEqual([
+      "/dcl-apps-productavail-vas/authz/private",
+      "/dcl-apps-productavail-vas/available-products/",
+    ]);
+  });
+
+  it("matches a whole path segment, so data endpoints that merely spell 'error' survive", () => {
+    const kept = extractActionSequence(
+      [
+        capture(`${BASE}/api/error-codes`, "{}"),
+        capture(`${BASE}/api/terrorism-screening`, "{}"),
+        capture(`${BASE}/api/errors`, "{}"),
+      ],
+      BASE
+    ).map((a) => new URL(a.capture.url).pathname);
+
+    expect(kept).toEqual(["/api/error-codes", "/api/terrorism-screening"]);
+  });
+});
+
+describe("compileActionSteps — Set-Cookie state binding (disneycruise-style token mint)", () => {
+  /** Capture 1: mints an anonymous bearer via Set-Cookie, response body is empty. */
+  const tokenMintCapture = {
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action",
+    method: "POST",
+    url: "https://api.example.com/authz/private",
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: "{}",
+    responseHeaders: { "set-cookie": "__pa=abc.def.ghi; Path=/; HttpOnly" },
+    responseBody: {},
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  };
+
+  /** Capture 2: the stateful call that 401s without the minted cookie —
+   * carries it back as a Cookie request header, exactly as the browser sent it. */
+  const statefulCallCapture = {
+    timestamp: "2024-01-01T00:00:01Z",
+    phase: "action",
+    method: "POST",
+    url: "https://api.example.com/available-products/",
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json", Cookie: "__pa=abc.def.ghi" },
+    requestPostData: "{}",
+    responseHeaders: { "content-type": "application/json" },
+    responseBody: { products: [{ productId: "p1" }] },
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  };
+
+  const captures = [tokenMintCapture, statefulCallCapture];
+  const actionCaptures = captures.map((capture, index) => ({ capture, index }));
+  const stateIndex = indexStateValues(captures);
+  const actionSteps = compileActionSteps(actionCaptures, stateIndex);
+
+  it("indexes the Set-Cookie value with a header origin, not a body path", () => {
+    const sv = stateIndex.get("abc.def.ghi");
+    expect(sv).toBeDefined();
+    expect(sv?.headerOrigin).toEqual({ sourceHeader: "set-cookie", cookieName: "__pa" });
+    expect(sv?.path).toEqual([]);
+  });
+
+  it("produces a header-kind binding on the token-mint step, not a body accessor", () => {
+    const [mintStep] = actionSteps;
+    const headerProduce = mintStep?.produces.find((p) => p.kind === "header");
+    expect(headerProduce).toBeDefined();
+    expect(headerProduce).toMatchObject({
+      kind: "header",
+      sourceHeader: "set-cookie",
+      cookieName: "__pa",
+      targetHeader: "Cookie",
+    });
+  });
+
+  it("does not fabricate a body-path produce for the cookie value", () => {
+    const [mintStep] = actionSteps;
+    expect(mintStep?.produces.some((p) => p.kind === "body")).toBe(false);
+  });
+
+  it("renders a bind: [...] entry on createHttpClient instead of dropping the token", () => {
+    const contract = emitContractTs({
+      ...BASE_OPTS,
+      inputBody: JSON.parse(tokenMintCapture.requestPostData) as unknown,
+      multiStepBody: emitMultiStepExecuteHttp(
+        actionSteps,
+        JSON.parse(tokenMintCapture.requestPostData) as unknown,
+        { stringMessageKey: null, nestedErrorPaths: [] },
+        new Map(),
+        new Set(),
+        new Map(),
+        new Set(),
+        new Map(),
+        new Map(),
+        "https://api.example.com",
+        new Map(),
+        new Map()
+      ),
+      headerBindings: actionSteps.flatMap((s) => s.produces).filter((p) => p.kind === "header"),
+    });
+
+    expect(contract).toContain(
+      'bind: [{ sourceHeader: "set-cookie", cookieName: "__pa", targetHeader: "Cookie" }]'
+    );
+  });
+
+  it("generated executeHttp body never references the raw JWT or emits an any-typed accessor", () => {
+    const body = emitMultiStepExecuteHttp(
+      actionSteps,
+      JSON.parse(tokenMintCapture.requestPostData) as unknown,
+      { stringMessageKey: null, nestedErrorPaths: [] },
+      new Map(),
+      new Set(),
+      new Map(),
+      new Set(),
+      new Map(),
+      new Map(),
+      "https://api.example.com",
+      new Map(),
+      new Map()
+    );
+    expect(body).not.toContain("abc.def.ghi");
+    expect(body).not.toContain(": any");
+    expect(body).not.toContain("<any>");
+  });
+});
+
 describe("emitContractTs — multipart plugin imports omitHeaderCaseInsensitive", () => {
   const source = emitContractTs({
     ...BASE_OPTS,
@@ -129,9 +348,9 @@ describe("emitContractTs — multipart plugin imports omitHeaderCaseInsensitive"
     multiStepBody: `    return { data: {} as unknown };`,
   });
 
-  it("imports omitHeaderCaseInsensitive from @/lib/case-insensitive-headers", () => {
+  it("imports omitHeaderCaseInsensitive from the package subpath, not the @/ alias", () => {
     expect(source).toContain(
-      'import { omitHeaderCaseInsensitive } from "@/lib/case-insensitive-headers"'
+      'import { omitHeaderCaseInsensitive } from "@enricai/barnacle/lib/case-insensitive-headers"'
     );
   });
 });
@@ -248,7 +467,9 @@ describe("emitBrowserFlowTs — payload splicing", () => {
   });
 
   it("wires the shared Anthropic client so the cascade can rephrase/replan", () => {
-    expect(code).toContain('import { buildAnthropicClient } from "@/lib/llm/anthropic-client"');
+    expect(code).toContain(
+      'import { buildAnthropicClient } from "@enricai/barnacle/lib/llm/anthropic-client"'
+    );
     expect(code).toContain("anthropic: buildAnthropicClient(),");
     expect(code).not.toContain("anthropic: null");
   });
@@ -530,6 +751,53 @@ describe("emitConfigManifest — config-only plugin emission", () => {
     );
     expect(objectSteps.some((s) => s.submitStep === true)).toBe(true);
     expect(objectSteps.some((s) => s.upload === true && s.optional === true)).toBe(true);
+  });
+});
+
+describe("emitConfigManifest — recovered request contract", () => {
+  const manifest = JSON.parse(
+    emitConfigManifest({
+      siteId: "acme-demo",
+      displayName: "AcmeDemo",
+      baseUrl: "https://apply.acme.example",
+      flowSteps: [{ step: "fill the First Name field with 'Jane'", payloadField: "FirstName" }],
+      inputBody: {
+        page: 1,
+        filters: [],
+        currency: "USD",
+        includeAdvancedBookingPrices: true,
+        region: { country: "US" },
+      },
+      recoveredFields: new Set(["AddressLine1"]),
+    })
+  ) as { spec: { request: { properties: Record<string, { type: string }> } } };
+  const props = manifest.spec.request.properties;
+
+  it("carries each first-POST-body key with its real JSON-Schema type", () => {
+    expect(props.page).toEqual({ type: "number" });
+    expect(props.filters).toEqual({ type: "array" });
+    expect(props.currency).toEqual({ type: "string" });
+    expect(props.includeAdvancedBookingPrices).toEqual({ type: "boolean" });
+    expect(props.region).toEqual({ type: "object" });
+  });
+
+  it("merges flow splices and recovered fields as caller-supplied strings", () => {
+    expect(props.FirstName).toEqual({ type: "string" });
+    expect(props.AddressLine1).toEqual({ type: "string" });
+  });
+
+  it("lets a body key's real type win over the string default when names overlap", () => {
+    const overlapped = JSON.parse(
+      emitConfigManifest({
+        siteId: "acme-demo",
+        displayName: "AcmeDemo",
+        baseUrl: "https://apply.acme.example",
+        flowSteps: [],
+        inputBody: { page: 1 },
+        recoveredFields: new Set(["page"]),
+      })
+    ) as { spec: { request: { properties: Record<string, { type: string }> } } };
+    expect(overlapped.spec.request.properties.page).toEqual({ type: "number" });
   });
 });
 

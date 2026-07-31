@@ -59,7 +59,10 @@ describe("fireTrackingClick", () => {
     fireTrackingClick("https://click.appcast.io/t/abc?vivclid=123", "appcast");
     await drainTrackingClicks();
 
-    expect(mockCreateSession).toHaveBeenCalledWith({ advancedStealth: true });
+    expect(mockCreateSession).toHaveBeenCalledWith({
+      advancedStealth: true,
+      browserbaseSessionCreateParams: { timeout: 300 },
+    });
     expect(mockPage.goto).toHaveBeenCalledWith("https://click.appcast.io/t/abc?vivclid=123", {
       waitUntil: "domcontentloaded",
       timeoutMs: 30_000,

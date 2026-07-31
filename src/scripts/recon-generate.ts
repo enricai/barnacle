@@ -28,7 +28,10 @@ import { join } from "node:path";
 
 import { toErrorMessage } from "@/lib/errors";
 import { getScriptLogger } from "@/lib/logging";
+import { PLUGIN_API_VERSION } from "@/plugins/plugin-api-version";
 import { CONFIG_PLUGIN_API_VERSION, CONFIG_PLUGIN_KIND } from "@/plugins/plugin-manifest-envelope";
+import { loadReconVocabulary, VOCABULARY_NONE } from "@/recon/load-vocabulary";
+import { EMPTY_VOCABULARY, type ReconVocabulary } from "@/recon/vocabulary";
 import {
   AUX_DIR,
   CAPTURES_DIR,
@@ -41,6 +44,20 @@ import {
 
 const logger = getScriptLogger("recon-generate");
 
+/**
+ * Engine imports in GENERATED code must be package subpaths, never the `@/`
+ * alias, and the reason is not visible from the source: `tsc-alias` rewrites by
+ * text, so it cannot tell an import this module *uses* from one it *emits as a
+ * string*. Written as `@/scraper/session`, the build silently rewrote the
+ * template literal itself — shipping `dist/` emitters that generated
+ * `../scraper/session` and left every out-of-tree consumer with TS2307.
+ * (`@/sites/...` survived only because `src/sites/` is empty, so it resolved to
+ * no file.) A bare specifier has nothing to resolve against, so the build leaves
+ * it alone. `out-of-tree-e2e.test.ts` asserts this against the BUILT dist —
+ * asserting it against the source would pass while the shipped artifact is broken.
+ */
+const ENGINE_PKG = "@enricai/barnacle";
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 function toPascalCase(siteId: string): string {
@@ -51,47 +68,52 @@ function toPascalCase(siteId: string): string {
 }
 
 /**
- * Instruction labels that name a NON-candidate field — a reference-contact, an
- * employment-history row, the applicant's signature, etc. When any of these
- * matches we leave the step literal so the generator never splices the primary
- * applicant's PII into a field that must hold someone/something else. Matched
- * against the English label in the instruction, never the recon constant value.
+ * The recruiting vocabulary the engine used to hardcode, kept only so consumers
+ * who have not yet passed `--vocabulary` keep working through the 1.x line.
+ *
+ * @deprecated Pass `--vocabulary <specifier>` instead. The engine cannot know
+ * what any site's forms mean, and guessing mis-fires on every non-recruiting
+ * domain (a cruise site's "Select the departure port from the Country dropdown"
+ * became `${payload.Country}`). Slated for deletion in 2.0.0, after which an
+ * absent vocabulary on a spliceable flow is a hard error. See `src/recon/vocabulary.ts`.
  */
-const PAYLOAD_FIELD_EXCLUSIONS: RegExp[] = [
-  /reference\s*#?\s*\d/i,
-  /employment history/i,
-  /\bcompany (name|phone)\b/i,
-  /\bemployer\b/i,
-  /signature/i,
-  /\bfull name\b/i,
-  /today'?s date/i,
-  /school|institution|degree|major|education/i,
-  // Screening-question shapes: "For '<question>' select '<answer>'" and any
-  // step framed around a 'question'. Here the first quoted string is the
-  // question label, not a candidate value — a label word inside the question
-  // (e.g. "...licensed in this state?") must NOT trigger a splice that would
-  // overwrite the question quote. Candidate-fill steps say "fill in the X
-  // field with '...'" / "Select '...' from the X dropdown" instead.
-  /^\s*for\s+'/i,
-  /\bquestion\b/i,
-];
-
-/**
- * Ordered candidate-field label table. Each entry maps an English-label regex
- * to the PascalCase payload field the generator should splice. Order matters:
- * the first matching row wins, so more-specific labels precede broader ones.
- */
-const PAYLOAD_FIELD_TABLE: Array<[RegExp, string]> = [
-  [/\bfirst name\b/i, "FirstName"],
-  [/\blast name\b/i, "LastName"],
-  [/\b(e-?mail|email address)\b/i, "Email"],
-  [/\b(mobile phone|primary phone|phone number|mobile)\b/i, "MobilePhone"],
-  [/\b(street address|address line 1)\b/i, "AddressLine1"],
-  [/\bcity\b/i, "City"],
-  [/\b(state|province|state\/region)\b/i, "State"],
-  [/\b(zip|postal)\b/i, "PostalCode"],
-  [/\bcountry\b/i, "Country"],
-];
+const DEPRECATED_BUILTIN_ATS_VOCABULARY: ReconVocabulary = {
+  // Naming the subject is what separates "…select the test candidate's state"
+  // (fill with the caller's data) from "…the departure port from the Country
+  // dropdown" (a search facet that merely says Country).
+  subject: /\b(the\s+)?(test\s+)?(candidate|applicant)'?s\b/i,
+  exclusions: [
+    /reference\s*#?\s*\d/i,
+    /employment history/i,
+    /\bcompany (name|phone)\b/i,
+    /\bemployer\b/i,
+    /signature/i,
+    /\bfull name\b/i,
+    /today'?s date/i,
+    /school|institution|degree|major|education/i,
+    // Screening-question shapes: "For '<question>' select '<answer>'" and any
+    // step framed around a 'question'. Here the first quoted string is the
+    // question label, not a candidate value — a label word inside the question
+    // (e.g. "...licensed in this state?") must NOT trigger a splice that would
+    // overwrite the question quote. Candidate-fill steps say "fill in the X
+    // field with '...'" / "Select '...' from the X dropdown" instead.
+    /^\s*for\s+'/i,
+    /\bquestion\b/i,
+    // A secondary phone must not fill the primary MobilePhone field.
+    /\bsecondary\b[^.]*\bphone\b/i,
+  ],
+  table: [
+    [/\bfirst name\b/i, "FirstName"],
+    [/\blast name\b/i, "LastName"],
+    [/\b(e-?mail|email address)\b/i, "Email"],
+    [/\b(mobile phone|primary phone|phone number|mobile)\b/i, "MobilePhone"],
+    [/\b(street address|address line 1)\b/i, "AddressLine1"],
+    [/\bcity\b/i, "City"],
+    [/\b(state|province|state\/region)\b/i, "State"],
+    [/\b(zip|postal)\b/i, "PostalCode"],
+    [/\bcountry\b/i, "Country"],
+  ],
+};
 
 /**
  * Decide whether a flow step should splice a runtime `payload.<field>` value in
@@ -105,27 +127,32 @@ const PAYLOAD_FIELD_TABLE: Array<[RegExp, string]> = [
  * @param instruction the flow step's plain-English instruction
  * @param explicit an optional flow-authored `payloadField` override (wins outright)
  * @param forceNone when true, force a literal step (the `payloadFieldNone` opt-out)
+ * @param vocabulary the consumer's domain vocabulary; defaults to the deprecated
+ *   built-in recruiting table so 1.x consumers who pass nothing keep working
  * @returns the PascalCase payload field name to splice, or null to keep literal
  */
 export function resolveStepPayloadField(
   instruction: string,
   explicit?: string,
-  forceNone?: boolean
+  forceNone?: boolean,
+  vocabulary: ReconVocabulary = DEPRECATED_BUILTIN_ATS_VOCABULARY
 ): string | null {
   if (forceNone) return null;
   if (explicit) return explicit;
-  // Nothing to splice unless the instruction actually carries a recon constant:
-  // a quoted literal, the ${RECON_EMAIL} token, or a dropdown/select phrasing.
+  // A quoted literal or ${RECON_EMAIL} IS the recon constant this step would
+  // replace, so it is spliceable on its own.
+  const hasQuotedConstant = /'[^']*'/.test(instruction) || /\$\{RECON_EMAIL\}/.test(instruction);
+  // A dropdown step carries no constant to replace, so a label match alone can't
+  // tell "select the test candidate's state" (the caller's data) from "select the
+  // departure port from the Country dropdown" (a facet that merely says Country).
+  // Requiring the subject is what keeps this from mis-firing off-domain.
+  const isDropdownStep =
+    /\bdropdown\b/i.test(instruction) || /\bselect\b[^.]*\bfrom\b/i.test(instruction);
   const hasSpliceable =
-    /'[^']*'/.test(instruction) ||
-    /\$\{RECON_EMAIL\}/.test(instruction) ||
-    /\bdropdown\b/i.test(instruction) ||
-    /\bselect\b[^.]*\bfrom\b/i.test(instruction);
+    hasQuotedConstant || (isDropdownStep && vocabulary.subject.test(instruction));
   if (!hasSpliceable) return null;
-  if (PAYLOAD_FIELD_EXCLUSIONS.some((rx) => rx.test(instruction))) return null;
-  // "Secondary Phone Number" must not fill the primary MobilePhone field.
-  if (/\bsecondary\b/i.test(instruction) && /\bphone\b/i.test(instruction)) return null;
-  for (const [rx, field] of PAYLOAD_FIELD_TABLE) {
+  if (vocabulary.exclusions.some((rx) => rx.test(instruction))) return null;
+  for (const [rx, field] of vocabulary.table) {
     if (rx.test(instruction)) return field;
   }
   return null;
@@ -440,6 +467,22 @@ const TELEMETRY_URL_PATTERNS = [
     .filter(Boolean),
 ];
 
+/**
+ * A POST to a path whose own segment is `error`/`errors` is a client-side
+ * reporting sink, never a call a caller wants replayed.
+ *
+ * Emitting one is worse than noise. A browser's error reports are frozen at
+ * recon time, so the generated plugin re-POSTs a crash that never happened —
+ * a stack trace and timestamp from the recon run, sent to the site on every
+ * invocation, describing a failure in a page the plugin never loaded.
+ *
+ * Matched on a whole path segment rather than by substring so `/error-codes`
+ * and `/terrorism-screening` stay data endpoints, and kept out of
+ * TELEMETRY_URL_PATTERNS because that list is literal substrings — a site's own
+ * sink is structural, not an ad-tech domain the operator must enumerate.
+ */
+const ERROR_SINK_PATH_SEGMENT = /(^|\/)errors?(\/|$)/i;
+
 interface ActionCapture {
   capture: Capture;
   index: number;
@@ -447,9 +490,14 @@ interface ActionCapture {
 
 /**
  * Extracts the ordered sequence of meaningful POSTs that represent the
- * transactional flow. Filters out GETs, telemetry, asset hits, and non-2xx.
+ * transactional flow: same-host 2xx POSTs, minus telemetry and error-reporting
+ * sinks. Assets need no filter of their own — they arrive as GETs.
+ *
+ * Exported for tests: this predicate decides what a generated plugin will POST
+ * at a live site, and it is the only gate between a browser's incidental
+ * chatter and the emitted hot path.
  */
-function extractActionSequence(captures: Capture[], baseUrl: string): ActionCapture[] {
+export function extractActionSequence(captures: Capture[], baseUrl: string): ActionCapture[] {
   let host: string;
   try {
     host = new URL(baseUrl).host;
@@ -470,6 +518,11 @@ function extractActionSequence(captures: Capture[], baseUrl: string): ActionCapt
       }
       if (captureHost !== host) return false;
       if (TELEMETRY_URL_PATTERNS.some((p) => capture.url.includes(p))) return false;
+      try {
+        if (ERROR_SINK_PATH_SEGMENT.test(new URL(capture.url).pathname)) return false;
+      } catch {
+        return false;
+      }
       return true;
     });
 }
@@ -502,8 +555,13 @@ interface StateValue {
   value: string;
   /** Index of the capture whose response is the EARLIEST origin of this value. */
   originIndex: number;
-  /** JSON path within the origin response (e.g. ["Auth", "Token"]). */
+  /** JSON path within the origin response (e.g. ["Auth", "Token"]). Empty for
+   * a header/cookie-origin value — see `headerOrigin`. */
   path: string[];
+  /** Set when `value` originates in a response header/cookie rather than a
+   * body JSON leaf (e.g. disneycruise's `Set-Cookie: __pa=<jwt>` token mint).
+   * `path` is empty in this case since there is no body accessor. */
+  headerOrigin?: { sourceHeader: string; cookieName?: string };
 }
 
 /**
@@ -772,13 +830,16 @@ function detectFormSchemaFieldNames(captures: Capture[]): {
 }
 
 /**
- * Walks a response body collecting every UUID-shaped string that appears at
- * a `FieldId` or `OptionId` (and its lowercase variants) path leaf, OR as the
- * `Id` of an object that has `OptionSourceCode`/`StringKey`/`FieldOptions`
- * sibling — i.e. an OptionId in the form schema. These UUIDs are stable
+ * Walks a response body collecting UUID-shaped strings under a `FieldId` key, or
+ * under the `Id` of an entry in a sibling `FieldOptions` array. These are stable
  * schema anchors that must be shielded from state-threading even when
- * detectFormSchemaFieldNames doesn't emit a payload-mappable name for the
- * field (e.g. when the field's FieldName is too long for our naming heuristic).
+ * detectFormSchemaFieldNames emits no payload-mappable name for the field (e.g.
+ * when the field's FieldName is too long for our naming heuristic).
+ *
+ * The key names are exact by design, not an oversight: a differing wire format
+ * (a lowercase `fieldId`, another vendor's option key) is the consumer's to
+ * declare, not the engine's to guess — see issue #57. Matching case variants
+ * here would re-broaden the very fingerprint that issue exists to narrow.
  */
 function walkForSchemaUuids(value: unknown, out: Set<string>): void {
   if (value === null || typeof value !== "object") return;
@@ -1181,10 +1242,32 @@ const MAX_STATE_VALUE_LENGTH = 256;
 const PLACEHOLDER_STATE_VALUES = new Set(["00000000-0000-0000-0000-000000000000"]);
 
 /**
+ * Splits a raw `Set-Cookie` response-header string into `name`/`value` pairs.
+ * Captures store `responseHeaders` as a flat `Record<string, string>`
+ * (see recon-shared.ts's `Capture`), so multiple `Set-Cookie` headers from the
+ * same response — if the recon browser's CDP session folds them together —
+ * would already have lost their individual boundaries before reaching here;
+ * this only recovers name/value pairs from whatever single string survives.
+ */
+function* walkSetCookiePairs(rawSetCookie: string): Generator<{ name: string; value: string }> {
+  const pair = rawSetCookie.split(";", 1)[0] ?? "";
+  const eq = pair.indexOf("=");
+  if (eq === -1) return;
+  const name = pair.slice(0, eq).trim();
+  const value = pair.slice(eq + 1).trim();
+  if (name && value) yield { name, value };
+}
+
+/**
  * Walks every capture's response (including GETs — formHistoryId-style values
  * may originate in a state-load GET, not a POST). Indexes every string leaf
  * whose length is in [MIN, MAX], recording the EARLIEST capture index that
  * produced it. Later occurrences of the same value reuse the earliest origin.
+ *
+ * Also indexes response-header/cookie-origin values (e.g. a `Set-Cookie`
+ * auth token) the same way, tagged with `headerOrigin` instead of a body
+ * `path` — this is what lets a stateful API's token-mint response feed a
+ * later call's `Cookie` header via `compileActionSteps`.
  *
  * The index is intentionally permissive — it doesn't try to shape-match
  * "what looks like a token" because token shapes are an open set across the
@@ -1196,7 +1279,9 @@ const PLACEHOLDER_STATE_VALUES = new Set(["00000000-0000-0000-0000-000000000000"
  * the LATER non-placeholder occurrence at the same JSON path becomes the
  * canonical binding instead.
  */
-function indexStateValues(
+/** Exported for unit testing — lets tests exercise the produces[] walk (body
+ * AND header/cookie origins) directly against synthetic Capture sequences. */
+export function indexStateValues(
   captures: Capture[],
   shieldedUuids: Set<string> = new Set(),
   actionCaptureIndices: Set<number> = new Set()
@@ -1212,8 +1297,29 @@ function indexStateValues(
   const haveActionFilter = actionCaptureIndices.size > 0;
   for (let i = 0; i < captures.length; i++) {
     const c = captures[i]!;
-    if (c.responseBody === undefined || c.responseBody === null) continue;
     if (haveActionFilter && !actionCaptureIndices.has(i)) continue;
+    // Headers/cookies are indexed regardless of responseBody presence — a
+    // token-mint call like disneycruise's `authz/private` returns `{}` and
+    // carries its whole payload in `Set-Cookie`.
+    const rawSetCookie = Object.entries(c.responseHeaders).find(
+      ([k]) => k.toLowerCase() === "set-cookie"
+    )?.[1];
+    if (rawSetCookie !== undefined) {
+      for (const { name, value } of walkSetCookiePairs(rawSetCookie)) {
+        if (value.length < MIN_STATE_VALUE_LENGTH) continue;
+        if (value.length > MAX_STATE_VALUE_LENGTH) continue;
+        if (PLACEHOLDER_STATE_VALUES.has(value)) continue;
+        if (!index.has(value)) {
+          index.set(value, {
+            value,
+            originIndex: i,
+            path: [],
+            headerOrigin: { sourceHeader: "set-cookie", cookieName: name },
+          });
+        }
+      }
+    }
+    if (c.responseBody === undefined || c.responseBody === null) continue;
     // For GET captures, only index UUID-shaped strings. GET captures (today,
     // only the form-schema fetch inserted as an action step) surface stable
     // structural identifiers — UUIDs that downstream POSTs need to thread.
@@ -1240,6 +1346,32 @@ function indexStateValues(
   return index;
 }
 
+/** A state value produced by a step's response body — read via a JSON
+ * accessor on the response variable (e.g. `r6.products["0"].productId`). */
+interface BodyProduce {
+  kind: "body";
+  name: string;
+  pathExpr: string;
+  path: string[];
+}
+
+/** A state value produced by a step's response header/cookie (e.g. a
+ * `Set-Cookie`-minted auth token). Unlike `BodyProduce` this has no JS
+ * accessor — the value never surfaces in emitted code at all, because
+ * `createHttpClient`'s `bind` option (see http-client.ts) captures and
+ * forwards it internally. Carried here only so the emitter knows to render
+ * a `bind` entry and which request header on the CONSUMING step observed it,
+ * i.e. `targetHeader`. */
+interface HeaderProduce {
+  kind: "header";
+  name: string;
+  sourceHeader: string;
+  cookieName?: string;
+  targetHeader: string;
+}
+
+type Produce = BodyProduce | HeaderProduce;
+
 interface ActionStep {
   /** The capture this step corresponds to. */
   capture: Capture;
@@ -1248,7 +1380,7 @@ interface ActionStep {
   /** Camelcase state values this step's response produces, ready for destructure.
    * `path` is the JSON path inside the response (used by the emitter to build
    * a narrow per-binding assertion type so the emitted access stays `any`-free). */
-  produces: Array<{ name: string; pathExpr: string; path: string[] }>;
+  produces: Produce[];
   /** Whether the request body is multipart (body bytes not in capture). */
   isMultipart: boolean;
   /** True when the capture's host differs from the immediately-preceding action. */
@@ -1262,9 +1394,18 @@ function isValidJsIdentifier(s: string): boolean {
   return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(s);
 }
 
-/** Converts a path like ["Auth","Token"] to a JS access expression ".Auth.Token". */
+/**
+ * Converts a path like ["Auth","Token"] to a JS access expression ".Auth.Token".
+ * Bracket segments (numeric array indices, non-identifier keys) get a trailing
+ * `!` — under `noUncheckedIndexedAccess` an array/index-signature access types
+ * as `T | undefined`, and this accessor is only ever used against a real Zod-
+ * inferred array/object type (payload fields, captured response bodies), never
+ * against the object-literal assertion types `pathToAssertionType` builds (those
+ * use known string-literal keys, which `noUncheckedIndexedAccess` does not
+ * widen). Dot segments stay bare since object property access isn't affected.
+ */
 function pathToAccessor(path: string[]): string {
-  return path.map((p) => (isValidJsIdentifier(p) ? `.${p}` : `[${JSON.stringify(p)}]`)).join("");
+  return path.map((p) => (isValidJsIdentifier(p) ? `.${p}` : `[${JSON.stringify(p)}]!`)).join("");
 }
 
 /**
@@ -1300,27 +1441,75 @@ function pathToVarName(path: string[]): string {
  * var name, the state values its response produces (used by downstream steps),
  * and a multipart flag (request body bytes not captured).
  */
-function compileActionSteps(
+/** Exported for unit testing — see `indexStateValues`. */
+export function compileActionSteps(
   actions: ActionCapture[],
   stateIndex: Map<string, StateValue>
 ): ActionStep[] {
   const usedValues = new Set<string>();
+  // Maps a used state value to the request-header NAME that carries it, for
+  // values whose consuming reference is a request header (not the URL/body).
+  // A header-origin produce needs this as its `targetHeader` — the header the
+  // *next* httpClient call must send the bound value back on. Only the first
+  // consuming header name observed wins; a value used in more than one distinct
+  // header downstream isn't a shape this models (see http-client.ts's `bind`,
+  // which is single-target per binding).
+  const usedValueTargetHeader = new Map<string, string>();
   // Pre-scan: collect all state values referenced by ANY action's URL/headers/body
   // so we only "produce" the values that are actually consumed downstream.
   for (const { capture } of actions) {
     const haystacks: string[] = [capture.url];
-    for (const v of Object.values(capture.requestHeaders)) haystacks.push(v);
     if (capture.requestPostData) haystacks.push(capture.requestPostData);
     for (const sv of stateIndex.values()) {
       if (haystacks.some((h) => h.includes(sv.value))) usedValues.add(sv.value);
+    }
+    for (const [headerName, headerValue] of Object.entries(capture.requestHeaders)) {
+      for (const sv of stateIndex.values()) {
+        if (!headerValue.includes(sv.value)) continue;
+        usedValues.add(sv.value);
+        if (!usedValueTargetHeader.has(sv.value)) {
+          usedValueTargetHeader.set(sv.value, headerName);
+        }
+      }
     }
   }
 
   let lastHost: string | null = null;
   return actions.map(({ capture, index }, i) => {
     const varName = `r${i}`;
-    const produces: ActionStep["produces"] = [];
+    const produces: Produce[] = [];
     const seenNames = new Set<string>();
+
+    // Header/cookie-origin produces — walked first so a value that appears in
+    // BOTH a Set-Cookie and the JSON body (unlikely, but not ruled out) prefers
+    // the header binding, which is what the runtime actually threads.
+    const rawSetCookie = Object.entries(capture.responseHeaders).find(
+      ([k]) => k.toLowerCase() === "set-cookie"
+    )?.[1];
+    if (rawSetCookie !== undefined) {
+      for (const { name: cookieName, value } of walkSetCookiePairs(rawSetCookie)) {
+        if (!usedValues.has(value)) continue;
+        const sv = stateIndex.get(value);
+        if (!sv || sv.originIndex !== index || !sv.headerOrigin) continue;
+        const targetHeader = usedValueTargetHeader.get(value);
+        if (!targetHeader) continue;
+        let name = `${cookieName.replace(/[^A-Za-z0-9]/g, "")}Cookie`;
+        if (!/^[A-Za-z_$]/.test(name)) name = `_${name}`;
+        let suffix = 1;
+        while (seenNames.has(name)) {
+          suffix++;
+          name = `${cookieName.replace(/[^A-Za-z0-9]/g, "")}Cookie${suffix}`;
+        }
+        seenNames.add(name);
+        produces.push({
+          kind: "header",
+          name,
+          sourceHeader: sv.headerOrigin.sourceHeader,
+          cookieName: sv.headerOrigin.cookieName,
+          targetHeader,
+        });
+      }
+    }
 
     if (capture.responseBody !== undefined && capture.responseBody !== null) {
       for (const { value, path } of walkStringLeaves(capture.responseBody)) {
@@ -1335,7 +1524,7 @@ function compileActionSteps(
           name = `${pathToVarName(path)}${suffix}`;
         }
         seenNames.add(name);
-        produces.push({ name, pathExpr: `${varName}${pathToAccessor(path)}`, path });
+        produces.push({ kind: "body", name, pathExpr: `${varName}${pathToAccessor(path)}`, path });
       }
     }
 
@@ -1359,6 +1548,26 @@ function compileActionSteps(
 }
 
 /**
+ * Collects every header/cookie-origin produce across an action sequence, in
+ * step order — this is what `emitContractTs` renders as `createHttpClient`'s
+ * `bind` option so the generated `executeHttp` actually forwards a value like
+ * disneycruise's `Set-Cookie: __pa=<jwt>` mint to the stateful call that 401s
+ * without it. Deduped by `targetHeader`: `HttpResponseBinding` (http-client.ts)
+ * is one binding per target header, so if two steps somehow produced the same
+ * target the earliest wins.
+ */
+function collectHeaderBindings(actionSteps: ActionStep[]): HeaderProduce[] {
+  const byTarget = new Map<string, HeaderProduce>();
+  for (const step of actionSteps) {
+    for (const p of step.produces) {
+      if (p.kind !== "header") continue;
+      if (!byTarget.has(p.targetHeader)) byTarget.set(p.targetHeader, p);
+    }
+  }
+  return [...byTarget.values()];
+}
+
+/**
  * Replaces occurrences of state values in `template` with `${varName}`
  * interpolations. Returns a JS template-literal string fragment (no backticks).
  *
@@ -1376,6 +1585,11 @@ function interpolateStateValues(
   const varNameByValue = new Map<string, string>();
   for (const step of priorSteps) {
     for (const p of step.produces) {
+      // Header/cookie-origin produces have no body path — their value never
+      // appears as a literal in a URL/body template (http-client's `bind`
+      // forwards it directly as a request header), so there's nothing to
+      // interpolate here.
+      if (p.kind === "header") continue;
       let cursor: unknown = step.capture.responseBody;
       for (const segment of p.path) {
         if (
@@ -2087,6 +2301,10 @@ export function emitMultiStepExecuteHttp(
     }
 
     for (const p of step.produces) {
+      // Header/cookie-origin produces never surface as a JS accessor —
+      // createHttpClient's `bind` option (rendered once, above the steps)
+      // captures and forwards the value internally.
+      if (p.kind === "header") continue;
       if (declaredNames.has(p.name)) continue;
       if (!referencedNames.has(p.name)) continue;
       declaredNames.add(p.name);
@@ -2112,6 +2330,26 @@ function summariseResponseShape(value: unknown): unknown {
     obj[k] = v === null ? "null" : typeof v;
   }
   return obj;
+}
+
+/**
+ * Renders `headerBindings` as a trailing `, bind: [...]` fragment for
+ * `createHttpClient`'s options object literal — empty string when there are
+ * none, so a plugin with no header/cookie-origin state keeps the exact output
+ * this emitter already produced. Structurally matches `HttpResponseBinding`
+ * (http-client.ts) without importing the type: the object literal typechecks
+ * against `HttpClientOptions.bind` on its own shape.
+ */
+function bindOptionLiteral(headerBindings: HeaderProduce[]): string {
+  if (headerBindings.length === 0) return "";
+  const entries = headerBindings
+    .map((b) => {
+      const cookieNameField =
+        b.cookieName !== undefined ? ` cookieName: ${JSON.stringify(b.cookieName)},` : "";
+      return `{ sourceHeader: ${JSON.stringify(b.sourceHeader)},${cookieNameField} targetHeader: ${JSON.stringify(b.targetHeader)} }`;
+    })
+    .join(", ");
+  return `, bind: [${entries}]`;
 }
 
 // ── code emitters ─────────────────────────────────────────────────────────────
@@ -2164,6 +2402,11 @@ export function emitContractTs(opts: {
    * emitBrowserFlowTs so schema and flow can never drift. */
   payloadFieldNames?: Set<string>;
   base64ContentHelper?: string;
+  /** Response-header/cookie-origin state bindings collected from the action
+   * sequence's produces[] (see `collectHeaderBindings`) — rendered as
+   * `createHttpClient`'s `bind` option so a value like a `Set-Cookie`-minted
+   * auth token actually reaches the stateful call that needs it. */
+  headerBindings?: HeaderProduce[];
 }): string {
   const {
     siteId,
@@ -2187,11 +2430,19 @@ export function emitContractTs(opts: {
     discoveredAdditionalBodyKeys,
     payloadFieldNames,
     base64ContentHelper = "",
+    headerBindings = [],
   } = opts;
 
   // Multi-step plugins thread responses through many different shapes that a
   // single Zod schema can't cover — use z.unknown() so each per-step access
   // compiles cleanly. Single-endpoint plugins keep the inferred schema.
+  //
+  // This is deliberate, not an unfinished schema: a submission flow's terminal
+  // shape is the plugin's OWN contract with its caller (e.g. { verified: boolean }),
+  // a field that appears in zero captured responses. Inferring a schema from the
+  // captures would emit the wrong shape with false confidence. z.unknown() plus
+  // the generated `[ ] Narrow ResponseSchema` checklist item is the intended
+  // hand-off to the plugin author, who alone knows that contract.
   const responseSchemaExpr = multiStepBody ? `z.unknown()` : inferZodSchema(responseBody);
   // Multi-step flows that include a multipart upload need the binary asset
   // on the payload. Add Resume/ResumeContentType/ResumeFilename as required
@@ -2324,14 +2575,14 @@ export function emitContractTs(opts: {
     ? `${basePayloadSchemaExpr}.extend({\n  Resume: z.instanceof(Buffer),\n  ResumeContentType: z.string(),\n  ResumeFilename: z.string(),\n})${formFieldsExtension}${splicedFieldsExtension}${optionSchemaExtension}${rawOptionSchemaExtension}${additionalBodyKeysExtension}${answersExtension}`
     : `${basePayloadSchemaExpr}${formFieldsExtension}${splicedFieldsExtension}${optionSchemaExtension}${rawOptionSchemaExtension}${additionalBodyKeysExtension}${answersExtension}`;
   // When the payload schema uses multipartBoolean(), import the shared helper
-  // from @/lib/zod-multipart so the generated file resolves the reference and
-  // doesn't re-inline the preprocess expression per boolean field.
+  // so the generated file resolves the reference and doesn't re-inline the
+  // preprocess expression per boolean field.
   const multipartBoolImport = hasMultipartStep
-    ? `import { multipartBoolean } from "@/lib/zod-multipart";\n`
+    ? `import { multipartBoolean } from "${ENGINE_PKG}/lib/zod-multipart";\n`
     : "";
   // Content-Type must be absent from multipart fetch calls so FormData can inject the boundary.
   const caseInsensitiveHeadersImport = hasMultipartStep
-    ? `import { omitHeaderCaseInsensitive } from "@/lib/case-insensitive-headers";\n`
+    ? `import { omitHeaderCaseInsensitive } from "${ENGINE_PKG}/lib/case-insensitive-headers";\n`
     : "";
   // Emit identifier-shaped keys unquoted so Biome's formatter doesn't rewrite
   // the generated file on first lint:fix.
@@ -2340,11 +2591,11 @@ export function emitContractTs(opts: {
     .join(",\n");
 
   const fixtureImport =
-    auxFiles.length > 0 ? `// import { loadFixture } from "@/scraper/fixtures";\n` : "";
+    auxFiles.length > 0 ? `// import { loadFixture } from "${ENGINE_PKG}/scraper/fixtures";\n` : "";
 
   const clientImport = gql
-    ? `import { createGraphqlClient } from "@/scraper/graphql-client";`
-    : `import { createHttpClient } from "@/scraper/http-client";`;
+    ? `import { createGraphqlClient } from "${ENGINE_PKG}/scraper/graphql-client";`
+    : `import { createHttpClient } from "${ENGINE_PKG}/scraper/http-client";`;
 
   const queryConst =
     gql && gqlQuery
@@ -2372,7 +2623,7 @@ function getGql(baseUrl: string): GqlFn {
 }
 `
     : `
-const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottleneck: limiter, baseHeaders: BASE_HEADERS });
+const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottleneck: limiter, baseHeaders: BASE_HEADERS${bindOptionLiteral(headerBindings)} });
 `;
 
   const executeHttpBody = multiStepBody
@@ -2402,6 +2653,8 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
     ? `\n *   [ ] Trim UI-only fields from ${pascal.toUpperCase()}_QUERY (keep only fields you need)`
     : "";
 
+  const camel = siteId.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
+
   return `/**
  * Generated by recon-generate.ts — review before shipping.
  *
@@ -2409,14 +2662,17 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
  *   [ ] Narrow ${pascal}ResponseSchema to match the real response shape
  *   [ ] Adjust ${pascal}PayloadSchema to your actual request parameters
  *   [ ] Verify BASE_HEADERS — remove any that aren't load-bearing
+ *   [ ] Out-of-tree: \`pnpm add bottleneck zod\` — this file imports both
+ *       directly, and a strict node_modules layout (pnpm) won't resolve
+ *       them as transitive deps of @enricai/barnacle alone
  */
 
 import Bottleneck from "bottleneck";
 import { z } from "zod/v4";
 
 ${fixtureImport}${caseInsensitiveHeadersImport}${multipartBoolImport}${clientImport}
-import type { BrowserSession } from "@/scraper/session";
-import type { SitePlugin, SitePluginContext, SitePluginResult } from "@/site-plugin";
+import type { BrowserSession } from "${ENGINE_PKG}/scraper/session";
+import type { SitePlugin, SitePluginContext, SitePluginResult } from "${ENGINE_PKG}/site-plugin";
 import { run${pascal}BrowserFlow } from "@/sites/${siteId}/flows/browser-flow";
 
 const BASE_HEADERS: Record<string, string> = {
@@ -2440,13 +2696,14 @@ ${queryConst}${gqlCacheBlock}${fixtureComments}
  * Plugin for ${siteId}. Tries the direct-HTTP hot path first; falls back to
  * Stagehand automatically on schema drift or bot challenge.
  */
-export const ${siteId.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase())}Plugin: SitePlugin<${pascal}Payload, ${pascal}Response> = {
+export const ${camel}Plugin: SitePlugin<${pascal}Payload, ${pascal}Response> = {
   meta: {
     siteId: ${JSON.stringify(siteId)},
     displayName: ${JSON.stringify(pascal.replace(/([A-Z])/g, " $1").trim())},
     bodySchema: ${pascal}PayloadSchema,
     responseSchema: ${pascal}ResponseSchema,
-    defaultBaseUrl: ${JSON.stringify(baseUrl)},${hasMultipartStep ? "\n    multipart: true," : ""}
+    defaultBaseUrl: ${JSON.stringify(baseUrl)},
+    apiVersion: ${JSON.stringify(PLUGIN_API_VERSION)},${hasMultipartStep ? "\n    multipart: true," : ""}
   },
 
   /** Hot path: direct HTTP — no browser, no LLM tokens. */
@@ -2467,6 +2724,11 @@ ${executeHttpBody}
     return { data: raw as ${pascal}Response };
   },
 };
+
+// Out-of-tree loader resolves \`m.plugin ?? m.default ?? m\` — this named
+// alias is what BARNACLE_PLUGINS finds; without it the loader would fall
+// through to \`m.default\` (the response schema above) and 404 at runtime.
+export { ${camel}Plugin as plugin };
 `;
 }
 
@@ -2553,20 +2815,48 @@ function buildManifestInstruction(instruction: string, field: string | null): st
 }
 
 /**
+ * The JSON Schema `type` keyword for a sample value. Just the keyword, not a
+ * full schema: the manifest is a scaffold a human narrows, so it needs the real
+ * type a caller must send (`page` is a number, `filters` an array) without
+ * duplicating {@link inferZodSchema}'s recursive shape inference. `null` and
+ * `undefined` fall back to `string`, the safe default for a field a caller fills.
+ */
+function jsonSchemaTypeOf(value: unknown): "string" | "number" | "boolean" | "array" | "object" {
+  if (Array.isArray(value)) return "array";
+  if (value === null || value === undefined) return "string";
+  const t = typeof value;
+  if (t === "number") return "number";
+  if (t === "boolean") return "boolean";
+  if (t === "object") return "object";
+  return "string";
+}
+
+/**
  * Emits a config-only plugin manifest (`<siteId>.plugin.json`) from the recon
  * flow, as an alternative to the `.ts` trio for browser-only sites. Reuses the
  * SAME `resolveStepPayloadField` splice logic as the browser-flow emitter, so
  * every `{{ .request.<field> }}` reference also lands in the manifest's request
- * schema — the two cannot drift. The direct-HTTP hot path is intentionally
- * omitted; a site that needs it keeps the `.ts` path or wires `spec.httpModule`.
+ * schema — the two cannot drift.
+ *
+ * `recovered` carries the request contract the `.ts` path infers from real
+ * captures — the first POST body's fields plus form-schema discoveries — so
+ * `--emit config` no longer throws that away and emit a request schema built
+ * only from the handful of flow-step splice hints. The direct-HTTP hot path is
+ * still omitted; a site that needs it keeps the `.ts` path or wires
+ * `spec.httpModule` by hand.
  */
 export function emitConfigManifest(opts: {
   siteId: string;
   displayName: string;
   baseUrl: string;
   flowSteps: FlowStepInput[];
+  vocabulary?: ReconVocabulary;
+  /** First action body: its top-level keys are the caller's real request fields. */
+  inputBody?: unknown;
+  /** Form-schema fields the recon recovered, added as caller-supplied strings. */
+  recoveredFields?: Iterable<string>;
 }): string {
-  const { siteId, displayName, baseUrl, flowSteps } = opts;
+  const { siteId, displayName, baseUrl, flowSteps, vocabulary, inputBody, recoveredFields } = opts;
   const payloadFieldNames = new Set<string>();
 
   const steps = flowSteps.map((step) => {
@@ -2575,7 +2865,8 @@ export function emitConfigManifest(opts: {
     const field = resolveStepPayloadField(
       instruction,
       isObj ? step.payloadField : undefined,
-      isObj ? step.payloadFieldNone : undefined
+      isObj ? step.payloadFieldNone : undefined,
+      vocabulary
     );
     if (field !== null) payloadFieldNames.add(field);
     const rewritten = buildManifestInstruction(instruction, field);
@@ -2586,8 +2877,22 @@ export function emitConfigManifest(opts: {
     return { step: rewritten, optional, upload, submitStep };
   });
 
-  const requestProperties = Object.fromEntries(
-    [...payloadFieldNames].sort().map((name) => [name, { type: "string" }])
+  // The request surface, widest wins: a flow splice, a recovered form field, or
+  // a key from the first POST body all name something a caller controls. Splices
+  // and recovered fields are strings (the browser flow fills them as text); a
+  // body key keeps its captured type so a caller sends `page: 1`, not `"1"`.
+  const requestProperties: Record<string, { type: string }> = {};
+  for (const name of payloadFieldNames) requestProperties[name] = { type: "string" };
+  for (const name of recoveredFields ?? []) requestProperties[name] = { type: "string" };
+  if (inputBody !== null && typeof inputBody === "object" && !Array.isArray(inputBody)) {
+    for (const [name, value] of Object.entries(inputBody)) {
+      requestProperties[name] = { type: jsonSchemaTypeOf(value) };
+    }
+  }
+  const sortedRequestProperties = Object.fromEntries(
+    Object.keys(requestProperties)
+      .sort()
+      .map((name) => [name, requestProperties[name]])
   );
 
   const manifest = {
@@ -2596,7 +2901,7 @@ export function emitConfigManifest(opts: {
     metadata: { siteId, displayName },
     spec: {
       defaultBaseUrl: baseUrl,
-      request: { type: "object", properties: requestProperties },
+      request: { type: "object", properties: sortedRequestProperties },
       response: {
         type: "object",
         description: "TODO: declare the fields this site returns (recon leaves this empty).",
@@ -2630,8 +2935,16 @@ export function emitBrowserFlowTs(opts: {
   flowSteps: FlowStepInput[];
   isSubmissionFlow: boolean;
   hasMultipartStep?: boolean;
+  vocabulary?: ReconVocabulary;
 }): { code: string; payloadFieldNames: Set<string> } {
-  const { siteId, pascal, flowSteps, isSubmissionFlow, hasMultipartStep = false } = opts;
+  const {
+    siteId,
+    pascal,
+    flowSteps,
+    isSubmissionFlow,
+    hasMultipartStep = false,
+    vocabulary,
+  } = opts;
 
   const payloadFieldNames = new Set<string>();
   const hasUploadStep = flowSteps.some((s) => typeof s !== "string" && s.upload === true);
@@ -2642,7 +2955,8 @@ export function emitBrowserFlowTs(opts: {
     const field = resolveStepPayloadField(
       instruction,
       isObj ? step.payloadField : undefined,
-      isObj ? step.payloadFieldNone : undefined
+      isObj ? step.payloadFieldNone : undefined,
+      vocabulary
     );
     if (field !== null) payloadFieldNames.add(field);
     const instructionExpr = buildStepInstructionExpr(instruction, field);
@@ -2690,10 +3004,10 @@ export function emitBrowserFlowTs(opts: {
 import type { Stagehand } from "@browserbasehq/stagehand";
 import { z } from "zod/v4";
 
-import { buildAnthropicClient } from "@/lib/llm/anthropic-client";
-import { getLogger } from "@/lib/logging";
-import { type HealingFlowStep, runHealingFlow, waitForSpaReady } from "@/scraper/flow-runner";
-import { guardedExtract } from "@/scraper/stagehand-guard";
+import { buildAnthropicClient } from "${ENGINE_PKG}/lib/llm/anthropic-client";
+import { getLogger } from "${ENGINE_PKG}/lib/logging";
+import { type HealingFlowStep, runHealingFlow, waitForSpaReady } from "${ENGINE_PKG}/scraper/flow-runner";
+import { guardedExtract } from "${ENGINE_PKG}/scraper/stagehand-guard";
 import type { ${pascal}Payload, ${pascal}Response } from "@/sites/${siteId}/contract";
 
 const logger = getLogger({ name: "${siteId}-browser-flow" });
@@ -2753,32 +3067,86 @@ ${flowStepsBlock}
   return { code, payloadFieldNames };
 }
 
-function emitIndexTs(opts: { siteId: string; pascal: string }): string {
+/** Generates the site's index.ts barrel — exported so the out-of-tree e2e
+ * test can drive the emitter directly without spawning the CLI. */
+export function emitIndexTs(opts: { siteId: string; pascal: string }): string {
   const { siteId } = opts;
   const camel = siteId.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
   return `/**
  * Generated by recon-generate.ts.
- * Register this built-in plugin by adding it to \`BUILTIN_SITE_PLUGINS\` in
- * src/plugins/discover.ts:
+ * Build this package, then point BARNACLE_PLUGINS at the compiled module —
+ * no core edits required:
  *
- *   import { ${camel}Plugin } from "@/sites/${siteId}";
- *   BUILTIN_SITE_PLUGINS.push(${camel}Plugin as SitePlugin<unknown, unknown>);
+ *   BARNACLE_PLUGINS=./dist/sites/${siteId}/index.js pnpm start
+ *
+ * The loader resolves \`m.plugin ?? m.default ?? m\` — the \`plugin\` alias
+ * below is what it finds.
  */
 
-export { ${camel}Plugin } from "@/sites/${siteId}/contract";
+export { ${camel}Plugin, ${camel}Plugin as plugin } from "@/sites/${siteId}/contract";
 `;
 }
 
 // ── main ──────────────────────────────────────────────────────────────────────
+
+/**
+ * Resolves the vocabulary for this run and reports which one is in play.
+ *
+ * The deprecation warning is the whole point of the 1.x window: removing a
+ * built-in default that consumers silently depend on is only safe if the
+ * transition is loud. It fires only when the built-in would actually change the
+ * output — a flow with nothing to splice gets no nag it can't act on.
+ */
+async function resolveVocabulary(
+  specifier: string,
+  flowSteps: FlowStepInput[]
+): Promise<ReconVocabulary> {
+  if (specifier) {
+    const vocabulary = await loadReconVocabulary(specifier, process.cwd());
+    logger.info(
+      `vocabulary: ${specifier === VOCABULARY_NONE ? "none (splicing disabled)" : `${vocabulary.table.length} row(s) from ${specifier}`}`
+    );
+    return vocabulary;
+  }
+
+  // Warn only when the built-in table itself changes the outcome. A step with an
+  // explicit payloadField resolves the same under any vocabulary, so nagging
+  // about it would send consumers to fix something that isn't broken.
+  const builtinChangesOutcome = flowSteps.some((step) => {
+    const isObj = typeof step !== "string";
+    const instruction = isObj ? step.step : step;
+    const explicit = isObj ? step.payloadField : undefined;
+    const forceNone = isObj ? step.payloadFieldNone : undefined;
+    const withBuiltin = resolveStepPayloadField(
+      instruction,
+      explicit,
+      forceNone,
+      DEPRECATED_BUILTIN_ATS_VOCABULARY
+    );
+    const withNothing = resolveStepPayloadField(instruction, explicit, forceNone, EMPTY_VOCABULARY);
+    return withBuiltin !== withNothing;
+  });
+  if (builtinChangesOutcome) {
+    logger.warn(
+      `DeprecationWarning: no --vocabulary given, falling back to the built-in recruiting table. ` +
+        `It is removed in 2.0.0, after which this is an error. Fix: create a vocabulary module ` +
+        `exporting a ReconVocabulary (see @enricai/barnacle/recon/vocabulary) and pass ` +
+        `--vocabulary ./src/recon/<name>.ts, or --vocabulary none if this site splices no caller data.`
+    );
+  }
+  return DEPRECATED_BUILTIN_ATS_VOCABULARY;
+}
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   let siteId = "";
   let force = false;
   let emit: "ts" | "config" = "ts";
+  let vocabularySpecifier = "";
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--site-id" && args[i + 1]) siteId = args[++i]!;
+    else if (args[i] === "--vocabulary" && args[i + 1]) vocabularySpecifier = args[++i]!;
     else if (args[i] === "--force") force = true;
     else if (args[i] === "--emit" && args[i + 1]) {
       const value = args[++i]!;
@@ -2850,6 +3218,11 @@ async function main(): Promise<void> {
       return [] as string[];
     }
   })();
+
+  // Resolved once and threaded down, never captured into a module const: a
+  // module-level const would freeze at import time, which is the bug that makes
+  // RECON_QUESTION_KEYWORDS silently inert for anyone setting it after load.
+  const vocabulary = await resolveVocabulary(vocabularySpecifier, flowSteps);
 
   const pascal = toPascalCase(siteId);
   const baseUrl = deriveBaseUrl(captures);
@@ -3031,6 +3404,7 @@ async function main(): Promise<void> {
         );
         if (draftPostStep && !draftPostStep.produces.some((p) => p.name === "draftId")) {
           draftPostStep.produces.push({
+            kind: "body",
             name: "draftId",
             pathExpr: `${draftPostStep.varName}.APPDraftId`,
             path: ["APPDraftId"],
@@ -3042,6 +3416,7 @@ async function main(): Promise<void> {
         );
         if (attachPostStep && !attachPostStep.produces.some((p) => p.name === "attachmentId")) {
           attachPostStep.produces.push({
+            kind: "body",
             name: "attachmentId",
             pathExpr: `${attachPostStep.varName}.Id`,
             path: ["Id"],
@@ -3116,6 +3491,7 @@ async function main(): Promise<void> {
     : multiStepBody;
 
   const hasMultipartStep = actionSteps.some((s) => s.isMultipart);
+  const headerBindings = collectHeaderBindings(actionSteps);
   // For submission flows the final action's response body is the most useful
   // shape inference target (it's the terminal success signal). Fall back to
   // the replay body for single-endpoint sites.
@@ -3136,6 +3512,9 @@ async function main(): Promise<void> {
         displayName: pascal,
         baseUrl,
         flowSteps,
+        vocabulary,
+        inputBody,
+        recoveredFields: [...discoveredFormFields, ...discoveredOptionFields],
       })
     );
     logger.info(`wrote ${manifestPath}`);
@@ -3157,6 +3536,7 @@ async function main(): Promise<void> {
     flowSteps,
     isSubmissionFlow,
     hasMultipartStep,
+    vocabulary,
   });
 
   writeFileSync(
@@ -3185,6 +3565,7 @@ async function main(): Promise<void> {
       discoveredRawOptionFields,
       discoveredAdditionalBodyKeys,
       payloadFieldNames: browserFlow.payloadFieldNames,
+      headerBindings,
     })
   );
   logger.info(`wrote ${outDir}/contract.ts`);

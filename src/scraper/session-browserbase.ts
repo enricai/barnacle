@@ -6,6 +6,7 @@ import { toErrorMessage } from "@/lib/errors";
 import { getLogger } from "@/lib/logging";
 import {
   type BrowserSession,
+  type BrowserSessionOptions,
   createTimeoutFetch,
   pickRandomViewport,
 } from "@/scraper/session-shared";
@@ -114,10 +115,23 @@ function makeFilteredStagehandLogger(pinoLogger: Logger): {
  * significantly better to Windows OS signals than the default mac/linux mix.
  * The combination mirrors a production Stagehand preset validated against such
  * sites, not Browserbase's defaults.
+ *
+ * `browserbaseSessionCreateParams` forwards caller-supplied Browserbase session
+ * create params (`timeout` being the intended knob — seconds, per Browserbase's
+ * `SessionCreateParams`). They are spread first so `proxies` and
+ * `browserSettings.fingerprint` land after and win — ordering is the only thing
+ * keeping those ours, so keep the caller spread above them.
+ *
+ * `projectId` is dropped from the caller params on top of being re-set below —
+ * belt and suspenders. Stagehand resolves it as `overrideProjectId ?? projectId`,
+ * so a caller value that reached the spread would beat the top-level one and
+ * silently route the session into a different Browserbase project. The re-set
+ * already prevents that; the strip is what keeps it prevented if the re-set is
+ * ever moved or dropped.
  */
-export async function createBrowserbaseBrowserSession(opts?: {
-  advancedStealth?: boolean;
-}): Promise<BrowserSession> {
+export async function createBrowserbaseBrowserSession(
+  opts?: Pick<BrowserSessionOptions, "advancedStealth" | "browserbaseSessionCreateParams">
+): Promise<BrowserSession> {
   if (!config.scraper.browserbaseApiKey) {
     throw new Error("BROWSERBASE_API_KEY is required for the browserbase provider");
   }
@@ -131,6 +145,8 @@ export async function createBrowserbaseBrowserSession(opts?: {
   const viewport = pickRandomViewport();
   const useResidentialProxy = config.scraper.proxyType.toLowerCase() === "residential";
   const advancedStealth = opts?.advancedStealth === true;
+  const { projectId: _callerProjectId, ...customSessionParams } =
+    opts?.browserbaseSessionCreateParams ?? {};
 
   if (config.scraper.useBedrock) {
     logger.info(`using bedrock model ${config.bedrock.model} in region ${config.bedrock.region}`);
@@ -169,9 +185,11 @@ export async function createBrowserbaseBrowserSession(opts?: {
       apiKey: config.scraper.browserbaseApiKey,
       projectId: config.scraper.browserbaseProjectId,
       browserbaseSessionCreateParams: {
+        ...customSessionParams,
         projectId: config.scraper.browserbaseProjectId,
         proxies: useResidentialProxy,
         browserSettings: {
+          ...customSessionParams.browserSettings,
           ...(advancedStealth ? { advancedStealth: true, solveCaptchas: true } : {}),
           fingerprint,
         },
