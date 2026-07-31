@@ -180,13 +180,14 @@ describe("flow-runner/executeStepWithHealing — observe-act overrides method fo
     const urls = { current: "https://apply.acme.example/jobs/1/apply" };
     const page = makeFakePage(urls);
     // Create a custom frame target that returns "California" for inputValue to satisfy verification
+    // and different snapshot values pre/post to trigger verification success via textChanged
     let snapshotCount = 0;
     const childFrameTarget = {
       frame: {} as FrameTarget["frame"],
       frameSelector: FRAME_SELECTOR,
       evaluate: vi.fn().mockImplementation(async () => {
         snapshotCount++;
-        return { html: snapshotCount, text: `${snapshotCount}:value-${snapshotCount}` };
+        return { html: snapshotCount, text: `${snapshotCount}:California-value-${snapshotCount}` };
       }),
       locator: vi.fn().mockReturnValue({
         first: () => ({
