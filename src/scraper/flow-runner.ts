@@ -1276,9 +1276,9 @@ export function shouldSkipTechnique(params: {
   // and the wizard did NOT move forward (non-advancing POST, or no effect),
   // re-observing/re-clicking the same button cannot move it — only a rephrase (a
   // different action) or the terminal replan can. So skip observe-act /
-  // structured-click / observe-act-exclude and let the cascade reach attempt-5
+  // structured-click / observe-act-exclude and let the cascade reach attempt-4
   // rephrase (kept — the ONE attempt that has ever recovered an advance) or fail
-  // fast to replan. act-string (attempt 1) and llm-rephrase (attempt 5) are never
+  // fast to replan. act-string (attempt 1) and llm-rephrase (attempt 4) are never
   // skipped here. (The `isAdvanceStalled` early-exit already handles the
   // network-fired subcase by breaking to replan; this also covers the
   // no-effect-at-all subcase, where that early-exit does not fire.)
@@ -1302,7 +1302,7 @@ export function shouldSkipTechnique(params: {
   // structured-click / observe-act-exclude re-resolves the SAME
   // light-DOM-only view of the page and would no-op identically, so skip
   // straight to deep-submit-locator (attempt 2) instead. llm-rephrase
-  // (attempt 5) is never skipped — a differently-worded instruction is still
+  // (attempt 4) is never skipped — a differently-worded instruction is still
   // a distinct attempt worth trying if the deep locator also fails. Gated on
   // submitShapedStep: the deep submit-control locator ranks submit-shaped
   // candidates only, so on a non-submit control (e.g. a radio/checkbox) it
@@ -1696,7 +1696,7 @@ let billingErrorLoggedThisProcess = false;
 
 /**
  * Getter for the module-private billing-exhausted flag. Exported so the
- * cascade's attempt-5 guard can read it without coupling to module-level
+ * cascade's attempt-4 guard can read it without coupling to module-level
  * state directly; also lets tests reset / observe the flag without
  * mutating shared globals.
  */
@@ -7760,7 +7760,7 @@ export async function executeStepWithHealing(params: {
       // Attempt 1 of an interior advance step didn't verify (we're past the
       // `if (verified) return` above): the wizard didn't move forward. Mark it so
       // attempts 2-4 skip the proven-dead re-observe/re-click techniques and the
-      // cascade goes straight to attempt-5 rephrase / replan.
+      // cascade goes straight to attempt-4 rephrase / replan.
       advanceUnmovedAfterAttempt1 =
         advanceTransitionBodyPattern !== null &&
         !isFinalStep &&
