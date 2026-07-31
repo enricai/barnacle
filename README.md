@@ -878,3 +878,9 @@ readinessProbe:
 - Testing guide: [docs/testing.md](./docs/testing.md)
 - Telemetry & LLM judging concept guide: [docs/telemetry-and-judging.md](./docs/telemetry-and-judging.md)
 - Per-site recon findings: [docs/target-recon.md](./docs/target-recon.md) (populated after first `pnpm run recon:summarize`)
+
+## License
+
+[MIT](./LICENSE) © Enricai
+
+Contributions welcome — see [CONTRIBUTING.md](./CONTRIBUTING.md).

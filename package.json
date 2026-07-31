@@ -1,15 +1,37 @@
 {
   "name": "barnacle",
   "version": "0.1.0",
-  "private": true,
   "description": "Site-agnostic browser automation engine. POST a structured payload to a typed endpoint; Barnacle drives a Steel + Stagehand session through the target site and returns a structured result.",
+  "license": "MIT",
+  "author": "Enricai",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/enricai/barnacle.git"
+  },
+  "bugs": {
+    "url": "https://github.com/enricai/barnacle/issues"
+  },
+  "homepage": "https://github.com/enricai/barnacle#readme",
+  "keywords": [
+    "browser-automation",
+    "stagehand",
+    "steel",
+    "scraping",
+    "fastify"
+  ],
+  "files": [
+    "dist",
+    "prisma",
+    "README.md",
+    "LICENSE"
+  ],
   "packageManager": "pnpm@10.4.1",
   "engines": {
     "node": ">=22.0.0"
   },
   "main": "dist/server.js",
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.build.json && tsc-alias -p tsconfig.build.json && (test -d src/sites && cp -r src/sites dist/sites || true)",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && tsc-alias -p tsconfig.build.json && (test -d src/sites && find src/sites -type d -name fixtures | while read d; do mkdir -p \"dist/${d#src/}\" && cp -r \"$d/.\" \"dist/${d#src/}/\"; done || true) && rm -f dist/tsconfig.tsbuildinfo",
     "clean": "rm -rf node_modules dist",
     "dev": "tsx watch --env-file=.env src/server.ts",
     "start": "node dist/server.js",

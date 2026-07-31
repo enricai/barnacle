@@ -23,10 +23,8 @@
  *     --url https://example.com \
  *     --flow-file src/sites/my-site/recon-flow.json
  *
- *   # Capture every network response (useful for non-GraphQL/REST sites):
- *   pnpm tsx src/scripts/recon-browser.ts --url https://example.com --capture-all
- *
- *   # Capture page-load XHRs only (no interaction — pure GET-style SPAs):
+ *   # Captures every network response — no URL-shape filtering. Use grep
+ *   # against /tmp/recon/graphql/ if you only want specific endpoints.
  *   pnpm tsx src/scripts/recon-browser.ts --url https://example.com
  *
  * The script needs STEEL_API_KEY and either ANTHROPIC_API_KEY or USE_BEDROCK=true
@@ -41,6 +39,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import Anthropic from "@anthropic-ai/sdk";
+import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import type { Action, Page, Stagehand } from "@browserbasehq/stagehand";
 import { z } from "zod/v4";
 
@@ -63,18 +62,6 @@ const logger = getScriptLogger("recon-browser");
 const GOTO_TIMEOUT_MS = 120_000;
 /** Post-action pause between flow steps — gives the page time to settle. */
 const STEP_PAUSE_MS = 2_000;
-
-/**
- * URL patterns we care about — GraphQL, REST API paths, and static JSON.
- * Intentionally conservative: add `--capture-all` for sites whose API paths
- * don't match these patterns (e.g. `/catalog`, `/products` without `/api/`).
- */
-const CAPTURE_PATTERNS = [/\/graph/, /\/api\//, /\/graphql/, /\/v1\//, /\.json(\?|$)/];
-
-function shouldCapture(url: string, captureAll: boolean): boolean {
-  if (captureAll) return true;
-  return CAPTURE_PATTERNS.some((p) => p.test(url));
-}
 
 /**
  * Attempts to decode opaque request parameters: tries JSON parse, then
@@ -123,8 +110,8 @@ const RECENT_CAPTURES_WINDOW = 20;
  */
 function wireNetworkCapture(
   page: Page,
-  captureAll: boolean,
   counter: { n: number },
+  signalCounter: { n: number },
   recentCaptures: string[],
   getCurrentPhase: () => string
 ): () => void {
@@ -143,7 +130,6 @@ function wireNetworkCapture(
   type GetResponseBodyResponse = { body: string; base64Encoded: boolean };
 
   const onRequest = (params: RequestWillBeSentEvent): void => {
-    if (!shouldCapture(params.request.url, captureAll)) return;
     inFlight.set(params.requestId, {
       url: params.request.url,
       method: params.request.method,
@@ -203,6 +189,23 @@ function wireNetworkCapture(
     }
 
     const idx = String(counter.n++).padStart(3, "0");
+    // The verifier reads `signalCounter` (not `counter`) so background polls
+    // and page-load chrome don't poison the "did this action cause something"
+    // signal. We approximate "action-driven" with "non-GET method": real form
+    // submits, uploads, and state-change calls are POST/PUT/PATCH/DELETE.
+    // GETs are page-load chrome, polls, and idle prefetches — none of which
+    // are caused by the user step we just executed.
+    //
+    // This replaces a prior URL-shape regex (POLLING_URL_PATTERNS) that
+    // misclassified jQuery-cache-busted page-load GETs as polls. See
+    // feedback_no_regex_open_sets — URL classification is an open-set
+    // problem; HTTP method is a closed-set discriminator.
+    //
+    // Filename indexing stays on `counter` so polls still get unique
+    // filenames on disk.
+    if (req.method !== "GET") {
+      signalCounter.n++;
+    }
     const opLabel = operationName ?? new URL(req.url).pathname.split("/").pop() ?? "unknown";
     const filename = `${idx}-${phase}-${opLabel}.json`;
 
@@ -269,6 +272,20 @@ const REPLAN_MAX_STEPS = 20;
 interface StepSnapshot {
   networkCount: number;
   url: string;
+  /**
+   * `document.body.outerHTML.length`. Measurement-only — pre/post delta
+   * exposes whether a click triggered a client-side state change that
+   * doesn't show up in network or URL (e.g. React view swap inside an SPA).
+   * Not consumed by the verifier yet; gathered for threshold tuning.
+   */
+  bodyHtmlLength: number;
+  /**
+   * `document.body.innerText.length + ":" + first 200 chars`. A cheap,
+   * deterministic proxy for "did the visible text change" that filters
+   * React-internal attribute churn (which moves `bodyHtmlLength` without
+   * moving anything the user perceives). Measurement-only.
+   */
+  visibleTextSignature: string;
 }
 
 /** One attempt's audit trail — included verbatim in the failure dump. */
@@ -294,8 +311,39 @@ interface AttemptRecord {
   verifiedBy: "network" | "url" | "dom" | null;
 }
 
-function snapshotPage(page: Page, counter: { n: number }): StepSnapshot {
-  return { networkCount: counter.n, url: page.url() };
+/**
+ * Trust boundary: static string literal, fixed at compile time. No interpolation
+ * means no injection surface. Runs in browser context and returns a typed-narrow
+ * shape via Runtime.callFunctionOn.
+ */
+const DOM_SNAPSHOT_EXPR = `(() => { const b = document.body; if (!b) return { html: 0, text: "" }; const t = b.innerText || ""; return { html: (b.outerHTML || "").length, text: t.length + ":" + t.slice(0, 200) }; })()`;
+
+async function snapshotPage(page: Page, signalCounter: { n: number }): Promise<StepSnapshot> {
+  let bodyHtmlLength = 0;
+  let visibleTextSignature = "";
+  try {
+    const result = await page.evaluate(DOM_SNAPSHOT_EXPR);
+    if (
+      result !== null &&
+      typeof result === "object" &&
+      "html" in result &&
+      "text" in result &&
+      typeof (result as { html: unknown }).html === "number" &&
+      typeof (result as { text: unknown }).text === "string"
+    ) {
+      bodyHtmlLength = (result as { html: number }).html;
+      visibleTextSignature = (result as { text: string }).text;
+    }
+  } catch {
+    // Snapshot is observational; on failure, defaults to 0/"" so the verifier
+    // sees no delta. Real state-class checks already cover the verified path.
+  }
+  return {
+    networkCount: signalCounter.n,
+    url: page.url(),
+    bodyHtmlLength,
+    visibleTextSignature,
+  };
 }
 
 /**
@@ -404,7 +452,65 @@ Rewrite the instruction so a Stagehand act() call can resolve it unambiguously t
   }
 }
 
-const REPLAN_RESPONSE_SCHEMA = z.array(z.string().min(1)).min(1).max(REPLAN_MAX_STEPS);
+/**
+ * Replanner response shape. Sent to Anthropic via `zodOutputFormat` so the API
+ * enforces the schema and rejects malformed output (no prose preambles, no
+ * markdown code fences, no schema-violating shapes). We accept either a
+ * replanned step array or an explicit "impossible" outcome — the latter is
+ * the structured replacement for the old IMPOSSIBLE magic string.
+ */
+/**
+ * Flow step shape. A bare string is a required step (backward-compatible with
+ * pre-N+23 flow files). An object form with `optional: true` lets the cascade
+ * skip the step cleanly when Stagehand's act+observe finds no target — the
+ * intended replacement for "If X is visible, do Y" conditionals that fail the
+ * cascade today even when the conditional should have been skipped.
+ */
+const RECON_FLOW_STEP_SCHEMA = z.union([
+  z.string().min(1),
+  z.object({
+    step: z.string().min(1),
+    optional: z.boolean().default(false),
+    /**
+     * When true, dispatches to the site-agnostic upload primitive
+     * (setInputFiles with the cached fixture) instead of the normal cascade.
+     * Required because resume-upload widgets often hide the real
+     * <input type="file"> behind styled buttons that Stagehand can't click.
+     *
+     * Explicit field per the no-regex-on-open-sets feedback — pre-N+24 code
+     * pattern-matched the step text to decide dispatch, which false-positived
+     * on click steps that happened to mention "resume" or "upload".
+     */
+    upload: z.boolean().default(false),
+  }),
+]);
+const RECON_FLOW_SCHEMA = z.array(RECON_FLOW_STEP_SCHEMA).min(1);
+
+/** Internal normalized step shape. Source-flow strings normalize with all flags false. */
+interface NormalizedStep {
+  instruction: string;
+  optional: boolean;
+  upload: boolean;
+}
+
+function normalizeFlow(steps: z.infer<typeof RECON_FLOW_SCHEMA>): NormalizedStep[] {
+  return steps.map((s) =>
+    typeof s === "string"
+      ? { instruction: s, optional: false, upload: false }
+      : { instruction: s.step, optional: s.optional, upload: s.upload }
+  );
+}
+
+const REPLAN_RESPONSE_SCHEMA = z.discriminatedUnion("outcome", [
+  z.object({
+    outcome: z.literal("replan"),
+    steps: z.array(RECON_FLOW_STEP_SCHEMA).min(1).max(REPLAN_MAX_STEPS),
+  }),
+  z.object({
+    outcome: z.literal("impossible"),
+    reason: z.string().min(1),
+  }),
+]);
 
 /**
  * Pull the raw-DOM and unfocused-observe evidence out of an on-disk failure
@@ -449,7 +555,7 @@ async function replanRemainingFlow(params: {
   page: Page;
   stagehand: Stagehand;
   captureFn?: CaptureFn;
-}): Promise<string[] | null> {
+}): Promise<NormalizedStep[] | null> {
   const {
     client,
     originalFlow,
@@ -509,63 +615,99 @@ Rewrite the remaining flow so the agent can reach the user's original intent fro
 - drop redundant steps
 - rephrase steps to be unambiguous given the current page state
 
+CRITICAL: single-action steps only.
+Each step in your output array MUST invoke exactly ONE DOM action:
+- one \`fill\` on one input, OR
+- one \`click\` on one button/radio/checkbox, OR
+- one \`selectOption\` on one dropdown, OR
+- one observable trigger like "upload the resume PDF".
+
+The underlying agent (Stagehand \`act()\`) can only execute one action per step.
+Multi-action steps silently drop all but one action and corrupt downstream form state.
+
+WRONG (multi-action — DO NOT emit steps like these):
+  "Fill in First Name 'Reginald', Last Name 'Reconaldo', Email '...'"
+  "If Street is visible fill Street; if City is visible fill City; then click Continue"
+  "Fill the signature field with 'Name'; check the I agree box; click Submit"
+
+RIGHT (single-action — emit steps like these):
+  "Fill in the First Name field with 'Reginald'"
+  "Fill in the Last Name field with 'Reconaldo'"
+  "Fill in the Email field with '...'"
+  "If a Street Address field is visible, fill it with '123 Test Lane'"
+  "If a City field is visible, fill it with 'Austin'"
+  "Click the Continue button"
+  "Fill the signature field with 'Name'"
+  "Check the I agree checkbox"
+  "Click the Submit button"
+
+A step CAN combine ONE conditional + ONE action ("If X is visible, do Y") — that
+counts as single-action because the conditional only gates whether the action
+runs. But NEVER combine multiple actions even when they're each conditional.
+
 Constraints:
 - Do NOT include the already-completed steps in your output — only the new remaining tail to execute from here.
-- Return ONLY a JSON array of strings — no prose, no markdown, no code fences.
-- If the user's intent is unreachable from this page state, reply with the literal string IMPOSSIBLE.
-- Maximum ${REPLAN_MAX_STEPS} steps.`;
+- If you can recover the flow, return outcome="replan" with the steps array.
+- If the user's intent is unreachable from this page state, return outcome="impossible" with a brief reason.
+- Maximum ${REPLAN_MAX_STEPS} steps.
+- Each step is a single DOM action (see CRITICAL section above).
+
+OPTIONAL STEPS:
+Each step entry can be a bare string (required step — cascade fails if the
+target is missing) OR an object \`{step: "...", optional: true}\` (cascade
+skips cleanly if Stagehand observes no candidates).
+
+Use optional ONLY when the action is genuinely conditional on the page having
+a specific element. Examples:
+  - "If a 'Currently employed here' checkbox is visible, check it" → emit as
+    \`{step: "Check the 'Currently employed here' checkbox", optional: true}\`
+  - "If an 'Add Experience' button is visible, click it" → emit as
+    \`{step: "Click the 'Add Experience' button", optional: true}\`
+
+Do NOT mark required actions optional (form fills the user needs filled, the
+Continue/Submit button at the end of a section, etc.) — that would silently
+skip them when the cascade can't see them, leaving the form half-filled.
+
+UPLOAD STEPS:
+A step that uploads a file to a file input MUST be emitted as
+\`{step: "...", upload: true}\` so the cascade routes it to the file-upload
+primitive (which handles widgets that hide the real <input type=file> behind
+a styled button Stagehand can't click).
+
+Do NOT mark non-upload actions as upload — even if their description mentions
+"upload" or "resume". Examples:
+  - "Upload the test resume PDF when the upload screen appears" → emit as
+    \`{step: "Upload the test resume PDF", upload: true}\`
+  - "Click Continue past the resume upload screen" → emit as the bare string
+    "Click Continue past the resume upload screen" (NOT upload — it's a click).
+  - "Click the Remove button to delete the previous resume" → bare string
+    (NOT upload — it's a click).
+
+A step CAN be both upload and optional (object form with both fields set),
+but that's rare — most upload steps are required.`;
 
   const model = anthropicModelName();
   const t0 = performance.now();
   try {
-    const response = await client.messages.create({
+    const response = await client.messages.parse({
       model,
       max_tokens: 2000,
       messages: [{ role: "user", content: prompt }],
+      output_config: {
+        format: zodOutputFormat(REPLAN_RESPONSE_SCHEMA),
+      },
     });
     const latencyMs = performance.now() - t0;
-    const block = response.content.find((b) => b.type === "text");
-    const rawText = block?.type === "text" ? block.text.trim() : "";
-
-    if (rawText === "IMPOSSIBLE" || rawText.length === 0) {
-      await captureFn({
-        callId: randomUUID(),
-        callType: CALL_TYPE_RECON_REPLAN,
-        model,
-        systemPrompt: null,
-        userContent: prompt,
-        responseContent: rawText || null,
-        parsedOk: false,
-        inputTokens: response.usage?.input_tokens ?? null,
-        outputTokens: response.usage?.output_tokens ?? null,
-        latencyMs,
-        success: false,
-      });
-      return null;
+    // Structured output: SDK throws on JSON or schema-validation failure, so
+    // reaching this point means parsed_output is the validated object. The
+    // typings keep T | null in the signature for the "no format supplied"
+    // branch — guard so the discriminated-union narrows cleanly below.
+    const parsed = response.parsed_output;
+    if (parsed === null) {
+      throw new Error("structured-output enabled but parsed_output is null");
     }
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(rawText);
-    } catch {
-      await captureFn({
-        callId: randomUUID(),
-        callType: CALL_TYPE_RECON_REPLAN,
-        model,
-        systemPrompt: null,
-        userContent: prompt,
-        responseContent: rawText,
-        parsedOk: false,
-        inputTokens: response.usage?.input_tokens ?? null,
-        outputTokens: response.usage?.output_tokens ?? null,
-        latencyMs,
-        success: false,
-      });
-      return null;
-    }
-
-    const validated = REPLAN_RESPONSE_SCHEMA.safeParse(parsed);
-    const parsedOk = validated.success;
+    const textBlock = response.content.find((b) => b.type === "text");
+    const rawText = textBlock?.type === "text" ? textBlock.text : "";
 
     await captureFn({
       callId: randomUUID(),
@@ -574,15 +716,15 @@ Constraints:
       systemPrompt: null,
       userContent: prompt,
       responseContent: rawText,
-      parsedOk,
+      parsedOk: true,
       inputTokens: response.usage?.input_tokens ?? null,
       outputTokens: response.usage?.output_tokens ?? null,
       latencyMs,
-      success: parsedOk,
+      success: true,
     });
 
-    if (!parsedOk) return null;
-    return validated.data;
+    if (parsed.outcome === "replan") return normalizeFlow(parsed.steps);
+    return null;
   } catch {
     await captureFn({
       callId: randomUUID(),
@@ -675,11 +817,18 @@ function dumpStepFailure(params: {
   return target;
 }
 
-/** Stagehand action methods that mutate DOM state without firing a request. */
+/**
+ * Stagehand action methods that mutate DOM state without firing a request.
+ * Reconcile against `SupportedUnderstudyAction` in
+ * `node_modules/@browserbasehq/stagehand/dist/esm/lib/v3/types/private/handlers.js`
+ * when bumping Stagehand — new state-class methods must be added here, or the
+ * verifier falls back to the network/URL signal and silently false-fails.
+ */
 const STATE_CLASS_METHODS = new Set([
   "fill",
   "type",
   "selectOption",
+  "selectOptionFromDropdown",
   "check",
   "uncheck",
   "setInputFiles",
@@ -692,6 +841,113 @@ const STATE_CLASS_METHODS = new Set([
  */
 function xpathBody(selector: string): string | null {
   return selector.startsWith("xpath=") ? selector.slice("xpath=".length) : null;
+}
+
+/** How long the upload primitive waits for a post-setInputFiles network POST. */
+const UPLOAD_NETWORK_TIMEOUT_MS = 5_000;
+/** Polling interval while waiting for the upload's network signal. */
+const UPLOAD_NETWORK_POLL_INTERVAL_MS = 250;
+
+/**
+ * Site-agnostic file-upload primitive that bypasses Stagehand's click-and-act
+ * cascade for steps explicitly marked `upload: true` in the flow file.
+ *
+ * Why this exists: many ATS upload widgets wrap the real `<input type="file">`
+ * behind a styled button or dropdown menu (jQuery File Upload + Bootstrap,
+ * Material UI menus, custom React popovers). Stagehand's CDP click often
+ * fails to trigger the JS handlers that reveal the hidden file input — the
+ * verifier correctly reports the click had no observable effect, but no
+ * amount of replanning resolves it because no clickable path actually
+ * surfaces the input.
+ *
+ * Dispatch is structural (the caller passes `isUploadStep: boolean` from the
+ * flow file's `upload: true` field), NOT text-matched on the step
+ * instruction. The pre-N+24 regex-based dispatch (`UPLOAD_RESUME_PATTERN`)
+ * false-positived on click steps that mentioned "resume" or "upload" in their
+ * descriptions, causing duplicate uploads — see feedback_no_regex_open_sets.
+ *
+ * Returns `true` if the upload completed; `false` if either the step isn't
+ * marked upload OR no file input was found (caller falls through to the
+ * existing cascade in that case).
+ */
+async function tryUploadPrimitive(params: {
+  page: Page;
+  /** Set from the flow file's `upload: true` field. Replaces the prior regex test. */
+  isUploadStep: boolean;
+  fixture: { buffer: Buffer; name: string; mimeType: string } | null;
+  logger: Logger;
+  signalCounter: { n: number };
+}): Promise<boolean> {
+  const { page, isUploadStep, fixture, logger, signalCounter } = params;
+  if (!isUploadStep) {
+    return false;
+  }
+  if (!fixture) {
+    return false;
+  }
+  // Raw-DOM xpath: matches `<input type="file">` even when accessibility-tree
+  // observers miss it (the common pattern when sites style the input invisible
+  // and overlay a button on top of it).
+  const fileInputSelector = "xpath=//input[@type='file']";
+  let count = 0;
+  try {
+    count = await page.locator(fileInputSelector).count();
+  } catch (err) {
+    logger.warn(`upload primitive: file-input probe threw: ${toErrorMessage(err)}`);
+    return false;
+  }
+  if (count === 0) {
+    logger.info("upload primitive: no <input type=file> on page; falling through to cascade");
+    return false;
+  }
+  const target = page.locator(fileInputSelector).first();
+  const networkCountBefore = signalCounter.n;
+  try {
+    await target.setInputFiles({
+      name: fixture.name,
+      mimeType: fixture.mimeType,
+      buffer: fixture.buffer,
+    });
+  } catch (err) {
+    logger.warn(`upload primitive: setInputFiles threw: ${toErrorMessage(err)}`);
+    return false;
+  }
+  // Primary signal: wait for a non-poll POST to fire. Widgets that upload
+  // immediately on setInputFiles (the common case — ClearCompany, AppCast,
+  // most ATS file widgets) trigger one within milliseconds. signalCounter
+  // already excludes background polls, so a single bump here is the upload.
+  const startedAt = performance.now();
+  while (performance.now() - startedAt < UPLOAD_NETWORK_TIMEOUT_MS) {
+    if (signalCounter.n > networkCountBefore) {
+      logger.info(
+        `upload primitive: network activity detected post-setInputFiles (name=${fixture.name}, size=${fixture.buffer.length}b)`
+      );
+      return true;
+    }
+    await page.waitForTimeout(UPLOAD_NETWORK_POLL_INTERVAL_MS);
+  }
+  // Fallback: some widgets defer the upload to a separate Save click. For
+  // those the DOM still has the attached File — verify there. Widgets that
+  // clear input.files on upload trigger (ClearCompany's jQuery File Upload)
+  // would fail this check, but they should have fired a network call above.
+  //
+  // Trust boundary: the evaluate expression is a static string literal — no
+  // interpolation from external data, no risk of injecting attacker-controlled
+  // values into the browser-side JS. Same trust posture as the type-probe
+  // expression in verifyDomEffect's click case.
+  const attachedLength = await page
+    .evaluate(
+      "(() => { const els = document.querySelectorAll('input[type=file]'); for (const el of els) { if (el.files && el.files.length > 0) return el.files.length; } return 0; })()"
+    )
+    .catch(() => 0);
+  if (typeof attachedLength !== "number" || attachedLength === 0) {
+    logger.warn("upload primitive: no network activity within timeout and no file attached in DOM");
+    return false;
+  }
+  logger.info(
+    `upload primitive: file attached in DOM after setInputFiles (deferred-upload widget; name=${fixture.name}, filesLength=${attachedLength})`
+  );
+  return true;
 }
 
 /**
@@ -726,10 +982,50 @@ async function verifyDomEffect(page: Page, action: Action): Promise<boolean> {
         return !(await locator.isChecked());
       }
       case "selectOption":
+      case "selectOptionFromDropdown": {
+        // Stagehand dispatches both names to Playwright's selectOption(text),
+        // which only succeeds on native <select> and matches against any of
+        // the option's value/label/textContent. Mirror that resolution here
+        // so the verifier succeeds iff Playwright's "selection happened" is
+        // true — same equality semantics, just read from the other side.
+        const expected = action.arguments?.[0]?.toString().trim() ?? "";
+        if (!expected) return false;
+        const xpath = xpathBody(selector);
+        if (!xpath) {
+          // Non-xpath selector: can't compose the page.evaluate; fall back
+          // to a weaker non-empty inputValue check.
+          const current = await locator.inputValue().catch(() => "");
+          return current.length > 0;
+        }
+        // Trust boundary: xpath comes from Stagehand's resolved selector
+        // (not URL/user input). JSON.stringify produces a safe JS string
+        // literal even for xpath containing quotes/backslashes, so composing
+        // this expression cannot inject behavior through the xpath content.
+        const expr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); const el = r.singleNodeValue; if (!el || el.tagName !== "SELECT") return null; const opt = el.options[el.selectedIndex]; if (!opt) return { value: "", label: "", text: "" }; return { value: (opt.value || "").trim(), label: (opt.label || "").trim(), text: (opt.textContent || "").trim() }; })()`;
+        let selected: { value: string; label: string; text: string } | null = null;
+        try {
+          const result = await page.evaluate(expr);
+          if (
+            result !== null &&
+            typeof result === "object" &&
+            "value" in result &&
+            "label" in result &&
+            "text" in result
+          ) {
+            selected = result as { value: string; label: string; text: string };
+          }
+        } catch {
+          return false;
+        }
+        if (!selected) return false;
+        const want = expected.toLowerCase();
+        const matches = (field: string): boolean =>
+          field.length > 0 && field.toLowerCase().includes(want);
+        return matches(selected.value) || matches(selected.label) || matches(selected.text);
+      }
       case "setInputFiles":
-        // Stagehand reports success; we don't have a cheap DOM equivalent
-        // for either of these without re-resolving the option/file. Trust
-        // its `actResultSuccess` upstream — caller composes signals.
+        // No cheap DOM equivalent without re-resolving the file. Trust Stagehand's
+        // actResultSuccess upstream — caller composes signals.
         return true;
       case "click": {
         // Clicks on radios and checkboxes toggle `:checked` without firing a
@@ -779,36 +1075,71 @@ async function executeStepWithHealing(params: {
   stagehand: Stagehand;
   page: Page;
   step: string;
+  /**
+   * When true and Stagehand's act+observe finds no candidates, the cascade
+   * skips the step cleanly instead of burning through attempts 3-4 and the
+   * replan budget. Required steps (default) keep the full 4-attempt healing.
+   */
+  optional: boolean;
+  /**
+   * When true, dispatches to the upload primitive (which sets the fixture
+   * on the page's <input type=file>) instead of running the cascade. Required
+   * for resume-upload widgets that hide the real file input behind styled
+   * buttons Stagehand can't click. Set from the flow file's `upload: true`.
+   */
+  upload: boolean;
   stepIndex: number;
   phase: string;
-  counter: { n: number };
+  signalCounter: { n: number };
   recentCaptures: string[];
   anthropic: Anthropic | null;
   logger: Logger;
   captureFn?: CaptureFn;
+  resumeFixture: { buffer: Buffer; name: string; mimeType: string } | null;
 }): Promise<void> {
   const {
     stagehand,
     page,
     step,
+    optional,
+    upload,
     stepIndex,
     phase,
-    counter,
+    signalCounter,
     recentCaptures,
     anthropic,
     logger,
     captureFn,
+    resumeFixture,
   } = params;
   const attempts: AttemptRecord[] = [];
   const triedSelectors: string[] = [];
   const failureReasons: string[] = [];
+
+  // When the flow file marks the step `upload: true`, dispatch to the
+  // site-agnostic upload primitive (setInputFiles + network-signal verify).
+  // On success, the step is fully handled — no cascade needed. On failure
+  // (no file input on the page, network never fires), we fall through to
+  // the existing cascade.
+  if (
+    await tryUploadPrimitive({
+      page,
+      isUploadStep: upload,
+      fixture: resumeFixture,
+      logger,
+      signalCounter,
+    })
+  ) {
+    logger.info(`step ${stepIndex + 1} resolved by upload primitive`);
+    return;
+  }
 
   for (let attempt = 1; attempt <= MAX_STEP_ATTEMPTS; attempt++) {
     if (attempt > 1) {
       await page.waitForTimeout(attempt * ATTEMPT_BACKOFF_MS);
     }
 
-    const pre = snapshotPage(page, counter);
+    const pre = await snapshotPage(page, signalCounter);
     const record: AttemptRecord = {
       attempt,
       technique: "act-string",
@@ -851,6 +1182,20 @@ async function executeStepWithHealing(params: {
           : await stagehand.observe(step);
         if (candidates.length === 0) {
           record.errorMessage = "observe returned no candidates";
+          // Optional-step short-circuit: when attempt 2 confirms no candidates
+          // match AND the step was marked optional in the flow, skip cleanly.
+          // We require attempt 1 to also have returned no actions (no resolved
+          // selector — `triedSelectors` only fills when act/observe resolved
+          // something) so an optional step that did find a target but failed
+          // to verify still runs the full healing cascade.
+          if (optional && attempt === 2 && triedSelectors.length === 0) {
+            record.verifiedBy = null;
+            attempts.push(record);
+            logger.info(
+              `step ${stepIndex + 1} skipped (optional, no candidates after act+observe)`
+            );
+            return;
+          }
         } else {
           const target = candidates[0]!;
           record.instruction = target.description;
@@ -897,7 +1242,7 @@ async function executeStepWithHealing(params: {
     }
 
     await page.waitForTimeout(STEP_PAUSE_MS);
-    const post = snapshotPage(page, counter);
+    const post = await snapshotPage(page, signalCounter);
     record.post = post;
 
     if (resolvedAction) {
@@ -925,6 +1270,69 @@ async function executeStepWithHealing(params: {
     if (verified) {
       record.verifiedBy = urlChanged ? "url" : networkFired ? "network" : "dom";
     }
+    // Observational signal: pre/post DOM deltas. Not consumed by the verifier
+    // yet — emitted alongside `verifiedBy` so populations (real-nav, state-class,
+    // client-side-only, no-op) are tabulatable for threshold tuning. Once a
+    // threshold is picked from real recon data, the verifier's click branch
+    // will consume this; for now it's measurement only.
+    const htmlLengthDelta = post.bodyHtmlLength - pre.bodyHtmlLength;
+    const visibleTextChanged = post.visibleTextSignature !== pre.visibleTextSignature;
+    logger.info(
+      `dom snapshot deltas: step=${stepIndex + 1} attempt=${attempt} htmlLengthDelta=${htmlLengthDelta} visibleTextChanged=${visibleTextChanged} verifiedBy=${record.verifiedBy}`
+    );
+
+    // N+16 probe: Stagehand's CDP click sometimes lands on the button without
+    // triggering React's SyntheticEvent layer (or jQuery delegated handlers).
+    // Empirically: failing Continue clicks produce zero network, zero URL change,
+    // zero DOM delta — the React handler never runs. Try invoking the element's
+    // native HTMLElement.click() through the JS event pipeline as a fallback;
+    // that path is guaranteed to fire registered click handlers. If it produces
+    // an observable effect, treat this attempt as healed.
+    if (
+      !verified &&
+      record.actResultSuccess === true &&
+      resolvedAction?.method === "click" &&
+      resolvedAction.selector
+    ) {
+      const xpath = xpathBody(resolvedAction.selector);
+      if (xpath) {
+        try {
+          // Trust boundary: xpath is from Stagehand's resolved selector (not
+          // URL/user input). JSON.stringify produces a safe JS string literal
+          // even for content with quotes/backslashes, so composing this
+          // expression cannot inject behavior through the xpath content.
+          const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); const el = r.singleNodeValue; if (!el || typeof el.click !== "function") return false; el.click(); return true; })()`;
+          const fired = await page.evaluate(clickExpr);
+          await page.waitForTimeout(STEP_PAUSE_MS);
+          const retryPost = await snapshotPage(page, signalCounter);
+          const retryNetworkFired = retryPost.networkCount > pre.networkCount;
+          const retryUrlChanged = retryPost.url !== pre.url;
+          const retryHtmlDelta = retryPost.bodyHtmlLength - pre.bodyHtmlLength;
+          const retryTextChanged = retryPost.visibleTextSignature !== pre.visibleTextSignature;
+          const retryVerified =
+            retryNetworkFired || retryUrlChanged || retryHtmlDelta !== 0 || retryTextChanged;
+          logger.info(
+            `n+16 probe: step=${stepIndex + 1} attempt=${attempt} el.click() fallback fired=${fired === true}; network=${retryNetworkFired} url=${retryUrlChanged} htmlDelta=${retryHtmlDelta} textChanged=${retryTextChanged} verified=${retryVerified}`
+          );
+          if (retryVerified) {
+            record.verifiedBy = retryUrlChanged ? "url" : retryNetworkFired ? "network" : "dom";
+            record.post = retryPost;
+            attempts.push(record);
+            if (attempt > 1) {
+              logger.info(
+                `step ${stepIndex + 1} healed on attempt ${attempt} via ${record.technique} + el.click() fallback`
+              );
+            }
+            return;
+          }
+        } catch (probeErr) {
+          logger.warn(
+            `n+16 probe: step=${stepIndex + 1} attempt=${attempt} el.click() fallback threw: ${toErrorMessage(probeErr)}`
+          );
+        }
+      }
+    }
+
     attempts.push(record);
 
     if (verified) {
@@ -975,28 +1383,30 @@ async function executeStepWithHealing(params: {
   );
 }
 
+/** Default resume fixture path; overridable via --resume-fixture or RESUME_FIXTURE_PATH. */
+const DEFAULT_RESUME_FIXTURE_PATH = "src/sites/_shared/fixtures/resume.pdf";
+
 function parseCli(): {
   url: string;
-  flow: string[];
-  captureAll: boolean;
+  flow: NormalizedStep[];
   provider: ProviderName | undefined;
+  resumeFixturePath: string;
 } {
   const args = process.argv.slice(2);
   let url = "";
-  let flow: string[] = [];
+  let rawFlow: unknown = null;
   let flowFile: string | null = null;
-  let captureAll = false;
   let provider: ProviderName | undefined;
+  // Precedence: --resume-fixture flag > RESUME_FIXTURE_PATH env > default path.
+  let resumeFixturePath = process.env.RESUME_FIXTURE_PATH || DEFAULT_RESUME_FIXTURE_PATH;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--url" && args[i + 1]) {
       url = args[++i]!;
     } else if (args[i] === "--flow" && args[i + 1]) {
-      flow = JSON.parse(args[++i]!) as string[];
+      rawFlow = JSON.parse(args[++i]!);
     } else if (args[i] === "--flow-file" && args[i + 1]) {
       flowFile = resolve(args[++i]!);
-    } else if (args[i] === "--capture-all") {
-      captureAll = true;
     } else if (args[i] === "--provider" && args[i + 1]) {
       const raw = args[++i]!.toLowerCase();
       if (raw !== "browserbase" && raw !== "steel") {
@@ -1004,41 +1414,90 @@ function parseCli(): {
         process.exit(1);
       }
       provider = raw;
+    } else if (args[i] === "--resume-fixture" && args[i + 1]) {
+      resumeFixturePath = args[++i]!;
     }
   }
 
   if (!url) {
     logger.error(
-      'usage: recon-browser.ts --url <url> [--flow \'["step1","step2"]\'] [--flow-file <path>] [--capture-all] [--provider browserbase|steel]'
+      'usage: recon-browser.ts --url <url> [--flow \'["step1","step2"]\'] [--flow-file <path>] [--provider browserbase|steel] [--resume-fixture <path>]'
     );
     process.exit(1);
   }
 
   if (flowFile) {
-    if (flow.length > 0) {
+    if (rawFlow !== null) {
       logger.warn("recon-browser: --flow-file takes precedence over --flow");
     }
     try {
-      flow = JSON.parse(readFileSync(flowFile, "utf8")) as string[];
+      rawFlow = JSON.parse(readFileSync(flowFile, "utf8"));
     } catch (err) {
       logger.error(`failed to read --flow-file ${flowFile}: ${toErrorMessage(err)}`);
       process.exit(1);
     }
   }
 
-  return { url, flow, captureAll, provider };
+  if (rawFlow === null) {
+    return { url, flow: [], provider, resumeFixturePath };
+  }
+  const parsed = RECON_FLOW_SCHEMA.safeParse(rawFlow);
+  if (!parsed.success) {
+    logger.error(`flow file/arg failed schema validation: ${parsed.error.message}`);
+    process.exit(1);
+  }
+  return {
+    url,
+    flow: normalizeFlow(parsed.data),
+    provider,
+    resumeFixturePath,
+  };
+}
+
+/**
+ * Loads the resume fixture from disk at startup so the upload primitive
+ * doesn't re-read the file from disk for every recon step. Returns null
+ * when the file doesn't exist — the primitive then falls through to the
+ * regular cascade and the recon continues unchanged (so flows that don't
+ * involve resume uploads aren't affected by a missing fixture).
+ */
+function loadResumeFixture(
+  path: string
+): { buffer: Buffer; name: string; mimeType: string } | null {
+  try {
+    const buffer = readFileSync(path);
+    const name = path.split("/").pop() ?? "resume.pdf";
+    // Conservative: every site we've targeted accepts PDF; if we ever ship a
+    // .docx fixture we'd extend this map. Default keeps the primitive safe.
+    const mimeType = name.toLowerCase().endsWith(".pdf")
+      ? "application/pdf"
+      : "application/octet-stream";
+    return { buffer, name, mimeType };
+  } catch (err) {
+    logger.warn(
+      `resume fixture not loaded from ${path}: ${toErrorMessage(err)} — upload primitive will fall through`
+    );
+    return null;
+  }
 }
 
 async function main(): Promise<void> {
-  const { url, flow, captureAll, provider } = parseCli();
+  const { url, flow, provider, resumeFixturePath } = parseCli();
 
   mkdirSync(CAPTURES_DIR, { recursive: true });
+  const resumeFixture = loadResumeFixture(resumeFixturePath);
   logger.info(
-    `recon-browser: target=${url} flow_steps=${flow.length} capture_all=${captureAll} provider=${provider ?? "(config-default)"} out=${CAPTURES_DIR}`
+    `recon-browser: target=${url} flow_steps=${flow.length} provider=${provider ?? "(config-default)"} resume_fixture=${resumeFixture ? `${resumeFixturePath} (${resumeFixture.buffer.length}b)` : "(missing)"} out=${CAPTURES_DIR}`
   );
 
   const session = await createBrowserSession({ provider });
+  // `counter` indexes captures on disk (filenames must stay unique).
+  // `signalCounter` drives the verifier — only non-GET methods increment
+  // it so coincident polling/page-load GETs don't falsely "verify" a
+  // click that produced no real effect. See the onFinished comment in
+  // wireNetworkCapture for the rationale.
   const counter = { n: 0 };
+  const signalCounter = { n: 0 };
   const recentCaptures: string[] = [];
 
   try {
@@ -1050,8 +1509,8 @@ async function main(): Promise<void> {
     let currentPhase = "home";
     const stopCapture = wireNetworkCapture(
       page,
-      captureAll,
       counter,
+      signalCounter,
       recentCaptures,
       () => currentPhase
     );
@@ -1066,32 +1525,37 @@ async function main(): Promise<void> {
       );
     }
 
-    const plan: string[] = [...flow];
+    const plan: NormalizedStep[] = [...flow];
     const completedSteps: string[] = [];
     let replansUsed = 0;
 
     for (let i = 0; i < plan.length; i++) {
       const step = plan[i]!;
       currentPhase =
-        step
+        step.instruction
           .replace(/[^a-z0-9]+/gi, "-")
           .toLowerCase()
           .replace(/^-|-$/g, "")
           .slice(0, 24) || `step-${i}`;
-      logger.info(`step ${i + 1}/${plan.length} [${currentPhase}]: ${step}`);
+      logger.info(
+        `step ${i + 1}/${plan.length} [${currentPhase}]${step.optional ? " (optional)" : ""}: ${step.instruction}`
+      );
       try {
         await executeStepWithHealing({
           stagehand,
           page,
-          step,
+          step: step.instruction,
+          optional: step.optional,
+          upload: step.upload,
           stepIndex: i,
           phase: currentPhase,
-          counter,
+          signalCounter,
           recentCaptures,
           anthropic,
           logger,
+          resumeFixture,
         });
-        completedSteps.push(step);
+        completedSteps.push(step.instruction);
       } catch (err) {
         if (!(err instanceof StepVerificationError)) throw err;
         if (!anthropic || replansUsed >= MAX_REPLANS) throw err;
@@ -1106,10 +1570,10 @@ async function main(): Promise<void> {
 
         const newSteps = await replanRemainingFlow({
           client: anthropic,
-          originalFlow: flow,
+          originalFlow: flow.map((s) => s.instruction),
           completedSteps,
-          failedStep: step,
-          remainingSteps: originalRemaining,
+          failedStep: step.instruction,
+          remainingSteps: originalRemaining.map((s) => s.instruction),
           failureDumpPath: dumpPath,
           page,
           stagehand,
@@ -1127,14 +1591,16 @@ async function main(): Promise<void> {
           phase: currentPhase,
           replanIndex: replansUsed,
           completedSteps,
-          originalRemaining,
-          newRemaining: newSteps,
+          originalRemaining: originalRemaining.map((s) => s.instruction),
+          newRemaining: newSteps.map((s) => s.instruction),
         });
         logger.info(
           `replan #${replansUsed} produced ${newSteps.length} new step(s); resuming (record: ${replanPath})`
         );
         for (const [j, s] of newSteps.entries()) {
-          logger.info(`  replanned step ${j + 1}: ${s}`);
+          logger.info(
+            `  replanned step ${j + 1}${s.optional ? " (optional)" : ""}: ${s.instruction}`
+          );
         }
 
         plan.splice(i, plan.length - i, ...newSteps);
