@@ -13,7 +13,9 @@
 
 import type { Page } from "@browserbasehq/stagehand";
 
+import { config } from "@/config";
 import { getLogger } from "@/lib/logging";
+import { WatchdogTimeoutError, withWatchdog } from "@/scraper/watchdog";
 
 const logger = getLogger({ name: "scraper/frame-target" });
 
@@ -33,6 +35,20 @@ export interface FrameTarget {
   readonly frame: StagehandFrame | null;
   /** CSS selector for the Stagehand scope hint (`ObserveOptions.selector` / `ExtractOptions.selector`), or `null` for the main frame. */
   readonly frameSelector: string | null;
+  /**
+   * The frame selector a caller originally asked `resolveFrameTarget` to bind
+   * to, kept even when resolution fails and this target falls back to the
+   * main frame (`frameSelector: null`). `frameSelector` stays `null` on a
+   * failed resolution because it un-scopes `ObserveOptions.selector` via
+   * `stagehand-guard`'s `frameScopedOptions` — that contract must not change.
+   * This field is the separate, additive signal a caller can use to notice
+   * "the frame I asked for didn't attach" and retry resolution later, e.g.
+   * right before a deepLocator candidate probe. `undefined` on targets built
+   * outside `resolveFrameTarget` (hand-constructed test fakes, older call
+   * sites) rather than a required field, so it never forces every existing
+   * `FrameTarget` literal to be updated.
+   */
+  readonly declaredFrameSelector?: string | null;
   /** Evaluate a function or expression against the resolved frame (or the main frame when unresolved). */
   evaluate<R = unknown, Arg = unknown>(
     pageFunctionOrExpression: string | ((arg: Arg) => R | Promise<R>),
@@ -47,20 +63,37 @@ export interface FrameTarget {
 }
 
 /**
- * Builds the main-frame `FrameTarget`: every method delegates straight to
- * `Page`, matching today's behavior for every site whose ATS form never
- * leaves the top window. Exported so call sites that have not yet resolved
- * a `FrameTarget` from `deps.frameSelector` can still pass a target-shaped
- * value to helpers that now require one.
+ * Builds the main-frame `FrameTarget`: every method delegates to `Page`,
+ * matching today's behavior for every site whose ATS form never leaves the
+ * top window. `evaluate`/`title` are bounded by a watchdog — a wedged CDP
+ * call (e.g. a racy Browserbase session) must fail the caller's await
+ * instead of hanging it, since `evaluate`/`url` are the first awaits inside
+ * `flow-runner.ts`'s per-attempt snapshot, ahead of any attempt log.
+ * Exported so call sites that have not yet resolved a `FrameTarget` from
+ * `deps.frameSelector` can still pass a target-shaped value to helpers that
+ * now require one.
  */
-export function mainFrameTarget(page: Page): FrameTarget {
+export function mainFrameTarget(
+  page: Page,
+  opts: { declaredFrameSelector?: string | null; evaluateTimeoutMs?: number } = {}
+): FrameTarget {
+  const evaluateTimeoutMs = opts.evaluateTimeoutMs ?? config.scraper.frameEvaluateTimeoutMs;
   return {
     frame: null,
     frameSelector: null,
-    evaluate: (pageFunctionOrExpression, arg) => page.evaluate(pageFunctionOrExpression, arg),
+    declaredFrameSelector: opts.declaredFrameSelector ?? null,
+    evaluate: (pageFunctionOrExpression, arg) =>
+      withWatchdog(() => page.evaluate(pageFunctionOrExpression, arg), {
+        timeoutMs: evaluateTimeoutMs,
+        label: "frame-target: main frame evaluate",
+      }),
     locator: (selector) => page.locator(selector),
     url: () => Promise.resolve(page.url()),
-    title: () => page.title(),
+    title: () =>
+      withWatchdog(() => page.title(), {
+        timeoutMs: evaluateTimeoutMs,
+        label: "frame-target: main frame title",
+      }),
   };
 }
 
@@ -69,16 +102,37 @@ export function mainFrameTarget(page: Page): FrameTarget {
  * resolved `Frame` (reaching across the cross-origin boundary via its own
  * CDP session), while `url`/`title` fall back to the frame's own
  * `location.href` and the top document's title respectively — `Frame` has
- * no `title()` of its own.
+ * no `title()` of its own. `evaluate`/`url`/`title` are bounded by the same
+ * watchdog as `mainFrameTarget` (`locator` stays unwrapped — it's
+ * synchronous, building a `Locator` handle rather than making a CDP call).
  */
-function childFrameTarget(page: Page, frame: StagehandFrame, frameSelector: string): FrameTarget {
+function childFrameTarget(
+  page: Page,
+  frame: StagehandFrame,
+  frameSelector: string,
+  opts: { evaluateTimeoutMs?: number } = {}
+): FrameTarget {
+  const evaluateTimeoutMs = opts.evaluateTimeoutMs ?? config.scraper.frameEvaluateTimeoutMs;
+  const evaluateOnFrame = <R = unknown, Arg = unknown>(
+    pageFunctionOrExpression: string | ((arg: Arg) => R | Promise<R>),
+    arg?: Arg
+  ): Promise<R> =>
+    withWatchdog(() => frame.evaluate<R, Arg>(pageFunctionOrExpression, arg), {
+      timeoutMs: evaluateTimeoutMs,
+      label: "frame-target: child frame evaluate",
+    });
   return {
     frame,
     frameSelector,
-    evaluate: (pageFunctionOrExpression, arg) => frame.evaluate(pageFunctionOrExpression, arg),
+    declaredFrameSelector: frameSelector,
+    evaluate: evaluateOnFrame,
     locator: (selector) => frame.locator(selector),
-    url: () => frame.evaluate<string>("location.href"),
-    title: () => page.title(),
+    url: () => evaluateOnFrame<string>("location.href"),
+    title: () =>
+      withWatchdog(() => page.title(), {
+        timeoutMs: evaluateTimeoutMs,
+        label: "frame-target: child frame title",
+      }),
   };
 }
 
@@ -118,20 +172,57 @@ function originOf(url: string): string | null {
  * beyond the main frame, that frame must be the one CDP attached to for
  * this iframe, so bind to it directly rather than degrading to the main
  * frame.
+ *
+ * Both `evaluate` calls (the top-level `<iframe>`-src probe and the
+ * per-candidate `location.href` read) are bounded by `evaluateTimeoutMs`,
+ * further clamped to whatever remains of `deadline` — `resolveFrameTarget`'s
+ * total attach budget — at the moment each probe starts: a wedged CDP call
+ * against a racy OOPIF must fail this one pass rather than hanging it, and
+ * the clamp keeps that true even for the *sum* of every probe a single pass
+ * makes, since the top-level probe runs once *before* `resolveFrameTarget`'s
+ * poll loop even starts (making an unclamped deadline unreachable) and a
+ * page with several candidate frames would otherwise pay
+ * `(1 + frames) * evaluateTimeoutMs` in one pass regardless of `deadline`.
+ * The candidate loop always probes its first candidate — mirroring the
+ * top-level probe's "runs once regardless of budget" guarantee, since a
+ * `timeoutMs: 0` re-resolution (`flow-runner.ts`'s `reresolveFrameTargetIfLost`)
+ * must still be able to pick up a frame that has already attached — but
+ * breaks before any further candidate once no budget remains, rather than
+ * still issuing a zero-budget probe per remaining candidate. A timed-out
+ * probe is treated as "no match, try again" (same as a `false` `matched`
+ * result) so a poll that merely wedges degrades to a retry rather than
+ * aborting resolution outright — a genuine evaluate error (e.g. a caller
+ * passing an invalid selector) still propagates unchanged, preserving the
+ * existing "rejects rather than silently falling back" contract for real
+ * errors.
  */
 async function tryResolveChildFrame(
   page: Page,
-  frameSelector: string
+  frameSelector: string,
+  evaluateTimeoutMs: number,
+  deadline: number
 ): Promise<FrameTarget | null> {
+  const remainingBudgetMs = (): number => Math.max(0, deadline - Date.now());
+
   const iframeSrcExpr = `(() => {
     const el = document.querySelector(${JSON.stringify(frameSelector)});
     if (!el || el.tagName !== "IFRAME") return { matched: false, src: null };
     return { matched: true, src: el.getAttribute("src") };
   })()`;
-  const { matched, src: iframeSrc } = await page.evaluate<{
-    matched: boolean;
-    src: string | null;
-  }>(iframeSrcExpr);
+  const { matched, src: iframeSrc } = await withWatchdog(
+    () =>
+      page.evaluate<{
+        matched: boolean;
+        src: string | null;
+      }>(iframeSrcExpr),
+    {
+      timeoutMs: Math.min(evaluateTimeoutMs, remainingBudgetMs()),
+      label: "frame-target: iframe src probe",
+    }
+  ).catch((err: unknown) => {
+    if (err instanceof WatchdogTimeoutError) return { matched: false, src: null };
+    throw err;
+  });
   if (!matched) return null;
 
   const candidates = page.frames();
@@ -139,14 +230,18 @@ async function tryResolveChildFrame(
   if (!targetOrigin) {
     const [onlyCandidate] = candidates;
     return candidates.length === 1 && onlyCandidate
-      ? childFrameTarget(page, onlyCandidate, frameSelector)
+      ? childFrameTarget(page, onlyCandidate, frameSelector, { evaluateTimeoutMs })
       : null;
   }
 
-  for (const candidate of candidates) {
-    const candidateUrl = await candidate.evaluate<string>("location.href").catch(() => null);
+  for (const [index, candidate] of candidates.entries()) {
+    if (index > 0 && remainingBudgetMs() <= 0) break;
+    const candidateUrl = await withWatchdog(() => candidate.evaluate<string>("location.href"), {
+      timeoutMs: Math.min(evaluateTimeoutMs, remainingBudgetMs()),
+      label: "frame-target: candidate frame location probe",
+    }).catch(() => null);
     if (candidateUrl && originOf(candidateUrl) === targetOrigin) {
-      return childFrameTarget(page, candidate, frameSelector);
+      return childFrameTarget(page, candidate, frameSelector, { evaluateTimeoutMs });
     }
   }
   return null;
@@ -154,8 +249,8 @@ async function tryResolveChildFrame(
 
 /**
  * Resolves the `FrameTarget` for `frameSelector` against `page`, polling for
- * up to `FRAME_READY_TIMEOUT_MS` (at `FRAME_READY_POLL_MS` intervals) before
- * falling back to the main-frame target rather than throwing:
+ * up to `timeoutMs` (at `pollMs` intervals) before falling back to the
+ * main-frame target rather than throwing:
  *
  * 1. `frameSelector` is `null`/`undefined` → main-frame target (today's
  *    behavior, unchanged) — zero polling, zero delay.
@@ -163,43 +258,57 @@ async function tryResolveChildFrame(
  *    it isn't an `<iframe>`, or its `src` can't be read and more than one
  *    `page.frames()` candidate exists (identity match is ambiguous), or no
  *    `page.frames()` entry has a matching origin yet → try again after
- *    `FRAME_READY_POLL_MS`.
+ *    `pollMs`.
  * 3. A poll finds a matching frame → a child-frame target bound to it,
  *    however many polls it took (an iframe created mid-flow by an earlier
  *    step, e.g. after a click reveals it, resolves as soon as Stagehand's
  *    CDP layer attaches to it instead of only when present at the first
  *    poll).
- * 4. Still unresolved once the deadline passes → main-frame target, with a
- *    `warn` naming the selector so a silent revert-to-main-frame is
- *    diagnosable from the log instead of invisible.
+ * 4. Still unresolved once the deadline passes → main-frame target carrying
+ *    `declaredFrameSelector` (so a caller can notice the failure and retry
+ *    resolution later), with a `warn` naming the selector so a silent
+ *    revert-to-main-frame is diagnosable from the log instead of invisible.
  *
- * `opts` overrides the poll timing for tests; production call sites rely on
- * the `FRAME_READY_TIMEOUT_MS`/`FRAME_READY_POLL_MS` defaults.
+ * Every `page`/`Frame` `evaluate` call this function (transitively) makes is
+ * bounded by `evaluateTimeoutMs`, further clamped to whatever remains of the
+ * total attach `deadline` at the moment each probe starts — including the
+ * very first resolution attempt made *before* the poll loop starts. Without
+ * that clamp, a single wedged CDP call there hangs this function for up to
+ * `evaluateTimeoutMs`, and a page with several `page.frames()` candidates
+ * multiplies that by each candidate probed in the same pass, which is
+ * exactly what made the declared attach deadline (`timeoutMs`) unenforceable
+ * whenever `evaluateTimeoutMs` exceeded it.
+ *
+ * `opts` overrides the timing for tests; production call sites default from
+ * `config.scraper.frameReadyTimeoutMs` / `frameEvaluateTimeoutMs` (poll
+ * cadence stays the fixed `FRAME_READY_POLL_MS`, cheap enough not to need
+ * tuning).
  */
 export async function resolveFrameTarget(
   page: Page,
   frameSelector?: string | null,
-  opts: { timeoutMs?: number; pollMs?: number } = {}
+  opts: { timeoutMs?: number; pollMs?: number; evaluateTimeoutMs?: number } = {}
 ): Promise<FrameTarget> {
-  if (!frameSelector) return mainFrameTarget(page);
+  const evaluateTimeoutMs = opts.evaluateTimeoutMs ?? config.scraper.frameEvaluateTimeoutMs;
+  if (!frameSelector) return mainFrameTarget(page, { evaluateTimeoutMs });
 
-  const resolved = await tryResolveChildFrame(page, frameSelector);
+  const timeoutMs = opts.timeoutMs ?? config.scraper.frameReadyTimeoutMs;
+  const pollMs = opts.pollMs ?? FRAME_READY_POLL_MS;
+  const deadline = Date.now() + timeoutMs;
+
+  const resolved = await tryResolveChildFrame(page, frameSelector, evaluateTimeoutMs, deadline);
   if (resolved) return resolved;
 
-  const timeoutMs = opts.timeoutMs ?? FRAME_READY_TIMEOUT_MS;
-  const pollMs = opts.pollMs ?? FRAME_READY_POLL_MS;
-
-  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     await sleep(pollMs);
-    const polled = await tryResolveChildFrame(page, frameSelector);
+    const polled = await tryResolveChildFrame(page, frameSelector, evaluateTimeoutMs, deadline);
     if (polled) return polled;
   }
 
   logger.warn(
     `frame ${frameSelector} did not attach within ${timeoutMs}ms — falling back to main frame`
   );
-  return mainFrameTarget(page);
+  return mainFrameTarget(page, { declaredFrameSelector: frameSelector, evaluateTimeoutMs });
 }
 
 const HOP_SEPARATOR = " >> ";
@@ -223,8 +332,7 @@ export function buildHopSelector(
   return `${trimmedFrameSelector}${HOP_SEPARATOR}${innerSelector.trimStart()}`;
 }
 
-/** Readiness-wait defaults — cheap poll, short timeout: an attached-but-not-yet-navigated child frame should settle in well under a second. */
-const FRAME_READY_TIMEOUT_MS = 5_000;
+/** Poll cadence shared by `resolveFrameTarget` and `waitForChildFrameReady` — cheap enough not to need per-call tuning. */
 const FRAME_READY_POLL_MS = 100;
 
 /** Shared delay helper — `FrameTarget` has no `waitForTimeout` since it isn't frame-scoped. */
@@ -240,18 +348,32 @@ export function sleep(ms: number): Promise<void> {
  * navigation lands. Best-effort like `waitForSpaReady`: never throws, just resolves
  * once ready or once `timeoutMs` elapses, so a frame that never becomes ready
  * degrades to "proceed anyway" rather than hanging the flow.
+ *
+ * Each `document.readyState` probe is itself bounded by `evaluateTimeoutMs` and
+ * treated as not-ready on timeout (same as a rejected `evaluate`) — otherwise a
+ * single wedged CDP call inside one poll would block past `timeoutMs`, defeating
+ * the outer deadline this function exists to enforce.
+ *
+ * `opts` overrides the timing for tests; production call sites default from
+ * `config.scraper.frameDocumentReadyTimeoutMs` / `frameEvaluateTimeoutMs` — kept
+ * separate from `resolveFrameTarget`'s (longer) attach budget since this wait
+ * settles in well under a second once the frame has attached.
  */
 export async function waitForChildFrameReady(
   target: FrameTarget,
-  opts: { timeoutMs?: number; pollMs?: number } = {}
+  opts: { timeoutMs?: number; pollMs?: number; evaluateTimeoutMs?: number } = {}
 ): Promise<void> {
   if (!target.frame) return;
 
-  const timeoutMs = opts.timeoutMs ?? FRAME_READY_TIMEOUT_MS;
+  const timeoutMs = opts.timeoutMs ?? config.scraper.frameDocumentReadyTimeoutMs;
   const pollMs = opts.pollMs ?? FRAME_READY_POLL_MS;
+  const evaluateTimeoutMs = opts.evaluateTimeoutMs ?? config.scraper.frameEvaluateTimeoutMs;
 
   const isReady = async (): Promise<boolean> => {
-    const readyState = await target.evaluate<string>("document.readyState").catch(() => null);
+    const readyState = await withWatchdog(() => target.evaluate<string>("document.readyState"), {
+      timeoutMs: evaluateTimeoutMs,
+      label: "frame-target: document.readyState probe",
+    }).catch(() => null);
     return readyState === "interactive" || readyState === "complete";
   };
 

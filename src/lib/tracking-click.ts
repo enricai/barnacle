@@ -18,6 +18,7 @@ import {
 } from "@/lib/dd-metrics";
 import { toErrorMessage } from "@/lib/errors";
 import { getLogger } from "@/lib/logging";
+import { captureBeaconEvent } from "@/lib/telemetry/beacon-capture";
 import { createBrowserbaseBrowserSession } from "@/scraper/session-browserbase";
 
 const logger = getLogger({ name: "tracking-click" });
@@ -29,11 +30,42 @@ const BROWSERBASE_SESSION_TIMEOUT_SECONDS = 300;
 const inFlightClicks = new Set<Promise<void>>();
 
 /**
+ * The run's opaque reconciliation join keys, threaded through so a
+ * beacon-fire outcome can be correlated back to its submit record. Optional
+ * so existing `fireTrackingClick` call sites keep compiling unchanged.
+ */
+export interface TrackingClickReconciliationContext {
+  requestId: string;
+  joinKeys: Record<string, unknown> | null;
+}
+
+/**
+ * Wraps `captureBeaconEvent` so a throwing/rejecting capture sink can never
+ * propagate into the tracking-click fire-and-forget path — the same defense
+ * `emitEnvelopeSafely` applies around `captureSubmissionEnvelope` in
+ * loader.ts, since `captureBeaconEvent`'s own internal swallow can be
+ * bypassed by a test double or an unexpected synchronous throw.
+ */
+async function captureBeaconOutcomeSafely(
+  input: Parameters<typeof captureBeaconEvent>[0]
+): Promise<void> {
+  try {
+    await captureBeaconEvent(input);
+  } catch (err) {
+    logger.warn(`beacon outcome capture failed: ${toErrorMessage(err)}`);
+  }
+}
+
+/**
  * Navigates a Browserbase session to the tracking URL. Errors are logged
  * and swallowed — the apply already succeeded, so a failed tracking click
  * is a monitoring concern, not a runtime failure.
  */
-async function executeTrackingClick(trackingUrl: string, siteId: string): Promise<void> {
+async function executeTrackingClick(
+  trackingUrl: string,
+  siteId: string,
+  reconciliation?: TrackingClickReconciliationContext
+): Promise<void> {
   const startedAt = Date.now();
   recordTrackingClickAttempt(siteId);
 
@@ -51,11 +83,31 @@ async function executeTrackingClick(trackingUrl: string, siteId: string): Promis
     logger.info(
       `tracking click success site=${siteId} url=${trackingUrl.slice(0, 120)} durationMs=${Date.now() - startedAt}`
     );
+    if (reconciliation) {
+      await captureBeaconOutcomeSafely({
+        requestId: reconciliation.requestId,
+        siteId,
+        joinKeys: reconciliation.joinKeys,
+        beaconStatus: "fired",
+        trackingUrl,
+        durationMs: Date.now() - startedAt,
+      });
+    }
   } catch (err) {
     recordTrackingClickFailure(siteId, err instanceof Error ? err.constructor.name : "unknown");
     logger.warn(
       `tracking click failed site=${siteId} url=${trackingUrl.slice(0, 120)}: ${toErrorMessage(err)}`
     );
+    if (reconciliation) {
+      await captureBeaconOutcomeSafely({
+        requestId: reconciliation.requestId,
+        siteId,
+        joinKeys: reconciliation.joinKeys,
+        beaconStatus: "failed",
+        trackingUrl,
+        durationMs: Date.now() - startedAt,
+      });
+    }
   } finally {
     recordTrackingClickDuration(siteId, Date.now() - startedAt);
     if (session) {
@@ -68,10 +120,16 @@ async function executeTrackingClick(trackingUrl: string, siteId: string): Promis
 
 /**
  * Launches a background tracking click. Returns immediately — the caller
- * does not await the result. Errors never propagate.
+ * does not await the result. Errors never propagate. `reconciliation` is
+ * optional so a fired/failed beacon outcome can be correlated to the run
+ * when the caller has resolved join keys; omit it to keep today's behavior.
  */
-export function fireTrackingClick(trackingUrl: string, siteId: string): void {
-  const promise = executeTrackingClick(trackingUrl, siteId).finally(() => {
+export function fireTrackingClick(
+  trackingUrl: string,
+  siteId: string,
+  reconciliation?: TrackingClickReconciliationContext
+): void {
+  const promise = executeTrackingClick(trackingUrl, siteId, reconciliation).finally(() => {
     inFlightClicks.delete(promise);
   });
   inFlightClicks.add(promise);

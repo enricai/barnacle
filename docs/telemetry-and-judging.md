@@ -227,24 +227,103 @@ All telemetry and judging knobs are in `src/config.ts` under the `telemetry`,
 
 ## Submission-envelope sink
 
-A separate append-only NDJSON file, `.barnacle/submissions.ndjson`, captures
-one record per dispatch outcome — the durable answer to "what did we submit
-for jobId X on date Y, and did it succeed?" Each line carries:
-
-- `siteId` — which plugin handled the request.
-- `requestId` — the Fastify-issued correlation ID for the inbound request.
-- `inboundPayload` — the request body the caller posted (PII-redacted).
-- `status` — `"submitted"` or `"error"`.
-- `auditPayload` — the same object plugins return via `SitePluginResult.auditPayload`; `null` on errors.
-- `errorMessage` — the failure message on errors; `null` on success.
-- `durationMs` — total dispatch wall time.
-- `ts` — ISO timestamp.
+A separate append-only NDJSON file, `.barnacle/submissions.ndjson`
+(`SUBMISSIONS_NDJSON_PATH`), is the canonical reconciliation record — the
+durable, queryable answer to "what did we submit for jobId X on date Y, did
+it succeed, and did the conversion beacon fire?" Two record kinds share the
+sink, discriminated by `kind`
+(`reconciliationRecordSchema`, `src/lib/telemetry/reconciliation-record.ts`).
 
 Kept on its own sink (not mixed into `calls.ndjson`) so the judge and
 self-heal readers — which Zod-parse every line of `calls.ndjson` as an
-`LlmCallSample` — stay untouched. Downstream consumption (querying by
-jobId, aggregating by site, replaying a payload) is an ETL concern; the
-file is the durable source-of-truth those pipelines read from.
+`LlmCallSample` — stay untouched.
+
+### `"submit"` records — one per dispatch outcome
+
+Written by `captureSubmissionEnvelope` (`src/lib/telemetry/submission-capture.ts`)
+and validated against `submitRecordSchema`, exported from that module as
+`submissionEnvelopeSampleSchema`. Every key of the schema:
+
+| Field | Meaning |
+|-------|---------|
+| `kind` | Always `"submit"`; defaults to `"submit"` so pre-existing lines written before this field existed still parse. |
+| `siteId` | Which plugin handled the request — the cohort dimension for reconciliation. |
+| `requestId` | The Fastify-issued correlation ID for the inbound request; joins a `"beacon"` record to this one. |
+| `joinKeys` | Opaque `Record<string, unknown> \| null` — whatever the plugin's own `extractJoinKeys` hook resolved from the inbound payload. Core never inspects its contents; `null` when the plugin has no `extractJoinKeys` or it resolved nothing. |
+| `inboundPayload` | The request body the caller posted, unredacted (`z.unknown()` — no shape is enforced on it). |
+| `status` | Submit outcome: `"submitted"` or `"error"`. |
+| `auditPayload` | The same object plugins return via `SitePluginResult.auditPayload`; `null` on errors. Plugins that need to keep PII out of the sink redact it here, not on `inboundPayload`. |
+| `errorMessage` | The failure message on errors; `null` on success. |
+| `durationMs` | Total dispatch wall time. |
+| `ts` | ISO timestamp. |
+
+`joinKeys` is only as populated as the plugin's own `extractJoinKeys` hook
+resolves it (`src/site-plugin.ts`). `dispatch()` (`src/plugins/loader.ts`),
+the sink's only production call site, calls `plugin.extractJoinKeys?.(payload) ?? null`
+once per dispatch and stamps the result onto every envelope it emits —
+`null` for a plugin that declares no `extractJoinKeys`, or when the plugin's
+hook resolves nothing.
+
+### `"beacon"` records — the conversion/beacon-fire dimension, distinct from submit `status`
+
+Written by `captureBeaconEvent` (`src/lib/telemetry/beacon-capture.ts`) and
+validated against `beaconEventSchema`. For a plugin with no `extractJoinKeys`,
+appended independently, strictly later than its matching `"submit"` record,
+once `fireTrackingClick` (`src/lib/tracking-click.ts`) resolves the vendor
+click-tracking navigation core drove itself. Every key:
+
+| Field | Meaning |
+|-------|---------|
+| `kind` | Always `"beacon"`. |
+| `requestId` | Joins this record back to its `"submit"` record. |
+| `siteId` | Same cohort dimension as the submit record. |
+| `joinKeys` | Same opaque bag as the submit record, threaded through by the caller of `fireTrackingClick`. |
+| `beaconStatus` | `"fired"`, `"failed"`, or `"skipped"` — the conversion/beacon-fire outcome, a field distinct from the submit record's `status`. This is what makes "submitted but the beacon did not fire" measurable, where previously `fireTrackingClick` was fire-and-forget with errors swallowed and only Datadog counters (`recordTrackingClickSuccess`/`recordTrackingClickFailure`) as evidence. `"skipped"` covers two distinct reasons, distinguished by `trackingUrl` below: no beacon was ever applicable for the run (no usable `TrackingUrl` — `trackingUrl: null`), or the plugin declared `extractJoinKeys` and so fires its own beacon nav outside `dispatch()` even though a `TrackingUrl` was present (`trackingUrl` carries the real, truncated URL). Either way `"skipped"` is distinct from `"not_fired"` below (no beacon line arrived at all). |
+| `trackingUrl` | The vendor click-tracking URL, truncated to 120 characters; `null` when none was present. For a `"skipped"` record this doubles as the two-reasons signal above — present means a URL existed but a plugin-owned navigation used it instead of core's `fireTrackingClick`. |
+| `durationMs` | Wall time of the tracking-click navigation itself, not the original dispatch. |
+| `ts` | ISO timestamp. |
+
+A `"fired"`/`"failed"` `"beacon"` record is written when the caller of
+`fireTrackingClick` supplies a `TrackingClickReconciliationContext`
+(`requestId` plus `joinKeys`) — the parameter is optional so existing call
+sites keep compiling. `dispatch()`'s call site supplies one on every
+tracking click it fires (i.e. only for a plugin with no `extractJoinKeys`),
+threading the same `joinKeys` bag it resolved for the submit record. A
+`"skipped"` `"beacon"` record is written by `dispatch()` itself, via the
+same `captureBeaconEvent`, when a successful submit's payload has no (or an
+empty-string) `TrackingUrl`, OR when the plugin declared `extractJoinKeys`
+(asserting it manages its own tracking nav) — `durationMs: 0` since no
+engine-driven tracking-click navigation ever ran in either case. The write
+path is additionally exercised directly by `beacon-capture.test.ts`.
+
+### Reading, filtering, and querying reconciliation rows
+
+`readReconciliationRows` (`src/lib/telemetry/submission-reader.ts`) reads the
+sink and left-joins `"beacon"` records onto their `"submit"` record by
+`requestId`, producing one `ReconciliationRow` per run with a `beaconStatus`
+of `"fired"`, `"failed"`, `"skipped"`, or `"not_fired"` — the sink writes the
+first three; `"not_fired"` is synthesized by the reader when no beacon line
+ever arrived for a submit row. `GET /v1/submissions` instead
+composes `readDurableReconciliationRows`
+(`src/lib/telemetry/reconciliation-source.ts`), which unions the local
+sink's raw records with its S3-mirrored records (the buffered S3 sink
+described above), dedupes exact duplicates, and folds the result the same
+way `readReconciliationRows` does — so a submit line written by one ECS
+task and its beacon line written by another still land in one row.
+`queryReconciliationRows`
+(`src/lib/telemetry/submission-query.ts`) then filters/sorts (newest-first)/
+paginates those rows by `siteId`, `requestId`, `status`, `beaconStatus`, or a
+`from`/`to` window — the fields every reconciliation query needs regardless
+of plugin. `joinKeys`-specific filtering is not offered at this layer, since
+core doesn't know its shape; a caller filters on `joinKeys` client-side, or
+narrows by `siteId`/`requestId` first. Both are composed behind
+`GET /v1/submissions` (authenticated; `src/api/routes/submissions.ts`,
+querystring/response schemas in `src/api/schemas/submissions.ts`) — the
+queryable HTTP path for a plugin to join runs against its own attribution
+provider's report without re-parsing raw NDJSON. The response row omits
+`inboundPayload`/`auditPayload` (the opaque blobs this route exists to stop
+callers from having to re-parse) and renames the reader's internal
+`beaconTrackingUrl` field to `trackingUrl`.
 
 ## File map
 
@@ -252,6 +331,13 @@ file is the durable source-of-truth those pipelines read from.
 |---------|------|
 | NDJSON capture sink + `LlmCallSample` type | `src/lib/telemetry/call-capture.ts` |
 | Submission-envelope sink + `SubmissionEnvelopeSample` type | `src/lib/telemetry/submission-capture.ts` |
+| Reconciliation record schemas (`submit` + `beacon` kinds) | `src/lib/telemetry/reconciliation-record.ts` |
+| Beacon-fire (conversion) event writer + `BeaconEventSample` type | `src/lib/telemetry/beacon-capture.ts` |
+| Plugin-owned join-key extraction hook | `SitePlugin.extractJoinKeys` in `src/site-plugin.ts` |
+| Reconciliation reader (`readReconciliationRows`) | `src/lib/telemetry/submission-reader.ts` |
+| Durable (local+S3) reconciliation source (`readDurableReconciliationRows`) | `src/lib/telemetry/reconciliation-source.ts` |
+| Reconciliation query/filter layer (`queryReconciliationRows`) | `src/lib/telemetry/submission-query.ts` |
+| `GET /v1/submissions` route + querystring/response schemas | `src/api/routes/submissions.ts`, `src/api/schemas/submissions.ts` |
 | Call-type string constants | `src/lib/telemetry/call-types.ts` |
 | `llmCallSampleSchema`, `judgeVerdictSchema` | `src/api/schemas/telemetry.ts` |
 | Judge batch script (`pnpm judge:llm`) | `src/scripts/judge-llm-batch.ts` |

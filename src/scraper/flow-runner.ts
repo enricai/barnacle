@@ -57,6 +57,7 @@ import {
   buildRankSubmitCandidatesExpr,
   type SubmitCandidate,
 } from "@/scraper/submit-control";
+import { withWatchdog } from "@/scraper/watchdog";
 import { type Capture, resolveReconRunDir } from "@/scripts/recon-shared";
 import type { Logger } from "@/types/logging";
 
@@ -641,12 +642,15 @@ export async function snapshotPage(
  * body HTML and url instead of pairing a child frame's DOM with the top
  * document's url. `title()` intentionally still reads the top document for
  * a child frame (see `frame-target.ts`); `url()` is the frame discriminator.
+ * Routed through `mainFrameTarget(page)` (rather than a raw `page.title()`)
+ * when no `frameTarget` is resolved so this CDP read is watchdog-bounded the
+ * same way a resolved `FrameTarget`'s `title()` already is.
  */
 async function resolveDumpPageIdentity(
   page: Page,
   frameTarget: FrameTarget | undefined
 ): Promise<{ pageTitle: string; pageUrl: string }> {
-  const pageTitle = await (frameTarget ?? page).title().catch(() => "");
+  const pageTitle = await (frameTarget ?? mainFrameTarget(page)).title().catch(() => "");
   const pageUrl = await (frameTarget ? frameTarget.url() : Promise.resolve(page.url())).catch(() =>
     page.url()
   );
@@ -5200,8 +5204,28 @@ export async function probeStepBeforeAttempts(params: {
   logger: Logger;
   captureFn?: CaptureFn;
   frameTarget?: FrameTarget;
+  /**
+   * Gives the caller a chance to re-resolve a frame that lost the attach
+   * race at step entry right before this probe's own deepLocator gate
+   * consults `frameTarget.frame` — see `executeStepWithHealing`'s
+   * `reresolveFrameTargetIfLost`, which is what `executeStepWithHealing`
+   * passes here. Omitted (e.g. direct unit tests of this function) keeps
+   * today's behavior: the probe reads `frameTarget` exactly as passed in,
+   * with no re-resolution attempt.
+   */
+  reresolveFrameTarget?: () => Promise<FrameTarget | undefined>;
 }): Promise<"present" | "absent"> {
-  const { stagehand, page, step, stepIndex, totalSteps, logger, captureFn, frameTarget } = params;
+  const {
+    stagehand,
+    page,
+    step,
+    stepIndex,
+    totalSteps,
+    logger,
+    captureFn,
+    frameTarget,
+    reresolveFrameTarget,
+  } = params;
   try {
     const candidates = await guardedObserve(
       stagehand,
@@ -5235,10 +5259,13 @@ export async function probeStepBeforeAttempts(params: {
         );
         return "present";
       }
-      if (frameTarget?.frame) {
+      const effectiveFrameTarget = reresolveFrameTarget
+        ? await reresolveFrameTarget()
+        : frameTarget;
+      if (effectiveFrameTarget?.frame) {
         const deepLocatorCandidates = await resolveDeepLocatorCandidates(
           page,
-          frameTarget.frameSelector,
+          effectiveFrameTarget.frameSelector,
           "*"
         );
         if (deepLocatorCandidates.length > 0) {
@@ -5428,7 +5455,6 @@ export async function executeStepWithHealing(params: {
   const {
     stagehand,
     page,
-    frameTarget,
     step,
     optional,
     upload,
@@ -5457,6 +5483,43 @@ export async function executeStepWithHealing(params: {
     trajectory,
     onStepFailure,
   } = params;
+  // Mutable (not the destructured const above) so a lost frame-attach race
+  // can be upgraded in place once the OOPIF attaches later in the cascade —
+  // see reresolveFrameTargetIfLost below. Every existing reference in this
+  // function keeps reading `frameTarget` unchanged; only its declaration
+  // moved so it can be reassigned.
+  let frameTarget = params.frameTarget;
+  let frameReresolveAttempted = false;
+  /**
+   * Re-resolves a frame that lost the attach race at step entry —
+   * `resolveFrameTarget`'s per-step poll (called once in the runner's step
+   * loop, before `executeStepWithHealing` even starts) gives up and pins
+   * `frameTarget.frame` to `null` for the rest of the step, so every
+   * deepLocator gate below tests a stale "unresolved" handle even after the
+   * OOPIF actually attaches moments later (the run 5 vs. run 6 divergence in
+   * the bug report). Called just before each gate; re-checks with
+   * `timeoutMs: 0` — a single presence probe, no added poll delay — so a
+   * frame that has since attached is picked up without making the deadline
+   * that already elapsed matter again. Memoized (`frameReresolveAttempted`)
+   * so the cascade's several gates share one attempt instead of each
+   * re-checking; a target with no `declaredFrameSelector` (the frame was
+   * never declared, or resolution already succeeded) returns immediately
+   * without calling `resolveFrameTarget` at all, so main-frame-only flows do
+   * zero extra work.
+   */
+  const reresolveFrameTargetIfLost = async (): Promise<void> => {
+    if (frameReresolveAttempted) return;
+    frameReresolveAttempted = true;
+    if (frameTarget?.frame || !frameTarget?.declaredFrameSelector) return;
+    const reresolved = await resolveFrameTarget(page, frameTarget.declaredFrameSelector, {
+      timeoutMs: 0,
+    });
+    if (!reresolved.frame) return;
+    logger.info(
+      `${formatStepPrefix(stepIndex, totalSteps)} frame ${frameTarget.declaredFrameSelector} attached after step entry — re-resolved before deepLocator gate`
+    );
+    frameTarget = reresolved;
+  };
   // Read-once to suppress "unused" — knownErrorClassPrefixes is threaded
   // through executeStepWithHealing's signature so the cascade has it in
   // scope when the invalid-fields judge migration (Task #43) lands. The
@@ -5611,6 +5674,10 @@ export async function executeStepWithHealing(params: {
     logger,
     captureFn,
     frameTarget,
+    reresolveFrameTarget: async () => {
+      await reresolveFrameTargetIfLost();
+      return frameTarget;
+    },
   });
   if (probeResult === "absent") {
     if (optional) {
@@ -5691,6 +5758,7 @@ export async function executeStepWithHealing(params: {
     // dump feeds replanRemainingFlow's diagnostic prompt, and an empty
     // candidate list there returns "repeat the failed step", burning the
     // replan budget on every frame-scoped probe-absent failure.
+    await reresolveFrameTargetIfLost();
     const unfocusedObserve =
       probeAbsentObservedUnfocused.length === 0 && frameTarget?.frame
         ? await deepLocatorCandidatesAsActions(page, frameTarget.frameSelector)
@@ -6054,6 +6122,7 @@ export async function executeStepWithHealing(params: {
         // exclusion is applied here by filtering resolved (already-ranked)
         // candidates against triedSelectors instead — otherwise attempt 4
         // would re-pick the same failed element and burn the attempt.
+        await reresolveFrameTargetIfLost();
         const deepLocatorCandidates =
           candidates.length === 0 && frameTarget?.frame
             ? (
@@ -6394,6 +6463,7 @@ export async function executeStepWithHealing(params: {
           // evidence rather than hard-failing — lower stakes than the
           // attempt-2/4 click path since this only feeds the rephrase
           // prompt, so a resolver error/empty result is fine to swallow.
+          await reresolveFrameTargetIfLost();
           const candidates =
             observedCandidates.length === 0 && frameTarget?.frame
               ? await deepLocatorCandidatesAsActions(page, frameTarget.frameSelector, step)
@@ -6643,7 +6713,10 @@ export async function executeStepWithHealing(params: {
         frameTarget ?? mainFrameTarget(page)
       ).catch(() => 0);
 
-      const pageTitle = await page.title().catch(() => "");
+      const pageTitle = await withWatchdog(() => page.title(), {
+        timeoutMs: config.scraper.frameEvaluateTimeoutMs,
+        label: "flow-runner: submit-verification page title probe",
+      }).catch(() => "");
       const matchedSubmittedSelectors = domSubmittedMatch !== null ? [domSubmittedMatch] : [];
 
       const judgeVerdict = await verifySubmitWithLLM({
@@ -6911,7 +6984,10 @@ export async function executeStepWithHealing(params: {
             const invalidMarkerCount = await countNgInvalidContainers(
               frameTarget ?? mainFrameTarget(page)
             ).catch(() => 0);
-            const pageTitle = await page.title().catch(() => "");
+            const pageTitle = await withWatchdog(() => page.title(), {
+              timeoutMs: config.scraper.frameEvaluateTimeoutMs,
+              label: "flow-runner: submit-verification retry page title probe",
+            }).catch(() => "");
             const matchedSubmittedSelectors = domSubmittedMatch !== null ? [domSubmittedMatch] : [];
 
             const judgeVerdict = await verifySubmitWithLLM({
@@ -7147,6 +7223,7 @@ export async function executeStepWithHealing(params: {
   // dump feeds replanRemainingFlow's diagnostic prompt, and an empty
   // candidate list there returns "repeat the failed step", burning the
   // replan budget on every frame-scoped cascade-exhaust failure.
+  await reresolveFrameTargetIfLost();
   const finalObserve =
     cascadeExhaustObservedFinal.length === 0 && frameTarget?.frame
       ? await deepLocatorCandidatesAsActions(page, frameTarget.frameSelector, step)
@@ -7155,7 +7232,7 @@ export async function executeStepWithHealing(params: {
   // Discriminator data for "Stagehand sees nothing" failures: capture the raw
   // DOM and an unfocused observe so a triager can tell empty-page from
   // Stagehand-can't-see-it without reproducing the failure.
-  const bodyOuterHtmlRaw = await (frameTarget ?? page)
+  const bodyOuterHtmlRaw = await (frameTarget ?? mainFrameTarget(page))
     .evaluate("document.body ? document.body.outerHTML : null")
     .catch(() => null);
   const bodyOuterHtml =
@@ -7265,6 +7342,16 @@ const SPA_MIN_BODY_LENGTH = 5_000;
  * the entire flow. The recon CLI has this gate inline; generated plugins call it
  * here so they inherit the same behavior. Polls `document.body.outerHTML.length`
  * up to a threshold, then proceeds regardless (best-effort, never throws).
+ *
+ * Each `document.body.outerHTML.length` read is itself bounded by a watchdog
+ * (capped to one poll interval) and treated as "still 0 chars" on timeout —
+ * same pattern as `waitForChildFrameReady`'s `isReady()` probe. Without this,
+ * a single wedged CDP round-trip inside `readBodyLength` would pend forever
+ * and the `while (Date.now() < deadline)` loop below would never be
+ * re-entered, defeating the very deadline it exists to enforce.
+ * `page.waitForTimeout(pollMs)` is left unguarded: it is a plain delay (no
+ * DOM/network read whose response can be lost), so it does not carry the
+ * "wedged read" failure mode this fix targets.
  */
 export async function waitForSpaReady(
   page: Page,
@@ -7277,7 +7364,10 @@ export async function waitForSpaReady(
   const bodyLengthExpr = "document.body ? document.body.outerHTML.length : 0";
 
   const readBodyLength = async (): Promise<number> => {
-    const raw = await page.evaluate(bodyLengthExpr).catch(() => 0);
+    const raw = await withWatchdog(() => page.evaluate(bodyLengthExpr), {
+      timeoutMs: pollMs,
+      label: "flow-runner: spa readiness body-length probe",
+    }).catch(() => 0);
     return typeof raw === "number" ? raw : 0;
   };
 

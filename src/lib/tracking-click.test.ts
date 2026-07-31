@@ -31,6 +31,11 @@ vi.mock("@/lib/dd-metrics", () => ({
   recordTrackingClickDuration: vi.fn(),
 }));
 
+const mockCaptureBeaconEvent = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+vi.mock("@/lib/telemetry/beacon-capture", () => ({
+  captureBeaconEvent: mockCaptureBeaconEvent,
+}));
+
 import {
   recordTrackingClickAttempt,
   recordTrackingClickFailure,
@@ -122,5 +127,105 @@ describe("fireTrackingClick", () => {
     await drainPromise;
 
     expect(mockClose).toHaveBeenCalledOnce();
+  });
+
+  it("does not capture a beacon outcome when the reconciliation context is omitted", async () => {
+    fireTrackingClick("https://click.acme.example/t/abc", "ats-c");
+    await drainTrackingClicks();
+
+    expect(mockCaptureBeaconEvent).not.toHaveBeenCalled();
+  });
+
+  it("captures a fired beacon outcome correlated to the run after a successful navigation", async () => {
+    fireTrackingClick("https://click.acme.example/t/abc?vivclid=123", "ats-c", {
+      requestId: "req-1",
+      joinKeys: { vivclid: "123", jobReference: "emp1_job1" },
+    });
+    await drainTrackingClicks();
+
+    expect(mockCaptureBeaconEvent).toHaveBeenCalledTimes(1);
+    expect(mockCaptureBeaconEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestId: "req-1",
+        siteId: "ats-c",
+        joinKeys: { vivclid: "123", jobReference: "emp1_job1" },
+        beaconStatus: "fired",
+        trackingUrl: "https://click.acme.example/t/abc?vivclid=123",
+      })
+    );
+  });
+
+  it("captures a failed beacon outcome when page.goto rejects", async () => {
+    mockPage.goto.mockRejectedValueOnce(new Error("navigation timeout"));
+    fireTrackingClick("https://click.acme.example/t/abc", "ats-c", {
+      requestId: "req-2",
+      joinKeys: null,
+    });
+    await drainTrackingClicks();
+
+    expect(mockCaptureBeaconEvent).toHaveBeenCalledTimes(1);
+    expect(mockCaptureBeaconEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestId: "req-2",
+        siteId: "ats-c",
+        beaconStatus: "failed",
+      })
+    );
+  });
+
+  it("captures a failed beacon outcome when session creation rejects", async () => {
+    mockCreateSession.mockRejectedValueOnce(new Error("no API key"));
+    fireTrackingClick("https://click.acme.example/t/abc", "ats-c", {
+      requestId: "req-3",
+      joinKeys: { vivclid: "999" },
+    });
+    await drainTrackingClicks();
+
+    expect(mockCaptureBeaconEvent).toHaveBeenCalledTimes(1);
+    expect(mockCaptureBeaconEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestId: "req-3",
+        siteId: "ats-c",
+        joinKeys: { vivclid: "999" },
+        beaconStatus: "failed",
+      })
+    );
+  });
+
+  it("does not throw when the capture sink itself rejects", async () => {
+    mockCaptureBeaconEvent.mockRejectedValueOnce(new Error("sink write failed"));
+    fireTrackingClick("https://click.acme.example/t/abc", "ats-c", {
+      requestId: "req-4",
+      joinKeys: null,
+    });
+
+    await expect(drainTrackingClicks()).resolves.toBeUndefined();
+  });
+
+  it("drainTrackingClicks resolves after the beacon outcome is captured", async () => {
+    let resolveCapture!: () => void;
+    mockCaptureBeaconEvent.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        resolveCapture = resolve;
+      })
+    );
+
+    fireTrackingClick("https://click.acme.example/t/abc", "ats-c", {
+      requestId: "req-5",
+      joinKeys: null,
+    });
+
+    const drainPromise = drainTrackingClicks(5_000);
+    let drained = false;
+    drainPromise.then(() => {
+      drained = true;
+    });
+
+    await Promise.resolve();
+    expect(drained).toBe(false);
+
+    resolveCapture();
+    await drainPromise;
+    expect(drained).toBe(true);
   });
 });

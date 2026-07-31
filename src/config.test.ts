@@ -30,6 +30,9 @@ describe("config/loadConfig", () => {
     expect(cfg.scraper.anthropicTimeoutMs).toBe(120_000);
     expect(cfg.scraper.connectTimeoutMs).toBe(120_000);
     expect(cfg.scraper.steelSessionTimeoutMs).toBe(3_600_000);
+    expect(cfg.scraper.frameReadyTimeoutMs).toBe(20_000);
+    expect(cfg.scraper.frameDocumentReadyTimeoutMs).toBe(5_000);
+    expect(cfg.scraper.frameEvaluateTimeoutMs).toBe(30_000);
     // Default trustProxy=true matches the most common deploy shape
     // (behind an ALB/nginx/Cloudflare); bare-metal runners must opt out.
     expect(cfg.trustProxy).toBe(true);
@@ -47,6 +50,26 @@ describe("config/loadConfig", () => {
     expect(cfg.scraper.poolSize).toBe(10);
     expect(cfg.rateLimit.max).toBe(500);
     expect(cfg.scraper.anthropicTimeoutMs).toBe(30000);
+  });
+
+  it("overrides frame timeout budgets via env", () => {
+    process.env.FRAME_READY_TIMEOUT_MS = "15000";
+    process.env.FRAME_DOCUMENT_READY_TIMEOUT_MS = "8000";
+    process.env.FRAME_EVALUATE_TIMEOUT_MS = "45000";
+    const cfg = loadConfig();
+    expect(cfg.scraper.frameReadyTimeoutMs).toBe(15000);
+    expect(cfg.scraper.frameDocumentReadyTimeoutMs).toBe(8000);
+    expect(cfg.scraper.frameEvaluateTimeoutMs).toBe(45000);
+  });
+
+  it("falls back to frame timeout defaults when env values are unparseable", () => {
+    process.env.FRAME_READY_TIMEOUT_MS = "not-a-number";
+    process.env.FRAME_DOCUMENT_READY_TIMEOUT_MS = "not-a-number";
+    process.env.FRAME_EVALUATE_TIMEOUT_MS = "not-a-number";
+    const cfg = loadConfig();
+    expect(cfg.scraper.frameReadyTimeoutMs).toBe(20_000);
+    expect(cfg.scraper.frameDocumentReadyTimeoutMs).toBe(5_000);
+    expect(cfg.scraper.frameEvaluateTimeoutMs).toBe(30_000);
   });
 
   it("parses boolean env vars", () => {
@@ -154,6 +177,8 @@ describe("config/loadConfig", () => {
     expect(cfg.telemetry.s3.prefix).toBe("telemetry");
     expect(cfg.telemetry.s3.flushIntervalMs).toBe(60_000);
     expect(cfg.telemetry.s3.maxBufferLines).toBe(500);
+    expect(cfg.telemetry.s3.readMaxObjects).toBe(200);
+    expect(cfg.telemetry.s3.readConcurrency).toBe(8);
   });
 
   it("telemetry.s3 env overrides", () => {
@@ -161,11 +186,15 @@ describe("config/loadConfig", () => {
     process.env.TELEMETRY_S3_PREFIX = "custom-prefix";
     process.env.TELEMETRY_S3_FLUSH_INTERVAL_MS = "30000";
     process.env.TELEMETRY_S3_MAX_BUFFER_LINES = "1000";
+    process.env.TELEMETRY_S3_READ_MAX_OBJECTS = "50";
+    process.env.TELEMETRY_S3_READ_CONCURRENCY = "4";
     const cfg = loadConfig();
     expect(cfg.telemetry.s3.bucket).toBe("my-telemetry-bucket");
     expect(cfg.telemetry.s3.prefix).toBe("custom-prefix");
     expect(cfg.telemetry.s3.flushIntervalMs).toBe(30000);
     expect(cfg.telemetry.s3.maxBufferLines).toBe(1000);
+    expect(cfg.telemetry.s3.readMaxObjects).toBe(50);
+    expect(cfg.telemetry.s3.readConcurrency).toBe(4);
   });
 
   it("normalizes empty-string TELEMETRY_S3_BUCKET to undefined", () => {

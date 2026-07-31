@@ -81,9 +81,30 @@ which path. This separation means:
   to `SITE_PLUGINS`.
 - The fallback logic is tested once, in one place.
 
+The submission envelope is one instance of this: `dispatch()` calls the
+plugin's own `extractJoinKeys` hook (if declared) once, then stamps the
+opaque result onto both the submit envelope and — when the plugin has no
+`extractJoinKeys` — the tracking-click call that fires the conversion beacon
+(`src/plugins/loader.ts`). Core never inspects what's inside `joinKeys`; a
+plugin that needs reconciliation join keys owns their shape entirely. A
+plugin only ever sees its own request/response — it has no visibility into
+whether core's automatic beacon fired, since that navigation (when it
+happens) is kicked off *by* `dispatch()`, after the plugin's own work is
+already done. Declaring `extractJoinKeys` is also the plugin's signal that it
+manages its own post-submit tracking navigation itself, so `dispatch()`
+skips its own automatic fire for that plugin — this matters because some
+attribution schemes require the click and apply navigations to share one
+browser session (a device cookie minted per-session), which core's
+generic single-URL fire can't provide. The reconciliation record therefore
+spans two writers (submit, beacon-fire) that only core can see both of;
+putting the fold logic anywhere else would mean either duplicating it per
+plugin or losing the ability to join a run's submit and beacon outcomes at
+all. See §Why the reconciliation record has an opaque join-key bag, a
+distinct beacon dimension, and an in-repo read path below.
+
 **Browser-execution escape hatch.** Sending `x-barnacle-execution: browser`
 on a plugin request causes `dispatch()` to skip `executeHttp` and route
-straight to the browser path (`src/plugins/loader.ts:341`). Used by the
+straight to the browser path (`src/plugins/loader.ts:364`). Used by the
 nightly smoke test (`src/scripts/smoke-test.ts`) to exercise the browser
 path even when the hot path is healthy, and available to on-call for
 diagnosis when the hot path is suspect. Header name is lowercase — Fastify
@@ -399,6 +420,80 @@ Telemetry capture is fire-and-forget — errors are logged and swallowed so a di
 full or permission error never breaks the recon run. The capture is a diagnostic
 instrument, not a load-bearing path.
 
+### Why the reconciliation record has an opaque join-key bag, a distinct beacon dimension, and an in-repo read path
+
+A separate sink, `.barnacle/submissions.ndjson`, captures the durable
+per-run reconciliation record — what did we submit, did it succeed, and did
+the conversion beacon fire (`reconciliation-record.ts`, `submission-capture.ts`,
+`beacon-capture.ts`; full field reference in
+[telemetry-and-judging.md](./telemetry-and-judging.md#submission-envelope-sink)).
+Three decisions in that record's shape are load-bearing enough to justify
+here, not just describe there.
+
+**Why `joinKeys` is an opaque bag, not named fields.** `inboundPayload` is
+deliberately `z.unknown()` — every plugin's request body has a different
+shape, and core has no business validating it. Reconciliation join keys are
+the same kind of thing: which fields matter, how they're composed, and what
+they mean is entirely a property of the attribution scheme a given site's
+plugin integrates with (an Appcast-style click ID is not the same kind of
+value as a job-board-specific applicant reference), and core has no more
+business knowing that vocabulary than it does the rest of the payload. An
+earlier version of this record named two fields (`vivclid`, `jobReference`)
+directly on `submitRecordSchema`, resolved by a core-owned extractor — this
+was a site-agnostic-boundary violation: it hardcoded one attribution
+vendor's terms into `dispatch()`, the telemetry schemas, and the
+`GET /v1/submissions` querystring, exactly the kind of `siteId`-shaped
+knowledge `dispatch()`/`registerRoutes()` are required to stay free of (see
+§Why `dispatch()` is in core, above). The fix: a plugin declares an optional
+`extractJoinKeys(payload) => Record<string, unknown> | null` hook
+(`src/site-plugin.ts`); `dispatch()` calls it once, generically, and stamps
+the opaque result onto `submitRecordSchema`/`beaconEventSchema`'s `joinKeys`
+field without inspecting it — the same "opaque, plugin-owned shape" pattern
+`SitePluginResult.auditPayload` already uses. `submission-query.ts` and
+`GET /v1/submissions` filter on the fields every reconciliation query
+genuinely needs regardless of plugin (`siteId`, `requestId`, `status`,
+`beaconStatus`, a time window) and leave `joinKeys`-specific filtering to the
+plugin's own read-side tooling.
+
+**Why beacon-fire is a dimension distinct from submit `status`, not a
+mutation of the submit record.** Submit `status` answers one question only —
+did `dispatch()`'s own HTTP/browser attempt complete. It says nothing about
+whether a tracking vendor's pixel actually recorded the click an attribution
+provider pays on; that is a second, independent failure surface, resolved
+later. For a plugin with no `extractJoinKeys`, that's a separate
+fire-and-forget navigation core drives itself (`fireTrackingClick`,
+`src/lib/tracking-click.ts`) that runs *after* `dispatch()` has already
+returned and already appended its submit line — except when there is no
+`TrackingUrl` to navigate to at all, in which case `dispatch()` writes a
+`beaconStatus: "skipped"` beacon line itself, synchronously, before
+returning, since there is nothing to fire-and-forget. A plugin that declares
+`extractJoinKeys` fires its own beacon nav entirely outside `dispatch()` (see
+above); `dispatch()` still writes the `"skipped"` beacon line for it, so the
+reconciliation row exists even though core never drove a nav for that run.
+Recording `beaconStatus`
+as a mutation of the submit line would mean rewriting an already-flushed
+NDJSON row — breaking the append-only, crash-safe write model this section
+just argued for. Instead the beacon outcome is its own later (or, for
+`"skipped"`, immediate) `kind:"beacon"` line, and a reader folds it onto the
+matching submit line by `requestId` (`submission-reader.ts`) — so "submitted
+but the beacon never fired" becomes a directly queryable value
+(`beaconStatus: "not_fired"`, synthesized by the reader when no beacon line
+ever arrives, distinct from the sink-written `"skipped"`) rather than
+something inferred from the absence of a Datadog counter increment.
+
+**Why a read path belongs in-repo, not deferred to ETL.** Reconciliation is
+not a periodic batch job — it runs continuously as cohort dollars accrue
+against an attribution provider's CPA report, and the write side (schemas,
+capture sinks) already lives in this repo. `submission-reader.ts` and `submission-query.ts`
+are a thin, I/O-light fold-and-filter layer over the exact same
+`reconciliationRecordSchema` the writers already validate against, and
+`GET /v1/submissions` (`src/api/routes/submissions.ts`) exposes it behind the
+same bearer-auth plugin every other route uses. Standing up separate ETL
+infrastructure to query a two-file append-only sink would mean duplicating
+the record schema in a second system and accepting a sync lag between what's
+on disk and what's queryable — for a read path that a few hundred lines of
+pure TypeScript already provide with zero new infrastructure.
+
 ### Why judging is offline over captured samples
 
 The judge (`pnpm run judge:llm`, `src/scripts/judge-llm-batch.ts`) reads the capture
@@ -627,6 +722,13 @@ maintenance loop.
 | Plugin contract interface (template for all site plugins) | `src/site-plugin.ts` |
 | Findings doc (generated) | `docs/target-recon.md` |
 | LLM call telemetry sink (NDJSON capture) | `src/lib/telemetry/call-capture.ts` |
+| Submission-envelope sink + `SubmissionEnvelopeSample` type | `src/lib/telemetry/submission-capture.ts` |
+| Reconciliation record schemas (`submit` + `beacon` kinds) | `src/lib/telemetry/reconciliation-record.ts` |
+| Beacon-fire (conversion) event writer + `BeaconEventSample` type | `src/lib/telemetry/beacon-capture.ts` |
+| Plugin-owned join-key extraction hook | `SitePlugin.extractJoinKeys` in `src/site-plugin.ts` |
+| Reconciliation reader (`readReconciliationRows`) | `src/lib/telemetry/submission-reader.ts` |
+| Reconciliation query/filter layer (`queryReconciliationRows`) | `src/lib/telemetry/submission-query.ts` |
+| `GET /v1/submissions` route + querystring/response schemas | `src/api/routes/submissions.ts`, `src/api/schemas/submissions.ts` |
 | Canonical call_type constants | `src/lib/telemetry/call-types.ts` |
 | Per-run telemetry state | `src/lib/telemetry/run-state.ts` |
 | LlmCallSample + JudgeVerdict schemas | `src/api/schemas/telemetry.ts` |

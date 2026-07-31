@@ -50,6 +50,7 @@ const mockGetOrCreateInFlight = vi.hoisted(() =>
   vi.fn().mockImplementation((_key: string, producer: () => Promise<unknown>) => producer())
 );
 const mockFireTrackingClick = vi.hoisted(() => vi.fn());
+const mockCaptureBeaconEvent = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const mockRecordDdFailure = vi.hoisted(() => vi.fn());
 
 const mockRunWithSession = vi.hoisted(() =>
@@ -85,6 +86,10 @@ vi.mock("@/cache/response-cache", () => ({
 
 vi.mock("@/lib/tracking-click", () => ({
   fireTrackingClick: mockFireTrackingClick,
+}));
+
+vi.mock("@/lib/telemetry/beacon-capture", () => ({
+  captureBeaconEvent: mockCaptureBeaconEvent,
 }));
 
 vi.mock("@/lib/dd-metrics", () => ({
@@ -168,6 +173,39 @@ describe("dispatch", () => {
     );
   });
 
+  it("emits null joinKeys on the success envelope when the plugin declares no extractJoinKeys", async () => {
+    const payload = {
+      TrackingUrl: "https://click.acme.example/t/abc?vivclid=123&empId=emp9&jid=job9",
+    };
+    await dispatch(stubPlugin, payload, stubContext);
+    expect(mockCaptureSubmissionEnvelope).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "submitted",
+        joinKeys: null,
+      })
+    );
+  });
+
+  it("emits the plugin's extractJoinKeys result on the success envelope", async () => {
+    const joinKeysPlugin: SitePlugin<unknown, unknown> = {
+      ...stubPlugin,
+      extractJoinKeys: (payload) => {
+        const { TrackingUrl } = payload as { TrackingUrl?: string };
+        return TrackingUrl ? { vivclid: "123", jobReference: "emp9_job9" } : null;
+      },
+    };
+    const payload = {
+      TrackingUrl: "https://click.acme.example/t/abc?vivclid=123&empId=emp9&jid=job9",
+    };
+    await dispatch(joinKeysPlugin, payload, stubContext);
+    expect(mockCaptureSubmissionEnvelope).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "submitted",
+        joinKeys: { vivclid: "123", jobReference: "emp9_job9" },
+      })
+    );
+  });
+
   it("returns the SitePluginResult from execute() on success", async () => {
     const result = await dispatch(stubPlugin, {}, stubContext);
     expect(result.data).toEqual({ result: "ok" });
@@ -229,6 +267,48 @@ describe("dispatch", () => {
         status: "error",
         errorMessage: "captcha hit",
         auditPayload: null,
+      })
+    );
+  });
+
+  it("emits the plugin's extractJoinKeys result on the error envelope", async () => {
+    mockPluginExecute.mockRejectedValueOnce(new CaptchaError("captcha hit"));
+    const joinKeysPlugin: SitePlugin<unknown, unknown> = {
+      ...stubPlugin,
+      extractJoinKeys: () => ({ vivclid: "999", jobReference: "emp1_job1" }),
+    };
+    const payload = {
+      TrackingUrl: "https://click.acme.example/t/abc?vivclid=999&empId=emp1&jid=job1",
+    };
+
+    try {
+      await dispatch(joinKeysPlugin, payload, stubContext);
+    } catch {
+      // expected — we only care that the envelope was emitted
+    }
+
+    expect(mockCaptureSubmissionEnvelope).toHaveBeenCalledWith(
+      expect.objectContaining({
+        siteId: "test-site",
+        status: "error",
+        joinKeys: { vivclid: "999", jobReference: "emp1_job1" },
+      })
+    );
+  });
+
+  it("emits null joinKeys on the error envelope when the plugin declares no extractJoinKeys", async () => {
+    mockPluginExecute.mockRejectedValueOnce(new CaptchaError("captcha hit"));
+
+    try {
+      await dispatch(stubPlugin, {}, stubContext);
+    } catch {
+      // expected — we only care that the envelope was emitted
+    }
+
+    expect(mockCaptureSubmissionEnvelope).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "error",
+        joinKeys: null,
       })
     );
   });
@@ -509,13 +589,48 @@ describe("dispatch — tracking click", () => {
     vi.clearAllMocks();
   });
 
-  it("calls fireTrackingClick with the URL and siteId when payload contains TrackingUrl", async () => {
-    const payload = { TrackingUrl: "https://click.acme.example/t/abc?vivclid=123" };
+  it("calls fireTrackingClick with the URL, siteId, and joinKeys when payload contains TrackingUrl", async () => {
+    const payload = {
+      TrackingUrl: "https://click.acme.example/t/abc?vivclid=123&empId=emp9&jid=job9",
+    };
     await dispatch(stubPlugin, payload, stubContext);
     expect(mockFireTrackingClick).toHaveBeenCalledOnce();
     expect(mockFireTrackingClick).toHaveBeenCalledWith(
-      "https://click.acme.example/t/abc?vivclid=123",
-      "test-site"
+      "https://click.acme.example/t/abc?vivclid=123&empId=emp9&jid=job9",
+      "test-site",
+      { requestId: "req-test-123", joinKeys: null }
+    );
+  });
+
+  it("does not call fireTrackingClick when the plugin declares extractJoinKeys (it manages its own tracking)", async () => {
+    const joinKeysPlugin: SitePlugin<unknown, unknown> = {
+      ...stubPlugin,
+      extractJoinKeys: () => ({ vivclid: "123" }),
+    };
+    const payload = {
+      TrackingUrl: "https://click.acme.example/t/abc?vivclid=123&empId=emp9&jid=job9",
+    };
+    await dispatch(joinKeysPlugin, payload, stubContext);
+    expect(mockFireTrackingClick).not.toHaveBeenCalled();
+  });
+
+  it("preserves the real TrackingUrl on the skipped beacon record when a plugin with extractJoinKeys delegates tracking", async () => {
+    const joinKeysPlugin: SitePlugin<unknown, unknown> = {
+      ...stubPlugin,
+      extractJoinKeys: () => ({ vivclid: "123" }),
+    };
+    const trackingUrl = "https://click.acme.example/t/abc?vivclid=123&empId=emp9&jid=job9";
+    await dispatch(joinKeysPlugin, { TrackingUrl: trackingUrl }, stubContext);
+    expect(mockFireTrackingClick).not.toHaveBeenCalled();
+    expect(mockCaptureBeaconEvent).toHaveBeenCalledOnce();
+    expect(mockCaptureBeaconEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestId: "req-test-123",
+        siteId: "test-site",
+        joinKeys: { vivclid: "123" },
+        beaconStatus: "skipped",
+        trackingUrl,
+      })
     );
   });
 
@@ -537,6 +652,54 @@ describe("dispatch — tracking click", () => {
       // expected
     }
     expect(mockFireTrackingClick).not.toHaveBeenCalled();
+  });
+
+  it("emits a skipped beacon record when a successful submit has no TrackingUrl", async () => {
+    const payload = { jobId: "job-1" };
+    await dispatch(stubPlugin, payload, stubContext);
+    expect(mockCaptureBeaconEvent).toHaveBeenCalledOnce();
+    expect(mockCaptureBeaconEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestId: "req-test-123",
+        siteId: "test-site",
+        joinKeys: null,
+        beaconStatus: "skipped",
+        trackingUrl: null,
+      })
+    );
+  });
+
+  it("emits a skipped beacon record when a successful submit has an empty-string TrackingUrl", async () => {
+    await dispatch(stubPlugin, { TrackingUrl: "" }, stubContext);
+    expect(mockCaptureBeaconEvent).toHaveBeenCalledOnce();
+    expect(mockCaptureBeaconEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ beaconStatus: "skipped", trackingUrl: null })
+    );
+  });
+
+  it("does not emit a skipped beacon record when the payload has a TrackingUrl", async () => {
+    const payload = {
+      TrackingUrl: "https://click.acme.example/t/abc?vivclid=123&empId=emp9&jid=job9",
+    };
+    await dispatch(stubPlugin, payload, stubContext);
+    expect(mockFireTrackingClick).toHaveBeenCalledOnce();
+    expect(mockCaptureBeaconEvent).not.toHaveBeenCalled();
+  });
+
+  it("does not emit a skipped beacon record on dispatch failure", async () => {
+    mockPluginExecute.mockRejectedValueOnce(new CaptchaError("captcha hit"));
+    try {
+      await dispatch(stubPlugin, {}, stubContext);
+    } catch {
+      // expected
+    }
+    expect(mockCaptureBeaconEvent).not.toHaveBeenCalled();
+  });
+
+  it("resolves normally when the skipped beacon sink write fails (best-effort swallow)", async () => {
+    mockCaptureBeaconEvent.mockRejectedValueOnce(new Error("disk full"));
+    const result = await dispatch(stubPlugin, {}, stubContext);
+    expect(result.data).toEqual({ result: "ok" });
   });
 });
 
