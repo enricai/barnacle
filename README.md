@@ -343,7 +343,7 @@ interface SitePlugin<TPayload, TResult> {
 
 ### Full plugin skeleton (hot path + browser fallback)
 
-`pnpm run recon:generate` produces this structure automatically. Use `createRateLimitedJsonClient()` for REST endpoints that send Chromium client-hint headers (the common case) and `createGraphqlClient()` for GraphQL endpoints — `recon:generate` selects the right one based on what it captured. The skeleton below illustrates the REST hot-path pattern; for GraphQL sites, `recon-generate` uses `createGraphqlClient` instead and inlines the captured query as a constant.
+`pnpm run recon:generate` produces this structure automatically. Use `createRateLimitedJsonClient()` for REST endpoints that send Chromium client-hint headers (the common case) and `createGraphqlClient()` for GraphQL endpoints — `recon:generate` selects the right one based on what it captured. The skeleton below illustrates the REST hot-path pattern; for GraphQL sites, `recon-generate` uses `createGraphqlClient` instead. A GraphQL target with a single captured query inlines it as a constant; a GraphQL target whose captures form a multi-operation mutation sequence (a submission flow) instead gets the same state-threaded, multi-step `executeHttp` REST submission flows get.
 
 ```ts
 // src/sites/my-site/contract.ts
