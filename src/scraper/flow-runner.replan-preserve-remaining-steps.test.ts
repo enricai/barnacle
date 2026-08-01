@@ -7,6 +7,7 @@ import {
 } from "@/scraper/deep-locator-fake";
 import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
 import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
+import { filterReplanDuplicatingNextAuthored } from "@/scripts/recon-browser";
 import type { Logger } from "@/types/logging";
 
 /**
@@ -532,5 +533,117 @@ describe("flow-runner replan-preserve-remaining-steps acceptance regression (uch
       if (Object.values(indexes).includes(index)) continue;
       expect(element.clicks).toBe(0);
     }
+  });
+
+  it("bugfix-002 branch: if the reveal click still exhausts the cascade and a bridge re-proposes the authored Add step, the dedup filter drops the bridge's duplicate so the authored Work-History chain still runs exactly once through submit (uchealth-19/-20 fallback path)", async () => {
+    // Fault-inject the scenario bugfix-001 is meant to prevent: the reveal
+    // click's replan still fires (as it did on run-19/-20 before the credit
+    // fix), and the replanner's bridge re-proposes the SAME action as this
+    // flow's own next authored step ("click 'Add New Work History'") under
+    // different wording — the exact `originalRemaining: 24 -> newRemaining:
+    // 1` shape from the replan record. `filterReplanDuplicatingNextAuthored`
+    // (bugfix-002, `recon-browser.ts`) is the splice-time guard that drops
+    // that duplicate bridge step so the authored Add is the one that opens
+    // the entry form, rather than a double-Add re-closing it.
+    const bridgeStep = {
+      instruction: "Click the 'Add New Work History' button to open a new work history entry form",
+      optional: false,
+      upload: false,
+      origin: "replan" as const,
+    };
+    const originalRemaining = ACCEPTANCE_STEPS.slice(1).map((s) => ({
+      instruction: s.instruction,
+      optional: s.optional,
+      upload: s.upload,
+      origin: "original" as const,
+    }));
+
+    const dedupedBridge = filterReplanDuplicatingNextAuthored([bridgeStep], originalRemaining);
+
+    // The dedup filter drops the bridge entirely — it duplicates
+    // originalRemaining[0] (the authored ADD_WH_STEP) — so the splice
+    // `[...dedupedBridge, ...originalRemaining]` never re-inserts a second
+    // Add ahead of the authored one.
+    expect(dedupedBridge).toEqual([]);
+    const splicedPlan: HealingFlowStep[] = [
+      { instruction: REVEAL_STEP, optional: false, upload: false, submitStep: false },
+      ...dedupedBridge.map((s) => ({
+        instruction: s.instruction,
+        optional: s.optional,
+        upload: s.upload,
+        submitStep: false,
+      })),
+      ...ACCEPTANCE_STEPS.slice(1),
+    ];
+    const addInstructionCount = splicedPlan.filter((s) =>
+      /add new work history/i.test(s.instruction)
+    ).length;
+    expect(addInstructionCount).toBe(1);
+
+    // Running the deduped, spliced plan through the same offline harness
+    // proves the authored chain still runs end to end to a verified submit
+    // even under this fault-injected fallback path.
+    const topUrl = { current: `${TOP_ORIGIN}/jobs/123/apply` };
+    const childUrls = { current: CHILD_SRC };
+    const state: AcceptanceSequenceState = {
+      filledWith: new Map(),
+      entryFormOpen: false,
+      entryFormReopenedOrClosedEarly: false,
+      entryComplete: false,
+      requiresAttention: false,
+      submitted: false,
+    };
+    const revealed = { current: false };
+    const detached = { current: false };
+    const educationHistoryUrlAtNext: { current: string | null } = { current: null };
+    const deepLocatorFrame: FakeDeepLocatorFrame = new Map();
+    const order = buildDenseHopOrder();
+    const hop = registerDeepLocatorHopElements(deepLocatorFrame, HOP_SELECTOR, order);
+
+    const indexes = {
+      reveal: findElementIndex(order, REVEAL_ELEMENT_TEXT),
+      add: findElementIndex(order, "Add New Work History"),
+      companyName: findElementIndex(order, "Company Name"),
+      jobTitle: findElementIndex(order, "Job Title"),
+      description: findElementIndex(order, "Description"),
+      startDate: findElementIndex(order, "Start Date"),
+      current: findElementIndex(order, "Current"),
+      done: findElementIndex(order, "Done"),
+      nextToEducation: findElementIndex(order, "Next"),
+      screening: findElementIndex(order, SCREENING_QUESTION_TEXT),
+      selfId: findElementIndex(order, SELF_ID_TEXT),
+      submit: findElementIndex(order, "Submit"),
+    };
+
+    const stagehand = makeAcceptanceStagehand();
+    const page = makeAcceptanceTopPage(
+      topUrl,
+      childUrls,
+      deepLocatorFrame,
+      state,
+      indexes,
+      revealed,
+      detached,
+      educationHistoryUrlAtNext
+    );
+
+    const result = await runHealingFlow({
+      stagehand,
+      page,
+      steps: splicedPlan,
+      logger: SILENT_LOGGER,
+      anthropic: null,
+      rephraseModel: null,
+      uploadFixture: null,
+      frameSelector: IFRAME_SELECTOR,
+      submittedStateSelectors: [SUBMITTED_STATE_SELECTOR],
+    });
+
+    expect(hop.elements[indexes.add]?.clicks).toBe(1);
+    expect(state.entryFormReopenedOrClosedEarly).toBe(false);
+    expect(state.entryComplete).toBe(true);
+    expect(state.requiresAttention).toBe(false);
+    expect(result.submitVerified).toBe(true);
+    expect(topUrl.current).toBe(TOP_THANK_YOU_URL);
   });
 });
