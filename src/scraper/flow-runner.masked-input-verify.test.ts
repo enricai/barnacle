@@ -22,7 +22,7 @@ function makeTarget(inputValue: string): FrameTarget {
         fill: vi.fn().mockResolvedValue(undefined),
         type: vi.fn().mockResolvedValue(undefined),
       }),
-    })) as FrameTarget["locator"],
+    })) as unknown as FrameTarget["locator"],
     url: () => Promise.resolve("https://example.com/apply"),
     title: () => Promise.resolve("Apply"),
   };
