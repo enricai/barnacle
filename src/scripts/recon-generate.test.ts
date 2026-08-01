@@ -12,6 +12,7 @@ import {
   emitContractTs,
   emitMultiStepExecuteHttp,
   extractActionSequence,
+  extractGraphQLActionSequence,
   indexStateValues,
   inferZodSchemaFromSamples,
   loadQuestionPromptKeywords,
@@ -235,6 +236,98 @@ describe("extractActionSequence — error-reporting sinks never reach the emitte
     ).map((a) => new URL(a.capture.url).pathname);
 
     expect(kept).toEqual(["/api/error-codes", "/api/terrorism-screening"]);
+  });
+});
+
+describe("extractGraphQLActionSequence — GraphQL submission flows get state-threaded, not the first-query fallback", () => {
+  const BASE = "https://aidfinder.example.com";
+  const gqlCapture = (
+    operationName: string,
+    kind: "query" | "mutation",
+    responseBody: unknown,
+    requestPostData: string
+  ) => ({
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action" as const,
+    method: "POST",
+    url: `${BASE}/graphql`,
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData,
+    responseHeaders: {},
+    responseBody,
+    operationName,
+    query: `${kind} ${operationName}($input: Input) {\n  ${operationName}(input: $input) { id }\n}`,
+    variables: null,
+    decodedParams: null,
+  });
+
+  // A textbook transactional flow: page-bootstrap read query first (the one
+  // the old chronologically-first fallback would have picked), then the
+  // mutation sequence a real submission drives.
+  const captures = [
+    gqlCapture("ListForms", "query", { forms: [] }, '{"op":"ListForms"}'),
+    gqlCapture("Form", "mutation", { formId: "f-1" }, '{"op":"Form"}'),
+    gqlCapture(
+      "UpsertSavedApplication",
+      "mutation",
+      { applicationId: "app-1" },
+      '{"op":"UpsertSavedApplication"}'
+    ),
+    gqlCapture("SubmitForm", "mutation", { submissionId: "sub-1" }, '{"op":"SubmitForm"}'),
+    gqlCapture(
+      "FinalizeFormSubmission",
+      "mutation",
+      { finalized: true },
+      '{"op":"FinalizeFormSubmission"}'
+    ),
+  ];
+
+  it("drops the read-only bootstrap query and keeps only the mutation sequence", () => {
+    const kept = extractGraphQLActionSequence(captures, BASE).map((a) => a.capture.operationName);
+    expect(kept).toEqual([
+      "Form",
+      "UpsertSavedApplication",
+      "SubmitForm",
+      "FinalizeFormSubmission",
+    ]);
+  });
+
+  it("threads through to isSubmissionFlow === true and a multi-step executeHttp covering every operation", () => {
+    const actionCaptures = extractGraphQLActionSequence(captures, BASE);
+    const stateIndex = indexStateValues(
+      captures,
+      new Set(),
+      new Set(actionCaptures.map((a) => a.index))
+    );
+    const actionSteps = compileActionSteps(actionCaptures, stateIndex);
+    const isSubmissionFlow = actionSteps.length > 1;
+
+    expect(isSubmissionFlow).toBe(true);
+
+    const body = emitMultiStepExecuteHttp(
+      actionSteps,
+      null,
+      { stringMessageKey: null, nestedErrorPaths: [] },
+      new Map(),
+      new Set(),
+      new Map(),
+      new Set(),
+      new Map(),
+      new Map(),
+      BASE,
+      new Map(),
+      new Map()
+    );
+
+    expect(actionSteps).toHaveLength(4);
+    expect(actionSteps.map((s) => s.capture.operationName)).toEqual([
+      "Form",
+      "UpsertSavedApplication",
+      "SubmitForm",
+      "FinalizeFormSubmission",
+    ]);
+    expect(body).not.toContain("ListForms");
   });
 });
 
