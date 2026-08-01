@@ -261,7 +261,7 @@ describe("flow-runner click-view-swap cascade — correct candidate is never exc
     expect(healedLog).toBeDefined();
   });
 
-  it("a click that produces <5KB DOM growth (below the view-swap threshold) does NOT verify via view-swap, and the cascade continues to attempt 4 which excludes the first candidate", async () => {
+  it("a click that produces <5KB DOM growth with no visible text change (below both the view-swap and reveal thresholds) does NOT verify via view-swap, and the cascade continues to attempt 4 which excludes the first candidate", async () => {
     const frame: FakeDeepLocatorFrame = new Map();
     const scopedHopSelector = `${FRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
 
@@ -271,13 +271,17 @@ describe("flow-runner click-view-swap cascade — correct candidate is never exc
       "Close",
     ]);
 
-    // DOM state that changes slightly on click (below threshold).
+    // DOM state that changes slightly on click (below threshold), with the
+    // visible text signature held constant so the small-delta reveal credit
+    // (which requires textChanged) does not fire — this fixture is pinning
+    // trivial DOM churn (e.g. a reflow), not a reveal.
     const domState = { current: { html: 0, text: "0:" } };
 
     const clickSpy = { manualApplication: 0, close: 0 };
     const page = makeViewSwapPage(frame, clickSpy, () => {
-      // Any click produces only 2KB growth (below the 5KB threshold)
-      domState.current = { html: 2000, text: "2000:" };
+      // Any click produces only 2KB growth (below the 5KB threshold) with no
+      // visible text change.
+      domState.current = { html: 2000, text: domState.current.text };
     });
 
     const frameTarget = makeChildFrameTarget(domState);
