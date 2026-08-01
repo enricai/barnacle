@@ -787,6 +787,69 @@ function normalizeInstruction(instruction: string): string {
 }
 
 /**
+ * Extract the quoted UI-control label(s) referenced by an instruction, e.g.
+ * `click the 'Add New Work History' button` -> `["add new work history"]`.
+ * Quoted phrases are the strongest, lowest-noise signal a flow author or the
+ * replanner gives for "which control": comparing these directly avoids false
+ * positives from prose that merely mentions the same page section.
+ */
+function extractQuotedLabels(instruction: string): string[] {
+  const matches = instruction.matchAll(/['"]([^'"]{2,80})['"]/g);
+  return [...matches].map((m) => normalizeInstruction(m[1]!));
+}
+
+/**
+ * Detect whether a replan bridge step's action is a semantic duplicate of the
+ * immediately-following authored step's action — e.g. the bridge says `Click
+ * the 'Add New Work History' button to open a new work history entry form`
+ * and originalRemaining[0] says `If a work history entry form ... is NOT
+ * already open, click the 'Add New Work History' button ...`. Both target the
+ * same control; splicing the bridge step ahead of the authored one re-toggles
+ * the control (open, then close-on-second-click) before the authored fill
+ * steps run against what is now a closed form.
+ *
+ * Matches when both instructions quote the same UI-control label. This is
+ * deliberately narrower than a general text-similarity check: quoted labels
+ * are the one part of a replan/author instruction pair that must denote the
+ * same DOM control for a click on it to be equivalent, regardless of how the
+ * surrounding prose is phrased (view-swap wording differs freely between the
+ * two authors). Steps without a quoted label never match — such steps have
+ * no clean action-target signal to compare and are left to the existing
+ * byte-identical dedup passes instead.
+ */
+function isReplanStepDuplicatingNextAuthoredStep(
+  bridgeStep: string,
+  nextAuthoredStep: string
+): boolean {
+  const bridgeLabels = extractQuotedLabels(bridgeStep);
+  const nextLabels = extractQuotedLabels(nextAuthoredStep);
+  if (bridgeLabels.length === 0 || nextLabels.length === 0) return false;
+  return bridgeLabels.some((label) => nextLabels.includes(label));
+}
+
+/**
+ * Splice-time counterpart to {@link filterCompletedFromReplan}: that filter
+ * only guards against the bridge re-proposing PAST (already-completed) work.
+ * It does nothing about the bridge re-proposing the very NEXT authored step's
+ * action under different wording — the gap that let a "Click 'Add New Work
+ * History'" bridge step precede an authored "click 'Add New Work History'"
+ * step, opening the entry form and then immediately re-toggling it closed
+ * before the authored fill steps could run against it. Drops any bridge step
+ * that semantically duplicates originalRemaining[0]'s action so the authored
+ * step is the one that actually runs.
+ */
+export function filterReplanDuplicatingNextAuthored(
+  newSteps: readonly NormalizedStep[],
+  originalRemaining: readonly NormalizedStep[]
+): NormalizedStep[] {
+  const nextAuthored = originalRemaining[0]?.instruction;
+  if (nextAuthored === undefined) return [...newSteps];
+  return newSteps.filter(
+    (s) => !isReplanStepDuplicatingNextAuthoredStep(s.instruction, nextAuthored)
+  );
+}
+
+/**
  * Detect a replan that only re-proposes the step that JUST terminally failed —
  * i.e. after {@link filterCompletedFromReplan} the sole surviving bridge step is
  * byte-identical (whitespace/case-normalized) to the failed instruction. The
@@ -2386,7 +2449,10 @@ async function main(): Promise<void> {
         // can force them optional on write-back. originalRemaining keeps its
         // origin: "original" — that's what protects the canonical final
         // submit from being silently demoted to optional across replans.
-        const taggedNewSteps = newSteps.map((s) => ({ ...s, origin: "replan" as const }));
+        const taggedNewSteps = filterReplanDuplicatingNextAuthored(
+          newSteps.map((s) => ({ ...s, origin: "replan" as const })),
+          originalRemaining
+        );
         plan.splice(i, plan.length - i, ...taggedNewSteps, ...originalRemaining);
         i--;
       }

@@ -118,6 +118,7 @@ import {
   extractSubmitFailureEvidence,
   fillHtml5DateTimeInput,
   filterCompletedFromReplan,
+  filterReplanDuplicatingNextAuthored,
   findRecentBackendError,
   findRecentPageTransition,
   findWizardRestartSignal,
@@ -1242,6 +1243,52 @@ describe("recon-browser/filterCompletedFromReplan", () => {
     const raw = [mk("Step A"), mk("Step B")];
     const out = filterCompletedFromReplan(raw, [], "Step failed");
     expect(out).toEqual(raw);
+  });
+});
+
+describe("recon-browser/filterReplanDuplicatingNextAuthored", () => {
+  const mk = (instruction: string): NormalizedStep => ({
+    instruction,
+    optional: false,
+    upload: false,
+    origin: "replan",
+  });
+
+  it("drops a bridge step that duplicates the next authored step's action (uchealth-recon-20.log lines 380-391)", () => {
+    const newSteps = [
+      mk("Click the 'Add New Work History' button to open a new work history entry form"),
+    ];
+    const originalRemaining = [
+      mk(
+        "If a work history entry form with a Company Name field is NOT already open, click the 'Add New Work History' button to open it"
+      ),
+      mk("In the work history entry form, fill in the Company Name field with 'General Hospital'"),
+    ];
+    const out = filterReplanDuplicatingNextAuthored(newSteps, originalRemaining);
+    expect(out).toEqual([]);
+    const spliced = [...out, ...originalRemaining];
+    const addClicks = spliced.filter((s) => /add new work history/i.test(s.instruction));
+    expect(addClicks).toHaveLength(1);
+  });
+
+  it("keeps a bridge step whose target differs from the next authored step", () => {
+    const newSteps = [mk("Click the 'Continue' button to proceed")];
+    const originalRemaining = [mk("Click the 'Add New Work History' button to open it")];
+    const out = filterReplanDuplicatingNextAuthored(newSteps, originalRemaining);
+    expect(out).toEqual(newSteps);
+  });
+
+  it("returns bridge steps unchanged when originalRemaining is empty", () => {
+    const newSteps = [mk("Click the 'Add New Work History' button")];
+    const out = filterReplanDuplicatingNextAuthored(newSteps, []);
+    expect(out).toEqual(newSteps);
+  });
+
+  it("keeps bridge steps with no quoted label (no clean signal to compare)", () => {
+    const newSteps = [mk("Click Next once to submit Basic Info")];
+    const originalRemaining = [mk("Click the 'Add New Work History' button")];
+    const out = filterReplanDuplicatingNextAuthored(newSteps, originalRemaining);
+    expect(out).toEqual(newSteps);
   });
 });
 
