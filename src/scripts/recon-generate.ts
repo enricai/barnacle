@@ -494,6 +494,47 @@ export function extractActionSequence(captures: Capture[], baseUrl: string): Act
 }
 
 /**
+ * GraphQL-aware analog of {@link extractActionSequence}: REST's URL/method
+ * shape doesn't apply when every operation POSTs to the same endpoint, so
+ * relevance here is decided by `operationName`/`query` instead. Keeps only
+ * captures whose GraphQL document is a `mutation` — the write operations that
+ * make up a transactional flow (`UpsertSavedApplication`, `SubmitForm`, ...)
+ * — and drops `query` operations, which are read/bootstrap calls (e.g. a
+ * page-load `ListForms`) that carry no state-threading value and are exactly
+ * what let a chronologically-first fallback pick an unrelated query.
+ *
+ * Exported for tests: this predicate decides what a generated GraphQL plugin
+ * will send at a live site.
+ */
+export function extractGraphQLActionSequence(
+  captures: Capture[],
+  baseUrl: string
+): ActionCapture[] {
+  let host: string;
+  try {
+    host = new URL(baseUrl).host;
+  } catch {
+    host = "";
+  }
+
+  return captures
+    .map((capture, index) => ({ capture, index }))
+    .filter(({ capture }) => {
+      if (capture.operationName === null) return false;
+      if (capture.status < 200 || capture.status >= 300) return false;
+      let captureHost: string;
+      try {
+        captureHost = new URL(capture.url).host;
+      } catch {
+        return false;
+      }
+      if (captureHost !== host) return false;
+      if (isNoiseUrl(capture.url)) return false;
+      return capture.query !== null && /^\s*mutation\b/.test(capture.query);
+    });
+}
+
+/**
  * Collapses redundant PATCH calls to the same endpoint path, keeping only the
  * last occurrence. SPA auto-save patterns produce one PATCH per field change,
  * but the API accepts a single full-state PATCH. Reduces the generated hot
@@ -3328,7 +3369,7 @@ async function main(): Promise<void> {
   // checkout, etc.). When the action sequence has 2+ POSTs, switch the
   // contract template to emit a state-threaded executeHttp.
   const rawActionCaptures = gql
-    ? []
+    ? extractGraphQLActionSequence(captures, baseUrl)
     : collapseRedundantPatches(extractActionSequence(captures, baseUrl));
   // Form-schema detection runs BEFORE state-indexing so the field-id/option-id
   // UUIDs can be shielded from indexing — those UUIDs are stable schema

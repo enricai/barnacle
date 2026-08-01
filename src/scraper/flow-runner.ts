@@ -4905,7 +4905,16 @@ export async function verifyDomEffect(target: FrameTarget, action: Action): Prom
         const expected = action.arguments?.[0];
         if (typeof expected !== "string" || expected.length === 0) return false;
         const current = await locator.inputValue();
-        const hit = current.includes(expected);
+        // Masked/formatted inputs (e.g. a phone field displaying
+        // "(212) 555-0123" after typing "2125550123") reformat the typed
+        // value with punctuation, so a raw substring check never matches.
+        // Strip non-alphanumeric characters from both sides before
+        // comparing so display formatting doesn't leak into the verifier.
+        const normalize = (value: string): string => value.replace(/[^a-zA-Z0-9]/g, "");
+        const normalizedExpected = normalize(expected);
+        const hit =
+          current.includes(expected) ||
+          (normalizedExpected.length > 0 && normalize(current).includes(normalizedExpected));
         if (hit) {
           // Stagehand typed via CDP Input.insertText which fires `input` per
           // keystroke but never fires `change`. Dispatch change here so jQuery/
