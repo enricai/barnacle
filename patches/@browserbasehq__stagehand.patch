@@ -1,14 +1,50 @@
-diff --git a/package.json b/package.json
-index 337239401d5a7c1380263e460872840f3d4f34bc..479657b5ec44aa87ca37477e7271df08c8adf617 100644
---- a/package.json
-+++ b/package.json
-@@ -5,9 +5,6 @@
-   "main": "./dist/index.js",
-   "module": "./dist/index.js",
-   "types": "./dist/index.d.ts",
--  "bin": {
--    "evals": "./dist/evals/cli.js"
--  },
-   "files": [
-     "dist/**"
-   ],
+diff --git a/dist/cjs/lib/v3/zodCompat.js b/dist/cjs/lib/v3/zodCompat.js
+index eba13413fa397434d6c64f31e539cca7415f8a18..9fd232d43fbb8044a64b2c3c2dd52e1280d85ade 100644
+--- a/dist/cjs/lib/v3/zodCompat.js
++++ b/dist/cjs/lib/v3/zodCompat.js
+@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
+ exports.isZod3Schema = exports.isZod4Schema = void 0;
+ exports.toJsonSchema = toJsonSchema;
+ const zod_1 = require("zod");
++const zod_v4_1 = require("zod/v4");
+ const zod_to_json_schema_1 = __importDefault(require("zod-to-json-schema"));
+ const isZod4Schema = (schema) => typeof schema._zod !== "undefined";
+ exports.isZod4Schema = isZod4Schema;
+@@ -15,7 +16,12 @@ function toJsonSchema(schema) {
+     if (!(0, exports.isZod4Schema)(schema)) {
+         return (0, zod_to_json_schema_1.default)(schema);
+     }
+-    // For v4 schemas, use built-in z.toJSONSchema() method
++    // Use the v4 subpath of this module's own zod dependency, since the
++    // caller's schema may be a zod/v4 schema even when this module's
++    // default `z` import resolves to zod's v3 namespace.
++    if (zod_v4_1.z.toJSONSchema) {
++        return zod_v4_1.z.toJSONSchema(schema);
++    }
+     const zodWithJsonSchema = zod_1.z;
+     if (zodWithJsonSchema.toJSONSchema) {
+         return zodWithJsonSchema.toJSONSchema(schema);
+diff --git a/dist/esm/lib/v3/zodCompat.js b/dist/esm/lib/v3/zodCompat.js
+index e97ff17b9cb176b17ba37badd8b9b04354ec72ea..8744baa2d34d4d8aec7ed3cacde1fce5f0ec955c 100644
+--- a/dist/esm/lib/v3/zodCompat.js
++++ b/dist/esm/lib/v3/zodCompat.js
+@@ -1,4 +1,5 @@
+ import { z } from "zod";
++import { z as z4 } from "zod/v4";
+ import zodToJsonSchema from "zod-to-json-schema";
+ export const isZod4Schema = (schema) => typeof schema._zod !== "undefined";
+ export const isZod3Schema = (schema) => !isZod4Schema(schema);
+@@ -6,7 +7,12 @@ export function toJsonSchema(schema) {
+     if (!isZod4Schema(schema)) {
+         return zodToJsonSchema(schema);
+     }
+-    // For v4 schemas, use built-in z.toJSONSchema() method
++    // Use the v4 subpath of this module's own zod dependency, since the
++    // caller's schema may be a zod/v4 schema even when this module's
++    // default `z` import resolves to zod's v3 namespace.
++    if (z4.toJSONSchema) {
++        return z4.toJSONSchema(schema);
++    }
+     const zodWithJsonSchema = z;
+     if (zodWithJsonSchema.toJSONSchema) {
+         return zodWithJsonSchema.toJSONSchema(schema);
