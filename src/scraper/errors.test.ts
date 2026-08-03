@@ -4,6 +4,9 @@ import {
   HttpRateLimitError,
   HttpSchemaError,
   HttpUrlLockedError,
+  isCaptchaError,
+  isHttpSchemaError,
+  isScraperError,
   MissingFormMapKeyError,
   type NeedsUserInfoResult,
   type RunHealingFlowResult,
@@ -92,6 +95,55 @@ describe("StepVerificationError", () => {
     expect(err.retryable).toBe(false);
     expect(err.name).toBe("StepVerificationError");
     expect(err.kind).toBe("submit-skipped");
+  });
+});
+
+describe("cross-realm type guards", () => {
+  // Mirrors what an out-of-tree plugin's independently-resolved copy of this
+  // package produces: a nominally distinct class (different constructor
+  // identity than this module's HttpSchemaError) whose base constructor still
+  // stamps `name` from `new.target.name`, exactly like the real class does.
+  class FakeCrossModuleHttpSchemaError extends Error {
+    constructor(message = "http response schema mismatch") {
+      super(message);
+      this.name = "HttpSchemaError";
+    }
+  }
+
+  class FakeCrossModuleCaptchaError extends Error {
+    constructor(message = "captcha challenge encountered") {
+      super(message);
+      this.name = "CaptchaError";
+    }
+  }
+
+  it("recognizes a cross-realm error via name when instanceof misses", () => {
+    const crossRealmErr = new FakeCrossModuleHttpSchemaError();
+    expect(crossRealmErr).not.toBeInstanceOf(HttpSchemaError);
+    expect(isHttpSchemaError(crossRealmErr)).toBe(true);
+    expect(isScraperError(crossRealmErr)).toBe(true);
+  });
+
+  it("still recognizes same-realm errors via instanceof (no regression)", () => {
+    const sameRealmErr = new HttpSchemaError();
+    expect(isHttpSchemaError(sameRealmErr)).toBe(true);
+    expect(isScraperError(sameRealmErr)).toBe(true);
+  });
+
+  it("does not cross-match a different error's cross-realm name", () => {
+    const crossRealmCaptcha = new FakeCrossModuleCaptchaError();
+    expect(isHttpSchemaError(crossRealmCaptcha)).toBe(false);
+    expect(isCaptchaError(crossRealmCaptcha)).toBe(true);
+    expect(isScraperError(crossRealmCaptcha)).toBe(true);
+  });
+
+  it("returns false for unrelated values", () => {
+    expect(isHttpSchemaError(new Error("plain"))).toBe(false);
+    expect(isHttpSchemaError(new TypeError("bad"))).toBe(false);
+    expect(isHttpSchemaError("not even an error")).toBe(false);
+    expect(isHttpSchemaError(null)).toBe(false);
+    expect(isHttpSchemaError(undefined)).toBe(false);
+    expect(isScraperError(new Error("plain"))).toBe(false);
   });
 });
 
