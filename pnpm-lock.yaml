@@ -9,7 +9,7 @@ patchedDependencies:
     hash: b811b2520d933dc309d013f3cb20fffcd882eb86d5937639926701dbb1474315
     path: patches/@browserbasehq__sdk.patch
   '@browserbasehq/stagehand':
-    hash: 4cdcf3dda54ac5c5edbd7b727703997f1e30bc01b731ff7428dba6b4821f4167
+    hash: 357226c9032bea0c6349b15861048452fbb2383163f2b408ec79dd597f9430ab
     path: patches/@browserbasehq__stagehand.patch
 
 importers:
@@ -33,7 +33,7 @@ importers:
         version: 2.16.0(patch_hash=b811b2520d933dc309d013f3cb20fffcd882eb86d5937639926701dbb1474315)
       '@browserbasehq/stagehand':
         specifier: ^3.6.0
-        version: 3.7.1(patch_hash=4cdcf3dda54ac5c5edbd7b727703997f1e30bc01b731ff7428dba6b4821f4167)(@cfworker/json-schema@4.1.1)(playwright-core@1.60.0)(zod@3.25.76)
+        version: 3.7.1(patch_hash=357226c9032bea0c6349b15861048452fbb2383163f2b408ec79dd597f9430ab)(@cfworker/json-schema@4.1.1)(playwright-core@1.60.0)(zod@3.25.76)
       '@fastify/compress':
         specifier: ^9.0.0
         version: 9.1.0
@@ -3266,7 +3266,7 @@ snapshots:
     transitivePeerDependencies:
       - encoding
 
-  '@browserbasehq/stagehand@3.7.1(patch_hash=4cdcf3dda54ac5c5edbd7b727703997f1e30bc01b731ff7428dba6b4821f4167)(@cfworker/json-schema@4.1.1)(playwright-core@1.60.0)(zod@3.25.76)':
+  '@browserbasehq/stagehand@3.7.1(patch_hash=357226c9032bea0c6349b15861048452fbb2383163f2b408ec79dd597f9430ab)(@cfworker/json-schema@4.1.1)(playwright-core@1.60.0)(zod@3.25.76)':
     dependencies:
       '@ai-sdk/provider': 2.0.3
       '@anthropic-ai/sdk': 0.39.0

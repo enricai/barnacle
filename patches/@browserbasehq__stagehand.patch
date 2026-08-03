@@ -1,3 +1,19 @@
+diff --git a/dist/cjs/lib/v3/llm/aisdk.js b/dist/cjs/lib/v3/llm/aisdk.js
+index 164294dfb71e05e45022b7d07e3bc5669a0ea265..fb1a660e3cb6b6621ec842c97455b02d17dc6528 100644
+--- a/dist/cjs/lib/v3/llm/aisdk.js
++++ b/dist/cjs/lib/v3/llm/aisdk.js
+@@ -9,6 +9,11 @@ const FlowLogger_js_1 = require("../flowlogger/FlowLogger.js");
+ const zodCompat_js_1 = require("../zodCompat.js");
+ function inferProviderName(modelId) {
+     const [providerName] = modelId.split("/");
++    // AWS Bedrock model IDs (e.g. "us.anthropic.claude-opus-5") contain no
++    // "/", so providerName above is the whole ID, matching no switch case.
++    // Detect the Bedrock-embedded Anthropic vendor segment so
++    // structuredOutputMode still gets set for Bedrock-routed Claude models.
++    if (providerName && providerName.includes("anthropic.")) return "anthropic";
+     return providerName || undefined;
+ }
+ class AISdkClient extends LLMClient_js_1.LLMClient {
 diff --git a/dist/cjs/lib/v3/zodCompat.js b/dist/cjs/lib/v3/zodCompat.js
 index eba13413fa397434d6c64f31e539cca7415f8a18..9fd232d43fbb8044a64b2c3c2dd52e1280d85ade 100644
 --- a/dist/cjs/lib/v3/zodCompat.js
@@ -24,6 +40,22 @@ index eba13413fa397434d6c64f31e539cca7415f8a18..9fd232d43fbb8044a64b2c3c2dd52e12
      const zodWithJsonSchema = zod_1.z;
      if (zodWithJsonSchema.toJSONSchema) {
          return zodWithJsonSchema.toJSONSchema(schema);
+diff --git a/dist/esm/lib/v3/llm/aisdk.js b/dist/esm/lib/v3/llm/aisdk.js
+index 76b32495d1dece84bbfd522260240ee8865bfae9..4df6382e1be0ae3c12bc3333280f858a6e451e6e 100644
+--- a/dist/esm/lib/v3/llm/aisdk.js
++++ b/dist/esm/lib/v3/llm/aisdk.js
+@@ -6,6 +6,11 @@ import { FlowLogger, extractLlmPromptSummary, } from "../flowlogger/FlowLogger.j
+ import { toJsonSchema } from "../zodCompat.js";
+ function inferProviderName(modelId) {
+     const [providerName] = modelId.split("/");
++    // AWS Bedrock model IDs (e.g. "us.anthropic.claude-opus-5") contain no
++    // "/", so providerName above is the whole ID, matching no switch case.
++    // Detect the Bedrock-embedded Anthropic vendor segment so
++    // structuredOutputMode still gets set for Bedrock-routed Claude models.
++    if (providerName && providerName.includes("anthropic.")) return "anthropic";
+     return providerName || undefined;
+ }
+ export class AISdkClient extends LLMClient {
 diff --git a/dist/esm/lib/v3/zodCompat.js b/dist/esm/lib/v3/zodCompat.js
 index e97ff17b9cb176b17ba37badd8b9b04354ec72ea..8744baa2d34d4d8aec7ed3cacde1fce5f0ec955c 100644
 --- a/dist/esm/lib/v3/zodCompat.js
