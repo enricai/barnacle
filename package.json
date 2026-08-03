@@ -276,7 +276,7 @@
     "@fastify/rate-limit": "^11.1.0",
     "@fastify/swagger": "^9.8.0",
     "@fastify/swagger-ui": "^6.1.0",
-    "ai": "^5.0.216",
+    "ai": "^7.0.46",
     "bcryptjs": "^3.0.3",
     "bottleneck": "^2.19.5",
     "date-fns": "^4.4.0",
