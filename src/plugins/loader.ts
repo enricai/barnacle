@@ -34,15 +34,15 @@ import { RunTelemetry } from "@/lib/telemetry/run-telemetry";
 import { captureSubmissionEnvelope } from "@/lib/telemetry/submission-capture";
 import { fireTrackingClick } from "@/lib/tracking-click";
 import {
-  CaptchaError,
-  EmptyResultsError,
-  HttpBotChallengeError,
-  HttpRateLimitError,
-  HttpSchemaError,
-  HttpServerError,
-  HttpUrlLockedError,
+  isCaptchaError,
+  isEmptyResultsError,
+  isHttpBotChallengeError,
+  isHttpRateLimitError,
+  isHttpSchemaError,
+  isHttpServerError,
+  isHttpUrlLockedError,
+  isScraperError,
   type NeedsUserInfoResult,
-  ScraperError,
 } from "@/scraper/errors";
 import {
   recordFallbackActivation,
@@ -79,11 +79,11 @@ const siteIdRouteParamsSchema = z.object({ siteId: z.string().min(1) });
  * original error (plain Error or anything outside the ScraperError tree).
  */
 function toApiError(err: unknown): ApiError | undefined {
-  if (err instanceof CaptchaError) return new CaptchaEncounteredError(err.message);
-  if (err instanceof EmptyResultsError) return new EmptyResultsApiError(err.message);
-  if (err instanceof HttpRateLimitError) return new ThrottledRequestError(err.message);
-  if (err instanceof HttpUrlLockedError) return new UrlLockedError(err.message);
-  if (err instanceof ScraperError) return new ScrapeFailureError(err.message);
+  if (isCaptchaError(err)) return new CaptchaEncounteredError(err.message);
+  if (isEmptyResultsError(err)) return new EmptyResultsApiError(err.message);
+  if (isHttpRateLimitError(err)) return new ThrottledRequestError(err.message);
+  if (isHttpUrlLockedError(err)) return new UrlLockedError(err.message);
+  if (isScraperError(err)) return new ScrapeFailureError(err.message);
   return undefined;
 }
 
@@ -203,9 +203,9 @@ async function runPluginPipeline<TResult>(
     return fresh;
   } catch (httpErr) {
     if (
-      httpErr instanceof HttpSchemaError ||
-      httpErr instanceof HttpBotChallengeError ||
-      httpErr instanceof HttpServerError
+      isHttpSchemaError(httpErr) ||
+      isHttpBotChallengeError(httpErr) ||
+      isHttpServerError(httpErr)
     ) {
       logger.warn(
         `hot path failed for ${plugin.meta.siteId} (${httpErr.constructor.name}): ${httpErr.message} — engaging browser fallback`
@@ -225,14 +225,14 @@ async function runPluginPipeline<TResult>(
         }
       )) as SitePluginResult<TResult>;
     }
-    if (httpErr instanceof HttpRateLimitError) {
+    if (isHttpRateLimitError(httpErr)) {
       logger.warn(
         `hot path rate-limited for ${plugin.meta.siteId}: ${httpErr.message} — not falling back`
       );
       recordRateLimitRejection(plugin.meta.siteId);
       recordDdRateLimit(plugin.meta.siteId);
     }
-    if (httpErr instanceof HttpUrlLockedError) {
+    if (isHttpUrlLockedError(httpErr)) {
       logger.warn(
         `hot path url-locked for ${plugin.meta.siteId}: ${httpErr.message} — not falling back`
       );
@@ -441,14 +441,14 @@ export async function dispatch<TResult>(
 
 /** Maps errors to DogStatsD-friendly classification strings. */
 function classifyDispatchError(err: unknown): string {
-  if (err instanceof HttpBotChallengeError) return "bot_challenge";
-  if (err instanceof HttpRateLimitError) return "rate_limit";
-  if (err instanceof HttpUrlLockedError) return "url_locked";
-  if (err instanceof HttpSchemaError) return "schema_drift";
-  if (err instanceof HttpServerError) return "server_error";
-  if (err instanceof CaptchaError) return "captcha";
-  if (err instanceof EmptyResultsError) return "empty_results";
-  if (err instanceof ScraperError) return "scraper_generic";
+  if (isHttpBotChallengeError(err)) return "bot_challenge";
+  if (isHttpRateLimitError(err)) return "rate_limit";
+  if (isHttpUrlLockedError(err)) return "url_locked";
+  if (isHttpSchemaError(err)) return "schema_drift";
+  if (isHttpServerError(err)) return "server_error";
+  if (isCaptchaError(err)) return "captcha";
+  if (isEmptyResultsError(err)) return "empty_results";
+  if (isScraperError(err)) return "scraper_generic";
   return "unknown";
 }
 

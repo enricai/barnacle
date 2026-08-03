@@ -388,6 +388,26 @@ describe("dispatch — executeHttp hot-path branches", () => {
     expect(result.data).toEqual({ result: "ok" });
   });
 
+  it("falls back to execute() and records fallback on a cross-realm HttpSchemaError (out-of-tree plugin scenario)", async () => {
+    // Mirrors an out-of-tree plugin's own independently-resolved copy of
+    // HttpSchemaError: a nominally distinct class from this module's, so
+    // `instanceof HttpSchemaError` fails even though `name` matches — the
+    // exact cross-module-identity bug this guard exists to survive.
+    class FakeCrossModuleHttpSchemaError extends Error {
+      constructor(message: string) {
+        super(message);
+        this.name = "HttpSchemaError";
+      }
+    }
+    const crossRealmErr = new FakeCrossModuleHttpSchemaError("no HTTP hot path — browser-only");
+    expect(crossRealmErr).not.toBeInstanceOf(HttpSchemaError);
+    mockHttpExecute.mockRejectedValueOnce(crossRealmErr);
+    const result = await dispatch(httpPlugin, {}, stubContext);
+    expect(mockPluginExecute).toHaveBeenCalledTimes(1);
+    expect(mockRecordFallbackActivation).toHaveBeenCalledWith("http-site");
+    expect(result.data).toEqual({ result: "ok" });
+  });
+
   it("falls back to execute() and records fallback on HttpBotChallengeError", async () => {
     mockHttpExecute.mockRejectedValueOnce(new HttpBotChallengeError("403 bot wall"));
     await dispatch(httpPlugin, {}, stubContext);

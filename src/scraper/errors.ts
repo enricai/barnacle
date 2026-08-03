@@ -38,6 +38,20 @@ export class CaptchaError extends ScraperError {
 }
 
 /**
+ * Cross-realm-safe replacement for `err instanceof CaptchaError`. An
+ * out-of-tree plugin's independently-resolved copy of this package throws a
+ * `CaptchaError` that is a nominally distinct class object from this
+ * module's — `instanceof` fails even at identical package versions, since
+ * Node gives each module resolution its own class identity. `name` survives
+ * across module boundaries because the base constructor stamps it from
+ * `new.target`, so name-matching is the fallback once `instanceof` (the
+ * fast, correct-for-same-realm path) misses.
+ */
+export function isCaptchaError(err: unknown): err is CaptchaError {
+  return err instanceof CaptchaError || (err instanceof Error && err.name === "CaptchaError");
+}
+
+/**
  * The scrape completed but returned no data. This is not a failure — it's
  * a legitimate empty result (e.g. a search returned zero matches). The
  * service layer handles this without throwing.
@@ -46,6 +60,13 @@ export class EmptyResultsError extends ScraperError {
   constructor(message = "scrape returned no results") {
     super(message, false);
   }
+}
+
+/** Cross-realm-safe replacement for `err instanceof EmptyResultsError`. See {@link isCaptchaError} for why this exists. */
+export function isEmptyResultsError(err: unknown): err is EmptyResultsError {
+  return (
+    err instanceof EmptyResultsError || (err instanceof Error && err.name === "EmptyResultsError")
+  );
 }
 
 /**
@@ -167,6 +188,11 @@ export class HttpSchemaError extends ScraperError {
   }
 }
 
+/** Cross-realm-safe replacement for `err instanceof HttpSchemaError`. See {@link isCaptchaError} for why this exists. */
+export function isHttpSchemaError(err: unknown): err is HttpSchemaError {
+  return err instanceof HttpSchemaError || (err instanceof Error && err.name === "HttpSchemaError");
+}
+
 /**
  * The direct-HTTP hot path received a non-2xx response that signals a bot
  * challenge or auth wall (403, 401). Non-retryable — fall back to Stagehand.
@@ -175,6 +201,14 @@ export class HttpBotChallengeError extends ScraperError {
   constructor(message = "http bot challenge or auth required") {
     super(message, false);
   }
+}
+
+/** Cross-realm-safe replacement for `err instanceof HttpBotChallengeError`. See {@link isCaptchaError} for why this exists. */
+export function isHttpBotChallengeError(err: unknown): err is HttpBotChallengeError {
+  return (
+    err instanceof HttpBotChallengeError ||
+    (err instanceof Error && err.name === "HttpBotChallengeError")
+  );
 }
 
 /**
@@ -189,6 +223,11 @@ export class HttpServerError extends ScraperError {
   }
 }
 
+/** Cross-realm-safe replacement for `err instanceof HttpServerError`. See {@link isCaptchaError} for why this exists. */
+export function isHttpServerError(err: unknown): err is HttpServerError {
+  return err instanceof HttpServerError || (err instanceof Error && err.name === "HttpServerError");
+}
+
 /**
  * The direct-HTTP hot path received a 429 rate-limit response. Non-retryable
  * and NOT a fallback trigger — a 429 means the configured rps ceiling is too
@@ -199,6 +238,13 @@ export class HttpRateLimitError extends ScraperError {
   constructor(message = "http 429 rate limit exceeded") {
     super(message, false);
   }
+}
+
+/** Cross-realm-safe replacement for `err instanceof HttpRateLimitError`. See {@link isCaptchaError} for why this exists. */
+export function isHttpRateLimitError(err: unknown): err is HttpRateLimitError {
+  return (
+    err instanceof HttpRateLimitError || (err instanceof Error && err.name === "HttpRateLimitError")
+  );
 }
 
 /**
@@ -215,6 +261,13 @@ export class HttpUrlLockedError extends ScraperError {
   constructor(message = "requisition url locked") {
     super(message, false);
   }
+}
+
+/** Cross-realm-safe replacement for `err instanceof HttpUrlLockedError`. See {@link isCaptchaError} for why this exists. */
+export function isHttpUrlLockedError(err: unknown): err is HttpUrlLockedError {
+  return (
+    err instanceof HttpUrlLockedError || (err instanceof Error && err.name === "HttpUrlLockedError")
+  );
 }
 
 /**
@@ -252,6 +305,37 @@ export class MissingFormMapKeyError extends ScraperError {
     this.missingKeys = missingKeys;
     this.context = context;
   }
+}
+
+/**
+ * The full set of `name` values `ScraperError` subclasses stamp via
+ * `new.target.name` in the base constructor — used by {@link isScraperError}
+ * to recognize a cross-realm `ScraperError` when `instanceof` misses. Must
+ * stay in sync with every concrete class in this file.
+ */
+const SCRAPER_ERROR_NAMES = new Set([
+  "CaptchaError",
+  "EmptyResultsError",
+  "SelectorFailureError",
+  "SessionTimeoutError",
+  "UnknownScraperError",
+  "StepVerificationError",
+  "HttpSchemaError",
+  "HttpBotChallengeError",
+  "HttpServerError",
+  "HttpRateLimitError",
+  "HttpUrlLockedError",
+  "MissingFormMapKeyError",
+]);
+
+/**
+ * Cross-realm-safe replacement for `err instanceof ScraperError`. See
+ * {@link isCaptchaError} for why this exists — this is the hierarchy-level
+ * variant, matching any of the 12 concrete subclasses defined in this file
+ * regardless of which module instance constructed the error.
+ */
+export function isScraperError(err: unknown): err is ScraperError {
+  return err instanceof ScraperError || (err instanceof Error && SCRAPER_ERROR_NAMES.has(err.name));
 }
 
 /**

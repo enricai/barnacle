@@ -6,7 +6,7 @@ import { ZodError } from "zod/v4";
 import { ApiError } from "@/api/errors";
 import { replyWithError } from "@/api/helpers/reply";
 import { ERROR_CODES } from "@/api/schemas/common";
-import { CaptchaError, ScraperError } from "@/scraper/errors";
+import { isCaptchaError, isScraperError } from "@/scraper/errors";
 import type { DispatchMetrics } from "@/types/dispatch-metrics";
 
 /**
@@ -54,11 +54,10 @@ async function errorHandlerPlugin(app: FastifyInstance): Promise<void> {
     // the dedicated codes 2004 / 2003 rather than a generic 1008 — the
     // whole reason those codes exist is for clients to distinguish scrape
     // failures from upstream target-site failures.
-    if (error instanceof ScraperError) {
-      const code =
-        error instanceof CaptchaError
-          ? ERROR_CODES.CAPTCHA_ENCOUNTERED
-          : ERROR_CODES.SCRAPE_FAILURE;
+    if (isScraperError(error)) {
+      const code = isCaptchaError(error)
+        ? ERROR_CODES.CAPTCHA_ENCOUNTERED
+        : ERROR_CODES.SCRAPE_FAILURE;
       replyWithError(reply, code, error.message, undefined, undefined, metrics);
       return;
     }
