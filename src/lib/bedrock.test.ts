@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -29,7 +30,11 @@ describe("createBedrockModel", () => {
  * patch fails this test instead of passing silently.
  */
 describe("Stagehand aisdk.js inferProviderName patch (Bedrock support)", () => {
-  const stagehandPackageRoot = dirname(require.resolve("@browserbasehq/stagehand/package.json"));
+  // Matches `discover.ts`'s createRequire idiom for resolving packages at runtime.
+  const requireStagehand = createRequire(__filename);
+  const stagehandPackageRoot = dirname(
+    requireStagehand.resolve("@browserbasehq/stagehand/package.json")
+  );
   const stagehandAisdkPath = join(stagehandPackageRoot, "dist/cjs/lib/v3/llm/aisdk.js");
   const source = readFileSync(stagehandAisdkPath, "utf8");
   const fnMatch = source.match(/function inferProviderName\(modelId\) \{[\s\S]*?\n\}/);
