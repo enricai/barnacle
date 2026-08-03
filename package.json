@@ -264,7 +264,7 @@
     "probe:warmup": "tsx --env-file=.env src/scripts/probe-warmup-reliability.ts"
   },
   "dependencies": {
-    "@ai-sdk/amazon-bedrock": "^3.0.112",
+    "@ai-sdk/amazon-bedrock": "^5.0.39",
     "@ai-sdk/anthropic": "^2.0.92",
     "@anthropic-ai/sdk": "^0.112.3",
     "@aws-sdk/client-s3": "^3.1085.0",
