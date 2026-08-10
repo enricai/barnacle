@@ -59,7 +59,7 @@ function makeStagehand(): Stagehand {
   return {} as unknown as Stagehand;
 }
 
-const FRAME_SELECTOR = "iframe#talemetry_apply_iframe";
+const FRAME_SELECTOR = "iframe#apply_frame";
 /** The cascade's attempt-2/4 branch resolves candidates at the interactive-scoped hop (bugfix-005). */
 const HOP_SELECTOR = `${FRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
 /** `probeStepBeforeAttempts` deliberately keeps requesting `"*"` (a reachability gate, not the candidate set the cascade acts on — see `deep-locator-candidates.ts`'s module docblock); this suite's probe falls through to its own deepLocator check, so it needs a hop registered here too. */

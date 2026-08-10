@@ -57,7 +57,7 @@ function makeStagehand(): Stagehand {
   return {} as unknown as Stagehand;
 }
 
-const FRAME_SELECTOR = "iframe#talemetry_apply_iframe";
+const FRAME_SELECTOR = "iframe#apply_frame";
 const STEP_INSTRUCTION = "Click the Manual Application button";
 
 /**
@@ -207,7 +207,7 @@ describe("flow-runner/runHealingFlow — OOPIF cascade regression (observe-blind
     // hop-composed selector rather than an observe()-style CSS/a11y selector.
     const recordedSelector = `deeplocator=${hopSelector} >> nth=${clickedIndexes[0]}`;
     expect(recordedSelector).toBe(
-      `deeplocator=iframe#talemetry_apply_iframe >> ${INTERACTIVE_CANDIDATE_SELECTOR} >> nth=0`
+      `deeplocator=iframe#apply_frame >> ${INTERACTIVE_CANDIDATE_SELECTOR} >> nth=0`
     );
   });
 

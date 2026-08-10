@@ -34,13 +34,13 @@ import { isNodeNotActionableError } from "@/scraper/deep-locator-scan";
 
 async function clickAgainstNotVisibleElement(): Promise<unknown> {
   const frame: FakeDeepLocatorFrame = new Map();
-  registerDeepLocatorHopElements(frame, "#talemetry_apply_iframe >> button", [
+  registerDeepLocatorHopElements(frame, "#apply_frame >> button", [
     { text: "Manual Application", visible: false },
   ]);
   const page = { deepLocator: makeFakeDeepLocator(frame) };
   try {
     // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
-    await clickDeepLocatorCandidate(page as any, "#talemetry_apply_iframe", "button", 0);
+    await clickDeepLocatorCandidate(page as any, "#apply_frame", "button", 0);
     throw new Error("expected clickDeepLocatorCandidate to reject");
   } catch (error) {
     return error;
@@ -70,7 +70,7 @@ describe("clickDeepLocatorCandidate / isNodeNotActionableError classification se
     let caught: unknown;
     try {
       // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
-      await clickDeepLocatorCandidate(page as any, "#talemetry_apply_iframe", "button", 0);
+      await clickDeepLocatorCandidate(page as any, "#apply_frame", "button", 0);
     } catch (error) {
       caught = error;
     }
@@ -91,20 +91,16 @@ describe("clickDeepLocatorCandidate / isNodeNotActionableError classification se
 
     it("does NOT classify a WatchdogTimeoutError from a never-settling click as not-actionable, per the existing watchdog contract", async () => {
       const frame: FakeDeepLocatorFrame = new Map();
-      const { release } = registerDeepLocatorHangingHop(
-        frame,
-        "#talemetry_apply_iframe >> button",
-        {
-          hangOn: "click",
-          text: "Manual Application",
-        }
-      );
+      const { release } = registerDeepLocatorHangingHop(frame, "#apply_frame >> button", {
+        hangOn: "click",
+        text: "Manual Application",
+      });
       const page = { deepLocator: makeFakeDeepLocator(frame) };
 
       const promise = clickDeepLocatorCandidate(
         // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
         page as any,
-        "#talemetry_apply_iframe",
+        "#apply_frame",
         "button",
         0,
         { callTimeoutMs: 50 }

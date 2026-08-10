@@ -3345,12 +3345,12 @@ describe("recon-browser/detectRejectionInResponseBody (Q1)", () => {
     expect(
       detectRejectionInResponseBody({
         not_qualified: false,
-        ggc_thank_you_redirect_url: "https://example.com",
+        thank_you_redirect_url: "https://example.com",
       })
     ).toEqual({ rejected: false, reason: null });
   });
 
-  it("detects Greenhouse `rejected: true` with reason", () => {
+  it("detects `rejected: true` with reason", () => {
     expect(
       detectRejectionInResponseBody({ rejected: true, reason: "Duplicate application" })
     ).toEqual({
@@ -3359,14 +3359,14 @@ describe("recon-browser/detectRejectionInResponseBody (Q1)", () => {
     });
   });
 
-  it("detects Lever `qualified: false` with reason", () => {
+  it("detects `qualified: false` with reason", () => {
     expect(detectRejectionInResponseBody({ qualified: false, reason: "Location" })).toEqual({
       rejected: true,
       reason: "Location",
     });
   });
 
-  it('detects Workday `status: "rejected"` shape', () => {
+  it('detects `status: "rejected"` shape', () => {
     expect(
       detectRejectionInResponseBody({ status: "rejected", reason: "Required field empty" })
     ).toEqual({
@@ -3421,7 +3421,7 @@ describe("recon-browser/Q1B — capture-shape integration (responseBody can be o
       responseBody: {
         not_qualified: true,
         error: "Not qualified reason: email",
-        ggc_thank_you_redirect_url: "https://www.getgreatcareers.com/?...",
+        thank_you_redirect_url: "https://example.com/?...",
       },
     };
     expect(detectFromCaptureLike(capture)).toEqual({
@@ -3462,7 +3462,7 @@ describe("recon-browser/Q1B — capture-shape integration (responseBody can be o
       status: 200,
       responseBody: {
         not_qualified: false,
-        ggc_thank_you_redirect_url: "https://www.getgreatcareers.com/?...",
+        thank_you_redirect_url: "https://example.com/?...",
       },
     };
     expect(detectFromCaptureLike(capture)).toEqual({ rejected: false, reason: null });

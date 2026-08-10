@@ -27,7 +27,7 @@ import {
   registerDeepLocatorHopLatency,
 } from "@/scraper/deep-locator-fake";
 
-const FRAME_SELECTOR = "#talemetry_apply_iframe";
+const FRAME_SELECTOR = "#apply_frame";
 
 function makeFakePage(frame: FakeDeepLocatorFrame) {
   return { deepLocator: makeFakeDeepLocator(frame) };

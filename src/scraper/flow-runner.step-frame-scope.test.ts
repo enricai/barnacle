@@ -297,7 +297,7 @@ describe("flow-runner/executeStepWithHealing — attempt-1 pre-cascade frame-sco
 
   it("threads the resolved child FrameTarget into tryRadioPrimitive's target param, not mainFrameTarget(page)", async () => {
     const urls = { current: "https://apply.acme.example/jobs/1/apply" };
-    const childTarget = makeChildFrameTarget("iframe#talemetry_apply_iframe", () => urls.current, {
+    const childTarget = makeChildFrameTarget("iframe#apply_frame", () => urls.current, {
       radioGroupPresent: false,
     });
     resolveFrameTarget.mockResolvedValue(childTarget);
@@ -317,7 +317,7 @@ describe("flow-runner/executeStepWithHealing — attempt-1 pre-cascade frame-sco
         anthropic: null,
         rephraseModel: null,
         uploadFixture: null,
-        frameSelector: "iframe#talemetry_apply_iframe",
+        frameSelector: "iframe#apply_frame",
       })
     ).rejects.toThrow(/probe found no candidates/);
 
@@ -335,7 +335,7 @@ describe("flow-runner/executeStepWithHealing — attempt-1 pre-cascade frame-sco
 
   it("threads the resolved child FrameTarget into the probe-absent hasUnfilledRequiredControlForStep check, not mainFrameTarget(page)", async () => {
     const urls = { current: "https://apply.acme.example/jobs/1/apply" };
-    const childTarget = makeChildFrameTarget("iframe#talemetry_apply_iframe", () => urls.current, {
+    const childTarget = makeChildFrameTarget("iframe#apply_frame", () => urls.current, {
       hasUnfilledRequiredControl: true,
     });
     resolveFrameTarget.mockResolvedValue(childTarget);
@@ -370,7 +370,7 @@ describe("flow-runner/executeStepWithHealing — attempt-1 pre-cascade frame-sco
         anthropic: null,
         rephraseModel: null,
         uploadFixture: null,
-        frameSelector: "iframe#talemetry_apply_iframe",
+        frameSelector: "iframe#apply_frame",
       })
     ).rejects.toThrow(/probe found no candidates/);
 
@@ -383,7 +383,7 @@ describe("flow-runner/executeStepWithHealing — attempt-1 pre-cascade frame-sco
 
   it("threads the resolved child FrameTarget into the pre-submit countNgInvalidContainers baseline and the attempt-1 pre/post snapshotPage captures, not mainFrameTarget(page)", async () => {
     const urls = { current: "https://apply.acme.example/jobs/1/apply" };
-    const childTarget = makeChildFrameTarget("iframe#talemetry_apply_iframe", () => urls.current, {
+    const childTarget = makeChildFrameTarget("iframe#apply_frame", () => urls.current, {
       ngInvalidCount: 0,
       // Judge-unavailable fallback (anthropic: null -> verifySubmitWithLLM
       // returns null): a DOM-state selector match verifies the step via
@@ -428,7 +428,7 @@ describe("flow-runner/executeStepWithHealing — attempt-1 pre-cascade frame-sco
       anthropic: null,
       rephraseModel: null,
       uploadFixture: null,
-      frameSelector: "iframe#talemetry_apply_iframe",
+      frameSelector: "iframe#apply_frame",
       submitEndpointPattern: "/gq",
       submittedStateSelectors: ["[data-testid=thank-you]"],
     });
@@ -505,7 +505,7 @@ describe("flow-runner/executeStepWithHealing — attempt-2-cascade-reachable fra
 
   it("threads the resolved child FrameTarget into the attempt-2 hasUnfilledRequiredControlForStep fast-skip guard, not mainFrameTarget(page)", async () => {
     const urls = { current: "https://apply.acme.example/jobs/1/apply" };
-    const childTarget = makeChildFrameTarget("iframe#talemetry_apply_iframe", () => urls.current, {
+    const childTarget = makeChildFrameTarget("iframe#apply_frame", () => urls.current, {
       hasUnfilledRequiredControl: true,
     });
     resolveFrameTarget.mockResolvedValue(childTarget);
@@ -548,7 +548,7 @@ describe("flow-runner/executeStepWithHealing — attempt-2-cascade-reachable fra
         anthropic: null,
         rephraseModel: null,
         uploadFixture: null,
-        frameSelector: "iframe#talemetry_apply_iframe",
+        frameSelector: "iframe#apply_frame",
       })
     ).rejects.toThrow(/failed verification after \d+ attempts/);
 
@@ -570,7 +570,7 @@ describe("flow-runner/executeStepWithHealing — attempt-2-cascade-reachable fra
   it("threads the resolved child FrameTarget into the llm-rephrase extractLivePageFormEvidence evidence call, not mainFrameTarget(page)", async () => {
     const urls = { current: "https://apply.acme.example/jobs/1/apply" };
     const bodyHtml = "<body><form>rephrase-evidence-fixture</form></body>";
-    const childTarget = makeChildFrameTarget("iframe#talemetry_apply_iframe", () => urls.current, {
+    const childTarget = makeChildFrameTarget("iframe#apply_frame", () => urls.current, {
       bodyOuterHtml: bodyHtml,
     });
     resolveFrameTarget.mockResolvedValue(childTarget);
@@ -617,7 +617,7 @@ describe("flow-runner/executeStepWithHealing — attempt-2-cascade-reachable fra
         anthropic,
         rephraseModel,
         uploadFixture: null,
-        frameSelector: "iframe#talemetry_apply_iframe",
+        frameSelector: "iframe#apply_frame",
       })
     ).rejects.toThrow(/failed verification after \d+ attempts/);
 
@@ -635,7 +635,7 @@ describe("flow-runner/executeStepWithHealing — attempt-2-cascade-reachable fra
 
   it("threads the resolved child FrameTarget into every guardedObserve call on the llm-rephrase path (focused candidates + unfocused ambient-UI observe), not undefined", async () => {
     const urls = { current: "https://apply.acme.example/jobs/1/apply" };
-    const childTarget = makeChildFrameTarget("iframe#talemetry_apply_iframe", () => urls.current);
+    const childTarget = makeChildFrameTarget("iframe#apply_frame", () => urls.current);
     resolveFrameTarget.mockResolvedValue(childTarget);
 
     const stagehand = makeStagehand();
@@ -672,7 +672,7 @@ describe("flow-runner/executeStepWithHealing — attempt-2-cascade-reachable fra
         anthropic,
         rephraseModel,
         uploadFixture: null,
-        frameSelector: "iframe#talemetry_apply_iframe",
+        frameSelector: "iframe#apply_frame",
       })
     ).rejects.toThrow(/failed verification after \d+ attempts/);
 
@@ -688,7 +688,7 @@ describe("flow-runner/executeStepWithHealing — attempt-2-cascade-reachable fra
 
   it("threads the resolved child FrameTarget into the unfocusedForJudge guardedObserve call feeding the success-state judge, not undefined", async () => {
     const urls = { current: "https://apply.acme.example/jobs/1/apply" };
-    const childTarget = makeChildFrameTarget("iframe#talemetry_apply_iframe", () => urls.current, {
+    const childTarget = makeChildFrameTarget("iframe#apply_frame", () => urls.current, {
       ngInvalidCount: 0,
       submittedStateSelector: "[data-testid=thank-you]",
     });
@@ -729,7 +729,7 @@ describe("flow-runner/executeStepWithHealing — attempt-2-cascade-reachable fra
       anthropic: null,
       rephraseModel: null,
       uploadFixture: null,
-      frameSelector: "iframe#talemetry_apply_iframe",
+      frameSelector: "iframe#apply_frame",
       submitEndpointPattern: "/gq",
       submittedStateSelectors: ["[data-testid=thank-you]"],
     });
@@ -760,7 +760,7 @@ describe("flow-runner/executeStepWithHealing — attempt-2-cascade-reachable fra
       tag: "button",
       accessibleName: "Submit Application",
     };
-    const childTarget = makeChildFrameTarget("iframe#talemetry_apply_iframe", () => urls.current, {
+    const childTarget = makeChildFrameTarget("iframe#apply_frame", () => urls.current, {
       rankSubmitCandidates: [topCandidate, runnerUpCandidate],
       // Every click-by-deep-index call reports clicked:true — both the top
       // pick's click and (if the phantom verdict fires) the runner-up's —
@@ -817,7 +817,7 @@ describe("flow-runner/executeStepWithHealing — attempt-2-cascade-reachable fra
         anthropic: null,
         rephraseModel: null,
         uploadFixture: null,
-        frameSelector: "iframe#talemetry_apply_iframe",
+        frameSelector: "iframe#apply_frame",
       })
     ).rejects.toThrow(/failed verification after \d+ attempts/);
 

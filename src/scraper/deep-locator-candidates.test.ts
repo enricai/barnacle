@@ -139,23 +139,23 @@ describe("resolveDeepLocatorCandidates", () => {
     const candidates = await resolveDeepLocatorCandidates(
       // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
       page as any,
-      "#talemetry_apply_iframe",
+      "#apply_frame",
       "button"
     );
 
     expect(candidates).toEqual([
       {
         index: 0,
-        selector: "deeplocator=#talemetry_apply_iframe >> button >> nth=0",
+        selector: "deeplocator=#apply_frame >> button >> nth=0",
         accessibleText: "Manual Application",
       },
       {
         index: 1,
-        selector: "deeplocator=#talemetry_apply_iframe >> button >> nth=1",
+        selector: "deeplocator=#apply_frame >> button >> nth=1",
         accessibleText: "Cancel",
       },
     ]);
-    expect(deepLocatorSpy).toHaveBeenCalledWith("#talemetry_apply_iframe >> button");
+    expect(deepLocatorSpy).toHaveBeenCalledWith("#apply_frame >> button");
   });
 
   it("never emits an xpath=-prefixed selector, since hop notation is not evaluable via document.evaluate on the top-level document", async () => {
@@ -165,7 +165,7 @@ describe("resolveDeepLocatorCandidates", () => {
     const candidates = await resolveDeepLocatorCandidates(
       // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
       page as any,
-      "#talemetry_apply_iframe",
+      "#apply_frame",
       "*"
     );
 
@@ -180,7 +180,7 @@ describe("resolveDeepLocatorCandidates", () => {
     const candidates = await resolveDeepLocatorCandidates(
       // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
       page as any,
-      "#talemetry_apply_iframe",
+      "#apply_frame",
       "button"
     );
 
@@ -198,7 +198,7 @@ describe("resolveDeepLocatorCandidates", () => {
     const candidates = await resolveDeepLocatorCandidates(
       // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
       page as any,
-      "#talemetry_apply_iframe",
+      "#apply_frame",
       "button"
     );
 
@@ -216,19 +216,19 @@ describe("resolveDeepLocatorCandidates", () => {
     const candidates = await resolveDeepLocatorCandidates(
       // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
       page as any,
-      "#talemetry_apply_iframe",
+      "#apply_frame",
       "*"
     );
 
     expect(candidates).toEqual([
       {
         index: 0,
-        selector: "deeplocator=#talemetry_apply_iframe >> * >> nth=0",
+        selector: "deeplocator=#apply_frame >> * >> nth=0",
         accessibleText: "",
       },
       {
         index: 1,
-        selector: "deeplocator=#talemetry_apply_iframe >> * >> nth=1",
+        selector: "deeplocator=#apply_frame >> * >> nth=1",
         accessibleText: "Manual Application",
       },
     ]);
@@ -245,7 +245,7 @@ describe("resolveDeepLocatorCandidates", () => {
     const candidates = await resolveDeepLocatorCandidates(
       // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
       page as any,
-      "#talemetry_apply_iframe",
+      "#apply_frame",
       "*",
       "click the 'Manual Application' button"
     );
@@ -273,7 +273,7 @@ describe("resolveDeepLocatorCandidates", () => {
 
     function makeAcceptanceScenarioPage() {
       const frame: FakeDeepLocatorFrame = new Map();
-      registerDeepLocatorHopElements(frame, "#talemetry_apply_iframe >> *", [
+      registerDeepLocatorHopElements(frame, "#apply_frame >> *", [
         "",
         "Upload a Resume/CV",
         "Use LinkedIn Profile",
@@ -290,7 +290,7 @@ describe("resolveDeepLocatorCandidates", () => {
       const candidates = await resolveDeepLocatorCandidates(
         // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
         page as any,
-        "#talemetry_apply_iframe",
+        "#apply_frame",
         "*",
         ACCEPTANCE_INSTRUCTION
       );
@@ -313,7 +313,7 @@ describe("resolveDeepLocatorCandidates", () => {
       const candidates = await resolveDeepLocatorCandidates(
         // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
         page as any,
-        "#talemetry_apply_iframe",
+        "#apply_frame",
         "*",
         ACCEPTANCE_INSTRUCTION
       );
@@ -332,7 +332,7 @@ describe("resolveDeepLocatorCandidates", () => {
       const candidates = await resolveDeepLocatorCandidates(
         // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
         page as any,
-        "#talemetry_apply_iframe",
+        "#apply_frame",
         "*",
         "click the 'Something Else' button"
       );
@@ -347,7 +347,7 @@ describe("resolveDeepLocatorCandidates", () => {
       const candidates = await resolveDeepLocatorCandidates(
         // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
         page as any,
-        "#talemetry_apply_iframe",
+        "#apply_frame",
         "*",
         "click the manual application button"
       );
@@ -367,8 +367,8 @@ describe("resolveDeepLocatorCandidates batched frame-scoped scan", () => {
     const elements = Array.from({ length: 371 }, (_, index) =>
       index === 200 ? "Manual Application" : `node-${index}`
     );
-    registerDeepLocatorHopElements(frame, "#talemetry_apply_iframe >> *", elements);
-    const { frameTarget, evaluateSpy } = makeFakeFrameTarget(frame, "#talemetry_apply_iframe >> *");
+    registerDeepLocatorHopElements(frame, "#apply_frame >> *", elements);
+    const { frameTarget, evaluateSpy } = makeFakeFrameTarget(frame, "#apply_frame >> *");
     const countSpy = vi.fn();
     const nthSpy = vi.fn();
     const deepLocatorSpy = vi.fn().mockReturnValue({ count: countSpy, nth: nthSpy });
@@ -376,7 +376,7 @@ describe("resolveDeepLocatorCandidates batched frame-scoped scan", () => {
     const candidates = await resolveDeepLocatorCandidates(
       // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
       { deepLocator: deepLocatorSpy } as any,
-      "#talemetry_apply_iframe",
+      "#apply_frame",
       "*",
       null,
       { frameTarget }
@@ -393,18 +393,18 @@ describe("resolveDeepLocatorCandidates batched frame-scoped scan", () => {
 
   it("keeps each candidate's index aligned with clickDeepLocatorCandidate's nth(), even after visibility filtering drops an earlier index", async () => {
     const frame: FakeDeepLocatorFrame = new Map();
-    const hop = registerDeepLocatorHopElements(frame, "#talemetry_apply_iframe >> *", [
+    const hop = registerDeepLocatorHopElements(frame, "#apply_frame >> *", [
       { text: "Hidden Decoy", visible: false },
       { text: "Manual Application", visible: true },
     ]);
-    const { frameTarget } = makeFakeFrameTarget(frame, "#talemetry_apply_iframe >> *");
+    const { frameTarget } = makeFakeFrameTarget(frame, "#apply_frame >> *");
     const page = { deepLocator: makeFakeDeepLocator(frame) };
     const timeoutOptions: DeepLocatorTimeoutOptions = { frameTarget };
 
     const candidates = await resolveDeepLocatorCandidates(
       // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
       page as any,
-      "#talemetry_apply_iframe",
+      "#apply_frame",
       "*",
       null,
       timeoutOptions
@@ -413,7 +413,7 @@ describe("resolveDeepLocatorCandidates batched frame-scoped scan", () => {
     expect(candidates).toEqual([
       {
         index: 1,
-        selector: "deeplocator=#talemetry_apply_iframe >> * >> nth=1",
+        selector: "deeplocator=#apply_frame >> * >> nth=1",
         accessibleText: "Manual Application",
       },
     ]);
@@ -421,7 +421,7 @@ describe("resolveDeepLocatorCandidates batched frame-scoped scan", () => {
     await clickDeepLocatorCandidate(
       // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
       page as any,
-      "#talemetry_apply_iframe",
+      "#apply_frame",
       "*",
       // biome-ignore lint/style/noNonNullAssertion: exactly one candidate survived filtering
       candidates[0]!.index,
@@ -434,18 +434,18 @@ describe("resolveDeepLocatorCandidates batched frame-scoped scan", () => {
 
   it("drops visible:false entries while keeping laid-out siblings, ranking a visible instruction match above a visible non-match", async () => {
     const frame: FakeDeepLocatorFrame = new Map();
-    registerDeepLocatorHopElements(frame, "#talemetry_apply_iframe >> *", [
+    registerDeepLocatorHopElements(frame, "#apply_frame >> *", [
       { text: "Manual Application", visible: false },
       { text: "Cancel", visible: true },
       { text: "Manual Application", visible: true },
     ]);
-    const { frameTarget } = makeFakeFrameTarget(frame, "#talemetry_apply_iframe >> *");
+    const { frameTarget } = makeFakeFrameTarget(frame, "#apply_frame >> *");
     const page = { deepLocator: makeFakeDeepLocator(frame) };
 
     const candidates = await resolveDeepLocatorCandidates(
       // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
       page as any,
-      "#talemetry_apply_iframe",
+      "#apply_frame",
       "*",
       "click the 'Manual Application' button",
       { frameTarget }
@@ -543,12 +543,12 @@ describe("clickDeepLocatorCandidate", () => {
     await clickDeepLocatorCandidate(
       // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
       page as any,
-      "#talemetry_apply_iframe",
+      "#apply_frame",
       "button",
       0
     );
 
-    expect(deepLocatorSpy).toHaveBeenCalledWith("#talemetry_apply_iframe >> button");
+    expect(deepLocatorSpy).toHaveBeenCalledWith("#apply_frame >> button");
     expect(clickSpy).toHaveBeenCalledWith(0);
   });
 
@@ -562,7 +562,7 @@ describe("clickDeepLocatorCandidate", () => {
 
     await expect(
       // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
-      clickDeepLocatorCandidate(page as any, "#talemetry_apply_iframe", "button", 0)
+      clickDeepLocatorCandidate(page as any, "#apply_frame", "button", 0)
     ).rejects.toThrow("element not attached");
   });
 });
@@ -588,7 +588,7 @@ describe("watchdog-guarded awaits (deepLocator-direct hang bug)", () => {
     const promise = resolveDeepLocatorCandidates(
       // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
       page as any,
-      "#talemetry_apply_iframe",
+      "#apply_frame",
       "*",
       null,
       { callTimeoutMs: 50 }
@@ -608,7 +608,7 @@ describe("watchdog-guarded awaits (deepLocator-direct hang bug)", () => {
     const promise = resolveDeepLocatorCandidates(
       // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
       page as any,
-      "#talemetry_apply_iframe",
+      "#apply_frame",
       "*"
     );
 
@@ -627,7 +627,7 @@ describe("watchdog-guarded awaits (deepLocator-direct hang bug)", () => {
     const promise = resolveDeepLocatorCandidates(
       // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
       page as any,
-      "#talemetry_apply_iframe",
+      "#apply_frame",
       "*",
       null,
       { callTimeoutMs: 50, enumerationBudgetMs: 10_000 }
@@ -650,7 +650,7 @@ describe("watchdog-guarded awaits (deepLocator-direct hang bug)", () => {
     const promise = clickDeepLocatorCandidate(
       // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
       page as any,
-      "#talemetry_apply_iframe",
+      "#apply_frame",
       "button",
       0,
       { callTimeoutMs: 50 }
@@ -672,7 +672,7 @@ describe("watchdog-guarded awaits (deepLocator-direct hang bug)", () => {
     const promise = clickDeepLocatorCandidate(
       // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
       page as any,
-      "#talemetry_apply_iframe",
+      "#apply_frame",
       "button",
       0
     );
@@ -705,7 +705,7 @@ describe("watchdog-guarded awaits (deepLocator-direct hang bug)", () => {
     const promise = resolveDeepLocatorCandidates(
       // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
       page as any,
-      "#talemetry_apply_iframe",
+      "#apply_frame",
       "*",
       null,
       { callTimeoutMs: 10_000, enumerationBudgetMs: 35 }

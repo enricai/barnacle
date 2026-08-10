@@ -34,7 +34,7 @@ import {
 } from "@/scraper/deep-locator-fake";
 import { isNodeNotActionableError } from "@/scraper/deep-locator-scan";
 
-const FRAME_SELECTOR = "#talemetry_apply_iframe";
+const FRAME_SELECTOR = "#apply_frame";
 const INNER_SELECTOR = "button";
 const HOP_SELECTOR = `${FRAME_SELECTOR} >> ${INNER_SELECTOR}`;
 const TARGET_INDEX = 40;

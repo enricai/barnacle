@@ -62,7 +62,7 @@ function makeStagehand(): Stagehand {
   return {} as unknown as Stagehand;
 }
 
-const FRAME_SELECTOR = "iframe#talemetry_apply_iframe";
+const FRAME_SELECTOR = "iframe#apply_frame";
 
 /** Child `FrameTarget` whose `evaluate` answers snapshotPage's `{html,text}` probe so pre/post captures don't throw, and whose `url()` tracks a mutable ref so a click's URL advance gives the cascade's `urlChanged` verification signal a genuine reason to fire. */
 function makeChildFrameTarget(urls: { current: string }): FrameTarget {
@@ -120,7 +120,7 @@ describe("flow-runner/executeStepWithHealing — deepLocator branch honors the w
 
     const wizardExitCandidate: DeepLocatorCandidate = {
       index: 0,
-      selector: `deeplocator=iframe#talemetry_apply_iframe >> ${INTERACTIVE_CANDIDATE_SELECTOR} >> nth=0`,
+      selector: `deeplocator=iframe#apply_frame >> ${INTERACTIVE_CANDIDATE_SELECTOR} >> nth=0`,
       accessibleText: "Save & Exit",
     };
     // Ranked first, mirroring the bug report's scenario where relevance
@@ -168,12 +168,12 @@ describe("flow-runner/executeStepWithHealing — deepLocator branch honors the w
 
     const wizardExitCandidate: DeepLocatorCandidate = {
       index: 0,
-      selector: `deeplocator=iframe#talemetry_apply_iframe >> ${INTERACTIVE_CANDIDATE_SELECTOR} >> nth=0`,
+      selector: `deeplocator=iframe#apply_frame >> ${INTERACTIVE_CANDIDATE_SELECTOR} >> nth=0`,
       accessibleText: "Save & Exit",
     };
     const benignCandidate: DeepLocatorCandidate = {
       index: 1,
-      selector: `deeplocator=iframe#talemetry_apply_iframe >> ${INTERACTIVE_CANDIDATE_SELECTOR} >> nth=1`,
+      selector: `deeplocator=iframe#apply_frame >> ${INTERACTIVE_CANDIDATE_SELECTOR} >> nth=1`,
       accessibleText: "Manual Application",
     };
     // The real resolveDeepLocatorCandidates ranks the destructive control
@@ -244,7 +244,7 @@ describe("flow-runner/executeStepWithHealing — deepLocator branch honors the w
 
     const benignCandidate: DeepLocatorCandidate = {
       index: 0,
-      selector: `deeplocator=iframe#talemetry_apply_iframe >> ${INTERACTIVE_CANDIDATE_SELECTOR} >> nth=0`,
+      selector: `deeplocator=iframe#apply_frame >> ${INTERACTIVE_CANDIDATE_SELECTOR} >> nth=0`,
       accessibleText: "Manual Application",
     };
     resolveDeepLocatorCandidates.mockResolvedValue([benignCandidate]);
