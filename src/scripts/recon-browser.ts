@@ -33,9 +33,11 @@
  *     --url https://example.com \
  *     --flow-file src/sites/my-site/recon-flow.json
  *
- *   # Captures every network response — no URL-shape filtering. Use grep
- *   # against /tmp/recon/graphql/ if you only want specific endpoints.
- *   pnpm tsx src/scripts/recon-browser.ts --url https://example.com
+ *   # Landing-page-only reconnaissance: captures every network response with no
+ *   # flow steps — no URL-shape filtering. Requires --allow-empty-flow, since a
+ *   # flowless run cannot scaffold a submission plugin and must not be fed to
+ *   # recon:generate. Use grep against /tmp/recon/graphql/ for specific endpoints.
+ *   pnpm tsx src/scripts/recon-browser.ts --url https://example.com --allow-empty-flow
  *
  * The script needs STEEL_API_KEY and either ANTHROPIC_API_KEY or USE_BEDROCK=true
  * in the environment (same vars as the main server).
@@ -108,6 +110,7 @@ import { guardedObserve } from "@/scraper/stagehand-guard";
 import { withWatchdog } from "@/scraper/watchdog";
 import { filterByCallType, parseSamples } from "@/scripts/judge-llm-batch";
 import { resolveReconRunDir } from "@/scripts/recon-shared";
+import { RESUME_FIXTURE_PATH } from "@/testing/resume-fixture";
 import { allocateTestmailInbox } from "@/testmail/client";
 import type { Logger } from "@/types/logging";
 
@@ -1650,7 +1653,10 @@ function dumpStepFailure(params: {
   return target;
 }
 
-const DEFAULT_UPLOAD_FIXTURE_PATH = "src/testing/fixtures/resume.pdf";
+// Resolved against the engine's own module location (via resume-fixture.ts), not
+// the process CWD — so the default résumé fixture is found even when recon-browser
+// runs from a consumer repo's working directory (the ENOENT WARN's root cause).
+const DEFAULT_UPLOAD_FIXTURE_PATH = RESUME_FIXTURE_PATH;
 
 function parseCli(): {
   url: string;
@@ -1674,6 +1680,7 @@ function parseCli(): {
   wizardExitButtonLabels: string[];
   restartSignalUrlPatterns: string[];
   originalShape: "array" | "object";
+  allowEmptyFlow: boolean;
 } {
   const args = process.argv.slice(2);
   let url = "";
@@ -1686,6 +1693,7 @@ function parseCli(): {
   let advancedStealth = false;
   let dumpDomBeforeStep: number | null = null;
   let allocateEmailEnvVar: string | null = null;
+  let allowEmptyFlow = false;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--url" && args[i + 1]) {
@@ -1725,12 +1733,14 @@ function parseCli(): {
         process.exit(1);
       }
       allocateEmailEnvVar = name;
+    } else if (args[i] === "--allow-empty-flow") {
+      allowEmptyFlow = true;
     }
   }
 
   if (!url) {
     logger.error(
-      'usage: recon-browser.ts --url <url> [--flow \'["step1","step2"]\'] [--flow-file <path>] [--provider browserbase|steel] [--upload-fixture <path>] [--no-save-replan] [--advanced-stealth] [--dump-dom-before-step <N>] [--allocate-email <ENV_VAR_NAME>]'
+      'usage: recon-browser.ts --url <url> [--flow \'["step1","step2"]\'] [--flow-file <path>] [--provider browserbase|steel] [--upload-fixture <path>] [--no-save-replan] [--advanced-stealth] [--dump-dom-before-step <N>] [--allocate-email <ENV_VAR_NAME>] [--allow-empty-flow]'
     );
     process.exit(1);
   }
@@ -1770,6 +1780,7 @@ function parseCli(): {
       wizardExitButtonLabels: [],
       restartSignalUrlPatterns: [],
       originalShape: "array",
+      allowEmptyFlow,
     };
   }
   const parsed = RECON_FLOW_FILE_SCHEMA.safeParse(rawFlow);
@@ -1842,6 +1853,7 @@ function parseCli(): {
     wizardExitButtonLabels,
     restartSignalUrlPatterns,
     originalShape: isArrayShape ? "array" : "object",
+    allowEmptyFlow,
   };
 }
 
@@ -1895,6 +1907,7 @@ async function main(): Promise<void> {
     wizardExitButtonLabels,
     restartSignalUrlPatterns,
     originalShape,
+    allowEmptyFlow,
   } = parseCli();
 
   // Allocate a fresh testmail.app inbox + bind it to the requested env var
@@ -1910,6 +1923,23 @@ async function main(): Promise<void> {
   }
 
   const flow = substituteFlowEnvVars(rawFlow);
+
+  // A run with zero flow steps performs only the initial goto, so it captures
+  // nothing but landing-page chrome — recon:generate then mistakes that chrome
+  // for a submission flow and emits a non-functional plugin. Fail loud by
+  // default; --allow-empty-flow preserves the documented --url-only
+  // "capture-everything" reconnaissance mode.
+  if (flow.length === 0) {
+    if (!allowEmptyFlow) {
+      logger.error(
+        "recon-browser: no flow steps supplied — a landing-only capture cannot scaffold a submission plugin. Pass --flow/--flow-file, or --allow-empty-flow to override."
+      );
+      process.exit(1);
+    }
+    logger.warn(
+      "WARN --allow-empty-flow set with zero steps: capturing landing-page traffic only. Do NOT feed this run dir to recon:generate as a submission flow."
+    );
+  }
 
   const runDir = resolveReconRunDir();
   const uploadFixture = loadUploadFixture(uploadFixturePath);

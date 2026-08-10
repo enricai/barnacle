@@ -5098,6 +5098,36 @@ describe("recon-browser/parseCli — frameSelector", () => {
   });
 });
 
+describe("recon-browser/parseCli — allowEmptyFlow (FAILURE 1)", () => {
+  const ORIGINAL_ARGV = process.argv;
+
+  afterEach(() => {
+    process.argv = ORIGINAL_ARGV;
+  });
+
+  it("defaults allowEmptyFlow to false, so a flowless run hits the guard", () => {
+    process.argv = ["node", "recon-browser.ts", "--url", "https://example.com"];
+
+    const parsed = parseCli();
+    expect(parsed.allowEmptyFlow).toBe(false);
+    expect(parsed.flow).toEqual([]);
+  });
+
+  it("sets allowEmptyFlow when --allow-empty-flow is passed", () => {
+    process.argv = [
+      "node",
+      "recon-browser.ts",
+      "--url",
+      "https://example.com",
+      "--allow-empty-flow",
+    ];
+
+    const parsed = parseCli();
+    expect(parsed.allowEmptyFlow).toBe(true);
+    expect(parsed.flow).toEqual([]);
+  });
+});
+
 describe("recon-browser/main — frameSelector reaches the cascade call", () => {
   /**
    * Minimal Page/Stagehand double: enough surface for main()'s pre-loop
