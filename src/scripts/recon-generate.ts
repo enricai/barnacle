@@ -3098,7 +3098,9 @@ export function emitBrowserFlowTs(opts: {
   const flowStepsBlock =
     stepLiterals.length > 0
       ? stepLiterals.join("\n")
-      : `  // TODO: add flow steps from src/sites/${siteId}/recon-flow.json`;
+      : "  // TODO: no flow steps were parsed. Re-run recon-browser with a --flow\n" +
+        "  // that walks the apply wizard, then regenerate — recon:generate reads\n" +
+        "  // the captured steps from the run dir, it does not write a flow file here.";
 
   // Wire an uploadFixture from the payload's Resume/ResumeFilename/
   // ResumeContentType fields ONLY when the contract actually carries them
@@ -3261,6 +3263,7 @@ async function main(): Promise<void> {
   let vocabularySpecifier = "";
   let formSchemaSpecifier = "";
   let runDir: string | undefined;
+  let allowEmptyCapture = false;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--site-id" && args[i + 1]) siteId = args[++i]!;
@@ -3268,6 +3271,7 @@ async function main(): Promise<void> {
     else if (args[i] === "--form-schema" && args[i + 1]) formSchemaSpecifier = args[++i]!;
     else if (args[i] === "--run-dir" && args[i + 1]) runDir = args[++i]!;
     else if (args[i] === "--force") force = true;
+    else if (args[i] === "--allow-empty-capture") allowEmptyCapture = true;
     else if (args[i] === "--emit" && args[i + 1]) {
       const value = args[++i]!;
       if (value !== "ts" && value !== "config") {
@@ -3302,6 +3306,18 @@ async function main(): Promise<void> {
   const auxDir = join(runRoot, "aux");
 
   const captures = readJsonDir<Capture>(capturesDir);
+  // No captures means recon-browser walked no flow (or ran with --allow-empty-flow):
+  // every downstream derivation (baseUrl, actionSteps, isSubmissionFlow) reads
+  // `captures`, so an empty graphql/ silently yields a skeleton plugin whose
+  // "submission flow" is fabricated from landing-page chrome. Fail fast. `replays`
+  // is written 1:1 downstream of captures, so it can never rescue an empty capture
+  // set — captures is the sole load-bearing signal.
+  if (captures.length === 0 && !allowEmptyCapture) {
+    logger.error(
+      `recon-generate: run dir ${runRoot} has no captures — nothing to generate a plugin from (did recon-browser run without a --flow?). Pass --allow-empty-capture to override.`
+    );
+    process.exit(1);
+  }
   const replays = readJsonDir<ReplayResult>(replaysDir, [
     "rate-limit.json",
     "introspection-schema.json",
@@ -3422,6 +3438,19 @@ async function main(): Promise<void> {
   const actionSteps =
     actionCaptures.length > 1 ? compileActionSteps(actionCaptures, stateIndex) : [];
   const isSubmissionFlow = actionSteps.length > 1;
+
+  // Diagnostic for the FAILURE-3 shape (hhccareers report): a "submission flow"
+  // whose every action capture is landing-phase is almost certainly page-chrome
+  // bootstrap (e.g. Phenom `POST /widgets`) misread as an apply flow, not a walked
+  // wizard. Real wizard steps carry a step-slug phase; single-endpoint search runs
+  // are `length <= 1` and never reach here. We do not filter (that would delete the
+  // sole search POST of legitimate `--url`-only single-endpoint runs, which is also
+  // landing-phase) — we only surface the suspicious shape.
+  if (isSubmissionFlow && actionCaptures.every((a) => a.capture.phase === "home")) {
+    logger.warn(
+      `WARN all ${actionCaptures.length} action captures are landing-phase (phase="home") — this may be page-chrome bootstrap misread as a submission flow, not a walked apply wizard; verify the recon --flow actually advanced the form`
+    );
+  }
 
   const inputBody = isSubmissionFlow
     ? (() => {
@@ -3728,7 +3757,9 @@ async function main(): Promise<void> {
     logger.info(`copied ${auxFiles.length} fixture(s) to ${outDir}/fixtures/`);
   }
 
-  logger.info(`done — review ${outDir}/, then register in src/plugins/loader.ts`);
+  logger.info(
+    `done — review ${outDir}/, build the package, then point BARNACLE_PLUGINS at the compiled module (no core edits required): BARNACLE_PLUGINS=./dist/sites/${siteId}/index.js pnpm start`
+  );
 }
 
 if (

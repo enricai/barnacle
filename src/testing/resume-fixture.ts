@@ -26,7 +26,15 @@ export interface ResumePayloadFields {
   ResumeBase64: string;
 }
 
-const RESUME_PATH = resolve(__dirname, "./fixtures/resume.pdf");
+/**
+ * Absolute path to the shared persona résumé PDF, resolved against this module's
+ * location so it is found regardless of the process's CWD. Exposed so CWD-sensitive
+ * callers (e.g. recon-browser's upload-fixture default) reuse the one robust
+ * resolution instead of a fragile CWD-relative literal.
+ */
+export const RESUME_FIXTURE_PATH = resolve(__dirname, "./fixtures/resume.pdf");
+
+const RESUME_PATH = RESUME_FIXTURE_PATH;
 
 /**
  * Read the shared persona PDF once and return its bytes + the per-call
