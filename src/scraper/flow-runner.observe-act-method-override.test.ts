@@ -51,7 +51,7 @@ function makeStagehand(): Stagehand {
   return {} as unknown as Stagehand;
 }
 
-const FRAME_SELECTOR = "iframe#talemetry_apply_iframe";
+const FRAME_SELECTOR = "iframe#apply_frame";
 
 function makeChildFrameTarget(urls: { current: string }): FrameTarget {
   let snapshotCount = 0;

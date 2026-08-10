@@ -34,7 +34,7 @@ import {
   registerDeepLocatorHopElements,
 } from "@/scraper/deep-locator-fake";
 
-const HOP_SELECTOR = "#talemetry_apply_iframe >> *";
+const HOP_SELECTOR = "#apply_frame >> *";
 
 /** Builds a `FrameTarget` whose `evaluate` reads back `frame`'s registered hop, exercising the batched-scan fast path the visibility filter lives on. */
 function makeFakeFrameTarget(frame: FakeDeepLocatorFrame, selector: string): FrameTarget {
@@ -65,7 +65,7 @@ describe("resolveDeepLocatorCandidates visibility filter", () => {
     const candidates = await resolveDeepLocatorCandidates(
       // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
       page as any,
-      "#talemetry_apply_iframe",
+      "#apply_frame",
       "*",
       null,
       { frameTarget }
@@ -90,7 +90,7 @@ describe("resolveDeepLocatorCandidates visibility filter", () => {
     const candidates = await resolveDeepLocatorCandidates(
       // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
       page as any,
-      "#talemetry_apply_iframe",
+      "#apply_frame",
       "*",
       null,
       { frameTarget }
@@ -113,7 +113,7 @@ describe("resolveDeepLocatorCandidates visibility filter", () => {
     const candidates = await resolveDeepLocatorCandidates(
       // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
       page as any,
-      "#talemetry_apply_iframe",
+      "#apply_frame",
       "*",
       null,
       timeoutOptions
@@ -126,7 +126,7 @@ describe("resolveDeepLocatorCandidates visibility filter", () => {
     await clickDeepLocatorCandidate(
       // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
       page as any,
-      "#talemetry_apply_iframe",
+      "#apply_frame",
       "*",
       // biome-ignore lint/style/noNonNullAssertion: exactly one candidate survived filtering
       candidates[0]!.index,
@@ -151,7 +151,7 @@ describe("resolveDeepLocatorCandidates visibility filter", () => {
     const candidates = await resolveDeepLocatorCandidates(
       // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
       page as any,
-      "#talemetry_apply_iframe",
+      "#apply_frame",
       "*",
       "Do NOT click 'Decoy'. Click the 'Manual Application' button.",
       { frameTarget }

@@ -23,7 +23,7 @@ import {
   registerDeepLocatorHopElements,
 } from "@/scraper/deep-locator-fake";
 
-const HOP_SELECTOR = "#talemetry_apply_iframe >> *";
+const HOP_SELECTOR = "#apply_frame >> *";
 
 /**
  * Hand-built `FrameTarget` whose `evaluate` is a bare stub rather than one
@@ -34,8 +34,8 @@ const HOP_SELECTOR = "#talemetry_apply_iframe >> *";
 function makeStubFrameTarget(evaluate: (...args: never[]) => Promise<unknown>): FrameTarget {
   return {
     frame: {} as unknown as FrameTarget["frame"],
-    frameSelector: "#talemetry_apply_iframe",
-    declaredFrameSelector: "#talemetry_apply_iframe",
+    frameSelector: "#apply_frame",
+    declaredFrameSelector: "#apply_frame",
     evaluate: evaluate as unknown as FrameTarget["evaluate"],
     locator: () => {
       throw new Error("locator() is not used by resolveDeepLocatorCandidates");
@@ -60,7 +60,7 @@ describe("resolveDeepLocatorCandidates empty batched-scan fallback", () => {
     const candidates = await resolveDeepLocatorCandidates(
       // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
       page as any,
-      "#talemetry_apply_iframe",
+      "#apply_frame",
       "*",
       null,
       { frameTarget }
@@ -84,7 +84,7 @@ describe("resolveDeepLocatorCandidates empty batched-scan fallback", () => {
     const candidates = await resolveDeepLocatorCandidates(
       // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
       page as any,
-      "#talemetry_apply_iframe",
+      "#apply_frame",
       "*",
       null,
       { frameTarget }

@@ -235,14 +235,14 @@ describe("guardedAct", () => {
   // frameTarget must NOT change what's forwarded to stagehand.act.
   it("does not forward a resolved frameTarget into ActOptions", async () => {
     const stagehand = fakeStagehandAct(VALID_ACT_RESULT);
-    const frameTarget = fakeChildFrameTarget("iframe#talemetry_apply_iframe");
+    const frameTarget = fakeChildFrameTarget("iframe#apply_frame");
     await guardedAct(stagehand, "click submit", { timeout: 5000 }, undefined, frameTarget);
     expect(stagehand.act).toHaveBeenCalledWith("click submit", { timeout: 5000 });
   });
 
   it("records the same success telemetry under a frame scope as the no-frame path", async () => {
     const stagehand = fakeStagehandAct(VALID_ACT_RESULT);
-    const frameTarget = fakeChildFrameTarget("iframe#talemetry_apply_iframe");
+    const frameTarget = fakeChildFrameTarget("iframe#apply_frame");
     await guardedAct(stagehand, "click submit", undefined, undefined, frameTarget);
     expect(captured).toHaveLength(1);
     expect(captured[0]?.callType).toBe("stagehand-act");
@@ -255,7 +255,7 @@ describe("guardedAct", () => {
     const stagehand = {
       act: vi.fn().mockRejectedValue(new Error("network error")),
     } as unknown as Stagehand;
-    const frameTarget = fakeChildFrameTarget("iframe#talemetry_apply_iframe");
+    const frameTarget = fakeChildFrameTarget("iframe#apply_frame");
     await expect(
       guardedAct(stagehand, "click submit", undefined, undefined, frameTarget)
     ).rejects.toThrow("network error");
@@ -318,26 +318,26 @@ describe("guardedObserve", () => {
 
   it("forwards a resolved frameTarget's frameSelector as ObserveOptions.selector in hop notation", async () => {
     const stagehand = fakeStagehandObserve([VALID_ACTION]);
-    const frameTarget = fakeChildFrameTarget("iframe#talemetry_apply_iframe");
+    const frameTarget = fakeChildFrameTarget("iframe#apply_frame");
     await guardedObserve(stagehand, "find something", undefined, undefined, frameTarget);
     expect(stagehand.observe).toHaveBeenCalledWith("find something", {
-      selector: "iframe#talemetry_apply_iframe >> *",
+      selector: "iframe#apply_frame >> *",
     });
   });
 
   it("merges frameTarget.frameSelector into existing options without a selector, in hop notation", async () => {
     const stagehand = fakeStagehandObserve([VALID_ACTION]);
-    const frameTarget = fakeChildFrameTarget("iframe#talemetry_apply_iframe");
+    const frameTarget = fakeChildFrameTarget("iframe#apply_frame");
     await guardedObserve(stagehand, "find something", { timeout: 5000 }, undefined, frameTarget);
     expect(stagehand.observe).toHaveBeenCalledWith("find something", {
       timeout: 5000,
-      selector: "iframe#talemetry_apply_iframe >> *",
+      selector: "iframe#apply_frame >> *",
     });
   });
 
   it("prefers a caller-supplied options.selector over frameTarget.frameSelector", async () => {
     const stagehand = fakeStagehandObserve([VALID_ACTION]);
-    const frameTarget = fakeChildFrameTarget("iframe#talemetry_apply_iframe");
+    const frameTarget = fakeChildFrameTarget("iframe#apply_frame");
     await guardedObserve(
       stagehand,
       "find something",
@@ -375,7 +375,7 @@ describe("guardedObserve", () => {
       method: "fill",
     };
     const stagehand = fakeStagehandObserveByScope(topCandidates, [frameAction]);
-    const frameTarget = fakeChildFrameTarget("iframe#talemetry_apply_iframe");
+    const frameTarget = fakeChildFrameTarget("iframe#apply_frame");
     const result = await guardedObserve(
       stagehand,
       "find something",
@@ -402,7 +402,7 @@ describe("guardedObserve", () => {
   it("still throws StagehandSchemaError on envelope drift under a frame scope", async () => {
     const malformed = [{ description: "missing selector" }];
     const stagehand = fakeStagehandObserve(malformed);
-    const frameTarget = fakeChildFrameTarget("iframe#talemetry_apply_iframe");
+    const frameTarget = fakeChildFrameTarget("iframe#apply_frame");
     await expect(
       guardedObserve(stagehand, "find something", undefined, undefined, frameTarget)
     ).rejects.toBeInstanceOf(StagehandSchemaError);
@@ -443,7 +443,7 @@ describe("guardedExtract", () => {
 
   it("forwards a resolved frameTarget's frameSelector as ExtractOptions.selector in hop notation", async () => {
     const stagehand = fakeStagehandExtract({ name: "Alice", age: 30 });
-    const frameTarget = fakeChildFrameTarget("iframe#talemetry_apply_iframe");
+    const frameTarget = fakeChildFrameTarget("iframe#apply_frame");
     await guardedExtract(
       stagehand,
       "extract person",
@@ -453,13 +453,13 @@ describe("guardedExtract", () => {
       frameTarget
     );
     expect(stagehand.extract).toHaveBeenCalledWith("extract person", PERSON_SCHEMA, {
-      selector: "iframe#talemetry_apply_iframe >> *",
+      selector: "iframe#apply_frame >> *",
     });
   });
 
   it("prefers a caller-supplied options.selector over frameTarget.frameSelector", async () => {
     const stagehand = fakeStagehandExtract({ name: "Alice", age: 30 });
-    const frameTarget = fakeChildFrameTarget("iframe#talemetry_apply_iframe");
+    const frameTarget = fakeChildFrameTarget("iframe#apply_frame");
     await guardedExtract(
       stagehand,
       "extract person",
@@ -493,7 +493,7 @@ describe("guardedExtract", () => {
     const topPayload = { name: "Alice", age: 30 };
     const framePayload = { name: "Bob", age: 45 };
     const stagehand = fakeStagehandExtractByScope(topPayload, framePayload);
-    const frameTarget = fakeChildFrameTarget("iframe#talemetry_apply_iframe");
+    const frameTarget = fakeChildFrameTarget("iframe#apply_frame");
     const result = await guardedExtract(
       stagehand,
       "extract person",
@@ -516,7 +516,7 @@ describe("guardedExtract", () => {
 
   it("still throws StagehandSchemaError on payload drift under a frame scope", async () => {
     const stagehand = fakeStagehandExtract({ name: "Alice", age: "thirty" });
-    const frameTarget = fakeChildFrameTarget("iframe#talemetry_apply_iframe");
+    const frameTarget = fakeChildFrameTarget("iframe#apply_frame");
     await expect(
       guardedExtract(stagehand, "extract person", PERSON_SCHEMA, undefined, undefined, frameTarget)
     ).rejects.toBeInstanceOf(StagehandSchemaError);

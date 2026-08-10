@@ -7,7 +7,7 @@ import {
   registerDeepLocatorHopElements,
 } from "@/scraper/deep-locator-fake";
 
-const FRAME_SELECTOR = "#talemetry_apply_iframe";
+const FRAME_SELECTOR = "#apply_frame";
 
 /**
  * Regression pin for the bug report's flagged (unconfirmed) duplicate-node

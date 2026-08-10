@@ -25,7 +25,7 @@ function makeChildFrameTarget(): {
   const evaluate = vi.fn().mockResolvedValue(undefined);
   const target = {
     frame: { session: { send: sessionSend } },
-    frameSelector: "iframe#talemetry_apply_iframe",
+    frameSelector: "iframe#apply_frame",
     evaluate,
     locator: vi.fn(),
     url: vi.fn(),
