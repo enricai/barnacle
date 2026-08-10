@@ -351,7 +351,8 @@ function normalizeResponseBodyForAudit(data: { responseBody?: unknown }): unknow
  *
  * Site-agnostic: rejection detection is via `detectRejectionInResponseBody`
  * which knows the union of common ATS rejection-envelope shapes
- * (Greenhouse/Lever/Workday and JSON-envelope ATSs). New ATSs extend the union.
+ * (`{rejected}` / `{qualified: false}` / `{status: "rejected"}` and JSON-envelope
+ * ATSs). New ATSs extend the union.
  *
  * Pre-existing site-specific equivalent: readJobOutcome in
  * recon-replay-jobs.ts. This is the agnostic engine-side version using

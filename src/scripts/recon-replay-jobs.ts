@@ -43,7 +43,7 @@ interface JobVerdict {
   integratedApply200: boolean;
   /**
    * True when the submit endpoint returned a 2xx whose response body
-   * declared rejection (e.g. `not_qualified: true`, Greenhouse
+   * declared rejection (e.g. `not_qualified: true`,
    * `rejected: true`). When this is true, `integratedApply200` should
    * NOT be interpreted as a real success — the application reached the
    * HTTP layer but was filtered out by the ATS's qualification check
@@ -208,8 +208,8 @@ export function readJobOutcome(
       ) {
         integratedApply200 = true;
         // Parse the response body to detect server-side rejection envelopes
-        // (`not_qualified`, Greenhouse `rejected`, Lever `qualified:
-        // false`, Workday `status: "rejected"`). HTTP 200 alone is not proof
+        // (`not_qualified`, `rejected`, `qualified: false`,
+        // `status: "rejected"`). HTTP 200 alone is not proof
         // of acceptance — many ATSs use a "200 with rejection envelope"
         // pattern. The capture writer at recon-browser.ts:240 stores
         // responseBody as either an object (JSON success) or a string

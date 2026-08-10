@@ -3350,7 +3350,7 @@ describe("recon-browser/detectRejectionInResponseBody (Q1)", () => {
     ).toEqual({ rejected: false, reason: null });
   });
 
-  it("detects Greenhouse `rejected: true` with reason", () => {
+  it("detects `rejected: true` with reason", () => {
     expect(
       detectRejectionInResponseBody({ rejected: true, reason: "Duplicate application" })
     ).toEqual({
@@ -3359,14 +3359,14 @@ describe("recon-browser/detectRejectionInResponseBody (Q1)", () => {
     });
   });
 
-  it("detects Lever `qualified: false` with reason", () => {
+  it("detects `qualified: false` with reason", () => {
     expect(detectRejectionInResponseBody({ qualified: false, reason: "Location" })).toEqual({
       rejected: true,
       reason: "Location",
     });
   });
 
-  it('detects Workday `status: "rejected"` shape', () => {
+  it('detects `status: "rejected"` shape', () => {
     expect(
       detectRejectionInResponseBody({ status: "rejected", reason: "Required field empty" })
     ).toEqual({

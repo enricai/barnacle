@@ -671,8 +671,8 @@ export async function snapshotPage(
  * application despite returning a 2xx HTTP status. Many ATSs use a "200 OK
  * with rejection envelope" pattern instead of a 4xx: one JSON-envelope ATS returns
  * `{not_qualified: true, error: "Not qualified reason: <field>"}`,
- * Greenhouse uses `{rejected: true, reason: "..."}`, Lever uses
- * `{qualified: false, reason: "..."}`, Workday uses
+ * others use `{rejected: true, reason: "..."}`,
+ * `{qualified: false, reason: "..."}`, or
  * `{status: "rejected"}`. Empirically verified on a JSON-envelope ATS: 4/6 historical
  * /integrated_apply 200s on this codebase had `not_qualified: true` and
  * we treated them as wins because the audit only checked HTTP status.
@@ -2674,7 +2674,7 @@ function harvestFieldErrors(body: unknown): string[] {
   if (!body || typeof body !== "object") return [];
   const out: string[] = [];
   const rec = body as Record<string, unknown>;
-  // Singular `{error: "message"}` shape used by JSON-envelope ATSs, Lever, Greenhouse,
+  // Singular `{error: "message"}` shape used by JSON-envelope ATSs
   // and any REST API following the {error:string} terse-error convention.
   // Verified on a JSON-envelope ATS tenant: /integrated_apply 422 body is
   // exactly {"error":"Resume is blank"} — no `errors`, no `message`. Before
