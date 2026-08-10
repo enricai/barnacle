@@ -3345,7 +3345,7 @@ describe("recon-browser/detectRejectionInResponseBody (Q1)", () => {
     expect(
       detectRejectionInResponseBody({
         not_qualified: false,
-        ggc_thank_you_redirect_url: "https://example.com",
+        thank_you_redirect_url: "https://example.com",
       })
     ).toEqual({ rejected: false, reason: null });
   });
@@ -3421,7 +3421,7 @@ describe("recon-browser/Q1B — capture-shape integration (responseBody can be o
       responseBody: {
         not_qualified: true,
         error: "Not qualified reason: email",
-        ggc_thank_you_redirect_url: "https://www.getgreatcareers.com/?...",
+        thank_you_redirect_url: "https://example.com/?...",
       },
     };
     expect(detectFromCaptureLike(capture)).toEqual({
@@ -3462,7 +3462,7 @@ describe("recon-browser/Q1B — capture-shape integration (responseBody can be o
       status: 200,
       responseBody: {
         not_qualified: false,
-        ggc_thank_you_redirect_url: "https://www.getgreatcareers.com/?...",
+        thank_you_redirect_url: "https://example.com/?...",
       },
     };
     expect(detectFromCaptureLike(capture)).toEqual({ rejected: false, reason: null });
