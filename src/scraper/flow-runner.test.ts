@@ -955,7 +955,7 @@ describe("flow-runner/executeStepWithHealing — observe-act method override for
   it("overrides observe candidate method='click' to method='fill' with arguments=['78701'] before calling act", async () => {
     const signalCounter = { n: 0 };
     const { page } = fakePage({
-      url: "https://careers.uchealth.org/jobs/123/apply",
+      url: "https://careers.example.org/jobs/123/apply",
       bodyHtmlLength: 184186,
     });
 
@@ -1212,10 +1212,10 @@ describe("flow-runner/extractLivePageFormEvidence", () => {
     });
     const childTarget: FrameTarget = {
       frame: {} as FrameTarget["frame"],
-      frameSelector: "iframe#talemetry_apply_iframe",
+      frameSelector: "iframe#apply_frame",
       evaluate: childEvaluate,
       locator: vi.fn(),
-      url: () => Promise.resolve("https://apply.talemetry.com/application/abc-123"),
+      url: () => Promise.resolve("https://apply.example.com/application/abc-123"),
       title: () => Promise.resolve("Apply"),
     };
     const pageEvaluate = vi.fn().mockResolvedValue(null);
@@ -1298,7 +1298,7 @@ describe("flow-runner/runHealingFlow — frameSelector routes the cascade to the
       : null;
     return {
       evaluate,
-      url: () => "https://careers.uchealth.org/jobs/123",
+      url: () => "https://careers.example.org/jobs/123",
       title: vi.fn().mockResolvedValue("Apply"),
       locator: vi.fn().mockReturnValue({
         first: () => ({
@@ -1333,13 +1333,13 @@ describe("flow-runner/runHealingFlow — frameSelector routes the cascade to the
 
   it("routes the cascade's DOM-direct evaluate calls to the resolved child frame when frameSelector matches an iframe", async () => {
     const childFrameEvaluate = vi.fn().mockImplementation(async (expr: unknown) => {
-      if (expr === "location.href") return "https://apply.talemetry.com/application/abc-123";
+      if (expr === "location.href") return "https://apply.example.com/application/abc-123";
       const src = String(expr);
       if (src.includes("outerHTML")) return null;
       return null;
     });
     const page = fakeFlowPageWithFrame({
-      iframeSrc: "https://apply.talemetry.com/application/abc-123",
+      iframeSrc: "https://apply.example.com/application/abc-123",
       childFrameEvaluate,
     });
     const pageEvaluate = page.evaluate as ReturnType<typeof vi.fn>;
@@ -1362,7 +1362,7 @@ describe("flow-runner/runHealingFlow — frameSelector routes the cascade to the
         anthropic: null,
         rephraseModel: null,
         uploadFixture: null,
-        frameSelector: "iframe#talemetry_apply_iframe",
+        frameSelector: "iframe#apply_frame",
       })
     ).rejects.toMatchObject({ name: "StepVerificationError" });
 
@@ -1394,7 +1394,7 @@ describe("flow-runner/runHealingFlow — frameSelector routes the cascade to the
     expect(scopedCalls.length).toBeGreaterThan(0);
     for (const call of scopedCalls) {
       const options = call.at(-1) as { selector?: string };
-      expect(options.selector).toBe("iframe#talemetry_apply_iframe >> *");
+      expect(options.selector).toBe("iframe#apply_frame >> *");
     }
   });
 
@@ -1406,7 +1406,7 @@ describe("flow-runner/runHealingFlow — frameSelector routes the cascade to the
       // resolveFrameTarget(page, undefined) must short-circuit to the
       // main-frame target WITHOUT ever probing for the iframe or reading
       // page.frames().
-      iframeSrc: "https://apply.talemetry.com/application/abc-123",
+      iframeSrc: "https://apply.example.com/application/abc-123",
       childFrameEvaluate,
     });
     const pageEvaluate = page.evaluate as ReturnType<typeof vi.fn>;
@@ -1448,9 +1448,9 @@ describe("flow-runner/runHealingFlow — frameSelector routes the cascade to the
     // normally via the existing urlChanged signal on attempt 1, proving a
     // selector typo degrades to today's main-frame behavior instead of
     // failing the run.
-    let url = "https://careers.uchealth.org/jobs/123";
+    let url = "https://careers.example.org/jobs/123";
     const page = fakeFlowPageWithFrame({
-      iframeSrc: "https://apply.talemetry.com/application/abc-123",
+      iframeSrc: "https://apply.example.com/application/abc-123",
       // No childFrameEvaluate supplied — frames() returns [] so no candidate
       // frame exists to match the resolved iframe origin against.
     });
@@ -1460,7 +1460,7 @@ describe("flow-runner/runHealingFlow — frameSelector routes the cascade to the
         .fn()
         .mockResolvedValue([{ selector: "button#submit", description: "submit", method: "click" }]),
       act: vi.fn().mockImplementation(async () => {
-        url = "https://careers.uchealth.org/jobs/123/thank-you";
+        url = "https://careers.example.org/jobs/123/thank-you";
         return {
           success: true,
           message: "clicked",
@@ -1480,7 +1480,7 @@ describe("flow-runner/runHealingFlow — frameSelector routes the cascade to the
       anthropic: null,
       rephraseModel: null,
       uploadFixture: null,
-      frameSelector: "iframe#talemetry_apply_iframe",
+      frameSelector: "iframe#apply_frame",
     });
 
     expect(result).toMatchObject({

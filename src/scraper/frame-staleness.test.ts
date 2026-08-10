@@ -56,44 +56,44 @@ function makeMutableFakePage(options: {
 
 describe("resolveFrameTarget re-resolution against a stale child frame", () => {
   it("still resolves a child-bound target after the frame's location.href changes to a same-origin path", async () => {
-    let currentUrl = "https://apply.talemetry.com/application/abc-123";
+    let currentUrl = "https://apply.example.com/application/abc-123";
     const childFrame = makeFakeFrame(() => currentUrl);
     const page = makeMutableFakePage({
-      mainUrl: "https://careers.uchealth.org/jobs/123",
+      mainUrl: "https://careers.example.org/jobs/123",
       iframes: {
-        "iframe#talemetry_apply_iframe": "https://apply.talemetry.com/application/abc-123",
+        "iframe#apply_frame": "https://apply.example.com/application/abc-123",
       },
       frames: [childFrame],
     });
 
-    const first = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe");
+    const first = await resolveFrameTarget(page as never, "iframe#apply_frame");
     expect(first.frame).toBe(childFrame);
 
-    currentUrl = "https://apply.talemetry.com/application/abc-123/gq";
+    currentUrl = "https://apply.example.com/application/abc-123/gq";
 
-    const second = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe");
+    const second = await resolveFrameTarget(page as never, "iframe#apply_frame");
 
     expect(second.frame).not.toBeNull();
-    expect(second.frameSelector).toBe("iframe#talemetry_apply_iframe");
-    expect(await second.url()).toBe("https://apply.talemetry.com/application/abc-123/gq");
+    expect(second.frameSelector).toBe("iframe#apply_frame");
+    expect(await second.url()).toBe("https://apply.example.com/application/abc-123/gq");
   });
 
   it("does not throw and falls back to the main-frame target when the resolved frame disappears from page.frames()", async () => {
-    const childFrame = makeFakeFrame(() => "https://apply.talemetry.com/application/abc-123");
+    const childFrame = makeFakeFrame(() => "https://apply.example.com/application/abc-123");
     const page = makeMutableFakePage({
-      mainUrl: "https://careers.uchealth.org/jobs/123",
+      mainUrl: "https://careers.example.org/jobs/123",
       iframes: {
-        "iframe#talemetry_apply_iframe": "https://apply.talemetry.com/application/abc-123",
+        "iframe#apply_frame": "https://apply.example.com/application/abc-123",
       },
       frames: [childFrame],
     });
 
-    const first = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe");
+    const first = await resolveFrameTarget(page as never, "iframe#apply_frame");
     expect(first.frame).toBe(childFrame);
 
     page.removeFrame(childFrame);
 
-    const second = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe", {
+    const second = await resolveFrameTarget(page as never, "iframe#apply_frame", {
       timeoutMs: 20,
       pollMs: 5,
     });
@@ -103,26 +103,26 @@ describe("resolveFrameTarget re-resolution against a stale child frame", () => {
   });
 
   it("rebinds to a replacement frame, without throwing, when the resolved frame is swapped for a new matching one", async () => {
-    const originalFrame = makeFakeFrame(() => "https://apply.talemetry.com/application/abc-123");
+    const originalFrame = makeFakeFrame(() => "https://apply.example.com/application/abc-123");
     const page = makeMutableFakePage({
-      mainUrl: "https://careers.uchealth.org/jobs/123",
+      mainUrl: "https://careers.example.org/jobs/123",
       iframes: {
-        "iframe#talemetry_apply_iframe": "https://apply.talemetry.com/application/abc-123",
+        "iframe#apply_frame": "https://apply.example.com/application/abc-123",
       },
       frames: [originalFrame],
     });
 
-    const first = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe");
+    const first = await resolveFrameTarget(page as never, "iframe#apply_frame");
     expect(first.frame).toBe(originalFrame);
 
     page.removeFrame(originalFrame);
-    const replacementFrame = makeFakeFrame(() => "https://apply.talemetry.com/application/abc-123");
+    const replacementFrame = makeFakeFrame(() => "https://apply.example.com/application/abc-123");
     page.attachFrame(replacementFrame);
 
-    const second = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe");
+    const second = await resolveFrameTarget(page as never, "iframe#apply_frame");
 
     expect(second.frame).toBe(replacementFrame);
-    expect(second.frameSelector).toBe("iframe#talemetry_apply_iframe");
+    expect(second.frameSelector).toBe("iframe#apply_frame");
   });
 });
 
@@ -131,7 +131,7 @@ describe("waitForChildFrameReady against a frame that dies mid-poll", () => {
     const readyStates = ["loading", "detached", "detached"];
     const childFrame = {
       evaluate: async (expr: unknown) => {
-        if (expr === "location.href") return "https://apply.talemetry.com/application/abc-123";
+        if (expr === "location.href") return "https://apply.example.com/application/abc-123";
         if (expr !== "document.readyState") return `frame-evaluated:${String(expr)}`;
         const nextState = readyStates.shift() ?? "detached";
         if (nextState === "detached") throw new Error("frame detached");
@@ -140,17 +140,14 @@ describe("waitForChildFrameReady against a frame that dies mid-poll", () => {
       locator: (selector: string) => ({ scope: "frame" as const, selector }),
     };
     const page = makeMutableFakePage({
-      mainUrl: "https://careers.uchealth.org/jobs/123",
+      mainUrl: "https://careers.example.org/jobs/123",
       iframes: {
-        "iframe#talemetry_apply_iframe": "https://apply.talemetry.com/application/abc-123",
+        "iframe#apply_frame": "https://apply.example.com/application/abc-123",
       },
       frames: [childFrame],
     });
 
-    const target: FrameTarget = await resolveFrameTarget(
-      page as never,
-      "iframe#talemetry_apply_iframe"
-    );
+    const target: FrameTarget = await resolveFrameTarget(page as never, "iframe#apply_frame");
     expect(target.frame).toBe(childFrame);
 
     await expect(

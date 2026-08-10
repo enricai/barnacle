@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { emitBrowserFlowTs, emitIndexTs } from "@/scripts/recon-generate";
 
 /**
- * Wording regressions from the hhccareers report:
+ * Wording regressions from the a flowless recon capture:
  * - FAILURE 4: the empty-`FLOW_STEPS` stub pointed at a `recon-flow.json` this tool
  *   never writes.
  * - FAILURE 6: the emitted index.ts (correctly) says no core edits are required,

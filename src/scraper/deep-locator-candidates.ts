@@ -1,6 +1,6 @@
 /**
  * Cross-origin OOPIF candidate resolver: `observe()` returns zero candidates
- * for a cross-origin OOPIF (measured against a live Talemetry wizard embed —
+ * for a cross-origin OOPIF (measured against a live embedded apply wizard embed —
  * see the frame-scoped iframe bug report), even though the frame is fully
  * attached and reachable. `page.deepLocator()` is Stagehand's own
  * hop-notation resolver and is measured to both locate and actuate elements

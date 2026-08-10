@@ -41,7 +41,7 @@ describe("EMPTY_VOCABULARY — the engine knows nothing", () => {
   it("resolves an explicit override identically with or without vocabulary", () => {
     // The deprecation nag fires by comparing built-in vs empty outcomes. A step
     // with an explicit payloadField must resolve the same under both, or a site
-    // that already declared its fields (disneycruise) gets told to fix nothing.
+    // that already declared its fields (cruise-fixture) gets told to fix nothing.
     const instruction = "Open the destination filter dropdown and select the 'Bahamas' option";
     expect(resolveStepPayloadField(instruction, "destination", undefined, EMPTY_VOCABULARY)).toBe(
       resolveStepPayloadField(instruction, "destination", undefined)

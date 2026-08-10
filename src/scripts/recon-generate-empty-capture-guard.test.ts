@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 /**
- * Guards FAILURE 2 from the hhccareers report: recon-generate accepted an
+ * Guards FAILURE 2 from the a flowless recon capture: recon-generate accepted an
  * apply-less run dir (empty graphql/) and emitted a skeleton plugin whose
  * "submission flow" was fabricated from landing-page chrome, exiting 0. The fix
  * fails fast on `captures.length === 0` unless `--allow-empty-capture` is passed.

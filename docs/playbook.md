@@ -86,8 +86,8 @@ handled by the navigation wait and `STEP_PAUSE_MS`.
 
 **Cross-origin iframe targets.** Some ATS integrations embed their entire
 application form in a cross-origin `<iframe>` rather than navigating the top
-window to it (e.g. UCHealth's careers site embeds the same Talemetry wizard
-HCA reaches by top-window navigation). `document`-rooted helpers can't reach
+window to it (e.g. the top-window site's careers site embeds the same the embedded apply wizard wizard
+the top-window site reaches by top-window navigation). `document`-rooted helpers can't reach
 across that boundary — `contentDocument` on a cross-origin iframe element is
 `null` from page script's perspective — so a flow whose target elements live
 inside such a frame must declare `frameSelector` in the object form of the
@@ -100,7 +100,7 @@ flow file:
     "click Manual Application",
     "fill the First Name field with {{ .request.FirstName }}"
   ],
-  "frameSelector": "iframe#talemetry_apply_iframe"
+  "frameSelector": "iframe#apply_frame"
 }
 ```
 
@@ -110,7 +110,7 @@ The same field is available on a config-plugin manifest's `spec.flow`
 ```json
 "flow": {
   "steps": [ "..." ],
-  "frameSelector": "iframe#talemetry_apply_iframe"
+  "frameSelector": "iframe#apply_frame"
 }
 ```
 
@@ -119,7 +119,7 @@ never a Stagehand `>>` hop string.** The engine (`resolveFrameTarget` in
 `src/scraper/frame-target.ts`) resolves the iframe boundary from that bare
 selector and composes the `>>` hop internally (`buildHopSelector`) when it
 scopes Stagehand's own `observe`/`extract` calls. Passing a pre-composed hop
-selector (e.g. `"iframe#talemetry_apply_iframe >> input[name=firstName]"`)
+selector (e.g. `"iframe#apply_frame >> input[name=firstName]"`)
 breaks resolution: `resolveFrameTarget`'s `document.querySelector` call
 receives the whole hop string, which isn't valid CSS, and throws rather than
 falling back — a deliberate fail-loud choice so a malformed selector doesn't
@@ -128,7 +128,7 @@ silently degrade to "drive the main frame and see nothing." Omitting
 main frame.
 
 **`observe()` cannot see into a cross-origin OOPIF at all** — measured against
-a live Talemetry wizard embed, every scoping form (`{selector: "iframe#... >>
+a live the embedded apply wizard wizard embed, every scoping form (`{selector: "iframe#... >>
 *"}`, `{page: childFrame}`, unscoped) returns zero candidates even though the
 frame is fully attached and its DOM is reachable via `frameTarget.evaluate`.
 For a frame-scoped step, the cascade and the pre-cascade probe fall back to

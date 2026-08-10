@@ -10,7 +10,7 @@ import type { Logger } from "@/types/logging";
 
 /**
  * Replays the exact reported DOM shape from
- * `/work/uchealth-iframe-repro/uchealth-11-city-diagnostic.json` (the
+ * `/work/oopif-iframe-repro/oopif-11-city-diagnostic.json` (the
  * recon-11 step-9 City-field diagnostic) rather than a generic duplicate-node
  * fixture, so bugfix-002/bugfix-003's routing fix is pinned against the
  * literal failure this report captured, not just an invented shape.
@@ -38,9 +38,9 @@ import type { Logger } from "@/types/logging";
  * declines to assert.
  */
 
-const TOP_ORIGIN = "https://careers.uchealth.org";
-const CHILD_ORIGIN = "https://apply.talemetry.com";
-const IFRAME_SELECTOR = "iframe#talemetry_apply_iframe";
+const TOP_ORIGIN = "https://careers.example.org";
+const CHILD_ORIGIN = "https://apply.example.com";
+const IFRAME_SELECTOR = "iframe#apply_frame";
 const CHILD_SRC = `${CHILD_ORIGIN}/application/9092a0da-ff56-4c5a-b0d6-41ff0f818cb1`;
 const HOP_SELECTOR = `${IFRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
 const PROBE_HOP_SELECTOR = `${IFRAME_SELECTOR} >> *`;
@@ -129,7 +129,7 @@ function makeFakeTopPage(deepLocatorFrame: FakeDeepLocatorFrame) {
       return null;
     },
     url: () => `${TOP_ORIGIN}/jobs/rn-cath-lab/apply`,
-    title: async () => "UCHealth Careers",
+    title: async () => "the top-window site Careers",
     locator: () => ({
       first: () => ({
         isChecked: async () => false,
@@ -145,7 +145,7 @@ function makeFakeTopPage(deepLocatorFrame: FakeDeepLocatorFrame) {
   } as unknown as import("@browserbasehq/stagehand").Page;
 }
 
-describe("flow-runner City-field diagnostic replay (uchealth-11 step-9, offline fixture, no network)", () => {
+describe("flow-runner City-field diagnostic replay (oopif-11 step-9, offline fixture, no network)", () => {
   it("fills the wizard's real, verified City input, not the phantom header search box or its non-committing duplicate copy", async () => {
     const deepLocatorFrame: FakeDeepLocatorFrame = new Map();
     const hop = registerDeepLocatorHopElements(deepLocatorFrame, HOP_SELECTOR, CANDIDATE_SET);

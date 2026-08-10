@@ -112,7 +112,7 @@ function cookieHeaderFromCall(callIndex: number): string | undefined {
   return headers.Cookie;
 }
 
-describe("bind emit -> runtime round-trip (disneycruise __pa)", () => {
+describe("bind emit -> runtime round-trip (cruise-fixture __pa)", () => {
   const captures = [toggleCapture, authzCapture, availableProductsCapture];
   const actionCaptures = captures.map((capture, index) => ({ capture, index }));
   const stateIndex = indexStateValues(captures as never);

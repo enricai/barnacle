@@ -27,7 +27,7 @@ const testLogger = {
 function makeChildTarget(evaluateImpl: (expr: unknown) => Promise<unknown>): FrameTarget {
   return {
     frame: {} as FrameTarget["frame"],
-    frameSelector: "iframe#talemetry_apply_iframe",
+    frameSelector: "iframe#apply_frame",
     evaluate: evaluateImpl as FrameTarget["evaluate"],
     locator: (selector: string) =>
       ({
@@ -35,7 +35,7 @@ function makeChildTarget(evaluateImpl: (expr: unknown) => Promise<unknown>): Fra
         selector,
         first: () => ({ setInputFiles: vi.fn().mockResolvedValue(undefined) }),
       }) as never,
-    url: () => Promise.resolve("https://apply.talemetry.com/application/abc-123"),
+    url: () => Promise.resolve("https://apply.example.com/application/abc-123"),
     title: () => Promise.resolve("Apply"),
   };
 }
@@ -140,7 +140,7 @@ describe("flow-runner/surfaceAndUpload — Strategy DZ frame scope", () => {
       recentCaptureMeta.push({
         method: "POST",
         status: 200,
-        url: "https://apply.talemetry.com/attachment_upload",
+        url: "https://apply.example.com/attachment_upload",
       });
     });
 
@@ -174,7 +174,7 @@ describe("flow-runner/surfaceAndUpload — Strategy DZ frame scope", () => {
       recentCaptureMeta.push({
         method: "POST",
         status: 200,
-        url: "https://apply.talemetry.com/attachment_upload",
+        url: "https://apply.example.com/attachment_upload",
       });
     });
 

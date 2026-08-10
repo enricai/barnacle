@@ -30,8 +30,8 @@ import { runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
 /**
- * Acceptance-shaped regression pin for the exact uchealth-7 failure shape:
- * `#talemetry_apply_iframe >> *` resolves 371 in-frame candidates, one of
+ * Acceptance-shaped regression pin for the exact oopif-7 failure shape:
+ * `#apply_frame >> *` resolves 371 in-frame candidates, one of
  * which is a hidden/zero-box element whose text collides with the rendered
  * control's, and the step must still click the rendered "Manual Application"
  * button — via one frame-scoped scan, not N per-candidate round-trips, and
@@ -45,12 +45,12 @@ import type { Logger } from "@/types/logging";
  * `resolveFrameTarget` / `resolveDeepLocatorCandidates` stack end to end —
  * scan, resolve, rank, walk, click — over a fake child frame whose
  * `evaluate` actually answers the batched-scan expression, so the whole path
- * the uchealth-7 bug report exercised is on trial, not one seam of it.
+ * the oopif-7 bug report exercised is on trial, not one seam of it.
  */
 
-const TOP_ORIGIN = "https://careers.uchealth.org";
-const CHILD_ORIGIN = "https://apply.talemetry.com";
-const IFRAME_SELECTOR = "iframe#talemetry_apply_iframe";
+const TOP_ORIGIN = "https://careers.example.org";
+const CHILD_ORIGIN = "https://apply.example.com";
+const IFRAME_SELECTOR = "iframe#apply_frame";
 const CHILD_SRC = `${CHILD_ORIGIN}/application/abc-123`;
 /** The cascade's actual hop (`flow-runner.ts` scopes the observe-act fallback to `INTERACTIVE_CANDIDATE_SELECTOR`, not `"*"`) — must match so the fake's registered elements resolve at the same selector the cascade clicks through. */
 const HOP_SELECTOR = `${IFRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
@@ -61,7 +61,7 @@ const SCAN_EXPR = buildScanFrameCandidatesExpr(INTERACTIVE_CANDIDATE_SELECTOR);
 const MANUAL_APPLICATION_STEP =
   "In the application widget, click the 'Manual Application' button to skip the resume-upload flow entirely. Do NOT click 'Upload a Resume/CV', 'Use LinkedIn Profile', 'Upload From Dropbox', or 'Upload From OneDrive'.";
 
-/** Matches the uchealth-7 bug report's measured candidate count for `#talemetry_apply_iframe >> *`. */
+/** Matches the oopif-7 bug report's measured candidate count for `#apply_frame >> *`. */
 const TOTAL_CANDIDATES = 371;
 
 const RENDERED_TARGET_TEXT = "Manual Application";
@@ -205,7 +205,7 @@ function makeFakeTopPage(
       return null;
     },
     url: () => topUrl.current,
-    title: async () => "UCHealth Careers",
+    title: async () => "the top-window site Careers",
     locator: () => ({
       first: () => ({
         isChecked: async () => false,
@@ -260,7 +260,7 @@ async function runManualApplicationStep(
   return { result, hop, childUrls, scanSpy, textContentSpy, forceRejectSpy };
 }
 
-describe("flow-runner dense-OOPIF-form regression pin (uchealth-7: 371 candidates, hidden decoy, actionability budget)", () => {
+describe("flow-runner dense-OOPIF-form regression pin (oopif-7: 371 candidates, hidden decoy, actionability budget)", () => {
   beforeEach(() => {
     loggerStub.warn.mockClear();
   });

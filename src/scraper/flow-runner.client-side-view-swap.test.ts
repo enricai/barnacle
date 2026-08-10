@@ -5,7 +5,7 @@ import { isClickViewSwapVerified } from "@/scraper/flow-runner";
 describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", () => {
   /**
    * Case 1: A non-advance, non-final click step with large DOM growth
-   * (+~49KB, mirroring the UCHealth Manual Application measurement) and
+   * (+~49KB, mirroring the top-window site Manual Application measurement) and
    * zero network is credited as verified=true.
    */
   it("credits a plain click with large DOM growth (≥5KB) and zero network as verified", () => {
@@ -16,7 +16,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
       isAdvanceWithPattern: false,
       networkDelta: 0,
       bytesDelta: 49518,
-      textChanged: false, // UCHealth "Manual Application" measured delta
+      textChanged: false, // the top-window site "Manual Application" measured delta
     });
     expect(result).toBe(true);
   });
@@ -172,14 +172,14 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
 
   /**
    * Small-delta reveal credit: a validation-triggered section reveal
-   * (UCHealth's Work-History gate message, measured +789B with visible text
+   * (the top-window site's Work-History gate message, measured +789B with visible text
    * change and zero network) is credited even though it never clears the
    * 5000B full-swap threshold — the exact signal shape logged at
-   * uchealth-recon-20.log:341. Mirrors the DESCRIBE_ATTEMPT_EFFECT_SIGNALS
+   * oopif-recon-20.log:341. Mirrors the DESCRIBE_ATTEMPT_EFFECT_SIGNALS
    * dom-grew-without-network diagnostic that used to be this step's only
    * output before it cascaded to a 5-attempt failure and global replan.
    */
-  it("credits a small text-changing reveal (+789B, UCHealth Work-History gate) below VIEW_SWAP_MIN_BYTES", () => {
+  it("credits a small text-changing reveal (+789B, the top-window site Work-History gate) below VIEW_SWAP_MIN_BYTES", () => {
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
       isFinalStep: false,

@@ -19,7 +19,7 @@ const testLogger = {
 } as unknown as Logger;
 
 const STEP = "Click the 'Manual Application' button";
-const FRAME_SELECTOR = "iframe#talemetry_apply_iframe";
+const FRAME_SELECTOR = "iframe#apply_frame";
 
 /** Stagehand whose observe/act always report "nothing here" — drives every step to the probe-absent dump path. */
 function fakeStagehand(): Stagehand {
@@ -32,8 +32,8 @@ function fakeStagehand(): Stagehand {
 /** Minimal top-frame `Page`: `url`/`title` are distinct from the child frame's so the assertions can tell them apart. */
 function fakePage(deepLocatorFrame?: FakeDeepLocatorFrame): Page {
   return {
-    url: () => "https://careers.uchealth.org/jobs/123-nurse",
-    title: vi.fn().mockResolvedValue("UCHealth Careers"),
+    url: () => "https://careers.example.org/jobs/123-nurse",
+    title: vi.fn().mockResolvedValue("the top-window site Careers"),
     evaluate: vi.fn().mockResolvedValue("<body>top document</body>"),
     locator: vi.fn(),
     waitForTimeout: vi.fn().mockResolvedValue(undefined),
@@ -45,11 +45,11 @@ function fakePage(deepLocatorFrame?: FakeDeepLocatorFrame): Page {
 function fakeChildFrameTarget(): FrameTarget {
   return {
     frame: {} as FrameTarget["frame"],
-    frameSelector: "iframe#talemetry_apply_iframe",
+    frameSelector: "iframe#apply_frame",
     evaluate: vi.fn().mockResolvedValue("<body>child frame</body>"),
     locator: vi.fn(),
-    url: () => Promise.resolve("https://apply.talemetry.com/application/abc-123"),
-    title: () => Promise.resolve("UCHealth Careers"),
+    url: () => Promise.resolve("https://apply.example.com/application/abc-123"),
+    title: () => Promise.resolve("the top-window site Careers"),
   };
 }
 
@@ -98,12 +98,12 @@ describe("flow-runner/executeStepWithHealing — failure-dump frame scoping (pro
 
     expect(onStepFailure).toHaveBeenCalledTimes(1);
     const dump = onStepFailure.mock.calls[0]?.[0];
-    expect(dump.pageUrl).toBe("https://apply.talemetry.com/application/abc-123");
+    expect(dump.pageUrl).toBe("https://apply.example.com/application/abc-123");
     expect(dump.bodyOuterHtml).toBe("<body>child frame</body>");
     // FrameTarget.title() for a child frame intentionally still reads the
     // top document (CDP Page.title has no distinct child-frame title) — url
     // is the discriminator, not title.
-    expect(dump.pageTitle).toBe("UCHealth Careers");
+    expect(dump.pageTitle).toBe("the top-window site Careers");
   });
 
   it("produces today's exact payload for a main-frame run: page.url()/page.title() and page's own body HTML", async () => {
@@ -120,8 +120,8 @@ describe("flow-runner/executeStepWithHealing — failure-dump frame scoping (pro
 
     expect(onStepFailure).toHaveBeenCalledTimes(1);
     const dump = onStepFailure.mock.calls[0]?.[0];
-    expect(dump.pageUrl).toBe("https://careers.uchealth.org/jobs/123-nurse");
-    expect(dump.pageTitle).toBe("UCHealth Careers");
+    expect(dump.pageUrl).toBe("https://careers.example.org/jobs/123-nurse");
+    expect(dump.pageTitle).toBe("the top-window site Careers");
     expect(dump.bodyOuterHtml).toBe("<body>top document</body>");
   });
 });

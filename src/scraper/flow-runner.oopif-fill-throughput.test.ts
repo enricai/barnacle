@@ -49,12 +49,12 @@ import type { Logger } from "@/types/logging";
  * fixture but asserts correctness, not throughput — this file stays
  * narrowly a throughput pin so a future change that quietly restores the
  * per-index fill walk fails an offline test instead of only surfacing on
- * the next live UCHealth run.
+ * the next live the top-window site run.
  */
 
-const TOP_ORIGIN = "https://careers.uchealth.org";
-const CHILD_ORIGIN = "https://apply.talemetry.com";
-const IFRAME_SELECTOR = "iframe#talemetry_apply_iframe";
+const TOP_ORIGIN = "https://careers.example.org";
+const CHILD_ORIGIN = "https://apply.example.com";
+const IFRAME_SELECTOR = "iframe#apply_frame";
 const CHILD_SRC = `${CHILD_ORIGIN}/application/abc-123`;
 /** Must match the field-label fill branch's actual hop — `flow-runner.ts` scopes it to `INTERACTIVE_CANDIDATE_SELECTOR`, not `"*"`. */
 const HOP_SELECTOR = `${IFRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
@@ -73,10 +73,10 @@ const COUNTRY_STEP = "Select 'United States' in the 'Country' dropdown";
 /** The select branch's rendered-target accessible text — the select counterpart of `RENDERED_TARGET_TEXT`; shares the same {@link HIDDEN_DECOY_INDEX}/{@link RENDERED_TARGET_INDEX} shape via {@link buildDenseCandidateElements}. */
 const SELECT_TARGET_TEXT = "Country";
 
-/** Matches the uchealth-7 bug report's measured candidate count for `#talemetry_apply_iframe >> *`. */
+/** Matches the oopif-7 bug report's measured candidate count for `#apply_frame >> *`. */
 const TOTAL_CANDIDATES = 371;
 
-/** Measured cost of one delegate round-trip through Browserbase's proxied CDP into the cross-origin OOPIF (uchealth-7's `13/371 candidates enumerated in 60s` measurement). */
+/** Measured cost of one delegate round-trip through Browserbase's proxied CDP into the cross-origin OOPIF (oopif-7's `13/371 candidates enumerated in 60s` measurement). */
 const MEASURED_DELEGATE_ROUND_TRIP_MS = 4_600;
 
 const RENDERED_TARGET_TEXT = "First Name";
@@ -282,7 +282,7 @@ function makeFakeTopPage(
       return null;
     },
     url: () => topUrl.current,
-    title: async () => "UCHealth Careers",
+    title: async () => "the top-window site Careers",
     locator: () => ({
       first: () => ({
         isChecked: async () => false,
@@ -379,7 +379,7 @@ function makeFakeTopPageForSelect(
       return null;
     },
     url: () => topUrl.current,
-    title: async () => "UCHealth Careers",
+    title: async () => "the top-window site Careers",
     locator: () => ({
       first: () => ({
         isChecked: async () => false,

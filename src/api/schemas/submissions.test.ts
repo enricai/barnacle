@@ -18,7 +18,7 @@ const EXPECTED_BEACON_STATUS_OPTIONS = [
 
 function makeValidRow(): ReconciliationRow {
   return {
-    siteId: "hca",
+    siteId: "recon-site-1",
     requestId: "req-abc-001",
     joinKeys: { clickId: "viv-123", refId: "emp1_jid1" },
     session: null,

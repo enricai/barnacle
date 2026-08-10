@@ -113,11 +113,11 @@ describe("recon-browser CLI/parseCli — frameSelector parsing", () => {
       "--flow",
       JSON.stringify({
         steps: ["Click Manual Application"],
-        frameSelector: "#talemetry_apply_iframe",
+        frameSelector: "#apply_frame",
       }),
     ];
 
-    expect(parseCli().frameSelector).toBe("#talemetry_apply_iframe");
+    expect(parseCli().frameSelector).toBe("#apply_frame");
   });
 
   it("resolves frameSelector to null for a legacy array-shape flow file", () => {
@@ -225,8 +225,8 @@ describe("recon-browser CLI/main — frameSelector reaches executeStepWithHealin
     // writeFileSync's into stepFailuresDir with no try/catch, so a stale
     // memoized dir from an earlier-run test would throw ENOENT here.
     const { stagehand } = makeFakePage({
-      iframeSrc: "https://apply.talemetry.com/application/abc-123",
-      frameUrl: "https://apply.talemetry.com/application/abc-123",
+      iframeSrc: "https://apply.example.com/application/abc-123",
+      frameUrl: "https://apply.example.com/application/abc-123",
     });
     vi.mocked(createBrowserSession).mockResolvedValue({
       stagehand,
@@ -239,7 +239,7 @@ describe("recon-browser CLI/main — frameSelector reaches executeStepWithHealin
     const originalFlowFileContents = `${JSON.stringify(
       {
         steps: ["Click Manual Application"],
-        frameSelector: "#talemetry_apply_iframe",
+        frameSelector: "#apply_frame",
       },
       null,
       2
@@ -271,7 +271,7 @@ describe("recon-browser CLI/main — frameSelector reaches executeStepWithHealin
       "node",
       "recon-browser.ts",
       "--url",
-      "https://careers.uchealth.org/apply",
+      "https://careers.example.org/apply",
       "--flow-file",
       flowFilePath,
     ];
@@ -288,7 +288,7 @@ describe("recon-browser CLI/main — frameSelector reaches executeStepWithHealin
     if (!parsedSchema.success) return;
     expect(Array.isArray(parsedSchema.data)).toBe(false);
     const object = parsedSchema.data as { frameSelector?: string };
-    expect(object.frameSelector).toBe("#talemetry_apply_iframe");
+    expect(object.frameSelector).toBe("#apply_frame");
 
     const flowFileDir = dirname(flowFilePath);
     const backupFiles = readdirSync(flowFileDir).filter((f) => f.endsWith(".bak.json"));
@@ -299,8 +299,8 @@ describe("recon-browser CLI/main — frameSelector reaches executeStepWithHealin
 
   it("forwards an object-shape flow's frameSelector as the exact resolved FrameTarget", async () => {
     const { stagehand } = makeFakePage({
-      iframeSrc: "https://apply.talemetry.com/application/abc-123",
-      frameUrl: "https://apply.talemetry.com/application/abc-123",
+      iframeSrc: "https://apply.example.com/application/abc-123",
+      frameUrl: "https://apply.example.com/application/abc-123",
     });
     vi.mocked(createBrowserSession).mockResolvedValue({
       stagehand,
@@ -318,7 +318,7 @@ describe("recon-browser CLI/main — frameSelector reaches executeStepWithHealin
       "--flow",
       JSON.stringify({
         steps: ["Click Manual Application"],
-        frameSelector: "#talemetry_apply_iframe",
+        frameSelector: "#apply_frame",
       }),
     ];
 
@@ -326,7 +326,7 @@ describe("recon-browser CLI/main — frameSelector reaches executeStepWithHealin
 
     expect(executeStepWithHealingStub).toHaveBeenCalledTimes(1);
     const callArgs = executeStepWithHealingStub.mock.calls[0]?.[0] as { frameTarget?: FrameTarget };
-    expect(callArgs.frameTarget?.frameSelector).toBe("#talemetry_apply_iframe");
+    expect(callArgs.frameTarget?.frameSelector).toBe("#apply_frame");
     expect(callArgs.frameTarget?.frame).not.toBeNull();
   });
 
@@ -386,7 +386,7 @@ describe("recon-browser CLI/main — frameSelector reaches executeStepWithHealin
   });
 
   it("forwards a child-bound FrameTarget for step 2 when the iframe only mounts mid-flow, after step 1 ran", async () => {
-    // Models the UCHealth repro: `#talemetry_apply_iframe` is absent from the
+    // Models the top-window site repro: `#apply_frame` is absent from the
     // DOM and from page.frames() while step 1 ("Apply now") runs against the
     // main document, and only exists once step 1 has completed — proving the
     // CLI's per-step resolveFrameTarget call (not merely a resolve-once-at-
@@ -399,12 +399,12 @@ describe("recon-browser CLI/main — frameSelector reaches executeStepWithHealin
     const childFrame = {
       evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
         if (typeof expr === "string" && expr.includes("readyState")) return "complete";
-        return "https://apply.talemetry.com/application/abc-123";
+        return "https://apply.example.com/application/abc-123";
       }),
     };
     const page = {
       goto: vi.fn().mockResolvedValue(undefined),
-      url: (): string => "https://careers.uchealth.org/apply",
+      url: (): string => "https://careers.example.org/apply",
       title: vi.fn().mockResolvedValue("Apply"),
       evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
         if (typeof expr === "string" && expr.includes("document.body")) {
@@ -412,7 +412,7 @@ describe("recon-browser CLI/main — frameSelector reaches executeStepWithHealin
         }
         if (typeof expr === "string" && expr.includes("querySelector")) {
           return iframeMounted
-            ? { matched: true, src: "https://apply.talemetry.com/application/abc-123" }
+            ? { matched: true, src: "https://apply.example.com/application/abc-123" }
             : { matched: false, src: null };
         }
         return null;
@@ -441,11 +441,11 @@ describe("recon-browser CLI/main — frameSelector reaches executeStepWithHealin
       "node",
       "recon-browser.ts",
       "--url",
-      "https://careers.uchealth.org/apply",
+      "https://careers.example.org/apply",
       "--flow",
       JSON.stringify({
         steps: ["Click Apply now", "Click Manual Application"],
-        frameSelector: "#talemetry_apply_iframe",
+        frameSelector: "#apply_frame",
       }),
     ];
 
@@ -460,7 +460,7 @@ describe("recon-browser CLI/main — frameSelector reaches executeStepWithHealin
     };
     expect(firstCallArgs.frameTarget?.frame).toBeNull();
     expect(secondCallArgs.frameTarget?.frame).not.toBeNull();
-    expect(secondCallArgs.frameTarget?.frameSelector).toBe("#talemetry_apply_iframe");
+    expect(secondCallArgs.frameTarget?.frameSelector).toBe("#apply_frame");
     // Proves the CLI actually awaited readiness on the resolved child frame
     // (not merely resolved it) before handing it to executeStepWithHealing —
     // the residual bug per the report was the resolve racing the iframe's
@@ -490,12 +490,12 @@ describe("recon-browser CLI/main — frameSelector reaches executeStepWithHealin
         if (typeof expr === "string" && expr.includes("readyState")) {
           return readyStates.shift() ?? "complete";
         }
-        return "https://apply.talemetry.com/application/abc-123";
+        return "https://apply.example.com/application/abc-123";
       }),
     };
     const page = {
       goto: vi.fn().mockResolvedValue(undefined),
-      url: (): string => "https://careers.uchealth.org/apply",
+      url: (): string => "https://careers.example.org/apply",
       title: vi.fn().mockResolvedValue("Apply"),
       evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
         if (typeof expr === "string" && expr.includes("document.body")) {
@@ -503,7 +503,7 @@ describe("recon-browser CLI/main — frameSelector reaches executeStepWithHealin
         }
         if (typeof expr === "string" && expr.includes("querySelector")) {
           return iframeMounted
-            ? { matched: true, src: "https://apply.talemetry.com/application/abc-123" }
+            ? { matched: true, src: "https://apply.example.com/application/abc-123" }
             : { matched: false, src: null };
         }
         return null;
@@ -532,11 +532,11 @@ describe("recon-browser CLI/main — frameSelector reaches executeStepWithHealin
       "node",
       "recon-browser.ts",
       "--url",
-      "https://careers.uchealth.org/apply",
+      "https://careers.example.org/apply",
       "--flow",
       JSON.stringify({
         steps: ["Click Apply now", "Click Manual Application"],
-        frameSelector: "#talemetry_apply_iframe",
+        frameSelector: "#apply_frame",
       }),
     ];
 

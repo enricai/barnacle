@@ -17,7 +17,7 @@ import type { Logger } from "@/types/logging";
 
 /**
  * Integration test for bugfix-001's click-view-swap verification gate.
- * Proves the root failure mode from the uchealth-8 bug report cannot recur:
+ * Proves the root failure mode from the oopif-8 bug report cannot recur:
  * once the gate credits a view-swap click (DOM grew ≥5KB, zero network) as
  * verified in attempt 2, the step returns "completed" before reaching
  * attempt 4 (observe-act-exclude), so the correct candidate is never added
@@ -53,8 +53,8 @@ const testLogger = {
   debug: vi.fn(),
 } as unknown as Logger;
 
-const FRAME_SELECTOR = "iframe#talemetry_apply_iframe";
-const VIEW_SWAP_BYTES_DELTA = 49518; // Measured from uchealth-8 run
+const FRAME_SELECTOR = "iframe#apply_frame";
+const VIEW_SWAP_BYTES_DELTA = 49518; // Measured from oopif-8 run
 
 function makeStagehand(): Stagehand {
   return {} as unknown as Stagehand;
@@ -97,7 +97,7 @@ function makeChildFrameTarget(domState: { current: { html: number; text: string 
         inputValue: vi.fn().mockResolvedValue(""),
       }),
     }),
-    url: () => Promise.resolve("https://apply.talemetry.com/application/abc-123"),
+    url: () => Promise.resolve("https://apply.example.com/application/abc-123"),
     title: () => Promise.resolve("Apply"),
   };
 }
@@ -139,7 +139,7 @@ function makeViewSwapPage(
   return {
     evaluate: vi.fn().mockResolvedValue(null),
     deepLocator: wrappedDeepLocator,
-    url: () => "https://careers.uchealth.org/jobs/123/apply",
+    url: () => "https://careers.example.org/jobs/123/apply",
     title: vi.fn().mockResolvedValue("Apply"),
     locator: vi.fn().mockReturnValue({
       first: () => ({
@@ -175,7 +175,7 @@ describe("flow-runner click-view-swap cascade — correct candidate is never exc
     const scopedHopSelector = `${FRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
 
     // Two candidates: the correct "Manual Application" button (index 0) and
-    // the decoy "Close" button (index 1). In the real uchealth-8 run,
+    // the decoy "Close" button (index 1). In the real oopif-8 run,
     // attempt 2 clicked Manual Application, was wrongly scored as failure,
     // then attempt 4 excluded it and clicked Close instead.
     registerDeepLocatorHopElements(frame, scopedHopSelector, ["Manual Application", "Close"]);

@@ -22,10 +22,10 @@ function makeFakeTarget(
 ): FrameTarget {
   return {
     frame: {} as FrameTarget["frame"],
-    frameSelector: "iframe#talemetry_apply_iframe",
+    frameSelector: "iframe#apply_frame",
     evaluate: evaluateImpl as FrameTarget["evaluate"],
     locator: (selector: string) => ({ scope: "frame" as const, selector }) as never,
-    url: () => Promise.resolve("https://apply.talemetry.com/application/abc-123"),
+    url: () => Promise.resolve("https://apply.example.com/application/abc-123"),
     title: () => Promise.resolve("main document title"),
     ...overrides,
   };
@@ -36,7 +36,7 @@ function makeFakePage(evaluateImpl: (expr: unknown) => Promise<unknown>) {
   return {
     evaluate: vi.fn().mockImplementation(evaluateImpl),
     locator: vi.fn().mockImplementation((selector: string) => ({ scope: "main", selector })),
-    url: () => "https://careers.uchealth.org/jobs/123",
+    url: () => "https://careers.example.org/jobs/123",
     title: async () => "main document title",
     waitForTimeout: vi.fn().mockResolvedValue(undefined),
   };
@@ -52,7 +52,7 @@ describe("flow-runner/snapshotPage", () => {
     expect(targetEvaluate).toHaveBeenCalledTimes(1);
     expect(snapshot).toEqual({
       networkCount: 3,
-      url: "https://apply.talemetry.com/application/abc-123",
+      url: "https://apply.example.com/application/abc-123",
       bodyHtmlLength: 42,
       visibleTextSignature: "5:hello",
       formValueSignature: "",
@@ -67,7 +67,7 @@ describe("flow-runner/snapshotPage", () => {
     expect(page.evaluate).toHaveBeenCalledTimes(1);
     expect(snapshot).toEqual({
       networkCount: 1,
-      url: "https://careers.uchealth.org/jobs/123",
+      url: "https://careers.example.org/jobs/123",
       bodyHtmlLength: 10,
       visibleTextSignature: "3:abc",
       formValueSignature: "",

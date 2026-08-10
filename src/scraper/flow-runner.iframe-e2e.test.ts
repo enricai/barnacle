@@ -11,10 +11,10 @@ import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
 /**
- * Offline, CI-safe end-to-end regression for the UCHealth/Talemetry
- * cross-origin iframe bug: `careers.uchealth.org` embeds its entire
+ * Offline, CI-safe end-to-end regression for the top-window site/the embedded apply wizard
+ * cross-origin iframe bug: `careers.example.org` embeds its entire
  * application wizard inside a same-origin-looking but cross-origin
- * `<iframe id="talemetry_apply_iframe" src="https://apply.talemetry.com/...">`
+ * `<iframe id="apply_frame" src="https://apply.example.com/...">`
  * rather than navigating the top window to it. Stagehand's `observe()`
  * historically returned only top-frame candidates (69 of them, all
  * nav/share/Apply-now controls — never the in-frame "Manual Application"
@@ -32,9 +32,9 @@ import type { Logger } from "@/types/logging";
  * ONLY inside the child frame.
  */
 
-const TOP_ORIGIN = "https://careers.uchealth.org";
-const CHILD_ORIGIN = "https://apply.talemetry.com";
-const IFRAME_SELECTOR = "iframe#talemetry_apply_iframe";
+const TOP_ORIGIN = "https://careers.example.org";
+const CHILD_ORIGIN = "https://apply.example.com";
+const IFRAME_SELECTOR = "iframe#apply_frame";
 const CHILD_SRC = `${CHILD_ORIGIN}/application/abc-123`;
 const CLICK_STEP = "Click the 'Manual Application' button";
 
@@ -47,7 +47,7 @@ const testLogger = {
 
 /**
  * The candidate Stagehand's `observe()` returns ONLY when scoped to the
- * resolved child frame (selector carrying the `iframe#talemetry_apply_iframe >> `
+ * resolved child frame (selector carrying the `iframe#apply_frame >> `
  * hop prefix `buildHopSelector` composes) — never for an unscoped or
  * top-frame-only observe. Its `selector` deliberately does NOT start with
  * `"xpath="`, so `verifyDomEffect`'s click branch short-circuits to `false`
@@ -217,7 +217,7 @@ function makeFakeTopPage(topUrl: { current: string }, childUrls: { current: stri
       return null;
     },
     url: () => topUrl.current,
-    title: async () => "UCHealth Careers",
+    title: async () => "the top-window site Careers",
     locator: () => ({
       first: () => ({
         isChecked: async () => false,
@@ -234,10 +234,10 @@ function makeFakeTopPage(topUrl: { current: string }, childUrls: { current: stri
 
 /**
  * Mutable-state fake `Page` for the mid-flow-attach scenario: unlike
- * `makeFakeTopPage`, the `#talemetry_apply_iframe` element and the matching
+ * `makeFakeTopPage`, the `#apply_frame` element and the matching
  * `page.frames()` entry BOTH stay absent until `iframeAttached.current` flips
- * true. Models the exact reported timeline — `careers.uchealth.org` mounts
- * the Talemetry wizard iframe only once the "Apply now" step's click runs,
+ * true. Models the exact reported timeline — `careers.example.org` mounts
+ * the embedded apply wizard iframe only once the "Apply now" step's click runs,
  * so `resolveFrameTarget` has nothing to resolve for any step before that,
  * and must resolve into the child frame for every step after it (bugfix-001's
  * bounded per-poll retry, bugfix-002's per-step re-resolution, bugfix-003's
@@ -264,7 +264,7 @@ function makeMidflowFakeTopPage(
       return null;
     },
     url: () => topUrl.current,
-    title: async () => "UCHealth Careers",
+    title: async () => "the top-window site Careers",
     locator: () => ({
       first: () => ({
         isChecked: async () => false,
@@ -321,7 +321,7 @@ function makeFakeStagehandForMidflowAttach(
         iframeAttached.current = true;
         childUrls.current = CHILD_SRC;
         // Same-origin path change (never a cross-origin top-window navigation
-        // — the top document stays on careers.uchealth.org throughout, per
+        // — the top document stays on careers.example.org throughout, per
         // the reported timeline) is what flips classifyPhantomClick's
         // urlChanged signal: a real "Apply now" click that mounts the wizard
         // also updates the top page's own URL/history state.
@@ -418,7 +418,7 @@ describe("flow-runner iframe end-to-end (offline fixture, no network)", () => {
  * .frame-threading.test.ts`'s and this file's other fixtures all assume the
  * `<iframe>` exists at flow start, which is precisely why 1.6.8 shipped
  * believing frame-scoped steps worked in general. Here neither the
- * `#talemetry_apply_iframe` element nor its matching `page.frames()` entry
+ * `#apply_frame` element nor its matching `page.frames()` entry
  * exists until step 1's ("Apply now") act runs — the flow must still resolve
  * a LATER step into the frame that click creates.
  */
@@ -507,7 +507,7 @@ describe("flow-runner iframe end-to-end: mid-flow iframe attachment (offline fix
     const page = {
       evaluate: async () => null,
       url: () => topUrl.current,
-      title: async () => "UCHealth Careers",
+      title: async () => "the top-window site Careers",
       locator: () => ({
         first: () => ({
           isChecked: async () => false,
@@ -538,7 +538,7 @@ describe("flow-runner iframe end-to-end: mid-flow iframe attachment (offline fix
 /**
  * Fake Stagehand whose `observe()` returns `[]` UNCONDITIONALLY — for a
  * hop-scoped selector, an unscoped call, and a top-frame-only call alike —
- * reproducing the measured A/B/C/D probe against the live UCHealth/Talemetry
+ * reproducing the measured A/B/C/D probe against the live the top-window site/the embedded apply wizard
  * OOPIF (`observe(instr, {selector: "#iframe >> *"})` => `[]`;
  * `observe(instr, {selector: "iframe#... >> button"})` => `[]`; unscoped
  * `observe(instr)` => `[]`; identical on Stagehand 3.7.0 and 3.7.1). Unlike
@@ -818,7 +818,7 @@ function makeFakeTopPageForAcceptanceSequence(
       return null;
     },
     url: () => topUrl.current,
-    title: async () => "UCHealth Careers",
+    title: async () => "the top-window site Careers",
     locator: () => ({
       first: () => ({
         isChecked: async () => false,

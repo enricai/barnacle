@@ -42,7 +42,7 @@ import { type HealingFlowStep, runHealingFlow, STEP_WATCHDOG_MS } from "@/scrape
 import type { Logger } from "@/types/logging";
 
 /**
- * Offline acceptance regression for the uchealth-7 bug report's own
+ * Offline acceptance regression for the oopif-7 bug report's own
  * acceptance test, run end to end through the REAL `runHealingFlow` /
  * `resolveFrameTarget` / `guardedObserve` / `resolveDeepLocatorCandidates`
  * stack (only Stagehand and Playwright's `Page`/`Frame` are faked) — the
@@ -52,7 +52,7 @@ import type { Logger } from "@/types/logging";
  * so a 371-element fixture doesn't bloat `flow-runner.iframe-e2e.test.ts`
  * and so a failure here names the run-7 regression directly.
  *
- * Reproduces the measured live shape: `#talemetry_apply_iframe >> *` matches
+ * Reproduces the measured live shape: `#apply_frame >> *` matches
  * 371 elements — almost all structural filler, plus a handful of interactive
  * controls, two of which (decoys) have no layout box (a responsive wizard's
  * hidden breakpoint variant) — with "Manual Application" LAST in DOM order.
@@ -81,9 +81,9 @@ import type { Logger } from "@/types/logging";
  * `flow-runner.deep-locator-interactive-scope.test.ts` already covers.
  */
 
-const TOP_ORIGIN = "https://careers.uchealth.org";
-const CHILD_ORIGIN = "https://apply.talemetry.com";
-const IFRAME_SELECTOR = "iframe#talemetry_apply_iframe";
+const TOP_ORIGIN = "https://careers.example.org";
+const CHILD_ORIGIN = "https://apply.example.com";
+const IFRAME_SELECTOR = "iframe#apply_frame";
 const CHILD_SRC = `${CHILD_ORIGIN}/application/abc-123`;
 /** The cascade's actual hop (`flow-runner.ts` scopes the observe-act fallback to `INTERACTIVE_CANDIDATE_SELECTOR`, not `"*"`) — must match so the fake's registered elements resolve at the same selector the cascade clicks through. */
 const HOP_SELECTOR = `${IFRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
@@ -215,7 +215,7 @@ const FORM_FIELD_ELEMENTS: ReadonlyArray<FakeDeepLocatorElementSpec | undefined>
 
 /**
  * Builds the 371-element (370 without the target) DOM-order array a `"*"`
- * hop over the dense Talemetry wizard resolves to: filler blocks with the
+ * hop over the dense embedded apply wizard resolves to: filler blocks with the
  * four decoys and the three fill/submit targets interspersed between them,
  * and — when `includeTarget` — the real "Manual Application" button LAST.
  *
@@ -501,7 +501,7 @@ function makeDenseTopPage(
       return null;
     },
     url: () => topUrl.current,
-    title: async () => "UCHealth Careers",
+    title: async () => "the top-window site Careers",
     locator: () => ({
       first: () => ({
         isChecked: async () => false,
@@ -590,7 +590,7 @@ const SCREENING_ACCEPTANCE_STEPS: HealingFlowStep[] = [
   { instruction: SUBMIT_STEP, optional: false, upload: false, submitStep: true },
 ];
 
-describe("flow-runner dense OOPIF acceptance regression (uchealth-7, offline fixture, no network)", () => {
+describe("flow-runner dense OOPIF acceptance regression (oopif-7, offline fixture, no network)", () => {
   beforeEach(() => {
     loggerStub.warn.mockClear();
   });
@@ -843,7 +843,7 @@ describe("flow-runner dense OOPIF acceptance regression (uchealth-7, offline fix
 
 /**
  * Measured cost of one delegate round-trip through Browserbase's proxied CDP
- * into the cross-origin OOPIF (uchealth-7's `13/371 candidates enumerated in
+ * into the cross-origin OOPIF (oopif-7's `13/371 candidates enumerated in
  * 60s` measurement) — same constant `flow-runner.oopif-click-throughput.test.ts`
  * uses.
  */
@@ -997,7 +997,7 @@ function makeBatchedTopPage(
       return null;
     },
     url: () => topUrl.current,
-    title: async () => "UCHealth Careers",
+    title: async () => "the top-window site Careers",
     locator: () => ({
       first: () => ({
         isChecked: async () => false,
@@ -1059,7 +1059,7 @@ function makeStepStartRecorder(): { onInfo: (msg: string) => void; startedAt: nu
  * 371-node dense-OOPIF-shaped hop, driven through the REAL `runHealingFlow`
  * stack, but with every round-trip a real cross-origin CDP call would pay —
  * the batched scan, the batched click/fill actuations, AND the legacy
- * per-index fallbacks they replace — charged the uchealth-7 bug report's own
+ * per-index fallbacks they replace — charged the oopif-7 bug report's own
  * measured cost (`MEASURED_DELEGATE_ROUND_TRIP_MS`, matching `flow-runner.
  * oopif-click-throughput.test.ts`'s constant) under fake timers, scoped to
  * this describe block only so the zero-cost tests above stay on real timers.
@@ -1080,7 +1080,7 @@ function makeStepStartRecorder(): { onInfo: (msg: string) => void; startedAt: nu
  * exactly the shape `test-004`'s `batched-frame-actuation-seam` dependency
  * exists to prevent.
  */
-describe("flow-runner dense OOPIF acceptance regression under measured latency (uchealth-7, fake timers)", () => {
+describe("flow-runner dense OOPIF acceptance regression under measured latency (oopif-7, fake timers)", () => {
   beforeEach(() => {
     loggerStub.warn.mockClear();
     vi.useFakeTimers();

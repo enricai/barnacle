@@ -28,10 +28,10 @@ import { withWatchdog } from "@/scraper/watchdog";
 /** Matches `deep-locator-candidates.ts`'s `DEFAULT_DEEP_LOCATOR_ENUMERATION_BUDGET_MS` (not exported). */
 const ENUMERATION_BUDGET_MS = 60_000;
 
-/** The uchealth-7 measured per-candidate CDP round-trip cost through a proxied OOPIF. */
+/** The oopif-7 measured per-candidate CDP round-trip cost through a proxied OOPIF. */
 const MEASURED_ROUND_TRIP_MS = 4_600;
 
-const HOP_SELECTOR = "#talemetry_apply_iframe >> *";
+const HOP_SELECTOR = "#apply_frame >> *";
 
 function build371ElementHop(frame: FakeDeepLocatorFrame) {
   return registerDeepLocatorHopElements(
@@ -94,7 +94,7 @@ function makeNeverSettlingFrameTarget(): FrameTarget {
   };
 }
 
-describe("resolveDeepLocatorCandidates enumeration throughput (uchealth-7 371-candidate hop)", () => {
+describe("resolveDeepLocatorCandidates enumeration throughput (oopif-7 371-candidate hop)", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     loggerStub.warn.mockClear();
@@ -114,7 +114,7 @@ describe("resolveDeepLocatorCandidates enumeration throughput (uchealth-7 371-ca
     const promise = resolveDeepLocatorCandidates(
       // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
       page as any,
-      "#talemetry_apply_iframe",
+      "#apply_frame",
       "*",
       null,
       { frameTarget }
@@ -140,7 +140,7 @@ describe("resolveDeepLocatorCandidates enumeration throughput (uchealth-7 371-ca
     const promise = resolveDeepLocatorCandidates(
       // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
       page as any,
-      "#talemetry_apply_iframe",
+      "#apply_frame",
       "*",
       null,
       { frameTarget }

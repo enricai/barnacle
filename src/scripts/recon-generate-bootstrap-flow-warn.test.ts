@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 /**
- * Diagnostic for FAILURE 3 (hhccareers report): recon:generate presented three
+ * Diagnostic for FAILURE 3 (a flowless recon capture): recon:generate presented three
  * landing-page `POST /widgets` bootstrap calls as a "submission flow, 3 steps".
  * We do not filter those out (that would delete the sole search POST of legitimate
  * single-endpoint runs, which is also landing-phase) — instead recon:generate WARNs

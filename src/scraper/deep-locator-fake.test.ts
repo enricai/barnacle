@@ -50,46 +50,41 @@ function raceAgainstTimer(promise: Promise<unknown>): Promise<unknown> {
 describe("deep-locator-fake", () => {
   it("count() is 1 for a registered hop selector and 0 for an unregistered one", async () => {
     const frame: FakeDeepLocatorFrame = new Map();
-    registerDeepLocatorHop(frame, "iframe#talemetry_apply_iframe >> button#manual-application");
+    registerDeepLocatorHop(frame, "iframe#apply_frame >> button#manual-application");
     const deepLocator = makeFakeDeepLocator(frame);
 
     await expect(
-      deepLocator("iframe#talemetry_apply_iframe >> button#manual-application").count()
+      deepLocator("iframe#apply_frame >> button#manual-application").count()
     ).resolves.toBe(1);
-    await expect(
-      deepLocator("iframe#talemetry_apply_iframe >> button#missing").count()
-    ).resolves.toBe(0);
+    await expect(deepLocator("iframe#apply_frame >> button#missing").count()).resolves.toBe(0);
   });
 
   it("click() mutates the fake child frame's recorded state", async () => {
     const frame: FakeDeepLocatorFrame = new Map();
-    const hop = registerDeepLocatorHop(
-      frame,
-      "iframe#talemetry_apply_iframe >> button#manual-application"
-    );
+    const hop = registerDeepLocatorHop(frame, "iframe#apply_frame >> button#manual-application");
     const deepLocator = makeFakeDeepLocator(frame);
 
     expect(hop.clicks).toBe(0);
-    await deepLocator("iframe#talemetry_apply_iframe >> button#manual-application").click();
+    await deepLocator("iframe#apply_frame >> button#manual-application").click();
     expect(hop.clicks).toBe(1);
   });
 
   it("fill() records the filled value against the registered hop", async () => {
     const frame: FakeDeepLocatorFrame = new Map();
-    const hop = registerDeepLocatorHop(frame, "iframe#talemetry_apply_iframe >> input#first-name");
+    const hop = registerDeepLocatorHop(frame, "iframe#apply_frame >> input#first-name");
     const deepLocator = makeFakeDeepLocator(frame);
 
-    await deepLocator("iframe#talemetry_apply_iframe >> input#first-name").fill("Ada");
+    await deepLocator("iframe#apply_frame >> input#first-name").fill("Ada");
     expect(hop.filledWith).toBe("Ada");
   });
 
   it("first()/nth() return a delegate of the same shape, still resolving against the registry", async () => {
     const frame: FakeDeepLocatorFrame = new Map();
-    const hop = registerDeepLocatorHop(frame, "iframe#talemetry_apply_iframe >> li.result");
+    const hop = registerDeepLocatorHop(frame, "iframe#apply_frame >> li.result");
     const deepLocator = makeFakeDeepLocator(frame);
 
-    const first = deepLocator("iframe#talemetry_apply_iframe >> li.result").first();
-    const second = deepLocator("iframe#talemetry_apply_iframe >> li.result").nth(1);
+    const first = deepLocator("iframe#apply_frame >> li.result").first();
+    const second = deepLocator("iframe#apply_frame >> li.result").nth(1);
 
     await expect(first.count()).resolves.toBe(1);
     await expect(second.count()).resolves.toBe(1);
@@ -99,42 +94,42 @@ describe("deep-locator-fake", () => {
 
   it("registerDeepLocatorHopElements models N indexed candidates: count() is N, and nth(i).textContent() resolves in registration order", async () => {
     const frame: FakeDeepLocatorFrame = new Map();
-    registerDeepLocatorHopElements(frame, "iframe#talemetry_apply_iframe >> *", [
+    registerDeepLocatorHopElements(frame, "iframe#apply_frame >> *", [
       "container",
       "Upload a Resume/CV",
       "Manual Application",
     ]);
     const deepLocator = makeFakeDeepLocator(frame);
 
-    await expect(deepLocator("iframe#talemetry_apply_iframe >> *").count()).resolves.toBe(3);
-    await expect(
-      deepLocator("iframe#talemetry_apply_iframe >> *").nth(0).textContent()
-    ).resolves.toBe("container");
-    await expect(
-      deepLocator("iframe#talemetry_apply_iframe >> *").nth(1).textContent()
-    ).resolves.toBe("Upload a Resume/CV");
-    await expect(
-      deepLocator("iframe#talemetry_apply_iframe >> *").nth(2).textContent()
-    ).resolves.toBe("Manual Application");
+    await expect(deepLocator("iframe#apply_frame >> *").count()).resolves.toBe(3);
+    await expect(deepLocator("iframe#apply_frame >> *").nth(0).textContent()).resolves.toBe(
+      "container"
+    );
+    await expect(deepLocator("iframe#apply_frame >> *").nth(1).textContent()).resolves.toBe(
+      "Upload a Resume/CV"
+    );
+    await expect(deepLocator("iframe#apply_frame >> *").nth(2).textContent()).resolves.toBe(
+      "Manual Application"
+    );
   });
 
   it("nth(i).click() records the click against element i specifically, not the hop as a whole", async () => {
     const frame: FakeDeepLocatorFrame = new Map();
-    const hop = registerDeepLocatorHopElements(frame, "iframe#talemetry_apply_iframe >> *", [
+    const hop = registerDeepLocatorHopElements(frame, "iframe#apply_frame >> *", [
       "container",
       "Upload a Resume/CV",
       "Manual Application",
     ]);
     const deepLocator = makeFakeDeepLocator(frame);
 
-    await deepLocator("iframe#talemetry_apply_iframe >> *").nth(2).click();
+    await deepLocator("iframe#apply_frame >> *").nth(2).click();
 
     expect(hop.elements.map((element) => element.clicks)).toEqual([0, 0, 1]);
   });
 
   it("registerDeepLocatorHopElements accepts a per-element visible spec, defaulting bare strings to visible: true", () => {
     const frame: FakeDeepLocatorFrame = new Map();
-    const hop = registerDeepLocatorHopElements(frame, "iframe#talemetry_apply_iframe >> *", [
+    const hop = registerDeepLocatorHopElements(frame, "iframe#apply_frame >> *", [
       "container",
       { text: "Upload a Resume/CV", visible: false },
       { text: "Manual Application" },
@@ -145,12 +140,12 @@ describe("deep-locator-fake", () => {
 
   it("makeFakeFrameScan returns the hop's elements as {index, text, visible} in registration order, ignoring the expression it's called with", async () => {
     const frame: FakeDeepLocatorFrame = new Map();
-    registerDeepLocatorHopElements(frame, "iframe#talemetry_apply_iframe >> *", [
+    registerDeepLocatorHopElements(frame, "iframe#apply_frame >> *", [
       "container",
       { text: "Upload a Resume/CV", visible: false },
       { text: "Manual Application", visible: true },
     ]);
-    const scan = makeFakeFrameScan(frame, "iframe#talemetry_apply_iframe >> *");
+    const scan = makeFakeFrameScan(frame, "iframe#apply_frame >> *");
 
     await expect(scan("() => { throw new Error('never executed by the fake'); }")).resolves.toEqual(
       [
@@ -163,18 +158,18 @@ describe("deep-locator-fake", () => {
 
   it("makeFakeFrameScan resolves an empty array for an unregistered selector, and nth(i).textContent() still works for legacy consumers alongside it", async () => {
     const frame: FakeDeepLocatorFrame = new Map();
-    registerDeepLocatorHopElements(frame, "iframe#talemetry_apply_iframe >> *", [
+    registerDeepLocatorHopElements(frame, "iframe#apply_frame >> *", [
       "container",
       "Manual Application",
     ]);
     const deepLocator = makeFakeDeepLocator(frame);
-    const scan = makeFakeFrameScan(frame, "iframe#talemetry_apply_iframe >> *");
+    const scan = makeFakeFrameScan(frame, "iframe#apply_frame >> *");
 
     await expect(makeFakeFrameScan(frame, "iframe#missing >> *")()).resolves.toEqual([]);
     await expect(scan()).resolves.toHaveLength(2);
-    await expect(
-      deepLocator("iframe#talemetry_apply_iframe >> *").nth(1).textContent()
-    ).resolves.toBe("Manual Application");
+    await expect(deepLocator("iframe#apply_frame >> *").nth(1).textContent()).resolves.toBe(
+      "Manual Application"
+    );
   });
 
   it("nth(i).click() on an element registered not-visible rejects with the CDP -32000 layout-object message, classified as not-actionable by isNodeNotActionableError", async () => {
@@ -229,9 +224,7 @@ describe("deep-locator-fake", () => {
     const frame: FakeDeepLocatorFrame = new Map();
     const deepLocator = makeFakeDeepLocator(frame);
 
-    await expect(
-      deepLocator("iframe#talemetry_apply_iframe >> button#missing").click()
-    ).rejects.toThrow();
+    await expect(deepLocator("iframe#apply_frame >> button#missing").click()).rejects.toThrow();
   });
 
   it("count()/nth(i).textContent()/nth(i).click() all never settle for a hop hanging on every method", async () => {
@@ -759,8 +752,8 @@ describe.each([
  * perf-003/perf-004 address.
  */
 describe("makeFakeFrameResolutionPage", () => {
-  const IFRAME_SELECTOR = "iframe#talemetry_apply_iframe";
-  const CHILD_SRC = "https://apply.talemetry.com/application/abc-123";
+  const IFRAME_SELECTOR = "iframe#apply_frame";
+  const CHILD_SRC = "https://apply.example.com/application/abc-123";
 
   beforeEach(() => {
     loggerStub.warn.mockClear();

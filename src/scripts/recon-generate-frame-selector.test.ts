@@ -7,9 +7,9 @@ import { emitBrowserFlowTs } from "@/scripts/recon-generate";
  * recon-generate.test.ts, so this file stays disjoint from the sibling
  * suite's capture chain. */
 const BASE_OPTS = {
-  siteId: "uchealth",
-  pascal: "Uchealth",
-  baseUrl: "https://careers.uchealth.org",
+  siteId: "recon-site-3",
+  pascal: "ReconSite3",
+  baseUrl: "https://careers.example.org",
   isSubmissionFlow: true,
   flowSteps: ["Click the Manual Application button"],
 };
@@ -18,12 +18,10 @@ describe("emitBrowserFlowTs — frameSelector emission into runHealingFlow", () 
   it("emits a runHealingFlow call whose deps carry the flow's frameSelector, so a generated plugin inherits cross-origin iframe capability", () => {
     const { code } = emitBrowserFlowTs({
       ...BASE_OPTS,
-      frameSelector: "#talemetry_apply_iframe",
+      frameSelector: "#apply_frame",
     });
 
-    expect(code).toMatch(
-      /runHealingFlow\(\{[\s\S]*frameSelector: "#talemetry_apply_iframe",[\s\S]*\}\)/
-    );
+    expect(code).toMatch(/runHealingFlow\(\{[\s\S]*frameSelector: "#apply_frame",[\s\S]*\}\)/);
   });
 
   it("omits the frameSelector key entirely when the flow declares none — byte-identical to today's output for every existing site", () => {
