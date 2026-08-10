@@ -199,7 +199,7 @@ describe("extractActionSequence — error-reporting sinks never reach the emitte
     decodedParams: null,
   });
 
-  const BASE = "https://disneycruise.example.com";
+  const BASE = "https://cruise-fixture.example.com";
   // The real shape: a browser's Angular error handler posting a frozen crash —
   // a stack trace and a recon-time timestamp that a replayed plugin would send
   // to the site as a fabricated error report on every invocation.
@@ -509,7 +509,7 @@ describe("indexStateValues — cookie-origin values get a separate, more permiss
   });
 });
 
-describe("compileActionSteps — Set-Cookie state binding (disneycruise-style token mint)", () => {
+describe("compileActionSteps — Set-Cookie state binding (cruise-fixture-style token mint)", () => {
   /** Capture 1: mints an anonymous bearer via Set-Cookie, response body is empty. */
   const tokenMintCapture = {
     timestamp: "2024-01-01T00:00:00Z",
@@ -621,7 +621,7 @@ describe("compileActionSteps — Set-Cookie state binding (disneycruise-style to
   });
 });
 
-describe("collectHeaderBindings — multi-cookie regression (disneycruise __pa first-wins bug)", () => {
+describe("collectHeaderBindings — multi-cookie regression (cruise-fixture __pa first-wins bug)", () => {
   /** Step 0: the feature-toggle call mints three geo/analytics cookies (all
    * later threaded back on the `Cookie` request header) plus a conversation
    * id threaded back on a distinct `X-Conversation-Id` header. */
@@ -1078,7 +1078,7 @@ describe("selectReturnAction", () => {
   });
 
   it("prefers the re-queried search endpoint's last call over a terminal drill-down (G1)", () => {
-    // The reported disneycruise shape: toggles (once) → authz mint (once) →
+    // The reported cruise-fixture shape: toggles (once) → authz mint (once) →
     // available-products/ re-queried with varying filters → a drill-down
     // into one itinerary fires last. The search result is the flow's
     // subject, not the drill-down's single-itinerary body.

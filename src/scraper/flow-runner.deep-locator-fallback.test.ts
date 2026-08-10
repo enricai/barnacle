@@ -62,7 +62,7 @@ function makeStagehand(): Stagehand {
   return {} as unknown as Stagehand;
 }
 
-const FRAME_SELECTOR = "iframe#talemetry_apply_iframe";
+const FRAME_SELECTOR = "iframe#apply_frame";
 
 /** Child `FrameTarget` whose `evaluate` answers snapshotPage's `{html,text}` probe so pre/post captures don't throw. */
 function makeChildFrameTarget(): FrameTarget {
@@ -76,7 +76,7 @@ function makeChildFrameTarget(): FrameTarget {
         inputValue: vi.fn().mockResolvedValue(""),
       }),
     }),
-    url: () => Promise.resolve("https://apply.talemetry.com/application/abc-123"),
+    url: () => Promise.resolve("https://apply.example.com/application/abc-123"),
     title: () => Promise.resolve("Apply"),
   };
 }

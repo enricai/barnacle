@@ -445,7 +445,7 @@ deliberately `z.unknown()` — every plugin's request body has a different
 shape, and core has no business validating it. Reconciliation join keys are
 the same kind of thing: which fields matter, how they're composed, and what
 they mean is entirely a property of the attribution scheme a given site's
-plugin integrates with (an Appcast-style click ID is not the same kind of
+plugin integrates with (an ReconSite2-style click ID is not the same kind of
 value as a job-board-specific applicant reference), and core has no more
 business knowing that vocabulary than it does the rest of the payload. An
 earlier version of this record named two fields (`vivclid`, `jobReference`)

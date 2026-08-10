@@ -543,7 +543,7 @@ export const RECON_FLOW_FILE_SCHEMA = z.union([
     steps: RECON_FLOW_SCHEMA,
     /**
      * CSS selector of a cross-origin `<iframe>` the flow's target elements
-     * live inside (e.g. a Talemetry wizard embedded rather than top-window
+     * live inside (e.g. an embedded apply wizard embedded rather than top-window
      * navigated). Mirrors `flowSchema.frameSelector` in
      * `src/plugins/config-plugin.ts` so a hand-authored recon flow file and
      * a config-plugin manifest use the same declaration. Omitted (default)
@@ -2174,7 +2174,7 @@ async function main(): Promise<void> {
       // before the OOPIF's own navigation lands). waitForSpaReady above only
       // re-gates on a TOP-document origin change, which never fires for a
       // same-origin-top site whose wizard lives entirely inside an iframe
-      // (e.g. UCHealth stays on careers.uchealth.org throughout), so without
+      // (e.g. the top-window site stays on careers.example.org throughout), so without
       // this the cascade would probe an unnavigated frame and see 0 candidates.
       // No-ops (zero delay) when frameTarget.frame is null.
       await waitForChildFrameReady(frameTarget);

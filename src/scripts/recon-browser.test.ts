@@ -698,7 +698,7 @@ describe("recon-browser/persistReplannedFlow", () => {
       `${JSON.stringify(
         {
           steps: ["Step A"],
-          frameSelector: "#talemetry_apply_iframe",
+          frameSelector: "#apply_frame",
           wizardExitButtonLabels: ["Save & Exit"],
           restartSignalUrlPatterns: ["init-apply"],
           advanceTransitionBodyPattern: "TransitionWorklet",
@@ -732,7 +732,7 @@ describe("recon-browser/persistReplannedFlow", () => {
 
     const parsed = JSON.parse(readFileSync(flowPath, "utf8"));
     expect(parsed).toEqual({
-      frameSelector: "#talemetry_apply_iframe",
+      frameSelector: "#apply_frame",
       wizardExitButtonLabels: ["Save & Exit"],
       restartSignalUrlPatterns: ["init-apply"],
       advanceTransitionBodyPattern: "TransitionWorklet",
@@ -987,7 +987,7 @@ describe("recon-browser/readFailureDumpEvidence", () => {
    * queries the main document instead of the iframe observes no fields.
    */
   function makeIframePageStub(iframeSelector: string, childLeafFieldsPayload: unknown[]): Page {
-    const iframeSrc = "https://apply.talemetry.com/application/abc-123";
+    const iframeSrc = "https://apply.example.com/application/abc-123";
     const childFrame = {
       evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
         if (typeof expr === "string" && expr.includes("location.href")) return iframeSrc;
@@ -1003,12 +1003,12 @@ describe("recon-browser/readFailureDumpEvidence", () => {
       }),
       frames: vi.fn().mockReturnValue([childFrame]),
       title: vi.fn().mockResolvedValue(""),
-      url: vi.fn().mockReturnValue("https://careers.uchealth.org/job/1"),
+      url: vi.fn().mockReturnValue("https://careers.example.org/job/1"),
     } as unknown as Page;
   }
 
   it("probes the child iframe (not the top document) when frameSelector resolves", async () => {
-    const iframeSelector = "#talemetry_apply_iframe";
+    const iframeSelector = "#apply_frame";
     const leafField = {
       xpath: "/html[1]/body[1]/form[1]/input[1]",
       label: "First Name",
@@ -1027,7 +1027,7 @@ describe("recon-browser/readFailureDumpEvidence", () => {
   });
 
   it("finds nothing when frameSelector is omitted even though the iframe has the invalid field", async () => {
-    const iframeSelector = "#talemetry_apply_iframe";
+    const iframeSelector = "#apply_frame";
     const leafField = {
       xpath: "/html[1]/body[1]/form[1]/input[1]",
       label: "First Name",
@@ -1254,7 +1254,7 @@ describe("recon-browser/filterReplanDuplicatingNextAuthored", () => {
     origin: "replan",
   });
 
-  it("drops a bridge step that duplicates the next authored step's action (uchealth-recon-20.log lines 380-391)", () => {
+  it("drops a bridge step that duplicates the next authored step's action (oopif-recon-20.log lines 380-391)", () => {
     const newSteps = [
       mk("Click the 'Add New Work History' button to open a new work history entry form"),
     ];
@@ -3551,10 +3551,10 @@ describe("recon-browser/probeStepBeforeAttempts", () => {
     const stagehand = makeProbeStagehand([], nonEmpty);
     const frameTarget: FrameTarget = {
       frame: {} as FrameTarget["frame"],
-      frameSelector: "iframe#talemetry_apply_iframe",
+      frameSelector: "iframe#apply_frame",
       evaluate: vi.fn() as FrameTarget["evaluate"],
       locator: vi.fn() as FrameTarget["locator"],
-      url: () => Promise.resolve("https://apply.talemetry.com/application/abc-123"),
+      url: () => Promise.resolve("https://apply.example.com/application/abc-123"),
       title: () => Promise.resolve("main document title"),
     };
     await probeStepBeforeAttempts({
@@ -3570,8 +3570,8 @@ describe("recon-browser/probeStepBeforeAttempts", () => {
     // resolved child frame.
     const focusedCall = stagehand.observe.mock.calls[0] as [string, { selector?: string }];
     const unfocusedCall = stagehand.observe.mock.calls[1] as [{ selector?: string }];
-    expect(focusedCall[1].selector).toBe("iframe#talemetry_apply_iframe >> *");
-    expect(unfocusedCall[0].selector).toBe("iframe#talemetry_apply_iframe >> *");
+    expect(focusedCall[1].selector).toBe("iframe#apply_frame >> *");
+    expect(unfocusedCall[0].selector).toBe("iframe#apply_frame >> *");
   });
 });
 
@@ -4983,14 +4983,14 @@ describe("recon-browser/RECON_FLOW_FILE_SCHEMA — frameSelector", () => {
   it("accepts an object-shape flow file with a frameSelector and carries it through unchanged", () => {
     const result = RECON_FLOW_FILE_SCHEMA.safeParse({
       steps: ["Click Manual Application"],
-      frameSelector: "#talemetry_apply_iframe",
+      frameSelector: "#apply_frame",
     });
 
     expect(result.success).toBe(true);
     if (!result.success) return;
     expect(Array.isArray(result.data)).toBe(false);
     if (Array.isArray(result.data)) return;
-    expect(result.data.frameSelector).toBe("#talemetry_apply_iframe");
+    expect(result.data.frameSelector).toBe("#apply_frame");
   });
 
   it("defaults frameSelector to undefined (top-frame) when the object-shape file omits it", () => {
@@ -5064,11 +5064,11 @@ describe("recon-browser/parseCli — frameSelector", () => {
       "--flow",
       JSON.stringify({
         steps: ["Click Manual Application"],
-        frameSelector: "#talemetry_apply_iframe",
+        frameSelector: "#apply_frame",
       }),
     ];
 
-    expect(parseCli().frameSelector).toBe("#talemetry_apply_iframe");
+    expect(parseCli().frameSelector).toBe("#apply_frame");
   });
 
   it("resolves frameSelector to null for a legacy bare-array --flow arg", () => {
@@ -5195,8 +5195,8 @@ describe("recon-browser/main — frameSelector reaches the cascade call", () => 
 
   it("resolves a declared frameSelector to a child FrameTarget and passes it to executeStepWithHealing", async () => {
     const { stagehand } = makeFakePage({
-      iframeSrc: "https://apply.talemetry.com/application/abc-123",
-      frameUrl: "https://apply.talemetry.com/application/abc-123",
+      iframeSrc: "https://apply.example.com/application/abc-123",
+      frameUrl: "https://apply.example.com/application/abc-123",
     });
     vi.mocked(createBrowserSession).mockResolvedValue({
       stagehand,
@@ -5214,7 +5214,7 @@ describe("recon-browser/main — frameSelector reaches the cascade call", () => 
       "--flow",
       JSON.stringify({
         steps: ["Click Manual Application"],
-        frameSelector: "#talemetry_apply_iframe",
+        frameSelector: "#apply_frame",
       }),
     ];
 
@@ -5222,7 +5222,7 @@ describe("recon-browser/main — frameSelector reaches the cascade call", () => 
 
     expect(executeStepWithHealingStub).toHaveBeenCalledTimes(1);
     const callArgs = executeStepWithHealingStub.mock.calls[0]?.[0] as { frameTarget?: FrameTarget };
-    expect(callArgs.frameTarget?.frameSelector).toBe("#talemetry_apply_iframe");
+    expect(callArgs.frameTarget?.frameSelector).toBe("#apply_frame");
     expect(callArgs.frameTarget?.frame).not.toBeNull();
   });
 
@@ -5261,7 +5261,7 @@ describe("recon-browser/main — frameSelector reaches the cascade call", () => 
         lastReadyState = readyStates.length > 0 ? readyStates.shift()! : lastReadyState;
         return lastReadyState;
       }
-      return "https://apply.talemetry.com/application/abc-123";
+      return "https://apply.example.com/application/abc-123";
     });
     const session = {
       on: (): void => {},
@@ -5276,7 +5276,7 @@ describe("recon-browser/main — frameSelector reaches the cascade call", () => 
           return 10_000;
         }
         if (typeof expr === "string" && expr.includes("querySelector")) {
-          return { matched: true, src: "https://apply.talemetry.com/application/abc-123" };
+          return { matched: true, src: "https://apply.example.com/application/abc-123" };
         }
         return null;
       }),
@@ -5304,7 +5304,7 @@ describe("recon-browser/main — frameSelector reaches the cascade call", () => 
       "--flow",
       JSON.stringify({
         steps: ["Click Manual Application"],
-        frameSelector: "#talemetry_apply_iframe",
+        frameSelector: "#apply_frame",
       }),
     ];
 

@@ -36,8 +36,8 @@ const testLogger = {
   debug: vi.fn(),
 } as unknown as Logger;
 
-const FRAME_SELECTOR = "#talemetry_apply_iframe";
-const CHILD_ORIGIN_URL = "https://apply.talemetry.com/application/abc-123";
+const FRAME_SELECTOR = "#apply_frame";
+const CHILD_ORIGIN_URL = "https://apply.example.com/application/abc-123";
 
 /**
  * Fake cross-origin `Frame`: answers `location.href` with the SAME mutable
@@ -128,7 +128,7 @@ describe("flow-runner/runHealingFlow — resolves a mid-flow iframe per step", (
   });
 
   it("re-resolves per step so step 2 enters an iframe that only appears after step 1's side effect runs", async () => {
-    const topUrls = { current: "https://careers.uchealth.org/jobs/123" };
+    const topUrls = { current: "https://careers.example.org/jobs/123" };
     const childUrls = { current: CHILD_ORIGIN_URL };
     const { page, attach } = makeMidFlowFakePage(
       () => topUrls.current,
@@ -140,10 +140,10 @@ describe("flow-runner/runHealingFlow — resolves a mid-flow iframe per step", (
     guardedAct.mockImplementation(async () => {
       stepCount += 1;
       // Step 1 ("Apply now") is what creates the <iframe> — mirrors the
-      // UCHealth repro where the wizard mounts only after this click.
+      // the top-window site repro where the wizard mounts only after this click.
       if (stepCount === 1) {
         attach();
-        topUrls.current = "https://careers.uchealth.org/jobs/123/apply";
+        topUrls.current = "https://careers.example.org/jobs/123/apply";
       } else {
         childUrls.current = `${CHILD_ORIGIN_URL}?step=${stepCount}`;
       }

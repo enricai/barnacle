@@ -42,8 +42,8 @@ import { makeFakeFrameResolutionPage } from "@/scraper/deep-locator-fake";
  * asserting the observable degrade contract.
  */
 describe("resolveDeepLocatorCandidates: internal resolveScanFrameTarget pass (no timeoutOptions.frameTarget)", () => {
-  const FRAME_SELECTOR = "#talemetry_apply_iframe";
-  const IFRAME_SRC = "https://apply.talemetry.com/application/abc-123";
+  const FRAME_SELECTOR = "#apply_frame";
+  const IFRAME_SRC = "https://apply.example.com/application/abc-123";
   const PROBE_DELAY_MS = 5;
 
   /**

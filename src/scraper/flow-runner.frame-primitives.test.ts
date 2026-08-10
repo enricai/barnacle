@@ -17,7 +17,7 @@ import type { Logger } from "@/types/logging";
  * target, the submitted-state DOM probe target, and the n+16 native-click
  * fallback target. Each was reachable once a frame-scoped step actually
  * entered the iframe, so a mid-flow-mounted cross-origin iframe (the
- * UCHealth/Talemetry shape) would silently fall back to the top document for
+ * the top-window site/the embedded apply wizard shape) would silently fall back to the top document for
  * every one of these primitives even though the enclosing step had already
  * resolved the child frame.
  *
@@ -63,8 +63,8 @@ const testLogger = {
   debug: vi.fn(),
 } as unknown as Logger;
 
-const CHILD_ORIGIN = "https://apply.talemetry.com";
-const FRAME_SELECTOR = "iframe#talemetry_apply_iframe";
+const CHILD_ORIGIN = "https://apply.example.com";
+const FRAME_SELECTOR = "iframe#apply_frame";
 
 /**
  * Builds a main-frame `FrameTarget` delegating straight to `page`, matching

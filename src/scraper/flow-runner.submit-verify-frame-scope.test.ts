@@ -65,8 +65,8 @@ const testLogger = {
   debug: vi.fn(),
 } as unknown as Logger;
 
-const CHILD_ORIGIN = "https://apply.talemetry.com";
-const FRAME_SELECTOR = "iframe#talemetry_apply_iframe";
+const CHILD_ORIGIN = "https://apply.example.com";
+const FRAME_SELECTOR = "iframe#apply_frame";
 const SUBMIT_STEP = "Click the Submit button";
 
 /**

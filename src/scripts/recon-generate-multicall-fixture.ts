@@ -62,7 +62,7 @@ function buildStep(
 }
 
 /**
- * Reproduces the disneycruise G1/G2 report's recon capture set: a
+ * Reproduces the cruise-fixture G1/G2 report's recon capture set: a
  * feature-toggle read, an anonymous auth mint, and an inventory search
  * re-queried with two distinct bodies (the report's "×N" `available-products/`
  * calls). Each of the three response SHAPES named in the report (toggles

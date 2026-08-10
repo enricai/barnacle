@@ -21,16 +21,16 @@ import type { Logger } from "@/types/logging";
  * resolution polling or the hop-selector composition surfaces here even if
  * the two are individually unit-tested elsewhere.
  *
- * The fake page's `#talemetry_apply_iframe` element and its matching
- * `frames()` entry BOTH start absent (per the reported UCHealth timeline)
+ * The fake page's `#apply_frame` element and its matching
+ * `frames()` entry BOTH start absent (per the reported the top-window site timeline)
  * and are populated only once step 1's `guardedAct` (driven through the fake
  * Stagehand's `act`) resolves — modelling the "Apply now" click mounting the
  * wizard iframe mid-flow rather than it being present at flow start.
  */
 
-const FRAME_SELECTOR = "#talemetry_apply_iframe";
+const FRAME_SELECTOR = "#apply_frame";
 const HOP_PREFIX = `${FRAME_SELECTOR} >> `;
-const CHILD_ORIGIN_URL = "https://apply.talemetry.com/application/abc-123";
+const CHILD_ORIGIN_URL = "https://apply.example.com/application/abc-123";
 const APPLY_NOW_STEP = "Click the 'Apply now' button";
 const MANUAL_APPLICATION_STEP = "Click the 'Manual Application' button";
 
@@ -90,7 +90,7 @@ function makeMutableFakePage(
 
   const page = {
     url: getTopUrl,
-    title: async () => "UCHealth Careers",
+    title: async () => "the top-window site Careers",
     evaluate: async (expr: unknown) => {
       const match = /document\.querySelector\((.+?)\)/.exec(String(expr));
       const selector = match?.[1] ? (JSON.parse(match[1]) as string) : null;
@@ -131,7 +131,7 @@ function makeMutableFakePage(
  * probe call, which the assertions below are not concerned with) so the
  * test can assert the exact hop-scoped string for step 2, and returns the
  * in-frame candidate ONLY when that selector carries the
- * `#talemetry_apply_iframe >> ` hop prefix; any other call (unscoped, or
+ * `#apply_frame >> ` hop prefix; any other call (unscoped, or
  * scoped to the wrong frame) gets an empty list, reproducing the "observe
  * returned no candidates" pre-fix signature.
  */
@@ -150,7 +150,7 @@ function makeFakeStagehand(
         // `?applied=1`) — the `urlChanged` signal `classifyPhantomClick`
         // needs to verify step 1 as a real (non-phantom) click rather than
         // exhausting the cascade on a flat, unchanging top-frame snapshot.
-        setTopUrl("https://careers.uchealth.org/jobs/123/apply?applied=1");
+        setTopUrl("https://careers.example.org/jobs/123/apply?applied=1");
         return {
           success: true,
           message: "clicked",
@@ -203,8 +203,8 @@ function makeFakeStagehand(
 }
 
 describe("flow-runner mid-flow iframe: guardedObserve's actual hop-scoped selector (real resolveFrameTarget + guardedObserve, only Stagehand faked)", () => {
-  it("step 1 acts against the main frame (iframe not yet attached), then step 2's guardedObserve is called with a selector carrying the '#talemetry_apply_iframe >> ' hop and returns the in-frame candidate", async () => {
-    const topUrls = { current: "https://careers.uchealth.org/jobs/123" };
+  it("step 1 acts against the main frame (iframe not yet attached), then step 2's guardedObserve is called with a selector carrying the '#apply_frame >> ' hop and returns the in-frame candidate", async () => {
+    const topUrls = { current: "https://careers.example.org/jobs/123" };
     const childUrls = { current: CHILD_ORIGIN_URL };
     const { page, attach } = makeMutableFakePage(
       () => topUrls.current,
@@ -244,7 +244,7 @@ describe("flow-runner mid-flow iframe: guardedObserve's actual hop-scoped select
     // phantom-fails on content it can't yet see pre-resolution.
     expect(observeSelectors).toHaveLength(2);
 
-    // BOTH of step 2's observe calls carry the `#talemetry_apply_iframe >> `
+    // BOTH of step 2's observe calls carry the `#apply_frame >> `
     // hop prefix — proving `resolveFrameTarget` re-resolved per step
     // (bugfix-001) and the hop selector was composed from that fresh
     // resolution (bugfix-003) for every observe call against the step, not a
@@ -260,7 +260,7 @@ describe("flow-runner mid-flow iframe: guardedObserve's actual hop-scoped select
   });
 
   it("fails against the pre-fix behaviour: without frameSelector, guardedObserve's selector never carries the hop and step 2 finds 0 candidates", async () => {
-    const topUrls = { current: "https://careers.uchealth.org/jobs/123" };
+    const topUrls = { current: "https://careers.example.org/jobs/123" };
     const childUrls = { current: CHILD_ORIGIN_URL };
     const { page, attach } = makeMutableFakePage(
       () => topUrls.current,
@@ -314,7 +314,7 @@ describe("flow-runner mid-flow iframe: guardedObserve's actual hop-scoped select
     // was declared for `resolveFrameTarget` to scope against.
     expect(observeSelectors.length).toBeGreaterThan(0);
     for (const selector of observeSelectors) {
-      expect(selector).not.toMatch(/talemetry_apply_iframe/);
+      expect(selector).not.toMatch(/apply_frame/);
     }
     expect(childUrls.current).toBe(CHILD_ORIGIN_URL);
   });

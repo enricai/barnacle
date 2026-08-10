@@ -68,7 +68,7 @@ const testLogger = {
   debug: vi.fn(),
 } as unknown as Logger;
 
-const FRAME_SELECTOR = "iframe#talemetry_apply_iframe";
+const FRAME_SELECTOR = "iframe#apply_frame";
 const RADIO_STEP = "Click the 'Yes' answer for the question 'Are you 18 or older?'";
 
 function makeStagehand(): Stagehand {
@@ -87,7 +87,7 @@ function makeChildFrameTarget(frame: FrameTarget["frame"]): FrameTarget {
         inputValue: vi.fn().mockResolvedValue(""),
       }),
     }),
-    url: () => Promise.resolve("https://apply.talemetry.com/application/abc-123"),
+    url: () => Promise.resolve("https://apply.example.com/application/abc-123"),
     title: () => Promise.resolve("Apply"),
   };
 }

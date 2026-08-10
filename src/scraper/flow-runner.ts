@@ -1107,7 +1107,7 @@ export function isDomOnlyAdvanceVerified(params: {
  * **Small-delta reveal credit:** a sub-section unhiding within an
  * already-loaded page (e.g. a validation-triggered "Work History requirement"
  * gate message) grows the DOM by far less than a full screen swap — measured
- * case: +789B on UCHealth, ~63x below the 5000B full-swap default. Below
+ * case: +789B on the top-window site, ~63x below the 5000B full-swap default. Below
  * `viewSwapMinBytesThreshold`, credit the click anyway when the growth ALSO
  * changed visible text (`textChanged`) and clears the lower
  * `viewSwapRevealMinBytesThreshold` floor (default 500B, matching
@@ -1151,7 +1151,7 @@ export function isClickViewSwapVerified(params: {
  * questions" — when this count grows from 0 (pre-submit) to ≥1 (post-attempt-1),
  * attempts 2-5 cannot succeed and the cascade should route to replan
  * immediately instead of burning Stagehand calls. Accepts a `FrameTarget` so a
- * wizard embedded in a cross-origin iframe (e.g. UCHealth's Talemetry form) is
+ * wizard embedded in a cross-origin iframe (e.g. an embedded apply-wizard form) is
  * scanned on its own frame; a main-frame target delegates straight to
  * `page.evaluate`, matching today's behavior byte-for-byte.
  */
@@ -2870,7 +2870,7 @@ export function writeFixtureToTempFile(fixture: { buffer: Buffer; name: string }
  */
 async function tryUploadPrimitive(params: {
   page: Page;
-  /** Frame the upload widget lives in — the main frame by default, or a resolved cross-origin child frame (e.g. an embedded Talemetry wizard). */
+  /** Frame the upload widget lives in — the main frame by default, or a resolved cross-origin child frame (e.g. an embedded apply wizard). */
   target: FrameTarget;
   /** Set from the flow file's `upload: true` field. Replaces the prior regex test. */
   isUploadStep: boolean;
@@ -3119,7 +3119,7 @@ export async function surfaceAndUpload(params: {
     }
   }
   // The file-chooser CDP interception below must run on the upload target's
-  // OWN session — an OOPIF (e.g. UCHealth's Talemetry wizard) has its own CDP
+  // OWN session — an OOPIF (e.g. a cross-origin OOPIF apply wizard) has its own CDP
   // target, and a chooser it opens is only observable via that frame's
   // session, not the main session. Main-frame targets fall back to
   // page.getSessionForFrame(page.mainFrameId()), matching today's behavior.
@@ -7332,10 +7332,10 @@ export async function executeStepWithHealing(params: {
     }
     // Client-side view-swap gate: credit a click that produces substantial
     // DOM growth (≥5KB) with zero network when it's NOT a submit/final step
-    // and NOT an advance-pattern step. Fixes the UCHealth "Manual Application"
+    // and NOT an advance-pattern step. Fixes the top-window site "Manual Application"
     // case where a +49KB DOM-only view swap was scored as "no observable effect".
     // Below that threshold, also credits a smaller text-changing reveal (≥500B) —
-    // fixes the UCHealth Work-History gate-message reveal (+789B) that used to
+    // fixes the top-window site Work-History gate-message reveal (+789B) that used to
     // cascade to a 5-attempt failure and global replan.
     const clickViewSwapVerified = isClickViewSwapVerified({
       resolvedAction,
@@ -8033,7 +8033,7 @@ export interface RunHealingFlowDeps {
   uploadFixture: { buffer: Buffer; name: string; mimeType: string } | null;
   /**
    * CSS selector of a cross-origin `<iframe>` the flow's target elements live
-   * inside (e.g. a Talemetry wizard embedded rather than top-window
+   * inside (e.g. an embedded apply wizard embedded rather than top-window
    * navigated), for resolution via `resolveFrameTarget` and scoping of the
    * cascade's `guardedObserve`/`guardedAct`/`guardedExtract` calls to that
    * frame. Omitted (default) preserves today's behavior: the flow drives the

@@ -27,7 +27,7 @@ import { isNodeNotActionableError } from "@/scraper/deep-locator-scan";
  * don't count against this cap — only a real `click()` invocation does — so a
  * dense post-filter list (a handful of controls, per bugfix-002's visibility
  * filter and bugfix-005's interactive scoping) still resolves in one or two
- * attempts, while a pathological list (371 candidates, the uchealth-7
+ * attempts, while a pathological list (371 candidates, the oopif-7
  * measurement) can't spend the whole step budget clicking its way through
  * every entry.
  */

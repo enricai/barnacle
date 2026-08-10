@@ -52,10 +52,10 @@ function makeChildTarget(): { target: FrameTarget; evaluate: ReturnType<typeof v
   const evaluate = makeEvaluateImpl(WIZARD_INVALID_HTML);
   const target: FrameTarget = {
     frame: {} as FrameTarget["frame"],
-    frameSelector: "iframe#talemetry_apply_iframe",
+    frameSelector: "iframe#apply_frame",
     evaluate: evaluate as FrameTarget["evaluate"],
     locator: vi.fn(),
-    url: () => Promise.resolve("https://apply.talemetry.com/application/abc-123"),
+    url: () => Promise.resolve("https://apply.example.com/application/abc-123"),
     title: () => Promise.resolve("Apply"),
   };
   return { target, evaluate };

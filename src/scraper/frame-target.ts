@@ -2,7 +2,7 @@
  * Cross-origin frame resolver: the single seam that lets every downstream
  * helper (flow-runner primitives, guarded Stagehand calls) act on either the
  * main frame or a resolved cross-origin OOPIF without knowing which. Some
- * ATS integrations (e.g. UCHealth's Talemetry wizard) embed their entire
+ * ATS integrations (e.g. a cross-origin OOPIF apply wizard) embed their entire
  * application form inside a cross-origin `<iframe>` rather than navigating
  * the top window to it, and `document`-rooted helpers (`page.evaluate`,
  * `page.locator`) cannot reach across that boundary — `contentDocument` on a
@@ -162,7 +162,7 @@ function originOf(url: string): string | null {
  *
  * The `src` attribute read can lose a same-tick race against the widget
  * script that constructs the `<iframe>`: some ATS integrations (e.g.
- * UCHealth's Talemetry wizard) assign `src` as a JS property immediately
+ * a cross-origin OOPIF apply wizard) assign `src` as a JS property immediately
  * before `appendChild`, so a poll can observe the element already in the
  * DOM with `src` still empty or not yet reflected to the attribute. Giving
  * up in that case would depend on same-tick attribute reflection that isn't

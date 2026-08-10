@@ -355,7 +355,7 @@ describe("out-of-tree plugin — hello-site's vendored BeaconOutcomeInput mirror
    * `Parameters<SitePluginContext["recordBeaconOutcome"]>[0]` shape under the
    * same exports-gated `tsc` harness used above, so a field added, removed,
    * or retyped on either side surfaces as a real `tsc` diagnostic instead of
-   * shipping unnoticed to the out-of-tree HCA/encompass plugins that copy
+   * shipping unnoticed to the out-of-tree out-of-tree plugins that copy
    * this file. Bidirectional (not one-way `extends`) so a removed *optional*
    * field — which a one-way assignability check would miss, since a missing
    * optional property is still structurally assignable — is caught too.

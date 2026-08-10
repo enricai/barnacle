@@ -6,11 +6,11 @@ import type { FrameTarget } from "@/scraper/frame-target";
 import type { Logger } from "@/types/logging";
 
 /**
- * UCHealth Zip field acceptance test — validates that the method-override fix
+ * the top-window site Zip field acceptance test — validates that the method-override fix
  * (bugfix-001) ensures the Zip field fills correctly instead of being clicked.
  *
- * This test simulates the exact scenario from uchealth-recon-13: inside the
- * #talemetry_apply_iframe, the first 6 fields (First Name, Last Name, Email,
+ * This test simulates the exact scenario from oopif-recon-13: inside the
+ * #apply_frame, the first 6 fields (First Name, Last Name, Email,
  * Mobile Phone, Street Address, City) fill successfully via attempt 1
  * (act-string), but the Zip field requires attempt 2 (observe-act), where
  * Stagehand observe() returns a candidate with method='click'. The fix must
@@ -57,7 +57,7 @@ function makeStagehand(): Stagehand {
   return {} as unknown as Stagehand;
 }
 
-const FRAME_SELECTOR = "iframe#talemetry_apply_iframe";
+const FRAME_SELECTOR = "iframe#apply_frame";
 
 function makeChildFrameTarget(
   urls: { current: string },
@@ -92,7 +92,7 @@ function makeChildFrameTarget(
       };
     }),
     url: () => Promise.resolve(urls.current),
-    title: () => Promise.resolve("Apply - UCHealth"),
+    title: () => Promise.resolve("Apply - the top-window site"),
   };
 }
 
@@ -105,7 +105,7 @@ function makeFakePage(urls: { current: string }, fieldValues: Map<string, string
     }),
     deepLocator: vi.fn(),
     url: () => urls.current,
-    title: vi.fn().mockResolvedValue("Apply - UCHealth"),
+    title: vi.fn().mockResolvedValue("Apply - the top-window site"),
     locator: vi.fn().mockImplementation((selector: string) => {
       // Extract the field from the selector to return the correct value
       for (const [field, value] of fieldValues.entries()) {
@@ -132,21 +132,21 @@ function makeFakePage(urls: { current: string }, fieldValues: Map<string, string
   } as unknown as Page;
 }
 
-describe("flow-runner/executeStepWithHealing — UCHealth Zip field acceptance", () => {
+describe("flow-runner/executeStepWithHealing — the top-window site Zip field acceptance", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetBillingErrorFlagForTests();
   });
 
   it("fills the Zip field via observe-act with overridden method='fill' instead of method='click'", async () => {
-    const urls = { current: "https://apply.talemetry.com/application/abc-123" };
+    const urls = { current: "https://apply.example.com/application/abc-123" };
     const fieldValues = new Map([["postal-code", "78701"]]);
     const page = makeFakePage(urls, fieldValues);
     const childFrameTarget = makeChildFrameTarget(urls, fieldValues);
     resolveFrameTarget.mockResolvedValue(childFrameTarget);
 
     // Mock guardedObserve to return a candidate with method='click' for the
-    // Zip step. This simulates the exact scenario from uchealth-recon-13 where
+    // Zip step. This simulates the exact scenario from oopif-recon-13 where
     // Stagehand observe() returned method='click' for the Zip text input.
     guardedObserve.mockResolvedValue([
       {
@@ -213,7 +213,7 @@ describe("flow-runner/executeStepWithHealing — UCHealth Zip field acceptance",
   });
 
   it("control case: does not override method='fill' when observe already returns method='fill'", async () => {
-    const urls = { current: "https://apply.talemetry.com/application/abc-123" };
+    const urls = { current: "https://apply.example.com/application/abc-123" };
     const fieldValues = new Map([["postal-code", "78701"]]);
     const page = makeFakePage(urls, fieldValues);
     const childFrameTarget = makeChildFrameTarget(urls, fieldValues);

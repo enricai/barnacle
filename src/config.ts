@@ -83,7 +83,7 @@ export interface AppConfig {
      * `describeAttemptEffectSignals`'s own 500B floor for that same
      * text-changed distinction. Default of 500 matches that floor: below it,
      * `describeAttemptEffectSignals` itself classifies the delta as a mere
-     * reflow, not a reveal. Measured case: UCHealth's Work-History gate
+     * reflow, not a reveal. Measured case: the top-window site's Work-History gate
      * message rendered +789B with text change and zero network. Lower via
      * `VIEW_SWAP_REVEAL_MIN_BYTES` per-deployment if a site's reveal is even
      * smaller.
@@ -103,7 +103,7 @@ export interface AppConfig {
     /**
      * How long `resolveFrameTarget` polls `page.frames()` for a child iframe
      * to attach before falling back to the main-frame target. Raised from a
-     * hardcoded 5 s default because cross-origin OOPIFs (e.g. Talemetry's
+     * hardcoded 5 s default because cross-origin OOPIFs (e.g. the embedded apply wizard's
      * apply iframe) regularly exceed 5 s to attach under advancedStealth +
      * proxied CDP, even though a bare session attaches in ~3-4 s.
      */

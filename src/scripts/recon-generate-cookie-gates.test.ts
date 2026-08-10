@@ -10,8 +10,8 @@ import {
  * mirrors recon-generate.test.ts's BASE_OPTS so the rendered bind literal
  * assertion below matches the shape the CLI actually emits. */
 const BASE_OPTS = {
-  siteId: "disneycruise",
-  pascal: "Disneycruise",
+  siteId: "cruise-fixture",
+  pascal: "CruiseFixture",
   baseUrl: "https://api.example.com",
   baseHeaders: { "Content-Type": "application/json" },
   minTime: 100,
@@ -64,7 +64,7 @@ describe("walkSetCookiePairs — newline-folded multi-cookie Set-Cookie strings"
   });
 });
 
-describe("collectHeaderBindings — multi-cookie Cookie target (disneycruise __pa report)", () => {
+describe("collectHeaderBindings — multi-cookie Cookie target (cruise-fixture __pa report)", () => {
   /** step 0: toggles/product-avail — surfaces three geo/toggle cookies plus one
    * non-cookie header produce, in recon order. */
   const productAvailStep = {
@@ -141,7 +141,7 @@ describe("collectHeaderBindings — multi-cookie Cookie target (disneycruise __p
     expect(bindings).toHaveLength(5);
   });
 
-  it("bindOptionLiteral renders __pa alongside the other three Cookie-origin cookies in the emitted contract, pinning the disneycruise report's exact ordering (__pa produced last)", () => {
+  it("bindOptionLiteral renders __pa alongside the other three Cookie-origin cookies in the emitted contract, pinning the cruise-fixture report's exact ordering (__pa produced last)", () => {
     const contract = emitContractTs({
       ...BASE_OPTS,
       inputBody: {},

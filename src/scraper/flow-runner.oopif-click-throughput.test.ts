@@ -45,9 +45,9 @@ import type { Logger } from "@/types/logging";
  * cost would matter if the fix ever regressed.
  */
 
-const TOP_ORIGIN = "https://careers.uchealth.org";
-const CHILD_ORIGIN = "https://apply.talemetry.com";
-const IFRAME_SELECTOR = "iframe#talemetry_apply_iframe";
+const TOP_ORIGIN = "https://careers.example.org";
+const CHILD_ORIGIN = "https://apply.example.com";
+const IFRAME_SELECTOR = "iframe#apply_frame";
 const CHILD_SRC = `${CHILD_ORIGIN}/application/abc-123`;
 /** Must match the cascade's actual hop — `flow-runner.ts` scopes the observe-act fallback to `INTERACTIVE_CANDIDATE_SELECTOR`, not `"*"`. */
 const HOP_SELECTOR = `${IFRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
@@ -60,10 +60,10 @@ const CLICK_INDEX_PATTERN = /matches\[(\d+)\]/;
 const MANUAL_APPLICATION_STEP =
   "In the application widget, click the 'Manual Application' button to skip the resume-upload flow entirely. Do NOT click 'Upload a Resume/CV', 'Use LinkedIn Profile', 'Upload From Dropbox', or 'Upload From OneDrive'.";
 
-/** Matches the uchealth-7 bug report's measured candidate count for `#talemetry_apply_iframe >> *`. */
+/** Matches the oopif-7 bug report's measured candidate count for `#apply_frame >> *`. */
 const TOTAL_CANDIDATES = 371;
 
-/** Measured cost of one delegate round-trip through Browserbase's proxied CDP into the cross-origin OOPIF (uchealth-7's `13/371 candidates enumerated in 60s` measurement). */
+/** Measured cost of one delegate round-trip through Browserbase's proxied CDP into the cross-origin OOPIF (oopif-7's `13/371 candidates enumerated in 60s` measurement). */
 const MEASURED_DELEGATE_ROUND_TRIP_MS = 4_600;
 
 const RENDERED_TARGET_TEXT = "Manual Application";
@@ -219,7 +219,7 @@ function makeFakeTopPage(
       return null;
     },
     url: () => topUrl.current,
-    title: async () => "UCHealth Careers",
+    title: async () => "the top-window site Careers",
     locator: () => ({
       first: () => ({
         isChecked: async () => false,

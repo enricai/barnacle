@@ -566,7 +566,7 @@ interface StateValue {
    * a header/cookie-origin value — see `headerOrigin`. */
   path: string[];
   /** Set when `value` originates in a response header/cookie rather than a
-   * body JSON leaf (e.g. disneycruise's `Set-Cookie: __pa=<jwt>` token mint).
+   * body JSON leaf (e.g. cruise-fixture's `Set-Cookie: __pa=<jwt>` token mint).
    * `path` is empty in this case since there is no body accessor. */
   headerOrigin?: { sourceHeader: string; cookieName?: string };
 }
@@ -1347,7 +1347,7 @@ export function indexStateValues(
     const c = captures[i]!;
     if (haveActionFilter && !actionCaptureIndices.has(i)) continue;
     // Headers/cookies are indexed regardless of responseBody presence — a
-    // token-mint call like disneycruise's `authz/private` returns `{}` and
+    // token-mint call like cruise-fixture's `authz/private` returns `{}` and
     // carries its whole payload in `Set-Cookie`.
     const rawSetCookie = Object.entries(c.responseHeaders).find(
       ([k]) => k.toLowerCase() === "set-cookie"
@@ -1600,7 +1600,7 @@ export function compileActionSteps(
  * Collects every header/cookie-origin produce across an action sequence, in
  * step order — this is what `emitContractTs` renders as `createHttpClient`'s
  * `bind` option so the generated `executeHttp` actually forwards a value like
- * disneycruise's `Set-Cookie: __pa=<jwt>` mint to the stateful call that 401s
+ * cruise-fixture's `Set-Cookie: __pa=<jwt>` mint to the stateful call that 401s
  * without it. Deduped by `targetHeader.toLowerCase()` + `cookieName` (HTTP
  * header names are case-insensitive, and compileActionSteps derives
  * `targetHeader` verbatim from observed request-header casing, so the same
@@ -3439,9 +3439,9 @@ async function main(): Promise<void> {
     actionCaptures.length > 1 ? compileActionSteps(actionCaptures, stateIndex) : [];
   const isSubmissionFlow = actionSteps.length > 1;
 
-  // Diagnostic for the FAILURE-3 shape (hhccareers report): a "submission flow"
+  // Diagnostic for the FAILURE-3 shape (a flowless recon capture): a "submission flow"
   // whose every action capture is landing-phase is almost certainly page-chrome
-  // bootstrap (e.g. Phenom `POST /widgets`) misread as an apply flow, not a walked
+  // bootstrap (e.g. page-chrome `POST /widgets`) misread as an apply flow, not a walked
   // wizard. Real wizard steps carry a step-slug phase; single-endpoint search runs
   // are `length <= 1` and never reach here. We do not filter (that would delete the
   // sole search POST of legitimate `--url`-only single-endpoint runs, which is also

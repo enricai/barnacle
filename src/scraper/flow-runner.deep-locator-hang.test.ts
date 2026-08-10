@@ -13,7 +13,7 @@ import type { FrameTarget } from "@/scraper/frame-target";
 import type { Logger } from "@/types/logging";
 
 /**
- * Regression coverage for run 6 of the uchealth deepLocator-hang report: a
+ * Regression coverage for run 6 of the oopif deepLocator-hang report: a
  * frame-scoped step whose `page.deepLocator(...).count()`/`.click()` never
  * settle must still fail the cascade's attempts (via the `withWatchdog` guard
  * added in bugfix-002) instead of producing zero attempt logs for ~78 minutes.
@@ -68,7 +68,7 @@ function makeStagehand(): Stagehand {
   return {} as unknown as Stagehand;
 }
 
-const FRAME_SELECTOR = "iframe#talemetry_apply_iframe";
+const FRAME_SELECTOR = "iframe#apply_frame";
 /** The cascade's attempt-2/4 branch resolves candidates at the interactive-scoped hop (bugfix-005), not `"*"`. */
 const HOP_SELECTOR = `${FRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
 

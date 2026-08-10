@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  * frame-scoped step whose deepLocator calls (or whose frame-attach probe)
  * wedge must fail fast to the next attempt/replan within the watchdog
  * window instead of hanging for ~78 minutes with zero attempt logs — the
- * run-6 shape from the UCHealth report. Unlike
+ * run-6 shape from the top-window site report. Unlike
  * `flow-runner.deep-locator-hang.test.ts` (which `vi.mock`s
  * `@/scraper/stagehand-guard` and `@/scraper/frame-target`), this file
  * drives the REAL `runHealingFlow` / `resolveFrameTarget` /
@@ -65,9 +65,9 @@ import { advanceUntilSettled } from "@/scraper/fake-timer-advance";
 import { runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
-const TOP_ORIGIN = "https://careers.uchealth.org";
-const CHILD_ORIGIN = "https://apply.talemetry.com";
-const IFRAME_SELECTOR = "iframe#talemetry_apply_iframe";
+const TOP_ORIGIN = "https://careers.example.org";
+const CHILD_ORIGIN = "https://apply.example.com";
+const IFRAME_SELECTOR = "iframe#apply_frame";
 const CHILD_SRC = `${CHILD_ORIGIN}/application/abc-123`;
 /** The cascade's attempt-2/4 branch resolves candidates at the interactive-scoped hop (bugfix-005), not `"*"`; the pre-cascade probe never reaches deepLocator in this suite (see `makeFakeStagehandObserveBlind`'s unfocused-observe short-circuit), so only this hop needs the hang gate. */
 const HOP_SELECTOR = `${IFRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
@@ -197,7 +197,7 @@ function makeFakeTopPage(
       return null;
     },
     url: () => topUrl.current,
-    title: async () => "UCHealth Careers",
+    title: async () => "the top-window site Careers",
     locator: () => ({
       first: () => ({
         isChecked: async () => false,
@@ -327,7 +327,7 @@ describe("flow-runner frame-attach probe hang (offline acceptance test, real sta
       evaluate: async (expr: unknown) =>
         /document\.querySelector\(/.test(String(expr)) ? new Promise(() => {}) : null,
       url: () => topUrl.current,
-      title: async () => "UCHealth Careers",
+      title: async () => "the top-window site Careers",
       locator: () => ({
         first: () => ({
           isChecked: async () => false,

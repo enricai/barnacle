@@ -1,6 +1,6 @@
 /**
  * Pins `clickDeepLocatorCandidate`'s legacy delegate fallback watchdog
- * scaling — the fix for the uchealth-7 finding that a candidate past index
+ * scaling — the fix for the oopif-7 finding that a candidate past index
  * ~14 (`resolveAtIndex(query, i)` costs `i + 1` serial CDP round-trips before
  * the click ever dispatches, understudy/selectorResolver.js:70,79-115) got
  * killed by a fixed single-round-trip `callTimeoutMs` even though the click
@@ -31,10 +31,10 @@ import {
   registerDeepLocatorHopLatency,
 } from "@/scraper/deep-locator-fake";
 
-/** The uchealth-7 measured per-round-trip CDP cost through a proxied OOPIF (run-7: candidate 13 enumerated within a 60s budget, i.e. 91 cumulative round-trips → ~659ms/round-trip). */
+/** The oopif-7 measured per-round-trip CDP cost through a proxied OOPIF (run-7: candidate 13 enumerated within a 60s budget, i.e. 91 cumulative round-trips → ~659ms/round-trip). */
 const PER_ROUND_TRIP_MS = 659;
 
-const HOP_SELECTOR = "#talemetry_apply_iframe >> button";
+const HOP_SELECTOR = "#apply_frame >> button";
 
 function buildHop(count: number) {
   const frame: FakeDeepLocatorFrame = new Map();
@@ -65,7 +65,7 @@ describe("clickDeepLocatorCandidate legacy-fallback watchdog scales with candida
       const promise = clickDeepLocatorCandidate(
         // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
         page as any,
-        "#talemetry_apply_iframe",
+        "#apply_frame",
         "button",
         index
       );
@@ -97,7 +97,7 @@ describe("clickDeepLocatorCandidate legacy-fallback watchdog scales with candida
     const promise = clickDeepLocatorCandidate(
       // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
       page as any,
-      "#talemetry_apply_iframe",
+      "#apply_frame",
       "button",
       20,
       { callTimeoutMs: 50 }
@@ -118,7 +118,7 @@ describe("clickDeepLocatorCandidate legacy-fallback watchdog scales with candida
     const promise = clickDeepLocatorCandidate(
       // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
       page as any,
-      "#talemetry_apply_iframe",
+      "#apply_frame",
       "button",
       0,
       { callTimeoutMs: PER_ROUND_TRIP_MS - 1 }

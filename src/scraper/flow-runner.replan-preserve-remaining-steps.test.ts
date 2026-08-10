@@ -11,7 +11,7 @@ import { filterReplanDuplicatingNextAuthored } from "@/scripts/recon-browser";
 import type { Logger } from "@/types/logging";
 
 /**
- * Offline acceptance regression for Barnacle follow-up #10 (UCHealth
+ * Offline acceptance regression for Barnacle follow-up #10 (the top-window site
  * recon-19/-20): a view-swap "reveal" step (Basic Info's Next click,
  * measured +789B DOM growth, zero network) used to be scored a failure and
  * trigger a global replan that DISCARDED the author's entire remaining
@@ -44,9 +44,9 @@ import type { Logger } from "@/types/logging";
  * and a post-Next Education History marker.
  */
 
-const TOP_ORIGIN = "https://careers.uchealth.org";
-const CHILD_ORIGIN = "https://apply.talemetry.com";
-const IFRAME_SELECTOR = "iframe#talemetry_apply_iframe";
+const TOP_ORIGIN = "https://careers.example.org";
+const CHILD_ORIGIN = "https://apply.example.com";
+const IFRAME_SELECTOR = "iframe#apply_frame";
 const CHILD_SRC = `${CHILD_ORIGIN}/application/abc-123/basic-info`;
 /** The cascade's actual hop (`flow-runner.ts` scopes the observe-act fallback to `INTERACTIVE_CANDIDATE_SELECTOR`, not `"*"`) — must match so the fake's registered elements resolve at the same selector the cascade clicks through. */
 const HOP_SELECTOR = `${IFRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
@@ -117,7 +117,7 @@ const ORDERED_TARGETS: FakeDeepLocatorElementSpec[] = [
 ];
 
 /**
- * Builds the DOM-order array a dense hop over the Talemetry wizard resolves
+ * Builds the DOM-order array a dense hop over the embedded apply wizard resolves
  * to: a filler block ahead of each ordered target, reproducing the "target
  * is never first/DOM-order-lucky" convention every sibling acceptance
  * fixture in this suite family uses.
@@ -364,7 +364,7 @@ function makeAcceptanceTopPage(
       return null;
     },
     url: () => topUrl.current,
-    title: async () => "UCHealth Careers",
+    title: async () => "the top-window site Careers",
     locator: () => ({
       first: () => ({
         isChecked: async () => false,
@@ -424,7 +424,7 @@ const ACCEPTANCE_STEPS: HealingFlowStep[] = [
   { instruction: SUBMIT_STEP, optional: false, upload: false, submitStep: true },
 ];
 
-describe("flow-runner replan-preserve-remaining-steps acceptance regression (uchealth-19/-20, offline fixture, no network)", () => {
+describe("flow-runner replan-preserve-remaining-steps acceptance regression (oopif-19/-20, offline fixture, no network)", () => {
   it("credits the +789B reveal click as verified (no replan), runs the authored Work-History entry-fill chain exactly once against the open form, completes the entry without Requires Attention, advances to Education History, and reaches a verified submit", async () => {
     const topUrl = { current: `${TOP_ORIGIN}/jobs/123/apply` };
     const childUrls = { current: CHILD_SRC };
@@ -535,7 +535,7 @@ describe("flow-runner replan-preserve-remaining-steps acceptance regression (uch
     }
   });
 
-  it("bugfix-002 branch: if the reveal click still exhausts the cascade and a bridge re-proposes the authored Add step, the dedup filter drops the bridge's duplicate so the authored Work-History chain still runs exactly once through submit (uchealth-19/-20 fallback path)", async () => {
+  it("bugfix-002 branch: if the reveal click still exhausts the cascade and a bridge re-proposes the authored Add step, the dedup filter drops the bridge's duplicate so the authored Work-History chain still runs exactly once through submit (oopif-19/-20 fallback path)", async () => {
     // Fault-inject the scenario bugfix-001 is meant to prevent: the reveal
     // click's replan still fires (as it did on run-19/-20 before the credit
     // fix), and the replanner's bridge re-proposes the SAME action as this

@@ -185,7 +185,7 @@ describe("flow-runner/runHealingFlow — frameSelector -> FrameTarget threading"
 
   it("re-resolves frameSelector into a FrameTarget once per step and threads the resolved object into guardedObserve for that step", async () => {
     const urls = { current: "https://apply.acme.example/jobs/1/apply" };
-    const childTarget = makeChildFrameTarget("iframe#talemetry_apply_iframe", () => urls.current);
+    const childTarget = makeChildFrameTarget("iframe#apply_frame", () => urls.current);
     resolveFrameTarget.mockResolvedValue(childTarget);
 
     wireVerifiedGuardedAct(urls);
@@ -200,7 +200,7 @@ describe("flow-runner/runHealingFlow — frameSelector -> FrameTarget threading"
       anthropic: null,
       rephraseModel: null,
       uploadFixture: null,
-      frameSelector: "iframe#talemetry_apply_iframe",
+      frameSelector: "iframe#apply_frame",
     });
 
     // The flow-level frameSelector is re-resolved once PER STEP — not cached
@@ -210,11 +210,11 @@ describe("flow-runner/runHealingFlow — frameSelector -> FrameTarget threading"
     // that's a distinct, pre-existing pattern this assertion does not
     // concern itself with.)
     const topLevelResolveCalls = resolveFrameTarget.mock.calls.filter(
-      ([, selector]) => selector === "iframe#talemetry_apply_iframe"
+      ([, selector]) => selector === "iframe#apply_frame"
     );
     expect(topLevelResolveCalls).toHaveLength(2);
     for (const call of topLevelResolveCalls) {
-      expect(call).toEqual([page, "iframe#talemetry_apply_iframe"]);
+      expect(call).toEqual([page, "iframe#apply_frame"]);
     }
 
     // Every guardedObserve call across both steps carries the resolved
@@ -231,7 +231,7 @@ describe("flow-runner/runHealingFlow — frameSelector -> FrameTarget threading"
     const stagehand = makeStagehand();
     const page = fakeFlowPage(() => urls.current);
     const mainTarget = delegatingMainFrameTarget(page);
-    const childTarget = makeChildFrameTarget("iframe#talemetry_apply_iframe", () => urls.current);
+    const childTarget = makeChildFrameTarget("iframe#apply_frame", () => urls.current);
 
     // Models an iframe created mid-flow: `page.frames()` (proxied here via
     // `resolveFrameTarget`'s own contract) has no match on the first call and
@@ -250,7 +250,7 @@ describe("flow-runner/runHealingFlow — frameSelector -> FrameTarget threading"
       anthropic: null,
       rephraseModel: null,
       uploadFixture: null,
-      frameSelector: "iframe#talemetry_apply_iframe",
+      frameSelector: "iframe#apply_frame",
     });
 
     expect(guardedObserve.mock.calls).toHaveLength(2);
@@ -268,7 +268,7 @@ describe("flow-runner/runHealingFlow — frameSelector -> FrameTarget threading"
 
   it("waits for the resolved child frame to be ready before stepping", async () => {
     const urls = { current: "https://apply.acme.example/jobs/1/apply" };
-    const childTarget = makeChildFrameTarget("iframe#talemetry_apply_iframe", () => urls.current);
+    const childTarget = makeChildFrameTarget("iframe#apply_frame", () => urls.current);
     resolveFrameTarget.mockResolvedValue(childTarget);
 
     wireVerifiedGuardedAct(urls);
@@ -283,7 +283,7 @@ describe("flow-runner/runHealingFlow — frameSelector -> FrameTarget threading"
       anthropic: null,
       rephraseModel: null,
       uploadFixture: null,
-      frameSelector: "iframe#talemetry_apply_iframe",
+      frameSelector: "iframe#apply_frame",
     });
 
     expect(waitForChildFrameReady).toHaveBeenCalledTimes(1);
@@ -323,7 +323,7 @@ describe("flow-runner/runHealingFlow — frameSelector -> FrameTarget threading"
 
   it("threads the resolved child FrameTarget into the DOM-direct probe helpers (snapshotPage, countNgInvalidContainers), not the mainFrameTarget(page) shim", async () => {
     const urls = { current: "https://apply.acme.example/jobs/1/apply" };
-    const childTarget = makeChildFrameTarget("iframe#talemetry_apply_iframe", () => urls.current);
+    const childTarget = makeChildFrameTarget("iframe#apply_frame", () => urls.current);
     resolveFrameTarget.mockResolvedValue(childTarget);
 
     // A submit-shaped step also exercises the `requireSubmitEndpoint`-gated
@@ -341,7 +341,7 @@ describe("flow-runner/runHealingFlow — frameSelector -> FrameTarget threading"
       anthropic: null,
       rephraseModel: null,
       uploadFixture: null,
-      frameSelector: "iframe#talemetry_apply_iframe",
+      frameSelector: "iframe#apply_frame",
     });
 
     // snapshotPage/countNgInvalidContainers call target.evaluate(...) — proof
@@ -354,7 +354,7 @@ describe("flow-runner/runHealingFlow — frameSelector -> FrameTarget threading"
 
   it("threads the resolved child FrameTarget into the probe-absent required-control escalation check, not the mainFrameTarget(page) shim", async () => {
     const urls = { current: "https://apply.acme.example/jobs/1/apply" };
-    const childTarget = makeChildFrameTarget("iframe#talemetry_apply_iframe", () => urls.current);
+    const childTarget = makeChildFrameTarget("iframe#apply_frame", () => urls.current);
     resolveFrameTarget.mockResolvedValue(childTarget);
     // An empty observe makes probeStepBeforeAttempts report "absent", which
     // — for an `optional` step — routes into
@@ -372,7 +372,7 @@ describe("flow-runner/runHealingFlow — frameSelector -> FrameTarget threading"
       anthropic: null,
       rephraseModel: null,
       uploadFixture: null,
-      frameSelector: "iframe#talemetry_apply_iframe",
+      frameSelector: "iframe#apply_frame",
     });
 
     expect(childTarget.evaluate).toHaveBeenCalled();
@@ -381,7 +381,7 @@ describe("flow-runner/runHealingFlow — frameSelector -> FrameTarget threading"
 
   it("threads the resolved child FrameTarget into the pre-submit ng-invalid count, not the mainFrameTarget(page) shim", async () => {
     const urls = { current: "https://apply.acme.example/jobs/1/apply" };
-    const childTarget = makeChildFrameTarget("iframe#talemetry_apply_iframe", () => urls.current);
+    const childTarget = makeChildFrameTarget("iframe#apply_frame", () => urls.current);
     resolveFrameTarget.mockResolvedValue(childTarget);
 
     // `submitEndpointPattern` set on a `submitStep` arms `requireSubmitEndpoint`,
@@ -406,8 +406,8 @@ describe("flow-runner/runHealingFlow — frameSelector -> FrameTarget threading"
         anthropic: null,
         rephraseModel: null,
         uploadFixture: null,
-        frameSelector: "iframe#talemetry_apply_iframe",
-        submitEndpointPattern: "apply\\.talemetry\\.com",
+        frameSelector: "iframe#apply_frame",
+        submitEndpointPattern: "apply\\.embedded-apply\\.com",
       })
     ).rejects.toThrow();
 

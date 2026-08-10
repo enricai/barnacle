@@ -168,7 +168,7 @@ describe("routes/submissions GET /v1/submissions", () => {
     fs.writeFileSync(
       sinkPath,
       ndjson(
-        makeSubmitLine({ requestId: "req-hca", siteId: "hca" }),
+        makeSubmitLine({ requestId: "req-site-1", siteId: "recon-site-1" }),
         makeSubmitLine({
           requestId: "req-ats-c",
           siteId: "ats-c",
@@ -181,14 +181,17 @@ describe("routes/submissions GET /v1/submissions", () => {
     try {
       const response = await app.inject({
         method: "GET",
-        url: "/v1/submissions?siteId=hca",
+        url: "/v1/submissions?siteId=recon-site-1",
         headers: { authorization: `Bearer ${VALID_KEY}` },
       });
 
       expect(response.statusCode).toBe(200);
       const body = response.json();
       expect(body.submissions).toHaveLength(1);
-      expect(body.submissions[0]).toMatchObject({ requestId: "req-hca", siteId: "hca" });
+      expect(body.submissions[0]).toMatchObject({
+        requestId: "req-site-1",
+        siteId: "recon-site-1",
+      });
     } finally {
       await app.close();
     }

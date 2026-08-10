@@ -622,7 +622,7 @@ export function makeSelectorAwareDomRoot(elements: readonly FakeDomElement[]): F
   };
 }
 
-/** Total node count {@link buildDenseFormFixture} produces — the live-measured `#talemetry_apply_iframe >> *` match count from the uchealth-7 bug report. */
+/** Total node count {@link buildDenseFormFixture} produces — the live-measured `#apply_frame >> *` match count from the oopif-7 bug report. */
 export const DENSE_FORM_TOTAL_COUNT = 371;
 
 /** Accessible name {@link buildDenseFormFixture}'s icon-only target button resolves to — mirrors the live report's `button.c-SocialButton-button-25:has(svg[data-testid='EditIcon'])` control, modeled here as a plain icon-only `button` named via `aria-label` since `:has()` support is not what this fixture is for. */
@@ -639,7 +639,7 @@ export interface DenseFormFixture {
 
 /**
  * Builds the {@link DENSE_FORM_TOTAL_COUNT}-node dense-OOPIF-shaped fixture
- * the uchealth-7 bug report measured (`#talemetry_apply_iframe >> *`
+ * the oopif-7 bug report measured (`#apply_frame >> *`
  * matching 371 elements): mostly structural `div`/`span` filler, a handful
  * of real form controls, an icon-only target button, and two unrendered
  * decoys. Exported (not inlined per test file) so `test-002`'s Stagehand-

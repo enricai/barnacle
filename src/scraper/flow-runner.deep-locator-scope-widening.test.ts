@@ -16,7 +16,7 @@ import type { Logger } from "@/types/logging";
  * `INTERACTIVE_CANDIDATE_SELECTOR` makes a dense OOPIF form's candidate set
  * tractable, but it also matches nothing for a `div`/`span` "tile" that only
  * carries a click handler (no `role`/`tabindex`) — the exact shape a
- * Talemetry-style "Manual Application" card uses. This suite drives the REAL
+ * the embedded apply wizard-style "Manual Application" card uses. This suite drives the REAL
  * `runHealingFlow` / `resolveFrameTarget` / `guardedObserve` /
  * `resolveDeepLocatorCandidates` stack — only Stagehand and Playwright's
  * `Page`/`Frame` are faked — mirroring
@@ -27,9 +27,9 @@ import type { Logger } from "@/types/logging";
  * `FakeDeepLocatorFrame` registry.
  */
 
-const TOP_ORIGIN = "https://careers.uchealth.org";
-const CHILD_ORIGIN = "https://apply.talemetry.com";
-const IFRAME_SELECTOR = "iframe#talemetry_apply_iframe";
+const TOP_ORIGIN = "https://careers.example.org";
+const CHILD_ORIGIN = "https://apply.example.com";
+const IFRAME_SELECTOR = "iframe#apply_frame";
 const CHILD_SRC = `${CHILD_ORIGIN}/application/abc-123`;
 const SCOPED_HOP_SELECTOR = `${IFRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
 // Also the pre-cascade reachability probe's own hop (`probeStepBeforeAttempts`
@@ -181,7 +181,7 @@ function makeFakeTopPage(
       return null;
     },
     url: () => topUrl.current,
-    title: async () => "UCHealth Careers",
+    title: async () => "the top-window site Careers",
     locator: () => ({
       first: () => ({
         isChecked: async () => false,

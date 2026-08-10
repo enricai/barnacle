@@ -46,7 +46,7 @@ function makeStagehand(): Stagehand {
   return {} as unknown as Stagehand;
 }
 
-const FRAME_SELECTOR = "iframe#talemetry_apply_iframe";
+const FRAME_SELECTOR = "iframe#apply_frame";
 const SCAN_EXPR = buildScanFrameCandidatesExpr("*");
 
 /**
@@ -71,7 +71,7 @@ function makeChildFrameTarget(scanResults: FrameCandidateScanResult[]): FrameTar
         inputValue: vi.fn().mockResolvedValue(""),
       }),
     }),
-    url: () => Promise.resolve("https://apply.talemetry.com/application/abc-123"),
+    url: () => Promise.resolve("https://apply.example.com/application/abc-123"),
     title: () => Promise.resolve("Apply"),
   };
 }

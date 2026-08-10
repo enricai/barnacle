@@ -41,8 +41,8 @@ import { makeFakeFrameResolutionPage } from "@/scraper/deep-locator-fake";
  * same-tick fake.
  */
 describe("fillDeepLocatorCandidate/selectDeepLocatorCandidateOption: internal resolveActuateFrameTarget pass (no timeoutOptions.frameTarget)", () => {
-  const FRAME_SELECTOR = "#talemetry_apply_iframe";
-  const IFRAME_SRC = "https://apply.talemetry.com/application/abc-123";
+  const FRAME_SELECTOR = "#apply_frame";
+  const IFRAME_SRC = "https://apply.example.com/application/abc-123";
   const INNER_SELECTOR = "input";
   const TARGET_INDEX = 1;
   const PROBE_DELAY_MS = 5;

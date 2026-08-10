@@ -61,7 +61,7 @@ describe("submission + beacon round-trip through the real writer and reader", ()
   it("a submitted envelope and its fired beacon come back as one row carrying every join key", async () => {
     await captureSubmissionEnvelope(
       {
-        siteId: "hca",
+        siteId: "recon-site-1",
         requestId: "req-fired-1",
         joinKeys: { clickId: "viv-fired-1", refId: "emp1_jid1" },
         session: null,
@@ -76,7 +76,7 @@ describe("submission + beacon round-trip through the real writer and reader", ()
     await captureBeaconEvent(
       {
         requestId: "req-fired-1",
-        siteId: "hca",
+        siteId: "recon-site-1",
         joinKeys: { clickId: "viv-fired-1", refId: "emp1_jid1" },
         beaconStatus: "fired",
         trackingUrl: "https://track.example.com/pixel?rid=req-fired-1",
@@ -91,7 +91,7 @@ describe("submission + beacon round-trip through the real writer and reader", ()
     expect(byRequestId).toHaveLength(1);
     const [row] = byRequestId;
     expect(row?.joinKeys).toEqual({ clickId: "viv-fired-1", refId: "emp1_jid1" });
-    expect(row?.siteId).toBe("hca");
+    expect(row?.siteId).toBe("recon-site-1");
     expect(row?.status).toBe("submitted");
     expect(row?.beaconStatus).toBe("fired");
   });
@@ -99,7 +99,7 @@ describe("submission + beacon round-trip through the real writer and reader", ()
   it("distinguishes a submitted-but-beacon-failed run from a submitted-and-beacon-fired run", async () => {
     await captureSubmissionEnvelope(
       {
-        siteId: "hca",
+        siteId: "recon-site-1",
         requestId: "req-fired-2",
         joinKeys: { clickId: "viv-fired-2", refId: "emp2_jid2" },
         session: null,
@@ -114,7 +114,7 @@ describe("submission + beacon round-trip through the real writer and reader", ()
     await captureBeaconEvent(
       {
         requestId: "req-fired-2",
-        siteId: "hca",
+        siteId: "recon-site-1",
         joinKeys: { clickId: "viv-fired-2", refId: "emp2_jid2" },
         beaconStatus: "fired",
         trackingUrl: "https://track.example.com/pixel?rid=req-fired-2",
@@ -125,7 +125,7 @@ describe("submission + beacon round-trip through the real writer and reader", ()
 
     await captureSubmissionEnvelope(
       {
-        siteId: "hca",
+        siteId: "recon-site-1",
         requestId: "req-failed-3",
         joinKeys: { clickId: "viv-failed-3", refId: "emp3_jid3" },
         session: null,
@@ -140,7 +140,7 @@ describe("submission + beacon round-trip through the real writer and reader", ()
     await captureBeaconEvent(
       {
         requestId: "req-failed-3",
-        siteId: "hca",
+        siteId: "recon-site-1",
         joinKeys: { clickId: "viv-failed-3", refId: "emp3_jid3" },
         beaconStatus: "failed",
         trackingUrl: null,
@@ -169,7 +169,7 @@ describe("submission + beacon round-trip through the real writer and reader", ()
   it("round-trips a skipped beacon's trackingUrl distinctly for 'no URL was ever applicable' vs. 'a plugin managing its own tracking nav delegated it'", async () => {
     await captureSubmissionEnvelope(
       {
-        siteId: "appcast",
+        siteId: "recon-site-2",
         requestId: "req-skipped-delegated",
         joinKeys: { clickId: "viv-delegated", refId: "emp4_jid4" },
         session: null,
@@ -184,7 +184,7 @@ describe("submission + beacon round-trip through the real writer and reader", ()
     await captureBeaconEvent(
       {
         requestId: "req-skipped-delegated",
-        siteId: "appcast",
+        siteId: "recon-site-2",
         joinKeys: { clickId: "viv-delegated", refId: "emp4_jid4" },
         beaconStatus: "skipped",
         trackingUrl: "https://track.example.com/t/abc",
@@ -195,7 +195,7 @@ describe("submission + beacon round-trip through the real writer and reader", ()
 
     await captureSubmissionEnvelope(
       {
-        siteId: "hca",
+        siteId: "recon-site-1",
         requestId: "req-skipped-no-url",
         joinKeys: null,
         session: null,
@@ -210,7 +210,7 @@ describe("submission + beacon round-trip through the real writer and reader", ()
     await captureBeaconEvent(
       {
         requestId: "req-skipped-no-url",
-        siteId: "hca",
+        siteId: "recon-site-1",
         joinKeys: null,
         beaconStatus: "skipped",
         trackingUrl: null,
@@ -246,7 +246,7 @@ describe("submission + beacon round-trip through the real writer and reader", ()
     };
     await captureSubmissionEnvelope(
       {
-        siteId: "hca",
+        siteId: "recon-site-1",
         requestId: "req-session-roundtrip",
         joinKeys: { clickId: "viv-roundtrip", refId: "emp9_jid9" },
         session,
@@ -261,7 +261,7 @@ describe("submission + beacon round-trip through the real writer and reader", ()
     await captureBeaconEvent(
       {
         requestId: "req-session-roundtrip",
-        siteId: "hca",
+        siteId: "recon-site-1",
         joinKeys: { clickId: "viv-roundtrip", refId: "emp9_jid9" },
         beaconStatus: "fired",
         trackingUrl: "https://track.example.com/pixel?rid=req-session-roundtrip",

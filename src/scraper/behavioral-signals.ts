@@ -17,7 +17,7 @@ import type { FrameTarget } from "@/scraper/frame-target";
  * resolved cross-origin child frame. Call once per poll iteration inside any
  * warmup loop that needs DataDome (or similar) fingerprint resolution —
  * `frameTarget` lets callers whose bot-detection warmup happens inside an
- * OOPIF (e.g. UCHealth's Talemetry wizard) target the frame's own CDP
+ * OOPIF (e.g. a cross-origin OOPIF apply wizard) target the frame's own CDP
  * session instead of the top-level one. Omitting `frameTarget`, or passing
  * one resolved to the main frame (`frame: null`), preserves today's
  * main-session behavior exactly.

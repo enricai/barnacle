@@ -10,7 +10,7 @@ import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
 /**
- * Offline acceptance regression for the UCHealth Manual Application
+ * Offline acceptance regression for the top-window site Manual Application
  * click-view-swap scenario (run-8): a click that reveals a form via pure
  * client-side DOM manipulation (measured: +49518B body HTML, zero network
  * captures) must be credited as a successful step outcome, not scored as
@@ -40,9 +40,9 @@ import type { Logger } from "@/types/logging";
  * fails with an immediately-diagnosable name.
  */
 
-const TOP_ORIGIN = "https://careers.uchealth.org";
-const CHILD_ORIGIN = "https://apply.talemetry.com";
-const IFRAME_SELECTOR = "iframe#talemetry_apply_iframe";
+const TOP_ORIGIN = "https://careers.example.org";
+const CHILD_ORIGIN = "https://apply.example.com";
+const IFRAME_SELECTOR = "iframe#apply_frame";
 const CHILD_SRC = `${CHILD_ORIGIN}/application/abc-123`;
 /** The cascade's actual hop (`flow-runner.ts` scopes the observe-act fallback to `INTERACTIVE_CANDIDATE_SELECTOR`, not `"*"`) — must match so the fake's registered elements resolve at the same selector the cascade clicks through. */
 const HOP_SELECTOR = `${IFRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
@@ -122,7 +122,7 @@ const FORM_FIELD_ELEMENTS: ReadonlyArray<FakeDeepLocatorElementSpec | undefined>
 ];
 
 /**
- * Builds the DOM-order array a dense hop over the Talemetry wizard resolves
+ * Builds the DOM-order array a dense hop over the embedded apply wizard resolves
  * to: filler blocks with the four decoys and the fill target interspersed
  * between them, and — when `includeTarget` — the real "Manual Application"
  * button LAST.
@@ -268,7 +268,7 @@ function makeViewSwapTopPage(
       return null;
     },
     url: () => topUrl.current,
-    title: async () => "UCHealth Careers",
+    title: async () => "the top-window site Careers",
     locator: () => ({
       first: () => ({
         isChecked: async () => false,
@@ -317,7 +317,7 @@ const VIEW_SWAP_STEPS: HealingFlowStep[] = [
   { instruction: FIRST_NAME_STEP, optional: false, upload: false, submitStep: false },
 ];
 
-describe("flow-runner client-side view-swap acceptance regression (uchealth-8, offline fixture, no network)", () => {
+describe("flow-runner client-side view-swap acceptance regression (oopif-8, offline fixture, no network)", () => {
   it("clicks 'Manual Application' (DOM +48KB, zero network) → credited as success → subsequent fill step resolves against the now-rendered form", async () => {
     const topUrl = { current: `${TOP_ORIGIN}/jobs/123/apply` };
     const childUrls = { current: CHILD_SRC };

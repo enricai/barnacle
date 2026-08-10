@@ -41,7 +41,7 @@ vi.mock("ai", async (importOriginal) => {
  * Positive, argument-level coverage that every flow-runner call site which
  * feeds the healing cascade scopes its deepLocator hop to
  * `INTERACTIVE_CANDIDATE_SELECTOR` instead of `"*"` — the fix for the
- * uchealth-7 371-candidate/4.6s-per-round-trip enumeration cost. The
+ * oopif-7 371-candidate/4.6s-per-round-trip enumeration cost. The
  * existing deepLocator suites (`flow-runner.deep-locator-fallback.test.ts`,
  * `flow-runner.rephrase-evidence-frame.test.ts`) only prove this
  * *behaviorally*, by registering the fake harness's hop at the scoped
@@ -85,7 +85,7 @@ const testLogger = {
   debug: vi.fn(),
 } as unknown as Logger;
 
-const FRAME_SELECTOR = "iframe#talemetry_apply_iframe";
+const FRAME_SELECTOR = "iframe#apply_frame";
 
 function makeStagehand(): Stagehand {
   return {} as unknown as Stagehand;
@@ -102,7 +102,7 @@ function makeStagehand(): Stagehand {
 function makeChildFrameTarget(
   frame: FrameTarget["frame"] = {} as FrameTarget["frame"],
   url: () => Promise<string> = () =>
-    Promise.resolve("https://apply.talemetry.com/application/abc-123")
+    Promise.resolve("https://apply.example.com/application/abc-123")
 ): FrameTarget {
   return {
     frame,

@@ -11,7 +11,7 @@ import type { Logger } from "@/types/logging";
 
 /**
  * Offline acceptance test locking in the bug report's exact decoy scenario:
- * `careers.uchealth.org`'s Talemetry apply wizard mounts inside a
+ * `careers.example.org`'s the embedded apply wizard apply wizard mounts inside a
  * cross-origin OOPIF whose "*" deepLocator hop matches every element,
  * including four decoy controls the flow's own instruction says NOT to
  * click. Unlike `flow-runner.deep-locator-fallback.test.ts` and
@@ -29,9 +29,9 @@ import type { Logger } from "@/types/logging";
  * is what makes this the acceptance scenario rather than a synthetic one.
  */
 
-const TOP_ORIGIN = "https://careers.uchealth.org";
-const CHILD_ORIGIN = "https://apply.talemetry.com";
-const IFRAME_SELECTOR = "iframe#talemetry_apply_iframe";
+const TOP_ORIGIN = "https://careers.example.org";
+const CHILD_ORIGIN = "https://apply.example.com";
+const IFRAME_SELECTOR = "iframe#apply_frame";
 const CHILD_SRC = `${CHILD_ORIGIN}/application/abc-123`;
 /** Interactive-scoped hop the attempt-2/4 cascade actually resolves candidates/clicks against (see bugfix-005). */
 const HOP_SELECTOR = `${IFRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
@@ -154,7 +154,7 @@ function makeFakeTopPage(
       return null;
     },
     url: () => topUrl.current,
-    title: async () => "UCHealth Careers",
+    title: async () => "the top-window site Careers",
     locator: () => ({
       first: () => ({
         isChecked: async () => false,

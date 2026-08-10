@@ -10,7 +10,7 @@ import type { ReconciliationRow } from "@/lib/telemetry/submission-reader";
 
 function makeRow(overrides: Partial<ReconciliationRow> = {}): ReconciliationRow {
   return {
-    siteId: "hca",
+    siteId: "recon-site-1",
     requestId: "req-1",
     joinKeys: { clickId: "viv-1", refId: "emp1_jid1" },
     session: null,
@@ -32,7 +32,7 @@ function makeRow(overrides: Partial<ReconciliationRow> = {}): ReconciliationRow 
 describe("queryReconciliationRows", () => {
   it("filters by siteId", () => {
     const rows = [
-      makeRow({ requestId: "req-1", siteId: "hca" }),
+      makeRow({ requestId: "req-1", siteId: "recon-site-1" }),
       makeRow({ requestId: "req-2", siteId: "ats-c" }),
     ];
     const result = queryReconciliationRows(rows, { siteId: "ats-c" });
@@ -70,17 +70,17 @@ describe("queryReconciliationRows", () => {
 
   it("composes requestId, siteId, and status filters as AND", () => {
     const rows = [
-      makeRow({ requestId: "req-1", siteId: "hca", status: "submitted" }),
-      makeRow({ requestId: "req-1", siteId: "hca", status: "error" }),
+      makeRow({ requestId: "req-1", siteId: "recon-site-1", status: "submitted" }),
+      makeRow({ requestId: "req-1", siteId: "recon-site-1", status: "error" }),
       makeRow({ requestId: "req-1", siteId: "ats-c", status: "submitted" }),
     ];
     const result = queryReconciliationRows(rows, {
       requestId: "req-1",
-      siteId: "hca",
+      siteId: "recon-site-1",
       status: "submitted",
     });
     expect(result).toHaveLength(1);
-    expect(result[0]?.siteId).toBe("hca");
+    expect(result[0]?.siteId).toBe("recon-site-1");
     expect(result[0]?.status).toBe("submitted");
   });
 
@@ -163,7 +163,7 @@ describe("queryReconciliationRows", () => {
   });
 
   it("returns an empty array when filtering an empty row array", () => {
-    const result = queryReconciliationRows([], { siteId: "hca" });
+    const result = queryReconciliationRows([], { siteId: "recon-site-1" });
     expect(result).toEqual([]);
   });
 });

@@ -126,17 +126,17 @@ function makeMutableFakePage(options: {
 
 describe("resolveFrameTarget", () => {
   it("returns the main-frame target when frameSelector is undefined", async () => {
-    const page = makeFakePage({ mainUrl: "https://careers.uchealth.org/jobs/123" });
+    const page = makeFakePage({ mainUrl: "https://careers.example.org/jobs/123" });
 
     const target = await resolveFrameTarget(page as never);
 
     expect(target.frame).toBeNull();
     expect(target.frameSelector).toBeNull();
-    expect(await target.url()).toBe("https://careers.uchealth.org/jobs/123");
+    expect(await target.url()).toBe("https://careers.example.org/jobs/123");
   });
 
   it("returns the main-frame target when frameSelector is null", async () => {
-    const page = makeFakePage({ mainUrl: "https://careers.uchealth.org/jobs/123" });
+    const page = makeFakePage({ mainUrl: "https://careers.example.org/jobs/123" });
 
     const target = await resolveFrameTarget(page as never, null);
 
@@ -145,33 +145,33 @@ describe("resolveFrameTarget", () => {
   });
 
   it("resolves a FrameTarget bound to the child Frame whose url matches the iframe's origin", async () => {
-    const childFrame = makeFakeFrame("https://apply.talemetry.com/application/abc-123");
+    const childFrame = makeFakeFrame("https://apply.example.com/application/abc-123");
     const page = makeFakePage({
-      mainUrl: "https://careers.uchealth.org/jobs/123",
+      mainUrl: "https://careers.example.org/jobs/123",
       iframes: {
-        "iframe#talemetry_apply_iframe": "https://apply.talemetry.com/application/abc-123",
+        "iframe#apply_frame": "https://apply.example.com/application/abc-123",
       },
       frames: [childFrame],
     });
 
-    const target = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe");
+    const target = await resolveFrameTarget(page as never, "iframe#apply_frame");
 
     expect(target.frame).toBe(childFrame);
-    expect(target.frameSelector).toBe("iframe#talemetry_apply_iframe");
-    expect(await target.url()).toBe("https://apply.talemetry.com/application/abc-123");
+    expect(target.frameSelector).toBe("iframe#apply_frame");
+    expect(await target.url()).toBe("https://apply.example.com/application/abc-123");
   });
 
   it("delegates evaluate/locator to the resolved child Frame, not the main Page", async () => {
-    const childFrame = makeFakeFrame("https://apply.talemetry.com/application/abc-123");
+    const childFrame = makeFakeFrame("https://apply.example.com/application/abc-123");
     const page = makeFakePage({
-      mainUrl: "https://careers.uchealth.org/jobs/123",
+      mainUrl: "https://careers.example.org/jobs/123",
       iframes: {
-        "iframe#talemetry_apply_iframe": "https://apply.talemetry.com/application/abc-123",
+        "iframe#apply_frame": "https://apply.example.com/application/abc-123",
       },
       frames: [childFrame],
     });
 
-    const target = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe");
+    const target = await resolveFrameTarget(page as never, "iframe#apply_frame");
 
     expect(await target.evaluate("document.title")).toBe("frame-evaluated:document.title");
     expect(target.locator("input#firstName")).toEqual({
@@ -182,8 +182,8 @@ describe("resolveFrameTarget", () => {
 
   it("falls back to the main-frame target when the selector matches no element in the DOM", async () => {
     const page = makeFakePage({
-      mainUrl: "https://careers.uchealth.org/jobs/123",
-      frames: [makeFakeFrame("https://apply.talemetry.com/application/abc-123")],
+      mainUrl: "https://careers.example.org/jobs/123",
+      frames: [makeFakeFrame("https://apply.example.com/application/abc-123")],
     });
 
     const target = await resolveFrameTarget(page as never, "iframe#does_not_exist", {
@@ -197,14 +197,14 @@ describe("resolveFrameTarget", () => {
 
   it("falls back to the main-frame target when no page.frames() entry matches the iframe's origin", async () => {
     const page = makeFakePage({
-      mainUrl: "https://careers.uchealth.org/jobs/123",
+      mainUrl: "https://careers.example.org/jobs/123",
       iframes: {
-        "iframe#talemetry_apply_iframe": "https://apply.talemetry.com/application/abc-123",
+        "iframe#apply_frame": "https://apply.example.com/application/abc-123",
       },
       frames: [makeFakeFrame("https://unrelated-vendor.example.com/widget")],
     });
 
-    const target = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe", {
+    const target = await resolveFrameTarget(page as never, "iframe#apply_frame", {
       timeoutMs: 20,
       pollMs: 5,
     });
@@ -215,14 +215,14 @@ describe("resolveFrameTarget", () => {
 
   it("falls back to the main-frame target when frames() is empty", async () => {
     const page = makeFakePage({
-      mainUrl: "https://careers.uchealth.org/jobs/123",
+      mainUrl: "https://careers.example.org/jobs/123",
       iframes: {
-        "iframe#talemetry_apply_iframe": "https://apply.talemetry.com/application/abc-123",
+        "iframe#apply_frame": "https://apply.example.com/application/abc-123",
       },
       frames: [],
     });
 
-    const target = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe", {
+    const target = await resolveFrameTarget(page as never, "iframe#apply_frame", {
       timeoutMs: 20,
       pollMs: 5,
     });
@@ -232,107 +232,104 @@ describe("resolveFrameTarget", () => {
   });
 
   it("resolves a childFrameTarget once the iframe element is mounted mid-flow, after being absent on the first poll", async () => {
-    const childFrame = makeFakeFrame("https://apply.talemetry.com/application/abc-123");
+    const childFrame = makeFakeFrame("https://apply.example.com/application/abc-123");
     const page = makeMutableFakePage({
-      mainUrl: "https://careers.uchealth.org/jobs/123",
+      mainUrl: "https://careers.example.org/jobs/123",
       frames: [childFrame],
     });
 
-    const target = resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe", {
+    const target = resolveFrameTarget(page as never, "iframe#apply_frame", {
       timeoutMs: 1000,
       pollMs: 5,
     });
 
     await sleepMs(15);
-    page.mountIframe(
-      "iframe#talemetry_apply_iframe",
-      "https://apply.talemetry.com/application/abc-123"
-    );
+    page.mountIframe("iframe#apply_frame", "https://apply.example.com/application/abc-123");
 
     const resolved = await target;
     expect(resolved.frame).toBe(childFrame);
-    expect(resolved.frameSelector).toBe("iframe#talemetry_apply_iframe");
+    expect(resolved.frameSelector).toBe("iframe#apply_frame");
   });
 
   it("resolves a childFrameTarget by origin match once the iframe's src is populated on a later poll, after the element existed with an empty src (and multiple ambiguous candidates) on the first poll", async () => {
-    const matchingFrame = makeFakeFrame("https://apply.talemetry.com/application/abc-123");
+    const matchingFrame = makeFakeFrame("https://apply.example.com/application/abc-123");
     const unrelatedFrame = makeFakeFrame("https://unrelated-vendor.example.com/widget");
     let src: string | null = null;
     const page = {
-      url: () => "https://careers.uchealth.org/jobs/123",
+      url: () => "https://careers.example.org/jobs/123",
       title: async () => "main document title",
       evaluate: async (expr: unknown) => {
         const match = /document\.querySelector\((.+?)\)/.exec(String(expr));
         const selector = match?.[1] ? (JSON.parse(match[1]) as string) : null;
-        if (selector !== "iframe#talemetry_apply_iframe") return { matched: false, src: null };
+        if (selector !== "iframe#apply_frame") return { matched: false, src: null };
         return { matched: true, src };
       },
       locator: (selector: string) => ({ scope: "main" as const, selector }),
       frames: () => [unrelatedFrame, matchingFrame],
     };
 
-    const target = resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe", {
+    const target = resolveFrameTarget(page as never, "iframe#apply_frame", {
       timeoutMs: 1000,
       pollMs: 5,
     });
 
     await sleepMs(15);
-    src = "https://apply.talemetry.com/application/abc-123";
+    src = "https://apply.example.com/application/abc-123";
 
     const resolved = await target;
     expect(resolved.frame).toBe(matchingFrame);
-    expect(resolved.frameSelector).toBe("iframe#talemetry_apply_iframe");
+    expect(resolved.frameSelector).toBe("iframe#apply_frame");
   });
 
   it("resolves a childFrameTarget by element identity on the very first poll when the iframe's src is unreadable but exactly one candidate frame exists", async () => {
-    const onlyCandidate = makeFakeFrame("https://apply.talemetry.com/application/abc-123");
+    const onlyCandidate = makeFakeFrame("https://apply.example.com/application/abc-123");
     const page = {
-      url: () => "https://careers.uchealth.org/jobs/123",
+      url: () => "https://careers.example.org/jobs/123",
       title: async () => "main document title",
       evaluate: async () => ({ matched: true, src: null }),
       locator: (selector: string) => ({ scope: "main" as const, selector }),
       frames: () => [onlyCandidate],
     };
 
-    const target = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe", {
+    const target = await resolveFrameTarget(page as never, "iframe#apply_frame", {
       timeoutMs: 1000,
       pollMs: 5,
     });
 
     expect(target.frame).toBe(onlyCandidate);
-    expect(target.frameSelector).toBe("iframe#talemetry_apply_iframe");
+    expect(target.frameSelector).toBe("iframe#apply_frame");
   });
 
   it("resolves a childFrameTarget once a matching frames() entry attaches, after the iframe element already existed with no matching frame", async () => {
     const page = makeMutableFakePage({
-      mainUrl: "https://careers.uchealth.org/jobs/123",
+      mainUrl: "https://careers.example.org/jobs/123",
       iframes: {
-        "iframe#talemetry_apply_iframe": "https://apply.talemetry.com/application/abc-123",
+        "iframe#apply_frame": "https://apply.example.com/application/abc-123",
       },
       frames: [],
     });
 
-    const target = resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe", {
+    const target = resolveFrameTarget(page as never, "iframe#apply_frame", {
       timeoutMs: 1000,
       pollMs: 5,
     });
 
     await sleepMs(15);
-    const childFrame = makeFakeFrame("https://apply.talemetry.com/application/abc-123");
+    const childFrame = makeFakeFrame("https://apply.example.com/application/abc-123");
     page.attachFrame(childFrame);
 
     const resolved = await target;
     expect(resolved.frame).toBe(childFrame);
-    expect(resolved.frameSelector).toBe("iframe#talemetry_apply_iframe");
+    expect(resolved.frameSelector).toBe("iframe#apply_frame");
   });
 
   it("does not throw and falls back to the main-frame target when the iframe element never mounts before the retry budget expires", async () => {
     const page = makeMutableFakePage({
-      mainUrl: "https://careers.uchealth.org/jobs/123",
+      mainUrl: "https://careers.example.org/jobs/123",
       frames: [],
     });
 
-    const target = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe", {
+    const target = await resolveFrameTarget(page as never, "iframe#apply_frame", {
       timeoutMs: 20,
       pollMs: 5,
     });
@@ -343,14 +340,14 @@ describe("resolveFrameTarget", () => {
 
   it("does not throw and falls back to the main-frame target when no matching frame attaches before the retry budget expires", async () => {
     const page = makeMutableFakePage({
-      mainUrl: "https://careers.uchealth.org/jobs/123",
+      mainUrl: "https://careers.example.org/jobs/123",
       iframes: {
-        "iframe#talemetry_apply_iframe": "https://apply.talemetry.com/application/abc-123",
+        "iframe#apply_frame": "https://apply.example.com/application/abc-123",
       },
       frames: [],
     });
 
-    const target = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe", {
+    const target = await resolveFrameTarget(page as never, "iframe#apply_frame", {
       timeoutMs: 20,
       pollMs: 5,
     });
@@ -360,16 +357,16 @@ describe("resolveFrameTarget", () => {
   });
 
   it("uses the top document's title for a resolved child-frame target", async () => {
-    const childFrame = makeFakeFrame("https://apply.talemetry.com/application/abc-123");
+    const childFrame = makeFakeFrame("https://apply.example.com/application/abc-123");
     const page = makeFakePage({
-      mainUrl: "https://careers.uchealth.org/jobs/123",
+      mainUrl: "https://careers.example.org/jobs/123",
       iframes: {
-        "iframe#talemetry_apply_iframe": "https://apply.talemetry.com/application/abc-123",
+        "iframe#apply_frame": "https://apply.example.com/application/abc-123",
       },
       frames: [childFrame],
     });
 
-    const target = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe");
+    const target = await resolveFrameTarget(page as never, "iframe#apply_frame");
 
     expect(await target.title()).toBe("main document title");
   });
@@ -394,20 +391,14 @@ describe("buildHopSelector", () => {
 
   it("composes a frame selector with an xpath-shaped inner selector without trimming its leading slashes", () => {
     expect(
-      buildHopSelector(
-        "#talemetry_apply_iframe",
-        "//button[normalize-space()='Manual Application']"
-      )
-    ).toBe("#talemetry_apply_iframe >> //button[normalize-space()='Manual Application']");
+      buildHopSelector("#apply_frame", "//button[normalize-space()='Manual Application']")
+    ).toBe("#apply_frame >> //button[normalize-space()='Manual Application']");
   });
 
   it("does not double-append the separator when the frame selector already ends with '>>' and the inner selector is xpath-shaped", () => {
     expect(
-      buildHopSelector(
-        "#talemetry_apply_iframe >>",
-        "//button[normalize-space()='Manual Application']"
-      )
-    ).toBe("#talemetry_apply_iframe >> //button[normalize-space()='Manual Application']");
+      buildHopSelector("#apply_frame >>", "//button[normalize-space()='Manual Application']")
+    ).toBe("#apply_frame >> //button[normalize-space()='Manual Application']");
   });
 
   it("returns an xpath-shaped inner selector unchanged for a main-frame target (frameSelector null)", () => {
@@ -426,10 +417,10 @@ describe("buildHopSelector", () => {
 function makeFakeTarget(evaluateImpl: () => Promise<string>): FrameTarget {
   return {
     frame: {} as FrameTarget["frame"],
-    frameSelector: "iframe#talemetry_apply_iframe",
+    frameSelector: "iframe#apply_frame",
     evaluate: evaluateImpl as FrameTarget["evaluate"],
     locator: (selector: string) => ({ scope: "frame" as const, selector }) as never,
-    url: () => Promise.resolve("https://apply.talemetry.com/application/abc-123"),
+    url: () => Promise.resolve("https://apply.example.com/application/abc-123"),
     title: () => Promise.resolve("main document title"),
   };
 }
@@ -442,7 +433,7 @@ describe("waitForChildFrameReady", () => {
       frameSelector: null,
       evaluate,
       locator: (selector: string) => ({ scope: "main" as const, selector }) as never,
-      url: () => Promise.resolve("https://careers.uchealth.org/jobs/123"),
+      url: () => Promise.resolve("https://careers.example.org/jobs/123"),
       title: () => Promise.resolve("main document title"),
     };
 
@@ -524,7 +515,7 @@ describe("resolveFrameTarget: bounded against a never-settling evaluate", () => 
   it("falls back to the main-frame target and logs the warn within its configured timeout, instead of hanging, when the iframe-src evaluate never settles", async () => {
     const evaluate = vi.fn().mockReturnValue(new Promise(() => {}));
     const page = {
-      url: () => "https://careers.uchealth.org/jobs/123",
+      url: () => "https://careers.example.org/jobs/123",
       title: async () => "main document title",
       evaluate,
       locator: (selector: string) => ({ scope: "main" as const, selector }),
@@ -532,7 +523,7 @@ describe("resolveFrameTarget: bounded against a never-settling evaluate", () => 
     };
 
     const start = Date.now();
-    const target = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe", {
+    const target = await resolveFrameTarget(page as never, "iframe#apply_frame", {
       timeoutMs: 40,
       pollMs: 10,
       evaluateTimeoutMs: 10,
@@ -547,7 +538,7 @@ describe("resolveFrameTarget: bounded against a never-settling evaluate", () => 
   it("still propagates a genuine (non-timeout) evaluate rejection from the top-level src probe unchanged", async () => {
     const originalError = new Error("boom: not a valid selector");
     const page = {
-      url: () => "https://careers.uchealth.org/jobs/123",
+      url: () => "https://careers.example.org/jobs/123",
       title: async () => "main document title",
       evaluate: () => Promise.reject(originalError),
       locator: (selector: string) => ({ scope: "main" as const, selector }),
@@ -555,7 +546,7 @@ describe("resolveFrameTarget: bounded against a never-settling evaluate", () => 
     };
 
     await expect(
-      resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe", {
+      resolveFrameTarget(page as never, "iframe#apply_frame", {
         timeoutMs: 40,
         pollMs: 10,
         evaluateTimeoutMs: 10,
@@ -565,7 +556,7 @@ describe("resolveFrameTarget: bounded against a never-settling evaluate", () => 
 
   it("defaults timeoutMs/evaluateTimeoutMs from config.scraper.* when opts is omitted, still returning the main-frame target instead of hanging on a never-settling evaluate", async () => {
     const page = {
-      url: () => "https://careers.uchealth.org/jobs/123",
+      url: () => "https://careers.example.org/jobs/123",
       title: async () => "main document title",
       evaluate: () => new Promise(() => {}),
       locator: (selector: string) => ({ scope: "main" as const, selector }),
@@ -573,7 +564,7 @@ describe("resolveFrameTarget: bounded against a never-settling evaluate", () => 
     };
 
     const start = Date.now();
-    const target = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe");
+    const target = await resolveFrameTarget(page as never, "iframe#apply_frame");
     const elapsed = Date.now() - start;
 
     expect(target.frame).toBeNull();
@@ -586,26 +577,26 @@ describe("resolveFrameTarget: bounded against a never-settling evaluate", () => 
 
   it("carries the declared frame selector on the main-frame target returned by a failed resolution, so a caller can retry resolution later", async () => {
     const page = {
-      url: () => "https://careers.uchealth.org/jobs/123",
+      url: () => "https://careers.example.org/jobs/123",
       title: async () => "main document title",
       evaluate: async () => ({ matched: false, src: null }),
       locator: (selector: string) => ({ scope: "main" as const, selector }),
       frames: () => [],
     };
 
-    const target = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe", {
+    const target = await resolveFrameTarget(page as never, "iframe#apply_frame", {
       timeoutMs: 20,
       pollMs: 5,
     });
 
     expect(target.frame).toBeNull();
     expect(target.frameSelector).toBeNull();
-    expect(target.declaredFrameSelector).toBe("iframe#talemetry_apply_iframe");
+    expect(target.declaredFrameSelector).toBe("iframe#apply_frame");
   });
 
   it("does not set declaredFrameSelector when no frame was ever requested (frameSelector null/undefined)", async () => {
     const page = {
-      url: () => "https://careers.uchealth.org/jobs/123",
+      url: () => "https://careers.example.org/jobs/123",
       title: async () => "main document title",
       evaluate: vi.fn(),
       locator: (selector: string) => ({ scope: "main" as const, selector }),
@@ -619,7 +610,7 @@ describe("resolveFrameTarget: bounded against a never-settling evaluate", () => 
 
   it("honors an explicit evaluateTimeoutMs on the no-selector fast path instead of the config default", async () => {
     const page = {
-      url: () => "https://careers.uchealth.org/jobs/123",
+      url: () => "https://careers.example.org/jobs/123",
       title: async () => "main document title",
       evaluate: () => new Promise(() => {}),
       locator: (selector: string) => ({ scope: "main" as const, selector }),
@@ -652,15 +643,15 @@ function makeHangingFrame() {
 describe("resolveFrameTarget: bounds the total attach budget across candidate probes", () => {
   it("keeps a single resolution pass near one evaluate budget when several page.frames() candidates never settle, instead of one evaluateTimeoutMs per candidate", async () => {
     const page = makeFakePage({
-      mainUrl: "https://careers.uchealth.org/jobs/123",
+      mainUrl: "https://careers.example.org/jobs/123",
       iframes: {
-        "iframe#talemetry_apply_iframe": "https://apply.talemetry.com/application/abc-123",
+        "iframe#apply_frame": "https://apply.example.com/application/abc-123",
       },
       frames: Array.from({ length: 5 }, () => makeHangingFrame()) as never,
     });
 
     const start = Date.now();
-    const target = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe", {
+    const target = await resolveFrameTarget(page as never, "iframe#apply_frame", {
       timeoutMs: 0,
       evaluateTimeoutMs: 100,
     });
@@ -668,7 +659,7 @@ describe("resolveFrameTarget: bounds the total attach budget across candidate pr
 
     expect(target.frame).toBeNull();
     expect(target.frameSelector).toBeNull();
-    expect(target.declaredFrameSelector).toBe("iframe#talemetry_apply_iframe");
+    expect(target.declaredFrameSelector).toBe("iframe#apply_frame");
     // Unbounded, this pays 5 * evaluateTimeoutMs (~500ms) sequentially probing
     // every hanging candidate before the caller ever sees a deadline check.
     expect(elapsed).toBeLessThan(250);
@@ -678,9 +669,9 @@ describe("resolveFrameTarget: bounds the total attach budget across candidate pr
     vi.useFakeTimers();
     try {
       const page = makeFakePage({
-        mainUrl: "https://careers.uchealth.org/jobs/123",
+        mainUrl: "https://careers.example.org/jobs/123",
         iframes: {
-          "iframe#talemetry_apply_iframe": "https://apply.talemetry.com/application/abc-123",
+          "iframe#apply_frame": "https://apply.example.com/application/abc-123",
         },
         frames: Array.from({ length: 5 }, () => makeHangingFrame()) as never,
       });
@@ -689,7 +680,7 @@ describe("resolveFrameTarget: bounds the total attach budget across candidate pr
       const evaluateTimeoutMs = 1000;
       const start = Date.now();
       let settledAt: number | null = null;
-      const targetPromise = resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe", {
+      const targetPromise = resolveFrameTarget(page as never, "iframe#apply_frame", {
         timeoutMs,
         pollMs: 100,
         evaluateTimeoutMs,
@@ -706,7 +697,7 @@ describe("resolveFrameTarget: bounds the total attach budget across candidate pr
       const target = await targetPromise;
 
       expect(target.frame).toBeNull();
-      expect(target.declaredFrameSelector).toBe("iframe#talemetry_apply_iframe");
+      expect(target.declaredFrameSelector).toBe("iframe#apply_frame");
       expect(settledAt).not.toBeNull();
       expect((settledAt as unknown as number) - start).toBeLessThanOrEqual(
         timeoutMs + evaluateTimeoutMs
@@ -718,20 +709,20 @@ describe("resolveFrameTarget: bounds the total attach budget across candidate pr
 
   it("still resolves an already-attached candidate frame at timeoutMs: 0, matching flow-runner's reresolveFrameTargetIfLost re-check", async () => {
     const page = makeFakePage({
-      mainUrl: "https://careers.uchealth.org/jobs/123",
+      mainUrl: "https://careers.example.org/jobs/123",
       iframes: {
-        "iframe#talemetry_apply_iframe": "https://apply.talemetry.com/application/abc-123",
+        "iframe#apply_frame": "https://apply.example.com/application/abc-123",
       },
-      frames: [makeFakeFrame("https://apply.talemetry.com/application/abc-123")],
+      frames: [makeFakeFrame("https://apply.example.com/application/abc-123")],
     });
 
-    const target = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe", {
+    const target = await resolveFrameTarget(page as never, "iframe#apply_frame", {
       timeoutMs: 0,
       evaluateTimeoutMs: 100,
     });
 
     expect(target.frame).not.toBeNull();
-    expect(target.frameSelector).toBe("iframe#talemetry_apply_iframe");
+    expect(target.frameSelector).toBe("iframe#apply_frame");
   });
 });
 
@@ -778,13 +769,13 @@ function makeDelayedFakeFrame(url: string, delayMs: number) {
 }
 
 describe("probeAttachedFrameTarget", () => {
-  const IFRAME_SELECTOR = "iframe#talemetry_apply_iframe";
-  const IFRAME_SRC = "https://apply.talemetry.com/application/abc-123";
+  const IFRAME_SELECTOR = "iframe#apply_frame";
+  const IFRAME_SRC = "https://apply.example.com/application/abc-123";
   const PROBE_DELAY_MS = 5;
 
   function makeRoundTripDelayedPage() {
     return makeDelayedFakePage({
-      mainUrl: "https://careers.uchealth.org/jobs/123",
+      mainUrl: "https://careers.example.org/jobs/123",
       delayMs: PROBE_DELAY_MS,
       iframes: { [IFRAME_SELECTOR]: IFRAME_SRC },
       frames: [makeDelayedFakeFrame(IFRAME_SRC, PROBE_DELAY_MS)],
@@ -842,7 +833,7 @@ describe("probeAttachedFrameTarget", () => {
   });
 
   it("returns null (not a main-frame fallback) when nothing matches within the floor", async () => {
-    const page = makeFakePage({ mainUrl: "https://careers.uchealth.org/jobs/123", frames: [] });
+    const page = makeFakePage({ mainUrl: "https://careers.example.org/jobs/123", frames: [] });
 
     const probed = await probeAttachedFrameTarget(page as never, "iframe#does_not_exist", {
       probeFloorMs: 20,
@@ -853,7 +844,7 @@ describe("probeAttachedFrameTarget", () => {
 
   it("bounds a single pass near the floor (not floor x candidate count) when several page.frames() candidates never settle", async () => {
     const page = makeFakePage({
-      mainUrl: "https://careers.uchealth.org/jobs/123",
+      mainUrl: "https://careers.example.org/jobs/123",
       iframes: { [IFRAME_SELECTOR]: IFRAME_SRC },
       frames: Array.from({ length: 5 }, () => makeHangingFrame()) as never,
     });
@@ -882,19 +873,19 @@ describe("FrameTarget.evaluate/url: bounded against a never-settling underlying 
     const childFrame = {
       evaluate: (expr: unknown) =>
         expr === "location.href"
-          ? Promise.resolve("https://apply.talemetry.com/application/abc-123")
+          ? Promise.resolve("https://apply.example.com/application/abc-123")
           : new Promise(() => {}),
       locator: (selector: string) => ({ scope: "frame" as const, selector }),
     };
     const page = makeFakePage({
-      mainUrl: "https://careers.uchealth.org/jobs/123",
+      mainUrl: "https://careers.example.org/jobs/123",
       iframes: {
-        "iframe#talemetry_apply_iframe": "https://apply.talemetry.com/application/abc-123",
+        "iframe#apply_frame": "https://apply.example.com/application/abc-123",
       },
       frames: [childFrame as never],
     });
 
-    const target = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe", {
+    const target = await resolveFrameTarget(page as never, "iframe#apply_frame", {
       evaluateTimeoutMs: 10,
     });
     expect(target.frame).toBe(childFrame);
@@ -916,20 +907,20 @@ describe("FrameTarget.evaluate/url: bounded against a never-settling underlying 
         if (expr !== "location.href") return new Promise(() => {});
         locationHrefCalls += 1;
         return locationHrefCalls === 1
-          ? Promise.resolve("https://apply.talemetry.com/application/abc-123")
+          ? Promise.resolve("https://apply.example.com/application/abc-123")
           : new Promise(() => {});
       },
       locator: (selector: string) => ({ scope: "frame" as const, selector }),
     };
     const page = makeFakePage({
-      mainUrl: "https://careers.uchealth.org/jobs/123",
+      mainUrl: "https://careers.example.org/jobs/123",
       iframes: {
-        "iframe#talemetry_apply_iframe": "https://apply.talemetry.com/application/abc-123",
+        "iframe#apply_frame": "https://apply.example.com/application/abc-123",
       },
       frames: [childFrame as never],
     });
 
-    const target = await resolveFrameTarget(page as never, "iframe#talemetry_apply_iframe", {
+    const target = await resolveFrameTarget(page as never, "iframe#apply_frame", {
       evaluateTimeoutMs: 10,
     });
     expect(target.frame).toBe(childFrame);
@@ -939,7 +930,7 @@ describe("FrameTarget.evaluate/url: bounded against a never-settling underlying 
 
   it("rejects a main-frame target's evaluate() within the evaluate budget when the underlying page.evaluate never settles", async () => {
     const page = {
-      url: () => "https://careers.uchealth.org/jobs/123",
+      url: () => "https://careers.example.org/jobs/123",
       title: async () => "main document title",
       evaluate: () => new Promise(() => {}),
       locator: (selector: string) => ({ scope: "main" as const, selector }),
