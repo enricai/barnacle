@@ -253,24 +253,13 @@ pnpm run recon:generate -- --site-id my-site --form-schema ./src/recon/my-form-s
 - `fieldNameKeys` models two roles: the first key is a machine code (PascalCased directly), the second is a human label (run through the section-heading heuristic). Supply one key for a label-only ATS, or two for one that exposes both. Additional keys are unused.
 - Omit `--form-schema` (or pass `none`) and ATS form-key recovery does not run — the engine hardcodes no vendor's wire format. A site whose ATS exposes a form definition must supply one to recover its option fields. See issue #57.
 
-#### Mapping the site's screening questions
-
-If the site asks screening questions, tell the generator which payload field answers each one — the same reasoning applies, it cannot know what your site asks:
+#### Filtering analytics noise
 
 | Env var | Default | Description |
 | --- | --- | --- |
-| `RECON_QUESTION_KEYWORDS` | `{}` | JSON object mapping a payload field name to the keywords that identify its question. A question must match **at least 2** keywords to map. |
 | `RECON_TELEMETRY_URL_PATTERNS` | *(empty)* | Comma-separated extra URL fragments to treat as analytics noise, on top of the built-in list. Put your site's trackers here. |
 
-```bash
-RECON_QUESTION_KEYWORDS='{
-  "VisaSponsorship":       ["visa", "sponsor"],
-  "RelatedToEmployee":     ["related", "employee"],
-  "CanPerformJobFunctions":["perform", "job functions", "duties"]
-}' pnpm run recon:generate -- --site-id my-site
-```
-
-Any question that matches no field is **logged by prompt** rather than skipped — an unmapped required question is how a generated plugin ends up submitting nothing for it. Read those warnings and either add keywords or accept that the question goes unanswered. Malformed JSON logs a warning and is treated as empty, so a typo cannot kill a recon run mid-flight.
+Screening-question answers with coded options (dropdowns) are recovered generically: when a flow step selects an answer by its label and the site's response carries the option list (JSON-Schema `enum`/`enumNames`, or `{label,value}` option objects), the generator maps the label to the wire code and emits a `z.enum` payload field, so the caller supplies the human-readable answer.
 
 Optionally generate the human-readable findings doc alongside:
 
