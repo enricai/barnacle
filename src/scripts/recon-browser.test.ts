@@ -35,6 +35,8 @@ vi.mock("@/config", () => ({
       frameReadyTimeoutMs: 20_000,
       frameDocumentReadyTimeoutMs: 5_000,
       frameEvaluateTimeoutMs: 30_000,
+      maxCascadeReplans: 5,
+      maxProbeReplans: 5,
     },
     telemetry: {
       callsNdjsonPath: ".barnacle/calls.ndjson",
@@ -100,6 +102,7 @@ vi.mock("@/scraper/flow-runner", async (importOriginal) => {
 });
 
 import { config } from "@/config";
+import { RECON_FLOW_STEP_SCHEMA } from "@/lib/llm/schemas";
 import type { LlmCallInput } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE, CALL_TYPE_RECON_REPLAN } from "@/lib/telemetry/call-types";
 import { StepVerificationError } from "@/scraper/errors";
@@ -110,7 +113,8 @@ import {
   capturesAfterIndex,
   chooseRequiredSelectOption,
   countSlugPrefixMatches,
-  dedupeConsecutiveIdentical,
+  dedupeIdenticalSteps,
+  dedupeReplanStepsByTarget,
   denormalizeStep,
   describeAttemptEffectSignals,
   detectRejectionInResponseBody,
@@ -142,6 +146,7 @@ import {
   type NormalizedStep,
   narrowInvalidFormControl,
   normalizeDateValue,
+  normalizeFlow,
   pairInvalidWithErrors,
   parseCaptureIndex,
   parseCli,
@@ -175,6 +180,7 @@ import {
   windowHasAdvanceTransition,
   windowHasTransitionBody,
   writeFixtureToTempFile,
+  writeSubmitManifest,
 } from "@/scripts/recon-browser";
 import type { Logger } from "@/types/logging";
 
@@ -535,6 +541,58 @@ describe("recon-browser/denormalizeStep", () => {
   });
 });
 
+describe("recon-browser/denormalizeStep + normalizeFlow — targetId/origin round-trip", () => {
+  it("emits targetId and a replan origin, forcing object form on an otherwise-bare step", () => {
+    expect(
+      denormalizeStep({
+        instruction: "Select 'No' in the sponsorship dropdown",
+        optional: false,
+        upload: false,
+        origin: "replan",
+        targetId: "applyNeedSponsorship",
+      })
+    ).toEqual({
+      step: "Select 'No' in the sponsorship dropdown",
+      targetId: "applyNeedSponsorship",
+      origin: "replan",
+    });
+  });
+
+  it("does not emit origin for an authored step (stays implicit)", () => {
+    expect(
+      denormalizeStep({
+        instruction: "Fill First Name",
+        optional: false,
+        upload: false,
+        origin: "original",
+        targetId: "firstName",
+      })
+    ).toEqual({ step: "Fill First Name", targetId: "firstName" });
+  });
+
+  it("survives a denormalize -> parse -> normalizeFlow round-trip (the on-disk path)", () => {
+    const step = {
+      instruction: "Select 'No' in the sponsorship dropdown",
+      optional: true,
+      upload: false,
+      origin: "replan" as const,
+      targetId: "applyNeedSponsorship",
+    };
+    // Mirror the real cycle: denormalize -> write JSON -> Zod-parse on read
+    // (applies flag defaults) -> normalizeFlow.
+    const onDisk = RECON_FLOW_STEP_SCHEMA.parse(denormalizeStep(step));
+    const [roundTripped] = normalizeFlow([onDisk]);
+    expect(roundTripped!.targetId).toBe("applyNeedSponsorship");
+    expect(roundTripped!.origin).toBe("replan");
+  });
+
+  it("reads a hand-authored bare-string flow back as origin:original with no targetId", () => {
+    const [step] = normalizeFlow(["Click Continue"]);
+    expect(step!.origin).toBe("original");
+    expect(step!.targetId).toBeUndefined();
+  });
+});
+
 describe("recon-browser/persistReplannedFlow", () => {
   let tmpDir: string;
   let flowPath: string;
@@ -879,7 +937,7 @@ describe("recon-browser/persistReplannedFlow", () => {
     const parsed = JSON.parse(readFileSync(flowPath, "utf8")) as unknown[];
     expect(parsed).toEqual([
       "Hand-authored required",
-      { step: "LLM-discovered required", optional: true },
+      { step: "LLM-discovered required", optional: true, origin: "replan" },
     ]);
   });
 
@@ -903,7 +961,69 @@ describe("recon-browser/persistReplannedFlow", () => {
     persistReplannedFlow({ flowFile: flowPath, finalPlan, replanEvents, logger: testLogger });
 
     expect(JSON.parse(readFileSync(flowPath, "utf8"))).toEqual([
-      { step: "Replan-optional", optional: true },
+      { step: "Replan-optional", optional: true, origin: "replan" },
+    ]);
+  });
+
+  it("converges reworded replan duplicates on targetId (the make-or-break case)", () => {
+    writeFileSync(flowPath, '{"steps":["Answer the employment question"]}\n');
+
+    // Two replan-origin steps describe the SAME DOM field (q_prev_employer) in
+    // different prose — the reword churn a deep wizard accretes across runs. No
+    // string/label dedup catches them; targetId does.
+    const finalPlan: NormalizedStep[] = [
+      {
+        instruction: "On the Employment step, answer the 'previously employed' question with 'No'",
+        optional: true,
+        upload: false,
+        origin: "replan",
+        targetId: "q_prev_employer",
+      },
+      {
+        instruction: "Fill the School field",
+        optional: true,
+        upload: false,
+        origin: "replan",
+        targetId: "eduSchool",
+      },
+      {
+        instruction: "Select 'No' in the 'Have you ever been employed…' dropdown",
+        optional: true,
+        upload: false,
+        origin: "replan",
+        targetId: "q_prev_employer",
+      },
+    ];
+    const replanEvents: ReplanEvent[] = [
+      {
+        replanIndex: 1,
+        cause: "cascade-exhausted",
+        indexAtFailure: 0,
+        failedInstruction: "Answer the employment question",
+        replanSteps: finalPlan,
+        timestamp: "2026-06-03T20:00:00.000Z",
+        pageState: { url: "https://example.com/apply", htmlLength: 50000 },
+      },
+    ];
+
+    persistReplannedFlow({
+      flowFile: flowPath,
+      finalPlan,
+      replanEvents,
+      logger: testLogger,
+      originalShape: "object",
+    });
+
+    const written = JSON.parse(readFileSync(flowPath, "utf8")) as { steps: unknown[] };
+    // The second q_prev_employer step is dropped; School survives.
+    expect(written.steps).toEqual([
+      {
+        step: "On the Employment step, answer the 'previously employed' question with 'No'",
+        optional: true,
+        targetId: "q_prev_employer",
+        origin: "replan",
+      },
+      { step: "Fill the School field", optional: true, targetId: "eduSchool", origin: "replan" },
     ]);
   });
 });
@@ -1153,60 +1273,84 @@ describe("recon-browser/narrowInvalidFormControl", () => {
   });
 });
 
-describe("recon-browser/dedupeConsecutiveIdentical", () => {
-  it("collapses consecutive identical strings", () => {
-    expect(dedupeConsecutiveIdentical(["A", "B", "B", "B", "C", "B", "B"])).toEqual([
-      "A",
-      "B",
-      "C",
-      "B",
-    ]);
+describe("recon-browser/dedupeIdenticalSteps", () => {
+  it("collapses NON-adjacent identical items (the real accretion pattern)", () => {
+    // A deep wizard's cross-run accretion is identical blocks stacked
+    // non-adjacently — the consecutive-only predecessor missed every one.
+    expect(dedupeIdenticalSteps(["A", "B", "A", "B", "A"])).toEqual(["A", "B"]);
   });
 
   it("returns empty array for empty input", () => {
-    expect(dedupeConsecutiveIdentical([])).toEqual([]);
-  });
-
-  it("returns single-item array unchanged", () => {
-    expect(dedupeConsecutiveIdentical(["only"])).toEqual(["only"]);
+    expect(dedupeIdenticalSteps([])).toEqual([]);
   });
 
   it("collapses an all-identical run to a single entry", () => {
-    expect(dedupeConsecutiveIdentical(["X", "X", "X", "X"])).toEqual(["X"]);
+    expect(dedupeIdenticalSteps(["X", "X", "X", "X"])).toEqual(["X"]);
   });
 
-  it("preserves non-adjacent duplicates", () => {
-    expect(dedupeConsecutiveIdentical(["A", "B", "A", "B", "A"])).toEqual([
-      "A",
-      "B",
-      "A",
-      "B",
-      "A",
+  it("compares objects structurally — two steps differing in any field are BOTH kept", () => {
+    const required = { step: "Fill First Name" };
+    const optional = { step: "Fill First Name", optional: true };
+    expect(dedupeIdenticalSteps([required, optional, { ...required }])).toEqual([
+      required,
+      optional,
     ]);
   });
 
-  it("compares objects structurally via JSON-stringify equality", () => {
-    const stepA = { step: "Fill First Name", optional: true };
-    const stepB = { step: "Fill Last Name", optional: true };
-    expect(dedupeConsecutiveIdentical([stepA, { ...stepA }, stepA, stepB, stepB])).toEqual([
-      stepA,
-      stepB,
-    ]);
-  });
-
-  it("does NOT collapse a string and an object with the same instruction (different semantics)", () => {
-    // Bare string = required step; object form = could be optional/upload.
-    // These are NOT identical even when text matches.
+  it("does NOT collapse a string and an object with the same instruction", () => {
     const bare = "Fill First Name";
     const objForm = { step: "Fill First Name", optional: true };
-    expect(dedupeConsecutiveIdentical([bare, objForm])).toEqual([bare, objForm]);
+    expect(dedupeIdenticalSteps([bare, objForm])).toEqual([bare, objForm]);
+  });
+});
+
+describe("recon-browser/dedupeReplanStepsByTarget", () => {
+  const mk = (
+    instruction: string,
+    origin: "original" | "replan",
+    targetId?: string
+  ): NormalizedStep => ({ instruction, optional: false, upload: false, origin, targetId });
+
+  it("collapses reworded replan duplicates that share a targetId", () => {
+    // The reword churn: same DOM field, different prose, no shared quoted label
+    // — string/label dedup misses it, targetId catches it.
+    const steps = [
+      mk(
+        "On the Employment step, answer the 'previously employed' question with 'No'",
+        "replan",
+        "q_prev_employer"
+      ),
+      mk("Fill the School field", "replan", "eduSchool"),
+      mk("Select 'No' in the 'Have you ever been employed…' dropdown", "replan", "q_prev_employer"),
+    ];
+    const out = dedupeReplanStepsByTarget(steps);
+    expect(out.map((s) => s.targetId)).toEqual(["q_prev_employer", "eduSchool"]);
   });
 
-  it("returns a new array, not the input reference", () => {
-    const input = ["A", "B"];
-    const out = dedupeConsecutiveIdentical(input);
-    expect(out).not.toBe(input);
-    expect(out).toEqual(input);
+  it("never drops an authored (original) step even when it repeats a targetId", () => {
+    const steps = [
+      mk("Fill First Name", "original", "firstName"),
+      mk("Re-fill First Name after the resume-upload re-render", "original", "firstName"),
+    ];
+    expect(dedupeReplanStepsByTarget(steps)).toHaveLength(2);
+  });
+
+  it("does not drop a replan step whose targetId first appeared on an authored step, but drops a later replan repeat", () => {
+    const steps = [
+      mk("Fill First Name", "original", "firstName"),
+      mk("Bridge: fill First Name", "replan", "firstName"),
+    ];
+    // The replan step repeats an authored target → dropped.
+    expect(dedupeReplanStepsByTarget(steps)).toHaveLength(1);
+    expect(dedupeReplanStepsByTarget(steps)[0]!.origin).toBe("original");
+  });
+
+  it("keeps replan steps that have no targetId (nothing to key on)", () => {
+    const steps = [
+      mk("Click a label-less button", "replan", undefined),
+      mk("Click another label-less button", "replan", undefined),
+    ];
+    expect(dedupeReplanStepsByTarget(steps)).toHaveLength(2);
   });
 });
 
@@ -5125,6 +5269,135 @@ describe("recon-browser/parseCli — allowEmptyFlow (FAILURE 1)", () => {
     const parsed = parseCli();
     expect(parsed.allowEmptyFlow).toBe(true);
     expect(parsed.flow).toEqual([]);
+  });
+});
+
+describe("recon-browser/parseCli — replan budgets", () => {
+  const ORIGINAL_ARGV = process.argv;
+
+  afterEach(() => {
+    process.argv = ORIGINAL_ARGV;
+  });
+
+  it("defaults both budget overrides to null (falls through to env/default)", () => {
+    process.argv = ["node", "recon-browser.ts", "--url", "https://example.com"];
+
+    const parsed = parseCli();
+    expect(parsed.maxCascadeReplans).toBeNull();
+    expect(parsed.maxProbeReplans).toBeNull();
+  });
+
+  it("parses --max-cascade-replans and --max-probe-replans as positive integers", () => {
+    process.argv = [
+      "node",
+      "recon-browser.ts",
+      "--url",
+      "https://example.com",
+      "--max-cascade-replans",
+      "8",
+      "--max-probe-replans",
+      "3",
+    ];
+
+    const parsed = parseCli();
+    expect(parsed.maxCascadeReplans).toBe(8);
+    expect(parsed.maxProbeReplans).toBe(3);
+  });
+
+  it("exits on a non-positive --max-cascade-replans value", () => {
+    process.argv = [
+      "node",
+      "recon-browser.ts",
+      "--url",
+      "https://example.com",
+      "--max-cascade-replans",
+      "0",
+    ];
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("process.exit");
+    }) as never);
+
+    expect(() => parseCli()).toThrow("process.exit");
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    exitSpy.mockRestore();
+  });
+});
+
+describe("recon-browser/writeSubmitManifest", () => {
+  const testLogger = {
+    info: (): void => {},
+    warn: (): void => {},
+    error: (): void => {},
+  } as unknown as Parameters<typeof writeSubmitManifest>[0]["logger"];
+
+  function setupRun(captures: { method: string; url: string; requestPostData: string | null }[]): {
+    runRoot: string;
+    capturesDir: string;
+  } {
+    const runRoot = mkdtempSync(join(tmpdir(), "recon-run-"));
+    const capturesDir = join(runRoot, "graphql");
+    mkdirSync(capturesDir);
+    captures.forEach((c, i) => {
+      const idx = String(i).padStart(3, "0");
+      writeFileSync(join(capturesDir, `${idx}-phase-x.json`), JSON.stringify(c));
+    });
+    return { runRoot, capturesDir };
+  }
+
+  const BASE = "https://www.example-ats.org";
+
+  it("records only POSTs matching endpoint + body patterns, with correct indices", () => {
+    const { runRoot, capturesDir } = setupRun([
+      { method: "POST", url: `${BASE}/widgets`, requestPostData: '{"ddoKey":"chrome"}' },
+      {
+        method: "POST",
+        url: `${BASE}/applySubmit`,
+        requestPostData: '{"ddoKey":"applyGetReferences"}',
+      },
+      { method: "POST", url: `${BASE}/applySubmit`, requestPostData: '{"ddoKey":"applySubmit"}' },
+    ]);
+    writeSubmitManifest({
+      runRoot,
+      capturesDir,
+      submitEndpointPattern: "/applySubmit",
+      submitBodyPattern: '"ddoKey":"applySubmit"',
+      logger: testLogger,
+    });
+    const manifest = JSON.parse(readFileSync(join(runRoot, "submit-manifest.json"), "utf8")) as {
+      index: number;
+      url: string;
+    }[];
+    expect(manifest).toEqual([
+      { index: 2, filename: "002-phase-x.json", url: `${BASE}/applySubmit` },
+    ]);
+  });
+
+  it("writes nothing when no submitEndpointPattern is declared", () => {
+    const { runRoot, capturesDir } = setupRun([
+      { method: "POST", url: `${BASE}/applySubmit`, requestPostData: "{}" },
+    ]);
+    writeSubmitManifest({
+      runRoot,
+      capturesDir,
+      submitEndpointPattern: null,
+      submitBodyPattern: null,
+      logger: testLogger,
+    });
+    expect(existsSync(join(runRoot, "submit-manifest.json"))).toBe(false);
+  });
+
+  it("writes an empty manifest (not silence) when the pattern matches nothing", () => {
+    const { runRoot, capturesDir } = setupRun([
+      { method: "POST", url: `${BASE}/widgets`, requestPostData: "{}" },
+    ]);
+    writeSubmitManifest({
+      runRoot,
+      capturesDir,
+      submitEndpointPattern: "/applySubmit",
+      submitBodyPattern: null,
+      logger: testLogger,
+    });
+    expect(JSON.parse(readFileSync(join(runRoot, "submit-manifest.json"), "utf8"))).toEqual([]);
   });
 });
 

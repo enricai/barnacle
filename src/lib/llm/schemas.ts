@@ -60,6 +60,25 @@ export const RECON_FLOW_STEP_SCHEMA = z.union([
      * candidate payload field. Ignored by the recon runtime.
      */
     payloadFieldNone: z.boolean().optional(),
+    /**
+     * Stable DOM identity of the element this step acts on, derived at
+     * resolution time (`el.id`, else accessible name, else a content hash).
+     * The runtime stamps it after a primitive succeeds; persisted so the next
+     * run's dedup and the replanner can recognize "this target is already
+     * covered" deterministically — independent of how the instruction prose is
+     * worded. Absent on hand-authored steps and steps whose target never
+     * resolved; such steps fall back to prose comparison.
+     */
+    targetId: z.string().optional(),
+    /**
+     * Provenance of the step: `"replan"` marks a step the LLM replanner
+     * appended at a cascade-exhausted recovery point; `"original"` (or absent)
+     * marks a hand-authored step. Persisted so accretion from a prior run can
+     * be distinguished from authored intent across runs — without it,
+     * `normalizeFlow` would stamp every re-read step `"original"` and the
+     * write-back could never converge.
+     */
+    origin: z.enum(["original", "replan"]).optional(),
   }),
 ]);
 

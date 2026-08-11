@@ -3983,6 +3983,12 @@ async function applySelectValue(
   return { ok: true, stillInvalid };
 }
 
+/**
+ * Returns the resolved `<select>`'s DOM id on success (empty string when the
+ * element has no id), or `null` when the step wasn't handled here (no matching
+ * select, no commit) and should fall through to the cascade. The id becomes the
+ * step's stable `targetId` for cross-run convergence.
+ */
 async function trySelectPrimitive(params: {
   page: Page;
   target: FrameTarget;
@@ -3990,10 +3996,10 @@ async function trySelectPrimitive(params: {
   logger: Logger;
   anthropic: Anthropic | null;
   captureFn?: JudgeCaptureFn;
-}): Promise<boolean> {
+}): Promise<string | null> {
   const { page, target, instruction, logger, anthropic, captureFn } = params;
   const parsed = parseSelectStep(instruction);
-  if (!parsed) return false;
+  if (!parsed) return null;
   const { option, questionLabel } = parsed;
   const optLabel = `option "${option.slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
   // Phase 1 (browser, no mutation): find the target select — the one whose
@@ -4022,7 +4028,7 @@ async function trySelectPrimitive(params: {
     for (let i = 0; i < selects.length; i++) {
       const opts = Array.from(selects[i].options || []);
       const m = opts.find((o) => norm(o.textContent) === wantOpt || norm(o.value) === wantOpt);
-      if (m) detMatches.push({ selIdx: i, value: m.value, text: m.textContent });
+      if (m) detMatches.push({ selIdx: i, value: m.value, text: m.textContent, id: selects[i].id || "" });
     }
     if (detMatches.length === 1) {
       return { selectPresent: true, detMatch: detMatches[0] };
@@ -4067,7 +4073,7 @@ async function trySelectPrimitive(params: {
       const options = Array.from(sel.options || [])
         .filter((o) => !o.disabled && (o.value || (o.textContent || "").trim()))
         .map((o) => ({ text: (o.textContent || "").replace(/\\s+/g, " ").trim(), value: o.value }));
-      if (options.length > 0) candidates.push({ selIdx: i, label: selLabelText(sel), options });
+      if (options.length > 0) candidates.push({ selIdx: i, id: sel.id || "", label: selLabelText(sel), options });
     }
     if (candidates.length === 0) return { selectPresent: true, candidates: [] };
     return { selectPresent: true, candidates };
@@ -4077,8 +4083,13 @@ async function trySelectPrimitive(params: {
     // render-lag); poll until it appears or the cap is hit.
     const enumResult = await pollEnumerate<{
       selectPresent: boolean;
-      detMatch?: { selIdx: number; value: string; text: string };
-      candidates?: { selIdx: number; label: string; options: { text: string; value: string }[] }[];
+      detMatch?: { selIdx: number; value: string; text: string; id: string };
+      candidates?: {
+        selIdx: number;
+        id: string;
+        label: string;
+        options: { text: string; value: string }[];
+      }[];
     }>(page, target, enumerateExpr, (r) => r?.selectPresent === true);
     // No <select> on the page at all (e.g. the question is a radio group) —
     // fall through to the cascade unchanged; the LLM picker can't help here.
@@ -4086,7 +4097,7 @@ async function trySelectPrimitive(params: {
       logger.info(
         `select primitive: no <select> on page for ${optLabel}; falling through to cascade`
       );
-      return false;
+      return null;
     }
     // Deterministic unique-option match: set it, settle, and confirm it committed
     // (cleared the required/invalid marker). A set that doesn't clear the marker
@@ -4103,19 +4114,19 @@ async function trySelectPrimitive(params: {
         logger.info(
           `select primitive: set dropdown to "${enumResult.detMatch.text.trim().slice(0, 40)}" (${optLabel})`
         );
-        return true;
+        return enumResult.detMatch.id;
       }
       logger.info(
         `select primitive: dropdown value for ${optLabel} did not commit (ok=${ok} stillInvalid=${stillInvalid}); falling through to cascade`
       );
-      return false;
+      return null;
     }
     const candidates = enumResult.candidates ?? [];
     if (anthropic === null || candidates.length === 0) {
       logger.info(
         `select primitive: no unique option match for ${optLabel}${anthropic === null ? " (no LLM client)" : ""}; falling through to cascade`
       );
-      return false;
+      return null;
     }
     // LLM picks WHICH dropdown answers the question and which option in it.
     const verdict = await judgeSelectOptionWithLLM({
@@ -4134,7 +4145,7 @@ async function trySelectPrimitive(params: {
       logger.info(
         `select primitive: LLM found no matching dropdown for ${optLabel}${verdict ? ` (${verdict.reason})` : ""}; falling through to cascade`
       );
-      return false;
+      return null;
     }
     // biome-ignore lint/style/noNonNullAssertion: guarded above by the verdict.selectIndex === null early-return
     const chosenCandidate = candidates[verdict.selectIndex]!;
@@ -4153,15 +4164,15 @@ async function trySelectPrimitive(params: {
       logger.info(
         `select primitive: LLM chose "${chosenOption.text.slice(0, 40)}" for ${optLabel} (${verdict.reason.slice(0, 60)})`
       );
-      return true;
+      return chosenCandidate.id;
     }
     logger.info(
       `select primitive: LLM-chosen value for ${optLabel} did not commit (ok=${ok} stillInvalid=${stillInvalid}); falling through`
     );
-    return false;
+    return null;
   } catch (err) {
     logger.warn(`select primitive: evaluate threw: ${toErrorMessage(err)}; falling through`);
-    return false;
+    return null;
   }
 }
 
@@ -4363,6 +4374,11 @@ async function tryFillRequiredSelectsPrimitive(params: {
  * no checkbox groups, or no option fits (fall through to the cascade — which is
  * also where `<select>`-only pages go, since trySelectPrimitive runs first).
  */
+/**
+ * Returns the resolved checkbox's DOM id on success (empty string when it has
+ * no id), or `null` when the step wasn't handled here. See trySelectPrimitive
+ * for the id-as-targetId rationale.
+ */
 async function tryCheckboxPrimitive(params: {
   page: Page;
   target: FrameTarget;
@@ -4370,10 +4386,10 @@ async function tryCheckboxPrimitive(params: {
   logger: Logger;
   anthropic: Anthropic | null;
   captureFn?: JudgeCaptureFn;
-}): Promise<boolean> {
+}): Promise<string | null> {
   const { page, target, instruction, logger, anthropic, captureFn } = params;
   const parsed = parseSelectStep(instruction);
-  if (!parsed) return false;
+  if (!parsed) return null;
   const { option, questionLabel } = parsed;
   const optLabel = `option "${option.slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
   // Phase 1 (browser, no mutation): find checkbox GROUPS and their options.
@@ -4447,7 +4463,7 @@ async function tryCheckboxPrimitive(params: {
       const grpEl = groupEls[h.gi];
       const cb = grpEl.querySelectorAll("input[type=checkbox]")[h.bi];
       const ok = cb ? setChecked(cb) : false;
-      return { groupPresent: true, applied: true, ok, chosen: h.text };
+      return { groupPresent: true, applied: true, ok, chosen: h.text, id: cb ? (cb.id || "") : "" };
     }
     // LLM path: return groups (label + option texts) for the picker.
     return { groupPresent: true, applied: false, groups: groups.map((g) => ({ gi: g.gi, label: g.label, options: g.options })) };
@@ -4460,21 +4476,22 @@ async function tryCheckboxPrimitive(params: {
       applied?: boolean;
       ok?: boolean;
       chosen?: string;
+      id?: string;
       groups?: { gi: number; label: string; options: { bi: number; text: string }[] }[];
     }>(page, target, enumerateExpr, (r) => r?.groupPresent === true);
-    if (!enumResult?.groupPresent) return false; // no checkbox groups → cascade
+    if (!enumResult?.groupPresent) return null; // no checkbox groups → cascade
     if (enumResult.applied && enumResult.ok) {
       logger.info(
         `checkbox primitive: checked "${(enumResult.chosen || "").trim().slice(0, 40)}" (${optLabel})`
       );
-      return true;
+      return enumResult.id ?? "";
     }
     const groups = enumResult.groups ?? [];
     if (anthropic === null || groups.length === 0) {
       logger.info(
         `checkbox primitive: no unique option match for ${optLabel}${anthropic === null ? " (no LLM client)" : ""}; falling through to cascade`
       );
-      return false;
+      return null;
     }
     // LLM picks which group answers the question + which option. Reuse the
     // select-option judge (candidate "dropdowns" == checkbox groups here).
@@ -4494,7 +4511,7 @@ async function tryCheckboxPrimitive(params: {
       logger.info(
         `checkbox primitive: LLM found no matching group for ${optLabel}${verdict ? ` (${verdict.reason})` : ""}; falling through to cascade`
       );
-      return false;
+      return null;
     }
     // biome-ignore lint/style/noNonNullAssertion: guarded above by the verdict.selectIndex === null early-return
     const chosenGroup = groups[verdict.selectIndex]!;
@@ -4513,22 +4530,22 @@ async function tryCheckboxPrimitive(params: {
         cb.dispatchEvent(new Event("input", { bubbles: true }));
         cb.dispatchEvent(new Event("change", { bubbles: true }));
       }
-      return { ok: cb.checked === true };
+      return { ok: cb.checked === true, id: cb.id || "" };
     })(${JSON.stringify(chosenGroup.gi)}, ${JSON.stringify(chosenOption.bi)})`;
-    const applyResult = (await target.evaluate(applyExpr)) as { ok: boolean };
+    const applyResult = (await target.evaluate(applyExpr)) as { ok: boolean; id: string };
     if (applyResult?.ok) {
       logger.info(
         `checkbox primitive: LLM checked "${chosenOption.text.slice(0, 40)}" for ${optLabel} (${verdict.reason.slice(0, 60)})`
       );
-      return true;
+      return applyResult.id;
     }
     logger.info(
       `checkbox primitive: LLM-chosen checkbox did not stick for ${optLabel}; falling through`
     );
-    return false;
+    return null;
   } catch (err) {
     logger.warn(`checkbox primitive: evaluate threw: ${toErrorMessage(err)}; falling through`);
-    return false;
+    return null;
   }
 }
 
@@ -4735,10 +4752,12 @@ async function tryRadioPrimitive(params: {
   logger: Logger;
   anthropic: Anthropic | null;
   captureFn?: JudgeCaptureFn;
-}): Promise<boolean> {
+  // Returns the selected radio's DOM id on success (empty string if none), or
+  // null when unhandled. See trySelectPrimitive for the id-as-targetId rationale.
+}): Promise<string | null> {
   const { page, target, instruction, logger, anthropic, captureFn } = params;
   const parsed = parseRadioStep(instruction);
-  if (!parsed) return false;
+  if (!parsed) return null;
   const { option, questionLabel } = parsed;
   const optLabel = `option "${option.slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
   // Phase 1 (browser): find radio GROUPS and their options. A group is a
@@ -4812,9 +4831,9 @@ async function tryRadioPrimitive(params: {
       groupPresent: boolean;
       groups?: RadioGroupCandidate[];
     }>(page, target, enumerateExpr, (r) => r?.groupPresent === true);
-    if (!enumResult?.groupPresent) return false; // no radio group → cascade
+    if (!enumResult?.groupPresent) return null; // no radio group → cascade
     const groups = enumResult.groups ?? [];
-    if (groups.length === 0) return false;
+    if (groups.length === 0) return null;
     // Deterministic + positional selection (excludes already-answered groups,
     // fixes the empty-label universal-match bug). Only genuine labeled ambiguity
     // defers to the LLM.
@@ -4829,23 +4848,23 @@ async function tryRadioPrimitive(params: {
         logger.info(
           `radio primitive: selected "${(chosenOpt?.text ?? "").trim().slice(0, 40)}" (${optLabel})`
         );
-        return true;
+        return chosenOpt?.id ?? "";
       }
       logger.info(`radio primitive: chosen radio did not stick for ${optLabel}; falling through`);
-      return false;
+      return null;
     }
     if (selection === null) {
       logger.info(
         `radio primitive: no group offers option for ${optLabel}; falling through to cascade`
       );
-      return false;
+      return null;
     }
     // selection === "ambiguous": multiple labeled groups match → let the LLM pick.
     if (anthropic === null) {
       logger.info(
         `radio primitive: ambiguous labeled match for ${optLabel} (no LLM client); falling through to cascade`
       );
-      return false;
+      return null;
     }
     // LLM picks which group answers the question + which option. Reuse the
     // select-option judge (candidate "dropdowns" == radio groups here). Only
@@ -4867,7 +4886,7 @@ async function tryRadioPrimitive(params: {
       logger.info(
         `radio primitive: LLM found no matching group for ${optLabel}${verdict ? ` (${verdict.reason})` : ""}; falling through to cascade`
       );
-      return false;
+      return null;
     }
     // biome-ignore lint/style/noNonNullAssertion: guarded above by the verdict.selectIndex === null early-return
     const chosenGroup = llmGroups[verdict.selectIndex]!;
@@ -4883,13 +4902,13 @@ async function tryRadioPrimitive(params: {
       logger.info(
         `radio primitive: LLM selected "${chosenOption.text.slice(0, 40)}" for ${optLabel} (${verdict.reason.slice(0, 60)})`
       );
-      return true;
+      return chosenOption.id ?? "";
     }
     logger.info(`radio primitive: LLM-chosen radio did not stick for ${optLabel}; falling through`);
-    return false;
+    return null;
   } catch (err) {
     logger.warn(`radio primitive: evaluate threw: ${toErrorMessage(err)}; falling through`);
-    return false;
+    return null;
   }
 }
 
@@ -6167,7 +6186,14 @@ export async function executeStepWithHealing(params: {
    * static. When omitted, the cascade behaves identically — purely
    * additive instrumentation.
    */
-  trajectory?: { stepIndex: number; verifiedBy: AttemptRecord["verifiedBy"] }[];
+  trajectory?: {
+    stepIndex: number;
+    verifiedBy: AttemptRecord["verifiedBy"];
+    // Stable DOM id of the element a fast primitive resolved for this step,
+    // when one was resolved (empty string = resolved but element had no id).
+    // The main loop reads it back to stamp the plan step's persistent targetId.
+    targetId?: string;
+  }[];
   /**
    * Persistence seam for the terminal failure dump. When the probe finds no
    * candidates or the cascade exhausts every attempt, the engine hands the
@@ -6317,18 +6343,17 @@ export async function executeStepWithHealing(params: {
   // falls back to the main-frame target when no frameSelector is set, so this
   // bridge stays behavior-identical for every existing site.
   const selectFrameTarget = frameTarget ?? mainFrameTarget(page);
-  if (
-    await trySelectPrimitive({
-      page,
-      target: selectFrameTarget,
-      instruction: step,
-      logger,
-      anthropic,
-      captureFn,
-    })
-  ) {
+  const selectTargetId = await trySelectPrimitive({
+    page,
+    target: selectFrameTarget,
+    instruction: step,
+    logger,
+    anthropic,
+    captureFn,
+  });
+  if (selectTargetId !== null) {
     logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by select primitive`);
-    trajectory?.push({ stepIndex, verifiedBy: "dom" });
+    trajectory?.push({ stepIndex, verifiedBy: "dom", targetId: selectTargetId });
     return "completed";
   }
 
@@ -6337,18 +6362,17 @@ export async function executeStepWithHealing(params: {
   // screening questions this way — answer it directly in the DOM. Runs AFTER
   // trySelectPrimitive (which handles <select> and no-ops on checkbox-only
   // pages). No-op (falls through) when there's no checkbox group or no match.
-  if (
-    await tryCheckboxPrimitive({
-      page,
-      target: selectFrameTarget,
-      instruction: step,
-      logger,
-      anthropic,
-      captureFn,
-    })
-  ) {
+  const checkboxTargetId = await tryCheckboxPrimitive({
+    page,
+    target: selectFrameTarget,
+    instruction: step,
+    logger,
+    anthropic,
+    captureFn,
+  });
+  if (checkboxTargetId !== null) {
     logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by checkbox primitive`);
-    trajectory?.push({ stepIndex, verifiedBy: "dom" });
+    trajectory?.push({ stepIndex, verifiedBy: "dom", targetId: checkboxTargetId });
     return "completed";
   }
 
@@ -6358,18 +6382,17 @@ export async function executeStepWithHealing(params: {
   // reach the observe cascade's el.click() fallback that fails to commit MUI/
   // React controlled state (the wizard ATS's Basic-Info Step-2 wall). No-op (falls
   // through) when there's no radio group or no confident option match.
-  if (
-    await tryRadioPrimitive({
-      page,
-      target: frameTarget ?? mainFrameTarget(page),
-      instruction: step,
-      logger,
-      anthropic,
-      captureFn,
-    })
-  ) {
+  const radioTargetId = await tryRadioPrimitive({
+    page,
+    target: frameTarget ?? mainFrameTarget(page),
+    instruction: step,
+    logger,
+    anthropic,
+    captureFn,
+  });
+  if (radioTargetId !== null) {
     logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by radio primitive`);
-    trajectory?.push({ stepIndex, verifiedBy: "dom" });
+    trajectory?.push({ stepIndex, verifiedBy: "dom", targetId: radioTargetId });
     return "completed";
   }
 

@@ -373,7 +373,8 @@ const IGNORE_REQUEST_HEADERS = new Set([
 function deriveRequestHeaders(
   captures: Capture[],
   replays: ReplayResult[],
-  baseUrl: string
+  baseUrl: string,
+  submitPatterns: SubmitPatterns | null = null
 ): Record<string, string> {
   const successfulUrls = new Set(replays.filter((r) => r.success).map((r) => endpointKey(r.url)));
 
@@ -384,7 +385,9 @@ function deriveRequestHeaders(
   // captures exist (multi-step submission flows), use them. For sites
   // where the flow is a single REST call (no detectable action sequence),
   // fall back to the replay-matched captures.
-  const actionCaptures = extractActionSequence(captures, baseUrl).map((a) => a.capture);
+  const actionCaptures = extractActionSequence(captures, baseUrl, submitPatterns).map(
+    (a) => a.capture
+  );
   const replayMatchedCaptures = captures.filter((c) => successfulUrls.has(endpointKey(c.url)));
 
   const relevantCaptures = actionCaptures.length > 0 ? actionCaptures : replayMatchedCaptures;
@@ -460,21 +463,97 @@ interface ActionCapture {
 }
 
 /**
+ * Flow-declared regexes that isolate the real submission POSTs from same-origin
+ * page chrome. `endpoint` matches the request URL; `body` matches the request
+ * body (for ATSes that overload one endpoint by a body discriminator). Both are
+ * null when the flow declares neither — in which case selection falls back to
+ * the host/noise heuristic and no submit-pattern gate is applied.
+ */
+export interface SubmitPatterns {
+  endpoint: string | null;
+  body: string | null;
+}
+
+/**
+ * Builds the compiled submit-pattern predicate. A flow-declared regex that
+ * fails to compile is a broken flow (recon-browser validates it eagerly too),
+ * so we let the `RegExp` constructor throw rather than silently reverting to
+ * unfiltered selection, which would re-admit the page-chrome bloat this gate
+ * exists to remove.
+ */
+function compileSubmitMatcher(patterns: SubmitPatterns | null): (capture: Capture) => boolean {
+  if (patterns === null || (patterns.endpoint === null && patterns.body === null)) {
+    return () => true;
+  }
+  const endpointRx = patterns.endpoint === null ? null : new RegExp(patterns.endpoint);
+  const bodyRx = patterns.body === null ? null : new RegExp(patterns.body);
+  return (capture: Capture): boolean => {
+    if (endpointRx !== null && !endpointRx.test(capture.url)) return false;
+    if (bodyRx !== null && !bodyRx.test(capture.requestPostData ?? "")) return false;
+    return true;
+  };
+}
+
+/**
+ * Reads `submit-manifest.json` (written by recon-browser) and resolves it to the
+ * authoritative submission action sequence. This is the deepest submit-selection
+ * signal: recon-browser matched these captures against the flow's declared submit
+ * patterns at run time, so generate emits exactly them instead of re-deriving the
+ * submission from raw traffic. Returns null when no manifest exists (older runs,
+ * `recon-http`-only) so the caller falls back to pattern/heuristic extraction.
+ *
+ * The manifest's `index` is the capture's sort-order position, and `captures`
+ * arrives already `.sort()`ed by `readJsonDir`, so `captures[index]` is the same
+ * capture recon-browser recorded — cross-checked on `url` as a guard against a
+ * capture set that drifted between runs.
+ */
+export function resolveManifestActionSequence(
+  runRoot: string,
+  captures: Capture[]
+): ActionCapture[] | null {
+  const manifestPath = join(runRoot, "submit-manifest.json");
+  let entries: { index: number; filename: string; url: string }[];
+  try {
+    entries = JSON.parse(readFileSync(manifestPath, "utf8")) as typeof entries;
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(entries) || entries.length === 0) return null;
+  const resolved: ActionCapture[] = [];
+  for (const entry of entries) {
+    const capture = captures[entry.index];
+    if (capture === undefined || capture.url !== entry.url) return null;
+    resolved.push({ capture, index: entry.index });
+  }
+  return resolved;
+}
+
+/**
  * Extracts the ordered sequence of meaningful POSTs that represent the
  * transactional flow: same-host 2xx POSTs, minus telemetry and error-reporting
  * sinks. Assets need no filter of their own — they arrive as GETs.
+ *
+ * When the flow declares submit patterns, only POSTs matching them survive —
+ * this isolates the submission from same-origin page chrome (bootstrap, chatbot,
+ * JWT refresh, reference-lookup) that a browser fires incidentally. Absent
+ * patterns preserve the host/noise heuristic exactly.
  *
  * Exported for tests: this predicate decides what a generated plugin will POST
  * at a live site, and it is the only gate between a browser's incidental
  * chatter and the emitted hot path.
  */
-export function extractActionSequence(captures: Capture[], baseUrl: string): ActionCapture[] {
+export function extractActionSequence(
+  captures: Capture[],
+  baseUrl: string,
+  submitPatterns: SubmitPatterns | null = null
+): ActionCapture[] {
   let host: string;
   try {
     host = new URL(baseUrl).host;
   } catch {
     host = "";
   }
+  const matchesSubmit = compileSubmitMatcher(submitPatterns);
 
   return captures
     .map((capture, index) => ({ capture, index }))
@@ -489,6 +568,7 @@ export function extractActionSequence(captures: Capture[], baseUrl: string): Act
       }
       if (captureHost !== host) return false;
       if (isNoiseUrl(capture.url)) return false;
+      if (!matchesSubmit(capture)) return false;
       return true;
     });
 }
@@ -508,7 +588,8 @@ export function extractActionSequence(captures: Capture[], baseUrl: string): Act
  */
 export function extractGraphQLActionSequence(
   captures: Capture[],
-  baseUrl: string
+  baseUrl: string,
+  submitPatterns: SubmitPatterns | null = null
 ): ActionCapture[] {
   let host: string;
   try {
@@ -516,6 +597,7 @@ export function extractGraphQLActionSequence(
   } catch {
     host = "";
   }
+  const matchesSubmit = compileSubmitMatcher(submitPatterns);
 
   return captures
     .map((capture, index) => ({ capture, index }))
@@ -530,6 +612,7 @@ export function extractGraphQLActionSequence(
       }
       if (captureHost !== host) return false;
       if (isNoiseUrl(capture.url)) return false;
+      if (!matchesSubmit(capture)) return false;
       return capture.query !== null && /^\s*mutation\b/.test(capture.query);
     });
 }
@@ -3342,26 +3425,59 @@ async function main(): Promise<void> {
     }
   })();
 
-  const { flowSteps, frameSelector } = (() => {
+  const { flowSteps, frameSelector, submitEndpointPattern, submitBodyPattern } = (() => {
     const flowFile = `src/sites/${siteId}/recon-flow.json`;
     try {
       const raw: unknown = JSON.parse(readFileSync(flowFile, "utf8"));
       if (Array.isArray(raw))
-        return { flowSteps: raw as FlowStepInput[], frameSelector: undefined };
+        return {
+          flowSteps: raw as FlowStepInput[],
+          frameSelector: undefined,
+          submitEndpointPattern: null,
+          submitBodyPattern: null,
+        };
       if (
         raw !== null &&
         typeof raw === "object" &&
         "steps" in raw &&
         Array.isArray((raw as { steps: unknown }).steps)
       ) {
-        const obj = raw as { steps: FlowStepInput[]; frameSelector?: string };
-        return { flowSteps: obj.steps, frameSelector: obj.frameSelector };
+        const obj = raw as {
+          steps: FlowStepInput[];
+          frameSelector?: string;
+          submitEndpointPattern?: string;
+          submitBodyPattern?: string;
+        };
+        return {
+          flowSteps: obj.steps,
+          frameSelector: obj.frameSelector,
+          submitEndpointPattern: obj.submitEndpointPattern ?? null,
+          submitBodyPattern: obj.submitBodyPattern ?? null,
+        };
       }
-      return { flowSteps: [] as string[], frameSelector: undefined };
+      return {
+        flowSteps: [] as string[],
+        frameSelector: undefined,
+        submitEndpointPattern: null,
+        submitBodyPattern: null,
+      };
     } catch {
-      return { flowSteps: [] as string[], frameSelector: undefined };
+      return {
+        flowSteps: [] as string[],
+        frameSelector: undefined,
+        submitEndpointPattern: null,
+        submitBodyPattern: null,
+      };
     }
   })();
+
+  // Flow-declared signals that isolate the submission POSTs from same-origin
+  // page chrome. Threaded into action-sequence extraction and header derivation
+  // so both draw from the real submission, not incidental widget/chatbot POSTs.
+  const submitPatterns: SubmitPatterns = {
+    endpoint: submitEndpointPattern,
+    body: submitBodyPattern,
+  };
 
   // Resolved once and threaded down, never captured into a module const: a
   // module-level const would freeze at import time, which is the bug that makes
@@ -3373,7 +3489,7 @@ async function main(): Promise<void> {
 
   const pascal = toPascalCase(siteId);
   const baseUrl = deriveBaseUrl(captures);
-  const baseHeaders = deriveRequestHeaders(captures, replays, baseUrl);
+  const baseHeaders = deriveRequestHeaders(captures, replays, baseUrl, submitPatterns);
   const minTime = deriveMinTime(rateLimits);
   const safeRps = rateLimits.find((f) => f.safeRps !== null)?.safeRps ?? Math.floor(1000 / minTime);
   const responseBody = firstSuccessfulReplayBody(replays);
@@ -3384,9 +3500,22 @@ async function main(): Promise<void> {
   // Detect a multi-step submission flow (transactional sites like apply forms,
   // checkout, etc.). When the action sequence has 2+ POSTs, switch the
   // contract template to emit a state-threaded executeHttp.
-  const rawActionCaptures = gql
-    ? extractGraphQLActionSequence(captures, baseUrl)
-    : collapseRedundantPatches(extractActionSequence(captures, baseUrl));
+  //
+  // Selection precedence: (A) the authoritative submit-manifest recon-browser
+  // wrote from the verified submission; else (B/C) pattern/heuristic extraction.
+  // The manifest is the only signal that separates a submission POST from a
+  // page-chrome POST sharing its URL, so it wins when present.
+  const manifestActionCaptures = resolveManifestActionSequence(runRoot, captures);
+  if (manifestActionCaptures !== null) {
+    logger.info(
+      `submission selection: using submit-manifest.json (${manifestActionCaptures.length} authoritative capture(s))`
+    );
+  }
+  const rawActionCaptures =
+    manifestActionCaptures ??
+    (gql
+      ? extractGraphQLActionSequence(captures, baseUrl, submitPatterns)
+      : collapseRedundantPatches(extractActionSequence(captures, baseUrl, submitPatterns)));
   // Form-schema detection runs BEFORE state-indexing so the field-id/option-id
   // UUIDs can be shielded from indexing — those UUIDs are stable schema
   // anchors that T2/T3 substitution depends on remaining literal in body
