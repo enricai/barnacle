@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ReconVocabulary } from "@/recon/vocabulary";
 import {
+  deriveFillLabelField,
   emitMultiStepExecuteHttp,
   extractEntryUrlParams,
   extractStepPersonaValue,
@@ -105,9 +106,22 @@ describe("harvestPersonaBindings", () => {
     expect(bindings.size).toBe(3);
   });
 
-  it("is a no-op with the empty vocabulary (no domain claim, no splice)", () => {
+  it("derives the field from the fill label when the vocabulary has no match", () => {
+    // With an empty vocabulary, `resolveStepPayloadField` returns null — but a
+    // `fill in the <LABEL> field with '<value>'` step is self-describing, so the
+    // label-derivation fallback still binds it (the fix for vocab-miss fields
+    // like a "middle name" the consumer vocab forgot to list).
     const empty: ReconVocabulary = { subject: /(?!)/, exclusions: [], table: [] };
     const steps = ["Fill in the First Name field with the test candidate's first name 'Reginald'"];
+    const bindings = harvestPersonaBindings(steps, empty, ENV);
+    expect(bindings.get("Reginald")).toBe("payload.FirstName");
+  });
+
+  it("does not derive a field for a Select step under an empty vocabulary", () => {
+    // Select/Choose stay vocabulary-gated: they name the answer first and often
+    // a mere facet second, so label-derivation there would false-splice.
+    const empty: ReconVocabulary = { subject: /(?!)/, exclusions: [], table: [] };
+    const steps = ["Select 'No' for the sponsorship question"];
     expect(harvestPersonaBindings(steps, empty, ENV).size).toBe(0);
   });
 
@@ -119,6 +133,63 @@ describe("harvestPersonaBindings", () => {
     const bindings = harvestPersonaBindings(steps, VOCAB, ENV);
     expect(bindings.get("Austin")).toBe("payload.City");
   });
+
+  it("lets the vocabulary win over label-derivation when both would resolve", () => {
+    // The vocab maps "personal email" → Email; label-derivation would produce
+    // PersonalEmail. Vocab must win, so a vocab-recognized fill step is never
+    // overridden by the fallback.
+    const steps = [`Fill in the Personal Email field with '$${"{RECON_EMAIL}"}'`];
+    const bindings = harvestPersonaBindings(steps, VOCAB, ENV);
+    expect(bindings.get("cand@inbox.test")).toBe("payload.Email");
+  });
+
+  it("respects vocabulary exclusions even for label-derivable fill steps", () => {
+    // The signature-block first name is excluded; the fill-grammar still matches,
+    // but an excluded step must not resurface via label-derivation.
+    const empty: ReconVocabulary = { subject: /(?!)/, exclusions: [/signature/i], table: [] };
+    const steps = ["Fill in the First Name field in the signature block with 'Reginald'"];
+    expect(harvestPersonaBindings(steps, empty, ENV).size).toBe(0);
+  });
+
+  it("honors an explicit payloadFieldNone opt-out over label-derivation", () => {
+    const empty: ReconVocabulary = { subject: /(?!)/, exclusions: [], table: [] };
+    const steps = [
+      { step: "Fill in the Middle Name field with 'Quentin'", payloadFieldNone: true },
+    ];
+    expect(harvestPersonaBindings(steps, empty, ENV).size).toBe(0);
+  });
+
+  it("binds a vocab-miss identity field (middle name) via the fill label", () => {
+    // The report's defect #2: a "middle name" step the recruiting vocab forgot.
+    const steps = [
+      "Fill in the First Name field with the test candidate's first name 'Reginald'",
+      "Fill in the Middle Name field with 'Quentin'",
+    ];
+    const bindings = harvestPersonaBindings(steps, VOCAB, ENV);
+    expect(bindings.get("Reginald")).toBe("payload.FirstName");
+    expect(bindings.get("Quentin")).toBe("payload.MiddleName");
+  });
+});
+
+describe("deriveFillLabelField — self-describing fill/enter/type grammar", () => {
+  const cases: Array<[string, string | null]> = [
+    ["Fill in the Middle Name field with 'Quentin'", "MiddleName"],
+    ["Fill in the Address Line 1 field with '100 Main'", "AddressLine1"],
+    ["Enter the Date of Birth field with '1990-01-01'", "DateOfBirth"],
+    ["Type in the Preferred Name field with 'Q'", "PreferredName"],
+    // Select/Choose are excluded — they name the answer first, not the field.
+    ["Select 'No' for the sponsorship question", null],
+    ["Choose 'United States' in the Country dropdown", null],
+    // No quoted constant → nothing to bind.
+    ["Fill in the Middle Name field", null],
+    // Not a fill/enter/type instruction.
+    ["Click the Continue button", null],
+  ];
+  for (const [instruction, expected] of cases) {
+    it(`derives ${JSON.stringify(expected)} from ${JSON.stringify(instruction.slice(0, 42))}…`, () => {
+      expect(deriveFillLabelField(instruction)).toBe(expected);
+    });
+  }
 });
 
 describe("extractEntryUrlParams — job coordinates from the entry URL", () => {

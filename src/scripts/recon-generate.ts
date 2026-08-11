@@ -166,6 +166,36 @@ export function extractStepPersonaValue(
 }
 
 /**
+ * Derives a payload field name from the field LABEL in a fill/enter/type
+ * instruction, for steps the consumer vocabulary does not cover.
+ *
+ * WHY: `fill in the <LABEL> field with '<VALUE>'` is self-describing — the label
+ * names the caller coordinate regardless of domain, so a vocabulary miss on a
+ * legitimate identity field (a "middle name" a recruiting vocab forgot to list)
+ * need not freeze the recon persona's value into every submission. This reads
+ * only the generic instruction grammar; it hardcodes no field or site name.
+ *
+ * Scoped to Fill/Enter/Type by design. Those name the field label FIRST and a
+ * quoted caller VALUE last, so a label→field claim is safe. Select/Choose name
+ * the ANSWER first and often only a facet second ("select the departure port
+ * from the Country dropdown") — deriving a field from the label there re-opens
+ * the exact off-domain false-splice `ReconVocabulary.subject` exists to prevent,
+ * so Select/Choose is deliberately excluded and stays vocabulary-gated.
+ *
+ * @param instruction the flow step's plain-English instruction
+ * @returns the PascalCase field name, or null when the shape does not match
+ */
+export function deriveFillLabelField(instruction: string): string | null {
+  if (!/^\s*(?:fill(?:\s+in)?|enter|type)\b/i.test(instruction)) return null;
+  if (!/'[^']*'/.test(instruction)) return null;
+  const label = /\b(?:fill(?:\s+in)?|enter|type)\s+(?:in\s+)?the\s+(.+?)\s+field\b/i.exec(
+    instruction
+  )?.[1];
+  if (label === undefined) return null;
+  return fieldNameToPascalCase(label, null);
+}
+
+/**
  * Builds the map from a recon persona VALUE (as it appears in the captured
  * request body) to the `payload.<Field>` accessor that should replace it, by
  * pairing each flow step's resolved field ({@link resolveStepPayloadField})
@@ -174,7 +204,9 @@ export function extractStepPersonaValue(
  * finally applied to the request-body templates.
  *
  * Earliest step wins on a duplicate value. Site-agnostic: the field mapping
- * lives entirely in the consumer's `--vocabulary`.
+ * lives entirely in the consumer's `--vocabulary`, with a generic
+ * label-derivation ({@link deriveFillLabelField}) fallback for fill steps the
+ * vocabulary doesn't recognize — the vocabulary always wins when it has a match.
  */
 export function harvestPersonaBindings(
   flowSteps: FlowStepInput[],
@@ -185,12 +217,22 @@ export function harvestPersonaBindings(
   for (const step of flowSteps) {
     const isObj = typeof step !== "string";
     const instruction = isObj ? step.step : step;
-    const field = resolveStepPayloadField(
+    const vocabField = resolveStepPayloadField(
       instruction,
       isObj ? step.payloadField : undefined,
       isObj ? step.payloadFieldNone : undefined,
       vocabulary
     );
+    // Vocabulary wins outright. Only on a miss do we fall back to deriving the
+    // field from the instruction's own label — and never when the author opted
+    // the step out (`payloadFieldNone`) or the vocabulary explicitly excluded it.
+    const field =
+      vocabField ??
+      (isObj && step.payloadFieldNone
+        ? null
+        : vocabulary.exclusions.some((rx) => rx.test(instruction))
+          ? null
+          : deriveFillLabelField(instruction));
     if (field === null) continue;
     const value = extractStepPersonaValue(instruction, env);
     if (value === null) continue;
@@ -2307,6 +2349,28 @@ export function collectHeaderBindings(actionSteps: ActionStep[]): HeaderProduce[
 }
 
 /**
+ * Reads the concrete string a response-body produce points at, by walking the
+ * capture's response body along the produce path. Returns null when any segment
+ * is absent or the leaf isn't a string. Shared by state-threading and the
+ * producer-boundary binding so both resolve produced values identically.
+ */
+function resolveResponsePathValue(responseBody: unknown, path: string[]): string | null {
+  let cursor: unknown = responseBody;
+  for (const segment of path) {
+    if (
+      cursor !== null &&
+      typeof cursor === "object" &&
+      segment in (cursor as Record<string, unknown>)
+    ) {
+      cursor = (cursor as Record<string, unknown>)[segment];
+    } else {
+      return null;
+    }
+  }
+  return typeof cursor === "string" ? cursor : null;
+}
+
+/**
  * Replaces occurrences of state values in `template` with `${varName}`
  * interpolations. Returns a JS template-literal string fragment (no backticks).
  *
@@ -2329,20 +2393,8 @@ function interpolateStateValues(
       // forwards it directly as a request header), so there's nothing to
       // interpolate here.
       if (p.kind === "header") continue;
-      let cursor: unknown = step.capture.responseBody;
-      for (const segment of p.path) {
-        if (
-          cursor !== null &&
-          typeof cursor === "object" &&
-          segment in (cursor as Record<string, unknown>)
-        ) {
-          cursor = (cursor as Record<string, unknown>)[segment];
-        } else {
-          cursor = null;
-          break;
-        }
-      }
-      if (typeof cursor === "string") varNameByValue.set(cursor, p.name);
+      const value = resolveResponsePathValue(step.capture.responseBody, p.path);
+      if (value !== null) varNameByValue.set(value, p.name);
     }
   }
 
@@ -2369,6 +2421,155 @@ function interpolateStateValues(
     result = result.split(value).join(`\${${accessor}}`);
   }
 
+  return result;
+}
+
+/** A producer-boundary coordinate: the capture value, its `payload.<field>`
+ * accessor, the bare field name to declare in the emitted schema, and the index
+ * of the step that produces it (the only step whose body is bound whole — later
+ * steps thread the produced state var as usual). */
+interface ProducerBoundaryBinding {
+  accessor: string;
+  field: string;
+  producerIndex: number;
+}
+
+/**
+ * Finds the request-body coordinates a PRODUCING step must source from the
+ * caller's payload instead of a frozen capture literal.
+ *
+ * A response-produced state var (see {@link compileActionSteps}' produces[]) is
+ * threaded as `${var}` in every step AFTER its producer. In the producer itself
+ * the value predates its own response, so {@link interpolateStateValues} has no
+ * prior binding for it and the frozen recon literal (the recon persona's
+ * jobId/jobSeqNo/jobTitle/jobLocation) leaks into every caller's submission. The
+ * value's real origin for the producer is the same coordinate the caller
+ * supplies — a payload field.
+ *
+ * WHY it keys off produces[] ∩ the producer's own body, never a field/site name:
+ * the signal is purely structural — "a value this flow threads downstream AND
+ * re-sends in the very step that first emitted it". The field name is the
+ * produced var name verbatim (`pathToVarName`'s output = the wire key), so the
+ * producer's payload field and the downstream `${var}` describe one logical
+ * coordinate and share the same runtime value (the caller passes it, the site
+ * echoes it).
+ *
+ * A coordinate that a HIGHER-priority source already maps to a `payload.<field>`
+ * (an entry-URL param — e.g. a jobSeqNo) is NOT skipped: it is re-emitted here so
+ * the whole-value pass binds it atomically on the producer step, reusing that
+ * source's accessor. Otherwise state threading fragments the composite (a prefix
+ * that a prior step produced) before the length-descending payload pass can match
+ * it, and the collision guard then refuses the embedded remainder — stranding the
+ * middle of the coordinate frozen. A value mapped to a NON-payload target (the
+ * threaded txn id) is left untouched. UUID-shaped values are excluded entirely —
+ * a re-sent UUID is a volatile/threaded id owned by another pass, not a caller
+ * coordinate — and only WHOLE request-body leaves qualify, so every returned
+ * value is one the whole-value pass will bind (and whose field must be declared).
+ *
+ * @param actions the compiled action steps (carry produces[] + request bodies)
+ * @param alreadyBound capture value → existing accessor; a `payload.*` accessor
+ *   is reused, a non-payload one (e.g. `txnId`) vetoes the value
+ * @returns capture value → { accessor: "payload.<field>"; field; producerIndex }
+ */
+export function deriveProducerBoundaryBindings(
+  actions: ActionStep[],
+  alreadyBound: ReadonlyMap<string, string>
+): Map<string, ProducerBoundaryBinding> {
+  const bindings = new Map<string, ProducerBoundaryBinding>();
+  for (let i = 0; i < actions.length; i++) {
+    const step = actions[i]!;
+    const bodyLeafValues = jsonBodyLeafValues(step.capture.requestPostData);
+    for (const p of step.produces) {
+      if (p.kind === "header") continue;
+      const value = resolveResponsePathValue(step.capture.responseBody, p.path);
+      if (value === null || value.length < MIN_STATE_VALUE_LENGTH) continue;
+      if (bindings.has(value)) continue;
+      // A UUID re-sent across steps is never a stable caller coordinate — it's a
+      // per-call volatile id or the threaded transaction id (which the server may
+      // echo, so it looks "produced"). Both are owned by their own passes (the
+      // volatile regen / the hoisted `txnId`); binding one to a payload field
+      // would freeze the recon's single id into every caller's submission.
+      if (UUID_REGEX.test(value)) continue;
+      // A value already mapped to a non-payload target (the threaded txn id) must
+      // stay that target; only a `payload.*` accessor is reusable here.
+      const existing = alreadyBound.get(value);
+      if (existing !== undefined && !existing.startsWith("payload.")) continue;
+      // Producer-boundary reuse: the value must re-appear as a WHOLE JSON leaf in
+      // THIS step's own request body. Whole-leaf (not substring) keeps "in this
+      // map" ⟺ "the whole-value pass will bind this value's `"<key>":"<value>"`
+      // slot" ⟺ "its field must be declared"; a substring match would declare a
+      // field the pass never references. A composite that embeds a shorter
+      // coordinate (a jobId inside a jobSeqNo) still binds — each is its own whole
+      // leaf, and the longer one's whole-value bind carries the embedded copy. A
+      // non-JSON (multipart) body has no parseable leaves and the whole-value pass
+      // can't rewrite it, so it never qualifies (`bodyLeafValues === null`).
+      if (bodyLeafValues === null || !bodyLeafValues.some((leaf) => leaf === value)) continue;
+      // Reuse the higher-priority source's field when present; otherwise the
+      // produced var name IS the wire key (pathToVarName). Use it verbatim so it
+      // stays consistent with the downstream `${<key>N}` var; don't PascalCase it
+      // (that lowercases camelCase, e.g. jobId→Jobid, and diverges from both the
+      // state var and the entry-URL-param raw-key convention).
+      const field = existing !== undefined ? existing.slice("payload.".length) : p.name;
+      if (!isValidJsIdentifier(field)) continue;
+      // `pathToVarName` returns the sentinel `"value"` when a produce path has no
+      // identifier segment (all array indices) — a meaningless caller field name.
+      // Freeze such a value (it surfaces via the unbound-literal TODO for the
+      // author to name) rather than shipping `payload.value`. A reused
+      // higher-priority accessor is a real declared field, so only veto the
+      // sentinel when the name came from `p.name`.
+      if (existing === undefined && field === "value") continue;
+      bindings.set(value, { accessor: `payload.${field}`, field, producerIndex: i });
+    }
+  }
+  return bindings;
+}
+
+/**
+ * Binds a caller coordinate in a step's body BEFORE state threading runs, via a
+ * JSON-key-anchored WHOLE-value rewrite (`"<key>":"<value>"` →
+ * `"<key>":"${payload.<field>}"`).
+ *
+ * WHY before {@link interpolateStateValues} and not via its payload pass: a
+ * composite coordinate like a jobLocation `"Torrington, Connecticut, United
+ * States"` or a jobSeqNo `"HHKHHEUS26158515EXTERNALENUS"` contains inner tokens a
+ * genuinely-prior step produces as its own state var (a `label`, a `refNum`).
+ * Pass-1 state threading would fragment the string (`"Torrington, ${label}"`,
+ * `"${refNum}26158515EXTERNALENUS"`) before the length-descending payload pass
+ * could match the full literal — and the collision guard then refuses to bind the
+ * embedded remainder, stranding it frozen. Binding the whole coordinate first —
+ * the same "swallow whole before inner passes reach in" discipline as
+ * {@link applyStructuredValuePayloadSubstitutions} — keeps it atomic. Anchored on
+ * the exact `"<key>":` slot, so it only fires on a value's own JSON slot.
+ *
+ * `producerScoped` bindings fire only on their producing step
+ * (`producerIndex === stepIndex`): a later step re-sending the same coordinate
+ * threads the produced state var, the established behavior; only the producer,
+ * which cannot thread its own not-yet-existent response, needs the payload bind.
+ * `entryUrlBindings` (a caller coordinate lifted from the entry URL) fire on
+ * EVERY step — they are the caller's data on every request, never a produced var.
+ */
+function applyWholeValuePayloadSubstitutions(
+  template: string,
+  parsedBody: unknown,
+  producerScoped: Map<string, ProducerBoundaryBinding>,
+  entryUrlBindings: ReadonlyMap<string, string>,
+  stepIndex: number
+): string {
+  if (producerScoped.size === 0 && entryUrlBindings.size === 0) return template;
+  let result = template;
+  for (const { value, path } of walkStringLeaves(parsedBody)) {
+    const scoped = producerScoped.get(value);
+    const accessor =
+      scoped !== undefined && scoped.producerIndex === stepIndex
+        ? scoped.accessor
+        : entryUrlBindings.get(value);
+    if (accessor === undefined) continue;
+    const key = path[path.length - 1] ?? "";
+    if (key.length === 0) continue;
+    const target = `"${key}":${JSON.stringify(value)}`;
+    const replacement = `"${key}":"\${${accessor}}"`;
+    result = result.split(target).join(replacement);
+  }
   return result;
 }
 
@@ -2729,6 +2930,31 @@ export function emitMultiStepExecuteHttp(
     const field = accessor.startsWith("payload.") ? accessor.slice("payload.".length) : null;
     if (field !== null && /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(field)) outDiscoveredFields.add(field);
   }
+  // Producer-boundary job coordinates: values a step's response produces (and
+  // steps 2..N thread as `${var}`) that ALSO appear in that producing step's
+  // own request body. The producer cannot thread its own not-yet-existent
+  // response, so those slots would freeze the recon persona's coordinate; bind
+  // them to the caller's payload instead. Registered here so the length-
+  // descending payload pass rewrites short/embedded coordinates (a jobId inside
+  // a jobSeqNo); the whole-value pass below binds composite coordinates a state
+  // var would otherwise fragment. `bindsWithoutCollision`-guarded like personas.
+  const producerBoundaryBindings = deriveProducerBoundaryBindings(
+    actions,
+    new Map(payloadAccessorByValue)
+  );
+  for (const [value, { accessor, field }] of producerBoundaryBindings) {
+    // Always declare: the whole-value pass binds this value's own JSON slot on
+    // its producer step regardless of collision, so the schema MUST carry the
+    // field or the emitted `${payload.<field>}` references an undeclared property.
+    outDiscoveredFields.add(field);
+    // The UNANCHORED length-descending registration stays collision-guarded: it
+    // rewrites embedded substrings globally, so a value that also sits inside a
+    // longer token (a jobId within a jobSeqNo) must not be registered here — the
+    // whole-value pass already binds its standalone slot atomically.
+    if (bindsWithoutCollision(value) && !payloadAccessorByValue.has(value)) {
+      payloadAccessorByValue.set(value, accessor);
+    }
+  }
   // G2: register any tenant-subdomain header values as payload-supplied fields
   // (e.g. an `API-ShortName: "addus"` header becomes `payload.ApiShortName`).
   for (const [headerName, _value] of tenantSubdomainHeaders) {
@@ -2839,9 +3065,25 @@ export function emitMultiStepExecuteHttp(
             outStructuredKeys
           )
         : rawBodyWithFormSubs;
-    const bodyAfterStateAndKv = rawBodyWithStructuredSubs
+    // Whole-value caller coordinates bind here — after structured subs, BEFORE
+    // state threading — so a composite coordinate (a jobLocation or jobSeqNo
+    // whose inner tokens a prior step produces as a state var) binds as one
+    // atomic `${payload.X}` before Pass 1 can fragment it. Producer-boundary
+    // coordinates fire on their producer only; entry-URL coordinates on every
+    // step. No-op on steps without a match.
+    const rawBodyWithProducerBoundary =
+      parsedBody !== null
+        ? applyWholeValuePayloadSubstitutions(
+            rawBodyWithStructuredSubs,
+            parsedBody,
+            producerBoundaryBindings,
+            entryUrlParams,
+            i
+          )
+        : rawBodyWithStructuredSubs;
+    const bodyAfterStateAndKv = rawBodyWithProducerBoundary
       ? applyPayloadKeyValueSubstitutions(
-          interpolateStateValues(rawBodyWithStructuredSubs, prior, payloadAccessorByValue),
+          interpolateStateValues(rawBodyWithProducerBoundary, prior, payloadAccessorByValue),
           inputBody,
           additionalBodies,
           outDiscoveredAdditionalBodyKeys
