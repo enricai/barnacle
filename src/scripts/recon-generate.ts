@@ -681,6 +681,31 @@ function* walkStringLeaves(
 }
 
 /**
+ * Parses a captured request body as JSON and returns its string leaf *values*
+ * (object keys are excluded — a key is never a JSON value). Returns null when
+ * the body is absent or not JSON (e.g. multipart raw bytes), so callers can
+ * fall back to whole-body substring matching. This lets the produces-filter
+ * match state values against JSON values only, so a response string that
+ * appears downstream solely in a JSON *key* position is not mistaken for a
+ * reused value — while a value legitimately embedded inside a longer value
+ * still matches via substring.
+ */
+function jsonBodyLeafValues(requestPostData: string | null | undefined): string[] | null {
+  if (typeof requestPostData !== "string" || requestPostData.length === 0) return null;
+  const parsed = ((): unknown => {
+    try {
+      return JSON.parse(requestPostData);
+    } catch {
+      return undefined;
+    }
+  })();
+  if (parsed === undefined) return null;
+  const values: string[] = [];
+  for (const { value } of walkStringLeaves(parsed)) values.push(value);
+  return values;
+}
+
+/**
  * Yields every primitive leaf (string, number, boolean, null) in the JSON
  * value with its path. Used by the body-literal substitution pass to find
  * JSON-keyed values whose key matches a payload field name — for example,
@@ -1590,10 +1615,29 @@ export function compileActionSteps(
   // Pre-scan: collect all state values referenced by ANY action's URL/headers/body
   // so we only "produce" the values that are actually consumed downstream.
   for (const { capture } of actions) {
-    const haystacks: string[] = [capture.url];
-    if (capture.requestPostData) haystacks.push(capture.requestPostData);
+    const bodyLeafValues = jsonBodyLeafValues(capture.requestPostData);
     for (const sv of stateIndex.values()) {
-      if (haystacks.some((h) => h.includes(sv.value))) usedValues.add(sv.value);
+      if (capture.url.includes(sv.value)) {
+        usedValues.add(sv.value);
+        continue;
+      }
+      // Body consumption is matched against JSON *values* only, never keys: a
+      // state value is a real cross-step dependency when a later request
+      // re-sends it inside a JSON value — either standalone or embedded in a
+      // composite value (e.g. a jobId reused inside a longer jobSeqNo). A
+      // match that lands on a JSON *key* is not reuse: binding then splicing it
+      // would emit a variable into a key position and produce uncompilable
+      // `"${var}":…` / `${${var}}` (e.g. a response echoing field NAMES like
+      // `tokens:["firstName","lastName"]` — those strings appear downstream
+      // only as keys, never within any value). Object keys are never JSON
+      // string leaves, so testing against leaf values alone excludes them while
+      // preserving substring-in-value reuse. Non-JSON bodies (multipart raw
+      // bytes) keep whole-body substring matching.
+      if (bodyLeafValues === null) {
+        if (capture.requestPostData?.includes(sv.value)) usedValues.add(sv.value);
+      } else if (bodyLeafValues.some((leaf) => leaf.includes(sv.value))) {
+        usedValues.add(sv.value);
+      }
     }
     for (const [headerName, headerValue] of Object.entries(capture.requestHeaders)) {
       for (const sv of stateIndex.values()) {
