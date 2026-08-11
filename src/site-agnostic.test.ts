@@ -29,6 +29,8 @@ function gitGrep(flags: string, pattern: string): string[] {
 /**
  * Tokens unique enough to match as a plain substring — a real customer site or an ATS
  * vendor/site-field prefix. None of these appear inside a legitimate English word.
+ * `oracle hcm` is a multi-word phrase, not bare `oracle`: the bare word collides with
+ * the legitimate "the browser is the oracle" testing term used in docs.
  */
 const FORBIDDEN_SUBSTRING = [
   "talemetry",
@@ -45,6 +47,7 @@ const FORBIDDEN_SUBSTRING = [
   "brassring",
   "successfactors",
   "smartrecruiters",
+  "oracle hcm",
 ];
 
 /**

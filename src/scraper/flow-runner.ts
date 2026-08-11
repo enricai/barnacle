@@ -2672,7 +2672,7 @@ function isCommittedDateReadback(
 
 /**
  * Fill a `type="text"` datepicker widget (react-datepicker — the standard
- * Oracle HCM / ATS start/end-date control), which `fillHtml5DateTimeInput`
+ * ATS start/end-date control), which `fillHtml5DateTimeInput`
  * cannot: react-datepicker rejects a programmatic `.value` write and commits
  * only through its own keyboard/calendar `onChange`. Returns `null` for any
  * input that is NOT a date-like text control, so every other text field stays
@@ -7184,7 +7184,7 @@ export async function executeStepWithHealing(params: {
                 }
               } else {
                 // Not an HTML5 date input. First try the text-datepicker
-                // primitive (react-datepicker — Oracle HCM / ATS start/end-date
+                // primitive (react-datepicker — ATS start/end-date
                 // controls): those are `type="text"`, so fillHtml5DateTimeInput
                 // returns null, and the generic fill's value-write never commits
                 // the widget. Returns null for any non-datepicker text input, so
