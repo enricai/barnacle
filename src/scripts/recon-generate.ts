@@ -116,6 +116,90 @@ export function resolveStepPayloadField(
 }
 
 /**
+ * Extracts the concrete persona VALUE a flow step fills — the recon-supplied
+ * constant that appears verbatim in the captured request body — so the body
+ * emitter can bind it to `${payload.<field>}`. This is a stricter job than
+ * {@link buildStepInstructionExpr}'s browser-flow splice, which only needs *a*
+ * span to replace: here the extracted string must equal the wire value exactly,
+ * or the value-identity substitution silently misses.
+ *
+ * Two grammar facts, both verified against real ATS flows, drive the rule:
+ *   1. The possessive apostrophe in "the candidate's first name 'Reginald'"
+ *      opens a false quote — a naive `/'[^']*'/` yields `s first name `, not
+ *      `Reginald`. Neutralizing `\w's` → `\ws` before matching removes it.
+ *   2. A `Select`/`Choose` step names the ANSWER first, then the question
+ *      ("Select 'No' for the 'sponsorship' question"), so the value is the
+ *      FIRST quoted token; a `Fill`/`Enter`/`Type` step names the field label
+ *      first and the value last, so it is the LAST quoted token.
+ * A `${RECON_EMAIL}` token (or the literal email `env` value) short-circuits to
+ * the env-resolved address, matching recon-browser's own env substitution.
+ *
+ * @param instruction the flow step's plain-English instruction
+ * @param env process env (or a stub) supplying `${VAR}` token values, e.g. RECON_EMAIL
+ * @returns the persona value, or null when the step carries no spliceable constant
+ */
+export function extractStepPersonaValue(
+  instruction: string,
+  env: NodeJS.ProcessEnv
+): string | null {
+  const emailToken = `$${"{RECON_EMAIL}"}`;
+  const reconEmail = env.RECON_EMAIL;
+  if (reconEmail && (instruction.includes(emailToken) || instruction.includes(reconEmail))) {
+    return reconEmail;
+  }
+  // Resolve any other `${UPPER_SNAKE}` env token the same way recon-browser's
+  // substituteFlowEnvVars does, so an env-supplied value (e.g. RECON_PHONE) is
+  // matched against the wire body by its runtime form, not the literal token.
+  const envToken = /\$\{([A-Z_][A-Z0-9_]*)\}/.exec(instruction);
+  if (envToken) {
+    const resolved = env[envToken[1]!];
+    if (resolved) return resolved;
+  }
+  // Neutralize the possessive apostrophe so it isn't read as a quote delimiter.
+  const cleaned = instruction.replace(/(\w)'s\b/g, "$1s");
+  const quotes = [...cleaned.matchAll(/'([^']*)'/g)].map((m) => m[1]!);
+  if (quotes.length === 0) return null;
+  const value = /^\s*(select|choose|pick)\b/i.test(instruction)
+    ? quotes[0]!
+    : quotes[quotes.length - 1]!;
+  return value.length > 0 ? value : null;
+}
+
+/**
+ * Builds the map from a recon persona VALUE (as it appears in the captured
+ * request body) to the `payload.<Field>` accessor that should replace it, by
+ * pairing each flow step's resolved field ({@link resolveStepPayloadField})
+ * with its extracted value ({@link extractStepPersonaValue}). This is the
+ * value→field reconciliation the browser flow and payload schema already do,
+ * finally applied to the request-body templates.
+ *
+ * Earliest step wins on a duplicate value. Site-agnostic: the field mapping
+ * lives entirely in the consumer's `--vocabulary`.
+ */
+export function harvestPersonaBindings(
+  flowSteps: FlowStepInput[],
+  vocabulary: ReconVocabulary,
+  env: NodeJS.ProcessEnv
+): Map<string, string> {
+  const bindings = new Map<string, string>();
+  for (const step of flowSteps) {
+    const isObj = typeof step !== "string";
+    const instruction = isObj ? step.step : step;
+    const field = resolveStepPayloadField(
+      instruction,
+      isObj ? step.payloadField : undefined,
+      isObj ? step.payloadFieldNone : undefined,
+      vocabulary
+    );
+    if (field === null) continue;
+    const value = extractStepPersonaValue(instruction, env);
+    if (value === null) continue;
+    if (!bindings.has(value)) bindings.set(value, `payload.${field}`);
+  }
+  return bindings;
+}
+
+/**
  * How deep to infer before collapsing to z.unknown(). Deep enough to reach the
  * fields that carry meaning on real inventory APIs — a cruise sailing's price
  * summary sits ~11 levels down inside products[].itineraries[].sailings[] —
@@ -342,6 +426,36 @@ function deriveBaseUrl(captures: Capture[]): string {
     }
   }
   return "https://example.com";
+}
+
+/**
+ * Extracts caller-supplied job/context coordinates from the recon ENTRY URL's
+ * query string, mapping each param VALUE to a `payload.<param>` accessor. The
+ * first capture is the landing navigation, and a submission flow's job context
+ * (`?jobSeqNo=...`, `?jobId=...`) rides its query string — it belongs to the
+ * target posting, not the recon run, so it must be caller-supplied. Values
+ * below {@link MIN_STATE_VALUE_LENGTH} and cache-buster keys are skipped, since
+ * a 1–7 char value collides with arbitrary substrings elsewhere in the body.
+ *
+ * Site-agnostic: reads only the entry URL's own query keys; no site-specific
+ * param knowledge. Downstream, `interpolateStateValues`' length-descending pass
+ * composes embedded substrings (a jobId inside a longer jobSeqNo) automatically.
+ */
+export function extractEntryUrlParams(entryUrl: string): Map<string, string> {
+  const params = new Map<string, string>();
+  let u: URL;
+  try {
+    u = new URL(entryUrl);
+  } catch {
+    return params;
+  }
+  for (const [key, value] of u.searchParams) {
+    if (value.length < MIN_STATE_VALUE_LENGTH) continue;
+    if (CACHE_BUSTER_QUERY_KEYS.has(key)) continue;
+    if (!isValidJsIdentifier(key)) continue;
+    if (!params.has(value)) params.set(value, `payload.${key}`);
+  }
+  return params;
 }
 
 const IGNORE_REQUEST_HEADERS = new Set([
@@ -1366,6 +1480,429 @@ function applyRawOptionIdPayloadSubstitutions(
   return result;
 }
 
+/** A resolved dropdown answer: the wire KEY the ATS submits under, the option
+ * CODE it expects, the human LABEL the flow step named, and the full label set
+ * (used to build the caller-facing z.enum). Anchored on the wire key so the
+ * body-slot rewrite is a closed-set JSON-key match. */
+interface SelectOptionResolution {
+  wireKey: string;
+  semanticName: string;
+  code: string;
+  label: string;
+  /** Every caller-selectable label paired with its wire code, so OPT_<Name>
+   * maps the full option set (not just the recon-answered choice). */
+  options: Array<{ label: string; code: string }>;
+}
+
+/** i18n label placeholders (e.g. `{{apply.option.label.gender.a}}`) are not
+ * human-facing answers and can never be matched against a flow step's quoted
+ * label, so a schema whose labels are all templated yields no usable
+ * label→code mapping. */
+function isI18nLabel(label: string): boolean {
+  return label.includes("{{");
+}
+
+/**
+ * Indexes the JSON-Schema `enum`/`enumNames` PARALLEL-ARRAY convention across
+ * every response body: an object carrying a string `name` plus equal-length
+ * `enum` (option codes) and `enumNames` (option labels) declares one dropdown's
+ * label→code mapping, disambiguated per-question by `name`. This is the PRIMARY
+ * label→code source for ATS demographic/eligibility dropdowns whose submitted
+ * value is an opaque code, not the label.
+ *
+ * The same `name` can appear in several captures with progressively fuller
+ * option lists (a later page reveals the "decline to answer" choice), so the
+ * entry with the MOST non-i18n labels wins rather than first-seen — the flow's
+ * answer might be the choice only the fuller list carries.
+ *
+ * Site-agnostic: `enum`/`enumNames` are generic JSON-Schema keys; the field
+ * identities are discovered from the response, never hardcoded.
+ */
+export function indexEnumEnumNamesSchemas(
+  captures: Capture[]
+): Map<string, { codes: string[]; labels: string[] }> {
+  const out = new Map<string, { codes: string[]; labels: string[] }>();
+  const walk = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item);
+      return;
+    }
+    if (value === null || typeof value !== "object") return;
+    const obj = value as Record<string, unknown>;
+    const name = obj.name;
+    const en = obj.enum;
+    const nm = obj.enumNames;
+    if (
+      typeof name === "string" &&
+      Array.isArray(en) &&
+      Array.isArray(nm) &&
+      en.length === nm.length &&
+      en.length > 0 &&
+      en.every((c) => typeof c === "string") &&
+      nm.every((l) => typeof l === "string")
+    ) {
+      const codes = en as string[];
+      const labels = nm as string[];
+      const usable = labels.filter((l) => !isI18nLabel(l)).length;
+      const prior = out.get(name);
+      const priorUsable = prior ? prior.labels.filter((l) => !isI18nLabel(l)).length : -1;
+      if (usable > priorUsable) out.set(name, { codes, labels });
+    }
+    for (const v of Object.values(obj)) walk(v);
+  };
+  for (const capture of captures) walk(capture.responseBody);
+  return out;
+}
+
+/**
+ * Indexes the `{label,value}`-shaped option-object convention: arrays of
+ * objects each carrying both a `label` and a `value` string (state/country
+ * pickers ship these). Builds a GLOBAL label→code map used as the fallback
+ * source for dropdowns whose flow step carries no `id=` hint (so the
+ * enum/enumNames index can't be keyed) — the answer label is looked up
+ * directly. First non-i18n binding wins on a duplicate label.
+ *
+ * Site-agnostic: `label`/`value` are generic option-object keys; no field name
+ * is assumed.
+ */
+export function indexLabelValueOptionCodes(captures: Capture[]): Map<string, string> {
+  const out = new Map<string, string>();
+  const walk = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (item !== null && typeof item === "object" && !Array.isArray(item)) {
+          const r = item as Record<string, unknown>;
+          const label = r.label;
+          const code = r.value;
+          if (
+            typeof label === "string" &&
+            typeof code === "string" &&
+            label.length > 0 &&
+            code.length > 0 &&
+            !isI18nLabel(label) &&
+            !out.has(label)
+          ) {
+            out.set(label, code);
+          }
+        }
+        walk(item);
+      }
+      return;
+    }
+    if (value === null || typeof value !== "object") return;
+    for (const v of Object.values(value as Record<string, unknown>)) walk(v);
+  };
+  for (const capture of captures) walk(capture.responseBody);
+  return out;
+}
+
+/**
+ * Reconciles each flow SELECT step to a submitted option CODE so the body-slot
+ * literal (`"applyHealthCareExclusion":"5395"`) can be rewritten to a
+ * caller-driven `${OPT_<Name>[payload.<Name>]}` lookup. Real ATS bodies carry
+ * codes, not labels; the flow carries labels — this bridges them via the two
+ * generic label→code conventions ({@link indexEnumEnumNamesSchemas} primary,
+ * {@link indexLabelValueOptionCodes} fallback).
+ *
+ * The wire KEY is discovered from the step's `id=<field>` hint when present
+ * (the enum/enumNames schema is keyed by that same field name); steps without
+ * an `id=` (state/country) fall back to the vocabulary-resolved persona field
+ * lowercased, matched against the `{label,value}` map by label. A dropdown
+ * whose labels are all i18n placeholders (e.g. gender) yields no enum and is
+ * reported separately for the raw-code channel.
+ *
+ * Returns structured resolutions plus the set of i18n-only wire keys (raw-code
+ * fallbacks). Site-agnostic: field identities come from the flow's own `id=`
+ * hints and the consumer vocabulary, never a hardcoded key.
+ */
+export function buildSelectOptionResolutions(
+  flowSteps: FlowStepInput[],
+  captures: Capture[],
+  vocabulary: ReconVocabulary,
+  env: NodeJS.ProcessEnv
+): {
+  resolutions: SelectOptionResolution[];
+  rawCodeFields: Map<string, { wireKey: string; code: string }>;
+} {
+  const enumSchemas = indexEnumEnumNamesSchemas(captures);
+  const labelValue = indexLabelValueOptionCodes(captures);
+  const resolutions: SelectOptionResolution[] = [];
+  const rawCodeFields = new Map<string, { wireKey: string; code: string }>();
+  const seenWireKeys = new Set<string>();
+  for (const step of flowSteps) {
+    const instruction = typeof step === "string" ? step : step.step;
+    if (!/^\s*(select|choose|pick)\b/i.test(instruction) && !/\bselect\b/i.test(instruction)) {
+      continue;
+    }
+    const idMatch = /id=(\w+)/.exec(instruction);
+    // A Select step names the ANSWER first, then the question — so the answer is
+    // the FIRST quoted token (apostrophe-aware). extractStepPersonaValue only
+    // returns first-quote when the sentence STARTS with select/choose/pick; a
+    // dropdown step phrased "On the X step, select 'No' in the '…?' dropdown"
+    // starts with "On", so read the first quote directly here for id= steps.
+    const firstQuoteLabel = ((): string | null => {
+      const cleaned = instruction.replace(/(\w)'s\b/g, "$1s");
+      const m = /'([^']*)'/.exec(cleaned);
+      return m && m[1]!.length > 0 ? m[1]! : null;
+    })();
+    const label = idMatch ? firstQuoteLabel : extractStepPersonaValue(instruction, env);
+    if (label === null) continue;
+    // Primary: an id= hint names the wire key AND the enum/enumNames schema key.
+    if (idMatch) {
+      const wireKey = idMatch[1]!;
+      if (seenWireKeys.has(wireKey)) continue;
+      const schema = enumSchemas.get(wireKey);
+      if (!schema) continue;
+      const semanticName = fieldNameToPascalCase(wireKey, null);
+      if (semanticName === null) continue;
+      const idx = schema.labels.indexOf(label);
+      const usableOptions = schema.labels
+        .map((l, i) => ({ label: l, code: schema.codes[i]! }))
+        .filter((o) => !isI18nLabel(o.label));
+      if (idx >= 0 && !isI18nLabel(schema.labels[idx]!)) {
+        resolutions.push({
+          wireKey,
+          semanticName,
+          code: schema.codes[idx]!,
+          label,
+          options: usableOptions,
+        });
+        seenWireKeys.add(wireKey);
+        continue;
+      }
+      // Label is i18n-only (or the answer maps to a templated label): the field
+      // still must not stay frozen — surface the recon-observed code so the raw
+      // channel emits a caller-supplied default.
+      if (usableOptions.length === 0 && schema.codes.length > 0) {
+        const fallbackIdx = idx >= 0 ? idx : schema.codes.length - 1;
+        rawCodeFields.set(semanticName, { wireKey, code: schema.codes[fallbackIdx]! });
+        seenWireKeys.add(wireKey);
+      }
+      continue;
+    }
+    // Fallback: no id= — resolve the wire key from the vocabulary persona field
+    // (lowercased) and the code from the global {label,value} map by label.
+    const field = resolveStepPayloadField(
+      instruction,
+      typeof step === "string" ? undefined : step.payloadField,
+      typeof step === "string" ? undefined : step.payloadFieldNone,
+      vocabulary
+    );
+    if (field === null) continue;
+    const code = labelValue.get(label);
+    if (code === undefined) continue;
+    const wireKey = field.toLowerCase();
+    if (seenWireKeys.has(wireKey)) continue;
+    const semanticName = fieldNameToPascalCase(wireKey, null);
+    if (semanticName === null) continue;
+    // The {label,value} map only reliably yields the one answered label→code
+    // pair here; emit a single-choice enum so the field still binds (the caller
+    // can widen it). Co-located labels aren't safely attributable to this field.
+    resolutions.push({ wireKey, semanticName, code, label, options: [{ label, code }] });
+    seenWireKeys.add(wireKey);
+  }
+  return { resolutions, rawCodeFields };
+}
+
+/**
+ * Rewrites plain-JSON dropdown body slots (`"<wireKey>":"<code>"`) to a
+ * caller-driven `${OPT_<Name>[payload.<Name>]}` lookup, anchored on the wire
+ * KEY rather than the UUID field-id marker
+ * {@link applyFormSchemaOptionIdSubstitutions} uses. This is the plain-JSON
+ * ATS case where the submitted body is a flat `{ "field": "code" }` map with no
+ * schema envelope, so the key/value pair — both drawn from recon input — is the
+ * only closed-set anchor available.
+ *
+ * Records each rewritten field's semanticName into `outDiscoveredOptionFields`
+ * so emitContractTs lights up its OPT_<Name> const + z.enum payload entry, and
+ * mutates `fieldOptionsMap` so that emit finds the option mapping. Closed-set:
+ * both the key and the code come from the recon-derived resolutions.
+ */
+function applyGenericOptionCodeSubstitutions(
+  rawBody: string,
+  resolutions: SelectOptionResolution[],
+  fieldOptionsMap: FieldOptionsMap,
+  outDiscoveredOptionFields: Set<string>
+): string {
+  if (resolutions.length === 0) return rawBody;
+  let result = rawBody;
+  for (const res of resolutions) {
+    const slot = `"${res.wireKey}":"${res.code}"`;
+    if (!result.includes(slot)) continue;
+    const replacement = `"${res.wireKey}":"$${"{"}OPT_${res.semanticName}[payload.${res.semanticName}]${"}"}"`;
+    result = result.split(slot).join(replacement);
+    // Mutate the option map so emitContractTs emits OPT_<Name> + the z.enum.
+    if (!fieldOptionsMap.has(res.wireKey)) {
+      fieldOptionsMap.set(res.wireKey, {
+        semanticName: res.semanticName,
+        options: res.options.map((o) => ({ value: o.label, optionId: o.code })),
+      });
+    }
+    outDiscoveredOptionFields.add(res.semanticName);
+  }
+  return result;
+}
+
+/**
+ * Rewrites the body slot of an i18n-only dropdown (one whose labels are all
+ * templated placeholders, so no OPT_<Name> enum is possible) from its frozen
+ * recon code to a caller-supplied `${payload.<Name>Code}`. This is the
+ * plain-JSON, wire-key-anchored twin of {@link applyRawOptionIdPayloadSubstitutions}
+ * (which is UUID/form-schema anchored) — without it a field like gender would
+ * submit the recon persona's frozen choice for every caller.
+ */
+function applyGenericRawCodeSubstitutions(
+  rawBody: string,
+  rawCodeFields: Map<string, { wireKey: string; code: string }>
+): string {
+  if (rawCodeFields.size === 0) return rawBody;
+  let result = rawBody;
+  for (const [semanticName, { wireKey, code }] of rawCodeFields) {
+    const slot = `"${wireKey}":"${code}"`;
+    if (!result.includes(slot)) continue;
+    const replacement = `"${wireKey}":"$${"{"}payload.${semanticName}Code${"}"}"`;
+    result = result.split(slot).join(replacement);
+  }
+  return result;
+}
+
+/** Counts an object's DIRECT primitive-valued children (string/number/boolean/
+ * null). The form envelope is the object with the most of these — its scalar
+ * children are the fields every other binding pass individually parameterizes,
+ * so it must never be swallowed wholesale. */
+function directPrimitiveChildCount(obj: Record<string, unknown>): number {
+  let n = 0;
+  for (const v of Object.values(obj)) {
+    if (v === null || (typeof v !== "object" && typeof v !== "function")) n++;
+  }
+  return n;
+}
+
+/**
+ * Locates the FORM ENVELOPE inside a submit body — the nested object that
+ * actually holds the scalar form fields (which every other pass binds one by
+ * one) — by descending through wrapper objects and picking the object with the
+ * most direct primitive children. Returns its dotted path from the body root
+ * (empty when the root itself is the envelope). Site-agnostic: no key names are
+ * assumed; the envelope is found by shape.
+ */
+function locateFormEnvelopePath(parsedBody: unknown): string[] {
+  const candidates: Array<{ path: string[]; primitives: number }> = [];
+  const visit = (value: unknown, path: string[]): void => {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return;
+    const obj = value as Record<string, unknown>;
+    candidates.push({ path, primitives: directPrimitiveChildCount(obj) });
+    for (const [k, v] of Object.entries(obj)) visit(v, [...path, k]);
+  };
+  visit(parsedBody, []);
+  if (candidates.length === 0) return [];
+  const maxP = Math.max(...candidates.map((c) => c.primitives));
+  // The analytics blob (`eventData`) mirrors the form, so the object with the
+  // MOST primitives can be a deep descendant of the true envelope. Pick the
+  // SHALLOWEST primitive-rich object (≥ half the max) instead — that is the
+  // form envelope itself, whose analytics mirror sits below it. Tie-break on a
+  // higher primitive count. Threshold is relative, not a magic key name.
+  const rich = candidates.filter((c) => c.primitives >= Math.max(1, maxP / 2));
+  // No object carries a scalar field (maxP === 0): the body root is the only
+  // sensible envelope — operate at the top level.
+  if (rich.length === 0) return [];
+  rich.sort((a, b) => a.path.length - b.path.length || b.primitives - a.primitives);
+  return rich[0]!.path;
+}
+
+/**
+ * Parameterizes whole nested caller-supplied structures sitting BESIDE the
+ * scalar form fields — the array-valued work/education history
+ * (`experienceData`/`educationData`/`dqData`) and the opaque `eventData`
+ * analytics object — replacing each `"key":<json>` span with
+ * `"key":${JSON.stringify(payload.<key>)}` and recording the key's inferred Zod
+ * schema so emitContractTs adds it to the payload contract.
+ *
+ * These blocks are caller data the recon merely captured a frozen sample of;
+ * freezing them would submit one applicant's history for every caller. Crucially
+ * the FORM ENVELOPE object itself (the one carrying firstName/state/… that the
+ * persona and dropdown passes bind field-by-field) is NEVER swallowed — that
+ * would collapse the whole form to one opaque `${JSON.stringify(payload.formData)}`
+ * and defeat every other binding. {@link locateFormEnvelopePath} finds it by
+ * shape; only its non-scalar SIBLING children are parameterized. A
+ * brace/bracket-depth scanner finds the exact JSON span (the captured body is
+ * well-formed).
+ *
+ * NOTE on `eventData`: it becomes an opaque `${JSON.stringify(payload.eventData)}`
+ * passthrough. Its nested volatiles (apTxnId, per-step timestamps) therefore
+ * become the CALLER's responsibility to mint fresh — acceptable because the
+ * whole blob is caller-supplied; the generator can't reach inside a value it
+ * has delegated wholesale.
+ *
+ * Site-agnostic: operates only on the recon body's own shape.
+ */
+function applyStructuredValuePayloadSubstitutions(
+  template: string,
+  parsedBody: unknown,
+  outStructuredKeys: Map<string, string>
+): string {
+  if (parsedBody === null || typeof parsedBody !== "object" || Array.isArray(parsedBody)) {
+    return template;
+  }
+  // Resolve the envelope object whose non-scalar children are caller structures.
+  const envelopePath = locateFormEnvelopePath(parsedBody);
+  let envelope: unknown = parsedBody;
+  for (const seg of envelopePath) {
+    if (envelope !== null && typeof envelope === "object" && !Array.isArray(envelope)) {
+      envelope = (envelope as Record<string, unknown>)[seg];
+    }
+  }
+  if (envelope === null || typeof envelope !== "object" || Array.isArray(envelope)) {
+    return template;
+  }
+  let result = template;
+  for (const [key, value] of Object.entries(envelope as Record<string, unknown>)) {
+    const isNonEmptyArray = Array.isArray(value) && value.length > 0;
+    const isNestedObject =
+      value !== null &&
+      typeof value === "object" &&
+      !Array.isArray(value) &&
+      Object.keys(value as Record<string, unknown>).length > 0;
+    if (!isNonEmptyArray && !isNestedObject) continue;
+    const keyMarker = `"${key}":`;
+    const markerIdx = result.indexOf(keyMarker);
+    if (markerIdx === -1) continue;
+    const spanStart = markerIdx + keyMarker.length;
+    const open = result[spanStart];
+    if (open !== "[" && open !== "{") continue;
+    const close = open === "[" ? "]" : "}";
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    let spanEnd = -1;
+    for (let i = spanStart; i < result.length; i++) {
+      const ch = result[i]!;
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (ch === "\\") escaped = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') inString = true;
+      else if (ch === open) depth++;
+      else if (ch === close) {
+        depth--;
+        if (depth === 0) {
+          spanEnd = i + 1;
+          break;
+        }
+      }
+    }
+    if (spanEnd === -1) continue;
+    const replacement = `$${"{"}JSON.stringify(payload.${key})${"}"}`;
+    result = result.slice(0, spanStart) + replacement + result.slice(spanEnd);
+    if (!outStructuredKeys.has(key)) {
+      outStructuredKeys.set(key, inferZodSchema(value));
+    }
+  }
+  return result;
+}
+
 /** Maximum length to guard against indexing massive blobs (HTML fragments,
  * embedded base64 images, etc.) that aren't candidates for state threading. */
 const MAX_STATE_VALUE_LENGTH = 256;
@@ -1913,221 +2450,97 @@ function applyPayloadKeyValueSubstitutions(
   return result;
 }
 
-// ── base64 Content parameterization ──────────────────────────────────────────
+/**
+ * Documented closed set of JSON-key-name fragments (matched case-insensitively)
+ * that mark a value as a per-request TIMESTAMP the plugin must generate fresh at
+ * call time, not replay from the capture. Closed set per the no-regex-on-open-
+ * sets feedback, mirroring {@link CACHE_BUSTER_QUERY_KEYS}'s posture. A frozen
+ * capture timestamp would make every submission claim the recon instant.
+ */
+const VOLATILE_TIMESTAMP_KEY_FRAGMENTS = ["timestamp", "esign", "signeddate", "signedat"];
+
+/** JSON-key-name suffix marking a value as a per-request time the plugin must
+ * regenerate (e.g. `stepStartTime`, `submissionTime`). Separate from the
+ * fragment set so it anchors on the suffix and doesn't match `runtime`/`downtime`. */
+const VOLATILE_TIME_KEY_SUFFIX = "time";
+
+function isVolatileTimestampKey(key: string): boolean {
+  const k = key.toLowerCase();
+  if (VOLATILE_TIMESTAMP_KEY_FRAGMENTS.some((frag) => k.includes(frag))) return true;
+  return k.endsWith(VOLATILE_TIME_KEY_SUFFIX) && k !== "time";
+}
 
 /**
- * Maps a site's screening-question prompts to the payload field that answers
- * them, as `{ payloadField: [keyword, …] }`.
+ * Rewrites per-request VOLATILE values in a body template so the generated
+ * plugin produces them at call time instead of replaying the capture's:
+ *   - a UUID-valued leaf → a fresh `crypto.randomUUID()`
+ *   - a timestamp/eSign/-time-named leaf → a fresh `new Date().toISOString()`
  *
- * Empty by default and supplied by the operator via `RECON_QUESTION_KEYWORDS`
- * (JSON) — the engine cannot know what any site asks or what a caller's payload
- * calls things. It previously hardcoded one product's field names, which capped
- * discovery at those questions and silently dropped every other site's.
+ * Walks the PARSED body (so keys are known) and rewrites JSON-key-anchored
+ * (`"key":JSON.stringify(value)`), the same closed-set idiom as
+ * {@link applyPayloadKeyValueSubstitutions}, recursing to ANY depth so nested
+ * analytics/step blobs (`eventData`, `stepInfo[]`) are neutralized too. Values
+ * in `shieldedUuids` (schema field-id/option-id anchors) or `boundValues` (a
+ * value already substituted to `${payload…}`/`${txnId}`/state) are left alone
+ * — an already-threaded transaction id or a bound email is not volatile.
+ *
+ * `crypto`/`Date` are bare Node/JS globals in the generated file (which already
+ * uses `Buffer` bare); the `${…}` fragments are assembled by concatenation so
+ * Biome's noTemplateCurlyInString doesn't flag THIS file's source.
  */
-export function loadQuestionPromptKeywords(): Record<string, string[]> {
-  const raw = process.env.RECON_QUESTION_KEYWORDS;
-  if (!raw) return {};
-  try {
-    return JSON.parse(raw) as Record<string, string[]>;
-  } catch (err) {
-    logger.warn(`RECON_QUESTION_KEYWORDS is not valid JSON, ignoring: ${toErrorMessage(err)}`);
-    return {};
+function applyVolatileFieldSubstitutions(
+  template: string,
+  parsedBody: unknown,
+  shieldedUuids: Set<string>,
+  boundValues: Set<string>
+): string {
+  const uuidGen = `$${"{"}crypto.randomUUID()${"}"}`;
+  const isoGen = `$${"{"}new Date().toISOString()${"}"}`;
+  let result = template;
+  for (const { value, path } of walkAllPrimitiveLeaves(parsedBody)) {
+    if (typeof value !== "string" || value.length === 0) continue;
+    if (shieldedUuids.has(value) || boundValues.has(value)) continue;
+    const key = path[path.length - 1] ?? "";
+    const replacement = UUID_REGEX.test(value)
+      ? uuidGen
+      : isVolatileTimestampKey(key)
+        ? isoGen
+        : null;
+    if (replacement === null) continue;
+    const target = `"${JSON.stringify(value).slice(1, -1)}"`;
+    result = result.split(target).join(`"${replacement}"`);
   }
-}
-
-const QUESTION_PROMPT_KEYWORDS: Record<string, string[]> = loadQuestionPromptKeywords();
-
-interface QuestionAnswerMapping {
-  questionId: number;
-  payloadField: string;
-  answers: Record<string, number>;
+  return result;
 }
 
 /**
- * Scans captures for a `recruitingCEQuestions` GET response and builds a
- * mapping from question prompts to payload.Answers field names using keyword
- * overlap scoring. Returns null if no questions capture is found.
+ * Collects captured string leaves that survived every binding/generation pass as
+ * still-literal — the values a reviewer must look at because they couldn't be
+ * traced to a payload field, a generator, or a schema anchor. Returns the JSON
+ * key names (deduped, in first-seen order) so the emitter can prepend a single
+ * `// TODO: unbound captured literal` marker; it never mutates the body, so the
+ * file still compiles. Short values (< {@link MIN_STATE_VALUE_LENGTH}) are
+ * skipped — they are the legitimately-constant enum-like fields.
  */
-function buildQuestionnaireMapping(captures: Capture[]): QuestionAnswerMapping[] | null {
-  const questionCapture = captures.find(
-    (c) => c.method === "GET" && c.url.includes("recruitingCEQuestions")
-  );
-  if (!questionCapture) return null;
-  const resp =
-    typeof questionCapture.responseBody === "string"
-      ? (JSON.parse(questionCapture.responseBody) as Record<string, unknown>)
-      : (questionCapture.responseBody as Record<string, unknown> | null);
-  if (!resp || !Array.isArray(resp.items)) return null;
-
-  const mappings: QuestionAnswerMapping[] = [];
-  const unmapped: string[] = [];
-  for (const item of resp.items as Array<Record<string, unknown>>) {
-    const prompt = String(item.Prompt ?? "").toLowerCase();
-    const qid = item.AttributeName as number | undefined;
-    const uiType = String(item.UIDisplayType ?? "");
-    if (!qid || uiType === "TextBox") continue;
-
-    let bestField: string | null = null;
-    let bestScore = 0;
-    for (const [field, keywords] of Object.entries(QUESTION_PROMPT_KEYWORDS)) {
-      const score = keywords.filter((kw) => prompt.includes(kw)).length;
-      if (score > bestScore) {
-        bestScore = score;
-        bestField = field;
-      }
-    }
-    // A question the keyword map cannot place is the interesting case: it is a
-    // question this site asks and the caller has no field for. Report it —
-    // dropping it silently is how a generated plugin ends up submitting nothing
-    // for a required question.
-    if (!bestField || bestScore < 2) {
-      unmapped.push(`${qid}: ${String(item.Prompt ?? "")}`);
-      continue;
-    }
-    if (mappings.some((m) => m.payloadField === bestField)) continue;
-
-    const answers: Record<string, number> = {};
-    for (const a of (item.answers ?? []) as Array<Record<string, unknown>>) {
-      const meaning = String(a.Meaning ?? "");
-      const code = a.LookupCode as number | undefined;
-      if (meaning && code) answers[meaning] = code;
-    }
-    mappings.push({ questionId: qid, payloadField: bestField, answers });
-  }
-  if (unmapped.length > 0) {
-    logger.warn(
-      `${unmapped.length} screening question(s) matched no payload field and will be unanswered — add keywords to RECON_QUESTION_KEYWORDS: ${unmapped.join(" | ")}`
-    );
-  }
-  return mappings.length > 0 ? mappings : null;
-}
-
-/**
- * Builds the TypeScript source for a `buildBase64Content` function that
- * constructs the base64-encoded Content JSON from payload values and returns
- * it as a base64 string. The function replaces persona-specific values
- * with payload references and maps questionnaire answers via a static
- * lookup table derived from the recon captures.
- */
-function emitBuildBase64ContentFunction(
-  base64: string,
-  personaValues: Map<string, string>,
-  questionMapping: QuestionAnswerMapping[] | null,
-  pascal: string
-): string {
-  const decoded = Buffer.from(base64, "base64").toString("utf8");
-  const content = JSON.parse(decoded) as Record<string, unknown>;
-
-  const candidate = (content as { candidate: Record<string, unknown> }).candidate;
-  const basic = (candidate as { basicInformation: Record<string, unknown> }).basicInformation;
-  const phone = basic.phone as Record<string, unknown> | undefined;
-  const application = (content as { application: Record<string, unknown> }).application;
-  const esig = (application as { eSignature: Record<string, unknown> }).eSignature;
-
-  basic.firstName = "__PAYLOAD_FirstName__";
-  basic.lastName = "__PAYLOAD_LastName__";
-  basic.email = "__PAYLOAD_Email__";
-  if (esig) esig.fullName = "__PAYLOAD_SignatureFullName__";
-  if (basic.displayName && typeof basic.displayName === "string")
-    basic.displayName = "__PAYLOAD_DisplayName__";
-  if (phone && typeof phone.number === "string" && phone.number) phone.number = "__PAYLOAD_Phone__";
-
-  for (const [personaVal, _payloadRef] of personaValues) {
-    if (typeof basic.email === "string" && basic.email === personaVal)
-      basic.email = "__PAYLOAD_Email__";
-  }
-
-  const questionnaires = (
-    candidate as {
-      questionnaires: Array<{
-        questionnaireId: number;
-        questions: Array<{
-          questionId: number;
-          answer: unknown;
-        }>;
-      }>;
-    }
-  ).questionnaires;
-  if (questionnaires && questionMapping) {
-    for (const q of questionnaires) {
-      q.questionnaireId = -1;
-      for (const question of q.questions) {
-        const mapping = questionMapping.find((m) => m.questionId === question.questionId);
-        if (mapping) {
-          question.answer = `__QMAP_${mapping.payloadField}__`;
-        }
-      }
+function collectUnboundLiterals(
+  finalTemplate: string,
+  parsedBody: unknown,
+  shieldedUuids: Set<string>
+): string[] {
+  const unbound: string[] = [];
+  const seen = new Set<string>();
+  for (const { value, path } of walkAllPrimitiveLeaves(parsedBody)) {
+    if (typeof value !== "string" || value.length < MIN_STATE_VALUE_LENGTH) continue;
+    if (shieldedUuids.has(value)) continue;
+    const key = path[path.length - 1] ?? "";
+    if (seen.has(key)) continue;
+    // Still a bare literal in the emitted template (no ${…} took its place).
+    if (finalTemplate.includes(JSON.stringify(value))) {
+      seen.add(key);
+      unbound.push(key);
     }
   }
-
-  const attachments = (candidate as { attachments: Array<{ id: string }> }).attachments;
-  if (attachments) {
-    for (const att of attachments) {
-      if (att.id && att.id !== "draft-json-undefined") {
-        att.id = "__PAYLOAD_AttachmentId__";
-      }
-    }
-    if (attachments[0]) {
-      (attachments[0] as Record<string, unknown>).appDraftId = "__PAYLOAD_DraftId__";
-    }
-  }
-
-  const jsonStr = JSON.stringify(content, null, 0);
-
-  const contentObj = JSON.parse(jsonStr) as Record<string, unknown>;
-
-  const questionMapEntries = (questionMapping ?? []).map(
-    (m) =>
-      `    ${JSON.stringify(m.payloadField)}: { answers: ${JSON.stringify(m.answers)} as Record<string, number>, questionId: ${m.questionId} },`
-  );
-
-  const questionMapConst2 =
-    questionMapEntries.length > 0
-      ? `\nconst QUESTIONNAIRE_ANSWER_MAP = {\n${questionMapEntries.join("\n")}\n};\n`
-      : "";
-
-  const contentTemplate = JSON.stringify(contentObj, null, 2);
-
-  const parameterized = contentTemplate
-    .replace(/"__PAYLOAD_FirstName__"/g, "payload.FirstName")
-    .replace(/"__PAYLOAD_LastName__"/g, "payload.LastName")
-    .replace(/"__PAYLOAD_Email__"/g, "payload.Email")
-    .replace(/"__PAYLOAD_Phone__"/g, "payload.Phone")
-    .replace(/"__PAYLOAD_SignatureFullName__"/g, "payload.Answers.SignatureFullName")
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: emitted as generated template-literal source
-    .replace(/"__PAYLOAD_DisplayName__"/g, "`${payload.FirstName} ${payload.LastName}`")
-    .replace(/"__PAYLOAD_AttachmentId__"/g, "attachmentId")
-    .replace(/"__PAYLOAD_DraftId__"/g, "draftId")
-    .replace(/-1(?=,\n\s*"questions")/g, "questionnaireId");
-
-  for (const m of questionMapping ?? []) {
-    parameterized.replace(
-      `"__QMAP_${m.payloadField}__"`,
-      `QUESTIONNAIRE_ANSWER_MAP[${JSON.stringify(m.payloadField)}].answers[payload.Answers.${m.payloadField}] ?? "draft-json-undefined"`
-    );
-  }
-
-  let finalTemplate = parameterized.replace(/"__QMAP_[^"]*__"/g, '"draft-json-undefined"');
-
-  for (const m of questionMapping ?? []) {
-    finalTemplate = finalTemplate.replace(
-      `"__QMAP_${m.payloadField}__"`,
-      `(QUESTIONNAIRE_ANSWER_MAP[${JSON.stringify(m.payloadField)}].answers[payload.Answers.${m.payloadField}] ?? "draft-json-undefined")`
-    );
-  }
-
-  return `${questionMapConst2}
-/** Builds the ATS Content payload as a base64-encoded JSON string. */
-function buildBase64Content(
-  payload: ${pascal}Payload,
-  questionnaireId: number,
-  draftId: number,
-  attachmentId: string
-): string {
-  const content = ${finalTemplate};
-  return Buffer.from(JSON.stringify(content)).toString("base64");
-}
-`;
+  return unbound;
 }
 
 /** Builds the multi-step `executeHttp` body as a single template-literal string.
@@ -2212,8 +2625,13 @@ export function emitMultiStepExecuteHttp(
   baseUrl: string,
   baseUrlDerivedHeaders: Map<string, string>,
   tenantSubdomainHeaders: Map<string, string>,
-  base64PatchOverride: Map<string, string> = new Map(),
-  formSchema: ReconFormSchema | null = null
+  formSchema: ReconFormSchema | null = null,
+  personaBindings: Map<string, string> = new Map(),
+  entryUrlParams: Map<string, string> = new Map(),
+  shieldedUuids: Set<string> = new Set(),
+  selectResolutions: SelectOptionResolution[] = [],
+  outStructuredKeys: Map<string, string> = new Map(),
+  rawCodeFields: Map<string, { wireKey: string; code: string }> = new Map()
 ): string {
   interface Rendered {
     url: string;
@@ -2259,6 +2677,58 @@ export function emitMultiStepExecuteHttp(
     payloadAccessorByValue.set(baseUrl, "payload.BaseUrl");
     outDiscoveredFields.add("BaseUrl");
   }
+  // Persona identity bindings (from the flow's quoted literals + RECON_EMAIL,
+  // paired to a payload field by the consumer vocabulary). Merged into the same
+  // value→accessor map so `interpolateStateValues`' length-descending payload
+  // pass substitutes them at ANY nesting depth — the fix for nested ATS bodies
+  // like `formData.firstName` that the top-level-only key pass never reached.
+  //
+  // Collision guard (not a blunt length floor): that pass replaces by UNANCHORED
+  // `String.split(value)`, so a persona value that appears INSIDE a longer token
+  // would corrupt it — e.g. a `Select 'No' …` answer a vocabulary mapped to a
+  // field would rewrite the "No" inside "Nursing"/"Not". A value binds only when
+  // every occurrence across the action bodies sits at a token boundary (the
+  // adjacent character is a non-alphanumeric JSON delimiter like `"`, space, or
+  // punctuation), never flanked by alphanumerics. This keeps legitimately-short
+  // identity values that don't collide (a 5-digit zip `06103`, a first name that
+  // also appears space-delimited inside a signature) while dropping genuinely
+  // dangerous substrings, which then surface via the unbound-literal TODO.
+  // State-threaded produced values still win — they run in Pass 1, before this.
+  const actionBodies = actions
+    .map((a) => a.capture.requestPostData)
+    .filter((b): b is string => typeof b === "string" && b.length > 0);
+  const isAlnum = (ch: string | undefined): boolean => ch !== undefined && /[A-Za-z0-9]/.test(ch);
+  const bindsWithoutCollision = (value: string): boolean => {
+    for (const body of actionBodies) {
+      let from = 0;
+      while (true) {
+        const at = body.indexOf(value, from);
+        if (at === -1) break;
+        // Flanked by an alphanumeric on either side → it's a substring of a
+        // longer token; binding it would mangle that token. Block the value.
+        if (isAlnum(body[at - 1]) || isAlnum(body[at + value.length])) return false;
+        from = at + value.length;
+      }
+    }
+    return true;
+  };
+  for (const [value, accessor] of personaBindings) {
+    if (value.length === 0) continue;
+    if (!bindsWithoutCollision(value)) continue;
+    if (!payloadAccessorByValue.has(value)) payloadAccessorByValue.set(value, accessor);
+    const field = accessor.startsWith("payload.") ? accessor.slice("payload.".length) : null;
+    if (field !== null && /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(field)) outDiscoveredFields.add(field);
+  }
+  // Job coordinates from the recon entry URL's query string (e.g.
+  // `?jobSeqNo=...`). Registered the same way as BaseUrl so every verbatim
+  // occurrence — and, via length-descending order, embedded substrings like a
+  // jobId inside a jobSeqNo — rewrites to the caller-supplied value.
+  for (const [value, accessor] of entryUrlParams) {
+    if (value.length === 0) continue;
+    if (!payloadAccessorByValue.has(value)) payloadAccessorByValue.set(value, accessor);
+    const field = accessor.startsWith("payload.") ? accessor.slice("payload.".length) : null;
+    if (field !== null && /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(field)) outDiscoveredFields.add(field);
+  }
   // G2: register any tenant-subdomain header values as payload-supplied fields
   // (e.g. an `API-ShortName: "addus"` header becomes `payload.ApiShortName`).
   for (const [headerName, _value] of tenantSubdomainHeaders) {
@@ -2279,6 +2749,36 @@ export function emitMultiStepExecuteHttp(
       // skip non-JSON bodies (e.g. multipart raw bytes)
     }
   }
+
+  // Detect the flow's THREADED transaction id: a single UUID the site mints
+  // once (on page load) and reuses across every submit body to correlate the
+  // multi-step wizard — observed on real ATS flows where one such id spans
+  // every step. A frozen capture UUID would collide across concurrent/real
+  // submissions, so the plugin must mint ONE at call time and thread it — hence
+  // it maps to a hoisted local, not a payload field. Identified generically:
+  // the same non-shielded UUID present in ≥2 action bodies.
+  const uuidBodyCounts = new Map<string, number>();
+  for (const { capture } of actions) {
+    const seen = new Set<string>();
+    for (const v of jsonBodyLeafValues(capture.requestPostData) ?? []) {
+      if (UUID_REGEX.test(v) && !shieldedUuids.has(v)) seen.add(v);
+    }
+    for (const v of seen) uuidBodyCounts.set(v, (uuidBodyCounts.get(v) ?? 0) + 1);
+  }
+  const threadedTxnId = [...uuidBodyCounts.entries()].find(([, n]) => n >= 2)?.[0] ?? null;
+  // The value→`${txnId}` binding rides the same substitution map as payload
+  // accessors (Pass 2 of interpolateStateValues); the hoisted `const txnId`
+  // declaration is emitted once above the step sequence below. `txnId` is a
+  // generic local name — the wire key it fills is whatever the body used.
+  if (threadedTxnId !== null && !payloadAccessorByValue.has(threadedTxnId)) {
+    payloadAccessorByValue.set(threadedTxnId, "txnId");
+  }
+  // Values already substituted to a `${…}` reference — the volatile pass must
+  // NOT regenerate these (an already-threaded txn id or a bound email is not
+  // volatile). Keyed by the concrete captured value.
+  const boundValues = new Set<string>(payloadAccessorByValue.keys());
+  // Captured literals that survived every pass — surfaced as a review TODO.
+  const unboundLiteralKeys = new Set<string>();
 
   // Pass 1: render every step's emitted strings; collect referenced var names.
   const rendered: Rendered[] = [];
@@ -2315,18 +2815,72 @@ export function emitMultiStepExecuteHttp(
             formSchema
           )
         : (cap.requestPostData ?? "");
-    let bodyTemplate = rawBodyWithFormSubs
+    // Parsed once and shared by the structured (Mechanism B) and volatile passes
+    // below — both walk the same body JSON, so parsing twice would be redundant.
+    // null for absent/non-JSON bodies (multipart raw bytes), which both passes skip.
+    const parsedBody = ((): unknown => {
+      if (!cap.requestPostData) return null;
+      try {
+        return JSON.parse(cap.requestPostData);
+      } catch {
+        return null;
+      }
+    })();
+    // Mechanism B — parameterize whole nested caller structures
+    // (experienceData/educationData history, opaque eventData) BEFORE value
+    // substitution reaches inside them: swallowing the entire array/object first
+    // keeps interpolateStateValues from binding a code buried in the history
+    // sample (e.g. a work entry's state code) to an unrelated field.
+    const rawBodyWithStructuredSubs =
+      parsedBody !== null
+        ? applyStructuredValuePayloadSubstitutions(
+            rawBodyWithFormSubs,
+            parsedBody,
+            outStructuredKeys
+          )
+        : rawBodyWithFormSubs;
+    const bodyAfterStateAndKv = rawBodyWithStructuredSubs
       ? applyPayloadKeyValueSubstitutions(
-          interpolateStateValues(rawBodyWithFormSubs, prior, payloadAccessorByValue),
+          interpolateStateValues(rawBodyWithStructuredSubs, prior, payloadAccessorByValue),
           inputBody,
           additionalBodies,
           outDiscoveredAdditionalBodyKeys
         )
       : "";
-
-    const contentOverride = base64PatchOverride.get(step.varName);
-    if (contentOverride && bodyTemplate) {
-      bodyTemplate = bodyTemplate.replace(/"Content":"ey[A-Za-z0-9+/=]{100,}"/, contentOverride);
+    // Mechanism A — generic (plain-JSON, wire-key-anchored) dropdown label→code
+    // rewrite. Runs AFTER interpolateStateValues + the payload-KV pass, not
+    // before: the emitted `${OPT_<Name>[…]}` placeholder embeds the PascalCase
+    // field name, and a wizard step-slug value (e.g. stepNum "Disability") that
+    // becomes a global `.split` payload binding would otherwise rewrite the
+    // matching substring INSIDE that placeholder and corrupt it. The closed-set
+    // `"<key>":"<code>"` slot (numeric code, nested key) survives both earlier
+    // passes untouched, so matching it here is still exact.
+    let bodyTemplate = cap.requestPostData
+      ? applyGenericRawCodeSubstitutions(
+          applyGenericOptionCodeSubstitutions(
+            bodyAfterStateAndKv,
+            selectResolutions,
+            fieldOptionsMap,
+            outDiscoveredOptionFields
+          ),
+          rawCodeFields
+        )
+      : bodyAfterStateAndKv;
+    // Volatile pass: after persona/job/state/kv binding, regenerate any
+    // remaining per-request UUID (fresh crypto.randomUUID()) and timestamp
+    // (fresh new Date().toISOString()) so the plugin never replays the capture
+    // instant. Recurses to any depth; skips schema anchors and already-bound
+    // values (incl. the threaded txn id). Then flag whatever is STILL literal.
+    if (bodyTemplate && parsedBody !== null) {
+      bodyTemplate = applyVolatileFieldSubstitutions(
+        bodyTemplate,
+        parsedBody,
+        shieldedUuids,
+        boundValues
+      );
+      for (const key of collectUnboundLiterals(bodyTemplate, parsedBody, shieldedUuids)) {
+        unboundLiteralKeys.add(key);
+      }
     }
 
     const perCallHeaders: Record<string, string> = {};
@@ -2393,23 +2947,27 @@ export function emitMultiStepExecuteHttp(
   // `return { data }` — see selectReturnAction.
   const returnAction = selectReturnAction(actions);
   if (returnAction) referencedNames.add(returnAction.varName);
-  // Base64 Content overrides reference variables inside function calls
-  // (e.g. buildBase64Content(payload, questionnaireId, ...)) that the
-  // ${name} regex above doesn't capture. Add them explicitly.
-  for (const [key, override] of base64PatchOverride.entries()) {
-    if (key === "__EXTRA_VARS__") continue;
-    for (const m of override.matchAll(/\b([A-Za-z_$][A-Za-z0-9_$]*)\b/g)) {
-      const name = m[1]!;
-      if (/^r\d+$/.test(name)) continue;
-      referencedNames.add(name);
-    }
-  }
 
   // Pass 2: emit. Skip response bindings that aren't referenced; skip
   // produces[] entries whose name isn't referenced. A step's response var
   // is still needed when at least one of its produces[] entries IS
   // referenced — the produces line dereferences it.
   const lines: string[] = [];
+  // Mint the threaded transaction id ONCE and reuse across every step — the
+  // `${txnId}` references emitted into the bodies above all resolve to this
+  // single call-time UUID, matching how the site mints one per application.
+  // Emitted only when actually referenced (Biome noUnusedVariables).
+  if (threadedTxnId !== null && referencedNames.has("txnId")) {
+    lines.push(`    const txnId = crypto.randomUUID();`);
+    lines.push("");
+  }
+  // Surface any captured literal that no pass could bind, so a reviewer knows
+  // exactly which slots still carry recon data. Comment only — never blocks emit.
+  if (unboundLiteralKeys.size > 0) {
+    lines.push(
+      `    // TODO: unbound captured literal(s) — verify these carry caller data, not the recon capture's: ${[...unboundLiteralKeys].join(", ")}`
+    );
+  }
   const declaredNames = new Set<string>();
   for (let i = 0; i < actions.length; i++) {
     const step = actions[i]!;
@@ -2437,11 +2995,6 @@ export function emitMultiStepExecuteHttp(
       );
     }
     const bindResponse = referencedNames.has(step.varName) || produceLines.length > 0;
-
-    if (base64PatchOverride.has(step.varName) && base64PatchOverride.has("__EXTRA_VARS__")) {
-      lines.push(base64PatchOverride.get("__EXTRA_VARS__")!);
-      lines.push("");
-    }
 
     if (step.isCrossDomain) {
       lines.push(
@@ -2626,12 +3179,17 @@ export function emitContractTs(opts: {
    * (inputBody). Mapped to their value type. Each becomes a payload field
    * (string → z.string(), number → z.number(), boolean → z.boolean()). */
   discoveredAdditionalBodyKeys?: Map<string, "string" | "number" | "boolean">;
+  /** Mechanism B: top-level body keys whose value is a whole caller-supplied
+   * nested structure (arrays like experienceData/educationData, or the opaque
+   * eventData blob), mapped to the inferred Zod schema expression for that
+   * value. Each becomes a `<key>: <schema>` payload field so the caller passes
+   * its own history/analytics rather than replaying the recon sample. */
+  discoveredStructuredKeys?: Map<string, string>;
   /** PascalCase candidate-PII field names the browser flow splices as
    * `payload.<field>` (from resolveStepPayloadField). Each is added to the
    * payload schema so those references typecheck. Shares the accumulator with
    * emitBrowserFlowTs so schema and flow can never drift. */
   payloadFieldNames?: Set<string>;
-  base64ContentHelper?: string;
   /** Response-header/cookie-origin state bindings collected from the action
    * sequence's produces[] (see `collectHeaderBindings`) — rendered as
    * `createHttpClient`'s `bind` option so a value like a `Set-Cookie`-minted
@@ -2658,8 +3216,8 @@ export function emitContractTs(opts: {
     discoveredOptionFields,
     discoveredRawOptionFields,
     discoveredAdditionalBodyKeys,
+    discoveredStructuredKeys,
     payloadFieldNames,
-    base64ContentHelper = "",
     headerBindings = [],
   } = opts;
 
@@ -2805,14 +3363,30 @@ export function emitContractTs(opts: {
           .join("\n")}\n})`
       : "";
 
+  // Mechanism B: nested caller structures become payload fields carrying their
+  // inferred schema. Emitted as an object body so multi-line z.array(z.object(
+  // …)) expressions indent cleanly; a leading TSDoc flags eventData's opaque
+  // passthrough so callers know its nested volatiles are theirs to mint.
+  const sortedStructuredEntries = discoveredStructuredKeys
+    ? [...discoveredStructuredKeys.entries()].sort(([a], [b]) => a.localeCompare(b))
+    : [];
+  const structuredKeysExtension =
+    sortedStructuredEntries.length > 0
+      ? `.extend({\n${sortedStructuredEntries
+          .map(
+            ([name, schema]) =>
+              `  ${isValidJsIdentifier(name) ? name : JSON.stringify(name)}: ${schema},`
+          )
+          .join("\n")}\n})`
+      : "";
+
   // optionSchemaExtension is appended LAST so option enums show up at the
   // end of the payload type — the section ordering (base, multipart fields,
   // form-schema fields, option enums, raw-option fields) mirrors the body
   // emit order and keeps the generated payload type readable.
-  const answersExtension = base64ContentHelper ? ".extend({ Answers: AnswersSchema })" : "";
   const payloadSchemaExpr = hasMultipartStep
-    ? `${basePayloadSchemaExpr}.extend({\n  Resume: z.instanceof(Buffer),\n  ResumeContentType: z.string(),\n  ResumeFilename: z.string(),\n})${formFieldsExtension}${splicedFieldsExtension}${optionSchemaExtension}${rawOptionSchemaExtension}${additionalBodyKeysExtension}${answersExtension}`
-    : `${basePayloadSchemaExpr}${formFieldsExtension}${splicedFieldsExtension}${optionSchemaExtension}${rawOptionSchemaExtension}${additionalBodyKeysExtension}${answersExtension}`;
+    ? `${basePayloadSchemaExpr}.extend({\n  Resume: z.instanceof(Buffer),\n  ResumeContentType: z.string(),\n  ResumeFilename: z.string(),\n})${formFieldsExtension}${splicedFieldsExtension}${optionSchemaExtension}${rawOptionSchemaExtension}${additionalBodyKeysExtension}${structuredKeysExtension}`
+    : `${basePayloadSchemaExpr}${formFieldsExtension}${splicedFieldsExtension}${optionSchemaExtension}${rawOptionSchemaExtension}${additionalBodyKeysExtension}${structuredKeysExtension}`;
   // When the payload schema uses multipartBoolean(), import the shared helper
   // so the generated file resolves the reference and doesn't re-inline the
   // preprocess expression per boolean field.
@@ -2935,7 +3509,7 @@ const ${pascal}ResponseSchema = ${responseSchemaExpr};
 export type ${pascal}Response = z.infer<typeof ${pascal}ResponseSchema>;
 
 export default ${pascal}ResponseSchema;
-${optionDecls}${base64ContentHelper}
+${optionDecls}
 const ${pascal}PayloadSchema = ${payloadSchemaExpr};
 
 export type ${pascal}Payload = z.infer<typeof ${pascal}PayloadSchema>;
@@ -3543,8 +4117,8 @@ async function main(): Promise<void> {
   };
 
   // Resolved once and threaded down, never captured into a module const: a
-  // module-level const would freeze at import time, which is the bug that makes
-  // RECON_QUESTION_KEYWORDS silently inert for anyone setting it after load.
+  // module-level const would freeze at import time, so an env var set after
+  // module load would be silently inert for anyone reading it that way.
   const vocabulary = await resolveVocabulary(vocabularySpecifier);
   // Consumer-supplied wire keys for ATS form-schema recovery, or null. When
   // null the recovery functions no-op — the engine hardcodes no vendor format.
@@ -3593,6 +4167,13 @@ async function main(): Promise<void> {
   // would be skipped by fieldNameMap; their field-ids still need shielding
   // because they appear as anchors in the T2-substituted body templates.
   const shieldedUuids = new Set<string>(allSchemaUuids);
+  // Persona identity bindings + entry-URL job coordinates — the value→payload
+  // reconciliation the body emitter merges into its substitution map so nested
+  // applicant fields and job context reach the caller's data instead of the
+  // recon persona's. Both are site-agnostic: persona mapping comes from the
+  // consumer vocabulary, job coordinates from the entry URL's own query keys.
+  const personaBindings = harvestPersonaBindings(flowSteps, vocabulary, process.env);
+  const entryUrlParams = extractEntryUrlParams(captures[0]?.url ?? "");
   // T4 — Phase B+C: detect a form-schema GET capture and insert it into the
   // action sequence at the position observed during recon, so the existing
   // state-threading machinery can produce its FormHistoryId / section UUIDs /
@@ -3665,6 +4246,24 @@ async function main(): Promise<void> {
   // that get parameterized. Recorded with their value type so the contract
   // emitter can add them to the payload schema with appropriate Zod types.
   const discoveredAdditionalBodyKeys = new Map<string, "string" | "number" | "boolean">();
+  // Mechanism A: reconcile flow SELECT steps to submitted option codes. The
+  // resolutions drive a wire-key-anchored body rewrite (label→code dropdowns);
+  // i18n-only dropdowns (labels all templated, e.g. gender) fall through to the
+  // existing raw-option channel so their frozen code is still parameterized.
+  const { resolutions: selectResolutions, rawCodeFields } = buildSelectOptionResolutions(
+    flowSteps,
+    captures,
+    vocabulary,
+    process.env
+  );
+  for (const [semanticName, { code }] of rawCodeFields) {
+    const fieldName = `${semanticName}Code`;
+    if (!discoveredRawOptionFields.has(fieldName)) discoveredRawOptionFields.set(fieldName, code);
+  }
+  // Mechanism B: nested caller structures (experienceData/educationData
+  // history, opaque eventData) discovered during the body emit, surfaced to the
+  // contract's payload schema.
+  const discoveredStructuredKeys = new Map<string, string>();
   // G1+G2: partition baseHeaders into three buckets:
   //   - static: values that don't reference baseUrl or tenant subdomain
   //   - baseUrl-derived: values containing the recon's baseUrl as substring
@@ -3706,146 +4305,15 @@ async function main(): Promise<void> {
         baseUrl,
         baseUrlDerivedHeaders,
         tenantSubdomainHeaders,
-        new Map(),
-        formSchema
+        formSchema,
+        personaBindings,
+        entryUrlParams,
+        shieldedUuids,
+        selectResolutions,
+        discoveredStructuredKeys,
+        rawCodeFields
       )
     : undefined;
-
-  let base64ContentHelper = "";
-  const base64PatchOverride = new Map<string, string>();
-
-  if (isSubmissionFlow && actionSteps.length > 0) {
-    const lastPatchWithContent = [...actionSteps]
-      .reverse()
-      .find(
-        (s) =>
-          s.capture.method === "PATCH" &&
-          s.capture.requestPostData &&
-          /"Content":"ey[A-Za-z0-9+/=]{100,}"/.test(s.capture.requestPostData)
-      );
-    if (lastPatchWithContent) {
-      const b64Match = lastPatchWithContent.capture.requestPostData!.match(
-        /"Content":"(ey[A-Za-z0-9+/=]{100,})"/
-      );
-      if (b64Match) {
-        const b64 = b64Match[1]!;
-        const qMapping = buildQuestionnaireMapping(captures);
-        const personaValues = new Map<string, string>();
-        const firstPost = captures.find(
-          (c) =>
-            c.method === "POST" &&
-            c.url.includes("recruitingCEJobApplicationDrafts") &&
-            c.requestPostData
-        );
-        if (firstPost?.requestPostData) {
-          try {
-            const pb = JSON.parse(firstPost.requestPostData) as Record<string, unknown>;
-            if (typeof pb.EmailAddress === "string")
-              personaValues.set(pb.EmailAddress, "payload.Email");
-          } catch {
-            /* skip */
-          }
-        }
-
-        base64ContentHelper = emitBuildBase64ContentFunction(b64, personaValues, qMapping, pascal);
-
-        base64PatchOverride.set(
-          lastPatchWithContent.varName,
-          // biome-ignore lint/suspicious/noTemplateCurlyInString: emitted as generated template-literal source
-          '"Content":"${buildBase64Content(payload, questionnaireId, Number(draftId), String(attachmentId))}"'
-        );
-
-        const draftPostStep = actionSteps.find(
-          (s) =>
-            s.capture.method === "POST" &&
-            s.capture.url.includes("recruitingCEJobApplicationDrafts")
-        );
-        if (draftPostStep && !draftPostStep.produces.some((p) => p.name === "draftId")) {
-          draftPostStep.produces.push({
-            kind: "body",
-            name: "draftId",
-            path: ["APPDraftId"],
-          });
-        }
-
-        const attachPostStep = actionSteps.find(
-          (s) => s.capture.method === "POST" && s.capture.url.includes("/attachments")
-        );
-        if (attachPostStep && !attachPostStep.produces.some((p) => p.name === "attachmentId")) {
-          attachPostStep.produces.push({
-            kind: "body",
-            name: "attachmentId",
-            path: ["Id"],
-          });
-        }
-
-        const questionnaireCapture = captures.find(
-          (c) =>
-            c.method === "GET" &&
-            c.url.includes("recruitingCEQuestions") &&
-            c.url.includes("expand=answers")
-        );
-        let sampleQid: number | undefined;
-        if (questionnaireCapture) {
-          const qResp =
-            typeof questionnaireCapture.responseBody === "string"
-              ? (JSON.parse(questionnaireCapture.responseBody) as {
-                  items?: Array<{ QuestionnaireId?: number }>;
-                })
-              : (questionnaireCapture.responseBody as {
-                  items?: Array<{ QuestionnaireId?: number }>;
-                } | null);
-          sampleQid = qResp?.items?.[0]?.QuestionnaireId ?? undefined;
-        }
-
-        const overrideValue = base64PatchOverride.values().next().value as string;
-        if (overrideValue) {
-          const extraVarLines: string[] = [];
-          if (sampleQid) {
-            extraVarLines.push(`    const questionnaireId = ${sampleQid};`);
-          }
-          if (!attachPostStep) {
-            extraVarLines.push(`    const attachmentId = "";`);
-          }
-          if (extraVarLines.length > 0) {
-            base64PatchOverride.set("__EXTRA_VARS__", extraVarLines.join("\n"));
-          }
-        }
-
-        const answersFields = (qMapping ?? []).map((m) => m.payloadField);
-        answersFields.push("SignatureFullName");
-        const answersSchemaFields = answersFields.map((f) => `    ${f}: z.string(),`).join("\n");
-        base64ContentHelper = `\nconst AnswersSchema = z.object({\n${answersSchemaFields}\n});\n${base64ContentHelper}`;
-
-        const inputKeys = new Set<string>();
-        if (inputBody && typeof inputBody === "object" && !Array.isArray(inputBody)) {
-          for (const k of Object.keys(inputBody as Record<string, unknown>)) inputKeys.add(k);
-        }
-        for (const fld of ["FirstName", "LastName", "Email", "Phone"]) {
-          if (!inputKeys.has(fld)) discoveredAdditionalBodyKeys.set(fld, "string");
-        }
-      }
-    }
-  }
-
-  const processedMultiStepBody = isSubmissionFlow
-    ? emitMultiStepExecuteHttp(
-        actionSteps,
-        inputBody,
-        errorSignals,
-        fieldNameMap,
-        discoveredFormFields,
-        fieldOptionsMap,
-        discoveredOptionFields,
-        discoveredRawOptionFields,
-        discoveredAdditionalBodyKeys,
-        baseUrl,
-        baseUrlDerivedHeaders,
-        tenantSubdomainHeaders,
-        base64PatchOverride,
-        formSchema
-      )
-    : multiStepBody;
 
   const hasMultipartStep = actionSteps.some((s) => s.isMultipart);
   const headerBindings = collectHeaderBindings(actionSteps);
@@ -3918,8 +4386,7 @@ async function main(): Promise<void> {
       gqlQuery,
       endpointPath,
       auxFiles,
-      multiStepBody: processedMultiStepBody,
-      base64ContentHelper,
+      multiStepBody,
       inputBody,
       hasMultipartStep,
       discoveredFormFields,
@@ -3927,6 +4394,7 @@ async function main(): Promise<void> {
       discoveredOptionFields,
       discoveredRawOptionFields,
       discoveredAdditionalBodyKeys,
+      discoveredStructuredKeys,
       payloadFieldNames: browserFlow.payloadFieldNames,
       headerBindings,
     })

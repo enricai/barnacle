@@ -1,7 +1,7 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { CONFIG_PLUGIN_API_VERSION, CONFIG_PLUGIN_KIND } from "@/plugins/plugin-manifest-envelope";
 import type { ReconFormSchema } from "@/recon/form-schema";
@@ -18,7 +18,6 @@ import {
   extractGraphQLActionSequence,
   indexStateValues,
   inferZodSchemaFromSamples,
-  loadQuestionPromptKeywords,
   resolveManifestActionSequence,
   resolveStepPayloadField,
   selectEffectiveResponseBody,
@@ -1901,35 +1900,5 @@ describe("emitConfigManifest — recovered request contract", () => {
       })
     ) as { spec: { httpModule?: string } };
     expect(browserOnly.spec.httpModule).toBeUndefined();
-  });
-});
-
-describe("loadQuestionPromptKeywords", () => {
-  const original = process.env.RECON_QUESTION_KEYWORDS;
-  afterEach(() => {
-    if (original === undefined) delete process.env.RECON_QUESTION_KEYWORDS;
-    else process.env.RECON_QUESTION_KEYWORDS = original;
-  });
-
-  it("defaults to empty so the engine ships no product's question vocabulary", () => {
-    delete process.env.RECON_QUESTION_KEYWORDS;
-    expect(loadQuestionPromptKeywords()).toEqual({});
-  });
-
-  it("takes the operator's field-to-keyword map from the env", () => {
-    process.env.RECON_QUESTION_KEYWORDS = JSON.stringify({
-      RelatedToEmployee: ["related", "employee"],
-      VisaSponsorship: ["visa", "sponsor"],
-    });
-    expect(loadQuestionPromptKeywords()).toEqual({
-      RelatedToEmployee: ["related", "employee"],
-      VisaSponsorship: ["visa", "sponsor"],
-    });
-  });
-
-  it("degrades to empty on malformed JSON rather than killing the run", () => {
-    process.env.RECON_QUESTION_KEYWORDS = "{not-json";
-    expect(() => loadQuestionPromptKeywords()).not.toThrow();
-    expect(loadQuestionPromptKeywords()).toEqual({});
   });
 });
