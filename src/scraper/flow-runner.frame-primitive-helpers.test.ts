@@ -270,6 +270,33 @@ describe("flow-runner/verifyFillReadback", () => {
 
     expect(await verifyFillReadback(target, "/html/body/input[1]", "Jane")).toBeNull();
   });
+
+  it("strips Stagehand's xpath= prefix before composing the probe (the #153 datepicker-guard selector)", async () => {
+    const targetEvaluate = vi
+      .fn()
+      .mockResolvedValue({ outcome: "rejected", postValue: "", tag: "input" });
+    const target = makeFakeTarget(targetEvaluate);
+
+    const result = await verifyFillReadback(
+      target,
+      "xpath=/html[1]/body[1]/main[1]/form[1]/input[1]",
+      "01/2020"
+    );
+
+    expect(result).toEqual({ outcome: "rejected", postValue: "", tag: "input" });
+    const expr = targetEvaluate.mock.calls[0]?.[0] as string;
+    expect(expr).toContain('"/html[1]/body[1]/main[1]/form[1]/input[1]"');
+    expect(expr).not.toContain("xpath=");
+  });
+
+  it("returns null without evaluating for a non-xpath selector form (deeplocator / deep-index)", async () => {
+    const targetEvaluate = vi.fn().mockResolvedValue(null);
+    const target = makeFakeTarget(targetEvaluate);
+
+    expect(await verifyFillReadback(target, "deeplocator=button >> nth=0", "01/2020")).toBeNull();
+    expect(await verifyFillReadback(target, "deep-index:7", "01/2020")).toBeNull();
+    expect(targetEvaluate).not.toHaveBeenCalled();
+  });
 });
 
 describe("flow-runner/pollEnumerate (file-upload locator path)", () => {
@@ -561,5 +588,19 @@ describe("flow-runner/parseFillValueIntent", () => {
 
   it("returns null for a fill step with no quoted value", () => {
     expect(parseFillValueIntent("Fill it with the test candidate's city")).toBeNull();
+  });
+
+  it("recognizes the replanner's escalated 'type <value> into ...' reword", () => {
+    // The replanner rewords a stuck date fill with no "fill" verb — without the
+    // type shape the act-success datepicker guard could never fire on it.
+    expect(
+      parseFillValueIntent(
+        "Type '01/2020' into the Start Date input field for the work experience entry"
+      )
+    ).toEqual({ value: "01/2020" });
+  });
+
+  it("returns null for a type step with no quoted value", () => {
+    expect(parseFillValueIntent("Type the start date into the input")).toBeNull();
   });
 });

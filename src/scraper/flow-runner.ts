@@ -2870,15 +2870,24 @@ export interface VerifyFillReadbackResult {
  * Returns null for non-fillable elements (clicks, selects, etc.) — caller
  * knows to skip the check.
  *
+ * Accepts any selector a call site holds: Stagehand's `xpath=…`, an
+ * already-stripped bare XPath, or a non-xpath form (`deeplocator=…`,
+ * `deep-index:N`). Non-xpath forms can't be read via `document.evaluate`, so
+ * the selector is normalized through {@link xpathBodyForEvaluate} and a form
+ * this reader can't resolve returns null (same "couldn't verify — skip" contract
+ * as a non-fillable element) rather than evaluating an invalid XPath expression.
+ *
  * Site-agnostic: works on any <input>, <textarea>, or [contenteditable]
  * element regardless of framework wrapping. Industry-standard pattern
  * (react-testing-library's `getByDisplayValue` does the same readback).
  */
 export async function verifyFillReadback(
   target: FrameTarget,
-  xpath: string,
+  selector: string,
   expectedValue: string
 ): Promise<VerifyFillReadbackResult | null> {
+  const xpath = xpathBodyForEvaluate(selector);
+  if (xpath === null) return null;
   const expr = `(() => {
     const xpath = ${JSON.stringify(xpath)};
     const expected = ${JSON.stringify(expectedValue)};
@@ -2991,6 +3000,23 @@ const STATE_CLASS_METHODS = new Set([
  */
 function xpathBody(selector: string): string | null {
   return selector.startsWith("xpath=") ? selector.slice("xpath=".length) : null;
+}
+
+/**
+ * Resolve any selector a caller might hold into a bare XPath body for
+ * `document.evaluate`. `verifyFillReadback` is shared across call sites that
+ * carry different selector forms — Stagehand's `xpath=…` (act path), an
+ * already-stripped body (the datepicker primitive's internal readback), and
+ * non-xpath forms like `deeplocator=… >> nth=N` / `deep-index:N` (deep-locator
+ * cascades) — so a single `xpath=`-strip is insufficient and feeding a
+ * prefixed string straight to `document.evaluate` yields an invalid expression.
+ * Accepts an `xpath=`-prefixed selector or a bare XPath (starts with `/` or
+ * `(`); returns null for every other form so the reader resolves nothing rather
+ * than evaluating garbage.
+ */
+function xpathBodyForEvaluate(selector: string): string | null {
+  const stripped = selector.startsWith("xpath=") ? selector.slice("xpath=".length) : selector;
+  return stripped.startsWith("/") || stripped.startsWith("(") ? stripped : null;
 }
 
 /** How long the upload primitive waits for a post-setInputFiles network POST. */
@@ -3643,21 +3669,30 @@ export function parseFillStep(instruction: string): { fieldLabel: string; value:
  * canonical `<label> field with '<value>'` shape, so real-world prose that
  * inserts words between the field noun and `with` — e.g. "Fill in the Start
  * Date field FOR WORK EXPERIENCE with '01/2020'" — parses to `null`, missing
- * the fill intent entirely. This looser parser recognizes a fill verb plus a
- * `with '<value>'` clause and returns just the value, so the act-success
- * datepicker guard can key off intent that survives that phrasing drift.
+ * the fill intent entirely. This looser parser recognizes a value-carrying
+ * entry verb and returns just the value, so the act-success datepicker guard
+ * can key off intent that survives that phrasing drift. Two shapes are
+ * accepted: `fill … with '<value>'` and the replanner's own escalation
+ * `type '<value>' into …` — the replanner rewords a stuck date fill as
+ * "Type '01/2020' into the Start Date input", which carries no `fill` verb, so
+ * without the `type` shape the guard could never fire on any replanned step.
  *
  * Deliberately excludes select steps (checked first, mirroring
  * `resolveDeepLocatorActuation`'s precedence) so a `select '…'` step whose
  * prose happens to trail a quoted value is never mistaken for a fill. Returns
- * `null` for clicks, selects, and any step without a quoted `with '…'` value.
+ * `null` for clicks, selects, and any step without a quoted value.
  */
 export function parseFillValueIntent(instruction: string): { value: string } | null {
   if (parseSelectStep(instruction)) return null;
-  if (!/\bfill(?:\s+in)?\b/i.test(instruction)) return null;
-  const match = instruction.match(/\bwith\s+'([^']+)'/i);
-  const value = match?.[1]?.trim();
-  return value ? { value } : null;
+  if (/\bfill(?:\s+in)?\b/i.test(instruction)) {
+    const value = instruction.match(/\bwith\s+'([^']+)'/i)?.[1]?.trim();
+    return value ? { value } : null;
+  }
+  if (/\btype\b/i.test(instruction)) {
+    const value = instruction.match(/\btype\s+'([^']+)'/i)?.[1]?.trim();
+    return value ? { value } : null;
+  }
+  return null;
 }
 
 /**
