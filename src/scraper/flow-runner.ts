@@ -2672,7 +2672,7 @@ function isCommittedDateReadback(
 
 /**
  * Fill a `type="text"` datepicker widget (react-datepicker — the standard
- * Taleo/Oracle HCM start/end-date control), which `fillHtml5DateTimeInput`
+ * Oracle HCM / ATS start/end-date control), which `fillHtml5DateTimeInput`
  * cannot: react-datepicker rejects a programmatic `.value` write and commits
  * only through its own keyboard/calendar `onChange`. Returns `null` for any
  * input that is NOT a date-like text control, so every other text field stays
@@ -2684,7 +2684,7 @@ function isCommittedDateReadback(
  *     *typeable* datepickers.
  *  2. Open-and-pick — click to open `.react-datepicker`, then either set the
  *     year/month `.range-select` dropdowns and click the `.react-datepicker__month-N`
- *     cell (month/year-picker variant — the reported Taleo widget, which is
+ *     cell (month/year-picker variant — the reported ATS widget, which is
  *     picker-only and ignores typed input) or click the matching
  *     `.react-datepicker__day` cell (day-grid variant). Commit fires on the cell
  *     click.
@@ -2759,7 +2759,7 @@ export async function fillTextDatepickerInput(
   }
 
   // Strategy 2 — open-and-pick. Required for picker-only widgets (the reported
-  // Taleo month/year picker ignores typed input entirely).
+  // month/year picker ignores typed input entirely).
   try {
     const locator = target.locator(selector).first();
     await locator.click();
@@ -2778,8 +2778,9 @@ export async function fillTextDatepickerInput(
     // Month/year-picker variant: click the target month cell (0-based month
     // index maps to the __month-N class) — THIS is the commit. The year/month
     // dropdowns are set first only so the calendar shows the right year's month
-    // page. NOTE: "range-select" is a SITE-SPECIFIC class (Taleo's own CSS), not
-    // a react-datepicker class; the bare "select" fallback covers other wrappers.
+    // page. NOTE: "range-select" is a SITE-SPECIFIC class (the ATS site's own
+    // CSS), not a react-datepicker class; the bare "select" fallback covers
+    // other wrappers.
     // Stock react-datepicker renders its month/year dropdowns as clickable divs,
     // so on those the select loop is inert and the month-cell click carries it.
     if (monthCells.length > 0) {
@@ -7183,7 +7184,7 @@ export async function executeStepWithHealing(params: {
                 }
               } else {
                 // Not an HTML5 date input. First try the text-datepicker
-                // primitive (react-datepicker — Taleo/Oracle HCM start/end-date
+                // primitive (react-datepicker — Oracle HCM / ATS start/end-date
                 // controls): those are `type="text"`, so fillHtml5DateTimeInput
                 // returns null, and the generic fill's value-write never commits
                 // the widget. Returns null for any non-datepicker text input, so
