@@ -4,8 +4,10 @@ import {
   countNgInvalidContainers,
   fillHtml5DateTimeInput,
   fillTextDatepickerInput,
+  parseFillValueIntent,
   pollEnumerate,
   probeLeafInvalidContainers,
+  shouldReadbackFillOnActSuccess,
   shouldWarnMissingAdvancePattern,
   snapshotPage,
   verifyFillReadback,
@@ -484,5 +486,80 @@ describe("flow-runner/shouldWarnMissingAdvancePattern", () => {
 
   it("does not warn when there are no advance steps", () => {
     expect(shouldWarnMissingAdvancePattern(["Fill in name", "Fill in email"], null)).toBe(false);
+  });
+});
+
+describe("flow-runner/shouldReadbackFillOnActSuccess", () => {
+  it("routes a fill-intent act-success step with no strong signal into the read-back", () => {
+    expect(
+      shouldReadbackFillOnActSuccess({
+        actReportedSuccess: true,
+        isFillIntent: true,
+        hasStrongSignal: false,
+      })
+    ).toBe(true);
+  });
+
+  it("does not read back when a strong signal (network/url/dom) already verified the fill", () => {
+    expect(
+      shouldReadbackFillOnActSuccess({
+        actReportedSuccess: true,
+        isFillIntent: true,
+        hasStrongSignal: true,
+      })
+    ).toBe(false);
+  });
+
+  it("does not read back a click-intent step (only fills route through the datepicker guard)", () => {
+    expect(
+      shouldReadbackFillOnActSuccess({
+        actReportedSuccess: true,
+        isFillIntent: false,
+        hasStrongSignal: false,
+      })
+    ).toBe(false);
+  });
+
+  it("does not read back when the act itself reported failure", () => {
+    expect(
+      shouldReadbackFillOnActSuccess({
+        actReportedSuccess: false,
+        isFillIntent: true,
+        hasStrongSignal: false,
+      })
+    ).toBe(false);
+  });
+});
+
+describe("flow-runner/parseFillValueIntent", () => {
+  it("recognizes the reported react-datepicker step prose that parseFillStep's strict shape misses", () => {
+    // "field" is separated from "with" by "for work experience", so the strict
+    // parseFillStep regex returns null — this looser value parser must still fire.
+    expect(
+      parseFillValueIntent("Fill in the Start Date field for work experience with '01/2020'")
+    ).toEqual({ value: "01/2020" });
+    expect(
+      parseFillValueIntent(
+        "Fill in the End Date field for the work experience entry with '01/2021'"
+      )
+    ).toEqual({ value: "01/2021" });
+  });
+
+  it("still recognizes the canonical field-with-value phrasing", () => {
+    expect(parseFillValueIntent("Fill in the First Name field with 'Reginald'")).toEqual({
+      value: "Reginald",
+    });
+  });
+
+  it("returns null for a click step (no fill intent)", () => {
+    expect(parseFillValueIntent("Click the Continue button")).toBeNull();
+  });
+
+  it("returns null for a select step even when a quoted value trails it", () => {
+    expect(parseFillValueIntent("Select 'Connecticut' in the State dropdown")).toBeNull();
+  });
+
+  it("returns null for a fill step with no quoted value", () => {
+    expect(parseFillValueIntent("Fill it with the test candidate's city")).toBeNull();
   });
 });

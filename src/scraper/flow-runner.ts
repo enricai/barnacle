@@ -1162,6 +1162,27 @@ export function isClickViewSwapVerified(params: {
 }
 
 /**
+ * Whether an act-success step warrants a committed-value read-back before the
+ * weak view-swap/form-value signals are allowed to accept it. A controlled
+ * datepicker (react-datepicker) accepts the keystrokes, discards the value on
+ * its next render, and — because the resolved action opened its calendar popup
+ * as a `click` — rides `isClickViewSwapVerified` to a phantom `dom=false`
+ * success without ever committing the date. The read-back (and, on a rejected
+ * value, the datepicker fill primitive) is only worth running when the step's
+ * PROSE asked for a fill AND no strong signal (network/url/dom) already verified
+ * it — so the happy path (a real fill, a real click, an advance) is untouched.
+ * Keyed on step intent, not the resolved method, because the widget resolves as
+ * a click and its accessible name identifies the popup, not the field.
+ */
+export function shouldReadbackFillOnActSuccess(params: {
+  actReportedSuccess: boolean;
+  isFillIntent: boolean;
+  hasStrongSignal: boolean;
+}): boolean {
+  return params.actReportedSuccess && params.isFillIntent && !params.hasStrongSignal;
+}
+
+/**
  * Read-only count of ng-invalid form controls on the resolved frame. Side-effect-free
  * counterpart to `probeFormValidityBeforeSubmit` (which also auto-fills
  * unselected radio groups via element.click()). Used by the cascade's
@@ -3614,6 +3635,29 @@ export function parseFillStep(instruction: string): { fieldLabel: string; value:
   const value = match[2]?.trim();
   if (!fieldLabel || !value) return null;
   return { fieldLabel, value };
+}
+
+/**
+ * Extract the quoted VALUE a fill step wants written, tolerant of the field-
+ * label phrasing `parseFillStep` is strict about. `parseFillStep` requires the
+ * canonical `<label> field with '<value>'` shape, so real-world prose that
+ * inserts words between the field noun and `with` — e.g. "Fill in the Start
+ * Date field FOR WORK EXPERIENCE with '01/2020'" — parses to `null`, missing
+ * the fill intent entirely. This looser parser recognizes a fill verb plus a
+ * `with '<value>'` clause and returns just the value, so the act-success
+ * datepicker guard can key off intent that survives that phrasing drift.
+ *
+ * Deliberately excludes select steps (checked first, mirroring
+ * `resolveDeepLocatorActuation`'s precedence) so a `select '…'` step whose
+ * prose happens to trail a quoted value is never mistaken for a fill. Returns
+ * `null` for clicks, selects, and any step without a quoted `with '…'` value.
+ */
+export function parseFillValueIntent(instruction: string): { value: string } | null {
+  if (parseSelectStep(instruction)) return null;
+  if (!/\bfill(?:\s+in)?\b/i.test(instruction)) return null;
+  const match = instruction.match(/\bwith\s+'([^']+)'/i);
+  const value = match?.[1]?.trim();
+  return value ? { value } : null;
 }
 
 /**
@@ -7607,12 +7651,76 @@ export async function executeStepWithHealing(params: {
     // actions (fill/check/etc.), same as domVerified, so it never lets an
     // advance/submit step ride a stray value mutation elsewhere on the page.
     const formValueVerified = isStateClass && post.formValueSignature !== pre.formValueSignature;
+    // Committed-value guard on the act-success path. A controlled datepicker
+    // (react-datepicker) accepts the typed value, discards it on React's next
+    // render, and — since the act resolved as a `click` that opened the calendar
+    // popup — rides `clickViewSwapVerified` to a phantom `dom=false` success
+    // without ever committing the date. The 1.9.0 `fillTextDatepickerInput`
+    // primitive (the open-and-pick gesture that DOES commit) sits in a fallback
+    // block only reached when the act "technically failed", so it never runs on
+    // this path. Route a fill-intent step whose value did NOT land (read-back
+    // rejected) into that primitive before the weak view-swap/form-value signals
+    // accept it — keyed on step PROSE, since the widget resolves as a click and
+    // its accessible name identifies the popup, not the field.
+    const fillIntent = parseFillValueIntent(step);
+    const hasStrongSignal = networkIsRealAdvance || urlChanged || domVerifiedForStep;
+    let datepickerCommitted = false;
+    let datepickerRejected = false;
+    if (
+      shouldReadbackFillOnActSuccess({
+        actReportedSuccess: record.actResultSuccess === true,
+        isFillIntent: fillIntent !== null,
+        hasStrongSignal,
+      })
+    ) {
+      const readbackSelector =
+        resolvedAction?.selector ?? triedSelectors[triedSelectors.length - 1] ?? null;
+      if (readbackSelector && fillIntent !== null) {
+        const readbackTarget = frameTarget ?? mainFrameTarget(page);
+        const readback = await verifyFillReadback(
+          readbackTarget,
+          readbackSelector,
+          fillIntent.value
+        );
+        if (readback?.outcome === "rejected") {
+          // Value didn't land. First try the datepicker primitive; it self-gates
+          // on react-datepicker's `.react-datepicker__input-container` and returns
+          // null for any non-datepicker input, so a plain rejected fill falls
+          // through to the failure path below unchanged.
+          const datepickerFill = await fillTextDatepickerInput(
+            readbackTarget,
+            readbackSelector,
+            fillIntent.value
+          );
+          if (datepickerFill !== null) {
+            if (datepickerFill.filled) {
+              datepickerCommitted = true;
+              record.errorMessage = `text-datepicker-fill: filled via ${datepickerFill.strategy} "${datepickerFill.postValue}"`;
+            } else {
+              // A gated-in datepicker that neither gesture commits is a real fill
+              // failure (per fillTextDatepickerInput's contract) — authoritative,
+              // so suppress the weak view-swap/form-value acceptance and escalate.
+              datepickerRejected = true;
+              record.actResultSuccess = false;
+              record.errorMessage = `text-datepicker-fill: failed to commit "${fillIntent.value.slice(0, 60)}" (post=${datepickerFill.postValue})`;
+            }
+          } else {
+            // Not a datepicker — the fill was genuinely rejected. Same message
+            // shape as the observe-act fill-fallback's readback verifier so the
+            // failure dump reads identically regardless of which path caught it.
+            datepickerRejected = true;
+            record.actResultSuccess = false;
+            record.errorMessage = `fill-value-rejected: tried "${fillIntent.value.slice(0, 60)}" on <${readback.tag}>; element value remains empty (silent rejection — HTML5 type validation, framework controlled-component, or masked-input library)`;
+          }
+        }
+      }
+    }
     let verified =
       networkIsRealAdvance ||
       urlChanged ||
       domVerifiedForStep ||
-      clickViewSwapVerified ||
-      formValueVerified;
+      datepickerCommitted ||
+      (!datepickerRejected && (clickViewSwapVerified || formValueVerified));
 
     // Final-step submit-verification gate. Replaces the deterministic
     // submitEndpointPattern regex with a Haiku 4.5 LLM judgment over
@@ -7748,18 +7856,22 @@ export async function executeStepWithHealing(params: {
 
     if (verified && record.verifiedBy === null) {
       // Preserve a richer verdict set earlier in this attempt (e.g.
-      // "submitted-state-dom" from the final-step DOM fallback).
-      record.verifiedBy = clickViewSwapVerified
-        ? "view-swap"
-        : urlChanged
-          ? "url"
-          : networkFired
-            ? "network"
-            : domVerifiedForStep
-              ? "dom"
-              : formValueVerified
-                ? "form-value"
-                : "dom";
+      // "submitted-state-dom" from the final-step DOM fallback). A datepicker
+      // commit is a real DOM value change, so it ranks ahead of the weaker
+      // view-swap signal that the same calendar-open click also produces.
+      record.verifiedBy = datepickerCommitted
+        ? "dom"
+        : clickViewSwapVerified
+          ? "view-swap"
+          : urlChanged
+            ? "url"
+            : networkFired
+              ? "network"
+              : domVerifiedForStep
+                ? "dom"
+                : formValueVerified
+                  ? "form-value"
+                  : "dom";
     }
 
     // N+16 probe: Stagehand's CDP click sometimes lands on the button without
