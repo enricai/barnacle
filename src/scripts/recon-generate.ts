@@ -1508,7 +1508,6 @@ export function indexStateValues(
 interface BodyProduce {
   kind: "body";
   name: string;
-  pathExpr: string;
   path: string[];
 }
 
@@ -1553,16 +1552,28 @@ function isValidJsIdentifier(s: string): boolean {
 
 /**
  * Converts a path like ["Auth","Token"] to a JS access expression ".Auth.Token".
- * Bracket segments (numeric array indices, non-identifier keys) get a trailing
- * `!` — under `noUncheckedIndexedAccess` an array/index-signature access types
- * as `T | undefined`, and this accessor is only ever used against a real Zod-
- * inferred array/object type (payload fields, captured response bodies), never
- * against the object-literal assertion types `pathToAssertionType` builds (those
- * use known string-literal keys, which `noUncheckedIndexedAccess` does not
- * widen). Dot segments stay bare since object property access isn't affected.
+ * Identifier segments use dot access; numeric / non-identifier segments use
+ * JSON-quoted bracket access. A trailing `!` is emitted on bracket segments ONLY
+ * when `assertNonNull` is set — the two call sites differ:
+ *   - Payload accessors (`payload…`) target the real Zod-inferred payload type,
+ *     where an array/index segment types as `T | undefined` under
+ *     `noUncheckedIndexedAccess`; an intermediate index followed by more path
+ *     fails to compile without the `!`, so it is required there.
+ *   - Produce extractions (`(rN as <assertionType>)…`) target the object-literal
+ *     type `pathToAssertionType` builds from known string-literal keys, which
+ *     `noUncheckedIndexedAccess` does NOT widen — so the `!` is unnecessary AND
+ *     is a Biome `noNonNullAssertion` error. That site passes `assertNonNull:
+ *     false`.
  */
-function pathToAccessor(path: string[]): string {
-  return path.map((p) => (isValidJsIdentifier(p) ? `.${p}` : `[${JSON.stringify(p)}]!`)).join("");
+function pathToAccessor(
+  path: string[],
+  opts: { assertNonNull: boolean } = { assertNonNull: true }
+): string {
+  return path
+    .map((p) =>
+      isValidJsIdentifier(p) ? `.${p}` : `[${JSON.stringify(p)}]${opts.assertNonNull ? "!" : ""}`
+    )
+    .join("");
 }
 
 /**
@@ -1700,7 +1711,7 @@ export function compileActionSteps(
           name = `${pathToVarName(path)}${suffix}`;
         }
         seenNames.add(name);
-        produces.push({ kind: "body", name, pathExpr: `${varName}${pathToAccessor(path)}`, path });
+        produces.push({ kind: "body", name, path });
       }
     }
 
@@ -2404,8 +2415,28 @@ export function emitMultiStepExecuteHttp(
     const step = actions[i]!;
     const cap = step.capture;
     const r = rendered[i]!;
-    const hasReferencedProduce = step.produces.some((p) => referencedNames.has(p.name));
-    const bindResponse = referencedNames.has(step.varName) || hasReferencedProduce;
+    // Build the produce-extraction lines FIRST so the binding decision reflects
+    // what is actually emitted, not a pre-scan predicate. A produce whose name
+    // was already declared by an earlier step is de-dup-skipped here — and must
+    // NOT keep this step's response bound, or `rN` is bound but never read
+    // (Biome `noUnusedVariables`). `assertNonNull: false`: the `pathToAssertionType`
+    // cast uses string-literal keys, so the accessor needs no `!` (and a `!`
+    // would trip Biome `noNonNullAssertion`).
+    const produceLines: string[] = [];
+    for (const p of step.produces) {
+      // Header/cookie-origin produces never surface as a JS accessor —
+      // createHttpClient's `bind` option (rendered once, above the steps)
+      // captures and forwards the value internally.
+      if (p.kind === "header") continue;
+      if (declaredNames.has(p.name)) continue;
+      if (!referencedNames.has(p.name)) continue;
+      declaredNames.add(p.name);
+      const assertion = pathToAssertionType(p.path);
+      produceLines.push(
+        `    const ${p.name} = (${step.varName} as ${assertion})${pathToAccessor(p.path, { assertNonNull: false })};`
+      );
+    }
+    const bindResponse = referencedNames.has(step.varName) || produceLines.length > 0;
 
     if (base64PatchOverride.has(step.varName) && base64PatchOverride.has("__EXTRA_VARS__")) {
       lines.push(base64PatchOverride.get("__EXTRA_VARS__")!);
@@ -2511,19 +2542,7 @@ export function emitMultiStepExecuteHttp(
       }
     }
 
-    for (const p of step.produces) {
-      // Header/cookie-origin produces never surface as a JS accessor —
-      // createHttpClient's `bind` option (rendered once, above the steps)
-      // captures and forwards the value internally.
-      if (p.kind === "header") continue;
-      if (declaredNames.has(p.name)) continue;
-      if (!referencedNames.has(p.name)) continue;
-      declaredNames.add(p.name);
-      const assertion = pathToAssertionType(p.path);
-      lines.push(
-        `    const ${p.name} = (${step.varName} as ${assertion})${pathToAccessor(p.path)};`
-      );
-    }
+    for (const line of produceLines) lines.push(line);
     lines.push("");
   }
 
@@ -3745,7 +3764,6 @@ async function main(): Promise<void> {
           draftPostStep.produces.push({
             kind: "body",
             name: "draftId",
-            pathExpr: `${draftPostStep.varName}.APPDraftId`,
             path: ["APPDraftId"],
           });
         }
@@ -3757,7 +3775,6 @@ async function main(): Promise<void> {
           attachPostStep.produces.push({
             kind: "body",
             name: "attachmentId",
-            pathExpr: `${attachPostStep.varName}.Id`,
             path: ["Id"],
           });
         }
