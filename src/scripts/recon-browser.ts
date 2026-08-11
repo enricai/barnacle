@@ -229,15 +229,6 @@ async function snapshotAndPersistCookieJar(
   }
 }
 
-const MAX_PROBE_REPLANS = 5;
-/**
- * Replans triggered by the full self-healing cascade exhausting all 4
- * attempts (expensive: 4 attempts × backoff + LLM rephrase + observe
- * calls). Counted separately from probe replans so cheap recoveries don't
- * consume the budget reserved for expensive recoveries.
- */
-const MAX_CASCADE_REPLANS = 5;
-
 /**
  * Validates the RECON_GOTO_WAIT_UNTIL override before it reaches Stagehand,
  * which accepts a narrower set of load states than Playwright does — `commit`
@@ -423,6 +414,76 @@ function auditFinalSubmitMatch(params: {
   return { auditFailed: true, rejectionReason: lastRejectionReason };
 }
 
+/** One authoritative submission capture, as recorded in `submit-manifest.json`. */
+interface SubmitManifestEntry {
+  /** Sort-order index == the capture's zero-padded filename prefix. */
+  index: number;
+  filename: string;
+  url: string;
+}
+
+/**
+ * Records which captured POSTs are the real submission — the authoritative
+ * signal `recon-generate` needs to emit only the submit calls, rather than
+ * re-guessing from raw same-origin traffic (which cannot separate the
+ * submission from page-chrome POSTs that share its URL). Selection is by the
+ * flow's declared submit patterns: `submitEndpointPattern` on the request URL
+ * AND, when declared, `submitBodyPattern` on the request body — the same
+ * site-agnostic signals the verifier already trusts. No-op (writes nothing)
+ * when no `submitEndpointPattern` is declared, so runs without submit signals
+ * fall through to generate's existing heuristic unchanged.
+ *
+ * Capture files are named `<NNN>-<phase>-...json` with a zero-padded index, so
+ * lexicographic order == numeric order; `recon-generate`'s `readJsonDir` sorts
+ * identically, making the recorded `index` a stable cross-tool key.
+ */
+function writeSubmitManifest(params: {
+  runRoot: string;
+  capturesDir: string;
+  submitEndpointPattern: string | null;
+  submitBodyPattern: string | null;
+  logger: Logger;
+}): void {
+  const { runRoot, capturesDir, submitEndpointPattern, submitBodyPattern, logger } = params;
+  if (submitEndpointPattern === null) return;
+  const endpointRx = new RegExp(submitEndpointPattern);
+  const bodyRx = submitBodyPattern === null ? null : new RegExp(submitBodyPattern);
+  let entries: string[];
+  try {
+    entries = readdirSync(capturesDir)
+      .filter((f) => f.endsWith(".json") && !f.endsWith(".decoded.json"))
+      .sort();
+  } catch (err) {
+    logger.warn(
+      `submit-manifest: could not read captures dir ${capturesDir}: ${toErrorMessage(err)}`
+    );
+    return;
+  }
+  const matched: SubmitManifestEntry[] = [];
+  for (const [index, filename] of entries.entries()) {
+    try {
+      const data = JSON.parse(readFileSync(join(capturesDir, filename), "utf8")) as {
+        method?: string;
+        url?: string;
+        requestPostData?: string | null;
+      };
+      if (data.method === "GET" || typeof data.url !== "string") continue;
+      if (!endpointRx.test(data.url)) continue;
+      if (bodyRx !== null && !bodyRx.test(data.requestPostData ?? "")) continue;
+      matched.push({ index, filename, url: data.url });
+    } catch {
+      // Ignore unparseable/non-capture files, as the audit does.
+    }
+  }
+  if (matched.length === 0) {
+    logger.warn(
+      `submit-manifest: no capture matched submitEndpointPattern${submitBodyPattern !== null ? " + submitBodyPattern" : ""} — writing empty manifest so generate reports the gap rather than silently re-guessing`
+    );
+  }
+  writeFileSync(join(runRoot, "submit-manifest.json"), `${JSON.stringify(matched, null, 2)}\n`);
+  logger.info(`submit-manifest: recorded ${matched.length} submission capture(s)`);
+}
+
 export function findWizardRestartSignal(params: {
   preIdx: number;
   capturesDir?: string;
@@ -552,6 +613,17 @@ export const RECON_FLOW_FILE_SCHEMA = z.union([
      */
     frameSelector: z.string().min(1).optional(),
     submitEndpointPattern: z.string().min(1).optional(),
+    /**
+     * Regex tested against a captured POST's request BODY to distinguish the
+     * real submission from page-chrome POSTs that share the submit URL. Some
+     * ATSes overload one endpoint by a body discriminator (e.g. a submit and a
+     * reference-lookup both POST the same path, separable only by a body key),
+     * so `submitEndpointPattern` (URL) alone keeps both. When set,
+     * `recon-generate` emits only POSTs whose body ALSO matches this pattern —
+     * isolating the submission. Opt-in: sites that don't set it keep URL-only
+     * selection, so no cross-site regression.
+     */
+    submitBodyPattern: z.string().min(1).optional(),
     submittedStateSelectors: z.array(z.string().min(1)).optional(),
     /**
      * When true, the final-step verifier accepts ONLY a `submitEndpointPattern`
@@ -658,6 +730,10 @@ interface NormalizedStep {
   // pre-existing fixtures and call sites need no changes.
   payloadField?: string;
   payloadFieldNone?: boolean;
+  // Stable DOM identity of the acted-on element (see RECON_FLOW_STEP_SCHEMA).
+  // Stamped at resolution time; persisted so cross-run dedup and the replanner
+  // recognize an already-covered target regardless of instruction wording.
+  targetId?: string;
   origin: "original" | "replan";
 }
 
@@ -672,7 +748,9 @@ function normalizeFlow(steps: z.infer<typeof RECON_FLOW_SCHEMA>): NormalizedStep
           submitStep: s.submitStep,
           payloadField: s.payloadField,
           payloadFieldNone: s.payloadFieldNone,
-          origin: "original",
+          targetId: s.targetId,
+          // Preserve a persisted replan marker across runs; absence = authored.
+          origin: s.origin ?? "original",
         }
   );
 }
@@ -713,9 +791,16 @@ function denormalizeStep(step: NormalizedStep):
       submitStep?: true;
       payloadField?: string;
       payloadFieldNone?: true;
+      targetId?: string;
+      origin?: "replan";
     } {
   const hasSplicerHint = step.payloadField !== undefined || step.payloadFieldNone === true;
-  if (!step.optional && !step.upload && !step.submitStep && !hasSplicerHint) {
+  // targetId and a "replan" origin are load-bearing identity that must survive
+  // the round-trip, so a step carrying either is forced to object form even when
+  // it has no flags. Authored ("original") origin stays implicit — persisting it
+  // on every step would needlessly object-ify the whole flow file.
+  const hasIdentity = step.targetId !== undefined || step.origin === "replan";
+  if (!step.optional && !step.upload && !step.submitStep && !hasSplicerHint && !hasIdentity) {
     return step.instruction;
   }
   const out: {
@@ -725,6 +810,8 @@ function denormalizeStep(step: NormalizedStep):
     submitStep?: true;
     payloadField?: string;
     payloadFieldNone?: true;
+    targetId?: string;
+    origin?: "replan";
   } = {
     step: step.instruction,
   };
@@ -733,36 +820,58 @@ function denormalizeStep(step: NormalizedStep):
   if (step.submitStep) out.submitStep = true;
   if (step.payloadField !== undefined) out.payloadField = step.payloadField;
   if (step.payloadFieldNone === true) out.payloadFieldNone = true;
+  if (step.targetId !== undefined) out.targetId = step.targetId;
+  if (step.origin === "replan") out.origin = "replan";
   return out;
 }
 
 /**
- * Collapse any consecutive run of structurally-identical denormalized
- * steps into a single entry. Used by `persistReplannedFlow` before write-
- * back so cumulative-replan noise (each cascade-exhausted replan adds the
- * same recovery bridge to the tail; after 5 replans the persisted file
- * carries 5 stacked copies) doesn't pollute the on-disk flow.
- *
- * Comparison is structural via JSON-stringify equality:
- * - Two strings with the same value collapse.
- * - Two objects with the same {step, optional, upload} collapse.
- * - A string and an object with the same instruction do NOT collapse — they
- *   are semantically different (bare = required, object = could be optional
- *   or upload).
- *
- * Only CONSECUTIVE duplicates collapse. A non-adjacent repeat is preserved
- * since flow authors sometimes intentionally re-fill a field after a
- * downstream interaction (e.g. re-fill First Name after the resume upload
- * triggers an Angular re-render). Adjacent duplicates are almost always
- * accumulation noise from successive replans converging on the same idea.
+ * Order-independent structural dedup: drops any item byte-identical to an
+ * earlier kept one, anywhere in the list (not just adjacent). The real
+ * cross-run accretion is identical recovery blocks stacked NON-adjacently
+ * (each cascade-exhausted replan re-appends its bridge to the tail, separated
+ * by other steps), which `dedupeConsecutiveIdentical` never compares. Keys on
+ * full JSON content, so two items collapse iff identical in every field — it
+ * can never merge two genuinely-different steps. First occurrence wins,
+ * preserving flow order.
  */
-function dedupeConsecutiveIdentical<T>(items: T[]): T[] {
-  if (items.length < 2) return [...items];
-  const out: T[] = [items[0]!];
-  for (let i = 1; i < items.length; i++) {
-    const prev = JSON.stringify(out[out.length - 1]);
-    const curr = JSON.stringify(items[i]);
-    if (prev !== curr) out.push(items[i]!);
+export function dedupeIdenticalSteps<T>(items: T[]): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const item of items) {
+    const key = JSON.stringify(item);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+  }
+  return out;
+}
+
+/**
+ * Global, deterministic dedup on stable DOM target identity, applied at persist
+ * time. A wizard section the replanner re-discovers across runs is described in
+ * fresh prose each time (the replan prompt rewards structurally-different
+ * wording), so string/label dedup never collapses it and the persisted flow
+ * never converges. Because a step's `targetId` is the SAME DOM element
+ * regardless of wording, keying on it collapses those reworded duplicates
+ * deterministically.
+ *
+ * Conservative by construction: only drops a `"replan"`-origin step whose
+ * `targetId` an EARLIER kept step already covers. Authored (`"original"`) steps
+ * are never dropped — that protects a legitimately-repeated authored action
+ * (e.g. re-fill after a re-render). Steps without a `targetId` are never
+ * dropped here; they fall through to the structural pass. First occurrence
+ * wins.
+ */
+export function dedupeReplanStepsByTarget(steps: NormalizedStep[]): NormalizedStep[] {
+  const seenTargets = new Set<string>();
+  const out: NormalizedStep[] = [];
+  for (const step of steps) {
+    if (step.origin === "replan" && step.targetId !== undefined && seenTargets.has(step.targetId)) {
+      continue;
+    }
+    if (step.targetId !== undefined) seenTargets.add(step.targetId);
+    out.push(step);
   }
   return out;
 }
@@ -988,14 +1097,21 @@ function persistReplannedFlow(params: {
   // cascade still fires for the original employer when the persisted flow
   // is replayed. Required to keep cross-employer sweeps from regressing
   // across runs.
-  const denormalizedSteps = finalPlan.map((step) =>
+  // Deterministic convergence: first drop replan-origin steps whose stable DOM
+  // targetId an earlier step already covers (collapses reworded re-discoveries
+  // of the same section across runs — the churn no string/label dedup catches).
+  // Runs on NormalizedStep[] because it needs `.origin`/`.targetId`, both erased
+  // by denormalizeStep.
+  const targetDeduped = dedupeReplanStepsByTarget(finalPlan);
+  const denormalizedSteps = targetDeduped.map((step) =>
     denormalizeStep(step.origin === "replan" && !step.optional ? { ...step, optional: true } : step)
   );
-  // Cumulative-replan dedupe: each cascade-exhausted replan appends a
-  // recovery bridge to the tail; after several replans the persisted flow
-  // would carry stacked copies of the same bridge. Collapse them so the
-  // user reviewing the diff sees only the distinct LLM-discovered steps.
-  const dedupedSteps = dedupeConsecutiveIdentical(denormalizedSteps);
+  // Then a global structural pass for identical blocks that carry no targetId
+  // (e.g. label-less clickable bridges): each cascade-exhausted replan re-appends
+  // its bridge to the tail, and successive runs stack byte-identical copies at
+  // NON-adjacent positions. Global JSON-equality collapses them; it can never
+  // merge two genuinely-different steps.
+  const dedupedSteps = dedupeIdenticalSteps(denormalizedSteps);
   // 2-space indent + trailing newline matches the existing on-disk style
   // (verified against site recon-flow.json files).
   const payload =
@@ -1409,7 +1525,7 @@ ${errorTextList || "(none)"}
 STRUCTURED SERVER-SIDE VALIDATION ERRORS (parsed from captured 4xx responses to the submit endpoint — when populated, the form's submit DID fire and the server rejected it with specific feedback):
 ${submitFailureList || "(none)"}
 
-PRIOR REPLAN HISTORY (proposals from previous replans for this same failure; the cascade executed each one and verification still failed at the time it ran. Between replans, the page may have advanced — a step that failed earlier could potentially work now if intervening steps filled missing prerequisites or dismissed blockers. But re-proposing the EXACT same multi-step sequence that already failed is unlikely to produce a different outcome. Prefer structurally different recovery paths. If you re-use a prior step, pair it with new context that addresses why it failed before):
+PRIOR REPLAN HISTORY (proposals from previous replans for this same failure; the cascade executed each one and verification still failed at the time it ran. Between replans, the page may have advanced — a step that failed earlier could potentially work now if intervening steps filled missing prerequisites or dismissed blockers. But re-proposing the EXACT same multi-step sequence that already failed is unlikely to produce a different outcome. When a prior proposal targeted the WRONG control (misread the DOM), target the correct control instead. Do NOT, however, merely re-describe an action on a control that a completed step already handled — same control, fresh wording is not progress and only bloats the flow; advance to the next unhandled control instead. If you re-use a prior step, pair it with new context that addresses why it failed before):
 ${priorReplanList || "(none)"}
 
 PRIOR STEP TRAJECTORY (how the last few completed steps verified — url / submitted-state-dom signal pages that visibly transitioned; network / dom signal pages that stayed static. Use this to distinguish "page has been advancing through the flow" from "page has been static and the form is still in front of us"; avoid proposing regression-style steps if the trajectory shows recent transitions):
@@ -1669,8 +1785,11 @@ function parseCli(): {
   advancedStealth: boolean;
   dumpDomBeforeStep: number | null;
   allocateEmailEnvVar: string | null;
+  maxCascadeReplans: number | null;
+  maxProbeReplans: number | null;
   frameSelector: string | null;
   submitEndpointPattern: string | null;
+  submitBodyPattern: string | null;
   submittedStateSelectors: string[];
   requireSubmitEndpointMatch: boolean;
   advanceTransitionBodyPattern: string | null;
@@ -1694,6 +1813,8 @@ function parseCli(): {
   let advancedStealth = false;
   let dumpDomBeforeStep: number | null = null;
   let allocateEmailEnvVar: string | null = null;
+  let maxCascadeReplans: number | null = null;
+  let maxProbeReplans: number | null = null;
   let allowEmptyFlow = false;
 
   for (let i = 0; i < args.length; i++) {
@@ -1734,6 +1855,24 @@ function parseCli(): {
         process.exit(1);
       }
       allocateEmailEnvVar = name;
+    } else if (args[i] === "--max-cascade-replans" && args[i + 1]) {
+      const n = Number.parseInt(args[++i]!, 10);
+      if (!Number.isInteger(n) || n < 1) {
+        logger.error(
+          `--max-cascade-replans must be a positive integer (got ${JSON.stringify(args[i])})`
+        );
+        process.exit(1);
+      }
+      maxCascadeReplans = n;
+    } else if (args[i] === "--max-probe-replans" && args[i + 1]) {
+      const n = Number.parseInt(args[++i]!, 10);
+      if (!Number.isInteger(n) || n < 1) {
+        logger.error(
+          `--max-probe-replans must be a positive integer (got ${JSON.stringify(args[i])})`
+        );
+        process.exit(1);
+      }
+      maxProbeReplans = n;
     } else if (args[i] === "--allow-empty-flow") {
       allowEmptyFlow = true;
     }
@@ -1741,7 +1880,7 @@ function parseCli(): {
 
   if (!url) {
     logger.error(
-      'usage: recon-browser.ts --url <url> [--flow \'["step1","step2"]\'] [--flow-file <path>] [--provider browserbase|steel] [--upload-fixture <path>] [--no-save-replan] [--advanced-stealth] [--dump-dom-before-step <N>] [--allocate-email <ENV_VAR_NAME>] [--allow-empty-flow]'
+      'usage: recon-browser.ts --url <url> [--flow \'["step1","step2"]\'] [--flow-file <path>] [--provider browserbase|steel] [--upload-fixture <path>] [--no-save-replan] [--advanced-stealth] [--dump-dom-before-step <N>] [--allocate-email <ENV_VAR_NAME>] [--max-cascade-replans <N>] [--max-probe-replans <N>] [--allow-empty-flow]'
     );
     process.exit(1);
   }
@@ -1769,8 +1908,11 @@ function parseCli(): {
       advancedStealth,
       dumpDomBeforeStep,
       allocateEmailEnvVar,
+      maxCascadeReplans,
+      maxProbeReplans,
       frameSelector: null,
       submitEndpointPattern: null,
+      submitBodyPattern: null,
       submittedStateSelectors: [],
       requireSubmitEndpointMatch: false,
       advanceTransitionBodyPattern: null,
@@ -1794,6 +1936,9 @@ function parseCli(): {
   const submitEndpointPattern = Array.isArray(parsed.data)
     ? null
     : (parsed.data.submitEndpointPattern ?? null);
+  const submitBodyPattern = Array.isArray(parsed.data)
+    ? null
+    : (parsed.data.submitBodyPattern ?? null);
   const submittedStateSelectors = Array.isArray(parsed.data)
     ? []
     : (parsed.data.submittedStateSelectors ?? []);
@@ -1832,6 +1977,14 @@ function parseCli(): {
       process.exit(1);
     }
   }
+  if (submitBodyPattern !== null) {
+    try {
+      new RegExp(submitBodyPattern);
+    } catch (err) {
+      logger.error(`flow file: submitBodyPattern is not a valid regex: ${toErrorMessage(err)}`);
+      process.exit(1);
+    }
+  }
   return {
     url,
     flow: normalizeFlow(stepsRaw),
@@ -1842,8 +1995,11 @@ function parseCli(): {
     advancedStealth,
     dumpDomBeforeStep,
     allocateEmailEnvVar,
+    maxCascadeReplans,
+    maxProbeReplans,
     frameSelector,
     submitEndpointPattern,
+    submitBodyPattern,
     submittedStateSelectors,
     requireSubmitEndpointMatch,
     advanceTransitionBodyPattern,
@@ -1896,8 +2052,11 @@ async function main(): Promise<void> {
     advancedStealth,
     dumpDomBeforeStep,
     allocateEmailEnvVar,
+    maxCascadeReplans,
+    maxProbeReplans,
     frameSelector,
     submitEndpointPattern,
+    submitBodyPattern,
     submittedStateSelectors,
     requireSubmitEndpointMatch,
     advanceTransitionBodyPattern,
@@ -1910,6 +2069,13 @@ async function main(): Promise<void> {
     originalShape,
     allowEmptyFlow,
   } = parseCli();
+
+  // Replan-budget precedence: CLI flag > RECON_MAX_*_REPLANS env
+  // (config.scraper.max*Replans) > the built-in default constants. A known-deep
+  // wizard can raise its own ceiling per-run without a code change; nothing set
+  // preserves the historical budget of 5.
+  const resolvedCascadeBudget = maxCascadeReplans ?? config.scraper.maxCascadeReplans;
+  const resolvedProbeBudget = maxProbeReplans ?? config.scraper.maxProbeReplans;
 
   // Allocate a fresh testmail.app inbox + bind it to the requested env var
   // BEFORE substituting placeholders in the flow. Subsequent ${ENV_VAR}
@@ -2081,7 +2247,11 @@ async function main(): Promise<void> {
 
     plan.push(...flow);
     const completedSteps: string[] = [];
-    const trajectory: { stepIndex: number; verifiedBy: AttemptRecord["verifiedBy"] }[] = [];
+    const trajectory: {
+      stepIndex: number;
+      verifiedBy: AttemptRecord["verifiedBy"];
+      targetId?: string;
+    }[] = [];
     let probeReplansUsed = 0;
     let cascadeReplansUsed = 0;
 
@@ -2215,6 +2385,20 @@ async function main(): Promise<void> {
         });
         await snapshotAndPersistCookieJar(page, jarCounter, "post-step", currentPhase, i);
 
+        // Stamp the step's stable DOM identity from the fast primitive that just
+        // resolved it (pushed onto trajectory), so persistReplannedFlow can dedup
+        // reworded re-discoveries of this field across runs on `targetId`. Only a
+        // non-empty id is load-bearing; an empty string (element had no id) is
+        // left off so the step falls back to structural dedup.
+        const lastTrajectory = trajectory[trajectory.length - 1];
+        if (
+          lastTrajectory?.stepIndex === i &&
+          lastTrajectory.targetId !== undefined &&
+          lastTrajectory.targetId !== ""
+        ) {
+          plan[i] = { ...plan[i]!, targetId: lastTrajectory.targetId };
+        }
+
         // Wizard-restart detection: if a configured restart-signal URL (e.g.
         // a wizard ATS's `init-apply?...&application_canceled=true`) landed during
         // this step, the multi-page wizard reset to page 1. Remaining steps now
@@ -2335,7 +2519,7 @@ async function main(): Promise<void> {
         // the step is unrecoverable). Separate budgets so cheap recoveries
         // don't eat into the budget reserved for expensive ones.
         const isProbe = err.kind === "probe-absent";
-        const budget = isProbe ? MAX_PROBE_REPLANS : MAX_CASCADE_REPLANS;
+        const budget = isProbe ? resolvedProbeBudget : resolvedCascadeBudget;
         const usedSoFar = isProbe ? probeReplansUsed : cascadeReplansUsed;
         if (usedSoFar >= budget) {
           const kindsSummary =
@@ -2490,6 +2674,18 @@ async function main(): Promise<void> {
     }
 
     stopCapture();
+
+    // Authoritative submission record for recon-generate: which captured POSTs
+    // are the real submission, keyed on the flow's declared submit patterns.
+    // Runs whenever a pattern is declared (independent of the audit gate below),
+    // since generate consumes it even when requireSubmitEndpointMatch is off.
+    writeSubmitManifest({
+      runRoot: runDir.root,
+      capturesDir: runDir.graphqlDir,
+      submitEndpointPattern,
+      submitBodyPattern,
+      logger,
+    });
 
     // End-of-run audit: when the flow declared submitEndpointPattern AND
     // opted into requireSubmitEndpointMatch=true, scan ALL captures from
@@ -2650,12 +2846,13 @@ export type { NormalizedStep, ReplanEvent };
 // by the process.argv[1] check below), so a test driving it end-to-end with a
 // mocked browser session cannot trigger a real recon run.
 export {
-  dedupeConsecutiveIdentical,
   denormalizeStep,
   main,
+  normalizeFlow,
   parseCli,
   persistReplannedFlow,
   readFailureDumpEvidence,
   replanRemainingFlow,
   snapshotAndPersistCookieJar,
+  writeSubmitManifest,
 };

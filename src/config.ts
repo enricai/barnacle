@@ -46,6 +46,22 @@ export interface AppConfig {
     maxActionDelayMs: number;
     readinessQueueThreshold: number;
     /**
+     * Default ceiling for expensive cascade-exhausted replans in a single recon
+     * run. Overridable per-run by `--max-cascade-replans`; a deep multi-section
+     * wizard needs roughly one cascade replan per section it wasn't pre-authored
+     * for, so the built-in 5 can be too low without a code change.
+     */
+    maxCascadeReplans: number;
+    /**
+     * Default ceiling for cheap probe-absent replans in a single recon run
+     * (one observe + one LLM call to detect "wrong page"). Counted separately
+     * from cascade replans — cascade replans are expensive (four attempts ×
+     * backoff + observe + LLM rephrase before the step is known unrecoverable)
+     * — so cheap recoveries never consume the budget reserved for expensive
+     * ones. Overridable per-run by `--max-probe-replans`.
+     */
+    maxProbeReplans: number;
+    /**
      * Per-site base URL overrides keyed by `meta.siteId`. Populated at startup
      * from `BARNACLE_SITE_<UPPERCASE_SITE_ID>_BASE_URL` env vars — underscores
      * in the env key map to hyphens in the siteId. Example:
@@ -419,6 +435,8 @@ export function loadConfig(): AppConfig {
       minActionDelayMs: getNumericEnv("SCRAPER_MIN_ACTION_DELAY_MS", 500),
       maxActionDelayMs: getNumericEnv("SCRAPER_MAX_ACTION_DELAY_MS", 1500),
       readinessQueueThreshold: getNumericEnv("READINESS_QUEUE_THRESHOLD", 20),
+      maxCascadeReplans: getNumericEnv("RECON_MAX_CASCADE_REPLANS", 5),
+      maxProbeReplans: getNumericEnv("RECON_MAX_PROBE_REPLANS", 5),
       siteBaseUrls: (() => {
         const map: Record<string, string> = {};
         for (const [key, val] of Object.entries(process.env)) {

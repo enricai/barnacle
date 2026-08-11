@@ -1,3 +1,6 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { CONFIG_PLUGIN_API_VERSION, CONFIG_PLUGIN_KIND } from "@/plugins/plugin-manifest-envelope";
@@ -16,6 +19,7 @@ import {
   indexStateValues,
   inferZodSchemaFromSamples,
   loadQuestionPromptKeywords,
+  resolveManifestActionSequence,
   resolveStepPayloadField,
   selectEffectiveResponseBody,
   selectPayloadAction,
@@ -236,6 +240,119 @@ describe("extractActionSequence — error-reporting sinks never reach the emitte
     ).map((a) => new URL(a.capture.url).pathname);
 
     expect(kept).toEqual(["/api/error-codes", "/api/terrorism-screening"]);
+  });
+});
+
+describe("extractActionSequence — submit patterns isolate the submission from same-URL chrome", () => {
+  const capture = (url: string, body: string) => ({
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action" as const,
+    method: "POST",
+    url,
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: body,
+    responseHeaders: {},
+    responseBody: {},
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  });
+
+  const BASE = "https://www.example-ats.org";
+  // Mirrors a real ATS endpoint overload: /applySubmit is hit by the real
+  // submission (ddoKey applySubmit) AND page-chrome reference-lookups (ddoKey
+  // applyGetReferences), plus unrelated /widgets bootstrap chrome.
+  const realSubmit = capture(`${BASE}/applySubmit`, '{"ddoKey":"applySubmit","formData":{}}');
+  const chromeRefs = capture(`${BASE}/applySubmit`, '{"ddoKey":"applyGetReferences"}');
+  const chromeWidget = capture(`${BASE}/widgets`, '{"ddoKey":"canvasGetWidgetContent"}');
+
+  it("with no patterns, keeps every same-origin POST (today's behavior)", () => {
+    const kept = extractActionSequence([realSubmit, chromeRefs, chromeWidget], BASE).map(
+      (a) => a.capture.url
+    );
+    expect(kept).toEqual([realSubmit.url, chromeRefs.url, chromeWidget.url]);
+  });
+
+  it("with an endpoint pattern, drops non-matching chrome but keeps same-URL chrome", () => {
+    const kept = extractActionSequence([realSubmit, chromeRefs, chromeWidget], BASE, {
+      endpoint: "/applySubmit",
+      body: null,
+    }).map((a) => a.capture.requestPostData);
+    // /widgets dropped; both /applySubmit POSTs kept (URL cannot separate them).
+    expect(kept).toEqual([realSubmit.requestPostData, chromeRefs.requestPostData]);
+  });
+
+  it("with an endpoint + body pattern, isolates the real submission", () => {
+    const kept = extractActionSequence([realSubmit, chromeRefs, chromeWidget], BASE, {
+      endpoint: "/applySubmit",
+      body: '"ddoKey":"applySubmit"',
+    }).map((a) => a.capture.requestPostData);
+    expect(kept).toEqual([realSubmit.requestPostData]);
+  });
+
+  it("throws on a malformed pattern rather than silently reverting to unfiltered", () => {
+    expect(() =>
+      extractActionSequence([realSubmit], BASE, { endpoint: "(", body: null })
+    ).toThrow();
+  });
+});
+
+describe("resolveManifestActionSequence — authoritative submission selection", () => {
+  const capture = (url: string) => ({
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action" as const,
+    method: "POST",
+    url,
+    status: 200,
+    requestHeaders: {},
+    requestPostData: "{}",
+    responseHeaders: {},
+    responseBody: {},
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  });
+  const BASE = "https://www.example-ats.org";
+  const captures = [
+    capture(`${BASE}/widgets`),
+    capture(`${BASE}/applySubmit`),
+    capture(`${BASE}/applySubmit`),
+  ];
+
+  it("returns null when no manifest exists (falls back to extraction)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "recon-manifest-"));
+    expect(resolveManifestActionSequence(dir, captures)).toBeNull();
+  });
+
+  it("resolves manifest indices to the exact captures, cross-checked on url", () => {
+    const dir = mkdtempSync(join(tmpdir(), "recon-manifest-"));
+    writeFileSync(
+      join(dir, "submit-manifest.json"),
+      JSON.stringify([{ index: 1, filename: "001-x.json", url: `${BASE}/applySubmit` }])
+    );
+    const resolved = resolveManifestActionSequence(dir, captures);
+    expect(resolved).not.toBeNull();
+    expect(resolved!.map((a) => a.index)).toEqual([1]);
+    expect(resolved![0]!.capture).toBe(captures[1]);
+  });
+
+  it("returns null when a manifest url no longer matches its index (capture set drifted)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "recon-manifest-"));
+    writeFileSync(
+      join(dir, "submit-manifest.json"),
+      JSON.stringify([{ index: 0, filename: "000-x.json", url: `${BASE}/applySubmit` }])
+    );
+    // index 0 is /widgets, not /applySubmit — mismatch → null (safe fallback).
+    expect(resolveManifestActionSequence(dir, captures)).toBeNull();
+  });
+
+  it("returns null for an empty manifest (nothing matched at run time)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "recon-manifest-"));
+    writeFileSync(join(dir, "submit-manifest.json"), "[]");
+    expect(resolveManifestActionSequence(dir, captures)).toBeNull();
   });
 });
 
