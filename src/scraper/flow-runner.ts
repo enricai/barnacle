@@ -21,6 +21,7 @@ import { join } from "node:path";
 import type Anthropic from "@anthropic-ai/sdk";
 import type { Action, Page, Stagehand } from "@browserbasehq/stagehand";
 import { generateObject } from "ai";
+import { format, isValid, parse } from "date-fns";
 
 import { config } from "@/config";
 import type { StagehandModel } from "@/lib/bedrock";
@@ -854,6 +855,23 @@ export function isAdvanceStep(instruction: string | null | undefined): boolean {
   if (!instruction) return false;
   const haystack = instruction.toLowerCase();
   return ADVANCE_STEP_PHRASES.some((p) => haystack.includes(p));
+}
+
+/**
+ * Whether a flow should be WARNed that its DOM-only advance guard is disarmed.
+ * `isDomOnlyAdvanceVerified` only vetoes a DOM-only "advance" when
+ * `advanceTransitionBodyPattern` is set; a flow with advance steps but no
+ * pattern silently loses that veto, so a validation-re-render wizard can desync
+ * its step pointer from the page. Pure + exported so the WARN condition is
+ * unit-testable without driving the whole runner. Author-side guard-rail only —
+ * no behavior change.
+ */
+export function shouldWarnMissingAdvancePattern(
+  instructions: (string | null | undefined)[],
+  advanceTransitionBodyPattern: string | null
+): boolean {
+  if (advanceTransitionBodyPattern) return false;
+  return instructions.some((s) => isAdvanceStep(s));
 }
 
 /**
@@ -2588,6 +2606,217 @@ export async function fillHtml5DateTimeInput(
     };
   } catch {
     return null;
+  }
+}
+
+/** Outcome of a text-input datepicker fill (react-datepicker et al). */
+export interface TextDatepickerFillResult {
+  /** Whether a date value committed into the widget (readback confirmed). */
+  filled: boolean;
+  /** The input's value after the attempt (for verifier/prompt context). */
+  postValue: string;
+  /** Which gesture committed the value, or "none" if nothing did. */
+  strategy: "keyboard" | "calendar-pick" | "none";
+}
+
+/**
+ * Parse a loosely-formatted date string into calendar parts. The recon flow
+ * passes dates in whatever shape the plan text used (ISO `yyyy-MM`, US
+ * `MM/dd/yyyy`, etc.), but a react-datepicker commits through year/month/day
+ * selection, so we need the numeric parts, not a display string. Uses date-fns
+ * per project convention; returns null when no candidate format matches so the
+ * caller skips the datepicker path rather than picking a wrong month.
+ */
+function parseDatepickerValue(
+  value: string
+): { year: number; monthIndex: number; day: number } | null {
+  const candidates = ["yyyy-MM", "yyyy-MM-dd", "MM/dd/yyyy", "MM-dd-yyyy", "MM/yyyy", "M/yyyy"];
+  for (const fmt of candidates) {
+    const parsed = parse(value.trim(), fmt, new Date(2000, 0, 1));
+    if (isValid(parsed)) {
+      return { year: parsed.getFullYear(), monthIndex: parsed.getMonth(), day: parsed.getDate() };
+    }
+  }
+  return null;
+}
+
+/** Dispatch a real Enter keydown/keyup on the element (Stagehand's Locator has no `press`). */
+async function dispatchEnterKey(target: FrameTarget, xpath: string): Promise<void> {
+  const expr = `(() => {
+    const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+    const el = r.singleNodeValue;
+    if (!el) return "no-element";
+    const opts = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true };
+    el.dispatchEvent(new KeyboardEvent("keydown", opts));
+    el.dispatchEvent(new KeyboardEvent("keyup", opts));
+    return "dispatched";
+  })()`;
+  try {
+    await target.evaluate(expr);
+  } catch {
+    // best-effort: an Enter-dispatch failure shouldn't fail the fill
+  }
+}
+
+/** A readback whose value is a non-empty, date-shaped string counts as committed. */
+function isCommittedDateReadback(
+  readback: VerifyFillReadbackResult | null
+): readback is VerifyFillReadbackResult {
+  if (readback === null) return false;
+  if (readback.outcome === "rejected") return false;
+  // A datepicker reformats what it accepts (e.g. "01/2020" → "2020-01"), so
+  // "differs" is a commit, not a rejection — require only a non-empty value
+  // that contains a 4-digit year, ruling out stray placeholder text.
+  return readback.postValue.trim().length > 0 && /\d{4}/.test(readback.postValue);
+}
+
+/**
+ * Fill a `type="text"` datepicker widget (react-datepicker — the standard
+ * ATS start/end-date control), which `fillHtml5DateTimeInput`
+ * cannot: react-datepicker rejects a programmatic `.value` write and commits
+ * only through its own keyboard/calendar `onChange`. Returns `null` for any
+ * input that is NOT a date-like text control, so every other text field stays
+ * on today's exact fill path.
+ *
+ * Two gestures, in order:
+ *  1. Keyboard entry — real keystrokes via `locator.type` (the proven
+ *     framework-control path at {@link verifyDomEffect}) + Enter. Works for
+ *     *typeable* datepickers.
+ *  2. Open-and-pick — click to open `.react-datepicker`, then either set the
+ *     year/month `.range-select` dropdowns and click the `.react-datepicker__month-N`
+ *     cell (month/year-picker variant — the reported ATS widget, which is
+ *     picker-only and ignores typed input) or click the matching
+ *     `.react-datepicker__day` cell (day-grid variant). Commit fires on the cell
+ *     click.
+ *
+ * The committed value is confirmed via {@link verifyFillReadback}; a datepicker
+ * reformats what it accepts, so a non-empty date-shaped readback is success.
+ *
+ * Return contract mirrors {@link fillHtml5DateTimeInput}: `null` means "not a
+ * datepicker — caller falls through to the generic readback verifier"; a
+ * non-null object means "this WAS a datepicker, here's the outcome". A non-null
+ * `filled:false` therefore deliberately TERMINATES the cascade (the caller
+ * records the failure and does NOT run the generic verifier) — a gated-in
+ * datepicker that neither gesture commits is a real fill failure, not an
+ * unrecognized field.
+ *
+ * Site-agnostic: react-datepicker's markup + commit model is universal across
+ * ATS tenants using it.
+ */
+export async function fillTextDatepickerInput(
+  target: FrameTarget,
+  selector: string,
+  value: string
+): Promise<TextDatepickerFillResult | null> {
+  const xpath = xpathBody(selector);
+  if (!xpath) return null;
+  const parts = parseDatepickerValue(value);
+  if (!parts) return null;
+
+  // Gate: only proceed for a text input that looks like a datepicker. The
+  // definitive signal is a `.react-datepicker__input-container` wrapper; we
+  // also accept id/name/class/aria date hints for non-react libraries.
+  const gateExpr = `(() => {
+    const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+    const el = r.singleNodeValue;
+    if (!el || el.tagName !== "INPUT") return { match: false };
+    const type = (el.getAttribute("type") || "text").toLowerCase();
+    if (type !== "text") return { match: false };
+    const inContainer = !!(el.closest && el.closest(".react-datepicker__input-container, .react-datepicker-wrapper"));
+    const hint = ((el.id || "") + " " + (el.name || "") + " " + (el.className || "") + " " + (el.getAttribute("aria-label") || "") + " " + (el.getAttribute("placeholder") || "")).toLowerCase();
+    const looksDate = /date|datepicker/.test(hint) || /\\bmm[\\/-]?(dd[\\/-]?)?yyyy\\b/.test(hint);
+    return { match: inContainer || looksDate };
+  })()`;
+  try {
+    const gate = await target.evaluate(gateExpr);
+    if (!gate || typeof gate !== "object" || (gate as { match?: unknown }).match !== true) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+
+  // Strategy 1 — keyboard entry (typeable datepickers). Mirrors the Angular
+  // reactive-form re-type at verifyDomEffect: real CDP keystrokes flow through
+  // the widget's own onChange, unlike a programmatic value write.
+  const typed = format(new Date(parts.year, parts.monthIndex, parts.day), "MM/dd/yyyy");
+  try {
+    const locator = target.locator(selector).first();
+    await locator.fill("");
+    await locator.type(typed, { delay: 50 });
+    // react-datepicker commits typed input on Enter/blur. The Stagehand Locator
+    // has no `press`, so dispatch the Enter keydown/keyup from page context
+    // (the widget's own keydown handler listens here) then blur via the shared
+    // jQuery-change helper.
+    await dispatchEnterKey(target, xpath);
+    await dispatchJqueryChangeEvent(target, selector);
+    const readback = await verifyFillReadback(target, xpath, value);
+    if (isCommittedDateReadback(readback)) {
+      return { filled: true, postValue: readback.postValue, strategy: "keyboard" };
+    }
+  } catch {
+    // fall through to open-and-pick
+  }
+
+  // Strategy 2 — open-and-pick. Required for picker-only widgets (the reported
+  // month/year picker ignores typed input entirely).
+  try {
+    const locator = target.locator(selector).first();
+    await locator.click();
+  } catch {
+    return { filled: false, postValue: "", strategy: "none" };
+  }
+  const pickExpr = `(() => {
+    const year = ${parts.year};
+    const monthIndex = ${parts.monthIndex};
+    const day = ${parts.day};
+    const cal = document.querySelector(".react-datepicker");
+    if (!cal) return { picked: false, reason: "no-calendar" };
+    const fireChange = (el) => { el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); };
+    const monthCells = cal.querySelectorAll(".react-datepicker__month-text");
+    const dayGrid = cal.querySelectorAll(".react-datepicker__day:not(.react-datepicker__day--outside-month):not(.react-datepicker__day--disabled)");
+    // Month/year-picker variant: click the target month cell (0-based month
+    // index maps to the __month-N class) — THIS is the commit. The year/month
+    // dropdowns are set first only so the calendar shows the right year's month
+    // page. NOTE: "range-select" is a SITE-SPECIFIC class (the ATS site's own
+    // CSS), not a react-datepicker class; the bare "select" fallback covers
+    // other wrappers.
+    // Stock react-datepicker renders its month/year dropdowns as clickable divs,
+    // so on those the select loop is inert and the month-cell click carries it.
+    if (monthCells.length > 0) {
+      const selects = cal.querySelectorAll("select.range-select, select");
+      for (const sel of selects) {
+        const opts = Array.from(sel.options).map((o) => (o.value || "").trim());
+        const yearOpt = opts.indexOf(String(year));
+        if (yearOpt >= 0) { sel.selectedIndex = yearOpt; fireChange(sel); continue; }
+        const monthOpt = opts.indexOf(String(monthIndex));
+        if (monthOpt >= 0) { sel.selectedIndex = monthOpt; fireChange(sel); }
+      }
+      const monthCell = cal.querySelector(".react-datepicker__month-" + monthIndex + ".react-datepicker__month-text");
+      const cell = monthCell || cal.querySelectorAll(".react-datepicker__month-text")[monthIndex];
+      if (cell) { cell.click(); return { picked: true, variant: "month-year" }; }
+      return { picked: false, reason: "no-month-cell" };
+    }
+    // Day-grid variant: click the day cell matching the parsed day number.
+    if (dayGrid.length > 0) {
+      for (const cell of dayGrid) {
+        if ((cell.textContent || "").trim() === String(day)) { cell.click(); return { picked: true, variant: "day-grid" }; }
+      }
+      return { picked: false, reason: "no-day-cell" };
+    }
+    return { picked: false, reason: "empty-calendar" };
+  })()`;
+  try {
+    const picked = await target.evaluate(pickExpr);
+    const didPick =
+      !!picked && typeof picked === "object" && (picked as { picked?: unknown }).picked === true;
+    const readback = await verifyFillReadback(target, xpath, value);
+    if (didPick && isCommittedDateReadback(readback)) {
+      return { filled: true, postValue: readback.postValue, strategy: "calendar-pick" };
+    }
+    return { filled: false, postValue: readback?.postValue ?? "", strategy: "none" };
+  } catch {
+    return { filled: false, postValue: "", strategy: "none" };
   }
 }
 
@@ -6954,25 +7183,49 @@ export async function executeStepWithHealing(params: {
                   resolvedAction = overriddenTarget;
                 }
               } else {
-                // Fix I: not a date input — verify the regular fill landed.
-                // Catches silent-value-rejection cases (HTML5 type validation
-                // on number/email/url/tel inputs, framework-controlled-
-                // component rejection, masked-input library reformatting).
-                // Generic primitive that the verifier's existing signals
-                // (network/url/dom/htmlDelta/textChanged) miss.
-                const readback = await verifyFillReadback(
+                // Not an HTML5 date input. First try the text-datepicker
+                // primitive (react-datepicker — ATS start/end-date
+                // controls): those are `type="text"`, so fillHtml5DateTimeInput
+                // returns null, and the generic fill's value-write never commits
+                // the widget. Returns null for any non-datepicker text input, so
+                // every other field falls through to the readback verifier below
+                // unchanged.
+                const datepickerFill = await fillTextDatepickerInput(
                   dateFillTarget,
                   overriddenTarget.selector,
                   fillValue
                 );
-                if (readback !== null) {
-                  if (readback.outcome === "rejected") {
-                    record.errorMessage = `fill-value-rejected: tried "${fillValue.slice(0, 60)}" on <${readback.tag}>; element value remains empty (silent rejection — HTML5 type validation, framework controlled-component, or masked-input library)`;
+                if (datepickerFill !== null) {
+                  record.errorMessage = datepickerFill.filled
+                    ? `text-datepicker-fill: filled via ${datepickerFill.strategy} "${datepickerFill.postValue}"`
+                    : `text-datepicker-fill: failed to commit "${fillValue.slice(0, 60)}" (post=${datepickerFill.postValue})`;
+                  if (datepickerFill.filled) {
+                    record.actResultSuccess = true;
+                    resolvedAction = overriddenTarget;
+                  } else {
                     record.actResultSuccess = false;
-                  } else if (readback.outcome === "differs") {
-                    logger.info(
-                      `${formatStepPrefix(stepIndex, totalSteps)} fill-value-differs: tried "${fillValue.slice(0, 60)}" got "${readback.postValue.slice(0, 60)}" (framework reformatted)`
-                    );
+                  }
+                } else {
+                  // Fix I: not a date input — verify the regular fill landed.
+                  // Catches silent-value-rejection cases (HTML5 type validation
+                  // on number/email/url/tel inputs, framework-controlled-
+                  // component rejection, masked-input library reformatting).
+                  // Generic primitive that the verifier's existing signals
+                  // (network/url/dom/htmlDelta/textChanged) miss.
+                  const readback = await verifyFillReadback(
+                    dateFillTarget,
+                    overriddenTarget.selector,
+                    fillValue
+                  );
+                  if (readback !== null) {
+                    if (readback.outcome === "rejected") {
+                      record.errorMessage = `fill-value-rejected: tried "${fillValue.slice(0, 60)}" on <${readback.tag}>; element value remains empty (silent rejection — HTML5 type validation, framework controlled-component, or masked-input library)`;
+                      record.actResultSuccess = false;
+                    } else if (readback.outcome === "differs") {
+                      logger.info(
+                        `${formatStepPrefix(stepIndex, totalSteps)} fill-value-differs: tried "${fillValue.slice(0, 60)}" got "${readback.postValue.slice(0, 60)}" (framework reformatted)`
+                      );
+                    }
                   }
                 }
               }
@@ -8166,6 +8419,17 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
       }
     },
   });
+
+  if (
+    shouldWarnMissingAdvancePattern(
+      steps.map((s) => s.instruction),
+      deps.advanceTransitionBodyPattern ?? null
+    )
+  ) {
+    logger.warn(
+      "flow has advance steps but no advanceTransitionBodyPattern — DOM-only advance guard is disarmed; pointer/page desync is possible on validation-re-render wizards"
+    );
+  }
 
   try {
     for (const [i, s] of steps.entries()) {

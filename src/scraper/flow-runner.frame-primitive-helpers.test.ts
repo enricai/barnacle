@@ -3,8 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 import {
   countNgInvalidContainers,
   fillHtml5DateTimeInput,
+  fillTextDatepickerInput,
   pollEnumerate,
   probeLeafInvalidContainers,
+  shouldWarnMissingAdvancePattern,
   snapshotPage,
   verifyFillReadback,
 } from "@/scraper/flow-runner";
@@ -342,5 +344,145 @@ describe("flow-runner/pollEnumerate (file-upload locator path)", () => {
 
     expect(count).toBe(0);
     expect(targetEvaluate).toHaveBeenCalledTimes(3);
+  });
+});
+
+/**
+ * Fake locator recording fill/type/click calls. `fillTextDatepickerInput`
+ * calls `target.locator(selector).first()` then those methods.
+ */
+function makeFakeLocator(): {
+  first: () => typeof api;
+  calls: string[];
+} & Record<string, unknown> {
+  const calls: string[] = [];
+  const api = {
+    first: () => api,
+    fill: vi.fn(async (v: string) => {
+      calls.push(`fill:${v}`);
+    }),
+    type: vi.fn(async (v: string) => {
+      calls.push(`type:${v}`);
+    }),
+    click: vi.fn(async () => {
+      calls.push("click");
+    }),
+    calls,
+  };
+  return api as never;
+}
+
+/**
+ * Script a datepicker `FrameTarget`: `evaluate` branches on the expression the
+ * primitive builds (gate → Enter-dispatch → calendar-pick → readback). `gate`
+ * decides whether the input is treated as a datepicker; `readbackSequence`
+ * feeds successive `verifyFillReadback` results (keyboard attempt, then pick
+ * attempt); `pickResult` is what the open-and-pick evaluate returns.
+ */
+function makeDatepickerTarget(opts: {
+  gateMatch: boolean;
+  pickResult?: unknown;
+  readbackSequence: (unknown | null)[];
+}): FrameTarget & { locator: () => ReturnType<typeof makeFakeLocator> } {
+  const readbacks = [...opts.readbackSequence];
+  const locator = makeFakeLocator();
+  const evaluate = vi.fn(async (expr: unknown) => {
+    const s = String(expr);
+    if (s.includes("react-datepicker__input-container")) return { match: opts.gateMatch };
+    if (s.includes('new KeyboardEvent("keydown"')) return "dispatched";
+    if (s.includes("react-datepicker__month-text") && s.includes("querySelectorAll")) {
+      return opts.pickResult ?? { picked: false, reason: "no-calendar" };
+    }
+    if (s.includes("el.isContentEditable")) {
+      return readbacks.length > 0 ? readbacks.shift() : null;
+    }
+    // dispatchJqueryChangeEvent
+    if (s.includes("new Event('change'")) return "dispatched";
+    return null;
+  });
+  const target = makeFakeTarget(evaluate, {
+    locator: (() => locator) as never,
+  }) as FrameTarget & { locator: () => ReturnType<typeof makeFakeLocator> };
+  return target;
+}
+
+describe("flow-runner/fillTextDatepickerInput", () => {
+  it("returns null when the value isn't a parseable date", async () => {
+    const target = makeDatepickerTarget({ gateMatch: true, readbackSequence: [] });
+    expect(await fillTextDatepickerInput(target, "xpath=//input[1]", "not-a-date")).toBeNull();
+  });
+
+  it("returns null when the selector has no xpath= prefix", async () => {
+    const target = makeDatepickerTarget({ gateMatch: true, readbackSequence: [] });
+    expect(await fillTextDatepickerInput(target, "#css-selector", "2020-01")).toBeNull();
+  });
+
+  it("returns null when the gate rejects a non-datepicker text input", async () => {
+    const target = makeDatepickerTarget({ gateMatch: false, readbackSequence: [] });
+    expect(await fillTextDatepickerInput(target, "xpath=//input[1]", "2020-01")).toBeNull();
+  });
+
+  it("commits via keyboard when the widget accepts typed input", async () => {
+    const target = makeDatepickerTarget({
+      gateMatch: true,
+      readbackSequence: [{ outcome: "differs", postValue: "2020-01", tag: "input" }],
+    });
+    const result = await fillTextDatepickerInput(target, "xpath=//input[1]", "2020-01");
+    expect(result).toEqual({ filled: true, postValue: "2020-01", strategy: "keyboard" });
+  });
+
+  it("falls through to calendar-pick (month/year variant) when keyboard is rejected", async () => {
+    const target = makeDatepickerTarget({
+      gateMatch: true,
+      pickResult: { picked: true, variant: "month-year" },
+      readbackSequence: [
+        { outcome: "rejected", postValue: "", tag: "input" }, // keyboard didn't take
+        { outcome: "differs", postValue: "2020-01", tag: "input" }, // pick committed
+      ],
+    });
+    const result = await fillTextDatepickerInput(target, "xpath=//input[1]", "2020-01");
+    expect(result).toEqual({ filled: true, postValue: "2020-01", strategy: "calendar-pick" });
+  });
+
+  it("returns filled:false/strategy:none when neither keyboard nor pick commits", async () => {
+    const target = makeDatepickerTarget({
+      gateMatch: true,
+      pickResult: { picked: false, reason: "no-month-cell" },
+      readbackSequence: [
+        { outcome: "rejected", postValue: "", tag: "input" },
+        { outcome: "rejected", postValue: "", tag: "input" },
+      ],
+    });
+    const result = await fillTextDatepickerInput(target, "xpath=//input[1]", "2020-01");
+    expect(result).toEqual({ filled: false, postValue: "", strategy: "none" });
+  });
+
+  it("parses ISO, US-slash, and full-date formats to the same month/year", async () => {
+    for (const value of ["2020-01", "01/2020", "2020-01-05"]) {
+      const target = makeDatepickerTarget({
+        gateMatch: true,
+        readbackSequence: [{ outcome: "differs", postValue: "2020-01", tag: "input" }],
+      });
+      const result = await fillTextDatepickerInput(target, "xpath=//input[1]", value);
+      expect(result?.filled).toBe(true);
+    }
+  });
+});
+
+describe("flow-runner/shouldWarnMissingAdvancePattern", () => {
+  it("warns when advance steps exist and no pattern is set", () => {
+    expect(
+      shouldWarnMissingAdvancePattern(["Click the Next button to continue", "Fill in name"], null)
+    ).toBe(true);
+  });
+
+  it("does not warn when the pattern is set", () => {
+    expect(
+      shouldWarnMissingAdvancePattern(["Click the Next button to continue"], "/applySubmit")
+    ).toBe(false);
+  });
+
+  it("does not warn when there are no advance steps", () => {
+    expect(shouldWarnMissingAdvancePattern(["Fill in name", "Fill in email"], null)).toBe(false);
   });
 });
