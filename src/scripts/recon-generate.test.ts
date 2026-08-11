@@ -38,6 +38,13 @@ function payloadRef(field: string): string {
   return `$${`{payload.${field}}`}`;
 }
 
+/** A bare template-literal reference the emitter injects, e.g. `${draftId}`.
+ * Built by concatenation so Biome's noTemplateCurlyInString rule doesn't flag
+ * the literal placeholder in this test source. */
+function interpRef(name: string): string {
+  return `$${`{${name}}`}`;
+}
+
 /** Minimal opts that satisfy the emitter for a non-multipart plugin. */
 const BASE_OPTS = {
   siteId: "test-site",
@@ -735,6 +742,166 @@ describe("compileActionSteps — Set-Cookie state binding (cruise-fixture-style 
     expect(body).not.toContain("abc.def.ghi");
     expect(body).not.toContain(": any");
     expect(body).not.toContain("<any>");
+  });
+});
+
+/** The `${${` double-interpolation sentinel, built by concatenation so Biome's
+ * noTemplateCurlyInString rule doesn't flag the literal placeholder. */
+const DOUBLE_INTERP = `$${"{"}$${"{"}`;
+
+describe("compileActionSteps — a response value used downstream ONLY as a JSON key is not reuse", () => {
+  // Regression for the malformed-template-literal bug: a submit response echoed
+  // the form's field NAMES (`tokens: ["firstName","lastName"]`), and a later
+  // POST body used those same strings as JSON keys (`"firstName":"…"`). The old
+  // substring produces-filter mistook the key match for value reuse, bound them
+  // as `tokens`/`tokens2`, then spliced them into key positions — emitting
+  // uncompilable `"${tokens}":` and `${${tokens2}}`. The fix matches body
+  // consumption against JSON *values* only (keys are never JSON leaves), so a
+  // key-only string never produces a binding.
+  const producerCapture = {
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action",
+    method: "POST",
+    url: "https://api.example.com/applySubmit",
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: '{"ddoKey":"applySubmit","firstName":"Reginald","lastName":"Reconaldo"}',
+    responseHeaders: { "content-type": "application/json" },
+    responseBody: { thankYouEmailParams: { tokens: ["firstName", "lastName"] } },
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  };
+
+  /** A later step whose body reuses `firstName`/`lastName` ONLY as JSON keys. */
+  const keyOnlyConsumerCapture = {
+    ...producerCapture,
+    timestamp: "2024-01-01T00:00:01Z",
+    requestPostData: '{"ddoKey":"applySubmit","firstName":"Reginald","lastName":"Reconaldo"}',
+    responseBody: { ok: true },
+  };
+
+  const captures = [producerCapture, keyOnlyConsumerCapture];
+  const actionCaptures = captures.map((capture, index) => ({ capture, index }));
+  const stateIndex = indexStateValues(captures);
+  const actionSteps = compileActionSteps(actionCaptures, stateIndex);
+
+  it("does not produce a body binding for a value that only appears downstream as a JSON key", () => {
+    const producedNames = actionSteps.flatMap((s) => s.produces).map((p) => p.name);
+    expect(producedNames).not.toContain("tokens");
+    expect(producedNames).not.toContain("tokens2");
+    const bodyProducedForFieldNames = actionSteps
+      .flatMap((s) => s.produces)
+      .filter((p) => p.kind === "body")
+      .some((p) => p.path.at(-1) === "0" || p.path.at(-1) === "1");
+    expect(bodyProducedForFieldNames).toBe(false);
+  });
+
+  it("emits a body with no key-position splice and no double interpolation", () => {
+    const body = emitMultiStepExecuteHttp(
+      actionSteps,
+      JSON.parse(producerCapture.requestPostData) as unknown,
+      { stringMessageKey: null, nestedErrorPaths: [] },
+      new Map(),
+      new Set(),
+      new Map(),
+      new Set(),
+      new Map(),
+      new Map(),
+      "https://api.example.com",
+      new Map(),
+      new Map()
+    );
+    expect(body).not.toContain(DOUBLE_INTERP);
+    expect(body).not.toContain(`"${interpRef("tokens")}"`);
+    expect(body).not.toContain(`"${interpRef("tokens2")}"`);
+    expect(body).toContain('"lastName":');
+  });
+});
+
+describe("compileActionSteps — a response value genuinely re-sent as a JSON value still produces", () => {
+  // Guards the fix from over-filtering: matching body consumption against JSON
+  // values must still recognize real cross-step reuse (an id minted in one
+  // response and re-sent as a JSON body value in the next request), including
+  // when the id is embedded inside a longer composite value.
+  const mintCapture = {
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action",
+    method: "POST",
+    url: "https://api.example.com/draft",
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: "{}",
+    responseHeaders: { "content-type": "application/json" },
+    responseBody: { draftId: "draft-8f81e44c-4561" },
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  };
+
+  const consumerCapture = {
+    ...mintCapture,
+    timestamp: "2024-01-01T00:00:01Z",
+    url: "https://api.example.com/submit",
+    requestPostData: '{"applicationDraftId":"draft-8f81e44c-4561"}',
+    responseBody: { ok: true },
+  };
+
+  const captures = [mintCapture, consumerCapture];
+  const actionCaptures = captures.map((capture, index) => ({ capture, index }));
+  const stateIndex = indexStateValues(captures);
+  const actionSteps = compileActionSteps(actionCaptures, stateIndex);
+
+  it("still produces a binding for the re-sent value", () => {
+    const producedNames = actionSteps.flatMap((s) => s.produces).map((p) => p.name);
+    expect(producedNames).toContain("draftId");
+  });
+
+  it("interpolates the re-sent value into the consuming body", () => {
+    const body = emitMultiStepExecuteHttp(
+      actionSteps,
+      JSON.parse(mintCapture.requestPostData) as unknown,
+      { stringMessageKey: null, nestedErrorPaths: [] },
+      new Map(),
+      new Set(),
+      new Map(),
+      new Set(),
+      new Map(),
+      new Map(),
+      "https://api.example.com",
+      new Map(),
+      new Map()
+    );
+    expect(body).toContain(interpRef("draftId"));
+    expect(body).not.toContain("draft-8f81e44c-4561");
+    expect(body).not.toContain(DOUBLE_INTERP);
+  });
+
+  it("still produces a value reused only as a substring inside a longer composite value", () => {
+    // Mirrors a real capture where a jobId (26158515) is reused downstream only
+    // inside a longer jobSeqNo (HHKHHEUS26158515EXTERNALENUS) — never as its own
+    // JSON leaf and not in the URL. Value-substring matching must keep binding
+    // it (exact-equality matching would have dropped it).
+    const producer = {
+      ...mintCapture,
+      url: "https://api.example.com/job",
+      responseBody: { jobId: "26158515" },
+    };
+    const consumer = {
+      ...mintCapture,
+      timestamp: "2024-01-01T00:00:02Z",
+      url: "https://api.example.com/apply",
+      requestPostData: '{"jobSeqNo":"HHKHHEUS26158515EXTERNALENUS"}',
+      responseBody: { ok: true },
+    };
+    const steps = compileActionSteps(
+      [producer, consumer].map((capture, index) => ({ capture, index })),
+      indexStateValues([producer, consumer])
+    );
+    const names = steps.flatMap((s) => s.produces).map((p) => p.name);
+    expect(names).toContain("jobId");
   });
 });
 
