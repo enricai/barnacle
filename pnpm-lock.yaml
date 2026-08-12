@@ -17,8 +17,8 @@ importers:
   .:
     dependencies:
       '@ai-sdk/amazon-bedrock':
-        specifier: ^3.0.112
-        version: 3.0.112(zod@3.25.76)
+        specifier: ^5.0.50
+        version: 5.0.50(zod@3.25.76)
       '@ai-sdk/anthropic':
         specifier: ^2.0.92
         version: 2.0.92(zod@3.25.76)
@@ -146,15 +146,33 @@ importers:
 
 packages:
 
-  '@ai-sdk/amazon-bedrock@3.0.112':
-    resolution: {integrity: sha512-nvBRPced+MMz4zMScNh/fDo6bPAMr0zJKJvxIdRST4E4ATc+cUPcmOW++IhgkkaW1WfCMNPqEX843BWQXWReXQ==}
+  '@ai-sdk/amazon-bedrock@3.0.115':
+    resolution: {integrity: sha512-qEvzM4mC+7qkkXcw6Q5nQOUcJyhZTvBvXkC64t/PCpeMzgVVoGDGNLfDzmRIAMS2fRIt1TGGawU0sptthyOCVQ==}
     engines: {node: '>=18'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
+  '@ai-sdk/amazon-bedrock@5.0.50':
+    resolution: {integrity: sha512-Z00rPc94bu4UawE30K6ppRPU1yRUyp4Vn+NBXo4xRJGek5cqCfuoRzwcKk3X7pexphEUohJaAO17OnOghDDcbA==}
+    engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
   '@ai-sdk/anthropic@2.0.92':
     resolution: {integrity: sha512-MlIQpuOnchlroR93Dq2GNw12jh/SAVjuFARXWRF/2SfowMv3J2fvPBUzA60waoQivZlf3XkzQ2nxSwer7dnh2g==}
     engines: {node: '>=18'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
+  '@ai-sdk/anthropic@2.0.95':
+    resolution: {integrity: sha512-V0nIwhyv8f9rD+p6glm0uq30seid8y2CrvNvHCAbnuPm5bPpqVChEB63kixrIDNnogkgI+ZjSTtIbIL2q3QPvQ==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
+  '@ai-sdk/anthropic@4.0.36':
+    resolution: {integrity: sha512-Wg5jfray0X4+qkrr73GZ7U7K2JNGx+S+rNY9LorVlXhkhTqnvtNLYWRA1WxSxlCDCw3yjRCJdL9kyc+b7naAog==}
+    engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
@@ -221,6 +239,12 @@ packages:
   '@ai-sdk/openai@2.0.117':
     resolution: {integrity: sha512-fqr2OwpegPlS58NUAat4+6cAOR/x1askt5dXKY1rCjDyhHJYxm2OZM9fZnG9I717ny4uRSp2mhsMio2uthA0Pg==}
     engines: {node: '>=18'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
+  '@ai-sdk/openai@4.0.36':
+    resolution: {integrity: sha512-wHJNArBdjJPXb8GXcA+FslbRt+7qIE1KoHSAVi+CeBFidinVrTVBZKFMJz3mNZMj8YILBMl/VIvTD/oGFjX6/g==}
+    engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
@@ -1232,8 +1256,8 @@ packages:
     resolution: {integrity: sha512-2jsPi+7Zv2hSzD9IXR9D7DTqSn7mv4XalzRm+bESh53jiaUS3NKEUbpQFTJP0HhQy9qzZvluxQ3yS24zdRrqsA==}
     engines: {node: '>=18.0.0'}
 
-  '@smithy/eventstream-codec@4.4.10':
-    resolution: {integrity: sha512-yG1n59zLQMa979xvXlTQ9+FpNmm4RRPR+2rYZo57wk28E27zmKZN4ST9wc2pKkyspLpDal2/84ST72KLJhbP1w==}
+  '@smithy/eventstream-codec@4.5.0':
+    resolution: {integrity: sha512-iqd3ZXZRMsWc7rSHjhfh89AfMkQ4NGpbylrGi5kADGtFrQ/Pr899wZCrKeCKo0pTJGd/psYMQDV0NN7k0Zm77Q==}
     engines: {node: '>=18.0.0'}
 
   '@smithy/fetch-http-handler@5.7.0':
@@ -1252,8 +1276,8 @@ packages:
     resolution: {integrity: sha512-Aw4joiM0ZdErpo39lCj8phT2lxoiKZV+KZzBxnnQhWVtU2Is/WffQSL04uUWRcXUse9Ln8vXZK6V/FwqRVnQpg==}
     engines: {node: '>=18.0.0'}
 
-  '@smithy/util-utf8@4.4.10':
-    resolution: {integrity: sha512-4pWFv2sxrykZqaTixXhkgAsG6+k/VxgAiyZ6M0iLEmsOqcJaR0eidlTCmuKKtMJMIEw8lYwDTvEyR4NyC+V0cw==}
+  '@smithy/util-utf8@4.5.0':
+    resolution: {integrity: sha512-0jP6o0EBoQq6qyipoxwOkQSuMV8h0T6fe3N8dY/XyWBAxRkoIAVJklufpW7Br8zqfcnoc0LfeBPPXPTSaCYp3g==}
     engines: {node: '>=18.0.0'}
 
   '@stablelib/base64@1.0.1':
@@ -2881,13 +2905,25 @@ packages:
 
 snapshots:
 
-  '@ai-sdk/amazon-bedrock@3.0.112(zod@3.25.76)':
+  '@ai-sdk/amazon-bedrock@3.0.115(zod@3.25.76)':
     dependencies:
-      '@ai-sdk/anthropic': 2.0.92(zod@3.25.76)
+      '@ai-sdk/anthropic': 2.0.95(zod@3.25.76)
       '@ai-sdk/provider': 2.0.3
-      '@ai-sdk/provider-utils': 3.0.31(zod@3.25.76)
-      '@smithy/eventstream-codec': 4.4.10
-      '@smithy/util-utf8': 4.4.10
+      '@ai-sdk/provider-utils': 3.0.32(zod@3.25.76)
+      '@smithy/eventstream-codec': 4.5.0
+      '@smithy/util-utf8': 4.5.0
+      aws4fetch: 1.0.20
+      zod: 3.25.76
+    optional: true
+
+  '@ai-sdk/amazon-bedrock@5.0.50(zod@3.25.76)':
+    dependencies:
+      '@ai-sdk/anthropic': 4.0.36(zod@3.25.76)
+      '@ai-sdk/openai': 4.0.36(zod@3.25.76)
+      '@ai-sdk/provider': 4.0.7
+      '@ai-sdk/provider-utils': 5.0.25(zod@3.25.76)
+      '@smithy/eventstream-codec': 4.5.0
+      '@smithy/util-utf8': 4.5.0
       aws4fetch: 1.0.20
       zod: 3.25.76
 
@@ -2895,6 +2931,19 @@ snapshots:
     dependencies:
       '@ai-sdk/provider': 2.0.3
       '@ai-sdk/provider-utils': 3.0.31(zod@3.25.76)
+      zod: 3.25.76
+
+  '@ai-sdk/anthropic@2.0.95(zod@3.25.76)':
+    dependencies:
+      '@ai-sdk/provider': 2.0.3
+      '@ai-sdk/provider-utils': 3.0.32(zod@3.25.76)
+      zod: 3.25.76
+    optional: true
+
+  '@ai-sdk/anthropic@4.0.36(zod@3.25.76)':
+    dependencies:
+      '@ai-sdk/provider': 4.0.7
+      '@ai-sdk/provider-utils': 5.0.25(zod@3.25.76)
       zod: 3.25.76
 
   '@ai-sdk/azure@2.0.122(zod@3.25.76)':
@@ -2982,6 +3031,12 @@ snapshots:
       '@ai-sdk/provider-utils': 3.0.31(zod@3.25.76)
       zod: 3.25.76
     optional: true
+
+  '@ai-sdk/openai@4.0.36(zod@3.25.76)':
+    dependencies:
+      '@ai-sdk/provider': 4.0.7
+      '@ai-sdk/provider-utils': 5.0.25(zod@3.25.76)
+      zod: 3.25.76
 
   '@ai-sdk/perplexity@2.0.37(zod@3.25.76)':
     dependencies:
@@ -3305,7 +3360,7 @@ snapshots:
       zod: 3.25.76
       zod-to-json-schema: 3.25.2(zod@3.25.76)
     optionalDependencies:
-      '@ai-sdk/amazon-bedrock': 3.0.112(zod@3.25.76)
+      '@ai-sdk/amazon-bedrock': 3.0.115(zod@3.25.76)
       '@ai-sdk/anthropic': 2.0.92(zod@3.25.76)
       '@ai-sdk/azure': 2.0.122(zod@3.25.76)
       '@ai-sdk/cerebras': 1.0.52(zod@3.25.76)
@@ -3910,7 +3965,7 @@ snapshots:
       '@smithy/types': 4.17.0
       tslib: 2.8.1
 
-  '@smithy/eventstream-codec@4.4.10':
+  '@smithy/eventstream-codec@4.5.0':
     dependencies:
       '@smithy/core': 3.32.0
       tslib: 2.8.1
@@ -3937,7 +3992,7 @@ snapshots:
     dependencies:
       tslib: 2.8.1
 
-  '@smithy/util-utf8@4.4.10':
+  '@smithy/util-utf8@4.5.0':
     dependencies:
       '@smithy/core': 3.32.0
       tslib: 2.8.1
@@ -4461,7 +4516,7 @@ snapshots:
 
   eventsource@3.0.7:
     dependencies:
-      eventsource-parser: 3.1.0
+      eventsource-parser: 3.1.1
 
   expect-type@1.4.0: {}
 
