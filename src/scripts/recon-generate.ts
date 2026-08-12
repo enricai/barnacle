@@ -2385,18 +2385,7 @@ function interpolateStateValues(
   priorSteps: ActionStep[],
   payloadAccessorByValue: Map<string, string> = new Map()
 ): string {
-  const varNameByValue = new Map<string, string>();
-  for (const step of priorSteps) {
-    for (const p of step.produces) {
-      // Header/cookie-origin produces have no body path — their value never
-      // appears as a literal in a URL/body template (http-client's `bind`
-      // forwards it directly as a request header), so there's nothing to
-      // interpolate here.
-      if (p.kind === "header") continue;
-      const value = resolveResponsePathValue(step.capture.responseBody, p.path);
-      if (value !== null) varNameByValue.set(value, p.name);
-    }
-  }
+  const varNameByValue = deriveStateVarByValue(priorSteps);
 
   let result = template;
 
@@ -2568,6 +2557,126 @@ function applyWholeValuePayloadSubstitutions(
     if (key.length === 0) continue;
     const target = `"${key}":${JSON.stringify(value)}`;
     const replacement = `"${key}":"\${${accessor}}"`;
+    result = result.split(target).join(replacement);
+  }
+  return result;
+}
+
+/** Maximum number of nested URL-encodings a query-param value is probed for
+ * before giving up. Real captures observed a doubly-encoded value (`%2520`); the
+ * extra headroom costs one cheap `decodeURIComponent` per level and stops runaway. */
+const MAX_URL_PARAM_DECODE_DEPTH = 3;
+
+/**
+ * Maps each response-produced value to the `${var}` name later steps thread it as.
+ * Shared by {@link interpolateStateValues} (the body/URL substitution) and the
+ * URL-param pass, so a threaded coordinate (e.g. a jobId a prior step produced)
+ * resolves to the same var in both — one source of truth, they can never diverge.
+ *
+ * Header/cookie-origin produces are skipped: they have no body path and their
+ * value never appears as a literal in a URL/body template (http-client's `bind`
+ * forwards it directly as a request header), so there is nothing to interpolate.
+ */
+function deriveStateVarByValue(priorSteps: ActionStep[]): Map<string, string> {
+  const varNameByValue = new Map<string, string>();
+  for (const step of priorSteps) {
+    for (const p of step.produces) {
+      if (p.kind === "header") continue;
+      const value = resolveResponsePathValue(step.capture.responseBody, p.path);
+      if (value !== null) varNameByValue.set(value, p.name);
+    }
+  }
+  return varNameByValue;
+}
+
+/** One `decodeURIComponent`, or null when the input is not validly percent-encoded
+ * (a stray `%` throws) — lets the progressive-decode loop stop instead of crash. */
+function safeDecodeOnce(value: string): string | null {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+}
+
+/** True when a JSON string leaf is itself an http(s) URL, the only leaves whose
+ * query string this pass rewrites. Site-agnostic: a structural test, not a key name. */
+function isHttpUrlLeaf(value: string): boolean {
+  if (!value.includes("://")) return false;
+  try {
+    const u = new URL(value);
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+/** Wraps an accessor expression in `encodeURIComponent(...)` `depth` times, so a
+ * value the capture stored URL-encoded is re-encoded to the same nesting at call
+ * time (a caller value with `&`/`=`/spaces then survives inside the query string). */
+function wrapEncode(expr: string, depth: number): string {
+  let out = expr;
+  for (let d = 0; d < depth; d++) out = `encodeURIComponent(${out})`;
+  return out;
+}
+
+/**
+ * Binds caller coordinates that were copied into a URL-valued body field's query
+ * string. Every other substitution pass matches whole leaf values, so a job
+ * coordinate re-encoded inside a redirect/thank-you URL stays frozen at the recon
+ * persona's value. This runs on the PRISTINE parsed body leaf — before state
+ * threading fragments a composite — and rewrites each query-param value that
+ * matches the unified binding table (after bounded progressive URL-decoding, so a
+ * double-encoded copy is caught) into a `${encodeURIComponent(<accessor>)}`
+ * fragment nested to the matched encode depth. Unmatched params (and the delimiters
+ * around them) stay byte-for-byte. Site-agnostic: keys off "leaf parses as an
+ * http(s) URL", never a field name.
+ */
+function applyUrlParamPayloadSubstitutions(
+  template: string,
+  parsedBody: unknown,
+  bindings: ReadonlyMap<string, string>
+): string {
+  if (bindings.size === 0) return template;
+  let result = template;
+  for (const { value, path } of walkStringLeaves(parsedBody)) {
+    if (!isHttpUrlLeaf(value)) continue;
+    const qIdx = value.indexOf("?");
+    if (qIdx < 0) continue;
+    const prefix = value.slice(0, qIdx + 1);
+    const rawQuery = value.slice(qIdx + 1);
+    let changed = false;
+    const newParams = rawQuery.split("&").map((pair) => {
+      const eq = pair.indexOf("=");
+      if (eq < 0) return pair;
+      const name = pair.slice(0, eq);
+      const rawVal = pair.slice(eq + 1);
+      if (rawVal.length < MIN_STATE_VALUE_LENGTH) return pair;
+      if (CACHE_BUSTER_QUERY_KEYS.has(name)) return pair;
+      let candidate = rawVal;
+      let matched: string | null = null;
+      let depth = 0;
+      for (let d = 0; d <= MAX_URL_PARAM_DECODE_DEPTH; d++) {
+        const accessor = bindings.get(candidate);
+        if (accessor !== undefined) {
+          matched = accessor;
+          depth = d;
+          break;
+        }
+        const next = safeDecodeOnce(candidate);
+        if (next === null || next === candidate) break;
+        candidate = next;
+      }
+      if (matched === null) return pair;
+      changed = true;
+      return `${name}=\${${wrapEncode(matched, depth)}}`;
+    });
+    if (!changed) continue;
+    const newUrl = prefix + newParams.join("&");
+    const key = path[path.length - 1] ?? "";
+    if (key.length === 0) continue;
+    const target = `"${key}":${JSON.stringify(value)}`;
+    const replacement = `"${key}":"${newUrl}"`;
     result = result.split(target).join(replacement);
   }
   return result;
@@ -3081,9 +3190,32 @@ export function emitMultiStepExecuteHttp(
             i
           )
         : rawBodyWithStructuredSubs;
-    const bodyAfterStateAndKv = rawBodyWithProducerBoundary
+    // Coordinates copied into a URL-valued leaf's query string bind here, BEFORE
+    // interpolateStateValues — same discipline as the whole-value pass above. A
+    // composite (a jobSeqNo whose prefix a prior step produces as a state var)
+    // would otherwise be fragmented mid-URL by Pass 1's global split, stranding
+    // the tail frozen. The unified table is highest-priority-last: a per-step
+    // state var (jobId2) wins over the caller payload accessor for that same
+    // coordinate on steps that thread it, matching the top-level slot's behaviour.
+    const urlParamBindings = new Map<string, string>(payloadAccessorByValue);
+    for (const [value, accessor] of entryUrlParams) urlParamBindings.set(value, accessor);
+    for (const [value, binding] of producerBoundaryBindings) {
+      if (binding.producerIndex === i) urlParamBindings.set(value, binding.accessor);
+    }
+    for (const [value, varName] of deriveStateVarByValue(prior)) {
+      urlParamBindings.set(value, varName);
+    }
+    const rawBodyWithUrlParams =
+      parsedBody !== null
+        ? applyUrlParamPayloadSubstitutions(
+            rawBodyWithProducerBoundary,
+            parsedBody,
+            urlParamBindings
+          )
+        : rawBodyWithProducerBoundary;
+    const bodyAfterStateAndKv = rawBodyWithUrlParams
       ? applyPayloadKeyValueSubstitutions(
-          interpolateStateValues(rawBodyWithProducerBoundary, prior, payloadAccessorByValue),
+          interpolateStateValues(rawBodyWithUrlParams, prior, payloadAccessorByValue),
           inputBody,
           additionalBodies,
           outDiscoveredAdditionalBodyKeys
@@ -3169,7 +3301,10 @@ export function emitMultiStepExecuteHttp(
 
   // Identifier scan against the rendered text — captures `${foo}`, `${foo.bar}`,
   // etc. The first segment (anchored at `${`) is the binding's name. Closed
-  // grammar (template-literal syntax we generated ourselves).
+  // grammar (template-literal syntax we generated ourselves). The optional
+  // `encodeURIComponent(` prefixes let the URL-param pass wrap a bound accessor
+  // (`${encodeURIComponent(jobTitle2)}`) without hiding the inner state var from
+  // this scan — otherwise its `const` would be pruned and the reference dangle.
   // For multipart steps the bodyArg isn't emitted (the body is a FormData
   // built inline), but the URL and headers ARE in executable code — scan
   // only those two haystacks for multipart.
@@ -3180,7 +3315,9 @@ export function emitMultiStepExecuteHttp(
       ? [r.url, r.headersExpr]
       : [r.url, r.headersExpr, r.bodyArg];
     for (const haystack of haystacks) {
-      for (const match of haystack.matchAll(/\$\{([A-Za-z_$][A-Za-z0-9_$]*)/g)) {
+      for (const match of haystack.matchAll(
+        /\$\{(?:encodeURIComponent\()*([A-Za-z_$][A-Za-z0-9_$]*)/g
+      )) {
         referencedNames.add(match[1]!);
       }
     }
