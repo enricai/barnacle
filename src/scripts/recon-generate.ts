@@ -2455,6 +2455,16 @@ interface ProducerBoundaryBinding {
  * coordinate — and only WHOLE request-body leaves qualify, so every returned
  * value is one the whole-value pass will bind (and whose field must be declared).
  *
+ * A field is NOT a caller coordinate when it is a per-step POSITION CONSTANT — the
+ * step's own identifier that the harness varies as it walks the wizard (like
+ * `stepIndex`). Such a field is produced-and-re-sent on every step, so it looks
+ * like a coordinate, but each producer step echoes a DIFFERENT value; a genuine
+ * coordinate (a jobId) is echoed with the SAME value on every step and the
+ * per-value dedupe below leaves it a single entry. So any field bound to ≥2
+ * distinct values across its producer steps is dropped wholesale: each step keeps
+ * its own captured literal and the field is never declared as caller input.
+ * Site-agnostic — the signal is value cardinality per field, not any field name.
+ *
  * @param actions the compiled action steps (carry produces[] + request bodies)
  * @param alreadyBound capture value → existing accessor; a `payload.*` accessor
  *   is reused, a non-payload one (e.g. `txnId`) vetoes the value
@@ -2509,6 +2519,19 @@ export function deriveProducerBoundaryBindings(
       if (existing === undefined && field === "value") continue;
       bindings.set(value, { accessor: `payload.${field}`, field, producerIndex: i });
     }
+  }
+  // Drop per-step position constants: a field bound to ≥2 distinct values across
+  // its producer steps is the step's own identifier the harness walked, not a
+  // caller coordinate (which is echoed with one stable value). Removing every
+  // entry leaves each step's captured literal in place and undeclared.
+  const distinctValuesByField = new Map<string, Set<string>>();
+  for (const [value, binding] of bindings) {
+    const values = distinctValuesByField.get(binding.field) ?? new Set<string>();
+    values.add(value);
+    distinctValuesByField.set(binding.field, values);
+  }
+  for (const [value, binding] of [...bindings]) {
+    if ((distinctValuesByField.get(binding.field)?.size ?? 0) >= 2) bindings.delete(value);
   }
   return bindings;
 }

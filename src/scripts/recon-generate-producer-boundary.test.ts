@@ -228,6 +228,72 @@ describe("deriveProducerBoundaryBindings", () => {
     const bindings = bindingsFor(captures);
     expect(bindings.has("VALUENOKEY123")).toBe(false);
   });
+
+  it("drops a per-step position constant — one field the producer echoes with a DIFFERENT value each step", () => {
+    // Each step both sends and echoes its own `section` identifier, so every step
+    // is that value's producer — the produced-and-re-sent signal fires on all
+    // three. But the field is a wizard position constant, not a caller coordinate:
+    // it carries a different value per step because the harness walked the steps.
+    // The ≥2-distinct-values rule drops every entry so each step keeps its literal.
+    const captures = [
+      capture({
+        url: SUBMIT_URL,
+        requestPostData: '{"section":"sectionAlpha","itemRef":"REF-10025518"}',
+        responseBody: { result: { section: "sectionAlpha", itemRef: "REF-10025518" } },
+        timestamp: "2024-01-01T00:00:00Z",
+      }),
+      capture({
+        url: SUBMIT_URL,
+        requestPostData: '{"section":"sectionBeta","itemRef":"REF-10025518"}',
+        responseBody: { result: { section: "sectionBeta", itemRef: "REF-10025518" } },
+        timestamp: "2024-01-01T00:00:01Z",
+      }),
+      capture({
+        url: SUBMIT_URL,
+        requestPostData: '{"section":"sectionGamma","itemRef":"REF-10025518"}',
+        responseBody: { result: { section: "sectionGamma", itemRef: "REF-10025518" } },
+        timestamp: "2024-01-01T00:00:02Z",
+      }),
+    ];
+    const bindings = bindingsFor(captures);
+    // No section value is bound — none becomes a caller field.
+    expect(bindings.has("sectionAlpha")).toBe(false);
+    expect(bindings.has("sectionBeta")).toBe(false);
+    expect(bindings.has("sectionGamma")).toBe(false);
+    expect([...bindings.values()].some((b) => b.field === "section")).toBe(false);
+    // The genuine coordinate echoed with ONE stable value across steps still binds.
+    expect(bindings.get("REF-10025518")).toEqual({
+      accessor: "payload.itemRef",
+      field: "itemRef",
+      producerIndex: 0,
+    });
+  });
+
+  it("keeps a coordinate a field echoes with the SAME value across every step", () => {
+    // Same field name on every step, but one stable value → a caller coordinate,
+    // not a position constant. The per-value dedupe leaves a single entry, so the
+    // ≥2-distinct-values rule never fires and the binding survives.
+    const captures = [
+      capture({
+        url: SUBMIT_URL,
+        requestPostData: '{"orderRef":"REF-10025518","stepName":"one"}',
+        responseBody: { result: { orderRef: "REF-10025518" } },
+        timestamp: "2024-01-01T00:00:00Z",
+      }),
+      capture({
+        url: SUBMIT_URL,
+        requestPostData: '{"orderRef":"REF-10025518","stepName":"two"}',
+        responseBody: { result: { orderRef: "REF-10025518" } },
+        timestamp: "2024-01-01T00:00:01Z",
+      }),
+    ];
+    const bindings = bindingsFor(captures);
+    expect(bindings.get("REF-10025518")).toEqual({
+      accessor: "payload.orderRef",
+      field: "orderRef",
+      producerIndex: 0,
+    });
+  });
 });
 
 describe("emitMultiStepExecuteHttp — producer-boundary integration", () => {
@@ -419,5 +485,50 @@ describe("emitMultiStepExecuteHttp — producer-boundary integration", () => {
     const body = emit(captures, outFields);
     expect(body).not.toContain("payload.apTxnId");
     expect(outFields.has("apTxnId")).toBe(false);
+  });
+
+  it("keeps each step's own literal for a per-step position constant and never declares it", () => {
+    // A wizard whose `section` identifier the server echoes per step: the producer-
+    // boundary signal fires on every step, but the field is a position constant.
+    // Each step must keep its OWN captured literal (never a shared payload.section),
+    // an empty value must stay empty, and a sibling coordinate echoed with one
+    // stable value must still bind and be declared. The fields sit inside a
+    // `formData` envelope — the real submit-body shape, so the producer-boundary
+    // path (not the top-level key-value pass) is what governs `section`.
+    const I = `$${"{"}`;
+    const env = (section: string): string =>
+      `{"ddoKey":"submit","formData":{"section":"${section}","itemRef":"REF-10025518","note":"a longer note here to enrich the envelope"}}`;
+    const captures = [
+      capture({
+        url: SUBMIT_URL,
+        requestPostData: env("sectionAlpha"),
+        responseBody: { result: { section: "sectionAlpha", itemRef: "REF-10025518" } },
+        timestamp: "2024-01-01T00:00:00Z",
+      }),
+      capture({
+        url: SUBMIT_URL,
+        requestPostData: env("sectionBeta"),
+        responseBody: { result: { section: "sectionBeta", itemRef: "REF-10025518" } },
+        timestamp: "2024-01-01T00:00:01Z",
+      }),
+      // A step that submits an empty section — must stay empty, not "fixed" to a literal.
+      capture({
+        url: SUBMIT_URL,
+        requestPostData: env(""),
+        responseBody: { result: { section: "", itemRef: "REF-10025518" } },
+        timestamp: "2024-01-01T00:00:02Z",
+      }),
+    ];
+    const outFields = new Set<string>();
+    const body = emit(captures, outFields);
+    // Each step keeps its own literal; the field is never collapsed to a payload accessor.
+    expect(body).toContain('"section":"sectionAlpha"');
+    expect(body).toContain('"section":"sectionBeta"');
+    expect(body).toContain('"section":""');
+    expect(body).not.toContain(`${I}payload.section}`);
+    expect(outFields.has("section")).toBe(false);
+    // The genuine sibling coordinate binds on its producer and is declared.
+    expect(body).toContain(`"itemRef":"${I}payload.itemRef}"`);
+    expect(outFields.has("itemRef")).toBe(true);
   });
 });
