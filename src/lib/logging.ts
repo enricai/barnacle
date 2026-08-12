@@ -189,7 +189,7 @@ export function extendLogger(logger: pino.Logger): Logger {
 /**
  * Returns a pino logger for one-shot CLI scripts. Uses pino-pretty in
  * development (where the devDependency is installed) and falls back to raw
- * JSON elsewhere, mirroring `getLogger`'s gating — `pino-pretty` is pruned
+ * JSON elsewhere, paralleling `getLogger`'s gating — `pino-pretty` is pruned
  * from production images, so an unconditional transport crashes on module
  * load in prod (see the pino-pretty prod-crash incident).
  */

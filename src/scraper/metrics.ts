@@ -66,7 +66,7 @@ export function recordRateLimitRejection(siteId: string): void {
  * Reservoir is capped at RESERVOIR_SIZE to bound memory; once full, a random
  * slot is replaced (Vitter's Algorithm R). Called by dispatch() on non-cached
  * hot-path successes only — cache hits are memory reads and must not bias the
- * upstream latency signal.
+ * target site latency signal.
  */
 export function recordHotPathLatency(siteId: string, latencyMs: number): void {
   const entry = ensureEntry(siteId);

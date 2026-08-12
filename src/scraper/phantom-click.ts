@@ -6,7 +6,7 @@
  * same way (see recon-submit-phantom-click bug report).
  */
 
-/** Cheap snapshot of side effects — field names mirror flow-runner's StepSnapshot. */
+/** Cheap snapshot of side effects — field names match flow-runner's StepSnapshot. */
 export interface PhantomClickSnapshot {
   networkCount: number;
   url: string;

@@ -33,7 +33,7 @@ function makeFakePage(frame: FakeDeepLocatorFrame) {
   return { deepLocator: makeFakeDeepLocator(frame) };
 }
 
-/** Builds a `FrameTarget` whose `evaluate` is a bare spy a test configures per scenario — mirrors `deep-locator-candidates.click-throughput.test.ts`'s helper of the same shape. */
+/** Builds a `FrameTarget` whose `evaluate` is a bare spy a test configures per scenario — matches `deep-locator-candidates.click-throughput.test.ts`'s helper of the same shape. */
 function makeFakeFrameTarget(evaluateImpl: (...args: unknown[]) => Promise<unknown>): {
   frameTarget: FrameTarget;
   evaluateSpy: ReturnType<typeof vi.fn>;
@@ -861,7 +861,7 @@ describe("fillDeepLocatorCandidate/selectDeepLocatorCandidateOption legacy-fallb
   const TARGET_INDEX = 40;
   const INNER_SELECTOR = "input";
   const HOP_SELECTOR = `${FRAME_SELECTOR} >> ${INNER_SELECTOR}`;
-  /** Mirrors `deep-locator-candidates.click-budget.test.ts`'s measured per-round-trip cost through a proxied OOPIF. */
+  /** Matches `deep-locator-candidates.click-budget.test.ts`'s measured per-round-trip cost through a proxied OOPIF. */
   const PER_ROUND_TRIP_MS = 659;
 
   beforeEach(() => {

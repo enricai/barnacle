@@ -83,7 +83,7 @@ function makeChildFrameTarget(getUrl: () => string): FrameTarget {
   };
 }
 
-/** Main-frame `FrameTarget` mirroring `mainFrameTarget`'s real contract: `frame: null`, delegates straight to `page`. Used for the control case proving the deepLocator fallback is frame-gated. */
+/** Main-frame `FrameTarget` matching `mainFrameTarget`'s real contract: `frame: null`, delegates straight to `page`. Used for the control case proving the deepLocator fallback is frame-gated. */
 function makeMainFrameTarget(page: Page): FrameTarget {
   return {
     frame: null,

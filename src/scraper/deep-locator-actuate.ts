@@ -1,5 +1,5 @@
 /**
- * Fill/select actuation seam over `deepLocator`, mirroring
+ * Fill/select actuation seam over `deepLocator`, paralleling
  * `clickDeepLocatorCandidate`'s contract (`deep-locator-candidates.ts`) for
  * the two other primitives a cross-origin OOPIF form's text/select steps
  * need. Stagehand `act`/`observe` are measured blind inside that OOPIF, and
@@ -119,7 +119,7 @@ async function writeAndVerify(
  * throws) when `frameSelector` is unset, the probe rejects (e.g. a fake
  * `Page` in a legacy-path test lacking `evaluate`/`frames`), or nothing
  * attaches within the probe's budget — each of those means "no frame seam
- * available", and the caller degrades to the legacy delegate path. Mirrors
+ * available", and the caller degrades to the legacy delegate path. Parallels
  * `deep-locator-candidates.ts`'s `resolveScanFrameTarget` exactly; duplicated
  * (not imported) so this module stays a leaf that never depends on
  * `deep-locator-candidates.ts`.
@@ -184,7 +184,7 @@ async function confirmBatchedWriteStuck(
  * available, the evaluate call rejects, or the resolved payload doesn't
  * conform to {@link FrameCandidateWriteResult} — every one of those degrades
  * the caller to the legacy delegate path instead of losing the write,
- * mirroring `clickCandidateBatched`'s degrade contract
+ * paralleling `clickCandidateBatched`'s degrade contract
  * (`deep-locator-candidates.ts`).
  */
 async function actuateCandidateBatched(

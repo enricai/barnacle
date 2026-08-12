@@ -81,7 +81,7 @@ const TOP_FRAME_CANDIDATES = [
  * the in-frame candidate. Every other call — no selector, or a selector
  * missing the hop — gets the top-frame-only list, reproducing the reported
  * "69 candidates, all top-frame" bug. `act` never itself resolves a
- * candidate (mirrors real Stagehand act-string frequently phantom-failing on
+ * candidate (matches real Stagehand act-string frequently phantom-failing on
  * content it can't see): it always reports `actions: []`, forcing the
  * cascade past attempt 1 into the frame-scoped observe+act path (attempt 2)
  * every real fix depends on.
@@ -107,7 +107,7 @@ function makeFakeStagehand() {
 /**
  * `guardedAct(stagehand, target, ...)` is called with the resolved
  * `Action` once `observe` surfaces `MANUAL_APPLICATION_CANDIDATE` — that
- * `act` call must actually succeed (mirroring Stagehand having resolved a
+ * `act` call must actually succeed (matching Stagehand having resolved a
  * concrete selector) and flip the CHILD frame's `location.href` (a click on
  * an in-iframe control navigates the iframe, not the top window) so the
  * cascade's frame-scoped `urlChanged` verification signal fires.
@@ -193,7 +193,7 @@ function makeFakeChildFrame(childUrls: { current: string }) {
  * `contentDocument` is blocked), and `frames()` exposes the child `Frame`.
  * Top-frame `evaluate`/`locator` calls NEVER see the in-frame button — only
  * the nav/share/Apply-now controls a real top-frame DOM would expose,
- * mirroring the reported bug at the fixture level. Includes the CDP-session
+ * matching the reported bug at the fixture level. Includes the CDP-session
  * plumbing `wireSignalCapture` requires (`getSessionForFrame`, `mainFrameId`,
  * `sendCDP`), matching the fake in `flow-runner.frame-threading.test.ts`.
  * `topUrl` is a SEPARATE mutable ref from the child frame's — the top
@@ -302,7 +302,7 @@ const SIXTY_FIVE_TOP_FRAME_CANDIDATES = Array.from({ length: 65 }, (_, index) =>
  * Fake Stagehand for the mid-flow timeline: step 1 ("Apply now") resolves
  * directly on attempt 1 against the TOP frame (no hop prefix) and, as a side
  * effect of that click, flips `iframeAttached` true and seeds `childUrls` —
- * mirroring the click event that mounts the wizard iframe. Step 2 ("Manual
+ * matching the click event that mounts the wizard iframe. Step 2 ("Manual
  * Application") discriminates on `options.selector`'s hop prefix exactly like
  * `makeFakeStagehand` above: frame-scoped observe finds the real candidate,
  * unscoped/top-frame observe gets the 65-candidate wrong-document list, and
@@ -347,7 +347,7 @@ function makeFakeStagehandForMidflowAttach(
           actions: [MANUAL_APPLICATION_CANDIDATE],
         };
       }
-      // Attempt-1 act-string for any in-frame-only step: mirrors Stagehand
+      // Attempt-1 act-string for any in-frame-only step: matches Stagehand
       // failing to resolve content it structurally cannot see pre-fix.
       return {
         success: false,
@@ -545,7 +545,7 @@ describe("flow-runner iframe end-to-end: mid-flow iframe attachment (offline fix
  * `makeFakeStagehand` above (whose observe DOES resolve a hop-scoped
  * selector — the very assumption this fixture exists to falsify), nothing
  * here ever hands the cascade an observe-sourced candidate: the ONLY path to
- * the in-frame button is `page.deepLocator()`. `act` mirrors the measured
+ * the in-frame button is `page.deepLocator()`. `act` matches the measured
  * unresolved-instruction-string failure (Stagehand's act-string path can't
  * resolve content its own observe can't see either) so attempt 1 always
  * fails, forcing the cascade into attempt 2's observe-act branch — the one
@@ -566,7 +566,7 @@ function makeFakeStagehandObserveBlind() {
 /**
  * `makeFakeTopPage`'s top-frame `Page`, plus a `deepLocator()` bound to
  * `deepLocatorFrame` — the shared `deep-locator-fake.ts` harness resolving
- * against an in-memory hop registry, mirroring `page.deepLocator()`
+ * against an in-memory hop registry, matching `page.deepLocator()`
  * (Stagehand's own deep-iframe resolver, measured to locate AND actuate
  * elements inside the cross-origin OOPIF end-to-end). Wraps the fake
  * delegate's `click()` to also advance `childUrls` — a real deepLocator
@@ -843,7 +843,7 @@ function makeFakeTopPageForAcceptanceSequence(
  * frame-scoped candidate from `observe()`, per the task's own analysis that
  * only the CLICK path routes through deepLocator — fill/upload/submit are
  * already frameTarget-direct. `act(instruction: string)` (attempt 1) always
- * phantom-fails for every step, mirroring real Stagehand's act-string path
+ * phantom-fails for every step, matching real Stagehand's act-string path
  * failing on content behind the OOPIF boundary and forcing every step
  * through attempt 2's observe-act path.
  */
@@ -885,7 +885,7 @@ function makeFakeStagehandForAcceptanceSequence(
           };
         }
       }
-      // Attempt 1 (act-string, every step): mirrors Stagehand failing to
+      // Attempt 1 (act-string, every step): matches Stagehand failing to
       // resolve content behind the OOPIF boundary via its own act-string path.
       return {
         success: false,
@@ -1046,11 +1046,11 @@ describe("flow-runner iframe end-to-end: full acceptance sequence through the OO
 
 /**
  * Fake `Stagehand` for the run-6 composite regression: `act()` (attempt 1's
- * act-string call) mirrors the reported timeline exactly — the OOPIF does
+ * act-string call) matches the reported timeline exactly — the OOPIF does
  * NOT exist yet when `runHealingFlow`'s step-entry `resolveFrameTarget` polls
  * for it (so that poll exhausts and falls back to the main frame, the run 5
  * vs. run 6 divergence), and only attaches as a side effect of THIS call,
- * i.e. after step entry already gave up. `observe()` mirrors
+ * i.e. after step entry already gave up. `observe()` matches
  * `makeFakeStagehandObserveBlind`/`makeFakeStagehandAttachingOnAct`: every
  * FOCUSED call (an instruction string) is blind, forcing the cascade past
  * attempt 1 and into attempt 2's observe-act branch — the one that owns the

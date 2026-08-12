@@ -27,7 +27,7 @@ available CPUs (`pool: "forks"`).
 
 - **Test file location:** colocated with the module being tested.
   `src/scraper/retry.ts` → `src/scraper/retry.test.ts`
-- **Naming:** `describe` blocks mirror the module name or the behavior under
+- **Naming:** `describe` blocks match the module name or the behavior under
   test; `it` strings describe what the test asserts, not how it does it.
 - **Imports:** use `@/` alias, matching the convention enforced for source files.
 

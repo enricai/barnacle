@@ -582,7 +582,7 @@ export async function phaseHeal(params: HealParams): Promise<HealResult> {
   // recon-heal operates on the instruction strings; per the file-level comment
   // it never writes back to the source flow, so the projection to strings is
   // lossless from recon-heal's perspective even if the source uses the N+23
-  // optional-object shape. The shape is validated upstream by recon-browser.
+  // optional-object shape. The shape is validated earlier by recon-browser.
   const rawFlow = JSON.parse(readFileSync(flowFilePath, "utf-8")) as unknown;
   const originalFlow: string[] = Array.isArray(rawFlow)
     ? rawFlow.map((s) => (typeof s === "string" ? s : (s as { step: string }).step))

@@ -1,6 +1,6 @@
 /**
  * Provides a registry-driven structural coverage guard for site plugins.
- * Mirrors the registry-first design of the loader: iterates BUILTIN_SITE_PLUGINS
+ * Matches the registry-first design of the loader: iterates BUILTIN_SITE_PLUGINS
  * (or a caller-supplied stub) and asserts that each registered plugin has its
  * required co-located test file — without hardcoding any site name. Safe to run
  * on main where BUILTIN_SITE_PLUGINS ships empty (0 iterations → trivially

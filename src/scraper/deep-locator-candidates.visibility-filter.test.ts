@@ -1,7 +1,7 @@
 /**
  * Pins `resolveDeepLocatorCandidates`'s visibility filter in isolation, at
  * the resolver seam feeding every flow-runner call site (Issue #2's
- * upstream half — a click can only hit an unrendered node if the resolver
+ * earlier half — a click can only hit an unrendered node if the resolver
  * offered it as a candidate in the first place). The `-32000`
  * click-classification side of the fix is pinned separately by
  * `deep-locator-candidates.layout-error.test.ts`; this file only proves

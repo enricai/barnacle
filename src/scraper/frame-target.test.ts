@@ -65,7 +65,7 @@ function makeFakeFrame(url: string) {
  * Minimal fake `Page`: `frames()` returns whatever child frames the test
  * wires up, `evaluate` answers `resolveFrameTarget`'s generated
  * "read the iframe's src" expression string by extracting the CSS selector
- * it was built with (mirroring how the real Stagehand `Page.evaluate` would
+ * it was built with (matching how the real Stagehand `Page.evaluate` would
  * execute that same string against a live DOM), and `url`/`title`/`locator`
  * prove main-frame delegation.
  */

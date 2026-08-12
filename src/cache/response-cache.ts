@@ -19,7 +19,7 @@ const cache = new LRUCache<string, object>({
 });
 
 /**
- * Tracks upstream calls that are currently resolving for a given key so
+ * Tracks origin calls that are currently resolving for a given key so
  * concurrent cache misses don't all fan out to the scraper. First miss
  * kicks off the work; subsequent misses await the same promise. Each
  * entry is removed after the promise settles (resolve or reject).
@@ -90,7 +90,7 @@ export function cacheStats(): { size: number; max: number; inFlight: number } {
 
 /**
  * Runs `producer` once per key even when multiple callers race on a
- * cache miss. The first caller kicks off the upstream call and all
+ * cache miss. The first caller kicks off the origin call and all
  * concurrent callers await the same promise. On resolve, the value is
  * written to the LRU cache so subsequent (non-racing) reads hit
  * normally.

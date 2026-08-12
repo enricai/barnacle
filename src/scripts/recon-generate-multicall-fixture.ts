@@ -1,6 +1,6 @@
 import type { Capture } from "@/scripts/recon-shared";
 
-/** Structural mirror of recon-generate.ts's internal (unexported) `ActionStep` —
+/** Structural match of recon-generate.ts's internal (unexported) `ActionStep` —
  * `capture`/`varName`/`produces`/`isMultipart`/`isCrossDomain`, per
  * recon-generate.ts:1384-1397. Kept local rather than imported since the
  * source type isn't exported and every consumer of `selectPayloadAction` only

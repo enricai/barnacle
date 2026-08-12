@@ -57,7 +57,7 @@ export async function withScraperRetry<T>(
           // Task 10: CAPTCHA hit — log it. p-retry skips onFailedAttempt
           // for AbortError, so the warn log below is the only signal a
           // captcha was encountered before it propagates to callers.
-          logger.error(`captcha encountered upstream — aborting retry: ${err.message}`);
+          logger.error(`captcha encountered on the target site — aborting retry: ${err.message}`);
           throw new AbortError(err.message);
         }
         if (err instanceof EmptyResultsError) {

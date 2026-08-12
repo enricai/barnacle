@@ -19,7 +19,7 @@ import type { Logger } from "@/types/logging";
  * the embedded apply wizard-style "Manual Application" card uses. This suite drives the REAL
  * `runHealingFlow` / `resolveFrameTarget` / `guardedObserve` /
  * `resolveDeepLocatorCandidates` stack — only Stagehand and Playwright's
- * `Page`/`Frame` are faked — mirroring
+ * `Page`/`Frame` are faked — matching
  * `flow-runner.deep-locator-layout-skip.test.ts`'s harness, with a fake
  * child-frame `evaluate` that routes the batched-scan expression to whichever
  * hop its inner selector names, so the interactive-scoped hop and the widened
@@ -57,7 +57,7 @@ function allLoggedLines(): string {
 
 /**
  * Fake Stagehand whose `observe()` returns `[]` unconditionally — reproducing
- * the measured probe against a cross-origin OOPIF — and whose `act` mirrors
+ * the measured probe against a cross-origin OOPIF — and whose `act` matches
  * the measured unresolved-instruction-string failure so attempt 1 always
  * fails, forcing the cascade into attempt 2's observe-act branch (the one
  * that owns the deepLocator widening under test).

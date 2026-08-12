@@ -18,7 +18,7 @@ function makeFakeFrame(getUrl: () => string) {
 }
 
 /**
- * Mutable fake `Page`: mirrors `frame-target.test.ts`'s `makeMutableFakePage`
+ * Mutable fake `Page`: matches `frame-target.test.ts`'s `makeMutableFakePage`
  * shape (copied, not imported — those helpers are module-private) plus a
  * `removeFrame` counterpart so a test can simulate a resolved frame
  * detaching from `page.frames()` between resolution passes.

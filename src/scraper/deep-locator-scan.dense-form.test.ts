@@ -27,7 +27,7 @@ const EXPECTED_CONTROL_TEXTS = [
 /**
  * Executes a generated expression string against a fake `document` bound as
  * global `document`, plus a fake `getComputedStyle` reading each fake
- * element's own `computedStyle` bag — mirrors `deep-locator-scan.test.ts`'s
+ * element's own `computedStyle` bag — matches `deep-locator-scan.test.ts`'s
  * own harness so this file proves the fix against a bigger, attribute-aware
  * fixture rather than reimplementing the execution seam.
  */

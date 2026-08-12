@@ -231,7 +231,7 @@ export interface AppConfig {
      */
     maxRetentionMs: number;
     /**
-     * Opt-in buffered S3 sink that mirrors local NDJSON telemetry so it
+     * Opt-in buffered S3 sink that replicates local NDJSON telemetry so it
      * survives ECS container restarts. Entirely inert when `bucket` is
      * undefined — the sink checks this before buffering or flushing.
      */
@@ -296,7 +296,7 @@ export interface AppConfig {
   selfheal: {
     /**
      * Maximum patch→replay→score iterations before giving up with
-     * BUDGET_EXHAUSTED. Mirrors the recon-heal default of 5.
+     * BUDGET_EXHAUSTED. Matches the recon-heal default of 5.
      */
     maxIterations: number;
     /**
@@ -306,12 +306,12 @@ export interface AppConfig {
     nReplays: number;
     /**
      * Minimum pass rate (0..1) to declare SUCCESS and stop iterating.
-     * Mirrors the pila llm-self-heal SKILL default of 0.9.
+     * Matches the pila llm-self-heal SKILL default of 0.9.
      */
     successThreshold: number;
     /**
      * Consecutive iterations whose pass-rate improvement is below
-     * `plateauDelta` that triggers a PLATEAUED verdict. Mirrors recon-heal.
+     * `plateauDelta` that triggers a PLATEAUED verdict. Matches recon-heal.
      */
     plateauWindow: number;
     /**

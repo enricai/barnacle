@@ -13,7 +13,7 @@ import { afterEach, describe, expect, it } from "vitest";
  * when a claimed submission flow is entirely landing-phase (`phase="home"`) captures.
  * This asserts the WARN fires for that shape and stays silent for a real walked flow.
  *
- * Exercises the real CLI, mirroring recon-generate-run-input.test.ts, since the
+ * Exercises the real CLI, matching recon-generate-run-input.test.ts, since the
  * diagnostic lives inside the un-exported `main`.
  */
 

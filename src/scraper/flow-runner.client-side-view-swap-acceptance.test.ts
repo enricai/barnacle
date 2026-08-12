@@ -108,7 +108,7 @@ const DECOYS: FakeDeepLocatorElementSpec[] = [
 const FILLER_BLOCK_SIZES = [12, 12, 12, 10];
 
 /**
- * The First Name fill target, placed in the second filler block (mirroring
+ * The First Name fill target, placed in the second filler block (matching
  * the actual form layout) — it is genuinely part of the SAME hop the
  * "Manual Application" click resolves against, not a distinct form the
  * fixture models separately. `undefined` entries keep the total element
@@ -166,7 +166,7 @@ interface ViewSwapSequenceState {
 
 /**
  * Child `Frame` fake: `location.href`/`document.readyState`/fill-readback
- * mirror `flow-runner.iframe-e2e.test.ts`'s `makeAcceptanceChildFrame`.
+ * match `flow-runner.iframe-e2e.test.ts`'s `makeAcceptanceChildFrame`.
  * `outerHTML.length` returns `state.initialBodyHtmlSize` before the click and
  * `state.postClickBodyHtmlSize` after — modeling the +48KB DOM growth the
  * click-view-swap gate exists to credit. The `<body>` probe is the exact

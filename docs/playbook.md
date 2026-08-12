@@ -731,7 +731,7 @@ from submit success: a submission can succeed while the beacon never fires
 (see §6B for how that shows up in metrics, and drain behavior on shutdown).
 
 **Cache deduplication:** `getOrCreateInFlight` coalesces concurrent misses on
-the same cache key into a single upstream call. If 10 identical requests arrive
+the same cache key into a single origin call. If 10 identical requests arrive
 while the first is in-flight, all 10 await the same promise. This prevents
 thundering-herd fan-out to the target site on cold-start.
 
@@ -1031,7 +1031,7 @@ pnpm run smoke -- --site <id> --payload '{"query":"test"}' --host "$SMOKE_HOST"
 
 **The manual-apply discipline** — prompts and flow instructions stay under human
 control; the loop proposes patches backed by measured evidence (replay pass rates)
-rather than modifying the source directly. This mirrors the pila self-healing
+rather than modifying the source directly. This parallels the pila self-healing
 principle: the tool produces evidence, the human applies judgment. A patch that
 improved the pass rate in the heal environment still needs human review before it
 ships to `main` — the operator is the last verifier, not the loop.

@@ -53,7 +53,7 @@ async function errorHandlerPlugin(app: FastifyInstance): Promise<void> {
     // exhausted selector retries, session timeouts) surface to clients as
     // the dedicated codes 2004 / 2003 rather than a generic 1008 — the
     // whole reason those codes exist is for clients to distinguish scrape
-    // failures from upstream target-site failures.
+    // failures from target-site failures.
     if (isScraperError(error)) {
       const code = isCaptchaError(error)
         ? ERROR_CODES.CAPTCHA_ENCOUNTERED

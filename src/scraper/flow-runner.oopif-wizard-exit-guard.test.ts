@@ -123,7 +123,7 @@ describe("flow-runner/executeStepWithHealing — deepLocator branch honors the w
       selector: `deeplocator=iframe#apply_frame >> ${INTERACTIVE_CANDIDATE_SELECTOR} >> nth=0`,
       accessibleText: "Save & Exit",
     };
-    // Ranked first, mirroring the bug report's scenario where relevance
+    // Ranked first, matching the bug report's scenario where relevance
     // ranking (not DOM order) puts the destructive control on top.
     resolveDeepLocatorCandidates.mockResolvedValue([wizardExitCandidate]);
 

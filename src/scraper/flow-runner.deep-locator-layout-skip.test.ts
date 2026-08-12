@@ -18,7 +18,7 @@ import type { Logger } from "@/types/logging";
  * `deepLocatorCandidates[0]`. This suite drives the REAL `runHealingFlow` /
  * `resolveFrameTarget` / `guardedObserve` / `resolveDeepLocatorCandidates`
  * stack — only Stagehand and Playwright's `Page`/`Frame` are faked —
- * mirroring `flow-runner.oopif-candidate-ranking.test.ts`'s harness, with a
+ * matching `flow-runner.oopif-candidate-ranking.test.ts`'s harness, with a
  * fake child-frame `evaluate` that doesn't answer the batched-scan
  * expression so `resolveDeepLocatorCandidates` degrades to its legacy
  * per-candidate loop, which (unlike the batched scan) does not pre-filter
@@ -56,7 +56,7 @@ function allLoggedLines(): string {
 
 /**
  * Fake Stagehand whose `observe()` returns `[]` unconditionally — reproducing
- * the measured probe against a cross-origin OOPIF — and whose `act` mirrors
+ * the measured probe against a cross-origin OOPIF — and whose `act` matches
  * the measured unresolved-instruction-string failure so attempt 1 always
  * fails, forcing the cascade into attempt 2's observe-act branch (the one
  * that owns the deepLocator click cascade under test).

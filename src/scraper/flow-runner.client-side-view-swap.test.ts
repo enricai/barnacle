@@ -5,7 +5,7 @@ import { isClickViewSwapVerified } from "@/scraper/flow-runner";
 describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", () => {
   /**
    * Case 1: A non-advance, non-final click step with large DOM growth
-   * (+~49KB, mirroring the top-window site Manual Application measurement) and
+   * (+~49KB, matching the top-window site Manual Application measurement) and
    * zero network is credited as verified=true.
    */
   it("credits a plain click with large DOM growth (≥5KB) and zero network as verified", () => {
@@ -175,7 +175,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
    * (the top-window site's Work-History gate message, measured +789B with visible text
    * change and zero network) is credited even though it never clears the
    * 5000B full-swap threshold — the exact signal shape logged at
-   * oopif-recon-20.log:341. Mirrors the DESCRIBE_ATTEMPT_EFFECT_SIGNALS
+   * oopif-recon-20.log:341. Matches the DESCRIBE_ATTEMPT_EFFECT_SIGNALS
    * dom-grew-without-network diagnostic that used to be this step's only
    * output before it cascaded to a 5-attempt failure and global replan.
    */

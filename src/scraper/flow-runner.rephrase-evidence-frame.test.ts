@@ -354,7 +354,7 @@ describe("flow-runner/executeStepWithHealing — form-value-diff signal (bugfix-
 
   /**
    * `formValues` starts as "" and flips to `FILL_VALUE` once `stagehand.act`
-   * resolves — mirroring how the write genuinely lands on the page even
+   * resolves — matching how the write genuinely lands on the page even
    * though `locator().inputValue()` (the pre-existing `domVerified` read)
    * stays blind to it here, same as `verifyDomEffect`'s own bug-report
    * false-negative. `evaluate`'s DOM_SNAPSHOT_EXPR reply is the ONLY

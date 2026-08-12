@@ -125,7 +125,7 @@ normalizes incoming header keys.
 The LRU cache prevents repeated identical requests from hitting the target
 API at all. The in-flight coalescing layer (`getOrCreateInFlight`) prevents
 a thundering-herd fan-out: if 10 identical requests arrive while the first
-is still in-flight, all 10 await the same upstream promise. Only one request
+is still in-flight, all 10 await the same origin promise. Only one request
 ever leaves the process per unique (endpoint, payload) pair per TTL window.
 
 Cache key = `<endpoint>:<sha256(canonical payload)[:32]>`. Object key order
@@ -133,7 +133,7 @@ and primitive array order are normalized before hashing, so `{a:1,b:2}` and
 `{b:2,a:1}` hit the same entry.
 
 Cache hits are excluded from `p95LatencyMs` metrics — they're memory reads
-and must not bias the upstream latency signal.
+and must not bias the origin latency signal.
 
 ### Why `p-queue` with bounded concurrency
 
@@ -239,7 +239,7 @@ Client-facing error codes:
 
 | Code | Name | HTTP | Meaning |
 |------|------|------|---------|
-| 1010 | `THROTTLED_REQUEST` | 429 | Upstream rate-limited; do not retry the hot path immediately. |
+| 1010 | `THROTTLED_REQUEST` | 429 | Target site rate-limited; do not retry the hot path immediately. |
 | 1011 | `TIME_OUT` | 504 | Task exceeded `TASK_TIMEOUT_MS`. |
 | 2003 | `SCRAPE_FAILURE` | 500 | Scraper failure after retries exhausted. |
 | 2004 | `CAPTCHA_ENCOUNTERED` | 500 | Anti-bot challenge the session could not solve. |
@@ -654,7 +654,7 @@ call templates. When the loop converges, it writes a `healing-<callType>.md`
 report containing the best patch and the pass-rate trajectory. It **never**
 modifies any source file in `src/`.
 
-This mirrors the same invariant already established for the recon-flow
+This parallels the same invariant already established for the recon-flow
 self-healing cascade (see `docs/playbook.md` §Phase 1e and §Recon recovery model
 above): *the tool produces evidence; the human applies judgment.* There are two
 concrete reasons this invariant matters for LLM prompt templates specifically.

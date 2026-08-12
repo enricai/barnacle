@@ -1,6 +1,6 @@
 /**
  * Durable read path for reconciliation rows: unions the container-local
- * submissions sink with the S3-mirrored objects (feat-003's
+ * submissions sink with the S3-replicated objects (feat-003's
  * `listSubmissionsS3Objects` + `fetchSubmissionsS3Records`) before folding,
  * so a submit line written by one ECS task and its beacon line written by
  * another both land in the same row instead of two ephemeral, incomplete
@@ -9,11 +9,11 @@
  * beacon detail a cross-store fold still needs (see
  * `submission-reader.ts`'s `foldReconciliationRecords`).
  *
- * The local sink and its S3 mirror both receive the exact same line for
+ * The local sink and its S3 replica both receive the exact same line for
  * every event (`appendSubmissionSinkLine` writes to disk and buffers to S3
  * in the same call), so an overlap between the two stores is an exact JSON
  * duplicate, never a conflicting value — deduping on `kind:requestId:ts` is
- * lossless for that mirror case. But `ts` is formatISO second-precision, so
+ * lossless for that replica case. But `ts` is formatISO second-precision, so
  * two *distinct* beacon lines for the same `requestId` (e.g. dispatch's
  * automatic `skipped` line and a plugin's later self-recorded `fired` line)
  * can land in the same wall-clock second — the dedupe key for beacon
@@ -61,7 +61,7 @@ async function readLocalRecords(sinkPath: string): Promise<ReconciliationRecord[
 }
 
 /**
- * Lists and fetches the S3-mirrored records for the window. A rejection
+ * Lists and fetches the S3-replicated records for the window. A rejection
  * anywhere in the S3 path (listing or fetch) is logged and swallowed rather
  * than propagated, so an S3 outage degrades the answer to local-only instead
  * of failing the whole read.
@@ -114,7 +114,7 @@ function mergeRecords(
 
 /**
  * Reads and folds the complete cross-container reconciliation history: the
- * local sink plus its S3 mirror, unioned and deduped before folding, so
+ * local sink plus its S3 replica, unioned and deduped before folding, so
  * `GET /v1/submissions` answers from durable storage instead of one ECS
  * task's ephemeral file. Falls back to local-only rows when no bucket is
  * configured or the S3 read fails.

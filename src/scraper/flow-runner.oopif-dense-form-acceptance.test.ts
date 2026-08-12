@@ -200,7 +200,7 @@ const FILLER_BLOCK_SIZES = [99, 99, 99, 66];
 
 /**
  * The First/Last Name fill targets and the Submit control, interspersed one
- * per filler block (mirroring `DECOYS`' placement) rather than appended
+ * per filler block (matching `DECOYS`' placement) rather than appended
  * separately — they are genuinely part of the SAME 371-node hop the
  * "Manual Application" click resolves against, not a distinct form the
  * fixture models on its own. `undefined` for the last block keeps the total
@@ -254,7 +254,7 @@ function findElementIndex(
   return order.findIndex((entry) => typeof entry !== "string" && entry.text === text);
 }
 
-/** In-memory model of the fields the acceptance sequence fills/uploads/submits inside the OOPIF, mirroring `flow-runner.iframe-e2e.test.ts`'s `AcceptanceSequenceState`. */
+/** In-memory model of the fields the acceptance sequence fills/uploads/submits inside the OOPIF, matching `flow-runner.iframe-e2e.test.ts`'s `AcceptanceSequenceState`. */
 interface AcceptanceSequenceState {
   filledWith: Map<string, string>;
   fileInputCount: number;
@@ -292,7 +292,7 @@ interface ScreeningSelectWiring {
 
 /**
  * Child `Frame` fake: `location.href`/`document.readyState`/fill-readback/
- * upload/submitted-state probes mirror `flow-runner.iframe-e2e.test.ts`'s
+ * upload/submitted-state probes match `flow-runner.iframe-e2e.test.ts`'s
  * `makeAcceptanceChildFrame` exactly, plus one addition — an `evaluate` call
  * whose expression contains `isVisible` (the batched
  * `buildScanFrameCandidatesExpr` marker, `deep-locator-scan.ts`) resolves

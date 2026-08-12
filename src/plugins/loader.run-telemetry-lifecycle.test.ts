@@ -20,7 +20,7 @@ const mockRunWithSession = vi.hoisted(() =>
 );
 
 // Stub runWithSession so tests can script exactly how many times the pool
-// invokes the task — the default single-call behavior mirrors loader.test.ts;
+// invokes the task — the default single-call behavior parallels loader.test.ts;
 // individual tests below override it to model a retry (two invocations).
 vi.mock("@/scraper/pool", () => ({
   runWithSession: mockRunWithSession,
@@ -66,7 +66,7 @@ vi.mock("@/lib/dd-metrics", () => ({
  * Local double for the mid-run join-keys accumulator `SitePluginContext`
  * exposes to plugins (Gap 1 in the run-telemetry plan: plugins need a way
  * to attach fields discovered during execute()/executeHttp(), not just fields
- * derivable up front from the inbound payload via `extractJoinKeys`). Mirrors
+ * derivable up front from the inbound payload via `extractJoinKeys`). Parallels
  * the documented contract — successive `addJoinKeys()` calls merge with later
  * keys winning, and an untouched collector snapshots to `null` rather than
  * `{}` so it composes cleanly with the existing `joinKeys: null` precedent in
@@ -82,7 +82,7 @@ interface RunTelemetryDouble {
 }
 
 // recordSession() stores a defensive copy, whole-object last-write-wins —
-// mirroring the real `RunTelemetry.recordSession` (src/lib/telemetry/run-telemetry.ts:66)
+// matching the real `RunTelemetry.recordSession` (src/lib/telemetry/run-telemetry.ts:66)
 // so this file's session-lifecycle cases (ordering, retry, per-request
 // isolation) exercise the documented contract, not a stub that discards the
 // session. The real `withSessionTelemetry` wrapper in loader.ts calls

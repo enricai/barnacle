@@ -141,7 +141,7 @@ function makeFakeChildFrame(
 }
 
 /**
- * Fake two-frame `Page` mirroring `flow-runner.oopif-candidate-ranking.test.
+ * Fake two-frame `Page` matching `flow-runner.oopif-candidate-ranking.test.
  * ts`'s fixture, extended with: (a) a child frame whose `evaluate` actually
  * answers the batched-scan expression (via {@link makeFakeChildFrame}) so
  * `resolveDeepLocatorCandidates`'s internal (no-pre-resolved-`FrameTarget`)

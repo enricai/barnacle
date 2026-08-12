@@ -267,7 +267,7 @@ describe("extractActionSequence — submit patterns isolate the submission from 
   });
 
   const BASE = "https://www.example-ats.org";
-  // Mirrors a real ATS endpoint overload: /applySubmit is hit by the real
+  // Matches a real ATS endpoint overload: /applySubmit is hit by the real
   // submission (ddoKey applySubmit) AND page-chrome reference-lookups (ddoKey
   // applyGetReferences), plus unrelated /widgets bootstrap chrome.
   const realSubmit = capture(`${BASE}/applySubmit`, '{"ddoKey":"applySubmit","formData":{}}');
@@ -879,7 +879,7 @@ describe("compileActionSteps — a response value genuinely re-sent as a JSON va
   });
 
   it("still produces a value reused only as a substring inside a longer composite value", () => {
-    // Mirrors a real capture where a jobId (26158515) is reused downstream only
+    // Matches a real capture where a jobId (26158515) is reused downstream only
     // inside a longer jobSeqNo (HHKHHEUS26158515EXTERNALENUS) — never as its own
     // JSON leaf and not in the URL. Value-substring matching must keep binding
     // it (exact-equality matching would have dropped it).

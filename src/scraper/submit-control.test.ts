@@ -12,7 +12,7 @@ import {
  * expressions touch (`tagName`, `getAttribute`, `textContent`,
  * `querySelectorAll`, `shadowRoot`, `focus`, `dispatchEvent`,
  * `getBoundingClientRect`) plus a `computedStyle` bag the fake global
- * `getComputedStyle` reads from. Mirrors the fixture in `deep-query.test.ts`
+ * `getComputedStyle` reads from. Matches the fixture in `deep-query.test.ts`
  * and `deep-locator-scan.test.ts`'s visibility shape so all three modules
  * exercise the real generated expression strings against a hand-built tree
  * rather than a re-implementation of the traversal.
@@ -536,7 +536,7 @@ describe("submit-control/buildClickByDeepIndexExpr", () => {
 });
 
 // Regression coverage: append-order sanity so `appendChild` stays exercised
-// (mirrors deep-query.test.ts's fixture shape) even though most cases above
+// (matches deep-query.test.ts's fixture shape) even though most cases above
 // build flat trees directly via makeRoot.
 describe("submit-control fixture sanity", () => {
   it("flattens nested children via appendChild in document order", () => {

@@ -26,7 +26,7 @@ before and after any prompt-template change.
 
 Local NDJSON survives process restarts but not container replacement — an ECS
 task swap discards the disk. The optional buffered S3 sink
-(`src/lib/telemetry/s3-sink.ts`) mirrors both the calls and submissions NDJSON
+(`src/lib/telemetry/s3-sink.ts`) replicates both the calls and submissions NDJSON
 streams to object storage so captures survive that case too; it is entirely
 inert until `TELEMETRY_S3_BUCKET` is set (see the Telemetry env var table in
 [README.md](../README.md#telemetry)).
@@ -365,7 +365,7 @@ regardless of write order; among equal-rank lines the later one wins. `GET
 /v1/submissions` instead
 composes `readDurableReconciliationRows`
 (`src/lib/telemetry/reconciliation-source.ts`), which unions the local
-sink's raw records with its S3-mirrored records (the buffered S3 sink
+sink's raw records with its S3-replicated records (the buffered S3 sink
 described above), dedupes exact duplicates, and folds the result the same
 way `readReconciliationRows` does — so a submit line written by one ECS
 task and its beacon line written by another still land in one row.

@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  * `@/scraper/stagehand-guard` and `@/scraper/frame-target`), this file
  * drives the REAL `runHealingFlow` / `resolveFrameTarget` /
  * `guardedObserve` / `guardedAct` stack end to end — only Stagehand and
- * Playwright's `Page`/`Frame` are faked — mirroring
+ * Playwright's `Page`/`Frame` are faked — matching
  * `flow-runner.oopif-candidate-ranking.test.ts`'s harness, so the guards
  * under test (deepLocator's per-call watchdog from bugfix-002,
  * frame-target's evaluate deadline from bugfix-003/005/006) are exercised

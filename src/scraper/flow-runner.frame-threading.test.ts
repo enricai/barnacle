@@ -58,7 +58,7 @@ const testLogger = {
 
 /**
  * Builds a main-frame `FrameTarget` that delegates straight to `page` —
- * mirroring the real `mainFrameTarget`'s contract — so `page.url()` flips
+ * matching the real `mainFrameTarget`'s contract — so `page.url()` flips
  * (the `urlChanged` verification signal) are visible through it exactly
  * like they would be through the unmocked implementation.
  */

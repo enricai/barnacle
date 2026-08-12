@@ -231,7 +231,7 @@ describe("scraper/retry", () => {
   });
 
   describe("classifyScraperError real-world error messages", () => {
-    // Table-driven pin of what real upstream failure shapes map to. Each
+    // Table-driven pin of what real target-site failure shapes map to. Each
     // row is a failure we've either seen or expect to see in prod, so a
     // future edit to classifyScraperError can't silently reclassify
     // something retriable as an abort (or vice versa).
@@ -246,8 +246,8 @@ describe("scraper/retry", () => {
         | typeof UnknownScraperError;
     }> = [
       {
-        name: "Steel 503 upstream (retriable as unknown)",
-        raw: new Error("upstream responded 503 Service Unavailable"),
+        name: "Steel 503 from the target site (retriable as unknown)",
+        raw: new Error("target site responded 503 Service Unavailable"),
         expected: UnknownScraperError,
       },
       {
@@ -257,7 +257,7 @@ describe("scraper/retry", () => {
         expected: UnknownScraperError,
       },
       {
-        name: "upstream 200 body with errors[] (propagated as JSON string)",
+        name: "target site 200 body with errors[] (propagated as JSON string)",
         raw: 'graphql response contained errors: [{"message":"internal"}]',
         expected: UnknownScraperError,
       },

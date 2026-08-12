@@ -23,7 +23,7 @@ const NEGATIVE_TEXT_EXPR = `((text) => {
 
 /**
  * Normalizes an element's accessible name to lowercase, whitespace-collapsed
- * text, preferring `aria-label` over visible `textContent` (mirrors
+ * text, preferring `aria-label` over visible `textContent` (parallels
  * `SUBMIT_SHAPED_EL_EXPR`'s own normalization in deep-query.ts so both
  * modules treat the same DOM the same way).
  */

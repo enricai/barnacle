@@ -248,7 +248,7 @@ describe("config/loadConfig", () => {
     const cfg = loadConfig();
     expect(cfg.selfheal.maxIterations).toBe(5);
     expect(cfg.selfheal.nReplays).toBe(5);
-    // 0.9 success threshold mirrors pila llm-self-heal SKILL default
+    // 0.9 success threshold matches pila llm-self-heal SKILL default
     expect(cfg.selfheal.successThreshold).toBe(0.9);
     expect(cfg.selfheal.plateauWindow).toBe(3);
     expect(cfg.selfheal.plateauDelta).toBe(0.03);

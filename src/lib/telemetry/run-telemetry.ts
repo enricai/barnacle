@@ -1,7 +1,7 @@
 /**
  * Run-scoped, mutable telemetry accumulator that a plugin can write
  * discovered fields into at any point during execute()/executeHttp() —
- * mirrors `MetricsCollector` (src/lib/dispatch-metrics.ts) as a per-request
+ * parallels `MetricsCollector` (src/lib/dispatch-metrics.ts) as a per-request
  * instance meant to be threaded through the plugin context, but for
  * run-discovered data (join keys, session info) rather than step timings.
  * Funnels everything a plugin discovers mid-run into the same opaque

@@ -98,7 +98,7 @@ const testLogger = {
 
 /**
  * Builds a main-frame `FrameTarget` that delegates straight to `page` —
- * mirroring the real `mainFrameTarget`'s contract — so this remains a
+ * matching the real `mainFrameTarget`'s contract — so this remains a
  * distinct, identifiable object from any resolved child `FrameTarget`. Used
  * as the `mainFrameTarget(page)` mock return value: the fallback half of
  * every `frameTarget ?? mainFrameTarget(page)` shim these sites use, which

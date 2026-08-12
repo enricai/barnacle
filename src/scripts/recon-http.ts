@@ -380,7 +380,7 @@ async function probeRateLimit(
 /**
  * Builds the rate-limit probe's target set from replay results. Applies
  * `isNoiseUrl` directly rather than trusting that `replays` was pre-filtered
- * upstream — the probe fires 60 requests per target, so a noise host reaching
+ * earlier in the pipeline — the probe fires 60 requests per target, so a noise host reaching
  * this function must never silently slip through on a caller's say-so.
  */
 export function selectRateLimitTargets(replays: ReplayResult[]): {

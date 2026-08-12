@@ -578,7 +578,7 @@ describe("recon-browser/denormalizeStep + normalizeFlow — targetId/origin roun
       origin: "replan" as const,
       targetId: "applyNeedSponsorship",
     };
-    // Mirror the real cycle: denormalize -> write JSON -> Zod-parse on read
+    // Match the real cycle: denormalize -> write JSON -> Zod-parse on read
     // (applies flag defaults) -> normalizeFlow.
     const onDisk = RECON_FLOW_STEP_SCHEMA.parse(denormalizeStep(step));
     const [roundTripped] = normalizeFlow([onDisk]);
@@ -1160,7 +1160,7 @@ describe("recon-browser/readFailureDumpEvidence", () => {
 
     const page = makeIframePageStub(iframeSelector, [leafField]);
     // No frameSelector passed — resolveFrameTarget(page) falls back to the
-    // main-frame target, whose evaluate() returns [] in this stub, mirroring
+    // main-frame target, whose evaluate() returns [] in this stub, matching
     // the pre-fix call site that always queried the top document.
     const result = await readFailureDumpEvidence(dumpPath, { page });
 
@@ -1471,7 +1471,7 @@ describe("recon-browser/isReplanReproposingFailedStep", () => {
     ).toBe(false);
   });
 
-  it("does not fire on an empty bridge (handled separately upstream)", () => {
+  it("does not fire on an empty bridge (handled separately earlier)", () => {
     expect(isReplanReproposingFailedStep([], "Click Next")).toBe(false);
   });
 });
@@ -1914,7 +1914,7 @@ describe("recon-browser/renderLeafInvalidFields", () => {
     expect(out).not.toContain("error:");
   });
 
-  it("numbers fields in order without elision (cap is upstream in probe)", () => {
+  it("numbers fields in order without elision (cap is earlier in probe)", () => {
     const fields: LeafInvalidField[] = Array.from({ length: 5 }, (_, i) => ({
       xpath: `/x[${i}]`,
       label: `field${i}`,
@@ -3297,7 +3297,7 @@ describe("recon-browser/selectBodyExcerpt", () => {
   });
 
   it("returns a window centered on the form marker when it lives beyond the default cap", () => {
-    // Body where ng-invalid is past 8KB — mimics the upstream ATS apply-portal
+    // Body where ng-invalid is past 8KB — mimics the target ATS apply-portal
     // SPA, whose form starts ~15KB after a header of Angular hydration JS.
     const chrome = "x".repeat(15_000);
     const formRegion = `class="ng-invalid"${"y".repeat(1000)}First Name required${"z".repeat(1000)}`;
@@ -3442,7 +3442,7 @@ describe("recon-browser/verifyFillReadback (shape contract)", () => {
 });
 
 describe("recon-browser/extractSubmitFailureEvidence — J' singular-error key", () => {
-  // Behavioral test of the J' parser fix: the upstream ATS returns
+  // Behavioral test of the J' parser fix: the target ATS returns
   // {"error": "Resume is blank"} in /integrated_apply 422 responses.
   // Before J', the parser only handled {errors: [...]} (plural) and
   // {message: "..."}, leaving the singular `error` string unsurfaced
@@ -3469,7 +3469,7 @@ describe("recon-browser/detectRejectionInResponseBody (Q1)", () => {
     expect(detectRejectionInResponseBody(42)).toEqual({ rejected: false, reason: null });
   });
 
-  it("detects the upstream ATS `not_qualified: true` with error reason", () => {
+  it("detects the target ATS `not_qualified: true` with error reason", () => {
     expect(
       detectRejectionInResponseBody({
         not_qualified: true,
@@ -3478,14 +3478,14 @@ describe("recon-browser/detectRejectionInResponseBody (Q1)", () => {
     ).toEqual({ rejected: true, reason: "Not qualified reason: email" });
   });
 
-  it("detects the upstream ATS `not_qualified: true` without error field (falls back to default reason)", () => {
+  it("detects the target ATS `not_qualified: true` without error field (falls back to default reason)", () => {
     expect(detectRejectionInResponseBody({ not_qualified: true })).toEqual({
       rejected: true,
       reason: "not_qualified",
     });
   });
 
-  it("does NOT flag the upstream ATS `not_qualified: false` as rejection (real success)", () => {
+  it("does NOT flag the target ATS `not_qualified: false` as rejection (real success)", () => {
     expect(
       detectRejectionInResponseBody({
         not_qualified: false,
@@ -3545,7 +3545,7 @@ describe("recon-browser/Q1B — capture-shape integration (responseBody can be o
     rejected: boolean;
     reason: string | null;
   } {
-    // Mirror the call-site pattern that handles all three shapes the
+    // Match the call-site pattern that handles all three shapes the
     // capture writer can produce: object, string-of-JSON, null.
     let body: unknown = capture.responseBody;
     if (typeof body === "string") {
@@ -3558,7 +3558,7 @@ describe("recon-browser/Q1B — capture-shape integration (responseBody can be o
     return detectRejectionInResponseBody(body);
   }
 
-  it("detects rejection when capture.responseBody is an OBJECT (the upstream ATS real-world case)", () => {
+  it("detects rejection when capture.responseBody is an OBJECT (the target ATS real-world case)", () => {
     const capture = {
       url: "https://apply.acme.example/api/jobs/53722549083/integrated_apply",
       status: 200,
@@ -4847,7 +4847,7 @@ describe("recon-browser/runHealingFlow — phantom-submit escalation, end-to-end
     } as unknown as Page;
   }
 
-  /** Two fill steps ahead of the submit step, mirroring the bug report's form-then-submit shape. */
+  /** Two fill steps ahead of the submit step, matching the bug report's form-then-submit shape. */
   function stepsWithSubmit(): HealingFlowStep[] {
     return [
       {
@@ -5065,7 +5065,7 @@ describe("recon-browser/runHealingFlow — phantom-submit escalation, end-to-end
     expect(stagehandAct).toHaveBeenCalledTimes(1);
   });
 
-  it("surfaces submit-skipped instead of phantom success when the submit step's probe finds zero candidates, mirroring a bot-walled/dead page", async () => {
+  it("surfaces submit-skipped instead of phantom success when the submit step's probe finds zero candidates, matching a bot-walled/dead page", async () => {
     // Both fill steps proceed normally (URL advances on each act), but the
     // submit step's probe (guardedObserve, focused AND unfocused) resolves
     // zero candidates — the exact "page is dead/bot-walled" shape from the

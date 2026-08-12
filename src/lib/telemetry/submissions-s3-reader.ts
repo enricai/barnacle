@@ -7,7 +7,7 @@
  * containers are ephemeral and per-task) becomes readable. Folding beacon
  * lines onto submit records and merging with the local sink live elsewhere.
  *
- * Mirrors `s3-sink.ts`'s inertness contract: no `S3Client` construction, no
+ * Parallels `s3-sink.ts`'s inertness contract: no `S3Client` construction, no
  * network calls, when `config.telemetry.s3.bucket` is unset.
  */
 

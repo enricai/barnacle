@@ -29,7 +29,7 @@ const HOP_SELECTOR = "#apply_frame >> *";
  * Hand-built `FrameTarget` whose `evaluate` is a bare stub rather than one
  * bound to a fixture registry — the empty-scan case needs `evaluate` to
  * resolve `[]` independent of whatever the delegate's hop is registered
- * with, which `makeFakeFrameScan` (always mirrors the registry) can't model.
+ * with, which `makeFakeFrameScan` (always matches the registry) can't model.
  */
 function makeStubFrameTarget(evaluate: (...args: never[]) => Promise<unknown>): FrameTarget {
   return {

@@ -29,7 +29,7 @@ export abstract class ScraperError extends Error {
 
 /**
  * The scraper encountered a CAPTCHA challenge Steel couldn't solve on our
- * behalf. Propagate upstream as error code 2004.
+ * behalf. Propagate to the caller as error code 2004.
  */
 export class CaptchaError extends ScraperError {
   constructor(message = "captcha challenge encountered") {
@@ -81,7 +81,7 @@ export class SelectorFailureError extends ScraperError {
 }
 
 /**
- * The upstream Steel browser session timed out or closed unexpectedly.
+ * The Steel browser session timed out or closed unexpectedly.
  * Needs a fresh session to retry — the session pool wrapper in retry.ts
  * honors this by invoking its `onRestart` hook before re-running.
  */

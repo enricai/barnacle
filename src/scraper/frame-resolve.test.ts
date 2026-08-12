@@ -36,7 +36,7 @@ function makeFakeFrame(url: string | { rejects: true }) {
 
 /**
  * Fake `Page`: `elements` maps a CSS selector to a DOM element description
- * (`tag` + optional `src`), mirroring what `resolveFrameTarget`'s generated
+ * (`tag` + optional `src`), matching what `resolveFrameTarget`'s generated
  * `document.querySelector` expression would read from a live page; `frames`
  * wires up `page.frames()` candidates.
  */
@@ -238,7 +238,7 @@ describe("resolveFrameTarget (id-only and multi-candidate selectors)", () => {
   it("rejects rather than silently falling back when a full '>> ' hop selector is passed through unsplit", async () => {
     // `document.querySelector` throws a SyntaxError on the combinator-bearing
     // selector `"iframe#x >> inner"` (it isn't valid CSS) — the fake models
-    // that by rejecting, mirroring what a live `page.evaluate` would surface.
+    // that by rejecting, matching what a live `page.evaluate` would surface.
     // `resolveFrameTarget`'s top-level `page.evaluate(iframeSrcExpr)` call has
     // no `.catch`, so this documents that callers must split the hop selector
     // themselves (pass only the iframe-id hop) rather than the raw hop string.

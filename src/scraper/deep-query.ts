@@ -18,7 +18,7 @@
  * `<form>` (the HTML default is submit), or a button-role element whose
  * visible text/aria-label contains "submit". Kept as a standalone
  * expression (not a RegExp) so it can be interpolated into a browser-
- * context `page.evaluate` string, mirroring `INVALID_MARKER_EL_EXPR`.
+ * context `page.evaluate` string, paralleling `INVALID_MARKER_EL_EXPR`.
  */
 const SUBMIT_SHAPED_EL_EXPR = `((el) => {
   const tag = (el.tagName || "").toLowerCase();

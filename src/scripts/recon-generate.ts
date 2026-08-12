@@ -1839,10 +1839,10 @@ function locateFormEnvelopePath(parsedBody: unknown): string[] {
   visit(parsedBody, []);
   if (candidates.length === 0) return [];
   const maxP = Math.max(...candidates.map((c) => c.primitives));
-  // The analytics blob (`eventData`) mirrors the form, so the object with the
+  // The analytics blob (`eventData`) parallels the form, so the object with the
   // MOST primitives can be a deep descendant of the true envelope. Pick the
   // SHALLOWEST primitive-rich object (≥ half the max) instead — that is the
-  // form envelope itself, whose analytics mirror sits below it. Tie-break on a
+  // form envelope itself, whose analytics copy sits below it. Tie-break on a
   // higher primitive count. Threshold is relative, not a magic key name.
   const rich = candidates.filter((c) => c.primitives >= Math.max(1, maxP / 2));
   // No object carries a scalar field (maxP === 0): the body root is the only
@@ -2787,7 +2787,7 @@ function applyPayloadKeyValueSubstitutions(
  * Documented closed set of JSON-key-name fragments (matched case-insensitively)
  * that mark a value as a per-request TIMESTAMP the plugin must generate fresh at
  * call time, not replay from the capture. Closed set per the no-regex-on-open-
- * sets feedback, mirroring {@link CACHE_BUSTER_QUERY_KEYS}'s posture. A frozen
+ * sets feedback, matching {@link CACHE_BUSTER_QUERY_KEYS}'s posture. A frozen
  * capture timestamp would make every submission claim the recon instant.
  */
 const VOLATILE_TIMESTAMP_KEY_FRAGMENTS = ["timestamp", "esign", "signeddate", "signedat"];
@@ -3784,7 +3784,7 @@ export function emitContractTs(opts: {
 
   // optionSchemaExtension is appended LAST so option enums show up at the
   // end of the payload type — the section ordering (base, multipart fields,
-  // form-schema fields, option enums, raw-option fields) mirrors the body
+  // form-schema fields, option enums, raw-option fields) matches the body
   // emit order and keeps the generated payload type readable.
   const payloadSchemaExpr = hasMultipartStep
     ? `${basePayloadSchemaExpr}.extend({\n  Resume: z.instanceof(Buffer),\n  ResumeContentType: z.string(),\n  ResumeFilename: z.string(),\n})${formFieldsExtension}${splicedFieldsExtension}${optionSchemaExtension}${rawOptionSchemaExtension}${additionalBodyKeysExtension}${structuredKeysExtension}`
@@ -4181,7 +4181,7 @@ export function emitBrowserFlowTs(opts: {
   hasMultipartStep?: boolean;
   vocabulary?: ReconVocabulary;
   /** CSS selector of a cross-origin `<iframe>` the flow's target elements live
-   * inside, from the recon flow file's object-form `frameSelector`. Mirrors
+   * inside, from the recon flow file's object-form `frameSelector`. Matches
    * `spec.flow.frameSelector` in `src/plugins/config-plugin.ts` so a generated
    * plugin keeps the same cross-origin iframe capability the recon flow used.
    * Omitted (undefined) preserves today's main-frame-only generation. */

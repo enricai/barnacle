@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it } from "vitest";
  * fails fast on `captures.length === 0` unless `--allow-empty-capture` is passed.
  *
  * Exercises the real CLI (`tsx recon-generate.ts`) rather than importing `main`,
- * which is not exported — mirroring recon-generate-run-input.test.ts.
+ * which is not exported — matching recon-generate-run-input.test.ts.
  */
 
 const REPO_ROOT = join(__dirname, "..", "..");

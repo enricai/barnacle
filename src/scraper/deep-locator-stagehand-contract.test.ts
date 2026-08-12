@@ -32,7 +32,7 @@ const VERIFIED_STAGEHAND_VERSION = "3.7.0";
 
 /**
  * Executes a generated expression string against a fake `document` bound as
- * global `document` — mirrors `deep-locator-scan.dense-form.test.ts`'s own
+ * global `document` — matches `deep-locator-scan.dense-form.test.ts`'s own
  * harness so this file proves the Stagehand-side half of the contract
  * against the IDENTICAL fixture, not a reimplementation of it.
  */

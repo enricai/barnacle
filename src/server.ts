@@ -38,7 +38,7 @@ configureHttpDispatcher();
 
 /**
  * Awaits a single plugin's onShutdown, bounded so a hanging plugin cannot
- * stall the rest of the shutdown sequence — mirrors drainTrackingClicks's
+ * stall the rest of the shutdown sequence — parallels drainTrackingClicks's
  * own Promise.race guard.
  */
 async function drainPlugin(plugin: SitePlugin<unknown, unknown>, timeoutMs: number): Promise<void> {

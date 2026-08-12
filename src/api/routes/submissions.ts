@@ -12,7 +12,7 @@ import type { ReconciliationRow } from "@/lib/telemetry/submission-reader";
 
 /**
  * Injectable options for `submissionsRoutes`. The sink path is passed in at
- * registration time (mirrors `pluginsIntrospectionRoutes`'s `report`
+ * registration time (parallels `pluginsIntrospectionRoutes`'s `report`
  * injection) so the route can be tested against a temp NDJSON file instead
  * of the real `.barnacle/submissions.ndjson`.
  */

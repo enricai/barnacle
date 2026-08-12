@@ -15,7 +15,7 @@ import {
  * the return-value target (`selectReturnAction`, recon-generate.ts:2255).
  * A fix applied only at the return site would leave the emitted schema/type
  * describing a different call than the one `executeHttp` actually returns.
- * `selectEffectiveResponseBody` is the extracted call-site helper (mirroring
+ * `selectEffectiveResponseBody` is the extracted call-site helper (matching
  * `selectReturnAction`'s own extraction) that delegates to
  * `selectReturnAction`, guaranteeing the two selections structurally cannot
  * drift apart.

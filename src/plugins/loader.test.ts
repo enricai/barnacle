@@ -389,7 +389,7 @@ describe("dispatch — executeHttp hot-path branches", () => {
   });
 
   it("falls back to execute() and records fallback on a cross-realm HttpSchemaError (out-of-tree plugin scenario)", async () => {
-    // Mirrors an out-of-tree plugin's own independently-resolved copy of
+    // Parallels an out-of-tree plugin's own independently-resolved copy of
     // HttpSchemaError: a nominally distinct class from this module's, so
     // `instanceof HttpSchemaError` fails even though `name` matches — the
     // exact cross-module-identity bug this guard exists to survive.
@@ -848,7 +848,7 @@ describe("registerRoutes — multipart flag", () => {
     vi.clearAllMocks();
   });
 
-  // Return type mirrors registerRoutes' app parameter so the FastifyInstance
+  // Return type matches registerRoutes' app parameter so the FastifyInstance
   // generic (custom Logger, etc.) lines up — `FastifyInstance` without
   // generics defaults to FastifyBaseLogger, which doesn't have errorWithStack.
   async function buildAppWithPlugin(

@@ -124,7 +124,7 @@ function makeMutableFakePage(
  * the step isn't declared "absent" before `act` ever runs; step 1's
  * `act(APPLY_NOW_STEP)` then succeeds on the first attempt and, as a side
  * effect, attaches the iframe. Step 2's `act` never itself resolves a
- * candidate (mirrors real Stagehand act-string phantom-failing on content it
+ * candidate (matches real Stagehand act-string phantom-failing on content it
  * can't yet see pre-resolution), forcing the cascade into attempt 2's
  * `observe` — the call under test. `observe` records every
  * `options.selector` it was called with (skipping step 1's own pre-cascade
@@ -187,7 +187,7 @@ function makeFakeStagehand(
       // `guardedObserve` calls `stagehand.observe(scopedOptions)` (ONE arg)
       // for its unfocused/no-instruction probe, and
       // `stagehand.observe(instruction, scopedOptions)` (TWO args) otherwise
-      // — mirror both Stagehand overloads so `options.selector` is read from
+      // — match both Stagehand overloads so `options.selector` is read from
       // whichever position actually carries it.
       const options =
         typeof instructionOrOptions === "string" || instructionOrOptions === undefined

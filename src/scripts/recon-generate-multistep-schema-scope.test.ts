@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { emitContractTs, emitMultiStepExecuteHttp } from "@/scripts/recon-generate";
 import { buildMulticallHeterogeneousActionSteps } from "@/scripts/recon-generate-multicall-fixture";
 
-/** Minimal opts that satisfy the emitter for a non-multipart plugin — mirrors
+/** Minimal opts that satisfy the emitter for a non-multipart plugin — matches
  * BASE_OPTS in recon-generate.test.ts:31-43. */
 const BASE_OPTS = {
   siteId: "test-site",

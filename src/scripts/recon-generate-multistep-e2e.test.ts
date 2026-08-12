@@ -115,7 +115,7 @@ describe("recon-generate multi-call executeHttp — generated-and-run integratio
       new Map()
     );
 
-    // Mirrors what emitContractTs wires at module scope: one client-wide
+    // Matches what emitContractTs wires at module scope: one client-wide
     // schema (z.unknown() for multi-step flows) plus the per-call `schema:`
     // override G2 threads onto every httpClient(...) call in `body`.
     const limiter = new Bottleneck({ maxConcurrent: 1, minTime: 0 });

@@ -317,7 +317,7 @@ against the external report.
 When you can't reach a running Barnacle instance, or you need
 `inboundPayload`/`auditPayload` that `GET /v1/submissions` deliberately omits,
 or you need to filter on a `joinKeys` field the route can't filter on, read
-`.barnacle/submissions.ndjson` directly. Every line carries `kind`. Mirrors
+`.barnacle/submissions.ndjson` directly. Every line carries `kind`. Parallels
 the jq-recipe style already used for `calls.ndjson` in
 [README.md](../README.md#tailing-call-samples-with-jq).
 

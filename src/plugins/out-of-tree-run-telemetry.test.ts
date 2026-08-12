@@ -53,7 +53,7 @@ const TSC_DIAGNOSTIC_LINE = /^.+\(\d+,\d+\): error (TS\d+): (.+)$/;
 /**
  * Compiles a single source file as if it were sitting in a consumer's own
  * package, with `@enricai/barnacle/site-plugin` resolved to this repo's real
- * `src/site-plugin.ts` (mirroring the `./site-plugin` `exports` subpath) and
+ * `src/site-plugin.ts` (matching the `./site-plugin` `exports` subpath) and
  * nothing else of `src/` reachable — an unexported type or member would
  * genuinely fail to resolve for a real out-of-tree consumer the same way it
  * fails here. Trimmed from `out-of-tree-e2e.test.ts`'s `typecheckGeneratedFiles`
@@ -117,7 +117,7 @@ describe("out-of-tree plugin — SitePluginContext.telemetry.addJoinKeys is reac
    * source would fail with TS2339 ("Property 'telemetry' does not exist")
    * under the exports-gated harness above — the failure signal this suite
    * exists to guard, distinct from an unresolved import (TS2307), and
-   * mirroring out-of-tree-e2e.test.ts's identical guard for
+   * matching out-of-tree-e2e.test.ts's identical guard for
    * `recordBeaconOutcome`.
    */
   const addJoinKeysSource = `
