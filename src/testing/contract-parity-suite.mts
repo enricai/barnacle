@@ -2,7 +2,7 @@
  * Eliminates the duplicated offline schema-parity scaffold that every contract
  * parity test repeats: build canonical payload → assert safeParse succeeds →
  * assert each rejection case (omission, enum violation, etc.) fails with an
- * issue on the expected path. Mirrors the shape of defineReplayIntegrationSuite
+ * issue on the expected path. Matches the shape of defineReplayIntegrationSuite
  * so adding a parity guard for a new site is a one-call drop-in.
  */
 

@@ -7,7 +7,7 @@
  * Two concerns are covered together: the live `getSuppressedCount`
  * accessor the cascade reads mid-step, and the strictness of the
  * suppression predicate itself — the filter must stay scoped to the
- * upstream "N-N" regex bug and never swallow unrelated AISDK failures.
+ * Stagehand-library "N-N" regex bug and never swallow unrelated AISDK failures.
  */
 
 import { describe, expect, it, vi } from "vitest";
@@ -94,7 +94,7 @@ describe("makeFilteredStagehandLogger", () => {
     expect(getSuppressedCount()).toBe(2);
   });
 
-  it("suppresses the upstream N-N regex schema error instead of logging it", () => {
+  it("suppresses the Stagehand-library N-N regex schema error instead of logging it", () => {
     const pinoLogger = makeLoggerStub();
     const { callback, reportSuppressed } = makeFilteredStagehandLogger(pinoLogger);
 
@@ -107,7 +107,7 @@ describe("makeFilteredStagehandLogger", () => {
     reportSuppressed();
     expect(pinoLogger.info).toHaveBeenCalledOnce();
     expect(pinoLogger.info).toHaveBeenCalledWith(
-      "stagehand-logger: suppressed 1 AISDK elementId-regex errors (upstream Stagehand bug; cascade Fix 1B handles consequence)"
+      "stagehand-logger: suppressed 1 AISDK elementId-regex errors (Stagehand bug; cascade Fix 1B handles consequence)"
     );
   });
 
@@ -180,7 +180,7 @@ describe("makeFilteredStagehandLogger", () => {
     reportSuppressed();
 
     expect(pinoLogger.info).toHaveBeenCalledWith(
-      "stagehand-logger: suppressed 2 AISDK elementId-regex errors (upstream Stagehand bug; cascade Fix 1B handles consequence)"
+      "stagehand-logger: suppressed 2 AISDK elementId-regex errors (Stagehand bug; cascade Fix 1B handles consequence)"
     );
   });
 
@@ -194,7 +194,7 @@ describe("makeFilteredStagehandLogger", () => {
 
     reportSuppressed();
     expect(pinoLogger.info).toHaveBeenCalledWith(
-      "stagehand-logger: suppressed 3 AISDK elementId-regex errors (upstream Stagehand bug; cascade Fix 1B handles consequence)"
+      "stagehand-logger: suppressed 3 AISDK elementId-regex errors (Stagehand bug; cascade Fix 1B handles consequence)"
     );
   });
 

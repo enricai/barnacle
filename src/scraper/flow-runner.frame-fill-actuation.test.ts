@@ -83,7 +83,7 @@ function makeFakeTopPage(
   const session = { on: () => {}, off: () => {} };
   const childFrame = makeFakeChildFrame(childUrls);
   const fakeDeepLocator = makeFakeDeepLocator(deepLocatorFrame);
-  // A click on ANY candidate navigates the child frame, mirroring
+  // A click on ANY candidate navigates the child frame, matching
   // `flow-runner.oopif-candidate-ranking.test.ts`'s wrappedDeepLocator — the
   // click-intent regression test needs a verification signal, and this
   // fixture only ever names one clickable target per test, so "any click

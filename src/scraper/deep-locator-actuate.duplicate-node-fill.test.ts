@@ -83,7 +83,7 @@ describe("duplicate accessible-name candidates: write-verify distinguishes the c
       frame: {} as unknown as import("@/scraper/frame-target").FrameTarget["frame"],
       frameSelector: FRAME_SELECTOR,
       declaredFrameSelector: FRAME_SELECTOR,
-      // Mirrors the real batched-write expression's own inline read-back —
+      // Matches the real batched-write expression's own inline read-back —
       // it reports the write "committed" locally, the same non-committing
       // state the legacy delegate's separate inputValue() call would see.
       evaluate: async () => ({ written: true, readBack: "" }),

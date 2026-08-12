@@ -27,7 +27,7 @@ interface FakeOption {
  * Minimal fake DOM element supporting exactly the surface the generated
  * expression touches (`textContent`, `getBoundingClientRect`, `getAttribute`,
  * `closest`, `value`, `options`) plus a `computedStyle` bag the fake global
- * `getComputedStyle` reads from — mirrors `submit-control.test.ts`'s fixture
+ * `getComputedStyle` reads from — matches `submit-control.test.ts`'s fixture
  * shape (real generated expression string against a hand-built tree, not a
  * re-implementation of the traversal).
  */
@@ -113,7 +113,7 @@ function makeEl(
  * any other elements (a `<label>`, an `aria-labelledby` target) the
  * accessible-name precedence chain looks up but the outer scan doesn't
  * itself match. Both `querySelectorAll` and `getElementById` filter/search
- * this same registry, mirroring how a real DOM has one tree underneath every
+ * this same registry, matching how a real DOM has one tree underneath every
  * lookup method.
  */
 function makeRoot(elements: FakeEl[]): FakeRoot {

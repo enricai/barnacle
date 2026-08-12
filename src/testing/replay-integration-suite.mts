@@ -35,7 +35,7 @@ export interface ReplayIntegrationSuiteOptions<TJob> {
   plugin: SitePlugin<unknown, unknown>;
   /**
    * Override `pollTestmailInbox` so unit tests avoid real network calls.
-   * Mirrors the same escape-hatch on `IntegrationJobOptions`.
+   * Matches the same escape-hatch on `IntegrationJobOptions`.
    */
   pollFn?: (opts: PollTestmailInboxOptions) => Promise<TestmailMessage>;
   /**

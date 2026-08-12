@@ -141,7 +141,7 @@ export function wireSignalCapture(
   // See mergeResponseHeaders.
   const extraResponseHeaders = new Map<string, Record<string, string>>();
   // Cookie (and other extra-info-only request headers) keyed by requestId.
-  // Mirrors extraResponseHeaders: Network.requestWillBeSent omits the outgoing
+  // Parallels extraResponseHeaders: Network.requestWillBeSent omits the outgoing
   // Cookie header by design, and requestWillBeSentExtraInfo — which carries it —
   // can race requestWillBeSent in either order. Buffered here and folded into
   // the capture once, in `onFinished`. See mergeResponseHeaders.
@@ -849,7 +849,7 @@ const ADVANCE_STEP_PHRASES: readonly string[] = [
  * advance step must be verified by a real transition (network/URL), not a DOM
  * state change. Keyed on the ORIGINAL step instruction so a rephrase that
  * resolves "Next" to a radio click can't launder a field toggle into a passed
- * advance. Pure; unit-testable seam mirroring `isWizardExitAction`.
+ * advance. Pure; unit-testable seam paralleling `isWizardExitAction`.
  */
 export function isAdvanceStep(instruction: string | null | undefined): boolean {
   if (!instruction) return false;
@@ -2122,7 +2122,7 @@ export interface LeafInvalidField {
  * signals" — DOM tree walking is the latter.
  *
  * Returns up to 12 leaf records. Empty array on evaluate failure (safe
- * fallback to the existing Haiku judge upstream). The `inputTag` and
+ * fallback to the existing Haiku judge earlier in the pipeline). The `inputTag` and
  * `visibleErrorText` fields let the prompt distinguish a smart-address
  * autocomplete (where typing-only fails and the cascade needs dropdown
  * selection) from a plain text input.
@@ -2713,7 +2713,7 @@ function isCommittedDateReadback(
  * The committed value is confirmed via {@link verifyFillReadback}; a datepicker
  * reformats what it accepts, so a non-empty date-shaped readback is success.
  *
- * Return contract mirrors {@link fillHtml5DateTimeInput}: `null` means "not a
+ * Return contract parallels {@link fillHtml5DateTimeInput}: `null` means "not a
  * datepicker — caller falls through to the generic readback verifier"; a
  * non-null object means "this WAS a datepicker, here's the outcome". A non-null
  * `filled:false` therefore deliberately TERMINATES the cascade (the caller
@@ -2757,7 +2757,7 @@ export async function fillTextDatepickerInput(
     return null;
   }
 
-  // Strategy 1 — keyboard entry (typeable datepickers). Mirrors the Angular
+  // Strategy 1 — keyboard entry (typeable datepickers). Parallels the Angular
   // reactive-form re-type at verifyDomEffect: real CDP keystrokes flow through
   // the widget's own onChange, unlike a programmatic value write.
   const typed = format(new Date(parts.year, parts.monthIndex, parts.day), "MM/dd/yyyy");
@@ -3350,8 +3350,8 @@ export async function surfaceAndUpload(params: {
   // mount. Wait (bounded, same window as the raw-input probe) for ANY upload
   // target to appear — a dropzone, an upload-affordance button, or an
   // <input type=file> — so every downstream strategy runs against a rendered
-  // widget. Static evaluate literal (no interpolation); dropzone list mirrors
-  // simulateDragDropUpload and the button matcher mirrors clickUploadAffordance.
+  // widget. Static evaluate literal (no interpolation); dropzone list parallels
+  // simulateDragDropUpload and the button matcher parallels clickUploadAffordance.
   const targetExpr = `(() => {
     const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
     const isUpload = (raw) => {
@@ -3486,7 +3486,7 @@ async function clickUploadAffordance(
   target: FrameTarget,
   logger: Logger
 ): Promise<boolean> {
-  // The browser-side matcher mirrors isUploadAffordanceLabel; kept as a literal
+  // The browser-side matcher parallels isUploadAffordanceLabel; kept as a literal
   // so the enumerate is a static string (same trust posture as the other
   // primitives). No external interpolation.
   const expr = `(() => {
@@ -3677,7 +3677,7 @@ export function parseFillStep(instruction: string): { fieldLabel: string; value:
  * "Type '01/2020' into the Start Date input", which carries no `fill` verb, so
  * without the `type` shape the guard could never fire on any replanned step.
  *
- * Deliberately excludes select steps (checked first, mirroring
+ * Deliberately excludes select steps (checked first, paralleling
  * `resolveDeepLocatorActuation`'s precedence) so a `select '…'` step whose
  * prose happens to trail a quoted value is never mistaken for a fill. Returns
  * `null` for clicks, selects, and any step without a quoted value.
@@ -4191,7 +4191,7 @@ const DECLINE_OPTION_MARKERS = [
 
 /**
  * Pick an option to satisfy a REQUIRED select on a catch-all step, from the
- * select's option TEXTS (placeholder already excluded upstream). Policy: take
+ * select's option TEXTS (placeholder already excluded earlier). Policy: take
  * the first non-decline option (a plausible substantive answer — the operator
  * accepts LLM-plausible answers reaching ATS prod); fall back to the first
  * option only if every option is a decline/placeholder. Returns null when there
@@ -5280,7 +5280,7 @@ export async function verifyDomEffect(target: FrameTarget, action: Action): Prom
       case "selectOptionFromDropdown": {
         // Stagehand dispatches both names to Playwright's `locator.selectOption(text)`,
         // which only succeeds on native <select> and matches the input against any of
-        // the option's value/label/textContent. Mirror that resolution at verify time
+        // the option's value/label/textContent. Match that resolution at verify time
         // so we get a real equality signal — Playwright's "selection happened" succeeds
         // iff one of those three fields matches.
         const expected = action.arguments?.[0]?.toString().trim() ?? "";
@@ -5297,7 +5297,7 @@ export async function verifyDomEffect(target: FrameTarget, action: Action): Prom
         // UI-style widgets — always fail the native-<select>-only check below,
         // misreporting genuinely-successful selections as unverified. Fall back to
         // reading the combobox's own displayed/aria value when the resolved element
-        // isn't a real <select>, mirroring what a real ARIA combobox exposes.
+        // isn't a real <select>, paralleling what a real ARIA combobox exposes.
         const exprNative = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); const el = r.singleNodeValue; if (!el || el.tagName !== "SELECT") return null; const opt = el.options[el.selectedIndex]; if (!opt) return { value: "", label: "", text: "" }; return { value: (opt.value || "").trim(), label: (opt.label || "").trim(), text: (opt.textContent || "").trim() }; })()`;
         let selected: { value: string; label: string; text: string } | null = null;
         try {
@@ -5359,7 +5359,7 @@ export async function verifyDomEffect(target: FrameTarget, action: Action): Prom
       }
       case "setInputFiles":
         // No cheap DOM equivalent without re-resolving the file. Trust Stagehand's
-        // actResultSuccess upstream — caller composes signals.
+        // actResultSuccess from the caller — caller composes signals.
         return true;
       case "click": {
         // Clicks on radios and checkboxes toggle `:checked` without firing a
@@ -7036,7 +7036,7 @@ export async function executeStepWithHealing(params: {
           // `-32000 Node does not have a layout object` error (an unrendered
           // node) or is refused by the wizard-exit deny-list costs only that
           // one candidate, not the whole attempt — the next ranked candidate
-          // is tried instead. `attemptTriedSelectors` mirrors the walk's own
+          // is tried instead. `attemptTriedSelectors` parallels the walk's own
           // click attempts as they happen (not just on a successful return)
           // so a click that throws a REAL error (e.g. a wedged
           // `WatchdogTimeoutError`) still feeds attempt 4's exclusion filter.
@@ -7503,7 +7503,7 @@ export async function executeStepWithHealing(params: {
               ? await deepLocatorCandidatesAsActions(page, frameTarget, step)
               : observedCandidates;
           // Fetch live-page evidence so the rephrase prompt can reason about
-          // form state, not just observe candidates. Mirrors the same
+          // form state, not just observe candidates. Parallels the same
           // extraction the cascade-exhaust dump path already does.
           const livePageEvidence = await extractLivePageFormEvidence(
             page,
@@ -8033,7 +8033,7 @@ export async function executeStepWithHealing(params: {
           // (validation errors rendered) with NO network/URL change is a
           // validation-blocked no-op, not a real transition — but the
           // dom-delta/text-change signals below would score it verified and
-          // advance the wizard past an unfilled required page. Mirror the
+          // advance the wizard past an unfilled required page. Match the
           // checkbox vacuous-click guard: when a click produced no network/URL
           // change AND the page still has required-invalid controls (MUI-aware
           // via countNgInvalidContainers), treat the DOM-only signal as NOT
@@ -8424,7 +8424,7 @@ export async function executeStepWithHealing(params: {
 
 /**
  * One flow step in the shape a generated plugin hands to {@link runHealingFlow}.
- * Mirrors the recon CLI's `NormalizedStep` minus its replan-origin bookkeeping:
+ * Parallels the recon CLI's `NormalizedStep` minus its replan-origin bookkeeping:
  * a plugin only needs the four fields the self-heal cascade reads per step.
  */
 export interface HealingFlowStep {
@@ -8483,7 +8483,7 @@ export interface RunHealingFlowDeps {
   maxFlowMs?: number;
 }
 
-/** SPA-readiness gate defaults — mirror the recon CLI's post-navigation wait. */
+/** SPA-readiness gate defaults — match the recon CLI's post-navigation wait. */
 const SPA_READINESS_TIMEOUT_MS = 15_000;
 const SPA_READINESS_POLL_MS = 500;
 const SPA_MIN_BODY_LENGTH = 5_000;
@@ -8613,7 +8613,7 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
       // Resolved fresh per step (not cached across the run) so a cross-origin
       // iframe that attaches mid-flow (e.g. after an "Apply" click reveals a
       // wizard embedded later in the DOM) is picked up as soon as it's
-      // reachable, mirroring the recon CLI's per-step resolution. `resolveFrameTarget`
+      // reachable, paralleling the recon CLI's per-step resolution. `resolveFrameTarget`
       // falls back to the main-frame target when `frameSelector` is null/unresolvable,
       // so this is a no-op for every flow that doesn't declare one.
       const frameTarget = await resolveFrameTarget(page, deps.frameSelector);

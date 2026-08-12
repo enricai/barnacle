@@ -70,7 +70,7 @@ const DEFAULT_OUT_DIR = "llm-heal-out";
 
 /**
  * Persistent state written after each iteration so the operator can inspect
- * progress. Mirrors recon-heal's HealState but scoped to prompt-template arms.
+ * progress. Matches recon-heal's HealState but scoped to prompt-template arms.
  */
 export interface LlmHealState {
   callType: string;

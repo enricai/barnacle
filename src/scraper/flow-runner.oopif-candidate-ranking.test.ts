@@ -18,7 +18,7 @@ import type { Logger } from "@/types/logging";
  * `flow-runner.deep-locator-frame.test.ts` (which `vi.mock` `@/scraper/frame-target`
  * and/or `@/scraper/stagehand-guard`), this file drives the REAL
  * `runHealingFlow` / `resolveFrameTarget` / `guardedObserve` stack — only
- * Stagehand and Playwright's `Page`/`Frame` are faked — mirroring
+ * Stagehand and Playwright's `Page`/`Frame` are faked — matching
  * `flow-runner.iframe-e2e.test.ts`'s "observe blind to the OOPIF" describe
  * block. "Manual Application" is placed LAST in DOM order deliberately: that
  * is exactly the ordering under which `deepLocatorCandidates[0]` (the
@@ -69,7 +69,7 @@ const testLogger = {
  * hop-scoped selector, an unscoped call, and a top-frame-only call alike —
  * reproducing the measured probe against the live OOPIF (see
  * `flow-runner.iframe-e2e.test.ts`'s `makeFakeStagehandObserveBlind`). `act`
- * mirrors the measured unresolved-instruction-string failure so attempt 1
+ * matches the measured unresolved-instruction-string failure so attempt 1
  * always fails, forcing the cascade into attempt 2's observe-act branch —
  * the one that owns the `resolveDeepLocatorCandidates` ranking under test.
  */

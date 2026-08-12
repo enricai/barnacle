@@ -96,7 +96,7 @@ const availableProductsCapture = {
   decodedParams: null,
 };
 
-/** Mirrors http-client.test.ts's helper of the same name — the established
+/** Matches http-client.test.ts's helper of the same name — the established
  * idiom for stubbing a response carrying multiple Set-Cookie entries. */
 function headersWithSetCookies(...cookiePairs: string[]): Headers {
   const headers = new Headers();
@@ -104,7 +104,7 @@ function headersWithSetCookies(...cookiePairs: string[]): Headers {
   return headers;
 }
 
-/** Mirrors http-client.test.ts's helper of the same name — reads the
+/** Matches http-client.test.ts's helper of the same name — reads the
  * outbound Cookie header fetch() was actually called with. */
 function cookieHeaderFromCall(callIndex: number): string | undefined {
   const call = vi.mocked(fetch).mock.calls[callIndex];

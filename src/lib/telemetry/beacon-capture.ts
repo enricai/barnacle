@@ -9,7 +9,7 @@
  * `requestId` (see `reconciliation-record.ts`, `submission-reader.ts`).
  *
  * Writes to the SAME sink as submit lines (`appendSubmissionSinkLine`,
- * feat-003), which is what lets the S3 mirror carry beacon lines for free
+ * feat-003), which is what lets the S3 replica carry beacon lines for free
  * with zero `s3-sink.ts` changes.
  *
  * `createBeaconOutcomeRecorder` builds on top of `captureBeaconEvent` to

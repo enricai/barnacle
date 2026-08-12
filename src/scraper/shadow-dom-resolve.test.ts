@@ -11,7 +11,7 @@ import {
  * Pins the submit-control resolver's contract against the bug report's
  * anchor scenario: a light DOM with no `type="submit"` and no literal
  * "Submit" text, because the actual control is rendered inside a web
- * component's shadow root (Angular Elements / Stencil). Mirrors the fake-DOM
+ * component's shadow root (Angular Elements / Stencil). Matches the fake-DOM
  * fixture shape from `submit-control.test.ts` and `deep-query.test.ts`
  * (including the `getBoundingClientRect`/`getComputedStyle` surface the
  * visibility check reads) so these tests execute the real generated
@@ -117,7 +117,7 @@ describe("shadow-dom-resolve/submit-control resolver contract", () => {
     host.shadowRoot = shadowRoot;
 
     // Light DOM contains no type="submit" and no literal "Submit" text —
-    // mirrors the bug report's captured bodyOuterHtml evidence.
+    // matches the bug report's captured bodyOuterHtml evidence.
     const nav = makeEl("nav", {}, "Back");
     const document = makeRoot([nav, host]);
 

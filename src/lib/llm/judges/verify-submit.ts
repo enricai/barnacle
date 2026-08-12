@@ -63,7 +63,7 @@ export interface VerifySubmitInput {
 }
 
 /**
- * Render the evidence into a user prompt for Haiku. The structure mirrors
+ * Render the evidence into a user prompt for Haiku. The structure parallels
  * the empirical-replay prototype that proved this works on production cases.
  */
 function buildVerifySubmitPrompt(input: VerifySubmitInput): string {

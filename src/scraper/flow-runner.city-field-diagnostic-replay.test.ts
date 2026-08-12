@@ -58,7 +58,7 @@ const HEADER_SEARCH_BOX_TEXT =
 /** Accessible name the wizard's real City `<label for=...>` (diagnostic `bodyOuterHtml`) resolves to. */
 const CITY_LABEL_TEXT = "City";
 
-/** DOM order matching the diagnostic's own layout: the header search box (outside the wizard, earlier in document order) precedes the wizard's fields; a non-committing duplicate copy of City sits adjacent to the genuine one, mirroring the report's flagged (unconfirmed) duplicate-node lead. */
+/** DOM order matching the diagnostic's own layout: the header search box (outside the wizard, earlier in document order) precedes the wizard's fields; a non-committing duplicate copy of City sits adjacent to the genuine one, matching the report's flagged (unconfirmed) duplicate-node lead. */
 const CANDIDATE_SET = [
   HEADER_SEARCH_BOX_TEXT,
   "First Name",

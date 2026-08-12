@@ -72,7 +72,7 @@ function fakeStagehandExtractHung(): Stagehand {
 
 /**
  * Fake Stagehand whose `observe` returns `frameResult` when called with a
- * `selector` option and `topResult` otherwise — mirrors how the real SDK's
+ * `selector` option and `topResult` otherwise — matches how the real SDK's
  * candidate search narrows to the scoped frame's DOM, so tests can assert
  * the frame-scoped RETURN VALUE, not just the forwarded call args.
  */
@@ -89,7 +89,7 @@ function fakeStagehandObserveByScope(topResult: unknown, frameResult: unknown): 
 
 /**
  * Fake Stagehand whose `extract` returns `frameResult` when called with a
- * `selector` option and `topResult` otherwise, mirroring
+ * `selector` option and `topResult` otherwise, matching
  * `fakeStagehandObserveByScope` for the extract overload's 3rd-arg options.
  */
 function fakeStagehandExtractByScope(topResult: unknown, frameResult: unknown): Stagehand {
@@ -365,7 +365,7 @@ describe("guardedObserve", () => {
   });
 
   // Proves the frame scope changes what's RETURNED, not just what's
-  // forwarded: mirrors the real 69-top-frame-candidate bug, where observe()
+  // forwarded: matches the real 69-top-frame-candidate bug, where observe()
   // must come back with the frame's own candidates instead of the page's.
   it("returns only the scoped frame's candidates when a frame scope is supplied", async () => {
     const topCandidates = [VALID_ACTION];
@@ -488,7 +488,7 @@ describe("guardedExtract", () => {
   });
 
   // Proves the frame scope changes what's RETURNED, not just what's
-  // forwarded: mirrors the observe contract above for the extract overload.
+  // forwarded: matches the observe contract above for the extract overload.
   it("returns only the scoped frame's payload when a frame scope is supplied", async () => {
     const topPayload = { name: "Alice", age: 30 };
     const framePayload = { name: "Bob", age: 45 };

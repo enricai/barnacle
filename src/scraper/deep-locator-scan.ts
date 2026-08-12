@@ -96,7 +96,7 @@ const IS_VISIBLE_EXPR = `((el) => {
  * visible text — an `input`/`select`/`textarea`, which the DOM spec defines
  * as always having empty `textContent` — still yields something
  * `scoreCandidate` (`deep-locator-candidates.ts`) and the rephrase LLM can
- * tell apart from every other candidate. Precedence mirrors the a11y-name
+ * tell apart from every other candidate. Precedence parallels the a11y-name
  * convention `buildRankSubmitCandidatesExpr` (`submit-control.ts`) applies at
  * its `aria-label`-over-`textContent` tier, extended with the sources a form
  * control actually carries: `aria-label` → `aria-labelledby` (ids resolved
@@ -188,7 +188,7 @@ function buildAccessibleNameExpr(root: string): string {
  * `root` overrides the traversal root expression (default `"document"`),
  * interpolated verbatim into the generated code so a caller evaluating this
  * expression via `Frame.evaluate` still resolves that frame's own document —
- * the expression never captures an outer `document` reference (mirrors
+ * the expression never captures an outer `document` reference (parallels
  * `buildRankSubmitCandidatesExpr`'s contract in `submit-control.ts`).
  */
 export function buildScanFrameCandidatesExpr(innerSelector: string, root = "document"): string {
@@ -227,7 +227,7 @@ export interface FrameCandidateScanResult {
  * the same frame document in the same match order.
  *
  * Reports out-of-range / not-actionable outcomes as data rather than by
- * throwing, mirroring {@link isNodeNotActionableError}'s CDP-error-side
+ * throwing, paralleling {@link isNodeNotActionableError}'s CDP-error-side
  * contract from the DOM-observable side:
  * - `index` no longer matches (e.g. the DOM changed between scan and click)
  *   returns `{ clicked: false, reason: "out-of-range" }`.
@@ -297,7 +297,7 @@ export interface FrameCandidateWriteResult {
  * shadows the setter at the instance level, so a bare assignment can be
  * silently absorbed by the framework's own value tracking while the DOM
  * read-back still looks correct (a silent false positive); calling the
- * descriptor's setter explicitly restores native behavior, mirroring
+ * descriptor's setter explicitly restores native behavior, paralleling
  * `fillHtml5DateTimeInput`'s and `applySelectValue`'s identical workaround in
  * `flow-runner.ts`. Falls back to a bare assignment when no such descriptor
  * exists (a plain, unmanaged form control). Dispatches bubbling `input` then
@@ -350,7 +350,7 @@ function buildWriteFrameCandidateExpr(
  *
  * `root` overrides the traversal root expression (default `"document"`) and
  * must match the `root` a prior {@link buildScanFrameCandidatesExpr} call
- * used to derive `index`, mirroring
+ * used to derive `index`, paralleling
  * {@link buildClickFrameCandidateExpr}'s `root` contract.
  */
 export function buildFillFrameCandidateExpr(
@@ -369,7 +369,7 @@ export function buildFillFrameCandidateExpr(
  * `root.querySelectorAll(innerSelector)` resolution and selects, on the
  * `<select>`-shaped candidate at `index`, the option whose `value` — or,
  * failing that, whose trimmed visible label — matches `value`. Matching by
- * value first mirrors what a `<select>`'s own `value` property actually is
+ * value first matches what a `<select>`'s own `value` property actually is
  * (the matched option's `value` attribute); falling back to the trimmed
  * label covers a flow instruction that quotes the option's VISIBLE label
  * instead (`parseSelectStep`), which a `<select>`'s DOM `value` never is —
@@ -384,7 +384,7 @@ export function buildFillFrameCandidateExpr(
  *
  * `root` overrides the traversal root expression (default `"document"`) and
  * must match the `root` a prior {@link buildScanFrameCandidatesExpr} call
- * used to derive `index`, mirroring
+ * used to derive `index`, paralleling
  * {@link buildClickFrameCandidateExpr}'s `root` contract. A candidate with
  * no option matching `value` by either value or label reports
  * `{ written: false, reason: "not-actionable" }` — nothing on the page can

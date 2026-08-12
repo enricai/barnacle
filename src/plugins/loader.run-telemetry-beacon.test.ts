@@ -7,7 +7,7 @@ import type { SitePlugin, SitePluginContext } from "@/site-plugin";
  * Covers the beacon-side seam of run-attached telemetry fields: dispatch()
  * hands joinKeys to `fireTrackingClick` and to `captureBeaconEvent` on two
  * different branches (§ dispatch — tracking click), separate from the
- * submit-envelope seam covered by loader.run-telemetry.test.ts. Mirrors the
+ * submit-envelope seam covered by loader.run-telemetry.test.ts. Parallels the
  * hoisted-mock scaffolding and assertion shapes of loader.test.ts:34-101 and
  * loader.test.ts:592-630 so this file is a drop-in sibling of the existing
  * "dispatch — tracking click" suite rather than a diverging convention.

@@ -9,7 +9,7 @@
  *  - `act` and `observe`: Stagehand owns the underlying LLM call and does
  *    not expose a caller-provided schema field on `ActOptions` /
  *    `ObserveOptions`. The strictest enforcement Stagehand's API allows is
- *    caller-side `safeParse` of the RETURN ENVELOPE against Zod mirrors of
+ *    caller-side `safeParse` of the RETURN ENVELOPE against Zod parallels of
  *    Stagehand's public types (`ActResult`, `Action`). On envelope drift
  *    (a Stagehand SDK upgrade that widens the shape, or a Stagehand bug
  *    that emits malformed JSON), the wrapper throws
@@ -73,14 +73,14 @@ export type StagehandCaptureFn = (input: LlmCallInput) => Promise<void>;
 
 /**
  * Fallback watchdog bound for a guarded call whose caller passes no
- * `options.timeout`. Mirrors `STEP_WATCHDOG_MS` (`@/scraper/flow-runner`) by
+ * `options.timeout`. Parallels `STEP_WATCHDOG_MS` (`@/scraper/flow-runner`) by
  * convention rather than by import — `flow-runner.ts` imports `guardedAct`/
  * `guardedObserve` from this module, so importing back would cycle.
  */
 const DEFAULT_GUARD_TIMEOUT_MS = 120_000;
 
 /**
- * Zod mirror of Stagehand's public `Action` shape (from
+ * Zod parallel of Stagehand's public `Action` shape (from
  * `@browserbasehq/stagehand/.../public/methods.d.ts`):
  *
  *   interface Action {
@@ -102,7 +102,7 @@ export const ACTION_SCHEMA = z.object({
 });
 
 /**
- * Zod mirror of Stagehand's public `ActResult` shape. The `actions` array
+ * Zod parallel of Stagehand's public `ActResult` shape. The `actions` array
  * is sometimes empty when Stagehand acted via a path that doesn't echo the
  * action back; the cascade's resolvedAction fallback already handles that
  * case. We accept empty arrays here as valid per the SDK contract.
@@ -282,7 +282,7 @@ export async function guardedAct(
 }
 
 /**
- * Schema-guarded wrapper around Stagehand's `observe`. Mirrors the
+ * Schema-guarded wrapper around Stagehand's `observe`. Parallels the
  * Stagehand overloads: no args, options-only, instruction-only,
  * instruction + options. On envelope drift (the `Action[]` shape changes),
  * throws `StagehandSchemaError`.

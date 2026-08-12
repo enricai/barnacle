@@ -32,12 +32,12 @@ export interface FakeDeepLocatorElement {
    * (`fillDeepLocatorCandidate`/`selectDeepLocatorCandidateOption` in
    * `deep-locator-actuate.ts`) has a fixture to prove it returns `false`
    * rather than trusting the write blindly. Leave unset to have `inputValue()`
-   * mirror whatever was last written.
+   * match whatever was last written.
    */
   readBackValue?: string;
   /**
    * When set to anything other than `"select"`, `selectOption()` rejects with
-   * {@link NODE_NOT_ACTIONABLE_MESSAGE} — mirrors `buildSelectFrameCandidateExpr`
+   * {@link NODE_NOT_ACTIONABLE_MESSAGE} — parallels `buildSelectFrameCandidateExpr`
    * (`deep-locator-scan.ts`), whose real `el.options || []` lookup is always
    * empty for a non-`<select>` element, so a real select-write against a
    * decoy `input`/`button` candidate reports `not-actionable` rather than
@@ -66,7 +66,7 @@ export interface FakeDeepLocatorElementSpec {
  * downstream fixtures register one entry per hop selector they need
  * `count()`/`click()` to resolve, and read `clicks`/`filledWith` back to
  * assert the fix actually routed through `deepLocator` rather than
- * `observe`/`act`. `clicks`/`filledWith`/`text` mirror element 0 (getters
+ * `observe`/`act`. `clicks`/`filledWith`/`text` match element 0 (getters
  * delegating to `elements[0]`) so every existing single-element consumer —
  * which only ever registers and clicks index 0 — keeps reading/observing the
  * same fields it always has.
@@ -102,7 +102,7 @@ function buildHop(elements: FakeDeepLocatorElement[]): FakeDeepLocatorHop {
 /**
  * Registry the fake `deepLocator()` resolves against, keyed by the exact
  * hop selector string (`buildHopSelector`'s `"iframe#id >> inner"` shape) —
- * mirrors how the real `DeepLocatorDelegate` re-resolves the DOM node fresh
+ * parallels how the real `DeepLocatorDelegate` re-resolves the DOM node fresh
  * on every call rather than caching a handle.
  */
 export type FakeDeepLocatorFrame = Map<string, FakeDeepLocatorHop>;
@@ -382,7 +382,7 @@ const INDEXED_RESOLVE_METHODS: ReadonlySet<LatencyDeepLocatorMethod> = new Set([
  * (never caches), matching the real delegate's re-resolve-on-every-call
  * contract — a hop that attaches after construction (the mid-flow-iframe
  * scenario) still resolves once registered. `count()` reports the hop's full
- * `elements.length` regardless of `elementIndex`, mirroring the real
+ * `elements.length` regardless of `elementIndex`, paralleling the real
  * delegate: `nth(i).count()` still reports the total match count, not `1`.
  * `click()`/`fill()`/`selectOption()` each reject with
  * {@link NODE_NOT_ACTIONABLE_MESSAGE} when the targeted element's `visible`
@@ -625,7 +625,7 @@ export function makeSelectorAwareDomRoot(elements: readonly FakeDomElement[]): F
 /** Total node count {@link buildDenseFormFixture} produces — the live-measured `#apply_frame >> *` match count from the oopif-7 bug report. */
 export const DENSE_FORM_TOTAL_COUNT = 371;
 
-/** Accessible name {@link buildDenseFormFixture}'s icon-only target button resolves to — mirrors the live report's `button.c-SocialButton-button-25:has(svg[data-testid='EditIcon'])` control, modeled here as a plain icon-only `button` named via `aria-label` since `:has()` support is not what this fixture is for. */
+/** Accessible name {@link buildDenseFormFixture}'s icon-only target button resolves to — parallels the live report's `button.c-SocialButton-button-25:has(svg[data-testid='EditIcon'])` control, modeled here as a plain icon-only `button` named via `aria-label` since `:has()` support is not what this fixture is for. */
 export const DENSE_FORM_TARGET_TEXT = "Manual Application";
 
 /** Accessible names of {@link buildDenseFormFixture}'s two unrendered decoys — one `display:none`, one a 0x0 layout box — the two shapes a real click rejects with the CDP `-32000 Node does not have a layout object` error. */
@@ -739,7 +739,7 @@ export function makeFakeFrameScan(
 
 /**
  * Result of the fake batched click-by-index seam
- * ({@link makeFakeFrameClickByIndex}): `clicked` mirrors whether the click
+ * ({@link makeFakeFrameClickByIndex}): `clicked` matches whether the click
  * landed on a rendered node. `reason` is set instead of the fake throwing —
  * a single batched evaluate call reports what it observed rather than
  * surfacing a per-call CDP rejection — and carries
@@ -759,7 +759,7 @@ export interface FakeBatchedClickResult {
  * `resolveAtIndex`'s serial per-index loop (see {@link INDEXED_RESOLVE_METHODS}).
  * Same "ignore the expression string, resolve against the hop registry"
  * contract as {@link makeFakeFrameScan}: a fake cannot execute browser-side
- * code, so the `expression` argument is accepted (mirroring `evaluate`'s
+ * code, so the `expression` argument is accepted (paralleling `evaluate`'s
  * signature) but never inspected. Increments `elements[index].clicks` when
  * the targeted element is registered and `visible`, so an assertion like
  * `hop.elements[i]?.clicks` reads the same regardless of which click path a
@@ -787,7 +787,7 @@ export function makeFakeFrameClickByIndex(
  * {@link makeFakeFrameFillByIndex} and {@link makeFakeFrameSelectByIndex}:
  * `{ written: false, reason: "out-of-range" }` for an unregistered hop or an
  * out-of-range index, `{ written: false, reason: "not-actionable" }` for a
- * `visible: false` element (never throws, mirroring
+ * `visible: false` element (never throws, paralleling
  * {@link buildFillFrameCandidateExpr}'s/{@link buildSelectFrameCandidateExpr}'s
  * data-not-exception contract), otherwise writes `value` into `filledWith`
  * and resolves `{ written: true, readBack }` — `readBack` honors
@@ -813,7 +813,7 @@ function resolveFakeBatchedWrite(
  * of the legacy delegate's `nth(index).fill()`. Same "ignore the expression
  * string, resolve against the hop registry" contract as
  * {@link makeFakeFrameClickByIndex}: the fake cannot execute browser-side
- * code, so `expression` is accepted (mirroring the real seam's signature)
+ * code, so `expression` is accepted (paralleling the real seam's signature)
  * but never inspected — `value` is passed explicitly since it's what a real
  * expression bakes in rather than something the fake could read back out of
  * a string it never parses. See {@link resolveFakeBatchedWrite} for the

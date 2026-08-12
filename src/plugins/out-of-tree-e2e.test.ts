@@ -40,7 +40,7 @@ const packageJson = JSON.parse(readFileSync(path.join(REPO_ROOT, "package.json")
 
 /**
  * Resolution for `@enricai/barnacle/*` restricted to exactly the subpaths the
- * package declares in `exports` — mirrors what an installed npm package offers
+ * package declares in `exports` — matches what an installed npm package offers
  * a consumer, so an emitted import to an undeclared subpath fails exactly like
  * it would out-of-tree, not merely because src/ happens to have the file.
  *
@@ -149,7 +149,7 @@ function typecheckGeneratedFiles(
  *
  * Two specifier shapes, because the emitted file legitimately carries both:
  * `@enricai/barnacle/<subpath>` is the ENGINE, resolved against this package's
- * real source and gated to only the subpaths declared in `exports` (mirroring
+ * real source and gated to only the subpaths declared in `exports` (matching
  * buildExportsPathsMap); `@/sites/<siteId>/...` is the CONSUMER's own generated
  * tree, resolved to the sibling temp file.
  */
@@ -344,14 +344,14 @@ export async function reportViaContext(context: SitePluginContext): Promise<void
   });
 });
 
-describe("out-of-tree plugin — hello-site's vendored BeaconOutcomeInput mirror stays in sync with the shipped seam", () => {
+describe("out-of-tree plugin — hello-site's vendored BeaconOutcomeInput copy stays in sync with the shipped seam", () => {
   /**
    * `examples/plugins/hello-site/src/types.ts` vendors its own narrowed
    * `BeaconOutcomeInput` rather than importing from core (so the example
    * builds with zero dependency on `src/`), but claims it is "kept
    * field-for-field in sync with the shipped seam". Nothing enforced that
    * claim. This probe compiles a bidirectional structural-equality check
-   * between the example's mirror and the real
+   * between the example's copy and the real
    * `Parameters<SitePluginContext["recordBeaconOutcome"]>[0]` shape under the
    * same exports-gated `tsc` harness used above, so a field added, removed,
    * or retyped on either side surfaces as a real `tsc` diagnostic instead of
@@ -360,7 +360,7 @@ describe("out-of-tree plugin — hello-site's vendored BeaconOutcomeInput mirror
    * field — which a one-way assignability check would miss, since a missing
    * optional property is still structurally assignable — is caught too.
    */
-  const beaconMirrorCheckSource = `
+  const beaconParityCheckSource = `
 import type { SitePluginContext } from "@enricai/barnacle/site-plugin";
 import type { BeaconOutcomeInput as ExampleBeaconOutcomeInput } from "../examples/plugins/hello-site/src/types";
 
@@ -373,25 +373,25 @@ type IfEquals<A, B, Yes = unknown, No = never> = (<T>() => T extends A ? 1 : 2) 
   : No;
 
 type AssertTrue<T extends true> = T;
-type _MirrorStaysInSyncWithShippedSeam = AssertTrue<
+type _StaysInSyncWithShippedSeam = AssertTrue<
   IfEquals<ExampleBeaconOutcomeInput, RealBeaconOutcomeInput, true, false>
 >;
 `;
 
   it("hello-site's BeaconOutcomeInput is bidirectionally assignable with the real recordBeaconOutcome parameter", () => {
     const diagnostics = typecheckGeneratedFiles({
-      "hello-site-beacon-mirror-check.ts": beaconMirrorCheckSource,
+      "hello-site-beacon-parity-check.ts": beaconParityCheckSource,
     });
     expect(diagnostics.map((d) => `${d.code}: ${d.message}`)).toEqual([]);
   });
 });
 
-describe("out-of-tree plugin — hello-site's vendored RunTelemetryHandle.addJoinKeys mirror stays in sync with the shipped seam", () => {
+describe("out-of-tree plugin — hello-site's vendored RunTelemetryHandle.addJoinKeys copy stays in sync with the shipped seam", () => {
   /**
    * `examples/plugins/hello-site/src/types.ts` vendors its own narrowed
    * `RunTelemetryHandle` (only `addJoinKeys` — `recordSession`/`snapshot` are
    * engine-owned and deliberately omitted, see docs-001) but claims the one
-   * method it does mirror is "kept field-for-field in sync with the shipped
+   * method it does copy is "kept field-for-field in sync with the shipped
    * seam". Nothing enforced that claim. This probe compiles a bidirectional
    * structural-equality check between the example's `addJoinKeys` signature
    * and the real `SitePluginContext["telemetry"]["addJoinKeys"]` signature
@@ -399,7 +399,7 @@ describe("out-of-tree plugin — hello-site's vendored RunTelemetryHandle.addJoi
    * added, removed, or retyped on either side surfaces as a real `tsc`
    * diagnostic instead of shipping unnoticed to plugins that copy this file.
    */
-  const telemetryMirrorCheckSource = `
+  const telemetryParityCheckSource = `
 import type { SitePluginContext } from "@enricai/barnacle/site-plugin";
 import type { RunTelemetryHandle as ExampleRunTelemetryHandle } from "../examples/plugins/hello-site/src/types";
 
@@ -413,14 +413,14 @@ type IfEquals<A, B, Yes = unknown, No = never> = (<T>() => T extends A ? 1 : 2) 
   : No;
 
 type AssertTrue<T extends true> = T;
-type _AddJoinKeysMirrorStaysInSyncWithShippedSeam = AssertTrue<
+type _AddJoinKeysStaysInSyncWithShippedSeam = AssertTrue<
   IfEquals<ExampleAddJoinKeys, RealAddJoinKeys, true, false>
 >;
 `;
 
   it("hello-site's RunTelemetryHandle.addJoinKeys is bidirectionally assignable with the real telemetry.addJoinKeys", () => {
     const diagnostics = typecheckGeneratedFiles({
-      "hello-site-telemetry-mirror-check.ts": telemetryMirrorCheckSource,
+      "hello-site-telemetry-parity-check.ts": telemetryParityCheckSource,
     });
     expect(diagnostics.map((d) => `${d.code}: ${d.message}`)).toEqual([]);
   });

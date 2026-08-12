@@ -5,7 +5,7 @@ import {
   buildMulticallHeterogeneousActionStepsWithDrillDown,
 } from "@/scripts/recon-generate-multicall-fixture";
 
-/** Mirrors recon-generate.ts's internal `endpointKey` (origin + pathname,
+/** Matches recon-generate.ts's internal `endpointKey` (origin + pathname,
  * query stripped) since that helper isn't exported — the self-test asserts
  * the same identity the generator itself uses to distinguish calls. */
 function endpointKey(url: string): string {

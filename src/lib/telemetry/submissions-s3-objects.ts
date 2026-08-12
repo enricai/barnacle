@@ -4,7 +4,7 @@
  * requested `from`/`to` window, so the fetch stage (feat-003) never has to
  * scan the whole telemetry bucket. Entirely inert (no `S3Client`
  * construction, no network calls) when `config.telemetry.s3.bucket` is
- * unset — mirrors `s3-sink.ts`'s inertness contract.
+ * unset — parallels `s3-sink.ts`'s inertness contract.
  */
 
 import { ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";

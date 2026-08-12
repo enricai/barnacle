@@ -5,7 +5,7 @@ import { dispatch } from "@/plugins/loader";
 import type { SitePlugin, SitePluginContext } from "@/site-plugin";
 
 // vi.hoisted runs before vi.mock factories — required so these references
-// are available when the factory closures execute. Scaffolding mirrors
+// are available when the factory closures execute. Scaffolding parallels
 // loader.test.ts:34-101 so both files exercise the same mocked boundary.
 const mockCaptureSubmissionEnvelope = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const mockRunWithSession = vi.hoisted(() =>

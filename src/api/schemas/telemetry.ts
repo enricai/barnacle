@@ -46,7 +46,7 @@ const judgeAggregateSchema = z.object({
 export type JudgeAggregate = z.infer<typeof judgeAggregateSchema>;
 
 /**
- * Top-level verdict file produced by the judge skill for one batch. Mirrors
+ * Top-level verdict file produced by the judge skill for one batch. Parallels
  * beacon/pila's verdict-JSON shape but in Barnacle's camelCase convention.
  */
 export const judgeVerdictSchema = z.object({

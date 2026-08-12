@@ -29,7 +29,7 @@ export interface StagehandLogLine {
 }
 
 /**
- * Build a custom Stagehand logger that filters out the noisy upstream
+ * Build a custom Stagehand logger that filters out the noisy
  * `AI_TypeValidationError` schema-validation spam. The errors come from
  * Stagehand's internal Haiku LLM returning bare integers like "4671"
  * when its Zod schema requires "N-N" format (regex /^\\d+-\\d+$/ at
@@ -47,7 +47,7 @@ export interface StagehandLogLine {
  * AND the cause body contains both `AI_TypeValidationError` and
  * `elementId`. Other AISDK errors (rate limits, malformed requests,
  * server errors) pass through unchanged. Site-agnostic — the
- * upstream Stagehand bug is universal across tenants.
+ * Stagehand bug is universal across tenants.
  *
  * Returns the callback + a `reportSuppressed` function that the
  * session teardown calls to log the final suppression count, plus a
@@ -83,7 +83,7 @@ export function makeFilteredStagehandLogger(pinoLogger: Logger): {
   const reportSuppressed = (): void => {
     if (suppressedCount > 0) {
       pinoLogger.info(
-        `stagehand-logger: suppressed ${suppressedCount} AISDK elementId-regex errors (upstream Stagehand bug; cascade Fix 1B handles consequence)`
+        `stagehand-logger: suppressed ${suppressedCount} AISDK elementId-regex errors (Stagehand bug; cascade Fix 1B handles consequence)`
       );
     }
   };
@@ -148,7 +148,7 @@ export function makeOutboundIpAccessor(
  * enabled we also force `solveCaptchas: true` (explicit; Browserbase defaults
  * it on) and pin a Windows desktop fingerprint — DataDome-protected sites react
  * significantly better to Windows OS signals than the default mac/linux mix.
- * The combination mirrors a production Stagehand preset validated against such
+ * The combination parallels a production Stagehand preset validated against such
  * sites, not Browserbase's defaults.
  *
  * `browserbaseSessionCreateParams` forwards caller-supplied Browserbase session

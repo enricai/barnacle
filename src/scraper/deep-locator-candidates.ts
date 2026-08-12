@@ -138,7 +138,7 @@ export interface TaggedPhrase {
  * same sentence — flow instructions keep each "Do NOT click 'X', 'Y', ..."
  * clause as one sentence listing every negated phrase, so a sentence
  * boundary (`.`/`;`) between the marker and the phrase ends the negation's
- * reach. Mirrors the quoted-phrase extraction convention in
+ * reach. Parallels the quoted-phrase extraction convention in
  * `parseSelectStep`/`parseRadioStep` (`flow-runner.ts`) — same
  * `/'([^']+)'/g` shape — but here we need ALL quoted phrases plus their
  * polarity, not just one option/label pair. Exported so `flow-runner.ts` can
@@ -168,7 +168,7 @@ function normalize(text: string): string {
 
 /**
  * Scores one candidate's relevance to `instruction`'s tagged phrases, higher
- * is more relevant. Mirrors `submit-control.ts`'s tiered-ranking shape:
+ * is more relevant. Parallels `submit-control.ts`'s tiered-ranking shape:
  * negative signal is checked first and wins outright (a candidate matching
  * ANY negated phrase is actively demoted below "no match" — a decoy sibling
  * button is worse than an unrelated structural node), then positive
@@ -443,7 +443,7 @@ function isFrameCandidateClickResult(entry: unknown): entry is FrameCandidateCli
  * throws) when no frame seam is available, the evaluate call rejects, or the
  * resolved payload doesn't conform to {@link FrameCandidateClickResult} —
  * every one of those degrades the caller to the legacy `nth(index).click()`
- * path instead of losing the click, mirroring {@link scanFrameCandidatesBatched}'s
+ * path instead of losing the click, paralleling {@link scanFrameCandidatesBatched}'s
  * degrade contract on the enumeration side.
  */
 async function clickCandidateBatched(

@@ -1,5 +1,5 @@
 /**
- * Buffered S3 sink that mirrors local NDJSON telemetry so it survives ECS
+ * Buffered S3 sink that replicates local NDJSON telemetry so it survives ECS
  * container restarts. Opt-in: entirely inert (no S3Client construction, no
  * network calls) when `config.telemetry.s3.bucket` is unset. Buffers lines
  * in module-level arrays and flushes each non-empty buffer to a single S3

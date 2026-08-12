@@ -83,7 +83,7 @@ const testLogger = {
  * FIRST call only, then `[]` on every call after — `act()` always reports no
  * actionable candidate, forcing attempt 1 to fail and the cascade into
  * attempt 2's observe-act branch, the one that owns the click walk under
- * test. Mirrors `flow-runner.oopif-dense-form-budget.test.ts`'s fixture
+ * test. Matches `flow-runner.oopif-dense-form-budget.test.ts`'s fixture
  * exactly (see its docblock for why the first observe call must succeed).
  */
 function makeFakeStagehandObserveOnceThenBlind() {
@@ -165,7 +165,7 @@ function makeFakeChildFrame(
  * two the legacy fallback (and nothing else) drives. Every registered
  * element's `click()`/`textContent()` additionally charges
  * `MEASURED_DELEGATE_ROUND_TRIP_MS` per round-trip (scaled by index,
- * mirroring Stagehand's real `resolveAtIndex` cost) via
+ * matching Stagehand's real `resolveAtIndex` cost) via
  * `registerDeepLocatorHopLatency` — a regression to the legacy fallback
  * would make this fixture's own delegate cost model the failure, not just an
  * unasserted side effect.

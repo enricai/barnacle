@@ -32,7 +32,7 @@ import { makeFakeFrameResolutionPage } from "@/scraper/deep-locator-fake";
  * byte-identically to the pre-batched delegate path"`) only proves the
  * degrade-to-legacy contract, since its fake `Page` has no `evaluate`/
  * `frames` at all. This file is the only coverage of the internal pass
- * actually landing the batched fast path end to end, mirroring
+ * actually landing the batched fast path end to end, matching
  * `deep-locator-candidates.internal-frame-resolution.test.ts`'s case (a) —
  * see that file's docblock for why `probeAttachedFrameTarget`'s real
  * per-probe budget (as opposed to the pre-perf-003

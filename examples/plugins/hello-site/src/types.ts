@@ -1,7 +1,7 @@
 import type { ZodType } from "zod/v4";
 
 /**
- * Minimal local mirror of Barnacle's `SitePluginMeta`. Kept in the example so
+ * Minimal local copy of Barnacle's `SitePluginMeta`. Kept in the example so
  * it builds with zero dependency on Barnacle's own `src/` (which is not
  * published as a type entry point in v1). In a real project, replace this file
  * with the Phase-2 `@barnacle/plugin-sdk` type import.
@@ -21,7 +21,7 @@ export interface SitePluginMeta {
 }
 
 /**
- * Minimal local mirror of the `BeaconOutcomeInput` argument to
+ * Minimal local copy of the `BeaconOutcomeInput` argument to
  * `context.recordBeaconOutcome` in Barnacle's `SitePluginContext`
  * (`src/site-plugin.ts`). Kept field-for-field in sync with the shipped
  * seam so a plugin copying this example sees the real call shape.
@@ -34,7 +34,7 @@ export interface BeaconOutcomeInput {
 }
 
 /**
- * Minimal local mirror of the `RunTelemetryHandle` argument to
+ * Minimal local copy of the `RunTelemetryHandle` argument to
  * `context.telemetry` in Barnacle's `SitePluginContext`
  * (`src/lib/telemetry/run-telemetry.ts`). Narrowed to the one method this
  * example's README documents: attaching a field only discovered mid-run.
@@ -44,7 +44,7 @@ export interface RunTelemetryHandle {
 }
 
 /**
- * Minimal local mirror of Barnacle's `SitePluginContext`, narrowed to the
+ * Minimal local copy of Barnacle's `SitePluginContext`, narrowed to the
  * two seams a self-managing plugin needs: reporting a real `fired`/`failed`
  * outcome for a beacon it navigates itself, and attaching join keys it only
  * discovers mid-run. See the repository README's Reconciliation join keys
@@ -56,7 +56,7 @@ export interface SitePluginContext {
 }
 
 /**
- * Minimal local mirror of Barnacle's `SitePlugin`. `executeHttp` is the
+ * Minimal local copy of Barnacle's `SitePlugin`. `executeHttp` is the
  * direct-HTTP hot path (no browser); `execute` is the browser fallback.
  */
 export interface SitePlugin {

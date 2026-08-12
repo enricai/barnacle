@@ -49,7 +49,7 @@ describe("resolveDeepLocatorCandidates: internal resolveScanFrameTarget pass (no
   /**
    * Minimal fake `page.evaluate`: answers `tryResolveChildFrame`'s
    * "read the iframe's src" probe (`frame-target.ts`) by extracting the CSS
-   * selector the expression string was built with, mirroring
+   * selector the expression string was built with, matching
    * `frame-target.test.ts`'s `makeFakePage`. Resolves with no internal
    * `await` so it settles as a microtask, same-tick — used by cases (b) and
    * (c) below, whose degrade behavior doesn't depend on probe latency.

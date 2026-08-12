@@ -99,7 +99,7 @@ describe("StepVerificationError", () => {
 });
 
 describe("cross-realm type guards", () => {
-  // Mirrors what an out-of-tree plugin's independently-resolved copy of this
+  // Matches what an out-of-tree plugin's independently-resolved copy of this
   // package produces: a nominally distinct class (different constructor
   // identity than this module's HttpSchemaError) whose base constructor still
   // stamps `name` from `new.target.name`, exactly like the real class does.

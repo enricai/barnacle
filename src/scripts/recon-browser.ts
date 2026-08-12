@@ -606,7 +606,7 @@ export const RECON_FLOW_FILE_SCHEMA = z.union([
     /**
      * CSS selector of a cross-origin `<iframe>` the flow's target elements
      * live inside (e.g. an embedded apply wizard embedded rather than top-window
-     * navigated). Mirrors `flowSchema.frameSelector` in
+     * navigated). Matches `flowSchema.frameSelector` in
      * `src/plugins/config-plugin.ts` so a hand-authored recon flow file and
      * a config-plugin manifest use the same declaration. Omitted (default)
      * preserves today's behavior: the flow drives the main frame.
@@ -1185,7 +1185,7 @@ export function renderStepWindow(
  * Detect a "false-premise loop" — the current cascade-exhausted step
  * shares a slug-prefix with at least N prior replans' failed steps,
  * suggesting the flow's element model for THIS widget family doesn't
- * match the actual DOM. Slug derivation mirrors the `currentPhase`
+ * match the actual DOM. Slug derivation matches the `currentPhase`
  * pattern at recon-browser.ts:5001 (24-char alphanumeric prefix of
  * normalized instruction). When the threshold is exceeded, callers
  * inject an ELEMENT MODEL CHECK section into the replan prompt so the

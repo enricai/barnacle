@@ -14,7 +14,7 @@ import type { PluginLoadRecord } from "@/plugins/discover";
  * registration, injecting env vars the same way auth.test.ts does — avoids
  * mocking the auth internals while keeping tests hermetic.
  *
- * The plugin load report is injected through options (mirrors HealthRoutesOptions)
+ * The plugin load report is injected through options (parallels HealthRoutesOptions)
  * so tests can assert the exact payload without full app wiring.
  */
 

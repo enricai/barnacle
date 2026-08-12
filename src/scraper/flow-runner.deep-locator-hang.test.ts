@@ -18,7 +18,7 @@ import type { Logger } from "@/types/logging";
  * settle must still fail the cascade's attempts (via the `withWatchdog` guard
  * added in bugfix-002) instead of producing zero attempt logs for ~78 minutes.
  *
- * Mirrors run 6's own diagnostic shape: the pre-cascade probe goes "present"
+ * Matches run 6's own diagnostic shape: the pre-cascade probe goes "present"
  * via an UNFOCUSED observe (the real run's "unfocused observe found 65
  * top-frame candidates" line) so it never touches `deepLocator` itself —
  * only the cascade's attempt-2/attempt-4 branch (flow-runner.ts:6033-6098)

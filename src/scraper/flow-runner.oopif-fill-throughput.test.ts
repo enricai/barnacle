@@ -116,7 +116,7 @@ const testLogger = {
  * FIRST call only, then `[]` on every call after — `act()` always reports no
  * actionable candidate, forcing attempt 1 to fail and the cascade into
  * attempt 2's observe-act branch, the one that owns the deterministic
- * field-label fill walk under test. Mirrors `flow-runner.oopif-click-
+ * field-label fill walk under test. Matches `flow-runner.oopif-click-
  * throughput.test.ts`'s fixture exactly (see its docblock for why the first
  * observe call must succeed).
  */
@@ -216,7 +216,7 @@ function makeFakeChildFrame(
  * two the legacy fallback (and nothing else) drives. Every registered
  * element's `fill()`/`inputValue()` additionally charges
  * `MEASURED_DELEGATE_ROUND_TRIP_MS` per round-trip (scaled by index,
- * mirroring Stagehand's real `resolveAtIndex` cost) via
+ * matching Stagehand's real `resolveAtIndex` cost) via
  * `registerDeepLocatorHopLatency` — a regression to the legacy fallback
  * would make this fixture's own delegate cost model the failure, not just an
  * unasserted side effect. `options.probeDelayMs` (default 0, matching every
@@ -462,7 +462,7 @@ describe("flow-runner cascade fill actuation throughput (batched fill-by-index o
     // SECOND probe here (the fake resolves instantly, masking the cost a
     // real CDP round-trip would pay) — so this is the assertion that
     // actually pins "the caller passed its own already-resolved
-    // frameTarget", not just "the fill ended up batched somehow". Mirrors
+    // frameTarget", not just "the fill ended up batched somehow". Matches
     // `flow-runner.oopif-click-throughput.test.ts`'s identical assertion.
     expect(iframeProbeSpy).toHaveBeenCalledTimes(1);
 
@@ -477,7 +477,7 @@ describe("flow-runner cascade fill actuation throughput (batched fill-by-index o
     }
   });
 
-  it("fills the same 371-candidate target even when the step-level frame resolution pays realistic CDP latency (perf-002's latency-realistic probe, mirroring `deep-locator-fake.ts`'s `makeFakeFrameResolutionPage`) — still exactly one iframe probe, one batched fill evaluate, zero legacy delegate calls", async () => {
+  it("fills the same 371-candidate target even when the step-level frame resolution pays realistic CDP latency (perf-002's latency-realistic probe, matching `deep-locator-fake.ts`'s `makeFakeFrameResolutionPage`) — still exactly one iframe probe, one batched fill evaluate, zero legacy delegate calls", async () => {
     const deepLocatorFrame: FakeDeepLocatorFrame = new Map();
     const elements = buildDenseCandidateElements(RENDERED_TARGET_TEXT);
     const hop = registerDeepLocatorHopElements(deepLocatorFrame, HOP_SELECTOR, elements);

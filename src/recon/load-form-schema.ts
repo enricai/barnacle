@@ -46,7 +46,7 @@ const formSchemaSchema = z.object({
  *
  * Resolution reuses {@link resolvePluginSpecifier}, so `--form-schema` accepts the
  * same specifier forms as `BARNACLE_PLUGINS` and `--vocabulary`. Export resolution
- * mirrors the plugin loader's `m.formSchema ?? m.default ?? m`. The
+ * matches the plugin loader's `m.formSchema ?? m.default ?? m`. The
  * {@link FORM_SCHEMA_NONE} sentinel returns `null` (not an empty struct — see the
  * form-schema module for why), the shape for "this site has no ATS form data."
  *

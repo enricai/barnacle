@@ -139,7 +139,7 @@ describe("flow-runner/runHealingFlow — resolves a mid-flow iframe per step", (
     let stepCount = 0;
     guardedAct.mockImplementation(async () => {
       stepCount += 1;
-      // Step 1 ("Apply now") is what creates the <iframe> — mirrors the
+      // Step 1 ("Apply now") is what creates the <iframe> — matches the
       // the top-window site repro where the wizard mounts only after this click.
       if (stepCount === 1) {
         attach();

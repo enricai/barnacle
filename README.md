@@ -139,7 +139,7 @@ Each file is a JSON object:
 }
 ```
 
-Field reference (mirrors CDP's `Network.Cookie` type verbatim — no remapping between capture and disk):
+Field reference (matches CDP's `Network.Cookie` type verbatim — no remapping between capture and disk):
 
 | Field | Meaning |
 | --- | --- |
@@ -328,7 +328,7 @@ interface SitePlugin<TPayload, TResult> {
 | `maxAttempts?` | `number` | Override the retry policy's default of 3 attempts (including the first try). Without this, the per-run ceiling is `3 × taskTimeoutMs`; set to `1` so `taskTimeoutMs` is the real per-run cap |
 | `apiVersion?` | `string` | Semver range targeting a plugin API version (e.g. `"^1.0.0"`); core disables the plugin on a major-version mismatch. Absent means "accept any version." |
 | `extraRoutes?` | `readonly SitePluginExtraRoute[]` | Extra non-run routes (OTP trigger, resume, etc.) that core registers as authenticated Fastify routes at startup. See `SitePluginExtraRoute` in `src/site-plugin.ts`. |
-| `onShutdown?` | `() => Promise<void>` | Optional cleanup for background work the plugin launched fire-and-forget, awaited during graceful shutdown so in-flight work is not abandoned and sessions are not leaked. Mirrors the engine's own drain functions. Bounded by a per-plugin timeout, so a hanging drain cannot stall shutdown. Module plugins only — config-only `*.plugin.json` manifests are pure JSON and cannot declare a function. |
+| `onShutdown?` | `() => Promise<void>` | Optional cleanup for background work the plugin launched fire-and-forget, awaited during graceful shutdown so in-flight work is not abandoned and sessions are not leaked. Parallels the engine's own drain functions. Bounded by a per-plugin timeout, so a hanging drain cannot stall shutdown. Module plugins only — config-only `*.plugin.json` manifests are pure JSON and cannot declare a function. |
 
 ### Full plugin skeleton (hot path + browser fallback)
 
@@ -623,7 +623,7 @@ When the smoke test fails: re-run `pnpm run recon:browser` → diff `<run-dir>/g
 
 ### Cache deduplication
 
-`getCachedResponse()` checks the LRU cache first. On a miss, `getOrCreateInFlight()` registers a promise in an `inFlight` map before awaiting it — meaning concurrent identical requests all await the same upstream call rather than fanning out. First caller wins; all others coalesce onto its promise.
+`getCachedResponse()` checks the LRU cache first. On a miss, `getOrCreateInFlight()` registers a promise in an `inFlight` map before awaiting it — meaning concurrent identical requests all await the same origin call rather than fanning out. First caller wins; all others coalesce onto its promise.
 
 Cache key: `<endpoint>:<sha256(canonical payload)[:32]>` — the endpoint is a literal prefix; the hash covers only the canonical payload. Object key order and primitive array element order are normalized so `{a:1,b:2}` and `{b:2,a:1}` hit the same entry. Default TTL: 15 minutes (`CACHE_TTL_MS`). Max entries: 1000 (`CACHE_MAX_ENTRIES`). Only successful responses are cached; errors propagate and never poison the cache.
 
@@ -694,7 +694,7 @@ When using Anthropic directly (not Bedrock), the model is controlled by `STAGEHA
 
 **What rising `fallbackActivations` means:** the hot path is failing and the browser fallback is absorbing traffic. Cost and latency rise while error rate stays flat — users don't notice yet, but you will on your bill. This is your signal to re-run recon.
 
-**`p95LatencyMs`** is reservoir-sampled (Vitter's Algorithm R, capped at 1000 samples) over actual upstream round-trips. Cache hits are excluded — they're memory reads and must not bias the upstream latency signal.
+**`p95LatencyMs`** is reservoir-sampled (Vitter's Algorithm R, capped at 1000 samples) over actual origin round-trips. Cache hits are excluded — they're memory reads and must not bias the origin latency signal.
 
 See [docs/playbook.md](./docs/playbook.md#6b--metrics-signals-the-detection-ladder) for the full detection ladder.
 
@@ -916,7 +916,7 @@ http/net/dns. Metrics have no such constraint.
 | `SUBMISSIONS_NDJSON_PATH` | `.barnacle/submissions.ndjson` | Append-only NDJSON sink for dispatch submission envelopes and beacon-fire outcomes. `kind:"submit"` lines (null/`"submit"`-defaulted on legacy lines) capture siteId, requestId, inbound payload, status, audit payload, and duration, plus the opaque `joinKeys` bag a plugin's `extractJoinKeys` hook resolved, merged with anything attached mid-run via `context.telemetry.addJoinKeys()` — the durable source-of-truth for "what did we submit for jobId X and did it succeed." `kind:"beacon"` lines record a later (or, for `beaconStatus: "skipped"`, immediate) independent beacon-fire outcome (`beaconStatus`: `fired`/`failed`/`skipped`, truncated `trackingUrl`) for the same `requestId`, so "submitted but the beacon did not fire" is measurable — the `skipped` line is always written by `dispatch()` itself, but a plugin managing its own tracking nav can call `context.recordBeaconOutcome` to append a real `fired`/`failed` line for the same `requestId`, which outranks `skipped` when the two are folded (see [Reconciliation join keys](#reconciliation-join-keys-extractjoinkeys)). A reader folds both kinds together by `requestId`, so a plugin can join runs to its own attribution provider's report without re-parsing `inboundPayload`. |
 | `TELEMETRY_MAX_FILE_SIZE_BYTES` | `104857600` (100 MB) | Rotate/drop the calls NDJSON once it exceeds this byte count. |
 | `TELEMETRY_MAX_RETENTION_MS` | `2592000000` (30 days) | Drop event-stream files older than this many milliseconds. |
-| `TELEMETRY_S3_BUCKET` | — | Optional — destination bucket for the buffered S3 telemetry mirror. Sink is entirely inert (no client, no network calls) when unset. Credentials/region resolve the same way as Bedrock (`AWS_REGION`, standard SDK credential order). |
+| `TELEMETRY_S3_BUCKET` | — | Optional — destination bucket for the buffered S3 telemetry replica. Sink is entirely inert (no client, no network calls) when unset. Credentials/region resolve the same way as Bedrock (`AWS_REGION`, standard SDK credential order). |
 | `TELEMETRY_S3_PREFIX` | `telemetry` | Key prefix for uploaded NDJSON objects (`<prefix>/<calls\|submissions>/<date>/...`). |
 | `TELEMETRY_S3_FLUSH_INTERVAL_MS` | `60000` | How often buffered lines are flushed to S3. |
 | `TELEMETRY_S3_MAX_BUFFER_LINES` | `500` | Threshold-flush trigger — flush early if either buffer exceeds this many lines, ahead of the next scheduled interval. |
@@ -1065,7 +1065,7 @@ Every response — success or error — uses the same envelope shape so clients 
 | 2005 | `EMPTY_RESULTS` | Scrape succeeded but returned no data |
 | 2006 | `VERIFICATION_TRIGGER_FAILED` | OTP trigger to the target site failed |
 | 2007 | `RESUME_INVALID_OTP` | Provided OTP was rejected by the target site |
-| 2008 | `URL_LOCKED` | Upstream vendor locked the target URL; back off and retry later |
+| 2008 | `URL_LOCKED` | Target site locked the target URL; back off and retry later |
 
 Full definitions: `src/api/schemas/common.ts`.
 

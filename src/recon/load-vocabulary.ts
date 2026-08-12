@@ -28,7 +28,7 @@ const regexSchema = z.custom<RegExp>((v) => v instanceof RegExp && !v.global && 
   message: "expected a RegExp literal without the g or y flag (they make .test() stateful)",
 });
 
-/** Mirrors the emitter's identifier rule: a field name is spliced into source as
+/** Matches the emitter's identifier rule: a field name is spliced into source as
  * `payload.<name>` / `{{ .request.<name> }}`, so anything else emits a broken
  * plugin that still generates and still typechecks. */
 const payloadFieldNameSchema = z
@@ -54,7 +54,7 @@ const vocabularySchema = z.object({
  *
  * Resolution reuses {@link resolvePluginSpecifier}, so `--vocabulary` accepts the
  * same specifier forms as `BARNACLE_PLUGINS` (relative path or package name) and
- * consumers learn one rule instead of two. Export resolution mirrors the plugin
+ * consumers learn one rule instead of two. Export resolution matches the plugin
  * loader's `m.vocabulary ?? m.default ?? m`, since a named-only export failing
  * silently is a known foot-gun in this codebase.
  *

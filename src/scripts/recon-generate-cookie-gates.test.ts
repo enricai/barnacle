@@ -7,7 +7,7 @@ import {
 } from "@/scripts/recon-generate";
 
 /** Minimal opts that satisfy emitContractTs for a non-multipart plugin —
- * mirrors recon-generate.test.ts's BASE_OPTS so the rendered bind literal
+ * matches recon-generate.test.ts's BASE_OPTS so the rendered bind literal
  * assertion below matches the shape the CLI actually emits. */
 const BASE_OPTS = {
   siteId: "cruise-fixture",

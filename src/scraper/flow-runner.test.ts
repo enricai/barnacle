@@ -808,7 +808,7 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
   });
 
   it("leaves the structured-click/observe-act-exclude ladder intact for a non-submit phantom click instead of routing to the deep-submit-locator", async () => {
-    // Mirrors the bug report's step 38 (`Click the 'No' label for 'Are you
+    // Matches the bug report's step 38 (`Click the 'No' label for 'Are you
     // currently a Contingent Worker?'`): a non-submit radio-style step whose
     // attempt 1 phantom-clicks (Stagehand reports success, zero observable
     // effect). submitStep:false + isFinalStep:false means submitShapedStep

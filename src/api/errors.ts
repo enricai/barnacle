@@ -118,12 +118,12 @@ export class ThrottledRequestError extends ApiError {
 }
 
 /**
- * The upstream site has locked the target URL (a plugin raises the underlying
+ * The target site has locked the target URL (a plugin raises the underlying
  * `HttpUrlLockedError`, e.g. from a `classifyResponseBody` sentinel).
  * Signals "back off and retry later" — not a browser-fallback trigger.
  */
 export class UrlLockedError extends ApiError {
-  constructor(message = "target URL is locked by the upstream site; retry later") {
+  constructor(message = "target URL is locked by the target site; retry later") {
     super(ERROR_CODES.URL_LOCKED, message);
   }
 }
@@ -135,7 +135,7 @@ export class ScrapeFailureError extends ApiError {
 }
 
 export class CaptchaEncounteredError extends ApiError {
-  constructor(message = "captcha challenge encountered upstream") {
+  constructor(message = "captcha challenge encountered on the target site") {
     super(ERROR_CODES.CAPTCHA_ENCOUNTERED, message);
   }
 }

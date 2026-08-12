@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { emitContractTs } from "@/scripts/recon-generate";
 
-/** Minimal opts that satisfy the emitter for a non-multipart plugin. Mirrors
+/** Minimal opts that satisfy the emitter for a non-multipart plugin. Matches
  * BASE_OPTS in recon-generate.test.ts — kept separate per that file's own
  * fixture rather than imported, so this file stays disjoint from the capture
  * chain the sibling suite exercises. */

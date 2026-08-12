@@ -118,7 +118,7 @@ describe("recon run-dir resolver — cross-run isolation (recon-browser + recon-
     };
   }
 
-  /** Mirrors recon-http.ts:452's inline replay writer — same resolver, same write pattern. */
+  /** Matches recon-http.ts:452's inline replay writer — same resolver, same write pattern. */
   function writeHttpReplay(ctx: RunContext, filename: string, body: unknown): void {
     writeFileSync(join(ctx.replaysDir, filename), JSON.stringify(body, null, 2));
   }

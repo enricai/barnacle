@@ -183,7 +183,7 @@ function originOf(url: string): string | null {
  * poll loop even starts (making an unclamped deadline unreachable) and a
  * page with several candidate frames would otherwise pay
  * `(1 + frames) * evaluateTimeoutMs` in one pass regardless of `deadline`.
- * The candidate loop always probes its first candidate — mirroring the
+ * The candidate loop always probes its first candidate — paralleling the
  * top-level probe's "runs once regardless of budget" guarantee, since a
  * `timeoutMs: 0` re-resolution (`flow-runner.ts`'s `reresolveFrameTargetIfLost`)
  * must still be able to pick up a frame that has already attached — but

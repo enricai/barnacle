@@ -13,11 +13,11 @@ import { ERROR_CODES } from "@/api/schemas/common";
 
 /**
  * Route tests for GET /v1/submissions. Auth is exercised via real authPlugin
- * registration (mirrors plugins-introspection.test.ts). The sink path is
+ * registration (parallels plugins-introspection.test.ts). The sink path is
  * injected through options so each test points at its own temp NDJSON file
  * instead of the real `.barnacle/submissions.ndjson`. The S3 half of the
  * durable source (`reconciliation-source.ts`) is mocked at its two
- * collaborator modules — mirrors `reconciliation-source.test.ts` — so the
+ * collaborator modules — parallels `reconciliation-source.test.ts` — so the
  * route's merge-in-production wiring is covered without a real bucket.
  */
 
@@ -511,7 +511,7 @@ describe("routes/submissions GET /v1/submissions", () => {
     }
   });
 
-  it("merges S3-mirrored rows into the response and counts them in total", async () => {
+  it("merges S3-replicated rows into the response and counts them in total", async () => {
     fs.writeFileSync(
       sinkPath,
       ndjson(makeSubmitLine({ requestId: "req-local", joinKeys: { clickId: "v-local" } })),

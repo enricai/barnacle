@@ -124,8 +124,8 @@ describe("readDurableReconciliationRows", () => {
     // Models the real cross-store race: the local sink already has both
     // dispatch's automatic "skipped" line and the plugin's later
     // self-recorded "fired" line (both share the same second-precision
-    // ts), but the S3 mirror's flush of "fired" hasn't landed yet — S3 so
-    // far only has the exact-duplicate mirror of the (now-stale) "skipped"
+    // ts), but the S3 replica's flush of "fired" hasn't landed yet — S3 so
+    // far only has the exact-duplicate replica of the (now-stale) "skipped"
     // line. Pre-fix, that S3 duplicate shares its dedupe key with BOTH
     // local lines, so its position in mergeRecords' Map (the earlier
     // local "skipped" slot) resurrects "skipped" as the sole survivor and
@@ -151,7 +151,7 @@ describe("readDurableReconciliationRows", () => {
     // The real production shape: submit + dispatch's automatic "skipped"
     // line are both written by the ECS task handling this run, while the
     // plugin's self-recorded "fired" line only ever reaches this reader via
-    // the S3 mirror (e.g. written by a different task, or not yet flushed to
+    // the S3 replica (e.g. written by a different task, or not yet flushed to
     // the local sink). The skipped line's ts is deliberately LATER than the
     // fired line's so a timestamp-ordering fold (picking whichever line has
     // the latest ts) would wrongly resurrect "skipped" — only a status-rank
@@ -177,7 +177,7 @@ describe("readDurableReconciliationRows", () => {
     expect(rows[0]?.beaconTrackingUrl).toBe("https://track.example.com/pixel?rid=req-abc-123");
   });
 
-  it("folds the mirrored arrangement — local fired beacon, S3-sourced skipped beacon — to the same fired row", async () => {
+  it("folds the replicated arrangement — local fired beacon, S3-sourced skipped beacon — to the same fired row", async () => {
     // Same run, opposite store membership from the previous case: proves the
     // precedence rule depends on beaconRank, not on which store (or which
     // union position) a line happens to come from. The skipped line again

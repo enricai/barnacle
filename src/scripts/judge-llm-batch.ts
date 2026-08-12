@@ -57,7 +57,7 @@ export interface SampleScore {
 
 /**
  * Injectable scorer — real implementation calls the LLM; dry-run stub
- * returns deterministic values. Mirrors recon-heal's requestPatchFn injection
+ * returns deterministic values. Matches recon-heal's requestPatchFn injection
  * so the deterministic core (parse/aggregate/write) is fully unit-testable.
  */
 export type ScorerFn = (sample: LlmCallSample) => Promise<SampleScore>;

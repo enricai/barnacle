@@ -18,7 +18,7 @@ const logger = getLogger({ name: "telemetry/call-capture" });
 
 /**
  * Categorical failure reason for an LLM call. Surfaces post-mortem without
- * regex-scanning `errorMessage`. Discriminated upstream by the caller.
+ * regex-scanning `errorMessage`. Discriminated earlier by the caller.
  */
 export const llmCallFailureKindSchema = z.enum([
   "anthropic-billing",

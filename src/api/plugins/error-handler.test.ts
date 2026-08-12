@@ -92,7 +92,7 @@ async function makeApp() {
   app.get("/throw/scraper-selector", async () => {
     // Selector failures are the most common Stagehand failure mode.
     // They must surface as SCRAPE_FAILURE (2003) so clients can
-    // distinguish scrape failures from upstream target-site failures.
+    // distinguish scrape failures from target-site failures.
     throw new SelectorFailureError("could not find .result-item after 3 retries");
   });
   app.get("/throw/scraper-session-timeout", async () => {

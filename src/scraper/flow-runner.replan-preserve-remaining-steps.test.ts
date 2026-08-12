@@ -95,7 +95,7 @@ const SCREENING_ELEMENT: FakeDeepLocatorElementSpec = {
 const SELF_ID_TEXT = "self-identification dropdown";
 const SELF_ID_ELEMENT: FakeDeepLocatorElementSpec = { text: SELF_ID_TEXT, tagName: "select" };
 const SUBMIT_ELEMENT: FakeDeepLocatorElementSpec = { text: "Submit" };
-/** The reveal button itself — DOM-order LAST among the first hop's elements, mirroring the sibling acceptance fixtures' "not DOM-order luck" convention. */
+/** The reveal button itself — DOM-order LAST among the first hop's elements, matching the sibling acceptance fixtures' "not DOM-order luck" convention. */
 const REVEAL_ELEMENT_TEXT = "primary Next";
 
 /** Filler-block sizes interspersing the ordered Work-History acceptance chain, matching `oopif-dense-form-acceptance.test.ts`'s filler-block convention. */
@@ -168,7 +168,7 @@ const SILENT_LOGGER = {
 /**
  * Child `Frame` fake wiring the reveal step's DOM-only view-swap delta plus
  * the Work-History entry-form open/close/complete state machine and the
- * screening/self-ID/submit tail — mirrors `oopif-dense-form-acceptance.test
+ * screening/self-ID/submit tail — matches `oopif-dense-form-acceptance.test
  * .ts`'s `makeDenseChildFrame` for the shared batched-scan/candidate-index
  * plumbing, with the acceptance state additionally threaded through.
  */

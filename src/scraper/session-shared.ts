@@ -26,7 +26,7 @@ export interface BrowserSessionOptions {
 
 /**
  * A live browser session paired with the per-session action limiter.
- * Callers MUST call `close()` in a `finally` block so the upstream provider
+ * Callers MUST call `close()` in a `finally` block so the remote provider
  * stops billing and the underlying browser process is released.
  */
 export interface BrowserSession {
@@ -40,7 +40,7 @@ export interface BrowserSession {
   /**
    * Live count of suppressed AISDK elementId-regex errors so far this
    * session. Only present on providers that filter Stagehand's logger for
-   * this upstream error (currently Browserbase); absent on Steel.
+   * this Stagehand error (currently Browserbase); absent on Steel.
    */
   getSuppressedAisdkElementIdErrorCount?: () => number;
   /**

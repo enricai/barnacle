@@ -135,7 +135,7 @@ export interface Capture {
 
 /**
  * A single cookie as reported by CDP's Network.getAllCookies. Field names and
- * types mirror the CDP Network.Cookie type verbatim so no lossy remap step is
+ * types match the CDP Network.Cookie type verbatim so no lossy remap step is
  * needed between capture and disk. `expires` stays the raw CDP number
  * (-1 for session cookies) — readers format it, not this layer.
  */

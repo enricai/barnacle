@@ -151,7 +151,7 @@ function buildRephraseModelForContext(appConfig: AppConfig): StagehandModel | nu
 }
 
 /**
- * Builds the upload fixture the browser flow uploads, mirroring the rule the
+ * Builds the upload fixture the browser flow uploads, matching the rule the
  * generator's `emitBrowserFlowTs` applies: only when a step uploads AND the
  * manifest declares itself multipart do the `Resume*` payload fields exist.
  */
@@ -174,7 +174,7 @@ function buildUploadFixture(
  * for an import it does not use, and a broken `httpModule` disables the plugin
  * via the loader's normal failure path rather than crashing the factory.
  *
- * Resolution mirrors the loader's `resolvePluginSpecifier`: a `.`/`/` specifier
+ * Resolution parallels the loader's `resolvePluginSpecifier`: a `.`/`/` specifier
  * is a filesystem path resolved against `baseDir` (so a relative `httpModule`
  * resolves against the operator's `BARNACLE_PLUGINS_DIR`, not this module's
  * location under `dist/`); anything else is a bare package name left for Node's

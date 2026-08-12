@@ -37,7 +37,7 @@ describe("response-cache", () => {
   it("treats primitive arrays as sets — reorder collapses to one cache entry", async () => {
     // Arrays whose elements are set-semantic (order carries no meaning)
     // must collapse to the same cache key regardless of send order so
-    // callers don't thrash duplicate upstream work.
+    // callers don't thrash duplicate origin work.
     const first = getCachedResponse("/v1/test", { tags: ["alpha", "beta"] });
     await getOrCreateInFlight(first.key, async () => ({ payload: "sorted" }));
     const { value } = getCachedResponse("/v1/test", { tags: ["beta", "alpha"] });
@@ -119,7 +119,7 @@ describe("response-cache getOrCreateInFlight", () => {
   });
 
   it("propagates rejection to every concurrent awaiter without caching the failure", async () => {
-    const producer = vi.fn().mockRejectedValue(new Error("upstream down"));
+    const producer = vi.fn().mockRejectedValue(new Error("origin down"));
     const { key } = getCachedResponse("/v1/test", { a: 1 });
     const [a, b] = await Promise.allSettled([
       getOrCreateInFlight(key, producer),

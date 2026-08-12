@@ -304,7 +304,7 @@ describe("scraper/http-client per-call schema override", () => {
 });
 
 describe("scraper/http-client per-call schema override (heterogeneous multi-call chain)", () => {
-  // Mirrors the G2 report scenario: a client configured with a strict
+  // Matches the G2 report scenario: a client configured with a strict
   // inventory-search schema (available-products/) must still be usable for
   // an earlier call in the same chain whose response is a toggles array
   // (toggles/product-avail) — a shape the client schema rejects outright.

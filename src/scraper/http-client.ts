@@ -204,7 +204,7 @@ function findHeaderCaseInsensitive(
 
 /**
  * Parses a `name=value; name=value` Cookie header string into per-cookie
- * entries, mirroring the pair-splitting `extractCookieValue` already does
+ * entries, paralleling the pair-splitting `extractCookieValue` already does
  * for `Set-Cookie`. Skips malformed segments (no `=`) rather than throwing —
  * an operator-authored `baseHeaders` or per-call `init.headers` Cookie value
  * is untrusted input, not a value this module produced.
