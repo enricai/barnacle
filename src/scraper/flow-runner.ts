@@ -40,6 +40,7 @@ import {
   type LlmCallInput,
 } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
+import { clickActivationExpr } from "@/scraper/browser-click-expr";
 import {
   fillDeepLocatorCandidate,
   selectDeepLocatorCandidateOption,
@@ -7199,7 +7200,7 @@ export async function executeStepWithHealing(params: {
             );
             const optionPhrases = extractTaggedPhrases(step);
             const optionScores = selectCandidates.map((candidate) =>
-              scoreCandidate(candidate.accessibleText, optionPhrases)
+              scoreCandidate(candidate.accessibleText, optionPhrases, candidate.isNav)
             );
             const topScore = optionScores.length > 0 ? Math.max(...optionScores) : 0;
             const tiedForTop = optionScores.filter((score) => score === topScore).length;
@@ -7241,6 +7242,36 @@ export async function executeStepWithHealing(params: {
           // attempt (not per candidate) — every candidate in this walk is a
           // guess at the SAME step's target, so they all actuate the same way.
           const actuation = resolveDeepLocatorActuation(step);
+          // Next-best-candidate recovery for a markerless multi-select phantom:
+          // a click-to-toggle option (not a native <select> write, which
+          // already read-back-verifies) whose "N selected" counter doesn't rise
+          // means the click landed but didn't register — so the walk should try
+          // the next real option before this attempt is scored a failure and a
+          // replan is spent. Only wired for a selection-intent CLICK step; the
+          // reader re-reads the same counter `pre` captured (via
+          // `selectionCountFromSignature`) so no extra pre-snapshot is paid, and
+          // returns `null` on any frame hiccup so a read failure never converts
+          // to a walk-stopping throw. Non-selection steps pass `undefined` and
+          // the walk behaves exactly as before.
+          const isSelectionIntentClick =
+            actuation.kind === "click" && parseSelectStep(step) !== null;
+          const baselineSelectionCount = isSelectionIntentClick
+            ? selectionCountFromSignature(pre.visibleTextSignature)
+            : null;
+          const readSelectionCount = isSelectionIntentClick
+            ? async (): Promise<number | null> => {
+                try {
+                  const snap = await snapshotPage(
+                    frameTarget ?? mainFrameTarget(page),
+                    signalCounter,
+                    page
+                  );
+                  return selectionCountFromSignature(snap.visibleTextSignature);
+                } catch {
+                  return null;
+                }
+              }
+            : undefined;
           const cascadeResult = await clickFirstActionableCandidate(
             deepLocatorCandidates,
             async (candidate) => {
@@ -7282,7 +7313,7 @@ export async function executeStepWithHealing(params: {
                 );
               }
             },
-            { denyCandidate }
+            { denyCandidate, readSelectionCount, baselineSelectionCount }
           )
             .then((outcome) => ({ outcome, error: null as unknown }))
             .catch((error: unknown) => ({ outcome: null, error }));
@@ -7318,11 +7349,14 @@ export async function executeStepWithHealing(params: {
                     arguments: [actuation.value],
                   };
           } else {
+            const counterStalledCount = cascadeResult.outcome?.counterStalledSelectors.length ?? 0;
             const failureMessage = cascadeResult.error
               ? `deepLocator: ${actuation.kind} threw ${toErrorMessage(cascadeResult.error)}`
-              : attemptTriedSelectors.length > 0
-                ? `deepLocator: no actionable candidate (${attemptTriedSelectors.length} not-actionable)`
-                : "deepLocator: no actionable candidate (every candidate refused by the wizard-exit deny-list)";
+              : counterStalledCount > 0
+                ? `deepLocator: clicked ${counterStalledCount} candidate(s) but the "N selected" counter never rose (no selection registered)`
+                : attemptTriedSelectors.length > 0
+                  ? `deepLocator: no actionable candidate (${attemptTriedSelectors.length} not-actionable)`
+                  : "deepLocator: no actionable candidate (every candidate refused by the wizard-exit deny-list)";
             record.actResultSuccess = false;
             record.errorMessage = failureMessage;
             attempts.push(record);
@@ -8204,7 +8238,7 @@ export async function executeStepWithHealing(params: {
           // default action, but isolated-world page.evaluate() click()s don't
           // reliably trigger that default action — same gap N+42 documented
           // for direct checkbox/radio clicks.
-          const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); let el = r.singleNodeValue; if (!el || typeof el.click !== "function") return { fired: false }; if (el.tagName === "LABEL") { const wrapped = el.querySelector("input[type=checkbox], input[type=radio]"); if (wrapped) el = wrapped; } if (el.type === "checkbox" || el.type === "radio") { el.checked = true; el.dispatchEvent(new Event("click", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { fired: true, kind: "checkbox", checked: el.checked }; } el.click(); return { fired: true, kind: "click" }; })()`;
+          const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); let el = r.singleNodeValue; if (!el || typeof el.click !== "function") return { fired: false }; if (el.tagName === "LABEL") { const wrapped = el.querySelector("input[type=checkbox], input[type=radio]"); if (wrapped) el = wrapped; } if (el.type === "checkbox" || el.type === "radio") { el.checked = true; el.dispatchEvent(new Event("click", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { fired: true, kind: "checkbox", checked: el.checked }; } ${clickActivationExpr("el")} return { fired: true, kind: "click" }; })()`;
           const n16FallbackTarget = frameTarget ?? mainFrameTarget(page);
           const probeResult = (await n16FallbackTarget.evaluate(clickExpr)) as {
             fired: boolean;

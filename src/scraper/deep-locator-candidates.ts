@@ -104,6 +104,15 @@ export interface DeepLocatorCandidate {
    * enumeration fallback.
    */
   accessibleText: string;
+  /**
+   * `true` when the batched scan flagged this candidate as a navigation/advance
+   * control (BACK/Next/Cancel — see {@link IS_NAV_CANDIDATE_EXPR}). Feeds
+   * {@link scoreCandidate}'s nav-demotion tier so a "select '<option>'" step
+   * never resolves to the wizard's back/next button. Always `false` on the
+   * legacy per-candidate path (which can't read `data-testid`); there
+   * {@link scoreCandidate} re-derives the text-based portion of the nav check.
+   */
+  isNav: boolean;
 }
 
 /**
@@ -167,26 +176,88 @@ function normalize(text: string): string {
 }
 
 /**
- * Scores one candidate's relevance to `instruction`'s tagged phrases, higher
- * is more relevant. Parallels `submit-control.ts`'s tiered-ranking shape:
- * negative signal is checked first and wins outright (a candidate matching
- * ANY negated phrase is actively demoted below "no match" — a decoy sibling
- * button is worse than an unrelated structural node), then positive
- * exact/substring match tiers, falling through to 0 for empty or
- * unrelated text so a structural container with no accessible text can
- * never outrank a candidate whose text actually matches the instruction.
- * Exported so `flow-runner.ts` can detect a tie for the top rank among
- * `resolveDeepLocatorCandidates`'s already-sorted output (see
- * {@link extractTaggedPhrases}'s docblock).
+ * Nav/advance words that mark a control as chrome (BACK/Next/Cancel), matched
+ * with the same word-boundary predicate SHAPE `submit-control.ts`'s
+ * `NEGATIVE_TEXT_EXPR` uses, over a nav-word list that adds `"next"` (an advance
+ * button a "select '<option>'" step must be de-prioritized against). Kept here
+ * (not imported from that browser-context string) so {@link scoreCandidate} can
+ * re-derive the text portion of the nav check on the legacy per-candidate path,
+ * which can't read `data-testid` and so always arrives with `isNav === false`.
  */
-export function scoreCandidate(accessibleText: string, phrases: TaggedPhrase[]): number {
+const NAV_TEXT_WORDS = [
+  "back",
+  "cancel",
+  "previous",
+  "next",
+  "close",
+  "save draft",
+  "save for later",
+];
+
+/** True when `normalizedText` is one of {@link NAV_TEXT_WORDS} (whole-word / edge match), the text-only half of the scan's `IS_NAV_CANDIDATE_EXPR`. */
+function matchesNavText(normalizedText: string): boolean {
+  return NAV_TEXT_WORDS.some(
+    (n) =>
+      normalizedText === n || normalizedText.startsWith(`${n} `) || normalizedText.endsWith(` ${n}`)
+  );
+}
+
+/**
+ * Scores one candidate's relevance to `instruction`'s tagged phrases, higher
+ * is more relevant. Parallels `submit-control.ts`'s tiered-ranking shape but
+ * adds two tiers the markerless-widget bug report needs: a nav/back demotion
+ * (so a "select '<option>'" step never lands on the wizard's BACK/Next button,
+ * whose own text may exact-match nothing OR be empty) and an ends-with tier (so
+ * an option whose accessible name is polluted by a leading icon-glyph name —
+ * an icon-font/`<svg><title>` prefix rendering as `"<IconName><Label>"` — still
+ * beats a bare exact-text decoy by matching on the trailing label).
+ *
+ * Strict-priority tiers, first match wins:
+ * - negated-phrase match → `-2` (worst: a decoy sibling is worse than an
+ *   unrelated structural node — the invariant the original tiering established),
+ * - exact positive → `4`,
+ * - ends-with a positive → `3` (the icon-glyph suffix case),
+ * - contains a positive (either direction) → `2`,
+ * - nav/back control with NO positive textual match → `-1`,
+ * - else → `0`.
+ *
+ * Crucially, the nav/back demotion sits BELOW the positive tiers, not above
+ * them: it only sinks a candidate that would otherwise score `0` (no phrase
+ * match at all) — the empty BACK button, or a bare "Next"/"Cancel" chrome
+ * button the instruction doesn't name. A candidate that positively matches the
+ * instruction phrase — exact, ends-with, or contains — is the control the step
+ * named and keeps its positive score even if its label happens to contain a nav
+ * word (`select 'Next'` → the "Next" option scores 4; "primary Next" whose step
+ * quotes 'Next' scores 2 via containment). This makes the demotion a tie-breaker
+ * against chrome, never an override of a real target.
+ *
+ * `isNav` comes from the batched scan (`data-testid` + empty-text signals it
+ * alone can see); the text-word portion is re-derived here via
+ * {@link matchesNavText} so the legacy per-candidate path (always `isNav=false`)
+ * still demotes a bare "Back"/"Next". Exported so `flow-runner.ts` can detect a
+ * tie for the top rank among `resolveDeepLocatorCandidates`'s already-sorted
+ * output (see {@link extractTaggedPhrases}'s docblock).
+ */
+export function scoreCandidate(
+  accessibleText: string,
+  phrases: TaggedPhrase[],
+  isNav = false
+): number {
   const normalizedText = normalize(accessibleText);
-  if (!normalizedText) return 0;
   const positives = phrases.filter((p) => !p.negated).map((p) => normalize(p.text));
   const negatives = phrases.filter((p) => p.negated).map((p) => normalize(p.text));
-  if (negatives.some((n) => n === normalizedText || normalizedText.includes(n))) return -1;
-  if (positives.some((p) => p === normalizedText)) return 3;
-  if (positives.some((p) => normalizedText.includes(p) || p.includes(normalizedText))) return 2;
+  if (
+    normalizedText.length > 0 &&
+    negatives.some((n) => n === normalizedText || normalizedText.includes(n))
+  ) {
+    return -2;
+  }
+  if (normalizedText.length > 0) {
+    if (positives.some((p) => p === normalizedText)) return 4;
+    if (positives.some((p) => normalizedText.endsWith(p))) return 3;
+    if (positives.some((p) => normalizedText.includes(p) || p.includes(normalizedText))) return 2;
+  }
+  if (isNav || matchesNavText(normalizedText)) return -1;
   return 0;
 }
 
@@ -294,6 +365,7 @@ async function scanFrameCandidatesBatched(
     index: entry.index,
     selector: candidateSelector(hopSelector, entry.index),
     accessibleText: entry.text.trim(),
+    isNav: entry.isNav === true,
   }));
 }
 
@@ -340,6 +412,7 @@ async function enumerateCandidatesViaLegacyLoop(
       index,
       selector: candidateSelector(hopSelector, index),
       accessibleText: accessibleText.trim(),
+      isNav: false,
     });
   }
   return candidates;
@@ -420,7 +493,7 @@ export async function resolveDeepLocatorCandidates(
     .map((candidate, originalOrder) => ({
       candidate,
       originalOrder,
-      score: scoreCandidate(candidate.accessibleText, phrases),
+      score: scoreCandidate(candidate.accessibleText, phrases, candidate.isNav),
     }))
     .sort((a, b) => b.score - a.score || a.originalOrder - b.originalOrder)
     .map(({ candidate }) => candidate);

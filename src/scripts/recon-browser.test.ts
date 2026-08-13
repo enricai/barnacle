@@ -4819,7 +4819,7 @@ describe("recon-browser/runHealingFlow — phantom-submit escalation, end-to-end
       if (src.includes("ranked.sort")) {
         return [{ deepIndex: 7, tier: 3, tag: "button", accessibleName: "submit" }];
       }
-      if (src.includes('dispatchEvent(new Event("click"')) {
+      if (src.includes('__mouse("click"')) {
         const requestedIndex = Number(src.match(/all\[(\d+)\]/)?.[1]);
         const clicked = requestedIndex === (deepIndexClicked ?? 7);
         if (clicked) onDeepClick?.();

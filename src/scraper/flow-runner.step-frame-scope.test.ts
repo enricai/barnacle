@@ -179,7 +179,7 @@ function makeChildFrameTarget(
     if (source.includes("ranked.sort")) {
       return rankSubmitCandidates;
     }
-    if (source.includes('dispatchEvent(new Event("click"')) {
+    if (source.includes('__mouse("click"')) {
       return clickByDeepIndexResult;
     }
     if (source.includes("html:") && source.includes("text:")) {

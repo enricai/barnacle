@@ -149,9 +149,9 @@ describe("deep-locator-fake", () => {
 
     await expect(scan("() => { throw new Error('never executed by the fake'); }")).resolves.toEqual(
       [
-        { index: 0, text: "container", visible: true },
-        { index: 1, text: "Upload a Resume/CV", visible: false },
-        { index: 2, text: "Manual Application", visible: true },
+        { index: 0, text: "container", visible: true, isNav: false },
+        { index: 1, text: "Upload a Resume/CV", visible: false, isNav: false },
+        { index: 2, text: "Manual Application", visible: true, isNav: false },
       ]
     );
   });
