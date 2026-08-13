@@ -18,7 +18,9 @@ vi.mock("@/lib/logging", () => ({
 import {
   clickDeepLocatorCandidate,
   type DeepLocatorTimeoutOptions,
+  extractTaggedPhrases,
   resolveDeepLocatorCandidates,
+  scoreCandidate,
 } from "@/scraper/deep-locator-candidates";
 import {
   type FakeDeepLocatorFrame,
@@ -148,11 +150,13 @@ describe("resolveDeepLocatorCandidates", () => {
         index: 0,
         selector: "deeplocator=#apply_frame >> button >> nth=0",
         accessibleText: "Manual Application",
+        isNav: false,
       },
       {
         index: 1,
         selector: "deeplocator=#apply_frame >> button >> nth=1",
         accessibleText: "Cancel",
+        isNav: false,
       },
     ]);
     expect(deepLocatorSpy).toHaveBeenCalledWith("#apply_frame >> button");
@@ -225,11 +229,13 @@ describe("resolveDeepLocatorCandidates", () => {
         index: 0,
         selector: "deeplocator=#apply_frame >> * >> nth=0",
         accessibleText: "",
+        isNav: false,
       },
       {
         index: 1,
         selector: "deeplocator=#apply_frame >> * >> nth=1",
         accessibleText: "Manual Application",
+        isNav: false,
       },
     ]);
   });
@@ -357,6 +363,56 @@ describe("resolveDeepLocatorCandidates", () => {
   });
 });
 
+describe("scoreCandidate — nav demotion + icon-glyph suffix tiers", () => {
+  const select = (option: string): ReturnType<typeof extractTaggedPhrases> =>
+    extractTaggedPhrases(`select '${option}'`);
+
+  it("ranks the icon-glyph-prefixed option (ends-with) above a bare nav decoy", () => {
+    const phrases = select("Preferred Ward");
+    // A design-system button's text can be polluted by a leading icon-glyph name
+    // (an icon-font / <svg><title> prefix rendering as "<IconName><Label>").
+    const optionScore = scoreCandidate("StarPreferred Ward", phrases);
+    const nextScore = scoreCandidate("Next", phrases);
+    expect(optionScore).toBe(3);
+    expect(nextScore).toBe(-1);
+    expect(optionScore).toBeGreaterThan(nextScore);
+  });
+
+  it("demotes the empty-text BACK button (isNav) below an unrelated neutral candidate", () => {
+    const phrases = select("Preferred Ward");
+    expect(scoreCandidate("", phrases, true)).toBe(-1);
+    expect(scoreCandidate("Something Unrelated", phrases)).toBe(0);
+  });
+
+  it("still lets a genuinely-quoted 'Next' win at the exact tier despite the nav gate", () => {
+    const phrases = select("Next");
+    // isNav=true (it IS the advance button) but the step explicitly targets it.
+    expect(scoreCandidate("Next", phrases, true)).toBe(4);
+  });
+
+  it("keeps a negated-phrase match the worst pick, below nav", () => {
+    const phrases = extractTaggedPhrases("select 'Alpha'. Do NOT click 'Omega'");
+    expect(scoreCandidate("Omega", phrases)).toBe(-2);
+    expect(scoreCandidate("Omega", phrases)).toBeLessThan(scoreCandidate("Next", phrases, true));
+  });
+
+  it("ranks a suffix match (ends-with) above a mid-string containment match", () => {
+    const phrases = select("Ward");
+    const endsWith = scoreCandidate("Isolation Ward", phrases);
+    const contains = scoreCandidate("Ward Assignment Menu", phrases);
+    expect(endsWith).toBe(3);
+    expect(contains).toBe(2);
+    expect(endsWith).toBeGreaterThan(contains);
+  });
+
+  it("demotes a bare nav-word candidate by text alone on the legacy path (isNav=false)", () => {
+    const phrases = select("Preferred Ward");
+    // Legacy per-candidate path can't read data-testid, so isNav stays false —
+    // matchesNavText must still catch a bare "Back".
+    expect(scoreCandidate("Back", phrases, false)).toBe(-1);
+  });
+});
+
 describe("resolveDeepLocatorCandidates batched frame-scoped scan", () => {
   beforeEach(() => {
     loggerStub.warn.mockClear();
@@ -415,6 +471,7 @@ describe("resolveDeepLocatorCandidates batched frame-scoped scan", () => {
         index: 1,
         selector: "deeplocator=#apply_frame >> * >> nth=1",
         accessibleText: "Manual Application",
+        isNav: false,
       },
     ]);
 

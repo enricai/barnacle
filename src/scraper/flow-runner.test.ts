@@ -76,12 +76,12 @@ describe("flow-runner/selectionCountFromSignature", () => {
   const sig = (text: string): string => `${text.length}:${text}`;
 
   it("reads the running selected-count from a multi-select counter heading", () => {
-    expect(
-      selectionCountFromSignature(sig("Which care settings?\n0 settings selected\nAcute Care"))
-    ).toBe(0);
-    expect(
-      selectionCountFromSignature(sig("Which care settings?\n2 settings selected\nAcute Care"))
-    ).toBe(2);
+    expect(selectionCountFromSignature(sig("Which options?\n0 settings selected\nWidget A"))).toBe(
+      0
+    );
+    expect(selectionCountFromSignature(sig("Which options?\n2 settings selected\nWidget A"))).toBe(
+      2
+    );
   });
 
   it("returns null when no counter idiom is present", () => {
@@ -95,7 +95,7 @@ describe("flow-runner/selectionCountFromSignature", () => {
 
 describe("flow-runner/isSelectionCounterStalled", () => {
   const sig = (n: number): string => {
-    const text = `Which care settings?\n${n} settings selected\nAcute Care`;
+    const text = `Which options?\n${n} settings selected\nWidget A`;
     return `${text.length}:${text}`;
   };
 
@@ -520,7 +520,7 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
       if (src.includes("ranked.sort")) {
         return rankedCandidates;
       }
-      if (src.includes('dispatchEvent(new Event("click"')) {
+      if (src.includes('__mouse("click"')) {
         const requestedIndex = Number(src.match(/all\[(\d+)\]/)?.[1]);
         const clicked = requestedIndex === (deepIndexClicked ?? 7);
         if (clicked) onDeepClick?.();
@@ -640,7 +640,7 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
     const rankCalls = evaluate.mock.calls.filter(([expr]) => String(expr).includes("ranked.sort"));
     expect(rankCalls.length).toBe(0);
     const clickByIndexCalls = evaluate.mock.calls.filter(([expr]) =>
-      String(expr).includes('dispatchEvent(new Event("click"')
+      String(expr).includes('__mouse("click"')
     );
     expect(clickByIndexCalls.length).toBe(0);
   });
@@ -734,7 +734,7 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
     const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
       const src = String(expr);
       if (src.includes("ranked.sort")) return [];
-      if (src.includes('dispatchEvent(new Event("click"')) return { clicked: false };
+      if (src.includes('__mouse("click"')) return { clicked: false };
       if (src.includes("outerHTML")) return { html: 184186, text: "0:" };
       if (src.includes("isInvalid(el)")) return 0;
       return null;
@@ -814,7 +814,7 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
     const rankCalls = evaluate.mock.calls.filter(([expr]) => String(expr).includes("ranked.sort"));
     expect(rankCalls.length).toBe(2);
     const clickByIndexCalls = evaluate.mock.calls.filter(([expr]) =>
-      String(expr).includes('dispatchEvent(new Event("click"')
+      String(expr).includes('__mouse("click"')
     );
     expect(clickByIndexCalls.length).toBe(2);
   });
@@ -833,7 +833,7 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
       if (src.includes("ranked.sort")) {
         return [{ deepIndex: 7, tier: 3, tag: "button", accessibleName: "submit" }];
       }
-      if (src.includes('dispatchEvent(new Event("click"')) {
+      if (src.includes('__mouse("click"')) {
         clickAttempts += 1;
         const clicked = clickAttempts >= 2;
         if (clicked) signalCounter.n += 1;
@@ -868,7 +868,7 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
     const rankCalls = evaluate.mock.calls.filter(([expr]) => String(expr).includes("ranked.sort"));
     expect(rankCalls.length).toBe(2);
     const clickByIndexCalls = evaluate.mock.calls.filter(([expr]) =>
-      String(expr).includes('dispatchEvent(new Event("click"')
+      String(expr).includes('__mouse("click"')
     );
     expect(clickByIndexCalls.length).toBe(2);
   });
@@ -888,7 +888,7 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
     const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
       const src = String(expr);
       if (src.includes("ranked.sort")) return rankedCandidates;
-      if (src.includes('dispatchEvent(new Event("click"')) {
+      if (src.includes('__mouse("click"')) {
         const requestedIndex = Number(src.match(/all\[(\d+)\]/)?.[1]);
         if (requestedIndex === 12) signalCounter.n += 1;
         return { clicked: requestedIndex === 7 || requestedIndex === 12 };
@@ -919,7 +919,7 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
     // retry happened inside attempt 2, so attempts 3-5 never ran.
     expect(stagehandAct).toHaveBeenCalledTimes(1);
     const clickByIndexCalls = evaluate.mock.calls
-      .filter(([expr]) => String(expr).includes('dispatchEvent(new Event("click"'))
+      .filter(([expr]) => String(expr).includes('__mouse("click"'))
       .map(([expr]) => Number(String(expr).match(/all\[(\d+)\]/)?.[1]));
     // Top pick (7) clicked first, then the runner-up (12) — both by
     // deep-index, extending the existing `deep-index:N` pseudo-selector
@@ -986,7 +986,7 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
       kind: "phantom-click-exhausted",
     });
     const clickByIndexCalls = evaluate.mock.calls
-      .filter(([expr]) => String(expr).includes('dispatchEvent(new Event("click"'))
+      .filter(([expr]) => String(expr).includes('__mouse("click"'))
       .map(([expr]) => Number(String(expr).match(/all\[(\d+)\]/)?.[1]));
     expect(clickByIndexCalls).toEqual([7]);
   });

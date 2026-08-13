@@ -122,6 +122,7 @@ describe("flow-runner/executeStepWithHealing — deepLocator branch honors the w
       index: 0,
       selector: `deeplocator=iframe#apply_frame >> ${INTERACTIVE_CANDIDATE_SELECTOR} >> nth=0`,
       accessibleText: "Save & Exit",
+      isNav: false,
     };
     // Ranked first, matching the bug report's scenario where relevance
     // ranking (not DOM order) puts the destructive control on top.
@@ -170,11 +171,13 @@ describe("flow-runner/executeStepWithHealing — deepLocator branch honors the w
       index: 0,
       selector: `deeplocator=iframe#apply_frame >> ${INTERACTIVE_CANDIDATE_SELECTOR} >> nth=0`,
       accessibleText: "Save & Exit",
+      isNav: false,
     };
     const benignCandidate: DeepLocatorCandidate = {
       index: 1,
       selector: `deeplocator=iframe#apply_frame >> ${INTERACTIVE_CANDIDATE_SELECTOR} >> nth=1`,
       accessibleText: "Manual Application",
+      isNav: false,
     };
     // The real resolveDeepLocatorCandidates ranks the destructive control
     // first; flow-runner.ts is responsible for filtering its own
@@ -246,6 +249,7 @@ describe("flow-runner/executeStepWithHealing — deepLocator branch honors the w
       index: 0,
       selector: `deeplocator=iframe#apply_frame >> ${INTERACTIVE_CANDIDATE_SELECTOR} >> nth=0`,
       accessibleText: "Manual Application",
+      isNav: false,
     };
     resolveDeepLocatorCandidates.mockResolvedValue([benignCandidate]);
     clickDeepLocatorCandidate.mockImplementation(async () => {

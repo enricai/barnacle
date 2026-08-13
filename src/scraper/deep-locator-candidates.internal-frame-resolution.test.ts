@@ -65,8 +65,8 @@ describe("resolveDeepLocatorCandidates: internal resolveScanFrameTarget pass (no
 
   it("case (a): a latency-realistic Page whose iframe-src/location.href probes settle after a real timer tick (not same-tick) still takes the batched fast path via probeAttachedFrameTarget's real budget — one frame evaluate, zero delegate.count()/nth() calls", async () => {
     const scanEvaluateSpy = vi.fn().mockResolvedValue([
-      { index: 0, text: "Manual Application", visible: true },
-      { index: 1, text: "Cancel", visible: true },
+      { index: 0, text: "Manual Application", visible: true, isNav: false },
+      { index: 1, text: "Cancel", visible: true, isNav: false },
     ]);
     const countSpy = vi.fn();
     const nthSpy = vi.fn();
@@ -88,11 +88,13 @@ describe("resolveDeepLocatorCandidates: internal resolveScanFrameTarget pass (no
         index: 0,
         selector: `deeplocator=${FRAME_SELECTOR} >> * >> nth=0`,
         accessibleText: "Manual Application",
+        isNav: false,
       },
       {
         index: 1,
         selector: `deeplocator=${FRAME_SELECTOR} >> * >> nth=1`,
         accessibleText: "Cancel",
+        isNav: false,
       },
     ]);
     expect(scanEvaluateSpy).toHaveBeenCalledTimes(1);
@@ -130,6 +132,7 @@ describe("resolveDeepLocatorCandidates: internal resolveScanFrameTarget pass (no
         index: 0,
         selector: `deeplocator=${FRAME_SELECTOR} >> * >> nth=0`,
         accessibleText: "Manual Application",
+        isNav: false,
       },
     ]);
     // Proves the internal resolution pass actually ran (attempted the iframe-src
@@ -167,6 +170,7 @@ describe("resolveDeepLocatorCandidates: internal resolveScanFrameTarget pass (no
         index: 0,
         selector: `deeplocator=${FRAME_SELECTOR} >> * >> nth=0`,
         accessibleText: "Manual Application",
+        isNav: false,
       },
     ]);
     // Proves the internal resolution pass actually attempted the (rejecting)

@@ -45,21 +45,47 @@ export type ClickCandidateFn = (candidate: DeepLocatorCandidate) => Promise<void
 /** Refuses a candidate before it's clicked — e.g. `flow-runner.ts`'s `isWizardExitAction` deny-list, injected so this module stays site-agnostic. */
 export type DenyCandidatePredicate = (candidate: DeepLocatorCandidate) => boolean;
 
+/**
+ * Reads the running "N selected" counter AFTER a candidate's click resolved,
+ * returning the current count or `null` when no counter is exposed. Injected so
+ * this module stays site-agnostic and `Page`-free — `flow-runner.ts` supplies a
+ * reader that re-snapshots the frame and parses the count via
+ * `selectionCountFromSignature`. See {@link ClickCandidateCascadeOptions.readSelectionCount}.
+ */
+export type ReadSelectionCountFn = () => Promise<number | null>;
+
 export interface ClickCandidateCascadeOptions {
   /** Skips a candidate without clicking it when this returns `true`. Optional — omit to click every non-not-actionable candidate in rank order. */
   denyCandidate?: DenyCandidatePredicate;
   /** Overrides {@link DEFAULT_CLICK_CANDIDATE_ATTEMPT_CAP}. */
   attemptCap?: number;
+  /**
+   * When supplied (alongside a numeric {@link baselineSelectionCount}), a
+   * candidate whose click RESOLVED but did not raise the selection count above
+   * the baseline is treated like a not-actionable rejection: the walk keeps
+   * going to the next candidate instead of reporting success. This is the
+   * next-best-candidate recovery for a markerless multi-select phantom (the
+   * #163/#164 counter veto knows the click didn't register; this feeds that
+   * back into re-resolution before a replan is spent). A `null` read means "no
+   * counter exposed" and never vetoes, mirroring `isSelectionCounterStalled`'s
+   * null-safety. Omit for non-selection steps — the walk then behaves exactly
+   * as before.
+   */
+  readSelectionCount?: ReadSelectionCountFn;
+  /** The pre-walk selection count; a post-click read at or below this counts as "did not register". Ignored unless {@link readSelectionCount} is set. `null` disables the check (counter-less widget). */
+  baselineSelectionCount?: number | null;
 }
 
 /** Outcome of a {@link clickFirstActionableCandidate} walk. */
 export interface ClickCandidateCascadeOutcome {
-  /** `true` only when a candidate's click resolved (didn't reject). */
+  /** `true` only when a candidate's click resolved (didn't reject) AND, when a selection-count check is wired, registered the selection. */
   clicked: boolean;
   /** The candidate that was clicked, or `null` when the walk exhausted the list/cap without a successful click. */
   candidate: DeepLocatorCandidate | null;
   /** Selectors of every candidate this walk actually clicked (attempted), in attempt order — denied candidates are excluded since they were never clicked. */
   triedSelectors: string[];
+  /** Selectors of candidates that clicked cleanly but were rejected because the selection counter did not rise (a subset of {@link triedSelectors}). Empty unless {@link ClickCandidateCascadeOptions.readSelectionCount} vetoed at least one — lets the caller emit a "clicked but nothing registered" failure reason distinct from not-actionable. */
+  counterStalledSelectors: string[];
 }
 
 /**
@@ -73,7 +99,20 @@ export interface ClickCandidateCascadeOutcome {
  * with actionability (a detached frame, a wedged click's
  * `WatchdogTimeoutError`). Never throws on exhaustion — an exhausted list
  * (every candidate denied or not-actionable, or the cap reached) resolves to
- * `{ clicked: false, candidate: null, triedSelectors }` instead.
+ * `{ clicked: false, candidate: null, triedSelectors, counterStalledSelectors }`
+ * instead.
+ *
+ * When `readSelectionCount`/`baselineSelectionCount` are supplied, a click that
+ * RESOLVED but left the selection count at or below the baseline is treated
+ * like a not-actionable rejection — the walk advances to the next candidate
+ * instead of reporting a phantom success. A count that rose returns immediately
+ * (so a click that DID register never triggers a second click — the
+ * toggle-double-click guard), and a `null` read is never a veto (counter-less
+ * widget). Because the check runs after `click` already awaited its own settle,
+ * a synchronously-updated counter is visible; the only residual is a genuinely-
+ * registered click whose counter lags, which is the same false-negative the
+ * caller's late counter veto already tolerates today — behaviour is no worse,
+ * and now recovers via the next candidate.
  */
 export async function clickFirstActionableCandidate(
   candidates: readonly DeepLocatorCandidate[],
@@ -81,7 +120,13 @@ export async function clickFirstActionableCandidate(
   options: ClickCandidateCascadeOptions = {}
 ): Promise<ClickCandidateCascadeOutcome> {
   const attemptCap = options.attemptCap ?? DEFAULT_CLICK_CANDIDATE_ATTEMPT_CAP;
+  const { readSelectionCount, baselineSelectionCount } = options;
+  const checkCounter =
+    readSelectionCount !== undefined &&
+    baselineSelectionCount !== undefined &&
+    baselineSelectionCount !== null;
   const triedSelectors: string[] = [];
+  const counterStalledSelectors: string[] = [];
   let attempts = 0;
 
   for (const candidate of candidates) {
@@ -92,11 +137,20 @@ export async function clickFirstActionableCandidate(
     triedSelectors.push(candidate.selector);
     try {
       await click(candidate);
-      return { clicked: true, candidate, triedSelectors };
     } catch (error) {
       if (!isNodeNotActionableError(error)) throw error;
+      continue;
     }
+
+    if (checkCounter) {
+      const after = await readSelectionCount();
+      if (after !== null && after <= baselineSelectionCount) {
+        counterStalledSelectors.push(candidate.selector);
+        continue;
+      }
+    }
+    return { clicked: true, candidate, triedSelectors, counterStalledSelectors };
   }
 
-  return { clicked: false, candidate: null, triedSelectors };
+  return { clicked: false, candidate: null, triedSelectors, counterStalledSelectors };
 }

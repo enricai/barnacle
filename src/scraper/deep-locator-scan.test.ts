@@ -40,13 +40,16 @@ interface FakeEl {
   parent: FakeEl | null;
   focused: boolean;
   dispatchedEvents: string[];
+  dispatchedEventCtors: string[];
+  nativeClicks: number;
   value: string;
   options: FakeOption[];
   getBoundingClientRect(): { width: number; height: number };
   getAttribute(name: string): string | null;
   closest(selector: string): FakeEl | null;
   focus(): void;
-  dispatchEvent(evt: { type: string }): void;
+  dispatchEvent(evt: { type: string; __ctor?: string }): void;
+  click(): void;
 }
 
 /** Fake `document`/frame-document surface: tag-filtered `querySelectorAll` plus `getElementById`, the two lookups the accessible-name precedence chain needs beyond the matched candidate set itself. */
@@ -81,6 +84,8 @@ function makeEl(
     parent,
     focused: false,
     dispatchedEvents: [],
+    dispatchedEventCtors: [],
+    nativeClicks: 0,
     value: overrides.value ?? "",
     options: overrides.options ?? [],
     getBoundingClientRect() {
@@ -102,6 +107,15 @@ function makeEl(
     },
     dispatchEvent(evt) {
       el.dispatchedEvents.push(evt.type);
+      if (evt.__ctor) el.dispatchedEventCtors.push(evt.__ctor);
+    },
+    click() {
+      // Model the real DOM: HTMLElement.click() synthesizes and dispatches a
+      // trusted `click` event, so it lands in dispatchedEvents like any other —
+      // this is what lets a test count TOTAL `click` activations on one element
+      // and catch a synthetic-click + native-click double fire.
+      el.nativeClicks += 1;
+      el.dispatchEvent({ type: "click", __ctor: "NativeClick" });
     },
   };
   return el;
@@ -159,6 +173,43 @@ function nativeElementGlobals(): Record<string, unknown> {
 }
 
 /**
+ * The event-constructor globals {@link clickActivationExpr} resolves against:
+ * real `MouseEvent`/`PointerEvent` classes (so the primitive builds a
+ * trusted-shaped event, not a bare `Event`) plus `window` for the event's
+ * `view`. Each stub records the constructor name on the event as `__ctor` so a
+ * test can assert the primitive used `MouseEvent`/`PointerEvent` — not the bare
+ * `Event` fallback — for each dispatched step.
+ */
+function clickEventGlobals(): Record<string, unknown> {
+  class FakeEventBase {
+    type: string;
+    __ctor: string;
+    constructor(type: string, ctor: string) {
+      this.type = type;
+      this.__ctor = ctor;
+    }
+  }
+  return {
+    Event: class extends FakeEventBase {
+      constructor(type: string) {
+        super(type, "Event");
+      }
+    },
+    MouseEvent: class extends FakeEventBase {
+      constructor(type: string) {
+        super(type, "MouseEvent");
+      }
+    },
+    PointerEvent: class extends FakeEventBase {
+      constructor(type: string) {
+        super(type, "PointerEvent");
+      }
+    },
+    window: {},
+  };
+}
+
+/**
  * Executes a generated expression string against a fake `document` bound as
  * global `document`, plus a fake `getComputedStyle` that reads each fake
  * element's own `computedStyle` bag, and the fake native form-element
@@ -169,12 +220,7 @@ function evaluateInFakePage(expr: string, document: FakeRoot): unknown {
   return runInNewContext(expr, {
     document,
     getComputedStyle: (el: FakeEl) => el.computedStyle,
-    Event: class {
-      type: string;
-      constructor(type: string) {
-        this.type = type;
-      }
-    },
+    ...clickEventGlobals(),
     console,
     ...nativeElementGlobals(),
   });
@@ -194,12 +240,7 @@ function evaluateInFakeFrame(expr: string, frameDocument: FakeRoot, outerRoot: F
     document: frameDocument,
     __outerDocumentNeverReferenced: outerRoot,
     getComputedStyle: (el: FakeEl) => el.computedStyle,
-    Event: class {
-      type: string;
-      constructor(type: string) {
-        this.type = type;
-      }
-    },
+    ...clickEventGlobals(),
     console,
     ...nativeElementGlobals(),
   });
@@ -267,9 +308,9 @@ describe("deep-locator-scan/buildScanFrameCandidatesExpr", () => {
     ) as FrameCandidateScanResult[];
 
     expect(result).toEqual([
-      { index: 0, text: "First", visible: true },
-      { index: 1, text: "Second", visible: true },
-      { index: 2, text: "Third", visible: true },
+      { index: 0, text: "First", visible: true, isNav: false },
+      { index: 1, text: "Second", visible: true, isNav: false },
+      { index: 2, text: "Third", visible: true, isNav: false },
     ]);
   });
 
@@ -283,8 +324,8 @@ describe("deep-locator-scan/buildScanFrameCandidatesExpr", () => {
       document
     ) as FrameCandidateScanResult[];
 
-    expect(result[0]).toEqual({ index: 0, text: "Hidden", visible: false });
-    expect(result[1]).toEqual({ index: 1, text: "Shown", visible: true });
+    expect(result[0]).toEqual({ index: 0, text: "Hidden", visible: false, isNav: false });
+    expect(result[1]).toEqual({ index: 1, text: "Shown", visible: true, isNav: false });
   });
 
   it("marks a display:none element visible:false while a laid-out sibling comes back visible:true", () => {
@@ -339,7 +380,7 @@ describe("deep-locator-scan/buildScanFrameCandidatesExpr", () => {
       outerDocument
     ) as FrameCandidateScanResult[];
 
-    expect(result).toEqual([{ index: 0, text: "Inner", visible: true }]);
+    expect(result).toEqual([{ index: 0, text: "Inner", visible: true, isNav: false }]);
   });
 
   it("scans the frame-document-like tree via the root arg, ignoring the outer document", () => {
@@ -354,7 +395,74 @@ describe("deep-locator-scan/buildScanFrameCandidatesExpr", () => {
       outerDocument
     ) as FrameCandidateScanResult[];
 
-    expect(result).toEqual([{ index: 0, text: "Inner", visible: true }]);
+    expect(result).toEqual([{ index: 0, text: "Inner", visible: true, isNav: false }]);
+  });
+
+  it("flags the BACK button (data-testid token 'back', empty text) as nav", () => {
+    const back = makeEl("", {
+      tagName: "button",
+      attributes: { "data-testid": "wizard-compact-back-button" },
+    });
+    const document = makeRoot([back]);
+
+    const result = evaluateInFakePage(
+      buildScanFrameCandidatesExpr("button"),
+      document
+    ) as FrameCandidateScanResult[];
+
+    expect(result).toEqual([{ index: 0, text: "", visible: true, isNav: true }]);
+  });
+
+  it("does NOT flag an option whose data-testid merely CONTAINS 'back' as a substring", () => {
+    // "feedback" contains "back" but is not a nav token — token-boundary match.
+    const option = makeEl("Submit Feedback", {
+      tagName: "button",
+      attributes: { "data-testid": "feedback-tile" },
+    });
+    const document = makeRoot([option]);
+
+    const result = evaluateInFakePage(
+      buildScanFrameCandidatesExpr("button"),
+      document
+    ) as FrameCandidateScanResult[];
+
+    expect(result).toEqual([{ index: 0, text: "Submit Feedback", visible: true, isNav: false }]);
+  });
+
+  it("flags a 'Next' advance button as nav", () => {
+    const next = makeEl("Next", { tagName: "button" });
+    const document = makeRoot([next]);
+
+    const result = evaluateInFakePage(
+      buildScanFrameCandidatesExpr("button"),
+      document
+    ) as FrameCandidateScanResult[];
+
+    expect(result).toEqual([{ index: 0, text: "Next", visible: true, isNav: true }]);
+  });
+
+  it("does NOT flag a real icon-glyph-prefixed option button as nav", () => {
+    const option = makeEl("StarPreferred Ward", { tagName: "button" });
+    const document = makeRoot([option]);
+
+    const result = evaluateInFakePage(
+      buildScanFrameCandidatesExpr("button"),
+      document
+    ) as FrameCandidateScanResult[];
+
+    expect(result).toEqual([{ index: 0, text: "StarPreferred Ward", visible: true, isNav: false }]);
+  });
+
+  it("does NOT flag an unlabelled <select> as nav (empty text but not a button)", () => {
+    const select = makeEl("", { tagName: "select" });
+    const document = makeRoot([select]);
+
+    const result = evaluateInFakePage(
+      buildScanFrameCandidatesExpr("select"),
+      document
+    ) as FrameCandidateScanResult[];
+
+    expect(result).toEqual([{ index: 0, text: "", visible: true, isNav: false }]);
   });
 });
 
@@ -368,7 +476,7 @@ describe("deep-locator-scan/buildScanFrameCandidatesExpr accessible-name derivat
       document
     ) as FrameCandidateScanResult[];
 
-    expect(result).toEqual([{ index: 0, text: "First Name", visible: true }]);
+    expect(result).toEqual([{ index: 0, text: "First Name", visible: true, isNav: false }]);
   });
 
   it("falls back to placeholder when there is no aria-label/labelledby/label and no textContent", () => {
@@ -380,7 +488,7 @@ describe("deep-locator-scan/buildScanFrameCandidatesExpr accessible-name derivat
       document
     ) as FrameCandidateScanResult[];
 
-    expect(result).toEqual([{ index: 0, text: "Email Address", visible: true }]);
+    expect(result).toEqual([{ index: 0, text: "Email Address", visible: true, isNav: false }]);
   });
 
   it("falls back to title for an icon-only button with no text, aria-label, or placeholder", () => {
@@ -392,7 +500,7 @@ describe("deep-locator-scan/buildScanFrameCandidatesExpr accessible-name derivat
       document
     ) as FrameCandidateScanResult[];
 
-    expect(result).toEqual([{ index: 0, text: "Close", visible: true }]);
+    expect(result).toEqual([{ index: 0, text: "Close", visible: true, isNav: true }]);
   });
 
   it("still yields unchanged textContent for a text-bearing button (no regression)", () => {
@@ -404,7 +512,7 @@ describe("deep-locator-scan/buildScanFrameCandidatesExpr accessible-name derivat
       document
     ) as FrameCandidateScanResult[];
 
-    expect(result).toEqual([{ index: 0, text: "Submit Application", visible: true }]);
+    expect(result).toEqual([{ index: 0, text: "Submit Application", visible: true, isNav: false }]);
   });
 
   it("derives text from an associated label[for=id] when there is no aria-label/labelledby and no textContent", () => {
@@ -417,7 +525,7 @@ describe("deep-locator-scan/buildScanFrameCandidatesExpr accessible-name derivat
       document
     ) as FrameCandidateScanResult[];
 
-    expect(result).toEqual([{ index: 0, text: "First Name", visible: true }]);
+    expect(result).toEqual([{ index: 0, text: "First Name", visible: true, isNav: false }]);
   });
 
   it("derives text from the nearest ancestor <label> when the input has no id/for association", () => {
@@ -430,7 +538,7 @@ describe("deep-locator-scan/buildScanFrameCandidatesExpr accessible-name derivat
       document
     ) as FrameCandidateScanResult[];
 
-    expect(result).toEqual([{ index: 0, text: "Last Name", visible: true }]);
+    expect(result).toEqual([{ index: 0, text: "Last Name", visible: true, isNav: false }]);
   });
 
   it("derives text from aria-labelledby, resolving the referenced id against root", () => {
@@ -446,7 +554,7 @@ describe("deep-locator-scan/buildScanFrameCandidatesExpr accessible-name derivat
       document
     ) as FrameCandidateScanResult[];
 
-    expect(result).toEqual([{ index: 0, text: "First Name", visible: true }]);
+    expect(result).toEqual([{ index: 0, text: "First Name", visible: true, isNav: false }]);
   });
 
   it("falls back to value for an input[type=submit] with no other accessible-name signal", () => {
@@ -461,7 +569,7 @@ describe("deep-locator-scan/buildScanFrameCandidatesExpr accessible-name derivat
       document
     ) as FrameCandidateScanResult[];
 
-    expect(result).toEqual([{ index: 0, text: "Send Application", visible: true }]);
+    expect(result).toEqual([{ index: 0, text: "Send Application", visible: true, isNav: false }]);
   });
 
   it("prefers aria-label over placeholder/title/textContent when multiple signals are present", () => {
@@ -476,7 +584,7 @@ describe("deep-locator-scan/buildScanFrameCandidatesExpr accessible-name derivat
       document
     ) as FrameCandidateScanResult[];
 
-    expect(result).toEqual([{ index: 0, text: "Preferred", visible: true }]);
+    expect(result).toEqual([{ index: 0, text: "Preferred", visible: true, isNav: false }]);
   });
 
   it("derives text from an associated label[for=id] for a <select>, not its concatenated option text", () => {
@@ -492,7 +600,7 @@ describe("deep-locator-scan/buildScanFrameCandidatesExpr accessible-name derivat
       document
     ) as FrameCandidateScanResult[];
 
-    expect(result).toEqual([{ index: 0, text: "Country", visible: true }]);
+    expect(result).toEqual([{ index: 0, text: "Country", visible: true, isNav: false }]);
   });
 
   it("yields empty text for an unlabelled <select>, never falling back to its concatenated option text", () => {
@@ -504,7 +612,7 @@ describe("deep-locator-scan/buildScanFrameCandidatesExpr accessible-name derivat
       document
     ) as FrameCandidateScanResult[];
 
-    expect(result).toEqual([{ index: 0, text: "", visible: true }]);
+    expect(result).toEqual([{ index: 0, text: "", visible: true, isNav: false }]);
   });
 
   it("yields empty text for a structural element with no accessible-name signal at all", () => {
@@ -516,7 +624,7 @@ describe("deep-locator-scan/buildScanFrameCandidatesExpr accessible-name derivat
       document
     ) as FrameCandidateScanResult[];
 
-    expect(result).toEqual([{ index: 0, text: "", visible: true }]);
+    expect(result).toEqual([{ index: 0, text: "", visible: true, isNav: false }]);
   });
 
   it("does not surface concatenated option text as the accessible name for an unlabelled <select>", () => {
@@ -528,7 +636,7 @@ describe("deep-locator-scan/buildScanFrameCandidatesExpr accessible-name derivat
       document
     ) as FrameCandidateScanResult[];
 
-    expect(result).toEqual([{ index: 0, text: "", visible: true }]);
+    expect(result).toEqual([{ index: 0, text: "", visible: true, isNav: false }]);
   });
 
   it("still derives text from aria-label on a <select> whose textContent is concatenated option text", () => {
@@ -543,7 +651,7 @@ describe("deep-locator-scan/buildScanFrameCandidatesExpr accessible-name derivat
       document
     ) as FrameCandidateScanResult[];
 
-    expect(result).toEqual([{ index: 0, text: "State", visible: true }]);
+    expect(result).toEqual([{ index: 0, text: "State", visible: true, isNav: false }]);
   });
 });
 
@@ -561,9 +669,64 @@ describe("deep-locator-scan/buildClickFrameCandidateExpr", () => {
 
     expect(result).toEqual({ clicked: true });
     expect(second.focused).toBe(true);
-    expect(second.dispatchedEvents).toEqual(["mousedown", "mouseup", "click"]);
+    expect(second.dispatchedEvents).toEqual([
+      "pointerdown",
+      "mousedown",
+      "pointerup",
+      "mouseup",
+      "click",
+    ]);
     expect(first.dispatchedEvents).toEqual([]);
     expect(third.dispatchedEvents).toEqual([]);
+  });
+
+  it("activates via real PointerEvent/MouseEvent constructors and a native click(), not a bare Event", () => {
+    const target = makeEl("Preferred Ward");
+    const document = makeRoot([target]);
+
+    const result = evaluateInFakePage(
+      buildClickFrameCandidateExpr("button", 0),
+      document
+    ) as FrameCandidateClickResult;
+
+    expect(result).toEqual({ clicked: true });
+    // Gesture uses trusted-shaped constructors (a bare `Event` bubbles to
+    // analytics but doesn't drive a React/Base Web toggle), and the down/up
+    // steps precede the activation.
+    expect(target.dispatchedEventCtors.slice(0, 4)).toEqual([
+      "PointerEvent",
+      "MouseEvent",
+      "PointerEvent",
+      "MouseEvent",
+    ]);
+    expect(target.dispatchedEventCtors).not.toContain("Event");
+    // Activation is delivered by native el.click() (trusted-path).
+    expect(target.nativeClicks).toBe(1);
+    // Critical invariant: the element's click handler must fire EXACTLY ONCE.
+    // A synthetic `click` dispatch PLUS a native click() would double-fire it,
+    // and on a toggle that is select -> deselect = net zero.
+    expect(target.dispatchedEvents.filter((t) => t === "click")).toHaveLength(1);
+  });
+
+  it("does NOT double-fire a toggle handler (single net activation, stays selected)", () => {
+    // Model a real toggle: each click flips selection state. A double activation
+    // would end deselected (false) — the exact multi-select phantom this fixes.
+    let selected = false;
+    const target = makeEl("Preferred Ward");
+    const originalDispatch = target.dispatchEvent;
+    target.dispatchEvent = (evt) => {
+      if (evt.type === "click") selected = !selected;
+      originalDispatch(evt);
+    };
+    const document = makeRoot([target]);
+
+    const result = evaluateInFakePage(
+      buildClickFrameCandidateExpr("button", 0),
+      document
+    ) as FrameCandidateClickResult;
+
+    expect(result).toEqual({ clicked: true });
+    expect(selected).toBe(true);
   });
 
   it('returns {clicked:false, reason:"not-actionable"} for a 0x0 element instead of throwing', () => {
@@ -647,7 +810,13 @@ describe("deep-locator-scan/buildClickFrameCandidateExpr", () => {
     ) as FrameCandidateClickResult;
 
     expect(result).toEqual({ clicked: true });
-    expect(frameButton.dispatchedEvents).toEqual(["mousedown", "mouseup", "click"]);
+    expect(frameButton.dispatchedEvents).toEqual([
+      "pointerdown",
+      "mousedown",
+      "pointerup",
+      "mouseup",
+      "click",
+    ]);
     expect(outerButton.dispatchedEvents).toEqual([]);
   });
 
@@ -664,7 +833,13 @@ describe("deep-locator-scan/buildClickFrameCandidateExpr", () => {
     ) as FrameCandidateClickResult;
 
     expect(result).toEqual({ clicked: true });
-    expect(frameButton.dispatchedEvents).toEqual(["mousedown", "mouseup", "click"]);
+    expect(frameButton.dispatchedEvents).toEqual([
+      "pointerdown",
+      "mousedown",
+      "pointerup",
+      "mouseup",
+      "click",
+    ]);
     expect(outerButton.dispatchedEvents).toEqual([]);
   });
 });

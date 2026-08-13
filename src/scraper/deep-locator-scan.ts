@@ -39,6 +39,8 @@
  * range/not-actionable reported as data exactly like the click builder.
  */
 
+import { clickActivationExpr } from "@/scraper/browser-click-expr";
+
 /**
  * CSS selector for the interactive-element universe the deepLocator cascade
  * should enumerate instead of `"*"`, so a candidate set that would otherwise
@@ -89,6 +91,37 @@ const IS_VISIBLE_EXPR = `((el) => {
   if (rect.width === 0 && rect.height === 0) return false;
   const style = getComputedStyle(el);
   return style.display !== "none" && style.visibility !== "hidden";
+})`;
+
+/**
+ * Flags a candidate as a navigation/advance control that a "select
+ * '<option>'" instruction must NEVER resolve to — the empty-text BACK button
+ * or a "Next"/"Cancel" chrome button. Design-system widgets (Base Web, etc.)
+ * give the BACK button a `data-testid` but no accessible text, and give option
+ * buttons neither; without this flag `scoreCandidate` would let an exact-text
+ * decoy (or the first empty-text button in DOM order) outrank the real option.
+ * Takes the already-derived accessible `name` so it applies the same negative
+ * word-boundary predicate SHAPE `submit-control.ts` uses (over a nav-word list
+ * that adds `"next"`), and additionally inspects `data-testid` (which the
+ * accessible name deliberately never surfaces) plus the empty-text case.
+ * `data-testid` is matched on whole hyphen/underscore/space-delimited TOKENS
+ * (`back`/`nav`), not as a bare substring, so a legit option testid like
+ * `feedback-tile` or `navigator-choice` is not demoted. `scoreCandidate` gates
+ * the resulting demotion behind "not an exact positive phrase", so a genuine
+ * `select 'Next'` still wins.
+ */
+const IS_NAV_CANDIDATE_EXPR = `((el, name) => {
+  const testid = ((el.getAttribute ? el.getAttribute("data-testid") : "") || "").toLowerCase();
+  const testidTokens = testid.split(/[-_\\s]+/);
+  if (testidTokens.indexOf("back") !== -1 || testidTokens.indexOf("nav") !== -1) return true;
+  const norm = (name || "").replace(/\\s+/g, " ").trim().toLowerCase();
+  if (norm === "") {
+    const tag = (el.tagName || "").toLowerCase();
+    const role = ((el.getAttribute ? el.getAttribute("role") : "") || "").toLowerCase();
+    return tag === "button" || tag === "a" || role === "button";
+  }
+  const navWords = ["back", "cancel", "previous", "next", "close", "save draft", "save for later"];
+  return navWords.some((n) => norm === n || norm.startsWith(n + " ") || norm.endsWith(" " + n));
 })`;
 
 /**
@@ -173,7 +206,8 @@ function buildAccessibleNameExpr(root: string): string {
  * resolution Stagehand's own primary CSS resolver uses
  * (`resolveCssSelector(sel, i) = querySelectorAll(sel)[i]`, in the frame's
  * own document) — and returns one entry per match, in document order:
- * `{ index, text, visible }`. `index` therefore lines up 1:1 with the index
+ * `{ index, text, visible, isNav }` (see {@link IS_NAV_CANDIDATE_EXPR} for the
+ * nav/back flag). `index` therefore lines up 1:1 with the index
  * `deepLocator(hop).nth(index)` will later resolve to, so a caller can scan
  * once here and hand an index to the existing per-index click path without
  * re-deriving the candidate set.
@@ -194,13 +228,13 @@ function buildAccessibleNameExpr(root: string): string {
 export function buildScanFrameCandidatesExpr(innerSelector: string, root = "document"): string {
   return `(() => {
     const isVisible = ${IS_VISIBLE_EXPR};
+    const isNavCandidate = ${IS_NAV_CANDIDATE_EXPR};
     const accessibleName = ${buildAccessibleNameExpr(root)};
     const matches = Array.from(${root}.querySelectorAll(${JSON.stringify(innerSelector)}));
-    return matches.map((el, index) => ({
-      index,
-      text: accessibleName(el),
-      visible: isVisible(el),
-    }));
+    return matches.map((el, index) => {
+      const text = accessibleName(el);
+      return { index, text, visible: isVisible(el), isNav: isNavCandidate(el, text) };
+    });
   })()`;
 }
 
@@ -212,15 +246,18 @@ export interface FrameCandidateScanResult {
   text: string;
   /** `false` when the element has a 0x0 layout box or a computed `display:none`/`visibility:hidden` style — never actionable via a real click. */
   visible: boolean;
+  /** `true` for a navigation/advance control (BACK/Next/Cancel by `data-testid` containing back/nav, an empty accessible name, or a submit-style negative-word match) — `scoreCandidate` demotes it below every real option so a "select '<option>'" step never lands on the wizard's back/next button. See {@link IS_NAV_CANDIDATE_EXPR}. */
+  isNav: boolean;
 }
 
 /**
  * Builds a self-contained evaluate expression that re-runs the SAME
  * `root.querySelectorAll(innerSelector)` resolution {@link buildScanFrameCandidatesExpr}
- * uses and clicks the element at `index` (dispatching focus + bubbling
- * mousedown/mouseup/click, matching `buildClickByDeepIndexExpr`'s
- * (`submit-control.ts`) controlled-state click convention). This is the
- * one-round-trip actuation half of the batched-scan fix: a caller that
+ * uses and clicks the element at `index` via the shared
+ * {@link clickActivationExpr} snippet — a real `PointerEvent`/`MouseEvent`
+ * sequence plus native `click()`, NOT a bare `new Event(...)` (which bubbles to
+ * analytics but doesn't drive a React/Base Web toggle; see the module docblock).
+ * This is the one-round-trip actuation half of the batched-scan fix: a caller that
  * scanned via {@link buildScanFrameCandidatesExpr} can hand the chosen
  * `index` straight to this builder without re-deriving the candidate set,
  * because both builders resolve `querySelectorAll(innerSelector)` against
@@ -255,10 +292,7 @@ export function buildClickFrameCandidateExpr(
     const el = matches[${JSON.stringify(index)}];
     if (!el) return { clicked: false, reason: "out-of-range" };
     if (!isVisible(el)) return { clicked: false, reason: "not-actionable" };
-    if (typeof el.focus === "function") { try { el.focus(); } catch (e) {} }
-    el.dispatchEvent(new Event("mousedown", { bubbles: true }));
-    el.dispatchEvent(new Event("mouseup", { bubbles: true }));
-    el.dispatchEvent(new Event("click", { bubbles: true }));
+    ${clickActivationExpr("el")}
     return { clicked: true };
   })()`;
 }

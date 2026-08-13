@@ -9,6 +9,8 @@
  * included, and "Back"/"Cancel"/"Save draft"-shaped controls never appear.
  */
 
+import { clickActivationExpr } from "@/scraper/browser-click-expr";
+
 /**
  * Verbs that identify a control as NOT the submit action even when it is
  * button-shaped and reachable. Checked before any positive tier so a
@@ -154,9 +156,11 @@ export function buildRankSubmitCandidatesExpr(root = "document"): string {
 /**
  * Builds a self-contained `page.evaluate` expression string that re-runs
  * the same deterministic deep traversal as {@link buildRankSubmitCandidatesExpr}
- * and clicks the element at `deepIndex` (dispatching focus + bubbling
- * mousedown/mouseup/click, matching `deep-query.ts`'s controlled-state click
- * convention). Returns `{ clicked: false }` without throwing if the index is
+ * and clicks the element at `deepIndex` via the shared
+ * {@link clickActivationExpr} snippet (a real `PointerEvent`/`MouseEvent`
+ * sequence plus native `click()`, not a bare `new Event(...)` that a
+ * React/design-system handler ignores; see that module's docblock). Returns
+ * `{ clicked: false }` without throwing if the index is
  * out of range for the current DOM (e.g. the page changed between the
  * locate and click calls), and `{ clicked: false, reason: "not-actionable" }`
  * without dispatching any event if the element at that index fails
@@ -179,10 +183,7 @@ export function buildClickByDeepIndexExpr(deepIndex: number, root = "document"):
     const el = all[${JSON.stringify(deepIndex)}];
     if (!el) return { clicked: false };
     if (!isVisible(el)) return { clicked: false, reason: "not-actionable" };
-    if (typeof el.focus === "function") { try { el.focus(); } catch (e) {} }
-    el.dispatchEvent(new Event("mousedown", { bubbles: true }));
-    el.dispatchEvent(new Event("mouseup", { bubbles: true }));
-    el.dispatchEvent(new Event("click", { bubbles: true }));
+    ${clickActivationExpr("el")}
     return { clicked: true };
   })()`;
 }

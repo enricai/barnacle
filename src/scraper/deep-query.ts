@@ -12,6 +12,8 @@
  * throwing.
  */
 
+import { clickActivationExpr } from "@/scraper/browser-click-expr";
+
 /**
  * Text/attribute predicate for "this element is submit-shaped": a native
  * `type="submit"` control, a `<button>` with no explicit `type` inside a
@@ -57,11 +59,11 @@ const DEEP_ELEMENTS_EXPR = `((root) => {
 /**
  * Builds a self-contained `page.evaluate` expression string that locates
  * the first submit-shaped control anywhere in the document — piercing open
- * shadow roots — clicks it (setting focus, then dispatching bubbling
- * mousedown/mouseup/click events, matching the repo's controlled-state
- * click convention rather than a bare `el.click()`, see flow-runner.ts's
- * checkbox/radio primitives), and returns a structured result so the
- * caller can verify what happened without a second round-trip.
+ * shadow roots — clicks it via the shared {@link clickActivationExpr} snippet
+ * (a real `PointerEvent`/`MouseEvent` sequence plus native `click()`, not a
+ * bare `new Event(...)` that a React/design-system handler would ignore; see
+ * that module's docblock), and returns a structured result so the caller can
+ * verify what happened without a second round-trip.
  *
  * Locate-only mode (`{ clickIfFound: false }`) is exposed for callers that
  * want to probe for a deep submit control before deciding whether to act
@@ -88,10 +90,7 @@ export function buildDeepSubmitClickExpr(options?: {
     if (candidates.length === 0) return { found: false, clicked: false };
     const el = candidates[0];
     if (!${JSON.stringify(clickIfFound)}) return { found: true, clicked: false };
-    if (typeof el.focus === "function") { try { el.focus(); } catch (e) {} }
-    el.dispatchEvent(new Event("mousedown", { bubbles: true }));
-    el.dispatchEvent(new Event("mouseup", { bubbles: true }));
-    el.dispatchEvent(new Event("click", { bubbles: true }));
+    ${clickActivationExpr("el")}
     return { found: true, clicked: true };
   })()`;
 }

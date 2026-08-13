@@ -98,6 +98,7 @@ function routeScanExpression(
     index,
     text: element.text,
     visible: element.visible,
+    isNav: false,
   }));
 }
 

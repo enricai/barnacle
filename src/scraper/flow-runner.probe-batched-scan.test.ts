@@ -102,7 +102,7 @@ describe("flow-runner/probeStepBeforeAttempts — batched frame scan", () => {
     const { deepLocator, countSpy, nthSpy } = makeLegacyLoopSpyDeepLocator();
     const page = { deepLocator } as unknown as Page;
     const frameTarget = makeChildFrameTarget([
-      { index: 0, text: "Manual Application", visible: true },
+      { index: 0, text: "Manual Application", visible: true, isNav: false },
     ]);
 
     const result = await probeStepBeforeAttempts({
@@ -125,8 +125,8 @@ describe("flow-runner/probeStepBeforeAttempts — batched frame scan", () => {
     const { deepLocator, nthSpy } = makeLegacyLoopSpyDeepLocator();
     const page = { deepLocator } as unknown as Page;
     const frameTarget = makeChildFrameTarget([
-      { index: 0, text: "Manual Application", visible: false },
-      { index: 1, text: "Cancel", visible: false },
+      { index: 0, text: "Manual Application", visible: false, isNav: false },
+      { index: 1, text: "Cancel", visible: false, isNav: false },
     ]);
 
     const result = await probeStepBeforeAttempts({
@@ -166,7 +166,7 @@ describe("flow-runner/probeStepBeforeAttempts — batched frame scan", () => {
     const { deepLocator } = makeLegacyLoopSpyDeepLocator();
     const page = { deepLocator } as unknown as Page;
     const frameTarget = makeChildFrameTarget([
-      { index: 0, text: "Manual Application", visible: true },
+      { index: 0, text: "Manual Application", visible: true, isNav: false },
     ]);
     const resolveDeepLocatorCandidatesSpy = vi.spyOn(
       deepLocatorCandidatesModule,
