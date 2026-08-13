@@ -553,6 +553,27 @@ interface StepSnapshot {
    * effect". This closes that blind spot. Measurement-only.
    */
   formValueSignature: string;
+  /**
+   * Selection-state fingerprint over the SELECTION-BEARING nodes only, each
+   * keyed by a stable identity (tag + trimmed accessible text) so a real flip
+   * on a specific control registers while node-set churn (a validation-error
+   * link, a lazily-mounted nav/consent button, a spinner) does NOT. Per node:
+   * `aria-pressed`/`aria-checked`/`aria-selected`, `data-state` (excluding the
+   * `open`/`closed` disclosure values, which are the `aria-expanded` equivalent),
+   * `data-selected`/`data-checked`, and a selected/active/checked class-token
+   * hit — but a class marker only counts on an interactive element (button/
+   * link/role=button/option/tab/[tabindex]/input), so a bare
+   * `<div class="spinner active">` is ignored. A custom React/SPA multi-select
+   * toggle flips one of these WITHOUT moving network, URL, innerText, or a real
+   * `<input>` value — and its byte delta is trivial or NEGATIVE (an
+   * `aria-pressed` flip shrinks the HTML), so every other signal misses it and
+   * the click was scored "no observable effect". This closes that blind spot.
+   * Deliberately excludes noisy attrs (aria-expanded/current/activedescendant,
+   * tabindex) and subtrees (dialog/tooltip/aria-live) that churn without a
+   * selection change. Consumed by the verifier (see
+   * {@link isClickStateToggleVerified}) and {@link classifyPhantomClick}.
+   */
+  selectionStateSignature: string;
 }
 
 /** One attempt's audit trail — included verbatim in the failure dump. */
@@ -596,9 +617,22 @@ export interface AttemptRecord {
    * - `form-value`: formValueVerified credited a visible input/textarea/select
    *   value diff with no other signal (plain-text-field fill, no secondary
    *   UI side effect).
+   * - `state-toggle`: isClickStateToggleVerified credited a client-side
+   *   selection-state flip (aria-pressed/checked/selected, data-state, a
+   *   selected/active/checked class, or a disabled→enabled gate) with a
+   *   trivial or negative byte delta and zero network — a React/SPA
+   *   multi-select toggle that every size/text/value signal missed.
    * - `null`: failure path.
    */
-  verifiedBy: "network" | "url" | "dom" | "view-swap" | "submitted-state-dom" | "form-value" | null;
+  verifiedBy:
+    | "network"
+    | "url"
+    | "dom"
+    | "view-swap"
+    | "submitted-state-dom"
+    | "form-value"
+    | "state-toggle"
+    | null;
   /**
    * {@link classifyPhantomClick}'s verdict for this attempt, computed from
    * the same pre/post snapshot pair `describeAttemptEffectSignals` already
@@ -615,7 +649,7 @@ export interface AttemptRecord {
  * means no injection surface. Runs in browser context and returns a typed-narrow
  * shape via Runtime.callFunctionOn.
  */
-const DOM_SNAPSHOT_EXPR = `(() => { const b = document.body; if (!b) return { html: 0, text: "", values: "" }; const t = b.innerText || ""; const controls = Array.from(b.querySelectorAll("input, textarea, select")).filter((el) => el.offsetParent !== null); const values = controls.map((el) => { if (el.type === "checkbox" || el.type === "radio") return el.checked ? "1" : "0"; return el.value || ""; }).join("|").slice(0, 2000); return { html: (b.outerHTML || "").length, text: t.length + ":" + t.slice(0, 200), values }; })()`;
+const DOM_SNAPSHOT_EXPR = `(() => { const b = document.body; if (!b) return { html: 0, text: "", values: "", state: "" }; const t = b.innerText || ""; const controls = Array.from(b.querySelectorAll("input, textarea, select")).filter((el) => el.offsetParent !== null); const values = controls.map((el) => { if (el.type === "checkbox" || el.type === "radio") return el.checked ? "1" : "0"; return el.value || ""; }).join("|").slice(0, 2000); const ariaSel = "[aria-pressed],[aria-checked],[aria-selected],[data-state],[data-selected],[data-checked],[role=option],[role=switch],[role=checkbox],[role=menuitemcheckbox]"; const classSel = "button.selected,button.active,button.checked,button.Mui-selected,button.is-selected,a.selected,a.active,a.checked,[role=button].selected,[role=button].active,[role=button].checked,[role=option].selected,[role=tab].active,[tabindex].selected,[tabindex].active,[tabindex].checked,input.selected,input.active"; const classRx = /(?:^|\\s)(selected|active|checked|Mui-selected|is-selected)(?:\\s|$)/; const skip = (el) => el.closest("[role=dialog],[role=tooltip],[aria-live]") !== null; const idOf = (el) => (el.tagName + ":" + ((el.getAttribute("aria-label") || el.textContent || "").trim().slice(0, 24))).slice(0, 40); const seen = new Set(); const parts = []; for (const el of b.querySelectorAll(ariaSel + "," + classSel)) { if (el.offsetParent === null || skip(el) || seen.has(el)) continue; seen.add(el); const ap = el.getAttribute("aria-pressed") || ""; const ac = el.getAttribute("aria-checked") || ""; const as = el.getAttribute("aria-selected") || ""; const dsRaw = el.getAttribute("data-state") || ""; const ds = (dsRaw === "open" || dsRaw === "closed") ? "" : dsRaw; const dsel = el.hasAttribute("data-selected") ? "1" : ""; const dchk = el.hasAttribute("data-checked") ? "1" : ""; const clsHit = classRx.test(el.getAttribute("class") || "") ? "1" : "0"; if (!ap && !ac && !as && !ds && !dsel && !dchk && clsHit === "0") continue; parts.push(idOf(el) + "=" + ap + "," + ac + "," + as + "," + ds + "," + dsel + "," + dchk + "," + clsHit); } const state = parts.sort().join("|").slice(0, 2000); return { html: (b.outerHTML || "").length, text: t.length + ":" + t.slice(0, 200), values, state }; })()`;
 
 /**
  * Captures the pre/post signal triple the submit-verify cascade diffs.
@@ -632,6 +666,7 @@ export async function snapshotPage(
   let bodyHtmlLength = 0;
   let visibleTextSignature = "";
   let formValueSignature = "";
+  let selectionStateSignature = "";
   try {
     const result = await target.evaluate(DOM_SNAPSHOT_EXPR);
     if (
@@ -646,6 +681,8 @@ export async function snapshotPage(
       visibleTextSignature = (result as { text: string }).text;
       const rawValues = (result as Record<string, unknown>).values;
       formValueSignature = typeof rawValues === "string" ? rawValues : "";
+      const rawState = (result as Record<string, unknown>).state;
+      selectionStateSignature = typeof rawState === "string" ? rawState : "";
     }
   } catch {
     // Snapshot is observational; on failure, defaults to 0/"" so the verifier
@@ -664,6 +701,7 @@ export async function snapshotPage(
     bodyHtmlLength,
     visibleTextSignature,
     formValueSignature,
+    selectionStateSignature,
   };
 }
 
@@ -1162,6 +1200,49 @@ export function isClickViewSwapVerified(params: {
 }
 
 /**
+ * Credits a network-free click when it flipped a client-side SELECTION state —
+ * an `aria-pressed`/`aria-checked`/`aria-selected` attribute, a `data-state`,
+ * or a `selected`/`active`/`checked` class on the toggled control (captured by
+ * `StepSnapshot.selectionStateSignature`). React/SPA multi-select wizards toggle
+ * options this way with a trivial or NEGATIVE byte delta and no
+ * network/URL/innerText/input-value change, so `isClickViewSwapVerified` and
+ * the byte-floor phantom check both miss them and score the real selection a
+ * phantom no-op. This is the size-independent counterpart to that gate. Scope
+ * guards: only a plain `click`, never a final/submit step (those keep their
+ * stronger submit-judge gate), and only when zero network fired (a network POST
+ * is authoritative). **Stricter than `isClickViewSwapVerified` on advance
+ * steps:** it excludes ANY advance/"Next" step (`isAdvance`), not just an
+ * advance-WITH-pattern step. The selection signal fires on a validation-render
+ * that toggles a control's own state, and an advance without a configured
+ * `advanceTransitionBodyPattern` has no real-transition veto
+ * (see `shouldWarnMissingAdvancePattern`) — so crediting a bare selection change
+ * would desync the wizard step pointer. A real advance still verifies via
+ * network/URL; a field-toggle answer step (not an advance) keeps this credit.
+ */
+export function isClickStateToggleVerified(params: {
+  resolvedAction: { method?: string | null } | null;
+  isFinalStep: boolean;
+  submitStep: boolean;
+  isAdvance: boolean;
+  networkDelta: number;
+  selectionStateChanged: boolean;
+}): boolean {
+  const {
+    resolvedAction,
+    isFinalStep,
+    submitStep,
+    isAdvance,
+    networkDelta,
+    selectionStateChanged,
+  } = params;
+  if (resolvedAction?.method !== "click") return false;
+  if (isFinalStep || submitStep) return false;
+  if (isAdvance) return false;
+  if (networkDelta !== 0) return false;
+  return selectionStateChanged;
+}
+
+/**
  * Whether an act-success step warrants a committed-value read-back before the
  * weak view-swap/form-value signals are allowed to accept it. A controlled
  * datepicker (react-datepicker) accepts the keystrokes, discards the value on
@@ -1230,6 +1311,7 @@ export function describeAttemptEffectSignals(
   const networkDelta = post.networkCount - pre.networkCount;
   const textChanged = post.visibleTextSignature !== pre.visibleTextSignature;
   const valueChanged = post.formValueSignature !== pre.formValueSignature;
+  const selectionStateChanged = post.selectionStateSignature !== pre.selectionStateSignature;
   const windowCaptures = recentCaptureMeta.slice(preMetaLength);
   const observations: string[] = [];
   if (networkDelta === 0 && bytesDelta >= 500) {
@@ -1253,6 +1335,11 @@ export function describeAttemptEffectSignals(
   if (valueChanged && !textChanged && networkDelta === 0) {
     observations.push(
       "form-value-changed-without-network: a visible input/textarea/select value changed with no other observable effect (plain field fill)"
+    );
+  }
+  if (selectionStateChanged && networkDelta === 0) {
+    observations.push(
+      "selection-state-changed-without-network: a control's selection state (aria-pressed/checked/selected, data-state, or a selected/active/checked class) flipped with no network/url change — the click DID toggle a client-side control; on a submit/advance step this is not a real transition, so answer any remaining required questions or find the real advance rather than re-clicking this toggle"
     );
   }
   return observations.join(" | ");
@@ -6595,6 +6682,7 @@ export async function executeStepWithHealing(params: {
         url: page.url(),
         bodyHtmlLength: 0,
         visibleTextSignature: "",
+        selectionStateSignature: "",
         formValueSignature: "",
       };
       attempts.push({
@@ -6874,6 +6962,10 @@ export async function executeStepWithHealing(params: {
                 actResultSuccess: true,
                 pre,
                 post: midPost,
+                // The deep-submit-locator runs only on submit escalation, so a
+                // stray selection flip must not mask a top-pick phantom and skip
+                // the runner-up retry.
+                isSubmitShapedStep: true,
               });
               if (topVerdict === "phantom") {
                 logger.info(
@@ -7701,6 +7793,20 @@ export async function executeStepWithHealing(params: {
       bytesDelta: post.bodyHtmlLength - pre.bodyHtmlLength,
       textChanged: post.visibleTextSignature !== pre.visibleTextSignature,
     });
+    // Client-side state-toggle gate: credit a network-free click that flipped a
+    // selection-state signature (aria-pressed/checked/selected, data-state, a
+    // selected/active/checked class, or a disabled→enabled gate) regardless of
+    // byte size. Fixes React/SPA multi-select wizards whose option buttons
+    // toggle client state with a trivial or NEGATIVE byte delta — which
+    // clickViewSwapVerified's byte floor and the phantom byte-check both miss.
+    const clickStateToggleVerified = isClickStateToggleVerified({
+      resolvedAction,
+      isFinalStep,
+      submitStep,
+      isAdvance: isAdvanceStep(step),
+      networkDelta: post.networkCount - pre.networkCount,
+      selectionStateChanged: post.selectionStateSignature !== pre.selectionStateSignature,
+    });
     // Form-value-diff signal: `visibleTextSignature` never reflects a plain
     // <input>/<textarea>/<select>'s `value` property, so a fill with no
     // secondary UI side effect (no toggle, no formatted display) had ZERO
@@ -7778,7 +7884,8 @@ export async function executeStepWithHealing(params: {
       urlChanged ||
       domVerifiedForStep ||
       datepickerCommitted ||
-      (!datepickerRejected && (clickViewSwapVerified || formValueVerified));
+      (!datepickerRejected &&
+        (clickViewSwapVerified || formValueVerified || clickStateToggleVerified));
 
     // Final-step submit-verification gate. Replaces the deterministic
     // submitEndpointPattern regex with a Haiku 4.5 LLM judgment over
@@ -7929,7 +8036,9 @@ export async function executeStepWithHealing(params: {
                 ? "dom"
                 : formValueVerified
                   ? "form-value"
-                  : "dom";
+                  : clickStateToggleVerified
+                    ? "state-toggle"
+                    : "dom";
     }
 
     // N+16 probe: Stagehand's CDP click sometimes lands on the button without
@@ -8029,6 +8138,14 @@ export async function executeStepWithHealing(params: {
           const retryHtmlDelta = retryPost.bodyHtmlLength - pre.bodyHtmlLength;
           const retryTextChanged = retryPost.visibleTextSignature !== pre.visibleTextSignature;
           const retryFormValueChanged = retryPost.formValueSignature !== pre.formValueSignature;
+          // Excludes advance/"Next" steps for the same reason the primary
+          // isClickStateToggleVerified does: a validation re-render can flip a
+          // control's selection state without moving the wizard, and an advance
+          // without a configured transition pattern has no real-transition veto,
+          // so crediting a bare selection change here would desync the step pointer.
+          const retrySelectionStateChanged =
+            !isAdvanceStep(step) &&
+            retryPost.selectionStateSignature !== pre.selectionStateSignature;
           // RC2: an advance/`kind=click` "Next" that only grew the DOM
           // (validation errors rendered) with NO network/URL change is a
           // validation-blocked no-op, not a real transition — but the
@@ -8091,6 +8208,7 @@ export async function executeStepWithHealing(params: {
               retryHtmlDelta !== 0 ||
               retryTextChanged ||
               retryFormValueChanged ||
+              retrySelectionStateChanged ||
               checkboxStateVerified);
           // Apply the same submit-endpoint gate the primary verifier uses.
           // Without this, the n+16 fallback would still ride past a
@@ -8179,11 +8297,21 @@ export async function executeStepWithHealing(params: {
             }
           }
           logger.info(
-            `n+16 probe: step=${stepIndex + 1}/${totalSteps?.() ?? "?"} attempt=${attempt} el.click() fallback fired=${fired === true} kind=${probeResult.kind ?? "none"} checkboxStateVerified=${checkboxStateVerified} ancestorStillInvalid=${ancestorStillInvalid}; network=${retryNetworkFired} url=${retryUrlChanged} htmlDelta=${retryHtmlDelta} textChanged=${retryTextChanged} formValueChanged=${retryFormValueChanged} verified=${retryVerified}`
+            `n+16 probe: step=${stepIndex + 1}/${totalSteps?.() ?? "?"} attempt=${attempt} el.click() fallback fired=${fired === true} kind=${probeResult.kind ?? "none"} checkboxStateVerified=${checkboxStateVerified} ancestorStillInvalid=${ancestorStillInvalid}; network=${retryNetworkFired} url=${retryUrlChanged} htmlDelta=${retryHtmlDelta} textChanged=${retryTextChanged} formValueChanged=${retryFormValueChanged} selectionStateChanged=${retrySelectionStateChanged} verified=${retryVerified}`
           );
           if (retryVerified) {
             if (record.verifiedBy === null) {
-              record.verifiedBy = retryUrlChanged ? "url" : retryNetworkFired ? "network" : "dom";
+              record.verifiedBy = retryUrlChanged
+                ? "url"
+                : retryNetworkFired
+                  ? "network"
+                  : retryHtmlDelta === 0 &&
+                      !retryTextChanged &&
+                      !retryFormValueChanged &&
+                      !checkboxStateVerified &&
+                      retrySelectionStateChanged
+                    ? "state-toggle"
+                    : "dom";
             }
             record.post = retryPost;
             attempts.push(record);
@@ -8212,7 +8340,7 @@ export async function executeStepWithHealing(params: {
     if (verified) {
       if (attempt > 1) {
         logger.info(
-          `${formatStepPrefix(stepIndex, totalSteps)} healed on attempt ${attempt} via ${record.technique} (network=${networkFired} url=${urlChanged} dom=${domVerified})`
+          `${formatStepPrefix(stepIndex, totalSteps)} healed on attempt ${attempt} via ${record.technique} (network=${networkFired} url=${urlChanged} dom=${domVerified} stateToggle=${clickStateToggleVerified} verifiedBy=${record.verifiedBy})`
         );
       } else {
         // Why log first-try wins explicitly: prior to this change, attempt-1
@@ -8223,7 +8351,7 @@ export async function executeStepWithHealing(params: {
         // 32 successful Stagehand acts. Surfacing attempt-1 wins lets the
         // log match telemetry and prevents the same false alarm.
         logger.info(
-          `${formatStepPrefix(stepIndex, totalSteps)} succeeded on attempt 1 via ${record.technique} (network=${networkFired} url=${urlChanged} dom=${domVerified})`
+          `${formatStepPrefix(stepIndex, totalSteps)} succeeded on attempt 1 via ${record.technique} (network=${networkFired} url=${urlChanged} dom=${domVerified} stateToggle=${clickStateToggleVerified} verifiedBy=${record.verifiedBy})`
         );
       }
       trajectory?.push({ stepIndex, verifiedBy: record.verifiedBy });
@@ -8240,6 +8368,7 @@ export async function executeStepWithHealing(params: {
       actResultSuccess: record.actResultSuccess,
       pre,
       post,
+      isSubmitShapedStep: isFinalStep || submitStep,
     });
     const reason = record.errorMessage
       ? effectSignals
