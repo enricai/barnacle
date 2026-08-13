@@ -652,6 +652,44 @@ export interface AttemptRecord {
   phantomClickVerdict: PhantomClickVerdict | null;
 }
 
+/** Cap on a single attribute value before a failure-bundle DOM capture keeps it. */
+const FAILURE_DUMP_MAX_ATTR_LENGTH = 2_000;
+
+/** Byte budget for a failure-bundle `bodyOuterHtml` capture after attribute pruning. */
+const FAILURE_DUMP_MAX_BODY_LENGTH = 100_000;
+
+const FAILURE_DUMP_ATTR_RX = new RegExp(
+  `="([^"]{${FAILURE_DUMP_MAX_ATTR_LENGTH},})"|='([^']{${FAILURE_DUMP_MAX_ATTR_LENGTH},})'`,
+  "g"
+);
+
+/**
+ * Prepares a `document.body.outerHTML` string for a step-failure bundle so it
+ * shows RENDERED controls, not a cut-off shell. A single data-carrying attribute
+ * (a SPA mount point's `data="{…}"` state blob, a long `value=`) can exceed the
+ * whole body budget on its own, pushing the actual `<button>`/`<input>` markup
+ * past the truncation point — which reads in the bundle as "empty DOM / 0
+ * buttons" when the page is fully hydrated. Collapse any attribute value longer
+ * than {@link FAILURE_DUMP_MAX_ATTR_LENGTH} to an elided marker BEFORE the length
+ * cap, then slice to {@link FAILURE_DUMP_MAX_BODY_LENGTH}. The double- and
+ * single-quoted alternatives are kept separate (rather than a `\1` backreference)
+ * so a double-quoted value may contain apostrophes — and vice versa — without
+ * ending the match early, which a shared `[^"']` class would wrongly do. Returns
+ * null passthrough so callers keep their "evaluate failed → null" contract.
+ */
+export function prepareFailureDumpBody(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const pruned = raw.replace(
+    FAILURE_DUMP_ATTR_RX,
+    (_m, dq: string | undefined, sq: string | undefined) => {
+      const value = dq ?? sq ?? "";
+      const quote = dq !== undefined ? '"' : "'";
+      return `=${quote}[elided ${value.length} chars]${quote}`;
+    }
+  );
+  return pruned.slice(0, FAILURE_DUMP_MAX_BODY_LENGTH);
+}
+
 /**
  * Trust boundary: static string literal, fixed at compile time. No interpolation
  * means no injection surface. Runs in browser context and returns a typed-narrow
@@ -1248,6 +1286,52 @@ export function isClickStateToggleVerified(params: {
   if (isAdvance) return false;
   if (networkDelta !== 0) return false;
   return selectionStateChanged;
+}
+
+/**
+ * Reads the "N settings/items selected" running count that multi-select wizard
+ * steps render as a live heading above the option grid. Returns the integer, or
+ * `null` when the snapshot has no such counter. Operates on a
+ * {@link StepSnapshot.visibleTextSignature}, which is
+ * `"<len>:<first-200-chars-of-innerText>"` — the counter idiom sits at the top
+ * of these steps, so it is always inside the 200-char window.
+ *
+ * Exists because some SPA multi-selects (obfuscated hashed classes, no
+ * `aria-pressed`/`data-state`) expose no selection-state attribute at all, so
+ * {@link isClickStateToggleVerified}'s fingerprint is structurally blind and a
+ * phantom option click rides the generic DOM-delta gate to a FALSE credit — the
+ * running counter is the only trustworthy "did the selection register" signal.
+ */
+export function selectionCountFromSignature(visibleTextSignature: string): number | null {
+  const colon = visibleTextSignature.indexOf(":");
+  const text = colon === -1 ? visibleTextSignature : visibleTextSignature.slice(colon + 1);
+  const match = text.match(/(\d+)\s+(?:(?:settings?|items?|options?)\s+)?selected\b/i);
+  const digits = match?.[1];
+  return digits === undefined ? null : Number.parseInt(digits, 10);
+}
+
+/**
+ * Veto for a SELECTION-intent step whose weak DOM signals (view-swap byte delta,
+ * a non-advance `domVerified` reflow) would otherwise credit a click that did
+ * NOT register the selection. When the step's snapshot exposes a running
+ * "N selected" counter (see {@link selectionCountFromSignature}) and that count
+ * did not increase across the click, the option was not actually selected — a
+ * phantom the fingerprint can't catch — so the caller must NOT treat the weak
+ * signals as verification and should keep healing. Returns `true` only when a
+ * counter is present on BOTH snapshots and did not rise; absent a counter it
+ * returns `false` (no veto), so counter-less selection widgets are untouched.
+ */
+export function isSelectionCounterStalled(params: {
+  isSelectionStep: boolean;
+  preVisibleTextSignature: string;
+  postVisibleTextSignature: string;
+}): boolean {
+  const { isSelectionStep, preVisibleTextSignature, postVisibleTextSignature } = params;
+  if (!isSelectionStep) return false;
+  const pre = selectionCountFromSignature(preVisibleTextSignature);
+  const post = selectionCountFromSignature(postVisibleTextSignature);
+  if (pre === null || post === null) return false;
+  return post <= pre;
 }
 
 /**
@@ -6600,8 +6684,7 @@ export async function executeStepWithHealing(params: {
     const bodyOuterHtmlRaw = await (frameTarget ?? page)
       .evaluate("document.body ? document.body.outerHTML : null")
       .catch(() => null);
-    const bodyOuterHtml =
-      typeof bodyOuterHtmlRaw === "string" ? bodyOuterHtmlRaw.slice(0, 100_000) : null;
+    const bodyOuterHtml = prepareFailureDumpBody(bodyOuterHtmlRaw);
     const probeAbsentObservedUnfocused = await guardedObserve(
       stagehand,
       undefined,
@@ -7887,13 +7970,36 @@ export async function executeStepWithHealing(params: {
         }
       }
     }
+    // Selection-counter veto. A multi-select option click whose widget exposes
+    // no aria/data-state marker (obfuscated hashed classes) leaves
+    // `clickStateToggleVerified` blind, so a phantom that merely reflowed the
+    // DOM would ride the weak `domVerifiedForStep`/`clickViewSwapVerified`
+    // signals to a FALSE credit — the flow then advances to a "Next" that
+    // no-ops because nothing was actually selected. When the step's running
+    // "N selected" counter did not rise, suppress those weak DOM-delta signals
+    // so the cascade keeps trying a real selection. Strong signals (real
+    // network/URL transition) and the counter-independent state-toggle /
+    // form-value signals — each of which IS the selection registering — are
+    // never vetoed; counter-less widgets are untouched (the helper no-ops).
+    const selectionCounterStalled = isSelectionCounterStalled({
+      isSelectionStep: parseSelectStep(step) !== null,
+      preVisibleTextSignature: pre.visibleTextSignature,
+      postVisibleTextSignature: post.visibleTextSignature,
+    });
+    if (selectionCounterStalled && (domVerifiedForStep || clickViewSwapVerified)) {
+      logger.info(
+        `${formatStepPrefix(stepIndex, totalSteps)} selection step credited only via DOM reflow but the "N selected" counter did not rise — the option did not register; not treating the weak DOM signal as verified`
+      );
+    }
+    const domVerifiedAfterCounter = selectionCounterStalled ? false : domVerifiedForStep;
+    const clickViewSwapAfterCounter = selectionCounterStalled ? false : clickViewSwapVerified;
     let verified =
       networkIsRealAdvance ||
       urlChanged ||
-      domVerifiedForStep ||
+      domVerifiedAfterCounter ||
       datepickerCommitted ||
       (!datepickerRejected &&
-        (clickViewSwapVerified || formValueVerified || clickStateToggleVerified));
+        (clickViewSwapAfterCounter || formValueVerified || clickStateToggleVerified));
 
     // Final-step submit-verification gate. Replaces the deterministic
     // submitEndpointPattern regex with a Haiku 4.5 LLM judgment over
@@ -8220,6 +8326,19 @@ export async function executeStepWithHealing(params: {
           // only a strong signal (network/url) or a verified checkbox state may
           // pass. Non-final/submit steps are unaffected.
           const weakDomSignalsAllowed = (!isFinalStep && !submitStep) || requireSubmitEndpoint;
+          // Selection-counter veto for the n+16 fallback — the same gate the
+          // primary verifier applies, recomputed against `retryPost`. Without
+          // it this path would re-credit a stalled selection the primary veto
+          // already suppressed: the fallback `el.click()` can reflow the DOM
+          // (html/text/selection-state delta) without registering the option,
+          // and those weak deltas are exactly what the OR below admits for a
+          // non-final selection step. Only the weak-delta disjunct is vetoed;
+          // strong signals (network/url) and a verified checkbox state pass.
+          const retrySelectionCounterStalled = isSelectionCounterStalled({
+            isSelectionStep: parseSelectStep(step) !== null,
+            preVisibleTextSignature: pre.visibleTextSignature,
+            postVisibleTextSignature: retryPost.visibleTextSignature,
+          });
           let retryVerified =
             !clickBlockedByInvalid &&
             !fallbackDomOnlyAdvance &&
@@ -8227,6 +8346,7 @@ export async function executeStepWithHealing(params: {
               retryUrlChanged ||
               checkboxStateVerified ||
               (weakDomSignalsAllowed &&
+                !retrySelectionCounterStalled &&
                 (retryHtmlDelta !== 0 ||
                   retryTextChanged ||
                   retryFormValueChanged ||
@@ -8533,8 +8653,7 @@ export async function executeStepWithHealing(params: {
   const bodyOuterHtmlRaw = await (frameTarget ?? mainFrameTarget(page))
     .evaluate("document.body ? document.body.outerHTML : null")
     .catch(() => null);
-  const bodyOuterHtml =
-    typeof bodyOuterHtmlRaw === "string" ? bodyOuterHtmlRaw.slice(0, 100_000) : null;
+  const bodyOuterHtml = prepareFailureDumpBody(bodyOuterHtmlRaw);
   const cascadeExhaustObservedUnfocused = await guardedObserve(
     stagehand,
     undefined,
