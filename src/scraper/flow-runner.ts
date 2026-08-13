@@ -554,24 +554,32 @@ interface StepSnapshot {
    */
   formValueSignature: string;
   /**
-   * Selection-state fingerprint over the SELECTION-BEARING nodes only, each
-   * keyed by a stable identity (tag + trimmed accessible text) so a real flip
-   * on a specific control registers while node-set churn (a validation-error
-   * link, a lazily-mounted nav/consent button, a spinner) does NOT. Per node:
-   * `aria-pressed`/`aria-checked`/`aria-selected`, `data-state` (excluding the
-   * `open`/`closed` disclosure values, which are the `aria-expanded` equivalent),
-   * `data-selected`/`data-checked`, and a selected/active/checked class-token
-   * hit — but a class marker only counts on an interactive element (button/
-   * link/role=button/option/tab/[tabindex]/input), so a bare
-   * `<div class="spinner active">` is ignored. A custom React/SPA multi-select
-   * toggle flips one of these WITHOUT moving network, URL, innerText, or a real
-   * `<input>` value — and its byte delta is trivial or NEGATIVE (an
-   * `aria-pressed` flip shrinks the HTML), so every other signal misses it and
-   * the click was scored "no observable effect". This closes that blind spot.
-   * Deliberately excludes noisy attrs (aria-expanded/current/activedescendant,
-   * tabindex) and subtrees (dialog/tooltip/aria-live) that churn without a
-   * selection change. Consumed by the verifier (see
-   * {@link isClickStateToggleVerified}) and {@link classifyPhantomClick}.
+   * `<fnv1a-hash>:<count>` fingerprint of the SELECTION-BEARING nodes only.
+   * Each such node contributes a DOM-order-indexed token of its selection
+   * state — `aria-pressed`/`aria-checked`/`aria-selected`, `data-state`
+   * (excluding the `open`/`closed` disclosure values, which are the
+   * `aria-expanded` equivalent), `data-selected`/`data-checked`, and a
+   * selected/active/checked class-token hit (the class marker only counts on
+   * an interactive element — button/link/role=button/option/tab/[tabindex]/
+   * input — so a bare `<div class="spinner active">` is ignored). The tokens
+   * are joined in document order and hashed (FNV-1a), so a flip ANYWHERE
+   * changes the hash with no truncation blind spot, and the DOM-order index
+   * makes two same-text controls distinguishable (a single-select group where
+   * selection MOVES between two identically-labelled options is detected). A
+   * custom React/SPA multi-select toggle flips one of these WITHOUT moving
+   * network, URL, innerText, or a real `<input>` value — and its byte delta is
+   * trivial or NEGATIVE (an `aria-pressed` flip shrinks the HTML), so every
+   * other signal misses it and the click was scored "no observable effect".
+   * This closes that blind spot. Deliberately excludes noisy attrs
+   * (aria-expanded/current/activedescendant, tabindex) and dialog/tooltip/
+   * aria-live subtrees that churn without a selection change; a node's mere
+   * appearance/removal (a validation-error link, a lazy button, a spinner) is
+   * reflected only via `:<count>`, and a non-selection node never enters the
+   * fingerprint at all. A pure `disabled`→`enabled` Next-gate with NO
+   * accompanying aria/class/data-state change is intentionally NOT tracked
+   * (disabled churns on unrelated newly-mounted controls); it is still caught
+   * when the toggle also flips a selection marker. Consumed by the verifier
+   * (see {@link isClickStateToggleVerified}) and {@link classifyPhantomClick}.
    */
   selectionStateSignature: string;
 }
@@ -618,10 +626,10 @@ export interface AttemptRecord {
    *   value diff with no other signal (plain-text-field fill, no secondary
    *   UI side effect).
    * - `state-toggle`: isClickStateToggleVerified credited a client-side
-   *   selection-state flip (aria-pressed/checked/selected, data-state, a
-   *   selected/active/checked class, or a disabled→enabled gate) with a
-   *   trivial or negative byte delta and zero network — a React/SPA
-   *   multi-select toggle that every size/text/value signal missed.
+   *   selection-state flip (aria-pressed/checked/selected, data-state, or a
+   *   selected/active/checked class) with a trivial or negative byte delta and
+   *   zero network — a React/SPA multi-select toggle that every size/text/value
+   *   signal missed.
    * - `null`: failure path.
    */
   verifiedBy:
@@ -649,7 +657,7 @@ export interface AttemptRecord {
  * means no injection surface. Runs in browser context and returns a typed-narrow
  * shape via Runtime.callFunctionOn.
  */
-const DOM_SNAPSHOT_EXPR = `(() => { const b = document.body; if (!b) return { html: 0, text: "", values: "", state: "" }; const t = b.innerText || ""; const controls = Array.from(b.querySelectorAll("input, textarea, select")).filter((el) => el.offsetParent !== null); const values = controls.map((el) => { if (el.type === "checkbox" || el.type === "radio") return el.checked ? "1" : "0"; return el.value || ""; }).join("|").slice(0, 2000); const ariaSel = "[aria-pressed],[aria-checked],[aria-selected],[data-state],[data-selected],[data-checked],[role=option],[role=switch],[role=checkbox],[role=menuitemcheckbox]"; const classSel = "button.selected,button.active,button.checked,button.Mui-selected,button.is-selected,a.selected,a.active,a.checked,[role=button].selected,[role=button].active,[role=button].checked,[role=option].selected,[role=tab].active,[tabindex].selected,[tabindex].active,[tabindex].checked,input.selected,input.active"; const classRx = /(?:^|\\s)(selected|active|checked|Mui-selected|is-selected)(?:\\s|$)/; const skip = (el) => el.closest("[role=dialog],[role=tooltip],[aria-live]") !== null; const idOf = (el) => (el.tagName + ":" + ((el.getAttribute("aria-label") || el.textContent || "").trim().slice(0, 24))).slice(0, 40); const seen = new Set(); const parts = []; for (const el of b.querySelectorAll(ariaSel + "," + classSel)) { if (el.offsetParent === null || skip(el) || seen.has(el)) continue; seen.add(el); const ap = el.getAttribute("aria-pressed") || ""; const ac = el.getAttribute("aria-checked") || ""; const as = el.getAttribute("aria-selected") || ""; const dsRaw = el.getAttribute("data-state") || ""; const ds = (dsRaw === "open" || dsRaw === "closed") ? "" : dsRaw; const dsel = el.hasAttribute("data-selected") ? "1" : ""; const dchk = el.hasAttribute("data-checked") ? "1" : ""; const clsHit = classRx.test(el.getAttribute("class") || "") ? "1" : "0"; if (!ap && !ac && !as && !ds && !dsel && !dchk && clsHit === "0") continue; parts.push(idOf(el) + "=" + ap + "," + ac + "," + as + "," + ds + "," + dsel + "," + dchk + "," + clsHit); } const state = parts.sort().join("|").slice(0, 2000); return { html: (b.outerHTML || "").length, text: t.length + ":" + t.slice(0, 200), values, state }; })()`;
+const DOM_SNAPSHOT_EXPR = `(() => { const b = document.body; if (!b) return { html: 0, text: "", values: "", state: "" }; const t = b.innerText || ""; const controls = Array.from(b.querySelectorAll("input, textarea, select")).filter((el) => el.offsetParent !== null); const values = controls.map((el) => { if (el.type === "checkbox" || el.type === "radio") return el.checked ? "1" : "0"; return el.value || ""; }).join("|").slice(0, 2000); const ariaSel = "[aria-pressed],[aria-checked],[aria-selected],[data-state],[data-selected],[data-checked],[role=option],[role=switch],[role=checkbox],[role=menuitemcheckbox]"; const classSel = "button.selected,button.active,button.checked,button.Mui-selected,button.is-selected,a.selected,a.active,a.checked,[role=button].selected,[role=button].active,[role=button].checked,[role=option].selected,[role=tab].active,[tabindex].selected,[tabindex].active,[tabindex].checked,input.selected,input.active"; const classRx = /(?:^|\\s)(selected|active|checked|Mui-selected|is-selected)(?:\\s|$)/; const skip = (el) => el.closest("[role=dialog],[role=tooltip],[aria-live]") !== null; const seen = new Set(); for (const el of b.querySelectorAll(ariaSel + "," + classSel)) { if (el.offsetParent !== null && !skip(el)) seen.add(el); } let idx = 0; const parts = []; for (const el of seen) { const ap = el.getAttribute("aria-pressed") || ""; const ac = el.getAttribute("aria-checked") || ""; const as = el.getAttribute("aria-selected") || ""; const dsRaw = el.getAttribute("data-state") || ""; const ds = (dsRaw === "open" || dsRaw === "closed") ? "" : dsRaw; const dsel = el.hasAttribute("data-selected") ? "1" : ""; const dchk = el.hasAttribute("data-checked") ? "1" : ""; const clsHit = classRx.test(el.getAttribute("class") || "") ? "1" : "0"; const i = idx++; if (!ap && !ac && !as && !ds && !dsel && !dchk && clsHit === "0") continue; parts.push(i + ":" + ap + "," + ac + "," + as + "," + ds + "," + dsel + "," + dchk + "," + clsHit); } const joined = parts.join("|"); let h = 2166136261; for (let k = 0; k < joined.length; k++) { h ^= joined.charCodeAt(k); h = Math.imul(h, 16777619); } const state = (h >>> 0).toString(36) + ":" + parts.length; return { html: (b.outerHTML || "").length, text: t.length + ":" + t.slice(0, 200), values, state }; })()`;
 
 /**
  * Captures the pre/post signal triple the submit-verify cascade diffs.
@@ -7794,11 +7802,11 @@ export async function executeStepWithHealing(params: {
       textChanged: post.visibleTextSignature !== pre.visibleTextSignature,
     });
     // Client-side state-toggle gate: credit a network-free click that flipped a
-    // selection-state signature (aria-pressed/checked/selected, data-state, a
-    // selected/active/checked class, or a disabled→enabled gate) regardless of
-    // byte size. Fixes React/SPA multi-select wizards whose option buttons
-    // toggle client state with a trivial or NEGATIVE byte delta — which
-    // clickViewSwapVerified's byte floor and the phantom byte-check both miss.
+    // selection-state signature (aria-pressed/checked/selected, data-state, or a
+    // selected/active/checked class) regardless of byte size. Fixes React/SPA
+    // multi-select wizards whose option buttons toggle client state with a
+    // trivial or NEGATIVE byte delta — which clickViewSwapVerified's byte floor
+    // and the phantom byte-check both miss.
     const clickStateToggleVerified = isClickStateToggleVerified({
       resolvedAction,
       isFinalStep,
@@ -8200,16 +8208,29 @@ export async function executeStepWithHealing(params: {
               `${formatStepPrefix(stepIndex, totalSteps)} n+16 fallback advanced but no real transition (non-advancing POST / field toggle); not treating as verified`
             );
           }
+          // Weak DOM-only signals (an html-byte delta, a visible-text change, a
+          // form-value change, a selection-state flip) are NOT sufficient to
+          // verify a final/submit step on their own: a validation re-render
+          // produces exactly these without the submit landing. The primary
+          // verifier is safe here because clickViewSwapVerified/formValueVerified/
+          // clickStateToggleVerified all self-exclude final/submit; the n+16
+          // fallback ORs the raw deltas, so gate them explicitly. On a
+          // final/submit step they only count when the submit-endpoint judge will
+          // actually run below (requireSubmitEndpoint) to corroborate — otherwise
+          // only a strong signal (network/url) or a verified checkbox state may
+          // pass. Non-final/submit steps are unaffected.
+          const weakDomSignalsAllowed = (!isFinalStep && !submitStep) || requireSubmitEndpoint;
           let retryVerified =
             !clickBlockedByInvalid &&
             !fallbackDomOnlyAdvance &&
             (retryNetworkFired ||
               retryUrlChanged ||
-              retryHtmlDelta !== 0 ||
-              retryTextChanged ||
-              retryFormValueChanged ||
-              retrySelectionStateChanged ||
-              checkboxStateVerified);
+              checkboxStateVerified ||
+              (weakDomSignalsAllowed &&
+                (retryHtmlDelta !== 0 ||
+                  retryTextChanged ||
+                  retryFormValueChanged ||
+                  retrySelectionStateChanged)));
           // Apply the same submit-endpoint gate the primary verifier uses.
           // Without this, the n+16 fallback would still ride past a
           // tracking-pixel-only click on the final step. Same Haiku LLM

@@ -5,7 +5,11 @@ import { classifyPhantomClick } from "@/scraper/phantom-click";
 
 const URL = "https://apply.acme.example/jobs/52270016990/apply-portal/apply";
 
-const STATE = "1,,,,,,0,0#n=12";
+// The production selectionStateSignature is an opaque `<fnv1a-hash>:<count>`
+// string (see DOM_SNAPSHOT_EXPR in flow-runner.ts). classifyPhantomClick only
+// compares pre vs post for inequality, so these fixtures use realistic-shape
+// opaque values; a differing pair means "a selection flipped".
+const STATE = "1a2b3c:4";
 
 function makeAttempt(overrides: Partial<PhantomClickAttempt>): PhantomClickAttempt {
   return {
@@ -89,70 +93,53 @@ describe("scraper/phantom-click classifyPhantomClick", () => {
   // must classify as effective, not phantom.
   it.each([
     {
-      name: "aria-pressed flip (false->true), +30B html, no net/url",
+      name: "aria-pressed flip (signature changes), +30B html, no net/url",
       attempt: makeAttempt({
         pre: {
           networkCount: 0,
           url: URL,
           bodyHtmlLength: 184186,
-          selectionStateSignature: "false,,,,,,0,0#n=12",
+          selectionStateSignature: "aaa:5",
         },
         post: {
           networkCount: 0,
           url: URL,
           bodyHtmlLength: 184216,
-          selectionStateSignature: "true,,,,,,0,0#n=12",
+          selectionStateSignature: "bbb:5",
         },
       }),
     },
     {
-      name: "selected class added, NEGATIVE byte delta (aria flip shrinks html)",
+      name: "selected class added (signature changes), NEGATIVE byte delta",
       attempt: makeAttempt({
         pre: {
           networkCount: 0,
           url: URL,
           bodyHtmlLength: 184186,
-          selectionStateSignature: ",,,,,,0,0#n=12",
+          selectionStateSignature: "ccc:5",
         },
         post: {
           networkCount: 0,
           url: URL,
           bodyHtmlLength: 184173,
-          selectionStateSignature: ",,,,,,1,0#n=12",
+          selectionStateSignature: "ddd:5",
         },
       }),
     },
     {
-      name: "Next gate disabled->enabled after a valid selection",
+      name: "toggle reveals a sub-question (a new selection control raises the count)",
       attempt: makeAttempt({
         pre: {
           networkCount: 0,
           url: URL,
           bodyHtmlLength: 184186,
-          selectionStateSignature: ",,,,,,0,1#n=12",
-        },
-        post: {
-          networkCount: 0,
-          url: URL,
-          bodyHtmlLength: 184186,
-          selectionStateSignature: ",,,,,,0,0#n=12",
-        },
-      }),
-    },
-    {
-      name: "sub-question revealed changes visible-node count",
-      attempt: makeAttempt({
-        pre: {
-          networkCount: 0,
-          url: URL,
-          bodyHtmlLength: 184186,
-          selectionStateSignature: "false,,,,,,0,0#n=12",
+          selectionStateSignature: "eee:5",
         },
         post: {
           networkCount: 0,
           url: URL,
           bodyHtmlLength: 184200,
-          selectionStateSignature: "true,,,,,,0,0#n=13",
+          selectionStateSignature: "fff:6",
         },
       }),
     },
@@ -170,12 +157,7 @@ describe("scraper/phantom-click classifyPhantomClick", () => {
   it("stays unresolved when act failed even if the selection-state changed", () => {
     const attempt = makeAttempt({
       actResultSuccess: false,
-      post: {
-        networkCount: 0,
-        url: URL,
-        bodyHtmlLength: 184186,
-        selectionStateSignature: "true,,,,,,0,0#n=12",
-      },
+      post: { networkCount: 0, url: URL, bodyHtmlLength: 184186, selectionStateSignature: "zzz:5" },
     });
     expect(classifyPhantomClick(attempt)).toBe("unresolved");
   });
@@ -183,12 +165,7 @@ describe("scraper/phantom-click classifyPhantomClick", () => {
   it("does not credit a state change when one side lacks the signature (older snapshot)", () => {
     const attempt = makeAttempt({
       pre: { networkCount: 0, url: URL, bodyHtmlLength: 184186 },
-      post: {
-        networkCount: 0,
-        url: URL,
-        bodyHtmlLength: 184186,
-        selectionStateSignature: "true,,,,,,0,0#n=12",
-      },
+      post: { networkCount: 0, url: URL, bodyHtmlLength: 184186, selectionStateSignature: "zzz:5" },
     });
     expect(classifyPhantomClick(attempt)).toBe("phantom");
   });
@@ -200,18 +177,8 @@ describe("scraper/phantom-click classifyPhantomClick", () => {
   it("stays phantom on a submit-shaped step even when selection state changed", () => {
     const attempt = makeAttempt({
       isSubmitShapedStep: true,
-      pre: {
-        networkCount: 0,
-        url: URL,
-        bodyHtmlLength: 184186,
-        selectionStateSignature: "false,,,,,,0,0#n=12",
-      },
-      post: {
-        networkCount: 0,
-        url: URL,
-        bodyHtmlLength: 184186,
-        selectionStateSignature: "true,,,,,,0,0#n=12",
-      },
+      pre: { networkCount: 0, url: URL, bodyHtmlLength: 184186, selectionStateSignature: "ggg:5" },
+      post: { networkCount: 0, url: URL, bodyHtmlLength: 184186, selectionStateSignature: "hhh:5" },
     });
     expect(classifyPhantomClick(attempt)).toBe("phantom");
   });

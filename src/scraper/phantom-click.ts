@@ -13,15 +13,19 @@ export interface PhantomClickSnapshot {
   /** `document.body.outerHTML.length`. */
   bodyHtmlLength: number;
   /**
-   * Fingerprint of selection state across visible interactive nodes —
-   * `aria-pressed`/`aria-checked`/`aria-selected`, `data-state`, a
-   * selected/active/checked class-token hit, and disabled/aria-disabled. A
-   * client-side multi-select toggle (React state flip) moves this without
-   * moving network, URL, or byte size — often a NEGATIVE byte delta (an
-   * `aria-pressed="false"`→`"true"` flip shrinks the HTML), which the
-   * byte-floor branch can never catch. Optional so pre-`selectionStateSignature`
-   * snapshots (and this module's own tests) stay valid; a defined pre/post
-   * pair that differs is a real effect (see {@link classifyPhantomClick}).
+   * Fingerprint of client-side selection state across selection-bearing
+   * controls — `aria-pressed`/`aria-checked`/`aria-selected`, `data-state`
+   * (excluding `open`/`closed` disclosure values), `data-selected`/
+   * `data-checked`, and a selected/active/checked class-token hit on an
+   * interactive element. A multi-select toggle (React state flip) moves this
+   * without moving network, URL, or byte size — often a NEGATIVE byte delta
+   * (an `aria-pressed="false"`→`"true"` flip shrinks the HTML), which the
+   * byte-floor branch can never catch. A pure `disabled`→`enabled` gate with
+   * no accompanying selection-marker change is intentionally NOT tracked.
+   * Optional so pre-`selectionStateSignature` snapshots (and this module's own
+   * tests) stay valid; a defined pre/post pair that differs is a real effect
+   * (see {@link classifyPhantomClick}). The producer is `snapshotPage`'s
+   * `DOM_SNAPSHOT_EXPR` in `flow-runner.ts`, which documents the exact shape.
    */
   selectionStateSignature?: string;
 }
