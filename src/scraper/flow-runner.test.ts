@@ -12,8 +12,11 @@ import {
   extractLivePageFormEvidence,
   formatStepPrefix,
   type HealingFlowStep,
+  isSelectionCounterStalled,
   pollEnumerate,
+  prepareFailureDumpBody,
   runHealingFlow,
+  selectionCountFromSignature,
   waitForSpaReady,
   wireSignalCapture,
 } from "@/scraper/flow-runner";
@@ -66,6 +69,123 @@ describe("flow-runner/formatStepPrefix", () => {
     expect(formatStepPrefix(19, getter)).toBe("step 20/338");
     plan.splice(20, 0, "replanned");
     expect(formatStepPrefix(20, getter)).toBe("step 21/339");
+  });
+});
+
+describe("flow-runner/selectionCountFromSignature", () => {
+  const sig = (text: string): string => `${text.length}:${text}`;
+
+  it("reads the running selected-count from a multi-select counter heading", () => {
+    expect(
+      selectionCountFromSignature(sig("Which care settings?\n0 settings selected\nAcute Care"))
+    ).toBe(0);
+    expect(
+      selectionCountFromSignature(sig("Which care settings?\n2 settings selected\nAcute Care"))
+    ).toBe(2);
+  });
+
+  it("returns null when no counter idiom is present", () => {
+    expect(selectionCountFromSignature(sig("Pick your specialties"))).toBeNull();
+  });
+
+  it("tolerates a signature with no length prefix", () => {
+    expect(selectionCountFromSignature("3 items selected")).toBe(3);
+  });
+});
+
+describe("flow-runner/isSelectionCounterStalled", () => {
+  const sig = (n: number): string => {
+    const text = `Which care settings?\n${n} settings selected\nAcute Care`;
+    return `${text.length}:${text}`;
+  };
+
+  it("vetoes when a selection step's counter did not rise", () => {
+    expect(
+      isSelectionCounterStalled({
+        isSelectionStep: true,
+        preVisibleTextSignature: sig(0),
+        postVisibleTextSignature: sig(0),
+      })
+    ).toBe(true);
+  });
+
+  it("does not veto when the counter rose", () => {
+    expect(
+      isSelectionCounterStalled({
+        isSelectionStep: true,
+        preVisibleTextSignature: sig(0),
+        postVisibleTextSignature: sig(1),
+      })
+    ).toBe(false);
+  });
+
+  it("does not veto a non-selection step", () => {
+    expect(
+      isSelectionCounterStalled({
+        isSelectionStep: false,
+        preVisibleTextSignature: sig(0),
+        postVisibleTextSignature: sig(0),
+      })
+    ).toBe(false);
+  });
+
+  it("does not veto a counter-less widget (helper no-ops)", () => {
+    expect(
+      isSelectionCounterStalled({
+        isSelectionStep: true,
+        preVisibleTextSignature: "40:Pick your specialties then continue",
+        postVisibleTextSignature: "60:Pick your specialties then continue — one chosen",
+      })
+    ).toBe(false);
+  });
+
+  it("does not veto when the counter appears only after the click (null pre)", () => {
+    expect(
+      isSelectionCounterStalled({
+        isSelectionStep: true,
+        preVisibleTextSignature: "30:Loading care settings…",
+        postVisibleTextSignature: sig(1),
+      })
+    ).toBe(false);
+  });
+
+  it("vetoes a decrease as well as a no-change (post <= pre)", () => {
+    expect(
+      isSelectionCounterStalled({
+        isSelectionStep: true,
+        preVisibleTextSignature: sig(2),
+        postVisibleTextSignature: sig(1),
+      })
+    ).toBe(true);
+  });
+});
+
+describe("flow-runner/prepareFailureDumpBody", () => {
+  it("elides a mega-attribute so rendered controls survive the length cap", () => {
+    const blob = "x".repeat(120_000);
+    const raw = `<div id="registration-app" data="${blob}"></div><button>Next</button>`;
+    const out = prepareFailureDumpBody(raw);
+    expect(out).not.toBeNull();
+    expect(out).toContain("[elided 120000 chars]");
+    expect(out).toContain("<button>Next</button>");
+  });
+
+  it("passes non-string input through as null", () => {
+    expect(prepareFailureDumpBody(null)).toBeNull();
+    expect(prepareFailureDumpBody(undefined)).toBeNull();
+  });
+
+  it("leaves ordinary bodies untouched below the attribute threshold", () => {
+    const raw = `<button data-testid="ok">Go</button>`;
+    expect(prepareFailureDumpBody(raw)).toBe(raw);
+  });
+
+  it("elides a double-quoted value that itself contains apostrophes", () => {
+    const blob = "a'b'".repeat(30_000);
+    const raw = `<div data="${blob}"></div><button>Next</button>`;
+    const out = prepareFailureDumpBody(raw);
+    expect(out).toContain("[elided");
+    expect(out).toContain("<button>Next</button>");
   });
 });
 
