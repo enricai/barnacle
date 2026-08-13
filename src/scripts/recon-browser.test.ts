@@ -2134,6 +2134,7 @@ describe("recon-browser/describeAttemptEffectSignals", () => {
       bodyHtmlLength: number;
       visibleTextSignature: string;
       formValueSignature: string;
+      selectionStateSignature: string;
     }>
   ): {
     networkCount: number;
@@ -2141,12 +2142,14 @@ describe("recon-browser/describeAttemptEffectSignals", () => {
     bodyHtmlLength: number;
     visibleTextSignature: string;
     formValueSignature: string;
+    selectionStateSignature: string;
   } => ({
     networkCount: 0,
     url: "https://example.com",
     bodyHtmlLength: 1000,
     visibleTextSignature: "1000:hello",
     formValueSignature: "",
+    selectionStateSignature: "",
     ...overrides,
   });
 

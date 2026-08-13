@@ -60,6 +60,7 @@ describe("flow-runner/snapshotPage", () => {
       bodyHtmlLength: 42,
       visibleTextSignature: "5:hello",
       formValueSignature: "",
+      selectionStateSignature: "",
     });
   });
 
@@ -75,6 +76,7 @@ describe("flow-runner/snapshotPage", () => {
       bodyHtmlLength: 10,
       visibleTextSignature: "3:abc",
       formValueSignature: "",
+      selectionStateSignature: "",
     });
   });
 
