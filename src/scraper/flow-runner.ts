@@ -579,10 +579,29 @@ interface StepSnapshot {
    * fingerprint at all. A pure `disabled`→`enabled` Next-gate with NO
    * accompanying aria/class/data-state change is intentionally NOT tracked
    * (disabled churns on unrelated newly-mounted controls); it is still caught
-   * when the toggle also flips a selection marker. Consumed by the verifier
-   * (see {@link isClickStateToggleVerified}) and {@link classifyPhantomClick}.
+   * when the toggle also flips a selection marker. DIAGNOSTIC-ONLY now: the
+   * click verdict comes from the authoritative element-scoped
+   * {@link StepSnapshot.selectionStateByXpath} baseline (via
+   * {@link verifyDomEffect}); this page-wide fingerprint only feeds
+   * {@link describeAttemptEffectSignals}'s "selection-state-changed-without-
+   * network" hint for the rephrase LLM on an already-unverified attempt.
    */
   selectionStateSignature: string;
+  /**
+   * Pre-action baseline for the authoritative, ELEMENT-SCOPED click verifier:
+   * a map from each visible interactive element's absolute positional xpath
+   * (`/html[1]/body[1]/…/button[N]` — the same convention Stagehand resolves
+   * a clicked target to) to that element's {@link ElementSelectionFingerprint}.
+   * After a non-radio/non-checkbox click, {@link verifyDomEffect} looks up the
+   * RESOLVED element's xpath here and credits the click as effective iff THAT
+   * element's own committed state changed across the click — so a Base Web
+   * `kind`/class toggle, an ARIA flip, or a native `checked` all register,
+   * while a state change on an unrelated element elsewhere on the page cannot.
+   * Absent the resolved xpath (element newly mounted, or an xpath the generator
+   * and Stagehand index differently), the verifier holds no baseline and defers
+   * to the network/URL signal — a miss is never a false credit.
+   */
+  selectionStateByXpath: Record<string, ElementSelectionFingerprint>;
 }
 
 /** One attempt's audit trail — included verbatim in the failure dump. */
@@ -627,22 +646,14 @@ export interface AttemptRecord {
    * - `form-value`: formValueVerified credited a visible input/textarea/select
    *   value diff with no other signal (plain-text-field fill, no secondary
    *   UI side effect).
-   * - `state-toggle`: isClickStateToggleVerified credited a client-side
-   *   selection-state flip (aria-pressed/checked/selected, data-state, or a
-   *   selected/active/checked class) with a trivial or negative byte delta and
-   *   zero network — a React/SPA multi-select toggle that every size/text/value
-   *   signal missed.
    * - `null`: failure path.
+   *
+   * A design-system selection/toggle whose own committed state changed (Base
+   * Web `kind`/class, ARIA, native checked) verifies via the element-scoped
+   * `verifyDomEffect` read-back and is reported as `dom` — the former
+   * page-wide `state-toggle` verdict is gone.
    */
-  verifiedBy:
-    | "network"
-    | "url"
-    | "dom"
-    | "view-swap"
-    | "submitted-state-dom"
-    | "form-value"
-    | "state-toggle"
-    | null;
+  verifiedBy: "network" | "url" | "dom" | "view-swap" | "submitted-state-dom" | "form-value" | null;
   /**
    * {@link classifyPhantomClick}'s verdict for this attempt, computed from
    * the same pre/post snapshot pair `describeAttemptEffectSignals` already
@@ -705,11 +716,19 @@ const DOM_SNAPSHOT_EXPR = `(() => { const b = document.body; if (!b) return { ht
  * `url()` rejects (OOPIF detached by the submit it just fired) can still
  * report the main frame's post-navigation URL instead of throwing the
  * whole attempt out of `executeStepWithHealing`.
+ *
+ * `captureSelectionState` (default false) additionally builds the per-element
+ * `selectionStateByXpath` baseline for the element-scoped click verifier. The
+ * caller sets it only for the pre/post pair of a selection/field-answer click
+ * step — never for submit/advance steps (so a self-toggling submit/Next button
+ * can't false-credit) nor for the mid-probe/retry snapshots — which also keeps
+ * this second full-DOM evaluate off the common (non-selection) path.
  */
 export async function snapshotPage(
   target: FrameTarget,
   signalCounter: { n: number },
-  page?: Page
+  page?: Page,
+  captureSelectionState = false
 ): Promise<StepSnapshot> {
   let bodyHtmlLength = 0;
   let visibleTextSignature = "";
@@ -736,6 +755,24 @@ export async function snapshotPage(
     // Snapshot is observational; on failure, defaults to 0/"" so the verifier
     // sees no delta. Real state-class checks already cover the verified path.
   }
+  // Per-element selection baseline for the element-scoped click verifier
+  // (see StepSnapshot.selectionStateByXpath). Captured ONLY when the caller
+  // asks (`captureSelectionState`) — the pre/post pair of a selection/field-
+  // answer click step. Skipping it for submit/advance steps is both the perf
+  // guard (this is a second full-DOM evaluate on a hot function) AND the
+  // correctness gate: with no baseline, verifyDomEffect's element read-back
+  // finds nothing to diff and defers to network/URL, so a submit/advance
+  // button's own self-toggle can never false-credit the step. Its own
+  // try/catch so a failure here can't lose the coarse signals above; an empty
+  // map leaves the verifier deferring to network/URL, never a false credit.
+  let selectionStateByXpath: Record<string, ElementSelectionFingerprint> = {};
+  if (captureSelectionState) {
+    try {
+      selectionStateByXpath = asSelectionStateMap(await target.evaluate(SELECTION_STATE_MAP_EXPR));
+    } catch {
+      // observational — empty baseline on failure
+    }
+  }
   // A resolved child FrameTarget's url() reads location.href off the CDP
   // frame session (frame-target.ts's childFrameTarget), which rejects (or
   // trips its watchdog) once the OOPIF detaches — most commonly right after
@@ -750,6 +787,7 @@ export async function snapshotPage(
     visibleTextSignature,
     formValueSignature,
     selectionStateSignature,
+    selectionStateByXpath,
   };
 }
 
@@ -941,6 +979,27 @@ export function isAdvanceStep(instruction: string | null | undefined): boolean {
   if (!instruction) return false;
   const haystack = instruction.toLowerCase();
   return ADVANCE_STEP_PHRASES.some((p) => haystack.includes(p));
+}
+
+/**
+ * Whether `snapshotPage` should build the per-element selection baseline
+ * (`StepSnapshot.selectionStateByXpath`) for this step — i.e. whether
+ * `verifyDomEffect`'s element-scoped click read-back is allowed to credit it.
+ * True ONLY for a field-answer/selection step: a submit, a final, or an advance
+ * step must be verified by a real network/URL transition, so its own
+ * self-toggling button (a submit flipping to a loading/pressed class, a "Next"
+ * flipping `aria-pressed`) must never earn an element-scoped credit — matching
+ * the `!submit`/`!final`/`!advance` exclusions the former
+ * `isClickStateToggleVerified` gate enforced. Pure + exported so the gate the
+ * cascade depends on is unit-testable, not buried in `executeStepWithHealing`.
+ */
+export function shouldCaptureSelectionState(params: {
+  step: string;
+  isFinalStep: boolean;
+  submitStep: boolean;
+}): boolean {
+  const { step, isFinalStep, submitStep } = params;
+  return !(isFinalStep || submitStep || isAdvanceStep(step));
 }
 
 /**
@@ -1248,49 +1307,6 @@ export function isClickViewSwapVerified(params: {
 }
 
 /**
- * Credits a network-free click when it flipped a client-side SELECTION state —
- * an `aria-pressed`/`aria-checked`/`aria-selected` attribute, a `data-state`,
- * or a `selected`/`active`/`checked` class on the toggled control (captured by
- * `StepSnapshot.selectionStateSignature`). React/SPA multi-select wizards toggle
- * options this way with a trivial or NEGATIVE byte delta and no
- * network/URL/innerText/input-value change, so `isClickViewSwapVerified` and
- * the byte-floor phantom check both miss them and score the real selection a
- * phantom no-op. This is the size-independent counterpart to that gate. Scope
- * guards: only a plain `click`, never a final/submit step (those keep their
- * stronger submit-judge gate), and only when zero network fired (a network POST
- * is authoritative). **Stricter than `isClickViewSwapVerified` on advance
- * steps:** it excludes ANY advance/"Next" step (`isAdvance`), not just an
- * advance-WITH-pattern step. The selection signal fires on a validation-render
- * that toggles a control's own state, and an advance without a configured
- * `advanceTransitionBodyPattern` has no real-transition veto
- * (see `shouldWarnMissingAdvancePattern`) — so crediting a bare selection change
- * would desync the wizard step pointer. A real advance still verifies via
- * network/URL; a field-toggle answer step (not an advance) keeps this credit.
- */
-export function isClickStateToggleVerified(params: {
-  resolvedAction: { method?: string | null } | null;
-  isFinalStep: boolean;
-  submitStep: boolean;
-  isAdvance: boolean;
-  networkDelta: number;
-  selectionStateChanged: boolean;
-}): boolean {
-  const {
-    resolvedAction,
-    isFinalStep,
-    submitStep,
-    isAdvance,
-    networkDelta,
-    selectionStateChanged,
-  } = params;
-  if (resolvedAction?.method !== "click") return false;
-  if (isFinalStep || submitStep) return false;
-  if (isAdvance) return false;
-  if (networkDelta !== 0) return false;
-  return selectionStateChanged;
-}
-
-/**
  * Reads the "N settings/items selected" running count that multi-select wizard
  * steps render as a live heading above the option grid. Returns the integer, or
  * `null` when the snapshot has no such counter. Operates on a
@@ -1298,11 +1314,12 @@ export function isClickStateToggleVerified(params: {
  * `"<len>:<first-200-chars-of-innerText>"` — the counter idiom sits at the top
  * of these steps, so it is always inside the 200-char window.
  *
- * Exists because some SPA multi-selects (obfuscated hashed classes, no
- * `aria-pressed`/`data-state`) expose no selection-state attribute at all, so
- * {@link isClickStateToggleVerified}'s fingerprint is structurally blind and a
- * phantom option click rides the generic DOM-delta gate to a FALSE credit — the
- * running counter is the only trustworthy "did the selection register" signal.
+ * Used by the deep-locator candidate walk to disambiguate WHICH of several
+ * option candidates registered a selection: after clicking a candidate, the
+ * running counter rising confirms that candidate was the real option (a
+ * candidate-selection signal, distinct from the click verifier — which now
+ * reads the resolved element's own committed state directly via
+ * {@link verifyDomEffect}).
  */
 export function selectionCountFromSignature(visibleTextSignature: string): number | null {
   const colon = visibleTextSignature.indexOf(":");
@@ -1310,30 +1327,6 @@ export function selectionCountFromSignature(visibleTextSignature: string): numbe
   const match = text.match(/(\d+)\s+(?:(?:settings?|items?|options?)\s+)?selected\b/i);
   const digits = match?.[1];
   return digits === undefined ? null : Number.parseInt(digits, 10);
-}
-
-/**
- * Veto for a SELECTION-intent step whose weak DOM signals (view-swap byte delta,
- * a non-advance `domVerified` reflow) would otherwise credit a click that did
- * NOT register the selection. When the step's snapshot exposes a running
- * "N selected" counter (see {@link selectionCountFromSignature}) and that count
- * did not increase across the click, the option was not actually selected — a
- * phantom the fingerprint can't catch — so the caller must NOT treat the weak
- * signals as verification and should keep healing. Returns `true` only when a
- * counter is present on BOTH snapshots and did not rise; absent a counter it
- * returns `false` (no veto), so counter-less selection widgets are untouched.
- */
-export function isSelectionCounterStalled(params: {
-  isSelectionStep: boolean;
-  preVisibleTextSignature: string;
-  postVisibleTextSignature: string;
-}): boolean {
-  const { isSelectionStep, preVisibleTextSignature, postVisibleTextSignature } = params;
-  if (!isSelectionStep) return false;
-  const pre = selectionCountFromSignature(preVisibleTextSignature);
-  const post = selectionCountFromSignature(postVisibleTextSignature);
-  if (pre === null || post === null) return false;
-  return post <= pre;
 }
 
 /**
@@ -2981,13 +2974,12 @@ export async function fillTextDatepickerInput(
     // Month/year-picker variant: click the target month cell (0-based month
     // index maps to the __month-N class) — THIS is the commit. The year/month
     // dropdowns are set first only so the calendar shows the right year's month
-    // page. NOTE: "range-select" is a SITE-SPECIFIC class (the ATS site's own
-    // CSS), not a react-datepicker class; the bare "select" fallback covers
-    // other wrappers.
+    // page. The bare "select" query covers every wrapper generically (site CSS
+    // classes are never named here).
     // Stock react-datepicker renders its month/year dropdowns as clickable divs,
     // so on those the select loop is inert and the month-cell click carries it.
     if (monthCells.length > 0) {
-      const selects = cal.querySelectorAll("select.range-select, select");
+      const selects = cal.querySelectorAll("select");
       for (const sel of selects) {
         const opts = Array.from(sel.options).map((o) => (o.value || "").trim());
         const yearOpt = opts.indexOf(String(year));
@@ -3199,6 +3191,183 @@ function xpathBody(selector: string): string | null {
 function xpathBodyForEvaluate(selector: string): string | null {
   const stripped = selector.startsWith("xpath=") ? selector.slice("xpath=".length) : selector;
   return stripped.startsWith("/") || stripped.startsWith("(") ? stripped : null;
+}
+
+/**
+ * Selection-relevant state of ONE element, as the browser-side expression body
+ * ({@link elementSelectionFingerprintExpr}) serializes it. A design-system
+ * option/toggle marks its selected state through one (or more) of these without
+ * moving network, URL, innerText, or a real `<input>` value — so a
+ * marker-agnostic union is the only fingerprint that catches every framework:
+ * Base Web's `kind` attribute (`tertiary`→`primary`), a swapped hashed styletron
+ * `class`, ARIA (`aria-pressed/checked/selected`), Radix `data-state`, native
+ * `checked`, or a committed `value`. Pseudo-states (`:active/:focus/:hover`)
+ * never appear in `getAttribute("class")`, so a click's transient focus can't
+ * pollute this — only a committed selection change does.
+ */
+interface ElementSelectionFingerprint {
+  kind: string;
+  cls: string;
+  ariaPressed: string;
+  ariaChecked: string;
+  ariaSelected: string;
+  dataState: string;
+  dataSelected: string;
+  dataChecked: string;
+  checked: string;
+  value: string;
+}
+
+/**
+ * Browser-side expression body that resolves `xpath` and returns that one
+ * element's {@link ElementSelectionFingerprint} (or `null` when the node is
+ * absent). Trust boundary: `xpath` is a Stagehand-resolved selector, and
+ * `JSON.stringify` produces a safe JS string literal, so composing it cannot
+ * inject behavior. The `data-state` disclosure values `open`/`closed` (the
+ * `aria-expanded` equivalent) are blanked so opening a popover isn't mistaken
+ * for a selection.
+ */
+function elementSelectionFingerprintExpr(xpath: string): string {
+  return `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); const el = r.singleNodeValue; if (!el) return null; const ds = el.getAttribute("data-state") || ""; return { kind: el.getAttribute("kind") || "", cls: el.getAttribute("class") || "", ariaPressed: el.getAttribute("aria-pressed") || "", ariaChecked: el.getAttribute("aria-checked") || "", ariaSelected: el.getAttribute("aria-selected") || "", dataState: (ds === "open" || ds === "closed") ? "" : ds, dataSelected: el.hasAttribute("data-selected") ? "1" : "", dataChecked: el.hasAttribute("data-checked") ? "1" : "", checked: (el.type === "checkbox" || el.type === "radio") ? (el.checked ? "1" : "0") : "", value: typeof el.value === "string" ? el.value.slice(0, 200) : "" }; })()`;
+}
+
+/**
+ * Browser-side expression: build `{ absolutePositionalXpath →
+ * ElementSelectionFingerprint }` for every VISIBLE interactive element, the
+ * pre-action baseline {@link verifyDomEffect} diffs the resolved element
+ * against. Trust boundary: static string literal, no interpolation. The xpath
+ * is generated by `xpathOf`, character-identical to the two other in-page
+ * copies in this file (the ng-invalid probe and the field-label scan) so it
+ * byte-matches Stagehand's resolved `xpath=/html[1]/…` selectors: hardcoded
+ * `/html[1]/body[1]/` prefix, walk `!== document.body`, `nodeName.toLowerCase()`,
+ * `parentElement`. `[role=dialog],[role=tooltip],[aria-live]` subtrees are
+ * skipped — they churn without a selection change. Visibility uses the same
+ * rect + `getComputedStyle` idiom as `deep-locator-scan.ts`'s `IS_VISIBLE_EXPR`
+ * (rather than `offsetParent`), so on-screen `position:fixed` controls — a
+ * sticky Next/Submit bar, whose `offsetParent` is `null` — still enter the map.
+ */
+const SELECTION_STATE_MAP_EXPR = `(() => {
+  const b = document.body;
+  if (!b) return {};
+  const xpathOf = (node) => {
+    const parts = [];
+    while (node && node.nodeType === 1 && node !== document.body) {
+      const tag = node.nodeName.toLowerCase();
+      let idx = 1;
+      let sib = node.previousElementSibling;
+      while (sib) {
+        if (sib.nodeName.toLowerCase() === tag) idx++;
+        sib = sib.previousElementSibling;
+      }
+      parts.unshift(tag + "[" + idx + "]");
+      node = node.parentElement;
+    }
+    return "/html[1]/body[1]/" + parts.join("/");
+  };
+  const visible = (el) => {
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) return false;
+    const style = getComputedStyle(el);
+    return style.display !== "none" && style.visibility !== "hidden";
+  };
+  const sel = "button,[role=button],a,[tabindex],input,select,textarea,[role=option],[role=tab],[role=switch],[role=checkbox],[role=menuitemcheckbox]";
+  const skip = (el) => el.closest("[role=dialog],[role=tooltip],[aria-live]") !== null;
+  const out = {};
+  for (const el of b.querySelectorAll(sel)) {
+    if (!visible(el) || skip(el)) continue;
+    const ds = el.getAttribute("data-state") || "";
+    out[xpathOf(el)] = {
+      kind: el.getAttribute("kind") || "",
+      cls: el.getAttribute("class") || "",
+      ariaPressed: el.getAttribute("aria-pressed") || "",
+      ariaChecked: el.getAttribute("aria-checked") || "",
+      ariaSelected: el.getAttribute("aria-selected") || "",
+      dataState: (ds === "open" || ds === "closed") ? "" : ds,
+      dataSelected: el.hasAttribute("data-selected") ? "1" : "",
+      dataChecked: el.hasAttribute("data-checked") ? "1" : "",
+      checked: (el.type === "checkbox" || el.type === "radio") ? (el.checked ? "1" : "0") : "",
+      value: typeof el.value === "string" ? el.value.slice(0, 200) : "",
+    };
+  }
+  return out;
+})()`;
+
+/**
+ * Narrows an unknown `evaluate` result into the
+ * {@link StepSnapshot.selectionStateByXpath} map, discarding any malformed
+ * entry. Defaults to `{}` so a snapshot failure leaves the verifier with an
+ * empty baseline (defer-to-network), never a throw.
+ */
+function asSelectionStateMap(raw: unknown): Record<string, ElementSelectionFingerprint> {
+  if (raw === null || typeof raw !== "object") return {};
+  const out: Record<string, ElementSelectionFingerprint> = {};
+  for (const [xpath, value] of Object.entries(raw as Record<string, unknown>)) {
+    const fp = asSelectionFingerprint(value);
+    if (fp) out[xpath] = fp;
+  }
+  return out;
+}
+
+/** True when two {@link ElementSelectionFingerprint}s differ in any tracked field. */
+function selectionFingerprintChanged(
+  pre: ElementSelectionFingerprint,
+  post: ElementSelectionFingerprint
+): boolean {
+  return (
+    pre.kind !== post.kind ||
+    pre.cls !== post.cls ||
+    pre.ariaPressed !== post.ariaPressed ||
+    pre.ariaChecked !== post.ariaChecked ||
+    pre.ariaSelected !== post.ariaSelected ||
+    pre.dataState !== post.dataState ||
+    pre.dataSelected !== post.dataSelected ||
+    pre.dataChecked !== post.dataChecked ||
+    pre.checked !== post.checked ||
+    pre.value !== post.value
+  );
+}
+
+/**
+ * Narrows an unknown `evaluate` result to an {@link ElementSelectionFingerprint}.
+ * Every field is emitted as a string by {@link elementSelectionFingerprintExpr},
+ * so a present object with a string `kind` is a sufficient shape check.
+ */
+function asSelectionFingerprint(raw: unknown): ElementSelectionFingerprint | null {
+  if (raw === null || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.kind !== "string") return null;
+  return {
+    kind: r.kind,
+    cls: typeof r.cls === "string" ? r.cls : "",
+    ariaPressed: typeof r.ariaPressed === "string" ? r.ariaPressed : "",
+    ariaChecked: typeof r.ariaChecked === "string" ? r.ariaChecked : "",
+    ariaSelected: typeof r.ariaSelected === "string" ? r.ariaSelected : "",
+    dataState: typeof r.dataState === "string" ? r.dataState : "",
+    dataSelected: typeof r.dataSelected === "string" ? r.dataSelected : "",
+    dataChecked: typeof r.dataChecked === "string" ? r.dataChecked : "",
+    checked: typeof r.checked === "string" ? r.checked : "",
+    value: typeof r.value === "string" ? r.value : "",
+  };
+}
+
+/**
+ * Reads one element's {@link ElementSelectionFingerprint} off `target` by
+ * xpath, or `null` when the selector isn't an xpath / the node is absent / the
+ * evaluate throws. Used by the click branch of {@link verifyDomEffect} to
+ * compare the resolved element's committed selection state against the
+ * pre-action baseline captured in {@link StepSnapshot.selectionStateByXpath}.
+ */
+async function readElementSelectionFingerprint(
+  target: FrameTarget,
+  selector: string
+): Promise<ElementSelectionFingerprint | null> {
+  const xpath = xpathBodyForEvaluate(selector);
+  if (!xpath) return null;
+  try {
+    return asSelectionFingerprint(await target.evaluate(elementSelectionFingerprintExpr(xpath)));
+  } catch {
+    return null;
+  }
 }
 
 /** How long the upload primitive waits for a post-setInputFiles network POST. */
@@ -5401,8 +5570,20 @@ export async function dispatchJqueryChangeEvent(
  *
  * `target` scopes both the locator/evaluate reads and the jQuery-change
  * dispatch to the resolved frame (main or a cross-origin child).
+ *
+ * `preSelectionState` is the pre-action per-element baseline
+ * ({@link StepSnapshot.selectionStateByXpath}) the click branch diffs the
+ * resolved element against — the element-scoped authoritative "did this
+ * selection register" signal for design-system option/toggle buttons that
+ * expose no native `checked` (Base Web `kind`, hashed styletron class, ARIA).
+ * Defaults to `{}` so callers/tests that don't supply it keep the prior
+ * radio/checkbox-and-network behavior.
  */
-export async function verifyDomEffect(target: FrameTarget, action: Action): Promise<boolean> {
+export async function verifyDomEffect(
+  target: FrameTarget,
+  action: Action,
+  preSelectionState: Record<string, ElementSelectionFingerprint> = {}
+): Promise<boolean> {
   const selector = action.selector;
   const method = action.method;
   if (!selector || !method) return false;
@@ -5545,9 +5726,15 @@ export async function verifyDomEffect(target: FrameTarget, action: Action): Prom
         return true;
       case "click": {
         // Clicks on radios and checkboxes toggle `:checked` without firing a
-        // network request — same false-fail class as fill. For every other
-        // click (buttons, links, custom toggles) return false so the verifier
-        // falls back to the network/URL signal, which is the right signal there.
+        // network request — same false-fail class as fill. Every OTHER click
+        // (design-system option/toggle buttons, links, custom controls) is
+        // verified element-scoped: compare the RESOLVED element's own committed
+        // selection state before vs. after the click. A Base Web option flips
+        // its `kind` (`tertiary`→`primary`) + a hashed styletron class with no
+        // network, no URL change, and a trivial/negative byte delta — the
+        // authoritative signal is that the clicked element's own fingerprint
+        // moved, which this reads directly instead of guessing from page-wide
+        // DOM deltas.
         const xpath = xpathBody(selector);
         if (!xpath) return false;
         let inputType: string | null = null;
@@ -5566,8 +5753,19 @@ export async function verifyDomEffect(target: FrameTarget, action: Action): Prom
           return false;
         }
         if (inputType !== "radio" && inputType !== "checkbox") {
-          // Real button/link click — let network/URL signal decide.
-          return false;
+          // Element-scoped selection read-back. The pre-map is keyed by the
+          // same absolute positional xpath Stagehand resolves to, so a lookup
+          // by the resolved element's xpath body yields THAT element's baseline.
+          // Credit the click iff the element's own committed state moved across
+          // it. No baseline (element newly mounted, or an xpath the generator
+          // and Stagehand index differently) → hold no opinion and let the
+          // network/URL signal decide: a miss is never a false credit, and a
+          // selection change on any OTHER element can never credit this step.
+          const preFingerprint = preSelectionState[xpath];
+          if (!preFingerprint) return false;
+          const postFingerprint = await readElementSelectionFingerprint(target, selector);
+          if (!postFingerprint) return false;
+          return selectionFingerprintChanged(preFingerprint, postFingerprint);
         }
         const isCheckedNow = await locator.isChecked();
         if (!isCheckedNow) return false;
@@ -6489,6 +6687,13 @@ export async function executeStepWithHealing(params: {
   // (verified 2026-06-15 on one measured tenant's telemetry). Site-agnostic: any flow
   // whose submit is mid-list can mark its submit step explicitly.
   const requireSubmitEndpoint = (isFinalStep || submitStep) && submitEndpointPattern !== null;
+  // Capture the per-element selection baseline (for verifyDomEffect's element-
+  // scoped click read-back) ONLY for selection/field-answer click steps — never
+  // for submit/advance steps, whose own self-toggling buttons must not
+  // false-credit the step, and whose advance/submit verdicts require a real
+  // network/URL transition. Also keeps the extra full-DOM evaluate off the
+  // submit/advance path. Step-level intent (available before the attempt loop).
+  const captureSelectionState = shouldCaptureSelectionState({ step, isFinalStep, submitStep });
   const attempts: AttemptRecord[] = [];
   const triedSelectors: string[] = [];
   const failureReasons: string[] = [];
@@ -6778,6 +6983,7 @@ export async function executeStepWithHealing(params: {
         visibleTextSignature: "",
         selectionStateSignature: "",
         formValueSignature: "",
+        selectionStateByXpath: {},
       };
       attempts.push({
         attempt: 0,
@@ -7000,7 +7206,12 @@ export async function executeStepWithHealing(params: {
       await page.waitForTimeout(attempt * ATTEMPT_BACKOFF_MS);
     }
 
-    const pre = await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter, page);
+    const pre = await snapshotPage(
+      frameTarget ?? mainFrameTarget(page),
+      signalCounter,
+      page,
+      captureSelectionState
+    );
     // Snapshot the meta-tail length so the final-step pattern gate can scope
     // its URL scan to captures added DURING this attempt (not historical
     // tail from earlier steps).
@@ -7969,12 +8180,19 @@ export async function executeStepWithHealing(params: {
     // State-class actions (fill/check/etc.) never move the network counter or URL,
     // so the legacy heuristic false-negatived every form fill. Re-read DOM state
     // for those; keep the navigation signal authoritative for clicks/links —
-    // but ALSO route clicks through verifyDomEffect, which internally returns
-    // false for non-radio/non-checkbox clicks so the network/URL signal still
-    // decides those. Radios/checkboxes are click-but-no-network just like fills.
+    // but ALSO route clicks through verifyDomEffect, which authoritatively
+    // credits a radio/checkbox toggle OR (via the pre/post element fingerprint
+    // baseline `pre.selectionStateByXpath`) a design-system option/toggle whose
+    // own committed state changed; otherwise it returns false and the
+    // network/URL signal decides. Radios/checkboxes are click-but-no-network
+    // just like fills.
     const domVerified =
       resolvedAction !== null && (isStateClass || isClick)
-        ? await verifyDomEffect(frameTarget ?? mainFrameTarget(page), resolvedAction)
+        ? await verifyDomEffect(
+            frameTarget ?? mainFrameTarget(page),
+            resolvedAction,
+            pre.selectionStateByXpath
+          )
         : false;
     // Interior-advance transition gate (opt-in). On SPAs where a page advance
     // and a mere field-edit share one endpoint URL (the wizard ATS's `/gq`:
@@ -8053,20 +8271,15 @@ export async function executeStepWithHealing(params: {
       bytesDelta: post.bodyHtmlLength - pre.bodyHtmlLength,
       textChanged: post.visibleTextSignature !== pre.visibleTextSignature,
     });
-    // Client-side state-toggle gate: credit a network-free click that flipped a
-    // selection-state signature (aria-pressed/checked/selected, data-state, or a
-    // selected/active/checked class) regardless of byte size. Fixes React/SPA
-    // multi-select wizards whose option buttons toggle client state with a
-    // trivial or NEGATIVE byte delta — which clickViewSwapVerified's byte floor
-    // and the phantom byte-check both miss.
-    const clickStateToggleVerified = isClickStateToggleVerified({
-      resolvedAction,
-      isFinalStep,
-      submitStep,
-      isAdvance: isAdvanceStep(step),
-      networkDelta: post.networkCount - pre.networkCount,
-      selectionStateChanged: post.selectionStateSignature !== pre.selectionStateSignature,
-    });
+    // A network-free selection/option toggle — including a Base Web `kind`
+    // flip or hashed-class swap that exposes no aria/data-state marker and
+    // moves a trivial or NEGATIVE byte delta — is now credited authoritatively
+    // and element-scoped by `verifyDomEffect` (via the pre/post per-element
+    // fingerprint baseline), flowing through `domVerified`. The former
+    // page-wide `clickStateToggleVerified` guess and its `selectionCounterStalled`
+    // veto (which only existed to suppress that guess's false positives) are
+    // removed: there is nothing to guess or veto when the resolved element's own
+    // committed state is read directly.
     // Form-value-diff signal: `visibleTextSignature` never reflects a plain
     // <input>/<textarea>/<select>'s `value` property, so a fill with no
     // secondary UI side effect (no toggle, no formatted display) had ZERO
@@ -8139,36 +8352,12 @@ export async function executeStepWithHealing(params: {
         }
       }
     }
-    // Selection-counter veto. A multi-select option click whose widget exposes
-    // no aria/data-state marker (obfuscated hashed classes) leaves
-    // `clickStateToggleVerified` blind, so a phantom that merely reflowed the
-    // DOM would ride the weak `domVerifiedForStep`/`clickViewSwapVerified`
-    // signals to a FALSE credit — the flow then advances to a "Next" that
-    // no-ops because nothing was actually selected. When the step's running
-    // "N selected" counter did not rise, suppress those weak DOM-delta signals
-    // so the cascade keeps trying a real selection. Strong signals (real
-    // network/URL transition) and the counter-independent state-toggle /
-    // form-value signals — each of which IS the selection registering — are
-    // never vetoed; counter-less widgets are untouched (the helper no-ops).
-    const selectionCounterStalled = isSelectionCounterStalled({
-      isSelectionStep: parseSelectStep(step) !== null,
-      preVisibleTextSignature: pre.visibleTextSignature,
-      postVisibleTextSignature: post.visibleTextSignature,
-    });
-    if (selectionCounterStalled && (domVerifiedForStep || clickViewSwapVerified)) {
-      logger.info(
-        `${formatStepPrefix(stepIndex, totalSteps)} selection step credited only via DOM reflow but the "N selected" counter did not rise — the option did not register; not treating the weak DOM signal as verified`
-      );
-    }
-    const domVerifiedAfterCounter = selectionCounterStalled ? false : domVerifiedForStep;
-    const clickViewSwapAfterCounter = selectionCounterStalled ? false : clickViewSwapVerified;
     let verified =
       networkIsRealAdvance ||
       urlChanged ||
-      domVerifiedAfterCounter ||
+      domVerifiedForStep ||
       datepickerCommitted ||
-      (!datepickerRejected &&
-        (clickViewSwapAfterCounter || formValueVerified || clickStateToggleVerified));
+      (!datepickerRejected && (clickViewSwapVerified || formValueVerified));
 
     // Final-step submit-verification gate. Replaces the deterministic
     // submitEndpointPattern regex with a Haiku 4.5 LLM judgment over
@@ -8319,9 +8508,7 @@ export async function executeStepWithHealing(params: {
                 ? "dom"
                 : formValueVerified
                   ? "form-value"
-                  : clickStateToggleVerified
-                    ? "state-toggle"
-                    : "dom";
+                  : "dom";
     }
 
     // N+16 probe: Stagehand's CDP click sometimes lands on the button without
@@ -8421,14 +8608,29 @@ export async function executeStepWithHealing(params: {
           const retryHtmlDelta = retryPost.bodyHtmlLength - pre.bodyHtmlLength;
           const retryTextChanged = retryPost.visibleTextSignature !== pre.visibleTextSignature;
           const retryFormValueChanged = retryPost.formValueSignature !== pre.formValueSignature;
-          // Excludes advance/"Next" steps for the same reason the primary
-          // isClickStateToggleVerified does: a validation re-render can flip a
-          // control's selection state without moving the wizard, and an advance
-          // without a configured transition pattern has no real-transition veto,
-          // so crediting a bare selection change here would desync the step pointer.
+          // Element-scoped selection read-back for the n+16 fallback — the same
+          // authoritative signal the primary verifier uses via `verifyDomEffect`,
+          // applied to the element this fallback just re-clicked. Credits only
+          // when the RESOLVED element's own committed state moved across the
+          // fallback click (Base Web `kind`/class, ARIA, native checked), read
+          // against the pre-action baseline. Excludes advance/"Next" steps: an
+          // advance without a configured transition pattern has no real-transition
+          // veto, so crediting a bare selection change would desync the step
+          // pointer. No page-wide signature, no counter veto — nothing to guess
+          // or suppress when the element's own state is read directly.
           const retrySelectionStateChanged =
             !isAdvanceStep(step) &&
-            retryPost.selectionStateSignature !== pre.selectionStateSignature;
+            (await (async (): Promise<boolean> => {
+              const preFingerprint = xpath ? pre.selectionStateByXpath[xpath] : undefined;
+              if (!preFingerprint || !resolvedAction?.selector) return false;
+              const postFingerprint = await readElementSelectionFingerprint(
+                frameTarget ?? mainFrameTarget(page),
+                resolvedAction.selector
+              );
+              return postFingerprint !== null
+                ? selectionFingerprintChanged(preFingerprint, postFingerprint)
+                : false;
+            })());
           // RC2: an advance/`kind=click` "Next" that only grew the DOM
           // (validation errors rendered) with NO network/URL change is a
           // validation-blocked no-op, not a real transition — but the
@@ -8484,42 +8686,26 @@ export async function executeStepWithHealing(params: {
             );
           }
           // Weak DOM-only signals (an html-byte delta, a visible-text change, a
-          // form-value change, a selection-state flip) are NOT sufficient to
+          // form-value change) are NOT sufficient to
           // verify a final/submit step on their own: a validation re-render
           // produces exactly these without the submit landing. The primary
-          // verifier is safe here because clickViewSwapVerified/formValueVerified/
-          // clickStateToggleVerified all self-exclude final/submit; the n+16
+          // verifier is safe here because clickViewSwapVerified/formValueVerified
+          // self-exclude final/submit; the n+16
           // fallback ORs the raw deltas, so gate them explicitly. On a
           // final/submit step they only count when the submit-endpoint judge will
           // actually run below (requireSubmitEndpoint) to corroborate — otherwise
           // only a strong signal (network/url) or a verified checkbox state may
           // pass. Non-final/submit steps are unaffected.
           const weakDomSignalsAllowed = (!isFinalStep && !submitStep) || requireSubmitEndpoint;
-          // Selection-counter veto for the n+16 fallback — the same gate the
-          // primary verifier applies, recomputed against `retryPost`. Without
-          // it this path would re-credit a stalled selection the primary veto
-          // already suppressed: the fallback `el.click()` can reflow the DOM
-          // (html/text/selection-state delta) without registering the option,
-          // and those weak deltas are exactly what the OR below admits for a
-          // non-final selection step. Only the weak-delta disjunct is vetoed;
-          // strong signals (network/url) and a verified checkbox state pass.
-          const retrySelectionCounterStalled = isSelectionCounterStalled({
-            isSelectionStep: parseSelectStep(step) !== null,
-            preVisibleTextSignature: pre.visibleTextSignature,
-            postVisibleTextSignature: retryPost.visibleTextSignature,
-          });
           let retryVerified =
             !clickBlockedByInvalid &&
             !fallbackDomOnlyAdvance &&
             (retryNetworkFired ||
               retryUrlChanged ||
               checkboxStateVerified ||
+              retrySelectionStateChanged ||
               (weakDomSignalsAllowed &&
-                !retrySelectionCounterStalled &&
-                (retryHtmlDelta !== 0 ||
-                  retryTextChanged ||
-                  retryFormValueChanged ||
-                  retrySelectionStateChanged)));
+                (retryHtmlDelta !== 0 || retryTextChanged || retryFormValueChanged)));
           // Apply the same submit-endpoint gate the primary verifier uses.
           // Without this, the n+16 fallback would still ride past a
           // tracking-pixel-only click on the final step. Same Haiku LLM
@@ -8611,17 +8797,7 @@ export async function executeStepWithHealing(params: {
           );
           if (retryVerified) {
             if (record.verifiedBy === null) {
-              record.verifiedBy = retryUrlChanged
-                ? "url"
-                : retryNetworkFired
-                  ? "network"
-                  : retryHtmlDelta === 0 &&
-                      !retryTextChanged &&
-                      !retryFormValueChanged &&
-                      !checkboxStateVerified &&
-                      retrySelectionStateChanged
-                    ? "state-toggle"
-                    : "dom";
+              record.verifiedBy = retryUrlChanged ? "url" : retryNetworkFired ? "network" : "dom";
             }
             record.post = retryPost;
             attempts.push(record);
@@ -8650,7 +8826,7 @@ export async function executeStepWithHealing(params: {
     if (verified) {
       if (attempt > 1) {
         logger.info(
-          `${formatStepPrefix(stepIndex, totalSteps)} healed on attempt ${attempt} via ${record.technique} (network=${networkFired} url=${urlChanged} dom=${domVerified} stateToggle=${clickStateToggleVerified} verifiedBy=${record.verifiedBy})`
+          `${formatStepPrefix(stepIndex, totalSteps)} healed on attempt ${attempt} via ${record.technique} (network=${networkFired} url=${urlChanged} dom=${domVerified} verifiedBy=${record.verifiedBy})`
         );
       } else {
         // Why log first-try wins explicitly: prior to this change, attempt-1
@@ -8661,7 +8837,7 @@ export async function executeStepWithHealing(params: {
         // 32 successful Stagehand acts. Surfacing attempt-1 wins lets the
         // log match telemetry and prevents the same false alarm.
         logger.info(
-          `${formatStepPrefix(stepIndex, totalSteps)} succeeded on attempt 1 via ${record.technique} (network=${networkFired} url=${urlChanged} dom=${domVerified} stateToggle=${clickStateToggleVerified} verifiedBy=${record.verifiedBy})`
+          `${formatStepPrefix(stepIndex, totalSteps)} succeeded on attempt 1 via ${record.technique} (network=${networkFired} url=${urlChanged} dom=${domVerified} verifiedBy=${record.verifiedBy})`
         );
       }
       trajectory?.push({ stepIndex, verifiedBy: record.verifiedBy });
@@ -8678,6 +8854,11 @@ export async function executeStepWithHealing(params: {
       actResultSuccess: record.actResultSuccess,
       pre,
       post,
+      // Authoritative element-scoped signal: `verifyDomEffect` read the resolved
+      // element's own committed-state delta (Base Web `kind`/class, ARIA, native
+      // checked) into `domVerified`. A registered selection toggle no longer
+      // reads as a phantom just because it moved no network/URL/bytes.
+      elementStateChanged: domVerified,
       isSubmitShapedStep: isFinalStep || submitStep,
     });
     const reason = record.errorMessage

@@ -12,11 +12,11 @@ import {
   extractLivePageFormEvidence,
   formatStepPrefix,
   type HealingFlowStep,
-  isSelectionCounterStalled,
   pollEnumerate,
   prepareFailureDumpBody,
   runHealingFlow,
   selectionCountFromSignature,
+  shouldCaptureSelectionState,
   waitForSpaReady,
   wireSignalCapture,
 } from "@/scraper/flow-runner";
@@ -93,68 +93,64 @@ describe("flow-runner/selectionCountFromSignature", () => {
   });
 });
 
-describe("flow-runner/isSelectionCounterStalled", () => {
-  const sig = (n: number): string => {
-    const text = `Which options?\n${n} settings selected\nWidget A`;
-    return `${text.length}:${text}`;
-  };
-
-  it("vetoes when a selection step's counter did not rise", () => {
+describe("flow-runner/shouldCaptureSelectionState", () => {
+  // This gate is the sole protection against #1 (submit false-credit) and #2
+  // (advance regression): a false result leaves pre.selectionStateByXpath empty,
+  // so verifyDomEffect's element read-back has no baseline and defers to
+  // network/URL. It must be false for EVERY submit/final/advance step.
+  it("captures for a plain selection/field-answer click step", () => {
     expect(
-      isSelectionCounterStalled({
-        isSelectionStep: true,
-        preVisibleTextSignature: sig(0),
-        postVisibleTextSignature: sig(0),
+      shouldCaptureSelectionState({
+        step: "Select 'Acute Care / Inpatient'",
+        isFinalStep: false,
+        submitStep: false,
       })
     ).toBe(true);
   });
 
-  it("does not veto when the counter rose", () => {
+  it("does NOT capture for a submit step (self-toggling submit must not credit)", () => {
     expect(
-      isSelectionCounterStalled({
-        isSelectionStep: true,
-        preVisibleTextSignature: sig(0),
-        postVisibleTextSignature: sig(1),
+      shouldCaptureSelectionState({
+        step: "Click the 'Submit application' button",
+        isFinalStep: false,
+        submitStep: true,
       })
     ).toBe(false);
   });
 
-  it("does not veto a non-selection step", () => {
+  it("does NOT capture for the final step", () => {
     expect(
-      isSelectionCounterStalled({
-        isSelectionStep: false,
-        preVisibleTextSignature: sig(0),
-        postVisibleTextSignature: sig(0),
+      shouldCaptureSelectionState({
+        step: "Confirm your selections",
+        isFinalStep: true,
+        submitStep: false,
       })
     ).toBe(false);
   });
 
-  it("does not veto a counter-less widget (helper no-ops)", () => {
+  it("does NOT capture for an advance/Next step (no-pattern desync guard)", () => {
     expect(
-      isSelectionCounterStalled({
-        isSelectionStep: true,
-        preVisibleTextSignature: "40:Pick your specialties then continue",
-        postVisibleTextSignature: "60:Pick your specialties then continue — one chosen",
+      shouldCaptureSelectionState({
+        step: "Click the Next button to continue",
+        isFinalStep: false,
+        submitStep: false,
       })
     ).toBe(false);
   });
 
-  it("does not veto when the counter appears only after the click (null pre)", () => {
+  it("still captures a selection step whose label merely contains 'next'/'continue' (not an advance phrase)", () => {
     expect(
-      isSelectionCounterStalled({
-        isSelectionStep: true,
-        preVisibleTextSignature: "30:Loading care settings…",
-        postVisibleTextSignature: sig(1),
+      shouldCaptureSelectionState({
+        step: "Select 'Next Available' shift preference",
+        isFinalStep: false,
+        submitStep: false,
       })
-    ).toBe(false);
-  });
-
-  it("vetoes a decrease as well as a no-change (post <= pre)", () => {
+    ).toBe(true);
     expect(
-      isSelectionCounterStalled({
-        isSelectionStep: true,
-        preVisibleTextSignature: sig(2),
-        postVisibleTextSignature: sig(1),
+      shouldCaptureSelectionState({
+        step: "Click the 'Continue Care' option",
+        isFinalStep: false,
+        submitStep: false,
       })
     ).toBe(true);
   });

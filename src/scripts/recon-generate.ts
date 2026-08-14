@@ -2543,10 +2543,10 @@ export function deriveProducerBoundaryBindings(
  *
  * WHY before {@link interpolateStateValues} and not via its payload pass: a
  * composite coordinate like a jobLocation `"Torrington, Connecticut, United
- * States"` or a jobSeqNo `"HHKHHEUS26158515EXTERNALENUS"` contains inner tokens a
+ * States"` or a jobSeqNo `"AAA0000000000EXTERNALENUS"` contains inner tokens a
  * genuinely-prior step produces as its own state var (a `label`, a `refNum`).
  * Pass-1 state threading would fragment the string (`"Torrington, ${label}"`,
- * `"${refNum}26158515EXTERNALENUS"`) before the length-descending payload pass
+ * `"${refNum}0000000000EXTERNALENUS"`) before the length-descending payload pass
  * could match the full literal — and the collision guard then refuses to bind the
  * embedded remainder, stranding it frozen. Binding the whole coordinate first —
  * the same "swallow whole before inner passes reach in" discipline as
