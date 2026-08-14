@@ -44,13 +44,23 @@ const fp = (over: Partial<Fingerprint>): Fingerprint => ({
 });
 
 /**
- * A FrameTarget whose `evaluate` answers the two browser expressions the click
- * branch runs: the `el.type` probe (returns `null` for a plain <button>) and
- * the element-fingerprint read (returns `postFingerprint`). The pre-baseline is
- * passed to `verifyDomEffect` directly.
+ * A FrameTarget whose `evaluate` answers the browser expressions the click
+ * branch runs: the `el.type` probe (returns `null` for a plain <button>), the
+ * element-fingerprint read (returns `postFingerprint`), and — new — the
+ * ancestor-walk expression (returns `ancestorWalkResult`, a raw boolean the
+ * helper coerces via `=== true`). `ancestorWalkResult` defaults to `false` so
+ * every existing case that expects a leaf-only verdict is unchanged: a leaf
+ * whose own fingerprint didn't move now additionally consults the ancestor
+ * walk, which returns `false` here unless a case opts in.
  */
-function makeTarget(postFingerprint: Fingerprint | null): FrameTarget {
+function makeTarget(
+  postFingerprint: Fingerprint | null,
+  ancestorWalkResult: boolean = false
+): FrameTarget {
   const evaluate = vi.fn(async (expr: string) => {
+    // The ancestor-walk expression is uniquely identified by its SELECTION_ROLES
+    // set literal; check it FIRST since it also contains `getAttribute("kind")`.
+    if (expr.includes("SELECTION_ROLES")) return ancestorWalkResult;
     // The element-fingerprint expression reads `getAttribute("kind")`; the
     // input-type probe reads `el.type`. Distinguish by a token unique to the
     // fingerprint expr.
@@ -140,5 +150,84 @@ describe("flow-runner/verifyDomEffect — element-scoped selection read-back", (
     const target = makeTarget(null);
 
     expect(await verifyDomEffect(target, clickAction, pre)).toBe(false);
+  });
+});
+
+/**
+ * Coverage for the ANCESTOR-scoped fallback: a design-system option that wraps
+ * its label in a child element (Base Web `tag`, and the standard listbox idiom
+ * where the option's accessible name comes from its descendant content). The
+ * click resolves to the label leaf, which has no baseline entry and never
+ * changes state; the selection commits on the ancestor `role="option"`. When
+ * the leaf read-back can't credit, `verifyDomEffect` consults the nearest
+ * baseline-present selection ancestor via the in-page walk — mocked here through
+ * `makeTarget`'s `ancestorWalkResult` (the raw boolean the walk expression
+ * returns, coerced by the helper via `=== true`).
+ */
+describe("flow-runner/verifyDomEffect — ancestor-scoped selection fallback", () => {
+  // A leaf under the resolved XPATH that carries no baseline entry of its own.
+  const LEAF_SELECTOR = `xpath=${XPATH}/span[1]`;
+  const leafClick: Action = {
+    selector: LEAF_SELECTOR,
+    description: "label span inside a role=option",
+    method: "click",
+  } as Action;
+
+  it("credits a selection ancestor when the clicked leaf has no baseline of its own", async () => {
+    // Leaf absent from baseline; the walk (mocked true) found a baseline-present
+    // role=option ancestor whose aria-selected flipped false→true.
+    const target = makeTarget(null, true);
+
+    expect(await verifyDomEffect(target, leafClick, {})).toBe(true);
+  });
+
+  it("does NOT credit when the nearest selection ancestor is unchanged", async () => {
+    // Ancestor in baseline but its fingerprint didn't move (re-click of an
+    // already-selected option) → walk returns false → no credit.
+    const target = makeTarget(null, false);
+
+    expect(await verifyDomEffect(target, leafClick, {})).toBe(false);
+  });
+
+  it("does NOT credit a disclosure-only ancestor (no selection marker) → walk false", async () => {
+    // A leaf under an aria-expanded / data-state open|closed button has no
+    // eligible selection ancestor; the in-page walk returns false.
+    const target = makeTarget(null, false);
+
+    expect(await verifyDomEffect(target, leafClick, {})).toBe(false);
+  });
+
+  it("does NOT credit when the eligible ancestor is not in the baseline (newly mounted) → walk false", async () => {
+    const target = makeTarget(null, false);
+
+    expect(await verifyDomEffect(target, leafClick, {})).toBe(false);
+  });
+
+  it("credits the direct-hit option via the fast path WITHOUT consulting the walk", async () => {
+    // The clicked node IS the option and its own fingerprint moved: the leaf
+    // read-back returns true before the ancestor walk is ever reached. Force the
+    // walk to false to prove the fast path is what credits it.
+    const pre = { [XPATH]: fp({ ariaSelected: "false" }) };
+    const target = makeTarget(fp({ ariaSelected: "true" }), false);
+
+    expect(await verifyDomEffect(target, clickAction, pre)).toBe(true);
+  });
+
+  it("cannot credit on a submit step: empty baseline → walk finds no key → false", async () => {
+    // executeStepWithHealing captures no selectionStateByXpath for submit/advance
+    // steps, so `pre` is empty; the ancestor walk has no baseline key to match
+    // and returns false, so the submit verdict must come from network/URL.
+    const target = makeTarget(null, false);
+
+    expect(await verifyDomEffect(target, leafClick, {})).toBe(false);
+  });
+
+  it("credits a class-only hashed swap on a marker-bearing ancestor (aria unchanged)", async () => {
+    // Base Web swaps only its hashed styletron class on the ancestor option;
+    // aria is unchanged. The walk (mocked true) reflects that the ancestor's
+    // `cls` field moved.
+    const target = makeTarget(null, true);
+
+    expect(await verifyDomEffect(target, leafClick, {})).toBe(true);
   });
 });
