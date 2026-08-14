@@ -228,7 +228,7 @@ describe("flow-runner/executeStepWithHealing — deepLocator branch honors the w
       FRAME_SELECTOR,
       INTERACTIVE_CANDIDATE_SELECTOR,
       benignCandidate.index,
-      { frameTarget: childFrameTarget }
+      { frameTarget: childFrameTarget, preferTrustedClick: false }
     );
   });
 
@@ -280,7 +280,7 @@ describe("flow-runner/executeStepWithHealing — deepLocator branch honors the w
       FRAME_SELECTOR,
       INTERACTIVE_CANDIDATE_SELECTOR,
       benignCandidate.index,
-      { frameTarget: childFrameTarget }
+      { frameTarget: childFrameTarget, preferTrustedClick: false }
     );
   });
 });

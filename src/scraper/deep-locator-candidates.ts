@@ -75,6 +75,21 @@ export interface DeepLocatorTimeoutOptions {
    * probe.
    */
   frameTarget?: FrameTarget;
+  /**
+   * Forces {@link clickDeepLocatorCandidate} to skip the batched in-page
+   * synthetic click ({@link buildClickFrameCandidateExpr}, `isTrusted=false`)
+   * and activate ONLY via the trusted CDP `deepLocator().nth(index).click()`
+   * (`Input.dispatchMouseEvent`, `isTrusted=true`). The synthetic fast path is
+   * the default because it collapses the `index + 1` per-index resolve
+   * round-trips; a caller sets this ONLY on the phantom-driven retry, where the
+   * prior synthetic click already fired without effect and the per-index cost
+   * is worth paying to deliver a click a React/design-system handler accepts.
+   * Omitted/false everywhere else so throughput is unchanged for the common
+   * case. Does NOT suppress the not-actionable probe: an unrendered node still
+   * throws {@link isNodeNotActionableError} rather than paying a scaled-timeout
+   * CDP click.
+   */
+  preferTrustedClick?: boolean;
 }
 
 /** `page.deepLocator()`'s return type, without importing Stagehand's understudy internals directly. */
@@ -512,10 +527,13 @@ function isFrameCandidateClickResult(entry: unknown): entry is FrameCandidateCli
  * Batched-click fast path: one `frameTarget.evaluate(buildClickFrameCandidateExpr(innerSelector, index))`
  * round-trip replaces the legacy `nth(index).click()`, which (per
  * {@link DEEP_LOCATOR_CLICK_INDEX_ROUND_TRIP_MS}'s docs) pays `index + 1`
- * serial CDP round-trips through `resolveAtIndex`. Returns `null` (never
- * throws) when no frame seam is available, the evaluate call rejects, or the
- * resolved payload doesn't conform to {@link FrameCandidateClickResult} —
- * every one of those degrades the caller to the legacy `nth(index).click()`
+ * serial CDP round-trips through `resolveAtIndex`. The batched click is a
+ * SYNTHETIC (`isTrusted=false`) activation; {@link clickDeepLocatorCandidate}
+ * escalates to the trusted CDP click only when this reports the index stale or
+ * the caller set `preferTrustedClick` (a phantom-driven retry). Returns `null`
+ * (never throws) when no frame seam is available, the evaluate call rejects, or
+ * the resolved payload doesn't conform to {@link FrameCandidateClickResult} —
+ * every one of those degrades the caller to the trusted `nth(index).click()`
  * path instead of losing the click, paralleling {@link scanFrameCandidatesBatched}'s
  * degrade contract on the enumeration side.
  */
@@ -559,19 +577,34 @@ async function clickCandidateBatched(
  * must infer the outcome from whether this call throws plus their own
  * downstream DOM verification, not from a returned boolean.
  *
- * Prefers the one-round-trip {@link clickCandidateBatched} fast path when a
- * frame seam is available (`timeoutOptions.frameTarget`, or one resolved
- * internally the same way {@link scanFrameCandidatesBatched} does), falling
- * back to the legacy `DeepLocatorDelegate.click()` — which never reports
- * success via a return value, only via not rejecting — when no seam is
- * available, the batched call fails/degrades, or it reports the index
- * stale (`reason: "out-of-range"`). A batched `reason: "not-actionable"`
- * result throws an error {@link isNodeNotActionableError} classifies, the
- * same contract a real click against an unrendered node rejects with via the
- * CDP `-32000 Node does not have a layout object` error, so a caller
- * cascading through candidates treats both paths identically.
+ * By default, prefers the one-round-trip {@link clickCandidateBatched} fast
+ * path when a frame seam is available (`timeoutOptions.frameTarget`, or one
+ * resolved internally the same way {@link scanFrameCandidatesBatched} does):
+ * that batched click is a SYNTHETIC (`isTrusted=false`) activation, but it
+ * collapses the `index + 1` serial `nth(index)` resolve round-trips and works
+ * for the overwhelmingly common control. It falls back to the trusted
+ * `deepLocator().nth(index).click()` (understudy `Input.dispatchMouseEvent`,
+ * `isTrusted=true`) — which never reports success via a return value, only via
+ * not rejecting — when no seam is available, the batched call fails/degrades, or
+ * it reports the index stale (`reason: "out-of-range"`). A batched
+ * `reason: "not-actionable"` result throws an error {@link isNodeNotActionableError}
+ * classifies, the same contract a real click against an unrendered node rejects
+ * with via the CDP `-32000 Node does not have a layout object` error, so a
+ * caller cascading through candidates treats both paths identically.
  *
- * The legacy fallback's watchdog scales with `index` (see
+ * When `timeoutOptions.preferTrustedClick` is set, the synthetic batched click
+ * is SKIPPED entirely and activation goes straight to the trusted CDP
+ * `nth(index).click()` — the escalation a phantom-driven retry uses after a
+ * synthetic click fired without effect (a React/design-system handler that
+ * ignores untrusted activation). A cheap not-actionable probe still runs first
+ * so an unrendered candidate is skipped without paying the scaled-timeout CDP
+ * click.
+ *
+ * Resolves on success and rejects on failure — the caller must infer the
+ * outcome from whether this call throws plus their own downstream DOM
+ * verification, not from a returned boolean.
+ *
+ * The trusted-fallback watchdog scales with `index` (see
  * {@link DEEP_LOCATOR_CLICK_INDEX_ROUND_TRIP_MS}) so a legitimately-reachable
  * candidate isn't killed by a budget sized for a single round-trip. A
  * `click()` that still exceeds that scaled budget (a wedged CDP round-trip
@@ -589,19 +622,28 @@ export async function clickDeepLocatorCandidate(
   const callTimeoutMs = timeoutOptions.callTimeoutMs ?? DEFAULT_DEEP_LOCATOR_CALL_TIMEOUT_MS;
   const hopSelector = buildHopSelector(frameSelector, innerSelector);
 
-  const batchedResult = await clickCandidateBatched(
-    page,
-    frameSelector,
-    innerSelector,
-    index,
-    hopSelector,
-    timeoutOptions
-  );
-  if (batchedResult?.clicked) return;
-  if (batchedResult?.reason === "not-actionable") {
-    throw new Error(
-      `deepLocator batched click for ${hopSelector} nth=${index}: node does not have a layout object`
+  // The synthetic batched click is skipped when a trusted click is demanded —
+  // running BOTH would activate the element twice (on a toggle: select →
+  // deselect = net zero, the exact double-fire hazard browser-click-expr.ts
+  // warns about). Under preferTrustedClick the trusted `nth().click()` below is
+  // the sole activation, and an unrendered node surfaces as the CDP `-32000`
+  // error `isNodeNotActionableError` classifies rather than the batched probe's
+  // not-actionable reason.
+  if (!timeoutOptions.preferTrustedClick) {
+    const batchedResult = await clickCandidateBatched(
+      page,
+      frameSelector,
+      innerSelector,
+      index,
+      hopSelector,
+      timeoutOptions
     );
+    if (batchedResult?.reason === "not-actionable") {
+      throw new Error(
+        `deepLocator batched click for ${hopSelector} nth=${index}: node does not have a layout object`
+      );
+    }
+    if (batchedResult?.clicked) return;
   }
 
   const scaledCallTimeoutMs = callTimeoutMs + index * DEEP_LOCATOR_CLICK_INDEX_ROUND_TRIP_MS;

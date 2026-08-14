@@ -1,7 +1,8 @@
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { makeFakeDeepLocator } from "@/scraper/deep-locator-fake";
+import { makeFakeDeepLocator, registerDeepLocatorHopElements } from "@/scraper/deep-locator-fake";
+import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
 import { executeStepWithHealing } from "@/scraper/flow-runner";
 import type { FrameTarget } from "@/scraper/frame-target";
 import type { Logger } from "@/types/logging";
@@ -464,6 +465,81 @@ describe("flow-runner/executeStepWithHealing — structured-click probe frame sc
     );
     expect(structuredClickCalls.length).toBeGreaterThan(0);
     expect(page.evaluate).not.toHaveBeenCalled();
+  });
+
+  it("keeps structured-click reachable at attempt 3 when trusted-click-retry's only deepLocator matches are all wizard-exit deny-listed", async () => {
+    // Bug-1 regression. A non-submit phantom routes attempt 2 to
+    // trusted-click-retry; if EVERY re-resolved deepLocator candidate is refused
+    // by the wizard-exit deny-list, the walk records zero tried selectors of its
+    // own. structured-click's `anyXpathResolved` precondition must still see the
+    // xpath attempt-1 resolved (carried forward via the running triedSelectors),
+    // so structured-click still runs at attempt 3 rather than being skipped.
+    const childEvaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const src = String(expr);
+      if (src.includes("groupPresent")) return { groupPresent: false };
+      if (src.includes("isCheckable")) return { resolved: true, isCheckable: false };
+      return null;
+    });
+    const childTarget: FrameTarget = {
+      frame: {} as FrameTarget["frame"],
+      frameSelector: FRAME_SELECTOR,
+      evaluate: childEvaluate as FrameTarget["evaluate"],
+      locator: vi.fn() as FrameTarget["locator"],
+      url: () => Promise.resolve(`${CHILD_ORIGIN}/application/abc-123`),
+      title: () => Promise.resolve("Apply"),
+    };
+    // deepLocator resolves ONE candidate whose accessible text is a wizard-exit
+    // control ("Continue Later"), which isWizardExitAction denies — so the
+    // trusted-click-retry walk clicks nothing and its own attemptTriedSelectors
+    // stays empty.
+    const frame = new Map();
+    registerDeepLocatorHopElements(
+      frame,
+      `${FRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`,
+      ["Continue Later"]
+    );
+    registerDeepLocatorHopElements(frame, `${FRAME_SELECTOR} >> *`, ["Continue Later"]);
+    const page = {
+      evaluate: vi.fn().mockResolvedValue(null),
+      deepLocator: makeFakeDeepLocator(frame),
+      locator: vi.fn().mockReturnValue({
+        first: () => ({
+          setInputFiles: vi.fn().mockResolvedValue(undefined),
+          isChecked: vi.fn().mockResolvedValue(false),
+          inputValue: vi.fn().mockResolvedValue(""),
+        }),
+      }),
+      url: () => `${CHILD_ORIGIN}/application/abc-123`,
+      title: vi.fn().mockResolvedValue("Apply"),
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
+    } as unknown as Page;
+
+    // Attempt 1 (act-string) resolves an xpath and reports success but produces
+    // no observable effect → phantom → attempt 2 = trusted-click-retry.
+    guardedObserve.mockResolvedValue([]);
+    guardedAct.mockResolvedValue({
+      success: true,
+      message: "clicked",
+      actionDescription: "I agree",
+      actions: [
+        { selector: "xpath=//input[@id='agree']", description: "I agree", method: "click" },
+      ],
+    });
+
+    await expect(
+      executeStepWithHealing(
+        baseParams({
+          page,
+          step: "Click the 'I agree' checkbox",
+          frameTarget: childTarget,
+        }) as never
+      )
+    ).rejects.toThrow();
+
+    const structuredClickCalls = childEvaluate.mock.calls.filter(([expr]) =>
+      String(expr).includes("isCheckable")
+    );
+    expect(structuredClickCalls.length).toBeGreaterThan(0);
   });
 });
 

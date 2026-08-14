@@ -18,13 +18,14 @@
  * {@link buildClickFrameCandidateExpr} is the actuation half of Issue #2
  * (clicking an unrendered node): a second one-round-trip evaluate call that
  * re-runs the same `querySelectorAll(innerSelector)` resolution, clicks the
- * element at a scan-derived `index`, and reports out-of-range /
- * not-actionable outcomes as data instead of throwing a CDP `-32000` error.
- * {@link isNodeNotActionableError} is the companion predicate for the case
- * where a click is attempted through a different path (e.g. Stagehand's own
- * `deepLocator().click()`) and throws anyway — both live here because a
- * caller enumerates with the first and needs the second or third to
- * interpret a click outcome against whatever the scan already reported as
+ * element at a scan-derived `index` (a synthetic fast-path click; the trusted
+ * CDP click is a phantom-driven escalation in `clickDeepLocatorCandidate`), and
+ * reports out-of-range / not-actionable outcomes as data instead of throwing a
+ * CDP `-32000` error. {@link isNodeNotActionableError} is the companion
+ * predicate for the case where a click is attempted through a different path
+ * (e.g. Stagehand's own `deepLocator().click()`) and throws anyway — both live
+ * here because a caller enumerates with the first and needs the second or third
+ * to interpret a click outcome against whatever the scan already reported as
  * `visible`.
  *
  * {@link buildFillFrameCandidateExpr} and {@link buildSelectFrameCandidateExpr}
@@ -256,12 +257,21 @@ export interface FrameCandidateScanResult {
  * uses and clicks the element at `index` via the shared
  * {@link clickActivationExpr} snippet — a real `PointerEvent`/`MouseEvent`
  * sequence plus native `click()`, NOT a bare `new Event(...)` (which bubbles to
- * analytics but doesn't drive a React/Base Web toggle; see the module docblock).
- * This is the one-round-trip actuation half of the batched-scan fix: a caller that
- * scanned via {@link buildScanFrameCandidatesExpr} can hand the chosen
- * `index` straight to this builder without re-deriving the candidate set,
- * because both builders resolve `querySelectorAll(innerSelector)` against
- * the same frame document in the same match order.
+ * analytics but doesn't drive a React/design-system toggle; see the module
+ * docblock). This is the one-round-trip actuation FAST PATH: a caller that
+ * scanned via {@link buildScanFrameCandidatesExpr} can hand the chosen `index`
+ * straight to this builder without re-deriving the candidate set OR paying the
+ * `index + 1` serial `nth(index)` resolve round-trips
+ * ({@link DEEP_LOCATOR_CLICK_INDEX_ROUND_TRIP_MS}), because both builders resolve
+ * `querySelectorAll(innerSelector)` against the same frame document in the same
+ * match order.
+ *
+ * This click is `isTrusted=false`. That is fine for the overwhelmingly common
+ * case (a plain button/link whose handler accepts a synthetic activation), and
+ * a caller that finds the click phantomed (no observable effect) escalates to
+ * the TRUSTED CDP `deepLocator().nth(index).click()` via
+ * `clickDeepLocatorCandidate`'s `preferTrustedClick` option — the throughput
+ * hit of the per-index resolve is paid only on the retry, not on every click.
  *
  * Reports out-of-range / not-actionable outcomes as data rather than by
  * throwing, paralleling {@link isNodeNotActionableError}'s CDP-error-side
