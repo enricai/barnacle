@@ -594,6 +594,7 @@ export interface AttemptRecord {
     | "structured-click"
     | "observe-act-exclude"
     | "deep-submit-locator"
+    | "trusted-click-retry"
     | "deep-locator-field-label"
     | "llm-rephrase";
   instruction: string | null;
@@ -1464,6 +1465,7 @@ export function shouldSkipTechnique(params: {
     | "structured-click"
     | "observe-act-exclude"
     | "deep-submit-locator"
+    | "trusted-click-retry"
     | "llm-rephrase";
   priorAttempts: readonly {
     technique: string;
@@ -1495,11 +1497,11 @@ export function shouldSkipTechnique(params: {
    * submit-control locator ranks submit-shaped candidates only and
    * deliberately excludes Back/Cancel/Save-draft controls, so it is a
    * guaranteed no-op on a non-submit control (e.g. a radio/checkbox). Scopes
-   * the phantom-click short-circuit above to submit-shaped steps only —
-   * on a non-submit step the fallback ladder (`structured-click`,
-   * `observe-act-exclude`) is left intact since those are the techniques
-   * that can actually click a radio or checkbox. Optional so existing
-   * callers are unchanged.
+   * the phantom-click deep-submit-locator short-circuit above to submit-shaped
+   * steps only — a non-submit phantom escalates instead to `trusted-click-retry`
+   * (a trusted CDP click on the resolved element, the activation a design-system
+   * widget ignored under the synthetic click), wired at the attempt-2 dispatch,
+   * not here. Optional so existing callers are unchanged.
    */
   submitShapedStep?: boolean;
 }): { skip: boolean; reason: string } {
@@ -6811,6 +6813,150 @@ export async function executeStepWithHealing(params: {
   // observable effect (see classifyPhantomClick). Reroutes attempt 2 to
   // deep-submit-locator instead of observe-act, since re-resolving via the
   // same light-DOM view cannot reach a target the resolver can't see.
+  // Shared deepLocator actionable-candidate walk, invoked by BOTH the
+  // observe-blind attempt-2/4 branch and the phantom-driven `trusted-click-retry`
+  // branch. Walks ranked `candidates`, skipping wizard-exit and not-actionable
+  // ones, actuating the first that sticks (`clickFirstActionableCandidate`), then
+  // synthesizes a `resolvedAction` the standard verifier consumes. Returns
+  // `resolvedAction` on success, or `null` on failure (the caller `continue`s).
+  // `preferTrustedClick` forwards to `clickDeepLocatorCandidate` so the retry
+  // path activates via the trusted CDP click; `labelPrefix` distinguishes the
+  // two callers in the audit record. On failure the running `triedSelectors`
+  // (which already holds prior attempts' resolved xpath) is written to
+  // `record.triedSelectors`, not just this walk's own — so a walk that resolved
+  // only deny-listed candidates still exposes a prior xpath to
+  // `shouldSkipTechnique`'s `anyXpathResolved` gate, keeping `structured-click`
+  // reachable at attempt 3.
+  const runDeepLocatorClickWalk = async (args: {
+    candidates: DeepLocatorCandidate[];
+    innerSelector: string;
+    preferTrustedClick: boolean;
+    labelPrefix: string;
+    record: AttemptRecord;
+    attempt: number;
+    pre: StepSnapshot;
+  }): Promise<{ resolvedAction: Action | null }> => {
+    const { candidates, innerSelector, preferTrustedClick, labelPrefix, record, attempt, pre } =
+      args;
+    const attemptTriedSelectors: string[] = [];
+    const denyCandidate = (candidate: DeepLocatorCandidate): boolean => {
+      const denied = isWizardExitAction(candidate.accessibleText, wizardExitButtonLabels);
+      if (denied) {
+        logger.info(
+          `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: refused wizard-exit control: "${candidate.accessibleText.slice(0, 60)}"`
+        );
+      }
+      return denied;
+    };
+    const actuation = resolveDeepLocatorActuation(step);
+    const isSelectionIntentClick = actuation.kind === "click" && parseSelectStep(step) !== null;
+    const baselineSelectionCount = isSelectionIntentClick
+      ? selectionCountFromSignature(pre.visibleTextSignature)
+      : null;
+    const readSelectionCount = isSelectionIntentClick
+      ? async (): Promise<number | null> => {
+          try {
+            const snap = await snapshotPage(
+              frameTarget ?? mainFrameTarget(page),
+              signalCounter,
+              page
+            );
+            return selectionCountFromSignature(snap.visibleTextSignature);
+          } catch {
+            return null;
+          }
+        }
+      : undefined;
+    const cascadeResult = await clickFirstActionableCandidate(
+      candidates,
+      async (candidate) => {
+        attemptTriedSelectors.push(candidate.selector);
+        if (actuation.kind === "select") {
+          const verified = await selectDeepLocatorCandidateOption(
+            page,
+            frameTarget?.frameSelector,
+            innerSelector,
+            candidate.index,
+            actuation.value,
+            { frameTarget }
+          );
+          // selectDeepLocatorCandidateOption never throws on an ordinary failed
+          // write (see deep-locator-actuate.ts's writeAndVerify) — it resolves
+          // `false` for both a rejected selectOption() and a read-back mismatch.
+          // clickFirstActionableCandidate infers success from "didn't throw", so
+          // a `false` here must become a throw or the walk would wrongly report
+          // this candidate as actuated.
+          if (!verified) throw new Error("-32000 Node does not have a layout object");
+        } else if (actuation.kind === "fill") {
+          const verified = await fillDeepLocatorCandidate(
+            page,
+            frameTarget?.frameSelector,
+            innerSelector,
+            candidate.index,
+            actuation.value,
+            { frameTarget }
+          );
+          if (!verified) throw new Error("-32000 Node does not have a layout object");
+        } else {
+          await clickDeepLocatorCandidate(
+            page,
+            frameTarget?.frameSelector,
+            innerSelector,
+            candidate.index,
+            {
+              frameTarget,
+              preferTrustedClick,
+            }
+          );
+        }
+      },
+      { denyCandidate, readSelectionCount, baselineSelectionCount }
+    )
+      .then((outcome) => ({ outcome, error: null as unknown }))
+      .catch((error: unknown) => ({ outcome: null, error }));
+    triedSelectors.push(...attemptTriedSelectors);
+    if (cascadeResult.outcome?.clicked && cascadeResult.outcome.candidate) {
+      const acted = cascadeResult.outcome.candidate;
+      record.triedSelectors = [...attemptTriedSelectors];
+      const verb =
+        actuation.kind === "select" ? "selected" : actuation.kind === "fill" ? "filled" : "clicked";
+      record.instruction = `${labelPrefix}: ${acted.accessibleText || "(no accessible text)"}`;
+      record.actResultSuccess = true;
+      record.actResultDescription = `${labelPrefix} ${verb} "${acted.accessibleText || acted.selector}"`;
+      // Synthesize an action matching the actuation kind so downstream
+      // verification (network/url/dom — STATE_CLASS_METHODS treats
+      // fill/selectOption as DOM-verifiable, not click) treats this exactly like
+      // any other resolved action — same idiom as deep-submit-locator/structured-click.
+      const resolvedAction: Action =
+        actuation.kind === "click"
+          ? { selector: acted.selector, description: record.actResultDescription, method: "click" }
+          : {
+              selector: acted.selector,
+              description: record.actResultDescription,
+              method: actuation.kind === "select" ? "selectOption" : "fill",
+              arguments: [actuation.value],
+            };
+      return { resolvedAction };
+    }
+    // Failure: carry the running triedSelectors (prior xpath + this walk's own)
+    // into the record so anyXpathResolved stays true even when every resolved
+    // candidate was deny-listed (attemptTriedSelectors would be empty then).
+    record.triedSelectors = [...triedSelectors];
+    const counterStalledCount = cascadeResult.outcome?.counterStalledSelectors.length ?? 0;
+    const failureMessage = cascadeResult.error
+      ? `${labelPrefix}: ${actuation.kind} threw ${toErrorMessage(cascadeResult.error)}`
+      : counterStalledCount > 0
+        ? `${labelPrefix}: clicked ${counterStalledCount} candidate(s) but the "N selected" counter never rose (no selection registered)`
+        : attemptTriedSelectors.length > 0
+          ? `${labelPrefix}: no actionable candidate (${attemptTriedSelectors.length} not-actionable)`
+          : `${labelPrefix}: no actionable candidate (every candidate refused by the wizard-exit deny-list)`;
+    record.actResultSuccess = false;
+    record.errorMessage = failureMessage;
+    attempts.push(record);
+    failureReasons.push(failureMessage);
+    logger.info(`${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${failureMessage}`);
+    return { resolvedAction: null };
+  };
   let phantomClickAfterAttempt1 = false;
   for (let attempt = 1; attempt <= MAX_STEP_ATTEMPTS; attempt++) {
     // Telemetry-driven technique-skip: when a cascade technique's
@@ -6823,7 +6969,9 @@ export async function executeStepWithHealing(params: {
         attempt === 2
           ? phantomClickAfterAttempt1 && (isFinalStep || submitStep)
             ? "deep-submit-locator"
-            : "observe-act"
+            : phantomClickAfterAttempt1
+              ? "trusted-click-retry"
+              : "observe-act"
           : attempt === 3
             ? "structured-click"
             : attempt === 4
@@ -7101,6 +7249,69 @@ export async function executeStepWithHealing(params: {
             );
           }
         }
+      } else if (attempt === 2 && phantomClickAfterAttempt1 && !(isFinalStep || submitStep)) {
+        // Trusted-click retry: attempt 1 phantom-clicked a NON-submit control —
+        // Stagehand reported success but pre/post showed zero effect. On a
+        // design-system widget (React synthetic-event delegation, custom
+        // event-bound wrappers) the likely cause is that the attempt-1 click was
+        // an in-page, `isTrusted=false` activation the handler ignores — the
+        // element resolves fine, but only a REAL user gesture registers. So
+        // re-resolve the target from the step's tagged phrases and re-click it
+        // via the trusted CDP path (`clickDeepLocatorCandidate` →
+        // `deepLocator().nth().click()`, an `Input.dispatchMouseEvent`). This is
+        // the non-submit sibling of the deep-submit-locator escalation above.
+        record.technique = "trusted-click-retry";
+        // Carry forward any selector prior attempts already resolved (e.g.
+        // attempt-1 act-string's xpath) so a trusted-click-retry that can't
+        // resolve a deepLocator candidate doesn't erase the xpath signal
+        // structured-click's precondition (shouldSkipTechnique) depends on —
+        // this attempt is an ADDITIONAL recovery, not a replacement that
+        // demotes the rest of the ladder.
+        if (!frameTarget?.frame) {
+          const failureMessage =
+            "trusted-click-retry: no frame seam available for a trusted deepLocator click";
+          record.actResultSuccess = false;
+          record.errorMessage = failureMessage;
+          record.triedSelectors = [...triedSelectors];
+          attempts.push(record);
+          failureReasons.push(failureMessage);
+          logger.info(
+            `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${failureMessage}`
+          );
+          continue;
+        }
+        await reresolveFrameTargetIfLost();
+        const { candidates: retryCandidates, innerSelector: retryInnerSelector } =
+          await resolveDeepLocatorCandidatesWithWidening(page, frameTarget.frameSelector, step, {
+            frameTarget,
+          });
+        const deepLocatorCandidates = retryCandidates.filter(
+          (c) => !triedSelectors.includes(c.selector)
+        );
+        if (deepLocatorCandidates.length === 0) {
+          const failureMessage =
+            "trusted-click-retry: no deepLocator candidate resolved for the phantomed target";
+          record.actResultSuccess = false;
+          record.errorMessage = failureMessage;
+          record.triedSelectors = [...triedSelectors];
+          attempts.push(record);
+          failureReasons.push(failureMessage);
+          logger.info(
+            `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${failureMessage}`
+          );
+          continue;
+        }
+        const { resolvedAction: retryResolvedAction } = await runDeepLocatorClickWalk({
+          candidates: deepLocatorCandidates,
+          innerSelector: retryInnerSelector,
+          preferTrustedClick: true,
+          labelPrefix: "trusted-click-retry",
+          record,
+          attempt,
+          pre,
+        });
+        if (!retryResolvedAction) continue;
+        resolvedAction = retryResolvedAction;
       } else if (attempt === 2 || attempt === 4) {
         record.technique = attempt === 2 ? "observe-act" : "observe-act-exclude";
         const observeOptions =
@@ -7216,156 +7427,25 @@ export async function executeStepWithHealing(params: {
               continue;
             }
           }
-          // Actionable-candidate walk: a top pick that rejects with the CDP
-          // `-32000 Node does not have a layout object` error (an unrendered
-          // node) or is refused by the wizard-exit deny-list costs only that
-          // one candidate, not the whole attempt — the next ranked candidate
-          // is tried instead. `attemptTriedSelectors` parallels the walk's own
-          // click attempts as they happen (not just on a successful return)
-          // so a click that throws a REAL error (e.g. a wedged
-          // `WatchdogTimeoutError`) still feeds attempt 4's exclusion filter.
-          const attemptTriedSelectors: string[] = [];
-          const denyCandidate = (candidate: DeepLocatorCandidate): boolean => {
-            const denied = isWizardExitAction(candidate.accessibleText, wizardExitButtonLabels);
-            if (denied) {
-              logger.info(
-                `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: refused wizard-exit control: "${candidate.accessibleText.slice(0, 60)}"`
-              );
-            }
-            return denied;
-          };
-          // Intent discrimination: observe()'s Stagehand-resolved action
-          // carries its own method + fill/select arguments (see attempt 1's
-          // `target.method === "fill"` handling above); the deepLocator
-          // fallback has no such resolved action, so the step prose is the
-          // only place the fill/select value can come from. Derived once per
-          // attempt (not per candidate) — every candidate in this walk is a
-          // guess at the SAME step's target, so they all actuate the same way.
-          const actuation = resolveDeepLocatorActuation(step);
-          // Next-best-candidate recovery for a markerless multi-select phantom:
-          // a click-to-toggle option (not a native <select> write, which
-          // already read-back-verifies) whose "N selected" counter doesn't rise
-          // means the click landed but didn't register — so the walk should try
-          // the next real option before this attempt is scored a failure and a
-          // replan is spent. Only wired for a selection-intent CLICK step; the
-          // reader re-reads the same counter `pre` captured (via
-          // `selectionCountFromSignature`) so no extra pre-snapshot is paid, and
-          // returns `null` on any frame hiccup so a read failure never converts
-          // to a walk-stopping throw. Non-selection steps pass `undefined` and
-          // the walk behaves exactly as before.
-          const isSelectionIntentClick =
-            actuation.kind === "click" && parseSelectStep(step) !== null;
-          const baselineSelectionCount = isSelectionIntentClick
-            ? selectionCountFromSignature(pre.visibleTextSignature)
-            : null;
-          const readSelectionCount = isSelectionIntentClick
-            ? async (): Promise<number | null> => {
-                try {
-                  const snap = await snapshotPage(
-                    frameTarget ?? mainFrameTarget(page),
-                    signalCounter,
-                    page
-                  );
-                  return selectionCountFromSignature(snap.visibleTextSignature);
-                } catch {
-                  return null;
-                }
-              }
-            : undefined;
-          const cascadeResult = await clickFirstActionableCandidate(
-            deepLocatorCandidates,
-            async (candidate) => {
-              attemptTriedSelectors.push(candidate.selector);
-              if (actuation.kind === "select") {
-                const verified = await selectDeepLocatorCandidateOption(
-                  page,
-                  frameTarget?.frameSelector,
-                  deepLocatorInnerSelector,
-                  candidate.index,
-                  actuation.value,
-                  { frameTarget }
-                );
-                // selectDeepLocatorCandidateOption never throws on an ordinary
-                // failed write (see deep-locator-actuate.ts's writeAndVerify) —
-                // it resolves `false` for both a rejected selectOption() and a
-                // read-back mismatch. clickFirstActionableCandidate infers
-                // success from "didn't throw", so a `false` here must become a
-                // throw or the walk would wrongly report this candidate as
-                // actuated.
-                if (!verified) throw new Error("-32000 Node does not have a layout object");
-              } else if (actuation.kind === "fill") {
-                const verified = await fillDeepLocatorCandidate(
-                  page,
-                  frameTarget?.frameSelector,
-                  deepLocatorInnerSelector,
-                  candidate.index,
-                  actuation.value,
-                  { frameTarget }
-                );
-                if (!verified) throw new Error("-32000 Node does not have a layout object");
-              } else {
-                await clickDeepLocatorCandidate(
-                  page,
-                  frameTarget?.frameSelector,
-                  deepLocatorInnerSelector,
-                  candidate.index,
-                  { frameTarget }
-                );
-              }
-            },
-            { denyCandidate, readSelectionCount, baselineSelectionCount }
-          )
-            .then((outcome) => ({ outcome, error: null as unknown }))
-            .catch((error: unknown) => ({ outcome: null, error }));
-          triedSelectors.push(...attemptTriedSelectors);
-          record.triedSelectors = [...attemptTriedSelectors];
-          if (cascadeResult.outcome?.clicked && cascadeResult.outcome.candidate) {
-            const acted = cascadeResult.outcome.candidate;
-            const verb =
-              actuation.kind === "select"
-                ? "selected"
-                : actuation.kind === "fill"
-                  ? "filled"
-                  : "clicked";
-            record.instruction = `deepLocator: ${acted.accessibleText || "(no accessible text)"}`;
-            record.actResultSuccess = true;
-            record.actResultDescription = `deepLocator ${verb} "${acted.accessibleText || acted.selector}"`;
-            // Synthesize an action matching the actuation kind so downstream
-            // verification (network/url/dom — STATE_CLASS_METHODS treats
-            // fill/selectOption as DOM-verifiable, not click) treats this
-            // exactly like any other resolved action — same idiom as
-            // deep-submit-locator/structured-click.
-            resolvedAction =
-              actuation.kind === "click"
-                ? {
-                    selector: acted.selector,
-                    description: record.actResultDescription,
-                    method: "click",
-                  }
-                : {
-                    selector: acted.selector,
-                    description: record.actResultDescription,
-                    method: actuation.kind === "select" ? "selectOption" : "fill",
-                    arguments: [actuation.value],
-                  };
-          } else {
-            const counterStalledCount = cascadeResult.outcome?.counterStalledSelectors.length ?? 0;
-            const failureMessage = cascadeResult.error
-              ? `deepLocator: ${actuation.kind} threw ${toErrorMessage(cascadeResult.error)}`
-              : counterStalledCount > 0
-                ? `deepLocator: clicked ${counterStalledCount} candidate(s) but the "N selected" counter never rose (no selection registered)`
-                : attemptTriedSelectors.length > 0
-                  ? `deepLocator: no actionable candidate (${attemptTriedSelectors.length} not-actionable)`
-                  : "deepLocator: no actionable candidate (every candidate refused by the wizard-exit deny-list)";
-            record.actResultSuccess = false;
-            record.errorMessage = failureMessage;
-            attempts.push(record);
-            failureReasons.push(failureMessage);
-            logger.info(
-              `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${failureMessage}`
-            );
-            continue;
-          }
+          // Actionable-candidate walk (shared with the trusted-click-retry
+          // branch): a top pick that rejects with the CDP `-32000 Node does not
+          // have a layout object` error (an unrendered node) or is refused by
+          // the wizard-exit deny-list costs only that one candidate, not the
+          // whole attempt — the next ranked candidate is tried instead. The
+          // observe-act path activates via the synthetic fast click
+          // (preferTrustedClick: false); the trusted CDP click is the
+          // phantom-retry escalation.
+          const { resolvedAction: walkResolvedAction } = await runDeepLocatorClickWalk({
+            candidates: deepLocatorCandidates,
+            innerSelector: deepLocatorInnerSelector,
+            preferTrustedClick: false,
+            labelPrefix: "deepLocator",
+            record,
+            attempt,
+            pre,
+          });
+          if (!walkResolvedAction) continue;
+          resolvedAction = walkResolvedAction;
         } else if (candidates.length === 0) {
           record.errorMessage = "observe returned no candidates";
           // Optional-step short-circuit: when attempt 2 confirms no candidates
@@ -8614,7 +8694,7 @@ export async function executeStepWithHealing(params: {
         const escalationTarget =
           isFinalStep || submitStep
             ? "escalating attempt 2 to deep-submit-locator"
-            : "non-submit step — leaving the normal structured-click/observe-act-exclude ladder intact";
+            : "non-submit step — escalating attempt 2 to trusted-click-retry (trusted CDP click on the resolved target)";
         logger.warn(
           `${formatStepPrefix(stepIndex, totalSteps)} phantom click detected on attempt 1 (${record.technique}): reported success with no network/url/dom change${suppressedCount !== undefined ? `; ${suppressedCount} AISDK elementId errors suppressed this session (corroborating, not causal)` : ""} — ${escalationTarget}`
         );

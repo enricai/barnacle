@@ -100,6 +100,19 @@ describe("scraper/flow-runner shouldSkipTechnique phantom-click escalation", () 
     expect(nonSubmitShaped.skip).toBe(false);
   });
 
+  it("never skips trusted-click-retry after a non-submit phantom click — it is the escalation, not a technique to gate", () => {
+    const decision = shouldSkipTechnique({
+      technique: "trusted-click-retry",
+      priorAttempts: [
+        { technique: "act-string", triedSelectors: ["#option-just-started"], errorMessage: null },
+      ],
+      phantomClickAfterAttempt1: true,
+      submitShapedStep: false,
+    });
+
+    expect(decision.skip).toBe(false);
+  });
+
   it("still skips structured-click when no prior attempt resolved an xpath (existing-behaviour control)", () => {
     const decision = shouldSkipTechnique({
       technique: "structured-click",

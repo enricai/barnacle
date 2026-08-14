@@ -94,6 +94,27 @@ describe("clickDeepLocatorCandidate batched click-by-index actuation", () => {
     expect(hop.elements[TARGET_INDEX]?.clicks).toBe(0);
   });
 
+  it("with preferTrustedClick, SKIPS the synthetic batched click and activates exactly once via the trusted delegate (no double-fire)", async () => {
+    const { hop, page, deepLocatorSpy } = buildHopWithTarget();
+    const { frameTarget, evaluateSpy } = makeFakeFrameTarget(async () => ({ clicked: true }));
+
+    await clickDeepLocatorCandidate(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      page as any,
+      FRAME_SELECTOR,
+      INNER_SELECTOR,
+      TARGET_INDEX,
+      { frameTarget, preferTrustedClick: true }
+    );
+
+    // The synthetic batched click never ran (it would have been a second
+    // activation — on a toggle that is select→deselect = net zero); only the
+    // trusted delegate click fired, exactly once.
+    expect(evaluateSpy).not.toHaveBeenCalled();
+    expect(deepLocatorSpy).toHaveBeenCalledWith(HOP_SELECTOR);
+    expect(hop.elements[TARGET_INDEX]?.clicks).toBe(1);
+  });
+
   it("costs (index + 1) delegate round-trips through the legacy fallback when no frameTarget is available — the exact cost the batched path collapses", async () => {
     vi.useFakeTimers();
     try {

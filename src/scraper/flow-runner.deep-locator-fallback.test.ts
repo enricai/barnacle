@@ -538,4 +538,128 @@ describe("flow-runner/executeStepWithHealing — frame-scoped deepLocator attemp
     // instead of clicking the same dead candidate again.
     expect(clickSpy).toHaveBeenCalledTimes(1);
   });
+
+  it("escalates a non-submit attempt-1 phantom click to trusted-click-retry, whose trusted CDP click registers the selection", async () => {
+    // Attempt 1 (act-string) reports success but produces no observable effect
+    // — a phantom on a design-system button whose handler ignored the untrusted
+    // in-page click. That routes attempt 2 to trusted-click-retry, which
+    // re-resolves the target and clicks it via the trusted deepLocator().nth()
+    // .click() — modeled here as the click that finally flips the URL.
+    const urls = { current: "https://apply.acme.example/onboard/a/2" };
+    const frame = new Map();
+    const hopSelector = `${FRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
+    registerDeepLocatorHopElements(frame, hopSelector, ["Just started looking"]);
+    registerDeepLocatorHop(frame, `${FRAME_SELECTOR} >> *`);
+    let advanceCounter = 2;
+    const deepLocator = makeFakeDeepLocator(frame);
+    const wrappedDeepLocator = (selector: string) => {
+      const delegate = deepLocator(selector);
+      return {
+        ...delegate,
+        nth: (index: number) => {
+          const nthDelegate = deepLocator(selector).nth(index);
+          return {
+            ...nthDelegate,
+            click: async () => {
+              await nthDelegate.click();
+              // Each trusted click advances the wizard to a fresh URL, so both
+              // the target step and the trailing step verify via url change.
+              advanceCounter += 1;
+              urls.current = `https://apply.acme.example/onboard/a/${advanceCounter}`;
+            },
+          };
+        },
+      };
+    };
+    const page = {
+      evaluate: vi.fn().mockResolvedValue(null),
+      deepLocator: wrappedDeepLocator,
+      url: () => urls.current,
+      title: vi.fn().mockResolvedValue("Onboard"),
+      locator: vi.fn().mockReturnValue({
+        first: () => ({
+          isChecked: vi.fn().mockResolvedValue(false),
+          inputValue: vi.fn().mockResolvedValue(""),
+        }),
+      }),
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
+      getSessionForFrame: () => ({ on: () => {}, off: () => {} }),
+      mainFrameId: () => "main",
+      sendCDP: vi.fn().mockResolvedValue({ body: "{}", base64Encoded: false }),
+    } as unknown as Page;
+    resolveFrameTarget.mockResolvedValue({
+      frame: {} as FrameTarget["frame"],
+      frameSelector: FRAME_SELECTOR,
+      evaluate: vi.fn().mockResolvedValue({ html: 0, text: "0:" }),
+      locator: vi.fn().mockReturnValue({
+        first: () => ({
+          isChecked: vi.fn().mockResolvedValue(false),
+          inputValue: vi.fn().mockResolvedValue(""),
+        }),
+      }),
+      url: () => Promise.resolve(urls.current),
+      title: () => Promise.resolve("Onboard"),
+    } satisfies FrameTarget);
+
+    guardedObserve.mockResolvedValue([]);
+    // Step 1's attempt-1 act-string: Stagehand believes it clicked (success +
+    // a resolved action) but the wrapped deepLocator did NOT run, so pre/post is
+    // flat — a phantom click that routes attempt 2 to trusted-click-retry.
+    // The trailing step's act-string genuinely advances the URL (a real click),
+    // so it verifies on its own attempt 1 and never confuses this assertion.
+    guardedAct.mockImplementation(async (_sh: unknown, instruction: string) => {
+      if (instruction.includes("Dismiss")) {
+        advanceCounter += 1;
+        urls.current = `https://apply.acme.example/onboard/a/${advanceCounter}`;
+        return {
+          success: true,
+          message: "dismissed",
+          actionDescription: "dismiss",
+          actions: [{ selector: "xpath=/button[9]", description: "dismiss", method: "click" }],
+        };
+      }
+      return {
+        success: true,
+        message: "clicked",
+        actionDescription: "Just started looking button",
+        actions: [
+          { selector: "xpath=/button[1]", description: "Just started looking", method: "click" },
+        ],
+      };
+    });
+
+    const result = await runHealingFlow({
+      stagehand: makeStagehand(),
+      page,
+      steps: [
+        {
+          instruction: "Click the 'Just started looking' button",
+          optional: false,
+          upload: false,
+          submitStep: false,
+        },
+        {
+          // A trailing OPTIONAL step so the target step above is NOT the final
+          // step — isFinalStep would otherwise mark it submit-shaped and route
+          // its phantom to deep-submit-locator instead of trusted-click-retry.
+          instruction: "Dismiss any confirmation dialog if present",
+          optional: true,
+          upload: false,
+          submitStep: false,
+        },
+      ],
+      logger: testLogger,
+      anthropic: null,
+      rephraseModel: null,
+      uploadFixture: null,
+      frameSelector: FRAME_SELECTOR,
+    });
+
+    expect(result.lastStepIndex).toBe(1);
+    // The trusted-click-retry's CDP click on the resolved candidate is what
+    // advanced the URL — the phantom attempt-1 click never touched the delegate.
+    expect(urls.current).toBe("https://apply.acme.example/onboard/a/4");
+    const hop = frame.get(hopSelector);
+    expect(hop?.elements[0]?.clicks).toBeGreaterThan(0);
+  });
 });
