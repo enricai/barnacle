@@ -110,3 +110,5 @@ presigned-url-lambda.zip
 /.planning
 
 /supabase
+
+/.playwright-mcp/

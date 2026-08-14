@@ -64,11 +64,11 @@ export interface ClickCandidateCascadeOptions {
    * candidate whose click RESOLVED but did not raise the selection count above
    * the baseline is treated like a not-actionable rejection: the walk keeps
    * going to the next candidate instead of reporting success. This is the
-   * next-best-candidate recovery for a markerless multi-select phantom (the
-   * #163/#164 counter veto knows the click didn't register; this feeds that
-   * back into re-resolution before a replan is spent). A `null` read means "no
-   * counter exposed" and never vetoes, mirroring `isSelectionCounterStalled`'s
-   * null-safety. Omit for non-selection steps — the walk then behaves exactly
+   * next-best-candidate recovery for a markerless multi-select phantom — the
+   * running "N selected" counter tells the walk the click didn't register, so
+   * it re-resolves to another candidate before a replan is spent. A `null` read
+   * means "no counter exposed" and never vetoes (counter-less widgets are
+   * untouched). Omit for non-selection steps — the walk then behaves exactly
    * as before.
    */
   readSelectionCount?: ReadSelectionCountFn;

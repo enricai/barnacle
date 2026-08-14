@@ -2135,6 +2135,7 @@ describe("recon-browser/describeAttemptEffectSignals", () => {
       visibleTextSignature: string;
       formValueSignature: string;
       selectionStateSignature: string;
+      selectionStateByXpath: Record<string, never>;
     }>
   ): {
     networkCount: number;
@@ -2143,6 +2144,7 @@ describe("recon-browser/describeAttemptEffectSignals", () => {
     visibleTextSignature: string;
     formValueSignature: string;
     selectionStateSignature: string;
+    selectionStateByXpath: Record<string, never>;
   } => ({
     networkCount: 0,
     url: "https://example.com",
@@ -2150,6 +2152,7 @@ describe("recon-browser/describeAttemptEffectSignals", () => {
     visibleTextSignature: "1000:hello",
     formValueSignature: "",
     selectionStateSignature: "",
+    selectionStateByXpath: {},
     ...overrides,
   });
 

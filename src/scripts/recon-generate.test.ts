@@ -879,10 +879,10 @@ describe("compileActionSteps — a response value genuinely re-sent as a JSON va
   });
 
   it("still produces a value reused only as a substring inside a longer composite value", () => {
-    // Matches a real capture where a jobId (26158515) is reused downstream only
-    // inside a longer jobSeqNo (HHKHHEUS26158515EXTERNALENUS) — never as its own
-    // JSON leaf and not in the URL. Value-substring matching must keep binding
-    // it (exact-equality matching would have dropped it).
+    // A jobId (26158515) is reused downstream only inside a longer composite
+    // jobSeqNo (AAA26158515EXTERNALENUS) — never as its own JSON leaf and not in
+    // the URL. Value-substring matching must keep binding it (exact-equality
+    // matching would have dropped it).
     const producer = {
       ...mintCapture,
       url: "https://api.example.com/job",
@@ -892,7 +892,7 @@ describe("compileActionSteps — a response value genuinely re-sent as a JSON va
       ...mintCapture,
       timestamp: "2024-01-01T00:00:02Z",
       url: "https://api.example.com/apply",
-      requestPostData: '{"jobSeqNo":"HHKHHEUS26158515EXTERNALENUS"}',
+      requestPostData: '{"jobSeqNo":"AAA26158515EXTERNALENUS"}',
       responseBody: { ok: true },
     };
     const steps = compileActionSteps(

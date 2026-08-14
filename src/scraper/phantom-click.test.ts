@@ -5,17 +5,11 @@ import { classifyPhantomClick } from "@/scraper/phantom-click";
 
 const URL = "https://apply.acme.example/jobs/52270016990/apply-portal/apply";
 
-// The production selectionStateSignature is an opaque `<fnv1a-hash>:<count>`
-// string (see DOM_SNAPSHOT_EXPR in flow-runner.ts). classifyPhantomClick only
-// compares pre vs post for inequality, so these fixtures use realistic-shape
-// opaque values; a differing pair means "a selection flipped".
-const STATE = "1a2b3c:4";
-
 function makeAttempt(overrides: Partial<PhantomClickAttempt>): PhantomClickAttempt {
   return {
     actResultSuccess: true,
-    pre: { networkCount: 0, url: URL, bodyHtmlLength: 184186, selectionStateSignature: STATE },
-    post: { networkCount: 0, url: URL, bodyHtmlLength: 184186, selectionStateSignature: STATE },
+    pre: { networkCount: 0, url: URL, bodyHtmlLength: 184186 },
+    post: { networkCount: 0, url: URL, bodyHtmlLength: 184186 },
     ...overrides,
   };
 }
@@ -77,108 +71,80 @@ describe("scraper/phantom-click classifyPhantomClick", () => {
   it("classifies as unresolved regardless of an incidental post-snapshot effect", () => {
     const attempt = makeAttempt({
       actResultSuccess: false,
+      elementStateChanged: true,
       post: {
         networkCount: 1,
         url: `${URL}?step=2`,
         bodyHtmlLength: 999999,
-        selectionStateSignature: "changed",
       },
     });
     expect(classifyPhantomClick(attempt)).toBe("unresolved");
   });
 
-  // A React/SPA multi-select toggle flips a selection-state signature with no
-  // network, no URL change, and a trivial or NEGATIVE byte delta — the exact
-  // signature measured against real Radix/MUI/ARIA-APG toggle patterns. These
-  // must classify as effective, not phantom.
+  // The authoritative, element-scoped signal: `verifyDomEffect` read the
+  // RESOLVED element's own committed-state delta (Base Web `kind`/class flip,
+  // ARIA, native checked) — a design-system toggle registers with no network,
+  // no URL change, and a trivial or NEGATIVE byte delta the byte floor misses.
+  // These must classify as effective, not phantom.
   it.each([
     {
-      name: "aria-pressed flip (signature changes), +30B html, no net/url",
+      name: "kind/class flip on the clicked element, +30B html, no net/url",
       attempt: makeAttempt({
-        pre: {
-          networkCount: 0,
-          url: URL,
-          bodyHtmlLength: 184186,
-          selectionStateSignature: "aaa:5",
-        },
-        post: {
-          networkCount: 0,
-          url: URL,
-          bodyHtmlLength: 184216,
-          selectionStateSignature: "bbb:5",
-        },
+        elementStateChanged: true,
+        post: { networkCount: 0, url: URL, bodyHtmlLength: 184216 },
       }),
     },
     {
-      name: "selected class added (signature changes), NEGATIVE byte delta",
+      name: "selected marker added, NEGATIVE byte delta",
       attempt: makeAttempt({
-        pre: {
-          networkCount: 0,
-          url: URL,
-          bodyHtmlLength: 184186,
-          selectionStateSignature: "ccc:5",
-        },
-        post: {
-          networkCount: 0,
-          url: URL,
-          bodyHtmlLength: 184173,
-          selectionStateSignature: "ddd:5",
-        },
+        elementStateChanged: true,
+        post: { networkCount: 0, url: URL, bodyHtmlLength: 184173 },
       }),
     },
     {
-      name: "toggle reveals a sub-question (a new selection control raises the count)",
+      name: "toggle registers with an exactly-flat byte delta",
       attempt: makeAttempt({
-        pre: {
-          networkCount: 0,
-          url: URL,
-          bodyHtmlLength: 184186,
-          selectionStateSignature: "eee:5",
-        },
-        post: {
-          networkCount: 0,
-          url: URL,
-          bodyHtmlLength: 184200,
-          selectionStateSignature: "fff:6",
-        },
+        elementStateChanged: true,
+        post: { networkCount: 0, url: URL, bodyHtmlLength: 184186 },
       }),
     },
-  ])("classifies as effective on a state-toggle: $name", ({ attempt }) => {
+  ])("classifies as effective on an element-state change: $name", ({ attempt }) => {
     expect(classifyPhantomClick(attempt)).toBe("effective");
   });
 
-  it("stays phantom when the selection-state signature is unchanged and byte delta is trivial", () => {
+  it("stays phantom when the resolved element's state did not change and byte delta is trivial", () => {
     const attempt = makeAttempt({
-      post: { networkCount: 0, url: URL, bodyHtmlLength: 184216, selectionStateSignature: STATE },
+      elementStateChanged: false,
+      post: { networkCount: 0, url: URL, bodyHtmlLength: 184216 },
     });
     expect(classifyPhantomClick(attempt)).toBe("phantom");
   });
 
-  it("stays unresolved when act failed even if the selection-state changed", () => {
+  it("stays phantom when elementStateChanged is unset (defaults to false)", () => {
+    const attempt = makeAttempt({
+      post: { networkCount: 0, url: URL, bodyHtmlLength: 184216 },
+    });
+    expect(classifyPhantomClick(attempt)).toBe("phantom");
+  });
+
+  it("stays unresolved when act failed even if the element state changed", () => {
     const attempt = makeAttempt({
       actResultSuccess: false,
-      post: { networkCount: 0, url: URL, bodyHtmlLength: 184186, selectionStateSignature: "zzz:5" },
+      elementStateChanged: true,
+      post: { networkCount: 0, url: URL, bodyHtmlLength: 184186 },
     });
     expect(classifyPhantomClick(attempt)).toBe("unresolved");
   });
 
-  it("does not credit a state change when one side lacks the signature (older snapshot)", () => {
-    const attempt = makeAttempt({
-      pre: { networkCount: 0, url: URL, bodyHtmlLength: 184186 },
-      post: { networkCount: 0, url: URL, bodyHtmlLength: 184186, selectionStateSignature: "zzz:5" },
-    });
-    expect(classifyPhantomClick(attempt)).toBe("phantom");
-  });
-
-  // On a submit-shaped step, a stray selection-state change must NOT lift the
+  // On a submit-shaped step, a stray element-state change must NOT lift the
   // verdict off "phantom": the cascade's escalation to the deep submit locator
   // keys on a "phantom" verdict, so a validation re-render (or the submit
   // button toggling its own aria-pressed) must not mask a real submit failure.
-  it("stays phantom on a submit-shaped step even when selection state changed", () => {
+  it("stays phantom on a submit-shaped step even when element state changed", () => {
     const attempt = makeAttempt({
       isSubmitShapedStep: true,
-      pre: { networkCount: 0, url: URL, bodyHtmlLength: 184186, selectionStateSignature: "ggg:5" },
-      post: { networkCount: 0, url: URL, bodyHtmlLength: 184186, selectionStateSignature: "hhh:5" },
+      elementStateChanged: true,
+      post: { networkCount: 0, url: URL, bodyHtmlLength: 184186 },
     });
     expect(classifyPhantomClick(attempt)).toBe("phantom");
   });
@@ -186,7 +152,7 @@ describe("scraper/phantom-click classifyPhantomClick", () => {
   it("still credits a submit-shaped step that produced a REAL effect (network fired)", () => {
     const attempt = makeAttempt({
       isSubmitShapedStep: true,
-      post: { networkCount: 1, url: URL, bodyHtmlLength: 184186, selectionStateSignature: STATE },
+      post: { networkCount: 1, url: URL, bodyHtmlLength: 184186 },
     });
     expect(classifyPhantomClick(attempt)).toBe("effective");
   });

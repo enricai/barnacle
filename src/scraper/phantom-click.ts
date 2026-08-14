@@ -12,22 +12,6 @@ export interface PhantomClickSnapshot {
   url: string;
   /** `document.body.outerHTML.length`. */
   bodyHtmlLength: number;
-  /**
-   * Fingerprint of client-side selection state across selection-bearing
-   * controls — `aria-pressed`/`aria-checked`/`aria-selected`, `data-state`
-   * (excluding `open`/`closed` disclosure values), `data-selected`/
-   * `data-checked`, and a selected/active/checked class-token hit on an
-   * interactive element. A multi-select toggle (React state flip) moves this
-   * without moving network, URL, or byte size — often a NEGATIVE byte delta
-   * (an `aria-pressed="false"`→`"true"` flip shrinks the HTML), which the
-   * byte-floor branch can never catch. A pure `disabled`→`enabled` gate with
-   * no accompanying selection-marker change is intentionally NOT tracked.
-   * Optional so pre-`selectionStateSignature` snapshots (and this module's own
-   * tests) stay valid; a defined pre/post pair that differs is a real effect
-   * (see {@link classifyPhantomClick}). The producer is `snapshotPage`'s
-   * `DOM_SNAPSHOT_EXPR` in `flow-runner.ts`, which documents the exact shape.
-   */
-  selectionStateSignature?: string;
 }
 
 export interface PhantomClickAttempt {
@@ -35,6 +19,18 @@ export interface PhantomClickAttempt {
   actResultSuccess: boolean | null;
   pre: PhantomClickSnapshot;
   post: PhantomClickSnapshot;
+  /**
+   * True when the resolved element's OWN committed selection state changed
+   * across the click — the authoritative, element-scoped signal `verifyDomEffect`
+   * computes from the pre/post per-element fingerprint baseline
+   * (`StepSnapshot.selectionStateByXpath`). A design-system option/toggle (Base
+   * Web `kind` flip, hashed-class swap, ARIA, native `checked`) registers here
+   * with no network, no URL change, and a trivial/negative byte delta that the
+   * byte-floor branch can never catch. Element-scoped, so a state change on any
+   * OTHER element on the page can never lift this verdict off `phantom`.
+   * Optional so callers/tests that don't supply it default to `false`.
+   */
+  elementStateChanged?: boolean;
   /**
    * True when the step is submit-shaped (a final/submit click). A submit must
    * show a REAL effect (network/URL) to count as effective — a mere selection-
@@ -78,25 +74,21 @@ export function classifyPhantomClick(attempt: PhantomClickAttempt): PhantomClick
   const networkDelta = attempt.post.networkCount - attempt.pre.networkCount;
   const bytesDelta = attempt.post.bodyHtmlLength - attempt.pre.bodyHtmlLength;
   const urlChanged = attempt.post.url !== attempt.pre.url;
-  // A client-side selection toggle (aria-pressed/checked/selected, data-state,
-  // or a selected/active/checked class) is a real effect regardless of byte
-  // size — the byte floor below rejects it because the delta is trivial or
-  // negative. Only credit when BOTH signatures are defined (an older snapshot
-  // without the field mustn't read undefined === undefined as a change) and
-  // they differ. NOT on a submit-shaped step: a submit must prove itself via
-  // network/URL, and letting a stray selection flip mark it "effective" would
-  // defeat the cascade's phantom-verdict-driven escalation to the deep submit
-  // locator.
-  const selectionStateChanged =
-    !attempt.isSubmitShapedStep &&
-    attempt.pre.selectionStateSignature !== undefined &&
-    attempt.post.selectionStateSignature !== undefined &&
-    attempt.pre.selectionStateSignature !== attempt.post.selectionStateSignature;
+  // The resolved element's OWN committed selection state changed across the
+  // click — a design-system option/toggle (Base Web `kind` flip, hashed-class
+  // swap, ARIA, native `checked`) registers here with no network, no URL, and a
+  // trivial/negative byte delta the byte floor can never catch. Authoritative
+  // and element-scoped (`verifyDomEffect` read it off the clicked element, not a
+  // page-wide fingerprint), so an unrelated element's change can't fake it. NOT
+  // on a submit-shaped step: a submit must prove itself via network/URL, or the
+  // cascade's phantom-verdict-driven escalation to the deep submit locator would
+  // be defeated by a stray self-toggle on the submit button.
+  const elementStateChanged = !attempt.isSubmitShapedStep && attempt.elementStateChanged === true;
 
   const hasEffect =
     networkDelta !== 0 ||
     urlChanged ||
-    selectionStateChanged ||
+    elementStateChanged ||
     bytesDelta >= TRIVIAL_DOM_DELTA_BYTES;
   return hasEffect ? "effective" : "phantom";
 }

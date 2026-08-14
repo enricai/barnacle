@@ -53,6 +53,8 @@ describe("flow-runner/snapshotPage", () => {
 
     const snapshot = await snapshotPage(target, { n: 3 });
 
+    // Default (captureSelectionState=false): a single coarse-snapshot evaluate;
+    // the per-element selection baseline is skipped, so the map is empty.
     expect(targetEvaluate).toHaveBeenCalledTimes(1);
     expect(snapshot).toEqual({
       networkCount: 3,
@@ -61,6 +63,7 @@ describe("flow-runner/snapshotPage", () => {
       visibleTextSignature: "5:hello",
       formValueSignature: "",
       selectionStateSignature: "",
+      selectionStateByXpath: {},
     });
   });
 
@@ -77,6 +80,36 @@ describe("flow-runner/snapshotPage", () => {
       visibleTextSignature: "3:abc",
       formValueSignature: "",
       selectionStateSignature: "",
+      selectionStateByXpath: {},
+    });
+  });
+
+  it("captures the per-element selection baseline only when asked", async () => {
+    // captureSelectionState=true adds the second evaluate that builds
+    // selectionStateByXpath. This mock returns a valid fingerprint map for it.
+    const fingerprint = {
+      kind: "primary",
+      cls: "ih-a",
+      ariaPressed: "",
+      ariaChecked: "",
+      ariaSelected: "",
+      dataState: "",
+      dataSelected: "",
+      dataChecked: "",
+      checked: "",
+      value: "",
+    };
+    const targetEvaluate = vi
+      .fn()
+      .mockResolvedValueOnce({ html: 42, text: "5:hello" })
+      .mockResolvedValueOnce({ "/html[1]/body[1]/button[1]": fingerprint });
+    const target = makeFakeTarget(targetEvaluate);
+
+    const snapshot = await snapshotPage(target, { n: 0 }, undefined, true);
+
+    expect(targetEvaluate).toHaveBeenCalledTimes(2);
+    expect(snapshot.selectionStateByXpath).toEqual({
+      "/html[1]/body[1]/button[1]": fingerprint,
     });
   });
 
