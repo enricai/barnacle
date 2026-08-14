@@ -663,3 +663,226 @@ describe("flow-runner/executeStepWithHealing — frame-scoped deepLocator attemp
     expect(hop?.elements[0]?.clicks).toBeGreaterThan(0);
   });
 });
+
+describe("flow-runner/executeStepWithHealing — top-window trusted-click-retry (no frame seam)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetBillingErrorFlagForTests();
+  });
+
+  it("escalates a non-submit attempt-1 phantom click to a trusted top-window locator click when no frame seam exists", async () => {
+    // A design-system wizard rendered in the TOP window (same-origin, no
+    // cross-origin OOPIF): resolveFrameTarget falls back to the main-frame
+    // target (frame: null) and the deepLocator path (built entirely on a frame
+    // seam) yields nothing. Attempt 1 (act-string) reports success but produces
+    // no observable effect — a phantom on a design-system button whose handler
+    // ignored the untrusted in-page click — routing attempt 2 to
+    // trusted-click-retry. Before the top-window fix this bailed with "no frame
+    // seam available"; now it must re-click attempt-1's resolved xpath through
+    // the main-frame FrameTarget's trusted `.locator().first().click()`.
+    const urls = { current: "https://apply.acme.example/onboard/a/1" };
+    const topWindowClick = vi.fn(async () => {
+      urls.current = "https://apply.acme.example/onboard/a/2";
+    });
+    const clickedSelectors: string[] = [];
+    const page = {
+      evaluate: vi.fn().mockResolvedValue({ html: 0, text: "0:" }),
+      url: () => urls.current,
+      title: vi.fn().mockResolvedValue("Onboard"),
+      locator: vi.fn().mockReturnValue({
+        first: () => ({
+          isChecked: vi.fn().mockResolvedValue(false),
+          inputValue: vi.fn().mockResolvedValue(""),
+        }),
+      }),
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
+      getSessionForFrame: () => ({ on: () => {}, off: () => {} }),
+      mainFrameId: () => "main",
+      sendCDP: vi.fn().mockResolvedValue({ body: "{}", base64Encoded: false }),
+    } as unknown as Page;
+    // Main-frame target: frame is null (the no-seam condition under test), and
+    // `.locator()` records the selector and delegates to the trusted-click spy.
+    resolveFrameTarget.mockResolvedValue({
+      frame: null,
+      frameSelector: null,
+      evaluate: vi.fn().mockResolvedValue({ html: 0, text: "0:" }),
+      locator: vi.fn().mockImplementation((selector: string) => ({
+        first: () => ({
+          click: async () => {
+            clickedSelectors.push(selector);
+            await topWindowClick();
+          },
+          isChecked: vi.fn().mockResolvedValue(false),
+          inputValue: vi.fn().mockResolvedValue(""),
+        }),
+      })),
+      url: () => Promise.resolve(urls.current),
+      title: () => Promise.resolve("Onboard"),
+    } satisfies FrameTarget);
+
+    // Probe's focused observe finds the button so the step is "present" (a
+    // top-window page has no frame seam for the probe's deepLocator fallback).
+    // Attempt 2 is trusted-click-retry (the phantom branch), so this candidate
+    // never feeds an observe-act attempt.
+    guardedObserve.mockResolvedValue([
+      {
+        selector: "xpath=//button[normalize-space()='Just started looking']",
+        description: "Just started looking",
+        method: "click",
+      },
+    ]);
+    guardedAct.mockImplementation(async (_sh: unknown, instruction: string) => {
+      if (instruction.includes("Dismiss")) {
+        urls.current = "https://apply.acme.example/onboard/a/3";
+        return {
+          success: true,
+          message: "dismissed",
+          actionDescription: "dismiss",
+          actions: [{ selector: "xpath=//button[9]", description: "dismiss", method: "click" }],
+        };
+      }
+      // Phantom: success + a resolved xpath, but no URL/DOM/network movement.
+      return {
+        success: true,
+        message: "clicked",
+        actionDescription: "Just started looking button",
+        actions: [
+          {
+            selector: "xpath=//button[normalize-space()='Just started looking']",
+            description: "Just started looking",
+            method: "click",
+          },
+        ],
+      };
+    });
+
+    const result = await runHealingFlow({
+      stagehand: makeStagehand(),
+      page,
+      steps: [
+        {
+          instruction: "Click the 'Just started looking' button",
+          optional: false,
+          upload: false,
+          submitStep: false,
+        },
+        {
+          instruction: "Dismiss any confirmation dialog if present",
+          optional: true,
+          upload: false,
+          submitStep: false,
+        },
+      ],
+      logger: testLogger,
+      anthropic: null,
+      rephraseModel: null,
+      uploadFixture: null,
+    });
+
+    expect(result.lastStepIndex).toBe(1);
+    // The trusted top-window locator click fired on attempt-1's resolved xpath
+    // and advanced the URL — the phantom attempt-1 click never moved it.
+    expect(clickedSelectors).toContain("xpath=//button[normalize-space()='Just started looking']");
+    expect(topWindowClick).toHaveBeenCalled();
+  });
+
+  it("re-clicks attempt-1's FIRST resolved xpath (the phantomed target), not the last, when act resolved multiple actions", async () => {
+    // Attempt-1 act resolves two actions: the FIRST is the phantomed target
+    // (what resolvedAction binds to and classifyPhantomClick judged), the
+    // SECOND an unrelated decoy pushed later into triedSelectors. The
+    // trusted-click-retry must re-click the FIRST — a last-entry heuristic
+    // would click the decoy and never activate the real control.
+    const targetXpath = "xpath=//button[normalize-space()='Just started looking']";
+    const decoyXpath = "xpath=//button[normalize-space()='Some other control']";
+    const urls = { current: "https://apply.acme.example/onboard/a/1" };
+    const clickedSelectors: string[] = [];
+    const page = {
+      evaluate: vi.fn().mockResolvedValue({ html: 0, text: "0:" }),
+      url: () => urls.current,
+      title: vi.fn().mockResolvedValue("Onboard"),
+      locator: vi.fn().mockReturnValue({
+        first: () => ({
+          isChecked: vi.fn().mockResolvedValue(false),
+          inputValue: vi.fn().mockResolvedValue(""),
+        }),
+      }),
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
+      getSessionForFrame: () => ({ on: () => {}, off: () => {} }),
+      mainFrameId: () => "main",
+      sendCDP: vi.fn().mockResolvedValue({ body: "{}", base64Encoded: false }),
+    } as unknown as Page;
+    resolveFrameTarget.mockResolvedValue({
+      frame: null,
+      frameSelector: null,
+      evaluate: vi.fn().mockResolvedValue({ html: 0, text: "0:" }),
+      locator: vi.fn().mockImplementation((selector: string) => ({
+        first: () => ({
+          click: async () => {
+            clickedSelectors.push(selector);
+            // Only a click on the correct (first) target advances the URL, so
+            // the step verifies iff the FIRST xpath was chosen.
+            if (selector === targetXpath) {
+              urls.current = "https://apply.acme.example/onboard/a/2";
+            }
+          },
+          isChecked: vi.fn().mockResolvedValue(false),
+          inputValue: vi.fn().mockResolvedValue(""),
+        }),
+      })),
+      url: () => Promise.resolve(urls.current),
+      title: () => Promise.resolve("Onboard"),
+    } satisfies FrameTarget);
+
+    guardedObserve.mockResolvedValue([
+      { selector: targetXpath, description: "Just started looking", method: "click" },
+    ]);
+    guardedAct.mockImplementation(async (_sh: unknown, instruction: string) => {
+      if (instruction.includes("Dismiss")) {
+        urls.current = "https://apply.acme.example/onboard/a/3";
+        return {
+          success: true,
+          message: "dismissed",
+          actionDescription: "dismiss",
+          actions: [{ selector: "xpath=//button[9]", description: "dismiss", method: "click" }],
+        };
+      }
+      // Phantom: success, first action is the real target, second a decoy.
+      return {
+        success: true,
+        message: "clicked",
+        actionDescription: "Just started looking button",
+        actions: [
+          { selector: targetXpath, description: "Just started looking", method: "click" },
+          { selector: decoyXpath, description: "Some other control", method: "click" },
+        ],
+      };
+    });
+
+    const result = await runHealingFlow({
+      stagehand: makeStagehand(),
+      page,
+      steps: [
+        {
+          instruction: "Click the 'Just started looking' button",
+          optional: false,
+          upload: false,
+          submitStep: false,
+        },
+        {
+          instruction: "Dismiss any confirmation dialog if present",
+          optional: true,
+          upload: false,
+          submitStep: false,
+        },
+      ],
+      logger: testLogger,
+      anthropic: null,
+      rephraseModel: null,
+      uploadFixture: null,
+    });
+
+    expect(result.lastStepIndex).toBe(1);
+    expect(clickedSelectors).toContain(targetXpath);
+    expect(clickedSelectors).not.toContain(decoyXpath);
+  });
+});

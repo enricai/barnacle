@@ -7256,9 +7256,12 @@ export async function executeStepWithHealing(params: {
         // event-bound wrappers) the likely cause is that the attempt-1 click was
         // an in-page, `isTrusted=false` activation the handler ignores — the
         // element resolves fine, but only a REAL user gesture registers. So
-        // re-resolve the target from the step's tagged phrases and re-click it
-        // via the trusted CDP path (`clickDeepLocatorCandidate` →
-        // `deepLocator().nth().click()`, an `Input.dispatchMouseEvent`). This is
+        // re-click the target with a TRUSTED gesture. Two arms by page shape:
+        // a top-window (no frame seam) page re-clicks attempt-1's resolved xpath
+        // via a Playwright `.locator().first().click()` on the main frame; an
+        // OOPIF/cross-origin page re-resolves via the frame-seam deepLocator and
+        // clicks through `clickDeepLocatorCandidate` → `deepLocator().nth().click()`
+        // (an `Input.dispatchMouseEvent`). Both deliver `isTrusted=true`. This is
         // the non-submit sibling of the deep-submit-locator escalation above.
         record.technique = "trusted-click-retry";
         // Carry forward any selector prior attempts already resolved (e.g.
@@ -7268,50 +7271,102 @@ export async function executeStepWithHealing(params: {
         // this attempt is an ADDITIONAL recovery, not a replacement that
         // demotes the rest of the ladder.
         if (!frameTarget?.frame) {
-          const failureMessage =
-            "trusted-click-retry: no frame seam available for a trusted deepLocator click";
-          record.actResultSuccess = false;
-          record.errorMessage = failureMessage;
-          record.triedSelectors = [...triedSelectors];
-          attempts.push(record);
-          failureReasons.push(failureMessage);
-          logger.info(
-            `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${failureMessage}`
+          // Top-window path: this wizard renders in the top document with no
+          // cross-origin OOPIF, so `deepLocator` (which is built entirely on a
+          // frame seam — deep-locator-candidates.ts's resolveScanFrameTarget
+          // returns null when no frameSelector resolves) yields nothing. The
+          // trusted-click primitive `deepLocator().nth().click()` is therefore
+          // unreachable, but the ACTIVATION we need — a real `isTrusted=true`
+          // gesture the Base Web handler honours — is still deliverable via a
+          // Playwright Locator click on the top frame (the same trusted click
+          // applyRadioSelection uses at Tier A). Re-click attempt-1's resolved
+          // xpath through the main-frame FrameTarget's `.locator()` instead of
+          // bailing; the synthesized click action flows through the standard
+          // verifier exactly like the frame-seam path's result.
+          //
+          // FIRST xpath, not last: attempt-1's act pushes every resolved
+          // action's selector into `triedSelectors` in order but binds the
+          // phantom-classified `resolvedAction` to the FIRST (see the
+          // `if (!resolvedAction)` at the attempt-1 branch). On a multi-action
+          // attempt-1 the last entry is a different control than the one that
+          // was clicked, so the first match is the phantomed target.
+          const topWindowSelector = triedSelectors.find(
+            (sel) => xpathBodyForEvaluate(sel) !== null
           );
-          continue;
-        }
-        await reresolveFrameTargetIfLost();
-        const { candidates: retryCandidates, innerSelector: retryInnerSelector } =
-          await resolveDeepLocatorCandidatesWithWidening(page, frameTarget.frameSelector, step, {
-            frameTarget,
+          if (!topWindowSelector) {
+            const failureMessage =
+              "trusted-click-retry: no top-window selector resolved for the phantomed target";
+            record.actResultSuccess = false;
+            record.errorMessage = failureMessage;
+            record.triedSelectors = [...triedSelectors];
+            attempts.push(record);
+            failureReasons.push(failureMessage);
+            logger.info(
+              `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${failureMessage}`
+            );
+            continue;
+          }
+          const topWindowTarget = frameTarget ?? mainFrameTarget(page);
+          try {
+            await topWindowTarget.locator(topWindowSelector).first().click();
+          } catch (err) {
+            const failureMessage = `trusted-click-retry: top-window trusted click threw ${toErrorMessage(err)}`;
+            record.actResultSuccess = false;
+            record.errorMessage = failureMessage;
+            record.triedSelectors = [...triedSelectors];
+            attempts.push(record);
+            failureReasons.push(failureMessage);
+            logger.info(
+              `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${failureMessage}`
+            );
+            continue;
+          }
+          record.instruction = `trusted-click-retry (top-window): ${topWindowSelector}`;
+          record.actResultSuccess = true;
+          record.actResultDescription = `trusted-click-retry clicked "${topWindowSelector}" via top-window locator`;
+          record.triedSelectors = [...triedSelectors];
+          logger.info(
+            `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: trusted-click-retry: top-window trusted locator click on the resolved target`
+          );
+          resolvedAction = {
+            selector: topWindowSelector,
+            description: record.actResultDescription,
+            method: "click",
+          };
+        } else {
+          await reresolveFrameTargetIfLost();
+          const { candidates: retryCandidates, innerSelector: retryInnerSelector } =
+            await resolveDeepLocatorCandidatesWithWidening(page, frameTarget.frameSelector, step, {
+              frameTarget,
+            });
+          const deepLocatorCandidates = retryCandidates.filter(
+            (c) => !triedSelectors.includes(c.selector)
+          );
+          if (deepLocatorCandidates.length === 0) {
+            const failureMessage =
+              "trusted-click-retry: no deepLocator candidate resolved for the phantomed target";
+            record.actResultSuccess = false;
+            record.errorMessage = failureMessage;
+            record.triedSelectors = [...triedSelectors];
+            attempts.push(record);
+            failureReasons.push(failureMessage);
+            logger.info(
+              `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${failureMessage}`
+            );
+            continue;
+          }
+          const { resolvedAction: retryResolvedAction } = await runDeepLocatorClickWalk({
+            candidates: deepLocatorCandidates,
+            innerSelector: retryInnerSelector,
+            preferTrustedClick: true,
+            labelPrefix: "trusted-click-retry",
+            record,
+            attempt,
+            pre,
           });
-        const deepLocatorCandidates = retryCandidates.filter(
-          (c) => !triedSelectors.includes(c.selector)
-        );
-        if (deepLocatorCandidates.length === 0) {
-          const failureMessage =
-            "trusted-click-retry: no deepLocator candidate resolved for the phantomed target";
-          record.actResultSuccess = false;
-          record.errorMessage = failureMessage;
-          record.triedSelectors = [...triedSelectors];
-          attempts.push(record);
-          failureReasons.push(failureMessage);
-          logger.info(
-            `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${failureMessage}`
-          );
-          continue;
+          if (!retryResolvedAction) continue;
+          resolvedAction = retryResolvedAction;
         }
-        const { resolvedAction: retryResolvedAction } = await runDeepLocatorClickWalk({
-          candidates: deepLocatorCandidates,
-          innerSelector: retryInnerSelector,
-          preferTrustedClick: true,
-          labelPrefix: "trusted-click-retry",
-          record,
-          attempt,
-          pre,
-        });
-        if (!retryResolvedAction) continue;
-        resolvedAction = retryResolvedAction;
       } else if (attempt === 2 || attempt === 4) {
         record.technique = attempt === 2 ? "observe-act" : "observe-act-exclude";
         const observeOptions =
