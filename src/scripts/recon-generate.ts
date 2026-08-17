@@ -3746,6 +3746,12 @@ export function emitContractTs(opts: {
           .join("\n")}\n})`
       : "";
 
+  // A non-scalar (Mechanism B) field forces multipart wire encoding just like
+  // an upload step does: the multipart body encodes arrays/objects as
+  // JSON-stringified strings, so those fields need the same
+  // multipartJsonObject() parsing Answers already gets in basePayloadSchemaExpr.
+  const payloadNeedsMultipart = hasMultipartStep || (discoveredStructuredKeys?.size ?? 0) > 0;
+
   // Phase F: additional-body keys (from action POSTs beyond r0). Each gets a
   // payload field of the appropriate Zod type. Site-agnostic.
   const sortedAdditionalKeys = discoveredAdditionalBodyKeys
@@ -3762,10 +3768,10 @@ export function emitContractTs(opts: {
               kind === "string"
                 ? "z.string()"
                 : kind === "number"
-                  ? hasMultipartStep
+                  ? payloadNeedsMultipart
                     ? "z.coerce.number()"
                     : "z.number()"
-                  : hasMultipartStep
+                  : payloadNeedsMultipart
                     ? "multipartBoolean()"
                     : "z.boolean()";
             return `  ${name}: ${zod},`;
@@ -3783,10 +3789,11 @@ export function emitContractTs(opts: {
   const structuredKeysExtension =
     sortedStructuredEntries.length > 0
       ? `.extend({\n${sortedStructuredEntries
-          .map(
-            ([name, schema]) =>
-              `  ${isValidJsIdentifier(name) ? name : JSON.stringify(name)}: ${schema},`
-          )
+          .map(([name, schema]) => {
+            const key = isValidJsIdentifier(name) ? name : JSON.stringify(name);
+            const value = payloadNeedsMultipart ? `multipartJsonObject(${schema})` : schema;
+            return `  ${key}: ${value},`;
+          })
           .join("\n")}\n})`
       : "";
 
@@ -3798,12 +3805,15 @@ export function emitContractTs(opts: {
     ? `${basePayloadSchemaExpr}.extend({\n  Resume: z.instanceof(Buffer),\n  ResumeContentType: z.string(),\n  ResumeFilename: z.string(),\n})${formFieldsExtension}${splicedFieldsExtension}${optionSchemaExtension}${rawOptionSchemaExtension}${additionalBodyKeysExtension}${structuredKeysExtension}`
     : `${basePayloadSchemaExpr}${formFieldsExtension}${splicedFieldsExtension}${optionSchemaExtension}${rawOptionSchemaExtension}${additionalBodyKeysExtension}${structuredKeysExtension}`;
   // basePayloadSchemaExpr always wraps Answers in multipartJsonObject() for
-  // submission flows (inputBody set); multipartBoolean() is only needed
-  // when a multipart upload step is present. Named imports from the same
-  // module are combined into one import statement.
+  // submission flows (inputBody set); multipartBoolean() and the
+  // structuredKeysExtension wrapping are needed whenever payloadNeedsMultipart
+  // is true (an upload step OR a non-scalar discoveredStructuredKeys field).
+  // Named imports from the same module are combined into one import statement.
   const zodMultipartNamedImports = [
-    ...(hasMultipartStep ? ["multipartBoolean"] : []),
-    ...(inputBody ? ["multipartJsonObject"] : []),
+    ...(payloadNeedsMultipart ? ["multipartBoolean"] : []),
+    ...(inputBody || (payloadNeedsMultipart && sortedStructuredEntries.length > 0)
+      ? ["multipartJsonObject"]
+      : []),
   ];
   const multipartBoolImport =
     zodMultipartNamedImports.length > 0
@@ -3947,11 +3957,14 @@ export const ${camel}Plugin: SitePlugin<${pascal}Payload, ${pascal}Response> = {
     responseSchema: ${pascal}ResponseSchema,
     defaultBaseUrl: ${JSON.stringify(baseUrl)},
     // multipart is required whenever the flow itself uploads a file
-    // (hasMultipartStep) OR this is a submission flow (inputBody set), since
+    // (hasMultipartStep), OR this is a submission flow (inputBody set) since
     // basePayloadSchemaExpr always requires a real Resume Buffer via
-    // ApplicantContactSchema for submission flows regardless of whether the
-    // recorded browser flow contained an upload step.
-    apiVersion: ${JSON.stringify(PLUGIN_API_VERSION)},${hasMultipartStep || inputBody ? "\n    multipart: true," : ""}
+    // ApplicantContactSchema regardless of whether the recorded browser flow
+    // contained an upload step, OR the payload has a non-scalar
+    // discoveredStructuredKeys field (payloadNeedsMultipart), since the
+    // multipart wire format is what makes that field's JSON-stringified
+    // encoding parseable.
+    apiVersion: ${JSON.stringify(PLUGIN_API_VERSION)},${payloadNeedsMultipart || inputBody ? "\n    multipart: true," : ""}
   },
 
   /** Hot path: direct HTTP — no browser, no LLM tokens. */

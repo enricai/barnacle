@@ -101,6 +101,57 @@ describe("emitContractTs — non-multipart plugin", () => {
   });
 });
 
+describe("emitContractTs — non-scalar discoveredStructuredKeys field forces multipart, no upload step", () => {
+  const source = emitContractTs({
+    ...BASE_OPTS,
+    hasMultipartStep: false,
+    discoveredStructuredKeys: new Map([["eventData", "z.object({ a: z.string() })"]]),
+  });
+
+  it("emits multipart: true in meta even though hasMultipartStep is false", () => {
+    expect(source).toContain("multipart: true,");
+  });
+
+  it("wraps the structured field in multipartJsonObject(...)", () => {
+    expect(source).toContain("eventData: multipartJsonObject(z.object({ a: z.string() })),");
+  });
+
+  it("imports multipartJsonObject from the package subpath", () => {
+    expect(source).toContain('multipartJsonObject } from "@enricai/barnacle/lib/zod-multipart"');
+  });
+});
+
+describe("emitContractTs — purely scalar payload, no upload step, no structured keys", () => {
+  const source = emitContractTs({
+    ...BASE_OPTS,
+    hasMultipartStep: false,
+    discoveredAdditionalBodyKeys: new Map([["Active", "boolean"]]),
+  });
+
+  it("still omits multipart: true (no regression)", () => {
+    expect(source).not.toContain("multipart: true,");
+  });
+
+  it("still uses z.boolean(), not multipartBoolean()", () => {
+    expect(source).toContain("Active: z.boolean(),");
+    expect(source).not.toContain("multipartBoolean");
+  });
+});
+
+describe("emitContractTs — hasMultipartStep:true with no structured keys keeps unwrapped Resume shape", () => {
+  const source = emitContractTs({
+    ...BASE_OPTS,
+    hasMultipartStep: true,
+  });
+
+  it("keeps the current unwrapped Resume-extend shape unchanged", () => {
+    expect(source).toContain(
+      ".extend({\n  Resume: z.instanceof(Buffer),\n  ResumeContentType: z.string(),\n  ResumeFilename: z.string(),\n})"
+    );
+    expect(source).not.toContain("multipartJsonObject(z.instanceof(Buffer))");
+  });
+});
+
 /** Minimal ActionStep with a multipart upload request. */
 const MULTIPART_ACTION_STEP = {
   capture: {
