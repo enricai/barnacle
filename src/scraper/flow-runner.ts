@@ -1277,6 +1277,21 @@ export function isDomOnlyAdvanceVerified(params: {
  * `describeAttemptEffectSignals`'s own reflow-vs-reveal boundary). Requiring
  * `textChanged` keeps a trivial reflow/tooltip (DOM churn with no new visible
  * content) from being credited — those still cascade to failure as before.
+ *
+ * **Blocked-submit veto:** a form-submit/advance click that a wizard-style
+ * client-side validation rejects renders inline error text — exactly the
+ * `textChanged` + DOM-growth shape the reveal-credit branch above rewards —
+ * with zero network, zero URL change. The reported false positive
+ * (`recon-viewswap-false-positive-on-blocked-form-submit.md`): a "Create
+ * Account" click with two empty required fields was scored
+ * `verifiedBy=view-swap` on `network=false url=false dom=false`, and recon
+ * advanced past a step the wizard never left. When `invalidMarkerDelta`
+ * (post-click minus pre-click ng-invalid-style container count, from
+ * {@link countNgInvalidContainers}) is positive, the click revealed NEW
+ * validation errors rather than a legitimate view transition — veto the
+ * credit regardless of which growth branch would otherwise fire. Optional
+ * and defaults to 0 (no veto) so existing callers that don't thread the
+ * marker count are unaffected.
  */
 export function isClickViewSwapVerified(params: {
   resolvedAction: { method?: string | null } | null;
@@ -1286,6 +1301,7 @@ export function isClickViewSwapVerified(params: {
   networkDelta: number;
   bytesDelta: number;
   textChanged: boolean;
+  invalidMarkerDelta?: number;
 }): boolean {
   const VIEW_SWAP_MIN_BYTES = config.scraper.viewSwapMinBytesThreshold;
   const VIEW_SWAP_REVEAL_MIN_BYTES = config.scraper.viewSwapRevealMinBytesThreshold;
@@ -1297,11 +1313,13 @@ export function isClickViewSwapVerified(params: {
     networkDelta,
     bytesDelta,
     textChanged,
+    invalidMarkerDelta = 0,
   } = params;
   if (resolvedAction?.method !== "click") return false;
   if (isFinalStep || submitStep) return false;
   if (isAdvanceWithPattern) return false;
   if (networkDelta !== 0) return false;
+  if (invalidMarkerDelta > 0) return false;
   if (bytesDelta >= VIEW_SWAP_MIN_BYTES) return true;
   return textChanged && bytesDelta >= VIEW_SWAP_REVEAL_MIN_BYTES;
 }
@@ -4193,6 +4211,49 @@ export function parseRadioStep(
 }
 
 /**
+ * Parse a CHECKBOX flow step into the label of the checkbox it targets.
+ *
+ * Why this exists (sibling of `parseSelectStep`/`parseFillStep`): checkbox
+ * steps are phrased as "Check the '…' checkbox" or "Click the '…' checkbox"
+ * (see `src/recon/fixtures/shipped-ats-flow-steps.json`), neither of which
+ * `parseSelectStep` recognizes (no "select" verb) and neither of which
+ * `parseRadioStep` recognizes (no "answer"/"radio" noun) — so a checkbox
+ * step's label was previously unextractable by any parser.
+ *
+ * Recognizes: "Check the 'Nights' workshift checkbox", "Click the 'No'
+ * checkbox for 'Please indicate if you are Hispanic or Latino'". Returns
+ * null when the step isn't checkbox-shaped or has no quoted label.
+ */
+export function parseCheckStep(instruction: string): { label: string } | null {
+  const lower = instruction.toLowerCase();
+  if (/\bany\s+remaining\b/.test(lower)) return null;
+  const match = instruction.match(/\b(?:check|click)\s+(?:the\s+)?'([^']+)'.*?\bcheckbox\b/i);
+  const label = match?.[1]?.trim();
+  return label ? { label } : null;
+}
+
+/** Strips wrapping single quotes a parser's capture group may include (e.g. when a flow author quotes the field name itself), so a probe label compares plain text against plain text. */
+function stripQuotedLabel(label: string): string {
+  return label.replace(/^'+|'+$/g, "").trim();
+}
+
+/**
+ * Extracts the DOM label {@link hasUnfilledRequiredControlForStep}'s probe
+ * should match against, widened beyond `parseSelectStep`'s literal "select"
+ * verb (which never matches fill or checkbox phrasing) to also try
+ * `parseFillStep` and `parseCheckStep` — see that function's docblock for
+ * why generalizing the label source, not just the select-step case, matters.
+ */
+function extractRequiredControlProbeLabel(instruction: string): string | null {
+  const selectLabel = parseSelectStep(instruction)?.questionLabel;
+  if (selectLabel) return selectLabel;
+  const fillLabel = parseFillStep(instruction)?.fieldLabel;
+  if (fillLabel) return stripQuotedLabel(fillLabel);
+  const checkLabel = parseCheckStep(instruction)?.label;
+  return checkLabel ? stripQuotedLabel(checkLabel) : null;
+}
+
+/**
  * Which deepLocator actuation primitive (`clickDeepLocatorCandidate` /
  * `fillDeepLocatorCandidate` / `selectDeepLocatorCandidateOption`) a step's
  * prose calls for, plus the value to pass it. `parseSelectStep`/
@@ -5465,17 +5526,18 @@ async function applyRadioSelection(
  * should fall through to the cascade/replan instead.
  *
  * Conservative by construction: returns false unless the step parses as a
- * select/answer step AND a required-and-unsatisfied control with a
- * label-matching the question is actually present. A genuinely-absent optional
- * step (e.g. "dismiss modal" on a modal-less page) has no such control, so the
- * fast-skip the comments call essential is preserved.
+ * select/fill/check step (via {@link extractRequiredControlProbeLabel}) AND a
+ * required-and-unsatisfied control with a label matching that target is
+ * actually present. A genuinely-absent optional step (e.g. "dismiss modal" on
+ * a modal-less page) has no such control, so the fast-skip the comments call
+ * essential is preserved.
  */
 async function hasUnfilledRequiredControlForStep(
   target: FrameTarget,
   instruction: string
 ): Promise<boolean> {
-  const parsed = parseSelectStep(instruction);
-  if (!parsed?.questionLabel) return false;
+  const label = extractRequiredControlProbeLabel(instruction);
+  if (!label) return false;
   const expr = `((label) => {
     const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
     const want = norm(label);
@@ -5519,7 +5581,7 @@ async function hasUnfilledRequiredControlForStep(
       }
     }
     return false;
-  })(${JSON.stringify(parsed.questionLabel)})`;
+  })(${JSON.stringify(label)})`;
   try {
     return (await target.evaluate(expr)) === true;
   } catch {
@@ -7324,6 +7386,14 @@ export async function executeStepWithHealing(params: {
     // disk for entries indexed after this point, which is eviction-proof when
     // >RECENT_CAPTURES_WINDOW captures flood during the step.
     const preCaptureIdx = latestCaptureIndex(recentCaptures);
+    // Pre-click ng-invalid baseline for the view-swap veto below
+    // (isClickViewSwapVerified's invalidMarkerDelta). Read unconditionally —
+    // cheap DOM query, and unlike `preSubmitInvalidCount` (final/submit-only)
+    // this must cover ANY click step: the reported false positive was an
+    // interior "Create Account" click, not the flow's final step.
+    const preInvalidMarkerCount = await countNgInvalidContainers(
+      frameTarget ?? mainFrameTarget(page)
+    ).catch(() => 0);
     const record: AttemptRecord = {
       attempt,
       technique: "act-string",
@@ -8358,13 +8428,24 @@ export async function executeStepWithHealing(params: {
         `${formatStepPrefix(stepIndex, totalSteps)} advance step succeeded only via DOM state change (field toggle / non-advancing POST), not a real transition; not treating as verified`
       );
     }
+    // Blocked-submit veto input for the view-swap gate below. Read post-click
+    // ng-invalid count only for a resolved click — the veto is meaningless
+    // for fill/select attempts, and this avoids a page.evaluate on every
+    // non-click attempt. See recon-viewswap-false-positive-on-blocked-form-submit.md:
+    // a "Create Account" click blocked by required-field validation grew the
+    // DOM (inline error text) with network=false url=false, which the reveal
+    // branch below alone would credit as verified.
+    const postInvalidMarkerCount = isClick
+      ? await countNgInvalidContainers(frameTarget ?? mainFrameTarget(page)).catch(() => 0)
+      : preInvalidMarkerCount;
     // Client-side view-swap gate: credit a click that produces substantial
     // DOM growth (≥5KB) with zero network when it's NOT a submit/final step
     // and NOT an advance-pattern step. Fixes the top-window site "Manual Application"
     // case where a +49KB DOM-only view swap was scored as "no observable effect".
     // Below that threshold, also credits a smaller text-changing reveal (≥500B) —
     // fixes the top-window site Work-History gate-message reveal (+789B) that used to
-    // cascade to a 5-attempt failure and global replan.
+    // cascade to a 5-attempt failure and global replan. Vetoed when the click's
+    // ng-invalid marker count grew (see isClickViewSwapVerified's doc comment).
     const clickViewSwapVerified = isClickViewSwapVerified({
       resolvedAction,
       isFinalStep,
@@ -8373,7 +8454,20 @@ export async function executeStepWithHealing(params: {
       networkDelta: post.networkCount - pre.networkCount,
       bytesDelta: post.bodyHtmlLength - pre.bodyHtmlLength,
       textChanged: post.visibleTextSignature !== pre.visibleTextSignature,
+      invalidMarkerDelta: postInvalidMarkerCount - preInvalidMarkerCount,
     });
+    if (
+      clickViewSwapVerified === false &&
+      isClick &&
+      postInvalidMarkerCount > preInvalidMarkerCount &&
+      post.networkCount - pre.networkCount === 0 &&
+      post.url === pre.url &&
+      post.bodyHtmlLength - pre.bodyHtmlLength >= config.scraper.viewSwapRevealMinBytesThreshold
+    ) {
+      logger.info(
+        `${formatStepPrefix(stepIndex, totalSteps)} click grew the DOM (view-swap shape) but ng-invalid markers grew from ${preInvalidMarkerCount} to ${postInvalidMarkerCount} — a blocked form submit, not a real view transition; not treating as verified`
+      );
+    }
     // A network-free selection/option toggle — including a Base Web `kind`
     // flip or hashed-class swap that exposes no aria/data-state marker and
     // moves a trivial or NEGATIVE byte delta — is now credited authoritatively

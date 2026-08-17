@@ -269,4 +269,66 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
     });
     expect(result).toBe(false);
   });
+
+  /**
+   * The reported false positive (recon-viewswap-false-positive-on-blocked-form-submit.md):
+   * a "Create Account" click blocked by required-field validation shows the
+   * exact CVS repro shape (network=false, url=false, dom=false meaning no
+   * strong signal — only the reveal-branch DOM growth + text change) AND the
+   * ng-invalid marker count grew post-click. Must NOT be credited as verified.
+   */
+  it("rejects a large DOM-growth reveal when invalidMarkerDelta > 0 (blocked form submit, CVS repro)", () => {
+    const result = isClickViewSwapVerified({
+      resolvedAction: { method: "click" },
+      isFinalStep: false,
+      submitStep: false,
+      isAdvanceWithPattern: false,
+      networkDelta: 0,
+      bytesDelta: 49518,
+      textChanged: true,
+      invalidMarkerDelta: 2,
+    });
+    expect(result).toBe(false);
+  });
+
+  it("rejects a small text-changing reveal when invalidMarkerDelta > 0", () => {
+    const result = isClickViewSwapVerified({
+      resolvedAction: { method: "click" },
+      isFinalStep: false,
+      submitStep: false,
+      isAdvanceWithPattern: false,
+      networkDelta: 0,
+      bytesDelta: 789,
+      textChanged: true,
+      invalidMarkerDelta: 1,
+    });
+    expect(result).toBe(false);
+  });
+
+  it("still credits a legitimate view-swap reveal when invalidMarkerDelta is 0", () => {
+    const result = isClickViewSwapVerified({
+      resolvedAction: { method: "click" },
+      isFinalStep: false,
+      submitStep: false,
+      isAdvanceWithPattern: false,
+      networkDelta: 0,
+      bytesDelta: 49518,
+      textChanged: false,
+      invalidMarkerDelta: 0,
+    });
+    expect(result).toBe(true);
+  });
+
+  it("still credits a legitimate view-swap reveal when invalidMarkerDelta is omitted (default callers)", () => {
+    const result = isClickViewSwapVerified({
+      resolvedAction: { method: "click" },
+      isFinalStep: false,
+      submitStep: false,
+      isAdvanceWithPattern: false,
+      networkDelta: 0,
+      bytesDelta: 49518,
+      textChanged: false,
+    });
+    expect(result).toBe(true);
+  });
 });
