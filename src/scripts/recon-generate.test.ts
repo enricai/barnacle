@@ -101,6 +101,42 @@ describe("emitContractTs — query-type plugin with a multipart step", () => {
   });
 });
 
+describe("emitContractTs — submission-flow default candidate-payload bodySchema", () => {
+  const source = emitContractTs({
+    ...BASE_OPTS,
+    hasMultipartStep: true,
+    inputBody: { ddoKey: "applySubmit", formData: {} },
+    multiStepBody: `    return { data: {} as unknown };`,
+  });
+
+  it("imports ApplicantContactSchema from the package's applicant-payload subpath", () => {
+    expect(source).toContain(
+      'import { ApplicantContactSchema } from "@enricai/barnacle/lib/applicant-payload"'
+    );
+  });
+
+  it("imports multipartJsonObject from the zod-multipart subpath", () => {
+    expect(source).toContain(
+      'import { multipartBoolean, multipartJsonObject } from "@enricai/barnacle/lib/zod-multipart"'
+    );
+  });
+
+  it("extends ApplicantContactSchema with Email, ClickUrl, and Answers", () => {
+    expect(source).toContain("ApplicantContactSchema.extend({");
+    expect(source).toContain("Email: z.email()");
+    expect(source).toContain("ClickUrl: z.string().min(1)");
+    expect(source).toContain("Answers: multipartJsonObject(");
+  });
+
+  it("marks the plugin meta as multipart", () => {
+    expect(source).toContain("multipart: true,");
+  });
+
+  it("does not emit the site-shaped inputBody keys as bodySchema fields", () => {
+    expect(source).not.toContain("ddoKey");
+  });
+});
+
 describe("emitContractTs — non-multipart plugin", () => {
   const source = emitContractTs({
     ...BASE_OPTS,
