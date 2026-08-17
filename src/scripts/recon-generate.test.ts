@@ -88,6 +88,19 @@ describe("emitContractTs — multipart plugin", () => {
   });
 });
 
+describe("emitContractTs — query-type plugin with a multipart step", () => {
+  const source = emitContractTs({
+    ...BASE_OPTS,
+    hasMultipartStep: true,
+  });
+
+  it("still extends Resume/ResumeContentType/ResumeFilename onto the query-type base, since basePayloadSchemaExpr has no ApplicantContactSchema to supply them from", () => {
+    expect(source).toContain("Resume: z.instanceof(Buffer)");
+    expect(source).toContain("ResumeContentType: z.string()");
+    expect(source).toContain("ResumeFilename: z.string()");
+  });
+});
+
 describe("emitContractTs — non-multipart plugin", () => {
   const source = emitContractTs({
     ...BASE_OPTS,
