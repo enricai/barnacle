@@ -3645,11 +3645,12 @@ export function emitContractTs(opts: {
   // coincide.
   const responseSchemaExpr = multiStepBody ? `z.unknown()` : inferZodSchema(responseBody);
   // Multi-step flows that include a multipart upload need the binary asset
-  // on the payload. Add Resume/ResumeContentType/ResumeFilename as required
-  // fields so the @fastify/multipart-populated request body has everything
-  // the upload step needs. Site-agnostic: works for any flow with a multipart
-  // step, regardless of which step in the sequence it is. The hasMultipartStep
-  // flag is computed once at the call site from actionSteps.some(s.isMultipart).
+  // on the payload. ApplicantContactSchema (via ApplicantResumeSchema) already
+  // declares Resume/ResumeContentType/ResumeFilename, so submission flows
+  // (inputBody set) get them from basePayloadSchemaExpr with no extra extend
+  // needed here. The hasMultipartStep flag is computed once at the call site
+  // from actionSteps.some(s.isMultipart) and still drives other emit
+  // decisions below (imports, boolean coercion, meta.multipart).
   //
   // The captured request body (inputBody) is the SITE's internal request
   // shape (Taleo ddoKey/formData, a GraphQL worklet's variables, …) — not
@@ -3794,9 +3795,7 @@ export function emitContractTs(opts: {
   // end of the payload type — the section ordering (base, multipart fields,
   // form-schema fields, option enums, raw-option fields) matches the body
   // emit order and keeps the generated payload type readable.
-  const payloadSchemaExpr = hasMultipartStep
-    ? `${basePayloadSchemaExpr}.extend({\n  Resume: z.instanceof(Buffer),\n  ResumeContentType: z.string(),\n  ResumeFilename: z.string(),\n})${formFieldsExtension}${splicedFieldsExtension}${optionSchemaExtension}${rawOptionSchemaExtension}${additionalBodyKeysExtension}${structuredKeysExtension}`
-    : `${basePayloadSchemaExpr}${formFieldsExtension}${splicedFieldsExtension}${optionSchemaExtension}${rawOptionSchemaExtension}${additionalBodyKeysExtension}${structuredKeysExtension}`;
+  const payloadSchemaExpr = `${basePayloadSchemaExpr}${formFieldsExtension}${splicedFieldsExtension}${optionSchemaExtension}${rawOptionSchemaExtension}${additionalBodyKeysExtension}${structuredKeysExtension}`;
   // basePayloadSchemaExpr always wraps Answers in multipartJsonObject() for
   // submission flows (inputBody set); multipartBoolean() is only needed
   // when a multipart upload step is present. Named imports from the same
