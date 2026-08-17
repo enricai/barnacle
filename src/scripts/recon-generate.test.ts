@@ -263,6 +263,37 @@ describe("emitContractTs — hasMultipartStep:true combined with non-empty disco
   });
 });
 
+describe("emitContractTs — incrediblehealth-shaped regression: resume-upload submission flow with a structured Answers field", () => {
+  // Models the recon-generate-payload-schema-mismatch.md incrediblehealth case
+  // study (lines 48-51): a submission flow with a resume-upload step
+  // (hasMultipartStep: true) whose captured request carries a non-scalar
+  // Answers-like block. autoapply PR #118 had to hand-fix the generated
+  // contract.ts to add meta.multipart:true and wrap that field in
+  // multipartJsonObject() because the generator emitted neither by default.
+  const source = emitContractTs({
+    ...BASE_OPTS,
+    hasMultipartStep: true,
+    inputBody: {
+      ddoKey: "applySubmit",
+      Answers: [{ questionId: "q1", answer: "yes" }],
+    },
+    discoveredStructuredKeys: new Map([
+      ["Answers", "z.array(z.object({ questionId: z.string(), answer: z.string() }))"],
+    ]),
+    multiStepBody: `    return { data: {} as unknown };`,
+  });
+
+  it("defaults meta.multipart to true with no hand-fix", () => {
+    expect(source).toContain("multipart: true,");
+  });
+
+  it("wraps the Answers-derived field in multipartJsonObject(...)", () => {
+    expect(source).toContain(
+      "Answers: multipartJsonObject(z.array(z.object({ questionId: z.string(), answer: z.string() }))),"
+    );
+  });
+});
+
 /** Minimal ActionStep with a multipart upload request. */
 const MULTIPART_ACTION_STEP = {
   capture: {
