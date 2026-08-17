@@ -7,9 +7,13 @@ import { resolveFrameTarget, waitForChildFrameReady } from "@/scraper/frame-targ
  * test currently has it report, letting a single frame instance model a
  * same-origin re-navigation (the URL changes but the frame identity doesn't).
  */
+let frameStalenessFakeCounter = 0;
+
 function makeFakeFrame(getUrl: () => string) {
   return {
+    frameId: `frame-staleness-fake-${frameStalenessFakeCounter++}`,
     evaluate: async (expr: unknown) => {
+      if (/document\.body/.test(String(expr))) return true;
       if (expr === "location.href") return getUrl();
       return `frame-evaluated:${String(expr)}`;
     },
@@ -41,6 +45,7 @@ function makeMutableFakePage(options: {
     },
     locator: (selector: string) => ({ scope: "main" as const, selector }),
     frames: () => frames,
+    mainFrameId: () => "frame-staleness-main-frame",
     mountIframe: (selector: string, src: string): void => {
       iframes[selector] = src;
     },
@@ -130,7 +135,9 @@ describe("waitForChildFrameReady against a frame that dies mid-poll", () => {
   it("resolves (does not reject) when a resolveFrameTarget-produced target reports not-ready, then detaches on a later poll — a transition, not a steady-state rejection", async () => {
     const readyStates = ["loading", "detached", "detached"];
     const childFrame = {
+      frameId: "frame-staleness-dying-child",
       evaluate: async (expr: unknown) => {
+        if (/document\.body/.test(String(expr))) return true;
         if (expr === "location.href") return "https://apply.example.com/application/abc-123";
         if (expr !== "document.readyState") return `frame-evaluated:${String(expr)}`;
         const nextState = readyStates.shift() ?? "detached";

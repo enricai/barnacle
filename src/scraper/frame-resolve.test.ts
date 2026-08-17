@@ -23,10 +23,15 @@ import { guardedObserve } from "@/scraper/stagehand-guard";
  * rejects, simulating a torn-down cross-origin frame whose CDP session no
  * longer responds) and otherwise echoes the expression for delegation checks.
  */
-function makeFakeFrame(url: string | { rejects: true }) {
+let frameResolveFakeCounter = 0;
+
+function makeFakeFrame(url: string | { rejects: true }, opts: { nonEmpty?: boolean } = {}) {
+  const nonEmpty = opts.nonEmpty ?? true;
   return {
+    frameId: `frame-resolve-fake-${frameResolveFakeCounter++}`,
     evaluate: async (expr: unknown) => {
       if (typeof url !== "string") throw new Error("frame detached");
+      if (/document\.body/.test(String(expr))) return nonEmpty;
       if (expr === "location.href") return url;
       return `frame-evaluated:${String(expr)}`;
     },
@@ -60,6 +65,7 @@ function makeFakePage(options: {
     },
     locator: (selector: string) => ({ scope: "main" as const, selector }),
     frames: () => frames,
+    mainFrameId: () => "frame-resolve-main-frame",
   };
 }
 
@@ -334,6 +340,7 @@ function makeMutableFakePage(options: {
     },
     locator: (selector: string) => ({ scope: "main" as const, selector }),
     frames: () => options.getFrames(),
+    mainFrameId: () => "frame-resolve-main-frame",
   };
 }
 

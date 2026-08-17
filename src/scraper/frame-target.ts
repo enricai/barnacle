@@ -138,11 +138,9 @@ function childFrameTarget(
 
 /**
  * Reads the origin (scheme + host) off a URL string, or `null` if it isn't
- * parseable — used to match a candidate `page.frames()` entry against the
- * `<iframe>` element's `src` attribute without requiring an exact URL match
- * (the iframe `src` and the frame's live `location.href` commonly differ by
- * path/query after the child navigates, e.g. an application UUID appended
- * post-load).
+ * parseable — the coarsest match tier {@link scoreFrameUrlMatch} falls back to
+ * when the iframe `src` and a candidate frame's live `location.href` share no
+ * path (e.g. an application UUID the child appended post-load).
  */
 function originOf(url: string): string | null {
   try {
@@ -153,12 +151,73 @@ function originOf(url: string): string | null {
 }
 
 /**
+ * Strips the query/hash off a URL so a candidate frame's `location.href` can be
+ * compared to the `<iframe>` `src` by scheme+host+path alone — the path (e.g.
+ * `/application/<uuid>`) is what distinguishes the real wizard frame from an
+ * empty same-origin shell frame the page also hosts.
+ */
+function urlWithoutQuery(url: string): string {
+  const q = url.indexOf("?");
+  const h = url.indexOf("#");
+  const cut = [q, h].filter((i) => i >= 0).sort((a, b) => a - b)[0];
+  return cut === undefined ? url : url.slice(0, cut);
+}
+
+/**
+ * Ranks how specifically a candidate frame's `location.href` matches the
+ * `<iframe>` element's `src`, so a page with more than one same-origin child
+ * frame binds the frame the target `<iframe>` actually hosts rather than the
+ * first origin match in `page.frames()` order (a whole class of "bound the
+ * empty shell frame" bugs — the iframe `src` path uniquely identifies the real
+ * frame, but origin alone does not). Higher is a stronger match; `0` means no
+ * match at all (not even origin):
+ *   3 — exact URL (query/hash ignored): the src path IS the frame's URL.
+ *   2 — the frame's path extends the src path (the child navigated deeper).
+ *   1 — same origin only (the post-load-drift fallback `originOf` documents).
+ *   0 — different origin / unparseable.
+ */
+function scoreFrameUrlMatch(candidateUrl: string, iframeSrc: string): number {
+  const candOrigin = originOf(candidateUrl);
+  const srcOrigin = originOf(iframeSrc);
+  if (!candOrigin || !srcOrigin || candOrigin !== srcOrigin) return 0;
+  const candPath = urlWithoutQuery(candidateUrl);
+  const srcPath = urlWithoutQuery(iframeSrc);
+  if (candPath === srcPath) return 3;
+  // A path extension must continue at a segment boundary ("/app" extends
+  // "/app/2" but not "/apple"), so an unrelated sibling path scores origin-only.
+  if (extendsAtSegmentBoundary(candPath, srcPath) || extendsAtSegmentBoundary(srcPath, candPath)) {
+    return 2;
+  }
+  return 1;
+}
+
+/** True when `longer` is `shorter` continued at a path-segment boundary (a trailing "/…"), not merely a string prefix. */
+function extendsAtSegmentBoundary(longer: string, shorter: string): boolean {
+  return (
+    longer.length > shorter.length && longer.startsWith(shorter) && longer[shorter.length] === "/"
+  );
+}
+
+/**
  * Attempts one resolution pass: reads the `<iframe>` element's `src` (not
  * `contentDocument`, which stays readable across the cross-origin boundary —
  * only same-origin script access to the child's document is blocked), then
- * looks for a `page.frames()` entry whose origin matches it. Returns `null`
- * rather than a target so the caller can distinguish "not yet attached, keep
- * polling" from a resolved target.
+ * binds the `page.frames()` child frame that matches it most specifically.
+ * Returns `null` rather than a target so the caller can distinguish "not yet
+ * attached, keep polling" from a resolved target.
+ *
+ * Match specificity matters because a page commonly hosts more than one
+ * child frame on the *same origin* as the target `<iframe>` — an empty shell
+ * frame plus the real populated wizard, tracking/telemetry sub-frames, etc.
+ * Binding by origin alone (the first origin match in `page.frames()` order)
+ * intermittently binds the empty shell, after which every downstream
+ * enumerate/click/fill silently operates on an empty document. The iframe
+ * `src` (e.g. `/application/<uuid>`) uniquely identifies the real frame, so
+ * candidates are ranked by {@link scoreFrameUrlMatch} (exact URL > path
+ * extension > origin-only) and, among equally-ranked candidates, one with a
+ * *non-empty* document is preferred so an empty shell can never outrank the
+ * populated wizard. The main frame is excluded from the candidate set up front
+ * (`frameId !== page.mainFrameId()`), since the target is always a child.
  *
  * The `src` attribute read can lose a same-tick race against the widget
  * script that constructs the `<iframe>`: some ATS integrations (e.g.
@@ -168,21 +227,21 @@ function originOf(url: string): string | null {
  * up in that case would depend on same-tick attribute reflection that isn't
  * guaranteed. Instead, when the element is confirmed to be the matching
  * `<iframe>` but its `src` can't be read, fall back to matching by element
- * identity: if `page.frames()` has resolved exactly one candidate frame
- * beyond the main frame, that frame must be the one CDP attached to for
- * this iframe, so bind to it directly rather than degrading to the main
- * frame.
+ * identity: if exactly one child frame (excluding the main frame) is
+ * attached, that frame must be the one CDP attached to for this iframe, so
+ * bind to it directly rather than degrading to the main frame.
  *
- * Both `evaluate` calls (the top-level `<iframe>`-src probe and the
- * per-candidate `location.href` read) are bounded by `evaluateTimeoutMs`,
+ * Every `evaluate` call — the top-level `<iframe>`-src probe, each candidate's
+ * `location.href` read, and the non-empty-document tiebreak (only run when two
+ * or more candidates tie on URL specificity) — is bounded by `evaluateTimeoutMs`,
  * further clamped to whatever remains of `deadline` — `resolveFrameTarget`'s
  * total attach budget — at the moment each probe starts: a wedged CDP call
  * against a racy OOPIF must fail this one pass rather than hanging it, and
  * the clamp keeps that true even for the *sum* of every probe a single pass
  * makes, since the top-level probe runs once *before* `resolveFrameTarget`'s
  * poll loop even starts (making an unclamped deadline unreachable) and a
- * page with several candidate frames would otherwise pay
- * `(1 + frames) * evaluateTimeoutMs` in one pass regardless of `deadline`.
+ * page with several candidate frames would otherwise pay a per-frame multiple
+ * of `evaluateTimeoutMs` in one pass regardless of `deadline`.
  * The candidate loop always probes its first candidate — paralleling the
  * top-level probe's "runs once regardless of budget" guarantee, since a
  * `timeoutMs: 0` re-resolution (`flow-runner.ts`'s `reresolveFrameTargetIfLost`)
@@ -225,26 +284,71 @@ async function tryResolveChildFrame(
   });
   if (!matched) return null;
 
-  const candidates = page.frames();
-  const targetOrigin = iframeSrc ? originOf(iframeSrc) : null;
-  if (!targetOrigin) {
+  const mainFrameId = page.mainFrameId();
+  const candidates = page.frames().filter((frame) => frame.frameId !== mainFrameId);
+
+  // The iframe `src` can't be resolved to an origin — it's empty (a same-tick
+  // race before the attribute reflects) or a relative/unparseable value. Fall
+  // back to element identity: exactly one attached child frame must be this
+  // iframe's, so bind it rather than degrading to the main frame.
+  if (!iframeSrc || originOf(iframeSrc) === null) {
     const [onlyCandidate] = candidates;
     return candidates.length === 1 && onlyCandidate
       ? childFrameTarget(page, onlyCandidate, frameSelector, { evaluateTimeoutMs })
       : null;
   }
 
+  // Score every child candidate by how specifically its live URL matches the
+  // iframe `src` (one `location.href` probe each), keeping the best-scoring
+  // group. The first candidate is always probed (a `timeoutMs: 0` re-resolution
+  // must still pick up an already-attached frame); further candidates stop once
+  // the budget is exhausted. Every candidate in budget is scored (no early
+  // break): two frames can share the exact iframe-src URL — an empty shell and
+  // the populated wizard — and both must be collected so the non-empty tiebreak
+  // below can pick the wizard.
+  const topByScore: { candidate: StagehandFrame; score: number }[] = [];
   for (const [index, candidate] of candidates.entries()) {
     if (index > 0 && remainingBudgetMs() <= 0) break;
     const candidateUrl = await withWatchdog(() => candidate.evaluate<string>("location.href"), {
       timeoutMs: Math.min(evaluateTimeoutMs, remainingBudgetMs()),
       label: "frame-target: candidate frame location probe",
     }).catch(() => null);
-    if (candidateUrl && originOf(candidateUrl) === targetOrigin) {
-      return childFrameTarget(page, candidate, frameSelector, { evaluateTimeoutMs });
+    if (!candidateUrl) continue;
+    const score = scoreFrameUrlMatch(candidateUrl, iframeSrc);
+    if (score === 0) continue;
+    const bestScore = topByScore[0]?.score ?? 0;
+    if (score > bestScore) {
+      topByScore.length = 0;
+      topByScore.push({ candidate, score });
+    } else if (score === bestScore) {
+      topByScore.push({ candidate, score });
     }
   }
-  return null;
+
+  const [first, ...rest] = topByScore;
+  if (!first) return null;
+  // Single best-scoring candidate — no tie to break, so bind it without paying
+  // the extra non-empty probe (the common single-frame case).
+  if (rest.length === 0) {
+    return childFrameTarget(page, first.candidate, frameSelector, { evaluateTimeoutMs });
+  }
+  // Multiple candidates tie on score (e.g. an empty same-origin shell and the
+  // populated wizard share the iframe-src URL). Prefer a non-empty document so
+  // the shell never wins; the probe is best-effort — a candidate whose probe
+  // fails is treated as non-empty rather than demoted, and the first tied
+  // candidate is the fallback when none reports non-empty.
+  for (const { candidate } of topByScore) {
+    if (remainingBudgetMs() <= 0) break;
+    const nonEmpty = await withWatchdog(
+      () => candidate.evaluate<boolean>("!!(document.body && document.body.childElementCount > 0)"),
+      {
+        timeoutMs: Math.min(evaluateTimeoutMs, remainingBudgetMs()),
+        label: "frame-target: candidate frame non-empty probe",
+      }
+    ).catch(() => true);
+    if (nonEmpty) return childFrameTarget(page, candidate, frameSelector, { evaluateTimeoutMs });
+  }
+  return childFrameTarget(page, first.candidate, frameSelector, { evaluateTimeoutMs });
 }
 
 /**

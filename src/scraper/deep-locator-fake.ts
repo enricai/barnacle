@@ -964,10 +964,16 @@ export function makeFakeFrameResolutionPage(
   const locationProbeSpy = vi.fn();
 
   const childFrame = {
+    frameId: "fake-child-frame",
     evaluate: async (expression: unknown) => {
       if (expression === "location.href") {
         locationProbeSpy(expression);
         return resolveAfterProbeDelay(options.childSrc, probeDelayMs);
+      }
+      // The resolver's non-empty tiebreak probe; a genuine attached frame has
+      // content.
+      if (/document\.body/.test(String(expression))) {
+        return resolveAfterProbeDelay(true, probeDelayMs);
       }
       return (await options.onFrameEvaluate?.(expression)) ?? null;
     },
@@ -987,6 +993,7 @@ export function makeFakeFrameResolutionPage(
     title: async () => "",
     locator: (selector: string) => ({ selector }),
     frames: () => [childFrame],
+    mainFrameId: () => "fake-main-frame",
   };
 
   return {

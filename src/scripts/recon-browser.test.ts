@@ -1109,6 +1109,7 @@ describe("recon-browser/readFailureDumpEvidence", () => {
   function makeIframePageStub(iframeSelector: string, childLeafFieldsPayload: unknown[]): Page {
     const iframeSrc = "https://apply.example.com/application/abc-123";
     const childFrame = {
+      frameId: "recon-child-frame",
       evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
         if (typeof expr === "string" && expr.includes("location.href")) return iframeSrc;
         return childLeafFieldsPayload;
@@ -1122,6 +1123,7 @@ describe("recon-browser/readFailureDumpEvidence", () => {
         return [];
       }),
       frames: vi.fn().mockReturnValue([childFrame]),
+      mainFrameId: () => "recon-main-frame",
       title: vi.fn().mockResolvedValue(""),
       url: vi.fn().mockReturnValue("https://careers.example.org/job/1"),
     } as unknown as Page;
