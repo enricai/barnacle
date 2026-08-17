@@ -133,7 +133,16 @@ describe("emitContractTs — submission-flow default candidate-payload bodySchem
   });
 
   it("does not emit the site-shaped inputBody keys as bodySchema fields", () => {
-    expect(source).not.toContain("ddoKey");
+    const payloadSchemaBlock = source.slice(
+      source.indexOf("const TestSitePayloadSchema"),
+      source.indexOf("export type TestSitePayload")
+    );
+    expect(payloadSchemaBlock).not.toContain("ddoKey");
+  });
+
+  it("demotes the site-shaped inputBody keys to the internal-reference scaffold instead", () => {
+    expect(source).toContain("export const TestSiteInternalRequestReference");
+    expect(source).toContain("ddoKey: z.string()");
   });
 });
 
