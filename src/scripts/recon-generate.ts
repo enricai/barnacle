@@ -3790,6 +3790,18 @@ export function emitContractTs(opts: {
           .join("\n")}\n})`
       : "";
 
+  // The structural walk over the captured request body that used to BE the
+  // public payload schema (see basePayloadSchemaExpr above) is still the
+  // right starting point for the plugin author's internal builder — it's
+  // what the site itself expects on the wire, just no longer what the
+  // platform caller sends. Demoted to a documented, unexported reference
+  // construct per recon-generate-payload-schema-mismatch.md fix option (a),
+  // matching the hhccareers hand-fix precedent (an internal builder that
+  // translates the standard payload into the site's request bodies).
+  // Unconditional whenever inputBody is set — same gate as basePayloadSchemaExpr.
+  const internalRequestReferenceExpr = inputBody
+    ? inferZodSchema(inputBody, 0, "", { multipartCoerce: hasMultipartStep })
+    : null;
   // optionSchemaExtension is appended LAST so option enums show up at the
   // end of the payload type — the section ordering (base, multipart fields,
   // form-schema fields, option enums, raw-option fields) matches the body
@@ -3883,6 +3895,26 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
         "\n"
       : "";
 
+  // Documented, unexported internal-reference construct: the site's own
+  // captured request shape, kept available as builder input for whatever
+  // code translates the standard ${pascal}Payload into the site's actual
+  // request bodies (see the hhccareers hand-fix precedent in
+  // recon-generate-payload-schema-mismatch.md). Distinct from — and never
+  // used to validate — the public ${pascal}PayloadSchema above.
+  const internalRequestReferenceBlock = internalRequestReferenceExpr
+    ? `
+/**
+ * The SITE's own request shape, as captured during recon — NOT the public
+ * /run contract (see ${pascal}PayloadSchema above, which is what the real
+ * caller sends). Exported so a builder module can import it as the target
+ * shape when translating the standard payload into the site's own request
+ * bodies (see recon-generate-payload-schema-mismatch.md's hhccareers
+ * hand-fix precedent).
+ */
+export const ${pascal}InternalRequestReference = ${internalRequestReferenceExpr};
+`
+    : "";
+
   const queryChecklistLine = gql
     ? `\n *   [ ] Trim UI-only fields from ${pascal.toUpperCase()}_QUERY (keep only fields you need)`
     : "";
@@ -3934,7 +3966,7 @@ ${optionDecls}
 const ${pascal}PayloadSchema = ${payloadSchemaExpr};
 
 export type ${pascal}Payload = z.infer<typeof ${pascal}PayloadSchema>;
-${queryConst}${gqlCacheBlock}${fixtureComments}
+${internalRequestReferenceBlock}${queryConst}${gqlCacheBlock}${fixtureComments}
 /**
  * Plugin for ${siteId}. Tries the direct-HTTP hot path first; falls back to
  * Stagehand automatically on schema drift or bot challenge.
