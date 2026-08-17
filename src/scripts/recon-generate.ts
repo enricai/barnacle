@@ -3946,7 +3946,12 @@ export const ${camel}Plugin: SitePlugin<${pascal}Payload, ${pascal}Response> = {
     bodySchema: ${pascal}PayloadSchema,
     responseSchema: ${pascal}ResponseSchema,
     defaultBaseUrl: ${JSON.stringify(baseUrl)},
-    apiVersion: ${JSON.stringify(PLUGIN_API_VERSION)},${hasMultipartStep ? "\n    multipart: true," : ""}
+    // multipart is required whenever the flow itself uploads a file
+    // (hasMultipartStep) OR this is a submission flow (inputBody set), since
+    // basePayloadSchemaExpr always requires a real Resume Buffer via
+    // ApplicantContactSchema for submission flows regardless of whether the
+    // recorded browser flow contained an upload step.
+    apiVersion: ${JSON.stringify(PLUGIN_API_VERSION)},${hasMultipartStep || inputBody ? "\n    multipart: true," : ""}
   },
 
   /** Hot path: direct HTTP — no browser, no LLM tokens. */
