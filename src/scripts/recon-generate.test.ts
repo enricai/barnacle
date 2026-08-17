@@ -64,12 +64,13 @@ describe("emitContractTs — multipart plugin", () => {
     ...BASE_OPTS,
     hasMultipartStep: true,
     inputBody: { Name: "Alice", SmsOptIn: true, Score: 1 },
+    discoveredAdditionalBodyKeys: new Map([["SmsOptIn", "boolean"]]),
     multiStepBody: `    return { data: {} as unknown };`,
   });
 
-  it("imports multipartBoolean from the package subpath, not the @/ alias", () => {
+  it("imports multipartBoolean and multipartJsonObject from the package subpath, not the @/ alias", () => {
     expect(source).toContain(
-      'import { multipartBoolean } from "@enricai/barnacle/lib/zod-multipart"'
+      'import { multipartBoolean, multipartJsonObject } from "@enricai/barnacle/lib/zod-multipart"'
     );
   });
 
@@ -81,6 +82,68 @@ describe("emitContractTs — multipart plugin", () => {
     expect(source).not.toContain("MULTIPART_BOOL");
     expect(source).not.toContain('z.preprocess(\n  (v) => (v === "true"');
   });
+
+  it("does not emit a redundant Resume field extend — ApplicantContactSchema already declares it", () => {
+    expect(source.match(/^\s*Resume:/gm)).toBeNull();
+  });
+});
+
+describe("emitContractTs — query-type plugin with a multipart step", () => {
+  const source = emitContractTs({
+    ...BASE_OPTS,
+    hasMultipartStep: true,
+  });
+
+  it("still extends Resume/ResumeContentType/ResumeFilename onto the query-type base, since basePayloadSchemaExpr has no ApplicantContactSchema to supply them from", () => {
+    expect(source).toContain("Resume: z.instanceof(Buffer)");
+    expect(source).toContain("ResumeContentType: z.string()");
+    expect(source).toContain("ResumeFilename: z.string()");
+  });
+});
+
+describe("emitContractTs — submission-flow default candidate-payload bodySchema", () => {
+  const source = emitContractTs({
+    ...BASE_OPTS,
+    hasMultipartStep: true,
+    inputBody: { ddoKey: "applySubmit", formData: {} },
+    multiStepBody: `    return { data: {} as unknown };`,
+  });
+
+  it("imports ApplicantContactSchema from the package's applicant-payload subpath", () => {
+    expect(source).toContain(
+      'import { ApplicantContactSchema } from "@enricai/barnacle/lib/applicant-payload"'
+    );
+  });
+
+  it("imports multipartJsonObject from the zod-multipart subpath", () => {
+    expect(source).toContain(
+      'import { multipartBoolean, multipartJsonObject } from "@enricai/barnacle/lib/zod-multipart"'
+    );
+  });
+
+  it("extends ApplicantContactSchema with Email, ClickUrl, and Answers", () => {
+    expect(source).toContain("ApplicantContactSchema.extend({");
+    expect(source).toContain("Email: z.email()");
+    expect(source).toContain("ClickUrl: z.string().min(1)");
+    expect(source).toContain("Answers: multipartJsonObject(");
+  });
+
+  it("marks the plugin meta as multipart", () => {
+    expect(source).toContain("multipart: true,");
+  });
+
+  it("does not emit the site-shaped inputBody keys as bodySchema fields", () => {
+    const payloadSchemaBlock = source.slice(
+      source.indexOf("const TestSitePayloadSchema"),
+      source.indexOf("export type TestSitePayload")
+    );
+    expect(payloadSchemaBlock).not.toContain("ddoKey");
+  });
+
+  it("demotes the site-shaped inputBody keys to the internal-reference scaffold instead", () => {
+    expect(source).toContain("export const TestSiteInternalRequestReference");
+    expect(source).toContain("ddoKey: z.string()");
+  });
 });
 
 describe("emitContractTs — non-multipart plugin", () => {
@@ -88,6 +151,7 @@ describe("emitContractTs — non-multipart plugin", () => {
     ...BASE_OPTS,
     hasMultipartStep: false,
     inputBody: { Name: "Alice", Active: true },
+    discoveredAdditionalBodyKeys: new Map([["Active", "boolean"]]),
   });
 
   it("does not import multipartBoolean", () => {
@@ -96,6 +160,137 @@ describe("emitContractTs — non-multipart plugin", () => {
 
   it("uses z.boolean() for boolean fields", () => {
     expect(source).toContain("z.boolean()");
+  });
+});
+
+describe("emitContractTs — non-scalar discoveredStructuredKeys field forces multipart, no upload step", () => {
+  const source = emitContractTs({
+    ...BASE_OPTS,
+    hasMultipartStep: false,
+    discoveredStructuredKeys: new Map([["eventData", "z.object({ a: z.string() })"]]),
+  });
+
+  it("emits multipart: true in meta even though hasMultipartStep is false", () => {
+    expect(source).toContain("multipart: true,");
+  });
+
+  it("wraps the structured field in multipartJsonObject(...)", () => {
+    expect(source).toContain("eventData: multipartJsonObject(z.object({ a: z.string() })),");
+  });
+
+  it("imports multipartJsonObject from the package subpath", () => {
+    expect(source).toContain('multipartJsonObject } from "@enricai/barnacle/lib/zod-multipart"');
+  });
+});
+
+describe("emitContractTs — purely scalar payload, no upload step, no structured keys", () => {
+  const source = emitContractTs({
+    ...BASE_OPTS,
+    hasMultipartStep: false,
+    discoveredAdditionalBodyKeys: new Map([["Active", "boolean"]]),
+  });
+
+  it("still omits multipart: true (no regression)", () => {
+    expect(source).not.toContain("multipart: true,");
+  });
+
+  it("still uses z.boolean(), not multipartBoolean()", () => {
+    expect(source).toContain("Active: z.boolean(),");
+    expect(source).not.toContain("multipartBoolean");
+  });
+});
+
+describe("emitContractTs — hasMultipartStep:true with no structured keys keeps unwrapped Resume shape", () => {
+  const source = emitContractTs({
+    ...BASE_OPTS,
+    hasMultipartStep: true,
+  });
+  const priorFixSource = emitContractTs({
+    ...BASE_OPTS,
+    hasMultipartStep: true,
+    discoveredStructuredKeys: new Map(),
+  });
+
+  it("keeps the current unwrapped Resume-extend shape unchanged", () => {
+    expect(source).toContain(
+      ".extend({\n  Resume: z.instanceof(Buffer),\n  ResumeContentType: z.string(),\n  ResumeFilename: z.string(),\n})"
+    );
+    expect(source).not.toContain("multipartJsonObject(z.instanceof(Buffer))");
+  });
+
+  it("is byte-for-byte identical to an explicit empty discoveredStructuredKeys map (no regression from the size-based multipart gate)", () => {
+    expect(source).toBe(priorFixSource);
+  });
+});
+
+describe("emitContractTs — hasMultipartStep:false with no structured keys keeps pre-change output byte-for-byte", () => {
+  const withoutStructuredKeysArg = emitContractTs({
+    ...BASE_OPTS,
+    hasMultipartStep: false,
+    discoveredAdditionalBodyKeys: new Map([["Active", "boolean"]]),
+  });
+  const withEmptyStructuredKeysMap = emitContractTs({
+    ...BASE_OPTS,
+    hasMultipartStep: false,
+    discoveredAdditionalBodyKeys: new Map([["Active", "boolean"]]),
+    discoveredStructuredKeys: new Map(),
+  });
+
+  it("is byte-for-byte identical whether discoveredStructuredKeys is omitted or an empty map", () => {
+    expect(withoutStructuredKeysArg).toBe(withEmptyStructuredKeysMap);
+  });
+
+  it("omits multipart: true and uses plain z.boolean()", () => {
+    expect(withoutStructuredKeysArg).not.toContain("multipart: true,");
+    expect(withoutStructuredKeysArg).toContain("Active: z.boolean(),");
+  });
+});
+
+describe("emitContractTs — hasMultipartStep:true combined with non-empty discoveredStructuredKeys stays multipart (both drivers agree)", () => {
+  const source = emitContractTs({
+    ...BASE_OPTS,
+    hasMultipartStep: true,
+    inputBody: { Name: "Alice" },
+    discoveredStructuredKeys: new Map([["eventData", "z.object({ a: z.string() })"]]),
+  });
+
+  it("still emits multipart: true", () => {
+    expect(source).toContain("multipart: true,");
+  });
+
+  it("still wraps the structured field in multipartJsonObject(...)", () => {
+    expect(source).toContain("eventData: multipartJsonObject(z.object({ a: z.string() })),");
+  });
+});
+
+describe("emitContractTs — incrediblehealth-shaped regression: resume-upload submission flow with a structured Answers field", () => {
+  // Models the recon-generate-payload-schema-mismatch.md incrediblehealth case
+  // study (lines 48-51): a submission flow with a resume-upload step
+  // (hasMultipartStep: true) whose captured request carries a non-scalar
+  // Answers-like block. autoapply PR #118 had to hand-fix the generated
+  // contract.ts to add meta.multipart:true and wrap that field in
+  // multipartJsonObject() because the generator emitted neither by default.
+  const source = emitContractTs({
+    ...BASE_OPTS,
+    hasMultipartStep: true,
+    inputBody: {
+      ddoKey: "applySubmit",
+      Answers: [{ questionId: "q1", answer: "yes" }],
+    },
+    discoveredStructuredKeys: new Map([
+      ["Answers", "z.array(z.object({ questionId: z.string(), answer: z.string() }))"],
+    ]),
+    multiStepBody: `    return { data: {} as unknown };`,
+  });
+
+  it("defaults meta.multipart to true with no hand-fix", () => {
+    expect(source).toContain("multipart: true,");
+  });
+
+  it("wraps the Answers-derived field in multipartJsonObject(...)", () => {
+    expect(source).toContain(
+      "Answers: multipartJsonObject(z.array(z.object({ questionId: z.string(), answer: z.string() }))),"
+    );
   });
 });
 
@@ -1770,16 +1965,62 @@ describe("emitBrowserFlowTs + emitContractTs — read-flow payload", () => {
     }
   });
 
-  it("derives the payload schema from a captured request body when one is available", () => {
-    // Real read-flow endpoints take a structured JSON body, not a search string.
+  it("emits the standard candidate-payload schema, not a search-string fallback, when a request body was captured", () => {
+    // A captured request body means this isn't the query-string fallback case
+    // (see the "no inputBody" test above) — recon-generate-payload-schema-mismatch.md's
+    // fix option (a) makes the standard candidate payload the unconditional
+    // default here, regardless of what the captured body's own shape was.
     const contract = emitContractTs({
       ...BASE_OPTS,
       inputBody: { page: 1, region: "INTL", filters: [], sorts: [{ criteria: "RECOMMENDED" }] },
     });
-    expect(contract).toContain("page:");
-    expect(contract).toContain("region:");
-    expect(contract).toContain("sorts:");
+    expect(contract).toContain("ApplicantContactSchema.extend({");
     expect(contract).not.toContain("query: z.string().min(1)");
+  });
+
+  it("demotes the captured request shape to a documented internal-reference const, distinct from the payload schema", () => {
+    const contract = emitContractTs({
+      ...BASE_OPTS,
+      inputBody: { page: 1, region: "INTL", filters: [], sorts: [{ criteria: "RECOMMENDED" }] },
+    });
+    const referenceConst = `${BASE_OPTS.pascal}InternalRequestReference`;
+    expect(contract).toContain(`export const ${referenceConst} =`);
+    expect(contract).toContain("region: z.");
+    expect(contract).toContain(
+      `const ${BASE_OPTS.pascal}PayloadSchema = ApplicantContactSchema.extend({`
+    );
+    // The reference const must carry TSDoc explaining it is builder input for
+    // reconstructing the site's own request, not the public /run contract —
+    // and must never itself become (or be assigned to) the exported bodySchema.
+    const docBlockMatch = contract.match(
+      new RegExp(`/\\*\\*[\\s\\S]*?\\*/\\s*\\nexport const ${referenceConst} =`)
+    );
+    expect(docBlockMatch).not.toBeNull();
+    const docBlock = docBlockMatch![0];
+    expect(docBlock).toMatch(/builder module/i);
+    expect(docBlock).toMatch(/site's own request/i);
+    expect(docBlock).toMatch(/NOT the public/i);
+    expect(contract).not.toMatch(new RegExp(`bodySchema:\\s*${referenceConst}\\b`));
+  });
+
+  it("emits no internal-reference construct when no request body was captured", () => {
+    const contract = emitContractTs({ ...BASE_OPTS, inputBody: undefined });
+    expect(contract).not.toContain("InternalRequestReference");
+  });
+
+  it("keeps the raw inferred query-fallback schema, not ApplicantContactSchema, when isSubmissionFlow is false", () => {
+    // generateSitePlugin only ever populates inputBody when isSubmissionFlow
+    // is true (`const inputBody = isSubmissionFlow ? ... : undefined`) —
+    // mirror that guard here so a non-submission (read/search) flow can
+    // never reach emitContractTs with a candidate-shaped inputBody, and the
+    // pre-existing query-object bodySchema stays exactly as before.
+    const isSubmissionFlow = false;
+    const candidateShapedBody = { Name: "Alice", Email: "alice@example.com" };
+    const inputBody = isSubmissionFlow ? candidateShapedBody : undefined;
+    const contract = emitContractTs({ ...BASE_OPTS, inputBody });
+    expect(contract).not.toContain("ApplicantContactSchema.extend(");
+    expect(contract).not.toContain("multipartJsonObject");
+    expect(contract).toContain("query: z.string().min(1)");
   });
 });
 
@@ -1900,5 +2141,77 @@ describe("emitConfigManifest — recovered request contract", () => {
       })
     ) as { spec: { httpModule?: string } };
     expect(browserOnly.spec.httpModule).toBeUndefined();
+  });
+});
+
+describe("emitContractTs — vendor-dump golden fixture (recon-generate-payload-schema-mismatch.md)", () => {
+  // Synthetic fixture modeled on the report's own field list: a vendor
+  // /applySubmit dump that shipped as the generated payload schema before the
+  // hand-fix — ddoKey/formData/dqData/eventData/experienceData/educationData,
+  // none of which the plugin's buildBarnacleFormData sends. isSubmissionFlow:
+  // true mirrors generateSitePlugin's own gate — inputBody is only ever
+  // populated on a submission flow.
+  const vendorDumpInputBody = {
+    ddoKey: "hrc-example",
+    formData: {
+      applyddokey: "hrc-example",
+      atsCode: "VENDOR",
+      refNum: "REF-00417",
+    },
+    dqData: {
+      GenderCode: "U",
+      questions: [{ id: "q1", answer: "yes" }],
+    },
+    eventData: {
+      jobSeqNo: 42,
+      jobId: "JOB-9981",
+      jobTitle: "Registered Nurse",
+      location: "Springfield, ST",
+      visibilitySiteType: "external",
+    },
+    experienceData: [{ employer: "Prior Health System", title: "RN", years: 3 }],
+    educationData: [{ school: "State University", degree: "BSN" }],
+  };
+
+  const contract = emitContractTs({
+    ...BASE_OPTS,
+    siteId: "examplesite",
+    pascal: "Examplesite",
+    inputBody: vendorDumpInputBody,
+    hasMultipartStep: true,
+  });
+
+  it("emits the ApplicantContactSchema-based candidate payload as the public bodySchema", () => {
+    expect(contract).toContain("const ExamplesitePayloadSchema = ApplicantContactSchema.extend({");
+    expect(contract).toContain("Answers: multipartJsonObject(");
+  });
+
+  it("does not leak the vendor site-dump field names into the public bodySchema", () => {
+    const payloadSchemaMatch = contract.match(
+      /const ExamplesitePayloadSchema = ApplicantContactSchema\.extend\(\{[\s\S]*?\n\}\)(?:\.extend\(\{[\s\S]*?\n\}\))*;/
+    );
+    expect(payloadSchemaMatch).not.toBeNull();
+    const payloadSchemaSource = payloadSchemaMatch![0];
+    expect(payloadSchemaSource).not.toContain("ddoKey:");
+    expect(payloadSchemaSource).not.toContain("formData:");
+    expect(payloadSchemaSource).not.toContain("dqData:");
+    expect(payloadSchemaSource).not.toContain("eventData:");
+    expect(payloadSchemaSource).not.toContain("experienceData:");
+    expect(payloadSchemaSource).not.toContain("educationData:");
+  });
+
+  it("demotes the vendor site-dump shape to the exported internal-reference const", () => {
+    expect(contract).toContain("export const ExamplesiteInternalRequestReference =");
+    const referenceMatch = contract.match(
+      /export const ExamplesiteInternalRequestReference = [\s\S]*?;\n/
+    );
+    expect(referenceMatch).not.toBeNull();
+    const referenceSource = referenceMatch![0];
+    expect(referenceSource).toContain("ddoKey:");
+    expect(referenceSource).toContain("formData:");
+    expect(referenceSource).toContain("dqData:");
+    expect(referenceSource).toContain("eventData:");
+    expect(referenceSource).toContain("experienceData:");
+    expect(referenceSource).toContain("educationData:");
   });
 });
