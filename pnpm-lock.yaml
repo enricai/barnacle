@@ -20,8 +20,8 @@ importers:
         specifier: ^3.0.112
         version: 3.0.112(zod@3.25.76)
       '@ai-sdk/anthropic':
-        specifier: ^2.0.92
-        version: 2.0.92(zod@3.25.76)
+        specifier: ^4.0.38
+        version: 4.0.38(zod@3.25.76)
       '@anthropic-ai/sdk':
         specifier: ^0.117.1
         version: 0.117.1(zod@3.25.76)
@@ -155,6 +155,18 @@ packages:
   '@ai-sdk/anthropic@2.0.92':
     resolution: {integrity: sha512-MlIQpuOnchlroR93Dq2GNw12jh/SAVjuFARXWRF/2SfowMv3J2fvPBUzA60waoQivZlf3XkzQ2nxSwer7dnh2g==}
     engines: {node: '>=18'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
+  '@ai-sdk/anthropic@2.0.95':
+    resolution: {integrity: sha512-V0nIwhyv8f9rD+p6glm0uq30seid8y2CrvNvHCAbnuPm5bPpqVChEB63kixrIDNnogkgI+ZjSTtIbIL2q3QPvQ==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
+  '@ai-sdk/anthropic@4.0.38':
+    resolution: {integrity: sha512-esbTb5jq/37dloBJzld3CpYCZskiDWGcI4O8kzst9J/0Km4by7cgQXLTB/gGdjXxBsyjPQUeotVqqRRIrx2zew==}
+    engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
@@ -2894,6 +2906,19 @@ snapshots:
       '@ai-sdk/provider-utils': 3.0.31(zod@3.25.76)
       zod: 3.25.76
 
+  '@ai-sdk/anthropic@2.0.95(zod@3.25.76)':
+    dependencies:
+      '@ai-sdk/provider': 2.0.3
+      '@ai-sdk/provider-utils': 3.0.32(zod@3.25.76)
+      zod: 3.25.76
+    optional: true
+
+  '@ai-sdk/anthropic@4.0.38(zod@3.25.76)':
+    dependencies:
+      '@ai-sdk/provider': 4.0.7
+      '@ai-sdk/provider-utils': 5.0.27(zod@3.25.76)
+      zod: 3.25.76
+
   '@ai-sdk/azure@2.0.122(zod@3.25.76)':
     dependencies:
       '@ai-sdk/deepseek': 1.0.49(zod@3.25.76)
@@ -3303,7 +3328,7 @@ snapshots:
       zod-to-json-schema: 3.25.2(zod@3.25.76)
     optionalDependencies:
       '@ai-sdk/amazon-bedrock': 3.0.112(zod@3.25.76)
-      '@ai-sdk/anthropic': 2.0.92(zod@3.25.76)
+      '@ai-sdk/anthropic': 2.0.95(zod@3.25.76)
       '@ai-sdk/azure': 2.0.122(zod@3.25.76)
       '@ai-sdk/cerebras': 1.0.52(zod@3.25.76)
       '@ai-sdk/deepseek': 1.0.49(zod@3.25.76)
@@ -4458,7 +4483,7 @@ snapshots:
 
   eventsource@3.0.7:
     dependencies:
-      eventsource-parser: 3.1.0
+      eventsource-parser: 3.1.1
 
   expect-type@1.4.0: {}
 
