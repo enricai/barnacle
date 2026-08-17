@@ -6,9 +6,9 @@ import type { Logger } from "@/types/logging";
 /**
  * Offline acceptance regression for
  * `docs/recon-viewswap-false-positive-on-blocked-form-submit.md`: the exact
- * CVS Health (Phenom→Workday) "Create Account" repro. `verifyPassword` and
+ * the target ATS "Create Account" repro. `verifyPassword` and
  * the "I Agree" checkbox are left empty; the "Create Account" click is
- * blocked by Workday's inline required-field validation (network=false,
+ * blocked by the target site's inline required-field validation (network=false,
  * url=false, the step-progress indicator stays "step 1 of 8" before and
  * after). Prior to bugfix-001 (`isClickViewSwapVerified`'s
  * `invalidMarkerDelta` veto), the inline-error DOM growth alone rode the
@@ -26,14 +26,14 @@ import type { Logger } from "@/types/logging";
  *
  * **Structure:** Modeled on `flow-runner.test.ts`'s `flow-runner/
  * runHealingFlow` describe block's `fakeFlowPage` (plain top-window Page
- * fake — no deep-locator/OOPIF hop needed since Workday's Create Account
+ * fake — no deep-locator/OOPIF hop needed since the target site's Create Account
  * form is not embedded) and
  * `flow-runner.replan-preserve-remaining-steps.test.ts`'s
  * `AcceptanceSequenceState` pattern (a single mutable state object threaded
  * through the fake `Stagehand`/`Page`, asserted against after the run).
  */
 
-const BASE_URL = "https://cvshealth.wd1.myworkdayjobs.com/CVS_Health_Careers/createAccount";
+const BASE_URL = "https://example-careers.example.com/apply/createAccount";
 const STEP_INDICATOR_TEXT = "current step 1 of 8";
 
 const EMAIL_STEP = "Fill in the 'Email Address' field with 'jane.doe@example.com'";
@@ -50,8 +50,8 @@ const SILENT_LOGGER = {
   debug: () => {},
 } as unknown as Logger;
 
-/** In-memory model of the Workday Create Account page's observable state. */
-interface WorkdaySequenceState {
+/** In-memory model of the target Create Account page's observable state. */
+interface TargetSiteSequenceState {
   url: string;
   /** `document.body.outerHTML.length` — grows only once, when the blocked submit first renders its inline errors. */
   bodyHtmlLength: number;
@@ -66,7 +66,7 @@ interface WorkdaySequenceState {
 }
 
 /** Matches `flow-runner.test.ts`'s `fakeFlowPage`: the plain DOM-evaluate surface `executeStepWithHealing` touches for a click/fill step with no select/checkbox/radio primitives in play. */
-function makeWorkdayPage(state: WorkdaySequenceState): Page {
+function makeTargetSitePage(state: TargetSiteSequenceState): Page {
   const session = { on: () => {}, off: () => {} };
   return {
     evaluate: async (expr: unknown) => {
@@ -81,7 +81,7 @@ function makeWorkdayPage(state: WorkdaySequenceState): Page {
       return null;
     },
     url: () => state.url,
-    title: async () => "Create Account | Workday",
+    title: async () => "Create Account | Careers",
     locator: () => ({
       first: () => ({
         isChecked: async () => false,
@@ -119,7 +119,7 @@ function describeActInput(input: unknown): string {
  * cascade, so the blocked click's own verification signals are the only
  * thing standing between a false credit and a correctly-failed step.
  */
-function makeWorkdayStagehand(state: WorkdaySequenceState): Stagehand {
+function makeTargetSiteStagehand(state: TargetSiteSequenceState): Stagehand {
   return {
     act: vi.fn().mockImplementation(async (input: unknown) => {
       const description = describeActInput(input);
@@ -157,7 +157,7 @@ function makeWorkdayStagehand(state: WorkdaySequenceState): Stagehand {
       }
       if (description.includes("Create Account")) {
         state.createAccountClickCount += 1;
-        // Blocked submit: Workday rejects the click (verifyPassword and "I
+        // Blocked submit: the target site rejects the click (verifyPassword and "I
         // Agree" are empty) and re-renders the SAME inline errors — the DOM
         // growth and invalid-marker count only move on the FIRST blocked
         // attempt, exactly like a real resubmit against an unchanged form.
@@ -221,16 +221,16 @@ function makeWorkdayStagehand(state: WorkdaySequenceState): Stagehand {
   } as unknown as Stagehand;
 }
 
-const WORKDAY_STEPS: HealingFlowStep[] = [
+const CREATE_ACCOUNT_STEPS: HealingFlowStep[] = [
   { instruction: EMAIL_STEP, optional: false, upload: false, submitStep: false },
   { instruction: PASSWORD_STEP, optional: false, upload: false, submitStep: false },
   { instruction: CREATE_ACCOUNT_STEP, optional: false, upload: false, submitStep: false },
   { instruction: UPLOAD_RESUME_STEP, optional: false, upload: false, submitStep: false },
 ];
 
-describe("flow-runner CVS Workday blocked Create-Account acceptance regression (bugfix-001, offline fixture, no network)", () => {
+describe("flow-runner blocked Create-Account acceptance regression (bugfix-001, offline fixture, no network)", () => {
   it("does NOT credit the blocked 'Create Account' click via view-swap, exhausts the cascade instead of skipping ahead, and never reaches the downstream steps standing in for the report's steps 9-12", async () => {
-    const state: WorkdaySequenceState = {
+    const state: TargetSiteSequenceState = {
       url: BASE_URL,
       bodyHtmlLength: 42_000,
       visibleText: "",
@@ -240,14 +240,14 @@ describe("flow-runner CVS Workday blocked Create-Account acceptance regression (
       uploadResumeStepReached: false,
     };
 
-    const stagehand = makeWorkdayStagehand(state);
-    const page = makeWorkdayPage(state);
+    const stagehand = makeTargetSiteStagehand(state);
+    const page = makeTargetSitePage(state);
 
     await expect(
       runHealingFlow({
         stagehand,
         page,
-        steps: WORKDAY_STEPS,
+        steps: CREATE_ACCOUNT_STEPS,
         logger: SILENT_LOGGER,
         anthropic: null,
         rephraseModel: null,

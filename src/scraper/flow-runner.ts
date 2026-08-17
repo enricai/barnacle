@@ -1278,7 +1278,7 @@ export function isDomOnlyAdvanceVerified(params: {
  * `textChanged` keeps a trivial reflow/tooltip (DOM churn with no new visible
  * content) from being credited — those still cascade to failure as before.
  *
- * **Blocked-submit veto:** a form-submit/advance click that Workday-style
+ * **Blocked-submit veto:** a form-submit/advance click that a wizard-style
  * client-side validation rejects renders inline error text — exactly the
  * `textChanged` + DOM-growth shape the reveal-credit branch above rewards —
  * with zero network, zero URL change. The reported false positive
