@@ -4211,6 +4211,49 @@ export function parseRadioStep(
 }
 
 /**
+ * Parse a CHECKBOX flow step into the label of the checkbox it targets.
+ *
+ * Why this exists (sibling of `parseSelectStep`/`parseFillStep`): checkbox
+ * steps are phrased as "Check the '…' checkbox" or "Click the '…' checkbox"
+ * (see `src/recon/fixtures/shipped-ats-flow-steps.json`), neither of which
+ * `parseSelectStep` recognizes (no "select" verb) and neither of which
+ * `parseRadioStep` recognizes (no "answer"/"radio" noun) — so a checkbox
+ * step's label was previously unextractable by any parser.
+ *
+ * Recognizes: "Check the 'Nights' workshift checkbox", "Click the 'No'
+ * checkbox for 'Please indicate if you are Hispanic or Latino'". Returns
+ * null when the step isn't checkbox-shaped or has no quoted label.
+ */
+export function parseCheckStep(instruction: string): { label: string } | null {
+  const lower = instruction.toLowerCase();
+  if (/\bany\s+remaining\b/.test(lower)) return null;
+  const match = instruction.match(/\b(?:check|click)\s+(?:the\s+)?'([^']+)'.*?\bcheckbox\b/i);
+  const label = match?.[1]?.trim();
+  return label ? { label } : null;
+}
+
+/** Strips wrapping single quotes a parser's capture group may include (e.g. when a flow author quotes the field name itself), so a probe label compares plain text against plain text. */
+function stripQuotedLabel(label: string): string {
+  return label.replace(/^'+|'+$/g, "").trim();
+}
+
+/**
+ * Extracts the DOM label {@link hasUnfilledRequiredControlForStep}'s probe
+ * should match against, widened beyond `parseSelectStep`'s literal "select"
+ * verb (which never matches fill or checkbox phrasing) to also try
+ * `parseFillStep` and `parseCheckStep` — see that function's docblock for
+ * why generalizing the label source, not just the select-step case, matters.
+ */
+function extractRequiredControlProbeLabel(instruction: string): string | null {
+  const selectLabel = parseSelectStep(instruction)?.questionLabel;
+  if (selectLabel) return selectLabel;
+  const fillLabel = parseFillStep(instruction)?.fieldLabel;
+  if (fillLabel) return stripQuotedLabel(fillLabel);
+  const checkLabel = parseCheckStep(instruction)?.label;
+  return checkLabel ? stripQuotedLabel(checkLabel) : null;
+}
+
+/**
  * Which deepLocator actuation primitive (`clickDeepLocatorCandidate` /
  * `fillDeepLocatorCandidate` / `selectDeepLocatorCandidateOption`) a step's
  * prose calls for, plus the value to pass it. `parseSelectStep`/
@@ -5483,17 +5526,18 @@ async function applyRadioSelection(
  * should fall through to the cascade/replan instead.
  *
  * Conservative by construction: returns false unless the step parses as a
- * select/answer step AND a required-and-unsatisfied control with a
- * label-matching the question is actually present. A genuinely-absent optional
- * step (e.g. "dismiss modal" on a modal-less page) has no such control, so the
- * fast-skip the comments call essential is preserved.
+ * select/fill/check step (via {@link extractRequiredControlProbeLabel}) AND a
+ * required-and-unsatisfied control with a label matching that target is
+ * actually present. A genuinely-absent optional step (e.g. "dismiss modal" on
+ * a modal-less page) has no such control, so the fast-skip the comments call
+ * essential is preserved.
  */
 async function hasUnfilledRequiredControlForStep(
   target: FrameTarget,
   instruction: string
 ): Promise<boolean> {
-  const parsed = parseSelectStep(instruction);
-  if (!parsed?.questionLabel) return false;
+  const label = extractRequiredControlProbeLabel(instruction);
+  if (!label) return false;
   const expr = `((label) => {
     const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
     const want = norm(label);
@@ -5537,7 +5581,7 @@ async function hasUnfilledRequiredControlForStep(
       }
     }
     return false;
-  })(${JSON.stringify(parsed.questionLabel)})`;
+  })(${JSON.stringify(label)})`;
   try {
     return (await target.evaluate(expr)) === true;
   } catch {
