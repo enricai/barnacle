@@ -64,12 +64,13 @@ describe("emitContractTs — multipart plugin", () => {
     ...BASE_OPTS,
     hasMultipartStep: true,
     inputBody: { Name: "Alice", SmsOptIn: true, Score: 1 },
+    discoveredAdditionalBodyKeys: new Map([["SmsOptIn", "boolean"]]),
     multiStepBody: `    return { data: {} as unknown };`,
   });
 
-  it("imports multipartBoolean from the package subpath, not the @/ alias", () => {
+  it("imports multipartBoolean and multipartJsonObject from the package subpath, not the @/ alias", () => {
     expect(source).toContain(
-      'import { multipartBoolean } from "@enricai/barnacle/lib/zod-multipart"'
+      'import { multipartBoolean, multipartJsonObject } from "@enricai/barnacle/lib/zod-multipart"'
     );
   });
 
@@ -88,6 +89,7 @@ describe("emitContractTs — non-multipart plugin", () => {
     ...BASE_OPTS,
     hasMultipartStep: false,
     inputBody: { Name: "Alice", Active: true },
+    discoveredAdditionalBodyKeys: new Map([["Active", "boolean"]]),
   });
 
   it("does not import multipartBoolean", () => {
@@ -1770,15 +1772,16 @@ describe("emitBrowserFlowTs + emitContractTs — read-flow payload", () => {
     }
   });
 
-  it("derives the payload schema from a captured request body when one is available", () => {
-    // Real read-flow endpoints take a structured JSON body, not a search string.
+  it("emits the standard candidate-payload schema, not a search-string fallback, when a request body was captured", () => {
+    // A captured request body means this isn't the query-string fallback case
+    // (see the "no inputBody" test above) — recon-generate-payload-schema-mismatch.md's
+    // fix option (a) makes the standard candidate payload the unconditional
+    // default here, regardless of what the captured body's own shape was.
     const contract = emitContractTs({
       ...BASE_OPTS,
       inputBody: { page: 1, region: "INTL", filters: [], sorts: [{ criteria: "RECOMMENDED" }] },
     });
-    expect(contract).toContain("page:");
-    expect(contract).toContain("region:");
-    expect(contract).toContain("sorts:");
+    expect(contract).toContain("ApplicantContactSchema.extend({");
     expect(contract).not.toContain("query: z.string().min(1)");
   });
 });

@@ -2734,8 +2734,9 @@ function applyPayloadKeyValueSubstitutions(
   const merged: Array<[string, string | number | boolean | null]> = [];
   const seenKeys = new Set<string>();
   // Track keys from inputBody (r0) separately so we know which ones are NEW.
-  // Only NEW keys need to be added to discovered-form-fields (the payload
-  // schema's inferZodSchema(inputBody) already covers inputBody's keys).
+  // Only NEW keys need to be added to discovered-form-fields — inputBody's
+  // own keys stay internal to the site request template, not the public
+  // payload schema (see basePayloadSchemaExpr in emitContractTs).
   if (inputBody !== null && typeof inputBody === "object" && !Array.isArray(inputBody)) {
     for (const { path } of walkAllPrimitiveLeaves(inputBody)) {
       if (path.length === 1) seenKeys.add(path[0]!);
@@ -2758,8 +2759,8 @@ function applyPayloadKeyValueSubstitutions(
       if (value === null) continue;
       merged.push([key, value]);
       // Record only the NEW keys (not in inputBody) so the contract emitter
-      // can add them to the payload schema. inputBody's keys are already
-      // emitted by inferZodSchema(inputBody).
+      // can add them to the payload schema — inputBody's own keys stay
+      // internal to the site request template (see basePayloadSchemaExpr).
       if (!inputBodyKeys.has(key)) {
         if (typeof value === "string") outAdditionalKeys.set(key, "string");
         else if (typeof value === "number") outAdditionalKeys.set(key, "number");
@@ -3650,13 +3651,20 @@ export function emitContractTs(opts: {
   // step, regardless of which step in the sequence it is. The hasMultipartStep
   // flag is computed once at the call site from actionSteps.some(s.isMultipart).
   //
-  // multipart/form-data wire format encodes every text field as a string, so
-  // pass multipartCoerce so inferZodSchema emits multipartBoolean() calls for
-  // booleans and z.coerce.number() for numbers at the source rather than via
-  // brittle post-process string substitution. Site-agnostic: only flips on
-  // when meta.multipart is true.
+  // The captured request body (inputBody) is the SITE's internal request
+  // shape (Taleo ddoKey/formData, a GraphQL worklet's variables, …) — not
+  // what the real caller sends. nursefly-web's buildBarnacleFormData posts
+  // the standard candidate payload (ApplicantContactSchema's identity/
+  // address/resume fields + Email + job-targeting + a JSON Answers block) to
+  // every plugin's /run, so that — not a structural inference over
+  // inputBody — is the public contract every submission-flow plugin must
+  // declare, unconditionally (see recon-generate-payload-schema-mismatch.md
+  // fix option (a)). inputBody remains available to the plugin author as the
+  // internal request shape the site's own call needs to be built from; it no
+  // longer drives the public schema. A missing inputBody means this is a
+  // non-submission (query-type) flow, which keeps its own contract untouched.
   const basePayloadSchemaExpr = inputBody
-    ? inferZodSchema(inputBody, 0, "", { multipartCoerce: hasMultipartStep })
+    ? `ApplicantContactSchema.extend({\n  Email: z.email(),\n  ClickUrl: z.string().min(1),\n  Answers: multipartJsonObject(z.record(z.string(), z.unknown())),\n})`
     : `z.object({\n  query: z.string().min(1),\n})`;
   // Form-schema-discovered fields (e.g. AddressLine1, UserSsn, Reference1FirstName)
   // are added to the payload as required strings. Site-agnostic: the set is
@@ -3789,11 +3797,22 @@ export function emitContractTs(opts: {
   const payloadSchemaExpr = hasMultipartStep
     ? `${basePayloadSchemaExpr}.extend({\n  Resume: z.instanceof(Buffer),\n  ResumeContentType: z.string(),\n  ResumeFilename: z.string(),\n})${formFieldsExtension}${splicedFieldsExtension}${optionSchemaExtension}${rawOptionSchemaExtension}${additionalBodyKeysExtension}${structuredKeysExtension}`
     : `${basePayloadSchemaExpr}${formFieldsExtension}${splicedFieldsExtension}${optionSchemaExtension}${rawOptionSchemaExtension}${additionalBodyKeysExtension}${structuredKeysExtension}`;
-  // When the payload schema uses multipartBoolean(), import the shared helper
-  // so the generated file resolves the reference and doesn't re-inline the
-  // preprocess expression per boolean field.
-  const multipartBoolImport = hasMultipartStep
-    ? `import { multipartBoolean } from "${ENGINE_PKG}/lib/zod-multipart";\n`
+  // basePayloadSchemaExpr always wraps Answers in multipartJsonObject() for
+  // submission flows (inputBody set); multipartBoolean() is only needed
+  // when a multipart upload step is present. Named imports from the same
+  // module are combined into one import statement.
+  const zodMultipartNamedImports = [
+    ...(hasMultipartStep ? ["multipartBoolean"] : []),
+    ...(inputBody ? ["multipartJsonObject"] : []),
+  ];
+  const multipartBoolImport =
+    zodMultipartNamedImports.length > 0
+      ? `import { ${zodMultipartNamedImports.join(", ")} } from "${ENGINE_PKG}/lib/zod-multipart";\n`
+      : "";
+  // ApplicantContactSchema backs the default submission-flow payload schema
+  // (see basePayloadSchemaExpr above); only referenced when inputBody is set.
+  const applicantContactImport = inputBody
+    ? `import { ApplicantContactSchema } from "${ENGINE_PKG}/lib/applicant-payload";\n`
     : "";
   // Content-Type must be absent from multipart fetch calls so FormData can inject the boundary.
   const caseInsensitiveHeadersImport = hasMultipartStep
@@ -3894,7 +3913,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
 import Bottleneck from "bottleneck";
 import { z } from "zod/v4";
 
-${fixtureImport}${caseInsensitiveHeadersImport}${multipartBoolImport}${clientImport}
+${fixtureImport}${applicantContactImport}${caseInsensitiveHeadersImport}${multipartBoolImport}${clientImport}
 import type { BrowserSession } from "${ENGINE_PKG}/scraper/session";
 import type { SitePlugin, SitePluginContext, SitePluginResult } from "${ENGINE_PKG}/site-plugin";
 import { run${pascal}BrowserFlow } from "@/sites/${siteId}/flows/browser-flow";
@@ -3927,7 +3946,12 @@ export const ${camel}Plugin: SitePlugin<${pascal}Payload, ${pascal}Response> = {
     bodySchema: ${pascal}PayloadSchema,
     responseSchema: ${pascal}ResponseSchema,
     defaultBaseUrl: ${JSON.stringify(baseUrl)},
-    apiVersion: ${JSON.stringify(PLUGIN_API_VERSION)},${hasMultipartStep ? "\n    multipart: true," : ""}
+    // multipart is required whenever the flow itself uploads a file
+    // (hasMultipartStep) OR this is a submission flow (inputBody set), since
+    // basePayloadSchemaExpr always requires a real Resume Buffer via
+    // ApplicantContactSchema for submission flows regardless of whether the
+    // recorded browser flow contained an upload step.
+    apiVersion: ${JSON.stringify(PLUGIN_API_VERSION)},${hasMultipartStep || inputBody ? "\n    multipart: true," : ""}
   },
 
   /** Hot path: direct HTTP — no browser, no LLM tokens. */
