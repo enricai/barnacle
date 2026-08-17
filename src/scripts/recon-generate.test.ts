@@ -82,6 +82,23 @@ describe("emitContractTs — multipart plugin", () => {
     expect(source).not.toContain("MULTIPART_BOOL");
     expect(source).not.toContain('z.preprocess(\n  (v) => (v === "true"');
   });
+
+  it("does not emit a redundant Resume field extend — ApplicantContactSchema already declares it", () => {
+    expect(source.match(/^\s*Resume:/gm)).toBeNull();
+  });
+});
+
+describe("emitContractTs — query-type plugin with a multipart step", () => {
+  const source = emitContractTs({
+    ...BASE_OPTS,
+    hasMultipartStep: true,
+  });
+
+  it("still extends Resume/ResumeContentType/ResumeFilename onto the query-type base, since basePayloadSchemaExpr has no ApplicantContactSchema to supply them from", () => {
+    expect(source).toContain("Resume: z.instanceof(Buffer)");
+    expect(source).toContain("ResumeContentType: z.string()");
+    expect(source).toContain("ResumeFilename: z.string()");
+  });
 });
 
 describe("emitContractTs — non-multipart plugin", () => {
