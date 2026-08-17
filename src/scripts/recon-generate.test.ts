@@ -1784,6 +1784,21 @@ describe("emitBrowserFlowTs + emitContractTs — read-flow payload", () => {
     expect(contract).toContain("ApplicantContactSchema.extend({");
     expect(contract).not.toContain("query: z.string().min(1)");
   });
+
+  it("demotes the captured request shape to a documented internal-reference const, distinct from the payload schema", () => {
+    const contract = emitContractTs({
+      ...BASE_OPTS,
+      inputBody: { page: 1, region: "INTL", filters: [], sorts: [{ criteria: "RECOMMENDED" }] },
+    });
+    expect(contract).toContain(`export const ${BASE_OPTS.pascal}InternalRequestReference =`);
+    expect(contract).toContain("region: z.");
+    expect(contract).toContain(`const ${BASE_OPTS.pascal}PayloadSchema = ApplicantContactSchema.extend({`);
+  });
+
+  it("emits no internal-reference construct when no request body was captured", () => {
+    const contract = emitContractTs({ ...BASE_OPTS, inputBody: undefined });
+    expect(contract).not.toContain("InternalRequestReference");
+  });
 });
 
 describe("emitConfigManifest — config-only plugin emission", () => {
