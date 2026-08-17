@@ -2112,3 +2112,76 @@ describe("emitConfigManifest — recovered request contract", () => {
     expect(browserOnly.spec.httpModule).toBeUndefined();
   });
 });
+
+describe("emitContractTs — hhccareers golden fixture (recon-generate-payload-schema-mismatch.md)", () => {
+  // Synthetic fixture modeled verbatim on the report's own field list
+  // (recon-generate-payload-schema-mismatch.md lines 38-41): the Taleo
+  // /applySubmit dump that shipped as the generated HhccareersPayloadSchema
+  // before the hand-fix — ddoKey/formData/dqData/eventData/experienceData/
+  // educationData, none of which nursefly-web's buildBarnacleFormData sends.
+  // isSubmissionFlow: true mirrors generateSitePlugin's own gate — inputBody
+  // is only ever populated on a submission flow.
+  const hhccareersInputBody = {
+    ddoKey: "hrc-hhccareers",
+    formData: {
+      applyddokey: "hrc-hhccareers",
+      atsCode: "TALEO",
+      refNum: "REF-00417",
+    },
+    dqData: {
+      GenderCode: "U",
+      questions: [{ id: "q1", answer: "yes" }],
+    },
+    eventData: {
+      jobSeqNo: 42,
+      jobId: "JOB-9981",
+      jobTitle: "Registered Nurse",
+      location: "Hartford, CT",
+      visibilitySiteType: "external",
+    },
+    experienceData: [{ employer: "Prior Health System", title: "RN", years: 3 }],
+    educationData: [{ school: "State University", degree: "BSN" }],
+  };
+
+  const contract = emitContractTs({
+    ...BASE_OPTS,
+    siteId: "hhccareers",
+    pascal: "Hhccareers",
+    inputBody: hhccareersInputBody,
+    hasMultipartStep: true,
+  });
+
+  it("emits the ApplicantContactSchema-based candidate payload as the public bodySchema", () => {
+    expect(contract).toContain("const HhccareersPayloadSchema = ApplicantContactSchema.extend({");
+    expect(contract).toContain("Answers: multipartJsonObject(");
+  });
+
+  it("does not leak the Taleo site-dump field names into the public bodySchema", () => {
+    const payloadSchemaMatch = contract.match(
+      /const HhccareersPayloadSchema = ApplicantContactSchema\.extend\(\{[\s\S]*?\n\}\)(?:\.extend\(\{[\s\S]*?\n\}\))*;/
+    );
+    expect(payloadSchemaMatch).not.toBeNull();
+    const payloadSchemaSource = payloadSchemaMatch![0];
+    expect(payloadSchemaSource).not.toContain("ddoKey:");
+    expect(payloadSchemaSource).not.toContain("formData:");
+    expect(payloadSchemaSource).not.toContain("dqData:");
+    expect(payloadSchemaSource).not.toContain("eventData:");
+    expect(payloadSchemaSource).not.toContain("experienceData:");
+    expect(payloadSchemaSource).not.toContain("educationData:");
+  });
+
+  it("demotes the Taleo site-dump shape to the exported internal-reference const", () => {
+    expect(contract).toContain("export const HhccareersInternalRequestReference =");
+    const referenceMatch = contract.match(
+      /export const HhccareersInternalRequestReference = [\s\S]*?;\n/
+    );
+    expect(referenceMatch).not.toBeNull();
+    const referenceSource = referenceMatch![0];
+    expect(referenceSource).toContain("ddoKey:");
+    expect(referenceSource).toContain("formData:");
+    expect(referenceSource).toContain("dqData:");
+    expect(referenceSource).toContain("eventData:");
+    expect(referenceSource).toContain("experienceData:");
+    expect(referenceSource).toContain("educationData:");
+  });
+});
