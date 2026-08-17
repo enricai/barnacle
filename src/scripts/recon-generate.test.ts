@@ -1894,9 +1894,24 @@ describe("emitBrowserFlowTs + emitContractTs — read-flow payload", () => {
       ...BASE_OPTS,
       inputBody: { page: 1, region: "INTL", filters: [], sorts: [{ criteria: "RECOMMENDED" }] },
     });
-    expect(contract).toContain(`export const ${BASE_OPTS.pascal}InternalRequestReference =`);
+    const referenceConst = `${BASE_OPTS.pascal}InternalRequestReference`;
+    expect(contract).toContain(`export const ${referenceConst} =`);
     expect(contract).toContain("region: z.");
-    expect(contract).toContain(`const ${BASE_OPTS.pascal}PayloadSchema = ApplicantContactSchema.extend({`);
+    expect(contract).toContain(
+      `const ${BASE_OPTS.pascal}PayloadSchema = ApplicantContactSchema.extend({`
+    );
+    // The reference const must carry TSDoc explaining it is builder input for
+    // reconstructing the site's own request, not the public /run contract —
+    // and must never itself become (or be assigned to) the exported bodySchema.
+    const docBlockMatch = contract.match(
+      new RegExp(`/\\*\\*[\\s\\S]*?\\*/\\s*\\nexport const ${referenceConst} =`)
+    );
+    expect(docBlockMatch).not.toBeNull();
+    const docBlock = docBlockMatch![0];
+    expect(docBlock).toMatch(/builder module/i);
+    expect(docBlock).toMatch(/site's own request/i);
+    expect(docBlock).toMatch(/NOT the public/i);
+    expect(contract).not.toMatch(new RegExp(`bodySchema:\\s*${referenceConst}\\b`));
   });
 
   it("emits no internal-reference construct when no request body was captured", () => {
