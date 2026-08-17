@@ -45,21 +45,34 @@ beforeEach(() => {
   loggerStub.warn.mockClear();
 });
 
+let fakeFrameCounter = 0;
+
 /**
  * Minimal fake `Frame`: just enough surface for `resolveFrameTarget` and the
- * resulting `FrameTarget` to exercise — `evaluate` (used both to read
- * `location.href` during resolution and to prove delegation afterward) and
- * `locator` (proves delegation without needing a real CDP-backed Locator).
+ * resulting `FrameTarget` to exercise — a unique `frameId` (so the resolver can
+ * exclude the main frame and identify candidates the way the real
+ * understudy `Frame` does), `evaluate` (answers the resolver's
+ * `location.href`/`{url,nonEmpty}` candidate probe and the delegation-proving
+ * expressions), and `locator` (proves delegation without a real CDP Locator).
+ *
+ * `nonEmpty` defaults to `true` — a genuine attached wizard frame has content;
+ * a test models the "empty same-origin shell" case by passing `false`.
  */
-function makeFakeFrame(url: string) {
+function makeFakeFrame(url: string, opts: { frameId?: string; nonEmpty?: boolean } = {}) {
+  const nonEmpty = opts.nonEmpty ?? true;
   return {
+    frameId: opts.frameId ?? `fake-frame-${fakeFrameCounter++}`,
     evaluate: async (expr: unknown) => {
       if (expr === "location.href") return url;
+      if (/document\.body/.test(String(expr))) return nonEmpty;
       return `frame-evaluated:${String(expr)}`;
     },
     locator: (selector: string) => ({ scope: "frame" as const, selector }),
   };
 }
+
+/** Stable main-frame id shared by the fake pages, so `frameId !== mainFrameId()` excludes only the main frame. */
+const FAKE_MAIN_FRAME_ID = "fake-main-frame";
 
 /**
  * Minimal fake `Page`: `frames()` returns whatever child frames the test
@@ -87,6 +100,7 @@ function makeFakePage(options: {
     },
     locator: (selector: string) => ({ scope: "main" as const, selector }),
     frames: () => frames,
+    mainFrameId: () => FAKE_MAIN_FRAME_ID,
   };
 }
 
@@ -115,6 +129,7 @@ function makeMutableFakePage(options: {
     },
     locator: (selector: string) => ({ scope: "main" as const, selector }),
     frames: () => frames,
+    mainFrameId: () => FAKE_MAIN_FRAME_ID,
     mountIframe: (selector: string, src: string): void => {
       iframes[selector] = src;
     },
@@ -159,6 +174,90 @@ describe("resolveFrameTarget", () => {
     expect(target.frame).toBe(childFrame);
     expect(target.frameSelector).toBe("iframe#apply_frame");
     expect(await target.url()).toBe("https://apply.example.com/application/abc-123");
+  });
+
+  it("binds the populated wizard frame, not an empty same-origin shell frame that appears first in frames() (the exact-URL match wins)", async () => {
+    // The production bug: a page hosts TWO same-origin child frames — an empty
+    // shell (different URL) ordered before the real wizard whose URL is the
+    // iframe src. Origin-only matching bound the shell; URL-specificity binds
+    // the wizard.
+    const emptyShell = makeFakeFrame("https://apply.example.com/application/SHELL-000", {
+      nonEmpty: false,
+    });
+    const wizard = makeFakeFrame("https://apply.example.com/application/abc-123");
+    const page = makeFakePage({
+      mainUrl: "https://careers.example.org/jobs/123",
+      iframes: { "iframe#apply_frame": "https://apply.example.com/application/abc-123" },
+      frames: [emptyShell, wizard],
+    });
+
+    const target = await resolveFrameTarget(page as never, "iframe#apply_frame");
+
+    expect(target.frame).toBe(wizard);
+    expect(await target.url()).toBe("https://apply.example.com/application/abc-123");
+  });
+
+  it("prefers a non-empty document among equally-ranked same-origin candidates whose URLs tie", async () => {
+    // Both candidates share the exact iframe-src URL (query stripped); only the
+    // non-empty one is the live wizard.
+    const emptyTwin = makeFakeFrame("https://apply.example.com/application/abc-123?x=1", {
+      nonEmpty: false,
+    });
+    const populatedTwin = makeFakeFrame("https://apply.example.com/application/abc-123?y=2");
+    const page = makeFakePage({
+      mainUrl: "https://careers.example.org/jobs/123",
+      iframes: { "iframe#apply_frame": "https://apply.example.com/application/abc-123" },
+      frames: [emptyTwin, populatedTwin],
+    });
+
+    const target = await resolveFrameTarget(page as never, "iframe#apply_frame");
+
+    expect(target.frame).toBe(populatedTwin);
+  });
+
+  it("binds a child frame whose path extends the iframe src (the child navigated deeper post-load)", async () => {
+    const deeper = makeFakeFrame("https://apply.example.com/application/abc-123/step/2");
+    const page = makeFakePage({
+      mainUrl: "https://careers.example.org/jobs/123",
+      iframes: { "iframe#apply_frame": "https://apply.example.com/application/abc-123" },
+      frames: [deeper],
+    });
+
+    const target = await resolveFrameTarget(page as never, "iframe#apply_frame");
+
+    expect(target.frame).toBe(deeper);
+  });
+
+  it("still binds by origin alone when no candidate URL shares the iframe src path (post-load-drift fallback)", async () => {
+    // The single same-origin candidate has a totally different path — origin is
+    // the only signal, and today's behavior (bind it) is preserved.
+    const drifted = makeFakeFrame("https://apply.example.com/session/xyz");
+    const page = makeFakePage({
+      mainUrl: "https://careers.example.org/jobs/123",
+      iframes: { "iframe#apply_frame": "https://apply.example.com/application/abc-123" },
+      frames: [drifted],
+    });
+
+    const target = await resolveFrameTarget(page as never, "iframe#apply_frame");
+
+    expect(target.frame).toBe(drifted);
+  });
+
+  it("does not treat a sibling path that is a mere string prefix (not a segment boundary) as a path extension", async () => {
+    // "/apple" string-starts-with "/app" but is a different path — it must not
+    // outrank a genuine deeper match. The genuine child (src exactly) wins; the
+    // decoy only ever ranks origin-level.
+    const decoy = makeFakeFrame("https://apply.example.com/apple");
+    const real = makeFakeFrame("https://apply.example.com/app");
+    const page = makeFakePage({
+      mainUrl: "https://careers.example.org/jobs/123",
+      iframes: { "iframe#apply_frame": "https://apply.example.com/app" },
+      frames: [decoy, real],
+    });
+
+    const target = await resolveFrameTarget(page as never, "iframe#apply_frame");
+
+    expect(target.frame).toBe(real);
   });
 
   it("delegates evaluate/locator to the resolved child Frame, not the main Page", async () => {
@@ -266,6 +365,7 @@ describe("resolveFrameTarget", () => {
       },
       locator: (selector: string) => ({ scope: "main" as const, selector }),
       frames: () => [unrelatedFrame, matchingFrame],
+      mainFrameId: () => FAKE_MAIN_FRAME_ID,
     };
 
     const target = resolveFrameTarget(page as never, "iframe#apply_frame", {
@@ -289,6 +389,29 @@ describe("resolveFrameTarget", () => {
       evaluate: async () => ({ matched: true, src: null }),
       locator: (selector: string) => ({ scope: "main" as const, selector }),
       frames: () => [onlyCandidate],
+      mainFrameId: () => FAKE_MAIN_FRAME_ID,
+    };
+
+    const target = await resolveFrameTarget(page as never, "iframe#apply_frame", {
+      timeoutMs: 1000,
+      pollMs: 5,
+    });
+
+    expect(target.frame).toBe(onlyCandidate);
+    expect(target.frameSelector).toBe("iframe#apply_frame");
+  });
+
+  it("resolves by element identity when the iframe src is a relative (origin-less) URL and exactly one candidate frame exists", async () => {
+    // A relative src like "/application/abc" has no resolvable origin — the same
+    // "src can't be read" fallback as an empty src must fire, not a no-match.
+    const onlyCandidate = makeFakeFrame("https://apply.example.com/application/abc-123");
+    const page = {
+      url: () => "https://careers.example.org/jobs/123",
+      title: async () => "main document title",
+      evaluate: async () => ({ matched: true, src: "/application/abc-123" }),
+      locator: (selector: string) => ({ scope: "main" as const, selector }),
+      frames: () => [onlyCandidate],
+      mainFrameId: () => FAKE_MAIN_FRAME_ID,
     };
 
     const target = await resolveFrameTarget(page as never, "iframe#apply_frame", {
@@ -520,6 +643,7 @@ describe("resolveFrameTarget: bounded against a never-settling evaluate", () => 
       evaluate,
       locator: (selector: string) => ({ scope: "main" as const, selector }),
       frames: () => [],
+      mainFrameId: () => FAKE_MAIN_FRAME_ID,
     };
 
     const start = Date.now();
@@ -543,6 +667,7 @@ describe("resolveFrameTarget: bounded against a never-settling evaluate", () => 
       evaluate: () => Promise.reject(originalError),
       locator: (selector: string) => ({ scope: "main" as const, selector }),
       frames: () => [],
+      mainFrameId: () => FAKE_MAIN_FRAME_ID,
     };
 
     await expect(
@@ -561,6 +686,7 @@ describe("resolveFrameTarget: bounded against a never-settling evaluate", () => 
       evaluate: () => new Promise(() => {}),
       locator: (selector: string) => ({ scope: "main" as const, selector }),
       frames: () => [],
+      mainFrameId: () => FAKE_MAIN_FRAME_ID,
     };
 
     const start = Date.now();
@@ -582,6 +708,7 @@ describe("resolveFrameTarget: bounded against a never-settling evaluate", () => 
       evaluate: async () => ({ matched: false, src: null }),
       locator: (selector: string) => ({ scope: "main" as const, selector }),
       frames: () => [],
+      mainFrameId: () => FAKE_MAIN_FRAME_ID,
     };
 
     const target = await resolveFrameTarget(page as never, "iframe#apply_frame", {
@@ -601,6 +728,7 @@ describe("resolveFrameTarget: bounded against a never-settling evaluate", () => 
       evaluate: vi.fn(),
       locator: (selector: string) => ({ scope: "main" as const, selector }),
       frames: () => [],
+      mainFrameId: () => FAKE_MAIN_FRAME_ID,
     };
 
     const target = await resolveFrameTarget(page as never, undefined);
@@ -615,6 +743,7 @@ describe("resolveFrameTarget: bounded against a never-settling evaluate", () => 
       evaluate: () => new Promise(() => {}),
       locator: (selector: string) => ({ scope: "main" as const, selector }),
       frames: () => [],
+      mainFrameId: () => FAKE_MAIN_FRAME_ID,
     };
 
     const target = await resolveFrameTarget(page as never, null, { evaluateTimeoutMs: 10 });
@@ -754,14 +883,17 @@ function makeDelayedFakePage(options: {
     },
     locator: (selector: string) => ({ scope: "main" as const, selector }),
     frames: () => frames,
+    mainFrameId: () => FAKE_MAIN_FRAME_ID,
   };
 }
 
-function makeDelayedFakeFrame(url: string, delayMs: number) {
+function makeDelayedFakeFrame(url: string, delayMs: number, opts: { frameId?: string } = {}) {
   return {
+    frameId: opts.frameId ?? `delayed-fake-frame-${fakeFrameCounter++}`,
     evaluate: async (expr: unknown) => {
       await sleepMs(delayMs);
       if (expr === "location.href") return url;
+      if (/document\.body/.test(String(expr))) return true;
       return `frame-evaluated:${String(expr)}`;
     },
     locator: (selector: string) => ({ scope: "frame" as const, selector }),
@@ -871,6 +1003,7 @@ describe("FrameTarget.evaluate/url: bounded against a never-settling underlying 
     // match) but hangs on every other expression, modeling a frame that CDP
     // attached to but that wedges on a later evaluate call.
     const childFrame = {
+      frameId: "wedging-child-frame",
       evaluate: (expr: unknown) =>
         expr === "location.href"
           ? Promise.resolve("https://apply.example.com/application/abc-123")
@@ -903,7 +1036,11 @@ describe("FrameTarget.evaluate/url: bounded against a never-settling underlying 
     // frame that attached fine but wedges on a later CDP round trip.
     let locationHrefCalls = 0;
     const childFrame = {
+      frameId: "wedging-later-child-frame",
       evaluate: (expr: unknown) => {
+        // Resolution's own candidate probe (first "location.href") resolves;
+        // the non-empty tiebreak and the later target.url() call all hang,
+        // proving the watchdog bounds them.
         if (expr !== "location.href") return new Promise(() => {});
         locationHrefCalls += 1;
         return locationHrefCalls === 1
@@ -935,6 +1072,7 @@ describe("FrameTarget.evaluate/url: bounded against a never-settling underlying 
       evaluate: () => new Promise(() => {}),
       locator: (selector: string) => ({ scope: "main" as const, selector }),
       frames: () => [],
+      mainFrameId: () => FAKE_MAIN_FRAME_ID,
     };
 
     const target = await resolveFrameTarget(page as never, null);
