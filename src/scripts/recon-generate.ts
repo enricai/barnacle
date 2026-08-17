@@ -3906,10 +3906,12 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
 /**
  * The SITE's own request shape, as captured during recon — NOT the public
  * /run contract (see ${pascal}PayloadSchema above, which is what the real
- * caller sends). Reference input for building the site's actual request
- * bodies from the standard payload.
+ * caller sends). Exported so a builder module can import it as the target
+ * shape when translating the standard payload into the site's own request
+ * bodies (see recon-generate-payload-schema-mismatch.md's hhccareers
+ * hand-fix precedent).
  */
-const ${pascal}InternalRequestReference = ${internalRequestReferenceExpr};
+export const ${pascal}InternalRequestReference = ${internalRequestReferenceExpr};
 `
     : "";
 
