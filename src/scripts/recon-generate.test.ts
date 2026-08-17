@@ -1784,6 +1784,21 @@ describe("emitBrowserFlowTs + emitContractTs — read-flow payload", () => {
     expect(contract).toContain("ApplicantContactSchema.extend({");
     expect(contract).not.toContain("query: z.string().min(1)");
   });
+
+  it("keeps the raw inferred query-fallback schema, not ApplicantContactSchema, when isSubmissionFlow is false", () => {
+    // generateSitePlugin only ever populates inputBody when isSubmissionFlow
+    // is true (`const inputBody = isSubmissionFlow ? ... : undefined`) —
+    // mirror that guard here so a non-submission (read/search) flow can
+    // never reach emitContractTs with a candidate-shaped inputBody, and the
+    // pre-existing query-object bodySchema stays exactly as before.
+    const isSubmissionFlow = false;
+    const candidateShapedBody = { Name: "Alice", Email: "alice@example.com" };
+    const inputBody = isSubmissionFlow ? candidateShapedBody : undefined;
+    const contract = emitContractTs({ ...BASE_OPTS, inputBody });
+    expect(contract).not.toContain("ApplicantContactSchema.extend(");
+    expect(contract).not.toContain("multipartJsonObject");
+    expect(contract).toContain("query: z.string().min(1)");
+  });
 });
 
 describe("emitConfigManifest — config-only plugin emission", () => {
