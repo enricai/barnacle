@@ -982,18 +982,15 @@ export function isReplanReproposingFailedStep(
   return newSteps.every((s) => normalizeInstruction(s.instruction) === failedNorm);
 }
 
-/** Substring phrases identifying a sign-in/log-in step, keyed lowercase like {@link ACCOUNT_CREATION_PHRASES}. */
-const SIGN_IN_PHRASES = ["sign in", "sign-in", "signin", "log in", "log-in", "login"];
+/** Word-boundary phrase patterns identifying a sign-in/log-in step, keyed lowercase like {@link ACCOUNT_CREATION_PATTERNS}. */
+const SIGN_IN_PATTERNS = [/\bsign[\s-]?in\b/, /\blog[\s-]?in\b/];
 
-/** Substring phrases identifying an account-creation/registration step. */
-const ACCOUNT_CREATION_PHRASES = [
-  "create account",
-  "create an account",
-  "sign up",
-  "sign-up",
-  "signup",
-  "register",
-  "registration",
+/** Word-boundary phrase patterns identifying an account-creation/registration step. */
+const ACCOUNT_CREATION_PATTERNS = [
+  /\bcreate\s+(an\s+)?account\b/,
+  /\bsign[\s-]?up\b/,
+  /\bregister\b/,
+  /\bregistration\b/,
 ];
 
 /**
@@ -1005,7 +1002,10 @@ const ACCOUNT_CREATION_PHRASES = [
  * upload, EEO, submit) never anticipated, silently stranding the application.
  * Keyed on lightweight keyword matching (same approach as `isAdvanceStep`)
  * rather than an LLM call, to keep the veto deterministic and cheap like its
- * siblings `isReplanReproposingFailedStep`/`isReplanCycle`. Pure.
+ * siblings `isReplanReproposingFailedStep`/`isReplanCycle`. Matches on word
+ * boundaries (not plain substring) so instructions like "redesign in the
+ * layout" or "assign in the reviewer field" don't false-positive on "sign
+ * in". Pure.
  */
 export function isReplanRegressingAcrossAuthBoundary(
   newSteps: readonly NormalizedStep[],
@@ -1013,12 +1013,12 @@ export function isReplanRegressingAcrossAuthBoundary(
 ): boolean {
   const hasAccountCreation = completedSteps.some((s) => {
     const norm = normalizeInstruction(s);
-    return ACCOUNT_CREATION_PHRASES.some((p) => norm.includes(p));
+    return ACCOUNT_CREATION_PATTERNS.some((p) => p.test(norm));
   });
   if (!hasAccountCreation) return false;
   return newSteps.some((s) => {
     const norm = normalizeInstruction(s.instruction);
-    return SIGN_IN_PHRASES.some((p) => norm.includes(p));
+    return SIGN_IN_PATTERNS.some((p) => p.test(norm));
   });
 }
 

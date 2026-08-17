@@ -1526,6 +1526,21 @@ describe("recon-browser/isReplanRegressingAcrossAuthBoundary", () => {
   it("does not fire on an empty bridge", () => {
     expect(isReplanRegressingAcrossAuthBoundary([], ["Click 'Create Account'"])).toBe(false);
   });
+
+  it("does not false-positive on 'sign in' as a substring of an unrelated word", () => {
+    expect(
+      isReplanRegressingAcrossAuthBoundary(
+        [mk("Redesign in the layout section")],
+        ["Click 'Create Account'"]
+      )
+    ).toBe(false);
+    expect(
+      isReplanRegressingAcrossAuthBoundary(
+        [mk("Select the reviewer to assign in the dropdown")],
+        ["Click 'Create Account'"]
+      )
+    ).toBe(false);
+  });
 });
 
 describe("recon-browser/isWizardExitAction", () => {
