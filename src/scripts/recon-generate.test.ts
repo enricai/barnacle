@@ -263,6 +263,37 @@ describe("emitContractTs — hasMultipartStep:true combined with non-empty disco
   });
 });
 
+describe("emitContractTs — incrediblehealth-shaped regression: resume-upload submission flow with a structured Answers field", () => {
+  // Models the recon-generate-payload-schema-mismatch.md incrediblehealth case
+  // study (lines 48-51): a submission flow with a resume-upload step
+  // (hasMultipartStep: true) whose captured request carries a non-scalar
+  // Answers-like block. autoapply PR #118 had to hand-fix the generated
+  // contract.ts to add meta.multipart:true and wrap that field in
+  // multipartJsonObject() because the generator emitted neither by default.
+  const source = emitContractTs({
+    ...BASE_OPTS,
+    hasMultipartStep: true,
+    inputBody: {
+      ddoKey: "applySubmit",
+      Answers: [{ questionId: "q1", answer: "yes" }],
+    },
+    discoveredStructuredKeys: new Map([
+      ["Answers", "z.array(z.object({ questionId: z.string(), answer: z.string() }))"],
+    ]),
+    multiStepBody: `    return { data: {} as unknown };`,
+  });
+
+  it("defaults meta.multipart to true with no hand-fix", () => {
+    expect(source).toContain("multipart: true,");
+  });
+
+  it("wraps the Answers-derived field in multipartJsonObject(...)", () => {
+    expect(source).toContain(
+      "Answers: multipartJsonObject(z.array(z.object({ questionId: z.string(), answer: z.string() }))),"
+    );
+  });
+});
+
 /** Minimal ActionStep with a multipart upload request. */
 const MULTIPART_ACTION_STEP = {
   capture: {
@@ -2113,19 +2144,18 @@ describe("emitConfigManifest — recovered request contract", () => {
   });
 });
 
-describe("emitContractTs — hhccareers golden fixture (recon-generate-payload-schema-mismatch.md)", () => {
-  // Synthetic fixture modeled verbatim on the report's own field list
-  // (recon-generate-payload-schema-mismatch.md lines 38-41): the Taleo
-  // /applySubmit dump that shipped as the generated HhccareersPayloadSchema
-  // before the hand-fix — ddoKey/formData/dqData/eventData/experienceData/
-  // educationData, none of which nursefly-web's buildBarnacleFormData sends.
-  // isSubmissionFlow: true mirrors generateSitePlugin's own gate — inputBody
-  // is only ever populated on a submission flow.
-  const hhccareersInputBody = {
-    ddoKey: "hrc-hhccareers",
+describe("emitContractTs — vendor-dump golden fixture (recon-generate-payload-schema-mismatch.md)", () => {
+  // Synthetic fixture modeled on the report's own field list: a vendor
+  // /applySubmit dump that shipped as the generated payload schema before the
+  // hand-fix — ddoKey/formData/dqData/eventData/experienceData/educationData,
+  // none of which the plugin's buildBarnacleFormData sends. isSubmissionFlow:
+  // true mirrors generateSitePlugin's own gate — inputBody is only ever
+  // populated on a submission flow.
+  const vendorDumpInputBody = {
+    ddoKey: "hrc-example",
     formData: {
-      applyddokey: "hrc-hhccareers",
-      atsCode: "TALEO",
+      applyddokey: "hrc-example",
+      atsCode: "VENDOR",
       refNum: "REF-00417",
     },
     dqData: {
@@ -2136,7 +2166,7 @@ describe("emitContractTs — hhccareers golden fixture (recon-generate-payload-s
       jobSeqNo: 42,
       jobId: "JOB-9981",
       jobTitle: "Registered Nurse",
-      location: "Hartford, CT",
+      location: "Springfield, ST",
       visibilitySiteType: "external",
     },
     experienceData: [{ employer: "Prior Health System", title: "RN", years: 3 }],
@@ -2145,20 +2175,20 @@ describe("emitContractTs — hhccareers golden fixture (recon-generate-payload-s
 
   const contract = emitContractTs({
     ...BASE_OPTS,
-    siteId: "hhccareers",
-    pascal: "Hhccareers",
-    inputBody: hhccareersInputBody,
+    siteId: "examplesite",
+    pascal: "Examplesite",
+    inputBody: vendorDumpInputBody,
     hasMultipartStep: true,
   });
 
   it("emits the ApplicantContactSchema-based candidate payload as the public bodySchema", () => {
-    expect(contract).toContain("const HhccareersPayloadSchema = ApplicantContactSchema.extend({");
+    expect(contract).toContain("const ExamplesitePayloadSchema = ApplicantContactSchema.extend({");
     expect(contract).toContain("Answers: multipartJsonObject(");
   });
 
-  it("does not leak the Taleo site-dump field names into the public bodySchema", () => {
+  it("does not leak the vendor site-dump field names into the public bodySchema", () => {
     const payloadSchemaMatch = contract.match(
-      /const HhccareersPayloadSchema = ApplicantContactSchema\.extend\(\{[\s\S]*?\n\}\)(?:\.extend\(\{[\s\S]*?\n\}\))*;/
+      /const ExamplesitePayloadSchema = ApplicantContactSchema\.extend\(\{[\s\S]*?\n\}\)(?:\.extend\(\{[\s\S]*?\n\}\))*;/
     );
     expect(payloadSchemaMatch).not.toBeNull();
     const payloadSchemaSource = payloadSchemaMatch![0];
@@ -2170,10 +2200,10 @@ describe("emitContractTs — hhccareers golden fixture (recon-generate-payload-s
     expect(payloadSchemaSource).not.toContain("educationData:");
   });
 
-  it("demotes the Taleo site-dump shape to the exported internal-reference const", () => {
-    expect(contract).toContain("export const HhccareersInternalRequestReference =");
+  it("demotes the vendor site-dump shape to the exported internal-reference const", () => {
+    expect(contract).toContain("export const ExamplesiteInternalRequestReference =");
     const referenceMatch = contract.match(
-      /export const HhccareersInternalRequestReference = [\s\S]*?;\n/
+      /export const ExamplesiteInternalRequestReference = [\s\S]*?;\n/
     );
     expect(referenceMatch).not.toBeNull();
     const referenceSource = referenceMatch![0];

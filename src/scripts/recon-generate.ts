@@ -3657,8 +3657,8 @@ export function emitContractTs(opts: {
   // boolean coercion, meta.multipart).
   //
   // The captured request body (inputBody) is the SITE's internal request
-  // shape (Taleo ddoKey/formData, a GraphQL worklet's variables, …) — not
-  // what the real caller sends. nursefly-web's buildBarnacleFormData posts
+  // shape (a vendor's ddoKey/formData, a GraphQL worklet's variables, …) — not
+  // what the real caller sends. The plugin's buildBarnacleFormData posts
   // the standard candidate payload (ApplicantContactSchema's identity/
   // address/resume fields + Email + job-targeting + a JSON Answers block) to
   // every plugin's /run, so that — not a structural inference over
@@ -3808,7 +3808,7 @@ export function emitContractTs(opts: {
   // what the site itself expects on the wire, just no longer what the
   // platform caller sends. Demoted to a documented, unexported reference
   // construct per recon-generate-payload-schema-mismatch.md fix option (a),
-  // matching the hhccareers hand-fix precedent (an internal builder that
+  // matching the prior hand-fix precedent (an internal builder that
   // translates the standard payload into the site's request bodies).
   // Unconditional whenever inputBody is set — same gate as basePayloadSchemaExpr.
   const internalRequestReferenceExpr = inputBody
@@ -3915,7 +3915,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
   // Documented, unexported internal-reference construct: the site's own
   // captured request shape, kept available as builder input for whatever
   // code translates the standard ${pascal}Payload into the site's actual
-  // request bodies (see the hhccareers hand-fix precedent in
+  // request bodies (see the prior hand-fix precedent in
   // recon-generate-payload-schema-mismatch.md). Distinct from — and never
   // used to validate — the public ${pascal}PayloadSchema above.
   const internalRequestReferenceBlock = internalRequestReferenceExpr
@@ -3925,7 +3925,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
  * /run contract (see ${pascal}PayloadSchema above, which is what the real
  * caller sends). Exported so a builder module can import it as the target
  * shape when translating the standard payload into the site's own request
- * bodies (see recon-generate-payload-schema-mismatch.md's hhccareers
+ * bodies (see recon-generate-payload-schema-mismatch.md's prior
  * hand-fix precedent).
  */
 export const ${pascal}InternalRequestReference = ${internalRequestReferenceExpr};
