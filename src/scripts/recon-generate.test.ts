@@ -205,12 +205,61 @@ describe("emitContractTs — hasMultipartStep:true with no structured keys keeps
     ...BASE_OPTS,
     hasMultipartStep: true,
   });
+  const priorFixSource = emitContractTs({
+    ...BASE_OPTS,
+    hasMultipartStep: true,
+    discoveredStructuredKeys: new Map(),
+  });
 
   it("keeps the current unwrapped Resume-extend shape unchanged", () => {
     expect(source).toContain(
       ".extend({\n  Resume: z.instanceof(Buffer),\n  ResumeContentType: z.string(),\n  ResumeFilename: z.string(),\n})"
     );
     expect(source).not.toContain("multipartJsonObject(z.instanceof(Buffer))");
+  });
+
+  it("is byte-for-byte identical to an explicit empty discoveredStructuredKeys map (no regression from the size-based multipart gate)", () => {
+    expect(source).toBe(priorFixSource);
+  });
+});
+
+describe("emitContractTs — hasMultipartStep:false with no structured keys keeps pre-change output byte-for-byte", () => {
+  const withoutStructuredKeysArg = emitContractTs({
+    ...BASE_OPTS,
+    hasMultipartStep: false,
+    discoveredAdditionalBodyKeys: new Map([["Active", "boolean"]]),
+  });
+  const withEmptyStructuredKeysMap = emitContractTs({
+    ...BASE_OPTS,
+    hasMultipartStep: false,
+    discoveredAdditionalBodyKeys: new Map([["Active", "boolean"]]),
+    discoveredStructuredKeys: new Map(),
+  });
+
+  it("is byte-for-byte identical whether discoveredStructuredKeys is omitted or an empty map", () => {
+    expect(withoutStructuredKeysArg).toBe(withEmptyStructuredKeysMap);
+  });
+
+  it("omits multipart: true and uses plain z.boolean()", () => {
+    expect(withoutStructuredKeysArg).not.toContain("multipart: true,");
+    expect(withoutStructuredKeysArg).toContain("Active: z.boolean(),");
+  });
+});
+
+describe("emitContractTs — hasMultipartStep:true combined with non-empty discoveredStructuredKeys stays multipart (both drivers agree)", () => {
+  const source = emitContractTs({
+    ...BASE_OPTS,
+    hasMultipartStep: true,
+    inputBody: { Name: "Alice" },
+    discoveredStructuredKeys: new Map([["eventData", "z.object({ a: z.string() })"]]),
+  });
+
+  it("still emits multipart: true", () => {
+    expect(source).toContain("multipart: true,");
+  });
+
+  it("still wraps the structured field in multipartJsonObject(...)", () => {
+    expect(source).toContain("eventData: multipartJsonObject(z.object({ a: z.string() })),");
   });
 });
 
@@ -1905,7 +1954,9 @@ describe("emitBrowserFlowTs + emitContractTs — read-flow payload", () => {
     });
     expect(contract).toContain(`export const ${BASE_OPTS.pascal}InternalRequestReference =`);
     expect(contract).toContain("region: z.");
-    expect(contract).toContain(`const ${BASE_OPTS.pascal}PayloadSchema = ApplicantContactSchema.extend({`);
+    expect(contract).toContain(
+      `const ${BASE_OPTS.pascal}PayloadSchema = ApplicantContactSchema.extend({`
+    );
   });
 
   it("emits no internal-reference construct when no request body was captured", () => {
