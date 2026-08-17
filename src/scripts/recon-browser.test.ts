@@ -134,6 +134,7 @@ import {
   isAdvanceStep,
   isDomOnlyAdvanceVerified,
   isReplanCycle,
+  isReplanRegressingAcrossAuthBoundary,
   isReplanReproposingFailedStep,
   isStructurallyBlocked,
   isSubmitRevealedInvalid,
@@ -1475,6 +1476,55 @@ describe("recon-browser/isReplanReproposingFailedStep", () => {
 
   it("does not fire on an empty bridge (handled separately earlier)", () => {
     expect(isReplanReproposingFailedStep([], "Click Next")).toBe(false);
+  });
+});
+
+describe("recon-browser/isReplanRegressingAcrossAuthBoundary", () => {
+  const mk = (instruction: string): NormalizedStep => ({
+    instruction,
+    optional: false,
+    upload: false,
+    origin: "replan",
+  });
+
+  it("fires when a Sign-In bridge step follows a completed account-creation step", () => {
+    expect(
+      isReplanRegressingAcrossAuthBoundary(
+        [mk("Click the 'Sign In' button")],
+        ["Fill in the email field", "Click 'Create Account'"]
+      )
+    ).toBe(true);
+  });
+
+  it("fires for Log In / Sign Up phrase variants", () => {
+    expect(
+      isReplanRegressingAcrossAuthBoundary(
+        [mk("Click 'Log In' to continue")],
+        ["Click the 'Sign Up' button to register"]
+      )
+    ).toBe(true);
+  });
+
+  it("does not fire when no account-creation step has completed", () => {
+    expect(
+      isReplanRegressingAcrossAuthBoundary(
+        [mk("Click the 'Sign In' button")],
+        ["Fill in the email field", "Click Next"]
+      )
+    ).toBe(false);
+  });
+
+  it("does not fire when the bridge has no sign-in step", () => {
+    expect(
+      isReplanRegressingAcrossAuthBoundary(
+        [mk("Fill in the phone field")],
+        ["Click 'Create Account'"]
+      )
+    ).toBe(false);
+  });
+
+  it("does not fire on an empty bridge", () => {
+    expect(isReplanRegressingAcrossAuthBoundary([], ["Click 'Create Account'"])).toBe(false);
   });
 });
 

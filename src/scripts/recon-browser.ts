@@ -982,6 +982,46 @@ export function isReplanReproposingFailedStep(
   return newSteps.every((s) => normalizeInstruction(s.instruction) === failedNorm);
 }
 
+/** Substring phrases identifying a sign-in/log-in step, keyed lowercase like {@link ACCOUNT_CREATION_PHRASES}. */
+const SIGN_IN_PHRASES = ["sign in", "sign-in", "signin", "log in", "log-in", "login"];
+
+/** Substring phrases identifying an account-creation/registration step. */
+const ACCOUNT_CREATION_PHRASES = [
+  "create account",
+  "create an account",
+  "sign up",
+  "sign-up",
+  "signup",
+  "register",
+  "registration",
+];
+
+/**
+ * Detect a replan that proposes a Sign-In/Log-In recovery bridge after the
+ * completed-steps history already shows an account-creation/registration step.
+ * Once a fresh account is created, the site treats the session as already
+ * authenticated for the current flow — a bridge that re-routes through Sign-In
+ * lands on a page shape the original flow's re-appended remaining tail (resume
+ * upload, EEO, submit) never anticipated, silently stranding the application.
+ * Keyed on lightweight keyword matching (same approach as `isAdvanceStep`)
+ * rather than an LLM call, to keep the veto deterministic and cheap like its
+ * siblings `isReplanReproposingFailedStep`/`isReplanCycle`. Pure.
+ */
+export function isReplanRegressingAcrossAuthBoundary(
+  newSteps: readonly NormalizedStep[],
+  completedSteps: readonly string[]
+): boolean {
+  const hasAccountCreation = completedSteps.some((s) => {
+    const norm = normalizeInstruction(s);
+    return ACCOUNT_CREATION_PHRASES.some((p) => norm.includes(p));
+  });
+  if (!hasAccountCreation) return false;
+  return newSteps.some((s) => {
+    const norm = normalizeInstruction(s.instruction);
+    return SIGN_IN_PHRASES.some((p) => norm.includes(p));
+  });
+}
+
 /** Top-level keys `persistReplannedFlow` already threads explicitly (plus `steps`). */
 const MANAGED_FLOW_FILE_KEYS = new Set([
   "steps",
@@ -1530,6 +1570,8 @@ ${priorReplanList || "(none)"}
 
 PRIOR STEP TRAJECTORY (how the last few completed steps verified — url / submitted-state-dom signal pages that visibly transitioned; network / dom signal pages that stayed static. Use this to distinguish "page has been advancing through the flow" from "page has been static and the form is still in front of us"; avoid proposing regression-style steps if the trajectory shows recent transitions):
 ${trajectoryList || "(none)"}
+
+ACCOUNT-CREATION / AUTH BOUNDARY: if STEPS ALREADY COMPLETED includes creating an account or registering (e.g. "Create Account", "Sign Up", "Register"), the session is already authenticated for this flow. Do NOT propose a Sign-In / Log-In bridge step — it routes the SPA through a page shape the original remaining tail was never authored against, stranding the application after the bridge executes. If the page looks logged-out or shows an auth wall, prefer retrying or completing the step that just failed (or another action that keeps the current authenticated session, e.g. dismissing an interstitial) over signing in again.
 
 ELEMENTS CURRENTLY VISIBLE ON THE PAGE (stagehand.observe with the failed instruction):
 ${candidateList || "(no candidates returned by observe)"}
@@ -2595,6 +2637,15 @@ async function main(): Promise<void> {
           const noProgressMessage = `replan #${replanIndex} re-proposed only the just-failed step ("${step.instruction.slice(0, 60)}") with no new bridge; resuming would re-fail identically — aborting`;
           logger.error(noProgressMessage);
           throw new StepVerificationError(noProgressMessage, "replan-cycle-detected");
+        }
+
+        // Auth-boundary guard: a Sign-In/Log-In bridge proposed after an
+        // account-creation step already completed desyncs the page from the
+        // re-appended original tail (see isReplanRegressingAcrossAuthBoundary).
+        if (isReplanRegressingAcrossAuthBoundary(newSteps, completedSteps)) {
+          const authBoundaryMessage = `replan #${replanIndex} proposed a Sign-In/Log-In step after an account-creation step already completed; resuming through Sign-In would strand the original remaining tail on an incompatible page — aborting`;
+          logger.error(authBoundaryMessage);
+          throw new StepVerificationError(authBoundaryMessage, "replan-cycle-detected");
         }
 
         const currentPageState = await snapshotPage(mainFrameTarget(page), signalCounter).catch(
