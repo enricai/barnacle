@@ -82,6 +82,10 @@ describe("emitContractTs — multipart plugin", () => {
     expect(source).not.toContain("MULTIPART_BOOL");
     expect(source).not.toContain('z.preprocess(\n  (v) => (v === "true"');
   });
+
+  it("does not emit a redundant Resume field extend — ApplicantContactSchema already declares it", () => {
+    expect(source.match(/^\s*Resume:/gm)).toBeNull();
+  });
 });
 
 describe("emitContractTs — non-multipart plugin", () => {
