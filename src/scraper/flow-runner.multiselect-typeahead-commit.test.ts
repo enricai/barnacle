@@ -1,17 +1,16 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import type { ActResult, Page, Stagehand } from "@browserbasehq/stagehand";
 import { describe, expect, it, vi } from "vitest";
 
 import { executeStepWithHealing, parseSelectStep } from "@/scraper/flow-runner";
+import { MULTISELECT_TYPEAHEAD_EVIDENCE_HTML } from "@/scraper/multiselect-typeahead-evidence.test-helper";
 import { buildPromptWidgetHarness } from "@/scraper/prompt-widget-dom-harness.test-helper";
 import type { Logger } from "@/types/logging";
 
 /**
  * Pins bugfix-001 (label-extraction) and bugfix-002 (view-swap gate) together
  * against the REAL nested-DOM shape captured in the incident evidence (see
- * `docs/_evidence/cvs-workday-multiselect-source-20260818/source-multiselect-widget.html`):
- * an outer `[data-uxi-widget-type='multiselect'][data-automation-id='multiSelectContainer']`
+ * `src/scraper/multiselect-typeahead-evidence.test-helper.ts`): an outer
+ * `[data-uxi-widget-type='multiselect'][data-automation-id='multiSelectContainer']`
  * wrapping a `[data-automation-id='multiselectInputContainer']` wrapping the
  * filter `<input data-uxi-widget-type='selectinput'>`. Neither producer
  * subtask's own test file exercises this exact captured markup, and this
@@ -29,13 +28,7 @@ const SILENT_LOGGER = {
 // `d="..."`) — happy-dom's parser still resolves the elements this test cares
 // about (the container, the nested input, the committed-value nodes) fine at
 // EOF, and the truncation itself is part of the real captured shape.
-const EVIDENCE_WIDGET_HTML = readFileSync(
-  join(
-    __dirname,
-    "../../docs/_evidence/cvs-workday-multiselect-source-20260818/source-multiselect-widget.html"
-  ),
-  "utf8"
-);
+const EVIDENCE_WIDGET_HTML = MULTISELECT_TYPEAHEAD_EVIDENCE_HTML;
 
 const WIDGET_CONTAINER_ID = "f07b615f-d446-4820-9312-6a5af82dfc09";
 const QUESTION_LABEL = "How Did You Hear About Us?";

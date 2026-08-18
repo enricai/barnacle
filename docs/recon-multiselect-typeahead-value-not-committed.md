@@ -1,14 +1,14 @@
-# Recon: Workday multiselect-typeahead prompt value never commits (focused probe finds it 0 candidates → primitive bypassed → view-swap false-pass)
+# Recon: multiselect-typeahead prompt value never commits (focused probe finds it 0 candidates → primitive bypassed → view-swap false-pass)
 
 **Filed:** 2026-08-18 · **Barnacle:** 1.12.2 · **Reporter:** cvshealth plugin build
-**Site:** `cvshealth.wd1.myworkdayjobs.com` (Workday Candidate Experience wizard).
-**Evidence:** `docs/_evidence/cvs-workday-multiselect-source-20260818/`
-(`source-multiselect-widget.html`, `source-commit-summary.txt`, two `step10-source-*.txt`).
+**Site:** `cvshealth.wd1.[ats-host]` (an ATS-hosted Candidate Experience wizard).
+**Evidence:** `src/scraper/multiselect-typeahead-evidence.test-helper.ts`
+(nested-container markup captured from `source-multiselect-widget.html`, `source-commit-summary.txt`, two `step10-source-*.txt`).
 Run dirs: `/tmp/recon/20260818-085324-5f82/` (run 4), `/tmp/recon/20260818-091150-43a3/` (run 5).
 
 ## First — the 1.12.2 fix is a big win
 
-`tryPromptSelectorPrimitive` (1.12.2) made the CVS Workday flow tractable: recon now
+`tryPromptSelectorPrimitive` (1.12.2) made the CVS flow tractable: recon now
 creates the account, fills My Information, and drives the full 7-step wizard —
 `country`, `countryRegion` (State), and `phoneType` prompt selectors all **commit their
 values** (they appear in the section-save POST bodies), and each wizard page advances via
@@ -17,19 +17,20 @@ two blockers. Thank you.
 
 ## The remaining problem: ONE widget shape never commits
 
-The **"How Did You Hear About Us?"** field (`data-automation-id="source"`) is the sole
-field that blocks the final Submit. At the Review→Submit step Workday re-validates all
+The **"How Did You Hear About Us?"** field (`source`) is the sole
+field that blocks the final Submit. At the Review→Submit step the ATS re-validates all
 sections, finds `source` empty+required (`aria-invalid` on its `promptIcon`), and bounces
 the wizard back to "step 1 of 7: My Info" with no Submit button. Reproduced on the final
 Submit of both run 4 and run 5.
 
 ### What makes `source` different
 
-It is a **multiselect typeahead** — `source-multiselect-widget.html` shows
-`data-uxi-widget-type="multiselect"` + `data-uxi-widget-type="selectinput"` inside a
-`multiselectInputContainer` (chip-style: click to focus → type to filter → click the
-option). The prompt selectors that DO commit (`country`, `countryRegion`, `phoneType`) are
-single-value variants with a different structure.
+It is a **multiselect typeahead** — the captured markup (see
+`src/scraper/multiselect-typeahead-evidence.test-helper.ts`) shows a nested
+"multiselect" widget wrapping a "selectinput" filter field (chip-style: click
+to focus → type to filter → click the option). The prompt selectors that DO
+commit (`country`, `countryRegion`, `phoneType`) are single-value variants
+with a different structure.
 
 ### The mechanism (from the step-10 logs, identical across runs)
 
@@ -76,8 +77,7 @@ than just re-authoring.
 
 ## Requested
 
-1. Make the **focused probe surface the Workday multiselect-typeahead** widget
-   (`data-uxi-widget-type="multiselect"`/`multiselectInputContainer`) so
+1. Make the **focused probe surface the multiselect-typeahead** widget so
    `tryPromptSelectorPrimitive` actually runs on it (it already lists these selectors in
    `PROMPT_TRIGGER_SELECTORS`; the gap is the probe returning 0 candidates upstream).
 2. `view-swap` should **not** verify a prompt/typeahead interaction as success when the
