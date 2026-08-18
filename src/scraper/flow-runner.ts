@@ -4369,8 +4369,9 @@ const WIDGET_NOUN_RE =
  * context phrase instead of the actual widget label. This prefers a quote
  * that sits immediately next to a widget noun (`dropdown`/`field`/
  * `question`/`checkbox`/`radio button`/`prompt selector`) or is introduced
- * by "for", before falling back to the first non-option quote so existing
- * un-adorned phrasings keep working.
+ * by "for"/"for the"/"for the question"/"for the answer" (e.g. "click the
+ * 'Yes' answer for the question '…'"), before falling back to the first
+ * non-option quote so existing un-adorned phrasings keep working.
  */
 function pickQuestionLabel(instruction: string, option: string): string | null {
   // biome-ignore lint/style/noNonNullAssertion: capture group 1 is required by the pattern, so it is present on every match
@@ -4379,9 +4380,9 @@ function pickQuestionLabel(instruction: string, option: string): string | null {
   const adjacentToWidgetNoun = candidates.find((m) => {
     const start = m.index ?? 0;
     const end = start + m[0].length;
-    const before = instruction.slice(Math.max(0, start - 15), start);
+    const before = instruction.slice(Math.max(0, start - 25), start);
     const after = instruction.slice(end, end + 40);
-    return /\bfor(?:\s+the)?\s*$/i.test(before) || WIDGET_NOUN_RE.test(after);
+    return /\bfor(?:\s+the)?(?:\s+(?:question|answer))?\s*$/i.test(before) || WIDGET_NOUN_RE.test(after);
   });
   // biome-ignore lint/style/noNonNullAssertion: candidates is guarded non-empty above, so the fallback element is always present
   const picked = (adjacentToWidgetNoun ?? candidates[0])!;
