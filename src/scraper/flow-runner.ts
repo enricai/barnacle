@@ -4356,7 +4356,7 @@ async function setFilesViaCdp(params: {
 // it in the instruction (e.g. a page/step-context quote like "'My
 // Information' step").
 const WIDGET_NOUN_RE =
-  /\b(prompt\s+selector|dropdown|field|question|checkbox|radio\s+button|radio)\b/i;
+  /\b(prompt\s+selector|multiselect|typeahead|dropdown|field|question|checkbox|radio\s+button|radio)\b/i;
 
 /**
  * Pick the QUESTION LABEL out of an instruction's quoted phrases, given the
@@ -4367,8 +4367,9 @@ const WIDGET_NOUN_RE =
  * 'My Information' step, open the 'How Did You Hear About Us?' prompt
  * selector…") — so naively taking the first non-option quote picks the
  * context phrase instead of the actual widget label. This prefers a quote
- * that sits immediately next to a widget noun (`dropdown`/`field`/
- * `question`/`checkbox`/`radio button`/`prompt selector`) or is introduced
+ * that sits immediately next to a widget noun (`multiselect`/`typeahead`/
+ * `dropdown`/`field`/`question`/`checkbox`/`radio button`/`prompt selector`)
+ * or is introduced
  * by "for"/"for the"/"for the question"/"for the answer" (e.g. "click the
  * 'Yes' answer for the question '…'"), before falling back to the first
  * non-option quote so existing un-adorned phrasings keep working.
@@ -4382,7 +4383,9 @@ function pickQuestionLabel(instruction: string, option: string): string | null {
     const end = start + m[0].length;
     const before = instruction.slice(Math.max(0, start - 25), start);
     const after = instruction.slice(end, end + 40);
-    return /\bfor(?:\s+the)?(?:\s+(?:question|answer))?\s*$/i.test(before) || WIDGET_NOUN_RE.test(after);
+    return (
+      /\bfor(?:\s+the)?(?:\s+(?:question|answer))?\s*$/i.test(before) || WIDGET_NOUN_RE.test(after)
+    );
   });
   // biome-ignore lint/style/noNonNullAssertion: candidates is guarded non-empty above, so the fallback element is always present
   const picked = (adjacentToWidgetNoun ?? candidates[0])!;

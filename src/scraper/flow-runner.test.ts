@@ -1781,6 +1781,17 @@ describe("flow-runner/parseSelectStep — filler-word phrasing between verb and 
       questionLabel: "How Did You Hear About Us?",
     });
   });
+
+  it("picks the widget's own quoted label when the step is phrased as 'multiselect' rather than 'dropdown'/'prompt selector'", () => {
+    expect(
+      parseSelectStep(
+        "On the authenticated 'My Information' step, open the 'How Did You Hear About Us?' multiselect, then select the option 'Job Boards' from the popup list"
+      )
+    ).toEqual({
+      option: "Job Boards",
+      questionLabel: "How Did You Hear About Us?",
+    });
+  });
 });
 
 describe("flow-runner/parseRadioStep — leading page/step-context quote before 'for the question'", () => {
@@ -1797,9 +1808,7 @@ describe("flow-runner/parseRadioStep — leading page/step-context quote before 
 
   it("still parses the pre-existing 'click the answer for the question' phrasing unchanged", () => {
     expect(
-      parseRadioStep(
-        "Click the 'Yes' answer for the question 'Are you at least 18 years of age?'"
-      )
+      parseRadioStep("Click the 'Yes' answer for the question 'Are you at least 18 years of age?'")
     ).toEqual({
       option: "Yes",
       questionLabel: "Are you at least 18 years of age?",
