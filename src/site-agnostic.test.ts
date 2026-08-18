@@ -90,7 +90,8 @@ describe("site-agnostic: no customer-site or ATS-vendor names in tracked source"
    */
   it("uses vendor-private attribute markers only inside the curated flow-runner unions", () => {
     // `src/scraper/flow-runner.ts` is the single home of the widget-detection
-    // selector unions (PROMPT_TRIGGER_SELECTORS et al. + the container-resolution
+    // selector unions (PROMPT_TRIGGER_SELECTORS et al., WIDGET_KIT_SELECTION_MARKER_SELECTORS,
+    // + the container-resolution
     // helper that reuses them); a vendor-attr marker there is a curated union
     // member. Anywhere else — a per-site file, a new module — it is a one-off hack.
     const ALLOWED_FILE = "src/scraper/flow-runner.ts";

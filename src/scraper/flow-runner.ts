@@ -3548,6 +3548,21 @@ async function readElementSelectionFingerprint(
  * nesting without over-reaching into an outer listbox/group.
  */
 const MAX_SELECTION_ANCESTOR_DEPTH = 6;
+/**
+ * Cross-vendor selector union for a selection-state widget that carries NO
+ * standard selection `role` or `aria-*`/`data-state` marker — a component-kit
+ * container whose selected-ness lives only in the library's own private
+ * attribute. Same multi-vendor-union discipline as {@link INVALID_MARKER_CLASS_SOURCE}
+ * and the `PROMPT_*_SELECTORS` unions: standards are checked FIRST (see
+ * `hasMarker` in {@link selectionAncestorChanged}); this union is the fallback
+ * for widgets that under-annotate ARIA, and no member is a per-site branch —
+ * each is one component library's signature. Grows by a one-line edit.
+ *
+ * Members: `data-baseweb` (Uber Base Web — verified in a real capture to mark
+ * 150 selection elements that expose no role/aria-state, so dropping it loses
+ * real coverage). Add other under-annotating kits here as they surface.
+ */
+const WIDGET_KIT_SELECTION_MARKER_SELECTORS = ["[data-baseweb]"].join(",");
 
 /**
  * Element-scoped selection read-back for the case the clicked node's OWN
@@ -3561,7 +3576,8 @@ const MAX_SELECTION_ANCESTOR_DEPTH = 6;
  *
  * Walks from the leaf up to {@link MAX_SELECTION_ANCESTOR_DEPTH}, and on the
  * NEAREST ancestor that (a) carries a selection marker (a non-empty fingerprint
- * field, a selection `role`, or a `data-baseweb` attribute — `aria-expanded` is
+ * field, a selection `role`, or a component-kit marker from
+ * {@link WIDGET_KIT_SELECTION_MARKER_SELECTORS} — `aria-expanded` is
  * deliberately NOT a marker so a bare disclosure/expander is skipped) AND (b) is
  * present in the pre-baseline map, diffs that ancestor's current fingerprint
  * against its baseline. Nearest-wins and returns even when unchanged, so a
@@ -3584,10 +3600,13 @@ async function selectionAncestorChanged(
     const xpathOf = ${XPATH_OF_FN_SRC};
     const fp = (el) => { const ds = el.getAttribute("data-state") || ""; return ${selectionFingerprintObjSrc("el", "ds")}; };
     const SELECTION_ROLES = new Set(["option", "tab", "switch", "radio", "checkbox", "menuitemcheckbox"]);
+    const KIT_MARKER_SEL = ${JSON.stringify(WIDGET_KIT_SELECTION_MARKER_SELECTORS)};
     const hasMarker = (el, f) => {
+      // Standards first: fingerprint fields / aria-states, then a selection role.
       if (f.kind || f.ariaPressed || f.ariaChecked || f.ariaSelected || f.dataState || f.dataSelected || f.dataChecked || f.checked) return true;
       if (SELECTION_ROLES.has((el.getAttribute("role") || "").toLowerCase())) return true;
-      if (el.hasAttribute("data-baseweb")) return true;
+      // Fallback: a component-kit selection widget that exposes no standard marker.
+      if (el.matches(KIT_MARKER_SEL)) return true;
       return false;
     };
     const changed = (a, b) =>
