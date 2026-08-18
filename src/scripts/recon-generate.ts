@@ -3644,7 +3644,10 @@ function bindOptionLiteral(headerBindings: HeaderProduce[]): string {
  * flow's payloadFieldNames, otherwise the captured literal value is emitted
  * verbatim via JSON.stringify.
  */
-function renderGqlVariablesExpr(variables: unknown, payloadFieldNames: Set<string> | undefined): string {
+function renderGqlVariablesExpr(
+  variables: unknown,
+  payloadFieldNames: Set<string> | undefined
+): string {
   if (variables === null || typeof variables !== "object" || Array.isArray(variables)) return "{}";
   const fields = payloadFieldNames ? [...payloadFieldNames] : [];
   const entries = Object.entries(variables as Record<string, unknown>).map(([key, value]) => {
