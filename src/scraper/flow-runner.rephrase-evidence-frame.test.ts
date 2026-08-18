@@ -1,7 +1,7 @@
 import type { Anthropic } from "@anthropic-ai/sdk";
 import type { ActResult, Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { StagehandModel } from "@/lib/bedrock";
+import type { RephraseModel } from "@/lib/llm/anthropic-client";
 import {
   type FakeDeepLocatorFrame,
   makeFakeDeepLocator,
@@ -155,12 +155,12 @@ function makeCapturingAnthropic(): { anthropic: Anthropic; prompts: string[] } {
  * record the rendered prompt and reject, so the cascade falls back to its
  * documented outcome=impossible path just like the Anthropic-SDK stub did.
  */
-function wireRephraseModel(prompts: string[]): StagehandModel {
+function wireRephraseModel(prompts: string[]): RephraseModel {
   generateObject.mockImplementation(async (req: { prompt: string }) => {
     prompts.push(req.prompt);
     throw new Error("stub rephrase model unavailable");
   });
-  return { modelId: "test-model" } as unknown as StagehandModel;
+  return { modelId: "test-model" } as unknown as RephraseModel;
 }
 
 function findRephrasePrompt(prompts: string[]): string {

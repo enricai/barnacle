@@ -2,7 +2,7 @@ import type { Anthropic } from "@anthropic-ai/sdk";
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { StagehandModel } from "@/lib/bedrock";
+import type { RephraseModel } from "@/lib/llm/anthropic-client";
 import * as deepLocatorActuateModule from "@/scraper/deep-locator-actuate";
 import * as deepLocatorCandidatesModule from "@/scraper/deep-locator-candidates";
 import {
@@ -294,7 +294,7 @@ describe("flow-runner deepLocator call sites — scoped to interactive elements,
       prompts.push(req.prompt);
       throw new Error("stub rephrase model unavailable");
     });
-    const rephraseModel = { modelId: "test-model" } as unknown as StagehandModel;
+    const rephraseModel = { modelId: "test-model" } as unknown as RephraseModel;
 
     const resolveDeepLocatorCandidatesSpy = vi.spyOn(
       deepLocatorCandidatesModule,
