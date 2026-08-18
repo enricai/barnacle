@@ -258,3 +258,108 @@ describe("flow-runner/tryPromptSelectorPrimitive widget contract", () => {
     expect(stagehandAct).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * Fake page whose `evaluate` answers the `<select>`-enumerate/set/invalid-
+ * check exprs `trySelectPrimitive`/`applySelectValue` issue with a single
+ * deterministic option match, and answers the prompt-selector primitive's
+ * own widget probe with `widgetPresent: false` — modeling a page that has a
+ * genuine native `<select>` and NO prompt-widget structure at all, so the
+ * select primitive (which runs earlier in the dispatch chain) must claim the
+ * step before prompt-selector ever gets a chance to.
+ */
+function fakeSelectOnlyPage(): Page {
+  const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+    const src = String(expr);
+    if (src.includes("outerHTML")) return { html: 50_000, text: "0:" };
+    if (src.includes("selectPresent")) {
+      return {
+        selectPresent: true,
+        detMatch: { selIdx: 0, value: "mobile", text: "Mobile", id: "phoneType-select" },
+      };
+    }
+    if (src.includes("desc.set.call")) return { ok: true };
+    if (src.includes("isInvalid(node)")) return false;
+    if (src.includes("promptIcon")) return { widgetPresent: false };
+    if (src.includes("isInvalid(el)")) return 0;
+    return null;
+  });
+  return {
+    evaluate,
+    url: () => "https://acme.wd1.myworkdayjobs.com/en-US/acme/apply/job/1",
+    title: vi.fn().mockResolvedValue("Apply"),
+    locator: vi.fn().mockReturnValue({
+      first: () => ({
+        click: vi.fn().mockResolvedValue(undefined),
+        fill: vi.fn().mockResolvedValue(undefined),
+        isChecked: vi.fn().mockResolvedValue(false),
+        inputValue: vi.fn().mockResolvedValue(""),
+      }),
+    }),
+    waitForTimeout: vi.fn().mockResolvedValue(undefined),
+  } as unknown as Page;
+}
+
+/**
+ * Dispatch/counting contract at the `executeStepWithHealing` call site
+ * (distinct from `flow-runner.prompt-selector-widget.test.ts`'s coverage of
+ * the primitive's own click/select mechanics): asserts a prompt-widget-only
+ * fixture is counted as a resolved candidate — logged, pushed onto the
+ * trajectory as a `dom`-verified entry with a `targetId`, and returned as
+ * "completed" — WITHOUT ever reaching the focused-probe/act-observe cascade
+ * the report shows going blind (0 candidates) on these widgets, and without
+ * disturbing the existing select/checkbox/radio-before-prompt-selector
+ * dispatch order.
+ */
+describe("flow-runner/executeStepWithHealing dispatch: prompt-selector counts as a resolved candidate", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("logs 'resolved by prompt-selector primitive', pushes a dom-verified trajectory entry with targetId, returns completed, and never reaches the probe/cascade", async () => {
+    const stagehandObserve = vi.fn().mockResolvedValue([]);
+    const stagehandAct = vi.fn();
+    const { page } = fakePromptWidgetPage({
+      widgetLabel: "What is your preferred phone type?",
+      optionTexts: ["Home", "Mobile", "Work"],
+      searchable: false,
+      committedAfterClick: true,
+    });
+    const trajectory: { stepIndex: number; verifiedBy: string; targetId?: string }[] = [];
+    const params = baseParams(page, stagehandAct);
+    params.stagehand = { act: stagehandAct, observe: stagehandObserve } as unknown as Stagehand;
+
+    const result = await executeStepWithHealing({ ...params, trajectory } as never);
+
+    expect(result).toBe("completed");
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining("resolved by prompt-selector primitive")
+    );
+    expect(trajectory).toEqual([{ stepIndex: 3, verifiedBy: "dom", targetId: "phoneType-widget" }]);
+    // The focused-probe-before-attempts path (the report's "focused probe
+    // found 0 candidates but unfocused observe found N" symptom) and the
+    // act/observe cascade never ran for this step.
+    expect(testLogger.info).not.toHaveBeenCalledWith(expect.stringContaining("focused probe"));
+    expect(testLogger.info).not.toHaveBeenCalledWith(expect.stringContaining("probe-absent"));
+    expect(stagehandObserve).not.toHaveBeenCalled();
+    expect(stagehandAct).not.toHaveBeenCalled();
+  });
+
+  it("does not shadow the select primitive: a page with a genuine <select> and no prompt-widget structure still resolves via 'resolved by select primitive', not prompt-selector", async () => {
+    const stagehandAct = vi.fn();
+    const page = fakeSelectOnlyPage();
+    const trajectory: { stepIndex: number; verifiedBy: string; targetId?: string }[] = [];
+    const params = baseParams(page, stagehandAct);
+
+    const result = await executeStepWithHealing({ ...params, trajectory } as never);
+
+    expect(result).toBe("completed");
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining("resolved by select primitive")
+    );
+    expect(testLogger.info).not.toHaveBeenCalledWith(
+      expect.stringContaining("resolved by prompt-selector primitive")
+    );
+    expect(trajectory).toEqual([{ stepIndex: 3, verifiedBy: "dom", targetId: "phoneType-select" }]);
+  });
+});
