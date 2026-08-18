@@ -1143,9 +1143,29 @@ export function shouldCaptureSelectionState(params: {
   step: string;
   isFinalStep: boolean;
   submitStep: boolean;
+  flowHasSubmitSemantics: boolean;
 }): boolean {
-  const { step, isFinalStep, submitStep } = params;
-  return !(isFinalStep || submitStep || isAdvanceStep(step));
+  const { step, isFinalStep, submitStep, flowHasSubmitSemantics } = params;
+  return !(submitStep || (isFinalStep && flowHasSubmitSemantics) || isAdvanceStep(step));
+}
+
+/**
+ * Whether a flow has ANY submit semantics at all — a step flagged
+ * `submitStep: true`, a `submitEndpointPattern`, or `requireSubmitEndpointMatch`.
+ * A read-only flow (none of the three) has no submit shape anywhere, so its
+ * final step is an ordinary read/click, not a submit. Pure + exported so
+ * callers can stop inferring submit-shape from `isFinalStep` alone on flows
+ * that never declared a submit.
+ */
+export function flowHasSubmitSemantics(params: {
+  steps: Array<{ submitStep: boolean }>;
+  submitEndpointPattern: string | null;
+  requireSubmitEndpointMatch: boolean;
+}): boolean {
+  const { steps, submitEndpointPattern, requireSubmitEndpointMatch } = params;
+  return (
+    steps.some((s) => s.submitStep) || submitEndpointPattern !== null || requireSubmitEndpointMatch
+  );
 }
 
 /**
@@ -1443,6 +1463,7 @@ export function isClickViewSwapVerified(params: {
   resolvedAction: { method?: string | null } | null;
   isFinalStep: boolean;
   submitStep: boolean;
+  flowHasSubmitSemantics: boolean;
   isAdvanceWithPattern: boolean;
   networkDelta: number;
   bytesDelta: number;
@@ -1455,6 +1476,7 @@ export function isClickViewSwapVerified(params: {
     resolvedAction,
     isFinalStep,
     submitStep,
+    flowHasSubmitSemantics,
     isAdvanceWithPattern,
     networkDelta,
     bytesDelta,
@@ -1462,7 +1484,7 @@ export function isClickViewSwapVerified(params: {
     invalidMarkerDelta = 0,
   } = params;
   if (resolvedAction?.method !== "click") return false;
-  if (isFinalStep || submitStep) return false;
+  if (submitStep || (isFinalStep && flowHasSubmitSemantics)) return false;
   if (isAdvanceWithPattern) return false;
   if (networkDelta !== 0) return false;
   if (invalidMarkerDelta > 0) return false;
@@ -7316,6 +7338,16 @@ export async function executeStepWithHealing(params: {
    * Site-agnostic: any flow whose canonical submit is mid-list can opt in.
    */
   submitStep: boolean;
+  /**
+   * Whether the FLOW (not just this step) has any submit semantics at all —
+   * some step flagged `submitStep: true`, a `submitEndpointPattern`, or
+   * `requireSubmitEndpointMatch`. Lets the cascade's `isFinalStep ||
+   * submitStep` submit-shape inferences stop treating a read-only flow's
+   * final step as a submit — it becomes `submitStep || (isFinalStep &&
+   * flowHasSubmitSemantics)` everywhere that inference is made. See
+   * {@link flowHasSubmitSemantics}.
+   */
+  flowHasSubmitSemantics: boolean;
   stepIndex: number;
   /**
    * Getter, not a number: a global replan splices new steps into the live plan
@@ -7460,6 +7492,7 @@ export async function executeStepWithHealing(params: {
     optional,
     upload,
     submitStep,
+    flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
     stepIndex,
     totalSteps,
     phase,
@@ -7551,7 +7584,12 @@ export async function executeStepWithHealing(params: {
   // false-credit the step, and whose advance/submit verdicts require a real
   // network/URL transition. Also keeps the extra full-DOM evaluate off the
   // submit/advance path. Step-level intent (available before the attempt loop).
-  const captureSelectionState = shouldCaptureSelectionState({ step, isFinalStep, submitStep });
+  const captureSelectionState = shouldCaptureSelectionState({
+    step,
+    isFinalStep,
+    submitStep,
+    flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+  });
   const attempts: AttemptRecord[] = [];
   const triedSelectors: string[] = [];
   const failureReasons: string[] = [];
@@ -8056,7 +8094,7 @@ export async function executeStepWithHealing(params: {
     if (attempt > 1) {
       const wouldBeTechnique: AttemptRecord["technique"] =
         attempt === 2
-          ? phantomClickAfterAttempt1 && (isFinalStep || submitStep)
+          ? phantomClickAfterAttempt1 && (submitStep || (isFinalStep && flowHasSubmitSemanticsFlag))
             ? "deep-submit-locator"
             : phantomClickAfterAttempt1
               ? "trusted-click-retry"
@@ -8075,7 +8113,7 @@ export async function executeStepWithHealing(params: {
         })),
         advanceUnmovedAfterAttempt1,
         phantomClickAfterAttempt1,
-        submitShapedStep: isFinalStep || submitStep,
+        submitShapedStep: submitStep || (isFinalStep && flowHasSubmitSemanticsFlag),
       });
       if (decision.skip) {
         logger.info(
@@ -8217,7 +8255,11 @@ export async function executeStepWithHealing(params: {
             if (!resolvedAction) resolvedAction = action;
           }
         }
-      } else if (attempt === 2 && phantomClickAfterAttempt1 && (isFinalStep || submitStep)) {
+      } else if (
+        attempt === 2 &&
+        phantomClickAfterAttempt1 &&
+        (submitStep || (isFinalStep && flowHasSubmitSemanticsFlag))
+      ) {
         // Deep submit-control locator: attempt 1 phantom-clicked (Stagehand
         // reported success but pre/post showed zero effect), so the target is
         // almost certainly unreachable via document.querySelectorAll — most
@@ -8351,7 +8393,11 @@ export async function executeStepWithHealing(params: {
             );
           }
         }
-      } else if (attempt === 2 && phantomClickAfterAttempt1 && !(isFinalStep || submitStep)) {
+      } else if (
+        attempt === 2 &&
+        phantomClickAfterAttempt1 &&
+        !(submitStep || (isFinalStep && flowHasSubmitSemanticsFlag))
+      ) {
         // Trusted-click retry: attempt 1 phantom-clicked a NON-submit control —
         // Stagehand reported success but pre/post showed zero effect. On a
         // design-system widget (React synthetic-event delegation, custom
@@ -9133,7 +9179,7 @@ export async function executeStepWithHealing(params: {
     // `advanceTransitionBodyPattern` are unaffected.
     const domVerifiedForStep = isDomOnlyAdvanceVerified({
       hasPattern: advanceTransitionBodyPattern !== null,
-      isFinalOrSubmit: isFinalStep || submitStep,
+      isFinalOrSubmit: submitStep || (isFinalStep && flowHasSubmitSemanticsFlag),
       isAdvance: isAdvanceStep(step),
       domVerified,
       networkIsRealAdvance,
@@ -9168,6 +9214,7 @@ export async function executeStepWithHealing(params: {
       resolvedAction,
       isFinalStep,
       submitStep,
+      flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
       isAdvanceWithPattern: isAdvanceStep(step) && advanceTransitionBodyPattern !== null,
       networkDelta: post.networkCount - pre.networkCount,
       bytesDelta: post.bodyHtmlLength - pre.bodyHtmlLength,
@@ -9606,7 +9653,7 @@ export async function executeStepWithHealing(params: {
             }));
           const fallbackDomOnlyAdvance = shouldVetoFallbackAdvance({
             hasPattern: advanceTransitionBodyPattern !== null,
-            isFinalOrSubmit: isFinalStep || submitStep,
+            isFinalOrSubmit: submitStep || (isFinalStep && flowHasSubmitSemanticsFlag),
             isAdvance: isAdvanceStep(step),
             retryUrlChanged,
             retryNetworkIsRealAdvance,
@@ -9790,7 +9837,7 @@ export async function executeStepWithHealing(params: {
       // checked) into `domVerified`. A registered selection toggle no longer
       // reads as a phantom just because it moved no network/URL/bytes.
       elementStateChanged: domVerified,
-      isSubmitShapedStep: isFinalStep || submitStep,
+      isSubmitShapedStep: submitStep || (isFinalStep && flowHasSubmitSemanticsFlag),
     });
     const reason = record.errorMessage
       ? effectSignals
@@ -9812,7 +9859,10 @@ export async function executeStepWithHealing(params: {
     // Empirically grounded: 22 of 22 JSON-envelope ATS Continue/Submit step-failure
     // dumps in a 2026-06-10 survey had the paired touched+dirty + visible
     // error text pattern with 3 distinct rejection messages.
-    if (record.resolvedMethod === "click" && (isFinalStep || submitStep)) {
+    if (
+      record.resolvedMethod === "click" &&
+      (submitStep || (isFinalStep && flowHasSubmitSemanticsFlag))
+    ) {
       const live = await extractLivePageFormEvidence(page, frameTarget ?? mainFrameTarget(page), {
         client: anthropic,
         knownErrorClassPrefixes,
@@ -9859,7 +9909,7 @@ export async function executeStepWithHealing(params: {
       if (phantomClickAfterAttempt1) {
         const suppressedCount = getSuppressedAisdkElementIdErrorCount?.();
         const escalationTarget =
-          isFinalStep || submitStep
+          submitStep || (isFinalStep && flowHasSubmitSemanticsFlag)
             ? "escalating attempt 2 to deep-submit-locator"
             : "non-submit step — escalating attempt 2 to trusted-click-retry (trusted CDP click on the resolved target)";
         logger.warn(
@@ -9873,7 +9923,7 @@ export async function executeStepWithHealing(params: {
         // Treat the canonical submit click as "final" for this predicate
         // even when it lives mid-flow. See requireSubmitEndpoint derivation
         // above for the same gate-widening rationale.
-        isFinalStep: isFinalStep || submitStep,
+        isFinalStep: submitStep || (isFinalStep && flowHasSubmitSemanticsFlag),
         requireSubmitEndpoint,
         resolvedMethod: record.resolvedMethod,
         effectSignals,
@@ -9894,7 +9944,7 @@ export async function executeStepWithHealing(params: {
       // can reorder a later step forward — instead of burning the cascade.
       const advanceStalled = isAdvanceStalled({
         isAdvance: isAdvanceStep(step),
-        isFinalOrSubmit: isFinalStep || submitStep,
+        isFinalOrSubmit: submitStep || (isFinalStep && flowHasSubmitSemanticsFlag),
         hasPattern: advanceTransitionBodyPattern !== null,
         clickFired: record.resolvedMethod === "click" && record.actResultSuccess === true,
         networkFired,
@@ -10140,6 +10190,12 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
     },
   });
 
+  const flowHasSubmitSemanticsFlag = flowHasSubmitSemantics({
+    steps,
+    submitEndpointPattern: deps.submitEndpointPattern ?? null,
+    requireSubmitEndpointMatch: deps.requireSubmitEndpointMatch ?? false,
+  });
+
   if (
     shouldWarnMissingAdvancePattern(
       steps.map((s) => s.instruction),
@@ -10175,6 +10231,7 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
         optional: s.optional,
         upload: s.upload,
         submitStep: s.submitStep,
+        flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
         stepIndex: i,
         totalSteps: () => steps.length,
         phase: "flow",

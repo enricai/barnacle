@@ -10,6 +10,7 @@ vi.mock("ai", async (importOriginal) => {
 import {
   executeStepWithHealing,
   extractLivePageFormEvidence,
+  flowHasSubmitSemantics,
   formatStepPrefix,
   type HealingFlowStep,
   pollEnumerate,
@@ -104,6 +105,7 @@ describe("flow-runner/shouldCaptureSelectionState", () => {
         step: "Select 'Acute Care / Inpatient'",
         isFinalStep: false,
         submitStep: false,
+        flowHasSubmitSemantics: true,
       })
     ).toBe(true);
   });
@@ -114,6 +116,7 @@ describe("flow-runner/shouldCaptureSelectionState", () => {
         step: "Click the 'Submit application' button",
         isFinalStep: false,
         submitStep: true,
+        flowHasSubmitSemantics: true,
       })
     ).toBe(false);
   });
@@ -124,8 +127,20 @@ describe("flow-runner/shouldCaptureSelectionState", () => {
         step: "Confirm your selections",
         isFinalStep: true,
         submitStep: false,
+        flowHasSubmitSemantics: true,
       })
     ).toBe(false);
+  });
+
+  it("captures the final step of a read-only flow with no submit semantics", () => {
+    expect(
+      shouldCaptureSelectionState({
+        step: "Confirm your selections",
+        isFinalStep: true,
+        submitStep: false,
+        flowHasSubmitSemantics: false,
+      })
+    ).toBe(true);
   });
 
   it("does NOT capture for an advance/Next step (no-pattern desync guard)", () => {
@@ -134,6 +149,7 @@ describe("flow-runner/shouldCaptureSelectionState", () => {
         step: "Click the Next button to continue",
         isFinalStep: false,
         submitStep: false,
+        flowHasSubmitSemantics: true,
       })
     ).toBe(false);
   });
@@ -144,6 +160,7 @@ describe("flow-runner/shouldCaptureSelectionState", () => {
         step: "Select 'Next Available' shift preference",
         isFinalStep: false,
         submitStep: false,
+        flowHasSubmitSemantics: true,
       })
     ).toBe(true);
     expect(
@@ -151,6 +168,49 @@ describe("flow-runner/shouldCaptureSelectionState", () => {
         step: "Click the 'Continue Care' option",
         isFinalStep: false,
         submitStep: false,
+        flowHasSubmitSemantics: true,
+      })
+    ).toBe(true);
+  });
+});
+
+describe("flow-runner/flowHasSubmitSemantics", () => {
+  it("returns false for a read-only flow (the royalcaribbean shape)", () => {
+    expect(
+      flowHasSubmitSemantics({
+        steps: [{ submitStep: false }, { submitStep: false }, { submitStep: false }],
+        submitEndpointPattern: null,
+        requireSubmitEndpointMatch: false,
+      })
+    ).toBe(false);
+  });
+
+  it("returns true when any step is flagged submitStep: true", () => {
+    expect(
+      flowHasSubmitSemantics({
+        steps: [{ submitStep: false }, { submitStep: true }],
+        submitEndpointPattern: null,
+        requireSubmitEndpointMatch: false,
+      })
+    ).toBe(true);
+  });
+
+  it("returns true when submitEndpointPattern is set, even with no submitStep", () => {
+    expect(
+      flowHasSubmitSemantics({
+        steps: [{ submitStep: false }],
+        submitEndpointPattern: "/api/apply$",
+        requireSubmitEndpointMatch: false,
+      })
+    ).toBe(true);
+  });
+
+  it("returns true when requireSubmitEndpointMatch is true, even with no submitStep", () => {
+    expect(
+      flowHasSubmitSemantics({
+        steps: [{ submitStep: false }],
+        submitEndpointPattern: null,
+        requireSubmitEndpointMatch: true,
       })
     ).toBe(true);
   });
@@ -563,6 +623,7 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
       // Every test in this describe block exercises the deep-submit-locator
       // escalation, which now only fires on submit-shaped steps.
       submitStep: true,
+      flowHasSubmitSemantics: true,
       stepIndex: 76,
       phase: "apply",
       signalCounter: { n: 0 },
@@ -964,6 +1025,82 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
     expect(stagehandObserve).toHaveBeenCalled();
   });
 
+  it("leaves the structured-click/observe-act-exclude ladder intact for a read-only flow's final step instead of routing to the deep-submit-locator (regression: recon-readonly-final-step-misclassified-as-submit)", async () => {
+    // Reproduces the exact reported misclassification: a read-only recon
+    // flow (no submitStep anywhere, submitEndpointPattern:null,
+    // requireSubmitEndpointMatch:false) whose LAST step happens to phantom-
+    // click on attempt 1. Before the fix, `isFinalStep` alone inferred
+    // submit-shape, so this final step was wrongly escalated straight to
+    // deep-submit-locator and attempts 3/4 were skipped. With
+    // flowHasSubmitSemantics:false, submitShapedStep must be false here too
+    // — attempt 2 must run observe-act and attempts 3/4 must NOT be skipped.
+    const { page, evaluate } = fakePage({
+      url: "https://apply.acme.example/jobs/1/apply-portal/review",
+      bodyHtmlLength: 184186,
+    });
+    const stagehandAct = vi.fn().mockResolvedValue(actResult());
+    const params = {
+      ...baseParams(page, stagehandAct),
+      step: "Click the 'Review' summary panel to expand it",
+      optional: false,
+      submitStep: false,
+      isFinalStep: true,
+      flowHasSubmitSemantics: false,
+      submitEndpointPattern: null,
+      requireSubmitEndpointMatch: false,
+      signalCounter: { n: 0 },
+    };
+    const stagehandObserve = (params.stagehand as unknown as { observe: ReturnType<typeof vi.fn> })
+      .observe;
+
+    await expect(executeStepWithHealing(params)).rejects.toMatchObject({
+      name: "StepVerificationError",
+    });
+
+    // The deep-submit-locator's ranking expression must never be evaluated —
+    // a read-only final step is not submit-shaped just because it's last.
+    const rankCalls = evaluate.mock.calls.filter(([expr]) => String(expr).includes("ranked.sort"));
+    expect(rankCalls.length).toBe(0);
+    // Attempt 1 (act-string) + attempt 2 (observe-act, NOT skipped) both call
+    // stagehand.act — proving attempts 3/4 (structured-click,
+    // observe-act-exclude) were not short-circuited away either.
+    expect(stagehandAct.mock.calls.length).toBeGreaterThan(1);
+    expect(stagehandObserve).toHaveBeenCalled();
+  });
+
+  it("still escalates to the deep submit-control locator on a genuine submit-flow's final step (no regression)", async () => {
+    // Paired control for the read-only case above: same isFinalStep:true
+    // final-step shape, but this flow DOES carry real submit semantics
+    // (flowHasSubmitSemantics:true) — the deep-submit-locator escalation on
+    // attempt-1 phantom-click must still fire exactly as before the fix.
+    const signalCounter = { n: 0 };
+    const { page, evaluate } = fakePage({
+      url: "https://apply.acme.example/jobs/1/apply-portal/apply",
+      bodyHtmlLength: 184186,
+      onDeepClick: () => {
+        signalCounter.n += 1;
+      },
+    });
+    const stagehandAct = vi.fn().mockResolvedValue(actResult());
+    const params = {
+      ...baseParams(page, stagehandAct),
+      signalCounter,
+      submitStep: false,
+      isFinalStep: true,
+      flowHasSubmitSemantics: true,
+    };
+
+    const result = await executeStepWithHealing(params);
+
+    expect(result).toBe("completed");
+    // Only attempt 1 (act-string) called stagehand.act — the escalation
+    // routed straight to deep-submit-locator instead of repeating light-DOM
+    // techniques, same as the existing submitStep:true escalation test.
+    expect(stagehandAct).toHaveBeenCalledTimes(1);
+    const rankCalls = evaluate.mock.calls.filter(([expr]) => String(expr).includes("ranked.sort"));
+    expect(rankCalls.length).toBe(1);
+  });
+
   it("falls through to the existing light-DOM techniques when only one deep candidate exists and it phantoms (control case)", async () => {
     // Same shape as the runner-up test, but with a single ranked candidate
     // — there is no ranked[1] to retry, so the branch must not attempt to
@@ -1045,6 +1182,7 @@ describe("flow-runner/executeStepWithHealing — observe-act method override for
       optional: false,
       upload: false,
       submitStep: false,
+      flowHasSubmitSemantics: true,
       stepIndex: 11,
       phase: "apply",
       signalCounter: { n: 0 },

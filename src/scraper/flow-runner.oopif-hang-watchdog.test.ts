@@ -240,12 +240,17 @@ describe("flow-runner OOPIF-bound deepLocator hang (offline acceptance test, rea
     const resultPromise = runHealingFlow({
       stagehand,
       page,
+      // submitStep: true keeps this step submit-shaped under
+      // flowHasSubmitSemantics (bugfix-005) so attempt 2's phantom-click
+      // escalation still takes the deep-submit-locator branch this test
+      // exercises, instead of the trusted-click-retry branch a plain
+      // read-only final step now takes.
       steps: [
         {
           instruction: MANUAL_APPLICATION_STEP,
           optional: false,
           upload: false,
-          submitStep: false,
+          submitStep: true,
         },
       ],
       logger: testLogger,
@@ -286,7 +291,7 @@ describe("flow-runner OOPIF-bound deepLocator hang (offline acceptance test, rea
           instruction: MANUAL_APPLICATION_STEP,
           optional: false,
           upload: false,
-          submitStep: false,
+          submitStep: true,
         },
       ],
       logger: testLogger,
@@ -350,7 +355,7 @@ describe("flow-runner frame-attach probe hang (offline acceptance test, real sta
             instruction: MANUAL_APPLICATION_STEP,
             optional: false,
             upload: false,
-            submitStep: false,
+            submitStep: true,
           },
         ],
         logger: testLogger,

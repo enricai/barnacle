@@ -5667,6 +5667,114 @@ describe("recon-browser/main — frameSelector reaches the cascade call", () => 
   });
 });
 
+describe("recon-browser/main — flowHasSubmitSemantics wiring into executeStepWithHealing (bugfix-004)", () => {
+  function makeFakePage(): { page: Page; stagehand: Stagehand } {
+    const session = {
+      on: (): void => {},
+      off: (): void => {},
+    };
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      url: (): string => "https://example.com/apply",
+      title: vi.fn().mockResolvedValue("Apply"),
+      evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+        if (typeof expr === "string" && expr.includes("document.body")) return 10_000;
+        return null;
+      }),
+      frames: vi.fn().mockReturnValue([]),
+      getSessionForFrame: () => session,
+      mainFrameId: () => "main",
+      sendCDP: vi.fn().mockResolvedValue({ cookies: [] }),
+    } as unknown as Page;
+    const stagehand = {
+      context: { awaitActivePage: async (): Promise<Page> => page },
+    } as unknown as Stagehand;
+    return { page, stagehand };
+  }
+
+  const ORIGINAL_ARGV = process.argv;
+  let runsRoot: string;
+
+  beforeEach(() => {
+    runsRoot = mkdtempSync(join(tmpdir(), "recon-browser-submit-semantics-"));
+    process.env.RECON_RUN_ID = "20260818-000000-submit1";
+    process.env.RECON_OUT_DIR = runsRoot;
+    executeStepWithHealingStub.mockReset();
+    executeStepWithHealingStub.mockResolvedValue("ok");
+    vi.mocked(createBrowserSession).mockReset();
+  });
+
+  afterEach(() => {
+    process.argv = ORIGINAL_ARGV;
+    rmSync(runsRoot, { recursive: true, force: true });
+    delete process.env.RECON_RUN_ID;
+    delete process.env.RECON_OUT_DIR;
+    vi.restoreAllMocks();
+    executeStepWithHealingStub.mockReset();
+  });
+
+  it("passes flowHasSubmitSemantics: false for every step of a read-only flow with no submitStep and no submitEndpointPattern", async () => {
+    const { stagehand } = makeFakePage();
+    vi.mocked(createBrowserSession).mockResolvedValue({
+      stagehand,
+      limiter: {} as never,
+      sessionId: "test-session",
+      provider: "browserbase",
+      close: vi.fn().mockResolvedValue(undefined),
+    } as never);
+
+    process.argv = [
+      "node",
+      "recon-browser.ts",
+      "--url",
+      "https://example.com/apply",
+      "--flow",
+      JSON.stringify({ steps: ["Click category tab A", "Click category tab B"] }),
+    ];
+
+    await main();
+
+    expect(executeStepWithHealingStub).toHaveBeenCalledTimes(2);
+    for (const call of executeStepWithHealingStub.mock.calls) {
+      const args = call[0] as { flowHasSubmitSemantics?: boolean };
+      expect(args.flowHasSubmitSemantics).toBe(false);
+    }
+  });
+
+  it("passes flowHasSubmitSemantics: true for every step once ANY step in the plan declares submitStep: true", async () => {
+    const { stagehand } = makeFakePage();
+    vi.mocked(createBrowserSession).mockResolvedValue({
+      stagehand,
+      limiter: {} as never,
+      sessionId: "test-session",
+      provider: "browserbase",
+      close: vi.fn().mockResolvedValue(undefined),
+    } as never);
+
+    process.argv = [
+      "node",
+      "recon-browser.ts",
+      "--url",
+      "https://example.com/apply",
+      "--flow",
+      JSON.stringify({
+        steps: [
+          "Fill in the applicant's name",
+          { step: "Click the Submit button", submitStep: true },
+        ],
+      }),
+    ];
+
+    await main();
+
+    expect(executeStepWithHealingStub).toHaveBeenCalledTimes(2);
+    for (const call of executeStepWithHealingStub.mock.calls) {
+      const args = call[0] as { flowHasSubmitSemantics?: boolean };
+      expect(args.flowHasSubmitSemantics).toBe(true);
+    }
+  });
+});
+
 describe("recon-browser/main — --dump-dom-before-step bounded against a never-settling evaluate (bugfix-004)", () => {
   const ORIGINAL_ARGV = process.argv;
   let runsRoot: string;

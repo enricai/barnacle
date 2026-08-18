@@ -49,6 +49,7 @@ function baseParams(
     optional: false,
     upload: false,
     submitStep: true,
+    flowHasSubmitSemantics: true,
     stepIndex: 0,
     phase: "apply",
     signalCounter: { n: 0 },
