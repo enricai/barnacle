@@ -507,16 +507,17 @@ const PROMPT_EMPTY_VALUE_RX_SRC = PROMPT_EMPTY_VALUE_RX.source;
 const PROMPT_EMPTY_VALUE_RX_FLAGS = PROMPT_EMPTY_VALUE_RX.flags;
 /**
  * Browser-side expression reading a `<button>`-trigger's own committed-value
- * text. A button's label is usually a direct text node (`<button>Mobile</button>`),
- * but some libraries wrap it in a child (`<button><span>Mobile</span></button>`).
- * So: read the recursive `textContent` when the button holds NO nested popup
- * (`[role='option']`) — safe, and covers the child-wrapped label; otherwise a
- * popup renders inside the trigger and would pollute `textContent`, so fall back
- * to DIRECT text nodes only. (The standard combobox portals its popup to
- * `document.body`, so the safe branch is the common case.)
+ * text. A button's label may be a direct text node (`<button>Mobile</button>`)
+ * or a child element (`<button><span>Mobile</span></button>`), so a recursive
+ * read is needed — but it must exclude (a) a popup rendered INSIDE the trigger
+ * (`[role='option']`/`[role='listbox']`, which some libraries nest) and (b)
+ * decorative descendants (`[aria-hidden='true']`, a required-marker `<abbr>`, an
+ * icon `<svg>`) whose text would otherwise make an EMPTY placeholder button read
+ * as filled and get skipped as a candidate. Clone, strip those subtrees, read
+ * the remaining `textContent`.
  */
-export const BUTTON_VALUE_EXPR =
-  '((el) => el.querySelector("[role=\'option\']") ? Array.from(el.childNodes).filter((n) => n.nodeType === 3).map((n) => n.textContent || "").join("") : (el.textContent || ""))';
+const BUTTON_VALUE_EXPR =
+  "((el) => { const c = el.cloneNode(true); for (const n of c.querySelectorAll(\"[role='option'],[role='listbox'],[aria-hidden='true'],abbr,svg\")) n.remove(); return c.textContent || \"\"; })";
 /**
  * Browser-side expression resolving the DOM root within which a chosen widget's
  * popup options / filter input live. Popup placement is vendor-split: the ARIA
@@ -529,7 +530,7 @@ export const BUTTON_VALUE_EXPR =
  * scope Element/Document; callers query options/search within it, which stops a
  * sibling widget's options from being picked on a multi-widget page.
  */
-export const PROMPT_SCOPE_ROOT_EXPR = `((w) => {
+const PROMPT_SCOPE_ROOT_EXPR = `((w) => {
   const refAttr = (el) => (el && (el.getAttribute("aria-controls") || el.getAttribute("aria-owns"))) || "";
   let ids = refAttr(w);
   if (!ids) {
@@ -539,13 +540,18 @@ export const PROMPT_SCOPE_ROOT_EXPR = `((w) => {
   if (ids) {
     // aria-controls/aria-owns may reference MULTIPLE ids (e.g. a listbox plus a
     // status region). Prefer the referenced element that IS or CONTAINS a
-    // listbox/option; fall back to the first that resolves at all.
+    // listbox/option (the portaled popup).
     const refs = ids.split(/\\s+/).map((id) => document.getElementById(id)).filter(Boolean);
     const withListbox = refs.find((el) => el.matches("[role='listbox']") || el.querySelector("[role='listbox'],[role='option']"));
     if (withListbox) return withListbox;
+  }
+  // No referenced listbox: try the inline popup in the widget's own subtree
+  // BEFORE falling back to a resolved-but-listbox-less ref, then to document.
+  if (w.querySelector("[role='listbox'],[role='option']")) return w;
+  if (ids) {
+    const refs = ids.split(/\\s+/).map((id) => document.getElementById(id)).filter(Boolean);
     if (refs.length) return refs[0];
   }
-  if (w.querySelector("[role='listbox'],[role='option']")) return w;
   return document;
 })`;
 /**

@@ -254,14 +254,22 @@ describe("flow-runner/tryPromptSelectorPrimitive dispatch & disambiguation (real
     // One harness (one window/DOM) reused across two calls — the real wizard's
     // "several select steps on one unreloaded page" scenario. Disjoint options so
     // a stale mark from step 1's popup would mis-fill step 2 if not cleared.
+    // `keepPopupMounted` leaves step 1's marked option <li>s in the DOM, and
+    // `searchable` leaves its `-search` input mark — so BOTH stale-mark paths
+    // (option-click and filter-fill) are exercised; step 2 must clear both.
     const { page, target } = buildPromptWidgetHarness({
       html: TWO_WIDGET_HTML,
-      // Both searchable → each leaves a persistent `-search` mark on its trigger
-      // input after commit; step 2 must clear step 1's stale mark or its
-      // document-wide filter fill would hit the DOM-earlier src-widget input.
       popupByWidgetId: {
-        "src-widget": { options: ["Job Board", "Referral", "LinkedIn"], searchable: true },
-        "phone-widget": { options: ["Home", "Mobile", "Work"], searchable: true },
+        "src-widget": {
+          options: ["Job Board", "Referral", "LinkedIn"],
+          searchable: true,
+          keepPopupMounted: true,
+        },
+        "phone-widget": {
+          options: ["Home", "Mobile", "Work"],
+          searchable: true,
+          keepPopupMounted: true,
+        },
       },
     });
 
@@ -295,5 +303,44 @@ describe("flow-runner/tryPromptSelectorPrimitive dispatch & disambiguation (real
     // Step 2 must resolve the PHONE widget, not the source widget marked in step 1.
     expect(r2).toBe("completed");
     expect(traj2).toEqual([{ stepIndex: 4, verifiedBy: "dom", targetId: "phone-widget" }]);
+  });
+
+  it("resolves an INLINE popup when aria-controls points only at a non-listbox status region — FIX G", async () => {
+    const stagehandAct = vi.fn();
+    const stagehand = {
+      act: stagehandAct,
+      observe: vi.fn().mockResolvedValue([]),
+    } as unknown as Stagehand;
+    // Single widget; its trigger's aria-controls resolves to a status region
+    // (no listbox), but the popup renders INLINE. Scope must fall back to the
+    // inline subtree rather than the resolved-but-listbox-less ref.
+    const SINGLE = `
+      <div role="group" aria-labelledby="src-section">
+        <span id="src-section">Contact</span>
+        <div data-automation-id="formField-source">
+          <label for="source--source"><span>How Did You Hear About Us?</span></label>
+          <div id="src-widget" data-uxi-widget-type="multiselect" data-automation-id="multiSelectContainer">
+            <div data-automation-id="promptSelectionLabel"></div>
+            <input id="source--source" data-uxi-widget-type="selectinput"
+                   aria-required="true" aria-invalid="true" value="" />
+          </div>
+        </div>
+      </div>`;
+    const { page, target } = buildPromptWidgetHarness({
+      html: SINGLE,
+      popupByWidgetId: { "src-widget": { options: ["Job Board", "Referral"], decoyRef: true } },
+    });
+    const trajectory: { stepIndex: number; verifiedBy: string; targetId?: string }[] = [];
+    const params = baseParams(
+      page as unknown as Page,
+      stagehand,
+      "for 'How Did You Hear About Us?' select 'Referral'",
+      target
+    );
+
+    const result = await executeStepWithHealing({ ...params, trajectory } as never);
+
+    expect(result).toBe("completed");
+    expect(trajectory).toEqual([{ stepIndex: 3, verifiedBy: "dom", targetId: "src-widget" }]);
   });
 });

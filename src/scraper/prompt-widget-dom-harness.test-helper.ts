@@ -40,6 +40,12 @@ export interface PopupSpec {
    * listbox target rather than the first id. Exercises the multi-id path.
    */
   decoyRef?: boolean;
+  /**
+   * Leave the popup (with its marked option elements) in the DOM after commit
+   * instead of removing it, so a stale option mark survives into a later step —
+   * the inter-call collision FIX A's option-mark clearing must handle.
+   */
+  keepPopupMounted?: boolean;
 }
 
 /**
@@ -87,6 +93,13 @@ export function buildPromptWidgetHarness(params: {
   };
 
   /** Render a widget's popup listbox into the DOM (options + a filter input). */
+  // The clickable trigger of a widget: the widget itself when it's a button/
+  // combobox, else its first such descendant, else the widget element.
+  const resolveTrigger = (widgetEl: Element): Element =>
+    widgetEl.matches("button,[role='combobox']")
+      ? widgetEl
+      : widgetEl.querySelector("button,[role='combobox']") || widgetEl;
+
   const renderPopup = (widgetEl: Element, state: { spec: PopupSpec; filter: string }): void => {
     // Remove any prior popup for this widget.
     const existing = document.querySelector(`[data-test-popup-for="${widgetEl.id}"]`);
@@ -117,9 +130,7 @@ export function buildPromptWidgetHarness(params: {
       // Portal to document.body and link via aria-controls (Radix/MUI/react-select).
       const popupId = `portal-${widgetEl.id}`;
       wrap.id = popupId;
-      const trigger = widgetEl.matches("button,[role='combobox']")
-        ? widgetEl
-        : widgetEl.querySelector("button,[role='combobox']") || widgetEl;
+      const trigger = resolveTrigger(widgetEl);
       if (state.spec.decoyRef) {
         // Prepend a NON-listbox status region to aria-controls (id-ref list),
         // so scope resolution must pick the listbox, not the first id.
@@ -135,6 +146,17 @@ export function buildPromptWidgetHarness(params: {
       document.body.appendChild(wrap);
     } else {
       widgetEl.appendChild(wrap);
+      if (state.spec.decoyRef) {
+        // Inline popup, but the trigger's `aria-controls` points ONLY at a
+        // non-listbox status region (no listbox ref). Scope resolution must fall
+        // back to the INLINE subtree, not the resolved-but-listbox-less ref.
+        const decoyId = `decoy-${widgetEl.id}`;
+        const decoy = document.createElement("div");
+        decoy.id = decoyId;
+        decoy.setAttribute("role", "status");
+        document.body.appendChild(decoy);
+        resolveTrigger(widgetEl).setAttribute("aria-controls", decoyId);
+      }
     }
   };
 
@@ -202,7 +224,10 @@ export function buildPromptWidgetHarness(params: {
             owner.querySelectorAll("[aria-invalid='true']").forEach((n) => {
               n.setAttribute("aria-invalid", "false");
             });
-            popup?.remove();
+            // Some widgets leave the popup in the DOM after commit (it's just
+            // hidden). Keeping it mounted lets a stale option mark survive into a
+            // later step — the scenario FIX A's option-mark clearing guards.
+            if (!params.popupByWidgetId[owningId]?.keepPopupMounted) popup?.remove();
           }
         }
       },
