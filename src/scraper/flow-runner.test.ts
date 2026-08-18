@@ -10,6 +10,7 @@ vi.mock("ai", async (importOriginal) => {
 import {
   executeStepWithHealing,
   extractLivePageFormEvidence,
+  flowHasSubmitSemantics,
   formatStepPrefix,
   type HealingFlowStep,
   pollEnumerate,
@@ -151,6 +152,48 @@ describe("flow-runner/shouldCaptureSelectionState", () => {
         step: "Click the 'Continue Care' option",
         isFinalStep: false,
         submitStep: false,
+      })
+    ).toBe(true);
+  });
+});
+
+describe("flow-runner/flowHasSubmitSemantics", () => {
+  it("returns false for a read-only flow (the royalcaribbean shape)", () => {
+    expect(
+      flowHasSubmitSemantics({
+        steps: [{ submitStep: false }, { submitStep: false }, { submitStep: false }],
+        submitEndpointPattern: null,
+        requireSubmitEndpointMatch: false,
+      })
+    ).toBe(false);
+  });
+
+  it("returns true when any step is flagged submitStep: true", () => {
+    expect(
+      flowHasSubmitSemantics({
+        steps: [{ submitStep: false }, { submitStep: true }],
+        submitEndpointPattern: null,
+        requireSubmitEndpointMatch: false,
+      })
+    ).toBe(true);
+  });
+
+  it("returns true when submitEndpointPattern is set, even with no submitStep", () => {
+    expect(
+      flowHasSubmitSemantics({
+        steps: [{ submitStep: false }],
+        submitEndpointPattern: "/api/apply$",
+        requireSubmitEndpointMatch: false,
+      })
+    ).toBe(true);
+  });
+
+  it("returns true when requireSubmitEndpointMatch is true, even with no submitStep", () => {
+    expect(
+      flowHasSubmitSemantics({
+        steps: [{ submitStep: false }],
+        submitEndpointPattern: null,
+        requireSubmitEndpointMatch: true,
       })
     ).toBe(true);
   });

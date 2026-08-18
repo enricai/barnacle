@@ -1149,6 +1149,27 @@ export function shouldCaptureSelectionState(params: {
 }
 
 /**
+ * Whether a flow has ANY submit semantics at all — a step flagged
+ * `submitStep: true`, a `submitEndpointPattern`, or `requireSubmitEndpointMatch`.
+ * A read-only flow (none of the three) has no submit shape anywhere, so its
+ * final step is an ordinary read/click, not a submit. Pure + exported so
+ * callers can stop inferring submit-shape from `isFinalStep` alone on flows
+ * that never declared a submit.
+ */
+export function flowHasSubmitSemantics(params: {
+  steps: Array<{ submitStep: boolean }>;
+  submitEndpointPattern: string | null;
+  requireSubmitEndpointMatch: boolean;
+}): boolean {
+  const { steps, submitEndpointPattern, requireSubmitEndpointMatch } = params;
+  return (
+    steps.some((s) => s.submitStep) ||
+    submitEndpointPattern !== null ||
+    requireSubmitEndpointMatch
+  );
+}
+
+/**
  * Whether a flow should be WARNed that its DOM-only advance guard is disarmed.
  * `isDomOnlyAdvanceVerified` only vetoes a DOM-only "advance" when
  * `advanceTransitionBodyPattern` is set; a flow with advance steps but no
