@@ -5702,6 +5702,15 @@ async function applyRadioSelection(
  * option slice until filtered), and clicks the matching option with a real
  * click.
  *
+ * Accepts either a SELECT-shaped step (`parseSelectStep`, "select 'X' in the
+ * Y dropdown") or a FILL-shaped step (`parseFillStep`, "Fill in the Y field
+ * with 'X'") — flow/replan generation describes this widget family's
+ * searchable variant as a fill because its filter box renders a real
+ * `<input>`, even though committing the choice still requires the popup-
+ * open/option-click gesture below, not typed text. A fill step's `value`
+ * becomes the option to match and its `fieldLabel` becomes the question
+ * label; downstream matching is identical either way.
+ *
  * Matches the target widget by `questionLabel` (when the step carries one) or,
  * failing that, by there being exactly one unfilled widget on the page —
  * deliberately conservative: an ambiguous multi-widget page with no question
@@ -5726,7 +5735,20 @@ async function tryPromptSelectorPrimitive(params: {
   captureFn?: JudgeCaptureFn;
 }): Promise<string | null> {
   const { page, target, instruction, logger, anthropic, captureFn } = params;
-  const parsed = parseSelectStep(instruction);
+  // A prompt-selector widget's search box renders a real <input>, so flow/
+  // replan generation routinely describes filling it as a FILL step ("Fill in
+  // the 'How Did You Hear About Us?' field with 'Internet/Online'") rather
+  // than a SELECT step. Accept either shape: parseSelectStep first, falling
+  // back to parseFillStep (fieldLabel -> questionLabel, value -> option) so
+  // the widget-matching/open/readback phases below run unchanged regardless
+  // of which verb the instruction used.
+  const parsedSelect = parseSelectStep(instruction);
+  const parsedFill = parsedSelect ? null : parseFillStep(instruction);
+  const parsed = parsedSelect
+    ? parsedSelect
+    : parsedFill
+      ? { option: parsedFill.value, questionLabel: parsedFill.fieldLabel }
+      : null;
   if (!parsed) return null;
   const { option, questionLabel } = parsed;
   const optLabel = `option "${option.slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
@@ -7582,15 +7604,17 @@ export async function executeStepWithHealing(params: {
     return "completed";
   }
 
-  // When the step is a "select 'X'" step whose only matching control is a
-  // native-control-less popup-dropdown widget (a combobox that opens a listbox
-  // popup, options rendered on-demand — see PROMPT_TRIGGER_SELECTORS) rather
-  // than a <select> or MUI radio group, answer it directly. Runs AFTER
-  // select/checkbox/radio (which own their own widget shapes and would already
-  // have claimed the step) and BEFORE the cascade, since the widget's trigger
-  // exposes no native control the observe cascade resolves. No-op (falls
-  // through) when there's no unfilled/unambiguous prompt widget or no confident
-  // option match.
+  // When the step is a "select 'X'" OR a "Fill in the Y field with 'X'" step
+  // (the latter shape is how flow/replan generation describes this widget's
+  // searchable filter box, which renders a real <input>) whose only matching
+  // control is a native-control-less popup-dropdown widget (a combobox that
+  // opens a listbox popup, options rendered on-demand — see
+  // PROMPT_TRIGGER_SELECTORS) rather than a <select> or MUI radio group,
+  // answer it directly. Runs AFTER select/checkbox/radio (which own their own
+  // widget shapes and would already have claimed the step) and BEFORE the
+  // cascade, since the widget's trigger exposes no native control the observe
+  // cascade resolves. No-op (falls through) when there's no unfilled/
+  // unambiguous prompt widget or no confident option match.
   const promptSelectorTargetId = await tryPromptSelectorPrimitive({
     page,
     target: selectFrameTarget,

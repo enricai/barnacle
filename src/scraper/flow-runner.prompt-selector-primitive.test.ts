@@ -263,6 +263,33 @@ describe("flow-runner/tryPromptSelectorPrimitive (real DOM)", () => {
     );
   });
 
+  it("resolves a FILL-shaped instruction ('Fill in the ... field with ...') against a multiselect widget", async () => {
+    const stagehandAct = vi.fn();
+    const { page, target, clicks } = buildPromptWidgetHarness({
+      html: WIDGET_KIT_HTML,
+      popupByWidgetId: {
+        "src-widget": { options: ["Job Board", "Referral", "Internet/Online"] },
+      },
+    });
+    const params = baseParams(page as unknown as Page, stagehandAct, "");
+    const merged = {
+      ...params,
+      frameTarget: target,
+      step: "Fill in the 'How Did You Hear About Us?' field with 'Internet/Online'",
+    };
+
+    const result = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    );
+
+    expect(result).toBe("completed");
+    expect(stagehandAct).not.toHaveBeenCalled();
+    expect(clicks.length).toBeGreaterThanOrEqual(2);
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining("resolved by prompt-selector primitive")
+    );
+  });
+
   it("detects an unfilled button whose only content is a decorative <abbr>* as UNFILLED — FIX E", async () => {
     const stagehandAct = vi.fn();
     const { page, target } = buildPromptWidgetHarness({
