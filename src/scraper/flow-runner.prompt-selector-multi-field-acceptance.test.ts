@@ -208,23 +208,30 @@ describe("flow-runner multi-field prompt-widget wizard-page acceptance (widget-k
       )
     );
 
-    // Each field's own dropdown/option markup actually rendered against the
-    // widget the step targeted (not just that "completed" was returned) —
-    // the resolved option is present under the matching widget container.
+    // Each field's committed-value node actually reflects the chosen option
+    // against the widget the step targeted (not just that "completed" was
+    // returned) — the popup itself is gone (a real commit removes it), so the
+    // widget's own `promptSelectionLabel` readback is the correct signal.
     expect(
-      window.document.querySelector("#source-widget [data-automation-label='LinkedIn']")
-    ).not.toBeNull();
+      window.document.querySelector("#source-widget [data-automation-id='promptSelectionLabel']")
+        ?.textContent
+    ).toBe("LinkedIn");
     expect(
-      window.document.querySelector("#phone-widget [data-automation-label='Mobile']")
-    ).not.toBeNull();
+      window.document.querySelector("#phone-widget [data-automation-id='promptSelectionLabel']")
+        ?.textContent
+    ).toBe("Mobile");
     expect(
-      window.document.querySelector("#country-widget [data-automation-label='United States']")
-    ).not.toBeNull();
+      window.document.querySelector("#country-widget [data-automation-id='promptSelectionLabel']")
+        ?.textContent
+    ).toBe("United States");
     expect(
-      window.document.querySelector("#worked-widget [data-automation-label='No']")
-    ).not.toBeNull();
+      window.document.querySelector("#worked-widget [data-automation-id='promptSelectionLabel']")
+        ?.textContent
+    ).toBe("No");
     expect(
-      window.document.querySelector("#eligibility-widget [data-automation-label='Yes']")
-    ).not.toBeNull();
+      window.document.querySelector(
+        "#eligibility-widget [data-automation-id='promptSelectionLabel']"
+      )?.textContent
+    ).toBe("Yes");
   });
 });

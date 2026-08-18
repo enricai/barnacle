@@ -431,6 +431,42 @@ describe("flow-runner/tryPromptSelectorPrimitive (real DOM)", () => {
     );
   });
 
+  it("commits a value on the multiselect-typeahead/chip widget shape via a COMPOUND instruction ('Open the …, then select the option … from the popup list')", async () => {
+    const stagehandAct = vi.fn();
+    const { page, target, window, clicks } = buildPromptWidgetHarness({
+      html: MULTISELECT_TYPEAHEAD_CHIP_HTML,
+      popupByWidgetId: {
+        "src-widget": { options: ["Job Boards", "Referral", "LinkedIn"], searchable: true },
+      },
+    });
+    const trajectory: { stepIndex: number; verifiedBy: string; targetId?: string }[] = [];
+    const params = baseParams(page as unknown as Page, stagehandAct, "");
+    const merged = {
+      ...params,
+      frameTarget: target,
+      trajectory,
+      step: "Open the 'How Did You Hear About Us?' prompt selector, then select the option 'Job Boards' from the popup list.",
+    };
+
+    const result = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    );
+
+    expect(result).toBe("completed");
+    expect(stagehandAct).not.toHaveBeenCalled();
+    // Resolved via the primitive's own DOM verification, not the observe cascade.
+    expect(trajectory).toEqual([{ stepIndex: 3, verifiedBy: "dom", targetId: "src-widget" }]);
+    // The trigger click landed on the nested filter <input>, and an option click
+    // followed — the widget's committed-value node reflects the chosen option.
+    expect(clicks.length).toBeGreaterThanOrEqual(2);
+    expect(
+      window.document.querySelector("[data-automation-id='promptSelectionLabel']")?.textContent
+    ).toBe("Job Boards");
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining("resolved by prompt-selector primitive")
+    );
+  });
+
   it("commits a value on the multiselect-typeahead/chip widget shape (FILL phrasing)", async () => {
     const stagehandAct = vi.fn();
     const { page, target } = buildPromptWidgetHarness({

@@ -207,6 +207,14 @@ export function buildPromptWidgetHarness(params: {
         clicks.push(selector);
         const el = resolveFirst(selector);
         if (!el) return;
+        // An option click must be recognized BEFORE the trigger-open branch:
+        // for an INLINE (non-portaled) popup, the option is rendered as a
+        // descendant of the widget container, so `el.closest` on the widget's
+        // mark attribute resolves to that SAME container a trigger click also
+        // resolves to. Checking `[data-test-popup-for]` first — present only on
+        // an option nested in an already-rendered popup, never on the bare
+        // trigger — disambiguates the two without relying on marker ancestry.
+        const inOpenPopup = el.closest("[data-test-popup-for]") !== null;
         // Trigger click → open this widget's popup. Resolve back to the
         // marked WIDGET (not just the clicked element's own id) — production
         // may click a widget's interactive descendant (e.g. its filter
@@ -214,7 +222,7 @@ export function buildPromptWidgetHarness(params: {
         const markedWidget = el.closest(`[${PROMPT_WIDGET_MARK_ATTR}]`);
         const widgetId = markedWidget?.id || el.id || el.closest("[id]")?.id || "";
         const spec = params.popupByWidgetId[widgetId];
-        if (spec) {
+        if (spec && !inOpenPopup) {
           const state = { spec, filter: "" };
           openState.set(widgetId, state);
           renderPopup((markedWidget || el.closest("[id]") || el) as Element, state);

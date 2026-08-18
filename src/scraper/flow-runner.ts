@@ -4319,7 +4319,11 @@ async function setFilesViaCdp(params: {
  * Recognizes the flow's conventional phrasings, all quoted:
  *   "select 'Yes'", "select or check 'BLS'",
  *   "for 'What is your highest level…?' select 'BSN completed'",
- *   "select 'Texas' in the State/Region dropdown".
+ *   "select 'Texas' in the State/Region dropdown",
+ *   "…then select the option 'Job Boards' from the popup list" (a compound
+ *   step that opens the widget in one clause and selects in another —
+ *   "select" is followed by a noun phrase like "the option"/"the value"
+ *   before the quoted option itself, rather than the quote directly).
  * Returns null when the step is not a single-dropdown select (e.g. generic
  * "for any remaining question…" catch-alls, or radio/checkbox-only steps) so
  * the caller falls through to the normal cascade.
