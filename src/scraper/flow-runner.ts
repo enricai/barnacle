@@ -24,8 +24,8 @@ import { generateObject } from "ai";
 import { format, isValid, parse } from "date-fns";
 
 import { config } from "@/config";
-import type { StagehandModel } from "@/lib/bedrock";
 import { toErrorMessage } from "@/lib/errors";
+import type { RephraseModel } from "@/lib/llm/anthropic-client";
 import type { JudgeCaptureFn } from "@/lib/llm/judge";
 import { judgeErrorMessagesWithLLM } from "@/lib/llm/judges/error-messages";
 import { judgeInvalidFieldsWithLLM } from "@/lib/llm/judges/invalid-fields";
@@ -1932,7 +1932,7 @@ const REPHRASE_SYSTEM_PROMPT =
  * so tests can inject a fake capture sink without touching the browser session.
  */
 export async function rephraseWithLLM(
-  client: StagehandModel,
+  client: RephraseModel,
   originalStep: string,
   triedSelectors: string[],
   observeCandidates: Action[],
@@ -7512,7 +7512,7 @@ export async function executeStepWithHealing(params: {
    * but still gets a non-null `rephraseModel`, so the rephrase tier runs
    * on both deployment shapes.
    */
-  rephraseModel: StagehandModel | null;
+  rephraseModel: RephraseModel | null;
   logger: Logger;
   captureFn?: CaptureFn;
   uploadFixture: { buffer: Buffer; name: string; mimeType: string } | null;
@@ -10234,7 +10234,7 @@ export interface RunHealingFlowDeps {
    * Callers typically resolve both via `buildAnthropicClient()` /
    * `buildRephraseModel()` from `@/lib/llm/anthropic-client`.
    */
-  rephraseModel: StagehandModel | null;
+  rephraseModel: RephraseModel | null;
   uploadFixture: { buffer: Buffer; name: string; mimeType: string } | null;
   /**
    * CSS selector of a cross-origin `<iframe>` the flow's target elements live
