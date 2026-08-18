@@ -3637,6 +3637,24 @@ function bindOptionLiteral(headerBindings: HeaderProduce[]): string {
 
 /** Generates a complete contract.ts source string for a plugin — exported so
  * unit tests can drive the emitter directly without spawning the CLI. */
+/**
+ * Renders the variables literal for the primary-operation getGql() call —
+ * each key from the selected capture's own recorded variables is bound to
+ * `payload.<Field>` when it correlates (case-insensitively) with one of the
+ * flow's payloadFieldNames, otherwise the captured literal value is emitted
+ * verbatim via JSON.stringify.
+ */
+function renderGqlVariablesExpr(variables: unknown, payloadFieldNames: Set<string> | undefined): string {
+  if (variables === null || typeof variables !== "object" || Array.isArray(variables)) return "{}";
+  const fields = payloadFieldNames ? [...payloadFieldNames] : [];
+  const entries = Object.entries(variables as Record<string, unknown>).map(([key, value]) => {
+    const matchedField = fields.find((field) => field.toLowerCase() === key.toLowerCase());
+    const valueExpr = matchedField ? `payload.${matchedField}` : JSON.stringify(value);
+    return `${key}: ${valueExpr}`;
+  });
+  return entries.length > 0 ? `{ ${entries.join(", ")} }` : "{}";
+}
+
 export function emitContractTs(opts: {
   siteId: string;
   pascal: string;
@@ -3648,6 +3666,15 @@ export function emitContractTs(opts: {
   gql: boolean;
   gqlQuery: string | null;
   endpointPath: string;
+  /** operationName recorded on the primary-operation capture selected by
+   * {@link selectPrimaryGraphQLOperation} — when set, replaces the
+   * `${pascal}Search` placeholder in the single-endpoint getGql() call. */
+  gqlOperationName?: string | null;
+  /** variables recorded on that same capture — when set alongside
+   * {@link gqlOperationName}, replaces the `{ q: payload.query }` placeholder,
+   * with keys bound to `payload.<Field>` where they correlate with
+   * `payloadFieldNames`. */
+  gqlVariables?: unknown;
   auxFiles: string[];
   /** Multi-step submission flow body — when set, replaces the default single-endpoint hot path. */
   multiStepBody?: string;
@@ -3705,6 +3732,8 @@ export function emitContractTs(opts: {
     gql,
     gqlQuery,
     endpointPath,
+    gqlOperationName,
+    gqlVariables,
     auxFiles,
     multiStepBody,
     inputBody,
@@ -3984,10 +4013,17 @@ function getGql(baseUrl: string): GqlFn {
 const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottleneck: limiter, baseHeaders: BASE_HEADERS${bindOptionLiteral(headerBindings)} });
 `;
 
+  const gqlOperationNameExpr = gqlOperationName
+    ? JSON.stringify(gqlOperationName)
+    : JSON.stringify(`${pascal}Search`);
+  const gqlVariablesExpr = gqlOperationName
+    ? renderGqlVariablesExpr(gqlVariables, payloadFieldNames)
+    : "{ q: payload.query }";
+
   const executeHttpBody = multiStepBody
     ? multiStepBody
     : gql
-      ? `    const data = await getGql(context.baseUrl)(${JSON.stringify(`${pascal}Search`)}, ${pascal.toUpperCase()}_QUERY, { q: payload.query });
+      ? `    const data = await getGql(context.baseUrl)(${gqlOperationNameExpr}, ${pascal.toUpperCase()}_QUERY, ${gqlVariablesExpr});
     return { data };`
       : `    const data = await httpClient(\`\${context.baseUrl}${endpointPath}\`, {
       method: "POST",
@@ -4971,6 +5007,8 @@ async function main(): Promise<void> {
       gql,
       gqlQuery,
       endpointPath,
+      gqlOperationName: primaryGraphQLOperation?.capture.operationName ?? null,
+      gqlVariables: primaryGraphQLOperation?.capture.variables ?? null,
       auxFiles,
       multiStepBody,
       inputBody,
