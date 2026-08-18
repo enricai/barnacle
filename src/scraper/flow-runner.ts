@@ -9368,8 +9368,8 @@ export async function executeStepWithHealing(params: {
         }
       }
     }
-    // Committed-value guard for the prompt-selector widget family (Workday-style
-    // popup multiselect/typeahead trigger widgets). The primitive's own picking
+    // Committed-value guard for the prompt-selector widget family (popup
+    // multiselect/typeahead trigger widgets). The primitive's own picking
     // gesture ({@link tryPromptSelectorPrimitive}) only runs on the observe-act
     // fallback path; a resolved-as-click act against the SAME widget shape can
     // open its popup, report success, and — since opening a popup mutates the
