@@ -37,7 +37,7 @@ function actResult(overrides: Partial<ActResult> = {}): ActResult {
  * `expr` string, and answers every OTHER primitive's probe with an
  * absent/zero result so only the prompt-selector primitive can claim the
  * step. `searchable` widgets only render `optionTexts` once `filled` is
- * true, modeling Workday's Country/Region widgets that render nothing (or a
+ * true, modeling the wizard ATS's Country/Region widgets that render nothing (or a
  * different slice) until the search box is typed into.
  */
 function fakePromptWidgetPage(params: {

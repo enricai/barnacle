@@ -6,8 +6,8 @@ import type { Logger } from "@/types/logging";
 
 /**
  * Regression coverage for `tryPromptSelectorPrimitive` (see the report
- * `recon-focused-probe-blind-to-workday-prompt-widgets.md`): Workday's
- * button-triggered popup dropdown widget (`promptIcon`/`promptSelectionLabel`/
+ * `recon-focused-probe-blind-to-wizard-ats-prompt-widgets.md`): the wizard
+ * ATS's button-triggered popup dropdown widget (`promptIcon`/`promptSelectionLabel`/
  * `multiSelectContainer`, options rendered on demand as
  * `data-automation-id="promptOption"`) carries no `<select>` and no
  * accessible role the focused probe / observe cascade resolves, so a

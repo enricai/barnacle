@@ -410,7 +410,7 @@ const RADIO_SETTLE_MS = 400;
 const SELECT_SETTLE_MS = 400;
 /**
  * Same async-revalidation tick as {@link RADIO_SETTLE_MS}/{@link SELECT_SETTLE_MS},
- * for Workday's prompt-selector popup widget: after opening the popup, after
+ * for the wizard ATS's prompt-selector popup widget: after opening the popup, after
  * typing into its search box, and after clicking an option, the DOM (option
  * list render, `promptSelectionLabel` text, `aria-invalid` marker) settles a
  * beat later than the synthetic/trusted event that triggered it.
@@ -419,7 +419,7 @@ const PROMPT_SELECTOR_SETTLE_MS = 400;
 /**
  * Temporary attribute {@link tryPromptSelectorPrimitive} stamps onto each
  * candidate widget button during its read-only enumerate pass, so the
- * Node-side click (a real Playwright gesture — Workday's `promptIcon` button
+ * Node-side click (a real Playwright gesture — the wizard ATS's `promptIcon` button
  * ignores a bare `el.click()`) can address the exact widget chosen by index
  * without re-deriving a CSS/xpath selector for an element with no stable id.
  */
@@ -5534,22 +5534,22 @@ async function applyRadioSelection(
 }
 
 /**
- * Site-agnostic prompt-selector primitive: answer Workday's button-triggered
+ * Site-agnostic prompt-selector primitive: answer the wizard ATS's button-triggered
  * popup dropdown widget family (`promptIcon`/`promptSelectionLabel`/
  * `multiSelectContainer` trigger, options rendered as
  * `data-automation-id="promptOption"` list items inside the opened popup).
  *
- * Why this exists (parallels `trySelectPrimitive`/`tryRadioPrimitive`): Workday
+ * Why this exists (parallels `trySelectPrimitive`/`tryRadioPrimitive`): the wizard ATS
  * never renders this widget as a native `<select>` and its trigger carries no
  * accessible role Stagehand's observe cascade resolves to a real click target,
- * so the focused probe reports "0 candidates" for it — measured on the Workday
- * application wizard, where My Information's Source/Phone Type/Country/Country
+ * so the focused probe reports "0 candidates" for it — measured on the wizard
+ * ATS's application wizard, where My Information's Source/Phone Type/Country/Country
  * Region/Previous-Worker fields are ALL this widget, and the wizard never
  * leaves step 1 of 7. This primitive finds the widget by its trigger markers,
  * opens the popup with a real Playwright click gesture (a bare `el.click()`
- * doesn't fire Workday's open handler — the same failure mode as the MUI
+ * doesn't fire the wizard ATS's open handler — the same failure mode as the MUI
  * radio/select widgets), types into the popup's search box when the widget is
- * the searchable-list variant (Workday's Country/Region widgets render only a
+ * the searchable-list variant (the wizard ATS's Country/Region widgets render only a
  * partial option slice until filtered), and clicks the matching
  * `promptOption` entry with a real click.
  *
@@ -5586,7 +5586,7 @@ async function tryPromptSelectorPrimitive(params: {
   // Phase 1 (browser, read-only except for the marker attribute stamped for
   // Phase 2's click addressing): find candidate widgets — the trigger markers
   // with no <select> equivalent — that are still unfilled/invalid. Options are
-  // NOT enumerated here; Workday only renders `promptOption` items once the
+  // NOT enumerated here; the wizard ATS only renders `promptOption` items once the
   // popup is open.
   const enumerateWidgetsExpr = `((markAttr) => {
     const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
@@ -5639,7 +5639,7 @@ async function tryPromptSelectorPrimitive(params: {
       return currentText(w) === "";
     };
     // Clear stale marks from a prior call on this same page (this primitive
-    // runs once per "select 'X'" step, and Workday's My-Info wizard answers
+    // runs once per "select 'X'" step, and the wizard ATS's My-Info wizard answers
     // several such steps on the same unreloaded page) — otherwise a widget
     // already filled by an earlier call keeps its old index and collides
     // with whatever new widget claims that index this round, and the
@@ -5699,7 +5699,7 @@ async function tryPromptSelectorPrimitive(params: {
       return null;
     }
 
-    // Phase 2 (real gesture): open the popup. Workday's trigger requires a
+    // Phase 2 (real gesture): open the popup. The wizard ATS's trigger requires a
     // genuine click — a synthetic dispatchEvent does not fire its handler.
     const triggerSel = `[${PROMPT_WIDGET_MARK_ATTR}="${chosen.wIdx}"]`;
     try {
@@ -5737,7 +5737,7 @@ async function tryPromptSelectorPrimitive(params: {
       return null;
     }
     // Searchable-list variant: type the option text to filter before the
-    // matching option is even rendered (Workday's Country/Region widgets show
+    // matching option is even rendered (the wizard ATS's Country/Region widgets show
     // only a paginated slice until filtered).
     if (!optionsInitial.searchable) {
       const optionsResult = optionsInitial;
@@ -7354,10 +7354,10 @@ export async function executeStepWithHealing(params: {
   }
 
   // When the step is a "select 'X'" step whose only matching control is
-  // Workday's button-triggered popup dropdown widget (promptIcon/
+  // the wizard ATS's button-triggered popup dropdown widget (promptIcon/
   // promptSelectionLabel/multiSelectContainer, options rendered on-demand as
   // data-automation-id="promptOption") rather than a <select> or MUI radio
-  // group — the Workday application wizard renders My Information/screening
+  // group — the wizard ATS's application wizard renders My Information/screening
   // fields this way — answer it directly. Runs AFTER select/checkbox/radio
   // (which own their own widget shapes and would already have claimed the
   // step) and BEFORE the cascade, since the widget's trigger has no
