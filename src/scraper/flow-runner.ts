@@ -506,15 +506,17 @@ const PROMPT_EMPTY_VALUE_RX = /^\s*0\s+items?\s+selected\s*$/i;
 const PROMPT_EMPTY_VALUE_RX_SRC = PROMPT_EMPTY_VALUE_RX.source;
 const PROMPT_EMPTY_VALUE_RX_FLAGS = PROMPT_EMPTY_VALUE_RX.flags;
 /**
- * Browser-side expression that reads only an element's DIRECT text nodes (not
- * descendants). Injected into the prompt-widget value probes so a `<button>`
- * trigger's own committed-value text is read WITHOUT concatenating any option
- * text from a popup that renders inside the button — the standard combobox
- * pattern portals its popup to `document.body`, but a library that nests it
- * inside the trigger would otherwise pollute a recursive `textContent` read.
+ * Browser-side expression reading a `<button>`-trigger's own committed-value
+ * text. A button's label is usually a direct text node (`<button>Mobile</button>`),
+ * but some libraries wrap it in a child (`<button><span>Mobile</span></button>`).
+ * So: read the recursive `textContent` when the button holds NO nested popup
+ * (`[role='option']`) — safe, and covers the child-wrapped label; otherwise a
+ * popup renders inside the trigger and would pollute `textContent`, so fall back
+ * to DIRECT text nodes only. (The standard combobox portals its popup to
+ * `document.body`, so the safe branch is the common case.)
  */
-const DIRECT_TEXT_EXPR =
-  '((el) => Array.from(el.childNodes).filter((n) => n.nodeType === 3).map((n) => n.textContent || "").join(""))';
+export const BUTTON_VALUE_EXPR =
+  '((el) => el.querySelector("[role=\'option\']") ? Array.from(el.childNodes).filter((n) => n.nodeType === 3).map((n) => n.textContent || "").join("") : (el.textContent || ""))';
 /**
  * Browser-side expression resolving the DOM root within which a chosen widget's
  * popup options / filter input live. Popup placement is vendor-split: the ARIA
@@ -527,17 +529,21 @@ const DIRECT_TEXT_EXPR =
  * scope Element/Document; callers query options/search within it, which stops a
  * sibling widget's options from being picked on a multi-widget page.
  */
-const PROMPT_SCOPE_ROOT_EXPR = `((w) => {
+export const PROMPT_SCOPE_ROOT_EXPR = `((w) => {
   const refAttr = (el) => (el && (el.getAttribute("aria-controls") || el.getAttribute("aria-owns"))) || "";
-  let id = refAttr(w);
-  if (!id) {
+  let ids = refAttr(w);
+  if (!ids) {
     const inner = w.querySelector("[aria-controls],[aria-owns]");
-    if (inner) id = refAttr(inner);
+    if (inner) ids = refAttr(inner);
   }
-  if (id) {
-    const first = id.split(/\\s+/)[0];
-    const popup = first && document.getElementById(first);
-    if (popup) return popup;
+  if (ids) {
+    // aria-controls/aria-owns may reference MULTIPLE ids (e.g. a listbox plus a
+    // status region). Prefer the referenced element that IS or CONTAINS a
+    // listbox/option; fall back to the first that resolves at all.
+    const refs = ids.split(/\\s+/).map((id) => document.getElementById(id)).filter(Boolean);
+    const withListbox = refs.find((el) => el.matches("[role='listbox']") || el.querySelector("[role='listbox'],[role='option']"));
+    if (withListbox) return withListbox;
+    if (refs.length) return refs[0];
   }
   if (w.querySelector("[role='listbox'],[role='option']")) return w;
   return document;
@@ -5727,7 +5733,7 @@ async function tryPromptSelectorPrimitive(params: {
   // popup is open.
   const enumerateWidgetsExpr = `((markAttr, triggerSel, valueSel, emptyRxSrc, emptyRxFlags) => {
     const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
-    const directText = ${DIRECT_TEXT_EXPR};
+    const buttonValue = ${BUTTON_VALUE_EXPR};
     const emptyRx = new RegExp(emptyRxSrc, emptyRxFlags);
     const triggers = Array.from(document.querySelectorAll(triggerSel));
     if (triggers.length === 0) return { widgetPresent: false };
@@ -5802,7 +5808,7 @@ async function tryPromptSelectorPrimitive(params: {
       const adid = w.getAttribute && w.getAttribute("aria-activedescendant");
       if (adid) { const opt = document.getElementById(adid); if (opt && opt.textContent.trim()) return norm(opt.textContent); }
       if (w.tagName === "INPUT" && (w.value || "").trim()) return norm(w.value);
-      if (w.tagName === "BUTTON" && directText(w).trim()) return norm(directText(w));
+      if (w.tagName === "BUTTON" && buttonValue(w).trim()) return norm(buttonValue(w));
       const lbl = w.matches(valueSel) ? w : w.querySelector(valueSel);
       const raw = lbl ? (lbl.textContent || "") : "";
       if (raw.trim() && !emptyRx.test(raw.trim())) return norm(raw);
@@ -5893,6 +5899,16 @@ async function tryPromptSelectorPrimitive(params: {
     const enumerateOptionsExpr = `((widgetMarkAttr, wIdx, markAttr, optionSel, searchSel) => {
       const w = document.querySelector("[" + widgetMarkAttr + '="' + wIdx + '"]');
       if (!w) return { optionsPresent: false };
+      // Clear stale option + filter marks from a PRIOR prompt-selector call on
+      // this same unreloaded page (an application wizard answers several "select
+      // X" steps without a reload). Both the option-click and the filter-fill
+      // address these marks with a document-wide \`.first()\`, so a leftover mark
+      // on an earlier widget's popup would otherwise win in DOM order — the
+      // inter-call sibling collision (mirrors the widget-mark reset).
+      for (const el of document.querySelectorAll("[" + markAttr + "],[" + markAttr + "-search]")) {
+        el.removeAttribute(markAttr);
+        el.removeAttribute(markAttr + "-search");
+      }
       // Scope options/search to THIS widget's popup (aria-controls portal, or
       // inline subtree), so a sibling widget's options are never picked. Fall
       // back to document only when neither a portal nor an inline popup is found.
@@ -6088,16 +6104,16 @@ async function commitPromptOption(params: {
   const readbackExpr = `((wIdx, markAttr, valueSel, emptyRxSrc, emptyRxFlags, wantText) => {
     const isInvalid = ${INVALID_MARKER_EL_EXPR};
     const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
-    const directText = ${DIRECT_TEXT_EXPR};
+    const buttonValue = ${BUTTON_VALUE_EXPR};
     const emptyRx = new RegExp(emptyRxSrc, emptyRxFlags);
     const w = document.querySelector("[" + markAttr + '="' + wIdx + '"]');
     if (!w) return { ok: false, id: "" };
     // Value via the union: aria-activedescendant, own input value, a <button>'s
-    // own DIRECT text (never descendant/popup text), or a selection-label node
-    // (empty-state phrase treated as no value).
+    // own value text (popup-pollution-safe, see BUTTON_VALUE_EXPR), or a
+    // selection-label node (empty-state phrase treated as no value).
     const adid = w.getAttribute && w.getAttribute("aria-activedescendant");
     const adText = adid && document.getElementById(adid) ? norm(document.getElementById(adid).textContent) : "";
-    const own = w.tagName === "INPUT" ? norm(w.value || "") : w.tagName === "BUTTON" ? norm(directText(w)) : "";
+    const own = w.tagName === "INPUT" ? norm(w.value || "") : w.tagName === "BUTTON" ? norm(buttonValue(w)) : "";
     const lbl = w.matches(valueSel) ? w : w.querySelector(valueSel);
     const lblRaw = lbl ? (lbl.textContent || "") : "";
     const lblText = lblRaw.trim() && !emptyRx.test(lblRaw.trim()) ? norm(lblRaw) : "";

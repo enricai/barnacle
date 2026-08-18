@@ -1,9 +1,28 @@
 import type { ActResult, Page, Stagehand } from "@browserbasehq/stagehand";
+import { Window } from "happy-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { executeStepWithHealing } from "@/scraper/flow-runner";
+import {
+  BUTTON_VALUE_EXPR,
+  executeStepWithHealing,
+  PROMPT_SCOPE_ROOT_EXPR,
+} from "@/scraper/flow-runner";
 import { buildPromptWidgetHarness } from "@/scraper/prompt-widget-dom-harness.test-helper";
 import type { Logger } from "@/types/logging";
+
+/**
+ * Run a browser-side prompt-widget expression string against a real happy-dom
+ * document (with `document` bound as the expression's globals reference it), so
+ * the value/scope contracts are tested directly rather than only through the
+ * primitive's aria-invalid-cleared commit path.
+ */
+function runWidgetExpr(expr: string, html: string, targetId: string): unknown {
+  const w = new Window({ url: "https://careers.example.com/" });
+  w.document.body.innerHTML = html;
+  const el = w.document.getElementById(targetId);
+  const fn = new w.Function("el", `return (${expr})(el);`) as (e: unknown) => unknown;
+  return fn(el);
+}
 
 /**
  * Regression coverage for the prompt-selector primitive: a native-control-less
@@ -220,5 +239,83 @@ describe("flow-runner/tryPromptSelectorPrimitive (real DOM)", () => {
     expect(testLogger.info).not.toHaveBeenCalledWith(
       expect.stringContaining("resolved by prompt-selector primitive")
     );
+  });
+
+  it("resolves options via a MULTI-id aria-controls (decoy status region first) — FIX C end-to-end", async () => {
+    const stagehandAct = vi.fn();
+    const { page, target } = buildPromptWidgetHarness({
+      html: ARIA_BUTTON_HTML,
+      // aria-controls = "<status-id> <listbox-id>": scope must pick the listbox.
+      popupByWidgetId: {
+        phoneType: { options: ["Home", "Mobile", "Work"], portaled: true, decoyRef: true },
+      },
+    });
+    const params = baseParams(page as unknown as Page, stagehandAct, "");
+    const merged = {
+      ...params,
+      frameTarget: target,
+      step: "for 'Phone Device Type' select 'Mobile'",
+    };
+
+    const result = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    );
+
+    expect(result).toBe("completed");
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining("resolved by prompt-selector primitive")
+    );
+  });
+});
+
+describe("flow-runner prompt-widget value/scope expressions (direct, real DOM)", () => {
+  it("BUTTON_VALUE_EXPR reads a child-<span> label (not a direct text node) — FIX B", () => {
+    // Would return "" under a direct-text-nodes-only read; must read "Mobile".
+    const val = runWidgetExpr(
+      BUTTON_VALUE_EXPR,
+      `<button id="b"><span>Mobile</span></button>`,
+      "b"
+    );
+    expect(String(val).trim()).toBe("Mobile");
+  });
+
+  it("BUTTON_VALUE_EXPR reads a plain direct-text label", () => {
+    const val = runWidgetExpr(BUTTON_VALUE_EXPR, `<button id="b">Mobile</button>`, "b");
+    expect(String(val).trim()).toBe("Mobile");
+  });
+
+  it("BUTTON_VALUE_EXPR does NOT absorb nested popup option text (pollution guard)", () => {
+    const val = runWidgetExpr(
+      BUTTON_VALUE_EXPR,
+      `<button id="b">Mobile<ul role="listbox"><li role="option">Home</li><li role="option">Work</li></ul></button>`,
+      "b"
+    );
+    expect(String(val)).toContain("Mobile");
+    expect(String(val)).not.toContain("Home");
+    expect(String(val)).not.toContain("Work");
+  });
+
+  it("PROMPT_SCOPE_ROOT_EXPR picks the listbox from a MULTI-id aria-controls (status region first) — FIX C", () => {
+    const scope = runWidgetExpr(
+      PROMPT_SCOPE_ROOT_EXPR,
+      `<button id="t" aria-controls="status lb"></button>` +
+        `<div id="status" role="status">Loading</div>` +
+        `<div id="lb" role="listbox"><div role="option">X</div></div>`,
+      "t"
+    ) as { id?: string };
+    expect(scope.id).toBe("lb");
+  });
+
+  it("PROMPT_SCOPE_ROOT_EXPR falls back to the inline widget subtree, then document", () => {
+    const inline = runWidgetExpr(
+      PROMPT_SCOPE_ROOT_EXPR,
+      `<div id="w"><ul role="listbox"><li role="option">X</li></ul></div>`,
+      "w"
+    ) as { id?: string };
+    expect(inline.id).toBe("w");
+    const doc = runWidgetExpr(PROMPT_SCOPE_ROOT_EXPR, `<div id="w"></div>`, "w") as {
+      nodeType?: number;
+    };
+    expect(doc.nodeType).toBe(9); // Document node
   });
 });

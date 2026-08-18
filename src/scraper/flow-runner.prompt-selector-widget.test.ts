@@ -244,4 +244,56 @@ describe("flow-runner/tryPromptSelectorPrimitive dispatch & disambiguation (real
     expect(result).toBe("completed");
     expect(trajectory).toEqual([{ stepIndex: 3, verifiedBy: "dom", targetId: "src-widget" }]);
   });
+
+  it("TWO sequential steps on the SAME page fill the correct widget each time — stale marks from step 1 do not steer step 2", async () => {
+    const stagehandAct = vi.fn();
+    const stagehand = {
+      act: stagehandAct,
+      observe: vi.fn().mockResolvedValue([]),
+    } as unknown as Stagehand;
+    // One harness (one window/DOM) reused across two calls — the real wizard's
+    // "several select steps on one unreloaded page" scenario. Disjoint options so
+    // a stale mark from step 1's popup would mis-fill step 2 if not cleared.
+    const { page, target } = buildPromptWidgetHarness({
+      html: TWO_WIDGET_HTML,
+      // Both searchable → each leaves a persistent `-search` mark on its trigger
+      // input after commit; step 2 must clear step 1's stale mark or its
+      // document-wide filter fill would hit the DOM-earlier src-widget input.
+      popupByWidgetId: {
+        "src-widget": { options: ["Job Board", "Referral", "LinkedIn"], searchable: true },
+        "phone-widget": { options: ["Home", "Mobile", "Work"], searchable: true },
+      },
+    });
+
+    const traj1: { stepIndex: number; verifiedBy: string; targetId?: string }[] = [];
+    const step1 = {
+      ...baseParams(
+        page as unknown as Page,
+        stagehand,
+        "for 'How Did You Hear About Us?' select 'Referral'",
+        target
+      ),
+      trajectory: traj1,
+    };
+    const r1 = await executeStepWithHealing(step1 as never);
+
+    const traj2: { stepIndex: number; verifiedBy: string; targetId?: string }[] = [];
+    const step2 = {
+      ...baseParams(
+        page as unknown as Page,
+        stagehand,
+        "for 'Phone Device Type' select 'Mobile'",
+        target
+      ),
+      stepIndex: 4,
+      trajectory: traj2,
+    };
+    const r2 = await executeStepWithHealing(step2 as never);
+
+    expect(r1).toBe("completed");
+    expect(traj1).toEqual([{ stepIndex: 3, verifiedBy: "dom", targetId: "src-widget" }]);
+    // Step 2 must resolve the PHONE widget, not the source widget marked in step 1.
+    expect(r2).toBe("completed");
+    expect(traj2).toEqual([{ stepIndex: 4, verifiedBy: "dom", targetId: "phone-widget" }]);
+  });
 });

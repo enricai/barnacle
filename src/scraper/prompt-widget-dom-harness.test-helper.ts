@@ -34,6 +34,12 @@ export interface PopupSpec {
    * The trigger gets `aria-controls` pointing at the portaled popup's id.
    */
   portaled?: boolean;
+  /**
+   * With `portaled`, prepend a non-listbox `role="status"` element id to the
+   * trigger's `aria-controls` (an id-ref LIST), so scope resolution must pick the
+   * listbox target rather than the first id. Exercises the multi-id path.
+   */
+  decoyRef?: boolean;
 }
 
 /**
@@ -114,7 +120,18 @@ export function buildPromptWidgetHarness(params: {
       const trigger = widgetEl.matches("button,[role='combobox']")
         ? widgetEl
         : widgetEl.querySelector("button,[role='combobox']") || widgetEl;
-      trigger.setAttribute("aria-controls", popupId);
+      if (state.spec.decoyRef) {
+        // Prepend a NON-listbox status region to aria-controls (id-ref list),
+        // so scope resolution must pick the listbox, not the first id.
+        const decoyId = `decoy-${widgetEl.id}`;
+        const decoy = document.createElement("div");
+        decoy.id = decoyId;
+        decoy.setAttribute("role", "status");
+        document.body.appendChild(decoy);
+        trigger.setAttribute("aria-controls", `${decoyId} ${popupId}`);
+      } else {
+        trigger.setAttribute("aria-controls", popupId);
+      }
       document.body.appendChild(wrap);
     } else {
       widgetEl.appendChild(wrap);
@@ -160,9 +177,13 @@ export function buildPromptWidgetHarness(params: {
           if (owner) {
             if (owner.tagName === "BUTTON") {
               // A near-standard button widget commits by updating its own
-              // accessible text/label (as the real DOM does), exercising the
-              // value union's own-text branch.
-              owner.textContent = label;
+              // accessible label (as the real DOM does), exercising the value
+              // union's own-text branch. If the button already wraps its label in
+              // a <span> (some libraries do), commit into that span — the
+              // child-wrapped-label case BUTTON_VALUE_EXPR must still read.
+              const span = owner.querySelector("span");
+              if (span) span.textContent = label;
+              else owner.textContent = label;
               owner.setAttribute("aria-label", `${label} Required`);
             } else {
               let valueNode = owner.querySelector("[data-automation-id='promptSelectionLabel']");
