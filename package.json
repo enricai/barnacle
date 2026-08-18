@@ -318,6 +318,7 @@
     "@types/node": "^26.1.0",
     "@vitest/coverage-v8": "^4.1.10",
     "dd-trace": "^6",
+    "happy-dom": "^20.11.2",
     "hot-shots": "^17",
     "husky": "^9.1.6",
     "pino-pretty": "^13.0.0",

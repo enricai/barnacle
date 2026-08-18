@@ -1,16 +1,18 @@
-import type { ActResult, Page, Stagehand } from "@browserbasehq/stagehand";
+import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { executeStepWithHealing } from "@/scraper/flow-runner";
+import { buildPromptWidgetHarness } from "@/scraper/prompt-widget-dom-harness.test-helper";
 import type { Logger } from "@/types/logging";
 
 /**
- * Unit coverage for `tryPromptSelectorPrimitive`'s enumerate/click/filter/
- * select/verify contract, exercised through `executeStepWithHealing` (the
- * primitive itself is module-private) against fake `page`/`target` fixtures
- * — no real browser, mirroring the fake-evaluate scaffolding style used by
- * `flow-runner.prompt-selector-primitive.test.ts` and
- * `flow-runner.deep-locator-scope-widening.test.ts`.
+ * Dispatch/disambiguation contract for the prompt-selector primitive, exercised
+ * through `executeStepWithHealing` against a REAL happy-dom document (see
+ * `prompt-widget-dom-harness.test-helper`) rather than substring-matched fake
+ * `evaluate` results. Covers what the primitive-mechanics test does not: the
+ * trajectory entry the caller records, conservative widget disambiguation on a
+ * multi-widget page, and the ordering guarantee that a genuine native
+ * `<select>` is claimed by the select primitive before prompt-selector runs.
  */
 
 const testLogger = {
@@ -20,111 +22,51 @@ const testLogger = {
   debug: vi.fn(),
 } as unknown as Logger;
 
-function actResult(overrides: Partial<ActResult> = {}): ActResult {
-  return {
-    success: true,
-    message: "clicked",
-    actionDescription: "clicked",
-    actions: [],
-    ...overrides,
-  };
-}
+/** Two labelled widget-kit widgets on one page, both unfilled. */
+const TWO_WIDGET_HTML = `
+<div data-automation-id="applyFlowMyInfoPage">
+  <div role="group" aria-labelledby="src-section">
+    <span id="src-section">Contact</span>
+    <div data-automation-id="formField-source">
+      <label for="source--source"><span>How Did You Hear About Us?</span></label>
+      <div id="src-widget" data-uxi-widget-type="multiselect" data-automation-id="multiSelectContainer">
+        <div data-automation-id="promptSelectionLabel"></div>
+        <input id="source--source" data-uxi-widget-type="selectinput" type="text"
+               aria-required="true" aria-invalid="true" value="" />
+      </div>
+    </div>
+  </div>
+  <div role="group" aria-labelledby="phone-section">
+    <span id="phone-section">Phone</span>
+    <div data-automation-id="formField-phoneType">
+      <label for="phone--phoneType"><span>Phone Device Type</span></label>
+      <div id="phone-widget" data-uxi-widget-type="multiselect" data-automation-id="multiSelectContainer">
+        <div data-automation-id="promptSelectionLabel"></div>
+        <input id="phone--phoneType" data-uxi-widget-type="selectinput" type="text"
+               aria-required="true" aria-invalid="true" value="" />
+      </div>
+    </div>
+  </div>
+</div>`;
 
-/**
- * Fake page whose `evaluate` answers the prompt-selector primitive's widget
- * enumerate, popup-option enumerate (static or searchable), and commit
- * readback passes by inspecting distinguishing substrings in the opaque
- * `expr` string, and answers every OTHER primitive's probe with an
- * absent/zero result so only the prompt-selector primitive can claim the
- * step. `searchable` widgets only render `optionTexts` once `filled` is
- * true, modeling the wizard ATS's Country/Region widgets that render nothing (or a
- * different slice) until the search box is typed into.
- */
-function fakePromptWidgetPage(params: {
-  widgetLabel: string;
-  optionTexts: string[];
-  searchable: boolean;
-  committedAfterClick: boolean;
-}): { page: Page; locatorClick: ReturnType<typeof vi.fn>; searchFill: ReturnType<typeof vi.fn> } {
-  const locatorClick = vi.fn().mockResolvedValue(undefined);
-  const state = { filled: false };
-  const searchFill = vi.fn().mockImplementation(async () => {
-    state.filled = true;
-  });
-  const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
-    const src = String(expr);
-    if (src.includes("outerHTML")) return { html: 50_000, text: "0:" };
-    if (src.includes("wantText")) {
-      return { ok: params.committedAfterClick, id: "phoneType-widget" };
-    }
-    if (src.includes("promptOption")) {
-      const optionsVisible = !params.searchable || state.filled;
-      return {
-        optionsPresent: true,
-        searchable: params.searchable,
-        options: optionsVisible ? params.optionTexts.map((text, oIdx) => ({ oIdx, text })) : [],
-      };
-    }
-    if (src.includes("promptIcon")) {
-      return {
-        widgetPresent: true,
-        candidates: [{ wIdx: 0, label: params.widgetLabel }],
-      };
-    }
-    if (src.includes("isInvalid(el)")) return 0;
-    return null;
-  });
-  const page = {
-    evaluate,
-    url: () => "https://acme.wd1.myworkdayjobs.com/en-US/acme/apply/job/1",
-    title: vi.fn().mockResolvedValue("Apply"),
-    locator: vi.fn().mockReturnValue({
-      first: () => ({
-        click: locatorClick,
-        fill: searchFill,
-        isChecked: vi.fn().mockResolvedValue(false),
-        inputValue: vi.fn().mockResolvedValue(""),
-      }),
-    }),
-    waitForTimeout: vi.fn().mockResolvedValue(undefined),
-  } as unknown as Page;
-  return { page, locatorClick, searchFill };
-}
+/** A native <select> and NO prompt-widget structure. */
+const SELECT_ONLY_HTML = `
+<div>
+  <label for="phoneType">Phone Device Type</label>
+  <select id="phoneType" name="phoneType" aria-required="true">
+    <option value="">Select One</option>
+    <option value="home">Home</option>
+    <option value="mobile">Mobile</option>
+    <option value="work">Work</option>
+  </select>
+</div>`;
 
-/** Fake page with no prompt-widget markers at all — every probe absent/zero. */
-function fakeNoWidgetPage(): Page {
-  const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
-    const src = String(expr);
-    if (src.includes("outerHTML")) return { html: 50_000, text: "0:" };
-    if (src.includes("promptIcon")) return { widgetPresent: false };
-    if (src.includes("isInvalid(el)")) return 0;
-    return null;
-  });
-  return {
-    evaluate,
-    url: () => "https://acme.wd1.myworkdayjobs.com/en-US/acme/apply/job/1",
-    title: vi.fn().mockResolvedValue("Apply"),
-    locator: vi.fn().mockReturnValue({
-      first: () => ({
-        click: vi.fn().mockResolvedValue(undefined),
-        fill: vi.fn().mockResolvedValue(undefined),
-        isChecked: vi.fn().mockResolvedValue(false),
-        inputValue: vi.fn().mockResolvedValue(""),
-      }),
-    }),
-    waitForTimeout: vi.fn().mockResolvedValue(undefined),
-  } as unknown as Page;
-}
-
-function baseParams(page: Page, stagehandAct: ReturnType<typeof vi.fn>) {
-  const stagehand = {
-    act: stagehandAct,
-    observe: vi.fn().mockResolvedValue([]),
-  } as unknown as Stagehand;
+function baseParams(page: Page, stagehand: Stagehand, step: string, frameTarget: unknown) {
   return {
     stagehand,
     page,
-    step: "for 'What is your preferred phone type?' select 'Mobile'",
+    frameTarget,
+    step,
     optional: false,
     upload: false,
     submitStep: false,
@@ -151,207 +93,87 @@ function baseParams(page: Page, stagehandAct: ReturnType<typeof vi.fn>) {
   };
 }
 
-describe("flow-runner/tryPromptSelectorPrimitive widget contract", () => {
+describe("flow-runner/tryPromptSelectorPrimitive dispatch & disambiguation (real DOM)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("resolves a static-list widget by clicking the trigger then the matching promptOption", async () => {
+  it("pushes a dom-verified trajectory entry with the resolved widget id and never reaches the cascade", async () => {
     const stagehandAct = vi.fn();
-    const { page, locatorClick } = fakePromptWidgetPage({
-      widgetLabel: "What is your preferred phone type?",
-      optionTexts: ["Home", "Mobile", "Work"],
-      searchable: false,
-      committedAfterClick: true,
-    });
-
-    const result = await executeStepWithHealing(baseParams(page, stagehandAct));
-
-    expect(result).toBe("completed");
-    // Trigger click (opens popup) + matched option click.
-    expect(locatorClick).toHaveBeenCalledTimes(2);
-    expect(stagehandAct).not.toHaveBeenCalled();
-    expect(testLogger.info).toHaveBeenCalledWith(
-      expect.stringContaining("resolved by prompt-selector primitive")
-    );
-  });
-
-  it("types the option text into the search box to filter a searchable-list widget before clicking", async () => {
-    const stagehandAct = vi.fn();
-    const { page, locatorClick, searchFill } = fakePromptWidgetPage({
-      widgetLabel: "What is your preferred phone type?",
-      optionTexts: ["Mobile"],
-      searchable: true,
-      committedAfterClick: true,
-    });
-
-    const result = await executeStepWithHealing(baseParams(page, stagehandAct));
-
-    expect(result).toBe("completed");
-    expect(searchFill).toHaveBeenCalledWith("Mobile");
-    // Trigger click + matched option click (the search box fill isn't a click).
-    expect(locatorClick).toHaveBeenCalledTimes(2);
-    expect(testLogger.info).toHaveBeenCalledWith(
-      expect.stringContaining("resolved by prompt-selector primitive")
-    );
-  });
-
-  it("returns null (falls through to cascade) when the page has no prompt-widget structure", async () => {
-    const stagehandAct = vi.fn().mockResolvedValue(actResult());
-    const page = fakeNoWidgetPage();
-    const stagehand = {
-      act: stagehandAct,
-      observe: vi.fn().mockResolvedValue([]),
-    } as unknown as Stagehand;
-
-    await executeStepWithHealing({ ...baseParams(page, stagehandAct), stagehand }).catch(
-      () => undefined
-    );
-
-    expect(testLogger.info).toHaveBeenCalledWith(
-      expect.stringContaining("no prompt widget on page")
-    );
-    expect(testLogger.info).not.toHaveBeenCalledWith(
-      expect.stringContaining("resolved by prompt-selector primitive")
-    );
-  });
-
-  it("returns null when no option matches the requested text and there is no LLM client to disambiguate", async () => {
-    const stagehandAct = vi.fn().mockResolvedValue(actResult());
-    const { page } = fakePromptWidgetPage({
-      widgetLabel: "What is your preferred phone type?",
-      optionTexts: ["Home", "Work"], // "Mobile" (STEP's target) is absent.
-      searchable: false,
-      committedAfterClick: true,
-    });
-    const stagehand = {
-      act: stagehandAct,
-      observe: vi.fn().mockResolvedValue([]),
-    } as unknown as Stagehand;
-
-    const params = baseParams(page, stagehandAct);
-    expect(params.anthropic).toBeNull();
-    await executeStepWithHealing({ ...params, stagehand }).catch(() => undefined);
-
-    expect(testLogger.info).toHaveBeenCalledWith(expect.stringContaining("no option match for"));
-    expect(testLogger.info).toHaveBeenCalledWith(expect.stringContaining("no LLM client"));
-    expect(testLogger.info).not.toHaveBeenCalledWith(
-      expect.stringContaining("resolved by prompt-selector primitive")
-    );
-  });
-
-  it("returns a non-null targetId on a resolved selection, which the caller counts as a completed step", async () => {
-    const stagehandAct = vi.fn();
-    const { page } = fakePromptWidgetPage({
-      widgetLabel: "What is your preferred phone type?",
-      optionTexts: ["Home", "Mobile", "Work"],
-      searchable: false,
-      committedAfterClick: true,
-    });
-
-    const result = await executeStepWithHealing(baseParams(page, stagehandAct));
-
-    // `tryPromptSelectorPrimitive` returns the widget's DOM id ("phoneType-widget"
-    // per the fake readback), pushed onto the trajectory as `targetId`; the
-    // caller maps a non-null targetId to a "completed" step outcome.
-    expect(result).toBe("completed");
-    expect(stagehandAct).not.toHaveBeenCalled();
-  });
-});
-
-/**
- * Fake page whose `evaluate` answers the `<select>`-enumerate/set/invalid-
- * check exprs `trySelectPrimitive`/`applySelectValue` issue with a single
- * deterministic option match, and answers the prompt-selector primitive's
- * own widget probe with `widgetPresent: false` — modeling a page that has a
- * genuine native `<select>` and NO prompt-widget structure at all, so the
- * select primitive (which runs earlier in the dispatch chain) must claim the
- * step before prompt-selector ever gets a chance to.
- */
-function fakeSelectOnlyPage(): Page {
-  const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
-    const src = String(expr);
-    if (src.includes("outerHTML")) return { html: 50_000, text: "0:" };
-    if (src.includes("selectPresent")) {
-      return {
-        selectPresent: true,
-        detMatch: { selIdx: 0, value: "mobile", text: "Mobile", id: "phoneType-select" },
-      };
-    }
-    if (src.includes("desc.set.call")) return { ok: true };
-    if (src.includes("isInvalid(node)")) return false;
-    if (src.includes("promptIcon")) return { widgetPresent: false };
-    if (src.includes("isInvalid(el)")) return 0;
-    return null;
-  });
-  return {
-    evaluate,
-    url: () => "https://acme.wd1.myworkdayjobs.com/en-US/acme/apply/job/1",
-    title: vi.fn().mockResolvedValue("Apply"),
-    locator: vi.fn().mockReturnValue({
-      first: () => ({
-        click: vi.fn().mockResolvedValue(undefined),
-        fill: vi.fn().mockResolvedValue(undefined),
-        isChecked: vi.fn().mockResolvedValue(false),
-        inputValue: vi.fn().mockResolvedValue(""),
-      }),
-    }),
-    waitForTimeout: vi.fn().mockResolvedValue(undefined),
-  } as unknown as Page;
-}
-
-/**
- * Dispatch/counting contract at the `executeStepWithHealing` call site
- * (distinct from `flow-runner.prompt-selector-widget.test.ts`'s coverage of
- * the primitive's own click/select mechanics): asserts a prompt-widget-only
- * fixture is counted as a resolved candidate — logged, pushed onto the
- * trajectory as a `dom`-verified entry with a `targetId`, and returned as
- * "completed" — WITHOUT ever reaching the focused-probe/act-observe cascade
- * the report shows going blind (0 candidates) on these widgets, and without
- * disturbing the existing select/checkbox/radio-before-prompt-selector
- * dispatch order.
- */
-describe("flow-runner/executeStepWithHealing dispatch: prompt-selector counts as a resolved candidate", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("logs 'resolved by prompt-selector primitive', pushes a dom-verified trajectory entry with targetId, returns completed, and never reaches the probe/cascade", async () => {
     const stagehandObserve = vi.fn().mockResolvedValue([]);
-    const stagehandAct = vi.fn();
-    const { page } = fakePromptWidgetPage({
-      widgetLabel: "What is your preferred phone type?",
-      optionTexts: ["Home", "Mobile", "Work"],
-      searchable: false,
-      committedAfterClick: true,
+    const stagehand = { act: stagehandAct, observe: stagehandObserve } as unknown as Stagehand;
+    const { page, target } = buildPromptWidgetHarness({
+      html: TWO_WIDGET_HTML,
+      popupByWidgetId: {
+        "phone-widget": { options: ["Home", "Mobile", "Work"] },
+        "src-widget": { options: ["Job Board", "Referral"] },
+      },
     });
     const trajectory: { stepIndex: number; verifiedBy: string; targetId?: string }[] = [];
-    const params = baseParams(page, stagehandAct);
-    params.stagehand = { act: stagehandAct, observe: stagehandObserve } as unknown as Stagehand;
+    const params = baseParams(
+      page as unknown as Page,
+      stagehand,
+      "for 'Phone Device Type' select 'Mobile'",
+      target
+    );
 
     const result = await executeStepWithHealing({ ...params, trajectory } as never);
 
     expect(result).toBe("completed");
-    expect(testLogger.info).toHaveBeenCalledWith(
-      expect.stringContaining("resolved by prompt-selector primitive")
-    );
-    expect(trajectory).toEqual([{ stepIndex: 3, verifiedBy: "dom", targetId: "phoneType-widget" }]);
-    // The focused-probe-before-attempts path (the report's "focused probe
-    // found 0 candidates but unfocused observe found N" symptom) and the
-    // act/observe cascade never ran for this step.
-    expect(testLogger.info).not.toHaveBeenCalledWith(expect.stringContaining("focused probe"));
-    expect(testLogger.info).not.toHaveBeenCalledWith(expect.stringContaining("probe-absent"));
+    // The uniquely-labelled 'phone-widget' was chosen, not the source widget.
+    expect(trajectory).toEqual([{ stepIndex: 3, verifiedBy: "dom", targetId: "phone-widget" }]);
     expect(stagehandObserve).not.toHaveBeenCalled();
     expect(stagehandAct).not.toHaveBeenCalled();
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining("resolved by prompt-selector primitive")
+    );
   });
 
-  it("does not shadow the select primitive: a page with a genuine <select> and no prompt-widget structure still resolves via 'resolved by select primitive', not prompt-selector", async () => {
+  it("falls through (does not guess) when an unlabelled step is ambiguous across multiple unfilled widgets", async () => {
     const stagehandAct = vi.fn();
-    const page = fakeSelectOnlyPage();
-    const trajectory: { stepIndex: number; verifiedBy: string; targetId?: string }[] = [];
-    const params = baseParams(page, stagehandAct);
+    const stagehand = {
+      act: stagehandAct,
+      observe: vi.fn().mockResolvedValue([]),
+    } as unknown as Stagehand;
+    const { page, target } = buildPromptWidgetHarness({
+      html: TWO_WIDGET_HTML,
+      popupByWidgetId: {
+        "phone-widget": { options: ["Home", "Mobile"] },
+        "src-widget": { options: ["Job Board", "Referral"] },
+      },
+    });
+    // No 'for <label>' — just "select 'Mobile'": two unfilled widgets, so the
+    // primitive must NOT guess which one the step means.
+    const params = baseParams(page as unknown as Page, stagehand, "select 'Mobile'", target);
 
-    const result = await executeStepWithHealing({ ...params, trajectory } as never);
+    await executeStepWithHealing(params as never).catch(() => undefined);
+
+    expect(testLogger.info).not.toHaveBeenCalledWith(
+      expect.stringContaining("resolved by prompt-selector primitive")
+    );
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining("no unambiguous widget match")
+    );
+  });
+
+  it("does not shadow the select primitive: a genuine <select> resolves via the select primitive, not prompt-selector", async () => {
+    const stagehandAct = vi.fn();
+    const stagehand = {
+      act: stagehandAct,
+      observe: vi.fn().mockResolvedValue([]),
+    } as unknown as Stagehand;
+    const { page, target } = buildPromptWidgetHarness({
+      html: SELECT_ONLY_HTML,
+      popupByWidgetId: {},
+    });
+    const params = baseParams(
+      page as unknown as Page,
+      stagehand,
+      "for 'Phone Device Type' select 'Mobile'",
+      target
+    );
+
+    const result = await executeStepWithHealing(params as never);
 
     expect(result).toBe("completed");
     expect(testLogger.info).toHaveBeenCalledWith(
@@ -360,6 +182,5 @@ describe("flow-runner/executeStepWithHealing dispatch: prompt-selector counts as
     expect(testLogger.info).not.toHaveBeenCalledWith(
       expect.stringContaining("resolved by prompt-selector primitive")
     );
-    expect(trajectory).toEqual([{ stepIndex: 3, verifiedBy: "dom", targetId: "phoneType-select" }]);
   });
 });

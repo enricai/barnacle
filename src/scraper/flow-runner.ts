@@ -410,22 +410,93 @@ const RADIO_SETTLE_MS = 400;
 const SELECT_SETTLE_MS = 400;
 /**
  * Same async-revalidation tick as {@link RADIO_SETTLE_MS}/{@link SELECT_SETTLE_MS},
- * for the wizard ATS's prompt-selector popup widget: after opening the popup, after
- * typing into its search box, and after clicking an option, the DOM (option
- * list render, `promptSelectionLabel` text, `aria-invalid` marker) settles a
- * beat later than the synthetic/trusted event that triggered it.
+ * for the popup-dropdown widget family {@link tryPromptSelectorPrimitive} handles:
+ * after opening the popup, after typing into an in-popup filter, and after
+ * clicking an option, the DOM (option-list render, selection-label text,
+ * `aria-invalid` marker) settles a beat later than the trusted event that
+ * triggered it.
  */
 const PROMPT_SELECTOR_SETTLE_MS = 400;
 /**
  * Temporary attribute {@link tryPromptSelectorPrimitive} stamps onto each
- * candidate widget button during its read-only enumerate pass, so the
- * Node-side click (a real Playwright gesture — the wizard ATS's `promptIcon` button
- * ignores a bare `el.click()`) can address the exact widget chosen by index
- * without re-deriving a CSS/xpath selector for an element with no stable id.
+ * candidate widget during its read-only enumerate pass, so the Node-side click
+ * (a real Playwright gesture — these widgets ignore a bare `el.click()`) can
+ * address the exact widget chosen by index without re-deriving a CSS/xpath
+ * selector for an element with no stable id.
  */
 const PROMPT_WIDGET_MARK_ATTR = "data-bcl-prompt-idx";
-/** Same role as {@link PROMPT_WIDGET_MARK_ATTR}, but for the popup's rendered `data-automation-id="promptOption"` entries. */
+/** Same role as {@link PROMPT_WIDGET_MARK_ATTR}, but for the popup's rendered option entries. */
 const PROMPT_OPTION_MARK_ATTR = "data-bcl-prompt-opt-idx";
+/**
+ * Cross-vendor selector union that identifies the TRIGGER of a native-control-less
+ * popup-dropdown widget (a combobox that opens a listbox popup and renders no
+ * `<select>`/`<input>` a focused `<select>`/`<input>` probe can see). Ordered as
+ * a UNION, standards first, with well-known widget-library markers as co-equal
+ * members — the same multi-vendor-union discipline as
+ * {@link INVALID_MARKER_CLASS_SOURCE} (`ng-invalid|Mui-error|…`). No member is a
+ * per-site branch; each is one recognizable spelling of the same widget shape.
+ * Growth is a one-line edit here — never a new hardcoded selector scattered into
+ * logic (the site-agnostic guard trips on the latter, allows this curated list).
+ *
+ * Members: ARIA combobox / listbox-owning triggers (`role=combobox`,
+ * `aria-haspopup=listbox`, `aria-controls`/`aria-owns`→listbox); and the
+ * `data-uxi-widget-type` / `data-automation-id` prompt family emitted by the
+ * Canvas/UXI widget kit some ATS front-ends build on (verified on a real
+ * capture: the trigger is an `<input data-uxi-widget-type="selectinput"
+ * aria-required aria-invalid>` beside a `data-automation-id="promptIcon"` icon,
+ * with NO `role=combobox` — hence ARIA alone under-selects it).
+ */
+const PROMPT_TRIGGER_SELECTORS = [
+  "[role='combobox'][aria-haspopup='listbox']",
+  "[role='combobox'][aria-controls]",
+  "[role='combobox'][aria-owns]",
+  "[aria-haspopup='listbox']",
+  "[data-uxi-widget-type='selectinput']",
+  "[data-uxi-widget-type='multiselect']",
+  "[data-automation-id='promptIcon']",
+  "[data-automation-id='multiSelectContainer']",
+  "[data-automation-id='promptSelectionLabel']",
+].join(",");
+/**
+ * Cross-vendor selector union for an OPTION rendered inside the opened popup —
+ * standards first (`role=option`), then the widget-kit option markers. Sibling
+ * of {@link PROMPT_TRIGGER_SELECTORS}; same union discipline and guard treatment.
+ */
+const PROMPT_OPTION_SELECTORS = [
+  "[role='option']",
+  "[data-automation-id='promptOption']",
+  "[data-uxi-widget-type='selectinputlistitem']",
+].join(",");
+/**
+ * Cross-vendor selector union for an in-popup filter/typeahead input — standards
+ * first, then the widget-kit's bare filter `<input>` (which carries no
+ * `role=searchbox`, only `data-uxi-widget-type='selectinput'` on the input
+ * itself). Sibling of {@link PROMPT_TRIGGER_SELECTORS}; same guard treatment.
+ */
+const PROMPT_SEARCH_SELECTORS = [
+  "[role='searchbox']",
+  "[role='combobox'] input[type='text']",
+  "[data-automation-id='searchBox'] input",
+  "[data-automation-id='searchBoxInput']",
+  "input[data-uxi-widget-type='selectinput']",
+].join(",");
+/**
+ * Cross-vendor selector union for the node that carries a widget's CURRENT
+ * (committed) value text — standards-poor here (no `aria-activedescendant` on
+ * the verified widget), so the widget-kit's selection-label node is a co-equal
+ * union member. Sibling of {@link PROMPT_TRIGGER_SELECTORS}.
+ */
+const PROMPT_VALUE_SELECTORS = [
+  "[data-automation-id='promptSelectionLabel']",
+  "[aria-live='polite'][data-automation-id='promptAriaInstruction']",
+].join(",");
+/**
+ * The widget-kit's empty-state value text ("0 items selected") — a filled
+ * widget's value node reads the chosen option instead. Matched
+ * case-insensitively as a whole phrase so a non-empty selection ("1 item
+ * selected, …") is correctly read as filled.
+ */
+const PROMPT_EMPTY_VALUE_RX = /^\s*0\s+items?\s+selected\s*$/i;
 /**
  * Extra bounded poll window for a network-only advance whose real
  * `TransitionWorklet(type="next")` POST lands AFTER the `STEP_PAUSE_MS`
@@ -5534,24 +5605,26 @@ async function applyRadioSelection(
 }
 
 /**
- * Site-agnostic prompt-selector primitive: answer the wizard ATS's button-triggered
- * popup dropdown widget family (`promptIcon`/`promptSelectionLabel`/
- * `multiSelectContainer` trigger, options rendered as
- * `data-automation-id="promptOption"` list items inside the opened popup).
+ * Answer a native-control-less popup-dropdown widget (a combobox that opens a
+ * listbox popup and renders NO `<select>`/`<input>` a focused `<select>`/
+ * `<input>` probe can see). Detected by a cross-vendor UNION of shape signals
+ * ({@link PROMPT_TRIGGER_SELECTORS}/{@link PROMPT_OPTION_SELECTORS}), not any
+ * one vendor's private attribute — standards (ARIA `combobox`/`listbox`/
+ * `option`) where the widget exposes them, plus the well-known Canvas/UXI
+ * widget-kit markers as co-equal union members for the widgets that under-
+ * annotate ARIA (some emit `role=option` only once the popup is open, and no
+ * `role=combobox` at all).
  *
- * Why this exists (parallels `trySelectPrimitive`/`tryRadioPrimitive`): the wizard ATS
- * never renders this widget as a native `<select>` and its trigger carries no
- * accessible role Stagehand's observe cascade resolves to a real click target,
- * so the focused probe reports "0 candidates" for it — measured on the wizard
- * ATS's application wizard, where My Information's Source/Phone Type/Country/Country
- * Region/Previous-Worker fields are ALL this widget, and the wizard never
- * leaves step 1 of 7. This primitive finds the widget by its trigger markers,
- * opens the popup with a real Playwright click gesture (a bare `el.click()`
- * doesn't fire the wizard ATS's open handler — the same failure mode as the MUI
- * radio/select widgets), types into the popup's search box when the widget is
- * the searchable-list variant (the wizard ATS's Country/Region widgets render only a
- * partial option slice until filtered), and clicks the matching
- * `promptOption` entry with a real click.
+ * Why this exists (parallels `trySelectPrimitive`/`tryRadioPrimitive`): such a
+ * widget renders as neither a native `<select>` nor a control the observe
+ * cascade resolves to a click target, so the focused probe reports "0
+ * candidates" and the step strands. This primitive finds the widget by the
+ * trigger union, opens the popup with a real Playwright click gesture (a bare
+ * `el.click()` does not fire these widgets' open handler — the same failure
+ * mode as the MUI radio/select widgets), types into an in-popup filter input
+ * when one is present (the searchable/typeahead variant renders only a partial
+ * option slice until filtered), and clicks the matching option with a real
+ * click.
  *
  * Matches the target widget by `questionLabel` (when the step carries one) or,
  * failing that, by there being exactly one unfilled widget on the page —
@@ -5584,30 +5657,50 @@ async function tryPromptSelectorPrimitive(params: {
   const norm = (s: string): string => s.replace(/\s+/g, " ").trim().toLowerCase();
 
   // Phase 1 (browser, read-only except for the marker attribute stamped for
-  // Phase 2's click addressing): find candidate widgets — the trigger markers
-  // with no <select> equivalent — that are still unfilled/invalid. Options are
-  // NOT enumerated here; the wizard ATS only renders `promptOption` items once the
+  // Phase 2's click addressing): find candidate widgets — popup-dropdown
+  // triggers with no native <select> — that are still unfilled/invalid. Options
+  // are NOT enumerated here; these widgets only render option entries once the
   // popup is open.
-  const enumerateWidgetsExpr = `((markAttr) => {
+  const enumerateWidgetsExpr = `((markAttr, triggerSel, valueSel, emptyRxSrc) => {
     const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
-    const triggers = Array.from(document.querySelectorAll(
-      "[data-automation-id='promptIcon'],[data-automation-id='multiSelectContainer'],[data-automation-id='promptSelectionLabel']"
-    ));
+    const emptyRx = new RegExp(emptyRxSrc.slice(1, emptyRxSrc.lastIndexOf("/")), emptyRxSrc.slice(emptyRxSrc.lastIndexOf("/") + 1));
+    const triggers = Array.from(document.querySelectorAll(triggerSel));
     if (triggers.length === 0) return { widgetPresent: false };
     const seen = new Set();
-    const widgets = [];
+    const resolved = [];
     for (const el of triggers) {
-      const btn =
-        el.closest("button,[role='button']") ||
-        el.closest("[data-automation-id='promptIcon'],[data-automation-id='multiSelectContainer']") ||
-        el;
-      if (seen.has(btn)) continue;
-      seen.add(btn);
-      widgets.push(btn);
+      // Resolve each union hit to ONE widget container. A single widget often
+      // matches the union more than once (e.g. an outer container AND its inner
+      // filter input both carry data-uxi-widget-type), so prefer a real
+      // interactive ancestor, else the OUTERMOST widget-kit container on the
+      // ancestor chain (so the inner input and its container collapse to the
+      // same node), else the element itself.
+      const interactive = el.closest("button,[role='button'],[role='combobox']");
+      let container = interactive || el;
+      if (!interactive) {
+        const kitSel = "[data-uxi-widget-type='selectinput'],[data-uxi-widget-type='multiselect'],[data-automation-id='multiSelectContainer']";
+        let node = el.closest(kitSel);
+        while (node) {
+          container = node;
+          const up = node.parentElement && node.parentElement.closest(kitSel);
+          if (!up || up === node) break;
+          node = up;
+        }
+      }
+      if (seen.has(container)) continue;
+      seen.add(container);
+      resolved.push(container);
     }
+    // Drop any candidate contained by another (belt-and-suspenders against a
+    // widget whose union hits resolve to nested containers).
+    const widgets = resolved.filter((w) => !resolved.some((o) => o !== w && o.contains(w)));
     if (widgets.length === 0) return { widgetPresent: false };
     const isInvalid = ${INVALID_MARKER_EL_EXPR};
     const widgetLabel = (w) => {
+      // Standard first: aria-labelledby, aria-label, then a <label for=id>
+      // referencing the widget or a control inside it, then a labelled group
+      // ancestor (role=group[aria-labelledby] / fieldset<legend>), then the
+      // nearest non-empty ancestor text as a last resort.
       const alb = w.getAttribute("aria-labelledby");
       if (alb) {
         const parts = [];
@@ -5616,7 +5709,18 @@ async function tryPromptSelectorPrimitive(params: {
       }
       const al = w.getAttribute("aria-label");
       if (al) return al.replace(/\\s+/g, " ").trim().slice(0, 120);
-      let node = w.closest("[data-automation-id*='formField']") || w.parentElement;
+      const labelledIds = [w.id, ...Array.from(w.querySelectorAll("[id]")).map((e) => e.id)].filter(Boolean);
+      for (const id of labelledIds) {
+        const lab = document.querySelector("label[for='" + (window.CSS && CSS.escape ? CSS.escape(id) : id) + "']");
+        if (lab && lab.textContent.trim()) return lab.textContent.replace(/\\s+/g, " ").trim().slice(0, 120);
+      }
+      const grp = w.closest("[role='group'][aria-labelledby],fieldset");
+      if (grp) {
+        const gid = grp.getAttribute("aria-labelledby");
+        const gref = gid ? document.getElementById(gid.split(/\\s+/)[0]) : grp.querySelector("legend");
+        if (gref && gref.textContent.trim()) return gref.textContent.replace(/\\s+/g, " ").trim().slice(0, 120);
+      }
+      let node = w.parentElement;
       for (let d = 0; d < 5 && node; d++) {
         const t = (node.textContent || "").trim();
         if (t) return t.replace(/\\s+/g, " ").trim().slice(0, 120);
@@ -5625,10 +5729,19 @@ async function tryPromptSelectorPrimitive(params: {
       return "";
     };
     const currentText = (w) => {
-      const lbl = w.matches("[data-automation-id='promptSelectionLabel']")
-        ? w
-        : w.querySelector("[data-automation-id='promptSelectionLabel']");
-      return lbl ? norm(lbl.textContent) : "";
+      // Value via the union: aria-activedescendant → option text, the widget's
+      // own value (an <input>'s value, or a <button>-trigger's own label text —
+      // a button that IS the trigger carries the committed choice as its own
+      // text), else a selection-label node — treating the widget-kit empty-state
+      // phrase as no value.
+      const adid = w.getAttribute && w.getAttribute("aria-activedescendant");
+      if (adid) { const opt = document.getElementById(adid); if (opt && opt.textContent.trim()) return norm(opt.textContent); }
+      if (w.tagName === "INPUT" && (w.value || "").trim()) return norm(w.value);
+      if (w.tagName === "BUTTON" && (w.textContent || "").trim()) return norm(w.textContent);
+      const lbl = w.matches(valueSel) ? w : w.querySelector(valueSel);
+      const raw = lbl ? (lbl.textContent || "") : "";
+      if (raw.trim() && !emptyRx.test(raw.trim())) return norm(raw);
+      return "";
     };
     const isUnfilled = (w) => {
       let node = w;
@@ -5639,11 +5752,11 @@ async function tryPromptSelectorPrimitive(params: {
       return currentText(w) === "";
     };
     // Clear stale marks from a prior call on this same page (this primitive
-    // runs once per "select 'X'" step, and the wizard ATS's My-Info wizard answers
-    // several such steps on the same unreloaded page) — otherwise a widget
-    // already filled by an earlier call keeps its old index and collides
-    // with whatever new widget claims that index this round, and the
-    // trigger-click selector's \`.first()\` can resolve to the stale widget.
+    // runs once per "select 'X'" step, and an application wizard answers several
+    // such steps on the same unreloaded page) — otherwise a widget already
+    // filled by an earlier call keeps its old index and collides with whatever
+    // new widget claims that index this round, and the trigger-click selector's
+    // \`.first()\` can resolve to the stale widget.
     for (const el of document.querySelectorAll("[" + markAttr + "]")) el.removeAttribute(markAttr);
     const candidates = [];
     let idx = 0;
@@ -5655,7 +5768,7 @@ async function tryPromptSelectorPrimitive(params: {
     }
     if (candidates.length === 0) return { widgetPresent: true, candidates: [] };
     return { widgetPresent: true, candidates };
-  })(${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)})`;
+  })(${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)}, ${JSON.stringify(PROMPT_TRIGGER_SELECTORS)}, ${JSON.stringify(PROMPT_VALUE_SELECTORS)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX.toString())})`;
 
   try {
     const enumResult = await pollEnumerate<{
@@ -5699,7 +5812,7 @@ async function tryPromptSelectorPrimitive(params: {
       return null;
     }
 
-    // Phase 2 (real gesture): open the popup. The wizard ATS's trigger requires a
+    // Phase 2 (real gesture): open the popup. These widgets' trigger requires a
     // genuine click — a synthetic dispatchEvent does not fire its handler.
     const triggerSel = `[${PROMPT_WIDGET_MARK_ATTR}="${chosen.wIdx}"]`;
     try {
@@ -5712,19 +5825,27 @@ async function tryPromptSelectorPrimitive(params: {
     }
     await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
 
-    const enumerateOptionsExpr = `((markAttr) => {
-      const opts = Array.from(document.querySelectorAll("[data-automation-id='promptOption']"));
-      if (opts.length === 0) return { optionsPresent: false };
-      const searchInput = document.querySelector(
-        "[data-automation-id='searchBox'] input,[data-automation-id='searchBoxInput'],[role='combobox'] input[type='text']"
-      );
+    const enumerateOptionsExpr = `((markAttr, optionSel, searchSel) => {
+      const all = Array.from(document.querySelectorAll(optionSel));
+      // A union hit may be an ancestor of another (e.g. role=listbox > li > p):
+      // keep only leaf-most option nodes with their own text so we don't double
+      // count or address a wrapper.
+      const opts = all.filter((el) => !all.some((o) => o !== el && el.contains(o)));
+      const searchInput = document.querySelector(searchSel);
+      // A searchable/typeahead widget renders NO options until its filter input
+      // is typed into — report the popup as present (with searchable=true) so the
+      // caller types the filter first, rather than falling through as "no popup".
+      if (opts.length === 0) {
+        return searchInput ? { optionsPresent: true, searchable: true, options: [] } : { optionsPresent: false };
+      }
       const options = [];
       for (let i = 0; i < opts.length; i++) {
         opts[i].setAttribute(markAttr, String(i));
-        options.push({ oIdx: i, text: (opts[i].textContent || "").replace(/\\s+/g, " ").trim() });
+        const label = opts[i].getAttribute("data-automation-label") || opts[i].getAttribute("aria-label") || opts[i].textContent || "";
+        options.push({ oIdx: i, text: label.replace(/\\s+/g, " ").trim() });
       }
       return { optionsPresent: true, searchable: !!searchInput, options };
-    })(${JSON.stringify(PROMPT_OPTION_MARK_ATTR)})`;
+    })(${JSON.stringify(PROMPT_OPTION_MARK_ATTR)}, ${JSON.stringify(PROMPT_OPTION_SELECTORS)}, ${JSON.stringify(PROMPT_SEARCH_SELECTORS)})`;
     const optionsInitial = await pollEnumerate<{
       optionsPresent: boolean;
       searchable?: boolean;
@@ -5736,9 +5857,11 @@ async function tryPromptSelectorPrimitive(params: {
       );
       return null;
     }
-    // Searchable-list variant: type the option text to filter before the
-    // matching option is even rendered (the wizard ATS's Country/Region widgets show
-    // only a paginated slice until filtered).
+    // Searchable/typeahead variant: type the option text to filter before the
+    // matching option is even rendered (a searchable widget may show only a
+    // paginated slice until filtered). Non-searchable widgets (no in-popup
+    // filter input) commit directly from the already-rendered list — a widget
+    // without a search box must NOT fall through to the cascade.
     if (!optionsInitial.searchable) {
       const optionsResult = optionsInitial;
       return await commitPromptOption({
@@ -5755,15 +5878,10 @@ async function tryPromptSelectorPrimitive(params: {
       });
     }
     try {
-      await target
-        .locator(
-          "[data-automation-id='searchBox'] input,[data-automation-id='searchBoxInput'],[role='combobox'] input[type='text']"
-        )
-        .first()
-        .fill(option);
+      await target.locator(PROMPT_SEARCH_SELECTORS).first().fill(option);
     } catch (err) {
       logger.info(
-        `prompt-selector primitive: search-box type failed for ${optLabel}: ${toErrorMessage(err)}; falling through`
+        `prompt-selector primitive: filter-input type failed for ${optLabel}: ${toErrorMessage(err)}; falling through`
       );
       return null;
     }
@@ -5804,10 +5922,10 @@ async function tryPromptSelectorPrimitive(params: {
  * (possibly filtered) option list, match the requested option — deterministic
  * exact-text match first, `judgeSelectOptionWithLLM` fallback for per-req
  * variance — click it with a real gesture, and verify the selection committed
- * (the widget's `promptSelectionLabel` text updated to the chosen option, or
- * its invalid marker cleared). Split out from the main function because both
- * the static and searchable-then-filtered branches need the identical
- * match/click/verify sequence.
+ * (the widget's accessible value / selection-label reflects the chosen option
+ * by the value union, or its invalid marker cleared). Split out from the main
+ * function because both the static and searchable-then-filtered branches need
+ * the identical match/click/verify sequence.
  */
 async function commitPromptOption(params: {
   page: Page;
@@ -5886,15 +6004,21 @@ async function commitPromptOption(params: {
   }
   await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
 
-  const readbackExpr = `((wIdx, markAttr, wantText) => {
+  const readbackExpr = `((wIdx, markAttr, valueSel, emptyRxSrc, wantText) => {
     const isInvalid = ${INVALID_MARKER_EL_EXPR};
     const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
+    const emptyRx = new RegExp(emptyRxSrc.slice(1, emptyRxSrc.lastIndexOf("/")), emptyRxSrc.slice(emptyRxSrc.lastIndexOf("/") + 1));
     const w = document.querySelector("[" + markAttr + '="' + wIdx + '"]');
     if (!w) return { ok: false, id: "" };
-    const lbl = w.matches("[data-automation-id='promptSelectionLabel']")
-      ? w
-      : w.querySelector("[data-automation-id='promptSelectionLabel']");
-    const text = lbl ? norm(lbl.textContent) : "";
+    // Value via the union: aria-activedescendant, own input value, or a
+    // selection-label node (empty-state phrase treated as no value).
+    const adid = w.getAttribute && w.getAttribute("aria-activedescendant");
+    const adText = adid && document.getElementById(adid) ? norm(document.getElementById(adid).textContent) : "";
+    const own = w.tagName === "INPUT" ? norm(w.value || "") : w.tagName === "BUTTON" ? norm(w.textContent || "") : "";
+    const lbl = w.matches(valueSel) ? w : w.querySelector(valueSel);
+    const lblRaw = lbl ? (lbl.textContent || "") : "";
+    const lblText = lblRaw.trim() && !emptyRx.test(lblRaw.trim()) ? norm(lblRaw) : "";
+    const text = adText || own || lblText;
     const textMatches = wantText ? text.includes(wantText) : text !== "";
     let node = w;
     let stillInvalid = false;
@@ -5903,7 +6027,7 @@ async function commitPromptOption(params: {
       node = node.parentElement;
     }
     return { ok: textMatches || !stillInvalid, id: w.id || "" };
-  })(${JSON.stringify(chosen.wIdx)}, ${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)}, ${JSON.stringify(norm(chosenOption.text))})`;
+  })(${JSON.stringify(chosen.wIdx)}, ${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)}, ${JSON.stringify(PROMPT_VALUE_SELECTORS)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX.toString())}, ${JSON.stringify(norm(chosenOption.text))})`;
   const readback = (await target.evaluate(readbackExpr).catch(() => ({ ok: false, id: "" }))) as {
     ok: boolean;
     id: string;
@@ -7353,16 +7477,15 @@ export async function executeStepWithHealing(params: {
     return "completed";
   }
 
-  // When the step is a "select 'X'" step whose only matching control is
-  // the wizard ATS's button-triggered popup dropdown widget (promptIcon/
-  // promptSelectionLabel/multiSelectContainer, options rendered on-demand as
-  // data-automation-id="promptOption") rather than a <select> or MUI radio
-  // group — the wizard ATS's application wizard renders My Information/screening
-  // fields this way — answer it directly. Runs AFTER select/checkbox/radio
-  // (which own their own widget shapes and would already have claimed the
-  // step) and BEFORE the cascade, since the widget's trigger has no
-  // accessible role the observe cascade resolves. No-op (falls through) when
-  // there's no unfilled/unambiguous prompt widget or no confident option match.
+  // When the step is a "select 'X'" step whose only matching control is a
+  // native-control-less popup-dropdown widget (a combobox that opens a listbox
+  // popup, options rendered on-demand — see PROMPT_TRIGGER_SELECTORS) rather
+  // than a <select> or MUI radio group, answer it directly. Runs AFTER
+  // select/checkbox/radio (which own their own widget shapes and would already
+  // have claimed the step) and BEFORE the cascade, since the widget's trigger
+  // exposes no native control the observe cascade resolves. No-op (falls
+  // through) when there's no unfilled/unambiguous prompt widget or no confident
+  // option match.
   const promptSelectorTargetId = await tryPromptSelectorPrimitive({
     page,
     target: selectFrameTarget,
