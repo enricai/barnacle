@@ -5702,6 +5702,22 @@ async function applyRadioSelection(
  * option slice until filtered), and clicks the matching option with a real
  * click.
  *
+ * Accepts a SELECT-shaped step (`parseSelectStep`, "select 'X' in the Y
+ * dropdown"), a FILL-shaped step (`parseFillStep`, "Fill in the Y field with
+ * 'X'"), or an ANSWER/RADIO-shaped step (`parseRadioStep`, "click the 'Yes'
+ * answer for the question '…'") — flow/replan generation describes this
+ * widget family's searchable variant as a fill because its filter box renders
+ * a real `<input>`, and describes its Yes/No variant with the same
+ * answer-verb phrasing used for native radio groups, even though committing
+ * either still requires the popup-open/option-click gesture below, not typed
+ * text or a bare click. `tryRadioPrimitive` (called first, see the call site)
+ * already claims answer-verb steps whose target has native
+ * `input[type=radio]` elements; this primitive only ever sees an answer-verb
+ * step after that primitive has fallen through for lack of any, so there is
+ * no double-claim. A fill or radio step's `value`/`option` becomes the option
+ * to match and its `fieldLabel`/`questionLabel` becomes the question label;
+ * downstream matching is identical across all three shapes.
+ *
  * Matches the target widget by `questionLabel` (when the step carries one) or,
  * failing that, by there being exactly one unfilled widget on the page —
  * deliberately conservative: an ambiguous multi-widget page with no question
@@ -5726,7 +5742,25 @@ async function tryPromptSelectorPrimitive(params: {
   captureFn?: JudgeCaptureFn;
 }): Promise<string | null> {
   const { page, target, instruction, logger, anthropic, captureFn } = params;
-  const parsed = parseSelectStep(instruction);
+  // A prompt-selector widget's search box renders a real <input>, so flow/
+  // replan generation routinely describes filling it as a FILL step ("Fill in
+  // the 'How Did You Hear About Us?' field with 'Internet/Online'") rather
+  // than a SELECT step, and its Yes/No variant renders no native radio inputs
+  // at all, so flow/replan generation describes it with the same answer-verb
+  // phrasing used for native radios ("Click the 'Yes' answer for the question
+  // '…'"). Accept all three shapes: parseSelectStep first, then parseFillStep
+  // (fieldLabel -> questionLabel, value -> option), then parseRadioStep
+  // (option/questionLabel already in this primitive's shape) so the widget-
+  // matching/open/readback phases below run unchanged regardless of which
+  // verb the instruction used.
+  const parsedSelect = parseSelectStep(instruction);
+  const parsedFill = parsedSelect ? null : parseFillStep(instruction);
+  const parsedAnswer = parsedSelect || parsedFill ? null : parseRadioStep(instruction);
+  const parsed = parsedSelect
+    ? parsedSelect
+    : parsedFill
+      ? { option: parsedFill.value, questionLabel: stripQuotedLabel(parsedFill.fieldLabel) }
+      : parsedAnswer;
   if (!parsed) return null;
   const { option, questionLabel } = parsed;
   const optLabel = `option "${option.slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
@@ -6166,22 +6200,26 @@ async function commitPromptOption(params: {
  * a modal-less page) has no such control, so the fast-skip the comments call
  * essential is preserved.
  */
-async function hasUnfilledRequiredControlForStep(
+export async function hasUnfilledRequiredControlForStep(
   target: FrameTarget,
   instruction: string
 ): Promise<boolean> {
   const label = extractRequiredControlProbeLabel(instruction);
   if (!label) return false;
-  const expr = `((label) => {
+  const expr = `((label, triggerSel) => {
     const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
     const want = norm(label);
     if (!want) return false;
     const isInvalid = ${INVALID_MARKER_EL_EXPR};
-    // Required markers: the control itself, or a required-asterisk label nearby.
+    // Required markers: the control itself, a required-asterisk label nearby,
+    // or (the UXI widget-kit shape) a trailing "Required" suffix baked into the
+    // accessible name rather than exposed as aria-required at all.
     const isRequired = (el) => {
       if (!el || !el.getAttribute) return false;
       if (el.hasAttribute("required")) return true;
       if (el.getAttribute("aria-required") === "true") return true;
+      const al = el.getAttribute("aria-label");
+      if (al && /required\\s*$/i.test(al.trim())) return true;
       return false;
     };
     const isEmptyish = (el) => {
@@ -6191,11 +6229,38 @@ async function hasUnfilledRequiredControlForStep(
       const v = ("value" in el) ? el.value : "";
       return !v || String(v).trim() === "";
     };
-    // Scan form controls; for each required+empty one, check whether a nearby
-    // label (ancestor label/legend, or [aria-labelledby], or preceding label)
-    // contains the question text.
+    // Standards-first, depth-independent label lookup: aria-labelledby, then
+    // a <label for=id> referencing the control or a control inside it, then
+    // the depth-capped ancestor label/legend walk as a last resort (real
+    // markup can nest a control several wrapper divs below its <label>,
+    // deeper than any fixed ancestor cap can safely assume).
+    const labelFor = (el) => {
+      const alb = el.getAttribute && el.getAttribute("aria-labelledby");
+      if (alb) {
+        const parts = [];
+        for (const id of alb.split(/\\s+/)) { const ref = document.getElementById(id); if (ref) parts.push(ref.textContent); }
+        if (parts.length) return norm(parts.join(" "));
+      }
+      const ids = [el.id, ...Array.from(el.querySelectorAll ? el.querySelectorAll("[id]") : []).map((e) => e.id)].filter(Boolean);
+      for (const id of ids) {
+        const lab = document.querySelector("label[for='" + (window.CSS && CSS.escape ? CSS.escape(id) : id) + "']");
+        if (lab && lab.textContent && lab.textContent.trim()) return norm(lab.textContent);
+      }
+      let node = el;
+      for (let d = 0; d < 6 && node; d++) {
+        const lbl = node.querySelector && node.querySelector("label,legend");
+        const txt = lbl && lbl.textContent ? norm(lbl.textContent) : "";
+        if (txt) return txt;
+        node = node.parentElement;
+      }
+      return "";
+    };
+    // Scan form controls; for each required+empty one, check whether its
+    // label matches the question. Adds the prompt-selector trigger union
+    // (button/aria-haspopup shapes with no native input/select at all) to
+    // the container-widget union already covered.
     const controls = Array.from(document.querySelectorAll(
-      "input,select,textarea,[role=combobox],[role=listbox],.bb-custom-select-container,[class*='MultiCheckboxInput']"
+      "input,select,textarea,[role=combobox],[role=listbox],.bb-custom-select-container,[class*='MultiCheckboxInput']," + triggerSel
     ));
     for (const el of controls) {
       if (!isRequired(el) && !(el.querySelector && el.querySelector("[required],[aria-required=true]"))) {
@@ -6205,17 +6270,11 @@ async function hasUnfilledRequiredControlForStep(
       // is it empty/invalid?
       const emptyOrInvalid = isEmptyish(el) || (el.querySelector && !!el.querySelector("[aria-invalid=true]"));
       if (!emptyOrInvalid) continue;
-      // does a nearby label match the question?
-      let node = el;
-      for (let d = 0; d < 6 && node; d++) {
-        const lbl = node.querySelector && node.querySelector("label,legend");
-        const txt = lbl && lbl.textContent ? norm(lbl.textContent) : "";
-        if (txt && (txt.includes(want) || want.includes(txt))) return true;
-        node = node.parentElement;
-      }
+      const txt = labelFor(el);
+      if (txt && (txt.includes(want) || want.includes(txt))) return true;
     }
     return false;
-  })(${JSON.stringify(label)})`;
+  })(${JSON.stringify(label)}, ${JSON.stringify(PROMPT_TRIGGER_SELECTORS)})`;
   try {
     return (await target.evaluate(expr)) === true;
   } catch {
@@ -7582,15 +7641,17 @@ export async function executeStepWithHealing(params: {
     return "completed";
   }
 
-  // When the step is a "select 'X'" step whose only matching control is a
-  // native-control-less popup-dropdown widget (a combobox that opens a listbox
-  // popup, options rendered on-demand — see PROMPT_TRIGGER_SELECTORS) rather
-  // than a <select> or MUI radio group, answer it directly. Runs AFTER
-  // select/checkbox/radio (which own their own widget shapes and would already
-  // have claimed the step) and BEFORE the cascade, since the widget's trigger
-  // exposes no native control the observe cascade resolves. No-op (falls
-  // through) when there's no unfilled/unambiguous prompt widget or no confident
-  // option match.
+  // When the step is a "select 'X'" OR a "Fill in the Y field with 'X'" step
+  // (the latter shape is how flow/replan generation describes this widget's
+  // searchable filter box, which renders a real <input>) whose only matching
+  // control is a native-control-less popup-dropdown widget (a combobox that
+  // opens a listbox popup, options rendered on-demand — see
+  // PROMPT_TRIGGER_SELECTORS) rather than a <select> or MUI radio group,
+  // answer it directly. Runs AFTER select/checkbox/radio (which own their own
+  // widget shapes and would already have claimed the step) and BEFORE the
+  // cascade, since the widget's trigger exposes no native control the observe
+  // cascade resolves. No-op (falls through) when there's no unfilled/
+  // unambiguous prompt widget or no confident option match.
   const promptSelectorTargetId = await tryPromptSelectorPrimitive({
     page,
     target: selectFrameTarget,
