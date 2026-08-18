@@ -6,10 +6,10 @@ settings:
 
 patchedDependencies:
   '@browserbasehq/sdk':
-    hash: b811b2520d933dc309d013f3cb20fffcd882eb86d5937639926701dbb1474315
+    hash: 20e010d91158897034a1d5b263fc954d81f1fdc544cc6d1f5d09f84fcfe3258d
     path: patches/@browserbasehq__sdk.patch
   '@browserbasehq/stagehand':
-    hash: 357226c9032bea0c6349b15861048452fbb2383163f2b408ec79dd597f9430ab
+    hash: baad094313d59db28f7203630052d544251ae03495fb5ed694c11046660f1740
     path: patches/@browserbasehq__stagehand.patch
 
 importers:
@@ -30,10 +30,10 @@ importers:
         version: 3.1100.0
       '@browserbasehq/sdk':
         specifier: ^2.16.0
-        version: 2.16.0(patch_hash=b811b2520d933dc309d013f3cb20fffcd882eb86d5937639926701dbb1474315)
+        version: 2.16.0(patch_hash=20e010d91158897034a1d5b263fc954d81f1fdc544cc6d1f5d09f84fcfe3258d)
       '@browserbasehq/stagehand':
         specifier: ^3.6.0
-        version: 3.7.1(patch_hash=357226c9032bea0c6349b15861048452fbb2383163f2b408ec79dd597f9430ab)(@cfworker/json-schema@4.1.1)(playwright-core@1.60.0)(zod@3.25.76)
+        version: 3.7.1(patch_hash=baad094313d59db28f7203630052d544251ae03495fb5ed694c11046660f1740)(@cfworker/json-schema@4.1.1)(playwright-core@1.60.0)(zod@3.25.76)
       '@fastify/compress':
         specifier: ^9.0.0
         version: 9.1.0
@@ -3314,7 +3314,7 @@ snapshots:
   '@biomejs/cli-win32-x64@2.5.6':
     optional: true
 
-  '@browserbasehq/sdk@2.16.0(patch_hash=b811b2520d933dc309d013f3cb20fffcd882eb86d5937639926701dbb1474315)':
+  '@browserbasehq/sdk@2.16.0(patch_hash=20e010d91158897034a1d5b263fc954d81f1fdc544cc6d1f5d09f84fcfe3258d)':
     dependencies:
       '@types/node': 18.19.130
       '@types/node-fetch': 2.6.13
@@ -3326,11 +3326,11 @@ snapshots:
     transitivePeerDependencies:
       - encoding
 
-  '@browserbasehq/stagehand@3.7.1(patch_hash=357226c9032bea0c6349b15861048452fbb2383163f2b408ec79dd597f9430ab)(@cfworker/json-schema@4.1.1)(playwright-core@1.60.0)(zod@3.25.76)':
+  '@browserbasehq/stagehand@3.7.1(patch_hash=baad094313d59db28f7203630052d544251ae03495fb5ed694c11046660f1740)(@cfworker/json-schema@4.1.1)(playwright-core@1.60.0)(zod@3.25.76)':
     dependencies:
       '@ai-sdk/provider': 2.0.3
       '@anthropic-ai/sdk': 0.39.0
-      '@browserbasehq/sdk': 2.16.0(patch_hash=b811b2520d933dc309d013f3cb20fffcd882eb86d5937639926701dbb1474315)
+      '@browserbasehq/sdk': 2.16.0(patch_hash=20e010d91158897034a1d5b263fc954d81f1fdc544cc6d1f5d09f84fcfe3258d)
       '@google/genai': 1.52.0(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(zod@3.25.76))(bufferutil@4.1.0)
       '@modelcontextprotocol/sdk': 1.30.0(@cfworker/json-schema@4.1.1)(zod@3.25.76)
       ai: 5.0.225(zod@3.25.76)

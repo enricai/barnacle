@@ -1,3 +1,8 @@
+# Verified 2026-08-18 post @ai-sdk/anthropic 4.0.38 workspace bump (deps-002):
+# @browserbasehq/sdk (2.16.0) is unrelated to @ai-sdk/anthropic; the patched
+# _shims/node-runtime.js keepAlive lines are still present unchanged in the
+# installed package. `pnpm install --frozen-lockfile` reapplies this patch
+# cleanly. Keep the hunk.
 diff --git a/_shims/node-runtime.js b/_shims/node-runtime.js
 index 02107e27ed0fbdfc3783ad2d133aa10b057eabae..e4b3a2f1c0000000000000000000000000000000 100644
 --- a/_shims/node-runtime.js
