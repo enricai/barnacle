@@ -612,7 +612,7 @@ interface PrimaryGraphQLOperation {
  * a non-landing capture phase, and how often the same operation re-fires are
  * combined into one composite score.
  */
-function selectPrimaryGraphQLOperation(
+export function selectPrimaryGraphQLOperation(
   captures: Capture[],
   flowSteps: FlowStepInput[],
   vocabulary: ReconVocabulary
