@@ -12,6 +12,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
       isFinalStep: false,
+      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,
@@ -29,6 +30,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
       isFinalStep: true,
+      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,
@@ -42,6 +44,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
       isFinalStep: false,
+      flowHasSubmitSemantics: true,
       submitStep: true,
       isAdvanceWithPattern: false,
       networkDelta: 0,
@@ -59,6 +62,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
       isFinalStep: false,
+      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: true, // advanceTransitionBodyPattern is non-null
       networkDelta: 0,
@@ -77,6 +81,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
       isFinalStep: false,
+      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,
@@ -90,6 +95,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
       isFinalStep: false,
+      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,
@@ -103,6 +109,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
       isFinalStep: false,
+      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,
@@ -116,6 +123,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
       isFinalStep: false,
+      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,
@@ -132,6 +140,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "type" },
       isFinalStep: false,
+      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,
@@ -145,6 +154,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
     const result = isClickViewSwapVerified({
       resolvedAction: null,
       isFinalStep: false,
+      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,
@@ -161,6 +171,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
       isFinalStep: false,
+      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 1, // At least one network request
@@ -183,6 +194,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
       isFinalStep: false,
+      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,
@@ -196,6 +208,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
       isFinalStep: false,
+      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,
@@ -209,6 +222,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
       isFinalStep: false,
+      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,
@@ -222,6 +236,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
       isFinalStep: false,
+      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,
@@ -235,6 +250,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
       isFinalStep: true,
+      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,
@@ -248,6 +264,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
       isFinalStep: false,
+      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: true,
       networkDelta: 0,
@@ -261,6 +278,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
       isFinalStep: false,
+      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 5,
@@ -281,6 +299,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
       isFinalStep: false,
+      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,
@@ -295,6 +314,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
       isFinalStep: false,
+      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,
@@ -309,6 +329,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
       isFinalStep: false,
+      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,
@@ -323,6 +344,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
       isFinalStep: false,
+      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,

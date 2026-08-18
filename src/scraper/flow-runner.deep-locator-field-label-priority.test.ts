@@ -161,17 +161,27 @@ describe("flow-runner field-label-first routing over a nonempty Stagehand resolu
     // No candidate in CANDIDATE_SET is "Middle Name" — the field-label
     // pre-check must report no-match and let the existing act()/observe()
     // path run instead of refusing outright the way the observe-empty
-    // branch does when IT finds no field-label match. This fixture's fake
-    // Stagehand never wires a verifiable side effect for its own
-    // resolution, so the cascade exhausts and throws — proving control
-    // passed through the fallback path (never touching the deep-locator
-    // seam) rather than asserting a success this fixture can't model.
+    // branch does when IT finds no field-label match. Since this single-step
+    // flow has no submit semantics (bugfix-002: a read-only flow's final
+    // step is no longer submit-shaped), the fallback ladder actually
+    // attempts a speculative fill on its best-guess candidate before
+    // exhausting verification retries and throwing — unlike the
+    // pre-bugfix-002 behavior where the misclassified submit-shaped step
+    // refused outright without ever touching an element.
     const { run, hop } = await runSingleStep("Fill in the Middle Name field with 'Q'");
 
     await expect(run()).rejects.toThrow(/failed verification after \d+ attempts/);
 
+    const [searchBoxEl, firstNameEl, cityEl, lastNameEl] = hop.elements;
+    // biome-ignore lint/style/noNonNullAssertion: CANDIDATE_SET has exactly 4 entries, registered above
+    expect(searchBoxEl!.filledWith).toBe("Q");
+    // biome-ignore lint/style/noNonNullAssertion: CANDIDATE_SET has exactly 4 entries, registered above
+    expect(firstNameEl!.filledWith).toBeNull();
+    // biome-ignore lint/style/noNonNullAssertion: CANDIDATE_SET has exactly 4 entries, registered above
+    expect(cityEl!.filledWith).toBeNull();
+    // biome-ignore lint/style/noNonNullAssertion: CANDIDATE_SET has exactly 4 entries, registered above
+    expect(lastNameEl!.filledWith).toBeNull();
     for (const el of hop.elements) {
-      expect(el.filledWith).toBeNull();
       expect(el.clicks).toBe(0);
     }
   });

@@ -105,6 +105,7 @@ describe("flow-runner/shouldCaptureSelectionState", () => {
         step: "Select 'Acute Care / Inpatient'",
         isFinalStep: false,
         submitStep: false,
+        flowHasSubmitSemantics: true,
       })
     ).toBe(true);
   });
@@ -115,6 +116,7 @@ describe("flow-runner/shouldCaptureSelectionState", () => {
         step: "Click the 'Submit application' button",
         isFinalStep: false,
         submitStep: true,
+        flowHasSubmitSemantics: true,
       })
     ).toBe(false);
   });
@@ -125,8 +127,20 @@ describe("flow-runner/shouldCaptureSelectionState", () => {
         step: "Confirm your selections",
         isFinalStep: true,
         submitStep: false,
+        flowHasSubmitSemantics: true,
       })
     ).toBe(false);
+  });
+
+  it("captures the final step of a read-only flow with no submit semantics", () => {
+    expect(
+      shouldCaptureSelectionState({
+        step: "Confirm your selections",
+        isFinalStep: true,
+        submitStep: false,
+        flowHasSubmitSemantics: false,
+      })
+    ).toBe(true);
   });
 
   it("does NOT capture for an advance/Next step (no-pattern desync guard)", () => {
@@ -135,6 +149,7 @@ describe("flow-runner/shouldCaptureSelectionState", () => {
         step: "Click the Next button to continue",
         isFinalStep: false,
         submitStep: false,
+        flowHasSubmitSemantics: true,
       })
     ).toBe(false);
   });
@@ -145,6 +160,7 @@ describe("flow-runner/shouldCaptureSelectionState", () => {
         step: "Select 'Next Available' shift preference",
         isFinalStep: false,
         submitStep: false,
+        flowHasSubmitSemantics: true,
       })
     ).toBe(true);
     expect(
@@ -152,6 +168,7 @@ describe("flow-runner/shouldCaptureSelectionState", () => {
         step: "Click the 'Continue Care' option",
         isFinalStep: false,
         submitStep: false,
+        flowHasSubmitSemantics: true,
       })
     ).toBe(true);
   });
@@ -606,6 +623,7 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
       // Every test in this describe block exercises the deep-submit-locator
       // escalation, which now only fires on submit-shaped steps.
       submitStep: true,
+      flowHasSubmitSemantics: true,
       stepIndex: 76,
       phase: "apply",
       signalCounter: { n: 0 },
@@ -1088,6 +1106,7 @@ describe("flow-runner/executeStepWithHealing — observe-act method override for
       optional: false,
       upload: false,
       submitStep: false,
+      flowHasSubmitSemantics: true,
       stepIndex: 11,
       phase: "apply",
       signalCounter: { n: 0 },

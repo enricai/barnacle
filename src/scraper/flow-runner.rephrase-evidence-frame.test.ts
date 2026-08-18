@@ -392,6 +392,7 @@ describe("flow-runner/executeStepWithHealing — form-value-diff signal (bugfix-
       optional: false,
       upload: false,
       submitStep: false,
+      flowHasSubmitSemantics: true,
       stepIndex: 3,
       phase: "apply",
       signalCounter: { n: 0 },

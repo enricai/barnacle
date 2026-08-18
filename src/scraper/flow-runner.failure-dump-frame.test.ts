@@ -62,6 +62,7 @@ function baseParams(page: Page, stagehand: Stagehand, frameTarget?: FrameTarget)
     optional: false,
     upload: false,
     submitStep: false,
+    flowHasSubmitSemantics: true,
     stepIndex: 1,
     phase: "apply",
     signalCounter: { n: 0 },

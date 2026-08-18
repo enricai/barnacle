@@ -426,6 +426,7 @@ function runStep(
     optional: false,
     upload: false,
     submitStep: false,
+    flowHasSubmitSemantics: true,
     stepIndex: 0,
     totalSteps: () => 1,
     phase: "flow",
