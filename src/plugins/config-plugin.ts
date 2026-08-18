@@ -22,7 +22,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod/v4";
 
 import type { AppConfig } from "@/config";
-import { createBedrockModel, type StagehandModel } from "@/lib/bedrock";
+import { createBedrockModel } from "@/lib/bedrock";
+import type { RephraseModel } from "@/lib/llm/anthropic-client";
 import { RECON_FLOW_STEP_SCHEMA } from "@/lib/llm/schemas";
 import { getLogger } from "@/lib/logging";
 import { jsonSchemaToZod } from "@/plugins/json-schema-to-zod";
@@ -139,7 +140,7 @@ function toHealingStep(
  * flows resolve their model from the per-request `SitePluginContext.config`
  * instead, so it can't be reused directly.
  */
-function buildRephraseModelForContext(appConfig: AppConfig): StagehandModel | null {
+function buildRephraseModelForContext(appConfig: AppConfig): RephraseModel | null {
   if (appConfig.scraper.useBedrock) return createBedrockModel(appConfig.bedrock);
   if (!appConfig.scraper.anthropicApiKey) return null;
   const provider = createAnthropic({ apiKey: appConfig.scraper.anthropicApiKey });
