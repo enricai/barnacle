@@ -1,9 +1,11 @@
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
+import { Window } from "happy-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { makeFakeDeepLocator } from "@/scraper/deep-locator-fake";
 import type { HealingFlowStep } from "@/scraper/flow-runner";
 import {
+  hasUnfilledRequiredControlForStep,
   parseCheckStep,
   resetBillingErrorFlagForTests,
   runHealingFlow,
@@ -134,6 +136,99 @@ function step(overrides: Partial<HealingFlowStep> = {}): HealingFlowStep {
 function makeStagehand(): Stagehand {
   return {} as unknown as Stagehand;
 }
+
+/**
+ * Real-DOM `FrameTarget` whose `evaluate` runs the guard's actual expression
+ * string against a live happy-dom document — proves the fix against genuine
+ * markup shapes, not a substring-matched mock.
+ */
+function makeDomFrameTarget(html: string): FrameTarget {
+  const window = new Window({ url: "https://careers.example.com/apply" });
+  const document = window.document;
+  document.body.innerHTML = html;
+  const evaluate = (async (expr: unknown) => {
+    const fn = new window.Function("document", "window", "CSS", `return (${String(expr)});`) as (
+      d: unknown,
+      w: unknown,
+      c: unknown
+    ) => unknown;
+    return fn(document, window, window.CSS);
+  }) as FrameTarget["evaluate"];
+  return {
+    frame: null,
+    frameSelector: null,
+    evaluate,
+    locator: vi.fn() as unknown as FrameTarget["locator"],
+    url: () => Promise.resolve("https://careers.example.com/apply"),
+    title: () => Promise.resolve("Apply"),
+  };
+}
+
+describe("hasUnfilledRequiredControlForStep — prompt-selector widget family (real DOM)", () => {
+  it("returns true for a deeply-nested multiselect input whose <label> sits 7 ancestor hops up", async () => {
+    // Mirrors the evidence DOM's "source--source" input: aria-invalid + aria-required
+    // on the control, but its <label> lives inside a wrapper 7 hops above the
+    // input — past the old depth-6 ancestor cap. Standards-first label[for=id]
+    // resolution (depth-independent) is what makes this reachable.
+    const html = `
+      <div id="formField-source">
+        <label for="source--source">How Did You Hear About Us?</label>
+        <div><div><div><div><div><div><div>
+          <input id="source--source" aria-invalid="true" aria-required="true" value="" />
+        </div></div></div></div></div></div></div>
+      </div>
+    `;
+    const target = makeDomFrameTarget(html);
+    await expect(
+      hasUnfilledRequiredControlForStep(
+        target,
+        "Select 'Employee Referral' for 'How Did You Hear About Us?'"
+      )
+    ).resolves.toBe(true);
+  });
+
+  it("returns true for a button-only prompt trigger with an aria-label ending in 'Required' and no aria-required attribute", async () => {
+    // Mirrors a country/phoneType single-select trigger: a plain
+    // <button> with no native input/select and no aria-required, but the
+    // 'required' marker baked as a text suffix into aria-label.
+    const html = `
+      <div id="formField-country">
+        <span id="country-label">Country</span>
+        <button id="country-trigger" aria-haspopup="listbox" aria-labelledby="country-label" aria-label="Country United States of America Required"></button>
+      </div>
+    `;
+    const target = makeDomFrameTarget(html);
+    await expect(
+      hasUnfilledRequiredControlForStep(target, "Select 'United States of America' for 'Country'")
+    ).resolves.toBe(true);
+  });
+
+  it("still returns true for a native required-and-empty input/select/textarea (existing coverage unchanged)", async () => {
+    const html = `
+      <div>
+        <label for="middleName">Middle Name</label>
+        <input id="middleName" required value="" />
+      </div>
+    `;
+    const target = makeDomFrameTarget(html);
+    await expect(
+      hasUnfilledRequiredControlForStep(target, "Fill in the Middle Name field with 'Q'")
+    ).resolves.toBe(true);
+  });
+
+  it("returns false when the required control is already filled", async () => {
+    const html = `
+      <div>
+        <label for="middleName">Middle Name</label>
+        <input id="middleName" required value="Q" />
+      </div>
+    `;
+    const target = makeDomFrameTarget(html);
+    await expect(
+      hasUnfilledRequiredControlForStep(target, "Fill in the Middle Name field with 'Q'")
+    ).resolves.toBe(false);
+  });
+});
 
 describe("parseCheckStep", () => {
   it("extracts the quoted label from a Check-phrased checkbox step", () => {

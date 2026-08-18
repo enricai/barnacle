@@ -6188,22 +6188,26 @@ async function commitPromptOption(params: {
  * a modal-less page) has no such control, so the fast-skip the comments call
  * essential is preserved.
  */
-async function hasUnfilledRequiredControlForStep(
+export async function hasUnfilledRequiredControlForStep(
   target: FrameTarget,
   instruction: string
 ): Promise<boolean> {
   const label = extractRequiredControlProbeLabel(instruction);
   if (!label) return false;
-  const expr = `((label) => {
+  const expr = `((label, triggerSel) => {
     const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
     const want = norm(label);
     if (!want) return false;
     const isInvalid = ${INVALID_MARKER_EL_EXPR};
-    // Required markers: the control itself, or a required-asterisk label nearby.
+    // Required markers: the control itself, a required-asterisk label nearby,
+    // or (the UXI widget-kit shape) a trailing "Required" suffix baked into the
+    // accessible name rather than exposed as aria-required at all.
     const isRequired = (el) => {
       if (!el || !el.getAttribute) return false;
       if (el.hasAttribute("required")) return true;
       if (el.getAttribute("aria-required") === "true") return true;
+      const al = el.getAttribute("aria-label");
+      if (al && /required\\s*$/i.test(al.trim())) return true;
       return false;
     };
     const isEmptyish = (el) => {
@@ -6213,11 +6217,38 @@ async function hasUnfilledRequiredControlForStep(
       const v = ("value" in el) ? el.value : "";
       return !v || String(v).trim() === "";
     };
-    // Scan form controls; for each required+empty one, check whether a nearby
-    // label (ancestor label/legend, or [aria-labelledby], or preceding label)
-    // contains the question text.
+    // Standards-first, depth-independent label lookup: aria-labelledby, then
+    // a <label for=id> referencing the control or a control inside it, then
+    // the depth-capped ancestor label/legend walk as a last resort (real
+    // markup can nest a control several wrapper divs below its <label>,
+    // deeper than any fixed ancestor cap can safely assume).
+    const labelFor = (el) => {
+      const alb = el.getAttribute && el.getAttribute("aria-labelledby");
+      if (alb) {
+        const parts = [];
+        for (const id of alb.split(/\\s+/)) { const ref = document.getElementById(id); if (ref) parts.push(ref.textContent); }
+        if (parts.length) return norm(parts.join(" "));
+      }
+      const ids = [el.id, ...Array.from(el.querySelectorAll ? el.querySelectorAll("[id]") : []).map((e) => e.id)].filter(Boolean);
+      for (const id of ids) {
+        const lab = document.querySelector("label[for='" + (window.CSS && CSS.escape ? CSS.escape(id) : id) + "']");
+        if (lab && lab.textContent && lab.textContent.trim()) return norm(lab.textContent);
+      }
+      let node = el;
+      for (let d = 0; d < 6 && node; d++) {
+        const lbl = node.querySelector && node.querySelector("label,legend");
+        const txt = lbl && lbl.textContent ? norm(lbl.textContent) : "";
+        if (txt) return txt;
+        node = node.parentElement;
+      }
+      return "";
+    };
+    // Scan form controls; for each required+empty one, check whether its
+    // label matches the question. Adds the prompt-selector trigger union
+    // (button/aria-haspopup shapes with no native input/select at all) to
+    // the container-widget union already covered.
     const controls = Array.from(document.querySelectorAll(
-      "input,select,textarea,[role=combobox],[role=listbox],.bb-custom-select-container,[class*='MultiCheckboxInput']"
+      "input,select,textarea,[role=combobox],[role=listbox],.bb-custom-select-container,[class*='MultiCheckboxInput']," + triggerSel
     ));
     for (const el of controls) {
       if (!isRequired(el) && !(el.querySelector && el.querySelector("[required],[aria-required=true]"))) {
@@ -6227,17 +6258,11 @@ async function hasUnfilledRequiredControlForStep(
       // is it empty/invalid?
       const emptyOrInvalid = isEmptyish(el) || (el.querySelector && !!el.querySelector("[aria-invalid=true]"));
       if (!emptyOrInvalid) continue;
-      // does a nearby label match the question?
-      let node = el;
-      for (let d = 0; d < 6 && node; d++) {
-        const lbl = node.querySelector && node.querySelector("label,legend");
-        const txt = lbl && lbl.textContent ? norm(lbl.textContent) : "";
-        if (txt && (txt.includes(want) || want.includes(txt))) return true;
-        node = node.parentElement;
-      }
+      const txt = labelFor(el);
+      if (txt && (txt.includes(want) || want.includes(txt))) return true;
     }
     return false;
-  })(${JSON.stringify(label)})`;
+  })(${JSON.stringify(label)}, ${JSON.stringify(PROMPT_TRIGGER_SELECTORS)})`;
   try {
     return (await target.evaluate(expr)) === true;
   } catch {
