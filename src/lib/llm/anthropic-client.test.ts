@@ -27,21 +27,21 @@ describe("buildAnthropicClient", () => {
   it("returns null on a Bedrock-only deployment", async () => {
     configStub.scraper.useBedrock = true;
     configStub.scraper.anthropicApiKey = "test-key";
-    const { buildAnthropicClient } = await import("@/lib/llm/anthropic-client");
+    const { buildAnthropicClient } = await import("@/lib/llm/anthropic-client.js");
     expect(buildAnthropicClient()).toBeNull();
   });
 
   it("returns null when no Anthropic API key is configured", async () => {
     configStub.scraper.useBedrock = false;
     configStub.scraper.anthropicApiKey = undefined;
-    const { buildAnthropicClient } = await import("@/lib/llm/anthropic-client");
+    const { buildAnthropicClient } = await import("@/lib/llm/anthropic-client.js");
     expect(buildAnthropicClient()).toBeNull();
   });
 
   it("returns an Anthropic client when a key is configured", async () => {
     configStub.scraper.useBedrock = false;
     configStub.scraper.anthropicApiKey = "test-key";
-    const { buildAnthropicClient } = await import("@/lib/llm/anthropic-client");
+    const { buildAnthropicClient } = await import("@/lib/llm/anthropic-client.js");
     const client = buildAnthropicClient();
     expect(client).toBeInstanceOf(Anthropic);
   });
