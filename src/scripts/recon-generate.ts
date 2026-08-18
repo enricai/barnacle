@@ -594,6 +594,101 @@ function firstGraphQLQuery(captures: Capture[]): string | null {
   return captures.find((c) => c.query)?.query ?? null;
 }
 
+interface PrimaryGraphQLOperation {
+  capture: Capture;
+  endpointPath: string;
+}
+
+/**
+ * Ranks 2xx `query` (non-mutation) captures to find the primary data
+ * operation of a read-only flow, replacing `firstGraphQLQuery`'s
+ * chronologically-first fallback. Used only when {@link extractGraphQLActionSequence}
+ * finds no mutations and the flow declares no `submitStep` — a transactional
+ * flow keeps threading state through its mutation sequence unchanged.
+ *
+ * No single signal is trusted alone (a page-load query can be close in size to
+ * the real one; a facet name can appear incidentally): response size, the
+ * flow's own `payloadField` facets appearing in the candidate's query/variables,
+ * a non-landing capture phase, and how often the same operation re-fires are
+ * combined into one composite score.
+ */
+export function selectPrimaryGraphQLOperation(
+  captures: Capture[],
+  flowSteps: FlowStepInput[],
+  vocabulary: ReconVocabulary
+): PrimaryGraphQLOperation | null {
+  const candidates = captures.filter(
+    (c) => c.status >= 200 && c.status < 300 && c.query !== null && !/^\s*mutation\b/.test(c.query)
+  );
+  if (candidates.length === 0) return null;
+
+  const payloadFields = new Set<string>();
+  for (const step of flowSteps) {
+    const isObj = typeof step !== "string";
+    const instruction = isObj ? step.step : step;
+    const field = resolveStepPayloadField(
+      instruction,
+      isObj ? step.payloadField : undefined,
+      isObj ? step.payloadFieldNone : undefined,
+      vocabulary
+    );
+    if (field !== null) payloadFields.add(field);
+  }
+
+  const responseSize = (c: Capture): number => {
+    try {
+      return JSON.stringify(c.responseBody ?? "").length;
+    } catch {
+      return 0;
+    }
+  };
+  const fieldMatchCount = (c: Capture): number => {
+    const haystack = `${c.query ?? ""} ${JSON.stringify(c.variables ?? "")}`.toLowerCase();
+    let matches = 0;
+    for (const field of payloadFields) {
+      if (haystack.includes(field.toLowerCase())) matches++;
+    }
+    return matches;
+  };
+  const operationNameCounts = new Map<string, number>();
+  for (const c of candidates) {
+    if (c.operationName === null) continue;
+    operationNameCounts.set(c.operationName, (operationNameCounts.get(c.operationName) ?? 0) + 1);
+  }
+
+  const maxSize = Math.max(...candidates.map(responseSize), 1);
+  const maxFieldMatch = Math.max(...candidates.map(fieldMatchCount), 1);
+  const maxRecurrence = Math.max(...Array.from(operationNameCounts.values()), 1);
+
+  const scored = candidates.map((capture) => {
+    const sizeScore = responseSize(capture) / maxSize;
+    const fieldScore = fieldMatchCount(capture) / maxFieldMatch;
+    const phaseScore = capture.phase !== "home" ? 1 : 0;
+    const recurrenceScore =
+      capture.operationName !== null
+        ? (operationNameCounts.get(capture.operationName) ?? 0) / maxRecurrence
+        : 0;
+    // Field correlation carries the heaviest weight so a smaller facet-matching
+    // operation outranks a larger decoy — size alone must not decide this.
+    const score = fieldScore * 0.45 + sizeScore * 0.2 + phaseScore * 0.15 + recurrenceScore * 0.2;
+    return { capture, score };
+  });
+
+  const winner = scored.reduce((best, candidate) =>
+    candidate.score > best.score ? candidate : best
+  );
+
+  const endpointPath = (() => {
+    try {
+      return new URL(winner.capture.url).pathname;
+    } catch {
+      return firstEndpointPath(candidates);
+    }
+  })();
+
+  return { capture: winner.capture, endpointPath };
+}
+
 function firstEndpointPath(captures: Capture[]): string {
   for (const c of captures) {
     try {
@@ -3542,6 +3637,27 @@ function bindOptionLiteral(headerBindings: HeaderProduce[]): string {
 
 /** Generates a complete contract.ts source string for a plugin — exported so
  * unit tests can drive the emitter directly without spawning the CLI. */
+/**
+ * Renders the variables literal for the primary-operation getGql() call —
+ * each key from the selected capture's own recorded variables is bound to
+ * `payload.<Field>` when it correlates (case-insensitively) with one of the
+ * flow's payloadFieldNames, otherwise the captured literal value is emitted
+ * verbatim via JSON.stringify.
+ */
+function renderGqlVariablesExpr(
+  variables: unknown,
+  payloadFieldNames: Set<string> | undefined
+): string {
+  if (variables === null || typeof variables !== "object" || Array.isArray(variables)) return "{}";
+  const fields = payloadFieldNames ? [...payloadFieldNames] : [];
+  const entries = Object.entries(variables as Record<string, unknown>).map(([key, value]) => {
+    const matchedField = fields.find((field) => field.toLowerCase() === key.toLowerCase());
+    const valueExpr = matchedField ? `payload.${matchedField}` : JSON.stringify(value);
+    return `${key}: ${valueExpr}`;
+  });
+  return entries.length > 0 ? `{ ${entries.join(", ")} }` : "{}";
+}
+
 export function emitContractTs(opts: {
   siteId: string;
   pascal: string;
@@ -3553,6 +3669,15 @@ export function emitContractTs(opts: {
   gql: boolean;
   gqlQuery: string | null;
   endpointPath: string;
+  /** operationName recorded on the primary-operation capture selected by
+   * {@link selectPrimaryGraphQLOperation} — when set, replaces the
+   * `${pascal}Search` placeholder in the single-endpoint getGql() call. */
+  gqlOperationName?: string | null;
+  /** variables recorded on that same capture — when set alongside
+   * {@link gqlOperationName}, replaces the `{ q: payload.query }` placeholder,
+   * with keys bound to `payload.<Field>` where they correlate with
+   * `payloadFieldNames`. */
+  gqlVariables?: unknown;
   auxFiles: string[];
   /** Multi-step submission flow body — when set, replaces the default single-endpoint hot path. */
   multiStepBody?: string;
@@ -3610,6 +3735,8 @@ export function emitContractTs(opts: {
     gql,
     gqlQuery,
     endpointPath,
+    gqlOperationName,
+    gqlVariables,
     auxFiles,
     multiStepBody,
     inputBody,
@@ -3889,10 +4016,17 @@ function getGql(baseUrl: string): GqlFn {
 const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottleneck: limiter, baseHeaders: BASE_HEADERS${bindOptionLiteral(headerBindings)} });
 `;
 
+  const gqlOperationNameExpr = gqlOperationName
+    ? JSON.stringify(gqlOperationName)
+    : JSON.stringify(`${pascal}Search`);
+  const gqlVariablesExpr = gqlOperationName
+    ? renderGqlVariablesExpr(gqlVariables, payloadFieldNames)
+    : "{ q: payload.query }";
+
   const executeHttpBody = multiStepBody
     ? multiStepBody
     : gql
-      ? `    const data = await getGql(context.baseUrl)(${JSON.stringify(`${pascal}Search`)}, ${pascal.toUpperCase()}_QUERY, { q: payload.query });
+      ? `    const data = await getGql(context.baseUrl)(${gqlOperationNameExpr}, ${pascal.toUpperCase()}_QUERY, ${gqlVariablesExpr});
     return { data };`
       : `    const data = await httpClient(\`\${context.baseUrl}${endpointPath}\`, {
       method: "POST",
@@ -4609,8 +4743,21 @@ async function main(): Promise<void> {
   const safeRps = rateLimits.find((f) => f.safeRps !== null)?.safeRps ?? Math.floor(1000 / minTime);
   const responseBody = firstSuccessfulReplayBody(replays);
   const gql = isGraphQL(captures);
-  const gqlQuery = firstGraphQLQuery(captures);
-  const endpointPath = firstEndpointPath(captures);
+  // Hoisted so both the primary-operation gate below and rawActionCaptures
+  // (further down) read the same computed sequence instead of calling the
+  // extractor twice.
+  const graphqlActionSequence = gql
+    ? extractGraphQLActionSequence(captures, baseUrl, submitPatterns)
+    : [];
+  const isReadOnlyFlow = !flowSteps.some(
+    (step) => typeof step !== "string" && step.submitStep === true
+  );
+  const primaryGraphQLOperation =
+    gql && isReadOnlyFlow && graphqlActionSequence.length === 0
+      ? selectPrimaryGraphQLOperation(captures, flowSteps, vocabulary)
+      : null;
+  const gqlQuery = primaryGraphQLOperation?.capture.query ?? firstGraphQLQuery(captures);
+  const endpointPath = primaryGraphQLOperation?.endpointPath ?? firstEndpointPath(captures);
 
   // Detect a multi-step submission flow (transactional sites like apply forms,
   // checkout, etc.). When the action sequence has 2+ POSTs, switch the
@@ -4629,7 +4776,7 @@ async function main(): Promise<void> {
   const rawActionCaptures =
     manifestActionCaptures ??
     (gql
-      ? extractGraphQLActionSequence(captures, baseUrl, submitPatterns)
+      ? graphqlActionSequence
       : collapseRedundantPatches(extractActionSequence(captures, baseUrl, submitPatterns)));
   // Form-schema detection runs BEFORE state-indexing so the field-id/option-id
   // UUIDs can be shielded from indexing — those UUIDs are stable schema
@@ -4863,6 +5010,8 @@ async function main(): Promise<void> {
       gql,
       gqlQuery,
       endpointPath,
+      gqlOperationName: primaryGraphQLOperation?.capture.operationName ?? null,
+      gqlVariables: primaryGraphQLOperation?.capture.variables ?? null,
       auxFiles,
       multiStepBody,
       inputBody,
