@@ -5741,7 +5741,7 @@ describe("recon-browser/main — flowHasSubmitSemantics wiring into executeStepW
     }
   });
 
-  it("passes flowHasSubmitSemantics: true for every step once ANY step in the plan declares submitStep: true, recomputed fresh from the live plan each iteration", async () => {
+  it("passes flowHasSubmitSemantics: true for every step once ANY step in the plan declares submitStep: true", async () => {
     const { stagehand } = makeFakePage();
     vi.mocked(createBrowserSession).mockResolvedValue({
       stagehand,
