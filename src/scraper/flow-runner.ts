@@ -9469,7 +9469,13 @@ export async function executeStepWithHealing(params: {
     // `isPromptWidget: false` for anything outside this widget family, so a
     // plain click/fill is untouched.
     let promptSelectorRejected = false;
-    if (record.actResultSuccess === true && !hasStrongSignal) {
+    // Exempt only on a genuine network-advance or URL-change signal, not the
+    // broader `hasStrongSignal` (which the sibling datepicker gate above
+    // legitimately relies on) — `domVerifiedForStep` is true here simply
+    // because opening the widget's popup mutates the DOM, so reusing it would
+    // let that popup-open alone skip the readback below.
+    const hasNetworkOrUrlSignal = networkIsRealAdvance || urlChanged;
+    if (record.actResultSuccess === true && !hasNetworkOrUrlSignal) {
       const readbackSelector =
         resolvedAction?.selector ?? triedSelectors[triedSelectors.length - 1] ?? null;
       if (readbackSelector) {
