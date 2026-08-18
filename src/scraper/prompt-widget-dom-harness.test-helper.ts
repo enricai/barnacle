@@ -71,6 +71,23 @@ export function buildPromptWidgetHarness(params: {
   const window = new Window({ url: "https://careers.example.com/apply/job/1" });
   const document = window.document;
   document.body.innerHTML = params.html;
+  // happy-dom implements neither `XPathResult` nor `document.evaluate`.
+  // Production `evaluate` expressions (e.g. `verifyPromptSelectorCommitted`)
+  // resolve their resolved-action element via a `//*[@id='...']` xpath — the
+  // only shape Stagehand's own resolutions and this suite's fixtures ever
+  // need — so polyfill just that one pattern rather than a general XPath
+  // engine.
+  const win = window as unknown as { XPathResult?: unknown };
+  if (!win.XPathResult) {
+    win.XPathResult = { FIRST_ORDERED_NODE_TYPE: 9 };
+    (
+      document as unknown as { evaluate: (expr: string) => { singleNodeValue: Element | null } }
+    ).evaluate = (expr: string) => {
+      const idMatch = expr.match(/^\/\/\*\[@id=(['"])([^'"]+)\1\]$/);
+      const id = idMatch?.[2];
+      return { singleNodeValue: id ? document.getElementById(id) : null };
+    };
+  }
   const clicks: string[] = [];
   const fills: { selector: string; value: string }[] = [];
 

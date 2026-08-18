@@ -519,6 +519,30 @@ const PROMPT_EMPTY_VALUE_RX_FLAGS = PROMPT_EMPTY_VALUE_RX.flags;
 const BUTTON_VALUE_EXPR =
   "((el) => { const c = el.cloneNode(true); for (const n of c.querySelectorAll(\"[role='option'],[role='listbox'],[aria-hidden='true'],abbr,svg\")) n.remove(); return c.textContent || \"\"; })";
 /**
+ * Browser-side expression reading a prompt-selector widget's OWN committed-value
+ * text — the single source of truth for "is this widget filled?", shared by the
+ * widget-enumeration phase ({@link tryPromptSelectorPrimitive}'s
+ * `enumerateWidgetsExpr`) and the act-success committed-value gate
+ * ({@link verifyPromptSelectorCommitted}) so the two never drift into separate
+ * ideas of "committed". Value via the union: `aria-activedescendant` → the
+ * referenced option's text, else the widget's own value (an `<input>`'s
+ * `value`, or a `<button>`-trigger's own label text via {@link BUTTON_VALUE_EXPR}),
+ * else a selection-label node ({@link PROMPT_VALUE_SELECTORS}) — treating the
+ * widget-kit empty-state phrase ({@link PROMPT_EMPTY_VALUE_RX}) as no value.
+ */
+const PROMPT_CURRENT_TEXT_EXPR = `((w, valueSel, emptyRx) => {
+  const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
+  const buttonValue = ${BUTTON_VALUE_EXPR};
+  const adid = w.getAttribute && w.getAttribute("aria-activedescendant");
+  if (adid) { const opt = document.getElementById(adid); if (opt && opt.textContent.trim()) return norm(opt.textContent); }
+  if (w.tagName === "INPUT" && (w.value || "").trim()) return norm(w.value);
+  if (w.tagName === "BUTTON" && buttonValue(w).trim()) return norm(buttonValue(w));
+  const lbl = w.matches(valueSel) ? w : w.querySelector(valueSel);
+  const raw = lbl ? (lbl.textContent || "") : "";
+  if (raw.trim() && !emptyRx.test(raw.trim())) return norm(raw);
+  return "";
+})`;
+/**
  * Browser-side expression resolving the DOM root within which a chosen widget's
  * popup options / filter input live. Popup placement is vendor-split: the ARIA
  * standard and most libraries (MUI/Radix/react-select) render the listbox in a
@@ -3263,6 +3287,62 @@ export async function verifyFillReadback(
 }
 
 /**
+ * Result of checking whether an act-success attempt's resolved element is a
+ * {@link PROMPT_TRIGGER_SELECTORS}-shaped widget and, if so, whether its
+ * committed value actually landed. `isPromptWidget: false` means the caller's
+ * weak view-swap/form-value signals are untouched — this gate only ever
+ * SUBTRACTS credit from a widget shape it recognizes, never from anything else.
+ */
+export interface VerifyPromptSelectorCommittedResult {
+  isPromptWidget: boolean;
+  committed: boolean;
+}
+
+/**
+ * Committed-value guard for the prompt-selector widget family
+ * (`data-uxi-widget-type='multiselect'`/`selectinput`, `role=combobox`, …),
+ * mirroring {@link verifyFillReadback}'s role for plain inputs but reading the
+ * widget's OWN committed-value node ({@link PROMPT_CURRENT_TEXT_EXPR}) instead
+ * of a bare `<input>.value` — a chip multiselect's committed state lives on
+ * `aria-activedescendant`/a selection-label node, not the trigger's own value.
+ * Walks UP from the resolved element to the nearest {@link PROMPT_TRIGGER_SELECTORS}
+ * ancestor (the resolved element is often the inner filter input or icon, not
+ * the widget container itself — same resolution discipline as
+ * `tryPromptSelectorPrimitive`'s widget-container walk). Returns
+ * `isPromptWidget: false` for a resolved element that isn't part of this
+ * widget family at all, so a non-prompt click/fill is untouched.
+ */
+export async function verifyPromptSelectorCommitted(
+  target: FrameTarget,
+  selector: string
+): Promise<VerifyPromptSelectorCommittedResult | null> {
+  const xpath = xpathBodyForEvaluate(selector);
+  if (xpath === null) return null;
+  const expr = `(() => {
+    const triggerSel = ${JSON.stringify(PROMPT_TRIGGER_SELECTORS)};
+    const valueSel = ${JSON.stringify(PROMPT_VALUE_SELECTORS)};
+    const emptyRx = new RegExp(${JSON.stringify(PROMPT_EMPTY_VALUE_RX_SRC)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_FLAGS)});
+    const currentText = ${PROMPT_CURRENT_TEXT_EXPR};
+    const xpath = ${JSON.stringify(xpath)};
+    const result = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+    const el = result.singleNodeValue;
+    if (!el) return { isPromptWidget: false, committed: false };
+    const widget = el.matches && el.matches(triggerSel) ? el : el.closest(triggerSel);
+    if (!widget) return { isPromptWidget: false, committed: false };
+    return { isPromptWidget: true, committed: currentText(widget, valueSel, emptyRx) !== "" };
+  })()`;
+  try {
+    const raw = await target.evaluate(expr);
+    if (raw === null || typeof raw !== "object") return null;
+    const r = raw as { isPromptWidget?: unknown; committed?: unknown };
+    if (typeof r.isPromptWidget !== "boolean" || typeof r.committed !== "boolean") return null;
+    return { isPromptWidget: r.isPromptWidget, committed: r.committed };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Pull field-level errors out of an arbitrary JSON response body. Walks a
  * few of the conventional ATS shapes; falls through to `[]` so the caller
  * can decide whether to emit a fallback summary.
@@ -5839,28 +5919,15 @@ async function tryPromptSelectorPrimitive(params: {
       }
       return "";
     };
-    const currentText = (w) => {
-      // Value via the union: aria-activedescendant → option text, the widget's
-      // own value (an <input>'s value, or a <button>-trigger's own label text —
-      // a button that IS the trigger carries the committed choice as its own
-      // text), else a selection-label node — treating the widget-kit empty-state
-      // phrase as no value.
-      const adid = w.getAttribute && w.getAttribute("aria-activedescendant");
-      if (adid) { const opt = document.getElementById(adid); if (opt && opt.textContent.trim()) return norm(opt.textContent); }
-      if (w.tagName === "INPUT" && (w.value || "").trim()) return norm(w.value);
-      if (w.tagName === "BUTTON" && buttonValue(w).trim()) return norm(buttonValue(w));
-      const lbl = w.matches(valueSel) ? w : w.querySelector(valueSel);
-      const raw = lbl ? (lbl.textContent || "") : "";
-      if (raw.trim() && !emptyRx.test(raw.trim())) return norm(raw);
-      return "";
-    };
+    const currentText = ${PROMPT_CURRENT_TEXT_EXPR};
+    const currentTextOf = (w) => currentText(w, valueSel, emptyRx);
     const isUnfilled = (w) => {
       let node = w;
       for (let d = 0; d < 6 && node; d++) {
         if (node.getAttribute && isInvalid(node)) return true;
         node = node.parentElement;
       }
-      return currentText(w) === "";
+      return currentTextOf(w) === "";
     };
     // Clear stale marks from a prior call on this same page (this primitive
     // runs once per "select 'X'" step, and an application wizard answers several
@@ -9267,12 +9334,43 @@ export async function executeStepWithHealing(params: {
         }
       }
     }
+    // Committed-value guard for the prompt-selector widget family (Workday-style
+    // popup multiselect/typeahead trigger widgets). The primitive's own picking
+    // gesture ({@link tryPromptSelectorPrimitive}) only runs on the observe-act
+    // fallback path; a resolved-as-click act against the SAME widget shape can
+    // open its popup, report success, and — since opening a popup mutates the
+    // DOM (bytes changed) — ride `clickViewSwapVerified` to a phantom success
+    // without ever committing an option. Gate it the same way as the datepicker
+    // guard above: readback the widget's own committed-value node
+    // ({@link verifyPromptSelectorCommitted}) and, when the resolved element IS
+    // this widget shape but nothing committed, suppress the weak signals.
+    // `isPromptWidget: false` for anything outside this widget family, so a
+    // plain click/fill is untouched.
+    let promptSelectorRejected = false;
+    if (record.actResultSuccess === true && !hasStrongSignal) {
+      const readbackSelector =
+        resolvedAction?.selector ?? triedSelectors[triedSelectors.length - 1] ?? null;
+      if (readbackSelector) {
+        const readbackTarget = frameTarget ?? mainFrameTarget(page);
+        const promptReadback = await verifyPromptSelectorCommitted(
+          readbackTarget,
+          readbackSelector
+        );
+        if (promptReadback?.isPromptWidget === true && promptReadback.committed === false) {
+          promptSelectorRejected = true;
+          record.actResultSuccess = false;
+          record.errorMessage = `prompt-selector-fill-rejected: resolved element <${readbackSelector}> is a prompt-selector-shaped widget but no committed value landed`;
+        }
+      }
+    }
     let verified =
       networkIsRealAdvance ||
       urlChanged ||
       domVerifiedForStep ||
       datepickerCommitted ||
-      (!datepickerRejected && (clickViewSwapVerified || formValueVerified));
+      (!datepickerRejected &&
+        !promptSelectorRejected &&
+        (clickViewSwapVerified || formValueVerified));
 
     // Final-step submit-verification gate. Replaces the deterministic
     // submitEndpointPattern regex with a Haiku 4.5 LLM judgment over
