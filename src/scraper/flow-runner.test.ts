@@ -1769,4 +1769,15 @@ describe("flow-runner/parseSelectStep — filler-word phrasing between verb and 
       questionLabel: null,
     });
   });
+
+  it("picks the widget's own quoted label over an unrelated leading page/step-context quote", () => {
+    expect(
+      parseSelectStep(
+        "On the authenticated 'My Information' step, open the 'How Did You Hear About Us?' prompt selector (data-automation-id='source'), then select the option 'Job Boards' from the popup list"
+      )
+    ).toEqual({
+      option: "Job Boards",
+      questionLabel: "How Did You Hear About Us?",
+    });
+  });
 });
