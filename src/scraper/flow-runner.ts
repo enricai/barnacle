@@ -4338,8 +4338,12 @@ export function parseSelectStep(
   // biome-ignore lint/style/noNonNullAssertion: capture group 1 is required by the pattern, so it is present on every match
   const quoted = [...instruction.matchAll(/'([^']+)'/g)].map((m) => m[1]!);
   if (quoted.length === 0) return null;
-  // The OPTION is the quoted string immediately following the word "select".
-  const selMatch = instruction.match(/\bselect(?:\s+or\s+check)?\s+'([^']+)'/i);
+  // The OPTION is the quoted string following the word "select", allowing a
+  // short filler ("the option", "the answer") between the verb and the
+  // quote — real flow phrasing like "select the option 'Job Boards'" or
+  // "select the answer 'X'" otherwise fails to parse and the caller
+  // silently no-ops before touching the DOM.
+  const selMatch = instruction.match(/\bselect(?:\s+or\s+check)?\s+(?:the\s+\S+\s+)?'([^']+)'/i);
   if (!selMatch) return null;
   // biome-ignore lint/style/noNonNullAssertion: guarded by the !selMatch early-return; group 1 is required by the pattern
   const option = selMatch[1]!.trim();

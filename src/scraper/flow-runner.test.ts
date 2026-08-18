@@ -12,6 +12,7 @@ import {
   extractLivePageFormEvidence,
   formatStepPrefix,
   type HealingFlowStep,
+  parseSelectStep,
   pollEnumerate,
   prepareFailureDumpBody,
   runHealingFlow,
@@ -1603,6 +1604,33 @@ describe("flow-runner/runHealingFlow — frameSelector routes the cascade to the
       submitVerified: true,
       submitStepSkipped: false,
       lastStepIndex: 0,
+    });
+  });
+});
+
+describe("flow-runner/parseSelectStep — filler-word phrasing between verb and quote", () => {
+  it("parses 'select the option \\'X\\'' with no question label", () => {
+    expect(parseSelectStep("select the option 'Job Boards' from the popup list")).toEqual({
+      option: "Job Boards",
+      questionLabel: null,
+    });
+  });
+
+  it("parses 'select the answer \\'X\\'' with a question label still present", () => {
+    expect(
+      parseSelectStep(
+        "For 'How did you hear about this position?' select the answer 'Job Boards'"
+      )
+    ).toEqual({
+      option: "Job Boards",
+      questionLabel: "How did you hear about this position?",
+    });
+  });
+
+  it("still parses the pre-existing 'select \\'X\\' in the \\'Y\\' dropdown' phrasing unchanged", () => {
+    expect(parseSelectStep("Select 'Texas' in the State or State/Region dropdown")).toEqual({
+      option: "Texas",
+      questionLabel: null,
     });
   });
 });
