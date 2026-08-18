@@ -1163,9 +1163,7 @@ export function flowHasSubmitSemantics(params: {
 }): boolean {
   const { steps, submitEndpointPattern, requireSubmitEndpointMatch } = params;
   return (
-    steps.some((s) => s.submitStep) ||
-    submitEndpointPattern !== null ||
-    requireSubmitEndpointMatch
+    steps.some((s) => s.submitStep) || submitEndpointPattern !== null || requireSubmitEndpointMatch
   );
 }
 
