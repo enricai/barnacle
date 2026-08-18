@@ -1,8 +1,18 @@
 import { createAnthropic } from "@ai-sdk/anthropic";
 import Anthropic from "@anthropic-ai/sdk";
+import type { LanguageModel } from "ai";
 
 import { config } from "@/config";
-import { createBedrockModel, type StagehandModel } from "@/lib/bedrock";
+import { createBedrockModel } from "@/lib/bedrock";
+
+/**
+ * The rephrase call chain's own model type, derived from `ai`'s
+ * provider-agnostic `LanguageModel` union rather than reusing bedrock.ts's
+ * `StagehandModel` (pinned to `LanguageModelV2` for its `AISdkClient`
+ * consumers). Excludes the bare-modelId-string variant so only
+ * object-shaped models with a `.modelId` field remain.
+ */
+export type RephraseModel = Exclude<LanguageModel, string>;
 
 /**
  * Build the shared Anthropic client used by the self-heal cascade's LLM
@@ -28,7 +38,7 @@ export function buildAnthropicClient(): Anthropic | null {
  * Returns `null` only when neither Bedrock nor a direct Anthropic key is
  * configured at all.
  */
-export function buildRephraseModel(): StagehandModel | null {
+export function buildRephraseModel(): RephraseModel | null {
   if (config.scraper.useBedrock) return createBedrockModel(config.bedrock);
   if (!config.scraper.anthropicApiKey) return null;
   const provider = createAnthropic({ apiKey: config.scraper.anthropicApiKey });
