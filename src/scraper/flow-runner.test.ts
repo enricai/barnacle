@@ -1618,9 +1618,7 @@ describe("flow-runner/parseSelectStep — filler-word phrasing between verb and 
 
   it("parses 'select the answer \\'X\\'' with a question label still present", () => {
     expect(
-      parseSelectStep(
-        "For 'How did you hear about this position?' select the answer 'Job Boards'"
-      )
+      parseSelectStep("For 'How did you hear about this position?' select the answer 'Job Boards'")
     ).toEqual({
       option: "Job Boards",
       questionLabel: "How did you hear about this position?",
