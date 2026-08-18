@@ -27,6 +27,13 @@ export interface PopupSpec {
    * filtered slice.
    */
   searchable?: boolean;
+  /**
+   * When true, render the popup as a `document.body`-level sibling linked to the
+   * trigger by `aria-controls` (the ARIA-standard placement used by MUI/Radix/
+   * react-select), instead of inline inside the widget (the Canvas/UXI kit).
+   * The trigger gets `aria-controls` pointing at the portaled popup's id.
+   */
+  portaled?: boolean;
 }
 
 /**
@@ -100,7 +107,18 @@ export function buildPromptWidgetHarness(params: {
       )
       .join("");
     wrap.innerHTML = `${searchHtml}<ul role="listbox">${optsHtml}</ul>`;
-    widgetEl.appendChild(wrap);
+    if (state.spec.portaled) {
+      // Portal to document.body and link via aria-controls (Radix/MUI/react-select).
+      const popupId = `portal-${widgetEl.id}`;
+      wrap.id = popupId;
+      const trigger = widgetEl.matches("button,[role='combobox']")
+        ? widgetEl
+        : widgetEl.querySelector("button,[role='combobox']") || widgetEl;
+      trigger.setAttribute("aria-controls", popupId);
+      document.body.appendChild(wrap);
+    } else {
+      widgetEl.appendChild(wrap);
+    }
   };
 
   const resolveFirst = (selector: string): Element | null => {
@@ -112,6 +130,13 @@ export function buildPromptWidgetHarness(params: {
   };
 
   const locator = (selector: string) => ({
+    count: async (): Promise<number> => {
+      try {
+        return document.querySelectorAll(selector).length;
+      } catch {
+        return 0;
+      }
+    },
     first: () => ({
       click: async (): Promise<void> => {
         clicks.push(selector);

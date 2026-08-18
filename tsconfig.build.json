@@ -9,5 +9,5 @@
     "tsBuildInfoFile": null
   },
   "include": ["src/**/*.ts", "src/**/*.mts"],
-  "exclude": ["node_modules", "dist", "src/**/*.test.ts"]
+  "exclude": ["node_modules", "dist", "src/**/*.test.ts", "src/**/*.test-helper.ts"]
 }

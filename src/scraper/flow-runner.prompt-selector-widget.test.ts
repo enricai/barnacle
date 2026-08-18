@@ -183,4 +183,65 @@ describe("flow-runner/tryPromptSelectorPrimitive dispatch & disambiguation (real
       expect.stringContaining("resolved by prompt-selector primitive")
     );
   });
+
+  it("scopes options to the CHOSEN widget on a multi-widget page — inline popups, decoy options ignored", async () => {
+    const stagehandAct = vi.fn();
+    const stagehand = {
+      act: stagehandAct,
+      observe: vi.fn().mockResolvedValue([]),
+    } as unknown as Stagehand;
+    // Two inline widgets with DISJOINT option sets. The step targets the source
+    // widget; the decoy (phone) widget's options ("Mobile"…) must never be
+    // matched — the chosen option "Referral" only exists in the source widget.
+    const { page, target } = buildPromptWidgetHarness({
+      html: TWO_WIDGET_HTML,
+      popupByWidgetId: {
+        "src-widget": { options: ["Job Board", "Referral", "LinkedIn"] },
+        "phone-widget": { options: ["Home", "Mobile", "Work"] },
+      },
+    });
+    const trajectory: { stepIndex: number; verifiedBy: string; targetId?: string }[] = [];
+    const params = baseParams(
+      page as unknown as Page,
+      stagehand,
+      "for 'How Did You Hear About Us?' select 'Referral'",
+      target
+    );
+
+    const result = await executeStepWithHealing({ ...params, trajectory } as never);
+
+    expect(result).toBe("completed");
+    // Resolved the SOURCE widget (not the decoy phone widget).
+    expect(trajectory).toEqual([{ stepIndex: 3, verifiedBy: "dom", targetId: "src-widget" }]);
+  });
+
+  it("scopes options to the CHOSEN widget when popups are PORTALED to body (aria-controls) — the MUI/Radix case", async () => {
+    const stagehandAct = vi.fn();
+    const stagehand = {
+      act: stagehandAct,
+      observe: vi.fn().mockResolvedValue([]),
+    } as unknown as Stagehand;
+    // Both widgets portal their listbox to document.body linked by aria-controls.
+    // A document-wide option query would see BOTH portaled lists; correct scoping
+    // via aria-controls must pick only the source widget's options.
+    const { page, target } = buildPromptWidgetHarness({
+      html: TWO_WIDGET_HTML,
+      popupByWidgetId: {
+        "src-widget": { options: ["Job Board", "Referral", "LinkedIn"], portaled: true },
+        "phone-widget": { options: ["Home", "Mobile", "Work"], portaled: true },
+      },
+    });
+    const trajectory: { stepIndex: number; verifiedBy: string; targetId?: string }[] = [];
+    const params = baseParams(
+      page as unknown as Page,
+      stagehand,
+      "for 'How Did You Hear About Us?' select 'Referral'",
+      target
+    );
+
+    const result = await executeStepWithHealing({ ...params, trajectory } as never);
+
+    expect(result).toBe("completed");
+    expect(trajectory).toEqual([{ stepIndex: 3, verifiedBy: "dom", targetId: "src-widget" }]);
+  });
 });

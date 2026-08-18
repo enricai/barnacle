@@ -498,6 +498,51 @@ const PROMPT_VALUE_SELECTORS = [
  */
 const PROMPT_EMPTY_VALUE_RX = /^\s*0\s+items?\s+selected\s*$/i;
 /**
+ * {@link PROMPT_EMPTY_VALUE_RX}'s source and flags as plain strings, passed into
+ * the browser-evaluated expressions to reconstruct the RegExp there. Kept as
+ * separate literals (not a `.toString()` round-trip) so the reconstruction can't
+ * be corrupted if the pattern ever gains a `/`.
+ */
+const PROMPT_EMPTY_VALUE_RX_SRC = PROMPT_EMPTY_VALUE_RX.source;
+const PROMPT_EMPTY_VALUE_RX_FLAGS = PROMPT_EMPTY_VALUE_RX.flags;
+/**
+ * Browser-side expression that reads only an element's DIRECT text nodes (not
+ * descendants). Injected into the prompt-widget value probes so a `<button>`
+ * trigger's own committed-value text is read WITHOUT concatenating any option
+ * text from a popup that renders inside the button — the standard combobox
+ * pattern portals its popup to `document.body`, but a library that nests it
+ * inside the trigger would otherwise pollute a recursive `textContent` read.
+ */
+const DIRECT_TEXT_EXPR =
+  '((el) => Array.from(el.childNodes).filter((n) => n.nodeType === 3).map((n) => n.textContent || "").join(""))';
+/**
+ * Browser-side expression resolving the DOM root within which a chosen widget's
+ * popup options / filter input live. Popup placement is vendor-split: the ARIA
+ * standard and most libraries (MUI/Radix/react-select) render the listbox in a
+ * PORTAL at `document.body` linked by `aria-controls`/`aria-owns`, while others
+ * (the Canvas/UXI kit) render it INLINE inside the widget. So resolve in order:
+ * (1) the `aria-controls`/`aria-owns` target of the widget or its trigger
+ * descendant (portal-safe); (2) the widget subtree itself if it already
+ * contains the popup (inline); (3) `document` as a last resort. Returns the
+ * scope Element/Document; callers query options/search within it, which stops a
+ * sibling widget's options from being picked on a multi-widget page.
+ */
+const PROMPT_SCOPE_ROOT_EXPR = `((w) => {
+  const refAttr = (el) => (el && (el.getAttribute("aria-controls") || el.getAttribute("aria-owns"))) || "";
+  let id = refAttr(w);
+  if (!id) {
+    const inner = w.querySelector("[aria-controls],[aria-owns]");
+    if (inner) id = refAttr(inner);
+  }
+  if (id) {
+    const first = id.split(/\\s+/)[0];
+    const popup = first && document.getElementById(first);
+    if (popup) return popup;
+  }
+  if (w.querySelector("[role='listbox'],[role='option']")) return w;
+  return document;
+})`;
+/**
  * Extra bounded poll window for a network-only advance whose real
  * `TransitionWorklet(type="next")` POST lands AFTER the `STEP_PAUSE_MS`
  * snapshot. The wizard ATS's "Next" click fires a fast `WorkletPayload` autosave
@@ -5661,9 +5706,10 @@ async function tryPromptSelectorPrimitive(params: {
   // triggers with no native <select> — that are still unfilled/invalid. Options
   // are NOT enumerated here; these widgets only render option entries once the
   // popup is open.
-  const enumerateWidgetsExpr = `((markAttr, triggerSel, valueSel, emptyRxSrc) => {
+  const enumerateWidgetsExpr = `((markAttr, triggerSel, valueSel, emptyRxSrc, emptyRxFlags) => {
     const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
-    const emptyRx = new RegExp(emptyRxSrc.slice(1, emptyRxSrc.lastIndexOf("/")), emptyRxSrc.slice(emptyRxSrc.lastIndexOf("/") + 1));
+    const directText = ${DIRECT_TEXT_EXPR};
+    const emptyRx = new RegExp(emptyRxSrc, emptyRxFlags);
     const triggers = Array.from(document.querySelectorAll(triggerSel));
     if (triggers.length === 0) return { widgetPresent: false };
     const seen = new Set();
@@ -5737,7 +5783,7 @@ async function tryPromptSelectorPrimitive(params: {
       const adid = w.getAttribute && w.getAttribute("aria-activedescendant");
       if (adid) { const opt = document.getElementById(adid); if (opt && opt.textContent.trim()) return norm(opt.textContent); }
       if (w.tagName === "INPUT" && (w.value || "").trim()) return norm(w.value);
-      if (w.tagName === "BUTTON" && (w.textContent || "").trim()) return norm(w.textContent);
+      if (w.tagName === "BUTTON" && directText(w).trim()) return norm(directText(w));
       const lbl = w.matches(valueSel) ? w : w.querySelector(valueSel);
       const raw = lbl ? (lbl.textContent || "") : "";
       if (raw.trim() && !emptyRx.test(raw.trim())) return norm(raw);
@@ -5768,7 +5814,7 @@ async function tryPromptSelectorPrimitive(params: {
     }
     if (candidates.length === 0) return { widgetPresent: true, candidates: [] };
     return { widgetPresent: true, candidates };
-  })(${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)}, ${JSON.stringify(PROMPT_TRIGGER_SELECTORS)}, ${JSON.stringify(PROMPT_VALUE_SELECTORS)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX.toString())})`;
+  })(${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)}, ${JSON.stringify(PROMPT_TRIGGER_SELECTORS)}, ${JSON.stringify(PROMPT_VALUE_SELECTORS)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_SRC)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_FLAGS)})`;
 
   try {
     const enumResult = await pollEnumerate<{
@@ -5825,13 +5871,22 @@ async function tryPromptSelectorPrimitive(params: {
     }
     await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
 
-    const enumerateOptionsExpr = `((markAttr, optionSel, searchSel) => {
-      const all = Array.from(document.querySelectorAll(optionSel));
+    const enumerateOptionsExpr = `((widgetMarkAttr, wIdx, markAttr, optionSel, searchSel) => {
+      const w = document.querySelector("[" + widgetMarkAttr + '="' + wIdx + '"]');
+      if (!w) return { optionsPresent: false };
+      // Scope options/search to THIS widget's popup (aria-controls portal, or
+      // inline subtree), so a sibling widget's options are never picked. Fall
+      // back to document only when neither a portal nor an inline popup is found.
+      const scope = ${PROMPT_SCOPE_ROOT_EXPR}(w);
+      const all = Array.from(scope.querySelectorAll(optionSel));
       // A union hit may be an ancestor of another (e.g. role=listbox > li > p):
       // keep only leaf-most option nodes with their own text so we don't double
       // count or address a wrapper.
       const opts = all.filter((el) => !all.some((o) => o !== el && el.contains(o)));
-      const searchInput = document.querySelector(searchSel);
+      const searchInput = scope.querySelector(searchSel);
+      // Mark the scoped filter input so the Node-side fill addresses THIS
+      // widget's input (Playwright's locator can't re-run the scope resolution).
+      if (searchInput) searchInput.setAttribute(markAttr + "-search", "1");
       // A searchable/typeahead widget renders NO options until its filter input
       // is typed into — report the popup as present (with searchable=true) so the
       // caller types the filter first, rather than falling through as "no popup".
@@ -5845,7 +5900,7 @@ async function tryPromptSelectorPrimitive(params: {
         options.push({ oIdx: i, text: label.replace(/\\s+/g, " ").trim() });
       }
       return { optionsPresent: true, searchable: !!searchInput, options };
-    })(${JSON.stringify(PROMPT_OPTION_MARK_ATTR)}, ${JSON.stringify(PROMPT_OPTION_SELECTORS)}, ${JSON.stringify(PROMPT_SEARCH_SELECTORS)})`;
+    })(${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)}, ${JSON.stringify(chosen.wIdx)}, ${JSON.stringify(PROMPT_OPTION_MARK_ATTR)}, ${JSON.stringify(PROMPT_OPTION_SELECTORS)}, ${JSON.stringify(PROMPT_SEARCH_SELECTORS)})`;
     const optionsInitial = await pollEnumerate<{
       optionsPresent: boolean;
       searchable?: boolean;
@@ -5878,7 +5933,14 @@ async function tryPromptSelectorPrimitive(params: {
       });
     }
     try {
-      await target.locator(PROMPT_SEARCH_SELECTORS).first().fill(option);
+      // Fill the filter input marked for THIS widget during enumeration (scoped
+      // to its popup), falling back to the union only if the mark is absent.
+      const scopedSearchSel = `[${PROMPT_OPTION_MARK_ATTR}-search="1"]`;
+      const marked = await target.locator(scopedSearchSel).count();
+      await target
+        .locator(marked > 0 ? scopedSearchSel : PROMPT_SEARCH_SELECTORS)
+        .first()
+        .fill(option);
     } catch (err) {
       logger.info(
         `prompt-selector primitive: filter-input type failed for ${optLabel}: ${toErrorMessage(err)}; falling through`
@@ -6004,17 +6066,19 @@ async function commitPromptOption(params: {
   }
   await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
 
-  const readbackExpr = `((wIdx, markAttr, valueSel, emptyRxSrc, wantText) => {
+  const readbackExpr = `((wIdx, markAttr, valueSel, emptyRxSrc, emptyRxFlags, wantText) => {
     const isInvalid = ${INVALID_MARKER_EL_EXPR};
     const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
-    const emptyRx = new RegExp(emptyRxSrc.slice(1, emptyRxSrc.lastIndexOf("/")), emptyRxSrc.slice(emptyRxSrc.lastIndexOf("/") + 1));
+    const directText = ${DIRECT_TEXT_EXPR};
+    const emptyRx = new RegExp(emptyRxSrc, emptyRxFlags);
     const w = document.querySelector("[" + markAttr + '="' + wIdx + '"]');
     if (!w) return { ok: false, id: "" };
-    // Value via the union: aria-activedescendant, own input value, or a
-    // selection-label node (empty-state phrase treated as no value).
+    // Value via the union: aria-activedescendant, own input value, a <button>'s
+    // own DIRECT text (never descendant/popup text), or a selection-label node
+    // (empty-state phrase treated as no value).
     const adid = w.getAttribute && w.getAttribute("aria-activedescendant");
     const adText = adid && document.getElementById(adid) ? norm(document.getElementById(adid).textContent) : "";
-    const own = w.tagName === "INPUT" ? norm(w.value || "") : w.tagName === "BUTTON" ? norm(w.textContent || "") : "";
+    const own = w.tagName === "INPUT" ? norm(w.value || "") : w.tagName === "BUTTON" ? norm(directText(w)) : "";
     const lbl = w.matches(valueSel) ? w : w.querySelector(valueSel);
     const lblRaw = lbl ? (lbl.textContent || "") : "";
     const lblText = lblRaw.trim() && !emptyRx.test(lblRaw.trim()) ? norm(lblRaw) : "";
@@ -6027,7 +6091,7 @@ async function commitPromptOption(params: {
       node = node.parentElement;
     }
     return { ok: textMatches || !stillInvalid, id: w.id || "" };
-  })(${JSON.stringify(chosen.wIdx)}, ${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)}, ${JSON.stringify(PROMPT_VALUE_SELECTORS)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX.toString())}, ${JSON.stringify(norm(chosenOption.text))})`;
+  })(${JSON.stringify(chosen.wIdx)}, ${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)}, ${JSON.stringify(PROMPT_VALUE_SELECTORS)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_SRC)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_FLAGS)}, ${JSON.stringify(norm(chosenOption.text))})`;
   const readback = (await target.evaluate(readbackExpr).catch(() => ({ ok: false, id: "" }))) as {
     ok: boolean;
     id: string;

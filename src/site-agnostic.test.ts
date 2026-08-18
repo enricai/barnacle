@@ -71,32 +71,41 @@ describe("site-agnostic: no customer-site or ATS-vendor names in tracked source"
   });
 
   /**
-   * Semantic tripwire for the ONE class of disguised site-coupling a plain token
-   * scan misses: a vendor-private attribute used as a SELECTOR. `data-automation-id`
-   * (the Canvas/UXI widget kit's signature attribute) and `data-uxi-*` are legitimate
-   * ONLY as members of the curated cross-vendor selector unions in
-   * `src/scraper/flow-runner.ts` (`PROMPT_TRIGGER_SELECTORS` et al.), where they sit
-   * alongside standard ARIA and grow by a one-line union edit. A `[data-automation-id=…]`
-   * / `data-uxi…=…` selector literal ANYWHERE ELSE in tracked non-test source is a new
-   * one-off site hack — exactly what #178 was — and must fail CI instead of a reviewer's
-   * memory. Prose mentions (no `[`/`=` selector syntax) and test files are exempt.
+   * Semantic tripwire for the class of disguised site-coupling a plain token
+   * scan misses: a vendor-private DOM attribute used in CODE — as a selector
+   * (`[data-automation-id=…]`), a presence match, or a `getAttribute`/
+   * `hasAttribute` read. These attributes are each one ATS/widget-kit vendor's
+   * signature (`data-automation-id`/`data-uxi-*` = Workday's Canvas/UXI kit,
+   * `data-baseweb` = Uber Base Web, `data-phenom*` = Phenom). They are legitimate
+   * ONLY inside the curated cross-vendor selector unions in
+   * `src/scraper/flow-runner.ts` (`PROMPT_TRIGGER_SELECTORS` et al.), where they
+   * sit alongside standard ARIA. ANY such usage in ANOTHER tracked non-test file
+   * is a new one-off site hack — exactly what #178 was — and must fail CI instead
+   * of a reviewer's memory. Bare prose mentions and test files are exempt.
+   *
+   * Matches the token in any code form (no `=` required), so `getAttribute(
+   * "data-automation-id")` and `[data-baseweb]` presence selectors are caught,
+   * not only `[data-automation-id='x']` literals — the gap a prior narrower
+   * pattern (data-automation-id=|data-uxi=) left open.
    */
-  it("uses vendor-private attribute selectors only inside the curated flow-runner unions", () => {
+  it("uses vendor-private attribute markers only inside the curated flow-runner unions", () => {
     // `src/scraper/flow-runner.ts` is the single home of the widget-detection
     // selector unions (PROMPT_TRIGGER_SELECTORS et al. + the container-resolution
-    // helper that reuses them); a vendor-attr selector there is a curated union
+    // helper that reuses them); a vendor-attr marker there is a curated union
     // member. Anywhere else — a per-site file, a new module — it is a one-off hack.
     const ALLOWED_FILE = "src/scraper/flow-runner.ts";
-    const hits = gitGrep("E", "data-automation-id=|data-uxi[a-z-]*=").filter((line) => {
-      // git grep output is `path:lineno:text`; exempt the curated-union file and
-      // test infrastructure (`*.test.ts` / `*.test-helper.ts` build fixture DOM).
-      const path = line.slice(0, line.indexOf(":"));
-      if (path.endsWith(".test.ts") || path.endsWith(".test-helper.ts")) return false;
-      return path !== ALLOWED_FILE;
-    });
+    const hits = gitGrep("E", "data-automation-id|data-uxi|data-baseweb|data-phenom").filter(
+      (line) => {
+        // git grep output is `path:lineno:text`; exempt the curated-union file and
+        // test infrastructure (`*.test.ts` / `*.test-helper.ts` build fixture DOM).
+        const path = line.slice(0, line.indexOf(":"));
+        if (path.endsWith(".test.ts") || path.endsWith(".test-helper.ts")) return false;
+        return path !== ALLOWED_FILE;
+      }
+    );
     expect(
       hits,
-      `vendor-private attribute selector used outside the curated flow-runner selector unions:\n${hits.join("\n")}`
+      `vendor-private attribute marker used outside the curated flow-runner selector unions:\n${hits.join("\n")}`
     ).toEqual([]);
   });
 });

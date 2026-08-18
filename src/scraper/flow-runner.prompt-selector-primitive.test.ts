@@ -147,7 +147,10 @@ describe("flow-runner/tryPromptSelectorPrimitive (real DOM)", () => {
     const stagehandAct = vi.fn();
     const { page, target } = buildPromptWidgetHarness({
       html: ARIA_BUTTON_HTML,
-      popupByWidgetId: { phoneType: { options: ["Home", "Mobile", "Work"] } },
+      // Portaled popup (aria-controls to a body-level listbox) — the standard
+      // MUI/Radix/react-select placement, and the case that proves the value
+      // union reads the button's OWN text, not the portaled option text.
+      popupByWidgetId: { phoneType: { options: ["Home", "Mobile", "Work"], portaled: true } },
     });
     const params = baseParams(page as unknown as Page, stagehandAct, "");
     const merged = {
