@@ -5638,6 +5638,13 @@ async function tryPromptSelectorPrimitive(params: {
       }
       return currentText(w) === "";
     };
+    // Clear stale marks from a prior call on this same page (this primitive
+    // runs once per "select 'X'" step, and Workday's My-Info wizard answers
+    // several such steps on the same unreloaded page) — otherwise a widget
+    // already filled by an earlier call keeps its old index and collides
+    // with whatever new widget claims that index this round, and the
+    // trigger-click selector's \`.first()\` can resolve to the stale widget.
+    for (const el of document.querySelectorAll("[" + markAttr + "]")) el.removeAttribute(markAttr);
     const candidates = [];
     let idx = 0;
     for (const w of widgets) {
