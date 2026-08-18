@@ -5702,14 +5702,21 @@ async function applyRadioSelection(
  * option slice until filtered), and clicks the matching option with a real
  * click.
  *
- * Accepts either a SELECT-shaped step (`parseSelectStep`, "select 'X' in the
- * Y dropdown") or a FILL-shaped step (`parseFillStep`, "Fill in the Y field
- * with 'X'") — flow/replan generation describes this widget family's
- * searchable variant as a fill because its filter box renders a real
- * `<input>`, even though committing the choice still requires the popup-
- * open/option-click gesture below, not typed text. A fill step's `value`
- * becomes the option to match and its `fieldLabel` becomes the question
- * label; downstream matching is identical either way.
+ * Accepts a SELECT-shaped step (`parseSelectStep`, "select 'X' in the Y
+ * dropdown"), a FILL-shaped step (`parseFillStep`, "Fill in the Y field with
+ * 'X'"), or an ANSWER/RADIO-shaped step (`parseRadioStep`, "click the 'Yes'
+ * answer for the question '…'") — flow/replan generation describes this
+ * widget family's searchable variant as a fill because its filter box renders
+ * a real `<input>`, and describes its Yes/No variant with the same
+ * answer-verb phrasing used for native radio groups, even though committing
+ * either still requires the popup-open/option-click gesture below, not typed
+ * text or a bare click. `tryRadioPrimitive` (called first, see the call site)
+ * already claims answer-verb steps whose target has native
+ * `input[type=radio]` elements; this primitive only ever sees an answer-verb
+ * step after that primitive has fallen through for lack of any, so there is
+ * no double-claim. A fill or radio step's `value`/`option` becomes the option
+ * to match and its `fieldLabel`/`questionLabel` becomes the question label;
+ * downstream matching is identical across all three shapes.
  *
  * Matches the target widget by `questionLabel` (when the step carries one) or,
  * failing that, by there being exactly one unfilled widget on the page —
@@ -5738,17 +5745,22 @@ async function tryPromptSelectorPrimitive(params: {
   // A prompt-selector widget's search box renders a real <input>, so flow/
   // replan generation routinely describes filling it as a FILL step ("Fill in
   // the 'How Did You Hear About Us?' field with 'Internet/Online'") rather
-  // than a SELECT step. Accept either shape: parseSelectStep first, falling
-  // back to parseFillStep (fieldLabel -> questionLabel, value -> option) so
-  // the widget-matching/open/readback phases below run unchanged regardless
-  // of which verb the instruction used.
+  // than a SELECT step, and its Yes/No variant renders no native radio inputs
+  // at all, so flow/replan generation describes it with the same answer-verb
+  // phrasing used for native radios ("Click the 'Yes' answer for the question
+  // '…'"). Accept all three shapes: parseSelectStep first, then parseFillStep
+  // (fieldLabel -> questionLabel, value -> option), then parseRadioStep
+  // (option/questionLabel already in this primitive's shape) so the widget-
+  // matching/open/readback phases below run unchanged regardless of which
+  // verb the instruction used.
   const parsedSelect = parseSelectStep(instruction);
   const parsedFill = parsedSelect ? null : parseFillStep(instruction);
+  const parsedAnswer = parsedSelect || parsedFill ? null : parseRadioStep(instruction);
   const parsed = parsedSelect
     ? parsedSelect
     : parsedFill
       ? { option: parsedFill.value, questionLabel: stripQuotedLabel(parsedFill.fieldLabel) }
-      : null;
+      : parsedAnswer;
   if (!parsed) return null;
   const { option, questionLabel } = parsed;
   const optLabel = `option "${option.slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;

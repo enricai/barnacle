@@ -316,6 +316,36 @@ describe("flow-runner/tryPromptSelectorPrimitive (real DOM)", () => {
     );
   });
 
+  it("resolves an ANSWER-shaped instruction ('Click the ... answer for the question ...') against a Yes/No widget with NO native radio inputs", async () => {
+    const stagehandAct = vi.fn();
+    const { page, target, window, clicks } = buildPromptWidgetHarness({
+      html: ARIA_BUTTON_HTML.replaceAll(
+        "Phone Device Type",
+        "Are you at least 18 years of age?"
+      ).replaceAll("phoneType", "ageGate"),
+      popupByWidgetId: { ageGate: { options: ["Yes", "No"], portaled: true } },
+    });
+    // Guard the fixture's own premise: no native radio inputs render at all.
+    expect(window.document.querySelectorAll('input[type="radio"]').length).toBe(0);
+    const params = baseParams(page as unknown as Page, stagehandAct, "");
+    const merged = {
+      ...params,
+      frameTarget: target,
+      step: "Click the 'Yes' answer for the question 'Are you at least 18 years of age?'",
+    };
+
+    const result = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    );
+
+    expect(result).toBe("completed");
+    expect(stagehandAct).not.toHaveBeenCalled();
+    expect(clicks.length).toBeGreaterThanOrEqual(2);
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining("resolved by prompt-selector primitive")
+    );
+  });
+
   it("detects an unfilled button whose only content is a decorative <abbr>* as UNFILLED — FIX E", async () => {
     const stagehandAct = vi.fn();
     const { page, target } = buildPromptWidgetHarness({
