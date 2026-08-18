@@ -4,6 +4,15 @@ import { Window } from "happy-dom";
 import type { FrameTarget } from "@/scraper/frame-target";
 
 /**
+ * Mirrors {@link tryPromptSelectorPrimitive}'s private `PROMPT_WIDGET_MARK_ATTR`
+ * (flow-runner.ts) — the harness needs it to resolve a click back to the
+ * WIDGET a real click landed in, not just the clicked element's own `id`,
+ * since production now prefers clicking a widget's interactive descendant
+ * (e.g. its filter `<input>`) over the marked container itself.
+ */
+const PROMPT_WIDGET_MARK_ATTR = "data-bcl-prompt-idx";
+
+/**
  * Real-DOM test harness for the prompt-selector primitive. Runs the primitive's
  * actual `page.evaluate(expr)` / `target.evaluate(expr)` expression STRINGS
  * against a live happy-dom document, and performs real DOM mutations for
@@ -198,13 +207,17 @@ export function buildPromptWidgetHarness(params: {
         clicks.push(selector);
         const el = resolveFirst(selector);
         if (!el) return;
-        // Trigger click → open this widget's popup.
-        const widgetId = el.id || el.closest("[id]")?.id || "";
+        // Trigger click → open this widget's popup. Resolve back to the
+        // marked WIDGET (not just the clicked element's own id) — production
+        // may click a widget's interactive descendant (e.g. its filter
+        // input) rather than the marked container itself.
+        const markedWidget = el.closest(`[${PROMPT_WIDGET_MARK_ATTR}]`);
+        const widgetId = markedWidget?.id || el.id || el.closest("[id]")?.id || "";
         const spec = params.popupByWidgetId[widgetId];
         if (spec) {
           const state = { spec, filter: "" };
           openState.set(widgetId, state);
-          renderPopup(el.id ? el : (el.closest("[id]") as Element), state);
+          renderPopup((markedWidget || el.closest("[id]") || el) as Element, state);
           return;
         }
         // Option click → commit the option into the owning widget's value.

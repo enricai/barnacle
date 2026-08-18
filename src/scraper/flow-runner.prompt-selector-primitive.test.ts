@@ -90,6 +90,35 @@ const DECORATIVE_BUTTON_HTML = `
   </div>
 </div>`;
 
+/**
+ * The multiselect-typeahead/chip variant of the widget-kit shape (transcribed
+ * from the reported evidence markup): the trigger `<input>` is nested a level
+ * DEEPER than {@link WIDGET_KIT_HTML} — inside its own
+ * `data-automation-id="multiselectInputContainer"` wrapper, itself inside the
+ * `multiSelectContainer` — and the widget's value reads via a SEPARATE
+ * `promptAriaInstruction` counter node ("0 items selected") in addition to the
+ * (empty) `promptSelectionLabel`. Real widget-kit chip widgets bind their
+ * open/filter handler on this nested input itself, not on the outer
+ * container, unlike the flatter single-value shape.
+ */
+const MULTISELECT_TYPEAHEAD_CHIP_HTML = `
+<div data-automation-id="applyFlowMyInfoPage">
+  <div role="group" aria-labelledby="source-section">
+    <span id="source-section">Contact</span>
+    <div data-automation-id="formField-source">
+      <label for="source--source"><span>How Did You Hear About Us?</span></label>
+      <div id="src-widget" data-uxi-widget-type="multiselect" data-automation-id="multiSelectContainer">
+        <div data-automation-id="multiselectInputContainer">
+          <input id="source--source" data-uxi-widget-type="selectinput" type="text"
+                 placeholder="Search" aria-required="true" aria-invalid="true" value="" />
+        </div>
+        <div data-automation-id="promptSelectionLabel"></div>
+        <div aria-live="polite" data-automation-id="promptAriaInstruction">0 items selected</div>
+      </div>
+    </div>
+  </div>
+</div>`;
+
 function baseParams(page: Page, stagehandAct: ReturnType<typeof vi.fn>, step: string) {
   const stagehand = {
     act: stagehandAct,
@@ -366,6 +395,61 @@ describe("flow-runner/tryPromptSelectorPrimitive (real DOM)", () => {
     // If BUTTON_VALUE absorbed the "*", the widget reads as filled → skipped →
     // no resolution. FIX E strips the <abbr>, so it's correctly unfilled and
     // resolved.
+    expect(result).toBe("completed");
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining("resolved by prompt-selector primitive")
+    );
+  });
+
+  it("commits a value on the multiselect-typeahead/chip widget shape (SELECT phrasing) — trigger click lands on the nested input, not the outer container", async () => {
+    const stagehandAct = vi.fn();
+    const { page, target, clicks } = buildPromptWidgetHarness({
+      html: MULTISELECT_TYPEAHEAD_CHIP_HTML,
+      popupByWidgetId: {
+        "src-widget": { options: ["Job Board", "Referral", "LinkedIn"], searchable: true },
+      },
+    });
+    const params = baseParams(page as unknown as Page, stagehandAct, "");
+    const merged = {
+      ...params,
+      frameTarget: target,
+      step: "for 'How Did You Hear About Us?' select 'Referral'",
+    };
+
+    const result = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    );
+
+    expect(result).toBe("completed");
+    expect(stagehandAct).not.toHaveBeenCalled();
+    // The trigger click must resolve to the widget's nested interactive
+    // control (an <input>), not the outer (non-interactive) container div —
+    // a click on a bare layout wrapper is what the reported failure traced to.
+    expect(clicks[0]).toContain("input");
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining("resolved by prompt-selector primitive")
+    );
+  });
+
+  it("commits a value on the multiselect-typeahead/chip widget shape (FILL phrasing)", async () => {
+    const stagehandAct = vi.fn();
+    const { page, target } = buildPromptWidgetHarness({
+      html: MULTISELECT_TYPEAHEAD_CHIP_HTML,
+      popupByWidgetId: {
+        "src-widget": { options: ["Job Board", "Referral", "LinkedIn"], searchable: true },
+      },
+    });
+    const params = baseParams(page as unknown as Page, stagehandAct, "");
+    const merged = {
+      ...params,
+      frameTarget: target,
+      step: "Fill in the 'How Did You Hear About Us?' field with 'Referral'",
+    };
+
+    const result = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    );
+
     expect(result).toBe("completed");
     expect(testLogger.info).toHaveBeenCalledWith(
       expect.stringContaining("resolved by prompt-selector primitive")

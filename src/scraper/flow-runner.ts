@@ -428,6 +428,18 @@ const PROMPT_WIDGET_MARK_ATTR = "data-bcl-prompt-idx";
 /** Same role as {@link PROMPT_WIDGET_MARK_ATTR}, but for the popup's rendered option entries. */
 const PROMPT_OPTION_MARK_ATTR = "data-bcl-prompt-opt-idx";
 /**
+ * Cross-vendor selector for a genuine focusable form control — the only kind
+ * of element a native click event reliably opens. Phase 1's container walk
+ * marks the OUTERMOST widget-kit container so one widget resolves to one
+ * candidate, but that container is often a layout wrapper with no click
+ * handler of its own (e.g. a typeahead/chip widget's real open+filter control
+ * is an `<input>` nested a level deeper, inside its own `*InputContainer`
+ * wrapper). Phase 2 prefers clicking this interactive descendant over the
+ * marked container itself, falling back to the container only when it has
+ * none — no vendor branch, just "click the real control if one exists".
+ */
+const PROMPT_INTERACTIVE_CONTROL_SELECTORS = "button,[role='combobox'],[role='button'],input";
+/**
  * Cross-vendor selector union that identifies the TRIGGER of a native-control-less
  * popup-dropdown widget (a combobox that opens a listbox popup and renders no
  * `<select>`/`<input>` a focused `<select>`/`<input>` probe can see). Ordered as
@@ -5992,7 +6004,21 @@ async function tryPromptSelectorPrimitive(params: {
 
     // Phase 2 (real gesture): open the popup. These widgets' trigger requires a
     // genuine click — a synthetic dispatchEvent does not fire its handler.
-    const triggerSel = `[${PROMPT_WIDGET_MARK_ATTR}="${chosen.wIdx}"]`;
+    // Prefer the marked widget's own interactive descendant (a real form
+    // control) over the marked container itself, since the container is
+    // frequently a non-interactive layout wrapper for widget shapes whose
+    // actual trigger sits a level deeper (see PROMPT_INTERACTIVE_CONTROL_SELECTORS).
+    const containerTriggerSel = `[${PROMPT_WIDGET_MARK_ATTR}="${chosen.wIdx}"]`;
+    const innerTriggerSel = PROMPT_INTERACTIVE_CONTROL_SELECTORS.split(",")
+      .map((s) => `${containerTriggerSel} ${s}`)
+      .join(",");
+    let triggerSel = containerTriggerSel;
+    try {
+      const innerCount = await target.locator(innerTriggerSel).count();
+      if (innerCount > 0) triggerSel = innerTriggerSel;
+    } catch {
+      // Fall back to the container selector.
+    }
     try {
       await target.locator(triggerSel).first().click();
     } catch (err) {
