@@ -2,7 +2,7 @@ import type { Anthropic } from "@anthropic-ai/sdk";
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { StagehandModel } from "@/lib/bedrock";
+import type { RephraseModel } from "@/lib/llm/anthropic-client";
 import type { LlmCallInput } from "@/lib/telemetry/call-capture";
 import { type FakeDeepLocatorFrame, makeFakeDeepLocator } from "@/scraper/deep-locator-fake";
 import type { HealingFlowStep } from "@/scraper/flow-runner";
@@ -587,7 +587,7 @@ describe("flow-runner/executeStepWithHealing — attempt-2-cascade-reachable fra
     const messagesParse = vi.fn().mockRejectedValue(new Error("stub judge unavailable"));
     const anthropic = { messages: { parse: messagesParse } } as unknown as Anthropic;
     generateObject.mockRejectedValue(new Error("stub rephrase model unavailable"));
-    const rephraseModel = { modelId: "test-model" } as unknown as StagehandModel;
+    const rephraseModel = { modelId: "test-model" } as unknown as RephraseModel;
 
     // Pre-cascade probe (probeStepBeforeAttempts) must find a candidate so
     // the step proceeds into the attempt loop instead of fast-skipping via
@@ -647,7 +647,7 @@ describe("flow-runner/executeStepWithHealing — attempt-2-cascade-reachable fra
     const messagesParse = vi.fn().mockRejectedValue(new Error("stub judge unavailable"));
     const anthropic = { messages: { parse: messagesParse } } as unknown as Anthropic;
     generateObject.mockRejectedValue(new Error("stub rephrase model unavailable"));
-    const rephraseModel = { modelId: "test-model" } as unknown as StagehandModel;
+    const rephraseModel = { modelId: "test-model" } as unknown as RephraseModel;
 
     // Attempt 1 (act-string) resolves nothing; attempts 2/3/4 report no
     // candidates / no prior selector and are skipped, landing the cascade on
