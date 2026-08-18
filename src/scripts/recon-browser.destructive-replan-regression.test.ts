@@ -18,8 +18,8 @@ import {
  * flow's re-appended remaining tail was never authored against — silently
  * stranded the application, with the recorded replan event showing the
  * flow's remaining work collapsed from 19 authored steps down to the
- * 7-step Sign-In bridge (dropping My Experience/resume, Application
- * Questions, Voluntary Disclosures, Self Identify, Review, and Submit from
+ * 7-step Sign-In bridge (dropping Work History/resume, Application
+ * Questions, Voluntary Demographics, Disability Status, Review, and Submit from
  * ever being reached against a compatible page).
  *
  * **What this pins:** the full splice-time output-filtering path
@@ -62,7 +62,7 @@ const ORIGINAL_REMAINING: NormalizedStep[] = [
   "Fill in the 'Postal Code' field with '94105'",
   "Select 'United States of America' in the 'Country' dropdown",
   "Fill in the 'Phone' field with the applicant's phone number",
-  "Click the 'Save and Continue' button to advance to My Experience",
+  "Click the 'Save and Continue' button to advance to Work History",
   "Upload the applicant's resume file in the 'Resume/CV' upload field",
   "Click the 'Add' button to add a Work Experience entry",
   "Fill in the 'Job Title' field with the applicant's most recent job title",
@@ -70,12 +70,12 @@ const ORIGINAL_REMAINING: NormalizedStep[] = [
   "Fill in the 'Start Date' field with the applicant's employment start date",
   "Click the 'I currently work here' checkbox",
   "Click the 'Save' button to save the Work Experience entry",
-  "Click the 'Next' button to advance to Application Questions",
-  "Select 'Yes' in response to the Application Questions eligibility question",
-  "Click the 'Next' button to advance to Voluntary Disclosures",
-  "Select 'I do not wish to answer' for each Voluntary Disclosures question",
-  "Click the 'Next' button to advance to Self Identify",
-  "Select 'Decline to self-identify' in the Self Identify dropdown",
+  "Click the 'Next' button to advance to Screening Questions",
+  "Select 'Yes' in response to the Screening Questions eligibility question",
+  "Click the 'Next' button to advance to Voluntary Demographics",
+  "Select 'I do not wish to answer' for each Voluntary Demographics question",
+  "Click the 'Next' button to advance to Disability Status",
+  "Select 'Decline to self-identify' in the Disability Status dropdown",
   "Click the 'Review' button, then click the final 'Submit' button",
 ].map((instruction) => mk(instruction, { origin: "original" }));
 
@@ -184,7 +184,7 @@ describe("recon-browser destructive-replan regression (19->7 Sign-In-bridge coll
     }
   });
 
-  it("the protected 19-step originalRemaining tail excludes any Sign-In step and preserves My Experience/resume, Application Questions, Voluntary Disclosures, Self Identify, Review, and Submit", () => {
+  it("the protected 19-step originalRemaining tail excludes any Sign-In step and preserves Work History/resume, Screening Questions, Voluntary Demographics, Disability Status, Review, and Submit", () => {
     // Because the guard throws before `plan.splice` ever runs, the plan's
     // remaining tail is never replaced by the buggy 7-step bridge — the
     // 19-step originalRemaining this test seeded is exactly what protects
@@ -198,11 +198,11 @@ describe("recon-browser destructive-replan regression (19->7 Sign-In-bridge coll
       expect(instruction).not.toMatch(signInPattern);
     }
 
-    expect(instructions.some((i) => /my experience/i.test(i))).toBe(true);
+    expect(instructions.some((i) => /work history/i.test(i))).toBe(true);
     expect(instructions.some((i) => /resume/i.test(i))).toBe(true);
-    expect(instructions.some((i) => /application questions/i.test(i))).toBe(true);
-    expect(instructions.some((i) => /voluntary disclosures/i.test(i))).toBe(true);
-    expect(instructions.some((i) => /self identify/i.test(i))).toBe(true);
+    expect(instructions.some((i) => /screening questions/i.test(i))).toBe(true);
+    expect(instructions.some((i) => /voluntary demographics/i.test(i))).toBe(true);
+    expect(instructions.some((i) => /disability status/i.test(i))).toBe(true);
     expect(instructions.some((i) => /review/i.test(i))).toBe(true);
     expect(instructions.some((i) => /submit/i.test(i))).toBe(true);
   });

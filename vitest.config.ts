@@ -12,6 +12,9 @@ export default defineConfig({
       exclude: [
         "src/**/*.d.ts",
         "src/**/*.test.ts",
+        // Test-only helpers (real-DOM harnesses etc.) — excluded from the
+        // build too (tsconfig.build.json), so they are not shippable code.
+        "src/**/*.test-helper.ts",
         // Pure interface files — no executable code to cover.
         "src/types/**",
         // Steel SDK + Stagehand wiring — testing it means booting a
