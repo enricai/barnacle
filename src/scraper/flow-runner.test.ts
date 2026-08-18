@@ -13,6 +13,7 @@ import {
   flowHasSubmitSemantics,
   formatStepPrefix,
   type HealingFlowStep,
+  parseRadioStep,
   parseSelectStep,
   pollEnumerate,
   prepareFailureDumpBody,
@@ -1767,6 +1768,50 @@ describe("flow-runner/parseSelectStep — filler-word phrasing between verb and 
     expect(parseSelectStep("Select 'Texas' in the State or State/Region dropdown")).toEqual({
       option: "Texas",
       questionLabel: null,
+    });
+  });
+
+  it("picks the widget's own quoted label over an unrelated leading page/step-context quote", () => {
+    expect(
+      parseSelectStep(
+        "On the authenticated 'My Information' step, open the 'How Did You Hear About Us?' prompt selector (data-automation-id='source'), then select the option 'Job Boards' from the popup list"
+      )
+    ).toEqual({
+      option: "Job Boards",
+      questionLabel: "How Did You Hear About Us?",
+    });
+  });
+
+  it("picks the widget's own quoted label when the step is phrased as 'multiselect' rather than 'dropdown'/'prompt selector'", () => {
+    expect(
+      parseSelectStep(
+        "On the authenticated 'My Information' step, open the 'How Did You Hear About Us?' multiselect, then select the option 'Job Boards' from the popup list"
+      )
+    ).toEqual({
+      option: "Job Boards",
+      questionLabel: "How Did You Hear About Us?",
+    });
+  });
+});
+
+describe("flow-runner/parseRadioStep — leading page/step-context quote before 'for the question'", () => {
+  it("picks the 'for the question' quoted label over an unrelated leading page/step-context quote", () => {
+    expect(
+      parseRadioStep(
+        "On the authenticated 'My Information' page, click the 'Yes' answer for the question 'Are you at least 18 years of age?'"
+      )
+    ).toEqual({
+      option: "Yes",
+      questionLabel: "Are you at least 18 years of age?",
+    });
+  });
+
+  it("still parses the pre-existing 'click the answer for the question' phrasing unchanged", () => {
+    expect(
+      parseRadioStep("Click the 'Yes' answer for the question 'Are you at least 18 years of age?'")
+    ).toEqual({
+      option: "Yes",
+      questionLabel: "Are you at least 18 years of age?",
     });
   });
 });

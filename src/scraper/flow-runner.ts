@@ -4350,6 +4350,49 @@ async function setFilesViaCdp(params: {
  * "for any remaining question…" catch-alls, or radio/checkbox-only steps) so
  * the caller falls through to the normal cascade.
  */
+// Nouns that name a form widget/question, used by `pickQuestionLabel` to tell
+// a genuine field label ("'How Did You Hear About Us?' prompt selector")
+// apart from an unrelated leading quoted phrase that just happens to precede
+// it in the instruction (e.g. a page/step-context quote like "'My
+// Information' step").
+const WIDGET_NOUN_RE =
+  /\b(prompt\s+selector|multiselect|typeahead|dropdown|field|question|checkbox|radio\s+button|radio)\b/i;
+
+/**
+ * Pick the QUESTION LABEL out of an instruction's quoted phrases, given the
+ * already-extracted OPTION.
+ *
+ * Why this exists: an instruction can carry more than one quoted phrase that
+ * is not the option — e.g. a page/step-context phrase ("On the authenticated
+ * 'My Information' step, open the 'How Did You Hear About Us?' prompt
+ * selector…") — so naively taking the first non-option quote picks the
+ * context phrase instead of the actual widget label. This prefers a quote
+ * that sits immediately next to a widget noun (`multiselect`/`typeahead`/
+ * `dropdown`/`field`/`question`/`checkbox`/`radio button`/`prompt selector`)
+ * or is introduced
+ * by "for"/"for the"/"for the question"/"for the answer" (e.g. "click the
+ * 'Yes' answer for the question '…'"), before falling back to the first
+ * non-option quote so existing un-adorned phrasings keep working.
+ */
+function pickQuestionLabel(instruction: string, option: string): string | null {
+  // biome-ignore lint/style/noNonNullAssertion: capture group 1 is required by the pattern, so it is present on every match
+  const candidates = [...instruction.matchAll(/'([^']+)'/g)].filter((m) => m[1]!.trim() !== option);
+  if (candidates.length === 0) return null;
+  const adjacentToWidgetNoun = candidates.find((m) => {
+    const start = m.index ?? 0;
+    const end = start + m[0].length;
+    const before = instruction.slice(Math.max(0, start - 25), start);
+    const after = instruction.slice(end, end + 40);
+    return (
+      /\bfor(?:\s+the)?(?:\s+(?:question|answer))?\s*$/i.test(before) || WIDGET_NOUN_RE.test(after)
+    );
+  });
+  // biome-ignore lint/style/noNonNullAssertion: candidates is guarded non-empty above, so the fallback element is always present
+  const picked = (adjacentToWidgetNoun ?? candidates[0])!;
+  // biome-ignore lint/style/noNonNullAssertion: capture group 1 is required by the pattern, so it is present on every match
+  return picked[1]!.trim();
+}
+
 export function parseSelectStep(
   instruction: string
 ): { option: string; questionLabel: string | null } | null {
@@ -4374,9 +4417,9 @@ export function parseSelectStep(
   // biome-ignore lint/style/noNonNullAssertion: guarded by the !selMatch early-return; group 1 is required by the pattern
   const option = selMatch[1]!.trim();
   // The QUESTION LABEL, when present, is a DIFFERENT quoted string — the one
-  // introduced by "for '…'" or "in the '…' dropdown". Pick the first quoted
-  // string that is not the option.
-  const questionLabel = quoted.find((q) => q.trim() !== option)?.trim() ?? null;
+  // introduced by "for '…'" or adjacent to a widget noun like "'…' dropdown"
+  // or "'…' prompt selector". See `pickQuestionLabel`.
+  const questionLabel = pickQuestionLabel(instruction, option);
   return { option, questionLabel };
 }
 
@@ -4492,8 +4535,9 @@ export function parseRadioStep(
   // introduced by "for the question '…'" / "for the '…' question". Some steps
   // phrase the question un-quoted ("…about requiring visa sponsorship"); in
   // that case there is no second quoted string and questionLabel stays null,
-  // which the primitive handles via LLM group-matching.
-  const questionLabel = quoted.find((q) => q.trim() !== option)?.trim() ?? null;
+  // which the primitive handles via LLM group-matching. See
+  // `pickQuestionLabel`.
+  const questionLabel = pickQuestionLabel(instruction, option);
   return { option, questionLabel };
 }
 
@@ -9428,7 +9472,13 @@ export async function executeStepWithHealing(params: {
     // `isPromptWidget: false` for anything outside this widget family, so a
     // plain click/fill is untouched.
     let promptSelectorRejected = false;
-    if (record.actResultSuccess === true && !hasStrongSignal) {
+    // Exempt only on a genuine network-advance or URL-change signal, not the
+    // broader `hasStrongSignal` (which the sibling datepicker gate above
+    // legitimately relies on) — `domVerifiedForStep` is true here simply
+    // because opening the widget's popup mutates the DOM, so reusing it would
+    // let that popup-open alone skip the readback below.
+    const hasNetworkOrUrlSignal = networkIsRealAdvance || urlChanged;
+    if (record.actResultSuccess === true && !hasNetworkOrUrlSignal) {
       const readbackSelector =
         resolvedAction?.selector ?? triedSelectors[triedSelectors.length - 1] ?? null;
       if (readbackSelector) {
