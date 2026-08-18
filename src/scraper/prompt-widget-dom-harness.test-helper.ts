@@ -4,6 +4,15 @@ import { Window } from "happy-dom";
 import type { FrameTarget } from "@/scraper/frame-target";
 
 /**
+ * Mirrors {@link tryPromptSelectorPrimitive}'s private `PROMPT_WIDGET_MARK_ATTR`
+ * (flow-runner.ts) — the harness needs it to resolve a click back to the
+ * WIDGET a real click landed in, not just the clicked element's own `id`,
+ * since production now prefers clicking a widget's interactive descendant
+ * (e.g. its filter `<input>`) over the marked container itself.
+ */
+const PROMPT_WIDGET_MARK_ATTR = "data-bcl-prompt-idx";
+
+/**
  * Real-DOM test harness for the prompt-selector primitive. Runs the primitive's
  * actual `page.evaluate(expr)` / `target.evaluate(expr)` expression STRINGS
  * against a live happy-dom document, and performs real DOM mutations for
@@ -71,6 +80,23 @@ export function buildPromptWidgetHarness(params: {
   const window = new Window({ url: "https://careers.example.com/apply/job/1" });
   const document = window.document;
   document.body.innerHTML = params.html;
+  // happy-dom implements neither `XPathResult` nor `document.evaluate`.
+  // Production `evaluate` expressions (e.g. `verifyPromptSelectorCommitted`)
+  // resolve their resolved-action element via a `//*[@id='...']` xpath — the
+  // only shape Stagehand's own resolutions and this suite's fixtures ever
+  // need — so polyfill just that one pattern rather than a general XPath
+  // engine.
+  const win = window as unknown as { XPathResult?: unknown };
+  if (!win.XPathResult) {
+    win.XPathResult = { FIRST_ORDERED_NODE_TYPE: 9 };
+    (
+      document as unknown as { evaluate: (expr: string) => { singleNodeValue: Element | null } }
+    ).evaluate = (expr: string) => {
+      const idMatch = expr.match(/^\/\/\*\[@id=(['"])([^'"]+)\1\]$/);
+      const id = idMatch?.[2];
+      return { singleNodeValue: id ? document.getElementById(id) : null };
+    };
+  }
   const clicks: string[] = [];
   const fills: { selector: string; value: string }[] = [];
 
@@ -181,13 +207,25 @@ export function buildPromptWidgetHarness(params: {
         clicks.push(selector);
         const el = resolveFirst(selector);
         if (!el) return;
-        // Trigger click → open this widget's popup.
-        const widgetId = el.id || el.closest("[id]")?.id || "";
+        // An option click must be recognized BEFORE the trigger-open branch:
+        // for an INLINE (non-portaled) popup, the option is rendered as a
+        // descendant of the widget container, so `el.closest` on the widget's
+        // mark attribute resolves to that SAME container a trigger click also
+        // resolves to. Checking `[data-test-popup-for]` first — present only on
+        // an option nested in an already-rendered popup, never on the bare
+        // trigger — disambiguates the two without relying on marker ancestry.
+        const inOpenPopup = el.closest("[data-test-popup-for]") !== null;
+        // Trigger click → open this widget's popup. Resolve back to the
+        // marked WIDGET (not just the clicked element's own id) — production
+        // may click a widget's interactive descendant (e.g. its filter
+        // input) rather than the marked container itself.
+        const markedWidget = el.closest(`[${PROMPT_WIDGET_MARK_ATTR}]`);
+        const widgetId = markedWidget?.id || el.id || el.closest("[id]")?.id || "";
         const spec = params.popupByWidgetId[widgetId];
-        if (spec) {
+        if (spec && !inOpenPopup) {
           const state = { spec, filter: "" };
           openState.set(widgetId, state);
-          renderPopup(el.id ? el : (el.closest("[id]") as Element), state);
+          renderPopup((markedWidget || el.closest("[id]") || el) as Element, state);
           return;
         }
         // Option click → commit the option into the owning widget's value.

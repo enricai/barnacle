@@ -106,17 +106,30 @@ const MULTI_FIELD_PAGE_HTML = `
       </div>
     </div>
   </div>
+  <div role="group" aria-labelledby="referral-section">
+    <span id="referral-section">Referral</span>
+    <div data-automation-id="formField-referralSource">
+      <label for="referral--referralSource"><span>Referral source</span></label>
+      <div id="referral-widget" data-uxi-widget-type="multiselect" data-automation-id="multiSelectContainer">
+        <div data-automation-id="promptSelectionLabel"></div>
+        <input id="referral--referralSource" data-uxi-widget-type="selectinput" type="text"
+               placeholder="Search" aria-required="true" aria-invalid="true" value="" />
+      </div>
+    </div>
+  </div>
 </div>`;
 
-/** The dropdown-phrased steps ("select … in the … dropdown") mixed with the answer-phrased steps ("click the … answer for …"), matching the report's mixed phrasing. */
+/** The dropdown-phrased steps ("select … in the … dropdown") mixed with the answer-phrased steps ("click the … answer for …") and the report's compound phrasing ("open the …, then select the option … from the popup list"). */
 const SOURCE_STEP = "Select 'LinkedIn' in the 'How did you hear about us' dropdown";
 const PHONE_STEP = "Select 'Mobile' in the 'Phone type' dropdown";
 const COUNTRY_STEP = "Select 'United States' in the 'Country' dropdown";
 const WORKED_STEP = "Click the 'No' answer for the question 'Have you worked here before?'";
 const ELIGIBILITY_STEP =
   "Click the 'Yes' answer for the question 'Are you legally authorized to work?'";
+const REFERRAL_STEP =
+  "Open the 'Referral source' prompt selector, then select the option 'Employee Referral' from the popup list";
 
-const STEPS = [SOURCE_STEP, PHONE_STEP, COUNTRY_STEP, WORKED_STEP, ELIGIBILITY_STEP];
+const STEPS = [SOURCE_STEP, PHONE_STEP, COUNTRY_STEP, WORKED_STEP, ELIGIBILITY_STEP, REFERRAL_STEP];
 
 function baseParams(page: Page, stagehandAct: ReturnType<typeof vi.fn>, stepIndex: number) {
   const stagehand = {
@@ -167,6 +180,7 @@ describe("flow-runner multi-field prompt-widget wizard-page acceptance (widget-k
         "country-widget": { options: ["United States", "Canada", "Mexico"] },
         "worked-widget": { options: ["Yes", "No"] },
         "eligibility-widget": { options: ["Yes", "No"] },
+        "referral-widget": { options: ["Job Board", "Employee Referral", "Social Media"] },
       },
     });
     // Guard the fixture's own premise: no native <select> or radio inputs
@@ -174,11 +188,13 @@ describe("flow-runner multi-field prompt-widget wizard-page acceptance (widget-k
     expect(window.document.querySelectorAll("select").length).toBe(0);
     expect(window.document.querySelectorAll('input[type="radio"]').length).toBe(0);
 
+    const trajectory: { stepIndex: number; verifiedBy: string; targetId?: string }[] = [];
     const results: string[] = [];
     for (const [index, step] of STEPS.entries()) {
       const merged = {
         ...baseParams(page as unknown as Page, stagehandAct, index),
         frameTarget: target,
+        trajectory,
         step,
       };
       // Each step's DOM effect (widget marked filled/valid) must land before
@@ -190,10 +206,18 @@ describe("flow-runner multi-field prompt-widget wizard-page acceptance (widget-k
       results.push(result);
     }
 
-    expect(results).toEqual(["completed", "completed", "completed", "completed", "completed"]);
+    expect(results).toEqual(STEPS.map(() => "completed"));
     // Every field resolved via the DOM-direct prompt-selector primitive, not
     // Stagehand's act() cascade.
     expect(stagehandAct).not.toHaveBeenCalled();
+    // Every step's own trajectory entry was verified against the DOM, not the
+    // observe cascade — this is the compound-phrased step's proof that it
+    // resolved through the same primitive as the others, not a coincidental
+    // "completed" from a different branch.
+    expect(trajectory).toHaveLength(STEPS.length);
+    for (const entry of trajectory) {
+      expect(entry.verifiedBy).toBe("dom");
+    }
     // At least a trigger click and an option click per widget.
     expect(clicks.length).toBeGreaterThanOrEqual(STEPS.length * 2);
     expect(testLogger.info).not.toHaveBeenCalledWith(
@@ -208,23 +232,34 @@ describe("flow-runner multi-field prompt-widget wizard-page acceptance (widget-k
       )
     );
 
-    // Each field's own dropdown/option markup actually rendered against the
-    // widget the step targeted (not just that "completed" was returned) —
-    // the resolved option is present under the matching widget container.
+    // Each field's committed-value node actually reflects the chosen option
+    // against the widget the step targeted (not just that "completed" was
+    // returned) — the popup itself is gone (a real commit removes it), so the
+    // widget's own `promptSelectionLabel` readback is the correct signal.
     expect(
-      window.document.querySelector("#source-widget [data-automation-label='LinkedIn']")
-    ).not.toBeNull();
+      window.document.querySelector("#source-widget [data-automation-id='promptSelectionLabel']")
+        ?.textContent
+    ).toBe("LinkedIn");
     expect(
-      window.document.querySelector("#phone-widget [data-automation-label='Mobile']")
-    ).not.toBeNull();
+      window.document.querySelector("#phone-widget [data-automation-id='promptSelectionLabel']")
+        ?.textContent
+    ).toBe("Mobile");
     expect(
-      window.document.querySelector("#country-widget [data-automation-label='United States']")
-    ).not.toBeNull();
+      window.document.querySelector("#country-widget [data-automation-id='promptSelectionLabel']")
+        ?.textContent
+    ).toBe("United States");
     expect(
-      window.document.querySelector("#worked-widget [data-automation-label='No']")
-    ).not.toBeNull();
+      window.document.querySelector("#worked-widget [data-automation-id='promptSelectionLabel']")
+        ?.textContent
+    ).toBe("No");
     expect(
-      window.document.querySelector("#eligibility-widget [data-automation-label='Yes']")
-    ).not.toBeNull();
+      window.document.querySelector(
+        "#eligibility-widget [data-automation-id='promptSelectionLabel']"
+      )?.textContent
+    ).toBe("Yes");
+    expect(
+      window.document.querySelector("#referral-widget [data-automation-id='promptSelectionLabel']")
+        ?.textContent
+    ).toBe("Employee Referral");
   });
 });
