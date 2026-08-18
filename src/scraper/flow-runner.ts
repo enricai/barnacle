@@ -5747,7 +5747,7 @@ async function tryPromptSelectorPrimitive(params: {
   const parsed = parsedSelect
     ? parsedSelect
     : parsedFill
-      ? { option: parsedFill.value, questionLabel: parsedFill.fieldLabel }
+      ? { option: parsedFill.value, questionLabel: stripQuotedLabel(parsedFill.fieldLabel) }
       : null;
   if (!parsed) return null;
   const { option, questionLabel } = parsed;
