@@ -10627,6 +10627,20 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
         knownErrorClassPrefixes: deps.knownErrorClassPrefixes ?? [],
         wizardExitButtonLabels: deps.wizardExitButtonLabels ?? [],
       });
+      // Second liveness gate: executeStepWithHealing can resolve normally even
+      // when the session died mid-step, if the death happened after its last
+      // probe. The pre-step gate above only catches this on the NEXT
+      // iteration, so on the final step — where there is no next iteration —
+      // a swallowed mid-step death would otherwise let the loop finish and
+      // runHealingFlow resolve as if the flow succeeded. Mirrors the same
+      // gate in recon-browser.ts's step loop.
+      try {
+        page.url();
+      } catch (err) {
+        throw new SessionTimeoutError(
+          `${formatStepPrefix(i, () => steps.length)} session appears closed/dead (page.url() threw: ${toErrorMessage(err)}) after step ${i} of ${steps.length} resolved`
+        );
+      }
       if (s.submitStep) {
         if (outcome === "skipped") {
           submitStepSkipped = true;
