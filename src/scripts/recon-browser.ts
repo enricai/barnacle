@@ -2465,6 +2465,11 @@ async function main(): Promise<void> {
           captureFn,
           onStepFailure: dumpStepFailure,
         });
+        // Second liveness gate: executeStepWithHealing can resolve normally even
+        // when the session died mid-step, if the death happened after its last
+        // probe. Re-check here so a swallowed mid-step death is still caught at
+        // the loop boundary rather than let the loop run to completion.
+        readLiveUrl();
         await snapshotAndPersistCookieJar(page, jarCounter, "post-step", currentPhase, i);
 
         // Stamp the step's stable DOM identity from the fast primitive that just
