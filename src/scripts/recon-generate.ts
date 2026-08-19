@@ -3749,21 +3749,18 @@ export function emitContractTs(opts: {
   // invocation, so heterogeneous per-call shapes are each checked against
   // their own inferred schema regardless of what this client-level schema is.
   //
-  // For multi-step flows this stays z.unknown(), not an unfinished schema: a
-  // submission flow's terminal shape is the plugin's OWN contract with its
-  // caller (e.g. { verified: boolean }), a field that appears in zero
-  // captured responses. Inferring a schema from the captures would emit the
-  // wrong shape with false confidence. z.unknown() plus the generated
-  // `[ ] Narrow ResponseSchema` checklist item is the intended hand-off to
-  // the plugin author, who alone knows that contract — narrowing it only
-  // changes what executeHttp promises its caller, and is now safe to do
-  // without affecting per-call validation. Single-endpoint plugins keep the
-  // inferred schema, since there both roles (client default and sole call)
-  // coincide.
-  // Browser-flow-only plugins have no HTTP call to infer a shape from either
-  // — same z.unknown() treatment as the multi-step case, for the same reason.
-  const responseSchemaExpr =
-    multiStepBody || omitExecuteHttp ? `z.unknown()` : inferZodSchema(responseBody);
+  // For multi-step flows, `responseBody` here is already
+  // `selectEffectiveResponseBody`'s pick — the SAME call `selectReturnAction`
+  // returns from `executeHttp` (`return { data: r9 }` below, r9 being that
+  // call's own already-validated result). Inferring the client-level schema
+  // from it is therefore not a guess about a field the captures never showed:
+  // it's the literal shape of the value the client hands back, captured by
+  // its own success response (e.g. a `valid`/`errors`-shaped terminal body).
+  // Single-endpoint plugins keep the same inferred-schema treatment, since
+  // there both roles (client default and sole call) coincide.
+  // Browser-flow-only plugins have no HTTP call to infer a shape from —
+  // z.unknown() there is the honest gap, not a narrowing shortcut.
+  const responseSchemaExpr = omitExecuteHttp ? `z.unknown()` : inferZodSchema(responseBody);
   // Multi-step flows that include a multipart upload need the binary asset
   // on the payload. ApplicantContactSchema (via ApplicantResumeSchema) already
   // declares Resume/ResumeContentType/ResumeFilename, so submission flows

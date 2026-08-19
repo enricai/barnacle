@@ -1829,24 +1829,22 @@ describe("emitMultiStepExecuteHttp — per-call response schema override (G2)", 
   });
 
   it("the client-level ResponseSchema is not referenced by any per-call schema, so narrowing it leaves non-terminal calls' schemas unchanged (the G2 reproduction)", () => {
-    // emitContractTs emits `${pascal}ResponseSchema = z.unknown()` for every
-    // multi-step flow and hands the author the `[ ] Narrow ResponseSchema`
-    // checklist item — the report's repro is the author following that item
-    // by hand-substituting the narrowed available-products/ shape (the same
-    // shape r2's own per-call schema below already carries) in place of
-    // z.unknown(), exactly as they would in the emitted file.
+    // emitContractTs infers the client-level ResponseSchema from the SAME
+    // body executeHttp returns (BASE_OPTS.responseBody here), independent of
+    // any individual call's own per-call `schema:` override — the report's
+    // repro is the author narrowing that client schema further and
+    // expecting it to leave every other call's own inferred schema alone.
     const contract = emitContractTs({ ...BASE_OPTS, multiStepBody: body });
-    expect(contract).toContain("const TestSiteResponseSchema = z.unknown();");
+    expect(contract).toContain(
+      "const TestSiteResponseSchema = z.object({\n  id: z.string(),\n  active: z.boolean(),\n});"
+    );
     const narrowedContract = contract.replace(
-      "const TestSiteResponseSchema = z.unknown();",
+      "const TestSiteResponseSchema = z.object({\n  id: z.string(),\n  active: z.boolean(),\n});",
       "const TestSiteResponseSchema = z.object({\n  totalPages: z.number(),\n  totalAvailableListings: z.number(),\n  products: z.array(z.object({ productId: z.string() })),\n});"
     );
 
-    // Pre-fix (no per-call override), the toggles call had no `schema:` of
-    // its own and validated against the client's TestSiteResponseSchema —
-    // narrowing it here would have applied the products shape to the toggles
-    // call. Post-fix, the toggles call carries its own inferred `schema:`
-    // literal, so the narrowed client schema is unreferenced by it.
+    // The toggles call carries its own inferred `schema:` literal, so the
+    // narrowed client schema is unreferenced by it.
     const togglesBlock = callBlockForUrl("toggles/product-avail");
     expect(togglesBlock).toMatch(/schema:\s*z\.array\(/);
     expect(togglesBlock).not.toContain("schema: TestSiteResponseSchema");
