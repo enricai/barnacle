@@ -191,6 +191,74 @@ describe("flow-runner/runHealingFlow — mid-flow session death", () => {
     expect(stepCount).toBe(0);
   });
 
+  it("rejects instead of resolving when the session dies after the LAST step's own verification finishes, with no next iteration to fall back on", async () => {
+    // A control run of this exact fixture (same steps/act/observe shape)
+    // reads `page.url()` a fixed number of times per step; the VERY LAST
+    // read of a full run is the post-step gate on the final step, since
+    // there is no next iteration's pre-step gate to run afterward. Killing
+    // the session starting on exactly that call — and no earlier — proves
+    // it's the post-step gate (not the final step's own cascade
+    // verification, and not a next-iteration pre-step gate that doesn't
+    // exist here) that turns the death into a rejection.
+    const URL_CALLS_PER_STEP = 4;
+    const totalUrlCallsForFullRun = URL_CALLS_PER_STEP * TOTAL_STEPS;
+
+    const urls = { current: "https://careers.example.org/jobs/123/apply" };
+    let urlCalls = 0;
+    const page = {
+      url: () => {
+        urlCalls += 1;
+        if (urlCalls >= totalUrlCallsForFullRun) {
+          throw new Error("Target page, context or browser has been closed");
+        }
+        return urls.current;
+      },
+      title: vi.fn().mockResolvedValue("Apply"),
+      evaluate: vi.fn().mockResolvedValue({ html: 0, text: "0:" }),
+      locator: vi.fn().mockReturnValue({
+        first: () => ({
+          isChecked: vi.fn().mockResolvedValue(false),
+          inputValue: vi.fn().mockResolvedValue(""),
+        }),
+      }),
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
+      frames: () => [],
+      getSessionForFrame: () => ({ on: () => {}, off: () => {} }),
+      mainFrameId: () => "main",
+      sendCDP: vi.fn().mockResolvedValue({ body: "{}", base64Encoded: false }),
+    } as unknown as Page;
+    const stagehand = makeStagehand();
+    const steps = Array.from({ length: TOTAL_STEPS }, (_, i) => step(i));
+
+    let stepCount = 0;
+    guardedObserve.mockResolvedValue([
+      { selector: "input#f", description: "field", method: "fill" },
+    ]);
+    guardedAct.mockImplementation(async () => {
+      stepCount += 1;
+      urls.current = `https://careers.example.org/jobs/123/apply?step=${stepCount}`;
+      return {
+        success: true,
+        message: "acted",
+        actionDescription: "filled",
+        actions: [{ selector: "input#f", description: "field", method: "fill" }],
+      };
+    });
+
+    await expect(
+      runHealingFlow({
+        stagehand,
+        page,
+        steps,
+        logger: testLogger,
+        anthropic: null,
+        rephraseModel: null,
+        uploadFixture: null,
+      })
+    ).rejects.toThrow(/session appears closed\/dead/);
+    expect(stepCount).toBe(TOTAL_STEPS);
+  });
+
   it("resolves normally when the session stays alive for all steps (control case)", async () => {
     const urls = { current: "https://careers.example.org/jobs/123/apply" };
     const { page } = makeFakePage(urls);

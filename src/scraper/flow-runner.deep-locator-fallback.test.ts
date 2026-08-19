@@ -90,7 +90,10 @@ describe("flow-runner/probeStepBeforeAttempts — frame-scoped deepLocator fallb
     guardedObserve.mockResolvedValue([]);
     const frame = new Map();
     registerDeepLocatorHop(frame, `${FRAME_SELECTOR} >> *`);
-    const page = { deepLocator: makeFakeDeepLocator(frame) } as unknown as Page;
+    const page = {
+      deepLocator: makeFakeDeepLocator(frame),
+      url: () => "https://apply.example.com/application/abc-123",
+    } as unknown as Page;
 
     const result = await probeStepBeforeAttempts({
       stagehand: makeStagehand(),
@@ -117,7 +120,10 @@ describe("flow-runner/probeStepBeforeAttempts — frame-scoped deepLocator fallb
       "Upload a Resume/CV",
       "Cancel",
     ]);
-    const page = { deepLocator: makeFakeDeepLocator(frame) } as unknown as Page;
+    const page = {
+      deepLocator: makeFakeDeepLocator(frame),
+      url: () => "https://apply.example.com/application/abc-123",
+    } as unknown as Page;
     const resolveDeepLocatorCandidatesSpy = vi.spyOn(
       deepLocatorCandidatesModule,
       "resolveDeepLocatorCandidates"
