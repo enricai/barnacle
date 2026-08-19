@@ -109,6 +109,12 @@ describe("CdpTransportClosedError", () => {
     expect(err.message).toBe("socket-close code=1006 reason=");
   });
 
+  it("defaults to the standard message when constructed with no argument", () => {
+    const err = new CdpTransportClosedError();
+    expect(err.name).toBe("CdpTransportClosedError");
+    expect(err.message).toBe("scraper session's CDP transport was closed by the SDK");
+  });
+
   it("isCdpTransportClosedError recognizes a same-realm instance and a name-tagged plain Error", () => {
     const sameRealmErr = new CdpTransportClosedError();
     expect(isCdpTransportClosedError(sameRealmErr)).toBe(true);
@@ -124,6 +130,13 @@ describe("CdpTransportClosedError", () => {
     expect(crossRealmErr).not.toBeInstanceOf(CdpTransportClosedError);
     expect(isCdpTransportClosedError(crossRealmErr)).toBe(true);
     expect(isScraperError(crossRealmErr)).toBe(true);
+  });
+
+  it("isCdpTransportClosedError returns false for an unrelated Error", () => {
+    expect(isCdpTransportClosedError(new Error("plain"))).toBe(false);
+    expect(isCdpTransportClosedError(new TypeError("bad"))).toBe(false);
+    expect(isCdpTransportClosedError(null)).toBe(false);
+    expect(isCdpTransportClosedError(undefined)).toBe(false);
   });
 });
 
