@@ -53,6 +53,7 @@ vi.mock("@/scraper/errors", () => ({
       this.kind = kind;
     }
   },
+  SessionTimeoutError: class SessionTimeoutError extends Error {},
 }));
 
 const { loggerStub } = vi.hoisted(() => ({
@@ -105,7 +106,7 @@ import { config } from "@/config";
 import { RECON_FLOW_STEP_SCHEMA } from "@/lib/llm/schemas";
 import type { LlmCallInput } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE, CALL_TYPE_RECON_REPLAN } from "@/lib/telemetry/call-types";
-import { StepVerificationError } from "@/scraper/errors";
+import { SessionTimeoutError, StepVerificationError } from "@/scraper/errors";
 import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import { createBrowserSession } from "@/scraper/session";
 import {
@@ -5685,6 +5686,92 @@ describe("recon-browser/main — frameSelector reaches the cascade call", () => 
     expect(readyStateCalls.length).toBeGreaterThanOrEqual(2);
     const callArgs = executeStepWithHealingStub.mock.calls[0]?.[0] as { frameTarget?: FrameTarget };
     expect(callArgs.frameTarget?.frame).not.toBeNull();
+  });
+});
+
+describe("recon-browser/main — per-step session-liveness gate (bugfix-001)", () => {
+  function makeFakePage(): { page: Page; stagehand: Stagehand; killSession: () => void } {
+    const session = {
+      on: (): void => {},
+      off: (): void => {},
+    };
+    let dead = false;
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      url: (): string => {
+        if (dead) throw new Error("Target page, context or browser has been closed");
+        return "https://example.com/apply";
+      },
+      title: vi.fn().mockResolvedValue("Apply"),
+      evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+        if (typeof expr === "string" && expr.includes("document.body")) return 10_000;
+        if (typeof expr === "string" && expr.includes("querySelector"))
+          return { matched: false, src: null };
+        return null;
+      }),
+      frames: vi.fn().mockReturnValue([]),
+      getSessionForFrame: () => session,
+      mainFrameId: () => "main",
+      sendCDP: vi.fn().mockResolvedValue({ cookies: [] }),
+    } as unknown as Page;
+    const stagehand = {
+      context: { awaitActivePage: async (): Promise<Page> => page },
+    } as unknown as Stagehand;
+    return {
+      page,
+      stagehand,
+      killSession: () => {
+        dead = true;
+      },
+    };
+  }
+
+  const ORIGINAL_ARGV = process.argv;
+  let runsRoot: string;
+
+  beforeEach(() => {
+    runsRoot = mkdtempSync(join(tmpdir(), "recon-browser-liveness-"));
+    process.env.RECON_RUN_ID = "20260819-000000-liveness1";
+    process.env.RECON_OUT_DIR = runsRoot;
+    executeStepWithHealingStub.mockReset();
+    vi.mocked(createBrowserSession).mockReset();
+  });
+
+  afterEach(() => {
+    process.argv = ORIGINAL_ARGV;
+    rmSync(runsRoot, { recursive: true, force: true });
+    delete process.env.RECON_RUN_ID;
+    delete process.env.RECON_OUT_DIR;
+    vi.restoreAllMocks();
+    executeStepWithHealingStub.mockReset();
+  });
+
+  it("rejects with SessionTimeoutError and stops iterating once page.url() throws mid-flow, instead of skipping remaining steps through to completion", async () => {
+    const { stagehand, killSession } = makeFakePage();
+    vi.mocked(createBrowserSession).mockResolvedValue({
+      stagehand,
+      limiter: {} as never,
+      sessionId: "test-session",
+      provider: "browserbase",
+      close: vi.fn().mockResolvedValue(undefined),
+    } as never);
+
+    executeStepWithHealingStub.mockImplementation(async () => {
+      killSession();
+      return "ok";
+    });
+
+    process.argv = [
+      "node",
+      "recon-browser.ts",
+      "--url",
+      "https://example.com/apply",
+      "--flow",
+      JSON.stringify(["Click category tab A", "Click category tab B", "Click category tab C"]),
+    ];
+
+    await expect(main()).rejects.toThrow(SessionTimeoutError);
+    expect(executeStepWithHealingStub).toHaveBeenCalledTimes(1);
   });
 });
 
