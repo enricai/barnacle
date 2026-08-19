@@ -414,15 +414,12 @@ describe("extractActionSequence — error-reporting sinks never reach the emitte
   );
 
   it("drops error sinks while keeping the calls that carry the flow", () => {
-    const kept = extractActionSequence(
-      [
-        capture(`${BASE}/listings-avail-api/authz/private`, "{}"),
-        errorReport,
-        capture(`${BASE}/listings-avail-api/available-products/`, '{"page":1}'),
-        errorReport,
-      ],
-      BASE
-    ).map((a) => new URL(a.capture.url).pathname);
+    const kept = extractActionSequence([
+      capture(`${BASE}/listings-avail-api/authz/private`, "{}"),
+      errorReport,
+      capture(`${BASE}/listings-avail-api/available-products/`, '{"page":1}'),
+      errorReport,
+    ]).map((a) => new URL(a.capture.url).pathname);
 
     expect(kept).toEqual([
       "/listings-avail-api/authz/private",
@@ -431,16 +428,47 @@ describe("extractActionSequence — error-reporting sinks never reach the emitte
   });
 
   it("matches a whole path segment, so data endpoints that merely spell 'error' survive", () => {
-    const kept = extractActionSequence(
-      [
-        capture(`${BASE}/api/error-codes`, "{}"),
-        capture(`${BASE}/api/terrorism-screening`, "{}"),
-        capture(`${BASE}/api/errors`, "{}"),
-      ],
-      BASE
-    ).map((a) => new URL(a.capture.url).pathname);
+    const kept = extractActionSequence([
+      capture(`${BASE}/api/error-codes`, "{}"),
+      capture(`${BASE}/api/terrorism-screening`, "{}"),
+      capture(`${BASE}/api/errors`, "{}"),
+    ]).map((a) => new URL(a.capture.url).pathname);
 
     expect(kept).toEqual(["/api/error-codes", "/api/terrorism-screening"]);
+  });
+});
+
+describe("extractActionSequence — host is not a filter criterion", () => {
+  const capture = (url: string, body: string) => ({
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action" as const,
+    method: "POST",
+    url,
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: body,
+    responseHeaders: {},
+    responseBody: {},
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  });
+
+  it("keeps non-GET 2xx non-noise captures whose host differs from every other capture's host", () => {
+    // Mirrors a real multi-step submission: an account-creation redirect
+    // lands the flow on a tenant API subdomain distinct from the landing page.
+    const kept = extractActionSequence([
+      capture("https://api.tenant.example.com/account/create", "{}"),
+      capture("https://api.tenant.example.com/sections/name", '{"name":"x"}'),
+      capture("https://api.tenant.example.com/submit", "{}"),
+    ]).map((a) => a.capture.url);
+
+    expect(kept).toEqual([
+      "https://api.tenant.example.com/account/create",
+      "https://api.tenant.example.com/sections/name",
+      "https://api.tenant.example.com/submit",
+    ]);
   });
 });
 
@@ -470,14 +498,14 @@ describe("extractActionSequence — submit patterns isolate the submission from 
   const chromeWidget = capture(`${BASE}/widgets`, '{"ddoKey":"canvasGetWidgetContent"}');
 
   it("with no patterns, keeps every same-origin POST (today's behavior)", () => {
-    const kept = extractActionSequence([realSubmit, chromeRefs, chromeWidget], BASE).map(
+    const kept = extractActionSequence([realSubmit, chromeRefs, chromeWidget]).map(
       (a) => a.capture.url
     );
     expect(kept).toEqual([realSubmit.url, chromeRefs.url, chromeWidget.url]);
   });
 
   it("with an endpoint pattern, drops non-matching chrome but keeps same-URL chrome", () => {
-    const kept = extractActionSequence([realSubmit, chromeRefs, chromeWidget], BASE, {
+    const kept = extractActionSequence([realSubmit, chromeRefs, chromeWidget], {
       endpoint: "/applySubmit",
       body: null,
     }).map((a) => a.capture.requestPostData);
@@ -486,7 +514,7 @@ describe("extractActionSequence — submit patterns isolate the submission from 
   });
 
   it("with an endpoint + body pattern, isolates the real submission", () => {
-    const kept = extractActionSequence([realSubmit, chromeRefs, chromeWidget], BASE, {
+    const kept = extractActionSequence([realSubmit, chromeRefs, chromeWidget], {
       endpoint: "/applySubmit",
       body: '"ddoKey":"applySubmit"',
     }).map((a) => a.capture.requestPostData);
@@ -495,7 +523,7 @@ describe("extractActionSequence — submit patterns isolate the submission from 
 
   it("throws on a malformed pattern rather than silently reverting to unfiltered", () => {
     expect(() =>
-      extractActionSequence([realSubmit], BASE, { endpoint: "(", body: null })
+      extractActionSequence([realSubmit], { endpoint: "(", body: null })
     ).toThrow();
   });
 });
@@ -602,7 +630,7 @@ describe("extractGraphQLActionSequence — GraphQL submission flows get state-th
   ];
 
   it("drops the read-only bootstrap query and keeps only the mutation sequence", () => {
-    const kept = extractGraphQLActionSequence(captures, BASE).map((a) => a.capture.operationName);
+    const kept = extractGraphQLActionSequence(captures).map((a) => a.capture.operationName);
     expect(kept).toEqual([
       "Form",
       "UpsertSavedApplication",
@@ -612,7 +640,7 @@ describe("extractGraphQLActionSequence — GraphQL submission flows get state-th
   });
 
   it("threads through to isSubmissionFlow === true and a multi-step executeHttp covering every operation", () => {
-    const actionCaptures = extractGraphQLActionSequence(captures, BASE);
+    const actionCaptures = extractGraphQLActionSequence(captures);
     const stateIndex = indexStateValues(
       captures,
       new Set(),
