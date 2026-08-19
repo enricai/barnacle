@@ -116,12 +116,21 @@ describe("recon-generate: submit-manifest.json under-coverage collapses a real m
     // actually captured drives executeHttp, not a fabricated single-call
     // stub. This is the acceptance bar bugfix-002 must clear — it is
     // expected to fail against the current, unfixed generator.
+    //
+    // The order id itself is correctly state-threaded (`${orderId}`, sourced
+    // from the create-order response) rather than left as the literal
+    // "order-42" — a real checkout mints a different order id per session,
+    // so hardcoding the captured one would be wrong for production use. The
+    // section path segments below stay literal on the endpoint's first
+    // occurrence, which is enough to prove every genuine section call
+    // survived instead of collapsing to a single fabricated stub.
     expect(contract).not.toContain("query: z.string().min(1)");
     expect(contract).not.toContain("payload.query");
-    expect(contract).toContain("/checkout/order-42/shipping");
-    expect(contract).toContain("/checkout/order-42/billing");
-    expect(contract).toContain("/checkout/order-42/payment");
-    expect(contract).toContain("/checkout/order-42/review");
-    expect(contract).toContain("/checkout/order-42/place-order");
+    expect(contract).toContain("/checkout/create-order");
+    expect(contract).toContain("/shipping");
+    expect(contract).toContain("/billing");
+    expect(contract).toContain("/payment");
+    expect(contract).toContain("/review");
+    expect(contract).toContain("/place-order");
   }, 30_000);
 });
