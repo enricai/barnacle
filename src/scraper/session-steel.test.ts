@@ -12,6 +12,7 @@ import { Stagehand } from "@browserbasehq/stagehand";
 import Steel from "steel-sdk";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { isCdpTransportClosedError } from "@/scraper/errors";
 import type { StagehandLogLine } from "@/scraper/session-browserbase";
 import { createSteelBrowserSession } from "@/scraper/session-steel";
 
@@ -49,7 +50,7 @@ vi.mock("@/config", () => ({
 }));
 
 const { fakeConn } = vi.hoisted(() => ({
-  fakeConn: { send: vi.fn().mockResolvedValue(undefined) },
+  fakeConn: { send: vi.fn().mockResolvedValue(undefined), onTransportClosed: vi.fn() },
 }));
 
 vi.mock("@browserbasehq/stagehand", () => ({
@@ -182,5 +183,36 @@ describe("scraper/session-steel teardown-detector composition", () => {
       level: 0,
     });
     await assertion;
+  });
+});
+
+describe("scraper/session-steel CDP-transport-teardown detection", () => {
+  beforeEach(() => {
+    configRef.value.scraper.steelApiKey = "steel-key";
+    configRef.value.scraper.anthropicApiKey = "anthropic-key";
+    configRef.value.scraper.useBedrock = false;
+    vi.clearAllMocks();
+  });
+
+  it("flags an SDK-initiated transport close that happens before our own close()", async () => {
+    const session = await createSteelBrowserSession();
+    const handler = fakeConn.onTransportClosed.mock.calls[0]?.[0] as (why: string) => void;
+
+    handler("socket-close code=1006 reason=");
+
+    const err = session.getCdpTransportClosedError?.();
+    expect(err).toBeDefined();
+    expect(isCdpTransportClosedError(err)).toBe(true);
+    expect(err?.message).toContain("socket-close code=1006 reason=");
+  });
+
+  it("does not flag a transport close that happens as a consequence of our own close()", async () => {
+    const session = await createSteelBrowserSession();
+    const handler = fakeConn.onTransportClosed.mock.calls[0]?.[0] as (why: string) => void;
+
+    await session.close();
+    handler("socket-close code=1000 reason=normal-close");
+
+    expect(session.getCdpTransportClosedError?.()).toBeUndefined();
   });
 });
