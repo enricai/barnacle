@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { CdpTransportClosedError, SelectorFailureError, SessionTimeoutError } from "@/scraper/errors";
+import {
+  CdpTransportClosedError,
+  SelectorFailureError,
+  SessionTimeoutError,
+} from "@/scraper/errors";
 import { drainPool, poolStats, runWithSession } from "@/scraper/pool";
 import * as sessionModule from "@/scraper/session";
 
