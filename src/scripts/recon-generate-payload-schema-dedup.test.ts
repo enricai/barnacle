@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { emitContractTs } from "@/scripts/recon-generate";
 
 /**
- * Regression coverage for Defect 4 (cvshealth collision): the spliced
+ * Regression coverage for Defect 4 (field-collision): the spliced
  * payload-schema field set must never re-declare a field ApplicantContactSchema
  * already merges in (or Email, which basePayloadSchemaExpr's own extend
  * already declares), or the generated payload schema shadows an already-typed

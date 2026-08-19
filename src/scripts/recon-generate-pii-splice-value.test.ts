@@ -71,7 +71,7 @@ describe("emitBrowserFlowTs — splice site targets the fill VALUE, not a select
   it("does not splice into a screen name or a button label", () => {
     const emailToken = `'$${"{RECON_EMAIL}"}'`;
     const code = emitStep(
-      `On the Workday ${emailToken} screen (step 1 of 8), click the 'Sign in with email' button`
+      `On the ATS ${emailToken} screen (step 1 of 8), click the 'Sign in with email' button`
     );
 
     expect(code).toContain("'Sign in with email'");
