@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { SessionTimeoutError } from "@/scraper/errors";
+import { CdpTransportClosedError } from "@/scraper/errors";
 import type { StagehandLogLine } from "@/scraper/session-browserbase";
 import { createSessionTeardownDetector, raceAgainstTeardown } from "@/scraper/session-teardown";
 
@@ -23,7 +23,7 @@ describe("session-teardown/createSessionTeardownDetector", () => {
 
     await flushMicrotasks();
 
-    expect(rejection).toBeInstanceOf(SessionTimeoutError);
+    expect(rejection).toBeInstanceOf(CdpTransportClosedError);
   });
 
   it("rejects on the second message of the pair too", async () => {
@@ -41,7 +41,7 @@ describe("session-teardown/createSessionTeardownDetector", () => {
 
     await flushMicrotasks();
 
-    expect(rejection).toBeInstanceOf(SessionTimeoutError);
+    expect(rejection).toBeInstanceOf(CdpTransportClosedError);
   });
 
   it("never rejects on ordinary info/debug log lines", async () => {
@@ -94,7 +94,7 @@ describe("session-teardown/raceAgainstTeardown", () => {
     expect(result).toBe("step-result");
   });
 
-  it("rejects with SessionTimeoutError when teardown fires before the step settles", async () => {
+  it("rejects with CdpTransportClosedError when teardown fires before the step settles", async () => {
     const { watchLogLine, deathSignal } = createSessionTeardownDetector();
     const stepPromise = new Promise<string>(() => undefined);
 
@@ -107,7 +107,7 @@ describe("session-teardown/raceAgainstTeardown", () => {
       message: "initiating shutdown → CDP transport closed: socket-close code=1006 reason=",
     } as StagehandLogLine);
 
-    await expect(racePromise).rejects.toBeInstanceOf(SessionTimeoutError);
+    await expect(racePromise).rejects.toBeInstanceOf(CdpTransportClosedError);
   });
 
   it("stays resolved with the step's value when teardown fires only after the flow already settled", async () => {

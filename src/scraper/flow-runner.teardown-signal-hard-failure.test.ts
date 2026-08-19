@@ -1,7 +1,7 @@
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { SessionTimeoutError } from "@/scraper/errors";
+import { CdpTransportClosedError } from "@/scraper/errors";
 import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import { createSessionTeardownDetector } from "@/scraper/session-teardown";
 import type { Logger } from "@/types/logging";
@@ -79,7 +79,7 @@ describe("flow-runner/runHealingFlow — session-teardown-detector deathSignal",
     vi.clearAllMocks();
   });
 
-  it("rejects with SessionTimeoutError when the teardown detector's signal fires partway through the step array, without completing the remaining steps", async () => {
+  it("rejects with CdpTransportClosedError when the teardown detector's signal fires partway through the step array, without completing the remaining steps", async () => {
     const urls = { current: "https://portal.example.org/records/9/details" };
     const page = makeFakePage(urls);
     const stagehand = makeStagehand();
@@ -120,7 +120,7 @@ describe("flow-runner/runHealingFlow — session-teardown-detector deathSignal",
         uploadFixture: null,
         deathSignal,
       })
-    ).rejects.toThrow(SessionTimeoutError);
+    ).rejects.toThrow(CdpTransportClosedError);
 
     expect(stepCount).toBeLessThan(TOTAL_STEPS);
   });
@@ -166,6 +166,6 @@ describe("flow-runner/runHealingFlow — session-teardown-detector deathSignal",
     // already resolved — and must not retroactively turn the resolved
     // promise into a rejection or throw as an unhandled rejection.
     watchLogLine(TEARDOWN_LOG_LINE);
-    await expect(deathSignal).rejects.toThrow(SessionTimeoutError);
+    await expect(deathSignal).rejects.toThrow(CdpTransportClosedError);
   });
 });

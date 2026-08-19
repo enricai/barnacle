@@ -1,4 +1,4 @@
-import { SessionTimeoutError } from "@/scraper/errors";
+import { CdpTransportClosedError } from "@/scraper/errors";
 import type { StagehandLogLine } from "@/scraper/session-browserbase";
 
 /**
@@ -24,9 +24,9 @@ export function createSessionTeardownDetector(): {
   watchLogLine: (line: StagehandLogLine) => void;
   deathSignal: Promise<never>;
 } {
-  let signalDeath: ((err: SessionTimeoutError) => void) | undefined;
+  let signalDeath: ((err: CdpTransportClosedError) => void) | undefined;
   const deathSignal = new Promise<never>((_resolve, reject) => {
-    signalDeath = (err: SessionTimeoutError): void => reject(err);
+    signalDeath = (err: CdpTransportClosedError): void => reject(err);
   });
   // deathSignal's executor runs synchronously above, so signalDeath is
   // always assigned before watchLogLine can be called.
@@ -39,7 +39,7 @@ export function createSessionTeardownDetector(): {
     if (!line.message.includes(TEARDOWN_MESSAGE_SUBSTRING)) return;
     fired = true;
     signalDeath?.(
-      new SessionTimeoutError(`stagehand-initiated teardown mid-flow: ${line.message}`)
+      new CdpTransportClosedError(`stagehand-initiated teardown mid-flow: ${line.message}`)
     );
   };
 
@@ -48,7 +48,7 @@ export function createSessionTeardownDetector(): {
 
 /**
  * Races a step's own promise against a teardown death signal so a
- * Stagehand-initiated mid-flow teardown surfaces as `SessionTimeoutError`
+ * Stagehand-initiated mid-flow teardown surfaces as `CdpTransportClosedError`
  * instead of the step promise hanging forever once the connection that
  * would have settled it is already gone.
  */
