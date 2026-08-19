@@ -10,8 +10,8 @@
  * Why this exists: deciding that "Fill in the First Name field with 'Reginald'"
  * should splice the caller's `FirstName` is a claim about a *domain*, not about
  * HTTP. The engine used to hardcode a recruiting table, which silently mis-fired
- * on every other domain — a cruise site's "Select the departure port from the
- * Country dropdown" became `${payload.Country}`. The engine cannot know what a
+ * on every other domain — a real-estate listing site's "Select the neighborhood
+ * from the Country dropdown" became `${payload.Country}`. The engine cannot know what a
  * site's forms mean, so it no longer guesses: the repo that owns the domain
  * declares the vocabulary and passes it with `--vocabulary`.
  */
@@ -38,7 +38,7 @@ export interface ReconVocabulary {
    * This is the semantic gate, and the reason the generator stopped being wrong
    * on non-ATS sites. A step phrased around a dropdown carries no quoted constant
    * to replace, so a label match alone cannot tell "the candidate's state" (fill
-   * it with the caller's data) from "the departure port" (a search facet that
+   * it with the caller's data) from "the neighborhood" (a search facet that
    * happens to say Country). Naming the subject is what distinguishes them.
    */
   subject: RegExp;

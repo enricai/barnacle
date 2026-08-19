@@ -4,13 +4,12 @@ import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
 /**
- * Offline acceptance regression for
- * `docs/recon-readonly-final-step-misclassified-as-submit.md`: a read-only
+ * Offline acceptance regression for a read-only
  * flow (no `submitStep` anywhere, no `submitEndpointPattern`,
  * `requireSubmitEndpointMatch: false`) whose FINAL step is an ordinary
- * data-viewing click — the report's "click a stateroom category tab" case.
+ * data-viewing click — the "click a listing type tab" case.
  * Attempt 1 phantom-clicks (Stagehand reports success but pre/post shows
- * zero network/url/dom change), which is exactly the report's step-10 log.
+ * zero network/url/dom change), which is exactly the step-10 phantom-click log.
  *
  * **What this pins:** `isFinalStep` alone must no longer make the step
  * "submit-shaped". Before the fix, `submitShapedStep` was derived as
@@ -31,27 +30,30 @@ import type { Logger } from "@/types/logging";
  * resolves.
  */
 
-const BASE_URL = "https://www.royalcaribbean.com/cruises";
-const TAB_STEP =
-  "Click the 'Balcony' stateroom category tab to view that category's per-cabin price";
+const BASE_URL = "https://www.listings-fixture.example.com/listings";
+const TAB_STEP = "Click the '2-Bed' listing type tab to view that type's per-unit price";
 
-/** The report's literal "probe found 4 candidate(s)" — the four stateroom tabs. */
+/** The literal "probe found 4 candidate(s)" — the four listing type tabs. */
 const TAB_CANDIDATES = [
   {
-    selector: "xpath=//button[@data-tab='interior']",
-    description: "Interior tab",
+    selector: "xpath=//button[@data-tab='studio']",
+    description: "Studio tab",
     method: "click",
   },
   {
-    selector: "xpath=//button[@data-tab='oceanview']",
-    description: "Oceanview tab",
+    selector: "xpath=//button[@data-tab='one-bed']",
+    description: "1-Bed tab",
     method: "click",
   },
-  { selector: "xpath=//button[@data-tab='balcony']", description: "Balcony tab", method: "click" },
-  { selector: "xpath=//button[@data-tab='suite']", description: "Suite tab", method: "click" },
+  { selector: "xpath=//button[@data-tab='two-bed']", description: "2-Bed tab", method: "click" },
+  {
+    selector: "xpath=//button[@data-tab='penthouse']",
+    description: "Penthouse tab",
+    method: "click",
+  },
 ];
 // biome-ignore lint/style/noNonNullAssertion: fixed-length literal array above
-const BALCONY_CANDIDATE = TAB_CANDIDATES[2]!;
+const SELECTED_CANDIDATE = TAB_CANDIDATES[2]!;
 
 interface CapturedLogs {
   info: string[];
@@ -79,7 +81,7 @@ interface AcceptanceSequenceState {
   bodyHtmlLength: number;
   visibleText: string;
   networkCount: number;
-  balconyTabClicked: boolean;
+  unitTabClicked: boolean;
 }
 
 /** Matches `flow-runner.test.ts`'s `fakeFlowPage`: a plain top-window Page fake, no OOPIF hop. */
@@ -99,7 +101,7 @@ function makeReadonlyFlowPage(state: AcceptanceSequenceState): Page {
       return null;
     },
     url: () => state.url,
-    title: async () => "Cruises | Royal Caribbean",
+    title: async () => "Listings | Listings Fixture",
     locator: () => ({
       first: () => ({
         // trusted-click-retry's top-window arm: the trusted CDP-style click
@@ -121,13 +123,13 @@ function makeReadonlyFlowPage(state: AcceptanceSequenceState): Page {
 }
 
 /**
- * Fake `Stagehand`: `observe(step, ...)` always reports the four stateroom
- * tabs (the report's "probe found 4 candidate(s)"). `act(step)` on attempt 1
- * (act-string) reports success on the balcony tab but leaves url/network/dom
- * completely unchanged — the report's literal phantom-click repro. Attempt 4
+ * Fake `Stagehand`: `observe(step, ...)` always reports the four listing type
+ * tabs (the "probe found 4 candidate(s)" shape). `act(step)` on attempt 1
+ * (act-string) reports success on the 2-Bed tab but leaves url/network/dom
+ * completely unchanged — the literal phantom-click repro. Attempt 4
  * (observe-act-exclude) resolves one of the 4 tabs via an observe candidate
  * object (not the instruction string) and this time the click has a REAL
- * effect (URL changes to the per-cabin pricing view), so the step verifies
+ * effect (URL changes to the per-unit pricing view), so the step verifies
  * via the light-DOM click ladder — never via `deep-submit-locator`.
  */
 function makeReadonlyFlowStagehand(state: AcceptanceSequenceState): Stagehand {
@@ -139,25 +141,25 @@ function makeReadonlyFlowStagehand(state: AcceptanceSequenceState): Stagehand {
         return {
           success: true,
           message: "clicked",
-          actionDescription: `Clicked "${BALCONY_CANDIDATE.description}"`,
-          actions: [BALCONY_CANDIDATE],
+          actionDescription: `Clicked "${SELECTED_CANDIDATE.description}"`,
+          actions: [SELECTED_CANDIDATE],
         };
       }
       // Attempt 4 (observe-act-exclude) hands back an observe candidate
       // object, not the instruction string — this is the click that
       // actually lands and produces an observable effect. Any of the 4
-      // stateroom tabs (attempt 4's `ignoreSelectors` demotes the balcony
+      // listing type tabs (attempt 4's `ignoreSelectors` demotes the 2-Bed
       // candidate the phantomed attempt 1 already tried) genuinely clicking
       // through is what proves the light-DOM ladder reached the target — the
-      // report's exact "4 candidate(s)" shape.
+      // exact "4 candidate(s)" shape.
       const target = input as { selector?: string; description?: string };
       const matched = TAB_CANDIDATES.find((c) => c.selector === target?.selector);
       if (matched) {
-        state.balconyTabClicked = true;
+        state.unitTabClicked = true;
         state.url = `${BASE_URL}#category=${matched.selector.match(/data-tab='(\w+)'/)?.[1]}`;
         state.networkCount += 1;
         state.bodyHtmlLength += 6_000;
-        state.visibleText = "Stateroom prices from $1,299 per person";
+        state.visibleText = "Listing prices from $1,299 per month";
         return {
           success: true,
           message: "clicked",
@@ -191,7 +193,7 @@ describe("flow-runner read-only final-step phantom-click acceptance regression (
       bodyHtmlLength: 42_000,
       visibleText: "current step 10 of 10",
       networkCount: 0,
-      balconyTabClicked: false,
+      unitTabClicked: false,
     };
     const stagehand = makeReadonlyFlowStagehand(state);
     const page = makeReadonlyFlowPage(state);
@@ -251,7 +253,7 @@ describe("flow-runner read-only final-step phantom-click acceptance regression (
     // The light-DOM click ladder reached and clicked one of the 4 tabs —
     // the exact target the report says the probe found but the old gating
     // never let the cascade reach.
-    expect(state.balconyTabClicked).toBe(true);
+    expect(state.unitTabClicked).toBe(true);
     expect(state.url).not.toBe(BASE_URL);
   });
 });

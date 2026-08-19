@@ -41,7 +41,7 @@ export interface HttpResponseInfo {
 /**
  * Declares a single named value to capture from a response and echo back as
  * a request header on later calls made by the same client instance. Models
- * the cruise-fixture-style pattern where one call mints a bearer via
+ * the listings-fixture-style pattern where one call mints a bearer via
  * `Set-Cookie` and a later stateful call 401s without it — extends the
  * response-body state-threading the emitter already speaks (`produces`) to
  * response headers, instead of a general cookie jar (see http-client.ts

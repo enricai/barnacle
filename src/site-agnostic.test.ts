@@ -49,6 +49,8 @@ const FORBIDDEN_SUBSTRING = [
   "smartrecruiters",
   "oracle hcm",
   "myworkdayjobs",
+  "royalcaribbean",
+  "cvshealth",
 ];
 
 /**

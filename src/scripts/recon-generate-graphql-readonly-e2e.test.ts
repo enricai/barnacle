@@ -6,8 +6,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 /**
- * Acceptance test for docs/recon-generate-picks-wrong-graphql-query-for-readonly-flows.md:
- * reproduces the report's exact royalcaribbean-shaped capture set (a read-only flow with no
+ * Acceptance test for the read-only GraphQL selection path:
+ * reproduces a listings-fixture-shaped capture set (a read-only flow with no
  * submitStep/mutation captures) through the real CLI entrypoint and asserts the emitted
  * contract.ts's hot path targets the primary data operation, not the chronologically-first
  * page-load query. Covers required outcomes 1 (selection) and 2 (coherent call-site
@@ -49,34 +49,33 @@ function gqlCapture(overrides: {
   };
 }
 
-/** The report's capture set: royalcaribbean, POST /graph and POST /cruises/graph. */
+/** The capture set: listings-fixture, POST /graph and POST /listings/graph. */
 function writeRunDir(root: string): void {
   mkdirSync(join(root, "graphql"), { recursive: true });
   mkdirSync(join(root, "replays"), { recursive: true });
   mkdirSync(join(root, "aux"), { recursive: true });
 
-  const cruiseSearch = (requestPostData: string) =>
+  const listingSearch = (requestPostData: string) =>
     gqlCapture({
-      phase: "open-the-destination-filter",
-      url: "https://www.royalcaribbean.com/cruises/graph",
-      operationName: "cruiseSearch_Cruises",
-      query:
-        "query cruiseSearch_Cruises($destination: String) { cruises(destination: $destination) { id name } }",
-      variables: { destination: "CARIBBEAN" },
+      phase: "open-the-metro-filter",
+      url: "https://www.listings-fixture.example.com/listings/graph",
+      operationName: "listingSearch_Listings",
+      query: "query listingSearch_Listings($metro: String) { listings(metro: $metro) { id name } }",
+      variables: { metro: "AUSTIN" },
       responseLength: 565648,
       requestPostData,
     });
-  const anonCruiseQuery = gqlCapture({
-    phase: "open-the-destination-filter",
-    url: "https://www.royalcaribbean.com/cruises/graph",
+  const anonListingQuery = gqlCapture({
+    phase: "open-the-metro-filter",
+    url: "https://www.listings-fixture.example.com/listings/graph",
     operationName: null,
-    query: "query { cruiseFacets { id } }",
+    query: "query { listingFacets { id } }",
     variables: null,
     responseLength: 59891,
   });
   const bestPromotionForMarket = gqlCapture({
     phase: "home",
-    url: "https://www.royalcaribbean.com/graph",
+    url: "https://www.listings-fixture.example.com/graph",
     operationName: "bestPromotionForMarket",
     query: "query bestPromotionForMarket { promotion { id imageUrl } }",
     variables: null,
@@ -84,7 +83,7 @@ function writeRunDir(root: string): void {
   });
   const targetedOffers = gqlCapture({
     phase: "home",
-    url: "https://www.royalcaribbean.com/graph",
+    url: "https://www.listings-fixture.example.com/graph",
     operationName: "targetedOffers",
     query: "query targetedOffers { offers { id } }",
     variables: null,
@@ -97,17 +96,17 @@ function writeRunDir(root: string): void {
   );
   writeFileSync(join(root, "graphql", "001-home-action.json"), JSON.stringify(targetedOffers));
   writeFileSync(
-    join(root, "graphql", "002-open-the-destination-filter-action.json"),
-    JSON.stringify(cruiseSearch('{"destination":"CARIBBEAN"}'))
+    join(root, "graphql", "002-open-the-metro-filter-action.json"),
+    JSON.stringify(listingSearch('{"metro":"AUSTIN"}'))
   );
   writeFileSync(
-    join(root, "graphql", "003-open-the-destination-filter-action.json"),
-    JSON.stringify(anonCruiseQuery)
+    join(root, "graphql", "003-open-the-metro-filter-action.json"),
+    JSON.stringify(anonListingQuery)
   );
   // The re-query: same operation, different request body, firing again on filter re-apply.
   writeFileSync(
-    join(root, "graphql", "004-open-the-destination-filter-action.json"),
-    JSON.stringify(cruiseSearch('{"destination":"BAHAMAS"}'))
+    join(root, "graphql", "004-open-the-metro-filter-action.json"),
+    JSON.stringify(listingSearch('{"metro":"DENVER"}'))
   );
 }
 
@@ -121,8 +120,8 @@ afterEach(() => {
   siteOutDir = null;
 });
 
-describe("recon-generate read-only GraphQL flow: royalcaribbean-shaped capture set (bug report)", () => {
-  it("selects cruiseSearch_Cruises over the chronologically-first, near-unrelated bestPromotionForMarket, with a coherent call site", () => {
+describe("recon-generate read-only GraphQL flow: listings-fixture-shaped capture set", () => {
+  it("selects listingSearch_Listings over the chronologically-first, near-unrelated bestPromotionForMarket, with a coherent call site", () => {
     workDir = mkdtempSync(join(tmpdir(), "barnacle-graphql-readonly-e2e-"));
     const runRoot = join(workDir, "run");
     writeRunDir(runRoot);
@@ -143,13 +142,13 @@ describe("recon-generate read-only GraphQL flow: royalcaribbean-shaped capture s
 
     // Outcome 1: the primary data operation's query text and endpoint were selected,
     // not the chronologically-first page-load query.
-    expect(contract).toContain("cruiseSearch_Cruises");
-    expect(contract).toContain("/cruises/graph");
+    expect(contract).toContain("listingSearch_Listings");
+    expect(contract).toContain("/listings/graph");
     expect(contract).not.toContain("bestPromotionForMarket");
 
     // Outcome 2: the emitted getGql() call site's operationName is derived from the
     // selected capture, not a siteId-derived "...Search" literal.
-    expect(contract).toContain('"cruiseSearch_Cruises"');
+    expect(contract).toContain('"listingSearch_Listings"');
     expect(contract).not.toMatch(/getGql\([^)]*\)\("[A-Za-z]*Search"/);
   }, 30_000);
 });

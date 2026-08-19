@@ -310,7 +310,7 @@ describe("scraper/http-client per-call schema override (heterogeneous multi-call
   // (toggles/product-avail) — a shape the client schema rejects outright.
   const InventorySchema = z.object({
     totalPages: z.number(),
-    totalAvailableCruises: z.number(),
+    totalAvailableListings: z.number(),
     products: z.array(z.unknown()),
   });
   type Inventory = z.infer<typeof InventorySchema>;
@@ -352,7 +352,7 @@ describe("scraper/http-client per-call schema override (heterogeneous multi-call
 
   it("the overriding call's return value is narrowed by the per-call schema, not the client schema", async () => {
     // A body that satisfies the override schema but would fail the client
-    // schema (no totalPages/totalAvailableCruises/products) — if the client
+    // schema (no totalPages/totalAvailableListings/products) — if the client
     // schema were still applied under the hood this would throw instead of
     // returning the toggle array unmodified.
     mockFetch(200, TOGGLES_BODY);
@@ -378,7 +378,7 @@ describe("scraper/http-client per-call schema override (heterogeneous multi-call
   });
 
   it("a later call on the same client without an override still validates against the client schema", async () => {
-    const inventoryBody: Inventory = { totalPages: 1, totalAvailableCruises: 2, products: [] };
+    const inventoryBody: Inventory = { totalPages: 1, totalAvailableListings: 2, products: [] };
     vi.stubGlobal(
       "fetch",
       vi
@@ -607,7 +607,7 @@ describe("scraper/http-client response-header binding", () => {
 
   const GEO_COOKIE_BINDING: HttpResponseBinding = {
     sourceHeader: "set-cookie",
-    cookieName: "latestWDPROGeoIP",
+    cookieName: "latestGeoIP",
     targetHeader: "Cookie",
   };
 
@@ -633,7 +633,7 @@ describe("scraper/http-client response-header binding", () => {
           ok: true,
           text: vi.fn().mockResolvedValue(JSON.stringify({ id: "1", name: "Widget" })),
           headers: headersWithSetCookies(
-            "latestWDPROGeoIP=1.2.3.4; Path=/",
+            "latestGeoIP=1.2.3.4; Path=/",
             "__pa=abc.def.ghi; Path=/; HttpOnly"
           ),
         })
@@ -656,9 +656,9 @@ describe("scraper/http-client response-header binding", () => {
     await client("https://example.com/available-products", { method: "POST" });
 
     const cookieHeader = cookieHeaderFromCall(1);
-    expect(cookieHeader).toContain("latestWDPROGeoIP=1.2.3.4");
+    expect(cookieHeader).toContain("latestGeoIP=1.2.3.4");
     expect(cookieHeader).toContain("__pa=abc.def.ghi");
-    expect(cookieHeader).toBe("latestWDPROGeoIP=1.2.3.4; __pa=abc.def.ghi");
+    expect(cookieHeader).toBe("latestGeoIP=1.2.3.4; __pa=abc.def.ghi");
   });
 
   it("re-minting one cookie updates it in place without dropping the other bound cookie", async () => {
@@ -671,7 +671,7 @@ describe("scraper/http-client response-header binding", () => {
           ok: true,
           text: vi.fn().mockResolvedValue(JSON.stringify({ id: "1", name: "Widget" })),
           headers: headersWithSetCookies(
-            "latestWDPROGeoIP=1.2.3.4; Path=/",
+            "latestGeoIP=1.2.3.4; Path=/",
             "__pa=abc.def.ghi; Path=/; HttpOnly"
           ),
         })
@@ -701,7 +701,7 @@ describe("scraper/http-client response-header binding", () => {
     await client("https://example.com/available-products", { method: "POST" });
 
     const cookieHeader = cookieHeaderFromCall(2);
-    expect(cookieHeader).toContain("latestWDPROGeoIP=1.2.3.4");
+    expect(cookieHeader).toContain("latestGeoIP=1.2.3.4");
     expect(cookieHeader).toContain("__pa=xyz.rotated.token");
     expect(cookieHeader).not.toContain("abc.def.ghi");
   });
@@ -716,7 +716,7 @@ describe("scraper/http-client response-header binding", () => {
           ok: true,
           text: vi.fn().mockResolvedValue(JSON.stringify({ id: "1", name: "Widget" })),
           headers: headersWithSetCookies(
-            "latestWDPROGeoIP=1.2.3.4; Path=/",
+            "latestGeoIP=1.2.3.4; Path=/",
             "__pa=abc.def.ghi; Path=/; HttpOnly"
           ),
         })
@@ -745,13 +745,13 @@ describe("scraper/http-client response-header binding", () => {
     await client("https://example.com/no-cookies-here", { method: "POST" });
     await client("https://example.com/available-products", { method: "POST" });
 
-    expect(cookieHeaderFromCall(2)).toBe("latestWDPROGeoIP=1.2.3.4; __pa=abc.def.ghi");
+    expect(cookieHeaderFromCall(2)).toBe("latestGeoIP=1.2.3.4; __pa=abc.def.ghi");
   });
 
   it("merges cookie bindings whose targetHeader differs only by case into one Cookie header", async () => {
     const CASE_VARIANT_GEO_BINDING: HttpResponseBinding = {
       sourceHeader: "set-cookie",
-      cookieName: "latestWDPROGeoIP",
+      cookieName: "latestGeoIP",
       targetHeader: "cookie",
     };
 
@@ -764,7 +764,7 @@ describe("scraper/http-client response-header binding", () => {
           ok: true,
           text: vi.fn().mockResolvedValue(JSON.stringify({ id: "1", name: "Widget" })),
           headers: headersWithSetCookies(
-            "latestWDPROGeoIP=1.2.3.4; Path=/",
+            "latestGeoIP=1.2.3.4; Path=/",
             "__pa=abc.def.ghi; Path=/; HttpOnly"
           ),
         })
@@ -794,7 +794,7 @@ describe("scraper/http-client response-header binding", () => {
 
     expect(cookieEntries).toHaveLength(1);
     const [, cookieValue] = cookieEntries[0] as [string, string];
-    expect(cookieValue).toContain("latestWDPROGeoIP=");
+    expect(cookieValue).toContain("latestGeoIP=");
     expect(cookieValue).toContain("__pa=");
   });
 

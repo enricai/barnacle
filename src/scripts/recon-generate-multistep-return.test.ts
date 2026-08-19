@@ -32,7 +32,7 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     const body = emit(buildMulticallHeterogeneousActionStepsWithDrillDown());
 
     // r3 is the last of the two re-queried available-products/ calls; r4 is
-    // the terminal available-sailings/ drill-down. Pre-fix (`actions[actions
+    // the terminal available-units/ drill-down. Pre-fix (`actions[actions
     // .length-1]`), this would return r4 — the wrong call's body.
     expect(body).toContain("return { data: r3 };");
     expect(body).not.toContain("return { data: r4 };");

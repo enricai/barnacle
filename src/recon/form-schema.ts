@@ -4,7 +4,7 @@
  *
  * A sibling to {@link @/recon/vocabulary}, not a field on it: a vocabulary matches
  * English instruction prose, this matches JSON response keys. Different inputs,
- * different validation, independent applicability — a cruise site needs a
+ * different validation, independent applicability — a real-estate listing site needs a
  * vocabulary and no form-schema. Published at `@enricai/barnacle/recon/form-schema`;
  * all imports are type-only so there are zero runtime side effects.
  *

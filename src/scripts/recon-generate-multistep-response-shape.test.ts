@@ -38,7 +38,7 @@ describe("recon-generate — G1 shape-inference target agrees with the return ta
   // re-queried instance — r3 (page 2), not r2 (page 1) — as the freshest
   // answer from the flow's subject.
   const inventoryStep = steps[3]!; // r3: available-products/, page 2
-  const drillDownStep = steps[4]!; // r4: available-sailings/ terminal drill-down
+  const drillDownStep = steps[4]!; // r4: available-units/ terminal drill-down
 
   it("selects the re-queried inventory call's body, not the terminal drill-down's", () => {
     const effectiveResponseBody = selectEffectiveResponseBody(true, steps, null);
@@ -77,9 +77,9 @@ describe("recon-generate — G1 shape-inference target agrees with the return ta
       // (see module doc comment above).
     });
 
-    expect(source).toContain("totalAvailableCruises");
+    expect(source).toContain("totalAvailableListings");
     expect(source).toContain("products");
-    expect(source).not.toContain("sailings");
+    expect(source).not.toContain("units");
     expect(source).not.toContain("exchangeRate");
   });
 
@@ -103,6 +103,6 @@ describe("recon-generate — G1 shape-inference target agrees with the return ta
     });
 
     expect(source).toContain("const TestSiteResponseSchema = z.unknown();");
-    expect(source).not.toContain("totalAvailableCruises");
+    expect(source).not.toContain("totalAvailableListings");
   });
 });

@@ -36,12 +36,10 @@ function buildCapture(overrides: {
   };
 }
 
-const TOGGLES_URL = "https://api.example.com/dcl-apps-productavail-spa/toggles/product-avail";
-const AUTHZ_URL = "https://api.example.com/dcl-apps-productavail-vas/authz/private";
-const AVAILABLE_PRODUCTS_URL =
-  "https://api.example.com/dcl-apps-productavail-vas/available-products/";
-const AVAILABLE_SAILINGS_URL =
-  "https://api.example.com/dcl-apps-productavail-vas/available-sailings/";
+const TOGGLES_URL = "https://api.example.com/listings-avail-spa/toggles/product-avail";
+const AUTHZ_URL = "https://api.example.com/listings-avail-api/authz/private";
+const AVAILABLE_PRODUCTS_URL = "https://api.example.com/listings-avail-api/available-products/";
+const AVAILABLE_UNITS_URL = "https://api.example.com/listings-avail-api/available-units/";
 
 function buildStep(
   varName: string,
@@ -62,11 +60,11 @@ function buildStep(
 }
 
 /**
- * Reproduces the cruise-fixture G1/G2 report's recon capture set: a
+ * Reproduces a listings-fixture G1/G2 recon capture set: a
  * feature-toggle read, an anonymous auth mint, and an inventory search
- * re-queried with two distinct bodies (the report's "×N" `available-products/`
- * calls). Each of the three response SHAPES named in the report (toggles
- * array, `{result,successful}` auth mint, `{totalPages,totalAvailableCruises,
+ * re-queried with two distinct bodies (the "×N" `available-products/`
+ * calls). Each of the three response SHAPES (toggles
+ * array, `{result,successful}` auth mint, `{totalPages,totalAvailableListings,
  * products[]}` inventory) is disjoint from the others so tests can assert the
  * generator distinguishes per-call shapes instead of collapsing them to one
  * (G2). `available-products/` is emitted twice with different request bodies
@@ -94,7 +92,7 @@ export function buildMulticallHeterogeneousActionSteps(): MulticallFixtureStep[]
       requestPostData: '{"page":1}',
       responseBody: {
         totalPages: 5,
-        totalAvailableCruises: 699,
+        totalAvailableListings: 699,
         products: [{ productId: "p1" }],
       },
       timestamp: "2024-01-01T00:00:02Z",
@@ -104,7 +102,7 @@ export function buildMulticallHeterogeneousActionSteps(): MulticallFixtureStep[]
       requestPostData: '{"page":2}',
       responseBody: {
         totalPages: 5,
-        totalAvailableCruises: 699,
+        totalAvailableListings: 699,
         products: [{ productId: "p2" }],
       },
       timestamp: "2024-01-01T00:00:03Z",
@@ -114,17 +112,17 @@ export function buildMulticallHeterogeneousActionSteps(): MulticallFixtureStep[]
 
 /**
  * Same call sequence, plus a terminal drill-down call whose response is a
- * single itinerary rather than the search result — reproducing G1's
- * "last call ≠ the flow's subject" condition (a `POST available-sailings/`
- * fired after the user picks one itinerary from the products list).
+ * single building rather than the search result — reproducing G1's
+ * "last call ≠ the flow's subject" condition (a `POST available-units/`
+ * fired after the user picks one building from the products list).
  */
 export function buildMulticallHeterogeneousActionStepsWithDrillDown(): MulticallFixtureStep[] {
   return [
     ...buildMulticallHeterogeneousActionSteps(),
     buildStep("r4", {
-      url: AVAILABLE_SAILINGS_URL,
+      url: AVAILABLE_UNITS_URL,
       requestPostData: '{"productId":"p1"}',
-      responseBody: { sailings: [{ sailingId: "s1" }], exchangeRate: 1.0 },
+      responseBody: { units: [{ unitId: "s1" }], exchangeRate: 1.0 },
       timestamp: "2024-01-01T00:00:04Z",
     }),
   ];
