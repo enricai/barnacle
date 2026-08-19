@@ -65,10 +65,9 @@ export interface BrowserSession {
    * Returns the {@link CdpTransportClosedError} recorded if Stagehand tore
    * the CDP transport down on its own, mid-operation — as opposed to the
    * transport closing as an expected consequence of this session's own
-   * `close()`. Only present on providers that wire the detection (currently
-   * Browserbase); absent on Steel. Returns undefined both when no transport
-   * close has happened yet and when the only transport close observed was
-   * our own end-of-run teardown.
+   * `close()`. Present on both Browserbase and Steel sessions. Returns
+   * undefined both when no transport close has happened yet and when the
+   * only transport close observed was our own end-of-run teardown.
    */
   getCdpTransportClosedError?: () => CdpTransportClosedError | undefined;
 }
