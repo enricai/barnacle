@@ -50,7 +50,7 @@ describe("read-only primary-operation selection does not affect mutation-bearing
       ),
     ];
 
-    const actionCaptures = extractGraphQLActionSequence(captures, BASE);
+    const actionCaptures = extractGraphQLActionSequence(captures);
     expect(actionCaptures.map((a) => a.capture.operationName)).toEqual([
       "Form",
       "UpsertSavedApplication",
@@ -99,7 +99,7 @@ describe("read-only primary-operation selection does not affect mutation-bearing
     // that guards selectPrimaryGraphQLOperation (graphqlActionSequence.length
     // === 0) never fires, so the real pipeline computes gqlOperationName /
     // gqlVariables as null for this capture set, exactly as pre-fix.
-    const actionCaptures = extractGraphQLActionSequence(captures, BASE);
+    const actionCaptures = extractGraphQLActionSequence(captures);
     expect(actionCaptures).toHaveLength(1);
 
     const stateIndex = indexStateValues(

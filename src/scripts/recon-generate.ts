@@ -534,16 +534,14 @@ function deriveRequestHeaders(
 ): Record<string, string> {
   const successfulUrls = new Set(replays.filter((r) => r.success).map((r) => endpointKey(r.url)));
 
-  // Prefer ACTION captures (non-GET 2xx to baseUrl host, non-telemetry) as
-  // the authoritative header source. Replay-matched static-asset GETs lack
-  // the API-specific headers that REST endpoints require, so falling back
-  // to those produces a degenerate baseline-only header set. When action
-  // captures exist (multi-step submission flows), use them. For sites
-  // where the flow is a single REST call (no detectable action sequence),
-  // fall back to the replay-matched captures.
-  const actionCaptures = extractActionSequence(captures, baseUrl, submitPatterns).map(
-    (a) => a.capture
-  );
+  // Prefer ACTION captures (non-GET 2xx, non-noise) as the authoritative
+  // header source. Replay-matched static-asset GETs lack the API-specific
+  // headers that REST endpoints require, so falling back to those produces
+  // a degenerate baseline-only header set. When action captures exist
+  // (multi-step submission flows), use them. For sites where the flow is a
+  // single REST call (no detectable action sequence), fall back to the
+  // replay-matched captures.
+  const actionCaptures = extractActionSequence(captures, submitPatterns).map((a) => a.capture);
   const replayMatchedCaptures = captures.filter((c) => successfulUrls.has(endpointKey(c.url)));
 
   const relevantCaptures = actionCaptures.length > 0 ? actionCaptures : replayMatchedCaptures;
@@ -788,13 +786,17 @@ export function resolveManifestActionSequence(
 
 /**
  * Extracts the ordered sequence of meaningful POSTs that represent the
- * transactional flow: same-host 2xx POSTs, minus telemetry and error-reporting
- * sinks. Assets need no filter of their own — they arrive as GETs.
+ * transactional flow: non-noise 2xx POSTs, minus telemetry and error-reporting
+ * sinks. Assets need no filter of their own — they arrive as GETs. Host is
+ * NOT a filter criterion — a multi-step submission routinely bounces to a
+ * different host mid-flow (an account-creation redirect, a tenant API
+ * subdomain distinct from the landing page's host), so `isNoiseUrl` alone
+ * decides what counts as site traffic vs. third-party noise.
  *
  * When the flow declares submit patterns, only POSTs matching them survive —
  * this isolates the submission from same-origin page chrome (bootstrap, chatbot,
  * JWT refresh, reference-lookup) that a browser fires incidentally. Absent
- * patterns preserve the host/noise heuristic exactly.
+ * patterns preserve the noise heuristic exactly.
  *
  * Exported for tests: this predicate decides what a generated plugin will POST
  * at a live site, and it is the only gate between a browser's incidental
@@ -802,15 +804,8 @@ export function resolveManifestActionSequence(
  */
 export function extractActionSequence(
   captures: Capture[],
-  baseUrl: string,
   submitPatterns: SubmitPatterns | null = null
 ): ActionCapture[] {
-  let host: string;
-  try {
-    host = new URL(baseUrl).host;
-  } catch {
-    host = "";
-  }
   const matchesSubmit = compileSubmitMatcher(submitPatterns);
 
   return captures
@@ -818,13 +813,6 @@ export function extractActionSequence(
     .filter(({ capture }) => {
       if (capture.method === "GET") return false;
       if (capture.status < 200 || capture.status >= 300) return false;
-      let captureHost: string;
-      try {
-        captureHost = new URL(capture.url).host;
-      } catch {
-        return false;
-      }
-      if (captureHost !== host) return false;
       if (isNoiseUrl(capture.url)) return false;
       if (!matchesSubmit(capture)) return false;
       return true;
@@ -839,22 +827,16 @@ export function extractActionSequence(
  * make up a transactional flow (`UpsertSavedApplication`, `SubmitForm`, ...)
  * — and drops `query` operations, which are read/bootstrap calls (e.g. a
  * page-load `ListForms`) that carry no state-threading value and are exactly
- * what let a chronologically-first fallback pick an unrelated query.
+ * what let a chronologically-first fallback pick an unrelated query. Host is
+ * NOT a filter criterion, matching {@link extractActionSequence}.
  *
  * Exported for tests: this predicate decides what a generated GraphQL plugin
  * will send at a live site.
  */
 export function extractGraphQLActionSequence(
   captures: Capture[],
-  baseUrl: string,
   submitPatterns: SubmitPatterns | null = null
 ): ActionCapture[] {
-  let host: string;
-  try {
-    host = new URL(baseUrl).host;
-  } catch {
-    host = "";
-  }
   const matchesSubmit = compileSubmitMatcher(submitPatterns);
 
   return captures
@@ -862,13 +844,6 @@ export function extractGraphQLActionSequence(
     .filter(({ capture }) => {
       if (capture.operationName === null) return false;
       if (capture.status < 200 || capture.status >= 300) return false;
-      let captureHost: string;
-      try {
-        captureHost = new URL(capture.url).host;
-      } catch {
-        return false;
-      }
-      if (captureHost !== host) return false;
       if (isNoiseUrl(capture.url)) return false;
       if (!matchesSubmit(capture)) return false;
       return capture.query !== null && /^\s*mutation\b/.test(capture.query);
@@ -3774,21 +3749,18 @@ export function emitContractTs(opts: {
   // invocation, so heterogeneous per-call shapes are each checked against
   // their own inferred schema regardless of what this client-level schema is.
   //
-  // For multi-step flows this stays z.unknown(), not an unfinished schema: a
-  // submission flow's terminal shape is the plugin's OWN contract with its
-  // caller (e.g. { verified: boolean }), a field that appears in zero
-  // captured responses. Inferring a schema from the captures would emit the
-  // wrong shape with false confidence. z.unknown() plus the generated
-  // `[ ] Narrow ResponseSchema` checklist item is the intended hand-off to
-  // the plugin author, who alone knows that contract — narrowing it only
-  // changes what executeHttp promises its caller, and is now safe to do
-  // without affecting per-call validation. Single-endpoint plugins keep the
-  // inferred schema, since there both roles (client default and sole call)
-  // coincide.
-  // Browser-flow-only plugins have no HTTP call to infer a shape from either
-  // — same z.unknown() treatment as the multi-step case, for the same reason.
-  const responseSchemaExpr =
-    multiStepBody || omitExecuteHttp ? `z.unknown()` : inferZodSchema(responseBody);
+  // For multi-step flows, `responseBody` here is already
+  // `selectEffectiveResponseBody`'s pick — the SAME call `selectReturnAction`
+  // returns from `executeHttp` (`return { data: r9 }` below, r9 being that
+  // call's own already-validated result). Inferring the client-level schema
+  // from it is therefore not a guess about a field the captures never showed:
+  // it's the literal shape of the value the client hands back, captured by
+  // its own success response (e.g. a `valid`/`errors`-shaped terminal body).
+  // Single-endpoint plugins keep the same inferred-schema treatment, since
+  // there both roles (client default and sole call) coincide.
+  // Browser-flow-only plugins have no HTTP call to infer a shape from —
+  // z.unknown() there is the honest gap, not a narrowing shortcut.
+  const responseSchemaExpr = omitExecuteHttp ? `z.unknown()` : inferZodSchema(responseBody);
   // Multi-step flows that include a multipart upload need the binary asset
   // on the payload. ApplicantContactSchema (via ApplicantResumeSchema) already
   // declares Resume/ResumeContentType/ResumeFilename, so submission flows
@@ -4800,9 +4772,7 @@ async function main(): Promise<void> {
   // Hoisted so both the primary-operation gate below and rawActionCaptures
   // (further down) read the same computed sequence instead of calling the
   // extractor twice.
-  const graphqlActionSequence = gql
-    ? extractGraphQLActionSequence(captures, baseUrl, submitPatterns)
-    : [];
+  const graphqlActionSequence = gql ? extractGraphQLActionSequence(captures, submitPatterns) : [];
   const isReadOnlyFlow = !flowSteps.some(
     (step) => typeof step !== "string" && step.submitStep === true
   );
@@ -4827,7 +4797,7 @@ async function main(): Promise<void> {
   // heuristic extraction finds.
   const patternedHeuristicActionCaptures = gql
     ? graphqlActionSequence
-    : collapseRedundantPatches(extractActionSequence(captures, baseUrl, submitPatterns));
+    : collapseRedundantPatches(extractActionSequence(captures, submitPatterns));
   // The same undercount hazard applies one layer below the manifest: a
   // flow-declared submitEndpointPattern that matches only one section's URL
   // (the natural way to describe "the button that finishes the wizard")
@@ -4841,8 +4811,8 @@ async function main(): Promise<void> {
     submitPatterns.endpoint === null && submitPatterns.body === null
       ? patternedHeuristicActionCaptures
       : gql
-        ? extractGraphQLActionSequence(captures, baseUrl, null)
-        : collapseRedundantPatches(extractActionSequence(captures, baseUrl, null));
+        ? extractGraphQLActionSequence(captures, null)
+        : collapseRedundantPatches(extractActionSequence(captures, null));
   const patternUndercounts =
     patternedHeuristicActionCaptures.length < unfilteredHeuristicActionCaptures.length;
   if (patternUndercounts) {
@@ -4873,17 +4843,17 @@ async function main(): Promise<void> {
   // The declared submitEndpointPattern's own under-match: unlike manifestUndercounts
   // (which compares an authoritative submit-manifest.json against the heuristic
   // sequence), this compares the pattern-filtered heuristic sequence against the SAME
-  // captures with no submitPatterns filter at all — the true raw same-host non-GET 2xx
+  // captures with no submitPatterns filter at all — the true raw non-GET 2xx non-noise
   // action set. A pattern that matches conspicuously fewer calls than that raw set is a
   // detection failure (the pattern is too narrow), not evidence the flow is read-only,
   // and per the no-silent-fallback rule must not be allowed to quietly collapse into the
   // generic single-endpoint {query} template below.
-  const rawSameHostActionCaptures =
+  const rawUnfilteredActionCaptures =
     submitEndpointPattern === null
       ? null
       : gql
-        ? extractGraphQLActionSequence(captures, baseUrl, null)
-        : collapseRedundantPatches(extractActionSequence(captures, baseUrl, null));
+        ? extractGraphQLActionSequence(captures, null)
+        : collapseRedundantPatches(extractActionSequence(captures, null));
   // Form-schema detection runs BEFORE state-indexing so the field-id/option-id
   // UUIDs can be shielded from indexing — those UUIDs are stable schema
   // anchors that T2/T3 substitution depends on remaining literal in body
@@ -4951,12 +4921,12 @@ async function main(): Promise<void> {
   // {query} template would misrepresent a genuine multi-call flow as read-only. Exit
   // rather than degrade quietly, per the no-defensive/no-silent-fallback rule.
   if (
-    rawSameHostActionCaptures !== null &&
+    rawUnfilteredActionCaptures !== null &&
     !isSubmissionFlow &&
-    rawSameHostActionCaptures.length > heuristicActionCaptures.length
+    rawUnfilteredActionCaptures.length > heuristicActionCaptures.length
   ) {
     logger.error(
-      `ERROR declared submitEndpointPattern ${JSON.stringify(submitEndpointPattern)} matched only ${heuristicActionCaptures.length} of ${rawSameHostActionCaptures.length} raw same-host non-GET 2xx action capture(s) — this under-match looks like a detection failure, not a read-only flow; refusing to fall back to the generic single-endpoint {query} template. Fix submitEndpointPattern in recon-flow.json to cover the real submission calls.`
+      `ERROR declared submitEndpointPattern ${JSON.stringify(submitEndpointPattern)} matched only ${heuristicActionCaptures.length} of ${rawUnfilteredActionCaptures.length} raw non-GET 2xx non-noise action capture(s) — this under-match looks like a detection failure, not a read-only flow; refusing to fall back to the generic single-endpoint {query} template. Fix submitEndpointPattern in recon-flow.json to cover the real submission calls.`
     );
     process.exit(1);
   }

@@ -122,4 +122,66 @@ describe("recon-generate multiendpoint CLI e2e: never fabricate a {query} POST t
       contract.includes("/validate");
     expect(hasFullMultiCallSequence || !hasExecuteHttp).toBe(true);
   }, 30_000);
+
+  it("emits the real multi-call sequence when every action capture lives on a different host than the landing page (account-creation redirect / tenant API subdomain)", () => {
+    workDir = mkdtempSync(join(tmpdir(), "barnacle-recon-multiendpoint-crosshost-e2e-"));
+    const runRoot = join(workDir, "run");
+    const capturesDir = join(runRoot, "graphql");
+    mkdirSync(capturesDir, { recursive: true });
+    mkdirSync(join(runRoot, "replays"), { recursive: true });
+    mkdirSync(join(runRoot, "aux"), { recursive: true });
+    writeFileSync(join(runRoot, "replays", "rate-limit.json"), JSON.stringify([]));
+
+    // The landing/entry page is on the job-board host; every real action
+    // capture (the fixture's create -> per-section -> validate sequence)
+    // lives on a distinct tenant API host, matching how an authenticated
+    // submission routinely bounces to a different host mid-flow.
+    const crossHostLandingUrl = "https://jobs.tenant.example.com/job/12345/apply";
+    const landing: Capture = { ...landingCapture(), url: crossHostLandingUrl };
+    const actionCaptures = buildMultiEndpointSubmissionActionSteps().map((s) => s.capture);
+    const allCaptures = [landing, ...actionCaptures];
+    allCaptures.forEach((capture, index) => {
+      const filename = `${String(index).padStart(3, "0")}-multiendpoint-action.json`;
+      writeFileSync(join(capturesDir, filename), JSON.stringify(capture));
+    });
+
+    const siteId = `recon-multiendpoint-crosshost-e2e-test-${process.pid}`;
+    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    mkdirSync(siteOutDir, { recursive: true });
+    writeFileSync(
+      join(siteOutDir, "recon-flow.json"),
+      JSON.stringify({
+        steps: [
+          { step: "fill out applicant, address, contact, employment, and attachment sections" },
+          { step: "submit address section", submitStep: true },
+        ],
+        submitEndpointPattern: "/address$",
+      })
+    );
+
+    const result = spawnSync(
+      TSX_BIN,
+      [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
+      { cwd: REPO_ROOT, encoding: "utf8" }
+    );
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+
+    const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+
+    // The headline defect: never fall back to the fabricated single-call
+    // stub just because the real captures live off the landing page's host.
+    expect(contract).not.toContain("query: payload.query");
+
+    // The real multi-call sequence must be emitted with the actual captured
+    // tenant-API absolute URLs — never dropped by an exact-host filter.
+    expect(contract).toContain("executeHttp(");
+    expect(contract).toContain("https://api.example.com/applications");
+    expect(contract).toContain("https://api.example.com/applicant");
+    expect(contract).toContain("https://api.example.com/address");
+    expect(contract).toContain("https://api.example.com/contact");
+    expect(contract).toContain("https://api.example.com/employment");
+    expect(contract).toContain("https://api.example.com/attachments");
+    expect(contract).toContain("https://api.example.com/validate");
+  }, 30_000);
 });

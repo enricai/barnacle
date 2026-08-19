@@ -20,17 +20,12 @@ import {
  * `selectReturnAction`, guaranteeing the two selections structurally cannot
  * drift apart.
  *
- * CAVEAT: for multi-step flows the emitted response SCHEMA is hardcoded to
- * `z.unknown()` regardless of the selected body (recon-generate.ts:2512,
- * gated on `multiStepBody` truthiness — a deliberate author-contract
- * hand-off, not a bug; see recon-generate.ts:2473-2478). So on the real
- * generation path the selected body never reaches the emitted schema OR the
- * `z.infer`-derived response type today. This is proven below via
- * `emitContractTs` with `multiStepBody` set, exactly as the real submission-
- * flow path always sets it. The observable-shape assertion therefore drives
- * `emitContractTs` with `multiStepBody` UNSET, isolating `inferZodSchema` on
- * the selected body — asserting through the real gated path would be
- * vacuous (masked by z.unknown()).
+ * The emitted response SCHEMA is inferred from the same selected body on the
+ * real multi-step path too (`multiStepBody` set): the client-level schema
+ * describes the same call `executeHttp` returns (`selectReturnAction`), so
+ * shape inference is not gated behind `multiStepBody` truthiness. Both the
+ * `multiStepBody`-unset and `multiStepBody`-set assertions below therefore
+ * observe the same inferred shape.
  */
 describe("recon-generate — G1 shape-inference target agrees with the return target", () => {
   const steps: MulticallFixtureStep[] = buildMulticallHeterogeneousActionStepsWithDrillDown();
@@ -83,7 +78,7 @@ describe("recon-generate — G1 shape-inference target agrees with the return ta
     expect(source).not.toContain("exchangeRate");
   });
 
-  it("documents that the real multi-step path masks the selection behind z.unknown() today", () => {
+  it("the real multi-step path also infers the schema from the selected body", () => {
     const effectiveResponseBody = selectEffectiveResponseBody(true, steps, null);
     const source = emitContractTs({
       siteId: "test-site",
@@ -97,12 +92,12 @@ describe("recon-generate — G1 shape-inference target agrees with the return ta
       gqlQuery: null,
       endpointPath: "/api/available-products",
       auxFiles: [],
-      // multiStepBody set (as the real submission-flow path always does) —
-      // the selected body's shape does NOT reach the emitted schema/type.
+      // multiStepBody set, exactly as the real submission-flow path always
+      // sets it — the selected body's shape reaches the emitted schema/type.
       multiStepBody: `    return { data: r3 };`,
     });
 
-    expect(source).toContain("const TestSiteResponseSchema = z.unknown();");
-    expect(source).not.toContain("totalAvailableListings");
+    expect(source).not.toContain("const TestSiteResponseSchema = z.unknown();");
+    expect(source).toContain("totalAvailableListings");
   });
 });
