@@ -4773,18 +4773,31 @@ async function main(): Promise<void> {
   // Selection precedence: (A) the authoritative submit-manifest recon-browser
   // wrote from the verified submission; else (B/C) pattern/heuristic extraction.
   // The manifest is the only signal that separates a submission POST from a
-  // page-chrome POST sharing its URL, so it wins when present.
+  // page-chrome POST sharing its URL, so it normally wins when present — but
+  // a manifest built from a single flow-declared submit step cannot represent
+  // a wizard whose every section saves independently, so it is only trusted
+  // when it isn't a strict undercount of what the same captures' own
+  // heuristic extraction finds.
+  const heuristicActionCaptures = gql
+    ? graphqlActionSequence
+    : collapseRedundantPatches(extractActionSequence(captures, baseUrl, submitPatterns));
   const manifestActionCaptures = resolveManifestActionSequence(runRoot, captures);
-  if (manifestActionCaptures !== null) {
+  const manifestUndercounts =
+    manifestActionCaptures !== null &&
+    manifestActionCaptures.length < heuristicActionCaptures.length;
+  if (manifestActionCaptures !== null && manifestUndercounts) {
+    logger.info(
+      `submission selection: ignoring submit-manifest.json (${manifestActionCaptures.length} capture(s)) as an undercount of the heuristic action sequence (${heuristicActionCaptures.length} capture(s))`
+    );
+  } else if (manifestActionCaptures !== null) {
     logger.info(
       `submission selection: using submit-manifest.json (${manifestActionCaptures.length} authoritative capture(s))`
     );
   }
   const rawActionCaptures =
-    manifestActionCaptures ??
-    (gql
-      ? graphqlActionSequence
-      : collapseRedundantPatches(extractActionSequence(captures, baseUrl, submitPatterns)));
+    manifestActionCaptures !== null && !manifestUndercounts
+      ? manifestActionCaptures
+      : heuristicActionCaptures;
   // Form-schema detection runs BEFORE state-indexing so the field-id/option-id
   // UUIDs can be shielded from indexing — those UUIDs are stable schema
   // anchors that T2/T3 substitution depends on remaining literal in body
