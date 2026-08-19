@@ -4553,6 +4553,46 @@ export function parseRadioStep(
 }
 
 /**
+ * Parse a cascading-multiselect CATEGORY/LEAF widget-option click step into
+ * the option to click.
+ *
+ * Why this exists (sibling of `parseRadioStep`): flow/replan generation
+ * describes a two-level cascading multiselect's category and leaf clicks as
+ * "click the top-level category 'Job Boards' to expand its sub-options" and
+ * "click the leaf option 'Internet - Job Boards/Search Engines' to commit the
+ * source value" — a `click` verb paired with a `category`/`option` noun that
+ * `parseRadioStep` deliberately does not recognize (its `answer`/`radio` noun
+ * set, and `tryRadioPrimitive`'s native `input[type=radio]` matching, are
+ * scoped to actual radio groups). Left unrecognized, this phrasing matches
+ * none of `tryPromptSelectorPrimitive`'s accepted shapes, so the primitive
+ * returns before ever inspecting the DOM and the step falls to the observe
+ * cascade's untrusted `el.click()`, which this widget family ignores.
+ *
+ * Deliberately excludes select/checkbox/radio-answer steps (checked first,
+ * mirroring `parseRadioStep`'s own precedence) so a single step never
+ * resolves through two primitives.
+ */
+export function parseWidgetOptionClickStep(instruction: string): { option: string } | null {
+  const lower = instruction.toLowerCase();
+  if (/\bselect(\s+or\s+check)?\b/.test(lower)) return null;
+  if (!/\bclick\b/.test(lower)) return null;
+  if (!/\b(category|option)\b/.test(lower)) return null;
+  // Catch-all steps ("for any remaining…") have no concrete single target.
+  if (/\bany\s+remaining\b/.test(lower)) return null;
+  // The OPTION is the quoted string after "click the <category|option noun>",
+  // tolerant of a short qualifier ("top-level", "leaf") between the noun and
+  // the quote — e.g. "click the top-level category 'Job Boards'" or "click
+  // the leaf option 'Internet - Job Boards/Search Engines'".
+  const optMatch = instruction.match(
+    /\bclick\s+the\s+(?:\S+\s+)?(?:category|option)\s+'([^']+)'/i
+  );
+  if (!optMatch) return null;
+  // biome-ignore lint/style/noNonNullAssertion: guarded by the !optMatch early-return; group 1 is required by the pattern
+  const option = optMatch[1]!.trim();
+  return { option };
+}
+
+/**
  * Parse a CHECKBOX flow step into the label of the checkbox it targets.
  *
  * Why this exists (sibling of `parseSelectStep`/`parseFillStep`): checkbox
@@ -5925,19 +5965,30 @@ async function tryPromptSelectorPrimitive(params: {
   // than a SELECT step, and its Yes/No variant renders no native radio inputs
   // at all, so flow/replan generation describes it with the same answer-verb
   // phrasing used for native radios ("Click the 'Yes' answer for the question
-  // '…'"). Accept all three shapes: parseSelectStep first, then parseFillStep
-  // (fieldLabel -> questionLabel, value -> option), then parseRadioStep
-  // (option/questionLabel already in this primitive's shape) so the widget-
-  // matching/open/readback phases below run unchanged regardless of which
-  // verb the instruction used.
+  // '…'"). Also accepts a cascading-multiselect CATEGORY/LEAF click step
+  // (`parseWidgetOptionClickStep`, "click the top-level category 'X'" /
+  // "click the leaf option 'Y'") — that widget's category/leaf clicks carry
+  // no question label, matched instead by the single-unfilled-widget rule
+  // below. Accept all four shapes: parseSelectStep first, then
+  // parseFillStep (fieldLabel -> questionLabel, value -> option), then
+  // parseRadioStep (option/questionLabel already in this primitive's
+  // shape), then parseWidgetOptionClickStep (option only, no question
+  // label) so the widget-matching/open/readback phases below run unchanged
+  // regardless of which verb the instruction used.
   const parsedSelect = parseSelectStep(instruction);
   const parsedFill = parsedSelect ? null : parseFillStep(instruction);
   const parsedAnswer = parsedSelect || parsedFill ? null : parseRadioStep(instruction);
+  const parsedOptionClick =
+    parsedSelect || parsedFill || parsedAnswer ? null : parseWidgetOptionClickStep(instruction);
   const parsed = parsedSelect
     ? parsedSelect
     : parsedFill
       ? { option: parsedFill.value, questionLabel: stripQuotedLabel(parsedFill.fieldLabel) }
-      : parsedAnswer;
+      : parsedAnswer
+        ? parsedAnswer
+        : parsedOptionClick
+          ? { option: parsedOptionClick.option, questionLabel: null }
+          : null;
   if (!parsed) return null;
   const { option, questionLabel } = parsed;
   const optLabel = `option "${option.slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
