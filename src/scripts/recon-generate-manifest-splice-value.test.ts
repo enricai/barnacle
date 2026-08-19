@@ -14,6 +14,9 @@ type ManifestStep = string | { step: string };
 function firstStepText(manifestStr: string): string {
   const manifest = JSON.parse(manifestStr) as { spec: { flow: { steps: ManifestStep[] } } };
   const step = manifest.spec.flow.steps[0];
+  if (step === undefined) {
+    throw new Error("manifest has no flow steps");
+  }
   return typeof step === "string" ? step : step.step;
 }
 
