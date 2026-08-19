@@ -7545,6 +7545,7 @@ export async function probeStepBeforeAttempts(params: {
         frameTarget
       );
       if (unfocused.length > 0) {
+        assertProbeSessionAlive(page, stepIndex, totalSteps);
         logger.info(
           `${formatStepPrefix(stepIndex, totalSteps)}: focused probe found 0 candidates but unfocused observe found ${unfocused.length} — treating as present (let cascade resolve)`
         );
@@ -7571,6 +7572,7 @@ export async function probeStepBeforeAttempts(params: {
           { frameTarget: effectiveFrameTarget }
         );
         if (deepLocatorCandidates.length > 0) {
+          assertProbeSessionAlive(page, stepIndex, totalSteps);
           logger.info(
             `${formatStepPrefix(stepIndex, totalSteps)}: observe found 0 candidates (focused and unfocused) but deepLocator found ${deepLocatorCandidates.length} — treating as present (let cascade resolve)`
           );
@@ -7588,11 +7590,32 @@ export async function probeStepBeforeAttempts(params: {
     return "present";
   } catch (err) {
     // Bias toward the existing behavior on errors: don't trigger a spurious
-    // replan when the probe itself is the broken thing.
+    // replan when the probe itself is the broken thing — but only once we've
+    // ruled out a dead session, which must surface as SessionTimeoutError
+    // rather than a silent "present" verdict.
+    assertProbeSessionAlive(page, stepIndex, totalSteps);
     logger.warn(
       `${formatStepPrefix(stepIndex, totalSteps)}: probe threw ${toErrorMessage(err)} — treating as present (cascade will run)`
     );
     return "present";
+  }
+}
+
+/**
+ * Distinguishes a dead session from a benign empty probe result. Each of
+ * `probeStepBeforeAttempts`'s three "treat as present" fallback branches
+ * (and its catch-all) would otherwise swallow a closed/crashed session as
+ * an ordinary reachability miss, discarding the death signal before the
+ * caller's own liveness gate ever sees it — mirrors the pre-step gate in
+ * `runHealingFlow`.
+ */
+function assertProbeSessionAlive(page: Page, stepIndex: number, totalSteps?: () => number): void {
+  try {
+    page.url();
+  } catch (err) {
+    throw new SessionTimeoutError(
+      `${formatStepPrefix(stepIndex, totalSteps)} session appears closed/dead (page.url() threw: ${toErrorMessage(err)}) during probe`
+    );
   }
 }
 

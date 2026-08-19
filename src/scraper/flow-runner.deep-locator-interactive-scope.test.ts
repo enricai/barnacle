@@ -129,7 +129,10 @@ describe("flow-runner deepLocator call sites — scoped to interactive elements,
     guardedObserve.mockResolvedValue([]);
     const frame: FakeDeepLocatorFrame = new Map();
     registerDeepLocatorHopElements(frame, `${FRAME_SELECTOR} >> *`, ["Upload a Resume/CV"]);
-    const page = { deepLocator: makeFakeDeepLocator(frame) } as unknown as Page;
+    const page = {
+      deepLocator: makeFakeDeepLocator(frame),
+      url: () => "https://apply.example.com/application/abc-123",
+    } as unknown as Page;
     const resolveDeepLocatorCandidatesSpy = vi.spyOn(
       deepLocatorCandidatesModule,
       "resolveDeepLocatorCandidates"

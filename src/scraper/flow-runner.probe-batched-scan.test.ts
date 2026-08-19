@@ -100,7 +100,10 @@ describe("flow-runner/probeStepBeforeAttempts — batched frame scan", () => {
   it('resolves "present" from exactly ONE evaluate call, with zero deepLocator().nth() round-trips, for a dense frame with a laid-out node', async () => {
     guardedObserve.mockResolvedValue([]);
     const { deepLocator, countSpy, nthSpy } = makeLegacyLoopSpyDeepLocator();
-    const page = { deepLocator } as unknown as Page;
+    const page = {
+      deepLocator,
+      url: () => "https://apply.example.com/application/abc-123",
+    } as unknown as Page;
     const frameTarget = makeChildFrameTarget([
       { index: 0, text: "Manual Application", visible: true, isNav: false },
     ]);
@@ -164,7 +167,10 @@ describe("flow-runner/probeStepBeforeAttempts — batched frame scan", () => {
   it('issues the scan for innerSelector "*" (not the interactive selector) against the already-resolved frameTarget', async () => {
     guardedObserve.mockResolvedValue([]);
     const { deepLocator } = makeLegacyLoopSpyDeepLocator();
-    const page = { deepLocator } as unknown as Page;
+    const page = {
+      deepLocator,
+      url: () => "https://apply.example.com/application/abc-123",
+    } as unknown as Page;
     const frameTarget = makeChildFrameTarget([
       { index: 0, text: "Manual Application", visible: true, isNav: false },
     ]);
