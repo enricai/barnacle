@@ -50,7 +50,7 @@ vi.mock("@/config", () => ({
 }));
 
 const { fakeConn } = vi.hoisted(() => ({
-  fakeConn: { send: vi.fn().mockResolvedValue(undefined) },
+  fakeConn: { send: vi.fn().mockResolvedValue(undefined), onTransportClosed: vi.fn() },
 }));
 
 vi.mock("@browserbasehq/stagehand", () => ({
