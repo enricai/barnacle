@@ -1,0 +1,6 @@
+[2026-08-18 15:20:21.899 -0500] INFO (barnacle://recon-browser): step 10/35 [on-the-authenticated-my-]: On the authenticated 'My Information' step, open the 'How Did You Hear About Us?' prompt selector (data-automation-id='source') and click the top-level category 'Job Boards' to expand its sub-options
+[2026-08-18 15:20:41.619 -0500] INFO (barnacle://recon-browser): step 10/35: focused probe found 0 candidates but unfocused observe found 30 — treating as present (let cascade resolve)
+[2026-08-18 15:20:51.102 -0500] INFO (barnacle://recon-browser): step 10/35 succeeded on attempt 1 via act-string (network=false url=false dom=true verifiedBy=view-swap)
+[2026-08-18 15:20:51.250 -0500] INFO (barnacle://recon-browser): step 11/35 [in-the-expanded-job-boar]: In the expanded 'Job Boards' sub-list, click the leaf option 'Internet - Job Boards/Search Engines' to commit the source value (this is a two-level cascading picker; a category alone does not commit)
+[2026-08-18 15:21:17.041 -0500] INFO (barnacle://recon-browser): step 11/35: focused probe found 0 candidates but unfocused observe found 37 — treating as present (let cascade resolve)
+[2026-08-18 15:21:28.740 -0500] INFO (barnacle://recon-browser): step 11/35 succeeded on attempt 1 via act-string + el.click() fallback
