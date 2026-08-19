@@ -2245,7 +2245,9 @@ describe("emitConfigManifest — a reserved RECON_PASSWORD env token never leaks
   });
 
   it("routes the splice through an explicit Password request field, not vocabulary", () => {
-    expect(manifest.spec.flow.steps).toEqual(["Enter {{ .request.Password }} in the Password field"]);
+    expect(manifest.spec.flow.steps).toEqual([
+      "Enter {{ .request.Password }} in the Password field",
+    ]);
     expect(manifest.spec.request.properties).toHaveProperty("Password");
   });
 });
