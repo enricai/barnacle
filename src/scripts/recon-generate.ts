@@ -4305,30 +4305,19 @@ function buildStepInstructionExpr(instruction: string, field: string | null): st
 }
 
 /**
- * Rewrites one step instruction into the config-manifest templating form:
- * the recon splice site (a `${RECON_EMAIL}` token or the first single-quoted
- * literal) becomes `{{ .request.<field> }}`. Unlike {@link buildStepInstructionExpr}
- * this yields a plain manifest string, not a TS expression — the runtime
- * config-plugin resolver, not the code generator, performs the splice.
+ * Rewrites one step instruction into the config-manifest templating form: the
+ * splice site located by {@link locateSpliceSite} becomes `{{ .request.<field> }}`.
+ * Unlike {@link buildStepInstructionExpr} this yields a plain manifest string,
+ * not a TS expression — the runtime config-plugin resolver, not the code
+ * generator, performs the splice. Reuses {@link locateSpliceSite} so this
+ * emitter never lands the splice on a selector's or label's quoted span, the
+ * same guarantee {@link buildStepInstructionExpr} makes.
  */
 function buildManifestInstruction(instruction: string, field: string | null): string {
   if (field === null) return instruction;
-  const emailToken = `$${"{RECON_EMAIL}"}`;
-  const emailIdx = instruction.indexOf(emailToken);
-  if (emailIdx >= 0) {
-    return (
-      instruction.slice(0, emailIdx) +
-      `{{ .request.${field} }}` +
-      instruction.slice(emailIdx + emailToken.length)
-    );
-  }
-  const m = /'[^']*'/.exec(instruction);
-  if (m === null) return instruction;
-  return (
-    instruction.slice(0, m.index) +
-    `{{ .request.${field} }}` +
-    instruction.slice(m.index + m[0].length)
-  );
+  const site = locateSpliceSite(instruction);
+  if (site === null) return instruction;
+  return `${site.before}{{ .request.${field} }}${site.after}`;
 }
 
 /**

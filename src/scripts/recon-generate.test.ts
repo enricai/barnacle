@@ -2168,6 +2168,29 @@ describe("emitConfigManifest — config-only plugin emission", () => {
   });
 });
 
+describe("emitConfigManifest — splice site lands on the fill VALUE, never the selector", () => {
+  const manifestStr = emitConfigManifest({
+    siteId: "acme-demo",
+    displayName: "AcmeDemo",
+    baseUrl: "https://apply.acme.example",
+    flowSteps: [
+      {
+        step: "Fill in the Legal Name First Name field (data-automation-id='legalName--firstName') with 'Reginald'",
+        payloadField: "FirstName",
+      },
+    ],
+  });
+
+  it("leaves the data-automation-id selector unchanged", () => {
+    expect(manifestStr).toContain("data-automation-id='legalName--firstName'");
+  });
+
+  it("splices {{ .request.FirstName }} only at the trailing value position", () => {
+    expect(manifestStr).toContain("{{ .request.FirstName }}");
+    expect(manifestStr).not.toContain("Reginald");
+  });
+});
+
 describe("emitConfigManifest — recovered request contract", () => {
   const manifest = JSON.parse(
     emitConfigManifest({
