@@ -4778,9 +4778,34 @@ async function main(): Promise<void> {
   // a wizard whose every section saves independently, so it is only trusted
   // when it isn't a strict undercount of what the same captures' own
   // heuristic extraction finds.
-  const heuristicActionCaptures = gql
+  const patternedHeuristicActionCaptures = gql
     ? graphqlActionSequence
     : collapseRedundantPatches(extractActionSequence(captures, baseUrl, submitPatterns));
+  // The same undercount hazard applies one layer below the manifest: a
+  // flow-declared submitEndpointPattern that matches only one section's URL
+  // (the natural way to describe "the button that finishes the wizard")
+  // filters the heuristic sequence down to that one capture even though the
+  // same captures, read without the pattern, show every section saving
+  // independently. A pattern that undercounts what the unfiltered heuristic
+  // finds is therefore not trusted either — it falls back to the richer,
+  // unfiltered sequence instead of collapsing a real multi-call flow into
+  // the generic single-endpoint fallback.
+  const unfilteredHeuristicActionCaptures =
+    submitPatterns.endpoint === null && submitPatterns.body === null
+      ? patternedHeuristicActionCaptures
+      : gql
+        ? extractGraphQLActionSequence(captures, baseUrl, null)
+        : collapseRedundantPatches(extractActionSequence(captures, baseUrl, null));
+  const patternUndercounts =
+    patternedHeuristicActionCaptures.length < unfilteredHeuristicActionCaptures.length;
+  if (patternUndercounts) {
+    logger.info(
+      `submission selection: ignoring submitEndpointPattern/submitBodyPattern (${patternedHeuristicActionCaptures.length} capture(s)) as an undercount of the unfiltered heuristic action sequence (${unfilteredHeuristicActionCaptures.length} capture(s))`
+    );
+  }
+  const heuristicActionCaptures = patternUndercounts
+    ? unfilteredHeuristicActionCaptures
+    : patternedHeuristicActionCaptures;
   const manifestActionCaptures = resolveManifestActionSequence(runRoot, captures);
   const manifestUndercounts =
     manifestActionCaptures !== null &&
