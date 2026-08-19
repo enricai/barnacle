@@ -99,6 +99,7 @@ import { main } from "@/scripts/recon-browser";
 
 const TOTAL_STEPS = 5;
 const SESSION_DIES_AFTER_STEP = 2;
+const SESSION_DIES_AFTER_STEP_SAME_ITERATION = SESSION_DIES_AFTER_STEP + 1;
 
 /**
  * Fake `Page` whose `url()` throws once `killSession()` has been called,
@@ -197,6 +198,41 @@ describe("recon-browser/main — mid-flow session death (bugfix-002)", () => {
     // driving every declared step through to a false "completed" state.
     expect(stepCount).toBeLessThan(TOTAL_STEPS);
     expect(executeStepWithHealingStub).toHaveBeenCalledTimes(SESSION_DIES_AFTER_STEP);
+  });
+
+  it("rejects within the same iteration the session dies, one step past the existing mid-flow case (bugfix-003)", async () => {
+    const { stagehand, killSession } = makeFakePage();
+    vi.mocked(createBrowserSession).mockResolvedValue({
+      stagehand,
+      limiter: {} as never,
+      sessionId: "test-session",
+      provider: "browserbase",
+      close: vi.fn().mockResolvedValue(undefined),
+    } as never);
+
+    let stepCount = 0;
+    executeStepWithHealingStub.mockImplementation(async () => {
+      stepCount += 1;
+      // Death happens one step later than the earlier "mid-flow" case above,
+      // and executeStepWithHealing still RESOLVES normally, swallowing the
+      // death exactly as a probe-style callee (bugfix-001) would. The post-
+      // step liveness gate must catch it in this same iteration rather than
+      // waiting for a pre-step check that would only ever run on the NEXT
+      // iteration.
+      if (stepCount === SESSION_DIES_AFTER_STEP_SAME_ITERATION) killSession();
+      return "ok";
+    });
+
+    process.argv = flowArgv(TOTAL_STEPS);
+
+    await expect(main()).rejects.toThrow(SessionTimeoutError);
+    expect(stepCount).toBeLessThan(TOTAL_STEPS);
+    // Called exactly once more than the earlier mid-flow case above, since
+    // death was moved one step later — the loop still stops on the very
+    // call during which the session died, not one iteration afterward.
+    expect(executeStepWithHealingStub).toHaveBeenCalledTimes(
+      SESSION_DIES_AFTER_STEP_SAME_ITERATION
+    );
   });
 
   it("rejects instead of resolving when the session is already dead at flow start", async () => {
