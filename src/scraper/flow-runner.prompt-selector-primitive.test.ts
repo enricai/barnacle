@@ -472,6 +472,62 @@ describe("flow-runner/tryPromptSelectorPrimitive (real DOM)", () => {
     );
   });
 
+  it("single-level widget-kit widget (country/source-shaped, no cascadeByOption drillTo) commits on the FIRST option click and never invokes the drill/re-match path", async () => {
+    const stagehandAct = vi.fn();
+    const { page, target, clicks } = buildPromptWidgetHarness({
+      html: WIDGET_KIT_HTML,
+      popupByWidgetId: { "src-widget": { options: ["Job Board", "Referral", "LinkedIn"] } },
+    });
+    const params = baseParams(page as unknown as Page, stagehandAct, "");
+    const merged = {
+      ...params,
+      frameTarget: target,
+      step: "for 'How Did You Hear About Us?' select 'Referral'",
+    };
+
+    const result = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    );
+
+    expect(result).toBe("completed");
+    // Exactly the trigger click plus the one real option click — no
+    // intermediate category click, i.e. exactly one option-level click.
+    expect(clicks.length).toBe(2);
+    expect(testLogger.info).not.toHaveBeenCalledWith(
+      expect.stringContaining("drilled the popup to a new option set")
+    );
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining("resolved by prompt-selector primitive")
+    );
+  });
+
+  it("single-level near-standard button widget (phoneType-shaped, no cascadeByOption drillTo) commits on the FIRST option click and never invokes the drill/re-match path", async () => {
+    const stagehandAct = vi.fn();
+    const { page, target, clicks } = buildPromptWidgetHarness({
+      html: ARIA_BUTTON_HTML,
+      popupByWidgetId: { phoneType: { options: ["Home", "Mobile", "Work"], portaled: true } },
+    });
+    const params = baseParams(page as unknown as Page, stagehandAct, "");
+    const merged = {
+      ...params,
+      frameTarget: target,
+      step: "for 'Phone Device Type' select 'Mobile'",
+    };
+
+    const result = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    );
+
+    expect(result).toBe("completed");
+    expect(clicks.length).toBe(2);
+    expect(testLogger.info).not.toHaveBeenCalledWith(
+      expect.stringContaining("drilled the popup to a new option set")
+    );
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining("resolved by prompt-selector primitive")
+    );
+  });
+
   it("commits a value on the multiselect-typeahead/chip widget shape (FILL phrasing)", async () => {
     const stagehandAct = vi.fn();
     const { page, target } = buildPromptWidgetHarness({
