@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -33,6 +33,33 @@ afterEach(() => {
   siteOutDir = null;
   tsconfigPath = null;
 });
+
+/**
+ * A minimal `--vocabulary` module so the flow's label-derived steps (First
+ * Name, Email, Phone) actually resolve to payload fields instead of staying
+ * inert under the CLI's default EMPTY_VOCABULARY — without this, Defects 1
+ * and 4 (the chained/duplicated `.extend()` schema) never engage, since no
+ * field ever gets spliced. "Phone" deliberately collides with a name
+ * ApplicantContactSchema's own identity/address merge already declares, so
+ * the reserved-name guard (Defect 1's fix) is exercised too.
+ */
+function writeVocabularyModule(workDir: string): string {
+  const vocabPath = join(workDir, "vocabulary.mjs");
+  writeFileSync(
+    vocabPath,
+    `export const vocabulary = {
+  subject: /(?!)/,
+  exclusions: [],
+  table: [
+    [/first name/i, "FirstName"],
+    [/\\bemail\\b/i, "Email"],
+    [/\\bphone\\b/i, "Phone"],
+  ],
+};
+`
+  );
+  return vocabPath;
+}
 
 describe("recon-generate CLI + tsc --noEmit — the four splice/schema defects closed together", () => {
   it("emits a contract.ts and browser-flow.ts that compile with zero diagnostics", () => {
@@ -73,7 +100,7 @@ describe("recon-generate CLI + tsc --noEmit — the four splice/schema defects c
       )
     );
 
-    const siteId = `recon-tsc-clean-emit-e2e-test-${process.pid}`;
+    const siteId = `recon-tsc-clean-emit-e2e-test${process.pid}`;
     siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
 
@@ -96,9 +123,22 @@ describe("recon-generate CLI + tsc --noEmit — the four splice/schema defects c
       })
     );
 
+    const vocabularyPath = writeVocabularyModule(workDir);
+
     const result = spawnSync(
       TSX_BIN,
-      [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
+      [
+        GENERATE_SCRIPT,
+        "--site-id",
+        siteId,
+        "--run-dir",
+        runRoot,
+        "--emit",
+        "ts",
+        "--force",
+        "--vocabulary",
+        vocabularyPath,
+      ],
       { cwd: REPO_ROOT, encoding: "utf8" }
     );
 
@@ -108,6 +148,21 @@ describe("recon-generate CLI + tsc --noEmit — the four splice/schema defects c
     const browserFlowPath = join(siteOutDir, "flows", "browser-flow.ts");
     expect(existsSync(contractPath)).toBe(true);
     expect(existsSync(browserFlowPath)).toBe(true);
+
+    // Defect 1/4's regression guard: every field source (base extend, the
+    // browser-flow-spliced FirstName/Email, and the RECON_PASSWORD-reserved
+    // throwaway) collapses into a SINGLE `.extend({...})` call, and "Phone"
+    // — a name ApplicantContactSchema's own identity merge already declares
+    // — is never redeclared.
+    const contract = readFileSync(contractPath, "utf8");
+    const payloadSchemaMatch = /const \w+PayloadSchema = [\s\S]*?;\n/.exec(contract);
+    expect(payloadSchemaMatch).not.toBeNull();
+    const payloadSchemaSource = payloadSchemaMatch![0];
+    const extendOccurrences = payloadSchemaSource.match(/\.extend\(/g) ?? [];
+    expect(extendOccurrences.length).toBe(1);
+    expect(payloadSchemaSource).not.toMatch(/^\s*Phone:/m);
+    const emailOccurrences = payloadSchemaSource.match(/^\s*Email:/gm) ?? [];
+    expect(emailOccurrences.length).toBe(1);
 
     // Uniquely named and removed in `finally` (well, `afterEach`) so it never
     // collides with the real tsconfig, matching recon-generate.build.test.ts's
