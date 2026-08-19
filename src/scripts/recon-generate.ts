@@ -3859,41 +3859,87 @@ export function emitContractTs(opts: {
   // longer drives the public schema. A missing inputBody means this is a
   // non-submission (query-type) flow, which keeps its own contract untouched.
   const basePayloadSchemaExpr = inputBody
-    ? `ApplicantContactSchema.extend({\n  Email: z.email(),\n  ClickUrl: z.string().min(1),\n  Answers: multipartJsonObject(z.record(z.string(), z.unknown())),\n})`
+    ? `ApplicantContactSchema`
     : `z.object({\n  query: z.string().min(1),\n})`;
+  // Every field source below (the base extend's own keys, form-schema
+  // discovery, browser-flow splicing, option/raw-option enums, additional
+  // body keys, and structured keys) is merged into a SINGLE `.extend({...})`
+  // object literal, keyed by field name, rather than each becoming its own
+  // chained `.extend()` call. A name that recurs across sources collapses to
+  // one declaration — the later source in this list wins, mirroring the
+  // override semantics a chain of `.extend()` calls used to have (each
+  // subsequent `.extend` replaced an earlier field of the same name).
+  const extendFields = new Map<string, string>();
+  const addExtendField = (name: string, line: string): void => {
+    extendFields.set(name, line);
+  };
+
+  // The base extend's own keys — submission flows only.
+  if (inputBody) {
+    addExtendField("Email", "  Email: z.email(),");
+    addExtendField("ClickUrl", "  ClickUrl: z.string().min(1),");
+    addExtendField("Answers", "  Answers: multipartJsonObject(z.record(z.string(), z.unknown())),");
+  }
+
+  // ApplicantContactSchema's own merged identity/address/resume field names
+  // (see src/lib/application-identity.ts, application-address.ts,
+  // application-resume.ts, applicant-payload.ts) — reserved so no discovered/
+  // spliced source can redeclare (and silently shadow) a field the base
+  // ApplicantContactSchema already supplies. Only relevant for submission
+  // flows, where basePayloadSchemaExpr actually is ApplicantContactSchema.
+  const applicantContactFieldNames = new Set([
+    "FirstName",
+    "LastName",
+    "Phone",
+    "AddressLine",
+    "City",
+    "State",
+    "PostalCode",
+    "Country",
+    "County",
+    "Resume",
+    "ResumeContentType",
+    "ResumeFilename",
+    "ResumeBase64",
+  ]);
+  const isReservedByApplicantContactSchema = (name: string): boolean =>
+    Boolean(inputBody) && applicantContactFieldNames.has(name);
+
+  // Multi-step flows that include a multipart upload need the binary asset
+  // on the payload. A query-type flow (no ApplicantContactSchema base) still
+  // needs these fields spelled out explicitly.
+  if (hasMultipartStep && !inputBody) {
+    addExtendField("Resume", "  Resume: z.instanceof(Buffer),");
+    addExtendField("ResumeContentType", "  ResumeContentType: z.string(),");
+    addExtendField("ResumeFilename", "  ResumeFilename: z.string(),");
+  }
+
   // Form-schema-discovered fields (e.g. AddressLine1, UserSsn, Reference1FirstName)
   // are added to the payload as required strings. Site-agnostic: the set is
   // populated by applyFormSchemaSubstitutions when the recon includes a
   // detectable form schema; empty for sites without one.
-  const formFieldsExtension =
-    discoveredFormFields && discoveredFormFields.size > 0
-      ? `.extend({\n${[...discoveredFormFields]
-          .sort()
-          .map((name) => `  ${name}: z.string(),`)
-          .join("\n")}\n})`
-      : "";
+  if (discoveredFormFields) {
+    for (const name of [...discoveredFormFields].sort()) {
+      if (isReservedByApplicantContactSchema(name)) continue;
+      addExtendField(name, `  ${name}: z.string(),`);
+    }
+  }
 
   // Candidate-PII fields the browser flow splices as `payload.<field>`. Emitted
   // as required strings (z.email() for Email per the repo's z.string().email()→
   // z.email() migration) so those references typecheck in the generated flow.
-  // Skip any field the form-schema pass already added to avoid a duplicate
-  // `.extend` key.
-  const splicedFieldNames = payloadFieldNames
-    ? [...payloadFieldNames].filter((name) => !discoveredFormFields?.has(name)).sort()
-    : [];
-  const splicedFieldsExtension =
-    splicedFieldNames.length > 0
-      ? `.extend({\n${splicedFieldNames
-          .map((name) => `  ${name}: ${name === "Email" ? "z.email()" : "z.string()"},`)
-          .join("\n")}\n})`
-      : "";
+  if (payloadFieldNames) {
+    for (const name of [...payloadFieldNames].sort()) {
+      if (isReservedByApplicantContactSchema(name)) continue;
+      addExtendField(name, `  ${name}: ${name === "Email" ? "z.email()" : "z.string()"},`);
+    }
+  }
 
   // Build per-field OPT_<Name> constant declarations + payload-schema enum
   // entries from the form schema's options. Only fields whose option-id
   // slots were actually rewritten in the body (i.e. that appear in
   // discoveredOptionFields) get emitted; the rest leave their schema entries
-  // unused. Computed BEFORE payloadSchemaExpr so the extension string is
-  // available for the final schema concat.
+  // unused.
   const emittedOptionMappings: FieldOptionsMapping[] = [];
   if (fieldOptionsMap && discoveredOptionFields && discoveredOptionFields.size > 0) {
     for (const mapping of fieldOptionsMap.values()) {
@@ -3914,15 +3960,13 @@ export function emitContractTs(opts: {
       return `\nconst OPT_${mapping.semanticName} = {\n${entries}\n} as const;\n`;
     })
     .join("");
-  const optionSchemaExtension =
-    emittedOptionMappings.length > 0
-      ? `.extend({\n${emittedOptionMappings
-          .map(
-            (m) =>
-              `  ${m.semanticName}: z.enum([${m.options.map((o) => JSON.stringify(o.value)).join(", ")}]),`
-          )
-          .join("\n")}\n})`
-      : "";
+  for (const mapping of emittedOptionMappings) {
+    if (isReservedByApplicantContactSchema(mapping.semanticName)) continue;
+    addExtendField(
+      mapping.semanticName,
+      `  ${mapping.semanticName}: z.enum([${mapping.options.map((o) => JSON.stringify(o.value)).join(", ")}]),`
+    );
+  }
 
   // Phase E raw-option payload fields: options whose label strings are empty in
   // the schema — no semantic enum is possible, so the caller supplies the
@@ -3931,15 +3975,13 @@ export function emitContractTs(opts: {
   const sortedRawOptionEntries = discoveredRawOptionFields
     ? [...discoveredRawOptionFields.entries()].sort(([a], [b]) => a.localeCompare(b))
     : [];
-  const rawOptionSchemaExtension =
-    sortedRawOptionEntries.length > 0
-      ? `.extend({\n${sortedRawOptionEntries
-          .map(
-            ([name, reconUuid]) =>
-              `  /** Recon-observed: ${reconUuid}. Caller supplies the option-id UUID for this field. */\n  ${name}: z.string(),`
-          )
-          .join("\n")}\n})`
-      : "";
+  for (const [name, reconUuid] of sortedRawOptionEntries) {
+    if (isReservedByApplicantContactSchema(name)) continue;
+    addExtendField(
+      name,
+      `  /** Recon-observed: ${reconUuid}. Caller supplies the option-id UUID for this field. */\n  ${name}: z.string(),`
+    );
+  }
 
   // A non-scalar (Mechanism B) field forces multipart wire encoding just like
   // an upload step does: the multipart body encodes arrays/objects as
@@ -3952,27 +3994,23 @@ export function emitContractTs(opts: {
   const sortedAdditionalKeys = discoveredAdditionalBodyKeys
     ? [...discoveredAdditionalBodyKeys.entries()].sort(([a], [b]) => a.localeCompare(b))
     : [];
-  const additionalBodyKeysExtension =
-    sortedAdditionalKeys.length > 0
-      ? `.extend({\n${sortedAdditionalKeys
-          .map(([name, kind]) => {
-            // Use multipartBoolean() for booleans when multipart is in play, so
-            // multipart string-encoded "true"/"false" round-trip to native
-            // booleans (matches the inputBody boolean handling for parity).
-            const zod =
-              kind === "string"
-                ? "z.string()"
-                : kind === "number"
-                  ? payloadNeedsMultipart
-                    ? "z.coerce.number()"
-                    : "z.number()"
-                  : payloadNeedsMultipart
-                    ? "multipartBoolean()"
-                    : "z.boolean()";
-            return `  ${name}: ${zod},`;
-          })
-          .join("\n")}\n})`
-      : "";
+  for (const [name, kind] of sortedAdditionalKeys) {
+    if (isReservedByApplicantContactSchema(name)) continue;
+    // Use multipartBoolean() for booleans when multipart is in play, so
+    // multipart string-encoded "true"/"false" round-trip to native booleans
+    // (matches the inputBody boolean handling for parity).
+    const zod =
+      kind === "string"
+        ? "z.string()"
+        : kind === "number"
+          ? payloadNeedsMultipart
+            ? "z.coerce.number()"
+            : "z.number()"
+          : payloadNeedsMultipart
+            ? "multipartBoolean()"
+            : "z.boolean()";
+    addExtendField(name, `  ${name}: ${zod},`);
+  }
 
   // Mechanism B: nested caller structures become payload fields carrying their
   // inferred schema. Emitted as an object body so multi-line z.array(z.object(
@@ -3981,16 +4019,12 @@ export function emitContractTs(opts: {
   const sortedStructuredEntries = discoveredStructuredKeys
     ? [...discoveredStructuredKeys.entries()].sort(([a], [b]) => a.localeCompare(b))
     : [];
-  const structuredKeysExtension =
-    sortedStructuredEntries.length > 0
-      ? `.extend({\n${sortedStructuredEntries
-          .map(([name, schema]) => {
-            const key = isValidJsIdentifier(name) ? name : JSON.stringify(name);
-            const value = payloadNeedsMultipart ? `multipartJsonObject(${schema})` : schema;
-            return `  ${key}: ${value},`;
-          })
-          .join("\n")}\n})`
-      : "";
+  for (const [name, schema] of sortedStructuredEntries) {
+    if (isReservedByApplicantContactSchema(name)) continue;
+    const key = isValidJsIdentifier(name) ? name : JSON.stringify(name);
+    const value = payloadNeedsMultipart ? `multipartJsonObject(${schema})` : schema;
+    addExtendField(name, `  ${key}: ${value},`);
+  }
 
   // The structural walk over the captured request body that used to BE the
   // public payload schema (see basePayloadSchemaExpr above) is still the
@@ -4004,19 +4038,20 @@ export function emitContractTs(opts: {
   const internalRequestReferenceExpr = inputBody
     ? inferZodSchema(inputBody, 0, "", { multipartCoerce: hasMultipartStep })
     : null;
-  // optionSchemaExtension is appended LAST so option enums show up at the
-  // end of the payload type — the section ordering (base, multipart fields,
-  // form-schema fields, option enums, raw-option fields) matches the body
-  // emit order and keeps the generated payload type readable.
-  const resumeFieldsExtension =
-    hasMultipartStep && !inputBody
-      ? `.extend({\n  Resume: z.instanceof(Buffer),\n  ResumeContentType: z.string(),\n  ResumeFilename: z.string(),\n})`
-      : "";
-  const payloadSchemaExpr = `${basePayloadSchemaExpr}${resumeFieldsExtension}${formFieldsExtension}${splicedFieldsExtension}${optionSchemaExtension}${rawOptionSchemaExtension}${additionalBodyKeysExtension}${structuredKeysExtension}`;
-  // basePayloadSchemaExpr always wraps Answers in multipartJsonObject() for
-  // submission flows (inputBody set); multipartBoolean() and the
-  // structuredKeysExtension wrapping are needed whenever payloadNeedsMultipart
-  // is true (an upload step OR a non-scalar discoveredStructuredKeys field).
+
+  // All field sources above are merged into a SINGLE `.extend({...})` object
+  // literal, keyed by field name — a name that recurs across sources (or
+  // that collides with the base extend's own Email/ClickUrl/Answers) collapses
+  // to its last-declared line, rather than becoming a second, dupe-prone
+  // `.extend()` call chained onto the schema.
+  const mergedExtension =
+    extendFields.size > 0 ? `.extend({\n${[...extendFields.values()].join("\n")}\n})` : "";
+  const payloadSchemaExpr = `${basePayloadSchemaExpr}${mergedExtension}`;
+  // basePayloadSchemaExpr's own Answers field always wraps in
+  // multipartJsonObject() for submission flows (inputBody set);
+  // multipartBoolean() and the structured-keys wrapping above are needed
+  // whenever payloadNeedsMultipart is true (an upload step OR a non-scalar
+  // discoveredStructuredKeys field).
   // Named imports from the same module are combined into one import statement.
   const zodMultipartNamedImports = [
     ...(payloadNeedsMultipart ? ["multipartBoolean"] : []),

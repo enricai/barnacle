@@ -1499,10 +1499,17 @@ describe("emitBrowserFlowTs + emitContractTs — schema/flow anti-drift", () => 
     payloadFieldNames,
   });
 
-  it("every payload.X the flow references appears as a contract schema key", () => {
+  // Fields ApplicantContactSchema itself already declares (see
+  // src/lib/applicant-payload.ts) don't get a redundant explicit key in the
+  // merged `.extend({...})` — the single-extend dedup (bugfix-004) reserves
+  // them so the schema stays a single, non-shadowing extend call.
+  const applicantContactFieldNames = new Set(["FirstName", "LastName", "Phone", "City"]);
+
+  it("every payload.X the flow references appears as a contract schema key, unless ApplicantContactSchema already declares it", () => {
     const referenced = [...code.matchAll(/\$\{payload\.([A-Za-z0-9_]+)\}/g)].map((m) => m[1]!);
     expect(referenced.length).toBeGreaterThan(0);
     for (const field of referenced) {
+      if (applicantContactFieldNames.has(field)) continue;
       const decl = field === "Email" ? `${field}: z.email()` : `${field}: z.string()`;
       expect(contract).toContain(decl);
     }
@@ -2332,6 +2339,57 @@ describe("emitContractTs — vendor-dump golden fixture (recon-generate-payload-
     expect(referenceSource).toContain("eventData:");
     expect(referenceSource).toContain("experienceData:");
     expect(referenceSource).toContain("educationData:");
+  });
+});
+
+describe("emitContractTs — single merged `.extend()` payload schema (bugfix-004)", () => {
+  it("emits exactly one `.extend(` call even when discovered/spliced fields collide with the base extend's own Email key", () => {
+    // payloadFieldNames (browser-flow-spliced fields) redeclares Email, which
+    // basePayloadSchemaExpr's own extend already declares. The old chain-of-
+    // extends shape re-added Email as a second `.extend({ Email: ... })`
+    // block; the merged shape must collapse it to one Email key with no
+    // second `.extend(` call.
+    const contract = emitContractTs({
+      ...BASE_OPTS,
+      siteId: "collision-site",
+      pascal: "CollisionSite",
+      inputBody: { some: "data" },
+      payloadFieldNames: new Set(["Email", "JobId"]),
+    });
+    const payloadSchemaMatch = contract.match(/const CollisionSitePayloadSchema = [\s\S]*?;\n/);
+    expect(payloadSchemaMatch).not.toBeNull();
+    const payloadSchemaSource = payloadSchemaMatch![0];
+
+    const extendOccurrences = payloadSchemaSource.match(/\.extend\(/g) ?? [];
+    expect(extendOccurrences.length).toBe(1);
+
+    const emailOccurrences = payloadSchemaSource.match(/^\s*Email:/gm) ?? [];
+    expect(emailOccurrences.length).toBe(1);
+    expect(payloadSchemaSource).toContain("Email: z.email(),");
+    expect(payloadSchemaSource).toContain("JobId: z.string(),");
+  });
+
+  it("never redeclares a field ApplicantContactSchema's own identity/address/resume merge already supplies", () => {
+    // City collides with ApplicantAddressSchema's own City field, and
+    // FirstName collides with ApplicantIdentitySchema's own FirstName field
+    // — both merged into ApplicantContactSchema. A discovered/spliced field
+    // of either name must not shadow the base schema's declaration.
+    const contract = emitContractTs({
+      ...BASE_OPTS,
+      siteId: "shadow-site",
+      pascal: "ShadowSite",
+      inputBody: { some: "data" },
+      discoveredFormFields: new Set(["City"]),
+      payloadFieldNames: new Set(["FirstName"]),
+    });
+    const payloadSchemaMatch = contract.match(/const ShadowSitePayloadSchema = [\s\S]*?;\n/);
+    expect(payloadSchemaMatch).not.toBeNull();
+    const payloadSchemaSource = payloadSchemaMatch![0];
+
+    expect(payloadSchemaSource).not.toMatch(/^\s*City:/m);
+    expect(payloadSchemaSource).not.toMatch(/^\s*FirstName:/m);
+    const extendOccurrences = payloadSchemaSource.match(/\.extend\(/g) ?? [];
+    expect(extendOccurrences.length).toBe(1);
   });
 });
 
