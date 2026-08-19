@@ -2227,6 +2227,29 @@ describe("emitConfigManifest — config-only plugin emission", () => {
   });
 });
 
+describe("emitConfigManifest — a reserved RECON_PASSWORD env token never leaks as a literal", () => {
+  const RECON_PASSWORD_TOKEN = `$${"{RECON_PASSWORD}"}`;
+  const manifestStr = emitConfigManifest({
+    siteId: "acme-demo",
+    displayName: "AcmeDemo",
+    baseUrl: "https://apply.acme.example",
+    flowSteps: [`Enter ${RECON_PASSWORD_TOKEN} in the Password field`],
+  });
+  const manifest = JSON.parse(manifestStr) as {
+    spec: { request: { properties: Record<string, unknown> }; flow: { steps: unknown[] } };
+  };
+
+  it("emits no literal RECON_PASSWORD substring anywhere", () => {
+    expect(manifestStr).not.toContain(RECON_PASSWORD_TOKEN);
+    expect(manifestStr).not.toContain("RECON_PASSWORD");
+  });
+
+  it("routes the splice through an explicit Password request field, not vocabulary", () => {
+    expect(manifest.spec.flow.steps).toEqual(["Enter {{ .request.Password }} in the Password field"]);
+    expect(manifest.spec.request.properties).toHaveProperty("Password");
+  });
+});
+
 describe("emitConfigManifest — splice site lands on the fill VALUE, never the selector", () => {
   const manifestStr = emitConfigManifest({
     siteId: "acme-demo",

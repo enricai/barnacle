@@ -4447,6 +4447,20 @@ export function emitConfigManifest(opts: {
   const steps = flowSteps.map((step) => {
     const isObj = typeof step !== "string";
     const instruction = isObj ? step.step : step;
+    // A config-only manifest has no compiled code to mint a throwaway credential
+    // at runtime (unlike emitBrowserFlowTs's generateThrowawayPassword() splice),
+    // so ${RECON_PASSWORD} is routed to an explicit "Password" request field
+    // instead — the operator supplies it at call time. Either way the literal
+    // token must never survive into the manifest.
+    if (instruction.includes(RECON_PASSWORD_TOKEN)) {
+      payloadFieldNames.add("Password");
+      const rewritten = buildManifestInstruction(instruction, "Password");
+      const optional = isObj ? step.optional === true : false;
+      const upload = isObj ? step.upload === true : false;
+      const submitStep = isObj ? step.submitStep === true : false;
+      if (!optional && !upload && !submitStep) return rewritten;
+      return { step: rewritten, optional, upload, submitStep };
+    }
     const field = resolveStepPayloadField(
       instruction,
       isObj ? step.payloadField : undefined,
