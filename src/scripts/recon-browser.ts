@@ -2342,13 +2342,16 @@ async function main(): Promise<void> {
       // post-loop isFlowTruncated count-check sees a full completedSteps
       // array and reports "not truncated" even though the session died
       // partway through. Mirrors the same guard in runHealingFlow.
-      try {
-        page.url();
-      } catch (err) {
-        throw new SessionTimeoutError(
-          `${formatStepPrefix(i, () => plan.length)} session appears closed/dead (page.url() threw: ${toErrorMessage(err)}) — aborting after ${i} of ${plan.length} steps completed`
-        );
-      }
+      const readLiveUrl = (): string => {
+        try {
+          return page.url();
+        } catch (err) {
+          throw new SessionTimeoutError(
+            `${formatStepPrefix(i, () => plan.length)} session appears closed/dead (page.url() threw: ${toErrorMessage(err)}) — aborting after ${i} of ${plan.length} steps completed`
+          );
+        }
+      };
+      readLiveUrl();
       currentPhase =
         step.instruction
           .replace(/[^a-z0-9]+/gi, "-")
@@ -2363,7 +2366,7 @@ async function main(): Promise<void> {
       // the wizard SPA (e.g. apply.<ats>.com after the Apply click) boots on
       // a new origin the initial-goto readiness gate never covered, so wait for
       // its body to render before probing rather than skipping a shell page.
-      const currentOrigin = originOf(page.url());
+      const currentOrigin = originOf(readLiveUrl());
       if (currentOrigin !== "" && currentOrigin !== lastOrigin) {
         logger.info(
           `origin changed ${lastOrigin || "(none)"} → ${currentOrigin}; re-gating on SPA hydration`
@@ -2496,7 +2499,7 @@ async function main(): Promise<void> {
 
         if (stepOutcome === "skipped") {
           const pageStagnant =
-            signalCounter.n === lastSuccessNetworkCount && page.url() === lastSuccessUrl;
+            signalCounter.n === lastSuccessNetworkCount && readLiveUrl() === lastSuccessUrl;
           if (pageStagnant) {
             consecutiveStaleSkips++;
           }
@@ -2513,7 +2516,7 @@ async function main(): Promise<void> {
         } else {
           consecutiveStaleSkips = 0;
           lastSuccessNetworkCount = signalCounter.n;
-          lastSuccessUrl = page.url();
+          lastSuccessUrl = readLiveUrl();
         }
 
         completedSteps.push(step.instruction);
