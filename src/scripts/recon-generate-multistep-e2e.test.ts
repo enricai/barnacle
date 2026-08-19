@@ -70,12 +70,12 @@ const TOGGLES_BODY = [{ name: "feature-a", enabled: true }];
 const AUTHZ_BODY = { result: "anonymous", successful: true };
 const PRODUCTS_PAGE_1_BODY = {
   totalPages: 5,
-  totalAvailableCruises: 699,
+  totalAvailableListings: 699,
   products: [{ productId: "p1" }],
 };
 const PRODUCTS_PAGE_2_BODY = {
   totalPages: 5,
-  totalAvailableCruises: 699,
+  totalAvailableListings: 699,
   products: [{ productId: "p2" }],
 };
 
@@ -130,8 +130,8 @@ describe("recon-generate multi-call executeHttp — generated-and-run integratio
     const executeHttp = evalExecuteHttpBody(body, httpClient);
     const result = await executeHttp({ BaseUrl: "https://api.example.com", page: 2 });
 
-    const data = result.data as { totalAvailableCruises?: unknown; products?: unknown[] };
-    expect(typeof data.totalAvailableCruises).toBe("number");
+    const data = result.data as { totalAvailableListings?: unknown; products?: unknown[] };
+    expect(typeof data.totalAvailableListings).toBe("number");
     expect(Array.isArray(data.products) && data.products.length > 0).toBe(true);
     expect(data).toEqual(PRODUCTS_PAGE_2_BODY);
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(4);

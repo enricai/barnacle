@@ -404,29 +404,29 @@ describe("extractActionSequence — error-reporting sinks never reach the emitte
     decodedParams: null,
   });
 
-  const BASE = "https://cruise-fixture.example.com";
+  const BASE = "https://listings-fixture.example.com";
   // The real shape: a browser's Angular error handler posting a frozen crash —
   // a stack trace and a recon-time timestamp that a replayed plugin would send
   // to the site as a fabricated error report on every invocation.
   const errorReport = capture(
-    `${BASE}/dcl-apps-productavail-spa/error`,
+    `${BASE}/listings-avail-spa/error`,
     '[["Error logged by WDPR RA Angular Error handler service","{\\"timestamp\\":1784247853926,\\"message\\":\\"Script load error for //connect.facebook.net/en_US/fbevents.js\\"}"]]'
   );
 
   it("drops error sinks while keeping the calls that carry the flow", () => {
     const kept = extractActionSequence(
       [
-        capture(`${BASE}/dcl-apps-productavail-vas/authz/private`, "{}"),
+        capture(`${BASE}/listings-avail-api/authz/private`, "{}"),
         errorReport,
-        capture(`${BASE}/dcl-apps-productavail-vas/available-products/`, '{"page":1}'),
+        capture(`${BASE}/listings-avail-api/available-products/`, '{"page":1}'),
         errorReport,
       ],
       BASE
     ).map((a) => new URL(a.capture.url).pathname);
 
     expect(kept).toEqual([
-      "/dcl-apps-productavail-vas/authz/private",
-      "/dcl-apps-productavail-vas/available-products/",
+      "/listings-avail-api/authz/private",
+      "/listings-avail-api/available-products/",
     ]);
   });
 
@@ -827,7 +827,7 @@ describe("indexStateValues — cookie-origin values get a separate, more permiss
   });
 });
 
-describe("compileActionSteps — Set-Cookie state binding (cruise-fixture-style token mint)", () => {
+describe("compileActionSteps — Set-Cookie state binding (listings-fixture-style token mint)", () => {
   /** Capture 1: mints an anonymous bearer via Set-Cookie, response body is empty. */
   const tokenMintCapture = {
     timestamp: "2024-01-01T00:00:00Z",
@@ -1099,7 +1099,7 @@ describe("compileActionSteps — a response value genuinely re-sent as a JSON va
   });
 });
 
-describe("collectHeaderBindings — multi-cookie regression (cruise-fixture __pa first-wins bug)", () => {
+describe("collectHeaderBindings — multi-cookie regression (listings-fixture __pa first-wins bug)", () => {
   /** Step 0: the feature-toggle call mints three geo/analytics cookies (all
    * later threaded back on the `Cookie` request header) plus a conversation
    * id threaded back on a distinct `X-Conversation-Id` header. */
@@ -1113,8 +1113,8 @@ describe("collectHeaderBindings — multi-cookie regression (cruise-fixture __pa
     requestPostData: null,
     responseHeaders: {
       "set-cookie": [
-        "latestWDPROGeoIP=US-TX-AUSTIN-1; Path=/",
-        "WDPROGeoIP=US-TX-AUSTIN-2; Path=/",
+        "latestGeoIP=US-TX-AUSTIN-1; Path=/",
+        "GeoIP=US-TX-AUSTIN-2; Path=/",
         "bm_sv=BMSVSESSIONVALUE1; Path=/; HttpOnly; Secure",
         "Conversation_UUID=conv-uuid-abcdefgh; Path=/",
       ].join("\n"),
@@ -1132,7 +1132,7 @@ describe("collectHeaderBindings — multi-cookie regression (cruise-fixture __pa
     timestamp: "2024-01-01T00:00:01Z",
     phase: "action",
     method: "POST",
-    url: "https://api.example.com/dcl-apps-productavail-vas/authz/private",
+    url: "https://api.example.com/listings-avail-api/authz/private",
     status: 200,
     requestHeaders: { "Content-Type": "application/json" },
     requestPostData: "{}",
@@ -1151,12 +1151,12 @@ describe("collectHeaderBindings — multi-cookie regression (cruise-fixture __pa
     timestamp: "2024-01-01T00:00:02Z",
     phase: "action",
     method: "GET",
-    url: "https://api.example.com/dcl-apps-productavail-vas/available-products/",
+    url: "https://api.example.com/listings-avail-api/available-products/",
     status: 200,
     requestHeaders: {
       "Content-Type": "application/json",
       Cookie:
-        "latestWDPROGeoIP=US-TX-AUSTIN-1; WDPROGeoIP=US-TX-AUSTIN-2; bm_sv=BMSVSESSIONVALUE1; __pa=eyJhbGciOiJIUzI1NiJ9.payload.sig",
+        "latestGeoIP=US-TX-AUSTIN-1; GeoIP=US-TX-AUSTIN-2; bm_sv=BMSVSESSIONVALUE1; __pa=eyJhbGciOiJIUzI1NiJ9.payload.sig",
       "X-Conversation-Id": "conv-uuid-abcdefgh",
     },
     requestPostData: null,
@@ -1187,10 +1187,10 @@ describe("collectHeaderBindings — multi-cookie regression (cruise-fixture __pa
     expect(pa).toMatchObject({ kind: "header", cookieName: "__pa", targetHeader: "Cookie" });
   });
 
-  it("collectHeaderBindings returns all four Cookie-targeting bindings, __pa included — does not drop it in favour of latestWDPROGeoIP", () => {
+  it("collectHeaderBindings returns all four Cookie-targeting bindings, __pa included — does not drop it in favour of latestGeoIP", () => {
     const cookieBindings = headerBindings.filter((b) => b.targetHeader === "Cookie");
     expect(cookieBindings.map((b) => b.cookieName).sort()).toEqual(
-      ["WDPROGeoIP", "__pa", "bm_sv", "latestWDPROGeoIP"].sort()
+      ["GeoIP", "__pa", "bm_sv", "latestGeoIP"].sort()
     );
     expect(cookieBindings.some((b) => b.cookieName === "__pa")).toBe(true);
   });
@@ -1492,7 +1492,7 @@ describe("selectPayloadAction", () => {
     const steps = [
       step("https://shop.test/toggles", '{"flags":["a"]}', { featureA: true }),
       step("https://shop.test/search", '{"page":1,"filters":[]}', { total: 699 }),
-      step("https://shop.test/search", '{"page":1,"filters":["7-night"]}', { total: 151 }),
+      step("https://shop.test/search", '{"page":1,"filters":["2-bed"]}', { total: 151 }),
     ];
     expect(selectPayloadAction(steps)).toBe(steps[1]);
   });
@@ -1556,23 +1556,23 @@ describe("selectReturnAction", () => {
   });
 
   it("prefers the re-queried search endpoint's last call over a terminal drill-down (G1)", () => {
-    // The reported cruise-fixture shape: toggles (once) → authz mint (once) →
+    // The listings-fixture shape: toggles (once) → authz mint (once) →
     // available-products/ re-queried with varying filters → a drill-down
-    // into one itinerary fires last. The search result is the flow's
-    // subject, not the drill-down's single-itinerary body.
+    // into one building fires last. The search result is the flow's
+    // subject, not the drill-down's single-building body.
     const steps = [
-      step("https://dcl.test/toggles/product-avail", '["a"]', [{ name: "a" }]),
-      step("https://dcl.test/authz/private", "{}", { result: "ok", successful: true }),
-      step("https://dcl.test/available-products/", '{"filters":[]}', {
-        totalAvailableCruises: 699,
+      step("https://listings.test/toggles/product-avail", '["a"]', [{ name: "a" }]),
+      step("https://listings.test/authz/private", "{}", { result: "ok", successful: true }),
+      step("https://listings.test/available-products/", '{"filters":[]}', {
+        totalAvailableListings: 699,
         products: [{ id: "p1" }],
       }),
-      step("https://dcl.test/available-products/", '{"filters":["7-night"]}', {
-        totalAvailableCruises: 151,
+      step("https://listings.test/available-products/", '{"filters":["2-bed"]}', {
+        totalAvailableListings: 151,
         products: [{ id: "p2" }],
       }),
-      step("https://dcl.test/available-sailings/", '{"itineraryId":"i1"}', {
-        sailings: [{ id: "s1" }],
+      step("https://listings.test/available-units/", '{"buildingId":"i1"}', {
+        units: [{ id: "s1" }],
         exchangeRate: 1,
       }),
     ];
@@ -1640,24 +1640,24 @@ describe("emitMultiStepExecuteHttp — relevance-selected return value (G1)", ()
 
   it("returns the re-queried search call's var, not the terminal drill-down's, when they differ", () => {
     const steps = [
-      capture("https://dcl.test/toggles", '["a"]', [{ name: "a" }], "r0"),
-      capture("https://dcl.test/authz/private", "{}", { successful: true }, "r1"),
+      capture("https://listings.test/toggles", '["a"]', [{ name: "a" }], "r0"),
+      capture("https://listings.test/authz/private", "{}", { successful: true }, "r1"),
       capture(
-        "https://dcl.test/available-products/",
+        "https://listings.test/available-products/",
         '{"filters":[]}',
-        { totalAvailableCruises: 699, products: [{ id: "p1" }] },
+        { totalAvailableListings: 699, products: [{ id: "p1" }] },
         "r2"
       ),
       capture(
-        "https://dcl.test/available-products/",
-        '{"filters":["7-night"]}',
-        { totalAvailableCruises: 151, products: [{ id: "p2" }] },
+        "https://listings.test/available-products/",
+        '{"filters":["2-bed"]}',
+        { totalAvailableListings: 151, products: [{ id: "p2" }] },
         "r3"
       ),
       capture(
-        "https://dcl.test/available-sailings/",
-        '{"itineraryId":"i1"}',
-        { sailings: [{ id: "s1" }], exchangeRate: 1 },
+        "https://listings.test/available-units/",
+        '{"buildingId":"i1"}',
+        { units: [{ id: "s1" }], exchangeRate: 1 },
         "r4"
       ),
     ];
@@ -1671,7 +1671,7 @@ describe("emitMultiStepExecuteHttp — relevance-selected return value (G1)", ()
       new Set(),
       new Map(),
       new Map(),
-      "https://dcl.test",
+      "https://listings.test",
       new Map(),
       new Map()
     );
@@ -1770,7 +1770,7 @@ describe("emitMultiStepExecuteHttp — per-call response schema override (G2)", 
     // \`{"page":2}\``.
     const block = callBlockForUrl("payload.page");
     expect(block).toContain("totalPages: z.number()");
-    expect(block).toContain("totalAvailableCruises: z.number()");
+    expect(block).toContain("totalAvailableListings: z.number()");
     expect(block).toContain("products: z.array(");
     expect(block).not.toMatch(/schema:\s*z\.array\(z\.object/);
   });
@@ -1778,7 +1778,7 @@ describe("emitMultiStepExecuteHttp — per-call response schema override (G2)", 
   it("the toggles call's schema is not the products/inventory schema (the G2 reproduction)", () => {
     const togglesBlock = callBlockForUrl("toggles/product-avail");
     expect(togglesBlock).not.toContain("totalPages");
-    expect(togglesBlock).not.toContain("totalAvailableCruises");
+    expect(togglesBlock).not.toContain("totalAvailableListings");
   });
 
   it("every httpClient(...) call carries its own schema: override rather than relying on the client default", () => {
@@ -1798,7 +1798,7 @@ describe("emitMultiStepExecuteHttp — per-call response schema override (G2)", 
     expect(contract).toContain("const TestSiteResponseSchema = z.unknown();");
     const narrowedContract = contract.replace(
       "const TestSiteResponseSchema = z.unknown();",
-      "const TestSiteResponseSchema = z.object({\n  totalPages: z.number(),\n  totalAvailableCruises: z.number(),\n  products: z.array(z.object({ productId: z.string() })),\n});"
+      "const TestSiteResponseSchema = z.object({\n  totalPages: z.number(),\n  totalAvailableListings: z.number(),\n  products: z.array(z.object({ productId: z.string() })),\n});"
     );
 
     // Pre-fix (no per-call override), the toggles call had no `schema:` of
@@ -1823,16 +1823,16 @@ describe("selectEffectiveResponseBody — shape source agrees with the return va
 
     // The search call (r3, the second available-products/ query) is what
     // executeHttp returns — assert the inferred shape comes from that SAME
-    // call, not the terminal available-sailings/ drill-down (r4).
+    // call, not the terminal available-units/ drill-down (r4).
     expect(returnAction?.varName).toBe("r3");
     expect(shapeSource).toEqual(returnAction?.capture.responseBody);
     expect(shapeSource).toEqual({
       totalPages: 5,
-      totalAvailableCruises: 699,
+      totalAvailableListings: 699,
       products: [{ productId: "p2" }],
     });
     expect(shapeSource).not.toEqual({
-      sailings: [{ sailingId: "s1" }],
+      units: [{ unitId: "s1" }],
       exchangeRate: 1.0,
     });
   });
@@ -1920,19 +1920,17 @@ describe("inferZodSchemaFromSamples", () => {
   });
 
   it("infers past four levels so deeply nested inventory fields survive", () => {
-    // products[].itineraries[].sailings[].price.summary.total — the shape real
-    // cruise inventory arrives in; a depth-4 cap erases exactly this.
+    // products[].buildings[].units[].price.summary.total — the shape real
+    // listing inventory arrives in; a depth-4 cap erases exactly this.
     const deep = {
       products: [
         {
-          itineraries: [
-            { sailings: [{ sailingId: "DD1522", price: { summary: { total: 1402 } } }] },
-          ],
+          buildings: [{ units: [{ unitId: "UU1522", price: { summary: { total: 1402 } } }] }],
         },
       ],
     };
     const schema = inferZodSchemaFromSamples([deep]);
-    expect(schema).toContain("sailingId: z.string()");
+    expect(schema).toContain("unitId: z.string()");
     expect(schema).toContain("total: z.number()");
   });
 

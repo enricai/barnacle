@@ -18,11 +18,11 @@ describe("isNoiseUrl — third-party asset/telemetry hosts", () => {
   });
 
   it("keeps the site's own API endpoint", () => {
-    expect(isNoiseUrl("https://apply.acme.example/dcl-apps/available-products/")).toBe(false);
+    expect(isNoiseUrl("https://apply.acme.example/listings-apps/available-products/")).toBe(false);
   });
 
   it("skips a same-host error-reporting sink but keeps data endpoints that spell 'error'", () => {
-    expect(isNoiseUrl("https://apply.acme.example/dcl-apps-spa/error")).toBe(true);
+    expect(isNoiseUrl("https://apply.acme.example/listings-spa/error")).toBe(true);
     expect(isNoiseUrl("https://apply.acme.example/api/error-codes")).toBe(false);
     expect(isNoiseUrl("https://apply.acme.example/api/terrorism-screening")).toBe(false);
   });

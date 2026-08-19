@@ -10,7 +10,7 @@ const BASE_OPTS = {
   safeRps: 10,
   responseBody: { id: "abc", active: true },
   gql: true,
-  gqlQuery: "query cruiseSearch_Cruises($destination: String) { cruises { id } }",
+  gqlQuery: "query listingSearch_Listings($metro: String) { listings { id } }",
   endpointPath: "/graphql",
   auxFiles: [],
 };
@@ -19,16 +19,16 @@ describe("emitContractTs — GraphQL getGql() call site", () => {
   it("uses the selected capture's own operationName and binds correlated variables to payload fields", () => {
     const source = emitContractTs({
       ...BASE_OPTS,
-      gqlOperationName: "cruiseSearch_Cruises",
-      gqlVariables: { destination: "Miami", nights: 7, ship: "Oasis", departurePort: "Miami" },
-      payloadFieldNames: new Set(["Destination", "Nights", "Ship", "DeparturePort"]),
+      gqlOperationName: "listingSearch_Listings",
+      gqlVariables: { metro: "Downtown", beds: 7, propertyType: "Condo", neighborhood: "Downtown" },
+      payloadFieldNames: new Set(["Metro", "Beds", "PropertyType", "Neighborhood"]),
     });
 
-    expect(source).toContain('getGql(context.baseUrl)("cruiseSearch_Cruises"');
-    expect(source).toContain("destination: payload.Destination");
-    expect(source).toContain("nights: payload.Nights");
-    expect(source).toContain("ship: payload.Ship");
-    expect(source).toContain("departurePort: payload.DeparturePort");
+    expect(source).toContain('getGql(context.baseUrl)("listingSearch_Listings"');
+    expect(source).toContain("metro: payload.Metro");
+    expect(source).toContain("beds: payload.Beds");
+    expect(source).toContain("propertyType: payload.PropertyType");
+    expect(source).toContain("neighborhood: payload.Neighborhood");
     expect(source).not.toContain(`$${"{pascal}"}Search`);
     expect(source).not.toContain("{ q: payload.query }");
   });
@@ -36,9 +36,9 @@ describe("emitContractTs — GraphQL getGql() call site", () => {
   it("falls back to the literal captured value when a variable key does not correlate with any payload field", () => {
     const source = emitContractTs({
       ...BASE_OPTS,
-      gqlOperationName: "cruiseSearch_Cruises",
+      gqlOperationName: "listingSearch_Listings",
       gqlVariables: { locale: "en-US" },
-      payloadFieldNames: new Set(["Destination"]),
+      payloadFieldNames: new Set(["Metro"]),
     });
 
     expect(source).toContain('locale: "en-US"');

@@ -13,11 +13,11 @@ describe("EMPTY_VOCABULARY — the engine knows nothing", () => {
     "Fill in the First Name field with 'Reginald'",
     "Enter 'Austin' in the City field",
     "Select 'Texas' from the State dropdown",
-    // Cruise phrasings: the false-positives that motivated this change.
-    "Select the departure port from the Country dropdown",
-    "Open the embarkation City dropdown and select the sailing port",
-    "Select the State dropdown for the passenger billing address",
-    "Select 'Miami' from the Departure Port City dropdown",
+    // Real-estate phrasings: the false-positives that motivated this change.
+    "Select the neighborhood from the Country dropdown",
+    "Open the listing City dropdown and select the metro area",
+    "Select the State dropdown for the tenant billing address",
+    "Select 'Downtown' from the Neighborhood City dropdown",
   ];
   for (const instruction of instructions) {
     it(`splices nothing for ${JSON.stringify(instruction)}`, () => {
@@ -30,21 +30,21 @@ describe("EMPTY_VOCABULARY — the engine knows nothing", () => {
   it("still honors an explicit payloadField override", () => {
     expect(
       resolveStepPayloadField(
-        "Open the destination filter dropdown",
-        "destination",
+        "Open the metro filter dropdown",
+        "metro",
         undefined,
         EMPTY_VOCABULARY
       )
-    ).toBe("destination");
+    ).toBe("metro");
   });
 
   it("resolves an explicit override identically with or without vocabulary", () => {
     // The deprecation nag fires by comparing built-in vs empty outcomes. A step
     // with an explicit payloadField must resolve the same under both, or a site
-    // that already declared its fields (cruise-fixture) gets told to fix nothing.
-    const instruction = "Open the destination filter dropdown and select the 'Bahamas' option";
-    expect(resolveStepPayloadField(instruction, "destination", undefined, EMPTY_VOCABULARY)).toBe(
-      resolveStepPayloadField(instruction, "destination", undefined)
+    // that already declared its fields (listings-fixture) gets told to fix nothing.
+    const instruction = "Open the metro filter dropdown and select the 'Denver' option";
+    expect(resolveStepPayloadField(instruction, "metro", undefined, EMPTY_VOCABULARY)).toBe(
+      resolveStepPayloadField(instruction, "metro", undefined)
     );
   });
 

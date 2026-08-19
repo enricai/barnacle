@@ -21,7 +21,7 @@ const BASE_OPTS = {
 };
 
 describe("bindOptionLiteral (via emitContractTs) — cookie vs non-cookie bindings", () => {
-  const COOKIE_NAMES = ["latestWDPROGeoIP", "WDPROGeoIP", "bm_sv", "__pa"];
+  const COOKIE_NAMES = ["latestGeoIP", "GeoIP", "bm_sv", "__pa"];
 
   const cookieBindings = COOKIE_NAMES.map((cookieName) => ({
     kind: "header" as const,

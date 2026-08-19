@@ -192,7 +192,7 @@ Then review the generated files: trim UI-only fields from the GraphQL query, nar
 
 #### Telling the generator which fields carry your caller's data
 
-Barnacle cannot know what your site's forms mean. `"Select the departure port from the Country dropdown"` and `"…select the test candidate's country"` are the same sentence shape; only you know that the first is a search facet and the second is your caller's address. So the vocabulary is yours to supply, with `--vocabulary`:
+Barnacle cannot know what your site's forms mean. `"Select the neighborhood from the Country dropdown"` and `"…select the test candidate's country"` are the same sentence shape; only you know that the first is a search facet and the second is your caller's address. So the vocabulary is yours to supply, with `--vocabulary`:
 
 ```ts
 // src/recon/my-vocabulary.ts
@@ -248,7 +248,7 @@ pnpm run recon:generate -- --site-id my-site --form-schema ./src/recon/my-form-s
 ```
 
 - The specifier follows the same rule as `--vocabulary`: a leading `.` or `/` is a filesystem path; anything else resolves from your `node_modules`. The module may export `formSchema` or a default.
-- **`--form-schema none`** for a site with no ATS form definition (a search API, a cruise site) — same as omitting it. "none" is the explicit form.
+- **`--form-schema none`** for a site with no ATS form definition (a search API, a real-estate listing site) — same as omitting it. "none" is the explicit form.
 - Wire keys anchor `"key":"uuid"` markers, so they may be any non-empty string without a quote or backslash — the JS-identifier rule that governs vocabulary field names does **not** apply here.
 - `fieldNameKeys` models two roles: the first key is a machine code (PascalCased directly), the second is a human label (run through the section-heading heuristic). Supply one key for a label-only ATS, or two for one that exposes both. Additional keys are unused.
 - Omit `--form-schema` (or pass `none`) and ATS form-key recovery does not run — the engine hardcodes no vendor's wire format. A site whose ATS exposes a form definition must supply one to recover its option fields. See issue #57.

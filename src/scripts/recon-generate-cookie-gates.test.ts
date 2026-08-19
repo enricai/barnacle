@@ -10,8 +10,8 @@ import {
  * matches recon-generate.test.ts's BASE_OPTS so the rendered bind literal
  * assertion below matches the shape the CLI actually emits. */
 const BASE_OPTS = {
-  siteId: "cruise-fixture",
-  pascal: "CruiseFixture",
+  siteId: "listings-fixture",
+  pascal: "ListingsFixture",
   baseUrl: "https://api.example.com",
   baseHeaders: { "Content-Type": "application/json" },
   minTime: 100,
@@ -19,7 +19,7 @@ const BASE_OPTS = {
   responseBody: { products: [] },
   gql: false,
   gqlQuery: null,
-  endpointPath: "/dcl-apps-productavail-vas/available-products/",
+  endpointPath: "/listings-avail-api/available-products/",
   auxFiles: [],
 };
 
@@ -64,7 +64,7 @@ describe("walkSetCookiePairs — newline-folded multi-cookie Set-Cookie strings"
   });
 });
 
-describe("collectHeaderBindings — multi-cookie Cookie target (cruise-fixture __pa report)", () => {
+describe("collectHeaderBindings — multi-cookie Cookie target (listings-fixture __pa report)", () => {
   /** step 0: toggles/product-avail — surfaces three geo/toggle cookies plus one
    * non-cookie header produce, in recon order. */
   const productAvailStep = {
@@ -79,16 +79,16 @@ describe("collectHeaderBindings — multi-cookie Cookie target (cruise-fixture _
       },
       {
         kind: "header",
-        name: "latestWdproGeoIpCookie",
+        name: "latestGeoIpCookie",
         sourceHeader: "set-cookie",
-        cookieName: "latestWDPROGeoIP",
+        cookieName: "latestGeoIP",
         targetHeader: "Cookie",
       },
       {
         kind: "header",
-        name: "wdproGeoIpCookie",
+        name: "geoIpCookie",
         sourceHeader: "set-cookie",
-        cookieName: "WDPROGeoIP",
+        cookieName: "GeoIP",
         targetHeader: "Cookie",
       },
       {
@@ -128,7 +128,7 @@ describe("collectHeaderBindings — multi-cookie Cookie target (cruise-fixture _
       .filter((b) => b.targetHeader === "Cookie")
       .map((b) => b.cookieName)
       .sort();
-    expect(cookieNames).toEqual(["WDPROGeoIP", "__pa", "bm_sv", "latestWDPROGeoIP"].sort());
+    expect(cookieNames).toEqual(["GeoIP", "__pa", "bm_sv", "latestGeoIP"].sort());
   });
 
   it("still dedupes the non-cookie X-Conversation-Id target to a single binding", () => {
@@ -141,7 +141,7 @@ describe("collectHeaderBindings — multi-cookie Cookie target (cruise-fixture _
     expect(bindings).toHaveLength(5);
   });
 
-  it("bindOptionLiteral renders __pa alongside the other three Cookie-origin cookies in the emitted contract, pinning the cruise-fixture report's exact ordering (__pa produced last)", () => {
+  it("bindOptionLiteral renders __pa alongside the other three Cookie-origin cookies in the emitted contract, pinning the listings-fixture report's exact ordering (__pa produced last)", () => {
     const contract = emitContractTs({
       ...BASE_OPTS,
       inputBody: {},
@@ -150,12 +150,12 @@ describe("collectHeaderBindings — multi-cookie Cookie target (cruise-fixture _
     });
 
     expect(contract).toContain('cookieName: "__pa"');
-    expect(contract).toContain('cookieName: "latestWDPROGeoIP"');
-    expect(contract).toContain('cookieName: "WDPROGeoIP"');
+    expect(contract).toContain('cookieName: "latestGeoIP"');
+    expect(contract).toContain('cookieName: "GeoIP"');
     expect(contract).toContain('cookieName: "bm_sv"');
   });
 
-  /** step 2: a later capture re-produces latestWDPROGeoIP under 'cookie'
+  /** step 2: a later capture re-produces latestGeoIP under 'cookie'
    * (lowercase, as compileActionSteps derives targetHeader verbatim from the
    * observed request-header casing) while step 0's produce above used 'Cookie'.
    * Both produces carry the SAME cookieName — a correct emitter must treat
@@ -168,9 +168,9 @@ describe("collectHeaderBindings — multi-cookie Cookie target (cruise-fixture _
     produces: [
       {
         kind: "header",
-        name: "latestWdproGeoIpCookieLower",
+        name: "latestGeoIpCookieLower",
         sourceHeader: "set-cookie",
-        cookieName: "latestWDPROGeoIP",
+        cookieName: "latestGeoIP",
         targetHeader: "cookie",
       },
       {
@@ -192,7 +192,7 @@ describe("collectHeaderBindings — multi-cookie Cookie target (cruise-fixture _
 
   it("does not split one logical cookie target across casings — the same cookieName produced under 'Cookie' and 'cookie' emits only one binding", () => {
     const latestGeoIpBindings = bindingsWithCasingVariants.filter(
-      (b) => b.cookieName === "latestWDPROGeoIP"
+      (b) => b.cookieName === "latestGeoIP"
     );
     expect(latestGeoIpBindings).toHaveLength(1);
   });

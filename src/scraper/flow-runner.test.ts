@@ -178,7 +178,7 @@ describe("flow-runner/shouldCaptureSelectionState", () => {
 });
 
 describe("flow-runner/flowHasSubmitSemantics", () => {
-  it("returns false for a read-only flow (the cruise-fixture shape)", () => {
+  it("returns false for a read-only flow (the listings-fixture shape)", () => {
     expect(
       flowHasSubmitSemantics({
         steps: [{ submitStep: false }, { submitStep: false }, { submitStep: false }],

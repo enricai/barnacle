@@ -39,8 +39,8 @@ const toggleCapture = {
   requestPostData: null,
   responseHeaders: {
     "set-cookie": [
-      "latestWDPROGeoIP=US-TX-AUSTIN-1; Path=/",
-      "WDPROGeoIP=US-TX-AUSTIN-2; Path=/",
+      "latestGeoIP=US-TX-AUSTIN-1; Path=/",
+      "GeoIP=US-TX-AUSTIN-2; Path=/",
       "bm_sv=BMSVSESSIONVALUE1; Path=/; HttpOnly; Secure",
       "Conversation_UUID=conv-uuid-abcdefgh; Path=/",
     ].join("\n"),
@@ -59,7 +59,7 @@ const authzCapture = {
   timestamp: "2024-01-01T00:00:01Z",
   phase: "action",
   method: "POST",
-  url: "https://api.example.com/dcl-apps-productavail-vas/authz/private",
+  url: "https://api.example.com/listings-avail-api/authz/private",
   status: 200,
   requestHeaders: { "Content-Type": "application/json" },
   requestPostData: "{}",
@@ -79,12 +79,12 @@ const availableProductsCapture = {
   timestamp: "2024-01-01T00:00:02Z",
   phase: "action",
   method: "GET",
-  url: "https://api.example.com/dcl-apps-productavail-vas/available-products/",
+  url: "https://api.example.com/listings-avail-api/available-products/",
   status: 200,
   requestHeaders: {
     "Content-Type": "application/json",
     Cookie:
-      "latestWDPROGeoIP=US-TX-AUSTIN-1; WDPROGeoIP=US-TX-AUSTIN-2; bm_sv=BMSVSESSIONVALUE1; __pa=eyJhbGciOiJIUzI1NiJ9.payload.sig",
+      "latestGeoIP=US-TX-AUSTIN-1; GeoIP=US-TX-AUSTIN-2; bm_sv=BMSVSESSIONVALUE1; __pa=eyJhbGciOiJIUzI1NiJ9.payload.sig",
     "X-Conversation-Id": "conv-uuid-abcdefgh",
   },
   requestPostData: null,
@@ -112,7 +112,7 @@ function cookieHeaderFromCall(callIndex: number): string | undefined {
   return headers.Cookie;
 }
 
-describe("bind emit -> runtime round-trip (cruise-fixture __pa)", () => {
+describe("bind emit -> runtime round-trip (listings-fixture __pa)", () => {
   const captures = [toggleCapture, authzCapture, availableProductsCapture];
   const actionCaptures = captures.map((capture, index) => ({ capture, index }));
   const stateIndex = indexStateValues(captures as never);
@@ -129,8 +129,8 @@ describe("bind emit -> runtime round-trip (cruise-fixture __pa)", () => {
           ok: true,
           text: vi.fn().mockResolvedValue(JSON.stringify({ products: [] })),
           headers: headersWithSetCookies(
-            "latestWDPROGeoIP=US-TX-AUSTIN-1; Path=/",
-            "WDPROGeoIP=US-TX-AUSTIN-2; Path=/",
+            "latestGeoIP=US-TX-AUSTIN-1; Path=/",
+            "GeoIP=US-TX-AUSTIN-2; Path=/",
             "bm_sv=BMSVSESSIONVALUE1; Path=/; HttpOnly; Secure"
           ),
         })
@@ -156,19 +156,17 @@ describe("bind emit -> runtime round-trip (cruise-fixture __pa)", () => {
     });
 
     await client("https://api.example.com/toggles/product-avail");
-    await client("https://api.example.com/dcl-apps-productavail-vas/authz/private", {
+    await client("https://api.example.com/listings-avail-api/authz/private", {
       method: "POST",
     });
-    const result = await client(
-      "https://api.example.com/dcl-apps-productavail-vas/available-products/"
-    );
+    const result = await client("https://api.example.com/listings-avail-api/available-products/");
 
     expect(result).toEqual({ products: [{ productId: "p1" }] });
 
     const cookieHeader = cookieHeaderFromCall(2);
     expect(cookieHeader).toMatch(/(^|; )__pa=eyJhbGciOiJIUzI1NiJ9\.payload\.sig(;|$)/);
-    expect(cookieHeader).toContain("latestWDPROGeoIP=US-TX-AUSTIN-1");
-    expect(cookieHeader).toContain("WDPROGeoIP=US-TX-AUSTIN-2");
+    expect(cookieHeader).toContain("latestGeoIP=US-TX-AUSTIN-1");
+    expect(cookieHeader).toContain("GeoIP=US-TX-AUSTIN-2");
     expect(cookieHeader).toContain("bm_sv=BMSVSESSIONVALUE1");
   });
 });

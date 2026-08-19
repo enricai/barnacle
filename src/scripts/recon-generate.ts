@@ -101,7 +101,7 @@ export function resolveStepPayloadField(
   const hasQuotedConstant = /'[^']*'/.test(instruction) || /\$\{RECON_EMAIL\}/.test(instruction);
   // A dropdown step carries no constant to replace, so a label match alone can't
   // tell "select the test candidate's state" (the caller's data) from "select the
-  // departure port from the Country dropdown" (a facet that merely says Country).
+  // neighborhood from the Country dropdown" (a facet that merely says Country).
   // Requiring the subject is what keeps this from mis-firing off-domain.
   const isDropdownStep =
     /\bdropdown\b/i.test(instruction) || /\bselect\b[^.]*\bfrom\b/i.test(instruction);
@@ -177,7 +177,7 @@ export function extractStepPersonaValue(
  *
  * Scoped to Fill/Enter/Type by design. Those name the field label FIRST and a
  * quoted caller VALUE last, so a label→field claim is safe. Select/Choose name
- * the ANSWER first and often only a facet second ("select the departure port
+ * the ANSWER first and often only a facet second ("select the neighborhood
  * from the Country dropdown") — deriving a field from the label there re-opens
  * the exact off-domain false-splice `ReconVocabulary.subject` exists to prevent,
  * so Select/Choose is deliberately excluded and stays vocabulary-gated.
@@ -243,8 +243,8 @@ export function harvestPersonaBindings(
 
 /**
  * How deep to infer before collapsing to z.unknown(). Deep enough to reach the
- * fields that carry meaning on real inventory APIs — a cruise sailing's price
- * summary sits ~11 levels down inside products[].itineraries[].sailings[] —
+ * fields that carry meaning on real inventory APIs — a listing's price
+ * summary sits ~11 levels down inside products[].buildings[].units[] —
  * while still bounding output for pathological payloads.
  */
 const DEFAULT_MAX_INFER_DEPTH = 12;
@@ -900,7 +900,7 @@ interface StateValue {
    * a header/cookie-origin value — see `headerOrigin`. */
   path: string[];
   /** Set when `value` originates in a response header/cookie rather than a
-   * body JSON leaf (e.g. cruise-fixture's `Set-Cookie: __pa=<jwt>` token mint).
+   * body JSON leaf (e.g. listings-fixture's `Set-Cookie: __pa=<jwt>` token mint).
    * `path` is empty in this case since there is no body accessor. */
   headerOrigin?: { sourceHeader: string; cookieName?: string };
 }
@@ -2129,7 +2129,7 @@ export function indexStateValues(
     const c = captures[i]!;
     if (haveActionFilter && !actionCaptureIndices.has(i)) continue;
     // Headers/cookies are indexed regardless of responseBody presence — a
-    // token-mint call like cruise-fixture's `authz/private` returns `{}` and
+    // token-mint call like listings-fixture's `authz/private` returns `{}` and
     // carries its whole payload in `Set-Cookie`.
     const rawSetCookie = Object.entries(c.responseHeaders).find(
       ([k]) => k.toLowerCase() === "set-cookie"
@@ -2412,7 +2412,7 @@ export function compileActionSteps(
  * Collects every header/cookie-origin produce across an action sequence, in
  * step order — this is what `emitContractTs` renders as `createHttpClient`'s
  * `bind` option so the generated `executeHttp` actually forwards a value like
- * cruise-fixture's `Set-Cookie: __pa=<jwt>` mint to the stateful call that 401s
+ * listings-fixture's `Set-Cookie: __pa=<jwt>` mint to the stateful call that 401s
  * without it. Deduped by `targetHeader.toLowerCase()` + `cookieName` (HTTP
  * header names are case-insensitive, and compileActionSteps derives
  * `targetHeader` verbatim from observed request-header casing, so the same

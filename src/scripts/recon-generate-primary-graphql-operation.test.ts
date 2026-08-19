@@ -34,8 +34,8 @@ describe("selectPrimaryGraphQLOperation", () => {
       phase: "filter",
       operationName: "SearchProducts",
       query:
-        "query SearchProducts($departurePort: String) { products(departurePort: $departurePort) { id name } }",
-      variables: { departurePort: "Miami" },
+        "query SearchProducts($neighborhood: String) { products(neighborhood: $neighborhood) { id name } }",
+      variables: { neighborhood: "Downtown" },
       responseBody: {
         products: Array.from({ length: 50 }, (_, i) => ({ id: i, name: `Product ${i}` })),
       },
@@ -43,7 +43,7 @@ describe("selectPrimaryGraphQLOperation", () => {
 
     const captures = [pageLoad, facetSearch];
     const flowSteps = [
-      { step: "select 'Miami' from the Departure Port dropdown", payloadField: "departurePort" },
+      { step: "select 'Downtown' from the Neighborhood dropdown", payloadField: "neighborhood" },
     ];
 
     const result = selectPrimaryGraphQLOperation(captures, flowSteps, EMPTY_VOCABULARY);
@@ -79,14 +79,14 @@ describe("selectPrimaryGraphQLOperation", () => {
       phase: "filter",
       operationName: "SearchProducts",
       query:
-        "query SearchProducts($departurePort: String) { products(departurePort: $departurePort) { id } }",
-      variables: { departurePort: "Miami" },
+        "query SearchProducts($neighborhood: String) { products(neighborhood: $neighborhood) { id } }",
+      variables: { neighborhood: "Downtown" },
       responseBody: { products: Array.from({ length: 30 }, (_, i) => ({ id: i })) },
     });
 
     const result = selectPrimaryGraphQLOperation(
       [first, winner],
-      [{ step: "select 'Miami' from the Departure Port dropdown", payloadField: "departurePort" }],
+      [{ step: "select 'Downtown' from the Neighborhood dropdown", payloadField: "neighborhood" }],
       EMPTY_VOCABULARY
     );
 

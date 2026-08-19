@@ -17,8 +17,8 @@ describe("buildMulticallHeterogeneousActionSteps", () => {
   const steps = buildMulticallHeterogeneousActionSteps();
 
   /** Distinct response SHAPES (toggles array, `{result,successful}` auth
-   * mint, `{totalPages,totalAvailableCruises,products[]}` inventory) named in
-   * the report — the inventory shape appears on 2 of the 4 steps since
+   * mint, `{totalPages,totalAvailableListings,products[]}` inventory) —
+   * the inventory shape appears on 2 of the 4 steps since
    * selectPayloadAction's re-query signature requires >=2 steps at the same
    * endpointKey with distinct requestPostData (recon-generate.ts:313-334). */
   it("returns 4 ActionSteps covering 3 distinct response shapes", () => {
@@ -71,14 +71,14 @@ describe("buildMulticallHeterogeneousActionSteps", () => {
 describe("buildMulticallHeterogeneousActionStepsWithDrillDown", () => {
   const steps = buildMulticallHeterogeneousActionStepsWithDrillDown();
 
-  it("returns 5 steps with the drill-down available-sailings/ call last", () => {
+  it("returns 5 steps with the drill-down available-units/ call last", () => {
     expect(steps).toHaveLength(5);
-    expect(steps[steps.length - 1]?.capture.url).toContain("available-sailings/");
+    expect(steps[steps.length - 1]?.capture.url).toContain("available-units/");
   });
 
   it("still selects available-products/ as the payload action, not the terminal drill-down", () => {
     const selected = selectPayloadAction(steps);
     expect(selected?.capture.url).toContain("available-products/");
-    expect(selected?.capture.url).not.toContain("available-sailings/");
+    expect(selected?.capture.url).not.toContain("available-units/");
   });
 });
