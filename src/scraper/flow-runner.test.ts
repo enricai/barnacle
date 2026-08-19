@@ -15,6 +15,7 @@ import {
   type HealingFlowStep,
   parseRadioStep,
   parseSelectStep,
+  parseWidgetOptionClickStep,
   pollEnumerate,
   prepareFailureDumpBody,
   runHealingFlow,
@@ -1813,5 +1814,51 @@ describe("flow-runner/parseRadioStep — leading page/step-context quote before 
       option: "Yes",
       questionLabel: "Are you at least 18 years of age?",
     });
+  });
+});
+
+describe("flow-runner/parseWidgetOptionClickStep — cascading-multiselect category/leaf click phrasing", () => {
+  it("parses the category-shaped step (evidence log step 10)", () => {
+    expect(
+      parseWidgetOptionClickStep(
+        "click the top-level category 'Job Boards' to expand its sub-options"
+      )
+    ).toEqual({ option: "Job Boards" });
+  });
+
+  it("parses the leaf-shaped step (evidence log step 11)", () => {
+    expect(
+      parseWidgetOptionClickStep(
+        "click the leaf option 'Internet - Job Boards/Search Engines' to commit the source value"
+      )
+    ).toEqual({ option: "Internet - Job Boards/Search Engines" });
+  });
+
+  it("returns null for select-verb steps so a single step never resolves through two primitives", () => {
+    expect(
+      parseWidgetOptionClickStep("select the option 'Job Boards' from the popup list")
+    ).toBeNull();
+  });
+
+  it("returns null for radio answer/radio-noun steps so parseRadioStep keeps sole ownership of those", () => {
+    expect(
+      parseRadioStep("Click the 'Yes' answer for the question 'Are you at least 18 years of age?'")
+    ).not.toBeNull();
+    expect(
+      parseWidgetOptionClickStep(
+        "Click the 'Yes' answer for the question 'Are you at least 18 years of age?'"
+      )
+    ).toBeNull();
+  });
+
+  it("returns null for the 'any remaining…' catch-all with no concrete single target", () => {
+    expect(
+      parseWidgetOptionClickStep("click the category option for any remaining categories")
+    ).toBeNull();
+  });
+
+  it("returns null when there's no click verb or no category/option noun", () => {
+    expect(parseWidgetOptionClickStep("open the 'Job Boards' category")).toBeNull();
+    expect(parseWidgetOptionClickStep("click the 'Job Boards' button")).toBeNull();
   });
 });
