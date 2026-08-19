@@ -107,6 +107,7 @@ import {
   waitForChildFrameReady,
 } from "@/scraper/frame-target";
 import { createBrowserSession, type ProviderName } from "@/scraper/session";
+import { raceAgainstTeardown } from "@/scraper/session-teardown";
 import { guardedObserve } from "@/scraper/stagehand-guard";
 import { withWatchdog } from "@/scraper/watchdog";
 import { filterByCallType, parseSamples } from "@/scripts/judge-llm-batch";
@@ -2427,7 +2428,7 @@ async function main(): Promise<void> {
       // No-ops (zero delay) when frameTarget.frame is null.
       await waitForChildFrameReady(frameTarget);
       try {
-        const stepOutcome = await executeStepWithHealing({
+        const stepPromise = executeStepWithHealing({
           stagehand,
           page,
           frameTarget,
@@ -2465,6 +2466,17 @@ async function main(): Promise<void> {
           captureFn,
           onStepFailure: dumpStepFailure,
         });
+        // Races the step's own promise against the session's teardown death
+        // signal (bugfix-003's raceAgainstTeardown): when Stagehand's CDP
+        // transport is reaped mid-step, the in-flight promise above never
+        // settles because the underlying CDP request is orphaned, and with
+        // keepAlive:true nothing else keeps the event loop alive — the
+        // process would otherwise exit 0 before this step ever resolves.
+        // No-op (behaves like `await stepPromise`) on providers where
+        // session.deathSignal is undefined.
+        const stepOutcome = await (session.deathSignal
+          ? raceAgainstTeardown(stepPromise, session.deathSignal)
+          : stepPromise);
         // Second liveness gate: executeStepWithHealing can resolve normally even
         // when the session died mid-step, if the death happened after its last
         // probe. Re-check here so a swallowed mid-step death is still caught at
