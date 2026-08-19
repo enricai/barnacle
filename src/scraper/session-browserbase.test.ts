@@ -457,4 +457,30 @@ describe("createBrowserbaseBrowserSession CDP-transport-teardown detection", () 
 
     expect(session.getCdpTransportClosedError?.()).toBeUndefined();
   });
+
+  it("never flags an unrelated error-level Stagehand log line, even one shaped like the SDK's own teardown text", async () => {
+    const session = await createBrowserbaseBrowserSession();
+    const stagehandArg = vi.mocked(Stagehand).mock.calls.at(-1)?.[0] as {
+      logger?: (line: StagehandLogLine) => void;
+    };
+
+    // Driven through the Stagehand `logger` callback (makeFilteredStagehandLogger's
+    // callback) rather than through context.conn.onTransportClosed — the actual
+    // detection signal wired above. Detection here must stay anchored to the SDK's
+    // own onTransportClosed hook, not to matching log text, so neither an unrelated
+    // AISDK failure nor Stagehand's own teardown wording accidentally flips the
+    // detector via the logger path.
+    stagehandArg.logger?.({
+      message: "AI_TypeValidationError: Type validation failed for someOtherField",
+      category: "AISDK error",
+      level: 0,
+    });
+    stagehandArg.logger?.({
+      message: "initiating shutdown → CDP transport closed: socket-close code=1006 reason=",
+      category: "stagehand:v3",
+      level: 0,
+    });
+
+    expect(session.getCdpTransportClosedError?.()).toBeUndefined();
+  });
 });
