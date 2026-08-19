@@ -23,12 +23,12 @@ import {
 
 /**
  * Installed `@browserbasehq/stagehand` version every assertion below was
- * verified against (package.json floats `^3.6.0`) — re-verify this file
+ * verified against (package.json pins `~3.6.0`) — re-verify this file
  * against `node_modules/@browserbasehq/stagehand/package.json`'s `version`
  * whenever the lockfile bumps it, since these contracts live in Stagehand's
  * own minified source, not in a type-checked public API.
  */
-const VERIFIED_STAGEHAND_VERSION = "3.7.0";
+const VERIFIED_STAGEHAND_VERSION = "3.6.0";
 
 /**
  * Executes a generated expression string against a fake `document` bound as
@@ -144,7 +144,7 @@ function makeFakeFrame(session: unknown): Frame {
 }
 
 describe(`Stagehand ${VERIFIED_STAGEHAND_VERSION} resolver contracts the batched-scan fix depends on`, () => {
-  it("resolveCssSelector(sel, index) resolves the SAME element buildScanFrameCandidatesExpr reported at that index, for every surviving candidate after visibility filtering — verified against the installed Stagehand 3.7.0", () => {
+  it("resolveCssSelector(sel, index) resolves the SAME element buildScanFrameCandidatesExpr reported at that index, for every surviving candidate after visibility filtering — verified against the installed Stagehand 3.6.0", () => {
     const { root } = buildDenseFormFixture();
     const expectedMatches = root.querySelectorAll(INTERACTIVE_CANDIDATE_SELECTOR);
 
@@ -169,7 +169,7 @@ describe(`Stagehand ${VERIFIED_STAGEHAND_VERSION} resolver contracts the batched
     for (const candidate of visibleCandidates) {
       const expected = expectedMatches[candidate.index];
       expect(expected).toBeDefined();
-      // Stagehand 3.7.0's resolveCssSelector(sel, i) = querySelectorAll(sel)[i]
+      // Stagehand 3.6.0's resolveCssSelector(sel, i) = querySelectorAll(sel)[i]
       // in the frame's own document (selectorResolver.js's `Y`/`Ct` helpers) —
       // the same resolution deepLocator(hop).nth(index) ultimately reaches.
       const resolved = resolveViaStagehand(INTERACTIVE_CANDIDATE_SELECTOR, candidate.index, root);
@@ -177,7 +177,7 @@ describe(`Stagehand ${VERIFIED_STAGEHAND_VERSION} resolver contracts the batched
     }
   });
 
-  it("resolves the icon-only target button's scan-reported index to the target element itself, not merely to `a`-matching-object of the same shape — Stagehand 3.7.0", () => {
+  it("resolves the icon-only target button's scan-reported index to the target element itself, not merely to `a`-matching-object of the same shape — Stagehand 3.6.0", () => {
     const { root } = buildDenseFormFixture();
     const scanResults = evaluateInFakePage(
       buildScanFrameCandidatesExpr(INTERACTIVE_CANDIDATE_SELECTOR),
@@ -189,7 +189,7 @@ describe(`Stagehand ${VERIFIED_STAGEHAND_VERSION} resolver contracts the batched
     expect(targetCandidate).toBeDefined();
     if (!targetCandidate) throw new Error("unreachable: asserted defined above");
 
-    // Stagehand 3.7.0: resolveCssSelector returns the live element, so its
+    // Stagehand 3.6.0: resolveCssSelector returns the live element, so its
     // own aria-label still reads back through the resolved reference.
     const resolved = resolveViaStagehand(
       INTERACTIVE_CANDIDATE_SELECTOR,
@@ -199,12 +199,12 @@ describe(`Stagehand ${VERIFIED_STAGEHAND_VERSION} resolver contracts the batched
     expect(resolved.getAttribute("aria-label")).toBe(DENSE_FORM_TARGET_TEXT);
   });
 
-  it("FrameSelectorResolver.parseSelector keeps a comma-bearing selector as one css query verbatim when it carries no '>>' hop — Stagehand 3.7.0", () => {
+  it("FrameSelectorResolver.parseSelector keeps a comma-bearing selector as one css query verbatim when it carries no '>>' hop — Stagehand 3.6.0", () => {
     const parsed = FrameSelectorResolver.parseSelector(INTERACTIVE_CANDIDATE_SELECTOR);
     expect(parsed).toEqual({ kind: "css", value: INTERACTIVE_CANDIDATE_SELECTOR });
   });
 
-  it("FrameSelectorResolver.parseSelector rewrites a '>>'-bearing selector by space-joining its hops, losing frame-scoping — pinning why INTERACTIVE_CANDIDATE_SELECTOR must stay the FINAL hop segment (verified against Stagehand 3.7.0)", () => {
+  it("FrameSelectorResolver.parseSelector rewrites a '>>'-bearing selector by space-joining its hops, losing frame-scoping — pinning why INTERACTIVE_CANDIDATE_SELECTOR must stay the FINAL hop segment (verified against Stagehand 3.6.0)", () => {
     const hopNotation = `iframe#id >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
     const parsed = FrameSelectorResolver.parseSelector(hopNotation);
     expect(parsed).toEqual({

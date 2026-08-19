@@ -350,7 +350,7 @@ export const NODE_NOT_ACTIONABLE_MESSAGE = "-32000 Node does not have a layout o
 
 /**
  * The delegate methods whose real cost scales with the resolved index:
- * Stagehand 3.7.0's `resolveAtIndex(query, index)` calls
+ * Stagehand 3.6.0's `resolveAtIndex(query, index)` calls
  * `resolveAll(query, {limit: index + 1})`, whose `resolveCss` runs
  * `for (let i = 0; i < limit; i += 1) { await this.evaluateElement(...) }`
  * (`selectorResolver.js`) — one serial CDP `Runtime.evaluate` per index, so
