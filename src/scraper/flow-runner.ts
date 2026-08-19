@@ -55,7 +55,11 @@ import {
 } from "@/scraper/deep-locator-candidates";
 import { clickFirstActionableCandidate } from "@/scraper/deep-locator-click";
 import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
-import { type RunHealingFlowResult, StepVerificationError } from "@/scraper/errors";
+import {
+  type RunHealingFlowResult,
+  SessionTimeoutError,
+  StepVerificationError,
+} from "@/scraper/errors";
 import {
   type FrameTarget,
   mainFrameTarget,
@@ -10489,54 +10493,84 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
           "flow-timeout"
         );
       }
-      lastStepIndex = i;
-      // Resolved fresh per step (not cached across the run) so a cross-origin
-      // iframe that attaches mid-flow (e.g. after an "Apply" click reveals a
-      // wizard embedded later in the DOM) is picked up as soon as it's
-      // reachable, paralleling the recon CLI's per-step resolution. `resolveFrameTarget`
-      // falls back to the main-frame target when `frameSelector` is null/unresolvable,
-      // so this is a no-op for every flow that doesn't declare one.
-      const frameTarget = await resolveFrameTarget(page, deps.frameSelector);
-      await waitForChildFrameReady(frameTarget);
-      const outcome = await executeStepWithHealing({
-        stagehand,
-        page,
-        step: s.instruction,
-        optional: s.optional,
-        upload: s.upload,
-        submitStep: s.submitStep,
-        flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
-        stepIndex: i,
-        totalSteps: () => steps.length,
-        phase: "flow",
-        signalCounter,
-        recentCaptures,
-        recentCaptureMeta,
-        anthropic,
-        rephraseModel,
-        logger,
-        uploadFixture,
-        frameTarget,
-        isFinalStep: i === steps.length - 1,
-        submitEndpointPattern: deps.submitEndpointPattern ?? null,
-        submittedStateSelectors: deps.submittedStateSelectors ?? [],
-        requireSubmitEndpointMatch: deps.requireSubmitEndpointMatch ?? false,
-        advanceTransitionBodyPattern: deps.advanceTransitionBodyPattern ?? null,
-        successUrlFragments: deps.successUrlFragments ?? [],
-        successPageTitleHints: deps.successPageTitleHints ?? [],
-        ownBackendHostnames: deps.ownBackendHostnames ?? [],
-        knownErrorClassPrefixes: deps.knownErrorClassPrefixes ?? [],
-        wizardExitButtonLabels: deps.wizardExitButtonLabels ?? [],
-      });
-      if (s.submitStep) {
-        if (outcome === "skipped") {
-          submitStepSkipped = true;
-          throw new StepVerificationError(
-            `${formatStepPrefix(i, () => steps.length)} submitStep was skipped instead of verified — flow cannot report success`,
-            "submit-skipped"
+      // Liveness gate: a closed/crashed Stagehand session (e.g. the
+      // shutdown-supervisor force-releasing mid-flow) makes `page.url()`
+      // throw synchronously — the one call every Page implementation
+      // answers without touching the DOM. Everything downstream (observe/
+      // act probes) treats a thrown error as "page has no candidates right
+      // now" and, for an optional step, quietly skips it — so without this
+      // check the loop runs to completion and `runHealingFlow` resolves as
+      // if the flow finished, even though the session died partway through.
+      // Checked both before the step (catches death between steps) and in
+      // the catch below (catches death mid-step, e.g. inside the cascade's
+      // own verification reads) so a dead session is reported as a
+      // `SessionTimeoutError` distinct from a legitimately-absent optional
+      // step or a genuine step-verification failure on a live page, and the
+      // flow's own step count never quietly reaches `steps.length` past the
+      // point of death.
+      const assertSessionAlive = (cause: unknown): void => {
+        try {
+          page.url();
+        } catch (err) {
+          throw new SessionTimeoutError(
+            `${formatStepPrefix(i, () => steps.length)} session appears closed/dead (page.url() threw: ${toErrorMessage(err)}) — aborting after ${i} of ${steps.length} steps completed${cause !== undefined ? `; triggering error: ${toErrorMessage(cause)}` : ""}`
           );
         }
-        submitVerified = true;
+      };
+      assertSessionAlive(undefined);
+      lastStepIndex = i;
+      try {
+        // Resolved fresh per step (not cached across the run) so a cross-origin
+        // iframe that attaches mid-flow (e.g. after an "Apply" click reveals a
+        // wizard embedded later in the DOM) is picked up as soon as it's
+        // reachable, paralleling the recon CLI's per-step resolution. `resolveFrameTarget`
+        // falls back to the main-frame target when `frameSelector` is null/unresolvable,
+        // so this is a no-op for every flow that doesn't declare one.
+        const frameTarget = await resolveFrameTarget(page, deps.frameSelector);
+        await waitForChildFrameReady(frameTarget);
+        const outcome = await executeStepWithHealing({
+          stagehand,
+          page,
+          step: s.instruction,
+          optional: s.optional,
+          upload: s.upload,
+          submitStep: s.submitStep,
+          flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+          stepIndex: i,
+          totalSteps: () => steps.length,
+          phase: "flow",
+          signalCounter,
+          recentCaptures,
+          recentCaptureMeta,
+          anthropic,
+          rephraseModel,
+          logger,
+          uploadFixture,
+          frameTarget,
+          isFinalStep: i === steps.length - 1,
+          submitEndpointPattern: deps.submitEndpointPattern ?? null,
+          submittedStateSelectors: deps.submittedStateSelectors ?? [],
+          requireSubmitEndpointMatch: deps.requireSubmitEndpointMatch ?? false,
+          advanceTransitionBodyPattern: deps.advanceTransitionBodyPattern ?? null,
+          successUrlFragments: deps.successUrlFragments ?? [],
+          successPageTitleHints: deps.successPageTitleHints ?? [],
+          ownBackendHostnames: deps.ownBackendHostnames ?? [],
+          knownErrorClassPrefixes: deps.knownErrorClassPrefixes ?? [],
+          wizardExitButtonLabels: deps.wizardExitButtonLabels ?? [],
+        });
+        if (s.submitStep) {
+          if (outcome === "skipped") {
+            submitStepSkipped = true;
+            throw new StepVerificationError(
+              `${formatStepPrefix(i, () => steps.length)} submitStep was skipped instead of verified — flow cannot report success`,
+              "submit-skipped"
+            );
+          }
+          submitVerified = true;
+        }
+      } catch (err) {
+        assertSessionAlive(err);
+        throw err;
       }
     }
   } finally {
