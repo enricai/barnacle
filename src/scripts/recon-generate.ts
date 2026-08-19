@@ -689,11 +689,18 @@ export function selectPrimaryGraphQLOperation(
   return { capture: winner.capture, endpointPath };
 }
 
-function firstEndpointPath(captures: Capture[]): string {
+export function firstEndpointPath(captures: Capture[]): string {
+  const nonGetCaptures = captures.filter((c) => c.method !== "GET");
+  for (const c of nonGetCaptures) {
+    try {
+      return new URL(c.url).pathname;
+    } catch {
+      // skip
+    }
+  }
   for (const c of captures) {
     try {
-      const u = new URL(c.url);
-      return u.pathname;
+      return new URL(c.url).pathname;
     } catch {
       // skip
     }
