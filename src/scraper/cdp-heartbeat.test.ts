@@ -48,7 +48,7 @@ describe("startCdpTransportHeartbeat", () => {
     const logger = fakeLogger();
     const handle = startCdpTransportHeartbeat(conn, { intervalMs: 1_000, logger });
 
-    await expect(vi.advanceTimersByTimeAsync(1_000)).resolves.toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1_000);
     expect(conn.send).toHaveBeenCalledTimes(1);
     expect(logger.warn).toHaveBeenCalledTimes(1);
 
