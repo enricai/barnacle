@@ -13,7 +13,7 @@ export interface MulticallFixtureStep {
   isCrossDomain: boolean;
 }
 
-function buildCapture(overrides: {
+export function buildCapture(overrides: {
   url: string;
   requestPostData: string | null;
   responseBody: unknown;
@@ -41,7 +41,7 @@ const AUTHZ_URL = "https://api.example.com/listings-avail-api/authz/private";
 const AVAILABLE_PRODUCTS_URL = "https://api.example.com/listings-avail-api/available-products/";
 const AVAILABLE_UNITS_URL = "https://api.example.com/listings-avail-api/available-units/";
 
-function buildStep(
+export function buildStep(
   varName: string,
   overrides: {
     url: string;
@@ -124,6 +124,57 @@ export function buildMulticallHeterogeneousActionStepsWithDrillDown(): Multicall
       requestPostData: '{"productId":"p1"}',
       responseBody: { units: [{ unitId: "s1" }], exchangeRate: 1.0 },
       timestamp: "2024-01-01T00:00:04Z",
+    }),
+  ];
+}
+
+const CHECKOUT_HOST = "https://api.example.com";
+
+/**
+ * Reproduces a wizard-style checkout submission on one host: a create-order
+ * call followed by a per-section save POST for each wizard step
+ * (shipping/billing/payment/review, repeated with a follow-up correction save
+ * so the sequence exceeds ten distinct captures), and a final "place order"
+ * click. Every section-save call is a genuine same-host, 2xx, submission POST
+ * that a heuristic extractor (`extractActionSequence`) would keep — this is
+ * what a real server-side-autosaving wizard produces, as opposed to
+ * incidental page chrome. Site-agnostic stand-in for the reported Workday
+ * apply-flow shape (recon-generate.ts's `resolveManifestActionSequence`
+ * unconditionally trusting a short submit-manifest.json over this richer
+ * capture set).
+ */
+export function buildWizardCheckoutCaptures(): Capture[] {
+  const section = (
+    name: string,
+    index: number,
+    body: Record<string, unknown>
+  ): { url: string; requestPostData: string | null; responseBody: unknown; timestamp: string } => ({
+    url: `${CHECKOUT_HOST}/checkout/order-42/${name}`,
+    requestPostData: JSON.stringify(body),
+    responseBody: { section: name, orderId: "order-42", saved: true },
+    timestamp: `2024-02-01T00:00:${String(index).padStart(2, "0")}Z`,
+  });
+
+  return [
+    buildCapture({
+      url: `${CHECKOUT_HOST}/checkout/create-order`,
+      requestPostData: JSON.stringify({ cartId: "cart-9" }),
+      responseBody: { orderId: "order-42" },
+      timestamp: "2024-02-01T00:00:00Z",
+    }),
+    buildCapture(section("shipping", 1, { line1: "1 Main St", city: "Springfield" })),
+    buildCapture(section("billing", 2, { cardLast4: "4242" })),
+    buildCapture(section("payment", 3, { method: "card" })),
+    buildCapture(section("review", 4, { accepted: true })),
+    buildCapture(section("shipping", 5, { line1: "2 Main St", city: "Springfield" })),
+    buildCapture(section("billing", 6, { cardLast4: "1111" })),
+    buildCapture(section("payment", 7, { method: "card", saveCard: true })),
+    buildCapture(section("review", 8, { accepted: true, confirmed: true })),
+    buildCapture({
+      url: `${CHECKOUT_HOST}/checkout/order-42/place-order`,
+      requestPostData: JSON.stringify({ confirm: true }),
+      responseBody: { orderId: "order-42", status: "placed" },
+      timestamp: "2024-02-01T00:00:09Z",
     }),
   ];
 }

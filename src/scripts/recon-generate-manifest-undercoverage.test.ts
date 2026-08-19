@@ -1,0 +1,127 @@
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterEach, describe, expect, it } from "vitest";
+import { buildWizardCheckoutCaptures } from "@/scripts/recon-generate-multicall-fixture";
+
+/**
+ * Reproduces the reported defect: `resolveManifestActionSequence`
+ * (recon-generate.ts:761-780) is unconditionally authoritative once
+ * submit-manifest.json parses ("the manifest ... wins when present",
+ * recon-generate.ts:766-769) — its result is never checked for plausibility
+ * against the richer heuristic `extractActionSequence` would find. A flow
+ * whose recon-flow.json marks only one step `submitStep: true` (the natural
+ * model for a single-button checkout) but whose real site auto-saves every
+ * wizard section server-side produces a short (here length-1) manifest,
+ * which then unconditionally overrides the correct multi-endpoint captured
+ * sequence. `recon-generate.ts:4838` sets `isSubmissionFlow = actionSteps.length
+ * > 1`, so a length-1 manifest collapses the plugin to the generic
+ * single-call `{ query }` fallback (recon-generate.ts:3800/4033) instead of
+ * the real 10-call checkout sequence that was actually captured.
+ *
+ * Exercises the real CLI (matches recon-generate-run-input.test.ts's
+ * spawnSync harness pattern) rather than importing internals directly, since
+ * `resolveManifestActionSequence`'s effect on the emitted `contract.ts` is
+ * only observable through the full generation pipeline.
+ *
+ * This is a red assertion: it documents CURRENT (pre-fix) behavior and must
+ * flip to green once bugfix-002 makes the generator compare the manifest
+ * against the heuristic sequence instead of trusting it unconditionally.
+ */
+
+const REPO_ROOT = join(__dirname, "..", "..");
+const TSX_BIN = join(REPO_ROOT, "node_modules", ".bin", "tsx");
+const GENERATE_SCRIPT = join(REPO_ROOT, "src", "scripts", "recon-generate.ts");
+
+let workDir: string | null = null;
+let siteOutDir: string | null = null;
+let flowFile: string | null = null;
+
+afterEach(() => {
+  if (workDir) rmSync(workDir, { recursive: true, force: true });
+  if (siteOutDir) rmSync(siteOutDir, { recursive: true, force: true });
+  if (flowFile) rmSync(flowFile, { force: true });
+  workDir = null;
+  siteOutDir = null;
+  flowFile = null;
+});
+
+describe("recon-generate: submit-manifest.json under-coverage collapses a real multi-call flow", () => {
+  it("emits the fabricated single {query} POST instead of the captured 10-call checkout sequence", () => {
+    workDir = mkdtempSync(join(tmpdir(), "barnacle-recon-manifest-undercoverage-"));
+    const runRoot = join(workDir, "run");
+    const capturesDir = join(runRoot, "graphql");
+    const replaysDir = join(runRoot, "replays");
+    const auxDir = join(runRoot, "aux");
+    mkdirSync(capturesDir, { recursive: true });
+    mkdirSync(replaysDir, { recursive: true });
+    mkdirSync(auxDir, { recursive: true });
+    writeFileSync(join(replaysDir, "rate-limit.json"), JSON.stringify([]));
+
+    const captures = buildWizardCheckoutCaptures();
+    captures.forEach((capture, index) => {
+      const filename = `${String(index).padStart(3, "0")}-checkout-action.json`;
+      writeFileSync(join(capturesDir, filename), JSON.stringify(capture));
+    });
+
+    // Under-covering submit-manifest.json: recon-browser only matched the
+    // final "place order" click against the flow's declared submit pattern,
+    // so it authoritatively narrates the whole flow as that one capture —
+    // even though 9 other genuine section-save POSTs were captured.
+    const placeOrderIndex = captures.length - 1;
+    const placeOrderCapture = captures[placeOrderIndex];
+    if (!placeOrderCapture) throw new Error("unreachable");
+    writeFileSync(
+      join(runRoot, "submit-manifest.json"),
+      JSON.stringify([
+        {
+          index: placeOrderIndex,
+          filename: `${String(placeOrderIndex).padStart(3, "0")}-checkout-action.json`,
+          url: placeOrderCapture.url,
+        },
+      ])
+    );
+
+    const siteId = `recon-manifest-undercoverage-test-${process.pid}`;
+    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+
+    // A single submitStep:true step is the natural (and, per the report, wrong)
+    // way to declare a one-button checkout flow — the flow itself never claims
+    // the wizard sections aren't part of the submission.
+    mkdirSync(siteOutDir, { recursive: true });
+    flowFile = join(siteOutDir, "recon-flow.json");
+    writeFileSync(
+      flowFile,
+      JSON.stringify({
+        steps: [
+          { step: "fill out the shipping, billing, payment, and review sections" },
+          { step: "click place order", submitStep: true },
+        ],
+      })
+    );
+
+    const result = spawnSync(
+      TSX_BIN,
+      [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
+      { cwd: REPO_ROOT, encoding: "utf8" }
+    );
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+
+    const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+
+    // What SHOULD happen: the real 10-call checkout sequence that was
+    // actually captured drives executeHttp, not a fabricated single-call
+    // stub. This is the acceptance bar bugfix-002 must clear — it is
+    // expected to fail against the current, unfixed generator.
+    expect(contract).not.toContain("query: z.string().min(1)");
+    expect(contract).not.toContain("payload.query");
+    expect(contract).toContain("/checkout/order-42/shipping");
+    expect(contract).toContain("/checkout/order-42/billing");
+    expect(contract).toContain("/checkout/order-42/payment");
+    expect(contract).toContain("/checkout/order-42/review");
+    expect(contract).toContain("/checkout/order-42/place-order");
+  }, 30_000);
+});
