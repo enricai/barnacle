@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { flowHasSubmitSemantics } from "@/scraper/flow-runner";
 
 describe("scraper/flow-runner flowHasSubmitSemantics", () => {
-  it("returns false when no step submits and no submit-endpoint shape is declared (royalcaribbean-style read-only flow)", () => {
+  it("returns false when no step submits and no submit-endpoint shape is declared (read-only flow)", () => {
     const result = flowHasSubmitSemantics({
       steps: [{ submitStep: false }, { submitStep: false }],
       submitEndpointPattern: null,
