@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 /**
  * Acceptance test for docs/recon-generate-picks-wrong-graphql-query-for-readonly-flows.md:
- * reproduces the report's exact royalcaribbean-shaped capture set (a read-only flow with no
+ * reproduces the report's exact cruise-fixture-shaped capture set (a read-only flow with no
  * submitStep/mutation captures) through the real CLI entrypoint and asserts the emitted
  * contract.ts's hot path targets the primary data operation, not the chronologically-first
  * page-load query. Covers required outcomes 1 (selection) and 2 (coherent call-site
@@ -49,7 +49,7 @@ function gqlCapture(overrides: {
   };
 }
 
-/** The report's capture set: royalcaribbean, POST /graph and POST /cruises/graph. */
+/** The report's capture set: cruise-fixture, POST /graph and POST /cruises/graph. */
 function writeRunDir(root: string): void {
   mkdirSync(join(root, "graphql"), { recursive: true });
   mkdirSync(join(root, "replays"), { recursive: true });
@@ -58,7 +58,7 @@ function writeRunDir(root: string): void {
   const cruiseSearch = (requestPostData: string) =>
     gqlCapture({
       phase: "open-the-destination-filter",
-      url: "https://www.royalcaribbean.com/cruises/graph",
+      url: "https://www.cruise-fixture.example.com/cruises/graph",
       operationName: "cruiseSearch_Cruises",
       query:
         "query cruiseSearch_Cruises($destination: String) { cruises(destination: $destination) { id name } }",
@@ -68,7 +68,7 @@ function writeRunDir(root: string): void {
     });
   const anonCruiseQuery = gqlCapture({
     phase: "open-the-destination-filter",
-    url: "https://www.royalcaribbean.com/cruises/graph",
+    url: "https://www.cruise-fixture.example.com/cruises/graph",
     operationName: null,
     query: "query { cruiseFacets { id } }",
     variables: null,
@@ -76,7 +76,7 @@ function writeRunDir(root: string): void {
   });
   const bestPromotionForMarket = gqlCapture({
     phase: "home",
-    url: "https://www.royalcaribbean.com/graph",
+    url: "https://www.cruise-fixture.example.com/graph",
     operationName: "bestPromotionForMarket",
     query: "query bestPromotionForMarket { promotion { id imageUrl } }",
     variables: null,
@@ -84,7 +84,7 @@ function writeRunDir(root: string): void {
   });
   const targetedOffers = gqlCapture({
     phase: "home",
-    url: "https://www.royalcaribbean.com/graph",
+    url: "https://www.cruise-fixture.example.com/graph",
     operationName: "targetedOffers",
     query: "query targetedOffers { offers { id } }",
     variables: null,
@@ -121,7 +121,7 @@ afterEach(() => {
   siteOutDir = null;
 });
 
-describe("recon-generate read-only GraphQL flow: royalcaribbean-shaped capture set (bug report)", () => {
+describe("recon-generate read-only GraphQL flow: cruise-fixture-shaped capture set (bug report)", () => {
   it("selects cruiseSearch_Cruises over the chronologically-first, near-unrelated bestPromotionForMarket, with a coherent call site", () => {
     workDir = mkdtempSync(join(tmpdir(), "barnacle-graphql-readonly-e2e-"));
     const runRoot = join(workDir, "run");
