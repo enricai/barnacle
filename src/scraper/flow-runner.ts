@@ -6076,33 +6076,6 @@ async function tryPromptSelectorPrimitive(params: {
       return null;
     }
 
-    // Phase 2 (real gesture): open the popup. These widgets' trigger requires a
-    // genuine click — a synthetic dispatchEvent does not fire its handler.
-    // Prefer the marked widget's own interactive descendant (a real form
-    // control) over the marked container itself, since the container is
-    // frequently a non-interactive layout wrapper for widget shapes whose
-    // actual trigger sits a level deeper (see PROMPT_INTERACTIVE_CONTROL_SELECTORS).
-    const containerTriggerSel = `[${PROMPT_WIDGET_MARK_ATTR}="${chosen.wIdx}"]`;
-    const innerTriggerSel = PROMPT_INTERACTIVE_CONTROL_SELECTORS.split(",")
-      .map((s) => `${containerTriggerSel} ${s}`)
-      .join(",");
-    let triggerSel = containerTriggerSel;
-    try {
-      const innerCount = await target.locator(innerTriggerSel).count();
-      if (innerCount > 0) triggerSel = innerTriggerSel;
-    } catch {
-      // Fall back to the container selector.
-    }
-    try {
-      await target.locator(triggerSel).first().click();
-    } catch (err) {
-      logger.info(
-        `prompt-selector primitive: trigger click failed for ${optLabel}: ${toErrorMessage(err)}; falling through`
-      );
-      return null;
-    }
-    await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
-
     const enumerateOptionsExpr = `((widgetMarkAttr, wIdx, markAttr, optionSel, searchSel) => {
       const w = document.querySelector("[" + widgetMarkAttr + '="' + wIdx + '"]');
       if (!w) return { optionsPresent: false };
@@ -6143,11 +6116,63 @@ async function tryPromptSelectorPrimitive(params: {
       }
       return { optionsPresent: true, searchable: !!searchInput, options };
     })(${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)}, ${JSON.stringify(chosen.wIdx)}, ${JSON.stringify(PROMPT_OPTION_MARK_ATTR)}, ${JSON.stringify(PROMPT_OPTION_SELECTORS)}, ${JSON.stringify(PROMPT_SEARCH_SELECTORS)})`;
-    const optionsInitial = await pollEnumerate<{
+
+    type EnumerateOptionsResult = {
       optionsPresent: boolean;
       searchable?: boolean;
       options?: { oIdx: number; text: string }[];
-    }>(page, target, enumerateOptionsExpr, (r) => r?.optionsPresent === true);
+    };
+    // Pre-check (single evaluate, no polling): a PRIOR primitive call on this
+    // same unreloaded page may have already opened/drilled this exact widget's
+    // popup (a two-level cascading multiselect authored as two flow steps —
+    // category, then leaf — re-enters here for the leaf with the popup already
+    // open). Re-clicking the trigger in that case perturbs/closes the
+    // already-rendered popup instead of reading it. Skip the open-click
+    // entirely when options are already present; a genuinely closed popup
+    // falls through to the normal open-click + poll path below unchanged.
+    const precheck = (await target.evaluate(enumerateOptionsExpr)) as EnumerateOptionsResult;
+    const alreadyOpen = precheck?.optionsPresent === true && (precheck.options?.length ?? 0) > 0;
+    if (!alreadyOpen) {
+      // Phase 2 (real gesture): open the popup. These widgets' trigger requires a
+      // genuine click — a synthetic dispatchEvent does not fire its handler.
+      // Prefer the marked widget's own interactive descendant (a real form
+      // control) over the marked container itself, since the container is
+      // frequently a non-interactive layout wrapper for widget shapes whose
+      // actual trigger sits a level deeper (see PROMPT_INTERACTIVE_CONTROL_SELECTORS).
+      const containerTriggerSel = `[${PROMPT_WIDGET_MARK_ATTR}="${chosen.wIdx}"]`;
+      const innerTriggerSel = PROMPT_INTERACTIVE_CONTROL_SELECTORS.split(",")
+        .map((s) => `${containerTriggerSel} ${s}`)
+        .join(",");
+      let triggerSel = containerTriggerSel;
+      try {
+        const innerCount = await target.locator(innerTriggerSel).count();
+        if (innerCount > 0) triggerSel = innerTriggerSel;
+      } catch {
+        // Fall back to the container selector.
+      }
+      try {
+        await target.locator(triggerSel).first().click();
+      } catch (err) {
+        logger.info(
+          `prompt-selector primitive: trigger click failed for ${optLabel}: ${toErrorMessage(err)}; falling through`
+        );
+        return null;
+      }
+      await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
+    } else {
+      logger.info(
+        `prompt-selector primitive: popup for ${optLabel} already open with rendered options; skipping trigger click`
+      );
+    }
+
+    const optionsInitial = alreadyOpen
+      ? precheck
+      : await pollEnumerate<EnumerateOptionsResult>(
+          page,
+          target,
+          enumerateOptionsExpr,
+          (r) => r?.optionsPresent === true
+        );
     if (!optionsInitial?.optionsPresent) {
       logger.info(
         `prompt-selector primitive: popup for ${optLabel} did not render options; falling through`
