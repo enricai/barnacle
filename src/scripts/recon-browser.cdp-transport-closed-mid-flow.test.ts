@@ -87,6 +87,7 @@ vi.mock("@/scraper/flow-runner", async (importOriginal) => {
   };
 });
 
+import { CdpTransportClosedError } from "@/scraper/errors";
 import { createBrowserSession } from "@/scraper/session";
 import { main } from "@/scripts/recon-browser";
 
@@ -257,5 +258,64 @@ describe("recon-browser/main — CDP transport closed mid-flow by Stagehand's ow
 
     await expect(main()).resolves.toBeUndefined();
     expect(executeStepWithHealingStub).toHaveBeenCalledTimes(TOTAL_STEPS);
+  });
+
+  it("retries on a fresh session when the first attempt's deathSignal race fires mid-flow (not the getCdpTransportClosedError accessor)", async () => {
+    const { stagehand: closingStagehand } = makeFakePage();
+    const { stagehand: healthyStagehand } = makeFakePage();
+
+    let signalDeath: ((err: CdpTransportClosedError) => void) | undefined;
+    const deathSignal = new Promise<never>((_resolve, reject) => {
+      signalDeath = reject;
+    });
+    deathSignal.catch(() => undefined);
+
+    vi.mocked(createBrowserSession)
+      .mockResolvedValueOnce({
+        stagehand: closingStagehand,
+        limiter: {} as never,
+        sessionId: "test-session-1",
+        provider: "browserbase",
+        close: vi.fn().mockResolvedValue(undefined),
+        deathSignal,
+      } as never)
+      .mockResolvedValueOnce({
+        stagehand: healthyStagehand,
+        limiter: {} as never,
+        sessionId: "test-session-2",
+        provider: "browserbase",
+        close: vi.fn().mockResolvedValue(undefined),
+      } as never);
+
+    let stepCountInAttempt = 0;
+    executeStepWithHealingStub.mockImplementation(() => {
+      stepCountInAttempt += 1;
+      // First attempt only: the step at TRANSPORT_CLOSES_AFTER_STEP hangs
+      // forever (the underlying CDP request is orphaned by teardown), so
+      // only raceAgainstTeardown's deathSignal branch can ever settle it.
+      if (stepCountInAttempt === TRANSPORT_CLOSES_AFTER_STEP) {
+        setTimeout(
+          () =>
+            signalDeath?.(
+              new CdpTransportClosedError(
+                "stagehand-initiated teardown mid-flow: CDP transport closed"
+              )
+            ),
+          0
+        );
+        return new Promise(() => {});
+      }
+      return Promise.resolve("ok");
+    });
+
+    process.argv = flowArgv(TOTAL_STEPS);
+
+    await expect(main()).resolves.toBeUndefined();
+    // A fresh session per attempt: the first dies via the deathSignal race
+    // at step 6, the retried attempt runs on a brand-new healthy session.
+    expect(createBrowserSession).toHaveBeenCalledTimes(2);
+    expect(executeStepWithHealingStub).toHaveBeenCalledTimes(
+      TRANSPORT_CLOSES_AFTER_STEP + TOTAL_STEPS
+    );
   });
 });
