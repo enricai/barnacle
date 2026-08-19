@@ -28,6 +28,7 @@ import {
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
 } from "@/scripts/recon-generate-multicall-fixture";
+import { buildRepeatedSectionSubmissionCaptures } from "@/scripts/recon-generate-repeated-section-fixture";
 
 /** The recon env-var token for the applicant email, built by concatenation so
  * Biome's noTemplateCurlyInString rule doesn't flag the literal `${...}`. */
@@ -2251,5 +2252,17 @@ describe("emitContractTs — vendor-dump golden fixture (recon-generate-payload-
     expect(referenceSource).toContain("eventData:");
     expect(referenceSource).toContain("experienceData:");
     expect(referenceSource).toContain("educationData:");
+  });
+});
+
+describe("extractActionSequence + compileActionSteps — repeated-section flow with id threaded into URL path", () => {
+  it("keeps the flow as a genuine multi-step action sequence instead of collapsing it to a single-endpoint query", () => {
+    const captures = buildRepeatedSectionSubmissionCaptures();
+    const actionCaptures = extractActionSequence(captures, null);
+    const actionCaptureIndices = new Set(actionCaptures.map((a) => a.index));
+    const stateIndex = indexStateValues(captures, new Set(), actionCaptureIndices);
+    const actionSteps = compileActionSteps(actionCaptures, stateIndex);
+
+    expect(actionSteps.length).toBeGreaterThan(1);
   });
 });
