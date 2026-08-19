@@ -49,13 +49,17 @@ vi.mock("@/config", () => ({
   },
 }));
 
+const { fakeConn } = vi.hoisted(() => ({
+  fakeConn: { send: vi.fn().mockResolvedValue(undefined) },
+}));
+
 vi.mock("@browserbasehq/stagehand", () => ({
   AISdkClient: vi.fn(),
   Stagehand: vi.fn(function (this: Record<string, unknown>) {
     this.init = vi.fn().mockResolvedValue(undefined);
     this.close = vi.fn().mockResolvedValue(undefined);
     this.browserbaseSessionID = "bb-session-id";
-    this.context = { conn: { send: vi.fn().mockResolvedValue(undefined) } };
+    this.context = { conn: fakeConn };
   }),
 }));
 
