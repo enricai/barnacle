@@ -3,7 +3,14 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import Bottleneck from "bottleneck";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod/v4";
+import { createHttpClient } from "@/scraper/http-client";
+import {
+  evalExecuteHttpBody,
+  extractExecuteHttpBodyFromContract,
+} from "@/scripts/recon-generate-execute-http-harness.test-helper";
 import { buildWizardCheckoutCaptures } from "@/scripts/recon-generate-multicall-fixture";
 
 /**
@@ -26,9 +33,13 @@ import { buildWizardCheckoutCaptures } from "@/scripts/recon-generate-multicall-
  * `resolveManifestActionSequence`'s effect on the emitted `contract.ts` is
  * only observable through the full generation pipeline.
  *
- * This is a red assertion: it documents CURRENT (pre-fix) behavior and must
- * flip to green once bugfix-002 makes the generator compare the manifest
- * against the heuristic sequence instead of trusting it unconditionally.
+ * Regression pin: bugfix-002 made the generator compare the manifest against
+ * the heuristic sequence instead of trusting it unconditionally. Beyond
+ * string-matching the emitted source, this also eval-and-runs the emitted
+ * `executeHttp` body against a mocked fetch (the
+ * recon-generate-multistep-e2e.test.ts harness pattern), proving the 10-call
+ * sequence executes correctly end to end and threads a freshly-minted
+ * `orderId` through every URL rather than hardcoding the captured one.
  */
 
 const REPO_ROOT = join(__dirname, "..", "..");
@@ -49,7 +60,7 @@ afterEach(() => {
 });
 
 describe("recon-generate: submit-manifest.json under-coverage collapses a real multi-call flow", () => {
-  it("emits the fabricated single {query} POST instead of the captured 10-call checkout sequence", () => {
+  it("emits the fabricated single {query} POST instead of the captured 10-call checkout sequence", async () => {
     workDir = mkdtempSync(join(tmpdir(), "barnacle-recon-manifest-undercoverage-"));
     const runRoot = join(workDir, "run");
     const capturesDir = join(runRoot, "graphql");
@@ -132,5 +143,72 @@ describe("recon-generate: submit-manifest.json under-coverage collapses a real m
     expect(contract).toContain("/payment");
     expect(contract).toContain("/review");
     expect(contract).toContain("/place-order");
+
+    // Stronger than the string checks above: eval-and-run the emitter's OWN
+    // executeHttp body (recon-generate-multistep-e2e.test.ts's harness
+    // pattern) against a mocked fetch, proving the 10-call sequence actually
+    // EXECUTES end to end rather than merely containing the right substrings.
+    // The mocked create-order response mints an orderId that DIFFERS from
+    // the captured "order-42" — if the generator had hardcoded the captured
+    // literal instead of threading `orderId` from the real response, every
+    // subsequent call's URL would still show "order-42" and this would fail.
+    const mintedOrderId = "sess-live-501";
+    const responseBodies = [
+      { orderId: mintedOrderId },
+      { section: "shipping", orderId: mintedOrderId, saved: true },
+      { section: "billing", orderId: mintedOrderId, saved: true },
+      { section: "payment", orderId: mintedOrderId, saved: true },
+      { section: "review", orderId: mintedOrderId, saved: true },
+      { section: "shipping", orderId: mintedOrderId, saved: true },
+      { section: "billing", orderId: mintedOrderId, saved: true },
+      { section: "payment", orderId: mintedOrderId, saved: true },
+      { section: "review", orderId: mintedOrderId, saved: true },
+      { orderId: mintedOrderId, status: "placed" },
+    ];
+    const fetchMock = vi.fn();
+    for (const body of responseBodies) {
+      fetchMock.mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        text: vi.fn().mockResolvedValue(JSON.stringify(body)),
+        headers: new Headers(),
+      });
+    }
+    vi.stubGlobal("fetch", fetchMock);
+
+    const executeHttpBody = extractExecuteHttpBodyFromContract(contract);
+    const limiter = new Bottleneck({ maxConcurrent: 1, minTime: 0 });
+    const httpClient = createHttpClient({
+      schema: z.unknown(),
+      bottleneck: limiter,
+      baseHeaders: { "Content-Type": "application/json" },
+    });
+    const executeHttp = evalExecuteHttpBody(executeHttpBody, httpClient, z);
+
+    const result2 = await executeHttp({
+      BaseUrl: "https://api.example.com",
+      line1: "1 Main St",
+      city: "Springfield",
+      cardLast4: "4242",
+      method: "card",
+      accepted: true,
+      confirmed: true,
+      saveCard: true,
+      confirm: true,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(10);
+    const requestedUrls = fetchMock.mock.calls.map((call) => call[0] as string);
+    expect(requestedUrls[0]).toBe("https://api.example.com/checkout/create-order");
+    for (const url of requestedUrls.slice(1)) {
+      expect(url).toContain(`/checkout/${mintedOrderId}/`);
+      expect(url).not.toContain("order-42");
+    }
+    expect(requestedUrls[requestedUrls.length - 1]).toBe(
+      `https://api.example.com/checkout/${mintedOrderId}/place-order`
+    );
+    expect(result2.data).toEqual({ section: "review", orderId: mintedOrderId, saved: true });
+
+    vi.unstubAllGlobals();
   }, 30_000);
 });
