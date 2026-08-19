@@ -1459,6 +1459,7 @@ describe("emitBrowserFlowTs — uploadFixture guard (upload vs multipart)", () =
       hasMultipartStep: true,
     });
     expect(code).toContain("Buffer.from(payload.Resume");
+    expect(code).not.toContain("base64");
     expect(code).toContain("payload.ResumeFilename");
   });
 
@@ -1498,13 +1499,130 @@ describe("emitBrowserFlowTs + emitContractTs — schema/flow anti-drift", () => 
     payloadFieldNames,
   });
 
-  it("every payload.X the flow references appears as a contract schema key", () => {
+  // Fields ApplicantContactSchema itself already declares (see
+  // src/lib/applicant-payload.ts) don't get a redundant explicit key in the
+  // merged `.extend({...})` — the single-extend dedup (bugfix-004) reserves
+  // them so the schema stays a single, non-shadowing extend call.
+  const applicantContactFieldNames = new Set(["FirstName", "LastName", "Phone", "City"]);
+
+  it("every payload.X the flow references appears as a contract schema key, unless ApplicantContactSchema already declares it", () => {
     const referenced = [...code.matchAll(/\$\{payload\.([A-Za-z0-9_]+)\}/g)].map((m) => m[1]!);
     expect(referenced.length).toBeGreaterThan(0);
     for (const field of referenced) {
+      if (applicantContactFieldNames.has(field)) continue;
       const decl = field === "Email" ? `${field}: z.email()` : `${field}: z.string()`;
       expect(contract).toContain(decl);
     }
+  });
+});
+
+describe("emitBrowserFlowTs — splice site lands on the fill VALUE, never the selector", () => {
+  const { code, payloadFieldNames } = emitBrowserFlowTs({
+    siteId: "test-site",
+    pascal: "TestSite",
+    baseUrl: "https://example.com",
+    isSubmissionFlow: true,
+    flowSteps: [
+      "Fill in the Legal Name First Name field (data-automation-id='legalName--firstName') with 'Reginald'",
+      "Select 'Texas' from the State dropdown (data-automation-id='address--state')",
+    ],
+    vocabulary: TEST_RECRUITING_VOCABULARY,
+  });
+
+  it("leaves the data-automation-id selector unchanged", () => {
+    expect(code).toContain("data-automation-id='legalName--firstName'");
+    expect(code).toContain("data-automation-id='address--state'");
+  });
+
+  it("splices payload.FirstName only at the trailing value position", () => {
+    expect(code).toContain(payloadRef("FirstName"));
+    expect(code).not.toContain(`${payloadRef("FirstName")}'firstName'`);
+  });
+
+  it("splices payload.State at the leading answer position for a Select step", () => {
+    expect(code).toContain(payloadRef("State"));
+    expect(code).not.toContain("Texas");
+  });
+
+  it("emits no un-spliced Reginald literal", () => {
+    expect(code).not.toContain("Reginald");
+  });
+
+  it("accumulates the FirstName field name", () => {
+    expect(payloadFieldNames.has("FirstName")).toBe(true);
+  });
+});
+
+describe("emitBrowserFlowTs — a reserved RECON_PHONE env token resolves to payload.MobilePhone", () => {
+  const RECON_PHONE_TOKEN = `$${"{RECON_PHONE}"}`;
+  const { code } = emitBrowserFlowTs({
+    siteId: "test-site",
+    pascal: "TestSite",
+    baseUrl: "https://example.com",
+    isSubmissionFlow: true,
+    flowSteps: [`Enter ${RECON_PHONE_TOKEN} in the Mobile Phone field`],
+    vocabulary: TEST_RECRUITING_VOCABULARY,
+  });
+
+  it("splices a payload.MobilePhone reference", () => {
+    expect(code).toContain(payloadRef("MobilePhone"));
+  });
+
+  it("emits no un-spliced or escaped RECON_PHONE token", () => {
+    expect(code).not.toContain(RECON_PHONE_TOKEN);
+    expect(code).not.toContain(`\\${RECON_PHONE_TOKEN}`);
+  });
+});
+
+describe("emitBrowserFlowTs — a reserved RECON_PASSWORD env token splices a generated throwaway credential", () => {
+  const RECON_PASSWORD_TOKEN = `$${"{RECON_PASSWORD}"}`;
+  const { code, payloadFieldNames } = emitBrowserFlowTs({
+    siteId: "test-site",
+    pascal: "TestSite",
+    baseUrl: "https://example.com",
+    isSubmissionFlow: true,
+    flowSteps: [
+      `Fill in the Email field with ${`$${"{RECON_EMAIL}"}`}`,
+      `Enter ${RECON_PASSWORD_TOKEN} in the Password field`,
+    ],
+    vocabulary: TEST_RECRUITING_VOCABULARY,
+  });
+
+  it("declares a local throwaway credential minted from the shared crypto-backed helper, never a hand-rolled RNG", () => {
+    expect(code).toContain(
+      'import { generateThrowawayPassword } from "@enricai/barnacle/lib/random";'
+    );
+    expect(code).toContain("const throwawayPassword = generateThrowawayPassword();");
+  });
+
+  it("splices the Password step to the generated throwaway, not a payload accessor", () => {
+    expect(code).toContain(`$${"{throwawayPassword}"}`);
+    expect(code).not.toContain("payload.Password");
+  });
+
+  it("never routes the Password step through vocabulary/payload-field resolution", () => {
+    expect(payloadFieldNames.has("Password")).toBe(false);
+  });
+
+  it("emits no literal RECON_PASSWORD substring anywhere, resolved or escaped", () => {
+    expect(code).not.toContain(RECON_PASSWORD_TOKEN);
+    expect(code).not.toContain(`\\${RECON_PASSWORD_TOKEN}`);
+    expect(code).not.toContain("RECON_PASSWORD");
+  });
+});
+
+describe("emitBrowserFlowTs — no throwaway-password import/declaration when no step uses RECON_PASSWORD", () => {
+  it("omits both the import and the local declaration", () => {
+    const { code } = emitBrowserFlowTs({
+      siteId: "test-site",
+      pascal: "TestSite",
+      baseUrl: "https://example.com",
+      isSubmissionFlow: true,
+      flowSteps: ["Fill in the First Name field with 'Reginald'"],
+      vocabulary: TEST_RECRUITING_VOCABULARY,
+    });
+    expect(code).not.toContain("generateThrowawayPassword");
+    expect(code).not.toContain("throwawayPassword");
   });
 });
 
@@ -2109,6 +2227,54 @@ describe("emitConfigManifest — config-only plugin emission", () => {
   });
 });
 
+describe("emitConfigManifest — a reserved RECON_PASSWORD env token never leaks as a literal", () => {
+  const RECON_PASSWORD_TOKEN = `$${"{RECON_PASSWORD}"}`;
+  const manifestStr = emitConfigManifest({
+    siteId: "acme-demo",
+    displayName: "AcmeDemo",
+    baseUrl: "https://apply.acme.example",
+    flowSteps: [`Enter ${RECON_PASSWORD_TOKEN} in the Password field`],
+  });
+  const manifest = JSON.parse(manifestStr) as {
+    spec: { request: { properties: Record<string, unknown> }; flow: { steps: unknown[] } };
+  };
+
+  it("emits no literal RECON_PASSWORD substring anywhere", () => {
+    expect(manifestStr).not.toContain(RECON_PASSWORD_TOKEN);
+    expect(manifestStr).not.toContain("RECON_PASSWORD");
+  });
+
+  it("routes the splice through an explicit Password request field, not vocabulary", () => {
+    expect(manifest.spec.flow.steps).toEqual([
+      "Enter {{ .request.Password }} in the Password field",
+    ]);
+    expect(manifest.spec.request.properties).toHaveProperty("Password");
+  });
+});
+
+describe("emitConfigManifest — splice site lands on the fill VALUE, never the selector", () => {
+  const manifestStr = emitConfigManifest({
+    siteId: "acme-demo",
+    displayName: "AcmeDemo",
+    baseUrl: "https://apply.acme.example",
+    flowSteps: [
+      {
+        step: "Fill in the Legal Name First Name field (data-automation-id='legalName--firstName') with 'Reginald'",
+        payloadField: "FirstName",
+      },
+    ],
+  });
+
+  it("leaves the data-automation-id selector unchanged", () => {
+    expect(manifestStr).toContain("data-automation-id='legalName--firstName'");
+  });
+
+  it("splices {{ .request.FirstName }} only at the trailing value position", () => {
+    expect(manifestStr).toContain("{{ .request.FirstName }}");
+    expect(manifestStr).not.toContain("Reginald");
+  });
+});
+
 describe("emitConfigManifest — recovered request contract", () => {
   const manifest = JSON.parse(
     emitConfigManifest({
@@ -2250,6 +2416,57 @@ describe("emitContractTs — vendor-dump golden fixture (recon-generate-payload-
     expect(referenceSource).toContain("eventData:");
     expect(referenceSource).toContain("experienceData:");
     expect(referenceSource).toContain("educationData:");
+  });
+});
+
+describe("emitContractTs — single merged `.extend()` payload schema (bugfix-004)", () => {
+  it("emits exactly one `.extend(` call even when discovered/spliced fields collide with the base extend's own Email key", () => {
+    // payloadFieldNames (browser-flow-spliced fields) redeclares Email, which
+    // basePayloadSchemaExpr's own extend already declares. The old chain-of-
+    // extends shape re-added Email as a second `.extend({ Email: ... })`
+    // block; the merged shape must collapse it to one Email key with no
+    // second `.extend(` call.
+    const contract = emitContractTs({
+      ...BASE_OPTS,
+      siteId: "collision-site",
+      pascal: "CollisionSite",
+      inputBody: { some: "data" },
+      payloadFieldNames: new Set(["Email", "JobId"]),
+    });
+    const payloadSchemaMatch = contract.match(/const CollisionSitePayloadSchema = [\s\S]*?;\n/);
+    expect(payloadSchemaMatch).not.toBeNull();
+    const payloadSchemaSource = payloadSchemaMatch![0];
+
+    const extendOccurrences = payloadSchemaSource.match(/\.extend\(/g) ?? [];
+    expect(extendOccurrences.length).toBe(1);
+
+    const emailOccurrences = payloadSchemaSource.match(/^\s*Email:/gm) ?? [];
+    expect(emailOccurrences.length).toBe(1);
+    expect(payloadSchemaSource).toContain("Email: z.email(),");
+    expect(payloadSchemaSource).toContain("JobId: z.string(),");
+  });
+
+  it("never redeclares a field ApplicantContactSchema's own identity/address/resume merge already supplies", () => {
+    // City collides with ApplicantAddressSchema's own City field, and
+    // FirstName collides with ApplicantIdentitySchema's own FirstName field
+    // — both merged into ApplicantContactSchema. A discovered/spliced field
+    // of either name must not shadow the base schema's declaration.
+    const contract = emitContractTs({
+      ...BASE_OPTS,
+      siteId: "shadow-site",
+      pascal: "ShadowSite",
+      inputBody: { some: "data" },
+      discoveredFormFields: new Set(["City"]),
+      payloadFieldNames: new Set(["FirstName"]),
+    });
+    const payloadSchemaMatch = contract.match(/const ShadowSitePayloadSchema = [\s\S]*?;\n/);
+    expect(payloadSchemaMatch).not.toBeNull();
+    const payloadSchemaSource = payloadSchemaMatch![0];
+
+    expect(payloadSchemaSource).not.toMatch(/^\s*City:/m);
+    expect(payloadSchemaSource).not.toMatch(/^\s*FirstName:/m);
+    const extendOccurrences = payloadSchemaSource.match(/\.extend\(/g) ?? [];
+    expect(extendOccurrences.length).toBe(1);
   });
 });
 

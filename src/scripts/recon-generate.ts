@@ -65,6 +65,94 @@ const ENGINE_PKG = "@enricai/barnacle";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
+/**
+ * A reserved recon env token, e.g. `${RECON_EMAIL}` or `${RECON_PHONE}` — the
+ * `RECON_` prefix is what marks a `${UPPER_SNAKE}` token as a recon-owned
+ * splice site rather than an unrelated caller-authored env reference.
+ */
+const RESERVED_ENV_TOKEN = /\$\{RECON_[A-Z0-9_]*\}/;
+
+/**
+ * The reserved `${RECON_PASSWORD}` token. Unlike every other `RESERVED_ENV_TOKEN`
+ * (RECON_EMAIL, RECON_PHONE, ...), which name a piece of the caller's real
+ * applicant identity and so splice to a `payload.<field>` accessor, this one
+ * names a credential the recon capture needed to authenticate but that has no
+ * caller-supplied counterpart on the applicant payload — there is no "Password"
+ * field to route it through. It gets its own reserved-tooling handling ahead of
+ * (never through) vocabulary/payload-field resolution.
+ */
+const RECON_PASSWORD_TOKEN = `$${"{RECON_PASSWORD}"}`;
+
+/**
+ * Masks the apostrophe in a possessive `'s` (e.g. "the candidate's name") with
+ * a non-quote placeholder of the same length, so a naive `'...'` quote scan
+ * doesn't mistake the possessive apostrophe for an opening quote delimiter.
+ * Length-preserving so callers that need positions in the ORIGINAL instruction
+ * can reuse the indices matched against the masked string unchanged.
+ */
+function maskPossessiveApostrophes(instruction: string): string {
+  return instruction.replace(/(\w)'(s\b)/g, "$1 $2");
+}
+
+/** One `'...'` quoted span found in an instruction, with its position in the ORIGINAL string. */
+interface QuoteSpan {
+  index: number;
+  length: number;
+  value: string;
+}
+
+function findQuoteSpans(instruction: string): QuoteSpan[] {
+  const masked = maskPossessiveApostrophes(instruction);
+  return [...masked.matchAll(/'([^']*)'/g)].map((m) => ({
+    index: m.index,
+    length: m[0].length,
+    value: instruction.slice(m.index + 1, m.index + m[0].length - 1),
+  }));
+}
+
+/**
+ * Picks which quoted span in an instruction is the persona VALUE, per the
+ * grammar recon-flow steps use: a `Select`/`Choose`/`Pick` step names the
+ * ANSWER first, then the question, so the value is the FIRST quoted span; a
+ * `Fill`/`Enter`/`Type` step names the field label first and the value last,
+ * so it is the LAST quoted span.
+ */
+function pickValueSpan(instruction: string, spans: readonly QuoteSpan[]): QuoteSpan {
+  return /^\s*(select|choose|pick)\b/i.test(instruction) ? spans[0]! : spans[spans.length - 1]!;
+}
+
+/**
+ * Locates the splice site in a flow-step instruction as `{ before, matched,
+ * after }` slices of the ORIGINAL instruction — a reserved `${RECON_*}` env
+ * token when present (preferred, since it names its own site unambiguously),
+ * otherwise the quoted VALUE span per {@link pickValueSpan}'s verb-class rule.
+ * This is the position-aware counterpart to {@link extractStepPersonaValue}:
+ * that function only needs the extracted string, this one needs the actual
+ * before/after slices so a template literal can be rebuilt around the site.
+ *
+ * @returns null when the instruction carries no spliceable site
+ */
+function locateSpliceSite(
+  instruction: string
+): { before: string; matched: string; after: string } | null {
+  const envToken = RESERVED_ENV_TOKEN.exec(instruction);
+  if (envToken) {
+    return {
+      before: instruction.slice(0, envToken.index),
+      matched: envToken[0],
+      after: instruction.slice(envToken.index + envToken[0].length),
+    };
+  }
+  const spans = findQuoteSpans(instruction);
+  if (spans.length === 0) return null;
+  const span = pickValueSpan(instruction, spans);
+  return {
+    before: instruction.slice(0, span.index),
+    matched: instruction.slice(span.index, span.index + span.length),
+    after: instruction.slice(span.index + span.length),
+  };
+}
+
 function toPascalCase(siteId: string): string {
   return siteId
     .split(/[-_]/)
@@ -96,9 +184,9 @@ export function resolveStepPayloadField(
 ): string | null {
   if (forceNone) return null;
   if (explicit) return explicit;
-  // A quoted literal or ${RECON_EMAIL} IS the recon constant this step would
-  // replace, so it is spliceable on its own.
-  const hasQuotedConstant = /'[^']*'/.test(instruction) || /\$\{RECON_EMAIL\}/.test(instruction);
+  // A quoted literal or a reserved ${RECON_*} env token IS the recon constant
+  // this step would replace, so it is spliceable on its own.
+  const hasQuotedConstant = /'[^']*'/.test(instruction) || RESERVED_ENV_TOKEN.test(instruction);
   // A dropdown step carries no constant to replace, so a label match alone can't
   // tell "select the test candidate's state" (the caller's data) from "select the
   // neighborhood from the Country dropdown" (a facet that merely says Country).
@@ -155,13 +243,9 @@ export function extractStepPersonaValue(
     const resolved = env[envToken[1]!];
     if (resolved) return resolved;
   }
-  // Neutralize the possessive apostrophe so it isn't read as a quote delimiter.
-  const cleaned = instruction.replace(/(\w)'s\b/g, "$1s");
-  const quotes = [...cleaned.matchAll(/'([^']*)'/g)].map((m) => m[1]!);
-  if (quotes.length === 0) return null;
-  const value = /^\s*(select|choose|pick)\b/i.test(instruction)
-    ? quotes[0]!
-    : quotes[quotes.length - 1]!;
+  const spans = findQuoteSpans(instruction);
+  if (spans.length === 0) return null;
+  const value = pickValueSpan(instruction, spans).value;
   return value.length > 0 ? value : null;
 }
 
@@ -3786,41 +3870,87 @@ export function emitContractTs(opts: {
   // longer drives the public schema. A missing inputBody means this is a
   // non-submission (query-type) flow, which keeps its own contract untouched.
   const basePayloadSchemaExpr = inputBody
-    ? `ApplicantContactSchema.extend({\n  Email: z.email(),\n  ClickUrl: z.string().min(1),\n  Answers: multipartJsonObject(z.record(z.string(), z.unknown())),\n})`
+    ? `ApplicantContactSchema`
     : `z.object({\n  query: z.string().min(1),\n})`;
+  // Every field source below (the base extend's own keys, form-schema
+  // discovery, browser-flow splicing, option/raw-option enums, additional
+  // body keys, and structured keys) is merged into a SINGLE `.extend({...})`
+  // object literal, keyed by field name, rather than each becoming its own
+  // chained `.extend()` call. A name that recurs across sources collapses to
+  // one declaration — the later source in this list wins, mirroring the
+  // override semantics a chain of `.extend()` calls used to have (each
+  // subsequent `.extend` replaced an earlier field of the same name).
+  const extendFields = new Map<string, string>();
+  const addExtendField = (name: string, line: string): void => {
+    extendFields.set(name, line);
+  };
+
+  // The base extend's own keys — submission flows only.
+  if (inputBody) {
+    addExtendField("Email", "  Email: z.email(),");
+    addExtendField("ClickUrl", "  ClickUrl: z.string().min(1),");
+    addExtendField("Answers", "  Answers: multipartJsonObject(z.record(z.string(), z.unknown())),");
+  }
+
+  // ApplicantContactSchema's own merged identity/address/resume field names
+  // (see src/lib/application-identity.ts, application-address.ts,
+  // application-resume.ts, applicant-payload.ts) — reserved so no discovered/
+  // spliced source can redeclare (and silently shadow) a field the base
+  // ApplicantContactSchema already supplies. Only relevant for submission
+  // flows, where basePayloadSchemaExpr actually is ApplicantContactSchema.
+  const applicantContactFieldNames = new Set([
+    "FirstName",
+    "LastName",
+    "Phone",
+    "AddressLine",
+    "City",
+    "State",
+    "PostalCode",
+    "Country",
+    "County",
+    "Resume",
+    "ResumeContentType",
+    "ResumeFilename",
+    "ResumeBase64",
+  ]);
+  const isReservedByApplicantContactSchema = (name: string): boolean =>
+    Boolean(inputBody) && applicantContactFieldNames.has(name);
+
+  // Multi-step flows that include a multipart upload need the binary asset
+  // on the payload. A query-type flow (no ApplicantContactSchema base) still
+  // needs these fields spelled out explicitly.
+  if (hasMultipartStep && !inputBody) {
+    addExtendField("Resume", "  Resume: z.instanceof(Buffer),");
+    addExtendField("ResumeContentType", "  ResumeContentType: z.string(),");
+    addExtendField("ResumeFilename", "  ResumeFilename: z.string(),");
+  }
+
   // Form-schema-discovered fields (e.g. AddressLine1, UserSsn, Reference1FirstName)
   // are added to the payload as required strings. Site-agnostic: the set is
   // populated by applyFormSchemaSubstitutions when the recon includes a
   // detectable form schema; empty for sites without one.
-  const formFieldsExtension =
-    discoveredFormFields && discoveredFormFields.size > 0
-      ? `.extend({\n${[...discoveredFormFields]
-          .sort()
-          .map((name) => `  ${name}: z.string(),`)
-          .join("\n")}\n})`
-      : "";
+  if (discoveredFormFields) {
+    for (const name of [...discoveredFormFields].sort()) {
+      if (isReservedByApplicantContactSchema(name)) continue;
+      addExtendField(name, `  ${name}: z.string(),`);
+    }
+  }
 
   // Candidate-PII fields the browser flow splices as `payload.<field>`. Emitted
   // as required strings (z.email() for Email per the repo's z.string().email()→
   // z.email() migration) so those references typecheck in the generated flow.
-  // Skip any field the form-schema pass already added to avoid a duplicate
-  // `.extend` key.
-  const splicedFieldNames = payloadFieldNames
-    ? [...payloadFieldNames].filter((name) => !discoveredFormFields?.has(name)).sort()
-    : [];
-  const splicedFieldsExtension =
-    splicedFieldNames.length > 0
-      ? `.extend({\n${splicedFieldNames
-          .map((name) => `  ${name}: ${name === "Email" ? "z.email()" : "z.string()"},`)
-          .join("\n")}\n})`
-      : "";
+  if (payloadFieldNames) {
+    for (const name of [...payloadFieldNames].sort()) {
+      if (isReservedByApplicantContactSchema(name)) continue;
+      addExtendField(name, `  ${name}: ${name === "Email" ? "z.email()" : "z.string()"},`);
+    }
+  }
 
   // Build per-field OPT_<Name> constant declarations + payload-schema enum
   // entries from the form schema's options. Only fields whose option-id
   // slots were actually rewritten in the body (i.e. that appear in
   // discoveredOptionFields) get emitted; the rest leave their schema entries
-  // unused. Computed BEFORE payloadSchemaExpr so the extension string is
-  // available for the final schema concat.
+  // unused.
   const emittedOptionMappings: FieldOptionsMapping[] = [];
   if (fieldOptionsMap && discoveredOptionFields && discoveredOptionFields.size > 0) {
     for (const mapping of fieldOptionsMap.values()) {
@@ -3841,15 +3971,13 @@ export function emitContractTs(opts: {
       return `\nconst OPT_${mapping.semanticName} = {\n${entries}\n} as const;\n`;
     })
     .join("");
-  const optionSchemaExtension =
-    emittedOptionMappings.length > 0
-      ? `.extend({\n${emittedOptionMappings
-          .map(
-            (m) =>
-              `  ${m.semanticName}: z.enum([${m.options.map((o) => JSON.stringify(o.value)).join(", ")}]),`
-          )
-          .join("\n")}\n})`
-      : "";
+  for (const mapping of emittedOptionMappings) {
+    if (isReservedByApplicantContactSchema(mapping.semanticName)) continue;
+    addExtendField(
+      mapping.semanticName,
+      `  ${mapping.semanticName}: z.enum([${mapping.options.map((o) => JSON.stringify(o.value)).join(", ")}]),`
+    );
+  }
 
   // Phase E raw-option payload fields: options whose label strings are empty in
   // the schema — no semantic enum is possible, so the caller supplies the
@@ -3858,15 +3986,13 @@ export function emitContractTs(opts: {
   const sortedRawOptionEntries = discoveredRawOptionFields
     ? [...discoveredRawOptionFields.entries()].sort(([a], [b]) => a.localeCompare(b))
     : [];
-  const rawOptionSchemaExtension =
-    sortedRawOptionEntries.length > 0
-      ? `.extend({\n${sortedRawOptionEntries
-          .map(
-            ([name, reconUuid]) =>
-              `  /** Recon-observed: ${reconUuid}. Caller supplies the option-id UUID for this field. */\n  ${name}: z.string(),`
-          )
-          .join("\n")}\n})`
-      : "";
+  for (const [name, reconUuid] of sortedRawOptionEntries) {
+    if (isReservedByApplicantContactSchema(name)) continue;
+    addExtendField(
+      name,
+      `  /** Recon-observed: ${reconUuid}. Caller supplies the option-id UUID for this field. */\n  ${name}: z.string(),`
+    );
+  }
 
   // A non-scalar (Mechanism B) field forces multipart wire encoding just like
   // an upload step does: the multipart body encodes arrays/objects as
@@ -3879,27 +4005,23 @@ export function emitContractTs(opts: {
   const sortedAdditionalKeys = discoveredAdditionalBodyKeys
     ? [...discoveredAdditionalBodyKeys.entries()].sort(([a], [b]) => a.localeCompare(b))
     : [];
-  const additionalBodyKeysExtension =
-    sortedAdditionalKeys.length > 0
-      ? `.extend({\n${sortedAdditionalKeys
-          .map(([name, kind]) => {
-            // Use multipartBoolean() for booleans when multipart is in play, so
-            // multipart string-encoded "true"/"false" round-trip to native
-            // booleans (matches the inputBody boolean handling for parity).
-            const zod =
-              kind === "string"
-                ? "z.string()"
-                : kind === "number"
-                  ? payloadNeedsMultipart
-                    ? "z.coerce.number()"
-                    : "z.number()"
-                  : payloadNeedsMultipart
-                    ? "multipartBoolean()"
-                    : "z.boolean()";
-            return `  ${name}: ${zod},`;
-          })
-          .join("\n")}\n})`
-      : "";
+  for (const [name, kind] of sortedAdditionalKeys) {
+    if (isReservedByApplicantContactSchema(name)) continue;
+    // Use multipartBoolean() for booleans when multipart is in play, so
+    // multipart string-encoded "true"/"false" round-trip to native booleans
+    // (matches the inputBody boolean handling for parity).
+    const zod =
+      kind === "string"
+        ? "z.string()"
+        : kind === "number"
+          ? payloadNeedsMultipart
+            ? "z.coerce.number()"
+            : "z.number()"
+          : payloadNeedsMultipart
+            ? "multipartBoolean()"
+            : "z.boolean()";
+    addExtendField(name, `  ${name}: ${zod},`);
+  }
 
   // Mechanism B: nested caller structures become payload fields carrying their
   // inferred schema. Emitted as an object body so multi-line z.array(z.object(
@@ -3908,16 +4030,12 @@ export function emitContractTs(opts: {
   const sortedStructuredEntries = discoveredStructuredKeys
     ? [...discoveredStructuredKeys.entries()].sort(([a], [b]) => a.localeCompare(b))
     : [];
-  const structuredKeysExtension =
-    sortedStructuredEntries.length > 0
-      ? `.extend({\n${sortedStructuredEntries
-          .map(([name, schema]) => {
-            const key = isValidJsIdentifier(name) ? name : JSON.stringify(name);
-            const value = payloadNeedsMultipart ? `multipartJsonObject(${schema})` : schema;
-            return `  ${key}: ${value},`;
-          })
-          .join("\n")}\n})`
-      : "";
+  for (const [name, schema] of sortedStructuredEntries) {
+    if (isReservedByApplicantContactSchema(name)) continue;
+    const key = isValidJsIdentifier(name) ? name : JSON.stringify(name);
+    const value = payloadNeedsMultipart ? `multipartJsonObject(${schema})` : schema;
+    addExtendField(name, `  ${key}: ${value},`);
+  }
 
   // The structural walk over the captured request body that used to BE the
   // public payload schema (see basePayloadSchemaExpr above) is still the
@@ -3931,19 +4049,20 @@ export function emitContractTs(opts: {
   const internalRequestReferenceExpr = inputBody
     ? inferZodSchema(inputBody, 0, "", { multipartCoerce: hasMultipartStep })
     : null;
-  // optionSchemaExtension is appended LAST so option enums show up at the
-  // end of the payload type — the section ordering (base, multipart fields,
-  // form-schema fields, option enums, raw-option fields) matches the body
-  // emit order and keeps the generated payload type readable.
-  const resumeFieldsExtension =
-    hasMultipartStep && !inputBody
-      ? `.extend({\n  Resume: z.instanceof(Buffer),\n  ResumeContentType: z.string(),\n  ResumeFilename: z.string(),\n})`
-      : "";
-  const payloadSchemaExpr = `${basePayloadSchemaExpr}${resumeFieldsExtension}${formFieldsExtension}${splicedFieldsExtension}${optionSchemaExtension}${rawOptionSchemaExtension}${additionalBodyKeysExtension}${structuredKeysExtension}`;
-  // basePayloadSchemaExpr always wraps Answers in multipartJsonObject() for
-  // submission flows (inputBody set); multipartBoolean() and the
-  // structuredKeysExtension wrapping are needed whenever payloadNeedsMultipart
-  // is true (an upload step OR a non-scalar discoveredStructuredKeys field).
+
+  // All field sources above are merged into a SINGLE `.extend({...})` object
+  // literal, keyed by field name — a name that recurs across sources (or
+  // that collides with the base extend's own Email/ClickUrl/Answers) collapses
+  // to its last-declared line, rather than becoming a second, dupe-prone
+  // `.extend()` call chained onto the schema.
+  const mergedExtension =
+    extendFields.size > 0 ? `.extend({\n${[...extendFields.values()].join("\n")}\n})` : "";
+  const payloadSchemaExpr = `${basePayloadSchemaExpr}${mergedExtension}`;
+  // basePayloadSchemaExpr's own Answers field always wraps in
+  // multipartJsonObject() for submission flows (inputBody set);
+  // multipartBoolean() and the structured-keys wrapping above are needed
+  // whenever payloadNeedsMultipart is true (an upload step OR a non-scalar
+  // discoveredStructuredKeys field).
   // Named imports from the same module are combined into one import statement.
   const zodMultipartNamedImports = [
     ...(payloadNeedsMultipart ? ["multipartBoolean"] : []),
@@ -4218,60 +4337,47 @@ function escapeForTemplateLiteral(segment: string): string {
  * Build the emitted instruction expression for one step: a plain double-quoted
  * literal when nothing splices, or a backtick template literal with the recon
  * constant replaced by `${payload.<field>}` when the resolver picks a field.
- * The first `${RECON_EMAIL}` token (preferred) or the first single-quoted
- * literal in the instruction is the splice site.
+ * The splice site is located by {@link locateSpliceSite} — a reserved
+ * `${RECON_*}` env token when present, otherwise the quoted VALUE span (never
+ * a selector's or label's quoted span), matching {@link extractStepPersonaValue}'s
+ * own choice so the browser-flow and HTTP-body emitters never disagree on
+ * which quoted span is the persona value.
  */
 function buildStepInstructionExpr(instruction: string, field: string | null): string {
   if (field === null) return JSON.stringify(instruction);
-  // Concatenated so Biome's noTemplateCurlyInString doesn't flag the literal
-  // env-var token — it must stay `${RECON_EMAIL}` to match recon's flow files.
-  const emailToken = `$${"{RECON_EMAIL}"}`;
-  const emailIdx = instruction.indexOf(emailToken);
-  const [before, matched, after] =
-    emailIdx >= 0
-      ? [
-          instruction.slice(0, emailIdx),
-          emailToken,
-          instruction.slice(emailIdx + emailToken.length),
-        ]
-      : (() => {
-          const m = /'[^']*'/.exec(instruction);
-          if (m === null) return [instruction, "", ""] as const;
-          return [
-            instruction.slice(0, m.index),
-            m[0],
-            instruction.slice(m.index + m[0].length),
-          ] as const;
-        })();
-  if (matched === "") return JSON.stringify(instruction);
-  return `\`${escapeForTemplateLiteral(before)}\${payload.${field}}${escapeForTemplateLiteral(after)}\``;
+  const site = locateSpliceSite(instruction);
+  if (site === null) return JSON.stringify(instruction);
+  return `\`${escapeForTemplateLiteral(site.before)}\${payload.${field}}${escapeForTemplateLiteral(site.after)}\``;
 }
 
 /**
- * Rewrites one step instruction into the config-manifest templating form:
- * the recon splice site (a `${RECON_EMAIL}` token or the first single-quoted
- * literal) becomes `{{ .request.<field> }}`. Unlike {@link buildStepInstructionExpr}
- * this yields a plain manifest string, not a TS expression — the runtime
- * config-plugin resolver, not the code generator, performs the splice.
+ * Build the emitted instruction expression for a step whose splice site is the
+ * reserved `${RECON_PASSWORD}` token: a backtick template literal with the
+ * token replaced by `${throwawayPassword}`, the per-run credential minted by
+ * {@link generateThrowawayPassword} — never the recon capture's literal
+ * password, and never routed through `payload.<field>` since no caller-
+ * supplied Password field exists on the applicant payload.
+ */
+function buildPasswordInstructionExpr(instruction: string): string {
+  const site = locateSpliceSite(instruction);
+  if (site === null) return JSON.stringify(instruction);
+  return `\`${escapeForTemplateLiteral(site.before)}\${throwawayPassword}${escapeForTemplateLiteral(site.after)}\``;
+}
+
+/**
+ * Rewrites one step instruction into the config-manifest templating form: the
+ * splice site located by {@link locateSpliceSite} becomes `{{ .request.<field> }}`.
+ * Unlike {@link buildStepInstructionExpr} this yields a plain manifest string,
+ * not a TS expression — the runtime config-plugin resolver, not the code
+ * generator, performs the splice. Reuses {@link locateSpliceSite} so this
+ * emitter never lands the splice on a selector's or label's quoted span, the
+ * same guarantee {@link buildStepInstructionExpr} makes.
  */
 function buildManifestInstruction(instruction: string, field: string | null): string {
   if (field === null) return instruction;
-  const emailToken = `$${"{RECON_EMAIL}"}`;
-  const emailIdx = instruction.indexOf(emailToken);
-  if (emailIdx >= 0) {
-    return (
-      instruction.slice(0, emailIdx) +
-      `{{ .request.${field} }}` +
-      instruction.slice(emailIdx + emailToken.length)
-    );
-  }
-  const m = /'[^']*'/.exec(instruction);
-  if (m === null) return instruction;
-  return (
-    instruction.slice(0, m.index) +
-    `{{ .request.${field} }}` +
-    instruction.slice(m.index + m[0].length)
-  );
+  const site = locateSpliceSite(instruction);
+  if (site === null) return instruction;
+  return `${site.before}{{ .request.${field} }}${site.after}`;
 }
 
 /**
@@ -4341,6 +4447,20 @@ export function emitConfigManifest(opts: {
   const steps = flowSteps.map((step) => {
     const isObj = typeof step !== "string";
     const instruction = isObj ? step.step : step;
+    // A config-only manifest has no compiled code to mint a throwaway credential
+    // at runtime (unlike emitBrowserFlowTs's generateThrowawayPassword() splice),
+    // so ${RECON_PASSWORD} is routed to an explicit "Password" request field
+    // instead — the operator supplies it at call time. Either way the literal
+    // token must never survive into the manifest.
+    if (instruction.includes(RECON_PASSWORD_TOKEN)) {
+      payloadFieldNames.add("Password");
+      const rewritten = buildManifestInstruction(instruction, "Password");
+      const optional = isObj ? step.optional === true : false;
+      const upload = isObj ? step.upload === true : false;
+      const submitStep = isObj ? step.submitStep === true : false;
+      if (!optional && !upload && !submitStep) return rewritten;
+      return { step: rewritten, optional, upload, submitStep };
+    }
     const field = resolveStepPayloadField(
       instruction,
       isObj ? step.payloadField : undefined,
@@ -4435,10 +4555,24 @@ export function emitBrowserFlowTs(opts: {
 
   const payloadFieldNames = new Set<string>();
   const hasUploadStep = flowSteps.some((s) => typeof s !== "string" && s.upload === true);
+  let usesThrowawayPassword = false;
 
   const stepLiterals = flowSteps.map((step) => {
     const isObj = typeof step !== "string";
     const instruction = isObj ? step.step : step;
+    // ${RECON_PASSWORD} is reserved-tooling, not a domain-vocabulary concern —
+    // it names a credential the recon capture needed to authenticate, not a
+    // piece of the caller's applicant identity, so it never reaches
+    // resolveStepPayloadField/vocabulary and never routes through
+    // payload.<field>. It gets a generated throwaway credential instead.
+    if (instruction.includes(RECON_PASSWORD_TOKEN)) {
+      usesThrowawayPassword = true;
+      const instructionExpr = buildPasswordInstructionExpr(instruction);
+      const optional = isObj ? step.optional === true : false;
+      const upload = isObj ? step.upload === true : false;
+      const submitStep = isObj ? step.submitStep === true : false;
+      return `  { instruction: ${instructionExpr}, optional: ${optional}, upload: ${upload}, submitStep: ${submitStep} },`;
+    }
     const field = resolveStepPayloadField(
       instruction,
       isObj ? step.payloadField : undefined,
@@ -4470,7 +4604,7 @@ export function emitBrowserFlowTs(opts: {
   const uploadFixtureExpr =
     hasUploadStep && hasMultipartStep
       ? `{
-    buffer: Buffer.from(payload.Resume ?? "", "base64"),
+    buffer: Buffer.from(payload.Resume),
     name: payload.ResumeFilename ?? "resume.pdf",
     mimeType: payload.ResumeContentType ?? "application/pdf",
   }`
@@ -4494,7 +4628,7 @@ import type { Stagehand } from "@browserbasehq/stagehand";
 import { z } from "zod/v4";
 
 import { buildAnthropicClient, buildRephraseModel } from "${ENGINE_PKG}/lib/llm/anthropic-client";
-import { getLogger } from "${ENGINE_PKG}/lib/logging";
+import { getLogger } from "${ENGINE_PKG}/lib/logging";${usesThrowawayPassword ? `\nimport { generateThrowawayPassword } from "${ENGINE_PKG}/lib/random";` : ""}
 import { type HealingFlowStep, runHealingFlow, waitForSpaReady } from "${ENGINE_PKG}/scraper/flow-runner";
 import { guardedExtract } from "${ENGINE_PKG}/scraper/stagehand-guard";
 import type { ${pascal}Payload, ${pascal}Response } from "@/sites/${siteId}/contract";
@@ -4522,7 +4656,7 @@ export async function run${pascal}BrowserFlow(
   // networkidle can resolve before a Cloudflare-fronted SPA hydrates; wait for
   // the real DOM so the first steps don't probe an empty shell page and skip.
   await waitForSpaReady(page, logger);
-
+${usesThrowawayPassword ? "\n  // Minted once per run — the flow needs a credential to authenticate, but\n  // there is no caller-supplied Password field on the payload to splice.\n  const throwawayPassword = generateThrowawayPassword();\n" : ""}
   const FLOW_STEPS: HealingFlowStep[] = [
 ${flowStepsBlock}
   ];
