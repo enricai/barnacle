@@ -216,6 +216,14 @@ describe("scraper/session-browserbase required-key validation", () => {
       })
     );
   });
+
+  it("passes keepAlive:true so Stagehand's out-of-process shutdown supervisor never spawns", async () => {
+    await createBrowserbaseBrowserSession();
+
+    const stagehandArg = vi.mocked(Stagehand).mock.calls.at(-1)?.[0] as { keepAlive?: boolean };
+
+    expect(stagehandArg.keepAlive).toBe(true);
+  });
 });
 
 describe("scraper/session-steel required-key validation", () => {
@@ -232,6 +240,14 @@ describe("scraper/session-steel required-key validation", () => {
     configRef.value.scraper.anthropicApiKey = undefined;
     configRef.value.scraper.useBedrock = false;
     await expect(createSteelBrowserSession()).rejects.toThrow(/ANTHROPIC_API_KEY/);
+  });
+
+  it("passes keepAlive:true so Stagehand's out-of-process shutdown supervisor never spawns", async () => {
+    await createSteelBrowserSession();
+
+    const stagehandArg = vi.mocked(Stagehand).mock.calls.at(-1)?.[0] as { keepAlive?: boolean };
+
+    expect(stagehandArg.keepAlive).toBe(true);
   });
 });
 

@@ -243,6 +243,13 @@ export async function createBrowserbaseBrowserSession(
       llmClient,
       serverCache: true,
       selfHeal: false,
+      // Stagehand spawns an out-of-process crash supervisor whenever
+      // keepAlive isn't true, watching its own stdin lifeline pipe and
+      // releasing the session the moment that pipe closes. Barnacle already
+      // owns explicit teardown (the close() below, and the try/finally on
+      // init failure above); the supervisor's stdin-close heuristic is a
+      // false-positive risk on top of that, not additional safety.
+      keepAlive: true,
       verbose: 0,
       // Custom logger to filter AISDK schema-error spam — see
       // makeFilteredStagehandLogger TSDoc for rationale.

@@ -98,6 +98,13 @@ export async function createSteelBrowserSession(): Promise<BrowserSession> {
       llmClient,
       serverCache: true,
       selfHeal: false,
+      // Stagehand spawns an out-of-process crash supervisor whenever
+      // keepAlive isn't true, watching its own stdin lifeline pipe and
+      // releasing the session the moment that pipe closes. Barnacle already
+      // owns explicit teardown (the close() below, and the try/finally on
+      // init failure above); the supervisor's stdin-close heuristic is a
+      // false-positive risk on top of that, not additional safety.
+      keepAlive: true,
       localBrowserLaunchOptions: { cdpUrl },
       verbose: 0,
     });
