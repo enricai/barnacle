@@ -327,3 +327,46 @@ describe("createBrowserbaseBrowserSession keepAlive", () => {
     expect(stagehandArg.keepAlive).toBe(true);
   });
 });
+
+describe("createBrowserbaseBrowserSession teardown-detector composition", () => {
+  beforeEach(() => {
+    configRef.value.scraper.browserbaseApiKey = "bb-key";
+    configRef.value.scraper.browserbaseProjectId = "bb-project";
+    configRef.value.scraper.anthropicApiKey = "anthropic-key";
+    configRef.value.scraper.useBedrock = false;
+    vi.clearAllMocks();
+  });
+
+  it("exposes a deathSignal that rejects when the composed logger callback observes a teardown line", async () => {
+    const session = await createBrowserbaseBrowserSession();
+
+    const stagehandArg = vi.mocked(Stagehand).mock.calls.at(-1)?.[0] as {
+      logger?: (line: StagehandLogLine) => void;
+    };
+    const loggerCallback = stagehandArg.logger;
+    expect(loggerCallback).toBeInstanceOf(Function);
+    expect(session.deathSignal).toBeInstanceOf(Promise);
+
+    const assertion = expect(session.deathSignal).rejects.toThrow(
+      "stagehand-initiated teardown mid-flow"
+    );
+    loggerCallback?.({
+      message: "CDP transport closed",
+      category: "connection",
+      level: 0,
+    });
+    await assertion;
+  });
+
+  it("still suppresses AISDK elementId spam through the composed callback (existing behavior preserved)", async () => {
+    const session = await createBrowserbaseBrowserSession();
+
+    const stagehandArg = vi.mocked(Stagehand).mock.calls.at(-1)?.[0] as {
+      logger?: (line: StagehandLogLine) => void;
+    };
+    const loggerCallback = stagehandArg.logger;
+
+    expect(() => loggerCallback?.(elementIdErrorLine)).not.toThrow();
+    expect(session.getSuppressedAisdkElementIdErrorCount?.()).toBe(1);
+  });
+});
