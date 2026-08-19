@@ -11,6 +11,7 @@
 import { Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { StagehandLogLine } from "@/scraper/session-browserbase";
 import { createSteelBrowserSession } from "@/scraper/session-steel";
 
 const { configRef } = vi.hoisted(() => ({
@@ -103,5 +104,48 @@ describe("scraper/session-steel keepAlive", () => {
     const stagehandArg = vi.mocked(Stagehand).mock.calls.at(-1)?.[0] as { keepAlive?: boolean };
 
     expect(stagehandArg.keepAlive).toBe(true);
+  });
+});
+
+describe("scraper/session-steel teardown-detector composition", () => {
+  beforeEach(() => {
+    configRef.value.scraper.steelApiKey = "steel-key";
+    configRef.value.scraper.anthropicApiKey = "anthropic-key";
+    configRef.value.scraper.useBedrock = false;
+    vi.clearAllMocks();
+  });
+
+  it("passes a logger callback to Stagehand that forwards ordinary lines to pino", async () => {
+    await createSteelBrowserSession();
+
+    const stagehandArg = vi.mocked(Stagehand).mock.calls.at(-1)?.[0] as {
+      logger?: (line: StagehandLogLine) => void;
+    };
+    const loggerCallback = stagehandArg.logger;
+    expect(loggerCallback).toBeInstanceOf(Function);
+
+    loggerCallback?.({ category: "action", message: "clicked element", level: 1 });
+
+    expect(loggerStub.info).toHaveBeenCalledWith({ stagehand: "action" }, "clicked element");
+  });
+
+  it("exposes a deathSignal that rejects when the logger callback observes a teardown line", async () => {
+    const session = await createSteelBrowserSession();
+
+    const stagehandArg = vi.mocked(Stagehand).mock.calls.at(-1)?.[0] as {
+      logger?: (line: StagehandLogLine) => void;
+    };
+    const loggerCallback = stagehandArg.logger;
+    expect(session.deathSignal).toBeInstanceOf(Promise);
+
+    const assertion = expect(session.deathSignal).rejects.toThrow(
+      "stagehand-initiated teardown mid-flow"
+    );
+    loggerCallback?.({
+      message: "CDP transport closed",
+      category: "connection",
+      level: 0,
+    });
+    await assertion;
   });
 });
