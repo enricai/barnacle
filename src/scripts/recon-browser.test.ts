@@ -102,7 +102,11 @@ import { config } from "@/config";
 import { RECON_FLOW_STEP_SCHEMA } from "@/lib/llm/schemas";
 import type { LlmCallInput } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE, CALL_TYPE_RECON_REPLAN } from "@/lib/telemetry/call-types";
-import { SessionTimeoutError, StepVerificationError } from "@/scraper/errors";
+import {
+  CdpTransportClosedError,
+  SessionTimeoutError,
+  StepVerificationError,
+} from "@/scraper/errors";
 import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import { createBrowserSession } from "@/scraper/session";
 import {
@@ -5860,7 +5864,9 @@ describe("recon-browser CLI — process exit code on a mid-flow teardown death s
         setTimeout(
           () =>
             signalDeath?.(
-              new SessionTimeoutError("stagehand-initiated teardown mid-flow: CDP transport closed")
+              new CdpTransportClosedError(
+                "stagehand-initiated teardown mid-flow: CDP transport closed"
+              )
             ),
           0
         );
@@ -5922,7 +5928,9 @@ describe("recon-browser CLI — process exit code on a mid-flow teardown death s
         setTimeout(
           () =>
             signalDeath?.(
-              new SessionTimeoutError("stagehand-initiated teardown mid-flow: CDP transport closed")
+              new CdpTransportClosedError(
+                "stagehand-initiated teardown mid-flow: CDP transport closed"
+              )
             ),
           0
         );

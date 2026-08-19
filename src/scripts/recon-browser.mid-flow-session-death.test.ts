@@ -90,7 +90,7 @@ vi.mock("@/scraper/flow-runner", async (importOriginal) => {
   };
 });
 
-import { SessionTimeoutError } from "@/scraper/errors";
+import { CdpTransportClosedError, SessionTimeoutError } from "@/scraper/errors";
 import { createBrowserSession } from "@/scraper/session";
 import { main } from "@/scripts/recon-browser";
 
@@ -285,7 +285,7 @@ describe("recon-browser/main — mid-flow session death (bugfix-002)", () => {
     expect(executeStepWithHealingStub).toHaveBeenCalledTimes(TOTAL_STEPS);
   });
 
-  it("rejects with SessionTimeoutError when the CDP teardown death signal fires while executeStepWithHealing hangs forever (bugfix-006)", async () => {
+  it("exits via the whole-flow retry gate when the CDP teardown death signal fires while executeStepWithHealing hangs forever (bugfix-006)", async () => {
     const { stagehand } = makeFakePage();
     let signalDeath: ((err: Error) => void) | undefined;
     const deathSignal = new Promise<never>((_resolve, reject) => {
@@ -311,7 +311,9 @@ describe("recon-browser/main — mid-flow session death (bugfix-002)", () => {
         setTimeout(
           () =>
             signalDeath?.(
-              new SessionTimeoutError("stagehand-initiated teardown mid-flow: CDP transport closed")
+              new CdpTransportClosedError(
+                "stagehand-initiated teardown mid-flow: CDP transport closed"
+              )
             ),
           0
         );
@@ -322,9 +324,17 @@ describe("recon-browser/main — mid-flow session death (bugfix-002)", () => {
 
     process.argv = flowArgv(TOTAL_STEPS);
 
-    await expect(main()).rejects.toThrow(SessionTimeoutError);
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("process.exit");
+    }) as never);
+
+    await expect(main()).rejects.toThrow("process.exit");
+    expect(exitSpy).toHaveBeenCalledWith(1);
     expect(stepCount).toBe(SESSION_DIES_AFTER_STEP);
     expect(executeStepWithHealingStub).toHaveBeenCalledTimes(SESSION_DIES_AFTER_STEP);
+    expect(loggerStub.error).toHaveBeenCalledWith(expect.stringContaining("CDP transport"));
+
+    exitSpy.mockRestore();
   });
 
   it("rejects when Stagehand tears the CDP transport down mid-flow even though every step reports completed (bugfix-007)", async () => {

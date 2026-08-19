@@ -311,7 +311,11 @@ describe("flow-runner OOPIF-bound deepLocator hang (offline acceptance test, rea
     for (const attempt of [1, 2, 3, 4, 5]) {
       expect(logged).toMatch(new RegExp(`attempt ${attempt}\\b`));
     }
-  });
+    // The click()-hang path is the deepest cascade branch (all 5 attempts run the
+    // full real stack, draining microtasks per virtual tick); on a loaded CI runner
+    // that real wall-clock drain can exceed vitest's 30s default even though the
+    // virtual-time budget is fine — 60s removes the flake without weakening the assertion.
+  }, 60_000);
 });
 
 describe("flow-runner frame-attach probe hang (offline acceptance test, real stack)", () => {
