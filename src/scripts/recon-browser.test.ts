@@ -133,6 +133,7 @@ import {
   isAdvanceStalled,
   isAdvanceStep,
   isDomOnlyAdvanceVerified,
+  isFlowTruncated,
   isReplanCycle,
   isReplanRegressingAcrossAuthBoundary,
   isReplanReproposingFailedStep,
@@ -2628,6 +2629,26 @@ describe("recon-browser/isReplanCycle", () => {
       { instruction: "Click submit", optional: false, upload: false, origin: "original" },
     ];
     expect(isReplanCycle(priors, newSteps, { url, htmlLength: 50000 })).toBe(false);
+  });
+});
+
+describe("recon-browser/isFlowTruncated", () => {
+  it("returns false when every declared step completed", () => {
+    expect(
+      isFlowTruncated({ completedStepCount: 5, planLength: 5, exitedViaTrailingGrace: false })
+    ).toBe(false);
+  });
+
+  it("returns false when the trailing-grace break fired even though steps remain", () => {
+    expect(
+      isFlowTruncated({ completedStepCount: 3, planLength: 5, exitedViaTrailingGrace: true })
+    ).toBe(false);
+  });
+
+  it("returns true when the loop stopped short with no trailing-grace exit", () => {
+    expect(
+      isFlowTruncated({ completedStepCount: 3, planLength: 5, exitedViaTrailingGrace: false })
+    ).toBe(true);
   });
 });
 

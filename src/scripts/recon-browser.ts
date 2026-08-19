@@ -314,6 +314,22 @@ export function detectRejectionInResponseBody(body: unknown): {
  * case; the string-as-JSON fallback covers rare cases where the capture
  * writer stored a parseable JSON string for some reason.
  */
+/**
+ * Last-line invariant for the step loop: the loop can only fall through
+ * without throwing via two legitimate paths — completing every declared
+ * step, or the trailing-grace break on a stalled trailing-optional step.
+ * Any other way of reaching the end (a future code path that returns/
+ * breaks early, or an unaccounted-for stop mid-step) must not be reported
+ * as a successful run.
+ */
+export function isFlowTruncated(params: {
+  completedStepCount: number;
+  planLength: number;
+  exitedViaTrailingGrace: boolean;
+}): boolean {
+  return !params.exitedViaTrailingGrace && params.completedStepCount !== params.planLength;
+}
+
 function normalizeResponseBodyForAudit(data: { responseBody?: unknown }): unknown {
   const body = data.responseBody;
   if (body && typeof body === "object") return body;
@@ -2315,6 +2331,7 @@ async function main(): Promise<void> {
       }
     };
     let lastOrigin = originOf(page.url());
+    let exitedViaTrailingGrace = false;
 
     for (let i = 0; i < plan.length; i++) {
       const step = plan[i]!;
@@ -2555,6 +2572,7 @@ async function main(): Promise<void> {
             logger.info(
               `${formatStepPrefix(i, () => plan.length)} optional + trailing position; judge verified recent submit (${trailingGraceVerdict.rationale}) — treating verification failure as benign no-op; recon complete`
             );
+            exitedViaTrailingGrace = true;
             break;
           }
         }
@@ -2728,6 +2746,19 @@ async function main(): Promise<void> {
         plan.splice(i, plan.length - i, ...taggedNewSteps, ...originalRemaining);
         i--;
       }
+    }
+
+    if (
+      isFlowTruncated({
+        completedStepCount: completedSteps.length,
+        planLength: plan.length,
+        exitedViaTrailingGrace,
+      })
+    ) {
+      logger.error(
+        `flow truncated: only ${completedSteps.length}/${plan.length} steps completed and no legitimate early-exit occurred — refusing to report success`
+      );
+      process.exit(1);
     }
 
     stopCapture();
