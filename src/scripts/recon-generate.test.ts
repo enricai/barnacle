@@ -470,6 +470,20 @@ describe("extractActionSequence — host is not a filter criterion", () => {
       "https://api.tenant.example.com/submit",
     ]);
   });
+
+  it("retains a capture whose host differs from every sibling capture in the same fixture", () => {
+    // The landing page is on the marketing host, but the actual submission
+    // redirects to a distinct tenant API host — neither is noise per isNoiseUrl.
+    const kept = extractActionSequence([
+      capture("https://www.example-corp.com/apply", "{}"),
+      capture("https://api.tenant.example.com/submit", "{}"),
+    ]).map((a) => a.capture.url);
+
+    expect(kept).toEqual([
+      "https://www.example-corp.com/apply",
+      "https://api.tenant.example.com/submit",
+    ]);
+  });
 });
 
 describe("extractActionSequence — submit patterns isolate the submission from same-URL chrome", () => {
