@@ -4583,9 +4583,7 @@ export function parseWidgetOptionClickStep(instruction: string): { option: strin
   // tolerant of a short qualifier ("top-level", "leaf") between the noun and
   // the quote — e.g. "click the top-level category 'Job Boards'" or "click
   // the leaf option 'Internet - Job Boards/Search Engines'".
-  const optMatch = instruction.match(
-    /\bclick\s+the\s+(?:\S+\s+)?(?:category|option)\s+'([^']+)'/i
-  );
+  const optMatch = instruction.match(/\bclick\s+the\s+(?:\S+\s+)?(?:category|option)\s+'([^']+)'/i);
   if (!optMatch) return null;
   // biome-ignore lint/style/noNonNullAssertion: guarded by the !optMatch early-return; group 1 is required by the pattern
   const option = optMatch[1]!.trim();
