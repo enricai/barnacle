@@ -4470,7 +4470,7 @@ export function emitBrowserFlowTs(opts: {
   const uploadFixtureExpr =
     hasUploadStep && hasMultipartStep
       ? `{
-    buffer: Buffer.from(payload.Resume ?? "", "base64"),
+    buffer: Buffer.from(payload.Resume),
     name: payload.ResumeFilename ?? "resume.pdf",
     mimeType: payload.ResumeContentType ?? "application/pdf",
   }`

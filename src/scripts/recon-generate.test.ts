@@ -1459,6 +1459,7 @@ describe("emitBrowserFlowTs — uploadFixture guard (upload vs multipart)", () =
       hasMultipartStep: true,
     });
     expect(code).toContain("Buffer.from(payload.Resume");
+    expect(code).not.toContain("base64");
     expect(code).toContain("payload.ResumeFilename");
   });
 
