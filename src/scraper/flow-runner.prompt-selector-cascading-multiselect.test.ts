@@ -220,4 +220,48 @@ describe("flow-runner/tryPromptSelectorPrimitive cascading multiselect (shared D
     expect(stagehandAct).not.toHaveBeenCalled();
     expect(stagehandObserve).not.toHaveBeenCalled();
   });
+
+  it("single-step-authored, no container-level invalid marker: does not accept the category-drill click as committed and continues to the leaf", async () => {
+    const stagehandAct = vi.fn();
+    const stagehandObserve = vi.fn().mockResolvedValue([]);
+    const stagehand = { act: stagehandAct, observe: stagehandObserve } as unknown as Stagehand;
+    const { page, target } = buildPromptWidgetHarness({ html: WIDGET_HTML, popupByWidgetId });
+
+    // The leaf text isn't among the CATEGORY options, so the deterministic
+    // match misses at the category level and falls to the LLM judge to pick
+    // the best-guess category for the leaf hint.
+    vi.mocked(judgeSelectOptionWithLLM).mockResolvedValue({
+      selectIndex: 0,
+      optionIndex: CATEGORIES.indexOf(CATEGORY),
+      reason: "closest category for the leaf hint",
+    });
+
+    const trajectory: { stepIndex: number; verifiedBy: string; targetId?: string }[] = [];
+    const result = await executeStepWithHealing({
+      ...baseParams(
+        page as unknown as Page,
+        stagehand,
+        `for 'How Did You Hear About Us?' select '${LEAF}'`,
+        target
+      ),
+      anthropic: {} as never,
+      stepIndex: 30,
+      trajectory,
+    } as never);
+
+    expect(result).toBe("completed");
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining("drilled the popup to a new option set")
+    );
+    expect(trajectory).toEqual([{ stepIndex: 30, verifiedBy: "dom", targetId: "src-widget" }]);
+
+    const finalState = await finalWidgetState(
+      target as unknown as { evaluate: (e: string) => Promise<unknown> }
+    );
+    expect(finalState.text).toBe(LEAF);
+    expect(finalState.invalid).toBe("false");
+
+    expect(stagehandAct).not.toHaveBeenCalled();
+    expect(stagehandObserve).not.toHaveBeenCalled();
+  });
 });
