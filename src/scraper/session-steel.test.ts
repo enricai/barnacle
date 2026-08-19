@@ -9,6 +9,7 @@
  */
 
 import { Stagehand } from "@browserbasehq/stagehand";
+import Steel from "steel-sdk";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { StagehandLogLine } from "@/scraper/session-browserbase";
@@ -47,13 +48,25 @@ vi.mock("@/config", () => ({
   },
 }));
 
+const { fakeConn } = vi.hoisted(() => ({
+  fakeConn: { send: vi.fn().mockResolvedValue(undefined) },
+}));
+
 vi.mock("@browserbasehq/stagehand", () => ({
   AISdkClient: vi.fn(),
   Stagehand: vi.fn(function (this: Record<string, unknown>) {
     this.init = vi.fn().mockResolvedValue(undefined);
     this.close = vi.fn().mockResolvedValue(undefined);
+    this.context = { conn: fakeConn };
   }),
 }));
+
+const { heartbeatStub, startCdpTransportHeartbeat } = vi.hoisted(() => {
+  const heartbeatStub = { stop: vi.fn() };
+  return { heartbeatStub, startCdpTransportHeartbeat: vi.fn(() => heartbeatStub) };
+});
+
+vi.mock("@/scraper/cdp-heartbeat", () => ({ startCdpTransportHeartbeat }));
 
 vi.mock("steel-sdk", () => ({
   default: vi.fn(function (this: Record<string, unknown>) {
@@ -104,6 +117,28 @@ describe("scraper/session-steel keepAlive", () => {
     const stagehandArg = vi.mocked(Stagehand).mock.calls.at(-1)?.[0] as { keepAlive?: boolean };
 
     expect(stagehandArg.keepAlive).toBe(true);
+  });
+
+  it("starts the CDP heartbeat against stagehand.context.conn and stops it before steel.sessions.release() on close()", async () => {
+    const session = await createSteelBrowserSession();
+
+    expect(startCdpTransportHeartbeat).toHaveBeenCalledWith(
+      fakeConn,
+      expect.objectContaining({ logger: loggerStub })
+    );
+    expect(heartbeatStub.stop).not.toHaveBeenCalled();
+
+    const steelInstance = vi.mocked(Steel).mock.results.at(-1)?.value as {
+      sessions: { release: ReturnType<typeof vi.fn> };
+    };
+
+    await session.close();
+
+    expect(heartbeatStub.stop).toHaveBeenCalledTimes(1);
+    const stopOrder = heartbeatStub.stop.mock.invocationCallOrder.at(0) ?? -1;
+    const releaseOrder = steelInstance.sessions.release.mock.invocationCallOrder.at(0) ?? -1;
+    expect(stopOrder).toBeGreaterThanOrEqual(0);
+    expect(stopOrder).toBeLessThan(releaseOrder);
   });
 });
 

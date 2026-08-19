@@ -5,6 +5,7 @@ import { config } from "@/config";
 import { createBedrockModel } from "@/lib/bedrock";
 import { toErrorMessage } from "@/lib/errors";
 import { getLogger } from "@/lib/logging";
+import { type CdpHeartbeatHandle, startCdpTransportHeartbeat } from "@/scraper/cdp-heartbeat";
 import type { StagehandLogLine } from "@/scraper/session-browserbase";
 import {
   type BrowserSession,
@@ -89,6 +90,7 @@ export async function createSteelBrowserSession(): Promise<BrowserSession> {
   // failure leaves a live session burning minutes until Steel's own timeout.
   let stagehand: Stagehand | undefined;
   let deathSignal: Promise<never> | undefined;
+  let heartbeat: CdpHeartbeatHandle | undefined;
   try {
     // Steel's websocketUrl is `wss://connect.steel.dev?sessionId=…`. Stagehand's
     // V3 CDP connector requires the apiKey as a query parameter too — without it
@@ -142,9 +144,11 @@ export async function createSteelBrowserSession(): Promise<BrowserSession> {
     });
 
     await stagehand.init();
+    heartbeat = startCdpTransportHeartbeat(stagehand.context.conn, { logger });
   } catch (err) {
     // Best-effort cleanup; swallow secondary failures so the original
     // error surfaces to the caller.
+    heartbeat?.stop();
     try {
       if (stagehand) await stagehand.close();
     } catch (closeErr) {
@@ -163,6 +167,7 @@ export async function createSteelBrowserSession(): Promise<BrowserSession> {
   const limiter = createSessionLimiter();
 
   const close = async (): Promise<void> => {
+    heartbeat?.stop();
     try {
       await stagehand.close();
     } catch (err) {
