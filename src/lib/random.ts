@@ -7,6 +7,8 @@
  * both sides) consistent and gives the call sites a single name to scan for.
  */
 
+import { randomBytes } from "node:crypto";
+
 /**
  * Returns a uniformly distributed integer in the inclusive range [min, max].
  * If `max <= min` the function returns `min` rather than producing NaN or
@@ -26,4 +28,15 @@ export function randomIntInclusive(min: number, max: number): number {
 export function pickRandom<T>(arr: readonly T[]): T {
   const index = randomIntInclusive(0, arr.length - 1);
   return arr[index] ?? (arr[0] as T);
+}
+
+/**
+ * Mints a fresh, single-use credential value for a flow step that must fill a
+ * password field but has no caller-supplied secret to splice — recon-captured
+ * credentials must never leak into a generated flow, and a fixed literal would
+ * be a shared secret across every run. `node:crypto`'s CSPRNG (not `Math.random`,
+ * which backs the jitter helpers above) keeps the value unguessable.
+ */
+export function generateThrowawayPassword(): string {
+  return randomBytes(24).toString("base64url");
 }

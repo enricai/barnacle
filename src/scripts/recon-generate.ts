@@ -73,6 +73,17 @@ const ENGINE_PKG = "@enricai/barnacle";
 const RESERVED_ENV_TOKEN = /\$\{RECON_[A-Z0-9_]*\}/;
 
 /**
+ * The reserved `${RECON_PASSWORD}` token. Unlike every other `RESERVED_ENV_TOKEN`
+ * (RECON_EMAIL, RECON_PHONE, ...), which name a piece of the caller's real
+ * applicant identity and so splice to a `payload.<field>` accessor, this one
+ * names a credential the recon capture needed to authenticate but that has no
+ * caller-supplied counterpart on the applicant payload — there is no "Password"
+ * field to route it through. It gets its own reserved-tooling handling ahead of
+ * (never through) vocabulary/payload-field resolution.
+ */
+const RECON_PASSWORD_TOKEN = `$${"{RECON_PASSWORD}"}`;
+
+/**
  * Masks the apostrophe in a possessive `'s` (e.g. "the candidate's name") with
  * a non-quote placeholder of the same length, so a naive `'...'` quote scan
  * doesn't mistake the possessive apostrophe for an opening quote delimiter.
@@ -4340,6 +4351,20 @@ function buildStepInstructionExpr(instruction: string, field: string | null): st
 }
 
 /**
+ * Build the emitted instruction expression for a step whose splice site is the
+ * reserved `${RECON_PASSWORD}` token: a backtick template literal with the
+ * token replaced by `${throwawayPassword}`, the per-run credential minted by
+ * {@link generateThrowawayPassword} — never the recon capture's literal
+ * password, and never routed through `payload.<field>` since no caller-
+ * supplied Password field exists on the applicant payload.
+ */
+function buildPasswordInstructionExpr(instruction: string): string {
+  const site = locateSpliceSite(instruction);
+  if (site === null) return JSON.stringify(instruction);
+  return `\`${escapeForTemplateLiteral(site.before)}\${throwawayPassword}${escapeForTemplateLiteral(site.after)}\``;
+}
+
+/**
  * Rewrites one step instruction into the config-manifest templating form: the
  * splice site located by {@link locateSpliceSite} becomes `{{ .request.<field> }}`.
  * Unlike {@link buildStepInstructionExpr} this yields a plain manifest string,
@@ -4516,10 +4541,24 @@ export function emitBrowserFlowTs(opts: {
 
   const payloadFieldNames = new Set<string>();
   const hasUploadStep = flowSteps.some((s) => typeof s !== "string" && s.upload === true);
+  let usesThrowawayPassword = false;
 
   const stepLiterals = flowSteps.map((step) => {
     const isObj = typeof step !== "string";
     const instruction = isObj ? step.step : step;
+    // ${RECON_PASSWORD} is reserved-tooling, not a domain-vocabulary concern —
+    // it names a credential the recon capture needed to authenticate, not a
+    // piece of the caller's applicant identity, so it never reaches
+    // resolveStepPayloadField/vocabulary and never routes through
+    // payload.<field>. It gets a generated throwaway credential instead.
+    if (instruction.includes(RECON_PASSWORD_TOKEN)) {
+      usesThrowawayPassword = true;
+      const instructionExpr = buildPasswordInstructionExpr(instruction);
+      const optional = isObj ? step.optional === true : false;
+      const upload = isObj ? step.upload === true : false;
+      const submitStep = isObj ? step.submitStep === true : false;
+      return `  { instruction: ${instructionExpr}, optional: ${optional}, upload: ${upload}, submitStep: ${submitStep} },`;
+    }
     const field = resolveStepPayloadField(
       instruction,
       isObj ? step.payloadField : undefined,
@@ -4575,7 +4614,7 @@ import type { Stagehand } from "@browserbasehq/stagehand";
 import { z } from "zod/v4";
 
 import { buildAnthropicClient, buildRephraseModel } from "${ENGINE_PKG}/lib/llm/anthropic-client";
-import { getLogger } from "${ENGINE_PKG}/lib/logging";
+import { getLogger } from "${ENGINE_PKG}/lib/logging";${usesThrowawayPassword ? `\nimport { generateThrowawayPassword } from "${ENGINE_PKG}/lib/random";` : ""}
 import { type HealingFlowStep, runHealingFlow, waitForSpaReady } from "${ENGINE_PKG}/scraper/flow-runner";
 import { guardedExtract } from "${ENGINE_PKG}/scraper/stagehand-guard";
 import type { ${pascal}Payload, ${pascal}Response } from "@/sites/${siteId}/contract";
@@ -4603,7 +4642,7 @@ export async function run${pascal}BrowserFlow(
   // networkidle can resolve before a Cloudflare-fronted SPA hydrates; wait for
   // the real DOM so the first steps don't probe an empty shell page and skip.
   await waitForSpaReady(page, logger);
-
+${usesThrowawayPassword ? "\n  // Minted once per run — the flow needs a credential to authenticate, but\n  // there is no caller-supplied Password field on the payload to splice.\n  const throwawayPassword = generateThrowawayPassword();\n" : ""}
   const FLOW_STEPS: HealingFlowStep[] = [
 ${flowStepsBlock}
   ];

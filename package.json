@@ -108,6 +108,10 @@
       "types": "./dist/lib/phone.d.ts",
       "default": "./dist/lib/phone.js"
     },
+    "./lib/random": {
+      "types": "./dist/lib/random.d.ts",
+      "default": "./dist/lib/random.js"
+    },
     "./lib/url-capture": {
       "types": "./dist/lib/url-capture.d.ts",
       "default": "./dist/lib/url-capture.js"

@@ -1574,6 +1574,58 @@ describe("emitBrowserFlowTs — a reserved RECON_PHONE env token resolves to pay
   });
 });
 
+describe("emitBrowserFlowTs — a reserved RECON_PASSWORD env token splices a generated throwaway credential", () => {
+  const RECON_PASSWORD_TOKEN = `$${"{RECON_PASSWORD}"}`;
+  const { code, payloadFieldNames } = emitBrowserFlowTs({
+    siteId: "test-site",
+    pascal: "TestSite",
+    baseUrl: "https://example.com",
+    isSubmissionFlow: true,
+    flowSteps: [
+      `Fill in the Email field with ${`$${"{RECON_EMAIL}"}`}`,
+      `Enter ${RECON_PASSWORD_TOKEN} in the Password field`,
+    ],
+    vocabulary: TEST_RECRUITING_VOCABULARY,
+  });
+
+  it("declares a local throwaway credential minted from the shared crypto-backed helper, never a hand-rolled RNG", () => {
+    expect(code).toContain(
+      'import { generateThrowawayPassword } from "@enricai/barnacle/lib/random";'
+    );
+    expect(code).toContain("const throwawayPassword = generateThrowawayPassword();");
+  });
+
+  it("splices the Password step to the generated throwaway, not a payload accessor", () => {
+    expect(code).toContain(`$${"{throwawayPassword}"}`);
+    expect(code).not.toContain("payload.Password");
+  });
+
+  it("never routes the Password step through vocabulary/payload-field resolution", () => {
+    expect(payloadFieldNames.has("Password")).toBe(false);
+  });
+
+  it("emits no literal RECON_PASSWORD substring anywhere, resolved or escaped", () => {
+    expect(code).not.toContain(RECON_PASSWORD_TOKEN);
+    expect(code).not.toContain(`\\${RECON_PASSWORD_TOKEN}`);
+    expect(code).not.toContain("RECON_PASSWORD");
+  });
+});
+
+describe("emitBrowserFlowTs — no throwaway-password import/declaration when no step uses RECON_PASSWORD", () => {
+  it("omits both the import and the local declaration", () => {
+    const { code } = emitBrowserFlowTs({
+      siteId: "test-site",
+      pascal: "TestSite",
+      baseUrl: "https://example.com",
+      isSubmissionFlow: true,
+      flowSteps: ["Fill in the First Name field with 'Reginald'"],
+      vocabulary: TEST_RECRUITING_VOCABULARY,
+    });
+    expect(code).not.toContain("generateThrowawayPassword");
+    expect(code).not.toContain("throwawayPassword");
+  });
+});
+
 describe("selectPayloadAction", () => {
   /** Minimal action step — only the fields selection reads. */
   const step = (url: string, requestPostData: string | null, responseBody: unknown) => ({
