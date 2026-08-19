@@ -31,7 +31,7 @@ import type { Logger } from "@/types/logging";
  * resolves.
  */
 
-const BASE_URL = "https://www.royalcaribbean.com/cruises";
+const BASE_URL = "https://www.cruise-fixture.example.com/cruises";
 const TAB_STEP =
   "Click the 'Balcony' stateroom category tab to view that category's per-cabin price";
 
@@ -99,7 +99,7 @@ function makeReadonlyFlowPage(state: AcceptanceSequenceState): Page {
       return null;
     },
     url: () => state.url,
-    title: async () => "Cruises | Royal Caribbean",
+    title: async () => "Cruises | Cruise Fixture",
     locator: () => ({
       first: () => ({
         // trusted-click-retry's top-window arm: the trusted CDP-style click
