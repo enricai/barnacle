@@ -11,6 +11,7 @@ import {
   createTimeoutFetch,
   pickRandomViewport,
 } from "@/scraper/session-shared";
+import { createSessionTeardownDetector } from "@/scraper/session-teardown";
 import { createSessionLimiter } from "@/scraper/throttle";
 import type { Logger } from "@/types/logging";
 
@@ -211,10 +212,15 @@ export async function createBrowserbaseBrowserSession(
     : baseFingerprint;
 
   const {
-    callback: stagehandLoggerCallback,
+    callback: filteredStagehandLoggerCallback,
     reportSuppressed: reportSuppressedAisdkErrors,
     getSuppressedCount: getSuppressedAisdkElementIdErrorCount,
   } = makeFilteredStagehandLogger(logger);
+  const { watchLogLine: watchForTeardown, deathSignal } = createSessionTeardownDetector();
+  const stagehandLoggerCallback = (line: StagehandLogLine): void => {
+    filteredStagehandLoggerCallback(line);
+    watchForTeardown(line);
+  };
 
   let stagehand: Stagehand | undefined;
   try {
@@ -301,5 +307,6 @@ export async function createBrowserbaseBrowserSession(
     close,
     getSuppressedAisdkElementIdErrorCount,
     getOutboundIp,
+    deathSignal,
   };
 }

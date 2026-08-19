@@ -5,14 +5,35 @@ import { config } from "@/config";
 import { createBedrockModel } from "@/lib/bedrock";
 import { toErrorMessage } from "@/lib/errors";
 import { getLogger } from "@/lib/logging";
+import type { StagehandLogLine } from "@/scraper/session-browserbase";
 import {
   type BrowserSession,
   createTimeoutFetch,
   pickRandomViewport,
 } from "@/scraper/session-shared";
+import { createSessionTeardownDetector } from "@/scraper/session-teardown";
 import { createSessionLimiter } from "@/scraper/throttle";
+import type { Logger } from "@/types/logging";
 
 const logger = getLogger({ name: "scraper/session-steel" });
+
+/**
+ * Forwards every Stagehand LogLine to pino unchanged. Steel has no
+ * AISDK-suppression need (that filter is Browserbase-specific — see
+ * makeFilteredStagehandLogger), so this is a plain forwarder rather than a
+ * filtering one, kept in parity with Browserbase's default log routing.
+ */
+export function makeStagehandLoggerForwarder(pinoLogger: Logger): (line: StagehandLogLine) => void {
+  return (line: StagehandLogLine): void => {
+    if (line.level === 0) {
+      pinoLogger.error({ stagehand: line.category }, line.message);
+    } else if (line.level === 1) {
+      pinoLogger.info({ stagehand: line.category }, line.message);
+    } else {
+      pinoLogger.debug({ stagehand: line.category }, line.message);
+    }
+  };
+}
 
 /**
  * Spins up one Steel cloud browser session with residential proxies +
@@ -67,6 +88,7 @@ export async function createSteelBrowserSession(): Promise<BrowserSession> {
   // explicitly — otherwise a Stagehand init crash or Stagehand CDP connection
   // failure leaves a live session burning minutes until Steel's own timeout.
   let stagehand: Stagehand | undefined;
+  let deathSignal: Promise<never> | undefined;
   try {
     // Steel's websocketUrl is `wss://connect.steel.dev?sessionId=…`. Stagehand's
     // V3 CDP connector requires the apiKey as a query parameter too — without it
@@ -84,6 +106,15 @@ export async function createSteelBrowserSession(): Promise<BrowserSession> {
     const llmClient = config.scraper.useBedrock
       ? new AISdkClient({ model: createBedrockModel(config.bedrock) })
       : undefined;
+
+    const forwardStagehandLogLine = makeStagehandLoggerForwarder(logger);
+    const teardownDetector = createSessionTeardownDetector();
+    const watchForTeardown = teardownDetector.watchLogLine;
+    deathSignal = teardownDetector.deathSignal;
+    const stagehandLoggerCallback = (line: StagehandLogLine): void => {
+      forwardStagehandLogLine(line);
+      watchForTeardown(line);
+    };
 
     stagehand = new Stagehand({
       env: "LOCAL",
@@ -107,6 +138,7 @@ export async function createSteelBrowserSession(): Promise<BrowserSession> {
       keepAlive: true,
       localBrowserLaunchOptions: { cdpUrl },
       verbose: 0,
+      logger: stagehandLoggerCallback,
     });
 
     await stagehand.init();
@@ -150,5 +182,6 @@ export async function createSteelBrowserSession(): Promise<BrowserSession> {
     sessionId: session.id,
     provider: "steel",
     close,
+    deathSignal,
   };
 }

@@ -288,6 +288,48 @@ describe("recon-browser/main — mid-flow session death (bugfix-002)", () => {
     expect(executeStepWithHealingStub).toHaveBeenCalledTimes(TOTAL_STEPS);
   });
 
+  it("rejects with SessionTimeoutError when the CDP teardown death signal fires while executeStepWithHealing hangs forever (bugfix-006)", async () => {
+    const { stagehand } = makeFakePage();
+    let signalDeath: ((err: Error) => void) | undefined;
+    const deathSignal = new Promise<never>((_resolve, reject) => {
+      signalDeath = reject;
+    });
+    deathSignal.catch(() => undefined);
+    vi.mocked(createBrowserSession).mockResolvedValue({
+      stagehand,
+      limiter: {} as never,
+      sessionId: "test-session",
+      provider: "browserbase",
+      close: vi.fn().mockResolvedValue(undefined),
+      deathSignal,
+    } as never);
+
+    let stepCount = 0;
+    executeStepWithHealingStub.mockImplementation(() => {
+      stepCount += 1;
+      // Simulates the CDP-request-orphaned-by-teardown case: the returned
+      // promise never resolves because the underlying transport is gone, so
+      // nothing but a race against deathSignal can ever settle this step.
+      if (stepCount === SESSION_DIES_AFTER_STEP) {
+        setTimeout(
+          () =>
+            signalDeath?.(
+              new SessionTimeoutError("stagehand-initiated teardown mid-flow: CDP transport closed")
+            ),
+          0
+        );
+        return new Promise(() => {});
+      }
+      return Promise.resolve("ok");
+    });
+
+    process.argv = flowArgv(TOTAL_STEPS);
+
+    await expect(main()).rejects.toThrow(SessionTimeoutError);
+    expect(stepCount).toBe(SESSION_DIES_AFTER_STEP);
+    expect(executeStepWithHealingStub).toHaveBeenCalledTimes(SESSION_DIES_AFTER_STEP);
+  });
+
   it("resolves normally when the session stays alive for all steps (control case)", async () => {
     const { stagehand } = makeFakePage();
     vi.mocked(createBrowserSession).mockResolvedValue({

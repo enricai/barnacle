@@ -52,6 +52,14 @@ export interface BrowserSession {
    * fails — never rejects.
    */
   getOutboundIp?: () => Promise<string | null>;
+  /**
+   * Rejects the instant a Stagehand-initiated CDP transport teardown is
+   * observed mid-flow, so a caller can race a step against it instead of
+   * hanging on a step promise the dead connection can never settle. Only
+   * present on providers that watch the Stagehand logger for this signal
+   * (currently Browserbase); absent on Steel.
+   */
+  deathSignal?: Promise<never>;
 }
 
 /**

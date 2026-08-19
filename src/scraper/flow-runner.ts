@@ -68,6 +68,7 @@ import {
   waitForChildFrameReady,
 } from "@/scraper/frame-target";
 import { classifyPhantomClick, type PhantomClickVerdict } from "@/scraper/phantom-click";
+import { raceAgainstTeardown } from "@/scraper/session-teardown";
 import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
 import {
   buildClickByDeepIndexExpr,
@@ -10435,6 +10436,16 @@ export interface RunHealingFlowDeps {
    * Omitted (default) preserves today's behavior: no flow-level deadline.
    */
   maxFlowMs?: number;
+  /**
+   * Teardown death signal from the session that built {@link stagehand}/
+   * {@link page} (see `BrowserSession.deathSignal`). When supplied, each
+   * step is raced against it via {@link raceAgainstTeardown} so a
+   * Stagehand-initiated mid-flow teardown rejects immediately instead of
+   * the step promise hanging until the next `page.url()` liveness check
+   * notices the dead session. Omitted (default) preserves today's
+   * behavior: no race, liveness relies solely on the `page.url()` gates.
+   */
+  deathSignal?: Promise<never>;
 }
 
 /** SPA-readiness gate defaults — match the recon CLI's post-navigation wait. */
@@ -10597,7 +10608,7 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
       // so this is a no-op for every flow that doesn't declare one.
       const frameTarget = await resolveFrameTarget(page, deps.frameSelector);
       await waitForChildFrameReady(frameTarget);
-      const outcome = await executeStepWithHealing({
+      const stepPromise = executeStepWithHealing({
         stagehand,
         page,
         step: s.instruction,
@@ -10627,6 +10638,9 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
         knownErrorClassPrefixes: deps.knownErrorClassPrefixes ?? [],
         wizardExitButtonLabels: deps.wizardExitButtonLabels ?? [],
       });
+      const outcome = deps.deathSignal
+        ? await raceAgainstTeardown(stepPromise, deps.deathSignal)
+        : await stepPromise;
       // Second liveness gate: executeStepWithHealing can resolve normally even
       // when the session died mid-step, if the death happened after its last
       // probe. The pre-step gate above only catches this on the NEXT

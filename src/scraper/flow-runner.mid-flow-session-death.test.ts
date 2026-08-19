@@ -1,6 +1,7 @@
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { SessionTimeoutError } from "@/scraper/errors";
 import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
@@ -257,6 +258,41 @@ describe("flow-runner/runHealingFlow — mid-flow session death", () => {
       })
     ).rejects.toThrow(/session appears closed\/dead/);
     expect(stepCount).toBe(TOTAL_STEPS);
+  });
+
+  it("rejects with SessionTimeoutError when deathSignal fires mid-step and the step promise never resolves", async () => {
+    const urls = { current: "https://careers.example.org/jobs/123/apply" };
+    const { page } = makeFakePage(urls);
+    const stagehand = makeStagehand();
+    const steps = Array.from({ length: TOTAL_STEPS }, (_, i) => step(i));
+
+    guardedObserve.mockResolvedValue([
+      { selector: "input#f", description: "field", method: "fill" },
+    ]);
+    // Never resolves — models a step whose only way out is the deathSignal race.
+    guardedAct.mockImplementation(() => new Promise(() => {}));
+
+    let rejectDeathSignal: ((err: Error) => void) | undefined;
+    const deathSignal = new Promise<never>((_resolve, reject) => {
+      rejectDeathSignal = reject;
+    });
+    deathSignal.catch(() => undefined);
+    setTimeout(() => {
+      rejectDeathSignal?.(new SessionTimeoutError("stagehand-initiated teardown mid-flow"));
+    }, 10);
+
+    await expect(
+      runHealingFlow({
+        stagehand,
+        page,
+        steps,
+        logger: testLogger,
+        anthropic: null,
+        rephraseModel: null,
+        uploadFixture: null,
+        deathSignal,
+      })
+    ).rejects.toThrow(SessionTimeoutError);
   });
 
   it("resolves normally when the session stays alive for all steps (control case)", async () => {

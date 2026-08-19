@@ -247,7 +247,7 @@ export async function buildConfigPlugin(
       context: SitePluginContext
     ): Promise<SitePluginResult<unknown>> {
       const payload = rawPayload as Record<string, unknown>;
-      const { stagehand } = session;
+      const { stagehand, deathSignal } = session;
       const page = await navigateActivePage(stagehand, context.baseUrl, context.metricsCollector);
 
       const steps = spec.flow.steps.map((s) => toHealingStep(s, payload, declaredFields));
@@ -263,6 +263,7 @@ export async function buildConfigPlugin(
         logger,
         anthropic,
         rephraseModel,
+        deathSignal,
         uploadFixture: buildUploadFixture(payload, hasUploadStep, spec.multipart ?? false),
         frameSelector: spec.flow.frameSelector,
         submitEndpointPattern: spec.flow.submitEndpointPattern ?? null,
