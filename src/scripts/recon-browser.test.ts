@@ -5778,6 +5778,122 @@ describe("recon-browser/main — per-step session-liveness gate (bugfix-001)", (
   });
 });
 
+describe("recon-browser CLI — process exit code on a mid-flow teardown death signal", () => {
+  function makeFakePage(): { page: Page; stagehand: Stagehand } {
+    const session = {
+      on: (): void => {},
+      off: (): void => {},
+    };
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      url: (): string => "https://example.com/apply",
+      title: vi.fn().mockResolvedValue("Apply"),
+      evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+        if (typeof expr === "string" && expr.includes("document.body")) return 10_000;
+        if (typeof expr === "string" && expr.includes("querySelector"))
+          return { matched: false, src: null };
+        return null;
+      }),
+      frames: vi.fn().mockReturnValue([]),
+      getSessionForFrame: () => session,
+      mainFrameId: () => "main",
+      sendCDP: vi.fn().mockResolvedValue({ cookies: [] }),
+    } as unknown as Page;
+    const stagehand = {
+      context: { awaitActivePage: async (): Promise<Page> => page },
+    } as unknown as Stagehand;
+    return { page, stagehand };
+  }
+
+  const ORIGINAL_ARGV = process.argv;
+  let runsRoot: string;
+
+  beforeEach(() => {
+    runsRoot = mkdtempSync(join(tmpdir(), "recon-browser-cli-exit-code-"));
+    process.env.RECON_RUN_ID = "20260819-000000-cliexitcode";
+    process.env.RECON_OUT_DIR = runsRoot;
+  });
+
+  afterEach(() => {
+    process.argv = ORIGINAL_ARGV;
+    rmSync(runsRoot, { recursive: true, force: true });
+    delete process.env.RECON_RUN_ID;
+    delete process.env.RECON_OUT_DIR;
+    vi.restoreAllMocks();
+  });
+
+  // Drives the script exactly as `node recon-browser.js` would: reloads the
+  // module fresh with process.argv[1] set so the file's own top-level
+  // `main().catch(...)` IIFE (recon-browser.ts:2912-2924) runs, rather than
+  // calling the exported `main()` directly the way the other describe
+  // blocks in this file do. That IIFE is the only place in this file that
+  // ever calls `process.exit` on a flow failure, so it's the only path that
+  // can prove the CLI itself — not just the `main()` promise — surfaces a
+  // mid-flow teardown as a non-zero exit instead of falling through to the
+  // default exit code 0.
+  it("calls process.exit(1) when the teardown death signal fires with steps still remaining", async () => {
+    const { stagehand } = makeFakePage();
+    const totalSteps = 5;
+    const sessionDiesAfterStep = 2;
+    let signalDeath: ((err: Error) => void) | undefined;
+    const deathSignal = new Promise<never>((_resolve, reject) => {
+      signalDeath = reject;
+    });
+    deathSignal.catch(() => undefined);
+
+    vi.resetModules();
+    const { createBrowserSession } = await import("@/scraper/session.js");
+    vi.mocked(createBrowserSession).mockResolvedValue({
+      stagehand,
+      limiter: {} as never,
+      sessionId: "test-session",
+      provider: "browserbase",
+      close: vi.fn().mockResolvedValue(undefined),
+      deathSignal,
+    } as never);
+
+    const { executeStepWithHealing } = await import("@/scraper/flow-runner.js");
+    let stepCount = 0;
+    vi.mocked(executeStepWithHealing).mockImplementation(() => {
+      stepCount += 1;
+      // Simulates the CDP-request-orphaned-by-teardown case: the step
+      // promise never settles on its own — only the death signal can end
+      // the race, and with steps 3-5 never having run, a real exit-0 here
+      // would report a 2-of-5-step run as a clean success.
+      if (stepCount === sessionDiesAfterStep) {
+        setTimeout(
+          () =>
+            signalDeath?.(
+              new SessionTimeoutError("stagehand-initiated teardown mid-flow: CDP transport closed")
+            ),
+          0
+        );
+        return new Promise(() => {});
+      }
+      return Promise.resolve("completed");
+    });
+
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+
+    process.argv = [
+      "node",
+      "/fake/path/recon-browser.js",
+      "--url",
+      "https://example.com/apply",
+      "--flow",
+      JSON.stringify(Array.from({ length: totalSteps }, (_, i) => `Fill in field ${i}`)),
+    ];
+    process.argv[1] = "/fake/path/recon-browser.js";
+
+    await import("@/scripts/recon-browser.js");
+
+    await vi.waitFor(() => expect(exitSpy).toHaveBeenCalled());
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(stepCount).toBe(sessionDiesAfterStep);
+  });
+});
+
 describe("recon-browser/main — flowHasSubmitSemantics wiring into executeStepWithHealing (bugfix-004)", () => {
   function makeFakePage(): { page: Page; stagehand: Stagehand } {
     const session = {
