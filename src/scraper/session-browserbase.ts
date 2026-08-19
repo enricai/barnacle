@@ -4,6 +4,7 @@ import { config } from "@/config";
 import { createBedrockModel } from "@/lib/bedrock";
 import { toErrorMessage } from "@/lib/errors";
 import { getLogger } from "@/lib/logging";
+import { startCdpTransportHeartbeat } from "@/scraper/cdp-heartbeat";
 import { resolveSessionOutboundIp } from "@/scraper/session-ip";
 import {
   type BrowserSession,
@@ -272,6 +273,8 @@ export async function createBrowserbaseBrowserSession(
     throw err;
   }
 
+  const heartbeat = startCdpTransportHeartbeat(stagehand.context.conn, { logger });
+
   const sessionId = stagehand.browserbaseSessionID ?? "unknown";
   logger.info(
     `created browserbase session ${sessionId} viewport=${viewport.width}x${viewport.height} proxies=${useResidentialProxy} advancedStealth=${advancedStealth}`
@@ -290,6 +293,7 @@ export async function createBrowserbaseBrowserSession(
   );
 
   const close = async (): Promise<void> => {
+    heartbeat.stop();
     try {
       await stagehand.close();
     } catch (err) {

@@ -13,6 +13,7 @@
 import { Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { startCdpTransportHeartbeat } from "@/scraper/cdp-heartbeat";
 import {
   createBrowserbaseBrowserSession,
   makeFilteredStagehandLogger,
@@ -62,9 +63,21 @@ vi.mock("@browserbasehq/stagehand", async (importOriginal) => {
       this.init = vi.fn().mockResolvedValue(undefined);
       this.close = vi.fn().mockResolvedValue(undefined);
       this.browserbaseSessionID = "bb-session-id";
+      this.context = { conn: { send: vi.fn().mockResolvedValue(undefined) } };
     }),
   };
 });
+
+const { heartbeatHandleRef } = vi.hoisted(() => ({
+  heartbeatHandleRef: { value: { stop: vi.fn() } },
+}));
+
+vi.mock("@/scraper/cdp-heartbeat", () => ({
+  startCdpTransportHeartbeat: vi.fn((..._args: unknown[]) => {
+    heartbeatHandleRef.value = { stop: vi.fn() };
+    return heartbeatHandleRef.value;
+  }),
+}));
 
 vi.mock("@/lib/bedrock", () => ({
   createBedrockModel: vi.fn(() => ({ specificationVersion: "v2" })),
@@ -368,5 +381,35 @@ describe("createBrowserbaseBrowserSession teardown-detector composition", () => 
 
     expect(() => loggerCallback?.(elementIdErrorLine)).not.toThrow();
     expect(session.getSuppressedAisdkElementIdErrorCount?.()).toBe(1);
+  });
+});
+
+describe("createBrowserbaseBrowserSession CDP heartbeat", () => {
+  beforeEach(() => {
+    configRef.value.scraper.browserbaseApiKey = "bb-key";
+    configRef.value.scraper.browserbaseProjectId = "bb-project";
+    configRef.value.scraper.anthropicApiKey = "anthropic-key";
+    configRef.value.scraper.useBedrock = false;
+    vi.clearAllMocks();
+  });
+
+  it("starts the heartbeat against stagehand.context.conn after init resolves, and stop() ends it before no calls fire after close", async () => {
+    const session = await createBrowserbaseBrowserSession();
+
+    const stagehandInstance = vi.mocked(Stagehand).mock.instances.at(-1) as unknown as {
+      context: { conn: unknown };
+    };
+    expect(vi.mocked(startCdpTransportHeartbeat)).toHaveBeenCalledWith(
+      stagehandInstance.context.conn,
+      expect.anything()
+    );
+
+    const handle = vi.mocked(startCdpTransportHeartbeat).mock.results.at(-1)?.value as {
+      stop: ReturnType<typeof vi.fn>;
+    };
+
+    await session.close();
+
+    expect(handle.stop).toHaveBeenCalledOnce();
   });
 });
