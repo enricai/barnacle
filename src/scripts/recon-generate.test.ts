@@ -1529,7 +1529,7 @@ describe("emitBrowserFlowTs — splice site lands on the fill VALUE, never the s
 
   it("splices payload.FirstName only at the trailing value position", () => {
     expect(code).toContain(payloadRef("FirstName"));
-    expect(code).not.toContain("${payload.FirstName}'firstName'");
+    expect(code).not.toContain(`${payloadRef("FirstName")}'firstName'`);
   });
 
   it("splices payload.State at the leading answer position for a Select step", () => {
@@ -1546,7 +1546,7 @@ describe("emitBrowserFlowTs — splice site lands on the fill VALUE, never the s
   });
 });
 
-describe("emitBrowserFlowTs — a reserved ${RECON_PHONE} token resolves to payload.MobilePhone", () => {
+describe("emitBrowserFlowTs — a reserved RECON_PHONE env token resolves to payload.MobilePhone", () => {
   const RECON_PHONE_TOKEN = `$${"{RECON_PHONE}"}`;
   const { code } = emitBrowserFlowTs({
     siteId: "test-site",
@@ -1563,7 +1563,7 @@ describe("emitBrowserFlowTs — a reserved ${RECON_PHONE} token resolves to payl
 
   it("emits no un-spliced or escaped RECON_PHONE token", () => {
     expect(code).not.toContain(RECON_PHONE_TOKEN);
-    expect(code).not.toContain("\\${RECON_PHONE}");
+    expect(code).not.toContain(`\\${RECON_PHONE_TOKEN}`);
   });
 });
 
