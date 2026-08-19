@@ -8,8 +8,8 @@ import { buildRepeatedSectionSubmissionCaptures } from "@/scripts/recon-generate
 import type { Capture } from "@/scripts/recon-shared";
 
 /**
- * CLI regression suite for docs/recon-generate-emits-bogus-http-stub-for-workday-multicall-flow.md,
- * run through the real `recon-generate` entry point (spawnSync tsx) rather
+ * CLI regression suite for recon-generate emitting a bogus HTTP stub for a
+ * repeated-section multi-call flow, run through the real `recon-generate` entry point (spawnSync tsx) rather
  * than only the exported unit-level functions, so the fix is proven at the
  * same surface the bug report used. Uses the repeated-section fixture (an
  * id threaded into every URL PATH, one leaf hit many times with distinct
