@@ -26,10 +26,19 @@ const PROMPT_WIDGET_MARK_ATTR = "data-bcl-prompt-idx";
  * enough to deserve one audited implementation.
  */
 
+/**
+ * A single rendered option. A bare string is a leaf (clicking it commits, as
+ * before); `drillTo` marks a CATEGORY option whose click re-renders the SAME
+ * popup with the child `PopupSpec`'s options instead of committing — models
+ * the doc's two-level cascading multiselect (category click swaps to a
+ * DIFFERENT leaf list, still uncommitted).
+ */
+export type PopupOption = string | { label: string; drillTo?: PopupSpec };
+
 /** A popup this harness knows how to open, and the options it then renders. */
 export interface PopupSpec {
   /** Options rendered into the listbox once the widget's trigger is clicked. */
-  options: string[];
+  options: PopupOption[];
   /**
    * When true, options are withheld until the filter input is typed into
    * (the searchable/typeahead variant), modeling a widget that renders only a
@@ -100,6 +109,10 @@ export function buildPromptWidgetHarness(params: {
   const clicks: string[] = [];
   const fills: { selector: string; value: string }[] = [];
 
+  const optionLabel = (o: PopupOption): string => (typeof o === "string" ? o : o.label);
+  const optionDrillTo = (o: PopupOption): PopupSpec | undefined =>
+    typeof o === "string" ? undefined : o.drillTo;
+
   // Per-widget popup runtime state, keyed by the widget element the marker
   // attribute resolves to.
   const openState = new Map<string, { spec: PopupSpec; filter: string }>();
@@ -134,7 +147,9 @@ export function buildPromptWidgetHarness(params: {
     wrap.setAttribute("data-test-popup-for", widgetEl.id);
     const shown = state.spec.searchable
       ? state.filter
-        ? state.spec.options.filter((o) => o.toLowerCase().includes(state.filter.toLowerCase()))
+        ? state.spec.options.filter((o) =>
+            optionLabel(o).toLowerCase().includes(state.filter.toLowerCase())
+          )
         : []
       : state.spec.options;
     // A searchable widget filters via the widget's OWN trigger input (as the
@@ -146,10 +161,10 @@ export function buildPromptWidgetHarness(params: {
     }
     const searchHtml = "";
     const optsHtml = shown
-      .map(
-        (o) =>
-          `<li role="option" data-automation-id="promptOption" data-automation-label="${o}">${o}</li>`
-      )
+      .map((o) => {
+        const label = optionLabel(o);
+        return `<li role="option" data-automation-id="promptOption" data-automation-label="${label}">${label}</li>`;
+      })
       .join("");
     wrap.innerHTML = `${searchHtml}<ul role="listbox">${optsHtml}</ul>`;
     if (state.spec.portaled) {
@@ -228,12 +243,27 @@ export function buildPromptWidgetHarness(params: {
           renderPopup((markedWidget || el.closest("[id]") || el) as Element, state);
           return;
         }
-        // Option click → commit the option into the owning widget's value.
+        // Option click → drill (category) or commit (leaf) into the owning widget.
         if (el.getAttribute("role") === "option" || el.hasAttribute("data-automation-id")) {
           const popup = el.closest("[data-test-popup-for]");
           const owningId = popup?.getAttribute("data-test-popup-for") || "";
           const owner = owningId ? document.getElementById(owningId) : null;
           const label = el.getAttribute("data-automation-label") || el.textContent?.trim() || "";
+          const state = owningId ? openState.get(owningId) : undefined;
+          const matched = state?.spec.options.find((o) => optionLabel(o) === label);
+          const drillTo = matched ? optionDrillTo(matched) : undefined;
+          if (owner && drillTo) {
+            // Models the real widget's async GET .../values/sources/sources/<catId>
+            // request that swaps the popup to the category's leaves instead of
+            // committing — the trusted-click gate above (a bare, non-locator
+            // `el.click()` never reaches this handler) is what makes this a
+            // no-op for a synthetic click, same as the commit path below.
+            await Promise.resolve();
+            const drillState = { spec: drillTo, filter: "" };
+            openState.set(owningId, drillState);
+            renderPopup(owner, drillState);
+            return;
+          }
           if (owner) {
             if (owner.tagName === "BUTTON") {
               // A near-standard button widget commits by updating its own
