@@ -1,5 +1,5 @@
-import type { Capture } from "@/scripts/recon-shared";
 import type { MulticallFixtureStep } from "@/scripts/recon-generate-multicall-fixture";
+import type { Capture } from "@/scripts/recon-shared";
 
 function buildCapture(overrides: {
   method: string;
@@ -56,10 +56,9 @@ const VALIDATE_URL = `${HOST}/validate`;
 const CREATED_APPLICATION_ID = "app-7f3c2e";
 
 /**
- * Reproduces the report's create -> per-section POST -> PUT validate shape
- * (docs/recon-generate-emits-bogus-http-stub-for-workday-multicall-flow.md
- * lines 30-46) with a generic permit/benefits application domain instead of
- * any real site or ATS vendor: a resource is created via one POST, its id is
+ * Reproduces the recon report's create -> per-section POST -> PUT validate
+ * shape with a generic permit/benefits application domain instead of any
+ * real site or ATS vendor: a resource is created via one POST, its id is
  * threaded verbatim into five further section POSTs at distinct paths, and
  * two terminal PUT calls validate the submission. Each response body shape
  * is disjoint across endpoints so tests can assert the generator
