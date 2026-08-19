@@ -6114,13 +6114,21 @@ async function tryPromptSelectorPrimitive(params: {
         const label = opts[i].getAttribute("data-automation-label") || opts[i].getAttribute("aria-label") || opts[i].textContent || "";
         options.push({ oIdx: i, text: label.replace(/\\s+/g, " ").trim() });
       }
-      return { optionsPresent: true, searchable: !!searchInput, options };
+      // scopeIsDocument distinguishes a genuinely resolved (portal or inline)
+      // popup from the document-wide last-resort fallback in
+      // PROMPT_SCOPE_ROOT_EXPR — the pre-open pre-check below must NOT treat a
+      // still-unopened widget as "already open" on the strength of some OTHER
+      // widget's stale/leftover popup elsewhere in the document; only a scope
+      // that resolved to THIS widget's own inline subtree or its own
+      // aria-controls/aria-owns target counts.
+      return { optionsPresent: true, searchable: !!searchInput, options, scopeIsDocument: scope === document };
     })(${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)}, ${JSON.stringify(chosen.wIdx)}, ${JSON.stringify(PROMPT_OPTION_MARK_ATTR)}, ${JSON.stringify(PROMPT_OPTION_SELECTORS)}, ${JSON.stringify(PROMPT_SEARCH_SELECTORS)})`;
 
     type EnumerateOptionsResult = {
       optionsPresent: boolean;
       searchable?: boolean;
       options?: { oIdx: number; text: string }[];
+      scopeIsDocument?: boolean;
     };
     // Pre-check (single evaluate, no polling): a PRIOR primitive call on this
     // same unreloaded page may have already opened/drilled this exact widget's
@@ -6128,10 +6136,16 @@ async function tryPromptSelectorPrimitive(params: {
     // category, then leaf — re-enters here for the leaf with the popup already
     // open). Re-clicking the trigger in that case perturbs/closes the
     // already-rendered popup instead of reading it. Skip the open-click
-    // entirely when options are already present; a genuinely closed popup
-    // falls through to the normal open-click + poll path below unchanged.
+    // entirely when options are already present AND resolved to THIS widget's
+    // OWN scope (not the document-wide fallback, which could otherwise credit
+    // an unrelated widget's stale/leftover popup elsewhere on the page as
+    // "already open"); a genuinely closed popup falls through to the normal
+    // open-click + poll path below unchanged.
     const precheck = (await target.evaluate(enumerateOptionsExpr)) as EnumerateOptionsResult;
-    const alreadyOpen = precheck?.optionsPresent === true && (precheck.options?.length ?? 0) > 0;
+    const alreadyOpen =
+      precheck?.optionsPresent === true &&
+      (precheck.options?.length ?? 0) > 0 &&
+      precheck.scopeIsDocument !== true;
     if (!alreadyOpen) {
       // Phase 2 (real gesture): open the popup. These widgets' trigger requires a
       // genuine click — a synthetic dispatchEvent does not fire its handler.
