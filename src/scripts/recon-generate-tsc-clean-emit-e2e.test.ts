@@ -85,7 +85,9 @@ describe("recon-generate CLI + tsc --noEmit — the four splice/schema defects c
       ...last,
       url: last.url.replace("https://api.example.com", "https://payments.example.net"),
     };
-    const filenames = captures.map((_, index) => `${String(index).padStart(3, "0")}-checkout-action.json`);
+    const filenames = captures.map(
+      (_, index) => `${String(index).padStart(3, "0")}-checkout-action.json`
+    );
     captures.forEach((capture, index) => {
       writeFileSync(join(capturesDir, filenames[index]!), JSON.stringify(capture));
     });
@@ -114,9 +116,9 @@ describe("recon-generate CLI + tsc --noEmit — the four splice/schema defects c
           {
             step: "Fill in the Legal Name First Name field (data-automation-id='legalName--firstName') with 'Reginald'",
           },
-          { step: "Fill in the Email field with '${RECON_EMAIL}'" },
-          { step: "Fill in the Phone field with '${RECON_PHONE}'" },
-          { step: "Fill in the Password field with '${RECON_PASSWORD}'" },
+          { step: `Fill in the Email field with '$${"{RECON_EMAIL}"}'` },
+          { step: `Fill in the Phone field with '$${"{RECON_PHONE}"}'` },
+          { step: `Fill in the Password field with '$${"{RECON_PASSWORD}"}'` },
           { step: "Upload the resume file", upload: true },
           { step: "submit the application", submitStep: true },
         ],
