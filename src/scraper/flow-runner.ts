@@ -418,6 +418,13 @@ const SELECT_SETTLE_MS = 400;
  */
 const PROMPT_SELECTOR_SETTLE_MS = 400;
 /**
+ * Cap on the category->leaf drill loop in {@link commitPromptOption}: a
+ * two-level cascading multiselect (category click re-renders the popup to
+ * leaves) only ever drills one level deep in the wild, so 3 gives headroom
+ * for a rarer 2-level cascade without letting a genuinely broken widget spin.
+ */
+const PROMPT_SELECTOR_MAX_DRILL_DEPTH = 3;
+/**
  * Temporary attribute {@link tryPromptSelectorPrimitive} stamps onto each
  * candidate widget during its read-only enumerate pass, so the Node-side click
  * (a real Playwright gesture — these widgets ignore a bare `el.click()`) can
@@ -6211,6 +6218,7 @@ async function tryPromptSelectorPrimitive(params: {
         questionLabel,
         chosen,
         optionsResult,
+        enumerateOptionsExpr,
       });
     }
     try {
@@ -6251,6 +6259,7 @@ async function tryPromptSelectorPrimitive(params: {
       questionLabel,
       chosen,
       optionsResult: optionsFiltered,
+      enumerateOptionsExpr,
     });
   } catch (err) {
     logger.warn(
@@ -6269,6 +6278,16 @@ async function tryPromptSelectorPrimitive(params: {
  * by the value union, or its invalid marker cleared). Split out from the main
  * function because both the static and searchable-then-filtered branches need
  * the identical match/click/verify sequence.
+ *
+ * Bounded (see {@link PROMPT_SELECTOR_MAX_DRILL_DEPTH}) category->leaf drill:
+ * when a click's readback fails, that is ambiguous between a genuine
+ * non-commit and a category click that swapped the popup to a deeper level
+ * (a two-level cascading multiselect authored as a SINGLE step naming only
+ * the leaf). Re-enumerating after a failed readback and comparing the
+ * option set disambiguates the two: an unchanged set is a real failure and
+ * must still fall through to the cascade; a changed set means the drill
+ * fired, so re-match/re-click continues at the new level instead of
+ * abandoning the primitive.
  */
 async function commitPromptOption(params: {
   page: Page;
@@ -6281,6 +6300,7 @@ async function commitPromptOption(params: {
   questionLabel: string | null;
   chosen: { wIdx: number; label: string };
   optionsResult: { options?: { oIdx: number; text: string }[] };
+  enumerateOptionsExpr: string;
 }): Promise<string | null> {
   const {
     page,
@@ -6292,101 +6312,134 @@ async function commitPromptOption(params: {
     option,
     questionLabel,
     chosen,
-    optionsResult,
+    enumerateOptionsExpr,
   } = params;
   const norm = (s: string): string => s.replace(/\s+/g, " ").trim().toLowerCase();
   const wantOpt = norm(option);
-  const options = optionsResult.options ?? [];
-  const detMatch = options.find((o) => norm(o.text) === wantOpt) ?? null;
-  if (detMatch === null && (anthropic === null || options.length === 0)) {
-    logger.info(
-      `prompt-selector primitive: no option match for ${optLabel}${anthropic === null ? " (no LLM client)" : ""}; falling through to cascade`
-    );
-    return null;
-  }
-  const verdict =
-    detMatch === null
-      ? await judgeSelectOptionWithLLM({
-          client: anthropic,
-          input: {
-            questionLabel,
-            desiredHint: option,
-            candidates: [{ label: chosen.label || null, options: options.map((o) => o.text) }],
-          },
-          captureFn,
-        })
-      : null;
-  if (
-    detMatch === null &&
-    (!verdict || verdict.selectIndex === null || verdict.optionIndex === null)
-  ) {
-    logger.info(
-      `prompt-selector primitive: LLM found no matching option for ${optLabel}${verdict ? ` (${verdict.reason})` : ""}; falling through to cascade`
-    );
-    return null;
-  }
-  const chosenOption =
-    detMatch ??
-    (verdict && verdict.optionIndex !== null ? (options[verdict.optionIndex] ?? null) : null);
-  if (!chosenOption) {
-    logger.info(
-      `prompt-selector primitive: option match out of range for ${optLabel}; falling through`
-    );
-    return null;
-  }
-  const matchReason = detMatch ? "deterministic" : `LLM: ${(verdict?.reason ?? "").slice(0, 60)}`;
+  const optionSetKey = (opts: { text: string }[]): string =>
+    opts
+      .map((o) => norm(o.text))
+      .sort()
+      .join("");
 
-  const optionSel = `[${PROMPT_OPTION_MARK_ATTR}="${chosenOption.oIdx}"]`;
-  try {
-    await target.locator(optionSel).first().click();
-  } catch (err) {
-    logger.info(
-      `prompt-selector primitive: option click failed for ${optLabel}: ${toErrorMessage(err)}; falling through`
-    );
-    return null;
-  }
-  await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
-
-  const readbackExpr = `((wIdx, markAttr, valueSel, emptyRxSrc, emptyRxFlags, wantText) => {
-    const isInvalid = ${INVALID_MARKER_EL_EXPR};
-    const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
-    const buttonValue = ${BUTTON_VALUE_EXPR};
-    const emptyRx = new RegExp(emptyRxSrc, emptyRxFlags);
-    const w = document.querySelector("[" + markAttr + '="' + wIdx + '"]');
-    if (!w) return { ok: false, id: "" };
-    // Value via the union: aria-activedescendant, own input value, a <button>'s
-    // own value text (popup-pollution-safe, see BUTTON_VALUE_EXPR), or a
-    // selection-label node (empty-state phrase treated as no value).
-    const adid = w.getAttribute && w.getAttribute("aria-activedescendant");
-    const adText = adid && document.getElementById(adid) ? norm(document.getElementById(adid).textContent) : "";
-    const own = w.tagName === "INPUT" ? norm(w.value || "") : w.tagName === "BUTTON" ? norm(buttonValue(w)) : "";
-    const lbl = w.matches(valueSel) ? w : w.querySelector(valueSel);
-    const lblRaw = lbl ? (lbl.textContent || "") : "";
-    const lblText = lblRaw.trim() && !emptyRx.test(lblRaw.trim()) ? norm(lblRaw) : "";
-    const text = adText || own || lblText;
-    const textMatches = wantText ? text.includes(wantText) : text !== "";
-    let node = w;
-    let stillInvalid = false;
-    for (let d = 0; d < 6 && node; d++) {
-      if (node.getAttribute && isInvalid(node)) { stillInvalid = true; break; }
-      node = node.parentElement;
+  let optionsResult = params.optionsResult;
+  for (let depth = 0; depth <= PROMPT_SELECTOR_MAX_DRILL_DEPTH; depth++) {
+    const options = optionsResult.options ?? [];
+    const detMatch = options.find((o) => norm(o.text) === wantOpt) ?? null;
+    if (detMatch === null && (anthropic === null || options.length === 0)) {
+      logger.info(
+        `prompt-selector primitive: no option match for ${optLabel}${anthropic === null ? " (no LLM client)" : ""}; falling through to cascade`
+      );
+      return null;
     }
-    return { ok: textMatches || !stillInvalid, id: w.id || "" };
-  })(${JSON.stringify(chosen.wIdx)}, ${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)}, ${JSON.stringify(PROMPT_VALUE_SELECTORS)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_SRC)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_FLAGS)}, ${JSON.stringify(norm(chosenOption.text))})`;
-  const readback = (await target.evaluate(readbackExpr).catch(() => ({ ok: false, id: "" }))) as {
-    ok: boolean;
-    id: string;
-  };
-  if (!readback?.ok) {
+    const verdict =
+      detMatch === null
+        ? await judgeSelectOptionWithLLM({
+            client: anthropic,
+            input: {
+              questionLabel,
+              desiredHint: option,
+              candidates: [{ label: chosen.label || null, options: options.map((o) => o.text) }],
+            },
+            captureFn,
+          })
+        : null;
+    if (
+      detMatch === null &&
+      (!verdict || verdict.selectIndex === null || verdict.optionIndex === null)
+    ) {
+      logger.info(
+        `prompt-selector primitive: LLM found no matching option for ${optLabel}${verdict ? ` (${verdict.reason})` : ""}; falling through to cascade`
+      );
+      return null;
+    }
+    const chosenOption =
+      detMatch ??
+      (verdict && verdict.optionIndex !== null ? (options[verdict.optionIndex] ?? null) : null);
+    if (!chosenOption) {
+      logger.info(
+        `prompt-selector primitive: option match out of range for ${optLabel}; falling through`
+      );
+      return null;
+    }
+    const matchReason = detMatch ? "deterministic" : `LLM: ${(verdict?.reason ?? "").slice(0, 60)}`;
+
+    const optionSel = `[${PROMPT_OPTION_MARK_ATTR}="${chosenOption.oIdx}"]`;
+    try {
+      await target.locator(optionSel).first().click();
+    } catch (err) {
+      logger.info(
+        `prompt-selector primitive: option click failed for ${optLabel}: ${toErrorMessage(err)}; falling through`
+      );
+      return null;
+    }
+    await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
+
+    const readbackExpr = `((wIdx, markAttr, valueSel, emptyRxSrc, emptyRxFlags, wantText) => {
+      const isInvalid = ${INVALID_MARKER_EL_EXPR};
+      const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
+      const buttonValue = ${BUTTON_VALUE_EXPR};
+      const emptyRx = new RegExp(emptyRxSrc, emptyRxFlags);
+      const w = document.querySelector("[" + markAttr + '="' + wIdx + '"]');
+      if (!w) return { ok: false, id: "" };
+      // Value via the union: aria-activedescendant, own input value, a <button>'s
+      // own value text (popup-pollution-safe, see BUTTON_VALUE_EXPR), or a
+      // selection-label node (empty-state phrase treated as no value).
+      const adid = w.getAttribute && w.getAttribute("aria-activedescendant");
+      const adText = adid && document.getElementById(adid) ? norm(document.getElementById(adid).textContent) : "";
+      const own = w.tagName === "INPUT" ? norm(w.value || "") : w.tagName === "BUTTON" ? norm(buttonValue(w)) : "";
+      const lbl = w.matches(valueSel) ? w : w.querySelector(valueSel);
+      const lblRaw = lbl ? (lbl.textContent || "") : "";
+      const lblText = lblRaw.trim() && !emptyRx.test(lblRaw.trim()) ? norm(lblRaw) : "";
+      const text = adText || own || lblText;
+      const textMatches = wantText ? text.includes(wantText) : text !== "";
+      let node = w;
+      let stillInvalid = false;
+      for (let d = 0; d < 6 && node; d++) {
+        if (node.getAttribute && isInvalid(node)) { stillInvalid = true; break; }
+        node = node.parentElement;
+      }
+      return { ok: textMatches || !stillInvalid, id: w.id || "" };
+    })(${JSON.stringify(chosen.wIdx)}, ${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)}, ${JSON.stringify(PROMPT_VALUE_SELECTORS)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_SRC)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_FLAGS)}, ${JSON.stringify(norm(chosenOption.text))})`;
+    const readback = (await target.evaluate(readbackExpr).catch(() => ({ ok: false, id: "" }))) as {
+      ok: boolean;
+      id: string;
+    };
+    if (readback?.ok) {
+      logger.info(
+        `prompt-selector primitive: selected "${chosenOption.text.slice(0, 40)}" for ${optLabel} (${matchReason})`
+      );
+      return readback.id;
+    }
+
+    if (depth === PROMPT_SELECTOR_MAX_DRILL_DEPTH) {
+      logger.info(
+        `prompt-selector primitive: selection for ${optLabel} did not commit; falling through to cascade`
+      );
+      return null;
+    }
+    // Readback failed — disambiguate a genuine non-commit from a
+    // category->leaf drill by re-enumerating and comparing the option set.
+    const reEnumerated = (await target
+      .evaluate(enumerateOptionsExpr)
+      .catch(() => ({ optionsPresent: false }))) as {
+      optionsPresent: boolean;
+      options?: { oIdx: number; text: string }[];
+    };
+    const newOptions = reEnumerated?.optionsPresent ? (reEnumerated.options ?? []) : [];
+    const drilled = newOptions.length > 0 && optionSetKey(newOptions) !== optionSetKey(options);
+    if (!drilled) {
+      logger.info(
+        `prompt-selector primitive: selection for ${optLabel} did not commit; falling through to cascade`
+      );
+      return null;
+    }
     logger.info(
-      `prompt-selector primitive: selection for ${optLabel} did not commit; falling through to cascade`
+      `prompt-selector primitive: click for ${optLabel} drilled the popup to a new option set; re-matching at the new level`
     );
-    return null;
+    optionsResult = { options: newOptions };
   }
-  logger.info(
-    `prompt-selector primitive: selected "${chosenOption.text.slice(0, 40)}" for ${optLabel} (${matchReason})`
-  );
-  return readback.id;
+  return null;
 }
 
 /**
