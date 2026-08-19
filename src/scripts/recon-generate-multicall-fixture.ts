@@ -138,7 +138,7 @@ const CHECKOUT_HOST = "https://api.example.com";
  * click. Every section-save call is a genuine same-host, 2xx, submission POST
  * that a heuristic extractor (`extractActionSequence`) would keep — this is
  * what a real server-side-autosaving wizard produces, as opposed to
- * incidental page chrome. Site-agnostic stand-in for the reported Workday
+ * incidental page chrome. Site-agnostic stand-in for the reported ATS
  * apply-flow shape (recon-generate.ts's `resolveManifestActionSequence`
  * unconditionally trusting a short submit-manifest.json over this richer
  * capture set).

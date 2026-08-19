@@ -8,7 +8,7 @@ import { buildWizardCheckoutCaptures } from "@/scripts/recon-generate-multicall-
 
 /**
  * Regression coverage for the browser-flow-only fallback (see
- * docs/recon-generate-emits-bogus-http-stub-for-workday-multicall-flow.md): a
+ * docs/recon-generate-emits-bogus-http-stub-for-multicall-flow.md): a
  * multi-action flow whose captured sequence can't be faithfully replayed as a
  * bare-`fetch` HTTP sequence must not ship a fabricated single-call
  * `executeHttp` (or any `executeHttp` at all) — it ships browser-only with
@@ -139,7 +139,7 @@ describe("recon-generate CLI — cross-domain multi-action flow falls back to br
     // baseUrl host outright — a submit-manifest.json is the one path
     // (resolveManifestActionSequence, recon-generate.ts:768) that carries a
     // cross-host entry through to compileActionSteps at all, matching how a
-    // real Workday-style CXS recon actually narrates its own submission
+    // real ATS-style CXS recon actually narrates its own submission
     // sequence (see bugfix-002's own precedent fixture/test for this same
     // manifest-driven path).
     writeFileSync(
