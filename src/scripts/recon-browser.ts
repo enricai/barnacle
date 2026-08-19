@@ -2811,6 +2811,19 @@ async function main(): Promise<void> {
       process.exit(1);
     }
 
+    // Stagehand can tear its own CDP transport down mid-flow while the step
+    // loop above keeps reporting steps as "completed" — completedSteps.length
+    // can still equal plan.length, so isFlowTruncated alone never fires.
+    // This must stay a separate, unconditional check rather than folding into
+    // isFlowTruncated's boolean.
+    const cdpTransportClosedError = session.getCdpTransportClosedError?.();
+    if (cdpTransportClosedError) {
+      logger.error(
+        `Stagehand tore down the CDP transport mid-flow: ${cdpTransportClosedError.message} — refusing to report success`
+      );
+      process.exit(1);
+    }
+
     stopCapture();
 
     // Authoritative submission record for recon-generate: which captured POSTs

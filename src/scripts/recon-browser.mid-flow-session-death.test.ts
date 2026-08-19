@@ -330,6 +330,49 @@ describe("recon-browser/main — mid-flow session death (bugfix-002)", () => {
     expect(executeStepWithHealingStub).toHaveBeenCalledTimes(SESSION_DIES_AFTER_STEP);
   });
 
+  it("rejects when Stagehand tears the CDP transport down mid-flow even though every step reports completed (bugfix-007)", async () => {
+    const { stagehand } = makeFakePage();
+    const TRANSPORT_CLOSES_AFTER_STEP = 6;
+    const cdpTransportClosedError = {
+      message: "scraper session's CDP transport was closed by the SDK",
+    };
+    let transportClosed = false;
+    vi.mocked(createBrowserSession).mockResolvedValue({
+      stagehand,
+      limiter: {} as never,
+      sessionId: "test-session",
+      provider: "browserbase",
+      close: vi.fn().mockResolvedValue(undefined),
+      getCdpTransportClosedError: () => (transportClosed ? cdpTransportClosedError : undefined),
+    } as never);
+
+    let stepCount = 0;
+    executeStepWithHealingStub.mockImplementation(async () => {
+      stepCount += 1;
+      // Stagehand's own teardown does not surface as a thrown error or a
+      // dead page.url() read here — it is only observable via the session's
+      // getCdpTransportClosedError() accessor, so every remaining step (7-10)
+      // still reports "completed" via the loop's normal mechanics.
+      if (stepCount === TRANSPORT_CLOSES_AFTER_STEP) transportClosed = true;
+      return "ok";
+    });
+
+    process.argv = flowArgv(10);
+
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("process.exit");
+    }) as never);
+
+    await expect(main()).rejects.toThrow("process.exit");
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    // The per-step isFlowTruncated count alone would have looked satisfied —
+    // all 10 declared steps ran to completion via the loop mechanics.
+    expect(executeStepWithHealingStub).toHaveBeenCalledTimes(10);
+    expect(loggerStub.error).toHaveBeenCalledWith(expect.stringContaining("CDP transport"));
+
+    exitSpy.mockRestore();
+  });
+
   it("resolves normally when the session stays alive for all steps (control case)", async () => {
     const { stagehand } = makeFakePage();
     vi.mocked(createBrowserSession).mockResolvedValue({
