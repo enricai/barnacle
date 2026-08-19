@@ -1,9 +1,14 @@
 import type { ActResult, Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { judgeSelectOptionWithLLM } from "@/lib/llm/judges/select-option";
 import { executeStepWithHealing } from "@/scraper/flow-runner";
 import { buildPromptWidgetHarness } from "@/scraper/prompt-widget-dom-harness.test-helper";
 import type { Logger } from "@/types/logging";
+
+vi.mock("@/lib/llm/judges/select-option", () => ({
+  judgeSelectOptionWithLLM: vi.fn(),
+}));
 
 /**
  * Regression coverage for the prompt-selector primitive: a native-control-less
@@ -487,6 +492,82 @@ describe("flow-runner/tryPromptSelectorPrimitive (real DOM)", () => {
     );
 
     expect(result).toBe("completed");
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining("resolved by prompt-selector primitive")
+    );
+  });
+
+  it("drills a category itself when the requested leaf isn't in the currently-rendered popup level", async () => {
+    const CATEGORY = "Job Boards";
+    const LEAF = "Internet - Job Boards/Search Engines";
+    const CATEGORIES = ["Advertising", CATEGORY, "Military"];
+    const LEAVES = ["Glassdoor", LEAF, "irishjobs"];
+
+    // The container itself must carry its OWN `aria-invalid` (unlike
+    // WIDGET_KIT_HTML, where only the nested filter <input> does): the
+    // category click's readback needs to genuinely FAIL against the
+    // container-level invalid marker, so the drill-retry loop — not a
+    // readback false-positive — is what carries the leaf match.
+    const DRILL_WIDGET_HTML = WIDGET_KIT_HTML.replace(
+      `data-automation-id="multiSelectContainer">`,
+      `data-automation-id="multiSelectContainer" aria-invalid="true">`
+    );
+
+    const stagehandAct = vi.fn();
+    const { page, target, clicks, window } = buildPromptWidgetHarness({
+      html: DRILL_WIDGET_HTML,
+      popupByWidgetId: {
+        "src-widget": {
+          options: CATEGORIES.map((c) =>
+            c === CATEGORY ? { label: c, drillTo: { options: LEAVES } } : c
+          ),
+        },
+      },
+    });
+    // The leaf text isn't among the top-level category options, so the
+    // deterministic match misses at the popup's initially-rendered level and
+    // falls to the LLM judge to pick the plausible category to drill into.
+    vi.mocked(judgeSelectOptionWithLLM).mockResolvedValue({
+      selectIndex: 0,
+      optionIndex: CATEGORIES.indexOf(CATEGORY),
+      reason: "closest category for the leaf hint",
+    });
+
+    const trajectory: { stepIndex: number; verifiedBy: string; targetId?: string }[] = [];
+    const params = baseParams(page as unknown as Page, stagehandAct, "");
+    const merged = {
+      ...params,
+      frameTarget: target,
+      anthropic: {} as never,
+      trajectory,
+      // Names ONLY the leaf option — no category text — so the primitive must
+      // drill through the best-guess category on its own.
+      step: `for 'How Did You Hear About Us?' select '${LEAF}'`,
+    };
+
+    const result = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    );
+
+    expect(result).toBe("completed");
+    expect(trajectory).toEqual([{ stepIndex: 3, verifiedBy: "dom", targetId: "src-widget" }]);
+    // Two distinct real locator clicks: the trigger-open click, then the
+    // category click, then the re-matched leaf click — the category click
+    // must land BEFORE the leaf click, both real gestures recorded via
+    // locator().first().click() (the harness never records a synthetic
+    // click), no interleaved cascade/observe fallback.
+    const optionClickIndices = clicks
+      .map((sel, i) => ({ sel, i }))
+      .filter(({ sel }) => sel.includes("data-bcl-prompt-opt-idx"))
+      .map(({ i }) => i);
+    expect(optionClickIndices.length).toBe(2);
+    expect(optionClickIndices[0]).toBeLessThan(optionClickIndices[1] as number);
+    expect(
+      window.document.querySelector("[data-automation-id='promptSelectionLabel']")?.textContent
+    ).toBe(LEAF);
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining("drilled the popup to a new option set")
+    );
     expect(testLogger.info).toHaveBeenCalledWith(
       expect.stringContaining("resolved by prompt-selector primitive")
     );
