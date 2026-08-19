@@ -40,6 +40,6 @@ describe("emitContractTs — getGql() call-site coherence with the selected capt
     expect(source).toContain(
       'getGql(context.baseUrl)("CruiseSearchCruises", CRUISESITE_QUERY, { destination: payload.destination, nights: payload.nights })'
     );
-    expect(source).toContain("endpoint: `${baseUrl}/graphql`");
+    expect(source).toContain(`endpoint: \`\${baseUrl}/graphql\``);
   });
 });
