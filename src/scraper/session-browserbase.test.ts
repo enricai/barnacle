@@ -14,6 +14,7 @@ import { Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { startCdpTransportHeartbeat } from "@/scraper/cdp-heartbeat";
+import { isCdpTransportClosedError } from "@/scraper/errors";
 import {
   createBrowserbaseBrowserSession,
   makeFilteredStagehandLogger,
@@ -63,7 +64,9 @@ vi.mock("@browserbasehq/stagehand", async (importOriginal) => {
       this.init = vi.fn().mockResolvedValue(undefined);
       this.close = vi.fn().mockResolvedValue(undefined);
       this.browserbaseSessionID = "bb-session-id";
-      this.context = { conn: { send: vi.fn().mockResolvedValue(undefined) } };
+      this.context = {
+        conn: { send: vi.fn().mockResolvedValue(undefined), onTransportClosed: vi.fn() },
+      };
     }),
   };
 });
@@ -411,5 +414,47 @@ describe("createBrowserbaseBrowserSession CDP heartbeat", () => {
     await session.close();
 
     expect(handle.stop).toHaveBeenCalledOnce();
+  });
+});
+
+describe("createBrowserbaseBrowserSession CDP-transport-teardown detection", () => {
+  beforeEach(() => {
+    configRef.value.scraper.browserbaseApiKey = "bb-key";
+    configRef.value.scraper.browserbaseProjectId = "bb-project";
+    configRef.value.scraper.anthropicApiKey = "anthropic-key";
+    configRef.value.scraper.useBedrock = false;
+    vi.clearAllMocks();
+  });
+
+  it("flags an SDK-initiated transport close that happens before our own close()", async () => {
+    const session = await createBrowserbaseBrowserSession();
+    const fakeStagehand = session.stagehand as unknown as {
+      context: { conn: { onTransportClosed: ReturnType<typeof vi.fn> } };
+    };
+    const handler = fakeStagehand.context.conn.onTransportClosed.mock.calls[0]?.[0] as (
+      why: string
+    ) => void;
+
+    handler("socket-close code=1006 reason=");
+
+    const err = session.getCdpTransportClosedError?.();
+    expect(err).toBeDefined();
+    expect(isCdpTransportClosedError(err)).toBe(true);
+    expect(err?.message).toContain("socket-close code=1006 reason=");
+  });
+
+  it("does not flag a transport close that happens as a consequence of our own close()", async () => {
+    const session = await createBrowserbaseBrowserSession();
+    const fakeStagehand = session.stagehand as unknown as {
+      context: { conn: { onTransportClosed: ReturnType<typeof vi.fn> } };
+    };
+    const handler = fakeStagehand.context.conn.onTransportClosed.mock.calls[0]?.[0] as (
+      why: string
+    ) => void;
+
+    await session.close();
+    handler("socket-close code=1000 reason=normal-close");
+
+    expect(session.getCdpTransportClosedError?.()).toBeUndefined();
   });
 });
