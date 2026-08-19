@@ -2573,7 +2573,15 @@ async function main(): Promise<void> {
           const trailingGraceVerdict = await verifySubmitWithLLM({
             client: anthropic,
             input: {
-              pageUrl: page.url(),
+              // A dead session throws synchronously here too — fall back to ""
+              // rather than let the trailing-grace check itself crash the run.
+              pageUrl: ((): string => {
+                try {
+                  return page.url();
+                } catch {
+                  return "";
+                }
+              })(),
               pageTitle,
               unfocusedObserve: [],
               networkCaptures: recentCaptureMeta,
@@ -2691,7 +2699,15 @@ async function main(): Promise<void> {
 
         const currentPageState = await snapshotPage(mainFrameTarget(page), signalCounter).catch(
           () => ({
-            url: page.url(),
+            // page.url() throws synchronously on a dead session — a raw call
+            // here would turn this fallback itself into an unhandled throw.
+            url: (() => {
+              try {
+                return page.url();
+              } catch {
+                return "";
+              }
+            })(),
             bodyHtmlLength: 0,
           })
         );
