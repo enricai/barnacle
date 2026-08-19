@@ -311,7 +311,9 @@ describe("recon-browser/main — mid-flow session death (bugfix-002)", () => {
         setTimeout(
           () =>
             signalDeath?.(
-              new CdpTransportClosedError("stagehand-initiated teardown mid-flow: CDP transport closed")
+              new CdpTransportClosedError(
+                "stagehand-initiated teardown mid-flow: CDP transport closed"
+              )
             ),
           0
         );
