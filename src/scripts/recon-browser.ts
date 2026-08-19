@@ -77,7 +77,11 @@ import {
   resolveSiteTelemetryDir,
 } from "@/lib/telemetry/telemetry-paths";
 import { captureCookieJarSnapshot } from "@/scraper/cookie-jar";
-import { SessionTimeoutError, StepVerificationError } from "@/scraper/errors";
+import {
+  CdpTransportClosedError,
+  SessionTimeoutError,
+  StepVerificationError,
+} from "@/scraper/errors";
 import {
   type AttemptRecord,
   anthropicModelName,
@@ -106,6 +110,7 @@ import {
   resolveFrameTarget,
   waitForChildFrameReady,
 } from "@/scraper/frame-target";
+import { withScraperRetry } from "@/scraper/retry";
 import { createBrowserSession, type ProviderName } from "@/scraper/session";
 import { raceAgainstTeardown } from "@/scraper/session-teardown";
 import { guardedObserve } from "@/scraper/stagehand-guard";
@@ -2195,731 +2200,779 @@ async function main(): Promise<void> {
     `recon-browser: target=${url} flow_steps=${flow.length} provider=${provider ?? "(config-default)"} advancedStealth=${advancedStealth} upload_fixture=${uploadFixture ? `${uploadFixturePath} (${uploadFixture.buffer.length}b)` : "(missing)"} runId=${runDir.runId} out=${runDir.root}`
   );
 
-  const session = await createBrowserSession({ provider, advancedStealth });
-  // `counter` indexes captures on disk (filenames must stay unique).
-  // `signalCounter` drives the verifier — only non-GET methods increment
-  // it so coincident polling/page-load GETs don't falsely "verify" a
-  // click that produced no real effect. See the onFinished comment in
-  // wireNetworkCapture for the rationale.
-  const counter = { n: 0 };
-  const signalCounter = { n: 0 };
-  // Indexes cookie-jar snapshot filenames chronologically, separate from
-  // `counter` (network captures) so a phase with zero network activity still
-  // gets a snapshot without skipping capture indices.
-  const jarCounter = { n: 0 };
-  const recentCaptures: string[] = [];
-  // Parallel tracker of recent non-GET captures' method + status. Used by
-  // the Tier 1 trailing-optional-step grace: a verification failure on an
-  // optional trailing step is treated as a benign no-op when a recent
-  // mutation returned 2xx (i.e. the SPA's "real work" already completed
-  // server-side and the trailing step is a redundant tail that the flow
-  // file may have included for sites where it's actually needed). GETs are
-  // filtered at the push site so the window isn't washed out by SPA chunk
-  // loads — see the comment in wireNetworkCapture's onFinished.
-  const recentCaptureMeta: { method: string; status: number; url: string }[] = [];
+  // Runs one whole-flow attempt on a brand-new session: create session ->
+  // run the step loop -> post-loop truncation/CDP-teardown checks -> replan
+  // write-back. Stagehand can tear its own CDP transport down mid-flow while
+  // traffic is still active (not idle — see docs/recon-1128-heartbeat-
+  // ineffective-1006-fires-under-active-traffic-not-idle.md), which is
+  // recoverable by retrying on a fresh session, so this throws
+  // CdpTransportClosedError instead of exiting so the caller can retry it
+  // through withScraperRetry. Every other failure mode keeps exiting/
+  // rejecting immediately, exactly as a single-attempt run always has.
+  async function runFlowAttempt(): Promise<void> {
+    const session = await createBrowserSession({ provider, advancedStealth });
+    // `counter` indexes captures on disk (filenames must stay unique).
+    // `signalCounter` drives the verifier — only non-GET methods increment
+    // it so coincident polling/page-load GETs don't falsely "verify" a
+    // click that produced no real effect. See the onFinished comment in
+    // wireNetworkCapture for the rationale.
+    const counter = { n: 0 };
+    const signalCounter = { n: 0 };
+    // Indexes cookie-jar snapshot filenames chronologically, separate from
+    // `counter` (network captures) so a phase with zero network activity still
+    // gets a snapshot without skipping capture indices.
+    const jarCounter = { n: 0 };
+    const recentCaptures: string[] = [];
+    // Parallel tracker of recent non-GET captures' method + status. Used by
+    // the Tier 1 trailing-optional-step grace: a verification failure on an
+    // optional trailing step is treated as a benign no-op when a recent
+    // mutation returned 2xx (i.e. the SPA's "real work" already completed
+    // server-side and the trailing step is a redundant tail that the flow
+    // file may have included for sites where it's actually needed). GETs are
+    // filtered at the push site so the window isn't washed out by SPA chunk
+    // loads — see the comment in wireNetworkCapture's onFinished.
+    const recentCaptureMeta: { method: string; status: number; url: string }[] = [];
 
-  // Hoisted out of the try block so the finally can run the replan
-  // write-back even when the cascade throws — replan-discovered steps
-  // accumulated up to the failure point should survive a cascade-exhausted
-  // exit so the user can review them and the next run starts where this
-  // one left off. The "only on success" gate before was the reason most
-  // recon discoveries got thrown away on failed runs.
-  const plan: NormalizedStep[] = [];
-  const replanEvents: ReplanEvent[] = [];
-  try {
-    const stagehand = session.stagehand;
-    const page = await stagehand.context.awaitActivePage();
-
-    // Phase label is mutated between flow steps so the single CDP listener
-    // always tags captures with the currently active phase.
-    let currentPhase = "home";
-    const stopCapture = wireNetworkCapture(
-      page,
-      counter,
-      signalCounter,
-      recentCaptures,
-      recentCaptureMeta,
-      () => currentPhase,
-      () => {
-        // Live read so SPA history navigation between captures stays accurate.
-        // Fallback to the initial url on parse failure (e.g. about:blank early
-        // in the goto cycle) so we don't accidentally mark a capture as
-        // cross-origin and miss the user-action signal.
-        try {
-          return new URL(page.url()).origin;
-        } catch {
-          return new URL(url).origin;
-        }
-      }
-    );
-
-    logger.info(`navigating to ${url} (waitUntil: ${GOTO_WAIT_UNTIL})`);
-    // A navigation wait that never resolves must not discard the run. Ad-heavy
-    // commercial sites (analytics/session-replay beacons on timers) never reach
-    // `networkidle`, so the wait burns GOTO_TIMEOUT_MS and throws — after the
-    // captures we came for are already on disk. Warn and press on: readiness is
-    // established by the SPA probe below, and the flow steps fail loudly on
-    // their own if the page really is unusable.
+    // Hoisted out of the try block so the finally can run the replan
+    // write-back even when the cascade throws — replan-discovered steps
+    // accumulated up to the failure point should survive a cascade-exhausted
+    // exit so the user can review them and the next run starts where this
+    // one left off. The "only on success" gate before was the reason most
+    // recon discoveries got thrown away on failed runs. Local to this
+    // attempt so a retried attempt starts from the originally authored flow
+    // rather than a previous attempt's partially-replanned plan.
+    const plan: NormalizedStep[] = [];
+    const replanEvents: ReplanEvent[] = [];
     try {
-      await page.goto(url, { waitUntil: GOTO_WAIT_UNTIL, timeoutMs: GOTO_TIMEOUT_MS });
-    } catch (err) {
-      logger.warn(
-        `navigation wait (${GOTO_WAIT_UNTIL}) did not settle: ${toErrorMessage(err)} — continuing; the SPA readiness probe below decides whether the page is usable`
-      );
-    }
-    await snapshotAndPersistCookieJar(page, jarCounter, "goto", currentPhase, -1);
+      const stagehand = session.stagehand;
+      const page = await stagehand.context.awaitActivePage();
 
-    const SPA_READINESS_TIMEOUT_MS = 15_000;
-    const SPA_READINESS_POLL_MS = 500;
-    const SPA_MIN_BODY_LENGTH = 5_000;
-    const spaDeadline = Date.now() + SPA_READINESS_TIMEOUT_MS;
-    let bodyLength = await page
-      .evaluate("document.body ? document.body.outerHTML.length : 0")
-      .catch(() => 0);
-    if (typeof bodyLength === "number" && bodyLength < SPA_MIN_BODY_LENGTH) {
-      logger.info(
-        `spa readiness: body ${bodyLength} chars < ${SPA_MIN_BODY_LENGTH} threshold — waiting for SPA to render`
-      );
-      while (Date.now() < spaDeadline) {
-        await new Promise((r) => setTimeout(r, SPA_READINESS_POLL_MS));
-        bodyLength = await page
-          .evaluate("document.body ? document.body.outerHTML.length : 0")
-          .catch(() => 0);
-        if (typeof bodyLength === "number" && bodyLength >= SPA_MIN_BODY_LENGTH) {
-          logger.info(`spa readiness: body grew to ${bodyLength} chars — SPA rendered`);
-          break;
+      // Phase label is mutated between flow steps so the single CDP listener
+      // always tags captures with the currently active phase.
+      let currentPhase = "home";
+      const stopCapture = wireNetworkCapture(
+        page,
+        counter,
+        signalCounter,
+        recentCaptures,
+        recentCaptureMeta,
+        () => currentPhase,
+        () => {
+          // Live read so SPA history navigation between captures stays accurate.
+          // Fallback to the initial url on parse failure (e.g. about:blank early
+          // in the goto cycle) so we don't accidentally mark a capture as
+          // cross-origin and miss the user-action signal.
+          try {
+            return new URL(page.url()).origin;
+          } catch {
+            return new URL(url).origin;
+          }
         }
-      }
-      if (typeof bodyLength === "number" && bodyLength < SPA_MIN_BODY_LENGTH) {
+      );
+
+      logger.info(`navigating to ${url} (waitUntil: ${GOTO_WAIT_UNTIL})`);
+      // A navigation wait that never resolves must not discard the run. Ad-heavy
+      // commercial sites (analytics/session-replay beacons on timers) never reach
+      // `networkidle`, so the wait burns GOTO_TIMEOUT_MS and throws — after the
+      // captures we came for are already on disk. Warn and press on: readiness is
+      // established by the SPA probe below, and the flow steps fail loudly on
+      // their own if the page really is unusable.
+      try {
+        await page.goto(url, { waitUntil: GOTO_WAIT_UNTIL, timeoutMs: GOTO_TIMEOUT_MS });
+      } catch (err) {
         logger.warn(
-          `spa readiness: body still ${bodyLength} chars after ${SPA_READINESS_TIMEOUT_MS}ms — proceeding with possibly incomplete page`
+          `navigation wait (${GOTO_WAIT_UNTIL}) did not settle: ${toErrorMessage(err)} — continuing; the SPA readiness probe below decides whether the page is usable`
         );
       }
-    }
+      await snapshotAndPersistCookieJar(page, jarCounter, "goto", currentPhase, -1);
 
-    const anthropic = buildAnthropicClient();
-    const rephraseModel = buildRephraseModel();
-    if (!anthropic) {
-      logger.warn(
-        "bedrock-only deployment: global replan will be skipped on step failures (attempt-5 llm rephrase still runs on the Bedrock-backed model)"
-      );
-    }
-
-    plan.push(...flow);
-    const completedSteps: string[] = [];
-    const trajectory: {
-      stepIndex: number;
-      verifiedBy: AttemptRecord["verifiedBy"];
-      targetId?: string;
-    }[] = [];
-    let probeReplansUsed = 0;
-    let cascadeReplansUsed = 0;
-
-    const STUCK_SKIP_THRESHOLD = 5;
-    let consecutiveStaleSkips = 0;
-    let lastSuccessNetworkCount = signalCounter.n;
-    let lastSuccessUrl = page.url();
-    // Track the page origin so a cross-origin navigation mid-flow (e.g. the
-    // Apply click taking careers.<employer>.com → apply.<ats>.com) can
-    // re-gate on SPA hydration. The initial goto's readiness gate only covers
-    // the landing page; the wizard app boots on a DIFFERENT origin with no gate,
-    // so its first steps would otherwise probe an un-hydrated shell and skip.
-    const originOf = (u: string): string => {
-      try {
-        return new URL(u).origin;
-      } catch {
-        return "";
-      }
-    };
-    let lastOrigin = originOf(page.url());
-    let exitedViaTrailingGrace = false;
-
-    for (let i = 0; i < plan.length; i++) {
-      const step = plan[i]!;
-      // Liveness gate: a closed/crashed Stagehand session makes `page.url()`
-      // throw synchronously. Every downstream observe/act probe treats that
-      // throw as "no candidates" and, for an optional step, silently skips
-      // it — so without this check the loop runs to `plan.length` and the
-      // post-loop isFlowTruncated count-check sees a full completedSteps
-      // array and reports "not truncated" even though the session died
-      // partway through. Mirrors the same guard in runHealingFlow.
-      const readLiveUrl = (): string => {
-        try {
-          return page.url();
-        } catch (err) {
-          throw new SessionTimeoutError(
-            `${formatStepPrefix(i, () => plan.length)} session appears closed/dead (page.url() threw: ${toErrorMessage(err)}) — aborting after ${i} of ${plan.length} steps completed`
+      const SPA_READINESS_TIMEOUT_MS = 15_000;
+      const SPA_READINESS_POLL_MS = 500;
+      const SPA_MIN_BODY_LENGTH = 5_000;
+      const spaDeadline = Date.now() + SPA_READINESS_TIMEOUT_MS;
+      let bodyLength = await page
+        .evaluate("document.body ? document.body.outerHTML.length : 0")
+        .catch(() => 0);
+      if (typeof bodyLength === "number" && bodyLength < SPA_MIN_BODY_LENGTH) {
+        logger.info(
+          `spa readiness: body ${bodyLength} chars < ${SPA_MIN_BODY_LENGTH} threshold — waiting for SPA to render`
+        );
+        while (Date.now() < spaDeadline) {
+          await new Promise((r) => setTimeout(r, SPA_READINESS_POLL_MS));
+          bodyLength = await page
+            .evaluate("document.body ? document.body.outerHTML.length : 0")
+            .catch(() => 0);
+          if (typeof bodyLength === "number" && bodyLength >= SPA_MIN_BODY_LENGTH) {
+            logger.info(`spa readiness: body grew to ${bodyLength} chars — SPA rendered`);
+            break;
+          }
+        }
+        if (typeof bodyLength === "number" && bodyLength < SPA_MIN_BODY_LENGTH) {
+          logger.warn(
+            `spa readiness: body still ${bodyLength} chars after ${SPA_READINESS_TIMEOUT_MS}ms — proceeding with possibly incomplete page`
           );
+        }
+      }
+
+      const anthropic = buildAnthropicClient();
+      const rephraseModel = buildRephraseModel();
+      if (!anthropic) {
+        logger.warn(
+          "bedrock-only deployment: global replan will be skipped on step failures (attempt-5 llm rephrase still runs on the Bedrock-backed model)"
+        );
+      }
+
+      plan.push(...flow);
+      const completedSteps: string[] = [];
+      const trajectory: {
+        stepIndex: number;
+        verifiedBy: AttemptRecord["verifiedBy"];
+        targetId?: string;
+      }[] = [];
+      let probeReplansUsed = 0;
+      let cascadeReplansUsed = 0;
+
+      const STUCK_SKIP_THRESHOLD = 5;
+      let consecutiveStaleSkips = 0;
+      let lastSuccessNetworkCount = signalCounter.n;
+      let lastSuccessUrl = page.url();
+      // Track the page origin so a cross-origin navigation mid-flow (e.g. the
+      // Apply click taking careers.<employer>.com → apply.<ats>.com) can
+      // re-gate on SPA hydration. The initial goto's readiness gate only covers
+      // the landing page; the wizard app boots on a DIFFERENT origin with no gate,
+      // so its first steps would otherwise probe an un-hydrated shell and skip.
+      const originOf = (u: string): string => {
+        try {
+          return new URL(u).origin;
+        } catch {
+          return "";
         }
       };
-      readLiveUrl();
-      currentPhase =
-        step.instruction
-          .replace(/[^a-z0-9]+/gi, "-")
-          .toLowerCase()
-          .replace(/^-|-$/g, "")
-          .slice(0, 24) || `step-${i}`;
-      logger.info(
-        `${formatStepPrefix(i, () => plan.length)} [${currentPhase}]${step.optional ? " (optional)" : ""}: ${step.instruction}`
-      );
-      await snapshotAndPersistCookieJar(page, jarCounter, "pre-step", currentPhase, i);
-      // Re-gate on SPA hydration when the origin changed since the last step —
-      // the wizard SPA (e.g. apply.<ats>.com after the Apply click) boots on
-      // a new origin the initial-goto readiness gate never covered, so wait for
-      // its body to render before probing rather than skipping a shell page.
-      const currentOrigin = originOf(readLiveUrl());
-      if (currentOrigin !== "" && currentOrigin !== lastOrigin) {
-        logger.info(
-          `origin changed ${lastOrigin || "(none)"} → ${currentOrigin}; re-gating on SPA hydration`
-        );
-        await waitForSpaReady(page, logger);
-        lastOrigin = currentOrigin;
-      }
-      // Debug: dump the full DOM right before this step's cascade runs. Lets
-      // a triager see the page state exactly as the cascade sees it, without
-      // re-running. One-shot per recon run via --dump-dom-before-step.
-      if (dumpDomBeforeStep !== null && i + 1 === dumpDomBeforeStep) {
-        try {
-          const html = await withWatchdog(
-            () =>
-              page.evaluate("document.documentElement ? document.documentElement.outerHTML : ''"),
-            {
-              timeoutMs: config.scraper.frameEvaluateTimeoutMs,
-              label: "dump-dom-before-step: evaluate",
-            }
-          );
-          if (typeof html === "string" && html.length > 0) {
-            const dumpPath = join(runDir.root, `dom-dump-step-${i + 1}.html`);
-            writeFileSync(dumpPath, html);
-            logger.info(
-              `${formatStepPrefix(i, () => plan.length)}: wrote DOM dump (${html.length} bytes) to ${dumpPath}`
-            );
-          } else {
-            logger.warn(
-              `${formatStepPrefix(i, () => plan.length)}: DOM dump returned empty content; skipping write`
+      let lastOrigin = originOf(page.url());
+      let exitedViaTrailingGrace = false;
+
+      for (let i = 0; i < plan.length; i++) {
+        const step = plan[i]!;
+        // Liveness gate: a closed/crashed Stagehand session makes `page.url()`
+        // throw synchronously. Every downstream observe/act probe treats that
+        // throw as "no candidates" and, for an optional step, silently skips
+        // it — so without this check the loop runs to `plan.length` and the
+        // post-loop isFlowTruncated count-check sees a full completedSteps
+        // array and reports "not truncated" even though the session died
+        // partway through. Mirrors the same guard in runHealingFlow.
+        const readLiveUrl = (): string => {
+          try {
+            return page.url();
+          } catch (err) {
+            throw new SessionTimeoutError(
+              `${formatStepPrefix(i, () => plan.length)} session appears closed/dead (page.url() threw: ${toErrorMessage(err)}) — aborting after ${i} of ${plan.length} steps completed`
             );
           }
-        } catch (err) {
-          logger.warn(
-            `${formatStepPrefix(i, () => plan.length)}: DOM dump failed: ${toErrorMessage(err)}`
-          );
-        }
-      }
-      // Baseline for wizard-restart detection: capture the highest capture
-      // INDEX before the step so findWizardRestartSignal scans only URLs that
-      // landed during THIS step's processing (eviction-proof disk scan).
-      const preCaptureIdxBeforeStep = latestCaptureIndex(recentCaptures);
-      // Resolved fresh per step (not cached across the run) so a cross-origin
-      // iframe that attaches mid-flow (e.g. after an "Apply" click reveals a
-      // wizard embedded later in the DOM) is picked up as soon as it's
-      // reachable, and so a replan-appended step — spliced into `plan` after
-      // this loop already started — resolves the same frame instead of
-      // silently reverting to the main frame. `resolveFrameTarget` falls back
-      // to the main-frame target when `frameSelector` is null/unresolvable,
-      // so this is a no-op for every flow that doesn't declare one.
-      const frameTarget = await resolveFrameTarget(page, frameSelector);
-      // A child frame CDP has just attached to may still be sitting on
-      // about:blank (the moment right after Target.setAutoAttach fires and
-      // before the OOPIF's own navigation lands). waitForSpaReady above only
-      // re-gates on a TOP-document origin change, which never fires for a
-      // same-origin-top site whose wizard lives entirely inside an iframe
-      // (e.g. the top-window site stays on careers.example.org throughout), so without
-      // this the cascade would probe an unnavigated frame and see 0 candidates.
-      // No-ops (zero delay) when frameTarget.frame is null.
-      await waitForChildFrameReady(frameTarget);
-      try {
-        const stepPromise = executeStepWithHealing({
-          stagehand,
-          page,
-          frameTarget,
-          step: step.instruction,
-          optional: step.optional,
-          upload: step.upload,
-          submitStep: step.submitStep === true,
-          flowHasSubmitSemantics: flowHasSubmitSemantics({
-            steps: plan.map((s) => ({ submitStep: s.submitStep === true })),
-            submitEndpointPattern,
-            requireSubmitEndpointMatch,
-          }),
-          stepIndex: i,
-          totalSteps: () => plan.length,
-          phase: currentPhase,
-          signalCounter,
-          recentCaptures,
-          recentCaptureMeta,
-          anthropic,
-          rephraseModel,
-          logger,
-          uploadFixture,
-          isFinalStep: i === plan.length - 1,
-          submitEndpointPattern,
-          submittedStateSelectors,
-          requireSubmitEndpointMatch,
-          advanceTransitionBodyPattern,
-          successUrlFragments,
-          successPageTitleHints,
-          ownBackendHostnames,
-          knownErrorClassPrefixes,
-          wizardExitButtonLabels,
-          getSuppressedAisdkElementIdErrorCount: session.getSuppressedAisdkElementIdErrorCount,
-          trajectory,
-          captureFn,
-          onStepFailure: dumpStepFailure,
-        });
-        // Races the step's own promise against the session's teardown death
-        // signal (bugfix-003's raceAgainstTeardown): when Stagehand's CDP
-        // transport is reaped mid-step, the in-flight promise above never
-        // settles because the underlying CDP request is orphaned, and with
-        // keepAlive:true nothing else keeps the event loop alive — the
-        // process would otherwise exit 0 before this step ever resolves.
-        // No-op (behaves like `await stepPromise`) on providers where
-        // session.deathSignal is undefined.
-        const stepOutcome = await (session.deathSignal
-          ? raceAgainstTeardown(stepPromise, session.deathSignal)
-          : stepPromise);
-        // Second liveness gate: executeStepWithHealing can resolve normally even
-        // when the session died mid-step, if the death happened after its last
-        // probe. Re-check here so a swallowed mid-step death is still caught at
-        // the loop boundary rather than let the loop run to completion.
+        };
         readLiveUrl();
-        await snapshotAndPersistCookieJar(page, jarCounter, "post-step", currentPhase, i);
-
-        // Stamp the step's stable DOM identity from the fast primitive that just
-        // resolved it (pushed onto trajectory), so persistReplannedFlow can dedup
-        // reworded re-discoveries of this field across runs on `targetId`. Only a
-        // non-empty id is load-bearing; an empty string (element had no id) is
-        // left off so the step falls back to structural dedup.
-        const lastTrajectory = trajectory[trajectory.length - 1];
-        if (
-          lastTrajectory?.stepIndex === i &&
-          lastTrajectory.targetId !== undefined &&
-          lastTrajectory.targetId !== ""
-        ) {
-          plan[i] = { ...plan[i]!, targetId: lastTrajectory.targetId };
-        }
-
-        // Wizard-restart detection: if a configured restart-signal URL (e.g.
-        // a wizard ATS's `init-apply?...&application_canceled=true`) landed during
-        // this step, the multi-page wizard reset to page 1. Remaining steps now
-        // target a reset page and replanning against the restarted wizard is
-        // futile — abort with a diagnostic instead of silently cycling.
-        const restartUrl = findWizardRestartSignal({
-          preIdx: preCaptureIdxBeforeStep,
-          restartSignalUrlPatterns,
-        });
-        if (restartUrl !== null) {
-          throw new StepVerificationError(
-            `${formatStepPrefix(i, () => plan.length)} (${step.instruction.slice(0, 60)}) triggered a wizard restart (${restartUrl.slice(0, 120)}) — the application reset to the first page; aborting`,
-            "wizard-regression"
+        currentPhase =
+          step.instruction
+            .replace(/[^a-z0-9]+/gi, "-")
+            .toLowerCase()
+            .replace(/^-|-$/g, "")
+            .slice(0, 24) || `step-${i}`;
+        logger.info(
+          `${formatStepPrefix(i, () => plan.length)} [${currentPhase}]${step.optional ? " (optional)" : ""}: ${step.instruction}`
+        );
+        await snapshotAndPersistCookieJar(page, jarCounter, "pre-step", currentPhase, i);
+        // Re-gate on SPA hydration when the origin changed since the last step —
+        // the wizard SPA (e.g. apply.<ats>.com after the Apply click) boots on
+        // a new origin the initial-goto readiness gate never covered, so wait for
+        // its body to render before probing rather than skipping a shell page.
+        const currentOrigin = originOf(readLiveUrl());
+        if (currentOrigin !== "" && currentOrigin !== lastOrigin) {
+          logger.info(
+            `origin changed ${lastOrigin || "(none)"} → ${currentOrigin}; re-gating on SPA hydration`
           );
+          await waitForSpaReady(page, logger);
+          lastOrigin = currentOrigin;
         }
-
-        if (stepOutcome === "skipped") {
-          const pageStagnant =
-            signalCounter.n === lastSuccessNetworkCount && readLiveUrl() === lastSuccessUrl;
-          if (pageStagnant) {
-            consecutiveStaleSkips++;
-          }
-          if (consecutiveStaleSkips >= STUCK_SKIP_THRESHOLD) {
+        // Debug: dump the full DOM right before this step's cascade runs. Lets
+        // a triager see the page state exactly as the cascade sees it, without
+        // re-running. One-shot per recon run via --dump-dom-before-step.
+        if (dumpDomBeforeStep !== null && i + 1 === dumpDomBeforeStep) {
+          try {
+            const html = await withWatchdog(
+              () =>
+                page.evaluate("document.documentElement ? document.documentElement.outerHTML : ''"),
+              {
+                timeoutMs: config.scraper.frameEvaluateTimeoutMs,
+                label: "dump-dom-before-step: evaluate",
+              }
+            );
+            if (typeof html === "string" && html.length > 0) {
+              const dumpPath = join(runDir.root, `dom-dump-step-${i + 1}.html`);
+              writeFileSync(dumpPath, html);
+              logger.info(
+                `${formatStepPrefix(i, () => plan.length)}: wrote DOM dump (${html.length} bytes) to ${dumpPath}`
+              );
+            } else {
+              logger.warn(
+                `${formatStepPrefix(i, () => plan.length)}: DOM dump returned empty content; skipping write`
+              );
+            }
+          } catch (err) {
             logger.warn(
-              `stuck detection: ${consecutiveStaleSkips} consecutive optional steps skipped with no page advancement (url=${lastSuccessUrl}, networkCount=${lastSuccessNetworkCount}) — treating as probe-absent failure to trigger replan`
-            );
-            consecutiveStaleSkips = 0;
-            throw new StepVerificationError(
-              `${formatStepPrefix(i, () => plan.length)} (${step.instruction.slice(0, 60)}) stuck: ${STUCK_SKIP_THRESHOLD}+ consecutive optional skips with stagnant page`,
-              "probe-absent"
+              `${formatStepPrefix(i, () => plan.length)}: DOM dump failed: ${toErrorMessage(err)}`
             );
           }
-        } else {
-          consecutiveStaleSkips = 0;
-          lastSuccessNetworkCount = signalCounter.n;
-          lastSuccessUrl = readLiveUrl();
         }
+        // Baseline for wizard-restart detection: capture the highest capture
+        // INDEX before the step so findWizardRestartSignal scans only URLs that
+        // landed during THIS step's processing (eviction-proof disk scan).
+        const preCaptureIdxBeforeStep = latestCaptureIndex(recentCaptures);
+        // Resolved fresh per step (not cached across the run) so a cross-origin
+        // iframe that attaches mid-flow (e.g. after an "Apply" click reveals a
+        // wizard embedded later in the DOM) is picked up as soon as it's
+        // reachable, and so a replan-appended step — spliced into `plan` after
+        // this loop already started — resolves the same frame instead of
+        // silently reverting to the main frame. `resolveFrameTarget` falls back
+        // to the main-frame target when `frameSelector` is null/unresolvable,
+        // so this is a no-op for every flow that doesn't declare one.
+        const frameTarget = await resolveFrameTarget(page, frameSelector);
+        // A child frame CDP has just attached to may still be sitting on
+        // about:blank (the moment right after Target.setAutoAttach fires and
+        // before the OOPIF's own navigation lands). waitForSpaReady above only
+        // re-gates on a TOP-document origin change, which never fires for a
+        // same-origin-top site whose wizard lives entirely inside an iframe
+        // (e.g. the top-window site stays on careers.example.org throughout), so without
+        // this the cascade would probe an unnavigated frame and see 0 candidates.
+        // No-ops (zero delay) when frameTarget.frame is null.
+        await waitForChildFrameReady(frameTarget);
+        try {
+          const stepPromise = executeStepWithHealing({
+            stagehand,
+            page,
+            frameTarget,
+            step: step.instruction,
+            optional: step.optional,
+            upload: step.upload,
+            submitStep: step.submitStep === true,
+            flowHasSubmitSemantics: flowHasSubmitSemantics({
+              steps: plan.map((s) => ({ submitStep: s.submitStep === true })),
+              submitEndpointPattern,
+              requireSubmitEndpointMatch,
+            }),
+            stepIndex: i,
+            totalSteps: () => plan.length,
+            phase: currentPhase,
+            signalCounter,
+            recentCaptures,
+            recentCaptureMeta,
+            anthropic,
+            rephraseModel,
+            logger,
+            uploadFixture,
+            isFinalStep: i === plan.length - 1,
+            submitEndpointPattern,
+            submittedStateSelectors,
+            requireSubmitEndpointMatch,
+            advanceTransitionBodyPattern,
+            successUrlFragments,
+            successPageTitleHints,
+            ownBackendHostnames,
+            knownErrorClassPrefixes,
+            wizardExitButtonLabels,
+            getSuppressedAisdkElementIdErrorCount: session.getSuppressedAisdkElementIdErrorCount,
+            trajectory,
+            captureFn,
+            onStepFailure: dumpStepFailure,
+          });
+          // Races the step's own promise against the session's teardown death
+          // signal (bugfix-003's raceAgainstTeardown): when Stagehand's CDP
+          // transport is reaped mid-step, the in-flight promise above never
+          // settles because the underlying CDP request is orphaned, and with
+          // keepAlive:true nothing else keeps the event loop alive — the
+          // process would otherwise exit 0 before this step ever resolves.
+          // No-op (behaves like `await stepPromise`) on providers where
+          // session.deathSignal is undefined.
+          const stepOutcome = await (session.deathSignal
+            ? raceAgainstTeardown(stepPromise, session.deathSignal)
+            : stepPromise);
+          // Second liveness gate: executeStepWithHealing can resolve normally even
+          // when the session died mid-step, if the death happened after its last
+          // probe. Re-check here so a swallowed mid-step death is still caught at
+          // the loop boundary rather than let the loop run to completion.
+          readLiveUrl();
+          await snapshotAndPersistCookieJar(page, jarCounter, "post-step", currentPhase, i);
 
-        completedSteps.push(step.instruction);
-      } catch (err) {
-        if (!(err instanceof StepVerificationError)) throw err;
+          // Stamp the step's stable DOM identity from the fast primitive that just
+          // resolved it (pushed onto trajectory), so persistReplannedFlow can dedup
+          // reworded re-discoveries of this field across runs on `targetId`. Only a
+          // non-empty id is load-bearing; an empty string (element had no id) is
+          // left off so the step falls back to structural dedup.
+          const lastTrajectory = trajectory[trajectory.length - 1];
+          if (
+            lastTrajectory?.stepIndex === i &&
+            lastTrajectory.targetId !== undefined &&
+            lastTrajectory.targetId !== ""
+          ) {
+            plan[i] = { ...plan[i]!, targetId: lastTrajectory.targetId };
+          }
 
-        // Unrecoverable backend-error short-circuit. When the cascade
-        // detected a same-window 5xx on the submit endpoint, no amount of
-        // replan or rephrase can heal a server crash. Propagate the error
-        // out of the flow loop so main()'s outer try/catch reports the
-        // diagnostic — bypasses the trailing-grace and replan paths
-        // entirely. (The cascade-exhausted and probe-absent kinds fall
-        // through to the existing dispatcher below.)
-        if (err.kind === "backend-error-unrecoverable") {
-          logger.error(`backend error unrecoverable: ${err.message}; aborting run`);
-          throw err;
-        }
-        if (err.kind === "wizard-regression") {
-          // The wizard restarted; replanning against a reset page cannot recover
-          // the lost progress. Bypass the replan dispatcher and abort.
-          logger.error(`wizard regression: ${err.message}; aborting run`);
-          throw err;
-        }
+          // Wizard-restart detection: if a configured restart-signal URL (e.g.
+          // a wizard ATS's `init-apply?...&application_canceled=true`) landed during
+          // this step, the multi-page wizard reset to page 1. Remaining steps now
+          // target a reset page and replanning against the restarted wizard is
+          // futile — abort with a diagnostic instead of silently cycling.
+          const restartUrl = findWizardRestartSignal({
+            preIdx: preCaptureIdxBeforeStep,
+            restartSignalUrlPatterns,
+          });
+          if (restartUrl !== null) {
+            throw new StepVerificationError(
+              `${formatStepPrefix(i, () => plan.length)} (${step.instruction.slice(0, 60)}) triggered a wizard restart (${restartUrl.slice(0, 120)}) — the application reset to the first page; aborting`,
+              "wizard-regression"
+            );
+          }
 
-        // Tier 1 — trailing-optional-step grace: when an OPTIONAL step at
-        // trailing position fails verification AND a recent non-GET capture
-        // returned 2xx, treat as a benign no-op exit. The flow's "real work"
-        // already completed server-side (recent successful POST proves it);
-        // the trailing step is a redundant tail that the cascade can't make
-        // meaningful progress on (e.g. resume re-upload after the workflow
-        // already ended, final Continue when the Submit button is in
-        // "Saving..." state). Uses only flow-position metadata + capture HTTP
-        // metadata — no content matching, no open-set patterns.
-        //
-        // When the flow declares submitEndpointPattern, the "recent 2xx" must
-        // match it. Without this gate, the heuristic latches onto every
-        // non-GET 2xx — including pre-submit interruption_check POSTs and
-        // third-party analytics tracking pixels (Google Analytics, DoubleClick,
-        // googletagmanager) that fire on form interaction events. Those look
-        // exactly like real submissions by HTTP signal but don't represent the
-        // actual application landing. Verified by reading captures from
-        // /tmp/recon/graphql/ during a sweep: some tenants hit this exact
-        // failure — only interruption_check + GA tracking POSTs fired, no
-        // integrated_apply, yet trailing-grace declared success.
-        if (step.optional && i >= plan.length - TRAILING_GRACE_WINDOW) {
-          // Trailing-grace check: did the submit actually land somewhere in
-          // the recent capture history? Ask the same Haiku judge — it has
-          // multi-signal reasoning to distinguish real submit POSTs from
-          // analytics/tracking 2xx that look submission-shaped.
-          const pageTitle = await withWatchdog(() => page.title(), {
-            timeoutMs: config.scraper.frameEvaluateTimeoutMs,
-            label: "trailing-grace: page title",
-          }).catch(() => "");
-          const trailingGraceVerdict = await verifySubmitWithLLM({
+          if (stepOutcome === "skipped") {
+            const pageStagnant =
+              signalCounter.n === lastSuccessNetworkCount && readLiveUrl() === lastSuccessUrl;
+            if (pageStagnant) {
+              consecutiveStaleSkips++;
+            }
+            if (consecutiveStaleSkips >= STUCK_SKIP_THRESHOLD) {
+              logger.warn(
+                `stuck detection: ${consecutiveStaleSkips} consecutive optional steps skipped with no page advancement (url=${lastSuccessUrl}, networkCount=${lastSuccessNetworkCount}) — treating as probe-absent failure to trigger replan`
+              );
+              consecutiveStaleSkips = 0;
+              throw new StepVerificationError(
+                `${formatStepPrefix(i, () => plan.length)} (${step.instruction.slice(0, 60)}) stuck: ${STUCK_SKIP_THRESHOLD}+ consecutive optional skips with stagnant page`,
+                "probe-absent"
+              );
+            }
+          } else {
+            consecutiveStaleSkips = 0;
+            lastSuccessNetworkCount = signalCounter.n;
+            lastSuccessUrl = readLiveUrl();
+          }
+
+          completedSteps.push(step.instruction);
+        } catch (err) {
+          if (!(err instanceof StepVerificationError)) throw err;
+
+          // Unrecoverable backend-error short-circuit. When the cascade
+          // detected a same-window 5xx on the submit endpoint, no amount of
+          // replan or rephrase can heal a server crash. Propagate the error
+          // out of the flow loop so main()'s outer try/catch reports the
+          // diagnostic — bypasses the trailing-grace and replan paths
+          // entirely. (The cascade-exhausted and probe-absent kinds fall
+          // through to the existing dispatcher below.)
+          if (err.kind === "backend-error-unrecoverable") {
+            logger.error(`backend error unrecoverable: ${err.message}; aborting run`);
+            throw err;
+          }
+          if (err.kind === "wizard-regression") {
+            // The wizard restarted; replanning against a reset page cannot recover
+            // the lost progress. Bypass the replan dispatcher and abort.
+            logger.error(`wizard regression: ${err.message}; aborting run`);
+            throw err;
+          }
+
+          // Tier 1 — trailing-optional-step grace: when an OPTIONAL step at
+          // trailing position fails verification AND a recent non-GET capture
+          // returned 2xx, treat as a benign no-op exit. The flow's "real work"
+          // already completed server-side (recent successful POST proves it);
+          // the trailing step is a redundant tail that the cascade can't make
+          // meaningful progress on (e.g. resume re-upload after the workflow
+          // already ended, final Continue when the Submit button is in
+          // "Saving..." state). Uses only flow-position metadata + capture HTTP
+          // metadata — no content matching, no open-set patterns.
+          //
+          // When the flow declares submitEndpointPattern, the "recent 2xx" must
+          // match it. Without this gate, the heuristic latches onto every
+          // non-GET 2xx — including pre-submit interruption_check POSTs and
+          // third-party analytics tracking pixels (Google Analytics, DoubleClick,
+          // googletagmanager) that fire on form interaction events. Those look
+          // exactly like real submissions by HTTP signal but don't represent the
+          // actual application landing. Verified by reading captures from
+          // /tmp/recon/graphql/ during a sweep: some tenants hit this exact
+          // failure — only interruption_check + GA tracking POSTs fired, no
+          // integrated_apply, yet trailing-grace declared success.
+          if (step.optional && i >= plan.length - TRAILING_GRACE_WINDOW) {
+            // Trailing-grace check: did the submit actually land somewhere in
+            // the recent capture history? Ask the same Haiku judge — it has
+            // multi-signal reasoning to distinguish real submit POSTs from
+            // analytics/tracking 2xx that look submission-shaped.
+            const pageTitle = await withWatchdog(() => page.title(), {
+              timeoutMs: config.scraper.frameEvaluateTimeoutMs,
+              label: "trailing-grace: page title",
+            }).catch(() => "");
+            const trailingGraceVerdict = await verifySubmitWithLLM({
+              client: anthropic,
+              input: {
+                // A dead session throws synchronously here too — fall back to ""
+                // rather than let the trailing-grace check itself crash the run.
+                pageUrl: ((): string => {
+                  try {
+                    return page.url();
+                  } catch {
+                    return "";
+                  }
+                })(),
+                pageTitle,
+                unfocusedObserve: [],
+                networkCaptures: recentCaptureMeta,
+                invalidMarkerCount: 0,
+                ownBackendHostnames,
+                successUrlFragments,
+                successPageTitleHints,
+                submittedStateSelectors,
+              },
+              captureFn,
+            });
+            if (trailingGraceVerdict?.verified) {
+              logger.info(
+                `${formatStepPrefix(i, () => plan.length)} optional + trailing position; judge verified recent submit (${trailingGraceVerdict.rationale}) — treating verification failure as benign no-op; recon complete`
+              );
+              exitedViaTrailingGrace = true;
+              break;
+            }
+          }
+
+          if (!anthropic) throw err;
+
+          // Cause-based replan budget. Probe replans are cheap (one observe +
+          // one LLM call to detect "wrong page"), cascade replans are expensive
+          // (four attempts × backoff + observe + LLM rephrase before we know
+          // the step is unrecoverable). Separate budgets so cheap recoveries
+          // don't eat into the budget reserved for expensive ones.
+          const isProbe = err.kind === "probe-absent";
+          const budget = isProbe ? resolvedProbeBudget : resolvedCascadeBudget;
+          const usedSoFar = isProbe ? probeReplansUsed : cascadeReplansUsed;
+          if (usedSoFar >= budget) {
+            const kindsSummary =
+              callsNdjsonPath !== null
+                ? summarizeReplanFailureKinds({
+                    callsNdjsonPath,
+                    callType: CALL_TYPE_RECON_REPLAN,
+                    tailCount: budget * 2,
+                  })
+                : "";
+            const kindsSuffix = kindsSummary ? ` — ${kindsSummary}` : "";
+            logger.error(
+              `${formatStepPrefix(i, () => plan.length)} ${err.kind} replan budget exhausted (${usedSoFar}/${budget}); aborting${kindsSuffix}`
+            );
+            throw err;
+          }
+
+          const replanIndex = replanEvents.length + 1;
+          const originalRemaining = plan.slice(i + 1);
+          const dumpMatch = err.message.match(/see (\/[^\s]+)$/);
+          const dumpPath = dumpMatch ? dumpMatch[1]! : "";
+          logger.warn(
+            `${formatStepPrefix(i, () => plan.length)} terminally failed (${err.kind}); attempting global replan #${replanIndex} (${isProbe ? "probe" : "cascade"} budget ${usedSoFar + 1}/${budget})`
+          );
+
+          const rawNewSteps = await replanRemainingFlow({
             client: anthropic,
-            input: {
-              // A dead session throws synchronously here too — fall back to ""
-              // rather than let the trailing-grace check itself crash the run.
-              pageUrl: ((): string => {
+            originalFlow: flow.map((s) => s.instruction),
+            completedSteps,
+            failedStep: step.instruction,
+            remainingSteps: originalRemaining.map((s) => s.instruction),
+            failureDumpPath: dumpPath,
+            page,
+            stagehand,
+            frameSelector,
+            captureFn,
+            recentCaptures,
+            ownBackendHostnames,
+            trajectory,
+            priorReplans: replanEvents,
+          });
+
+          if (!rawNewSteps) {
+            logger.error(
+              `replan #${replanIndex} returned outcome=impossible or unparseable output; aborting`
+            );
+            throw err;
+          }
+
+          // Resume-from-failure: drop any replan bridge step that re-runs an
+          // already-completed step (see filterCompletedFromReplan). Keeps the
+          // failed step's re-emission. originalRemaining is re-appended below.
+          const newSteps = filterCompletedFromReplan(rawNewSteps, completedSteps, step.instruction);
+          const droppedCompleted = rawNewSteps.length - newSteps.length;
+          if (droppedCompleted > 0) {
+            logger.info(
+              `replan #${replanIndex}: dropped ${droppedCompleted} bridge step(s) that re-ran already-completed steps`
+            );
+          }
+          if (newSteps.length === 0) {
+            logger.error(
+              `replan #${replanIndex} produced only already-completed steps (nothing new to bridge); aborting`
+            );
+            throw err;
+          }
+
+          // Immediate no-progress guard: if the replan's only bridge is a
+          // re-emission of the step that just failed, resuming re-runs the whole
+          // cascade on the identical click that just exhausted it. Abort now
+          // instead of waiting REPLAN_CYCLE_THRESHOLD repeats for the cycle
+          // detector — that many dead cascades cost minutes of wall-clock.
+          if (isReplanReproposingFailedStep(newSteps, step.instruction)) {
+            const noProgressMessage = `replan #${replanIndex} re-proposed only the just-failed step ("${step.instruction.slice(0, 60)}") with no new bridge; resuming would re-fail identically — aborting`;
+            logger.error(noProgressMessage);
+            throw new StepVerificationError(noProgressMessage, "replan-cycle-detected");
+          }
+
+          // Auth-boundary guard: a Sign-In/Log-In bridge proposed after an
+          // account-creation step already completed desyncs the page from the
+          // re-appended original tail (see isReplanRegressingAcrossAuthBoundary).
+          if (isReplanRegressingAcrossAuthBoundary(newSteps, completedSteps)) {
+            const authBoundaryMessage = `replan #${replanIndex} proposed a Sign-In/Log-In step after an account-creation step already completed; resuming through Sign-In would strand the original remaining tail on an incompatible page — aborting`;
+            logger.error(authBoundaryMessage);
+            throw new StepVerificationError(authBoundaryMessage, "replan-cycle-detected");
+          }
+
+          const currentPageState = await snapshotPage(mainFrameTarget(page), signalCounter).catch(
+            () => ({
+              // page.url() throws synchronously on a dead session — a raw call
+              // here would turn this fallback itself into an unhandled throw.
+              url: (() => {
                 try {
                   return page.url();
                 } catch {
                   return "";
                 }
               })(),
-              pageTitle,
-              unfocusedObserve: [],
-              networkCaptures: recentCaptureMeta,
-              invalidMarkerCount: 0,
-              ownBackendHostnames,
-              successUrlFragments,
-              successPageTitleHints,
-              submittedStateSelectors,
-            },
-            captureFn,
-          });
-          if (trailingGraceVerdict?.verified) {
-            logger.info(
-              `${formatStepPrefix(i, () => plan.length)} optional + trailing position; judge verified recent submit (${trailingGraceVerdict.rationale}) — treating verification failure as benign no-op; recon complete`
-            );
-            exitedViaTrailingGrace = true;
-            break;
+              bodyHtmlLength: 0,
+            })
+          );
+          if (
+            isReplanCycle(replanEvents, newSteps, {
+              url: currentPageState.url,
+              htmlLength: currentPageState.bodyHtmlLength,
+            })
+          ) {
+            const cycleMessage = `replan cycle detected: identical proposal × ${REPLAN_CYCLE_THRESHOLD} under static page state; aborting`;
+            logger.error(cycleMessage);
+            throw new StepVerificationError(cycleMessage, "replan-cycle-detected");
           }
-        }
 
-        if (!anthropic) throw err;
+          if (isProbe) {
+            probeReplansUsed++;
+          } else {
+            cascadeReplansUsed++;
+          }
+          // err.kind narrowed to the two replan-bearing variants here: the
+          // backend-error-unrecoverable dispatcher above throws out, and the
+          // cycle-detected variant is only constructed at the throw site just
+          // above this push — never caught back here.
+          replanEvents.push({
+            replanIndex,
+            cause: err.kind as "probe-absent" | "cascade-exhausted",
+            indexAtFailure: i,
+            failedInstruction: step.instruction,
+            replanSteps: newSteps,
+            timestamp: formatISO(new Date()),
+            pageState: {
+              url: currentPageState.url,
+              htmlLength: currentPageState.bodyHtmlLength,
+            },
+          });
 
-        // Cause-based replan budget. Probe replans are cheap (one observe +
-        // one LLM call to detect "wrong page"), cascade replans are expensive
-        // (four attempts × backoff + observe + LLM rephrase before we know
-        // the step is unrecoverable). Separate budgets so cheap recoveries
-        // don't eat into the budget reserved for expensive ones.
-        const isProbe = err.kind === "probe-absent";
-        const budget = isProbe ? resolvedProbeBudget : resolvedCascadeBudget;
-        const usedSoFar = isProbe ? probeReplansUsed : cascadeReplansUsed;
-        if (usedSoFar >= budget) {
-          const kindsSummary =
-            callsNdjsonPath !== null
-              ? summarizeReplanFailureKinds({
-                  callsNdjsonPath,
-                  callType: CALL_TYPE_RECON_REPLAN,
-                  tailCount: budget * 2,
-                })
-              : "";
-          const kindsSuffix = kindsSummary ? ` — ${kindsSummary}` : "";
-          logger.error(
-            `${formatStepPrefix(i, () => plan.length)} ${err.kind} replan budget exhausted (${usedSoFar}/${budget}); aborting${kindsSuffix}`
-          );
-          throw err;
-        }
-
-        const replanIndex = replanEvents.length + 1;
-        const originalRemaining = plan.slice(i + 1);
-        const dumpMatch = err.message.match(/see (\/[^\s]+)$/);
-        const dumpPath = dumpMatch ? dumpMatch[1]! : "";
-        logger.warn(
-          `${formatStepPrefix(i, () => plan.length)} terminally failed (${err.kind}); attempting global replan #${replanIndex} (${isProbe ? "probe" : "cascade"} budget ${usedSoFar + 1}/${budget})`
-        );
-
-        const rawNewSteps = await replanRemainingFlow({
-          client: anthropic,
-          originalFlow: flow.map((s) => s.instruction),
-          completedSteps,
-          failedStep: step.instruction,
-          remainingSteps: originalRemaining.map((s) => s.instruction),
-          failureDumpPath: dumpPath,
-          page,
-          stagehand,
-          frameSelector,
-          captureFn,
-          recentCaptures,
-          ownBackendHostnames,
-          trajectory,
-          priorReplans: replanEvents,
-        });
-
-        if (!rawNewSteps) {
-          logger.error(
-            `replan #${replanIndex} returned outcome=impossible or unparseable output; aborting`
-          );
-          throw err;
-        }
-
-        // Resume-from-failure: drop any replan bridge step that re-runs an
-        // already-completed step (see filterCompletedFromReplan). Keeps the
-        // failed step's re-emission. originalRemaining is re-appended below.
-        const newSteps = filterCompletedFromReplan(rawNewSteps, completedSteps, step.instruction);
-        const droppedCompleted = rawNewSteps.length - newSteps.length;
-        if (droppedCompleted > 0) {
+          const replanPath = dumpReplanRecord({
+            stepIndex: i,
+            phase: currentPhase,
+            replanIndex,
+            completedSteps,
+            originalRemaining: originalRemaining.map((s) => s.instruction),
+            newRemaining: newSteps.map((s) => s.instruction),
+          });
           logger.info(
-            `replan #${replanIndex}: dropped ${droppedCompleted} bridge step(s) that re-ran already-completed steps`
+            `replan #${replanIndex} produced ${newSteps.length} new step(s); resuming (record: ${replanPath})`
           );
-        }
-        if (newSteps.length === 0) {
-          logger.error(
-            `replan #${replanIndex} produced only already-completed steps (nothing new to bridge); aborting`
+          for (const [j, s] of newSteps.entries()) {
+            logger.info(
+              `  replanned step ${j + 1}${s.optional ? " (optional)" : ""}: ${s.instruction}`
+            );
+          }
+
+          // Prepend recovery steps before the original remaining tail — the
+          // replanner emits bridge steps from the failure point back to where
+          // the original flow can resume. Idempotent fills/clicks on already-
+          // satisfied form fields cost a few seconds each but keep the rest of
+          // the original intent (page-0 Continue, page-1 sections, resume
+          // upload, final submit) intact instead of replacing them with the
+          // replanner's necessarily-truncated tail (capped at REPLAN_MAX_STEPS).
+          // Tag replan-discovered steps with origin so persistReplannedFlow
+          // can force them optional on write-back. originalRemaining keeps its
+          // origin: "original" — that's what protects the canonical final
+          // submit from being silently demoted to optional across replans.
+          const taggedNewSteps = filterReplanDuplicatingNextAuthored(
+            newSteps.map((s) => ({ ...s, origin: "replan" as const })),
+            originalRemaining
           );
-          throw err;
+          plan.splice(i, plan.length - i, ...taggedNewSteps, ...originalRemaining);
+          i--;
         }
-
-        // Immediate no-progress guard: if the replan's only bridge is a
-        // re-emission of the step that just failed, resuming re-runs the whole
-        // cascade on the identical click that just exhausted it. Abort now
-        // instead of waiting REPLAN_CYCLE_THRESHOLD repeats for the cycle
-        // detector — that many dead cascades cost minutes of wall-clock.
-        if (isReplanReproposingFailedStep(newSteps, step.instruction)) {
-          const noProgressMessage = `replan #${replanIndex} re-proposed only the just-failed step ("${step.instruction.slice(0, 60)}") with no new bridge; resuming would re-fail identically — aborting`;
-          logger.error(noProgressMessage);
-          throw new StepVerificationError(noProgressMessage, "replan-cycle-detected");
-        }
-
-        // Auth-boundary guard: a Sign-In/Log-In bridge proposed after an
-        // account-creation step already completed desyncs the page from the
-        // re-appended original tail (see isReplanRegressingAcrossAuthBoundary).
-        if (isReplanRegressingAcrossAuthBoundary(newSteps, completedSteps)) {
-          const authBoundaryMessage = `replan #${replanIndex} proposed a Sign-In/Log-In step after an account-creation step already completed; resuming through Sign-In would strand the original remaining tail on an incompatible page — aborting`;
-          logger.error(authBoundaryMessage);
-          throw new StepVerificationError(authBoundaryMessage, "replan-cycle-detected");
-        }
-
-        const currentPageState = await snapshotPage(mainFrameTarget(page), signalCounter).catch(
-          () => ({
-            // page.url() throws synchronously on a dead session — a raw call
-            // here would turn this fallback itself into an unhandled throw.
-            url: (() => {
-              try {
-                return page.url();
-              } catch {
-                return "";
-              }
-            })(),
-            bodyHtmlLength: 0,
-          })
-        );
-        if (
-          isReplanCycle(replanEvents, newSteps, {
-            url: currentPageState.url,
-            htmlLength: currentPageState.bodyHtmlLength,
-          })
-        ) {
-          const cycleMessage = `replan cycle detected: identical proposal × ${REPLAN_CYCLE_THRESHOLD} under static page state; aborting`;
-          logger.error(cycleMessage);
-          throw new StepVerificationError(cycleMessage, "replan-cycle-detected");
-        }
-
-        if (isProbe) {
-          probeReplansUsed++;
-        } else {
-          cascadeReplansUsed++;
-        }
-        // err.kind narrowed to the two replan-bearing variants here: the
-        // backend-error-unrecoverable dispatcher above throws out, and the
-        // cycle-detected variant is only constructed at the throw site just
-        // above this push — never caught back here.
-        replanEvents.push({
-          replanIndex,
-          cause: err.kind as "probe-absent" | "cascade-exhausted",
-          indexAtFailure: i,
-          failedInstruction: step.instruction,
-          replanSteps: newSteps,
-          timestamp: formatISO(new Date()),
-          pageState: {
-            url: currentPageState.url,
-            htmlLength: currentPageState.bodyHtmlLength,
-          },
-        });
-
-        const replanPath = dumpReplanRecord({
-          stepIndex: i,
-          phase: currentPhase,
-          replanIndex,
-          completedSteps,
-          originalRemaining: originalRemaining.map((s) => s.instruction),
-          newRemaining: newSteps.map((s) => s.instruction),
-        });
-        logger.info(
-          `replan #${replanIndex} produced ${newSteps.length} new step(s); resuming (record: ${replanPath})`
-        );
-        for (const [j, s] of newSteps.entries()) {
-          logger.info(
-            `  replanned step ${j + 1}${s.optional ? " (optional)" : ""}: ${s.instruction}`
-          );
-        }
-
-        // Prepend recovery steps before the original remaining tail — the
-        // replanner emits bridge steps from the failure point back to where
-        // the original flow can resume. Idempotent fills/clicks on already-
-        // satisfied form fields cost a few seconds each but keep the rest of
-        // the original intent (page-0 Continue, page-1 sections, resume
-        // upload, final submit) intact instead of replacing them with the
-        // replanner's necessarily-truncated tail (capped at REPLAN_MAX_STEPS).
-        // Tag replan-discovered steps with origin so persistReplannedFlow
-        // can force them optional on write-back. originalRemaining keeps its
-        // origin: "original" — that's what protects the canonical final
-        // submit from being silently demoted to optional across replans.
-        const taggedNewSteps = filterReplanDuplicatingNextAuthored(
-          newSteps.map((s) => ({ ...s, origin: "replan" as const })),
-          originalRemaining
-        );
-        plan.splice(i, plan.length - i, ...taggedNewSteps, ...originalRemaining);
-        i--;
       }
-    }
 
-    if (
-      isFlowTruncated({
-        completedStepCount: completedSteps.length,
-        planLength: plan.length,
-        exitedViaTrailingGrace,
-      })
-    ) {
-      logger.error(
-        `flow truncated: only ${completedSteps.length}/${plan.length} steps completed and no legitimate early-exit occurred — refusing to report success`
-      );
-      process.exit(1);
-    }
-
-    // Stagehand can tear its own CDP transport down mid-flow while the step
-    // loop above keeps reporting steps as "completed" — completedSteps.length
-    // can still equal plan.length, so isFlowTruncated alone never fires.
-    // This must stay a separate, unconditional check rather than folding into
-    // isFlowTruncated's boolean.
-    const cdpTransportClosedError = session.getCdpTransportClosedError?.();
-    if (cdpTransportClosedError) {
-      logger.error(
-        `Stagehand tore down the CDP transport mid-flow: ${cdpTransportClosedError.message} — refusing to report success`
-      );
-      process.exit(1);
-    }
-
-    stopCapture();
-
-    // Authoritative submission record for recon-generate: which captured POSTs
-    // are the real submission, keyed on the flow's declared submit patterns.
-    // Runs whenever a pattern is declared (independent of the audit gate below),
-    // since generate consumes it even when requireSubmitEndpointMatch is off.
-    writeSubmitManifest({
-      runRoot: runDir.root,
-      capturesDir: runDir.graphqlDir,
-      submitEndpointPattern,
-      submitBodyPattern,
-      logger,
-    });
-
-    // End-of-run audit: when the flow declared submitEndpointPattern AND
-    // opted into requireSubmitEndpointMatch=true, scan ALL captures from
-    // this run for a pattern-matching 200 before declaring success. If no
-    // match, the run "succeeded" by the verifier's lights but the actual
-    // submission didn't land. Exit non-zero so the caller (test harness,
-    // CI, or production runner) can distinguish silent-pass from real
-    // success. This closes the loop the silent-pass bug exposed on 2026-
-    // 06-09: per-step verifier accepted DOM-fallback as proof; run-level
-    // audit catches that the network proof never actually arrived.
-    if (requireSubmitEndpointMatch && ownBackendHostnames.length > 0) {
-      const { auditFailed, rejectionReason } = auditFinalSubmitMatch({
-        ownBackendHostnames,
-        capturesDir: runDir.graphqlDir,
-        logger,
-      });
-      if (auditFailed) {
-        const reasonSuffix = rejectionReason
-          ? ` — server REJECTED submission with rejection envelope (reason: "${rejectionReason}"); HTTP layer succeeded but application was not accepted`
-          : ` — no captured 2xx had hostname in ${JSON.stringify(ownBackendHostnames)} — submission did not land despite verifier success`;
-        logger.error(`end-of-run audit FAILED${reasonSuffix}`);
-        // Exit non-zero so the runner counts this as a real failure rather
-        // than rolling silent-pass forward as success.
+      if (
+        isFlowTruncated({
+          completedStepCount: completedSteps.length,
+          planLength: plan.length,
+          exitedViaTrailingGrace,
+        })
+      ) {
+        logger.error(
+          `flow truncated: only ${completedSteps.length}/${plan.length} steps completed and no legitimate early-exit occurred — refusing to report success`
+        );
         process.exit(1);
       }
-      logger.info(
-        `end-of-run audit PASSED: at least one captured 2xx matched submitEndpointPattern with clean response body`
+
+      // Stagehand can tear its own CDP transport down mid-flow while the step
+      // loop above keeps reporting steps as "completed" — completedSteps.length
+      // can still equal plan.length, so isFlowTruncated alone never fires.
+      // This must stay a separate, unconditional check rather than folding into
+      // isFlowTruncated's boolean. Traffic is active right up to the teardown
+      // (not idle), so this is recoverable by retrying on a fresh session —
+      // throw instead of exiting so the caller can retry it.
+      const cdpTransportClosedError = session.getCdpTransportClosedError?.();
+      if (cdpTransportClosedError) {
+        throw new CdpTransportClosedError(
+          `Stagehand tore down the CDP transport mid-flow: ${cdpTransportClosedError.message}`
+        );
+      }
+
+      stopCapture();
+
+      // Authoritative submission record for recon-generate: which captured POSTs
+      // are the real submission, keyed on the flow's declared submit patterns.
+      // Runs whenever a pattern is declared (independent of the audit gate below),
+      // since generate consumes it even when requireSubmitEndpointMatch is off.
+      writeSubmitManifest({
+        runRoot: runDir.root,
+        capturesDir: runDir.graphqlDir,
+        submitEndpointPattern,
+        submitBodyPattern,
+        logger,
+      });
+
+      // End-of-run audit: when the flow declared submitEndpointPattern AND
+      // opted into requireSubmitEndpointMatch=true, scan ALL captures from
+      // this run for a pattern-matching 200 before declaring success. If no
+      // match, the run "succeeded" by the verifier's lights but the actual
+      // submission didn't land. Exit non-zero so the caller (test harness,
+      // CI, or production runner) can distinguish silent-pass from real
+      // success. This closes the loop the silent-pass bug exposed on 2026-
+      // 06-09: per-step verifier accepted DOM-fallback as proof; run-level
+      // audit catches that the network proof never actually arrived.
+      if (requireSubmitEndpointMatch && ownBackendHostnames.length > 0) {
+        const { auditFailed, rejectionReason } = auditFinalSubmitMatch({
+          ownBackendHostnames,
+          capturesDir: runDir.graphqlDir,
+          logger,
+        });
+        if (auditFailed) {
+          const reasonSuffix = rejectionReason
+            ? ` — server REJECTED submission with rejection envelope (reason: "${rejectionReason}"); HTTP layer succeeded but application was not accepted`
+            : ` — no captured 2xx had hostname in ${JSON.stringify(ownBackendHostnames)} — submission did not land despite verifier success`;
+          logger.error(`end-of-run audit FAILED${reasonSuffix}`);
+          // Exit non-zero so the runner counts this as a real failure rather
+          // than rolling silent-pass forward as success.
+          process.exit(1);
+        }
+        logger.info(
+          `end-of-run audit PASSED: at least one captured 2xx matched submitEndpointPattern with clean response body`
+        );
+      }
+
+      await snapshotAndPersistCookieJar(
+        page,
+        jarCounter,
+        "run-complete",
+        currentPhase,
+        plan.length - 1
       );
-    }
 
-    await snapshotAndPersistCookieJar(
-      page,
-      jarCounter,
-      "run-complete",
-      currentPhase,
-      plan.length - 1
-    );
-
-    logger.info(`recon complete — ${counter.n} captures written to ${runDir.root}`);
-  } finally {
-    // Replay-the-discovered-path: if any replan fired and the user provided
-    // a flow file, write the improved plan back so the next run starts
-    // where this one ended up. Runs INSIDE finally so the cascade's
-    // discoveries survive cascade-exhausted exits too — the persistence
-    // mechanism is the way recon self-heals the flow across runs, so it
-    // needs to fire on failure as much as on success. Skipped on
-    // --no-save-replan (diagnostic dry-runs) and when --flow was used
-    // inline (no file to write back to).
-    if (replanEvents.length > 0) {
-      if (!saveReplan) {
-        logger.info(
-          `run done with ${replanEvents.length} replan event(s); --no-save-replan, leaving flow.json unchanged`
-        );
-      } else if (!flowFile) {
-        logger.info(
-          `run done with ${replanEvents.length} replan event(s); --flow used (no file to write back to)`
-        );
-      } else {
-        logger.info(`run done; writing flow.json with ${replanEvents.length} replan event(s)`);
-        try {
-          persistReplannedFlow({
-            flowFile,
-            finalPlan: plan,
-            replanEvents,
-            logger,
-            originalShape,
-            submitEndpointPattern,
-            submittedStateSelectors,
-            requireSubmitEndpointMatch,
-            successUrlFragments,
-            successPageTitleHints,
-            ownBackendHostnames,
-            knownErrorClassPrefixes,
-          });
-        } catch (err) {
-          // Persistence is best-effort in the finally block — a write
-          // failure here must not eat the original cascade error.
-          logger.error(`persistReplannedFlow threw in finally: ${toErrorMessage(err)}`);
+      logger.info(`recon complete — ${counter.n} captures written to ${runDir.root}`);
+    } finally {
+      // Replay-the-discovered-path: if any replan fired and the user provided
+      // a flow file, write the improved plan back so the next run starts
+      // where this one ended up. Runs INSIDE finally so the cascade's
+      // discoveries survive cascade-exhausted exits too — the persistence
+      // mechanism is the way recon self-heals the flow across runs, so it
+      // needs to fire on failure as much as on success. Skipped on
+      // --no-save-replan (diagnostic dry-runs) and when --flow was used
+      // inline (no file to write back to).
+      if (replanEvents.length > 0) {
+        if (!saveReplan) {
+          logger.info(
+            `run done with ${replanEvents.length} replan event(s); --no-save-replan, leaving flow.json unchanged`
+          );
+        } else if (!flowFile) {
+          logger.info(
+            `run done with ${replanEvents.length} replan event(s); --flow used (no file to write back to)`
+          );
+        } else {
+          logger.info(`run done; writing flow.json with ${replanEvents.length} replan event(s)`);
+          try {
+            persistReplannedFlow({
+              flowFile,
+              finalPlan: plan,
+              replanEvents,
+              logger,
+              originalShape,
+              submitEndpointPattern,
+              submittedStateSelectors,
+              requireSubmitEndpointMatch,
+              successUrlFragments,
+              successPageTitleHints,
+              ownBackendHostnames,
+              knownErrorClassPrefixes,
+            });
+          } catch (err) {
+            // Persistence is best-effort in the finally block — a write
+            // failure here must not eat the original cascade error.
+            logger.error(`persistReplannedFlow threw in finally: ${toErrorMessage(err)}`);
+          }
         }
       }
+      await session.close();
     }
-    await session.close();
   }
+
+  // Only a CDP-transport teardown gets retried on a fresh session — every
+  // other failure mode (isFlowTruncated's exit(1), StepVerificationError,
+  // SessionTimeoutError, etc.) must keep rejecting/exiting after exactly one
+  // attempt, exactly as before this whole-flow retry was added. `withScraperRetry`
+  // (mandated over a hand-rolled loop) can't distinguish that on its own —
+  // its classifyScraperError policy retries SessionTimeoutError too — so
+  // non-CdpTransportClosedError failures are caught here and stashed instead
+  // of thrown, making the retried task look "successful" to p-retry, then
+  // re-thrown unchanged (same instance, same type) once the retry call
+  // settles. This is plain error propagation, not a second retry loop.
+  let nonTransportError: unknown;
+  try {
+    await withScraperRetry(
+      async () => {
+        try {
+          await runFlowAttempt();
+        } catch (err) {
+          if (err instanceof CdpTransportClosedError) throw err;
+          nonTransportError = err;
+        }
+      },
+      { maxAttempts: config.scraper.maxTransportRetries }
+    );
+  } catch (err) {
+    if (err instanceof CdpTransportClosedError) {
+      logger.error(
+        `Stagehand tore down the CDP transport mid-flow on every attempt (${config.scraper.maxTransportRetries} of ${config.scraper.maxTransportRetries}): ${err.message} — refusing to report success`
+      );
+      process.exit(1);
+    }
+    throw err;
+  }
+  if (nonTransportError !== undefined) throw nonTransportError;
 }
 
 if (
