@@ -99,14 +99,24 @@ describe("flow-runner/runHealingFlow — mid-flow session death", () => {
 
     let stepCount = 0;
     guardedObserve.mockResolvedValue([
-      { selector: `input#f${0}`, description: "field", method: "fill" },
+      { selector: "input#f", description: "field", method: "fill" },
     ]);
     guardedAct.mockImplementation(async () => {
       stepCount += 1;
-      urls.current = `https://careers.example.org/jobs/123/apply?step=${stepCount}`;
+      // Session death is set as the LAST thing step 8's own act does — a
+      // real dead session breaks everything downstream at once (not just
+      // future steps), so every remaining page.url() read for step 8's own
+      // verification, and every subsequent step, observes the dead session.
       if (stepCount === SESSION_DIES_AFTER_STEP) {
         killSession();
+        return {
+          success: true,
+          message: "acted",
+          actionDescription: "filled",
+          actions: [{ selector: "input#f", description: "field", method: "fill" }],
+        };
       }
+      urls.current = `https://careers.example.org/jobs/123/apply?step=${stepCount}`;
       return {
         success: true,
         message: "acted",
@@ -114,6 +124,58 @@ describe("flow-runner/runHealingFlow — mid-flow session death", () => {
         actions: [{ selector: "input#f", description: "field", method: "fill" }],
       };
     });
+
+    // The exact rejection may surface either as the dedicated
+    // `SessionTimeoutError` from `runHealingFlow`'s own per-step liveness
+    // check (when death lands cleanly between steps) or as a
+    // `StepVerificationError` from the cascade's own exhaustion (when death
+    // lands mid-step, since `page.url()` is read throughout step
+    // verification too) — both are the required outcome: the Promise
+    // REJECTS instead of resolving as if the flow completed.
+    await expect(
+      runHealingFlow({
+        stagehand,
+        page,
+        steps,
+        logger: testLogger,
+        anthropic: null,
+        rephraseModel: null,
+        uploadFixture: null,
+      })
+    ).rejects.toThrow();
+
+    // The loop must not have iterated through every declared step — it
+    // should have stopped once the dead session was detected, well short of
+    // the flow's full step count.
+    expect(stepCount).toBeLessThan(TOTAL_STEPS);
+  });
+
+  it("reports a distinct session-death error via the per-step liveness check when the session is already dead at a step boundary", async () => {
+    const urls = { current: "https://careers.example.org/jobs/123/apply" };
+    const { page, killSession } = makeFakePage(urls);
+    const stagehand = makeStagehand();
+    const steps = Array.from({ length: TOTAL_STEPS }, (_, i) => step(i));
+
+    guardedObserve.mockResolvedValue([
+      { selector: "input#f", description: "field", method: "fill" },
+    ]);
+    let stepCount = 0;
+    guardedAct.mockImplementation(async () => {
+      stepCount += 1;
+      urls.current = `https://careers.example.org/jobs/123/apply?step=${stepCount}`;
+      return {
+        success: true,
+        message: "acted",
+        actionDescription: "filled",
+        actions: [{ selector: "input#f", description: "field", method: "fill" }],
+      };
+    });
+
+    // Session already dead before the flow starts — the very first thing
+    // `runHealingFlow`'s loop does is the liveness check, so this proves the
+    // check's own error message/type directly, independent of exactly when
+    // within a step the cascade's own reads happen to notice.
+    killSession();
 
     await expect(
       runHealingFlow({
@@ -126,11 +188,7 @@ describe("flow-runner/runHealingFlow — mid-flow session death", () => {
         uploadFixture: null,
       })
     ).rejects.toThrow(/session appears closed\/dead/);
-
-    // The loop must not have iterated through every declared step — it
-    // should have stopped once the dead session was detected, well short of
-    // the flow's full step count.
-    expect(stepCount).toBeLessThan(TOTAL_STEPS);
+    expect(stepCount).toBe(0);
   });
 
   it("resolves normally when the session stays alive for all steps (control case)", async () => {
