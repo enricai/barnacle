@@ -37,6 +37,7 @@ describe("config/loadConfig", () => {
     expect(cfg.scraper.captureSessionIp).toBe(true);
     expect(cfg.scraper.sessionIpEchoUrl).toBe("https://api.ipify.org?format=json");
     expect(cfg.scraper.sessionIpTimeoutMs).toBe(10_000);
+    expect(cfg.scraper.maxTransportRetries).toBe(3);
     // Default trustProxy=true matches the most common deploy shape
     // (behind an ALB/nginx/Cloudflare); bare-metal runners must opt out.
     expect(cfg.trustProxy).toBe(true);
@@ -54,6 +55,12 @@ describe("config/loadConfig", () => {
     expect(cfg.scraper.poolSize).toBe(10);
     expect(cfg.rateLimit.max).toBe(500);
     expect(cfg.scraper.anthropicTimeoutMs).toBe(30000);
+  });
+
+  it("overrides maxTransportRetries via RECON_MAX_TRANSPORT_RETRIES", () => {
+    process.env.RECON_MAX_TRANSPORT_RETRIES = "7";
+    const cfg = loadConfig();
+    expect(cfg.scraper.maxTransportRetries).toBe(7);
   });
 
   it("overrides frame timeout budgets via env", () => {

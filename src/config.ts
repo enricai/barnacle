@@ -62,6 +62,13 @@ export interface AppConfig {
      */
     maxProbeReplans: number;
     /**
+     * Ceiling for whole-flow retry attempts on transport failures. Matches
+     * `withScraperRetry`'s own default `maxAttempts` so the config knob and
+     * the hard-coded fallback stay in agreement. Overridable via
+     * `RECON_MAX_TRANSPORT_RETRIES`.
+     */
+    maxTransportRetries: number;
+    /**
      * Per-site base URL overrides keyed by `meta.siteId`. Populated at startup
      * from `BARNACLE_SITE_<UPPERCASE_SITE_ID>_BASE_URL` env vars — underscores
      * in the env key map to hyphens in the siteId. Example:
@@ -437,6 +444,7 @@ export function loadConfig(): AppConfig {
       readinessQueueThreshold: getNumericEnv("READINESS_QUEUE_THRESHOLD", 20),
       maxCascadeReplans: getNumericEnv("RECON_MAX_CASCADE_REPLANS", 5),
       maxProbeReplans: getNumericEnv("RECON_MAX_PROBE_REPLANS", 5),
+      maxTransportRetries: getNumericEnv("RECON_MAX_TRANSPORT_RETRIES", 3),
       siteBaseUrls: (() => {
         const map: Record<string, string> = {};
         for (const [key, val] of Object.entries(process.env)) {
