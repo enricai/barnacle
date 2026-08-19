@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { SelectorFailureError, SessionTimeoutError } from "@/scraper/errors";
+import { CdpTransportClosedError, SelectorFailureError, SessionTimeoutError } from "@/scraper/errors";
 import { drainPool, poolStats, runWithSession } from "@/scraper/pool";
 import * as sessionModule from "@/scraper/session";
 
@@ -79,6 +79,37 @@ describe("scraper/pool", () => {
         async () => {
           attempt.n += 1;
           throw new SessionTimeoutError("nope");
+        },
+        { maxAttempts: 2 }
+      )
+    ).rejects.toThrow();
+
+    expect(attempt.n).toBe(2);
+    expect(sessions.length).toBeGreaterThanOrEqual(2);
+    expect(sessions.every((s) => s.closed)).toBe(true);
+  });
+
+  it("restarts the session between attempts on CdpTransportClosedError", async () => {
+    const sessions: Array<{ close: () => void; closed: boolean }> = [];
+    vi.mocked(sessionModule.createBrowserSession).mockImplementation(async () => {
+      const rec = { close: vi.fn(), closed: false };
+      sessions.push(rec);
+      return {
+        stagehand: {} as never,
+        limiter: {} as never,
+        sessionId: `s-${sessions.length}`,
+        close: async () => {
+          rec.closed = true;
+        },
+      } as unknown as Awaited<ReturnType<typeof sessionModule.createBrowserSession>>;
+    });
+
+    const attempt = { n: 0 };
+    await expect(
+      runWithSession(
+        async () => {
+          attempt.n += 1;
+          throw new CdpTransportClosedError("nope");
         },
         { maxAttempts: 2 }
       )
