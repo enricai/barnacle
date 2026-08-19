@@ -6428,7 +6428,8 @@ async function commitPromptOption(params: {
     }
     await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
 
-    const readbackExpr = `((wIdx, markAttr, valueSel, emptyRxSrc, emptyRxFlags, wantText) => {
+    const isRequestedLeaf = norm(chosenOption.text) === wantOpt;
+    const readbackExpr = `((wIdx, markAttr, valueSel, emptyRxSrc, emptyRxFlags, wantText, isRequestedLeaf) => {
       const isInvalid = ${INVALID_MARKER_EL_EXPR};
       const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
       const buttonValue = ${BUTTON_VALUE_EXPR};
@@ -6452,8 +6453,11 @@ async function commitPromptOption(params: {
         if (node.getAttribute && isInvalid(node)) { stillInvalid = true; break; }
         node = node.parentElement;
       }
-      return { ok: textMatches || !stillInvalid, id: w.id || "" };
-    })(${JSON.stringify(chosen.wIdx)}, ${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)}, ${JSON.stringify(PROMPT_VALUE_SELECTORS)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_SRC)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_FLAGS)}, ${JSON.stringify(norm(chosenOption.text))})`;
+      // A category click may leave the widget's aria-invalid unset until final
+      // submit, so !stillInvalid alone only counts as success when this click
+      // landed on the requested leaf option, not an intermediate category.
+      return { ok: textMatches || (isRequestedLeaf && !stillInvalid), id: w.id || "" };
+    })(${JSON.stringify(chosen.wIdx)}, ${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)}, ${JSON.stringify(PROMPT_VALUE_SELECTORS)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_SRC)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_FLAGS)}, ${JSON.stringify(norm(chosenOption.text))}, ${JSON.stringify(isRequestedLeaf)})`;
     const readback = (await target.evaluate(readbackExpr).catch(() => ({ ok: false, id: "" }))) as {
       ok: boolean;
       id: string;
