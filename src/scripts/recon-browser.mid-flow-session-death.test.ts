@@ -224,6 +224,34 @@ describe("recon-browser/main — mid-flow session death (bugfix-002)", () => {
     expect(executeStepWithHealingStub).not.toHaveBeenCalled();
   });
 
+  it("rejects when the session dies during the final step, after executeStepWithHealing resolves (bugfix-003)", async () => {
+    const { stagehand, killSession } = makeFakePage();
+    vi.mocked(createBrowserSession).mockResolvedValue({
+      stagehand,
+      limiter: {} as never,
+      sessionId: "test-session",
+      provider: "browserbase",
+      close: vi.fn().mockResolvedValue(undefined),
+    } as never);
+
+    let stepCount = 0;
+    executeStepWithHealingStub.mockImplementation(async () => {
+      stepCount += 1;
+      // Session dies on the LAST step, after the healing call has already
+      // resolved. With no further iteration to reach the next pre-step
+      // liveness gate, only the post-step gate added right after this call
+      // can catch it — without it the loop would exit and main() would
+      // resolve as if the run completed cleanly.
+      if (stepCount === TOTAL_STEPS) killSession();
+      return "ok";
+    });
+
+    process.argv = flowArgv(TOTAL_STEPS);
+
+    await expect(main()).rejects.toThrow(SessionTimeoutError);
+    expect(executeStepWithHealingStub).toHaveBeenCalledTimes(TOTAL_STEPS);
+  });
+
   it("resolves normally when the session stays alive for all steps (control case)", async () => {
     const { stagehand } = makeFakePage();
     vi.mocked(createBrowserSession).mockResolvedValue({
