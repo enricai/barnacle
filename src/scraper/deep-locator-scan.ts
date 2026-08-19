@@ -1,7 +1,7 @@
 /**
  * Frame-scoped candidate-scan seam: `resolveDeepLocatorCandidates`
  * (`deep-locator-candidates.ts`) pays one CDP round-trip per candidate via
- * `delegate.nth(index).textContent()`, because Stagehand 3.7.0's
+ * `delegate.nth(index).textContent()`, because Stagehand 3.6.0's
  * `FrameSelectorResolver.resolveAll` re-resolves the selector from index 0
  * on every call (understudy/selectorResolver.js) — enumerating n candidates
  * costs n(n+1)/2 round-trips, not n. Through Browserbase's proxied CDP into

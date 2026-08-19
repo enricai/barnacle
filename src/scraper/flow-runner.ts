@@ -55,7 +55,11 @@ import {
 } from "@/scraper/deep-locator-candidates";
 import { clickFirstActionableCandidate } from "@/scraper/deep-locator-click";
 import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
-import { type RunHealingFlowResult, StepVerificationError } from "@/scraper/errors";
+import {
+  type RunHealingFlowResult,
+  SessionTimeoutError,
+  StepVerificationError,
+} from "@/scraper/errors";
 import {
   type FrameTarget,
   mainFrameTarget,
@@ -10487,6 +10491,25 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
         throw new StepVerificationError(
           `${formatStepPrefix(i, () => steps.length)} flow exceeded its maxFlowMs budget (${maxFlowMs}ms)`,
           "flow-timeout"
+        );
+      }
+      // Liveness gate: a closed/crashed Stagehand session (e.g. the
+      // shutdown-supervisor force-releasing mid-flow) makes `page.url()`
+      // throw synchronously — the one call every Page implementation
+      // answers without touching the DOM. Everything downstream (observe/
+      // act probes) treats a thrown error as "page has no candidates right
+      // now" and, for an optional step, quietly skips it — so without this
+      // check the loop runs to completion and `runHealingFlow` resolves as
+      // if the flow finished, even though the session died partway through.
+      // Checking here, before any step-specific handling, means a dead
+      // session is reported as a `SessionTimeoutError` distinct from a
+      // legitimately-absent optional step, and the flow's own step count
+      // never quietly reaches `steps.length` past the point of death.
+      try {
+        page.url();
+      } catch (err) {
+        throw new SessionTimeoutError(
+          `${formatStepPrefix(i, () => steps.length)} session appears closed/dead (page.url() threw: ${toErrorMessage(err)}) — aborting after ${i} of ${steps.length} steps completed`
         );
       }
       lastStepIndex = i;

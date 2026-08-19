@@ -9,7 +9,7 @@ patchedDependencies:
     hash: 20e010d91158897034a1d5b263fc954d81f1fdc544cc6d1f5d09f84fcfe3258d
     path: patches/@browserbasehq__sdk.patch
   '@browserbasehq/stagehand':
-    hash: baad094313d59db28f7203630052d544251ae03495fb5ed694c11046660f1740
+    hash: 617fb279a5fb78c231773350866457fe9e877aa0716dbeee9e153bba47852dd2
     path: patches/@browserbasehq__stagehand.patch
 
 importers:
@@ -32,8 +32,8 @@ importers:
         specifier: ^2.16.0
         version: 2.16.0(patch_hash=20e010d91158897034a1d5b263fc954d81f1fdc544cc6d1f5d09f84fcfe3258d)
       '@browserbasehq/stagehand':
-        specifier: ^3.6.0
-        version: 3.7.1(patch_hash=baad094313d59db28f7203630052d544251ae03495fb5ed694c11046660f1740)(@cfworker/json-schema@4.1.1)(playwright-core@1.60.0)(zod@3.25.76)
+        specifier: ~3.6.0
+        version: 3.6.0(patch_hash=617fb279a5fb78c231773350866457fe9e877aa0716dbeee9e153bba47852dd2)(@cfworker/json-schema@4.1.1)(playwright-core@1.60.0)(zod@3.25.76)
       '@fastify/compress':
         specifier: ^9.0.0
         version: 9.1.0
@@ -119,6 +119,9 @@ importers:
       '@types/node':
         specifier: ^26.1.0
         version: 26.1.2
+      '@types/semver':
+        specifier: ^7.7.1
+        version: 7.8.0
       '@vitest/coverage-v8':
         specifier: ^4.1.10
         version: 4.1.10(vitest@4.1.10)
@@ -137,6 +140,9 @@ importers:
       pino-pretty:
         specifier: ^13.0.0
         version: 13.1.3
+      semver:
+        specifier: ^7.8.5
+        version: 7.8.5
       tsc-alias:
         specifier: ^1.9.0
         version: 1.9.1
@@ -446,8 +452,8 @@ packages:
   '@browserbasehq/sdk@2.16.0':
     resolution: {integrity: sha512-mPAuLRU9jWR7o0KJi9+gQnOBDUSIkoKbbFv4HjrA+80qWVcFacrNPlZmf4mguQnfZ0oP2t5c3ws6yuFyAX9vpA==}
 
-  '@browserbasehq/stagehand@3.7.1':
-    resolution: {integrity: sha512-vAuYSZWIhh3d76BxwppNVE3dB0ztEBLBi85G6TWulZNiebdWptNoANOMuprOB/cw5dE+80b/ZZQo4G33Pc9i6w==}
+  '@browserbasehq/stagehand@3.6.0':
+    resolution: {integrity: sha512-wQ3Mv5b2xy64SntWNUbvgd7liWPbQRvGa8KEb1LorwheTkpUZFkt3BpZE8ovMY/lIleV9DfYjbvqghbeOOla4w==}
     engines: {node: ^20.19.0 || >=22.12.0}
     peerDependencies:
       patchright-core: ^1.55.2
@@ -1299,6 +1305,9 @@ packages:
 
   '@types/retry@0.12.0':
     resolution: {integrity: sha512-wWKOClTTiizcZhXnPY4wikVAwmdYHp8q6DmC+EJUzAMsycb7HB32Kh9RN4+0gExjmPmZSAQjgURXIGATPegAvA==}
+
+  '@types/semver@7.8.0':
+    resolution: {integrity: sha512-1mAINjtQCXXeLkJ9ehXkwOcBpqtLxiVtKhpUf83DdRNdQKV0iXZpaHYqRr7nj+wvxuJzoAmAwXI+sCNMv1CzLQ==}
 
   '@types/whatwg-mimetype@3.0.2':
     resolution: {integrity: sha512-c2AKvDT8ToxLIOUlN51gTiHXflsfIFisS4pO7pDPoKouJCESkhZnEy623gwP9laCy5lnLDAw1vAzu2vM2YLOrA==}
@@ -3326,7 +3335,7 @@ snapshots:
     transitivePeerDependencies:
       - encoding
 
-  '@browserbasehq/stagehand@3.7.1(patch_hash=baad094313d59db28f7203630052d544251ae03495fb5ed694c11046660f1740)(@cfworker/json-schema@4.1.1)(playwright-core@1.60.0)(zod@3.25.76)':
+  '@browserbasehq/stagehand@3.6.0(patch_hash=617fb279a5fb78c231773350866457fe9e877aa0716dbeee9e153bba47852dd2)(@cfworker/json-schema@4.1.1)(playwright-core@1.60.0)(zod@3.25.76)':
     dependencies:
       '@ai-sdk/provider': 2.0.3
       '@anthropic-ai/sdk': 0.39.0
@@ -4017,6 +4026,8 @@ snapshots:
       undici-types: 8.3.0
 
   '@types/retry@0.12.0': {}
+
+  '@types/semver@7.8.0': {}
 
   '@types/whatwg-mimetype@3.0.2': {}
 
