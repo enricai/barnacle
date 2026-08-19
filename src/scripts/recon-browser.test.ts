@@ -3734,10 +3734,13 @@ describe("recon-browser/probeStepBeforeAttempts", () => {
     };
   }
 
-  // Never dereferenced by these fixtures: the unfocused observe always
-  // returns non-empty candidates before the deep-locator fallback would
-  // need `page`, or there is no frameTarget for the fallback to key on.
-  const fakeProbePage = {} as unknown as Page;
+  // `url()` backs `probeStepBeforeAttempts`'s liveness check at each
+  // "treat as present" branch these fixtures exercise; otherwise never
+  // dereferenced since the unfocused observe always returns non-empty
+  // candidates before the deep-locator fallback would need `page`.
+  const fakeProbePage = {
+    url: () => "https://apply.example.com/application/abc-123",
+  } as unknown as Page;
 
   beforeEach(() => {
     vi.clearAllMocks();
