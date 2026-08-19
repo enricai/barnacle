@@ -1,3 +1,9 @@
+# Verified 2026-08-18 post @ai-sdk/anthropic 4.0.38 workspace bump (deps-002):
+# stagehand@3.7.1 still pins its own @ai-sdk/anthropic ^2.0.81 / @ai-sdk/provider
+# ^2.0.0 internally (isolated from the workspace bump by pnpm), and both patched
+# files/functions (aisdk.js inferProviderName, zodCompat.js toJsonSchema) are
+# still present and reachable in dist/{cjs,esm}. `pnpm install --frozen-lockfile`
+# reapplies this patch cleanly. Keep both hunks.
 diff --git a/dist/cjs/lib/v3/llm/aisdk.js b/dist/cjs/lib/v3/llm/aisdk.js
 index 164294dfb71e05e45022b7d07e3bc5669a0ea265..fb1a660e3cb6b6621ec842c97455b02d17dc6528 100644
 --- a/dist/cjs/lib/v3/llm/aisdk.js

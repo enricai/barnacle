@@ -8,21 +8,42 @@ const mockRunHealingFlow = vi.hoisted(() =>
   vi.fn().mockResolvedValue({ submitVerified: false, submitStepSkipped: false, lastStepIndex: -1 })
 );
 const mockGuardedExtract = vi.hoisted(() => vi.fn().mockResolvedValue({ confirmationId: "X" }));
+const mockCreateBedrockModel = vi.hoisted(() =>
+  vi.fn(() => ({ specificationVersion: "v2", modelId: "bedrock-model" }))
+);
 
 vi.mock("@/scraper/flow-runner", () => ({ runHealingFlow: mockRunHealingFlow }));
 vi.mock("@/scraper/stagehand-guard", () => ({ guardedExtract: mockGuardedExtract }));
+vi.mock("@/lib/bedrock", () => ({ createBedrockModel: mockCreateBedrockModel }));
 
 const FIXTURES_DIR = path.join(__dirname, "__fixtures__");
 
 /** Minimal mocked browser session + context so `execute` runs without a real Stagehand. */
-function mockExecuteDeps(): { session: never; context: never } {
+function mockExecuteDeps(scraperOverrides: Record<string, unknown> = {}): {
+  session: never;
+  context: never;
+} {
   const page = { goto: async (): Promise<void> => undefined, url: (): string => "about:blank" };
   const session = {
     stagehand: { context: { awaitActivePage: async () => page } },
   } as never;
   const context = {
     baseUrl: "https://apply.acme.example",
-    config: { scraper: { anthropicApiKey: undefined } },
+    config: {
+      scraper: {
+        useBedrock: false,
+        anthropicApiKey: undefined,
+        model: "anthropic/claude-sonnet-4-6",
+        ...scraperOverrides,
+      },
+      bedrock: {
+        region: "us-east-1",
+        accessKeyId: undefined,
+        secretAccessKey: undefined,
+        sessionToken: undefined,
+        model: "us.anthropic.claude-sonnet-4-6",
+      },
+    },
     metricsCollector: { startStep: () => undefined, endStep: () => undefined },
     logger: { info: () => undefined, warn: () => undefined },
     requestId: "test",
@@ -60,6 +81,7 @@ describe("buildConfigPlugin", () => {
   beforeEach(() => {
     mockRunHealingFlow.mockClear();
     mockGuardedExtract.mockClear();
+    mockCreateBedrockModel.mockClear();
   });
 
   it("synthesizes a SitePlugin with real Zod schemas and mapped meta", async () => {
@@ -245,6 +267,53 @@ describe("buildConfigPlugin", () => {
 
     expect(CONFIG_PLUGIN_MANIFEST.safeParse(manifest).success).toBe(false);
     await expect(buildConfigPlugin(manifest)).rejects.toThrow(/frameSelector/);
+  });
+});
+
+describe("buildRephraseModelForContext (via execute)", () => {
+  beforeEach(() => {
+    mockRunHealingFlow.mockClear();
+    mockCreateBedrockModel.mockClear();
+  });
+
+  it("delegates to createBedrockModel on a Bedrock-only per-request config", async () => {
+    const plugin = await buildConfigPlugin(baseManifest());
+    const { session, context } = mockExecuteDeps({ useBedrock: true });
+
+    await plugin.execute({ FirstName: "J", Email: "e" }, session, context);
+
+    expect(mockCreateBedrockModel).toHaveBeenCalledWith(
+      (context as { config: { bedrock: unknown } }).config.bedrock
+    );
+    const deps = mockRunHealingFlow.mock.calls[0]?.[0] as { rephraseModel: unknown };
+    expect(deps.rephraseModel).toEqual({ specificationVersion: "v2", modelId: "bedrock-model" });
+  });
+
+  it("passes a null rephraseModel when neither Bedrock nor an Anthropic key is configured", async () => {
+    const plugin = await buildConfigPlugin(baseManifest());
+    const { session, context } = mockExecuteDeps({ useBedrock: false, anthropicApiKey: undefined });
+
+    await plugin.execute({ FirstName: "J", Email: "e" }, session, context);
+
+    expect(mockCreateBedrockModel).not.toHaveBeenCalled();
+    const deps = mockRunHealingFlow.mock.calls[0]?.[0] as { rephraseModel: unknown };
+    expect(deps.rephraseModel).toBeNull();
+  });
+
+  it("resolves a live AI-SDK language model when an anthropicApiKey is configured", async () => {
+    const plugin = await buildConfigPlugin(baseManifest());
+    const { session, context } = mockExecuteDeps({
+      useBedrock: false,
+      anthropicApiKey: "test-key",
+      model: "anthropic/claude-sonnet-4-6",
+    });
+
+    await plugin.execute({ FirstName: "J", Email: "e" }, session, context);
+
+    const deps = mockRunHealingFlow.mock.calls[0]?.[0] as { rephraseModel: { modelId?: unknown } };
+    expect(deps.rephraseModel).not.toBeNull();
+    expect(deps.rephraseModel?.modelId).toBe("claude-sonnet-4-6");
+    expect(typeof (deps.rephraseModel as { doGenerate?: unknown }).doGenerate).toBe("function");
   });
 });
 

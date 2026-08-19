@@ -6,10 +6,10 @@ settings:
 
 patchedDependencies:
   '@browserbasehq/sdk':
-    hash: b811b2520d933dc309d013f3cb20fffcd882eb86d5937639926701dbb1474315
+    hash: 20e010d91158897034a1d5b263fc954d81f1fdc544cc6d1f5d09f84fcfe3258d
     path: patches/@browserbasehq__sdk.patch
   '@browserbasehq/stagehand':
-    hash: 357226c9032bea0c6349b15861048452fbb2383163f2b408ec79dd597f9430ab
+    hash: baad094313d59db28f7203630052d544251ae03495fb5ed694c11046660f1740
     path: patches/@browserbasehq__stagehand.patch
 
 importers:
@@ -20,8 +20,8 @@ importers:
         specifier: ^3.0.112
         version: 3.0.112(zod@3.25.76)
       '@ai-sdk/anthropic':
-        specifier: ^2.0.92
-        version: 2.0.92(zod@3.25.76)
+        specifier: ^4.0.38
+        version: 4.0.39(zod@3.25.76)
       '@anthropic-ai/sdk':
         specifier: ^0.117.1
         version: 0.117.1(zod@3.25.76)
@@ -30,10 +30,10 @@ importers:
         version: 3.1100.0
       '@browserbasehq/sdk':
         specifier: ^2.16.0
-        version: 2.16.0(patch_hash=b811b2520d933dc309d013f3cb20fffcd882eb86d5937639926701dbb1474315)
+        version: 2.16.0(patch_hash=20e010d91158897034a1d5b263fc954d81f1fdc544cc6d1f5d09f84fcfe3258d)
       '@browserbasehq/stagehand':
         specifier: ^3.6.0
-        version: 3.7.1(patch_hash=357226c9032bea0c6349b15861048452fbb2383163f2b408ec79dd597f9430ab)(@cfworker/json-schema@4.1.1)(playwright-core@1.60.0)(zod@3.25.76)
+        version: 3.7.1(patch_hash=baad094313d59db28f7203630052d544251ae03495fb5ed694c11046660f1740)(@cfworker/json-schema@4.1.1)(playwright-core@1.60.0)(zod@3.25.76)
       '@fastify/compress':
         specifier: ^9.0.0
         version: 9.1.0
@@ -161,6 +161,12 @@ packages:
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
+  '@ai-sdk/anthropic@4.0.39':
+    resolution: {integrity: sha512-JAMGtYeEuaBzqbsPO4fkho6vQyNoVhsHASM4o59wmJRU6Vh7prjOp490Kmc7YQTY+ioU1/xYzXvWOtxZBup0Xw==}
+    engines: {node: '>=22'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
   '@ai-sdk/azure@2.0.122':
     resolution: {integrity: sha512-fLpsBWOAgl6nzJgty6mmkAZ43ROYxi1flwBRbHKb0snFx1Kk62jepEy5/R+F5w+XOFFg3gt3Cl1Zom2qLz/RoA==}
     engines: {node: '>=18'}
@@ -245,12 +251,22 @@ packages:
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
+  '@ai-sdk/provider-utils@5.0.27':
+    resolution: {integrity: sha512-EzAn4pdgG5g0xXtH6lE2zyNmfjDQIDjATkfqzuidEI35g++hh4+07vnjzkT/RmGmIClPZiRj/Q2GMPV2V7mkHw==}
+    engines: {node: '>=22'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
   '@ai-sdk/provider@2.0.3':
     resolution: {integrity: sha512-h88OPkavHTiN9tMn2l5awAznGB0lXzjcLhgR1/rvjB2zlLprsNxbM2tt6OJsHUxduLC3klq0/eqaSf6fX5XVww==}
     engines: {node: '>=18'}
 
   '@ai-sdk/provider@4.0.4':
     resolution: {integrity: sha512-tbHKNLirllUNF3ZlkCsXnwab2ZV1Sl4b1H/Cp9ruCce15IBmskE8Gwkk0yo9xDWY+jho2of7lVXtwSsyrq7cwQ==}
+    engines: {node: '>=22'}
+
+  '@ai-sdk/provider@4.0.7':
+    resolution: {integrity: sha512-6or44XprPzKbr8zkmzosowSE0pxkvJcoojBL+mCZvPUt3kvXp3XSNqeVun9golb1acEfSo6yaEBRT18h2VU+1Q==}
     engines: {node: '>=22'}
 
   '@ai-sdk/togetherai@1.0.51':
@@ -2909,6 +2925,12 @@ snapshots:
       '@ai-sdk/provider-utils': 3.0.31(zod@3.25.76)
       zod: 3.25.76
 
+  '@ai-sdk/anthropic@4.0.39(zod@3.25.76)':
+    dependencies:
+      '@ai-sdk/provider': 4.0.7
+      '@ai-sdk/provider-utils': 5.0.27(zod@3.25.76)
+      zod: 3.25.76
+
   '@ai-sdk/azure@2.0.122(zod@3.25.76)':
     dependencies:
       '@ai-sdk/deepseek': 1.0.49(zod@3.25.76)
@@ -3019,11 +3041,24 @@ snapshots:
       undici: 7.29.0
       zod: 3.25.76
 
+  '@ai-sdk/provider-utils@5.0.27(zod@3.25.76)':
+    dependencies:
+      '@ai-sdk/provider': 4.0.7
+      '@standard-schema/spec': 1.1.0
+      '@workflow/serde': 4.1.0
+      eventsource-parser: 3.1.0
+      undici: 7.29.0
+      zod: 3.25.76
+
   '@ai-sdk/provider@2.0.3':
     dependencies:
       json-schema: 0.4.0
 
   '@ai-sdk/provider@4.0.4':
+    dependencies:
+      json-schema: 0.4.0
+
+  '@ai-sdk/provider@4.0.7':
     dependencies:
       json-schema: 0.4.0
 
@@ -3279,7 +3314,7 @@ snapshots:
   '@biomejs/cli-win32-x64@2.5.6':
     optional: true
 
-  '@browserbasehq/sdk@2.16.0(patch_hash=b811b2520d933dc309d013f3cb20fffcd882eb86d5937639926701dbb1474315)':
+  '@browserbasehq/sdk@2.16.0(patch_hash=20e010d91158897034a1d5b263fc954d81f1fdc544cc6d1f5d09f84fcfe3258d)':
     dependencies:
       '@types/node': 18.19.130
       '@types/node-fetch': 2.6.13
@@ -3291,11 +3326,11 @@ snapshots:
     transitivePeerDependencies:
       - encoding
 
-  '@browserbasehq/stagehand@3.7.1(patch_hash=357226c9032bea0c6349b15861048452fbb2383163f2b408ec79dd597f9430ab)(@cfworker/json-schema@4.1.1)(playwright-core@1.60.0)(zod@3.25.76)':
+  '@browserbasehq/stagehand@3.7.1(patch_hash=baad094313d59db28f7203630052d544251ae03495fb5ed694c11046660f1740)(@cfworker/json-schema@4.1.1)(playwright-core@1.60.0)(zod@3.25.76)':
     dependencies:
       '@ai-sdk/provider': 2.0.3
       '@anthropic-ai/sdk': 0.39.0
-      '@browserbasehq/sdk': 2.16.0(patch_hash=b811b2520d933dc309d013f3cb20fffcd882eb86d5937639926701dbb1474315)
+      '@browserbasehq/sdk': 2.16.0(patch_hash=20e010d91158897034a1d5b263fc954d81f1fdc544cc6d1f5d09f84fcfe3258d)
       '@google/genai': 1.52.0(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(zod@3.25.76))(bufferutil@4.1.0)
       '@modelcontextprotocol/sdk': 1.30.0(@cfworker/json-schema@4.1.1)(zod@3.25.76)
       ai: 5.0.225(zod@3.25.76)

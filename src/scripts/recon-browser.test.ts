@@ -20,7 +20,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import type { ActResult, Page, Stagehand } from "@browserbasehq/stagehand";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { StagehandModel } from "@/lib/bedrock";
+import type { RephraseModel } from "@/lib/llm/anthropic-client";
 import type { StepVerificationErrorKind } from "@/scraper/errors";
 import type { FrameTarget } from "@/scraper/frame-target";
 
@@ -189,7 +189,7 @@ import type { Logger } from "@/types/logging";
 
 /**
  * Wires `generateObject` (the ai-SDK call `rephraseWithLLM` now makes) and
- * returns a fake `StagehandModel` to pass as its `client` param.
+ * returns a fake `RephraseModel` to pass as its `client` param.
  *
  * `responseText` overloads meaning per the structured-output schema:
  *  - "IMPOSSIBLE" or "" returns outcome=impossible (back-compat for tests
@@ -201,7 +201,7 @@ function makeRephraseModel(
   responseText: string,
   inputTokens = 50,
   outputTokens = 10
-): StagehandModel {
+): RephraseModel {
   const trimmed = responseText.trim();
   const parsed =
     trimmed.length === 0 || trimmed === "IMPOSSIBLE"
@@ -214,7 +214,7 @@ function makeRephraseModel(
     object: parsed,
     usage: { inputTokens, outputTokens },
   });
-  return { modelId: "claude-sonnet-4-6" } as unknown as StagehandModel;
+  return { modelId: "claude-sonnet-4-6" } as unknown as RephraseModel;
 }
 
 function makeCaptureFn(): {
@@ -291,7 +291,7 @@ describe("rephraseWithLLM — capture instrumentation", () => {
 
   it("records parsedOk=false and does not throw when the API call throws", async () => {
     generateObjectStub.mockRejectedValue(new Error("network error"));
-    const client = { modelId: "claude-sonnet-4-6" } as unknown as StagehandModel;
+    const client = { modelId: "claude-sonnet-4-6" } as unknown as RephraseModel;
     const { fn, calls } = makeCaptureFn();
 
     const result = await rephraseWithLLM(client, "click the login button", [], [], [], fn);
