@@ -21,7 +21,6 @@ import type { ActResult, Page, Stagehand } from "@browserbasehq/stagehand";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { RephraseModel } from "@/lib/llm/anthropic-client";
-import type { StepVerificationErrorKind } from "@/scraper/errors";
 import type { FrameTarget } from "@/scraper/frame-target";
 
 vi.mock("@/config", () => ({
@@ -37,6 +36,9 @@ vi.mock("@/config", () => ({
       frameEvaluateTimeoutMs: 30_000,
       maxCascadeReplans: 5,
       maxProbeReplans: 5,
+      // Retries are exercised only by the CDP-transport-close-specific
+      // suites; every other test in this file relies on a single attempt.
+      maxTransportRetries: 1,
     },
     telemetry: {
       callsNdjsonPath: ".barnacle/calls.ndjson",
@@ -45,16 +47,10 @@ vi.mock("@/config", () => ({
 }));
 vi.mock("@/lib/http", () => ({ configureHttpDispatcher: vi.fn() }));
 vi.mock("@/scraper/session", () => ({ createBrowserSession: vi.fn() }));
-vi.mock("@/scraper/errors", () => ({
-  StepVerificationError: class StepVerificationError extends Error {
-    readonly kind: StepVerificationErrorKind;
-    constructor(message = "step failed", kind: StepVerificationErrorKind = "cascade-exhausted") {
-      super(message);
-      this.kind = kind;
-    }
-  },
-  SessionTimeoutError: class SessionTimeoutError extends Error {},
-}));
+vi.mock("@/scraper/errors", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/scraper/errors")>();
+  return { ...actual };
+});
 
 const { loggerStub } = vi.hoisted(() => ({
   loggerStub: {

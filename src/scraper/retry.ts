@@ -4,6 +4,7 @@ import { toErrorMessage } from "@/lib/errors";
 import { getLogger } from "@/lib/logging";
 import {
   CaptchaError,
+  CdpTransportClosedError,
   EmptyResultsError,
   ScraperError,
   SelectorFailureError,
@@ -33,7 +34,7 @@ export interface RetryOptions {
  * with our ScraperError hierarchy:
  *
  * - CaptchaError + EmptyResultsError + StepVerificationError → AbortError, no retry.
- * - SessionTimeoutError → invoke onSessionRestart before every retry, then retry up to maxAttempts.
+ * - SessionTimeoutError + CdpTransportClosedError → invoke onSessionRestart before every retry, then retry up to maxAttempts.
  * - SelectorFailureError + UnknownScraperError → retry up to maxAttempts.
  * - Anything non-ScraperError → wrap in UnknownScraperError and retry.
  *
@@ -71,7 +72,10 @@ export async function withScraperRetry<T>(
           throw new AbortError(err.message);
         }
 
-        if (err instanceof SessionTimeoutError && options.onSessionRestart) {
+        if (
+          (err instanceof SessionTimeoutError || err instanceof CdpTransportClosedError) &&
+          options.onSessionRestart
+        ) {
           await options.onSessionRestart();
         }
 

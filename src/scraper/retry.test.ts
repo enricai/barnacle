@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   CaptchaError,
+  CdpTransportClosedError,
   EmptyResultsError,
   SelectorFailureError,
   SessionTimeoutError,
@@ -129,6 +130,27 @@ describe("scraper/retry", () => {
           async () => {
             counter.n += 1;
             throw new SessionTimeoutError();
+          },
+          {
+            maxAttempts: 3,
+            onSessionRestart: async () => {
+              restarted.n += 1;
+            },
+          }
+        )
+      ).rejects.toThrow();
+      expect(restarted.n).toBe(3);
+      expect(counter.n).toBe(3);
+    });
+
+    it("invokes onSessionRestart for every CdpTransportClosedError attempt", async () => {
+      const restarted = { n: 0 };
+      const counter = { n: 0 };
+      await expect(
+        withScraperRetry(
+          async () => {
+            counter.n += 1;
+            throw new CdpTransportClosedError();
           },
           {
             maxAttempts: 3,

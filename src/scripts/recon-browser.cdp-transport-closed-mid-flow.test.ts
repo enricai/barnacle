@@ -1,10 +1,12 @@
 /**
- * End-to-end coverage for main()'s post-loop CDP-transport-teardown guard
- * (recon-browser.ts:2802-2811): a Stagehand-initiated transport teardown
- * mid-flow must make main() reject instead of resolving as if the run were
- * whole, even though the per-step loop mechanics still report every step
- * "completed" (isFlowTruncated alone never fires for this case — see
- * bugfix-007's comment at that call site). Mirrors the harness in
+ * End-to-end coverage for main()'s CDP-transport-teardown handling: a
+ * Stagehand-initiated transport teardown mid-flow must make the whole-flow
+ * attempt fail (isFlowTruncated alone never fires for this case, since the
+ * per-step loop mechanics still report every step "completed"). bugfix-003
+ * changed the immediate `process.exit(1)` into a bounded fresh-session retry
+ * (up to `config.scraper.maxTransportRetries` attempts, via
+ * `withScraperRetry`) — main() only calls `process.exit(1)` once every
+ * attempt has hit the same failure. Mirrors the harness in
  * recon-browser.mid-flow-session-death.test.ts.
  */
 
@@ -14,8 +16,6 @@ import { join } from "node:path";
 
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
-import type { StepVerificationErrorKind } from "@/scraper/errors";
 
 vi.mock("@/config", () => ({
   config: {
@@ -30,6 +30,7 @@ vi.mock("@/config", () => ({
       frameEvaluateTimeoutMs: 30_000,
       maxCascadeReplans: 5,
       maxProbeReplans: 5,
+      maxTransportRetries: 3,
     },
     telemetry: {
       callsNdjsonPath: ".barnacle/calls.ndjson",
@@ -38,16 +39,10 @@ vi.mock("@/config", () => ({
 }));
 vi.mock("@/lib/http", () => ({ configureHttpDispatcher: vi.fn() }));
 vi.mock("@/scraper/session", () => ({ createBrowserSession: vi.fn() }));
-vi.mock("@/scraper/errors", () => ({
-  StepVerificationError: class StepVerificationError extends Error {
-    readonly kind: StepVerificationErrorKind;
-    constructor(message = "step failed", kind: StepVerificationErrorKind = "cascade-exhausted") {
-      super(message);
-      this.kind = kind;
-    }
-  },
-  SessionTimeoutError: class SessionTimeoutError extends Error {},
-}));
+vi.mock("@/scraper/errors", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/scraper/errors")>();
+  return { ...actual };
+});
 
 const { loggerStub } = vi.hoisted(() => ({
   loggerStub: {
@@ -161,11 +156,13 @@ describe("recon-browser/main — CDP transport closed mid-flow by Stagehand's ow
     executeStepWithHealingStub.mockReset();
   });
 
-  it("rejects instead of resolving when Stagehand tears the CDP transport down mid-flow, even though every step still reports completed", async () => {
+  it("retries on a fresh session up to maxTransportRetries, then rejects once every attempt hits the same CDP teardown", async () => {
     const { stagehand } = makeFakePage();
     const cdpTransportClosedError = {
       message: "scraper session's CDP transport was closed by the SDK: teardown initiated",
     };
+    // Every fresh session torn down by Stagehand at the same point — this
+    // never recovers, so all maxTransportRetries (3) attempts fail.
     let transportClosed = false;
     vi.mocked(createBrowserSession).mockResolvedValue({
       stagehand,
@@ -180,14 +177,15 @@ describe("recon-browser/main — CDP transport closed mid-flow by Stagehand's ow
       getCdpTransportClosedError: () => (transportClosed ? cdpTransportClosedError : undefined),
     } as never);
 
-    let stepCount = 0;
+    let stepCountInAttempt = 0;
     executeStepWithHealingStub.mockImplementation(async () => {
-      stepCount += 1;
+      stepCountInAttempt += 1;
       // Stagehand's teardown does not surface as a thrown error or a dead
       // page.url() read — every remaining step still reports "completed"
       // via the loop's normal mechanics, exactly like isFlowTruncated's
       // completedSteps.length would look satisfied.
-      if (stepCount === TRANSPORT_CLOSES_AFTER_STEP) transportClosed = true;
+      if (stepCountInAttempt === TRANSPORT_CLOSES_AFTER_STEP) transportClosed = true;
+      if (stepCountInAttempt === TOTAL_STEPS) stepCountInAttempt = 0;
       return "ok";
     });
 
@@ -199,13 +197,47 @@ describe("recon-browser/main — CDP transport closed mid-flow by Stagehand's ow
 
     await expect(main()).rejects.toThrow("process.exit");
     expect(exitSpy).toHaveBeenCalledWith(1);
-    // The per-step loop has no liveness signal for this failure mode, so it
-    // runs every declared step to completion — the guard fires only once,
-    // right after the loop, beside the isFlowTruncated check.
-    expect(executeStepWithHealingStub).toHaveBeenCalledTimes(TOTAL_STEPS);
+    // 3 whole-flow attempts, a brand-new session each time, each running
+    // every declared step to completion before the post-loop guard fires.
+    expect(createBrowserSession).toHaveBeenCalledTimes(3);
+    expect(executeStepWithHealingStub).toHaveBeenCalledTimes(TOTAL_STEPS * 3);
     expect(loggerStub.error).toHaveBeenCalledWith(expect.stringContaining("CDP transport"));
 
     exitSpy.mockRestore();
+  });
+
+  it("recovers on a retried attempt when the fresh session's transport stays open", async () => {
+    const { stagehand: closingStagehand } = makeFakePage();
+    const { stagehand: healthyStagehand } = makeFakePage();
+    const cdpTransportClosedError = {
+      message: "scraper session's CDP transport was closed by the SDK: teardown initiated",
+    };
+
+    vi.mocked(createBrowserSession)
+      .mockResolvedValueOnce({
+        stagehand: closingStagehand,
+        limiter: {} as never,
+        sessionId: "test-session-1",
+        provider: "browserbase",
+        close: vi.fn().mockResolvedValue(undefined),
+        getCdpTransportClosedError: () => cdpTransportClosedError,
+      } as never)
+      .mockResolvedValueOnce({
+        stagehand: healthyStagehand,
+        limiter: {} as never,
+        sessionId: "test-session-2",
+        provider: "browserbase",
+        close: vi.fn().mockResolvedValue(undefined),
+        getCdpTransportClosedError: () => undefined,
+      } as never);
+
+    executeStepWithHealingStub.mockResolvedValue("ok");
+
+    process.argv = flowArgv(TOTAL_STEPS);
+
+    await expect(main()).resolves.toBeUndefined();
+    expect(createBrowserSession).toHaveBeenCalledTimes(2);
+    expect(executeStepWithHealingStub).toHaveBeenCalledTimes(TOTAL_STEPS * 2);
   });
 
   it("resolves normally end to end when Stagehand never tears the transport down (control case)", async () => {
