@@ -77,7 +77,7 @@ import {
   resolveSiteTelemetryDir,
 } from "@/lib/telemetry/telemetry-paths";
 import { captureCookieJarSnapshot } from "@/scraper/cookie-jar";
-import { StepVerificationError } from "@/scraper/errors";
+import { SessionTimeoutError, StepVerificationError } from "@/scraper/errors";
 import {
   type AttemptRecord,
   anthropicModelName,
@@ -2335,6 +2335,20 @@ async function main(): Promise<void> {
 
     for (let i = 0; i < plan.length; i++) {
       const step = plan[i]!;
+      // Liveness gate: a closed/crashed Stagehand session makes `page.url()`
+      // throw synchronously. Every downstream observe/act probe treats that
+      // throw as "no candidates" and, for an optional step, silently skips
+      // it — so without this check the loop runs to `plan.length` and the
+      // post-loop isFlowTruncated count-check sees a full completedSteps
+      // array and reports "not truncated" even though the session died
+      // partway through. Mirrors the same guard in runHealingFlow.
+      try {
+        page.url();
+      } catch (err) {
+        throw new SessionTimeoutError(
+          `${formatStepPrefix(i, () => plan.length)} session appears closed/dead (page.url() threw: ${toErrorMessage(err)}) — aborting after ${i} of ${plan.length} steps completed`
+        );
+      }
       currentPhase =
         step.instruction
           .replace(/[^a-z0-9]+/gi, "-")
