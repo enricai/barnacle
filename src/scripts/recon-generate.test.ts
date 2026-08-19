@@ -1509,6 +1509,64 @@ describe("emitBrowserFlowTs + emitContractTs — schema/flow anti-drift", () => 
   });
 });
 
+describe("emitBrowserFlowTs — splice site lands on the fill VALUE, never the selector", () => {
+  const { code, payloadFieldNames } = emitBrowserFlowTs({
+    siteId: "test-site",
+    pascal: "TestSite",
+    baseUrl: "https://example.com",
+    isSubmissionFlow: true,
+    flowSteps: [
+      "Fill in the Legal Name First Name field (data-automation-id='legalName--firstName') with 'Reginald'",
+      "Select 'Texas' from the State dropdown (data-automation-id='address--state')",
+    ],
+    vocabulary: TEST_RECRUITING_VOCABULARY,
+  });
+
+  it("leaves the data-automation-id selector unchanged", () => {
+    expect(code).toContain("data-automation-id='legalName--firstName'");
+    expect(code).toContain("data-automation-id='address--state'");
+  });
+
+  it("splices payload.FirstName only at the trailing value position", () => {
+    expect(code).toContain(payloadRef("FirstName"));
+    expect(code).not.toContain("${payload.FirstName}'firstName'");
+  });
+
+  it("splices payload.State at the leading answer position for a Select step", () => {
+    expect(code).toContain(payloadRef("State"));
+    expect(code).not.toContain("Texas");
+  });
+
+  it("emits no un-spliced Reginald literal", () => {
+    expect(code).not.toContain("Reginald");
+  });
+
+  it("accumulates the FirstName field name", () => {
+    expect(payloadFieldNames.has("FirstName")).toBe(true);
+  });
+});
+
+describe("emitBrowserFlowTs — a reserved ${RECON_PHONE} token resolves to payload.MobilePhone", () => {
+  const RECON_PHONE_TOKEN = `$${"{RECON_PHONE}"}`;
+  const { code } = emitBrowserFlowTs({
+    siteId: "test-site",
+    pascal: "TestSite",
+    baseUrl: "https://example.com",
+    isSubmissionFlow: true,
+    flowSteps: [`Enter ${RECON_PHONE_TOKEN} in the Mobile Phone field`],
+    vocabulary: TEST_RECRUITING_VOCABULARY,
+  });
+
+  it("splices a payload.MobilePhone reference", () => {
+    expect(code).toContain(payloadRef("MobilePhone"));
+  });
+
+  it("emits no un-spliced or escaped RECON_PHONE token", () => {
+    expect(code).not.toContain(RECON_PHONE_TOKEN);
+    expect(code).not.toContain("\\${RECON_PHONE}");
+  });
+});
+
 describe("selectPayloadAction", () => {
   /** Minimal action step — only the fields selection reads. */
   const step = (url: string, requestPostData: string | null, responseBody: unknown) => ({

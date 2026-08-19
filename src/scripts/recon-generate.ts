@@ -65,6 +65,83 @@ const ENGINE_PKG = "@enricai/barnacle";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
+/**
+ * A reserved recon env token, e.g. `${RECON_EMAIL}` or `${RECON_PHONE}` — the
+ * `RECON_` prefix is what marks a `${UPPER_SNAKE}` token as a recon-owned
+ * splice site rather than an unrelated caller-authored env reference.
+ */
+const RESERVED_ENV_TOKEN = /\$\{RECON_[A-Z0-9_]*\}/;
+
+/**
+ * Masks the apostrophe in a possessive `'s` (e.g. "the candidate's name") with
+ * a non-quote placeholder of the same length, so a naive `'...'` quote scan
+ * doesn't mistake the possessive apostrophe for an opening quote delimiter.
+ * Length-preserving so callers that need positions in the ORIGINAL instruction
+ * can reuse the indices matched against the masked string unchanged.
+ */
+function maskPossessiveApostrophes(instruction: string): string {
+  return instruction.replace(/(\w)'(s\b)/g, "$1 $2");
+}
+
+/** One `'...'` quoted span found in an instruction, with its position in the ORIGINAL string. */
+interface QuoteSpan {
+  index: number;
+  length: number;
+  value: string;
+}
+
+function findQuoteSpans(instruction: string): QuoteSpan[] {
+  const masked = maskPossessiveApostrophes(instruction);
+  return [...masked.matchAll(/'([^']*)'/g)].map((m) => ({
+    index: m.index,
+    length: m[0].length,
+    value: instruction.slice(m.index + 1, m.index + m[0].length - 1),
+  }));
+}
+
+/**
+ * Picks which quoted span in an instruction is the persona VALUE, per the
+ * grammar recon-flow steps use: a `Select`/`Choose`/`Pick` step names the
+ * ANSWER first, then the question, so the value is the FIRST quoted span; a
+ * `Fill`/`Enter`/`Type` step names the field label first and the value last,
+ * so it is the LAST quoted span.
+ */
+function pickValueSpan(instruction: string, spans: readonly QuoteSpan[]): QuoteSpan {
+  return /^\s*(select|choose|pick)\b/i.test(instruction) ? spans[0]! : spans[spans.length - 1]!;
+}
+
+/**
+ * Locates the splice site in a flow-step instruction as `{ before, matched,
+ * after }` slices of the ORIGINAL instruction — a reserved `${RECON_*}` env
+ * token when present (preferred, since it names its own site unambiguously),
+ * otherwise the quoted VALUE span per {@link pickValueSpan}'s verb-class rule.
+ * This is the position-aware counterpart to {@link extractStepPersonaValue}:
+ * that function only needs the extracted string, this one needs the actual
+ * before/after slices so a template literal can be rebuilt around the site.
+ *
+ * @returns null when the instruction carries no spliceable site
+ */
+function locateSpliceSite(
+  instruction: string
+): { before: string; matched: string; after: string } | null {
+  const envToken = RESERVED_ENV_TOKEN.exec(instruction);
+  if (envToken) {
+    return {
+      before: instruction.slice(0, envToken.index),
+      matched: envToken[0],
+      after: instruction.slice(envToken.index + envToken[0].length),
+    };
+  }
+  const spans = findQuoteSpans(instruction);
+  if (spans.length === 0) return null;
+  const span = pickValueSpan(instruction, spans);
+  return {
+    before: instruction.slice(0, span.index),
+    matched: instruction.slice(span.index, span.index + span.length),
+    after: instruction.slice(span.index + span.length),
+  };
+}
+
 function toPascalCase(siteId: string): string {
   return siteId
     .split(/[-_]/)
@@ -96,9 +173,9 @@ export function resolveStepPayloadField(
 ): string | null {
   if (forceNone) return null;
   if (explicit) return explicit;
-  // A quoted literal or ${RECON_EMAIL} IS the recon constant this step would
-  // replace, so it is spliceable on its own.
-  const hasQuotedConstant = /'[^']*'/.test(instruction) || /\$\{RECON_EMAIL\}/.test(instruction);
+  // A quoted literal or a reserved ${RECON_*} env token IS the recon constant
+  // this step would replace, so it is spliceable on its own.
+  const hasQuotedConstant = /'[^']*'/.test(instruction) || RESERVED_ENV_TOKEN.test(instruction);
   // A dropdown step carries no constant to replace, so a label match alone can't
   // tell "select the test candidate's state" (the caller's data) from "select the
   // neighborhood from the Country dropdown" (a facet that merely says Country).
@@ -155,13 +232,9 @@ export function extractStepPersonaValue(
     const resolved = env[envToken[1]!];
     if (resolved) return resolved;
   }
-  // Neutralize the possessive apostrophe so it isn't read as a quote delimiter.
-  const cleaned = instruction.replace(/(\w)'s\b/g, "$1s");
-  const quotes = [...cleaned.matchAll(/'([^']*)'/g)].map((m) => m[1]!);
-  if (quotes.length === 0) return null;
-  const value = /^\s*(select|choose|pick)\b/i.test(instruction)
-    ? quotes[0]!
-    : quotes[quotes.length - 1]!;
+  const spans = findQuoteSpans(instruction);
+  if (spans.length === 0) return null;
+  const value = pickValueSpan(instruction, spans).value;
   return value.length > 0 ? value : null;
 }
 
@@ -4218,33 +4291,17 @@ function escapeForTemplateLiteral(segment: string): string {
  * Build the emitted instruction expression for one step: a plain double-quoted
  * literal when nothing splices, or a backtick template literal with the recon
  * constant replaced by `${payload.<field>}` when the resolver picks a field.
- * The first `${RECON_EMAIL}` token (preferred) or the first single-quoted
- * literal in the instruction is the splice site.
+ * The splice site is located by {@link locateSpliceSite} — a reserved
+ * `${RECON_*}` env token when present, otherwise the quoted VALUE span (never
+ * a selector's or label's quoted span), matching {@link extractStepPersonaValue}'s
+ * own choice so the browser-flow and HTTP-body emitters never disagree on
+ * which quoted span is the persona value.
  */
 function buildStepInstructionExpr(instruction: string, field: string | null): string {
   if (field === null) return JSON.stringify(instruction);
-  // Concatenated so Biome's noTemplateCurlyInString doesn't flag the literal
-  // env-var token — it must stay `${RECON_EMAIL}` to match recon's flow files.
-  const emailToken = `$${"{RECON_EMAIL}"}`;
-  const emailIdx = instruction.indexOf(emailToken);
-  const [before, matched, after] =
-    emailIdx >= 0
-      ? [
-          instruction.slice(0, emailIdx),
-          emailToken,
-          instruction.slice(emailIdx + emailToken.length),
-        ]
-      : (() => {
-          const m = /'[^']*'/.exec(instruction);
-          if (m === null) return [instruction, "", ""] as const;
-          return [
-            instruction.slice(0, m.index),
-            m[0],
-            instruction.slice(m.index + m[0].length),
-          ] as const;
-        })();
-  if (matched === "") return JSON.stringify(instruction);
-  return `\`${escapeForTemplateLiteral(before)}\${payload.${field}}${escapeForTemplateLiteral(after)}\``;
+  const site = locateSpliceSite(instruction);
+  if (site === null) return JSON.stringify(instruction);
+  return `\`${escapeForTemplateLiteral(site.before)}\${payload.${field}}${escapeForTemplateLiteral(site.after)}\``;
 }
 
 /**
