@@ -55,7 +55,12 @@ vi.mock("@browserbasehq/stagehand", () => ({
     this.init = vi.fn().mockResolvedValue(undefined);
     this.close = vi.fn().mockResolvedValue(undefined);
     this.browserbaseSessionID = "bb-session-id";
+    this.context = { conn: { send: vi.fn().mockResolvedValue(undefined) } };
   }),
+}));
+
+vi.mock("@/scraper/cdp-heartbeat", () => ({
+  startCdpTransportHeartbeat: vi.fn(() => ({ stop: vi.fn() })),
 }));
 
 vi.mock("steel-sdk", () => ({
