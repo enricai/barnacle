@@ -10,14 +10,75 @@
  * Stagehand-library "N-N" regex bug and never swallow unrelated AISDK failures.
  */
 
-import { describe, expect, it, vi } from "vitest";
+import { Stagehand } from "@browserbasehq/stagehand";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  createBrowserbaseBrowserSession,
   makeFilteredStagehandLogger,
   makeOutboundIpAccessor,
   type StagehandLogLine,
 } from "@/scraper/session-browserbase";
 import type { Logger } from "@/types/logging";
+
+const { configRef } = vi.hoisted(() => ({
+  configRef: {
+    value: {
+      scraper: {
+        browserbaseApiKey: "bb-key" as string | undefined,
+        browserbaseProjectId: "bb-project" as string | undefined,
+        anthropicApiKey: "anthropic-key" as string | undefined,
+        useBedrock: false,
+        model: "anthropic/claude-sonnet-4-6",
+        proxyType: "residential",
+        solveCaptcha: true,
+        anthropicTimeoutMs: 120000,
+        captureSessionIp: true,
+        sessionIpEchoUrl: "https://api.ipify.org?format=json",
+        sessionIpTimeoutMs: 10000,
+      },
+      bedrock: {
+        region: "us-east-1",
+        model: "test",
+        accessKeyId: undefined,
+        secretAccessKey: undefined,
+        sessionToken: undefined,
+      },
+    },
+  },
+}));
+
+vi.mock("@/config", () => ({
+  get config() {
+    return configRef.value;
+  },
+}));
+
+vi.mock("@browserbasehq/stagehand", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@browserbasehq/stagehand")>();
+  return {
+    ...actual,
+    Stagehand: vi.fn(function (this: Record<string, unknown>) {
+      this.init = vi.fn().mockResolvedValue(undefined);
+      this.close = vi.fn().mockResolvedValue(undefined);
+      this.browserbaseSessionID = "bb-session-id";
+    }),
+  };
+});
+
+vi.mock("@/lib/bedrock", () => ({
+  createBedrockModel: vi.fn(() => ({ specificationVersion: "v2" })),
+}));
+
+vi.mock("@/scraper/session-ip", () => ({
+  resolveSessionOutboundIp: vi.fn(),
+}));
+
+vi.mock("@/scraper/throttle", () => ({
+  createSessionLimiter: vi.fn(() => ({
+    stop: vi.fn().mockResolvedValue(undefined),
+  })),
+}));
 
 function makeLoggerStub(): Logger {
   return {
@@ -246,5 +307,23 @@ describe("makeOutboundIpAccessor", () => {
     // Memoizes the rejection-turned-null too — a second call doesn't retry.
     await expect(getOutboundIp()).resolves.toBeNull();
     expect(resolve).toHaveBeenCalledOnce();
+  });
+});
+
+describe("createBrowserbaseBrowserSession keepAlive", () => {
+  beforeEach(() => {
+    configRef.value.scraper.browserbaseApiKey = "bb-key";
+    configRef.value.scraper.browserbaseProjectId = "bb-project";
+    configRef.value.scraper.anthropicApiKey = "anthropic-key";
+    configRef.value.scraper.useBedrock = false;
+    vi.clearAllMocks();
+  });
+
+  it("passes keepAlive:true so Stagehand's out-of-process shutdown supervisor never spawns", async () => {
+    await createBrowserbaseBrowserSession();
+
+    const stagehandArg = vi.mocked(Stagehand).mock.calls.at(-1)?.[0] as { keepAlive?: boolean };
+
+    expect(stagehandArg.keepAlive).toBe(true);
   });
 });
