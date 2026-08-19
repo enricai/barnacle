@@ -5892,6 +5892,67 @@ describe("recon-browser CLI — process exit code on a mid-flow teardown death s
     expect(exitSpy).toHaveBeenCalledWith(1);
     expect(stepCount).toBe(sessionDiesAfterStep);
   });
+
+  // Negative control for the test above: recon-1127's cross-version table
+  // shows 1.12.2 logging the identical "initiating shutdown → CDP transport
+  // closed" line at normal end-of-flow teardown (after the last step) and
+  // still exiting 0. The hard-failure gate must only fire on a mid-flow
+  // teardown, not on the post-completion teardown every run ends with.
+  it("still exits 0 when the teardown death signal fires only after the flow's final step has completed", async () => {
+    const { stagehand } = makeFakePage();
+    const totalSteps = 5;
+    let signalDeath: ((err: Error) => void) | undefined;
+    const deathSignal = new Promise<never>((_resolve, reject) => {
+      signalDeath = reject;
+    });
+    deathSignal.catch(() => undefined);
+
+    vi.resetModules();
+    const { createBrowserSession } = await import("@/scraper/session.js");
+    vi.mocked(createBrowserSession).mockResolvedValue({
+      stagehand,
+      limiter: {} as never,
+      sessionId: "test-session",
+      provider: "browserbase",
+      close: vi.fn().mockResolvedValue(undefined),
+      deathSignal,
+    } as never);
+
+    const { executeStepWithHealing } = await import("@/scraper/flow-runner.js");
+    let stepCount = 0;
+    vi.mocked(executeStepWithHealing).mockImplementation(() => {
+      stepCount += 1;
+      if (stepCount === totalSteps) {
+        setTimeout(
+          () =>
+            signalDeath?.(
+              new SessionTimeoutError("stagehand-initiated teardown mid-flow: CDP transport closed")
+            ),
+          0
+        );
+      }
+      return Promise.resolve("completed");
+    });
+
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+
+    process.argv = [
+      "node",
+      "/fake/path/recon-browser.js",
+      "--url",
+      "https://example.com/apply",
+      "--flow",
+      JSON.stringify(Array.from({ length: totalSteps }, (_, i) => `Fill in field ${i}`)),
+    ];
+    process.argv[1] = "/fake/path/recon-browser.js";
+
+    await import("@/scripts/recon-browser.js");
+
+    await vi.waitFor(() => expect(stepCount).toBe(totalSteps));
+
+    expect(exitSpy).not.toHaveBeenCalledWith(1);
+    expect(stepCount).toBe(totalSteps);
+  });
 });
 
 describe("recon-browser/main — flowHasSubmitSemantics wiring into executeStepWithHealing (bugfix-004)", () => {
