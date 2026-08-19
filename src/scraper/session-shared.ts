@@ -2,6 +2,7 @@ import type { Stagehand } from "@browserbasehq/stagehand";
 import type Bottleneck from "bottleneck";
 
 import { pickRandom } from "@/lib/random";
+import type { CdpTransportClosedError } from "@/scraper/errors";
 
 /** Allowed provider names. */
 export type ProviderName = "browserbase" | "steel";
@@ -60,6 +61,15 @@ export interface BrowserSession {
    * (currently Browserbase); absent on Steel.
    */
   deathSignal?: Promise<never>;
+  /**
+   * Returns the {@link CdpTransportClosedError} recorded if Stagehand tore
+   * the CDP transport down on its own, mid-operation — as opposed to the
+   * transport closing as an expected consequence of this session's own
+   * `close()`. Present on both Browserbase and Steel sessions. Returns
+   * undefined both when no transport close has happened yet and when the
+   * only transport close observed was our own end-of-run teardown.
+   */
+  getCdpTransportClosedError?: () => CdpTransportClosedError | undefined;
 }
 
 /**

@@ -13,6 +13,8 @@
 import { Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { startCdpTransportHeartbeat } from "@/scraper/cdp-heartbeat";
+import { isCdpTransportClosedError } from "@/scraper/errors";
 import {
   createBrowserbaseBrowserSession,
   makeFilteredStagehandLogger,
@@ -62,9 +64,23 @@ vi.mock("@browserbasehq/stagehand", async (importOriginal) => {
       this.init = vi.fn().mockResolvedValue(undefined);
       this.close = vi.fn().mockResolvedValue(undefined);
       this.browserbaseSessionID = "bb-session-id";
+      this.context = {
+        conn: { send: vi.fn().mockResolvedValue(undefined), onTransportClosed: vi.fn() },
+      };
     }),
   };
 });
+
+const { heartbeatHandleRef } = vi.hoisted(() => ({
+  heartbeatHandleRef: { value: { stop: vi.fn() } },
+}));
+
+vi.mock("@/scraper/cdp-heartbeat", () => ({
+  startCdpTransportHeartbeat: vi.fn((..._args: unknown[]) => {
+    heartbeatHandleRef.value = { stop: vi.fn() };
+    return heartbeatHandleRef.value;
+  }),
+}));
 
 vi.mock("@/lib/bedrock", () => ({
   createBedrockModel: vi.fn(() => ({ specificationVersion: "v2" })),
@@ -368,5 +384,103 @@ describe("createBrowserbaseBrowserSession teardown-detector composition", () => 
 
     expect(() => loggerCallback?.(elementIdErrorLine)).not.toThrow();
     expect(session.getSuppressedAisdkElementIdErrorCount?.()).toBe(1);
+  });
+});
+
+describe("createBrowserbaseBrowserSession CDP heartbeat", () => {
+  beforeEach(() => {
+    configRef.value.scraper.browserbaseApiKey = "bb-key";
+    configRef.value.scraper.browserbaseProjectId = "bb-project";
+    configRef.value.scraper.anthropicApiKey = "anthropic-key";
+    configRef.value.scraper.useBedrock = false;
+    vi.clearAllMocks();
+  });
+
+  it("starts the heartbeat against stagehand.context.conn after init resolves, and stop() ends it before no calls fire after close", async () => {
+    const session = await createBrowserbaseBrowserSession();
+
+    const stagehandInstance = vi.mocked(Stagehand).mock.instances.at(-1) as unknown as {
+      context: { conn: unknown };
+    };
+    expect(vi.mocked(startCdpTransportHeartbeat)).toHaveBeenCalledWith(
+      stagehandInstance.context.conn,
+      expect.anything()
+    );
+
+    const handle = vi.mocked(startCdpTransportHeartbeat).mock.results.at(-1)?.value as {
+      stop: ReturnType<typeof vi.fn>;
+    };
+
+    await session.close();
+
+    expect(handle.stop).toHaveBeenCalledOnce();
+  });
+});
+
+describe("createBrowserbaseBrowserSession CDP-transport-teardown detection", () => {
+  beforeEach(() => {
+    configRef.value.scraper.browserbaseApiKey = "bb-key";
+    configRef.value.scraper.browserbaseProjectId = "bb-project";
+    configRef.value.scraper.anthropicApiKey = "anthropic-key";
+    configRef.value.scraper.useBedrock = false;
+    vi.clearAllMocks();
+  });
+
+  it("flags an SDK-initiated transport close that happens before our own close()", async () => {
+    const session = await createBrowserbaseBrowserSession();
+    const fakeStagehand = session.stagehand as unknown as {
+      context: { conn: { onTransportClosed: ReturnType<typeof vi.fn> } };
+    };
+    const handler = fakeStagehand.context.conn.onTransportClosed.mock.calls[0]?.[0] as (
+      why: string
+    ) => void;
+
+    handler("socket-close code=1006 reason=");
+
+    const err = session.getCdpTransportClosedError?.();
+    expect(err).toBeDefined();
+    expect(isCdpTransportClosedError(err)).toBe(true);
+    expect(err?.message).toContain("socket-close code=1006 reason=");
+  });
+
+  it("does not flag a transport close that happens as a consequence of our own close()", async () => {
+    const session = await createBrowserbaseBrowserSession();
+    const fakeStagehand = session.stagehand as unknown as {
+      context: { conn: { onTransportClosed: ReturnType<typeof vi.fn> } };
+    };
+    const handler = fakeStagehand.context.conn.onTransportClosed.mock.calls[0]?.[0] as (
+      why: string
+    ) => void;
+
+    await session.close();
+    handler("socket-close code=1000 reason=normal-close");
+
+    expect(session.getCdpTransportClosedError?.()).toBeUndefined();
+  });
+
+  it("never flags an unrelated error-level Stagehand log line, even one shaped like the SDK's own teardown text", async () => {
+    const session = await createBrowserbaseBrowserSession();
+    const stagehandArg = vi.mocked(Stagehand).mock.calls.at(-1)?.[0] as {
+      logger?: (line: StagehandLogLine) => void;
+    };
+
+    // Driven through the Stagehand `logger` callback (makeFilteredStagehandLogger's
+    // callback) rather than through context.conn.onTransportClosed — the actual
+    // detection signal wired above. Detection here must stay anchored to the SDK's
+    // own onTransportClosed hook, not to matching log text, so neither an unrelated
+    // AISDK failure nor Stagehand's own teardown wording accidentally flips the
+    // detector via the logger path.
+    stagehandArg.logger?.({
+      message: "AI_TypeValidationError: Type validation failed for someOtherField",
+      category: "AISDK error",
+      level: 0,
+    });
+    stagehandArg.logger?.({
+      message: "initiating shutdown → CDP transport closed: socket-close code=1006 reason=",
+      category: "stagehand:v3",
+      level: 0,
+    });
+
+    expect(session.getCdpTransportClosedError?.()).toBeUndefined();
   });
 });

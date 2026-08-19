@@ -5,6 +5,8 @@ import { config } from "@/config";
 import { createBedrockModel } from "@/lib/bedrock";
 import { toErrorMessage } from "@/lib/errors";
 import { getLogger } from "@/lib/logging";
+import { type CdpHeartbeatHandle, startCdpTransportHeartbeat } from "@/scraper/cdp-heartbeat";
+import { CdpTransportClosedError } from "@/scraper/errors";
 import type { StagehandLogLine } from "@/scraper/session-browserbase";
 import {
   type BrowserSession,
@@ -89,6 +91,7 @@ export async function createSteelBrowserSession(): Promise<BrowserSession> {
   // failure leaves a live session burning minutes until Steel's own timeout.
   let stagehand: Stagehand | undefined;
   let deathSignal: Promise<never> | undefined;
+  let heartbeat: CdpHeartbeatHandle | undefined;
   try {
     // Steel's websocketUrl is `wss://connect.steel.dev?sessionId=…`. Stagehand's
     // V3 CDP connector requires the apiKey as a query parameter too — without it
@@ -142,9 +145,11 @@ export async function createSteelBrowserSession(): Promise<BrowserSession> {
     });
 
     await stagehand.init();
+    heartbeat = startCdpTransportHeartbeat(stagehand.context.conn, { logger });
   } catch (err) {
     // Best-effort cleanup; swallow secondary failures so the original
     // error surfaces to the caller.
+    heartbeat?.stop();
     try {
       if (stagehand) await stagehand.close();
     } catch (closeErr) {
@@ -160,9 +165,25 @@ export async function createSteelBrowserSession(): Promise<BrowserSession> {
     throw err;
   }
 
+  // Stagehand's own end-of-run teardown also closes the CDP transport, so
+  // the handler must not flag that expected case. `weInitiatedClose` is
+  // flipped at the top of `close()` below, before `stagehand.close()` runs;
+  // only a transport close observed while it's still false is an SDK-
+  // initiated teardown mid-operation, not a consequence of our own close.
+  let weInitiatedClose = false;
+  let cdpTransportClosedError: CdpTransportClosedError | undefined;
+  stagehand.context.conn.onTransportClosed((why: string) => {
+    if (weInitiatedClose) return;
+    cdpTransportClosedError = new CdpTransportClosedError(
+      `scraper session's CDP transport was closed by the SDK: ${why}`
+    );
+  });
+
   const limiter = createSessionLimiter();
 
   const close = async (): Promise<void> => {
+    weInitiatedClose = true;
+    heartbeat?.stop();
     try {
       await stagehand.close();
     } catch (err) {
@@ -176,6 +197,9 @@ export async function createSteelBrowserSession(): Promise<BrowserSession> {
     await limiter.stop({ dropWaitingJobs: true });
   };
 
+  const getCdpTransportClosedError = (): CdpTransportClosedError | undefined =>
+    cdpTransportClosedError;
+
   return {
     stagehand,
     limiter,
@@ -183,5 +207,6 @@ export async function createSteelBrowserSession(): Promise<BrowserSession> {
     provider: "steel",
     close,
     deathSignal,
+    getCdpTransportClosedError,
   };
 }

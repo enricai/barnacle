@@ -92,6 +92,29 @@ export class SessionTimeoutError extends ScraperError {
 }
 
 /**
+ * The underlying session's CDP transport was torn down by the SDK itself
+ * mid-operation. Distinct from {@link SessionTimeoutError} so downstream code
+ * (recon-browser's exit-code gate) can branch on it precisely instead of
+ * lumping it into the generic timeout case. Retryable on the runtime path —
+ * it is the same class of failure as SessionTimeoutError (a session that died
+ * and needs a fresh one) — even though recon-browser's single-shot CLI
+ * separately treats it as fatal.
+ */
+export class CdpTransportClosedError extends ScraperError {
+  constructor(message = "scraper session's CDP transport was closed by the SDK") {
+    super(message, true);
+  }
+}
+
+/** Cross-realm-safe replacement for `err instanceof CdpTransportClosedError`. See {@link isCaptchaError} for why this exists. */
+export function isCdpTransportClosedError(err: unknown): err is CdpTransportClosedError {
+  return (
+    err instanceof CdpTransportClosedError ||
+    (err instanceof Error && err.name === "CdpTransportClosedError")
+  );
+}
+
+/**
  * Catch-all for unclassified scraper failures. Retryable by default so
  * transient issues (DOM not settled, network blips) get a second chance.
  */
@@ -318,6 +341,7 @@ const SCRAPER_ERROR_NAMES = new Set([
   "EmptyResultsError",
   "SelectorFailureError",
   "SessionTimeoutError",
+  "CdpTransportClosedError",
   "UnknownScraperError",
   "StepVerificationError",
   "HttpSchemaError",
@@ -331,7 +355,7 @@ const SCRAPER_ERROR_NAMES = new Set([
 /**
  * Cross-realm-safe replacement for `err instanceof ScraperError`. See
  * {@link isCaptchaError} for why this exists — this is the hierarchy-level
- * variant, matching any of the 12 concrete subclasses defined in this file
+ * variant, matching any of the 13 concrete subclasses defined in this file
  * regardless of which module instance constructed the error.
  */
 export function isScraperError(err: unknown): err is ScraperError {

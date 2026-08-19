@@ -49,13 +49,22 @@ vi.mock("@/config", () => ({
   },
 }));
 
+const { fakeConn } = vi.hoisted(() => ({
+  fakeConn: { send: vi.fn().mockResolvedValue(undefined), onTransportClosed: vi.fn() },
+}));
+
 vi.mock("@browserbasehq/stagehand", () => ({
   AISdkClient: vi.fn(),
   Stagehand: vi.fn(function (this: Record<string, unknown>) {
     this.init = vi.fn().mockResolvedValue(undefined);
     this.close = vi.fn().mockResolvedValue(undefined);
     this.browserbaseSessionID = "bb-session-id";
+    this.context = { conn: fakeConn };
   }),
+}));
+
+vi.mock("@/scraper/cdp-heartbeat", () => ({
+  startCdpTransportHeartbeat: vi.fn(() => ({ stop: vi.fn() })),
 }));
 
 vi.mock("steel-sdk", () => ({

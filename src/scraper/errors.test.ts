@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  CdpTransportClosedError,
   HttpRateLimitError,
   HttpSchemaError,
   HttpUrlLockedError,
   isCaptchaError,
+  isCdpTransportClosedError,
   isHttpSchemaError,
   isScraperError,
   MissingFormMapKeyError,
@@ -95,6 +97,46 @@ describe("StepVerificationError", () => {
     expect(err.retryable).toBe(false);
     expect(err.name).toBe("StepVerificationError");
     expect(err.kind).toBe("submit-skipped");
+  });
+});
+
+describe("CdpTransportClosedError", () => {
+  it("is retryable, instanceof ScraperError, and named correctly", () => {
+    const err = new CdpTransportClosedError("socket-close code=1006 reason=");
+    expect(err).toBeInstanceOf(ScraperError);
+    expect(err.retryable).toBe(true);
+    expect(err.name).toBe("CdpTransportClosedError");
+    expect(err.message).toBe("socket-close code=1006 reason=");
+  });
+
+  it("defaults to the standard message when constructed with no argument", () => {
+    const err = new CdpTransportClosedError();
+    expect(err.name).toBe("CdpTransportClosedError");
+    expect(err.message).toBe("scraper session's CDP transport was closed by the SDK");
+  });
+
+  it("isCdpTransportClosedError recognizes a same-realm instance and a name-tagged plain Error", () => {
+    const sameRealmErr = new CdpTransportClosedError();
+    expect(isCdpTransportClosedError(sameRealmErr)).toBe(true);
+    expect(isScraperError(sameRealmErr)).toBe(true);
+
+    class FakeCrossModuleCdpTransportClosedError extends Error {
+      constructor(message = "scraper session's CDP transport was closed by the SDK") {
+        super(message);
+        this.name = "CdpTransportClosedError";
+      }
+    }
+    const crossRealmErr = new FakeCrossModuleCdpTransportClosedError();
+    expect(crossRealmErr).not.toBeInstanceOf(CdpTransportClosedError);
+    expect(isCdpTransportClosedError(crossRealmErr)).toBe(true);
+    expect(isScraperError(crossRealmErr)).toBe(true);
+  });
+
+  it("isCdpTransportClosedError returns false for an unrelated Error", () => {
+    expect(isCdpTransportClosedError(new Error("plain"))).toBe(false);
+    expect(isCdpTransportClosedError(new TypeError("bad"))).toBe(false);
+    expect(isCdpTransportClosedError(null)).toBe(false);
+    expect(isCdpTransportClosedError(undefined)).toBe(false);
   });
 });
 

@@ -4,6 +4,8 @@ import { config } from "@/config";
 import { createBedrockModel } from "@/lib/bedrock";
 import { toErrorMessage } from "@/lib/errors";
 import { getLogger } from "@/lib/logging";
+import { startCdpTransportHeartbeat } from "@/scraper/cdp-heartbeat";
+import { CdpTransportClosedError } from "@/scraper/errors";
 import { resolveSessionOutboundIp } from "@/scraper/session-ip";
 import {
   type BrowserSession,
@@ -272,6 +274,22 @@ export async function createBrowserbaseBrowserSession(
     throw err;
   }
 
+  const heartbeat = startCdpTransportHeartbeat(stagehand.context.conn, { logger });
+
+  // Stagehand's own end-of-run teardown also closes the CDP transport, so
+  // the handler must not flag that expected case. `weInitiatedClose` is
+  // flipped at the top of `close()` below, before `stagehand.close()` runs;
+  // only a transport close observed while it's still false is an SDK-
+  // initiated teardown mid-operation, not a consequence of our own close.
+  let weInitiatedClose = false;
+  let cdpTransportClosedError: CdpTransportClosedError | undefined;
+  stagehand.context.conn.onTransportClosed((why: string) => {
+    if (weInitiatedClose) return;
+    cdpTransportClosedError = new CdpTransportClosedError(
+      `scraper session's CDP transport was closed by the SDK: ${why}`
+    );
+  });
+
   const sessionId = stagehand.browserbaseSessionID ?? "unknown";
   logger.info(
     `created browserbase session ${sessionId} viewport=${viewport.width}x${viewport.height} proxies=${useResidentialProxy} advancedStealth=${advancedStealth}`
@@ -290,6 +308,8 @@ export async function createBrowserbaseBrowserSession(
   );
 
   const close = async (): Promise<void> => {
+    heartbeat.stop();
+    weInitiatedClose = true;
     try {
       await stagehand.close();
     } catch (err) {
@@ -298,6 +318,9 @@ export async function createBrowserbaseBrowserSession(
     await limiter.stop({ dropWaitingJobs: true });
     reportSuppressedAisdkErrors();
   };
+
+  const getCdpTransportClosedError = (): CdpTransportClosedError | undefined =>
+    cdpTransportClosedError;
 
   return {
     stagehand,
@@ -308,5 +331,6 @@ export async function createBrowserbaseBrowserSession(
     getSuppressedAisdkElementIdErrorCount,
     getOutboundIp,
     deathSignal,
+    getCdpTransportClosedError,
   };
 }
