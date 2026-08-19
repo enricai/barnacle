@@ -1,8 +1,11 @@
-import type { Page, Stagehand } from "@browserbasehq/stagehand";
+import type { ActResult, Page, Stagehand } from "@browserbasehq/stagehand";
+import type { Element } from "happy-dom";
+import { Window } from "happy-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { judgeSelectOptionWithLLM } from "@/lib/llm/judges/select-option";
 import { executeStepWithHealing } from "@/scraper/flow-runner";
+import type { FrameTarget } from "@/scraper/frame-target";
 import { buildPromptWidgetHarness } from "@/scraper/prompt-widget-dom-harness.test-helper";
 import type { Logger } from "@/types/logging";
 
@@ -120,6 +123,111 @@ function finalWidgetState(target: {
   return target.evaluate(
     `((() => { const w = document.getElementById("src-widget"); return { text: w.querySelector("[data-automation-id='promptSelectionLabel']").textContent, invalid: w.querySelector("input").getAttribute("aria-invalid") }; })())`
   ) as Promise<{ text: string; invalid: string }>;
+}
+
+/**
+ * Models a popup whose option click is a genuine dead end: no drill (the
+ * SAME option set stays rendered), no commit (no text, no aria-invalid
+ * change) — e.g. a backend request the widget fires on click that silently
+ * no-ops. Deliberately NOT built on `buildPromptWidgetHarness`: that shared
+ * harness always commits a plain (non-`drillTo`) leaf option on click, so it
+ * cannot express "click landed, nothing happened" — the other edge this
+ * fixture exists to cover.
+ */
+function buildDeadEndClickHarness(): {
+  page: unknown;
+  target: FrameTarget;
+  clicks: string[];
+} {
+  const window = new Window({ url: "https://careers.example.com/apply/job/1" });
+  const document = window.document;
+  document.body.innerHTML = SINGLE_STEP_WIDGET_HTML;
+  const clicks: string[] = [];
+  let open = false;
+
+  const renderPopup = (): void => {
+    const widgetEl = document.getElementById("src-widget") as Element;
+    const existing = document.querySelector("[data-test-popup]");
+    existing?.remove();
+    const wrap = document.createElement("div");
+    wrap.setAttribute("data-test-popup", "1");
+    wrap.innerHTML = `<ul role="listbox">${LEAVES.map(
+      (o) => `<li role="option" data-automation-label="${o}">${o}</li>`
+    ).join("")}</ul>`;
+    widgetEl.appendChild(wrap);
+    open = true;
+  };
+
+  const runExpr = (expr: string): unknown => {
+    const fn = new window.Function("document", "window", "CSS", `return (${expr});`) as (
+      d: unknown,
+      w: unknown,
+      c: unknown
+    ) => unknown;
+    return fn(document, window, window.CSS);
+  };
+
+  const resolveFirst = (selector: string): Element | null => {
+    try {
+      return document.querySelector(selector);
+    } catch {
+      return null;
+    }
+  };
+
+  const locator = (selector: string) => ({
+    count: async (): Promise<number> => {
+      try {
+        return document.querySelectorAll(selector).length;
+      } catch {
+        return 0;
+      }
+    },
+    first: () => ({
+      click: async (): Promise<void> => {
+        clicks.push(selector);
+        const el = resolveFirst(selector);
+        if (!el) return;
+        const inOpenPopup = el.closest("[data-test-popup]") !== null;
+        if (inOpenPopup && el.getAttribute("role") === "option") {
+          // The dead-end click itself: rendered option exists and is
+          // clickable, but nothing in the DOM changes as a result.
+          return;
+        }
+        if (!open) {
+          renderPopup();
+        } else {
+          document.querySelector("[data-test-popup]")?.remove();
+          open = false;
+        }
+      },
+      fill: async (): Promise<void> => undefined,
+      isChecked: async (): Promise<boolean> => false,
+      inputValue: async (): Promise<string> => "",
+    }),
+  });
+
+  const evaluate = async (expr: unknown): Promise<unknown> => runExpr(String(expr));
+
+  const page = {
+    evaluate,
+    url: () => "https://careers.example.com/apply/job/1",
+    title: async (): Promise<string> => "Apply",
+    locator,
+    waitForTimeout: async (): Promise<void> => undefined,
+  };
+
+  const target = {
+    evaluate,
+    locator,
+    url: async (): Promise<string> => "https://careers.example.com/apply/job/1",
+    title: async (): Promise<string> => "Apply",
+    frame: null,
+    frameSelector: null,
+    declaredFrameSelector: null,
+  } as unknown as FrameTarget;
+
+  return { page, target, clicks };
 }
 
 describe("flow-runner/tryPromptSelectorPrimitive cascading multiselect (shared DOM harness)", () => {
@@ -263,5 +371,66 @@ describe("flow-runner/tryPromptSelectorPrimitive cascading multiselect (shared D
 
     expect(stagehandAct).not.toHaveBeenCalled();
     expect(stagehandObserve).not.toHaveBeenCalled();
+  });
+
+  it("a click that neither commits nor drills falls through to cascade instead of false-succeeding", async () => {
+    const { page, target, clicks } = buildDeadEndClickHarness();
+    const stagehandAct = vi.fn().mockImplementation(async (): Promise<ActResult> => {
+      // The cascade's own act-driven click, exercised so the fallthrough is
+      // visibly reached rather than asserted on the primitive's return value
+      // alone. It lands on the SAME dead-end widget, so it commits nothing
+      // either — the overall step must not report "completed".
+      await (
+        page as unknown as {
+          locator: (s: string) => { first: () => { click: () => Promise<void> } };
+        }
+      )
+        .locator("#src-widget")
+        .first()
+        .click();
+      return {
+        success: true,
+        message: "clicked",
+        actionDescription: "clicked How Did You Hear About Us dropdown",
+        actions: [
+          {
+            selector: "xpath=//*[@id='src-widget']",
+            description: "How Did You Hear About Us",
+            method: "click",
+          },
+        ],
+      };
+    });
+    const stagehandObserve = vi.fn().mockResolvedValue([]);
+    const stagehand = { act: stagehandAct, observe: stagehandObserve } as unknown as Stagehand;
+
+    const trajectory: { stepIndex: number; verifiedBy: string; targetId?: string }[] = [];
+
+    await expect(
+      executeStepWithHealing({
+        ...baseParams(
+          page as unknown as Page,
+          stagehand,
+          `for 'How Did You Hear About Us?' select '${LEAF}'`,
+          target
+        ),
+        stepIndex: 40,
+        trajectory,
+      } as never)
+    ).rejects.toMatchObject({ name: "StepVerificationError" });
+
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining("did not commit; falling through to cascade")
+    );
+    // The primitive never reports a "dom"-verified step for this widget — no
+    // false-success credit against an option that never committed.
+    expect(trajectory).toEqual([]);
+    expect(clicks.some((s) => s.includes("bcl-prompt-opt-idx"))).toBe(true);
+
+    const finalState = await finalWidgetState(
+      target as unknown as { evaluate: (e: string) => Promise<unknown> }
+    );
+    expect(finalState.text).toBe("");
+    expect(finalState.invalid).toBe("true");
   });
 });
