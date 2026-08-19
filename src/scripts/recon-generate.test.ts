@@ -522,9 +522,7 @@ describe("extractActionSequence — submit patterns isolate the submission from 
   });
 
   it("throws on a malformed pattern rather than silently reverting to unfiltered", () => {
-    expect(() =>
-      extractActionSequence([realSubmit], { endpoint: "(", body: null })
-    ).toThrow();
+    expect(() => extractActionSequence([realSubmit], { endpoint: "(", body: null })).toThrow();
   });
 });
 

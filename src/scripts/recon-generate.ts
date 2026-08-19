@@ -4775,9 +4775,7 @@ async function main(): Promise<void> {
   // Hoisted so both the primary-operation gate below and rawActionCaptures
   // (further down) read the same computed sequence instead of calling the
   // extractor twice.
-  const graphqlActionSequence = gql
-    ? extractGraphQLActionSequence(captures, submitPatterns)
-    : [];
+  const graphqlActionSequence = gql ? extractGraphQLActionSequence(captures, submitPatterns) : [];
   const isReadOnlyFlow = !flowSteps.some(
     (step) => typeof step !== "string" && step.submitStep === true
   );
