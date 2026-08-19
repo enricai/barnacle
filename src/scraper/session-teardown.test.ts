@@ -109,4 +109,20 @@ describe("session-teardown/raceAgainstTeardown", () => {
 
     await expect(racePromise).rejects.toBeInstanceOf(SessionTimeoutError);
   });
+
+  it("stays resolved with the step's value when teardown fires only after the flow already settled", async () => {
+    const { watchLogLine, deathSignal } = createSessionTeardownDetector();
+
+    const result = await raceAgainstTeardown(Promise.resolve("step-result"), deathSignal);
+    expect(result).toBe("step-result");
+
+    watchLogLine({
+      level: 0,
+      category: "stagehand:v3",
+      message: "initiating shutdown → CDP transport closed: socket-close code=1006 reason=",
+    } as StagehandLogLine);
+    await flushMicrotasks();
+
+    expect(result).toBe("step-result");
+  });
 });
