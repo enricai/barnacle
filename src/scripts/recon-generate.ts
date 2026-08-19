@@ -3688,6 +3688,13 @@ export function emitContractTs(opts: {
   auxFiles: string[];
   /** Multi-step submission flow body — when set, replaces the default single-endpoint hot path. */
   multiStepBody?: string;
+  /** Browser-flow-only fallback: a multi-action flow whose captured sequence
+   * couldn't be synthesized into a trustworthy `executeHttp` (a required
+   * value never resolved via state-threading, a payload field, or a
+   * generator). When true, `executeHttp` is omitted entirely — the plugin
+   * ships browser-only with the standard candidate payload schema — rather
+   * than emitting a fabricated single-call HTTP stub. */
+  omitExecuteHttp?: boolean;
   /** First action capture's request body — used to infer the payload schema for submission flows. */
   inputBody?: unknown;
   /** Whether the flow has a multipart upload step — derived from actionSteps at the call site. */
@@ -3746,6 +3753,7 @@ export function emitContractTs(opts: {
     gqlVariables,
     auxFiles,
     multiStepBody,
+    omitExecuteHttp = false,
     inputBody,
     hasMultipartStep = false,
     discoveredFormFields,
@@ -3777,7 +3785,10 @@ export function emitContractTs(opts: {
   // without affecting per-call validation. Single-endpoint plugins keep the
   // inferred schema, since there both roles (client default and sole call)
   // coincide.
-  const responseSchemaExpr = multiStepBody ? `z.unknown()` : inferZodSchema(responseBody);
+  // Browser-flow-only plugins have no HTTP call to infer a shape from either
+  // — same z.unknown() treatment as the multi-step case, for the same reason.
+  const responseSchemaExpr =
+    multiStepBody || omitExecuteHttp ? `z.unknown()` : inferZodSchema(responseBody);
   // Multi-step flows that include a multipart upload need the binary asset
   // on the payload. ApplicantContactSchema (via ApplicantResumeSchema) already
   // declares Resume/ResumeContentType/ResumeFilename, so submission flows
@@ -3990,17 +4001,25 @@ export function emitContractTs(opts: {
   const fixtureImport =
     auxFiles.length > 0 ? `// import { loadFixture } from "${ENGINE_PKG}/scraper/fixtures";\n` : "";
 
-  const clientImport = gql
-    ? `import { createGraphqlClient } from "${ENGINE_PKG}/scraper/graphql-client";`
-    : `import { createHttpClient } from "${ENGINE_PKG}/scraper/http-client";`;
+  // Browser-flow-only plugins have no direct-HTTP hot path, so none of the
+  // client-construction machinery below (import, rate limiter, cache/client
+  // const) is emitted — it would sit unreferenced and trip Biome's
+  // `noUnusedVariables`.
+  const clientImport = omitExecuteHttp
+    ? ""
+    : gql
+      ? `import { createGraphqlClient } from "${ENGINE_PKG}/scraper/graphql-client";`
+      : `import { createHttpClient } from "${ENGINE_PKG}/scraper/http-client";`;
 
   const queryConst =
-    gql && gqlQuery
+    !omitExecuteHttp && gql && gqlQuery
       ? `\n// Lifted verbatim from recon capture — trim UI-only fields before shipping.\nconst ${pascal.toUpperCase()}_QUERY = \`${gqlQuery.trim()}\`;\n`
       : "";
 
-  const gqlCacheBlock = gql
-    ? `
+  const gqlCacheBlock = omitExecuteHttp
+    ? ""
+    : gql
+      ? `
 type GqlFn = (operationName: string, query: string, variables: Record<string, unknown>) => Promise<${pascal}Response>;
 
 const gqlCache = new Map<string, GqlFn>();
@@ -4019,7 +4038,7 @@ function getGql(baseUrl: string): GqlFn {
   return client;
 }
 `
-    : `
+      : `
 const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottleneck: limiter, baseHeaders: BASE_HEADERS${bindOptionLiteral(headerBindings)} });
 `;
 
@@ -4073,48 +4092,87 @@ export const ${pascal}InternalRequestReference = ${internalRequestReferenceExpr}
 `
     : "";
 
-  const queryChecklistLine = gql
-    ? `\n *   [ ] Trim UI-only fields from ${pascal.toUpperCase()}_QUERY (keep only fields you need)`
-    : "";
+  const queryChecklistLine =
+    !omitExecuteHttp && gql
+      ? `\n *   [ ] Trim UI-only fields from ${pascal.toUpperCase()}_QUERY (keep only fields you need)`
+      : "";
 
   // Multi-step flows validate each call against its own per-call inferred
   // schema (emitMultiStepExecuteHttp) — narrowing ResponseSchema only changes
   // what executeHttp promises ITS OWN caller, never a per-call validator, so
   // the checklist item must say that explicitly. Single-endpoint plugins have
   // exactly one call, so the client schema and that call's validator are the
-  // same schema and the shorter wording stays accurate.
-  const narrowSchemaChecklistLine = multiStepBody
-    ? `\n *   [ ] Narrow ${pascal}ResponseSchema to match what executeHttp should promise ITS CALLER — this is the plugin's own return-value contract, not a per-call validator (each call in the flow is already checked against its own inferred schema)`
-    : `\n *   [ ] Narrow ${pascal}ResponseSchema to match the real response shape`;
+  // same schema and the shorter wording stays accurate. Browser-flow-only
+  // plugins have no executeHttp at all, so ResponseSchema is only ever the
+  // browser flow's own return-value contract.
+  const narrowSchemaChecklistLine = omitExecuteHttp
+    ? `\n *   [ ] Narrow ${pascal}ResponseSchema to match what the browser flow should promise ITS CALLER — this flow could not synthesize a trustworthy executeHttp (a required value from the captured sequence never resolved), so it ships browser-only`
+    : multiStepBody
+      ? `\n *   [ ] Narrow ${pascal}ResponseSchema to match what executeHttp should promise ITS CALLER — this is the plugin's own return-value contract, not a per-call validator (each call in the flow is already checked against its own inferred schema)`
+      : `\n *   [ ] Narrow ${pascal}ResponseSchema to match the real response shape`;
 
   const camel = siteId.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
+
+  // Browser-flow-only plugins need neither Bottleneck (no rate-limited HTTP
+  // client) nor BASE_HEADERS (no per-call headers to bake in) — both would
+  // sit unreferenced and trip Biome's `noUnusedVariables`.
+  const bottleneckImport = omitExecuteHttp ? "" : `import Bottleneck from "bottleneck";\n`;
+  const baseHeadersBlock = omitExecuteHttp
+    ? ""
+    : `
+const BASE_HEADERS: Record<string, string> = {
+${headersLiteral},
+};
+`;
+  const limiterBlock = omitExecuteHttp
+    ? ""
+    : `
+// Safe ceiling: ${safeRps} rps — from recon rate-limit probe.
+const limiter = new Bottleneck({ minTime: ${minTime} });
+`;
+  const executeHttpMethodBlock = omitExecuteHttp
+    ? ""
+    : `
+  /** Hot path: direct HTTP — no browser, no LLM tokens. */
+  async executeHttp(
+    payload: ${pascal}Payload,
+    ${executeHttpBody.includes("context.") ? "context" : "_context"}: SitePluginContext
+  ): Promise<SitePluginResult<${pascal}Response>> {
+${executeHttpBody}
+  },
+`;
+  const pluginDocComment = omitExecuteHttp
+    ? `/**
+ * Plugin for ${siteId}. Browser-flow-only: the captured multi-step submission
+ * sequence could not be synthesized into a trustworthy direct-HTTP hot path
+ * (see the checklist above), so this always runs via Stagehand.
+ */`
+    : `/**
+ * Plugin for ${siteId}. Tries the direct-HTTP hot path first; falls back to
+ * Stagehand automatically on schema drift or bot challenge.
+ */`;
+
+  const baseHeadersChecklistLine = omitExecuteHttp
+    ? ""
+    : `\n *   [ ] Verify BASE_HEADERS — remove any that aren't load-bearing`;
+  const outOfTreeChecklistLine = omitExecuteHttp
+    ? `\n *   [ ] Out-of-tree: \`pnpm add zod\` — this file imports it directly, and a\n *       strict node_modules layout (pnpm) won't resolve it as a transitive\n *       dep of @enricai/barnacle alone`
+    : `\n *   [ ] Out-of-tree: \`pnpm add bottleneck zod\` — this file imports both\n *       directly, and a strict node_modules layout (pnpm) won't resolve\n *       them as transitive deps of @enricai/barnacle alone`;
 
   return `/**
  * Generated by recon-generate.ts — review before shipping.
  *
  * Checklist:${queryChecklistLine}${narrowSchemaChecklistLine}
- *   [ ] Adjust ${pascal}PayloadSchema to your actual request parameters
- *   [ ] Verify BASE_HEADERS — remove any that aren't load-bearing
- *   [ ] Out-of-tree: \`pnpm add bottleneck zod\` — this file imports both
- *       directly, and a strict node_modules layout (pnpm) won't resolve
- *       them as transitive deps of @enricai/barnacle alone
+ *   [ ] Adjust ${pascal}PayloadSchema to your actual request parameters${baseHeadersChecklistLine}${outOfTreeChecklistLine}
  */
 
-import Bottleneck from "bottleneck";
-import { z } from "zod/v4";
+${bottleneckImport}import { z } from "zod/v4";
 
 ${fixtureImport}${applicantContactImport}${caseInsensitiveHeadersImport}${multipartBoolImport}${clientImport}
 import type { BrowserSession } from "${ENGINE_PKG}/scraper/session";
 import type { SitePlugin, SitePluginContext, SitePluginResult } from "${ENGINE_PKG}/site-plugin";
 import { run${pascal}BrowserFlow } from "@/sites/${siteId}/flows/browser-flow";
-
-const BASE_HEADERS: Record<string, string> = {
-${headersLiteral},
-};
-
-// Safe ceiling: ${safeRps} rps — from recon rate-limit probe.
-const limiter = new Bottleneck({ minTime: ${minTime} });
-
+${baseHeadersBlock}${limiterBlock}
 const ${pascal}ResponseSchema = ${responseSchemaExpr};
 
 export type ${pascal}Response = z.infer<typeof ${pascal}ResponseSchema>;
@@ -4125,10 +4183,7 @@ const ${pascal}PayloadSchema = ${payloadSchemaExpr};
 
 export type ${pascal}Payload = z.infer<typeof ${pascal}PayloadSchema>;
 ${internalRequestReferenceBlock}${queryConst}${gqlCacheBlock}${fixtureComments}
-/**
- * Plugin for ${siteId}. Tries the direct-HTTP hot path first; falls back to
- * Stagehand automatically on schema drift or bot challenge.
- */
+${pluginDocComment}
 export const ${camel}Plugin: SitePlugin<${pascal}Payload, ${pascal}Response> = {
   meta: {
     siteId: ${JSON.stringify(siteId)},
@@ -4146,15 +4201,7 @@ export const ${camel}Plugin: SitePlugin<${pascal}Payload, ${pascal}Response> = {
     // encoding parseable.
     apiVersion: ${JSON.stringify(PLUGIN_API_VERSION)},${payloadNeedsMultipart || inputBody ? "\n    multipart: true," : ""}
   },
-
-  /** Hot path: direct HTTP — no browser, no LLM tokens. */
-  async executeHttp(
-    payload: ${pascal}Payload,
-    ${executeHttpBody.includes("context.") ? "context" : "_context"}: SitePluginContext
-  ): Promise<SitePluginResult<${pascal}Response>> {
-${executeHttpBody}
-  },
-
+${executeHttpMethodBlock}
   /** Browser fallback: Stagehand + Steel — invoked only when hot path fails. */
   async execute(
     payload: ${pascal}Payload,
@@ -4936,29 +4983,47 @@ async function main(): Promise<void> {
       staticBaseHeaders[k] = v;
     }
   }
-  const multiStepBody = isSubmissionFlow
-    ? emitMultiStepExecuteHttp(
-        actionSteps,
-        inputBody,
-        errorSignals,
-        fieldNameMap,
-        discoveredFormFields,
-        fieldOptionsMap,
-        discoveredOptionFields,
-        discoveredRawOptionFields,
-        discoveredAdditionalBodyKeys,
-        baseUrl,
-        baseUrlDerivedHeaders,
-        tenantSubdomainHeaders,
-        formSchema,
-        personaBindings,
-        entryUrlParams,
-        shieldedUuids,
-        selectResolutions,
-        discoveredStructuredKeys,
-        rawCodeFields
-      )
-    : undefined;
+  // Third branch (browser-flow-only): a multi-action flow (isSubmissionFlow)
+  // that crosses hosts mid-sequence (compileActionSteps' isCrossDomain — a
+  // captured redirect off the original domain, e.g. an auth bounce or a
+  // vendor-hosted submission step). A bare `fetch`-based executeHttp can't
+  // reliably replay that: cookies/CSRF/session state minted for one origin
+  // don't automatically carry to the next the way a real browser's redirect
+  // handling does, so synthesizing a same-shape HTTP sequence would silently
+  // drop the session boundary the recon actually walked. Per-step, this
+  // already surfaces as the "cross-domain redirect detected ... likely needs
+  // browser fallback for this step" TODO (see emitMultiStepExecuteHttp); at
+  // the whole-flow level the honest emit is no executeHttp at all — never a
+  // same-host multi-step body that quietly drops the hop, and never a
+  // downgrade to the single-endpoint `{query}` branch either, since that's a
+  // fabrication of its own kind for a flow that isn't a single-action
+  // query/search to begin with.
+  const browserFlowOnly = isSubmissionFlow && actionSteps.some((s) => s.isCrossDomain);
+  const multiStepBody = browserFlowOnly
+    ? undefined
+    : isSubmissionFlow
+      ? emitMultiStepExecuteHttp(
+          actionSteps,
+          inputBody,
+          errorSignals,
+          fieldNameMap,
+          discoveredFormFields,
+          fieldOptionsMap,
+          discoveredOptionFields,
+          discoveredRawOptionFields,
+          discoveredAdditionalBodyKeys,
+          baseUrl,
+          baseUrlDerivedHeaders,
+          tenantSubdomainHeaders,
+          formSchema,
+          personaBindings,
+          entryUrlParams,
+          shieldedUuids,
+          selectResolutions,
+          discoveredStructuredKeys,
+          rawCodeFields
+        )
+      : undefined;
 
   const hasMultipartStep = actionSteps.some((s) => s.isMultipart);
   const headerBindings = collectHeaderBindings(actionSteps);
@@ -4971,7 +5036,7 @@ async function main(): Promise<void> {
   );
 
   logger.info(
-    `generating plugin for ${siteId} (${gql ? "GraphQL" : isSubmissionFlow ? `submission flow, ${actionSteps.length} steps` : "single-endpoint REST"}, baseUrl: ${baseUrl})`
+    `generating plugin for ${siteId} (${gql ? "GraphQL" : browserFlowOnly ? `submission flow, ${actionSteps.length} steps, browser-flow-only (cross-domain hop detected)` : isSubmissionFlow ? `submission flow, ${actionSteps.length} steps` : "single-endpoint REST"}, baseUrl: ${baseUrl})`
   );
 
   if (emit === "config") {
@@ -4989,7 +5054,9 @@ async function main(): Promise<void> {
         // A submission flow is the case where the `.ts` emit carries an
         // executeHttp hot path; point the manifest at where the operator drops
         // the compiled module rather than silently dropping the direct path.
-        httpModulePath: isSubmissionFlow ? `./${siteId}.http.js` : undefined,
+        // Not set for the browser-flow-only branch — there is no hot path to
+        // compile a module for.
+        httpModulePath: isSubmissionFlow && !browserFlowOnly ? `./${siteId}.http.js` : undefined,
       })
     );
     logger.info(`wrote ${manifestPath}`);
@@ -5034,6 +5101,7 @@ async function main(): Promise<void> {
       gqlVariables: primaryGraphQLOperation?.capture.variables ?? null,
       auxFiles,
       multiStepBody,
+      omitExecuteHttp: browserFlowOnly,
       inputBody,
       hasMultipartStep,
       discoveredFormFields,
