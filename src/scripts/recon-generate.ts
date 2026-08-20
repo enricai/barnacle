@@ -2400,9 +2400,7 @@ function sanitizeFixtureIdentifier(filename: string): string {
     .replace(/\.json$/, "")
     .split(/[^A-Za-z0-9_$]+/)
     .filter(Boolean)
-    .map((part, i) =>
-      i === 0 ? part : `${part.charAt(0).toUpperCase()}${part.slice(1)}`
-    )
+    .map((part, i) => (i === 0 ? part : `${part.charAt(0).toUpperCase()}${part.slice(1)}`))
     .join("");
   const stripped = camelCased.replace(/[^A-Za-z0-9_$]/g, "");
   return isValidJsIdentifier(stripped) ? stripped : `fixture${stripped}`;
