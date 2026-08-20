@@ -1,10 +1,14 @@
-import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { emitContractTs } from "@/scripts/recon-generate";
 import { buildWizardCheckoutCaptures } from "@/scripts/recon-generate-multicall-fixture";
+
+/** Resolve the Biome binary from the repo's own `node_modules/.bin` rather than
+ * bare PATH — matches the sibling binary-invoking test (recon-generate-biome-clean.test.ts). */
+const BIOME_BIN = resolve(__dirname, "..", "..", "node_modules", ".bin", "biome");
 
 /**
  * Regression coverage for the browser-flow-only fallback (see
@@ -218,5 +222,141 @@ describe("emitContractTs — omitHeaderCaseInsensitive import gate", () => {
     });
 
     expect(source).toContain("omitHeaderCaseInsensitive");
+  });
+});
+
+/**
+ * Regression coverage for docs/recon-generate-emits-unused-imports-for-omitted-http-path.md:
+ * the multipartBoolean import must be gated on an actual boolean
+ * additional-body-key being wrapped in it, not on payloadNeedsMultipart
+ * alone — mirrors the omitHeaderCaseInsensitive gate above so both fixes
+ * (bugfix-001, bugfix-002) can't silently regress toward always-omit or
+ * always-import.
+ */
+describe("emitContractTs — multipartBoolean import gate", () => {
+  const inputBody = { FirstName: "Reginald" };
+
+  it("does not import multipartBoolean for a browser-flow-only multipart flow with no boolean additional-body-key", () => {
+    const source = emitContractTs({
+      siteId: "test-site",
+      pascal: "TestSite",
+      baseUrl: "https://api.example.com",
+      baseHeaders: { "Content-Type": "application/json" },
+      minTime: 100,
+      safeRps: 10,
+      responseBody: { saved: true },
+      gql: false,
+      gqlQuery: null,
+      endpointPath: "/apply/create",
+      auxFiles: [],
+      multiStepBody: undefined,
+      omitExecuteHttp: true,
+      hasMultipartStep: true,
+      inputBody,
+    });
+
+    expect(source).not.toContain("multipartBoolean");
+    expect(source).toContain("multipartJsonObject");
+  });
+
+  it("still imports and calls multipartBoolean() when a boolean additional-body-key is present under multipart", () => {
+    const source = emitContractTs({
+      siteId: "test-site",
+      pascal: "TestSite",
+      baseUrl: "https://api.example.com",
+      baseHeaders: { "Content-Type": "application/json" },
+      minTime: 100,
+      safeRps: 10,
+      responseBody: { saved: true },
+      gql: false,
+      gqlQuery: null,
+      endpointPath: "/apply/create",
+      auxFiles: [],
+      multiStepBody: undefined,
+      omitExecuteHttp: true,
+      hasMultipartStep: true,
+      inputBody,
+      discoveredAdditionalBodyKeys: new Map([["SubscribeToUpdates", "boolean"]]),
+    });
+
+    expect(source).toContain("import { multipartBoolean, multipartJsonObject }");
+    expect(source).toContain("SubscribeToUpdates: multipartBoolean(),");
+  });
+});
+
+/**
+ * Highest-fidelity guard: run the real Biome binary against the emitted
+ * contract source for the reported shape (omitExecuteHttp, upload-only, no
+ * boolean field) — a unit assertion on substrings can miss a regression
+ * that reintroduces an unused import in a different form (e.g. a re-export
+ * or an aliased import).
+ */
+describe("emitContractTs — browser-flow-only reported shape is Biome-clean", () => {
+  const inputBody = { FirstName: "Reginald" };
+
+  it("produces zero noUnusedImports diagnostics while keeping multipartJsonObject present and used", () => {
+    if (!existsSync(BIOME_BIN)) {
+      throw new Error(`biome binary not found at ${BIOME_BIN} — run pnpm install`);
+    }
+
+    const source = emitContractTs({
+      siteId: "test-site",
+      pascal: "TestSite",
+      baseUrl: "https://api.example.com",
+      baseHeaders: { "Content-Type": "application/json" },
+      minTime: 100,
+      safeRps: 10,
+      responseBody: { saved: true },
+      gql: false,
+      gqlQuery: null,
+      endpointPath: "/apply/create",
+      auxFiles: [],
+      multiStepBody: undefined,
+      omitExecuteHttp: true,
+      hasMultipartStep: true,
+      inputBody,
+    });
+
+    expect(source).toContain("multipartJsonObject(z.record(z.string(), z.unknown()))");
+
+    const dir = mkdtempSync(join(tmpdir(), "barnacle-biome-contract-"));
+    try {
+      writeFileSync(
+        join(dir, "biome.json"),
+        JSON.stringify({
+          $schema: "https://biomejs.dev/schemas/2.3.11/schema.json",
+          formatter: { enabled: false },
+          assist: { enabled: false },
+          linter: {
+            enabled: true,
+            rules: {
+              recommended: false,
+              correctness: { noUnusedImports: "error" },
+            },
+          },
+        })
+      );
+
+      const file = join(dir, "contract.ts");
+      writeFileSync(file, source);
+
+      let stdout = "";
+      let threw = false;
+      try {
+        execFileSync(BIOME_BIN, ["lint", "--config-path", dir, file], {
+          cwd: dir,
+          encoding: "utf8",
+          stdio: "pipe",
+        });
+      } catch (error) {
+        threw = true;
+        stdout = (error as { stdout?: string }).stdout ?? "";
+      }
+
+      expect(threw, stdout).toBe(false);
+      expect(stdout).not.toContain("noUnusedImports");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
