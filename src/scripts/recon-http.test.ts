@@ -38,7 +38,7 @@ vi.mock("@/lib/logging", () => ({
 }));
 vi.mock("@/lib/http", () => ({ configureHttpDispatcher: vi.fn() }));
 
-import { selectRateLimitTargets } from "@/scripts/recon-http";
+import { selectAuxFixtureCandidates, selectRateLimitTargets } from "@/scripts/recon-http";
 import type { ReplayResult } from "@/scripts/recon-shared";
 
 function replay(overrides: Partial<ReplayResult>): ReplayResult {
@@ -154,5 +154,95 @@ describe("selectRateLimitTargets — noise host exclusion", () => {
     const { targets } = selectRateLimitTargets(replays);
 
     expect(targets.size).toBe(0);
+  });
+});
+
+describe("selectAuxFixtureCandidates — own-backend host allowlist", () => {
+  it("excludes a fictitious third-party vendor host even though it is path-shaped like a fixture", () => {
+    const replays: ReplayResult[] = [
+      replay({ url: "https://api.example.com/config/markets.json" }),
+      replay({ url: "https://widgets.some-survey-vendor.example/formDataV2_123_en.json" }),
+    ];
+
+    const candidates = selectAuxFixtureCandidates(replays, ["api.example.com"], null);
+
+    expect(candidates.map((c) => c.url)).toEqual(["https://api.example.com/config/markets.json"]);
+  });
+
+  it("keeps a subdomain declared in ownBackendHostnames and a bare .json path", () => {
+    const replays: ReplayResult[] = [
+      replay({ url: "https://api.example.com/dictionary.json" }),
+      replay({ url: "https://www.example.com/labels/en.json" }),
+    ];
+
+    const candidates = selectAuxFixtureCandidates(
+      replays,
+      ["api.example.com", "www.example.com"],
+      null
+    );
+
+    expect(candidates.map((c) => c.url).sort()).toEqual([
+      "https://api.example.com/dictionary.json",
+      "https://www.example.com/labels/en.json",
+    ]);
+  });
+
+  it("falls back to the registrable domain of fallbackHost when ownBackendHostnames is unset", () => {
+    const replays: ReplayResult[] = [
+      replay({ url: "https://static.example.com/currencies.json" }),
+      replay({ url: "https://widgets.some-survey-vendor.example/config.json" }),
+    ];
+
+    const candidates = selectAuxFixtureCandidates(replays, [], "api.example.com");
+
+    expect(candidates.map((c) => c.url)).toEqual(["https://static.example.com/currencies.json"]);
+  });
+
+  it("harvests nothing when ownBackendHostnames is unset and there is no fallback host", () => {
+    const replays: ReplayResult[] = [
+      replay({ url: "https://api.example.com/config/markets.json" }),
+    ];
+
+    const candidates = selectAuxFixtureCandidates(replays, [], null);
+
+    expect(candidates).toEqual([]);
+  });
+
+  it("still excludes isNoiseUrl hosts even when they would otherwise match the allowlist", () => {
+    const replays: ReplayResult[] = [
+      replay({ url: "https://cdn.cookielaw.org/consent/config.json" }),
+    ];
+
+    const candidates = selectAuxFixtureCandidates(replays, ["cdn.cookielaw.org"], null);
+
+    expect(candidates).toEqual([]);
+  });
+
+  it("keeps only the own-backend candidate when several distinct third-party hosts are mixed in", () => {
+    const replays: ReplayResult[] = [
+      replay({ url: "https://api.example.com/config/markets.json" }),
+      replay({ url: "https://widgets.some-survey-vendor.example/config.json" }),
+      replay({ url: "https://cdn.some-analytics-vendor.example/pixel/config.json" }),
+      replay({ url: "https://tag.some-tagmanager-vendor.example/labels/en.json" }),
+    ];
+
+    const candidates = selectAuxFixtureCandidates(replays, ["api.example.com"], null);
+
+    expect(candidates.map((c) => c.url)).toEqual(["https://api.example.com/config/markets.json"]);
+  });
+
+  it("excludes non-fixture-shaped paths and failed/GraphQL replays", () => {
+    const replays: ReplayResult[] = [
+      replay({ url: "https://api.example.com/order/checkout" }),
+      replay({ url: "https://api.example.com/config/markets.json", success: false }),
+      replay({
+        url: "https://api.example.com/config/markets.json",
+        operationName: "GetMarkets",
+      }),
+    ];
+
+    const candidates = selectAuxFixtureCandidates(replays, ["api.example.com"], null);
+
+    expect(candidates).toEqual([]);
   });
 });

@@ -11,7 +11,12 @@
  *   - Rate-limit probe (1 → 3 → 5 rps, stops at first 429/403)
  *
  * Usage:
- *   pnpm tsx src/scripts/recon-http.ts [--captures-dir <path>] [--out-dir <path>]
+ *   pnpm tsx src/scripts/recon-http.ts [--captures-dir <path>] [--out-dir <path>] [--flow-file <path>]
+ *
+ * `--flow-file` supplies the flow's `ownBackendHostnames` (same file
+ * recon-browser.ts's own `--flow-file` reads) so the auxiliary-endpoint probe
+ * (Phase 3b) only harvests the site's own static-JSON fixtures, not
+ * third-party vendor config that happens to share the same path shape.
  *
  * Output lands under the run-scoped root resolved by `resolveReconRunDir()`
  * (`@/scripts/recon-shared`) — `/tmp/recon/<runId>/` by default, rooted
@@ -31,8 +36,8 @@ import { join } from "node:path";
 import { toErrorMessage } from "@/lib/errors";
 import { configureHttpDispatcher } from "@/lib/http";
 import { getScriptLogger } from "@/lib/logging";
-import { isNoiseUrl } from "@/recon/capture-filters";
-import { resolveReconRunDir } from "@/scripts/recon-shared";
+import { isNoiseUrl, registrableDomain } from "@/recon/capture-filters";
+import { readOwnBackendHostnames, resolveReconRunDir } from "@/scripts/recon-shared";
 
 configureHttpDispatcher();
 
@@ -234,27 +239,61 @@ async function probeIntrospection(endpoint: string, replaysDir: string): Promise
 }
 
 /**
+ * Builds the aux-fixture candidate set from replay results. A candidate must
+ * be path-shaped like a static fixture (markets/currencies/labels/etc. or a
+ * bare `.json`), must not be `isNoiseUrl` noise (defense-in-depth, mirroring
+ * `selectRateLimitTargets` — this function must not trust that `replays` was
+ * pre-filtered by the caller), and must resolve to one of the flow's
+ * declared `ownBackendHostnames`. When the flow declares none, it falls back
+ * to same-registrable-domain as `fallbackHost` (the run's own replayed
+ * traffic) so an undeclared flow doesn't silently harvest nothing — but
+ * still excludes every other third-party host that happens to serve
+ * static-JSON-shaped paths (analytics/survey/pixel vendor config).
+ */
+export function selectAuxFixtureCandidates(
+  replays: ReplayResult[],
+  ownBackendHostnames: string[],
+  fallbackHost: string | null
+): ReplayResult[] {
+  const allowedHostnames = new Set(ownBackendHostnames.map((h) => h.toLowerCase()));
+  const fallbackDomain = fallbackHost ? registrableDomain(fallbackHost) : null;
+
+  return replays.filter((r) => {
+    if (!r.success || r.operationName !== null) return false;
+    if (isNoiseUrl(r.url)) return false;
+    let parsed: URL;
+    try {
+      parsed = new URL(r.url);
+    } catch {
+      return false;
+    }
+    const pathname = parsed.pathname.toLowerCase();
+    const isFixtureShaped =
+      pathname.endsWith(".json") ||
+      /\/(markets|currencies|labels|dictionaries|config|locales|i18n)/.test(pathname);
+    if (!isFixtureShaped) return false;
+    const host = parsed.hostname.toLowerCase();
+    if (allowedHostnames.size > 0) return allowedHostnames.has(host);
+    return fallbackDomain !== null && registrableDomain(host) === fallbackDomain;
+  });
+}
+
+/**
  * Finds static JSON endpoints in successful replays (markets, currencies,
  * labels, dictionaries, config) and downloads them as committed fixtures.
  * These rarely change and are cheaper to serve from a snapshot than to
  * re-fetch on every production call.
  */
-async function probeAuxiliaryEndpoints(replays: ReplayResult[], auxDir: string): Promise<void> {
+async function probeAuxiliaryEndpoints(
+  replays: ReplayResult[],
+  auxDir: string,
+  ownBackendHostnames: string[],
+  fallbackHost: string | null
+): Promise<void> {
   mkdirSync(auxDir, { recursive: true });
   const writtenInRun = new Set<string>();
 
-  const candidates = replays.filter((r) => {
-    if (!r.success || r.operationName !== null) return false;
-    try {
-      const pathname = new URL(r.url).pathname.toLowerCase();
-      return (
-        pathname.endsWith(".json") ||
-        /\/(markets|currencies|labels|dictionaries|config|locales|i18n)/.test(pathname)
-      );
-    } catch {
-      return false;
-    }
-  });
+  const candidates = selectAuxFixtureCandidates(replays, ownBackendHostnames, fallbackHost);
 
   if (candidates.length === 0) {
     logger.info("no auxiliary endpoints detected");
@@ -424,9 +463,12 @@ async function main(): Promise<void> {
 
   const runDir = resolveReconRunDir();
   let capturesDir = runDir.graphqlDir;
+  let flowFile: string | null = null;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--captures-dir" && args[i + 1]) capturesDir = args[++i]!;
+    else if (args[i] === "--flow-file" && args[i + 1]) flowFile = args[++i]!;
   }
+  const ownBackendHostnames = flowFile ? readOwnBackendHostnames(flowFile) : [];
 
   mkdirSync(runDir.replaysDir, { recursive: true });
 
@@ -476,9 +518,19 @@ async function main(): Promise<void> {
     await probeIntrospection(endpoint, runDir.replaysDir);
   }
 
-  // Auxiliary endpoint probe
+  // Auxiliary endpoint probe. When the flow declares no ownBackendHostnames,
+  // fall back to the registrable domain of the first probeworthy replay's
+  // host — `replays` is already the post-isNoiseUrl-filtered set built above,
+  // so it's a safe same-site proxy.
   logger.info("=== PHASE 3B: AUXILIARY ENDPOINTS ===");
-  await probeAuxiliaryEndpoints(replays, runDir.auxDir);
+  const fallbackHost = ((): string | null => {
+    try {
+      return replays[0] ? new URL(replays[0].url).hostname : null;
+    } catch {
+      return null;
+    }
+  })();
+  await probeAuxiliaryEndpoints(replays, runDir.auxDir, ownBackendHostnames, fallbackHost);
 
   // Rate-limit probe — runs last
   logger.info("=== PHASE 3C: RATE-LIMIT PROBE (runs last — may trigger ban) ===");
