@@ -49,6 +49,62 @@ function gqlCapture(overrides: {
   };
 }
 
+function gqlCaptureWithBody(overrides: {
+  phase: string;
+  url: string;
+  operationName: string | null;
+  query: string | null;
+  variables: Record<string, unknown> | null;
+  responseBody: unknown;
+}) {
+  return {
+    timestamp: "2026-08-18T10:23:03.000Z",
+    phase: overrides.phase,
+    method: "POST",
+    url: overrides.url,
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: "{}",
+    responseHeaders: {},
+    responseBody: overrides.responseBody,
+    operationName: overrides.operationName,
+    query: overrides.query,
+    variables: overrides.variables,
+    decodedParams: null,
+  };
+}
+
+/** 10 catalog-style item objects, each with a bare `id` identity field. */
+function makeCatalogPage(count: number): Record<string, unknown>[] {
+  return Array.from({ length: count }, (_, i) => ({
+    id: `sku-${i}`,
+    name: `Item ${i}`,
+  }));
+}
+
+/** A run dir whose primary operation's response exposes a total alongside a
+ * skip+count pagination variable — the paging signal. */
+function writePagedRunDir(root: string): void {
+  mkdirSync(join(root, "graphql"), { recursive: true });
+  mkdirSync(join(root, "replays"), { recursive: true });
+  mkdirSync(join(root, "aux"), { recursive: true });
+
+  const catalogSearch = gqlCaptureWithBody({
+    phase: "browse-the-catalog",
+    url: "https://www.catalog-fixture.example.com/catalog/graph",
+    operationName: "catalogSearch_Items",
+    query:
+      "query catalogSearch_Items($pagination: PaginationInput) { search(pagination: $pagination) { total items { id name } } }",
+    variables: { pagination: { count: 10, skip: 0 }, sort: "PRICE" },
+    responseBody: { search: { total: 20, items: makeCatalogPage(10) } },
+  });
+
+  writeFileSync(
+    join(root, "graphql", "000-browse-the-catalog-action.json"),
+    JSON.stringify(catalogSearch)
+  );
+}
+
 /** The capture set: listings-fixture, POST /graph and POST /listings/graph. */
 function writeRunDir(root: string): void {
   mkdirSync(join(root, "graphql"), { recursive: true });
@@ -150,5 +206,54 @@ describe("recon-generate read-only GraphQL flow: listings-fixture-shaped capture
     // selected capture, not a siteId-derived "...Search" literal.
     expect(contract).toContain('"listingSearch_Listings"');
     expect(contract).not.toMatch(/getGql\([^)]*\)\("[A-Za-z]*Search"/);
+
+    // No paging signal in this capture set (no total/count field alongside a
+    // pagination variable) — the existing single fixed-page call form is
+    // still emitted, unchanged.
+    expect(contract).toMatch(
+      /const data = await getGql\(context\.baseUrl\)\("listingSearch_Listings", \w+_QUERY, \{ metro: "AUSTIN" \}\);\n\s*return \{ data \};/
+    );
+    expect(contract).not.toContain("MAX_PAGES");
+    expect(contract).not.toContain("itemsById");
+  }, 30_000);
+});
+
+describe("recon-generate read-only GraphQL flow: catalog-fixture capture set with a paging signal", () => {
+  it("emits a bounded paging loop that advances skip and merges pages by identity", () => {
+    workDir = mkdtempSync(join(tmpdir(), "barnacle-graphql-readonly-paging-e2e-"));
+    const runRoot = join(workDir, "run");
+    writePagedRunDir(runRoot);
+
+    const siteId = `graphql-readonly-paging-e2e-test-${process.pid}`;
+    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    expect(existsSync(siteOutDir)).toBe(false);
+
+    const result = spawnSync(
+      TSX_BIN,
+      [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts"],
+      { cwd: REPO_ROOT, encoding: "utf8" }
+    );
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+
+    const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+
+    // (a) The loop advances the pagination variable by the observed page size.
+    expect(contract).toContain("const PAGE_SIZE = 10;");
+    expect(contract).toContain("skip += PAGE_SIZE;");
+    expect(contract).toContain(
+      "pagination: { ...baseVariables.pagination, count: PAGE_SIZE, skip: skip }"
+    );
+
+    // (b) It stops at the reported total or a finite maxPages cap — never an
+    // unbounded while(true).
+    expect(contract).toContain("const MAX_PAGES = 50;");
+    expect(contract).toContain("total = page.search.total;");
+    expect(contract).not.toMatch(/while\s*\(\s*true\s*\)/);
+
+    // (c) Pages are merged by an identity field, not concatenated blindly.
+    expect(contract).toContain("itemsById.set(String(item.id), item);");
+    expect(contract).toContain("[...itemsById.values()]");
+    expect(contract).not.toMatch(/\.push\(\.\.\.(page|data)\.search\.items\)/);
   }, 30_000);
 });
