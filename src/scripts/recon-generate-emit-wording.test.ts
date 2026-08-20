@@ -39,6 +39,21 @@ describe("emitBrowserFlowTs empty-steps TODO (FAILURE 4)", () => {
   });
 });
 
+describe("emitBrowserFlowTs SPA-hydration-wait comment (F3)", () => {
+  it("uses vendor-neutral wording instead of hardcoding Cloudflare", () => {
+    const { code } = emitBrowserFlowTs({
+      siteId: "some-site",
+      pascal: "SomeSite",
+      baseUrl: "https://example.com",
+      flowSteps: [],
+      isSubmissionFlow: false,
+    });
+
+    expect(code).not.toContain("Cloudflare");
+    expect(code).toContain("bot-managed/CDN-fronted");
+  });
+});
+
 describe("emitIndexTs registration guidance (FAILURE 6)", () => {
   it("directs the operator to BARNACLE_PLUGINS, not a core-file edit", () => {
     const code = emitIndexTs({ siteId: "some-site", pascal: "SomeSite" });

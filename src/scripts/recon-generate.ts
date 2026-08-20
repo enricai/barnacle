@@ -5042,7 +5042,7 @@ export async function run${pascal}BrowserFlow(
   const page = await stagehand.context.awaitActivePage();
 
   await page.goto(${isSubmissionFlow ? "entryUrl" : "baseUrl"}, { waitUntil: "networkidle" });
-  // networkidle can resolve before a Cloudflare-fronted SPA hydrates; wait for
+  // networkidle can resolve before a bot-managed/CDN-fronted SPA hydrates; wait for
   // the real DOM so the first steps don't probe an empty shell page and skip.
   await waitForSpaReady(page, logger);
 ${usesThrowawayPassword ? "\n  // Minted once per run — the flow needs a credential to authenticate, but\n  // there is no caller-supplied Password field on the payload to splice.\n  const throwawayPassword = generateThrowawayPassword();\n" : ""}
