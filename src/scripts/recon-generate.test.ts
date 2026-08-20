@@ -1490,8 +1490,8 @@ describe("emitBrowserFlowTs — payload splicing — Yes/No screening answers st
     baseUrl: "https://example.com",
     isSubmissionFlow: true,
     flowSteps: [
-      "Select 'No' for the previously excluded from state health care programs question",
-      "Select 'Yes' for the actively licensed in this state question",
+      "Select 'No' for previously excluded from state health care programs",
+      "Select 'Yes' for currently licensed in this state",
     ],
     vocabulary: TEST_RECRUITING_VOCABULARY,
   });
