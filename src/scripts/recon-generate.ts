@@ -785,17 +785,24 @@ interface PrimaryGraphQLOperation {
  * flow's own `payloadField` facets appearing in the candidate's query/variables,
  * a non-landing capture phase, and how often the same operation re-fires are
  * combined into one composite score.
+ *
+ * The `payloadField` facets are drawn from {@link resolveStepPayloadField} with
+ * {@link buildKnownFieldValues}'s known-value guard applied, so an operational
+ * Select answer (e.g. a device-type dropdown) never contributes a spurious
+ * facet match to the ranking.
  */
 export function selectPrimaryGraphQLOperation(
   captures: Capture[],
   flowSteps: FlowStepInput[],
-  vocabulary: ReconVocabulary
+  vocabulary: ReconVocabulary,
+  env: NodeJS.ProcessEnv = process.env
 ): PrimaryGraphQLOperation | null {
   const candidates = captures.filter(
     (c) => c.status >= 200 && c.status < 300 && c.query !== null && !/^\s*mutation\b/.test(c.query)
   );
   if (candidates.length === 0) return null;
 
+  const knownFieldValues = buildKnownFieldValues(flowSteps, vocabulary, env);
   const payloadFields = new Set<string>();
   for (const step of flowSteps) {
     const isObj = typeof step !== "string";
@@ -804,7 +811,8 @@ export function selectPrimaryGraphQLOperation(
       instruction,
       isObj ? step.payloadField : undefined,
       isObj ? step.payloadFieldNone : undefined,
-      vocabulary
+      vocabulary,
+      knownFieldValues
     );
     if (field !== null) payloadFields.add(field);
   }
