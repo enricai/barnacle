@@ -4223,7 +4223,7 @@ export function emitContractTs(opts: {
     ? `import { ApplicantContactSchema } from "${ENGINE_PKG}/lib/applicant-payload";\n`
     : "";
   // Content-Type must be absent from multipart fetch calls so FormData can inject the boundary.
-  const caseInsensitiveHeadersImport = hasMultipartStep
+  const caseInsensitiveHeadersImport = hasMultipartStep && !omitExecuteHttp
     ? `import { omitHeaderCaseInsensitive } from "${ENGINE_PKG}/lib/case-insensitive-headers";\n`
     : "";
   // Emit identifier-shaped keys unquoted so Biome's formatter doesn't rewrite

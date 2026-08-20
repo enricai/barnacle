@@ -171,3 +171,52 @@ describe("recon-generate CLI — cross-domain multi-action flow falls back to br
     );
   }, 30_000);
 });
+
+describe("emitContractTs — omitHeaderCaseInsensitive import gate", () => {
+  const inputBody = { FirstName: "Reginald" };
+
+  it("does not import omitHeaderCaseInsensitive for a browser-flow-only multipart flow", () => {
+    const source = emitContractTs({
+      siteId: "test-site",
+      pascal: "TestSite",
+      baseUrl: "https://api.example.com",
+      baseHeaders: { "Content-Type": "application/json" },
+      minTime: 100,
+      safeRps: 10,
+      responseBody: { saved: true },
+      gql: false,
+      gqlQuery: null,
+      endpointPath: "/apply/create",
+      auxFiles: [],
+      multiStepBody: undefined,
+      omitExecuteHttp: true,
+      hasMultipartStep: true,
+      inputBody,
+    });
+
+    expect(source).not.toContain("omitHeaderCaseInsensitive");
+  });
+
+  it("still imports omitHeaderCaseInsensitive for a genuine multipart executeHttp flow", () => {
+    const source = emitContractTs({
+      siteId: "test-site",
+      pascal: "TestSite",
+      baseUrl: "https://api.example.com",
+      baseHeaders: { "Content-Type": "application/json" },
+      minTime: 100,
+      safeRps: 10,
+      responseBody: { saved: true },
+      gql: false,
+      gqlQuery: null,
+      endpointPath: "/apply/create",
+      auxFiles: [],
+      multiStepBody:
+        '  const headers = { ...omitHeaderCaseInsensitive(BASE_HEADERS, "Content-Type") };\n',
+      omitExecuteHttp: false,
+      hasMultipartStep: true,
+      inputBody,
+    });
+
+    expect(source).toContain("omitHeaderCaseInsensitive");
+  });
+});
