@@ -21,6 +21,7 @@ import {
   inferZodSchemaFromSamples,
   resolveManifestActionSequence,
   resolveStepPayloadField,
+  sanitizeFixtureIdentifier,
   selectEffectiveResponseBody,
   selectPayloadAction,
   selectReturnAction,
@@ -2539,5 +2540,78 @@ describe("extractActionSequence + compileActionSteps — repeated-section flow w
     const actionSteps = compileActionSteps(actionCaptures, stateIndex);
 
     expect(actionSteps.length).toBeGreaterThan(1);
+  });
+});
+
+describe("emitContractTs — sanitizeFixtureIdentifier keeps loadFixture comments valid JS (G2)", () => {
+  const VALID_IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+
+  function fixtureConstLines(auxFiles: string[]): string[] {
+    const source = emitContractTs({ ...BASE_OPTS, hasMultipartStep: false, auxFiles });
+    return source
+      .split("\n")
+      .filter((line) => line.trimStart().startsWith("// const ") && line.includes("loadFixture("));
+  }
+
+  it("never emits an invalid identifier for a digit-leading, dotted, or hyphenated fixture filename", () => {
+    const lines = fixtureConstLines([
+      "10219132.json",
+      "vendorwidget.config-a.example-net.json",
+      "acme-domains-configuration.json",
+    ]);
+
+    expect(lines.length).toBe(3);
+    for (const line of lines) {
+      const match = line.match(/^\/\/ const ([^\s=]+)\s*=/);
+      expect(match).not.toBeNull();
+      expect(match![1]).toMatch(VALID_IDENTIFIER);
+    }
+  });
+
+  it("emits a const name not starting with a digit for auxFiles:['10219132.json']", () => {
+    const line = fixtureConstLines(["10219132.json"])[0]!;
+    expect(line).toMatch(/^\/\/ const [A-Za-z_$][A-Za-z0-9_$]*\s*=/);
+    expect(line).not.toContain("const 10219132");
+  });
+
+  it("emits a dot/hyphen-free identifier for dotted+hyphenated vendor-style config filenames", () => {
+    for (const filename of [
+      "vendorwidget.config-a.example-net.json",
+      "pixel-config.example-vendor.net-config.json",
+    ]) {
+      const line = fixtureConstLines([filename])[0]!;
+      const match = line.match(/^\/\/ const ([^\s=]+)\s*=/);
+      expect(match![1]).not.toContain(".");
+      expect(match![1]).not.toContain("-");
+    }
+  });
+
+  it("emits a hyphen-free identifier for auxFiles:['acme-domains-configuration.json']", () => {
+    const line = fixtureConstLines(["acme-domains-configuration.json"])[0]!;
+    const match = line.match(/^\/\/ const ([^\s=]+)\s*=/);
+    expect(match![1]).not.toContain("-");
+  });
+
+  it("every emitted `// const <name> =` identifier satisfies the same regex isValidJsIdentifier enforces internally", () => {
+    const lines = fixtureConstLines([
+      "10219132.json",
+      "vendorwidget.config-a.example-net.json",
+      "acme-domains-configuration.json",
+      "abc123.json",
+    ]);
+
+    for (const line of lines) {
+      const match = line.match(/^\/\/ const ([^\s=]+)\s*=/);
+      expect(match![1]).toMatch(VALID_IDENTIFIER);
+    }
+  });
+
+  it("still emits a valid JS identifier for both sides of a punctuation-only-differing filename pair, even where sanitization collapses them to the same base", () => {
+    for (const filename of ["10219132.json", "1-0219132.json"]) {
+      expect(sanitizeFixtureIdentifier(filename)).toMatch(VALID_IDENTIFIER);
+      const line = fixtureConstLines([filename])[0]!;
+      const match = line.match(/^\/\/ const ([^\s=]+)\s*=/);
+      expect(match![1]).toMatch(VALID_IDENTIFIER);
+    }
   });
 });
