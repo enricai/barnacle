@@ -883,6 +883,30 @@ function firstGraphQLQuery(captures: Capture[]): string | null {
 interface PrimaryGraphQLOperation {
   capture: Capture;
   endpointPath: string;
+  unpopulatedDeclaredVariables: string[];
+}
+
+/**
+ * Parses `$name:` declarations out of a GraphQL operation signature, e.g.
+ * `query cruiseSearch_Cruises($filters: String, $qualifiers: String)` yields
+ * `["filters", "qualifiers"]`.
+ */
+function declaredOperationVariableNames(query: string): string[] {
+  const signature = /^\s*(?:query|mutation)\s+\w*\s*\(([^)]*)\)/.exec(query);
+  if (!signature) return [];
+  return Array.from(signature[1]!.matchAll(/\$(\w+)\s*:/g), (m) => m[1]!);
+}
+
+/**
+ * A declared variable is "populated" only by a non-null, non-empty-string
+ * value — an operation can declare a filter input that every capture leaves
+ * `undefined`/`null`/`""`, which is exactly the unfiltered-payload case this
+ * flags for generation to warn about.
+ */
+function isPopulatedVariableValue(value: unknown): boolean {
+  if (value === null || value === undefined) return false;
+  if (typeof value === "string") return value.length > 0;
+  return true;
 }
 
 /**
@@ -944,6 +968,20 @@ export function selectPrimaryGraphQLOperation(
     }
     return matches;
   };
+  const payloadFieldList = [...payloadFields];
+  // Same mechanism renderGqlVariablesExpr uses to splice payload into a
+  // facet-packed string variable — a candidate scores 1 here only if that
+  // splice would actually have somewhere to land, not merely if a facet name
+  // appears somewhere in its query/variables text (fieldScore's substring
+  // match is incidental and can be satisfied by an unfiltered decoy).
+  const facetSpliceable = (c: Capture): boolean => {
+    if (c.variables === null || typeof c.variables !== "object" || Array.isArray(c.variables)) {
+      return false;
+    }
+    return Object.values(c.variables as Record<string, unknown>).some(
+      (value) => spliceFacetsIntoStringVariable(value, payloadFieldList) !== null
+    );
+  };
   const operationNameCounts = new Map<string, number>();
   for (const c of candidates) {
     if (c.operationName === null) continue;
@@ -962,9 +1000,17 @@ export function selectPrimaryGraphQLOperation(
       capture.operationName !== null
         ? (operationNameCounts.get(capture.operationName) ?? 0) / maxRecurrence
         : 0;
+    const facetScore = facetSpliceable(capture) ? 1 : 0;
     // Field correlation carries the heaviest weight so a smaller facet-matching
     // operation outranks a larger decoy — size alone must not decide this.
-    const score = fieldScore * 0.45 + sizeScore * 0.2 + phaseScore * 0.15 + recurrenceScore * 0.2;
+    // facetScore breaks ties among same-operation candidates in favor of the
+    // one spliceFacetsIntoStringVariable can actually act on.
+    const score =
+      fieldScore * 0.35 +
+      sizeScore * 0.15 +
+      phaseScore * 0.15 +
+      recurrenceScore * 0.15 +
+      facetScore * 0.2;
     return { capture, score };
   });
 
@@ -980,7 +1026,19 @@ export function selectPrimaryGraphQLOperation(
     }
   })();
 
-  return { capture: winner.capture, endpointPath };
+  const sharedCaptures =
+    winner.capture.operationName !== null
+      ? candidates.filter((c) => c.operationName === winner.capture.operationName)
+      : [winner.capture];
+  const declaredVariableNames = declaredOperationVariableNames(winner.capture.query ?? "");
+  const unpopulatedDeclaredVariables = declaredVariableNames.filter(
+    (name) =>
+      !sharedCaptures.some((c) =>
+        isPopulatedVariableValue((c.variables as Record<string, unknown> | null)?.[name])
+      )
+  );
+
+  return { capture: winner.capture, endpointPath, unpopulatedDeclaredVariables };
 }
 
 /**
@@ -5715,6 +5773,12 @@ async function main(): Promise<void> {
     gql && isReadOnlyFlow && graphqlActionSequence.length === 0
       ? selectPrimaryGraphQLOperation(captures, flowSteps, vocabulary)
       : null;
+  if (primaryGraphQLOperation && primaryGraphQLOperation.unpopulatedDeclaredVariables.length > 0) {
+    const operationLabel = primaryGraphQLOperation.capture.operationName ?? "(anonymous)";
+    logger.warn(
+      `WARN primary GraphQL operation '${operationLabel}' declares filter variable(s) ${primaryGraphQLOperation.unpopulatedDeclaredVariables.join(", ")} that are never populated in any capture — the generated executeHttp's payload field(s) for ${primaryGraphQLOperation.unpopulatedDeclaredVariables.join(", ")} have no wiring target and will replay the captured frozen value instead of the caller's input`
+    );
+  }
   const gqlQuery = primaryGraphQLOperation?.capture.query ?? firstGraphQLQuery(captures);
   const endpointPath = primaryGraphQLOperation?.endpointPath ?? firstEndpointPath(captures);
   // Derived from the primary operation's own Phase-1 capture, never from

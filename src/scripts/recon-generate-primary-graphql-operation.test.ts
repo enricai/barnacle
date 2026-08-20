@@ -92,4 +92,92 @@ describe("selectPrimaryGraphQLOperation", () => {
 
     expect(result?.endpointPath).toBe("/graphql/search");
   });
+
+  it("prefers a facet-bearing capture over a larger, more recurrent decoy sharing the same operation", () => {
+    // The decoy incidentally mentions both field names ("category" in
+    // `sort.by`, "priceRange" in `note`) so fieldMatchCount's substring
+    // search scores it exactly as high as the facet-bearing capture — this
+    // rules out the decoy losing merely because fieldScore already favors
+    // the other candidate; facetScore must be what tips the balance.
+    const decoy = makeCapture({
+      phase: "browse",
+      operationName: "SearchProducts",
+      query: "query SearchProducts($filters: String) { products(filters: $filters) { id name } }",
+      variables: { pagination: { count: 10 }, sort: { by: "category" }, note: "priceRange" },
+      responseBody: {
+        products: Array.from({ length: 200 }, (_, i) => ({ id: i, name: `Product ${i}` })),
+      },
+    });
+    const decoyRepeat = makeCapture({
+      phase: "browse",
+      operationName: "SearchProducts",
+      query: "query SearchProducts($filters: String) { products(filters: $filters) { id name } }",
+      variables: { pagination: { count: 10 }, sort: { by: "category" }, note: "priceRange" },
+      responseBody: {
+        products: Array.from({ length: 200 }, (_, i) => ({ id: i, name: `Product ${i}` })),
+      },
+    });
+    const facetBearing = makeCapture({
+      phase: "filter",
+      operationName: "SearchProducts",
+      query: "query SearchProducts($filters: String) { products(filters: $filters) { id name } }",
+      variables: { filters: "category:widgets|priceRange:10~50" },
+      responseBody: {
+        products: Array.from({ length: 5 }, (_, i) => ({ id: i, name: `Product ${i}` })),
+      },
+    });
+
+    const captures = [decoy, decoyRepeat, facetBearing];
+    const flowSteps = [
+      { step: "select 'widgets' from the Category dropdown", payloadField: "category" },
+      { step: "select '10~50' from the Price Range dropdown", payloadField: "priceRange" },
+    ];
+
+    const result = selectPrimaryGraphQLOperation(captures, flowSteps, EMPTY_VOCABULARY);
+
+    expect(result?.capture).toBe(facetBearing);
+  });
+
+  it("reports declared filter variables that are never populated across any candidate", () => {
+    const query =
+      "query productSearch_Listings($filters: String, $qualifiers: String, $sort: SortInput, $pagination: PaginationInput) { listings { id } }";
+    const first = makeCapture({
+      operationName: "productSearch_Listings",
+      query,
+      variables: { sort: { by: "RECOMMENDED" }, pagination: { count: 10, skip: 0 } },
+    });
+    const second = makeCapture({
+      operationName: "productSearch_Listings",
+      query,
+      variables: {
+        sort: { by: "RECOMMENDED" },
+        pagination: { count: 10, skip: 10 },
+        filters: null,
+        qualifiers: "",
+      },
+    });
+
+    const result = selectPrimaryGraphQLOperation([first, second], [], EMPTY_VOCABULARY);
+
+    expect(result?.unpopulatedDeclaredVariables).toEqual(["filters", "qualifiers"]);
+  });
+
+  it("omits a declared filter variable when some candidate actually populates it", () => {
+    const query =
+      "query productSearch_Listings($filters: String, $qualifiers: String, $sort: SortInput) { listings { id } }";
+    const unfiltered = makeCapture({
+      operationName: "productSearch_Listings",
+      query,
+      variables: { sort: { by: "RECOMMENDED" } },
+    });
+    const filtered = makeCapture({
+      operationName: "productSearch_Listings",
+      query,
+      variables: { sort: { by: "RECOMMENDED" }, filters: "neighborhood:Downtown" },
+    });
+
+    const result = selectPrimaryGraphQLOperation([unfiltered, filtered], [], EMPTY_VOCABULARY);
+
+    expect(result?.unpopulatedDeclaredVariables).toEqual(["qualifiers"]);
+  });
 });
