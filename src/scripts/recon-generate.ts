@@ -3971,6 +3971,55 @@ function renderGqlVariablesExpr(
   return entries.length > 0 ? `{ ${entries.join(", ")} }` : "{}";
 }
 
+/**
+ * Same review-checklist items the pre-move contract.ts header used to embed,
+ * now surfaced on recon-generate's own stdout instead of the shipped file —
+ * call with the exact same opts passed to {@link emitContractTs} so the two
+ * can never drift out of sync.
+ */
+export function buildContractChecklist(opts: {
+  pascal: string;
+  gql: boolean;
+  omitExecuteHttp?: boolean;
+  multiStepBody?: string;
+}): string[] {
+  const { pascal, gql, omitExecuteHttp, multiStepBody } = opts;
+
+  const queryChecklistLine =
+    !omitExecuteHttp && gql
+      ? `Trim UI-only fields from ${pascal.toUpperCase()}_QUERY (keep only fields you need)`
+      : "";
+
+  // Multi-step flows validate each call against its own per-call inferred
+  // schema (emitMultiStepExecuteHttp) — narrowing ResponseSchema only changes
+  // what executeHttp promises ITS OWN caller, never a per-call validator, so
+  // the checklist item must say that explicitly. Single-endpoint plugins have
+  // exactly one call, so the client schema and that call's validator are the
+  // same schema and the shorter wording stays accurate. Browser-flow-only
+  // plugins have no executeHttp at all, so ResponseSchema is only ever the
+  // browser flow's own return-value contract.
+  const narrowSchemaChecklistLine = omitExecuteHttp
+    ? `Narrow ${pascal}ResponseSchema to match what the browser flow should promise ITS CALLER — this flow could not synthesize a trustworthy executeHttp (a required value from the captured sequence never resolved), so it ships browser-only`
+    : multiStepBody
+      ? `Narrow ${pascal}ResponseSchema to match what executeHttp should promise ITS CALLER — this is the plugin's own return-value contract, not a per-call validator (each call in the flow is already checked against its own inferred schema)`
+      : `Narrow ${pascal}ResponseSchema to match the real response shape`;
+
+  const baseHeadersChecklistLine = omitExecuteHttp
+    ? ""
+    : "Verify BASE_HEADERS — remove any that aren't load-bearing";
+  const outOfTreeChecklistLine = omitExecuteHttp
+    ? "Out-of-tree: `pnpm add zod` — this file imports it directly, and a strict node_modules layout (pnpm) won't resolve it as a transitive dep of @enricai/barnacle alone"
+    : "Out-of-tree: `pnpm add bottleneck zod` — this file imports both directly, and a strict node_modules layout (pnpm) won't resolve them as transitive deps of @enricai/barnacle alone";
+
+  return [
+    queryChecklistLine,
+    narrowSchemaChecklistLine,
+    `Adjust ${pascal}PayloadSchema to your actual request parameters`,
+    baseHeadersChecklistLine,
+    outOfTreeChecklistLine,
+  ].filter((line) => line !== "");
+}
+
 export function emitContractTs(opts: {
   siteId: string;
   pascal: string;
@@ -4456,25 +4505,6 @@ export const ${pascal}InternalRequestReference = ${internalRequestReferenceExpr}
 `
     : "";
 
-  const queryChecklistLine =
-    !omitExecuteHttp && gql
-      ? `\n *   [ ] Trim UI-only fields from ${pascal.toUpperCase()}_QUERY (keep only fields you need)`
-      : "";
-
-  // Multi-step flows validate each call against its own per-call inferred
-  // schema (emitMultiStepExecuteHttp) — narrowing ResponseSchema only changes
-  // what executeHttp promises ITS OWN caller, never a per-call validator, so
-  // the checklist item must say that explicitly. Single-endpoint plugins have
-  // exactly one call, so the client schema and that call's validator are the
-  // same schema and the shorter wording stays accurate. Browser-flow-only
-  // plugins have no executeHttp at all, so ResponseSchema is only ever the
-  // browser flow's own return-value contract.
-  const narrowSchemaChecklistLine = omitExecuteHttp
-    ? `\n *   [ ] Narrow ${pascal}ResponseSchema to match what the browser flow should promise ITS CALLER — this flow could not synthesize a trustworthy executeHttp (a required value from the captured sequence never resolved), so it ships browser-only`
-    : multiStepBody
-      ? `\n *   [ ] Narrow ${pascal}ResponseSchema to match what executeHttp should promise ITS CALLER — this is the plugin's own return-value contract, not a per-call validator (each call in the flow is already checked against its own inferred schema)`
-      : `\n *   [ ] Narrow ${pascal}ResponseSchema to match the real response shape`;
-
   const camel = siteId.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
 
   // Browser-flow-only plugins need neither Bottleneck (no rate-limited HTTP
@@ -4512,25 +4542,16 @@ ${executeHttpBody}
     ? `/**
  * Plugin for ${siteId}. Browser-flow-only: the captured multi-step submission
  * sequence could not be synthesized into a trustworthy direct-HTTP hot path
- * (see the checklist above), so this always runs via Stagehand.
+ * (see recon-generate's review checklist, logged to stdout at generation
+ * time), so this always runs via Stagehand.
  */`
     : `/**
  * Plugin for ${siteId}. Tries the direct-HTTP hot path first; falls back to
  * Stagehand automatically on schema drift or bot challenge.
  */`;
 
-  const baseHeadersChecklistLine = omitExecuteHttp
-    ? ""
-    : `\n *   [ ] Verify BASE_HEADERS — remove any that aren't load-bearing`;
-  const outOfTreeChecklistLine = omitExecuteHttp
-    ? `\n *   [ ] Out-of-tree: \`pnpm add zod\` — this file imports it directly, and a\n *       strict node_modules layout (pnpm) won't resolve it as a transitive\n *       dep of @enricai/barnacle alone`
-    : `\n *   [ ] Out-of-tree: \`pnpm add bottleneck zod\` — this file imports both\n *       directly, and a strict node_modules layout (pnpm) won't resolve\n *       them as transitive deps of @enricai/barnacle alone`;
-
   return `/**
  * Generated by recon-generate.ts — review before shipping.
- *
- * Checklist:${queryChecklistLine}${narrowSchemaChecklistLine}
- *   [ ] Adjust ${pascal}PayloadSchema to your actual request parameters${baseHeadersChecklistLine}${outOfTreeChecklistLine}
  */
 
 ${bottleneckImport}import { z } from "zod/v4";
@@ -5666,7 +5687,7 @@ async function main(): Promise<void> {
     frameSelector,
   });
 
-  const contractCode = emitContractTs({
+  const contractOpts = {
     siteId,
     pascal,
     baseUrl,
@@ -5696,7 +5717,9 @@ async function main(): Promise<void> {
     discoveredStructuredKeys,
     payloadFieldNames: browserFlow.payloadFieldNames,
     headerBindings,
-  });
+  };
+
+  const contractCode = emitContractTs(contractOpts);
 
   // Fails loudly rather than shipping a flow that requires a URL field it
   // never reads (see assertRequiredUrlFieldsReferenced doc comment).
@@ -5704,6 +5727,12 @@ async function main(): Promise<void> {
 
   writeFileSync(`${outDir}/contract.ts`, contractCode);
   logger.info(`wrote ${outDir}/contract.ts`);
+  // Same opts fed to emitContractTs above, so this can never drift from what
+  // the header used to embed.
+  const checklist = buildContractChecklist(contractOpts);
+  logger.info(
+    `review checklist for ${outDir}/contract.ts:\n${checklist.map((item) => `  [ ] ${item}`).join("\n")}`
+  );
 
   writeFileSync(`${outDir}/flows/browser-flow.ts`, browserFlow.code);
   logger.info(`wrote ${outDir}/flows/browser-flow.ts`);
