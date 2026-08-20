@@ -30,6 +30,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 
+import { resolveCanonicalAtsFieldName } from "@/lib/ats-field-vocabulary";
 import { toErrorMessage } from "@/lib/errors";
 import { getScriptLogger } from "@/lib/logging";
 import { PLUGIN_API_VERSION } from "@/plugins/plugin-api-version";
@@ -1569,6 +1570,12 @@ function assignFieldNamesFromArray(
         continue;
       }
       semantic = fieldNameToPascalCase(name, currentPrefix);
+      if (currentPrefix === null) {
+        const canonical = resolveCanonicalAtsFieldName(name);
+        if (canonical !== null) {
+          semantic = canonical;
+        }
+      }
     }
 
     if (semantic !== null && !fieldNameMap.has(fieldId)) {
