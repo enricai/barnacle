@@ -63,6 +63,36 @@ describe("emitIndexTs registration guidance (FAILURE 6)", () => {
   });
 });
 
+describe("emitBrowserFlowTs header splice wording (F4)", () => {
+  it("describes the payload splice domain-neutrally for a non-submission flow", () => {
+    const { code } = emitBrowserFlowTs({
+      siteId: "some-site",
+      pascal: "SomeSite",
+      baseUrl: "https://example.com",
+      flowSteps: [],
+      isSubmissionFlow: false,
+    });
+
+    expect(code).not.toContain("applicant");
+    expect(code).not.toContain("PII");
+    expect(code).toContain("the caller's real value");
+  });
+
+  it("does not unconditionally claim applicant-specific semantics for a submission flow", () => {
+    const { code } = emitBrowserFlowTs({
+      siteId: "some-site",
+      pascal: "SomeSite",
+      baseUrl: "https://example.com",
+      flowSteps: [],
+      isSubmissionFlow: true,
+    });
+
+    expect(code).not.toContain("applicant");
+    expect(code).not.toContain("PII");
+    expect(code).toContain("the caller's real value");
+  });
+});
+
 /**
  * F2: the "multipart is required whenever" explainer comment must only be
  * emitted alongside the `multipart: true` field it explains, gated on the

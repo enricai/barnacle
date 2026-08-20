@@ -4999,8 +4999,8 @@ export function emitBrowserFlowTs(opts: {
  * Core invokes this automatically when executeHttp throws HttpSchemaError or
  * HttpBotChallengeError. Update the flow steps and extract schema as needed.
  *
- * Steps whose instruction named a candidate PII label have their recon
- * constant spliced to \`payload.<field>\` so the caller's real applicant reaches
+ * Steps whose instruction named a labeled payload field have their recon
+ * constant spliced to \`payload.<field>\` so the caller's real value reaches
  * the page; operational-default steps stay literal. The steps run through the
  * self-heal cascade via runHealingFlow — the same engine the recon CLI uses,
  * minus its disk-dump/replan layer.
