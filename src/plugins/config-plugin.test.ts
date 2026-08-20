@@ -98,6 +98,18 @@ describe("buildConfigPlugin", () => {
     expect(typeof plugin.execute).toBe("function");
   });
 
+  it("parses and loads a manifest that omits metadata.displayName, leaving meta.displayName undefined", async () => {
+    const manifest = baseManifest();
+    (manifest.metadata as Record<string, unknown>) = { siteId: "acme-jobs" };
+
+    expect(() => CONFIG_PLUGIN_MANIFEST.parse(manifest)).not.toThrow();
+
+    const plugin = await buildConfigPlugin(manifest);
+
+    expect(plugin.meta.siteId).toBe("acme-jobs");
+    expect(plugin.meta.displayName).toBeUndefined();
+  });
+
   it("is browser-only (no executeHttp) when the manifest omits httpModule", async () => {
     const plugin = await buildConfigPlugin(baseManifest());
     expect(plugin.executeHttp).toBeUndefined();
