@@ -7,6 +7,7 @@ import { CONFIG_PLUGIN_API_VERSION, CONFIG_PLUGIN_KIND } from "@/plugins/plugin-
 import type { ReconFormSchema } from "@/recon/form-schema";
 import type { ReconVocabulary } from "@/recon/vocabulary";
 import {
+  buildKnownFieldValues,
   collectHeaderBindings,
   compileActionSteps,
   detectFormSchemaFieldNames,
@@ -1364,6 +1365,14 @@ describe("resolveStepPayloadField — trap negatives", () => {
     "For 'Are you currently licensed to work as a Registered Nurse in this state?' select 'Yes'",
     "For 'In which settings have you worked as a Registered Nurse during the past three years?' select 'Hospital'",
     "Click the 'No' answer for the question about common domicile with any employee",
+    // A control's own NAME mentions a field-label word ("email") but carries no
+    // applicant datum — the button/link/tab guard must reject it regardless of
+    // the vocabulary label match.
+    "Click the 'Sign in with email' button",
+    // Yes/No screening answers are never a persona datum, even when the
+    // question text elsewhere mentions a field-label word.
+    "Select 'No' for the previously excluded or debarred question",
+    "Select 'Yes' for the actively licensed in this state question",
   ];
   for (const instruction of traps) {
     it(`leaves ${JSON.stringify(instruction)} literal (null)`, () => {
@@ -1372,6 +1381,34 @@ describe("resolveStepPayloadField — trap negatives", () => {
       ).toBeNull();
     });
   }
+});
+
+describe("resolveStepPayloadField — Select answer must match the field's known value", () => {
+  it("does not splice a device-type dropdown answer onto a phone-number field it merely mentions", () => {
+    // "MobilePhone" is bound to a real number by the Fill step; the device-type
+    // dropdown's answer ('Mobile') is a category, not that number, even though
+    // its label mentions "mobile" too.
+    const steps = [
+      "Type '5125550000' into the Mobile Phone field",
+      "Select 'Mobile' from the phone device type popup list",
+    ];
+    const known = buildKnownFieldValues(steps, TEST_RECRUITING_VOCABULARY, {} as NodeJS.ProcessEnv);
+    expect(known.get("MobilePhone")).toBe("5125550000");
+    expect(
+      resolveStepPayloadField(steps[1]!, undefined, false, TEST_RECRUITING_VOCABULARY, known)
+    ).toBeNull();
+  });
+
+  it("still splices a matching field once the answer equals the known value", () => {
+    const steps = [
+      "Type '5125550000' into the Mobile Phone field",
+      "Select '5125550000' from the phone number confirmation list",
+    ];
+    const known = buildKnownFieldValues(steps, TEST_RECRUITING_VOCABULARY, {} as NodeJS.ProcessEnv);
+    expect(
+      resolveStepPayloadField(steps[1]!, undefined, false, TEST_RECRUITING_VOCABULARY, known)
+    ).toBe("MobilePhone");
+  });
 });
 
 describe("resolveStepPayloadField — override + opt-out + no-constant", () => {
