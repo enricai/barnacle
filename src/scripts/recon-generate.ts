@@ -3713,31 +3713,34 @@ function bindOptionLiteral(headerBindings: HeaderProduce[]): string {
  * strings with no delimiter-separated `key:value` segment, and for strings
  * whose facet keys correlate with none of `fields`, so opaque tokens, JSON
  * blobs, and plain literals fall through to the existing JSON.stringify path
- * unchanged.
+ * unchanged. Every delimiter-separated segment whose facet key correlates
+ * with a payloadField is spliced — not just the first — so a filters string
+ * packing several facets (e.g. `category:Fiction|format:Hardcover`) ends up
+ * fully caller-parameterized rather than only its first facet.
  */
 function spliceFacetsIntoStringVariable(value: unknown, fields: readonly string[]): string | null {
   if (typeof value !== "string") return null;
   const segments = value.split(/([|,;])/);
-  const hasFacetShape = segments.some((segment, index) => index % 2 === 0 && segment.includes(":"));
-  if (!hasFacetShape) return null;
-  const matchedFieldIndex = segments.findIndex(
-    (segment, index) =>
-      index % 2 === 0 &&
-      segment.includes(":") &&
-      fields.some(
-        (field) => field.toLowerCase() === segment.slice(0, segment.indexOf(":")).toLowerCase()
-      )
+  const matchedFieldForSegment = (segment: string): string | undefined => {
+    const colonIndex = segment.indexOf(":");
+    if (colonIndex === -1) return undefined;
+    const facetKey = segment.slice(0, colonIndex);
+    return fields.find((field) => field.toLowerCase() === facetKey.toLowerCase());
+  };
+  const hasMatch = segments.some(
+    (segment, index) => index % 2 === 0 && matchedFieldForSegment(segment) !== undefined
   );
-  if (matchedFieldIndex === -1) return null;
-  const matchedSegment = segments[matchedFieldIndex] as string;
-  const matchedColonIndex = matchedSegment.indexOf(":");
-  const facetKey = matchedSegment.slice(0, matchedColonIndex);
-  const matchedField = fields.find(
-    (field) => field.toLowerCase() === facetKey.toLowerCase()
-  ) as string;
-  const before = `${segments.slice(0, matchedFieldIndex).join("") + facetKey}:`;
-  const after = segments.slice(matchedFieldIndex + 1).join("");
-  return `\`${escapeForTemplateLiteral(before)}\${payload.${matchedField}}${escapeForTemplateLiteral(after)}\``;
+  if (!hasMatch) return null;
+  const rendered = segments
+    .map((segment, index) => {
+      if (index % 2 !== 0) return escapeForTemplateLiteral(segment);
+      const matchedField = matchedFieldForSegment(segment);
+      if (!matchedField) return escapeForTemplateLiteral(segment);
+      const facetKey = segment.slice(0, segment.indexOf(":"));
+      return `${escapeForTemplateLiteral(facetKey)}:\${payload.${matchedField}}`;
+    })
+    .join("");
+  return `\`${rendered}\``;
 }
 
 /**
