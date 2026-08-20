@@ -97,8 +97,7 @@ describe("selectPrimaryGraphQLOperation", () => {
     const decoy = makeCapture({
       phase: "browse",
       operationName: "SearchProducts",
-      query:
-        "query SearchProducts($filters: String) { products(filters: $filters) { id name } }",
+      query: "query SearchProducts($filters: String) { products(filters: $filters) { id name } }",
       variables: { pagination: { count: 10 } },
       responseBody: {
         products: Array.from({ length: 200 }, (_, i) => ({ id: i, name: `Product ${i}` })),
@@ -107,8 +106,7 @@ describe("selectPrimaryGraphQLOperation", () => {
     const decoyRepeat = makeCapture({
       phase: "browse",
       operationName: "SearchProducts",
-      query:
-        "query SearchProducts($filters: String) { products(filters: $filters) { id name } }",
+      query: "query SearchProducts($filters: String) { products(filters: $filters) { id name } }",
       variables: { pagination: { count: 10 } },
       responseBody: {
         products: Array.from({ length: 200 }, (_, i) => ({ id: i, name: `Product ${i}` })),
@@ -117,8 +115,7 @@ describe("selectPrimaryGraphQLOperation", () => {
     const facetBearing = makeCapture({
       phase: "filter",
       operationName: "SearchProducts",
-      query:
-        "query SearchProducts($filters: String) { products(filters: $filters) { id name } }",
+      query: "query SearchProducts($filters: String) { products(filters: $filters) { id name } }",
       variables: { filters: "category:widgets|priceRange:10~50" },
       responseBody: {
         products: Array.from({ length: 5 }, (_, i) => ({ id: i, name: `Product ${i}` })),
