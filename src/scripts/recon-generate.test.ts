@@ -745,7 +745,8 @@ describe("extractGraphQLActionSequence — GraphQL submission flows get state-th
     const nullNamed = {
       ...named,
       operationName: null,
-      query: "mutation SubmitApplication($input: Input) {\n  SubmitApplication(input: $input) { id }\n}",
+      query:
+        "mutation SubmitApplication($input: Input) {\n  SubmitApplication(input: $input) { id }\n}",
     };
 
     const kept = extractGraphQLActionSequence([named, nullNamed]);
