@@ -4887,9 +4887,9 @@ export function emitBrowserFlowTs(opts: {
   // The last step of a submission flow is structurally the submit — force
   // submitStep:true even when the source recon-flow.json step never declared
   // it, so the engine's pre-submit probe/StepVerificationError actually gates it.
-  if (isSubmissionFlow && stepLiterals.length > 0) {
-    const lastIndex = stepLiterals.length - 1;
-    stepLiterals[lastIndex] = stepLiterals[lastIndex].replace(
+  const lastStepLiteral = stepLiterals.at(-1);
+  if (isSubmissionFlow && lastStepLiteral !== undefined) {
+    stepLiterals[stepLiterals.length - 1] = lastStepLiteral.replace(
       /submitStep: (true|false)(?= \},)/,
       "submitStep: true"
     );

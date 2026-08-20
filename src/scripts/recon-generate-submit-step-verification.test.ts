@@ -24,9 +24,7 @@ describe("recon-generate — submit-step verification", () => {
 
   it("forces submitStep:true on the LAST emitted step even when the source step never declared it", () => {
     const { code } = emitBrowserFlowTs(submissionOpts);
-    const stepLines = code
-      .split("\n")
-      .filter((line) => line.trim().startsWith("{ instruction:"));
+    const stepLines = code.split("\n").filter((line) => line.trim().startsWith("{ instruction:"));
 
     expect(stepLines).toHaveLength(3);
     expect(stepLines[0]).toContain("submitStep: false");
@@ -42,9 +40,7 @@ describe("recon-generate — submit-step verification", () => {
         "Click the Submit Application button",
       ],
     });
-    const stepLines = code
-      .split("\n")
-      .filter((line) => line.trim().startsWith("{ instruction:"));
+    const stepLines = code.split("\n").filter((line) => line.trim().startsWith("{ instruction:"));
 
     expect(stepLines).toHaveLength(2);
     expect(stepLines[0]).toContain("submitStep: false");
@@ -53,9 +49,7 @@ describe("recon-generate — submit-step verification", () => {
 
   it("does NOT force submitStep on a non-submission (query) flow's last step", () => {
     const { code } = emitBrowserFlowTs({ ...submissionOpts, isSubmissionFlow: false });
-    const stepLines = code
-      .split("\n")
-      .filter((line) => line.trim().startsWith("{ instruction:"));
+    const stepLines = code.split("\n").filter((line) => line.trim().startsWith("{ instruction:"));
 
     expect(stepLines.at(-1)).toContain("submitStep: false");
   });
