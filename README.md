@@ -319,7 +319,7 @@ interface SitePlugin<TPayload, TResult> {
 | Field | Type | Purpose |
 |---|---|---|
 | `siteId` | `string` | Stable key used for routing (`/v1/<siteId>/run`) and audit rows |
-| `displayName` | `string` | Human-readable label for logs and Swagger docs |
+| `displayName?` | `string` | Human-readable label for logs and Swagger docs. `recon:generate` does not derive this — plugin authors set it explicitly |
 | `bodySchema` | `ZodTypeAny` | Request body schema — core validates before calling `execute()` |
 | `responseSchema` | `ZodTypeAny` | Success response schema — drives Swagger output shape |
 | `routeOverride?` | `string` | Override the full route path (legacy compatibility only) |
