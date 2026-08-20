@@ -4964,7 +4964,7 @@ ${flowStepsBlock}
   // fields the recon flow actually surfaces.
   const result = await guardedExtract(
     stagehand,
-    ${isSubmissionFlow ? `\`drove the ${siteId} submission flow for payload \${JSON.stringify(payload)}\`` : `\`extract results matching query: \${payload.query}\``},
+    ${isSubmissionFlow ? `"is a submission confirmation shown, and what is its reference number?"` : `\`extract results matching query: \${payload.query}\``},
     ${pascal}BrowserSchema
   );
 
