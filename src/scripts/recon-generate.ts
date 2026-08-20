@@ -1656,10 +1656,13 @@ function assignFieldNamesFromArray(
         const headingPrefix = fieldNameToPascalCase(name, null);
         if (headingPrefix !== null) {
           currentPrefix = headingPrefix;
-          // Only a repeated/indexed heading (e.g. "Reference #1") marks a
-          // nested sub-entity whose fields must stay prefixed to avoid
-          // colliding with the applicant's own top-level field name.
-          currentPrefixIsRepeated = /\d/.test(name) || name.includes("#");
+          // Only a repeated/indexed heading (e.g. "Reference #1", "Employer 2")
+          // marks a nested sub-entity whose fields must stay prefixed to avoid
+          // colliding with the applicant's own top-level field name. A trailing
+          // 1-2 digit index, standing on its own word boundary, is a repetition
+          // marker; a longer digit run (e.g. a year in "EMPLOYMENT HISTORY
+          // 2024") is not, and must still canonicalize underneath it.
+          currentPrefixIsRepeated = /\b\d{1,2}\s*$/.test(name) || name.includes("#");
         }
         continue;
       }

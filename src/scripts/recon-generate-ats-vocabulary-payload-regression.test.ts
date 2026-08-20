@@ -126,4 +126,17 @@ describe("recon-generate — ATS-vocabulary payload-schema regression (detectFor
     expect(names).toContain("Reference2FirstName");
     expect(names).not.toContain("FirstName");
   });
+
+  it("does not mistake a heading with an embedded year for a repeated/indexed heading", () => {
+    const UUID_B = "22222222-2222-2222-2222-222222222222";
+    const body = [
+      { FieldId: UUID_A, FieldName: "EMPLOYMENT HISTORY 2024" },
+      { FieldId: UUID_B, FieldName: "Mobile Phone" },
+    ];
+    const { fieldNameMap } = detectFormSchemaFieldNames([capture(body)], HISTORICAL);
+
+    const names = new Set(fieldNameMap.values());
+    expect(names).toContain("Phone");
+    expect(names).not.toContain("EmploymentHistory2024MobilePhone");
+  });
 });
