@@ -218,6 +218,71 @@ describe("selectPrimaryGraphQLOperation", () => {
     expect(result?.capture).toBe(ownBackend);
   });
 
+  it("groups operationName-null captures sharing an endpoint and parsed inline query name for recurrence credit", () => {
+    // Every capture omits operationName, as real facet-bearing inline
+    // documents do, and no flowSteps/facet signal is supplied — recurrence
+    // is the only signal that can distinguish these two same-size,
+    // same-phase candidates, so the recurring one must come from the
+    // endpoint + the `query CruisesSearchResults(...)` name parsed out of
+    // the body, not from operationName equality (which is null on every
+    // candidate here).
+    const repeatedNullOp = Array.from({ length: 4 }, (_, i) =>
+      makeCapture({
+        phase: "filter",
+        operationName: null,
+        query:
+          "query CruisesSearchResults($destination: String) { cruises(destination: $destination) { id } }",
+        variables: { destination: "Caribbean" },
+        responseBody: { cruises: [{ id: i }] },
+      })
+    );
+    const nonRecurringDecoy = makeCapture({
+      phase: "filter",
+      operationName: null,
+      query: "query PageChrome { nav { items } }",
+      responseBody: { cruises: [{ id: 9 }] },
+    });
+
+    const result = selectPrimaryGraphQLOperation(
+      [nonRecurringDecoy, ...repeatedNullOp],
+      [],
+      EMPTY_VOCABULARY
+    );
+
+    expect(result?.capture.operationName).toBeNull();
+    expect(result?.capture.query).toContain("CruisesSearchResults");
+  });
+
+  it("does not credit operationName-null captures with different parsed query names as recurring together", () => {
+    // Same endpoint, same null operationName, but two distinct underlying
+    // queries — grouping must key on the parsed name too, not endpoint alone.
+    const facetQuery = makeCapture({
+      phase: "filter",
+      operationName: null,
+      query:
+        "query CruisesSearchResults($destination: String) { cruises(destination: $destination) { id } }",
+      variables: { destination: "Caribbean" },
+      responseBody: { cruises: [{ id: 1 }] },
+    });
+    const unrelatedQuery = makeCapture({
+      phase: "browse",
+      operationName: null,
+      query: "query PageChrome { nav { items } }",
+      responseBody: { nav: { items: Array.from({ length: 200 }, (_, i) => ({ id: i })) } },
+    });
+
+    const flowSteps = [
+      { step: "select 'Caribbean' from the Destination dropdown", payloadField: "destination" },
+    ];
+    const result = selectPrimaryGraphQLOperation(
+      [unrelatedQuery, facetQuery],
+      flowSteps,
+      EMPTY_VOCABULARY
+    );
+
+    expect(result?.capture).toBe(facetQuery);
+  });
+
   it("returns null when every candidate is off-host", () => {
     const thirdParty = makeCapture({
       url: "https://analytics.thirdparty.com/graphql",
