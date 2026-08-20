@@ -54,7 +54,10 @@ function writeUnwiredRunDir(root: string): void {
     join(root, "graphql", "001-browse-action.json"),
     JSON.stringify(gqlCapture(1, { filters: null }))
   );
-  writeFileSync(join(root, "replays", "000-browse-action.json"), JSON.stringify(gqlCapture(0, null)));
+  writeFileSync(
+    join(root, "replays", "000-browse-action.json"),
+    JSON.stringify(gqlCapture(0, null))
+  );
 }
 
 /** Control: the same shape, but $filters IS populated on one capture. */
@@ -70,7 +73,10 @@ function writeWiredRunDir(root: string): void {
     join(root, "graphql", "001-browse-action.json"),
     JSON.stringify(gqlCapture(1, { filters: null }))
   );
-  writeFileSync(join(root, "replays", "000-browse-action.json"), JSON.stringify(gqlCapture(0, null)));
+  writeFileSync(
+    join(root, "replays", "000-browse-action.json"),
+    JSON.stringify(gqlCapture(0, null))
+  );
 }
 
 let workDir: string | null = null;
