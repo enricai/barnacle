@@ -174,7 +174,7 @@ describe("recon-generate GraphQL paginated fetch loop: no total/count signal", (
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
 
     expect(contract).toMatch(
-      /const data = await getGql\(context\.baseUrl\)\("productSearch_Products", \w+_QUERY, \{ pagination: \{ count: 5, skip: 0 \}, sort: "RELEVANCE" \}\);\n\s*return \{ data \};/
+      /const data = await getGql\(context\.baseUrl\)\("productSearch_Products", \w+_QUERY, \{ pagination: \{"count":5,"skip":0\}, sort: "RELEVANCE" \}\);\n\s*return \{ data \};/
     );
     expect(contract).not.toContain("MAX_PAGES");
     expect(contract).not.toContain("itemsById");
