@@ -3978,6 +3978,10 @@ export function emitContractTs(opts: {
   baseHeaders: Record<string, string>;
   minTime: number;
   safeRps: number;
+  /** Whether `safeRps`/`minTime` were derived from a real recon rate-limit
+   * probe measurement, as opposed to the hardcoded 200ms fallback. Gates
+   * the provenance claim in the emitted limiter comment. */
+  hasRateLimitProbeData?: boolean;
   responseBody: unknown;
   gql: boolean;
   gqlQuery: string | null;
@@ -4056,6 +4060,7 @@ export function emitContractTs(opts: {
     baseHeaders,
     minTime,
     safeRps,
+    hasRateLimitProbeData = false,
     responseBody,
     gql,
     gqlQuery,
@@ -4483,10 +4488,13 @@ const BASE_HEADERS: Record<string, string> = {
 ${headersLiteral},
 };
 `;
+  const rateLimitComment = hasRateLimitProbeData
+    ? `// Safe ceiling: ${safeRps} rps — from recon rate-limit probe.`
+    : `// Safe ceiling: ${safeRps} rps — DEFAULT (no rate-limit probe data; run recon:http).`;
   const limiterBlock = omitExecuteHttp
     ? ""
     : `
-// Safe ceiling: ${safeRps} rps — from recon rate-limit probe.
+${rateLimitComment}
 const limiter = new Bottleneck({ minTime: ${minTime} });
 `;
   const executeHttpMethodBlock = omitExecuteHttp
@@ -5300,6 +5308,7 @@ async function main(): Promise<void> {
   const baseUrl = deriveBaseUrl(captures);
   const baseHeaders = deriveRequestHeaders(captures, replays, baseUrl, submitPatterns);
   const minTime = deriveMinTime(rateLimits);
+  const hasRateLimitProbeData = rateLimits.some((f) => f.safeRps !== null);
   const safeRps = rateLimits.find((f) => f.safeRps !== null)?.safeRps ?? Math.floor(1000 / minTime);
   const gql = isGraphQL(captures);
   // Hoisted so both the primary-operation gate below and rawActionCaptures
@@ -5658,6 +5667,7 @@ async function main(): Promise<void> {
     baseHeaders: isSubmissionFlow ? staticBaseHeaders : baseHeaders,
     minTime,
     safeRps,
+    hasRateLimitProbeData,
     responseBody: effectiveResponseBody,
     gql,
     gqlQuery,

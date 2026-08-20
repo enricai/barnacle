@@ -1,6 +1,20 @@
 import { describe, expect, it } from "vitest";
 
-import { emitBrowserFlowTs, emitIndexTs } from "@/scripts/recon-generate";
+import { emitBrowserFlowTs, emitContractTs, emitIndexTs } from "@/scripts/recon-generate";
+
+const CONTRACT_BASE_OPTS = {
+  siteId: "test-site",
+  pascal: "TestSite",
+  baseUrl: "https://example.com",
+  baseHeaders: { "Content-Type": "application/json" },
+  minTime: 200,
+  safeRps: 5,
+  responseBody: { id: "abc", active: true },
+  gql: false,
+  gqlQuery: null,
+  endpointPath: "/api/search",
+  auxFiles: [],
+};
 
 /**
  * Wording regressions from the a flowless recon capture:
@@ -31,5 +45,21 @@ describe("emitIndexTs registration guidance (FAILURE 6)", () => {
 
     expect(code).toContain("BARNACLE_PLUGINS");
     expect(code).not.toContain("src/plugins/loader.ts");
+  });
+});
+
+describe("emitContractTs rate-limit comment provenance", () => {
+  it("emits a DEFAULT comment, not a probe claim, when no rate-limit probe ran", () => {
+    const source = emitContractTs({ ...CONTRACT_BASE_OPTS, hasRateLimitProbeData: false });
+
+    expect(source).toContain("DEFAULT (no rate-limit probe data; run recon:http).");
+    expect(source).not.toContain("from recon rate-limit probe");
+  });
+
+  it("emits the probe-provenance comment when a real safeRps measurement was captured", () => {
+    const source = emitContractTs({ ...CONTRACT_BASE_OPTS, hasRateLimitProbeData: true });
+
+    expect(source).toContain("from recon rate-limit probe");
+    expect(source).not.toContain("DEFAULT (no rate-limit probe data");
   });
 });
