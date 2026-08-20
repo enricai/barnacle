@@ -4227,13 +4227,21 @@ function buildPaginatedGqlExecuteHttpBody(opts: {
   const totalAccessExpr = pathAccessExpr("page", totalPath);
   const arrayAccessExpr = pathAccessExpr("page", arrayPath);
   const identityAccessExpr = pathAccessExpr("item", [identityField]);
-  // Non-null: the loop body runs at least once (MAX_PAGES is a positive
-  // constant and the initial `total` is Infinity), so `lastPage` is always
-  // assigned before this line executes.
-  const dataOverrideExpr = buildNestedSpreadOverride(
-    "lastPage!",
+  // `lastPage` is typed as ${pascal}Response (never null): the first page is
+  // fetched before the loop starts, so there's nothing left to narrow.
+  const withItemsOverrideExpr = buildNestedSpreadOverride(
+    "lastPage",
     arrayPath,
     "[...itemsById.values()]"
+  );
+  // When MAX_PAGES caps the loop before `total` converges, the merged
+  // envelope's own total must say so instead of repeating the API's
+  // original (larger) reported total — otherwise a truncated payload still
+  // claims to be complete.
+  const withTotalOverrideExpr = buildNestedSpreadOverride(
+    "withItems",
+    totalPath,
+    `truncated ? itemsById.size : ${pathAccessExpr("withItems", totalPath)}`
   );
 
   return `    const baseVariables = ${gqlVariablesExpr};
@@ -4242,9 +4250,14 @@ function buildPaginatedGqlExecuteHttpBody(opts: {
     const MAX_PAGES = 50;
     const itemsById = new Map<string, unknown>();
     let skip = 0;
-    let total = Number.POSITIVE_INFINITY;
-    let lastPage: ${pascal}Response | null = null;
-    for (let pageIndex = 0; pageIndex < MAX_PAGES && itemsById.size < total; pageIndex++) {
+    const page = await getGql(context.baseUrl)(${gqlOperationNameExpr}, ${queryConstName}, ${variablesForCall});
+    let lastPage: ${pascal}Response = page;
+    let total = ${totalAccessExpr};
+    for (const item of ${arrayAccessExpr}) {
+      itemsById.set(String(${identityAccessExpr}), item);
+    }
+    skip += PAGE_SIZE;
+    for (let pageIndex = 1; pageIndex < MAX_PAGES && itemsById.size < total; pageIndex++) {
       const page = await getGql(context.baseUrl)(${gqlOperationNameExpr}, ${queryConstName}, ${variablesForCall});
       lastPage = page;
       total = ${totalAccessExpr};
@@ -4253,7 +4266,9 @@ function buildPaginatedGqlExecuteHttpBody(opts: {
       }
       skip += PAGE_SIZE;
     }
-    const data = ${dataOverrideExpr} as ${pascal}Response;
+    const truncated = itemsById.size < total;
+    const withItems = ${withItemsOverrideExpr};
+    const data = ${withTotalOverrideExpr} as ${pascal}Response;
     return { data };`;
 }
 
