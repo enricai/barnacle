@@ -16,7 +16,7 @@
  * it cannot regress. Do not re-file the end-to-end claim.
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -38,7 +38,11 @@ vi.mock("@/lib/logging", () => ({
 }));
 vi.mock("@/lib/http", () => ({ configureHttpDispatcher: vi.fn() }));
 
-import { selectAuxFixtureCandidates, selectRateLimitTargets } from "@/scripts/recon-http";
+import {
+  probeAuxiliaryEndpoints,
+  selectAuxFixtureCandidates,
+  selectRateLimitTargets,
+} from "@/scripts/recon-http";
 import type { ReplayResult } from "@/scripts/recon-shared";
 
 function replay(overrides: Partial<ReplayResult>): ReplayResult {
@@ -244,5 +248,63 @@ describe("selectAuxFixtureCandidates — own-backend host allowlist", () => {
     const candidates = selectAuxFixtureCandidates(replays, ["api.example.com"], null);
 
     expect(candidates).toEqual([]);
+  });
+});
+
+describe("probeAuxiliaryEndpoints — aux-manifest.json host provenance", () => {
+  let auxDir: string;
+  const originalFetch = global.fetch;
+
+  beforeEach(() => {
+    auxDir = mkdtempSync(join(tmpdir(), "recon-http-aux-test-"));
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    rmSync(auxDir, { recursive: true, force: true });
+  });
+
+  it("records one manifest entry per written fixture, with the correct hostname", async () => {
+    global.fetch = vi.fn(async (url: string | URL) => {
+      return new Response(JSON.stringify({ from: url.toString() }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+
+    const replays: ReplayResult[] = [
+      replay({ url: "https://api.example.com/config/markets.json" }),
+      replay({ url: "https://www.example.com/labels/en.json" }),
+    ];
+
+    await probeAuxiliaryEndpoints(replays, auxDir, ["api.example.com", "www.example.com"], null);
+
+    const manifest = JSON.parse(readFileSync(join(auxDir, "aux-manifest.json"), "utf-8"));
+
+    expect(manifest).toHaveLength(2);
+    expect(manifest).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          filename: "markets.json",
+          url: "https://api.example.com/config/markets.json",
+          hostname: "api.example.com",
+        }),
+        expect.objectContaining({
+          filename: "en.json",
+          url: "https://www.example.com/labels/en.json",
+          hostname: "www.example.com",
+        }),
+      ])
+    );
+  });
+
+  it("writes no manifest when there are no candidates to write", async () => {
+    global.fetch = vi.fn() as unknown as typeof fetch;
+
+    const replays: ReplayResult[] = [replay({ url: "https://api.example.com/order/checkout" })];
+
+    await probeAuxiliaryEndpoints(replays, auxDir, ["api.example.com"], null);
+
+    expect(existsSync(join(auxDir, "aux-manifest.json"))).toBe(false);
   });
 });
