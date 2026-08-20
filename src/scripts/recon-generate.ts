@@ -1621,7 +1621,7 @@ function assignFieldNamesFromArray(
 
     let semantic: string | null = null;
     if (typeof sourceCode === "string" && sourceCode.trim().length > 0) {
-      semantic = sourceCodeToPascalCase(sourceCode);
+      semantic = resolveCanonicalAtsFieldName(sourceCode) ?? sourceCodeToPascalCase(sourceCode);
       currentPrefix = null;
     } else if (typeof name === "string" && name.trim().length > 0 && name.length < 250) {
       const hasNoSourceCode = typeof sourceCode !== "string" || sourceCode.trim().length === 0;
