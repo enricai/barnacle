@@ -5818,11 +5818,8 @@ async function main(): Promise<void> {
   // (further down) read the same computed sequence instead of calling the
   // extractor twice.
   const graphqlActionSequence = gql ? extractGraphQLActionSequence(captures, submitPatterns) : [];
-  const isReadOnlyFlow = !flowSteps.some(
-    (step) => typeof step !== "string" && step.submitStep === true
-  );
   const primaryGraphQLOperation =
-    gql && isReadOnlyFlow && graphqlActionSequence.length === 0
+    gql && graphqlActionSequence.length === 0
       ? selectPrimaryGraphQLOperation(
           captures,
           flowSteps,
@@ -6187,7 +6184,10 @@ async function main(): Promise<void> {
     gql,
     gqlQuery,
     endpointPath,
-    gqlOperationName: primaryGraphQLOperation?.capture.operationName ?? null,
+    gqlOperationName: primaryGraphQLOperation
+      ? (primaryGraphQLOperation.capture.operationName ??
+        parsedOperationName(primaryGraphQLOperation.capture.query ?? ""))
+      : null,
     gqlVariables: primaryGraphQLOperation?.capture.variables ?? null,
     auxFiles,
     multiStepBody,
