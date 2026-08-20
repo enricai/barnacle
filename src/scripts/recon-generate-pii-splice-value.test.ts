@@ -86,6 +86,23 @@ describe("emitBrowserFlowTs — splice site targets the fill VALUE, not a select
     expect(code).not.toContain(`$${"{payload."}`);
   });
 
+  it("does not splice a button's own name even when the vocabulary genuinely label-matches it", () => {
+    // Unlike the "does not splice into a screen name or a button label" case
+    // above (whose default VOCAB has no Email row at all, so it can't tell
+    // the namesAControl guard apart from a plain no-match), this vocabulary
+    // includes a real e-mail row that DOES match the button's own name — the
+    // guard must still keep the control name literal.
+    const emailVocab: ReconVocabulary = {
+      subject: /(?!)/,
+      exclusions: [],
+      table: [[/\b(e-?mail|email address)\b/i, "Email"]],
+    };
+    const code = emitStep("Click the 'Sign in with email' button", emailVocab);
+
+    expect(code).toContain("'Sign in with email'");
+    expect(code).not.toContain(`$${"{payload.Email}"}`);
+  });
+
   it("does not splice a Yes/No answer even when the vocabulary label-matches the question", () => {
     // "RN state license" label-matches the State vocab row, but the ANSWER is a
     // Yes/No screening response, not the applicant's state — the operational-

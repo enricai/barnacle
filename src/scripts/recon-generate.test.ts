@@ -1483,6 +1483,29 @@ describe("emitBrowserFlowTs — payload splicing", () => {
   });
 });
 
+describe("emitBrowserFlowTs — payload splicing — Yes/No screening answers stay literal", () => {
+  const { code } = emitBrowserFlowTs({
+    siteId: "test-site",
+    pascal: "TestSite",
+    baseUrl: "https://example.com",
+    isSubmissionFlow: true,
+    flowSteps: [
+      "Select 'No' for previously excluded from state health care programs",
+      "Select 'Yes' for currently licensed in this state",
+    ],
+    vocabulary: TEST_RECRUITING_VOCABULARY,
+  });
+
+  it("keeps the excluded-from-state-programs answer a literal 'No', not payload.State", () => {
+    expect(code).toContain("'No'");
+    expect(code).not.toContain(payloadRef("State"));
+  });
+
+  it("keeps the licensed-in-this-state answer a literal 'Yes', not payload.State", () => {
+    expect(code).toContain("'Yes'");
+  });
+});
+
 describe("emitBrowserFlowTs — uploadFixture guard (upload vs multipart)", () => {
   const uploadFlow = [{ step: "Upload the resume PDF using the upload control", upload: true }];
 
