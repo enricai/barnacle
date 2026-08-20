@@ -832,10 +832,6 @@ function isGraphQL(captures: Capture[]): boolean {
   return captures.some((c) => c.operationName !== null);
 }
 
-function firstSuccessfulReplayBody(replays: ReplayResult[]): unknown {
-  return replays.find((r) => r.success)?.replayBody ?? null;
-}
-
 function firstGraphQLQuery(captures: Capture[]): string | null {
   return captures.find((c) => c.query)?.query ?? null;
 }
@@ -943,23 +939,39 @@ export function selectPrimaryGraphQLOperation(
   return { capture: winner.capture, endpointPath };
 }
 
-export function firstEndpointPath(captures: Capture[]): string {
+/**
+ * Resolves the same primary-endpoint capture that {@link firstEndpointPath}
+ * derives a path string from, so non-GraphQL flows can also read that
+ * capture's own `.responseBody` instead of an array-order-first replay.
+ */
+export function firstEndpointCapture(captures: Capture[]): Capture | null {
   const nonGetCaptures = captures.filter((c) => c.method !== "GET");
   for (const c of nonGetCaptures) {
     try {
-      return new URL(c.url).pathname;
+      new URL(c.url);
+      return c;
     } catch {
       // skip
     }
   }
   for (const c of captures) {
     try {
-      return new URL(c.url).pathname;
+      new URL(c.url);
+      return c;
     } catch {
       // skip
     }
   }
-  return "/api/search";
+  return null;
+}
+
+export function firstEndpointPath(captures: Capture[]): string {
+  try {
+    const capture = firstEndpointCapture(captures);
+    return capture ? new URL(capture.url).pathname : "/api/search";
+  } catch {
+    return "/api/search";
+  }
 }
 
 // ── multi-step "submission flow" detection ────────────────────────────────────
@@ -5289,7 +5301,6 @@ async function main(): Promise<void> {
   const baseHeaders = deriveRequestHeaders(captures, replays, baseUrl, submitPatterns);
   const minTime = deriveMinTime(rateLimits);
   const safeRps = rateLimits.find((f) => f.safeRps !== null)?.safeRps ?? Math.floor(1000 / minTime);
-  const responseBody = firstSuccessfulReplayBody(replays);
   const gql = isGraphQL(captures);
   // Hoisted so both the primary-operation gate below and rawActionCaptures
   // (further down) read the same computed sequence instead of calling the
@@ -5304,6 +5315,12 @@ async function main(): Promise<void> {
       : null;
   const gqlQuery = primaryGraphQLOperation?.capture.query ?? firstGraphQLQuery(captures);
   const endpointPath = primaryGraphQLOperation?.endpointPath ?? firstEndpointPath(captures);
+  // Derived from the primary operation's own Phase-1 capture, never from
+  // replay array order -- a replay's body reflects whichever endpoint fired
+  // first, not necessarily the primary operation, and only exists once
+  // recon:http has run.
+  const responseBody =
+    (primaryGraphQLOperation?.capture ?? firstEndpointCapture(captures))?.responseBody ?? null;
 
   // Detect a multi-step submission flow (transactional sites like apply forms,
   // checkout, etc.). When the action sequence has 2+ POSTs, switch the
