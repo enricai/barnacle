@@ -2395,7 +2395,7 @@ function isValidJsIdentifier(s: string): boolean {
 /** Derives a valid camelCase identifier from a fixture filename (e.g.
  * "10219132.json" -> "fixture10219132", "acme-metrics.config.json" ->
  * "acmeMetricsConfig") for use in generated `loadFixture` const lines. */
-function sanitizeFixtureIdentifier(filename: string): string {
+export function sanitizeFixtureIdentifier(filename: string): string {
   const camelCased = filename
     .replace(/\.json$/, "")
     .split(/[^A-Za-z0-9_$]+/)
