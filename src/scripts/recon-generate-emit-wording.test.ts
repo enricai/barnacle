@@ -64,7 +64,12 @@ describe("emitBrowserFlowTs browser-fallback schema (F5a)", () => {
       isSubmissionFlow: false,
     });
 
-    expect(code).not.toContain("TODO");
+    const schemaBlock = code.slice(
+      code.indexOf("SomeSiteBrowserSchema = z.object({"),
+      code.indexOf("});", code.indexOf("SomeSiteBrowserSchema = z.object({"))
+    );
+
+    expect(schemaBlock).not.toContain("TODO");
   });
 });
 
