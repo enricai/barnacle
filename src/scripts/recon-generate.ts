@@ -4369,7 +4369,7 @@ const limiter = new Bottleneck({ minTime: ${minTime} });
     : `
   /** Hot path: direct HTTP — no browser, no LLM tokens. */
   async executeHttp(
-    payload: ${pascal}Payload,
+    ${executeHttpBody.includes("payload.") ? "payload" : "_payload"}: ${pascal}Payload,
     ${executeHttpBody.includes("context.") ? "context" : "_context"}: SitePluginContext
   ): Promise<SitePluginResult<${pascal}Response>> {
 ${executeHttpBody}
