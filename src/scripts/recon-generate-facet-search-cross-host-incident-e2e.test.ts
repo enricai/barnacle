@@ -66,6 +66,22 @@ function writeIncidentRunDir(root: string): void {
   mkdirSync(join(root, "aux"), { recursive: true });
   writeFileSync(join(root, "replays", "rate-limit.json"), JSON.stringify([]));
 
+  // The landing capture fires first, chronologically -- it decides the
+  // derived base URL, matching a real recon walk where the entry page loads
+  // before any filter or third-party tracker call.
+  const unfilteredLandingQuery = gqlCapture({
+    phase: "open-the-metro-filter",
+    url: `https://${OWN_BACKEND_HOST}/x/graph`,
+    operationName: LANDING_OPERATION_NAME,
+    query: FILTERED_QUERY_TEXT,
+    variables: { metro: null },
+    responseLength: 61440,
+  });
+  writeFileSync(
+    join(root, "graphql", "000-open-the-metro-filter-landing.json"),
+    JSON.stringify(unfilteredLandingQuery)
+  );
+
   const thirdPartyQuery = gqlCapture({
     phase: "open-the-metro-filter",
     url: `https://${THIRD_PARTY_HOST}/collect/graph`,
@@ -76,23 +92,10 @@ function writeIncidentRunDir(root: string): void {
   });
   for (let i = 0; i < 16; i++) {
     writeFileSync(
-      join(root, "graphql", `000-open-the-metro-filter-tracker-${String(i).padStart(2, "0")}.json`),
+      join(root, "graphql", `001-open-the-metro-filter-tracker-${String(i).padStart(2, "0")}.json`),
       JSON.stringify(thirdPartyQuery)
     );
   }
-
-  const unfilteredLandingQuery = gqlCapture({
-    phase: "open-the-metro-filter",
-    url: `https://${OWN_BACKEND_HOST}/x/graph`,
-    operationName: LANDING_OPERATION_NAME,
-    query: FILTERED_QUERY_TEXT,
-    variables: { metro: null },
-    responseLength: 61440,
-  });
-  writeFileSync(
-    join(root, "graphql", "100-open-the-metro-filter-landing.json"),
-    JSON.stringify(unfilteredLandingQuery)
-  );
 
   // 24 operationName:null facet-bearing filtered-search POSTs, one per metro
   // (repeating the metro list), for 25 own-backend captures total.
