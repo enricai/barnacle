@@ -418,6 +418,77 @@ export function harvestPersonaBindings(
 }
 
 /**
+ * Detects a flow step whose quoted VALUE is the space-joined concatenation of
+ * two already-known field values (either order), e.g. a signature step whose
+ * label the vocabulary doesn't recognize but whose value is `${FirstName}
+ * ${LastName}`. {@link resolveStepPayloadField} only ever resolves a SINGLE
+ * field per step, so a composite value like this falls through its label
+ * match entirely and the persona literal would otherwise survive emission.
+ *
+ * @returns the two known fields (in the order they appear in the value), or
+ *   null when the step's value is not such a concatenation
+ */
+export function resolveCompositePersonaFields(
+  instruction: string,
+  knownFieldValues: ReadonlyMap<string, string>
+): { fieldA: string; fieldB: string } | null {
+  const spans = findQuoteSpans(instruction);
+  if (spans.length === 0) return null;
+  const value = pickValueSpan(instruction, spans).value;
+  if (value.length === 0) return null;
+  for (const [fieldA, valueA] of knownFieldValues) {
+    for (const [fieldB, valueB] of knownFieldValues) {
+      if (fieldA === fieldB) continue;
+      if (value === `${valueA} ${valueB}`) return { fieldA, fieldB };
+    }
+  }
+  return null;
+}
+
+/**
+ * Every persona literal a generated flow could leak: each single known field
+ * value, plus both concatenation orders of every distinct pair — the same
+ * composite shape {@link resolveCompositePersonaFields} splices. Feeds
+ * {@link assertNoLeakedPersonaConstant}'s final safety-net scan so a splice
+ * miss (single OR composite) is caught regardless of which matching path
+ * should have handled it.
+ */
+function allPersonaLiterals(knownFieldValues: ReadonlyMap<string, string>): string[] {
+  const entries = [...knownFieldValues.entries()];
+  const literals = entries.map(([, value]) => value);
+  for (const [fieldA, valueA] of entries) {
+    for (const [fieldB, valueB] of entries) {
+      if (fieldA === fieldB) continue;
+      literals.push(`${valueA} ${valueB}`);
+    }
+  }
+  return literals.filter((value) => value.length > 0);
+}
+
+/**
+ * Final safety net: throws if any known persona constant — single field or
+ * composite concatenation — still appears verbatim as a quoted literal in the
+ * fully-built flow code. Every splice path above (vocabulary match, derived
+ * label, composite match) is a heuristic; this is the loud failure that
+ * catches whatever heuristic missed rather than shipping the recon identity's
+ * own data as a frozen literal in every caller's submission.
+ *
+ * @throws when a persona literal survives emission
+ */
+function assertNoLeakedPersonaConstant(
+  code: string,
+  knownFieldValues: ReadonlyMap<string, string>
+): void {
+  for (const value of allPersonaLiterals(knownFieldValues)) {
+    if (code.includes(`'${value}'`)) {
+      throw new Error(
+        `recon-generate: persona constant '${value}' survived emission — a flow step failed to splice its known field value to payload.<field>`
+      );
+    }
+  }
+}
+
+/**
  * How deep to infer before collapsing to z.unknown(). Deep enough to reach the
  * fields that carry meaning on real inventory APIs — a listing's price
  * summary sits ~11 levels down inside products[].buildings[].units[] —
@@ -4522,6 +4593,23 @@ function buildStepInstructionExpr(instruction: string, field: string | null): st
 }
 
 /**
+ * Build the emitted instruction expression for a step whose value is the
+ * concatenation of two known fields ({@link resolveCompositePersonaFields}):
+ * a backtick template literal with the whole quoted value replaced by
+ * `${payload.<fieldA>} ${payload.<fieldB>}`, preserving the single space the
+ * concatenation was built with.
+ */
+function buildCompositeStepInstructionExpr(
+  instruction: string,
+  fieldA: string,
+  fieldB: string
+): string {
+  const site = locateSpliceSite(instruction);
+  if (site === null) return JSON.stringify(instruction);
+  return `\`${escapeForTemplateLiteral(site.before)}\${payload.${fieldA}} \${payload.${fieldB}}${escapeForTemplateLiteral(site.after)}\``;
+}
+
+/**
  * Build the emitted instruction expression for a step whose splice site is the
  * reserved `${RECON_PASSWORD}` token: a backtick template literal with the
  * token replaced by `${throwawayPassword}`, the per-run credential minted by
@@ -4762,8 +4850,19 @@ export function emitBrowserFlowTs(opts: {
       vocabulary,
       knownFieldValues
     );
+    const composite =
+      field === null && !(isObj && step.payloadFieldNone)
+        ? resolveCompositePersonaFields(instruction, knownFieldValues)
+        : null;
     if (field !== null) payloadFieldNames.add(field);
-    const instructionExpr = buildStepInstructionExpr(instruction, field);
+    if (composite !== null) {
+      payloadFieldNames.add(composite.fieldA);
+      payloadFieldNames.add(composite.fieldB);
+    }
+    const instructionExpr =
+      composite !== null
+        ? buildCompositeStepInstructionExpr(instruction, composite.fieldA, composite.fieldB)
+        : buildStepInstructionExpr(instruction, field);
     const optional = isObj ? step.optional === true : false;
     const upload = isObj ? step.upload === true : false;
     const submitStep = isObj ? step.submitStep === true : false;
@@ -4872,6 +4971,7 @@ ${flowStepsBlock}
   return result as unknown as ${pascal}Response;
 }
 `;
+  assertNoLeakedPersonaConstant(code, knownFieldValues);
   return { code, payloadFieldNames };
 }
 
