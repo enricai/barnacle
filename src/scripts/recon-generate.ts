@@ -931,10 +931,24 @@ export function selectPrimaryGraphQLOperation(
   captures: Capture[],
   flowSteps: FlowStepInput[],
   vocabulary: ReconVocabulary,
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  ownBackendHostnames: string[] = [],
+  fallbackDomain: string | null = null
 ): PrimaryGraphQLOperation | null {
+  // Callers with no host-provenance data (the exported function's unit
+  // tests) pass neither ownBackendHostnames nor fallbackDomain — in that
+  // case isAllowedFixtureHost would reject every candidate, so the gate
+  // only applies once the caller has actually resolved a notion of "own
+  // backend" to check against.
+  const hasHostProvenance = ownBackendHostnames.length > 0 || fallbackDomain !== null;
   const candidates = captures.filter(
-    (c) => c.status >= 200 && c.status < 300 && c.query !== null && !/^\s*mutation\b/.test(c.query)
+    (c) =>
+      c.status >= 200 &&
+      c.status < 300 &&
+      c.query !== null &&
+      !/^\s*mutation\b/.test(c.query) &&
+      (!hasHostProvenance ||
+        isAllowedFixtureHost(new URL(c.url).hostname, ownBackendHostnames, fallbackDomain))
   );
   if (candidates.length === 0) return null;
 
@@ -5771,7 +5785,14 @@ async function main(): Promise<void> {
   );
   const primaryGraphQLOperation =
     gql && isReadOnlyFlow && graphqlActionSequence.length === 0
-      ? selectPrimaryGraphQLOperation(captures, flowSteps, vocabulary)
+      ? selectPrimaryGraphQLOperation(
+          captures,
+          flowSteps,
+          vocabulary,
+          process.env,
+          ownBackendHostnames,
+          fallbackDomain
+        )
       : null;
   if (primaryGraphQLOperation && primaryGraphQLOperation.unpopulatedDeclaredVariables.length > 0) {
     const operationLabel = primaryGraphQLOperation.capture.operationName ?? "(anonymous)";
