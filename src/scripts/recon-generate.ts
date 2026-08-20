@@ -6184,7 +6184,10 @@ async function main(): Promise<void> {
     gql,
     gqlQuery,
     endpointPath,
-    gqlOperationName: primaryGraphQLOperation?.capture.operationName ?? null,
+    gqlOperationName: primaryGraphQLOperation
+      ? (primaryGraphQLOperation.capture.operationName ??
+        parsedOperationName(primaryGraphQLOperation.capture.query ?? ""))
+      : null,
     gqlVariables: primaryGraphQLOperation?.capture.variables ?? null,
     auxFiles,
     multiStepBody,
