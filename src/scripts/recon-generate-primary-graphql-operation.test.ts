@@ -282,6 +282,60 @@ describe("selectPrimaryGraphQLOperation", () => {
 
     expect(result?.capture).toBe(facetQuery);
   });
+  it.each([
+    ["with an operationName", "SearchListings"],
+    ["with no operationName", null],
+  ])(
+    "picks the same-endpoint facet-bearing candidate %s over a higher-recurrence, larger third-party candidate",
+    (_label, operationName) => {
+      const thirdParty = makeCapture({
+        url: "https://sdk.thirdpartyanalytics.com/graphql",
+        phase: "browse",
+        operationName,
+        query: "query SearchListings($raw: String) { listings(raw: $raw) { id name } }",
+        variables: { raw: "unrelated" },
+        responseBody: {
+          listings: Array.from({ length: 200 }, (_, i) => ({ id: i, name: `Listing ${i}` })),
+        },
+      });
+      const thirdPartyRepeat = makeCapture({
+        url: "https://sdk.thirdpartyanalytics.com/graphql",
+        phase: "browse",
+        operationName,
+        query: "query SearchListings($raw: String) { listings(raw: $raw) { id name } }",
+        variables: { raw: "unrelated" },
+        responseBody: {
+          listings: Array.from({ length: 200 }, (_, i) => ({ id: i, name: `Listing ${i}` })),
+        },
+      });
+      const facetBearing = makeCapture({
+        url: "https://example.com/graphql",
+        phase: "filter",
+        operationName,
+        query: "query SearchListings($filters: String) { listings(filters: $filters) { id name } }",
+        variables: { filters: "category:widgets" },
+        responseBody: {
+          listings: Array.from({ length: 3 }, (_, i) => ({ id: i, name: `Listing ${i}` })),
+        },
+      });
+
+      const captures = [thirdParty, thirdPartyRepeat, facetBearing];
+      const flowSteps = [
+        { step: "select 'widgets' from the Category dropdown", payloadField: "category" },
+      ];
+
+      const result = selectPrimaryGraphQLOperation(
+        captures,
+        flowSteps,
+        EMPTY_VOCABULARY,
+        process.env,
+        ["example.com"],
+        null
+      );
+
+      expect(result?.capture).toBe(facetBearing);
+    }
+  );
 
   it("returns null when every candidate is off-host", () => {
     const thirdParty = makeCapture({
