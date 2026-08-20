@@ -536,7 +536,8 @@ export function collectConditionalGraphQLFieldNames(query: string): ReadonlySet<
   const names = new Set<string>();
   const pattern = /([A-Za-z_][A-Za-z0-9_]*)\s*(?:\([^()]*\))?\s*@(?:include|skip)\s*\(/g;
   for (const match of query.matchAll(pattern)) {
-    names.add(match[1]);
+    const fieldName = match[1];
+    if (fieldName) names.add(fieldName);
   }
   return names;
 }
@@ -4440,7 +4441,8 @@ export function emitContractTs(opts: {
   // verification already throws StepVerificationError on failure, so a
   // successful return IS a real signal — z.unknown() would be dishonest
   // in the other direction, hiding a field the flow can actually promise.
-  const conditionalFieldNames = gql && gqlQuery ? collectConditionalGraphQLFieldNames(gqlQuery) : undefined;
+  const conditionalFieldNames =
+    gql && gqlQuery ? collectConditionalGraphQLFieldNames(gqlQuery) : undefined;
   const responseSchemaExpr =
     omitExecuteHttp && isSubmissionFlow
       ? `z.object({ verified: z.boolean() })`

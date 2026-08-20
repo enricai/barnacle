@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { collectConditionalGraphQLFieldNames, inferZodSchemaFromSamples } from "@/scripts/recon-generate";
+import {
+  collectConditionalGraphQLFieldNames,
+  inferZodSchemaFromSamples,
+} from "@/scripts/recon-generate";
 
 describe("inferZodSchemaFromSamples — GraphQL @include/@skip directive fields", () => {
   it("marks a single-sample-present field .optional() when its query selection carries @include", () => {
@@ -19,7 +22,9 @@ describe("inferZodSchemaFromSamples — GraphQL @include/@skip directive fields"
     expect(presenceOnlySchema).toMatch(/discountAmount: z\.number\(\),/);
 
     const conditionalFieldNames = collectConditionalGraphQLFieldNames(query);
-    const directiveAwareSchema = inferZodSchemaFromSamples([sample], 0, "", { conditionalFieldNames });
+    const directiveAwareSchema = inferZodSchemaFromSamples([sample], 0, "", {
+      conditionalFieldNames,
+    });
     expect(directiveAwareSchema).toMatch(/discountAmount: z\.number\(\)\.optional\(\)/);
   });
 
@@ -34,7 +39,9 @@ describe("inferZodSchemaFromSamples — GraphQL @include/@skip directive fields"
     `;
     const sample = { offer: { basePrice: 42, discountAmount: 7 } };
     const conditionalFieldNames = collectConditionalGraphQLFieldNames(query);
-    const directiveAwareSchema = inferZodSchemaFromSamples([sample], 0, "", { conditionalFieldNames });
+    const directiveAwareSchema = inferZodSchemaFromSamples([sample], 0, "", {
+      conditionalFieldNames,
+    });
     expect(directiveAwareSchema).toMatch(/basePrice: z\.number\(\),/);
     expect(directiveAwareSchema).not.toMatch(/basePrice: z\.number\(\)\.optional\(\)/);
   });
