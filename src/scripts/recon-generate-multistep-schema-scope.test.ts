@@ -27,7 +27,9 @@ const BASE_OPTS = {
  * generated ResponseSchema — the checklist line built by
  * buildContractChecklist and logged (not shipped) by main(). */
 function instructsSchemaNarrowing(checklist: string[]): boolean {
-  return checklist.some((line) => /^Narrow \w+ResponseSchema to match the real response shape/.test(line));
+  return checklist.some((line) =>
+    /^Narrow \w+ResponseSchema to match the real response shape/.test(line)
+  );
 }
 
 /** True when `source` wires the (narrowable) generated ResponseSchema as the
