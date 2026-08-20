@@ -4099,8 +4099,7 @@ interface PaginationSignal {
  * paging signal: a total/count field in the captured response alongside a
  * skip+count (or offset+limit) shaped pagination variable whose declared
  * page size evenly divides the captured page's item count. When present,
- * {@link emitContractTs} emits a paging loop instead of a single fixed page
- * (see docs/recon-generated-read-plugin-not-production-shaped.md, G1).
+ * {@link emitContractTs} emits a paging loop instead of a single fixed page.
  */
 function detectPaginationSignal(
   responseBody: unknown,
