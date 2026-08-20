@@ -418,6 +418,77 @@ export function harvestPersonaBindings(
 }
 
 /**
+ * Detects a flow step whose quoted VALUE is the space-joined concatenation of
+ * two already-known field values (either order), e.g. a signature step whose
+ * label the vocabulary doesn't recognize but whose value is `${FirstName}
+ * ${LastName}`. {@link resolveStepPayloadField} only ever resolves a SINGLE
+ * field per step, so a composite value like this falls through its label
+ * match entirely and the persona literal would otherwise survive emission.
+ *
+ * @returns the two known fields (in the order they appear in the value), or
+ *   null when the step's value is not such a concatenation
+ */
+export function resolveCompositePersonaFields(
+  instruction: string,
+  knownFieldValues: ReadonlyMap<string, string>
+): { fieldA: string; fieldB: string } | null {
+  const spans = findQuoteSpans(instruction);
+  if (spans.length === 0) return null;
+  const value = pickValueSpan(instruction, spans).value;
+  if (value.length === 0) return null;
+  for (const [fieldA, valueA] of knownFieldValues) {
+    for (const [fieldB, valueB] of knownFieldValues) {
+      if (fieldA === fieldB) continue;
+      if (value === `${valueA} ${valueB}`) return { fieldA, fieldB };
+    }
+  }
+  return null;
+}
+
+/**
+ * Every persona literal a generated flow could leak: each single known field
+ * value, plus both concatenation orders of every distinct pair — the same
+ * composite shape {@link resolveCompositePersonaFields} splices. Feeds
+ * {@link assertNoLeakedPersonaConstant}'s final safety-net scan so a splice
+ * miss (single OR composite) is caught regardless of which matching path
+ * should have handled it.
+ */
+function allPersonaLiterals(knownFieldValues: ReadonlyMap<string, string>): string[] {
+  const entries = [...knownFieldValues.entries()];
+  const literals = entries.map(([, value]) => value);
+  for (const [fieldA, valueA] of entries) {
+    for (const [fieldB, valueB] of entries) {
+      if (fieldA === fieldB) continue;
+      literals.push(`${valueA} ${valueB}`);
+    }
+  }
+  return literals.filter((value) => value.length > 0);
+}
+
+/**
+ * Final safety net: throws if any known persona constant — single field or
+ * composite concatenation — still appears verbatim as a quoted literal in the
+ * fully-built flow code. Every splice path above (vocabulary match, derived
+ * label, composite match) is a heuristic; this is the loud failure that
+ * catches whatever heuristic missed rather than shipping the recon identity's
+ * own data as a frozen literal in every caller's submission.
+ *
+ * @throws when a persona literal survives emission
+ */
+function assertNoLeakedPersonaConstant(
+  code: string,
+  knownFieldValues: ReadonlyMap<string, string>
+): void {
+  for (const value of allPersonaLiterals(knownFieldValues)) {
+    if (code.includes(`'${value}'`)) {
+      throw new Error(
+        `recon-generate: persona constant '${value}' survived emission — a flow step failed to splice its known field value to payload.<field>`
+      );
+    }
+  }
+}
+
+/**
  * How deep to infer before collapsing to z.unknown(). Deep enough to reach the
  * fields that carry meaning on real inventory APIs — a listing's price
  * summary sits ~11 levels down inside products[].buildings[].units[] —
@@ -3911,6 +3982,11 @@ export function emitContractTs(opts: {
    * ships browser-only with the standard candidate payload schema — rather
    * than emitting a fabricated single-call HTTP stub. */
   omitExecuteHttp?: boolean;
+  /** Multi-action flow whose last step is a submit — when combined with
+   * `omitExecuteHttp`, `runHealingFlow`'s `submitStep` verification already
+   * gates a successful return, so the response schema carries a real
+   * `verified: z.boolean()` field instead of the honest-gap `z.unknown()`. */
+  isSubmissionFlow?: boolean;
   /** First action capture's request body — used to infer the payload schema for submission flows. */
   inputBody?: unknown;
   /** Whether the flow has a multipart upload step — derived from actionSteps at the call site. */
@@ -3970,6 +4046,7 @@ export function emitContractTs(opts: {
     auxFiles,
     multiStepBody,
     omitExecuteHttp = false,
+    isSubmissionFlow = false,
     inputBody,
     hasMultipartStep = false,
     discoveredFormFields,
@@ -4000,8 +4077,17 @@ export function emitContractTs(opts: {
   // Single-endpoint plugins keep the same inferred-schema treatment, since
   // there both roles (client default and sole call) coincide.
   // Browser-flow-only plugins have no HTTP call to infer a shape from —
-  // z.unknown() there is the honest gap, not a narrowing shortcut.
-  const responseSchemaExpr = omitExecuteHttp ? `z.unknown()` : inferZodSchema(responseBody);
+  // z.unknown() there is the honest gap, not a narrowing shortcut. A
+  // submission flow is the exception: runHealingFlow's submitStep
+  // verification already throws StepVerificationError on failure, so a
+  // successful return IS a real signal — z.unknown() would be dishonest
+  // in the other direction, hiding a field the flow can actually promise.
+  const responseSchemaExpr =
+    omitExecuteHttp && isSubmissionFlow
+      ? `z.object({ verified: z.boolean() })`
+      : omitExecuteHttp
+        ? `z.unknown()`
+        : inferZodSchema(responseBody);
   // Multi-step flows that include a multipart upload need the binary asset
   // on the payload. ApplicantContactSchema (via ApplicantResumeSchema) already
   // declares Resume/ResumeContentType/ResumeFilename, so submission flows
@@ -4456,7 +4542,7 @@ ${executeHttpMethodBlock}
     session: BrowserSession,
     context: SitePluginContext
   ): Promise<SitePluginResult<${pascal}Response>> {
-    const raw = await run${pascal}BrowserFlow(session.stagehand, context.baseUrl, payload);
+    const raw = await run${pascal}BrowserFlow(session.stagehand, ${inputBody ? "payload.ClickUrl" : "context.baseUrl"}, payload);
     return { data: raw as ${pascal}Response };
   },
 };
@@ -4466,6 +4552,34 @@ ${executeHttpMethodBlock}
 // through to \`m.default\` (the response schema above) and 404 at runtime.
 export { ${camel}Plugin as plugin };
 `;
+}
+
+/**
+ * Fails generation loudly when the payload schema `emitContractTs` just wrote
+ * declares a required `*Url` field (e.g. `ClickUrl`) that neither the
+ * contract's own `execute()` call site nor the emitted browser flow ever
+ * reads as `payload.<Field>`. A required URL field nothing dereferences means
+ * the flow enters on the wrong page (see
+ * docs/recon-generate-browser-flow-entry-url-pii-and-unverified-submit.md
+ * defect 1) — this generalizes the check past ClickUrl so any future
+ * required URL field regresses loudly instead of silently.
+ */
+export function assertRequiredUrlFieldsReferenced(
+  contractCode: string,
+  browserFlowCode: string
+): void {
+  const urlFieldLinePattern = /^\s*(\w*Url\w*):\s*z\.\w+\(.*$/gm;
+  const emittedCode = `${contractCode}\n${browserFlowCode}`;
+  const unreferenced = [...contractCode.matchAll(urlFieldLinePattern)]
+    .filter((match) => !match[0].includes(".optional("))
+    .map((match) => match[1])
+    .filter((name): name is string => name !== undefined)
+    .filter((name) => !emittedCode.includes(`payload.${name}`));
+  if (unreferenced.length === 0) return;
+  throw new Error(
+    `recon-generate: required URL field(s) ${unreferenced.join(", ")} declared on the payload schema ` +
+      `but never referenced by the emitted contract or browser flow — the flow would enter on the wrong page`
+  );
 }
 
 /** A flow step as read from recon-flow.json, carrying the optional splicer hints. */
@@ -4505,6 +4619,23 @@ function buildStepInstructionExpr(instruction: string, field: string | null): st
   const site = locateSpliceSite(instruction);
   if (site === null) return JSON.stringify(instruction);
   return `\`${escapeForTemplateLiteral(site.before)}\${payload.${field}}${escapeForTemplateLiteral(site.after)}\``;
+}
+
+/**
+ * Build the emitted instruction expression for a step whose value is the
+ * concatenation of two known fields ({@link resolveCompositePersonaFields}):
+ * a backtick template literal with the whole quoted value replaced by
+ * `${payload.<fieldA>} ${payload.<fieldB>}`, preserving the single space the
+ * concatenation was built with.
+ */
+function buildCompositeStepInstructionExpr(
+  instruction: string,
+  fieldA: string,
+  fieldB: string
+): string {
+  const site = locateSpliceSite(instruction);
+  if (site === null) return JSON.stringify(instruction);
+  return `\`${escapeForTemplateLiteral(site.before)}\${payload.${fieldA}} \${payload.${fieldB}}${escapeForTemplateLiteral(site.after)}\``;
 }
 
 /**
@@ -4588,6 +4719,10 @@ export function emitConfigManifest(opts: {
    * browser-only.
    */
   httpModulePath?: string;
+  /** Multi-action flow whose last step is a submit — mirrors emitBrowserFlowTs's
+   * forcing so the config-plugin runtime's `runHealingFlow` submitStep
+   * verification (`src/plugins/config-plugin.ts`) actually gates it. */
+  isSubmissionFlow?: boolean;
   /** Env supplying `${RECON_*}` token values for {@link buildKnownFieldValues};
    * defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
@@ -4601,6 +4736,7 @@ export function emitConfigManifest(opts: {
     inputBody,
     recoveredFields,
     httpModulePath,
+    isSubmissionFlow = false,
     env = process.env,
   } = opts;
   const payloadFieldNames = new Set<string>();
@@ -4638,6 +4774,24 @@ export function emitConfigManifest(opts: {
     if (!optional && !upload && !submitStep) return rewritten;
     return { step: rewritten, optional, upload, submitStep };
   });
+
+  // The last step of a submission flow is structurally the submit — force
+  // submitStep:true even when the source recon-flow.json step never declared
+  // it, mirroring emitBrowserFlowTs's forcing (see there) so a config-plugin
+  // load of this manifest also gates on runHealingFlow's submitStep verification.
+  const lastStepIndex = steps.length - 1;
+  const lastStep = steps[lastStepIndex];
+  if (isSubmissionFlow && lastStep !== undefined) {
+    steps[lastStepIndex] =
+      typeof lastStep === "string"
+        ? { step: lastStep, optional: false, upload: false, submitStep: true }
+        : {
+            step: lastStep.step,
+            optional: lastStep.optional,
+            upload: lastStep.upload,
+            submitStep: true,
+          };
+  }
 
   // The request surface, widest wins: a flow splice, a recovered form field, or
   // a key from the first POST body all name something a caller controls. Splices
@@ -4748,13 +4902,35 @@ export function emitBrowserFlowTs(opts: {
       vocabulary,
       knownFieldValues
     );
+    const composite =
+      field === null && !(isObj && step.payloadFieldNone)
+        ? resolveCompositePersonaFields(instruction, knownFieldValues)
+        : null;
     if (field !== null) payloadFieldNames.add(field);
-    const instructionExpr = buildStepInstructionExpr(instruction, field);
+    if (composite !== null) {
+      payloadFieldNames.add(composite.fieldA);
+      payloadFieldNames.add(composite.fieldB);
+    }
+    const instructionExpr =
+      composite !== null
+        ? buildCompositeStepInstructionExpr(instruction, composite.fieldA, composite.fieldB)
+        : buildStepInstructionExpr(instruction, field);
     const optional = isObj ? step.optional === true : false;
     const upload = isObj ? step.upload === true : false;
     const submitStep = isObj ? step.submitStep === true : false;
     return `  { instruction: ${instructionExpr}, optional: ${optional}, upload: ${upload}, submitStep: ${submitStep} },`;
   });
+
+  // The last step of a submission flow is structurally the submit — force
+  // submitStep:true even when the source recon-flow.json step never declared
+  // it, so the engine's pre-submit probe/StepVerificationError actually gates it.
+  const lastStepLiteral = stepLiterals.at(-1);
+  if (isSubmissionFlow && lastStepLiteral !== undefined) {
+    stepLiterals[stepLiterals.length - 1] = lastStepLiteral.replace(
+      /submitStep: (true|false)(?= \},)/,
+      "submitStep: true"
+    );
+  }
 
   const flowStepsBlock =
     stepLiterals.length > 0
@@ -4804,9 +4980,16 @@ import type { ${pascal}Payload, ${pascal}Response } from "@/sites/${siteId}/cont
 
 const logger = getLogger({ name: "${siteId}-browser-flow" });
 
-const ${pascal}BrowserSchema = z.object({
+const ${pascal}BrowserSchema = z.object({${
+    isSubmissionFlow
+      ? `
+  // runHealingFlow throws StepVerificationError on a failed submitStep, so
+  // reaching this point already proves the submission verified.
+  verified: z.boolean(),`
+      : `
   // TODO: define the fields you need — align with ${pascal}Response
-  extraction: z.string(),
+  extraction: z.string(),`
+  }
 });
 
 /**
@@ -4816,12 +4999,12 @@ const ${pascal}BrowserSchema = z.object({
  */
 export async function run${pascal}BrowserFlow(
   stagehand: Stagehand,
-  baseUrl: string,
+  ${isSubmissionFlow ? "entryUrl" : "baseUrl"}: string,
   payload: ${pascal}Payload
 ): Promise<${pascal}Response> {
   const page = await stagehand.context.awaitActivePage();
 
-  await page.goto(baseUrl, { waitUntil: "networkidle" });
+  await page.goto(${isSubmissionFlow ? "entryUrl" : "baseUrl"}, { waitUntil: "networkidle" });
   // networkidle can resolve before a Cloudflare-fronted SPA hydrates; wait for
   // the real DOM so the first steps don't probe an empty shell page and skip.
   await waitForSpaReady(page, logger);
@@ -4848,16 +5031,39 @@ ${flowStepsBlock}
   // both Zod v3 and v4 schemas natively (StagehandZodSchema union since
   // 2.4.3 / PR #944), and the caller-side safeParse defends against SDK
   // contract drift. Widen ${pascal}BrowserSchema as needed to match the
-  // fields the recon flow actually surfaces.
+  // fields the recon flow actually surfaces.${
+    isSubmissionFlow
+      ? `
+  // runHealingFlow above already verified the submit (submitStep:true), so the
+  // application is already committed at the ATS. A schema-validation or
+  // watchdog-timeout throw from this trailing confirmation extract must not
+  // propagate and trigger a duplicate re-dispatch — catch it, log it, and
+  // degrade to a not-confirmed result instead.
+  try {
+    const result = await guardedExtract(
+      stagehand,
+      "is a submission confirmation shown, and what is its reference number?",
+      ${pascal}BrowserSchema
+    );
+    return { ...result, verified: true } as unknown as ${pascal}Response;
+  } catch (error) {
+    logger.error(\`GuardedExtractError: post-submit confirmation extract failed on an already-verified submit, degrading to not-confirmed: \${error}\`);
+    return { verified: false } as unknown as ${pascal}Response;
+  }
+}
+`
+      : `
   const result = await guardedExtract(
     stagehand,
-    ${isSubmissionFlow ? `\`drove the ${siteId} submission flow for payload \${JSON.stringify(payload)}\`` : `\`extract results matching query: \${payload.query}\``},
+    \`extract results matching query: \${payload.query}\`,
     ${pascal}BrowserSchema
   );
 
   return result as unknown as ${pascal}Response;
 }
-`;
+`
+  }`;
+  assertNoLeakedPersonaConstant(code, knownFieldValues);
   return { code, payloadFieldNames };
 }
 
@@ -5381,6 +5587,7 @@ async function main(): Promise<void> {
         vocabulary,
         inputBody,
         recoveredFields: [...discoveredFormFields, ...discoveredOptionFields],
+        isSubmissionFlow,
         // A submission flow is the case where the `.ts` emit carries an
         // executeHttp hot path; point the manifest at where the operator drops
         // the compiled module rather than silently dropping the direct path.
@@ -5412,38 +5619,42 @@ async function main(): Promise<void> {
     frameSelector,
   });
 
-  writeFileSync(
-    `${outDir}/contract.ts`,
-    emitContractTs({
-      siteId,
-      pascal,
-      baseUrl,
-      // G1+G2: only the static headers (no baseUrl/tenant-subdomain references)
-      // get baked into BASE_HEADERS. The rest are emitted per-call from payload.
-      baseHeaders: isSubmissionFlow ? staticBaseHeaders : baseHeaders,
-      minTime,
-      safeRps,
-      responseBody: effectiveResponseBody,
-      gql,
-      gqlQuery,
-      endpointPath,
-      gqlOperationName: primaryGraphQLOperation?.capture.operationName ?? null,
-      gqlVariables: primaryGraphQLOperation?.capture.variables ?? null,
-      auxFiles,
-      multiStepBody,
-      omitExecuteHttp: browserFlowOnly,
-      inputBody,
-      hasMultipartStep,
-      discoveredFormFields,
-      fieldOptionsMap,
-      discoveredOptionFields,
-      discoveredRawOptionFields,
-      discoveredAdditionalBodyKeys,
-      discoveredStructuredKeys,
-      payloadFieldNames: browserFlow.payloadFieldNames,
-      headerBindings,
-    })
-  );
+  const contractCode = emitContractTs({
+    siteId,
+    pascal,
+    baseUrl,
+    // G1+G2: only the static headers (no baseUrl/tenant-subdomain references)
+    // get baked into BASE_HEADERS. The rest are emitted per-call from payload.
+    baseHeaders: isSubmissionFlow ? staticBaseHeaders : baseHeaders,
+    minTime,
+    safeRps,
+    responseBody: effectiveResponseBody,
+    gql,
+    gqlQuery,
+    endpointPath,
+    gqlOperationName: primaryGraphQLOperation?.capture.operationName ?? null,
+    gqlVariables: primaryGraphQLOperation?.capture.variables ?? null,
+    auxFiles,
+    multiStepBody,
+    omitExecuteHttp: browserFlowOnly,
+    isSubmissionFlow,
+    inputBody,
+    hasMultipartStep,
+    discoveredFormFields,
+    fieldOptionsMap,
+    discoveredOptionFields,
+    discoveredRawOptionFields,
+    discoveredAdditionalBodyKeys,
+    discoveredStructuredKeys,
+    payloadFieldNames: browserFlow.payloadFieldNames,
+    headerBindings,
+  });
+
+  // Fails loudly rather than shipping a flow that requires a URL field it
+  // never reads (see assertRequiredUrlFieldsReferenced doc comment).
+  assertRequiredUrlFieldsReferenced(contractCode, browserFlow.code);
+
+  writeFileSync(`${outDir}/contract.ts`, contractCode);
   logger.info(`wrote ${outDir}/contract.ts`);
 
   writeFileSync(`${outDir}/flows/browser-flow.ts`, browserFlow.code);
