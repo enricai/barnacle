@@ -90,7 +90,7 @@ function looksLikeZodSchema(s: unknown): boolean {
 const metaSchema = z
   .object({
     siteId: z.string().min(1),
-    displayName: z.string().min(1),
+    displayName: z.string().min(1).optional(),
     routeOverride: z.string().optional(),
     defaultBaseUrl: z.string().optional(),
     taskTimeoutMs: z.number().optional(),
