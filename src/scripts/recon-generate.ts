@@ -3968,6 +3968,11 @@ export function emitContractTs(opts: {
    * ships browser-only with the standard candidate payload schema — rather
    * than emitting a fabricated single-call HTTP stub. */
   omitExecuteHttp?: boolean;
+  /** Multi-action flow whose last step is a submit — when combined with
+   * `omitExecuteHttp`, `runHealingFlow`'s `submitStep` verification already
+   * gates a successful return, so the response schema carries a real
+   * `verified: z.boolean()` field instead of the honest-gap `z.unknown()`. */
+  isSubmissionFlow?: boolean;
   /** First action capture's request body — used to infer the payload schema for submission flows. */
   inputBody?: unknown;
   /** Whether the flow has a multipart upload step — derived from actionSteps at the call site. */
@@ -4027,6 +4032,7 @@ export function emitContractTs(opts: {
     auxFiles,
     multiStepBody,
     omitExecuteHttp = false,
+    isSubmissionFlow = false,
     inputBody,
     hasMultipartStep = false,
     discoveredFormFields,
@@ -4057,8 +4063,17 @@ export function emitContractTs(opts: {
   // Single-endpoint plugins keep the same inferred-schema treatment, since
   // there both roles (client default and sole call) coincide.
   // Browser-flow-only plugins have no HTTP call to infer a shape from —
-  // z.unknown() there is the honest gap, not a narrowing shortcut.
-  const responseSchemaExpr = omitExecuteHttp ? `z.unknown()` : inferZodSchema(responseBody);
+  // z.unknown() there is the honest gap, not a narrowing shortcut. A
+  // submission flow is the exception: runHealingFlow's submitStep
+  // verification already throws StepVerificationError on failure, so a
+  // successful return IS a real signal — z.unknown() would be dishonest
+  // in the other direction, hiding a field the flow can actually promise.
+  const responseSchemaExpr =
+    omitExecuteHttp && isSubmissionFlow
+      ? `z.object({ verified: z.boolean() })`
+      : omitExecuteHttp
+        ? `z.unknown()`
+        : inferZodSchema(responseBody);
   // Multi-step flows that include a multipart upload need the binary asset
   // on the payload. ApplicantContactSchema (via ApplicantResumeSchema) already
   // declares Resume/ResumeContentType/ResumeFilename, so submission flows
@@ -4869,6 +4884,17 @@ export function emitBrowserFlowTs(opts: {
     return `  { instruction: ${instructionExpr}, optional: ${optional}, upload: ${upload}, submitStep: ${submitStep} },`;
   });
 
+  // The last step of a submission flow is structurally the submit — force
+  // submitStep:true even when the source recon-flow.json step never declared
+  // it, so the engine's pre-submit probe/StepVerificationError actually gates it.
+  if (isSubmissionFlow && stepLiterals.length > 0) {
+    const lastIndex = stepLiterals.length - 1;
+    stepLiterals[lastIndex] = stepLiterals[lastIndex].replace(
+      /submitStep: (true|false)(?= \},)/,
+      "submitStep: true"
+    );
+  }
+
   const flowStepsBlock =
     stepLiterals.length > 0
       ? stepLiterals.join("\n")
@@ -4917,9 +4943,16 @@ import type { ${pascal}Payload, ${pascal}Response } from "@/sites/${siteId}/cont
 
 const logger = getLogger({ name: "${siteId}-browser-flow" });
 
-const ${pascal}BrowserSchema = z.object({
+const ${pascal}BrowserSchema = z.object({${
+    isSubmissionFlow
+      ? `
+  // runHealingFlow throws StepVerificationError on a failed submitStep, so
+  // reaching this point already proves the submission verified.
+  verified: z.boolean(),`
+      : `
   // TODO: define the fields you need — align with ${pascal}Response
-  extraction: z.string(),
+  extraction: z.string(),`
+  }
 });
 
 /**
@@ -4968,7 +5001,7 @@ ${flowStepsBlock}
     ${pascal}BrowserSchema
   );
 
-  return result as unknown as ${pascal}Response;
+  return ${isSubmissionFlow ? `{ ...result, verified: true }` : `result`} as unknown as ${pascal}Response;
 }
 `;
   assertNoLeakedPersonaConstant(code, knownFieldValues);
@@ -5544,6 +5577,7 @@ async function main(): Promise<void> {
     auxFiles,
     multiStepBody,
     omitExecuteHttp: browserFlowOnly,
+    isSubmissionFlow,
     inputBody,
     hasMultipartStep,
     discoveredFormFields,
