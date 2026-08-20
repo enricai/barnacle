@@ -4442,7 +4442,7 @@ ${executeHttpMethodBlock}
     session: BrowserSession,
     context: SitePluginContext
   ): Promise<SitePluginResult<${pascal}Response>> {
-    const raw = await run${pascal}BrowserFlow(session.stagehand, context.baseUrl, payload);
+    const raw = await run${pascal}BrowserFlow(session.stagehand, ${inputBody ? "payload.ClickUrl" : "context.baseUrl"}, payload);
     return { data: raw as ${pascal}Response };
   },
 };
@@ -4452,6 +4452,34 @@ ${executeHttpMethodBlock}
 // through to \`m.default\` (the response schema above) and 404 at runtime.
 export { ${camel}Plugin as plugin };
 `;
+}
+
+/**
+ * Fails generation loudly when the payload schema `emitContractTs` just wrote
+ * declares a required `*Url` field (e.g. `ClickUrl`) that neither the
+ * contract's own `execute()` call site nor the emitted browser flow ever
+ * reads as `payload.<Field>`. A required URL field nothing dereferences means
+ * the flow enters on the wrong page (see
+ * docs/recon-generate-browser-flow-entry-url-pii-and-unverified-submit.md
+ * defect 1) — this generalizes the check past ClickUrl so any future
+ * required URL field regresses loudly instead of silently.
+ */
+export function assertRequiredUrlFieldsReferenced(
+  contractCode: string,
+  browserFlowCode: string
+): void {
+  const urlFieldLinePattern = /^\s*(\w*Url\w*):\s*z\.\w+\(.*$/gm;
+  const emittedCode = `${contractCode}\n${browserFlowCode}`;
+  const unreferenced = [...contractCode.matchAll(urlFieldLinePattern)]
+    .filter((match) => !match[0].includes(".optional("))
+    .map((match) => match[1])
+    .filter((name): name is string => name !== undefined)
+    .filter((name) => !emittedCode.includes(`payload.${name}`));
+  if (unreferenced.length === 0) return;
+  throw new Error(
+    `recon-generate: required URL field(s) ${unreferenced.join(", ")} declared on the payload schema ` +
+      `but never referenced by the emitted contract or browser flow — the flow would enter on the wrong page`
+  );
 }
 
 /** A flow step as read from recon-flow.json, carrying the optional splicer hints. */
@@ -4802,12 +4830,12 @@ const ${pascal}BrowserSchema = z.object({
  */
 export async function run${pascal}BrowserFlow(
   stagehand: Stagehand,
-  baseUrl: string,
+  ${isSubmissionFlow ? "entryUrl" : "baseUrl"}: string,
   payload: ${pascal}Payload
 ): Promise<${pascal}Response> {
   const page = await stagehand.context.awaitActivePage();
 
-  await page.goto(baseUrl, { waitUntil: "networkidle" });
+  await page.goto(${isSubmissionFlow ? "entryUrl" : "baseUrl"}, { waitUntil: "networkidle" });
   // networkidle can resolve before a Cloudflare-fronted SPA hydrates; wait for
   // the real DOM so the first steps don't probe an empty shell page and skip.
   await waitForSpaReady(page, logger);
@@ -5398,38 +5426,41 @@ async function main(): Promise<void> {
     frameSelector,
   });
 
-  writeFileSync(
-    `${outDir}/contract.ts`,
-    emitContractTs({
-      siteId,
-      pascal,
-      baseUrl,
-      // G1+G2: only the static headers (no baseUrl/tenant-subdomain references)
-      // get baked into BASE_HEADERS. The rest are emitted per-call from payload.
-      baseHeaders: isSubmissionFlow ? staticBaseHeaders : baseHeaders,
-      minTime,
-      safeRps,
-      responseBody: effectiveResponseBody,
-      gql,
-      gqlQuery,
-      endpointPath,
-      gqlOperationName: primaryGraphQLOperation?.capture.operationName ?? null,
-      gqlVariables: primaryGraphQLOperation?.capture.variables ?? null,
-      auxFiles,
-      multiStepBody,
-      omitExecuteHttp: browserFlowOnly,
-      inputBody,
-      hasMultipartStep,
-      discoveredFormFields,
-      fieldOptionsMap,
-      discoveredOptionFields,
-      discoveredRawOptionFields,
-      discoveredAdditionalBodyKeys,
-      discoveredStructuredKeys,
-      payloadFieldNames: browserFlow.payloadFieldNames,
-      headerBindings,
-    })
-  );
+  const contractCode = emitContractTs({
+    siteId,
+    pascal,
+    baseUrl,
+    // G1+G2: only the static headers (no baseUrl/tenant-subdomain references)
+    // get baked into BASE_HEADERS. The rest are emitted per-call from payload.
+    baseHeaders: isSubmissionFlow ? staticBaseHeaders : baseHeaders,
+    minTime,
+    safeRps,
+    responseBody: effectiveResponseBody,
+    gql,
+    gqlQuery,
+    endpointPath,
+    gqlOperationName: primaryGraphQLOperation?.capture.operationName ?? null,
+    gqlVariables: primaryGraphQLOperation?.capture.variables ?? null,
+    auxFiles,
+    multiStepBody,
+    omitExecuteHttp: browserFlowOnly,
+    inputBody,
+    hasMultipartStep,
+    discoveredFormFields,
+    fieldOptionsMap,
+    discoveredOptionFields,
+    discoveredRawOptionFields,
+    discoveredAdditionalBodyKeys,
+    discoveredStructuredKeys,
+    payloadFieldNames: browserFlow.payloadFieldNames,
+    headerBindings,
+  });
+
+  // Fails loudly rather than shipping a flow that requires a URL field it
+  // never reads (see assertRequiredUrlFieldsReferenced doc comment).
+  assertRequiredUrlFieldsReferenced(contractCode, browserFlow.code);
+
+  writeFileSync(`${outDir}/contract.ts`, contractCode);
   logger.info(`wrote ${outDir}/contract.ts`);
 
   writeFileSync(`${outDir}/flows/browser-flow.ts`, browserFlow.code);
