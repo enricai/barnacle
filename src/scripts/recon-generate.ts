@@ -4148,6 +4148,7 @@ export function emitContractTs(opts: {
   const sortedAdditionalKeys = discoveredAdditionalBodyKeys
     ? [...discoveredAdditionalBodyKeys.entries()].sort(([a], [b]) => a.localeCompare(b))
     : [];
+  let usesMultipartBoolean = false;
   for (const [name, kind] of sortedAdditionalKeys) {
     if (isReservedByApplicantContactSchema(name)) continue;
     // Use multipartBoolean() for booleans when multipart is in play, so
@@ -4163,6 +4164,7 @@ export function emitContractTs(opts: {
           : payloadNeedsMultipart
             ? "multipartBoolean()"
             : "z.boolean()";
+    if (zod === "multipartBoolean()") usesMultipartBoolean = true;
     addExtendField(name, `  ${name}: ${zod},`);
   }
 
@@ -4192,6 +4194,9 @@ export function emitContractTs(opts: {
   const internalRequestReferenceExpr = inputBody
     ? inferZodSchema(inputBody, 0, "", { multipartCoerce: hasMultipartStep })
     : null;
+  if (internalRequestReferenceExpr?.includes("multipartBoolean(")) {
+    usesMultipartBoolean = true;
+  }
 
   // All field sources above are merged into a SINGLE `.extend({...})` object
   // literal, keyed by field name — a name that recurs across sources (or
@@ -4203,12 +4208,12 @@ export function emitContractTs(opts: {
   const payloadSchemaExpr = `${basePayloadSchemaExpr}${mergedExtension}`;
   // basePayloadSchemaExpr's own Answers field always wraps in
   // multipartJsonObject() for submission flows (inputBody set);
-  // multipartBoolean() and the structured-keys wrapping above are needed
-  // whenever payloadNeedsMultipart is true (an upload step OR a non-scalar
-  // discoveredStructuredKeys field).
+  // multipartBoolean() is only imported when a boolean field was actually
+  // wrapped in it above (an additional-body-key or an inputBody field under
+  // multipartCoerce) — payloadNeedsMultipart alone doesn't imply that.
   // Named imports from the same module are combined into one import statement.
   const zodMultipartNamedImports = [
-    ...(payloadNeedsMultipart ? ["multipartBoolean"] : []),
+    ...(usesMultipartBoolean ? ["multipartBoolean"] : []),
     ...(inputBody || (payloadNeedsMultipart && sortedStructuredEntries.length > 0)
       ? ["multipartJsonObject"]
       : []),
