@@ -82,6 +82,68 @@ function makeCatalogPage(count: number): Record<string, unknown>[] {
   }));
 }
 
+/**
+ * A run dir shaped like the reported incoherent-selection bug: a flow that
+ * declares `submitStep:true` (e.g. "apply the filter") but whose captures
+ * contain zero mutations -- a filtered search sent as a GraphQL query, not a
+ * mutation. Six facet-bearing anonymous captures and one named-but-unfiltered
+ * capture live on the site's own backend host; sixteen GraphQL-shaped POSTs
+ * sharing the SAME operationName live on a third-party host and sort ahead of
+ * the own-backend captures, so the ungated firstGraphQLQuery()/
+ * firstEndpointPath() fallback -- were it still reachable -- would pick one of
+ * them purely because it comes first in capture order.
+ */
+function writeSubmitStepMutationFreeRunDir(root: string): void {
+  mkdirSync(join(root, "graphql"), { recursive: true });
+  mkdirSync(join(root, "replays"), { recursive: true });
+  mkdirSync(join(root, "aux"), { recursive: true });
+
+  const thirdPartyQuery = gqlCapture({
+    phase: "open-the-metro-filter",
+    url: "https://gql.third-party-tracker.example.net/collect/graph",
+    operationName: "listingSearch_Listings",
+    query: "query listingSearch_Listings { trackedEvents { id } }",
+    variables: null,
+    responseLength: 2048,
+  });
+  for (let i = 0; i < 16; i++) {
+    writeFileSync(
+      join(root, "graphql", `000-open-the-metro-filter-tracker-${String(i).padStart(2, "0")}.json`),
+      JSON.stringify(thirdPartyQuery)
+    );
+  }
+
+  const facetQuery = (metro: string) =>
+    gqlCapture({
+      phase: "open-the-metro-filter",
+      url: "https://www.own-backend-fixture.example.com/x/graph",
+      operationName: null,
+      query: "query listingSearch_Listings($metro: String) { listings(metro: $metro) { id name } }",
+      variables: { metro },
+      responseLength: 61440,
+    });
+  const metros = ["AUSTIN", "DENVER", "SEATTLE", "BOSTON", "MIAMI", "PHOENIX"];
+  metros.forEach((metro, i) => {
+    writeFileSync(
+      join(root, "graphql", `100-open-the-metro-filter-facet-${i}.json`),
+      JSON.stringify(facetQuery(metro))
+    );
+  });
+
+  const unfilteredNamedQuery = gqlCapture({
+    phase: "open-the-metro-filter",
+    url: "https://www.own-backend-fixture.example.com/x/graph",
+    operationName: "listingSearch_Listings",
+    query: "query listingSearch_Listings($metro: String) { listings(metro: $metro) { id name } }",
+    variables: { metro: null },
+    responseLength: 61440,
+  });
+  writeFileSync(
+    join(root, "graphql", "101-open-the-metro-filter-unfiltered.json"),
+    JSON.stringify(unfilteredNamedQuery)
+  );
+}
+
 /** A run dir whose primary operation's response exposes a total alongside a
  * skip+count pagination variable — the paging signal. */
 function writePagedRunDir(root: string): void {
@@ -255,5 +317,45 @@ describe("recon-generate read-only GraphQL flow: catalog-fixture capture set wit
     expect(contract).toContain("itemsById.set(String(item.id), item);");
     expect(contract).toContain("[...itemsById.values()]");
     expect(contract).not.toMatch(/\.push\(\.\.\.(page|data)\.search\.items\)/);
+  }, 30_000);
+});
+
+describe("recon-generate: flow declares submitStep:true but captures zero mutations", () => {
+  it("still runs host-gated/facet-aware primary GraphQL selection instead of falling through to the ungated first-capture fallback", () => {
+    workDir = mkdtempSync(join(tmpdir(), "barnacle-graphql-submitstep-no-mutation-e2e-"));
+    const runRoot = join(workDir, "run");
+    writeSubmitStepMutationFreeRunDir(runRoot);
+
+    const siteId = `graphql-submitstep-no-mutation-e2e-test-${process.pid}`;
+    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    expect(existsSync(siteOutDir)).toBe(false);
+    mkdirSync(siteOutDir, { recursive: true });
+    writeFileSync(
+      join(siteOutDir, "recon-flow.json"),
+      JSON.stringify({
+        steps: [{ step: "apply the metro filter", payloadField: "metro", submitStep: true }],
+        ownBackendHostnames: ["www.own-backend-fixture.example.com"],
+      })
+    );
+
+    const result = spawnSync(
+      TSX_BIN,
+      [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
+      { cwd: REPO_ROOT, encoding: "utf8" }
+    );
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+
+    const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+
+    // The emitted endpoint and query text come from the own-backend
+    // capture's own operation, never the chronologically-first third-party
+    // capture sharing the same operationName -- submitStep:true no longer
+    // disables selection merely because no mutation was ever actually
+    // captured. (defaultBaseUrl is derived elsewhere, out of this
+    // subtask's scope, so it is not asserted on here.)
+    expect(contract).toMatch(/endpoint: .*\/x\/graph/);
+    expect(contract).toContain("listings(metro: $metro)");
+    expect(contract).not.toContain("trackedEvents");
   }, 30_000);
 });
