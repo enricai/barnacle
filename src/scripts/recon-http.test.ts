@@ -218,6 +218,19 @@ describe("selectAuxFixtureCandidates — own-backend host allowlist", () => {
     expect(candidates).toEqual([]);
   });
 
+  it("keeps only the own-backend candidate when several distinct third-party hosts are mixed in", () => {
+    const replays: ReplayResult[] = [
+      replay({ url: "https://api.example.com/config/markets.json" }),
+      replay({ url: "https://widgets.some-survey-vendor.example/config.json" }),
+      replay({ url: "https://cdn.some-analytics-vendor.example/pixel/config.json" }),
+      replay({ url: "https://tag.some-tagmanager-vendor.example/labels/en.json" }),
+    ];
+
+    const candidates = selectAuxFixtureCandidates(replays, ["api.example.com"], null);
+
+    expect(candidates.map((c) => c.url)).toEqual(["https://api.example.com/config/markets.json"]);
+  });
+
   it("excludes non-fixture-shaped paths and failed/GraphQL replays", () => {
     const replays: ReplayResult[] = [
       replay({ url: "https://api.example.com/order/checkout" }),
