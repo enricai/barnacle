@@ -53,4 +53,26 @@ describe("emitContractTs — GraphQL string-facet correlation", () => {
     );
     expect(source).not.toContain('"Category:Fiction|Format:Hardcover"');
   });
+
+  it("emits a string with no correlating facet keys as an untouched literal (fallback)", () => {
+    const source = emitContractTs({
+      ...BASE_OPTS,
+      gqlVariables: { locale: "en-US", filters: "badge:Bestseller" },
+      payloadFieldNames: new Set(["query"]),
+    });
+
+    expect(source).toContain('locale: "en-US"');
+    expect(source).toContain('filters: "badge:Bestseller"');
+  });
+
+  it("resolves a top-level-key match and a string-embedded facet match in the same call", () => {
+    const source = emitContractTs({
+      ...BASE_OPTS,
+      gqlVariables: { author: "Doe", filters: "category:Fiction" },
+      payloadFieldNames: new Set(["author", "category"]),
+    });
+
+    expect(source).toContain("author: payload.author");
+    expect(source).toContain(`filters: \`category:$${"{payload.category}"}\``);
+  });
 });
