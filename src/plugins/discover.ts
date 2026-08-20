@@ -259,7 +259,7 @@ export async function loadPlugins(
       logger.info(`${spec}: loaded siteId "${meta.siteId}" (${PLUGIN_API_VERSION})`);
       report.push({
         siteId: meta.siteId,
-        displayName: meta.displayName,
+        displayName: meta.displayName ?? null,
         specifier: spec,
         resolvedPath,
         route: meta.routeOverride ?? `/v1/${meta.siteId}/run`,
@@ -310,7 +310,7 @@ export async function loadAllPlugins(cfg: AppConfig): Promise<LoadPluginsResult>
 
   const builtinReport: PluginLoadRecord[] = builtins.map((p) => ({
     siteId: p.meta.siteId,
-    displayName: p.meta.displayName,
+    displayName: p.meta.displayName ?? null,
     specifier: "(builtin)",
     resolvedPath: null,
     route: p.meta.routeOverride ?? `/v1/${p.meta.siteId}/run`,

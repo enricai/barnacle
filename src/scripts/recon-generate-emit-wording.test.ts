@@ -220,3 +220,23 @@ describe("emitContractTs — review checklist moved out of the shipped file head
     );
   });
 });
+
+describe("emitContractTs meta.displayName (F6)", () => {
+  it("does not derive displayName via naive PascalCase-to-spaced capitalization", () => {
+    const code = emitContractTs({
+      siteId: "somemultiwordsite",
+      pascal: "Somemultiwordsite",
+      baseUrl: "https://example.com",
+      baseHeaders: { "Content-Type": "application/json" },
+      minTime: 100,
+      safeRps: 10,
+      responseBody: { id: "abc" },
+      gql: false,
+      gqlQuery: null,
+      endpointPath: "/api/search",
+      auxFiles: [],
+    });
+
+    expect(code).not.toContain("displayName:");
+  });
+});

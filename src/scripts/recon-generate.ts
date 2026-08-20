@@ -4575,7 +4575,6 @@ ${pluginDocComment}
 export const ${camel}Plugin: SitePlugin<${pascal}Payload, ${pascal}Response> = {
   meta: {
     siteId: ${JSON.stringify(siteId)},
-    displayName: ${JSON.stringify(pascal.replace(/([A-Z])/g, " $1").trim())},
     bodySchema: ${pascal}PayloadSchema,
     responseSchema: ${pascal}ResponseSchema,
     defaultBaseUrl: ${JSON.stringify(baseUrl)},
