@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -93,10 +93,11 @@ describe("recon-generate empty-replays warning (F1 bonus)", () => {
     siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
 
     const result = run(runRoot, siteId);
+    const out = `${result.stdout}\n${result.stderr}`;
 
-    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
-    expect(result.stderr).toContain("replays");
-    expect(result.stderr).toContain("recon:http");
+    expect(result.status, out).toBe(0);
+    expect(out).toContain("replays");
+    expect(out).toContain("recon:http");
   }, 30_000);
 
   it("does not warn when replays/ has entries (non-empty control)", () => {
@@ -108,8 +109,9 @@ describe("recon-generate empty-replays warning (F1 bonus)", () => {
     siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
 
     const result = run(runRoot, siteId);
+    const out = `${result.stdout}\n${result.stderr}`;
 
-    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
-    expect(result.stderr).not.toContain("empty replays/");
+    expect(result.status, out).toBe(0);
+    expect(out).not.toContain("empty replays/");
   }, 30_000);
 });
