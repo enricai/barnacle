@@ -898,6 +898,35 @@ function declaredOperationVariableNames(query: string): string[] {
 }
 
 /**
+ * Parses the operation name out of the query body itself, for captures whose
+ * top-level `operationName` field is null (an inline document with no
+ * separate operationName was still sent with a named `query`/`mutation`).
+ */
+function parsedOperationName(query: string): string | null {
+  const signature = /^\s*(?:query|mutation)\s+(\w+)/.exec(query);
+  return signature?.[1] ?? null;
+}
+
+/**
+ * Groups a capture for recurrence counting by endpoint path + operation
+ * name (falling back to the name parsed out of the query body when
+ * `operationName` is null), so operationName-less inline documents that
+ * repeat the same underlying query are recognized as recurring instead of
+ * being permanently unjoinable.
+ */
+function operationGroupKey(capture: Capture): string {
+  const endpointPath = (() => {
+    try {
+      return new URL(capture.url).pathname;
+    } catch {
+      return "";
+    }
+  })();
+  const name = capture.operationName ?? parsedOperationName(capture.query ?? "") ?? "anonymous";
+  return `${endpointPath}::${name}`;
+}
+
+/**
  * A declared variable is "populated" only by a non-null, non-empty-string
  * value — an operation can declare a filter input that every capture leaves
  * `undefined`/`null`/`""`, which is exactly the unfiltered-payload case this
@@ -998,8 +1027,8 @@ export function selectPrimaryGraphQLOperation(
   };
   const operationNameCounts = new Map<string, number>();
   for (const c of candidates) {
-    if (c.operationName === null) continue;
-    operationNameCounts.set(c.operationName, (operationNameCounts.get(c.operationName) ?? 0) + 1);
+    const key = operationGroupKey(c);
+    operationNameCounts.set(key, (operationNameCounts.get(key) ?? 0) + 1);
   }
 
   const maxSize = Math.max(...candidates.map(responseSize), 1);
@@ -1011,9 +1040,7 @@ export function selectPrimaryGraphQLOperation(
     const fieldScore = fieldMatchCount(capture) / maxFieldMatch;
     const phaseScore = capture.phase !== "home" ? 1 : 0;
     const recurrenceScore =
-      capture.operationName !== null
-        ? (operationNameCounts.get(capture.operationName) ?? 0) / maxRecurrence
-        : 0;
+      (operationNameCounts.get(operationGroupKey(capture)) ?? 0) / maxRecurrence;
     const facetScore = facetSpliceable(capture) ? 1 : 0;
     // Field correlation carries the heaviest weight so a smaller facet-matching
     // operation outranks a larger decoy — size alone must not decide this.
@@ -1040,10 +1067,8 @@ export function selectPrimaryGraphQLOperation(
     }
   })();
 
-  const sharedCaptures =
-    winner.capture.operationName !== null
-      ? candidates.filter((c) => c.operationName === winner.capture.operationName)
-      : [winner.capture];
+  const winnerGroupKey = operationGroupKey(winner.capture);
+  const sharedCaptures = candidates.filter((c) => operationGroupKey(c) === winnerGroupKey);
   const declaredVariableNames = declaredOperationVariableNames(winner.capture.query ?? "");
   const unpopulatedDeclaredVariables = declaredVariableNames.filter(
     (name) =>
