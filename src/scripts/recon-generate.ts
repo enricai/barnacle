@@ -367,7 +367,7 @@ export function deriveFillLabelField(instruction: string): string | null {
     instruction
   )?.[1];
   if (label === undefined) return null;
-  return fieldNameToPascalCase(label, null);
+  return resolveCanonicalAtsFieldName(label) ?? fieldNameToPascalCase(label, null);
 }
 
 /**

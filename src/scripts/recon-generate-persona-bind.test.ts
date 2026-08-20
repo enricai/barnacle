@@ -174,9 +174,10 @@ describe("harvestPersonaBindings", () => {
 describe("deriveFillLabelField — self-describing fill/enter/type grammar", () => {
   const cases: Array<[string, string | null]> = [
     ["Fill in the Middle Name field with 'Quentin'", "MiddleName"],
-    ["Fill in the Address Line 1 field with '100 Main'", "AddressLine1"],
+    ["Fill in the Address Line 1 field with '100 Main'", "AddressLine"],
     ["Enter the Date of Birth field with '1990-01-01'", "DateOfBirth"],
     ["Type in the Preferred Name field with 'Q'", "PreferredName"],
+    ["Fill in the Mobile Phone field with '5125551234'", "Phone"],
     // Select/Choose are excluded — they name the answer first, not the field.
     ["Select 'No' for the sponsorship question", null],
     ["Choose 'United States' in the Country dropdown", null],
