@@ -98,3 +98,20 @@ export function isNoiseUrl(url: string): boolean {
   if (ASSET_EXTENSION.test(parsed.pathname)) return true;
   return false;
 }
+
+/**
+ * Naive registrable-domain heuristic: the last two dot-separated labels. No
+ * PSL library is used anywhere in this codebase (this file's own host
+ * matching above is plain suffix comparison), so a hand-rolled 2-label
+ * approximation is consistent style rather than a new dependency. Good
+ * enough for grouping same-vendor subdomains (`api.example.com` /
+ * `static.example.com` → `example.com`); not correct for multi-label
+ * public suffixes (e.g. `co.uk`), which this codebase does not target.
+ */
+export function registrableDomain(hostname: string): string {
+  const labels = hostname
+    .toLowerCase()
+    .split(".")
+    .filter((label) => label.length > 0);
+  return labels.length <= 2 ? labels.join(".") : labels.slice(-2).join(".");
+}

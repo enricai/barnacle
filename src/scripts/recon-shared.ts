@@ -227,6 +227,30 @@ export function readSuccessUrlFragments(flowFile: string): string[] {
 }
 
 /**
+ * Reads just `ownBackendHostnames` out of a recon flow file.
+ *
+ * Mirrors `readSuccessUrlFragments` above: tolerant of a missing/malformed
+ * file (a bad flow file must not abort the HTTP probe over a field that only
+ * narrows a filter), and returns `[]` for the legacy bare-array flow shape.
+ */
+export function readOwnBackendHostnames(flowFile: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(flowFile, "utf8"));
+    if (Array.isArray(parsed)) return [];
+    const hostnames = (parsed as { ownBackendHostnames?: unknown }).ownBackendHostnames;
+    if (!Array.isArray(hostnames)) return [];
+    return hostnames.filter((h): h is string => typeof h === "string" && h.length > 0);
+  } catch (err) {
+    logger.warn(
+      `flow file '${flowFile}' unreadable for ownBackendHostnames, aux-fixture allowlist disabled: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
+    return [];
+  }
+}
+
+/**
  * Counts how often each response header appears across successful replays.
  * Infrastructure headers that are never load-bearing on the request side are
  * excluded so the caller sees only candidates worth committing as BASE_HEADERS.
