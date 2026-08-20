@@ -155,5 +155,13 @@ describe("recon-generate ungated fallback prefers own-backend facet-bearing capt
     expect(contract).not.toContain(THIRD_PARTY_PATH);
     expect(contract).toContain(OWN_HOST);
     expect(contract).toContain("baseUrl}/graphql");
+
+    // Distinguishes the facet-bearing capture's query from the mutation's:
+    // both are own-backend, so the host/path assertions above pass either
+    // way. Only inspecting the wired QUERY constant proves the fallback
+    // picked the facet-bearing catalogSearch_Items capture over the
+    // addToCart mutation capture that also made it into the same array.
+    expect(contract).toContain("catalogSearch(filters: $filters)");
+    expect(contract).not.toContain("mutation addToCart");
   }, 30_000);
 });
