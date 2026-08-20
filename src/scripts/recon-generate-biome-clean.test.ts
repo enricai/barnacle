@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { emitMultiStepExecuteHttp } from "@/scripts/recon-generate";
+import { emitContractTs, emitMultiStepExecuteHttp } from "@/scripts/recon-generate";
 import type { Capture } from "@/scripts/recon-shared";
 
 /** Resolve the Biome binary from the repo's own `node_modules/.bin` rather than
@@ -239,6 +239,78 @@ describe("emitMultiStepExecuteHttp — emitted code is Biome-clean", () => {
           })
         ).not.toThrow();
       }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * G2's own uncomment instruction claims the emitted `// const ... =
+ * loadFixture(...)` line is valid JS once stripped of its leading `// `.
+ * Regex-checking the identifier shape (recon-generate-fixture-identifier.test.ts)
+ * proves the name is well-formed but not that the whole line parses — this
+ * closes that gap by running it through the real Biome parser.
+ */
+describe("emitContractTs — uncommented loadFixture lines parse (G2)", () => {
+  it("parses cleanly once every `// const ... = loadFixture(...)` line is uncommented", () => {
+    if (!existsSync(BIOME_BIN)) {
+      throw new Error(`biome binary not found at ${BIOME_BIN} — run pnpm install`);
+    }
+
+    const source = emitContractTs({
+      siteId: "test-site",
+      pascal: "TestSite",
+      baseUrl: "https://example.com",
+      baseHeaders: { "Content-Type": "application/json" },
+      minTime: 100,
+      safeRps: 10,
+      responseBody: { id: "abc", active: true },
+      gql: false,
+      gqlQuery: null,
+      endpointPath: "/api/search",
+      hasMultipartStep: false,
+      auxFiles: [
+        "10219132.json",
+        "vendorwidget.config-a.example-net.json",
+        "acme-domains-configuration.json",
+      ],
+    });
+    const uncommented = source
+      .split("\n")
+      .filter((line) => line.trimStart().startsWith("// const ") && line.includes("loadFixture("))
+      .map((line) => line.trimStart().replace(/^\/\/ /, ""));
+    expect(uncommented.length).toBe(3);
+
+    const snippet = [
+      "declare function loadFixture(siteId: string, filename: string, schema: unknown): unknown;",
+      "declare const z: { unknown: () => unknown };",
+      ...uncommented,
+    ].join("\n");
+
+    const dir = mkdtempSync(join(tmpdir(), "barnacle-biome-"));
+    try {
+      // No rules enabled — Biome still parses the file before applying any
+      // rule, so a parse error (the exact G2 "uncomment and it breaks"
+      // scenario) surfaces as a diagnostic and a non-zero exit regardless.
+      writeFileSync(
+        join(dir, "biome.json"),
+        JSON.stringify({
+          $schema: "https://biomejs.dev/schemas/2.3.11/schema.json",
+          formatter: { enabled: false },
+          assist: { enabled: false },
+          linter: { enabled: true, rules: { recommended: false } },
+        })
+      );
+      const file = join(dir, "fixtures.ts");
+      writeFileSync(file, `${snippet}\n`);
+      expect(() =>
+        execFileSync(BIOME_BIN, ["lint", "--config-path", dir, file], {
+          cwd: dir,
+          encoding: "utf8",
+          stdio: "pipe",
+        })
+      ).not.toThrow();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
