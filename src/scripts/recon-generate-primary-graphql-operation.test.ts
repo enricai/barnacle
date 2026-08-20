@@ -137,4 +137,47 @@ describe("selectPrimaryGraphQLOperation", () => {
 
     expect(result?.capture).toBe(facetBearing);
   });
+
+  it("reports declared filter variables that are never populated across any candidate", () => {
+    const query =
+      "query productSearch_Listings($filters: String, $qualifiers: String, $sort: SortInput, $pagination: PaginationInput) { listings { id } }";
+    const first = makeCapture({
+      operationName: "productSearch_Listings",
+      query,
+      variables: { sort: { by: "RECOMMENDED" }, pagination: { count: 10, skip: 0 } },
+    });
+    const second = makeCapture({
+      operationName: "productSearch_Listings",
+      query,
+      variables: {
+        sort: { by: "RECOMMENDED" },
+        pagination: { count: 10, skip: 10 },
+        filters: null,
+        qualifiers: "",
+      },
+    });
+
+    const result = selectPrimaryGraphQLOperation([first, second], [], EMPTY_VOCABULARY);
+
+    expect(result?.unpopulatedDeclaredVariables).toEqual(["filters", "qualifiers"]);
+  });
+
+  it("omits a declared filter variable when some candidate actually populates it", () => {
+    const query =
+      "query productSearch_Listings($filters: String, $qualifiers: String, $sort: SortInput) { listings { id } }";
+    const unfiltered = makeCapture({
+      operationName: "productSearch_Listings",
+      query,
+      variables: { sort: { by: "RECOMMENDED" } },
+    });
+    const filtered = makeCapture({
+      operationName: "productSearch_Listings",
+      query,
+      variables: { sort: { by: "RECOMMENDED" }, filters: "neighborhood:Downtown" },
+    });
+
+    const result = selectPrimaryGraphQLOperation([unfiltered, filtered], [], EMPTY_VOCABULARY);
+
+    expect(result?.unpopulatedDeclaredVariables).toEqual(["qualifiers"]);
+  });
 });

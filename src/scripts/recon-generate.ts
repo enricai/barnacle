@@ -883,6 +883,30 @@ function firstGraphQLQuery(captures: Capture[]): string | null {
 interface PrimaryGraphQLOperation {
   capture: Capture;
   endpointPath: string;
+  unpopulatedDeclaredVariables: string[];
+}
+
+/**
+ * Parses `$name:` declarations out of a GraphQL operation signature, e.g.
+ * `query cruiseSearch_Cruises($filters: String, $qualifiers: String)` yields
+ * `["filters", "qualifiers"]`.
+ */
+function declaredOperationVariableNames(query: string): string[] {
+  const signature = /^\s*(?:query|mutation)\s+\w*\s*\(([^)]*)\)/.exec(query);
+  if (!signature) return [];
+  return Array.from(signature[1]!.matchAll(/\$(\w+)\s*:/g), (m) => m[1]!);
+}
+
+/**
+ * A declared variable is "populated" only by a non-null, non-empty-string
+ * value — an operation can declare a filter input that every capture leaves
+ * `undefined`/`null`/`""`, which is exactly the unfiltered-payload case this
+ * flags for generation to warn about.
+ */
+function isPopulatedVariableValue(value: unknown): boolean {
+  if (value === null || value === undefined) return false;
+  if (typeof value === "string") return value.length > 0;
+  return true;
 }
 
 /**
@@ -1002,7 +1026,19 @@ export function selectPrimaryGraphQLOperation(
     }
   })();
 
-  return { capture: winner.capture, endpointPath };
+  const sharedCaptures =
+    winner.capture.operationName !== null
+      ? candidates.filter((c) => c.operationName === winner.capture.operationName)
+      : [winner.capture];
+  const declaredVariableNames = declaredOperationVariableNames(winner.capture.query ?? "");
+  const unpopulatedDeclaredVariables = declaredVariableNames.filter(
+    (name) =>
+      !sharedCaptures.some((c) =>
+        isPopulatedVariableValue((c.variables as Record<string, unknown> | null)?.[name])
+      )
+  );
+
+  return { capture: winner.capture, endpointPath, unpopulatedDeclaredVariables };
 }
 
 /**
