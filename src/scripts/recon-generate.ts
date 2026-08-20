@@ -4705,6 +4705,10 @@ export function emitConfigManifest(opts: {
    * browser-only.
    */
   httpModulePath?: string;
+  /** Multi-action flow whose last step is a submit — mirrors emitBrowserFlowTs's
+   * forcing so the config-plugin runtime's `runHealingFlow` submitStep
+   * verification (`src/plugins/config-plugin.ts`) actually gates it. */
+  isSubmissionFlow?: boolean;
   /** Env supplying `${RECON_*}` token values for {@link buildKnownFieldValues};
    * defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
@@ -4718,6 +4722,7 @@ export function emitConfigManifest(opts: {
     inputBody,
     recoveredFields,
     httpModulePath,
+    isSubmissionFlow = false,
     env = process.env,
   } = opts;
   const payloadFieldNames = new Set<string>();
@@ -4755,6 +4760,24 @@ export function emitConfigManifest(opts: {
     if (!optional && !upload && !submitStep) return rewritten;
     return { step: rewritten, optional, upload, submitStep };
   });
+
+  // The last step of a submission flow is structurally the submit — force
+  // submitStep:true even when the source recon-flow.json step never declared
+  // it, mirroring emitBrowserFlowTs's forcing (see there) so a config-plugin
+  // load of this manifest also gates on runHealingFlow's submitStep verification.
+  const lastStepIndex = steps.length - 1;
+  const lastStep = steps[lastStepIndex];
+  if (isSubmissionFlow && lastStep !== undefined) {
+    steps[lastStepIndex] =
+      typeof lastStep === "string"
+        ? { step: lastStep, optional: false, upload: false, submitStep: true }
+        : {
+            step: lastStep.step,
+            optional: lastStep.optional,
+            upload: lastStep.upload,
+            submitStep: true,
+          };
+  }
 
   // The request surface, widest wins: a flow splice, a recovered form field, or
   // a key from the first POST body all name something a caller controls. Splices
@@ -5528,6 +5551,7 @@ async function main(): Promise<void> {
         vocabulary,
         inputBody,
         recoveredFields: [...discoveredFormFields, ...discoveredOptionFields],
+        isSubmissionFlow,
         // A submission flow is the case where the `.ts` emit carries an
         // executeHttp hot path; point the manifest at where the operator drops
         // the compiled module rather than silently dropping the direct path.

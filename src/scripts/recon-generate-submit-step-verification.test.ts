@@ -120,4 +120,34 @@ describe("recon-generate — submit-step verification", () => {
 
     expect(manifest).not.toContain("submitEndpointPattern");
   });
+
+  it("emitConfigManifest also forces submitStep:true on the last step for a submission flow — the config-plugin runtime gates on the same field", () => {
+    const manifest = emitConfigManifest({
+      siteId: "recon-site-3",
+      displayName: "Recon Site 3",
+      baseUrl: "https://careers.example.org",
+      flowSteps: submissionOpts.flowSteps,
+      inputBody: { FirstName: "John" },
+      isSubmissionFlow: true,
+    });
+    const steps = JSON.parse(manifest).spec.flow.steps;
+
+    expect(steps).toHaveLength(3);
+    expect(steps[0]).not.toHaveProperty("submitStep");
+    expect(steps[1]).not.toHaveProperty("submitStep");
+    expect(steps.at(-1)).toMatchObject({ submitStep: true });
+  });
+
+  it("does NOT force submitStep on emitConfigManifest's last step when isSubmissionFlow is omitted", () => {
+    const manifest = emitConfigManifest({
+      siteId: "recon-site-3",
+      displayName: "Recon Site 3",
+      baseUrl: "https://careers.example.org",
+      flowSteps: submissionOpts.flowSteps,
+      inputBody: { FirstName: "John" },
+    });
+    const steps = JSON.parse(manifest).spec.flow.steps;
+
+    expect(steps.at(-1)).not.toHaveProperty("submitStep");
+  });
 });
