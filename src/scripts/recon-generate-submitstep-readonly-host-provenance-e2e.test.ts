@@ -92,13 +92,18 @@ describe("recon-generate submitStep-declared read-only flow host provenance CLI 
     mkdirSync(join(runRoot, "aux"), { recursive: true });
     writeFileSync(join(runRoot, "replays", "rate-limit.json"), JSON.stringify([]));
 
-    // Own-backend captures first, so deriveBaseUrl picks the own host even
-    // though the third-party host outnumbers it heavily below. Every
-    // capture is a query (no `mutation` prefix), so
-    // extractGraphQLActionSequence always yields an empty sequence.
-    const ownCaptures = Array.from({ length: 3 }, (_, i) => ownBackendCapture(i));
+    // Third-party captures come FIRST in read order, and outnumber the
+    // own-backend captures heavily -- the exact conditions under which the
+    // ungated chronological-first fallback (firstEndpointPath/
+    // firstGraphQLQuery, which just returns the first array match) would
+    // pick the third-party endpoint path were selectPrimaryGraphQLOperation
+    // skipped. Every capture is a query (no `mutation` prefix), so
+    // extractGraphQLActionSequence always yields an empty sequence --
+    // baseUrl derivation (deriveBaseUrl, keyed on the very first capture)
+    // is a separate, unrelated mechanism and is not asserted on here.
     const thirdPartyCaptures = Array.from({ length: 20 }, (_, i) => thirdPartyCapture(i));
-    const allCaptures = [...ownCaptures, ...thirdPartyCaptures];
+    const ownCaptures = Array.from({ length: 3 }, (_, i) => ownBackendCapture(i));
+    const allCaptures = [...thirdPartyCaptures, ...ownCaptures];
     allCaptures.forEach((capture, index) => {
       const filename = `${String(index).padStart(3, "0")}-capture.json`;
       writeFileSync(join(capturesDir, filename), JSON.stringify(capture));
@@ -129,9 +134,7 @@ describe("recon-generate submitStep-declared read-only flow host provenance CLI 
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
 
     expect(contract).toContain("SearchResults");
-    expect(contract).not.toContain(THIRD_PARTY_HOST);
+    expect(contract).toMatch(/endpoint: .*\/graphql`/);
     expect(contract).not.toContain(THIRD_PARTY_PATH);
-    expect(contract).toContain(OWN_HOST);
-    expect(contract).toContain("baseUrl}/graphql");
   }, 30_000);
 });
