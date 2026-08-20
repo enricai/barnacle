@@ -1,9 +1,9 @@
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { emitContractTs, emitMultiStepExecuteHttp } from "@/scripts/recon-generate";
 import type { Capture } from "@/scripts/recon-shared";
@@ -12,6 +12,10 @@ import type { Capture } from "@/scripts/recon-shared";
  * bare PATH — matches the sibling binary-invoking tests (recon-browser.build.test.ts)
  * and survives runner invocations that don't prepend `.bin` to PATH. */
 const BIOME_BIN = resolve(__dirname, "..", "..", "node_modules", ".bin", "biome");
+
+const REPO_ROOT = resolve(__dirname, "..", "..");
+const TSX_BIN = join(REPO_ROOT, "node_modules", ".bin", "tsx");
+const GENERATE_SCRIPT = join(REPO_ROOT, "src", "scripts", "recon-generate.ts");
 
 /**
  * The emitter's output ships to a consumer's `src/sites/<id>/contract.ts`, which
@@ -315,4 +319,155 @@ describe("emitContractTs — uncommented loadFixture lines parse (G2)", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+});
+
+/** Extracts the body of the emitted `executeHttp` method from a generated
+ * contract.ts by locating its opening `Promise<SitePluginResult<...>> {`
+ * signature line and its closing `  },` — `emitContractTs`'s helpers aren't
+ * exported, so the body is read back out of the CLI's own file output rather
+ * than re-invoked in isolation. */
+function extractExecuteHttpBody(contract: string): string {
+  const start = contract.indexOf("async executeHttp(");
+  if (start === -1) throw new Error("contract.ts has no executeHttp method");
+  const signatureEnd = contract.indexOf("{", contract.indexOf(">>", start));
+  const bodyStart = contract.indexOf("\n", signatureEnd) + 1;
+  const bodyEnd = contract.indexOf("\n  },\n", bodyStart);
+  if (bodyEnd === -1) throw new Error("could not locate end of executeHttp body");
+  return contract.slice(bodyStart, bodyEnd);
+}
+
+/** A run dir whose primary operation's response exposes a total alongside a
+ * skip+count pagination variable — the bounded-paging signal that drives
+ * `buildPaginatedGqlExecuteHttpBody`'s merge/return construction. */
+function writePagedRunDir(root: string): void {
+  mkdirSync(join(root, "graphql"), { recursive: true });
+  mkdirSync(join(root, "replays"), { recursive: true });
+  mkdirSync(join(root, "aux"), { recursive: true });
+
+  const capture = {
+    timestamp: "2026-08-18T10:23:03.000Z",
+    phase: "browse-the-catalog",
+    method: "POST",
+    url: "https://www.catalog-fixture.example.com/catalog/graph",
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: "{}",
+    responseHeaders: {},
+    operationName: "catalogSearch_Items",
+    query:
+      "query catalogSearch_Items($pagination: PaginationInput) { search(pagination: $pagination) { total items { id title } } }",
+    variables: { pagination: { count: 5, skip: 0 }, sort: "RELEVANCE" },
+    responseBody: {
+      search: {
+        total: 15,
+        items: Array.from({ length: 5 }, (_, i) => ({ id: `item-${i}`, title: `Item ${i}` })),
+      },
+    },
+    decodedParams: null,
+  };
+
+  writeFileSync(
+    join(root, "graphql", "000-browse-the-catalog-action.json"),
+    JSON.stringify(capture)
+  );
+}
+
+/**
+ * H2: the paginated fetch loop's merge/return construction previously
+ * narrowed `lastPage` with a non-null assertion (`lastPage!`) that propagated
+ * into every spread path built off it, tripping `noNonNullAssertion` in any
+ * consumer that enables the rule. The template now declares `lastPage` from
+ * the always-executed first-page fetch (never `null`), so no narrowing is
+ * needed. This locks both the structural absence of `!` and a real Biome
+ * lint pass, matching the technique in the describe block above.
+ */
+describe("recon-generate GraphQL paginated fetch loop — emitted merge step is Biome-clean (H2)", () => {
+  let workDir: string | null = null;
+  let siteOutDir: string | null = null;
+
+  afterEach(() => {
+    if (workDir) rmSync(workDir, { recursive: true, force: true });
+    if (siteOutDir) rmSync(siteOutDir, { recursive: true, force: true });
+    workDir = null;
+    siteOutDir = null;
+  });
+
+  it("emits a merge/return construction with zero non-null assertions and passes `biome lint`", () => {
+    if (!existsSync(BIOME_BIN)) {
+      throw new Error(`biome binary not found at ${BIOME_BIN} — run pnpm install`);
+    }
+
+    workDir = mkdtempSync(join(tmpdir(), "barnacle-paginated-biome-clean-"));
+    const runRoot = join(workDir, "run");
+    writePagedRunDir(runRoot);
+
+    const siteId = `paginated-biome-clean-test-${process.pid}`;
+    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    expect(existsSync(siteOutDir)).toBe(false);
+
+    const result = spawnSync(
+      TSX_BIN,
+      [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts"],
+      { cwd: REPO_ROOT, encoding: "utf8" }
+    );
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+
+    const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+    const body = extractExecuteHttpBody(contract);
+
+    // The 4 warnings this locks were all `lastPage!` occurrences, plus the
+    // spread paths built off it.
+    expect(body).not.toMatch(/lastPage!/);
+    // General sweep: no non-null assertion on any identifier anywhere in the
+    // merge/return construction.
+    expect(body).not.toMatch(/\w!(?:[.[]|\s*(?:as|;))/);
+
+    const preamble = [
+      "interface GqlResponse { search: { total: number; items: unknown[] } }",
+      "async function executeHttp(",
+      "  _payload: Record<string, unknown>,",
+      "  context: { baseUrl: string },",
+      "): Promise<{ data: GqlResponse }> {",
+      "  const getGql = (_baseUrl: string) => async (",
+      "    _op: string,",
+      "    _query: string,",
+      "    _vars: unknown,",
+      "  ): Promise<GqlResponse> => ({ search: { total: 0, items: [] } });",
+      "  void getGql;",
+    ].join("\n");
+
+    const dir = mkdtempSync(join(tmpdir(), "barnacle-biome-"));
+    try {
+      writeFileSync(
+        join(dir, "biome.json"),
+        JSON.stringify({
+          $schema: "https://biomejs.dev/schemas/2.3.11/schema.json",
+          formatter: { enabled: false },
+          assist: { enabled: false },
+          linter: {
+            enabled: true,
+            rules: {
+              recommended: false,
+              style: { noNonNullAssertion: "error" },
+            },
+          },
+        })
+      );
+
+      const file = join(dir, "paginated-merge.ts");
+      writeFileSync(
+        file,
+        `${preamble}\n${body.replace(/: \w+Response\b/g, ": GqlResponse")}\n}\nvoid executeHttp;\n`
+      );
+      expect(() =>
+        execFileSync(BIOME_BIN, ["lint", "--config-path", dir, file], {
+          cwd: dir,
+          encoding: "utf8",
+          stdio: "pipe",
+        })
+      ).not.toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
 });

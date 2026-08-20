@@ -78,6 +78,29 @@ function writePagedRunDir(root: string): void {
   );
 }
 
+/** A run dir whose primary operation reports a total far beyond what
+ * PAGE_SIZE * MAX_PAGES can ever deliver — the MAX_PAGES-truncation path. */
+function writeTruncatedPagedRunDir(root: string): void {
+  mkdirSync(join(root, "graphql"), { recursive: true });
+  mkdirSync(join(root, "replays"), { recursive: true });
+  mkdirSync(join(root, "aux"), { recursive: true });
+
+  const productSearch = gqlCapture({
+    phase: "browse-the-products",
+    url: "https://www.products-fixture.example.com/products/graph",
+    operationName: "productSearch_Products",
+    query:
+      "query productSearch_Products($pagination: PaginationInput) { search(pagination: $pagination) { total items { id title } } }",
+    variables: { pagination: { count: 5, skip: 0 }, sort: "RELEVANCE" },
+    responseBody: { search: { total: 1000, items: makeProductPage(5) } },
+  });
+
+  writeFileSync(
+    join(root, "graphql", "000-browse-the-products-action.json"),
+    JSON.stringify(productSearch)
+  );
+}
+
 /** A sibling run dir whose primary operation has a pagination variable but no
  * total/count field in the response — no bounded-paging signal. */
 function writeUnpagedRunDir(root: string): void {
@@ -150,6 +173,44 @@ describe("recon-generate GraphQL paginated fetch loop: total/count signal presen
     expect(contract).toContain("itemsById.set(String(item.id), item);");
     expect(contract).toContain("[...itemsById.values()]");
     expect(contract).not.toMatch(/\.push\(\.\.\.(page|data)\.search\.items\)/);
+
+    // (d) `lastPage` is never null-asserted: the first page is fetched before the
+    // loop, so it's typed non-nullable by construction.
+    expect(contract).not.toContain("lastPage!");
+    expect(contract).toMatch(/let lastPage: \w+Response = page;/);
+  }, 30_000);
+});
+
+describe("recon-generate GraphQL paginated fetch loop: MAX_PAGES caps before the API's own total", () => {
+  it("rewrites the merged envelope's total to the delivered count instead of repeating the un-delivered original total", () => {
+    workDir = mkdtempSync(join(tmpdir(), "barnacle-graphql-paginated-truncation-"));
+    const runRoot = join(workDir, "run");
+    writeTruncatedPagedRunDir(runRoot);
+
+    const siteId = `graphql-paginated-truncation-test-${process.pid}`;
+    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    expect(existsSync(siteOutDir)).toBe(false);
+
+    const result = spawnSync(
+      TSX_BIN,
+      [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts"],
+      { cwd: REPO_ROOT, encoding: "utf8" }
+    );
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+
+    const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+
+    // PAGE_SIZE (5) * MAX_PAGES (50) = 250, which never reaches the response's
+    // reported total of 1000 — the loop always exits on MAX_PAGES here.
+    expect(contract).toContain("const PAGE_SIZE = 5;");
+    expect(contract).toContain("const MAX_PAGES = 50;");
+
+    // The merged envelope's own total must reflect what was actually delivered
+    // when the loop is capped by MAX_PAGES, not repeat the API's original
+    // (larger, un-delivered) total.
+    expect(contract).toContain("const truncated = itemsById.size < total;");
+    expect(contract).toContain("total: truncated ? itemsById.size : withItems.search.total");
   }, 30_000);
 });
 
