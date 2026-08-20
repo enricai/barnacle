@@ -4558,7 +4558,9 @@ export const ${camel}Plugin: SitePlugin<${pascal}Payload, ${pascal}Response> = {
     bodySchema: ${pascal}PayloadSchema,
     responseSchema: ${pascal}ResponseSchema,
     defaultBaseUrl: ${JSON.stringify(baseUrl)},
-    // multipart is required whenever the flow itself uploads a file
+    ${
+      payloadNeedsMultipart || inputBody
+        ? `// multipart is required whenever the flow itself uploads a file
     // (hasMultipartStep), OR this is a submission flow (inputBody set) since
     // basePayloadSchemaExpr always requires a real Resume Buffer via
     // ApplicantContactSchema regardless of whether the recorded browser flow
@@ -4566,7 +4568,9 @@ export const ${camel}Plugin: SitePlugin<${pascal}Payload, ${pascal}Response> = {
     // discoveredStructuredKeys field (payloadNeedsMultipart), since the
     // multipart wire format is what makes that field's JSON-stringified
     // encoding parseable.
-    apiVersion: ${JSON.stringify(PLUGIN_API_VERSION)},${payloadNeedsMultipart || inputBody ? "\n    multipart: true," : ""}
+    `
+        : ""
+    }apiVersion: ${JSON.stringify(PLUGIN_API_VERSION)},${payloadNeedsMultipart || inputBody ? "\n    multipart: true," : ""}
   },
 ${executeHttpMethodBlock}
   /** Browser fallback: Stagehand + Steel — invoked only when hot path fails. */

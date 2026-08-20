@@ -48,6 +48,51 @@ describe("emitIndexTs registration guidance (FAILURE 6)", () => {
   });
 });
 
+/**
+ * F2: the "multipart is required whenever" explainer comment must only be
+ * emitted alongside the `multipart: true` field it explains, gated on the
+ * same `payloadNeedsMultipart || inputBody` condition — not unconditionally.
+ */
+describe("emitContractTs — multipart explainer comment gate", () => {
+  const baseOpts = {
+    siteId: "test-site",
+    pascal: "TestSite",
+    baseUrl: "https://api.example.com",
+    baseHeaders: { "Content-Type": "application/json" },
+    minTime: 100,
+    safeRps: 10,
+    responseBody: { saved: true },
+    gql: false,
+    gqlQuery: null,
+    endpointPath: "/apply/create",
+    auxFiles: [],
+    multiStepBody: undefined,
+    omitExecuteHttp: true,
+  };
+
+  it("omits the explainer comment when no multipart field is emitted", () => {
+    const source = emitContractTs({
+      ...baseOpts,
+      hasMultipartStep: false,
+      inputBody: undefined,
+    });
+
+    expect(source).not.toContain("multipart is required whenever");
+    expect(source).not.toContain("multipart: true,");
+  });
+
+  it("includes the explainer comment alongside multipart: true when the flow uploads a file", () => {
+    const source = emitContractTs({
+      ...baseOpts,
+      hasMultipartStep: true,
+      inputBody: { FirstName: "Reginald" },
+    });
+
+    expect(source).toContain("multipart is required whenever");
+    expect(source).toContain("multipart: true,");
+  });
+});
+
 describe("emitContractTs rate-limit comment provenance", () => {
   it("emits a DEFAULT comment, not a probe claim, when no rate-limit probe ran", () => {
     const source = emitContractTs({ ...CONTRACT_BASE_OPTS, hasRateLimitProbeData: false });
