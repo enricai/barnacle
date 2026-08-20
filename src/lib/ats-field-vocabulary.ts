@@ -14,8 +14,8 @@ const ATS_FIELD_VOCABULARY: Record<string, string[]> = {
 
 const NORMALIZED_LOOKUP: Map<string, string> = new Map(
   Object.entries(ATS_FIELD_VOCABULARY).flatMap(([canonical, synonyms]) =>
-    synonyms.map((synonym) => [normalizeAtsLabel(synonym), canonical]),
-  ),
+    synonyms.map((synonym) => [normalizeAtsLabel(synonym), canonical])
+  )
 );
 
 /**
