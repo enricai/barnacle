@@ -5017,16 +5017,38 @@ ${flowStepsBlock}
   // both Zod v3 and v4 schemas natively (StagehandZodSchema union since
   // 2.4.3 / PR #944), and the caller-side safeParse defends against SDK
   // contract drift. Widen ${pascal}BrowserSchema as needed to match the
-  // fields the recon flow actually surfaces.
+  // fields the recon flow actually surfaces.${
+    isSubmissionFlow
+      ? `
+  // runHealingFlow above already verified the submit (submitStep:true), so the
+  // application is already committed at the ATS. A schema-validation or
+  // watchdog-timeout throw from this trailing confirmation extract must not
+  // propagate and trigger a duplicate re-dispatch — catch it, log it, and
+  // degrade to a not-confirmed result instead.
+  try {
+    const result = await guardedExtract(
+      stagehand,
+      "is a submission confirmation shown, and what is its reference number?",
+      ${pascal}BrowserSchema
+    );
+    return { ...result, verified: true } as unknown as ${pascal}Response;
+  } catch (error) {
+    logger.error(\`GuardedExtractError: post-submit confirmation extract failed on an already-verified submit, degrading to not-confirmed: \${error}\`);
+    return { verified: false } as unknown as ${pascal}Response;
+  }
+}
+`
+      : `
   const result = await guardedExtract(
     stagehand,
-    ${isSubmissionFlow ? `"is a submission confirmation shown, and what is its reference number?"` : `\`extract results matching query: \${payload.query}\``},
+    \`extract results matching query: \${payload.query}\`,
     ${pascal}BrowserSchema
   );
 
-  return ${isSubmissionFlow ? `{ ...result, verified: true }` : `result`} as unknown as ${pascal}Response;
+  return result as unknown as ${pascal}Response;
 }
-`;
+`
+  }`;
   assertNoLeakedPersonaConstant(code, knownFieldValues);
   return { code, payloadFieldNames };
 }
