@@ -35,7 +35,12 @@ import { toErrorMessage } from "@/lib/errors";
 import { getScriptLogger } from "@/lib/logging";
 import { PLUGIN_API_VERSION } from "@/plugins/plugin-api-version";
 import { CONFIG_PLUGIN_API_VERSION, CONFIG_PLUGIN_KIND } from "@/plugins/plugin-manifest-envelope";
-import { isNoiseUrl, telemetryUrlPatterns } from "@/recon/capture-filters";
+import {
+  isAllowedFixtureHost,
+  isNoiseUrl,
+  registrableDomain,
+  telemetryUrlPatterns,
+} from "@/recon/capture-filters";
 import type { ReconFormSchema } from "@/recon/form-schema";
 import { FORM_SCHEMA_NONE, loadReconFormSchema } from "@/recon/load-form-schema";
 import { loadReconVocabulary, VOCABULARY_NONE } from "@/recon/load-vocabulary";
@@ -45,6 +50,7 @@ import {
   type RateLimitFinding,
   type ReplayResult,
   readJsonDir,
+  readOwnBackendHostnames,
   resolveLatestReconRunRoot,
 } from "@/scripts/recon-shared";
 
@@ -5279,18 +5285,19 @@ async function main(): Promise<void> {
     }
   })();
 
-  const auxFiles = (() => {
+  const flowFile = `src/sites/${siteId}/recon-flow.json`;
+  const auxManifest = (() => {
     try {
-      return readdirSync(auxDir)
-        .filter((f) => f.endsWith(".json"))
-        .sort();
+      return JSON.parse(readFileSync(join(auxDir, "aux-manifest.json"), "utf8")) as Array<{
+        filename: string;
+        hostname: string;
+      }>;
     } catch {
-      return [] as string[];
+      return [] as Array<{ filename: string; hostname: string }>;
     }
   })();
 
   const { flowSteps, frameSelector, submitEndpointPattern, submitBodyPattern } = (() => {
-    const flowFile = `src/sites/${siteId}/recon-flow.json`;
     try {
       const raw: unknown = JSON.parse(readFileSync(flowFile, "utf8"));
       if (Array.isArray(raw))
@@ -5353,6 +5360,45 @@ async function main(): Promise<void> {
 
   const pascal = toPascalCase(siteId);
   const baseUrl = deriveBaseUrl(captures);
+  // Gate on the flow's declared own-backend hosts (or the registrable-domain
+  // fallback of baseUrl) via the same predicate recon-http.ts applies at
+  // write time, so a stale aux/ directory from before that filter existed
+  // — or one written by a filter someone bypassed — can never smuggle a
+  // third party's JSON into a generated plugin's fixtures/. A file with no
+  // manifest entry is unverifiable provenance, not proven safe, so it is
+  // excluded rather than assumed to have passed the write-time filter.
+  const ownBackendHostnames = readOwnBackendHostnames(flowFile);
+  const fallbackDomain = baseUrl.length > 0 ? registrableDomain(new URL(baseUrl).hostname) : null;
+  const auxFiles = auxManifest
+    .filter((entry) => {
+      const allowed = isAllowedFixtureHost(entry.hostname, ownBackendHostnames, fallbackDomain);
+      if (!allowed) {
+        logger.warn(
+          `excluding aux fixture '${entry.filename}' — host '${entry.hostname}' is not an own-backend host`
+        );
+      }
+      return allowed;
+    })
+    .map((entry) => entry.filename)
+    .sort();
+  // A file on disk with no manifest entry predates the write-time provenance
+  // record (bugfix-002) or otherwise landed outside probeAuxiliaryEndpoints —
+  // its source host is unverifiable, so it is excluded, not assumed safe.
+  const manifestedFilenames = new Set(auxManifest.map((entry) => entry.filename));
+  const unmanifestedFiles = (() => {
+    try {
+      return readdirSync(auxDir).filter(
+        (f) => f.endsWith(".json") && f !== "aux-manifest.json" && !manifestedFilenames.has(f)
+      );
+    } catch {
+      return [] as string[];
+    }
+  })();
+  for (const f of unmanifestedFiles) {
+    logger.warn(
+      `excluding aux fixture '${f}' — no aux-manifest.json entry, provenance unverifiable`
+    );
+  }
   const baseHeaders = deriveRequestHeaders(captures, replays, baseUrl, submitPatterns);
   const minTime = deriveMinTime(rateLimits);
   const hasRateLimitProbeData = rateLimits.some((f) => f.safeRps !== null);

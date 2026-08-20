@@ -74,6 +74,16 @@ function writeRunDir(root: string, marker: string): void {
   writeFileSync(join(root, "replays", "000-home-action.json"), JSON.stringify(replay(marker)));
   writeFileSync(join(root, "replays", "rate-limit.json"), JSON.stringify([]));
   writeFileSync(join(root, "aux", `${marker}.json`), JSON.stringify({ marker }));
+  writeFileSync(
+    join(root, "aux", "aux-manifest.json"),
+    JSON.stringify([
+      {
+        filename: `${marker}.json`,
+        url: `https://example.com/aux/${marker}.json`,
+        hostname: "example.com",
+      },
+    ])
+  );
 }
 
 let workDir: string | null = null;
