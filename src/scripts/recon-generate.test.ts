@@ -224,6 +224,10 @@ describe("emitContractTs — hasMultipartStep:true with no structured keys keeps
   it("is byte-for-byte identical to an explicit empty discoveredStructuredKeys map (no regression from the size-based multipart gate)", () => {
     expect(source).toBe(priorFixSource);
   });
+
+  it("does not import multipartBoolean — payloadNeedsMultipart alone never wraps a boolean field", () => {
+    expect(source).not.toContain("multipartBoolean");
+  });
 });
 
 describe("emitContractTs — plain file-upload flow with no boolean fields does not import multipartBoolean", () => {
@@ -298,6 +302,10 @@ describe("emitContractTs — hasMultipartStep:true combined with non-empty disco
 
   it("still wraps the structured field in multipartJsonObject(...)", () => {
     expect(source).toContain("eventData: multipartJsonObject(z.object({ a: z.string() })),");
+  });
+
+  it("does not import multipartBoolean — no boolean field is ever wrapped in it, even though multipartJsonObject is genuinely used", () => {
+    expect(source).not.toContain("multipartBoolean");
   });
 });
 
