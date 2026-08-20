@@ -180,4 +180,58 @@ describe("selectPrimaryGraphQLOperation", () => {
 
     expect(result?.unpopulatedDeclaredVariables).toEqual(["qualifiers"]);
   });
+
+  it("never selects a third-party-host candidate over a lower-scoring own-backend candidate", () => {
+    const thirdParty = makeCapture({
+      url: "https://analytics.thirdparty.com/graphql",
+      phase: "filter",
+      operationName: "SearchProducts",
+      query:
+        "query SearchProducts($neighborhood: String) { products(neighborhood: $neighborhood) { id name } }",
+      variables: { neighborhood: "Downtown" },
+      responseBody: {
+        products: Array.from({ length: 200 }, (_, i) => ({ id: i, name: `Product ${i}` })),
+      },
+    });
+    const ownBackend = makeCapture({
+      url: "https://example.com/graphql",
+      phase: "home",
+      operationName: "PageChrome",
+      query: "query PageChrome { nav { items } }",
+      responseBody: { nav: { items: [] } },
+    });
+
+    const captures = [thirdParty, ownBackend];
+    const flowSteps = [
+      { step: "select 'Downtown' from the Neighborhood dropdown", payloadField: "neighborhood" },
+    ];
+
+    const result = selectPrimaryGraphQLOperation(
+      captures,
+      flowSteps,
+      EMPTY_VOCABULARY,
+      process.env,
+      ["example.com"],
+      null
+    );
+
+    expect(result?.capture).toBe(ownBackend);
+  });
+
+  it("returns null when every candidate is off-host", () => {
+    const thirdParty = makeCapture({
+      url: "https://analytics.thirdparty.com/graphql",
+    });
+
+    const result = selectPrimaryGraphQLOperation(
+      [thirdParty],
+      [],
+      EMPTY_VOCABULARY,
+      process.env,
+      ["example.com"],
+      null
+    );
+
+    expect(result).toBeNull();
+  });
 });
