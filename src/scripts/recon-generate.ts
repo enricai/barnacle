@@ -989,7 +989,8 @@ export function selectPrimaryGraphQLOperation(
       c.status < 300 &&
       c.query !== null &&
       !/^\s*mutation\b/.test(c.query) &&
-      (!hasHostProvenance || isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, fallbackDomain))
+      (!hasHostProvenance ||
+        isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, fallbackDomain))
   );
   if (candidates.length === 0) return null;
 

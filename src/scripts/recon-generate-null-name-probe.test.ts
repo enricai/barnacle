@@ -41,11 +41,7 @@ describe("probe: operationName-less recurrence grouping", () => {
       responseBody: { decoy: { id: 1 } },
     });
 
-    const result = selectPrimaryGraphQLOperation(
-      [...filteredResults, decoy],
-      [],
-      EMPTY_VOCABULARY
-    );
+    const result = selectPrimaryGraphQLOperation([...filteredResults, decoy], [], EMPTY_VOCABULARY);
 
     expect(result?.capture.operationName).toBeNull();
     expect(result?.capture.query).toContain("GetFilteredResults");
