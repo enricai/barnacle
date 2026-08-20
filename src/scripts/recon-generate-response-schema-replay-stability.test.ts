@@ -90,7 +90,7 @@ function writeReplayResult(root: string, name: string, overrides: Partial<Replay
 
 function extractResponseSchemaLine(contract: string): string {
   const match = contract.match(
-    /^const \w+ResponseSchema = ([\s\S]+?);\n\nexport type \w+Response = /m
+    /^export const \w+ResponseSchema = ([\s\S]+?);\n\nexport type \w+Response = /m
   );
   if (!match?.[1]) throw new Error(`no ResponseSchema declaration found in contract:\n${contract}`);
   return match[1];
