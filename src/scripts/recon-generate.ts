@@ -3971,6 +3971,55 @@ function renderGqlVariablesExpr(
   return entries.length > 0 ? `{ ${entries.join(", ")} }` : "{}";
 }
 
+/**
+ * Same review-checklist items the pre-move contract.ts header used to embed,
+ * now surfaced on recon-generate's own stdout instead of the shipped file —
+ * call with the exact same opts passed to {@link emitContractTs} so the two
+ * can never drift out of sync.
+ */
+export function buildContractChecklist(opts: {
+  pascal: string;
+  gql: boolean;
+  omitExecuteHttp?: boolean;
+  multiStepBody?: string;
+}): string[] {
+  const { pascal, gql, omitExecuteHttp, multiStepBody } = opts;
+
+  const queryChecklistLine =
+    !omitExecuteHttp && gql
+      ? `Trim UI-only fields from ${pascal.toUpperCase()}_QUERY (keep only fields you need)`
+      : "";
+
+  // Multi-step flows validate each call against its own per-call inferred
+  // schema (emitMultiStepExecuteHttp) — narrowing ResponseSchema only changes
+  // what executeHttp promises ITS OWN caller, never a per-call validator, so
+  // the checklist item must say that explicitly. Single-endpoint plugins have
+  // exactly one call, so the client schema and that call's validator are the
+  // same schema and the shorter wording stays accurate. Browser-flow-only
+  // plugins have no executeHttp at all, so ResponseSchema is only ever the
+  // browser flow's own return-value contract.
+  const narrowSchemaChecklistLine = omitExecuteHttp
+    ? `Narrow ${pascal}ResponseSchema to match what the browser flow should promise ITS CALLER — this flow could not synthesize a trustworthy executeHttp (a required value from the captured sequence never resolved), so it ships browser-only`
+    : multiStepBody
+      ? `Narrow ${pascal}ResponseSchema to match what executeHttp should promise ITS CALLER — this is the plugin's own return-value contract, not a per-call validator (each call in the flow is already checked against its own inferred schema)`
+      : `Narrow ${pascal}ResponseSchema to match the real response shape`;
+
+  const baseHeadersChecklistLine = omitExecuteHttp
+    ? ""
+    : "Verify BASE_HEADERS — remove any that aren't load-bearing";
+  const outOfTreeChecklistLine = omitExecuteHttp
+    ? "Out-of-tree: `pnpm add zod` — this file imports it directly, and a strict node_modules layout (pnpm) won't resolve it as a transitive dep of @enricai/barnacle alone"
+    : "Out-of-tree: `pnpm add bottleneck zod` — this file imports both directly, and a strict node_modules layout (pnpm) won't resolve them as transitive deps of @enricai/barnacle alone";
+
+  return [
+    queryChecklistLine,
+    narrowSchemaChecklistLine,
+    `Adjust ${pascal}PayloadSchema to your actual request parameters`,
+    baseHeadersChecklistLine,
+    outOfTreeChecklistLine,
+  ].filter((line) => line !== "");
+}
+
 export function emitContractTs(opts: {
   siteId: string;
   pascal: string;
@@ -3978,6 +4027,10 @@ export function emitContractTs(opts: {
   baseHeaders: Record<string, string>;
   minTime: number;
   safeRps: number;
+  /** Whether `safeRps`/`minTime` were derived from a real recon rate-limit
+   * probe measurement, as opposed to the hardcoded 200ms fallback. Gates
+   * the provenance claim in the emitted limiter comment. */
+  hasRateLimitProbeData?: boolean;
   responseBody: unknown;
   gql: boolean;
   gqlQuery: string | null;
@@ -4056,6 +4109,7 @@ export function emitContractTs(opts: {
     baseHeaders,
     minTime,
     safeRps,
+    hasRateLimitProbeData = false,
     responseBody,
     gql,
     gqlQuery,
@@ -4451,25 +4505,6 @@ export const ${pascal}InternalRequestReference = ${internalRequestReferenceExpr}
 `
     : "";
 
-  const queryChecklistLine =
-    !omitExecuteHttp && gql
-      ? `\n *   [ ] Trim UI-only fields from ${pascal.toUpperCase()}_QUERY (keep only fields you need)`
-      : "";
-
-  // Multi-step flows validate each call against its own per-call inferred
-  // schema (emitMultiStepExecuteHttp) — narrowing ResponseSchema only changes
-  // what executeHttp promises ITS OWN caller, never a per-call validator, so
-  // the checklist item must say that explicitly. Single-endpoint plugins have
-  // exactly one call, so the client schema and that call's validator are the
-  // same schema and the shorter wording stays accurate. Browser-flow-only
-  // plugins have no executeHttp at all, so ResponseSchema is only ever the
-  // browser flow's own return-value contract.
-  const narrowSchemaChecklistLine = omitExecuteHttp
-    ? `\n *   [ ] Narrow ${pascal}ResponseSchema to match what the browser flow should promise ITS CALLER — this flow could not synthesize a trustworthy executeHttp (a required value from the captured sequence never resolved), so it ships browser-only`
-    : multiStepBody
-      ? `\n *   [ ] Narrow ${pascal}ResponseSchema to match what executeHttp should promise ITS CALLER — this is the plugin's own return-value contract, not a per-call validator (each call in the flow is already checked against its own inferred schema)`
-      : `\n *   [ ] Narrow ${pascal}ResponseSchema to match the real response shape`;
-
   const camel = siteId.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
 
   // Browser-flow-only plugins need neither Bottleneck (no rate-limited HTTP
@@ -4483,10 +4518,13 @@ const BASE_HEADERS: Record<string, string> = {
 ${headersLiteral},
 };
 `;
+  const rateLimitComment = hasRateLimitProbeData
+    ? `// Safe ceiling: ${safeRps} rps — from recon rate-limit probe.`
+    : `// Safe ceiling: ${safeRps} rps — DEFAULT (no rate-limit probe data; run recon:http).`;
   const limiterBlock = omitExecuteHttp
     ? ""
     : `
-// Safe ceiling: ${safeRps} rps — from recon rate-limit probe.
+${rateLimitComment}
 const limiter = new Bottleneck({ minTime: ${minTime} });
 `;
   const executeHttpMethodBlock = omitExecuteHttp
@@ -4504,25 +4542,16 @@ ${executeHttpBody}
     ? `/**
  * Plugin for ${siteId}. Browser-flow-only: the captured multi-step submission
  * sequence could not be synthesized into a trustworthy direct-HTTP hot path
- * (see the checklist above), so this always runs via Stagehand.
+ * (see recon-generate's review checklist, logged to stdout at generation
+ * time), so this always runs via Stagehand.
  */`
     : `/**
  * Plugin for ${siteId}. Tries the direct-HTTP hot path first; falls back to
  * Stagehand automatically on schema drift or bot challenge.
  */`;
 
-  const baseHeadersChecklistLine = omitExecuteHttp
-    ? ""
-    : `\n *   [ ] Verify BASE_HEADERS — remove any that aren't load-bearing`;
-  const outOfTreeChecklistLine = omitExecuteHttp
-    ? `\n *   [ ] Out-of-tree: \`pnpm add zod\` — this file imports it directly, and a\n *       strict node_modules layout (pnpm) won't resolve it as a transitive\n *       dep of @enricai/barnacle alone`
-    : `\n *   [ ] Out-of-tree: \`pnpm add bottleneck zod\` — this file imports both\n *       directly, and a strict node_modules layout (pnpm) won't resolve\n *       them as transitive deps of @enricai/barnacle alone`;
-
   return `/**
  * Generated by recon-generate.ts — review before shipping.
- *
- * Checklist:${queryChecklistLine}${narrowSchemaChecklistLine}
- *   [ ] Adjust ${pascal}PayloadSchema to your actual request parameters${baseHeadersChecklistLine}${outOfTreeChecklistLine}
  */
 
 ${bottleneckImport}import { z } from "zod/v4";
@@ -4546,11 +4575,12 @@ ${pluginDocComment}
 export const ${camel}Plugin: SitePlugin<${pascal}Payload, ${pascal}Response> = {
   meta: {
     siteId: ${JSON.stringify(siteId)},
-    displayName: ${JSON.stringify(pascal.replace(/([A-Z])/g, " $1").trim())},
     bodySchema: ${pascal}PayloadSchema,
     responseSchema: ${pascal}ResponseSchema,
     defaultBaseUrl: ${JSON.stringify(baseUrl)},
-    // multipart is required whenever the flow itself uploads a file
+    ${
+      payloadNeedsMultipart || inputBody
+        ? `// multipart is required whenever the flow itself uploads a file
     // (hasMultipartStep), OR this is a submission flow (inputBody set) since
     // basePayloadSchemaExpr always requires a real Resume Buffer via
     // ApplicantContactSchema regardless of whether the recorded browser flow
@@ -4558,7 +4588,9 @@ export const ${camel}Plugin: SitePlugin<${pascal}Payload, ${pascal}Response> = {
     // discoveredStructuredKeys field (payloadNeedsMultipart), since the
     // multipart wire format is what makes that field's JSON-stringified
     // encoding parseable.
-    apiVersion: ${JSON.stringify(PLUGIN_API_VERSION)},${payloadNeedsMultipart || inputBody ? "\n    multipart: true," : ""}
+    `
+        : ""
+    }apiVersion: ${JSON.stringify(PLUGIN_API_VERSION)},${payloadNeedsMultipart || inputBody ? "\n    multipart: true," : ""}
   },
 ${executeHttpMethodBlock}
   /** Browser fallback: Stagehand + Steel — invoked only when hot path fails. */
@@ -4987,8 +5019,8 @@ export function emitBrowserFlowTs(opts: {
  * Core invokes this automatically when executeHttp throws HttpSchemaError or
  * HttpBotChallengeError. Update the flow steps and extract schema as needed.
  *
- * Steps whose instruction named a candidate PII label have their recon
- * constant spliced to \`payload.<field>\` so the caller's real applicant reaches
+ * Steps whose instruction named a labeled payload field have their recon
+ * constant spliced to \`payload.<field>\` so the caller's real value reaches
  * the page; operational-default steps stay literal. The steps run through the
  * self-heal cascade via runHealingFlow — the same engine the recon CLI uses,
  * minus its disk-dump/replan layer.
@@ -5012,7 +5044,6 @@ const ${pascal}BrowserSchema = z.object({${
   // reaching this point already proves the submission verified.
   verified: z.boolean(),`
       : `
-  // TODO: define the fields you need — align with ${pascal}Response
   extraction: z.string(),`
   }
 });
@@ -5030,7 +5061,7 @@ export async function run${pascal}BrowserFlow(
   const page = await stagehand.context.awaitActivePage();
 
   await page.goto(${isSubmissionFlow ? "entryUrl" : "baseUrl"}, { waitUntil: "networkidle" });
-  // networkidle can resolve before a Cloudflare-fronted SPA hydrates; wait for
+  // networkidle can resolve before a bot-managed/CDN-fronted SPA hydrates; wait for
   // the real DOM so the first steps don't probe an empty shell page and skip.
   await waitForSpaReady(page, logger);
 ${usesThrowawayPassword ? "\n  // Minted once per run — the flow needs a credential to authenticate, but\n  // there is no caller-supplied Password field on the payload to splice.\n  const throwawayPassword = generateThrowawayPassword();\n" : ""}
@@ -5214,6 +5245,11 @@ async function main(): Promise<void> {
     "rate-limit.json",
     "introspection-schema.json",
   ]);
+  if (replays.length === 0) {
+    logger.warn(
+      `recon-generate: run dir ${runRoot} has an empty replays/ directory — recon:http (rate-limit probe) and replay validation were skipped, so this contract's timing and shape are unvalidated`
+    );
+  }
   const rateLimits = (() => {
     try {
       return JSON.parse(
@@ -5300,6 +5336,7 @@ async function main(): Promise<void> {
   const baseUrl = deriveBaseUrl(captures);
   const baseHeaders = deriveRequestHeaders(captures, replays, baseUrl, submitPatterns);
   const minTime = deriveMinTime(rateLimits);
+  const hasRateLimitProbeData = rateLimits.some((f) => f.safeRps !== null);
   const safeRps = rateLimits.find((f) => f.safeRps !== null)?.safeRps ?? Math.floor(1000 / minTime);
   const gql = isGraphQL(captures);
   // Hoisted so both the primary-operation gate below and rawActionCaptures
@@ -5649,7 +5686,7 @@ async function main(): Promise<void> {
     frameSelector,
   });
 
-  const contractCode = emitContractTs({
+  const contractOpts = {
     siteId,
     pascal,
     baseUrl,
@@ -5658,6 +5695,7 @@ async function main(): Promise<void> {
     baseHeaders: isSubmissionFlow ? staticBaseHeaders : baseHeaders,
     minTime,
     safeRps,
+    hasRateLimitProbeData,
     responseBody: effectiveResponseBody,
     gql,
     gqlQuery,
@@ -5678,7 +5716,9 @@ async function main(): Promise<void> {
     discoveredStructuredKeys,
     payloadFieldNames: browserFlow.payloadFieldNames,
     headerBindings,
-  });
+  };
+
+  const contractCode = emitContractTs(contractOpts);
 
   // Fails loudly rather than shipping a flow that requires a URL field it
   // never reads (see assertRequiredUrlFieldsReferenced doc comment).
@@ -5686,6 +5726,12 @@ async function main(): Promise<void> {
 
   writeFileSync(`${outDir}/contract.ts`, contractCode);
   logger.info(`wrote ${outDir}/contract.ts`);
+  // Same opts fed to emitContractTs above, so this can never drift from what
+  // the header used to embed.
+  const checklist = buildContractChecklist(contractOpts);
+  logger.info(
+    `review checklist for ${outDir}/contract.ts:\n${checklist.map((item) => `  [ ] ${item}`).join("\n")}`
+  );
 
   writeFileSync(`${outDir}/flows/browser-flow.ts`, browserFlow.code);
   logger.info(`wrote ${outDir}/flows/browser-flow.ts`);

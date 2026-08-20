@@ -270,7 +270,12 @@ describe("flow-runner OOPIF-bound deepLocator hang (offline acceptance test, rea
     for (const attempt of [1, 2, 3, 4, 5]) {
       expect(logged).toMatch(new RegExp(`attempt ${attempt}\\b`));
     }
-  });
+    // Like the click()-hang case below, all 5 attempts run the full real stack,
+    // draining microtasks per virtual tick; under the full suite that real
+    // wall-clock drain can exceed vitest's 30s default even though the
+    // virtual-time budget is fine — 60s removes the flake without weakening the
+    // assertion. (Isolated, this file runs in ~1s.)
+  }, 60_000);
 
   it("fails fast to the next attempt/replan instead of hanging when a bound OOPIF's deepLocator click() never settles", async () => {
     const topUrl = { current: `${TOP_ORIGIN}/jobs/123/apply` };

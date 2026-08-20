@@ -82,8 +82,12 @@ export interface SitePluginExtraRoute {
 export interface SitePluginMeta {
   /** Stable identifier used as the `config.scraper.siteBaseUrls` lookup key. */
   siteId: string;
-  /** Human-readable label used in logs and Swagger docs. */
-  displayName: string;
+  /**
+   * Human-readable label used in logs and Swagger docs. Optional — the
+   * generator has no reliable capture-observed source to derive it from,
+   * so it's left for the plugin author to set explicitly.
+   */
+  displayName?: string;
   /** Zod schema for the route request body — validated by core before execute(). */
   bodySchema: ZodType;
   /** Zod schema for the successful response body — drives the Swagger response shape. */
