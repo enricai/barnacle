@@ -4762,7 +4762,12 @@ function jsonSchemaTypeOf(value: unknown): "string" | "number" | "boolean" | "ar
  */
 export function emitConfigManifest(opts: {
   siteId: string;
-  displayName: string;
+  /**
+   * Optional human-readable brand name. Omitted entirely from the emitted
+   * `metadata` object when absent — the generator has no reliable source to
+   * derive this from, so it must not fabricate one via siteId capitalization.
+   */
+  displayName?: string;
   baseUrl: string;
   flowSteps: FlowStepInput[];
   vocabulary?: ReconVocabulary;
@@ -4871,7 +4876,7 @@ export function emitConfigManifest(opts: {
   const manifest = {
     apiVersion: CONFIG_PLUGIN_API_VERSION,
     kind: CONFIG_PLUGIN_KIND,
-    metadata: { siteId, displayName },
+    metadata: { siteId, ...(displayName !== undefined && { displayName }) },
     spec: {
       defaultBaseUrl: baseUrl,
       ...(httpModulePath ? { httpModule: httpModulePath } : {}),
@@ -5648,7 +5653,6 @@ async function main(): Promise<void> {
       manifestPath,
       emitConfigManifest({
         siteId,
-        displayName: pascal,
         baseUrl,
         flowSteps,
         vocabulary,

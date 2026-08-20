@@ -62,7 +62,7 @@ export const CONFIG_PLUGIN_MANIFEST = z.object({
   kind: z.literal(CONFIG_PLUGIN_KIND),
   metadata: z.object({
     siteId: z.string().min(1),
-    displayName: z.string().min(1),
+    displayName: z.string().min(1).optional(),
   }),
   spec: z.object({
     defaultBaseUrl: z.string().optional(),
@@ -226,7 +226,7 @@ export async function buildConfigPlugin(
   const plugin: SitePlugin<unknown, unknown> = {
     meta: {
       siteId: metadata.siteId,
-      displayName: metadata.displayName,
+      ...(metadata.displayName !== undefined && { displayName: metadata.displayName }),
       bodySchema,
       responseSchema,
       apiVersion: PLUGIN_API_VERSION,
