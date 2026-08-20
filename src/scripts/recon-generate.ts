@@ -2392,6 +2392,22 @@ function isValidJsIdentifier(s: string): boolean {
   return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(s);
 }
 
+/** Derives a valid camelCase identifier from a fixture filename (e.g.
+ * "10219132.json" -> "fixture10219132", "acme-metrics.config.json" ->
+ * "acmeMetricsConfig") for use in generated `loadFixture` const lines. */
+function sanitizeFixtureIdentifier(filename: string): string {
+  const camelCased = filename
+    .replace(/\.json$/, "")
+    .split(/[^A-Za-z0-9_$]+/)
+    .filter(Boolean)
+    .map((part, i) =>
+      i === 0 ? part : `${part.charAt(0).toUpperCase()}${part.slice(1)}`
+    )
+    .join("");
+  const stripped = camelCased.replace(/[^A-Za-z0-9_$]/g, "");
+  return isValidJsIdentifier(stripped) ? stripped : `fixture${stripped}`;
+}
+
 /**
  * Converts a path like ["Auth","Token"] to a JS access expression ".Auth.Token".
  * Identifier segments use dot access; numeric / non-identifier segments use
@@ -4300,7 +4316,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
         auxFiles
           .map(
             (f) =>
-              `// const ${f.replace(".json", "")} = loadFixture(${JSON.stringify(siteId)}, ${JSON.stringify(f)}, z.unknown());`
+              `// const ${sanitizeFixtureIdentifier(f)} = loadFixture(${JSON.stringify(siteId)}, ${JSON.stringify(f)}, z.unknown());`
           )
           .join("\n") +
         "\n"
