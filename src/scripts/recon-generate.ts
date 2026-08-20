@@ -506,6 +506,40 @@ const DEFAULT_MAX_INFER_DEPTH = 12;
 interface InferOpts {
   multipartCoerce?: boolean;
   maxDepth?: number;
+  /** Field names carrying an `@include`/`@skip` directive anywhere in the
+   * GraphQL query this inference is drawn from, as collected by
+   * {@link collectConditionalGraphQLFieldNames}. The server may legally omit
+   * these regardless of what a single capture happened to show, so they're
+   * OR'd into the same presence-driven `.optional()` decision rather than
+   * appending a second independent `.optional()`. */
+  conditionalFieldNames?: ReadonlySet<string>;
+}
+
+/**
+ * Walks a GraphQL query's selection set and collects the names of fields
+ * carrying `@include(if: ...)` or `@skip(if: ...)`. The server omits such a
+ * field entirely when its condition doesn't hold, so a single capture where
+ * the field happens to be present proves nothing about whether it's always
+ * present — schema inference needs this signal to avoid typing a legally
+ * omittable field as required.
+ *
+ * Deliberately a scoped regex over the query text rather than a full GraphQL
+ * AST parser — the "battle-tested libraries only" rule covers the
+ * fastify/zod/stagehand stack, not query-text scanning, and this is
+ * proportionate to the existing hand-rolled string processing in this file
+ * (e.g. {@link spliceFacetsIntoStringVariable}). Matches by field name only
+ * (not by path), since a directive-bearing field name recurs unchanged across
+ * every nesting depth and sibling object shape it appears in within the same
+ * query.
+ */
+export function collectConditionalGraphQLFieldNames(query: string): ReadonlySet<string> {
+  const names = new Set<string>();
+  const pattern = /([A-Za-z_][A-Za-z0-9_]*)\s*(?:\([^()]*\))?\s*@(?:include|skip)\s*\(/g;
+  for (const match of query.matchAll(pattern)) {
+    const fieldName = match[1];
+    if (fieldName) names.add(fieldName);
+  }
+  return names;
 }
 
 /**
@@ -579,9 +613,13 @@ export function inferZodSchemaFromSamples(
       .map((k) => {
         const valuesForKey = objects.filter((o) => k in o).map((o) => o[k]);
         const expr = inferZodSchemaFromSamples(valuesForKey, depth + 1, inner, opts);
-        // Seen on some samples but not others: the endpoint omits it sometimes,
-        // so requiring it would reject valid responses.
-        const optional = valuesForKey.length < objects.length ? `${expr}.optional()` : expr;
+        // Seen on some samples but not others (the endpoint omits it sometimes)
+        // OR the query marks it @include/@skip-conditional (the server can
+        // legally omit it regardless of what this sample happened to show):
+        // either signal alone is enough to require callers to guard the field.
+        const isOptional =
+          valuesForKey.length < objects.length || (opts.conditionalFieldNames?.has(k) ?? false);
+        const optional = isOptional ? `${expr}.optional()` : expr;
         return `${inner}${isValidJsIdentifier(k) ? k : JSON.stringify(k)}: ${optional}`;
       })
       .join(",\n");
@@ -3991,6 +4029,234 @@ function renderGqlVariablesExpr(
   return entries.length > 0 ? `{ ${entries.join(", ")} }` : "{}";
 }
 
+/** A count-style page-size key (e.g. `count`, `limit`, `first`) paired with a
+ * skip-style offset key (e.g. `skip`, `offset`) in the same object is the
+ * shape a paginated listings query's variables take. */
+const PAGE_SIZE_KEY_PATTERN = /^(count|limit|pageSize|first|take)$/i;
+const SKIP_KEY_PATTERN = /^(skip|offset)$/i;
+/** A numeric field named for "the total size of a larger set the current
+ * page is a slice of" — as opposed to the page-size variable, which lives in
+ * the request variables, not the response body. */
+const TOTAL_FIELD_PATTERN = /total/i;
+
+/** A read-only GraphQL operation's request variables expose a bounded
+ * paging signal when a nested (or top-level) object carries both a
+ * page-size key and a skip/offset key. */
+interface PaginationContainer {
+  path: string[];
+  countKey: string;
+  skipKey: string;
+  pageSize: number;
+}
+
+function findPaginationContainer(
+  variables: unknown,
+  path: string[] = []
+): PaginationContainer | null {
+  if (variables === null || typeof variables !== "object" || Array.isArray(variables)) return null;
+  const entries = Object.entries(variables as Record<string, unknown>);
+  const countEntry = entries.find(
+    ([k, v]) => PAGE_SIZE_KEY_PATTERN.test(k) && typeof v === "number" && v > 0
+  );
+  const skipEntry = entries.find(([k, v]) => SKIP_KEY_PATTERN.test(k) && typeof v === "number");
+  if (countEntry && skipEntry) {
+    return {
+      path,
+      countKey: countEntry[0],
+      skipKey: skipEntry[0],
+      pageSize: countEntry[1] as number,
+    };
+  }
+  for (const [key, value] of entries) {
+    const found = findPaginationContainer(value, [...path, key]);
+    if (found) return found;
+  }
+  return null;
+}
+
+/** Depth-first search for the first numeric leaf whose key matches `pattern`. */
+function findNumericFieldByName(
+  value: unknown,
+  pattern: RegExp,
+  path: string[] = []
+): string[] | null {
+  if (value === null || typeof value !== "object") return null;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findNumericFieldByName(item, pattern, path);
+      if (found) return found;
+    }
+    return null;
+  }
+  const entries = Object.entries(value as Record<string, unknown>);
+  const direct = entries.find(([k, v]) => typeof v === "number" && pattern.test(k));
+  if (direct) return [...path, direct[0]];
+  for (const [key, v] of entries) {
+    const found = findNumericFieldByName(v, pattern, [...path, key]);
+    if (found) return found;
+  }
+  return null;
+}
+
+/** Depth-first search for the first array whose elements are (non-array)
+ * objects — the same "per-item response array" shape schema inference
+ * already resolves to when it emits `z.array(z.object({...}))`. */
+function findObjectArrayField(
+  value: unknown,
+  path: string[] = []
+): { path: string[]; items: Record<string, unknown>[] } | null {
+  if (value === null || typeof value !== "object") return null;
+  if (Array.isArray(value)) {
+    const objectItems = value.filter(
+      (v): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v)
+    );
+    return objectItems.length > 0 ? { path, items: objectItems } : null;
+  }
+  for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
+    const found = findObjectArrayField(v, [...path, key]);
+    if (found) return found;
+  }
+  return null;
+}
+
+/** Bounded-paging signal detected from a primary read operation's own
+ * captured response body and request variables — see
+ * {@link buildPaginatedGqlExecuteHttpBody}. */
+interface PaginationSignal {
+  totalPath: string[];
+  arrayPath: string[];
+  containerPath: string[];
+  countKey: string;
+  skipKey: string;
+  pageSize: number;
+  identityField: string;
+}
+
+/**
+ * Detects whether a read-only GraphQL primary operation exposes a bounded
+ * paging signal: a total/count field in the captured response alongside a
+ * skip+count (or offset+limit) shaped pagination variable whose declared
+ * page size evenly divides the captured page's item count. When present,
+ * {@link emitContractTs} emits a paging loop instead of a single fixed page.
+ */
+function detectPaginationSignal(
+  responseBody: unknown,
+  gqlVariables: unknown
+): PaginationSignal | null {
+  const container = findPaginationContainer(gqlVariables);
+  if (!container) return null;
+  const totalPath = findNumericFieldByName(responseBody, TOTAL_FIELD_PATTERN);
+  if (!totalPath) return null;
+  const arrayField = findObjectArrayField(responseBody);
+  if (!arrayField || arrayField.items.length === 0) return null;
+  // A real page-size variable evenly explains the captured page's length —
+  // an unrelated numeric "count" that happens to sit near a "skip" would not.
+  if (arrayField.items.length % container.pageSize !== 0) return null;
+  const firstItem = arrayField.items[0];
+  if (!firstItem) return null;
+  const firstItemKeys = Object.keys(firstItem);
+  const identityField =
+    firstItemKeys.find((k) => k.toLowerCase() === "id") ??
+    firstItemKeys.find((k) => /Id$/.test(k)) ??
+    firstItemKeys[0];
+  if (!identityField) return null;
+  return {
+    totalPath,
+    arrayPath: arrayField.path,
+    containerPath: container.path,
+    countKey: container.countKey,
+    skipKey: container.skipKey,
+    pageSize: container.pageSize,
+    identityField,
+  };
+}
+
+/** Renders `base.a.b` / `base["a-b"].c`, using bracket access for any path
+ * segment that isn't a valid JS identifier. */
+function pathAccessExpr(base: string, path: readonly string[]): string {
+  return path.reduce(
+    (acc, key) => acc + (isValidJsIdentifier(key) ? `.${key}` : `[${JSON.stringify(key)}]`),
+    base
+  );
+}
+
+/** Rebuilds `base` with `leafExpr` spliced in at `path`, spreading every
+ * ancestor level so sibling fields survive unchanged. `path: []` returns
+ * `leafExpr` itself (the override IS the whole value). */
+function buildNestedSpreadOverride(
+  base: string,
+  path: readonly string[],
+  leafExpr: string
+): string {
+  if (path.length === 0) return leafExpr;
+  const [key, ...rest] = path as [string, ...string[]];
+  const keyExpr = isValidJsIdentifier(key) ? key : JSON.stringify(key);
+  const nested =
+    rest.length === 0 ? leafExpr : buildNestedSpreadOverride(`${base}.${key}`, rest, leafExpr);
+  return `{ ...${base}, ${keyExpr}: ${nested} }`;
+}
+
+/**
+ * Emits a bounded paging loop for a read-only GraphQL primary operation
+ * exposing {@link PaginationSignal}: advances the skip/offset variable by
+ * the observed page size on each call, stops once the response's own
+ * reported total is reached or `MAX_PAGES` caps it, and merges pages by the
+ * detected identity field rather than concatenating blindly.
+ */
+function buildPaginatedGqlExecuteHttpBody(opts: {
+  pascal: string;
+  gqlOperationNameExpr: string;
+  queryConstName: string;
+  gqlVariablesExpr: string;
+  signal: PaginationSignal;
+}): string {
+  const { pascal, gqlOperationNameExpr, queryConstName, gqlVariablesExpr, signal } = opts;
+  const { totalPath, arrayPath, containerPath, countKey, skipKey, pageSize, identityField } =
+    signal;
+
+  const countKeyExpr = isValidJsIdentifier(countKey) ? countKey : JSON.stringify(countKey);
+  const skipKeyExpr = isValidJsIdentifier(skipKey) ? skipKey : JSON.stringify(skipKey);
+  const paginationBase = pathAccessExpr("baseVariables", containerPath);
+  const paginationOverrideLeaf = `{ ...${paginationBase}, ${countKeyExpr}: PAGE_SIZE, ${skipKeyExpr}: skip }`;
+  const variablesForCall = buildNestedSpreadOverride(
+    "baseVariables",
+    containerPath,
+    paginationOverrideLeaf
+  );
+
+  const totalAccessExpr = pathAccessExpr("page", totalPath);
+  const arrayAccessExpr = pathAccessExpr("page", arrayPath);
+  const identityAccessExpr = pathAccessExpr("item", [identityField]);
+  // Non-null: the loop body runs at least once (MAX_PAGES is a positive
+  // constant and the initial `total` is Infinity), so `lastPage` is always
+  // assigned before this line executes.
+  const dataOverrideExpr = buildNestedSpreadOverride(
+    "lastPage!",
+    arrayPath,
+    "[...itemsById.values()]"
+  );
+
+  return `    const baseVariables = ${gqlVariablesExpr};
+    const PAGE_SIZE = ${pageSize};
+    // Bounded so a paging bug (a total that never converges) can't loop forever.
+    const MAX_PAGES = 50;
+    const itemsById = new Map<string, unknown>();
+    let skip = 0;
+    let total = Number.POSITIVE_INFINITY;
+    let lastPage: ${pascal}Response | null = null;
+    for (let pageIndex = 0; pageIndex < MAX_PAGES && itemsById.size < total; pageIndex++) {
+      const page = await getGql(context.baseUrl)(${gqlOperationNameExpr}, ${queryConstName}, ${variablesForCall});
+      lastPage = page;
+      total = ${totalAccessExpr};
+      for (const item of ${arrayAccessExpr}) {
+        itemsById.set(String(${identityAccessExpr}), item);
+      }
+      skip += PAGE_SIZE;
+    }
+    const data = ${dataOverrideExpr} as ${pascal}Response;
+    return { data };`;
+}
+
 /**
  * Same review-checklist items the pre-move contract.ts header used to embed,
  * now surfaced on recon-generate's own stdout instead of the shipped file —
@@ -4175,12 +4441,14 @@ export function emitContractTs(opts: {
   // verification already throws StepVerificationError on failure, so a
   // successful return IS a real signal — z.unknown() would be dishonest
   // in the other direction, hiding a field the flow can actually promise.
+  const conditionalFieldNames =
+    gql && gqlQuery ? collectConditionalGraphQLFieldNames(gqlQuery) : undefined;
   const responseSchemaExpr =
     omitExecuteHttp && isSubmissionFlow
       ? `z.object({ verified: z.boolean() })`
       : omitExecuteHttp
         ? `z.unknown()`
-        : inferZodSchema(responseBody);
+        : inferZodSchema(responseBody, 0, "", { conditionalFieldNames });
   // Multi-step flows that include a multipart upload need the binary asset
   // on the payload. ApplicantContactSchema (via ApplicantResumeSchema) already
   // declares Resume/ResumeContentType/ResumeFilename, so submission flows
@@ -4482,12 +4750,28 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
     ? renderGqlVariablesExpr(gqlVariables, payloadFieldNames)
     : "{ q: payload.query }";
 
+  // Only the single-endpoint GraphQL read path (a real primary operation, no
+  // multi-step flow) is a candidate for a paging signal — multiStepBody
+  // already owns its own per-call semantics.
+  const paginationSignal =
+    !multiStepBody && gql && gqlOperationName
+      ? detectPaginationSignal(responseBody, gqlVariables)
+      : null;
+
   const executeHttpBody = multiStepBody
     ? multiStepBody
-    : gql
-      ? `    const data = await getGql(context.baseUrl)(${gqlOperationNameExpr}, ${pascal.toUpperCase()}_QUERY, ${gqlVariablesExpr});
+    : paginationSignal
+      ? buildPaginatedGqlExecuteHttpBody({
+          pascal,
+          gqlOperationNameExpr,
+          queryConstName: `${pascal.toUpperCase()}_QUERY`,
+          gqlVariablesExpr,
+          signal: paginationSignal,
+        })
+      : gql
+        ? `    const data = await getGql(context.baseUrl)(${gqlOperationNameExpr}, ${pascal.toUpperCase()}_QUERY, ${gqlVariablesExpr});
     return { data };`
-      : `    const data = await httpClient(\`\${context.baseUrl}${endpointPath}\`, {
+        : `    const data = await httpClient(\`\${context.baseUrl}${endpointPath}\`, {
       method: "POST",
       body: JSON.stringify({ query: payload.query }),
     });
@@ -4581,7 +4865,7 @@ import type { BrowserSession } from "${ENGINE_PKG}/scraper/session";
 import type { SitePlugin, SitePluginContext, SitePluginResult } from "${ENGINE_PKG}/site-plugin";
 import { run${pascal}BrowserFlow } from "@/sites/${siteId}/flows/browser-flow";
 ${baseHeadersBlock}${limiterBlock}
-const ${pascal}ResponseSchema = ${responseSchemaExpr};
+export const ${pascal}ResponseSchema = ${responseSchemaExpr};
 
 export type ${pascal}Response = z.infer<typeof ${pascal}ResponseSchema>;
 
@@ -5051,28 +5335,30 @@ export function emitBrowserFlowTs(opts: {
  * minus its disk-dump/replan layer.
  */
 
-import type { Stagehand } from "@browserbasehq/stagehand";
-import { z } from "zod/v4";
+import type { Stagehand } from "@browserbasehq/stagehand";${isSubmissionFlow ? `\nimport { z } from "zod/v4";` : ""}
 
 import { buildAnthropicClient, buildRephraseModel } from "${ENGINE_PKG}/lib/llm/anthropic-client";
 import { getLogger } from "${ENGINE_PKG}/lib/logging";${usesThrowawayPassword ? `\nimport { generateThrowawayPassword } from "${ENGINE_PKG}/lib/random";` : ""}
 import { type HealingFlowStep, runHealingFlow, waitForSpaReady } from "${ENGINE_PKG}/scraper/flow-runner";
 import { guardedExtract } from "${ENGINE_PKG}/scraper/stagehand-guard";
-import type { ${pascal}Payload, ${pascal}Response } from "@/sites/${siteId}/contract";
+import ${
+    isSubmissionFlow
+      ? `type { ${pascal}Payload, ${pascal}Response }`
+      : `{ type ${pascal}Payload, type ${pascal}Response, ${pascal}ResponseSchema }`
+  } from "@/sites/${siteId}/contract";
 
 const logger = getLogger({ name: "${siteId}-browser-flow" });
-
-const ${pascal}BrowserSchema = z.object({${
-    isSubmissionFlow
-      ? `
+${
+  isSubmissionFlow
+    ? `
+const ${pascal}BrowserSchema = z.object({
   // runHealingFlow throws StepVerificationError on a failed submitStep, so
   // reaching this point already proves the submission verified.
-  verified: z.boolean(),`
-      : `
-  extraction: z.string(),`
-  }
+  verified: z.boolean(),
 });
-
+`
+    : ""
+}
 /**
  * Drives ${siteId} through the recon flow and extracts structured data. This is
  * the browser path; if contract.ts also defines executeHttp, that hot path runs
@@ -5111,8 +5397,7 @@ ${flowStepsBlock}
   // Schema-enforced extract via guardedExtract: Stagehand 3.4.0 accepts
   // both Zod v3 and v4 schemas natively (StagehandZodSchema union since
   // 2.4.3 / PR #944), and the caller-side safeParse defends against SDK
-  // contract drift. Widen ${pascal}BrowserSchema as needed to match the
-  // fields the recon flow actually surfaces.${
+  // contract drift.${
     isSubmissionFlow
       ? `
   // runHealingFlow above already verified the submit (submitStep:true), so the
@@ -5137,10 +5422,10 @@ ${flowStepsBlock}
   const result = await guardedExtract(
     stagehand,
     \`extract results matching query: \${payload.query}\`,
-    ${pascal}BrowserSchema
+    ${pascal}ResponseSchema
   );
 
-  return result as unknown as ${pascal}Response;
+  return result;
 }
 `
   }`;

@@ -343,7 +343,7 @@ import type { SitePlugin, SitePluginContext, SitePluginResult } from "@/site-plu
 import { runMySiteBrowserFlow } from "@/sites/my-site/flows/browser-flow";
 
 // Generated: Zod schemas inferred from captured JSON — tighten z.unknown() fields as needed.
-const MySiteResponseSchema = z.object({ data: z.object({ items: z.array(z.object({ id: z.string() })) }) });
+export const MySiteResponseSchema = z.object({ data: z.object({ items: z.array(z.object({ id: z.string() })) }) });
 const MySitePayloadSchema = z.object({ query: z.string().min(1) });
 
 type MySitePayload = z.infer<typeof MySitePayloadSchema>;
