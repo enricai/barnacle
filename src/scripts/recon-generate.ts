@@ -1618,6 +1618,12 @@ function assignFieldNamesFromArray(
   formSchema: ReconFormSchema
 ): void {
   let currentPrefix: string | null = null;
+  // Repeated/indexed headings (e.g. "Reference #1") must keep suppressing
+  // canonicalization to avoid colliding a nested entity's field with the
+  // applicant's own top-level field. Plain grouping headings with no
+  // repetition marker (e.g. "CONTACT INFORMATION") still describe the
+  // applicant, so canonicalization must still apply under them.
+  let currentPrefixIsRepeated = false;
   const usedNames = new Set<string>([...fieldNameMap.values()]);
   // First field-name key is the machine code (preferred, PascalCased directly);
   // any later key is a human label (subject to the section-heading heuristic).
@@ -1635,6 +1641,7 @@ function assignFieldNamesFromArray(
     if (typeof sourceCode === "string" && sourceCode.trim().length > 0) {
       semantic = resolveCanonicalAtsFieldName(sourceCode) ?? sourceCodeToPascalCase(sourceCode);
       currentPrefix = null;
+      currentPrefixIsRepeated = false;
     } else if (typeof name === "string" && name.trim().length > 0 && name.length < 250) {
       const hasNoSourceCode = typeof sourceCode !== "string" || sourceCode.trim().length === 0;
       // Section-heading heuristic: short label, no machine code, MOSTLY
@@ -1649,11 +1656,15 @@ function assignFieldNamesFromArray(
         const headingPrefix = fieldNameToPascalCase(name, null);
         if (headingPrefix !== null) {
           currentPrefix = headingPrefix;
+          // Only a repeated/indexed heading (e.g. "Reference #1") marks a
+          // nested sub-entity whose fields must stay prefixed to avoid
+          // colliding with the applicant's own top-level field name.
+          currentPrefixIsRepeated = /\d/.test(name) || name.includes("#");
         }
         continue;
       }
       semantic = fieldNameToPascalCase(name, currentPrefix);
-      if (currentPrefix === null) {
+      if (!currentPrefixIsRepeated) {
         const canonical = resolveCanonicalAtsFieldName(name);
         if (canonical !== null) {
           semantic = canonical;
