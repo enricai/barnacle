@@ -574,7 +574,16 @@ is any response that changes rarely enough that it can be baked into the
 codebase — load it at startup via `src/scraper/fixtures.ts` rather than
 re-fetching on every request.
 
-`recon:generate` automatically copies detected fixtures to
+Each downloaded fixture is written alongside a per-file provenance record in
+`<run-dir>/aux/aux-manifest.json` (filename, source URL, hostname). `recon:generate`
+only copies a fixture to `src/sites/<id>/fixtures/` when its manifested hostname
+is an own-backend host — an exact match against the flow's declared
+`ownBackendHostnames`, or, when none are declared, the same registrable domain
+as the site's base URL. A file in `aux/` with no manifest entry (e.g. from a
+run predating this gate) is excluded rather than assumed safe, since its
+source host can't be verified.
+
+`recon:generate` automatically copies allowed fixtures to
 `src/sites/<id>/fixtures/`. To use one in your plugin:
 
 ```ts

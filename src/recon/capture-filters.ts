@@ -115,3 +115,22 @@ export function registrableDomain(hostname: string): string {
     .filter((label) => label.length > 0);
   return labels.length <= 2 ? labels.join(".") : labels.slice(-2).join(".");
 }
+
+/**
+ * True when `hostname` is allowed as a fixture host: an exact match against
+ * `ownBackendHostnames` when the flow declares any, otherwise a
+ * same-registrable-domain match against `fallbackDomain`. Shared by
+ * `recon-http.ts`'s write-time filter and `recon-generate.ts`'s copy-time
+ * filter so which hosts count as "the site's own backend" cannot drift
+ * between capture and emission.
+ */
+export function isAllowedFixtureHost(
+  hostname: string,
+  ownBackendHostnames: string[],
+  fallbackDomain: string | null
+): boolean {
+  const host = hostname.toLowerCase();
+  const allowedHostnames = new Set(ownBackendHostnames.map((h) => h.toLowerCase()));
+  if (allowedHostnames.size > 0) return allowedHostnames.has(host);
+  return fallbackDomain !== null && registrableDomain(host) === fallbackDomain;
+}

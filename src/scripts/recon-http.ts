@@ -36,7 +36,7 @@ import { join } from "node:path";
 import { toErrorMessage } from "@/lib/errors";
 import { configureHttpDispatcher } from "@/lib/http";
 import { getScriptLogger } from "@/lib/logging";
-import { isNoiseUrl, registrableDomain } from "@/recon/capture-filters";
+import { isAllowedFixtureHost, isNoiseUrl, registrableDomain } from "@/recon/capture-filters";
 import { readOwnBackendHostnames, resolveReconRunDir } from "@/scripts/recon-shared";
 
 configureHttpDispatcher();
@@ -87,6 +87,13 @@ interface RateLimitFinding {
   triggerRps: number | null;
   retryAfter: string | null;
   xRateLimitHeaders: Record<string, string>;
+}
+
+/** Per-file host provenance record for aux fixtures, so a stale directory's origin stays checkable independent of when it was written. */
+interface AuxManifestEntry {
+  filename: string;
+  url: string;
+  hostname: string;
 }
 
 function loadCaptures(dir: string): Array<{ filename: string; capture: Capture }> {
@@ -255,7 +262,6 @@ export function selectAuxFixtureCandidates(
   ownBackendHostnames: string[],
   fallbackHost: string | null
 ): ReplayResult[] {
-  const allowedHostnames = new Set(ownBackendHostnames.map((h) => h.toLowerCase()));
   const fallbackDomain = fallbackHost ? registrableDomain(fallbackHost) : null;
 
   return replays.filter((r) => {
@@ -272,9 +278,7 @@ export function selectAuxFixtureCandidates(
       pathname.endsWith(".json") ||
       /\/(markets|currencies|labels|dictionaries|config|locales|i18n)/.test(pathname);
     if (!isFixtureShaped) return false;
-    const host = parsed.hostname.toLowerCase();
-    if (allowedHostnames.size > 0) return allowedHostnames.has(host);
-    return fallbackDomain !== null && registrableDomain(host) === fallbackDomain;
+    return isAllowedFixtureHost(parsed.hostname, ownBackendHostnames, fallbackDomain);
   });
 }
 
@@ -284,7 +288,7 @@ export function selectAuxFixtureCandidates(
  * These rarely change and are cheaper to serve from a snapshot than to
  * re-fetch on every production call.
  */
-async function probeAuxiliaryEndpoints(
+export async function probeAuxiliaryEndpoints(
   replays: ReplayResult[],
   auxDir: string,
   ownBackendHostnames: string[],
@@ -292,6 +296,7 @@ async function probeAuxiliaryEndpoints(
 ): Promise<void> {
   mkdirSync(auxDir, { recursive: true });
   const writtenInRun = new Set<string>();
+  const manifestEntries: AuxManifestEntry[] = [];
 
   const candidates = selectAuxFixtureCandidates(replays, ownBackendHostnames, fallbackHost);
 
@@ -320,10 +325,15 @@ async function probeAuxiliaryEndpoints(
       const filename = writtenInRun.has(base) ? `${parsed.hostname}-${base}` : base;
       writeFileSync(join(auxDir, filename), JSON.stringify(body, null, 2));
       writtenInRun.add(base);
+      manifestEntries.push({ filename, url: candidate.url, hostname: parsed.hostname });
       logger.info(`[fixture] ${candidate.url} → ${auxDir}/${filename} — commit as static fixture`);
     } catch (err) {
       logger.error(`[aux err] ${candidate.url}: ${toErrorMessage(err)}`);
     }
+  }
+
+  if (manifestEntries.length > 0) {
+    writeFileSync(join(auxDir, "aux-manifest.json"), JSON.stringify(manifestEntries, null, 2));
   }
 }
 
