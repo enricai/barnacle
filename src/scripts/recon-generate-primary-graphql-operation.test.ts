@@ -94,11 +94,16 @@ describe("selectPrimaryGraphQLOperation", () => {
   });
 
   it("prefers a facet-bearing capture over a larger, more recurrent decoy sharing the same operation", () => {
+    // The decoy incidentally mentions both field names ("category" in
+    // `sort.by`, "priceRange" in `note`) so fieldMatchCount's substring
+    // search scores it exactly as high as the facet-bearing capture — this
+    // rules out the decoy losing merely because fieldScore already favors
+    // the other candidate; facetScore must be what tips the balance.
     const decoy = makeCapture({
       phase: "browse",
       operationName: "SearchProducts",
       query: "query SearchProducts($filters: String) { products(filters: $filters) { id name } }",
-      variables: { pagination: { count: 10 } },
+      variables: { pagination: { count: 10 }, sort: { by: "category" }, note: "priceRange" },
       responseBody: {
         products: Array.from({ length: 200 }, (_, i) => ({ id: i, name: `Product ${i}` })),
       },
@@ -107,7 +112,7 @@ describe("selectPrimaryGraphQLOperation", () => {
       phase: "browse",
       operationName: "SearchProducts",
       query: "query SearchProducts($filters: String) { products(filters: $filters) { id name } }",
-      variables: { pagination: { count: 10 } },
+      variables: { pagination: { count: 10 }, sort: { by: "category" }, note: "priceRange" },
       responseBody: {
         products: Array.from({ length: 200 }, (_, i) => ({ id: i, name: `Product ${i}` })),
       },
