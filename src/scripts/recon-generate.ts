@@ -1307,7 +1307,6 @@ export function extractGraphQLActionSequence(
   return captures
     .map((capture, index) => ({ capture, index }))
     .filter(({ capture }) => {
-      if (capture.operationName === null) return false;
       if (capture.status < 200 || capture.status >= 300) return false;
       if (isNoiseUrl(capture.url)) return false;
       if (!matchesSubmit(capture)) return false;

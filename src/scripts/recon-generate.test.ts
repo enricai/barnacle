@@ -734,6 +734,25 @@ describe("extractGraphQLActionSequence — GraphQL submission flows get state-th
     ]);
     expect(body).not.toContain("ListForms");
   });
+
+  it("keeps a mutation capture whose top-level operationName is null, matching a same-shaped named mutation", () => {
+    const named = gqlCapture(
+      "SubmitApplication",
+      "mutation",
+      { applicationId: "app-1" },
+      '{"op":"SubmitApplication"}'
+    );
+    const nullNamed = {
+      ...named,
+      operationName: null,
+      query:
+        "mutation SubmitApplication($input: Input) {\n  SubmitApplication(input: $input) { id }\n}",
+    };
+
+    const kept = extractGraphQLActionSequence([named, nullNamed]);
+    expect(kept).toHaveLength(2);
+    expect(kept.map((a) => a.capture.query)).toEqual([named.query, nullNamed.query]);
+  });
 });
 
 describe("detectFormSchemaFieldNames — consumer-supplied wire keys (#57)", () => {
