@@ -92,4 +92,47 @@ describe("selectPrimaryGraphQLOperation", () => {
 
     expect(result?.endpointPath).toBe("/graphql/search");
   });
+
+  it("prefers a facet-bearing capture over a larger, more recurrent decoy sharing the same operation", () => {
+    const decoy = makeCapture({
+      phase: "browse",
+      operationName: "SearchProducts",
+      query:
+        "query SearchProducts($filters: String) { products(filters: $filters) { id name } }",
+      variables: { pagination: { count: 10 } },
+      responseBody: {
+        products: Array.from({ length: 200 }, (_, i) => ({ id: i, name: `Product ${i}` })),
+      },
+    });
+    const decoyRepeat = makeCapture({
+      phase: "browse",
+      operationName: "SearchProducts",
+      query:
+        "query SearchProducts($filters: String) { products(filters: $filters) { id name } }",
+      variables: { pagination: { count: 10 } },
+      responseBody: {
+        products: Array.from({ length: 200 }, (_, i) => ({ id: i, name: `Product ${i}` })),
+      },
+    });
+    const facetBearing = makeCapture({
+      phase: "filter",
+      operationName: "SearchProducts",
+      query:
+        "query SearchProducts($filters: String) { products(filters: $filters) { id name } }",
+      variables: { filters: "category:widgets|priceRange:10~50" },
+      responseBody: {
+        products: Array.from({ length: 5 }, (_, i) => ({ id: i, name: `Product ${i}` })),
+      },
+    });
+
+    const captures = [decoy, decoyRepeat, facetBearing];
+    const flowSteps = [
+      { step: "select 'widgets' from the Category dropdown", payloadField: "category" },
+      { step: "select '10~50' from the Price Range dropdown", payloadField: "priceRange" },
+    ];
+
+    const result = selectPrimaryGraphQLOperation(captures, flowSteps, EMPTY_VOCABULARY);
+
+    expect(result?.capture).toBe(facetBearing);
+  });
 });

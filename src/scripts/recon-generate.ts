@@ -944,6 +944,20 @@ export function selectPrimaryGraphQLOperation(
     }
     return matches;
   };
+  const payloadFieldList = [...payloadFields];
+  // Same mechanism renderGqlVariablesExpr uses to splice payload into a
+  // facet-packed string variable — a candidate scores 1 here only if that
+  // splice would actually have somewhere to land, not merely if a facet name
+  // appears somewhere in its query/variables text (fieldScore's substring
+  // match is incidental and can be satisfied by an unfiltered decoy).
+  const facetSpliceable = (c: Capture): boolean => {
+    if (c.variables === null || typeof c.variables !== "object" || Array.isArray(c.variables)) {
+      return false;
+    }
+    return Object.values(c.variables as Record<string, unknown>).some(
+      (value) => spliceFacetsIntoStringVariable(value, payloadFieldList) !== null
+    );
+  };
   const operationNameCounts = new Map<string, number>();
   for (const c of candidates) {
     if (c.operationName === null) continue;
@@ -962,9 +976,17 @@ export function selectPrimaryGraphQLOperation(
       capture.operationName !== null
         ? (operationNameCounts.get(capture.operationName) ?? 0) / maxRecurrence
         : 0;
+    const facetScore = facetSpliceable(capture) ? 1 : 0;
     // Field correlation carries the heaviest weight so a smaller facet-matching
     // operation outranks a larger decoy — size alone must not decide this.
-    const score = fieldScore * 0.45 + sizeScore * 0.2 + phaseScore * 0.15 + recurrenceScore * 0.2;
+    // facetScore breaks ties among same-operation candidates in favor of the
+    // one spliceFacetsIntoStringVariable can actually act on.
+    const score =
+      fieldScore * 0.35 +
+      sizeScore * 0.15 +
+      phaseScore * 0.15 +
+      recurrenceScore * 0.15 +
+      facetScore * 0.2;
     return { capture, score };
   });
 
