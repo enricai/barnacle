@@ -67,11 +67,12 @@ describe("recon-generate — submit-step verification", () => {
     expect(code).toContain("{ ...result, verified: true }");
   });
 
-  it("keeps the extraction TODO placeholder for a non-submission browser flow", () => {
+  it("validates a non-submission browser flow against the contract's ResponseSchema, not a placeholder", () => {
     const { code } = emitBrowserFlowTs({ ...submissionOpts, isSubmissionFlow: false });
 
-    expect(code).toContain("extraction: z.string()");
+    expect(code).not.toContain("extraction: z.string()");
     expect(code).not.toContain("verified: z.boolean()");
+    expect(code).toContain(`${submissionOpts.pascal}ResponseSchema`);
   });
 
   const contractOpts = {

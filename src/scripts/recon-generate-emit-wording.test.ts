@@ -75,21 +75,16 @@ describe("emitBrowserFlowTs SPA-hydration-wait comment (F3)", () => {
 });
 
 describe("emitBrowserFlowTs browser-fallback schema (F5a)", () => {
-  it("does not ship an actionable TODO in the extract schema for a non-submission flow", () => {
+  it("does not ship an actionable TODO for a non-submission flow's shared ResponseSchema", () => {
     const { code } = emitBrowserFlowTs({
       siteId: "some-site",
       pascal: "SomeSite",
       baseUrl: "https://example.com",
-      flowSteps: [],
+      flowSteps: [{ step: "Click search" }],
       isSubmissionFlow: false,
     });
 
-    const schemaBlock = code.slice(
-      code.indexOf("SomeSiteBrowserSchema = z.object({"),
-      code.indexOf("});", code.indexOf("SomeSiteBrowserSchema = z.object({"))
-    );
-
-    expect(schemaBlock).not.toContain("TODO");
+    expect(code).not.toContain("TODO");
   });
 });
 

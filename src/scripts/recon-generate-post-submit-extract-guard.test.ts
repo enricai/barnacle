@@ -56,6 +56,7 @@ describe("recon-generate — post-submit guardedExtract guard", () => {
     expect(code).not.toContain("try {");
     expect(code).not.toContain("} catch (error) {");
     expect(code).toContain("const result = await guardedExtract(");
-    expect(code).toContain("return result as unknown as ReconSite4Response;");
+    expect(code).toContain("return result;");
+    expect(code).not.toContain("as unknown as ReconSite4Response");
   });
 });

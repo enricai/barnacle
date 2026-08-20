@@ -4865,7 +4865,7 @@ import type { BrowserSession } from "${ENGINE_PKG}/scraper/session";
 import type { SitePlugin, SitePluginContext, SitePluginResult } from "${ENGINE_PKG}/site-plugin";
 import { run${pascal}BrowserFlow } from "@/sites/${siteId}/flows/browser-flow";
 ${baseHeadersBlock}${limiterBlock}
-const ${pascal}ResponseSchema = ${responseSchemaExpr};
+export const ${pascal}ResponseSchema = ${responseSchemaExpr};
 
 export type ${pascal}Response = z.infer<typeof ${pascal}ResponseSchema>;
 
@@ -5335,28 +5335,30 @@ export function emitBrowserFlowTs(opts: {
  * minus its disk-dump/replan layer.
  */
 
-import type { Stagehand } from "@browserbasehq/stagehand";
-import { z } from "zod/v4";
+import type { Stagehand } from "@browserbasehq/stagehand";${isSubmissionFlow ? `\nimport { z } from "zod/v4";` : ""}
 
 import { buildAnthropicClient, buildRephraseModel } from "${ENGINE_PKG}/lib/llm/anthropic-client";
 import { getLogger } from "${ENGINE_PKG}/lib/logging";${usesThrowawayPassword ? `\nimport { generateThrowawayPassword } from "${ENGINE_PKG}/lib/random";` : ""}
 import { type HealingFlowStep, runHealingFlow, waitForSpaReady } from "${ENGINE_PKG}/scraper/flow-runner";
 import { guardedExtract } from "${ENGINE_PKG}/scraper/stagehand-guard";
-import type { ${pascal}Payload, ${pascal}Response } from "@/sites/${siteId}/contract";
+import ${
+    isSubmissionFlow
+      ? `type { ${pascal}Payload, ${pascal}Response }`
+      : `{ type ${pascal}Payload, type ${pascal}Response, ${pascal}ResponseSchema }`
+  } from "@/sites/${siteId}/contract";
 
 const logger = getLogger({ name: "${siteId}-browser-flow" });
-
-const ${pascal}BrowserSchema = z.object({${
-    isSubmissionFlow
-      ? `
+${
+  isSubmissionFlow
+    ? `
+const ${pascal}BrowserSchema = z.object({
   // runHealingFlow throws StepVerificationError on a failed submitStep, so
   // reaching this point already proves the submission verified.
-  verified: z.boolean(),`
-      : `
-  extraction: z.string(),`
-  }
+  verified: z.boolean(),
 });
-
+`
+    : ""
+}
 /**
  * Drives ${siteId} through the recon flow and extracts structured data. This is
  * the browser path; if contract.ts also defines executeHttp, that hot path runs
@@ -5395,8 +5397,7 @@ ${flowStepsBlock}
   // Schema-enforced extract via guardedExtract: Stagehand 3.4.0 accepts
   // both Zod v3 and v4 schemas natively (StagehandZodSchema union since
   // 2.4.3 / PR #944), and the caller-side safeParse defends against SDK
-  // contract drift. Widen ${pascal}BrowserSchema as needed to match the
-  // fields the recon flow actually surfaces.${
+  // contract drift.${
     isSubmissionFlow
       ? `
   // runHealingFlow above already verified the submit (submitStep:true), so the
@@ -5421,10 +5422,10 @@ ${flowStepsBlock}
   const result = await guardedExtract(
     stagehand,
     \`extract results matching query: \${payload.query}\`,
-    ${pascal}BrowserSchema
+    ${pascal}ResponseSchema
   );
 
-  return result as unknown as ${pascal}Response;
+  return result;
 }
 `
   }`;
