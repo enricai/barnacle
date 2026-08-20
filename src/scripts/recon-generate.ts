@@ -1064,17 +1064,23 @@ export function selectPrimaryGraphQLOperation(
       (value) => spliceFacetsIntoStringVariable(value, payloadFieldList) !== null
     );
   };
+  // A facet-spliceable candidate must win over any non-facet candidate
+  // regardless of size/recurrence/phase — those signals only decide among
+  // candidates of the same facet-spliceability tier, never across tiers.
+  const facetCandidates = candidates.filter((c) => facetSpliceable(c));
+  const scoringPool = facetCandidates.length > 0 ? facetCandidates : candidates;
+
   const operationNameCounts = new Map<string, number>();
-  for (const c of candidates) {
+  for (const c of scoringPool) {
     const key = operationGroupKey(c);
     operationNameCounts.set(key, (operationNameCounts.get(key) ?? 0) + 1);
   }
 
-  const maxSize = Math.max(...candidates.map(responseSize), 1);
-  const maxFieldMatch = Math.max(...candidates.map(fieldMatchCount), 1);
+  const maxSize = Math.max(...scoringPool.map(responseSize), 1);
+  const maxFieldMatch = Math.max(...scoringPool.map(fieldMatchCount), 1);
   const maxRecurrence = Math.max(...Array.from(operationNameCounts.values()), 1);
 
-  const scored = candidates.map((capture) => {
+  const scored = scoringPool.map((capture) => {
     const sizeScore = responseSize(capture) / maxSize;
     const fieldScore = fieldMatchCount(capture) / maxFieldMatch;
     const phaseScore = capture.phase !== "home" ? 1 : 0;

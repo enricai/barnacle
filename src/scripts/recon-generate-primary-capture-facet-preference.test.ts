@@ -107,4 +107,35 @@ describe("selectPrimaryGraphQLOperation facet preference", () => {
 
     expect(result?.capture).toBe(catalogSearch);
   });
+
+  it("prefers a facet-spliceable candidate over a larger, more-recurring non-facet decoy on the same endpoint", () => {
+    // The decoy incidentally mentions "category" too, so fieldScore ties with
+    // the facet candidate — without a hard facet preference the decoy still
+    // wins on sizeScore + phaseScore + recurrenceScore alone (0.80 composite
+    // vs. the facet candidate's ~0.73), which is exactly the failure this
+    // subtask closes.
+    const decoyA = gqlCapture({
+      operationName: "FilterOptionsQuery",
+      query: "query FilterOptionsQuery { filterOptions { category values } }",
+      variables: { context: "category" },
+      responseBody: {
+        filterOptions: Array.from({ length: 200 }, (_, i) => ({ id: i, label: `Option ${i}` })),
+      },
+    });
+    const decoyRest = Array.from({ length: 4 }, () => ({ ...decoyA }));
+    const facetBearing = gqlCapture({
+      operationName: "catalogSearch_Items",
+      variables: { filters: "category:kitchen" },
+      responseBody: { catalogSearch: { items: [{ id: 1, name: "Item 1" }] } },
+    });
+
+    const captures = [decoyA, ...decoyRest, facetBearing];
+    const flowSteps = [
+      { step: "select 'kitchen' from the Category dropdown", payloadField: "category" },
+    ];
+
+    const result = selectPrimaryGraphQLOperation(captures, flowSteps, EMPTY_VOCABULARY);
+
+    expect(result?.capture).toBe(facetBearing);
+  });
 });
