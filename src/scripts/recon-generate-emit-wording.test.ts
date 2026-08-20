@@ -54,6 +54,20 @@ describe("emitBrowserFlowTs SPA-hydration-wait comment (F3)", () => {
   });
 });
 
+describe("emitBrowserFlowTs browser-fallback schema (F5a)", () => {
+  it("does not ship an actionable TODO in the extract schema for a non-submission flow", () => {
+    const { code } = emitBrowserFlowTs({
+      siteId: "some-site",
+      pascal: "SomeSite",
+      baseUrl: "https://example.com",
+      flowSteps: [],
+      isSubmissionFlow: false,
+    });
+
+    expect(code).not.toContain("TODO");
+  });
+});
+
 describe("emitIndexTs registration guidance (FAILURE 6)", () => {
   it("directs the operator to BARNACLE_PLUGINS, not a core-file edit", () => {
     const code = emitIndexTs({ siteId: "some-site", pascal: "SomeSite" });

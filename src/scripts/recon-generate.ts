@@ -5024,7 +5024,6 @@ const ${pascal}BrowserSchema = z.object({${
   // reaching this point already proves the submission verified.
   verified: z.boolean(),`
       : `
-  // TODO: define the fields you need — align with ${pascal}Response
   extraction: z.string(),`
   }
 });
