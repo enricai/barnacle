@@ -750,6 +750,19 @@ export function selectEffectiveResponseBody<T extends { capture: Capture }>(
   return selectReturnAction(actionSteps)?.capture.responseBody ?? replayResponseBody;
 }
 
+/**
+ * A capture's own URL is not guaranteed parseable (see the try/catch in
+ * `deriveBaseUrl` and `firstEndpointCapture` below), so host-provenance
+ * filtering must not throw on a malformed one — it just never matches.
+ */
+function captureHostname(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return "";
+  }
+}
+
 function deriveBaseUrl(captures: Capture[]): string {
   for (const c of captures) {
     try {
@@ -976,8 +989,7 @@ export function selectPrimaryGraphQLOperation(
       c.status < 300 &&
       c.query !== null &&
       !/^\s*mutation\b/.test(c.query) &&
-      (!hasHostProvenance ||
-        isAllowedFixtureHost(new URL(c.url).hostname, ownBackendHostnames, fallbackDomain))
+      (!hasHostProvenance || isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, fallbackDomain))
   );
   if (candidates.length === 0) return null;
 
