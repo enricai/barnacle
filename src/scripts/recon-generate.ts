@@ -153,6 +153,41 @@ function locateSpliceSite(
   };
 }
 
+/**
+ * A quoted span immediately followed by "button"/"link"/"tab" NAMES a control,
+ * not a fill/select VALUE — `click the 'Sign in with email' button` carries no
+ * applicant datum even though the quoted text happens to contain a field-label
+ * word ("email"). Checked ahead of vocabulary matching so a control's own name
+ * can never be mistaken for the data it merely mentions.
+ */
+function namesAControl(instruction: string): boolean {
+  return findQuoteSpans(instruction).some((span) =>
+    /^\s*(button|link|tab)\b/i.test(instruction.slice(span.index + span.length))
+  );
+}
+
+/** The quoted VALUE a Select/Choose/Fill step carries, per {@link pickValueSpan}'s
+ * grammar rule — used to validate a vocabulary match's ANSWER, not just its label. */
+function pickedQuotedValue(instruction: string): string | null {
+  const spans = findQuoteSpans(instruction);
+  if (spans.length === 0) return null;
+  const value = pickValueSpan(instruction, spans).value;
+  return value.length > 0 ? value : null;
+}
+
+/**
+ * Closed-enum answers (Yes/No, decline-to-answer, ...) a Select/Choose step
+ * commonly carries. None of these is ever an applicant's own datum — they are
+ * the RESPONSE to a screening question, not the fact a name/state/phone field
+ * asks for — so a vocabulary label match must never bind one to a payload field.
+ * Generic English grammar, not a domain vocabulary concern, so it belongs here
+ * rather than in any consumer's `--vocabulary`.
+ */
+const OPERATIONAL_ANSWER =
+  /^(yes|no|true|false|n\/a|none|decline(?:\s+to\s+(?:answer|self-identify))?|prefer not to (?:answer|say))$/i;
+
+const EMPTY_KNOWN_FIELD_VALUES: ReadonlyMap<string, string> = new Map();
+
 function toPascalCase(siteId: string): string {
   return siteId
     .split(/[-_]/)
@@ -174,16 +209,26 @@ function toPascalCase(siteId: string): string {
  * @param forceNone when true, force a literal step (the `payloadFieldNone` opt-out)
  * @param vocabulary the consumer's domain vocabulary; defaults to {@link EMPTY_VOCABULARY}
  *   (no splicing) when the caller passes none
+ * @param knownFieldValues field→value pairs the flow already established
+ *   unambiguously via a Fill/Enter/Type step ({@link buildKnownFieldValues}). A
+ *   Select/Choose step's ANSWER must equal the known value for the field a
+ *   label match names, or it is not that field's datum (e.g. a device-type
+ *   dropdown's `'Mobile'` looks like a phone-number field by label alone, but
+ *   is nothing like the number the Fill step already bound).
  * @returns the PascalCase payload field name to splice, or null to keep literal
  */
 export function resolveStepPayloadField(
   instruction: string,
   explicit?: string,
   forceNone?: boolean,
-  vocabulary: ReconVocabulary = EMPTY_VOCABULARY
+  vocabulary: ReconVocabulary = EMPTY_VOCABULARY,
+  knownFieldValues: ReadonlyMap<string, string> = EMPTY_KNOWN_FIELD_VALUES
 ): string | null {
   if (forceNone) return null;
   if (explicit) return explicit;
+  // A control's own name (a button/link/tab label) is never a fill/select VALUE,
+  // even when it happens to contain a word a vocabulary row also matches.
+  if (namesAControl(instruction)) return null;
   // A quoted literal or a reserved ${RECON_*} env token IS the recon constant
   // this step would replace, so it is spliceable on its own.
   const hasQuotedConstant = /'[^']*'/.test(instruction) || RESERVED_ENV_TOKEN.test(instruction);
@@ -197,10 +242,55 @@ export function resolveStepPayloadField(
     hasQuotedConstant || (isDropdownStep && vocabulary.subject.test(instruction));
   if (!hasSpliceable) return null;
   if (vocabulary.exclusions.some((rx) => rx.test(instruction))) return null;
+  // A Select/Choose/Pick step names an ANSWER, not a Fill step's self-evident
+  // value — a label match alone can't tell the applicant's own datum from an
+  // operational choice the widget merely offers, so the answer itself is
+  // validated below.
+  const isSelectStep = /\b(select|choose|pick)\b/i.test(instruction);
   for (const [rx, field] of vocabulary.table) {
-    if (rx.test(instruction)) return field;
+    if (!rx.test(instruction)) continue;
+    if (!isSelectStep) return field;
+    const answer = pickedQuotedValue(instruction);
+    if (answer !== null && OPERATIONAL_ANSWER.test(answer.trim())) return null;
+    const known = knownFieldValues.get(field);
+    if (known !== undefined && answer !== known) return null;
+    return field;
   }
   return null;
+}
+
+/**
+ * Field→value pairs the flow establishes unambiguously via a Fill/Enter/Type
+ * step — the applicant's own datum, per {@link deriveFillLabelField}'s same
+ * self-describing grammar. {@link resolveStepPayloadField} uses this to verify
+ * a Select/Choose step's ANSWER is that SAME datum before binding it to the
+ * field a label match names, catching the mismatch a label alone cannot see
+ * (a field whose label mentions "phone" but whose select answer is a device
+ * type, not a number).
+ */
+export function buildKnownFieldValues(
+  flowSteps: FlowStepInput[],
+  vocabulary: ReconVocabulary,
+  env: NodeJS.ProcessEnv
+): Map<string, string> {
+  const known = new Map<string, string>();
+  for (const step of flowSteps) {
+    const isObj = typeof step !== "string";
+    const instruction = isObj ? step.step : step;
+    if (!/^\s*(?:fill(?:\s+in)?|enter|type)\b/i.test(instruction)) continue;
+    const field =
+      resolveStepPayloadField(
+        instruction,
+        isObj ? step.payloadField : undefined,
+        isObj ? step.payloadFieldNone : undefined,
+        vocabulary
+      ) ?? deriveFillLabelField(instruction);
+    if (field === null) continue;
+    const value = extractStepPersonaValue(instruction, env);
+    if (value === null) continue;
+    if (!known.has(field)) known.set(field, value);
+  }
+  return known;
 }
 
 /**
@@ -298,6 +388,7 @@ export function harvestPersonaBindings(
   env: NodeJS.ProcessEnv
 ): Map<string, string> {
   const bindings = new Map<string, string>();
+  const knownFieldValues = buildKnownFieldValues(flowSteps, vocabulary, env);
   for (const step of flowSteps) {
     const isObj = typeof step !== "string";
     const instruction = isObj ? step.step : step;
@@ -305,7 +396,8 @@ export function harvestPersonaBindings(
       instruction,
       isObj ? step.payloadField : undefined,
       isObj ? step.payloadFieldNone : undefined,
-      vocabulary
+      vocabulary,
+      knownFieldValues
     );
     // Vocabulary wins outright. Only on a miss do we fall back to deriving the
     // field from the instruction's own label — and never when the author opted
@@ -693,17 +785,24 @@ interface PrimaryGraphQLOperation {
  * flow's own `payloadField` facets appearing in the candidate's query/variables,
  * a non-landing capture phase, and how often the same operation re-fires are
  * combined into one composite score.
+ *
+ * The `payloadField` facets are drawn from {@link resolveStepPayloadField} with
+ * {@link buildKnownFieldValues}'s known-value guard applied, so an operational
+ * Select answer (e.g. a device-type dropdown) never contributes a spurious
+ * facet match to the ranking.
  */
 export function selectPrimaryGraphQLOperation(
   captures: Capture[],
   flowSteps: FlowStepInput[],
-  vocabulary: ReconVocabulary
+  vocabulary: ReconVocabulary,
+  env: NodeJS.ProcessEnv = process.env
 ): PrimaryGraphQLOperation | null {
   const candidates = captures.filter(
     (c) => c.status >= 200 && c.status < 300 && c.query !== null && !/^\s*mutation\b/.test(c.query)
   );
   if (candidates.length === 0) return null;
 
+  const knownFieldValues = buildKnownFieldValues(flowSteps, vocabulary, env);
   const payloadFields = new Set<string>();
   for (const step of flowSteps) {
     const isObj = typeof step !== "string";
@@ -712,7 +811,8 @@ export function selectPrimaryGraphQLOperation(
       instruction,
       isObj ? step.payloadField : undefined,
       isObj ? step.payloadFieldNone : undefined,
-      vocabulary
+      vocabulary,
+      knownFieldValues
     );
     if (field !== null) payloadFields.add(field);
   }
@@ -1832,6 +1932,7 @@ export function buildSelectOptionResolutions(
   const resolutions: SelectOptionResolution[] = [];
   const rawCodeFields = new Map<string, { wireKey: string; code: string }>();
   const seenWireKeys = new Set<string>();
+  const knownFieldValues = buildKnownFieldValues(flowSteps, vocabulary, env);
   for (const step of flowSteps) {
     const instruction = typeof step === "string" ? step : step.step;
     if (!/^\s*(select|choose|pick)\b/i.test(instruction) && !/\bselect\b/i.test(instruction)) {
@@ -1889,7 +1990,8 @@ export function buildSelectOptionResolutions(
       instruction,
       typeof step === "string" ? undefined : step.payloadField,
       typeof step === "string" ? undefined : step.payloadFieldNone,
-      vocabulary
+      vocabulary,
+      knownFieldValues
     );
     if (field === null) continue;
     const code = labelValue.get(label);
@@ -4431,6 +4533,9 @@ export function emitConfigManifest(opts: {
    * browser-only.
    */
   httpModulePath?: string;
+  /** Env supplying `${RECON_*}` token values for {@link buildKnownFieldValues};
+   * defaults to `process.env`. */
+  env?: NodeJS.ProcessEnv;
 }): string {
   const {
     siteId,
@@ -4441,8 +4546,10 @@ export function emitConfigManifest(opts: {
     inputBody,
     recoveredFields,
     httpModulePath,
+    env = process.env,
   } = opts;
   const payloadFieldNames = new Set<string>();
+  const knownFieldValues = buildKnownFieldValues(flowSteps, vocabulary ?? EMPTY_VOCABULARY, env);
 
   const steps = flowSteps.map((step) => {
     const isObj = typeof step !== "string";
@@ -4465,7 +4572,8 @@ export function emitConfigManifest(opts: {
       instruction,
       isObj ? step.payloadField : undefined,
       isObj ? step.payloadFieldNone : undefined,
-      vocabulary
+      vocabulary,
+      knownFieldValues
     );
     if (field !== null) payloadFieldNames.add(field);
     const rewritten = buildManifestInstruction(instruction, field);
@@ -4542,6 +4650,9 @@ export function emitBrowserFlowTs(opts: {
    * plugin keeps the same cross-origin iframe capability the recon flow used.
    * Omitted (undefined) preserves today's main-frame-only generation. */
   frameSelector?: string;
+  /** Env supplying `${RECON_*}` token values for {@link buildKnownFieldValues};
+   * defaults to `process.env`. */
+  env?: NodeJS.ProcessEnv;
 }): { code: string; payloadFieldNames: Set<string> } {
   const {
     siteId,
@@ -4551,10 +4662,12 @@ export function emitBrowserFlowTs(opts: {
     hasMultipartStep = false,
     vocabulary,
     frameSelector,
+    env = process.env,
   } = opts;
 
   const payloadFieldNames = new Set<string>();
   const hasUploadStep = flowSteps.some((s) => typeof s !== "string" && s.upload === true);
+  const knownFieldValues = buildKnownFieldValues(flowSteps, vocabulary ?? EMPTY_VOCABULARY, env);
   let usesThrowawayPassword = false;
 
   const stepLiterals = flowSteps.map((step) => {
@@ -4577,7 +4690,8 @@ export function emitBrowserFlowTs(opts: {
       instruction,
       isObj ? step.payloadField : undefined,
       isObj ? step.payloadFieldNone : undefined,
-      vocabulary
+      vocabulary,
+      knownFieldValues
     );
     if (field !== null) payloadFieldNames.add(field);
     const instructionExpr = buildStepInstructionExpr(instruction, field);

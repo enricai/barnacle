@@ -86,7 +86,10 @@ describe("emitBrowserFlowTs — splice site targets the fill VALUE, not a select
     expect(code).not.toContain(`$${"{payload."}`);
   });
 
-  it("splices the answer (not the label) into a Select step when the vocabulary maps it", () => {
+  it("does not splice a Yes/No answer even when the vocabulary label-matches the question", () => {
+    // "RN state license" label-matches the State vocab row, but the ANSWER is a
+    // Yes/No screening response, not the applicant's state — the operational-
+    // answer guard must leave it literal regardless of the label match.
     const stateVocab: ReconVocabulary = {
       subject: /(?!)/,
       exclusions: [],
@@ -95,7 +98,24 @@ describe("emitBrowserFlowTs — splice site targets the fill VALUE, not a select
     const code = emitStep("In the 'RN state license' Select One dropdown, select 'No'", stateVocab);
 
     expect(code).toContain("'RN state license'");
+    expect(code).toContain("'No'");
+    expect(code).not.toContain(`$${"{payload."}`);
+  });
+
+  it("splices a Select step's answer when it equals the field's known value", () => {
+    // A real STATE dropdown: the answer is the applicant's own datum, so it
+    // still splices once it is not an operational Yes/No/enum literal.
+    const stateVocab: ReconVocabulary = {
+      subject: /(?!)/,
+      exclusions: [],
+      table: [[/\bstate\b/i, "State"]],
+    };
+    const code = emitStep(
+      "In the 'State' dropdown, select 'Connecticut' for the state of residence",
+      stateVocab
+    );
+
     expect(code).toContain(`$${"{payload.State}"}`);
-    expect(code).not.toContain("'No'");
+    expect(code).not.toContain("'Connecticut'");
   });
 });
