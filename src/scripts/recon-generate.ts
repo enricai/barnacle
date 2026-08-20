@@ -903,11 +903,17 @@ function isGraphQL(captures: Capture[]): boolean {
   return captures.some((c) => c.operationName !== null);
 }
 
-function firstGraphQLQuery(
+/**
+ * The single own-backend capture the raw GraphQL fallback (no
+ * `selectPrimaryGraphQLOperation` winner) resolves its query, endpoint, and
+ * operationName from — all three MUST trace back to this same capture, not
+ * three independent array scans that could each land on a different one.
+ */
+function firstGraphQLCapture(
   captures: Capture[],
   ownBackendHostnames: string[] = [],
   fallbackDomain: string | null = null
-): string | null {
+): Capture | null {
   const hasHostProvenance = ownBackendHostnames.length > 0 || fallbackDomain !== null;
   return (
     captures.find(
@@ -915,7 +921,7 @@ function firstGraphQLQuery(
         c.query &&
         (!hasHostProvenance ||
           isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, fallbackDomain))
-    )?.query ?? null
+    ) ?? null
   );
 }
 
@@ -1162,6 +1168,14 @@ export function firstEndpointCapture(
     }
   }
   return null;
+}
+
+function safeUrlPathname(url: string): string {
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return "/api/search";
+  }
 }
 
 export function firstEndpointPath(
@@ -5890,12 +5904,21 @@ async function main(): Promise<void> {
       `WARN primary GraphQL operation '${operationLabel}' declares filter variable(s) ${primaryGraphQLOperation.unpopulatedDeclaredVariables.join(", ")} that are never populated in any capture — the generated executeHttp's payload field(s) for ${primaryGraphQLOperation.unpopulatedDeclaredVariables.join(", ")} have no wiring target and will replay the captured frozen value instead of the caller's input`
     );
   }
-  const gqlQuery =
-    primaryGraphQLOperation?.capture.query ??
-    firstGraphQLQuery(captures, ownBackendHostnames, fallbackDomain);
+  // When there's no primaryGraphQLOperation winner but the flow is still
+  // GraphQL, the query/endpointPath/responseBody/operationName fallbacks
+  // must all trace back to the SAME capture (firstGraphQLCapture) rather
+  // than resolving independently — a non-GraphQL-shaped own-backend
+  // capture could otherwise win the endpoint/body fallback while an
+  // unrelated capture supplies the query text.
+  const fallbackGraphQLCapture = gql
+    ? firstGraphQLCapture(captures, ownBackendHostnames, fallbackDomain)
+    : null;
+  const gqlQuery = primaryGraphQLOperation?.capture.query ?? fallbackGraphQLCapture?.query ?? null;
   const endpointPath =
     primaryGraphQLOperation?.endpointPath ??
-    firstEndpointPath(captures, ownBackendHostnames, fallbackDomain);
+    (fallbackGraphQLCapture
+      ? safeUrlPathname(fallbackGraphQLCapture.url)
+      : firstEndpointPath(captures, ownBackendHostnames, fallbackDomain));
   // Derived from the primary operation's own Phase-1 capture, never from
   // replay array order -- a replay's body reflects whichever endpoint fired
   // first, not necessarily the primary operation, and only exists once
@@ -5903,6 +5926,7 @@ async function main(): Promise<void> {
   const responseBody =
     (
       primaryGraphQLOperation?.capture ??
+      fallbackGraphQLCapture ??
       firstEndpointCapture(captures, ownBackendHostnames, fallbackDomain)
     )?.responseBody ?? null;
 
@@ -6249,7 +6273,8 @@ async function main(): Promise<void> {
     gqlOperationName: primaryGraphQLOperation
       ? (primaryGraphQLOperation.capture.operationName ??
         parsedOperationName(primaryGraphQLOperation.capture.query ?? ""))
-      : null,
+      : (fallbackGraphQLCapture?.operationName ??
+        parsedOperationName(fallbackGraphQLCapture?.query ?? "")),
     gqlVariables: primaryGraphQLOperation?.capture.variables ?? null,
     auxFiles,
     multiStepBody,

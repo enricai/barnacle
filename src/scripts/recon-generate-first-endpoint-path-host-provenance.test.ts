@@ -32,11 +32,7 @@ describe("firstEndpointPath host provenance gate", () => {
       url: "https://api.example.com/api/submit",
     });
 
-    const endpointPath = firstEndpointPath(
-      [thirdParty, ownBackend],
-      ["api.example.com"],
-      null
-    );
+    const endpointPath = firstEndpointPath([thirdParty, ownBackend], ["api.example.com"], null);
 
     expect(endpointPath).toBe("/api/submit");
   });
