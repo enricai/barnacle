@@ -2332,6 +2332,19 @@ describe("emitConfigManifest — config-only plugin emission", () => {
   });
 });
 
+describe("emitConfigManifest — displayName omitted rather than derived from siteId", () => {
+  it("never bakes a PascalCase(siteId) brand string into metadata.displayName", () => {
+    const manifestStr = emitConfigManifest({
+      siteId: "wholesale-fish-market",
+      baseUrl: "https://apply.example.com",
+      flowSteps: ["click the apply button"],
+    });
+    const manifest = JSON.parse(manifestStr) as { metadata: Record<string, unknown> };
+    expect(manifest.metadata).not.toHaveProperty("displayName");
+    expect(manifestStr).not.toContain("WholesaleFishMarket");
+  });
+});
+
 describe("emitConfigManifest — a reserved RECON_PASSWORD env token never leaks as a literal", () => {
   const RECON_PASSWORD_TOKEN = `$${"{RECON_PASSWORD}"}`;
   const manifestStr = emitConfigManifest({
