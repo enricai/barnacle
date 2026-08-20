@@ -506,6 +506,39 @@ const DEFAULT_MAX_INFER_DEPTH = 12;
 interface InferOpts {
   multipartCoerce?: boolean;
   maxDepth?: number;
+  /** Field names carrying an `@include`/`@skip` directive anywhere in the
+   * GraphQL query this inference is drawn from, as collected by
+   * {@link collectConditionalGraphQLFieldNames}. The server may legally omit
+   * these regardless of what a single capture happened to show, so they're
+   * OR'd into the same presence-driven `.optional()` decision rather than
+   * appending a second independent `.optional()`. */
+  conditionalFieldNames?: ReadonlySet<string>;
+}
+
+/**
+ * Walks a GraphQL query's selection set and collects the names of fields
+ * carrying `@include(if: ...)` or `@skip(if: ...)`. The server omits such a
+ * field entirely when its condition doesn't hold, so a single capture where
+ * the field happens to be present proves nothing about whether it's always
+ * present — schema inference needs this signal to avoid typing a legally
+ * omittable field as required.
+ *
+ * Deliberately a scoped regex over the query text rather than a full GraphQL
+ * AST parser — the "battle-tested libraries only" rule covers the
+ * fastify/zod/stagehand stack, not query-text scanning, and this is
+ * proportionate to the existing hand-rolled string processing in this file
+ * (e.g. {@link spliceFacetsIntoStringVariable}). Matches by field name only
+ * (not by path), since a directive-bearing field name recurs unchanged across
+ * every nesting depth and sibling object shape it appears in within the same
+ * query.
+ */
+export function collectConditionalGraphQLFieldNames(query: string): ReadonlySet<string> {
+  const names = new Set<string>();
+  const pattern = /([A-Za-z_][A-Za-z0-9_]*)\s*(?:\([^()]*\))?\s*@(?:include|skip)\s*\(/g;
+  for (const match of query.matchAll(pattern)) {
+    names.add(match[1]);
+  }
+  return names;
 }
 
 /**
@@ -579,9 +612,13 @@ export function inferZodSchemaFromSamples(
       .map((k) => {
         const valuesForKey = objects.filter((o) => k in o).map((o) => o[k]);
         const expr = inferZodSchemaFromSamples(valuesForKey, depth + 1, inner, opts);
-        // Seen on some samples but not others: the endpoint omits it sometimes,
-        // so requiring it would reject valid responses.
-        const optional = valuesForKey.length < objects.length ? `${expr}.optional()` : expr;
+        // Seen on some samples but not others (the endpoint omits it sometimes)
+        // OR the query marks it @include/@skip-conditional (the server can
+        // legally omit it regardless of what this sample happened to show):
+        // either signal alone is enough to require callers to guard the field.
+        const isOptional =
+          valuesForKey.length < objects.length || (opts.conditionalFieldNames?.has(k) ?? false);
+        const optional = isOptional ? `${expr}.optional()` : expr;
         return `${inner}${isValidJsIdentifier(k) ? k : JSON.stringify(k)}: ${optional}`;
       })
       .join(",\n");
@@ -4403,12 +4440,13 @@ export function emitContractTs(opts: {
   // verification already throws StepVerificationError on failure, so a
   // successful return IS a real signal — z.unknown() would be dishonest
   // in the other direction, hiding a field the flow can actually promise.
+  const conditionalFieldNames = gql && gqlQuery ? collectConditionalGraphQLFieldNames(gqlQuery) : undefined;
   const responseSchemaExpr =
     omitExecuteHttp && isSubmissionFlow
       ? `z.object({ verified: z.boolean() })`
       : omitExecuteHttp
         ? `z.unknown()`
-        : inferZodSchema(responseBody);
+        : inferZodSchema(responseBody, 0, "", { conditionalFieldNames });
   // Multi-step flows that include a multipart upload need the binary asset
   // on the payload. ApplicantContactSchema (via ApplicantResumeSchema) already
   // declares Resume/ResumeContentType/ResumeFilename, so submission flows
