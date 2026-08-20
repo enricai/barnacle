@@ -44,6 +44,20 @@ describe("detectFormSchemaFieldNames — form-schema label canonicalization agai
     expect(fieldNameMap.get(UUID_A)).toBe("Phone");
   });
 
+  it("maps a machine source code that normalizes to a vocabulary entry to the canonical 'Phone', not a fresh 'Mobilephone'", () => {
+    const body = [{ FieldId: UUID_A, FieldSourceCode: "mobilePhone", FieldName: "Mobile Phone" }];
+    const { fieldNameMap } = detectFormSchemaFieldNames([capture(body)], VENDOR);
+    expect(fieldNameMap.get(UUID_A)).toBe("Phone");
+  });
+
+  it("still PascalCases a non-vocabulary source code unchanged", () => {
+    const body = [
+      { FieldId: UUID_A, FieldSourceCode: "contact.first.name", FieldName: "First Name" },
+    ];
+    const { fieldNameMap } = detectFormSchemaFieldNames([capture(body)], VENDOR);
+    expect(fieldNameMap.get(UUID_A)).toBe("ContactFirstName");
+  });
+
   it("does NOT collapse a repeated-section instance of the same label into the base field", () => {
     const body = [
       { FieldId: UUID_A, FieldName: "REFERENCE #1" },
