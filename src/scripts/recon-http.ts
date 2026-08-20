@@ -36,7 +36,7 @@ import { join } from "node:path";
 import { toErrorMessage } from "@/lib/errors";
 import { configureHttpDispatcher } from "@/lib/http";
 import { getScriptLogger } from "@/lib/logging";
-import { isNoiseUrl, registrableDomain } from "@/recon/capture-filters";
+import { isAllowedFixtureHost, isNoiseUrl, registrableDomain } from "@/recon/capture-filters";
 import { readOwnBackendHostnames, resolveReconRunDir } from "@/scripts/recon-shared";
 
 configureHttpDispatcher();
@@ -255,7 +255,6 @@ export function selectAuxFixtureCandidates(
   ownBackendHostnames: string[],
   fallbackHost: string | null
 ): ReplayResult[] {
-  const allowedHostnames = new Set(ownBackendHostnames.map((h) => h.toLowerCase()));
   const fallbackDomain = fallbackHost ? registrableDomain(fallbackHost) : null;
 
   return replays.filter((r) => {
@@ -272,9 +271,7 @@ export function selectAuxFixtureCandidates(
       pathname.endsWith(".json") ||
       /\/(markets|currencies|labels|dictionaries|config|locales|i18n)/.test(pathname);
     if (!isFixtureShaped) return false;
-    const host = parsed.hostname.toLowerCase();
-    if (allowedHostnames.size > 0) return allowedHostnames.has(host);
-    return fallbackDomain !== null && registrableDomain(host) === fallbackDomain;
+    return isAllowedFixtureHost(parsed.hostname, ownBackendHostnames, fallbackDomain);
   });
 }
 
