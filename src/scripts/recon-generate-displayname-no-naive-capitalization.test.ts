@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { emitContractTs } from "@/scripts/recon-generate";
+import { emitConfigManifest, emitContractTs } from "@/scripts/recon-generate";
 
 /** Minimal opts that satisfy the emitter for a non-multipart plugin. Matches
  * BASE_OPTS in recon-generate-bind-literal.test.ts, but with a multi-word
@@ -32,5 +32,19 @@ describe("emitContractTs — meta.displayName is not derived by naive siteId cap
     const metaBlockMatch = contract.match(/meta: \{[\s\S]*?\n {2}\},/);
     expect(metaBlockMatch).not.toBeNull();
     expect(metaBlockMatch?.[0]).not.toContain("displayName");
+  });
+});
+
+describe("emitConfigManifest — metadata.displayName is not derived by naive siteId capitalization", () => {
+  it("never emits a displayName split from the PascalCase siteId, and omits it entirely", () => {
+    const manifest = emitConfigManifest({
+      siteId: BASE_OPTS.siteId,
+      baseUrl: BASE_OPTS.baseUrl,
+      flowSteps: ["click apply"],
+    });
+    const parsed = JSON.parse(manifest) as { metadata: Record<string, unknown> };
+
+    expect(manifest).not.toContain("Wholesale Fish Market");
+    expect(parsed.metadata).not.toHaveProperty("displayName");
   });
 });
