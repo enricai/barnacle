@@ -4,7 +4,6 @@ import { detectFormSchemaFieldNames } from "@/scripts/recon-generate";
 
 const UUID_A = "11111111-1111-1111-1111-111111111111";
 const UUID_B = "22222222-2222-2222-2222-222222222222";
-const UUID_C = "33333333-3333-3333-3333-333333333333";
 
 const capture = (responseBody: unknown) => ({
   timestamp: "2024-01-01T00:00:00Z",
