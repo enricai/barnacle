@@ -3806,11 +3806,49 @@ function bindOptionLiteral(headerBindings: HeaderProduce[]): string {
 /** Generates a complete contract.ts source string for a plugin — exported so
  * unit tests can drive the emitter directly without spawning the CLI. */
 /**
+ * Splices payload fields into a string variable that packs filter facets as
+ * delimited `key:value` segments (e.g. a product-catalog `filters` variable
+ * shaped like `category:widgets|priceRange:10~50`) — the shape GraphQL search
+ * endpoints commonly use instead of exposing each facet as its own top-level
+ * variable, which is otherwise invisible to the key-name-equality strategy in
+ * {@link renderGqlVariablesExpr}. Every facet segment whose key correlates
+ * (case-insensitively) with one of `fields` gets its value slot spliced with
+ * `payload.<Field>`; segments that don't correlate are left as their literal
+ * `key:value` piece. Returns `null` for non-string values, strings with no
+ * delimiter-separated `key:value` segment, and strings whose facet keys
+ * correlate with none of `fields`, so opaque tokens, JSON blobs, and plain
+ * literals fall through to the existing JSON.stringify path unchanged.
+ */
+function spliceFacetsIntoStringVariable(value: unknown, fields: readonly string[]): string | null {
+  if (typeof value !== "string") return null;
+  const segments = value.split(/([|,;])/);
+  const hasFacetShape = segments.some((segment, index) => index % 2 === 0 && segment.includes(":"));
+  if (!hasFacetShape) return null;
+  let hasMatch = false;
+  const body = segments
+    .map((segment, index) => {
+      if (index % 2 !== 0 || !segment.includes(":")) return escapeForTemplateLiteral(segment);
+      const colonIndex = segment.indexOf(":");
+      const facetKey = segment.slice(0, colonIndex);
+      const matchedField = fields.find((field) => field.toLowerCase() === facetKey.toLowerCase());
+      if (!matchedField) return escapeForTemplateLiteral(segment);
+      hasMatch = true;
+      return `${escapeForTemplateLiteral(`${facetKey}:`)}\${payload.${matchedField}}`;
+    })
+    .join("");
+  if (!hasMatch) return null;
+  return `\`${body}\``;
+}
+
+/**
  * Renders the variables literal for the primary-operation getGql() call —
  * each key from the selected capture's own recorded variables is bound to
  * `payload.<Field>` when it correlates (case-insensitively) with one of the
- * flow's payloadFieldNames, otherwise the captured literal value is emitted
- * verbatim via JSON.stringify.
+ * flow's payloadFieldNames. When no top-level key correlates and the value is
+ * a string packing facets in a delimited `key:value` grammar (see
+ * {@link spliceFacetsIntoStringVariable}), a correlated facet's value slot is
+ * spliced with `payload.<Field>` instead of freezing the whole string; any
+ * other value is emitted verbatim via JSON.stringify.
  */
 function renderGqlVariablesExpr(
   variables: unknown,
@@ -3820,7 +3858,10 @@ function renderGqlVariablesExpr(
   const fields = payloadFieldNames ? [...payloadFieldNames] : [];
   const entries = Object.entries(variables as Record<string, unknown>).map(([key, value]) => {
     const matchedField = fields.find((field) => field.toLowerCase() === key.toLowerCase());
-    const valueExpr = matchedField ? `payload.${matchedField}` : JSON.stringify(value);
+    const facetSpliceExpr = matchedField ? null : spliceFacetsIntoStringVariable(value, fields);
+    const valueExpr = matchedField
+      ? `payload.${matchedField}`
+      : (facetSpliceExpr ?? JSON.stringify(value));
     return `${key}: ${valueExpr}`;
   });
   return entries.length > 0 ? `{ ${entries.join(", ")} }` : "{}";
