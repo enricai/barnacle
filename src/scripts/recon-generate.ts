@@ -5773,6 +5773,12 @@ async function main(): Promise<void> {
     gql && isReadOnlyFlow && graphqlActionSequence.length === 0
       ? selectPrimaryGraphQLOperation(captures, flowSteps, vocabulary)
       : null;
+  if (primaryGraphQLOperation && primaryGraphQLOperation.unpopulatedDeclaredVariables.length > 0) {
+    const operationLabel = primaryGraphQLOperation.capture.operationName ?? "(anonymous)";
+    logger.warn(
+      `WARN primary GraphQL operation '${operationLabel}' declares filter variable(s) ${primaryGraphQLOperation.unpopulatedDeclaredVariables.join(", ")} that are never populated in any capture — the generated executeHttp's payload field(s) for ${primaryGraphQLOperation.unpopulatedDeclaredVariables.join(", ")} have no wiring target and will replay the captured frozen value instead of the caller's input`
+    );
+  }
   const gqlQuery = primaryGraphQLOperation?.capture.query ?? firstGraphQLQuery(captures);
   const endpointPath = primaryGraphQLOperation?.endpointPath ?? firstEndpointPath(captures);
   // Derived from the primary operation's own Phase-1 capture, never from
