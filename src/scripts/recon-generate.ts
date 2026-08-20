@@ -5222,6 +5222,11 @@ async function main(): Promise<void> {
     "rate-limit.json",
     "introspection-schema.json",
   ]);
+  if (replays.length === 0) {
+    logger.warn(
+      `recon-generate: run dir ${runRoot} has an empty replays/ directory — recon:http (rate-limit probe) and replay validation were skipped, so this contract's timing and shape are unvalidated`
+    );
+  }
   const rateLimits = (() => {
     try {
       return JSON.parse(
