@@ -28,7 +28,7 @@ process to exit on missing values; optional ones have safe defaults.
 
 | Variable | Default | Required | Purpose |
 |----------|---------|----------|---------|
-| `SCRAPER_PROVIDER` | `browserbase` | No | `browserbase` or `steel` — selects which session backend drives browser automation. |
+| `SCRAPER_PROVIDER` | `browserbase` | No | Managed browser backend Stagehand drives: `browserbase` or `steel`. |
 | `BROWSERBASE_API_KEY` | — | Yes (if `SCRAPER_PROVIDER=browserbase`) | Browserbase account API key. |
 | `BROWSERBASE_PROJECT_ID` | — | Yes (if `SCRAPER_PROVIDER=browserbase`) | Browserbase project ID. |
 | `STEEL_API_KEY` | — | Yes (if `SCRAPER_PROVIDER=steel`) | Steel account API key. |
@@ -216,7 +216,8 @@ ENABLE_DOCS=false         # never expose Swagger in prod
 TRUST_PROXY=true          # set false if deploying directly to the internet (no ALB/nginx)
 DEV_BYPASS_AUTH=false     # this is the default — confirm it's not set to true
 API_KEYS_HASHED="<bcrypt-hash>,<bcrypt-hash>"  # at least one key
-STEEL_API_KEY="..."
+BROWSERBASE_API_KEY="..."   # or STEEL_API_KEY="..." if SCRAPER_PROVIDER=steel
+BROWSERBASE_PROJECT_ID="..."
 ANTHROPIC_API_KEY="..."   # or USE_BEDROCK=true + AWS creds
 ```
 
@@ -274,7 +275,7 @@ readinessProbe:
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| `Error: STEEL_API_KEY is required` | Missing env var | Add `STEEL_API_KEY` to `.env` |
+| `Error: STEEL_API_KEY is required` | Missing env var (`SCRAPER_PROVIDER=steel`) | Add `STEEL_API_KEY` to `.env` |
 | `useProxy rejected` / `402` from Steel | Free-tier plan doesn't support residential proxies | Set `SCRAPER_PROXY_TYPE=none` and `SCRAPER_SOLVE_CAPTCHA=false` |
 | `401 Unauthorized` on every request | No API key configured or wrong plaintext key | Verify `API_KEYS_HASHED` is set; double-check the plaintext key. For dev, set `DEV_BYPASS_AUTH=true` |
 | Stagehand throws `model not found` | Wrong model name format | Use the `anthropic/` prefix: `STAGEHAND_MODEL=anthropic/claude-sonnet-4-6` |
