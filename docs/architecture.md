@@ -139,10 +139,10 @@ and must not bias the origin latency signal.
 ### Why `p-queue` with bounded concurrency
 
 A raw `Promise.all` pool would let traffic spikes spin up arbitrarily many
-Steel sessions simultaneously. `p-queue` with `concurrency = SESSION_POOL_SIZE`
+browser sessions simultaneously. `p-queue` with `concurrency = SESSION_POOL_SIZE`
 caps that. Sessions are created on demand inside each queued task — not
-pre-warmed — so Steel billing stays proportional to actual traffic, not to
-pool capacity.
+pre-warmed — so provider billing (Browserbase by default, Steel for the
+opt-in fallback) stays proportional to actual traffic, not to pool capacity.
 
 The queue also provides a natural backpressure point. `/readyz` exposes
 `pool.size + pool.pending` so ops can alert when the queue depth exceeds
