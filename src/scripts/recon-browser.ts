@@ -39,7 +39,8 @@
  *   # recon:generate. Use grep against /tmp/recon/graphql/ for specific endpoints.
  *   pnpm tsx src/scripts/recon-browser.ts --url https://example.com --allow-empty-flow
  *
- * The script needs STEEL_API_KEY and either ANTHROPIC_API_KEY or USE_BEDROCK=true
+ * The script needs BROWSERBASE_API_KEY/BROWSERBASE_PROJECT_ID (or STEEL_API_KEY
+ * when passing --provider steel) and either ANTHROPIC_API_KEY or USE_BEDROCK=true
  * in the environment (same vars as the main server).
  *
  * Runtime: varies — ~20–40 min for a full flow (STEP_PAUSE_MS × N steps + LLM latency
