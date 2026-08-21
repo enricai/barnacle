@@ -800,4 +800,3 @@ See the [README intro](../README.md#barnacle) for the one-paragraph pitch, and
 
 See the [README's Architecture section](../README.md#architecture) for the
 full `src/` tree.
-| LLM prompt self-heal loop | `src/scripts/llm-heal.ts` |
