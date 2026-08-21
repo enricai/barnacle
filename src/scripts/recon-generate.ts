@@ -932,12 +932,23 @@ interface PrimaryGraphQLOperation {
 }
 
 /**
+ * Strips leading blank lines and `#`-comment lines (GraphQL comments run
+ * from `#` to end of line) so operation-signature regexes anchored at the
+ * `query`/`mutation` keyword still match documents preceded by a comment.
+ */
+function stripLeadingGraphQLComments(query: string): string {
+  return query.replace(/^(?:[ \t]*(?:#[^\n]*)?\r?\n)*/, "");
+}
+
+/**
  * Parses `$name:` declarations out of a GraphQL operation signature, e.g.
  * `query cruiseSearch_Cruises($filters: String, $qualifiers: String)` yields
  * `["filters", "qualifiers"]`.
  */
 function declaredOperationVariableNames(query: string): string[] {
-  const signature = /^\s*(?:query|mutation)\s+\w*\s*\(([^)]*)\)/.exec(query);
+  const signature = /^\s*(?:query|mutation)\s+\w*\s*\(([^)]*)\)/.exec(
+    stripLeadingGraphQLComments(query)
+  );
   if (!signature) return [];
   return Array.from(signature[1]!.matchAll(/\$(\w+)\s*:/g), (m) => m[1]!);
 }
@@ -948,7 +959,7 @@ function declaredOperationVariableNames(query: string): string[] {
  * separate operationName was still sent with a named `query`/`mutation`).
  */
 function parsedOperationName(query: string): string | null {
-  const signature = /^\s*(?:query|mutation)\s+(\w+)/.exec(query);
+  const signature = /^\s*(?:query|mutation)\s+(\w+)/.exec(stripLeadingGraphQLComments(query));
   return signature?.[1] ?? null;
 }
 

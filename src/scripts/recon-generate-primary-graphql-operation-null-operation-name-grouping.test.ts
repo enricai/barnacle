@@ -93,4 +93,43 @@ describe("selectPrimaryGraphQLOperation - operationName-less recurrence grouping
 
     expect([filteredSearchA, filteredSearchB, filteredSearchC]).toContain(result?.capture);
   });
+
+  it("groups a `#`-comment-prefixed operationName:null capture with its uncommented named repeats instead of leaving it as an ungrouped singleton", () => {
+    // No flowSteps/facet-shaped variables here, so fieldScore and facetScore
+    // are 0 for every candidate, phase and response size are identical across
+    // all three, and recurrenceScore (weight 0.15) is the only score
+    // component that can differ — making it decisive. If the comment line
+    // defeats the operation-name regex, `commentPrefixed` parses to
+    // `null` and falls back to the "anonymous" group alone (recurrenceScore
+    // 0.5 vs. the group's 1), so `namedRepeat`/`namedRepeat2` would outscore
+    // and win instead of tying with (and losing the tiebreak to, since it's
+    // listed first) `commentPrefixed`.
+    const commentPrefixed = makeCapture({
+      phase: "filter",
+      operationName: null,
+      query:
+        "# CruisesSearchResults\nquery CruisesSearchResults($filters: String) { results(filters: $filters) { id } }",
+      variables: {},
+      responseBody: { results: [{ id: 0 }] },
+    });
+    const namedRepeat = makeCapture({
+      phase: "filter",
+      operationName: null,
+      query: "query CruisesSearchResults($filters: String) { results(filters: $filters) { id } }",
+      variables: { filters: "caribbean" },
+      responseBody: { results: [{ id: 1 }] },
+    });
+    const namedRepeat2 = makeCapture({
+      phase: "filter",
+      operationName: null,
+      query: "query CruisesSearchResults($filters: String) { results(filters: $filters) { id } }",
+      variables: { filters: "caribbean" },
+      responseBody: { results: [{ id: 2 }] },
+    });
+
+    const captures = [commentPrefixed, namedRepeat, namedRepeat2];
+    const result = selectPrimaryGraphQLOperation(captures, [], EMPTY_VOCABULARY);
+
+    expect(result?.capture).toBe(commentPrefixed);
+  });
 });
