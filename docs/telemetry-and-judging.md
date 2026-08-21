@@ -28,8 +28,8 @@ Local NDJSON survives process restarts but not container replacement — an ECS
 task swap discards the disk. The optional buffered S3 sink
 (`src/lib/telemetry/s3-sink.ts`) replicates both the calls and submissions NDJSON
 streams to object storage so captures survive that case too; it is entirely
-inert until `TELEMETRY_S3_BUCKET` is set (see the Telemetry env var table in
-[README.md](../README.md#telemetry)).
+inert until `TELEMETRY_S3_BUCKET` is set (see the [Configuration reference](#configuration-reference)
+below).
 
 **The goal is an evidence base, not a dashboard.** The verdict JSON is a diffable
 artifact in `judge-out/`. When a prompt change is proposed or a model upgrade is
