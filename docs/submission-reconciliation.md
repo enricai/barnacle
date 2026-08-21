@@ -257,7 +257,9 @@ external report.
 
 Use `.barnacle/submissions.ndjson` directly when you can't reach a running
 instance, need `inboundPayload`/`auditPayload` (omitted from the route), or
-need to filter on a `joinKeys` field. Every line carries `kind`.
+need to filter on a `joinKeys` field. Every line carries `kind`. Parallels
+the jq-recipe style used for `calls.ndjson` in
+[README.md](../README.md#tailing-call-samples-with-jq).
 
 ```bash
 # Per-run lookup by a joinKeys field
