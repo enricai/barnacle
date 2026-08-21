@@ -82,7 +82,8 @@ describe("recon-generate CLI — null operationName on the selected primary Grap
         catalogItems: Array.from({ length: 50 }, (_, i) => ({ id: `catalog-${i}` })),
       },
       operationName: null,
-      query: "query CatalogSearchResults($filters: String) { catalogItems(filters: $filters) { id } }",
+      query:
+        "query CatalogSearchResults($filters: String) { catalogItems(filters: $filters) { id } }",
       variables: { filters: "visiting:CARI" },
       decodedParams: null,
     };
