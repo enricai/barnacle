@@ -190,7 +190,10 @@ describe("recon-generate CLI — null operationName on the selected primary Grap
       variables: { metro: "AUSTIN" },
       decodedParams: null,
     };
-    writeFileSync(join(capturesDir, "200-open-the-filter-facet-00.json"), JSON.stringify(facetQuery));
+    writeFileSync(
+      join(capturesDir, "200-open-the-filter-facet-00.json"),
+      JSON.stringify(facetQuery)
+    );
 
     const siteId = `gql-comment-prefixed-null-op-incident-e2e-test${process.pid}`;
     siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
