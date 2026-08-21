@@ -59,7 +59,15 @@ const FORBIDDEN_SUBSTRING = [
  * split as the manual acceptance greps — the `-w` distinction whose absence let 101
  * refs slip through a prior scrub.
  */
-const FORBIDDEN_WHOLE_WORD = ["hca", "taleo", "hartford", "lever", "workday", "greenhouse"];
+const FORBIDDEN_WHOLE_WORD = [
+  "hca",
+  "taleo",
+  "hartford",
+  "lever",
+  "workday",
+  "greenhouse",
+  "cruise",
+];
 
 describe("site-agnostic: no customer-site or ATS-vendor names in tracked source", () => {
   it("has zero forbidden substring tokens", () => {
