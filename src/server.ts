@@ -115,7 +115,7 @@ export async function buildServer(): Promise<
         info: {
           title: "Barnacle Automation API",
           description:
-            "Site-agnostic browser automation engine. POST a structured payload to a typed endpoint; Barnacle drives a Steel + Stagehand session through the target site and returns a structured result via a plugin adapter.",
+            "Site-agnostic browser automation engine. POST a structured payload to a typed endpoint; Barnacle drives a Stagehand session (Browserbase by default, Steel as the opt-in fallback) through the target site and returns a structured result via a plugin adapter.",
           version: "0.1.0",
         },
         servers: [{ url: `http://${cfg.host}:${cfg.port}` }],
