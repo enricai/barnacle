@@ -24,16 +24,19 @@ process to exit on missing values; optional ones have safe defaults.
 | `API_KEYS_HASHED` | `""` | Yes (prod) | Comma-separated bcrypt hashes of plaintext bearer tokens. See [Generating an API key](#generating-an-api-key). |
 | `DEV_BYPASS_AUTH` | `false` | No | Skip auth entirely. Local dev only — **never set in production**. |
 
-### Browser automation (Steel + Stagehand)
+### Browser automation (Browserbase / Steel + Stagehand)
 
 | Variable | Default | Required | Purpose |
 |----------|---------|----------|---------|
-| `STEEL_API_KEY` | — | **Yes** | Steel account API key. Required for all browser automation. |
+| `SCRAPER_PROVIDER` | `browserbase` | No | `browserbase` or `steel` — selects which session backend drives browser automation. |
+| `BROWSERBASE_API_KEY` | — | Yes (if `SCRAPER_PROVIDER=browserbase`) | Browserbase account API key. |
+| `BROWSERBASE_PROJECT_ID` | — | Yes (if `SCRAPER_PROVIDER=browserbase`) | Browserbase project ID. |
+| `STEEL_API_KEY` | — | Yes (if `SCRAPER_PROVIDER=steel`) | Steel account API key. |
 | `ANTHROPIC_API_KEY` | — | Yes (if not using Bedrock) | Anthropic API key for Stagehand's LLM calls. |
 | `STAGEHAND_MODEL` | `anthropic/claude-sonnet-4-6` | No | Stagehand model. Use the `anthropic/` prefix — Stagehand 2.x's model map is stale and the prefix routes through AI-SDK's fallback path. |
-| `SCRAPER_PROXY_TYPE` | `residential` | No | `residential` (paid Steel tiers) or `none` (free tier — Steel rejects `useProxy=true` on hobby plans). |
-| `SCRAPER_SOLVE_CAPTCHA` | `true` | No | Enable Steel's built-in CAPTCHA solver. Requires a paid plan; set `false` on the free tier. |
-| `SESSION_POOL_SIZE` | `3` | No | Maximum concurrent Steel browser sessions. |
+| `SCRAPER_PROXY_TYPE` | `residential` | No | `residential` (paid tiers) or `none` (free tier — rejects `useProxy=true` on hobby plans). Applies to both providers. |
+| `SCRAPER_SOLVE_CAPTCHA` | `true` | No | Enable the provider's built-in CAPTCHA solver. Requires a paid plan; set `false` on the free tier. Applies to both providers. |
+| `SESSION_POOL_SIZE` | `3` | No | Maximum concurrent browser sessions. Applies to both providers. |
 | `SCRAPER_MIN_ACTION_DELAY_MS` | `500` | No | Minimum delay between scraper actions (ms). Jitter applied on top. |
 | `SCRAPER_MAX_ACTION_DELAY_MS` | `1500` | No | Maximum delay between scraper actions (ms). |
 | `STAGEHAND_API_TIMEOUT_MS` | `120000` | No | Anthropic SDK request timeout (ms). Raise on slow network paths to `api.anthropic.com`. |
