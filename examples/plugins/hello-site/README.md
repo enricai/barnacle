@@ -75,8 +75,8 @@ curl -s http://localhost:3000/v1/plugins -H "Authorization: Bearer <your-api-key
   stuck at `beaconStatus: "skipped"`. A config-only `*.plugin.json` manifest
   can reach it too, but only through the `spec.httpModule` escape hatch —
   `executeHttp(payload, context)` receives the same `SitePluginContext` a
-  module plugin's does. See the repository README's
-  [Reconciliation join keys](../../../README.md#reconciliation-join-keys-extractjoinkeys)
+  module plugin's does. See the plugin-authoring guide's
+  [Reconciliation join keys](../../../docs/plugin-authoring.md#reconciliation-join-keys-extractjoinkeys)
   section for the full contract, including the fold-precedence consequence
   of adopting it.
 - **To attach a field only discovered mid-run** (something read off the page
@@ -87,7 +87,7 @@ curl -s http://localhost:3000/v1/plugins -H "Authorization: Bearer <your-api-key
   the collector's snapshot over `extractJoinKeys(payload)`'s result before
   writing the submission's `joinKeys` bag — run-discovered keys win on
   collision. See the same
-  [Reconciliation join keys](../../../README.md#reconciliation-join-keys-extractjoinkeys)
+  [Reconciliation join keys](../../../docs/plugin-authoring.md#reconciliation-join-keys-extractjoinkeys)
   section for the full contract.
 - **Config-only `*.plugin.json` manifests can only reach `context.telemetry`
   through the `httpModule` escape hatch.** `executeHttp(payload, context)`
@@ -97,6 +97,7 @@ curl -s http://localhost:3000/v1/plugins -H "Authorization: Bearer <your-api-key
   `runHealingFlow`, with no imperative per-site code for a call like this to
   live in.
 
-See the repository README's **Out-of-tree plugins** section for the full
+See the [configuration guide's **Out-of-tree plugins**](../../../docs/configuration.md#out-of-tree-plugins)
+section for the full
 `BARNACLE_PLUGINS` / `BARNACLE_PLUGINS_STRICT` / `BARNACLE_PLUGINS_DIR` env-var
 reference and the resolution/failure-policy rules.

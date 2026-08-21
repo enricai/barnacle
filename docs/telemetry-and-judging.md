@@ -17,19 +17,19 @@ patch to a failing LLM prompt template. These calls are invisible at runtime
 model's output quality has shifted.
 
 Structured telemetry solves this. Every LLM call site appends one NDJSON line
-to a shared sink (`src/lib/telemetry/call-capture.ts`, path configured by
-`CALLS_NDJSON_PATH`, default `.barnacle/calls.ndjson`). The file is append-only
-so captures survive process restarts; the sink swallows write errors rather than
-interrupting the call site. Operators run the judge skill against the accumulating
-file on a cadence that fits their recon frequency — weekly for active sites,
-before and after any prompt-template change.
+to a shared, append-only sink (`src/lib/telemetry/call-capture.ts`, path
+configured by `CALLS_NDJSON_PATH`, default `.barnacle/calls.ndjson`) that
+swallows write errors rather than interrupting the call site. Operators run
+the judge skill against the accumulating file on a cadence that fits their
+recon frequency — weekly for active sites, before and after any
+prompt-template change.
 
 Local NDJSON survives process restarts but not container replacement — an ECS
 task swap discards the disk. The optional buffered S3 sink
 (`src/lib/telemetry/s3-sink.ts`) replicates both the calls and submissions NDJSON
 streams to object storage so captures survive that case too; it is entirely
-inert until `TELEMETRY_S3_BUCKET` is set (see the Telemetry env var table in
-[README.md](../README.md#telemetry)).
+inert until `TELEMETRY_S3_BUCKET` is set (see the [Configuration reference](#configuration-reference)
+below).
 
 **The goal is an evidence base, not a dashboard.** The verdict JSON is a diffable
 artifact in `judge-out/`. When a prompt change is proposed or a model upgrade is
@@ -177,8 +177,8 @@ skill's patch generator more precise.
 ## The self-heal loop
 
 When the aggregate pass rate falls below a threshold (default 90%, configurable
-via `SELFHEAL_SUCCESS_THRESHOLD`), the self-heal skill (`llm-self-heal`, invoked
-via `pnpm heal:llm`) runs an iterative patch-and-replay loop:
+via `SELFHEAL_SUCCESS_THRESHOLD`), `llm-self-heal` (`pnpm heal:llm`) runs an
+iterative patch-and-replay loop:
 
 1. **Baseline** — replay the failing samples against the current prompt
    template and record the pass rate.
@@ -394,26 +394,3 @@ separate Browserbase sessions per run. `ReconciliationRow` and
 a caller comparing runs against a third-party report's IP column reads
 `session.ip` (and, separately, the beacon's own `beaconSessionIp`) straight
 off `GET /v1/submissions` without re-parsing raw NDJSON.
-
-## File map
-
-| Concern | File |
-|---------|------|
-| NDJSON capture sink + `LlmCallSample` type | `src/lib/telemetry/call-capture.ts` |
-| Submission-envelope sink + `SubmissionEnvelopeSample` type | `src/lib/telemetry/submission-capture.ts` |
-| Reconciliation record schemas (`submit` + `beacon` kinds) | `src/lib/telemetry/reconciliation-record.ts` |
-| Beacon-fire (conversion) event writer + `BeaconEventSample` type | `src/lib/telemetry/beacon-capture.ts` |
-| Plugin-callable beacon-outcome recorder | `createBeaconOutcomeRecorder` in `src/lib/telemetry/beacon-capture.ts`, bound onto `SitePluginContext.recordBeaconOutcome` by `buildPluginContext` in `src/plugins/loader.ts` |
-| Plugin-owned join-key extraction hook | `SitePlugin.extractJoinKeys` in `src/site-plugin.ts` |
-| Mid-run join-key attach point + per-dispatch collector | `SitePluginContext.telemetry` in `src/site-plugin.ts`, `RunTelemetry` in `src/lib/telemetry/run-telemetry.ts` |
-| Browser-session outbound-IP resolver | `src/scraper/session-ip.ts` |
-| Reconciliation reader (`readReconciliationRows`) | `src/lib/telemetry/submission-reader.ts` |
-| Durable (local+S3) reconciliation source (`readDurableReconciliationRows`) | `src/lib/telemetry/reconciliation-source.ts` |
-| Reconciliation query/filter layer (`queryReconciliationRows`) | `src/lib/telemetry/submission-query.ts` |
-| `GET /v1/submissions` route + querystring/response schemas | `src/api/routes/submissions.ts`, `src/api/schemas/submissions.ts` |
-| Call-type string constants | `src/lib/telemetry/call-types.ts` |
-| `llmCallSampleSchema`, `judgeVerdictSchema` | `src/api/schemas/telemetry.ts` |
-| Judge batch script (`pnpm judge:llm`) | `src/scripts/judge-llm-batch.ts` |
-| Self-heal loop (`pnpm heal:llm`) | `src/scripts/llm-heal.ts` |
-| Telemetry + judging + selfheal config | `src/config.ts` |
-| Per-run event-stream state | `src/lib/telemetry/run-state.ts` |

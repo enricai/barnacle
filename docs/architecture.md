@@ -791,79 +791,12 @@ Right runtime destination, wrong starting point.
 
 ## Elevator pitch
 
-We don't hand-write integrations against partner websites. We point an
-AI-driven browser — Stagehand on a Steel cloud browser — at the site and
-have it click through a normal user flow while a response listener wiretaps
-every network call to disk. Then a separate script replays those captured
-requests from plain Node `fetch()` — no browser, no AI — to prove the
-endpoints work standalone. Once that passes, a generator script turns those captures into a plugin skeleton —
-Zod schemas, load-bearing headers, and the query constant — which the developer reviews,
-trims, and ships as a PR. The runtime hot path then hits the real API
-directly: fast, cheap, deterministic. The AI browser only re-engages as a
-fallback if that path breaks. A nightly smoke test tells us the moment a
-contract drifts, and the whole recon script is re-runnable — that's our
-maintenance loop.
-
-**Four verifications:**
-- `pnpm run smoke` — exercises the direct-HTTP hot path end-to-end
-- Open `<run-dir>/graphql/*.json` after a recon run — these are real captures
-- Diff `src/sites/<id>/contract.ts` against `<run-dir>/graphql/*<operationName>*.json` — the committed query should be a lean subset of the captured one (UI-only fields stripped)
-- `docs/target-recon.md` is the human rollup from Phase 4e
+See the [README intro](../README.md#barnacle) for the one-paragraph pitch, and
+[How it works](../README.md#how-it-works) for the pipeline walkthrough.
 
 ---
 
 ## File map
 
-| Concern | File |
-|---------|------|
-| Plugin contract interface | `src/site-plugin.ts` |
-| Dispatch (hot path → fallback) | `src/plugins/loader.ts` |
-| Fastify bootstrap + shutdown | `src/server.ts` |
-| Frozen config singleton | `src/config.ts` |
-| Bearer auth plugin | `src/api/plugins/auth.ts` |
-| Global error serializer | `src/api/plugins/error-handler.ts` |
-| Request/correlation ID propagation | `src/api/plugins/request-context.ts` |
-| Error hierarchy + envelope builders | `src/api/errors.ts` |
-| Success envelope builder | `src/api/helpers/envelope.ts` |
-| Error codes + status schema | `src/api/schemas/common.ts` |
-| Health routes (`/healthz`, `/readyz`) | `src/api/routes/health.ts` |
-| Session bootstrap | `src/scraper/session.ts` |
-| Session pool + timeout | `src/scraper/pool.ts` |
-| Retry policy | `src/scraper/retry.ts` |
-| Hot-path HTTP client | `src/scraper/http-client.ts` |
-| Raw-fetch scaffold (undici + onResponse hook + optional status classify via `skipClassify`) | `src/scraper/raw-fetch.ts` |
-| JSON-parse + Zod-validate seam for rawFetch callers | `src/scraper/parse-json-response.ts` |
-| GraphQL client | `src/scraper/graphql-client.ts` |
-| Per-plugin rate limiting | `src/scraper/throttle.ts` |
-| Scraper error hierarchy (includes recon-only `StepVerificationError`) | `src/scraper/errors.ts` |
-| Drift-detection metrics | `src/scraper/metrics.ts` |
-| Static fixture loader | `src/scraper/fixtures.ts` |
-| Response cache + coalescing | `src/cache/response-cache.ts` |
-| Pino logger + CloudWatch splitting | `src/lib/logging.ts` |
-| Environment variable parsers | `src/lib/env.ts` |
-| AWS Bedrock model factory | `src/lib/bedrock.ts` |
-| Phase 1 — browser recon | `src/scripts/recon-browser.ts` |
-| Phase 2–3 — HTTP replay + probes | `src/scripts/recon-http.ts` |
-| Phase 4f — plugin skeleton generator | `src/scripts/recon-generate.ts` |
-| Phase 4e — findings doc generator | `src/scripts/recon-summarize.ts` |
-| Shared recon types + utilities (`resolveReconRunDir`, `resolveLatestReconRunRoot`) | `src/scripts/recon-shared.ts` |
-| Recon flow self-heal loop | `src/scripts/recon-heal.ts` |
-| Smoke test | `src/scripts/smoke-test.ts` |
-| Plugin contract interface (template for all site plugins) | `src/site-plugin.ts` |
-| Findings doc (generated) | `docs/target-recon.md` |
-| LLM call telemetry sink (NDJSON capture) | `src/lib/telemetry/call-capture.ts` |
-| Submission-envelope sink + `SubmissionEnvelopeSample` type | `src/lib/telemetry/submission-capture.ts` |
-| Reconciliation record schemas (`submit` + `beacon` kinds) | `src/lib/telemetry/reconciliation-record.ts` |
-| Beacon-fire (conversion) event writer + `BeaconEventSample` type | `src/lib/telemetry/beacon-capture.ts` |
-| Plugin-callable beacon-outcome recorder | `createBeaconOutcomeRecorder` in `src/lib/telemetry/beacon-capture.ts`, bound onto `SitePluginContext.recordBeaconOutcome` by `buildPluginContext` in `src/plugins/loader.ts` |
-| Plugin-owned join-key extraction hook | `SitePlugin.extractJoinKeys` in `src/site-plugin.ts` |
-| Per-run telemetry collector (mid-run join-key attach point) | `src/lib/telemetry/run-telemetry.ts`, bound onto `SitePluginContext.telemetry` by `buildPluginContext` in `src/plugins/loader.ts` |
-| Browser-session outbound-IP resolver (IP-echo navigation) | `src/scraper/session-ip.ts`, exposed as `getOutboundIp()` on `BrowserSession` in `src/scraper/session-browserbase.ts` |
-| Reconciliation reader (`readReconciliationRows`) | `src/lib/telemetry/submission-reader.ts` |
-| Reconciliation query/filter layer (`queryReconciliationRows`) | `src/lib/telemetry/submission-query.ts` |
-| `GET /v1/submissions` route + querystring/response schemas | `src/api/routes/submissions.ts`, `src/api/schemas/submissions.ts` |
-| Canonical call_type constants | `src/lib/telemetry/call-types.ts` |
-| Per-run telemetry state | `src/lib/telemetry/run-state.ts` |
-| LlmCallSample + JudgeVerdict schemas | `src/api/schemas/telemetry.ts` |
-| LLM batch judge | `src/scripts/judge-llm-batch.ts` |
-| LLM prompt self-heal loop | `src/scripts/llm-heal.ts` |
+See the [README's Architecture section](../README.md#architecture) for the
+full `src/` tree.

@@ -92,57 +92,22 @@ these against a real environment.
 
 ## Recipe 1 — cohort roll-up by `siteId`
 
-Reproduces the cohort-level check attribution already trusts (applies-per-site)
-at the per-run level, so a cohort total can be traced back to its constituent
-runs.
-
 ```bash
 curl -s "http://localhost:3971/v1/submissions?siteId=acme&limit=1000" \
   -H "Authorization: Bearer $BARNACLE_API_KEY" | jq '.submissions | length'
 ```
 
-Output:
-
-```
-5
-```
-
-This returns every row for the cohort regardless of `status`, so the count
-includes errored submits (not eligible for a downstream match) alongside
-successful applies. Filter client-side by `status`/`beaconStatus`, or narrow
-further with `from`/`to`.
+Output: `5`. Counts every row for the cohort regardless of `status`, so
+errored submits are included — filter client-side by `status`/`beaconStatus`,
+or narrow with `from`/`to`.
 
 ---
 
 ## Recipe 2 — submitted but the beacon did not fire
 
-The conversion/beacon-fire dimension is `beaconStatus`, distinct from submit
-`status` — a row can be `status: "submitted"` and still show
-`beaconStatus: "not_fired"` (no beacon line ever arrived), `beaconStatus:
-"failed"` (the tracking-click navigation errored — either core's own fire or
-a plugin-recorded one), or `beaconStatus: "skipped"` (`dispatch()`'s own
-synchronous default: no `TrackingUrl` was ever applicable, or the plugin
-manages its own tracking nav outside `dispatch()`). A self-managing plugin
-can call `context.recordBeaconOutcome()` to report a real `fired`/`failed`
-outcome for its own navigation; when it does, that line always outranks the
-automatic `skipped` line for the same `requestId` in the fold, regardless of
-write order (`foldReconciliationRecords`,
-[telemetry-and-judging.md](./telemetry-and-judging.md#submission-envelope-sink)) —
-so a row you read as `"skipped"` really never got a real outcome recorded,
-not just "not read yet."
-
-All three non-`"fired"` outcomes are candidates for "why didn't this apply
-get credited," but they don't carry equal alerting weight. `"not_fired"` is
-always worth alerting on — a beacon was applicable and no outcome at all was
-recorded. `"skipped"` is murkier than it used to be: for a plugin with no
-`TrackingUrl` it's still an expected, terminal outcome, but for a
-self-managing plugin it now also covers "this plugin never adopted
-`recordBeaconOutcome`" and "this plugin adopted it but didn't call it for
-this run" — both look identical to a permanently-uninterested plugin from
-this row alone. Whether a given `siteId`'s self-managing plugin is expected
-to call `recordBeaconOutcome` is site-specific knowledge this runbook
-doesn't have — check that plugin's own docs before deciding whether its
-`"skipped"` rows are alertable.
+Filters on `beaconStatus: "not_fired"` (see the field table above for how it
+differs from `"skipped"`/`"failed"`) alongside `status: "submitted"`, so a
+failed apply that was never beacon-eligible is correctly excluded.
 
 ```bash
 curl -s "http://localhost:3971/v1/submissions?status=submitted&beaconStatus=not_fired" \
@@ -182,17 +147,12 @@ Output:
 }
 ```
 
-`req-1004` (an `error`-status submit) is correctly excluded — a failed
-apply was never eligible to fire a beacon in the first place, so it shouldn't
-count toward "submitted but the beacon did not fire."
-
 ---
 
 ## Recipe 3 — per-run lookup by a `joinKeys` field
 
-Since `joinKeys` isn't filterable via the HTTP route's querystring, narrow by
-`siteId` (and `from`/`to` if the field isn't unique on its own) and filter
-the response client-side:
+`joinKeys` isn't filterable via the querystring, so narrow by `siteId` and
+filter client-side:
 
 ```bash
 curl -s "http://localhost:3971/v1/submissions?siteId=acme&limit=1000" \
@@ -223,34 +183,18 @@ Output:
 }
 ```
 
-If you need to filter or join on a `joinKeys` field routinely — not just for
-a one-off lookup — read the raw NDJSON with `jq` instead (below), or build
-that filter into your own plugin-side tooling; it's out of scope for this
-generic route.
+For routine filtering/joining on a `joinKeys` field, read the raw NDJSON
+with `jq` instead (below).
 
 ---
 
 ## Recipe 4 — matching a run's session IP against a third-party report's IP column
 
-Two different Browserbase sessions can carry an IP for the same `requestId`:
-the submit line's `session.ip` (the session that filled out and submitted
-the application) and the matching beacon line's `sessionIp` (the session the
-engine-owned tracking-click opened to fire the plugin's `TrackingUrl`). An
-attribution vendor's own report reflects the request that hit *their*
-tracking pixel, so it's the beacon line's `sessionIp` — not `session.ip` —
-that lines up against a third-party report's IP column.
-
-Both are `null` under the same conditions as the field-table entries above:
-session-IP capture disabled (`SCRAPER_CAPTURE_SESSION_IP=false`), a
-non-Browserbase provider, or the IP-echo navigation timing out
-(`SCRAPER_SESSION_IP_TIMEOUT_MS`, default `10000`). Neither failure affects
-`status`/`beaconStatus` — a `null` IP just means this corroboration signal
-isn't available for that run, not that the run itself failed.
-
-`GET /v1/submissions` exposes it too, as `beaconSessionIp` on each row —
-prefer that route for a batch lookup (see below). To read it straight from
-the sink instead, keyed by the same `joinKeys` field your external report
-uses to identify a run:
+An attribution vendor's report reflects the request that hit *their*
+tracking pixel — so match against the beacon line's `sessionIp`, not the
+submit line's `session.ip` (see the field table above for when either is
+`null`). To read it straight from the sink, keyed by the `joinKeys` field
+your external report uses to identify a run:
 
 ```bash
 # Beacon session IP for a run identified by the report's refId column
@@ -267,9 +211,8 @@ Output:
 {"requestId":"req-1002","siteId":"acme","joinKeys":{"refId":"4471_88214"},"sessionIp":"198.51.100.24","beaconStatus":"fired","ts":"2026-07-20T15:10:20.000Z"}
 ```
 
-Compare `sessionIp` above against the corresponding row of the external
-report. For a batch of runs rather than a one-off lookup, drop the
-`joinKeys.refId` filter and fold over every beacon line:
+For a batch of runs, drop the `joinKeys.refId` filter and fold over every
+beacon line:
 
 ```bash
 jq -sc '
@@ -278,10 +221,9 @@ jq -sc '
 ' .barnacle/submissions.ndjson
 ```
 
-Both the submit-side `session` block and the beacon's session IP flow
-through `GET /v1/submissions` automatically (the latter as `beaconSessionIp`
-so it doesn't collide with `session.ip`), so a batch lookup can go through
-the route in one call instead of two NDJSON passes:
+Or skip NDJSON entirely — `GET /v1/submissions` exposes the same field as
+`beaconSessionIp` on each row, so a batch lookup can go through the route in
+one call:
 
 ```bash
 curl -s "http://localhost:3971/v1/submissions?siteId=acme&limit=1000" \
@@ -304,22 +246,18 @@ Output:
 }
 ```
 
-Note `session.ip` (`203.0.113.9`) and `beaconSessionIp`
-(`198.51.100.24`) differ for the same `requestId` — expected, since they're
-two different sessions; don't treat a mismatch between them as a
-reconciliation failure. Only `beaconSessionIp` is the field to compare
-against the external report.
+`session.ip` (`203.0.113.9`) and `beaconSessionIp` (`198.51.100.24`) differ
+for the same `requestId` by design — don't treat that mismatch as a
+reconciliation failure. Only `beaconSessionIp` compares against the
+external report.
 
 ---
 
 ## `jq` fallback: reading raw NDJSON directly
 
-When you can't reach a running Barnacle instance, or you need
-`inboundPayload`/`auditPayload` that `GET /v1/submissions` deliberately omits,
-or you need to filter on a `joinKeys` field the route can't filter on, read
-`.barnacle/submissions.ndjson` directly. Every line carries `kind`. Parallels
-the jq-recipe style already used for `calls.ndjson` in
-[README.md](../README.md#tailing-call-samples-with-jq).
+Use `.barnacle/submissions.ndjson` directly when you can't reach a running
+instance, need `inboundPayload`/`auditPayload` (omitted from the route), or
+need to filter on a `joinKeys` field. Every line carries `kind`.
 
 ```bash
 # Per-run lookup by a joinKeys field
@@ -363,17 +301,6 @@ logic (`readReconciliationRows`, `src/lib/telemetry/submission-reader.ts`).
 
 ---
 
-## File map
-
-| Concern | File |
-|---|---|
-| Plugin-owned join-key extraction hook | `SitePlugin.extractJoinKeys` in `src/site-plugin.ts` |
-| Mid-run join-key attach point (fields `extractJoinKeys` can't see — discovered after navigation, minted mid-flow, etc.) | `SitePluginContext.telemetry` (`RunTelemetry.addJoinKeys()`) in `src/site-plugin.ts`, built by `src/lib/telemetry/run-telemetry.ts` |
-| Plugin-callable beacon-outcome recorder (bound to the run's `requestId`/`siteId`) | `SitePluginContext.recordBeaconOutcome` in `src/site-plugin.ts`, built by `createBeaconOutcomeRecorder` in `src/lib/telemetry/beacon-capture.ts` |
-| Browser-session outbound-IP resolver (IP-echo navigation against a configurable endpoint) | `src/scraper/session-ip.ts` |
-| Memoized `getOutboundIp()` accessor on Browserbase sessions + `SCRAPER_CAPTURE_SESSION_IP`/`SCRAPER_SESSION_IP_ECHO_URL`/`SCRAPER_SESSION_IP_TIMEOUT_MS` config | `src/scraper/session-browserbase.ts`, `src/config.ts` |
-| Submit-record + beacon-event schemas (incl. `session` and `sessionIp`) | `src/lib/telemetry/reconciliation-record.ts` |
-| Sink read path (folds beacon onto submit by `requestId`, real outcome outranks `skipped`) | `src/lib/telemetry/submission-reader.ts` |
-| Filter/sort/paginate layer | `src/lib/telemetry/submission-query.ts` |
-| `GET /v1/submissions` route + querystring/response schemas | `src/api/routes/submissions.ts`, `src/api/schemas/submissions.ts` |
-| Concept guide (why the sink is shaped this way) | [telemetry-and-judging.md](./telemetry-and-judging.md#submission-envelope-sink) |
+For the reconciliation-sink source files (join-key hooks, beacon-outcome
+recorder, session-IP resolver, schemas, route), see
+[architecture.md § File map](./architecture.md#file-map).

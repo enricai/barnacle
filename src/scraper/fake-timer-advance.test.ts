@@ -87,4 +87,59 @@ describe("advanceUntilSettled", () => {
     expect(result.settled).toBe(false);
     expect(calls).toBe(300);
   });
+
+  it("charges the clock nothing for ticks taken while no timer is scheduled", async () => {
+    let resolvePromise!: () => void;
+    const promise = new Promise<void>((resolve) => {
+      resolvePromise = resolve;
+    });
+    // Models the shape that made `flow-runner.oopif-dense-form-acceptance`
+    // flaky: a deep await chain needs several turns with nothing scheduled
+    // before it arms its next timer, and only that timer deserves the clock.
+    const scheduled = [0, 0, 0, 1, 0, 0, 1];
+    const advanceTimersByTimeAsync = vi.fn(
+      makeCountingAdvance((calls) => {
+        if (calls === scheduled.length) resolvePromise();
+      })
+    );
+
+    const result = await advanceUntilSettled(promise, {
+      advanceTimersByTimeAsync,
+      getTimerCount: () => scheduled[advanceTimersByTimeAsync.mock.calls.length] ?? 0,
+    });
+
+    expect(result.settled).toBe(true);
+    expect(advanceTimersByTimeAsync.mock.calls.map((call) => call[0])).toEqual([
+      0, 0, 0, 1_000, 0, 0, 1_000,
+    ]);
+  });
+
+  it("spends its iteration cap on clock-advancing ticks only, so idle turns never eat the virtual budget", async () => {
+    const promise = new Promise<void>(() => {});
+    const advanceTimersByTimeAsync = vi.fn(makeCountingAdvance(() => {}));
+    // Every other tick is idle: a plain per-tick cap would stop after 2
+    // advancing ticks, halving the virtual time the caller asked for.
+    const result = await advanceUntilSettled(promise, {
+      advanceTimersByTimeAsync,
+      getTimerCount: () => advanceTimersByTimeAsync.mock.calls.length % 2,
+      maxIterations: 4,
+    });
+
+    expect(result.settled).toBe(false);
+    expect(advanceTimersByTimeAsync.mock.calls.filter((call) => call[0] === 1_000)).toHaveLength(4);
+  });
+
+  it("gives up after the idle cap when the promise never settles and nothing is ever scheduled", async () => {
+    const promise = new Promise<void>(() => {});
+    const advanceTimersByTimeAsync = vi.fn(makeCountingAdvance(() => {}));
+
+    const result = await advanceUntilSettled(promise, {
+      advanceTimersByTimeAsync,
+      getTimerCount: () => 0,
+      maxIdleIterations: 7,
+    });
+
+    expect(result.settled).toBe(false);
+    expect(advanceTimersByTimeAsync).toHaveBeenCalledTimes(7);
+  });
 });
