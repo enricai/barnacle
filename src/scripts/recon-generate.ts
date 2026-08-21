@@ -947,7 +947,7 @@ function stripLeadingGraphQLComments(query: string): string {
  */
 function declaredOperationVariableNames(query: string): string[] {
   const signature = /^\s*(?:query|mutation)\s+\w*\s*\(([^)]*)\)/.exec(
-    stripLeadingGraphQLComments(query),
+    stripLeadingGraphQLComments(query)
   );
   if (!signature) return [];
   return Array.from(signature[1]!.matchAll(/\$(\w+)\s*:/g), (m) => m[1]!);
