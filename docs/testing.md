@@ -431,13 +431,6 @@ The following are excluded from coverage reports (see `vitest.config.ts`):
 
 ---
 
-## Task completion checklist (from CLAUDE.md)
+## Task completion checklist
 
-Before marking any task done:
-
-1. `pnpm run lint:fix` — must pass with no errors
-2. `pnpm run typecheck` — must pass
-3. `pnpm test <relevant-file>` — relevant tests must pass (NEVER use `--` before the filter)
-4. Verify `@/` alias usage on all src imports
-5. Confirm explicit return types on all exported functions
-6. Confirm TSDoc on all exported functions (explain *why*, not *what*)
+See CLAUDE.md's "Task Completion Checklist" for the steps required before marking any task done.
