@@ -279,7 +279,7 @@ function resolveBinding(binding: HttpResponseBinding, headers: Headers): string 
  * Throws `HttpServerError` on 5xx — also a fallback trigger; a server-side
  * outage is not the same as a bot block but the recovery is identical.
  * Throws `HttpRateLimitError` on 429 — NOT a fallback trigger; the caller
- * should back off, not burn a Steel session.
+ * should back off, not burn a session.
  * Wraps transient network errors in `UnknownScraperError` and retries up to
  * 2 times with exponential backoff before propagating.
  */

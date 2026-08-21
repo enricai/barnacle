@@ -13,7 +13,7 @@
  *
  * Knobs (all optional):
  *   --max-iterations <N>        default 5
- *   --n-replays <N>             default 3 (Steel sessions are expensive)
+ *   --n-replays <N>             default 3 (browser sessions are expensive)
  *   --success-threshold <0..1>  default 0.9
  *   --plateau-delta <0..1>      default 0.03
  *   --plateau-window <N>        default 3
@@ -57,7 +57,7 @@ const DEFAULT_PLATEAU_DELTA = 0.03;
 const DEFAULT_PLATEAU_WINDOW = 3;
 const DEFAULT_OUT_DIR = "heal-out";
 
-/** Warn before starting when estimated Steel+Anthropic calls exceed this. */
+/** Warn before starting when estimated browser+Anthropic calls exceed this. */
 const COST_WARNING_THRESHOLD = 30;
 
 // ── types ─────────────────────────────────────────────────────────────────────
@@ -335,7 +335,7 @@ export function checkConvergence(params: {
 
 /**
  * Dry-run step runner: all steps pass immediately. Used in CI to avoid real
- * Steel sessions. Accepts a dry-run pass rate override for testing convergence.
+ * browser sessions. Accepts a dry-run pass rate override for testing convergence.
  */
 export function makeDryRunStepRunner(passRate: number = 1.0): StepRunner {
   return async ({
@@ -353,7 +353,7 @@ export function makeDryRunStepRunner(passRate: number = 1.0): StepRunner {
 }
 
 /**
- * Real step runner: drives recon-browser.ts against a live Steel session.
+ * Real step runner: drives recon-browser.ts against a live browser session.
  * Each step that throws StepVerificationError counts as a failure.
  */
 export function makeRealStepRunner(): StepRunner {
