@@ -21,8 +21,8 @@ const TASK_TIMEOUT_MS = 60 * 60 * 1_000; // 60 minutes
 /**
  * Shared queue that limits how many scraper tasks run concurrently across
  * the whole process. Sessions are created on demand inside each queued
- * task, not pre-warmed, so Steel billing stays proportional to actual
- * traffic.
+ * task, not pre-warmed, so provider billing (Browserbase by default, Steel
+ * for the opt-in fallback) stays proportional to actual traffic.
  */
 const queue = new PQueue({ concurrency: config.scraper.poolSize });
 
@@ -101,9 +101,9 @@ export function poolStats(): { size: number; pending: number; concurrency: numbe
 
 /**
  * Drains the scraper queue on graceful shutdown — pauses new intake,
- * waits for in-flight tasks' `finally` blocks to close their Steel
- * sessions, then resolves. Leaving sessions open past process exit
- * means Steel keeps billing until their own timeout kicks in.
+ * waits for in-flight tasks' `finally` blocks to close their sessions,
+ * then resolves. Leaving sessions open past process exit means the
+ * provider keeps billing until their own timeout kicks in.
  *
  * Bounded by `timeoutMs` so a hung scrape can't block SIGTERM forever;
  * the orchestrator's grace period is usually 30s, so 20s is a safe

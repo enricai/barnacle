@@ -7,7 +7,7 @@
  * session pool key off of. Some failures abort the whole call (no retry
  * can resolve them); others are retryable in place because a fresh AI
  * resolution or DOM re-settle usually fixes them; some need a brand-new
- * Steel session before retrying, in which case retry.ts invokes its
+ * session before retrying, in which case retry.ts invokes its
  * onRestart callback. See each class's TSDoc for its specific policy
  * and the diagnostic it represents.
  */
@@ -28,8 +28,8 @@ export abstract class ScraperError extends Error {
 }
 
 /**
- * The scraper encountered a CAPTCHA challenge Steel couldn't solve on our
- * behalf. Propagate to the caller as error code 2004.
+ * The scraper encountered a CAPTCHA challenge the session provider's built-in
+ * solver couldn't solve on our behalf. Propagate to the caller as error code 2004.
  */
 export class CaptchaError extends ScraperError {
   constructor(message = "captcha challenge encountered") {
@@ -81,7 +81,7 @@ export class SelectorFailureError extends ScraperError {
 }
 
 /**
- * The Steel browser session timed out or closed unexpectedly.
+ * The browser session timed out or closed unexpectedly.
  * Needs a fresh session to retry — the session pool wrapper in retry.ts
  * honors this by invoking its `onRestart` hook before re-running.
  */
@@ -178,7 +178,7 @@ export type StepVerificationErrorKind =
  *     backend-error-unrecoverable.
  *   - "flow-timeout": runHealingFlow's per-run deadline (`maxFlowMs`) elapsed
  *     while stepping through the flow. Distinct from {@link SessionTimeoutError},
- *     which means the Steel session/browser itself died — this means the
+ *     which means the session/browser itself died — this means the
  *     browser is fine but the flow overran its own budget, so the caller can
  *     fail fast well under the coarser pool-level `taskTimeoutMs` ceiling
  *     instead of grinding for the full session lifetime.
@@ -255,7 +255,7 @@ export function isHttpServerError(err: unknown): err is HttpServerError {
  * The direct-HTTP hot path received a 429 rate-limit response. Non-retryable
  * and NOT a fallback trigger — a 429 means the configured rps ceiling is too
  * high; the right response is to back off and surface the metric, not burn a
- * Steel browser session.
+ * session.
  */
 export class HttpRateLimitError extends ScraperError {
   constructor(message = "http 429 rate limit exceeded") {
@@ -276,7 +276,7 @@ export function isHttpRateLimitError(err: unknown): err is HttpRateLimitError {
  * resource after repeated requests. Non-retryable and NOT a browser-fallback
  * trigger — the lock is at the target's end, so neither a retry of the identical
  * HTTP request nor a fresh Stagehand browser session can succeed. The caller must
- * back off and surface a "retry later" state rather than burning a Steel session.
+ * back off and surface a "retry later" state rather than burning a session.
  * Kept distinct from HttpRateLimitError so metrics/logs (classifyDispatchError)
  * can tell a resource lock apart from a self-inflicted 429 rate limit.
  */
