@@ -77,14 +77,14 @@ fixtures, and how to register a plugin (out-of-tree, config-only, or in-tree) li
 
 - Node.js 22+
 - pnpm 10.4.1
-- A Steel account (`STEEL_API_KEY`) for managed browser sessions
+- A Browserbase account (`BROWSERBASE_API_KEY` + `BROWSERBASE_PROJECT_ID`) for managed browser sessions — the default provider. A Steel account (`STEEL_API_KEY`) is an alternative via `SCRAPER_PROVIDER=steel`
 - An Anthropic key (`ANTHROPIC_API_KEY`) for Stagehand's LLM calls, **or** AWS Bedrock (`USE_BEDROCK=true` + AWS credentials) — see [docs/configuration.md](./docs/configuration.md) for details
 
 ### Install
 
 ```bash
 pnpm install
-cp .env.example .env   # fill in STEEL_API_KEY and either ANTHROPIC_API_KEY or Bedrock creds
+cp .env.example .env   # fill in BROWSERBASE_API_KEY + BROWSERBASE_PROJECT_ID (or STEEL_API_KEY for SCRAPER_PROVIDER=steel) and either ANTHROPIC_API_KEY or Bedrock creds
 ```
 
 ### Generating an API key
