@@ -115,7 +115,7 @@ avoid open-handle leaks between tests.
 
 ## Mocking external dependencies
 
-External dependencies (the submission-envelope sink, Steel session pool, metrics counters) must be
+External dependencies (the submission-envelope sink, browser session pool, metrics counters) must be
 mocked so tests run without live infrastructure. Use `vi.mock` at the module
 level and `vi.hoisted` for references that mock factories close over.
 
@@ -426,7 +426,7 @@ The following are excluded from coverage reports (see `vitest.config.ts`):
 | `src/**/*.d.ts` | TypeScript declaration files — no executable code |
 | `src/**/*.test.ts` | Test files themselves |
 | `src/types/**` | Interface files — no executable code |
-| `src/scraper/session.ts` | Requires a live Steel session to test meaningfully |
+| `src/scraper/session.ts` | Requires a live browser session (Browserbase/Steel) to test meaningfully |
 | `src/server.ts` | Fastify entrypoint — `main()` only fires when executed directly |
 
 ---
