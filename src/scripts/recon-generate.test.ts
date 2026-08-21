@@ -2153,10 +2153,10 @@ describe("emitMultiStepExecuteHttp — per-call response schema override (G2)", 
     // expecting it to leave every other call's own inferred schema alone.
     const contract = emitContractTs({ ...BASE_OPTS, multiStepBody: body });
     expect(contract).toContain(
-      "const TestSiteResponseSchema = z.object({\n  id: z.string(),\n  active: z.boolean(),\n});"
+      "const TestSiteResponseSchema = z.object({\n  id: z.string(),\n  active: z.boolean(),\n}).loose();"
     );
     const narrowedContract = contract.replace(
-      "const TestSiteResponseSchema = z.object({\n  id: z.string(),\n  active: z.boolean(),\n});",
+      "const TestSiteResponseSchema = z.object({\n  id: z.string(),\n  active: z.boolean(),\n}).loose();",
       "const TestSiteResponseSchema = z.object({\n  totalPages: z.number(),\n  totalAvailableListings: z.number(),\n  products: z.array(z.object({ productId: z.string() })),\n});"
     );
 
@@ -2167,6 +2167,111 @@ describe("emitMultiStepExecuteHttp — per-call response schema override (G2)", 
     expect(togglesBlock).not.toContain("schema: TestSiteResponseSchema");
     expect(togglesBlock).not.toContain("totalPages");
     expect(narrowedContract).toContain("totalPages: z.number()");
+  });
+});
+
+describe("inferZodSchemaFromSamples — __typename dropped and objects .loose() on server-response call sites", () => {
+  it("never emits __typename in the client-level ResponseSchema, even nested", () => {
+    const source = emitContractTs({
+      ...BASE_OPTS,
+      gql: true,
+      gqlQuery: "{ widget { __typename id nested { __typename label } } }",
+      responseBody: {
+        __typename: "Widget",
+        id: "abc",
+        nested: { __typename: "Nested", label: "x" },
+      },
+      multiStepBody: `    return { data: {} as unknown };`,
+    });
+    const schemaMatch = source.match(/export const TestSiteResponseSchema = [\s\S]*?;\n/);
+    expect(schemaMatch).not.toBeNull();
+    expect(schemaMatch?.[0]).not.toContain("__typename");
+  });
+
+  it("wraps every emitted nested z.object({...}) in the client-level ResponseSchema with .loose()", () => {
+    const source = emitContractTs({
+      ...BASE_OPTS,
+      responseBody: { id: "abc", nested: { label: "x" } },
+      multiStepBody: `    return { data: {} as unknown };`,
+    });
+    const schemaMatch = source.match(/export const TestSiteResponseSchema = ([\s\S]*?);\n/);
+    expect(schemaMatch).not.toBeNull();
+    const schemaText = schemaMatch?.[1] ?? "";
+    const objectOpens = schemaText.match(/z\.object\(\{/g) ?? [];
+    const looseCloses = schemaText.match(/\}\)\.loose\(\)/g) ?? [];
+    expect(objectOpens.length).toBeGreaterThan(0);
+    expect(looseCloses.length).toBe(objectOpens.length);
+  });
+
+  it("drops __typename and looses objects in emitMultiStepExecuteHttp's per-call schema", () => {
+    const capture = (
+      url: string,
+      requestPostData: string | null,
+      responseBody: unknown,
+      varName: string
+    ) => ({
+      capture: {
+        timestamp: "2024-01-01T00:00:00Z",
+        phase: "action" as const,
+        method: "POST",
+        url,
+        status: 200,
+        requestHeaders: { "Content-Type": "application/json" },
+        requestPostData,
+        responseHeaders: { "content-type": "application/json" },
+        responseBody,
+        operationName: null,
+        query: null,
+        variables: null,
+        decodedParams: null,
+      },
+      varName,
+      produces: [],
+      isMultipart: false,
+      isCrossDomain: false,
+    });
+    const steps = [
+      capture("https://api.example.com/graphql", null, { __typename: "Widget", id: "abc" }, "r0"),
+    ];
+    const body = emitMultiStepExecuteHttp(
+      steps,
+      null,
+      { stringMessageKey: null, nestedErrorPaths: [] },
+      new Map(),
+      new Set(),
+      new Map(),
+      new Set(),
+      new Map(),
+      new Map(),
+      "https://api.example.com",
+      new Map(),
+      new Map()
+    );
+    expect(body).not.toContain("__typename");
+    expect(body).toMatch(/schema:\s*z\.object\(\{\n\s*id: z\.string\(\),\n\s*\}\)\.loose\(\)/);
+  });
+
+  it("leaves the input-body-derived payload schema and structured-key inference unaffected by __typename/.loose()", () => {
+    const source = emitContractTs({
+      ...BASE_OPTS,
+      inputBody: { __typename: "Ignored", Name: "Alice" },
+      discoveredStructuredKeys: new Map([["eventData", "z.object({ a: z.string() })"]]),
+      multiStepBody: `    return { data: {} as unknown };`,
+    });
+    expect(source).toContain("__typename");
+    expect(source).toContain("eventData: multipartJsonObject(z.object({ a: z.string() })),");
+  });
+});
+
+describe("query-constant comment", () => {
+  it("no longer promises a trim the generator never performs", () => {
+    const source = emitContractTs({
+      ...BASE_OPTS,
+      gql: true,
+      gqlQuery: "{ widget { id } }",
+      multiStepBody: `    return { data: {} as unknown };`,
+    });
+    expect(source).not.toContain("trim UI-only fields before shipping");
   });
 });
 

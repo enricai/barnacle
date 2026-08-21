@@ -513,6 +513,17 @@ interface InferOpts {
    * OR'd into the same presence-driven `.optional()` decision rather than
    * appending a second independent `.optional()`. */
   conditionalFieldNames?: ReadonlySet<string>;
+  /** Drop `__typename` keys from every emitted object shape and mark every
+   * emitted `z.object({...})` `.loose()` rather than the Zod default of
+   * rejecting unrecognized keys. `__typename` is GraphQL response machinery,
+   * never a caller's payload, and recurs at every nesting level; a server
+   * response can otherwise gain or shift fields the plugin never captured,
+   * so an exact-shape object schema rejects live traffic that a byte-for-byte
+   * schema mismatch shouldn't. Scoped to schemas that validate a live
+   * response, not to payload/structured-key inference — those describe what
+   * the plugin itself sends, which doesn't drift the way a server's response
+   * does. */
+  looseServerResponse?: boolean;
 }
 
 /**
@@ -604,7 +615,9 @@ export function inferZodSchemaFromSamples(
 
   if (kind === "object") {
     const objects = nonNull as Record<string, unknown>[];
-    const keys = [...new Set(objects.flatMap((o) => Object.keys(o)))];
+    const keys = [...new Set(objects.flatMap((o) => Object.keys(o)))].filter(
+      (k) => !(opts.looseServerResponse && k === "__typename")
+    );
     if (keys.length === 0) return wrap("z.record(z.string(), z.unknown())");
     const inner = `${indent}  `;
     // Emit identifier-shaped keys unquoted so Biome's formatter doesn't rewrite
@@ -623,7 +636,8 @@ export function inferZodSchemaFromSamples(
         return `${inner}${isValidJsIdentifier(k) ? k : JSON.stringify(k)}: ${optional}`;
       })
       .join(",\n");
-    return wrap(`z.object({\n${fields},\n${indent}})`);
+    const objectExpr = `z.object({\n${fields},\n${indent}})${opts.looseServerResponse ? ".loose()" : ""}`;
+    return wrap(objectExpr);
   }
 
   return wrap("z.unknown()");
@@ -3957,7 +3971,7 @@ export function emitMultiStepExecuteHttp(
     // validates any individual call. Without this override, HttpRequestInit.schema
     // would default to the client's z.unknown() and narrowing the caller-facing
     // contract would enforce that narrowed shape on every call in the chain.
-    const schemaExpr = inferZodSchema(cap.responseBody);
+    const schemaExpr = inferZodSchema(cap.responseBody, 0, "", { looseServerResponse: true });
 
     rendered.push({ url, method: cap.method, headersExpr, bodyArg, schemaExpr });
   }
@@ -4684,7 +4698,10 @@ export function emitContractTs(opts: {
       ? `z.object({ verified: z.boolean() })`
       : omitExecuteHttp
         ? `z.unknown()`
-        : inferZodSchemaFromSamples(responseBodySamples, 0, "", { conditionalFieldNames });
+        : inferZodSchemaFromSamples(responseBodySamples, 0, "", {
+            conditionalFieldNames,
+            looseServerResponse: true,
+          });
   // Multi-step flows that include a multipart upload need the binary asset
   // on the payload. ApplicantContactSchema (via ApplicantResumeSchema) already
   // declares Resume/ResumeContentType/ResumeFilename, so submission flows
@@ -4950,7 +4967,7 @@ export function emitContractTs(opts: {
 
   const queryConst =
     !omitExecuteHttp && gql && gqlQuery
-      ? `\n// Lifted verbatim from recon capture — trim UI-only fields before shipping.\nconst ${pascal.toUpperCase()}_QUERY = \`${gqlQuery.trim()}\`;\n`
+      ? `\n// Lifted verbatim from recon capture. The adjacent response schema is drift-tolerant by construction (dropped __typename, .loose() objects), so this query text is not hand-trimmed.\nconst ${pascal.toUpperCase()}_QUERY = \`${gqlQuery.trim()}\`;\n`
       : "";
 
   const gqlCacheBlock = omitExecuteHttp
