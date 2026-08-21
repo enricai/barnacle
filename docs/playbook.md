@@ -141,7 +141,7 @@ when a step enters the cascade. `resolveFrameTarget` polls for up to
 and the cascade re-resolves the frame target right before the `deepLocator`
 candidate probe (not only at step entry) so a frame that attaches mid-step is
 still reached instead of leaving the step stuck on a stale main-frame
-fallback. See [Environment variables](../README.md#environment-variables) for
+fallback. See [Environment variables](./configuration.md#environment-variables) for
 `FRAME_READY_TIMEOUT_MS` / `FRAME_DOCUMENT_READY_TIMEOUT_MS` /
 `FRAME_EVALUATE_TIMEOUT_MS`.
 
@@ -733,8 +733,8 @@ route, once it knows how its own tracking nav actually resolved. That
 (`src/lib/telemetry/submission-reader.ts`), so a self-managing plugin is not
 structurally locked to `"skipped"` — it just needs to opt in. Full field
 detail and the call-site conventions live in
-[Reconciliation join keys](../README.md#reconciliation-join-keys-extractjoinkeys)
-in the README; this section only needs to know the escape hatch exists. This
+[Fields every reconciliation row carries](./submission-reconciliation.md#fields-every-reconciliation-row-carries)
+in docs/submission-reconciliation.md; this section only needs to know the escape hatch exists. This
 is why beacon-fire needs its own durable record instead of being inferred
 from submit success: a submission can succeed while the beacon never fires
 (see §6B for how that shows up in metrics, and drain behavior on shutdown).
