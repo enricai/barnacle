@@ -149,7 +149,7 @@ describe("recon-generate CLI: preferred branch synthesizes the real per-section 
     // success body (`{ valid, revision }`), not z.unknown().
     expect(contract).not.toMatch(/ResponseSchema = z\.unknown\(\);/);
     expect(contract).toMatch(
-      /ResponseSchema = z\.object\(\{\s*\n\s*valid: z\.boolean\(\),\s*\n\s*revision: z\.number\(\),\s*\n\s*\}\);/
+      /ResponseSchema = z\.object\(\{\s*\n\s*valid: z\.boolean\(\),\s*\n\s*revision: z\.number\(\),\s*\n\s*\}\)\.loose\(\);/
     );
   }, 30_000);
 });
