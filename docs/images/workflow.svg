@@ -9,7 +9,7 @@
   <desc id="desc">
     Three swimlanes — Setup, Runtime, Heal — show the full Barnacle loop.
     Setup (Phases 0–4, orange) goes Write recon-flow.json → recon:browser
-    (Stagehand on Steel) → recon:http (replay + rate-limit probe) →
+    (Stagehand on a hosted browser) → recon:http (replay + rate-limit probe) →
     recon:generate (Zod schemas + headers + client) → Human PR
     contract.ts. A dashed blue Deploys arrow leaves the PR and enters
     Runtime at dispatch(). Runtime (Phase 5, deep blue) goes
@@ -220,7 +220,7 @@
 
   <rect class="node-rect setup" x="40" y="256" width="280" height="78" rx="4" />
   <text class="node-kicker"     x="56" y="279">PHASE 1 · <tspan class="node-mono" font-size="10">recon:browser</tspan></text>
-  <text class="node-title"      x="56" y="302">Stagehand on Steel</text>
+  <text class="node-title"      x="56" y="302">Stagehand on hosted browser</text>
   <text class="node-sub"        x="56" y="320">captures every network call</text>
 
   <path class="edge setup" d="M180,334 L180,364" marker-end="url(#ah-orange)" />
