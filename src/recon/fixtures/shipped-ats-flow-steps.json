@@ -161,7 +161,7 @@
   },
   {
     "site": "ats-a",
-    "instruction": "On the COMPENSATION / Job-Related Questions page, for 'Do you currently or have you ever worked at Acme Health or an Acme Health affiliated company?' select 'No, I do not currently or have never worked for Acme Health or an Acme Health affiliated company.'"
+    "instruction": "On the COMPENSATION / Job-Related Questions page, for 'Do you currently or have you ever worked at Acme Corp or an Acme Corp affiliated company?' select 'No, I do not currently or have never worked for Acme Corp or an Acme Corp affiliated company.'"
   },
   {
     "site": "ats-a",
@@ -289,7 +289,7 @@
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for 'Have you ever been previously employed with Acme Health?'"
+    "instruction": "Click the 'No' label for 'Have you ever been previously employed with Acme Corp?'"
   },
   {
     "site": "ats-c",
@@ -369,7 +369,7 @@
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for 'Have you ever been previously employed with Acme Health?'"
+    "instruction": "Click the 'No' label for 'Have you ever been previously employed with Acme Corp?'"
   },
   {
     "site": "ats-c",
@@ -401,7 +401,7 @@
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'Yes' label for 'Do you wish to be considered for other employment opportunities at Acme Health?'"
+    "instruction": "Click the 'Yes' label for 'Do you wish to be considered for other employment opportunities at Acme Corp?'"
   },
   {
     "site": "ats-c",
@@ -449,11 +449,11 @@
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for the radio button 'Are you related to a current Acme Health employee?'"
+    "instruction": "Click the 'No' label for the radio button 'Are you related to a current Acme Corp employee?'"
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for the radio button 'Have your previously worked for Acme Health?'"
+    "instruction": "Click the 'No' label for the radio button 'Have your previously worked for Acme Corp?'"
   },
   {
     "site": "ats-c",
@@ -469,7 +469,7 @@
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for the radio button asking whether you require Acme Health visa sponsorship to work in the United States"
+    "instruction": "Click the 'No' label for the radio button asking whether you require Acme Corp visa sponsorship to work in the United States"
   },
   {
     "site": "ats-c",
@@ -557,7 +557,7 @@
   },
   {
     "site": "ats-c",
-    "instruction": "If a question asks whether you have previously worked for the employer (e.g. Acme Health, formerly Acme Health, or its affiliates) and 'No' is not already selected, select 'No'"
+    "instruction": "If a question asks whether you have previously worked for the employer (e.g. Acme Corp, formerly Acme Corp, or its affiliates) and 'No' is not already selected, select 'No'"
   },
   {
     "site": "ats-c",
@@ -669,11 +669,11 @@
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for 'Are you related to a current Acme Health employee?'"
+    "instruction": "Click the 'No' label for 'Are you related to a current Acme Corp employee?'"
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for 'Have you previously worked for Acme Health?'"
+    "instruction": "Click the 'No' label for 'Have you previously worked for Acme Corp?'"
   },
   {
     "site": "ats-c",
@@ -689,7 +689,7 @@
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for 'Do you require Acme Health visa sponsorship?'"
+    "instruction": "Click the 'No' label for 'Do you require Acme Corp visa sponsorship?'"
   },
   {
     "site": "ats-c",
@@ -729,11 +729,11 @@
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for 'Are you related to a current Acme Health employee?'"
+    "instruction": "Click the 'No' label for 'Are you related to a current Acme Corp employee?'"
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for 'Have you previously worked for Acme Health?'"
+    "instruction": "Click the 'No' label for 'Have you previously worked for Acme Corp?'"
   },
   {
     "site": "ats-c",
@@ -749,7 +749,7 @@
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for 'Do you require Acme Health visa sponsorship?'"
+    "instruction": "Click the 'No' label for 'Do you require Acme Corp visa sponsorship?'"
   },
   {
     "site": "ats-c",
@@ -793,11 +793,11 @@
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for 'Are you related to a current Acme Health employee?'"
+    "instruction": "Click the 'No' label for 'Are you related to a current Acme Corp employee?'"
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for 'Have you previously worked for Acme Health?'"
+    "instruction": "Click the 'No' label for 'Have you previously worked for Acme Corp?'"
   },
   {
     "site": "ats-c",
@@ -813,7 +813,7 @@
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for 'Do you require Acme Health visa sponsorship?'"
+    "instruction": "Click the 'No' label for 'Do you require Acme Corp visa sponsorship?'"
   },
   {
     "site": "ats-c",
@@ -849,7 +849,7 @@
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for 'Have you ever been previously employed with Acme Health?'"
+    "instruction": "Click the 'No' label for 'Have you ever been previously employed with Acme Corp?'"
   },
   {
     "site": "ats-c",
@@ -877,7 +877,7 @@
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'Yes' label for 'Do you wish to be considered for other employment opportunities at Acme Health?'"
+    "instruction": "Click the 'Yes' label for 'Do you wish to be considered for other employment opportunities at Acme Corp?'"
   },
   {
     "site": "ats-c",
@@ -933,11 +933,11 @@
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for 'Are you related to a current Acme Health employee?'"
+    "instruction": "Click the 'No' label for 'Are you related to a current Acme Corp employee?'"
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for 'Have you previously worked for Acme Health?'"
+    "instruction": "Click the 'No' label for 'Have you previously worked for Acme Corp?'"
   },
   {
     "site": "ats-c",
@@ -953,7 +953,7 @@
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for 'Do you require Acme Health visa sponsorship?'"
+    "instruction": "Click the 'No' label for 'Do you require Acme Corp visa sponsorship?'"
   },
   {
     "site": "ats-c",
@@ -993,11 +993,11 @@
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for 'Are you related to a current Acme Health employee?'"
+    "instruction": "Click the 'No' label for 'Are you related to a current Acme Corp employee?'"
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for 'Have you previously worked for Acme Health?'"
+    "instruction": "Click the 'No' label for 'Have you previously worked for Acme Corp?'"
   },
   {
     "site": "ats-c",
@@ -1013,7 +1013,7 @@
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for 'Do you require Acme Health visa sponsorship?'"
+    "instruction": "Click the 'No' label for 'Do you require Acme Corp visa sponsorship?'"
   },
   {
     "site": "ats-c",
@@ -1053,11 +1053,11 @@
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for 'Are you related to a current Acme Health employee?'"
+    "instruction": "Click the 'No' label for 'Are you related to a current Acme Corp employee?'"
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for 'Have you previously worked for Acme Health?'"
+    "instruction": "Click the 'No' label for 'Have you previously worked for Acme Corp?'"
   },
   {
     "site": "ats-c",
@@ -1073,7 +1073,7 @@
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for 'Do you require Acme Health visa sponsorship?'"
+    "instruction": "Click the 'No' label for 'Do you require Acme Corp visa sponsorship?'"
   },
   {
     "site": "ats-c",
@@ -1117,11 +1117,11 @@
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for 'Are you related to a current Acme Health employee?'"
+    "instruction": "Click the 'No' label for 'Are you related to a current Acme Corp employee?'"
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for 'Have you previously worked for Acme Health?'"
+    "instruction": "Click the 'No' label for 'Have you previously worked for Acme Corp?'"
   },
   {
     "site": "ats-c",
@@ -1137,7 +1137,7 @@
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for 'Do you require Acme Health visa sponsorship?'"
+    "instruction": "Click the 'No' label for 'Do you require Acme Corp visa sponsorship?'"
   },
   {
     "site": "ats-c",
@@ -1177,11 +1177,11 @@
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for 'Are you related to a current Acme Health employee?'"
+    "instruction": "Click the 'No' label for 'Are you related to a current Acme Corp employee?'"
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for 'Have you previously worked for Acme Health?'"
+    "instruction": "Click the 'No' label for 'Have you previously worked for Acme Corp?'"
   },
   {
     "site": "ats-c",
@@ -1197,7 +1197,7 @@
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for 'Do you require Acme Health visa sponsorship?'"
+    "instruction": "Click the 'No' label for 'Do you require Acme Corp visa sponsorship?'"
   },
   {
     "site": "ats-c",
@@ -1237,19 +1237,19 @@
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' radio button for 'Are you a current employee at Acme Health or Acme Samaritan Society?'"
+    "instruction": "Click the 'No' radio button for 'Are you a current employee at Acme Corp or Acme Affiliated Co?'"
   },
   {
     "site": "ats-c",
-    "instruction": "Select 'No' or the closest non-former-employee option in the 'Are you a former Acme Health or Acme Samaritan Society Employee?' dropdown"
+    "instruction": "Select 'No' or the closest non-former-employee option in the 'Are you a former Acme Corp or Acme Affiliated Co Employee?' dropdown"
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' radio button for 'Have you applied to an Acme Health or Acme Samaritan Society position in the last 6 months?'"
+    "instruction": "Click the 'No' radio button for 'Have you applied to an Acme Corp or Acme Affiliated Co position in the last 6 months?'"
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' radio button for 'Were you referred by a current Acme Samaritan Society or Acme Health employee?'"
+    "instruction": "Click the 'No' radio button for 'Were you referred by a current Acme Affiliated Co or Acme Corp employee?'"
   },
   {
     "site": "ats-c",
@@ -1297,11 +1297,11 @@
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for 'Are you related to a current Acme Health employee?'"
+    "instruction": "Click the 'No' label for 'Are you related to a current Acme Corp employee?'"
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for 'Have you previously worked for Acme Health?'"
+    "instruction": "Click the 'No' label for 'Have you previously worked for Acme Corp?'"
   },
   {
     "site": "ats-c",
@@ -1317,7 +1317,7 @@
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for 'Do you require Acme Health visa sponsorship?'"
+    "instruction": "Click the 'No' label for 'Do you require Acme Corp visa sponsorship?'"
   },
   {
     "site": "ats-c",
@@ -1357,11 +1357,11 @@
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for 'Are you related to a current Acme Health employee?'"
+    "instruction": "Click the 'No' label for 'Are you related to a current Acme Corp employee?'"
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for 'Have you previously worked for Acme Health?'"
+    "instruction": "Click the 'No' label for 'Have you previously worked for Acme Corp?'"
   },
   {
     "site": "ats-c",
@@ -1377,7 +1377,7 @@
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for 'Do you require Acme Health visa sponsorship?'"
+    "instruction": "Click the 'No' label for 'Do you require Acme Corp visa sponsorship?'"
   },
   {
     "site": "ats-c",
@@ -1517,11 +1517,11 @@
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for 'Are you related to a current Acme Health employee?'"
+    "instruction": "Click the 'No' label for 'Are you related to a current Acme Corp employee?'"
   },
   {
     "site": "ats-c",
-    "instruction": "Click the 'No' label for 'Have you previously worked for Acme Health?'"
+    "instruction": "Click the 'No' label for 'Have you previously worked for Acme Corp?'"
   },
   {
     "site": "ats-c",
@@ -1657,7 +1657,7 @@
   },
   {
     "site": "ats-b",
-    "instruction": "If a question asks whether you have previously worked for Acme Health or its affiliates, select 'No'"
+    "instruction": "If a question asks whether you have previously worked for Acme Corp or its affiliates, select 'No'"
   },
   {
     "site": "ats-b",
