@@ -21,7 +21,7 @@ interface SitePlugin<TPayload, TResult> {
     payload: TPayload,
     context: SitePluginContext
   ) => Promise<SitePluginResult<TResult>>;
-  // Browser fallback — Stagehand + Steel session, acquired from the pool by core.
+  // Browser fallback — Stagehand-driven session (Browserbase by default, Steel via SCRAPER_PROVIDER), acquired from the pool by core.
   execute(
     payload: TPayload,
     session: BrowserSession,
@@ -98,7 +98,7 @@ export const mySitePlugin: SitePlugin<MySitePayload, MySiteResponse> = {
     });
     return { data };
   },
-  // Browser fallback: Stagehand + Steel — invoked automatically when hot path fails.
+  // Browser fallback: Stagehand-driven session (Browserbase by default, Steel via SCRAPER_PROVIDER) — invoked automatically when hot path fails.
   async execute(payload: MySitePayload, session: BrowserSession, context: SitePluginContext): Promise<SitePluginResult<MySiteResponse>> {
     const raw = await runMySiteBrowserFlow(session.stagehand, context.baseUrl, payload.query);
     return { data: raw };

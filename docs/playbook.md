@@ -814,13 +814,14 @@ Hot-path error → fallback decision (in `dispatch()`):
 | `HttpSchemaError` | **Yes** | Response shape drifted; browser might still work |
 | `HttpBotChallengeError` | **Yes** | 401/403 — browser with residential IP may get through |
 | `HttpServerError` | **Yes** | 5xx — browser recovery strategy is the same |
-| `HttpRateLimitError` | **No** | 429 — burning a Steel session won't help; back off instead |
+| `HttpRateLimitError` | **No** | 429 — burning a browser session won't help; back off instead |
 
 ### 5D — Session pool mechanics
 
 A single `p-queue` with `concurrency = SESSION_POOL_SIZE` (default: 3) prevents
 accidental session sprawl. Sessions are created on demand inside each queued
-task — not pre-warmed — so Steel billing stays proportional to actual traffic.
+task — not pre-warmed — so provider billing (Browserbase by default, Steel
+for the opt-in fallback) stays proportional to actual traffic.
 
 The **per-task hang ceiling** (`TASK_TIMEOUT_MS` in `src/scraper/pool.ts`,
 60-minute default) prevents a hung Stagehand operation (infinite network wait,
@@ -840,8 +841,9 @@ pinning the whole task until `TASK_TIMEOUT_MS` finally kills it.
 
 On `SIGTERM` / `SIGINT`, `drainPool()` (`src/scraper/pool.ts`) pauses new intake,
 waits up to 20 seconds for in-flight tasks to finish their `finally` blocks and
-close Steel sessions, then resolves. Without this, process exit leaves live Steel
-sessions billing until their own timeout.
+close provider sessions, then resolves. Without this, process exit leaves live
+provider sessions (Browserbase by default, Steel for the opt-in fallback)
+billing until their own timeout.
 
 **Viewport rotation** (`src/scraper/session.ts`): each session picks a random
 desktop viewport from a fixed set (`1280×720`, `1366×768`, `1440×900`,

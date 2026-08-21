@@ -55,7 +55,8 @@ for the step-by-step.
 
 ### Why hot path + browser fallback, not browser on every call
 
-A Stagehand + Steel session costs real money and takes 5–15 seconds:
+A Stagehand browser session (Browserbase by default, Steel as the opt-in
+fallback via `SCRAPER_PROVIDER=steel`) costs real money and takes 5–15 seconds:
 browser cold-start, navigation, LLM inference for selector resolution.
 At any meaningful request volume, that's the wrong default path.
 
@@ -138,10 +139,10 @@ and must not bias the origin latency signal.
 ### Why `p-queue` with bounded concurrency
 
 A raw `Promise.all` pool would let traffic spikes spin up arbitrarily many
-Steel sessions simultaneously. `p-queue` with `concurrency = SESSION_POOL_SIZE`
+browser sessions simultaneously. `p-queue` with `concurrency = SESSION_POOL_SIZE`
 caps that. Sessions are created on demand inside each queued task — not
-pre-warmed — so Steel billing stays proportional to actual traffic, not to
-pool capacity.
+pre-warmed — so provider billing (Browserbase by default, Steel for the
+opt-in fallback) stays proportional to actual traffic, not to pool capacity.
 
 The queue also provides a natural backpressure point. `/readyz` exposes
 `pool.size + pool.pending` so ops can alert when the queue depth exceeds
@@ -191,7 +192,7 @@ each error class. Here's why each decision was made:
 
 | Error | Policy | Reason |
 |-------|--------|--------|
-| `CaptchaError` | Abort immediately | Steel's built-in solver handles most CAPTCHAs transparently when `SCRAPER_SOLVE_CAPTCHA=true` (default). This row covers the residual case where the solver fails: at that point the CAPTCHA needs human intervention, and burning more sessions just makes the IP look more like a bot. Surface immediately. |
+| `CaptchaError` | Abort immediately | The session provider's built-in solver (Browserbase by default, Steel as the opt-in alternative) handles most CAPTCHAs transparently when `SCRAPER_SOLVE_CAPTCHA=true` (default). This row covers the residual case where the solver fails: at that point the CAPTCHA needs human intervention, and burning more sessions just makes the IP look more like a bot. Surface immediately. |
 | `EmptyResultsError` | Abort immediately | Empty results are a query-shape bug, not a transient failure. Retrying the same malformed query will always return empty. Fix the query. |
 | `SessionTimeoutError` | Kill session → create fresh → retry up to `maxAttempts` | The session itself is corrupted (hung CDP, stale context). `onSessionRestart` is invoked before every retry attempt, not just the first, so a stuck session is never left running between repeat timeouts. |
 | `SelectorFailureError` | Retry up to `maxAttempts` with backoff | Stagehand cache may have a stale selector. Retry forces LLM re-resolution. Usually recovers in 1–2 retries. |
@@ -212,7 +213,7 @@ Hot-path → fallback decision (in `dispatch()`):
 | `HttpSchemaError` | Yes | Response shape drifted; browser may still return the right data via DOM extraction |
 | `HttpBotChallengeError` | Yes | 401/403 from edge; residential proxy in the browser session may get through |
 | `HttpServerError` | Yes | 5xx; recovery strategy is the same regardless of path |
-| `HttpRateLimitError` | **No** | 429 means back off — burning a Steel session against a rate-limited endpoint just costs money and burns the session |
+| `HttpRateLimitError` | **No** | 429 means back off — burning a browser session against a rate-limited endpoint just costs money and burns the session |
 
 ---
 
@@ -725,8 +726,8 @@ of the hand-rolled options are.
 This is what Barnacle uses as *fallback only*, after direct HTTP has been
 proven sufficient.
 
-- **Cost:** Steel minutes + Anthropic tokens on every production call. Orders
-  of magnitude more expensive at scale.
+- **Cost:** Browserbase/Steel session minutes + Anthropic tokens on every
+  production call. Orders of magnitude more expensive at scale.
 - **Latency:** 5–15 seconds per request (browser cold-start + navigation +
   LLM inference). Not viable for interactive traffic.
 - **Fragility:** More moving parts (browser, proxy, AI) = more failure modes.

@@ -77,14 +77,14 @@ fixtures, and how to register a plugin (out-of-tree, config-only, or in-tree) li
 
 - Node.js 22+
 - pnpm 10.4.1
-- A Steel account (`STEEL_API_KEY`) for managed browser sessions
+- A Browserbase account (`BROWSERBASE_API_KEY` + `BROWSERBASE_PROJECT_ID`) for managed browser sessions — the default provider. A Steel account (`STEEL_API_KEY`) is an alternative via `SCRAPER_PROVIDER=steel`
 - An Anthropic key (`ANTHROPIC_API_KEY`) for Stagehand's LLM calls, **or** AWS Bedrock (`USE_BEDROCK=true` + AWS credentials) — see [docs/configuration.md](./docs/configuration.md) for details
 
 ### Install
 
 ```bash
 pnpm install
-cp .env.example .env   # fill in STEEL_API_KEY and either ANTHROPIC_API_KEY or Bedrock creds
+cp .env.example .env   # fill in BROWSERBASE_API_KEY + BROWSERBASE_PROJECT_ID (or STEEL_API_KEY for SCRAPER_PROVIDER=steel) and either ANTHROPIC_API_KEY or Bedrock creds
 ```
 
 ### Generating an API key
@@ -195,7 +195,7 @@ src/
 │   ├── helpers/envelope.ts    # success envelope builder
 │   └── errors.ts              # error hierarchy + envelope builder
 ├── scraper/
-│   ├── session.ts             # Steel + Stagehand session factory
+│   ├── session.ts             # Stagehand session factory (Browserbase default, Steel opt-in fallback)
 │   ├── pool.ts                # p-queue over createBrowserSession
 │   ├── throttle.ts            # Bottleneck limiter + jitter
 │   ├── retry.ts               # p-retry + failure classification
@@ -232,7 +232,7 @@ src/
 
 - API server: [`fastify`](https://fastify.dev/) + helmet + compress + rate-limit + swagger
 - Schema: [`zod`](https://zod.dev/) via `fastify-type-provider-zod`
-- Browser automation: [`@browserbasehq/stagehand`](https://github.com/browserbase/stagehand) + [`steel-sdk`](https://steel.dev)
+- Browser automation: [`@browserbasehq/stagehand`](https://github.com/browserbase/stagehand) with [`@browserbasehq/sdk`](https://browserbase.com) (default provider) and [`steel-sdk`](https://steel.dev) (opt-in fallback via `SCRAPER_PROVIDER=steel`)
 - Concurrency: [`p-queue`](https://github.com/sindresorhus/p-queue), [`p-retry`](https://github.com/sindresorhus/p-retry), [`bottleneck`](https://github.com/SGrondin/bottleneck)
 - Caching: [`lru-cache`](https://github.com/isaacs/node-lru-cache)
 - Logging: [`pino`](https://github.com/pinojs/pino) with CloudWatch 256KB splitting + sensitive-field redaction
