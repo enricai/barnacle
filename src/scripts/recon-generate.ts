@@ -763,8 +763,22 @@ function captureHostname(url: string): string {
   }
 }
 
-function deriveBaseUrl(captures: Capture[]): string {
-  for (const c of captures) {
+/**
+ * `baseUrl` itself is what {@link registrableDomain}'s fallback would be
+ * derived FROM, so at this point in generation the registrable-domain gate
+ * doesn't exist yet: when the flow declares no `ownBackendHostnames`, the
+ * best available signal is {@link isNoiseUrl}'s conservative exclusion of
+ * known third-party asset/tracking hosts (the same fallback
+ * `selectAuxFixtureCandidates` uses regardless of host-provenance data).
+ */
+function deriveBaseUrl(captures: Capture[], ownBackendHostnames: string[]): string {
+  const candidates = captures.filter((c) => {
+    if (ownBackendHostnames.length > 0) {
+      return isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, null);
+    }
+    return !isNoiseUrl(c.url);
+  });
+  for (const c of candidates) {
     try {
       const u = new URL(c.url);
       return `${u.protocol}//${u.host}`;
@@ -889,8 +903,26 @@ function isGraphQL(captures: Capture[]): boolean {
   return captures.some((c) => c.operationName !== null);
 }
 
-function firstGraphQLQuery(captures: Capture[]): string | null {
-  return captures.find((c) => c.query)?.query ?? null;
+/**
+ * The single own-backend capture the raw GraphQL fallback (no
+ * `selectPrimaryGraphQLOperation` winner) resolves its query, endpoint, and
+ * operationName from — all three MUST trace back to this same capture, not
+ * three independent array scans that could each land on a different one.
+ */
+function firstGraphQLCapture(
+  captures: Capture[],
+  ownBackendHostnames: string[] = [],
+  fallbackDomain: string | null = null
+): Capture | null {
+  const hasHostProvenance = ownBackendHostnames.length > 0 || fallbackDomain !== null;
+  return (
+    captures.find(
+      (c) =>
+        c.query &&
+        (!hasHostProvenance ||
+          isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, fallbackDomain))
+    ) ?? null
+  );
 }
 
 interface PrimaryGraphQLOperation {
@@ -1038,17 +1070,23 @@ export function selectPrimaryGraphQLOperation(
       (value) => spliceFacetsIntoStringVariable(value, payloadFieldList) !== null
     );
   };
+  // A facet-spliceable candidate must win over any non-facet candidate
+  // regardless of size/recurrence/phase — those signals only decide among
+  // candidates of the same facet-spliceability tier, never across tiers.
+  const facetCandidates = candidates.filter((c) => facetSpliceable(c));
+  const scoringPool = facetCandidates.length > 0 ? facetCandidates : candidates;
+
   const operationNameCounts = new Map<string, number>();
-  for (const c of candidates) {
+  for (const c of scoringPool) {
     const key = operationGroupKey(c);
     operationNameCounts.set(key, (operationNameCounts.get(key) ?? 0) + 1);
   }
 
-  const maxSize = Math.max(...candidates.map(responseSize), 1);
-  const maxFieldMatch = Math.max(...candidates.map(fieldMatchCount), 1);
+  const maxSize = Math.max(...scoringPool.map(responseSize), 1);
+  const maxFieldMatch = Math.max(...scoringPool.map(fieldMatchCount), 1);
   const maxRecurrence = Math.max(...Array.from(operationNameCounts.values()), 1);
 
-  const scored = candidates.map((capture) => {
+  const scored = scoringPool.map((capture) => {
     const sizeScore = responseSize(capture) / maxSize;
     const fieldScore = fieldMatchCount(capture) / maxFieldMatch;
     const phaseScore = capture.phase !== "home" ? 1 : 0;
@@ -1098,8 +1136,21 @@ export function selectPrimaryGraphQLOperation(
  * derives a path string from, so non-GraphQL flows can also read that
  * capture's own `.responseBody` instead of an array-order-first replay.
  */
-export function firstEndpointCapture(captures: Capture[]): Capture | null {
-  const nonGetCaptures = captures.filter((c) => c.method !== "GET");
+export function firstEndpointCapture(
+  captures: Capture[],
+  ownBackendHostnames: string[] = [],
+  fallbackDomain: string | null = null
+): Capture | null {
+  // Callers with no host-provenance data (unit tests exercising the
+  // chronological-first fallback in isolation) pass neither argument -- in
+  // that case isAllowedFixtureHost would reject every candidate, so the
+  // gate only applies once the caller has actually resolved a notion of
+  // "own backend" to check against. Mirrors selectPrimaryGraphQLOperation.
+  const hasHostProvenance = ownBackendHostnames.length > 0 || fallbackDomain !== null;
+  const allowed = (c: Capture): boolean =>
+    !hasHostProvenance ||
+    isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, fallbackDomain);
+  const nonGetCaptures = captures.filter((c) => c.method !== "GET" && allowed(c));
   for (const c of nonGetCaptures) {
     try {
       new URL(c.url);
@@ -1108,7 +1159,7 @@ export function firstEndpointCapture(captures: Capture[]): Capture | null {
       // skip
     }
   }
-  for (const c of captures) {
+  for (const c of captures.filter(allowed)) {
     try {
       new URL(c.url);
       return c;
@@ -1119,9 +1170,21 @@ export function firstEndpointCapture(captures: Capture[]): Capture | null {
   return null;
 }
 
-export function firstEndpointPath(captures: Capture[]): string {
+function safeUrlPathname(url: string): string {
   try {
-    const capture = firstEndpointCapture(captures);
+    return new URL(url).pathname;
+  } catch {
+    return "/api/search";
+  }
+}
+
+export function firstEndpointPath(
+  captures: Capture[],
+  ownBackendHostnames: string[] = [],
+  fallbackDomain: string | null = null
+): string {
+  try {
+    const capture = firstEndpointCapture(captures, ownBackendHostnames, fallbackDomain);
     return capture ? new URL(capture.url).pathname : "/api/search";
   } catch {
     return "/api/search";
@@ -1264,7 +1327,6 @@ export function extractGraphQLActionSequence(
   return captures
     .map((capture, index) => ({ capture, index }))
     .filter(({ capture }) => {
-      if (capture.operationName === null) return false;
       if (capture.status < 200 || capture.status >= 300) return false;
       if (isNoiseUrl(capture.url)) return false;
       if (!matchesSubmit(capture)) return false;
@@ -5769,7 +5831,15 @@ async function main(): Promise<void> {
   const formSchema = await resolveFormSchema(formSchemaSpecifier);
 
   const pascal = toPascalCase(siteId);
-  const baseUrl = deriveBaseUrl(captures);
+  // Read the flow's declared own-backend hosts BEFORE deriving baseUrl, so
+  // deriveBaseUrl itself can gate on them: a third-party host that happens
+  // to capture first (a feature-flag SDK, an analytics vendor) must never
+  // become the generated hot path's base URL. baseUrl's own
+  // registrable-domain fallback is necessarily derived FROM baseUrl, so it
+  // isn't available to deriveBaseUrl yet -- see deriveBaseUrl's own doc
+  // comment for how it copes when ownBackendHostnames is empty.
+  const ownBackendHostnames = readOwnBackendHostnames(flowFile);
+  const baseUrl = deriveBaseUrl(captures, ownBackendHostnames);
   // Gate on the flow's declared own-backend hosts (or the registrable-domain
   // fallback of baseUrl) via the same predicate recon-http.ts applies at
   // write time, so a stale aux/ directory from before that filter existed
@@ -5777,7 +5847,6 @@ async function main(): Promise<void> {
   // third party's JSON into a generated plugin's fixtures/. A file with no
   // manifest entry is unverifiable provenance, not proven safe, so it is
   // excluded rather than assumed to have passed the write-time filter.
-  const ownBackendHostnames = readOwnBackendHostnames(flowFile);
   const fallbackDomain = baseUrl.length > 0 ? registrableDomain(new URL(baseUrl).hostname) : null;
   const auxFiles = auxManifest
     .filter((entry) => {
@@ -5835,14 +5904,31 @@ async function main(): Promise<void> {
       `WARN primary GraphQL operation '${operationLabel}' declares filter variable(s) ${primaryGraphQLOperation.unpopulatedDeclaredVariables.join(", ")} that are never populated in any capture — the generated executeHttp's payload field(s) for ${primaryGraphQLOperation.unpopulatedDeclaredVariables.join(", ")} have no wiring target and will replay the captured frozen value instead of the caller's input`
     );
   }
-  const gqlQuery = primaryGraphQLOperation?.capture.query ?? firstGraphQLQuery(captures);
-  const endpointPath = primaryGraphQLOperation?.endpointPath ?? firstEndpointPath(captures);
+  // When there's no primaryGraphQLOperation winner but the flow is still
+  // GraphQL, the query/endpointPath/responseBody/operationName fallbacks
+  // must all trace back to the SAME capture (firstGraphQLCapture) rather
+  // than resolving independently — a non-GraphQL-shaped own-backend
+  // capture could otherwise win the endpoint/body fallback while an
+  // unrelated capture supplies the query text.
+  const fallbackGraphQLCapture = gql
+    ? firstGraphQLCapture(captures, ownBackendHostnames, fallbackDomain)
+    : null;
+  const gqlQuery = primaryGraphQLOperation?.capture.query ?? fallbackGraphQLCapture?.query ?? null;
+  const endpointPath =
+    primaryGraphQLOperation?.endpointPath ??
+    (fallbackGraphQLCapture
+      ? safeUrlPathname(fallbackGraphQLCapture.url)
+      : firstEndpointPath(captures, ownBackendHostnames, fallbackDomain));
   // Derived from the primary operation's own Phase-1 capture, never from
   // replay array order -- a replay's body reflects whichever endpoint fired
   // first, not necessarily the primary operation, and only exists once
   // recon:http has run.
   const responseBody =
-    (primaryGraphQLOperation?.capture ?? firstEndpointCapture(captures))?.responseBody ?? null;
+    (
+      primaryGraphQLOperation?.capture ??
+      fallbackGraphQLCapture ??
+      firstEndpointCapture(captures, ownBackendHostnames, fallbackDomain)
+    )?.responseBody ?? null;
 
   // Detect a multi-step submission flow (transactional sites like apply forms,
   // checkout, etc.). When the action sequence has 2+ POSTs, switch the
@@ -6187,7 +6273,8 @@ async function main(): Promise<void> {
     gqlOperationName: primaryGraphQLOperation
       ? (primaryGraphQLOperation.capture.operationName ??
         parsedOperationName(primaryGraphQLOperation.capture.query ?? ""))
-      : null,
+      : (fallbackGraphQLCapture?.operationName ??
+        parsedOperationName(fallbackGraphQLCapture?.query ?? "")),
     gqlVariables: primaryGraphQLOperation?.capture.variables ?? null,
     auxFiles,
     multiStepBody,
