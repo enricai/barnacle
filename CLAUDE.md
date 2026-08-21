@@ -3,7 +3,8 @@
 **This document contains mandatory development standards referenced by all code in this project.**
 
 Barnacle is a headless Node.js API that drives browser automation workflows via
-Steel + Stagehand. Each supported site is a self-contained plugin; core handles
+Stagehand, using Browserbase as the default session provider (Steel is a
+supported opt-in fallback via `SCRAPER_PROVIDER=steel`). Each supported site is a self-contained plugin; core handles
 sessions, retries, audit persistence, and response envelopes. All contributors
 must follow these patterns and rules. Code reviews will reference sections in this document.
 
@@ -103,7 +104,7 @@ need one of these, use the listed library, not a hand-rolled alternative:
 
 - HTTP server: **fastify** + `@fastify/helmet`, `@fastify/compress`, `@fastify/rate-limit`, `@fastify/swagger`
 - Schema: **zod** via `fastify-type-provider-zod`
-- Scraper: **@browserbasehq/stagehand** + **steel-sdk**
+- Scraper: **@browserbasehq/stagehand** with **@browserbasehq/sdk** (default provider) and **steel-sdk** (opt-in fallback via `SCRAPER_PROVIDER=steel`)
 - Concurrency: **p-queue** (queues), **p-retry** (retries), **bottleneck** (throttling + jitter)
 - Caching: **lru-cache**
 - Logging: **pino** + **pino-pretty** (pino-pretty is the dev transport only; prod emits raw JSON)
