@@ -138,4 +138,51 @@ describe("selectPrimaryGraphQLOperation facet preference", () => {
 
     expect(result?.capture).toBe(facetBearing);
   });
+
+  it("prefers an own-backend facet-bearing operationName-null query over both a same-host non-facet named query and a higher-volume third-party host", () => {
+    const ownBackendFacetBearing = makeCapture({
+      phase: "filter",
+      url: "https://own-backend.example.com/graphql",
+      operationName: null,
+      query:
+        "query catalogSearch_Items($filters: String) { catalogSearch(filters: $filters) { items { id name } } }",
+      variables: { filters: "category:kitchen" },
+      responseBody: { catalogSearch: { items: [{ id: 1, name: "Item 1" }] } },
+    });
+    const ownBackendNamedNonFacet = gqlCapture({
+      url: "https://own-backend.example.com/graphql",
+      variables: { pagination: { count: 24 } },
+      responseBody: {
+        catalogSearch: {
+          items: Array.from({ length: 50 }, (_, i) => ({ id: i, name: `Item ${i}` })),
+        },
+      },
+    });
+    const thirdPartyDecoy = makeCapture({
+      url: "https://tracker.thirdparty-sdk.example/collect",
+      operationName: "trackerCollect",
+      query: "query trackerCollect { events { id } }",
+      variables: null,
+      responseBody: { events: Array.from({ length: 500 }, (_, i) => ({ id: i })) },
+    });
+
+    const captures = [
+      ...Array.from({ length: 20 }, () => ({ ...thirdPartyDecoy })),
+      ownBackendNamedNonFacet,
+      ownBackendFacetBearing,
+    ];
+    const flowSteps = [
+      { step: "select 'kitchen' from the Category dropdown", payloadField: "category" },
+    ];
+
+    const result = selectPrimaryGraphQLOperation(
+      captures,
+      flowSteps,
+      EMPTY_VOCABULARY,
+      process.env,
+      ["own-backend.example.com"]
+    );
+
+    expect(result?.capture).toBe(ownBackendFacetBearing);
+  });
 });
