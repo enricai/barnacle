@@ -49,7 +49,7 @@ describe("recon-generate CLI — null operationName on the selected primary Grap
       timestamp: "2026-08-19T19:15:00.000Z",
       phase: "search",
       method: "POST",
-      url: "https://www.cruise-fixture.example.com/graphql",
+      url: "https://www.catalog-fixture.example.com/graphql",
       status: 200,
       requestHeaders: { "Content-Type": "application/json" },
       requestPostData: JSON.stringify({ variables: {} }),
@@ -71,7 +71,7 @@ describe("recon-generate CLI — null operationName on the selected primary Grap
       timestamp: "2026-08-19T19:16:15.000Z",
       phase: "search",
       method: "POST",
-      url: "https://www.cruise-fixture.example.com/graphql",
+      url: "https://www.catalog-fixture.example.com/graphql",
       status: 200,
       requestHeaders: { "Content-Type": "application/json" },
       requestPostData: JSON.stringify({
@@ -79,10 +79,10 @@ describe("recon-generate CLI — null operationName on the selected primary Grap
       }),
       responseHeaders: { "content-type": "application/json" },
       responseBody: {
-        cruises: Array.from({ length: 50 }, (_, i) => ({ id: `cruise-${i}` })),
+        catalogItems: Array.from({ length: 50 }, (_, i) => ({ id: `catalog-${i}` })),
       },
       operationName: null,
-      query: "query CruisesSearchResults($filters: String) { cruises(filters: $filters) { id } }",
+      query: "query CatalogSearchResults($filters: String) { catalogItems(filters: $filters) { id } }",
       variables: { filters: "visiting:CARI" },
       decodedParams: null,
     };
@@ -104,7 +104,7 @@ describe("recon-generate CLI — null operationName on the selected primary Grap
     expect(existsSync(contractPath)).toBe(true);
     const contract = readFileSync(contractPath, "utf8");
 
-    expect(contract).toContain('getGql(context.baseUrl)("CruisesSearchResults"');
+    expect(contract).toContain('getGql(context.baseUrl)("CatalogSearchResults"');
     expect(contract).not.toMatch(/Search"/);
     expect(contract).not.toContain("{ q: payload.query }");
   }, 60_000);

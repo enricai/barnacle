@@ -108,21 +108,21 @@ describe("selectPrimaryGraphQLOperation - operationName-less recurrence grouping
       phase: "filter",
       operationName: null,
       query:
-        "# CruisesSearchResults\nquery CruisesSearchResults($filters: String) { results(filters: $filters) { id } }",
+        "# CatalogSearchResults\nquery CatalogSearchResults($filters: String) { results(filters: $filters) { id } }",
       variables: {},
       responseBody: { results: [{ id: 0 }] },
     });
     const namedRepeat = makeCapture({
       phase: "filter",
       operationName: null,
-      query: "query CruisesSearchResults($filters: String) { results(filters: $filters) { id } }",
+      query: "query CatalogSearchResults($filters: String) { results(filters: $filters) { id } }",
       variables: { filters: "caribbean" },
       responseBody: { results: [{ id: 1 }] },
     });
     const namedRepeat2 = makeCapture({
       phase: "filter",
       operationName: null,
-      query: "query CruisesSearchResults($filters: String) { results(filters: $filters) { id } }",
+      query: "query CatalogSearchResults($filters: String) { results(filters: $filters) { id } }",
       variables: { filters: "caribbean" },
       responseBody: { results: [{ id: 2 }] },
     });

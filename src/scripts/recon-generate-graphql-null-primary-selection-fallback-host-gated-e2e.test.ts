@@ -15,7 +15,7 @@ import type { Capture } from "@/scripts/recon-shared";
  * chronological-first fallback. A third-party host capture sorts first and
  * outnumbers the real own-backend facet-bearing search, and carries its own
  * query text so it can win the fallback outright when ungated — exactly the
- * shape that let a LaunchDarkly SDK path outrank `/cruises/graph` in the
+ * shape that let a LaunchDarkly SDK path outrank `/catalogItems/graph` in the
  * reported incident. Asserts the fallback stays
  * host-gated and internally coherent: endpoint, query, and operationName all
  * resolve to the SAME own-backend capture.

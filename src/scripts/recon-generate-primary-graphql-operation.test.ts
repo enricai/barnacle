@@ -223,7 +223,7 @@ describe("selectPrimaryGraphQLOperation", () => {
     // documents do, and no flowSteps/facet signal is supplied — recurrence
     // is the only signal that can distinguish these two same-size,
     // same-phase candidates, so the recurring one must come from the
-    // endpoint + the `query CruisesSearchResults(...)` name parsed out of
+    // endpoint + the `query CatalogSearchResults(...)` name parsed out of
     // the body, not from operationName equality (which is null on every
     // candidate here).
     const repeatedNullOp = Array.from({ length: 4 }, (_, i) =>
@@ -231,16 +231,16 @@ describe("selectPrimaryGraphQLOperation", () => {
         phase: "filter",
         operationName: null,
         query:
-          "query CruisesSearchResults($destination: String) { cruises(destination: $destination) { id } }",
+          "query CatalogSearchResults($destination: String) { catalogItems(destination: $destination) { id } }",
         variables: { destination: "Caribbean" },
-        responseBody: { cruises: [{ id: i }] },
+        responseBody: { catalogItems: [{ id: i }] },
       })
     );
     const nonRecurringDecoy = makeCapture({
       phase: "filter",
       operationName: null,
       query: "query PageChrome { nav { items } }",
-      responseBody: { cruises: [{ id: 9 }] },
+      responseBody: { catalogItems: [{ id: 9 }] },
     });
 
     const result = selectPrimaryGraphQLOperation(
@@ -250,7 +250,7 @@ describe("selectPrimaryGraphQLOperation", () => {
     );
 
     expect(result?.capture.operationName).toBeNull();
-    expect(result?.capture.query).toContain("CruisesSearchResults");
+    expect(result?.capture.query).toContain("CatalogSearchResults");
   });
 
   it("does not credit operationName-null captures with different parsed query names as recurring together", () => {
@@ -260,9 +260,9 @@ describe("selectPrimaryGraphQLOperation", () => {
       phase: "filter",
       operationName: null,
       query:
-        "query CruisesSearchResults($destination: String) { cruises(destination: $destination) { id } }",
+        "query CatalogSearchResults($destination: String) { catalogItems(destination: $destination) { id } }",
       variables: { destination: "Caribbean" },
-      responseBody: { cruises: [{ id: 1 }] },
+      responseBody: { catalogItems: [{ id: 1 }] },
     });
     const unrelatedQuery = makeCapture({
       phase: "browse",

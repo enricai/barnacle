@@ -942,7 +942,7 @@ function stripLeadingGraphQLComments(query: string): string {
 
 /**
  * Parses `$name:` declarations out of a GraphQL operation signature, e.g.
- * `query cruiseSearch_Cruises($filters: String, $qualifiers: String)` yields
+ * `query catalogSearch_Catalog($filters: String, $qualifiers: String)` yields
  * `["filters", "qualifiers"]`.
  */
 function declaredOperationVariableNames(query: string): string[] {

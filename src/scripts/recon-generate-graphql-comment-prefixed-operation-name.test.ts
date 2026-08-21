@@ -28,14 +28,14 @@ describe("comment-prefixed GraphQL operation-name/variable parsing", () => {
       phase: "filter",
       operationName: null,
       query:
-        "# CruisesSearchResults\nquery CruisesSearchResults($filters: String) { results(filters: $filters) { id } }",
+        "# CatalogSearchResults\nquery CatalogSearchResults($filters: String) { results(filters: $filters) { id } }",
       variables: { filters: "caribbean" },
     });
     const namedRepeats = Array.from({ length: 4 }, (_, i) =>
       makeCapture({
         phase: "filter",
         operationName: null,
-        query: "query CruisesSearchResults($filters: String) { results(filters: $filters) { id } }",
+        query: "query CatalogSearchResults($filters: String) { results(filters: $filters) { id } }",
         variables: { filters: "caribbean" },
         responseBody: { results: [{ id: i }] },
       })
@@ -47,6 +47,6 @@ describe("comment-prefixed GraphQL operation-name/variable parsing", () => {
       EMPTY_VOCABULARY
     );
 
-    expect(result?.capture.query).toContain("CruisesSearchResults");
+    expect(result?.capture.query).toContain("CatalogSearchResults");
   });
 });
