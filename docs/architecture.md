@@ -726,8 +726,8 @@ of the hand-rolled options are.
 This is what Barnacle uses as *fallback only*, after direct HTTP has been
 proven sufficient.
 
-- **Cost:** Browserbase/Steel session minutes + Anthropic tokens on every production call. Orders
-  of magnitude more expensive at scale.
+- **Cost:** Browserbase/Steel session minutes + Anthropic tokens on every
+  production call. Orders of magnitude more expensive at scale.
 - **Latency:** 5–15 seconds per request (browser cold-start + navigation +
   LLM inference). Not viable for interactive traffic.
 - **Fragility:** More moving parts (browser, proxy, AI) = more failure modes.
