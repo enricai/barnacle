@@ -113,6 +113,7 @@ function allLoggedLines(): string {
 async function advancePastDeepLocatorHangs(resultPromise: Promise<unknown>): Promise<void> {
   await advanceUntilSettled(resultPromise, {
     advanceTimersByTimeAsync: vi.advanceTimersByTimeAsync,
+    getTimerCount: vi.getTimerCount,
   });
 }
 

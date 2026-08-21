@@ -1164,6 +1164,7 @@ describe("flow-runner dense OOPIF acceptance regression under measured latency (
 
     await advanceUntilSettled(resultPromise, {
       advanceTimersByTimeAsync: vi.advanceTimersByTimeAsync,
+      getTimerCount: vi.getTimerCount,
     });
     const result = await resultPromise;
     const finishedAtMs = Date.now();
