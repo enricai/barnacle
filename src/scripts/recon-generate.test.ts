@@ -17,6 +17,7 @@ import {
   emitMultiStepExecuteHttp,
   extractActionSequence,
   extractGraphQLActionSequence,
+  gatherResponseBodySamples,
   indexStateValues,
   inferZodSchemaFromSamples,
   resolveManifestActionSequence,
@@ -31,6 +32,7 @@ import {
   buildMulticallHeterogeneousActionStepsWithDrillDown,
 } from "@/scripts/recon-generate-multicall-fixture";
 import { buildRepeatedSectionSubmissionCaptures } from "@/scripts/recon-generate-repeated-section-fixture";
+import type { Capture } from "@/scripts/recon-shared";
 
 /** The recon env-var token for the applicant email, built by concatenation so
  * Biome's noTemplateCurlyInString rule doesn't flag the literal `${...}`. */
@@ -164,6 +166,79 @@ describe("emitContractTs — non-multipart plugin", () => {
 
   it("uses z.boolean() for boolean fields", () => {
     expect(source).toContain("z.boolean()");
+  });
+});
+
+describe("emitContractTs — responseBodySamples widens the client-level ResponseSchema across multiple captures", () => {
+  it("marks a leaf key present in only one sample .optional() (previously required from a single capture)", () => {
+    const singleSample = emitContractTs({
+      ...BASE_OPTS,
+      responseBody: { id: "abc", active: true, tags: ["a"] },
+    });
+    expect(singleSample).toContain("tags: z.array(z.string()),");
+
+    const multiSample = emitContractTs({
+      ...BASE_OPTS,
+      responseBody: { id: "abc", active: true, tags: ["a"] },
+      responseBodySamples: [
+        { id: "abc", active: true, tags: ["a"] },
+        { id: "def", active: false },
+      ],
+    });
+    expect(multiSample).toContain("tags: z.array(z.string()).optional(),");
+  });
+
+  it("defaults to [responseBody] when responseBodySamples is omitted, keeping existing single-capture call sites unchanged", () => {
+    const withoutSamples = emitContractTs(BASE_OPTS);
+    const withExplicitSingleSample = emitContractTs({
+      ...BASE_OPTS,
+      responseBodySamples: [BASE_OPTS.responseBody],
+    });
+    expect(withoutSamples).toBe(withExplicitSingleSample);
+  });
+});
+
+describe("gatherResponseBodySamples — groups by operation identity, filters to 2xx, dedupes", () => {
+  const BASE = "https://jobs.example.com";
+  const restCapture = (path: string, status: number, responseBody: unknown): Capture => ({
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action",
+    method: "GET",
+    url: `${BASE}${path}?page=1`,
+    status,
+    requestHeaders: {},
+    requestPostData: null,
+    responseHeaders: {},
+    responseBody,
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  });
+
+  it("collects every 2xx same-endpoint capture's response body, deduplicated, ignoring a non-2xx re-fire", () => {
+    const winning = restCapture("/api/listings", 200, { id: "1", tags: ["a"] });
+    const captures = [
+      winning,
+      restCapture("/api/listings", 200, { id: "2" }),
+      restCapture("/api/listings", 200, { id: "1", tags: ["a"] }),
+      restCapture("/api/listings", 500, { error: "boom" }),
+      restCapture("/api/other", 200, { unrelated: true }),
+    ];
+
+    const samples = gatherResponseBodySamples(winning, false, captures);
+
+    expect(samples).toEqual([{ id: "1", tags: ["a"] }, { id: "2" }]);
+  });
+
+  it("falls back to [winningCapture.responseBody] when nothing else in the run shares its identity", () => {
+    const winning = restCapture("/api/listings", 200, { id: "1" });
+    const samples = gatherResponseBodySamples(winning, false, [winning]);
+    expect(samples).toEqual([{ id: "1" }]);
+  });
+
+  it("returns [null] when there is no winning capture", () => {
+    expect(gatherResponseBodySamples(null, false, [])).toEqual([null]);
   });
 });
 

@@ -983,6 +983,37 @@ function operationGroupKey(capture: Capture): string {
 }
 
 /**
+ * Every 2xx capture in the run sharing `winningCapture`'s operation identity
+ * (its `operationGroupKey` for a GraphQL winner, `endpointKey` for a
+ * plain-REST one), deduplicated by response body. A single recon run can
+ * capture the same read operation multiple times (pagination, re-filtering),
+ * and each occurrence is evidence for `inferZodSchemaFromSamples` about
+ * which fields the operation actually returns every time versus only
+ * sometimes -- evidence the winning capture alone can't provide.
+ */
+export function gatherResponseBodySamples(
+  winningCapture: Capture | null,
+  isGraphQLWinner: boolean,
+  captures: readonly Capture[]
+): unknown[] {
+  if (!winningCapture) return [null];
+  const identityOf = (c: Capture): string =>
+    isGraphQLWinner ? operationGroupKey(c) : endpointKey(c.url);
+  const winningIdentity = identityOf(winningCapture);
+  const seen = new Set<string>();
+  const samples: unknown[] = [];
+  for (const c of captures) {
+    if (c.status < 200 || c.status >= 300) continue;
+    if (identityOf(c) !== winningIdentity) continue;
+    const serialized = JSON.stringify(c.responseBody);
+    if (seen.has(serialized)) continue;
+    seen.add(serialized);
+    samples.push(c.responseBody);
+  }
+  return samples.length > 0 ? samples : [winningCapture.responseBody];
+}
+
+/**
  * A declared variable is "populated" only by a non-null, non-empty-string
  * value — an operation can declare a filter input that every capture leaves
  * `undefined`/`null`/`""`, which is exactly the unfiltered-payload case this
@@ -4516,6 +4547,12 @@ export function emitContractTs(opts: {
    * the provenance claim in the emitted limiter comment. */
   hasRateLimitProbeData?: boolean;
   responseBody: unknown;
+  /** Every same-identity 2xx capture's response body from the recon run
+   * (deduplicated), fed to `inferZodSchemaFromSamples` so a field the
+   * operation didn't return on every occurrence is inferred `.optional()`
+   * instead of required from `responseBody` alone. Defaults to
+   * `[responseBody]` for call sites that only have the one capture. */
+  responseBodySamples?: readonly unknown[];
   gql: boolean;
   gqlQuery: string | null;
   endpointPath: string;
@@ -4595,6 +4632,7 @@ export function emitContractTs(opts: {
     safeRps,
     hasRateLimitProbeData = false,
     responseBody,
+    responseBodySamples = [responseBody],
     gql,
     gqlQuery,
     endpointPath,
@@ -4646,7 +4684,7 @@ export function emitContractTs(opts: {
       ? `z.object({ verified: z.boolean() })`
       : omitExecuteHttp
         ? `z.unknown()`
-        : inferZodSchema(responseBody, 0, "", { conditionalFieldNames });
+        : inferZodSchemaFromSamples(responseBodySamples, 0, "", { conditionalFieldNames });
   // Multi-step flows that include a multipart upload need the binary asset
   // on the payload. ApplicantContactSchema (via ApplicantResumeSchema) already
   // declares Resume/ResumeContentType/ResumeFilename, so submission flows
@@ -5934,12 +5972,22 @@ async function main(): Promise<void> {
   // replay array order -- a replay's body reflects whichever endpoint fired
   // first, not necessarily the primary operation, and only exists once
   // recon:http has run.
-  const responseBody =
-    (
-      primaryGraphQLOperation?.capture ??
-      fallbackGraphQLCapture ??
-      firstEndpointCapture(captures, ownBackendHostnames, fallbackDomain)
-    )?.responseBody ?? null;
+  const winningCapture =
+    primaryGraphQLOperation?.capture ??
+    fallbackGraphQLCapture ??
+    firstEndpointCapture(captures, ownBackendHostnames, fallbackDomain);
+  const responseBody = winningCapture?.responseBody ?? null;
+  // Every 2xx capture sharing the winning capture's operation identity, not
+  // just the one that happened to win selection -- a paginated/re-filtered
+  // re-fire of the same operation can omit a field the winning capture
+  // happened to have (or vice versa), and inferZodSchemaFromSamples needs
+  // that presence evidence across occurrences to mark the field .optional()
+  // instead of required from a single observation.
+  const responseBodySamples = gatherResponseBodySamples(
+    winningCapture,
+    primaryGraphQLOperation !== null || fallbackGraphQLCapture !== null,
+    captures
+  );
 
   // Detect a multi-step submission flow (transactional sites like apply forms,
   // checkout, etc.). When the action sequence has 2+ POSTs, switch the
@@ -6278,6 +6326,11 @@ async function main(): Promise<void> {
     safeRps,
     hasRateLimitProbeData,
     responseBody: effectiveResponseBody,
+    // selectEffectiveResponseBody already resolves a submission flow's own
+    // single terminal capture -- the multi-sample evidence gathered above
+    // describes the (possibly different) read-flow winning capture and
+    // doesn't apply once a submission flow has picked its own return call.
+    responseBodySamples: isSubmissionFlow ? [effectiveResponseBody] : responseBodySamples,
     gql,
     gqlQuery,
     endpointPath,
