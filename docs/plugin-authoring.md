@@ -28,7 +28,7 @@ interface SitePlugin<TPayload, TResult> {
 | Field | Type | Purpose |
 |---|---|---|
 | `siteId` | `string` | Stable key for routing (`/v1/<siteId>/run`) and audit rows |
-| `displayName?` | `string` | Label for logs and Swagger; not derived by `recon:generate` |
+| `displayName?` | `string` | Label for logs and Swagger; `recon:generate` carries this through when `recon-flow.json` authors an optional `displayName` field (never derived from `siteId`) |
 | `bodySchema` | `ZodTypeAny` | Request body schema — validated before `execute()` |
 | `responseSchema` | `ZodTypeAny` | Success response schema — drives Swagger output |
 | `routeOverride?` | `string` | Override the full route path (legacy compatibility only) |
