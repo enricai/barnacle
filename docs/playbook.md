@@ -1,52 +1,17 @@
 # Barnacle Recon Playbook
 
-> Turn a website into an API. A fully automated pipeline — scripts handle recon,
-> replay, and drift detection with minimal human involvement. You write the flow
-> once; the tooling does the rest.
-
-**Outcome:** a production plugin whose hot path is ~50 lines of `fetch()` plus
-headers, with an AI-browser fallback, automated drift detection, and a body of
-captured evidence that justifies every design choice. Human time is front-loaded
-to one recon run and a small PR when things change.
-
----
-
-## Mental model
-
-> *Stagehand is the teacher. The runtime is a student who only needs to open the
-> textbook. Every phase runs from a script — human involvement is writing the
-> flow definition once, then reviewing a PR when the site changes.*
-
-Modern SPAs are thick clients. The page is just a shell — all the data you care
-about flows through the network layer as GraphQL or JSON API calls. The browser
-already knows how to make those calls correctly. Recon uses an AI-driven browser
-to *learn* the exact bytes the site sends, then discards the browser in
-production and sends those same bytes directly.
-
-The browser is the oracle. After Step 1, you don't need it anymore — until the
-site changes.
-
----
-
-## The pipeline at a glance
-
-| Phase | Script / action | Automation |
-|-------|-----------------|------------|
-| 0 — Define flow | `src/sites/<id>/recon-flow.json` | Human (once) |
-| 1 — Browser recon | `pnpm run recon:browser` | Fully automated |
-| 2 — HTTP replay | `pnpm run recon:http` | Fully automated |
-| 3 — Edge probing | (same script) | Fully automated |
-| 4 — Codify contract | `src/sites/<id>/contract.ts` | One human PR |
-| 5 — Runtime | `dispatch()` in `src/plugins/loader.ts` | Fully automated |
-| 6 — Drift detection | Nightly smoke test + `/readyz` metrics | Fully automated |
+> Turn a website into an API. Recon, replay, and drift detection are scripted;
+> you write the flow once and review a PR when the site changes. See
+> [README.md](../README.md#how-it-works) for the mental model and pipeline
+> overview — this doc is the operator runbook, phase by phase.
 
 ---
 
 ## Phase 0 — Define the user flow
 
-The only human-authored input to the entire pipeline. Write down the narrowest
-sequence of user actions whose data you care about, as a JSON array of
-natural-language instructions. Commit it alongside your plugin:
+The only human-authored input to the pipeline. Write the narrowest sequence of
+user actions whose data you care about, as a JSON array of natural-language
+instructions, and commit it:
 
 ```
 src/sites/<id>/recon-flow.json
@@ -56,94 +21,56 @@ src/sites/<id>/recon-flow.json
 ["click the Electronics category filter", "open the first product result"]
 ```
 
-**Why commit it:** committing the flow makes recon re-runnable in one command
-without retyping it. When the site changes and you need to re-run recon, you
-`git pull` and run the same command you ran the first time.
+Aim for the narrowest flow that triggers the network calls you need — more
+steps means more captures and more noise.
 
-Aim for the narrowest flow that triggers the network calls you need. More steps
-= more captures = more noise. You can always run wider later.
+**Pure GET-style SPAs:** if the target fetches everything on initial page
+load, skip the flow entirely — run `recon:browser --url X` with neither
+`--flow` nor `--flow-file`; the script captures whatever fires during
+navigation.
 
-**Pure GET-style SPAs:** if the target site fetches everything it needs on
-initial page load, you can skip the flow entirely — run `recon:browser --url X`
-with neither `--flow` nor `--flow-file` and the script will capture only the
-network activity that fires during navigation.
+**Ad-heavy commercial sites:** analytics/session-replay beacons fire on
+timers, so `networkidle` never resolves. The initial `goto` waits for
+`domcontentloaded` instead and proceeds if even that doesn't settle. Set
+`RECON_GOTO_WAIT_UNTIL` (`load` | `domcontentloaded` | `networkidle`) if a
+site needs a stricter wait.
 
-**Ad-heavy commercial sites.** Analytics and session-replay beacons fire on
-timers, so the network never falls idle and a `networkidle` navigation wait can
-never resolve. The initial `goto` therefore waits for `domcontentloaded` and, if
-even that does not settle, warns and proceeds rather than discarding a run whose
-captures are already on disk. Page readiness is established afterwards by the SPA
-body-growth probe. Set `RECON_GOTO_WAIT_UNTIL` (`load` | `domcontentloaded` |
-`networkidle`) if a site genuinely needs a stricter wait — e.g. a form whose
-scripts must settle before step 1.
+**Read-only sites:** omit `submitStep`/`submitEndpointPattern` from the flow
+file. Steps must still *act* on something — "wait for results to load" has no
+action and the healing cascade will report it as impossible.
 
-**Read-only sites.** For a site whose flow ends in results rather than a
-submission, omit `submitStep` and `submitEndpointPattern` from the flow file: the
-submit verifier stays inert. Steps must still *act* on something — an
-instruction like "wait for the results to load" asks for no action, and the
-healing cascade will correctly report it as impossible. Settling is already
-handled by the navigation wait and `STEP_PAUSE_MS`.
-
-**Cross-origin iframe targets.** Some ATS integrations embed their entire
-application form in a cross-origin `<iframe>` rather than navigating the top
-window to it (e.g. the top-window site's careers site embeds the same the embedded apply wizard wizard
-the top-window site reaches by top-window navigation). `document`-rooted helpers can't reach
-across that boundary — `contentDocument` on a cross-origin iframe element is
-`null` from page script's perspective — so a flow whose target elements live
-inside such a frame must declare `frameSelector` in the object form of the
-flow file:
+**Cross-origin iframe targets:** some integrations embed their form in a
+cross-origin `<iframe>` rather than navigating the top window. A flow whose
+targets live inside such a frame must declare `frameSelector`:
 
 ```json
 {
-  "steps": [
-    "click the Apply button",
-    "click Manual Application",
-    "fill the First Name field with {{ .request.FirstName }}"
-  ],
+  "steps": ["click the Apply button", "fill the First Name field with {{ .request.FirstName }}"],
   "frameSelector": "iframe#apply_frame"
 }
 ```
 
-The same field is available on a config-plugin manifest's `spec.flow`
-(`examples/plugins/acme-jobs.plugin.json` shows the sibling fields):
+The same field is available on a config-plugin manifest's `spec.flow` (see
+`examples/plugins/acme-jobs.plugin.json`).
 
-```json
-"flow": {
-  "steps": [ "..." ],
-  "frameSelector": "iframe#apply_frame"
-}
-```
+`frameSelector` must be the bare CSS selector of the `<iframe>` element
+itself — never a Stagehand `>>` hop string. `resolveFrameTarget`
+(`src/scraper/frame-target.ts`) resolves the frame boundary from that
+selector and composes the hop internally; passing a pre-composed hop breaks
+resolution and throws rather than silently degrading to the main frame.
+Omitting `frameSelector` preserves default behavior (drive the main frame).
 
-**`frameSelector` is the bare CSS selector of the `<iframe>` element itself —
-never a Stagehand `>>` hop string.** The engine (`resolveFrameTarget` in
-`src/scraper/frame-target.ts`) resolves the iframe boundary from that bare
-selector and composes the `>>` hop internally (`buildHopSelector`) when it
-scopes Stagehand's own `observe`/`extract` calls. Passing a pre-composed hop
-selector (e.g. `"iframe#apply_frame >> input[name=firstName]"`)
-breaks resolution: `resolveFrameTarget`'s `document.querySelector` call
-receives the whole hop string, which isn't valid CSS, and throws rather than
-falling back — a deliberate fail-loud choice so a malformed selector doesn't
-silently degrade to "drive the main frame and see nothing." Omitting
-`frameSelector` (the default) preserves today's behavior: the flow drives the
-main frame.
+`observe()` cannot see into a cross-origin OOPIF at all — every scoping form
+returns zero candidates even though the frame is attached. For a frame-scoped
+step, the cascade falls back to `page.deepLocator()` whenever `observe()`
+comes back empty.
 
-**`observe()` cannot see into a cross-origin OOPIF at all** — measured against
-a live the embedded apply wizard wizard embed, every scoping form (`{selector: "iframe#... >>
-*"}`, `{page: childFrame}`, unscoped) returns zero candidates even though the
-frame is fully attached and its DOM is reachable via `frameTarget.evaluate`.
-For a frame-scoped step, the cascade and the pre-cascade probe fall back to
-`page.deepLocator()` (Stagehand's own hop-notation resolver, which does reach
-the OOPIF) whenever `observe()` comes back empty — see 1c.
-
-**Frame-attach timing.** A racy cross-origin OOPIF can still be mid-attach
-when a step enters the cascade. `resolveFrameTarget` polls for up to
-`FRAME_READY_TIMEOUT_MS` (20s default) before falling back to the main frame,
-and the cascade re-resolves the frame target right before the `deepLocator`
-candidate probe (not only at step entry) so a frame that attaches mid-step is
-still reached instead of leaving the step stuck on a stale main-frame
-fallback. See [Environment variables](./configuration.md#environment-variables) for
-`FRAME_READY_TIMEOUT_MS` / `FRAME_DOCUMENT_READY_TIMEOUT_MS` /
-`FRAME_EVALUATE_TIMEOUT_MS`.
+**Frame-attach timing:** a racy OOPIF can still be mid-attach when a step
+enters the cascade. `resolveFrameTarget` polls up to `FRAME_READY_TIMEOUT_MS`
+(20s default) before falling back to the main frame, re-resolving before each
+candidate probe so a frame attaching mid-step is still reached. See
+[Environment variables](./configuration.md#environment-variables) for the
+related `FRAME_*_TIMEOUT_MS` settings.
 
 ---
 
@@ -155,354 +82,129 @@ pnpm run recon:browser -- \
   --flow-file src/sites/my-site/recon-flow.json
 ```
 
-**Total runtime: 20–40 minutes for a typical flow (varies with flow length,
-`STEP_PAUSE_MS`, and any healing/replan attempts that fire). Fully unattended.**
+Total runtime: 20–40 minutes for a typical flow, fully unattended.
 
 ### 1a — Session bootstrap
 
-The script calls `createBrowserSession()` (`src/scraper/session.ts`), which
-constructs the Stagehand instance with two intentional flags:
+`createBrowserSession()` (`src/scraper/session.ts`) constructs Stagehand with
+`serverCache: true` (skips LLM inference on replay after the first run) and
+`selfHeal: false` — Stagehand's built-in heal only catches Playwright throws,
+not silent semantic misses ("clicked the wrong thing, returned success"),
+which recon's own verify-and-retry cascade handles (1c). The runtime fallback
+uses a separate whole-flow retry via `withScraperRetry`
+(`src/scraper/retry.ts`), verified by Zod.
 
-- `serverCache: true` — Stagehand's server-side action cache skips LLM
-  inference on replay. After the first run against a page structure, subsequent
-  `act()` calls resolve from cache in milliseconds.
-- `selfHeal: false` — explicitly off. Stagehand's built-in self-heal only fires
-  on Playwright throws (element-not-found, intercepted, timeout); it does *not*
-  catch the silent semantic miss ("clicked the wrong thing, returned success"),
-  which is the primary failure mode for ambiguous instructions. Recon-browser
-  owns its own verify-and-retry cascade — see 1c. The runtime fallback uses a
-  separate whole-flow retry via `withScraperRetry` in `src/scraper/retry.ts`,
-  with Zod as the verifier.
-
-`createBrowserSession()` is the same factory the runtime dispatch path uses
-(`src/plugins/loader.ts` — see 5B/5D), so every Browserbase-backed session it
-returns, recon or runtime alike, also exposes an optional, memoized
-`getOutboundIp()` (`BrowserSession.getOutboundIp?`,
-`src/scraper/session-shared.ts` — Browserbase-only, absent on Steel). Neither
-the Browserbase SDK nor its session-create/get/log endpoints ever return a
-session's actual outbound IP, so the accessor's only option is to have the
-session itself navigate a separate tab to an IP-echo endpoint and read the
-result back — one extra tab load, bounded by `SCRAPER_SESSION_IP_TIMEOUT_MS`
-(~10s default). Gated by `SCRAPER_CAPTURE_SESSION_IP` (default `true`);
-recon-browser.ts never calls it — the accessor exists for the dispatch path's
-per-submission telemetry (5D), not recon output.
+This factory is shared with the runtime dispatch path (`src/plugins/loader.ts`
+— 5B/5D), so every Browserbase-backed session also exposes a memoized
+`getOutboundIp()` (absent on Steel) — one extra tab load to an IP-echo
+endpoint, bounded by `SCRAPER_SESSION_IP_TIMEOUT_MS` (~10s default), gated by
+`SCRAPER_CAPTURE_SESSION_IP` (default `true`). Recon-browser never calls it —
+it exists for the dispatch path's per-submission telemetry (5D).
 
 ### 1b — CDP session-level network capture
 
-A single listener attaches to the page's main CDP session:
+A single listener attaches to the page's main CDP session and pairs
+`Network.requestWillBeSent` / `responseReceived` / `loadingFinished` by
+`requestId`, so a response body is fetched only once fully received. There is
+no URL-shape filter — every response is captured, including early ones during
+navigation. Grep `<run-dir>/graphql/` for specific endpoints.
 
-```ts
-const session = page.getSessionForFrame(page.mainFrameId());
-session.on("Network.requestWillBeSent", onRequest);
-session.on("Network.responseReceived", onResponse);
-session.on("Network.loadingFinished", onFinished);
-```
-
-Stagehand V3 already enables the Network domain internally, so attaching at
-the session layer catches every response — including the early ones that fire
-during navigation, before any page-level handler could be wired up. We pair
-`requestWillBeSent` / `responseReceived` / `loadingFinished` via `requestId` so
-we only fetch the response body after it's fully received.
-
-Every network response is captured — there is no URL-shape filter, so a site
-with non-standard API paths cannot be missed. Grep `<run-dir>/graphql/` when
-you only care about specific endpoints.
-
-Each capture records, untruncated:
-- Timestamp, method, URL, status
-- Request headers and post body
-- Response headers and body
-- `operationName`, `query`, `variables` (parsed from GraphQL POST bodies)
-- Phase tag (e.g. `home`, `filter`, `detail`)
+Each capture records, untruncated: timestamp, method, URL, status, request
+headers and post body, response headers and body, `operationName`/`query`/
+`variables` (parsed from GraphQL POST bodies), and a phase tag.
 
 ### 1c — Self-healing cascade
 
-Each flow step runs through `executeStepWithHealing` (`src/scraper/flow-runner.ts`),
-which is a 5-attempt escalating cascade. We stop the moment an attempt is
-verified successful; the verifier is "did the network counter advance OR did the
-URL change" (DOM-state verification was tried and removed — see the source
-comments for why).
+Each flow step runs through `executeStepWithHealing`
+(`src/scraper/flow-runner.ts`), a 5-attempt escalating cascade. We stop the
+moment an attempt is verified successful; the verifier is "did the network
+counter advance OR did the URL change":
 
 ```
 flow step "X"
-  │
-  ├── attempt 1: stagehand.act("X")
-  │     └── verify: network counter delta || page.url() change?
-  │           ├── yes → step healed, move on
-  │           └── no  → fall through
-  │
-  ├── attempt 2: stagehand.observe("X") → act(topAction)
-  │     └── verify: same signals
-  │
-  ├── attempt 3: structured-click resolution
-  │     └── verify: same signals
-  │
-  ├── attempt 4: stagehand.observe("X", { ignoreSelectors: tried })
-  │              → act(topAction)
-  │     └── verify: same signals
-  │
-  ├── attempt 5: LLM rephrase("X", page, tried, candidates)
-  │              → stagehand.act(rephrased)
-  │     └── verify: same signals
-  │
+  ├── 1: act(X)                                    → verify
+  ├── 2: observe(X) → act(topAction)                → verify
+  ├── 3: structured-click resolution                → verify
+  ├── 4: observe(X, { ignoreSelectors: tried }) → act → verify
+  ├── 5: LLM rephrase(X, ...) → act(rephrased)       → verify
   └── all exhausted → dumpStepFailure() + throw StepVerificationError
 ```
 
-Phantom-click escalation: if attempt 1 reports `actResultSuccess: true` but the
-pre/post snapshot shows zero network delta, zero URL change, and no real DOM
-growth, `classifyPhantomClick` (`src/scraper/phantom-click.ts`) marks the
-attempt `"phantom"` — Stagehand believes it clicked something, but the click
-landed on nothing (typically a submit control rendered inside a shadow root /
-web component that the light-DOM resolver can't see). On a submit-shaped step
-(`isFinalStep || submitStep`), attempt 2 is rerouted from `observe-act` to
-`deep-submit-locator` (`src/scraper/submit-control.ts`): it ranks every
-submit-shaped candidate reachable via a deep DOM traversal (including shadow
-roots) and clicks the top-ranked one directly by index, skipping the
-light-DOM re-observe/re-click attempts that would otherwise no-op
-identically. On a non-submit step the deep submit-control locator would be a
-guaranteed no-op (it ranks submit-shaped candidates only), so the escalation
-does not fire — attempt 2 stays `observe-act` and the normal
-`structured-click` / `observe-act-exclude` ladder is left intact, since those
-are the techniques that can actually click a radio or checkbox.
-`llm-rephrase` is never skipped by this escalation. See `shouldSkipTechnique`
-in `src/scraper/flow-runner.ts` for the skip logic.
+**Phantom-click escalation:** if attempt 1 reports success but pre/post
+snapshots show zero network delta, zero URL change, and no DOM growth,
+`classifyPhantomClick` (`src/scraper/phantom-click.ts`) marks it `"phantom"`
+— Stagehand clicked nothing real (typically a submit control inside a shadow
+root). On a submit-shaped step, attempt 2 reroutes to
+`deep-submit-locator` (`src/scraper/submit-control.ts`), ranking every
+submit-shaped candidate via deep DOM traversal (including shadow roots) and
+clicking the top-ranked one directly. Non-submit steps are unaffected — the
+deep submit-control locator would be a guaranteed no-op there.
 
-The recon script calls `stagehand.act()` (not `page.act()`); the four
-techniques are, in order:
+**Deep-locator candidate walk (frame-scoped steps):** when `observe()` is
+blind to a cross-origin OOPIF, candidates resolve via `page.deepLocator()`
+(`src/scraper/deep-locator-candidates.ts`), scoped first to
+`INTERACTIVE_CANDIDATE_SELECTOR`, widening once to `"*"` if nothing matches.
+A fill/select step recovers its target field label (e.g. "First Name")
+separately from the value via `parseFillStep`/`parseSelectStep`, matched
+against a candidate's accessible name — this exists because ranking by
+quoted phrases alone ties every candidate at score 0 for a step like "Fill in
+the First Name field with 'Reginald'" (only `'Reginald'` is quoted), so DOM
+order would pick whatever sits first. A field-label match routes to
+`fillDeepLocatorCandidate`/`selectDeepLocatorCandidateOption`
+(`src/scraper/deep-locator-actuate.ts`), which reads the write back to
+confirm — the only verification signal available for a `deeplocator=`
+selector. No candidate naming the field is a refusal, not a guess.
 
-1. **`act(string)`** — the cheap path. Stagehand resolves the natural-language
-   instruction against the current DOM.
-2. **`observe()` + `act(Action)`** — Stagehand returns a list of candidate
-   `Action` objects with `selector` + `description`. We pick the top candidate
-   and call `act` on the structured object directly. Disambiguates without
-   needing rephrase. For fill/select steps, if `observe()` returns a candidate
-   with `method='click'` (which can happen when Stagehand misclassifies a text
-   input or dropdown), the engine overrides the candidate's `method` and
-   `arguments` with the correct values derived from the step text before calling
-   `act()` — ensuring a "Fill in the Zip field with '78701'" step actuates as
-   `fill('78701')`, not `click()`. Frame-scoped exception: when the step declares
-   `frameSelector` and `observe()` comes back empty, `observe()` is blind to a
-   cross-origin OOPIF (see the cross-origin iframe note above), so this
-   attempt (and the pre-cascade probe, and the rephrase evidence gather)
-   additionally resolves candidates via `page.deepLocator()`
-   (`src/scraper/deep-locator-candidates.ts`) before giving up. Candidates are
-   resolved scoped to `INTERACTIVE_CANDIDATE_SELECTOR` first (keeps a dense
-   OOPIF form's candidate set to a handful of controls); when that scoped
-   pass finds nothing, resolution widens once to the unscoped `"*"` hop so a
-   `div`/`span` tile with only a click handler (no `role`/`tabindex`) can
-   still be reached. A fill/select step matched to a named field short-circuits
-   straight to the dedicated actuation seam described below; everything else
-   falls to `clickFirstActionableCandidate`
-   (`src/scraper/deep-locator-click.ts`), which walks the ranked candidates in
-   order and actuates the first one that actually succeeds — the step's own
-   prose (`parseSelectStep`/`parseFillStep` in `src/scraper/flow-runner.ts`,
-   via `resolveDeepLocatorActuation`) picks
-   `selectDeepLocatorCandidateOption`/`fillDeepLocatorCandidate` for a
-   select/fill-shaped step, falling back to `clickDeepLocatorCandidate` for
-   everything else. An actuation rejecting with the CDP `-32000 Node does not
-   have a layout object` error (an unrendered node) costs only that one
-   candidate, and the walk moves on to the next-ranked candidate instead of
-   scoring the whole attempt as a failure. Any other rejection (a detached
-   frame, a wedged call's `WatchdogTimeoutError`) still stops the walk
-   immediately, matching the old top-only behavior.
+Everything else falls to `clickFirstActionableCandidate`
+(`src/scraper/deep-locator-click.ts`), which walks ranked candidates and
+actuates the first that succeeds; a CDP `-32000 Node does not have a layout
+object` error costs only that candidate. A select step with no quoted field
+label refuses outright on a tie rather than guessing the wrong screening
+question.
 
-   **Fill/select steps skip the candidate walk entirely.** Candidate
-   ranking scores by the instruction's quoted phrases, which for a fill
-   step is only the value being typed ("Fill in the First Name field with
-   'Reginald'" quotes just `'Reginald'`) — no control's accessible name
-   ever matches a person's name, so every candidate ties at score 0 and
-   DOM order would decide, clicking whatever happens to sit first (a
-   wizard's 'Close' button, in the bug report that motivated this). Before
-   the walk runs, `parseFillStep`/`parseSelectStep` (`src/scraper/flow-runner.ts`)
-   recover the step's target FIELD LABEL (e.g. "First Name") separately
-   from the value, and `findDeepLocatorCandidateByFieldLabel` matches it
-   directly against a candidate's accessible name (exact match first,
-   substring match either direction otherwise). A match routes to the
-   dedicated fill/select actuation seam
-   (`fillDeepLocatorCandidate`/`selectDeepLocatorCandidateOption`,
-   `src/scraper/deep-locator-actuate.ts`), which prefers one batched
-   `frameTarget.evaluate(buildFillFrameCandidateExpr(...) |
-   buildSelectFrameCandidateExpr(...))` round-trip
-   (`src/scraper/deep-locator-scan.ts`) over the legacy
-   `page.deepLocator().nth(index).fill()`/`.selectOption()` +
-   `.inputValue()` pair — Stagehand's `resolveAtIndex` pays `index + 1`
-   serial CDP round-trips per legacy call, so the batched expression is what
-   makes a fill/select survivable deep in a dense OOPIF form. The legacy
-   pair remains the degrade path when no frame seam is available or the
-   batched evaluate rejects/returns a non-conforming payload. Either way,
-   the write is read back (inline in the batched expression, or via
-   `inputValue()` on the legacy path) to confirm —
-   `verifyDomEffect` can't resolve a `deeplocator=` selector, so the
-   read-back itself is the only verification signal available, recorded as
-   `verifiedBy: "dom"` directly. `buildSelectFrameCandidateExpr` matches an
-   option by value first, falling back to its trimmed visible label, so a
-   step that quotes either one still lands. The hop re-derived for this
-   actuation always matches whichever selector actually produced the ranked
-   candidates (`INTERACTIVE_CANDIDATE_SELECTOR`, or the widened `"*"` when
-   the scoped pass found nothing), so a fill/select routed through a
-   widened hop still actuates against the right element instead of
-   re-resolving against the wrong candidate set. No candidate naming the
-   field at all is a refusal, not a guess: the step fails that attempt
-   rather than clicking an unrelated control.
-
-   A select step whose question is phrased without a quoted label
-   (`parseSelectStep` returns `questionLabel: null`, e.g. "Select 'Yes' for
-   the question about requiring visa sponsorship") has no field label to
-   match, so before falling through to the click-only walk below,
-   `executeStepWithHealing` re-resolves a `select`-only candidate set
-   (`resolveDeepLocatorCandidates(..., "select", ...)`) and scores it
-   against the step's quoted option the same way the walk's own ranking
-   does (`scoreCandidate`, exported from `src/scraper/deep-locator-candidates.ts`).
-   More than one `<select>` tying for the top score is refused outright
-   rather than guessed — DOM order would otherwise silently pick the wrong
-   screening question's control, exactly the ambiguity a bug report once
-   described. A unique top-ranked `<select>` (including the common
-   single-`<select>`-in-frame case, where a tie is impossible) still
-   proceeds to the walk unmodified.
-
-   Only a step with no fill/select field-label match falls through to the
-   click-only candidate walk. That walk still uses
-   `resolveDeepLocatorActuation` (`src/scraper/flow-runner.ts`) to infer
-   fill/select/click intent from the step's prose per attempt, so a
-   fill/select step that has no matching field label still actuates through
-   `fillDeepLocatorCandidate`/`selectDeepLocatorCandidateOption` rather than
-   only ever clicking — but since those actuators return a boolean (`true`
-   only when the read-back confirms the write) rather than throwing on an
-   ordinary failed write, the walk's per-candidate callback turns a `false`
-   result into a thrown `-32000` error itself, so
-   `clickFirstActionableCandidate` still treats a failed fill/select the
-   same as a not-actionable click: skip this candidate, try the next. The
-   candidate that does succeed — via the field-label fast path or the
-   click-only walk — has a `resolvedAction` matching the actuation kind
-   (`click`/`fill`/`selectOption`) synthesized so downstream verification
-   proceeds exactly as it would for an `observe()`-sourced candidate.
-3. **Structured click** — re-resolves a checkable input (radio/checkbox) from
-   the prior attempt's selector via xpath, then tries three CLICK targets in
-   order — `label[for=id]`, the closest `<label>`, the closest framework
-   wrapper — checking `input.checked` after each. Skipped (no xpath to reuse)
-   when no prior attempt resolved a selector, or when the resolved element
-   isn't a checkable input; those steps fall through to attempts 4 and 5.
-4. **`observe(step, { ignoreSelectors: tried })` + `act(Action)`** — same as
-   attempt 2, but we tell Stagehand to exclude the selectors we already tried.
-   Addresses the "same wrong button twice" failure mode. When no selectors
-   were captured from earlier attempts (rare — usually means both attempts
-   found nothing actionable), attempt 4 degenerates to a plain `observe(step)`
-   and acts like a second pass of attempt 2. The frame-scoped `deepLocator`
-   fallback applies here too; since `DeepLocatorDelegate` has no
-   `ignoreSelectors` equivalent, the exclusion is applied by filtering
-   resolved candidates against `triedSelectors` before picking the top one.
-5. **LLM rephrase** — final escape hatch. We call Claude, via the ai-SDK
-   model abstraction (Anthropic-direct or Bedrock-backed, per config), with
-   the original step, the failure reasons from attempts 1–4, the selectors
-   already tried, and the first ~12 visible interactive elements from
-   `stagehand.observe()`. Claude returns a rephrased instruction; we `act` on
-   it. This attempt runs on both Anthropic-direct and Bedrock-only
-   deployments; it is skipped only when neither an Anthropic key nor Bedrock
-   is configured at all.
-
-Backoff between attempts: linear `attempt * 1000ms`. Verification is OR'd
-across network + URL; the network counter is the primary signal because recon
-exists to capture API calls.
+Backoff between attempts: linear `attempt * 1000ms`.
 
 ### 1d — Step failure dump
 
 When the cascade exhausts, the executor writes a diagnostic bundle to
-`<run-dir>/step-failures/<NNN>-<phase>.json` and throws `StepVerificationError`
-(`src/scraper/errors.ts`). The bundle has top-level keys:
+`<run-dir>/step-failures/<NNN>-<phase>.json` (timestamp, step, page state,
+every attempt's technique/selectors/result, final `observe()` output, and the
+last 5 capture filenames) and throws `StepVerificationError`
+(`src/scraper/errors.ts`). This is what you read to fix the flow. The
+`.claude/agents/recon-flow-patch-generator` subagent automates the analysis,
+returning a minimal `{anchor, replacement}` patch verified mechanically
+before it's applied.
 
-- `timestamp`, `stepIndex`, `phase`, `originalStep`
-- `pageUrl`, `pageTitle`
-- `attempts[]` — every attempt's `technique` (one of `act-string`,
-  `observe-act`, `structured-click`, `observe-act-exclude`,
-  `deep-submit-locator`, `llm-rephrase`), `instruction`, `triedSelectors`,
-  `actResultSuccess`, `actResultDescription`, `errorMessage`,
-  `phantomClickVerdict`, `pre`/`post` snapshots
-- `finalObserve[]` — what Stagehand could see at the point of giving up
-- `recentCaptures[]` — the last 5 capture filenames (helps locate what API
-  calls *did* fire just before the broken step)
-
-This is the artifact the operator reads to fix the flow. If the global replan
-loop (1e) doesn't recover, the dump is everything you need to edit the source
-`--flow-file` and rerun. The `.claude/agents/recon-flow-patch-generator`
-subagent automates the analysis: pass it the dump, the step verdict, and the
-current flow JSON and it returns a minimal `{anchor, replacement}` patch for
-the failing step — verified mechanically before it is applied.
-
-For repeated or intermittent failures, `pnpm run recon:heal -- --site-id <id>
---url <url>` orchestrates the full baseline → patch → replay → convergence
-loop automatically: it proposes patches, replays the patched flow, scores each
-arm, and writes `heal-out/<id>/healing-<id>.md` with the verdict and best patch
-for manual review. The source `recon-flow.json` is never modified.
+For repeated/intermittent failures, `pnpm run recon:heal -- --site-id <id>
+--url <url>` runs the full baseline → patch → replay → convergence loop
+automatically and writes `heal-out/<id>/healing-<id>.md` with the verdict and
+best patch for manual review. The source `recon-flow.json` is never modified.
 
 ### 1e — Global replan loop
 
-When `StepVerificationError` reaches the `main()` loop, it triggers a global
-replan rather than failing immediately. Claude is asked to rewrite the
-remaining tail of the flow given the failure context. Capped at
-`MAX_REPLANS = 2` per run.
-
-```
-StepVerificationError caught in main() loop
-  │
-  ├── replansUsed >= MAX_REPLANS (2)? → rethrow, recon fails
-  │
-  ├── no Anthropic client (Bedrock-only)? → rethrow
-  │
-  └── replanRemainingFlow(originalFlow, completed, failed,
-                          remaining, page.url(), title,
-                          observe() candidates, dumpPath)
-        │
-        ├── returns IMPOSSIBLE / unparseable → rethrow
-        │
-        └── returns new tail (1..REPLAN_MAX_STEPS strings)
-              │
-              ├── dumpReplanRecord(...) → .replan.json
-              ├── plan.splice(i, plan.length - i, ...newSteps)
-              ├── i--
-              └── continue loop on the new tail
-```
-
-Replan inputs:
-
-- The original flow as the user wrote it.
-- The verbatim steps that already succeeded (held fixed — already-completed
-  history is never rewritten).
-- The step that just failed.
-- The remaining unexecuted steps.
-- Current `page.url()` and `page.title()`.
-- The first ~12 candidates from `stagehand.observe()`.
-- The path on disk to the step failure dump from 1d.
-
-Replan output: strict JSON array of 1..`REPLAN_MAX_STEPS` (20) instruction
-strings, validated with `z.array(z.string().min(1)).min(1).max(REPLAN_MAX_STEPS)`.
-If Claude returns the literal `IMPOSSIBLE` or the response fails to parse, the
-loop rethrows the original `StepVerificationError`.
-
-When replan succeeds it writes a sibling audit record at
-`<run-dir>/step-failures/<NNN>-<phase>.replan.json` with `{ timestamp,
-stepIndex, phase, replanIndex, completedSteps, originalRemaining,
-newRemaining }`, then splices the new tail into the live plan and resumes
-execution. The `--flow-file` on disk is *not* modified — humans still own the
-canonical source.
+When `StepVerificationError` reaches `main()`, it triggers a global replan
+rather than failing: Claude rewrites the remaining flow tail given the
+failure context, capped at `MAX_REPLANS = 2` per run. Inputs: the original
+flow, completed steps (held fixed), the failed step, remaining steps, current
+page URL/title, `observe()` candidates, and the failure dump path. Output is
+a strict JSON array of 1–20 instruction strings; `IMPOSSIBLE` or an unparsable
+response rethrows the original error. A successful replan writes a sibling
+`<run-dir>/step-failures/<NNN>-<phase>.replan.json` audit record, splices the
+new tail into the live plan, and resumes. The `--flow-file` on disk is never
+modified.
 
 ### 1f — Per-call capture files
 
-Each captured response is written to its own numbered JSON file:
-
-```
-<run-dir>/graphql/000-home-productSearch_Products.json
-<run-dir>/graphql/007-detail-product_Detail.json
-```
-
-One file per call keeps captures diffable and greppable. `git diff` on a
-second recon run against the first immediately shows which operations changed
-shape.
+Each captured response is written to its own numbered file, e.g.
+`<run-dir>/graphql/000-home-productSearch_Products.json` — one file per call
+keeps captures diffable, so `git diff` between two recon runs shows exactly
+which operations changed shape.
 
 ### 1g — Parameter decoding
 
-Opaque POST body parameters are decoded automatically: the script tries
-JSON → URL-encoded → base64, and saves the decoded result alongside the
-capture. This handles sites that double-encode filter state into query strings.
+Opaque POST body parameters are decoded automatically (JSON → URL-encoded →
+base64) and saved alongside the capture, for sites that double-encode filter
+state into query strings.
 
 ---
 
@@ -512,35 +214,21 @@ capture. This handles sites that double-encode filter state into query strings.
 pnpm run recon:http
 ```
 
-`recon-http.ts` answers the pivotal question: *Does the server care that a real
-browser was on the other end, or will it answer anyone who sends the right bytes?*
+Answers the pivotal question: does the server care that a real browser sent
+the request, or will it answer anyone who sends the right bytes? No
+Stagehand, no Steel, no Playwright — the script walks `<run-dir>/graphql/*.json`,
+deduplicates by `url|operationName|variables`, and reissues each capture via
+Node's `fetch()`.
 
-No Stagehand, no Steel, no Playwright. The script walks
-`<run-dir>/graphql/*.json`, deduplicates by `url|operationName|variables`, and
-reissues each capture via Node's built-in `fetch()`.
+**Start minimal.** Replay uses only the load-bearing header subset
+(`Content-Type`, `Accept`, `Origin`, `Referer`, `User-Agent`). Cookies and
+auth tokens are almost always unnecessary on public endpoints — adding them
+makes it harder to isolate which headers actually matter. If a replay fails,
+add headers one at a time; the one that fixes it was load-bearing.
 
-### The minimal header set (RC_HEADERS)
-
-The replay uses only the load-bearing header subset:
-
-```
-Content-Type: application/json
-Accept: application/json, */*
-Origin: https://example.com
-Referer: https://example.com/
-User-Agent: Mozilla/5.0 ...
-```
-
-**Start minimal.** Cookies and auth tokens are almost always unnecessary on
-public endpoints. Adding them makes it harder to isolate which headers actually
-matter. If a replay fails, add headers one at a time until it passes — the
-header you just added was load-bearing.
-
-Each replay is saved to `<run-dir>/replays/` with status, headers, body, and a
-link back to the source capture.
-
-**Every replay returning 200 with a matching shape proves the browser is
-unnecessary for production.**
+Each replay is saved to `<run-dir>/replays/` with status, headers, body, and
+a link back to the source capture. Every replay returning 200 with a matching
+shape proves the browser is unnecessary for production.
 
 ### Interpreting replay failures
 
@@ -549,133 +237,93 @@ unnecessary for production.**
 | `403` on every replay | Browser fingerprinting / bot manager | Add more headers; if still `403`, accept Stagehand-only production |
 | `401` on every replay | Session auth required | Capture the token, determine its lifetime, build a refresh strategy |
 | `200` but empty body | Missing `Origin` / `Referer` | Add them and retry immediately |
-| `200` on home, `500` on detail | Detail query references a session variable | Look for differing headers between working/failing replays; likely a CSRF token |
+| `200` on home, `500` on detail | Detail query references a session variable | Diff working/failing replay headers; likely a CSRF token |
 | Replay passes sporadically | Rate limit already triggered from recon | Pause, switch IP, reduce rps ceiling |
-| Replays fine for a week, then fail | Target site changed schema | Re-run Phases 1–4, diff captures against committed queries, ship the delta |
+| Replays fine for a week, then fail | Target site changed schema | Re-run Phases 1–4, diff captures, ship the delta |
 
 ---
 
 ## Phase 3 — Edge probing (`recon-http.ts`, still automated)
 
-Run together with Phase 2 in the same script invocation.
+Runs together with Phase 2 in the same script invocation.
 
 ### 3a — GraphQL introspection
 
 Sends `{ __schema { types { name } } }` to each unique GraphQL endpoint. If
-introspection is enabled, the full schema is dumped — it's gold for reviewing
-the inferred Zod types that `recon-generate` produces. If disabled,
-`recon-generate` infers Zod schemas directly from the captured JSON bodies.
+enabled, the full schema is dumped for reviewing the inferred Zod types. If
+disabled, `recon-generate` infers Zod schemas directly from captured JSON.
 
 ### 3b — Auxiliary fixture detection
 
-Finds static JSON endpoints in the captures (markets, currencies, labels,
-dictionaries), downloads them, and flags them as fixtures to commit. A fixture
-is any response that changes rarely enough that it can be baked into the
-codebase — load it at startup via `src/scraper/fixtures.ts` rather than
-re-fetching on every request.
+Finds static JSON endpoints in the captures (markets, currencies, labels),
+downloads them, and flags them as fixtures — a response that changes rarely
+enough to bake into the codebase and load at startup via
+`src/scraper/fixtures.ts` rather than re-fetching per request.
 
-Each downloaded fixture is written alongside a per-file provenance record in
-`<run-dir>/aux/aux-manifest.json` (filename, source URL, hostname). `recon:generate`
-only copies a fixture to `src/sites/<id>/fixtures/` when its manifested hostname
-is an own-backend host — an exact match against the flow's declared
-`ownBackendHostnames`, or, when none are declared, the same registrable domain
-as the site's base URL. A file in `aux/` with no manifest entry (e.g. from a
-run predating this gate) is excluded rather than assumed safe, since its
-source host can't be verified.
-
-`recon:generate` automatically copies allowed fixtures to
-`src/sites/<id>/fixtures/`. To use one in your plugin:
+Each fixture is written with a provenance record in
+`<run-dir>/aux/aux-manifest.json`. `recon:generate` only copies a fixture to
+`src/sites/<id>/fixtures/` when its manifested hostname is an own-backend
+host (matches the flow's declared `ownBackendHostnames`, or the site's own
+registrable domain). A file in `aux/` with no manifest entry is excluded
+rather than assumed safe.
 
 ```ts
 import { z } from "zod";
 import { loadFixture } from "@/scraper/fixtures";
 
 const MarketsSchema = z.array(z.object({ id: z.string(), name: z.string() }));
-
-// Loaded synchronously at module init — zero per-request overhead.
 const markets = loadFixture("my-site", "markets.json", MarketsSchema);
 ```
 
-`loadFixture(siteId, filename, schema)` reads `src/sites/<siteId>/fixtures/<filename>`
-synchronously and Zod-parses it. The call throws at startup if the file is missing
-or the shape is wrong, so fixture breakage surfaces immediately on deploy rather
-than on the first request.
+`loadFixture` reads and Zod-parses synchronously at module init, throwing at
+startup if the file is missing or malformed — breakage surfaces on deploy,
+not on the first request.
 
 ### 3c — Rate-limit probe (run last)
 
-Fires 60 sequential requests (20 per rps level) at 1 → 3 → 5 rps, records `Retry-After` /
-`X-RateLimit-*` / Akamai headers, and stops at the first `429` or `403`. The
-safe ceiling is written to config.
-
-**Run this last.** If the probe bans the egress IP, everything else is already
-captured. Losing access mid-probe is acceptable; losing it mid-recon is not.
+Fires 60 sequential requests (20 per rps level) at 1 → 3 → 5 rps, records
+`Retry-After` / `X-RateLimit-*` / Akamai headers, and stops at the first
+`429` or `403`. The safe ceiling is written to config. **Run this last** —
+if the probe bans the egress IP, everything else is already captured.
 
 ---
 
 ## Phase 4 — Codify the contract (one human PR)
 
-This is the only phase with meaningful human judgment. The output is
-`src/sites/<id>/contract.ts`.
+The only phase with meaningful human judgment. Output: `src/sites/<id>/contract.ts`.
 
-### 4a — Trim the query
+- **4a — Trim the query.** `recon-generate` inlines the captured query
+  verbatim. Strip UI-only fields — often 60% of them — to isolate yourself
+  from UI-driven schema churn.
+- **4b — Verify load-bearing headers.** `recon-generate` derives
+  `BASE_HEADERS` from headers present in every successfully-replayed capture.
+  Remove anything decorative; extra headers widen the bot-detection
+  fingerprint surface.
+- **4c — Verify the rate-limit ceiling.** `recon-generate` sets Bottleneck's
+  `minTime` from the Phase 3c probe. Check it against the findings doc (4e).
+- **4d — Review Zod schemas.** Tighten any `z.unknown()` fields — these are
+  runtime drift detectors; the moment a response stops matching, `dispatch()`
+  falls back to the browser and the smoke test fails.
+- **4e — Findings document.** `pnpm run recon:summarize -- --site-id <id>`
+  writes `docs/<id>-recon.md` (endpoints, auth, rate limits, headers, hazards,
+  fixtures). Default output without `--site-id` is `docs/target-recon.md` —
+  see that file for the format.
+- **4f — Generate the plugin skeleton (automated).**
 
-`recon-generate` produces an initial `contract.ts` with the captured query inlined verbatim. Review it and strip UI-only fields: your query is what *you* need, not everything the UI requested. Often that's 60% of the fields. Keeping it lean isolates you from UI-driven schema churn — the server only sends what you ask for.
+  ```bash
+  pnpm run recon:generate -- --site-id my-site
+  ```
 
-### 4b — Verify load-bearing headers
-
-`recon-generate` derives `BASE_HEADERS` from the request headers the browser actually sent during recon, filtered to those present in every capture whose endpoint replayed successfully. Review the generated set and remove anything decorative — extra headers widen the fingerprint surface that bot-detection systems can exploit. The minimal set (Content-Type, Accept, Origin, Referer, User-Agent) is almost always sufficient.
-
-### 4c — Verify the rate-limit ceiling
-
-`recon-generate` sets the Bottleneck `minTime` from the Phase 3 probe result. Check the generated value against the probe findings in the findings doc (Phase 4e) and adjust if needed. The ceiling prevents the hot path from ever exceeding the safe rps discovered during probing.
-
-### 4d — Review Zod schemas
-
-`recon-generate` infers Zod schemas from the captured JSON bodies. Review any `z.unknown()` fields — these appear where the inferred type was ambiguous — and tighten them to the actual shape you need. These schemas are **runtime drift detectors**: the moment a response stops matching, dispatch() falls back to the browser path and the smoke test fails.
-
-### 4e — Findings document
-
-`pnpm run recon:summarize -- --site-id <id>` writes `docs/<id>-recon.md` — a
-human-readable rollup of what the pipeline found: endpoints, which are public,
-auth requirements, rate-limit ceilings with ready-to-paste Bottleneck config,
-load-bearing headers, hazards (Akamai, Cloudflare), and auxiliary fixtures.
-Without `--site-id`, the default output path is `docs/target-recon.md`.
-
-See `docs/target-recon.md` for the format.
-
-### 4f — Generate the plugin skeleton (automated)
-
-```bash
-pnpm run recon:generate -- --site-id my-site
-```
-
-Reads every artifact from Phases 1–3 and writes a complete plugin to `src/sites/my-site/`:
-
-- `contract.ts` — Zod schemas inferred from captured JSON, load-bearing headers, Bottleneck ceiling, and `executeHttp` / `execute` implementations
-- `flows/browser-flow.ts` — Stagehand fallback wired to your `recon-flow.json` steps
-- `index.ts` — barrel export
-- `fixtures/` — any static JSON found by Phase 3b auxiliary probe, already copied in
-
-After generation: trim UI-only fields from the GraphQL query, narrow any `z.unknown()` entries in the schema you care about, and verify the header set. Pass `--force` to overwrite an existing plugin directory. The generated code is a starting point — review it before registering the plugin.
-
-### 4g — Shared helpers used inside `contract.ts`
-
-Plugins should not write raw `fetch` / `undici` calls. The generated
-`contract.ts` wires up two factories — keep them when you edit:
-
-- `createHttpClient(opts)` (`src/scraper/http-client.ts`) — typed fetch
-  wrapper with header normalization, response-header/cookie binding (`opts.bind`
-  — echoes a named value from one call's response, e.g. `Set-Cookie`, back as
-  a request header on later calls from the same client instance), response
-  Zod validation, and retry-aware error classes (`HttpRateLimitError`,
-  `HttpBotChallengeError`, `HttpSchemaError`, `HttpServerError`) that the
-  dispatcher knows how to classify.
-- `createGraphqlClient(opts)` (`src/scraper/graphql-client.ts`) — same
-  conventions for GraphQL endpoints.
-
-Instantiate each at module scope so bound values persist across invocations;
-call the returned wrapper inside `executeHttp`. Tests should stub the
-**wrapper**, not the factory — see `docs/testing.md`.
+  Writes `src/sites/my-site/{contract.ts, flows/browser-flow.ts, index.ts,
+  fixtures/}` from Phases 1–3 artifacts. Pass `--force` to overwrite. Review
+  the generated code before registering the plugin.
+- **4g — Shared helpers.** Plugins should not write raw `fetch`/`undici`
+  calls. Use `createHttpClient(opts)` (`src/scraper/http-client.ts`) and
+  `createGraphqlClient(opts)` (`src/scraper/graphql-client.ts`) — typed
+  wrappers with header normalization, response-header/cookie binding, Zod
+  validation, and retry-aware error classes. Instantiate at module scope so
+  bound values persist across calls. Tests stub the wrapper, not the factory
+  — see `docs/testing.md`.
 
 ---
 
@@ -685,202 +333,124 @@ The full dispatch flow lives in `src/plugins/loader.ts` (`dispatch()`).
 
 ### 5A — Hot path (preferred)
 
-Direct HTTP — no browser, no LLM tokens, millisecond latency, fractions of a
-cent per call.
+Direct HTTP — no browser, no LLM tokens, millisecond latency:
 
 ```
-Request arrives
-  → plugin.extractJoinKeys(payload) → joinKeys   [opaque, plugin-owned; pre-run only — sees the inbound payload, not anything discovered mid-run; src/site-plugin.ts — see Beacon-fire below for self-managed context.recordBeaconOutcome]
-  → LRU cache check (getCachedResponse)         [src/cache/response-cache.ts]
-  → cache hit → return immediately
-  → cache miss → getOrCreateInFlight(key, fn)   [coalesces concurrent misses]
-    → executeHttp(payload, context)              [plugin's hot path; context.telemetry.addJoinKeys() stays open for run-discovered fields — src/lib/telemetry/run-telemetry.ts. .recordSession() is also on the handle but is stamped only by the loader wrapper around a live session (see 5B/5D) — the hot path never acquires one, so it goes uncalled here]
-      → bottleneck.schedule(fetch)              [per-plugin rate limit]
-        → p-retry (2 retries on network errors)
-        → zod.parse(response)                   [drift detector]
-  → record hot-path latency
-  → write cache entry
-  → dispatch() merges context.telemetry.snapshot() over joinKeys (run-discovered keys win on collision) and stamps the session block [no live session on the hot path → session: null]
-  → emit submission envelope (NDJSON)           [reconciliation "submit" record — carries the merged joinKeys + session]
-  → fire beacon-fire tracking click              [background — not awaited]
-  → return
+Request → plugin.extractJoinKeys(payload) → LRU cache check
+  → hit → return
+  → miss → getOrCreateInFlight(key, fn) [coalesces concurrent misses]
+    → executeHttp(payload, context)
+      → bottleneck.schedule(fetch) → p-retry (2x on network errors) → zod.parse(response)
+  → merge telemetry over joinKeys, stamp session (null on hot path)
+  → emit submission envelope (NDJSON) → fire beacon-fire click (background) → return
 ```
 
-**Beacon-fire (conversion tracking):** the last two steps both come from
-`dispatch()` itself, after `runPluginPipeline` resolves — they run for the
-hot path and the browser fallback alike, but only for a plugin that has NOT
-declared `extractJoinKeys`. When such a plugin's payload has a usable
-`TrackingUrl`, `fireTrackingClick` (`src/lib/tracking-click.ts`) is
-fire-and-forget: `dispatch()` calls it and returns without awaiting, so the
-response reaches the caller before the click even starts. In the background
-it opens a short-lived Browserbase session, navigates to the plugin's
-`TrackingUrl` (30s timeout), waits 5s to let the vendor's beacon settle, then
-writes a separate `"beacon"` reconciliation record with `beaconStatus:
-"fired"` or `"failed"` — errors are swallowed and logged at `warn`, never
-surfaced to the request path. When there is no `TrackingUrl` to navigate to
-at all, or when the plugin declared `extractJoinKeys` (asserting it fires its
-own post-submit tracking nav itself, outside `dispatch()` — see §Reconciliation
-join keys in architecture.md), `dispatch()` skips `fireTrackingClick` entirely
-and instead writes a `beaconStatus: "skipped"` beacon record itself,
-synchronously, before returning. This remains the default outcome for a
-self-managing plugin, but it is not the whole story: such a plugin can call
-`context.recordBeaconOutcome({ beaconStatus: "fired" | "failed", joinKeys, ... })`
-(bound to the run's `requestId`/`siteId`, never-throwing, built on the same
-`captureBeaconEvent` writer) from `execute()`, `executeHttp()`, or an extra
-route, once it knows how its own tracking nav actually resolved. That
-`fired`/`failed` line outranks the automatic `skipped` line for the same
-`requestId` when the reader folds them together
-(`src/lib/telemetry/submission-reader.ts`), so a self-managing plugin is not
-structurally locked to `"skipped"` — it just needs to opt in. Full field
-detail and the call-site conventions live in
-[Fields every reconciliation row carries](./submission-reconciliation.md#fields-every-reconciliation-row-carries)
-in docs/submission-reconciliation.md; this section only needs to know the escape hatch exists. This
-is why beacon-fire needs its own durable record instead of being inferred
-from submit success: a submission can succeed while the beacon never fires
-(see §6B for how that shows up in metrics, and drain behavior on shutdown).
+**Beacon-fire (conversion tracking):** for a plugin that has NOT declared
+`extractJoinKeys`, `dispatch()` fires `fireTrackingClick`
+(`src/lib/tracking-click.ts`) unawaited after the response returns: it opens
+a short-lived Browserbase session, navigates to the plugin's `TrackingUrl`
+(30s timeout), waits 5s, then writes a `"beacon"` reconciliation record
+(`fired`/`failed`; errors are swallowed and logged at `warn`). A plugin that
+declared `extractJoinKeys` (asserting it fires its own tracking nav) instead
+gets a synchronous `beaconStatus: "skipped"` record — unless it calls
+`context.recordBeaconOutcome(...)` itself once it knows how its nav resolved,
+which outranks the automatic `skipped` line for the same `requestId`. Full
+field detail: [Fields every reconciliation row
+carries](./submission-reconciliation.md#fields-every-reconciliation-row-carries).
+This durable record exists because a submission can succeed while the beacon
+never fires.
 
 **Cache deduplication:** `getOrCreateInFlight` coalesces concurrent misses on
-the same cache key into a single origin call. If 10 identical requests arrive
-while the first is in-flight, all 10 await the same promise. This prevents
-thundering-herd fan-out to the target site on cold-start.
-
-Cache key = `${context.baseUrl}:${plugin.meta.siteId}:<sha256(canonical payload)[:32]>`
-(`src/plugins/loader.ts:82-83`). The "endpoint" prefix is the resolved per-site
-base URL plus the site ID, so swapping a site's base URL via env naturally
-invalidates its cache without any code changes. Object key order and primitive
-array order are normalized so `{a:1,b:2}` and `{b:2,a:1}` hit the same entry.
-Default TTL: 15 minutes. Configurable via `CACHE_TTL_MS`.
+the same key into a single origin call, preventing thundering-herd fan-out on
+cold start. Cache key: `${context.baseUrl}:${plugin.meta.siteId}:<sha256(canonical
+payload)[:32]>` (`src/plugins/loader.ts:82-83`) — swapping a site's base URL
+via env naturally invalidates its cache. Object key order and primitive array
+order are normalized. Default TTL 15 minutes, via `CACHE_TTL_MS`.
 
 ### 5B — Browser fallback (on failure only)
 
-Invoked when the hot path throws `HttpSchemaError`, `HttpBotChallengeError`, or
-`HttpServerError`. Slower and more expensive — that's fine, it's rare.
+Invoked when the hot path throws `HttpSchemaError`, `HttpBotChallengeError`,
+or `HttpServerError`:
 
 ```
-Hot path fails (schema mismatch, bot challenge, or 5xx)
-  → recordFallbackActivation(siteId)
-  → runWithSession(fn)                          [src/scraper/pool.ts]
-    → p-queue (bounded concurrency = SESSION_POOL_SIZE)
-    → withScraperRetry (up to 3 attempts)       [wraps everything below]
-      → createBrowserSession()                  [src/scraper/session.ts]
-          → Browserbase.sessions.create (residential proxy, random viewport)  [default provider; Steel is the opt-in fallback via SCRAPER_PROVIDER=steel]
-          → Stagehand.init() via CDP
-      → fn(session): Promise.race([plugin.execute(session), TASK_TIMEOUT_MS (60min default)])
-          → finally: best-effort session.getOutboundIp?.() → context.telemetry.recordSession(...)  [loader.ts wrapper; Browserbase-only, gated by SCRAPER_CAPTURE_SESSION_IP — runs while the session is still open]
-    → session.close() in finally                [src/scraper/pool.ts]
-  → dispatch() merges context.telemetry.snapshot() over joinKeys (run-discovered keys win on collision) and stamps the session block
-  → emit submission envelope (NDJSON)           [reconciliation "submit" record — carries the merged joinKeys + session]
-  → fire beacon-fire tracking click              [background — not awaited]
-  → return
+Hot path fails → recordFallbackActivation(siteId)
+  → runWithSession(fn) [p-queue, concurrency = SESSION_POOL_SIZE]
+    → withScraperRetry (up to 3 attempts)
+      → createBrowserSession() → Browserbase.sessions.create (default; Steel is the opt-in fallback via SCRAPER_PROVIDER=steel)
+      → fn(session): Promise.race([plugin.execute(session), TASK_TIMEOUT_MS])
+      → finally: session.getOutboundIp?.() → context.telemetry.recordSession(...)
+    → session.close() in finally
+  → [same tail as 5A: merge telemetry, emit envelope, fire beacon, return]
 ```
 
-Same tail as 5A: `emitEnvelopeSafely` and `fireTrackingClick` live in
-`dispatch()`, not in either pipeline branch, so both paths converge on the
-identical joinKeys/session-merge-then-submit-record-then-beacon-fire sequence
-once a result comes back.
+`emitEnvelopeSafely` and `fireTrackingClick` live in `dispatch()` itself, so
+both paths converge on the identical sequence once a result comes back.
 
-**`x-barnacle-execution: browser`** — sending this header on the incoming
-request bypasses the hot path entirely and goes directly to the browser path.
-Omit it (or send any other value) to use the default hot path. Useful for
-debugging or when you know the hot path is broken. (Fastify lowercases incoming
-header keys; the dispatcher reads `request.headers["x-barnacle-execution"]` —
-supply lowercase to match.)
+**`x-barnacle-execution: browser`** on the incoming request bypasses the hot
+path entirely (lowercase header key — Fastify lowercases incoming headers).
 
 ### 5C — Error classification
 
-`withScraperRetry` (`src/scraper/retry.ts`) applies a policy based on error type:
-
 | Error | Source | Policy |
 |-------|--------|--------|
-| `CaptchaError` | Stagehand flow | **Abort immediately** — surface to humans, don't burn sessions |
-| `EmptyResultsError` | Plugin logic | **Abort** — query-shape bug, not transient |
-| `SessionTimeoutError` | Per-task hang ceiling (`TASK_TIMEOUT_MS`, 60min default) | Kill session → create fresh → retry up to `maxAttempts` (restart happens before every retry, not just the first) |
-| `SelectorFailureError` | Stagehand can't find element | Retry up to `maxAttempts` (default 3) with exponential backoff |
+| `CaptchaError` | Stagehand flow | Abort immediately — surface to humans |
+| `EmptyResultsError` | Plugin logic | Abort — query-shape bug, not transient |
+| `SessionTimeoutError` | `TASK_TIMEOUT_MS` (60min default) | Kill session → fresh → retry (restart before every retry) |
+| `SelectorFailureError` | Stagehand can't find element | Retry up to `maxAttempts` (default 3), exponential backoff |
 | `UnknownScraperError` | Unclassified | Retry up to `maxAttempts` |
 
-Concrete settings (`src/scraper/retry.ts`): `factor: 2`, `minTimeout: 500ms`,
-`maxTimeout: 5000ms`, `randomize: true`, default `maxAttempts: 3` — a plugin
-can override this via `SitePluginMeta.maxAttempts` so the per-run ceiling is
-`maxAttempts × taskTimeoutMs` under its own control instead of a fixed 3×.
-`EmptyResultsError`, `CaptchaError`, and `StepVerificationError` short-circuit
-retries (a deterministic verification failure won't resolve by re-running the
-whole flow); `SessionTimeoutError` triggers a session restart before every
-retry attempt, not just the first.
+Concrete retry settings (`src/scraper/retry.ts`): `factor: 2`, `minTimeout:
+500ms`, `maxTimeout: 5000ms`, `randomize: true`. Override per-plugin via
+`SitePluginMeta.maxAttempts`.
 
-Hot-path error → fallback decision (in `dispatch()`):
-
-| Hot-path error | Triggers browser fallback? | Reason |
-|---------------|--------------------------|--------|
-| `HttpSchemaError` | **Yes** | Response shape drifted; browser might still work |
-| `HttpBotChallengeError` | **Yes** | 401/403 — browser with residential IP may get through |
-| `HttpServerError` | **Yes** | 5xx — browser recovery strategy is the same |
-| `HttpRateLimitError` | **No** | 429 — burning a browser session won't help; back off instead |
+Hot-path error → fallback decision: `HttpSchemaError`, `HttpBotChallengeError`,
+and `HttpServerError` all trigger the browser fallback (schema drift/bot
+block/5xx may resolve with a real browser). `HttpRateLimitError` does not —
+burning a session on a 429 won't help; back off instead.
 
 ### 5D — Session pool mechanics
 
-A single `p-queue` with `concurrency = SESSION_POOL_SIZE` (default: 3) prevents
-accidental session sprawl. Sessions are created on demand inside each queued
-task — not pre-warmed — so provider billing (Browserbase by default, Steel
-for the opt-in fallback) stays proportional to actual traffic.
+A single `p-queue` (`concurrency = SESSION_POOL_SIZE`, default 3) prevents
+session sprawl; sessions are created on demand, not pre-warmed, so provider
+billing stays proportional to traffic.
 
-The **per-task hang ceiling** (`TASK_TIMEOUT_MS` in `src/scraper/pool.ts`,
-60-minute default) prevents a hung Stagehand operation (infinite network wait,
-frozen CDP connection) from holding a queue slot indefinitely. It converts a
-silent hang into `SessionTimeoutError`, which the retry policy acts on by
-tearing down the broken session and starting a fresh one. The default is sized
-for long browser flows; shorten per-plugin via `SitePluginMeta.taskTimeoutMs`
-when a site's normal latency is well below it. This is a hang-recovery floor,
-not a p99 latency budget.
+The per-task hang ceiling (`TASK_TIMEOUT_MS` in `src/scraper/pool.ts`,
+60-minute default) converts a hung Stagehand operation into
+`SessionTimeoutError` rather than holding a queue slot forever. Shorten it
+per-plugin via `SitePluginMeta.taskTimeoutMs`. Below that floor, every
+individual deepLocator/frame-evaluate await is itself bounded by
+`withWatchdog` (`src/scraper/watchdog.ts`) against `STEP_WATCHDOG_MS` (2min
+default) or the relevant `config.scraper.frame*TimeoutMs` budget.
 
-Below that per-task floor, every individual `deepLocator`/frame-evaluate/
-Stagehand-guard await inside the cascade is itself bounded by `withWatchdog`
-(`src/scraper/watchdog.ts`) against `STEP_WATCHDOG_MS` (2min default) or the
-relevant `config.scraper.frame*TimeoutMs` budget, so a single wedged CDP call
-against a racy frame fails that attempt and lets self-heal proceed instead of
-pinning the whole task until `TASK_TIMEOUT_MS` finally kills it.
+On `SIGTERM`/`SIGINT`, `drainPool()` pauses new intake and waits up to 20s
+for in-flight tasks to close their provider sessions before resolving.
 
-On `SIGTERM` / `SIGINT`, `drainPool()` (`src/scraper/pool.ts`) pauses new intake,
-waits up to 20 seconds for in-flight tasks to finish their `finally` blocks and
-close provider sessions, then resolves. Without this, process exit leaves live
-provider sessions (Browserbase by default, Steel for the opt-in fallback)
-billing until their own timeout.
-
-**Viewport rotation** (`src/scraper/session.ts`): each session picks a random
-desktop viewport from a fixed set (`1280×720`, `1366×768`, `1440×900`,
-`1920×1080`). A fixed pixel size is an easy bot-detection signal; rotating it
-makes session fingerprints harder to cluster.
+**Viewport rotation:** each session picks a random desktop viewport from a
+fixed set, since a static size is an easy bot-detection signal.
 
 **Outbound-IP capture** (`src/scraper/session-browserbase.ts`, gated by
-`SCRAPER_CAPTURE_SESSION_IP`, default `true`): Browserbase never returns a
-session's actual outbound IP through its SDK, session-create/get calls, logs,
-or recording endpoints, so the only way to learn it is to have the session
-itself navigate a separate short-lived tab to an IP-echo endpoint
-(`SCRAPER_SESSION_IP_ECHO_URL`, default ipify) and read the response back —
-`getOutboundIp()` on `BrowserSession` does this once, memoized, and is
-Browserbase-only (absent on Steel). The cost is one extra tab load, bounded by
-`SCRAPER_SESSION_IP_TIMEOUT_MS` (~10s default) via `withWatchdog`. It runs in
-the shared wrapper around both `runWithSession` call sites in
-`src/plugins/loader.ts`, in a `finally` after `plugin.execute()` resolves and
-before `pool.ts`'s own `session.close()` — as close to submit time as the
-pool allows, since `pool.ts` closes the session in its own `finally` and never
-surfaces it back to `dispatch()`.
+`SCRAPER_CAPTURE_SESSION_IP`, default `true`): since Browserbase never exposes
+a session's outbound IP directly, `getOutboundIp()` has the session navigate a
+separate tab to an IP-echo endpoint and reads the response back, memoized,
+Browserbase-only. Bounded by `SCRAPER_SESSION_IP_TIMEOUT_MS` (~10s default);
+runs in a `finally` after `plugin.execute()` resolves, before `pool.ts` closes
+the session.
 
 ### 5E — Per-site base URL overrides
 
 Any env var matching `BARNACLE_SITE_<UPPERCASE_SITE_ID>_BASE_URL` is collected
 into `config.scraper.siteBaseUrls[siteId]` at boot (`src/config.ts:40-46,
-119-122`) and passed to the plugin as `context.baseUrl`. Underscores in the
-env-key suffix map to hyphens in the looked-up `siteId` (`src/config.ts:124`):
+119-122`) and passed as `context.baseUrl`; underscores in the suffix map to
+hyphens in the `siteId`:
 
 ```bash
 BARNACLE_SITE_MY_SHOP_BASE_URL=https://staging.my-shop.com
 ```
 
-overrides the `my-shop` plugin's `defaultBaseUrl` without any source change.
-Falls back to `SitePluginMeta.defaultBaseUrl` when the key is absent. Lets you
-swing a plugin between staging/prod/replay environments per deployment, and —
-because the cache key prefix is `${context.baseUrl}:${siteId}` — staging
-traffic never pollutes the production cache.
+overrides `my-shop`'s `defaultBaseUrl` with no source change (falls back to
+`SitePluginMeta.defaultBaseUrl` when unset). Because the cache key prefix is
+`${context.baseUrl}:${siteId}`, staging traffic never pollutes the production
+cache.
 
 ---
 
@@ -889,8 +459,8 @@ traffic never pollutes the production cache.
 ### 6A — Nightly smoke test
 
 `src/scripts/smoke-test.ts` runs one request through the hot path end-to-end
-and Zod-parses the full response body against the plugin's `responseSchema`. Any
-schema violation fails the pipeline immediately — fail fast, fail loud.
+and Zod-parses the full response body against the plugin's `responseSchema`
+— any violation fails the pipeline immediately.
 
 ```bash
 pnpm run smoke -- \
@@ -899,304 +469,140 @@ pnpm run smoke -- \
   --host "$SMOKE_HOST" \
   --fallback \
   --response-schema src/sites/my-site/contract.ts
-
-# For plugins that use routeOverride in their meta:
-pnpm run smoke -- \
-  --site my-site \
-  --route /legacy/v2/submit \
-  --payload '{"query":"test"}' \
-  --host "$SMOKE_HOST"
 ```
 
-`--response-schema` points to a module whose default export is a Zod schema. The
-smoke test validates the *full* response body against it — not just the envelope
-shape — so any schema drift on the data payload fails the pipeline immediately.
-Client-facing error codes are tabled in `docs/architecture.md`.
-
-`--fallback` additionally runs a second request through the Stagehand browser
-path to catch Stagehand cache staleness (the cached selector was for a DOM
-structure that no longer exists).
+`--response-schema` points to a module whose default export is a Zod schema,
+validated against the full response body, not just the envelope. Client-facing
+error codes are tabled in `docs/architecture.md`. `--fallback` additionally
+runs a second request through the Stagehand browser path to catch selector
+cache staleness.
 
 ### 6B — Metrics signals (the detection ladder)
 
-`/readyz` exposes per-site drift-detection counters (`src/scraper/metrics.ts`):
+`/readyz` exposes per-site counters (`src/scraper/metrics.ts`):
+`hotPathSuccess`, `fallbackActivations`, `rateLimitRejections`, `p95LatencyMs`.
 
-```json
-{
-  "metrics": {
-    "my-site": {
-      "hotPathSuccess": 4821,
-      "fallbackActivations": 3,
-      "rateLimitRejections": 0,
-      "p95LatencyMs": 187
-    }
-  }
-}
-```
+Ordered by how early each signal fires:
 
-The detection ladder — ordered by how early each signal fires:
-
-1. **Smoke test fails.** Runs nightly (or per deploy). Zod-parses a real
-   response. Fails fast, fails loud.
-2. **`fallbackActivations` spikes.** The hot path starts dying; fallback
-   absorbs traffic. Error rate stays low but cost rises. Dashboard warns you
-   before users notice.
-3. **`p95LatencyMs` spikes.** Fallbacks are 10–100× slower than the hot path.
-   p95 doubling overnight means something shifted.
-4. **`rateLimitRejections` appear.** The site lowered its ceiling, or your IP
-   is being throttled. Your Bottleneck config is now wrong.
-5. **`tracking_click.failure` rises (Datadog, not `/readyz`).** Emitted by
-   `recordTrackingClickFailure` (`src/lib/dd-metrics.ts:62`), tagged by
-   `site` and `error_type`. Submits can be 100% healthy while this climbs —
-   it is the only signal for "submitted but the beacon did not fire," which
-   is exactly why the reconciliation record carries a separate `"beacon"`
-   line instead of inferring conversion from submit status. A graceful
-   shutdown is a real not-fired path too: `drainTrackingClicks`
-   (`src/lib/tracking-click.ts:145`) gives in-flight clicks only its own
-   timeout (default 20s) to finish before `onClose` proceeds, so a SIGTERM
-   that lands mid-navigation can still exit the process with the click
-   unresolved and no `"beacon"` line ever written for that run.
-6. **Customer-reported — dead last.** If this is how you find out, drift
+1. **Smoke test fails** — nightly, Zod-parses a real response.
+2. **`fallbackActivations` spikes** — hot path dying; error rate stays low
+   but cost rises.
+3. **`p95LatencyMs` spikes** — fallbacks are 10–100× slower than the hot
+   path.
+4. **`rateLimitRejections` appear** — the site lowered its ceiling, or your
+   IP is throttled.
+5. **`tracking_click.failure` rises** (Datadog, tagged `site`/`error_type`,
+   emitted by `recordTrackingClickFailure`) — the only signal for "submitted
+   but the beacon didn't fire." A graceful shutdown is a real not-fired path
+   too: `drainTrackingClicks` gives in-flight clicks only its own timeout
+   (default 20s) before `onClose` proceeds.
+6. **Customer-reported** — dead last. If this is how you find out, drift
    detection failed.
 
 ### 6C — Maintenance loop
 
 ```
-Smoke test fails (nightly, automated)
-  → Re-run recon:browser      → fresh <run-dir>/graphql/*.json
-  → Re-run recon:http         → fresh <run-dir>/replays/
-  → Human reviews diff:       captured shape vs. contract.ts
-  → Update query / headers / Zod schema / throttle config
-  → Re-run recon:summarize    → updated docs/target-recon.md
-  → Ship PR
-  → Smoke test reruns         → green? done.
+Smoke test fails (nightly) → re-run recon:browser → re-run recon:http
+  → human reviews diff (captured shape vs. contract.ts)
+  → update query / headers / Zod schema / throttle config
+  → re-run recon:summarize → ship PR → smoke test reruns green
 ```
 
-Human involvement = one diff review + a small PR. All detection and execution is
-automated.
+Human involvement is one diff review and a small PR; detection and execution
+are automated.
 
 ### 6D — Heal-loop workflow
 
-When a smoke test fails *and* the failure is a recon flow step error (the browser
-couldn't find an element or a step timed out after all four cascade attempts), the
-automated maintenance loop in §6C won't help — you don't need a schema update, you
-need a better flow instruction. The heal loop handles this case.
-
-**Step 1 — Run the heal loop**
+When a smoke test fails because a recon flow step errored (element not found,
+or timeout after all four cascade attempts) rather than a schema mismatch,
+§6C doesn't help — you need a better flow instruction, not a schema update.
 
 ```bash
-pnpm tsx src/scripts/recon-heal.ts \
-  --site-id <id> \
-  --url https://<target-site.example.com>
+pnpm tsx src/scripts/recon-heal.ts --site-id <id> --url https://<target-site.example.com>
 ```
 
-The loop runs a baseline replay of `src/sites/<id>/recon-flow.json`, measures which
-steps fail, then iterates: propose a minimal patch to one failing step, replay the
-patched flow, score, repeat. Defaults: 5 iterations, 3 replays per arm,
-success threshold 0.9. Add `--dry-run` to stub the browser runner in CI.
+Runs a baseline replay of `recon-flow.json`, then iterates: propose a minimal
+patch to a failing step, replay, score, repeat (defaults: 5 iterations, 3
+replays per arm, success threshold 0.9; `--dry-run` stubs the browser runner
+for CI). Writes `heal-out/<id>/healing-<id>.md` (verdict, best patch,
+iteration table) and `heal-out/<id>/state.json`. Verdicts: `SUCCESS` /
+`PLATEAUED` / `BUDGET_EXHAUSTED` / `REGRESSED`. `/readyz` surfaces the latest
+verdict per site under `heal`.
 
-**Step 2 — Review the report**
+The heal loop never modifies `recon-flow.json` — apply the reported
+`{anchor, replacement}` patch by hand, then re-run the smoke test to confirm.
 
-When the loop finishes it writes:
+**The manual-apply discipline:** flow instructions stay under human control;
+the loop proposes patches backed by measured replay evidence rather than
+modifying the source directly. A patch that improved the pass rate in the
+heal environment still needs human review before it ships to `main`.
 
-```
-heal-out/<id>/healing-<id>.md   ← verdict, best patch, iteration table
-heal-out/<id>/state.json        ← full convergence history
-heal-out/<id>/iter-N/           ← per-iteration patch-request, patch-response, scores
-```
-
-Open `heal-out/<id>/healing-<id>.md`. It shows:
-
-- **Verdict**: `SUCCESS` / `PLATEAUED` / `BUDGET_EXHAUSTED` / `REGRESSED`
-- **Best patch**: the `anchor` (verbatim substring of the failing step) and its
-  `replacement` (the new instruction text)
-- **Iteration table**: pass-rate delta per iteration
-
-The `/readyz` endpoint surfaces the latest verdict per site in the `heal` field:
-
-```json
-{
-  "heal": {
-    "my-site": { "verdict": "SUCCESS", "bestPassRate": 0.95, "reportPath": "heal-out/my-site/healing-my-site.md" }
-  }
-}
-```
-
-**Step 3 — Manually apply the patch**
-
-The heal loop never modifies `src/sites/<id>/recon-flow.json` — the operator owns
-the source of truth. After reviewing the report, open the flow file and apply the
-patch by hand:
-
-```bash
-# The report gives you: anchor="<old text>" replacement="<new text>"
-# Find the matching step in src/sites/<id>/recon-flow.json and substitute.
-$EDITOR src/sites/<id>/recon-flow.json
-```
-
-Then re-run the smoke test to confirm:
-
-```bash
-pnpm run smoke -- --site <id> --payload '{"query":"test"}' --host "$SMOKE_HOST"
-```
-
-**The manual-apply discipline** — prompts and flow instructions stay under human
-control; the loop proposes patches backed by measured evidence (replay pass rates)
-rather than modifying the source directly. This parallels the pila self-healing
-principle: the tool produces evidence, the human applies judgment. A patch that
-improved the pass rate in the heal environment still needs human review before it
-ships to `main` — the operator is the last verifier, not the loop.
-
-> **LLM prompt self-healing is different from recon-flow self-healing.** `pnpm run recon:heal` (this section) heals natural-language flow-step strings in `recon-flow.json`. `pnpm run heal:llm` heals the TypeScript prompt templates used by the LLM call sites (rephrase, replan, recon-flow-patch, llm-prompt-patch). See [docs/telemetry-and-judging.md](./telemetry-and-judging.md) for the judging rubric and the `heal:llm` self-heal loop.
-
----
+> LLM prompt self-healing is a separate mechanism from recon-flow
+> self-healing: `recon:heal` (above) heals natural-language flow steps in
+> `recon-flow.json`; `heal:llm` (below) heals the TypeScript prompt templates
+> used by LLM call sites. See
+> [docs/telemetry-and-judging.md](./telemetry-and-judging.md) for the judging
+> rubric.
 
 ### 6E — LLM judging and prompt self-healing
 
 > See [docs/telemetry-and-judging.md](./telemetry-and-judging.md) for the
-> conceptual background — what is captured, the three-dimensional rubric, and
-> how the self-heal loop works. This section is the operator runbook: what
-> commands to run, what files they produce, and how to read the results.
+> conceptual background. This section is the operator runbook.
 
 Barnacle captures every LLM call to `.barnacle/calls.ndjson` during recon and
-heal runs. When you want to check whether the call sites are producing accurate
-output — before or after a prompt change, after a model upgrade, or on a regular
-quality cadence — run the judge over the accumulating capture file, then (if
-needed) run the self-heal loop to find a prompt improvement.
+heal runs.
 
-#### Step 1 — Run the judge
+**Step 1 — Judge:**
 
 ```bash
 pnpm run judge:llm -- \
   --calls-ndjson .barnacle/calls.ndjson \
-  --call-type <callType> \
-  [--batch-index <N>] \
-  [--judge-model <model>] \
-  [--out-dir judge-out] \
-  [--dry-run]
+  --call-type <recon-rephrase|recon-replan|recon-flow-patch|llm-prompt-patch> \
+  [--batch-index <N>] [--judge-model <model>] [--out-dir judge-out] [--dry-run]
 ```
 
-`--call-type` is one of: `recon-rephrase`, `recon-replan`, `recon-flow-patch`,
-`llm-prompt-patch`. Run the command once per call type you want to evaluate.
+Zero samples for a call type exits cleanly, not an error. `--dry-run` stubs
+the scorer deterministically for CI.
 
-If zero samples exist for the requested call type the script exits cleanly —
-this is not an error. The `--dry-run` flag stubs the scorer with deterministic
-pass-all values and makes no API calls; use it in CI.
+**Step 2 — Read the verdict** at `judge-out/verdict-<callType>-<batchIndex>.json`.
+The `aggregate` block reports pass rate per dimension: `schemaPass / n`
+(output shape), `factualPass / n` (consistent with grounding context), and
+`hallucinationFreePass / n` (no invented URLs/selectors/field names);
+`overallPass / n` requires all three. `overallPass / n ≥ 0.9` (default
+threshold) means nothing to heal.
 
-#### Step 2 — Read the verdict
-
-The judge writes one file per invocation:
-
-```
-judge-out/
-  verdict-<callType>-<batchIndex>.json
-```
-
-Open that file. The `aggregate` block tells you the pass rate per dimension:
-
-| Field | What it measures |
-|-------|-----------------|
-| `schemaPass / n` | Fraction of samples whose response matched the expected output shape |
-| `factualPass / n` | Fraction of samples whose response was consistent with the grounding context |
-| `hallucinationFreePass / n` | Fraction of samples that contained no invented URLs, selectors, or field names |
-| `overallPass / n` | Fraction that passed all three dimensions simultaneously |
-
-A low `schemaPass` ratio points to output-format issues. A low `factualPass`
-ratio points to grounding issues. A low `hallucinationFreePass` ratio points to
-fabrication. If `overallPass / n ≥ 0.9` (the default threshold) there is
-nothing to heal — the call site is performing well.
-
-#### Step 3 — Run the self-heal loop (when pass rate is below threshold)
+**Step 3 — Self-heal (below threshold):**
 
 ```bash
 pnpm run heal:llm -- \
   --verdict-path judge-out/verdict-<callType>-<batchIndex>.json \
   --call-type <callType> \
-  [--max-iterations <N>] \
-  [--n-replays <N>] \
-  [--success-threshold <0..1>] \
-  [--plateau-delta <0..1>] \
-  [--plateau-window <N>] \
-  [--out-dir llm-heal-out] \
-  [--judge-model <model>] \
-  [--dry-run]
+  [--max-iterations <N>] [--n-replays <N>] [--success-threshold <0..1>] \
+  [--plateau-delta <0..1>] [--plateau-window <N>] [--out-dir llm-heal-out] \
+  [--judge-model <model>] [--dry-run]
 ```
 
-Defaults: 5 iterations, 5 replays per arm, success threshold 0.9. Add
-`--dry-run` to stub both the scorer and the patch generator without making any
-API calls (exercises loop mechanics only, exits BUDGET_EXHAUSTED).
+Defaults: 5 iterations, 5 replays per arm, success threshold 0.9. Cost warning:
+`failures × n_replays × max_iterations` Anthropic calls — up to 250 for 10
+failing samples at defaults. `--dry-run` stubs both scorer and patch generator, exits `BUDGET_EXHAUSTED`.
 
-**Before running:** the loop makes `failures × n_replays × max_iterations`
-Anthropic API calls. For 10 failing samples with the defaults that is up to
-250 calls — confirm you are comfortable with the cost before proceeding.
+**Step 4 — Review** `llm-heal-out/<callType>/healing-<callType>.md` (verdict,
+best `{anchor, replacement}` patch, iteration table) and `state.json`.
+Verdicts: `SUCCESS`, `PLATEAUED` (no improvement above `plateauDelta` across
+`plateauWindow` iterations), `BUDGET_EXHAUSTED`, `TIMEOUT`, `REGRESSED`.
 
-#### Step 4 — Review the heal report
-
-When the loop finishes it writes:
-
-```
-llm-heal-out/<callType>/
-  healing-<callType>.md    ← verdict, best patch, iteration table
-  state.json               ← full convergence history
-  iter-<N>/
-    patch-response.json    ← llm-call-patch-generator output for this iteration
-    patched-prompt.txt     ← prompt text after applying the patch
-    scores.json            ← pass/fail counts for this iteration's arm
-```
-
-Open `llm-heal-out/<callType>/healing-<callType>.md`. It shows:
-
-- **Verdict**: one of the five convergence outcomes below
-- **Best patch**: the `anchor` (verbatim substring of the prompt template) and
-  its `replacement` (the proposed new text), plus the measured pass-rate
-  improvement
-- **Iteration table**: pass-rate delta per iteration
-
-**Convergence verdicts:**
-
-| Verdict | Meaning |
-|---------|---------|
-| `SUCCESS` | Pass rate reached or exceeded the success threshold |
-| `PLATEAUED` | No meaningful improvement (`< plateauDelta`) across `plateauWindow` consecutive iterations |
-| `BUDGET_EXHAUSTED` | Hit `maxIterations` without converging |
-| `TIMEOUT` | An individual iteration exceeded the per-replay timeout |
-| `REGRESSED` | Pass rate fell below the baseline after patching |
-
-#### Step 5 — Manually apply the patch
-
-The heal loop never modifies any source file — the operator owns the source of
-truth. After reviewing the report, locate the relevant call site and apply the
-patch by hand:
+**Step 5 — Apply by hand.** The loop never modifies source. Locate the call
+site and substitute the anchor:
 
 | `callType` | Source file |
 |------------|------------|
-| `recon-rephrase` | `src/scripts/recon-browser.ts` |
-| `recon-replan` | `src/scripts/recon-browser.ts` |
+| `recon-rephrase` / `recon-replan` | `src/scripts/recon-browser.ts` |
 | `recon-flow-patch` | `src/scripts/recon-heal.ts` |
 | `llm-prompt-patch` | `src/scripts/llm-heal.ts` |
 
-The report gives you the exact `anchor` substring and its `replacement`. Open
-the source file, find the anchor, and substitute:
-
-```bash
-$EDITOR src/scripts/<source-file>.ts
-# find: anchor="<old text>"
-# replace with: replacement="<new text>"
-```
-
-Then re-run the judge to confirm the patch raised the pass rate:
-
-```bash
-pnpm run judge:llm -- \
-  --calls-ndjson .barnacle/calls.ndjson \
-  --call-type <callType> \
-  --batch-index 1
-```
-
-**The manual-apply discipline** — prompt templates stay under human control;
-the loop proposes patches backed by measured replay evidence rather than
-modifying source directly. A patch that improved the pass rate in the heal
-environment still needs human review before it ships to `main`.
+Re-run the judge to confirm the patch raised the pass rate. Same
+manual-apply discipline as 6D: a patch backed by measured evidence still
+needs human review before `main`.
 
 ---
 
@@ -1206,59 +612,37 @@ environment still needs human review before it ships to `main`.
 
 | Severity | What changed | Symptom |
 |----------|-------------|---------|
-| **Low** | Response field added or renamed | Zod schemas start failing; existing consumers may be unaffected |
-| **Medium** | Query shape required by server changes | A field you request is now rejected, or a new required argument appears — hot path 4xx on every call |
-| **High** | Endpoint path or host moves | `404` on every call |
-| **High** | Bot detection tightens | `403` on plain `fetch()`. Endpoint still exists, direct HTTP is dead |
-| **Severe** | Auth requirements appear | What was public now requires a session token. Direct HTTP dead until auth flow is resolved |
+| Low | Response field added or renamed | Zod schemas start failing; existing consumers may be unaffected |
+| Medium | Query shape required by server changes | A requested field is rejected, or a new required argument appears — hot path 4xx |
+| High | Endpoint path or host moves | `404` on every call |
+| High | Bot detection tightens | `403` on plain `fetch()`; direct HTTP is dead |
+| Severe | Auth requirements appear | What was public now requires a session token |
 
 ### The fix ladder
 
 | Severity | Response | Time-to-fix |
 |----------|----------|-------------|
 | Schema drift | Update Zod schema; re-deploy. Fallback covers the gap. | < 1 hour |
-| Query shape rejected | Re-run Phase 1 against the broken operation. Diff old vs. new capture. Update codified query. | < 4 hours |
-| Endpoint moved | Re-run Phase 1 fully — the whole flow is likely restructured. Re-do Phases 2–4. | 1 day |
-| Bot detection tightened | Recon still works (real browser). Flip to fallback-only while you investigate whether new headers restore direct HTTP. | Minutes to flip; days to restore |
-| Auth appeared | Strategy decision: capture-and-refresh auth token via browser, or accept Stagehand-only for affected endpoints. | Days to weeks |
+| Query shape rejected | Re-run Phase 1 against the broken operation; diff and update. | < 4 hours |
+| Endpoint moved | Re-run Phase 1 fully; re-do Phases 2–4. | 1 day |
+| Bot detection tightened | Flip to fallback-only while investigating new headers. | Minutes to flip; days to restore |
+| Auth appeared | Capture-and-refresh token, or accept Stagehand-only. | Days to weeks |
 
 ### What protects you before the change is visible
 
-**Zod at the boundary.** The moment a response stops matching your schema, the
-request fails loudly rather than silently returning garbage. Single most
-important defensive measure.
-
-**Stagehand fallback is always hot.** You don't have to build a fallback when
-the hot path dies — it already exists. Site changes degrade cost and latency,
-not availability.
-
-**Recon-time self-healing.** When a recon flow step misses, recon-browser does
-not give up. Each step runs through a 5-attempt cascade (act → observe+act →
-structured-click → observe+act with `ignoreSelectors` → LLM rephrase),
-verified by
-network-counter delta or URL change. On terminal cascade failure the script's
-`main()` loop also attempts up to two global flow replans, where Claude
-rewrites the remaining flow tail given the failure context. The aim is that a
-single recon run produces a working capture set even when the user's
-flow text was rough — see Phase 1c–1e above for the full design. Note: we
-intentionally set `selfHeal: false` on Stagehand. Stagehand's built-in heal
-only catches Playwright throws, not silent semantic misses ("clicked the wrong
-button, returned success"), which is the failure mode we actually need to
-recover from. The cascade handles both.
-
-**Runtime fallback retries the whole flow.** The runtime path is different:
-when the hot HTTP path throws a schema/bot-challenge/5xx error the dispatch
-layer falls back to the browser, and the entire `plugin.execute()` is wrapped
-in `withScraperRetry` (`src/scraper/retry.ts`) — 3 attempts, exponential
-backoff, classified by error type. The verifier at runtime is the plugin's
-Zod schema: if extraction returns garbage, parse fails, the whole flow
-restarts with a fresh selector cache. Coarse-grained but correct, and fits
-the runtime cost model where the right answer to a hot fallback rate is to
-re-run recon.
-
-**Committed artifacts make the diff trivial.** `git log` on the captured query
-tells you exactly when the target's shape last changed. You're never guessing
-what changed or when.
+- **Zod at the boundary.** A response that stops matching fails loudly
+  rather than returning garbage — the single most important defensive
+  measure.
+- **Stagehand fallback is always hot.** Site changes degrade cost and
+  latency, not availability.
+- **Recon-time self-healing.** The 5-attempt cascade (1c) plus up to two
+  global replans (1e) mean a single recon run usually produces a working
+  capture set even from a rough flow.
+- **Runtime fallback retries the whole flow.** `plugin.execute()` is wrapped
+  in `withScraperRetry` — 3 attempts, exponential backoff, classified by
+  error type — verified by the plugin's Zod schema.
+- **Committed artifacts make the diff trivial.** `git log` on the captured
+  query shows exactly when the target's shape last changed.
 
 ---
 For the design rationale behind this approach — alternatives compared and why

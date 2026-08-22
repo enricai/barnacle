@@ -1,10 +1,7 @@
 # Barnacle Testing Guide
 
-> Quick reference for writing and running tests. For coding standards, see
-> [../CLAUDE.md](../CLAUDE.md). For architecture context, see
-> [architecture.md](./architecture.md).
-
----
+> Quick reference for writing and running tests. Coding standards:
+> [../CLAUDE.md](../CLAUDE.md). Architecture: [architecture.md](./architecture.md).
 
 ## Running tests
 
@@ -17,31 +14,22 @@ pnpm run typecheck                      # strict TypeScript (no emit) — run be
 pnpm run lint:fix                       # Biome lint + format — run before every PR
 ```
 
-Tests use [Vitest](https://vitest.dev/) in Node environment (no DOM). Coverage
-uses `@vitest/coverage-v8`. Timeout: 30 seconds per test. Workers: up to 50% of
-available CPUs (`pool: "forks"`).
-
----
+[Vitest](https://vitest.dev/), Node environment (no DOM), `@vitest/coverage-v8`. Timeout: 30s. Workers: up to 50% of CPUs (`pool: "forks"`).
 
 ## File conventions
 
-- **Test file location:** colocated with the module being tested.
-  `src/scraper/retry.ts` → `src/scraper/retry.test.ts`
-- **Naming:** `describe` blocks match the module name or the behavior under
-  test; `it` strings describe what the test asserts, not how it does it.
-- **Imports:** use `@/` alias, matching the convention enforced for source files.
+- **Location:** colocated (`src/scraper/retry.ts` → `retry.test.ts`).
+- **Naming:** `describe` matches the module/behavior; `it` describes the assertion.
+- **Imports:** `@/` alias, same as source files.
 
 ```ts
 import { describe, expect, it, vi } from "vitest";
 import { withScraperRetry } from "@/scraper/retry";
 ```
 
----
-
 ## Unit tests
 
-Unit tests cover pure functions, error classification, config parsing, and
-utilities that have no external dependencies.
+Pure functions, error classification, config parsing, no external deps.
 
 ```ts
 // src/scraper/retry.test.ts (excerpt)
@@ -62,13 +50,9 @@ describe("classifyScraperError", () => {
 });
 ```
 
----
-
 ## Route tests (no port binding)
 
-Route tests use Fastify's `app.inject()` to fire HTTP requests directly into
-the Fastify instance without binding a TCP port. This avoids port conflicts
-and is faster than a real HTTP round-trip.
+`app.inject()` fires HTTP requests without binding a TCP port.
 
 ```ts
 import Fastify from "fastify";
@@ -108,16 +92,11 @@ describe("GET /healthz", () => {
 });
 ```
 
-**Pattern:** build → inject → assert → close. Always `close()` in `finally` to
-avoid open-handle leaks between tests.
-
----
+**Pattern:** build → inject → assert → close. Always `close()` in `finally`.
 
 ## Mocking external dependencies
 
-External dependencies (the submission-envelope sink, browser session pool, metrics counters) must be
-mocked so tests run without live infrastructure. Use `vi.mock` at the module
-level and `vi.hoisted` for references that mock factories close over.
+`vi.mock` at module level; `vi.hoisted` for references the mock factory closes over.
 
 ```ts
 // vi.hoisted runs before vi.mock — required when the mock factory uses
@@ -137,18 +116,11 @@ vi.mock("@/scraper/pool", () => ({
 }));
 ```
 
-The `loader.test.ts` file shows the full pattern for testing `dispatch()` —
-mocking the pool, the submission-envelope sink, metrics, and cache while
-keeping the dispatch logic itself un-mocked.
-
----
+See `loader.test.ts` for the full `dispatch()` pattern: pool, sink, metrics, and cache mocked; dispatch logic un-mocked.
 
 ## Testing out-of-tree plugins
 
-Out-of-tree plugin tests exercise the full load→register→dispatch path without
-any static imports. Use a `.js` fixture under `src/plugins/__fixtures__/` so
-the test loads the plugin the same way an operator's runtime module would be
-loaded.
+Full load→register→dispatch path via a `.js` fixture under `__fixtures__/`.
 
 ```ts
 import path from "node:path";
@@ -193,48 +165,18 @@ it("serves POST /v1/<siteId>/run with the canned response", async () => {
 });
 ```
 
-Set `DEV_BYPASS_AUTH=true` and `NODE_ENV=test` in `beforeEach` (and restore in
-`afterEach`) so the auth plugin passes without a real bearer token. The fixture
-module must be CJS (`module.exports = plugin`) so Node can `require("zod/v4")`
-without ESM complications — see `src/plugins/__fixtures__/e2e-plugin.js` for
-the canonical example.
-
----
+Set `DEV_BYPASS_AUTH=true` + `NODE_ENV=test` in `beforeEach`/`afterEach`. Fixture must be CJS (`module.exports = plugin`) — see `e2e-plugin.js`.
 
 ## Testing a new site plugin
 
-A new plugin needs tests for:
+1. **Hot path** — mock `createHttpClient`/`createGraphqlClient`, assert `executeHttp` result.
+2. **Browser fallback** — mock `runWithSession`, assert `execute()` result.
+3. **`auditPayload`** — assert only intended fields (no PII).
+4. **`onRetry`** — assert `ScraperError` + attempt number per retry, if implemented.
+5. **Telemetry** — for join keys discovered mid-run, stub `context.telemetry` and assert `addJoinKeys`.
 
-1. **Hot path returns data** — mock `createHttpClient` or `createGraphqlClient`
-   to return a fixture response and assert the plugin's `executeHttp` returns
-   the right `SitePluginResult`.
-2. **Browser fallback is wired** — mock `runWithSession` to call the task with
-   a stub session and assert `execute()` returns the right `SitePluginResult`.
-3. **`auditPayload` is set correctly** — assert `result.auditPayload` contains
-   only the fields you intend to write to the DB (no PII, right shape).
-4. **`onRetry` hook** — if your plugin implements `onRetry`, assert it is called
-   with the correct `ScraperError` and attempt number on each retry cycle.
-5. **Run-attached telemetry fields** — if your plugin calls
-   `context.telemetry.addJoinKeys()` to attach a join key it only discovers
-   mid-run (something `extractJoinKeys` can't see because it only ever
-   resolves once against the inbound payload — a token minted mid-flow, a
-   value scraped off a confirmation page), stub `context.telemetry` on the
-   `SitePluginContext` you pass in and assert `addJoinKeys` was called with
-   the right fields at the point in `execute()`/`executeHttp()` where the
-   value becomes known.
-
-**Mock the wrapper, not the factory.** Plugins call `createHttpClient()` (or
-`createGraphqlClient()`) once at module scope and reuse the returned wrapper
-inside `executeHttp`. Both factories return a **plain callable function**, not
-an object with method names — `createHttpClient` returns
-`(url, init) => Promise<TResponse>` (`src/scraper/http-client.ts:198-207`);
-`createGraphqlClient` returns
-`(operationName, query, variables) => Promise<TResponse>`
-(`src/scraper/graphql-client.ts:28-34`). Your mock must be a callable with the
-same signature. Mocking the factory but leaving the return as an object with
-imagined `.query` / `.get` methods produces a wrapper that's called as a
-function but resolves to `undefined` — the test fails confusingly inside
-`executeHttp` rather than at the mock boundary.
+**Mock the wrapper, not the factory.** Both return a **plain callable
+function** — not an object with method names.
 
 ```ts
 // Example: testing a new plugin's hot path
@@ -259,13 +201,7 @@ it("hot path returns items from the GraphQL response", async () => {
 });
 ```
 
-**Stub `context.telemetry`, not a module.** `SitePluginContext.telemetry` is
-bound by `buildPluginContext` (`src/plugins/loader.ts`) the same way
-`recordBeaconOutcome` is — it is a plain object your test constructs by hand
-as part of `SitePluginContext`, not something you `vi.mock()` a module for.
-Assert on the `addJoinKeys` spy directly rather than inspecting core's
-merged `joinKeys`; `dispatch()`'s own merge with `extractJoinKeys(payload)`
-is core's concern, not the plugin's.
+**Stub `context.telemetry`, not a module.** Assert on `addJoinKeys` directly.
 
 ```ts
 // Example: asserting a mid-run join-key attachment
@@ -288,23 +224,11 @@ it("attaches the confirmation token discovered mid-run as a join key", async () 
 });
 ```
 
-Build the stub with `as unknown as SitePluginContext` rather than a direct
-`: SitePluginContext` annotation — the direct annotation runs an excess-
-property check against every field on the interface (including ones added
-after this test was written), which is exactly the kind of churn a stub
-object shouldn't be exposed to.
-
----
+Use `as unknown as SitePluginContext`, not a direct annotation (avoids excess-property checks).
 
 ## Integration-test scaffold
 
-`src/testing/integration-runner.ts` exports `runIntegrationJob` — a
-site-agnostic orchestrator for end-to-end integration tests that verify a
-plugin submission by polling a [testmail.app](https://testmail.app) inbox.
-
-Each plugin's integration test owns only the per-job payload mapping; the
-generic steps (inbox allocation, context construction, `dispatch()`, inbox
-poll) live in the helper:
+`runIntegrationJob` (`src/testing/integration-runner.ts`) polls a [testmail.app](https://testmail.app) inbox; per-plugin tests own only the payload mapping.
 
 ```ts
 import { runIntegrationJob } from "@/testing/integration-runner";
@@ -320,21 +244,11 @@ const { result, message } = await runIntegrationJob({
 expect(message.subject).toBeTruthy();
 ```
 
-In unit tests, pass a stub `pollFn` to avoid real network calls — see
-`src/testing/integration-runner.test.ts` for the full pattern.
-
----
+Pass a stub `pollFn` in unit tests — see `integration-runner.test.ts`.
 
 ## Batch-test harness
 
-`src/testing/batch-email-confirmation.ts` exports `runBatchEmailConfirmation` — a
-site-agnostic two-phase batch runner used by scripts that submit many jobs and
-then verify each one via a confirmation email. Phase 1 submits all jobs (with
-configurable concurrency via `p-queue`); phase 2 polls each inbox serially to
-stay within testmail's rate limit.
-
-All site-specific behaviour is injected via callbacks (`allocateInbox`,
-`submit`, `pollEmail`, `mapVerdict`), so the harness owns only the loop:
+`runBatchEmailConfirmation` (`src/testing/batch-email-confirmation.ts`): phase 1 submits jobs, phase 2 polls serially. Site behaviour is callback-injected.
 
 ```ts
 import { runBatchEmailConfirmation } from "@/testing/batch-email-confirmation";
@@ -348,26 +262,15 @@ const verdicts = await runBatchEmailConfirmation(jobs, {
 });
 ```
 
-`src/testing/batch-report.ts` exports `renderBatchReport` — a pure function
-that converts a `BatchJobVerdict[]` into a markdown table with a `Net: N/M`
-summary line. Callers decide how to emit the string (stdout, file, logger).
-
----
+`renderBatchReport` (`src/testing/batch-report.ts`) renders verdicts as a markdown table with a `Net: N/M` summary line.
 
 ## Shared test fixtures
 
-`src/testing/resume-fixture.ts` and `src/testing/persona-fixture.ts` export the
-canonical test persona and resume used across all site tests so every test submits
-the same data and a future swap is a one-file change.
+`resume-fixture.ts` / `persona-fixture.ts` export the canonical test persona and resume.
 
-- `loadTestResume()` — reads `src/testing/fixtures/resume.pdf` and returns a
-  `TestResume` with `buffer`, `contentType`, `filename`, and `base64` fields.
-- `resumePayloadFields(resume)` — maps a `TestResume` to the four payload field
-  names every resume-accepting site shares (`Resume`, `ResumeContentType`,
-  `ResumeFilename`, `ResumeBase64`). Spread into the payload object instead of
-  repeating the mapping at every call site.
-- `TEST_PERSONA` — a static `PersonaFixture` object with pre-filled applicant
-  contact fields (name, phone, address) sourced from `persona-fixture.ts`.
+- `loadTestResume()` — reads `resume.pdf`, returns `buffer`/`contentType`/`filename`/`base64`.
+- `resumePayloadFields(resume)` — maps to the four shared resume payload fields.
+- `TEST_PERSONA` — static contact fields (name/phone/address).
 
 ```ts
 import { loadTestResume, resumePayloadFields } from "@/testing/resume-fixture";
@@ -381,15 +284,9 @@ const payload = {
 };
 ```
 
----
-
 ## Structural coverage guard
 
-`src/testing/coverage-guard-suite.ts` exports `defineCoverageGuardSuite` — a
-registry-driven helper that asserts each registered plugin has a co-located
-`contract.parity.test.ts` without hardcoding any site name. On `main` where
-`BUILTIN_SITE_PLUGINS` is empty the guard runs zero iterations (trivially
-green); any branch that populates the registry gains the check automatically.
+`defineCoverageGuardSuite` (`src/testing/coverage-guard-suite.ts`) asserts each registered plugin has a `contract.parity.test.ts`, without hardcoding site names.
 
 ```ts
 import { defineCoverageGuardSuite } from "@/testing/coverage-guard-suite";
@@ -403,23 +300,11 @@ defineCoverageGuardSuite({
 });
 ```
 
-Pass a stub array of `{ meta: { siteId } }` objects in unit tests — no real
-plugin imports needed. The optional `extraAssertions(pluginDir, siteId)` callback
-lets callers register additional per-plugin `it` blocks (replay fixture presence,
-etc.) without baking site-specific logic into the engine helper.
-
-The live cross-plugin guard for the site branch lives in
-`src/sites/_shared/coverage-expectations.test.ts`. It drives
-`defineCoverageGuardSuite` with the real `BUILTIN_SITE_PLUGINS` registry,
-locks the replay-fixture asymmetry, and pins per-plugin bodySchema rejection
-baselines — keeping `src/testing/contract-parity-suite.test.ts` free of site
-imports.
-
----
+Pass a stub `{ meta: { siteId } }` array in unit tests. Live guard: `src/sites/_shared/coverage-expectations.test.ts`.
 
 ## Coverage exclusions
 
-The following are excluded from coverage reports (see `vitest.config.ts`):
+Excluded from coverage (see `vitest.config.ts`):
 
 | Exclusion | Reason |
 |-----------|--------|
@@ -428,8 +313,6 @@ The following are excluded from coverage reports (see `vitest.config.ts`):
 | `src/types/**` | Interface files — no executable code |
 | `src/scraper/session.ts` | Requires a live browser session (Browserbase/Steel) to test meaningfully |
 | `src/server.ts` | Fastify entrypoint — `main()` only fires when executed directly |
-
----
 
 ## Task completion checklist
 

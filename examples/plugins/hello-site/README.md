@@ -24,15 +24,8 @@ From the repository root:
 BARNACLE_PLUGINS=./examples/plugins/hello-site/dist/index.js pnpm start
 ```
 
-On boot you'll see:
-
-```
-hello-site → /v1/hello-site/run (loaded)
-```
-
 Then call it (Barnacle routes are authenticated — send a plaintext key whose
-bcrypt hash is in `API_KEYS_HASHED`, or set `DEV_BYPASS_AUTH=true` in dev). The
-server listens on `http://localhost:3000` by default (`PORT` to override):
+bcrypt hash is in `API_KEYS_HASHED`, or set `DEV_BYPASS_AUTH=true` in dev):
 
 ```bash
 curl -s -X POST http://localhost:3000/v1/hello-site/run \
@@ -49,55 +42,11 @@ curl -s -X POST http://localhost:3000/v1/hello-site/run \
 }
 ```
 
-The authenticated introspection route lists every loaded plugin:
+## Writing your own
 
-```bash
-curl -s http://localhost:3000/v1/plugins -H "Authorization: Bearer <your-api-key>"
-```
-
-## Things to know when writing your own
-
-- **Import Zod as `zod/v4`, not bare `zod`.** Barnacle uses
-  `fastify-type-provider-zod`, which compiles routes against core's own Zod
-  instance. A schema built against a different Zod import may pass load-time
-  validation but fail at route registration.
-- **Export the plugin as `plugin` and/or `default`** — Barnacle reads
-  `module.exports.plugin`, then `.default`, then the module itself. An
-  arbitrarily-named export (e.g. `export const myPlugin`) will **not** be found.
-- **`apiVersion` must be a plain version like `"1.0.0"`**, not a caret range
-  (`"^1.0.0"`). v1 matches the leading major version only; a `^` prefix is not
-  parsed and would disable the plugin. (Caret ranges arrive in a later release.)
-  You can also omit `apiVersion` entirely to accept any version.
-- **Ship binary assets `__dirname`-relative**: `path.join(__dirname, "fixtures", …)`.
-  cwd-relative paths break depending on where the server is launched.
-- **A plugin that manages its own post-submit tracking navigation must call
-  `context.recordBeaconOutcome`** — otherwise its beacon-fire telemetry stays
-  stuck at `beaconStatus: "skipped"`. A config-only `*.plugin.json` manifest
-  can reach it too, but only through the `spec.httpModule` escape hatch —
-  `executeHttp(payload, context)` receives the same `SitePluginContext` a
-  module plugin's does. See the plugin-authoring guide's
-  [Reconciliation join keys](../../../docs/plugin-authoring.md#reconciliation-join-keys-extractjoinkeys)
-  section for the full contract, including the fold-precedence consequence
-  of adopting it.
-- **To attach a field only discovered mid-run** (something read off the page
-  after navigation, a token minted mid-flow, a value observed on a response —
-  anything `extractJoinKeys` can't see because it only ever runs against the
-  pre-run payload), call `context.telemetry.addJoinKeys({ ... })` from
-  `execute()` or `executeHttp()` at any point before returning. Core merges
-  the collector's snapshot over `extractJoinKeys(payload)`'s result before
-  writing the submission's `joinKeys` bag — run-discovered keys win on
-  collision. See the same
-  [Reconciliation join keys](../../../docs/plugin-authoring.md#reconciliation-join-keys-extractjoinkeys)
-  section for the full contract.
-- **Config-only `*.plugin.json` manifests can only reach `context.telemetry`
-  through the `httpModule` escape hatch.** `executeHttp(payload, context)`
-  receives the same `SitePluginContext` a module plugin's does, so a manifest
-  with an `httpModule` can call `addJoinKeys()` from it. The manifest's own
-  declarative browser flow cannot — it's driven entirely by data through
-  `runHealingFlow`, with no imperative per-site code for a call like this to
-  live in.
-
-See the [configuration guide's **Out-of-tree plugins**](../../../docs/configuration.md#out-of-tree-plugins)
-section for the full
-`BARNACLE_PLUGINS` / `BARNACLE_PLUGINS_STRICT` / `BARNACLE_PLUGINS_DIR` env-var
-reference and the resolution/failure-policy rules.
+For the full authoring contract — Zod import rules, plugin export shape,
+`apiVersion` matching, `context.recordBeaconOutcome`, and
+`context.telemetry.addJoinKeys()` — see the
+[plugin-authoring guide](../../../docs/plugin-authoring.md) and the
+[configuration guide's **Out-of-tree plugins**](../../../docs/configuration.md#out-of-tree-plugins)
+section for the `BARNACLE_PLUGINS*` env-var reference.

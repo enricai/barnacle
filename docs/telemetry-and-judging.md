@@ -13,8 +13,8 @@ Barnacle's recon pipeline and its healing cascades make LLM calls at several
 points: rephrasing a stuck flow step, replanning the remaining tail after a
 terminal failure, proposing a patch to a failed flow step, and proposing a
 patch to a failing LLM prompt template. These calls are invisible at runtime
-— they succeed or silently degrade, and there is no natural signal that the
-model's output quality has shifted.
+— they succeed or silently degrade, with no natural signal that output
+quality has shifted.
 
 Structured telemetry solves this. Every LLM call site appends one NDJSON line
 to a shared, append-only sink (`src/lib/telemetry/call-capture.ts`, path
@@ -24,18 +24,18 @@ the judge skill against the accumulating file on a cadence that fits their
 recon frequency — weekly for active sites, before and after any
 prompt-template change.
 
-Local NDJSON survives process restarts but not container replacement — an ECS
-task swap discards the disk. The optional buffered S3 sink
-(`src/lib/telemetry/s3-sink.ts`) replicates both the calls and submissions NDJSON
-streams to object storage so captures survive that case too; it is entirely
-inert until `TELEMETRY_S3_BUCKET` is set (see the [Configuration reference](#configuration-reference)
-below).
+Local NDJSON survives process restarts but not container replacement — an
+ECS task swap discards the disk. The optional buffered S3 sink
+(`src/lib/telemetry/s3-sink.ts`) replicates both the calls and submissions
+NDJSON streams to object storage so captures survive that case too; it is
+inert until `TELEMETRY_S3_BUCKET` is set (see the
+[Configuration reference](#configuration-reference) below).
 
-**The goal is an evidence base, not a dashboard.** The verdict JSON is a diffable
-artifact in `judge-out/`. When a prompt change is proposed or a model upgrade is
-considered, the operator runs the judge against both the old and new configuration
-and compares the aggregate pass rates. The captures are the ground truth; the
-verdicts are the measurement.
+**The goal is an evidence base, not a dashboard.** The verdict JSON is a
+diffable artifact in `judge-out/`. When a prompt change is proposed or a
+model upgrade is considered, the operator runs the judge against both the
+old and new configuration and compares the aggregate pass rates. The
+captures are the ground truth; the verdicts are the measurement.
 
 ---
 
@@ -43,24 +43,14 @@ verdicts are the measurement.
 
 Each captured sample (`LlmCallSample`, defined in
 `src/lib/telemetry/call-capture.ts` and re-exported via
-`src/api/schemas/telemetry.ts`) carries:
-
-| Field | Meaning |
-|-------|---------|
-| `callId` | UUID assigned at call time — ties a sample to its verdict entry |
-| `callType` | Which LLM call site produced this sample (see below) |
-| `model` | Model string used for the call |
-| `systemPrompt` | System prompt text, or `null` if none was provided |
-| `userContent` | The full user-turn content sent to the model |
-| `responseContent` | Raw response text, or `null` if the call threw |
-| `parsedOk` | `true` if the response was parseable as the expected schema |
-| `inputTokens` | Token count from the API response, or `null` |
-| `outputTokens` | Token count from the API response, or `null` |
-| `latencyMs` | Wall-clock milliseconds from request to response, or `null` |
-| `success` | `true` if the call site accepted and used the response |
-| `errorMessage` | The thrown error's message, or `null` on success |
-| `failureKind` | Categorical failure reason (`classifyLlmCallFailure`) — `"anthropic-billing"`, `"anthropic-rate-limit"`, `"anthropic-other"`, `"schema-validation-failed"`, `"response-empty"`, or `"exception-other"`; `null` on success |
-| `ts` | ISO-8601 timestamp when the line was written |
+`src/api/schemas/telemetry.ts`) records the call's identity (`callId`,
+`callType`, `model`), its prompt and response (`systemPrompt`,
+`userContent`, `responseContent`, `parsedOk`), timing and cost
+(`inputTokens`, `outputTokens`, `latencyMs`), and outcome (`success`,
+`errorMessage`, `failureKind`, `ts`). `failureKind` is one of
+`"anthropic-billing"`, `"anthropic-rate-limit"`, `"anthropic-other"`,
+`"schema-validation-failed"`, `"response-empty"`, or `"exception-other"` —
+`null` on success.
 
 ### Call types
 
@@ -87,48 +77,33 @@ three are `true`.
 
 ### 1. Schema adherence (`schemaOk`)
 
-**Question:** Did the model's response match the expected output structure for
-this `callType`?
-
-`true` when `responseContent` is valid JSON whose shape conforms to the
-call type's expected contract — for example, `recon-rephrase` expects a plain
-string, `recon-flow-patch` expects `{anchor, replacement, strategy, pivot_reason}`.
-
-`false` when the response is malformed JSON, missing required fields, or has
-an unexpected shape. If the sample's own `parsedOk` field is `false` — meaning
-the call site itself could not parse the response — the judge automatically
-marks `schemaOk = false` regardless of what the model returns.
+Did the model's response match the expected output structure for this
+`callType`? `true` when `responseContent` is valid JSON conforming to the
+call type's contract — e.g. `recon-rephrase` expects a plain string,
+`recon-flow-patch` expects `{anchor, replacement, strategy, pivot_reason}`.
+If the sample's own `parsedOk` is `false`, the judge marks `schemaOk = false`
+regardless of what the model returned.
 
 ### 2. Factual grounding (`factuallyGrounded`)
 
-**Question:** Are all factual claims in the response consistent with the context
-provided in `userContent`?
-
-`true` when the model's output is consistent with the page context, error dumps,
-observe candidates, and other grounding material included in the user turn.
-`false` when the response contradicts or ignores facts explicitly present in
-the prompt — for example, a rephrase that targets a DOM element the observe
-candidates show is absent, or a replan that ignores the list of already-completed
-steps.
+Are all factual claims in the response consistent with the context provided
+in `userContent`? `false` when the response contradicts or ignores facts
+present in the prompt — e.g. a rephrase targeting a DOM element the observe
+candidates show is absent, or a replan ignoring already-completed steps.
 
 ### 3. Hallucination-freeness (`hallucinationFree`)
 
-**Question:** Does the response avoid inventing information not implied by the
-prompt?
-
-`true` when the output contains no fabricated URLs, selector strings, field
-names, or other values that were not grounded in the user-turn content.
-`false` when the model invents specifics — a plausible-looking but non-existent
-GraphQL field, a selector that does not appear in the observe candidates, a
-URL that was not mentioned in the page context.
+Does the response avoid inventing information not implied by the prompt?
+`false` when the model invents specifics not grounded in the user-turn
+content — a fabricated GraphQL field, a selector absent from the observe
+candidates, an unmentioned URL.
 
 ### Aggregate pass
 
-`pass = schemaOk && factuallyGrounded && hallucinationFree`.
-
-The aggregate counts (`schemaPass`, `factualPass`, `hallucinationFreePass`,
-`overallPass`) let operators identify which dimension is the primary failure
-mode before deciding on a prompt-template change.
+`pass = schemaOk && factuallyGrounded && hallucinationFree`. The aggregate
+counts (`schemaPass`, `factualPass`, `hallucinationFreePass`, `overallPass`)
+let operators identify which dimension is the primary failure mode before
+deciding on a prompt-template change.
 
 ---
 
@@ -176,15 +151,15 @@ skill's patch generator more precise.
 
 ## The self-heal loop
 
-When the aggregate pass rate falls below a threshold (default 90%, configurable
-via `SELFHEAL_SUCCESS_THRESHOLD`), `llm-self-heal` (`pnpm heal:llm`) runs an
-iterative patch-and-replay loop:
+When the aggregate pass rate falls below a threshold (default 90%,
+configurable via `SELFHEAL_SUCCESS_THRESHOLD`), `llm-self-heal`
+(`pnpm heal:llm`) runs an iterative patch-and-replay loop:
 
 1. **Baseline** — replay the failing samples against the current prompt
    template and record the pass rate.
 2. **Patch** — ask the `llm-call-patch-generator` subagent to propose a
-   minimal `{anchor, replacement}` edit to the prompt template based on the
-   failing examples and any prior iteration history.
+   minimal `{anchor, replacement}` edit based on the failing examples and
+   any prior iteration history.
 3. **Replay** — apply the patch and re-score the failing samples `N` times
    (default 5) to account for LLM non-determinism.
 4. **Converge** — check against `successThreshold`, plateau detection
@@ -192,20 +167,21 @@ iterative patch-and-replay loop:
 
 The loop writes per-iteration artifacts to `llm-heal-out/<callType>/iter-N/`
 and a final `healing-<callType>.md` report with the best patch and iteration
-history. **Production prompt templates in `src/` are never modified automatically.**
-The operator applies the best patch manually after reviewing the report.
+history. **Production prompt templates in `src/` are never modified
+automatically** — the operator applies the best patch manually after
+reviewing the report.
 
 Convergence verdicts: `SUCCESS` (threshold met), `PLATEAUED` (no meaningful
-improvement across `plateauWindow` consecutive iterations), `BUDGET_EXHAUSTED`
-(hit `maxIterations` without converging), `REGRESSED` (pass rate fell below
-baseline).
+improvement across `plateauWindow` consecutive iterations),
+`BUDGET_EXHAUSTED` (hit `maxIterations` without converging), `REGRESSED`
+(pass rate fell below baseline).
 
 ---
 
 ## Configuration reference
 
-All telemetry and judging knobs are in `src/config.ts` under the `telemetry`,
-`judging`, and `selfheal` namespaces:
+All telemetry and judging knobs are in `src/config.ts` under the
+`telemetry`, `judging`, and `selfheal` namespaces:
 
 | Env var | Default | Meaning |
 |---------|---------|---------|
@@ -229,8 +205,9 @@ All telemetry and judging knobs are in `src/config.ts` under the `telemetry`,
 ### Session-IP capture knobs
 
 The submit record's `session.ip` (and the beacon record's `sessionIp`) are
-gated by knobs under `src/config.ts`'s `scraper` namespace, not `telemetry` —
-they govern the browser-session echo navigation, not the NDJSON sink itself:
+gated by knobs under `src/config.ts`'s `scraper` namespace, not `telemetry`
+— they govern the browser-session echo navigation, not the NDJSON sink
+itself:
 
 | Env var | Default | Meaning |
 |---------|---------|---------|
@@ -247,150 +224,17 @@ A separate append-only NDJSON file, `.barnacle/submissions.ndjson`
 durable, queryable answer to "what did we submit for jobId X on date Y, did
 it succeed, and did the conversion beacon fire?" Two record kinds share the
 sink, discriminated by `kind`
-(`reconciliationRecordSchema`, `src/lib/telemetry/reconciliation-record.ts`).
+(`reconciliationRecordSchema`, `src/lib/telemetry/reconciliation-record.ts`):
+a `"submit"` record per dispatch outcome, and a `"beacon"` record for the
+conversion/beacon-fire dimension, which is distinct from the submit
+record's `status`.
 
 Kept on its own sink (not mixed into `calls.ndjson`) so the judge and
 self-heal readers — which Zod-parse every line of `calls.ndjson` as an
 `LlmCallSample` — stay untouched.
 
-### `"submit"` records — one per dispatch outcome
-
-Written by `captureSubmissionEnvelope` (`src/lib/telemetry/submission-capture.ts`)
-and validated against `submitRecordSchema`, exported from that module as
-`submissionEnvelopeSampleSchema`. Every key of the schema:
-
-| Field | Meaning |
-|-------|---------|
-| `kind` | Always `"submit"`. |
-| `siteId` | Which plugin handled the request — the cohort dimension for reconciliation. |
-| `requestId` | The Fastify-issued correlation ID for the inbound request; joins a `"beacon"` record to this one. |
-| `joinKeys` | Opaque `Record<string, unknown> \| null` — the plugin's own `extractJoinKeys` hook resolved from the inbound payload, merged with any fields the plugin attached mid-run via `context.telemetry.addJoinKeys()` (run-discovered keys win on collision). Core never inspects its contents; `null` when neither source produced anything. |
-| `inboundPayload` | The request body the caller posted, unredacted (`z.unknown()` — no shape is enforced on it). |
-| `status` | Submit outcome: `"submitted"` or `"error"`. |
-| `auditPayload` | The same object plugins return via `SitePluginResult.auditPayload`; `null` on errors. Plugins that need to keep PII out of the sink redact it here, not on `inboundPayload`. |
-| `errorMessage` | The failure message on errors; `null` on success. |
-| `durationMs` | Total dispatch wall time. |
-| `ts` | ISO timestamp. |
-| `session` | `{ id, provider, ip, ipCapturedAt } \| null` — identity of the Browserbase session that served this run. `null` only on the direct-HTTP hot path (`executeHttp`, no session ever acquired). Once a session is acquired, `id`/`provider` are always populated; `ip`/`ipCapturedAt` fall back to `null` when the provider exposes no outbound-IP accessor (Steel) or when session-IP capture is disabled (see [Configuration reference](#configuration-reference)). |
-
-`joinKeys` is populated from two sources merged together: the plugin's own
-`extractJoinKeys` hook (`src/site-plugin.ts`), resolved once from the inbound
-payload, and `context.telemetry.addJoinKeys()` — a mid-run attach point on
-`SitePluginContext` backed by a per-dispatch `RunTelemetry`
-(`src/lib/telemetry/run-telemetry.ts`) that a plugin can call at any point
-during `execute()`/`executeHttp()` to attach a field it only discovers during
-the run (something read from the page, a token minted mid-flow, a value
-observed on a response) — something `extractJoinKeys` cannot do since it only
-ever sees the pre-run payload. `dispatch()` (`src/plugins/loader.ts`), the
-sink's only production call site, calls `plugin.extractJoinKeys?.(payload) ?? null`
-once per dispatch, then merges the collector's snapshot over it (run-discovered
-keys win on collision) on both the success and error envelope paths —
-`null` when neither source produced anything.
-
-`session` is stamped by the same `dispatch()` call site: once per dispatch,
-in a `finally` around the plugin's session-scoped work, core best-effort
-awaits the acquired `BrowserSession`'s optional `getOutboundIp()` accessor
-(`src/scraper/session-shared.ts`) and records `{ id: session.sessionId,
-provider: session.provider, ip, ipCapturedAt }` — `session` itself is only
-`null` when no `BrowserSession` was ever acquired (the `executeHttp` hot
-path). `getOutboundIp()` is itself a memoized wrapper
-(`src/scraper/session-browserbase.ts`) around `resolveSessionOutboundIp`
-(`src/scraper/session-ip.ts`), which opens a separate, short-lived tab and
-navigates it to an IP-echo endpoint — the only way to learn a Browserbase
-session's actual outbound IP, since neither the Browserbase SDK nor
-`BrowserSession` otherwise exposes it. It never throws: capture failures,
-timeouts, a missing accessor (Steel), and a disabled capture flag all yield
-`ip`/`ipCapturedAt: null` within an otherwise-populated `session` block,
-rather than interrupting the submission.
-
-### `"beacon"` records — the conversion/beacon-fire dimension, distinct from submit `status`
-
-Written by `captureBeaconEvent` (`src/lib/telemetry/beacon-capture.ts`) and
-validated against `beaconEventSchema`. For a plugin with no `extractJoinKeys`,
-appended independently, strictly later than its matching `"submit"` record,
-once `fireTrackingClick` (`src/lib/tracking-click.ts`) resolves the vendor
-click-tracking navigation core drove itself. A plugin that declares
-`extractJoinKeys` (and so manages its own beacon nav) can instead call
-`context.recordBeaconOutcome` — bound to the run's `requestId`/`siteId` by
-`buildPluginContext` (`src/plugins/loader.ts`) — once its own navigation
-resolves, giving it the same ability to report a real outcome. Every key:
-
-| Field | Meaning |
-|-------|---------|
-| `kind` | Always `"beacon"`. |
-| `requestId` | Joins this record back to its `"submit"` record. |
-| `siteId` | Same cohort dimension as the submit record. |
-| `joinKeys` | Two writers, not one. For a `fireTrackingClick`-written line: the same merged `extractJoinKeys`/`context.telemetry.addJoinKeys()` bag as the submit record, threaded through by the caller. For a `context.recordBeaconOutcome`-written line: exactly the bag the plugin passes as `input.joinKeys` — `createBeaconOutcomeRecorder` forwards it to `captureBeaconEvent` verbatim, with no merge against the run's submit-side bag and no interpretation by core. Either way, the folded row `GET /v1/submissions` returns takes `joinKeys` from the submit line only — `foldReconciliationRecords` copies just `beaconStatus`/`trackingUrl`/`ts`/`durationMs` off the winning beacon line — so a beacon line's own `joinKeys` bag is readable only from raw NDJSON. |
-| `beaconStatus` | `"fired"`, `"failed"`, or `"skipped"` — the conversion/beacon-fire outcome, a field distinct from the submit record's `status`. This is what makes "submitted but the beacon did not fire" measurable, where previously `fireTrackingClick` was fire-and-forget with errors swallowed and only Datadog counters (`recordTrackingClickSuccess`/`recordTrackingClickFailure`) as evidence. `"skipped"` covers two distinct reasons, distinguished by `trackingUrl` below: no beacon was ever applicable for the run (no usable `TrackingUrl` — `trackingUrl: null`), or the plugin declared `extractJoinKeys` and so fires its own beacon nav outside `dispatch()` even though a `TrackingUrl` was present (`trackingUrl` carries the real, truncated URL). Either way `"skipped"` is distinct from `"not_fired"` below (no beacon line arrived at all). If that self-managing plugin later calls `context.recordBeaconOutcome` to report a real `fired`/`failed` outcome for the same `requestId`, that line always outranks the earlier `"skipped"` line when folded, regardless of write order. |
-| `trackingUrl` | The vendor click-tracking URL, truncated to 120 characters; `null` when none was present. For a `"skipped"` record this doubles as the two-reasons signal above — present means a URL existed but a plugin-owned navigation used it instead of core's `fireTrackingClick`. |
-| `durationMs` | Wall time of the tracking-click navigation itself, not the original dispatch. |
-| `ts` | ISO timestamp. |
-| `sessionIp` | `string \| null`. The outbound IP of `fireTrackingClick`'s own short-lived Browserbase session (`src/lib/tracking-click.ts`) — a **different** session than the one that served the original submit, so it can (and often will) carry a different IP than the submit record's `session.ip`. Resolved the same way (`getOutboundIp()`), and only present on `"fired"`/`"failed"` records; `null` on `"skipped"` records, since no engine-driven tracking-click session ever opens in that case. |
-
-A `"fired"`/`"failed"` `"beacon"` record is written by either of two
-sources. The first is `fireTrackingClick`, when its caller supplies a
-`TrackingClickReconciliationContext` (`requestId` plus `joinKeys`) — the
-parameter is optional so existing call sites keep compiling. `dispatch()`'s
-call site supplies one on every tracking click it fires (i.e. only for a
-plugin with no `extractJoinKeys`), threading the same `joinKeys` bag it
-resolved for the submit record. The second is
-`context.recordBeaconOutcome` (`SitePluginContext`, bound to the run's
-`requestId`/`siteId` by `buildPluginContext` in `src/plugins/loader.ts`) —
-a plugin-callable wrapper around `createBeaconOutcomeRecorder`
-(`src/lib/telemetry/beacon-capture.ts`), which a plugin that declares
-`extractJoinKeys` calls once its own beacon navigation resolves, to report
-the real outcome that `dispatch()` otherwise records as `"skipped"`. Like
-`captureBeaconEvent`, it never throws — errors are logged and swallowed.
-It defaults an omitted `trackingUrl`/`durationMs` to `null`/`0`, the same
-values `dispatch()`'s own `"skipped"` write uses. A `"skipped"` `"beacon"`
-record is written by `dispatch()` itself, via the same `captureBeaconEvent`,
-when a successful submit's payload has no (or an empty-string)
-`TrackingUrl`, OR when the plugin declared `extractJoinKeys` (asserting it
-manages its own tracking nav) — `durationMs: 0` since no engine-driven
-tracking-click navigation ever ran in either case. The write path is
-additionally exercised directly by `beacon-capture.test.ts`.
-
-### Reading, filtering, and querying reconciliation rows
-
-`readReconciliationRows` (`src/lib/telemetry/submission-reader.ts`) reads the
-sink and left-joins `"beacon"` records onto their `"submit"` record by
-`requestId`, producing one `ReconciliationRow` per run with a `beaconStatus`
-of `"fired"`, `"failed"`, `"skipped"`, or `"not_fired"` — the sink writes the
-first three; `"not_fired"` is synthesized by the reader when no beacon line
-ever arrived for a submit row. When more than one `"beacon"` line shares a
-`requestId` — e.g. `dispatch()`'s synchronous `"skipped"` write for a
-self-managing plugin followed by that plugin's own later-recorded real
-outcome — a real `"fired"`/`"failed"` line always outranks `"skipped"`
-regardless of write order; among equal-rank lines the later one wins. `GET
-/v1/submissions` instead
-composes `readDurableReconciliationRows`
-(`src/lib/telemetry/reconciliation-source.ts`), which unions the local
-sink's raw records with its S3-replicated records (the buffered S3 sink
-described above), dedupes exact duplicates, and folds the result the same
-way `readReconciliationRows` does — so a submit line written by one ECS
-task and its beacon line written by another still land in one row.
-`queryReconciliationRows`
-(`src/lib/telemetry/submission-query.ts`) then filters/sorts (newest-first)/
-paginates those rows by `siteId`, `requestId`, `status`, `beaconStatus`, or a
-`from`/`to` window — the fields every reconciliation query needs regardless
-of plugin. `joinKeys`-specific filtering is not offered at this layer, since
-core doesn't know its shape; a caller filters on `joinKeys` client-side, or
-narrows by `siteId`/`requestId` first. Both are composed behind
-`GET /v1/submissions` (authenticated; `src/api/routes/submissions.ts`,
-querystring/response schemas in `src/api/schemas/submissions.ts`) — the
-queryable HTTP path for a plugin to join runs against its own attribution
-provider's report without re-parsing raw NDJSON. The response row omits
-`inboundPayload`/`auditPayload` (the opaque blobs this route exists to stop
-callers from having to re-parse) and renames the reader's internal
-`beaconTrackingUrl` field to `trackingUrl`. The submit record's `session`
-block folds and serializes through unchanged, while the beacon record's
-`sessionIp` is renamed to `beaconSessionIp` (both on `ReconciliationRow`
-and on `reconciliationRowSchema`, derived off
-`beaconEventSchema.shape.sessionIp` rather than restated) so it reads as
-distinct from the submit line's own `session.ip` on the wire — the two are
-separate Browserbase sessions per run. `ReconciliationRow` and
-`reconciliationRowSchema` otherwise derive from
-`submitRecordSchema`/`beaconEventSchema` rather than restating fields, so
-a caller comparing runs against a third-party report's IP column reads
-`session.ip` (and, separately, the beacon's own `beaconSessionIp`) straight
-off `GET /v1/submissions` without re-parsing raw NDJSON.
+For the full field-by-field schema of both record kinds, how `joinKeys` is
+merged from `extractJoinKeys` and `context.telemetry.addJoinKeys()`, how
+`session`/`sessionIp` are captured, and how rows are read, filtered, and
+queried via `GET /v1/submissions`, see the operator runbook:
+[submission-reconciliation.md](./submission-reconciliation.md).

@@ -4,8 +4,7 @@ Environment variables, deployment, and troubleshooting reference for Barnacle.
 
 ## Environment variables
 
-All variables are read once at process start. Required variables cause the
-process to exit on missing values; optional ones have safe defaults.
+All variables are read once at process start; missing required ones exit the process.
 
 ### Application
 
@@ -52,10 +51,7 @@ process to exit on missing values; optional ones have safe defaults.
 
 ### AWS Bedrock (alternative LLM provider)
 
-Set `USE_BEDROCK=true` to route Stagehand's LLM calls through AWS Bedrock
-instead of the Anthropic API. When enabled, `ANTHROPIC_API_KEY` is not needed.
-AWS credentials resolve in standard SDK order: explicit vars → ECS task role →
-EC2 instance profile → `~/.aws/credentials`.
+Set `USE_BEDROCK=true` to route Stagehand's LLM calls through AWS Bedrock instead of the Anthropic API; credentials resolve in standard SDK order.
 
 | Variable | Default | Required | Purpose |
 |----------|---------|----------|---------|
@@ -75,8 +71,7 @@ EC2 instance profile → `~/.aws/credentials`.
 
 ### Rate limiting (inbound)
 
-These limit traffic *to* Barnacle's own API. See per-plugin Bottleneck config
-in each `contract.ts` for outbound rate limits to target sites.
+These limit traffic *to* Barnacle's own API (outbound limits live in each plugin's `contract.ts`).
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
@@ -93,25 +88,14 @@ in each `contract.ts` for outbound rate limits to target sites.
 
 ### Datadog (opt-in)
 
-APM tracing and DogStatsD metrics are **opt-in**: `dd-trace` and `hot-shots` are
-optional peer dependencies, so a plain `npm i @enricai/barnacle` installs neither
-and Barnacle runs without them. Enable either half independently — install the
-package and flip its flag. If a flag is on but the package is missing, Barnacle
-warns and carries on with that feature disabled; it never fails to boot.
+APM tracing and DogStatsD metrics are **opt-in** peer dependencies — a missing package just disables its flag with a warning instead of failing to boot.
 
 ```bash
-# APM tracing
-pnpm add dd-trace
-DD_TRACE_ENABLED=true node --import dd-trace/initialize dist/server.js
-
+# APM tracing — --import loads the tracer before other modules so it can patch http/net/dns
+pnpm add dd-trace && DD_TRACE_ENABLED=true node --import dd-trace/initialize dist/server.js
 # DogStatsD metrics
-pnpm add hot-shots
-DD_METRICS_ENABLED=true node dist/server.js
+pnpm add hot-shots && DD_METRICS_ENABLED=true node dist/server.js
 ```
-
-Tracing needs `--import dd-trace/initialize` for full auto-instrumentation:
-Datadog requires the tracer to load before any other module so it can patch
-http/net/dns. Metrics have no such constraint.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
@@ -162,9 +146,7 @@ http/net/dns. Metrics have no such constraint.
 
 ### Per-site base URL overrides
 
-Set `BARNACLE_SITE_<UPPERCASE_SITE_ID>_BASE_URL` to override a plugin's
-`defaultBaseUrl` without source changes. Underscores in the env key map to
-hyphens in the `siteId`:
+Set `BARNACLE_SITE_<UPPERCASE_SITE_ID>_BASE_URL` to override a plugin's `defaultBaseUrl` without source changes (underscores map to hyphens in the `siteId`):
 
 ```bash
 BARNACLE_SITE_MY_SHOP_BASE_URL="https://staging.my-shop.com"  # overrides plugin `my-shop`
@@ -179,31 +161,22 @@ BARNACLE_SITE_MY_SHOP_BASE_URL="https://staging.my-shop.com"  # overrides plugin
 | `BARNACLE_PLUGINS_DIR` | `process.cwd()` | Base directory used to resolve relative specifiers and locate the operator's `node_modules`. Defaults to wherever the binary is run — not the installed Barnacle package root. |
 | `BARNACLE_PLUGINS_CONFIG_DIR` | _(unset)_ | Directory scanned at startup for `*.plugin.json` config manifests, each loaded as a config-only plugin. Lets operators register sites by dropping a JSON file in a directory instead of editing `BARNACLE_PLUGINS`. An unreadable directory is logged and skipped — it never crashes boot. |
 
-**Resolution rule:** a specifier starting with `.` or `/` is treated as a filesystem path resolved relative to `BARNACLE_PLUGINS_DIR`. Anything else is treated as an npm package name and resolved via `require.resolve` against the operator's own `node_modules` inside `BARNACLE_PLUGINS_DIR`.
+**Resolution rule:** a `.`/`/`-prefixed specifier is a filesystem path resolved against `BARNACLE_PLUGINS_DIR`; anything else is an npm package resolved via `require.resolve`. **Failure policy:** non-strict logs and records `"disabled"` while the rest boot; `BARNACLE_PLUGINS_STRICT=true` aborts instead. **`zod/v4` requirement:** plugins must `import { z } from "zod/v4"`, not bare `"zod"`, since `fastify-type-provider-zod` compiles routes against core's zod instance.
 
-**Failure policy:** by default (non-strict), a plugin that fails to load is logged at `warn` level and recorded as `"disabled"` in the load report — the server still boots with the remaining plugins. Set `BARNACLE_PLUGINS_STRICT=true` to abort startup on any load failure instead.
-
-**`zod/v4` requirement for plugin authors:** import Zod as `import { z } from "zod/v4"` in your plugin, not as bare `"zod"`. Barnacle uses `fastify-type-provider-zod` which compiles routes against core's own zod instance; a plugin schema built against a different zod import may pass load-time validation but fail at route registration.
-
-`GET /v1/plugins` (authenticated) returns the full plugin load report — one record per built-in and out-of-tree specifier — including `siteId`, `displayName`, `route`, `specifier`, `resolvedPath`, `apiVersion`, `status` (`"loaded"` or `"disabled"`), and an optional `reason` when disabled. Requires a valid `Authorization: Bearer <token>` header (reveals filesystem paths, so it is separate from the auth-free `/healthz`/`/readyz` probes).
+`GET /v1/plugins` (authenticated) returns the full load report per plugin — auth-gated since it reveals filesystem paths.
 
 ### Generating an API key
 
-Barnacle validates every request using bcrypt-hashed bearer tokens stored in
-`API_KEYS_HASHED`. To create one:
+Barnacle validates requests against bcrypt hashes in `API_KEYS_HASHED` (comma-separate multiple hashes for key rotation):
 
 ```bash
-# 1. Generate a random plaintext key — save this, you'll send it as Authorization: Bearer <key>
+# 1. Generate a plaintext key — send it as Authorization: Bearer <key>
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-
-# 2. Hash it (bcrypt cost factor 10) — paste the output into API_KEYS_HASHED
+# 2. Hash it (bcrypt cost 10) — paste into API_KEYS_HASHED
 node -e "const b=require('bcryptjs');b.hash(process.argv[1],10,(e,h)=>console.log(h))" <your-key>
 ```
 
-Comma-separate multiple hashes in `API_KEYS_HASHED` to support key rotation.
-
-For local development, set `DEV_BYPASS_AUTH=true` in `.env` to skip auth
-entirely — never set this in production.
+For local dev, `DEV_BYPASS_AUTH=true` skips auth entirely — never in production.
 
 ## Deployment
 
@@ -223,53 +196,26 @@ ANTHROPIC_API_KEY="..."   # or USE_BEDROCK=true + AWS creds
 
 ### Process management
 
-Barnacle is a plain Node.js process. Use pm2 or systemd to keep it alive and
-restart it on crash:
+Use pm2 or systemd to keep the plain Node.js process alive and restart on crash:
 
 ```bash
-# pm2
-pm2 start dist/server.js --name barnacle --env production
-pm2 save && pm2 startup
-
-# systemd (example unit)
-[Service]
-ExecStart=/usr/bin/node /srv/barnacle/dist/server.js
-WorkingDirectory=/srv/barnacle
-EnvironmentFile=/srv/barnacle/.env
-Restart=on-failure
+pm2 start dist/server.js --name barnacle --env production && pm2 save && pm2 startup
 ```
 
 ### Reverse proxy
 
-Route traffic through nginx or an Application Load Balancer (ALB). Set
-`TRUST_PROXY=true` so Fastify uses `X-Forwarded-For` for the client IP
-(needed for rate limiting on unauthenticated traffic).
+Route traffic through nginx or an ALB with `TRUST_PROXY=true` so Fastify reads `X-Forwarded-For` for rate limiting.
 
 ```nginx
 location / {
     proxy_pass         http://127.0.0.1:3000;
     proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header   X-Forwarded-Proto $scheme;
-    proxy_set_header   Host $host;
 }
 ```
 
 ### Health probes
 
-Wire `/healthz` as the liveness probe and `/readyz` as the readiness probe:
-
-```yaml
-# Kubernetes example
-livenessProbe:
-  httpGet: { path: /healthz, port: 3000 }
-  initialDelaySeconds: 5
-readinessProbe:
-  httpGet: { path: /readyz, port: 3000 }
-  initialDelaySeconds: 10
-```
-
-`/readyz` returns 503 when the scraper pool queue is saturated (depth >
-`READINESS_QUEUE_THRESHOLD`) or when required scraper credentials are missing.
+Wire `/healthz` as the liveness probe and `/readyz` as the readiness probe; `/readyz` returns 503 when the scraper queue is saturated or required credentials are missing.
 
 ## Common issues
 
