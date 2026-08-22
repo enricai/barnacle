@@ -90,7 +90,9 @@ const nonStepsKeys = Object.keys(objectBranch.shape).filter((key) => key !== "st
  * non-empty / true to distinguish "gated out on purpose" from "dropped by a
  * regression").
  */
-function representativeValueFor(zodType: IntrospectableZodType): string | string[] | boolean {
+function representativeValueFor(
+  zodType: IntrospectableZodType
+): string | string[] | boolean | Record<string, string> {
   const def = zodType.def;
   const unwrapped = def.type === "optional" && def.innerType ? def.innerType.def : def;
   switch (unwrapped.type) {
@@ -100,6 +102,12 @@ function representativeValueFor(zodType: IntrospectableZodType): string | string
       return ["guard-representative-value"];
     case "boolean":
       return true;
+    case "object":
+      return {
+        endpointPattern: "guard-representative-value",
+        resultsPath: "guard-representative-value",
+        joinField: "guard-representative-value",
+      };
     default:
       throw new Error(
         `replan-writeback-schema-coverage guard: no representative-value mapping for zod type "${unwrapped.type}" — add a case to representativeValueFor in this test`
