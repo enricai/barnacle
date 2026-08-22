@@ -10,8 +10,40 @@ import {
   buildMulticallDependentDrillDownActionSteps,
   buildMulticallHeterogeneousActionSteps,
   buildMulticallSingleShotSearchDrillDownActionSteps,
+  buildStep,
   type MulticallFixtureStep,
 } from "@/scripts/recon-generate-multicall-fixture";
+
+/** A single-shot search + drill-down pair joined on two fields (`accountId`
+ * and `region`) rather than one, so composite `joinFields` declarations have
+ * a fixture to resolve and emit against. */
+function buildCompositeJoinActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: "https://api.example.com/records/search",
+      requestPostData: '{"page":1}',
+      responseBody: {
+        results: [
+          { accountId: "acc-1", region: "us" },
+          { accountId: "acc-2", region: "eu" },
+        ],
+      },
+      timestamp: "2024-04-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: "https://api.example.com/records/detail",
+      requestPostData: '{"accountId":"acc-1","region":"us"}',
+      responseBody: { details: [{ accountId: "acc-1", region: "us", balance: 100 }] },
+      timestamp: "2024-04-01T00:00:01Z",
+    }),
+  ];
+}
+
+const COMPOSITE_SPEC: FoldReturnSpec = {
+  endpointPattern: "/records/detail",
+  resultsPath: "results",
+  joinFields: ["accountId", "region"],
+};
 
 /** Mirrors recon-generate-multistep-return.test.ts's helper — the emitter takes
  * the unexported `ActionStep[]`, structurally identical to the shared fixture's
@@ -47,7 +79,7 @@ function emit(steps: MulticallFixtureStep[], foldReturnSpec: FoldReturnSpec | nu
 const SINGLE_SHOT_SPEC: FoldReturnSpec = {
   endpointPattern: "/catalog/pricing/",
   resultsPath: "results",
-  joinField: "sku",
+  joinFields: ["sku"],
 };
 
 function flowFile(extra: Record<string, unknown>): string {
@@ -71,8 +103,27 @@ describe("parseFoldReturnSpec", () => {
 
   it("returns null when foldReturn declares a non-string field", () => {
     expect(
-      parseFoldReturnSpec(flowFile({ foldReturn: { ...SINGLE_SHOT_SPEC, joinField: 42 } }))
+      parseFoldReturnSpec(flowFile({ foldReturn: { ...SINGLE_SHOT_SPEC, joinFields: 42 } }))
     ).toBeNull();
+  });
+
+  it("returns null when joinFields is empty", () => {
+    expect(
+      parseFoldReturnSpec(flowFile({ foldReturn: { ...SINGLE_SHOT_SPEC, joinFields: [] } }))
+    ).toBeNull();
+  });
+
+  it("returns null when joinFields contains a non-string element", () => {
+    expect(
+      parseFoldReturnSpec(
+        flowFile({ foldReturn: { ...SINGLE_SHOT_SPEC, joinFields: ["sku", 42] } })
+      )
+    ).toBeNull();
+  });
+
+  it("parses a composite (multi-field) joinFields declaration", () => {
+    const spec = { ...SINGLE_SHOT_SPEC, joinFields: ["accountId", "region"] };
+    expect(parseFoldReturnSpec(flowFile({ foldReturn: spec }))).toEqual(spec);
   });
 
   it("returns null when foldReturn is missing a required field", () => {
@@ -129,7 +180,7 @@ describe("resolveFoldPlan", () => {
       resolveFoldPlan(steps, {
         endpointPattern: "/nowhere/",
         resultsPath: "nothing",
-        joinField: "nope",
+        joinFields: ["nope"],
       })
     ).toEqual(heuristicOnly);
   });
@@ -154,6 +205,18 @@ describe("resolveFoldPlan", () => {
         endpointPattern: "([unclosed",
       })
     ).toBeNull();
+  });
+
+  it("resolves a composite (multi-field) joinFields declaration to a plan carrying all fields", () => {
+    const steps = buildCompositeJoinActionSteps();
+
+    expect(resolveFoldPlan(steps, COMPOSITE_SPEC)).toEqual({
+      primaryStepIndex: 0,
+      primaryArrayPath: ["results"],
+      joinFields: ["accountId", "region"],
+      drillStepIndex: 1,
+      drillArrayPath: ["details"],
+    });
   });
 
   it("returns null when the resolved drill-down step is multipart", () => {
@@ -211,6 +274,21 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
     // re-issue the captured item's call and fold one response onto all items.
     expect(body).toContain(`body: \`{"sku":"\${item.sku}"}\``);
     expect(body).not.toContain('"sku":"sku-a"');
+  });
+
+  it("parameterizes every field of a composite joinFields declaration, not just the first", () => {
+    const body = emit(buildCompositeJoinActionSteps(), COMPOSITE_SPEC);
+
+    expect(body).toContain("const foldItems = (r0 as { results: Record<string, unknown>[] })");
+    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain("Object.assign(item, foldMatches[0] ?? {});");
+
+    // Both join fields must re-key to the loop item, not just accountId.
+    expect(body).toContain(
+      `body: \`{"accountId":"\${item.accountId}","region":"\${item.region}"}\``
+    );
+    expect(body).not.toContain('"accountId":"acc-1"');
+    expect(body).not.toContain('"region":"us"');
   });
 
   it("emits no fold loop for the same steps when the flow declares nothing", () => {

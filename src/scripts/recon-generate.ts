@@ -4855,11 +4855,13 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
 
 /**
  * A flow-declared fold/compose return: a drill-down call's response should
- * fold onto the primary capture's result array, keyed by `joinField`. Exists
+ * fold onto the primary capture's result array, keyed by `joinFields`. Exists
  * so a site author can express a fold {@link detectDrillDownFoldPlan}'s
  * structural heuristic cannot see on its own — most commonly a join value
  * the drill-down carries in a request HEADER, which
- * {@link collectRequestStringValues} deliberately never scans.
+ * {@link collectRequestStringValues} deliberately never scans. `joinFields`
+ * is a non-empty array, mirroring {@link FoldPlan.joinFields}, so a composite
+ * join (e.g. `accountId` + `region`) can be declared, not just a single field.
  */
 export interface FoldReturnSpec {
   /** Matches the drill-down call whose response folds onto the primary
@@ -4868,9 +4870,9 @@ export interface FoldReturnSpec {
   /** Dot-separated JSON path to the primary capture's result array the
    * drill-down's response folds onto, e.g. `"orderSearch.results.orders"`. */
   resultsPath: string;
-  /** Name of the field — present on both the primary array's items and the
-   * drill-down's response — that folded items are matched on. */
-  joinField: string;
+  /** Names of the fields — present on both the primary array's items and the
+   * drill-down's response — that folded items are matched on, in order. */
+  joinFields: string[];
 }
 
 /**
@@ -4896,19 +4898,21 @@ export function parseFoldReturnSpec(flowFileContents: string): FoldReturnSpec | 
     if (foldReturn === undefined || foldReturn === null || typeof foldReturn !== "object") {
       return null;
     }
-    const { endpointPattern, resultsPath, joinField } = foldReturn as {
+    const { endpointPattern, resultsPath, joinFields } = foldReturn as {
       endpointPattern?: unknown;
       resultsPath?: unknown;
-      joinField?: unknown;
+      joinFields?: unknown;
     };
     if (
       typeof endpointPattern !== "string" ||
       typeof resultsPath !== "string" ||
-      typeof joinField !== "string"
+      !Array.isArray(joinFields) ||
+      joinFields.length === 0 ||
+      !joinFields.every((f): f is string => typeof f === "string" && f.length > 0)
     ) {
       return null;
     }
-    return { endpointPattern, resultsPath, joinField };
+    return { endpointPattern, resultsPath, joinFields };
   } catch {
     return null;
   }
@@ -4982,7 +4986,7 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
       return {
         primaryStepIndex,
         primaryArrayPath,
-        joinFields: [spec.joinField],
+        joinFields: spec.joinFields,
         drillStepIndex,
         drillArrayPath: drillArray.path,
       };
@@ -7075,7 +7079,7 @@ async function main(): Promise<void> {
   // in the output saying their declaration never applied.
   if (foldReturnSpec !== null && resolveFoldPlan(actionSteps, foldReturnSpec) === null) {
     logger.warn(
-      `flow declares foldReturn (endpointPattern: ${foldReturnSpec.endpointPattern}, resultsPath: ${foldReturnSpec.resultsPath}, joinField: ${foldReturnSpec.joinField}) but no fold plan resolved — no later capture matched the endpoint pattern, resultsPath resolved to no object array, or the matched drill-down is multipart; the drill-down's response will not be folded`
+      `flow declares foldReturn (endpointPattern: ${foldReturnSpec.endpointPattern}, resultsPath: ${foldReturnSpec.resultsPath}, joinFields: ${foldReturnSpec.joinFields.join(", ")}) but no fold plan resolved — no later capture matched the endpoint pattern, resultsPath resolved to no object array, or the matched drill-down is multipart; the drill-down's response will not be folded`
     );
   }
 
