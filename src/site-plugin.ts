@@ -83,9 +83,10 @@ export interface SitePluginMeta {
   /** Stable identifier used as the `config.scraper.siteBaseUrls` lookup key. */
   siteId: string;
   /**
-   * Human-readable label used in logs and Swagger docs. Optional — the
-   * generator has no reliable capture-observed source to derive it from,
-   * so it's left for the plugin author to set explicitly.
+   * Human-readable label used in logs and Swagger docs. Optional —
+   * `recon:generate` derives it from an optional flow-authored `displayName`
+   * in recon-flow.json when the flow author supplies one; otherwise it stays
+   * unset rather than being fabricated from siteId capitalization.
    */
   displayName?: string;
   /** Zod schema for the route request body — validated by core before execute(). */

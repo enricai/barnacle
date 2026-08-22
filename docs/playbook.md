@@ -60,6 +60,12 @@ selector and composes the hop internally; passing a pre-composed hop breaks
 resolution and throws rather than silently degrading to the main frame.
 Omitting `frameSelector` preserves default behavior (drive the main frame).
 
+**Human-readable name:** the object form also accepts `displayName`, the flow
+author's real label for the plugin (never derived by capitalizing `siteId`).
+It round-trips losslessly through replan write-back, and `recon:generate`
+threads it verbatim into both emit paths' `meta.displayName` /
+`metadata.displayName` when present, leaving it unset otherwise.
+
 `observe()` cannot see into a cross-origin OOPIF at all — every scoping form
 returns zero candidates even though the frame is attached. For a frame-scoped
 step, the cascade falls back to `page.deepLocator()` whenever `observe()`
