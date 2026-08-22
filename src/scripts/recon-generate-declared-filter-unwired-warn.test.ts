@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import type { SitePlugin } from "@/site-plugin";
 
 /**
  * When selectPrimaryGraphQLOperation (bugfix-002) reports a declared filter
@@ -97,14 +98,41 @@ function run(runRoot: string, siteId: string): ReturnType<typeof spawnSync> {
   );
 }
 
+/** The generated contract module exports exactly one `<camel>Plugin`; find it by name shape. */
+async function loadBodySchema(siteOutDir: string): Promise<SitePlugin["meta"]["bodySchema"]> {
+  const contractPath = join(siteOutDir, "contract.ts");
+  const contractModule: Record<string, unknown> = await import(
+    /* @vite-ignore */ contractPath
+  );
+  const pluginExportName = Object.keys(contractModule).find((name) => name.endsWith("Plugin"));
+  if (!pluginExportName) throw new Error(`no *Plugin export found in ${contractPath}`);
+  return (contractModule[pluginExportName] as SitePlugin).meta.bodySchema;
+}
+
+/**
+ * A flow step whose explicit `payloadField` names the declared GraphQL
+ * variable's PascalCase field, so `emitBrowserFlowTs`'s payloadFieldNames
+ * accumulator (and therefore emitContractTs's merged extend) actually
+ * contains that field — otherwise the generated contract never declares it
+ * at all, and there is nothing to assert optional/required about.
+ */
+function writeFlowFile(siteOutDir: string): void {
+  mkdirSync(siteOutDir, { recursive: true });
+  writeFileSync(
+    join(siteOutDir, "recon-flow.json"),
+    JSON.stringify([{ step: "select the category filters", payloadField: "Filters" }])
+  );
+}
+
 describe("recon-generate declared-filter-unwired warning", () => {
-  it("warns naming the operation and the unwired variable when no capture populates it", () => {
+  it("warns naming the operation and the unwired variable when no capture populates it", async () => {
     workDir = mkdtempSync(join(tmpdir(), "barnacle-unwired-filter-"));
     const runRoot = join(workDir, "run");
     writeUnwiredRunDir(runRoot);
 
     const siteId = `unwired-filter-test-${process.pid}`;
     siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    writeFlowFile(siteOutDir);
 
     const result = run(runRoot, siteId);
     const out = `${result.stdout}\n${result.stderr}`;
@@ -113,20 +141,34 @@ describe("recon-generate declared-filter-unwired warning", () => {
     expect(out).toContain("catalogSearch_Items");
     expect(out).toContain("filters");
     expect(out).toContain("will replay the captured frozen value");
+
+    // The unwired declared variable's field has no wiring target in
+    // executeHttp, so the caller must be free to omit it from the payload.
+    const bodySchema = await loadBodySchema(siteOutDir);
+    expect(bodySchema.safeParse({ query: "kitchen" }).success).toBe(true);
   }, 30_000);
 
-  it("does not warn when the declared variable is populated on at least one capture (control)", () => {
+  it("does not warn when the declared variable is populated on at least one capture (control)", async () => {
     workDir = mkdtempSync(join(tmpdir(), "barnacle-wired-filter-"));
     const runRoot = join(workDir, "run");
     writeWiredRunDir(runRoot);
 
     const siteId = `wired-filter-test-${process.pid}`;
     siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    writeFlowFile(siteOutDir);
 
     const result = run(runRoot, siteId);
     const out = `${result.stdout}\n${result.stderr}`;
 
     expect(result.status, out).toBe(0);
     expect(out).not.toContain("will replay the captured frozen value");
+
+    // A wired sibling field DOES have a wiring target, so it stays required —
+    // omitting it must fail safeParse instead of silently passing.
+    const bodySchema = await loadBodySchema(siteOutDir);
+    expect(bodySchema.safeParse({ query: "kitchen" }).success).toBe(false);
+    expect(bodySchema.safeParse({ query: "kitchen", Filters: "category:kitchen" }).success).toBe(
+      true
+    );
   }, 30_000);
 });
