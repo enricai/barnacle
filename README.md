@@ -1,5 +1,7 @@
 # Barnacle
 
+## How it works
+
 Point Barnacle at a site, describe the user flow in plain English, and run three
 recon commands. Barnacle drives a real browser through the flow, captures every
 API call, replays them with plain HTTP to prove which ones work without a browser,
