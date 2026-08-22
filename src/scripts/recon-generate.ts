@@ -4551,6 +4551,12 @@ export function buildContractChecklist(opts: {
 
 export function emitContractTs(opts: {
   siteId: string;
+  /**
+   * Optional human-readable brand name. Omitted entirely from the emitted
+   * `meta` object when absent — the generator has no reliable source to
+   * derive this from, so it must not fabricate one via siteId/pascal.
+   */
+  displayName?: string;
   pascal: string;
   baseUrl: string;
   baseHeaders: Record<string, string>;
@@ -4639,6 +4645,7 @@ export function emitContractTs(opts: {
 }): string {
   const {
     siteId,
+    displayName,
     pascal,
     baseUrl,
     baseHeaders,
@@ -5138,7 +5145,7 @@ ${internalRequestReferenceBlock}${queryConst}${gqlCacheBlock}${fixtureComments}
 ${pluginDocComment}
 export const ${camel}Plugin: SitePlugin<${pascal}Payload, ${pascal}Response> = {
   meta: {
-    siteId: ${JSON.stringify(siteId)},
+    siteId: ${JSON.stringify(siteId)},${displayName !== undefined ? `\n    displayName: ${JSON.stringify(displayName)},` : ""}
     bodySchema: ${pascal}PayloadSchema,
     responseSchema: ${pascal}ResponseSchema,
     defaultBaseUrl: ${JSON.stringify(baseUrl)},

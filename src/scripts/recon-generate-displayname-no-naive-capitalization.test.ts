@@ -33,6 +33,13 @@ describe("emitContractTs — meta.displayName is not derived by naive siteId cap
     expect(metaBlockMatch).not.toBeNull();
     expect(metaBlockMatch?.[0]).not.toContain("displayName");
   });
+
+  it("emits a supplied displayName verbatim in the meta block", () => {
+    const contract = emitContractTs({ ...BASE_OPTS, displayName: "Some Real Brand" });
+    const metaBlockMatch = contract.match(/meta: \{[\s\S]*?\n {2}\},/);
+    expect(metaBlockMatch).not.toBeNull();
+    expect(metaBlockMatch?.[0]).toContain(`displayName: "Some Real Brand"`);
+  });
 });
 
 describe("emitConfigManifest — metadata.displayName is not derived by naive siteId capitalization", () => {
