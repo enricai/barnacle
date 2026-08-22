@@ -49,4 +49,36 @@ describe("emitContractTs — aggregate/per-unit basis annotation", () => {
     const contract = emitContractTs({ ...BASE_OPTS, responseBody });
     expect(contract).not.toContain(".describe(");
   });
+
+  it("describes every sibling breakdown that independently confirms the same aggregate, not just the last one found", () => {
+    // Both breakdownA and breakdownB are per-entry maps whose "total" sums
+    // equal price.summary.total in every sample -- two independent, equally
+    // valid derivations for the same aggregate field.
+    const samples = [
+      {
+        price: {
+          summary: { total: 30 },
+          breakdownA: { a: { total: 10 }, b: { total: 20 } },
+          breakdownB: { x: { total: 12 }, y: { total: 18 } },
+        },
+      },
+      {
+        price: {
+          summary: { total: 15 },
+          breakdownA: { a: { total: 5 }, b: { total: 10 } },
+          breakdownB: { x: { total: 6 }, y: { total: 9 } },
+        },
+      },
+    ];
+    const contract = emitContractTs({
+      ...BASE_OPTS,
+      responseBody: samples[0],
+      responseBodySamples: samples,
+    });
+    const describeMatch = contract.match(/total: z\.number\(\)\.describe\(([^)]*)\)/);
+    expect(describeMatch).not.toBeNull();
+    const describeText = describeMatch![1]!;
+    expect(describeText).toContain("breakdownA");
+    expect(describeText).toContain("breakdownB");
+  });
 });

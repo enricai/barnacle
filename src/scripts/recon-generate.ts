@@ -527,8 +527,11 @@ interface InferOpts {
   /** Confirmed aggregate/per-unit findings from {@link detectAggregateUnitBasisFindings},
    * keyed by the joined dot-path of the aggregate field (`path.join(".")`,
    * matching the `path` accumulator threaded below), for O(1) lookup at the
-   * leaf that emits that field's expression. */
-  aggregateUnitBasisFindingsByPath?: ReadonlyMap<string, AggregateUnitBasisFinding>;
+   * leaf that emits that field's expression. Grouped into an array per key
+   * because two different sibling breakdown fields can each independently
+   * satisfy the sum relation for the same aggregate -- every confirmed
+   * derivation is described, not just the last one found. */
+  aggregateUnitBasisFindingsByPath?: ReadonlyMap<string, readonly AggregateUnitBasisFinding[]>;
 }
 
 /**
@@ -640,10 +643,15 @@ export function inferZodSchemaFromSamples(
         const isOptional =
           valuesForKey.length < objects.length || (opts.conditionalFieldNames?.has(k) ?? false);
         const optional = isOptional ? `${expr}.optional()` : expr;
-        const finding = opts.aggregateUnitBasisFindingsByPath?.get(fieldPath.join("."));
-        const described = finding
+        const findings = opts.aggregateUnitBasisFindingsByPath?.get(fieldPath.join("."));
+        const described = findings?.length
           ? `${optional}.describe(${JSON.stringify(
-              `Derived: equals the sum of "${finding.unitFieldName}" across every entry of "${finding.breakdownPath.join(".")}".`
+              `Derived: ${findings
+                .map(
+                  (finding) =>
+                    `equals the sum of "${finding.unitFieldName}" across every entry of "${finding.breakdownPath.join(".")}"`
+                )
+                .join("; also ")}.`
             )})`
           : optional;
         return `${inner}${isValidJsIdentifier(k) ? k : JSON.stringify(k)}: ${described}`;
@@ -4960,12 +4968,16 @@ export function emitContractTs(opts: {
   // in the other direction, hiding a field the flow can actually promise.
   const conditionalFieldNames =
     gql && gqlQuery ? collectConditionalGraphQLFieldNames(gqlQuery) : undefined;
-  const aggregateUnitBasisFindingsByPath = new Map(
-    detectAggregateUnitBasisFindings(responseBodySamples).map((finding) => [
-      finding.aggregatePath.join("."),
-      finding,
-    ])
-  );
+  const aggregateUnitBasisFindingsByPath = new Map<string, AggregateUnitBasisFinding[]>();
+  for (const finding of detectAggregateUnitBasisFindings(responseBodySamples)) {
+    const key = finding.aggregatePath.join(".");
+    const existing = aggregateUnitBasisFindingsByPath.get(key);
+    if (existing) {
+      existing.push(finding);
+    } else {
+      aggregateUnitBasisFindingsByPath.set(key, [finding]);
+    }
+  }
   const responseSchemaExpr =
     omitExecuteHttp && isSubmissionFlow
       ? `z.object({ verified: z.boolean() })`
