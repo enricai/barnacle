@@ -902,11 +902,11 @@ function walkAggregateUnitBasis(
  * Finds every object path where a numeric field's value observably equals
  * the sum of a same-named numeric field carried by every entry of a sibling
  * map-of-objects field -- the party-total/per-guest-breakdown shape
- * (report: `docs/incoming-reports/party-total-per-guest-price-derivation.md`)
  * generalized to any aggregate/per-unit pair, regardless of field or site
  * naming, so recon-generate can annotate the price basis instead of leaving
  * every plugin author and consumer to re-derive it independently and
- * diverge.
+ * diverge. See docs/architecture.md, "Why the generator annotates
+ * aggregate/per-unit basis instead of deriving it".
  *
  * Pure and read-only: walks the merged sample set the same way
  * {@link inferZodSchemaFromSamples} does, but only ever compares numbers
