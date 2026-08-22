@@ -1040,6 +1040,105 @@ export function selectEffectiveResponseBody<T extends { capture: Capture }>(
 }
 
 /**
+ * A detected fold opportunity: a later action's request is keyed off a field
+ * that lives INSIDE an array in an earlier action's response, so folding the
+ * later action's response back onto that array (matched on the field) is
+ * possible instead of `selectReturnAction` discarding one call's data.
+ */
+export interface FoldPlan<T> {
+  /** The step whose response holds the array the fold merges onto. */
+  primaryAction: T;
+  /** JSON path to the array within `primaryAction`'s response body (the
+   * array-index segment and everything after it stripped off). */
+  arrayContainerPath: string[];
+  /** Name(s) of the array-item field(s) the drill-down keys its request off
+   * of. Always length 1 today — plural to leave room for a composite join
+   * key without a shape change. */
+  joinFields: string[];
+  /** The strictly-later step whose request references the join field's
+   * value — the drill-down call whose response should fold onto the array. */
+  drillAction: T;
+}
+
+/** Reads the value at a JSON path (as produced by `walkStringLeaves`/
+ * `Produce.path`) out of a response body, or `undefined` if any segment
+ * doesn't resolve. Array-index segments are numeric strings, matching how
+ * `walkStringLeaves` stringifies them. */
+function readValueAtPath(body: unknown, path: readonly string[]): unknown {
+  return path.reduce<unknown>((node, segment) => {
+    if (node === null || typeof node !== "object") return undefined;
+    return (node as Record<string, unknown>)[segment];
+  }, body);
+}
+
+/** True when a request (URL, JSON body leaf, or header value) references
+ * `value`. Mirrors `compileActionSteps`' pre-scan matching so a fold's join
+ * field is found through the same channels state-threading already uses. */
+function requestReferencesValue<T extends { capture: Capture }>(step: T, value: string): boolean {
+  const { capture } = step;
+  if (capture.url.includes(value)) return true;
+  const bodyLeafValues = jsonBodyLeafValues(capture.requestPostData);
+  if (bodyLeafValues === null) {
+    if (capture.requestPostData?.includes(value)) return true;
+  } else if (bodyLeafValues.some((leaf) => leaf.includes(value))) {
+    return true;
+  }
+  return Object.values(capture.requestHeaders).some((headerValue) => headerValue.includes(value));
+}
+
+/**
+ * Detects a search → drill-down enrichment shape: an earlier action's
+ * response produces a value from INSIDE an array (a non-terminal array-index
+ * path segment, e.g. `["products","0","productId"]`), and that value's own
+ * string is referenced by a strictly-later action's rendered request. When
+ * found, that's the join key a fold/compose return can key off of — the
+ * generator input `emitMultiStepExecuteHttp` needs to merge the drill-down's
+ * response onto the primary array instead of discarding it (see
+ * `selectReturnAction`, which can only ever pick one call's body).
+ *
+ * Returns `null` for flows with no such array-nested produce — a plain
+ * re-queried search or a plain multi-step submission with no re-query, where
+ * every produced value threads from a scalar (or array-tail) field rather
+ * than from inside an array the caller would iterate.
+ *
+ * Picks the FIRST such (producer, consumer) pair in step order, so a flow
+ * with more than one candidate deterministically prefers the earliest array
+ * the caller would naturally iterate over.
+ */
+export function detectFoldPlan<T extends { capture: Capture; produces: Produce[] }>(
+  actions: readonly T[]
+): FoldPlan<T> | null {
+  for (let i = 0; i < actions.length; i++) {
+    const producer = actions[i]!;
+    for (const produce of producer.produces) {
+      if (produce.kind !== "body") continue;
+      const arrayIndexIdx = produce.path.findIndex(
+        (segment, idx) => idx < produce.path.length - 1 && /^\d+$/.test(segment)
+      );
+      if (arrayIndexIdx === -1) continue;
+
+      const value = readValueAtPath(producer.capture.responseBody, produce.path);
+      // An empty string trivially satisfies `.includes("")` on every request,
+      // so it would match the first later action regardless of relevance.
+      if (typeof value !== "string" || value === "") continue;
+
+      const drillAction = actions
+        .slice(i + 1)
+        .find((candidate) => requestReferencesValue(candidate, value));
+      if (!drillAction) continue;
+
+      return {
+        primaryAction: producer,
+        arrayContainerPath: produce.path.slice(0, arrayIndexIdx),
+        joinFields: [produce.name],
+        drillAction,
+      };
+    }
+  }
+  return null;
+}
+
+/**
  * A capture's own URL is not guaranteed parseable (see the try/catch in
  * `deriveBaseUrl` and `firstEndpointCapture` below), so host-provenance
  * filtering must not throw on a malformed one — it just never matches.
@@ -2998,7 +3097,7 @@ export function indexStateValues(
 
 /** A state value produced by a step's response body — read via a JSON
  * accessor on the response variable (e.g. `r6.products["0"].productId`). */
-interface BodyProduce {
+export interface BodyProduce {
   kind: "body";
   name: string;
   path: string[];
@@ -3011,7 +3110,7 @@ interface BodyProduce {
  * forwards it internally. Carried here only so the emitter knows to render
  * a `bind` entry and which request header on the CONSUMING step observed it,
  * i.e. `targetHeader`. */
-interface HeaderProduce {
+export interface HeaderProduce {
   kind: "header";
   name: string;
   sourceHeader: string;
@@ -3019,7 +3118,7 @@ interface HeaderProduce {
   targetHeader: string;
 }
 
-type Produce = BodyProduce | HeaderProduce;
+export type Produce = BodyProduce | HeaderProduce;
 
 interface ActionStep {
   /** The capture this step corresponds to. */
@@ -5534,6 +5633,67 @@ type FlowStepInput =
       payloadField?: string;
       payloadFieldNone?: boolean;
     };
+
+/**
+ * A flow-declared fold/compose return: a drill-down call's response should
+ * fold onto the primary capture's result array, keyed by `joinField`. The
+ * input `emitMultiStepExecuteHttp` needs to generate a loop-and-merge return
+ * instead of `selectReturnAction` discarding the drill-down's data (see
+ * `detectFoldPlan`, which derives this same shape structurally from the
+ * captures rather than from a flow declaration).
+ */
+export interface FoldReturnSpec {
+  /** Matches the drill-down call whose response should fold onto the
+   * primary results (same matching semantics as `submitEndpointPattern`). */
+  endpointPattern: string;
+  /** JSON path (dot-separated) to the primary capture's result array that
+   * the drill-down's response folds onto, e.g. `"cruiseSearch.results.cruises"`. */
+  resultsPath: string;
+  /** Name of the field — present on both the primary array's items and the
+   * drill-down's response — that folded items are matched on. */
+  joinField: string;
+}
+
+/**
+ * Parses an object-form recon-flow.json's optional `foldReturn` declaration
+ * into a typed {@link FoldReturnSpec}, or `null` when the flow is array-form,
+ * doesn't declare `foldReturn`, or declares it with a non-string field —
+ * mirroring the same null-safe pattern the flow loader already applies to
+ * `submitEndpointPattern`/`submitBodyPattern`.
+ */
+export function parseFoldReturnSpec(flowFileContents: string): FoldReturnSpec | null {
+  try {
+    const raw: unknown = JSON.parse(flowFileContents);
+    if (Array.isArray(raw)) return null;
+    if (
+      raw === null ||
+      typeof raw !== "object" ||
+      !("steps" in raw) ||
+      !Array.isArray((raw as { steps: unknown }).steps)
+    ) {
+      return null;
+    }
+    const foldReturn = (raw as { foldReturn?: unknown }).foldReturn;
+    if (foldReturn === undefined || foldReturn === null || typeof foldReturn !== "object") {
+      return null;
+    }
+    const { endpointPattern, resultsPath, joinField } = foldReturn as {
+      endpointPattern?: unknown;
+      resultsPath?: unknown;
+      joinField?: unknown;
+    };
+    if (
+      typeof endpointPattern !== "string" ||
+      typeof resultsPath !== "string" ||
+      typeof joinField !== "string"
+    ) {
+      return null;
+    }
+    return { endpointPattern, resultsPath, joinField };
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Escape a literal string segment so it is safe INSIDE a JS backtick template
