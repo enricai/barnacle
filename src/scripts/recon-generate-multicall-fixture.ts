@@ -128,6 +128,106 @@ export function buildMulticallHeterogeneousActionStepsWithDrillDown(): Multicall
   ];
 }
 
+/** Points `varName`'s step response at an array-nested field, mirroring the
+ * `produces` shape `detectFoldPlan` (recon-generate.ts:1097) looks for: a
+ * non-terminal array-index path segment whose value a strictly-later step's
+ * request references. Cast through `unknown` since `MulticallFixtureStep`
+ * types `produces` as the always-empty `never[]` (see the type's own doc
+ * comment above) — same pattern recon-generate-fold-detection.test.ts uses. */
+function withArrayJoinProduce(
+  steps: MulticallFixtureStep[],
+  varName: string,
+  arrayContainerPath: string[],
+  joinField: string,
+  itemIndex: number
+): MulticallFixtureStep[] {
+  return steps.map((step) =>
+    step.varName === varName
+      ? {
+          ...step,
+          produces: [
+            {
+              kind: "body",
+              name: joinField,
+              path: [...arrayContainerPath, String(itemIndex), joinField],
+            },
+          ] as unknown as never[],
+        }
+      : step
+  );
+}
+
+/**
+ * Same call sequence as {@link buildMulticallHeterogeneousActionStepsWithDrillDown},
+ * but the primary `available-products/` step (r2) carries a `produces` entry
+ * pointing at `productId` inside its `products[]` array — the array-nested
+ * join-field annotation `detectFoldPlan` needs to recognize the terminal
+ * `available-units/` call (r4) as a fold-onto-primary drill-down rather than
+ * a call whose response `selectReturnAction` would otherwise discard.
+ */
+export function buildMulticallHeterogeneousActionStepsWithFoldedDrillDown(): MulticallFixtureStep[] {
+  const annotated = withArrayJoinProduce(
+    buildMulticallHeterogeneousActionSteps(),
+    "r2",
+    ["products"],
+    "productId",
+    0
+  );
+  return [
+    ...annotated,
+    buildStep("r4", {
+      url: AVAILABLE_UNITS_URL,
+      requestPostData: '{"productId":"p1"}',
+      responseBody: { units: [{ unitId: "s1" }], exchangeRate: 1.0 },
+      timestamp: "2024-01-01T00:00:04Z",
+    }),
+  ];
+}
+
+/**
+ * Loop variant of {@link buildMulticallHeterogeneousActionStepsWithFoldedDrillDown}:
+ * the primary `available-products/` step's `products[]` array carries TWO
+ * items (`p1`, `p2`), each with its own terminal `available-units/`
+ * drill-down call (r4, r5) keyed on that item's `productId` — so a
+ * loop-and-merge consumer has more than one iteration to prove it folds
+ * every matching drill-down onto its array item instead of special-casing
+ * the first one.
+ */
+export function buildMulticallHeterogeneousActionStepsWithFoldedDrillDownLoop(): MulticallFixtureStep[] {
+  const steps = buildMulticallHeterogeneousActionSteps();
+  const withSecondProduct = steps.map((step) =>
+    step.varName === "r2"
+      ? {
+          ...step,
+          capture: {
+            ...step.capture,
+            responseBody: {
+              totalPages: 5,
+              totalAvailableListings: 699,
+              products: [{ productId: "p1" }, { productId: "p2" }],
+            },
+          },
+        }
+      : step
+  );
+  const annotated = withArrayJoinProduce(withSecondProduct, "r2", ["products"], "productId", 0);
+  return [
+    ...annotated,
+    buildStep("r4", {
+      url: AVAILABLE_UNITS_URL,
+      requestPostData: '{"productId":"p1"}',
+      responseBody: { units: [{ unitId: "s1" }], exchangeRate: 1.0 },
+      timestamp: "2024-01-01T00:00:04Z",
+    }),
+    buildStep("r5", {
+      url: AVAILABLE_UNITS_URL,
+      requestPostData: '{"productId":"p2"}',
+      responseBody: { units: [{ unitId: "s2" }], exchangeRate: 1.0 },
+      timestamp: "2024-01-01T00:00:05Z",
+    }),
+  ];
+}
+
 const CHECKOUT_HOST = "https://api.example.com";
 
 /**
