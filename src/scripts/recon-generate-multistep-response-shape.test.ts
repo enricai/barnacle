@@ -6,6 +6,7 @@ import {
 } from "@/scripts/recon-generate";
 import {
   buildMulticallHeterogeneousActionStepsWithDrillDown,
+  buildMulticallHeterogeneousActionStepsWithFoldedDrillDown,
   type MulticallFixtureStep,
 } from "@/scripts/recon-generate-multicall-fixture";
 
@@ -99,5 +100,35 @@ describe("recon-generate — G1 shape-inference target agrees with the return ta
 
     expect(source).not.toContain("const TestSiteResponseSchema = z.unknown();");
     expect(source).toContain("totalAvailableListings");
+  });
+
+  it("a resolved fold plan's inferred shape includes the folded drill-down fields, not just the primary call's own", () => {
+    const foldedSteps: MulticallFixtureStep[] =
+      buildMulticallHeterogeneousActionStepsWithFoldedDrillDown();
+    const effectiveResponseBody = selectEffectiveResponseBody(true, foldedSteps, null);
+    const source = emitContractTs({
+      siteId: "test-site",
+      pascal: "TestSite",
+      baseUrl: "https://api.example.com",
+      baseHeaders: { "Content-Type": "application/json" },
+      minTime: 100,
+      safeRps: 10,
+      responseBody: effectiveResponseBody,
+      gql: false,
+      gqlQuery: null,
+      endpointPath: "/api/available-products",
+      auxFiles: [],
+      multiStepBody: `    return { data: r3 };`,
+    });
+
+    // Primary call's own fields must still be present.
+    expect(source).toContain("totalAvailableListings");
+    expect(source).toContain("products");
+    // The drill-down's fields, folded onto the primary array's items, must
+    // be present too — a schema/type describing only the primary call's raw
+    // body would disagree with what executeHttp actually returns for a
+    // resolved fold plan.
+    expect(source).toContain("units");
+    expect(source).toContain("exchangeRate");
   });
 });
