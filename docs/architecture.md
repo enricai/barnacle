@@ -373,5 +373,5 @@ of the hand-rolled options are.
 
 ## File map
 
-See the [README's Architecture section](../README.md#architecture) for the
+See the [README's Reference section](../README.md#reference) for the
 full `src/` tree.
