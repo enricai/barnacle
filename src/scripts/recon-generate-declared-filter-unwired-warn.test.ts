@@ -1,10 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
-import type { SitePlugin } from "@/site-plugin";
+import { z } from "zod/v4";
 
 /**
  * When selectPrimaryGraphQLOperation (bugfix-002) reports a declared filter
@@ -93,20 +93,24 @@ afterEach(() => {
 function run(runRoot: string, siteId: string): ReturnType<typeof spawnSync> {
   return spawnSync(
     TSX_BIN,
-    [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts"],
+    [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
     { cwd: REPO_ROOT, encoding: "utf8" }
   );
 }
 
-/** The generated contract module exports exactly one `<camel>Plugin`; find it by name shape. */
-async function loadBodySchema(siteOutDir: string): Promise<SitePlugin["meta"]["bodySchema"]> {
-  const contractPath = join(siteOutDir, "contract.ts");
-  const contractModule: Record<string, unknown> = await import(
-    /* @vite-ignore */ contractPath
-  );
-  const pluginExportName = Object.keys(contractModule).find((name) => name.endsWith("Plugin"));
-  if (!pluginExportName) throw new Error(`no *Plugin export found in ${contractPath}`);
-  return (contractModule[pluginExportName] as SitePlugin).meta.bodySchema;
+/**
+ * Reads the generated contract.ts's `const <Pascal>PayloadSchema = ...`
+ * expression back out and evaluates it against the real `zod/v4` runtime
+ * (the same import the generated file itself uses), so `safeParse` exercises
+ * the actual emitted schema rather than a hand-copied stand-in. The emitted
+ * expression is pure `z....` composition with no external references, so
+ * evaluating it standalone is safe and faithful to what the plugin ships.
+ */
+function readPayloadSchema(siteOutDir: string): ReturnType<typeof z.object> {
+  const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+  const match = /const \w+PayloadSchema = ([\s\S]*?);\n/.exec(contract);
+  if (!match) throw new Error(`no PayloadSchema declaration found in ${contract}`);
+  return new Function("z", `return ${match[1]};`)(z);
 }
 
 /**
@@ -125,12 +129,12 @@ function writeFlowFile(siteOutDir: string): void {
 }
 
 describe("recon-generate declared-filter-unwired warning", () => {
-  it("warns naming the operation and the unwired variable when no capture populates it", async () => {
+  it("warns naming the operation and the unwired variable when no capture populates it", () => {
     workDir = mkdtempSync(join(tmpdir(), "barnacle-unwired-filter-"));
     const runRoot = join(workDir, "run");
     writeUnwiredRunDir(runRoot);
 
-    const siteId = `unwired-filter-test-${process.pid}`;
+    const siteId = `unwired-filter-test-run${process.pid}`;
     siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
     writeFlowFile(siteOutDir);
 
@@ -144,16 +148,16 @@ describe("recon-generate declared-filter-unwired warning", () => {
 
     // The unwired declared variable's field has no wiring target in
     // executeHttp, so the caller must be free to omit it from the payload.
-    const bodySchema = await loadBodySchema(siteOutDir);
+    const bodySchema = readPayloadSchema(siteOutDir);
     expect(bodySchema.safeParse({ query: "kitchen" }).success).toBe(true);
   }, 30_000);
 
-  it("does not warn when the declared variable is populated on at least one capture (control)", async () => {
+  it("does not warn when the declared variable is populated on at least one capture (control)", () => {
     workDir = mkdtempSync(join(tmpdir(), "barnacle-wired-filter-"));
     const runRoot = join(workDir, "run");
     writeWiredRunDir(runRoot);
 
-    const siteId = `wired-filter-test-${process.pid}`;
+    const siteId = `wired-filter-test-run${process.pid}`;
     siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
     writeFlowFile(siteOutDir);
 
@@ -165,7 +169,7 @@ describe("recon-generate declared-filter-unwired warning", () => {
 
     // A wired sibling field DOES have a wiring target, so it stays required —
     // omitting it must fail safeParse instead of silently passing.
-    const bodySchema = await loadBodySchema(siteOutDir);
+    const bodySchema = readPayloadSchema(siteOutDir);
     expect(bodySchema.safeParse({ query: "kitchen" }).success).toBe(false);
     expect(bodySchema.safeParse({ query: "kitchen", Filters: "category:kitchen" }).success).toBe(
       true
