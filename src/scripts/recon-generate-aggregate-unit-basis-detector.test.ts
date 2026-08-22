@@ -105,6 +105,54 @@ describe("detectAggregateUnitBasisFindings", () => {
     expect(detectAggregateUnitBasisFindings(samples)).toEqual([]);
   });
 
+  it("does not find a finding when the aggregate has no matching-shaped sibling breakdown", () => {
+    const samples = [
+      {
+        price: {
+          summary: { total: 300 },
+          currency: "USD",
+        },
+      },
+      {
+        price: {
+          summary: { total: 90 },
+          currency: "USD",
+        },
+      },
+    ];
+
+    expect(detectAggregateUnitBasisFindings(samples)).toEqual([]);
+  });
+
+  it("does not find a finding when the breakdown is nested two levels deep instead of one", () => {
+    const samples = [
+      {
+        price: {
+          summary: { total: 300 },
+          details: {
+            breakdownByGuest: {
+              guest1: { total: 100 },
+              guest2: { total: 200 },
+            },
+          },
+        },
+      },
+      {
+        price: {
+          summary: { total: 90 },
+          details: {
+            breakdownByGuest: {
+              guest1: { total: 30 },
+              guest2: { total: 60 },
+            },
+          },
+        },
+      },
+    ];
+
+    expect(detectAggregateUnitBasisFindings(samples)).toEqual([]);
+  });
+
   it("returns no findings for empty samples", () => {
     expect(detectAggregateUnitBasisFindings([])).toEqual([]);
   });
