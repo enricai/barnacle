@@ -17,6 +17,7 @@ import {
   emitMultiStepExecuteHttp,
   extractActionSequence,
   extractGraphQLActionSequence,
+  gatherResponseBodySamples,
   indexStateValues,
   inferZodSchemaFromSamples,
   resolveManifestActionSequence,
@@ -31,6 +32,7 @@ import {
   buildMulticallHeterogeneousActionStepsWithDrillDown,
 } from "@/scripts/recon-generate-multicall-fixture";
 import { buildRepeatedSectionSubmissionCaptures } from "@/scripts/recon-generate-repeated-section-fixture";
+import type { Capture } from "@/scripts/recon-shared";
 
 /** The recon env-var token for the applicant email, built by concatenation so
  * Biome's noTemplateCurlyInString rule doesn't flag the literal `${...}`. */
@@ -164,6 +166,79 @@ describe("emitContractTs — non-multipart plugin", () => {
 
   it("uses z.boolean() for boolean fields", () => {
     expect(source).toContain("z.boolean()");
+  });
+});
+
+describe("emitContractTs — responseBodySamples widens the client-level ResponseSchema across multiple captures", () => {
+  it("marks a leaf key present in only one sample .optional() (previously required from a single capture)", () => {
+    const singleSample = emitContractTs({
+      ...BASE_OPTS,
+      responseBody: { id: "abc", active: true, tags: ["a"] },
+    });
+    expect(singleSample).toContain("tags: z.array(z.string()),");
+
+    const multiSample = emitContractTs({
+      ...BASE_OPTS,
+      responseBody: { id: "abc", active: true, tags: ["a"] },
+      responseBodySamples: [
+        { id: "abc", active: true, tags: ["a"] },
+        { id: "def", active: false },
+      ],
+    });
+    expect(multiSample).toContain("tags: z.array(z.string()).optional(),");
+  });
+
+  it("defaults to [responseBody] when responseBodySamples is omitted, keeping existing single-capture call sites unchanged", () => {
+    const withoutSamples = emitContractTs(BASE_OPTS);
+    const withExplicitSingleSample = emitContractTs({
+      ...BASE_OPTS,
+      responseBodySamples: [BASE_OPTS.responseBody],
+    });
+    expect(withoutSamples).toBe(withExplicitSingleSample);
+  });
+});
+
+describe("gatherResponseBodySamples — groups by operation identity, filters to 2xx, dedupes", () => {
+  const BASE = "https://jobs.example.com";
+  const restCapture = (path: string, status: number, responseBody: unknown): Capture => ({
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action",
+    method: "GET",
+    url: `${BASE}${path}?page=1`,
+    status,
+    requestHeaders: {},
+    requestPostData: null,
+    responseHeaders: {},
+    responseBody,
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  });
+
+  it("collects every 2xx same-endpoint capture's response body, deduplicated, ignoring a non-2xx re-fire", () => {
+    const winning = restCapture("/api/listings", 200, { id: "1", tags: ["a"] });
+    const captures = [
+      winning,
+      restCapture("/api/listings", 200, { id: "2" }),
+      restCapture("/api/listings", 200, { id: "1", tags: ["a"] }),
+      restCapture("/api/listings", 500, { error: "boom" }),
+      restCapture("/api/other", 200, { unrelated: true }),
+    ];
+
+    const samples = gatherResponseBodySamples(winning, false, captures);
+
+    expect(samples).toEqual([{ id: "1", tags: ["a"] }, { id: "2" }]);
+  });
+
+  it("falls back to [winningCapture.responseBody] when nothing else in the run shares its identity", () => {
+    const winning = restCapture("/api/listings", 200, { id: "1" });
+    const samples = gatherResponseBodySamples(winning, false, [winning]);
+    expect(samples).toEqual([{ id: "1" }]);
+  });
+
+  it("returns [null] when there is no winning capture", () => {
+    expect(gatherResponseBodySamples(null, false, [])).toEqual([null]);
   });
 });
 
@@ -2078,10 +2153,10 @@ describe("emitMultiStepExecuteHttp — per-call response schema override (G2)", 
     // expecting it to leave every other call's own inferred schema alone.
     const contract = emitContractTs({ ...BASE_OPTS, multiStepBody: body });
     expect(contract).toContain(
-      "const TestSiteResponseSchema = z.object({\n  id: z.string(),\n  active: z.boolean(),\n});"
+      "const TestSiteResponseSchema = z.object({\n  id: z.string(),\n  active: z.boolean(),\n}).loose();"
     );
     const narrowedContract = contract.replace(
-      "const TestSiteResponseSchema = z.object({\n  id: z.string(),\n  active: z.boolean(),\n});",
+      "const TestSiteResponseSchema = z.object({\n  id: z.string(),\n  active: z.boolean(),\n}).loose();",
       "const TestSiteResponseSchema = z.object({\n  totalPages: z.number(),\n  totalAvailableListings: z.number(),\n  products: z.array(z.object({ productId: z.string() })),\n});"
     );
 
@@ -2092,6 +2167,111 @@ describe("emitMultiStepExecuteHttp — per-call response schema override (G2)", 
     expect(togglesBlock).not.toContain("schema: TestSiteResponseSchema");
     expect(togglesBlock).not.toContain("totalPages");
     expect(narrowedContract).toContain("totalPages: z.number()");
+  });
+});
+
+describe("inferZodSchemaFromSamples — __typename dropped and objects .loose() on server-response call sites", () => {
+  it("never emits __typename in the client-level ResponseSchema, even nested", () => {
+    const source = emitContractTs({
+      ...BASE_OPTS,
+      gql: true,
+      gqlQuery: "{ widget { __typename id nested { __typename label } } }",
+      responseBody: {
+        __typename: "Widget",
+        id: "abc",
+        nested: { __typename: "Nested", label: "x" },
+      },
+      multiStepBody: `    return { data: {} as unknown };`,
+    });
+    const schemaMatch = source.match(/export const TestSiteResponseSchema = [\s\S]*?;\n/);
+    expect(schemaMatch).not.toBeNull();
+    expect(schemaMatch?.[0]).not.toContain("__typename");
+  });
+
+  it("wraps every emitted nested z.object({...}) in the client-level ResponseSchema with .loose()", () => {
+    const source = emitContractTs({
+      ...BASE_OPTS,
+      responseBody: { id: "abc", nested: { label: "x" } },
+      multiStepBody: `    return { data: {} as unknown };`,
+    });
+    const schemaMatch = source.match(/export const TestSiteResponseSchema = ([\s\S]*?);\n/);
+    expect(schemaMatch).not.toBeNull();
+    const schemaText = schemaMatch?.[1] ?? "";
+    const objectOpens = schemaText.match(/z\.object\(\{/g) ?? [];
+    const looseCloses = schemaText.match(/\}\)\.loose\(\)/g) ?? [];
+    expect(objectOpens.length).toBeGreaterThan(0);
+    expect(looseCloses.length).toBe(objectOpens.length);
+  });
+
+  it("drops __typename and looses objects in emitMultiStepExecuteHttp's per-call schema", () => {
+    const capture = (
+      url: string,
+      requestPostData: string | null,
+      responseBody: unknown,
+      varName: string
+    ) => ({
+      capture: {
+        timestamp: "2024-01-01T00:00:00Z",
+        phase: "action" as const,
+        method: "POST",
+        url,
+        status: 200,
+        requestHeaders: { "Content-Type": "application/json" },
+        requestPostData,
+        responseHeaders: { "content-type": "application/json" },
+        responseBody,
+        operationName: null,
+        query: null,
+        variables: null,
+        decodedParams: null,
+      },
+      varName,
+      produces: [],
+      isMultipart: false,
+      isCrossDomain: false,
+    });
+    const steps = [
+      capture("https://api.example.com/graphql", null, { __typename: "Widget", id: "abc" }, "r0"),
+    ];
+    const body = emitMultiStepExecuteHttp(
+      steps,
+      null,
+      { stringMessageKey: null, nestedErrorPaths: [] },
+      new Map(),
+      new Set(),
+      new Map(),
+      new Set(),
+      new Map(),
+      new Map(),
+      "https://api.example.com",
+      new Map(),
+      new Map()
+    );
+    expect(body).not.toContain("__typename");
+    expect(body).toMatch(/schema:\s*z\.object\(\{\n\s*id: z\.string\(\),\n\s*\}\)\.loose\(\)/);
+  });
+
+  it("leaves the input-body-derived payload schema and structured-key inference unaffected by __typename/.loose()", () => {
+    const source = emitContractTs({
+      ...BASE_OPTS,
+      inputBody: { __typename: "Ignored", Name: "Alice" },
+      discoveredStructuredKeys: new Map([["eventData", "z.object({ a: z.string() })"]]),
+      multiStepBody: `    return { data: {} as unknown };`,
+    });
+    expect(source).toContain("__typename");
+    expect(source).toContain("eventData: multipartJsonObject(z.object({ a: z.string() })),");
+  });
+});
+
+describe("query-constant comment", () => {
+  it("no longer promises a trim the generator never performs", () => {
+    const source = emitContractTs({
+      ...BASE_OPTS,
+      gql: true,
+      gqlQuery: "{ widget { id } }",
+      multiStepBody: `    return { data: {} as unknown };`,
+    });
+    expect(source).not.toContain("trim UI-only fields before shipping");
   });
 });
 

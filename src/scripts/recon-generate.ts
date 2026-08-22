@@ -513,6 +513,17 @@ interface InferOpts {
    * OR'd into the same presence-driven `.optional()` decision rather than
    * appending a second independent `.optional()`. */
   conditionalFieldNames?: ReadonlySet<string>;
+  /** Drop `__typename` keys from every emitted object shape and mark every
+   * emitted `z.object({...})` `.loose()` rather than the Zod default of
+   * rejecting unrecognized keys. `__typename` is GraphQL response machinery,
+   * never a caller's payload, and recurs at every nesting level; a server
+   * response can otherwise gain or shift fields the plugin never captured,
+   * so an exact-shape object schema rejects live traffic that a byte-for-byte
+   * schema mismatch shouldn't. Scoped to schemas that validate a live
+   * response, not to payload/structured-key inference — those describe what
+   * the plugin itself sends, which doesn't drift the way a server's response
+   * does. */
+  looseServerResponse?: boolean;
 }
 
 /**
@@ -604,7 +615,9 @@ export function inferZodSchemaFromSamples(
 
   if (kind === "object") {
     const objects = nonNull as Record<string, unknown>[];
-    const keys = [...new Set(objects.flatMap((o) => Object.keys(o)))];
+    const keys = [...new Set(objects.flatMap((o) => Object.keys(o)))].filter(
+      (k) => !(opts.looseServerResponse && k === "__typename")
+    );
     if (keys.length === 0) return wrap("z.record(z.string(), z.unknown())");
     const inner = `${indent}  `;
     // Emit identifier-shaped keys unquoted so Biome's formatter doesn't rewrite
@@ -623,7 +636,8 @@ export function inferZodSchemaFromSamples(
         return `${inner}${isValidJsIdentifier(k) ? k : JSON.stringify(k)}: ${optional}`;
       })
       .join(",\n");
-    return wrap(`z.object({\n${fields},\n${indent}})`);
+    const objectExpr = `z.object({\n${fields},\n${indent}})${opts.looseServerResponse ? ".loose()" : ""}`;
+    return wrap(objectExpr);
   }
 
   return wrap("z.unknown()");
@@ -980,6 +994,37 @@ function operationGroupKey(capture: Capture): string {
   })();
   const name = capture.operationName ?? parsedOperationName(capture.query ?? "") ?? "anonymous";
   return `${endpointPath}::${name}`;
+}
+
+/**
+ * Every 2xx capture in the run sharing `winningCapture`'s operation identity
+ * (its `operationGroupKey` for a GraphQL winner, `endpointKey` for a
+ * plain-REST one), deduplicated by response body. A single recon run can
+ * capture the same read operation multiple times (pagination, re-filtering),
+ * and each occurrence is evidence for `inferZodSchemaFromSamples` about
+ * which fields the operation actually returns every time versus only
+ * sometimes -- evidence the winning capture alone can't provide.
+ */
+export function gatherResponseBodySamples(
+  winningCapture: Capture | null,
+  isGraphQLWinner: boolean,
+  captures: readonly Capture[]
+): unknown[] {
+  if (!winningCapture) return [null];
+  const identityOf = (c: Capture): string =>
+    isGraphQLWinner ? operationGroupKey(c) : endpointKey(c.url);
+  const winningIdentity = identityOf(winningCapture);
+  const seen = new Set<string>();
+  const samples: unknown[] = [];
+  for (const c of captures) {
+    if (c.status < 200 || c.status >= 300) continue;
+    if (identityOf(c) !== winningIdentity) continue;
+    const serialized = JSON.stringify(c.responseBody);
+    if (seen.has(serialized)) continue;
+    seen.add(serialized);
+    samples.push(c.responseBody);
+  }
+  return samples.length > 0 ? samples : [winningCapture.responseBody];
 }
 
 /**
@@ -3926,7 +3971,7 @@ export function emitMultiStepExecuteHttp(
     // validates any individual call. Without this override, HttpRequestInit.schema
     // would default to the client's z.unknown() and narrowing the caller-facing
     // contract would enforce that narrowed shape on every call in the chain.
-    const schemaExpr = inferZodSchema(cap.responseBody);
+    const schemaExpr = inferZodSchema(cap.responseBody, 0, "", { looseServerResponse: true });
 
     rendered.push({ url, method: cap.method, headersExpr, bodyArg, schemaExpr });
   }
@@ -4516,6 +4561,12 @@ export function emitContractTs(opts: {
    * the provenance claim in the emitted limiter comment. */
   hasRateLimitProbeData?: boolean;
   responseBody: unknown;
+  /** Every same-identity 2xx capture's response body from the recon run
+   * (deduplicated), fed to `inferZodSchemaFromSamples` so a field the
+   * operation didn't return on every occurrence is inferred `.optional()`
+   * instead of required from `responseBody` alone. Defaults to
+   * `[responseBody]` for call sites that only have the one capture. */
+  responseBodySamples?: readonly unknown[];
   gql: boolean;
   gqlQuery: string | null;
   endpointPath: string;
@@ -4595,6 +4646,7 @@ export function emitContractTs(opts: {
     safeRps,
     hasRateLimitProbeData = false,
     responseBody,
+    responseBodySamples = [responseBody],
     gql,
     gqlQuery,
     endpointPath,
@@ -4646,7 +4698,10 @@ export function emitContractTs(opts: {
       ? `z.object({ verified: z.boolean() })`
       : omitExecuteHttp
         ? `z.unknown()`
-        : inferZodSchema(responseBody, 0, "", { conditionalFieldNames });
+        : inferZodSchemaFromSamples(responseBodySamples, 0, "", {
+            conditionalFieldNames,
+            looseServerResponse: true,
+          });
   // Multi-step flows that include a multipart upload need the binary asset
   // on the payload. ApplicantContactSchema (via ApplicantResumeSchema) already
   // declares Resume/ResumeContentType/ResumeFilename, so submission flows
@@ -4912,7 +4967,7 @@ export function emitContractTs(opts: {
 
   const queryConst =
     !omitExecuteHttp && gql && gqlQuery
-      ? `\n// Lifted verbatim from recon capture — trim UI-only fields before shipping.\nconst ${pascal.toUpperCase()}_QUERY = \`${gqlQuery.trim()}\`;\n`
+      ? `\n// Lifted verbatim from recon capture. The adjacent response schema is drift-tolerant by construction (dropped __typename, .loose() objects), so this query text is not hand-trimmed.\nconst ${pascal.toUpperCase()}_QUERY = \`${gqlQuery.trim()}\`;\n`
       : "";
 
   const gqlCacheBlock = omitExecuteHttp
@@ -5934,12 +5989,22 @@ async function main(): Promise<void> {
   // replay array order -- a replay's body reflects whichever endpoint fired
   // first, not necessarily the primary operation, and only exists once
   // recon:http has run.
-  const responseBody =
-    (
-      primaryGraphQLOperation?.capture ??
-      fallbackGraphQLCapture ??
-      firstEndpointCapture(captures, ownBackendHostnames, fallbackDomain)
-    )?.responseBody ?? null;
+  const winningCapture =
+    primaryGraphQLOperation?.capture ??
+    fallbackGraphQLCapture ??
+    firstEndpointCapture(captures, ownBackendHostnames, fallbackDomain);
+  const responseBody = winningCapture?.responseBody ?? null;
+  // Every 2xx capture sharing the winning capture's operation identity, not
+  // just the one that happened to win selection -- a paginated/re-filtered
+  // re-fire of the same operation can omit a field the winning capture
+  // happened to have (or vice versa), and inferZodSchemaFromSamples needs
+  // that presence evidence across occurrences to mark the field .optional()
+  // instead of required from a single observation.
+  const responseBodySamples = gatherResponseBodySamples(
+    winningCapture,
+    primaryGraphQLOperation !== null || fallbackGraphQLCapture !== null,
+    captures
+  );
 
   // Detect a multi-step submission flow (transactional sites like apply forms,
   // checkout, etc.). When the action sequence has 2+ POSTs, switch the
@@ -6278,6 +6343,11 @@ async function main(): Promise<void> {
     safeRps,
     hasRateLimitProbeData,
     responseBody: effectiveResponseBody,
+    // selectEffectiveResponseBody already resolves a submission flow's own
+    // single terminal capture -- the multi-sample evidence gathered above
+    // describes the (possibly different) read-flow winning capture and
+    // doesn't apply once a submission flow has picked its own return call.
+    responseBodySamples: isSubmissionFlow ? [effectiveResponseBody] : responseBodySamples,
     gql,
     gqlQuery,
     endpointPath,
