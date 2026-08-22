@@ -3,6 +3,7 @@ import { emitMultiStepExecuteHttp } from "@/scripts/recon-generate";
 import {
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
+  buildStep,
   type MulticallFixtureStep,
 } from "@/scripts/recon-generate-multicall-fixture";
 
@@ -28,15 +29,50 @@ function emit(steps: MulticallFixtureStep[]): string {
 }
 
 describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
-  it("returns the re-queried search step's body, not the terminal drill-down's", () => {
+  it("folds the terminal drill-down's per-item response onto the re-queried search step, rather than discarding it", () => {
     const body = emit(buildMulticallHeterogeneousActionStepsWithDrillDown());
 
-    // r3 is the last of the two re-queried available-products/ calls; r4 is
-    // the terminal available-units/ drill-down. Pre-fix (`actions[actions
-    // .length-1]`), this would return r4 — the wrong call's body.
-    expect(body).toContain("return { data: r3 };");
+    // r4 (available-units/) threads r2's `products[0].productId` ("p1") into
+    // its own request — a detected fold plan — so the return must reference
+    // r2 (the primary array actually folded onto), not r3 (selectReturnAction's
+    // plain "latest re-queried call" pick, which has no relation to what r4
+    // threaded) and not r4's own raw body (the original defect: the drill-down
+    // was fetched and its data discarded).
+    expect(body).toContain("return { data: r2 };");
+    expect(body).not.toContain("return { data: r3 };");
     expect(body).not.toContain("return { data: r4 };");
-    expect(body).toContain("const r3 = (await httpClient(");
+    expect(body).toContain("const r2 = (await httpClient(");
+    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain("Object.assign(item, foldMatches[0] ?? {});");
+  });
+
+  it("refuses to emit when a later step threads a produced value out of the fold drill step's own response", () => {
+    // r4 (available-units/) is the fold plan's drill step. Its own
+    // `units[0].unitId` is declared as a produce here — the same way a
+    // chained call's threaded id normally reaches a later step — and step 5
+    // threads it. `const r4` (and any produce read off it) is declared
+    // inside the fold loop's block scope, so a reference from step 5
+    // (outside that loop) can't resolve — emitting that would be broken
+    // TypeScript, so this must fail loudly at generation time instead.
+    const withDrillDown = buildMulticallHeterogeneousActionStepsWithDrillDown();
+    const drillStep = withDrillDown[withDrillDown.length - 1]!;
+    const steps: MulticallFixtureStep[] = [
+      ...withDrillDown.slice(0, -1),
+      {
+        ...drillStep,
+        produces: [
+          { kind: "body", name: "unitId", path: ["units", "0", "unitId"] },
+        ] as unknown as never[],
+      },
+      buildStep("r5", {
+        url: "https://api.example.com/listings-avail-api/units/s1/hold",
+        requestPostData: '{"unitId":"s1"}',
+        responseBody: { held: true },
+        timestamp: "2024-01-01T00:00:05Z",
+      }),
+    ];
+
+    expect(() => emit(steps)).toThrow(/fold plan drill step r4 is referenced outside/);
   });
 
   it("still returns the search step when it is ALSO the terminal call", () => {

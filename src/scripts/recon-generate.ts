@@ -3099,6 +3099,19 @@ function pathToAssertionType(path: string[]): string {
   return `{ ${key}: ${pathToAssertionType(path.slice(1))} }`;
 }
 
+/**
+ * Same nesting as {@link pathToAssertionType} but the leaf types as
+ * `Record<string, unknown>[]` instead of `string` — used to cast a step's
+ * response down to the object-array field a {@link FoldPlan} located
+ * (the primary results array, or the drill-down's per-item match array).
+ */
+function foldArrayAssertionType(path: string[]): string {
+  if (path.length === 0) return "Record<string, unknown>[]";
+  const segment = path[0]!;
+  const key = isValidJsIdentifier(segment) ? segment : JSON.stringify(segment);
+  return `{ ${key}: ${foldArrayAssertionType(path.slice(1))} }`;
+}
+
 /** Suggests a JS-camelCase variable name for a state value path. Falls back
  * up the path if the tail is numeric or not a valid JS identifier. */
 function pathToVarName(path: string[]): string {
@@ -4274,10 +4287,14 @@ export function emitMultiStepExecuteHttp(
       }
     }
   }
-  // The relevance-selected step's var is also referenced by the closing
-  // `return { data }` — see selectReturnAction.
-  const returnAction = selectReturnAction(actions);
+  // A detected drill-down fold plan bypasses selectReturnAction entirely: the
+  // primary step's array is folded in place (see the loop-and-merge emitted
+  // below), so the primary step's var — not whichever call selectReturnAction
+  // would otherwise pick — is what `return { data }` must reference.
+  const foldPlan = detectDrillDownFoldPlan(actions);
+  const returnAction = foldPlan ? null : selectReturnAction(actions);
   if (returnAction) referencedNames.add(returnAction.varName);
+  if (foldPlan) referencedNames.add(actions[foldPlan.primaryStepIndex]!.varName);
 
   // Pass 2: emit. Skip response bindings that aren't referenced; skip
   // produces[] entries whose name isn't referenced. A step's response var
@@ -4326,6 +4343,90 @@ export function emitMultiStepExecuteHttp(
       );
     }
     const bindResponse = referencedNames.has(step.varName) || produceLines.length > 0;
+
+    // The fold plan's drill-down step is emitted as a per-item loop instead
+    // of the single call every other step gets: it re-issues the SAME
+    // url/headers/bodyArg/schemaExpr this pass already rendered for it, only
+    // with the captured join value(s) swapped for the loop item's own field
+    // accessor, then merges the matched drill response back onto that item —
+    // reusing the per-call render rather than a second HTTP-call emitter.
+    if (foldPlan && i === foldPlan.drillStepIndex) {
+      // The loop below block-scopes `const ${step.varName}` inside the
+      // `for` — it does not escape to the rest of the function. If this
+      // step's response var (or one of its produces) is referenced
+      // elsewhere, that reference would resolve to a `const` declared in a
+      // narrower scope and fail to compile. No fixture currently threads a
+      // drill step's own response onward like this, so fail loudly instead
+      // of silently emitting broken TypeScript.
+      if (referencedNames.has(step.varName) || produceLines.length > 0) {
+        throw new Error(
+          `emitMultiStepExecuteHttp: fold plan drill step ${step.varName} is referenced outside its own request (directly or via a produce), but the fold loop scopes its response to a single loop iteration — this combination isn't supported yet.`
+        );
+      }
+      const primaryStep = actions[foldPlan.primaryStepIndex]!;
+      const primaryArray = findObjectArrayField(primaryStep.capture.responseBody);
+      const firstItem = primaryArray?.items[0];
+      if (!primaryArray || !firstItem) {
+        throw new Error(
+          `emitMultiStepExecuteHttp: fold plan primary step ${primaryStep.varName} no longer resolves an object array — detectDrillDownFoldPlan and this emitter have drifted out of sync`
+        );
+      }
+      const joinAccessor = (field: string): string =>
+        isValidJsIdentifier(field) ? `item.${field}` : `item[${JSON.stringify(field)}]`;
+      // A join field can reach the render either as the raw captured literal
+      // (URL query params) or as an already-generic `${payload.<field>}`
+      // reference (top-level JSON body keys — see
+      // applyPayloadKeyValueSubstitutions, which payload-ifies every scalar
+      // body key regardless of length, running BEFORE this fold branch ever
+      // sees the value). Both must resolve to the loop item's own field, not
+      // a caller-supplied payload value shared across every iteration.
+      // Word-boundary anchored: a plain `.split(value).join(...)` would also
+      // rewrite unrelated substrings that happen to contain the join value
+      // (e.g. a "p1" product id colliding with a "/v1/" path segment or a
+      // "p10" sibling id), corrupting parts of the request the join field
+      // never touched.
+      const replaceWholeValue = (haystack: string, value: string, replacement: string): string =>
+        haystack.replace(
+          new RegExp(`\\b${value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g"),
+          replacement
+        );
+      const parameterize = (text: string): string =>
+        foldPlan.joinFields.reduce((acc, field) => {
+          const replacement = `\${${joinAccessor(field)}}`;
+          const withAccessorSwapped = acc.split(`\${payload.${field}}`).join(replacement);
+          const value = firstItem[field];
+          return typeof value === "string" && value.length > 0
+            ? replaceWholeValue(withAccessorSwapped, value, replacement)
+            : withAccessorSwapped;
+        }, text);
+
+      const primaryArrType = foldArrayAssertionType(foldPlan.primaryArrayPath);
+      const primaryArrAccessor = pathToAccessor(foldPlan.primaryArrayPath, {
+        assertNonNull: false,
+      });
+      const drillArrType = foldArrayAssertionType(foldPlan.drillArrayPath);
+      const drillArrAccessor = pathToAccessor(foldPlan.drillArrayPath, { assertNonNull: false });
+
+      lines.push(
+        `    const foldItems = (${primaryStep.varName} as ${primaryArrType})${primaryArrAccessor};`,
+        `    for (const item of foldItems) {`,
+        `      const ${step.varName} = (await httpClient(\`${parameterize(r.url)}\`, {`,
+        `        method: ${JSON.stringify(r.method)},`
+      );
+      const joined = [parameterize(r.headersExpr), parameterize(r.bodyArg)]
+        .filter((s) => s !== "")
+        .join(" ");
+      if (joined !== "") lines.push(`        ${joined}`);
+      lines.push(
+        `        schema: ${r.schemaExpr},`,
+        `      })) as Record<string, unknown>;`,
+        `      const foldMatches = (${step.varName} as ${drillArrType})${drillArrAccessor};`,
+        `      Object.assign(item, foldMatches[0] ?? {});`,
+        `    }`,
+        ""
+      );
+      continue;
+    }
 
     if (step.isCrossDomain) {
       lines.push(
@@ -4430,7 +4531,9 @@ export function emitMultiStepExecuteHttp(
     lines.push("");
   }
 
-  const returnVar = returnAction ? returnAction.varName : "undefined";
+  const returnVar = foldPlan
+    ? actions[foldPlan.primaryStepIndex]!.varName
+    : (returnAction?.varName ?? "undefined");
   lines.push(`    return { data: ${returnVar} };`);
 
   return lines.join("\n");
