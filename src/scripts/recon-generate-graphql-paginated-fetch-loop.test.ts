@@ -168,6 +168,10 @@ describe("recon-generate GraphQL paginated fetch loop: total/count signal presen
     expect(contract).not.toMatch(/while\s*\(\s*true\s*\)/);
     expect(contract).not.toContain("TODO");
 
+    // (b.1) The payload schema exposes maxPages as an optional caller override,
+    // distinct from the required PAGE_SIZE-style fields.
+    expect(contract).toContain("maxPages: z.number().int().positive().optional(),");
+
     // (c) Pages are merged by an identity field discovered from the array element
     // shape, not concatenated blindly.
     expect(contract).toContain("itemsById.set(String(item.id), item);");
@@ -238,6 +242,7 @@ describe("recon-generate GraphQL paginated fetch loop: no total/count signal", (
       /const data = await getGql\(context\.baseUrl\)\("productSearch_Products", \w+_QUERY, \{ pagination: \{"count":5,"skip":0\}, sort: "RELEVANCE" \}\);\n\s*return \{ data \};/
     );
     expect(contract).not.toContain("MAX_PAGES");
+    expect(contract).not.toContain("maxPages");
     expect(contract).not.toContain("itemsById");
   }, 30_000);
 });
