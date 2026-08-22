@@ -72,6 +72,7 @@ const testLogger = loggerStub as unknown as Logger;
 interface IntrospectableZodDef {
   type: string;
   innerType?: { def: IntrospectableZodDef };
+  shape?: Record<string, IntrospectableZodType>;
 }
 interface IntrospectableZodType {
   def: IntrospectableZodDef;
@@ -92,7 +93,7 @@ const nonStepsKeys = Object.keys(objectBranch.shape).filter((key) => key !== "st
  */
 function representativeValueFor(
   zodType: IntrospectableZodType
-): string | string[] | boolean | Record<string, string> {
+): string | string[] | boolean | Record<string, unknown> {
   const def = zodType.def;
   const unwrapped = def.type === "optional" && def.innerType ? def.innerType.def : def;
   switch (unwrapped.type) {
@@ -102,12 +103,12 @@ function representativeValueFor(
       return ["guard-representative-value"];
     case "boolean":
       return true;
-    case "object":
-      return {
-        endpointPattern: "guard-representative-value",
-        resultsPath: "guard-representative-value",
-        joinField: "guard-representative-value",
-      };
+    case "object": {
+      const shape = unwrapped.shape ?? {};
+      return Object.fromEntries(
+        Object.entries(shape).map(([subKey, subType]) => [subKey, representativeValueFor(subType)])
+      );
+    }
     default:
       throw new Error(
         `replan-writeback-schema-coverage guard: no representative-value mapping for zod type "${unwrapped.type}" — add a case to representativeValueFor in this test`
