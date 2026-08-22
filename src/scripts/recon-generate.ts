@@ -524,6 +524,11 @@ interface InferOpts {
    * the plugin itself sends, which doesn't drift the way a server's response
    * does. */
   looseServerResponse?: boolean;
+  /** Confirmed aggregate/per-unit findings from {@link detectAggregateUnitBasisFindings},
+   * keyed by the joined dot-path of the aggregate field (`path.join(".")`,
+   * matching the `path` accumulator threaded below), for O(1) lookup at the
+   * leaf that emits that field's expression. */
+  aggregateUnitBasisFindingsByPath?: ReadonlyMap<string, AggregateUnitBasisFinding>;
 }
 
 /**
@@ -570,7 +575,8 @@ export function inferZodSchemaFromSamples(
   samples: readonly unknown[],
   depth = 0,
   indent = "",
-  opts: InferOpts = {}
+  opts: InferOpts = {},
+  path: readonly string[] = []
 ): string {
   const maxDepth = opts.maxDepth ?? DEFAULT_MAX_INFER_DEPTH;
   if (depth > maxDepth) return "z.unknown()";
@@ -610,7 +616,7 @@ export function inferZodSchemaFromSamples(
     // fields are discovered instead of being decided by element [0].
     const items = (nonNull as unknown[][]).flat();
     if (items.length === 0) return wrap("z.array(z.unknown())");
-    return wrap(`z.array(${inferZodSchemaFromSamples(items, depth + 1, indent, opts)})`);
+    return wrap(`z.array(${inferZodSchemaFromSamples(items, depth + 1, indent, opts, path)})`);
   }
 
   if (kind === "object") {
@@ -624,8 +630,9 @@ export function inferZodSchemaFromSamples(
     // the generated file on first lint:fix.
     const fields = keys
       .map((k) => {
+        const fieldPath = [...path, k];
         const valuesForKey = objects.filter((o) => k in o).map((o) => o[k]);
-        const expr = inferZodSchemaFromSamples(valuesForKey, depth + 1, inner, opts);
+        const expr = inferZodSchemaFromSamples(valuesForKey, depth + 1, inner, opts, fieldPath);
         // Seen on some samples but not others (the endpoint omits it sometimes)
         // OR the query marks it @include/@skip-conditional (the server can
         // legally omit it regardless of what this sample happened to show):
@@ -633,7 +640,13 @@ export function inferZodSchemaFromSamples(
         const isOptional =
           valuesForKey.length < objects.length || (opts.conditionalFieldNames?.has(k) ?? false);
         const optional = isOptional ? `${expr}.optional()` : expr;
-        return `${inner}${isValidJsIdentifier(k) ? k : JSON.stringify(k)}: ${optional}`;
+        const finding = opts.aggregateUnitBasisFindingsByPath?.get(fieldPath.join("."));
+        const described = finding
+          ? `${optional}.describe(${JSON.stringify(
+              `Derived: equals the sum of "${finding.unitFieldName}" across every entry of "${finding.breakdownPath.join(".")}".`
+            )})`
+          : optional;
+        return `${inner}${isValidJsIdentifier(k) ? k : JSON.stringify(k)}: ${described}`;
       })
       .join(",\n");
     const objectExpr = `z.object({\n${fields},\n${indent}})${opts.looseServerResponse ? ".loose()" : ""}`;
@@ -4947,6 +4960,12 @@ export function emitContractTs(opts: {
   // in the other direction, hiding a field the flow can actually promise.
   const conditionalFieldNames =
     gql && gqlQuery ? collectConditionalGraphQLFieldNames(gqlQuery) : undefined;
+  const aggregateUnitBasisFindingsByPath = new Map(
+    detectAggregateUnitBasisFindings(responseBodySamples).map((finding) => [
+      finding.aggregatePath.join("."),
+      finding,
+    ])
+  );
   const responseSchemaExpr =
     omitExecuteHttp && isSubmissionFlow
       ? `z.object({ verified: z.boolean() })`
@@ -4955,6 +4974,7 @@ export function emitContractTs(opts: {
         : inferZodSchemaFromSamples(responseBodySamples, 0, "", {
             conditionalFieldNames,
             looseServerResponse: true,
+            aggregateUnitBasisFindingsByPath,
           });
   // Multi-step flows that include a multipart upload need the binary asset
   // on the payload. ApplicantContactSchema (via ApplicantResumeSchema) already
