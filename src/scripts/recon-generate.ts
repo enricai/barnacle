@@ -4802,8 +4802,8 @@ function findThreadedJoinFields(item: Record<string, unknown>, drillCapture: Cap
  * Detects, purely from the compiled action sequence, that a later step is a
  * per-item drill-down whose response should be folded onto an earlier
  * "primary" step's results array by a join key — the shape a hand-authored
- * `foldDatedPricing`-style merge exists to paper over (see the drill-down
- * fold report). The primary candidate is restricted to
+ * per-item merge exists to paper over (see the drill-down fold report),
+ * e.g. a search-results-plus-detail-lookup flow. The primary candidate is restricted to
  * {@link findRequeriedActions}'s set — the same re-queried-endpoint
  * relevance heuristic `selectReturnAction` already uses to find a flow's
  * results endpoint — so this reuses that signal rather than inventing a
