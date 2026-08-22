@@ -4246,7 +4246,20 @@ export function emitMultiStepExecuteHttp(
     // validates any individual call. Without this override, HttpRequestInit.schema
     // would default to the client's z.unknown() and narrowing the caller-facing
     // contract would enforce that narrowed shape on every call in the chain.
-    const schemaExpr = inferZodSchema(cap.responseBody, 0, "", { looseServerResponse: true });
+    const perCallAggregateUnitBasisFindingsByPath = new Map<string, AggregateUnitBasisFinding[]>();
+    for (const finding of detectAggregateUnitBasisFindings([cap.responseBody])) {
+      const key = finding.aggregatePath.join(".");
+      const existing = perCallAggregateUnitBasisFindingsByPath.get(key);
+      if (existing) {
+        existing.push(finding);
+      } else {
+        perCallAggregateUnitBasisFindingsByPath.set(key, [finding]);
+      }
+    }
+    const schemaExpr = inferZodSchema(cap.responseBody, 0, "", {
+      looseServerResponse: true,
+      aggregateUnitBasisFindingsByPath: perCallAggregateUnitBasisFindingsByPath,
+    });
 
     rendered.push({ url, method: cap.method, headersExpr, bodyArg, schemaExpr });
   }
