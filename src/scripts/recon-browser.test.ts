@@ -5290,6 +5290,79 @@ describe("recon-browser/RECON_FLOW_FILE_SCHEMA — frameSelector", () => {
   });
 });
 
+describe("recon-browser/RECON_FLOW_FILE_SCHEMA — foldReturn", () => {
+  it("accepts an object-shape flow file with a well-formed foldReturn and carries it through unchanged", () => {
+    const result = RECON_FLOW_FILE_SCHEMA.safeParse({
+      steps: ["Click Search"],
+      foldReturn: {
+        endpointPattern: "^https://example\\.com/api/drilldown$",
+        resultsPath: "orderSearch.results.orders",
+        joinField: "orderId",
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(Array.isArray(result.data)).toBe(false);
+    if (Array.isArray(result.data)) return;
+    expect(result.data.foldReturn).toEqual({
+      endpointPattern: "^https://example\\.com/api/drilldown$",
+      resultsPath: "orderSearch.results.orders",
+      joinField: "orderId",
+    });
+  });
+
+  it("defaults foldReturn to undefined when the object-shape file omits it", () => {
+    const result = RECON_FLOW_FILE_SCHEMA.safeParse({
+      steps: ["Click Search"],
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(Array.isArray(result.data)).toBe(false);
+    if (Array.isArray(result.data)) return;
+    expect(result.data.foldReturn).toBeUndefined();
+  });
+
+  it("rejects a foldReturn missing a required field", () => {
+    const result = RECON_FLOW_FILE_SCHEMA.safeParse({
+      steps: ["Click Search"],
+      foldReturn: {
+        endpointPattern: "^https://example\\.com/api/drilldown$",
+        resultsPath: "orderSearch.results.orders",
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a foldReturn with a non-string field", () => {
+    const result = RECON_FLOW_FILE_SCHEMA.safeParse({
+      steps: ["Click Search"],
+      foldReturn: {
+        endpointPattern: "^https://example\\.com/api/drilldown$",
+        resultsPath: "orderSearch.results.orders",
+        joinField: 42,
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a foldReturn with an empty-string field", () => {
+    const result = RECON_FLOW_FILE_SCHEMA.safeParse({
+      steps: ["Click Search"],
+      foldReturn: {
+        endpointPattern: "",
+        resultsPath: "orderSearch.results.orders",
+        joinField: "orderId",
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+});
+
 describe("recon-browser/parseCli — frameSelector", () => {
   const ORIGINAL_ARGV = process.argv;
 
