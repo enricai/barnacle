@@ -5297,7 +5297,7 @@ describe("recon-browser/RECON_FLOW_FILE_SCHEMA — foldReturn", () => {
       foldReturn: {
         endpointPattern: "^https://example\\.com/api/drilldown$",
         resultsPath: "orderSearch.results.orders",
-        joinField: "orderId",
+        joinFields: ["orderId"],
       },
     });
 
@@ -5308,7 +5308,28 @@ describe("recon-browser/RECON_FLOW_FILE_SCHEMA — foldReturn", () => {
     expect(result.data.foldReturn).toEqual({
       endpointPattern: "^https://example\\.com/api/drilldown$",
       resultsPath: "orderSearch.results.orders",
-      joinField: "orderId",
+      joinFields: ["orderId"],
+    });
+  });
+
+  it("accepts an object-shape flow file with a composite foldReturn.joinFields and carries it through unchanged", () => {
+    const result = RECON_FLOW_FILE_SCHEMA.safeParse({
+      steps: ["Click Search"],
+      foldReturn: {
+        endpointPattern: "^https://example\\.com/api/drilldown$",
+        resultsPath: "orderSearch.results.orders",
+        joinFields: ["orderId", "warehouseId"],
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(Array.isArray(result.data)).toBe(false);
+    if (Array.isArray(result.data)) return;
+    expect(result.data.foldReturn).toEqual({
+      endpointPattern: "^https://example\\.com/api/drilldown$",
+      resultsPath: "orderSearch.results.orders",
+      joinFields: ["orderId", "warehouseId"],
     });
   });
 
@@ -5342,7 +5363,7 @@ describe("recon-browser/RECON_FLOW_FILE_SCHEMA — foldReturn", () => {
       foldReturn: {
         endpointPattern: "^https://example\\.com/api/drilldown$",
         resultsPath: "orderSearch.results.orders",
-        joinField: 42,
+        joinFields: [42],
       },
     });
 
@@ -5355,7 +5376,20 @@ describe("recon-browser/RECON_FLOW_FILE_SCHEMA — foldReturn", () => {
       foldReturn: {
         endpointPattern: "",
         resultsPath: "orderSearch.results.orders",
-        joinField: "orderId",
+        joinFields: ["orderId"],
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a foldReturn with an empty joinFields array", () => {
+    const result = RECON_FLOW_FILE_SCHEMA.safeParse({
+      steps: ["Click Search"],
+      foldReturn: {
+        endpointPattern: "^https://example\\.com/api/drilldown$",
+        resultsPath: "orderSearch.results.orders",
+        joinFields: [],
       },
     });
 
