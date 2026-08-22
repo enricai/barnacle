@@ -84,6 +84,22 @@ describe("detectFoldPlan", () => {
     expect(detect([withProduce, drillStep])).toBeNull();
   });
 
+  it("returns null when the array-nested produce value is an empty string (would trivially match every later request)", () => {
+    const step = buildStep("r0", {
+      url: "https://api.example.com/catalog/search",
+      requestPostData: null,
+      responseBody: { results: [{ itemCode: "", name: "Widget" }] },
+      timestamp: "2024-01-01T00:00:00Z",
+    });
+    const withProduce: MulticallFixtureStep = {
+      ...step,
+      produces: [{ kind: "body", name: "itemCode", path: ["results", "0", "itemCode"] }] as unknown as never[],
+    };
+    const unrelatedStep = buildDrillDownStep("");
+
+    expect(detect([withProduce, unrelatedStep])).toBeNull();
+  });
+
   it("returns null when no strictly-later action references the array-nested value", () => {
     const searchStep = buildSearchStepWithArrayProduce();
     const unrelatedStep = buildCapture({

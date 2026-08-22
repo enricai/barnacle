@@ -1118,7 +1118,9 @@ export function detectFoldPlan<T extends { capture: Capture; produces: Produce[]
       if (arrayIndexIdx === -1) continue;
 
       const value = readValueAtPath(producer.capture.responseBody, produce.path);
-      if (typeof value !== "string") continue;
+      // An empty string trivially satisfies `.includes("")` on every request,
+      // so it would match the first later action regardless of relevance.
+      if (typeof value !== "string" || value === "") continue;
 
       const drillAction = actions
         .slice(i + 1)
