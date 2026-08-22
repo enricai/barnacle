@@ -28,15 +28,21 @@ function emit(steps: MulticallFixtureStep[]): string {
 }
 
 describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
-  it("returns the re-queried search step's body, not the terminal drill-down's", () => {
+  it("folds the terminal drill-down's per-item response onto the re-queried search step, rather than discarding it", () => {
     const body = emit(buildMulticallHeterogeneousActionStepsWithDrillDown());
 
-    // r3 is the last of the two re-queried available-products/ calls; r4 is
-    // the terminal available-units/ drill-down. Pre-fix (`actions[actions
-    // .length-1]`), this would return r4 — the wrong call's body.
-    expect(body).toContain("return { data: r3 };");
+    // r4 (available-units/) threads r2's `products[0].productId` ("p1") into
+    // its own request — a detected fold plan — so the return must reference
+    // r2 (the primary array actually folded onto), not r3 (selectReturnAction's
+    // plain "latest re-queried call" pick, which has no relation to what r4
+    // threaded) and not r4's own raw body (the original defect: the drill-down
+    // was fetched and its data discarded).
+    expect(body).toContain("return { data: r2 };");
+    expect(body).not.toContain("return { data: r3 };");
     expect(body).not.toContain("return { data: r4 };");
-    expect(body).toContain("const r3 = (await httpClient(");
+    expect(body).toContain("const r2 = (await httpClient(");
+    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain("Object.assign(item, foldMatches[0] ?? {});");
   });
 
   it("still returns the search step when it is ALSO the terminal call", () => {
