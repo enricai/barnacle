@@ -4769,7 +4769,7 @@ function findObjectArrayField(
  * response, so the drill step's own response should be folded onto the
  * matching item of the primary step's results array rather than discarded.
  * `joinFields` is ordered (not a single string) because a real join can be
- * composite — e.g. matching on `packageCode` AND `groupId` together. */
+ * composite — e.g. matching on `accountId` AND `region` together. */
 export interface FoldPlan {
   primaryStepIndex: number;
   primaryArrayPath: string[];
@@ -4796,7 +4796,7 @@ function collectRequestStringValues(capture: Capture): Set<string> {
  * Finds the ordered list of an array item's string field names whose values
  * are threaded into `drillCapture`'s outbound request — the join key a
  * dependent drill-down call was built from. Field order follows the item's
- * own key order, so a composite join (e.g. `packageCode` + `groupId`) comes
+ * own key order, so a composite join (e.g. `accountId` + `region`) comes
  * out in the same order the primary response declares them, not sorted.
  * Returns `[]` when no field of the item threads into the request at all.
  */
@@ -4866,7 +4866,7 @@ export interface FoldReturnSpec {
    * results (same matching semantics as `submitEndpointPattern`). */
   endpointPattern: string;
   /** Dot-separated JSON path to the primary capture's result array the
-   * drill-down's response folds onto, e.g. `"cruiseSearch.results.cruises"`. */
+   * drill-down's response folds onto, e.g. `"orderSearch.results.orders"`. */
   resultsPath: string;
   /** Name of the field — present on both the primary array's items and the
    * drill-down's response — that folded items are matched on. */
