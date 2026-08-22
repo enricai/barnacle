@@ -733,6 +733,26 @@ export const RECON_FLOW_FILE_SCHEMA = z.union([
      * network/url/dom signal verifies), so no cross-site regression.
      */
     advanceTransitionBodyPattern: z.string().min(1).optional(),
+    /**
+     * Declares a drill-down capture whose response folds onto the primary
+     * results, for cases where the structural heuristic can't see the fold
+     * itself — most commonly a join value the drill-down carries in a
+     * request HEADER, which the heuristic deliberately never scans.
+     * `endpointPattern` matches the drill-down call (same semantics as
+     * `submitEndpointPattern`), `resultsPath` is the dot-separated JSON path
+     * to the primary capture's result array the drill-down folds onto, and
+     * `joinField` is the field name — present on both the primary array's
+     * items and the drill-down's response — that folded items are matched
+     * on. Omitted (default) preserves today's behavior: only folds the
+     * heuristic can see structurally are applied.
+     */
+    foldReturn: z
+      .object({
+        endpointPattern: z.string().min(1),
+        resultsPath: z.string().min(1),
+        joinField: z.string().min(1),
+      })
+      .optional(),
   }),
 ]);
 

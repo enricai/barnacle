@@ -122,4 +122,51 @@ describe("recon-browser/RECON_FLOW_FILE_SCHEMA — cross-frame flow structural c
     expect(submitIndex).toBeGreaterThanOrEqual(0);
     expect(continueIndex).toBeLessThan(submitIndex);
   });
+
+  it("accepts a well-formed foldReturn declaration", () => {
+    const flowWithFoldReturn = {
+      ...EXAMPLE_FLOW,
+      foldReturn: {
+        endpointPattern: "/api/example/candidate-details",
+        resultsPath: "data.results",
+        joinField: "candidateId",
+      },
+    };
+
+    const result = RECON_FLOW_FILE_SCHEMA.safeParse(flowWithFoldReturn);
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    if (Array.isArray(result.data)) return;
+    expect(result.data.foldReturn).toEqual(flowWithFoldReturn.foldReturn);
+  });
+
+  it("rejects a foldReturn declaration missing resultsPath", () => {
+    const flowWithFoldReturnMissingResultsPath = {
+      ...EXAMPLE_FLOW,
+      foldReturn: {
+        endpointPattern: "/api/example/candidate-details",
+        joinField: "candidateId",
+      },
+    };
+
+    const result = RECON_FLOW_FILE_SCHEMA.safeParse(flowWithFoldReturnMissingResultsPath);
+
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a foldReturn declaration with a wrong-typed joinField", () => {
+    const flowWithWrongTypedJoinField = {
+      ...EXAMPLE_FLOW,
+      foldReturn: {
+        endpointPattern: "/api/example/candidate-details",
+        resultsPath: "data.results",
+        joinField: 42,
+      },
+    };
+
+    const result = RECON_FLOW_FILE_SCHEMA.safeParse(flowWithWrongTypedJoinField);
+
+    expect(result.success).toBe(false);
+  });
 });
