@@ -309,7 +309,7 @@ describe("recon-generate read-only GraphQL flow: catalog-fixture capture set wit
 
     // (b) It stops at the reported total or a finite maxPages cap — never an
     // unbounded while(true).
-    expect(contract).toContain("const MAX_PAGES = 50;");
+    expect(contract).toContain("const MAX_PAGES = payload.maxPages ?? 50;");
     expect(contract).toContain("total = page.search.total;");
     expect(contract).not.toMatch(/while\s*\(\s*true\s*\)/);
 

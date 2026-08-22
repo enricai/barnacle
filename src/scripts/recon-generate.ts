@@ -4475,7 +4475,7 @@ function buildPaginatedGqlExecuteHttpBody(opts: {
   return `    const baseVariables = ${gqlVariablesExpr};
     const PAGE_SIZE = ${pageSize};
     // Bounded so a paging bug (a total that never converges) can't loop forever.
-    const MAX_PAGES = 50;
+    const MAX_PAGES = payload.maxPages ?? 50;
     const itemsById = new Map<string, unknown>();
     let skip = 0;
     const page = await getGql(context.baseUrl)(${gqlOperationNameExpr}, ${queryConstName}, ${variablesForCall});
@@ -4729,6 +4729,13 @@ export function emitContractTs(opts: {
   const basePayloadSchemaExpr = inputBody
     ? `ApplicantContactSchema`
     : `z.object({\n  query: z.string().min(1),\n})`;
+  // Only the single-endpoint GraphQL read path (a real primary operation, no
+  // multi-step flow) is a candidate for a paging signal — multiStepBody
+  // already owns its own per-call semantics.
+  const paginationSignal =
+    !multiStepBody && gql && gqlOperationName
+      ? detectPaginationSignal(responseBody, gqlVariables)
+      : null;
   // Every field source below (the base extend's own keys, form-schema
   // discovery, browser-flow splicing, option/raw-option enums, additional
   // body keys, and structured keys) is merged into a SINGLE `.extend({...})`
@@ -4741,6 +4748,14 @@ export function emitContractTs(opts: {
   const addExtendField = (name: string, line: string): void => {
     extendFields.set(name, line);
   };
+
+  // A detected bounded-paging signal means buildPaginatedGqlExecuteHttpBody
+  // will emit a loop bounded by MAX_PAGES — expose that bound as a caller-
+  // overridable payload field, mirroring how PAGE_SIZE is already sourced
+  // from the detected signal.
+  if (paginationSignal) {
+    addExtendField("maxPages", "  maxPages: z.number().int().positive().optional(),");
+  }
 
   // The base extend's own keys — submission flows only.
   if (inputBody) {
@@ -5002,14 +5017,6 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
   const gqlVariablesExpr = gqlOperationName
     ? renderGqlVariablesExpr(gqlVariables, payloadFieldNames)
     : "{ q: payload.query }";
-
-  // Only the single-endpoint GraphQL read path (a real primary operation, no
-  // multi-step flow) is a candidate for a paging signal — multiStepBody
-  // already owns its own per-call semantics.
-  const paginationSignal =
-    !multiStepBody && gql && gqlOperationName
-      ? detectPaginationSignal(responseBody, gqlVariables)
-      : null;
 
   const executeHttpBody = multiStepBody
     ? multiStepBody

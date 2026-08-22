@@ -163,7 +163,7 @@ describe("recon-generate GraphQL paginated fetch loop: total/count signal presen
 
     // (b) It terminates once accumulated results reach the response's own reported
     // total, or a finite MAX_PAGES cap — never an unbounded loop, never a TODO.
-    expect(contract).toContain("const MAX_PAGES = 50;");
+    expect(contract).toContain("const MAX_PAGES = payload.maxPages ?? 50;");
     expect(contract).toContain("total = page.search.total;");
     expect(contract).not.toMatch(/while\s*\(\s*true\s*\)/);
     expect(contract).not.toContain("TODO");
@@ -204,7 +204,7 @@ describe("recon-generate GraphQL paginated fetch loop: MAX_PAGES caps before the
     // PAGE_SIZE (5) * MAX_PAGES (50) = 250, which never reaches the response's
     // reported total of 1000 — the loop always exits on MAX_PAGES here.
     expect(contract).toContain("const PAGE_SIZE = 5;");
-    expect(contract).toContain("const MAX_PAGES = 50;");
+    expect(contract).toContain("const MAX_PAGES = payload.maxPages ?? 50;");
 
     // The merged envelope's own total must reflect what was actually delivered
     // when the loop is capped by MAX_PAGES, not repeat the API's original
