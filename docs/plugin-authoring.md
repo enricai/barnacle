@@ -71,6 +71,28 @@ export const mySitePlugin: SitePlugin<MySitePayload, MySiteResponse> = {
 };
 ```
 
+## Reading an aggregate/per-unit basis annotation
+
+`pnpm run recon:generate` samples live responses to build `responseSchema`. When
+a numeric field's value observably equals the sum of a same-named field carried
+by every entry of a sibling map-of-objects field, the generator annotates that
+field with a `.describe()` note naming the breakdown it was derived from:
+
+```ts
+total: z.number().describe(
+  'Derived: equals the sum of "amount" across every entry of "charges.byLineItem".'
+),
+```
+
+That annotation only tells you the aggregate's basis — it does not add a
+per-unit field to the schema, and core does not compute one. If a plugin or
+its consumer needs the per-unit figure (e.g. `total / Object.keys(charges.byLineItem).length`,
+or reading `charges.byLineItem[key].amount` directly), deriving it is the
+plugin's or the consumer's responsibility, using the named breakdown path as
+the source of truth. Re-deriving it independently at another layer risks the
+two figures drifting apart if the upstream site's field composition ever
+changes.
+
 ## The auditPayload hook
 
 `SitePluginResult` accepts an optional `auditPayload` alongside `data` — when
