@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { emitMultiStepExecuteHttp } from "@/scripts/recon-generate";
 import {
   buildMulticallHeterogeneousActionSteps,
-  buildMulticallHeterogeneousActionStepsWithDrillDown,
+  buildMulticallHeterogeneousActionStepsWithFoldedDrillDown,
+  buildMulticallHeterogeneousActionStepsWithFoldedDrillDownLoop,
   type MulticallFixtureStep,
 } from "@/scripts/recon-generate-multicall-fixture";
 
@@ -28,15 +29,40 @@ function emit(steps: MulticallFixtureStep[]): string {
 }
 
 describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
-  it("returns the re-queried search step's body, not the terminal drill-down's", () => {
-    const body = emit(buildMulticallHeterogeneousActionStepsWithDrillDown());
+  it("folds the terminal drill-down's response onto the primary search results by the declared join field", () => {
+    const body = emit(buildMulticallHeterogeneousActionStepsWithFoldedDrillDown());
 
-    // r3 is the last of the two re-queried available-products/ calls; r4 is
-    // the terminal available-units/ drill-down. Pre-fix (`actions[actions
-    // .length-1]`), this would return r4 — the wrong call's body.
-    expect(body).toContain("return { data: r3 };");
-    expect(body).not.toContain("return { data: r4 };");
-    expect(body).toContain("const r3 = (await httpClient(");
+    // r2 is the primary available-products/ search step whose `products[]`
+    // array carries the `productId` join field; r4 is the terminal
+    // available-units/ drill-down keyed on that field. A resolved fold plan
+    // must loop over r2's array, re-fetch r4 per item, and merge the
+    // drill-down's fields onto each item — not discard r4's data the way a
+    // bare `selectReturnAction` pick would.
+    expect(body).toContain("const r2Items = (r2 as { products: unknown[] }).products");
+    expect(body).toContain("for (const r2Item of r2Items) {");
+    expect(body).toContain("const r4ByJoin = new Map<string, Record<string, unknown>>();");
+    expect(body).toContain("const r4 = (await httpClient(");
+    expect(body).toContain("r4ByJoin.set(productIdValue, r4);");
+    expect(body).toContain("const r2Merged = r2Items.map((r2Item) => {");
+    expect(body).toContain(
+      "return { data: { ...(r2 as Record<string, unknown>), products: r2Merged } };"
+    );
+  });
+
+  it("emits a per-item loop-and-merge for a multi-item primary array, re-fetching the drill-down once per item", () => {
+    const body = emit(buildMulticallHeterogeneousActionStepsWithFoldedDrillDownLoop());
+
+    // r2's products[] carries TWO items (p1, p2), each with its own terminal
+    // available-units/ drill-down (r4, r5 in the fixture's raw capture set) —
+    // the emitted code must be a single loop keyed on the join field's
+    // per-item VALUE, not a call per fixture step, so it folds every item
+    // regardless of how many drill-downs the capture set recorded.
+    expect(body).toContain("const r2Items = (r2 as { products: unknown[] }).products");
+    expect(body).toContain("for (const r2Item of r2Items) {");
+    expect(body).toContain("const productIdValue = (r2Item as { productId: string }).productId;");
+    expect(body).toContain("if (r4ByJoin.has(productIdValue)) continue;");
+    expect(body).toContain("const r2Merged = r2Items.map((r2Item) => {");
+    expect(body).toContain("return { ...r2Item, ...(r4ByJoin.get(productIdValue) ?? {}) };");
   });
 
   it("still returns the search step when it is ALSO the terminal call", () => {
