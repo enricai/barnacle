@@ -42,6 +42,16 @@ describe("recon-browser/RECON_FLOW_FILE_SCHEMA — cross-frame flow structural c
     expect(result.data.displayName).toBe("Example Careers");
   });
 
+  it("keeps displayName optional when a flow omits it", () => {
+    const { displayName: _displayName, ...flowWithoutDisplayName } = EXAMPLE_FLOW;
+    const result = RECON_FLOW_FILE_SCHEMA.safeParse(flowWithoutDisplayName);
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    if (Array.isArray(result.data)) return;
+    expect(result.data.displayName).toBeUndefined();
+  });
+
   it("orders the Apply CTA step before the in-iframe Continue step", () => {
     const result = RECON_FLOW_FILE_SCHEMA.safeParse(EXAMPLE_FLOW);
 
