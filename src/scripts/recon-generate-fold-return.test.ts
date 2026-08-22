@@ -1,0 +1,222 @@
+import { describe, expect, it } from "vitest";
+import {
+  emitMultiStepExecuteHttp,
+  type FoldReturnSpec,
+  parseFoldReturnSpec,
+  resolveFoldPlan,
+  selectEffectiveResponseBody,
+} from "@/scripts/recon-generate";
+import {
+  buildMulticallDependentDrillDownActionSteps,
+  buildMulticallHeterogeneousActionSteps,
+  buildMulticallSingleShotSearchDrillDownActionSteps,
+  type MulticallFixtureStep,
+} from "@/scripts/recon-generate-multicall-fixture";
+
+/** Mirrors recon-generate-multistep-return.test.ts's helper — the emitter takes
+ * the unexported `ActionStep[]`, structurally identical to the shared fixture's
+ * step except for the always-empty `produces`. */
+function emit(steps: MulticallFixtureStep[], foldReturnSpec: FoldReturnSpec | null): string {
+  return emitMultiStepExecuteHttp(
+    steps as unknown as Parameters<typeof emitMultiStepExecuteHttp>[0],
+    null,
+    { stringMessageKey: null, nestedErrorPaths: [] },
+    new Map(),
+    new Set(),
+    new Map(),
+    new Set(),
+    new Map(),
+    new Map(),
+    "https://api.example.com",
+    new Map(),
+    new Map(),
+    null,
+    new Map(),
+    new Map(),
+    new Set(),
+    [],
+    new Map(),
+    new Map(),
+    foldReturnSpec
+  );
+}
+
+/** The declaration the single-shot-search fixture needs: its search endpoint
+ * fires once, so findRequeriedActions excludes it as a fold primary and only
+ * an explicit `foldReturn` can name the fold. */
+const SINGLE_SHOT_SPEC: FoldReturnSpec = {
+  endpointPattern: "/catalog/pricing/",
+  resultsPath: "results",
+  joinField: "sku",
+};
+
+function flowFile(extra: Record<string, unknown>): string {
+  return JSON.stringify({ steps: ["Search for a product"], ...extra });
+}
+
+describe("parseFoldReturnSpec", () => {
+  it("parses a present, well-formed foldReturn block", () => {
+    expect(parseFoldReturnSpec(flowFile({ foldReturn: SINGLE_SHOT_SPEC }))).toEqual(
+      SINGLE_SHOT_SPEC
+    );
+  });
+
+  it("returns null when foldReturn is absent", () => {
+    expect(parseFoldReturnSpec(flowFile({}))).toBeNull();
+  });
+
+  it("returns null for an array-form flow (foldReturn has nowhere to live)", () => {
+    expect(parseFoldReturnSpec(JSON.stringify(["Search for a product"]))).toBeNull();
+  });
+
+  it("returns null when foldReturn declares a non-string field", () => {
+    expect(
+      parseFoldReturnSpec(flowFile({ foldReturn: { ...SINGLE_SHOT_SPEC, joinField: 42 } }))
+    ).toBeNull();
+  });
+
+  it("returns null when foldReturn is missing a required field", () => {
+    expect(
+      parseFoldReturnSpec(
+        flowFile({ foldReturn: { endpointPattern: "/catalog/pricing/", resultsPath: "results" } })
+      )
+    ).toBeNull();
+  });
+
+  it("returns null on malformed JSON", () => {
+    expect(parseFoldReturnSpec("{not json")).toBeNull();
+  });
+});
+
+describe("resolveFoldPlan", () => {
+  it("falls back to a flow-declared foldReturn spec when the structural heuristic finds nothing", () => {
+    const steps = buildMulticallSingleShotSearchDrillDownActionSteps();
+
+    // The search endpoint fires exactly once, so findRequeriedActions yields
+    // nothing and detectDrillDownFoldPlan has no primary candidate at all —
+    // without the declaration there is no plan.
+    expect(resolveFoldPlan(steps)).toBeNull();
+
+    expect(resolveFoldPlan(steps, SINGLE_SHOT_SPEC)).toEqual({
+      primaryStepIndex: 0,
+      primaryArrayPath: ["results"],
+      joinFields: ["sku"],
+      drillStepIndex: 1,
+      drillArrayPath: ["prices"],
+    });
+  });
+
+  it("honours the declared resultsPath over findObjectArrayField's DFS first match", () => {
+    const steps = buildMulticallSingleShotSearchDrillDownActionSteps();
+
+    // The primary body's first object array by DFS is the decoy `facets[]`;
+    // the fold must key off the declared `results[]` instead, or the emitted
+    // loop would iterate the wrong array.
+    const plan = resolveFoldPlan(steps, SINGLE_SHOT_SPEC);
+    expect(plan?.primaryArrayPath).toEqual(["results"]);
+    expect(plan?.primaryArrayPath).not.toEqual(["facets"]);
+  });
+
+  it("prefers the structural heuristic's plan over a foldReturn spec when both would resolve", () => {
+    const steps = buildMulticallDependentDrillDownActionSteps();
+    const heuristicOnly = resolveFoldPlan(steps);
+    expect(heuristicOnly).not.toBeNull();
+
+    // A spec pointing somewhere else entirely must not displace a plan the
+    // captures themselves already prove — the declaration is a fallback, not
+    // an override.
+    expect(
+      resolveFoldPlan(steps, {
+        endpointPattern: "/nowhere/",
+        resultsPath: "nothing",
+        joinField: "nope",
+      })
+    ).toEqual(heuristicOnly);
+  });
+
+  it("returns null when no spec is given and the heuristic finds nothing", () => {
+    expect(resolveFoldPlan(buildMulticallHeterogeneousActionSteps())).toBeNull();
+  });
+
+  it("returns null when the spec's endpointPattern matches no strictly-later action", () => {
+    expect(
+      resolveFoldPlan(buildMulticallSingleShotSearchDrillDownActionSteps(), {
+        ...SINGLE_SHOT_SPEC,
+        endpointPattern: "/catalog/never-captured/",
+      })
+    ).toBeNull();
+  });
+
+  it("returns null when the spec's endpointPattern is not a valid regex", () => {
+    expect(
+      resolveFoldPlan(buildMulticallSingleShotSearchDrillDownActionSteps(), {
+        ...SINGLE_SHOT_SPEC,
+        endpointPattern: "([unclosed",
+      })
+    ).toBeNull();
+  });
+
+  it("returns null when the resolved drill-down step is multipart", () => {
+    const steps = buildMulticallSingleShotSearchDrillDownActionSteps();
+    const multipartDrill = steps.map((step, i) =>
+      i === 1 ? { ...step, isMultipart: true } : step
+    );
+
+    // The fold loop re-issues the drill call per item by re-keying its
+    // rendered JSON request template; a raw FormData upload has no such
+    // template, so the plan must be dropped rather than emitted broken.
+    expect(resolveFoldPlan(multipartDrill, SINGLE_SHOT_SPEC)).toBeNull();
+  });
+});
+
+describe("selectEffectiveResponseBody — flow-declared foldReturn", () => {
+  it("samples the declared array folded with the drill-down's fields, not either bare body", () => {
+    const steps = buildMulticallSingleShotSearchDrillDownActionSteps();
+
+    expect(selectEffectiveResponseBody(true, steps, null, SINGLE_SHOT_SPEC)).toEqual({
+      facets: [{ name: "brand" }],
+      results: [{ sku: "sku-a", amount: 19.99 }, { sku: "sku-b" }],
+    });
+  });
+
+  it("leaves the sample unfolded when the same steps carry no declaration", () => {
+    const steps = buildMulticallSingleShotSearchDrillDownActionSteps();
+
+    // Without the spec no plan resolves, so shape inference must fall back to
+    // selectReturnAction's plain pick — proving the fold above came from the
+    // declaration and not from the fixture happening to fold either way.
+    expect(selectEffectiveResponseBody(true, steps, null)).toEqual({
+      prices: [{ sku: "sku-a", amount: 19.99 }],
+    });
+  });
+});
+
+describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
+  it("emits the per-item loop-and-merge for a spec-resolved plan the heuristic cannot see", () => {
+    const body = emit(buildMulticallSingleShotSearchDrillDownActionSteps(), SINGLE_SHOT_SPEC);
+
+    // The loop iterates the DECLARED results[] array, re-issues the pricing
+    // call per item, and merges each response back onto its item — so the
+    // return references the folded primary, not the drill-down's own body.
+    expect(body).toContain("const foldItems = (r0 as { results: Record<string, unknown>[] })");
+    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain("Object.assign(item, foldMatches[0] ?? {});");
+    expect(body).toContain("return { data: r0 };");
+    expect(body).not.toContain("return { data: r1 };");
+
+    // The declared array wins over findObjectArrayField's DFS first match.
+    expect(body).not.toContain("as { facets: Record<string, unknown>[] }");
+
+    // The join must be re-keyed to the loop item, or every iteration would
+    // re-issue the captured item's call and fold one response onto all items.
+    expect(body).toContain(`body: \`{"sku":"\${item.sku}"}\``);
+    expect(body).not.toContain('"sku":"sku-a"');
+  });
+
+  it("emits no fold loop for the same steps when the flow declares nothing", () => {
+    const body = emit(buildMulticallSingleShotSearchDrillDownActionSteps(), null);
+
+    expect(body).not.toContain("const foldItems");
+    expect(body).toContain("return { data: r1 };");
+  });
+});

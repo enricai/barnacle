@@ -227,3 +227,39 @@ export function buildWizardCheckoutCaptures(): Capture[] {
     }),
   ];
 }
+
+const CATALOG_PRICING_URL = "https://api.example.com/catalog/pricing/";
+
+/**
+ * A search → per-item drill-down flow whose search endpoint fires exactly
+ * ONCE. {@link detectDrillDownFoldPlan} only ever considers
+ * {@link findRequeriedActions}' output as fold primaries — an endpoint re-hit
+ * with a varying body — so a single-shot search can never be a fold primary
+ * under the heuristic, no matter how plainly the drill-down threads a value
+ * out of its results. That is the shape the flow-declared `foldReturn`
+ * (`FoldReturnSpec`/`resolveFoldPlan`) exists to reach.
+ *
+ * The primary response also carries a decoy `facets[]` array ahead of the real
+ * `results[]`, so `findObjectArrayField`'s DFS first-match deliberately
+ * disagrees with the array a caller would fold onto — pinning that the
+ * DECLARED `resultsPath` is what drives emission.
+ */
+export function buildMulticallSingleShotSearchDrillDownActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        facets: [{ name: "brand" }],
+        results: [{ sku: "sku-a" }, { sku: "sku-b" }],
+      },
+      timestamp: "2024-04-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_PRICING_URL,
+      requestPostData: '{"sku":"sku-a"}',
+      responseBody: { prices: [{ sku: "sku-a", amount: 19.99 }] },
+      timestamp: "2024-04-01T00:00:01Z",
+    }),
+  ];
+}
