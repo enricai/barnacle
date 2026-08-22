@@ -1,9 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { selectPayloadAction } from "@/scripts/recon-generate";
+import { detectDrillDownFoldPlan, selectPayloadAction } from "@/scripts/recon-generate";
 import {
+  buildMulticallDependentDrillDownActionSteps,
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
+  type MulticallFixtureStep,
 } from "@/scripts/recon-generate-multicall-fixture";
+
+/** `detectDrillDownFoldPlan` takes the unexported `ActionStep[]`; the shared
+ * fixture's `MulticallFixtureStep` is structurally identical except for
+ * `produces` (`unknown[]` vs. the real `Produce[]`, always empty here — the
+ * detector never reads it), so a type-only cast through the detector's own
+ * parameter type is safe (mirrors recon-generate-fold-plan.test.ts). */
+function detect(steps: MulticallFixtureStep[]): ReturnType<typeof detectDrillDownFoldPlan> {
+  return detectDrillDownFoldPlan(steps as unknown as Parameters<typeof detectDrillDownFoldPlan>[0]);
+}
 
 /** Matches recon-generate.ts's internal `endpointKey` (origin + pathname,
  * query stripped) since that helper isn't exported — the self-test asserts
@@ -80,5 +91,49 @@ describe("buildMulticallHeterogeneousActionStepsWithDrillDown", () => {
     const selected = selectPayloadAction(steps);
     expect(selected?.capture.url).toContain("available-products/");
     expect(selected?.capture.url).not.toContain("available-units/");
+  });
+});
+
+describe("buildMulticallDependentDrillDownActionSteps", () => {
+  const steps = buildMulticallDependentDrillDownActionSteps();
+
+  it("returns 4 steps: 2 search pages then 2 per-item drill-downs", () => {
+    expect(steps).toHaveLength(4);
+    expect(steps.filter((s) => s.capture.url.includes("catalog/search/"))).toHaveLength(2);
+    expect(steps.filter((s) => s.capture.url.includes("catalog/item-detail/"))).toHaveLength(2);
+  });
+
+  it("the primary (re-queried) search page carries >=2 items, each with a join-key field", () => {
+    const primaryPage = steps[1];
+    const body = primaryPage?.capture.responseBody as { items: { itemId: string }[] };
+    expect(body.items.length).toBeGreaterThanOrEqual(2);
+    for (const item of body.items) {
+      expect(typeof item.itemId).toBe("string");
+    }
+  });
+
+  it("each primary item has its own corresponding drill-down capture, threaded by itemId", () => {
+    const primaryPage = steps[1];
+    const body = primaryPage?.capture.responseBody as { items: { itemId: string }[] };
+    const drillSteps = steps.filter((s) => s.capture.url.includes("catalog/item-detail/"));
+
+    for (const item of body.items) {
+      const matching = drillSteps.filter((s) => s.capture.requestPostData?.includes(item.itemId));
+      expect(matching).toHaveLength(1);
+    }
+  });
+
+  it("detects a fold plan whose drill step is chosen by join key, not by call order", () => {
+    const plan = detect(steps);
+
+    expect(plan).not.toBeNull();
+    expect(plan?.primaryStepIndex).toBe(1);
+    expect(plan?.primaryArrayPath).toEqual(["items"]);
+    expect(plan?.joinFields).toEqual(["itemId"]);
+    expect(plan?.drillArrayPath).toEqual(["details"]);
+    // The primary's first item is "i-b", but its drill-down (r3) fires AFTER
+    // "i-a"'s (r2) — a positional pick would land on r2 (index 2) and pair
+    // the wrong response. The plan must resolve to r3 (index 3) by join key.
+    expect(plan?.drillStepIndex).toBe(3);
   });
 });

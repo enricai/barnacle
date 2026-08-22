@@ -902,11 +902,11 @@ function walkAggregateUnitBasis(
  * Finds every object path where a numeric field's value observably equals
  * the sum of a same-named numeric field carried by every entry of a sibling
  * map-of-objects field -- the party-total/per-guest-breakdown shape
- * (report: `docs/incoming-reports/party-total-per-guest-price-derivation.md`)
  * generalized to any aggregate/per-unit pair, regardless of field or site
  * naming, so recon-generate can annotate the price basis instead of leaving
  * every plugin author and consumer to re-derive it independently and
- * diverge.
+ * diverge. See docs/architecture.md, "Why the generator annotates
+ * aggregate/per-unit basis instead of deriving it".
  *
  * Pure and read-only: walks the merged sample set the same way
  * {@link inferZodSchemaFromSamples} does, but only ever compares numbers
@@ -1047,6 +1047,12 @@ export function selectReturnAction<T extends { capture: Capture }>(steps: readon
  * submission flow's `executeHttp` and its inferred type/schema have to agree
  * on which call they describe, or the emitted type disagrees with the value
  * actually returned. Falls back to the replay body for single-endpoint sites.
+ *
+ * A detected drill-down fold plan (see {@link detectDrillDownFoldPlan})
+ * bypasses `selectReturnAction` entirely, exactly as
+ * `emitMultiStepExecuteHttp` does when it emits the per-item loop-and-merge —
+ * so the shape this infers has to be the FOLDED primary body, not the plain
+ * one, or the schema would omit every field the fold adds.
  */
 export function selectEffectiveResponseBody<T extends { capture: Capture }>(
   isSubmissionFlow: boolean,
@@ -1054,6 +1060,8 @@ export function selectEffectiveResponseBody<T extends { capture: Capture }>(
   replayResponseBody: unknown
 ): unknown {
   if (!isSubmissionFlow) return replayResponseBody;
+  const foldPlan = detectDrillDownFoldPlan(actionSteps);
+  if (foldPlan) return foldResponseBodyForShapeInference(actionSteps, foldPlan);
   return selectReturnAction(actionSteps)?.capture.responseBody ?? replayResponseBody;
 }
 
@@ -3117,6 +3125,19 @@ function pathToAssertionType(path: string[]): string {
   return `{ ${key}: ${pathToAssertionType(path.slice(1))} }`;
 }
 
+/**
+ * Same nesting as {@link pathToAssertionType} but the leaf types as
+ * `Record<string, unknown>[]` instead of `string` — used to cast a step's
+ * response down to the object-array field a {@link FoldPlan} located
+ * (the primary results array, or the drill-down's per-item match array).
+ */
+function foldArrayAssertionType(path: string[]): string {
+  if (path.length === 0) return "Record<string, unknown>[]";
+  const segment = path[0]!;
+  const key = isValidJsIdentifier(segment) ? segment : JSON.stringify(segment);
+  return `{ ${key}: ${foldArrayAssertionType(path.slice(1))} }`;
+}
+
 /** Suggests a JS-camelCase variable name for a state value path. Falls back
  * up the path if the tail is numeric or not a valid JS identifier. */
 function pathToVarName(path: string[]): string {
@@ -4295,10 +4316,14 @@ export function emitMultiStepExecuteHttp(
       }
     }
   }
-  // The relevance-selected step's var is also referenced by the closing
-  // `return { data }` — see selectReturnAction.
-  const returnAction = selectReturnAction(actions);
+  // A detected drill-down fold plan bypasses selectReturnAction entirely: the
+  // primary step's array is folded in place (see the loop-and-merge emitted
+  // below), so the primary step's var — not whichever call selectReturnAction
+  // would otherwise pick — is what `return { data }` must reference.
+  const foldPlan = detectDrillDownFoldPlan(actions);
+  const returnAction = foldPlan ? null : selectReturnAction(actions);
   if (returnAction) referencedNames.add(returnAction.varName);
+  if (foldPlan) referencedNames.add(actions[foldPlan.primaryStepIndex]!.varName);
 
   // Pass 2: emit. Skip response bindings that aren't referenced; skip
   // produces[] entries whose name isn't referenced. A step's response var
@@ -4347,6 +4372,90 @@ export function emitMultiStepExecuteHttp(
       );
     }
     const bindResponse = referencedNames.has(step.varName) || produceLines.length > 0;
+
+    // The fold plan's drill-down step is emitted as a per-item loop instead
+    // of the single call every other step gets: it re-issues the SAME
+    // url/headers/bodyArg/schemaExpr this pass already rendered for it, only
+    // with the captured join value(s) swapped for the loop item's own field
+    // accessor, then merges the matched drill response back onto that item —
+    // reusing the per-call render rather than a second HTTP-call emitter.
+    if (foldPlan && i === foldPlan.drillStepIndex) {
+      // The loop below block-scopes `const ${step.varName}` inside the
+      // `for` — it does not escape to the rest of the function. If this
+      // step's response var (or one of its produces) is referenced
+      // elsewhere, that reference would resolve to a `const` declared in a
+      // narrower scope and fail to compile. No fixture currently threads a
+      // drill step's own response onward like this, so fail loudly instead
+      // of silently emitting broken TypeScript.
+      if (referencedNames.has(step.varName) || produceLines.length > 0) {
+        throw new Error(
+          `emitMultiStepExecuteHttp: fold plan drill step ${step.varName} is referenced outside its own request (directly or via a produce), but the fold loop scopes its response to a single loop iteration — this combination isn't supported yet.`
+        );
+      }
+      const primaryStep = actions[foldPlan.primaryStepIndex]!;
+      const primaryArray = findObjectArrayField(primaryStep.capture.responseBody);
+      const firstItem = primaryArray?.items[0];
+      if (!primaryArray || !firstItem) {
+        throw new Error(
+          `emitMultiStepExecuteHttp: fold plan primary step ${primaryStep.varName} no longer resolves an object array — detectDrillDownFoldPlan and this emitter have drifted out of sync`
+        );
+      }
+      const joinAccessor = (field: string): string =>
+        isValidJsIdentifier(field) ? `item.${field}` : `item[${JSON.stringify(field)}]`;
+      // A join field can reach the render either as the raw captured literal
+      // (URL query params) or as an already-generic `${payload.<field>}`
+      // reference (top-level JSON body keys — see
+      // applyPayloadKeyValueSubstitutions, which payload-ifies every scalar
+      // body key regardless of length, running BEFORE this fold branch ever
+      // sees the value). Both must resolve to the loop item's own field, not
+      // a caller-supplied payload value shared across every iteration.
+      // Word-boundary anchored: a plain `.split(value).join(...)` would also
+      // rewrite unrelated substrings that happen to contain the join value
+      // (e.g. a "p1" product id colliding with a "/v1/" path segment or a
+      // "p10" sibling id), corrupting parts of the request the join field
+      // never touched.
+      const replaceWholeValue = (haystack: string, value: string, replacement: string): string =>
+        haystack.replace(
+          new RegExp(`\\b${value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g"),
+          replacement
+        );
+      const parameterize = (text: string): string =>
+        foldPlan.joinFields.reduce((acc, field) => {
+          const replacement = `\${${joinAccessor(field)}}`;
+          const withAccessorSwapped = acc.split(`\${payload.${field}}`).join(replacement);
+          const value = firstItem[field];
+          return typeof value === "string" && value.length > 0
+            ? replaceWholeValue(withAccessorSwapped, value, replacement)
+            : withAccessorSwapped;
+        }, text);
+
+      const primaryArrType = foldArrayAssertionType(foldPlan.primaryArrayPath);
+      const primaryArrAccessor = pathToAccessor(foldPlan.primaryArrayPath, {
+        assertNonNull: false,
+      });
+      const drillArrType = foldArrayAssertionType(foldPlan.drillArrayPath);
+      const drillArrAccessor = pathToAccessor(foldPlan.drillArrayPath, { assertNonNull: false });
+
+      lines.push(
+        `    const foldItems = (${primaryStep.varName} as ${primaryArrType})${primaryArrAccessor};`,
+        `    for (const item of foldItems) {`,
+        `      const ${step.varName} = (await httpClient(\`${parameterize(r.url)}\`, {`,
+        `        method: ${JSON.stringify(r.method)},`
+      );
+      const joined = [parameterize(r.headersExpr), parameterize(r.bodyArg)]
+        .filter((s) => s !== "")
+        .join(" ");
+      if (joined !== "") lines.push(`        ${joined}`);
+      lines.push(
+        `        schema: ${r.schemaExpr},`,
+        `      })) as Record<string, unknown>;`,
+        `      const foldMatches = (${step.varName} as ${drillArrType})${drillArrAccessor};`,
+        `      Object.assign(item, foldMatches[0] ?? {});`,
+        `    }`,
+        ""
+      );
+      continue;
+    }
 
     if (step.isCrossDomain) {
       lines.push(
@@ -4451,7 +4560,9 @@ export function emitMultiStepExecuteHttp(
     lines.push("");
   }
 
-  const returnVar = returnAction ? returnAction.varName : "undefined";
+  const returnVar = foldPlan
+    ? actions[foldPlan.primaryStepIndex]!.varName
+    : (returnAction?.varName ?? "undefined");
   lines.push(`    return { data: ${returnVar} };`);
 
   return lines.join("\n");
@@ -4641,6 +4752,135 @@ function findObjectArrayField(
     if (found) return found;
   }
   return null;
+}
+
+/** A detected dependent drill-down: a later step whose request threads a
+ * value out of an array-indexed field of an earlier (primary) step's
+ * response, so the drill step's own response should be folded onto the
+ * matching item of the primary step's results array rather than discarded.
+ * `joinFields` is ordered (not a single string) because a real join can be
+ * composite — e.g. matching on `packageCode` AND `groupId` together. */
+export interface FoldPlan {
+  primaryStepIndex: number;
+  primaryArrayPath: string[];
+  joinFields: string[];
+  drillStepIndex: number;
+  drillArrayPath: string[];
+}
+
+/** Every string value present in a capture's outbound request — its URL
+ * query parameters and its JSON body's string leaves — the set a drill-down
+ * request's threaded join value must appear in. */
+function collectRequestStringValues(capture: Capture): Set<string> {
+  const values = new Set<string>();
+  try {
+    for (const v of new URL(capture.url).searchParams.values()) values.add(v);
+  } catch {
+    // Relative or malformed URL — no query params to contribute.
+  }
+  for (const v of jsonBodyLeafValues(capture.requestPostData) ?? []) values.add(v);
+  return values;
+}
+
+/**
+ * Finds the ordered list of an array item's string field names whose values
+ * are threaded into `drillCapture`'s outbound request — the join key a
+ * dependent drill-down call was built from. Field order follows the item's
+ * own key order, so a composite join (e.g. `packageCode` + `groupId`) comes
+ * out in the same order the primary response declares them, not sorted.
+ * Returns `[]` when no field of the item threads into the request at all.
+ */
+function findThreadedJoinFields(item: Record<string, unknown>, drillCapture: Capture): string[] {
+  const requestValues = collectRequestStringValues(drillCapture);
+  if (requestValues.size === 0) return [];
+  return Object.entries(item)
+    .filter(([, v]) => typeof v === "string" && v.length > 0 && requestValues.has(v))
+    .map(([k]) => k);
+}
+
+/**
+ * Detects, purely from the compiled action sequence, that a later step is a
+ * per-item drill-down whose response should be folded onto an earlier
+ * "primary" step's results array by a join key — the shape a hand-authored
+ * `foldDatedPricing`-style merge exists to paper over (see the drill-down
+ * fold report). The primary candidate is restricted to
+ * {@link findRequeriedActions}'s set — the same re-queried-endpoint
+ * relevance heuristic `selectReturnAction` already uses to find a flow's
+ * results endpoint — so this reuses that signal rather than inventing a
+ * second one. For each primary candidate, in order, this looks for the
+ * first later step whose request was built from one of the primary array's
+ * item fields (the join key) and whose own response contains an
+ * object-array field (the foldable per-item results the drill-down call
+ * returns). Returns `null` when no primary/drill pair with a threaded join
+ * key exists — e.g. a plain submission flow with no re-queried endpoint.
+ */
+export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
+  actions: readonly T[]
+): FoldPlan | null {
+  const requeried = findRequeriedActions(actions);
+  for (const primary of requeried) {
+    const primaryIndex = actions.indexOf(primary);
+    const primaryArray = findObjectArrayField(primary.capture.responseBody);
+    const firstItem = primaryArray?.items[0];
+    if (!primaryArray || !firstItem) continue;
+
+    for (let drillIndex = primaryIndex + 1; drillIndex < actions.length; drillIndex++) {
+      const drill = actions[drillIndex]!;
+      if (drill === primary) continue;
+      const joinFields = findThreadedJoinFields(firstItem, drill.capture);
+      if (joinFields.length === 0) continue;
+      const drillArray = findObjectArrayField(drill.capture.responseBody);
+      if (!drillArray || drillArray.items.length === 0) continue;
+      return {
+        primaryStepIndex: primaryIndex,
+        primaryArrayPath: primaryArray.path,
+        joinFields,
+        drillStepIndex: drillIndex,
+        drillArrayPath: drillArray.path,
+      };
+    }
+  }
+  return null;
+}
+
+/** Rebuilds `value` with `leaf` spliced in at `path`, spreading every
+ * ancestor object level so sibling fields survive unchanged. A non-object
+ * (or array) encountered before `path` is exhausted returns `value`
+ * untouched — the path was computed by `findObjectArrayField` against this
+ * same body, so that should never happen outside a drifted caller. */
+function setAtPath(value: unknown, path: readonly string[], leaf: unknown): unknown {
+  if (path.length === 0) return leaf;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
+  const [key, ...rest] = path as [string, ...string[]];
+  const obj = value as Record<string, unknown>;
+  return { ...obj, [key]: setAtPath(obj[key], rest, leaf) };
+}
+
+/**
+ * The value-level counterpart of the per-item loop-and-merge
+ * `emitMultiStepExecuteHttp` emits for a detected {@link FoldPlan}: merges
+ * the single captured drill-down sample onto the single captured primary
+ * sample's matched array item (the same item `detectDrillDownFoldPlan` built
+ * the join key from — always index 0, see its own doc comment), so schema
+ * inference walks the SAME shape the folded `executeHttp` actually returns
+ * at runtime. Falls back to the unmerged primary body if either capture no
+ * longer resolves an object array — same drift guard as the emitter's own
+ * `throw` at the analogous point, minus the throw, since shape inference
+ * degrading gracefully is preferable to failing a generate run over it.
+ */
+function foldResponseBodyForShapeInference<T extends { capture: Capture }>(
+  actionSteps: readonly T[],
+  foldPlan: FoldPlan
+): unknown {
+  const primaryBody = actionSteps[foldPlan.primaryStepIndex]!.capture.responseBody;
+  const drillBody = actionSteps[foldPlan.drillStepIndex]!.capture.responseBody;
+  const primaryArray = findObjectArrayField(primaryBody);
+  const drillArray = findObjectArrayField(drillBody);
+  const matchedItem = primaryArray?.items[0];
+  const drillMatch = drillArray?.items[0];
+  if (!primaryArray || !matchedItem || !drillMatch) return primaryBody;
+  const foldedItems = [{ ...matchedItem, ...drillMatch }, ...primaryArray.items.slice(1)];
+  return setAtPath(primaryBody, foldPlan.primaryArrayPath, foldedItems);
 }
 
 /** Bounded-paging signal detected from a primary read operation's own
