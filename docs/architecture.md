@@ -299,6 +299,34 @@ with `extractJoinKeys`) reports its own outcome via
 outcome above core's synchronous `"skipped"` placeholder line, so a real
 outcome always wins the fold regardless of write order.
 
+### Why the generator annotates aggregate/per-unit basis instead of deriving it
+
+Some captured responses nest a per-unit breakdown under an aggregate total —
+an order's `total` alongside a `lineItems` map where each entry carries its
+own `total`, with the aggregate observably equal to the sum across every
+entry. `detectAggregateUnitBasisFindings` (`src/scripts/recon-generate.ts`)
+detects this shape during schema inference: for every numeric field, it looks
+for a sibling map-of-objects field whose entries share the same field name
+and whose values sum to the candidate aggregate within a tight relative
+tolerance, across every sample instance.
+
+The same site-agnostic-boundary rule as `extractJoinKeys` above applies here:
+core has no more business knowing whether a given total is "the aggregate" or
+"a per-unit value that happens to equal the aggregate" than it does an
+attribution vendor's field names — that's a judgment call about the
+underlying domain, not something a structural sum-match can settle on its
+own (a coincidental sum match is possible; a mislabeled basis silently
+breaks any downstream code that assumes one interpretation). So the
+generator doesn't compute or rewrite the field's value, and it doesn't guess
+which of the two totals is "real." It only records what it observed: a
+`.describe()` annotation is stamped onto the generated Zod schema field
+naming the breakdown path and the field the sum relation held against (e.g.
+`Derived: equals the sum of "total" across every entry of "lineItems".`).
+The generated contract stays a faithful shape description, and the decision
+about which basis a given call site should trust is left to the plugin or
+consumer layer reading that annotation — the same hook-not-guess pattern
+`extractJoinKeys` uses for vendor-specific join keys.
+
 ### Why judging is offline over captured samples
 
 The judge (`pnpm run judge:llm`, `src/scripts/judge-llm-batch.ts`) scores

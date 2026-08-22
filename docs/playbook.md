@@ -303,7 +303,13 @@ The only phase with meaningful human judgment. Output: `src/sites/<id>/contract.
   `minTime` from the Phase 3c probe. Check it against the findings doc (4e).
 - **4d — Review Zod schemas.** Tighten any `z.unknown()` fields — these are
   runtime drift detectors; the moment a response stops matching, `dispatch()`
-  falls back to the browser and the smoke test fails.
+  falls back to the browser and the smoke test fails. `recon-generate` also
+  detects when a captured field carries an aggregate total whose value equals
+  the sum of a same-named field across every entry of a sibling breakdown one
+  level deeper, and annotates the aggregate field with `.describe("Derived:
+  equals the sum of \"<field>\" across every entry of \"<path>\".")`. Review
+  that annotation as part of this pass — confirm the described basis actually
+  matches what the field represents before shipping the contract.
 - **4e — Findings document.** `pnpm run recon:summarize -- --site-id <id>`
   writes `docs/<id>-recon.md` (endpoints, auth, rate limits, headers, hazards,
   fixtures). Default output without `--site-id` is `docs/target-recon.md` —

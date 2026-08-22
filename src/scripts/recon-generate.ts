@@ -524,6 +524,14 @@ interface InferOpts {
    * the plugin itself sends, which doesn't drift the way a server's response
    * does. */
   looseServerResponse?: boolean;
+  /** Confirmed aggregate/per-unit findings from {@link detectAggregateUnitBasisFindings},
+   * keyed by the joined dot-path of the aggregate field (`path.join(".")`,
+   * matching the `path` accumulator threaded below), for O(1) lookup at the
+   * leaf that emits that field's expression. Grouped into an array per key
+   * because two different sibling breakdown fields can each independently
+   * satisfy the sum relation for the same aggregate -- every confirmed
+   * derivation is described, not just the last one found. */
+  aggregateUnitBasisFindingsByPath?: ReadonlyMap<string, readonly AggregateUnitBasisFinding[]>;
 }
 
 /**
@@ -570,7 +578,8 @@ export function inferZodSchemaFromSamples(
   samples: readonly unknown[],
   depth = 0,
   indent = "",
-  opts: InferOpts = {}
+  opts: InferOpts = {},
+  path: readonly string[] = []
 ): string {
   const maxDepth = opts.maxDepth ?? DEFAULT_MAX_INFER_DEPTH;
   if (depth > maxDepth) return "z.unknown()";
@@ -610,7 +619,7 @@ export function inferZodSchemaFromSamples(
     // fields are discovered instead of being decided by element [0].
     const items = (nonNull as unknown[][]).flat();
     if (items.length === 0) return wrap("z.array(z.unknown())");
-    return wrap(`z.array(${inferZodSchemaFromSamples(items, depth + 1, indent, opts)})`);
+    return wrap(`z.array(${inferZodSchemaFromSamples(items, depth + 1, indent, opts, path)})`);
   }
 
   if (kind === "object") {
@@ -624,8 +633,9 @@ export function inferZodSchemaFromSamples(
     // the generated file on first lint:fix.
     const fields = keys
       .map((k) => {
+        const fieldPath = [...path, k];
         const valuesForKey = objects.filter((o) => k in o).map((o) => o[k]);
-        const expr = inferZodSchemaFromSamples(valuesForKey, depth + 1, inner, opts);
+        const expr = inferZodSchemaFromSamples(valuesForKey, depth + 1, inner, opts, fieldPath);
         // Seen on some samples but not others (the endpoint omits it sometimes)
         // OR the query marks it @include/@skip-conditional (the server can
         // legally omit it regardless of what this sample happened to show):
@@ -633,7 +643,18 @@ export function inferZodSchemaFromSamples(
         const isOptional =
           valuesForKey.length < objects.length || (opts.conditionalFieldNames?.has(k) ?? false);
         const optional = isOptional ? `${expr}.optional()` : expr;
-        return `${inner}${isValidJsIdentifier(k) ? k : JSON.stringify(k)}: ${optional}`;
+        const findings = opts.aggregateUnitBasisFindingsByPath?.get(fieldPath.join("."));
+        const described = findings?.length
+          ? `${optional}.describe(${JSON.stringify(
+              `Derived: ${findings
+                .map(
+                  (finding) =>
+                    `equals the sum of "${finding.unitFieldName}" across every entry of "${finding.breakdownPath.join(".")}"`
+                )
+                .join("; also ")}.`
+            )})`
+          : optional;
+        return `${inner}${isValidJsIdentifier(k) ? k : JSON.stringify(k)}: ${described}`;
       })
       .join(",\n");
     const objectExpr = `z.object({\n${fields},\n${indent}})${opts.looseServerResponse ? ".loose()" : ""}`;
@@ -648,6 +669,260 @@ export function inferZodSchemaFromSamples(
  */
 function inferZodSchema(value: unknown, depth = 0, indent = "", opts: InferOpts = {}): string {
   return inferZodSchemaFromSamples([value], depth, indent, opts);
+}
+
+/** Bound on how far {@link detectAggregateUnitBasisFindings} descends into a
+ * response tree, matching {@link DEFAULT_MAX_INFER_DEPTH} so detection never
+ * outruns the schema inference it feeds. */
+const MAX_AGGREGATE_UNIT_BASIS_DEPTH = DEFAULT_MAX_INFER_DEPTH;
+
+/** Relative tolerance for aggregate-vs-sum comparison, wide enough to absorb
+ * float rounding in tax/currency math but tight enough that two merely
+ * similar-magnitude fields won't pass by coincidence. */
+const AGGREGATE_UNIT_BASIS_RELATIVE_EPSILON = 1e-6;
+const AGGREGATE_UNIT_BASIS_ABSOLUTE_EPSILON = 1e-6;
+
+/**
+ * One confirmed aggregate/per-unit path pair: a numeric field whose value
+ * observably equals the sum of a same-named numeric field carried by every
+ * entry of a sibling map-of-objects field.
+ */
+export interface AggregateUnitBasisFinding {
+  /** Path to the aggregate numeric field, e.g. `["price", "summary", "total"]`. */
+  readonly aggregatePath: readonly string[];
+  /** Path to the map-of-objects field the aggregate is derived from, e.g.
+   * `["price", "breakdownByGuest"]`. */
+  readonly breakdownPath: readonly string[];
+  /** Field name shared by the aggregate and every breakdown entry, e.g. `"total"`. */
+  readonly unitFieldName: string;
+  /** Count of samples where both fields were present and the sum relation held. */
+  readonly sampleCount: number;
+  /** Largest number of breakdown entries observed in any single sample. */
+  readonly maxBreakdownEntries: number;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** A "map of objects" is a dynamically-keyed collection (guest index, room id,
+ * line-item id, ...) where every value is itself a record — the per-unit
+ * breakdown shape, as opposed to a plain nested object or a scalar map. */
+function isMapOfObjects(value: unknown): value is Record<string, Record<string, unknown>> {
+  if (!isPlainObject(value)) return false;
+  const values = Object.values(value);
+  if (values.length === 0) return false;
+  return values.every(isPlainObject);
+}
+
+interface AggregateCandidate {
+  readonly fieldName: string;
+  readonly path: readonly string[];
+  readonly getValue: (instance: Record<string, unknown>) => number | undefined;
+}
+
+interface BreakdownCandidate {
+  readonly key: string;
+  readonly getEntries: (instance: Record<string, unknown>) => Record<string, unknown>[] | undefined;
+}
+
+/**
+ * Collects, for one merged object node, every numeric field that could be an
+ * aggregate: fields directly on the node, and fields one level deeper inside
+ * a plain (non-map) nested object — the shape the report evidences
+ * (`price.summary.total`, where `summary` is a single object, not a
+ * dynamically-keyed map).
+ */
+function collectAggregateCandidates(
+  instances: readonly Record<string, unknown>[],
+  path: readonly string[],
+  keys: ReadonlySet<string>
+): AggregateCandidate[] {
+  const candidates: AggregateCandidate[] = [];
+  for (const key of keys) {
+    if (instances.some((instance) => typeof instance[key] === "number")) {
+      candidates.push({
+        fieldName: key,
+        path: [...path, key],
+        getValue: (instance) =>
+          typeof instance[key] === "number" ? (instance[key] as number) : undefined,
+      });
+    }
+
+    const nestedObjects = instances.map((instance) => instance[key]).filter(isPlainObject);
+    if (nestedObjects.length === 0 || nestedObjects.some(isMapOfObjects)) continue;
+    const innerKeys = new Set(nestedObjects.flatMap((o) => Object.keys(o)));
+    for (const innerKey of innerKeys) {
+      if (!nestedObjects.some((o) => typeof o[innerKey] === "number")) continue;
+      candidates.push({
+        fieldName: innerKey,
+        path: [...path, key, innerKey],
+        getValue: (instance) => {
+          const nested = instance[key];
+          return isPlainObject(nested) && typeof nested[innerKey] === "number"
+            ? (nested[innerKey] as number)
+            : undefined;
+        },
+      });
+    }
+  }
+  return candidates;
+}
+
+function collectBreakdownCandidates(
+  instances: readonly Record<string, unknown>[],
+  keys: ReadonlySet<string>
+): BreakdownCandidate[] {
+  const candidates: BreakdownCandidate[] = [];
+  for (const key of keys) {
+    if (!instances.some((instance) => isMapOfObjects(instance[key]))) continue;
+    candidates.push({
+      key,
+      getEntries: (instance) => {
+        const value = instance[key];
+        return isMapOfObjects(value) ? Object.values(value) : undefined;
+      },
+    });
+  }
+  return candidates;
+}
+
+/**
+ * Checks one aggregate/breakdown candidate pair against every instance at
+ * this node and records a finding only when the sum relation holds in ALL
+ * evidence. A single sample that violates the relation, or a breakdown entry
+ * missing the shared field, disqualifies the pair entirely -- proving the
+ * relation from a subset of samples is exactly the false-positive pattern
+ * this detector exists to avoid (a field that merely happens to share
+ * magnitude with a sum on some responses).
+ */
+function evaluateAggregateUnitBasisPair(
+  instances: readonly Record<string, unknown>[],
+  breakdownPath: readonly string[],
+  aggregate: AggregateCandidate,
+  breakdown: BreakdownCandidate,
+  findings: AggregateUnitBasisFinding[]
+): void {
+  let confirmedSamples = 0;
+  let maxEntries = 0;
+  let sawEvidence = false;
+
+  for (const instance of instances) {
+    const aggregateValue = aggregate.getValue(instance);
+    const entries = breakdown.getEntries(instance);
+    if (aggregateValue === undefined || entries === undefined || entries.length === 0) continue;
+
+    sawEvidence = true;
+    maxEntries = Math.max(maxEntries, entries.length);
+
+    const unitValues = entries.map((entry) => entry[aggregate.fieldName]);
+    if (!unitValues.every((v) => typeof v === "number")) return;
+
+    const sum = (unitValues as number[]).reduce((total, v) => total + v, 0);
+    const tolerance = Math.max(
+      Math.abs(aggregateValue) * AGGREGATE_UNIT_BASIS_RELATIVE_EPSILON,
+      AGGREGATE_UNIT_BASIS_ABSOLUTE_EPSILON
+    );
+    if (Math.abs(sum - aggregateValue) > tolerance) return;
+
+    confirmedSamples++;
+  }
+
+  if (!sawEvidence || confirmedSamples === 0) return;
+  // A single-entry breakdown makes aggregate == unit trivially true and
+  // proves nothing about summation -- at least one sample must carry a real
+  // multi-entry breakdown for the relation to be evidence of aggregation.
+  if (maxEntries < 2) return;
+
+  findings.push({
+    aggregatePath: aggregate.path,
+    breakdownPath,
+    unitFieldName: aggregate.fieldName,
+    sampleCount: confirmedSamples,
+    maxBreakdownEntries: maxEntries,
+  });
+}
+
+function detectAggregateUnitBasisAtNode(
+  instances: readonly Record<string, unknown>[],
+  path: readonly string[],
+  findings: AggregateUnitBasisFinding[]
+): void {
+  const keys = new Set(instances.flatMap((instance) => Object.keys(instance)));
+  const aggregateCandidates = collectAggregateCandidates(instances, path, keys);
+  const breakdownCandidates = collectBreakdownCandidates(instances, keys);
+
+  for (const aggregate of aggregateCandidates) {
+    // The immediate child key the aggregate was found under -- either the
+    // aggregate's own key (direct case) or the plain-object container it was
+    // found nested inside (one-level-deeper case).
+    const aggregateContainerKey = aggregate.path[path.length];
+    for (const breakdown of breakdownCandidates) {
+      if (aggregateContainerKey === breakdown.key) continue;
+      evaluateAggregateUnitBasisPair(
+        instances,
+        [...path, breakdown.key],
+        aggregate,
+        breakdown,
+        findings
+      );
+    }
+  }
+}
+
+function walkAggregateUnitBasis(
+  values: readonly unknown[],
+  path: readonly string[],
+  depth: number,
+  findings: AggregateUnitBasisFinding[]
+): void {
+  if (depth > MAX_AGGREGATE_UNIT_BASIS_DEPTH) return;
+
+  const instances = values.filter(isPlainObject);
+  if (instances.length > 0) {
+    detectAggregateUnitBasisAtNode(instances, path, findings);
+
+    const keys = new Set(instances.flatMap((instance) => Object.keys(instance)));
+    for (const key of keys) {
+      const childValues = instances
+        .map((instance) => instance[key])
+        .filter((v): v is NonNullable<typeof v> => v !== undefined && v !== null);
+      if (childValues.length === 0) continue;
+      walkAggregateUnitBasis(childValues, [...path, key], depth + 1, findings);
+    }
+  }
+
+  const arrayItems = values.filter((v): v is unknown[] => Array.isArray(v)).flat();
+  if (arrayItems.length > 0) {
+    walkAggregateUnitBasis(arrayItems, path, depth + 1, findings);
+  }
+}
+
+/**
+ * Finds every object path where a numeric field's value observably equals
+ * the sum of a same-named numeric field carried by every entry of a sibling
+ * map-of-objects field -- the party-total/per-guest-breakdown shape
+ * (report: `docs/incoming-reports/party-total-per-guest-price-derivation.md`)
+ * generalized to any aggregate/per-unit pair, regardless of field or site
+ * naming, so recon-generate can annotate the price basis instead of leaving
+ * every plugin author and consumer to re-derive it independently and
+ * diverge.
+ *
+ * Pure and read-only: walks the merged sample set the same way
+ * {@link inferZodSchemaFromSamples} does, but only ever compares numbers
+ * already present in the samples -- it emits no schema and mutates nothing.
+ */
+export function detectAggregateUnitBasisFindings(
+  samples: readonly unknown[]
+): readonly AggregateUnitBasisFinding[] {
+  const findings: AggregateUnitBasisFinding[] = [];
+  walkAggregateUnitBasis(
+    samples.filter((s) => s !== undefined && s !== null),
+    [],
+    0,
+    findings
+  );
+  return findings;
 }
 
 function deriveMinTime(rateLimits: RateLimitFinding[]): number {
@@ -4693,6 +4968,16 @@ export function emitContractTs(opts: {
   // in the other direction, hiding a field the flow can actually promise.
   const conditionalFieldNames =
     gql && gqlQuery ? collectConditionalGraphQLFieldNames(gqlQuery) : undefined;
+  const aggregateUnitBasisFindingsByPath = new Map<string, AggregateUnitBasisFinding[]>();
+  for (const finding of detectAggregateUnitBasisFindings(responseBodySamples)) {
+    const key = finding.aggregatePath.join(".");
+    const existing = aggregateUnitBasisFindingsByPath.get(key);
+    if (existing) {
+      existing.push(finding);
+    } else {
+      aggregateUnitBasisFindingsByPath.set(key, [finding]);
+    }
+  }
   const responseSchemaExpr =
     omitExecuteHttp && isSubmissionFlow
       ? `z.object({ verified: z.boolean() })`
@@ -4701,6 +4986,7 @@ export function emitContractTs(opts: {
         : inferZodSchemaFromSamples(responseBodySamples, 0, "", {
             conditionalFieldNames,
             looseServerResponse: true,
+            aggregateUnitBasisFindingsByPath,
           });
   // Multi-step flows that include a multipart upload need the binary asset
   // on the payload. ApplicantContactSchema (via ApplicantResumeSchema) already
