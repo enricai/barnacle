@@ -4552,9 +4552,9 @@ export function buildContractChecklist(opts: {
 export function emitContractTs(opts: {
   siteId: string;
   /**
-   * Optional human-readable brand name. Omitted entirely from the emitted
-   * `meta` object when absent — the generator has no reliable source to
-   * derive this from, so it must not fabricate one via siteId/pascal.
+   * Optional human-readable brand name, sourced from recon-flow.json's
+   * `displayName` field. Omitted entirely from the emitted `meta` object
+   * when absent — never fabricated via siteId/pascal capitalization.
    */
   displayName?: string;
   pascal: string;
@@ -5334,9 +5334,9 @@ function jsonSchemaTypeOf(value: unknown): "string" | "number" | "boolean" | "ar
 export function emitConfigManifest(opts: {
   siteId: string;
   /**
-   * Optional human-readable brand name. Omitted entirely from the emitted
-   * `metadata` object when absent — the generator has no reliable source to
-   * derive this from, so it must not fabricate one via siteId capitalization.
+   * Optional human-readable brand name, sourced from recon-flow.json's
+   * `displayName` field. Omitted entirely from the emitted `metadata` object
+   * when absent — never fabricated via siteId capitalization.
    */
   displayName?: string;
   baseUrl: string;
@@ -5849,50 +5849,56 @@ async function main(): Promise<void> {
     }
   })();
 
-  const { flowSteps, frameSelector, submitEndpointPattern, submitBodyPattern } = (() => {
-    try {
-      const raw: unknown = JSON.parse(readFileSync(flowFile, "utf8"));
-      if (Array.isArray(raw))
+  const { flowSteps, frameSelector, submitEndpointPattern, submitBodyPattern, displayName } =
+    (() => {
+      try {
+        const raw: unknown = JSON.parse(readFileSync(flowFile, "utf8"));
+        if (Array.isArray(raw))
+          return {
+            flowSteps: raw as FlowStepInput[],
+            frameSelector: undefined,
+            submitEndpointPattern: null,
+            submitBodyPattern: null,
+            displayName: undefined,
+          };
+        if (
+          raw !== null &&
+          typeof raw === "object" &&
+          "steps" in raw &&
+          Array.isArray((raw as { steps: unknown }).steps)
+        ) {
+          const obj = raw as {
+            steps: FlowStepInput[];
+            frameSelector?: string;
+            submitEndpointPattern?: string;
+            submitBodyPattern?: string;
+            displayName?: string;
+          };
+          return {
+            flowSteps: obj.steps,
+            frameSelector: obj.frameSelector,
+            submitEndpointPattern: obj.submitEndpointPattern ?? null,
+            submitBodyPattern: obj.submitBodyPattern ?? null,
+            displayName: obj.displayName,
+          };
+        }
         return {
-          flowSteps: raw as FlowStepInput[],
+          flowSteps: [] as string[],
           frameSelector: undefined,
           submitEndpointPattern: null,
           submitBodyPattern: null,
+          displayName: undefined,
         };
-      if (
-        raw !== null &&
-        typeof raw === "object" &&
-        "steps" in raw &&
-        Array.isArray((raw as { steps: unknown }).steps)
-      ) {
-        const obj = raw as {
-          steps: FlowStepInput[];
-          frameSelector?: string;
-          submitEndpointPattern?: string;
-          submitBodyPattern?: string;
-        };
+      } catch {
         return {
-          flowSteps: obj.steps,
-          frameSelector: obj.frameSelector,
-          submitEndpointPattern: obj.submitEndpointPattern ?? null,
-          submitBodyPattern: obj.submitBodyPattern ?? null,
+          flowSteps: [] as string[],
+          frameSelector: undefined,
+          submitEndpointPattern: null,
+          submitBodyPattern: null,
+          displayName: undefined,
         };
       }
-      return {
-        flowSteps: [] as string[],
-        frameSelector: undefined,
-        submitEndpointPattern: null,
-        submitBodyPattern: null,
-      };
-    } catch {
-      return {
-        flowSteps: [] as string[],
-        frameSelector: undefined,
-        submitEndpointPattern: null,
-        submitBodyPattern: null,
-      };
-    }
-  })();
+    })();
 
   // Flow-declared signals that isolate the submission POSTs from same-origin
   // page chrome. Threaded into action-sequence extraction and header derivation
@@ -6309,6 +6315,7 @@ async function main(): Promise<void> {
       manifestPath,
       emitConfigManifest({
         siteId,
+        displayName,
         baseUrl,
         flowSteps,
         vocabulary,
@@ -6348,6 +6355,7 @@ async function main(): Promise<void> {
 
   const contractOpts = {
     siteId,
+    displayName,
     pascal,
     baseUrl,
     // G1+G2: only the static headers (no baseUrl/tenant-subdomain references)
