@@ -4911,6 +4911,12 @@ export function emitContractTs(opts: {
    * `createHttpClient`'s `bind` option so a value like a `Set-Cookie`-minted
    * auth token actually reaches the stateful call that needs it. */
   headerBindings?: HeaderProduce[];
+  /** Declared operation variable names that {@link selectPrimaryGraphQLOperation}
+   * found no capture ever populates. Any merged extend field whose name
+   * case-insensitively matches one of these is emitted `.optional()` instead
+   * of required — it has no wiring target in `executeHttp` and would
+   * otherwise mislead callers into thinking it affects the request. */
+  unpopulatedDeclaredVariables?: readonly string[];
 }): string {
   const {
     siteId,
@@ -4941,6 +4947,7 @@ export function emitContractTs(opts: {
     discoveredStructuredKeys,
     payloadFieldNames,
     headerBindings = [],
+    unpopulatedDeclaredVariables = [],
   } = opts;
 
   // This is the CLIENT-level schema — createHttpClient's default, and the
@@ -5218,6 +5225,19 @@ export function emitContractTs(opts: {
   // that collides with the base extend's own Email/ClickUrl/Answers) collapses
   // to its last-declared line, rather than becoming a second, dupe-prone
   // `.extend()` call chained onto the schema.
+  // A field whose name matches (case-insensitively, the same convention
+  // renderGqlVariablesExpr uses) a declared GraphQL variable that no capture
+  // ever populated has no wiring target in executeHttp — it would replay the
+  // captured frozen value regardless of what the caller sends. Downgrading it
+  // to `.optional()` here, at the single merge point every source funnels
+  // through, keeps the schema honest without special-casing any one source.
+  for (const [fieldName, line] of extendFields) {
+    if (
+      unpopulatedDeclaredVariables.some((name) => name.toLowerCase() === fieldName.toLowerCase())
+    ) {
+      extendFields.set(fieldName, line.replace(/,\s*$/, ".optional(),"));
+    }
+  }
   const mergedExtension =
     extendFields.size > 0 ? `.extend({\n${[...extendFields.values()].join("\n")}\n})` : "";
   const payloadSchemaExpr = `${basePayloadSchemaExpr}${mergedExtension}`;
@@ -6664,6 +6684,7 @@ async function main(): Promise<void> {
     discoveredStructuredKeys,
     payloadFieldNames: browserFlow.payloadFieldNames,
     headerBindings,
+    unpopulatedDeclaredVariables: primaryGraphQLOperation?.unpopulatedDeclaredVariables ?? [],
   };
 
   const contractCode = emitContractTs(contractOpts);
