@@ -373,5 +373,53 @@ of the hand-rolled options are.
 
 ## File map
 
-See the [README's Reference section](../README.md#reference) for the
-full `src/` tree.
+```
+src/
+├── server.ts                  # Fastify bootstrap — calls loadAllPlugins(), registerRoutes(), site-agnostic
+├── site-plugin.ts             # SitePlugin<TInput,TOutput> interface (engine contract)
+├── config.ts                  # frozen env-typed config singleton
+├── plugins/
+│   ├── loader.ts              # dispatch(), registerRoutes(app, cfg, plugins)
+│   └── discover.ts            # BUILTIN_SITE_PLUGINS, loadAllPlugins(), loadPlugins()
+├── sites/
+│   ├── _shared/               # branch-local cross-plugin guards (coverage-expectations.test.ts)
+│   └── <site-id>/             # one directory per registered plugin
+├── api/
+│   ├── plugins/               # auth, error-handler, request-context
+│   ├── routes/                # health
+│   ├── schemas/               # common envelope schemas; LLM telemetry + judge-verdict schemas
+│   ├── helpers/envelope.ts    # success envelope builder
+│   └── errors.ts              # error hierarchy + envelope builder
+├── scraper/
+│   ├── session.ts             # Stagehand session factory (Browserbase default, Steel opt-in fallback)
+│   ├── pool.ts                # p-queue over createBrowserSession
+│   ├── throttle.ts            # Bottleneck limiter + jitter
+│   ├── retry.ts               # p-retry + failure classification
+│   ├── errors.ts              # typed scraper error hierarchy
+│   ├── http-client.ts         # typed fetch wrapper (hot path)
+│   ├── rate-limited-json-client.ts # factory: Bottleneck + chromiumClientHints + createHttpClient in one call — prefer this over the three-step scaffold for Chromium-hint plugins
+│   ├── http-status-classifier.ts # pure status→ScraperError classifier for raw-fetch callers
+│   ├── raw-fetch.ts           # site-agnostic undici scaffold: network-error wrap, onResponse hook, optional classifyHttpStatus (skipClassify for callers that classify manually)
+│   ├── graphql-client.ts      # GraphQL POST wrapper
+│   ├── metrics.ts             # drift-detection counters
+│   ├── fixtures.ts            # static JSON fixture loader
+│   ├── navigate.ts            # shared awaitActivePage + goto(networkidle) helper
+│   ├── behavioral-signals.ts  # CDP synthetic mouse-move + scroll dispatcher for bot-detection warmup
+│   ├── session-warmup.ts      # generic pRetry browser-session runner: acquire → callback → close, with caller-supplied exhaustion mapping
+│   ├── session-ip.ts          # resolves a session's outbound IP via a throwaway tab + IP-echo navigation
+│   └── require-response-field.ts # shared helpers for extracting required fields from HTTP response objects (HttpSchemaError on missing/null)
+├── cache/
+│   ├── response-cache.ts      # lru-cache wrapper for deduplicating concurrent identical scraper requests
+│   └── keyed-ttl-cache.ts     # generic per-key TTL + single-flight coalescing cache factory
+├── lib/                       # logging, env, bedrock, db client, multipart, option-matcher, chromium-client-hints, telemetry/
+├── scripts/                   # recon-browser, recon-http, recon-generate, recon-summarize, recon-heal, recon-shared, smoke-test, judge-llm-batch, llm-heal
+├── testing/
+│   ├── integration-runner.ts              # site-agnostic scaffold for integration tests (allocate inbox → dispatch → poll)
+│   ├── mock-fetch-response.ts             # shared undici-compatible Response stub factory for flow tests that mock fetch
+│   ├── replay-integration-suite.ts        # generic describe.skipIf/it.each scaffold; eliminates per-site integration boilerplate
+│   ├── contract-parity-suite.ts           # offline schema-parity scaffold; one-call drop-in for accept + rejection-case coverage
+│   ├── coverage-guard-suite.ts            # registry-driven structural guard; asserts contract.parity.test.ts exists per registered plugin
+│   ├── batch-email-confirmation.ts        # two-phase batch runner: submit jobs → poll inboxes (site-agnostic)
+│   └── batch-report.ts                    # markdown table renderer for batch-test verdicts
+└── types/
+```
