@@ -1112,9 +1112,15 @@ export function detectFoldPlan<T extends { capture: Capture; produces: Produce[]
     const producer = actions[i]!;
     for (const produce of producer.produces) {
       if (produce.kind !== "body") continue;
-      const arrayIndexIdx = produce.path.findIndex(
-        (segment, idx) => idx < produce.path.length - 1 && /^\d+$/.test(segment)
-      );
+      // A numeric-looking segment (`/^\d+$/`) is ambiguous on its own — it's
+      // equally what `walkStringLeaves` emits for a real array index AND for
+      // an object keyed by a numeric-looking string (e.g. `data["221"]`).
+      // Only the response body itself disambiguates: a real array index's
+      // parent node is an actual JS array.
+      const arrayIndexIdx = produce.path.findIndex((segment, idx) => {
+        if (idx >= produce.path.length - 1 || !/^\d+$/.test(segment)) return false;
+        return Array.isArray(readValueAtPath(producer.capture.responseBody, produce.path.slice(0, idx)));
+      });
       if (arrayIndexIdx === -1) continue;
 
       const value = readValueAtPath(producer.capture.responseBody, produce.path);
