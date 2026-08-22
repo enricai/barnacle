@@ -128,6 +128,55 @@ export function buildMulticallHeterogeneousActionStepsWithDrillDown(): Multicall
   ];
 }
 
+const CATALOG_SEARCH_URL = "https://api.example.com/catalog/search/";
+const CATALOG_ITEM_DETAIL_URL = "https://api.example.com/catalog/item-detail/";
+
+/**
+ * Reproduces a search-then-per-item-drill-down flow whose primary page
+ * carries multiple results, each followed by its own drill-down call — the
+ * shape {@link detectDrillDownFoldPlan} must resolve by join key rather than
+ * by position. `search`/`page 2` is re-queried (distinct body from `page 1`)
+ * so it satisfies {@link findRequeriedActions}'s relevance signal, and its
+ * response holds two items (`i-b` then `i-a`, deliberately not alphabetical)
+ * so a later merge can't assume primary-array order. The two drill-down
+ * calls are fired in the OPPOSITE order of the primary array (`i-a`'s
+ * drill-down first, `i-b`'s second) — a positional/index-based fold would
+ * pair the wrong item with the wrong drill-down response, while a join-key
+ * fold (matching each drill request's `itemId` back to the primary item that
+ * produced it) pairs them correctly regardless of call order.
+ */
+export function buildMulticallDependentDrillDownActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: { totalPages: 2, items: [{ itemId: "solo" }] },
+      timestamp: "2024-03-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":2}',
+      responseBody: {
+        totalPages: 2,
+        items: [{ itemId: "i-b" }, { itemId: "i-a" }],
+      },
+      timestamp: "2024-03-01T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: CATALOG_ITEM_DETAIL_URL,
+      requestPostData: '{"itemId":"i-a"}',
+      responseBody: { details: [{ detailId: "d-a" }] },
+      timestamp: "2024-03-01T00:00:02Z",
+    }),
+    buildStep("r3", {
+      url: CATALOG_ITEM_DETAIL_URL,
+      requestPostData: '{"itemId":"i-b"}',
+      responseBody: { details: [{ detailId: "d-b" }] },
+      timestamp: "2024-03-01T00:00:03Z",
+    }),
+  ];
+}
+
 const CHECKOUT_HOST = "https://api.example.com";
 
 /**
