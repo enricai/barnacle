@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   detectFoldPlan,
   parseFoldReturnSpec,
+  resolveFoldPlan,
   selectEffectiveResponseBody,
 } from "@/scripts/recon-generate";
 import {
@@ -19,6 +20,13 @@ import {
  * recon-generate-multistep-return.test.ts's `emit` helper. */
 function detect(steps: unknown[]): ReturnType<typeof detectFoldPlan> {
   return detectFoldPlan(steps as unknown as Parameters<typeof detectFoldPlan>[0]);
+}
+
+function resolve(
+  steps: unknown[],
+  spec: Parameters<typeof resolveFoldPlan>[1]
+): ReturnType<typeof resolveFoldPlan> {
+  return resolveFoldPlan(steps as unknown as Parameters<typeof resolveFoldPlan>[0], spec);
 }
 
 /** A step whose response is a search-result ARRAY, with a `produces` entry
@@ -227,5 +235,73 @@ describe("parseFoldReturnSpec", () => {
 
   it("returns null on malformed JSON", () => {
     expect(parseFoldReturnSpec("{not json")).toBeNull();
+  });
+});
+
+describe("resolveFoldPlan", () => {
+  it("falls back to a flow-declared foldReturn spec when detectFoldPlan's structural heuristic finds nothing", () => {
+    // No `produces` entry threads the array item's join field anywhere, so
+    // `detectFoldPlan` can't infer the fold on its own — this is exactly the
+    // shape `foldReturn` exists to cover.
+    const searchStep = buildStep("r0", {
+      url: "https://api.example.com/catalog/search",
+      requestPostData: null,
+      responseBody: { results: [{ itemCode: "WIDGET-42", name: "Widget" }] },
+      timestamp: "2024-01-01T00:00:00Z",
+    });
+    const drillStep = buildStep("r1", {
+      url: "https://api.example.com/catalog/pricing/WIDGET-42",
+      requestPostData: null,
+      responseBody: { pricing: { amount: 19.99 } },
+      timestamp: "2024-01-01T00:00:01Z",
+    });
+    expect(detect([searchStep, drillStep])).toBeNull();
+
+    const plan = resolve([searchStep, drillStep], {
+      endpointPattern: "/catalog/pricing/",
+      resultsPath: "results",
+      joinField: "itemCode",
+    });
+
+    if (plan === null) throw new Error("expected a fold plan");
+    expect(plan.arrayContainerPath).toEqual(["results"]);
+    expect(plan.joinFields).toEqual(["itemCode"]);
+    expect((plan.primaryAction as MulticallFixtureStep).varName).toBe("r0");
+    expect((plan.drillAction as MulticallFixtureStep).varName).toBe("r1");
+  });
+
+  it("prefers detectFoldPlan's structural result over a foldReturn spec when both would resolve", () => {
+    const searchStep = buildSearchStepWithArrayProduce();
+    const drillStep = buildDrillDownStep("WIDGET-42");
+
+    const plan = resolve([searchStep, drillStep], {
+      endpointPattern: "/nonexistent/",
+      resultsPath: "results",
+      joinField: "itemCode",
+    });
+
+    if (plan === null) throw new Error("expected a fold plan");
+    expect((plan.drillAction as MulticallFixtureStep).varName).toBe("r1");
+  });
+
+  it("returns null when no foldReturn spec is given and the heuristic finds nothing", () => {
+    expect(resolve(buildMulticallHeterogeneousActionSteps(), null)).toBeNull();
+  });
+
+  it("returns null when the foldReturn spec's endpointPattern matches no strictly-later action", () => {
+    const searchStep = buildStep("r0", {
+      url: "https://api.example.com/catalog/search",
+      requestPostData: null,
+      responseBody: { results: [{ itemCode: "WIDGET-42" }] },
+      timestamp: "2024-01-01T00:00:00Z",
+    });
+
+    expect(
+      resolve([searchStep], {
+        endpointPattern: "/catalog/pricing/",
+        resultsPath: "results",
+        joinField: "itemCode",
+      })
+    ).toBeNull();
   });
 });

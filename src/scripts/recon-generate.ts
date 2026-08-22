@@ -1032,14 +1032,19 @@ export function selectReturnAction<T extends { capture: Capture }>(steps: readon
  */
 export function selectEffectiveResponseBody<
   T extends { capture: Capture; produces: Produce[]; isMultipart: boolean },
->(isSubmissionFlow: boolean, actionSteps: readonly T[], replayResponseBody: unknown): unknown {
+>(
+  isSubmissionFlow: boolean,
+  actionSteps: readonly T[],
+  replayResponseBody: unknown,
+  foldReturnSpec: FoldReturnSpec | null = null
+): unknown {
   if (!isSubmissionFlow) return replayResponseBody;
   // A resolved fold plan makes emitMultiStepExecuteHttp return the primary
   // action's body with its array folded, never a bare action's body — so
   // shape inference must sample that same merged shape, not fall through to
   // whichever action `selectReturnAction` would otherwise pick (which could
   // be the fold's own drill action, describing the wrong call entirely).
-  const foldPlan = detectFoldPlan(actionSteps);
+  const foldPlan = resolveFoldPlan(actionSteps, foldReturnSpec);
   if (foldPlan !== null && !foldPlan.drillAction.isMultipart) {
     return buildFoldedResponseBodySample(foldPlan);
   }
@@ -1186,6 +1191,53 @@ export function detectFoldPlan<T extends { capture: Capture; produces: Produce[]
     }
   }
   return null;
+}
+
+/**
+ * Builds a {@link FoldPlan} directly from a flow-declared {@link FoldReturnSpec},
+ * for shapes `detectFoldPlan`'s structural heuristic can't infer on its own
+ * (e.g. the join value only reaches the drill-down via a header the heuristic
+ * doesn't consider, or the primary array item's join field isn't itself a
+ * `produces` leaf). Returns `null` when `resultsPath` doesn't resolve to an
+ * array on any action's response, or no strictly-later action's URL matches
+ * `endpointPattern` — the same null-safe fallback shape `detectFoldPlan` uses.
+ */
+function buildFoldPlanFromSpec<T extends { capture: Capture; produces: Produce[] }>(
+  actions: readonly T[],
+  spec: FoldReturnSpec
+): FoldPlan<T> | null {
+  const arrayContainerPath = spec.resultsPath.split(".");
+  const endpointRx = new RegExp(spec.endpointPattern);
+  for (let i = 0; i < actions.length; i++) {
+    const primaryAction = actions[i]!;
+    if (!Array.isArray(readValueAtPath(primaryAction.capture.responseBody, arrayContainerPath))) {
+      continue;
+    }
+    const drillAction = actions
+      .slice(i + 1)
+      .find((candidate) => endpointRx.test(candidate.capture.url));
+    if (!drillAction) continue;
+    return { primaryAction, arrayContainerPath, joinFields: [spec.joinField], drillAction };
+  }
+  return null;
+}
+
+/**
+ * Resolves the fold plan a flow should use: `detectFoldPlan`'s structural
+ * heuristic first, falling back to a flow-declared `foldReturn` spec when the
+ * heuristic finds nothing. Both `emitMultiStepExecuteHttp` and
+ * `selectEffectiveResponseBody` MUST call this instead of `detectFoldPlan`
+ * directly so they keep describing the same call (see `selectEffectiveResponseBody`'s
+ * docstring) regardless of which source resolved the plan.
+ */
+export function resolveFoldPlan<T extends { capture: Capture; produces: Produce[] }>(
+  actions: readonly T[],
+  foldReturnSpec: FoldReturnSpec | null = null
+): FoldPlan<T> | null {
+  return (
+    detectFoldPlan(actions) ??
+    (foldReturnSpec === null ? null : buildFoldPlanFromSpec(actions, foldReturnSpec))
+  );
 }
 
 /**
@@ -4042,7 +4094,8 @@ export function emitMultiStepExecuteHttp(
   shieldedUuids: Set<string> = new Set(),
   selectResolutions: SelectOptionResolution[] = [],
   outStructuredKeys: Map<string, string> = new Map(),
-  rawCodeFields: Map<string, { wireKey: string; code: string }> = new Map()
+  rawCodeFields: Map<string, { wireKey: string; code: string }> = new Map(),
+  foldReturnSpec: FoldReturnSpec | null = null
 ): string {
   interface Rendered {
     url: string;
@@ -4223,7 +4276,7 @@ export function emitMultiStepExecuteHttp(
   // call's data. Multipart drill calls (raw FormData upload, no JSON
   // request template to re-key per item) fall back to the existing
   // single-call emission.
-  const foldPlan = detectFoldPlan(actions);
+  const foldPlan = resolveFoldPlan(actions, foldReturnSpec);
   const isFoldedDrillAction =
     foldPlan !== null && !foldPlan.drillAction.isMultipart ? foldPlan.drillAction : null;
 
@@ -6474,56 +6527,74 @@ async function main(): Promise<void> {
     }
   })();
 
-  const { flowSteps, frameSelector, submitEndpointPattern, submitBodyPattern, displayName } =
-    (() => {
+  const {
+    flowSteps,
+    frameSelector,
+    submitEndpointPattern,
+    submitBodyPattern,
+    displayName,
+    foldReturnSpec,
+  } = (() => {
+    const flowFileContents = (() => {
       try {
-        const raw: unknown = JSON.parse(readFileSync(flowFile, "utf8"));
-        if (Array.isArray(raw))
-          return {
-            flowSteps: raw as FlowStepInput[],
-            frameSelector: undefined,
-            submitEndpointPattern: null,
-            submitBodyPattern: null,
-            displayName: undefined,
-          };
-        if (
-          raw !== null &&
-          typeof raw === "object" &&
-          "steps" in raw &&
-          Array.isArray((raw as { steps: unknown }).steps)
-        ) {
-          const obj = raw as {
-            steps: FlowStepInput[];
-            frameSelector?: string;
-            submitEndpointPattern?: string;
-            submitBodyPattern?: string;
-            displayName?: string;
-          };
-          return {
-            flowSteps: obj.steps,
-            frameSelector: obj.frameSelector,
-            submitEndpointPattern: obj.submitEndpointPattern ?? null,
-            submitBodyPattern: obj.submitBodyPattern ?? null,
-            displayName: obj.displayName,
-          };
-        }
-        return {
-          flowSteps: [] as string[],
-          frameSelector: undefined,
-          submitEndpointPattern: null,
-          submitBodyPattern: null,
-          displayName: undefined,
-        };
+        return readFileSync(flowFile, "utf8");
       } catch {
-        return {
-          flowSteps: [] as string[],
-          frameSelector: undefined,
-          submitEndpointPattern: null,
-          submitBodyPattern: null,
-          displayName: undefined,
-        };
+        return null;
       }
     })();
+    const foldReturnSpec = flowFileContents === null ? null : parseFoldReturnSpec(flowFileContents);
+    try {
+      const raw: unknown = flowFileContents === null ? null : JSON.parse(flowFileContents);
+      if (Array.isArray(raw))
+        return {
+          flowSteps: raw as FlowStepInput[],
+          frameSelector: undefined,
+          submitEndpointPattern: null,
+          submitBodyPattern: null,
+          displayName: undefined,
+          foldReturnSpec,
+        };
+      if (
+        raw !== null &&
+        typeof raw === "object" &&
+        "steps" in raw &&
+        Array.isArray((raw as { steps: unknown }).steps)
+      ) {
+        const obj = raw as {
+          steps: FlowStepInput[];
+          frameSelector?: string;
+          submitEndpointPattern?: string;
+          submitBodyPattern?: string;
+          displayName?: string;
+        };
+        return {
+          flowSteps: obj.steps,
+          frameSelector: obj.frameSelector,
+          submitEndpointPattern: obj.submitEndpointPattern ?? null,
+          submitBodyPattern: obj.submitBodyPattern ?? null,
+          displayName: obj.displayName,
+          foldReturnSpec,
+        };
+      }
+      return {
+        flowSteps: [] as string[],
+        frameSelector: undefined,
+        submitEndpointPattern: null,
+        submitBodyPattern: null,
+        displayName: undefined,
+        foldReturnSpec,
+      };
+    } catch {
+      return {
+        flowSteps: [] as string[],
+        frameSelector: undefined,
+        submitEndpointPattern: null,
+        submitBodyPattern: null,
+        displayName: undefined,
+        foldReturnSpec,
+      };
+    }
+  })();
 
   // Flow-declared signals that isolate the submission POSTs from same-origin
   // page chrome. Threaded into action-sequence extraction and header derivation
@@ -6916,7 +6987,8 @@ async function main(): Promise<void> {
           shieldedUuids,
           selectResolutions,
           discoveredStructuredKeys,
-          rawCodeFields
+          rawCodeFields,
+          foldReturnSpec
         )
       : undefined;
 
@@ -6927,7 +6999,8 @@ async function main(): Promise<void> {
   const effectiveResponseBody = selectEffectiveResponseBody(
     isSubmissionFlow,
     actionSteps,
-    responseBody
+    responseBody,
+    foldReturnSpec
   );
 
   logger.info(
