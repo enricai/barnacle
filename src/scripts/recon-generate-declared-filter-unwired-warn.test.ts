@@ -1,9 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { z } from "zod/v4";
 
 /**
  * When selectPrimaryGraphQLOperation (bugfix-002) reports a declared filter
@@ -92,8 +93,38 @@ afterEach(() => {
 function run(runRoot: string, siteId: string): ReturnType<typeof spawnSync> {
   return spawnSync(
     TSX_BIN,
-    [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts"],
+    [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
     { cwd: REPO_ROOT, encoding: "utf8" }
+  );
+}
+
+/**
+ * Reads the generated contract.ts's `const <Pascal>PayloadSchema = ...`
+ * expression back out and evaluates it against the real `zod/v4` runtime
+ * (the same import the generated file itself uses), so `safeParse` exercises
+ * the actual emitted schema rather than a hand-copied stand-in. The emitted
+ * expression is pure `z....` composition with no external references, so
+ * evaluating it standalone is safe and faithful to what the plugin ships.
+ */
+function readPayloadSchema(siteOutDir: string): ReturnType<typeof z.object> {
+  const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+  const match = /const \w+PayloadSchema = ([\s\S]*?);\n/.exec(contract);
+  if (!match) throw new Error(`no PayloadSchema declaration found in ${contract}`);
+  return new Function("z", `return ${match[1]};`)(z);
+}
+
+/**
+ * A flow step whose explicit `payloadField` names the declared GraphQL
+ * variable's PascalCase field, so `emitBrowserFlowTs`'s payloadFieldNames
+ * accumulator (and therefore emitContractTs's merged extend) actually
+ * contains that field — otherwise the generated contract never declares it
+ * at all, and there is nothing to assert optional/required about.
+ */
+function writeFlowFile(siteOutDir: string): void {
+  mkdirSync(siteOutDir, { recursive: true });
+  writeFileSync(
+    join(siteOutDir, "recon-flow.json"),
+    JSON.stringify([{ step: "select the category filters", payloadField: "Filters" }])
   );
 }
 
@@ -103,8 +134,9 @@ describe("recon-generate declared-filter-unwired warning", () => {
     const runRoot = join(workDir, "run");
     writeUnwiredRunDir(runRoot);
 
-    const siteId = `unwired-filter-test-${process.pid}`;
+    const siteId = `unwired-filter-test-run${process.pid}`;
     siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    writeFlowFile(siteOutDir);
 
     const result = run(runRoot, siteId);
     const out = `${result.stdout}\n${result.stderr}`;
@@ -113,6 +145,11 @@ describe("recon-generate declared-filter-unwired warning", () => {
     expect(out).toContain("catalogSearch_Items");
     expect(out).toContain("filters");
     expect(out).toContain("will replay the captured frozen value");
+
+    // The unwired declared variable's field has no wiring target in
+    // executeHttp, so the caller must be free to omit it from the payload.
+    const bodySchema = readPayloadSchema(siteOutDir);
+    expect(bodySchema.safeParse({ query: "kitchen" }).success).toBe(true);
   }, 30_000);
 
   it("does not warn when the declared variable is populated on at least one capture (control)", () => {
@@ -120,13 +157,22 @@ describe("recon-generate declared-filter-unwired warning", () => {
     const runRoot = join(workDir, "run");
     writeWiredRunDir(runRoot);
 
-    const siteId = `wired-filter-test-${process.pid}`;
+    const siteId = `wired-filter-test-run${process.pid}`;
     siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    writeFlowFile(siteOutDir);
 
     const result = run(runRoot, siteId);
     const out = `${result.stdout}\n${result.stderr}`;
 
     expect(result.status, out).toBe(0);
     expect(out).not.toContain("will replay the captured frozen value");
+
+    // A wired sibling field DOES have a wiring target, so it stays required —
+    // omitting it must fail safeParse instead of silently passing.
+    const bodySchema = readPayloadSchema(siteOutDir);
+    expect(bodySchema.safeParse({ query: "kitchen" }).success).toBe(false);
+    expect(bodySchema.safeParse({ query: "kitchen", Filters: "category:kitchen" }).success).toBe(
+      true
+    );
   }, 30_000);
 });
