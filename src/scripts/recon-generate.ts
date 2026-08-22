@@ -4351,6 +4351,18 @@ export function emitMultiStepExecuteHttp(
     // accessor, then merges the matched drill response back onto that item —
     // reusing the per-call render rather than a second HTTP-call emitter.
     if (foldPlan && i === foldPlan.drillStepIndex) {
+      // The loop below block-scopes `const ${step.varName}` inside the
+      // `for` — it does not escape to the rest of the function. If this
+      // step's response var (or one of its produces) is referenced
+      // elsewhere, that reference would resolve to a `const` declared in a
+      // narrower scope and fail to compile. No fixture currently threads a
+      // drill step's own response onward like this, so fail loudly instead
+      // of silently emitting broken TypeScript.
+      if (referencedNames.has(step.varName) || produceLines.length > 0) {
+        throw new Error(
+          `emitMultiStepExecuteHttp: fold plan drill step ${step.varName} is referenced outside its own request (directly or via a produce), but the fold loop scopes its response to a single loop iteration — this combination isn't supported yet.`
+        );
+      }
       const primaryStep = actions[foldPlan.primaryStepIndex]!;
       const primaryArray = findObjectArrayField(primaryStep.capture.responseBody);
       const firstItem = primaryArray?.items[0];
@@ -4368,13 +4380,23 @@ export function emitMultiStepExecuteHttp(
       // body key regardless of length, running BEFORE this fold branch ever
       // sees the value). Both must resolve to the loop item's own field, not
       // a caller-supplied payload value shared across every iteration.
+      // Word-boundary anchored: a plain `.split(value).join(...)` would also
+      // rewrite unrelated substrings that happen to contain the join value
+      // (e.g. a "p1" product id colliding with a "/v1/" path segment or a
+      // "p10" sibling id), corrupting parts of the request the join field
+      // never touched.
+      const replaceWholeValue = (haystack: string, value: string, replacement: string): string =>
+        haystack.replace(
+          new RegExp(`\\b${value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g"),
+          replacement
+        );
       const parameterize = (text: string): string =>
         foldPlan.joinFields.reduce((acc, field) => {
           const replacement = `\${${joinAccessor(field)}}`;
           const withAccessorSwapped = acc.split(`\${payload.${field}}`).join(replacement);
           const value = firstItem[field];
           return typeof value === "string" && value.length > 0
-            ? withAccessorSwapped.split(value).join(replacement)
+            ? replaceWholeValue(withAccessorSwapped, value, replacement)
             : withAccessorSwapped;
         }, text);
 

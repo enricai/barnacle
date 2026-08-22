@@ -3,6 +3,7 @@ import { emitMultiStepExecuteHttp } from "@/scripts/recon-generate";
 import {
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
+  buildStep,
   type MulticallFixtureStep,
 } from "@/scripts/recon-generate-multicall-fixture";
 
@@ -43,6 +44,35 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     expect(body).toContain("const r2 = (await httpClient(");
     expect(body).toContain("for (const item of foldItems) {");
     expect(body).toContain("Object.assign(item, foldMatches[0] ?? {});");
+  });
+
+  it("refuses to emit when a later step threads a produced value out of the fold drill step's own response", () => {
+    // r4 (available-units/) is the fold plan's drill step. Its own
+    // `units[0].unitId` is declared as a produce here — the same way a
+    // chained call's threaded id normally reaches a later step — and step 5
+    // threads it. `const r4` (and any produce read off it) is declared
+    // inside the fold loop's block scope, so a reference from step 5
+    // (outside that loop) can't resolve — emitting that would be broken
+    // TypeScript, so this must fail loudly at generation time instead.
+    const withDrillDown = buildMulticallHeterogeneousActionStepsWithDrillDown();
+    const drillStep = withDrillDown[withDrillDown.length - 1]!;
+    const steps: MulticallFixtureStep[] = [
+      ...withDrillDown.slice(0, -1),
+      {
+        ...drillStep,
+        produces: [
+          { kind: "body", name: "unitId", path: ["units", "0", "unitId"] },
+        ] as unknown as never[],
+      },
+      buildStep("r5", {
+        url: "https://api.example.com/listings-avail-api/units/s1/hold",
+        requestPostData: '{"unitId":"s1"}',
+        responseBody: { held: true },
+        timestamp: "2024-01-01T00:00:05Z",
+      }),
+    ];
+
+    expect(() => emit(steps)).toThrow(/fold plan drill step r4 is referenced outside/);
   });
 
   it("still returns the search step when it is ALSO the terminal call", () => {
