@@ -925,6 +925,24 @@ export function detectAggregateUnitBasisFindings(
   return findings;
 }
 
+/** Groups {@link detectAggregateUnitBasisFindings} output by aggregate path so
+ * {@link inferZodSchemaFromSamples} can look findings up per-field in O(1). */
+function groupAggregateUnitBasisFindingsByPath(
+  samples: readonly unknown[]
+): Map<string, AggregateUnitBasisFinding[]> {
+  const byPath = new Map<string, AggregateUnitBasisFinding[]>();
+  for (const finding of detectAggregateUnitBasisFindings(samples)) {
+    const key = finding.aggregatePath.join(".");
+    const existing = byPath.get(key);
+    if (existing) {
+      existing.push(finding);
+    } else {
+      byPath.set(key, [finding]);
+    }
+  }
+  return byPath;
+}
+
 function deriveMinTime(rateLimits: RateLimitFinding[]): number {
   const first = rateLimits.find((f) => f.safeRps !== null);
   return first?.safeRps ? Math.floor(1000 / first.safeRps) : 200;
@@ -4246,19 +4264,9 @@ export function emitMultiStepExecuteHttp(
     // validates any individual call. Without this override, HttpRequestInit.schema
     // would default to the client's z.unknown() and narrowing the caller-facing
     // contract would enforce that narrowed shape on every call in the chain.
-    const perCallAggregateUnitBasisFindingsByPath = new Map<string, AggregateUnitBasisFinding[]>();
-    for (const finding of detectAggregateUnitBasisFindings([cap.responseBody])) {
-      const key = finding.aggregatePath.join(".");
-      const existing = perCallAggregateUnitBasisFindingsByPath.get(key);
-      if (existing) {
-        existing.push(finding);
-      } else {
-        perCallAggregateUnitBasisFindingsByPath.set(key, [finding]);
-      }
-    }
     const schemaExpr = inferZodSchema(cap.responseBody, 0, "", {
       looseServerResponse: true,
-      aggregateUnitBasisFindingsByPath: perCallAggregateUnitBasisFindingsByPath,
+      aggregateUnitBasisFindingsByPath: groupAggregateUnitBasisFindingsByPath([cap.responseBody]),
     });
 
     rendered.push({ url, method: cap.method, headersExpr, bodyArg, schemaExpr });
@@ -4995,16 +5003,8 @@ export function emitContractTs(opts: {
   // in the other direction, hiding a field the flow can actually promise.
   const conditionalFieldNames =
     gql && gqlQuery ? collectConditionalGraphQLFieldNames(gqlQuery) : undefined;
-  const aggregateUnitBasisFindingsByPath = new Map<string, AggregateUnitBasisFinding[]>();
-  for (const finding of detectAggregateUnitBasisFindings(responseBodySamples)) {
-    const key = finding.aggregatePath.join(".");
-    const existing = aggregateUnitBasisFindingsByPath.get(key);
-    if (existing) {
-      existing.push(finding);
-    } else {
-      aggregateUnitBasisFindingsByPath.set(key, [finding]);
-    }
-  }
+  const aggregateUnitBasisFindingsByPath =
+    groupAggregateUnitBasisFindingsByPath(responseBodySamples);
   const responseSchemaExpr =
     omitExecuteHttp && isSubmissionFlow
       ? `z.object({ verified: z.boolean() })`
