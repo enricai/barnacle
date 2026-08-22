@@ -628,6 +628,13 @@ export const RECON_FLOW_FILE_SCHEMA = z.union([
   z.object({
     steps: RECON_FLOW_SCHEMA,
     /**
+     * The flow author's real, human-readable name for the site plugin,
+     * consumed by `recon:generate` for `meta.displayName`. Never derived by
+     * capitalizing `siteId` — this is an explicit declaration, not a
+     * fabricated fallback.
+     */
+    displayName: z.string().min(1).optional(),
+    /**
      * CSS selector of a cross-origin `<iframe>` the flow's target elements
      * live inside (e.g. an embedded apply wizard embedded rather than top-window
      * navigated). Matches `flowSchema.frameSelector` in

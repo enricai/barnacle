@@ -10,6 +10,7 @@ import { RECON_FLOW_FILE_SCHEMA } from "@/scripts/recon-browser";
  * real content) live in the downstream `autoapply` repo's `src/sites/<id>/`.
  */
 const EXAMPLE_FLOW = {
+  displayName: "Example Careers",
   frameSelector: "#example_apply_iframe",
   steps: [
     { step: "Click the 'Apply now' button", optional: false, upload: false },
@@ -30,6 +31,15 @@ describe("recon-browser/RECON_FLOW_FILE_SCHEMA — cross-frame flow structural c
     expect(Array.isArray(result.data)).toBe(false);
     if (Array.isArray(result.data)) return;
     expect(result.data.frameSelector).toBe("#example_apply_iframe");
+  });
+
+  it("accepts a flow-authored displayName and returns it verbatim", () => {
+    const result = RECON_FLOW_FILE_SCHEMA.safeParse(EXAMPLE_FLOW);
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    if (Array.isArray(result.data)) return;
+    expect(result.data.displayName).toBe("Example Careers");
   });
 
   it("orders the Apply CTA step before the in-iframe Continue step", () => {
