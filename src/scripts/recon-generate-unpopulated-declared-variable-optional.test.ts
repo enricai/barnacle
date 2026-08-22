@@ -43,7 +43,8 @@ describe("emitContractTs — unpopulated declared GraphQL variables become optio
       safeRps: 10,
       responseBody: { products: [{ id: "p-1", name: "Widget" }] },
       gql: true,
-      gqlQuery: "query productSearch_Products($filters: String) { products(filters: $filters) { id name } }",
+      gqlQuery:
+        "query productSearch_Products($filters: String) { products(filters: $filters) { id name } }",
       endpointPath: "/graphql",
       gqlOperationName: "productSearch_Products",
       gqlVariables: { filters: "category:widgets" },
@@ -53,5 +54,29 @@ describe("emitContractTs — unpopulated declared GraphQL variables become optio
 
     expect(source).toMatch(/Category: z\.string\(\),/);
     expect(source).not.toContain(".optional()");
+  });
+
+  it("does not downgrade the base Email/ClickUrl/Answers contract fields on a submission flow, even when a GraphQL variable shares the name", () => {
+    const source = emitContractTs({
+      siteId: "submit-example",
+      pascal: "SubmitExample",
+      baseUrl: "https://submit-example.example.com",
+      baseHeaders: { "Content-Type": "application/json" },
+      minTime: 100,
+      safeRps: 10,
+      responseBody: { ok: true },
+      inputBody: { email: "" },
+      gql: true,
+      gqlQuery: "mutation submit($email: String) { submit(email: $email) { ok } }",
+      endpointPath: "/graphql",
+      gqlOperationName: "submit",
+      gqlVariables: { email: "" },
+      payloadFieldNames: new Set(),
+      unpopulatedDeclaredVariables: ["email"],
+      auxFiles: [],
+    });
+
+    expect(source).toMatch(/Email: z\.email\(\),/);
+    expect(source).not.toMatch(/Email: z\.email\(\)\.optional\(\),/);
   });
 });

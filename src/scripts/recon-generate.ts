@@ -5231,7 +5231,14 @@ export function emitContractTs(opts: {
   // captured frozen value regardless of what the caller sends. Downgrading it
   // to `.optional()` here, at the single merge point every source funnels
   // through, keeps the schema honest without special-casing any one source.
+  // Email/ClickUrl/Answers are the public contract every submission-flow
+  // plugin must declare unconditionally (see the basePayloadSchemaExpr
+  // comment above) — a GraphQL mutation that happens to declare an
+  // unpopulated variable with a matching name (e.g. `$email`) must not
+  // downgrade that required base field.
+  const baseContractFieldNames = new Set(["Email", "ClickUrl", "Answers"]);
   for (const [fieldName, line] of extendFields) {
+    if (inputBody && baseContractFieldNames.has(fieldName)) continue;
     if (
       unpopulatedDeclaredVariables.some((name) => name.toLowerCase() === fieldName.toLowerCase())
     ) {
