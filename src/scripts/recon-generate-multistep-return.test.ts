@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { emitMultiStepExecuteHttp } from "@/scripts/recon-generate";
 import {
+  buildMulticallDependentDrillDownActionSteps,
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
   buildStep,
@@ -141,5 +142,54 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     expect(body).toContain("return { data: r1 };");
     expect(body).not.toContain("return { data: r0 };");
     expect(body).toContain("const r1 = (await httpClient(");
+  });
+
+  it("resolves the drill step by join key rather than call order across multiple primary items", () => {
+    // The primary page's items are [i-b, i-a] (index 0 is i-b), but i-a's
+    // drill-down (r2) fires BEFORE i-b's (r3). A positional fold would pair
+    // foldItems[0] (i-b) with whichever drill call came first (r2, i-a's) —
+    // this asserts the plan instead resolves to r3, the call whose own
+    // request actually threads i-b's itemId, and that every loop iteration
+    // re-derives the join value from its own `item` rather than the single
+    // sampled item the plan was detected from.
+    const body = emit(buildMulticallDependentDrillDownActionSteps());
+
+    expect(body).toContain(
+      `const r3 = (await httpClient(\`\${payload.BaseUrl}/catalog/item-detail/\``
+    );
+    expect(body).toContain(`body: \`{"itemId":"\${item.itemId}"}\``);
+    expect(body).not.toContain('"itemId":"i-b"');
+    expect(body).not.toContain('"itemId":"i-a"');
+  });
+
+  it("leaves the primary results unmerged, without crashing, when no later step threads the primary item's join key", () => {
+    // Same primary page as the join-key test, but both later item-detail
+    // calls carry a request body value that doesn't match either primary
+    // item's itemId. findThreadedJoinFields then finds nothing to thread,
+    // so detectDrillDownFoldPlan returns null and the generator must fall
+    // back to its ordinary return-value selection instead of emitting a
+    // fold loop it can't ground in evidence.
+    const steps = buildMulticallDependentDrillDownActionSteps();
+    const withUnthreadedDrills: MulticallFixtureStep[] = [
+      ...steps.slice(0, 2),
+      buildStep("r2", {
+        url: "https://api.example.com/catalog/item-detail/",
+        requestPostData: '{"itemId":"unrelated"}',
+        responseBody: { details: [{ detailId: "d-a" }] },
+        timestamp: "2024-03-01T00:00:02Z",
+      }),
+      buildStep("r3", {
+        url: "https://api.example.com/catalog/item-detail/",
+        requestPostData: '{"itemId":"also-unrelated"}',
+        responseBody: { details: [{ detailId: "d-b" }] },
+        timestamp: "2024-03-01T00:00:03Z",
+      }),
+    ];
+
+    const body = emit(withUnthreadedDrills);
+
+    expect(body).toContain("return { data: r3 };");
+    expect(body).not.toContain("for (const item of foldItems) {");
+    expect(body).not.toContain("Object.assign(item, foldMatches[0] ?? {});");
   });
 });
