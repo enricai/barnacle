@@ -42,6 +42,25 @@ describe("emitContractTs — meta.displayName is not derived by naive siteId cap
   });
 });
 
+describe("cross-emitter displayName parity — same flow-authored value reaches both artifacts identically", () => {
+  it("emits the identical displayName string in emitContractTs meta and emitConfigManifest metadata", () => {
+    const contract = emitContractTs({ ...BASE_OPTS, displayName: "Widget Depot" });
+    const metaBlockMatch = contract.match(/meta: \{[\s\S]*?\n {2}\},/);
+    expect(metaBlockMatch).not.toBeNull();
+    expect(metaBlockMatch?.[0]).toContain(`displayName: "Widget Depot"`);
+
+    const manifest = emitConfigManifest({
+      siteId: BASE_OPTS.siteId,
+      baseUrl: BASE_OPTS.baseUrl,
+      flowSteps: ["click apply"],
+      displayName: "Widget Depot",
+    });
+    const parsed = JSON.parse(manifest) as { metadata: Record<string, unknown> };
+
+    expect(parsed.metadata.displayName).toBe("Widget Depot");
+  });
+});
+
 describe("emitConfigManifest — metadata.displayName is not derived by naive siteId capitalization", () => {
   it("never emits a displayName split from the PascalCase siteId, and omits it entirely", () => {
     const manifest = emitConfigManifest({
