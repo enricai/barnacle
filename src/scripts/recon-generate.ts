@@ -1030,13 +1030,55 @@ export function selectReturnAction<T extends { capture: Capture }>(steps: readon
  * on which call they describe, or the emitted type disagrees with the value
  * actually returned. Falls back to the replay body for single-endpoint sites.
  */
-export function selectEffectiveResponseBody<T extends { capture: Capture }>(
-  isSubmissionFlow: boolean,
-  actionSteps: readonly T[],
-  replayResponseBody: unknown
-): unknown {
+export function selectEffectiveResponseBody<
+  T extends { capture: Capture; produces: Produce[]; isMultipart: boolean },
+>(isSubmissionFlow: boolean, actionSteps: readonly T[], replayResponseBody: unknown): unknown {
   if (!isSubmissionFlow) return replayResponseBody;
+  // A resolved fold plan makes emitMultiStepExecuteHttp return the primary
+  // action's body with its array folded, never a bare action's body — so
+  // shape inference must sample that same merged shape, not fall through to
+  // whichever action `selectReturnAction` would otherwise pick (which could
+  // be the fold's own drill action, describing the wrong call entirely).
+  const foldPlan = detectFoldPlan(actionSteps);
+  if (foldPlan !== null && !foldPlan.drillAction.isMultipart) {
+    return buildFoldedResponseBodySample(foldPlan);
+  }
   return selectReturnAction(actionSteps)?.capture.responseBody ?? replayResponseBody;
+}
+
+/**
+ * Samples the shape `emitMultiStepExecuteHttp`'s loop-and-merge block actually
+ * returns for a resolved fold plan: the primary action's response body with
+ * its array-container replaced by items that also carry the drill action's
+ * response fields — mirroring the runtime per-item spread merge, but against
+ * the single recon-captured drill response (sufficient for shape inference,
+ * which only needs the union of fields, not per-item join accuracy).
+ */
+function buildFoldedResponseBodySample<
+  T extends { capture: Capture; produces: Produce[]; isMultipart: boolean },
+>(plan: FoldPlan<T>): unknown {
+  const array = readValueAtPath(plan.primaryAction.capture.responseBody, plan.arrayContainerPath);
+  const mergedArray = Array.isArray(array)
+    ? array.map((item) =>
+        item !== null && typeof item === "object"
+          ? { ...item, ...(plan.drillAction.capture.responseBody as Record<string, unknown>) }
+          : item
+      )
+    : array;
+  return setValueAtPath(
+    plan.primaryAction.capture.responseBody,
+    plan.arrayContainerPath,
+    mergedArray
+  );
+}
+
+/** Returns a shallow-copied-at-each-level clone of `body` with `value` set at
+ * `path`, leaving sibling keys and the original object untouched. */
+function setValueAtPath(body: unknown, path: readonly string[], value: unknown): unknown {
+  if (path.length === 0) return value;
+  const [head, ...rest] = path as [string, ...string[]];
+  const node = body !== null && typeof body === "object" ? (body as Record<string, unknown>) : {};
+  return { ...node, [head]: setValueAtPath(node[head], rest, value) };
 }
 
 /**
@@ -1112,9 +1154,17 @@ export function detectFoldPlan<T extends { capture: Capture; produces: Produce[]
     const producer = actions[i]!;
     for (const produce of producer.produces) {
       if (produce.kind !== "body") continue;
-      const arrayIndexIdx = produce.path.findIndex(
-        (segment, idx) => idx < produce.path.length - 1 && /^\d+$/.test(segment)
-      );
+      // A numeric-looking segment (`/^\d+$/`) is ambiguous on its own — it's
+      // equally what `walkStringLeaves` emits for a real array index AND for
+      // an object keyed by a numeric-looking string (e.g. `data["221"]`).
+      // Only the response body itself disambiguates: a real array index's
+      // parent node is an actual JS array.
+      const arrayIndexIdx = produce.path.findIndex((segment, idx) => {
+        if (idx >= produce.path.length - 1 || !/^\d+$/.test(segment)) return false;
+        return Array.isArray(
+          readValueAtPath(producer.capture.responseBody, produce.path.slice(0, idx))
+        );
+      });
       if (arrayIndexIdx === -1) continue;
 
       const value = readValueAtPath(producer.capture.responseBody, produce.path);
@@ -4166,6 +4216,17 @@ export function emitMultiStepExecuteHttp(
   // Captured literals that survived every pass — surfaced as a review TODO.
   const unboundLiteralKeys = new Set<string>();
 
+  // Detect a search → drill-down fold: when found, the drill action's call
+  // moves from a single top-level statement into a per-item loop over the
+  // primary action's result array (see `detectFoldPlan`), so its response
+  // is merged onto every matching item instead of discarding all but one
+  // call's data. Multipart drill calls (raw FormData upload, no JSON
+  // request template to re-key per item) fall back to the existing
+  // single-call emission.
+  const foldPlan = detectFoldPlan(actions);
+  const isFoldedDrillAction =
+    foldPlan !== null && !foldPlan.drillAction.isMultipart ? foldPlan.drillAction : null;
+
   // Pass 1: render every step's emitted strings; collect referenced var names.
   const rendered: Rendered[] = [];
   for (let i = 0; i < actions.length; i++) {
@@ -4361,6 +4422,11 @@ export function emitMultiStepExecuteHttp(
   // only those two haystacks for multipart.
   const referencedNames = new Set<string>();
   for (let i = 0; i < rendered.length; i++) {
+    // A folded drill action's rendered text is consumed separately, inside
+    // the per-item loop this function emits below — it never becomes a
+    // top-level statement, so its own state-var references (e.g. the join
+    // field) must not force the primary's produce line to stay top-level.
+    if (isFoldedDrillAction !== null && actions[i] === isFoldedDrillAction) continue;
     const r = rendered[i]!;
     const haystacks = actions[i]!.isMultipart
       ? [r.url, r.headersExpr]
@@ -4374,9 +4440,17 @@ export function emitMultiStepExecuteHttp(
     }
   }
   // The relevance-selected step's var is also referenced by the closing
-  // `return { data }` — see selectReturnAction.
-  const returnAction = selectReturnAction(actions);
+  // `return { data }` — see selectReturnAction. A folded drill action can
+  // never win this pick: its data is merged onto the primary's array
+  // instead of being returned as its own top-level call.
+  const returnAction = selectReturnAction(
+    isFoldedDrillAction !== null ? actions.filter((a) => a !== isFoldedDrillAction) : actions
+  );
   if (returnAction) referencedNames.add(returnAction.varName);
+  // The fold's primary action must stay bound even if nothing else in the
+  // rendered text references it — the loop-and-merge block below reads its
+  // response directly.
+  if (isFoldedDrillAction !== null) referencedNames.add(foldPlan!.primaryAction.varName);
 
   // Pass 2: emit. Skip response bindings that aren't referenced; skip
   // produces[] entries whose name isn't referenced. A step's response var
@@ -4401,6 +4475,10 @@ export function emitMultiStepExecuteHttp(
   const declaredNames = new Set<string>();
   for (let i = 0; i < actions.length; i++) {
     const step = actions[i]!;
+    // A folded drill action never gets a standalone top-level statement —
+    // its call happens once per unique join value inside the loop-and-merge
+    // block emitted after this loop.
+    if (isFoldedDrillAction !== null && step === isFoldedDrillAction) continue;
     const cap = step.capture;
     const r = rendered[i]!;
     // Build the produce-extraction lines FIRST so the binding decision reflects
@@ -4529,10 +4607,84 @@ export function emitMultiStepExecuteHttp(
     lines.push("");
   }
 
+  if (isFoldedDrillAction !== null) {
+    const plan = foldPlan!;
+    const primaryVar = plan.primaryAction.varName;
+    const drillVar = plan.drillAction.varName;
+    const drillIdx = actions.indexOf(plan.drillAction);
+    const drillRendered = rendered[drillIdx]!;
+    const joinField = plan.joinFields[0]!;
+    const itemVar = `${primaryVar}Item`;
+    const joinValueVar = `${joinField}Value`;
+    const itemsVar = `${primaryVar}Items`;
+    const byJoinVar = `${drillVar}ByJoin`;
+    const mergedVar = `${primaryVar}Merged`;
+    const joinPlaceholder = `\${${joinField}}`;
+    const joinReplacement = `\${${joinValueVar}}`;
+    const drillUrl = drillRendered.url.split(joinPlaceholder).join(joinReplacement);
+    const drillHeadersExpr = drillRendered.headersExpr.split(joinPlaceholder).join(joinReplacement);
+    const drillBodyArg = drillRendered.bodyArg.split(joinPlaceholder).join(joinReplacement);
+    const drillJoined = [drillHeadersExpr, drillBodyArg].filter((s) => s !== "").join(" ");
+
+    lines.push(
+      `    const ${itemsVar} = (${primaryVar} as ${pathToArrayAssertionType(plan.arrayContainerPath)})${pathToAccessor(plan.arrayContainerPath, { assertNonNull: false })} as Record<string, unknown>[];`,
+      `    const ${byJoinVar} = new Map<string, Record<string, unknown>>();`,
+      `    for (const ${itemVar} of ${itemsVar}) {`,
+      `      const ${joinValueVar} = (${itemVar} as { ${joinField}: string }).${joinField};`,
+      `      if (${byJoinVar}.has(${joinValueVar})) continue;`,
+      `      const ${drillVar} = (await httpClient(\`${drillUrl}\`, {`,
+      `        method: ${JSON.stringify(drillRendered.method)},`
+    );
+    if (drillJoined !== "") lines.push(`        ${drillJoined}`);
+    lines.push(
+      `        schema: ${drillRendered.schemaExpr},`,
+      `      })) as Record<string, unknown>;`,
+      `      ${byJoinVar}.set(${joinValueVar}, ${drillVar});`,
+      `    }`,
+      `    const ${mergedVar} = ${itemsVar}.map((${itemVar}) => {`,
+      `      const ${joinValueVar} = (${itemVar} as { ${joinField}: string }).${joinField};`,
+      `      return { ...${itemVar}, ...(${byJoinVar}.get(${joinValueVar}) ?? {}) };`,
+      `    });`,
+      ""
+    );
+    lines.push(
+      `    return { data: ${buildMergedResponseExpr(primaryVar, plan.arrayContainerPath, mergedVar)} };`
+    );
+    return lines.join("\n");
+  }
+
   const returnVar = returnAction ? returnAction.varName : "undefined";
   lines.push(`    return { data: ${returnVar} };`);
 
   return lines.join("\n");
+}
+
+/**
+ * Like {@link pathToAssertionType} but the leaf types as `unknown[]` instead
+ * of `string` — used to cast a produce's array-container path (the array a
+ * fold plan loops over) rather than a scalar string leaf.
+ */
+function pathToArrayAssertionType(path: string[]): string {
+  if (path.length === 0) return "unknown[]";
+  const segment = path[0]!;
+  const key = isValidJsIdentifier(segment) ? segment : JSON.stringify(segment);
+  return `{ ${key}: ${pathToArrayAssertionType(path.slice(1))} }`;
+}
+
+/**
+ * Builds the return-line expression that composes a fold plan's primary
+ * response with its result array replaced by the merged (drill-down-folded)
+ * items, at whatever depth `path` nests it — a spread-and-override at each
+ * level so siblings of the array (and of any intermediate container) survive
+ * untouched.
+ */
+function buildMergedResponseExpr(baseExpr: string, path: string[], mergedExpr: string): string {
+  if (path.length === 0) return mergedExpr;
+  const [head, ...rest] = path as [string, ...string[]];
+  const key = isValidJsIdentifier(head) ? head : JSON.stringify(head);
+  const accessor = isValidJsIdentifier(head) ? `.${head}` : `[${JSON.stringify(head)}]`;
+  const nestedBase = `(${baseExpr} as Record<string, unknown>)${accessor}`;
+  return `{ ...(${baseExpr} as Record<string, unknown>), ${key}: ${buildMergedResponseExpr(nestedBase, rest, mergedExpr)} }`;
 }
 
 function summariseResponseShape(value: unknown): unknown {
