@@ -97,7 +97,9 @@ describe("detectFoldPlan", () => {
     });
     const withProduce: MulticallFixtureStep = {
       ...step,
-      produces: [{ kind: "body", name: "itemCode", path: ["results", "0", "itemCode"] }] as unknown as never[],
+      produces: [
+        { kind: "body", name: "itemCode", path: ["results", "0", "itemCode"] },
+      ] as unknown as never[],
     };
     const unrelatedStep = buildDrillDownStep("");
 

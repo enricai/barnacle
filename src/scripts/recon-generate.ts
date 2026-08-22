@@ -1032,11 +1032,7 @@ export function selectReturnAction<T extends { capture: Capture }>(steps: readon
  */
 export function selectEffectiveResponseBody<
   T extends { capture: Capture; produces: Produce[]; isMultipart: boolean },
->(
-  isSubmissionFlow: boolean,
-  actionSteps: readonly T[],
-  replayResponseBody: unknown
-): unknown {
+>(isSubmissionFlow: boolean, actionSteps: readonly T[], replayResponseBody: unknown): unknown {
   if (!isSubmissionFlow) return replayResponseBody;
   // A resolved fold plan makes emitMultiStepExecuteHttp return the primary
   // action's body with its array folded, never a bare action's body — so
@@ -1165,7 +1161,9 @@ export function detectFoldPlan<T extends { capture: Capture; produces: Produce[]
       // parent node is an actual JS array.
       const arrayIndexIdx = produce.path.findIndex((segment, idx) => {
         if (idx >= produce.path.length - 1 || !/^\d+$/.test(segment)) return false;
-        return Array.isArray(readValueAtPath(producer.capture.responseBody, produce.path.slice(0, idx)));
+        return Array.isArray(
+          readValueAtPath(producer.capture.responseBody, produce.path.slice(0, idx))
+        );
       });
       if (arrayIndexIdx === -1) continue;
 
