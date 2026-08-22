@@ -2608,6 +2608,80 @@ describe("recon-generate CLI — flow-authored displayName reaches emitConfigMan
   }, 30_000);
 });
 
+describe("recon-generate CLI — no displayName override never fabricates PascalCase(siteId) at the extraction site", () => {
+  const REPO_ROOT = join(__dirname, "..", "..");
+  const TSX_BIN = join(REPO_ROOT, "node_modules", ".bin", "tsx");
+  const GENERATE_SCRIPT = join(REPO_ROOT, "src", "scripts", "recon-generate.ts");
+
+  let workDir: string | null = null;
+  let siteOutDir: string | null = null;
+
+  afterEach(() => {
+    if (workDir) rmSync(workDir, { recursive: true, force: true });
+    if (siteOutDir) rmSync(siteOutDir, { recursive: true, force: true });
+    workDir = null;
+    siteOutDir = null;
+  });
+
+  it("omits displayName from both the contract.ts meta block and the config manifest's metadata, with no PascalCase-split fabrication", () => {
+    workDir = mkdtempSync(join(tmpdir(), "recon-cli-no-displayname-"));
+    const runRoot = join(workDir, "run");
+    mkdirSync(join(runRoot, "graphql"), { recursive: true });
+    mkdirSync(join(runRoot, "replays"), { recursive: true });
+    mkdirSync(join(runRoot, "aux"), { recursive: true });
+    writeFileSync(join(runRoot, "replays", "rate-limit.json"), JSON.stringify([]));
+    writeFileSync(
+      join(runRoot, "graphql", "000-search.json"),
+      JSON.stringify({
+        timestamp: "2024-01-01T00:00:00Z",
+        phase: "home",
+        method: "POST",
+        url: "https://example.com/api/search",
+        status: 200,
+        requestHeaders: { "Content-Type": "application/json" },
+        requestPostData: JSON.stringify({ query: "widgets" }),
+        responseHeaders: { "content-type": "application/json" },
+        responseBody: { id: "abc", active: true },
+        operationName: null,
+        query: null,
+        variables: null,
+        decodedParams: null,
+      } satisfies Capture)
+    );
+
+    const siteId = "wholesale-fish-market";
+    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    mkdirSync(siteOutDir, { recursive: true });
+    writeFileSync(
+      join(siteOutDir, "recon-flow.json"),
+      JSON.stringify({ steps: [{ step: "search for widgets" }] })
+    );
+
+    const tsResult = spawnSync(
+      TSX_BIN,
+      [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
+      { cwd: REPO_ROOT, encoding: "utf8" }
+    );
+    expect(tsResult.status, `${tsResult.stdout}\n${tsResult.stderr}`).toBe(0);
+
+    const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+    expect(contract).not.toContain("displayName");
+    expect(contract).not.toContain("Wholesale Fish Market");
+
+    const configResult = spawnSync(
+      TSX_BIN,
+      [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "config", "--force"],
+      { cwd: REPO_ROOT, encoding: "utf8" }
+    );
+    expect(configResult.status, `${configResult.stdout}\n${configResult.stderr}`).toBe(0);
+
+    const manifestStr = readFileSync(join(siteOutDir, `${siteId}.plugin.json`), "utf8");
+    const manifest = JSON.parse(manifestStr) as { metadata: Record<string, unknown> };
+    expect(manifest.metadata).not.toHaveProperty("displayName");
+    expect(manifestStr).not.toContain("Wholesale Fish Market");
+  }, 30_000);
+});
+
 describe("emitConfigManifest — a reserved RECON_PASSWORD env token never leaks as a literal", () => {
   const RECON_PASSWORD_TOKEN = `$${"{RECON_PASSWORD}"}`;
   const manifestStr = emitConfigManifest({
