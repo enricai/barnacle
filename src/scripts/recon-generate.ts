@@ -1030,13 +1030,59 @@ export function selectReturnAction<T extends { capture: Capture }>(steps: readon
  * on which call they describe, or the emitted type disagrees with the value
  * actually returned. Falls back to the replay body for single-endpoint sites.
  */
-export function selectEffectiveResponseBody<T extends { capture: Capture }>(
+export function selectEffectiveResponseBody<
+  T extends { capture: Capture; produces: Produce[]; isMultipart: boolean },
+>(
   isSubmissionFlow: boolean,
   actionSteps: readonly T[],
   replayResponseBody: unknown
 ): unknown {
   if (!isSubmissionFlow) return replayResponseBody;
+  // A resolved fold plan makes emitMultiStepExecuteHttp return the primary
+  // action's body with its array folded, never a bare action's body — so
+  // shape inference must sample that same merged shape, not fall through to
+  // whichever action `selectReturnAction` would otherwise pick (which could
+  // be the fold's own drill action, describing the wrong call entirely).
+  const foldPlan = detectFoldPlan(actionSteps);
+  if (foldPlan !== null && !foldPlan.drillAction.isMultipart) {
+    return buildFoldedResponseBodySample(foldPlan);
+  }
   return selectReturnAction(actionSteps)?.capture.responseBody ?? replayResponseBody;
+}
+
+/**
+ * Samples the shape `emitMultiStepExecuteHttp`'s loop-and-merge block actually
+ * returns for a resolved fold plan: the primary action's response body with
+ * its array-container replaced by items that also carry the drill action's
+ * response fields — mirroring the runtime per-item spread merge, but against
+ * the single recon-captured drill response (sufficient for shape inference,
+ * which only needs the union of fields, not per-item join accuracy).
+ */
+function buildFoldedResponseBodySample<
+  T extends { capture: Capture; produces: Produce[]; isMultipart: boolean },
+>(plan: FoldPlan<T>): unknown {
+  const array = readValueAtPath(plan.primaryAction.capture.responseBody, plan.arrayContainerPath);
+  const mergedArray = Array.isArray(array)
+    ? array.map((item) =>
+        item !== null && typeof item === "object"
+          ? { ...item, ...(plan.drillAction.capture.responseBody as Record<string, unknown>) }
+          : item
+      )
+    : array;
+  return setValueAtPath(
+    plan.primaryAction.capture.responseBody,
+    plan.arrayContainerPath,
+    mergedArray
+  );
+}
+
+/** Returns a shallow-copied-at-each-level clone of `body` with `value` set at
+ * `path`, leaving sibling keys and the original object untouched. */
+function setValueAtPath(body: unknown, path: readonly string[], value: unknown): unknown {
+  if (path.length === 0) return value;
+  const [head, ...rest] = path as [string, ...string[]];
+  const node = body !== null && typeof body === "object" ? (body as Record<string, unknown>) : {};
+  return { ...node, [head]: setValueAtPath(node[head], rest, value) };
 }
 
 /**

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { detectFoldPlan, parseFoldReturnSpec } from "@/scripts/recon-generate";
+import {
+  detectFoldPlan,
+  parseFoldReturnSpec,
+  selectEffectiveResponseBody,
+} from "@/scripts/recon-generate";
 import {
   buildCapture,
   buildMulticallHeterogeneousActionSteps,
@@ -100,6 +104,29 @@ describe("detectFoldPlan", () => {
     expect(detect([withProduce, unrelatedStep])).toBeNull();
   });
 
+  it("returns null when the numeric-looking segment is an object key, not a real array index", () => {
+    const step = buildStep("r0", {
+      url: "https://api.example.com/references",
+      requestPostData: "{}",
+      responseBody: { data: { "221": { label: "LABEL-VALUE" } } },
+      timestamp: "2024-01-01T00:00:00Z",
+    });
+    const withProduce: MulticallFixtureStep = {
+      ...step,
+      produces: [
+        { kind: "body", name: "label", path: ["data", "221", "label"] },
+      ] as unknown as never[],
+    };
+    const consumerStep = buildStep("r1", {
+      url: "https://api.example.com/submit",
+      requestPostData: JSON.stringify({ ref: "LABEL-VALUE" }),
+      responseBody: { success: true },
+      timestamp: "2024-01-01T00:00:01Z",
+    });
+
+    expect(detect([withProduce, consumerStep])).toBeNull();
+  });
+
   it("returns null when no strictly-later action references the array-nested value", () => {
     const searchStep = buildSearchStepWithArrayProduce();
     const unrelatedStep = buildCapture({
@@ -121,6 +148,25 @@ describe("detectFoldPlan", () => {
     ]);
 
     expect(plan).toBeNull();
+  });
+});
+
+describe("selectEffectiveResponseBody — agrees with a resolved fold plan", () => {
+  it("samples the primary action's array folded with the drill-down's fields, not either action's bare body", () => {
+    const searchStep = buildSearchStepWithArrayProduce();
+    const drillStep = buildDrillDownStep("WIDGET-42");
+
+    const effectiveResponseBody = selectEffectiveResponseBody(
+      true,
+      [searchStep, drillStep] as unknown as Parameters<typeof selectEffectiveResponseBody>[1],
+      null
+    ) as { results: Array<Record<string, unknown>> };
+
+    expect(effectiveResponseBody).not.toBe(searchStep.capture.responseBody);
+    expect(effectiveResponseBody).not.toBe(drillStep.capture.responseBody);
+    expect(effectiveResponseBody.results).toEqual([
+      { itemCode: "WIDGET-42", name: "Widget", pricing: { amount: 19.99 } },
+    ]);
   });
 });
 
