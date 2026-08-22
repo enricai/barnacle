@@ -629,9 +629,10 @@ export const RECON_FLOW_FILE_SCHEMA = z.union([
     steps: RECON_FLOW_SCHEMA,
     /**
      * The flow author's real, human-readable name for the site plugin,
-     * consumed by `recon:generate` for `meta.displayName`. Never derived by
-     * capitalizing `siteId` — this is an explicit declaration, not a
-     * fabricated fallback.
+     * declared here so it survives replan write-back losslessly. Not yet
+     * threaded into `recon:generate`'s `meta.displayName` emission — that
+     * remains a manual post-generation edit. Never derived by capitalizing
+     * `siteId`; this is an explicit declaration, not a fabricated fallback.
      */
     displayName: z.string().min(1).optional(),
     /**
