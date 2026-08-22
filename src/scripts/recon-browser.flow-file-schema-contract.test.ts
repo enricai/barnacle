@@ -129,7 +129,7 @@ describe("recon-browser/RECON_FLOW_FILE_SCHEMA — cross-frame flow structural c
       foldReturn: {
         endpointPattern: "/api/example/candidate-details",
         resultsPath: "data.results",
-        joinField: "candidateId",
+        joinFields: ["candidateId"],
       },
     };
 
@@ -141,12 +141,30 @@ describe("recon-browser/RECON_FLOW_FILE_SCHEMA — cross-frame flow structural c
     expect(result.data.foldReturn).toEqual(flowWithFoldReturn.foldReturn);
   });
 
+  it("accepts a foldReturn declaration with a composite joinFields key", () => {
+    const flowWithCompositeJoinFields = {
+      ...EXAMPLE_FLOW,
+      foldReturn: {
+        endpointPattern: "/api/example/candidate-details",
+        resultsPath: "data.results",
+        joinFields: ["candidateId", "orderId"],
+      },
+    };
+
+    const result = RECON_FLOW_FILE_SCHEMA.safeParse(flowWithCompositeJoinFields);
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    if (Array.isArray(result.data)) return;
+    expect(result.data.foldReturn).toEqual(flowWithCompositeJoinFields.foldReturn);
+  });
+
   it("rejects a foldReturn declaration missing resultsPath", () => {
     const flowWithFoldReturnMissingResultsPath = {
       ...EXAMPLE_FLOW,
       foldReturn: {
         endpointPattern: "/api/example/candidate-details",
-        joinField: "candidateId",
+        joinFields: ["candidateId"],
       },
     };
 
@@ -155,17 +173,32 @@ describe("recon-browser/RECON_FLOW_FILE_SCHEMA — cross-frame flow structural c
     expect(result.success).toBe(false);
   });
 
-  it("rejects a foldReturn declaration with a wrong-typed joinField", () => {
+  it("rejects a foldReturn declaration with a wrong-typed joinFields element", () => {
     const flowWithWrongTypedJoinField = {
       ...EXAMPLE_FLOW,
       foldReturn: {
         endpointPattern: "/api/example/candidate-details",
         resultsPath: "data.results",
-        joinField: 42,
+        joinFields: [42],
       },
     };
 
     const result = RECON_FLOW_FILE_SCHEMA.safeParse(flowWithWrongTypedJoinField);
+
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a foldReturn declaration with an empty joinFields array", () => {
+    const flowWithEmptyJoinFields = {
+      ...EXAMPLE_FLOW,
+      foldReturn: {
+        endpointPattern: "/api/example/candidate-details",
+        resultsPath: "data.results",
+        joinFields: [],
+      },
+    };
+
+    const result = RECON_FLOW_FILE_SCHEMA.safeParse(flowWithEmptyJoinFields);
 
     expect(result.success).toBe(false);
   });
