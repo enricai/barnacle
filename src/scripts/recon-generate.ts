@@ -4622,6 +4622,93 @@ function findObjectArrayField(
   return null;
 }
 
+/** A detected dependent drill-down: a later step whose request threads a
+ * value out of an array-indexed field of an earlier (primary) step's
+ * response, so the drill step's own response should be folded onto the
+ * matching item of the primary step's results array rather than discarded.
+ * `joinFields` is ordered (not a single string) because a real join can be
+ * composite — e.g. matching on `packageCode` AND `groupId` together. */
+export interface FoldPlan {
+  primaryStepIndex: number;
+  primaryArrayPath: string[];
+  joinFields: string[];
+  drillStepIndex: number;
+  drillArrayPath: string[];
+}
+
+/** Every string value present in a capture's outbound request — its URL
+ * query parameters and its JSON body's string leaves — the set a drill-down
+ * request's threaded join value must appear in. */
+function collectRequestStringValues(capture: Capture): Set<string> {
+  const values = new Set<string>();
+  try {
+    for (const v of new URL(capture.url).searchParams.values()) values.add(v);
+  } catch {
+    // Relative or malformed URL — no query params to contribute.
+  }
+  for (const v of jsonBodyLeafValues(capture.requestPostData) ?? []) values.add(v);
+  return values;
+}
+
+/**
+ * Finds the ordered list of an array item's string field names whose values
+ * are threaded into `drillCapture`'s outbound request — the join key a
+ * dependent drill-down call was built from. Field order follows the item's
+ * own key order, so a composite join (e.g. `packageCode` + `groupId`) comes
+ * out in the same order the primary response declares them, not sorted.
+ * Returns `[]` when no field of the item threads into the request at all.
+ */
+function findThreadedJoinFields(item: Record<string, unknown>, drillCapture: Capture): string[] {
+  const requestValues = collectRequestStringValues(drillCapture);
+  if (requestValues.size === 0) return [];
+  return Object.entries(item)
+    .filter(([, v]) => typeof v === "string" && v.length > 0 && requestValues.has(v))
+    .map(([k]) => k);
+}
+
+/**
+ * Detects, purely from the compiled action sequence, that a later step is a
+ * per-item drill-down whose response should be folded onto an earlier
+ * "primary" step's results array by a join key — the shape a hand-authored
+ * `foldDatedPricing`-style merge exists to paper over (see the drill-down
+ * fold report). The primary candidate is restricted to
+ * {@link findRequeriedActions}'s set — the same re-queried-endpoint
+ * relevance heuristic `selectReturnAction` already uses to find a flow's
+ * results endpoint — so this reuses that signal rather than inventing a
+ * second one. For each primary candidate, in order, this looks for the
+ * first later step whose request was built from one of the primary array's
+ * item fields (the join key) and whose own response contains an
+ * object-array field (the foldable per-item results the drill-down call
+ * returns). Returns `null` when no primary/drill pair with a threaded join
+ * key exists — e.g. a plain submission flow with no re-queried endpoint.
+ */
+export function detectDrillDownFoldPlan(actions: ActionStep[]): FoldPlan | null {
+  const requeried = findRequeriedActions(actions);
+  for (const primary of requeried) {
+    const primaryIndex = actions.indexOf(primary);
+    const primaryArray = findObjectArrayField(primary.capture.responseBody);
+    const firstItem = primaryArray?.items[0];
+    if (!primaryArray || !firstItem) continue;
+
+    for (let drillIndex = primaryIndex + 1; drillIndex < actions.length; drillIndex++) {
+      const drill = actions[drillIndex]!;
+      if (drill === primary) continue;
+      const joinFields = findThreadedJoinFields(firstItem, drill.capture);
+      if (joinFields.length === 0) continue;
+      const drillArray = findObjectArrayField(drill.capture.responseBody);
+      if (!drillArray || drillArray.items.length === 0) continue;
+      return {
+        primaryStepIndex: primaryIndex,
+        primaryArrayPath: primaryArray.path,
+        joinFields,
+        drillStepIndex: drillIndex,
+        drillArrayPath: drillArray.path,
+      };
+    }
+  }
+  return null;
+}
+
 /** Bounded-paging signal detected from a primary read operation's own
  * captured response body and request variables — see
  * {@link buildPaginatedGqlExecuteHttpBody}. */
