@@ -163,10 +163,14 @@ describe("recon-generate GraphQL paginated fetch loop: total/count signal presen
 
     // (b) It terminates once accumulated results reach the response's own reported
     // total, or a finite MAX_PAGES cap — never an unbounded loop, never a TODO.
-    expect(contract).toContain("const MAX_PAGES = 50;");
+    expect(contract).toContain("const MAX_PAGES = payload.maxPages ?? 50;");
     expect(contract).toContain("total = page.search.total;");
     expect(contract).not.toMatch(/while\s*\(\s*true\s*\)/);
     expect(contract).not.toContain("TODO");
+
+    // (b.1) The payload schema exposes maxPages as an optional caller override,
+    // distinct from the required PAGE_SIZE-style fields.
+    expect(contract).toContain("maxPages: z.number().int().positive().optional(),");
 
     // (c) Pages are merged by an identity field discovered from the array element
     // shape, not concatenated blindly.
@@ -204,7 +208,7 @@ describe("recon-generate GraphQL paginated fetch loop: MAX_PAGES caps before the
     // PAGE_SIZE (5) * MAX_PAGES (50) = 250, which never reaches the response's
     // reported total of 1000 — the loop always exits on MAX_PAGES here.
     expect(contract).toContain("const PAGE_SIZE = 5;");
-    expect(contract).toContain("const MAX_PAGES = 50;");
+    expect(contract).toContain("const MAX_PAGES = payload.maxPages ?? 50;");
 
     // The merged envelope's own total must reflect what was actually delivered
     // when the loop is capped by MAX_PAGES, not repeat the API's original
@@ -238,6 +242,7 @@ describe("recon-generate GraphQL paginated fetch loop: no total/count signal", (
       /const data = await getGql\(context\.baseUrl\)\("productSearch_Products", \w+_QUERY, \{ pagination: \{"count":5,"skip":0\}, sort: "RELEVANCE" \}\);\n\s*return \{ data \};/
     );
     expect(contract).not.toContain("MAX_PAGES");
+    expect(contract).not.toContain("maxPages");
     expect(contract).not.toContain("itemsById");
   }, 30_000);
 });
