@@ -1029,6 +1029,12 @@ export function selectReturnAction<T extends { capture: Capture }>(steps: readon
  * submission flow's `executeHttp` and its inferred type/schema have to agree
  * on which call they describe, or the emitted type disagrees with the value
  * actually returned. Falls back to the replay body for single-endpoint sites.
+ *
+ * A detected drill-down fold plan (see {@link detectDrillDownFoldPlan})
+ * bypasses `selectReturnAction` entirely, exactly as
+ * `emitMultiStepExecuteHttp` does when it emits the per-item loop-and-merge —
+ * so the shape this infers has to be the FOLDED primary body, not the plain
+ * one, or the schema would omit every field the fold adds.
  */
 export function selectEffectiveResponseBody<T extends { capture: Capture }>(
   isSubmissionFlow: boolean,
@@ -1036,6 +1042,8 @@ export function selectEffectiveResponseBody<T extends { capture: Capture }>(
   replayResponseBody: unknown
 ): unknown {
   if (!isSubmissionFlow) return replayResponseBody;
+  const foldPlan = detectDrillDownFoldPlan(actionSteps);
+  if (foldPlan) return foldResponseBodyForShapeInference(actionSteps, foldPlan);
   return selectReturnAction(actionSteps)?.capture.responseBody ?? replayResponseBody;
 }
 
@@ -4785,7 +4793,9 @@ function findThreadedJoinFields(item: Record<string, unknown>, drillCapture: Cap
  * returns). Returns `null` when no primary/drill pair with a threaded join
  * key exists — e.g. a plain submission flow with no re-queried endpoint.
  */
-export function detectDrillDownFoldPlan(actions: ActionStep[]): FoldPlan | null {
+export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
+  actions: readonly T[]
+): FoldPlan | null {
   const requeried = findRequeriedActions(actions);
   for (const primary of requeried) {
     const primaryIndex = actions.indexOf(primary);
@@ -4810,6 +4820,46 @@ export function detectDrillDownFoldPlan(actions: ActionStep[]): FoldPlan | null 
     }
   }
   return null;
+}
+
+/** Rebuilds `value` with `leaf` spliced in at `path`, spreading every
+ * ancestor object level so sibling fields survive unchanged. A non-object
+ * (or array) encountered before `path` is exhausted returns `value`
+ * untouched — the path was computed by `findObjectArrayField` against this
+ * same body, so that should never happen outside a drifted caller. */
+function setAtPath(value: unknown, path: readonly string[], leaf: unknown): unknown {
+  if (path.length === 0) return leaf;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
+  const [key, ...rest] = path as [string, ...string[]];
+  const obj = value as Record<string, unknown>;
+  return { ...obj, [key]: setAtPath(obj[key], rest, leaf) };
+}
+
+/**
+ * The value-level counterpart of the per-item loop-and-merge
+ * `emitMultiStepExecuteHttp` emits for a detected {@link FoldPlan}: merges
+ * the single captured drill-down sample onto the single captured primary
+ * sample's matched array item (the same item `detectDrillDownFoldPlan` built
+ * the join key from — always index 0, see its own doc comment), so schema
+ * inference walks the SAME shape the folded `executeHttp` actually returns
+ * at runtime. Falls back to the unmerged primary body if either capture no
+ * longer resolves an object array — same drift guard as the emitter's own
+ * `throw` at the analogous point, minus the throw, since shape inference
+ * degrading gracefully is preferable to failing a generate run over it.
+ */
+function foldResponseBodyForShapeInference<T extends { capture: Capture }>(
+  actionSteps: readonly T[],
+  foldPlan: FoldPlan
+): unknown {
+  const primaryBody = actionSteps[foldPlan.primaryStepIndex]!.capture.responseBody;
+  const drillBody = actionSteps[foldPlan.drillStepIndex]!.capture.responseBody;
+  const primaryArray = findObjectArrayField(primaryBody);
+  const drillArray = findObjectArrayField(drillBody);
+  const matchedItem = primaryArray?.items[0];
+  const drillMatch = drillArray?.items[0];
+  if (!primaryArray || !matchedItem || !drillMatch) return primaryBody;
+  const foldedItems = [{ ...matchedItem, ...drillMatch }, ...primaryArray.items.slice(1)];
+  return setAtPath(primaryBody, foldPlan.primaryArrayPath, foldedItems);
 }
 
 /** Bounded-paging signal detected from a primary read operation's own

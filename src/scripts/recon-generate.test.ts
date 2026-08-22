@@ -29,6 +29,7 @@ import {
   selectReturnAction,
 } from "@/scripts/recon-generate";
 import {
+  buildMulticallDependentDrillDownActionSteps,
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
 } from "@/scripts/recon-generate-multicall-fixture";
@@ -2277,25 +2278,24 @@ describe("query-constant comment", () => {
 });
 
 describe("selectEffectiveResponseBody — shape source agrees with the return value (G1)", () => {
-  it("derives from the re-queried search call, not the terminal drill-down, for the drill-down-terminal fixture", () => {
+  it("derives from the fold-merged primary call, not the plain re-queried page or the raw drill-down, for the drill-down-terminal fixture", () => {
     const steps = buildMulticallHeterogeneousActionStepsWithDrillDown();
 
     const shapeSource = selectEffectiveResponseBody(true, steps, null);
     const returnAction = selectReturnAction(steps);
 
-    // The search call (r3, the second available-products/ query) is what
-    // executeHttp returns — assert the inferred shape comes from that SAME
-    // call, not the terminal available-units/ drill-down (r4).
+    // r4's drill-down request threads r2's (page 1) sole item's productId, so
+    // detectDrillDownFoldPlan finds a fold plan over [r2, r4] — this bypasses
+    // selectReturnAction entirely (see emitMultiStepExecuteHttp's own
+    // "A detected drill-down fold plan bypasses selectReturnAction" comment),
+    // so the inferred shape has to follow the fold, not selectReturnAction's
+    // freshest-re-query pick (r3, page 2) or the raw unmerged r2/r4 bodies.
     expect(returnAction?.varName).toBe("r3");
-    expect(shapeSource).toEqual(returnAction?.capture.responseBody);
+    expect(shapeSource).not.toEqual(returnAction?.capture.responseBody);
     expect(shapeSource).toEqual({
       totalPages: 5,
       totalAvailableListings: 699,
-      products: [{ productId: "p2" }],
-    });
-    expect(shapeSource).not.toEqual({
-      units: [{ unitId: "s1" }],
-      exchangeRate: 1.0,
+      products: [{ productId: "p1", unitId: "s1" }],
     });
   });
 
@@ -2351,6 +2351,24 @@ describe("selectEffectiveResponseBody — shape source agrees with the return va
     expect(returnAction?.varName).toBe("r1");
     expect(shapeSource).toEqual(returnAction?.capture.responseBody);
     expect(shapeSource).toEqual({ success: true });
+  });
+
+  it("merges by join key, not position: the drill-down response matches the primary item it was built from", () => {
+    // The primary page's items are [i-b, i-a] (deliberately not alphabetical)
+    // and the two drill-down calls fire in the OPPOSITE order (i-a's call
+    // first). detectDrillDownFoldPlan always keys off the primary array's
+    // FIRST item (i-b) to find its join value, so the fold must land i-b's
+    // OWN drill-down response (fired second, "d-b") onto items[0] — a
+    // positional/index-based merge would wrongly pair items[0] with
+    // whichever drill-down call happened to fire first (i-a's, "d-a").
+    const steps = buildMulticallDependentDrillDownActionSteps();
+
+    const shapeSource = selectEffectiveResponseBody(true, steps, null);
+
+    expect(shapeSource).toEqual({
+      totalPages: 2,
+      items: [{ itemId: "i-b", detailId: "d-b" }, { itemId: "i-a" }],
+    });
   });
 });
 

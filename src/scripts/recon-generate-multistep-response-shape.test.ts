@@ -12,13 +12,15 @@ import {
 /**
  * Pins G1's second surface: recon-generate.ts's response-shape-inference
  * target (formerly `actionSteps[actionSteps.length - 1]`) must agree with
- * the return-value target (`selectReturnAction`, recon-generate.ts:2255).
- * A fix applied only at the return site would leave the emitted schema/type
- * describing a different call than the one `executeHttp` actually returns.
- * `selectEffectiveResponseBody` is the extracted call-site helper (matching
- * `selectReturnAction`'s own extraction) that delegates to
- * `selectReturnAction`, guaranteeing the two selections structurally cannot
- * drift apart.
+ * whatever `executeHttp` actually returns at runtime — `selectReturnAction`
+ * (recon-generate.ts:2255) for a plain submission flow, or the fold-merged
+ * primary body for a detected drill-down fold plan, which bypasses
+ * `selectReturnAction` entirely. A fix applied only at the return site would
+ * leave the emitted schema/type describing a different call (or a different
+ * shape of the same call) than the one `executeHttp` actually returns.
+ * `selectEffectiveResponseBody` is the extracted call-site helper that
+ * mirrors that same fold-plan-first, `selectReturnAction`-fallback decision,
+ * guaranteeing the two selections structurally cannot drift apart.
  *
  * The emitted response SCHEMA is inferred from the same selected body on the
  * real multi-step path too (`multiStepBody` set): the client-level schema
@@ -29,23 +31,32 @@ import {
  */
 describe("recon-generate — G1 shape-inference target agrees with the return target", () => {
   const steps: MulticallFixtureStep[] = buildMulticallHeterogeneousActionStepsWithDrillDown();
-  // selectReturnAction/selectEffectiveResponseBody pick the MOST RECENT
-  // re-queried instance — r3 (page 2), not r2 (page 1) — as the freshest
-  // answer from the flow's subject.
-  const inventoryStep = steps[3]!; // r3: available-products/, page 2
+  // This fixture's terminal drill-down (r4) threads r2's (page 1) sole item's
+  // productId — detectDrillDownFoldPlan finds a fold plan over [r2, r4], which
+  // bypasses selectReturnAction entirely (see emitMultiStepExecuteHttp's own
+  // "A detected drill-down fold plan bypasses selectReturnAction" comment).
+  // The freshest re-queried call without a fold plan would be r3 (page 2);
+  // with one, the emitted executeHttp instead loop-and-merges the drill onto
+  // r2, so shape inference has to follow the fold, not the plain re-query.
+  const primaryStep = steps[2]!; // r2: available-products/, page 1 (fold primary)
   const drillDownStep = steps[4]!; // r4: available-units/ terminal drill-down
 
-  it("selects the re-queried inventory call's body, not the terminal drill-down's", () => {
+  it("selects the fold-merged primary call's body, not the plain re-queried page or the raw drill-down", () => {
     const effectiveResponseBody = selectEffectiveResponseBody(true, steps, null);
-    expect(effectiveResponseBody).toBe(inventoryStep.capture.responseBody);
+    expect(effectiveResponseBody).not.toBe(primaryStep.capture.responseBody);
     expect(effectiveResponseBody).not.toBe(drillDownStep.capture.responseBody);
+    expect(effectiveResponseBody).toEqual({
+      totalPages: 5,
+      totalAvailableListings: 699,
+      products: [{ productId: "p1", unitId: "s1" }],
+    });
   });
 
-  it("the return-selected call and the shape-inferred call are the same step", () => {
+  it("agrees with the var a fold plan makes emitMultiStepExecuteHttp actually return: the folded primary, not selectReturnAction's pick", () => {
     const returnSelected = selectReturnAction(steps);
     const shapeInferenceBody = selectEffectiveResponseBody(true, steps, null);
-    expect(shapeInferenceBody).toBe(returnSelected!.capture.responseBody);
-    expect(shapeInferenceBody).toBe(inventoryStep.capture.responseBody);
+    expect(returnSelected?.varName).toBe("r3");
+    expect(shapeInferenceBody).not.toBe(returnSelected!.capture.responseBody);
   });
 
   it("falls back to the replay body for a non-submission (single-endpoint) flow", () => {
