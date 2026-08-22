@@ -4361,12 +4361,21 @@ export function emitMultiStepExecuteHttp(
       }
       const joinAccessor = (field: string): string =>
         isValidJsIdentifier(field) ? `item.${field}` : `item[${JSON.stringify(field)}]`;
+      // A join field can reach the render either as the raw captured literal
+      // (URL query params) or as an already-generic `${payload.<field>}`
+      // reference (top-level JSON body keys — see
+      // applyPayloadKeyValueSubstitutions, which payload-ifies every scalar
+      // body key regardless of length, running BEFORE this fold branch ever
+      // sees the value). Both must resolve to the loop item's own field, not
+      // a caller-supplied payload value shared across every iteration.
       const parameterize = (text: string): string =>
         foldPlan.joinFields.reduce((acc, field) => {
+          const replacement = `\${${joinAccessor(field)}}`;
+          const withAccessorSwapped = acc.split(`\${payload.${field}}`).join(replacement);
           const value = firstItem[field];
           return typeof value === "string" && value.length > 0
-            ? acc.split(value).join(`\${${joinAccessor(field)}}`)
-            : acc;
+            ? withAccessorSwapped.split(value).join(replacement)
+            : withAccessorSwapped;
         }, text);
 
       const primaryArrType = foldArrayAssertionType(foldPlan.primaryArrayPath);
