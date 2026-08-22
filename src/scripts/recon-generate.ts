@@ -1048,19 +1048,21 @@ export function selectReturnAction<T extends { capture: Capture }>(steps: readon
  * on which call they describe, or the emitted type disagrees with the value
  * actually returned. Falls back to the replay body for single-endpoint sites.
  *
- * A detected drill-down fold plan (see {@link detectDrillDownFoldPlan})
- * bypasses `selectReturnAction` entirely, exactly as
- * `emitMultiStepExecuteHttp` does when it emits the per-item loop-and-merge —
- * so the shape this infers has to be the FOLDED primary body, not the plain
- * one, or the schema would omit every field the fold adds.
+ * A resolved drill-down fold plan (see {@link resolveFoldPlan}) bypasses
+ * `selectReturnAction` entirely, exactly as `emitMultiStepExecuteHttp` does
+ * when it emits the per-item loop-and-merge — so the shape this infers has to
+ * be the FOLDED primary body, not the plain one, or the schema would omit
+ * every field the fold adds. Both resolve through `resolveFoldPlan` with the
+ * same `foldReturnSpec` so they can never disagree on whether a fold applies.
  */
-export function selectEffectiveResponseBody<T extends { capture: Capture }>(
+export function selectEffectiveResponseBody<T extends { capture: Capture; isMultipart: boolean }>(
   isSubmissionFlow: boolean,
   actionSteps: readonly T[],
-  replayResponseBody: unknown
+  replayResponseBody: unknown,
+  foldReturnSpec: FoldReturnSpec | null = null
 ): unknown {
   if (!isSubmissionFlow) return replayResponseBody;
-  const foldPlan = detectDrillDownFoldPlan(actionSteps);
+  const foldPlan = resolveFoldPlan(actionSteps, foldReturnSpec);
   if (foldPlan) return foldResponseBodyForShapeInference(actionSteps, foldPlan);
   return selectReturnAction(actionSteps)?.capture.responseBody ?? replayResponseBody;
 }
@@ -3932,7 +3934,8 @@ export function emitMultiStepExecuteHttp(
   shieldedUuids: Set<string> = new Set(),
   selectResolutions: SelectOptionResolution[] = [],
   outStructuredKeys: Map<string, string> = new Map(),
-  rawCodeFields: Map<string, { wireKey: string; code: string }> = new Map()
+  rawCodeFields: Map<string, { wireKey: string; code: string }> = new Map(),
+  foldReturnSpec: FoldReturnSpec | null = null
 ): string {
   interface Rendered {
     url: string;
@@ -4316,11 +4319,11 @@ export function emitMultiStepExecuteHttp(
       }
     }
   }
-  // A detected drill-down fold plan bypasses selectReturnAction entirely: the
+  // A resolved drill-down fold plan bypasses selectReturnAction entirely: the
   // primary step's array is folded in place (see the loop-and-merge emitted
   // below), so the primary step's var — not whichever call selectReturnAction
   // would otherwise pick — is what `return { data }` must reference.
-  const foldPlan = detectDrillDownFoldPlan(actions);
+  const foldPlan = resolveFoldPlan(actions, foldReturnSpec);
   const returnAction = foldPlan ? null : selectReturnAction(actions);
   if (returnAction) referencedNames.add(returnAction.varName);
   if (foldPlan) referencedNames.add(actions[foldPlan.primaryStepIndex]!.varName);
@@ -4393,11 +4396,18 @@ export function emitMultiStepExecuteHttp(
         );
       }
       const primaryStep = actions[foldPlan.primaryStepIndex]!;
-      const primaryArray = findObjectArrayField(primaryStep.capture.responseBody);
-      const firstItem = primaryArray?.items[0];
-      if (!primaryArray || !firstItem) {
+      // Read at the plan's OWN path rather than re-running the DFS: a
+      // flow-declared `resultsPath` (see FoldReturnSpec) can name a different
+      // array than findObjectArrayField's first match, and `firstItem` below
+      // decides which captured literal `parameterize` rewrites.
+      const primaryItems = objectItemsAtPath(
+        primaryStep.capture.responseBody,
+        foldPlan.primaryArrayPath
+      );
+      const firstItem = primaryItems?.[0];
+      if (!firstItem) {
         throw new Error(
-          `emitMultiStepExecuteHttp: fold plan primary step ${primaryStep.varName} no longer resolves an object array — detectDrillDownFoldPlan and this emitter have drifted out of sync`
+          `emitMultiStepExecuteHttp: fold plan primary step ${primaryStep.varName} no longer resolves an object array at ${foldPlan.primaryArrayPath.join(".")} — the fold plan and this emitter have drifted out of sync`
         );
       }
       const joinAccessor = (field: string): string =>
@@ -4843,6 +4853,169 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
   return null;
 }
 
+/**
+ * A flow-declared fold/compose return: a drill-down call's response should
+ * fold onto the primary capture's result array, keyed by `joinField`. Exists
+ * so a site author can express a fold {@link detectDrillDownFoldPlan}'s
+ * structural heuristic cannot see on its own — most commonly a join value
+ * the drill-down carries in a request HEADER, which
+ * {@link collectRequestStringValues} deliberately never scans.
+ */
+export interface FoldReturnSpec {
+  /** Matches the drill-down call whose response folds onto the primary
+   * results (same matching semantics as `submitEndpointPattern`). */
+  endpointPattern: string;
+  /** Dot-separated JSON path to the primary capture's result array the
+   * drill-down's response folds onto, e.g. `"cruiseSearch.results.cruises"`. */
+  resultsPath: string;
+  /** Name of the field — present on both the primary array's items and the
+   * drill-down's response — that folded items are matched on. */
+  joinField: string;
+}
+
+/**
+ * Parses an object-form recon-flow.json's optional `foldReturn` declaration
+ * into a typed {@link FoldReturnSpec}, or `null` when the flow is array-form,
+ * doesn't declare `foldReturn`, or declares it with a non-string field —
+ * mirroring the same null-safe pattern the flow loader already applies to
+ * `submitEndpointPattern`/`submitBodyPattern`.
+ */
+export function parseFoldReturnSpec(flowFileContents: string): FoldReturnSpec | null {
+  try {
+    const raw: unknown = JSON.parse(flowFileContents);
+    if (Array.isArray(raw)) return null;
+    if (
+      raw === null ||
+      typeof raw !== "object" ||
+      !("steps" in raw) ||
+      !Array.isArray((raw as { steps: unknown }).steps)
+    ) {
+      return null;
+    }
+    const foldReturn = (raw as { foldReturn?: unknown }).foldReturn;
+    if (foldReturn === undefined || foldReturn === null || typeof foldReturn !== "object") {
+      return null;
+    }
+    const { endpointPattern, resultsPath, joinField } = foldReturn as {
+      endpointPattern?: unknown;
+      resultsPath?: unknown;
+      joinField?: unknown;
+    };
+    if (
+      typeof endpointPattern !== "string" ||
+      typeof resultsPath !== "string" ||
+      typeof joinField !== "string"
+    ) {
+      return null;
+    }
+    return { endpointPattern, resultsPath, joinField };
+  } catch {
+    return null;
+  }
+}
+
+/** Reads the value at an exact JSON path out of a response body, or
+ * `undefined` when any segment doesn't resolve. The exactness is the point:
+ * {@link findObjectArrayField} is a DFS FIRST-match, so it would silently
+ * override a flow-declared `resultsPath` that names a later array. */
+function readValueAtPath(body: unknown, path: readonly string[]): unknown {
+  return path.reduce<unknown>((node, segment) => {
+    if (node === null || typeof node !== "object") return undefined;
+    return (node as Record<string, unknown>)[segment];
+  }, body);
+}
+
+/** The object items of the array at `path` — the same subset
+ * {@link findObjectArrayField} exposes as `items`, but anchored to a
+ * caller-supplied path instead of discovered by DFS. `null` when `path`
+ * doesn't resolve to an array holding at least one non-array object. */
+function objectItemsAtPath(
+  body: unknown,
+  path: readonly string[]
+): Record<string, unknown>[] | null {
+  const value = readValueAtPath(body, path);
+  if (!Array.isArray(value)) return null;
+  const items = value.filter(
+    (v): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v)
+  );
+  return items.length > 0 ? items : null;
+}
+
+/**
+ * Builds a {@link FoldPlan} from a flow-declared {@link FoldReturnSpec}, so a
+ * site author can express a fold the structural heuristic misses.
+ *
+ * Returns `null` — the same null-safe contract as
+ * {@link detectDrillDownFoldPlan} — when `endpointPattern` is not a valid
+ * regex, when `resultsPath` resolves to no object array on any action, when
+ * no strictly-later action's URL matches `endpointPattern`, or when the
+ * matched drill-down's own response holds no object array (the emitter folds
+ * `foldMatches[0]` out of that array, so a plan without one has nothing to
+ * merge).
+ */
+function buildFoldPlanFromSpec<T extends { capture: Capture }>(
+  actions: readonly T[],
+  spec: FoldReturnSpec
+): FoldPlan | null {
+  const primaryArrayPath = spec.resultsPath.split(".");
+  const endpointRx = ((): RegExp | null => {
+    try {
+      return new RegExp(spec.endpointPattern);
+    } catch {
+      return null;
+    }
+  })();
+  if (endpointRx === null) return null;
+  for (let primaryStepIndex = 0; primaryStepIndex < actions.length; primaryStepIndex++) {
+    if (!objectItemsAtPath(actions[primaryStepIndex]!.capture.responseBody, primaryArrayPath)) {
+      continue;
+    }
+    for (
+      let drillStepIndex = primaryStepIndex + 1;
+      drillStepIndex < actions.length;
+      drillStepIndex++
+    ) {
+      const drill = actions[drillStepIndex]!;
+      if (!endpointRx.test(drill.capture.url)) continue;
+      const drillArray = findObjectArrayField(drill.capture.responseBody);
+      if (!drillArray || drillArray.items.length === 0) continue;
+      return {
+        primaryStepIndex,
+        primaryArrayPath,
+        joinFields: [spec.joinField],
+        drillStepIndex,
+        drillArrayPath: drillArray.path,
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * The single fold-plan entry point: {@link detectDrillDownFoldPlan}'s
+ * structural heuristic first, falling back to a flow-declared `foldReturn`
+ * spec when the heuristic finds nothing. `emitMultiStepExecuteHttp` and
+ * `selectEffectiveResponseBody` MUST both resolve through this rather than
+ * calling the detector directly, or the emitted `executeHttp` and its
+ * inferred schema would describe different calls (see
+ * {@link selectEffectiveResponseBody}'s own docstring).
+ *
+ * A multipart drill-down disqualifies the plan: the fold loop re-issues the
+ * drill call per item by re-keying its rendered JSON request template, and a
+ * raw `FormData` upload has no such template to re-key — so those fall back
+ * to ordinary single-call emission instead of emitting a broken loop.
+ */
+export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boolean }>(
+  actions: readonly T[],
+  foldReturnSpec: FoldReturnSpec | null = null
+): FoldPlan | null {
+  const plan =
+    detectDrillDownFoldPlan(actions) ??
+    (foldReturnSpec === null ? null : buildFoldPlanFromSpec(actions, foldReturnSpec));
+  if (plan === null) return null;
+  return actions[plan.drillStepIndex]!.isMultipart ? null : plan;
+}
+
 /** Rebuilds `value` with `leaf` spliced in at `path`, spreading every
  * ancestor object level so sibling fields survive unchanged. A non-object
  * (or array) encountered before `path` is exhausted returns `value`
@@ -4863,7 +5036,10 @@ function setAtPath(value: unknown, path: readonly string[], leaf: unknown): unkn
  * sample's matched array item (the same item `detectDrillDownFoldPlan` built
  * the join key from — always index 0, see its own doc comment), so schema
  * inference walks the SAME shape the folded `executeHttp` actually returns
- * at runtime. Falls back to the unmerged primary body if either capture no
+ * at runtime. Reads both arrays at the plan's OWN paths rather than
+ * re-running `findObjectArrayField`, so a flow-declared `resultsPath` stays
+ * authoritative here exactly as it is in the emitter. Falls back to the
+ * unmerged primary body if either capture no
  * longer resolves an object array — same drift guard as the emitter's own
  * `throw` at the analogous point, minus the throw, since shape inference
  * degrading gracefully is preferable to failing a generate run over it.
@@ -4874,12 +5050,12 @@ function foldResponseBodyForShapeInference<T extends { capture: Capture }>(
 ): unknown {
   const primaryBody = actionSteps[foldPlan.primaryStepIndex]!.capture.responseBody;
   const drillBody = actionSteps[foldPlan.drillStepIndex]!.capture.responseBody;
-  const primaryArray = findObjectArrayField(primaryBody);
-  const drillArray = findObjectArrayField(drillBody);
-  const matchedItem = primaryArray?.items[0];
-  const drillMatch = drillArray?.items[0];
-  if (!primaryArray || !matchedItem || !drillMatch) return primaryBody;
-  const foldedItems = [{ ...matchedItem, ...drillMatch }, ...primaryArray.items.slice(1)];
+  const primaryItems = objectItemsAtPath(primaryBody, foldPlan.primaryArrayPath);
+  const drillItems = objectItemsAtPath(drillBody, foldPlan.drillArrayPath);
+  const matchedItem = primaryItems?.[0];
+  const drillMatch = drillItems?.[0];
+  if (!primaryItems || !matchedItem || !drillMatch) return primaryBody;
+  const foldedItems = [{ ...matchedItem, ...drillMatch }, ...primaryItems.slice(1)];
   return setAtPath(primaryBody, foldPlan.primaryArrayPath, foldedItems);
 }
 
@@ -6415,56 +6591,77 @@ async function main(): Promise<void> {
     }
   })();
 
-  const { flowSteps, frameSelector, submitEndpointPattern, submitBodyPattern, displayName } =
-    (() => {
+  const {
+    flowSteps,
+    frameSelector,
+    submitEndpointPattern,
+    submitBodyPattern,
+    displayName,
+    foldReturnSpec,
+  } = (() => {
+    const flowFileContents = (() => {
       try {
-        const raw: unknown = JSON.parse(readFileSync(flowFile, "utf8"));
-        if (Array.isArray(raw))
-          return {
-            flowSteps: raw as FlowStepInput[],
-            frameSelector: undefined,
-            submitEndpointPattern: null,
-            submitBodyPattern: null,
-            displayName: undefined,
-          };
-        if (
-          raw !== null &&
-          typeof raw === "object" &&
-          "steps" in raw &&
-          Array.isArray((raw as { steps: unknown }).steps)
-        ) {
-          const obj = raw as {
-            steps: FlowStepInput[];
-            frameSelector?: string;
-            submitEndpointPattern?: string;
-            submitBodyPattern?: string;
-            displayName?: string;
-          };
-          return {
-            flowSteps: obj.steps,
-            frameSelector: obj.frameSelector,
-            submitEndpointPattern: obj.submitEndpointPattern ?? null,
-            submitBodyPattern: obj.submitBodyPattern ?? null,
-            displayName: obj.displayName,
-          };
-        }
-        return {
-          flowSteps: [] as string[],
-          frameSelector: undefined,
-          submitEndpointPattern: null,
-          submitBodyPattern: null,
-          displayName: undefined,
-        };
+        return readFileSync(flowFile, "utf8");
       } catch {
-        return {
-          flowSteps: [] as string[],
-          frameSelector: undefined,
-          submitEndpointPattern: null,
-          submitBodyPattern: null,
-          displayName: undefined,
-        };
+        return null;
       }
     })();
+    // Parsed off the raw bytes, independently of the steps shape below, so a
+    // valid `foldReturn` still resolves when the rest of the flow file is
+    // degenerate — the two declarations fail independently.
+    const foldReturnSpec = flowFileContents === null ? null : parseFoldReturnSpec(flowFileContents);
+    try {
+      const raw: unknown = flowFileContents === null ? null : JSON.parse(flowFileContents);
+      if (Array.isArray(raw))
+        return {
+          flowSteps: raw as FlowStepInput[],
+          frameSelector: undefined,
+          submitEndpointPattern: null,
+          submitBodyPattern: null,
+          displayName: undefined,
+          foldReturnSpec,
+        };
+      if (
+        raw !== null &&
+        typeof raw === "object" &&
+        "steps" in raw &&
+        Array.isArray((raw as { steps: unknown }).steps)
+      ) {
+        const obj = raw as {
+          steps: FlowStepInput[];
+          frameSelector?: string;
+          submitEndpointPattern?: string;
+          submitBodyPattern?: string;
+          displayName?: string;
+        };
+        return {
+          flowSteps: obj.steps,
+          frameSelector: obj.frameSelector,
+          submitEndpointPattern: obj.submitEndpointPattern ?? null,
+          submitBodyPattern: obj.submitBodyPattern ?? null,
+          displayName: obj.displayName,
+          foldReturnSpec,
+        };
+      }
+      return {
+        flowSteps: [] as string[],
+        frameSelector: undefined,
+        submitEndpointPattern: null,
+        submitBodyPattern: null,
+        displayName: undefined,
+        foldReturnSpec,
+      };
+    } catch {
+      return {
+        flowSteps: [] as string[],
+        frameSelector: undefined,
+        submitEndpointPattern: null,
+        submitBodyPattern: null,
+        displayName: undefined,
+        foldReturnSpec,
+      };
+    }
+  })();
 
   // Flow-declared signals that isolate the submission POSTs from same-origin
   // page chrome. Threaded into action-sequence extraction and header derivation
@@ -6857,7 +7054,8 @@ async function main(): Promise<void> {
           shieldedUuids,
           selectResolutions,
           discoveredStructuredKeys,
-          rawCodeFields
+          rawCodeFields,
+          foldReturnSpec
         )
       : undefined;
 
@@ -6868,8 +7066,18 @@ async function main(): Promise<void> {
   const effectiveResponseBody = selectEffectiveResponseBody(
     isSubmissionFlow,
     actionSteps,
-    responseBody
+    responseBody,
+    foldReturnSpec
   );
+
+  // A declared foldReturn that resolves to no plan is a silent no-op otherwise
+  // — the flow author gets the discarding selectReturnAction path with nothing
+  // in the output saying their declaration never applied.
+  if (foldReturnSpec !== null && resolveFoldPlan(actionSteps, foldReturnSpec) === null) {
+    logger.warn(
+      `flow declares foldReturn (endpointPattern: ${foldReturnSpec.endpointPattern}, resultsPath: ${foldReturnSpec.resultsPath}, joinField: ${foldReturnSpec.joinField}) but no fold plan resolved — no later capture matched the endpoint pattern, resultsPath resolved to no object array, or the matched drill-down is multipart; the drill-down's response will not be folded`
+    );
+  }
 
   logger.info(
     `generating plugin for ${siteId} (${gql ? "GraphQL" : browserFlowOnly ? `submission flow, ${actionSteps.length} steps, browser-flow-only (cross-domain hop detected)` : isSubmissionFlow ? `submission flow, ${actionSteps.length} steps` : "single-endpoint REST"}, baseUrl: ${baseUrl})`
