@@ -62,9 +62,9 @@ Omitting `frameSelector` preserves default behavior (drive the main frame).
 
 **Human-readable name:** the object form also accepts `displayName`, the flow
 author's real label for the plugin (never derived by capitalizing `siteId`).
-It round-trips losslessly through replan write-back, but `recon:generate`
-does not yet read it — `metadata.displayName` / `meta.displayName` remains a
-manual post-generation edit until that wiring lands.
+It round-trips losslessly through replan write-back, and `recon:generate`
+threads it verbatim into both emit paths' `meta.displayName` /
+`metadata.displayName` when present, leaving it unset otherwise.
 
 `observe()` cannot see into a cross-origin OOPIF at all — every scoping form
 returns zero candidates even though the frame is attached. For a frame-scoped
