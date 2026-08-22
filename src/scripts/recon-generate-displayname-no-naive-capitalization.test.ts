@@ -54,4 +54,16 @@ describe("emitConfigManifest — metadata.displayName is not derived by naive si
     expect(manifest).not.toContain("Wholesale Fish Market");
     expect(parsed.metadata).not.toHaveProperty("displayName");
   });
+
+  it("emits a supplied displayName verbatim in metadata", () => {
+    const manifest = emitConfigManifest({
+      siteId: BASE_OPTS.siteId,
+      baseUrl: BASE_OPTS.baseUrl,
+      flowSteps: ["click apply"],
+      displayName: "Wholesale Fish Market Co",
+    });
+    const parsed = JSON.parse(manifest) as { metadata: Record<string, unknown> };
+
+    expect(parsed.metadata.displayName).toBe("Wholesale Fish Market Co");
+  });
 });
