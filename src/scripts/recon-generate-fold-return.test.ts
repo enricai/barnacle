@@ -12,6 +12,7 @@ import {
   buildMulticallHeterogeneousActionSteps,
   buildMulticallSingleShotSearchDrillDownActionSteps,
   buildMulticallSingleShotSearchDrillDownMultiMatchActionSteps,
+  buildMulticallSingleShotSearchDrillDownTypeMismatchJoinActionSteps,
   buildStep,
   type MulticallFixtureStep,
 } from "@/scripts/recon-generate-multicall-fixture";
@@ -594,6 +595,20 @@ describe("selectEffectiveResponseBody — flow-declared foldReturn", () => {
     });
   });
 
+  it("folds the drill item whose join value matches by VALUE across mismatched JS types, not index 0", () => {
+    const steps = buildMulticallSingleShotSearchDrillDownTypeMismatchJoinActionSteps();
+
+    // The primary side's accountId is a number (42); every candidate on the
+    // drill side has accountId as a string, and the decoy ("99") sorts
+    // before the real match ("42", transactionId "t-real"). A strict `===`
+    // comparison would never match the number against either string and
+    // would fall through to drillItems?.[0] — the decoy — instead of
+    // resolving the real match by coerced value equality.
+    expect(selectEffectiveResponseBody(true, steps, null)).toEqual({
+      accounts: [{ accountId: "42", name: "Acme", transactionId: "t-real" }],
+    });
+  });
+
   it("rebuilds through an array-typed path segment instead of returning the body unfolded", () => {
     const steps = buildNestedArrayPathDrillDownActionSteps();
 
@@ -640,6 +655,21 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
     // runtime; the emitted loop must select by the join field's value, not
     // by lifting foldMatches[0] straight off the response.
     expect(body).toContain(`foldMatches.find((m) => String(m["sku"]) === String(item.sku))`);
+    expect(body).not.toContain("Object.assign(item, foldMatches[0] ?? {});");
+    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
+  });
+
+  it("emits a type-coerced join-key .find(...) match, not a bare === that could never match", () => {
+    const body = emit(buildMulticallSingleShotSearchDrillDownTypeMismatchJoinActionSteps(), null);
+
+    // The primary side's accountId is a number and the drill side's is a
+    // string on every candidate — a bare `m["accountId"] === item.accountId`
+    // could never match either candidate and would silently fall through to
+    // foldMatches[0], the decoy. The emitted predicate must coerce both
+    // sides to string before comparing.
+    expect(body).toContain(
+      `foldMatches.find((m) => String(m["accountId"]) === String(item.accountId))`
+    );
     expect(body).not.toContain("Object.assign(item, foldMatches[0] ?? {});");
     expect(body).toContain("Object.assign(item, foldMatch ?? {});");
   });
