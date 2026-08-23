@@ -224,7 +224,7 @@ function buildNestedGroupedDrillDownActionSteps(): MulticallFixtureStep[] {
     buildStep("r1", {
       url: "https://api.example.com/catalog/entries/e2/details",
       requestPostData: null,
-      responseBody: { entryId: "e2", description: "A gadget." },
+      responseBody: { details: [{ entryId: "e2", description: "A gadget." }] },
       timestamp: "2024-05-01T00:00:01Z",
     }),
   ];
@@ -771,10 +771,13 @@ describe("grouped/nested primary fold — detection, schema inference, and codeg
     // 1. detectDrillDownFoldPlan's structural heuristic must resolve a plan
     // naming the NESTED array path — not just the outer grouping array — or
     // there is nothing for the other two surfaces to agree on.
-    const plan = detectDrillDownFoldPlan(steps as unknown as Parameters<typeof detectDrillDownFoldPlan>[0]);
+    const plan = detectDrillDownFoldPlan(
+      steps as unknown as Parameters<typeof detectDrillDownFoldPlan>[0]
+    );
     expect(plan).not.toBeNull();
     expect(plan?.primaryArrayPath).toEqual(["sections", "0", "entries"]);
     expect(plan?.joinFields).toEqual(["entryId"]);
+    expect(plan?.drillArrayPath).toEqual(["details"]);
     expect(plan?.primaryMatchedItemIndex).toBe(1);
 
     // 2. selectEffectiveResponseBody must fold the drill-down's field in at
@@ -800,6 +803,9 @@ describe("grouped/nested primary fold — detection, schema inference, and codeg
       'const foldItems = (r0 as { sections: { "0": { entries: Record<string, unknown>[] } } }).sections["0"].entries;'
     );
     expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain(
+      "const foldMatches = (r1 as { details: Record<string, unknown>[] }).details;"
+    );
     expect(body).toContain("const foldMatch = foldMatches.find(");
     expect(body).toContain("Object.assign(item, foldMatch ?? {});");
     expect(body).toContain("return { data: r0 };");
