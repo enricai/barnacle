@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { emitMultiStepExecuteHttp } from "@/scripts/recon-generate";
+import { emitMultiStepExecuteHttp, selectEffectiveResponseBody } from "@/scripts/recon-generate";
 import {
   buildMulticallDependentDrillDownActionSteps,
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
+  buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps,
   buildStep,
   type MulticallFixtureStep,
 } from "@/scripts/recon-generate-multicall-fixture";
@@ -45,6 +46,27 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     expect(body).toContain("const r2 = (await httpClient(");
     expect(body).toContain("for (const item of foldItems) {");
     expect(body).toContain("Object.assign(item, foldMatches[0] ?? {});");
+  });
+
+  it("folds a single-shot (non-requeried) search's drill-down onto its results with no foldReturn declaration", () => {
+    // detectDrillDownFoldPlan alone (structural heuristic, no FoldReturnSpec)
+    // must recognize this primary even though its search endpoint fires
+    // exactly once — the requeried-primary case above only proves the fold
+    // fires when findRequeriedActions already flagged the primary as a
+    // candidate; this fixture has no re-query at all.
+    const steps = buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps();
+    const body = emit(steps);
+
+    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain("Object.assign(item, foldMatches[0] ?? {});");
+    expect(body).toContain("return { data: r0 };");
+
+    const replayBody = { unused: true };
+    const effectiveResponseBody = selectEffectiveResponseBody(true, steps, replayBody);
+
+    expect(effectiveResponseBody).toEqual({
+      results: [{ sku: "sku-a", amount: 19.99 }, { sku: "sku-b" }],
+    });
   });
 
   it("refuses to emit when a later step threads a produced value out of the fold drill step's own response", () => {
