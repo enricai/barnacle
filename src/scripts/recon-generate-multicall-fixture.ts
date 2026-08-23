@@ -356,3 +356,29 @@ export function buildMulticallSingleShotSearchDrillDownNumericJoinActionSteps():
     }),
   ];
 }
+
+/**
+ * A single-shot search whose primary items carry a COMPOSITE join key mixing
+ * a string field (`region`) and a numeric field (`accountId`), both threaded
+ * into the drill-down request. `findThreadedJoinFields` filters candidate
+ * fields independently per entry, so a numeric field dropped alongside a
+ * present string field would silently degrade the fold to a partial
+ * (string-only) join key rather than failing outright — this fixture proves
+ * both survive together, in the item's own key order.
+ */
+export function buildMulticallSingleShotSearchDrillDownCompositeNumericJoinActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: ACCOUNT_SEARCH_URL,
+      requestPostData: JSON.stringify({ page: 1 }),
+      responseBody: { accounts: [{ region: "us", accountId: 7, name: "Acme" }] },
+      timestamp: "2024-06-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: `${ACCOUNT_DETAIL_URL}?region=us&accountId=7`,
+      requestPostData: null,
+      responseBody: { transactions: [{ transactionId: "t1" }] },
+      timestamp: "2024-06-01T00:00:01Z",
+    }),
+  ];
+}
