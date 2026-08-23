@@ -567,3 +567,38 @@ export function buildMulticallSingleShotSearchDrillDownMultiMatchActionSteps(): 
     }),
   ];
 }
+
+/**
+ * A multi-match sibling of
+ * {@link buildMulticallSingleShotSearchDrillDownMultiMatchActionSteps} whose
+ * join field's type DIFFERS across the two sides: the primary item's
+ * `accountId` is a NUMBER, while every item in the drill-down response's
+ * array carries `accountId` as a STRING (as request-threaded values always
+ * are). A decoy entry is listed first with a string that never equals the
+ * primary's numeric value even after coercion; only the second entry's
+ * string stringifies to the primary's value. A fold that matches via strict
+ * equality (`m["accountId"] === item.accountId`, i.e. `"42" === 42`) fails
+ * for every candidate here, proving the fold must compare join values by
+ * their string representation, not by strict identity.
+ */
+export function buildMulticallSingleShotSearchDrillDownTypeMismatchJoinActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: ACCOUNT_SEARCH_URL,
+      requestPostData: JSON.stringify({ page: 1 }),
+      responseBody: { accounts: [{ accountId: 42, name: "Acme" }] },
+      timestamp: "2024-10-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: `${ACCOUNT_DETAIL_URL}?accountId=42`,
+      requestPostData: null,
+      responseBody: {
+        transactions: [
+          { accountId: "99", transactionId: "decoy" },
+          { accountId: "42", transactionId: "t-real" },
+        ],
+      },
+      timestamp: "2024-10-01T00:00:01Z",
+    }),
+  ];
+}
