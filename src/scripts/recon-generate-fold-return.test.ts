@@ -10,6 +10,7 @@ import {
   buildMulticallDependentDrillDownActionSteps,
   buildMulticallHeterogeneousActionSteps,
   buildMulticallSingleShotSearchDrillDownActionSteps,
+  buildMulticallSingleShotSearchDrillDownMultiMatchActionSteps,
   buildStep,
   type MulticallFixtureStep,
 } from "@/scripts/recon-generate-multicall-fixture";
@@ -514,6 +515,17 @@ describe("selectEffectiveResponseBody — flow-declared foldReturn", () => {
       results: [{ sku: "sku-a" }, { sku: "sku-b", amount: 24.99 }],
     });
   });
+
+  it("folds the drill item whose own sku matches the join key, not the drill array's index 0", () => {
+    const steps = buildMulticallSingleShotSearchDrillDownMultiMatchActionSteps();
+
+    // The drill-down's prices[] holds a decoy ("sku-z") at index 0 and the
+    // real match ("sku-a") at index 1 — a fold that took drillItems?.[0]
+    // would splice the decoy's amount (5.0) onto the primary item instead.
+    expect(selectEffectiveResponseBody(true, steps, null, SINGLE_SHOT_SPEC)).toEqual({
+      results: [{ sku: "sku-a", amount: 19.99 }],
+    });
+  });
 });
 
 describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
@@ -525,7 +537,8 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
     // return references the folded primary, not the drill-down's own body.
     expect(body).toContain("const foldItems = (r0 as { results: Record<string, unknown>[] })");
     expect(body).toContain("for (const item of foldItems) {");
-    expect(body).toContain("Object.assign(item, foldMatches[0] ?? {});");
+    expect(body).toContain("const foldMatch = foldMatches.find(");
+    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
     expect(body).toContain("return { data: r0 };");
     expect(body).not.toContain("return { data: r1 };");
 
@@ -538,12 +551,27 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
     expect(body).not.toContain('"sku":"sku-a"');
   });
 
+  it("emits a join-key .find(...) match for the fold, not a bare drill-array index", () => {
+    const body = emit(
+      buildMulticallSingleShotSearchDrillDownMultiMatchActionSteps(),
+      SINGLE_SHOT_SPEC
+    );
+
+    // The drill-down's own prices[] holds a decoy ahead of the real match at
+    // runtime; the emitted loop must select by the join field's value, not
+    // by lifting foldMatches[0] straight off the response.
+    expect(body).toContain(`foldMatches.find((m) => m["sku"] === item.sku)`);
+    expect(body).not.toContain("Object.assign(item, foldMatches[0] ?? {});");
+    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
+  });
+
   it("parameterizes every field of a composite joinFields declaration, not just the first", () => {
     const body = emit(buildCompositeJoinActionSteps(), COMPOSITE_SPEC);
 
     expect(body).toContain("const foldItems = (r0 as { results: Record<string, unknown>[] })");
     expect(body).toContain("for (const item of foldItems) {");
-    expect(body).toContain("Object.assign(item, foldMatches[0] ?? {});");
+    expect(body).toContain("const foldMatch = foldMatches.find(");
+    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
 
     // Both join fields must re-key to the loop item, not just accountId.
     expect(body).toContain(
@@ -551,6 +579,11 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
     );
     expect(body).not.toContain('"accountId":"acc-1"');
     expect(body).not.toContain('"region":"us"');
+
+    // The fold match itself must key on BOTH join fields, not just the first.
+    expect(body).toContain(
+      `foldMatches.find((m) => m["accountId"] === item.accountId && m["region"] === item.region)`
+    );
   });
 
   it("emits the per-item loop-and-merge for the decoy fixture without needing a declaration", () => {
@@ -561,7 +594,8 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
     // decoy `facets[]` array must not win over `results[]` here either.
     expect(body).toContain("const foldItems = (r0 as { results: Record<string, unknown>[] })");
     expect(body).toContain("for (const item of foldItems) {");
-    expect(body).toContain("Object.assign(item, foldMatches[0] ?? {});");
+    expect(body).toContain("const foldMatch = foldMatches.find(");
+    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
     expect(body).toContain("return { data: r0 };");
     expect(body).not.toContain("return { data: r1 };");
     expect(body).not.toContain("as { facets: Record<string, unknown>[] }");
@@ -585,7 +619,8 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
     expect(body).toContain(
       "const foldMatches = (r1 as { details: Record<string, unknown>[] }).details;"
     );
-    expect(body).toContain("Object.assign(item, foldMatches[0] ?? {});");
+    expect(body).toContain("const foldMatch = foldMatches.find(");
+    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
     expect(body).not.toContain("as { facets: Record<string, unknown>[] }");
     expect(body).not.toContain("as { errors: Record<string, unknown>[] }");
   });
@@ -640,7 +675,8 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
     expect(body).toContain(
       "const foldMatches = (r1 as { details: Record<string, unknown>[] }).details;"
     );
-    expect(body).toContain("Object.assign(item, foldMatches[0] ?? {});");
+    expect(body).toContain("const foldMatch = foldMatches.find(");
+    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
 
     // The declared drillResultsPath wins over findObjectArrayField's DFS
     // first match on the drill side, which would have picked the decoy

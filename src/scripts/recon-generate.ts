@@ -4468,7 +4468,10 @@ export function emitMultiStepExecuteHttp(
         `        schema: ${r.schemaExpr},`,
         `      })) as Record<string, unknown>;`,
         `      const foldMatches = (${step.varName} as ${drillArrType})${drillArrAccessor};`,
-        `      Object.assign(item, foldMatches[0] ?? {});`,
+        `      const foldMatch = foldMatches.find((m) => ${foldPlan.joinFields
+          .map((f) => `m[${JSON.stringify(f)}] === ${joinAccessor(f)}`)
+          .join(" && ")}) ?? foldMatches[0];`,
+        `      Object.assign(item, foldMatch ?? {});`,
         `    }`,
         ""
       );
@@ -5183,15 +5186,15 @@ function setAtPath(value: unknown, path: readonly string[], leaf: unknown): unkn
 /**
  * The value-level counterpart of the per-item loop-and-merge
  * `emitMultiStepExecuteHttp` emits for a detected {@link FoldPlan}: merges
- * the single captured drill-down sample onto the single captured primary
- * sample's matched array item — at `primaryMatchedItemIndex`, the same item
- * `detectDrillDownFoldPlan` built the join key from, not necessarily
- * index 0 — so schema inference walks the SAME shape the folded
- * `executeHttp` actually returns at runtime. Reads both arrays at the plan's
- * OWN paths rather than
- * re-running `findObjectArrayField`, so a flow-declared `resultsPath` stays
- * authoritative here exactly as it is in the emitter. Falls back to the
- * unmerged primary body if either capture no
+ * the captured drill-down item whose `joinFields` match the single captured
+ * primary sample's matched array item — at `primaryMatchedItemIndex`, the
+ * same item `detectDrillDownFoldPlan` built the join key from, not
+ * necessarily index 0 — falling back to the drill array's first item only
+ * when no drill item matches, so schema inference walks the SAME shape the
+ * folded `executeHttp` actually returns at runtime. Reads both arrays at
+ * the plan's OWN paths rather than re-running `findObjectArrayField`, so a
+ * flow-declared `resultsPath` stays authoritative here exactly as it is in
+ * the emitter. Falls back to the unmerged primary body if either capture no
  * longer resolves an object array — same drift guard as the emitter's own
  * `throw` at the analogous point, minus the throw, since shape inference
  * degrading gracefully is preferable to failing a generate run over it.
@@ -5205,7 +5208,9 @@ function foldResponseBodyForShapeInference<T extends { capture: Capture }>(
   const primaryItems = objectItemsAtPath(primaryBody, foldPlan.primaryArrayPath);
   const drillItems = objectItemsAtPath(drillBody, foldPlan.drillArrayPath);
   const matchedItem = primaryItems?.[foldPlan.primaryMatchedItemIndex];
-  const drillMatch = drillItems?.[0];
+  const drillMatch =
+    drillItems?.find((d) => foldPlan.joinFields.every((f) => d[f] === matchedItem?.[f])) ??
+    drillItems?.[0];
   if (!primaryItems || !matchedItem || !drillMatch) return primaryBody;
   const foldedItems = primaryItems.map((item, index) =>
     index === foldPlan.primaryMatchedItemIndex ? { ...matchedItem, ...drillMatch } : item
