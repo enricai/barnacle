@@ -18,6 +18,7 @@ export function buildCapture(overrides: {
   requestPostData: string | null;
   responseBody: unknown;
   timestamp: string;
+  requestHeaders?: Record<string, string>;
 }): Capture {
   return {
     timestamp: overrides.timestamp,
@@ -25,7 +26,7 @@ export function buildCapture(overrides: {
     method: "POST",
     url: overrides.url,
     status: 200,
-    requestHeaders: { "Content-Type": "application/json" },
+    requestHeaders: overrides.requestHeaders ?? { "Content-Type": "application/json" },
     requestPostData: overrides.requestPostData,
     responseHeaders: { "content-type": "application/json" },
     responseBody: overrides.responseBody,
@@ -48,6 +49,7 @@ export function buildStep(
     requestPostData: string | null;
     responseBody: unknown;
     timestamp: string;
+    requestHeaders?: Record<string, string>;
   }
 ): MulticallFixtureStep {
   return {
@@ -358,6 +360,32 @@ export function buildMulticallSingleShotSearchDrillDownNumericJoinActionSteps():
 }
 
 /**
+ * A single-shot search whose primary item join field (`accountId`) is
+ * threaded into the drill-down call ONLY as a URL path segment
+ * (`/accounts/42/transactions`) — never as a query param or a JSON body
+ * value. REST-style APIs commonly shape drill-down calls this way, but
+ * `collectRequestStringValues` only harvested query params and JSON body
+ * leaves, so this join field was invisible to `findThreadedJoinFields` and
+ * {@link detectDrillDownFoldPlan} returned null for this shape.
+ */
+export function buildMulticallSingleShotSearchDrillDownPathThreadedJoinActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: ACCOUNT_SEARCH_URL,
+      requestPostData: JSON.stringify({ page: 1 }),
+      responseBody: { accounts: [{ accountId: 42, name: "Acme" }] },
+      timestamp: "2024-07-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: "https://api.example.com/accounts/42/transactions",
+      requestPostData: null,
+      responseBody: { transactions: [{ transactionId: "t1" }] },
+      timestamp: "2024-07-01T00:00:01Z",
+    }),
+  ];
+}
+
+/**
  * A single-shot search whose primary items carry a COMPOSITE join key mixing
  * a string field (`region`) and a numeric field (`accountId`), both threaded
  * into the drill-down request. `findThreadedJoinFields` filters candidate
@@ -379,6 +407,35 @@ export function buildMulticallSingleShotSearchDrillDownCompositeNumericJoinActio
       requestPostData: null,
       responseBody: { transactions: [{ transactionId: "t1" }] },
       timestamp: "2024-06-01T00:00:01Z",
+    }),
+  ];
+}
+
+/**
+ * A single-shot search whose primary item join field (`accountId`) is
+ * threaded into the drill-down call ONLY via a custom request header
+ * (`X-Account-Id`) — never a query param, JSON body value, or URL path
+ * segment. `collectRequestStringValues` deliberately never scans
+ * `requestHeaders` (recon-generate.ts:4787-4815), so this join is invisible
+ * to `findThreadedJoinFields` and {@link detectDrillDownFoldPlan} must return
+ * `null` here regardless of how many other threading channels it learns to
+ * scan — only a flow-declared `foldReturn` naming `accountId` can resolve
+ * this fold.
+ */
+export function buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: ACCOUNT_SEARCH_URL,
+      requestPostData: JSON.stringify({ page: 1 }),
+      responseBody: { accounts: [{ accountId: 42, name: "Acme" }] },
+      timestamp: "2024-08-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: ACCOUNT_DETAIL_URL,
+      requestPostData: null,
+      requestHeaders: { "Content-Type": "application/json", "X-Account-Id": "42" },
+      responseBody: { transactions: [{ transactionId: "t1" }] },
+      timestamp: "2024-08-01T00:00:01Z",
     }),
   ];
 }

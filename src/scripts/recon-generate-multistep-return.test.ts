@@ -5,6 +5,7 @@ import {
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
   buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps,
+  buildMulticallSingleShotSearchDrillDownPathThreadedJoinActionSteps,
   buildStep,
   type MulticallFixtureStep,
 } from "@/scripts/recon-generate-multicall-fixture";
@@ -67,6 +68,21 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     expect(effectiveResponseBody).toEqual({
       results: [{ sku: "sku-a", amount: 19.99 }, { sku: "sku-b" }],
     });
+  });
+
+  it("folds a drill-down whose join key is threaded only as a URL path segment", () => {
+    // detectDrillDownFoldPlan only resolves this shape because
+    // collectRequestStringValues now scans URL path segments as
+    // join-candidate values (accountId reaches the drill-down only via
+    // `/accounts/42/transactions`, never a query param or JSON body value).
+    // This proves the resolved plan actually reaches the emitter and
+    // produces a real fold loop, not just that detection succeeds.
+    const body = emit(buildMulticallSingleShotSearchDrillDownPathThreadedJoinActionSteps());
+
+    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain("Object.assign(item, foldMatches[0] ?? {});");
+    expect(body).toContain("return { data: r0 };");
+    expect(body).not.toContain("return { data: r1 };");
   });
 
   it("refuses to emit when a later step threads a produced value out of the fold drill step's own response", () => {

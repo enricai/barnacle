@@ -15,13 +15,13 @@ import {
 } from "@/scripts/recon-generate-multicall-fixture";
 
 /** Both sides of {@link buildMulticallSingleShotSearchDrillDownActionSteps}'s
- * decoy at once: the primary response's decoy `facets[]` array still outranks
- * `results[]` in `findObjectArrayField`'s DFS (so `detectDrillDownFoldPlan`'s
- * structural heuristic can't thread a join field off a decoy item and finds
- * no plan at all, letting resolution fall through to the declared spec), AND
- * the drill-down's own response carries a decoy `errors[]` array ahead of the
- * real per-item `details[]` array — isolating `buildFoldPlanFromSpec`'s
- * drill-side resolution as the only thing that can still get this right. */
+ * decoy at once: a decoy `facets[]` array ahead of the real `results[]` on
+ * the primary side, and a decoy `errors[]` array ahead of the real per-item
+ * `details[]` on the drill side. Since the join value threads into the drill
+ * request on both sides, `detectDrillDownFoldPlan`'s structural heuristic
+ * resolves this on its own (see {@link buildUnthreadedDoubleDecoyDrillDownActionSteps}
+ * for the variant that isolates `buildFoldPlanFromSpec`'s own DFS-first
+ * fallback instead). */
 function buildDoubleDecoyDrillDownActionSteps(): MulticallFixtureStep[] {
   return [
     buildStep("r0", {
@@ -40,6 +40,58 @@ function buildDoubleDecoyDrillDownActionSteps(): MulticallFixtureStep[] {
         errors: [{ code: "none" }],
         details: [{ sku: "sku-a", price: 19.99 }],
       },
+      timestamp: "2024-04-01T00:00:01Z",
+    }),
+  ];
+}
+
+/** Same double-decoy shape as {@link buildDoubleDecoyDrillDownActionSteps},
+ * except the drill-down request never carries the join value anywhere the
+ * structural heuristic can see it — so, unlike that fixture (which the
+ * heuristic now resolves on its own via join-threading), the heuristic finds
+ * nothing on either side and `buildFoldPlanFromSpec`'s own drill-side
+ * DFS-first fallback is the only thing left to isolate. */
+function buildUnthreadedDoubleDecoyDrillDownActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: "https://api.example.com/catalog/search/",
+      requestPostData: '{"page":1}',
+      responseBody: {
+        facets: [{ name: "brand" }],
+        results: [{ sku: "sku-a" }, { sku: "sku-b" }],
+      },
+      timestamp: "2024-04-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: "https://api.example.com/catalog/pricing/",
+      requestPostData: '{"lookup":true}',
+      responseBody: {
+        errors: [{ code: "none" }],
+        details: [{ sku: "sku-a", price: 19.99 }],
+      },
+      timestamp: "2024-04-01T00:00:01Z",
+    }),
+  ];
+}
+
+/** A single-shot search + drill-down pair whose join value never appears
+ * anywhere in the drill-down's captured request (the fixture's stand-in for
+ * a value threaded only through a request HEADER, which
+ * `collectRequestStringValues` deliberately never scans) — the structural
+ * heuristic has no threaded value to find on either candidate array, so only
+ * a flow-declared `foldReturn` can resolve the fold. */
+function buildUnthreadedJoinDrillDownActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: "https://api.example.com/catalog/search/",
+      requestPostData: '{"page":1}',
+      responseBody: { results: [{ sku: "sku-a" }, { sku: "sku-b" }] },
+      timestamp: "2024-04-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: "https://api.example.com/catalog/pricing/",
+      requestPostData: '{"lookup":true}',
+      responseBody: { prices: [{ sku: "sku-a", amount: 19.99 }] },
       timestamp: "2024-04-01T00:00:01Z",
     }),
   ];
@@ -104,10 +156,9 @@ function emit(steps: MulticallFixtureStep[], foldReturnSpec: FoldReturnSpec | nu
   );
 }
 
-/** The declaration the single-shot-search fixture needs: its primary response
- * carries a decoy `facets[]` array ahead of the real `results[]`, so
- * `findObjectArrayField`'s DFS first-match disagrees with the array a caller
- * would fold onto — only an explicit `foldReturn` can name the fold. */
+/** A `results`/`sku`/`prices` foldReturn shape shared across several
+ * fixtures below, both ones the structural heuristic can resolve on its own
+ * and (via {@link buildUnthreadedJoinDrillDownActionSteps}) ones it can't. */
 const SINGLE_SHOT_SPEC: FoldReturnSpec = {
   endpointPattern: "/catalog/pricing/",
   resultsPath: "results",
@@ -196,12 +247,12 @@ describe("parseFoldReturnSpec", () => {
 
 describe("resolveFoldPlan", () => {
   it("falls back to a flow-declared foldReturn spec when the structural heuristic finds nothing", () => {
-    const steps = buildMulticallSingleShotSearchDrillDownActionSteps();
+    const steps = buildUnthreadedJoinDrillDownActionSteps();
 
-    // The primary response's decoy `facets[]` array outranks `results[]` in
-    // findObjectArrayField's DFS, so detectDrillDownFoldPlan's structural
-    // heuristic disagrees with the declared path — without the declaration
-    // there is no plan.
+    // The join value never appears in the drill-down's captured request (the
+    // stand-in for a header-threaded join), so detectDrillDownFoldPlan's
+    // structural heuristic has no candidate array to disambiguate by —
+    // without the declaration there is no plan.
     expect(resolveFoldPlan(steps)).toBeNull();
 
     expect(resolveFoldPlan(steps, SINGLE_SHOT_SPEC)).toEqual({
@@ -213,15 +264,29 @@ describe("resolveFoldPlan", () => {
     });
   });
 
-  it("honours the declared resultsPath over findObjectArrayField's DFS first match", () => {
-    const steps = buildMulticallSingleShotSearchDrillDownActionSteps();
+  it("honours the declared resultsPath even when the structural heuristic can't verify it", () => {
+    const steps = buildUnthreadedJoinDrillDownActionSteps();
 
-    // The primary body's first object array by DFS is the decoy `facets[]`;
-    // the fold must key off the declared `results[]` instead, or the emitted
-    // loop would iterate the wrong array.
+    // The structural heuristic has no threaded value to disambiguate by at
+    // all here; the fold must key off the declared `results[]` regardless.
     const plan = resolveFoldPlan(steps, SINGLE_SHOT_SPEC);
     expect(plan?.primaryArrayPath).toEqual(["results"]);
-    expect(plan?.primaryArrayPath).not.toEqual(["facets"]);
+  });
+
+  it("resolves the real results array over an earlier decoy without needing a declaration", () => {
+    const steps = buildMulticallSingleShotSearchDrillDownActionSteps();
+
+    // The primary response's decoy `facets[]` array is positioned earlier in
+    // key order than `results[]`, but only `results[]`'s items thread the
+    // `sku` join value into the drill-down's request, so the structural
+    // heuristic alone resolves the real array — no foldReturn needed.
+    expect(resolveFoldPlan(steps)).toEqual({
+      primaryStepIndex: 0,
+      primaryArrayPath: ["results"],
+      joinFields: ["sku"],
+      drillStepIndex: 1,
+      drillArrayPath: ["prices"],
+    });
   });
 
   it("prefers the structural heuristic's plan over a foldReturn spec when both would resolve", () => {
@@ -247,7 +312,7 @@ describe("resolveFoldPlan", () => {
 
   it("returns null when the spec's endpointPattern matches no strictly-later action", () => {
     expect(
-      resolveFoldPlan(buildMulticallSingleShotSearchDrillDownActionSteps(), {
+      resolveFoldPlan(buildUnthreadedJoinDrillDownActionSteps(), {
         ...SINGLE_SHOT_SPEC,
         endpointPattern: "/catalog/never-captured/",
       })
@@ -256,7 +321,7 @@ describe("resolveFoldPlan", () => {
 
   it("returns null when the spec's endpointPattern is not a valid regex", () => {
     expect(
-      resolveFoldPlan(buildMulticallSingleShotSearchDrillDownActionSteps(), {
+      resolveFoldPlan(buildUnthreadedJoinDrillDownActionSteps(), {
         ...SINGLE_SHOT_SPEC,
         endpointPattern: "([unclosed",
       })
@@ -275,35 +340,24 @@ describe("resolveFoldPlan", () => {
     });
   });
 
-  it("honours a declared drillResultsPath over findObjectArrayField's DFS first match on the drill side", () => {
+  it("resolves the real per-item array over an earlier decoy on the drill side without needing a declaration", () => {
     const steps = buildDoubleDecoyDrillDownActionSteps();
-    const spec: FoldReturnSpec = {
-      endpointPattern: "/catalog/pricing/",
-      resultsPath: "results",
-      drillResultsPath: "details",
-      joinFields: ["sku"],
-    };
 
-    // The drill response's first object array by DFS is the decoy `errors[]`;
-    // without drillResultsPath the DFS match wins and there is nothing to
-    // fold `errors[]` items onto by `sku`, so the plan must be built from the
-    // declared path instead.
-    const plan = resolveFoldPlan(steps, spec);
-    expect(plan).toEqual({
+    // The drill response's first object array by DFS is the decoy `errors[]`,
+    // but only `details[]`'s items thread the `sku` join value into the
+    // drill-down's own request, so the structural heuristic alone resolves
+    // the real array on both sides — no foldReturn needed.
+    expect(resolveFoldPlan(steps)).toEqual({
       primaryStepIndex: 0,
       primaryArrayPath: ["results"],
       joinFields: ["sku"],
       drillStepIndex: 1,
       drillArrayPath: ["details"],
     });
-
-    // Same discipline as the primary-side decoy test: name the decoy the
-    // resolved path must NOT be, not just the path it must equal.
-    expect(plan?.drillArrayPath).not.toEqual(["errors"]);
   });
 
   it("falls back to findObjectArrayField's DFS on the drill side when drillResultsPath is undeclared", () => {
-    const steps = buildDoubleDecoyDrillDownActionSteps();
+    const steps = buildUnthreadedDoubleDecoyDrillDownActionSteps();
     const spec: FoldReturnSpec = {
       endpointPattern: "/catalog/pricing/",
       resultsPath: "results",
@@ -316,7 +370,7 @@ describe("resolveFoldPlan", () => {
   });
 
   it("returns null when the declared drillResultsPath resolves to no non-empty object array", () => {
-    const steps = buildDoubleDecoyDrillDownActionSteps();
+    const steps = buildUnthreadedDoubleDecoyDrillDownActionSteps();
     const spec: FoldReturnSpec = {
       endpointPattern: "/catalog/pricing/",
       resultsPath: "results",
@@ -350,12 +404,26 @@ describe("selectEffectiveResponseBody — flow-declared foldReturn", () => {
     });
   });
 
-  it("leaves the sample unfolded when the same steps carry no declaration", () => {
+  it("resolves the real results array over an earlier decoy without needing a declaration", () => {
     const steps = buildMulticallSingleShotSearchDrillDownActionSteps();
 
-    // Without the spec no plan resolves, so shape inference must fall back to
-    // selectReturnAction's plain pick — proving the fold above came from the
-    // declaration and not from the fixture happening to fold either way.
+    // The primary response's decoy `facets[]` array is positioned earlier in
+    // key order than `results[]`, but the structural heuristic now resolves
+    // the real array on its own, so the fold happens even with no spec at
+    // all — the declaration above is a fallback, not the only path to it.
+    expect(selectEffectiveResponseBody(true, steps, null)).toEqual({
+      facets: [{ name: "brand" }],
+      results: [{ sku: "sku-a", amount: 19.99 }, { sku: "sku-b" }],
+    });
+  });
+
+  it("leaves the sample unfolded when the structural heuristic has nothing to thread", () => {
+    const steps = buildUnthreadedJoinDrillDownActionSteps();
+
+    // The join value never appears in the drill-down's captured request (the
+    // stand-in for a header-threaded join), so neither the heuristic nor a
+    // declaration is available here — shape inference must fall back to
+    // selectReturnAction's plain pick.
     expect(selectEffectiveResponseBody(true, steps, null)).toEqual({
       prices: [{ sku: "sku-a", amount: 19.99 }],
     });
@@ -399,11 +467,41 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
     expect(body).not.toContain('"region":"us"');
   });
 
-  it("emits no fold loop for the same steps when the flow declares nothing", () => {
+  it("emits the per-item loop-and-merge for the decoy fixture without needing a declaration", () => {
     const body = emit(buildMulticallSingleShotSearchDrillDownActionSteps(), null);
+
+    // Same structural heuristic that resolves resolveFoldPlan and
+    // selectEffectiveResponseBody without a spec also drives emission — the
+    // decoy `facets[]` array must not win over `results[]` here either.
+    expect(body).toContain("const foldItems = (r0 as { results: Record<string, unknown>[] })");
+    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain("Object.assign(item, foldMatches[0] ?? {});");
+    expect(body).toContain("return { data: r0 };");
+    expect(body).not.toContain("return { data: r1 };");
+    expect(body).not.toContain("as { facets: Record<string, unknown>[] }");
+  });
+
+  it("emits no fold loop for steps the structural heuristic can't thread a join value across", () => {
+    const body = emit(buildUnthreadedJoinDrillDownActionSteps(), null);
 
     expect(body).not.toContain("const foldItems");
     expect(body).toContain("return { data: r1 };");
+  });
+
+  it("emits a per-item loop over the real arrays on both sides for a double decoy with no spec declared", () => {
+    const body = emit(buildDoubleDecoyDrillDownActionSteps(), null);
+
+    // Neither side's decoy (`facets[]` on the primary, `errors[]` on the
+    // drill) should win: the structural heuristic threads the `sku` join
+    // value through the real `results[]`/`details[]` arrays on its own.
+    expect(body).toContain("const foldItems = (r0 as { results: Record<string, unknown>[] })");
+    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain(
+      "const foldMatches = (r1 as { details: Record<string, unknown>[] }).details;"
+    );
+    expect(body).toContain("Object.assign(item, foldMatches[0] ?? {});");
+    expect(body).not.toContain("as { facets: Record<string, unknown>[] }");
+    expect(body).not.toContain("as { errors: Record<string, unknown>[] }");
   });
 
   it("emits foldMatches off the declared drillResultsPath, not the drill side's DFS-first decoy", () => {

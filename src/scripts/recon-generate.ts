@@ -4749,25 +4749,36 @@ function findNumericFieldByName(
   return null;
 }
 
-/** Depth-first search for the first array whose elements are (non-array)
+/** Depth-first search for every array whose elements are (non-array)
  * objects — the same "per-item response array" shape schema inference
- * already resolves to when it emits `z.array(z.object({...}))`. */
-function findObjectArrayField(
+ * already resolves to when it emits `z.array(z.object({...}))`. Ordered by
+ * DFS/key order, so `[0]` is {@link findObjectArrayField}'s first match. */
+function findAllObjectArrayFields(
   value: unknown,
   path: string[] = []
-): { path: string[]; items: Record<string, unknown>[] } | null {
-  if (value === null || typeof value !== "object") return null;
+): { path: string[]; items: Record<string, unknown>[] }[] {
+  if (value === null || typeof value !== "object") return [];
   if (Array.isArray(value)) {
     const objectItems = value.filter(
       (v): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v)
     );
-    return objectItems.length > 0 ? { path, items: objectItems } : null;
+    return objectItems.length > 0 ? [{ path, items: objectItems }] : [];
   }
-  for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
-    const found = findObjectArrayField(v, [...path, key]);
-    if (found) return found;
-  }
-  return null;
+  return Object.entries(value as Record<string, unknown>).flatMap(([key, v]) =>
+    findAllObjectArrayFields(v, [...path, key])
+  );
+}
+
+/** The first object-array field by DFS/key order — see
+ * {@link findAllObjectArrayFields}. Every call site that must disambiguate
+ * between several candidate arrays (e.g. a decoy array positioned earlier in
+ * key order than the real one) uses {@link findAllObjectArrayFields}
+ * directly instead of this first-match shortcut. */
+function findObjectArrayField(
+  value: unknown,
+  path: string[] = []
+): { path: string[]; items: Record<string, unknown>[] } | null {
+  return findAllObjectArrayFields(value, path)[0] ?? null;
 }
 
 /** A detected dependent drill-down: a later step whose request threads a
@@ -4785,17 +4796,22 @@ export interface FoldPlan {
 }
 
 /** Every string and numeric value present in a capture's outbound request —
- * its URL query parameters (always strings) and its JSON body's string and
- * numeric leaves (numeric leaves stringified) — the set a drill-down
- * request's threaded join value must appear in. Numeric leaves are included
- * because a join key is just as often a numeric id (threaded as a query
- * param string or a JSON body number literal) as a string one. */
+ * its URL path segments and query parameters (always strings) and its JSON
+ * body's string and numeric leaves (numeric leaves stringified) — the set a
+ * drill-down request's threaded join value must appear in. Path segments are
+ * included because REST-style APIs commonly thread a primary item's id as a
+ * path segment (e.g. `/orders/{id}`) rather than a query param or body
+ * field. Numeric leaves are included because a join key is just as often a
+ * numeric id (threaded as a query param string or a JSON body number
+ * literal) as a string one. */
 function collectRequestStringValues(capture: Capture): Set<string> {
   const values = new Set<string>();
   try {
-    for (const v of new URL(capture.url).searchParams.values()) values.add(v);
+    const url = new URL(capture.url);
+    for (const v of url.searchParams.values()) values.add(v);
+    for (const segment of url.pathname.split("/").filter(Boolean)) values.add(segment);
   } catch {
-    // Relative or malformed URL — no query params to contribute.
+    // Relative or malformed URL — no query params or path segments to contribute.
   }
   for (const v of jsonBodyLeafValues(capture.requestPostData) ?? []) values.add(v);
   const parsedBody = ((): unknown => {
@@ -4856,17 +4872,40 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
 ): FoldPlan | null {
   for (let primaryIndex = 0; primaryIndex < actions.length; primaryIndex++) {
     const primary = actions[primaryIndex]!;
-    const primaryArray = findObjectArrayField(primary.capture.responseBody);
-    const firstItem = primaryArray?.items[0];
-    if (!primaryArray || !firstItem) continue;
+    const primaryCandidates = findAllObjectArrayFields(primary.capture.responseBody);
+    if (primaryCandidates.length === 0) continue;
 
     for (let drillIndex = primaryIndex + 1; drillIndex < actions.length; drillIndex++) {
       const drill = actions[drillIndex]!;
       if (drill === primary) continue;
-      const joinFields = findThreadedJoinFields(firstItem, drill.capture);
-      if (joinFields.length === 0) continue;
-      const drillArray = findObjectArrayField(drill.capture.responseBody);
-      if (!drillArray || drillArray.items.length === 0) continue;
+
+      // Every candidate array is tried, not just the DFS-first match — a
+      // decoy array (e.g. a facets/errors collection) can sit earlier in key
+      // order than the real results array, so the candidate actually
+      // threading a join field into the drill request is the one this picks,
+      // not the one DFS happens to reach first.
+      const primaryArray = primaryCandidates.find(
+        (candidate) => findThreadedJoinFields(candidate.items[0]!, drill.capture).length > 0
+      );
+      if (!primaryArray) continue;
+      const joinFields = findThreadedJoinFields(primaryArray.items[0]!, drill.capture);
+
+      const drillCandidates = findAllObjectArrayFields(drill.capture.responseBody);
+      // Same disambiguation on the drill side, reusing findThreadedJoinFields
+      // against the drill's own request: a per-item drill array commonly
+      // echoes the join value(s) it was looked up by (e.g. a `sku` search
+      // parameter mirrored back on each result), which distinguishes it from
+      // a decoy array (e.g. an `errors[]` collection) that never does. Not
+      // every real drill array echoes the join value, though (e.g. a
+      // `productId`-keyed lookup returning `units[]` with no `productId`
+      // field of its own) — when no candidate threads, the DFS-first match
+      // is still the best guess.
+      const drillArray =
+        drillCandidates.find(
+          (candidate) => findThreadedJoinFields(candidate.items[0]!, drill.capture).length > 0
+        ) ?? drillCandidates[0];
+      if (!drillArray) continue;
+
       return {
         primaryStepIndex: primaryIndex,
         primaryArrayPath: primaryArray.path,
