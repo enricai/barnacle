@@ -96,7 +96,9 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     // as the literal to search-and-replace would find no match in the
     // rendered URL and silently leave it hardcoded to the one captured
     // request instead of generifying it per loop iteration.
-    const body = emit(buildMulticallSingleShotSearchDrillDownCompositeNumericJoinNonFirstItemActionSteps());
+    const body = emit(
+      buildMulticallSingleShotSearchDrillDownCompositeNumericJoinNonFirstItemActionSteps()
+    );
 
     expect(body).toContain("for (const item of foldItems) {");
     expect(body).toContain("region=${item.region}&accountId=${item.accountId}");
