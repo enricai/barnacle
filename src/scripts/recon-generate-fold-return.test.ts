@@ -525,7 +525,8 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
     // return references the folded primary, not the drill-down's own body.
     expect(body).toContain("const foldItems = (r0 as { results: Record<string, unknown>[] })");
     expect(body).toContain("for (const item of foldItems) {");
-    expect(body).toContain("Object.assign(item, foldMatches[0] ?? {});");
+    expect(body).toContain("const foldMatch = foldMatches.find(");
+    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
     expect(body).toContain("return { data: r0 };");
     expect(body).not.toContain("return { data: r1 };");
 
@@ -543,7 +544,8 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
 
     expect(body).toContain("const foldItems = (r0 as { results: Record<string, unknown>[] })");
     expect(body).toContain("for (const item of foldItems) {");
-    expect(body).toContain("Object.assign(item, foldMatches[0] ?? {});");
+    expect(body).toContain("const foldMatch = foldMatches.find(");
+    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
 
     // Both join fields must re-key to the loop item, not just accountId.
     expect(body).toContain(
@@ -561,7 +563,8 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
     // decoy `facets[]` array must not win over `results[]` here either.
     expect(body).toContain("const foldItems = (r0 as { results: Record<string, unknown>[] })");
     expect(body).toContain("for (const item of foldItems) {");
-    expect(body).toContain("Object.assign(item, foldMatches[0] ?? {});");
+    expect(body).toContain("const foldMatch = foldMatches.find(");
+    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
     expect(body).toContain("return { data: r0 };");
     expect(body).not.toContain("return { data: r1 };");
     expect(body).not.toContain("as { facets: Record<string, unknown>[] }");
@@ -585,7 +588,8 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
     expect(body).toContain(
       "const foldMatches = (r1 as { details: Record<string, unknown>[] }).details;"
     );
-    expect(body).toContain("Object.assign(item, foldMatches[0] ?? {});");
+    expect(body).toContain("const foldMatch = foldMatches.find(");
+    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
     expect(body).not.toContain("as { facets: Record<string, unknown>[] }");
     expect(body).not.toContain("as { errors: Record<string, unknown>[] }");
   });
@@ -640,7 +644,8 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
     expect(body).toContain(
       "const foldMatches = (r1 as { details: Record<string, unknown>[] }).details;"
     );
-    expect(body).toContain("Object.assign(item, foldMatches[0] ?? {});");
+    expect(body).toContain("const foldMatch = foldMatches.find(");
+    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
 
     // The declared drillResultsPath wins over findObjectArrayField's DFS
     // first match on the drill side, which would have picked the decoy
