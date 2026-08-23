@@ -327,3 +327,32 @@ export function buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps(): Mul
     }),
   ];
 }
+
+const ACCOUNT_SEARCH_URL = "https://api.example.com/accounts/search";
+const ACCOUNT_DETAIL_URL = "https://api.example.com/accounts/detail";
+
+/**
+ * A single-shot search whose primary item join field (`accountId`) is a
+ * NUMBER rather than a string, threaded into the drill-down call via a URL
+ * query parameter (`?accountId=42`). `URLSearchParams` always stringifies its
+ * values, so the request-collection side already captures `"42"` as a
+ * string; the item side of the join is what must widen to accept a numeric
+ * leaf for {@link detectDrillDownFoldPlan} to resolve `accountId` as a join
+ * field at all.
+ */
+export function buildMulticallSingleShotSearchDrillDownNumericJoinActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: ACCOUNT_SEARCH_URL,
+      requestPostData: JSON.stringify({ page: 1 }),
+      responseBody: { accounts: [{ accountId: 42, name: "Acme" }] },
+      timestamp: "2024-05-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: `${ACCOUNT_DETAIL_URL}?accountId=42`,
+      requestPostData: null,
+      responseBody: { transactions: [{ transactionId: "t1" }] },
+      timestamp: "2024-05-01T00:00:01Z",
+    }),
+  ];
+}
