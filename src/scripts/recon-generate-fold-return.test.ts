@@ -169,6 +169,35 @@ function buildCompositeJoinActionSteps(): MulticallFixtureStep[] {
   ];
 }
 
+/** A primary response whose declared `resultsPath` threads through an array
+ * index (`categories.0.products`) rather than a bare object key, isolating
+ * `setAtPath`'s array-node branch: the primary items to fold live inside
+ * `categories[0].products[]`, not at the response's top level. */
+function buildNestedArrayPathDrillDownActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: "https://api.example.com/catalog/search/",
+      requestPostData: '{"page":1}',
+      responseBody: {
+        categories: [{ products: [{ sku: "sku-a" }, { sku: "sku-b" }] }],
+      },
+      timestamp: "2024-04-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: "https://api.example.com/catalog/pricing/",
+      requestPostData: '{"sku":"sku-a"}',
+      responseBody: { prices: [{ sku: "sku-a", amount: 19.99 }] },
+      timestamp: "2024-04-01T00:00:01Z",
+    }),
+  ];
+}
+
+const NESTED_ARRAY_PATH_SPEC: FoldReturnSpec = {
+  endpointPattern: "/catalog/pricing/",
+  resultsPath: "categories.0.products",
+  joinFields: ["sku"],
+};
+
 const COMPOSITE_SPEC: FoldReturnSpec = {
   endpointPattern: "/records/detail",
   resultsPath: "results",
@@ -524,6 +553,18 @@ describe("selectEffectiveResponseBody — flow-declared foldReturn", () => {
     // would splice the decoy's amount (5.0) onto the primary item instead.
     expect(selectEffectiveResponseBody(true, steps, null, SINGLE_SHOT_SPEC)).toEqual({
       results: [{ sku: "sku-a", amount: 19.99 }],
+    });
+  });
+
+  it("rebuilds through an array-typed path segment instead of returning the body unfolded", () => {
+    const steps = buildNestedArrayPathDrillDownActionSteps();
+
+    // resultsPath ("categories.0.products") walks through the array at
+    // "categories" via its "0" segment before reaching "products" — setAtPath
+    // must descend into that array node and rebuild it, not bail out and
+    // return the primary body byte-identical to its unfolded original.
+    expect(selectEffectiveResponseBody(true, steps, null, NESTED_ARRAY_PATH_SPEC)).toEqual({
+      categories: [{ products: [{ sku: "sku-a", amount: 19.99 }, { sku: "sku-b" }] }],
     });
   });
 });
