@@ -9,7 +9,7 @@ import {
   buildMulticallSingleShotSearchDrillDownDrillDecoyActionSteps,
   buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinActionSteps,
   buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps,
-  buildMulticallSingleShotSearchDrillDownNonFirstItemActionSteps,
+  buildMulticallSingleShotSearchDrillDownNonFirstItemSkuActionSteps,
   buildMulticallSingleShotSearchDrillDownNumericJoinActionSteps,
   buildMulticallSingleShotSearchDrillDownOutOfOrderItemActionSteps,
   buildMulticallSingleShotSearchDrillDownPathThreadedJoinActionSteps,
@@ -89,7 +89,7 @@ describe("detectDrillDownFoldPlan", () => {
   });
 
   it("resolves a fold plan when the sole captured drill-down call threads the second (not first) item's sku", () => {
-    const plan = detect(buildMulticallSingleShotSearchDrillDownNonFirstItemActionSteps());
+    const plan = detect(buildMulticallSingleShotSearchDrillDownNonFirstItemSkuActionSteps());
 
     expect(plan).not.toBeNull();
     expect(plan?.primaryStepIndex).toBe(0);

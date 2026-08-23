@@ -511,7 +511,7 @@ export function buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinActionS
  * item search to the actually-drilled item rather than an index-0 default —
  * the search must find the match at `primaryMatchedItemIndex` 1.
  * Named "OutOfOrder" (rather than "NonFirstItem") to avoid colliding with
- * {@link buildMulticallSingleShotSearchDrillDownNonFirstItemActionSteps}.
+ * {@link buildMulticallSingleShotSearchDrillDownNonFirstItemSkuActionSteps}.
  */
 export function buildMulticallSingleShotSearchDrillDownOutOfOrderItemActionSteps(): MulticallFixtureStep[] {
   return [
