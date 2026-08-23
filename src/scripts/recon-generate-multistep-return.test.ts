@@ -4,6 +4,7 @@ import {
   buildMulticallDependentDrillDownActionSteps,
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
+  buildMulticallSingleShotSearchDrillDownCompositeNumericJoinNonFirstItemActionSteps,
   buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps,
   buildMulticallSingleShotSearchDrillDownPathThreadedJoinActionSteps,
   buildStep,
@@ -83,6 +84,26 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     expect(body).toContain("Object.assign(item, foldMatches[0] ?? {});");
     expect(body).toContain("return { data: r0 };");
     expect(body).not.toContain("return { data: r1 };");
+  });
+
+  it("parameterizes the fold request template on the item the drill call actually matched, not items[0]", () => {
+    // The captured drill call's URL query string only ever mentions the
+    // SECOND account (region "eu", accountId 9) — those are the only join
+    // literals that ever appear in the rendered request. Query params reach
+    // `parameterize` as raw captured literals (unlike a top-level JSON body
+    // key, which is already payload-ified to `${payload.field}` before this
+    // fold branch runs), so a branch that reads primaryItems[0] ("us"/7)
+    // as the literal to search-and-replace would find no match in the
+    // rendered URL and silently leave it hardcoded to the one captured
+    // request instead of generifying it per loop iteration.
+    const body = emit(buildMulticallSingleShotSearchDrillDownCompositeNumericJoinNonFirstItemActionSteps());
+
+    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain("region=${item.region}&accountId=${item.accountId}");
+    expect(body).not.toContain("region=eu");
+    expect(body).not.toContain("accountId=9");
+    expect(body).not.toContain("region=us");
+    expect(body).not.toContain("accountId=7");
   });
 
   it("refuses to emit when a later step threads a produced value out of the fold drill step's own response", () => {
