@@ -4813,23 +4813,22 @@ function findThreadedJoinFields(item: Record<string, unknown>, drillCapture: Cap
  * per-item drill-down whose response should be folded onto an earlier
  * "primary" step's results array by a join key — the shape a hand-authored
  * per-item merge exists to paper over (see the drill-down fold report),
- * e.g. a search-results-plus-detail-lookup flow. The primary candidate is restricted to
- * {@link findRequeriedActions}'s set — the same re-queried-endpoint
- * relevance heuristic `selectReturnAction` already uses to find a flow's
- * results endpoint — so this reuses that signal rather than inventing a
- * second one. For each primary candidate, in order, this looks for the
- * first later step whose request was built from one of the primary array's
- * item fields (the join key) and whose own response contains an
- * object-array field (the foldable per-item results the drill-down call
- * returns). Returns `null` when no primary/drill pair with a threaded join
- * key exists — e.g. a plain submission flow with no re-queried endpoint.
+ * e.g. a search-results-plus-detail-lookup flow. Every prior action is a
+ * primary candidate, in order — a results endpoint hit exactly once (the
+ * common search-once-then-drill-into-each-item shape) is just as eligible
+ * as a re-queried one, so this does not restrict candidates to
+ * {@link findRequeriedActions}'s set. For each primary candidate, in order,
+ * this looks for the first later step whose request was built from one of
+ * the primary array's item fields (the join key) and whose own response
+ * contains an object-array field (the foldable per-item results the
+ * drill-down call returns). Returns `null` when no primary/drill pair with
+ * a threaded join key exists — e.g. a plain submission flow.
  */
 export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
   actions: readonly T[]
 ): FoldPlan | null {
-  const requeried = findRequeriedActions(actions);
-  for (const primary of requeried) {
-    const primaryIndex = actions.indexOf(primary);
+  for (let primaryIndex = 0; primaryIndex < actions.length; primaryIndex++) {
+    const primary = actions[primaryIndex]!;
     const primaryArray = findObjectArrayField(primary.capture.responseBody);
     const firstItem = primaryArray?.items[0];
     if (!primaryArray || !firstItem) continue;

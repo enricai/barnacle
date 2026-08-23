@@ -3,6 +3,7 @@ import { detectDrillDownFoldPlan } from "@/scripts/recon-generate";
 import {
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
+  buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps,
   buildStep,
   type MulticallFixtureStep,
 } from "@/scripts/recon-generate-multicall-fixture";
@@ -53,5 +54,16 @@ describe("detectDrillDownFoldPlan", () => {
     const plan = detect(buildMulticallHeterogeneousActionSteps());
 
     expect(plan).toBeNull();
+  });
+
+  it("detects a single-shot (non-requeried) search as a fold primary when its results array is the only object-array field", () => {
+    const plan = detect(buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps());
+
+    expect(plan).not.toBeNull();
+    expect(plan?.primaryStepIndex).toBe(0);
+    expect(plan?.primaryArrayPath).toEqual(["results"]);
+    expect(plan?.joinFields).toEqual(["sku"]);
+    expect(plan?.drillStepIndex).toBe(1);
+    expect(plan?.drillArrayPath).toEqual(["prices"]);
   });
 });
