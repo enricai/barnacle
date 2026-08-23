@@ -8,6 +8,7 @@ import {
   buildMulticallSingleShotSearchDrillDownDrillDecoyActionSteps,
   buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinActionSteps,
   buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps,
+  buildMulticallSingleShotSearchDrillDownNonFirstItemActionSteps,
   buildMulticallSingleShotSearchDrillDownNumericJoinActionSteps,
   buildMulticallSingleShotSearchDrillDownPathThreadedJoinActionSteps,
   buildStep,
@@ -71,6 +72,18 @@ describe("detectDrillDownFoldPlan", () => {
     expect(plan?.joinFields).toEqual(["sku"]);
     expect(plan?.drillStepIndex).toBe(1);
     expect(plan?.drillArrayPath).toEqual(["prices"]);
+  });
+
+  it("resolves a fold plan and records the matched item's index when the drilled item is not first", () => {
+    const plan = detect(buildMulticallSingleShotSearchDrillDownNonFirstItemActionSteps());
+
+    expect(plan).not.toBeNull();
+    expect(plan?.primaryStepIndex).toBe(0);
+    expect(plan?.primaryArrayPath).toEqual(["results"]);
+    expect(plan?.joinFields).toEqual(["itemId"]);
+    expect(plan?.drillStepIndex).toBe(1);
+    expect(plan?.drillArrayPath).toEqual(["prices"]);
+    expect(plan?.primaryMatchedItemIndex).toBe(1);
   });
 
   it("resolves a numeric-typed join field threaded via a URL query param", () => {
@@ -203,6 +216,7 @@ describe("resolveFoldPlan — header-threaded join boundary", () => {
       joinFields: ["accountId"],
       drillStepIndex: 1,
       drillArrayPath: ["transactions"],
+      primaryMatchedItemIndex: 0,
     });
   });
 });

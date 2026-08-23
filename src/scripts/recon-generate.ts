@@ -4793,6 +4793,7 @@ export interface FoldPlan {
   joinFields: string[];
   drillStepIndex: number;
   drillArrayPath: string[];
+  primaryMatchedItemIndex: number;
 }
 
 /** Every string and numeric value present in a capture's outbound request —
@@ -4883,12 +4884,24 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
       // decoy array (e.g. a facets/errors collection) can sit earlier in key
       // order than the real results array, so the candidate actually
       // threading a join field into the drill request is the one this picks,
-      // not the one DFS happens to reach first.
-      const primaryArray = primaryCandidates.find(
-        (candidate) => findThreadedJoinFields(candidate.items[0]!, drill.capture).length > 0
-      );
+      // not the one DFS happens to reach first. Within a candidate array,
+      // every item is searched too — a flow that only ever drilled into a
+      // later item (never the first) must still resolve, so this cannot stop
+      // at items[0].
+      let primaryArray: { path: string[]; items: Record<string, unknown>[] } | undefined;
+      let primaryMatchedItemIndex = -1;
+      let joinFields: string[] = [];
+      for (const candidate of primaryCandidates) {
+        const matchedIndex = candidate.items.findIndex(
+          (item) => findThreadedJoinFields(item, drill.capture).length > 0
+        );
+        if (matchedIndex === -1) continue;
+        primaryArray = candidate;
+        primaryMatchedItemIndex = matchedIndex;
+        joinFields = findThreadedJoinFields(candidate.items[matchedIndex]!, drill.capture);
+        break;
+      }
       if (!primaryArray) continue;
-      const joinFields = findThreadedJoinFields(primaryArray.items[0]!, drill.capture);
 
       const drillCandidates = findAllObjectArrayFields(drill.capture.responseBody);
       // Same disambiguation on the drill side, reusing findThreadedJoinFields
@@ -4899,10 +4912,11 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
       // every real drill array echoes the join value, though (e.g. a
       // `productId`-keyed lookup returning `units[]` with no `productId`
       // field of its own) — when no candidate threads, the DFS-first match
-      // is still the best guess.
+      // is still the best guess. As on the primary side, every item (not
+      // just items[0]) is checked for a thread.
       const drillArray =
-        drillCandidates.find(
-          (candidate) => findThreadedJoinFields(candidate.items[0]!, drill.capture).length > 0
+        drillCandidates.find((candidate) =>
+          candidate.items.some((item) => findThreadedJoinFields(item, drill.capture).length > 0)
         ) ?? drillCandidates[0];
       if (!drillArray) continue;
 
@@ -4912,6 +4926,7 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
         joinFields,
         drillStepIndex: drillIndex,
         drillArrayPath: drillArray.path,
+        primaryMatchedItemIndex,
       };
     }
   }
@@ -5073,6 +5088,7 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
         joinFields: spec.joinFields,
         drillStepIndex,
         drillArrayPath,
+        primaryMatchedItemIndex: 0,
       };
     }
   }

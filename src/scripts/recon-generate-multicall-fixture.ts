@@ -439,3 +439,33 @@ export function buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinActionS
     }),
   ];
 }
+
+/**
+ * A single-shot search whose primary results array is NOT drilled into at
+ * item 0 — only a single later drill call exists, and it threads the second
+ * item's (`itemId: "i-a"`) join value, never the first's (`itemId: "i-b"`).
+ * With no coincidental extra call re-drilling item 0 (unlike
+ * {@link buildMulticallDependentDrillDownActionSteps}, whose items are also
+ * out of order but which happens to pass a items[0]-only match because a
+ * third step re-drills item 0), this pins {@link detectDrillDownFoldPlan}'s
+ * item search to the actually-drilled item rather than an index-0 default —
+ * the search must find the match at `primaryMatchedItemIndex` 1.
+ */
+export function buildMulticallSingleShotSearchDrillDownNonFirstItemActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        results: [{ itemId: "i-b" }, { itemId: "i-a" }],
+      },
+      timestamp: "2024-09-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_PRICING_URL,
+      requestPostData: '{"itemId":"i-a"}',
+      responseBody: { prices: [{ itemId: "i-a", amount: 19.99 }] },
+      timestamp: "2024-09-01T00:00:01Z",
+    }),
+  ];
+}

@@ -261,6 +261,7 @@ describe("resolveFoldPlan", () => {
       joinFields: ["sku"],
       drillStepIndex: 1,
       drillArrayPath: ["prices"],
+      primaryMatchedItemIndex: 0,
     });
   });
 
@@ -286,6 +287,7 @@ describe("resolveFoldPlan", () => {
       joinFields: ["sku"],
       drillStepIndex: 1,
       drillArrayPath: ["prices"],
+      primaryMatchedItemIndex: 0,
     });
   });
 
@@ -337,6 +339,7 @@ describe("resolveFoldPlan", () => {
       joinFields: ["accountId", "region"],
       drillStepIndex: 1,
       drillArrayPath: ["details"],
+      primaryMatchedItemIndex: 0,
     });
   });
 
@@ -353,6 +356,7 @@ describe("resolveFoldPlan", () => {
       joinFields: ["sku"],
       drillStepIndex: 1,
       drillArrayPath: ["details"],
+      primaryMatchedItemIndex: 0,
     });
   });
 
