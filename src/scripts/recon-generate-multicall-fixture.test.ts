@@ -7,6 +7,7 @@ import {
   buildMulticallSingleShotSearchDrillDownCompositeNumericJoinNonFirstItemActionSteps,
   buildMulticallSingleShotSearchDrillDownMultiMatchActionSteps,
   buildMulticallSingleShotSearchDrillDownNonFirstItemSkuActionSteps,
+  buildMulticallSingleShotSearchDrillDownTypeMismatchJoinActionSteps,
   type MulticallFixtureStep,
 } from "@/scripts/recon-generate-multicall-fixture";
 
@@ -215,5 +216,38 @@ describe("buildMulticallSingleShotSearchDrillDownMultiMatchActionSteps", () => {
     expect(secondDrillItem).toBeDefined();
     expect(firstDrillItem?.sku).not.toBe(primarySku);
     expect(secondDrillItem?.sku).toBe(primarySku);
+  });
+});
+
+describe("buildMulticallSingleShotSearchDrillDownTypeMismatchJoinActionSteps", () => {
+  const steps = buildMulticallSingleShotSearchDrillDownTypeMismatchJoinActionSteps();
+
+  it("the primary item's join field is a number and the drill response's is a string", () => {
+    const primaryBody = steps[0]?.capture.responseBody as {
+      accounts: { accountId: number }[];
+    };
+    const drillBody = steps[1]?.capture.responseBody as {
+      transactions: { accountId: string }[];
+    };
+
+    expect(typeof primaryBody.accounts[0]?.accountId).toBe("number");
+    expect(drillBody.transactions.every((t) => typeof t.accountId === "string")).toBe(true);
+  });
+
+  it("only the SECOND drill item's accountId stringifies to the primary's value", () => {
+    const primaryBody = steps[0]?.capture.responseBody as {
+      accounts: { accountId: number }[];
+    };
+    const primaryAccountId = primaryBody.accounts[0]?.accountId;
+    const drillBody = steps[1]?.capture.responseBody as {
+      transactions: { accountId: string }[];
+    };
+    const [firstDrillItem, secondDrillItem] = drillBody.transactions;
+
+    expect(drillBody.transactions.length).toBeGreaterThanOrEqual(2);
+    expect(firstDrillItem).toBeDefined();
+    expect(secondDrillItem).toBeDefined();
+    expect(firstDrillItem?.accountId).not.toBe(String(primaryAccountId));
+    expect(secondDrillItem?.accountId).toBe(String(primaryAccountId));
   });
 });
