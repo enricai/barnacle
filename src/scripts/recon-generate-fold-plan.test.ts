@@ -248,7 +248,9 @@ describe("detectDrillDownFoldPlan — nested grouping array", () => {
       buildStep("r1", {
         url: "https://api.example.com/catalog/entries/e2/details",
         requestPostData: null,
-        responseBody: { entryId: "e2", description: "A gadget." },
+        responseBody: {
+          details: [{ entryId: "e2", description: "A gadget." }],
+        },
         timestamp: "2024-05-01T00:00:01Z",
       }),
     ];
@@ -259,6 +261,7 @@ describe("detectDrillDownFoldPlan — nested grouping array", () => {
     expect(plan?.primaryArrayPath).toEqual(["sections", "0", "entries"]);
     expect(plan?.joinFields).toEqual(["entryId"]);
     expect(plan?.drillStepIndex).toBe(1);
+    expect(plan?.drillArrayPath).toEqual(["details"]);
     expect(plan?.primaryMatchedItemIndex).toBe(1);
   });
 });
