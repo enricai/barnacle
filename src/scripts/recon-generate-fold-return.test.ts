@@ -567,7 +567,7 @@ describe("selectEffectiveResponseBody — flow-declared foldReturn", () => {
     // would fall through to drillItems?.[0] — the decoy — instead of
     // resolving the real match by coerced value equality.
     expect(selectEffectiveResponseBody(true, steps, null)).toEqual({
-      accounts: [{ accountId: 42, name: "Acme", transactionId: "t-real" }],
+      accounts: [{ accountId: "42", name: "Acme", transactionId: "t-real" }],
     });
   });
 
