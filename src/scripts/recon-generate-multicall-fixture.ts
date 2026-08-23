@@ -421,7 +421,7 @@ export function buildMulticallSingleShotSearchDrillDownCompositeNumericJoinActio
  * mentions `sku-b` — proving the fold must select the drill call's item by
  * matching the join field's actual value, not by array position.
  */
-export function buildMulticallSingleShotSearchDrillDownNonFirstItemActionSteps(): MulticallFixtureStep[] {
+export function buildMulticallSingleShotSearchDrillDownNonFirstItemSkuActionSteps(): MulticallFixtureStep[] {
   return [
     buildStep("r0", {
       url: CATALOG_SEARCH_URL,

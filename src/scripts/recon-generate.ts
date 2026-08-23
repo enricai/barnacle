@@ -5052,6 +5052,43 @@ function objectItemsAtPath(
  * `foldMatches[0]` out of that array, so a plan without one has nothing to
  * merge).
  */
+/** Same value set as {@link collectRequestStringValues}, plus every request
+ * header value — a flow-declared `foldReturn` exists specifically to cover
+ * joins the structural heuristic can't see (most notably a value threaded
+ * through a request HEADER), so matching a spec's `joinFields` against the
+ * drill capture must search headers even though the structural heuristic
+ * deliberately doesn't (see {@link collectRequestStringValues}'s docstring). */
+function collectRequestValuesIncludingHeaders(capture: Capture): Set<string> {
+  const values = collectRequestStringValues(capture);
+  for (const v of Object.values(capture.requestHeaders)) values.add(v);
+  return values;
+}
+
+/** Finds which of `primaryItems` the drill call actually captured, by
+ * checking every field named in `joinFields` against the drill request's
+ * full value set (URL, body, and headers) — the item matches only when ALL
+ * join fields resolve, since a composite join (e.g. `accountId` + `region`)
+ * is only a real match when every field lines up together. Returns `null`
+ * (never a guessed index) when no item fully matches. */
+function resolveSpecMatchedPrimaryItemIndex(
+  primaryItems: readonly Record<string, unknown>[],
+  joinFields: readonly string[],
+  drillCapture: Capture
+): number | null {
+  const requestValues = collectRequestValuesIncludingHeaders(drillCapture);
+  if (requestValues.size === 0) return null;
+  const matchedIndex = primaryItems.findIndex((item) =>
+    joinFields.every((field) => {
+      const value = item[field];
+      return (
+        (typeof value === "string" && value.length > 0 && requestValues.has(value)) ||
+        (typeof value === "number" && requestValues.has(String(value)))
+      );
+    })
+  );
+  return matchedIndex === -1 ? null : matchedIndex;
+}
+
 function buildFoldPlanFromSpec<T extends { capture: Capture }>(
   actions: readonly T[],
   spec: FoldReturnSpec
@@ -5066,9 +5103,11 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
   })();
   if (endpointRx === null) return null;
   for (let primaryStepIndex = 0; primaryStepIndex < actions.length; primaryStepIndex++) {
-    if (!objectItemsAtPath(actions[primaryStepIndex]!.capture.responseBody, primaryArrayPath)) {
-      continue;
-    }
+    const primaryItems = objectItemsAtPath(
+      actions[primaryStepIndex]!.capture.responseBody,
+      primaryArrayPath
+    );
+    if (!primaryItems) continue;
     for (
       let drillStepIndex = primaryStepIndex + 1;
       drillStepIndex < actions.length;
@@ -5084,13 +5123,19 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
         return objectItemsAtPath(drill.capture.responseBody, path) ? path : null;
       })();
       if (drillArrayPath === null) continue;
+      const primaryMatchedItemIndex = resolveSpecMatchedPrimaryItemIndex(
+        primaryItems,
+        spec.joinFields,
+        drill.capture
+      );
+      if (primaryMatchedItemIndex === null) continue;
       return {
         primaryStepIndex,
         primaryArrayPath,
         joinFields: spec.joinFields,
         drillStepIndex,
         drillArrayPath,
-        primaryMatchedItemIndex: 0,
+        primaryMatchedItemIndex,
       };
     }
   }

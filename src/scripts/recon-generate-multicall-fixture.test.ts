@@ -5,7 +5,7 @@ import {
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
   buildMulticallSingleShotSearchDrillDownCompositeNumericJoinNonFirstItemActionSteps,
-  buildMulticallSingleShotSearchDrillDownNonFirstItemActionSteps,
+  buildMulticallSingleShotSearchDrillDownNonFirstItemSkuActionSteps,
   type MulticallFixtureStep,
 } from "@/scripts/recon-generate-multicall-fixture";
 
@@ -142,8 +142,8 @@ describe("buildMulticallDependentDrillDownActionSteps", () => {
   });
 });
 
-describe("buildMulticallSingleShotSearchDrillDownNonFirstItemActionSteps", () => {
-  const steps = buildMulticallSingleShotSearchDrillDownNonFirstItemActionSteps();
+describe("buildMulticallSingleShotSearchDrillDownNonFirstItemSkuActionSteps", () => {
+  const steps = buildMulticallSingleShotSearchDrillDownNonFirstItemSkuActionSteps();
 
   it("the primary results array carries >=2 items", () => {
     const body = steps[0]?.capture.responseBody as { results: { sku: string }[] };

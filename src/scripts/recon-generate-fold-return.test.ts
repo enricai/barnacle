@@ -70,16 +70,17 @@ function buildUnthreadedDoubleDecoyDrillDownActionSteps(): MulticallFixtureStep[
         details: [{ sku: "sku-a", price: 19.99 }],
       },
       timestamp: "2024-04-01T00:00:01Z",
+      requestHeaders: { "Content-Type": "application/json", "X-Item-Sku": "sku-a" },
     }),
   ];
 }
 
-/** A single-shot search + drill-down pair whose join value never appears
- * anywhere in the drill-down's captured request (the fixture's stand-in for
- * a value threaded only through a request HEADER, which
- * `collectRequestStringValues` deliberately never scans) — the structural
- * heuristic has no threaded value to find on either candidate array, so only
- * a flow-declared `foldReturn` can resolve the fold. */
+/** A single-shot search + drill-down pair whose join value is threaded only
+ * through a request HEADER, never through the URL or body —
+ * `collectRequestStringValues` deliberately never scans headers, so the
+ * structural heuristic has no threaded value to find on either candidate
+ * array and only a flow-declared `foldReturn` (which must search headers
+ * too) can resolve the fold. */
 function buildUnthreadedJoinDrillDownActionSteps(): MulticallFixtureStep[] {
   return [
     buildStep("r0", {
@@ -93,6 +94,51 @@ function buildUnthreadedJoinDrillDownActionSteps(): MulticallFixtureStep[] {
       requestPostData: '{"lookup":true}',
       responseBody: { prices: [{ sku: "sku-a", amount: 19.99 }] },
       timestamp: "2024-04-01T00:00:01Z",
+      requestHeaders: { "Content-Type": "application/json", "X-Item-Sku": "sku-a" },
+    }),
+  ];
+}
+
+/** Same header-threaded join as {@link buildUnthreadedJoinDrillDownActionSteps},
+ * except the header carries the SECOND primary item's join value, not the
+ * first — isolating `buildFoldPlanFromSpec`'s own item search (it must not
+ * assume `primaryMatchedItemIndex` is always 0 just because a spec resolved
+ * the plan). */
+function buildHeaderThreadedNonFirstItemDrillDownActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: "https://api.example.com/catalog/search/",
+      requestPostData: '{"page":1}',
+      responseBody: { results: [{ sku: "sku-a" }, { sku: "sku-b" }] },
+      timestamp: "2024-04-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: "https://api.example.com/catalog/pricing/",
+      requestPostData: '{"lookup":true}',
+      responseBody: { prices: [{ sku: "sku-b", amount: 24.99 }] },
+      timestamp: "2024-04-01T00:00:01Z",
+      requestHeaders: { "Content-Type": "application/json", "X-Item-Sku": "sku-b" },
+    }),
+  ];
+}
+
+/** Same header-threaded join shape, except the header carries a value that
+ * matches no primary item at all — the fixture for the fails-closed case:
+ * `buildFoldPlanFromSpec` must return `null` rather than guess index 0. */
+function buildHeaderThreadedNoMatchDrillDownActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: "https://api.example.com/catalog/search/",
+      requestPostData: '{"page":1}',
+      responseBody: { results: [{ sku: "sku-a" }, { sku: "sku-b" }] },
+      timestamp: "2024-04-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: "https://api.example.com/catalog/pricing/",
+      requestPostData: '{"lookup":true}',
+      responseBody: { prices: [{ sku: "sku-z", amount: 24.99 }] },
+      timestamp: "2024-04-01T00:00:01Z",
+      requestHeaders: { "Content-Type": "application/json", "X-Item-Sku": "sku-z" },
     }),
   ];
 }
@@ -383,6 +429,30 @@ describe("resolveFoldPlan", () => {
     };
 
     expect(resolveFoldPlan(steps, spec)).toBeNull();
+  });
+
+  it("resolves primaryMatchedItemIndex against the drill request's headers, not just URL/body", () => {
+    const steps = buildHeaderThreadedNonFirstItemDrillDownActionSteps();
+
+    // The join value lives only in an `X-Item-Sku` header naming the SECOND
+    // primary item, so a spec-resolved plan must resolve
+    // primaryMatchedItemIndex to 1, not guess 0.
+    expect(resolveFoldPlan(steps, SINGLE_SHOT_SPEC)).toEqual({
+      primaryStepIndex: 0,
+      primaryArrayPath: ["results"],
+      joinFields: ["sku"],
+      drillStepIndex: 1,
+      drillArrayPath: ["prices"],
+      primaryMatchedItemIndex: 1,
+    });
+  });
+
+  it("returns null (fails closed) when no primary item's joinFields values match the drill request", () => {
+    const steps = buildHeaderThreadedNoMatchDrillDownActionSteps();
+
+    // The header carries a sku that matches neither primary item, so the
+    // plan must not resolve at all rather than guessing index 0.
+    expect(resolveFoldPlan(steps, SINGLE_SHOT_SPEC)).toBeNull();
   });
 
   it("returns null when the resolved drill-down step is multipart", () => {
