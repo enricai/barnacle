@@ -226,6 +226,43 @@ describe("detectDrillDownFoldPlan", () => {
   });
 });
 
+describe("detectDrillDownFoldPlan — nested grouping array", () => {
+  it("detects a primary results array nested inside an outer grouping array", () => {
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/catalog/sections",
+        requestPostData: null,
+        responseBody: {
+          sections: [
+            {
+              label: "featured",
+              entries: [
+                { entryId: "e1", name: "Widget" },
+                { entryId: "e2", name: "Gadget" },
+              ],
+            },
+          ],
+        },
+        timestamp: "2024-05-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/catalog/entries/e2/details",
+        requestPostData: null,
+        responseBody: { entryId: "e2", description: "A gadget." },
+        timestamp: "2024-05-01T00:00:01Z",
+      }),
+    ];
+
+    const plan = detect(steps);
+
+    expect(plan).not.toBeNull();
+    expect(plan?.primaryArrayPath).toEqual(["sections", "0", "entries"]);
+    expect(plan?.joinFields).toEqual(["entryId"]);
+    expect(plan?.drillStepIndex).toBe(1);
+    expect(plan?.primaryMatchedItemIndex).toBe(1);
+  });
+});
+
 describe("resolveFoldPlan — header-threaded join boundary", () => {
   it("resolves the plan from a declared foldReturn spec when the join is header-threaded", () => {
     const steps = buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinActionSteps();

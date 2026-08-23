@@ -4767,7 +4767,12 @@ function findAllObjectArrayFields(
     const objectItems = value.filter(
       (v): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v)
     );
-    return objectItems.length > 0 ? [{ path, items: objectItems }] : [];
+    const nestedCandidates = objectItems.flatMap((item, index) =>
+      findAllObjectArrayFields(item, [...path, String(index)])
+    );
+    return objectItems.length > 0
+      ? [{ path, items: objectItems }, ...nestedCandidates]
+      : nestedCandidates;
   }
   return Object.entries(value as Record<string, unknown>).flatMap(([key, v]) =>
     findAllObjectArrayFields(v, [...path, key])
