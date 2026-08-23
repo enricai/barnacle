@@ -2356,18 +2356,19 @@ describe("selectEffectiveResponseBody — shape source agrees with the return va
   it("merges by join key, not position: the drill-down response matches the primary item it was built from", () => {
     // The primary page's items are [i-b, i-a] (deliberately not alphabetical)
     // and the two drill-down calls fire in the OPPOSITE order (i-a's call
-    // first). detectDrillDownFoldPlan always keys off the primary array's
-    // FIRST item (i-b) to find its join value, so the fold must land i-b's
-    // OWN drill-down response (fired second, "d-b") onto items[0] — a
-    // positional/index-based merge would wrongly pair items[0] with
-    // whichever drill-down call happened to fire first (i-a's, "d-a").
+    // first). detectDrillDownFoldPlan scans every primary item, so it finds
+    // the earliest later step that threads ANY item's join value — r2,
+    // threading item index 1 (i-a) — and the fold must land i-a's OWN
+    // drill-down response ("d-a") onto ITS item (index 1), not onto items[0]
+    // — a positional/index-based merge would wrongly pair items[0] with
+    // whichever drill-down call happened to fire first.
     const steps = buildMulticallDependentDrillDownActionSteps();
 
     const shapeSource = selectEffectiveResponseBody(true, steps, null);
 
     expect(shapeSource).toEqual({
       totalPages: 2,
-      items: [{ itemId: "i-b", detailId: "d-b" }, { itemId: "i-a" }],
+      items: [{ itemId: "i-b" }, { itemId: "i-a", detailId: "d-a" }],
     });
   });
 });

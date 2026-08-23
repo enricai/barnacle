@@ -4399,12 +4399,14 @@ export function emitMultiStepExecuteHttp(
       // Read at the plan's OWN path rather than re-running the DFS: a
       // flow-declared `resultsPath` (see FoldReturnSpec) can name a different
       // array than findObjectArrayField's first match, and `firstItem` below
-      // decides which captured literal `parameterize` rewrites.
+      // decides which captured literal `parameterize` rewrites — it must be
+      // the item at `primaryMatchedItemIndex`, the one the drill request was
+      // actually built from, not always index 0.
       const primaryItems = objectItemsAtPath(
         primaryStep.capture.responseBody,
         foldPlan.primaryArrayPath
       );
-      const firstItem = primaryItems?.[0];
+      const firstItem = primaryItems?.[foldPlan.primaryMatchedItemIndex];
       if (!firstItem) {
         throw new Error(
           `emitMultiStepExecuteHttp: fold plan primary step ${primaryStep.varName} no longer resolves an object array at ${foldPlan.primaryArrayPath.join(".")} — the fold plan and this emitter have drifted out of sync`
@@ -4793,6 +4795,7 @@ export interface FoldPlan {
   joinFields: string[];
   drillStepIndex: number;
   drillArrayPath: string[];
+  primaryMatchedItemIndex: number;
 }
 
 /** Every string and numeric value present in a capture's outbound request —
@@ -4883,12 +4886,24 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
       // decoy array (e.g. a facets/errors collection) can sit earlier in key
       // order than the real results array, so the candidate actually
       // threading a join field into the drill request is the one this picks,
-      // not the one DFS happens to reach first.
-      const primaryArray = primaryCandidates.find(
-        (candidate) => findThreadedJoinFields(candidate.items[0]!, drill.capture).length > 0
-      );
+      // not the one DFS happens to reach first. Within a candidate array,
+      // every item is searched too — a flow that only ever drilled into a
+      // later item (never the first) must still resolve, so this cannot stop
+      // at items[0].
+      let primaryArray: { path: string[]; items: Record<string, unknown>[] } | undefined;
+      let primaryMatchedItemIndex = -1;
+      let joinFields: string[] = [];
+      for (const candidate of primaryCandidates) {
+        const matchedIndex = candidate.items.findIndex(
+          (item) => findThreadedJoinFields(item, drill.capture).length > 0
+        );
+        if (matchedIndex === -1) continue;
+        primaryArray = candidate;
+        primaryMatchedItemIndex = matchedIndex;
+        joinFields = findThreadedJoinFields(candidate.items[matchedIndex]!, drill.capture);
+        break;
+      }
       if (!primaryArray) continue;
-      const joinFields = findThreadedJoinFields(primaryArray.items[0]!, drill.capture);
 
       const drillCandidates = findAllObjectArrayFields(drill.capture.responseBody);
       // Same disambiguation on the drill side, reusing findThreadedJoinFields
@@ -4899,10 +4914,11 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
       // every real drill array echoes the join value, though (e.g. a
       // `productId`-keyed lookup returning `units[]` with no `productId`
       // field of its own) — when no candidate threads, the DFS-first match
-      // is still the best guess.
+      // is still the best guess. As on the primary side, every item (not
+      // just items[0]) is checked for a thread.
       const drillArray =
-        drillCandidates.find(
-          (candidate) => findThreadedJoinFields(candidate.items[0]!, drill.capture).length > 0
+        drillCandidates.find((candidate) =>
+          candidate.items.some((item) => findThreadedJoinFields(item, drill.capture).length > 0)
         ) ?? drillCandidates[0];
       if (!drillArray) continue;
 
@@ -4912,6 +4928,7 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
         joinFields,
         drillStepIndex: drillIndex,
         drillArrayPath: drillArray.path,
+        primaryMatchedItemIndex,
       };
     }
   }
@@ -5035,6 +5052,43 @@ function objectItemsAtPath(
  * `foldMatches[0]` out of that array, so a plan without one has nothing to
  * merge).
  */
+/** Same value set as {@link collectRequestStringValues}, plus every request
+ * header value — a flow-declared `foldReturn` exists specifically to cover
+ * joins the structural heuristic can't see (most notably a value threaded
+ * through a request HEADER), so matching a spec's `joinFields` against the
+ * drill capture must search headers even though the structural heuristic
+ * deliberately doesn't (see {@link collectRequestStringValues}'s docstring). */
+function collectRequestValuesIncludingHeaders(capture: Capture): Set<string> {
+  const values = collectRequestStringValues(capture);
+  for (const v of Object.values(capture.requestHeaders)) values.add(v);
+  return values;
+}
+
+/** Finds which of `primaryItems` the drill call actually captured, by
+ * checking every field named in `joinFields` against the drill request's
+ * full value set (URL, body, and headers) — the item matches only when ALL
+ * join fields resolve, since a composite join (e.g. `accountId` + `region`)
+ * is only a real match when every field lines up together. Returns `null`
+ * (never a guessed index) when no item fully matches. */
+function resolveSpecMatchedPrimaryItemIndex(
+  primaryItems: readonly Record<string, unknown>[],
+  joinFields: readonly string[],
+  drillCapture: Capture
+): number | null {
+  const requestValues = collectRequestValuesIncludingHeaders(drillCapture);
+  if (requestValues.size === 0) return null;
+  const matchedIndex = primaryItems.findIndex((item) =>
+    joinFields.every((field) => {
+      const value = item[field];
+      return (
+        (typeof value === "string" && value.length > 0 && requestValues.has(value)) ||
+        (typeof value === "number" && requestValues.has(String(value)))
+      );
+    })
+  );
+  return matchedIndex === -1 ? null : matchedIndex;
+}
+
 function buildFoldPlanFromSpec<T extends { capture: Capture }>(
   actions: readonly T[],
   spec: FoldReturnSpec
@@ -5049,9 +5103,11 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
   })();
   if (endpointRx === null) return null;
   for (let primaryStepIndex = 0; primaryStepIndex < actions.length; primaryStepIndex++) {
-    if (!objectItemsAtPath(actions[primaryStepIndex]!.capture.responseBody, primaryArrayPath)) {
-      continue;
-    }
+    const primaryItems = objectItemsAtPath(
+      actions[primaryStepIndex]!.capture.responseBody,
+      primaryArrayPath
+    );
+    if (!primaryItems) continue;
     for (
       let drillStepIndex = primaryStepIndex + 1;
       drillStepIndex < actions.length;
@@ -5067,12 +5123,19 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
         return objectItemsAtPath(drill.capture.responseBody, path) ? path : null;
       })();
       if (drillArrayPath === null) continue;
+      const primaryMatchedItemIndex = resolveSpecMatchedPrimaryItemIndex(
+        primaryItems,
+        spec.joinFields,
+        drill.capture
+      );
+      if (primaryMatchedItemIndex === null) continue;
       return {
         primaryStepIndex,
         primaryArrayPath,
         joinFields: spec.joinFields,
         drillStepIndex,
         drillArrayPath,
+        primaryMatchedItemIndex,
       };
     }
   }
@@ -5121,10 +5184,11 @@ function setAtPath(value: unknown, path: readonly string[], leaf: unknown): unkn
  * The value-level counterpart of the per-item loop-and-merge
  * `emitMultiStepExecuteHttp` emits for a detected {@link FoldPlan}: merges
  * the single captured drill-down sample onto the single captured primary
- * sample's matched array item (the same item `detectDrillDownFoldPlan` built
- * the join key from — always index 0, see its own doc comment), so schema
- * inference walks the SAME shape the folded `executeHttp` actually returns
- * at runtime. Reads both arrays at the plan's OWN paths rather than
+ * sample's matched array item — at `primaryMatchedItemIndex`, the same item
+ * `detectDrillDownFoldPlan` built the join key from, not necessarily
+ * index 0 — so schema inference walks the SAME shape the folded
+ * `executeHttp` actually returns at runtime. Reads both arrays at the plan's
+ * OWN paths rather than
  * re-running `findObjectArrayField`, so a flow-declared `resultsPath` stays
  * authoritative here exactly as it is in the emitter. Falls back to the
  * unmerged primary body if either capture no
@@ -5140,10 +5204,12 @@ function foldResponseBodyForShapeInference<T extends { capture: Capture }>(
   const drillBody = actionSteps[foldPlan.drillStepIndex]!.capture.responseBody;
   const primaryItems = objectItemsAtPath(primaryBody, foldPlan.primaryArrayPath);
   const drillItems = objectItemsAtPath(drillBody, foldPlan.drillArrayPath);
-  const matchedItem = primaryItems?.[0];
+  const matchedItem = primaryItems?.[foldPlan.primaryMatchedItemIndex];
   const drillMatch = drillItems?.[0];
   if (!primaryItems || !matchedItem || !drillMatch) return primaryBody;
-  const foldedItems = [{ ...matchedItem, ...drillMatch }, ...primaryItems.slice(1)];
+  const foldedItems = primaryItems.map((item, index) =>
+    index === foldPlan.primaryMatchedItemIndex ? { ...matchedItem, ...drillMatch } : item
+  );
   return setAtPath(primaryBody, foldPlan.primaryArrayPath, foldedItems);
 }
 

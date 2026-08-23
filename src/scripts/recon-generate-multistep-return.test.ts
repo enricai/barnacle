@@ -4,6 +4,7 @@ import {
   buildMulticallDependentDrillDownActionSteps,
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
+  buildMulticallSingleShotSearchDrillDownCompositeNumericJoinNonFirstItemActionSteps,
   buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps,
   buildMulticallSingleShotSearchDrillDownPathThreadedJoinActionSteps,
   buildStep,
@@ -83,6 +84,28 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     expect(body).toContain("Object.assign(item, foldMatches[0] ?? {});");
     expect(body).toContain("return { data: r0 };");
     expect(body).not.toContain("return { data: r1 };");
+  });
+
+  it("parameterizes the fold request template on the item the drill call actually matched, not items[0]", () => {
+    // The captured drill call's URL query string only ever mentions the
+    // SECOND account (region "eu", accountId 9) — those are the only join
+    // literals that ever appear in the rendered request. Query params reach
+    // `parameterize` as raw captured literals (unlike a top-level JSON body
+    // key, which is already payload-ified to `${payload.field}` before this
+    // fold branch runs), so a branch that reads primaryItems[0] ("us"/7)
+    // as the literal to search-and-replace would find no match in the
+    // rendered URL and silently leave it hardcoded to the one captured
+    // request instead of generifying it per loop iteration.
+    const body = emit(
+      buildMulticallSingleShotSearchDrillDownCompositeNumericJoinNonFirstItemActionSteps()
+    );
+
+    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain("region=${item.region}&accountId=${item.accountId}");
+    expect(body).not.toContain("region=eu");
+    expect(body).not.toContain("accountId=9");
+    expect(body).not.toContain("region=us");
+    expect(body).not.toContain("accountId=7");
   });
 
   it("refuses to emit when a later step threads a produced value out of the fold drill step's own response", () => {
@@ -183,21 +206,39 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
   });
 
   it("resolves the drill step by join key rather than call order across multiple primary items", () => {
-    // The primary page's items are [i-b, i-a] (index 0 is i-b), but i-a's
-    // drill-down (r2) fires BEFORE i-b's (r3). A positional fold would pair
-    // foldItems[0] (i-b) with whichever drill call came first (r2, i-a's) —
-    // this asserts the plan instead resolves to r3, the call whose own
-    // request actually threads i-b's itemId, and that every loop iteration
+    // The primary page's items are [i-b, i-a] (index 0 is i-b); i-a's
+    // drill-down (r2) fires BEFORE i-b's (r3). detectDrillDownFoldPlan now
+    // scans every primary item (not just items[0]) for each candidate later
+    // step, so it finds the earliest step that threads ANY item's join
+    // value — r2, threading item index 1 (i-a) — rather than waiting for a
+    // later step that happens to thread items[0]. Every loop iteration still
     // re-derives the join value from its own `item` rather than the single
     // sampled item the plan was detected from.
     const body = emit(buildMulticallDependentDrillDownActionSteps());
 
     expect(body).toContain(
-      `const r3 = (await httpClient(\`\${payload.BaseUrl}/catalog/item-detail/\``
+      `const r2 = (await httpClient(\`\${payload.BaseUrl}/catalog/item-detail/\``
     );
     expect(body).toContain(`body: \`{"itemId":"\${item.itemId}"}\``);
-    expect(body).not.toContain('"itemId":"i-b"');
+    // r3 (i-b's own drill call) is not part of the fold — it's still
+    // emitted as its own literal step — so only i-a (the value folded away
+    // into the loop) must be absent from the emitted body.
     expect(body).not.toContain('"itemId":"i-a"');
+  });
+
+  it("folds the shape-inference sample onto the matched item, not primaryItems[0]", () => {
+    // Same fixture as above: primary items are [i-b, i-a] and the plan
+    // matches i-a at index 1. selectEffectiveResponseBody must merge the
+    // drill response onto items[1] (i-a), leaving items[0] (i-b) untouched —
+    // not hard-code primaryItems[0] as the shape-inference merge target.
+    const steps = buildMulticallDependentDrillDownActionSteps();
+
+    const shapeSource = selectEffectiveResponseBody(true, steps, null);
+
+    expect(shapeSource).toEqual({
+      totalPages: 2,
+      items: [{ itemId: "i-b" }, { itemId: "i-a", detailId: "d-a" }],
+    });
   });
 
   it("re-derives a numeric-typed join field per loop iteration instead of hard-coding the sampled item's literal", () => {
