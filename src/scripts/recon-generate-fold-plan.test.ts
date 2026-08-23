@@ -3,6 +3,7 @@ import { detectDrillDownFoldPlan } from "@/scripts/recon-generate";
 import {
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
+  buildMulticallSingleShotSearchDrillDownCompositeNumericJoinActionSteps,
   buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps,
   buildMulticallSingleShotSearchDrillDownNumericJoinActionSteps,
   buildStep,
@@ -96,6 +97,14 @@ describe("detectDrillDownFoldPlan", () => {
 
     expect(plan).not.toBeNull();
     expect(plan?.joinFields).toEqual(["accountId"]);
+    expect(plan?.drillArrayPath).toEqual(["transactions"]);
+  });
+
+  it("resolves a composite join key mixing a string field and a numeric field, in item key order", () => {
+    const plan = detect(buildMulticallSingleShotSearchDrillDownCompositeNumericJoinActionSteps());
+
+    expect(plan).not.toBeNull();
+    expect(plan?.joinFields).toEqual(["region", "accountId"]);
     expect(plan?.drillArrayPath).toEqual(["transactions"]);
   });
 });
