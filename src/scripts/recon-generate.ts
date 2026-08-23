@@ -5020,14 +5020,20 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
     ) {
       const drill = actions[drillStepIndex]!;
       if (!endpointRx.test(drill.capture.url)) continue;
-      const drillArray = findObjectArrayField(drill.capture.responseBody);
-      if (!drillArray || drillArray.items.length === 0) continue;
+      const drillArrayPath = ((): string[] | null => {
+        if (spec.drillResultsPath === undefined) {
+          return findObjectArrayField(drill.capture.responseBody)?.path ?? null;
+        }
+        const path = spec.drillResultsPath.split(".");
+        return objectItemsAtPath(drill.capture.responseBody, path) ? path : null;
+      })();
+      if (drillArrayPath === null) continue;
       return {
         primaryStepIndex,
         primaryArrayPath,
         joinFields: spec.joinFields,
         drillStepIndex,
-        drillArrayPath: drillArray.path,
+        drillArrayPath,
       };
     }
   }
