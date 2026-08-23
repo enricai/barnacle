@@ -553,6 +553,11 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
     );
     expect(body).not.toContain('"accountId":"acc-1"');
     expect(body).not.toContain('"region":"us"');
+
+    // The fold match itself must key on BOTH join fields, not just the first.
+    expect(body).toContain(
+      `foldMatches.find((m) => m["accountId"] === item.accountId && m["region"] === item.region)`
+    );
   });
 
   it("emits the per-item loop-and-merge for the decoy fixture without needing a declaration", () => {
