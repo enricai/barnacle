@@ -131,9 +131,11 @@ describe("buildMulticallDependentDrillDownActionSteps", () => {
     expect(plan?.primaryArrayPath).toEqual(["items"]);
     expect(plan?.joinFields).toEqual(["itemId"]);
     expect(plan?.drillArrayPath).toEqual(["details"]);
-    // The primary's first item is "i-b", but its drill-down (r3) fires AFTER
-    // "i-a"'s (r2) — a positional pick would land on r2 (index 2) and pair
-    // the wrong response. The plan must resolve to r3 (index 3) by join key.
-    expect(plan?.drillStepIndex).toBe(3);
+    // Every primary item (not just items[0]) is searched for a threaded join
+    // match, so the plan resolves to the EARLIEST later step that threads
+    // ANY item's join value — r2 (index 2), threading "i-a" — rather than
+    // waiting for a later step that happens to thread items[0]'s "i-b".
+    expect(plan?.drillStepIndex).toBe(2);
+    expect(plan?.primaryMatchedItemIndex).toBe(1);
   });
 });

@@ -4399,12 +4399,14 @@ export function emitMultiStepExecuteHttp(
       // Read at the plan's OWN path rather than re-running the DFS: a
       // flow-declared `resultsPath` (see FoldReturnSpec) can name a different
       // array than findObjectArrayField's first match, and `firstItem` below
-      // decides which captured literal `parameterize` rewrites.
+      // decides which captured literal `parameterize` rewrites — it must be
+      // the item at `primaryMatchedItemIndex`, the one the drill request was
+      // actually built from, not always index 0.
       const primaryItems = objectItemsAtPath(
         primaryStep.capture.responseBody,
         foldPlan.primaryArrayPath
       );
-      const firstItem = primaryItems?.[0];
+      const firstItem = primaryItems?.[foldPlan.primaryMatchedItemIndex];
       if (!firstItem) {
         throw new Error(
           `emitMultiStepExecuteHttp: fold plan primary step ${primaryStep.varName} no longer resolves an object array at ${foldPlan.primaryArrayPath.join(".")} — the fold plan and this emitter have drifted out of sync`
@@ -5137,10 +5139,11 @@ function setAtPath(value: unknown, path: readonly string[], leaf: unknown): unkn
  * The value-level counterpart of the per-item loop-and-merge
  * `emitMultiStepExecuteHttp` emits for a detected {@link FoldPlan}: merges
  * the single captured drill-down sample onto the single captured primary
- * sample's matched array item (the same item `detectDrillDownFoldPlan` built
- * the join key from — always index 0, see its own doc comment), so schema
- * inference walks the SAME shape the folded `executeHttp` actually returns
- * at runtime. Reads both arrays at the plan's OWN paths rather than
+ * sample's matched array item — at `primaryMatchedItemIndex`, the same item
+ * `detectDrillDownFoldPlan` built the join key from, not necessarily
+ * index 0 — so schema inference walks the SAME shape the folded
+ * `executeHttp` actually returns at runtime. Reads both arrays at the plan's
+ * OWN paths rather than
  * re-running `findObjectArrayField`, so a flow-declared `resultsPath` stays
  * authoritative here exactly as it is in the emitter. Falls back to the
  * unmerged primary body if either capture no
@@ -5156,10 +5159,12 @@ function foldResponseBodyForShapeInference<T extends { capture: Capture }>(
   const drillBody = actionSteps[foldPlan.drillStepIndex]!.capture.responseBody;
   const primaryItems = objectItemsAtPath(primaryBody, foldPlan.primaryArrayPath);
   const drillItems = objectItemsAtPath(drillBody, foldPlan.drillArrayPath);
-  const matchedItem = primaryItems?.[0];
+  const matchedItem = primaryItems?.[foldPlan.primaryMatchedItemIndex];
   const drillMatch = drillItems?.[0];
   if (!primaryItems || !matchedItem || !drillMatch) return primaryBody;
-  const foldedItems = [{ ...matchedItem, ...drillMatch }, ...primaryItems.slice(1)];
+  const foldedItems = primaryItems.map((item, index) =>
+    index === foldPlan.primaryMatchedItemIndex ? { ...matchedItem, ...drillMatch } : item
+  );
   return setAtPath(primaryBody, foldPlan.primaryArrayPath, foldedItems);
 }
 
