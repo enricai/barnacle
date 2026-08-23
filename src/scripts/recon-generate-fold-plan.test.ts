@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { detectDrillDownFoldPlan } from "@/scripts/recon-generate";
+import { detectDrillDownFoldPlan, resolveFoldPlan } from "@/scripts/recon-generate";
 import {
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
   buildMulticallSingleShotSearchDrillDownActionSteps,
   buildMulticallSingleShotSearchDrillDownCompositeNumericJoinActionSteps,
   buildMulticallSingleShotSearchDrillDownDrillDecoyActionSteps,
+  buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinActionSteps,
   buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps,
   buildMulticallSingleShotSearchDrillDownNumericJoinActionSteps,
   buildMulticallSingleShotSearchDrillDownPathThreadedJoinActionSteps,
@@ -173,5 +174,35 @@ describe("detectDrillDownFoldPlan", () => {
     ];
 
     expect(detect(steps)).toBeNull();
+  });
+
+  it("returns null when the join value is threaded only via a request header, never the URL or JSON body", () => {
+    const steps = buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinActionSteps();
+
+    // collectRequestStringValues deliberately never scans requestHeaders, so
+    // the structural heuristic has nothing to disambiguate the drill-down
+    // request by even though the join value is right there in the header.
+    expect(detect(steps)).toBeNull();
+    expect(resolveFoldPlan(steps)).toBeNull();
+  });
+});
+
+describe("resolveFoldPlan — header-threaded join boundary", () => {
+  it("resolves the plan from a declared foldReturn spec when the join is header-threaded", () => {
+    const steps = buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinActionSteps();
+
+    expect(
+      resolveFoldPlan(steps, {
+        endpointPattern: "/accounts/detail",
+        resultsPath: "accounts",
+        joinFields: ["accountId"],
+      })
+    ).toEqual({
+      primaryStepIndex: 0,
+      primaryArrayPath: ["accounts"],
+      joinFields: ["accountId"],
+      drillStepIndex: 1,
+      drillArrayPath: ["transactions"],
+    });
   });
 });
