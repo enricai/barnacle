@@ -590,6 +590,39 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
     expect(body).not.toContain("as { errors: Record<string, unknown>[] }");
   });
 
+  it("parameterizes against the primary item the drill request actually matched, not items[0]", () => {
+    // The drill-down's own URL threads sku-b (results[1]) as a query
+    // param, not sku-a (results[0]). Unlike a top-level JSON body key
+    // (payload-ified generically before this fold branch ever runs, see
+    // applyPayloadKeyValueSubstitutions), a URL query param reaches
+    // `parameterize` as the RAW captured literal — so a fold branch that
+    // always read primaryItems[0] would look for sku-a's literal, find no
+    // match in the rendered URL, and silently no-op, re-issuing the exact
+    // sku-b call captured here on every loop iteration instead of
+    // substituting each item's own sku.
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/catalog/search/",
+        requestPostData: '{"page":1}',
+        responseBody: { results: [{ sku: "sku-a" }, { sku: "sku-b" }] },
+        timestamp: "2024-04-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/catalog/pricing/?sku=sku-b",
+        requestPostData: '{"lookup":true}',
+        responseBody: { prices: [{ sku: "sku-b", amount: 24.99 }] },
+        timestamp: "2024-04-01T00:00:01Z",
+      }),
+    ];
+    const body = emit(steps, SINGLE_SHOT_SPEC);
+
+    expect(body).toContain("const foldItems = (r0 as { results: Record<string, unknown>[] })");
+    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain(`/catalog/pricing/?sku=\${item.sku}`);
+    expect(body).not.toContain("sku=sku-a");
+    expect(body).not.toContain("sku=sku-b");
+  });
+
   it("emits foldMatches off the declared drillResultsPath, not the drill side's DFS-first decoy", () => {
     const spec: FoldReturnSpec = {
       endpointPattern: "/catalog/pricing/",
