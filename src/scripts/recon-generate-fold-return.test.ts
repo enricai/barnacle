@@ -560,7 +560,7 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
     // The drill-down's own prices[] holds a decoy ahead of the real match at
     // runtime; the emitted loop must select by the join field's value, not
     // by lifting foldMatches[0] straight off the response.
-    expect(body).toContain(`foldMatches.find((m) => m["sku"] === item.sku)`);
+    expect(body).toContain(`foldMatches.find((m) => String(m["sku"]) === String(item.sku))`);
     expect(body).not.toContain("Object.assign(item, foldMatches[0] ?? {});");
     expect(body).toContain("Object.assign(item, foldMatch ?? {});");
   });
@@ -582,7 +582,7 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
 
     // The fold match itself must key on BOTH join fields, not just the first.
     expect(body).toContain(
-      `foldMatches.find((m) => m["accountId"] === item.accountId && m["region"] === item.region)`
+      `foldMatches.find((m) => String(m["accountId"]) === String(item.accountId) && String(m["region"]) === String(item.region))`
     );
   });
 
