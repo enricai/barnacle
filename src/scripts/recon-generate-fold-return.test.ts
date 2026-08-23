@@ -502,6 +502,18 @@ describe("selectEffectiveResponseBody — flow-declared foldReturn", () => {
       prices: [{ sku: "sku-a", amount: 19.99 }],
     });
   });
+
+  it("folds onto the item the spec-resolved plan actually matched, not primary items[0]", () => {
+    const steps = buildHeaderThreadedNonFirstItemDrillDownActionSteps();
+
+    // The header threads the SECOND primary item's sku ("sku-b"), so
+    // primaryMatchedItemIndex resolves to 1 — the fold must land the
+    // drill-down's amount onto items[1], leaving items[0] untouched, not
+    // hard-code items[0] as the merge target.
+    expect(selectEffectiveResponseBody(true, steps, null, SINGLE_SHOT_SPEC)).toEqual({
+      results: [{ sku: "sku-a" }, { sku: "sku-b", amount: 24.99 }],
+    });
+  });
 });
 
 describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {

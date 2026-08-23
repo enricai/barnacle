@@ -203,6 +203,21 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     expect(body).not.toContain('"itemId":"i-a"');
   });
 
+  it("folds the shape-inference sample onto the matched item, not primaryItems[0]", () => {
+    // Same fixture as above: primary items are [i-b, i-a] and the plan
+    // matches i-a at index 1. selectEffectiveResponseBody must merge the
+    // drill response onto items[1] (i-a), leaving items[0] (i-b) untouched —
+    // not hard-code primaryItems[0] as the shape-inference merge target.
+    const steps = buildMulticallDependentDrillDownActionSteps();
+
+    const shapeSource = selectEffectiveResponseBody(true, steps, null);
+
+    expect(shapeSource).toEqual({
+      totalPages: 2,
+      items: [{ itemId: "i-b" }, { itemId: "i-a", detailId: "d-a" }],
+    });
+  });
+
   it("re-derives a numeric-typed join field per loop iteration instead of hard-coding the sampled item's literal", () => {
     // accountId is a NUMBER on the primary item and is threaded into the
     // drill-down's JSON body as a number literal (not a string) — the
