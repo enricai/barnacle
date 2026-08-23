@@ -135,6 +135,29 @@ describe("parseFoldReturnSpec", () => {
     ).toBeNull();
   });
 
+  it("includes drillResultsPath verbatim when declared", () => {
+    const spec = { ...SINGLE_SHOT_SPEC, drillResultsPath: "detail.results.items" };
+    expect(parseFoldReturnSpec(flowFile({ foldReturn: spec }))).toEqual(spec);
+  });
+
+  it("parses to a spec without drillResultsPath when omitted", () => {
+    expect(parseFoldReturnSpec(flowFile({ foldReturn: SINGLE_SHOT_SPEC }))).not.toHaveProperty(
+      "drillResultsPath"
+    );
+  });
+
+  it("returns null when drillResultsPath is a non-string", () => {
+    expect(
+      parseFoldReturnSpec(flowFile({ foldReturn: { ...SINGLE_SHOT_SPEC, drillResultsPath: 42 } }))
+    ).toBeNull();
+  });
+
+  it("returns null when drillResultsPath is an empty string", () => {
+    expect(
+      parseFoldReturnSpec(flowFile({ foldReturn: { ...SINGLE_SHOT_SPEC, drillResultsPath: "" } }))
+    ).toBeNull();
+  });
+
   it("returns null on malformed JSON", () => {
     expect(parseFoldReturnSpec("{not json")).toBeNull();
   });

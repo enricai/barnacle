@@ -4869,6 +4869,11 @@ export interface FoldReturnSpec {
   /** Dot-separated JSON path to the primary capture's result array the
    * drill-down's response folds onto, e.g. `"orderSearch.results.orders"`. */
   resultsPath: string;
+  /** Dot-separated JSON path to the drill-down's OWN per-item results array,
+   * for cases where the drill-down response nests its results under a key
+   * rather than being the array itself, e.g. `"orderDetail.results.items"`.
+   * Omitted (default) treats the drill-down's response as the array. */
+  drillResultsPath?: string;
   /** Names of the fields — present on both the primary array's items and the
    * drill-down's response — that folded items are matched on, in order. */
   joinFields: string[];
@@ -4897,21 +4902,29 @@ export function parseFoldReturnSpec(flowFileContents: string): FoldReturnSpec | 
     if (foldReturn === undefined || foldReturn === null || typeof foldReturn !== "object") {
       return null;
     }
-    const { endpointPattern, resultsPath, joinFields } = foldReturn as {
+    const { endpointPattern, resultsPath, drillResultsPath, joinFields } = foldReturn as {
       endpointPattern?: unknown;
       resultsPath?: unknown;
+      drillResultsPath?: unknown;
       joinFields?: unknown;
     };
     if (
       typeof endpointPattern !== "string" ||
       typeof resultsPath !== "string" ||
+      (drillResultsPath !== undefined &&
+        (typeof drillResultsPath !== "string" || drillResultsPath.length === 0)) ||
       !Array.isArray(joinFields) ||
       joinFields.length === 0 ||
       !joinFields.every((f): f is string => typeof f === "string" && f.length > 0)
     ) {
       return null;
     }
-    return { endpointPattern, resultsPath, joinFields };
+    return {
+      endpointPattern,
+      resultsPath,
+      ...(drillResultsPath !== undefined ? { drillResultsPath } : {}),
+      joinFields,
+    };
   } catch {
     return null;
   }
