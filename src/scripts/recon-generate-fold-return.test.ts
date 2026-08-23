@@ -14,6 +14,37 @@ import {
   type MulticallFixtureStep,
 } from "@/scripts/recon-generate-multicall-fixture";
 
+/** Both sides of {@link buildMulticallSingleShotSearchDrillDownActionSteps}'s
+ * decoy at once: the primary response's decoy `facets[]` array still outranks
+ * `results[]` in `findObjectArrayField`'s DFS (so `detectDrillDownFoldPlan`'s
+ * structural heuristic can't thread a join field off a decoy item and finds
+ * no plan at all, letting resolution fall through to the declared spec), AND
+ * the drill-down's own response carries a decoy `errors[]` array ahead of the
+ * real per-item `details[]` array — isolating `buildFoldPlanFromSpec`'s
+ * drill-side resolution as the only thing that can still get this right. */
+function buildDoubleDecoyDrillDownActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: "https://api.example.com/catalog/search/",
+      requestPostData: '{"page":1}',
+      responseBody: {
+        facets: [{ name: "brand" }],
+        results: [{ sku: "sku-a" }, { sku: "sku-b" }],
+      },
+      timestamp: "2024-04-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: "https://api.example.com/catalog/pricing/",
+      requestPostData: '{"sku":"sku-a"}',
+      responseBody: {
+        errors: [{ code: "none" }],
+        details: [{ sku: "sku-a", price: 19.99 }],
+      },
+      timestamp: "2024-04-01T00:00:01Z",
+    }),
+  ];
+}
+
 /** A single-shot search + drill-down pair joined on two fields (`accountId`
  * and `region`) rather than one, so composite `joinFields` declarations have
  * a fixture to resolve and emit against. */
@@ -242,6 +273,53 @@ describe("resolveFoldPlan", () => {
       drillStepIndex: 1,
       drillArrayPath: ["details"],
     });
+  });
+
+  it("honours a declared drillResultsPath over findObjectArrayField's DFS first match on the drill side", () => {
+    const steps = buildDoubleDecoyDrillDownActionSteps();
+    const spec: FoldReturnSpec = {
+      endpointPattern: "/catalog/pricing/",
+      resultsPath: "results",
+      drillResultsPath: "details",
+      joinFields: ["sku"],
+    };
+
+    // The drill response's first object array by DFS is the decoy `errors[]`;
+    // without drillResultsPath the DFS match wins and there is nothing to
+    // fold `errors[]` items onto by `sku`, so the plan must be built from the
+    // declared path instead.
+    expect(resolveFoldPlan(steps, spec)).toEqual({
+      primaryStepIndex: 0,
+      primaryArrayPath: ["results"],
+      joinFields: ["sku"],
+      drillStepIndex: 1,
+      drillArrayPath: ["details"],
+    });
+  });
+
+  it("falls back to findObjectArrayField's DFS on the drill side when drillResultsPath is undeclared", () => {
+    const steps = buildDoubleDecoyDrillDownActionSteps();
+    const spec: FoldReturnSpec = {
+      endpointPattern: "/catalog/pricing/",
+      resultsPath: "results",
+      joinFields: ["sku"],
+    };
+
+    // Preserves today's behavior for specs that don't declare
+    // drillResultsPath: the DFS first match (the decoy `errors[]`) is used.
+    expect(resolveFoldPlan(steps, spec)?.drillArrayPath).toEqual(["errors"]);
+  });
+
+  it("returns null when the declared drillResultsPath resolves to no non-empty object array", () => {
+    const steps = buildDoubleDecoyDrillDownActionSteps();
+    const spec: FoldReturnSpec = {
+      endpointPattern: "/catalog/pricing/",
+      resultsPath: "results",
+      drillResultsPath: "nothing",
+      joinFields: ["sku"],
+    };
+
+    expect(resolveFoldPlan(steps, spec)).toBeNull();
   });
 
   it("returns null when the resolved drill-down step is multipart", () => {
