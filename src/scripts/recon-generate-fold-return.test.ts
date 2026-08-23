@@ -280,9 +280,13 @@ describe("resolveFoldPlan", () => {
     // key order than `results[]`, but only `results[]`'s items thread the
     // `sku` join value into the drill-down's request, so the structural
     // heuristic alone resolves the real array — no foldReturn needed.
-    const plan = resolveFoldPlan(steps);
-    expect(plan?.primaryArrayPath).toEqual(["results"]);
-    expect(plan?.primaryArrayPath).not.toEqual(["facets"]);
+    expect(resolveFoldPlan(steps)).toEqual({
+      primaryStepIndex: 0,
+      primaryArrayPath: ["results"],
+      joinFields: ["sku"],
+      drillStepIndex: 1,
+      drillArrayPath: ["prices"],
+    });
   });
 
   it("prefers the structural heuristic's plan over a foldReturn spec when both would resolve", () => {
@@ -336,31 +340,20 @@ describe("resolveFoldPlan", () => {
     });
   });
 
-  it("honours a declared drillResultsPath over findObjectArrayField's DFS first match on the drill side", () => {
+  it("resolves the real per-item array over an earlier decoy on the drill side without needing a declaration", () => {
     const steps = buildDoubleDecoyDrillDownActionSteps();
-    const spec: FoldReturnSpec = {
-      endpointPattern: "/catalog/pricing/",
-      resultsPath: "results",
-      drillResultsPath: "details",
-      joinFields: ["sku"],
-    };
 
-    // The drill response's first object array by DFS is the decoy `errors[]`;
-    // without drillResultsPath the DFS match wins and there is nothing to
-    // fold `errors[]` items onto by `sku`, so the plan must be built from the
-    // declared path instead.
-    const plan = resolveFoldPlan(steps, spec);
-    expect(plan).toEqual({
+    // The drill response's first object array by DFS is the decoy `errors[]`,
+    // but only `details[]`'s items thread the `sku` join value into the
+    // drill-down's own request, so the structural heuristic alone resolves
+    // the real array on both sides — no foldReturn needed.
+    expect(resolveFoldPlan(steps)).toEqual({
       primaryStepIndex: 0,
       primaryArrayPath: ["results"],
       joinFields: ["sku"],
       drillStepIndex: 1,
       drillArrayPath: ["details"],
     });
-
-    // Same discipline as the primary-side decoy test: name the decoy the
-    // resolved path must NOT be, not just the path it must equal.
-    expect(plan?.drillArrayPath).not.toEqual(["errors"]);
   });
 
   it("falls back to findObjectArrayField's DFS on the drill side when drillResultsPath is undeclared", () => {
