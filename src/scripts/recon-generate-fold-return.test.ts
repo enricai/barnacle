@@ -288,13 +288,18 @@ describe("resolveFoldPlan", () => {
     // without drillResultsPath the DFS match wins and there is nothing to
     // fold `errors[]` items onto by `sku`, so the plan must be built from the
     // declared path instead.
-    expect(resolveFoldPlan(steps, spec)).toEqual({
+    const plan = resolveFoldPlan(steps, spec);
+    expect(plan).toEqual({
       primaryStepIndex: 0,
       primaryArrayPath: ["results"],
       joinFields: ["sku"],
       drillStepIndex: 1,
       drillArrayPath: ["details"],
     });
+
+    // Same discipline as the primary-side decoy test: name the decoy the
+    // resolved path must NOT be, not just the path it must equal.
+    expect(plan?.drillArrayPath).not.toEqual(["errors"]);
   });
 
   it("falls back to findObjectArrayField's DFS on the drill side when drillResultsPath is undeclared", () => {
