@@ -4434,8 +4434,14 @@ export function emitMultiStepExecuteHttp(
           const replacement = `\${${joinAccessor(field)}}`;
           const withAccessorSwapped = acc.split(`\${payload.${field}}`).join(replacement);
           const value = firstItem[field];
-          return typeof value === "string" && value.length > 0
-            ? replaceWholeValue(withAccessorSwapped, value, replacement)
+          const stringValue =
+            typeof value === "string" && value.length > 0
+              ? value
+              : typeof value === "number"
+                ? String(value)
+                : null;
+          return stringValue !== null
+            ? replaceWholeValue(withAccessorSwapped, stringValue, replacement)
             : withAccessorSwapped;
         }, text);
 
@@ -4778,9 +4784,12 @@ export interface FoldPlan {
   drillArrayPath: string[];
 }
 
-/** Every string value present in a capture's outbound request — its URL
- * query parameters and its JSON body's string leaves — the set a drill-down
- * request's threaded join value must appear in. */
+/** Every string and numeric value present in a capture's outbound request —
+ * its URL query parameters (always strings) and its JSON body's string and
+ * numeric leaves (numeric leaves stringified) — the set a drill-down
+ * request's threaded join value must appear in. Numeric leaves are included
+ * because a join key is just as often a numeric id (threaded as a query
+ * param string or a JSON body number literal) as a string one. */
 function collectRequestStringValues(capture: Capture): Set<string> {
   const values = new Set<string>();
   try {
@@ -4789,12 +4798,26 @@ function collectRequestStringValues(capture: Capture): Set<string> {
     // Relative or malformed URL — no query params to contribute.
   }
   for (const v of jsonBodyLeafValues(capture.requestPostData) ?? []) values.add(v);
+  const parsedBody = ((): unknown => {
+    try {
+      return typeof capture.requestPostData === "string" && capture.requestPostData.length > 0
+        ? JSON.parse(capture.requestPostData)
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  })();
+  if (parsedBody !== undefined) {
+    for (const { value } of walkAllPrimitiveLeaves(parsedBody)) {
+      if (typeof value === "number") values.add(String(value));
+    }
+  }
   return values;
 }
 
 /**
- * Finds the ordered list of an array item's string field names whose values
- * are threaded into `drillCapture`'s outbound request — the join key a
+ * Finds the ordered list of an array item's string/numeric field names whose
+ * values are threaded into `drillCapture`'s outbound request — the join key a
  * dependent drill-down call was built from. Field order follows the item's
  * own key order, so a composite join (e.g. `accountId` + `region`) comes
  * out in the same order the primary response declares them, not sorted.
@@ -4804,7 +4827,11 @@ function findThreadedJoinFields(item: Record<string, unknown>, drillCapture: Cap
   const requestValues = collectRequestStringValues(drillCapture);
   if (requestValues.size === 0) return [];
   return Object.entries(item)
-    .filter(([, v]) => typeof v === "string" && v.length > 0 && requestValues.has(v))
+    .filter(
+      ([, v]) =>
+        (typeof v === "string" && v.length > 0 && requestValues.has(v)) ||
+        (typeof v === "number" && requestValues.has(String(v)))
+    )
     .map(([k]) => k);
 }
 

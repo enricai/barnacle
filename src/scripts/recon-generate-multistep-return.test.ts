@@ -184,6 +184,34 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     expect(body).not.toContain('"itemId":"i-a"');
   });
 
+  it("re-derives a numeric-typed join field per loop iteration instead of hard-coding the sampled item's literal", () => {
+    // accountId is a NUMBER on the primary item and is threaded into the
+    // drill-down's JSON body as a number literal (not a string) — the
+    // emitted loop must substitute `${item.accountId}` for the literal `42`
+    // on every iteration, not leave `42` hard-coded from the single sampled
+    // item detectDrillDownFoldPlan used to find the plan.
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/accounts/search",
+        requestPostData: JSON.stringify({ page: 1 }),
+        responseBody: { accounts: [{ accountId: 42, name: "Acme" }] },
+        timestamp: "2024-01-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/accounts/detail",
+        requestPostData: JSON.stringify({ accountId: 42 }),
+        responseBody: { transactions: [{ transactionId: "t1" }] },
+        timestamp: "2024-01-01T00:00:01Z",
+      }),
+    ];
+
+    const body = emit(steps);
+
+    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain(`body: \`{"accountId":\${item.accountId}}\``);
+    expect(body).not.toContain('"accountId":42');
+  });
+
   it("leaves the primary results unmerged, without crashing, when no later step threads the primary item's join key", () => {
     // Same primary page as the join-key test, but both later item-detail
     // calls carry a request body value that doesn't match either primary
