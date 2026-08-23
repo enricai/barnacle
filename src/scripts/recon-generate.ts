@@ -4434,8 +4434,14 @@ export function emitMultiStepExecuteHttp(
           const replacement = `\${${joinAccessor(field)}}`;
           const withAccessorSwapped = acc.split(`\${payload.${field}}`).join(replacement);
           const value = firstItem[field];
-          return typeof value === "string" && value.length > 0
-            ? replaceWholeValue(withAccessorSwapped, value, replacement)
+          const stringValue =
+            typeof value === "string" && value.length > 0
+              ? value
+              : typeof value === "number"
+                ? String(value)
+                : null;
+          return stringValue !== null
+            ? replaceWholeValue(withAccessorSwapped, stringValue, replacement)
             : withAccessorSwapped;
         }, text);
 
@@ -4778,9 +4784,12 @@ export interface FoldPlan {
   drillArrayPath: string[];
 }
 
-/** Every string value present in a capture's outbound request — its URL
- * query parameters and its JSON body's string leaves — the set a drill-down
- * request's threaded join value must appear in. */
+/** Every string and numeric value present in a capture's outbound request —
+ * its URL query parameters (always strings) and its JSON body's string and
+ * numeric leaves (numeric leaves stringified) — the set a drill-down
+ * request's threaded join value must appear in. Numeric leaves are included
+ * because a join key is just as often a numeric id (threaded as a query
+ * param string or a JSON body number literal) as a string one. */
 function collectRequestStringValues(capture: Capture): Set<string> {
   const values = new Set<string>();
   try {
@@ -4789,12 +4798,26 @@ function collectRequestStringValues(capture: Capture): Set<string> {
     // Relative or malformed URL — no query params to contribute.
   }
   for (const v of jsonBodyLeafValues(capture.requestPostData) ?? []) values.add(v);
+  const parsedBody = ((): unknown => {
+    try {
+      return typeof capture.requestPostData === "string" && capture.requestPostData.length > 0
+        ? JSON.parse(capture.requestPostData)
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  })();
+  if (parsedBody !== undefined) {
+    for (const { value } of walkAllPrimitiveLeaves(parsedBody)) {
+      if (typeof value === "number") values.add(String(value));
+    }
+  }
   return values;
 }
 
 /**
- * Finds the ordered list of an array item's string field names whose values
- * are threaded into `drillCapture`'s outbound request — the join key a
+ * Finds the ordered list of an array item's string/numeric field names whose
+ * values are threaded into `drillCapture`'s outbound request — the join key a
  * dependent drill-down call was built from. Field order follows the item's
  * own key order, so a composite join (e.g. `accountId` + `region`) comes
  * out in the same order the primary response declares them, not sorted.
@@ -4804,7 +4827,11 @@ function findThreadedJoinFields(item: Record<string, unknown>, drillCapture: Cap
   const requestValues = collectRequestStringValues(drillCapture);
   if (requestValues.size === 0) return [];
   return Object.entries(item)
-    .filter(([, v]) => typeof v === "string" && v.length > 0 && requestValues.has(v))
+    .filter(
+      ([, v]) =>
+        (typeof v === "string" && v.length > 0 && requestValues.has(v)) ||
+        (typeof v === "number" && requestValues.has(String(v)))
+    )
     .map(([k]) => k);
 }
 
@@ -4869,6 +4896,11 @@ export interface FoldReturnSpec {
   /** Dot-separated JSON path to the primary capture's result array the
    * drill-down's response folds onto, e.g. `"orderSearch.results.orders"`. */
   resultsPath: string;
+  /** Dot-separated JSON path to the drill-down's OWN per-item results array,
+   * for cases where the drill-down response nests its results under a key
+   * rather than being the array itself, e.g. `"orderDetail.results.items"`.
+   * Omitted (default) treats the drill-down's response as the array. */
+  drillResultsPath?: string;
   /** Names of the fields — present on both the primary array's items and the
    * drill-down's response — that folded items are matched on, in order. */
   joinFields: string[];
@@ -4897,21 +4929,29 @@ export function parseFoldReturnSpec(flowFileContents: string): FoldReturnSpec | 
     if (foldReturn === undefined || foldReturn === null || typeof foldReturn !== "object") {
       return null;
     }
-    const { endpointPattern, resultsPath, joinFields } = foldReturn as {
+    const { endpointPattern, resultsPath, drillResultsPath, joinFields } = foldReturn as {
       endpointPattern?: unknown;
       resultsPath?: unknown;
+      drillResultsPath?: unknown;
       joinFields?: unknown;
     };
     if (
       typeof endpointPattern !== "string" ||
       typeof resultsPath !== "string" ||
+      (drillResultsPath !== undefined &&
+        (typeof drillResultsPath !== "string" || drillResultsPath.length === 0)) ||
       !Array.isArray(joinFields) ||
       joinFields.length === 0 ||
       !joinFields.every((f): f is string => typeof f === "string" && f.length > 0)
     ) {
       return null;
     }
-    return { endpointPattern, resultsPath, joinFields };
+    return {
+      endpointPattern,
+      resultsPath,
+      ...(drillResultsPath !== undefined ? { drillResultsPath } : {}),
+      joinFields,
+    };
   } catch {
     return null;
   }
@@ -4980,14 +5020,20 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
     ) {
       const drill = actions[drillStepIndex]!;
       if (!endpointRx.test(drill.capture.url)) continue;
-      const drillArray = findObjectArrayField(drill.capture.responseBody);
-      if (!drillArray || drillArray.items.length === 0) continue;
+      const drillArrayPath = ((): string[] | null => {
+        if (spec.drillResultsPath === undefined) {
+          return findObjectArrayField(drill.capture.responseBody)?.path ?? null;
+        }
+        const path = spec.drillResultsPath.split(".");
+        return objectItemsAtPath(drill.capture.responseBody, path) ? path : null;
+      })();
+      if (drillArrayPath === null) continue;
       return {
         primaryStepIndex,
         primaryArrayPath,
         joinFields: spec.joinFields,
         drillStepIndex,
-        drillArrayPath: drillArray.path,
+        drillArrayPath,
       };
     }
   }

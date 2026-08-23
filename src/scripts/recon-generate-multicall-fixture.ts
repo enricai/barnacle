@@ -268,6 +268,41 @@ export function buildMulticallSingleShotSearchDrillDownActionSteps(): MulticallF
 }
 
 /**
+ * A search → per-item drill-down flow whose search response is unambiguous
+ * (a single `results[]` array, no decoy), but whose DRILL step's response
+ * carries a decoy `errors[]` array ahead of the real per-item `details[]`
+ * array. `findObjectArrayField`'s DFS first-match lands on `errors[]`
+ * instead of `details[]` when resolving the drill side of the fold, so a
+ * `foldReturn` declaration that only names the primary's `resultsPath`
+ * (see {@link FoldReturnSpec}) cannot fix this — the gap is on the drill
+ * side, not the primary side. Proves a drill-side results-path declaration
+ * (as opposed to {@link buildMulticallSingleShotSearchDrillDownActionSteps}'s
+ * primary-side decoy) is what a `drillResultsPath`-style flow declaration
+ * exists to reach.
+ */
+export function buildMulticallSingleShotSearchDrillDownDrillDecoyActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        results: [{ sku: "sku-a" }, { sku: "sku-b" }],
+      },
+      timestamp: "2024-04-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_PRICING_URL,
+      requestPostData: '{"sku":"sku-a"}',
+      responseBody: {
+        errors: [{ code: "none" }],
+        details: [{ sku: "sku-a", price: 19.99 }],
+      },
+      timestamp: "2024-04-01T00:00:01Z",
+    }),
+  ];
+}
+
+/**
  * A decoy-free sibling of {@link buildMulticallSingleShotSearchDrillDownActionSteps}:
  * the search endpoint still fires exactly once, but `results[]` is the sole
  * object-array field in its response, so `findObjectArrayField`'s DFS
@@ -289,6 +324,61 @@ export function buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps(): Mul
       requestPostData: '{"sku":"sku-a"}',
       responseBody: { prices: [{ sku: "sku-a", amount: 19.99 }] },
       timestamp: "2024-04-01T00:00:01Z",
+    }),
+  ];
+}
+
+const ACCOUNT_SEARCH_URL = "https://api.example.com/accounts/search";
+const ACCOUNT_DETAIL_URL = "https://api.example.com/accounts/detail";
+
+/**
+ * A single-shot search whose primary item join field (`accountId`) is a
+ * NUMBER rather than a string, threaded into the drill-down call via a URL
+ * query parameter (`?accountId=42`). `URLSearchParams` always stringifies its
+ * values, so the request-collection side already captures `"42"` as a
+ * string; the item side of the join is what must widen to accept a numeric
+ * leaf for {@link detectDrillDownFoldPlan} to resolve `accountId` as a join
+ * field at all.
+ */
+export function buildMulticallSingleShotSearchDrillDownNumericJoinActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: ACCOUNT_SEARCH_URL,
+      requestPostData: JSON.stringify({ page: 1 }),
+      responseBody: { accounts: [{ accountId: 42, name: "Acme" }] },
+      timestamp: "2024-05-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: `${ACCOUNT_DETAIL_URL}?accountId=42`,
+      requestPostData: null,
+      responseBody: { transactions: [{ transactionId: "t1" }] },
+      timestamp: "2024-05-01T00:00:01Z",
+    }),
+  ];
+}
+
+/**
+ * A single-shot search whose primary items carry a COMPOSITE join key mixing
+ * a string field (`region`) and a numeric field (`accountId`), both threaded
+ * into the drill-down request. `findThreadedJoinFields` filters candidate
+ * fields independently per entry, so a numeric field dropped alongside a
+ * present string field would silently degrade the fold to a partial
+ * (string-only) join key rather than failing outright — this fixture proves
+ * both survive together, in the item's own key order.
+ */
+export function buildMulticallSingleShotSearchDrillDownCompositeNumericJoinActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: ACCOUNT_SEARCH_URL,
+      requestPostData: JSON.stringify({ page: 1 }),
+      responseBody: { accounts: [{ region: "us", accountId: 7, name: "Acme" }] },
+      timestamp: "2024-06-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: `${ACCOUNT_DETAIL_URL}?region=us&accountId=7`,
+      requestPostData: null,
+      responseBody: { transactions: [{ transactionId: "t1" }] },
+      timestamp: "2024-06-01T00:00:01Z",
     }),
   ];
 }

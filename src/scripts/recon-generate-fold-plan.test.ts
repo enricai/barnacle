@@ -3,7 +3,9 @@ import { detectDrillDownFoldPlan } from "@/scripts/recon-generate";
 import {
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
+  buildMulticallSingleShotSearchDrillDownCompositeNumericJoinActionSteps,
   buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps,
+  buildMulticallSingleShotSearchDrillDownNumericJoinActionSteps,
   buildStep,
   type MulticallFixtureStep,
 } from "@/scripts/recon-generate-multicall-fixture";
@@ -65,5 +67,44 @@ describe("detectDrillDownFoldPlan", () => {
     expect(plan?.joinFields).toEqual(["sku"]);
     expect(plan?.drillStepIndex).toBe(1);
     expect(plan?.drillArrayPath).toEqual(["prices"]);
+  });
+
+  it("resolves a numeric-typed join field threaded via a URL query param", () => {
+    const plan = detect(buildMulticallSingleShotSearchDrillDownNumericJoinActionSteps());
+
+    expect(plan).not.toBeNull();
+    expect(plan?.joinFields).toEqual(["accountId"]);
+    expect(plan?.drillArrayPath).toEqual(["transactions"]);
+  });
+
+  it("resolves a numeric-typed join field threaded via a JSON body literal", () => {
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/accounts/search",
+        requestPostData: JSON.stringify({ page: 1 }),
+        responseBody: { accounts: [{ accountId: 42, name: "Acme" }] },
+        timestamp: "2024-01-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/accounts/detail",
+        requestPostData: JSON.stringify({ accountId: 42 }),
+        responseBody: { transactions: [{ transactionId: "t1" }] },
+        timestamp: "2024-01-01T00:00:01Z",
+      }),
+    ];
+
+    const plan = detect(steps);
+
+    expect(plan).not.toBeNull();
+    expect(plan?.joinFields).toEqual(["accountId"]);
+    expect(plan?.drillArrayPath).toEqual(["transactions"]);
+  });
+
+  it("resolves a composite join key mixing a string field and a numeric field, in item key order", () => {
+    const plan = detect(buildMulticallSingleShotSearchDrillDownCompositeNumericJoinActionSteps());
+
+    expect(plan).not.toBeNull();
+    expect(plan?.joinFields).toEqual(["region", "accountId"]);
+    expect(plan?.drillArrayPath).toEqual(["transactions"]);
   });
 });

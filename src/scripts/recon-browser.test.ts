@@ -5395,6 +5395,74 @@ describe("recon-browser/RECON_FLOW_FILE_SCHEMA — foldReturn", () => {
 
     expect(result.success).toBe(false);
   });
+
+  it("accepts a foldReturn with drillResultsPath and carries it through unchanged", () => {
+    const result = RECON_FLOW_FILE_SCHEMA.safeParse({
+      steps: ["Click Search"],
+      foldReturn: {
+        endpointPattern: "^https://example\\.com/api/drilldown$",
+        resultsPath: "orderSearch.results.orders",
+        drillResultsPath: "detail.results.items",
+        joinFields: ["orderId"],
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(Array.isArray(result.data)).toBe(false);
+    if (Array.isArray(result.data)) return;
+    expect(result.data.foldReturn).toEqual({
+      endpointPattern: "^https://example\\.com/api/drilldown$",
+      resultsPath: "orderSearch.results.orders",
+      drillResultsPath: "detail.results.items",
+      joinFields: ["orderId"],
+    });
+  });
+
+  it("accepts a foldReturn without drillResultsPath (optional field)", () => {
+    const result = RECON_FLOW_FILE_SCHEMA.safeParse({
+      steps: ["Click Search"],
+      foldReturn: {
+        endpointPattern: "^https://example\\.com/api/drilldown$",
+        resultsPath: "orderSearch.results.orders",
+        joinFields: ["orderId"],
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(Array.isArray(result.data)).toBe(false);
+    if (Array.isArray(result.data)) return;
+    expect(result.data.foldReturn?.drillResultsPath).toBeUndefined();
+  });
+
+  it("rejects a foldReturn with a non-string drillResultsPath", () => {
+    const result = RECON_FLOW_FILE_SCHEMA.safeParse({
+      steps: ["Click Search"],
+      foldReturn: {
+        endpointPattern: "^https://example\\.com/api/drilldown$",
+        resultsPath: "orderSearch.results.orders",
+        drillResultsPath: 42,
+        joinFields: ["orderId"],
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a foldReturn with an empty-string drillResultsPath", () => {
+    const result = RECON_FLOW_FILE_SCHEMA.safeParse({
+      steps: ["Click Search"],
+      foldReturn: {
+        endpointPattern: "^https://example\\.com/api/drilldown$",
+        resultsPath: "orderSearch.results.orders",
+        drillResultsPath: "",
+        joinFields: ["orderId"],
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
 });
 
 describe("recon-browser/parseCli — frameSelector", () => {
