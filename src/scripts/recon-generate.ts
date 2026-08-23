@@ -4469,7 +4469,7 @@ export function emitMultiStepExecuteHttp(
         `      })) as Record<string, unknown>;`,
         `      const foldMatches = (${step.varName} as ${drillArrType})${drillArrAccessor};`,
         `      const foldMatch = foldMatches.find((m) => ${foldPlan.joinFields
-          .map((f) => `m[${JSON.stringify(f)}] === ${joinAccessor(f)}`)
+          .map((f) => `String(m[${JSON.stringify(f)}]) === String(${joinAccessor(f)})`)
           .join(" && ")}) ?? foldMatches[0];`,
         `      Object.assign(item, foldMatch ?? {});`,
         `    }`,
@@ -4767,7 +4767,12 @@ function findAllObjectArrayFields(
     const objectItems = value.filter(
       (v): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v)
     );
-    return objectItems.length > 0 ? [{ path, items: objectItems }] : [];
+    const nestedCandidates = objectItems.flatMap((item, index) =>
+      findAllObjectArrayFields(item, [...path, String(index)])
+    );
+    return objectItems.length > 0
+      ? [{ path, items: objectItems }, ...nestedCandidates]
+      : nestedCandidates;
   }
   return Object.entries(value as Record<string, unknown>).flatMap(([key, v]) =>
     findAllObjectArrayFields(v, [...path, key])
@@ -5177,8 +5182,13 @@ export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boole
  * same body, so that should never happen outside a drifted caller. */
 function setAtPath(value: unknown, path: readonly string[], leaf: unknown): unknown {
   if (path.length === 0) return leaf;
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
+  if (value === null || typeof value !== "object") return value;
   const [key, ...rest] = path as [string, ...string[]];
+  if (Array.isArray(value)) {
+    const index = Number(key);
+    if (!Number.isInteger(index) || index < 0 || index >= value.length) return value;
+    return value.map((item, i) => (i === index ? setAtPath(item, rest, leaf) : item));
+  }
   const obj = value as Record<string, unknown>;
   return { ...obj, [key]: setAtPath(obj[key], rest, leaf) };
 }
@@ -5209,8 +5219,9 @@ function foldResponseBodyForShapeInference<T extends { capture: Capture }>(
   const drillItems = objectItemsAtPath(drillBody, foldPlan.drillArrayPath);
   const matchedItem = primaryItems?.[foldPlan.primaryMatchedItemIndex];
   const drillMatch =
-    drillItems?.find((d) => foldPlan.joinFields.every((f) => d[f] === matchedItem?.[f])) ??
-    drillItems?.[0];
+    drillItems?.find((d) =>
+      foldPlan.joinFields.every((f) => String(d[f]) === String(matchedItem?.[f]))
+    ) ?? drillItems?.[0];
   if (!primaryItems || !matchedItem || !drillMatch) return primaryBody;
   const foldedItems = primaryItems.map((item, index) =>
     index === foldPlan.primaryMatchedItemIndex ? { ...matchedItem, ...drillMatch } : item
