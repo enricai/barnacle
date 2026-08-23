@@ -6,6 +6,7 @@ import {
 } from "@/scripts/recon-generate";
 import {
   buildMulticallHeterogeneousActionStepsWithDrillDown,
+  buildMulticallSingleShotSearchDrillDownNumericJoinActionSteps,
   type MulticallFixtureStep,
 } from "@/scripts/recon-generate-multicall-fixture";
 
@@ -110,5 +111,20 @@ describe("recon-generate — G1 shape-inference target agrees with the return ta
 
     expect(source).not.toContain("const TestSiteResponseSchema = z.unknown();");
     expect(source).toContain("totalAvailableListings");
+  });
+
+  it("folds a numeric-joined drill-down's sample onto the primary item, mirroring emitMultiStepExecuteHttp's own merge", () => {
+    // Mirrors "folds a single-shot search's drill-down onto its results with
+    // no foldReturn declaration" (recon-generate-multistep-return.test.ts:51-68),
+    // but with a NUMBER join field (accountId) resolved via a URL query
+    // param instead of a string one, so this exercises the fold end-to-end
+    // through selectEffectiveResponseBody rather than re-testing detection.
+    const numericJoinSteps = buildMulticallSingleShotSearchDrillDownNumericJoinActionSteps();
+
+    const effectiveResponseBody = selectEffectiveResponseBody(true, numericJoinSteps, null);
+
+    expect(effectiveResponseBody).toEqual({
+      accounts: [{ accountId: 42, name: "Acme", transactionId: "t1" }],
+    });
   });
 });
