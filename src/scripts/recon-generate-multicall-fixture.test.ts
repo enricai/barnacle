@@ -206,9 +206,10 @@ describe("buildMulticallSingleShotSearchDrillDownMultiMatchActionSteps", () => {
   it("only the SECOND drill item's sku matches the primary result's sku", () => {
     const primaryBody = steps[0]?.capture.responseBody as { results: { sku: string }[] };
     const primarySku = primaryBody.results[0]?.sku;
-    const [firstDrillItem, secondDrillItem] = (
-      steps[1]?.capture.responseBody as { prices: { sku: string; amount: number }[] }
-    ).prices;
+    const drillBody = steps[1]?.capture.responseBody as {
+      prices: { sku: string; amount: number }[];
+    };
+    const [firstDrillItem, secondDrillItem] = drillBody.prices;
 
     expect(firstDrillItem).toBeDefined();
     expect(secondDrillItem).toBeDefined();
