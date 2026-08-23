@@ -405,4 +405,29 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
     expect(body).not.toContain("const foldItems");
     expect(body).toContain("return { data: r1 };");
   });
+
+  it("emits foldMatches off the declared drillResultsPath, not the drill side's DFS-first decoy", () => {
+    const spec: FoldReturnSpec = {
+      endpointPattern: "/catalog/pricing/",
+      resultsPath: "results",
+      drillResultsPath: "details",
+      joinFields: ["sku"],
+    };
+    const body = emit(buildDoubleDecoyDrillDownActionSteps(), spec);
+
+    // The loop iterates the declared primary results[] and folds the drill
+    // response's DECLARED details[] array onto each item, re-issuing the
+    // pricing call per item.
+    expect(body).toContain("const foldItems = (r0 as { results: Record<string, unknown>[] })");
+    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain(
+      "const foldMatches = (r1 as { details: Record<string, unknown>[] }).details;"
+    );
+    expect(body).toContain("Object.assign(item, foldMatches[0] ?? {});");
+
+    // The declared drillResultsPath wins over findObjectArrayField's DFS
+    // first match on the drill side, which would have picked the decoy
+    // errors[] array instead.
+    expect(body).not.toContain("as { errors: Record<string, unknown>[] }");
+  });
 });
