@@ -5,6 +5,7 @@ import {
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
   buildMulticallSingleShotSearchDrillDownCompositeNumericJoinNonFirstItemActionSteps,
+  buildMulticallSingleShotSearchDrillDownMultiMatchActionSteps,
   buildMulticallSingleShotSearchDrillDownNonFirstItemSkuActionSteps,
   type MulticallFixtureStep,
 } from "@/scripts/recon-generate-multicall-fixture";
@@ -191,5 +192,28 @@ describe("buildMulticallSingleShotSearchDrillDownCompositeNumericJoinNonFirstIte
     expect(drillUrl).toContain(`region=${secondItem?.region}`);
     expect(drillUrl).toContain(`accountId=${secondItem?.accountId}`);
     expect(drillUrl).not.toContain(`region=${firstItem?.region}`);
+  });
+});
+
+describe("buildMulticallSingleShotSearchDrillDownMultiMatchActionSteps", () => {
+  const steps = buildMulticallSingleShotSearchDrillDownMultiMatchActionSteps();
+
+  it("the drill-down response's prices array carries >=2 items", () => {
+    const body = steps[1]?.capture.responseBody as { prices: { sku: string }[] };
+    expect(body.prices.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("only the SECOND drill item's sku matches the primary result's sku", () => {
+    const primaryBody = steps[0]?.capture.responseBody as { results: { sku: string }[] };
+    const primarySku = primaryBody.results[0]?.sku;
+    const drillBody = steps[1]?.capture.responseBody as {
+      prices: { sku: string; amount: number }[];
+    };
+    const [firstDrillItem, secondDrillItem] = drillBody.prices;
+
+    expect(firstDrillItem).toBeDefined();
+    expect(secondDrillItem).toBeDefined();
+    expect(firstDrillItem?.sku).not.toBe(primarySku);
+    expect(secondDrillItem?.sku).toBe(primarySku);
   });
 });

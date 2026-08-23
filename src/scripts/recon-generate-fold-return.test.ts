@@ -10,6 +10,7 @@ import {
   buildMulticallDependentDrillDownActionSteps,
   buildMulticallHeterogeneousActionSteps,
   buildMulticallSingleShotSearchDrillDownActionSteps,
+  buildMulticallSingleShotSearchDrillDownMultiMatchActionSteps,
   buildStep,
   type MulticallFixtureStep,
 } from "@/scripts/recon-generate-multicall-fixture";
@@ -514,6 +515,17 @@ describe("selectEffectiveResponseBody — flow-declared foldReturn", () => {
       results: [{ sku: "sku-a" }, { sku: "sku-b", amount: 24.99 }],
     });
   });
+
+  it("folds the drill item whose own sku matches the join key, not the drill array's index 0", () => {
+    const steps = buildMulticallSingleShotSearchDrillDownMultiMatchActionSteps();
+
+    // The drill-down's prices[] holds a decoy ("sku-z") at index 0 and the
+    // real match ("sku-a") at index 1 — a fold that took drillItems?.[0]
+    // would splice the decoy's amount (5.0) onto the primary item instead.
+    expect(selectEffectiveResponseBody(true, steps, null, SINGLE_SHOT_SPEC)).toEqual({
+      results: [{ sku: "sku-a", amount: 19.99 }],
+    });
+  });
 });
 
 describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
@@ -537,6 +549,20 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
     // re-issue the captured item's call and fold one response onto all items.
     expect(body).toContain(`body: \`{"sku":"\${item.sku}"}\``);
     expect(body).not.toContain('"sku":"sku-a"');
+  });
+
+  it("emits a join-key .find(...) match for the fold, not a bare drill-array index", () => {
+    const body = emit(
+      buildMulticallSingleShotSearchDrillDownMultiMatchActionSteps(),
+      SINGLE_SHOT_SPEC
+    );
+
+    // The drill-down's own prices[] holds a decoy ahead of the real match at
+    // runtime; the emitted loop must select by the join field's value, not
+    // by lifting foldMatches[0] straight off the response.
+    expect(body).toContain(`foldMatches.find((m) => m["sku"] === item.sku)`);
+    expect(body).not.toContain("Object.assign(item, foldMatches[0] ?? {});");
+    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
   });
 
   it("parameterizes every field of a composite joinFields declaration, not just the first", () => {

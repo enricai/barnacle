@@ -531,3 +531,39 @@ export function buildMulticallSingleShotSearchDrillDownOutOfOrderItemActionSteps
     }),
   ];
 }
+
+/**
+ * A single-shot search sibling of
+ * {@link buildMulticallSingleShotSearchDrillDownNonFirstItemSkuActionSteps}
+ * whose axis is on the DRILL side rather than the primary side: the primary
+ * `results[]` has a single item (`sku-a`), but the drill-down's own
+ * `prices[]` array comes back holding TWO entries — a decoy for an unrelated
+ * sku (`sku-z`, listed first) alongside the real match (`sku-a`, listed
+ * second). A fold that merges `foldMatches[0]`/`drillItems?.[0]` would
+ * silently splice the decoy's `amount` onto the primary item; only matching
+ * the drill array's own entries against the threaded join field (`sku`)
+ * picks the correct one, at a non-zero index within that array.
+ */
+export function buildMulticallSingleShotSearchDrillDownMultiMatchActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        results: [{ sku: "sku-a" }],
+      },
+      timestamp: "2024-09-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_PRICING_URL,
+      requestPostData: '{"sku":"sku-a"}',
+      responseBody: {
+        prices: [
+          { sku: "sku-z", amount: 5.0 },
+          { sku: "sku-a", amount: 19.99 },
+        ],
+      },
+      timestamp: "2024-09-01T00:00:01Z",
+    }),
+  ];
+}
