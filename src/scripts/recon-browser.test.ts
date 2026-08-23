@@ -5436,6 +5436,20 @@ describe("recon-browser/RECON_FLOW_FILE_SCHEMA — foldReturn", () => {
     expect(result.data.foldReturn?.drillResultsPath).toBeUndefined();
   });
 
+  it("rejects a foldReturn with a non-string drillResultsPath", () => {
+    const result = RECON_FLOW_FILE_SCHEMA.safeParse({
+      steps: ["Click Search"],
+      foldReturn: {
+        endpointPattern: "^https://example\\.com/api/drilldown$",
+        resultsPath: "orderSearch.results.orders",
+        drillResultsPath: 42,
+        joinFields: ["orderId"],
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
   it("rejects a foldReturn with an empty-string drillResultsPath", () => {
     const result = RECON_FLOW_FILE_SCHEMA.safeParse({
       steps: ["Click Search"],
