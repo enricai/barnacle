@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  detectDrillDownFoldPlan,
   emitMultiStepExecuteHttp,
   type FoldReturnSpec,
   parseFoldReturnSpec,
@@ -188,6 +189,43 @@ function buildNestedArrayPathDrillDownActionSteps(): MulticallFixtureStep[] {
       requestPostData: '{"sku":"sku-a"}',
       responseBody: { prices: [{ sku: "sku-a", amount: 19.99 }] },
       timestamp: "2024-04-01T00:00:01Z",
+    }),
+  ];
+}
+
+/** A grouped/nested primary shape: an outer `sections[]` grouping array whose
+ * single item holds a per-item `entries[]` array — the shape
+ * `findAllObjectArrayFields` only surfaces once it recurses into each
+ * group's own properties (see {@link detectDrillDownFoldPlan}'s nested
+ * grouping array coverage in recon-generate-fold-plan.test.ts). The
+ * drill-down URL threads the matched entry's `entryId`, so the structural
+ * heuristic resolves this with no declared foldReturn spec. Shared by the
+ * e2e test below so detection, schema inference, and codegen all fold the
+ * SAME response against the SAME path, rather than each describing its own
+ * independently-plausible fixture. */
+function buildNestedGroupedDrillDownActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: "https://api.example.com/catalog/sections",
+      requestPostData: null,
+      responseBody: {
+        sections: [
+          {
+            label: "featured",
+            entries: [
+              { entryId: "e1", name: "Widget" },
+              { entryId: "e2", name: "Gadget" },
+            ],
+          },
+        ],
+      },
+      timestamp: "2024-05-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: "https://api.example.com/catalog/entries/e2/details",
+      requestPostData: null,
+      responseBody: { entryId: "e2", description: "A gadget." },
+      timestamp: "2024-05-01T00:00:01Z",
     }),
   ];
 }
@@ -723,5 +761,47 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
     // first match on the drill side, which would have picked the decoy
     // errors[] array instead.
     expect(body).not.toContain("as { errors: Record<string, unknown>[] }");
+  });
+});
+
+describe("grouped/nested primary fold — detection, schema inference, and codegen agree", () => {
+  it("fold detection, schema-inference folding, and the emitted loop all describe the same nested-array fold", () => {
+    const steps = buildNestedGroupedDrillDownActionSteps();
+
+    // 1. detectDrillDownFoldPlan's structural heuristic must resolve a plan
+    // naming the NESTED array path — not just the outer grouping array — or
+    // there is nothing for the other two surfaces to agree on.
+    const plan = detectDrillDownFoldPlan(steps as unknown as Parameters<typeof detectDrillDownFoldPlan>[0]);
+    expect(plan).not.toBeNull();
+    expect(plan?.primaryArrayPath).toEqual(["sections", "0", "entries"]);
+    expect(plan?.joinFields).toEqual(["entryId"]);
+    expect(plan?.primaryMatchedItemIndex).toBe(1);
+
+    // 2. selectEffectiveResponseBody must fold the drill-down's field in at
+    // that SAME nested path — setAtPath rebuilding through the "0" array
+    // segment, not silently no-opping and leaving the body unfolded.
+    expect(selectEffectiveResponseBody(true, steps, null)).toEqual({
+      sections: [
+        {
+          label: "featured",
+          entries: [
+            { entryId: "e1", name: "Widget" },
+            { entryId: "e2", name: "Gadget", description: "A gadget." },
+          ],
+        },
+      ],
+    });
+
+    // 3. emitMultiStepExecuteHttp's emitted loop must read foldItems off the
+    // identical path literal the plan named in (1) — not some other
+    // plausible-looking path the emitter derived independently.
+    const body = emit(steps, null);
+    expect(body).toContain(
+      'const foldItems = (r0 as { sections: { "0": { entries: Record<string, unknown>[] } } }).sections["0"].entries;'
+    );
+    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain("const foldMatch = foldMatches.find(");
+    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
+    expect(body).toContain("return { data: r0 };");
   });
 });
