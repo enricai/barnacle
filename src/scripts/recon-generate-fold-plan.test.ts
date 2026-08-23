@@ -4,6 +4,7 @@ import {
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
   buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps,
+  buildMulticallSingleShotSearchDrillDownNumericJoinActionSteps,
   buildStep,
   type MulticallFixtureStep,
 } from "@/scripts/recon-generate-multicall-fixture";
@@ -68,22 +69,7 @@ describe("detectDrillDownFoldPlan", () => {
   });
 
   it("resolves a numeric-typed join field threaded via a URL query param", () => {
-    const steps: MulticallFixtureStep[] = [
-      buildStep("r0", {
-        url: "https://api.example.com/accounts/search",
-        requestPostData: JSON.stringify({ page: 1 }),
-        responseBody: { accounts: [{ accountId: 42, name: "Acme" }] },
-        timestamp: "2024-01-01T00:00:00Z",
-      }),
-      buildStep("r1", {
-        url: "https://api.example.com/accounts/detail?accountId=42",
-        requestPostData: null,
-        responseBody: { transactions: [{ transactionId: "t1" }] },
-        timestamp: "2024-01-01T00:00:01Z",
-      }),
-    ];
-
-    const plan = detect(steps);
+    const plan = detect(buildMulticallSingleShotSearchDrillDownNumericJoinActionSteps());
 
     expect(plan).not.toBeNull();
     expect(plan?.joinFields).toEqual(["accountId"]);
