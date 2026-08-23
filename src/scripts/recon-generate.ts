@@ -5211,8 +5211,7 @@ function foldResponseBodyForShapeInference<T extends { capture: Capture }>(
   const drillMatch =
     drillItems?.find((d) =>
       foldPlan.joinFields.every((f) => String(d[f]) === String(matchedItem?.[f]))
-    ) ??
-    drillItems?.[0];
+    ) ?? drillItems?.[0];
   if (!primaryItems || !matchedItem || !drillMatch) return primaryBody;
   const foldedItems = primaryItems.map((item, index) =>
     index === foldPlan.primaryMatchedItemIndex ? { ...matchedItem, ...drillMatch } : item
