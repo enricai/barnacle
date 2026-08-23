@@ -268,6 +268,41 @@ export function buildMulticallSingleShotSearchDrillDownActionSteps(): MulticallF
 }
 
 /**
+ * A search → per-item drill-down flow whose search response is unambiguous
+ * (a single `results[]` array, no decoy), but whose DRILL step's response
+ * carries a decoy `errors[]` array ahead of the real per-item `details[]`
+ * array. `findObjectArrayField`'s DFS first-match lands on `errors[]`
+ * instead of `details[]` when resolving the drill side of the fold, so a
+ * `foldReturn` declaration that only names the primary's `resultsPath`
+ * (see {@link FoldReturnSpec}) cannot fix this — the gap is on the drill
+ * side, not the primary side. Proves a drill-side results-path declaration
+ * (as opposed to {@link buildMulticallSingleShotSearchDrillDownActionSteps}'s
+ * primary-side decoy) is what a `drillResultsPath`-style flow declaration
+ * exists to reach.
+ */
+export function buildMulticallSingleShotSearchDrillDownDrillDecoyActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        results: [{ sku: "sku-a" }, { sku: "sku-b" }],
+      },
+      timestamp: "2024-04-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_PRICING_URL,
+      requestPostData: '{"sku":"sku-a"}',
+      responseBody: {
+        errors: [{ code: "none" }],
+        details: [{ sku: "sku-a", price: 19.99 }],
+      },
+      timestamp: "2024-04-01T00:00:01Z",
+    }),
+  ];
+}
+
+/**
  * A decoy-free sibling of {@link buildMulticallSingleShotSearchDrillDownActionSteps}:
  * the search endpoint still fires exactly once, but `results[]` is the sole
  * object-array field in its response, so `findObjectArrayField`'s DFS
