@@ -6,6 +6,7 @@ import {
   buildMulticallSingleShotSearchDrillDownCompositeNumericJoinActionSteps,
   buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps,
   buildMulticallSingleShotSearchDrillDownNumericJoinActionSteps,
+  buildMulticallSingleShotSearchDrillDownPathThreadedJoinActionSteps,
   buildStep,
   type MulticallFixtureStep,
 } from "@/scripts/recon-generate-multicall-fixture";
@@ -94,6 +95,14 @@ describe("detectDrillDownFoldPlan", () => {
     ];
 
     const plan = detect(steps);
+
+    expect(plan).not.toBeNull();
+    expect(plan?.joinFields).toEqual(["accountId"]);
+    expect(plan?.drillArrayPath).toEqual(["transactions"]);
+  });
+
+  it("resolves a join field threaded only as a URL path segment, never a query param or body value", () => {
+    const plan = detect(buildMulticallSingleShotSearchDrillDownPathThreadedJoinActionSteps());
 
     expect(plan).not.toBeNull();
     expect(plan?.joinFields).toEqual(["accountId"]);

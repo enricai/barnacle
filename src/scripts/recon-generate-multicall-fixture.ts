@@ -358,6 +358,32 @@ export function buildMulticallSingleShotSearchDrillDownNumericJoinActionSteps():
 }
 
 /**
+ * A single-shot search whose primary item join field (`accountId`) is
+ * threaded into the drill-down call ONLY as a URL path segment
+ * (`/accounts/42/transactions`) — never as a query param or a JSON body
+ * value. REST-style APIs commonly shape drill-down calls this way, but
+ * `collectRequestStringValues` only harvested query params and JSON body
+ * leaves, so this join field was invisible to `findThreadedJoinFields` and
+ * {@link detectDrillDownFoldPlan} returned null for this shape.
+ */
+export function buildMulticallSingleShotSearchDrillDownPathThreadedJoinActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: ACCOUNT_SEARCH_URL,
+      requestPostData: JSON.stringify({ page: 1 }),
+      responseBody: { accounts: [{ accountId: 42, name: "Acme" }] },
+      timestamp: "2024-07-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: "https://api.example.com/accounts/42/transactions",
+      requestPostData: null,
+      responseBody: { transactions: [{ transactionId: "t1" }] },
+      timestamp: "2024-07-01T00:00:01Z",
+    }),
+  ];
+}
+
+/**
  * A single-shot search whose primary items carry a COMPOSITE join key mixing
  * a string field (`region`) and a numeric field (`accountId`), both threaded
  * into the drill-down request. `findThreadedJoinFields` filters candidate
