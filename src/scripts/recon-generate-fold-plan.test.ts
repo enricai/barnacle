@@ -5,11 +5,13 @@ import {
   buildMulticallHeterogeneousActionStepsWithDrillDown,
   buildMulticallSingleShotSearchDrillDownActionSteps,
   buildMulticallSingleShotSearchDrillDownCompositeNumericJoinActionSteps,
+  buildMulticallSingleShotSearchDrillDownCompositeNumericJoinNonFirstItemActionSteps,
   buildMulticallSingleShotSearchDrillDownDrillDecoyActionSteps,
   buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinActionSteps,
   buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps,
   buildMulticallSingleShotSearchDrillDownNonFirstItemActionSteps,
   buildMulticallSingleShotSearchDrillDownNumericJoinActionSteps,
+  buildMulticallSingleShotSearchDrillDownOutOfOrderItemActionSteps,
   buildMulticallSingleShotSearchDrillDownPathThreadedJoinActionSteps,
   buildStep,
   type MulticallFixtureStep,
@@ -75,7 +77,7 @@ describe("detectDrillDownFoldPlan", () => {
   });
 
   it("resolves a fold plan and records the matched item's index when the drilled item is not first", () => {
-    const plan = detect(buildMulticallSingleShotSearchDrillDownNonFirstItemActionSteps());
+    const plan = detect(buildMulticallSingleShotSearchDrillDownOutOfOrderItemActionSteps());
 
     expect(plan).not.toBeNull();
     expect(plan?.primaryStepIndex).toBe(0);
@@ -84,6 +86,30 @@ describe("detectDrillDownFoldPlan", () => {
     expect(plan?.drillStepIndex).toBe(1);
     expect(plan?.drillArrayPath).toEqual(["prices"]);
     expect(plan?.primaryMatchedItemIndex).toBe(1);
+  });
+
+  it("resolves a fold plan when the sole captured drill-down call threads the second (not first) item's sku", () => {
+    const plan = detect(buildMulticallSingleShotSearchDrillDownNonFirstItemActionSteps());
+
+    expect(plan).not.toBeNull();
+    expect(plan?.primaryStepIndex).toBe(0);
+    expect(plan?.primaryArrayPath).toEqual(["results"]);
+    expect(plan?.joinFields).toEqual(["sku"]);
+    expect(plan?.drillStepIndex).toBe(1);
+    expect(plan?.drillArrayPath).toEqual(["prices"]);
+  });
+
+  it("resolves a fold plan with a composite join key when the sole captured drill-down call threads the second (not first) item's key", () => {
+    const plan = detect(
+      buildMulticallSingleShotSearchDrillDownCompositeNumericJoinNonFirstItemActionSteps()
+    );
+
+    expect(plan).not.toBeNull();
+    expect(plan?.primaryStepIndex).toBe(0);
+    expect(plan?.primaryArrayPath).toEqual(["accounts"]);
+    expect(plan?.joinFields).toEqual(["region", "accountId"]);
+    expect(plan?.drillStepIndex).toBe(1);
+    expect(plan?.drillArrayPath).toEqual(["transactions"]);
   });
 
   it("resolves a numeric-typed join field threaded via a URL query param", () => {

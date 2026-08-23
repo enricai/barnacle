@@ -510,8 +510,10 @@ export function buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinActionS
  * third step re-drills item 0), this pins {@link detectDrillDownFoldPlan}'s
  * item search to the actually-drilled item rather than an index-0 default —
  * the search must find the match at `primaryMatchedItemIndex` 1.
+ * Named "OutOfOrder" (rather than "NonFirstItem") to avoid colliding with
+ * {@link buildMulticallSingleShotSearchDrillDownNonFirstItemActionSteps}.
  */
-export function buildMulticallSingleShotSearchDrillDownNonFirstItemActionSteps(): MulticallFixtureStep[] {
+export function buildMulticallSingleShotSearchDrillDownOutOfOrderItemActionSteps(): MulticallFixtureStep[] {
   return [
     buildStep("r0", {
       url: CATALOG_SEARCH_URL,
