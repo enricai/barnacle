@@ -73,9 +73,10 @@ function emit(steps: MulticallFixtureStep[], foldReturnSpec: FoldReturnSpec | nu
   );
 }
 
-/** The declaration the single-shot-search fixture needs: its search endpoint
- * fires once, so findRequeriedActions excludes it as a fold primary and only
- * an explicit `foldReturn` can name the fold. */
+/** The declaration the single-shot-search fixture needs: its primary response
+ * carries a decoy `facets[]` array ahead of the real `results[]`, so
+ * `findObjectArrayField`'s DFS first-match disagrees with the array a caller
+ * would fold onto — only an explicit `foldReturn` can name the fold. */
 const SINGLE_SHOT_SPEC: FoldReturnSpec = {
   endpointPattern: "/catalog/pricing/",
   resultsPath: "results",
@@ -143,9 +144,10 @@ describe("resolveFoldPlan", () => {
   it("falls back to a flow-declared foldReturn spec when the structural heuristic finds nothing", () => {
     const steps = buildMulticallSingleShotSearchDrillDownActionSteps();
 
-    // The search endpoint fires exactly once, so findRequeriedActions yields
-    // nothing and detectDrillDownFoldPlan has no primary candidate at all —
-    // without the declaration there is no plan.
+    // The primary response's decoy `facets[]` array outranks `results[]` in
+    // findObjectArrayField's DFS, so detectDrillDownFoldPlan's structural
+    // heuristic disagrees with the declared path — without the declaration
+    // there is no plan.
     expect(resolveFoldPlan(steps)).toBeNull();
 
     expect(resolveFoldPlan(steps, SINGLE_SHOT_SPEC)).toEqual({
