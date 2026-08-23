@@ -5177,8 +5177,13 @@ export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boole
  * same body, so that should never happen outside a drifted caller. */
 function setAtPath(value: unknown, path: readonly string[], leaf: unknown): unknown {
   if (path.length === 0) return leaf;
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
+  if (value === null || typeof value !== "object") return value;
   const [key, ...rest] = path as [string, ...string[]];
+  if (Array.isArray(value)) {
+    const index = Number(key);
+    if (!Number.isInteger(index) || index < 0 || index >= value.length) return value;
+    return value.map((item, i) => (i === index ? setAtPath(item, rest, leaf) : item));
+  }
   const obj = value as Record<string, unknown>;
   return { ...obj, [key]: setAtPath(obj[key], rest, leaf) };
 }
