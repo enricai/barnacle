@@ -741,16 +741,17 @@ export const RECON_FLOW_FILE_SCHEMA = z.union([
      * `endpointPattern` matches the drill-down call (same semantics as
      * `submitEndpointPattern`), `resultsPath` is the dot-separated JSON path
      * to the primary capture's result array the drill-down folds onto, and
-     * `joinField` is the field name — present on both the primary array's
-     * items and the drill-down's response — that folded items are matched
-     * on. Omitted (default) preserves today's behavior: only folds the
+     * `joinFields` is the ordered list of field names — present on both the
+     * primary array's items and the drill-down's response — that folded
+     * items are matched on (a composite key when more than one is given).
+     * Omitted (default) preserves today's behavior: only folds the
      * heuristic can see structurally are applied.
      */
     foldReturn: z
       .object({
         endpointPattern: z.string().min(1),
         resultsPath: z.string().min(1),
-        joinField: z.string().min(1),
+        joinFields: z.array(z.string().min(1)).min(1),
       })
       .optional(),
   }),
