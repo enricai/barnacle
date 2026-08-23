@@ -4785,17 +4785,22 @@ export interface FoldPlan {
 }
 
 /** Every string and numeric value present in a capture's outbound request —
- * its URL query parameters (always strings) and its JSON body's string and
- * numeric leaves (numeric leaves stringified) — the set a drill-down
- * request's threaded join value must appear in. Numeric leaves are included
- * because a join key is just as often a numeric id (threaded as a query
- * param string or a JSON body number literal) as a string one. */
+ * its URL path segments and query parameters (always strings) and its JSON
+ * body's string and numeric leaves (numeric leaves stringified) — the set a
+ * drill-down request's threaded join value must appear in. Path segments are
+ * included because REST-style APIs commonly thread a primary item's id as a
+ * path segment (e.g. `/orders/{id}`) rather than a query param or body
+ * field. Numeric leaves are included because a join key is just as often a
+ * numeric id (threaded as a query param string or a JSON body number
+ * literal) as a string one. */
 function collectRequestStringValues(capture: Capture): Set<string> {
   const values = new Set<string>();
   try {
-    for (const v of new URL(capture.url).searchParams.values()) values.add(v);
+    const url = new URL(capture.url);
+    for (const v of url.searchParams.values()) values.add(v);
+    for (const segment of url.pathname.split("/").filter(Boolean)) values.add(segment);
   } catch {
-    // Relative or malformed URL — no query params to contribute.
+    // Relative or malformed URL — no query params or path segments to contribute.
   }
   for (const v of jsonBodyLeafValues(capture.requestPostData) ?? []) values.add(v);
   const parsedBody = ((): unknown => {
