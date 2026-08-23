@@ -5191,12 +5191,10 @@ function setAtPath(value: unknown, path: readonly string[], leaf: unknown): unkn
  * same item `detectDrillDownFoldPlan` built the join key from, not
  * necessarily index 0 — falling back to the drill array's first item only
  * when no drill item matches, so schema inference walks the SAME shape the
- * folded
- * `executeHttp` actually returns at runtime. Reads both arrays at the plan's
- * OWN paths rather than
- * re-running `findObjectArrayField`, so a flow-declared `resultsPath` stays
- * authoritative here exactly as it is in the emitter. Falls back to the
- * unmerged primary body if either capture no
+ * folded `executeHttp` actually returns at runtime. Reads both arrays at
+ * the plan's OWN paths rather than re-running `findObjectArrayField`, so a
+ * flow-declared `resultsPath` stays authoritative here exactly as it is in
+ * the emitter. Falls back to the unmerged primary body if either capture no
  * longer resolves an object array — same drift guard as the emitter's own
  * `throw` at the analogous point, minus the throw, since shape inference
  * degrading gracefully is preferable to failing a generate run over it.
