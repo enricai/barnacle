@@ -4469,7 +4469,7 @@ export function emitMultiStepExecuteHttp(
         `      })) as Record<string, unknown>;`,
         `      const foldMatches = (${step.varName} as ${drillArrType})${drillArrAccessor};`,
         `      const foldMatch = foldMatches.find((m) => ${foldPlan.joinFields
-          .map((f) => `m[${JSON.stringify(f)}] === ${joinAccessor(f)}`)
+          .map((f) => `String(m[${JSON.stringify(f)}]) === String(${joinAccessor(f)})`)
           .join(" && ")}) ?? foldMatches[0];`,
         `      Object.assign(item, foldMatch ?? {});`,
         `    }`,
@@ -5219,8 +5219,9 @@ function foldResponseBodyForShapeInference<T extends { capture: Capture }>(
   const drillItems = objectItemsAtPath(drillBody, foldPlan.drillArrayPath);
   const matchedItem = primaryItems?.[foldPlan.primaryMatchedItemIndex];
   const drillMatch =
-    drillItems?.find((d) => foldPlan.joinFields.every((f) => d[f] === matchedItem?.[f])) ??
-    drillItems?.[0];
+    drillItems?.find((d) =>
+      foldPlan.joinFields.every((f) => String(d[f]) === String(matchedItem?.[f]))
+    ) ?? drillItems?.[0];
   if (!primaryItems || !matchedItem || !drillMatch) return primaryBody;
   const foldedItems = primaryItems.map((item, index) =>
     index === foldPlan.primaryMatchedItemIndex ? { ...matchedItem, ...drillMatch } : item
