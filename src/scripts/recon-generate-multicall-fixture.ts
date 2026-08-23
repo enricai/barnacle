@@ -412,6 +412,66 @@ export function buildMulticallSingleShotSearchDrillDownCompositeNumericJoinActio
 }
 
 /**
+ * A decoy-free single-shot search sibling of
+ * {@link buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps} whose
+ * `results[]` has TWO items, but whose only captured drill-down call was
+ * made for the SECOND item (`sku-b`), not the first. A heuristic that always
+ * pairs the primary's `results[0]` with the sole drill step would thread
+ * `sku-a` into the fold even though the captured request body only ever
+ * mentions `sku-b` — proving the fold must select the drill call's item by
+ * matching the join field's actual value, not by array position.
+ */
+export function buildMulticallSingleShotSearchDrillDownNonFirstItemActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        results: [{ sku: "sku-a" }, { sku: "sku-b" }],
+      },
+      timestamp: "2024-09-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_PRICING_URL,
+      requestPostData: '{"sku":"sku-b"}',
+      responseBody: { prices: [{ sku: "sku-b", amount: 24.99 }] },
+      timestamp: "2024-09-01T00:00:01Z",
+    }),
+  ];
+}
+
+/**
+ * A composite-join sibling of
+ * {@link buildMulticallSingleShotSearchDrillDownCompositeNumericJoinActionSteps}
+ * whose `accounts[]` has TWO items, but whose only captured drill-down call
+ * threads the SECOND item's composite join key (`region: "eu"`,
+ * `accountId: 9`), never the first item's (`region: "us"`, `accountId: 7`).
+ * Proves the same non-first-item selection requirement holds when the join
+ * key is composite, not just when it's a single field.
+ */
+export function buildMulticallSingleShotSearchDrillDownCompositeNumericJoinNonFirstItemActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: ACCOUNT_SEARCH_URL,
+      requestPostData: JSON.stringify({ page: 1 }),
+      responseBody: {
+        accounts: [
+          { region: "us", accountId: 7, name: "Acme" },
+          { region: "eu", accountId: 9, name: "Globex" },
+        ],
+      },
+      timestamp: "2024-09-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: `${ACCOUNT_DETAIL_URL}?region=eu&accountId=9`,
+      requestPostData: null,
+      responseBody: { transactions: [{ transactionId: "t2" }] },
+      timestamp: "2024-09-01T00:00:01Z",
+    }),
+  ];
+}
+
+/**
  * A single-shot search whose primary item join field (`accountId`) is
  * threaded into the drill-down call ONLY via a custom request header
  * (`X-Account-Id`) — never a query param, JSON body value, or URL path

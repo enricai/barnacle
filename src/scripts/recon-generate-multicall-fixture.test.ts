@@ -4,6 +4,8 @@ import {
   buildMulticallDependentDrillDownActionSteps,
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
+  buildMulticallSingleShotSearchDrillDownCompositeNumericJoinNonFirstItemActionSteps,
+  buildMulticallSingleShotSearchDrillDownNonFirstItemActionSteps,
   type MulticallFixtureStep,
 } from "@/scripts/recon-generate-multicall-fixture";
 
@@ -137,5 +139,57 @@ describe("buildMulticallDependentDrillDownActionSteps", () => {
     // waiting for a later step that happens to thread items[0]'s "i-b".
     expect(plan?.drillStepIndex).toBe(2);
     expect(plan?.primaryMatchedItemIndex).toBe(1);
+  });
+});
+
+describe("buildMulticallSingleShotSearchDrillDownNonFirstItemActionSteps", () => {
+  const steps = buildMulticallSingleShotSearchDrillDownNonFirstItemActionSteps();
+
+  it("the primary results array carries >=2 items", () => {
+    const body = steps[0]?.capture.responseBody as { results: { sku: string }[] };
+    expect(body.results.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("the sole captured drill-down request carries the SECOND item's sku, never the first's", () => {
+    const body = steps[0]?.capture.responseBody as { results: { sku: string }[] };
+    const [firstItem, secondItem] = body.results;
+    expect(firstItem).toBeDefined();
+    expect(secondItem).toBeDefined();
+
+    const drillSteps = steps.filter((s) => s.capture.url.includes("pricing"));
+    expect(drillSteps).toHaveLength(1);
+
+    const drillRequest = drillSteps[0]?.capture.requestPostData ?? "";
+    expect(drillRequest).toContain(secondItem?.sku as string);
+    expect(drillRequest).not.toContain(firstItem?.sku as string);
+  });
+});
+
+describe("buildMulticallSingleShotSearchDrillDownCompositeNumericJoinNonFirstItemActionSteps", () => {
+  const steps =
+    buildMulticallSingleShotSearchDrillDownCompositeNumericJoinNonFirstItemActionSteps();
+
+  it("the primary accounts array carries >=2 items", () => {
+    const body = steps[0]?.capture.responseBody as {
+      accounts: { region: string; accountId: number }[];
+    };
+    expect(body.accounts.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("the sole captured drill-down request carries the SECOND item's composite join key, never the first's", () => {
+    const body = steps[0]?.capture.responseBody as {
+      accounts: { region: string; accountId: number }[];
+    };
+    const [firstItem, secondItem] = body.accounts;
+    expect(firstItem).toBeDefined();
+    expect(secondItem).toBeDefined();
+
+    const drillSteps = steps.filter((s) => s.capture.url.includes("accounts/detail"));
+    expect(drillSteps).toHaveLength(1);
+
+    const drillUrl = drillSteps[0]?.capture.url ?? "";
+    expect(drillUrl).toContain(`region=${secondItem?.region}`);
+    expect(drillUrl).toContain(`accountId=${secondItem?.accountId}`);
+    expect(drillUrl).not.toContain(`region=${firstItem?.region}`);
   });
 });
