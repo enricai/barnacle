@@ -404,13 +404,26 @@ describe("selectEffectiveResponseBody — flow-declared foldReturn", () => {
     });
   });
 
-  it("leaves the sample unfolded when the same steps carry no declaration", () => {
+  it("resolves the real results array over an earlier decoy without needing a declaration", () => {
+    const steps = buildMulticallSingleShotSearchDrillDownActionSteps();
+
+    // The primary response's decoy `facets[]` array is positioned earlier in
+    // key order than `results[]`, but the structural heuristic now resolves
+    // the real array on its own, so the fold happens even with no spec at
+    // all — the declaration above is a fallback, not the only path to it.
+    expect(selectEffectiveResponseBody(true, steps, null)).toEqual({
+      facets: [{ name: "brand" }],
+      results: [{ sku: "sku-a", amount: 19.99 }, { sku: "sku-b" }],
+    });
+  });
+
+  it("leaves the sample unfolded when the structural heuristic has nothing to thread", () => {
     const steps = buildUnthreadedJoinDrillDownActionSteps();
 
-    // Without the spec no plan resolves (the join value never appears in the
-    // drill-down's captured request), so shape inference must fall back to
-    // selectReturnAction's plain pick — proving the fold above came from the
-    // declaration and not from the fixture happening to fold either way.
+    // The join value never appears in the drill-down's captured request (the
+    // stand-in for a header-threaded join), so neither the heuristic nor a
+    // declaration is available here — shape inference must fall back to
+    // selectReturnAction's plain pick.
     expect(selectEffectiveResponseBody(true, steps, null)).toEqual({
       prices: [{ sku: "sku-a", amount: 19.99 }],
     });
@@ -454,11 +467,41 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
     expect(body).not.toContain('"region":"us"');
   });
 
-  it("emits no fold loop for the same steps when the flow declares nothing", () => {
+  it("emits the per-item loop-and-merge for the decoy fixture without needing a declaration", () => {
+    const body = emit(buildMulticallSingleShotSearchDrillDownActionSteps(), null);
+
+    // Same structural heuristic that resolves resolveFoldPlan and
+    // selectEffectiveResponseBody without a spec also drives emission — the
+    // decoy `facets[]` array must not win over `results[]` here either.
+    expect(body).toContain("const foldItems = (r0 as { results: Record<string, unknown>[] })");
+    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain("Object.assign(item, foldMatches[0] ?? {});");
+    expect(body).toContain("return { data: r0 };");
+    expect(body).not.toContain("return { data: r1 };");
+    expect(body).not.toContain("as { facets: Record<string, unknown>[] }");
+  });
+
+  it("emits no fold loop for steps the structural heuristic can't thread a join value across", () => {
     const body = emit(buildUnthreadedJoinDrillDownActionSteps(), null);
 
     expect(body).not.toContain("const foldItems");
     expect(body).toContain("return { data: r1 };");
+  });
+
+  it("emits a per-item loop over the real arrays on both sides for a double decoy with no spec declared", () => {
+    const body = emit(buildDoubleDecoyDrillDownActionSteps(), null);
+
+    // Neither side's decoy (`facets[]` on the primary, `errors[]` on the
+    // drill) should win: the structural heuristic threads the `sku` join
+    // value through the real `results[]`/`details[]` arrays on its own.
+    expect(body).toContain("const foldItems = (r0 as { results: Record<string, unknown>[] })");
+    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain(
+      "const foldMatches = (r1 as { details: Record<string, unknown>[] }).details;"
+    );
+    expect(body).toContain("Object.assign(item, foldMatches[0] ?? {});");
+    expect(body).not.toContain("as { facets: Record<string, unknown>[] }");
+    expect(body).not.toContain("as { errors: Record<string, unknown>[] }");
   });
 
   it("emits foldMatches off the declared drillResultsPath, not the drill side's DFS-first decoy", () => {
