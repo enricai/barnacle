@@ -232,17 +232,20 @@ const CATALOG_PRICING_URL = "https://api.example.com/catalog/pricing/";
 
 /**
  * A search → per-item drill-down flow whose search endpoint fires exactly
- * ONCE. {@link detectDrillDownFoldPlan} only ever considers
- * {@link findRequeriedActions}' output as fold primaries — an endpoint re-hit
- * with a varying body — so a single-shot search can never be a fold primary
- * under the heuristic, no matter how plainly the drill-down threads a value
- * out of its results. That is the shape the flow-declared `foldReturn`
+ * ONCE. {@link detectDrillDownFoldPlan} now scans every prior action as a
+ * fold-primary candidate, so a single-shot search is just as eligible as a
+ * re-queried one — but the primary response here also carries a decoy
+ * `facets[]` array ahead of the real `results[]`, so `findObjectArrayField`'s
+ * DFS first-match deliberately disagrees with the array a caller would fold
+ * onto. `resolveFoldPlan(steps)` on this fixture still returns `null`, but
+ * only because of that decoy, not because the search fires once. That
+ * decoy-vs-declared-path gap is the shape the flow-declared `foldReturn`
  * (`FoldReturnSpec`/`resolveFoldPlan`) exists to reach.
  *
- * The primary response also carries a decoy `facets[]` array ahead of the real
- * `results[]`, so `findObjectArrayField`'s DFS first-match deliberately
- * disagrees with the array a caller would fold onto — pinning that the
- * DECLARED `resultsPath` is what drives emission.
+ * The decoy is load-bearing for a `resolveFoldPlan`/`foldReturn` test
+ * elsewhere; {@link buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps}
+ * is the decoy-free sibling used to prove `detectDrillDownFoldPlan` alone
+ * detects a single-shot primary.
  */
 export function buildMulticallSingleShotSearchDrillDownActionSteps(): MulticallFixtureStep[] {
   return [
@@ -251,6 +254,32 @@ export function buildMulticallSingleShotSearchDrillDownActionSteps(): MulticallF
       requestPostData: '{"page":1}',
       responseBody: {
         facets: [{ name: "brand" }],
+        results: [{ sku: "sku-a" }, { sku: "sku-b" }],
+      },
+      timestamp: "2024-04-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_PRICING_URL,
+      requestPostData: '{"sku":"sku-a"}',
+      responseBody: { prices: [{ sku: "sku-a", amount: 19.99 }] },
+      timestamp: "2024-04-01T00:00:01Z",
+    }),
+  ];
+}
+
+/**
+ * A decoy-free sibling of {@link buildMulticallSingleShotSearchDrillDownActionSteps}:
+ * the search endpoint still fires exactly once, but `results[]` is the sole
+ * object-array field in its response, so `findObjectArrayField`'s DFS
+ * first-match lands on the real results array with no declared `foldReturn`
+ * needed. Proves the single-shot primary is detected on structure alone.
+ */
+export function buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
         results: [{ sku: "sku-a" }, { sku: "sku-b" }],
       },
       timestamp: "2024-04-01T00:00:00Z",
