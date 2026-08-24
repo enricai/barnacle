@@ -996,6 +996,35 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
     // errors[] array instead.
     expect(body).not.toContain("as { errors: Record<string, unknown>[] }");
   });
+
+  it("emits one shared loop with a merge block per merged target when a spec-declared target is unioned onto the heuristic's plan", () => {
+    const body = emit(buildMulticallSingleShotSearchHeuristicAndSpecTwoTargetActionSteps(), {
+      endpointPattern: "/catalog/stock/",
+      resultsPath: "results",
+      joinFields: ["itemId"],
+    });
+
+    // Both the heuristic-found pricing target and the spec-declared stock
+    // target must fold into the SAME loop over the SAME primary array —
+    // exactly one `for` block, not one per target.
+    expect(body.match(/for \(const item of foldItems\) \{/g)).toHaveLength(1);
+
+    expect(body).toContain(
+      `const foldMatches0 = (r1 as { prices: Record<string, unknown>[] }).prices;`
+    );
+    expect(body).toContain(
+      `const foldMatch0 = foldMatches0.find((m) => String(m["sku"]) === String(item.sku)) ?? foldMatches0[0];`
+    );
+    expect(body).toContain("Object.assign(item, foldMatch0 ?? {});");
+
+    expect(body).toContain(
+      `const foldMatches1 = (r2 as { stock: Record<string, unknown>[] }).stock;`
+    );
+    expect(body).toContain(
+      `const foldMatch1 = foldMatches1.find((m) => String(m["itemId"]) === String(item.itemId)) ?? foldMatches1[0];`
+    );
+    expect(body).toContain("Object.assign(item, foldMatch1 ?? {});");
+  });
 });
 
 describe("grouped/nested primary fold — detection, schema inference, and codegen agree", () => {
