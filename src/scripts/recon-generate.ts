@@ -1054,6 +1054,10 @@ export function selectReturnAction<T extends { capture: Capture }>(steps: readon
  * be the FOLDED primary body, not the plain one, or the schema would omit
  * every field the fold adds. Both resolve through `resolveFoldPlan` with the
  * same `foldReturnSpec` so they can never disagree on whether a fold applies.
+ * When multiple plans resolve, this picks the LAST plan's folded body — the
+ * same convention `emitMultiStepExecuteHttp` uses for `return { data }` (see
+ * its `lastFoldPlan` selection) — so the inferred shape and the runtime
+ * return value always describe the same call.
  */
 export function selectEffectiveResponseBody<T extends { capture: Capture; isMultipart: boolean }>(
   isSubmissionFlow: boolean,
@@ -1062,8 +1066,9 @@ export function selectEffectiveResponseBody<T extends { capture: Capture; isMult
   foldReturnSpec: FoldReturnSpec | null = null
 ): unknown {
   if (!isSubmissionFlow) return replayResponseBody;
-  const foldPlan = resolveFoldPlan(actionSteps, foldReturnSpec)[0] ?? null;
-  if (foldPlan) return foldResponseBodyForShapeInference(actionSteps, foldPlan);
+  const foldPlans = resolveFoldPlan(actionSteps, foldReturnSpec);
+  const lastFoldPlan = foldPlans[foldPlans.length - 1] ?? null;
+  if (lastFoldPlan) return foldResponseBodyForShapeInference(actionSteps, lastFoldPlan);
   return selectReturnAction(actionSteps)?.capture.responseBody ?? replayResponseBody;
 }
 
