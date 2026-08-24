@@ -13,6 +13,7 @@ import {
   buildMulticallSingleShotSearchDrillDownMultiMatchActionSteps,
   buildMulticallSingleShotSearchDrillDownNonFirstItemSkuActionSteps,
   buildMulticallSingleShotSearchDrillDownTypeMismatchJoinActionSteps,
+  buildMulticallSingleShotSearchHeuristicAndSpecTwoTargetActionSteps,
   type MulticallFixtureStep,
 } from "@/scripts/recon-generate-multicall-fixture";
 
@@ -286,5 +287,37 @@ describe("buildMulticallSingleShotSearchDrillDownTypeMismatchJoinActionSteps", (
     expect(secondDrillItem).toBeDefined();
     expect(firstDrillItem?.accountId).not.toBe(String(primaryAccountId));
     expect(secondDrillItem?.accountId).toBe(String(primaryAccountId));
+  });
+});
+
+describe("buildMulticallSingleShotSearchHeuristicAndSpecTwoTargetActionSteps", () => {
+  const steps = buildMulticallSingleShotSearchHeuristicAndSpecTwoTargetActionSteps();
+
+  it("returns 3 steps: primary results, a body-threaded pricing drill, and a header-threaded stock drill", () => {
+    expect(steps).toHaveLength(3);
+  });
+
+  it("the primary results array carries a sku and itemId per item", () => {
+    const body = steps[0]?.capture.responseBody as {
+      results: { sku: string; itemId: string }[];
+    };
+    expect(body.results.length).toBeGreaterThanOrEqual(2);
+    for (const item of body.results) {
+      expect(typeof item.sku).toBe("string");
+      expect(typeof item.itemId).toBe("string");
+    }
+  });
+
+  it("the pricing step threads sku in its request body (heuristically detectable)", () => {
+    const pricingStep = steps.find((s) => s.capture.url.includes("catalog/pricing/"));
+    expect(pricingStep?.capture.requestPostData).toContain("sku-a");
+  });
+
+  it("the stock step's join value is carried ONLY in a request header, absent from URL/query/body", () => {
+    const stockStep = steps.find((s) => s.capture.url.includes("catalog/stock/"));
+    expect(stockStep).toBeDefined();
+    expect(stockStep?.capture.requestHeaders["X-Item-Id"]).toBe("item-a");
+    expect(stockStep?.capture.url).not.toContain("item-a");
+    expect(stockStep?.capture.requestPostData).not.toContain("item-a");
   });
 });
