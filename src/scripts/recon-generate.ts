@@ -4881,10 +4881,22 @@ function findObjectArrayField(
   return findAllObjectArrayFields(value, path)[0] ?? null;
 }
 
-/** A detected dependent drill-down: a later step whose request threads a
- * value out of an array-indexed field of an earlier (primary) step's
- * response, so the drill step's own response should be folded onto the
- * matching item of the primary step's results array rather than discarded.
+/** A detected primary results array and every independent drill-down that
+ * folds onto it — a later step whose request threads a value out of an
+ * array-indexed field of the primary step's response, so the drill step's
+ * own response should be folded onto the matching item of the primary
+ * step's results array rather than discarded. */
+export interface FoldPlan {
+  primaryStepIndex: number;
+  primaryArrayPath: string[];
+  targets: FoldTarget[];
+}
+
+/** One independent per-item drill-down folding onto {@link FoldPlan}'s
+ * primary array — a single primary can have several of these when more than
+ * one later step threads a different join field from it (see
+ * {@link detectDrillDownFoldPlan}).
+ *
  * `joinFields` is ordered (not a single string) because a real join can be
  * composite — e.g. matching on `accountId` AND `region` together.
  *
@@ -4905,16 +4917,6 @@ function findObjectArrayField(
  * past the immediate drill call, `chain` is `[drillStepIndex]`,
  * `chainTerminalIndex` is `drillStepIndex`, and `chainArrayPath` equals
  * `drillArrayPath`. */
-export interface FoldPlan {
-  primaryStepIndex: number;
-  primaryArrayPath: string[];
-  targets: FoldTarget[];
-}
-
-/** One independent per-item drill-down folding onto {@link FoldPlan}'s
- * primary array — a single primary can have several of these when more than
- * one later step threads a different join field from it (see
- * {@link detectDrillDownFoldPlan}). */
 export interface FoldTarget {
   joinFields: string[];
   drillStepIndex: number;
@@ -5182,7 +5184,7 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
  * structural heuristic cannot see on its own — most commonly a join value
  * the drill-down carries in a request HEADER, which
  * {@link collectRequestStringValues} deliberately never scans. `joinFields`
- * is a non-empty array, mirroring {@link FoldPlan.joinFields}, so a composite
+ * is a non-empty array, mirroring {@link FoldTarget.joinFields}, so a composite
  * join (e.g. `accountId` + `region`) can be declared, not just a single field.
  */
 export interface FoldReturnSpec {
