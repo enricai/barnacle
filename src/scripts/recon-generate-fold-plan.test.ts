@@ -139,11 +139,13 @@ describe("detectDrillDownFoldPlan", () => {
     const steps: MulticallFixtureStep[] = [
       buildStep("r0", {
         url: "https://api.example.com/search-results",
+        requestPostData: null,
         responseBody: { results: [{ sku: "sku-1" }, { sku: "sku-2" }] },
         timestamp: "2024-01-01T00:00:00Z",
       }),
       buildStep("r1", {
         url: "https://api.example.com/results/sku-2",
+        requestPostData: null,
         responseBody: { sku: "sku-2", price: 42 },
         timestamp: "2024-01-01T00:00:01Z",
       }),
