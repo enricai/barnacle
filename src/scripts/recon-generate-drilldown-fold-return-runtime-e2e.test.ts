@@ -251,3 +251,123 @@ describe("recon-generate drill-down foldReturn spec executeHttp — freshest re-
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(3);
   });
 });
+
+/**
+ * A search → per-item drill-down pair whose join value threads ONLY through
+ * a request header (`X-Item-Sku`), so `detectDrillDownFoldPlan`'s structural
+ * heuristic — which never scans headers — resolves nothing here and
+ * `buildFoldPlanFromSpec` is the only path left to fold. The drill endpoint
+ * (`/catalog/pricing/`) was captured TWICE (`r1`, `r2`), both independently
+ * satisfying the spec's join against the single primary item: `r1` is a
+ * plain lookup, `r2` is a later "refresh" re-query with a different response
+ * payload. `buildFoldPlanFromSpec`'s inner drill loop must retain the LAST
+ * (freshest) `drillStepIndex` — `r2` — as the template for the per-item fold
+ * call, not `r1`.
+ */
+function buildHeaderThreadedDrillCalledTwiceActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: "https://api.example.com/catalog/search/",
+      requestPostData: '{"page":1}',
+      responseBody: { results: [{ sku: "sku-a" }] },
+      timestamp: "2024-04-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: "https://api.example.com/catalog/pricing/",
+      requestPostData: '{"lookup":true}',
+      requestHeaders: { "Content-Type": "application/json", "X-Item-Sku": "sku-a" },
+      responseBody: { prices: [{ sku: "sku-a", amount: 19.99 }] },
+      timestamp: "2024-04-01T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: "https://api.example.com/catalog/pricing/",
+      requestPostData: '{"lookup":true,"refresh":true}',
+      requestHeaders: { "Content-Type": "application/json", "X-Item-Sku": "sku-a" },
+      responseBody: { prices: [{ sku: "sku-a", amount: 24.99 }] },
+      timestamp: "2024-04-01T00:00:02Z",
+    }),
+  ];
+}
+
+const HEADER_THREADED_DRILL_CALLED_TWICE_SPEC: FoldReturnSpec = {
+  endpointPattern: "/catalog/pricing/",
+  resultsPath: "results",
+  drillResultsPath: "prices",
+  joinFields: ["sku"],
+};
+
+/** Stubs `fetch` to answer the primary search call with its recorded body,
+ * and to distinguish the two possible shapes of the drill-down request by
+ * their `refresh` flag: the emitted code replays `r1`'s stale request body
+ * verbatim (it wasn't selected into the fold plan) ahead of the per-item
+ * loop, which issues the freshest (`r2`, `refresh: true`) request as its
+ * template — so both request shapes actually reach `fetch`, each answered
+ * with its own distinct payload, making which one got folded observable. */
+function stubDrillCalledTwiceFetch(): void {
+  const fn = vi.fn(async (url: string, init?: RequestInit) => {
+    if (!url.includes("/catalog/pricing/")) {
+      return jsonResponse({ results: [{ sku: "sku-a" }] });
+    }
+    const requestBody = init?.body
+      ? (JSON.parse(String(init.body)) as { refresh?: boolean })
+      : null;
+    return requestBody?.refresh === true
+      ? jsonResponse({ prices: [{ sku: "sku-a", amount: 24.99 }] })
+      : jsonResponse({ prices: [{ sku: "sku-a", amount: 19.99 }] });
+  });
+  vi.stubGlobal("fetch", fn);
+}
+
+describe("recon-generate drill-down foldReturn spec executeHttp — freshest re-queried drill runtime guard", () => {
+  it("folds the drilled field onto the freshest re-queried drill occurrence, not the stale one", async () => {
+    const actionSteps = buildHeaderThreadedDrillCalledTwiceActionSteps();
+    const inputBody = JSON.parse(actionSteps[0]!.capture.requestPostData ?? "null") as unknown;
+
+    const body = emitMultiStepExecuteHttp(
+      actionSteps as unknown as Parameters<typeof emitMultiStepExecuteHttp>[0],
+      inputBody,
+      { stringMessageKey: null, nestedErrorPaths: [] },
+      new Map(),
+      new Set(),
+      new Map(),
+      new Set(),
+      new Map(),
+      new Map(),
+      "https://api.example.com",
+      new Map(),
+      new Map(),
+      null,
+      new Map(),
+      new Map(),
+      new Set(),
+      [],
+      new Map(),
+      new Map(),
+      HEADER_THREADED_DRILL_CALLED_TWICE_SPEC
+    );
+
+    const limiter = new Bottleneck({ maxConcurrent: 1, minTime: 0 });
+    const httpClient = createHttpClient({
+      schema: z.unknown(),
+      bottleneck: limiter,
+      baseHeaders: { "Content-Type": "application/json" },
+    });
+
+    stubDrillCalledTwiceFetch();
+
+    const executeHttp = evalExecuteHttpBody(body, httpClient, z);
+    const result = await executeHttp({
+      BaseUrl: "https://api.example.com",
+      page: 1,
+      lookup: true,
+      refresh: true,
+    });
+
+    expect(result.data).toEqual({
+      results: [{ sku: "sku-a", amount: 24.99 }],
+    });
+    // Primary search call, the stale drill-down replay, and the freshest
+    // per-item fold call.
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(3);
+  });
+});
