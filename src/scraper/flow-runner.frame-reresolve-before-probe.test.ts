@@ -15,20 +15,22 @@ import type { Logger } from "@/types/logging";
  * Pins the run-6-into-run-5 half of the bug report: `resolveFrameTarget`'s
  * step-entry poll loses the attach race and returns a main-frame fallback,
  * but the OOPIF is bound by the time the cascade reaches its deepLocator
- * gates. `resolveFrameTarget` is mocked at the module boundary (matching
+ * gates. `resolveFrameTarget` (step entry) and `probeAttachedFrameTarget`
+ * (re-resolution) are mocked at the module boundary (matching
  * `flow-runner.deep-locator-fallback.test.ts`'s style) rather than driven
  * through a fake `page.frames()` timeline (`flow-runner.frame-reresolve.test.ts`'s
  * style) so the two calls can be sequenced deterministically: fallback on the
- * step-entry call, a bound child target on every re-resolution afterward. A
- * single-resolution-at-step-entry implementation calls `resolveFrameTarget`
- * once, keeps `frameTarget.frame` pinned to `null` for the whole step, and
- * every deepLocator gate below stays closed — the hop's click counters never
- * move off 0.
+ * step-entry call, a bound child target on every re-resolution afterward. An
+ * implementation whose re-resolve path stays on the broken `timeoutMs: 0`
+ * probe never observes the bound target, keeps `frameTarget.frame` pinned to
+ * `null` for the whole step, and every deepLocator gate below stays closed —
+ * the hop's click counters never move off 0.
  */
 
 const guardedObserve = vi.fn();
 const guardedAct = vi.fn();
 const resolveFrameTarget = vi.fn();
+const probeAttachedFrameTarget = vi.fn();
 
 vi.mock("@/scraper/stagehand-guard", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/scraper/stagehand-guard")>();
@@ -44,6 +46,7 @@ vi.mock("@/scraper/frame-target", async (importOriginal) => {
   return {
     ...actual,
     resolveFrameTarget: (...args: unknown[]) => resolveFrameTarget(...args),
+    probeAttachedFrameTarget: (...args: unknown[]) => probeAttachedFrameTarget(...args),
     waitForChildFrameReady: async () => undefined,
   };
 });
@@ -161,9 +164,8 @@ describe("flow-runner — frame re-resolved right before the deepLocator probe (
     // Step-entry call loses the attach race and falls back to the main
     // frame; every re-resolution attempt after that (the deepLocator-gate
     // fix under test) sees the OOPIF bound.
-    resolveFrameTarget
-      .mockResolvedValueOnce(makeMainFrameFallback())
-      .mockResolvedValue(makeChildFrameTarget(urls));
+    resolveFrameTarget.mockResolvedValue(makeMainFrameFallback());
+    probeAttachedFrameTarget.mockResolvedValue(makeChildFrameTarget(urls));
 
     // Focused AND unfocused observe both empty on every call — probe falls
     // through past both observe checks to its own deepLocator gate, and
