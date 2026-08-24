@@ -5345,7 +5345,9 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
       // the re-queried join key) would be silently dropped instead of
       // folded at all.
       const laterCoversEveryCurrentTarget = freshestResult.targets.every((currentTarget) =>
-        laterResult.targets.some((laterTarget) => laterTarget.drillStepIndex === currentTarget.drillStepIndex)
+        laterResult.targets.some(
+          (laterTarget) => laterTarget.drillStepIndex === currentTarget.drillStepIndex
+        )
       );
       if (!laterCoversEveryCurrentTarget) continue;
       freshestIndex = laterIndex;

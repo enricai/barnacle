@@ -52,7 +52,9 @@ describe("detectDrillDownFoldPlan", () => {
   });
 
   it("anchors on the freshest re-queried primary occurrence when both independently satisfy the drill-down's join key", () => {
-    const plan = detect(buildMulticallSingleShotSearchDrillDownRequeriedPrimaryOverlapActionSteps());
+    const plan = detect(
+      buildMulticallSingleShotSearchDrillDownRequeriedPrimaryOverlapActionSteps()
+    );
 
     expect(plan).not.toBeNull();
     expect(plan?.primaryStepIndex).toBe(1);
