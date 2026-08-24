@@ -8,6 +8,7 @@ import {
 import {
   buildMulticallHeterogeneousActionStepsWithDrillDown,
   buildMulticallSingleShotSearchDrillDownNumericJoinActionSteps,
+  buildMulticallSingleShotSearchDrillDownRequeriedPrimaryOverlapActionSteps,
   buildStep,
   type MulticallFixtureStep,
 } from "@/scripts/recon-generate-multicall-fixture";
@@ -236,6 +237,18 @@ describe("recon-generate — G1 shape-inference target agrees with the return ta
           customerName: "Acme",
         },
       ],
+    });
+  });
+  it("folds the drill-down onto the freshest re-queried primary occurrence, not the first matching one", () => {
+    // r0 (page 1, price: 10) and r1 (page 2, price: 12) both satisfy r2's
+    // drill-down join on `sku`; the fold must anchor on r1, the freshest
+    // occurrence, or shape inference would silently pin the stale price.
+    const requeriedSteps = buildMulticallSingleShotSearchDrillDownRequeriedPrimaryOverlapActionSteps();
+
+    const effectiveResponseBody = selectEffectiveResponseBody(true, requeriedSteps, null);
+
+    expect(effectiveResponseBody).toEqual({
+      results: [{ sku: "sku-a", price: 12, amount: 19.99 }],
     });
   });
 });
