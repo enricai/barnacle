@@ -6,6 +6,7 @@ import {
   buildMulticallNestedGroupedDrillDownMultiGroupActionSteps,
   buildMulticallSingleShotSearchDrillDownActionSteps,
   buildMulticallSingleShotSearchDrillDownChainedDependentActionSteps,
+  buildMulticallSingleShotSearchDrillDownChainedDependentMultipartChainStepActionSteps,
   buildMulticallSingleShotSearchDrillDownCompositeNumericJoinActionSteps,
   buildMulticallSingleShotSearchDrillDownCompositeNumericJoinNonFirstItemActionSteps,
   buildMulticallSingleShotSearchDrillDownDrillDecoyActionSteps,
@@ -346,6 +347,31 @@ describe("detectDrillDownFoldPlan — chained per-item dependency", () => {
     expect(plan?.drillArrayPath).toEqual(["prices"]);
     expect(plan?.chain).toEqual([1, 2]);
     expect(plan?.chainArrayPath).toEqual(["history"]);
+  });
+});
+
+describe("resolveFoldPlan — multipart chain-step disqualification", () => {
+  it("disqualifies the plan when a downstream CHAIN step (not the drill step itself) is multipart", () => {
+    const steps =
+      buildMulticallSingleShotSearchDrillDownChainedDependentMultipartChainStepActionSteps();
+
+    // The structural detector still finds a plan — drillStepIndex (r1) is
+    // not multipart, only the further chained step (r2) is — but
+    // resolveFoldPlan must disqualify it because emitMultiStepExecuteHttp's
+    // fold loop re-issues every step in `chain`, not just drillStepIndex.
+    const plan = detectDrillDownFoldPlan(steps);
+    expect(plan).not.toBeNull();
+    expect(plan?.chain).toEqual([1, 2]);
+    expect(steps[plan!.drillStepIndex]!.isMultipart).toBe(false);
+    expect(steps[2]!.isMultipart).toBe(true);
+
+    expect(resolveFoldPlan(steps)).toBeNull();
+  });
+
+  it("still resolves the plan when every chain step is a plain JSON request", () => {
+    const steps = buildMulticallSingleShotSearchDrillDownChainedDependentActionSteps();
+
+    expect(resolveFoldPlan(steps)).not.toBeNull();
   });
 });
 

@@ -10,14 +10,53 @@ import type { createHttpClient } from "@/scraper/http-client";
  * the exact, closed set of type syntax the emitter is capable of producing
  * inside an executeHttp body: `as Record<string, unknown>` (the httpClient
  * response bindings, recon-generate.ts:2383) and the nested object-literal
- * assertion types `pathToAssertionType` builds for produces[] accessors
- * (recon-generate.ts:1476-1481, e.g. `as { Auth: { Token: string } }`). Both
- * are always a parenthesized or bare `as <braces-or-Record>` suffix — never a
- * generic, interface, or decorator — so a bounded regex is exhaustive against
- * everything this emitter can write, not merely today's fixture output.
+ * assertion types `pathToAssertionType` builds for produces[] accessors and
+ * fold-plan array accessors (recon-generate.ts:1476-1481, e.g.
+ * `as { Auth: { Token: string } }`, and — for a primary array nested inside
+ * a grouping array — `as { sections: ({ entries: Record<string, unknown>[] })[] }`).
+ * Both are always a parenthesized or bare `as <braces-or-Record>` suffix —
+ * never a generic, interface, or decorator — but the object-literal case can
+ * itself nest braces arbitrarily deep, so a single non-greedy `[^;]+?\}`
+ * regex only matches up to the FIRST inner `}` and truncates the assertion.
+ * This walks the string to find the matching close-brace by depth instead.
  */
 export function stripEmitterTypeAssertions(body: string): string {
-  const stripped = body.replace(/ as (?:Record<string, unknown>|\{[^;]+?\})/g, "");
+  let stripped = "";
+  let cursor = 0;
+  while (cursor < body.length) {
+    const recordMatch = / as Record<string, unknown>/y;
+    recordMatch.lastIndex = cursor;
+    if (recordMatch.test(body)) {
+      cursor = recordMatch.lastIndex;
+      continue;
+    }
+    if (body.startsWith(" as {", cursor)) {
+      const braceStart = cursor + 4;
+      let depth = 0;
+      let braceEnd = -1;
+      for (let i = braceStart; i < body.length; i++) {
+        if (body[i] === "{") depth++;
+        if (body[i] === "}") {
+          depth--;
+          if (depth === 0) {
+            braceEnd = i;
+            break;
+          }
+        }
+      }
+      if (braceEnd === -1) {
+        throw new Error(
+          `stripEmitterTypeAssertions found an unterminated object assertion starting at index ${cursor}`
+        );
+      }
+      // A fold-plan array accessor's assertion is followed by `)[]` — the
+      // array-of-groups suffix lives OUTSIDE the brace this loop closed on.
+      cursor = body.startsWith("[]", braceEnd + 1) ? braceEnd + 3 : braceEnd + 1;
+      continue;
+    }
+    stripped += body[cursor];
+    cursor++;
+  }
   if (/\bas\s+[A-Za-z{]/.test(stripped)) {
     throw new Error(
       `stripEmitterTypeAssertions left unstripped TS syntax — emitter output grew a new ` +
