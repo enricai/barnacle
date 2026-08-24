@@ -4349,52 +4349,35 @@ export function emitMultiStepExecuteHttp(
     );
   }
   const declaredNames = new Set<string>();
+  // Every non-terminal chain step past the drill step is folded into the SAME
+  // per-item loop the drill step itself emits (see below) — it must not also
+  // get the normal single-call treatment this pass gives every other step, or
+  // its request would be issued a second time, unconditionally, outside the
+  // loop.
+  // Every step in the fold plan's chain (the drill step and every further
+  // step transitively dependent on it — see FoldPlan.chain) is emitted
+  // together as a single per-item loop below, not by this pass's normal
+  // per-step produce/response declarations: their responses and produces are
+  // block-scoped to that loop and never escape to the rest of the function,
+  // so none of them may run through the outer `declaredNames`/produceLines
+  // bookkeeping below (that bookkeeping assumes function-scope declarations).
+  const foldChainIndices = new Set(foldPlan ? foldPlan.chain : []);
   for (let i = 0; i < actions.length; i++) {
     const step = actions[i]!;
     const cap = step.capture;
     const r = rendered[i]!;
-    // Build the produce-extraction lines FIRST so the binding decision reflects
-    // what is actually emitted, not a pre-scan predicate. A produce whose name
-    // was already declared by an earlier step is de-dup-skipped here — and must
-    // NOT keep this step's response bound, or `rN` is bound but never read
-    // (Biome `noUnusedVariables`). `assertNonNull: false`: the `pathToAssertionType`
-    // cast uses string-literal keys, so the accessor needs no `!` (and a `!`
-    // would trip Biome `noNonNullAssertion`).
-    const produceLines: string[] = [];
-    for (const p of step.produces) {
-      // Header/cookie-origin produces never surface as a JS accessor —
-      // createHttpClient's `bind` option (rendered once, above the steps)
-      // captures and forwards the value internally.
-      if (p.kind === "header") continue;
-      if (declaredNames.has(p.name)) continue;
-      if (!referencedNames.has(p.name)) continue;
-      declaredNames.add(p.name);
-      const assertion = pathToAssertionType(p.path);
-      produceLines.push(
-        `    const ${p.name} = (${step.varName} as ${assertion})${pathToAccessor(p.path, { assertNonNull: false })};`
-      );
-    }
-    const bindResponse = referencedNames.has(step.varName) || produceLines.length > 0;
 
-    // The fold plan's drill-down step is emitted as a per-item loop instead
-    // of the single call every other step gets: it re-issues the SAME
-    // url/headers/bodyArg/schemaExpr this pass already rendered for it, only
-    // with the captured join value(s) swapped for the loop item's own field
-    // accessor, then merges the matched drill response back onto that item —
+    // The fold plan's drill-down step (and every further step transitively
+    // dependent on it — see FoldPlan.chain) is emitted as a per-item loop
+    // instead of the single call every other step gets: each chain step
+    // re-issues the SAME url/headers/bodyArg/schemaExpr this pass already
+    // rendered for it, only with the captured join value(s) swapped for the
+    // loop item's own field accessor (the drill step) or its own produced
+    // response values (later chain steps, which already render with
+    // `${producedName}` templates — see deriveStateVarByValue), then merges
+    // the terminal chain step's matched response back onto that item —
     // reusing the per-call render rather than a second HTTP-call emitter.
     if (foldPlan && i === foldPlan.drillStepIndex) {
-      // The loop below block-scopes `const ${step.varName}` inside the
-      // `for` — it does not escape to the rest of the function. If this
-      // step's response var (or one of its produces) is referenced
-      // elsewhere, that reference would resolve to a `const` declared in a
-      // narrower scope and fail to compile. No fixture currently threads a
-      // drill step's own response onward like this, so fail loudly instead
-      // of silently emitting broken TypeScript.
-      if (referencedNames.has(step.varName) || produceLines.length > 0) {
-        throw new Error(
-          `emitMultiStepExecuteHttp: fold plan drill step ${step.varName} is referenced outside its own request (directly or via a produce), but the fold loop scopes its response to a single loop iteration — this combination isn't supported yet.`
-        );
-      }
       const primaryStep = actions[foldPlan.primaryStepIndex]!;
       // Read at the plan's OWN path rather than re-running the DFS: a
       // flow-declared `resultsPath` (see FoldReturnSpec) can name a different
@@ -4451,23 +4434,54 @@ export function emitMultiStepExecuteHttp(
       const primaryArrAccessor = pathToAccessor(foldPlan.primaryArrayPath, {
         assertNonNull: false,
       });
-      const drillArrType = foldArrayAssertionType(foldPlan.drillArrayPath);
-      const drillArrAccessor = pathToAccessor(foldPlan.drillArrayPath, { assertNonNull: false });
 
       lines.push(
         `    const foldItems = (${primaryStep.varName} as ${primaryArrType})${primaryArrAccessor};`,
-        `    for (const item of foldItems) {`,
-        `      const ${step.varName} = (await httpClient(\`${parameterize(r.url)}\`, {`,
-        `        method: ${JSON.stringify(r.method)},`
+        `    for (const item of foldItems) {`
       );
-      const joined = [parameterize(r.headersExpr), parameterize(r.bodyArg)]
-        .filter((s) => s !== "")
-        .join(" ");
-      if (joined !== "") lines.push(`        ${joined}`);
+      // Every chain step's response and produces are block-scoped to this
+      // `for` — they never escape to the rest of the function. That is
+      // exactly the constraint the previous (now-removed) throw enforced by
+      // refusing to run at all: instead of failing, each chain step's
+      // produces are re-declared here as loop-scoped locals, so a later
+      // chain step's own request (already rendered with `${producedName}`
+      // templates by the pass above, same as it would be for any two
+      // sequential non-fold steps) resolves them from this narrower scope.
+      const chainDeclared = new Set<string>();
+      for (const chainIndex of foldPlan.chain) {
+        const chainStep = actions[chainIndex]!;
+        const chainRendered = rendered[chainIndex]!;
+        lines.push(
+          `      const ${chainStep.varName} = (await httpClient(\`${parameterize(chainRendered.url)}\`, {`,
+          `        method: ${JSON.stringify(chainRendered.method)},`
+        );
+        const joined = [
+          parameterize(chainRendered.headersExpr),
+          parameterize(chainRendered.bodyArg),
+        ]
+          .filter((s) => s !== "")
+          .join(" ");
+        if (joined !== "") lines.push(`        ${joined}`);
+        lines.push(
+          `        schema: ${chainRendered.schemaExpr},`,
+          `      })) as Record<string, unknown>;`
+        );
+        for (const p of chainStep.produces) {
+          if (p.kind === "header") continue;
+          if (chainDeclared.has(p.name)) continue;
+          if (!referencedNames.has(p.name)) continue;
+          chainDeclared.add(p.name);
+          const assertion = pathToAssertionType(p.path);
+          lines.push(
+            `      const ${p.name} = (${chainStep.varName} as ${assertion})${pathToAccessor(p.path, { assertNonNull: false })};`
+          );
+        }
+      }
+      const terminalStep = actions[foldPlan.chain[foldPlan.chain.length - 1]!]!;
+      const drillArrType = foldArrayAssertionType(foldPlan.chainArrayPath);
+      const drillArrAccessor = pathToAccessor(foldPlan.chainArrayPath, { assertNonNull: false });
       lines.push(
-        `        schema: ${r.schemaExpr},`,
-        `      })) as Record<string, unknown>;`,
-        `      const foldMatches = (${step.varName} as ${drillArrType})${drillArrAccessor};`,
+        `      const foldMatches = (${terminalStep.varName} as ${drillArrType})${drillArrAccessor};`,
         `      const foldMatch = foldMatches.find((m) => ${foldPlan.joinFields
           .map((f) => `String(m[${JSON.stringify(f)}]) === String(${joinAccessor(f)})`)
           .join(" && ")}) ?? foldMatches[0];`,
@@ -4477,6 +4491,34 @@ export function emitMultiStepExecuteHttp(
       );
       continue;
     }
+    // Every other chain step (already fully emitted, inline, by the fold
+    // block above) must not also get the normal single-call treatment this
+    // pass gives every step, or its request would be issued a second time,
+    // unconditionally, outside the loop.
+    if (foldChainIndices.has(i)) continue;
+
+    // Build the produce-extraction lines FIRST so the binding decision reflects
+    // what is actually emitted, not a pre-scan predicate. A produce whose name
+    // was already declared by an earlier step is de-dup-skipped here — and must
+    // NOT keep this step's response bound, or `rN` is bound but never read
+    // (Biome `noUnusedVariables`). `assertNonNull: false`: the `pathToAssertionType`
+    // cast uses string-literal keys, so the accessor needs no `!` (and a `!`
+    // would trip Biome `noNonNullAssertion`).
+    const produceLines: string[] = [];
+    for (const p of step.produces) {
+      // Header/cookie-origin produces never surface as a JS accessor —
+      // createHttpClient's `bind` option (rendered once, above the steps)
+      // captures and forwards the value internally.
+      if (p.kind === "header") continue;
+      if (declaredNames.has(p.name)) continue;
+      if (!referencedNames.has(p.name)) continue;
+      declaredNames.add(p.name);
+      const assertion = pathToAssertionType(p.path);
+      produceLines.push(
+        `    const ${p.name} = (${step.varName} as ${assertion})${pathToAccessor(p.path, { assertNonNull: false })};`
+      );
+    }
+    const bindResponse = referencedNames.has(step.varName) || produceLines.length > 0;
 
     if (step.isCrossDomain) {
       lines.push(
