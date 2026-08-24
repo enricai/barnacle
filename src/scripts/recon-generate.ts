@@ -4380,142 +4380,164 @@ export function emitMultiStepExecuteHttp(
   // get the normal single-call treatment this pass gives every other step, or
   // its request would be issued a second time, unconditionally, outside the
   // loop.
-  // Every step in the fold plan's chain (the drill step and every further
-  // step transitively dependent on it — see FoldPlan.chain) is emitted
+  // Every step in a fold target's chain (the drill step and every further
+  // step transitively dependent on it — see FoldTarget.chain) is emitted
   // together as a single per-item loop below, not by this pass's normal
   // per-step produce/response declarations: their responses and produces are
   // block-scoped to that loop and never escape to the rest of the function,
   // so none of them may run through the outer `declaredNames`/produceLines
   // bookkeeping below (that bookkeeping assumes function-scope declarations).
-  const foldChainIndices = new Set(foldPlan ? foldPlan.chain : []);
+  const foldChainIndices = new Set(
+    foldPlan ? foldPlan.targets.flatMap((target) => target.chain) : []
+  );
   for (let i = 0; i < actions.length; i++) {
     const step = actions[i]!;
     const cap = step.capture;
     const r = rendered[i]!;
 
-    // The fold plan's drill-down step (and every further step transitively
-    // dependent on it — see FoldPlan.chain) is emitted as a per-item loop
-    // instead of the single call every other step gets: each chain step
-    // re-issues the SAME url/headers/bodyArg/schemaExpr this pass already
-    // rendered for it, only with the captured join value(s) swapped for the
-    // loop item's own field accessor (the drill step) or its own produced
-    // response values (later chain steps, which already render with
-    // `${producedName}` templates — see deriveStateVarByValue), then merges
-    // the terminal chain step's matched response back onto that item —
-    // reusing the per-call render rather than a second HTTP-call emitter.
-    if (foldPlan && i === foldPlan.drillStepIndex) {
+    // Every independent fold target — regardless of which drill step starts
+    // it — is folded into ONE shared per-item loop over the primary array,
+    // emitted once, at the FIRST target's drillStepIndex: each target's
+    // chain calls and Object.assign both run inside that same `for (const
+    // item of foldItems)` body, so a primary item ends up with fields folded
+    // in from every independent dependent drill-down, not just the first.
+    // Each chain step re-issues the SAME url/headers/bodyArg/schemaExpr this
+    // pass already rendered for it, only with the captured join value(s)
+    // swapped for the loop item's own field accessor (the drill step) or its
+    // own produced response values (later chain steps, which already render
+    // with `${producedName}` templates — see deriveStateVarByValue).
+    const isFirstFoldTarget =
+      foldPlan !== null && foldPlan.targets.length > 0 && foldPlan.targets[0]!.drillStepIndex === i;
+    if (foldPlan && isFirstFoldTarget) {
       const primaryStep = actions[foldPlan.primaryStepIndex]!;
       // Read at the plan's OWN path rather than re-running the DFS: a
       // flow-declared `resultsPath` (see FoldReturnSpec) can name a different
-      // array than findObjectArrayField's first match, and `firstItem` below
-      // decides which captured literal `parameterize` rewrites — it must be
-      // the item at `primaryMatchedItemIndex`, the one the drill request was
-      // actually built from, not always index 0.
+      // array than findObjectArrayField's first match.
       const primaryItems = objectItemsAtPath(
         primaryStep.capture.responseBody,
         foldPlan.primaryArrayPath
       );
-      const firstItem = primaryItems?.[foldPlan.primaryMatchedItemIndex];
-      if (!firstItem) {
-        throw new Error(
-          `emitMultiStepExecuteHttp: fold plan primary step ${primaryStep.varName} no longer resolves an object array at ${foldPlan.primaryArrayPath.join(".")} — the fold plan and this emitter have drifted out of sync`
-        );
-      }
-      const joinAccessor = (field: string): string =>
-        isValidJsIdentifier(field) ? `item.${field}` : `item[${JSON.stringify(field)}]`;
-      // A join field can reach the render either as the raw captured literal
-      // (URL query params) or as an already-generic `${payload.<field>}`
-      // reference (top-level JSON body keys — see
-      // applyPayloadKeyValueSubstitutions, which payload-ifies every scalar
-      // body key regardless of length, running BEFORE this fold branch ever
-      // sees the value). Both must resolve to the loop item's own field, not
-      // a caller-supplied payload value shared across every iteration.
-      // Word-boundary anchored: a plain `.split(value).join(...)` would also
-      // rewrite unrelated substrings that happen to contain the join value
-      // (e.g. a "p1" product id colliding with a "/v1/" path segment or a
-      // "p10" sibling id), corrupting parts of the request the join field
-      // never touched.
-      const replaceWholeValue = (haystack: string, value: string, replacement: string): string =>
-        haystack.replace(
-          new RegExp(`\\b${value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g"),
-          replacement
-        );
-      const parameterize = (text: string): string =>
-        foldPlan.joinFields.reduce((acc, field) => {
-          const replacement = `\${${joinAccessor(field)}}`;
-          const withAccessorSwapped = acc.split(`\${payload.${field}}`).join(replacement);
-          const value = firstItem[field];
-          const stringValue =
-            typeof value === "string" && value.length > 0
-              ? value
-              : typeof value === "number"
-                ? String(value)
-                : null;
-          return stringValue !== null
-            ? replaceWholeValue(withAccessorSwapped, stringValue, replacement)
-            : withAccessorSwapped;
-        }, text);
 
       const primaryArrType = foldArrayAssertionType(foldPlan.primaryArrayPath);
       const foldItemsExpr = pathToFoldAccessorExpr(
         `(${primaryStep.varName} as ${primaryArrType})`,
         foldPlan.primaryArrayPath
       );
+      const itemVar = "item";
 
-      lines.push(`    const foldItems = ${foldItemsExpr};`, `    for (const item of foldItems) {`);
-      // Every chain step's response and produces are block-scoped to this
-      // `for` — they never escape to the rest of the function. That is
-      // exactly the constraint the previous (now-removed) throw enforced by
-      // refusing to run at all: instead of failing, each chain step's
-      // produces are re-declared here as loop-scoped locals, so a later
-      // chain step's own request (already rendered with `${producedName}`
-      // templates by the pass above, same as it would be for any two
-      // sequential non-fold steps) resolves them from this narrower scope.
-      const chainDeclared = new Set<string>();
-      for (const chainIndex of foldPlan.chain) {
-        const chainStep = actions[chainIndex]!;
-        const chainRendered = rendered[chainIndex]!;
-        lines.push(
-          `      const ${chainStep.varName} = (await httpClient(\`${parameterize(chainRendered.url)}\`, {`,
-          `        method: ${JSON.stringify(chainRendered.method)},`
-        );
-        const joined = [
-          parameterize(chainRendered.headersExpr),
-          parameterize(chainRendered.bodyArg),
-        ]
-          .filter((s) => s !== "")
-          .join(" ");
-        if (joined !== "") lines.push(`        ${joined}`);
-        lines.push(
-          `        schema: ${chainRendered.schemaExpr},`,
-          `      })) as Record<string, unknown>;`
-        );
-        for (const p of chainStep.produces) {
-          if (p.kind === "header") continue;
-          if (chainDeclared.has(p.name)) continue;
-          if (!referencedNames.has(p.name)) continue;
-          chainDeclared.add(p.name);
-          const assertion = pathToAssertionType(p.path);
-          lines.push(
-            `      const ${p.name} = (${chainStep.varName} as ${assertion})${pathToAccessor(p.path, { assertNonNull: false })};`
+      lines.push(
+        `    const foldItems = ${foldItemsExpr};`,
+        `    for (const ${itemVar} of foldItems) {`
+      );
+
+      for (const [targetIndex, target] of foldPlan.targets.entries()) {
+        // `firstItem` decides which captured literal `parameterize` rewrites
+        // — it must be the item at `primaryMatchedItemIndex`, the one THIS
+        // target's drill request was actually built from, not always index
+        // 0, and can differ per target even though every target now shares
+        // the same runtime loop item.
+        const firstItem = primaryItems?.[target.primaryMatchedItemIndex];
+        if (!firstItem) {
+          throw new Error(
+            `emitMultiStepExecuteHttp: fold plan primary step ${primaryStep.varName} no longer resolves an object array at ${foldPlan.primaryArrayPath.join(".")} — the fold plan and this emitter have drifted out of sync`
           );
         }
+        // Each target's chain variables and merge result get their own
+        // suffixed local names so multiple independent targets sharing the
+        // same loop body can each declare their own locals without
+        // colliding on `foldMatches`/`foldMatch`. The overwhelmingly common
+        // single-target case keeps the original unsuffixed names.
+        const suffix = foldPlan.targets.length > 1 ? String(targetIndex) : "";
+        const joinAccessor = (field: string): string =>
+          isValidJsIdentifier(field)
+            ? `${itemVar}.${field}`
+            : `${itemVar}[${JSON.stringify(field)}]`;
+        // A join field can reach the render either as the raw captured literal
+        // (URL query params) or as an already-generic `${payload.<field>}`
+        // reference (top-level JSON body keys — see
+        // applyPayloadKeyValueSubstitutions, which payload-ifies every scalar
+        // body key regardless of length, running BEFORE this fold branch ever
+        // sees the value). Both must resolve to the loop item's own field, not
+        // a caller-supplied payload value shared across every iteration.
+        // Word-boundary anchored: a plain `.split(value).join(...)` would also
+        // rewrite unrelated substrings that happen to contain the join value
+        // (e.g. a "p1" product id colliding with a "/v1/" path segment or a
+        // "p10" sibling id), corrupting parts of the request the join field
+        // never touched.
+        const replaceWholeValue = (haystack: string, value: string, replacement: string): string =>
+          haystack.replace(
+            new RegExp(`\\b${value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g"),
+            replacement
+          );
+        const parameterize = (text: string): string =>
+          target.joinFields.reduce((acc, field) => {
+            const replacement = `\${${joinAccessor(field)}}`;
+            const withAccessorSwapped = acc.split(`\${payload.${field}}`).join(replacement);
+            const value = firstItem[field];
+            const stringValue =
+              typeof value === "string" && value.length > 0
+                ? value
+                : typeof value === "number"
+                  ? String(value)
+                  : null;
+            return stringValue !== null
+              ? replaceWholeValue(withAccessorSwapped, stringValue, replacement)
+              : withAccessorSwapped;
+          }, text);
+
+        // Every chain step's response and produces are block-scoped to this
+        // `for` — they never escape to the rest of the function. That is
+        // exactly the constraint the previous (now-removed) throw enforced by
+        // refusing to run at all: instead of failing, each chain step's
+        // produces are re-declared here as loop-scoped locals, so a later
+        // chain step's own request (already rendered with `${producedName}`
+        // templates by the pass above, same as it would be for any two
+        // sequential non-fold steps) resolves them from this narrower scope.
+        const chainDeclared = new Set<string>();
+        for (const chainIndex of target.chain) {
+          const chainStep = actions[chainIndex]!;
+          const chainRendered = rendered[chainIndex]!;
+          lines.push(
+            `      const ${chainStep.varName} = (await httpClient(\`${parameterize(chainRendered.url)}\`, {`,
+            `        method: ${JSON.stringify(chainRendered.method)},`
+          );
+          const joined = [
+            parameterize(chainRendered.headersExpr),
+            parameterize(chainRendered.bodyArg),
+          ]
+            .filter((s) => s !== "")
+            .join(" ");
+          if (joined !== "") lines.push(`        ${joined}`);
+          lines.push(
+            `        schema: ${chainRendered.schemaExpr},`,
+            `      })) as Record<string, unknown>;`
+          );
+          for (const p of chainStep.produces) {
+            if (p.kind === "header") continue;
+            if (chainDeclared.has(p.name)) continue;
+            if (!referencedNames.has(p.name)) continue;
+            chainDeclared.add(p.name);
+            const assertion = pathToAssertionType(p.path);
+            lines.push(
+              `      const ${p.name} = (${chainStep.varName} as ${assertion})${pathToAccessor(p.path, { assertNonNull: false })};`
+            );
+          }
+        }
+        const terminalStep = actions[target.chainTerminalIndex]!;
+        const drillArrType = foldArrayAssertionType(target.chainArrayPath);
+        const foldMatchesExpr = pathToFoldAccessorExpr(
+          `(${terminalStep.varName} as ${drillArrType})`,
+          target.chainArrayPath
+        );
+        lines.push(
+          `      const foldMatches${suffix} = ${foldMatchesExpr};`,
+          `      const foldMatch${suffix} = foldMatches${suffix}.find((m) => ${target.joinFields
+            .map((f) => `String(m[${JSON.stringify(f)}]) === String(${joinAccessor(f)})`)
+            .join(" && ")}) ?? foldMatches${suffix}[0];`,
+          `      Object.assign(${itemVar}, foldMatch${suffix} ?? {});`
+        );
       }
-      const terminalStep = actions[foldPlan.chainTerminalIndex]!;
-      const drillArrType = foldArrayAssertionType(foldPlan.chainArrayPath);
-      const foldMatchesExpr = pathToFoldAccessorExpr(
-        `(${terminalStep.varName} as ${drillArrType})`,
-        foldPlan.chainArrayPath
-      );
-      lines.push(
-        `      const foldMatches = ${foldMatchesExpr};`,
-        `      const foldMatch = foldMatches.find((m) => ${foldPlan.joinFields
-          .map((f) => `String(m[${JSON.stringify(f)}]) === String(${joinAccessor(f)})`)
-          .join(" && ")}) ?? foldMatches[0];`,
-        `      Object.assign(item, foldMatch ?? {});`,
-        `    }`,
-        ""
-      );
+      lines.push(`    }`, "");
       continue;
     }
     // Every other chain step (already fully emitted, inline, by the fold
@@ -4881,10 +4903,22 @@ function findObjectArrayField(
   return findAllObjectArrayFields(value, path)[0] ?? null;
 }
 
-/** A detected dependent drill-down: a later step whose request threads a
- * value out of an array-indexed field of an earlier (primary) step's
- * response, so the drill step's own response should be folded onto the
- * matching item of the primary step's results array rather than discarded.
+/** A detected primary results array and every independent drill-down that
+ * folds onto it — a later step whose request threads a value out of an
+ * array-indexed field of the primary step's response, so the drill step's
+ * own response should be folded onto the matching item of the primary
+ * step's results array rather than discarded. */
+export interface FoldPlan {
+  primaryStepIndex: number;
+  primaryArrayPath: string[];
+  targets: FoldTarget[];
+}
+
+/** One independent per-item drill-down folding onto {@link FoldPlan}'s
+ * primary array — a single primary can have several of these when more than
+ * one later step threads a different join field from it (see
+ * {@link detectDrillDownFoldPlan}).
+ *
  * `joinFields` is ordered (not a single string) because a real join can be
  * composite — e.g. matching on `accountId` AND `region` together.
  *
@@ -4905,9 +4939,7 @@ function findObjectArrayField(
  * past the immediate drill call, `chain` is `[drillStepIndex]`,
  * `chainTerminalIndex` is `drillStepIndex`, and `chainArrayPath` equals
  * `drillArrayPath`. */
-export interface FoldPlan {
-  primaryStepIndex: number;
-  primaryArrayPath: string[];
+export interface FoldTarget {
   joinFields: string[];
   drillStepIndex: number;
   drillArrayPath: string[];
@@ -5056,9 +5088,18 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
     const primaryCandidates = findAllObjectArrayFields(primary.capture.responseBody);
     if (primaryCandidates.length === 0) continue;
 
+    let primaryArrayPath: string[] | undefined;
+    const targets: FoldTarget[] = [];
+    // A step already consumed as a later member of an earlier target's
+    // chain threads its request from that target's own response, not
+    // straight off the primary array — it must not also be picked up here
+    // as a second, independent target.
+    const consumedIndices = new Set<number>();
+
     for (let drillIndex = primaryIndex + 1; drillIndex < actions.length; drillIndex++) {
       const drill = actions[drillIndex]!;
       if (drill === primary) continue;
+      if (consumedIndices.has(drillIndex)) continue;
 
       // Every candidate array is tried, not just the DFS-first match — a
       // decoy array (e.g. a facets/errors collection) can sit earlier in key
@@ -5067,11 +5108,19 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
       // not the one DFS happens to reach first. Within a candidate array,
       // every item is searched too — a flow that only ever drilled into a
       // later item (never the first) must still resolve, so this cannot stop
-      // at items[0].
+      // at items[0]. Once a primary array has been chosen for this primary
+      // step (by the first qualifying drill-down), every further target must
+      // thread from that SAME array — a second, unrelated array on the same
+      // primary response is not a valid target source for this plan.
+      const candidatePool = primaryArrayPath
+        ? primaryCandidates.filter(
+            (c) => JSON.stringify(c.path) === JSON.stringify(primaryArrayPath)
+          )
+        : primaryCandidates;
       let primaryArray: { path: string[]; items: Record<string, unknown>[] } | undefined;
       let primaryMatchedItemIndex = -1;
       let joinFields: string[] = [];
-      for (const candidate of primaryCandidates) {
+      for (const candidate of candidatePool) {
         const matchedIndex = candidate.items.findIndex(
           (item) => findThreadedJoinFields(item, drill.capture).length > 0
         );
@@ -5082,6 +5131,7 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
         break;
       }
       if (!primaryArray) continue;
+      primaryArrayPath = primaryArray.path;
 
       const drillCandidates = findAllObjectArrayFields(drill.capture.responseBody);
       // Same disambiguation on the drill side, reusing findThreadedJoinFields
@@ -5123,9 +5173,7 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
         primaryArray.items[primaryMatchedItemIndex]!
       );
 
-      return {
-        primaryStepIndex: primaryIndex,
-        primaryArrayPath: primaryArray.path,
+      targets.push({
         joinFields,
         drillStepIndex: drillIndex,
         drillArrayPath: drillArray.path,
@@ -5134,6 +5182,19 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
         chain,
         chainArrayPath,
         chainTerminalIndex,
+      });
+      // Everything past drillIndex already folded into this target's own
+      // chain is per-item dependent on THIS drill-down, not independently
+      // threaded off the primary array, so it must be skipped rather than
+      // re-considered as a new target.
+      for (const chainIndex of chain) consumedIndices.add(chainIndex);
+    }
+
+    if (targets.length > 0) {
+      return {
+        primaryStepIndex: primaryIndex,
+        primaryArrayPath: primaryArrayPath!,
+        targets,
       };
     }
   }
@@ -5147,7 +5208,7 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
  * structural heuristic cannot see on its own — most commonly a join value
  * the drill-down carries in a request HEADER, which
  * {@link collectRequestStringValues} deliberately never scans. `joinFields`
- * is a non-empty array, mirroring {@link FoldPlan.joinFields}, so a composite
+ * is a non-empty array, mirroring {@link FoldTarget.joinFields}, so a composite
  * join (e.g. `accountId` + `region`) can be declared, not just a single field.
  */
 export interface FoldReturnSpec {
@@ -5353,13 +5414,17 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
       return {
         primaryStepIndex,
         primaryArrayPath,
-        joinFields: spec.joinFields,
-        drillStepIndex,
-        drillArrayPath,
-        primaryMatchedItemIndex,
-        chain,
-        chainArrayPath,
-        chainTerminalIndex,
+        targets: [
+          {
+            joinFields: spec.joinFields,
+            drillStepIndex,
+            drillArrayPath,
+            primaryMatchedItemIndex,
+            chain,
+            chainArrayPath,
+            chainTerminalIndex,
+          },
+        ],
       };
     }
   }
@@ -5375,11 +5440,15 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
  * inferred schema would describe different calls (see
  * {@link selectEffectiveResponseBody}'s own docstring).
  *
- * A multipart step anywhere in the fold chain disqualifies the plan: the
- * fold loop re-issues EVERY chain step's request per item by re-keying its
- * rendered JSON request template (not just the immediate drill step's), and
- * a raw `FormData` upload has no such template to re-key — so those fall
- * back to ordinary single-call emission instead of emitting a broken loop.
+ * A multipart step anywhere in a target's fold chain disqualifies only that
+ * target: the fold loop re-issues EVERY chain step's request per item by
+ * re-keying its rendered JSON request template (not just the immediate drill
+ * step's), and a raw `FormData` upload has no such template to re-key — so
+ * that target falls back to ordinary single-call emission instead of
+ * emitting a broken loop, while any other target on the same primary that
+ * has no multipart step in its chain still folds normally. The whole plan is
+ * disqualified (returns `null`) only when EVERY target for the primary is
+ * multipart-disqualified, leaving nothing left to fold.
  */
 export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boolean }>(
   actions: readonly T[],
@@ -5389,7 +5458,10 @@ export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boole
     detectDrillDownFoldPlan(actions) ??
     (foldReturnSpec === null ? null : buildFoldPlanFromSpec(actions, foldReturnSpec));
   if (plan === null) return null;
-  return plan.chain.some((chainIndex) => actions[chainIndex]!.isMultipart) ? null : plan;
+  const targets = plan.targets.filter(
+    (target) => !target.chain.some((chainIndex) => actions[chainIndex]!.isMultipart)
+  );
+  return targets.length === 0 ? null : { ...plan, targets };
 }
 
 /** Rebuilds `value` with every occurrence of `target` (compared by object
@@ -5437,16 +5509,18 @@ function foldResponseBodyForShapeInference<T extends { capture: Capture }>(
   foldPlan: FoldPlan
 ): unknown {
   const primaryBody = actionSteps[foldPlan.primaryStepIndex]!.capture.responseBody;
-  const drillBody = actionSteps[foldPlan.chainTerminalIndex]!.capture.responseBody;
-  const primaryItems = objectItemsAtPath(primaryBody, foldPlan.primaryArrayPath);
-  const drillItems = objectItemsAtPath(drillBody, foldPlan.chainArrayPath);
-  const matchedItem = primaryItems?.[foldPlan.primaryMatchedItemIndex];
-  const drillMatch =
-    drillItems?.find((d) =>
-      foldPlan.joinFields.every((f) => String(d[f]) === String(matchedItem?.[f]))
-    ) ?? drillItems?.[0];
-  if (!primaryItems || !matchedItem || !drillMatch) return primaryBody;
-  return replaceByReference(primaryBody, matchedItem, { ...matchedItem, ...drillMatch });
+  return foldPlan.targets.reduce<unknown>((body, target) => {
+    const drillBody = actionSteps[target.chainTerminalIndex]!.capture.responseBody;
+    const primaryItems = objectItemsAtPath(body, foldPlan.primaryArrayPath);
+    const drillItems = objectItemsAtPath(drillBody, target.chainArrayPath);
+    const matchedItem = primaryItems?.[target.primaryMatchedItemIndex];
+    const drillMatch =
+      drillItems?.find((d) =>
+        target.joinFields.every((f) => String(d[f]) === String(matchedItem?.[f]))
+      ) ?? drillItems?.[0];
+    if (!primaryItems || !matchedItem || !drillMatch) return body;
+    return replaceByReference(body, matchedItem, { ...matchedItem, ...drillMatch });
+  }, primaryBody);
 }
 
 /** Bounded-paging signal detected from a primary read operation's own

@@ -176,4 +176,44 @@ describe("recon-generate — G1 shape-inference target agrees with the return ta
       })
     );
   });
+
+  it("folds EVERY independent target's fields onto the matched primary item, not just the first target's", () => {
+    // r0's sole item threads two unrelated join keys into two independent
+    // drill-downs (r1 keyed on orderId, r2 keyed on customerId) — both must
+    // land on the same matched item, mirroring emitMultiStepExecuteHttp's
+    // own chained loop-and-merge across every FoldPlan target.
+    const multiTargetSteps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/orders/list",
+        requestPostData: JSON.stringify({ page: 1 }),
+        responseBody: { orders: [{ orderId: "o1", customerId: "c1" }] },
+        timestamp: "2024-06-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/orders/o1/tracking",
+        requestPostData: null,
+        responseBody: { tracking: [{ orderId: "o1", trackingCode: "TRK1" }] },
+        timestamp: "2024-06-01T00:00:01Z",
+      }),
+      buildStep("r2", {
+        url: "https://api.example.com/customers/c1/profile",
+        requestPostData: null,
+        responseBody: { profiles: [{ customerId: "c1", customerName: "Acme" }] },
+        timestamp: "2024-06-01T00:00:02Z",
+      }),
+    ];
+
+    const effectiveResponseBody = selectEffectiveResponseBody(true, multiTargetSteps, null);
+
+    expect(effectiveResponseBody).toEqual({
+      orders: [
+        {
+          orderId: "o1",
+          customerId: "c1",
+          trackingCode: "TRK1",
+          customerName: "Acme",
+        },
+      ],
+    });
+  });
 });

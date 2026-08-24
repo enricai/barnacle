@@ -223,39 +223,47 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     expect(body).toContain("const r1 = (await httpClient(");
   });
 
-  it("resolves the drill step by join key rather than call order across multiple primary items", () => {
+  it("resolves both drill steps by join key rather than call order, as two independent fold targets sharing one loop", () => {
     // The primary page's items are [i-b, i-a] (index 0 is i-b); i-a's
-    // drill-down (r2) fires BEFORE i-b's (r3). detectDrillDownFoldPlan now
-    // scans every primary item (not just items[0]) for each candidate later
-    // step, so it finds the earliest step that threads ANY item's join
-    // value — r2, threading item index 1 (i-a) — rather than waiting for a
-    // later step that happens to thread items[0]. Every loop iteration still
-    // re-derives the join value from its own `item` rather than the single
-    // sampled item the plan was detected from.
+    // drill-down (r2) fires BEFORE i-b's (r3). Both r2 and r3 independently
+    // thread a primary item's itemId, so detectDrillDownFoldPlan now
+    // resolves TWO targets — one per drill-down — both emitted inside the
+    // SAME per-item loop over the primary array, so a single item ends up
+    // with fields folded in from both drill-downs. Every loop iteration
+    // re-derives the join value from the shared loop item rather than the
+    // single sampled item each target was detected from.
     const body = emit(buildMulticallDependentDrillDownActionSteps());
 
+    expect(body).toContain("for (const item of foldItems) {");
     expect(body).toContain(
       `const r2 = (await httpClient(\`\${payload.BaseUrl}/catalog/item-detail/\``
     );
+    expect(body).toContain(
+      `const r3 = (await httpClient(\`\${payload.BaseUrl}/catalog/item-detail/\``
+    );
     expect(body).toContain(`body: \`{"itemId":"\${item.itemId}"}\``);
-    // r3 (i-b's own drill call) is not part of the fold — it's still
-    // emitted as its own literal step — so only i-a (the value folded away
-    // into the loop) must be absent from the emitted body.
+    // Both drill calls' captured literal itemIds are parameterized away into
+    // the shared loop, so neither survives verbatim in the emitted body.
     expect(body).not.toContain('"itemId":"i-a"');
+    expect(body).not.toContain('"itemId":"i-b"');
   });
 
-  it("folds the shape-inference sample onto the matched item, not primaryItems[0]", () => {
-    // Same fixture as above: primary items are [i-b, i-a] and the plan
-    // matches i-a at index 1. selectEffectiveResponseBody must merge the
-    // drill response onto items[1] (i-a), leaving items[0] (i-b) untouched —
-    // not hard-code primaryItems[0] as the shape-inference merge target.
+  it("folds the shape-inference sample onto every matched item, not just primaryItems[0]", () => {
+    // Same fixture as above: primary items are [i-b, i-a], and both i-a's
+    // and i-b's own drill-downs are independent fold targets.
+    // selectEffectiveResponseBody must merge each drill response onto its
+    // OWN matched item — not hard-code primaryItems[0], and not stop after
+    // the first target.
     const steps = buildMulticallDependentDrillDownActionSteps();
 
     const shapeSource = selectEffectiveResponseBody(true, steps, null);
 
     expect(shapeSource).toEqual({
       totalPages: 2,
-      items: [{ itemId: "i-b" }, { itemId: "i-a", detailId: "d-a" }],
+      items: [
+        { itemId: "i-b", detailId: "d-b" },
+        { itemId: "i-a", detailId: "d-a" },
+      ],
     });
   });
 
