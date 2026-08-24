@@ -475,6 +475,24 @@ describe("resolveFoldPlan", () => {
     ).toEqual(heuristicOnly);
   });
 
+  it("leaves the heuristic's plan unchanged when the spec's resultsPath names an array on a different primary step", () => {
+    const steps = buildMulticallDependentDrillDownActionSteps();
+    const heuristicOnly = resolveFoldPlan(steps);
+    expect(heuristicOnly).toHaveLength(1);
+
+    // "details" is a genuinely real array — it just lives on the drill steps
+    // (index 2 and 3), not the primary step (index 1) the heuristic resolved
+    // — so the spec must be left unmerged rather than displacing or
+    // appending onto the heuristic's own primary.
+    const merged = resolveFoldPlan(steps, {
+      endpointPattern: "https://api.example.com/catalog/item-detail/",
+      resultsPath: "details",
+      joinFields: ["detailId"],
+    });
+
+    expect(merged).toEqual(heuristicOnly);
+  });
+
   it("returns null when no spec is given and the heuristic finds nothing", () => {
     expect(resolveFoldPlan(buildMulticallHeterogeneousActionSteps())).toEqual([]);
   });
