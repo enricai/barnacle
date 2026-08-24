@@ -5329,10 +5329,12 @@ function foldResponseBodyForShapeInference<T extends { capture: Capture }>(
   actionSteps: readonly T[],
   foldPlan: FoldPlan
 ): unknown {
+  const chainTerminalStepIndex =
+    foldPlan.chain[foldPlan.chain.length - 1] ?? foldPlan.drillStepIndex;
   const primaryBody = actionSteps[foldPlan.primaryStepIndex]!.capture.responseBody;
-  const drillBody = actionSteps[foldPlan.drillStepIndex]!.capture.responseBody;
+  const drillBody = actionSteps[chainTerminalStepIndex]!.capture.responseBody;
   const primaryItems = objectItemsAtPath(primaryBody, foldPlan.primaryArrayPath);
-  const drillItems = objectItemsAtPath(drillBody, foldPlan.drillArrayPath);
+  const drillItems = objectItemsAtPath(drillBody, foldPlan.chainArrayPath);
   const matchedItem = primaryItems?.[foldPlan.primaryMatchedItemIndex];
   const drillMatch =
     drillItems?.find((d) =>
