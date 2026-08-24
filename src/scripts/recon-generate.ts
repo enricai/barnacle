@@ -5637,9 +5637,14 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
     ) {
       const drill = actions[drillStepIndex]!;
       if (!endpointRx.test(drill.capture.url)) continue;
+      // Widened to a flat (non-array) object response the same way the
+      // structural heuristic is (see findAllObjectArrayFieldsOrWholeObject):
+      // an explicit foldReturn declaration must be able to express a
+      // detail-by-id drill response exactly like the case the heuristic
+      // detects on its own, not just an array field.
       const drillArrayPath = ((): string[] | null => {
         if (spec.drillResultsPath === undefined) {
-          return findObjectArrayField(drill.capture.responseBody)?.path ?? null;
+          return findObjectArrayFieldOrWholeObject(drill.capture.responseBody)?.path ?? null;
         }
         const path = spec.drillResultsPath.split(".");
         return objectItemsAtPath(drill.capture.responseBody, path) ? path : null;

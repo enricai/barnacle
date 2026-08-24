@@ -776,6 +776,75 @@ describe("resolveFoldPlan", () => {
     expect(resolveFoldPlan(steps, spec)[0]?.targets[0]?.drillArrayPath).toEqual(["errors"]);
   });
 
+  it("resolves a plan when the drill response is a single flat object and drillResultsPath is undeclared", () => {
+    // No object-array field anywhere in the drill response — the whole body
+    // IS the detail-by-id object, same shape detectDrillDownFoldPlan's
+    // structural heuristic already treats as an implicit one-item
+    // collection (findAllObjectArrayFieldsOrWholeObject).
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/catalog/search/",
+        requestPostData: '{"page":1}',
+        responseBody: { results: [{ sku: "sku-a" }, { sku: "sku-b" }] },
+        timestamp: "2024-04-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/catalog/pricing/",
+        requestPostData: '{"sku":"sku-a"}',
+        responseBody: { sku: "sku-a", amount: 19.99 },
+        timestamp: "2024-04-01T00:00:01Z",
+      }),
+    ];
+    const spec: FoldReturnSpec = {
+      endpointPattern: "/catalog/pricing/",
+      resultsPath: "results",
+      joinFields: ["sku"],
+    };
+
+    expect(resolveFoldPlan(steps, spec)).toEqual([
+      {
+        primaryStepIndex: 0,
+        primaryArrayPath: ["results"],
+        targets: [
+          {
+            joinFields: ["sku"],
+            drillStepIndex: 1,
+            drillArrayPath: [],
+            primaryMatchedItemIndex: 0,
+            chain: [1],
+            chainArrayPath: [],
+            chainTerminalIndex: 1,
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("resolves a plan when a declared drillResultsPath points at a nested single flat object", () => {
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/catalog/search/",
+        requestPostData: '{"page":1}',
+        responseBody: { results: [{ sku: "sku-a" }, { sku: "sku-b" }] },
+        timestamp: "2024-04-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/catalog/pricing/",
+        requestPostData: '{"sku":"sku-a"}',
+        responseBody: { detail: { sku: "sku-a", amount: 19.99 } },
+        timestamp: "2024-04-01T00:00:01Z",
+      }),
+    ];
+    const spec: FoldReturnSpec = {
+      endpointPattern: "/catalog/pricing/",
+      resultsPath: "results",
+      drillResultsPath: "detail",
+      joinFields: ["sku"],
+    };
+
+    expect(resolveFoldPlan(steps, spec)[0]?.targets[0]?.drillArrayPath).toEqual(["detail"]);
+  });
+
   it("returns null when the declared drillResultsPath resolves to no non-empty object array", () => {
     const steps = buildUnthreadedDoubleDecoyDrillDownActionSteps();
     const spec: FoldReturnSpec = {
