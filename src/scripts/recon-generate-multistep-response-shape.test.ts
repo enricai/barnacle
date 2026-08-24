@@ -8,6 +8,7 @@ import {
 import {
   buildMulticallHeterogeneousActionStepsWithDrillDown,
   buildMulticallSingleShotSearchDrillDownNumericJoinActionSteps,
+  buildMulticallSingleShotSearchDrillDownRequeriedPrimaryOverlapActionSteps,
   buildStep,
   type MulticallFixtureStep,
 } from "@/scripts/recon-generate-multicall-fixture";
@@ -238,15 +239,27 @@ describe("recon-generate — G1 shape-inference target agrees with the return ta
       ],
     });
   });
+  it("folds the drill-down onto the freshest re-queried primary occurrence, not the first matching one", () => {
+    // r0 (page 1, price: 10) and r1 (page 2, price: 12) both satisfy r2's
+    // drill-down join on `sku`; the fold must anchor on r1, the freshest
+    // occurrence, or shape inference would silently pin the stale price.
+    const requeriedSteps =
+      buildMulticallSingleShotSearchDrillDownRequeriedPrimaryOverlapActionSteps();
+
+    const effectiveResponseBody = selectEffectiveResponseBody(true, requeriedSteps, null);
+
+    expect(effectiveResponseBody).toEqual({
+      results: [{ sku: "sku-a", price: 12, amount: 19.99 }],
+    });
+  });
 });
 
 describe("recon-generate — G1 shape-inference target agrees with the return target across multiple independent fold plans", () => {
   // Two unrelated primary/drill-down pairs in one action sequence —
   // resolveFoldPlan resolves both (see "detectDrillDownFoldPlan — multiple
-  // independent primaries" in recon-generate-fold-plan.test.ts). Only the
-  // LAST plan's fold is what emitMultiStepExecuteHttp's `return { data }`
-  // references (see its own `lastFoldPlan` selection); shape inference must
-  // pick the SAME plan's folded body, not the first plan's.
+  // independent primaries" in recon-generate-fold-plan.test.ts). Both plans'
+  // own folded primary bodies are object-spread together into the returned
+  // `data`; shape inference must merge the SAME two plans' folded bodies.
   const twoPrimarySteps: MulticallFixtureStep[] = [
     buildStep("r0", {
       url: "https://api.example.com/products/search",
@@ -284,14 +297,17 @@ describe("recon-generate — G1 shape-inference target agrees with the return ta
     }),
   ];
 
-  it("selects the LAST plan's folded body, matching emitMultiStepExecuteHttp's return-value selection", () => {
+  it("merges every plan's folded body, matching emitMultiStepExecuteHttp's return-value merge", () => {
     const emitted = emit(twoPrimarySteps);
-    expect(emitted).toContain("return { data: r2 };");
-    expect(emitted).not.toContain("return { data: r0 };");
+    expect(emitted).toContain("return { data: { ...r0, ...r2 } };");
 
     const effectiveResponseBody = selectEffectiveResponseBody(true, twoPrimarySteps, null);
 
     expect(effectiveResponseBody).toEqual({
+      products: [
+        { productId: "p1", name: "Widget", rating: 5 },
+        { productId: "p2", name: "Gadget" },
+      ],
       vendors: [
         { vendorId: "v1", name: "Acme", contractId: "c1" },
         { vendorId: "v2", name: "Globex" },

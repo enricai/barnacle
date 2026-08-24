@@ -110,15 +110,17 @@ describe("recon-generate drill-down fold executeHttp — multi-primary runtime g
     const executeHttp = evalExecuteHttpBody(body, httpClient, z);
     const result = await executeHttp({ BaseUrl: "https://api.example.com", page: 1 });
 
-    // emitMultiStepExecuteHttp's `return { data }` picks the LAST resolved
-    // fold plan's primary (see recon-generate.ts's `lastFoldPlan` selection,
-    // the same last-wins convention `selectReturnAction` uses) — here the
-    // vendors/contracts plan. Both loops still run at runtime (asserted via
-    // the fetch call count and per-id routing below), so this proves the
-    // vendors plan's own drill-down folded in correctly and picked up NONE
-    // of the products plan's `rating` field — i.e. no cross-contamination —
-    // even though both loops executed in the same function.
+    // emitMultiStepExecuteHttp's `return { data }` object-spreads every
+    // resolved fold plan's own primary var together (see recon-generate.ts's
+    // merge in the `return { data: ... }` emission) — here both the
+    // products/reviews plan and the vendors/contracts plan. This proves each
+    // plan's own drill-down folded in correctly onto its own items with no
+    // cross-contamination between the two independently executed loops.
     expect(result.data).toEqual({
+      products: [
+        { productId: "p1", rating: 5 },
+        { productId: "p2", rating: 3 },
+      ],
       vendors: [
         { vendorId: "v1", contractId: "c1" },
         { vendorId: "v2", contractId: "c2" },

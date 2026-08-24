@@ -1054,10 +1054,13 @@ export function selectReturnAction<T extends { capture: Capture }>(steps: readon
  * be the FOLDED primary body, not the plain one, or the schema would omit
  * every field the fold adds. Both resolve through `resolveFoldPlan` with the
  * same `foldReturnSpec` so they can never disagree on whether a fold applies.
- * When multiple plans resolve, this picks the LAST plan's folded body — the
- * same convention `emitMultiStepExecuteHttp` uses for `return { data }` (see
- * its `lastFoldPlan` selection) — so the inferred shape and the runtime
- * return value always describe the same call.
+ * When multiple plans resolve, each plan's own folded body is object-spread
+ * together into one combined object — the same merge
+ * `emitMultiStepExecuteHttp` performs for `return { data }` — so the inferred
+ * shape and the runtime return value always describe the same call. A plan
+ * whose folded body isn't a plain object can't be spread meaningfully, so in
+ * that case this falls back to the LAST plan's folded body alone, exactly as
+ * before this merge was introduced.
  */
 export function selectEffectiveResponseBody<T extends { capture: Capture; isMultipart: boolean }>(
   isSubmissionFlow: boolean,
@@ -1068,8 +1071,17 @@ export function selectEffectiveResponseBody<T extends { capture: Capture; isMult
   if (!isSubmissionFlow) return replayResponseBody;
   const foldPlans = resolveFoldPlan(actionSteps, foldReturnSpec);
   const lastFoldPlan = foldPlans[foldPlans.length - 1] ?? null;
-  if (lastFoldPlan) return foldResponseBodyForShapeInference(actionSteps, lastFoldPlan);
-  return selectReturnAction(actionSteps)?.capture.responseBody ?? replayResponseBody;
+  if (foldPlans.length <= 1) {
+    if (lastFoldPlan) return foldResponseBodyForShapeInference(actionSteps, lastFoldPlan);
+    return selectReturnAction(actionSteps)?.capture.responseBody ?? replayResponseBody;
+  }
+  const foldedBodies = foldPlans.map((plan) =>
+    foldResponseBodyForShapeInference(actionSteps, plan)
+  );
+  if (foldedBodies.every(isPlainObject)) {
+    return Object.assign({}, ...foldedBodies) as Record<string, unknown>;
+  }
+  return foldResponseBodyForShapeInference(actionSteps, lastFoldPlan!);
 }
 
 /**
@@ -4731,15 +4743,28 @@ export function emitMultiStepExecuteHttp(
     lines.push("");
   }
 
-  // When multiple plans resolve, the LAST one in action-sequence order wins —
-  // same convention selectReturnAction uses (see findRequeriedActions /
-  // selectReturnAction above): a later primary is more likely the one the
-  // flow's final response actually reflects.
+  // When multiple plans resolve, every plan's own primary var is
+  // object-spread together into one combined result — mirroring
+  // selectEffectiveResponseBody's merge — so the runtime return value and the
+  // inferred shape always describe the same call. A primary whose OWN
+  // top-level body isn't a plain object can't be spread meaningfully, so in
+  // that case this falls back to the LAST plan's primary var alone, same as
+  // before this merge was introduced.
   const lastFoldPlan = foldPlans[foldPlans.length - 1] ?? null;
-  const returnVar = lastFoldPlan
-    ? actions[lastFoldPlan.primaryStepIndex]!.varName
-    : (returnAction?.varName ?? "undefined");
-  lines.push(`    return { data: ${returnVar} };`);
+  const everyPrimaryIsPlainObject = foldPlans.every((plan) =>
+    isPlainObject(actions[plan.primaryStepIndex]!.capture.responseBody)
+  );
+  if (foldPlans.length > 1 && everyPrimaryIsPlainObject) {
+    const spreadVars = foldPlans
+      .map((plan) => `...${actions[plan.primaryStepIndex]!.varName}`)
+      .join(", ");
+    lines.push(`    return { data: { ${spreadVars} } };`);
+  } else {
+    const returnVar = lastFoldPlan
+      ? actions[lastFoldPlan.primaryStepIndex]!.varName
+      : (returnAction?.varName ?? "undefined");
+    lines.push(`    return { data: ${returnVar} };`);
+  }
 
   return lines.join("\n");
 }
@@ -5149,6 +5174,128 @@ function computeFoldChain<T extends { capture: Capture }>(
  * primary/drill pair with a threaded join key exists — e.g. a plain
  * submission flow.
  */
+/** The result of scanning a single primary candidate for drill-down targets
+ * — factored out of {@link detectDrillDownFoldPlan}'s outer loop so the
+ * freshest-wins lookahead can re-run it against a later occurrence of the
+ * same re-queried endpoint without duplicating the scan logic. */
+interface PrimaryScanResult {
+  primaryArrayPath: string[] | undefined;
+  targets: FoldTarget[];
+}
+
+function scanPrimaryCandidate<T extends { capture: Capture }>(
+  actions: readonly T[],
+  primaryIndex: number,
+  globallyConsumedIndices: ReadonlySet<number>
+): PrimaryScanResult {
+  const primary = actions[primaryIndex]!;
+  const primaryCandidates = findAllObjectArrayFields(primary.capture.responseBody);
+  if (primaryCandidates.length === 0) return { primaryArrayPath: undefined, targets: [] };
+
+  let primaryArrayPath: string[] | undefined;
+  const targets: FoldTarget[] = [];
+  // A step already consumed as a later member of an earlier target's
+  // chain threads its request from that target's own response, not
+  // straight off the primary array — it must not also be picked up here
+  // as a second, independent target.
+  const consumedIndices = new Set<number>();
+
+  for (let drillIndex = primaryIndex + 1; drillIndex < actions.length; drillIndex++) {
+    const drill = actions[drillIndex]!;
+    if (drill === primary) continue;
+    if (consumedIndices.has(drillIndex)) continue;
+    if (globallyConsumedIndices.has(drillIndex)) continue;
+
+    // Every candidate array is tried, not just the DFS-first match — a
+    // decoy array (e.g. a facets/errors collection) can sit earlier in key
+    // order than the real results array, so the candidate actually
+    // threading a join field into the drill request is the one this picks,
+    // not the one DFS happens to reach first. Within a candidate array,
+    // every item is searched too — a flow that only ever drilled into a
+    // later item (never the first) must still resolve, so this cannot stop
+    // at items[0]. Once a primary array has been chosen for this primary
+    // step (by the first qualifying drill-down), every further target must
+    // thread from that SAME array — a second, unrelated array on the same
+    // primary response is not a valid target source for this plan.
+    const candidatePool = primaryArrayPath
+      ? primaryCandidates.filter((c) => JSON.stringify(c.path) === JSON.stringify(primaryArrayPath))
+      : primaryCandidates;
+    let primaryArray: { path: string[]; items: Record<string, unknown>[] } | undefined;
+    let primaryMatchedItemIndex = -1;
+    let joinFields: string[] = [];
+    for (const candidate of candidatePool) {
+      const matchedIndex = candidate.items.findIndex(
+        (item) => findThreadedJoinFields(item, drill.capture).length > 0
+      );
+      if (matchedIndex === -1) continue;
+      primaryArray = candidate;
+      primaryMatchedItemIndex = matchedIndex;
+      joinFields = findThreadedJoinFields(candidate.items[matchedIndex]!, drill.capture);
+      break;
+    }
+    if (!primaryArray) continue;
+    primaryArrayPath = primaryArray.path;
+
+    const drillCandidates = findAllObjectArrayFields(drill.capture.responseBody);
+    // Same disambiguation on the drill side, reusing findThreadedJoinFields
+    // against the drill's own request: a per-item drill array commonly
+    // echoes the join value(s) it was looked up by (e.g. a `sku` search
+    // parameter mirrored back on each result), which distinguishes it from
+    // a decoy array (e.g. an `errors[]` collection) that never does. Not
+    // every real drill array echoes the join value, though (e.g. a
+    // `productId`-keyed lookup returning `units[]` with no `productId`
+    // field of its own) — when no candidate threads, the DFS-first match
+    // is still the best guess. As on the primary side, every item (not
+    // just items[0]) is checked for a thread.
+    const drillArray =
+      drillCandidates.find((candidate) =>
+        candidate.items.some((item) => findThreadedJoinFields(item, drill.capture).length > 0)
+      ) ?? drillCandidates[0];
+    if (!drillArray) continue;
+
+    const { chain, chainArrayPath, chainTerminalIndex } = computeFoldChain(
+      actions,
+      drillIndex,
+      drillArray.path
+    );
+
+    // `primaryArray.path` can carry an ARRAY_WILDCARD_SEGMENT (a matched
+    // item nested inside a multi-element outer array — e.g. a
+    // paginated/grouped response wrapping several sub-collections), in
+    // which case `primaryMatchedItemIndex` above is only the LOCAL index
+    // within the one group `primaryArray.items` happens to be. Re-resolve
+    // it against the FLATTENED items every group at that path contributes,
+    // by object identity (findAllObjectArrayFields and objectItemsAtPath
+    // both read the same references, never cloning), so downstream
+    // consumers reading through `objectItemsAtPath` — the emitter's
+    // `firstItem` lookup and the shape-inference fold — land on the exact
+    // same item regardless of which group it came from.
+    const flattenedPrimaryItems =
+      objectItemsAtPath(primary.capture.responseBody, primaryArray.path) ?? [];
+    const globalMatchedItemIndex = flattenedPrimaryItems.indexOf(
+      primaryArray.items[primaryMatchedItemIndex]!
+    );
+
+    targets.push({
+      joinFields,
+      drillStepIndex: drillIndex,
+      drillArrayPath: drillArray.path,
+      primaryMatchedItemIndex:
+        globalMatchedItemIndex === -1 ? primaryMatchedItemIndex : globalMatchedItemIndex,
+      chain,
+      chainArrayPath,
+      chainTerminalIndex,
+    });
+    // Everything past drillIndex already folded into this target's own
+    // chain is per-item dependent on THIS drill-down, not independently
+    // threaded off the primary array, so it must be skipped rather than
+    // re-considered as a new target.
+    for (const chainIndex of chain) consumedIndices.add(chainIndex);
+  }
+
+  return { primaryArrayPath, targets };
+}
+
 export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
   actions: readonly T[]
 ): FoldPlan[] {
@@ -5163,127 +5310,66 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
   for (let primaryIndex = 0; primaryIndex < actions.length; primaryIndex++) {
     if (globallyConsumedIndices.has(primaryIndex)) continue;
     const primary = actions[primaryIndex]!;
-    const primaryCandidates = findAllObjectArrayFields(primary.capture.responseBody);
-    if (primaryCandidates.length === 0) continue;
+    const scanResult = scanPrimaryCandidate(actions, primaryIndex, globallyConsumedIndices);
+    if (scanResult.targets.length === 0) continue;
 
-    let primaryArrayPath: string[] | undefined;
-    const targets: FoldTarget[] = [];
-    // A step already consumed as a later member of an earlier target's
-    // chain threads its request from that target's own response, not
-    // straight off the primary array — it must not also be picked up here
-    // as a second, independent target.
-    const consumedIndices = new Set<number>();
-
-    for (let drillIndex = primaryIndex + 1; drillIndex < actions.length; drillIndex++) {
-      const drill = actions[drillIndex]!;
-      if (drill === primary) continue;
-      if (consumedIndices.has(drillIndex)) continue;
-      if (globallyConsumedIndices.has(drillIndex)) continue;
-
-      // Every candidate array is tried, not just the DFS-first match — a
-      // decoy array (e.g. a facets/errors collection) can sit earlier in key
-      // order than the real results array, so the candidate actually
-      // threading a join field into the drill request is the one this picks,
-      // not the one DFS happens to reach first. Within a candidate array,
-      // every item is searched too — a flow that only ever drilled into a
-      // later item (never the first) must still resolve, so this cannot stop
-      // at items[0]. Once a primary array has been chosen for this primary
-      // step (by the first qualifying drill-down), every further target must
-      // thread from that SAME array — a second, unrelated array on the same
-      // primary response is not a valid target source for this plan.
-      const candidatePool = primaryArrayPath
-        ? primaryCandidates.filter(
-            (c) => JSON.stringify(c.path) === JSON.stringify(primaryArrayPath)
-          )
-        : primaryCandidates;
-      let primaryArray: { path: string[]; items: Record<string, unknown>[] } | undefined;
-      let primaryMatchedItemIndex = -1;
-      let joinFields: string[] = [];
-      for (const candidate of candidatePool) {
-        const matchedIndex = candidate.items.findIndex(
-          (item) => findThreadedJoinFields(item, drill.capture).length > 0
-        );
-        if (matchedIndex === -1) continue;
-        primaryArray = candidate;
-        primaryMatchedItemIndex = matchedIndex;
-        joinFields = findThreadedJoinFields(candidate.items[matchedIndex]!, drill.capture);
-        break;
-      }
-      if (!primaryArray) continue;
-      primaryArrayPath = primaryArray.path;
-
-      const drillCandidates = findAllObjectArrayFields(drill.capture.responseBody);
-      // Same disambiguation on the drill side, reusing findThreadedJoinFields
-      // against the drill's own request: a per-item drill array commonly
-      // echoes the join value(s) it was looked up by (e.g. a `sku` search
-      // parameter mirrored back on each result), which distinguishes it from
-      // a decoy array (e.g. an `errors[]` collection) that never does. Not
-      // every real drill array echoes the join value, though (e.g. a
-      // `productId`-keyed lookup returning `units[]` with no `productId`
-      // field of its own) — when no candidate threads, the DFS-first match
-      // is still the best guess. As on the primary side, every item (not
-      // just items[0]) is checked for a thread.
-      const drillArray =
-        drillCandidates.find((candidate) =>
-          candidate.items.some((item) => findThreadedJoinFields(item, drill.capture).length > 0)
-        ) ?? drillCandidates[0];
-      if (!drillArray) continue;
-
-      const { chain, chainArrayPath, chainTerminalIndex } = computeFoldChain(
-        actions,
-        drillIndex,
-        drillArray.path
+    // A re-queried primary (same endpoint hit more than once, per
+    // findRequeriedActions) can have MULTIPLE occurrences that each
+    // independently thread a join key into the SAME later drill-down —
+    // e.g. two "available-products" calls that both happen to contain the
+    // item the drill-down looks up. selectReturnAction/selectPayloadAction
+    // already establish freshest-wins for this exact re-queried-primary
+    // case, so the plan must anchor on the LAST such occurrence, not the
+    // first one the forward scan happens to reach.
+    const primaryEndpointKey = endpointKey(primary.capture.url);
+    let freshestIndex = primaryIndex;
+    let freshestResult = scanResult;
+    for (let laterIndex = primaryIndex + 1; laterIndex < actions.length; laterIndex++) {
+      if (globallyConsumedIndices.has(laterIndex)) continue;
+      const laterAction = actions[laterIndex]!;
+      if (endpointKey(laterAction.capture.url) !== primaryEndpointKey) continue;
+      const laterResult = scanPrimaryCandidate(actions, laterIndex, globallyConsumedIndices);
+      if (laterResult.targets.length === 0) continue;
+      const threadsSameDrill = laterResult.targets.some((laterTarget) =>
+        freshestResult.targets.some(
+          (currentTarget) => currentTarget.drillStepIndex === laterTarget.drillStepIndex
+        )
       );
-
-      // `primaryArray.path` can carry an ARRAY_WILDCARD_SEGMENT (a matched
-      // item nested inside a multi-element outer array — e.g. a
-      // paginated/grouped response wrapping several sub-collections), in
-      // which case `primaryMatchedItemIndex` above is only the LOCAL index
-      // within the one group `primaryArray.items` happens to be. Re-resolve
-      // it against the FLATTENED items every group at that path contributes,
-      // by object identity (findAllObjectArrayFields and objectItemsAtPath
-      // both read the same references, never cloning), so downstream
-      // consumers reading through `objectItemsAtPath` — the emitter's
-      // `firstItem` lookup and the shape-inference fold — land on the exact
-      // same item regardless of which group it came from.
-      const flattenedPrimaryItems =
-        objectItemsAtPath(primary.capture.responseBody, primaryArray.path) ?? [];
-      const globalMatchedItemIndex = flattenedPrimaryItems.indexOf(
-        primaryArray.items[primaryMatchedItemIndex]!
+      if (!threadsSameDrill) continue;
+      // A primary occurrence's targets all read from THAT occurrence's own
+      // response array, so switching the anchor to a later occurrence can
+      // only be done wholesale, not merged field-by-field. Doing so is only
+      // safe when the later occurrence re-threads EVERY drill-down the
+      // current anchor already covers — otherwise a drill-down target
+      // unique to the earlier occurrence (one it threads independently of
+      // the re-queried join key) would be silently dropped instead of
+      // folded at all.
+      const laterCoversEveryCurrentTarget = freshestResult.targets.every((currentTarget) =>
+        laterResult.targets.some(
+          (laterTarget) => laterTarget.drillStepIndex === currentTarget.drillStepIndex
+        )
       );
-
-      targets.push({
-        joinFields,
-        drillStepIndex: drillIndex,
-        drillArrayPath: drillArray.path,
-        primaryMatchedItemIndex:
-          globalMatchedItemIndex === -1 ? primaryMatchedItemIndex : globalMatchedItemIndex,
-        chain,
-        chainArrayPath,
-        chainTerminalIndex,
-      });
-      // Everything past drillIndex already folded into this target's own
-      // chain is per-item dependent on THIS drill-down, not independently
-      // threaded off the primary array, so it must be skipped rather than
-      // re-considered as a new target.
-      for (const chainIndex of chain) consumedIndices.add(chainIndex);
+      if (!laterCoversEveryCurrentTarget) continue;
+      freshestIndex = laterIndex;
+      freshestResult = laterResult;
     }
+    // Defer to the later occurrence: it will be picked up on its own turn
+    // through the outer loop, once it is reached as `primaryIndex`.
+    if (freshestIndex !== primaryIndex) continue;
 
-    if (targets.length > 0) {
-      plans.push({
-        primaryStepIndex: primaryIndex,
-        primaryArrayPath: primaryArrayPath!,
-        targets,
-      });
-      // A step already folded into this plan's chains — the drill step(s)
-      // and everything threaded onward from them — was already merged
-      // into this primary's own array; it must not be re-picked up as a
-      // fresh PRIMARY (its response was already consumed here) nor as a
-      // drill target for a later, independent primary.
-      globallyConsumedIndices.add(primaryIndex);
-      for (const target of targets) {
-        for (const chainIndex of target.chain) globallyConsumedIndices.add(chainIndex);
-      }
+    plans.push({
+      primaryStepIndex: freshestIndex,
+      primaryArrayPath: freshestResult.primaryArrayPath!,
+      targets: freshestResult.targets,
+    });
+    // A step already folded into this plan's chains — the drill step(s)
+    // and everything threaded onward from them — was already merged
+    // into this primary's own array; it must not be re-picked up as a
+    // fresh PRIMARY (its response was already consumed here) nor as a
+    // drill target for a later, independent primary.
+    globallyConsumedIndices.add(freshestIndex);
+    for (const target of freshestResult.targets) {
+      for (const chainIndex of target.chain) globallyConsumedIndices.add(chainIndex);
     }
   }
   return plans;
