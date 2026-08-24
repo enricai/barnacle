@@ -4,7 +4,11 @@ import { z } from "zod/v4";
 import { createHttpClient } from "@/scraper/http-client";
 import { emitMultiStepExecuteHttp, type FoldReturnSpec } from "@/scripts/recon-generate";
 import { evalExecuteHttpBody } from "@/scripts/recon-generate-execute-http-harness.test-helper";
-import { buildStep, type MulticallFixtureStep } from "@/scripts/recon-generate-multicall-fixture";
+import {
+  buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinRequeriedPrimaryOverlapActionSteps,
+  buildStep,
+  type MulticallFixtureStep,
+} from "@/scripts/recon-generate-multicall-fixture";
 
 /**
  * A search → per-item drill-down pair whose join value threads ONLY through
@@ -167,6 +171,83 @@ describe("recon-generate drill-down foldReturn spec executeHttp — generated-an
       ],
     });
     // One primary call plus one drill-down call per primary item.
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(3);
+  });
+});
+
+const REQUERIED_PRIMARY_SPEC: FoldReturnSpec = {
+  endpointPattern: "/accounts/detail",
+  resultsPath: "accounts",
+  joinFields: ["accountId"],
+};
+
+/** Stubs `fetch` to answer the primary search call TWICE with different
+ * `accounts[]` payloads (stale "Acme" first, freshest "Acme Corp" second —
+ * mirroring the requery in
+ * {@link buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinRequeriedPrimaryOverlapActionSteps}),
+ * then the drill-down call with the account's transaction. Proves the
+ * emitted code's own fold loop, not just `resolveFoldPlan`, is built off
+ * the freshest ("Acme Corp") occurrence. */
+function stubRequeriedPrimaryFetch(): void {
+  let searchCallCount = 0;
+  const fn = vi.fn(async (url: string) => {
+    if (url.includes("/accounts/detail")) {
+      return jsonResponse({ transactions: [{ transactionId: "t1" }] });
+    }
+    const isFirstSearchCall = searchCallCount === 0;
+    searchCallCount += 1;
+    return jsonResponse({
+      accounts: [{ accountId: 42, name: isFirstSearchCall ? "Acme" : "Acme Corp" }],
+    });
+  });
+  vi.stubGlobal("fetch", fn);
+}
+
+describe("recon-generate drill-down foldReturn spec executeHttp — freshest re-queried primary runtime guard", () => {
+  it("folds the drill-down onto the freshest re-queried primary occurrence at runtime, not the stale one", async () => {
+    const actionSteps =
+      buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinRequeriedPrimaryOverlapActionSteps();
+    const inputBody = JSON.parse(actionSteps[0]!.capture.requestPostData ?? "null") as unknown;
+
+    const body = emitMultiStepExecuteHttp(
+      actionSteps as unknown as Parameters<typeof emitMultiStepExecuteHttp>[0],
+      inputBody,
+      { stringMessageKey: null, nestedErrorPaths: [] },
+      new Map(),
+      new Set(),
+      new Map(),
+      new Set(),
+      new Map(),
+      new Map(),
+      "https://api.example.com",
+      new Map(),
+      new Map(),
+      null,
+      new Map(),
+      new Map(),
+      new Set(),
+      [],
+      new Map(),
+      new Map(),
+      REQUERIED_PRIMARY_SPEC
+    );
+
+    const limiter = new Bottleneck({ maxConcurrent: 1, minTime: 0 });
+    const httpClient = createHttpClient({
+      schema: z.unknown(),
+      bottleneck: limiter,
+      baseHeaders: { "Content-Type": "application/json" },
+    });
+
+    stubRequeriedPrimaryFetch();
+
+    const executeHttp = evalExecuteHttpBody(body, httpClient, z);
+    const result = await executeHttp({ BaseUrl: "https://api.example.com", page: 1 });
+
+    expect(result.data).toEqual({
+      accounts: [{ accountId: 42, name: "Acme Corp", transactionId: "t1" }],
+    });
+    // Both primary calls (stale + freshest re-query) plus one drill-down call.
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(3);
   });
 });
