@@ -860,14 +860,25 @@ describe("grouped/nested primary fold — detection, schema inference, and codeg
   it("folds correctly when the matched item lives in a non-first outer group, not just group 0", () => {
     const steps = buildMulticallNestedGroupedDrillDownMultiGroupActionSteps();
 
-    // The emitted accessor flattens every group instead of indexing into
+    // 1. Detection must resolve the item that actually matched — group 1's
+    // e2 — regardless of which group it lives in.
+    const plan = detectDrillDownFoldPlan(
+      steps as unknown as Parameters<typeof detectDrillDownFoldPlan>[0]
+    );
+    expect(plan).not.toBeNull();
+    expect(plan?.primaryArrayPath).toEqual(["sections", "*", "entries"]);
+    expect(plan?.joinFields).toEqual(["entryId"]);
+
+    // 2. The emitted accessor flattens every group instead of indexing into
     // whichever one the matched item happened to be captured in.
     const body = emit(steps, null);
     expect(body).toContain(
       "const foldItems = (r0 as { sections: ({ entries: Record<string, unknown>[] })[] }).sections.flatMap((g0) => g0.entries);"
     );
+    expect(body).not.toContain('sections["0"]');
+    expect(body).not.toContain("sections[0]");
 
-    // Shape inference must fold the drilled description onto the SECOND
+    // 3. Shape inference must fold the drilled description onto the SECOND
     // group's entry (e2), leaving every other item — in EITHER group —
     // untouched, proving the fold isn't scoped to group 0.
     expect(selectEffectiveResponseBody(true, steps, null)).toEqual({
