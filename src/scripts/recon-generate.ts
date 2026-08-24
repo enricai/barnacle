@@ -5569,9 +5569,9 @@ function objectItemsAtPath(
  * {@link detectDrillDownFoldPlan} — when `endpointPattern` is not a valid
  * regex, when `resultsPath` resolves to no object array on any action, when
  * no strictly-later action's URL matches `endpointPattern`, or when the
- * matched drill-down's own response holds no object array (the emitter folds
- * `foldMatches[0]` out of that array, so a plan without one has nothing to
- * merge).
+ * matched drill-down's own response holds no object array and is not itself
+ * a flat object (the emitter folds `foldMatches[0]` out of that collection,
+ * so a plan without one has nothing to merge).
  */
 /** Same value set as {@link collectRequestStringValues}, plus every request
  * header value — a flow-declared `foldReturn` exists specifically to cover
