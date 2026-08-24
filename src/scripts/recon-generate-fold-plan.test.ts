@@ -285,6 +285,8 @@ describe("detectDrillDownFoldPlan — nested grouping array", () => {
     // fixture can never disprove) would land the fold on the wrong item.
     expect(plan?.primaryMatchedItemIndex).toBe(2);
     expect(plan?.joinFields).toEqual(["entryId"]);
+    expect(plan?.drillStepIndex).toBe(1);
+    expect(plan?.drillArrayPath).toEqual(["details"]);
   });
 });
 
