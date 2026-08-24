@@ -50,6 +50,41 @@ describe("detectDrillDownFoldPlan", () => {
     expect(plan && [2, 3]).toContain(plan?.primaryStepIndex);
   });
 
+  it("anchors on the freshest re-queried primary occurrence when both independently thread the same drill-down's join key", () => {
+    const AVAILABLE_PRODUCTS_URL = "https://api.example.com/available-products/";
+    const AVAILABLE_UNITS_URL = "https://api.example.com/available-units/";
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: AVAILABLE_PRODUCTS_URL,
+        requestPostData: '{"page":1}',
+        responseBody: { products: [{ productId: "p1" }] },
+        timestamp: "2024-01-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: AVAILABLE_PRODUCTS_URL,
+        requestPostData: '{"page":2}',
+        responseBody: { products: [{ productId: "p1" }] },
+        timestamp: "2024-01-01T00:00:01Z",
+      }),
+      buildStep("r2", {
+        url: AVAILABLE_UNITS_URL,
+        requestPostData: '{"productId":"p1"}',
+        responseBody: { units: [{ unitId: "s1" }] },
+        timestamp: "2024-01-01T00:00:02Z",
+      }),
+    ];
+
+    const plan = detect(steps);
+
+    expect(plan).not.toBeNull();
+    // Both r0 and r1 independently thread productId "p1" into r2's drill-down
+    // request; the plan must anchor on the LATER (freshest) occurrence, r1,
+    // matching selectReturnAction/selectPayloadAction's freshest-wins
+    // convention for re-queried primaries.
+    expect(plan?.primaryStepIndex).toBe(1);
+    expect(plan?.targets[0]?.drillStepIndex).toBe(2);
+  });
+
   it("returns null for a plain 2-step submission flow with no array-index-threaded request", () => {
     const steps: MulticallFixtureStep[] = [
       buildStep("r0", {

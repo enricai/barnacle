@@ -5336,6 +5336,18 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
         )
       );
       if (!threadsSameDrill) continue;
+      // A primary occurrence's targets all read from THAT occurrence's own
+      // response array, so switching the anchor to a later occurrence can
+      // only be done wholesale, not merged field-by-field. Doing so is only
+      // safe when the later occurrence re-threads EVERY drill-down the
+      // current anchor already covers — otherwise a drill-down target
+      // unique to the earlier occurrence (one it threads independently of
+      // the re-queried join key) would be silently dropped instead of
+      // folded at all.
+      const laterCoversEveryCurrentTarget = freshestResult.targets.every((currentTarget) =>
+        laterResult.targets.some((laterTarget) => laterTarget.drillStepIndex === currentTarget.drillStepIndex)
+      );
+      if (!laterCoversEveryCurrentTarget) continue;
       freshestIndex = laterIndex;
       freshestResult = laterResult;
     }
