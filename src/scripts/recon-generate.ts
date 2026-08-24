@@ -5175,7 +5175,18 @@ function computeFoldChain<T extends { capture: Capture }>(
     });
     if (!dependsOnChain) continue;
     chain.push(i);
-    const candidateArray = findObjectArrayFieldOrWholeObject(candidate.capture.responseBody);
+    // Deliberately the STRICT (non-widened) lookup here, not
+    // findObjectArrayFieldOrWholeObject: every later step in the chain
+    // depends on an earlier one by definition (it threads a value out of
+    // it), so a flat, non-array response would ALWAYS qualify as an
+    // implicit one-item collection — collapsing this into "always advance
+    // the terminal to the newest chain member" regardless of whether that
+    // member actually holds foldable per-item data. Only a response that
+    // genuinely contains an object-array field should move the terminal
+    // forward; a step called purely for its side effect / for threading a
+    // value further (e.g. a `{ held: true }` confirmation) must leave the
+    // terminal at the last step that actually had one.
+    const candidateArray = findObjectArrayField(candidate.capture.responseBody);
     if (candidateArray) {
       chainArrayPath = candidateArray.path;
       chainTerminalIndex = i;
