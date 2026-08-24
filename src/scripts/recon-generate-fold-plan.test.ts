@@ -352,7 +352,8 @@ describe("detectDrillDownFoldPlan — chained per-item dependency", () => {
 
 describe("resolveFoldPlan — multipart chain-step disqualification", () => {
   it("disqualifies the plan when a downstream CHAIN step (not the drill step itself) is multipart", () => {
-    const steps = buildMulticallSingleShotSearchDrillDownChainedDependentMultipartChainStepActionSteps();
+    const steps =
+      buildMulticallSingleShotSearchDrillDownChainedDependentMultipartChainStepActionSteps();
 
     // The structural detector still finds a plan — drillStepIndex (r1) is
     // not multipart, only the further chained step (r2) is — but
