@@ -3,6 +3,7 @@ import { detectDrillDownFoldPlan, resolveFoldPlan } from "@/scripts/recon-genera
 import {
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
+  buildMulticallNestedGroupedDrillDownMultiGroupActionSteps,
   buildMulticallSingleShotSearchDrillDownActionSteps,
   buildMulticallSingleShotSearchDrillDownCompositeNumericJoinActionSteps,
   buildMulticallSingleShotSearchDrillDownCompositeNumericJoinNonFirstItemActionSteps,
@@ -258,11 +259,31 @@ describe("detectDrillDownFoldPlan — nested grouping array", () => {
     const plan = detect(steps);
 
     expect(plan).not.toBeNull();
-    expect(plan?.primaryArrayPath).toEqual(["sections", "0", "entries"]);
+    // The literal group index is never baked in — "*" marks the outer
+    // sections[] array as a whole, so the accessor generalizes to N groups
+    // (see ARRAY_WILDCARD_SEGMENT in recon-generate.ts) instead of freezing
+    // whichever group happened to contain the matched item.
+    expect(plan?.primaryArrayPath).toEqual(["sections", "*", "entries"]);
     expect(plan?.joinFields).toEqual(["entryId"]);
     expect(plan?.drillStepIndex).toBe(1);
     expect(plan?.drillArrayPath).toEqual(["details"]);
     expect(plan?.primaryMatchedItemIndex).toBe(1);
+  });
+
+  it("resolves primaryMatchedItemIndex as the GLOBAL flattened index across every outer group, not the local index within the one group that matched", () => {
+    const steps = buildMulticallNestedGroupedDrillDownMultiGroupActionSteps();
+
+    const plan = detect(steps);
+
+    expect(plan).not.toBeNull();
+    expect(plan?.primaryArrayPath).toEqual(["sections", "*", "entries"]);
+    // sections[0].entries = [e1, e3]; sections[1].entries = [e2, e4]; the
+    // drilled entry (e2) is local index 0 of group 1, but flattened across
+    // both groups in outer-array order ([e1, e3, e2, e4]) it is index 2 —
+    // freezing the local index (0) or assuming group 0 (as a single-group
+    // fixture can never disprove) would land the fold on the wrong item.
+    expect(plan?.primaryMatchedItemIndex).toBe(2);
+    expect(plan?.joinFields).toEqual(["entryId"]);
   });
 });
 
