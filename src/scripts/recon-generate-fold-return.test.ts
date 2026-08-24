@@ -603,6 +603,13 @@ describe("resolveFoldPlan", () => {
     const plan = resolveFoldPlan(steps, SINGLE_SHOT_SPEC);
     expect(plan[0]?.primaryStepIndex).toBe(0);
     expect(plan[0]?.targets[0]?.drillStepIndex).toBe(2);
+
+    // The folded body itself must carry r2's amount (24.99), not r1's
+    // (19.99) — pinning the resolved index alone wouldn't catch a fold that
+    // picks the right step but still merges the wrong response payload.
+    expect(selectEffectiveResponseBody(true, steps, null, SINGLE_SHOT_SPEC)).toEqual({
+      results: [{ sku: "sku-a", amount: 24.99 }],
+    });
   });
 
   it("merges a spec-declared drill-down target onto the heuristic's plan for the same primary", () => {
