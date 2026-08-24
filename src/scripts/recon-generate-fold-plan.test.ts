@@ -547,6 +547,44 @@ describe("detectDrillDownFoldPlan — chained per-item dependency", () => {
     expect(plan?.targets[0]?.chainArrayPath).toEqual(["rows"]);
     expect(plan?.targets[0]?.chainTerminalIndex).toBe(1);
   });
+
+  it("advances the terminal to a later flat-object step whose own data outweighs the drill step's echo-inflated baseline", () => {
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/widgets/search",
+        requestPostData: JSON.stringify({ page: 1 }),
+        responseBody: { results: [{ widgetId: "widget-7" }] },
+        timestamp: "2024-12-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/widgets/widget-7/status",
+        requestPostData: null,
+        // The drill step's own response echoes the threaded widgetId
+        // (present in its own request URL) alongside one lightweight,
+        // non-echoed field. Uncorrected, this echoed field inflates the
+        // baseline richness a later step must exceed.
+        responseBody: { widgetId: "widget-7", status: "active" },
+        timestamp: "2024-12-01T00:00:01Z",
+      }),
+      buildStep("r2", {
+        url: "https://api.example.com/widgets/widget-7/detail",
+        requestPostData: JSON.stringify({ status: "active" }),
+        // Threads r1's `status` value onward, and itself echoes it, but
+        // carries strictly more of its own non-echoed data than r1's real
+        // (echo-excluded) richness of 1 — this is the genuine terminal.
+        responseBody: { status: "active", detailId: "detail-1", quantity: 9 },
+        timestamp: "2024-12-01T00:00:02Z",
+      }),
+    ];
+
+    const plan = detect(steps);
+
+    expect(plan).not.toBeNull();
+    expect(plan?.targets[0]?.drillStepIndex).toBe(1);
+    expect(plan?.targets[0]?.chain).toEqual([1, 2]);
+    expect(plan?.targets[0]?.chainArrayPath).toEqual([]);
+    expect(plan?.targets[0]?.chainTerminalIndex).toBe(2);
+  });
 });
 
 describe("detectDrillDownFoldPlan — multiple independent targets", () => {
