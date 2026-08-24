@@ -876,3 +876,46 @@ export function buildMulticallSingleShotSearchDrillDownChainedDependentActionSte
     }),
   ];
 }
+
+/**
+ * A search endpoint re-queried with two distinct bodies (`page 1`/`page 2`,
+ * satisfying {@link findRequeriedActions}'s re-query signature) whose
+ * responses BOTH independently contain a `results[]` item sharing the same
+ * `sku` — but at a different `price` (10 vs 12) — followed by a pricing
+ * drill-down call threading that `sku` via its URL query param. Every prior
+ * action is a fold-primary candidate for {@link detectDrillDownFoldPlan}, so
+ * both step 0 and step 1 satisfy the drill's join; the primary-candidate
+ * scan currently commits to the FIRST match (step 0, `price: 10`) and
+ * globally consumes the drill step, so step 1 — the fresher, `price: 12`
+ * re-queried occurrence — is never considered. `amount` in the drill
+ * response is the object-array field distinct from `price` that a fold
+ * assertion reads to observe which occurrence was actually folded onto.
+ */
+export function buildMulticallSingleShotSearchDrillDownRequeriedPrimaryOverlapActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        results: [{ sku: "sku-a", price: 10 }],
+      },
+      timestamp: "2024-12-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":2}',
+      responseBody: {
+        results: [{ sku: "sku-a", price: 12 }],
+      },
+      timestamp: "2024-12-01T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: `${CATALOG_PRICING_URL}?sku=sku-a`,
+      requestPostData: null,
+      responseBody: {
+        prices: [{ sku: "sku-a", amount: 19.99 }],
+      },
+      timestamp: "2024-12-01T00:00:02Z",
+    }),
+  ];
+}
