@@ -7,6 +7,7 @@ import {
 } from "@/scripts/recon-generate";
 import {
   buildMulticallHeterogeneousActionStepsWithDrillDown,
+  buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinRequeriedPrimaryOverlapActionSteps,
   buildMulticallSingleShotSearchDrillDownNumericJoinActionSteps,
   buildMulticallSingleShotSearchDrillDownRequeriedPrimaryOverlapActionSteps,
   buildStep,
@@ -250,6 +251,29 @@ describe("recon-generate — G1 shape-inference target agrees with the return ta
 
     expect(effectiveResponseBody).toEqual({
       results: [{ sku: "sku-a", price: 12, amount: 19.99 }],
+    });
+  });
+
+  it("folds the drill-down onto the freshest re-queried primary occurrence resolved from a spec, not the first matching one", () => {
+    // r0 (page 1, name: "Acme") and r1 (page 2, name: "Acme Corp") both
+    // satisfy r2's header-threaded join on accountId; the join value never
+    // appears anywhere the structural heuristic scans, so this can only
+    // resolve via the declared spec — mirroring resolveFoldPlan's own
+    // "anchors on the freshest re-queried primary occurrence when the join
+    // is threaded only through a request header" coverage, but asserting
+    // the folded body agrees, not just the resolved index.
+    const headerThreadedRequeriedSteps =
+      buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinRequeriedPrimaryOverlapActionSteps();
+
+    const effectiveResponseBody = selectEffectiveResponseBody(
+      true,
+      headerThreadedRequeriedSteps,
+      null,
+      { endpointPattern: "/accounts/detail", resultsPath: "accounts", joinFields: ["accountId"] }
+    );
+
+    expect(effectiveResponseBody).toEqual({
+      accounts: [{ accountId: 42, name: "Acme Corp", transactionId: "t1" }],
     });
   });
 });
