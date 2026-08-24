@@ -5218,7 +5218,10 @@ function computeFoldChain<T extends { capture: Capture }>(
     // member" regardless of whether that member actually holds foldable
     // data.
     if (!isObjectArrayItem(candidate.capture.responseBody)) continue;
-    const candidateRichness = directPrimitiveChildCount(candidate.capture.responseBody);
+    const candidateRichness = directPrimitiveChildCountExcludingEchoed(
+      candidate.capture.responseBody,
+      requestValues
+    );
     if (candidateRichness > chainTerminalRichness) {
       chainArrayPath = [];
       chainTerminalIndex = i;
@@ -5238,6 +5241,29 @@ function computeFoldChain<T extends { capture: Capture }>(
 function chainTerminalItemRichness(responseBody: unknown, path: string[]): number {
   const items = objectItemsAtPath(responseBody, path);
   return items && items.length > 0 ? directPrimitiveChildCount(items[0]!) : 0;
+}
+
+/** Like {@link directPrimitiveChildCount}, but skips a field whose value was
+ * itself already threaded INTO this response's own request (present in
+ * `requestValues`) — a confirmation step routinely echoes the id/token it
+ * was called with alongside a status flag, and that echo must not count as
+ * genuine per-item data or a side-effect-only response (e.g. `{ token:
+ * "t1", held: true }` echoing a threaded `token`) would out-rank the real
+ * terminal on field count alone. */
+function directPrimitiveChildCountExcludingEchoed(
+  obj: Record<string, unknown>,
+  requestValues: ReadonlySet<string>
+): number {
+  let n = 0;
+  for (const v of Object.values(obj)) {
+    if (v === null || (typeof v !== "object" && typeof v !== "function")) {
+      if (typeof v === "string" || typeof v === "number") {
+        if (requestValues.has(String(v))) continue;
+      }
+      n++;
+    }
+  }
+  return n;
 }
 
 /**

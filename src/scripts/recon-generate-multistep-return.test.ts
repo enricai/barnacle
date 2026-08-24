@@ -194,6 +194,40 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     expect(body).not.toContain("const foldMatches = ");
   });
 
+  it("does not let a confirmation step's echoed threaded field outrank the genuine flat-object terminal", () => {
+    // r2 (confirm/) echoes back r1's priceToken alongside a `held` flag — a
+    // routine confirmation-response shape, not richer per-item data. Naively
+    // counting r2's direct primitive fields (2: priceToken + held) against
+    // r1's (1: priceToken) would wrongly promote r2 to the chain terminal;
+    // the echoed priceToken must be excluded from the count since it
+    // reached r2 only because r2's OWN request threaded it in.
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/catalog/search/",
+        requestPostData: '{"page":1}',
+        responseBody: { results: [{ sku: "sku-a" }] },
+        timestamp: "2024-11-15T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/catalog/pricing/",
+        requestPostData: '{"sku":"sku-a"}',
+        responseBody: { priceToken: "tok-a1" },
+        timestamp: "2024-11-15T00:00:01Z",
+      }),
+      buildStep("r2", {
+        url: "https://api.example.com/catalog/confirm/",
+        requestPostData: '{"priceToken":"tok-a1"}',
+        responseBody: { priceToken: "tok-a1", held: true },
+        timestamp: "2024-11-15T00:00:02Z",
+      }),
+    ];
+
+    const body = emit(steps);
+
+    expect(body).toContain("const foldMatch = r1 as Record<string, unknown>;");
+    expect(body).not.toContain("const foldMatch = r2 as Record<string, unknown>;");
+  });
+
   it("still returns the search step when it is ALSO the terminal call", () => {
     const body = emit(buildMulticallHeterogeneousActionSteps());
 
