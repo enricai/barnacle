@@ -803,6 +803,27 @@ describe("selectEffectiveResponseBody — flow-declared foldReturn", () => {
       categories: [{ products: [{ sku: "sku-a", amount: 19.99 }, { sku: "sku-b" }] }],
     });
   });
+
+  it("folds fields from BOTH a merged plan's targets onto the sampled response, not just the first", () => {
+    const steps = buildMulticallSingleShotSearchHeuristicAndSpecTwoTargetActionSteps();
+
+    // The heuristic resolves the body-threaded pricing drill-down (amount) on
+    // its own; the header-threaded stock drill-down (qty) is only reachable
+    // via the declared spec. The merged plan must fold BOTH onto item[0],
+    // not just whichever target the heuristic found first.
+    const spec: FoldReturnSpec = {
+      endpointPattern: "/catalog/stock/",
+      resultsPath: "results",
+      joinFields: ["itemId"],
+    };
+
+    expect(selectEffectiveResponseBody(true, steps, null, spec)).toEqual({
+      results: [
+        { sku: "sku-a", itemId: "item-a", amount: 19.99, qty: 7 },
+        { sku: "sku-b", itemId: "item-b" },
+      ],
+    });
+  });
 });
 
 describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
