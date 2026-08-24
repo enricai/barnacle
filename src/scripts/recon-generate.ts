@@ -4455,7 +4455,10 @@ export function emitMultiStepExecuteHttp(
           `      const ${chainStep.varName} = (await httpClient(\`${parameterize(chainRendered.url)}\`, {`,
           `        method: ${JSON.stringify(chainRendered.method)},`
         );
-        const joined = [parameterize(chainRendered.headersExpr), parameterize(chainRendered.bodyArg)]
+        const joined = [
+          parameterize(chainRendered.headersExpr),
+          parameterize(chainRendered.bodyArg),
+        ]
           .filter((s) => s !== "")
           .join(" ");
         if (joined !== "") lines.push(`        ${joined}`);

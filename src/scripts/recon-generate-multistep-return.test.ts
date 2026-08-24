@@ -144,7 +144,7 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     expect(body).toContain("for (const item of foldItems) {");
     expect(body).toContain("const r4 = (await httpClient(");
     expect(body).toContain("const r5 = (await httpClient(");
-    expect(body).toContain("const unitId = (r4 as { units: { \"0\": { unitId: string } } })");
+    expect(body).toContain('const unitId = (r4 as { units: { "0": { unitId: string } } })');
     expect(body).toContain("const foldMatches = (r5 as");
     expect(body).toContain("Object.assign(item, foldMatch ?? {});");
     // r5 must not be re-issued a second time outside the fold loop.
