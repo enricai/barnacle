@@ -18,6 +18,7 @@ import {
   buildMulticallSingleShotSearchDrillDownOutOfOrderItemActionSteps,
   buildMulticallSingleShotSearchDrillDownPathThreadedJoinActionSteps,
   buildMulticallSingleShotSearchDrillDownRequeriedPrimaryOverlapActionSteps,
+  buildMulticallSingleShotSearchDrillDownRicherFlatOutranksNestedArrayActionSteps,
   buildStep,
   type MulticallFixtureStep,
 } from "@/scripts/recon-generate-multicall-fixture";
@@ -134,6 +135,16 @@ describe("detectDrillDownFoldPlan", () => {
     expect(plan?.targets[0]?.joinFields).toEqual(["sku"]);
     expect(plan?.targets[0]?.drillStepIndex).toBe(1);
     expect(plan?.targets[0]?.drillArrayPath).toEqual(["prices"]);
+  });
+
+  it("prefers a richer flat whole-object drill candidate over a small real nested object-array field", () => {
+    const plan = detect(
+      buildMulticallSingleShotSearchDrillDownRicherFlatOutranksNestedArrayActionSteps()
+    );
+
+    expect(plan).not.toBeNull();
+    expect(plan?.targets[0]?.drillArrayPath).toEqual([]);
+    expect(plan?.targets[0]?.chainArrayPath).toEqual([]);
   });
 
   it("resolves a fold plan when the drill step's response is a single flat object, not wrapped in an object-array field", () => {

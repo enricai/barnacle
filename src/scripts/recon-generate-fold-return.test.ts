@@ -16,9 +16,12 @@ import {
   buildMulticallSingleShotSearchDrillDownMultiMatchActionSteps,
   buildMulticallSingleShotSearchDrillDownTypeMismatchJoinActionSteps,
   buildMulticallSingleShotSearchHeuristicAndSpecTwoTargetActionSteps,
+  buildMulticallTwoIndependentPrimariesSecondHeaderThreadedActionSteps,
   buildStep,
   type MulticallFixtureStep,
 } from "@/scripts/recon-generate-multicall-fixture";
+
+const CATALOG_VENDOR_CONTRACTS_URL_PATTERN = "https://api.example.com/catalog/vendors/contracts/";
 
 /** Both sides of {@link buildMulticallSingleShotSearchDrillDownActionSteps}'s
  * decoy at once: a decoy `facets[]` array ahead of the real `results[]` on
@@ -548,6 +551,46 @@ describe("resolveFoldPlan", () => {
     });
 
     expect(merged).toEqual(heuristicOnly);
+  });
+
+  it("appends a genuinely independent spec-declared plan instead of discarding it when an unrelated structural plan already exists", () => {
+    const steps = buildMulticallTwoIndependentPrimariesSecondHeaderThreadedActionSteps();
+
+    // The heuristic alone only resolves the first pair (r0/r1, body-threaded
+    // via `productId`) — the second pair's join threads only through a
+    // request header, which the structural heuristic never scans.
+    const heuristicOnly = resolveFoldPlan(steps);
+    expect(heuristicOnly).toHaveLength(1);
+    expect(heuristicOnly[0]?.primaryStepIndex).toBe(0);
+
+    // The spec's own primary (r2) and target chain (r3) are entirely
+    // disjoint from the heuristic's plan's consumed indices (0, 1), so the
+    // spec's plan must be appended as a second, independent entry rather
+    // than silently dropped just because its primary differs from the one
+    // the heuristic already resolved.
+    const merged = resolveFoldPlan(steps, {
+      endpointPattern: CATALOG_VENDOR_CONTRACTS_URL_PATTERN,
+      resultsPath: "vendors",
+      joinFields: ["vendorId"],
+    });
+
+    expect(merged).toHaveLength(2);
+    expect(merged[0]).toEqual(heuristicOnly[0]);
+    expect(merged[1]).toEqual({
+      primaryStepIndex: 2,
+      primaryArrayPath: ["vendors"],
+      targets: [
+        {
+          joinFields: ["vendorId"],
+          drillStepIndex: 3,
+          drillArrayPath: ["contracts"],
+          primaryMatchedItemIndex: 0,
+          chain: [3],
+          chainArrayPath: ["contracts"],
+          chainTerminalIndex: 3,
+        },
+      ],
+    });
   });
 
   it("returns null when no spec is given and the heuristic finds nothing", () => {

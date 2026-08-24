@@ -5041,22 +5041,26 @@ function findObjectArrayField(
   return findAllObjectArrayFields(value, path)[0] ?? null;
 }
 
-/** {@link findAllObjectArrayFields}, widened to recognize a single flat
- * (non-array) object response as an implicit one-item array when it has no
- * object-array field of its own — a detail-by-id drill/chain response (e.g.
- * `GET /widgets/{id}` returning the widget object directly, not
- * `{ widget: {...} }`) is exactly as foldable as a one-element array would
- * be. The implicit entry's path is `[]` (the whole body); {@link
- * objectItemsAtPath} recognizes a flat object at a resolved path the same
- * way, so a {@link FoldTarget} built from this fallback resolves correctly
- * end to end. Only applies when no REAL object-array field exists anywhere
- * in `value` — a response that already has one is never second-guessed. */
+/** {@link findAllObjectArrayFields}, widened to ALSO offer the flat
+ * (non-array) whole object itself as a candidate — a detail-by-id
+ * drill/chain response (e.g. `GET /widgets/{id}` returning the widget
+ * object directly, not `{ widget: {...} }`) is exactly as foldable as a
+ * one-element array would be. The flat entry's path is `[]` (the whole
+ * body); {@link objectItemsAtPath} recognizes a flat object at a resolved
+ * path the same way, so a {@link FoldTarget} built from this fallback
+ * resolves correctly end to end. The flat candidate is appended AFTER every
+ * real object-array candidate (never in place of one) so a caller that
+ * needs to compare candidates by richness — see {@link
+ * chainTerminalItemRichness} — can prefer the flat shape when it carries
+ * more genuine per-item data than a small real nested object-array; a
+ * caller that just wants the first real array (the common case) is
+ * unaffected since it still comes first. */
 function findAllObjectArrayFieldsOrWholeObject(
   value: unknown,
   path: string[] = []
 ): { path: string[]; items: Record<string, unknown>[] }[] {
   const found = findAllObjectArrayFields(value, path);
-  return found.length > 0 ? found : isObjectArrayItem(value) ? [{ path, items: [value] }] : [];
+  return isObjectArrayItem(value) ? [...found, { path, items: [value] }] : found;
 }
 
 /** The first candidate from {@link findAllObjectArrayFieldsOrWholeObject} —
@@ -5439,13 +5443,36 @@ function scanPrimaryCandidate<T extends { capture: Capture }>(
     // a decoy array (e.g. an `errors[]` collection) that never does. Not
     // every real drill array echoes the join value, though (e.g. a
     // `productId`-keyed lookup returning `units[]` with no `productId`
-    // field of its own) — when no candidate threads, the DFS-first match
-    // is still the best guess. As on the primary side, every item (not
-    // just items[0]) is checked for a thread.
+    // field of its own) — when no candidate threads, the richest candidate
+    // by per-item primitive-field count wins (see
+    // {@link chainTerminalItemRichness}), so a small real nested
+    // object-array field (e.g. a few related tags) does not automatically
+    // beat a richer flat whole-object candidate just for being found first.
+    // As on the primary side, every item (not just items[0]) is checked for
+    // a thread.
+    const drillRequestValues = collectRequestValuesIncludingHeaders(drill.capture);
+    const threadedDrillArray = drillCandidates.find((candidate) =>
+      candidate.items.some((item) => findThreadedJoinFields(item, drill.capture).length > 0)
+    );
     const drillArray =
-      drillCandidates.find((candidate) =>
-        candidate.items.some((item) => findThreadedJoinFields(item, drill.capture).length > 0)
-      ) ?? drillCandidates[0];
+      threadedDrillArray ??
+      drillCandidates.reduce<{ path: string[]; items: Record<string, unknown>[] } | undefined>(
+        (richest, candidate) => {
+          if (!richest) return candidate;
+          const candidateRichness = chainTerminalItemRichness(
+            drill.capture.responseBody,
+            candidate.path,
+            drillRequestValues
+          );
+          const richestSoFar = chainTerminalItemRichness(
+            drill.capture.responseBody,
+            richest.path,
+            drillRequestValues
+          );
+          return candidateRichness > richestSoFar ? candidate : richest;
+        },
+        undefined
+      );
     if (!drillArray) continue;
 
     const { chain, chainArrayPath, chainTerminalIndex } = computeFoldChain(
@@ -5821,10 +5848,15 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
  * structurally-detected plan for the SAME primary array (matched by
  * `primaryStepIndex` and `primaryArrayPath`), so a spec declaring an
  * independent target the heuristic missed is not silently discarded just
- * because the heuristic already resolved something for that primary. A
- * spec naming a different primary array is left alone, per
- * {@link resolveFoldPlan}'s documented behavior. A spec re-declaring a
- * `drillStepIndex` the heuristic already found is skipped, not duplicated.
+ * because the heuristic already resolved something for that primary. A spec
+ * whose own primary/drill pair is entirely independent of every structural
+ * plan — its `primaryStepIndex` and its target chains touch no index any
+ * structural plan already consumes — is appended as a brand-new plan
+ * instead. Only a spec whose primary step is itself already consumed by an
+ * unrelated structural plan's own chain (not its own primary) is left alone,
+ * to avoid folding onto a step that plan already depends on. A spec
+ * re-declaring a `drillStepIndex` the heuristic already found (for the SAME
+ * primary) is skipped, not duplicated.
  */
 function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
   structuralPlans: readonly FoldPlan[],
@@ -5834,19 +5866,36 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
   if (foldReturnSpec === null) return [...structuralPlans];
   const specPlan = buildFoldPlanFromSpec(actions, foldReturnSpec);
   if (specPlan === null) return [...structuralPlans];
-  return structuralPlans.map((plan) => {
-    if (
-      plan.primaryStepIndex !== specPlan.primaryStepIndex ||
-      JSON.stringify(plan.primaryArrayPath) !== JSON.stringify(specPlan.primaryArrayPath)
-    ) {
-      return plan;
+  const samePrimaryPlan = structuralPlans.find(
+    (plan) =>
+      plan.primaryStepIndex === specPlan.primaryStepIndex &&
+      JSON.stringify(plan.primaryArrayPath) === JSON.stringify(specPlan.primaryArrayPath)
+  );
+  if (samePrimaryPlan !== undefined) {
+    return structuralPlans.map((plan) => {
+      if (plan !== samePrimaryPlan) return plan;
+      const existingDrillStepIndexes = new Set(plan.targets.map((target) => target.drillStepIndex));
+      const newTargets = specPlan.targets.filter(
+        (target) => !existingDrillStepIndexes.has(target.drillStepIndex)
+      );
+      return newTargets.length === 0
+        ? plan
+        : { ...plan, targets: [...plan.targets, ...newTargets] };
+    });
+  }
+  const consumedIndices = new Set<number>();
+  for (const plan of structuralPlans) {
+    consumedIndices.add(plan.primaryStepIndex);
+    for (const target of plan.targets) {
+      for (const chainIndex of target.chain) consumedIndices.add(chainIndex);
     }
-    const existingDrillStepIndexes = new Set(plan.targets.map((target) => target.drillStepIndex));
-    const newTargets = specPlan.targets.filter(
-      (target) => !existingDrillStepIndexes.has(target.drillStepIndex)
+  }
+  const specConsumesOnlyItsOwnIndices =
+    !consumedIndices.has(specPlan.primaryStepIndex) &&
+    specPlan.targets.every((target) =>
+      target.chain.every((chainIndex) => !consumedIndices.has(chainIndex))
     );
-    return newTargets.length === 0 ? plan : { ...plan, targets: [...plan.targets, ...newTargets] };
-  });
+  return specConsumesOnlyItsOwnIndices ? [...structuralPlans, specPlan] : [...structuralPlans];
 }
 
 /**
