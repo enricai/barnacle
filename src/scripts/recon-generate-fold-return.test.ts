@@ -780,7 +780,11 @@ describe("resolveFoldPlan", () => {
     // No object-array field anywhere in the drill response — the whole body
     // IS the detail-by-id object, same shape detectDrillDownFoldPlan's
     // structural heuristic already treats as an implicit one-item
-    // collection (findAllObjectArrayFieldsOrWholeObject).
+    // collection. The join is threaded only through a request header, which
+    // the structural heuristic deliberately never searches (see
+    // collectRequestValuesIncludingHeaders's docstring), so the heuristic
+    // resolves no plan here at all — this isolates
+    // buildFoldPlanFromSpec's own undeclared-drillResultsPath branch.
     const steps: MulticallFixtureStep[] = [
       buildStep("r0", {
         url: "https://api.example.com/catalog/search/",
@@ -790,7 +794,8 @@ describe("resolveFoldPlan", () => {
       }),
       buildStep("r1", {
         url: "https://api.example.com/catalog/pricing/",
-        requestPostData: '{"sku":"sku-a"}',
+        requestPostData: '{"lookup":true}',
+        requestHeaders: { "Content-Type": "application/json", "X-Item-Sku": "sku-a" },
         responseBody: { sku: "sku-a", amount: 19.99 },
         timestamp: "2024-04-01T00:00:01Z",
       }),
