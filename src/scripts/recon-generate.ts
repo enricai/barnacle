@@ -4345,14 +4345,15 @@ export function emitMultiStepExecuteHttp(
       }
     }
   }
-  // A resolved drill-down fold plan bypasses selectReturnAction entirely: the
-  // primary step's array is folded in place (see the loop-and-merge emitted
-  // below), so the primary step's var — not whichever call selectReturnAction
-  // would otherwise pick — is what `return { data }` must reference.
-  const foldPlan = resolveFoldPlan(actions, foldReturnSpec)[0] ?? null;
-  const returnAction = foldPlan ? null : selectReturnAction(actions);
+  // Every resolved drill-down fold plan bypasses selectReturnAction entirely:
+  // each plan's primary step's array is folded in place (see the loop-and-merge
+  // emitted below, one such loop per plan), so a primary step's var — not
+  // whichever call selectReturnAction would otherwise pick — is what
+  // `return { data }` must reference when any plan resolves.
+  const foldPlans = resolveFoldPlan(actions, foldReturnSpec);
+  const returnAction = foldPlans.length > 0 ? null : selectReturnAction(actions);
   if (returnAction) referencedNames.add(returnAction.varName);
-  if (foldPlan) referencedNames.add(actions[foldPlan.primaryStepIndex]!.varName);
+  for (const plan of foldPlans) referencedNames.add(actions[plan.primaryStepIndex]!.varName);
 
   // Pass 2: emit. Skip response bindings that aren't referenced; skip
   // produces[] entries whose name isn't referenced. A step's response var
@@ -4388,27 +4389,34 @@ export function emitMultiStepExecuteHttp(
   // so none of them may run through the outer `declaredNames`/produceLines
   // bookkeeping below (that bookkeeping assumes function-scope declarations).
   const foldChainIndices = new Set(
-    foldPlan ? foldPlan.targets.flatMap((target) => target.chain) : []
+    foldPlans.flatMap((plan) => plan.targets.flatMap((target) => target.chain))
   );
   for (let i = 0; i < actions.length; i++) {
     const step = actions[i]!;
     const cap = step.capture;
     const r = rendered[i]!;
 
-    // Every independent fold target — regardless of which drill step starts
-    // it — is folded into ONE shared per-item loop over the primary array,
-    // emitted once, at the FIRST target's drillStepIndex: each target's
-    // chain calls and Object.assign both run inside that same `for (const
-    // item of foldItems)` body, so a primary item ends up with fields folded
-    // in from every independent dependent drill-down, not just the first.
+    // Every independent fold target within a given plan — regardless of which
+    // drill step starts it — is folded into ONE shared per-item loop over
+    // that plan's primary array, emitted once, at the plan's FIRST target's
+    // drillStepIndex: each target's chain calls and Object.assign both run
+    // inside that same `for (const item of foldItems)` body, so a primary
+    // item ends up with fields folded in from every independent dependent
+    // drill-down of that plan, not just the first. When more than one
+    // independent plan resolves (distinct primary arrays), each plan gets its
+    // OWN loop block, anchored at that plan's own first target's
+    // drillStepIndex, so each primary array is folded with only its own
+    // drill-downs' matched fields.
     // Each chain step re-issues the SAME url/headers/bodyArg/schemaExpr this
     // pass already rendered for it, only with the captured join value(s)
     // swapped for the loop item's own field accessor (the drill step) or its
     // own produced response values (later chain steps, which already render
     // with `${producedName}` templates — see deriveStateVarByValue).
-    const isFirstFoldTarget =
-      foldPlan !== null && foldPlan.targets.length > 0 && foldPlan.targets[0]!.drillStepIndex === i;
-    if (foldPlan && isFirstFoldTarget) {
+    const matchingPlanIndex = foldPlans.findIndex(
+      (plan) => plan.targets.length > 0 && plan.targets[0]!.drillStepIndex === i
+    );
+    if (matchingPlanIndex !== -1) {
+      const foldPlan = foldPlans[matchingPlanIndex]!;
       const primaryStep = actions[foldPlan.primaryStepIndex]!;
       // Read at the plan's OWN path rather than re-running the DFS: a
       // flow-declared `resultsPath` (see FoldReturnSpec) can name a different
@@ -4419,15 +4427,22 @@ export function emitMultiStepExecuteHttp(
       );
 
       const primaryArrType = foldArrayAssertionType(foldPlan.primaryArrayPath);
+      // Plan-level suffix mirrors the target-level suffix below: multiple
+      // loop blocks now sharing the same function scope can't declare
+      // unsuffixed `foldItems`/`item` locals without colliding. The
+      // overwhelmingly common single-plan case keeps the original
+      // unsuffixed names.
+      const planSuffix = foldPlans.length > 1 ? String(matchingPlanIndex) : "";
+      const foldItemsVar = `foldItems${planSuffix}`;
       const foldItemsExpr = pathToFoldAccessorExpr(
         `(${primaryStep.varName} as ${primaryArrType})`,
         foldPlan.primaryArrayPath
       );
-      const itemVar = "item";
+      const itemVar = `item${planSuffix}`;
 
       lines.push(
-        `    const foldItems = ${foldItemsExpr};`,
-        `    for (const ${itemVar} of foldItems) {`
+        `    const ${foldItemsVar} = ${foldItemsExpr};`,
+        `    for (const ${itemVar} of ${foldItemsVar}) {`
       );
 
       for (const [targetIndex, target] of foldPlan.targets.entries()) {
@@ -4447,7 +4462,8 @@ export function emitMultiStepExecuteHttp(
         // same loop body can each declare their own locals without
         // colliding on `foldMatches`/`foldMatch`. The overwhelmingly common
         // single-target case keeps the original unsuffixed names.
-        const suffix = foldPlan.targets.length > 1 ? String(targetIndex) : "";
+        const suffix =
+          foldPlan.targets.length > 1 ? `${planSuffix}${targetIndex}` : planSuffix;
         const joinAccessor = (field: string): string =>
           isValidJsIdentifier(field)
             ? `${itemVar}.${field}`
@@ -4672,8 +4688,13 @@ export function emitMultiStepExecuteHttp(
     lines.push("");
   }
 
-  const returnVar = foldPlan
-    ? actions[foldPlan.primaryStepIndex]!.varName
+  // When multiple plans resolve, the LAST one in action-sequence order wins —
+  // same convention selectReturnAction uses (see findRequeriedActions /
+  // selectReturnAction above): a later primary is more likely the one the
+  // flow's final response actually reflects.
+  const lastFoldPlan = foldPlans[foldPlans.length - 1] ?? null;
+  const returnVar = lastFoldPlan
+    ? actions[lastFoldPlan.primaryStepIndex]!.varName
     : (returnAction?.varName ?? "undefined");
   lines.push(`    return { data: ${returnVar} };`);
 
