@@ -4540,10 +4540,6 @@ export function emitMultiStepExecuteHttp(
       lines.push(`    }`, "");
       continue;
     }
-    // Every fold target's drillStepIndex other than the first is already
-    // fully emitted, inline, inside the shared loop above — skip it here so
-    // its chain isn't also visited by this pass's normal per-step handling.
-    if (foldPlan?.targets.some((t) => t.drillStepIndex === i)) continue;
     // Every other chain step (already fully emitted, inline, by the fold
     // block above) must not also get the normal single-call treatment this
     // pass gives every step, or its request would be issued a second time,
