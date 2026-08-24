@@ -360,6 +360,43 @@ export function buildMulticallSingleShotSearchDrillDownNestedJoinFieldMultiItemA
   ];
 }
 
+/**
+ * A search → per-item drill-down flow whose DRILL step's response carries
+ * BOTH a small real nested object-array field (`tags[]`, one primitive
+ * field per item, no join echo) AND richer flat top-level per-item fields
+ * (`name`/`price`/`brand`, none of them echoing the join either) — the
+ * shape {@link findAllObjectArrayFieldsOrWholeObject}'s old docstring
+ * ("a response that already has one [a real object-array field] is never
+ * second-guessed") resolved to the tiny `tags[]` array instead of the
+ * richer flat object. Neither candidate threads the join value in its
+ * response body (only the drill REQUEST carries `sku-a`), so selection must
+ * fall through to comparing per-item primitive-field richness, which the
+ * flat object wins 3 (`name`/`price`/`brand`) to 1 (`tags[0].id`).
+ */
+export function buildMulticallSingleShotSearchDrillDownRicherFlatOutranksNestedArrayActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        results: [{ sku: "sku-a" }, { sku: "sku-b" }],
+      },
+      timestamp: "2024-04-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_PRICING_URL,
+      requestPostData: '{"sku":"sku-a"}',
+      responseBody: {
+        tags: [{ id: 1 }, { id: 2 }],
+        name: "Widget A",
+        price: 19.99,
+        brand: "Acme",
+      },
+      timestamp: "2024-04-01T00:00:01Z",
+    }),
+  ];
+}
+
 const CATALOG_INVENTORY_URL = "https://api.example.com/catalog/inventory/";
 
 /**

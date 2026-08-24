@@ -5041,22 +5041,26 @@ function findObjectArrayField(
   return findAllObjectArrayFields(value, path)[0] ?? null;
 }
 
-/** {@link findAllObjectArrayFields}, widened to recognize a single flat
- * (non-array) object response as an implicit one-item array when it has no
- * object-array field of its own — a detail-by-id drill/chain response (e.g.
- * `GET /widgets/{id}` returning the widget object directly, not
- * `{ widget: {...} }`) is exactly as foldable as a one-element array would
- * be. The implicit entry's path is `[]` (the whole body); {@link
- * objectItemsAtPath} recognizes a flat object at a resolved path the same
- * way, so a {@link FoldTarget} built from this fallback resolves correctly
- * end to end. Only applies when no REAL object-array field exists anywhere
- * in `value` — a response that already has one is never second-guessed. */
+/** {@link findAllObjectArrayFields}, widened to ALSO offer the flat
+ * (non-array) whole object itself as a candidate — a detail-by-id
+ * drill/chain response (e.g. `GET /widgets/{id}` returning the widget
+ * object directly, not `{ widget: {...} }`) is exactly as foldable as a
+ * one-element array would be. The flat entry's path is `[]` (the whole
+ * body); {@link objectItemsAtPath} recognizes a flat object at a resolved
+ * path the same way, so a {@link FoldTarget} built from this fallback
+ * resolves correctly end to end. The flat candidate is appended AFTER every
+ * real object-array candidate (never in place of one) so a caller that
+ * needs to compare candidates by richness — see {@link
+ * chainTerminalItemRichness} — can prefer the flat shape when it carries
+ * more genuine per-item data than a small real nested object-array; a
+ * caller that just wants the first real array (the common case) is
+ * unaffected since it still comes first. */
 function findAllObjectArrayFieldsOrWholeObject(
   value: unknown,
   path: string[] = []
 ): { path: string[]; items: Record<string, unknown>[] }[] {
   const found = findAllObjectArrayFields(value, path);
-  return found.length > 0 ? found : isObjectArrayItem(value) ? [{ path, items: [value] }] : [];
+  return isObjectArrayItem(value) ? [...found, { path, items: [value] }] : found;
 }
 
 /** The first candidate from {@link findAllObjectArrayFieldsOrWholeObject} —
@@ -5439,13 +5443,36 @@ function scanPrimaryCandidate<T extends { capture: Capture }>(
     // a decoy array (e.g. an `errors[]` collection) that never does. Not
     // every real drill array echoes the join value, though (e.g. a
     // `productId`-keyed lookup returning `units[]` with no `productId`
-    // field of its own) — when no candidate threads, the DFS-first match
-    // is still the best guess. As on the primary side, every item (not
-    // just items[0]) is checked for a thread.
+    // field of its own) — when no candidate threads, the richest candidate
+    // by per-item primitive-field count wins (see
+    // {@link chainTerminalItemRichness}), so a small real nested
+    // object-array field (e.g. a few related tags) does not automatically
+    // beat a richer flat whole-object candidate just for being found first.
+    // As on the primary side, every item (not just items[0]) is checked for
+    // a thread.
+    const drillRequestValues = collectRequestValuesIncludingHeaders(drill.capture);
+    const threadedDrillArray = drillCandidates.find((candidate) =>
+      candidate.items.some((item) => findThreadedJoinFields(item, drill.capture).length > 0)
+    );
     const drillArray =
-      drillCandidates.find((candidate) =>
-        candidate.items.some((item) => findThreadedJoinFields(item, drill.capture).length > 0)
-      ) ?? drillCandidates[0];
+      threadedDrillArray ??
+      drillCandidates.reduce<{ path: string[]; items: Record<string, unknown>[] } | undefined>(
+        (richest, candidate) => {
+          if (!richest) return candidate;
+          const candidateRichness = chainTerminalItemRichness(
+            drill.capture.responseBody,
+            candidate.path,
+            drillRequestValues
+          );
+          const richestSoFar = chainTerminalItemRichness(
+            drill.capture.responseBody,
+            richest.path,
+            drillRequestValues
+          );
+          return candidateRichness > richestSoFar ? candidate : richest;
+        },
+        undefined
+      );
     if (!drillArray) continue;
 
     const { chain, chainArrayPath, chainTerminalIndex } = computeFoldChain(
