@@ -358,7 +358,11 @@ describe("recon-generate — G1 shape-inference target agrees with the return ta
       }),
     ];
 
-    const effectiveResponseBody = selectEffectiveResponseBody(true, sameEndpointTwicePlansSteps, null);
+    const effectiveResponseBody = selectEffectiveResponseBody(
+      true,
+      sameEndpointTwicePlansSteps,
+      null
+    );
 
     const productsArray = (effectiveResponseBody as { products: unknown[] }).products;
     expect(productsArray).toEqual(
