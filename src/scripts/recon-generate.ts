@@ -4908,6 +4908,14 @@ function findObjectArrayField(
 export interface FoldPlan {
   primaryStepIndex: number;
   primaryArrayPath: string[];
+  targets: FoldTarget[];
+}
+
+/** One independent per-item drill-down folding onto {@link FoldPlan}'s
+ * primary array — a single primary can have several of these when more than
+ * one later step threads a different join field from it (see
+ * {@link detectDrillDownFoldPlan}). */
+export interface FoldTarget {
   joinFields: string[];
   drillStepIndex: number;
   drillArrayPath: string[];
@@ -5056,9 +5064,18 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
     const primaryCandidates = findAllObjectArrayFields(primary.capture.responseBody);
     if (primaryCandidates.length === 0) continue;
 
+    let primaryArrayPath: string[] | undefined;
+    const targets: FoldTarget[] = [];
+    // A step already consumed as a later member of an earlier target's
+    // chain threads its request from that target's own response, not
+    // straight off the primary array — it must not also be picked up here
+    // as a second, independent target.
+    const consumedIndices = new Set<number>();
+
     for (let drillIndex = primaryIndex + 1; drillIndex < actions.length; drillIndex++) {
       const drill = actions[drillIndex]!;
       if (drill === primary) continue;
+      if (consumedIndices.has(drillIndex)) continue;
 
       // Every candidate array is tried, not just the DFS-first match — a
       // decoy array (e.g. a facets/errors collection) can sit earlier in key
@@ -5067,11 +5084,17 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
       // not the one DFS happens to reach first. Within a candidate array,
       // every item is searched too — a flow that only ever drilled into a
       // later item (never the first) must still resolve, so this cannot stop
-      // at items[0].
+      // at items[0]. Once a primary array has been chosen for this primary
+      // step (by the first qualifying drill-down), every further target must
+      // thread from that SAME array — a second, unrelated array on the same
+      // primary response is not a valid target source for this plan.
+      const candidatePool = primaryArrayPath
+        ? primaryCandidates.filter((c) => JSON.stringify(c.path) === JSON.stringify(primaryArrayPath))
+        : primaryCandidates;
       let primaryArray: { path: string[]; items: Record<string, unknown>[] } | undefined;
       let primaryMatchedItemIndex = -1;
       let joinFields: string[] = [];
-      for (const candidate of primaryCandidates) {
+      for (const candidate of candidatePool) {
         const matchedIndex = candidate.items.findIndex(
           (item) => findThreadedJoinFields(item, drill.capture).length > 0
         );
@@ -5082,6 +5105,7 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
         break;
       }
       if (!primaryArray) continue;
+      primaryArrayPath = primaryArray.path;
 
       const drillCandidates = findAllObjectArrayFields(drill.capture.responseBody);
       // Same disambiguation on the drill side, reusing findThreadedJoinFields
@@ -5123,9 +5147,7 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
         primaryArray.items[primaryMatchedItemIndex]!
       );
 
-      return {
-        primaryStepIndex: primaryIndex,
-        primaryArrayPath: primaryArray.path,
+      targets.push({
         joinFields,
         drillStepIndex: drillIndex,
         drillArrayPath: drillArray.path,
@@ -5134,6 +5156,19 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
         chain,
         chainArrayPath,
         chainTerminalIndex,
+      });
+      // Everything past drillIndex already folded into this target's own
+      // chain is per-item dependent on THIS drill-down, not independently
+      // threaded off the primary array, so it must be skipped rather than
+      // re-considered as a new target.
+      for (const chainIndex of chain) consumedIndices.add(chainIndex);
+    }
+
+    if (targets.length > 0) {
+      return {
+        primaryStepIndex: primaryIndex,
+        primaryArrayPath: primaryArrayPath!,
+        targets,
       };
     }
   }
