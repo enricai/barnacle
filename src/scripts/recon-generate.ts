@@ -4140,6 +4140,44 @@ export function emitMultiStepExecuteHttp(
   // Captured literals that survived every pass — surfaced as a review TODO.
   const unboundLiteralKeys = new Set<string>();
 
+  // A fold target's join value can be threaded through a request HEADER
+  // rather than the URL/body (see collectRequestValuesIncludingHeaders) —
+  // the structural heuristic can't see those, but a flow-declared foldReturn
+  // spec resolves the target anyway, and the drill step's per-item re-issue
+  // below must still carry that header or every iteration replays the SAME
+  // captured header value instead of re-keying it. Resolved once, up front
+  // (fold plans depend only on `actions`/`foldReturnSpec`, not on Pass 1's
+  // render), so Pass 1's header collection below knows which non-auth header
+  // names are actually load-bearing for a resolved fold.
+  const earlyFoldPlans = resolveFoldPlan(actions, foldReturnSpec);
+  const joinCarryingHeaderNamesByStep = new Map<number, Set<string>>();
+  for (const plan of earlyFoldPlans) {
+    const primaryItems = objectItemsAtPath(
+      actions[plan.primaryStepIndex]!.capture.responseBody,
+      plan.primaryArrayPath
+    );
+    for (const target of plan.targets) {
+      const firstItem = primaryItems?.[target.primaryMatchedItemIndex];
+      if (!firstItem) continue;
+      for (const stepIndex of [target.drillStepIndex, ...target.chain]) {
+        const headerNames = joinCarryingHeaderNamesByStep.get(stepIndex) ?? new Set<string>();
+        for (const [headerName, headerValue] of Object.entries(
+          actions[stepIndex]!.capture.requestHeaders
+        )) {
+          const matchesJoinField = target.joinFields.some((field) => {
+            const value = firstItem[field];
+            return (
+              (typeof value === "string" && value.length > 0 && value === headerValue) ||
+              (typeof value === "number" && String(value) === headerValue)
+            );
+          });
+          if (matchesJoinField) headerNames.add(headerName);
+        }
+        if (headerNames.size > 0) joinCarryingHeaderNamesByStep.set(stepIndex, headerNames);
+      }
+    }
+  }
+
   // Pass 1: render every step's emitted strings; collect referenced var names.
   const rendered: Rendered[] = [];
   for (let i = 0; i < actions.length; i++) {
@@ -4282,10 +4320,11 @@ export function emitMultiStepExecuteHttp(
       }
     }
 
+    const joinCarryingHeaderNames = joinCarryingHeaderNamesByStep.get(i);
     const perCallHeaders: Record<string, string> = {};
     for (const [k, v] of Object.entries(cap.requestHeaders)) {
       const lower = k.toLowerCase();
-      if (lower === "api-token" || lower === "authorization") {
+      if (lower === "api-token" || lower === "authorization" || joinCarryingHeaderNames?.has(k)) {
         perCallHeaders[k] = interpolateStateValues(v, prior, payloadAccessorByValue);
       }
     }
@@ -4355,7 +4394,7 @@ export function emitMultiStepExecuteHttp(
   // emitted below, one such loop per plan), so a primary step's var — not
   // whichever call selectReturnAction would otherwise pick — is what
   // `return { data }` must reference when any plan resolves.
-  const foldPlans = resolveFoldPlan(actions, foldReturnSpec);
+  const foldPlans = earlyFoldPlans;
   const returnAction = foldPlans.length > 0 ? null : selectReturnAction(actions);
   if (returnAction) referencedNames.add(returnAction.varName);
   for (const plan of foldPlans) referencedNames.add(actions[plan.primaryStepIndex]!.varName);
