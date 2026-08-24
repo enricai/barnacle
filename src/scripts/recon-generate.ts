@@ -5435,11 +5435,15 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
  * inferred schema would describe different calls (see
  * {@link selectEffectiveResponseBody}'s own docstring).
  *
- * A multipart step anywhere in the fold chain disqualifies the plan: the
- * fold loop re-issues EVERY chain step's request per item by re-keying its
- * rendered JSON request template (not just the immediate drill step's), and
- * a raw `FormData` upload has no such template to re-key — so those fall
- * back to ordinary single-call emission instead of emitting a broken loop.
+ * A multipart step anywhere in a target's fold chain disqualifies only that
+ * target: the fold loop re-issues EVERY chain step's request per item by
+ * re-keying its rendered JSON request template (not just the immediate drill
+ * step's), and a raw `FormData` upload has no such template to re-key — so
+ * that target falls back to ordinary single-call emission instead of
+ * emitting a broken loop, while any other target on the same primary that
+ * has no multipart step in its chain still folds normally. The whole plan is
+ * disqualified (returns `null`) only when EVERY target for the primary is
+ * multipart-disqualified, leaving nothing left to fold.
  */
 export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boolean }>(
   actions: readonly T[],
@@ -5449,10 +5453,10 @@ export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boole
     detectDrillDownFoldPlan(actions) ??
     (foldReturnSpec === null ? null : buildFoldPlanFromSpec(actions, foldReturnSpec));
   if (plan === null) return null;
-  const disqualified = plan.targets.some((target) =>
-    target.chain.some((chainIndex) => actions[chainIndex]!.isMultipart)
+  const targets = plan.targets.filter(
+    (target) => !target.chain.some((chainIndex) => actions[chainIndex]!.isMultipart)
   );
-  return disqualified ? null : plan;
+  return targets.length === 0 ? null : { ...plan, targets };
 }
 
 /** Rebuilds `value` with every occurrence of `target` (compared by object

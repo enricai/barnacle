@@ -373,6 +373,82 @@ describe("resolveFoldPlan — multipart chain-step disqualification", () => {
 
     expect(resolveFoldPlan(steps)).not.toBeNull();
   });
+
+  it("drops only the multipart-disqualified target, keeping the other clean target on the same primary", () => {
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/accounts/search",
+        requestPostData: JSON.stringify({ page: 1 }),
+        responseBody: {
+          accounts: [
+            { accountId: "41", name: "Globex" },
+            { accountId: "42", name: "Acme" },
+          ],
+        },
+        timestamp: "2024-01-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/accounts/detail?accountId=41",
+        requestPostData: null,
+        responseBody: { transactions: [{ accountId: "41", transactionId: "t-clean" }] },
+        timestamp: "2024-01-01T00:00:01Z",
+      }),
+      {
+        ...buildStep("r2", {
+          url: "https://api.example.com/accounts/detail?accountId=42",
+          requestPostData: null,
+          responseBody: { transactions: [{ accountId: "42", transactionId: "t-multipart" }] },
+          timestamp: "2024-01-01T00:00:02Z",
+        }),
+        isMultipart: true,
+      },
+    ];
+
+    const structuralPlan = detectDrillDownFoldPlan(steps);
+    expect(structuralPlan?.targets).toHaveLength(2);
+
+    const resolved = resolveFoldPlan(steps);
+    expect(resolved).not.toBeNull();
+    expect(resolved?.targets).toHaveLength(1);
+    expect(resolved?.targets[0]?.drillStepIndex).toBe(1);
+  });
+
+  it("returns null when every target for the primary is multipart-disqualified", () => {
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/accounts/search",
+        requestPostData: JSON.stringify({ page: 1 }),
+        responseBody: {
+          accounts: [
+            { accountId: "41", name: "Globex" },
+            { accountId: "42", name: "Acme" },
+          ],
+        },
+        timestamp: "2024-01-01T00:00:00Z",
+      }),
+      {
+        ...buildStep("r1", {
+          url: "https://api.example.com/accounts/detail?accountId=41",
+          requestPostData: null,
+          responseBody: { transactions: [{ accountId: "41", transactionId: "t-multipart-1" }] },
+          timestamp: "2024-01-01T00:00:01Z",
+        }),
+        isMultipart: true,
+      },
+      {
+        ...buildStep("r2", {
+          url: "https://api.example.com/accounts/detail?accountId=42",
+          requestPostData: null,
+          responseBody: { transactions: [{ accountId: "42", transactionId: "t-multipart-2" }] },
+          timestamp: "2024-01-01T00:00:02Z",
+        }),
+        isMultipart: true,
+      },
+    ];
+
+    expect(detectDrillDownFoldPlan(steps)?.targets).toHaveLength(2);
+    expect(resolveFoldPlan(steps)).toBeNull();
+  });
 });
 
 describe("resolveFoldPlan — header-threaded join boundary", () => {
