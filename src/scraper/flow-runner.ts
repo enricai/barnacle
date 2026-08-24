@@ -63,6 +63,7 @@ import {
 import {
   type FrameTarget,
   mainFrameTarget,
+  probeAttachedFrameTarget,
   resolveFrameTarget,
   sleep,
   waitForChildFrameReady,
@@ -7850,24 +7851,22 @@ export async function executeStepWithHealing(params: {
    * `frameTarget.frame` to `null` for the rest of the step, so every
    * deepLocator gate below tests a stale "unresolved" handle even after the
    * OOPIF actually attaches moments later (the run 5 vs. run 6 divergence in
-   * the bug report). Called just before each gate; re-checks with
-   * `timeoutMs: 0` — a single presence probe, no added poll delay — so a
-   * frame that has since attached is picked up without making the deadline
-   * that already elapsed matter again. Memoized (`frameReresolveAttempted`)
-   * so the cascade's several gates share one attempt instead of each
-   * re-checking; a target with no `declaredFrameSelector` (the frame was
-   * never declared, or resolution already succeeded) returns immediately
-   * without calling `resolveFrameTarget` at all, so main-frame-only flows do
-   * zero extra work.
+   * the bug report). Called just before each gate; re-checks via
+   * `probeAttachedFrameTarget` — a genuine `framePresenceProbeFloorMs`-backed
+   * probe, not a poll — so a frame that has since attached is picked up
+   * without re-running the full per-step poll. Memoized
+   * (`frameReresolveAttempted`) so the cascade's several gates share one
+   * attempt instead of each re-checking; a target with no
+   * `declaredFrameSelector` (the frame was never declared, or resolution
+   * already succeeded) returns immediately without probing at all, so
+   * main-frame-only flows do zero extra work.
    */
   const reresolveFrameTargetIfLost = async (): Promise<void> => {
     if (frameReresolveAttempted) return;
     frameReresolveAttempted = true;
     if (frameTarget?.frame || !frameTarget?.declaredFrameSelector) return;
-    const reresolved = await resolveFrameTarget(page, frameTarget.declaredFrameSelector, {
-      timeoutMs: 0,
-    });
-    if (!reresolved.frame) return;
+    const reresolved = await probeAttachedFrameTarget(page, frameTarget.declaredFrameSelector);
+    if (!reresolved?.frame) return;
     logger.info(
       `${formatStepPrefix(stepIndex, totalSteps)} frame ${frameTarget.declaredFrameSelector} attached after step entry — re-resolved before deepLocator gate`
     );

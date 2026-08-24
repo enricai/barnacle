@@ -1211,3 +1211,181 @@ describe("flow-runner iframe end-to-end: run-6 composite regression — late-att
     }
   });
 });
+
+/**
+ * Fake `Stagehand` for the late-attach recovery regression: identical timing
+ * shape to `makeFakeStagehandForRun6Regression` (the OOPIF attaches only as a
+ * side effect of attempt 1's `act()`, strictly after the step-entry
+ * `resolveFrameTarget` poll already gave up), but ALSO seeds `childUrls` to
+ * `CHILD_SRC` in that same side effect. `reresolveFrameTargetIfLost`'s
+ * `probeAttachedFrameTarget` call scores each `page.frames()` candidate by
+ * how its live `location.href` matches the declared iframe's `src`
+ * (`frame-target.ts`'s `tryResolveChildFrame`) — a child frame whose
+ * `location.href` is still the top window's URL (as
+ * `makeFakeStagehandForRun6Regression`'s docblock deliberately leaves it, to
+ * avoid a false `urlChanged` signal in ITS scenario) scores zero and can
+ * never be picked up, independent of whether the re-resolve logic itself is
+ * fixed. Safe to seed here because attempt 2's `pre` snapshot
+ * (`flow-runner.ts`'s `snapshotPage` call) is taken from the STILL
+ * main-frame-bound `frameTarget` (`page.url()`, unaffected by `childUrls`)
+ * BEFORE `reresolveFrameTargetIfLost` runs — so `urlChanged` stays
+ * attributable only to the deepLocator click that follows, exactly as in
+ * `makeFakeStagehandForMidflowAttach`'s original mid-flow-attach pattern.
+ */
+function makeFakeStagehandForLateAttachRecovery(
+  iframeAttached: { current: boolean },
+  childUrls: { current: string }
+) {
+  return {
+    act: async () => {
+      iframeAttached.current = true;
+      childUrls.current = CHILD_SRC;
+      return {
+        success: false,
+        message: "no actionable candidate",
+        actionDescription: CLICK_STEP,
+        actions: [],
+      };
+    },
+    observe: async (instructionOrOptions?: unknown) =>
+      typeof instructionOrOptions === "string"
+        ? []
+        : [{ selector: "css=body", description: "page body", method: "click" }],
+  } as unknown as import("@browserbasehq/stagehand").Stagehand;
+}
+
+/**
+ * Same run-6 timing shape as the composite regression above — the OOPIF
+ * attaches only inside attempt 1's `act()`, strictly after the step-entry
+ * `resolveFrameTarget` poll has already exhausted `frameReadyTimeoutMs` and
+ * pinned `frameTarget` to the main-frame fallback with `declaredFrameSelector`
+ * set — but with a REAL, resolvable deepLocator hop (`registerDeepLocatorHop`,
+ * not `registerDeepLocatorHangingHop`) so the outcome is a single checkable
+ * assertion instead of the composite suite's "either settles" acceptance.
+ * `reresolveFrameTargetIfLost` (`flow-runner.ts`) is the only thing standing
+ * between "attempt 2's deepLocator gate still sees the stale main-frame
+ * `FrameTarget`" and "the gate re-resolves into the now-attached child frame
+ * and clicks it" — pins the bug report's required regression item directly,
+ * unlike `flow-runner.frame-reresolve-before-probe.test.ts` (mocks
+ * `resolveFrameTarget`/`probeAttachedFrameTarget` at the module boundary, so
+ * it can't fail on the real `timeoutMs: 0` bug) or this file's run-6
+ * composite suite above (accepts either success or failure as its outcome).
+ */
+describe("flow-runner iframe end-to-end: late-attaching OOPIF recovered by reresolveFrameTargetIfLost before the deepLocator gate (offline fixture, no network)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("resolves successfully and clicks the in-frame candidate once the OOPIF attaches after step-entry frame resolution", async () => {
+    const topUrl = { current: `${TOP_ORIGIN}/jobs/123/apply` };
+    const childUrls = { current: topUrl.current };
+    const iframeAttached = { current: false };
+    const deepLocatorFrame: FakeDeepLocatorFrame = new Map();
+    const hopSelector = `${IFRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
+    registerDeepLocatorHop(deepLocatorFrame, hopSelector, "Manual Application");
+    const baseDeepLocator = makeFakeDeepLocator(deepLocatorFrame);
+    // Wraps click()/nth().click() to also advance childUrls past CHILD_SRC —
+    // matching flow-runner.frame-reresolve-before-probe.test.ts's
+    // wrappedDeepLocator pattern — so a real click on the resolved candidate
+    // is observable via the deepLocator gate's own urlChanged signal.
+    const wrappedDeepLocator = (selector: string) => {
+      const delegate = baseDeepLocator(selector);
+      return {
+        ...delegate,
+        click: async () => {
+          await delegate.click();
+          childUrls.current = `${CHILD_ORIGIN}/application/abc-123/basic-info`;
+        },
+        nth: (index: number) => {
+          const nthDelegate = baseDeepLocator(selector).nth(index);
+          return {
+            ...nthDelegate,
+            click: async () => {
+              await nthDelegate.click();
+              childUrls.current = `${CHILD_ORIGIN}/application/abc-123/basic-info`;
+            },
+          };
+        },
+      };
+    };
+    const stagehand = makeFakeStagehandForLateAttachRecovery(iframeAttached, childUrls);
+    // `probeAttachedFrameTarget`'s `withWatchdog`-guarded probes race the real
+    // operation against a `setTimeout(reject, …)` timer (`watchdog.ts`) — a
+    // same-tick-resolving fake `evaluate` wins that race regardless of the
+    // configured budget, which is exactly what let the pre-fix
+    // `resolveFrameTarget(…, { timeoutMs: 0 })` call appear to "work" against
+    // a naive fake despite `frame-target.ts`'s own docs certifying it can
+    // never observe an already-attached frame in production. Delaying both
+    // probes behind a real `setTimeout` (matching
+    // `deep-locator-candidates.internal-frame-resolution.test.ts`'s
+    // `makeFakeFrameResolutionPage` pattern) makes the race genuine: a
+    // `timeoutMs: 0` probe's reject timer always fires first regardless of
+    // how small this delay is, while `probeAttachedFrameTarget`'s real
+    // `framePresenceProbeFloorMs` budget comfortably outlasts it.
+    const PROBE_DELAY_MS = 5;
+    const delayed = <T>(value: T): Promise<T> =>
+      new Promise((resolve) => setTimeout(() => resolve(value), PROBE_DELAY_MS));
+    const baseMidflowPage = makeMidflowFakeTopPage(
+      topUrl,
+      childUrls,
+      iframeAttached
+    ) as unknown as {
+      evaluate: (expr: unknown) => Promise<unknown>;
+      frames: () => Array<{ evaluate: (expr: unknown) => Promise<unknown> }>;
+    };
+    const page = {
+      ...baseMidflowPage,
+      evaluate: async (expr: unknown) => delayed(await baseMidflowPage.evaluate(expr)),
+      frames: () =>
+        baseMidflowPage.frames().map((frame) => ({
+          ...frame,
+          evaluate: async (expr: unknown) => delayed(await frame.evaluate(expr)),
+        })),
+      deepLocator: wrappedDeepLocator,
+    } as unknown as import("@browserbasehq/stagehand").Page;
+
+    expect(iframeAttached.current).toBe(false);
+
+    const resultPromise = runHealingFlow({
+      stagehand,
+      page,
+      steps: [{ instruction: CLICK_STEP, optional: false, upload: false, submitStep: false }],
+      logger: testLogger,
+      anthropic: null,
+      rephraseModel: null,
+      uploadFixture: null,
+      frameSelector: IFRAME_SELECTOR,
+    });
+
+    // Advances past the step-entry resolveFrameTarget poll's 20s deadline
+    // (the OOPIF isn't attached yet — it only attaches inside attempt 1's
+    // act(), after that poll already gave up) plus reresolveFrameTargetIfLost's
+    // probeAttachedFrameTarget budget, then the PROBE_DELAY_MS-gated evaluate
+    // calls the deepLocator walk/verification steps make afterward. Each is
+    // scheduled sequentially as the walk progresses — a chain of fixed-count
+    // bulk advances can outrun a timer that gets registered only once an
+    // earlier one in the same chain settles, so this polls in small
+    // increments until resultPromise itself settles instead of guessing a
+    // total budget up front.
+    let settled = false;
+    resultPromise.finally(() => {
+      settled = true;
+    });
+    for (let i = 0; i < 2000 && !settled; i++) {
+      await vi.advanceTimersByTimeAsync(100);
+    }
+
+    const result = await resultPromise;
+
+    // Proves the "late attach" timing shape actually happened before
+    // asserting recovery — the OOPIF was absent at step entry and only
+    // attached mid-cascade.
+    expect(iframeAttached.current).toBe(true);
+    expect(result.lastStepIndex).toBe(0);
+    expect(childUrls.current).toBe(`${CHILD_ORIGIN}/application/abc-123/basic-info`);
+  });
+});
