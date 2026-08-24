@@ -197,6 +197,14 @@ export interface AppConfig {
   docs: {
     enabled: boolean;
   };
+  multipart: {
+    /**
+     * Ceiling passed to `@fastify/multipart`'s `limits.fileSize`. Default of
+     * 20 MiB sits above the largest observed résumé upload (17.9 MB) in prod
+     * evidence, with headroom. Overridable via `MULTIPART_MAX_FILE_SIZE_BYTES`.
+     */
+    maxFileSizeBytes: number;
+  };
   telemetry: {
     /**
      * Master switch — set to false to disable all NDJSON telemetry writes.
@@ -487,6 +495,9 @@ export function loadConfig(): AppConfig {
     },
     docs: {
       enabled: getBoolEnv("ENABLE_DOCS", false),
+    },
+    multipart: {
+      maxFileSizeBytes: getNumericEnv("MULTIPART_MAX_FILE_SIZE_BYTES", 20 * 1024 * 1024),
     },
     telemetry: {
       enabled: getBoolEnv("TELEMETRY_ENABLED", true),

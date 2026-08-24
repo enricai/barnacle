@@ -169,6 +169,19 @@ describe("config/loadConfig", () => {
     expect(cfg.bedrock.model).toBe("us.anthropic.claude-opus-4-7[1m]");
   });
 
+  it("multipart defaults", () => {
+    process.env = {};
+    const cfg = loadConfig();
+    // 20 MiB default clears the largest observed résumé upload (17.9 MB)
+    expect(cfg.multipart.maxFileSizeBytes).toBe(20 * 1024 * 1024);
+  });
+
+  it("multipart env override", () => {
+    process.env.MULTIPART_MAX_FILE_SIZE_BYTES = "10485760";
+    const cfg = loadConfig();
+    expect(cfg.multipart.maxFileSizeBytes).toBe(10485760);
+  });
+
   it("telemetry defaults", () => {
     process.env = {};
     const cfg = loadConfig();
