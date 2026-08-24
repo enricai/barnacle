@@ -4,7 +4,10 @@ import { z } from "zod/v4";
 import { createHttpClient } from "@/scraper/http-client";
 import { emitMultiStepExecuteHttp } from "@/scripts/recon-generate";
 import { evalExecuteHttpBody } from "@/scripts/recon-generate-execute-http-harness.test-helper";
-import { buildMulticallTwoIndependentPrimariesActionSteps } from "@/scripts/recon-generate-multicall-fixture";
+import {
+  buildMulticallTwoIndependentPrimariesActionSteps,
+  buildMulticallTwoOccurrencesSamePrimaryDistinctDrillsActionSteps,
+} from "@/scripts/recon-generate-multicall-fixture";
 
 const PRODUCTS_SEARCH_RESPONSE_BODY = {
   products: [{ productId: "p1" }, { productId: "p2" }],
@@ -147,5 +150,96 @@ describe("recon-generate drill-down fold executeHttp — multi-primary runtime g
       { vendorId: "v1" },
       { vendorId: "v2" },
     ]);
+  });
+});
+
+const SAME_PRIMARY_SEARCH_RESPONSE_BY_QUERY: Record<string, unknown> = {
+  widgets: { results: [{ sku: "sku-a" }] },
+  gadgets: { results: [{ sku: "sku-c" }] },
+};
+const PRICES_RESPONSE_BY_SKU: Record<string, unknown> = {
+  "sku-a": { prices: [{ sku: "sku-a", amount: 19.99 }] },
+};
+const STOCK_RESPONSE_BY_SKU: Record<string, unknown> = {
+  "sku-c": { stock: [{ sku: "sku-c", qty: 4 }] },
+};
+
+/** Stubs `fetch` to answer each of the two same-endpoint primary search
+ * calls (distinguished only by their query string) with their own response,
+ * then routes each drill call to the pricing or inventory fixture by
+ * inspecting the request's own JSON body. */
+function stubTwoOccurrencesSamePrimaryFetch(): void {
+  const fn = vi.fn(async (url: string, init?: RequestInit) => {
+    const requestBody = init?.body
+      ? (JSON.parse(String(init.body)) as Record<string, unknown>)
+      : null;
+    if (typeof requestBody?.sku === "string") {
+      const pricesResponse = PRICES_RESPONSE_BY_SKU[requestBody.sku];
+      if (pricesResponse) return jsonResponse(pricesResponse);
+      const stockResponse = STOCK_RESPONSE_BY_SKU[requestBody.sku];
+      if (stockResponse) return jsonResponse(stockResponse);
+      throw new Error(
+        `stubTwoOccurrencesSamePrimaryFetch: no drill fixture for sku "${requestBody.sku}"`
+      );
+    }
+    const query = new URL(url).searchParams.get("q");
+    const response = query ? SAME_PRIMARY_SEARCH_RESPONSE_BY_QUERY[query] : undefined;
+    if (!response) {
+      throw new Error(`stubTwoOccurrencesSamePrimaryFetch: unexpected request to "${url}"`);
+    }
+    return jsonResponse(response);
+  });
+  vi.stubGlobal("fetch", fn);
+}
+
+describe("recon-generate drill-down fold executeHttp — same-primary-endpoint runtime merge guard", () => {
+  it("merges both occurrences' folded results at runtime instead of dropping the earlier one", async () => {
+    const actionSteps = buildMulticallTwoOccurrencesSamePrimaryDistinctDrillsActionSteps();
+    const inputBody = JSON.parse(actionSteps[0]!.capture.requestPostData ?? "null") as unknown;
+
+    const body = emitMultiStepExecuteHttp(
+      actionSteps as unknown as Parameters<typeof emitMultiStepExecuteHttp>[0],
+      inputBody,
+      { stringMessageKey: null, nestedErrorPaths: [] },
+      new Map(),
+      new Set(),
+      new Map(),
+      new Set(),
+      new Map(),
+      new Map(),
+      "https://api.example.com",
+      new Map(),
+      new Map()
+    );
+
+    // The generated return statement must route through the shared merge
+    // helper, not a bare `{ ...a, ...b }` object-spread — that spread drops
+    // the earlier occurrence's `results` array entirely whenever both
+    // occurrences' primary bodies share the same top-level key.
+    expect(body).toContain("return { data: mergeFoldedPrimaryBodies(");
+    expect(body).not.toMatch(/return \{ data: \{ \.\.\./);
+
+    const limiter = new Bottleneck({ maxConcurrent: 1, minTime: 0 });
+    const httpClient = createHttpClient({
+      schema: z.unknown(),
+      bottleneck: limiter,
+      baseHeaders: { "Content-Type": "application/json" },
+    });
+
+    stubTwoOccurrencesSamePrimaryFetch();
+
+    const executeHttp = evalExecuteHttpBody(body, httpClient, z);
+    const result = await executeHttp({ BaseUrl: "https://api.example.com", page: 1 });
+
+    // Both occurrences' `results` arrays must survive the merge — a
+    // last-write-wins spread would only ever contain the LATER occurrence's
+    // single item (sku-c), silently dropping the earlier occurrence's
+    // sku-a entirely.
+    expect(result.data).toEqual({
+      results: [
+        { sku: "sku-a", amount: 19.99 },
+        { sku: "sku-c", qty: 4 },
+      ],
+    });
   });
 });

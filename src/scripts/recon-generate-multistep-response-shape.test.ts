@@ -299,7 +299,7 @@ describe("recon-generate — G1 shape-inference target agrees with the return ta
 
   it("merges every plan's folded body, matching emitMultiStepExecuteHttp's return-value merge", () => {
     const emitted = emit(twoPrimarySteps);
-    expect(emitted).toContain("return { data: { ...r0, ...r2 } };");
+    expect(emitted).toContain("return { data: mergeFoldedPrimaryBodies(r0, r2) };");
 
     const effectiveResponseBody = selectEffectiveResponseBody(true, twoPrimarySteps, null);
 

@@ -4746,22 +4746,23 @@ export function emitMultiStepExecuteHttp(
     lines.push("");
   }
 
-  // When multiple plans resolve, every plan's own primary var is
-  // object-spread together into one combined result — mirroring
-  // selectEffectiveResponseBody's merge — so the runtime return value and the
-  // inferred shape always describe the same call. A primary whose OWN
-  // top-level body isn't a plain object can't be spread meaningfully, so in
-  // that case this falls back to the LAST plan's primary var alone, same as
-  // before this merge was introduced.
+  // When multiple plans resolve, every plan's own primary var is deep-merged
+  // together into one combined result via mergeFoldedPrimaryBodies —
+  // mirroring selectEffectiveResponseBody's merge — so the runtime return
+  // value and the inferred shape always describe the same call. A plain
+  // object-spread would silently drop one plan's array whenever two plans'
+  // primary bodies share a top-level array key (e.g. the same paginated
+  // primary endpoint drilled into twice). A primary whose OWN top-level body
+  // isn't a plain object can't be merged meaningfully, so in that case this
+  // falls back to the LAST plan's primary var alone, same as before this
+  // merge was introduced.
   const lastFoldPlan = foldPlans[foldPlans.length - 1] ?? null;
   const everyPrimaryIsPlainObject = foldPlans.every((plan) =>
     isPlainObject(actions[plan.primaryStepIndex]!.capture.responseBody)
   );
   if (foldPlans.length > 1 && everyPrimaryIsPlainObject) {
-    const spreadVars = foldPlans
-      .map((plan) => `...${actions[plan.primaryStepIndex]!.varName}`)
-      .join(", ");
-    lines.push(`    return { data: { ${spreadVars} } };`);
+    const mergedVars = foldPlans.map((plan) => actions[plan.primaryStepIndex]!.varName).join(", ");
+    lines.push(`    return { data: mergeFoldedPrimaryBodies(${mergedVars}) };`);
   } else {
     const returnVar = lastFoldPlan
       ? actions[lastFoldPlan.primaryStepIndex]!.varName
@@ -6397,6 +6398,13 @@ export function emitContractTs(opts: {
     hasMultipartStep && !omitExecuteHttp
       ? `import { omitHeaderCaseInsensitive } from "${ENGINE_PKG}/lib/case-insensitive-headers";\n`
       : "";
+  // emitMultiStepExecuteHttp emits a call to this helper whenever more than
+  // one fold plan resolves — the generated plugin package can't reach into
+  // recon-generate.ts's own module scope, so it must import it separately.
+  const mergeFoldedPrimaryBodiesImport =
+    multiStepBody?.includes("mergeFoldedPrimaryBodies(") === true
+      ? `import { mergeFoldedPrimaryBodies } from "${ENGINE_PKG}/lib/merge-folded-primary-bodies";\n`
+      : "";
   // Emit identifier-shaped keys unquoted so Biome's formatter doesn't rewrite
   // the generated file on first lint:fix.
   const headersLiteral = Object.entries(baseHeaders)
@@ -6556,7 +6564,7 @@ ${executeHttpBody}
 
 ${bottleneckImport}import { z } from "zod/v4";
 
-${fixtureImport}${applicantContactImport}${caseInsensitiveHeadersImport}${multipartBoolImport}${clientImport}
+${fixtureImport}${applicantContactImport}${caseInsensitiveHeadersImport}${mergeFoldedPrimaryBodiesImport}${multipartBoolImport}${clientImport}
 import type { BrowserSession } from "${ENGINE_PKG}/scraper/session";
 import type { SitePlugin, SitePluginContext, SitePluginResult } from "${ENGINE_PKG}/site-plugin";
 import { run${pascal}BrowserFlow } from "@/sites/${siteId}/flows/browser-flow";

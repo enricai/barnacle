@@ -1,3 +1,4 @@
+import { mergeFoldedPrimaryBodies } from "@/lib/merge-folded-primary-bodies";
 import type { createHttpClient } from "@/scraper/http-client";
 
 /**
@@ -81,6 +82,11 @@ export function stripEmitterTypeAssertions(body: string): string {
  * engine module (imported locally via `@/`, not the out-of-tree subpath) with
  * fetch mocked. No network I/O — matches this repo's offline test-suite
  * discipline.
+ *
+ * Also binds `mergeFoldedPrimaryBodies` into the evaluated scope — the
+ * emitted body calls it unqualified (the real import statement is emitted
+ * separately by `emitContractTs`, which this harness bypasses), so a
+ * multi-plan fold body would otherwise throw a ReferenceError at eval time.
  */
 export function evalExecuteHttpBody(
   body: string,
@@ -91,12 +97,14 @@ export function evalExecuteHttpBody(
   const factory = new Function(
     "httpClient",
     "z",
+    "mergeFoldedPrimaryBodies",
     `return async function executeHttp(payload) {\n${stripped}\n};`
   ) as (
     httpClient: unknown,
-    z: unknown
+    z: unknown,
+    mergeFoldedPrimaryBodies: unknown
   ) => (payload: Record<string, unknown>) => Promise<{ data: unknown }>;
-  return factory(httpClient, z);
+  return factory(httpClient, z, mergeFoldedPrimaryBodies);
 }
 
 /**
