@@ -16,6 +16,7 @@ import {
   buildMulticallSingleShotSearchDrillDownNumericJoinActionSteps,
   buildMulticallSingleShotSearchDrillDownOutOfOrderItemActionSteps,
   buildMulticallSingleShotSearchDrillDownPathThreadedJoinActionSteps,
+  buildMulticallSingleShotSearchDrillDownRequeriedPrimaryOverlapActionSteps,
   buildStep,
   type MulticallFixtureStep,
 } from "@/scripts/recon-generate-multicall-fixture";
@@ -45,9 +46,20 @@ describe("detectDrillDownFoldPlan", () => {
     expect(plan?.targets[0]?.joinFields).toEqual(["productId"]);
     expect(plan?.targets[0]?.drillStepIndex).toBe(4);
     expect(plan?.targets[0]?.drillArrayPath).toEqual(["units"]);
-    // Primary must be one of the requeried available-products/ steps (r2/r3),
-    // not the drill-down step itself.
-    expect(plan && [2, 3]).toContain(plan?.primaryStepIndex);
+    // Primary must be the requeried available-products/ step whose item
+    // actually satisfies the join (r2), not the drill-down step itself.
+    expect(plan?.primaryStepIndex).toBe(2);
+  });
+
+  it("anchors on the freshest re-queried primary occurrence when both independently satisfy the drill-down's join key", () => {
+    const plan = detect(buildMulticallSingleShotSearchDrillDownRequeriedPrimaryOverlapActionSteps());
+
+    expect(plan).not.toBeNull();
+    expect(plan?.primaryStepIndex).toBe(1);
+    expect(plan?.primaryArrayPath).toEqual(["results"]);
+    expect(plan?.targets[0]?.joinFields).toEqual(["sku"]);
+    expect(plan?.targets[0]?.drillStepIndex).toBe(2);
+    expect(plan?.targets[0]?.primaryMatchedItemIndex).toBe(0);
   });
 
   it("anchors on the freshest re-queried primary occurrence when both independently thread the same drill-down's join key", () => {
