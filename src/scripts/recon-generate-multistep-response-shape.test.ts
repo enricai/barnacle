@@ -7,6 +7,7 @@ import {
 import {
   buildMulticallHeterogeneousActionStepsWithDrillDown,
   buildMulticallSingleShotSearchDrillDownNumericJoinActionSteps,
+  buildStep,
   type MulticallFixtureStep,
 } from "@/scripts/recon-generate-multicall-fixture";
 
@@ -126,5 +127,53 @@ describe("recon-generate — G1 shape-inference target agrees with the return ta
     expect(effectiveResponseBody).toEqual({
       accounts: [{ accountId: 42, name: "Acme", transactionId: "t1" }],
     });
+  });
+
+  it("folds the CHAIN's terminal step's response onto the primary item, not the immediate drill step's", () => {
+    // Mirrors the chained-dependency fixture in
+    // recon-generate-fold-plan.test.ts ("chains a further step whose
+    // request threads a value the drill call's response produced"): r1 is
+    // an intermediate drill step whose own response is a decoy (`tags`
+    // looks foldable but isn't the real per-item array), and r2 is the
+    // chain's terminal step whose `entries` array is what the emitted loop
+    // actually returns per item. Shape inference must fold r2's body, not
+    // r1's, or the schema would describe a different call than executeHttp.
+    const chainedSteps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/orders/search",
+        requestPostData: JSON.stringify({ page: 1 }),
+        responseBody: { results: [{ orderId: "order-7" }] },
+        timestamp: "2024-06-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/orders/order-7/status",
+        requestPostData: null,
+        responseBody: { statusToken: "tok-99", tags: [{ tag: "expedited" }] },
+        timestamp: "2024-06-01T00:00:01Z",
+      }),
+      buildStep("r2", {
+        url: "https://api.example.com/orders/history",
+        requestPostData: JSON.stringify({ token: "tok-99" }),
+        responseBody: { entries: [{ ts: "2024-06-01T00:00:02Z", event: "shipped" }] },
+        timestamp: "2024-06-01T00:00:02Z",
+      }),
+    ];
+
+    const effectiveResponseBody = selectEffectiveResponseBody(true, chainedSteps, null);
+
+    expect(effectiveResponseBody).toEqual({
+      results: [
+        {
+          orderId: "order-7",
+          ts: "2024-06-01T00:00:02Z",
+          event: "shipped",
+        },
+      ],
+    });
+    expect(effectiveResponseBody).not.toEqual(
+      expect.objectContaining({
+        results: [expect.objectContaining({ statusToken: expect.anything() })],
+      })
+    );
   });
 });
