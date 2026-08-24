@@ -330,6 +330,52 @@ export function buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps(): Mul
   ];
 }
 
+const CATALOG_SECTIONS_URL = "https://api.example.com/catalog/sections";
+const CATALOG_ENTRY_DETAIL_URL = "https://api.example.com/catalog/entries/e2/details";
+
+/**
+ * A grouped, nested-primary drill-down whose primary response carries TWO
+ * outer `sections[]` groups rather than the single group every other nested
+ * fixture in this file uses, with the drilled entry living in the SECOND
+ * group's `entries[]`, not the first. A fold that assumes the matched item
+ * always lives in group 0 (as a single-group fixture can never disprove)
+ * would resolve the fold onto `sections[0]` and silently attach the drill
+ * response's `description` to the wrong entry.
+ */
+export function buildMulticallNestedGroupedDrillDownMultiGroupActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SECTIONS_URL,
+      requestPostData: null,
+      responseBody: {
+        sections: [
+          {
+            label: "featured",
+            entries: [
+              { entryId: "e1", name: "Widget" },
+              { entryId: "e3", name: "Doohickey" },
+            ],
+          },
+          {
+            label: "clearance",
+            entries: [
+              { entryId: "e2", name: "Gadget" },
+              { entryId: "e4", name: "Thingamajig" },
+            ],
+          },
+        ],
+      },
+      timestamp: "2024-11-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_ENTRY_DETAIL_URL,
+      requestPostData: null,
+      responseBody: { details: [{ entryId: "e2", description: "A gadget." }] },
+      timestamp: "2024-11-01T00:00:01Z",
+    }),
+  ];
+}
+
 const ACCOUNT_SEARCH_URL = "https://api.example.com/accounts/search";
 const ACCOUNT_DETAIL_URL = "https://api.example.com/accounts/detail";
 

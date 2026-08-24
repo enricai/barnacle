@@ -4,6 +4,7 @@ import {
   buildMulticallDependentDrillDownActionSteps,
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
+  buildMulticallNestedGroupedDrillDownMultiGroupActionSteps,
   buildMulticallSingleShotSearchDrillDownCompositeNumericJoinNonFirstItemActionSteps,
   buildMulticallSingleShotSearchDrillDownMultiMatchActionSteps,
   buildMulticallSingleShotSearchDrillDownNonFirstItemSkuActionSteps,
@@ -216,6 +217,35 @@ describe("buildMulticallSingleShotSearchDrillDownMultiMatchActionSteps", () => {
     expect(secondDrillItem).toBeDefined();
     expect(firstDrillItem?.sku).not.toBe(primarySku);
     expect(secondDrillItem?.sku).toBe(primarySku);
+  });
+});
+
+describe("buildMulticallNestedGroupedDrillDownMultiGroupActionSteps", () => {
+  const steps = buildMulticallNestedGroupedDrillDownMultiGroupActionSteps();
+
+  it("the primary response carries >=2 outer groups, each with >=1 entries", () => {
+    const body = steps[0]?.capture.responseBody as {
+      sections: { label: string; entries: { entryId: string }[] }[];
+    };
+    expect(body.sections.length).toBeGreaterThanOrEqual(2);
+    for (const section of body.sections) {
+      expect(section.entries.length).toBeGreaterThanOrEqual(1);
+    }
+  });
+
+  it("the drilled entry lives in a group OTHER than index 0", () => {
+    const body = steps[0]?.capture.responseBody as {
+      sections: { entries: { entryId: string }[] }[];
+    };
+    const drillBody = steps[1]?.capture.responseBody as { details: { entryId: string }[] };
+    const drilledEntryId = drillBody.details[0]?.entryId;
+    expect(drilledEntryId).toBeDefined();
+
+    const groupIndex = body.sections.findIndex((section) =>
+      section.entries.some((entry) => entry.entryId === drilledEntryId)
+    );
+    expect(groupIndex).toBeGreaterThan(0);
+    expect(body.sections[0]?.entries.some((entry) => entry.entryId === drilledEntryId)).toBe(false);
   });
 });
 
