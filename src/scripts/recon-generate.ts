@@ -5553,6 +5553,7 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
     }
   })();
   if (endpointRx === null) return null;
+  let freshestPlan: FoldPlan | null = null;
   for (let primaryStepIndex = 0; primaryStepIndex < actions.length; primaryStepIndex++) {
     const primaryItems = objectItemsAtPath(
       actions[primaryStepIndex]!.capture.responseBody,
@@ -5585,7 +5586,7 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
         drillStepIndex,
         drillArrayPath
       );
-      return {
+      freshestPlan = {
         primaryStepIndex,
         primaryArrayPath,
         targets: [
@@ -5602,7 +5603,7 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
       };
     }
   }
-  return null;
+  return freshestPlan;
 }
 
 /**
