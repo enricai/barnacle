@@ -1054,10 +1054,13 @@ export function selectReturnAction<T extends { capture: Capture }>(steps: readon
  * be the FOLDED primary body, not the plain one, or the schema would omit
  * every field the fold adds. Both resolve through `resolveFoldPlan` with the
  * same `foldReturnSpec` so they can never disagree on whether a fold applies.
- * When multiple plans resolve, this picks the LAST plan's folded body — the
- * same convention `emitMultiStepExecuteHttp` uses for `return { data }` (see
- * its `lastFoldPlan` selection) — so the inferred shape and the runtime
- * return value always describe the same call.
+ * When multiple plans resolve, each plan's own folded body is object-spread
+ * together into one combined object — the same merge
+ * `emitMultiStepExecuteHttp` performs for `return { data }` — so the inferred
+ * shape and the runtime return value always describe the same call. A plan
+ * whose folded body isn't a plain object can't be spread meaningfully, so in
+ * that case this falls back to the LAST plan's folded body alone, exactly as
+ * before this merge was introduced.
  */
 export function selectEffectiveResponseBody<T extends { capture: Capture; isMultipart: boolean }>(
   isSubmissionFlow: boolean,
@@ -1068,8 +1071,17 @@ export function selectEffectiveResponseBody<T extends { capture: Capture; isMult
   if (!isSubmissionFlow) return replayResponseBody;
   const foldPlans = resolveFoldPlan(actionSteps, foldReturnSpec);
   const lastFoldPlan = foldPlans[foldPlans.length - 1] ?? null;
-  if (lastFoldPlan) return foldResponseBodyForShapeInference(actionSteps, lastFoldPlan);
-  return selectReturnAction(actionSteps)?.capture.responseBody ?? replayResponseBody;
+  if (foldPlans.length <= 1) {
+    if (lastFoldPlan) return foldResponseBodyForShapeInference(actionSteps, lastFoldPlan);
+    return selectReturnAction(actionSteps)?.capture.responseBody ?? replayResponseBody;
+  }
+  const foldedBodies = foldPlans.map((plan) =>
+    foldResponseBodyForShapeInference(actionSteps, plan)
+  );
+  if (foldedBodies.every(isPlainObject)) {
+    return Object.assign({}, ...foldedBodies) as Record<string, unknown>;
+  }
+  return foldResponseBodyForShapeInference(actionSteps, lastFoldPlan!);
 }
 
 /**
@@ -4731,15 +4743,28 @@ export function emitMultiStepExecuteHttp(
     lines.push("");
   }
 
-  // When multiple plans resolve, the LAST one in action-sequence order wins —
-  // same convention selectReturnAction uses (see findRequeriedActions /
-  // selectReturnAction above): a later primary is more likely the one the
-  // flow's final response actually reflects.
+  // When multiple plans resolve, every plan's own primary var is
+  // object-spread together into one combined result — mirroring
+  // selectEffectiveResponseBody's merge — so the runtime return value and the
+  // inferred shape always describe the same call. A primary whose OWN
+  // top-level body isn't a plain object can't be spread meaningfully, so in
+  // that case this falls back to the LAST plan's primary var alone, same as
+  // before this merge was introduced.
   const lastFoldPlan = foldPlans[foldPlans.length - 1] ?? null;
-  const returnVar = lastFoldPlan
-    ? actions[lastFoldPlan.primaryStepIndex]!.varName
-    : (returnAction?.varName ?? "undefined");
-  lines.push(`    return { data: ${returnVar} };`);
+  const everyPrimaryIsPlainObject = foldPlans.every((plan) =>
+    isPlainObject(actions[plan.primaryStepIndex]!.capture.responseBody)
+  );
+  if (foldPlans.length > 1 && everyPrimaryIsPlainObject) {
+    const spreadVars = foldPlans
+      .map((plan) => `...${actions[plan.primaryStepIndex]!.varName}`)
+      .join(", ");
+    lines.push(`    return { data: { ${spreadVars} } };`);
+  } else {
+    const returnVar = lastFoldPlan
+      ? actions[lastFoldPlan.primaryStepIndex]!.varName
+      : (returnAction?.varName ?? "undefined");
+    lines.push(`    return { data: ${returnVar} };`);
+  }
 
   return lines.join("\n");
 }
