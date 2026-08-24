@@ -162,6 +162,90 @@ function stubChainedFetchWithFlatTerminal(): void {
   vi.stubGlobal("fetch", fn);
 }
 
+const DETAIL_URL = "https://api.example.com/catalog/detail/";
+const AUDIT_LOG_URL = "https://api.example.com/catalog/audit-log";
+
+// Richer array-bearing chain step (3 primitive fields per item beyond
+// `sku`) — the chain's genuine terminal, even though it is not the LAST
+// step called. The multi-hop counterpart to the flat-terminal fixtures
+// above, but exercising the object-array branch of `computeFoldChain`.
+const DETAIL_BODY_FOR = (
+  sku: string
+): { detailToken: string; details: Array<Record<string, unknown>> } => ({
+  // >= 8 chars, see PRICING_BODY_FOR's comment: `indexStateValues`' floor.
+  detailToken: `detail-token-${sku}`,
+  details: [{ sku, color: "red", weight: 4.2, category: "widgets" }],
+});
+
+// Poorer array-bearing chain step (1 primitive field per item beyond
+// `sku`) called LAST in the chain — a lightweight audit-log call that
+// must NOT displace the richer detail hop as the fold terminal.
+const AUDIT_LOG_BODY_FOR = (sku: string): { logs: Array<Record<string, unknown>> } => ({
+  logs: [{ sku, event: "viewed" }],
+});
+
+/**
+ * Builds a primary-search + 2-hop chained-drill-down capture shape where
+ * BOTH chain hops carry their own object-array field, but the second
+ * (last-called) hop is strictly poorer than the first — proving
+ * `computeFoldChain`'s object-array branch picks the richer earlier hop
+ * as the terminal instead of always overwriting to the latest array
+ * candidate.
+ */
+function buildRecordedChainedDrillDownCapturesWithPoorerArrayTerminal(): ReturnType<
+  typeof buildCapture
+>[] {
+  return [
+    buildCapture({
+      url: SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: SEARCH_BODY,
+      timestamp: "2024-11-15T00:00:00Z",
+    }),
+    buildCapture({
+      url: DETAIL_URL,
+      requestPostData: '{"sku":"sku-a"}',
+      responseBody: DETAIL_BODY_FOR("sku-a"),
+      timestamp: "2024-11-15T00:00:01Z",
+    }),
+    buildCapture({
+      url: AUDIT_LOG_URL,
+      requestPostData: `{"detailToken":"${DETAIL_BODY_FOR("sku-a").detailToken}"}`,
+      responseBody: AUDIT_LOG_BODY_FOR("sku-a"),
+      timestamp: "2024-11-15T00:00:02Z",
+    }),
+  ];
+}
+
+/**
+ * Stubs `fetch` for the poorer-array-terminal chain: search -> detail
+ * (keyed by `sku`) -> audit-log (keyed by the threaded `detailToken`),
+ * matched by request body content, not call order.
+ */
+function stubChainedFetchWithPoorerArrayTerminal(): void {
+  const fn = vi.fn().mockImplementation((_url: string, init?: { body?: string }) => {
+    const requestBody = init?.body ? (JSON.parse(init.body) as Record<string, unknown>) : null;
+    const responseBody = (() => {
+      if (requestBody === null || typeof requestBody.page === "number") return SEARCH_BODY;
+      if (typeof requestBody.sku === "string") return DETAIL_BODY_FOR(requestBody.sku);
+      if (typeof requestBody.detailToken === "string") {
+        const sku = requestBody.detailToken.replace("detail-token-", "");
+        return AUDIT_LOG_BODY_FOR(sku);
+      }
+      throw new Error(
+        `stubChainedFetchWithPoorerArrayTerminal: unrecognized request body ${JSON.stringify(requestBody)}`
+      );
+    })();
+    return Promise.resolve({
+      status: 200,
+      ok: true,
+      text: vi.fn().mockResolvedValue(JSON.stringify(responseBody)),
+      headers: new Headers(),
+    });
+  });
+  vi.stubGlobal("fetch", fn);
+}
+
 describe("recon-generate chained drill-down fold executeHttp — generated-and-run integration guard", () => {
   it("threads each chain step's produced value into the next call and folds the terminal chain response onto the primary item, at runtime", async () => {
     const captures = buildRecordedChainedDrillDownCaptures();
@@ -269,6 +353,55 @@ describe("recon-generate chained drill-down fold executeHttp — generated-and-r
     // The intermediate chain step's own field never lands on the folded
     // item — only the chain's TERMINAL step's fields do.
     expect(data.results?.[0]).not.toHaveProperty("priceToken");
+
+    // One primary call, plus one call per chain step (2) per primary item (2).
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1 + 2 * 2);
+  });
+
+  it("folds the richer earlier array-bearing chain hop onto the primary item, not the poorer chain-terminal call, at runtime", async () => {
+    const captures = buildRecordedChainedDrillDownCapturesWithPoorerArrayTerminal();
+    const inputBody = JSON.parse(captures[0]!.requestPostData ?? "null") as unknown;
+
+    const actionCaptures = captures.map((capture, index) => ({ capture, index }));
+    const stateIndex = indexStateValues(captures);
+    const actionSteps = compileActionSteps(actionCaptures as never, stateIndex);
+
+    const body = emitMultiStepExecuteHttp(
+      actionSteps as unknown as Parameters<typeof emitMultiStepExecuteHttp>[0],
+      inputBody,
+      { stringMessageKey: null, nestedErrorPaths: [] },
+      new Map(),
+      new Set(),
+      new Map(),
+      new Set(),
+      new Map(),
+      new Map(),
+      "https://api.example.com",
+      new Map(),
+      new Map()
+    );
+
+    const limiter = new Bottleneck({ maxConcurrent: 1, minTime: 0 });
+    const httpClient = createHttpClient({
+      schema: z.unknown(),
+      bottleneck: limiter,
+      baseHeaders: { "Content-Type": "application/json" },
+    });
+
+    stubChainedFetchWithPoorerArrayTerminal();
+
+    const executeHttp = evalExecuteHttpBody(body, httpClient, z);
+    const result = await executeHttp({ BaseUrl: "https://api.example.com", page: 1 });
+
+    const data = result.data as { results?: Array<Record<string, unknown>> };
+    expect(data.results).toEqual([
+      { sku: "sku-a", color: "red", weight: 4.2, category: "widgets" },
+      { sku: "sku-b", color: "red", weight: 4.2, category: "widgets" },
+    ]);
+    // The poorer, later-called audit-log hop's field never lands on the
+    // folded item — only the chain's genuinely richer terminal's fields do.
+    expect(data.results?.[0]).not.toHaveProperty("event");
+    expect(data.results?.[0]).not.toHaveProperty("detailToken");
 
     // One primary call, plus one call per chain step (2) per primary item (2).
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1 + 2 * 2);
