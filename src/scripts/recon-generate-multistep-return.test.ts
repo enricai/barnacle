@@ -156,6 +156,44 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     expect(body.match(/const r5 = \(await httpClient\(/g)).toHaveLength(1);
   });
 
+  it("folds a flat-object chain terminal two hops downstream, past an intermediate token-only step", () => {
+    // r1 (pricing/) is the immediate drill step but carries only a
+    // `priceToken`, no data of its own; r2 (price-history/) threads that
+    // token and returns a flat object richer than r1's — 3 primitive
+    // fields versus r1's 1 — so computeFoldChain must recognize r2, not
+    // r1, as the chain's genuine terminal even though neither response is
+    // an array.
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/catalog/search/",
+        requestPostData: '{"page":1}',
+        responseBody: { results: [{ sku: "sku-a" }] },
+        timestamp: "2024-11-15T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/catalog/pricing/",
+        requestPostData: '{"sku":"sku-a"}',
+        responseBody: { priceToken: "tok-a1" },
+        timestamp: "2024-11-15T00:00:01Z",
+      }),
+      buildStep("r2", {
+        url: "https://api.example.com/catalog/price-history/",
+        requestPostData: '{"priceToken":"tok-a1"}',
+        responseBody: { status: "confirmed", amount: 18.5, asOf: "2024-11-01" },
+        timestamp: "2024-11-15T00:00:02Z",
+      }),
+    ];
+
+    const body = emit(steps);
+
+    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain("const r1 = (await httpClient(");
+    expect(body).toContain("const r2 = (await httpClient(");
+    expect(body).toContain("const foldMatch = r2 as Record<string, unknown>;");
+    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
+    expect(body).not.toContain("const foldMatches = ");
+  });
+
   it("still returns the search step when it is ALSO the terminal call", () => {
     const body = emit(buildMulticallHeterogeneousActionSteps());
 
