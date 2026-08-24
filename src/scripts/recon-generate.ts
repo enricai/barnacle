@@ -5198,12 +5198,15 @@ function computeFoldChain<T extends { capture: Capture }>(
     chain.push(i);
     const candidateArray = findObjectArrayField(candidate.capture.responseBody);
     if (candidateArray) {
-      chainArrayPath = candidateArray.path;
-      chainTerminalIndex = i;
-      chainTerminalRichness = chainTerminalItemRichness(
+      const candidateArrayRichness = chainTerminalItemRichness(
         candidate.capture.responseBody,
         candidateArray.path
       );
+      if (candidateArrayRichness > chainTerminalRichness) {
+        chainArrayPath = candidateArray.path;
+        chainTerminalIndex = i;
+        chainTerminalRichness = candidateArrayRichness;
+      }
       continue;
     }
     // No real object-array field. A flat response can still be the genuine
