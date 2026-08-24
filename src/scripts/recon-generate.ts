@@ -5185,7 +5185,8 @@ function computeFoldChain<T extends { capture: Capture }>(
   let chainTerminalIndex = drillStepIndex;
   let chainTerminalRichness = chainTerminalItemRichness(
     actions[drillStepIndex]!.capture.responseBody,
-    drillArrayPath
+    drillArrayPath,
+    collectRequestValuesIncludingHeaders(actions[drillStepIndex]!.capture)
   );
   for (let i = drillStepIndex + 1; i < actions.length; i++) {
     const candidate = actions[i]!;
@@ -5200,7 +5201,8 @@ function computeFoldChain<T extends { capture: Capture }>(
     if (candidateArray) {
       const candidateArrayRichness = chainTerminalItemRichness(
         candidate.capture.responseBody,
-        candidateArray.path
+        candidateArray.path,
+        requestValues
       );
       if (candidateArrayRichness > chainTerminalRichness) {
         chainArrayPath = candidateArray.path;
@@ -5221,8 +5223,9 @@ function computeFoldChain<T extends { capture: Capture }>(
     // member" regardless of whether that member actually holds foldable
     // data.
     if (!isObjectArrayItem(candidate.capture.responseBody)) continue;
-    const candidateRichness = directPrimitiveChildCountExcludingEchoed(
+    const candidateRichness = chainTerminalItemRichness(
       candidate.capture.responseBody,
+      [],
       requestValues
     );
     if (candidateRichness > chainTerminalRichness) {
@@ -5235,15 +5238,24 @@ function computeFoldChain<T extends { capture: Capture }>(
 }
 
 /** The per-item primitive-field richness of a chain terminal candidate at
- * `path` — {@link directPrimitiveChildCount} of the first item {@link
- * objectItemsAtPath} resolves there (an object-array item when `path` names
- * a real array, or the whole flat object when `path` is `[]`), or 0 when
- * `path` resolves to nothing. The baseline {@link computeFoldChain} compares
- * every later flat-object candidate against, so a later step only ever
+ * `path` — {@link directPrimitiveChildCountExcludingEchoed} of the first item
+ * {@link objectItemsAtPath} resolves there (an object-array item when `path`
+ * names a real array, or the whole flat object when `path` is `[]`), or 0
+ * when `path` resolves to nothing. `requestValues` excludes fields the
+ * candidate's own response merely echoes back from its request (join keys,
+ * threaded ids), so an echo can never be mistaken for genuine per-item data.
+ * The single metric every {@link computeFoldChain} comparison — baseline,
+ * array-branch, and flat-branch alike — uses, so a later step only ever
  * displaces the terminal by actually contributing more of its own data. */
-function chainTerminalItemRichness(responseBody: unknown, path: string[]): number {
+function chainTerminalItemRichness(
+  responseBody: unknown,
+  path: string[],
+  requestValues: ReadonlySet<string>
+): number {
   const items = objectItemsAtPath(responseBody, path);
-  return items && items.length > 0 ? directPrimitiveChildCount(items[0]!) : 0;
+  return items && items.length > 0
+    ? directPrimitiveChildCountExcludingEchoed(items[0]!, requestValues)
+    : 0;
 }
 
 /** Like {@link directPrimitiveChildCount}, but skips a field whose value was
