@@ -433,6 +433,83 @@ describe("detectDrillDownFoldPlan — chained per-item dependency", () => {
     expect(plan?.targets[0]?.chain).toEqual([1, 2]);
     expect(plan?.targets[0]?.chainArrayPath).toEqual(["history"]);
   });
+
+  it("resolves the chain terminal to a flat-object response two hops past the immediate drill step", () => {
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/orders/search",
+        requestPostData: JSON.stringify({ page: 1 }),
+        responseBody: { orders: [{ orderId: "order-9" }] },
+        timestamp: "2024-10-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/orders/order-9/status",
+        requestPostData: null,
+        // Flat, single-field body — the immediate drill step's own richness
+        // baseline that a later chain member must exceed to displace it.
+        responseBody: { token: "tok-1" },
+        timestamp: "2024-10-01T00:00:01Z",
+      }),
+      buildStep("r2", {
+        url: "https://api.example.com/orders/history",
+        requestPostData: JSON.stringify({ token: "tok-1" }),
+        // Side-effect-only: its only field beyond the echoed threaded token
+        // is a bare flag, no richer than r1's own single field.
+        responseBody: { confirmed: true, token: "tok-1" },
+        timestamp: "2024-10-01T00:00:02Z",
+      }),
+      buildStep("r3", {
+        url: "https://api.example.com/orders/order-9/receipt",
+        requestPostData: JSON.stringify({ token: "tok-1" }),
+        // Genuinely richer flat object — the real terminal, two hops past
+        // the drill step (r1 -> r2 -> r3).
+        responseBody: { receiptId: "rcpt-1", amount: 42, token: "tok-1" },
+        timestamp: "2024-10-01T00:00:03Z",
+      }),
+    ];
+
+    const plan = detect(steps);
+
+    expect(plan).not.toBeNull();
+    expect(plan?.targets[0]?.drillStepIndex).toBe(1);
+    expect(plan?.targets[0]?.chain).toEqual([1, 2, 3]);
+    expect(plan?.targets[0]?.chainArrayPath).toEqual([]);
+    expect(plan?.targets[0]?.chainTerminalIndex).toBe(3);
+  });
+
+  it("skips a side-effect-only intermediate response, keeping the drill step's own array as the terminal", () => {
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/accounts/search",
+        requestPostData: JSON.stringify({ page: 1 }),
+        responseBody: { accounts: [{ accountId: "acc-1" }] },
+        timestamp: "2024-10-02T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/accounts/acc-1/transactions",
+        requestPostData: null,
+        responseBody: { transactions: [{ transactionId: "t1", amount: 10 }] },
+        timestamp: "2024-10-02T00:00:01Z",
+      }),
+      buildStep("r2", {
+        url: "https://api.example.com/accounts/acc-1/ack",
+        requestPostData: JSON.stringify({ transactionId: "t1" }),
+        // No object-array field of its own, and its only non-echoed field
+        // (`acknowledged`) carries strictly less per-item data than r1's
+        // matched transaction item — must not become the terminal.
+        responseBody: { transactionId: "t1", acknowledged: true },
+        timestamp: "2024-10-02T00:00:02Z",
+      }),
+    ];
+
+    const plan = detect(steps);
+
+    expect(plan).not.toBeNull();
+    expect(plan?.targets[0]?.drillStepIndex).toBe(1);
+    expect(plan?.targets[0]?.chain).toEqual([1, 2]);
+    expect(plan?.targets[0]?.chainArrayPath).toEqual(["transactions"]);
+    expect(plan?.targets[0]?.chainTerminalIndex).toBe(1);
+  });
 });
 
 describe("detectDrillDownFoldPlan — multiple independent targets", () => {
