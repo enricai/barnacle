@@ -350,6 +350,48 @@ describe("detectDrillDownFoldPlan — chained per-item dependency", () => {
   });
 });
 
+describe("detectDrillDownFoldPlan — multiple independent targets", () => {
+  it("detects two independently-threaded per-item drill-downs off the same primary array", () => {
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/catalog/search",
+        requestPostData: JSON.stringify({ page: 1 }),
+        responseBody: {
+          items: [
+            { itemId: "i1", sku: "sku-1" },
+            { itemId: "i2", sku: "sku-2" },
+          ],
+        },
+        timestamp: "2024-07-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/catalog/items/i1/reviews",
+        requestPostData: null,
+        responseBody: { reviews: [{ itemId: "i1", rating: 5 }] },
+        timestamp: "2024-07-01T00:00:01Z",
+      }),
+      buildStep("r2", {
+        url: "https://api.example.com/catalog/items/sku-2/inventory",
+        requestPostData: null,
+        responseBody: { stock: [{ sku: "sku-2", qty: 3 }] },
+        timestamp: "2024-07-01T00:00:02Z",
+      }),
+    ];
+
+    const plan = detect(steps);
+
+    expect(plan).not.toBeNull();
+    expect(plan?.primaryArrayPath).toEqual(["items"]);
+    expect(plan?.targets).toHaveLength(2);
+    expect(plan?.targets[0]?.joinFields).toEqual(["itemId"]);
+    expect(plan?.targets[0]?.drillStepIndex).toBe(1);
+    expect(plan?.targets[0]?.drillArrayPath).toEqual(["reviews"]);
+    expect(plan?.targets[1]?.joinFields).toEqual(["sku"]);
+    expect(plan?.targets[1]?.drillStepIndex).toBe(2);
+    expect(plan?.targets[1]?.drillArrayPath).toEqual(["stock"]);
+  });
+});
+
 describe("resolveFoldPlan — multipart chain-step disqualification", () => {
   it("disqualifies the plan when a downstream CHAIN step (not the drill step itself) is multipart", () => {
     const steps =
@@ -411,6 +453,46 @@ describe("resolveFoldPlan — multipart chain-step disqualification", () => {
     expect(resolved).not.toBeNull();
     expect(resolved?.targets).toHaveLength(1);
     expect(resolved?.targets[0]?.drillStepIndex).toBe(1);
+  });
+
+  it("drops only the multipart-disqualified target when the surviving target is a different, independently-threaded drill-down", () => {
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/catalog/search",
+        requestPostData: JSON.stringify({ page: 1 }),
+        responseBody: {
+          items: [
+            { itemId: "i1", sku: "sku-1" },
+            { itemId: "i2", sku: "sku-2" },
+          ],
+        },
+        timestamp: "2024-07-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/catalog/items/i1/reviews",
+        requestPostData: null,
+        responseBody: { reviews: [{ itemId: "i1", rating: 5 }] },
+        timestamp: "2024-07-01T00:00:01Z",
+      }),
+      {
+        ...buildStep("r2", {
+          url: "https://api.example.com/catalog/items/sku-2/inventory",
+          requestPostData: null,
+          responseBody: { stock: [{ sku: "sku-2", qty: 3 }] },
+          timestamp: "2024-07-01T00:00:02Z",
+        }),
+        isMultipart: true,
+      },
+    ];
+
+    const structuralPlan = detectDrillDownFoldPlan(steps);
+    expect(structuralPlan?.targets).toHaveLength(2);
+
+    const resolved = resolveFoldPlan(steps);
+    expect(resolved).not.toBeNull();
+    expect(resolved?.targets).toHaveLength(1);
+    expect(resolved?.targets[0]?.drillStepIndex).toBe(1);
+    expect(resolved?.targets[0]?.drillArrayPath).toEqual(["reviews"]);
   });
 
   it("returns null when every target for the primary is multipart-disqualified", () => {
