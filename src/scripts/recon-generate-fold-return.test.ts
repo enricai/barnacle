@@ -369,23 +369,25 @@ describe("resolveFoldPlan", () => {
     // stand-in for a header-threaded join), so detectDrillDownFoldPlan's
     // structural heuristic has no candidate array to disambiguate by —
     // without the declaration there is no plan.
-    expect(resolveFoldPlan(steps)).toBeNull();
+    expect(resolveFoldPlan(steps)).toEqual([]);
 
-    expect(resolveFoldPlan(steps, SINGLE_SHOT_SPEC)).toEqual({
-      primaryStepIndex: 0,
-      primaryArrayPath: ["results"],
-      targets: [
-        {
-          joinFields: ["sku"],
-          drillStepIndex: 1,
-          drillArrayPath: ["prices"],
-          primaryMatchedItemIndex: 0,
-          chain: [1],
-          chainArrayPath: ["prices"],
-          chainTerminalIndex: 1,
-        },
-      ],
-    });
+    expect(resolveFoldPlan(steps, SINGLE_SHOT_SPEC)).toEqual([
+      {
+        primaryStepIndex: 0,
+        primaryArrayPath: ["results"],
+        targets: [
+          {
+            joinFields: ["sku"],
+            drillStepIndex: 1,
+            drillArrayPath: ["prices"],
+            primaryMatchedItemIndex: 0,
+            chain: [1],
+            chainArrayPath: ["prices"],
+            chainTerminalIndex: 1,
+          },
+        ],
+      },
+    ]);
   });
 
   it("honours the declared resultsPath even when the structural heuristic can't verify it", () => {
@@ -394,7 +396,7 @@ describe("resolveFoldPlan", () => {
     // The structural heuristic has no threaded value to disambiguate by at
     // all here; the fold must key off the declared `results[]` regardless.
     const plan = resolveFoldPlan(steps, SINGLE_SHOT_SPEC);
-    expect(plan?.primaryArrayPath).toEqual(["results"]);
+    expect(plan[0]?.primaryArrayPath).toEqual(["results"]);
   });
 
   it("resolves the real results array over an earlier decoy without needing a declaration", () => {
@@ -404,27 +406,29 @@ describe("resolveFoldPlan", () => {
     // key order than `results[]`, but only `results[]`'s items thread the
     // `sku` join value into the drill-down's request, so the structural
     // heuristic alone resolves the real array — no foldReturn needed.
-    expect(resolveFoldPlan(steps)).toEqual({
-      primaryStepIndex: 0,
-      primaryArrayPath: ["results"],
-      targets: [
-        {
-          joinFields: ["sku"],
-          drillStepIndex: 1,
-          drillArrayPath: ["prices"],
-          primaryMatchedItemIndex: 0,
-          chain: [1],
-          chainArrayPath: ["prices"],
-          chainTerminalIndex: 1,
-        },
-      ],
-    });
+    expect(resolveFoldPlan(steps)).toEqual([
+      {
+        primaryStepIndex: 0,
+        primaryArrayPath: ["results"],
+        targets: [
+          {
+            joinFields: ["sku"],
+            drillStepIndex: 1,
+            drillArrayPath: ["prices"],
+            primaryMatchedItemIndex: 0,
+            chain: [1],
+            chainArrayPath: ["prices"],
+            chainTerminalIndex: 1,
+          },
+        ],
+      },
+    ]);
   });
 
   it("prefers the structural heuristic's plan over a foldReturn spec when both would resolve", () => {
     const steps = buildMulticallDependentDrillDownActionSteps();
     const heuristicOnly = resolveFoldPlan(steps);
-    expect(heuristicOnly).not.toBeNull();
+    expect(heuristicOnly.length).toBeGreaterThan(0);
 
     // A spec pointing somewhere else entirely must not displace a plan the
     // captures themselves already prove — the declaration is a fallback, not
@@ -439,7 +443,7 @@ describe("resolveFoldPlan", () => {
   });
 
   it("returns null when no spec is given and the heuristic finds nothing", () => {
-    expect(resolveFoldPlan(buildMulticallHeterogeneousActionSteps())).toBeNull();
+    expect(resolveFoldPlan(buildMulticallHeterogeneousActionSteps())).toEqual([]);
   });
 
   it("returns null when the spec's endpointPattern matches no strictly-later action", () => {
@@ -448,7 +452,7 @@ describe("resolveFoldPlan", () => {
         ...SINGLE_SHOT_SPEC,
         endpointPattern: "/catalog/never-captured/",
       })
-    ).toBeNull();
+    ).toEqual([]);
   });
 
   it("returns null when the spec's endpointPattern is not a valid regex", () => {
@@ -457,27 +461,29 @@ describe("resolveFoldPlan", () => {
         ...SINGLE_SHOT_SPEC,
         endpointPattern: "([unclosed",
       })
-    ).toBeNull();
+    ).toEqual([]);
   });
 
   it("resolves a composite (multi-field) joinFields declaration to a plan carrying all fields", () => {
     const steps = buildCompositeJoinActionSteps();
 
-    expect(resolveFoldPlan(steps, COMPOSITE_SPEC)).toEqual({
-      primaryStepIndex: 0,
-      primaryArrayPath: ["results"],
-      targets: [
-        {
-          joinFields: ["accountId", "region"],
-          drillStepIndex: 1,
-          drillArrayPath: ["details"],
-          primaryMatchedItemIndex: 0,
-          chain: [1],
-          chainArrayPath: ["details"],
-          chainTerminalIndex: 1,
-        },
-      ],
-    });
+    expect(resolveFoldPlan(steps, COMPOSITE_SPEC)).toEqual([
+      {
+        primaryStepIndex: 0,
+        primaryArrayPath: ["results"],
+        targets: [
+          {
+            joinFields: ["accountId", "region"],
+            drillStepIndex: 1,
+            drillArrayPath: ["details"],
+            primaryMatchedItemIndex: 0,
+            chain: [1],
+            chainArrayPath: ["details"],
+            chainTerminalIndex: 1,
+          },
+        ],
+      },
+    ]);
   });
 
   it("resolves the real per-item array over an earlier decoy on the drill side without needing a declaration", () => {
@@ -487,21 +493,23 @@ describe("resolveFoldPlan", () => {
     // but only `details[]`'s items thread the `sku` join value into the
     // drill-down's own request, so the structural heuristic alone resolves
     // the real array on both sides — no foldReturn needed.
-    expect(resolveFoldPlan(steps)).toEqual({
-      primaryStepIndex: 0,
-      primaryArrayPath: ["results"],
-      targets: [
-        {
-          joinFields: ["sku"],
-          drillStepIndex: 1,
-          drillArrayPath: ["details"],
-          primaryMatchedItemIndex: 0,
-          chain: [1],
-          chainArrayPath: ["details"],
-          chainTerminalIndex: 1,
-        },
-      ],
-    });
+    expect(resolveFoldPlan(steps)).toEqual([
+      {
+        primaryStepIndex: 0,
+        primaryArrayPath: ["results"],
+        targets: [
+          {
+            joinFields: ["sku"],
+            drillStepIndex: 1,
+            drillArrayPath: ["details"],
+            primaryMatchedItemIndex: 0,
+            chain: [1],
+            chainArrayPath: ["details"],
+            chainTerminalIndex: 1,
+          },
+        ],
+      },
+    ]);
   });
 
   it("falls back to findObjectArrayField's DFS on the drill side when drillResultsPath is undeclared", () => {
@@ -514,7 +522,7 @@ describe("resolveFoldPlan", () => {
 
     // Preserves today's behavior for specs that don't declare
     // drillResultsPath: the DFS first match (the decoy `errors[]`) is used.
-    expect(resolveFoldPlan(steps, spec)?.targets[0]?.drillArrayPath).toEqual(["errors"]);
+    expect(resolveFoldPlan(steps, spec)[0]?.targets[0]?.drillArrayPath).toEqual(["errors"]);
   });
 
   it("returns null when the declared drillResultsPath resolves to no non-empty object array", () => {
@@ -526,7 +534,7 @@ describe("resolveFoldPlan", () => {
       joinFields: ["sku"],
     };
 
-    expect(resolveFoldPlan(steps, spec)).toBeNull();
+    expect(resolveFoldPlan(steps, spec)).toEqual([]);
   });
 
   it("resolves primaryMatchedItemIndex against the drill request's headers, not just URL/body", () => {
@@ -535,21 +543,23 @@ describe("resolveFoldPlan", () => {
     // The join value lives only in an `X-Item-Sku` header naming the SECOND
     // primary item, so a spec-resolved plan must resolve
     // primaryMatchedItemIndex to 1, not guess 0.
-    expect(resolveFoldPlan(steps, SINGLE_SHOT_SPEC)).toEqual({
-      primaryStepIndex: 0,
-      primaryArrayPath: ["results"],
-      targets: [
-        {
-          joinFields: ["sku"],
-          drillStepIndex: 1,
-          drillArrayPath: ["prices"],
-          primaryMatchedItemIndex: 1,
-          chain: [1],
-          chainArrayPath: ["prices"],
-          chainTerminalIndex: 1,
-        },
-      ],
-    });
+    expect(resolveFoldPlan(steps, SINGLE_SHOT_SPEC)).toEqual([
+      {
+        primaryStepIndex: 0,
+        primaryArrayPath: ["results"],
+        targets: [
+          {
+            joinFields: ["sku"],
+            drillStepIndex: 1,
+            drillArrayPath: ["prices"],
+            primaryMatchedItemIndex: 1,
+            chain: [1],
+            chainArrayPath: ["prices"],
+            chainTerminalIndex: 1,
+          },
+        ],
+      },
+    ]);
   });
 
   it("returns null (fails closed) when no primary item's joinFields values match the drill request", () => {
@@ -557,7 +567,7 @@ describe("resolveFoldPlan", () => {
 
     // The header carries a sku that matches neither primary item, so the
     // plan must not resolve at all rather than guessing index 0.
-    expect(resolveFoldPlan(steps, SINGLE_SHOT_SPEC)).toBeNull();
+    expect(resolveFoldPlan(steps, SINGLE_SHOT_SPEC)).toEqual([]);
   });
 
   it("returns null when the resolved drill-down step is multipart", () => {
@@ -569,7 +579,7 @@ describe("resolveFoldPlan", () => {
     // The fold loop re-issues the drill call per item by re-keying its
     // rendered JSON request template; a raw FormData upload has no such
     // template, so the plan must be dropped rather than emitted broken.
-    expect(resolveFoldPlan(multipartDrill, SINGLE_SHOT_SPEC)).toBeNull();
+    expect(resolveFoldPlan(multipartDrill, SINGLE_SHOT_SPEC)).toEqual([]);
   });
 });
 

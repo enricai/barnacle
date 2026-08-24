@@ -232,7 +232,7 @@ describe("detectDrillDownFoldPlan", () => {
     // the structural heuristic has nothing to disambiguate the drill-down
     // request by even though the join value is right there in the header.
     expect(detect(steps)).toBeNull();
-    expect(resolveFoldPlan(steps)).toBeNull();
+    expect(resolveFoldPlan(steps)).toEqual([]);
   });
 });
 
@@ -456,6 +456,58 @@ describe("detectDrillDownFoldPlan — multiple independent primaries", () => {
   });
 });
 
+describe("resolveFoldPlan — multiple independent primaries", () => {
+  it("drops the whole plan whose sole target is multipart-disqualified, keeping the other independent plan", () => {
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/products/search",
+        requestPostData: JSON.stringify({ page: 1 }),
+        responseBody: {
+          products: [
+            { productId: "p1", name: "Widget" },
+            { productId: "p2", name: "Gadget" },
+          ],
+        },
+        timestamp: "2024-08-01T00:00:00Z",
+      }),
+      {
+        ...buildStep("r1", {
+          url: "https://api.example.com/products/p1/reviews",
+          requestPostData: null,
+          responseBody: { reviews: [{ productId: "p1", rating: 5 }] },
+          timestamp: "2024-08-01T00:00:01Z",
+        }),
+        isMultipart: true,
+      },
+      buildStep("r2", {
+        url: "https://api.example.com/vendors/search",
+        requestPostData: JSON.stringify({ page: 1 }),
+        responseBody: {
+          vendors: [
+            { vendorId: "v1", name: "Acme" },
+            { vendorId: "v2", name: "Globex" },
+          ],
+        },
+        timestamp: "2024-08-01T00:00:02Z",
+      }),
+      buildStep("r3", {
+        url: "https://api.example.com/vendors/v1/contracts",
+        requestPostData: null,
+        responseBody: { contracts: [{ vendorId: "v1", contractId: "c1" }] },
+        timestamp: "2024-08-01T00:00:03Z",
+      }),
+    ];
+
+    expect(detectDrillDownFoldPlan(steps)).toHaveLength(2);
+
+    const resolved = resolveFoldPlan(steps);
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0]?.primaryStepIndex).toBe(2);
+    expect(resolved[0]?.primaryArrayPath).toEqual(["vendors"]);
+    expect(resolved[0]?.targets[0]?.drillStepIndex).toBe(3);
+  });
+});
+
 describe("resolveFoldPlan — multipart chain-step disqualification", () => {
   it("disqualifies the plan when a downstream CHAIN step (not the drill step itself) is multipart", () => {
     const steps =
@@ -471,13 +523,13 @@ describe("resolveFoldPlan — multipart chain-step disqualification", () => {
     expect(steps[plan!.targets[0]!.drillStepIndex]!.isMultipart).toBe(false);
     expect(steps[2]!.isMultipart).toBe(true);
 
-    expect(resolveFoldPlan(steps)).toBeNull();
+    expect(resolveFoldPlan(steps)).toEqual([]);
   });
 
   it("still resolves the plan when every chain step is a plain JSON request", () => {
     const steps = buildMulticallSingleShotSearchDrillDownChainedDependentActionSteps();
 
-    expect(resolveFoldPlan(steps)).not.toBeNull();
+    expect(resolveFoldPlan(steps)).toHaveLength(1);
   });
 
   it("drops only the multipart-disqualified target, keeping the other clean target on the same primary", () => {
@@ -514,9 +566,9 @@ describe("resolveFoldPlan — multipart chain-step disqualification", () => {
     expect(structuralPlan?.targets).toHaveLength(2);
 
     const resolved = resolveFoldPlan(steps);
-    expect(resolved).not.toBeNull();
-    expect(resolved?.targets).toHaveLength(1);
-    expect(resolved?.targets[0]?.drillStepIndex).toBe(1);
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0]?.targets).toHaveLength(1);
+    expect(resolved[0]?.targets[0]?.drillStepIndex).toBe(1);
   });
 
   it("drops only the multipart-disqualified target when the surviving target is a different, independently-threaded drill-down", () => {
@@ -553,13 +605,13 @@ describe("resolveFoldPlan — multipart chain-step disqualification", () => {
     expect(structuralPlan?.targets).toHaveLength(2);
 
     const resolved = resolveFoldPlan(steps);
-    expect(resolved).not.toBeNull();
-    expect(resolved?.targets).toHaveLength(1);
-    expect(resolved?.targets[0]?.drillStepIndex).toBe(1);
-    expect(resolved?.targets[0]?.drillArrayPath).toEqual(["reviews"]);
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0]?.targets).toHaveLength(1);
+    expect(resolved[0]?.targets[0]?.drillStepIndex).toBe(1);
+    expect(resolved[0]?.targets[0]?.drillArrayPath).toEqual(["reviews"]);
   });
 
-  it("returns null when every target for the primary is multipart-disqualified", () => {
+  it("returns an empty array when every target for the primary is multipart-disqualified", () => {
     const steps: MulticallFixtureStep[] = [
       buildStep("r0", {
         url: "https://api.example.com/accounts/search",
@@ -593,7 +645,7 @@ describe("resolveFoldPlan — multipart chain-step disqualification", () => {
     ];
 
     expect(detectDrillDownFoldPlan(steps)[0]?.targets).toHaveLength(2);
-    expect(resolveFoldPlan(steps)).toBeNull();
+    expect(resolveFoldPlan(steps)).toEqual([]);
   });
 });
 
@@ -607,20 +659,22 @@ describe("resolveFoldPlan — header-threaded join boundary", () => {
         resultsPath: "accounts",
         joinFields: ["accountId"],
       })
-    ).toEqual({
-      primaryStepIndex: 0,
-      primaryArrayPath: ["accounts"],
-      targets: [
-        {
-          joinFields: ["accountId"],
-          drillStepIndex: 1,
-          drillArrayPath: ["transactions"],
-          primaryMatchedItemIndex: 0,
-          chain: [1],
-          chainArrayPath: ["transactions"],
-          chainTerminalIndex: 1,
-        },
-      ],
-    });
+    ).toEqual([
+      {
+        primaryStepIndex: 0,
+        primaryArrayPath: ["accounts"],
+        targets: [
+          {
+            joinFields: ["accountId"],
+            drillStepIndex: 1,
+            drillArrayPath: ["transactions"],
+            primaryMatchedItemIndex: 0,
+            chain: [1],
+            chainArrayPath: ["transactions"],
+            chainTerminalIndex: 1,
+          },
+        ],
+      },
+    ]);
   });
 });
