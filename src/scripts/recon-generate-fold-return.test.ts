@@ -12,6 +12,7 @@ import {
   buildMulticallHeterogeneousActionSteps,
   buildMulticallNestedGroupedDrillDownMultiGroupActionSteps,
   buildMulticallSingleShotSearchDrillDownActionSteps,
+  buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinRequeriedPrimaryOverlapActionSteps,
   buildMulticallSingleShotSearchDrillDownMultiMatchActionSteps,
   buildMulticallSingleShotSearchDrillDownTypeMismatchJoinActionSteps,
   buildMulticallSingleShotSearchHeuristicAndSpecTwoTargetActionSteps,
@@ -563,6 +564,34 @@ describe("resolveFoldPlan", () => {
     const plan = resolveFoldPlan(steps, SINGLE_SHOT_SPEC);
     expect(plan[0]?.primaryStepIndex).toBe(1);
     expect(plan[0]?.targets[0]?.drillStepIndex).toBe(2);
+  });
+
+  it("anchors on the freshest re-queried primary occurrence when the join is threaded only through a request header", () => {
+    const steps =
+      buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinRequeriedPrimaryOverlapActionSteps();
+
+    // The join value never appears anywhere the structural heuristic scans
+    // (only in the drill call's X-Account-Id header), so this can only
+    // resolve via the declared spec — exercising buildFoldPlanFromSpec alone.
+    expect(resolveFoldPlan(steps)).toEqual([]);
+
+    const plan = resolveFoldPlan(steps, {
+      endpointPattern: "/accounts/detail",
+      resultsPath: "accounts",
+      joinFields: ["accountId"],
+    });
+
+    // r0 and r1 are both /accounts/search calls whose accounts[] independently
+    // satisfy the join against r2's header-threaded drill call; the plan
+    // must anchor on r1 (index 1), the LATER occurrence, not r0.
+    expect(plan[0]?.primaryStepIndex).toBe(1);
+    expect(plan[0]?.targets[0]?.drillStepIndex).toBe(2);
+    const matchedItemIndex = plan[0]?.targets[0]?.primaryMatchedItemIndex ?? -1;
+    const matchedStep = steps[plan[0]?.primaryStepIndex ?? -1];
+    const matchedResponseBody = matchedStep?.capture.responseBody as {
+      accounts: { name: string }[];
+    };
+    expect(matchedResponseBody.accounts[matchedItemIndex]?.name).toBe("Acme Corp");
   });
 
   it("anchors on the freshest drill occurrence when the drill endpoint is called twice and both independently match the spec's endpointPattern and join", () => {

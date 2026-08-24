@@ -668,6 +668,45 @@ export function buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinActionS
 }
 
 /**
+ * A sibling of {@link buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinActionSteps}
+ * whose primary endpoint is hit TWICE (`r0`, `r1`), each occurrence's single
+ * `accounts[]` item independently satisfying the drill-down's `X-Account-Id`
+ * join on its own — mirroring
+ * {@link buildMulticallSingleShotSearchDrillDownRequeriedPrimaryOverlapActionSteps}'s
+ * requeried-primary-overlap shape, but with the join threaded ONLY through a
+ * request header rather than a URL query param, so `detectDrillDownFoldPlan`'s
+ * structural heuristic can never see it (same blind spot documented on
+ * {@link buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinActionSteps}).
+ * Only a flow-declared `foldReturn` naming `accountId` can resolve this fold,
+ * isolating `buildFoldPlanFromSpec`'s own freshest-wins primary lookahead:
+ * the resolved plan must anchor on `r1` (the LATER occurrence) and its
+ * differing `name` value ("Acme Corp"), not `r0`'s stale "Acme".
+ */
+export function buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinRequeriedPrimaryOverlapActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: ACCOUNT_SEARCH_URL,
+      requestPostData: JSON.stringify({ page: 1 }),
+      responseBody: { accounts: [{ accountId: 42, name: "Acme" }] },
+      timestamp: "2024-08-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: ACCOUNT_SEARCH_URL,
+      requestPostData: JSON.stringify({ page: 2 }),
+      responseBody: { accounts: [{ accountId: 42, name: "Acme Corp" }] },
+      timestamp: "2024-08-01T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: ACCOUNT_DETAIL_URL,
+      requestPostData: null,
+      requestHeaders: { "Content-Type": "application/json", "X-Account-Id": "42" },
+      responseBody: { transactions: [{ transactionId: "t1" }] },
+      timestamp: "2024-08-01T00:00:02Z",
+    }),
+  ];
+}
+
+/**
  * Sibling of {@link buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinActionSteps}
  * whose primary `accounts[]` array holds TWO items rather than one, so a
  * runtime fold loop built from this capture must re-key the drill-down's
