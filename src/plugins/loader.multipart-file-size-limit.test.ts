@@ -63,10 +63,9 @@ describe("registerRoutes — multipart file size limit (real config)", () => {
     ]);
   }
 
-  function buildMultipartPlugin(executeHttp: SitePlugin<unknown, unknown>["executeHttp"]): SitePlugin<
-    unknown,
-    unknown
-  > {
+  function buildMultipartPlugin(
+    executeHttp: SitePlugin<unknown, unknown>["executeHttp"]
+  ): SitePlugin<unknown, unknown> {
     return {
       meta: {
         siteId: "mp-size-test",
