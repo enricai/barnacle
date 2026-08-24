@@ -5470,8 +5470,8 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
  * step's), and a raw `FormData` upload has no such template to re-key — so
  * that target falls back to ordinary single-call emission instead of
  * emitting a broken loop, while any other target on the same primary that
- * has no multipart step in its chain still folds normally. The whole plan is
- * disqualified (returns `null`) only when EVERY target for the primary is
+ * has no multipart step in its chain still folds normally. A plan is dropped
+ * from the returned array only when EVERY target for its primary is
  * multipart-disqualified, leaving nothing left to fold.
  *
  * {@link detectDrillDownFoldPlan} can find more than one independent
