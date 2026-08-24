@@ -266,6 +266,50 @@ describe("detectDrillDownFoldPlan — nested grouping array", () => {
   });
 });
 
+describe("detectDrillDownFoldPlan — chained per-item dependency", () => {
+  it("chains a further step whose request threads a value the drill call's response produced, ending at the step holding the foldable array", () => {
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/orders/search",
+        requestPostData: JSON.stringify({ page: 1 }),
+        responseBody: { results: [{ orderId: "order-7" }] },
+        timestamp: "2024-06-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/orders/order-7/status",
+        requestPostData: null,
+        // `tags` satisfies detectDrillDownFoldPlan's own drill-array
+        // requirement, but it is a DECOY — the real per-item results only
+        // show up on the step this one's `statusToken` threads into.
+        responseBody: { statusToken: "tok-99", tags: [{ tag: "expedited" }] },
+        timestamp: "2024-06-01T00:00:01Z",
+      }),
+      buildStep("r2", {
+        url: "https://api.example.com/orders/history",
+        requestPostData: JSON.stringify({ token: "tok-99" }),
+        responseBody: { entries: [{ ts: "2024-06-01T00:00:02Z", event: "shipped" }] },
+        timestamp: "2024-06-01T00:00:02Z",
+      }),
+    ];
+
+    const plan = detect(steps);
+
+    expect(plan).not.toBeNull();
+    expect(plan?.primaryStepIndex).toBe(0);
+    expect(plan?.drillStepIndex).toBe(1);
+    expect(plan?.chain).toEqual([1, 2]);
+    expect(plan?.chainArrayPath).toEqual(["entries"]);
+  });
+
+  it("degrades to a single-entry chain when nothing downstream threads a value out of the drill response", () => {
+    const plan = detect(buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps());
+
+    expect(plan).not.toBeNull();
+    expect(plan?.chain).toEqual([plan?.drillStepIndex]);
+    expect(plan?.chainArrayPath).toEqual(plan?.drillArrayPath);
+  });
+});
+
 describe("resolveFoldPlan — header-threaded join boundary", () => {
   it("resolves the plan from a declared foldReturn spec when the join is header-threaded", () => {
     const steps = buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinActionSteps();
@@ -283,6 +327,8 @@ describe("resolveFoldPlan — header-threaded join boundary", () => {
       drillStepIndex: 1,
       drillArrayPath: ["transactions"],
       primaryMatchedItemIndex: 0,
+      chain: [1],
+      chainArrayPath: ["transactions"],
     });
   });
 });

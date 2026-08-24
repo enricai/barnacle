@@ -4796,7 +4796,20 @@ function findObjectArrayField(
  * response, so the drill step's own response should be folded onto the
  * matching item of the primary step's results array rather than discarded.
  * `joinFields` is ordered (not a single string) because a real join can be
- * composite — e.g. matching on `accountId` AND `region` together. */
+ * composite — e.g. matching on `accountId` AND `region` together.
+ *
+ * `drillStepIndex`/`drillArrayPath` describe the IMMEDIATE drill call only.
+ * A drill-down's own response sometimes has to feed one or more FURTHER
+ * per-item calls before the actual foldable array shows up (e.g. a search
+ * step that returns an id, drilled into by a detail call that returns only a
+ * status, drilled into AGAIN by a history call that finally returns the
+ * per-item array) — `chain` carries that full dependency path, in order,
+ * starting at `drillStepIndex`, so downstream code has every step that must
+ * run per primary item to loop over instead of assuming exactly one.
+ * `chainArrayPath` is the object-array path on the chain's LAST step's
+ * response — the step whose response actually holds the foldable per-item
+ * array. When nothing threads past the immediate drill call, `chain` is
+ * `[drillStepIndex]` and `chainArrayPath` equals `drillArrayPath`. */
 export interface FoldPlan {
   primaryStepIndex: number;
   primaryArrayPath: string[];
@@ -4804,6 +4817,8 @@ export interface FoldPlan {
   drillStepIndex: number;
   drillArrayPath: string[];
   primaryMatchedItemIndex: number;
+  chain: number[];
+  chainArrayPath: string[];
 }
 
 /** Every string and numeric value present in a capture's outbound request —
@@ -4860,6 +4875,58 @@ function findThreadedJoinFields(item: Record<string, unknown>, drillCapture: Cap
         (typeof v === "number" && requestValues.has(String(v)))
     )
     .map(([k]) => k);
+}
+
+/** Every string and numeric leaf value present anywhere in a response body —
+ * the set a chained drill-down step's request must overlap with for that
+ * step to count as depending on this response. Deliberately walks the WHOLE
+ * body (not just object-array items, unlike {@link findThreadedJoinFields})
+ * since a chained step can thread any response value, not only a per-item
+ * join field. */
+function collectResponseLeafValues(responseBody: unknown): Set<string> {
+  const values = new Set<string>();
+  for (const { value } of walkAllPrimitiveLeaves(responseBody)) {
+    if (typeof value === "string" && value.length > 0) values.add(value);
+    if (typeof value === "number") values.add(String(value));
+  }
+  return values;
+}
+
+/**
+ * Walks forward from `drillStepIndex`, following the transitive per-item
+ * dependency chain: each subsequent step whose request threads a value out
+ * of ANY step already in the chain is itself added to the chain, since its
+ * own request — and therefore its response — only makes sense once per
+ * matched primary item. Reuses {@link collectRequestValuesIncludingHeaders}
+ * (URL, body, AND headers) so a chained step threading its join value
+ * through a header, exactly like {@link buildFoldPlanFromSpec}'s own
+ * threading, is still picked up. Returns the ordered step indices (starting
+ * at `drillStepIndex`) plus the object-array path found on the chain's LAST
+ * step's response — the step whose response actually holds the per-item
+ * results to fold. Falls back to `drillArrayPath` (the immediate drill
+ * step's own array) when nothing threads further, so `chain` degrades to
+ * `[drillStepIndex]` for the common single-step case.
+ */
+function computeFoldChain<T extends { capture: Capture }>(
+  actions: readonly T[],
+  drillStepIndex: number,
+  drillArrayPath: string[]
+): { chain: number[]; chainArrayPath: string[] } {
+  const chain = [drillStepIndex];
+  let chainArrayPath = drillArrayPath;
+  for (let i = drillStepIndex + 1; i < actions.length; i++) {
+    const candidate = actions[i]!;
+    const requestValues = collectRequestValuesIncludingHeaders(candidate.capture);
+    const dependsOnChain = chain.some((chainIndex) => {
+      const responseValues = collectResponseLeafValues(actions[chainIndex]!.capture.responseBody);
+      return [...responseValues].some((v) => requestValues.has(v));
+    });
+    if (!dependsOnChain) continue;
+    chain.push(i);
+    const candidateArray = findObjectArrayField(candidate.capture.responseBody);
+    if (candidateArray) chainArrayPath = candidateArray.path;
+  }
+  return { chain, chainArrayPath };
 }
 
 /**
@@ -4930,6 +4997,8 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
         ) ?? drillCandidates[0];
       if (!drillArray) continue;
 
+      const { chain, chainArrayPath } = computeFoldChain(actions, drillIndex, drillArray.path);
+
       return {
         primaryStepIndex: primaryIndex,
         primaryArrayPath: primaryArray.path,
@@ -4937,6 +5006,8 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
         drillStepIndex: drillIndex,
         drillArrayPath: drillArray.path,
         primaryMatchedItemIndex,
+        chain,
+        chainArrayPath,
       };
     }
   }
@@ -5137,6 +5208,7 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
         drill.capture
       );
       if (primaryMatchedItemIndex === null) continue;
+      const { chain, chainArrayPath } = computeFoldChain(actions, drillStepIndex, drillArrayPath);
       return {
         primaryStepIndex,
         primaryArrayPath,
@@ -5144,6 +5216,8 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
         drillStepIndex,
         drillArrayPath,
         primaryMatchedItemIndex,
+        chain,
+        chainArrayPath,
       };
     }
   }
