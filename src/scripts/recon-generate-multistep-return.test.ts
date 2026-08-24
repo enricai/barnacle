@@ -4,6 +4,7 @@ import {
   buildMulticallDependentDrillDownActionSteps,
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
+  buildMulticallNestedGroupedDrillDownMultiGroupActionSteps,
   buildMulticallSingleShotSearchDrillDownCompositeNumericJoinNonFirstItemActionSteps,
   buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps,
   buildMulticallSingleShotSearchDrillDownPathThreadedJoinActionSteps,
@@ -281,6 +282,19 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     expect(body).toContain("for (const item of foldItems) {");
     expect(body).toContain(`body: \`{"accountId":\${item.accountId}}\``);
     expect(body).not.toContain('"accountId":42');
+  });
+
+  it("flattens every outer group's items into the fold loop instead of baking in the group index that produced the fold plan", () => {
+    // The matched entry lives in the SECOND outer group, so an accessor
+    // that bakes in the single group index detectDrillDownFoldPlan sampled
+    // from (e.g. `.sections["1"].entries` or `.sections[1].entries`) would
+    // silently drop every entry outside that one group instead of
+    // flattening all of them into the loop.
+    const body = emit(buildMulticallNestedGroupedDrillDownMultiGroupActionSteps());
+
+    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
+    expect(body).not.toMatch(/sections\[("\d+"|\d+)\]/);
   });
 
   it("leaves the primary results unmerged, without crashing, when no later step threads the primary item's join key", () => {
