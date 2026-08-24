@@ -1036,6 +1036,34 @@ describe("selectEffectiveResponseBody — flow-declared foldReturn", () => {
       ],
     });
   });
+
+  it("merges a single flat-object drill-down capture's fields onto the matched primary item", () => {
+    const steps = [
+      buildStep("r0", {
+        url: "https://api.example.com/catalog/search/",
+        requestPostData: '{"page":1}',
+        responseBody: { results: [{ sku: "sku-a" }, { sku: "sku-b" }] },
+        timestamp: "2024-04-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/catalog/detail/",
+        requestPostData: '{"sku":"sku-a"}',
+        // A single flat object, not an array — the shape the emitted
+        // executeHttp actually receives at runtime for a detail-by-id
+        // drill-down (bugfix-002's per-item loop-and-merge).
+        responseBody: { sku: "sku-a", amount: 19.99 },
+        timestamp: "2024-04-01T00:00:01Z",
+      }),
+    ];
+
+    // Must merge the flat drill object's own fields onto the matched primary
+    // item, matching what emitMultiStepExecuteHttp's loop-and-merge actually
+    // returns at runtime — not fall back to the unmerged primary body just
+    // because the drill-down response isn't an array.
+    expect(selectEffectiveResponseBody(true, steps, null)).toEqual({
+      results: [{ sku: "sku-a", amount: 19.99 }, { sku: "sku-b" }],
+    });
+  });
 });
 
 describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
