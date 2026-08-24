@@ -368,6 +368,50 @@ export function buildMulticallSingleShotSearchTwoIndependentDrillDownsActionStep
   ];
 }
 
+const CATALOG_VENDORS_SEARCH_URL = "https://api.example.com/catalog/vendors/search";
+const CATALOG_VENDOR_CONTRACTS_URL = "https://api.example.com/catalog/vendors/contracts/";
+
+/**
+ * TWO independent primary/drill-down pairs, fully disjoint in both endpoint
+ * and step range: a products search folded by a per-product reviews drill
+ * (r0/r1), and an UNRELATED vendors search folded by a per-vendor contracts
+ * drill (r2/r3). Neither primary's items reference the other pair's join key
+ * (`productId` vs `vendorId`), so this proves the fold emitter resolves and
+ * loops over every independent plan, not only the first one it finds.
+ */
+export function buildMulticallTwoIndependentPrimariesActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        products: [{ productId: "p1" }, { productId: "p2" }],
+      },
+      timestamp: "2024-05-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_PRICING_URL,
+      requestPostData: '{"productId":"p1"}',
+      responseBody: { reviews: [{ productId: "p1", rating: 5 }] },
+      timestamp: "2024-05-01T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: CATALOG_VENDORS_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        vendors: [{ vendorId: "v1" }, { vendorId: "v2" }],
+      },
+      timestamp: "2024-05-01T00:00:02Z",
+    }),
+    buildStep("r3", {
+      url: CATALOG_VENDOR_CONTRACTS_URL,
+      requestPostData: '{"vendorId":"v1"}',
+      responseBody: { contracts: [{ vendorId: "v1", contractId: "c1" }] },
+      timestamp: "2024-05-01T00:00:03Z",
+    }),
+  ];
+}
+
 const CATALOG_STOCK_URL = "https://api.example.com/catalog/stock/";
 
 /** A single-shot search drilled by two INDEPENDENT later calls whose join
