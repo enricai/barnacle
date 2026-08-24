@@ -648,3 +648,48 @@ export function buildMulticallSingleShotSearchDrillDownTypeMismatchJoinActionSte
     }),
   ];
 }
+
+const CATALOG_PRICE_HISTORY_URL = "https://api.example.com/catalog/price-history";
+
+/**
+ * A single-shot search → per-item drill-down flow whose drill step's OWN
+ * response is foldable on its own terms — it carries `prices[]`, the same
+ * per-item results shape {@link buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps}
+ * would fold directly — but is ALSO depended on by a THIRD step: the drill
+ * response's `priceToken` threads into a price-history call whose response
+ * carries the real per-item array this flow means to fold. `computeFoldChain`
+ * must extend the plan's chain to `[drillStepIndex, historyStepIndex]`
+ * instead of stopping at the drill step's own array, so
+ * `emitMultiStepExecuteHttp`'s fold loop renders BOTH calls per item and
+ * shape inference ({@link foldResponseBodyForShapeInference}) folds the
+ * chain's TERMINAL (history) response, not the drill step's own `prices[]`.
+ */
+export function buildMulticallSingleShotSearchDrillDownChainedDependentActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        results: [{ sku: "sku-a" }, { sku: "sku-b" }],
+      },
+      timestamp: "2024-11-15T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_PRICING_URL,
+      requestPostData: '{"sku":"sku-a"}',
+      responseBody: {
+        priceToken: "tok-a1",
+        prices: [{ sku: "sku-a", amount: 19.99 }],
+      },
+      timestamp: "2024-11-15T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: CATALOG_PRICE_HISTORY_URL,
+      requestPostData: '{"priceToken":"tok-a1"}',
+      responseBody: {
+        history: [{ sku: "sku-a", amount: 18.5, asOf: "2024-11-01" }],
+      },
+      timestamp: "2024-11-15T00:00:02Z",
+    }),
+  ];
+}

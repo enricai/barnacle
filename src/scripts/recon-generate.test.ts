@@ -32,6 +32,7 @@ import {
   buildMulticallDependentDrillDownActionSteps,
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
+  buildMulticallSingleShotSearchDrillDownChainedDependentActionSteps,
 } from "@/scripts/recon-generate-multicall-fixture";
 import { buildRepeatedSectionSubmissionCaptures } from "@/scripts/recon-generate-repeated-section-fixture";
 import type { Capture } from "@/scripts/recon-shared";
@@ -2370,6 +2371,64 @@ describe("selectEffectiveResponseBody — shape source agrees with the return va
       totalPages: 2,
       items: [{ itemId: "i-b" }, { itemId: "i-a", detailId: "d-a" }],
     });
+  });
+
+  it("folds the chain's terminal (price-history) response onto the primary item, not the drill step's own foldable prices[]", () => {
+    const steps = buildMulticallSingleShotSearchDrillDownChainedDependentActionSteps();
+
+    const shapeSource = selectEffectiveResponseBody(true, steps, null);
+
+    expect(shapeSource).toEqual({
+      results: [{ sku: "sku-a", amount: 18.5, asOf: "2024-11-01" }, { sku: "sku-b" }],
+    });
+  });
+});
+
+describe("emitMultiStepExecuteHttp — chained per-item drill dependency", () => {
+  it("emits the full chain inside the fold loop instead of throwing when the drill step's own response is both foldable and depended on further", () => {
+    const steps = buildMulticallSingleShotSearchDrillDownChainedDependentActionSteps();
+
+    expect(() =>
+      emitMultiStepExecuteHttp(
+        steps as Parameters<typeof emitMultiStepExecuteHttp>[0],
+        null,
+        { stringMessageKey: null, nestedErrorPaths: [] },
+        new Map(),
+        new Set(),
+        new Map(),
+        new Set(),
+        new Map(),
+        new Map(),
+        "https://api.example.com",
+        new Map(),
+        new Map()
+      )
+    ).not.toThrow();
+
+    const body = emitMultiStepExecuteHttp(
+      steps as Parameters<typeof emitMultiStepExecuteHttp>[0],
+      null,
+      { stringMessageKey: null, nestedErrorPaths: [] },
+      new Map(),
+      new Set(),
+      new Map(),
+      new Set(),
+      new Map(),
+      new Map(),
+      "https://api.example.com",
+      new Map(),
+      new Map()
+    );
+
+    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain("const r1 = (await httpClient(");
+    expect(body).toContain("const r2 = (await httpClient(");
+    expect(body).toContain("const foldMatches = (r2 as");
+    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
+    // r1/r2 are only ever issued inside the fold loop — never a second time
+    // outside it.
+    expect(body.match(/const r1 = \(await httpClient\(/g)).toHaveLength(1);
+    expect(body.match(/const r2 = \(await httpClient\(/g)).toHaveLength(1);
   });
 });
 
