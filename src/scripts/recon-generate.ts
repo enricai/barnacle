@@ -4462,8 +4462,7 @@ export function emitMultiStepExecuteHttp(
         // same loop body can each declare their own locals without
         // colliding on `foldMatches`/`foldMatch`. The overwhelmingly common
         // single-target case keeps the original unsuffixed names.
-        const suffix =
-          foldPlan.targets.length > 1 ? `${planSuffix}${targetIndex}` : planSuffix;
+        const suffix = foldPlan.targets.length > 1 ? `${planSuffix}${targetIndex}` : planSuffix;
         const joinAccessor = (field: string): string =>
           isValidJsIdentifier(field)
             ? `${itemVar}.${field}`
