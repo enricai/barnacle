@@ -4598,11 +4598,20 @@ export function emitMultiStepExecuteHttp(
           }
         }
         const terminalStep = actions[target.chainTerminalIndex]!;
-        const drillArrType = foldArrayAssertionType(target.chainArrayPath);
-        const foldMatchesExpr = pathToFoldAccessorExpr(
-          `(${terminalStep.varName} as ${drillArrType})`,
-          target.chainArrayPath
-        );
+        // An empty chainArrayPath means the terminal step's response IS the
+        // implicit one-item collection (see findAllObjectArrayFieldsOrWholeObject
+        // / objectItemsAtPath's flat-object branch): the response is a flat
+        // object at runtime, not an array, so it must be wrapped in an array
+        // literal here rather than cast to an array type — casting a flat
+        // object `as Record<string, unknown>[]` compiles but throws
+        // `foldMatches.find is not a function` at runtime.
+        const foldMatchesExpr =
+          target.chainArrayPath.length === 0
+            ? `[${terminalStep.varName} as Record<string, unknown>]`
+            : pathToFoldAccessorExpr(
+                `(${terminalStep.varName} as ${foldArrayAssertionType(target.chainArrayPath)})`,
+                target.chainArrayPath
+              );
         lines.push(
           `      const foldMatches${suffix} = ${foldMatchesExpr};`,
           `      const foldMatch${suffix} = foldMatches${suffix}.find((m) => ${target.joinFields
