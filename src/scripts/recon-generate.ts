@@ -4180,7 +4180,7 @@ export function emitMultiStepExecuteHttp(
           actions[stepIndex]!.capture.requestHeaders
         )) {
           const matchesJoinField = target.joinFields.some((field) => {
-            const value = firstItem[field];
+            const value = readValueAtPath(firstItem, field.split("."));
             return (
               (typeof value === "string" && value.length > 0 && value === headerValue) ||
               (typeof value === "number" && String(value) === headerValue)
@@ -4523,9 +4523,7 @@ export function emitMultiStepExecuteHttp(
         // single-target case keeps the original unsuffixed names.
         const suffix = foldPlan.targets.length > 1 ? `${planSuffix}${targetIndex}` : planSuffix;
         const joinAccessor = (field: string): string =>
-          isValidJsIdentifier(field)
-            ? `${itemVar}.${field}`
-            : `${itemVar}[${JSON.stringify(field)}]`;
+          `${itemVar}${pathToAccessor(field.split("."), { assertNonNull: false })}`;
         // A join field can reach the render either as the raw captured literal
         // (URL query params) or as an already-generic `${payload.<field>}`
         // reference (top-level JSON body keys — see
@@ -4546,8 +4544,23 @@ export function emitMultiStepExecuteHttp(
         const parameterize = (text: string): string =>
           target.joinFields.reduce((acc, field) => {
             const replacement = `\${${joinAccessor(field)}}`;
-            const withAccessorSwapped = acc.split(`\${payload.${field}}`).join(replacement);
-            const value = firstItem[field];
+            // applyPayloadKeyValueSubstitutions only ever names a payload
+            // accessor after the DRILL REQUEST's own top-level JSON key
+            // (`${payload.sku}`), never after `field`'s dot path into the
+            // PRIMARY ITEM — those are unrelated structures that only
+            // happen to share a leaf name for a top-level join field. A
+            // nested join field (e.g. `identifiers.sku`) must therefore
+            // also match on its bare last segment, or the accessor swap
+            // silently no-ops and leaves an undefined `payload.sku`
+            // reference behind once the literal value itself has already
+            // been replaced by the payload-key-value pass.
+            const lastSegment = field.split(".").pop()!;
+            const withAccessorSwapped = acc
+              .split(`\${payload.${field}}`)
+              .join(replacement)
+              .split(`\${payload.${lastSegment}}`)
+              .join(replacement);
+            const value = readValueAtPath(firstItem, field.split("."));
             const stringValue =
               typeof value === "string" && value.length > 0
                 ? value
@@ -4618,7 +4631,26 @@ export function emitMultiStepExecuteHttp(
           lines.push(
             `      const foldMatches${suffix} = ${foldMatchesExpr};`,
             `      const foldMatch${suffix} = foldMatches${suffix}.find((m) => ${target.joinFields
-              .map((f) => `String(m[${JSON.stringify(f)}]) === String(${joinAccessor(f)})`)
+              .map((f) => {
+                const segments = f.split(".");
+                // The drill-down response is a DIFFERENT payload than the
+                // primary item, so it has no obligation to mirror the
+                // primary item's own nesting for the join key (e.g. a
+                // primary item's `identifiers.sku` is typically echoed
+                // back flat, as `sku`, on the drill response). Try the
+                // full nested path first (optional-chained, since an
+                // intermediate segment may not exist on a flat response),
+                // then fall back to the bare last segment.
+                const lastSegment = segments[segments.length - 1]!;
+                const optionalBracketAccessor = segments
+                  .map((segment) => `?.[${JSON.stringify(segment)}]`)
+                  .join("");
+                const matchAccessor =
+                  segments.length > 1
+                    ? `(m${optionalBracketAccessor} ?? m[${JSON.stringify(lastSegment)}])`
+                    : `m[${JSON.stringify(lastSegment)}]`;
+                return `String(${matchAccessor}) === String(${joinAccessor(f)})`;
+              })
               .join(" && ")}) ?? foldMatches${suffix}[0];`,
             `      Object.assign(${itemVar}, foldMatch${suffix} ?? {});`
           );
@@ -5119,23 +5151,50 @@ function collectRequestStringValues(capture: Capture): Set<string> {
 }
 
 /**
- * Finds the ordered list of an array item's string/numeric field names whose
+ * Yields every string/numeric leaf reachable from `item` by walking nested
+ * plain objects only (not arrays — a join key is a scalar field of the item
+ * or one of its nested objects, never an element drawn from a nested array),
+ * paired with its dot-separated path from `item`'s root. A bare top-level
+ * field yields a single-segment path (e.g. `["sku"]`), matching every
+ * existing joinFields entry's shape unchanged; a field nested inside an
+ * object (e.g. `{ identifiers: { sku } }`) yields `["identifiers", "sku"]`.
+ */
+function* walkItemFieldPaths(
+  item: Record<string, unknown>,
+  path: string[] = []
+): Generator<{ path: string[]; value: unknown }, void, unknown> {
+  for (const [k, v] of Object.entries(item)) {
+    const childPath = [...path, k];
+    if (v !== null && typeof v === "object" && !Array.isArray(v)) {
+      yield* walkItemFieldPaths(v as Record<string, unknown>, childPath);
+      continue;
+    }
+    yield { path: childPath, value: v };
+  }
+}
+
+/**
+ * Finds the ordered list of an array item's string/numeric field paths whose
  * values are threaded into `drillCapture`'s outbound request — the join key a
- * dependent drill-down call was built from. Field order follows the item's
- * own key order, so a composite join (e.g. `accountId` + `region`) comes
- * out in the same order the primary response declares them, not sorted.
- * Returns `[]` when no field of the item threads into the request at all.
+ * dependent drill-down call was built from. Each entry is a dot-separated
+ * path (see {@link readValueAtPath} / {@link pathToAccessor}), so a bare
+ * top-level field stays a single segment (e.g. `"sku"`) and a field nested
+ * inside an object becomes e.g. `"identifiers.sku"`. Field order follows the
+ * item's own key order (nested objects walked depth-first as encountered),
+ * so a composite join (e.g. `accountId` + `region`) comes out in the same
+ * order the primary response declares them, not sorted. Returns `[]` when no
+ * field of the item threads into the request at all.
  */
 function findThreadedJoinFields(item: Record<string, unknown>, drillCapture: Capture): string[] {
   const requestValues = collectRequestStringValues(drillCapture);
   if (requestValues.size === 0) return [];
-  return Object.entries(item)
+  return [...walkItemFieldPaths(item)]
     .filter(
-      ([, v]) =>
+      ({ value: v }) =>
         (typeof v === "string" && v.length > 0 && requestValues.has(v)) ||
         (typeof v === "number" && requestValues.has(String(v)))
     )
-    .map(([k]) => k);
+    .map(({ path }) => path.join("."));
 }
 
 /** Every string and numeric leaf value present anywhere in a response body —
@@ -5534,7 +5593,10 @@ export interface FoldReturnSpec {
    * Omitted (default) treats the drill-down's response as the array. */
   drillResultsPath?: string;
   /** Names of the fields — present on both the primary array's items and the
-   * drill-down's response — that folded items are matched on, in order. */
+   * drill-down's response — that folded items are matched on, in order. Each
+   * entry may be a dot-separated JSON path (mirroring {@link resultsPath}) so
+   * a join key nested under an object, not just a top-level property, can be
+   * declared. */
   joinFields: string[];
 }
 
@@ -5673,7 +5735,7 @@ function resolveSpecMatchedPrimaryItemIndex(
   if (requestValues.size === 0) return null;
   const matchedIndex = primaryItems.findIndex((item) =>
     joinFields.every((field) => {
-      const value = item[field];
+      const value = readValueAtPath(item, field.split("."));
       return (
         (typeof value === "string" && value.length > 0 && requestValues.has(value)) ||
         (typeof value === "number" && requestValues.has(String(value)))
@@ -5884,7 +5946,11 @@ function foldResponseBodyForShapeInference<T extends { capture: Capture }>(
     const matchedItem = primaryItems?.[target.primaryMatchedItemIndex];
     const drillMatch =
       drillItems?.find((d) =>
-        target.joinFields.every((f) => String(d[f]) === String(matchedItem?.[f]))
+        target.joinFields.every(
+          (f) =>
+            String(readValueAtPath(d, f.split("."))) ===
+            String(readValueAtPath(matchedItem, f.split(".")))
+        )
       ) ?? drillItems?.[0];
     if (!primaryItems || !matchedItem || !drillMatch) return body;
     return replaceByReference(body, matchedItem, { ...matchedItem, ...drillMatch });

@@ -330,6 +330,36 @@ export function buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps(): Mul
   ];
 }
 
+/**
+ * A nested-join-key sibling of {@link buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps}
+ * with a SECOND primary item, so a per-item fold loop is actually exercised
+ * (not just a single-item detection check): each primary `results[]` item
+ * carries its join key under a nested `identifiers` object
+ * (`{ identifiers: { sku } }`) instead of as a top-level field, while the
+ * drill-down request is still keyed by the plain `sku` value pulled out of
+ * that nested field. Proves the fold loop threads a join key found by
+ * walking INTO an item's nested objects, not only its own top-level
+ * `Object.entries`, across every primary item.
+ */
+export function buildMulticallSingleShotSearchDrillDownNestedJoinFieldMultiItemActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        results: [{ identifiers: { sku: "sku-a" } }, { identifiers: { sku: "sku-b" } }],
+      },
+      timestamp: "2024-04-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_PRICING_URL,
+      requestPostData: '{"sku":"sku-a"}',
+      responseBody: { prices: [{ sku: "sku-a", amount: 19.99 }] },
+      timestamp: "2024-04-01T00:00:01Z",
+    }),
+  ];
+}
+
 const CATALOG_INVENTORY_URL = "https://api.example.com/catalog/inventory/";
 
 /**
@@ -591,6 +621,30 @@ export function buildMulticallSingleShotSearchDrillDownPathThreadedJoinActionSte
       requestPostData: null,
       responseBody: { transactions: [{ transactionId: "t1" }] },
       timestamp: "2024-07-01T00:00:01Z",
+    }),
+  ];
+}
+
+/**
+ * A single-shot search whose primary item join field (`sku`) sits inside a
+ * NESTED object (`{ identifiers: { sku } }`) rather than as a top-level
+ * property. `findThreadedJoinFields` must walk into nested plain objects to
+ * find it, and the resulting joinFields entry is the dot-separated path
+ * `"identifiers.sku"`, not the bare leaf name `"sku"`.
+ */
+export function buildMulticallSingleShotSearchDrillDownNestedJoinFieldActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: ACCOUNT_SEARCH_URL,
+      requestPostData: JSON.stringify({ page: 1 }),
+      responseBody: { accounts: [{ identifiers: { sku: "SKU-1" }, name: "Acme" }] },
+      timestamp: "2024-08-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: ACCOUNT_DETAIL_URL,
+      requestPostData: JSON.stringify({ sku: "SKU-1" }),
+      responseBody: { transactions: [{ transactionId: "t1" }] },
+      timestamp: "2024-08-01T00:00:01Z",
     }),
   ];
 }

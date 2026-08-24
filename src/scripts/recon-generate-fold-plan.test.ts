@@ -11,6 +11,7 @@ import {
   buildMulticallSingleShotSearchDrillDownCompositeNumericJoinNonFirstItemActionSteps,
   buildMulticallSingleShotSearchDrillDownDrillDecoyActionSteps,
   buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinActionSteps,
+  buildMulticallSingleShotSearchDrillDownNestedJoinFieldActionSteps,
   buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps,
   buildMulticallSingleShotSearchDrillDownNonFirstItemSkuActionSteps,
   buildMulticallSingleShotSearchDrillDownNumericJoinActionSteps,
@@ -244,6 +245,14 @@ describe("detectDrillDownFoldPlan", () => {
 
     expect(plan).not.toBeNull();
     expect(plan?.targets[0]?.joinFields).toEqual(["region", "accountId"]);
+    expect(plan?.targets[0]?.drillArrayPath).toEqual(["transactions"]);
+  });
+
+  it("resolves a join field nested inside an object as a dot-separated path", () => {
+    const plan = detect(buildMulticallSingleShotSearchDrillDownNestedJoinFieldActionSteps());
+
+    expect(plan).not.toBeNull();
+    expect(plan?.targets[0]?.joinFields).toEqual(["identifiers.sku"]);
     expect(plan?.targets[0]?.drillArrayPath).toEqual(["transactions"]);
   });
 
