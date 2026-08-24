@@ -4,6 +4,7 @@ import {
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
   buildMulticallSingleShotSearchDrillDownActionSteps,
+  buildMulticallSingleShotSearchDrillDownChainedDependentActionSteps,
   buildMulticallSingleShotSearchDrillDownCompositeNumericJoinActionSteps,
   buildMulticallSingleShotSearchDrillDownCompositeNumericJoinNonFirstItemActionSteps,
   buildMulticallSingleShotSearchDrillDownDrillDecoyActionSteps,
@@ -307,6 +308,21 @@ describe("detectDrillDownFoldPlan — chained per-item dependency", () => {
     expect(plan).not.toBeNull();
     expect(plan?.chain).toEqual([plan?.drillStepIndex]);
     expect(plan?.chainArrayPath).toEqual(plan?.drillArrayPath);
+  });
+
+  it("extends the chain past a drill step that is itself foldable, when a further step also depends on it", () => {
+    const plan = detect(buildMulticallSingleShotSearchDrillDownChainedDependentActionSteps());
+
+    expect(plan).not.toBeNull();
+    expect(plan?.primaryStepIndex).toBe(0);
+    expect(plan?.joinFields).toEqual(["sku"]);
+    // r1 (the price lookup) is a valid drill step in isolation — its own
+    // `prices[]` is foldable — but r2 (price-history) threads r1's
+    // `priceToken`, so the chain must not stop at r1.
+    expect(plan?.drillStepIndex).toBe(1);
+    expect(plan?.drillArrayPath).toEqual(["prices"]);
+    expect(plan?.chain).toEqual([1, 2]);
+    expect(plan?.chainArrayPath).toEqual(["history"]);
   });
 });
 
