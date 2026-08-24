@@ -824,9 +824,12 @@ describe("dispatch — forceFallback option", () => {
  * `@fastify/multipart` register call after the route loop).
  */
 describe("registerRoutes — multipart flag", () => {
-  // Minimal AppConfig satisfying registerRoutes' only field access: cfg.scraper.siteBaseUrls.
-  // Cast to AppConfig so the rest of the (deep) shape stays unmocked.
-  const cfgStub = { scraper: { siteBaseUrls: {} } } as unknown as AppConfig;
+  // Minimal AppConfig satisfying registerRoutes' only field accesses: cfg.scraper.siteBaseUrls
+  // and cfg.multipart.maxFileSizeBytes. Cast to AppConfig so the rest of the (deep) shape stays unmocked.
+  const cfgStub = {
+    scraper: { siteBaseUrls: {} },
+    multipart: { maxFileSizeBytes: 20 * 1024 * 1024 },
+  } as unknown as AppConfig;
   const preservedEnv = {
     DEV_BYPASS_AUTH: process.env.DEV_BYPASS_AUTH,
     NODE_ENV: process.env.NODE_ENV,
@@ -1066,7 +1069,10 @@ describe("registerRoutes — x-barnacle-execution header", () => {
 });
 
 describe("registerRoutes — extraRoutes loop", () => {
-  const cfgStub = { scraper: { siteBaseUrls: {} } } as unknown as AppConfig;
+  const cfgStub = {
+    scraper: { siteBaseUrls: {} },
+    multipart: { maxFileSizeBytes: 20 * 1024 * 1024 },
+  } as unknown as AppConfig;
   const preservedEnv = {
     DEV_BYPASS_AUTH: process.env.DEV_BYPASS_AUTH,
     NODE_ENV: process.env.NODE_ENV,

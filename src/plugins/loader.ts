@@ -483,7 +483,10 @@ export async function registerRoutes(
     (p) => p.meta.multipart === true || p.meta.extraRoutes?.some((r) => r.multipart === true)
   );
   if (needsMultipart) {
-    await app.register(fastifyMultipart, { attachFieldsToBody: "keyValues" });
+    await app.register(fastifyMultipart, {
+      attachFieldsToBody: "keyValues",
+      limits: { fileSize: cfg.multipart.maxFileSizeBytes },
+    });
   }
 
   for (const plugin of plugins) {
