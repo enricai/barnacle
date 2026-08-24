@@ -1062,7 +1062,7 @@ export function selectEffectiveResponseBody<T extends { capture: Capture; isMult
   foldReturnSpec: FoldReturnSpec | null = null
 ): unknown {
   if (!isSubmissionFlow) return replayResponseBody;
-  const foldPlan = resolveFoldPlan(actionSteps, foldReturnSpec);
+  const foldPlan = resolveFoldPlan(actionSteps, foldReturnSpec)[0] ?? null;
   if (foldPlan) return foldResponseBodyForShapeInference(actionSteps, foldPlan);
   return selectReturnAction(actionSteps)?.capture.responseBody ?? replayResponseBody;
 }
@@ -4349,7 +4349,7 @@ export function emitMultiStepExecuteHttp(
   // primary step's array is folded in place (see the loop-and-merge emitted
   // below), so the primary step's var — not whichever call selectReturnAction
   // would otherwise pick — is what `return { data }` must reference.
-  const foldPlan = resolveFoldPlan(actions, foldReturnSpec);
+  const foldPlan = resolveFoldPlan(actions, foldReturnSpec)[0] ?? null;
   const returnAction = foldPlan ? null : selectReturnAction(actions);
   if (returnAction) referencedNames.add(returnAction.varName);
   if (foldPlan) referencedNames.add(actions[foldPlan.primaryStepIndex]!.varName);
@@ -5470,28 +5470,34 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
  * step's), and a raw `FormData` upload has no such template to re-key — so
  * that target falls back to ordinary single-call emission instead of
  * emitting a broken loop, while any other target on the same primary that
- * has no multipart step in its chain still folds normally. The whole plan is
- * disqualified (returns `null`) only when EVERY target for the primary is
+ * has no multipart step in its chain still folds normally. A plan is dropped
+ * from the returned array only when EVERY target for its primary is
  * multipart-disqualified, leaving nothing left to fold.
  *
  * {@link detectDrillDownFoldPlan} can find more than one independent
- * primary/drill-down pair in a single action sequence, but this entry point
- * — and every emitter/shape-inference caller downstream of it — still folds
- * a single primary per generate run, so only the first detected plan is
- * resolved here.
+ * primary/drill-down pair in a single action sequence, so this returns every
+ * plan that survives multipart disqualification, letting every downstream
+ * emitter/shape-inference caller fold each of them.
  */
 export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boolean }>(
   actions: readonly T[],
   foldReturnSpec: FoldReturnSpec | null = null
-): FoldPlan | null {
-  const plan =
-    detectDrillDownFoldPlan(actions)[0] ??
-    (foldReturnSpec === null ? null : buildFoldPlanFromSpec(actions, foldReturnSpec));
-  if (plan === null) return null;
-  const targets = plan.targets.filter(
-    (target) => !target.chain.some((chainIndex) => actions[chainIndex]!.isMultipart)
-  );
-  return targets.length === 0 ? null : { ...plan, targets };
+): FoldPlan[] {
+  const structuralPlans = detectDrillDownFoldPlan(actions);
+  const plans =
+    structuralPlans.length > 0
+      ? structuralPlans
+      : ((): FoldPlan[] => {
+          if (foldReturnSpec === null) return [];
+          const specPlan = buildFoldPlanFromSpec(actions, foldReturnSpec);
+          return specPlan === null ? [] : [specPlan];
+        })();
+  return plans.flatMap((plan) => {
+    const targets = plan.targets.filter(
+      (target) => !target.chain.some((chainIndex) => actions[chainIndex]!.isMultipart)
+    );
+    return targets.length === 0 ? [] : [{ ...plan, targets }];
+  });
 }
 
 /** Rebuilds `value` with every occurrence of `target` (compared by object
@@ -7567,7 +7573,7 @@ async function main(): Promise<void> {
   // A declared foldReturn that resolves to no plan is a silent no-op otherwise
   // — the flow author gets the discarding selectReturnAction path with nothing
   // in the output saying their declaration never applied.
-  if (foldReturnSpec !== null && resolveFoldPlan(actionSteps, foldReturnSpec) === null) {
+  if (foldReturnSpec !== null && resolveFoldPlan(actionSteps, foldReturnSpec).length === 0) {
     logger.warn(
       `flow declares foldReturn (endpointPattern: ${foldReturnSpec.endpointPattern}, resultsPath: ${foldReturnSpec.resultsPath}, joinFields: ${foldReturnSpec.joinFields.join(", ")}) but no fold plan resolved — no later capture matched the endpoint pattern, resultsPath resolved to no object array, or the matched drill-down is multipart; the drill-down's response will not be folded`
     );
