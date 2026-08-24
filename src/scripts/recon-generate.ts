@@ -4395,146 +4395,155 @@ export function emitMultiStepExecuteHttp(
     const cap = step.capture;
     const r = rendered[i]!;
 
-    // The fold plan's drill-down step (and every further step transitively
-    // dependent on it — see FoldTarget.chain) is emitted as a per-item loop
-    // instead of the single call every other step gets: each chain step
-    // re-issues the SAME url/headers/bodyArg/schemaExpr this pass already
-    // rendered for it, only with the captured join value(s) swapped for the
-    // loop item's own field accessor (the drill step) or its own produced
-    // response values (later chain steps, which already render with
-    // `${producedName}` templates — see deriveStateVarByValue), then merges
-    // the terminal chain step's matched response back onto that item —
-    // reusing the per-call render rather than a second HTTP-call emitter.
-    // Several independent targets can share the same primary step, so this
-    // is matched by drillStepIndex, not just plan membership.
-    const targetIndex = foldPlan ? foldPlan.targets.findIndex((t) => t.drillStepIndex === i) : -1;
-    if (foldPlan && targetIndex !== -1) {
-      const target = foldPlan.targets[targetIndex]!;
+    // Every independent fold target — regardless of which drill step starts
+    // it — is folded into ONE shared per-item loop over the primary array,
+    // emitted once, at the FIRST target's drillStepIndex: each target's
+    // chain calls and Object.assign both run inside that same `for (const
+    // item of foldItems)` body, so a primary item ends up with fields folded
+    // in from every independent dependent drill-down, not just the first.
+    // Each chain step re-issues the SAME url/headers/bodyArg/schemaExpr this
+    // pass already rendered for it, only with the captured join value(s)
+    // swapped for the loop item's own field accessor (the drill step) or its
+    // own produced response values (later chain steps, which already render
+    // with `${producedName}` templates — see deriveStateVarByValue).
+    const isFirstFoldTarget =
+      foldPlan !== null && foldPlan.targets.length > 0 && foldPlan.targets[0]!.drillStepIndex === i;
+    if (foldPlan && isFirstFoldTarget) {
       const primaryStep = actions[foldPlan.primaryStepIndex]!;
       // Read at the plan's OWN path rather than re-running the DFS: a
       // flow-declared `resultsPath` (see FoldReturnSpec) can name a different
-      // array than findObjectArrayField's first match, and `firstItem` below
-      // decides which captured literal `parameterize` rewrites — it must be
-      // the item at `primaryMatchedItemIndex`, the one the drill request was
-      // actually built from, not always index 0.
+      // array than findObjectArrayField's first match.
       const primaryItems = objectItemsAtPath(
         primaryStep.capture.responseBody,
         foldPlan.primaryArrayPath
       );
-      const firstItem = primaryItems?.[target.primaryMatchedItemIndex];
-      if (!firstItem) {
-        throw new Error(
-          `emitMultiStepExecuteHttp: fold plan primary step ${primaryStep.varName} no longer resolves an object array at ${foldPlan.primaryArrayPath.join(".")} — the fold plan and this emitter have drifted out of sync`
-        );
-      }
-      // Each target's per-item loop gets its own suffixed local names so
-      // multiple independent targets folding onto the same primary array can
-      // each emit their own `for` block into the same function scope without
-      // colliding on `foldItems`/`item`/`foldMatches`/`foldMatch`. The
-      // overwhelmingly common single-target case keeps the original
-      // unsuffixed names.
-      const suffix = foldPlan.targets.length > 1 ? String(targetIndex) : "";
-      const itemVar = `item${suffix}`;
-      const joinAccessor = (field: string): string =>
-        isValidJsIdentifier(field) ? `${itemVar}.${field}` : `${itemVar}[${JSON.stringify(field)}]`;
-      // A join field can reach the render either as the raw captured literal
-      // (URL query params) or as an already-generic `${payload.<field>}`
-      // reference (top-level JSON body keys — see
-      // applyPayloadKeyValueSubstitutions, which payload-ifies every scalar
-      // body key regardless of length, running BEFORE this fold branch ever
-      // sees the value). Both must resolve to the loop item's own field, not
-      // a caller-supplied payload value shared across every iteration.
-      // Word-boundary anchored: a plain `.split(value).join(...)` would also
-      // rewrite unrelated substrings that happen to contain the join value
-      // (e.g. a "p1" product id colliding with a "/v1/" path segment or a
-      // "p10" sibling id), corrupting parts of the request the join field
-      // never touched.
-      const replaceWholeValue = (haystack: string, value: string, replacement: string): string =>
-        haystack.replace(
-          new RegExp(`\\b${value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g"),
-          replacement
-        );
-      const parameterize = (text: string): string =>
-        target.joinFields.reduce((acc, field) => {
-          const replacement = `\${${joinAccessor(field)}}`;
-          const withAccessorSwapped = acc.split(`\${payload.${field}}`).join(replacement);
-          const value = firstItem[field];
-          const stringValue =
-            typeof value === "string" && value.length > 0
-              ? value
-              : typeof value === "number"
-                ? String(value)
-                : null;
-          return stringValue !== null
-            ? replaceWholeValue(withAccessorSwapped, stringValue, replacement)
-            : withAccessorSwapped;
-        }, text);
 
       const primaryArrType = foldArrayAssertionType(foldPlan.primaryArrayPath);
       const foldItemsExpr = pathToFoldAccessorExpr(
         `(${primaryStep.varName} as ${primaryArrType})`,
         foldPlan.primaryArrayPath
       );
+      const itemVar = "item";
 
       lines.push(
-        `    const foldItems${suffix} = ${foldItemsExpr};`,
-        `    for (const ${itemVar} of foldItems${suffix}) {`
+        `    const foldItems = ${foldItemsExpr};`,
+        `    for (const ${itemVar} of foldItems) {`
       );
-      // Every chain step's response and produces are block-scoped to this
-      // `for` — they never escape to the rest of the function. That is
-      // exactly the constraint the previous (now-removed) throw enforced by
-      // refusing to run at all: instead of failing, each chain step's
-      // produces are re-declared here as loop-scoped locals, so a later
-      // chain step's own request (already rendered with `${producedName}`
-      // templates by the pass above, same as it would be for any two
-      // sequential non-fold steps) resolves them from this narrower scope.
-      const chainDeclared = new Set<string>();
-      for (const chainIndex of target.chain) {
-        const chainStep = actions[chainIndex]!;
-        const chainRendered = rendered[chainIndex]!;
-        lines.push(
-          `      const ${chainStep.varName} = (await httpClient(\`${parameterize(chainRendered.url)}\`, {`,
-          `        method: ${JSON.stringify(chainRendered.method)},`
-        );
-        const joined = [
-          parameterize(chainRendered.headersExpr),
-          parameterize(chainRendered.bodyArg),
-        ]
-          .filter((s) => s !== "")
-          .join(" ");
-        if (joined !== "") lines.push(`        ${joined}`);
-        lines.push(
-          `        schema: ${chainRendered.schemaExpr},`,
-          `      })) as Record<string, unknown>;`
-        );
-        for (const p of chainStep.produces) {
-          if (p.kind === "header") continue;
-          if (chainDeclared.has(p.name)) continue;
-          if (!referencedNames.has(p.name)) continue;
-          chainDeclared.add(p.name);
-          const assertion = pathToAssertionType(p.path);
-          lines.push(
-            `      const ${p.name} = (${chainStep.varName} as ${assertion})${pathToAccessor(p.path, { assertNonNull: false })};`
+
+      for (const [targetIndex, target] of foldPlan.targets.entries()) {
+        // `firstItem` decides which captured literal `parameterize` rewrites
+        // — it must be the item at `primaryMatchedItemIndex`, the one THIS
+        // target's drill request was actually built from, not always index
+        // 0, and can differ per target even though every target now shares
+        // the same runtime loop item.
+        const firstItem = primaryItems?.[target.primaryMatchedItemIndex];
+        if (!firstItem) {
+          throw new Error(
+            `emitMultiStepExecuteHttp: fold plan primary step ${primaryStep.varName} no longer resolves an object array at ${foldPlan.primaryArrayPath.join(".")} — the fold plan and this emitter have drifted out of sync`
           );
         }
+        // Each target's chain variables and merge result get their own
+        // suffixed local names so multiple independent targets sharing the
+        // same loop body can each declare their own locals without
+        // colliding on `foldMatches`/`foldMatch`. The overwhelmingly common
+        // single-target case keeps the original unsuffixed names.
+        const suffix = foldPlan.targets.length > 1 ? String(targetIndex) : "";
+        const joinAccessor = (field: string): string =>
+          isValidJsIdentifier(field)
+            ? `${itemVar}.${field}`
+            : `${itemVar}[${JSON.stringify(field)}]`;
+        // A join field can reach the render either as the raw captured literal
+        // (URL query params) or as an already-generic `${payload.<field>}`
+        // reference (top-level JSON body keys — see
+        // applyPayloadKeyValueSubstitutions, which payload-ifies every scalar
+        // body key regardless of length, running BEFORE this fold branch ever
+        // sees the value). Both must resolve to the loop item's own field, not
+        // a caller-supplied payload value shared across every iteration.
+        // Word-boundary anchored: a plain `.split(value).join(...)` would also
+        // rewrite unrelated substrings that happen to contain the join value
+        // (e.g. a "p1" product id colliding with a "/v1/" path segment or a
+        // "p10" sibling id), corrupting parts of the request the join field
+        // never touched.
+        const replaceWholeValue = (haystack: string, value: string, replacement: string): string =>
+          haystack.replace(
+            new RegExp(`\\b${value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g"),
+            replacement
+          );
+        const parameterize = (text: string): string =>
+          target.joinFields.reduce((acc, field) => {
+            const replacement = `\${${joinAccessor(field)}}`;
+            const withAccessorSwapped = acc.split(`\${payload.${field}}`).join(replacement);
+            const value = firstItem[field];
+            const stringValue =
+              typeof value === "string" && value.length > 0
+                ? value
+                : typeof value === "number"
+                  ? String(value)
+                  : null;
+            return stringValue !== null
+              ? replaceWholeValue(withAccessorSwapped, stringValue, replacement)
+              : withAccessorSwapped;
+          }, text);
+
+        // Every chain step's response and produces are block-scoped to this
+        // `for` — they never escape to the rest of the function. That is
+        // exactly the constraint the previous (now-removed) throw enforced by
+        // refusing to run at all: instead of failing, each chain step's
+        // produces are re-declared here as loop-scoped locals, so a later
+        // chain step's own request (already rendered with `${producedName}`
+        // templates by the pass above, same as it would be for any two
+        // sequential non-fold steps) resolves them from this narrower scope.
+        const chainDeclared = new Set<string>();
+        for (const chainIndex of target.chain) {
+          const chainStep = actions[chainIndex]!;
+          const chainRendered = rendered[chainIndex]!;
+          lines.push(
+            `      const ${chainStep.varName} = (await httpClient(\`${parameterize(chainRendered.url)}\`, {`,
+            `        method: ${JSON.stringify(chainRendered.method)},`
+          );
+          const joined = [
+            parameterize(chainRendered.headersExpr),
+            parameterize(chainRendered.bodyArg),
+          ]
+            .filter((s) => s !== "")
+            .join(" ");
+          if (joined !== "") lines.push(`        ${joined}`);
+          lines.push(
+            `        schema: ${chainRendered.schemaExpr},`,
+            `      })) as Record<string, unknown>;`
+          );
+          for (const p of chainStep.produces) {
+            if (p.kind === "header") continue;
+            if (chainDeclared.has(p.name)) continue;
+            if (!referencedNames.has(p.name)) continue;
+            chainDeclared.add(p.name);
+            const assertion = pathToAssertionType(p.path);
+            lines.push(
+              `      const ${p.name} = (${chainStep.varName} as ${assertion})${pathToAccessor(p.path, { assertNonNull: false })};`
+            );
+          }
+        }
+        const terminalStep = actions[target.chainTerminalIndex]!;
+        const drillArrType = foldArrayAssertionType(target.chainArrayPath);
+        const foldMatchesExpr = pathToFoldAccessorExpr(
+          `(${terminalStep.varName} as ${drillArrType})`,
+          target.chainArrayPath
+        );
+        lines.push(
+          `      const foldMatches${suffix} = ${foldMatchesExpr};`,
+          `      const foldMatch${suffix} = foldMatches${suffix}.find((m) => ${target.joinFields
+            .map((f) => `String(m[${JSON.stringify(f)}]) === String(${joinAccessor(f)})`)
+            .join(" && ")}) ?? foldMatches${suffix}[0];`,
+          `      Object.assign(${itemVar}, foldMatch${suffix} ?? {});`
+        );
       }
-      const terminalStep = actions[target.chainTerminalIndex]!;
-      const drillArrType = foldArrayAssertionType(target.chainArrayPath);
-      const foldMatchesExpr = pathToFoldAccessorExpr(
-        `(${terminalStep.varName} as ${drillArrType})`,
-        target.chainArrayPath
-      );
-      lines.push(
-        `      const foldMatches${suffix} = ${foldMatchesExpr};`,
-        `      const foldMatch${suffix} = foldMatches${suffix}.find((m) => ${target.joinFields
-          .map((f) => `String(m[${JSON.stringify(f)}]) === String(${joinAccessor(f)})`)
-          .join(" && ")}) ?? foldMatches${suffix}[0];`,
-        `      Object.assign(${itemVar}, foldMatch${suffix} ?? {});`,
-        `    }`,
-        ""
-      );
+      lines.push(`    }`, "");
       continue;
     }
+    // Every fold target's drillStepIndex other than the first is already
+    // fully emitted, inline, inside the shared loop above — skip it here so
+    // its chain isn't also visited by this pass's normal per-step handling.
+    if (foldPlan?.targets.some((t) => t.drillStepIndex === i)) continue;
     // Every other chain step (already fully emitted, inline, by the fold
     // block above) must not also get the normal single-call treatment this
     // pass gives every step, or its request would be issued a second time,

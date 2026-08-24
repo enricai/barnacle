@@ -223,27 +223,27 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     expect(body).toContain("const r1 = (await httpClient(");
   });
 
-  it("resolves both drill steps by join key rather than call order, as two independent fold targets", () => {
+  it("resolves both drill steps by join key rather than call order, as two independent fold targets sharing one loop", () => {
     // The primary page's items are [i-b, i-a] (index 0 is i-b); i-a's
     // drill-down (r2) fires BEFORE i-b's (r3). Both r2 and r3 independently
     // thread a primary item's itemId, so detectDrillDownFoldPlan now
-    // resolves TWO targets — one per drill-down — each emitting its own
-    // per-item loop over the SAME primary array rather than only the
-    // earliest-firing one winning. Every loop iteration re-derives the join
-    // value from its own loop item rather than the single sampled item each
-    // target was detected from.
+    // resolves TWO targets — one per drill-down — both emitted inside the
+    // SAME per-item loop over the primary array, so a single item ends up
+    // with fields folded in from both drill-downs. Every loop iteration
+    // re-derives the join value from the shared loop item rather than the
+    // single sampled item each target was detected from.
     const body = emit(buildMulticallDependentDrillDownActionSteps());
 
+    expect(body).toContain("for (const item of foldItems) {");
     expect(body).toContain(
       `const r2 = (await httpClient(\`\${payload.BaseUrl}/catalog/item-detail/\``
     );
     expect(body).toContain(
       `const r3 = (await httpClient(\`\${payload.BaseUrl}/catalog/item-detail/\``
     );
-    expect(body).toContain(`body: \`{"itemId":"\${item0.itemId}"}\``);
-    expect(body).toContain(`body: \`{"itemId":"\${item1.itemId}"}\``);
+    expect(body).toContain(`body: \`{"itemId":"\${item.itemId}"}\``);
     // Both drill calls' captured literal itemIds are parameterized away into
-    // their own loop, so neither survives verbatim in the emitted body.
+    // the shared loop, so neither survives verbatim in the emitted body.
     expect(body).not.toContain('"itemId":"i-a"');
     expect(body).not.toContain('"itemId":"i-b"');
   });
