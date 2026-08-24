@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { detectDrillDownFoldPlan, selectPayloadAction } from "@/scripts/recon-generate";
+import {
+  detectDrillDownFoldPlan,
+  type FoldPlan,
+  selectPayloadAction,
+} from "@/scripts/recon-generate";
 import {
   buildMulticallDependentDrillDownActionSteps,
   buildMulticallHeterogeneousActionSteps,
@@ -17,8 +21,11 @@ import {
  * `produces` (`unknown[]` vs. the real `Produce[]`, always empty here — the
  * detector never reads it), so a type-only cast through the detector's own
  * parameter type is safe (mirrors recon-generate-fold-plan.test.ts). */
-function detect(steps: MulticallFixtureStep[]): ReturnType<typeof detectDrillDownFoldPlan> {
-  return detectDrillDownFoldPlan(steps as unknown as Parameters<typeof detectDrillDownFoldPlan>[0]);
+function detect(steps: MulticallFixtureStep[]): FoldPlan | null {
+  return (
+    detectDrillDownFoldPlan(steps as unknown as Parameters<typeof detectDrillDownFoldPlan>[0])[0] ??
+    null
+  );
 }
 
 /** Matches recon-generate.ts's internal `endpointKey` (origin + pathname,
