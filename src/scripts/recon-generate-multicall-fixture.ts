@@ -330,6 +330,44 @@ export function buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps(): Mul
   ];
 }
 
+const CATALOG_INVENTORY_URL = "https://api.example.com/catalog/inventory/";
+
+/**
+ * A decoy-free sibling of {@link buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps}
+ * with a SECOND, independently-threaded per-item drill-down appended: the
+ * primary `results[]` items carry both a `sku` (joined to the pricing drill)
+ * and an `itemId` (joined to this inventory drill), and neither drill
+ * step's response overlaps the other's fields. Proves the fold loop merges
+ * fields from every independent target onto each item, not just the first.
+ */
+export function buildMulticallSingleShotSearchTwoIndependentDrillDownsActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        results: [
+          { sku: "sku-a", itemId: "item-a" },
+          { sku: "sku-b", itemId: "item-b" },
+        ],
+      },
+      timestamp: "2024-04-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_PRICING_URL,
+      requestPostData: '{"sku":"sku-a"}',
+      responseBody: { prices: [{ sku: "sku-a", amount: 19.99 }] },
+      timestamp: "2024-04-01T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: CATALOG_INVENTORY_URL,
+      requestPostData: '{"itemId":"item-a"}',
+      responseBody: { stock: [{ itemId: "item-a", qty: 7 }] },
+      timestamp: "2024-04-01T00:00:02Z",
+    }),
+  ];
+}
+
 const CATALOG_SECTIONS_URL = "https://api.example.com/catalog/sections";
 const CATALOG_ENTRY_DETAIL_URL = "https://api.example.com/catalog/entries/e2/details";
 
