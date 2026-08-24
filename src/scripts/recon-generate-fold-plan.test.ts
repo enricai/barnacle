@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { detectDrillDownFoldPlan, resolveFoldPlan } from "@/scripts/recon-generate";
+import { detectDrillDownFoldPlan, type FoldPlan, resolveFoldPlan } from "@/scripts/recon-generate";
 import {
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
@@ -25,8 +25,15 @@ import {
  * `produces` (`unknown[]` vs. the real `Produce[]`, always empty here — the
  * detector never reads it), so a type-only cast through the detector's own
  * parameter type is safe. */
-function detect(steps: MulticallFixtureStep[]): ReturnType<typeof detectDrillDownFoldPlan> {
+function detectAll(steps: MulticallFixtureStep[]): ReturnType<typeof detectDrillDownFoldPlan> {
   return detectDrillDownFoldPlan(steps as unknown as Parameters<typeof detectDrillDownFoldPlan>[0]);
+}
+
+/** Most callers in this file exercise a single primary/drill-down pair, so
+ * this unwraps the detector's plural result to the one plan they assert
+ * against (or `null` when none was found). */
+function detect(steps: MulticallFixtureStep[]): FoldPlan | null {
+  return detectAll(steps)[0] ?? null;
 }
 
 describe("detectDrillDownFoldPlan", () => {
@@ -392,6 +399,63 @@ describe("detectDrillDownFoldPlan — multiple independent targets", () => {
   });
 });
 
+describe("detectDrillDownFoldPlan — multiple independent primaries", () => {
+  it("returns a plan for EVERY independent primary/drill-down pair, not just the first", () => {
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/products/search",
+        requestPostData: JSON.stringify({ page: 1 }),
+        responseBody: {
+          products: [
+            { productId: "p1", name: "Widget" },
+            { productId: "p2", name: "Gadget" },
+          ],
+        },
+        timestamp: "2024-08-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/products/p1/reviews",
+        requestPostData: null,
+        responseBody: { reviews: [{ productId: "p1", rating: 5 }] },
+        timestamp: "2024-08-01T00:00:01Z",
+      }),
+      buildStep("r2", {
+        url: "https://api.example.com/vendors/search",
+        requestPostData: JSON.stringify({ page: 1 }),
+        responseBody: {
+          vendors: [
+            { vendorId: "v1", name: "Acme" },
+            { vendorId: "v2", name: "Globex" },
+          ],
+        },
+        timestamp: "2024-08-01T00:00:02Z",
+      }),
+      buildStep("r3", {
+        url: "https://api.example.com/vendors/v1/contracts",
+        requestPostData: null,
+        responseBody: { contracts: [{ vendorId: "v1", contractId: "c1" }] },
+        timestamp: "2024-08-01T00:00:03Z",
+      }),
+    ];
+
+    const plans = detectAll(steps);
+
+    expect(plans).toHaveLength(2);
+    expect(plans[0]?.primaryStepIndex).toBe(0);
+    expect(plans[0]?.primaryArrayPath).toEqual(["products"]);
+    expect(plans[0]?.targets).toHaveLength(1);
+    expect(plans[0]?.targets[0]?.joinFields).toEqual(["productId"]);
+    expect(plans[0]?.targets[0]?.drillStepIndex).toBe(1);
+    expect(plans[0]?.targets[0]?.drillArrayPath).toEqual(["reviews"]);
+    expect(plans[1]?.primaryStepIndex).toBe(2);
+    expect(plans[1]?.primaryArrayPath).toEqual(["vendors"]);
+    expect(plans[1]?.targets).toHaveLength(1);
+    expect(plans[1]?.targets[0]?.joinFields).toEqual(["vendorId"]);
+    expect(plans[1]?.targets[0]?.drillStepIndex).toBe(3);
+    expect(plans[1]?.targets[0]?.drillArrayPath).toEqual(["contracts"]);
+  });
+});
+
 describe("resolveFoldPlan — multipart chain-step disqualification", () => {
   it("disqualifies the plan when a downstream CHAIN step (not the drill step itself) is multipart", () => {
     const steps =
@@ -401,7 +465,7 @@ describe("resolveFoldPlan — multipart chain-step disqualification", () => {
     // not multipart, only the further chained step (r2) is — but
     // resolveFoldPlan must disqualify it because emitMultiStepExecuteHttp's
     // fold loop re-issues every step in `chain`, not just drillStepIndex.
-    const plan = detectDrillDownFoldPlan(steps);
+    const plan = detectDrillDownFoldPlan(steps)[0] ?? null;
     expect(plan).not.toBeNull();
     expect(plan?.targets[0]?.chain).toEqual([1, 2]);
     expect(steps[plan!.targets[0]!.drillStepIndex]!.isMultipart).toBe(false);
@@ -446,7 +510,7 @@ describe("resolveFoldPlan — multipart chain-step disqualification", () => {
       },
     ];
 
-    const structuralPlan = detectDrillDownFoldPlan(steps);
+    const structuralPlan = detectDrillDownFoldPlan(steps)[0] ?? null;
     expect(structuralPlan?.targets).toHaveLength(2);
 
     const resolved = resolveFoldPlan(steps);
@@ -485,7 +549,7 @@ describe("resolveFoldPlan — multipart chain-step disqualification", () => {
       },
     ];
 
-    const structuralPlan = detectDrillDownFoldPlan(steps);
+    const structuralPlan = detectDrillDownFoldPlan(steps)[0] ?? null;
     expect(structuralPlan?.targets).toHaveLength(2);
 
     const resolved = resolveFoldPlan(steps);
@@ -528,7 +592,7 @@ describe("resolveFoldPlan — multipart chain-step disqualification", () => {
       },
     ];
 
-    expect(detectDrillDownFoldPlan(steps)?.targets).toHaveLength(2);
+    expect(detectDrillDownFoldPlan(steps)[0]?.targets).toHaveLength(2);
     expect(resolveFoldPlan(steps)).toBeNull();
   });
 });

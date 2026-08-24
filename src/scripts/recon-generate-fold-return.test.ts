@@ -838,9 +838,10 @@ describe("grouped/nested primary fold — detection, schema inference, and codeg
     // 1. detectDrillDownFoldPlan's structural heuristic must resolve a plan
     // naming the NESTED array path — not just the outer grouping array — or
     // there is nothing for the other two surfaces to agree on.
-    const plan = detectDrillDownFoldPlan(
-      steps as unknown as Parameters<typeof detectDrillDownFoldPlan>[0]
-    );
+    const plan =
+      detectDrillDownFoldPlan(
+        steps as unknown as Parameters<typeof detectDrillDownFoldPlan>[0]
+      )[0] ?? null;
     expect(plan).not.toBeNull();
     expect(plan?.primaryArrayPath).toEqual(["sections", "*", "entries"]);
     expect(plan?.targets[0]?.joinFields).toEqual(["entryId"]);
@@ -887,9 +888,10 @@ describe("grouped/nested primary fold — detection, schema inference, and codeg
 
     // 1. Detection must resolve the item that actually matched — group 1's
     // e2 — regardless of which group it lives in.
-    const plan = detectDrillDownFoldPlan(
-      steps as unknown as Parameters<typeof detectDrillDownFoldPlan>[0]
-    );
+    const plan =
+      detectDrillDownFoldPlan(
+        steps as unknown as Parameters<typeof detectDrillDownFoldPlan>[0]
+      )[0] ?? null;
     expect(plan).not.toBeNull();
     expect(plan?.primaryArrayPath).toEqual(["sections", "*", "entries"]);
     expect(plan?.targets[0]?.joinFields).toEqual(["entryId"]);

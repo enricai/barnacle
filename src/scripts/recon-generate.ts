@@ -5077,13 +5077,27 @@ function computeFoldChain<T extends { capture: Capture }>(
  * this looks for the first later step whose request was built from one of
  * the primary array's item fields (the join key) and whose own response
  * contains an object-array field (the foldable per-item results the
- * drill-down call returns). Returns `null` when no primary/drill pair with
- * a threaded join key exists — e.g. a plain submission flow.
+ * drill-down call returns). A flow can contain more than one such
+ * independent primary/drill-down relationship (e.g. two unrelated
+ * search-then-detail pairs back to back) — scanning continues past the
+ * first match instead of stopping there, so EVERY independent pair is
+ * returned, in primary-step order. Returns an empty array when no
+ * primary/drill pair with a threaded join key exists — e.g. a plain
+ * submission flow.
  */
 export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
   actions: readonly T[]
-): FoldPlan | null {
+): FoldPlan[] {
+  const plans: FoldPlan[] = [];
+  // Spans every primary candidate, not just the current one's own drill
+  // scan: a step already folded into an earlier plan's chain — as either
+  // its drill step or a later chained step — depended on that earlier
+  // primary's response, not on this later primary's array, so it must
+  // never be re-claimed as a fresh drill target for a subsequent primary.
+  const globallyConsumedIndices = new Set<number>();
+
   for (let primaryIndex = 0; primaryIndex < actions.length; primaryIndex++) {
+    if (globallyConsumedIndices.has(primaryIndex)) continue;
     const primary = actions[primaryIndex]!;
     const primaryCandidates = findAllObjectArrayFields(primary.capture.responseBody);
     if (primaryCandidates.length === 0) continue;
@@ -5100,6 +5114,7 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
       const drill = actions[drillIndex]!;
       if (drill === primary) continue;
       if (consumedIndices.has(drillIndex)) continue;
+      if (globallyConsumedIndices.has(drillIndex)) continue;
 
       // Every candidate array is tried, not just the DFS-first match — a
       // decoy array (e.g. a facets/errors collection) can sit earlier in key
@@ -5191,14 +5206,23 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
     }
 
     if (targets.length > 0) {
-      return {
+      plans.push({
         primaryStepIndex: primaryIndex,
         primaryArrayPath: primaryArrayPath!,
         targets,
-      };
+      });
+      // A step already folded into this plan's chains — the drill step(s)
+      // and everything threaded onward from them — was already merged
+      // into this primary's own array; it must not be re-picked up as a
+      // fresh PRIMARY (its response was already consumed here) nor as a
+      // drill target for a later, independent primary.
+      globallyConsumedIndices.add(primaryIndex);
+      for (const target of targets) {
+        for (const chainIndex of target.chain) globallyConsumedIndices.add(chainIndex);
+      }
     }
   }
-  return null;
+  return plans;
 }
 
 /**
@@ -5449,13 +5473,19 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
  * has no multipart step in its chain still folds normally. The whole plan is
  * disqualified (returns `null`) only when EVERY target for the primary is
  * multipart-disqualified, leaving nothing left to fold.
+ *
+ * {@link detectDrillDownFoldPlan} can find more than one independent
+ * primary/drill-down pair in a single action sequence, but this entry point
+ * — and every emitter/shape-inference caller downstream of it — still folds
+ * a single primary per generate run, so only the first detected plan is
+ * resolved here.
  */
 export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boolean }>(
   actions: readonly T[],
   foldReturnSpec: FoldReturnSpec | null = null
 ): FoldPlan | null {
   const plan =
-    detectDrillDownFoldPlan(actions) ??
+    detectDrillDownFoldPlan(actions)[0] ??
     (foldReturnSpec === null ? null : buildFoldPlanFromSpec(actions, foldReturnSpec));
   if (plan === null) return null;
   const targets = plan.targets.filter(
