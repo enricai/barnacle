@@ -368,6 +368,89 @@ export function buildMulticallSingleShotSearchTwoIndependentDrillDownsActionStep
   ];
 }
 
+const CATALOG_VENDORS_SEARCH_URL = "https://api.example.com/catalog/vendors/search";
+const CATALOG_VENDOR_CONTRACTS_URL = "https://api.example.com/catalog/vendors/contracts/";
+
+/**
+ * TWO independent primary/drill-down pairs, fully disjoint in both endpoint
+ * and step range: a products search folded by a per-product reviews drill
+ * (r0/r1), and an UNRELATED vendors search folded by a per-vendor contracts
+ * drill (r2/r3). Neither primary's items reference the other pair's join key
+ * (`productId` vs `vendorId`), so this proves the fold emitter resolves and
+ * loops over every independent plan, not only the first one it finds.
+ */
+export function buildMulticallTwoIndependentPrimariesActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        products: [{ productId: "p1" }, { productId: "p2" }],
+      },
+      timestamp: "2024-05-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_PRICING_URL,
+      requestPostData: '{"productId":"p1"}',
+      responseBody: { reviews: [{ productId: "p1", rating: 5 }] },
+      timestamp: "2024-05-01T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: CATALOG_VENDORS_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        vendors: [{ vendorId: "v1" }, { vendorId: "v2" }],
+      },
+      timestamp: "2024-05-01T00:00:02Z",
+    }),
+    buildStep("r3", {
+      url: CATALOG_VENDOR_CONTRACTS_URL,
+      requestPostData: '{"vendorId":"v1"}',
+      responseBody: { contracts: [{ vendorId: "v1", contractId: "c1" }] },
+      timestamp: "2024-05-01T00:00:03Z",
+    }),
+  ];
+}
+
+const CATALOG_STOCK_URL = "https://api.example.com/catalog/stock/";
+
+/** A single-shot search drilled by two INDEPENDENT later calls whose join
+ * values thread through different surfaces: the pricing step's `sku` lands
+ * in its JSON body (heuristically detectable by `collectRequestStringValues`),
+ * while the stock step's `itemId` is carried ONLY in a request header —
+ * `collectRequestStringValues` never scans headers, so that fold can only be
+ * resolved via a flow-declared `foldReturn` spec. Every downstream unit and
+ * runtime test that needs one mixed-source, two-target fold scenario should
+ * share this fixture rather than inventing its own. */
+export function buildMulticallSingleShotSearchHeuristicAndSpecTwoTargetActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        results: [
+          { sku: "sku-a", itemId: "item-a" },
+          { sku: "sku-b", itemId: "item-b" },
+        ],
+      },
+      timestamp: "2024-04-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_PRICING_URL,
+      requestPostData: '{"sku":"sku-a"}',
+      responseBody: { prices: [{ sku: "sku-a", amount: 19.99 }] },
+      timestamp: "2024-04-01T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: CATALOG_STOCK_URL,
+      requestPostData: '{"lookup":true}',
+      responseBody: { stock: [{ itemId: "item-a", qty: 7 }] },
+      timestamp: "2024-04-01T00:00:02Z",
+      requestHeaders: { "Content-Type": "application/json", "X-Item-Id": "item-a" },
+    }),
+  ];
+}
+
 const CATALOG_SECTIONS_URL = "https://api.example.com/catalog/sections";
 const CATALOG_ENTRY_DETAIL_URL = "https://api.example.com/catalog/entries/e2/details";
 

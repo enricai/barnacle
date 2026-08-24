@@ -1054,6 +1054,10 @@ export function selectReturnAction<T extends { capture: Capture }>(steps: readon
  * be the FOLDED primary body, not the plain one, or the schema would omit
  * every field the fold adds. Both resolve through `resolveFoldPlan` with the
  * same `foldReturnSpec` so they can never disagree on whether a fold applies.
+ * When multiple plans resolve, this picks the LAST plan's folded body — the
+ * same convention `emitMultiStepExecuteHttp` uses for `return { data }` (see
+ * its `lastFoldPlan` selection) — so the inferred shape and the runtime
+ * return value always describe the same call.
  */
 export function selectEffectiveResponseBody<T extends { capture: Capture; isMultipart: boolean }>(
   isSubmissionFlow: boolean,
@@ -1062,8 +1066,9 @@ export function selectEffectiveResponseBody<T extends { capture: Capture; isMult
   foldReturnSpec: FoldReturnSpec | null = null
 ): unknown {
   if (!isSubmissionFlow) return replayResponseBody;
-  const foldPlan = resolveFoldPlan(actionSteps, foldReturnSpec);
-  if (foldPlan) return foldResponseBodyForShapeInference(actionSteps, foldPlan);
+  const foldPlans = resolveFoldPlan(actionSteps, foldReturnSpec);
+  const lastFoldPlan = foldPlans[foldPlans.length - 1] ?? null;
+  if (lastFoldPlan) return foldResponseBodyForShapeInference(actionSteps, lastFoldPlan);
   return selectReturnAction(actionSteps)?.capture.responseBody ?? replayResponseBody;
 }
 
@@ -4135,6 +4140,44 @@ export function emitMultiStepExecuteHttp(
   // Captured literals that survived every pass — surfaced as a review TODO.
   const unboundLiteralKeys = new Set<string>();
 
+  // A fold target's join value can be threaded through a request HEADER
+  // rather than the URL/body (see collectRequestValuesIncludingHeaders) —
+  // the structural heuristic can't see those, but a flow-declared foldReturn
+  // spec resolves the target anyway, and the drill step's per-item re-issue
+  // below must still carry that header or every iteration replays the SAME
+  // captured header value instead of re-keying it. Resolved once, up front
+  // (fold plans depend only on `actions`/`foldReturnSpec`, not on Pass 1's
+  // render), so Pass 1's header collection below knows which non-auth header
+  // names are actually load-bearing for a resolved fold.
+  const earlyFoldPlans = resolveFoldPlan(actions, foldReturnSpec);
+  const joinCarryingHeaderNamesByStep = new Map<number, Set<string>>();
+  for (const plan of earlyFoldPlans) {
+    const primaryItems = objectItemsAtPath(
+      actions[plan.primaryStepIndex]!.capture.responseBody,
+      plan.primaryArrayPath
+    );
+    for (const target of plan.targets) {
+      const firstItem = primaryItems?.[target.primaryMatchedItemIndex];
+      if (!firstItem) continue;
+      for (const stepIndex of [target.drillStepIndex, ...target.chain]) {
+        const headerNames = joinCarryingHeaderNamesByStep.get(stepIndex) ?? new Set<string>();
+        for (const [headerName, headerValue] of Object.entries(
+          actions[stepIndex]!.capture.requestHeaders
+        )) {
+          const matchesJoinField = target.joinFields.some((field) => {
+            const value = firstItem[field];
+            return (
+              (typeof value === "string" && value.length > 0 && value === headerValue) ||
+              (typeof value === "number" && String(value) === headerValue)
+            );
+          });
+          if (matchesJoinField) headerNames.add(headerName);
+        }
+        if (headerNames.size > 0) joinCarryingHeaderNamesByStep.set(stepIndex, headerNames);
+      }
+    }
+  }
+
   // Pass 1: render every step's emitted strings; collect referenced var names.
   const rendered: Rendered[] = [];
   for (let i = 0; i < actions.length; i++) {
@@ -4277,10 +4320,11 @@ export function emitMultiStepExecuteHttp(
       }
     }
 
+    const joinCarryingHeaderNames = joinCarryingHeaderNamesByStep.get(i);
     const perCallHeaders: Record<string, string> = {};
     for (const [k, v] of Object.entries(cap.requestHeaders)) {
       const lower = k.toLowerCase();
-      if (lower === "api-token" || lower === "authorization") {
+      if (lower === "api-token" || lower === "authorization" || joinCarryingHeaderNames?.has(k)) {
         perCallHeaders[k] = interpolateStateValues(v, prior, payloadAccessorByValue);
       }
     }
@@ -4345,14 +4389,15 @@ export function emitMultiStepExecuteHttp(
       }
     }
   }
-  // A resolved drill-down fold plan bypasses selectReturnAction entirely: the
-  // primary step's array is folded in place (see the loop-and-merge emitted
-  // below), so the primary step's var — not whichever call selectReturnAction
-  // would otherwise pick — is what `return { data }` must reference.
-  const foldPlan = resolveFoldPlan(actions, foldReturnSpec);
-  const returnAction = foldPlan ? null : selectReturnAction(actions);
+  // Every resolved drill-down fold plan bypasses selectReturnAction entirely:
+  // each plan's primary step's array is folded in place (see the loop-and-merge
+  // emitted below, one such loop per plan), so a primary step's var — not
+  // whichever call selectReturnAction would otherwise pick — is what
+  // `return { data }` must reference when any plan resolves.
+  const foldPlans = earlyFoldPlans;
+  const returnAction = foldPlans.length > 0 ? null : selectReturnAction(actions);
   if (returnAction) referencedNames.add(returnAction.varName);
-  if (foldPlan) referencedNames.add(actions[foldPlan.primaryStepIndex]!.varName);
+  for (const plan of foldPlans) referencedNames.add(actions[plan.primaryStepIndex]!.varName);
 
   // Pass 2: emit. Skip response bindings that aren't referenced; skip
   // produces[] entries whose name isn't referenced. A step's response var
@@ -4388,27 +4433,34 @@ export function emitMultiStepExecuteHttp(
   // so none of them may run through the outer `declaredNames`/produceLines
   // bookkeeping below (that bookkeeping assumes function-scope declarations).
   const foldChainIndices = new Set(
-    foldPlan ? foldPlan.targets.flatMap((target) => target.chain) : []
+    foldPlans.flatMap((plan) => plan.targets.flatMap((target) => target.chain))
   );
   for (let i = 0; i < actions.length; i++) {
     const step = actions[i]!;
     const cap = step.capture;
     const r = rendered[i]!;
 
-    // Every independent fold target — regardless of which drill step starts
-    // it — is folded into ONE shared per-item loop over the primary array,
-    // emitted once, at the FIRST target's drillStepIndex: each target's
-    // chain calls and Object.assign both run inside that same `for (const
-    // item of foldItems)` body, so a primary item ends up with fields folded
-    // in from every independent dependent drill-down, not just the first.
+    // Every independent fold target within a given plan — regardless of which
+    // drill step starts it — is folded into ONE shared per-item loop over
+    // that plan's primary array, emitted once, at the plan's FIRST target's
+    // drillStepIndex: each target's chain calls and Object.assign both run
+    // inside that same `for (const item of foldItems)` body, so a primary
+    // item ends up with fields folded in from every independent dependent
+    // drill-down of that plan, not just the first. When more than one
+    // independent plan resolves (distinct primary arrays), each plan gets its
+    // OWN loop block, anchored at that plan's own first target's
+    // drillStepIndex, so each primary array is folded with only its own
+    // drill-downs' matched fields.
     // Each chain step re-issues the SAME url/headers/bodyArg/schemaExpr this
     // pass already rendered for it, only with the captured join value(s)
     // swapped for the loop item's own field accessor (the drill step) or its
     // own produced response values (later chain steps, which already render
     // with `${producedName}` templates — see deriveStateVarByValue).
-    const isFirstFoldTarget =
-      foldPlan !== null && foldPlan.targets.length > 0 && foldPlan.targets[0]!.drillStepIndex === i;
-    if (foldPlan && isFirstFoldTarget) {
+    const matchingPlanIndex = foldPlans.findIndex(
+      (plan) => plan.targets.length > 0 && plan.targets[0]!.drillStepIndex === i
+    );
+    if (matchingPlanIndex !== -1) {
+      const foldPlan = foldPlans[matchingPlanIndex]!;
       const primaryStep = actions[foldPlan.primaryStepIndex]!;
       // Read at the plan's OWN path rather than re-running the DFS: a
       // flow-declared `resultsPath` (see FoldReturnSpec) can name a different
@@ -4419,15 +4471,22 @@ export function emitMultiStepExecuteHttp(
       );
 
       const primaryArrType = foldArrayAssertionType(foldPlan.primaryArrayPath);
+      // Plan-level suffix mirrors the target-level suffix below: multiple
+      // loop blocks now sharing the same function scope can't declare
+      // unsuffixed `foldItems`/`item` locals without colliding. The
+      // overwhelmingly common single-plan case keeps the original
+      // unsuffixed names.
+      const planSuffix = foldPlans.length > 1 ? String(matchingPlanIndex) : "";
+      const foldItemsVar = `foldItems${planSuffix}`;
       const foldItemsExpr = pathToFoldAccessorExpr(
         `(${primaryStep.varName} as ${primaryArrType})`,
         foldPlan.primaryArrayPath
       );
-      const itemVar = "item";
+      const itemVar = `item${planSuffix}`;
 
       lines.push(
-        `    const foldItems = ${foldItemsExpr};`,
-        `    for (const ${itemVar} of foldItems) {`
+        `    const ${foldItemsVar} = ${foldItemsExpr};`,
+        `    for (const ${itemVar} of ${foldItemsVar}) {`
       );
 
       for (const [targetIndex, target] of foldPlan.targets.entries()) {
@@ -4447,7 +4506,7 @@ export function emitMultiStepExecuteHttp(
         // same loop body can each declare their own locals without
         // colliding on `foldMatches`/`foldMatch`. The overwhelmingly common
         // single-target case keeps the original unsuffixed names.
-        const suffix = foldPlan.targets.length > 1 ? String(targetIndex) : "";
+        const suffix = foldPlan.targets.length > 1 ? `${planSuffix}${targetIndex}` : planSuffix;
         const joinAccessor = (field: string): string =>
           isValidJsIdentifier(field)
             ? `${itemVar}.${field}`
@@ -4672,8 +4731,13 @@ export function emitMultiStepExecuteHttp(
     lines.push("");
   }
 
-  const returnVar = foldPlan
-    ? actions[foldPlan.primaryStepIndex]!.varName
+  // When multiple plans resolve, the LAST one in action-sequence order wins —
+  // same convention selectReturnAction uses (see findRequeriedActions /
+  // selectReturnAction above): a later primary is more likely the one the
+  // flow's final response actually reflects.
+  const lastFoldPlan = foldPlans[foldPlans.length - 1] ?? null;
+  const returnVar = lastFoldPlan
+    ? actions[lastFoldPlan.primaryStepIndex]!.varName
     : (returnAction?.varName ?? "undefined");
   lines.push(`    return { data: ${returnVar} };`);
 
@@ -5077,13 +5141,27 @@ function computeFoldChain<T extends { capture: Capture }>(
  * this looks for the first later step whose request was built from one of
  * the primary array's item fields (the join key) and whose own response
  * contains an object-array field (the foldable per-item results the
- * drill-down call returns). Returns `null` when no primary/drill pair with
- * a threaded join key exists — e.g. a plain submission flow.
+ * drill-down call returns). A flow can contain more than one such
+ * independent primary/drill-down relationship (e.g. two unrelated
+ * search-then-detail pairs back to back) — scanning continues past the
+ * first match instead of stopping there, so EVERY independent pair is
+ * returned, in primary-step order. Returns an empty array when no
+ * primary/drill pair with a threaded join key exists — e.g. a plain
+ * submission flow.
  */
 export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
   actions: readonly T[]
-): FoldPlan | null {
+): FoldPlan[] {
+  const plans: FoldPlan[] = [];
+  // Spans every primary candidate, not just the current one's own drill
+  // scan: a step already folded into an earlier plan's chain — as either
+  // its drill step or a later chained step — depended on that earlier
+  // primary's response, not on this later primary's array, so it must
+  // never be re-claimed as a fresh drill target for a subsequent primary.
+  const globallyConsumedIndices = new Set<number>();
+
   for (let primaryIndex = 0; primaryIndex < actions.length; primaryIndex++) {
+    if (globallyConsumedIndices.has(primaryIndex)) continue;
     const primary = actions[primaryIndex]!;
     const primaryCandidates = findAllObjectArrayFields(primary.capture.responseBody);
     if (primaryCandidates.length === 0) continue;
@@ -5100,6 +5178,7 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
       const drill = actions[drillIndex]!;
       if (drill === primary) continue;
       if (consumedIndices.has(drillIndex)) continue;
+      if (globallyConsumedIndices.has(drillIndex)) continue;
 
       // Every candidate array is tried, not just the DFS-first match — a
       // decoy array (e.g. a facets/errors collection) can sit earlier in key
@@ -5191,14 +5270,23 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
     }
 
     if (targets.length > 0) {
-      return {
+      plans.push({
         primaryStepIndex: primaryIndex,
         primaryArrayPath: primaryArrayPath!,
         targets,
-      };
+      });
+      // A step already folded into this plan's chains — the drill step(s)
+      // and everything threaded onward from them — was already merged
+      // into this primary's own array; it must not be re-picked up as a
+      // fresh PRIMARY (its response was already consumed here) nor as a
+      // drill target for a later, independent primary.
+      globallyConsumedIndices.add(primaryIndex);
+      for (const target of targets) {
+        for (const chainIndex of target.chain) globallyConsumedIndices.add(chainIndex);
+      }
     }
   }
-  return null;
+  return plans;
 }
 
 /**
@@ -5432,6 +5520,39 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
 }
 
 /**
+ * Unions a flow-declared `foldReturn` spec's drill-down target into the
+ * structurally-detected plan for the SAME primary array (matched by
+ * `primaryStepIndex` and `primaryArrayPath`), so a spec declaring an
+ * independent target the heuristic missed is not silently discarded just
+ * because the heuristic already resolved something for that primary. A
+ * spec naming a different primary array is left alone, per
+ * {@link resolveFoldPlan}'s documented behavior. A spec re-declaring a
+ * `drillStepIndex` the heuristic already found is skipped, not duplicated.
+ */
+function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
+  structuralPlans: readonly FoldPlan[],
+  actions: readonly T[],
+  foldReturnSpec: FoldReturnSpec | null
+): FoldPlan[] {
+  if (foldReturnSpec === null) return [...structuralPlans];
+  const specPlan = buildFoldPlanFromSpec(actions, foldReturnSpec);
+  if (specPlan === null) return [...structuralPlans];
+  return structuralPlans.map((plan) => {
+    if (
+      plan.primaryStepIndex !== specPlan.primaryStepIndex ||
+      JSON.stringify(plan.primaryArrayPath) !== JSON.stringify(specPlan.primaryArrayPath)
+    ) {
+      return plan;
+    }
+    const existingDrillStepIndexes = new Set(plan.targets.map((target) => target.drillStepIndex));
+    const newTargets = specPlan.targets.filter(
+      (target) => !existingDrillStepIndexes.has(target.drillStepIndex)
+    );
+    return newTargets.length === 0 ? plan : { ...plan, targets: [...plan.targets, ...newTargets] };
+  });
+}
+
+/**
  * The single fold-plan entry point: {@link detectDrillDownFoldPlan}'s
  * structural heuristic first, falling back to a flow-declared `foldReturn`
  * spec when the heuristic finds nothing. `emitMultiStepExecuteHttp` and
@@ -5446,22 +5567,34 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
  * step's), and a raw `FormData` upload has no such template to re-key — so
  * that target falls back to ordinary single-call emission instead of
  * emitting a broken loop, while any other target on the same primary that
- * has no multipart step in its chain still folds normally. The whole plan is
- * disqualified (returns `null`) only when EVERY target for the primary is
+ * has no multipart step in its chain still folds normally. A plan is dropped
+ * from the returned array only when EVERY target for its primary is
  * multipart-disqualified, leaving nothing left to fold.
+ *
+ * {@link detectDrillDownFoldPlan} can find more than one independent
+ * primary/drill-down pair in a single action sequence, so this returns every
+ * plan that survives multipart disqualification, letting every downstream
+ * emitter/shape-inference caller fold each of them.
  */
 export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boolean }>(
   actions: readonly T[],
   foldReturnSpec: FoldReturnSpec | null = null
-): FoldPlan | null {
-  const plan =
-    detectDrillDownFoldPlan(actions) ??
-    (foldReturnSpec === null ? null : buildFoldPlanFromSpec(actions, foldReturnSpec));
-  if (plan === null) return null;
-  const targets = plan.targets.filter(
-    (target) => !target.chain.some((chainIndex) => actions[chainIndex]!.isMultipart)
-  );
-  return targets.length === 0 ? null : { ...plan, targets };
+): FoldPlan[] {
+  const structuralPlans = detectDrillDownFoldPlan(actions);
+  const plans =
+    structuralPlans.length > 0
+      ? mergeSpecPlanOntoSamePrimary(structuralPlans, actions, foldReturnSpec)
+      : ((): FoldPlan[] => {
+          if (foldReturnSpec === null) return [];
+          const specPlan = buildFoldPlanFromSpec(actions, foldReturnSpec);
+          return specPlan === null ? [] : [specPlan];
+        })();
+  return plans.flatMap((plan) => {
+    const targets = plan.targets.filter(
+      (target) => !target.chain.some((chainIndex) => actions[chainIndex]!.isMultipart)
+    );
+    return targets.length === 0 ? [] : [{ ...plan, targets }];
+  });
 }
 
 /** Rebuilds `value` with every occurrence of `target` (compared by object
@@ -7537,7 +7670,7 @@ async function main(): Promise<void> {
   // A declared foldReturn that resolves to no plan is a silent no-op otherwise
   // — the flow author gets the discarding selectReturnAction path with nothing
   // in the output saying their declaration never applied.
-  if (foldReturnSpec !== null && resolveFoldPlan(actionSteps, foldReturnSpec) === null) {
+  if (foldReturnSpec !== null && resolveFoldPlan(actionSteps, foldReturnSpec).length === 0) {
     logger.warn(
       `flow declares foldReturn (endpointPattern: ${foldReturnSpec.endpointPattern}, resultsPath: ${foldReturnSpec.resultsPath}, joinFields: ${foldReturnSpec.joinFields.join(", ")}) but no fold plan resolved — no later capture matched the endpoint pattern, resultsPath resolved to no object array, or the matched drill-down is multipart; the drill-down's response will not be folded`
     );
