@@ -12,6 +12,7 @@ import {
   buildMulticallHeterogeneousActionSteps,
   buildMulticallNestedGroupedDrillDownMultiGroupActionSteps,
   buildMulticallSingleShotSearchDrillDownActionSteps,
+  buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinRequeriedPrimaryOverlapActionSteps,
   buildMulticallSingleShotSearchDrillDownMultiMatchActionSteps,
   buildMulticallSingleShotSearchDrillDownTypeMismatchJoinActionSteps,
   buildMulticallSingleShotSearchHeuristicAndSpecTwoTargetActionSteps,
@@ -265,6 +266,62 @@ function buildNestedGroupedDrillDownActionSteps(): MulticallFixtureStep[] {
   ];
 }
 
+/** The primary endpoint is called twice, both occurrences independently
+ * satisfying the spec's join against a single later drill call — isolating
+ * `buildFoldPlanFromSpec`'s outer primary loop, which must retain the LAST
+ * (freshest) primaryStepIndex rather than returning on the first match. */
+function buildPrimaryCalledTwiceActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: "https://api.example.com/catalog/search/",
+      requestPostData: '{"page":1}',
+      responseBody: { results: [{ sku: "sku-a", label: "stale" }] },
+      timestamp: "2024-04-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: "https://api.example.com/catalog/search/",
+      requestPostData: '{"page":2}',
+      responseBody: { results: [{ sku: "sku-a", label: "fresh" }] },
+      timestamp: "2024-04-01T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: "https://api.example.com/catalog/pricing/",
+      requestPostData: '{"sku":"sku-a"}',
+      responseBody: { prices: [{ sku: "sku-a", amount: 19.99 }] },
+      timestamp: "2024-04-01T00:00:02Z",
+    }),
+  ];
+}
+
+/** The drill endpoint is called twice, both occurrences independently
+ * matching the spec's endpointPattern and join — isolating
+ * `buildFoldPlanFromSpec`'s inner drill loop, which must retain the LAST
+ * (freshest) drillStepIndex rather than returning on the first match. */
+function buildDrillCalledTwiceActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: "https://api.example.com/catalog/search/",
+      requestPostData: '{"page":1}',
+      responseBody: { results: [{ sku: "sku-a" }] },
+      timestamp: "2024-04-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: "https://api.example.com/catalog/pricing/",
+      requestPostData: '{"lookup":true}',
+      responseBody: { prices: [{ sku: "sku-a", amount: 19.99 }] },
+      timestamp: "2024-04-01T00:00:01Z",
+      requestHeaders: { "Content-Type": "application/json", "X-Item-Sku": "sku-a" },
+    }),
+    buildStep("r2", {
+      url: "https://api.example.com/catalog/pricing/",
+      requestPostData: '{"lookup":true,"refresh":true}',
+      responseBody: { prices: [{ sku: "sku-a", amount: 24.99 }] },
+      timestamp: "2024-04-01T00:00:02Z",
+      requestHeaders: { "Content-Type": "application/json", "X-Item-Sku": "sku-a" },
+    }),
+  ];
+}
+
 const NESTED_ARRAY_PATH_SPEC: FoldReturnSpec = {
   endpointPattern: "/catalog/pricing/",
   resultsPath: "categories.0.products",
@@ -495,6 +552,64 @@ describe("resolveFoldPlan", () => {
 
   it("returns null when no spec is given and the heuristic finds nothing", () => {
     expect(resolveFoldPlan(buildMulticallHeterogeneousActionSteps())).toEqual([]);
+  });
+
+  it("anchors on the freshest primary occurrence when the primary endpoint is called twice and both independently satisfy the spec's join", () => {
+    const steps = buildPrimaryCalledTwiceActionSteps();
+
+    // r0 and r1 are both /catalog/search/ calls whose results[] independently
+    // satisfy the join against r2's drill call; the spec-declared path must
+    // anchor on r1 (index 1), not r0, matching detectDrillDownFoldPlan's
+    // already-freshest-wins structural convention.
+    const plan = resolveFoldPlan(steps, SINGLE_SHOT_SPEC);
+    expect(plan[0]?.primaryStepIndex).toBe(1);
+    expect(plan[0]?.targets[0]?.drillStepIndex).toBe(2);
+  });
+
+  it("anchors on the freshest re-queried primary occurrence when the join is threaded only through a request header", () => {
+    const steps =
+      buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinRequeriedPrimaryOverlapActionSteps();
+
+    // The join value never appears anywhere the structural heuristic scans
+    // (only in the drill call's X-Account-Id header), so this can only
+    // resolve via the declared spec — exercising buildFoldPlanFromSpec alone.
+    expect(resolveFoldPlan(steps)).toEqual([]);
+
+    const plan = resolveFoldPlan(steps, {
+      endpointPattern: "/accounts/detail",
+      resultsPath: "accounts",
+      joinFields: ["accountId"],
+    });
+
+    // r0 and r1 are both /accounts/search calls whose accounts[] independently
+    // satisfy the join against r2's header-threaded drill call; the plan
+    // must anchor on r1 (index 1), the LATER occurrence, not r0.
+    expect(plan[0]?.primaryStepIndex).toBe(1);
+    expect(plan[0]?.targets[0]?.drillStepIndex).toBe(2);
+    const matchedItemIndex = plan[0]?.targets[0]?.primaryMatchedItemIndex ?? -1;
+    const matchedStep = steps[plan[0]?.primaryStepIndex ?? -1];
+    const matchedResponseBody = matchedStep?.capture.responseBody as {
+      accounts: { name: string }[];
+    };
+    expect(matchedResponseBody.accounts[matchedItemIndex]?.name).toBe("Acme Corp");
+  });
+
+  it("anchors on the freshest drill occurrence when the drill endpoint is called twice and both independently match the spec's endpointPattern and join", () => {
+    const steps = buildDrillCalledTwiceActionSteps();
+
+    // r1 and r2 both match /catalog/pricing/ and independently satisfy the
+    // sku join against r0's primary; the spec-declared path must anchor on
+    // r2 (index 2), the freshest, not r1.
+    const plan = resolveFoldPlan(steps, SINGLE_SHOT_SPEC);
+    expect(plan[0]?.primaryStepIndex).toBe(0);
+    expect(plan[0]?.targets[0]?.drillStepIndex).toBe(2);
+
+    // The folded body itself must carry r2's amount (24.99), not r1's
+    // (19.99) — pinning the resolved index alone wouldn't catch a fold that
+    // picks the right step but still merges the wrong response payload.
+    expect(selectEffectiveResponseBody(true, steps, null, SINGLE_SHOT_SPEC)).toEqual({
+      results: [{ sku: "sku-a", amount: 24.99 }],
+    });
   });
 
   it("merges a spec-declared drill-down target onto the heuristic's plan for the same primary", () => {

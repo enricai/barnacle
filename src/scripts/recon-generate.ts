@@ -33,6 +33,7 @@ import { join } from "node:path";
 import { resolveCanonicalAtsFieldName } from "@/lib/ats-field-vocabulary";
 import { toErrorMessage } from "@/lib/errors";
 import { getScriptLogger } from "@/lib/logging";
+import { mergeFoldedPrimaryBodies } from "@/lib/merge-folded-primary-bodies";
 import { PLUGIN_API_VERSION } from "@/plugins/plugin-api-version";
 import { CONFIG_PLUGIN_API_VERSION, CONFIG_PLUGIN_KIND } from "@/plugins/plugin-manifest-envelope";
 import {
@@ -1054,13 +1055,15 @@ export function selectReturnAction<T extends { capture: Capture }>(steps: readon
  * be the FOLDED primary body, not the plain one, or the schema would omit
  * every field the fold adds. Both resolve through `resolveFoldPlan` with the
  * same `foldReturnSpec` so they can never disagree on whether a fold applies.
- * When multiple plans resolve, each plan's own folded body is object-spread
- * together into one combined object — the same merge
+ * When multiple plans resolve, each plan's own folded body is merged via
+ * `mergeFoldedPrimaryBodies` into one combined object — the same merge
  * `emitMultiStepExecuteHttp` performs for `return { data }` — so the inferred
- * shape and the runtime return value always describe the same call. A plan
- * whose folded body isn't a plain object can't be spread meaningfully, so in
- * that case this falls back to the LAST plan's folded body alone, exactly as
- * before this merge was introduced.
+ * shape and the runtime return value always describe the same call, and two
+ * plans that share a top-level array key (e.g. the same paginated primary
+ * endpoint drilled into twice) both contribute their items instead of one
+ * clobbering the other. A plan whose folded body isn't a plain object can't
+ * be merged meaningfully, so in that case this falls back to the LAST plan's
+ * folded body alone, exactly as before this merge was introduced.
  */
 export function selectEffectiveResponseBody<T extends { capture: Capture; isMultipart: boolean }>(
   isSubmissionFlow: boolean,
@@ -1079,7 +1082,7 @@ export function selectEffectiveResponseBody<T extends { capture: Capture; isMult
     foldResponseBodyForShapeInference(actionSteps, plan)
   );
   if (foldedBodies.every(isPlainObject)) {
-    return Object.assign({}, ...foldedBodies) as Record<string, unknown>;
+    return mergeFoldedPrimaryBodies(...foldedBodies);
   }
   return foldResponseBodyForShapeInference(actionSteps, lastFoldPlan!);
 }
@@ -4743,22 +4746,23 @@ export function emitMultiStepExecuteHttp(
     lines.push("");
   }
 
-  // When multiple plans resolve, every plan's own primary var is
-  // object-spread together into one combined result — mirroring
-  // selectEffectiveResponseBody's merge — so the runtime return value and the
-  // inferred shape always describe the same call. A primary whose OWN
-  // top-level body isn't a plain object can't be spread meaningfully, so in
-  // that case this falls back to the LAST plan's primary var alone, same as
-  // before this merge was introduced.
+  // When multiple plans resolve, every plan's own primary var is deep-merged
+  // together into one combined result via mergeFoldedPrimaryBodies —
+  // mirroring selectEffectiveResponseBody's merge — so the runtime return
+  // value and the inferred shape always describe the same call. A plain
+  // object-spread would silently drop one plan's array whenever two plans'
+  // primary bodies share a top-level array key (e.g. the same paginated
+  // primary endpoint drilled into twice). A primary whose OWN top-level body
+  // isn't a plain object can't be merged meaningfully, so in that case this
+  // falls back to the LAST plan's primary var alone, same as before this
+  // merge was introduced.
   const lastFoldPlan = foldPlans[foldPlans.length - 1] ?? null;
   const everyPrimaryIsPlainObject = foldPlans.every((plan) =>
     isPlainObject(actions[plan.primaryStepIndex]!.capture.responseBody)
   );
   if (foldPlans.length > 1 && everyPrimaryIsPlainObject) {
-    const spreadVars = foldPlans
-      .map((plan) => `...${actions[plan.primaryStepIndex]!.varName}`)
-      .join(", ");
-    lines.push(`    return { data: { ${spreadVars} } };`);
+    const mergedVars = foldPlans.map((plan) => actions[plan.primaryStepIndex]!.varName).join(", ");
+    lines.push(`    return { data: mergeFoldedPrimaryBodies(${mergedVars}) };`);
   } else {
     const returnVar = lastFoldPlan
       ? actions[lastFoldPlan.primaryStepIndex]!.varName
@@ -5553,6 +5557,7 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
     }
   })();
   if (endpointRx === null) return null;
+  let freshestPlan: FoldPlan | null = null;
   for (let primaryStepIndex = 0; primaryStepIndex < actions.length; primaryStepIndex++) {
     const primaryItems = objectItemsAtPath(
       actions[primaryStepIndex]!.capture.responseBody,
@@ -5585,7 +5590,7 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
         drillStepIndex,
         drillArrayPath
       );
-      return {
+      freshestPlan = {
         primaryStepIndex,
         primaryArrayPath,
         targets: [
@@ -5602,7 +5607,7 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
       };
     }
   }
-  return null;
+  return freshestPlan;
 }
 
 /**
@@ -6393,6 +6398,13 @@ export function emitContractTs(opts: {
     hasMultipartStep && !omitExecuteHttp
       ? `import { omitHeaderCaseInsensitive } from "${ENGINE_PKG}/lib/case-insensitive-headers";\n`
       : "";
+  // emitMultiStepExecuteHttp emits a call to this helper whenever more than
+  // one fold plan resolves — the generated plugin package can't reach into
+  // recon-generate.ts's own module scope, so it must import it separately.
+  const mergeFoldedPrimaryBodiesImport =
+    multiStepBody?.includes("mergeFoldedPrimaryBodies(") === true
+      ? `import { mergeFoldedPrimaryBodies } from "${ENGINE_PKG}/lib/merge-folded-primary-bodies";\n`
+      : "";
   // Emit identifier-shaped keys unquoted so Biome's formatter doesn't rewrite
   // the generated file on first lint:fix.
   const headersLiteral = Object.entries(baseHeaders)
@@ -6552,7 +6564,7 @@ ${executeHttpBody}
 
 ${bottleneckImport}import { z } from "zod/v4";
 
-${fixtureImport}${applicantContactImport}${caseInsensitiveHeadersImport}${multipartBoolImport}${clientImport}
+${fixtureImport}${applicantContactImport}${caseInsensitiveHeadersImport}${mergeFoldedPrimaryBodiesImport}${multipartBoolImport}${clientImport}
 import type { BrowserSession } from "${ENGINE_PKG}/scraper/session";
 import type { SitePlugin, SitePluginContext, SitePluginResult } from "${ENGINE_PKG}/site-plugin";
 import { run${pascal}BrowserFlow } from "@/sites/${siteId}/flows/browser-flow";
