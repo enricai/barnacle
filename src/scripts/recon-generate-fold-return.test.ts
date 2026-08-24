@@ -776,6 +776,103 @@ describe("resolveFoldPlan", () => {
     expect(resolveFoldPlan(steps, spec)[0]?.targets[0]?.drillArrayPath).toEqual(["errors"]);
   });
 
+  it("resolves a plan when the drill response is a single flat object and drillResultsPath is undeclared", () => {
+    // No object-array field anywhere in the drill response — the whole body
+    // IS the detail-by-id object, same shape detectDrillDownFoldPlan's
+    // structural heuristic already treats as an implicit one-item
+    // collection. The join is threaded only through a request header, which
+    // the structural heuristic deliberately never searches (see
+    // collectRequestValuesIncludingHeaders's docstring), so the heuristic
+    // resolves no plan here at all — this isolates
+    // buildFoldPlanFromSpec's own undeclared-drillResultsPath branch.
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/catalog/search/",
+        requestPostData: '{"page":1}',
+        responseBody: { results: [{ sku: "sku-a" }, { sku: "sku-b" }] },
+        timestamp: "2024-04-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/catalog/pricing/",
+        requestPostData: '{"lookup":true}',
+        requestHeaders: { "Content-Type": "application/json", "X-Item-Sku": "sku-a" },
+        responseBody: { sku: "sku-a", amount: 19.99 },
+        timestamp: "2024-04-01T00:00:01Z",
+      }),
+    ];
+    const spec: FoldReturnSpec = {
+      endpointPattern: "/catalog/pricing/",
+      resultsPath: "results",
+      joinFields: ["sku"],
+    };
+
+    expect(resolveFoldPlan(steps, spec)).toEqual([
+      {
+        primaryStepIndex: 0,
+        primaryArrayPath: ["results"],
+        targets: [
+          {
+            joinFields: ["sku"],
+            drillStepIndex: 1,
+            drillArrayPath: [],
+            primaryMatchedItemIndex: 0,
+            chain: [1],
+            chainArrayPath: [],
+            chainTerminalIndex: 1,
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("resolves a plan when a declared drillResultsPath points at a nested single flat object", () => {
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/catalog/search/",
+        requestPostData: '{"page":1}',
+        responseBody: { results: [{ sku: "sku-a" }, { sku: "sku-b" }] },
+        timestamp: "2024-04-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/catalog/pricing/",
+        // The join value is threaded only through a request header, which
+        // detectDrillDownFoldPlan's structural heuristic deliberately never
+        // searches (see collectRequestValuesIncludingHeaders's docstring),
+        // so the heuristic resolves no plan at all here — only the declared
+        // drillResultsPath can resolve this fold, isolating
+        // buildFoldPlanFromSpec's own single-object resolution.
+        requestPostData: '{"lookup":true}',
+        requestHeaders: { "Content-Type": "application/json", "X-Item-Sku": "sku-a" },
+        responseBody: { detail: { sku: "sku-a", amount: 19.99 } },
+        timestamp: "2024-04-01T00:00:01Z",
+      }),
+    ];
+    const spec: FoldReturnSpec = {
+      endpointPattern: "/catalog/pricing/",
+      resultsPath: "results",
+      drillResultsPath: "detail",
+      joinFields: ["sku"],
+    };
+
+    expect(resolveFoldPlan(steps, spec)).toEqual([
+      {
+        primaryStepIndex: 0,
+        primaryArrayPath: ["results"],
+        targets: [
+          {
+            joinFields: ["sku"],
+            drillStepIndex: 1,
+            drillArrayPath: ["detail"],
+            primaryMatchedItemIndex: 0,
+            chain: [1],
+            chainArrayPath: ["detail"],
+            chainTerminalIndex: 1,
+          },
+        ],
+      },
+    ]);
+  });
+
   it("returns null when the declared drillResultsPath resolves to no non-empty object array", () => {
     const steps = buildUnthreadedDoubleDecoyDrillDownActionSteps();
     const spec: FoldReturnSpec = {
@@ -937,6 +1034,34 @@ describe("selectEffectiveResponseBody — flow-declared foldReturn", () => {
         { sku: "sku-a", itemId: "item-a", amount: 19.99, qty: 7 },
         { sku: "sku-b", itemId: "item-b" },
       ],
+    });
+  });
+
+  it("merges a single flat-object drill-down capture's fields onto the matched primary item", () => {
+    const steps = [
+      buildStep("r0", {
+        url: "https://api.example.com/catalog/search/",
+        requestPostData: '{"page":1}',
+        responseBody: { results: [{ sku: "sku-a" }, { sku: "sku-b" }] },
+        timestamp: "2024-04-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/catalog/detail/",
+        requestPostData: '{"sku":"sku-a"}',
+        // A single flat object, not an array — the shape the emitted
+        // executeHttp actually receives at runtime for a detail-by-id
+        // drill-down (bugfix-002's per-item loop-and-merge).
+        responseBody: { sku: "sku-a", amount: 19.99 },
+        timestamp: "2024-04-01T00:00:01Z",
+      }),
+    ];
+
+    // Must merge the flat drill object's own fields onto the matched primary
+    // item, matching what emitMultiStepExecuteHttp's loop-and-merge actually
+    // returns at runtime — not fall back to the unmerged primary body just
+    // because the drill-down response isn't an array.
+    expect(selectEffectiveResponseBody(true, steps, null)).toEqual({
+      results: [{ sku: "sku-a", amount: 19.99 }, { sku: "sku-b" }],
     });
   });
 });

@@ -4598,18 +4598,31 @@ export function emitMultiStepExecuteHttp(
           }
         }
         const terminalStep = actions[target.chainTerminalIndex]!;
-        const drillArrType = foldArrayAssertionType(target.chainArrayPath);
-        const foldMatchesExpr = pathToFoldAccessorExpr(
-          `(${terminalStep.varName} as ${drillArrType})`,
-          target.chainArrayPath
-        );
-        lines.push(
-          `      const foldMatches${suffix} = ${foldMatchesExpr};`,
-          `      const foldMatch${suffix} = foldMatches${suffix}.find((m) => ${target.joinFields
-            .map((f) => `String(m[${JSON.stringify(f)}]) === String(${joinAccessor(f)})`)
-            .join(" && ")}) ?? foldMatches${suffix}[0];`,
-          `      Object.assign(${itemVar}, foldMatch${suffix} ?? {});`
-        );
+        // An empty chainArrayPath means the terminal step's response IS the
+        // implicit one-item collection (see findAllObjectArrayFieldsOrWholeObject
+        // / objectItemsAtPath's flat-object branch): the response is a flat
+        // object at runtime, not an array. There is exactly one candidate, so
+        // no join-field match is needed (or even possible against an array
+        // API) — emit a direct object reference instead of the array
+        // `.find()` machinery the multi-item branch below needs.
+        if (target.chainArrayPath.length === 0) {
+          lines.push(
+            `      const foldMatch${suffix} = ${terminalStep.varName} as Record<string, unknown>;`,
+            `      Object.assign(${itemVar}, foldMatch${suffix} ?? {});`
+          );
+        } else {
+          const foldMatchesExpr = pathToFoldAccessorExpr(
+            `(${terminalStep.varName} as ${foldArrayAssertionType(target.chainArrayPath)})`,
+            target.chainArrayPath
+          );
+          lines.push(
+            `      const foldMatches${suffix} = ${foldMatchesExpr};`,
+            `      const foldMatch${suffix} = foldMatches${suffix}.find((m) => ${target.joinFields
+              .map((f) => `String(m[${JSON.stringify(f)}]) === String(${joinAccessor(f)})`)
+              .join(" && ")}) ?? foldMatches${suffix}[0];`,
+            `      Object.assign(${itemVar}, foldMatch${suffix} ?? {});`
+          );
+        }
       }
       lines.push(`    }`, "");
       continue;
@@ -4996,6 +5009,33 @@ function findObjectArrayField(
   return findAllObjectArrayFields(value, path)[0] ?? null;
 }
 
+/** {@link findAllObjectArrayFields}, widened to recognize a single flat
+ * (non-array) object response as an implicit one-item array when it has no
+ * object-array field of its own — a detail-by-id drill/chain response (e.g.
+ * `GET /widgets/{id}` returning the widget object directly, not
+ * `{ widget: {...} }`) is exactly as foldable as a one-element array would
+ * be. The implicit entry's path is `[]` (the whole body); {@link
+ * objectItemsAtPath} recognizes a flat object at a resolved path the same
+ * way, so a {@link FoldTarget} built from this fallback resolves correctly
+ * end to end. Only applies when no REAL object-array field exists anywhere
+ * in `value` — a response that already has one is never second-guessed. */
+function findAllObjectArrayFieldsOrWholeObject(
+  value: unknown,
+  path: string[] = []
+): { path: string[]; items: Record<string, unknown>[] }[] {
+  const found = findAllObjectArrayFields(value, path);
+  return found.length > 0 ? found : isObjectArrayItem(value) ? [{ path, items: [value] }] : [];
+}
+
+/** The first candidate from {@link findAllObjectArrayFieldsOrWholeObject} —
+ * the flat-object-aware counterpart of {@link findObjectArrayField}. */
+function findObjectArrayFieldOrWholeObject(
+  value: unknown,
+  path: string[] = []
+): { path: string[]; items: Record<string, unknown>[] } | null {
+  return findAllObjectArrayFieldsOrWholeObject(value, path)[0] ?? null;
+}
+
 /** A detected primary results array and every independent drill-down that
  * folds onto it — a later step whose request threads a value out of an
  * array-indexed field of the primary step's response, so the drill step's
@@ -5148,6 +5188,17 @@ function computeFoldChain<T extends { capture: Capture }>(
     });
     if (!dependsOnChain) continue;
     chain.push(i);
+    // Deliberately the STRICT (non-widened) lookup here, not
+    // findObjectArrayFieldOrWholeObject: every later step in the chain
+    // depends on an earlier one by definition (it threads a value out of
+    // it), so a flat, non-array response would ALWAYS qualify as an
+    // implicit one-item collection — collapsing this into "always advance
+    // the terminal to the newest chain member" regardless of whether that
+    // member actually holds foldable per-item data. Only a response that
+    // genuinely contains an object-array field should move the terminal
+    // forward; a step called purely for its side effect / for threading a
+    // value further (e.g. a `{ held: true }` confirmation) must leave the
+    // terminal at the last step that actually had one.
     const candidateArray = findObjectArrayField(candidate.capture.responseBody);
     if (candidateArray) {
       chainArrayPath = candidateArray.path;
@@ -5240,7 +5291,15 @@ function scanPrimaryCandidate<T extends { capture: Capture }>(
     if (!primaryArray) continue;
     primaryArrayPath = primaryArray.path;
 
-    const drillCandidates = findAllObjectArrayFields(drill.capture.responseBody);
+    // Widened to a flat (non-array) object response when the drill step has
+    // no object-array field of its own — see
+    // findAllObjectArrayFieldsOrWholeObject. A detail-by-id response (e.g.
+    // `GET /widgets/{id}` returning the widget directly) is just as valid a
+    // fold target as a one-element array would be; only skipping it, rather
+    // than treating it as an implicit one-item collection, was the actual
+    // root cause of dependent drill-downs never folding onto primary
+    // results.
+    const drillCandidates = findAllObjectArrayFieldsOrWholeObject(drill.capture.responseBody);
     // Same disambiguation on the drill side, reusing findThreadedJoinFields
     // against the drill's own request: a per-item drill array commonly
     // echoes the join value(s) it was looked up by (e.g. a `sku` search
@@ -5471,12 +5530,17 @@ function readValueAtPath(body: unknown, path: readonly string[]): unknown {
 /** The object items of the array at `path` — the same subset
  * {@link findObjectArrayField} exposes as `items`, but anchored to a
  * caller-supplied path instead of discovered by DFS. `null` when `path`
- * doesn't resolve to an array holding at least one non-array object. An
- * {@link ARRAY_WILDCARD_SEGMENT} segment in `path` flattens across every
- * element of the array reached at that point — in DFS/outer-array order —
- * instead of indexing into one, mirroring the `.flatMap` accessor
- * {@link pathToFoldAccessorExpr} emits for the same segment, so plan
- * resolution and codegen always agree on which items a fold covers. */
+ * doesn't resolve to an array holding at least one non-array object, UNLESS
+ * `path` resolves to a flat (non-array) object itself, in which case that
+ * object is treated as an implicit one-item collection — see {@link
+ * findAllObjectArrayFieldsOrWholeObject}, which resolves a {@link
+ * FoldTarget}'s `chainArrayPath` to exactly this whole-body shape for a
+ * detail-by-id drill/chain response. An {@link ARRAY_WILDCARD_SEGMENT}
+ * segment in `path` flattens across every element of the array reached at
+ * that point — in DFS/outer-array order — instead of indexing into one,
+ * mirroring the `.flatMap` accessor {@link pathToFoldAccessorExpr} emits for
+ * the same segment, so plan resolution and codegen always agree on which
+ * items a fold covers. */
 function objectItemsAtPath(
   body: unknown,
   path: readonly string[]
@@ -5484,9 +5548,11 @@ function objectItemsAtPath(
   const wildcardIndex = path.indexOf(ARRAY_WILDCARD_SEGMENT);
   if (wildcardIndex === -1) {
     const value = readValueAtPath(body, path);
-    if (!Array.isArray(value)) return null;
-    const items = value.filter(isObjectArrayItem);
-    return items.length > 0 ? items : null;
+    if (Array.isArray(value)) {
+      const items = value.filter(isObjectArrayItem);
+      return items.length > 0 ? items : null;
+    }
+    return isObjectArrayItem(value) ? [value] : null;
   }
   const outer = readValueAtPath(body, path.slice(0, wildcardIndex));
   if (!Array.isArray(outer)) return null;
@@ -5503,9 +5569,9 @@ function objectItemsAtPath(
  * {@link detectDrillDownFoldPlan} — when `endpointPattern` is not a valid
  * regex, when `resultsPath` resolves to no object array on any action, when
  * no strictly-later action's URL matches `endpointPattern`, or when the
- * matched drill-down's own response holds no object array (the emitter folds
- * `foldMatches[0]` out of that array, so a plan without one has nothing to
- * merge).
+ * matched drill-down's own response holds no object array and is not itself
+ * a flat object (the emitter folds `foldMatches[0]` out of that collection,
+ * so a plan without one has nothing to merge).
  */
 /** Same value set as {@link collectRequestStringValues}, plus every request
  * header value — a flow-declared `foldReturn` exists specifically to cover
@@ -5571,9 +5637,14 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
     ) {
       const drill = actions[drillStepIndex]!;
       if (!endpointRx.test(drill.capture.url)) continue;
+      // Widened to a flat (non-array) object response the same way the
+      // structural heuristic is (see findAllObjectArrayFieldsOrWholeObject):
+      // an explicit foldReturn declaration must be able to express a
+      // detail-by-id drill response exactly like the case the heuristic
+      // detects on its own, not just an array field.
       const drillArrayPath = ((): string[] | null => {
         if (spec.drillResultsPath === undefined) {
-          return findObjectArrayField(drill.capture.responseBody)?.path ?? null;
+          return findObjectArrayFieldOrWholeObject(drill.capture.responseBody)?.path ?? null;
         }
         const path = spec.drillResultsPath.split(".");
         return objectItemsAtPath(drill.capture.responseBody, path) ? path : null;

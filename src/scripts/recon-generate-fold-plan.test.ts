@@ -135,6 +135,35 @@ describe("detectDrillDownFoldPlan", () => {
     expect(plan?.targets[0]?.drillArrayPath).toEqual(["prices"]);
   });
 
+  it("resolves a fold plan when the drill step's response is a single flat object, not wrapped in an object-array field", () => {
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/search-results",
+        requestPostData: null,
+        responseBody: { results: [{ sku: "sku-1" }, { sku: "sku-2" }] },
+        timestamp: "2024-01-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/results/sku-2",
+        requestPostData: null,
+        responseBody: { sku: "sku-2", price: 42 },
+        timestamp: "2024-01-01T00:00:01Z",
+      }),
+    ];
+
+    const plan = detect(steps);
+
+    expect(plan).not.toBeNull();
+    expect(plan?.primaryStepIndex).toBe(0);
+    expect(plan?.primaryArrayPath).toEqual(["results"]);
+    expect(plan?.targets[0]?.joinFields).toEqual(["sku"]);
+    expect(plan?.targets[0]?.drillStepIndex).toBe(1);
+    expect(plan?.targets[0]?.drillArrayPath).toEqual([]);
+    expect(plan?.targets[0]?.primaryMatchedItemIndex).toBe(1);
+    expect(plan?.targets[0]?.chainArrayPath).toEqual([]);
+    expect(plan?.targets[0]?.chainTerminalIndex).toBe(1);
+  });
+
   it("resolves a fold plan and records the matched item's index when the drilled item is not first", () => {
     const plan = detect(buildMulticallSingleShotSearchDrillDownOutOfOrderItemActionSteps());
 
