@@ -5565,7 +5565,10 @@ export interface FoldReturnSpec {
    * Omitted (default) treats the drill-down's response as the array. */
   drillResultsPath?: string;
   /** Names of the fields — present on both the primary array's items and the
-   * drill-down's response — that folded items are matched on, in order. */
+   * drill-down's response — that folded items are matched on, in order. Each
+   * entry may be a dot-separated JSON path (mirroring {@link resultsPath}) so
+   * a join key nested under an object, not just a top-level property, can be
+   * declared. */
   joinFields: string[];
 }
 
@@ -5704,7 +5707,7 @@ function resolveSpecMatchedPrimaryItemIndex(
   if (requestValues.size === 0) return null;
   const matchedIndex = primaryItems.findIndex((item) =>
     joinFields.every((field) => {
-      const value = item[field];
+      const value = readValueAtPath(item, field.split("."));
       return (
         (typeof value === "string" && value.length > 0 && requestValues.has(value)) ||
         (typeof value === "number" && requestValues.has(String(value)))
@@ -5915,7 +5918,11 @@ function foldResponseBodyForShapeInference<T extends { capture: Capture }>(
     const matchedItem = primaryItems?.[target.primaryMatchedItemIndex];
     const drillMatch =
       drillItems?.find((d) =>
-        target.joinFields.every((f) => String(d[f]) === String(matchedItem?.[f]))
+        target.joinFields.every(
+          (f) =>
+            String(readValueAtPath(d, f.split("."))) ===
+            String(readValueAtPath(matchedItem, f.split(".")))
+        )
       ) ?? drillItems?.[0];
     if (!primaryItems || !matchedItem || !drillMatch) return body;
     return replaceByReference(body, matchedItem, { ...matchedItem, ...drillMatch });
