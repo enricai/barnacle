@@ -4544,7 +4544,22 @@ export function emitMultiStepExecuteHttp(
         const parameterize = (text: string): string =>
           target.joinFields.reduce((acc, field) => {
             const replacement = `\${${joinAccessor(field)}}`;
-            const withAccessorSwapped = acc.split(`\${payload.${field}}`).join(replacement);
+            // applyPayloadKeyValueSubstitutions only ever names a payload
+            // accessor after the DRILL REQUEST's own top-level JSON key
+            // (`${payload.sku}`), never after `field`'s dot path into the
+            // PRIMARY ITEM — those are unrelated structures that only
+            // happen to share a leaf name for a top-level join field. A
+            // nested join field (e.g. `identifiers.sku`) must therefore
+            // also match on its bare last segment, or the accessor swap
+            // silently no-ops and leaves an undefined `payload.sku`
+            // reference behind once the literal value itself has already
+            // been replaced by the payload-key-value pass.
+            const lastSegment = field.split(".").pop()!;
+            const withAccessorSwapped = acc
+              .split(`\${payload.${field}}`)
+              .join(replacement)
+              .split(`\${payload.${lastSegment}}`)
+              .join(replacement);
             const value = readValueAtPath(firstItem, field.split("."));
             const stringValue =
               typeof value === "string" && value.length > 0
@@ -4617,11 +4632,24 @@ export function emitMultiStepExecuteHttp(
             `      const foldMatches${suffix} = ${foldMatchesExpr};`,
             `      const foldMatch${suffix} = foldMatches${suffix}.find((m) => ${target.joinFields
               .map((f) => {
-                const bracketAccessor = f
-                  .split(".")
-                  .map((segment) => `[${JSON.stringify(segment)}]`)
+                const segments = f.split(".");
+                // The drill-down response is a DIFFERENT payload than the
+                // primary item, so it has no obligation to mirror the
+                // primary item's own nesting for the join key (e.g. a
+                // primary item's `identifiers.sku` is typically echoed
+                // back flat, as `sku`, on the drill response). Try the
+                // full nested path first (optional-chained, since an
+                // intermediate segment may not exist on a flat response),
+                // then fall back to the bare last segment.
+                const lastSegment = segments[segments.length - 1]!;
+                const optionalBracketAccessor = segments
+                  .map((segment) => `?.[${JSON.stringify(segment)}]`)
                   .join("");
-                return `String(m${bracketAccessor}) === String(${joinAccessor(f)})`;
+                const matchAccessor =
+                  segments.length > 1
+                    ? `(m${optionalBracketAccessor} ?? m[${JSON.stringify(lastSegment)}])`
+                    : `m[${JSON.stringify(lastSegment)}]`;
+                return `String(${matchAccessor}) === String(${joinAccessor(f)})`;
               })
               .join(" && ")}) ?? foldMatches${suffix}[0];`,
             `      Object.assign(${itemVar}, foldMatch${suffix} ?? {});`
