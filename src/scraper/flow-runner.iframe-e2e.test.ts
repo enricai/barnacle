@@ -1329,7 +1329,11 @@ describe("flow-runner iframe end-to-end: late-attaching OOPIF recovered by reres
     const PROBE_DELAY_MS = 5;
     const delayed = <T>(value: T): Promise<T> =>
       new Promise((resolve) => setTimeout(() => resolve(value), PROBE_DELAY_MS));
-    const baseMidflowPage = makeMidflowFakeTopPage(topUrl, childUrls, iframeAttached) as unknown as {
+    const baseMidflowPage = makeMidflowFakeTopPage(
+      topUrl,
+      childUrls,
+      iframeAttached
+    ) as unknown as {
       evaluate: (expr: unknown) => Promise<unknown>;
       frames: () => Array<{ evaluate: (expr: unknown) => Promise<unknown> }>;
     };
@@ -1360,16 +1364,18 @@ describe("flow-runner iframe end-to-end: late-attaching OOPIF recovered by reres
     // Advances past the step-entry resolveFrameTarget poll's 20s deadline
     // (the OOPIF isn't attached yet — it only attaches inside attempt 1's
     // act(), after that poll already gave up) plus reresolveFrameTargetIfLost's
-    // probeAttachedFrameTarget budget, in bulk 10s chunks first...
-    for (let i = 0; i < 3; i++) {
-      await vi.advanceTimersByTimeAsync(10_000);
-    }
-    // ...then many small chunks to flush the PROBE_DELAY_MS-gated evaluate
-    // calls the deepLocator walk/verification steps make afterward — each is
-    // only PROBE_DELAY_MS, but scheduled sequentially as the walk progresses,
-    // one bulk advance can outrun a timer that gets scheduled only once an
-    // earlier one in the same chain settles.
-    for (let i = 0; i < 50; i++) {
+    // probeAttachedFrameTarget budget, then the PROBE_DELAY_MS-gated evaluate
+    // calls the deepLocator walk/verification steps make afterward. Each is
+    // scheduled sequentially as the walk progresses — a chain of fixed-count
+    // bulk advances can outrun a timer that gets registered only once an
+    // earlier one in the same chain settles, so this polls in small
+    // increments until resultPromise itself settles instead of guessing a
+    // total budget up front.
+    let settled = false;
+    resultPromise.finally(() => {
+      settled = true;
+    });
+    for (let i = 0; i < 2000 && !settled; i++) {
       await vi.advanceTimersByTimeAsync(100);
     }
 
