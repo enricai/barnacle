@@ -4616,10 +4616,13 @@ export function emitMultiStepExecuteHttp(
           lines.push(
             `      const foldMatches${suffix} = ${foldMatchesExpr};`,
             `      const foldMatch${suffix} = foldMatches${suffix}.find((m) => ${target.joinFields
-              .map(
-                (f) =>
-                  `String(m${pathToAccessor(f.split("."), { assertNonNull: false })}) === String(${joinAccessor(f)})`
-              )
+              .map((f) => {
+                const bracketAccessor = f
+                  .split(".")
+                  .map((segment) => `[${JSON.stringify(segment)}]`)
+                  .join("");
+                return `String(m${bracketAccessor}) === String(${joinAccessor(f)})`;
+              })
               .join(" && ")}) ?? foldMatches${suffix}[0];`,
             `      Object.assign(${itemVar}, foldMatch${suffix} ?? {});`
           );
