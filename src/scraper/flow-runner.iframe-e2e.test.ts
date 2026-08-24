@@ -1329,7 +1329,10 @@ describe("flow-runner iframe end-to-end: late-attaching OOPIF recovered by reres
     const PROBE_DELAY_MS = 5;
     const delayed = <T>(value: T): Promise<T> =>
       new Promise((resolve) => setTimeout(() => resolve(value), PROBE_DELAY_MS));
-    const baseMidflowPage = makeMidflowFakeTopPage(topUrl, childUrls, iframeAttached);
+    const baseMidflowPage = makeMidflowFakeTopPage(topUrl, childUrls, iframeAttached) as unknown as {
+      evaluate: (expr: unknown) => Promise<unknown>;
+      frames: () => Array<{ evaluate: (expr: unknown) => Promise<unknown> }>;
+    };
     const page = {
       ...baseMidflowPage,
       evaluate: async (expr: unknown) => delayed(await baseMidflowPage.evaluate(expr)),
