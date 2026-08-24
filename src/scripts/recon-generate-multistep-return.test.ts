@@ -4,6 +4,7 @@ import {
   buildMulticallDependentDrillDownActionSteps,
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
+  buildMulticallNestedGroupedDrillDownMultiGroupActionSteps,
   buildMulticallSingleShotSearchDrillDownCompositeNumericJoinNonFirstItemActionSteps,
   buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps,
   buildMulticallSingleShotSearchDrillDownPathThreadedJoinActionSteps,
@@ -111,14 +112,19 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     expect(body).not.toContain("accountId=7");
   });
 
-  it("refuses to emit when a later step threads a produced value out of the fold drill step's own response", () => {
+  it("folds every chained per-item step into the same loop instead of throwing when a later step threads the drill step's own response", () => {
     // r4 (available-units/) is the fold plan's drill step. Its own
     // `units[0].unitId` is declared as a produce here — the same way a
     // chained call's threaded id normally reaches a later step — and step 5
-    // threads it. `const r4` (and any produce read off it) is declared
-    // inside the fold loop's block scope, so a reference from step 5
-    // (outside that loop) can't resolve — emitting that would be broken
-    // TypeScript, so this must fail loudly at generation time instead.
+    // threads it, so detectDrillDownFoldPlan's computeFoldChain extends the
+    // plan's chain to [r4, r5]: both calls now render inside the same
+    // per-item loop, r5's threaded `unitId` resolved from a loop-scoped
+    // local (not the outer function scope the old throw refused to emit
+    // into). r5's own response (`{ held: true }`) has no object-array field,
+    // so the LAST chain step whose response actually HOLDS an array — r4 —
+    // is what gets folded onto the primary item, not r5 (r5 is still called,
+    // for its side effect / threading, but reading `.units` off it would be
+    // `undefined` at runtime since it never has that shape).
     const withDrillDown = buildMulticallHeterogeneousActionStepsWithDrillDown();
     const drillStep = withDrillDown[withDrillDown.length - 1]!;
     const steps: MulticallFixtureStep[] = [
@@ -137,7 +143,16 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
       }),
     ];
 
-    expect(() => emit(steps)).toThrow(/fold plan drill step r4 is referenced outside/);
+    const body = emit(steps);
+
+    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain("const r4 = (await httpClient(");
+    expect(body).toContain("const r5 = (await httpClient(");
+    expect(body).toContain('const unitId = (r4 as { units: { "0": { unitId: string } } })');
+    expect(body).toContain("const foldMatches = (r4 as");
+    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
+    // r5 must not be re-issued a second time outside the fold loop.
+    expect(body.match(/const r5 = \(await httpClient\(/g)).toHaveLength(1);
   });
 
   it("still returns the search step when it is ALSO the terminal call", () => {
@@ -270,6 +285,19 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     expect(body).toContain("for (const item of foldItems) {");
     expect(body).toContain(`body: \`{"accountId":\${item.accountId}}\``);
     expect(body).not.toContain('"accountId":42');
+  });
+
+  it("flattens every outer group's items into the fold loop instead of baking in the group index that produced the fold plan", () => {
+    // The matched entry lives in the SECOND outer group, so an accessor
+    // that bakes in the single group index detectDrillDownFoldPlan sampled
+    // from (e.g. `.sections["1"].entries` or `.sections[1].entries`) would
+    // silently drop every entry outside that one group instead of
+    // flattening all of them into the loop.
+    const body = emit(buildMulticallNestedGroupedDrillDownMultiGroupActionSteps());
+
+    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
+    expect(body).not.toMatch(/sections\[("\d+"|\d+)\]/);
   });
 
   it("leaves the primary results unmerged, without crashing, when no later step threads the primary item's join key", () => {

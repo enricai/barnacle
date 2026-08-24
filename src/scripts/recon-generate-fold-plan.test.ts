@@ -3,7 +3,9 @@ import { detectDrillDownFoldPlan, resolveFoldPlan } from "@/scripts/recon-genera
 import {
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
+  buildMulticallNestedGroupedDrillDownMultiGroupActionSteps,
   buildMulticallSingleShotSearchDrillDownActionSteps,
+  buildMulticallSingleShotSearchDrillDownChainedDependentActionSteps,
   buildMulticallSingleShotSearchDrillDownCompositeNumericJoinActionSteps,
   buildMulticallSingleShotSearchDrillDownCompositeNumericJoinNonFirstItemActionSteps,
   buildMulticallSingleShotSearchDrillDownDrillDecoyActionSteps,
@@ -258,11 +260,92 @@ describe("detectDrillDownFoldPlan — nested grouping array", () => {
     const plan = detect(steps);
 
     expect(plan).not.toBeNull();
-    expect(plan?.primaryArrayPath).toEqual(["sections", "0", "entries"]);
+    // The literal group index is never baked in — "*" marks the outer
+    // sections[] array as a whole, so the accessor generalizes to N groups
+    // (see ARRAY_WILDCARD_SEGMENT in recon-generate.ts) instead of freezing
+    // whichever group happened to contain the matched item.
+    expect(plan?.primaryArrayPath).toEqual(["sections", "*", "entries"]);
     expect(plan?.joinFields).toEqual(["entryId"]);
     expect(plan?.drillStepIndex).toBe(1);
     expect(plan?.drillArrayPath).toEqual(["details"]);
     expect(plan?.primaryMatchedItemIndex).toBe(1);
+  });
+
+  it("resolves primaryMatchedItemIndex as the GLOBAL flattened index across every outer group, not the local index within the one group that matched", () => {
+    const steps = buildMulticallNestedGroupedDrillDownMultiGroupActionSteps();
+
+    const plan = detect(steps);
+
+    expect(plan).not.toBeNull();
+    expect(plan?.primaryArrayPath).toEqual(["sections", "*", "entries"]);
+    // sections[0].entries = [e1, e3]; sections[1].entries = [e2, e4]; the
+    // drilled entry (e2) is local index 0 of group 1, but flattened across
+    // both groups in outer-array order ([e1, e3, e2, e4]) it is index 2 —
+    // freezing the local index (0) or assuming group 0 (as a single-group
+    // fixture can never disprove) would land the fold on the wrong item.
+    expect(plan?.primaryMatchedItemIndex).toBe(2);
+    expect(plan?.joinFields).toEqual(["entryId"]);
+    expect(plan?.drillStepIndex).toBe(1);
+    expect(plan?.drillArrayPath).toEqual(["details"]);
+  });
+});
+
+describe("detectDrillDownFoldPlan — chained per-item dependency", () => {
+  it("chains a further step whose request threads a value the drill call's response produced, ending at the step holding the foldable array", () => {
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/orders/search",
+        requestPostData: JSON.stringify({ page: 1 }),
+        responseBody: { results: [{ orderId: "order-7" }] },
+        timestamp: "2024-06-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/orders/order-7/status",
+        requestPostData: null,
+        // `tags` satisfies detectDrillDownFoldPlan's own drill-array
+        // requirement, but it is a DECOY — the real per-item results only
+        // show up on the step this one's `statusToken` threads into.
+        responseBody: { statusToken: "tok-99", tags: [{ tag: "expedited" }] },
+        timestamp: "2024-06-01T00:00:01Z",
+      }),
+      buildStep("r2", {
+        url: "https://api.example.com/orders/history",
+        requestPostData: JSON.stringify({ token: "tok-99" }),
+        responseBody: { entries: [{ ts: "2024-06-01T00:00:02Z", event: "shipped" }] },
+        timestamp: "2024-06-01T00:00:02Z",
+      }),
+    ];
+
+    const plan = detect(steps);
+
+    expect(plan).not.toBeNull();
+    expect(plan?.primaryStepIndex).toBe(0);
+    expect(plan?.drillStepIndex).toBe(1);
+    expect(plan?.chain).toEqual([1, 2]);
+    expect(plan?.chainArrayPath).toEqual(["entries"]);
+  });
+
+  it("degrades to a single-entry chain when nothing downstream threads a value out of the drill response", () => {
+    const plan = detect(buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps());
+
+    expect(plan).not.toBeNull();
+    expect(plan?.chain).toEqual([plan?.drillStepIndex]);
+    expect(plan?.chainArrayPath).toEqual(plan?.drillArrayPath);
+  });
+
+  it("extends the chain past a drill step that is itself foldable, when a further step also depends on it", () => {
+    const plan = detect(buildMulticallSingleShotSearchDrillDownChainedDependentActionSteps());
+
+    expect(plan).not.toBeNull();
+    expect(plan?.primaryStepIndex).toBe(0);
+    expect(plan?.joinFields).toEqual(["sku"]);
+    // r1 (the price lookup) is a valid drill step in isolation — its own
+    // `prices[]` is foldable — but r2 (price-history) threads r1's
+    // `priceToken`, so the chain must not stop at r1.
+    expect(plan?.drillStepIndex).toBe(1);
+    expect(plan?.drillArrayPath).toEqual(["prices"]);
+    expect(plan?.chain).toEqual([1, 2]);
+    expect(plan?.chainArrayPath).toEqual(["history"]);
   });
 });
 
@@ -283,6 +366,9 @@ describe("resolveFoldPlan — header-threaded join boundary", () => {
       drillStepIndex: 1,
       drillArrayPath: ["transactions"],
       primaryMatchedItemIndex: 0,
+      chain: [1],
+      chainArrayPath: ["transactions"],
+      chainTerminalIndex: 1,
     });
   });
 });

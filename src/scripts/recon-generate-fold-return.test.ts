@@ -10,6 +10,7 @@ import {
 import {
   buildMulticallDependentDrillDownActionSteps,
   buildMulticallHeterogeneousActionSteps,
+  buildMulticallNestedGroupedDrillDownMultiGroupActionSteps,
   buildMulticallSingleShotSearchDrillDownActionSteps,
   buildMulticallSingleShotSearchDrillDownMultiMatchActionSteps,
   buildMulticallSingleShotSearchDrillDownTypeMismatchJoinActionSteps,
@@ -173,8 +174,8 @@ function buildCompositeJoinActionSteps(): MulticallFixtureStep[] {
 
 /** A primary response whose declared `resultsPath` threads through an array
  * index (`categories.0.products`) rather than a bare object key, isolating
- * `setAtPath`'s array-node branch: the primary items to fold live inside
- * `categories[0].products[]`, not at the response's top level. */
+ * `objectItemsAtPath`'s array-node traversal: the primary items to fold live
+ * inside `categories[0].products[]`, not at the response's top level. */
 function buildNestedArrayPathDrillDownActionSteps(): MulticallFixtureStep[] {
   return [
     buildStep("r0", {
@@ -377,6 +378,9 @@ describe("resolveFoldPlan", () => {
       drillStepIndex: 1,
       drillArrayPath: ["prices"],
       primaryMatchedItemIndex: 0,
+      chain: [1],
+      chainArrayPath: ["prices"],
+      chainTerminalIndex: 1,
     });
   });
 
@@ -403,6 +407,9 @@ describe("resolveFoldPlan", () => {
       drillStepIndex: 1,
       drillArrayPath: ["prices"],
       primaryMatchedItemIndex: 0,
+      chain: [1],
+      chainArrayPath: ["prices"],
+      chainTerminalIndex: 1,
     });
   });
 
@@ -455,6 +462,9 @@ describe("resolveFoldPlan", () => {
       drillStepIndex: 1,
       drillArrayPath: ["details"],
       primaryMatchedItemIndex: 0,
+      chain: [1],
+      chainArrayPath: ["details"],
+      chainTerminalIndex: 1,
     });
   });
 
@@ -472,6 +482,9 @@ describe("resolveFoldPlan", () => {
       drillStepIndex: 1,
       drillArrayPath: ["details"],
       primaryMatchedItemIndex: 0,
+      chain: [1],
+      chainArrayPath: ["details"],
+      chainTerminalIndex: 1,
     });
   });
 
@@ -513,6 +526,9 @@ describe("resolveFoldPlan", () => {
       drillStepIndex: 1,
       drillArrayPath: ["prices"],
       primaryMatchedItemIndex: 1,
+      chain: [1],
+      chainArrayPath: ["prices"],
+      chainTerminalIndex: 1,
     });
   });
 
@@ -613,9 +629,10 @@ describe("selectEffectiveResponseBody — flow-declared foldReturn", () => {
     const steps = buildNestedArrayPathDrillDownActionSteps();
 
     // resultsPath ("categories.0.products") walks through the array at
-    // "categories" via its "0" segment before reaching "products" — setAtPath
-    // must descend into that array node and rebuild it, not bail out and
-    // return the primary body byte-identical to its unfolded original.
+    // "categories" via its "0" segment before reaching "products" —
+    // objectItemsAtPath must descend into that array node to locate the
+    // matched item, not bail out and return the primary body byte-identical
+    // to its unfolded original.
     expect(selectEffectiveResponseBody(true, steps, null, NESTED_ARRAY_PATH_SPEC)).toEqual({
       categories: [{ products: [{ sku: "sku-a", amount: 19.99 }, { sku: "sku-b" }] }],
     });
@@ -805,14 +822,15 @@ describe("grouped/nested primary fold — detection, schema inference, and codeg
       steps as unknown as Parameters<typeof detectDrillDownFoldPlan>[0]
     );
     expect(plan).not.toBeNull();
-    expect(plan?.primaryArrayPath).toEqual(["sections", "0", "entries"]);
+    expect(plan?.primaryArrayPath).toEqual(["sections", "*", "entries"]);
     expect(plan?.joinFields).toEqual(["entryId"]);
     expect(plan?.drillArrayPath).toEqual(["details"]);
     expect(plan?.primaryMatchedItemIndex).toBe(1);
 
     // 2. selectEffectiveResponseBody must fold the drill-down's field in at
-    // that SAME nested path — setAtPath rebuilding through the "0" array
-    // segment, not silently no-opping and leaving the body unfolded.
+    // that SAME nested path — replaceByReference rebuilding through the
+    // outer sections[] array, not silently no-opping and leaving the body
+    // unfolded.
     expect(selectEffectiveResponseBody(true, steps, null)).toEqual({
       sections: [
         {
@@ -827,10 +845,13 @@ describe("grouped/nested primary fold — detection, schema inference, and codeg
 
     // 3. emitMultiStepExecuteHttp's emitted loop must read foldItems off the
     // identical path literal the plan named in (1) — not some other
-    // plausible-looking path the emitter derived independently.
+    // plausible-looking path the emitter derived independently. The "*"
+    // segment compiles to a `.flatMap` over every section, not a literal
+    // ["0"] index into the one group this single-group fixture happens to
+    // have — see ARRAY_WILDCARD_SEGMENT in recon-generate.ts.
     const body = emit(steps, null);
     expect(body).toContain(
-      'const foldItems = (r0 as { sections: { "0": { entries: Record<string, unknown>[] } } }).sections["0"].entries;'
+      "const foldItems = (r0 as { sections: ({ entries: Record<string, unknown>[] })[] }).sections.flatMap((g0) => g0.entries);"
     );
     expect(body).toContain("for (const item of foldItems) {");
     expect(body).toContain(
@@ -839,5 +860,49 @@ describe("grouped/nested primary fold — detection, schema inference, and codeg
     expect(body).toContain("const foldMatch = foldMatches.find(");
     expect(body).toContain("Object.assign(item, foldMatch ?? {});");
     expect(body).toContain("return { data: r0 };");
+  });
+
+  it("folds correctly when the matched item lives in a non-first outer group, not just group 0", () => {
+    const steps = buildMulticallNestedGroupedDrillDownMultiGroupActionSteps();
+
+    // 1. Detection must resolve the item that actually matched — group 1's
+    // e2 — regardless of which group it lives in.
+    const plan = detectDrillDownFoldPlan(
+      steps as unknown as Parameters<typeof detectDrillDownFoldPlan>[0]
+    );
+    expect(plan).not.toBeNull();
+    expect(plan?.primaryArrayPath).toEqual(["sections", "*", "entries"]);
+    expect(plan?.joinFields).toEqual(["entryId"]);
+
+    // 2. The emitted accessor flattens every group instead of indexing into
+    // whichever one the matched item happened to be captured in.
+    const body = emit(steps, null);
+    expect(body).toContain(
+      "const foldItems = (r0 as { sections: ({ entries: Record<string, unknown>[] })[] }).sections.flatMap((g0) => g0.entries);"
+    );
+    expect(body).not.toContain('sections["0"]');
+    expect(body).not.toContain("sections[0]");
+
+    // 3. Shape inference must fold the drilled description onto the SECOND
+    // group's entry (e2), leaving every other item — in EITHER group —
+    // untouched, proving the fold isn't scoped to group 0.
+    expect(selectEffectiveResponseBody(true, steps, null)).toEqual({
+      sections: [
+        {
+          label: "featured",
+          entries: [
+            { entryId: "e1", name: "Widget" },
+            { entryId: "e3", name: "Doohickey" },
+          ],
+        },
+        {
+          label: "clearance",
+          entries: [
+            { entryId: "e2", name: "Gadget", description: "A gadget." },
+            { entryId: "e4", name: "Thingamajig" },
+          ],
+        },
+      ],
+    });
   });
 });

@@ -330,6 +330,52 @@ export function buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps(): Mul
   ];
 }
 
+const CATALOG_SECTIONS_URL = "https://api.example.com/catalog/sections";
+const CATALOG_ENTRY_DETAIL_URL = "https://api.example.com/catalog/entries/e2/details";
+
+/**
+ * A grouped, nested-primary drill-down whose primary response carries TWO
+ * outer `sections[]` groups rather than the single group every other nested
+ * fixture in this file uses, with the drilled entry living in the SECOND
+ * group's `entries[]`, not the first. A fold that assumes the matched item
+ * always lives in group 0 (as a single-group fixture can never disprove)
+ * would resolve the fold onto `sections[0]` and silently attach the drill
+ * response's `description` to the wrong entry.
+ */
+export function buildMulticallNestedGroupedDrillDownMultiGroupActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SECTIONS_URL,
+      requestPostData: null,
+      responseBody: {
+        sections: [
+          {
+            label: "featured",
+            entries: [
+              { entryId: "e1", name: "Widget" },
+              { entryId: "e3", name: "Doohickey" },
+            ],
+          },
+          {
+            label: "clearance",
+            entries: [
+              { entryId: "e2", name: "Gadget" },
+              { entryId: "e4", name: "Thingamajig" },
+            ],
+          },
+        ],
+      },
+      timestamp: "2024-11-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_ENTRY_DETAIL_URL,
+      requestPostData: null,
+      responseBody: { details: [{ entryId: "e2", description: "A gadget." }] },
+      timestamp: "2024-11-01T00:00:01Z",
+    }),
+  ];
+}
+
 const ACCOUNT_SEARCH_URL = "https://api.example.com/accounts/search";
 const ACCOUNT_DETAIL_URL = "https://api.example.com/accounts/detail";
 
@@ -599,6 +645,51 @@ export function buildMulticallSingleShotSearchDrillDownTypeMismatchJoinActionSte
         ],
       },
       timestamp: "2024-10-01T00:00:01Z",
+    }),
+  ];
+}
+
+const CATALOG_PRICE_HISTORY_URL = "https://api.example.com/catalog/price-history";
+
+/**
+ * A single-shot search → per-item drill-down flow whose drill step's OWN
+ * response is foldable on its own terms — it carries `prices[]`, the same
+ * per-item results shape {@link buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps}
+ * would fold directly — but is ALSO depended on by a THIRD step: the drill
+ * response's `priceToken` threads into a price-history call whose response
+ * carries the real per-item array this flow means to fold. `computeFoldChain`
+ * must extend the plan's chain to `[drillStepIndex, historyStepIndex]`
+ * instead of stopping at the drill step's own array, so
+ * `emitMultiStepExecuteHttp`'s fold loop renders BOTH calls per item and
+ * shape inference ({@link foldResponseBodyForShapeInference}) folds the
+ * chain's TERMINAL (history) response, not the drill step's own `prices[]`.
+ */
+export function buildMulticallSingleShotSearchDrillDownChainedDependentActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        results: [{ sku: "sku-a" }, { sku: "sku-b" }],
+      },
+      timestamp: "2024-11-15T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_PRICING_URL,
+      requestPostData: '{"sku":"sku-a"}',
+      responseBody: {
+        priceToken: "tok-a1",
+        prices: [{ sku: "sku-a", amount: 19.99 }],
+      },
+      timestamp: "2024-11-15T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: CATALOG_PRICE_HISTORY_URL,
+      requestPostData: '{"priceToken":"tok-a1"}',
+      responseBody: {
+        history: [{ sku: "sku-a", amount: 18.5, asOf: "2024-11-01" }],
+      },
+      timestamp: "2024-11-15T00:00:02Z",
     }),
   ];
 }

@@ -3131,13 +3131,39 @@ function pathToAssertionType(path: string[]): string {
  * Same nesting as {@link pathToAssertionType} but the leaf types as
  * `Record<string, unknown>[]` instead of `string` — used to cast a step's
  * response down to the object-array field a {@link FoldPlan} located
- * (the primary results array, or the drill-down's per-item match array).
+ * (the primary results array, or the drill-down's per-item match array). An
+ * {@link ARRAY_WILDCARD_SEGMENT} segment types as an array of whatever the
+ * rest of the path resolves to, matching the `.flatMap` accessor
+ * {@link pathToFoldAccessorExpr} emits for the same segment.
  */
 function foldArrayAssertionType(path: string[]): string {
   if (path.length === 0) return "Record<string, unknown>[]";
   const segment = path[0]!;
+  if (segment === ARRAY_WILDCARD_SEGMENT) {
+    return `(${foldArrayAssertionType(path.slice(1))})[]`;
+  }
   const key = isValidJsIdentifier(segment) ? segment : JSON.stringify(segment);
   return `{ ${key}: ${foldArrayAssertionType(path.slice(1))} }`;
+}
+
+/**
+ * Builds a JS access expression reading `path` off of `expr`, generalizing
+ * across every {@link ARRAY_WILDCARD_SEGMENT} in `path` via `.flatMap` so the
+ * emitted accessor visits every element of that outer array instead of
+ * freezing the single index that happened to contain the matched item during
+ * detection (see {@link ARRAY_WILDCARD_SEGMENT}'s docstring). A path with no
+ * wildcard segment degrades to the plain {@link pathToAccessor} chain.
+ */
+function pathToFoldAccessorExpr(expr: string, path: string[], depth = 0): string {
+  const wildcardIndex = path.indexOf(ARRAY_WILDCARD_SEGMENT);
+  if (wildcardIndex === -1) {
+    return `${expr}${pathToAccessor(path, { assertNonNull: false })}`;
+  }
+  const before = path.slice(0, wildcardIndex);
+  const after = path.slice(wildcardIndex + 1);
+  const groupVar = `g${depth}`;
+  const outerExpr = `${expr}${pathToAccessor(before, { assertNonNull: false })}`;
+  return `${outerExpr}.flatMap((${groupVar}) => ${pathToFoldAccessorExpr(groupVar, after, depth + 1)})`;
 }
 
 /** Suggests a JS-camelCase variable name for a state value path. Falls back
@@ -4349,52 +4375,35 @@ export function emitMultiStepExecuteHttp(
     );
   }
   const declaredNames = new Set<string>();
+  // Every non-terminal chain step past the drill step is folded into the SAME
+  // per-item loop the drill step itself emits (see below) — it must not also
+  // get the normal single-call treatment this pass gives every other step, or
+  // its request would be issued a second time, unconditionally, outside the
+  // loop.
+  // Every step in the fold plan's chain (the drill step and every further
+  // step transitively dependent on it — see FoldPlan.chain) is emitted
+  // together as a single per-item loop below, not by this pass's normal
+  // per-step produce/response declarations: their responses and produces are
+  // block-scoped to that loop and never escape to the rest of the function,
+  // so none of them may run through the outer `declaredNames`/produceLines
+  // bookkeeping below (that bookkeeping assumes function-scope declarations).
+  const foldChainIndices = new Set(foldPlan ? foldPlan.chain : []);
   for (let i = 0; i < actions.length; i++) {
     const step = actions[i]!;
     const cap = step.capture;
     const r = rendered[i]!;
-    // Build the produce-extraction lines FIRST so the binding decision reflects
-    // what is actually emitted, not a pre-scan predicate. A produce whose name
-    // was already declared by an earlier step is de-dup-skipped here — and must
-    // NOT keep this step's response bound, or `rN` is bound but never read
-    // (Biome `noUnusedVariables`). `assertNonNull: false`: the `pathToAssertionType`
-    // cast uses string-literal keys, so the accessor needs no `!` (and a `!`
-    // would trip Biome `noNonNullAssertion`).
-    const produceLines: string[] = [];
-    for (const p of step.produces) {
-      // Header/cookie-origin produces never surface as a JS accessor —
-      // createHttpClient's `bind` option (rendered once, above the steps)
-      // captures and forwards the value internally.
-      if (p.kind === "header") continue;
-      if (declaredNames.has(p.name)) continue;
-      if (!referencedNames.has(p.name)) continue;
-      declaredNames.add(p.name);
-      const assertion = pathToAssertionType(p.path);
-      produceLines.push(
-        `    const ${p.name} = (${step.varName} as ${assertion})${pathToAccessor(p.path, { assertNonNull: false })};`
-      );
-    }
-    const bindResponse = referencedNames.has(step.varName) || produceLines.length > 0;
 
-    // The fold plan's drill-down step is emitted as a per-item loop instead
-    // of the single call every other step gets: it re-issues the SAME
-    // url/headers/bodyArg/schemaExpr this pass already rendered for it, only
-    // with the captured join value(s) swapped for the loop item's own field
-    // accessor, then merges the matched drill response back onto that item —
+    // The fold plan's drill-down step (and every further step transitively
+    // dependent on it — see FoldPlan.chain) is emitted as a per-item loop
+    // instead of the single call every other step gets: each chain step
+    // re-issues the SAME url/headers/bodyArg/schemaExpr this pass already
+    // rendered for it, only with the captured join value(s) swapped for the
+    // loop item's own field accessor (the drill step) or its own produced
+    // response values (later chain steps, which already render with
+    // `${producedName}` templates — see deriveStateVarByValue), then merges
+    // the terminal chain step's matched response back onto that item —
     // reusing the per-call render rather than a second HTTP-call emitter.
     if (foldPlan && i === foldPlan.drillStepIndex) {
-      // The loop below block-scopes `const ${step.varName}` inside the
-      // `for` — it does not escape to the rest of the function. If this
-      // step's response var (or one of its produces) is referenced
-      // elsewhere, that reference would resolve to a `const` declared in a
-      // narrower scope and fail to compile. No fixture currently threads a
-      // drill step's own response onward like this, so fail loudly instead
-      // of silently emitting broken TypeScript.
-      if (referencedNames.has(step.varName) || produceLines.length > 0) {
-        throw new Error(
-          `emitMultiStepExecuteHttp: fold plan drill step ${step.varName} is referenced outside its own request (directly or via a produce), but the fold loop scopes its response to a single loop iteration — this combination isn't supported yet.`
-        );
-      }
       const primaryStep = actions[foldPlan.primaryStepIndex]!;
       // Read at the plan's OWN path rather than re-running the DFS: a
       // flow-declared `resultsPath` (see FoldReturnSpec) can name a different
@@ -4448,26 +4457,58 @@ export function emitMultiStepExecuteHttp(
         }, text);
 
       const primaryArrType = foldArrayAssertionType(foldPlan.primaryArrayPath);
-      const primaryArrAccessor = pathToAccessor(foldPlan.primaryArrayPath, {
-        assertNonNull: false,
-      });
-      const drillArrType = foldArrayAssertionType(foldPlan.drillArrayPath);
-      const drillArrAccessor = pathToAccessor(foldPlan.drillArrayPath, { assertNonNull: false });
-
-      lines.push(
-        `    const foldItems = (${primaryStep.varName} as ${primaryArrType})${primaryArrAccessor};`,
-        `    for (const item of foldItems) {`,
-        `      const ${step.varName} = (await httpClient(\`${parameterize(r.url)}\`, {`,
-        `        method: ${JSON.stringify(r.method)},`
+      const foldItemsExpr = pathToFoldAccessorExpr(
+        `(${primaryStep.varName} as ${primaryArrType})`,
+        foldPlan.primaryArrayPath
       );
-      const joined = [parameterize(r.headersExpr), parameterize(r.bodyArg)]
-        .filter((s) => s !== "")
-        .join(" ");
-      if (joined !== "") lines.push(`        ${joined}`);
+
+      lines.push(`    const foldItems = ${foldItemsExpr};`, `    for (const item of foldItems) {`);
+      // Every chain step's response and produces are block-scoped to this
+      // `for` — they never escape to the rest of the function. That is
+      // exactly the constraint the previous (now-removed) throw enforced by
+      // refusing to run at all: instead of failing, each chain step's
+      // produces are re-declared here as loop-scoped locals, so a later
+      // chain step's own request (already rendered with `${producedName}`
+      // templates by the pass above, same as it would be for any two
+      // sequential non-fold steps) resolves them from this narrower scope.
+      const chainDeclared = new Set<string>();
+      for (const chainIndex of foldPlan.chain) {
+        const chainStep = actions[chainIndex]!;
+        const chainRendered = rendered[chainIndex]!;
+        lines.push(
+          `      const ${chainStep.varName} = (await httpClient(\`${parameterize(chainRendered.url)}\`, {`,
+          `        method: ${JSON.stringify(chainRendered.method)},`
+        );
+        const joined = [
+          parameterize(chainRendered.headersExpr),
+          parameterize(chainRendered.bodyArg),
+        ]
+          .filter((s) => s !== "")
+          .join(" ");
+        if (joined !== "") lines.push(`        ${joined}`);
+        lines.push(
+          `        schema: ${chainRendered.schemaExpr},`,
+          `      })) as Record<string, unknown>;`
+        );
+        for (const p of chainStep.produces) {
+          if (p.kind === "header") continue;
+          if (chainDeclared.has(p.name)) continue;
+          if (!referencedNames.has(p.name)) continue;
+          chainDeclared.add(p.name);
+          const assertion = pathToAssertionType(p.path);
+          lines.push(
+            `      const ${p.name} = (${chainStep.varName} as ${assertion})${pathToAccessor(p.path, { assertNonNull: false })};`
+          );
+        }
+      }
+      const terminalStep = actions[foldPlan.chainTerminalIndex]!;
+      const drillArrType = foldArrayAssertionType(foldPlan.chainArrayPath);
+      const foldMatchesExpr = pathToFoldAccessorExpr(
+        `(${terminalStep.varName} as ${drillArrType})`,
+        foldPlan.chainArrayPath
+      );
       lines.push(
-        `        schema: ${r.schemaExpr},`,
-        `      })) as Record<string, unknown>;`,
-        `      const foldMatches = (${step.varName} as ${drillArrType})${drillArrAccessor};`,
+        `      const foldMatches = ${foldMatchesExpr};`,
         `      const foldMatch = foldMatches.find((m) => ${foldPlan.joinFields
           .map((f) => `String(m[${JSON.stringify(f)}]) === String(${joinAccessor(f)})`)
           .join(" && ")}) ?? foldMatches[0];`,
@@ -4477,6 +4518,34 @@ export function emitMultiStepExecuteHttp(
       );
       continue;
     }
+    // Every other chain step (already fully emitted, inline, by the fold
+    // block above) must not also get the normal single-call treatment this
+    // pass gives every step, or its request would be issued a second time,
+    // unconditionally, outside the loop.
+    if (foldChainIndices.has(i)) continue;
+
+    // Build the produce-extraction lines FIRST so the binding decision reflects
+    // what is actually emitted, not a pre-scan predicate. A produce whose name
+    // was already declared by an earlier step is de-dup-skipped here — and must
+    // NOT keep this step's response bound, or `rN` is bound but never read
+    // (Biome `noUnusedVariables`). `assertNonNull: false`: the `pathToAssertionType`
+    // cast uses string-literal keys, so the accessor needs no `!` (and a `!`
+    // would trip Biome `noNonNullAssertion`).
+    const produceLines: string[] = [];
+    for (const p of step.produces) {
+      // Header/cookie-origin produces never surface as a JS accessor —
+      // createHttpClient's `bind` option (rendered once, above the steps)
+      // captures and forwards the value internally.
+      if (p.kind === "header") continue;
+      if (declaredNames.has(p.name)) continue;
+      if (!referencedNames.has(p.name)) continue;
+      declaredNames.add(p.name);
+      const assertion = pathToAssertionType(p.path);
+      produceLines.push(
+        `    const ${p.name} = (${step.varName} as ${assertion})${pathToAccessor(p.path, { assertNonNull: false })};`
+      );
+    }
+    const bindResponse = referencedNames.has(step.varName) || produceLines.length > 0;
 
     if (step.isCrossDomain) {
       lines.push(
@@ -4754,21 +4823,42 @@ function findNumericFieldByName(
   return null;
 }
 
+/** Filter predicate isolating an array's (non-array) object elements — the
+ * shape both {@link findAllObjectArrayFields} and {@link objectItemsAtPath}
+ * treat as a "results array" candidate. */
+function isObjectArrayItem(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === "object" && !Array.isArray(v);
+}
+
+/** Sentinel path segment marking "every element of the array reached so
+ * far", emitted by {@link findAllObjectArrayFields} in place of a literal
+ * numeric index whenever it descends through an array to keep searching —
+ * the array itself is a container of candidate groups, not a single fixed
+ * one. Freezing the literal index of whichever group happened to contain
+ * the matched item (the bug this sentinel fixes) meant a multi-element
+ * outer array — e.g. a paginated/grouped response wrapping several
+ * sub-collections — only ever resolved/iterated the ONE group seen during
+ * detection. {@link objectItemsAtPath} and the fold-emission accessor
+ * builders below both flatten across every element at this position instead
+ * of indexing into one. */
+const ARRAY_WILDCARD_SEGMENT = "*";
+
 /** Depth-first search for every array whose elements are (non-array)
  * objects — the same "per-item response array" shape schema inference
  * already resolves to when it emits `z.array(z.object({...}))`. Ordered by
- * DFS/key order, so `[0]` is {@link findObjectArrayField}'s first match. */
+ * DFS/key order, so `[0]` is {@link findObjectArrayField}'s first match.
+ * A path segment for an array index the search descended through (to keep
+ * looking for a nested candidate array) is the {@link ARRAY_WILDCARD_SEGMENT}
+ * sentinel, never a literal index — see its docstring. */
 function findAllObjectArrayFields(
   value: unknown,
   path: string[] = []
 ): { path: string[]; items: Record<string, unknown>[] }[] {
   if (value === null || typeof value !== "object") return [];
   if (Array.isArray(value)) {
-    const objectItems = value.filter(
-      (v): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v)
-    );
-    const nestedCandidates = objectItems.flatMap((item, index) =>
-      findAllObjectArrayFields(item, [...path, String(index)])
+    const objectItems = value.filter(isObjectArrayItem);
+    const nestedCandidates = objectItems.flatMap((item) =>
+      findAllObjectArrayFields(item, [...path, ARRAY_WILDCARD_SEGMENT])
     );
     return objectItems.length > 0
       ? [{ path, items: objectItems }, ...nestedCandidates]
@@ -4796,7 +4886,25 @@ function findObjectArrayField(
  * response, so the drill step's own response should be folded onto the
  * matching item of the primary step's results array rather than discarded.
  * `joinFields` is ordered (not a single string) because a real join can be
- * composite — e.g. matching on `accountId` AND `region` together. */
+ * composite — e.g. matching on `accountId` AND `region` together.
+ *
+ * `drillStepIndex`/`drillArrayPath` describe the IMMEDIATE drill call only.
+ * A drill-down's own response sometimes has to feed one or more FURTHER
+ * per-item calls before the actual foldable array shows up (e.g. a search
+ * step that returns an id, drilled into by a detail call that returns only a
+ * status, drilled into AGAIN by a history call that finally returns the
+ * per-item array) — `chain` carries that full dependency path, in order,
+ * starting at `drillStepIndex`, so downstream code has every step that must
+ * run per primary item to loop over instead of assuming exactly one.
+ * `chainArrayPath` is the object-array path on `chainTerminalIndex`'s
+ * response — the step whose response actually holds the foldable per-item
+ * array. `chainTerminalIndex` is NOT always `chain`'s last entry: a step can
+ * be added to `chain` purely because it threads a value onward (e.g. a
+ * status-check call with no object-array field of its own), so the terminal
+ * must be tracked separately from "last step added". When nothing threads
+ * past the immediate drill call, `chain` is `[drillStepIndex]`,
+ * `chainTerminalIndex` is `drillStepIndex`, and `chainArrayPath` equals
+ * `drillArrayPath`. */
 export interface FoldPlan {
   primaryStepIndex: number;
   primaryArrayPath: string[];
@@ -4804,6 +4912,9 @@ export interface FoldPlan {
   drillStepIndex: number;
   drillArrayPath: string[];
   primaryMatchedItemIndex: number;
+  chain: number[];
+  chainArrayPath: string[];
+  chainTerminalIndex: number;
 }
 
 /** Every string and numeric value present in a capture's outbound request —
@@ -4860,6 +4971,65 @@ function findThreadedJoinFields(item: Record<string, unknown>, drillCapture: Cap
         (typeof v === "number" && requestValues.has(String(v)))
     )
     .map(([k]) => k);
+}
+
+/** Every string and numeric leaf value present anywhere in a response body —
+ * the set a chained drill-down step's request must overlap with for that
+ * step to count as depending on this response. Deliberately walks the WHOLE
+ * body (not just object-array items, unlike {@link findThreadedJoinFields})
+ * since a chained step can thread any response value, not only a per-item
+ * join field. */
+function collectResponseLeafValues(responseBody: unknown): Set<string> {
+  const values = new Set<string>();
+  for (const { value } of walkAllPrimitiveLeaves(responseBody)) {
+    if (typeof value === "string" && value.length > 0) values.add(value);
+    if (typeof value === "number") values.add(String(value));
+  }
+  return values;
+}
+
+/**
+ * Walks forward from `drillStepIndex`, following the transitive per-item
+ * dependency chain: each subsequent step whose request threads a value out
+ * of ANY step already in the chain is itself added to the chain, since its
+ * own request — and therefore its response — only makes sense once per
+ * matched primary item. Reuses {@link collectRequestValuesIncludingHeaders}
+ * (URL, body, AND headers) so a chained step threading its join value
+ * through a header, exactly like {@link buildFoldPlanFromSpec}'s own
+ * threading, is still picked up. Returns the ordered step indices (starting
+ * at `drillStepIndex`) plus the object-array path AND owning step index found
+ * on the LAST chain step whose response actually has an object-array field —
+ * NOT necessarily `chain`'s last entry, since a step can be chained purely
+ * because it threads a value onward (e.g. a status-check response with no
+ * array of its own) without itself holding the foldable array. Falls back to
+ * `drillArrayPath`/`drillStepIndex` (the immediate drill step's own array)
+ * when nothing threads further, so `chain` degrades to `[drillStepIndex]`
+ * for the common single-step case.
+ */
+function computeFoldChain<T extends { capture: Capture }>(
+  actions: readonly T[],
+  drillStepIndex: number,
+  drillArrayPath: string[]
+): { chain: number[]; chainArrayPath: string[]; chainTerminalIndex: number } {
+  const chain = [drillStepIndex];
+  let chainArrayPath = drillArrayPath;
+  let chainTerminalIndex = drillStepIndex;
+  for (let i = drillStepIndex + 1; i < actions.length; i++) {
+    const candidate = actions[i]!;
+    const requestValues = collectRequestValuesIncludingHeaders(candidate.capture);
+    const dependsOnChain = chain.some((chainIndex) => {
+      const responseValues = collectResponseLeafValues(actions[chainIndex]!.capture.responseBody);
+      return [...responseValues].some((v) => requestValues.has(v));
+    });
+    if (!dependsOnChain) continue;
+    chain.push(i);
+    const candidateArray = findObjectArrayField(candidate.capture.responseBody);
+    if (candidateArray) {
+      chainArrayPath = candidateArray.path;
+      chainTerminalIndex = i;
+    }
+  }
+  return { chain, chainArrayPath, chainTerminalIndex };
 }
 
 /**
@@ -4930,13 +5100,40 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
         ) ?? drillCandidates[0];
       if (!drillArray) continue;
 
+      const { chain, chainArrayPath, chainTerminalIndex } = computeFoldChain(
+        actions,
+        drillIndex,
+        drillArray.path
+      );
+
+      // `primaryArray.path` can carry an ARRAY_WILDCARD_SEGMENT (a matched
+      // item nested inside a multi-element outer array — e.g. a
+      // paginated/grouped response wrapping several sub-collections), in
+      // which case `primaryMatchedItemIndex` above is only the LOCAL index
+      // within the one group `primaryArray.items` happens to be. Re-resolve
+      // it against the FLATTENED items every group at that path contributes,
+      // by object identity (findAllObjectArrayFields and objectItemsAtPath
+      // both read the same references, never cloning), so downstream
+      // consumers reading through `objectItemsAtPath` — the emitter's
+      // `firstItem` lookup and the shape-inference fold — land on the exact
+      // same item regardless of which group it came from.
+      const flattenedPrimaryItems =
+        objectItemsAtPath(primary.capture.responseBody, primaryArray.path) ?? [];
+      const globalMatchedItemIndex = flattenedPrimaryItems.indexOf(
+        primaryArray.items[primaryMatchedItemIndex]!
+      );
+
       return {
         primaryStepIndex: primaryIndex,
         primaryArrayPath: primaryArray.path,
         joinFields,
         drillStepIndex: drillIndex,
         drillArrayPath: drillArray.path,
-        primaryMatchedItemIndex,
+        primaryMatchedItemIndex:
+          globalMatchedItemIndex === -1 ? primaryMatchedItemIndex : globalMatchedItemIndex,
+        chain,
+        chainArrayPath,
+        chainTerminalIndex,
       };
     }
   }
@@ -5035,16 +5232,27 @@ function readValueAtPath(body: unknown, path: readonly string[]): unknown {
 /** The object items of the array at `path` — the same subset
  * {@link findObjectArrayField} exposes as `items`, but anchored to a
  * caller-supplied path instead of discovered by DFS. `null` when `path`
- * doesn't resolve to an array holding at least one non-array object. */
+ * doesn't resolve to an array holding at least one non-array object. An
+ * {@link ARRAY_WILDCARD_SEGMENT} segment in `path` flattens across every
+ * element of the array reached at that point — in DFS/outer-array order —
+ * instead of indexing into one, mirroring the `.flatMap` accessor
+ * {@link pathToFoldAccessorExpr} emits for the same segment, so plan
+ * resolution and codegen always agree on which items a fold covers. */
 function objectItemsAtPath(
   body: unknown,
   path: readonly string[]
 ): Record<string, unknown>[] | null {
-  const value = readValueAtPath(body, path);
-  if (!Array.isArray(value)) return null;
-  const items = value.filter(
-    (v): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v)
-  );
+  const wildcardIndex = path.indexOf(ARRAY_WILDCARD_SEGMENT);
+  if (wildcardIndex === -1) {
+    const value = readValueAtPath(body, path);
+    if (!Array.isArray(value)) return null;
+    const items = value.filter(isObjectArrayItem);
+    return items.length > 0 ? items : null;
+  }
+  const outer = readValueAtPath(body, path.slice(0, wildcardIndex));
+  if (!Array.isArray(outer)) return null;
+  const after = path.slice(wildcardIndex + 1);
+  const items = outer.flatMap((element) => objectItemsAtPath(element, after) ?? []);
   return items.length > 0 ? items : null;
 }
 
@@ -5137,6 +5345,11 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
         drill.capture
       );
       if (primaryMatchedItemIndex === null) continue;
+      const { chain, chainArrayPath, chainTerminalIndex } = computeFoldChain(
+        actions,
+        drillStepIndex,
+        drillArrayPath
+      );
       return {
         primaryStepIndex,
         primaryArrayPath,
@@ -5144,6 +5357,9 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
         drillStepIndex,
         drillArrayPath,
         primaryMatchedItemIndex,
+        chain,
+        chainArrayPath,
+        chainTerminalIndex,
       };
     }
   }
@@ -5175,22 +5391,28 @@ export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boole
   return actions[plan.drillStepIndex]!.isMultipart ? null : plan;
 }
 
-/** Rebuilds `value` with `leaf` spliced in at `path`, spreading every
- * ancestor object level so sibling fields survive unchanged. A non-object
- * (or array) encountered before `path` is exhausted returns `value`
- * untouched — the path was computed by `findObjectArrayField` against this
- * same body, so that should never happen outside a drifted caller. */
-function setAtPath(value: unknown, path: readonly string[], leaf: unknown): unknown {
-  if (path.length === 0) return leaf;
-  if (value === null || typeof value !== "object") return value;
-  const [key, ...rest] = path as [string, ...string[]];
-  if (Array.isArray(value)) {
-    const index = Number(key);
-    if (!Number.isInteger(index) || index < 0 || index >= value.length) return value;
-    return value.map((item, i) => (i === index ? setAtPath(item, rest, leaf) : item));
+/** Rebuilds `value` with every occurrence of `target` (compared by object
+ * identity) replaced by `replacement`, spreading every ancestor
+ * array/object level so sibling fields and sibling array elements survive
+ * unchanged. Identity, not a path, is what locates the splice point: a
+ * {@link FoldPlan.primaryArrayPath} carrying an {@link ARRAY_WILDCARD_SEGMENT}
+ * names a whole family of per-group arrays, not one splice-able location, so
+ * only the matched item's own object reference (never cloned by
+ * {@link findAllObjectArrayFields}/{@link objectItemsAtPath}, both of which
+ * only filter) pins down where the fold actually lands, regardless of which
+ * group it came from. */
+function replaceByReference(value: unknown, target: object, replacement: unknown): unknown {
+  if (value === target) return replacement;
+  if (Array.isArray(value)) return value.map((v) => replaceByReference(v, target, replacement));
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([k, v]) => [
+        k,
+        replaceByReference(v, target, replacement),
+      ])
+    );
   }
-  const obj = value as Record<string, unknown>;
-  return { ...obj, [key]: setAtPath(obj[key], rest, leaf) };
+  return value;
 }
 
 /**
@@ -5214,19 +5436,16 @@ function foldResponseBodyForShapeInference<T extends { capture: Capture }>(
   foldPlan: FoldPlan
 ): unknown {
   const primaryBody = actionSteps[foldPlan.primaryStepIndex]!.capture.responseBody;
-  const drillBody = actionSteps[foldPlan.drillStepIndex]!.capture.responseBody;
+  const drillBody = actionSteps[foldPlan.chainTerminalIndex]!.capture.responseBody;
   const primaryItems = objectItemsAtPath(primaryBody, foldPlan.primaryArrayPath);
-  const drillItems = objectItemsAtPath(drillBody, foldPlan.drillArrayPath);
+  const drillItems = objectItemsAtPath(drillBody, foldPlan.chainArrayPath);
   const matchedItem = primaryItems?.[foldPlan.primaryMatchedItemIndex];
   const drillMatch =
     drillItems?.find((d) =>
       foldPlan.joinFields.every((f) => String(d[f]) === String(matchedItem?.[f]))
     ) ?? drillItems?.[0];
   if (!primaryItems || !matchedItem || !drillMatch) return primaryBody;
-  const foldedItems = primaryItems.map((item, index) =>
-    index === foldPlan.primaryMatchedItemIndex ? { ...matchedItem, ...drillMatch } : item
-  );
-  return setAtPath(primaryBody, foldPlan.primaryArrayPath, foldedItems);
+  return replaceByReference(primaryBody, matchedItem, { ...matchedItem, ...drillMatch });
 }
 
 /** Bounded-paging signal detected from a primary read operation's own
