@@ -457,6 +457,53 @@ describe("detectDrillDownFoldPlan — multiple independent primaries", () => {
 });
 
 describe("resolveFoldPlan — multiple independent primaries", () => {
+  it("returns a resolved fold plan for EVERY independent primary/drill-down pair when neither is disqualified", () => {
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/products/search",
+        requestPostData: JSON.stringify({ page: 1 }),
+        responseBody: {
+          products: [
+            { productId: "p1", name: "Widget" },
+            { productId: "p2", name: "Gadget" },
+          ],
+        },
+        timestamp: "2024-09-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/products/p1/reviews",
+        requestPostData: null,
+        responseBody: { reviews: [{ productId: "p1", rating: 5 }] },
+        timestamp: "2024-09-01T00:00:01Z",
+      }),
+      buildStep("r2", {
+        url: "https://api.example.com/vendors/search",
+        requestPostData: JSON.stringify({ page: 1 }),
+        responseBody: {
+          vendors: [
+            { vendorId: "v1", name: "Acme" },
+            { vendorId: "v2", name: "Globex" },
+          ],
+        },
+        timestamp: "2024-09-01T00:00:02Z",
+      }),
+      buildStep("r3", {
+        url: "https://api.example.com/vendors/v1/contracts",
+        requestPostData: null,
+        responseBody: { contracts: [{ vendorId: "v1", contractId: "c1" }] },
+        timestamp: "2024-09-01T00:00:03Z",
+      }),
+    ];
+
+    const resolved = resolveFoldPlan(steps);
+
+    expect(resolved).toHaveLength(2);
+    expect(resolved[0]?.primaryStepIndex).toBe(0);
+    expect(resolved[0]?.targets[0]?.drillStepIndex).toBe(1);
+    expect(resolved[1]?.primaryStepIndex).toBe(2);
+    expect(resolved[1]?.targets[0]?.drillStepIndex).toBe(3);
+  });
+
   it("drops the whole plan whose sole target is multipart-disqualified, keeping the other independent plan", () => {
     const steps: MulticallFixtureStep[] = [
       buildStep("r0", {
