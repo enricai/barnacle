@@ -86,6 +86,12 @@ These limit traffic *to* Barnacle's own API (outbound limits live in each plugin
 | `READINESS_QUEUE_THRESHOLD` | `20` | `/readyz` returns 503 when scraper queue depth exceeds this. Lets orchestrators shed load before the pool is saturated. |
 | `ENABLE_DOCS` | `false` | Serve Swagger UI at `/docs`. Disable in production. |
 
+### Multipart uploads
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `MULTIPART_MAX_FILE_SIZE_BYTES` | `20971520` (20 MiB) | Ceiling passed to `@fastify/multipart`'s `limits.fileSize`. |
+
 ### Datadog (opt-in)
 
 APM tracing and DogStatsD metrics are **opt-in** peer dependencies — a missing package just disables its flag with a warning instead of failing to boot.
