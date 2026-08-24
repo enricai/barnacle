@@ -368,6 +368,7 @@ describe("resolveFoldPlan — header-threaded join boundary", () => {
       primaryMatchedItemIndex: 0,
       chain: [1],
       chainArrayPath: ["transactions"],
+      chainTerminalIndex: 1,
     });
   });
 });

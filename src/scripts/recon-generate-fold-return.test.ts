@@ -380,6 +380,7 @@ describe("resolveFoldPlan", () => {
       primaryMatchedItemIndex: 0,
       chain: [1],
       chainArrayPath: ["prices"],
+      chainTerminalIndex: 1,
     });
   });
 
@@ -408,6 +409,7 @@ describe("resolveFoldPlan", () => {
       primaryMatchedItemIndex: 0,
       chain: [1],
       chainArrayPath: ["prices"],
+      chainTerminalIndex: 1,
     });
   });
 
@@ -462,6 +464,7 @@ describe("resolveFoldPlan", () => {
       primaryMatchedItemIndex: 0,
       chain: [1],
       chainArrayPath: ["details"],
+      chainTerminalIndex: 1,
     });
   });
 
@@ -481,6 +484,7 @@ describe("resolveFoldPlan", () => {
       primaryMatchedItemIndex: 0,
       chain: [1],
       chainArrayPath: ["details"],
+      chainTerminalIndex: 1,
     });
   });
 
@@ -524,6 +528,7 @@ describe("resolveFoldPlan", () => {
       primaryMatchedItemIndex: 1,
       chain: [1],
       chainArrayPath: ["prices"],
+      chainTerminalIndex: 1,
     });
   });
 

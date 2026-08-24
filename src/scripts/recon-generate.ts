@@ -4501,7 +4501,7 @@ export function emitMultiStepExecuteHttp(
           );
         }
       }
-      const terminalStep = actions[foldPlan.chain[foldPlan.chain.length - 1]!]!;
+      const terminalStep = actions[foldPlan.chainTerminalIndex]!;
       const drillArrType = foldArrayAssertionType(foldPlan.chainArrayPath);
       const foldMatchesExpr = pathToFoldAccessorExpr(
         `(${terminalStep.varName} as ${drillArrType})`,
@@ -4896,10 +4896,15 @@ function findObjectArrayField(
  * per-item array) — `chain` carries that full dependency path, in order,
  * starting at `drillStepIndex`, so downstream code has every step that must
  * run per primary item to loop over instead of assuming exactly one.
- * `chainArrayPath` is the object-array path on the chain's LAST step's
+ * `chainArrayPath` is the object-array path on `chainTerminalIndex`'s
  * response — the step whose response actually holds the foldable per-item
- * array. When nothing threads past the immediate drill call, `chain` is
- * `[drillStepIndex]` and `chainArrayPath` equals `drillArrayPath`. */
+ * array. `chainTerminalIndex` is NOT always `chain`'s last entry: a step can
+ * be added to `chain` purely because it threads a value onward (e.g. a
+ * status-check call with no object-array field of its own), so the terminal
+ * must be tracked separately from "last step added". When nothing threads
+ * past the immediate drill call, `chain` is `[drillStepIndex]`,
+ * `chainTerminalIndex` is `drillStepIndex`, and `chainArrayPath` equals
+ * `drillArrayPath`. */
 export interface FoldPlan {
   primaryStepIndex: number;
   primaryArrayPath: string[];
@@ -4909,6 +4914,7 @@ export interface FoldPlan {
   primaryMatchedItemIndex: number;
   chain: number[];
   chainArrayPath: string[];
+  chainTerminalIndex: number;
 }
 
 /** Every string and numeric value present in a capture's outbound request —
@@ -4991,19 +4997,23 @@ function collectResponseLeafValues(responseBody: unknown): Set<string> {
  * (URL, body, AND headers) so a chained step threading its join value
  * through a header, exactly like {@link buildFoldPlanFromSpec}'s own
  * threading, is still picked up. Returns the ordered step indices (starting
- * at `drillStepIndex`) plus the object-array path found on the chain's LAST
- * step's response — the step whose response actually holds the per-item
- * results to fold. Falls back to `drillArrayPath` (the immediate drill
- * step's own array) when nothing threads further, so `chain` degrades to
- * `[drillStepIndex]` for the common single-step case.
+ * at `drillStepIndex`) plus the object-array path AND owning step index found
+ * on the LAST chain step whose response actually has an object-array field —
+ * NOT necessarily `chain`'s last entry, since a step can be chained purely
+ * because it threads a value onward (e.g. a status-check response with no
+ * array of its own) without itself holding the foldable array. Falls back to
+ * `drillArrayPath`/`drillStepIndex` (the immediate drill step's own array)
+ * when nothing threads further, so `chain` degrades to `[drillStepIndex]`
+ * for the common single-step case.
  */
 function computeFoldChain<T extends { capture: Capture }>(
   actions: readonly T[],
   drillStepIndex: number,
   drillArrayPath: string[]
-): { chain: number[]; chainArrayPath: string[] } {
+): { chain: number[]; chainArrayPath: string[]; chainTerminalIndex: number } {
   const chain = [drillStepIndex];
   let chainArrayPath = drillArrayPath;
+  let chainTerminalIndex = drillStepIndex;
   for (let i = drillStepIndex + 1; i < actions.length; i++) {
     const candidate = actions[i]!;
     const requestValues = collectRequestValuesIncludingHeaders(candidate.capture);
@@ -5014,9 +5024,12 @@ function computeFoldChain<T extends { capture: Capture }>(
     if (!dependsOnChain) continue;
     chain.push(i);
     const candidateArray = findObjectArrayField(candidate.capture.responseBody);
-    if (candidateArray) chainArrayPath = candidateArray.path;
+    if (candidateArray) {
+      chainArrayPath = candidateArray.path;
+      chainTerminalIndex = i;
+    }
   }
-  return { chain, chainArrayPath };
+  return { chain, chainArrayPath, chainTerminalIndex };
 }
 
 /**
@@ -5087,7 +5100,11 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
         ) ?? drillCandidates[0];
       if (!drillArray) continue;
 
-      const { chain, chainArrayPath } = computeFoldChain(actions, drillIndex, drillArray.path);
+      const { chain, chainArrayPath, chainTerminalIndex } = computeFoldChain(
+        actions,
+        drillIndex,
+        drillArray.path
+      );
 
       // `primaryArray.path` can carry an ARRAY_WILDCARD_SEGMENT (a matched
       // item nested inside a multi-element outer array — e.g. a
@@ -5116,6 +5133,7 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
           globalMatchedItemIndex === -1 ? primaryMatchedItemIndex : globalMatchedItemIndex,
         chain,
         chainArrayPath,
+        chainTerminalIndex,
       };
     }
   }
@@ -5327,7 +5345,11 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
         drill.capture
       );
       if (primaryMatchedItemIndex === null) continue;
-      const { chain, chainArrayPath } = computeFoldChain(actions, drillStepIndex, drillArrayPath);
+      const { chain, chainArrayPath, chainTerminalIndex } = computeFoldChain(
+        actions,
+        drillStepIndex,
+        drillArrayPath
+      );
       return {
         primaryStepIndex,
         primaryArrayPath,
@@ -5337,6 +5359,7 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
         primaryMatchedItemIndex,
         chain,
         chainArrayPath,
+        chainTerminalIndex,
       };
     }
   }
@@ -5412,10 +5435,8 @@ function foldResponseBodyForShapeInference<T extends { capture: Capture }>(
   actionSteps: readonly T[],
   foldPlan: FoldPlan
 ): unknown {
-  const chainTerminalStepIndex =
-    foldPlan.chain[foldPlan.chain.length - 1] ?? foldPlan.drillStepIndex;
   const primaryBody = actionSteps[foldPlan.primaryStepIndex]!.capture.responseBody;
-  const drillBody = actionSteps[chainTerminalStepIndex]!.capture.responseBody;
+  const drillBody = actionSteps[foldPlan.chainTerminalIndex]!.capture.responseBody;
   const primaryItems = objectItemsAtPath(primaryBody, foldPlan.primaryArrayPath);
   const drillItems = objectItemsAtPath(drillBody, foldPlan.chainArrayPath);
   const matchedItem = primaryItems?.[foldPlan.primaryMatchedItemIndex];

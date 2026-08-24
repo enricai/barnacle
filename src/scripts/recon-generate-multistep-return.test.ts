@@ -120,8 +120,11 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     // plan's chain to [r4, r5]: both calls now render inside the same
     // per-item loop, r5's threaded `unitId` resolved from a loop-scoped
     // local (not the outer function scope the old throw refused to emit
-    // into), and the LAST chain step's (r5's) response is what gets folded
-    // onto the primary item.
+    // into). r5's own response (`{ held: true }`) has no object-array field,
+    // so the LAST chain step whose response actually HOLDS an array — r4 —
+    // is what gets folded onto the primary item, not r5 (r5 is still called,
+    // for its side effect / threading, but reading `.units` off it would be
+    // `undefined` at runtime since it never has that shape).
     const withDrillDown = buildMulticallHeterogeneousActionStepsWithDrillDown();
     const drillStep = withDrillDown[withDrillDown.length - 1]!;
     const steps: MulticallFixtureStep[] = [
@@ -146,7 +149,7 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     expect(body).toContain("const r4 = (await httpClient(");
     expect(body).toContain("const r5 = (await httpClient(");
     expect(body).toContain('const unitId = (r4 as { units: { "0": { unitId: string } } })');
-    expect(body).toContain("const foldMatches = (r5 as");
+    expect(body).toContain("const foldMatches = (r4 as");
     expect(body).toContain("Object.assign(item, foldMatch ?? {});");
     // r5 must not be re-issued a second time outside the fold loop.
     expect(body.match(/const r5 = \(await httpClient\(/g)).toHaveLength(1);
