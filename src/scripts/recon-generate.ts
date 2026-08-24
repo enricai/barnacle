@@ -5163,13 +5163,17 @@ function collectResponseLeafValues(responseBody: unknown): Set<string> {
  * through a header, exactly like {@link buildFoldPlanFromSpec}'s own
  * threading, is still picked up. Returns the ordered step indices (starting
  * at `drillStepIndex`) plus the object-array path AND owning step index found
- * on the LAST chain step whose response actually has an object-array field —
+ * on the LAST chain step whose response actually has an object-array field,
+ * OR — failing that — the last chain step whose response is a flat object
+ * carrying MORE of its own per-item data than the chain's best terminal
+ * found so far (see {@link chainTerminalItemRichness}). Either way this is
  * NOT necessarily `chain`'s last entry, since a step can be chained purely
  * because it threads a value onward (e.g. a status-check response with no
- * array of its own) without itself holding the foldable array. Falls back to
- * `drillArrayPath`/`drillStepIndex` (the immediate drill step's own array)
- * when nothing threads further, so `chain` degrades to `[drillStepIndex]`
- * for the common single-step case.
+ * array of its own and no richer data than what came before) without itself
+ * holding the foldable data. Falls back to `drillArrayPath`/`drillStepIndex`
+ * (the immediate drill step's own array or flat object) when nothing
+ * threads further, so `chain` degrades to `[drillStepIndex]` for the common
+ * single-step case.
  */
 function computeFoldChain<T extends { capture: Capture }>(
   actions: readonly T[],
@@ -5179,6 +5183,10 @@ function computeFoldChain<T extends { capture: Capture }>(
   const chain = [drillStepIndex];
   let chainArrayPath = drillArrayPath;
   let chainTerminalIndex = drillStepIndex;
+  let chainTerminalRichness = chainTerminalItemRichness(
+    actions[drillStepIndex]!.capture.responseBody,
+    drillArrayPath
+  );
   for (let i = drillStepIndex + 1; i < actions.length; i++) {
     const candidate = actions[i]!;
     const requestValues = collectRequestValuesIncludingHeaders(candidate.capture);
@@ -5188,24 +5196,74 @@ function computeFoldChain<T extends { capture: Capture }>(
     });
     if (!dependsOnChain) continue;
     chain.push(i);
-    // Deliberately the STRICT (non-widened) lookup here, not
-    // findObjectArrayFieldOrWholeObject: every later step in the chain
-    // depends on an earlier one by definition (it threads a value out of
-    // it), so a flat, non-array response would ALWAYS qualify as an
-    // implicit one-item collection — collapsing this into "always advance
-    // the terminal to the newest chain member" regardless of whether that
-    // member actually holds foldable per-item data. Only a response that
-    // genuinely contains an object-array field should move the terminal
-    // forward; a step called purely for its side effect / for threading a
-    // value further (e.g. a `{ held: true }` confirmation) must leave the
-    // terminal at the last step that actually had one.
     const candidateArray = findObjectArrayField(candidate.capture.responseBody);
     if (candidateArray) {
       chainArrayPath = candidateArray.path;
       chainTerminalIndex = i;
+      chainTerminalRichness = chainTerminalItemRichness(
+        candidate.capture.responseBody,
+        candidateArray.path
+      );
+      continue;
+    }
+    // No real object-array field. A flat response can still be the genuine
+    // terminal further down the chain (not only at the immediate drill
+    // step), but only when it carries STRICTLY MORE of its own per-item
+    // primitive data than the chain's best terminal so far — otherwise a
+    // step called purely for its side effect / for threading a value
+    // further (e.g. a `{ held: true }` confirmation, exactly as rich as —
+    // never richer than — the real per-item shape it merely threads onward
+    // from) would always qualify as an implicit one-item collection and
+    // collapse this into "always advance the terminal to the newest chain
+    // member" regardless of whether that member actually holds foldable
+    // data.
+    if (!isObjectArrayItem(candidate.capture.responseBody)) continue;
+    const candidateRichness = directPrimitiveChildCountExcludingEchoed(
+      candidate.capture.responseBody,
+      requestValues
+    );
+    if (candidateRichness > chainTerminalRichness) {
+      chainArrayPath = [];
+      chainTerminalIndex = i;
+      chainTerminalRichness = candidateRichness;
     }
   }
   return { chain, chainArrayPath, chainTerminalIndex };
+}
+
+/** The per-item primitive-field richness of a chain terminal candidate at
+ * `path` — {@link directPrimitiveChildCount} of the first item {@link
+ * objectItemsAtPath} resolves there (an object-array item when `path` names
+ * a real array, or the whole flat object when `path` is `[]`), or 0 when
+ * `path` resolves to nothing. The baseline {@link computeFoldChain} compares
+ * every later flat-object candidate against, so a later step only ever
+ * displaces the terminal by actually contributing more of its own data. */
+function chainTerminalItemRichness(responseBody: unknown, path: string[]): number {
+  const items = objectItemsAtPath(responseBody, path);
+  return items && items.length > 0 ? directPrimitiveChildCount(items[0]!) : 0;
+}
+
+/** Like {@link directPrimitiveChildCount}, but skips a field whose value was
+ * itself already threaded INTO this response's own request (present in
+ * `requestValues`) — a confirmation step routinely echoes the id/token it
+ * was called with alongside a status flag, and that echo must not count as
+ * genuine per-item data or a side-effect-only response (e.g. `{ token:
+ * "t1", held: true }` echoing a threaded `token`) would out-rank the real
+ * terminal on field count alone. */
+function directPrimitiveChildCountExcludingEchoed(
+  obj: Record<string, unknown>,
+  requestValues: ReadonlySet<string>
+): number {
+  let n = 0;
+  for (const v of Object.values(obj)) {
+    if (v === null || (typeof v !== "object" && typeof v !== "function")) {
+      if (typeof v === "string" || typeof v === "number") {
+        if (requestValues.has(String(v))) continue;
+      }
+      n++;
+    }
+  }
+  return n;
 }
 
 /**
