@@ -510,6 +510,43 @@ describe("detectDrillDownFoldPlan — chained per-item dependency", () => {
     expect(plan?.targets[0]?.chainArrayPath).toEqual(["transactions"]);
     expect(plan?.targets[0]?.chainTerminalIndex).toBe(1);
   });
+
+  it("keeps a richer earlier array-bearing chain step as the terminal over a later, poorer array-bearing step", () => {
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/catalog/search",
+        requestPostData: JSON.stringify({ page: 1 }),
+        responseBody: { results: [{ itemId: "item-5" }] },
+        timestamp: "2024-11-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/catalog/items/item-5/detail",
+        requestPostData: null,
+        // Rich object-array per item — the genuine terminal that must win.
+        responseBody: {
+          rows: [{ sku: "sku-1", price: 20, quantity: 3, warehouse: "w1" }],
+          token: "tok-42",
+        },
+        timestamp: "2024-11-01T00:00:01Z",
+      }),
+      buildStep("r2", {
+        url: "https://api.example.com/catalog/items/item-5/audit",
+        requestPostData: JSON.stringify({ token: "tok-42" }),
+        // Also an object-array, but with strictly fewer primitive fields
+        // per item than r1's — must NOT displace r1 as the terminal.
+        responseBody: { entries: [{ action: "viewed" }], token: "tok-42" },
+        timestamp: "2024-11-01T00:00:02Z",
+      }),
+    ];
+
+    const plan = detect(steps);
+
+    expect(plan).not.toBeNull();
+    expect(plan?.targets[0]?.drillStepIndex).toBe(1);
+    expect(plan?.targets[0]?.chain).toEqual([1, 2]);
+    expect(plan?.targets[0]?.chainArrayPath).toEqual(["rows"]);
+    expect(plan?.targets[0]?.chainTerminalIndex).toBe(1);
+  });
 });
 
 describe("detectDrillDownFoldPlan — multiple independent targets", () => {
