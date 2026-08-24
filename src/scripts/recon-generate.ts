@@ -4180,7 +4180,7 @@ export function emitMultiStepExecuteHttp(
           actions[stepIndex]!.capture.requestHeaders
         )) {
           const matchesJoinField = target.joinFields.some((field) => {
-            const value = firstItem[field];
+            const value = readValueAtPath(firstItem, field.split("."));
             return (
               (typeof value === "string" && value.length > 0 && value === headerValue) ||
               (typeof value === "number" && String(value) === headerValue)
@@ -4523,9 +4523,7 @@ export function emitMultiStepExecuteHttp(
         // single-target case keeps the original unsuffixed names.
         const suffix = foldPlan.targets.length > 1 ? `${planSuffix}${targetIndex}` : planSuffix;
         const joinAccessor = (field: string): string =>
-          isValidJsIdentifier(field)
-            ? `${itemVar}.${field}`
-            : `${itemVar}[${JSON.stringify(field)}]`;
+          `${itemVar}${pathToAccessor(field.split("."), { assertNonNull: false })}`;
         // A join field can reach the render either as the raw captured literal
         // (URL query params) or as an already-generic `${payload.<field>}`
         // reference (top-level JSON body keys — see
@@ -4547,7 +4545,7 @@ export function emitMultiStepExecuteHttp(
           target.joinFields.reduce((acc, field) => {
             const replacement = `\${${joinAccessor(field)}}`;
             const withAccessorSwapped = acc.split(`\${payload.${field}}`).join(replacement);
-            const value = firstItem[field];
+            const value = readValueAtPath(firstItem, field.split("."));
             const stringValue =
               typeof value === "string" && value.length > 0
                 ? value
@@ -4618,7 +4616,10 @@ export function emitMultiStepExecuteHttp(
           lines.push(
             `      const foldMatches${suffix} = ${foldMatchesExpr};`,
             `      const foldMatch${suffix} = foldMatches${suffix}.find((m) => ${target.joinFields
-              .map((f) => `String(m[${JSON.stringify(f)}]) === String(${joinAccessor(f)})`)
+              .map(
+                (f) =>
+                  `String(m${pathToAccessor(f.split("."), { assertNonNull: false })}) === String(${joinAccessor(f)})`
+              )
               .join(" && ")}) ?? foldMatches${suffix}[0];`,
             `      Object.assign(${itemVar}, foldMatch${suffix} ?? {});`
           );
