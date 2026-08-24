@@ -649,6 +649,22 @@ export function buildMulticallSingleShotSearchDrillDownTypeMismatchJoinActionSte
   ];
 }
 
+/**
+ * Same shape as {@link buildMulticallSingleShotSearchDrillDownChainedDependentActionSteps},
+ * but the CHAIN's second step (the price-history call `r2`, not the drill
+ * step `r1` itself) is a multipart upload rather than a JSON POST.
+ * `emitMultiStepExecuteHttp`'s fold loop re-issues EVERY chain step's
+ * request per item by re-keying its rendered JSON body template — a
+ * multipart step anywhere in `chain`, not just at `drillStepIndex`, has no
+ * such template to re-key, so `resolveFoldPlan` must disqualify the whole
+ * plan here exactly as it already does when the drill step itself is
+ * multipart.
+ */
+export function buildMulticallSingleShotSearchDrillDownChainedDependentMultipartChainStepActionSteps(): MulticallFixtureStep[] {
+  const steps = buildMulticallSingleShotSearchDrillDownChainedDependentActionSteps();
+  return steps.map((step, index) => (index === 2 ? { ...step, isMultipart: true } : step));
+}
+
 const CATALOG_PRICE_HISTORY_URL = "https://api.example.com/catalog/price-history";
 
 /**

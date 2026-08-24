@@ -5375,10 +5375,11 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
  * inferred schema would describe different calls (see
  * {@link selectEffectiveResponseBody}'s own docstring).
  *
- * A multipart drill-down disqualifies the plan: the fold loop re-issues the
- * drill call per item by re-keying its rendered JSON request template, and a
- * raw `FormData` upload has no such template to re-key — so those fall back
- * to ordinary single-call emission instead of emitting a broken loop.
+ * A multipart step anywhere in the fold chain disqualifies the plan: the
+ * fold loop re-issues EVERY chain step's request per item by re-keying its
+ * rendered JSON request template (not just the immediate drill step's), and
+ * a raw `FormData` upload has no such template to re-key — so those fall
+ * back to ordinary single-call emission instead of emitting a broken loop.
  */
 export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boolean }>(
   actions: readonly T[],
@@ -5388,7 +5389,7 @@ export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boole
     detectDrillDownFoldPlan(actions) ??
     (foldReturnSpec === null ? null : buildFoldPlanFromSpec(actions, foldReturnSpec));
   if (plan === null) return null;
-  return actions[plan.drillStepIndex]!.isMultipart ? null : plan;
+  return plan.chain.some((chainIndex) => actions[chainIndex]!.isMultipart) ? null : plan;
 }
 
 /** Rebuilds `value` with every occurrence of `target` (compared by object
