@@ -18,6 +18,8 @@ vi.mock("@/config", async (importOriginal) => {
         ...actual.config.scraper,
         frameReadyTimeoutMs: 30,
         frameDocumentReadyTimeoutMs: 20,
+        frameEvaluateTimeoutMs: 200,
+        framePresenceProbeFloorMs: 50,
       },
     },
   };
@@ -31,7 +33,11 @@ import {
 import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
 import { runHealingFlow } from "@/scraper/flow-runner";
 import * as frameTargetModule from "@/scraper/frame-target";
+import { sleep as sleepMs } from "@/scraper/frame-target";
 import type { Logger } from "@/types/logging";
+
+/** Real timer delay used by the genuinely-delayed fakes below — long enough to be a real tick, short enough to stay under `framePresenceProbeFloorMs` (mocked to 50ms above). */
+const PROBE_DELAY_MS = 5;
 
 /**
  * Offline acceptance test for the trigger half of the bug report: a step
@@ -180,6 +186,138 @@ function makeFakeTopPage(
     },
   };
 }
+
+/**
+ * `makeFakeChildFrame`/`makeFakeTopPage` above resolve every `evaluate` call
+ * and flip `attached` synchronously, in the same tick `attach()` is invoked —
+ * a shape `resolveFrameTarget(..., { timeoutMs: 0 })` can win by accident
+ * (`frame-target.ts`'s `probeAttachedFrameTarget` doc comment), since a
+ * `Math.min(evaluateTimeoutMs, 0) === 0` watchdog only loses a race that
+ * takes real wall-clock time to settle. These delayed variants insert a
+ * genuine `setTimeout`-based tick (`PROBE_DELAY_MS`, mirroring
+ * `frame-target.test.ts:908-934`'s `makeDelayedFakePage`/`makeDelayedFakeFrame`)
+ * between step entry and the OOPIF attaching, so the assertion below can only
+ * pass if the re-resolution seam actually has a real probe budget to spend.
+ */
+function makeDelayedFakeChildFrame(childUrls: { current: string }) {
+  return {
+    evaluate: async (expr: unknown) => {
+      await sleepMs(PROBE_DELAY_MS);
+      return expr === "location.href" ? childUrls.current : { html: 0, text: "0:" };
+    },
+    locator: () => ({
+      first: () => ({
+        isChecked: async () => false,
+        inputValue: async () => "",
+      }),
+    }),
+  };
+}
+
+function makeDelayedFakeTopPage(
+  topUrl: { current: string },
+  childUrls: { current: string },
+  deepLocatorFrame: FakeDeepLocatorFrame
+): { page: import("@browserbasehq/stagehand").Page; attach: () => void } {
+  let attached = false;
+  const session = { on: () => {}, off: () => {} };
+  const childFrame = makeDelayedFakeChildFrame(childUrls);
+  const fakeDeepLocator = makeFakeDeepLocator(deepLocatorFrame);
+  const wrappedDeepLocator = (selector: string) => {
+    const delegate = fakeDeepLocator(selector);
+    return {
+      ...delegate,
+      click: async () => {
+        await delegate.click();
+        childUrls.current = `${CHILD_ORIGIN}/application/abc-123/basic-info`;
+      },
+      nth: (index: number) => {
+        const inner = fakeDeepLocator(selector);
+        const nthDelegate = inner.nth(index);
+        return {
+          ...nthDelegate,
+          click: async () => {
+            await nthDelegate.click();
+            childUrls.current = `${CHILD_ORIGIN}/application/abc-123/basic-info`;
+          },
+        };
+      },
+    };
+  };
+  const page = {
+    evaluate: async (expr: unknown) => {
+      await sleepMs(PROBE_DELAY_MS);
+      const iframeSrcMatch = /document\.querySelector\((.+?)\)/.exec(String(expr));
+      if (iframeSrcMatch) {
+        const selector = JSON.parse(iframeSrcMatch[1] as string) as string;
+        return selector === IFRAME_SELECTOR
+          ? { matched: true, src: CHILD_SRC }
+          : { matched: false, src: null };
+      }
+      return null;
+    },
+    url: () => topUrl.current,
+    title: async () => "the top-window site Careers",
+    locator: () => ({
+      first: () => ({
+        isChecked: async () => false,
+        inputValue: async () => "",
+      }),
+    }),
+    waitForTimeout: async () => {},
+    getSessionForFrame: () => session,
+    mainFrameId: () => "main",
+    sendCDP: async () => ({ body: "{}", base64Encoded: false }),
+    frames: () => (attached ? [childFrame] : []),
+    deepLocator: wrappedDeepLocator,
+  } as unknown as import("@browserbasehq/stagehand").Page;
+
+  return {
+    page,
+    attach: () => {
+      // A real timer tick between step entry and attach — not a same-tick
+      // flip — is the whole point of this fake; a broken `timeoutMs: 0`
+      // re-resolution can never observe this frame before it falls back to
+      // the main frame, however long the run keeps grinding after that.
+      void sleepMs(PROBE_DELAY_MS).then(() => {
+        attached = true;
+      });
+    },
+  };
+}
+
+describe("flow-runner frame re-resolution before the deepLocator gate — genuinely delayed attach", () => {
+  it("re-resolves a lost OOPIF that only attaches after a real timer tick, and does not fall back to the main frame", async () => {
+    const topUrl = { current: `${TOP_ORIGIN}/jobs/123/apply` };
+    const childUrls = { current: CHILD_SRC };
+    const deepLocatorFrame: FakeDeepLocatorFrame = new Map();
+    registerDeepLocatorHop(deepLocatorFrame, HOP_SELECTOR, "Manual Application");
+    const { page, attach } = makeDelayedFakeTopPage(topUrl, childUrls, deepLocatorFrame);
+    const stagehand = makeFakeStagehandAttachingOnAct(attach);
+
+    const result = await runHealingFlow({
+      stagehand,
+      page,
+      steps: [
+        { instruction: MANUAL_APPLICATION_STEP, optional: false, upload: false, submitStep: false },
+      ],
+      logger: testLogger,
+      anthropic: null,
+      rephraseModel: null,
+      uploadFixture: null,
+      frameSelector: IFRAME_SELECTOR,
+    });
+
+    expect(result.lastStepIndex).toBe(0);
+    // The click lands only once the deepLocator gate resolves against the
+    // recovered child frame — a stale main-frame `FrameTarget` never reaches
+    // this hop at all, so a URL/click still stuck at the pre-apply state
+    // means the re-resolution fell back to the main frame instead.
+    expect(childUrls.current).toBe(`${CHILD_ORIGIN}/application/abc-123/basic-info`);
+    const hop = deepLocatorFrame.get(HOP_SELECTOR);
+    expect(hop?.clicks).toBeGreaterThan(0);
+  });
+});
 
 describe("flow-runner frame re-resolution before the deepLocator gate", () => {
   it("re-resolves a lost OOPIF and clicks 'Manual Application' through it, despite the frame being absent at step entry", async () => {
