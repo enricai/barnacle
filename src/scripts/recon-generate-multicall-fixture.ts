@@ -596,6 +596,30 @@ export function buildMulticallSingleShotSearchDrillDownPathThreadedJoinActionSte
 }
 
 /**
+ * A single-shot search whose primary item join field (`sku`) sits inside a
+ * NESTED object (`{ identifiers: { sku } }`) rather than as a top-level
+ * property. `findThreadedJoinFields` must walk into nested plain objects to
+ * find it, and the resulting joinFields entry is the dot-separated path
+ * `"identifiers.sku"`, not the bare leaf name `"sku"`.
+ */
+export function buildMulticallSingleShotSearchDrillDownNestedJoinFieldActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: ACCOUNT_SEARCH_URL,
+      requestPostData: JSON.stringify({ page: 1 }),
+      responseBody: { accounts: [{ identifiers: { sku: "SKU-1" }, name: "Acme" }] },
+      timestamp: "2024-08-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: ACCOUNT_DETAIL_URL,
+      requestPostData: JSON.stringify({ sku: "SKU-1" }),
+      responseBody: { transactions: [{ transactionId: "t1" }] },
+      timestamp: "2024-08-01T00:00:01Z",
+    }),
+  ];
+}
+
+/**
  * A single-shot search whose primary items carry a COMPOSITE join key mixing
  * a string field (`region`) and a numeric field (`accountId`), both threaded
  * into the drill-down request. `findThreadedJoinFields` filters candidate
