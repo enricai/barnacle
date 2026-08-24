@@ -830,7 +830,14 @@ describe("resolveFoldPlan", () => {
       }),
       buildStep("r1", {
         url: "https://api.example.com/catalog/pricing/",
-        requestPostData: '{"sku":"sku-a"}',
+        // The join value is threaded only through a request header, which
+        // detectDrillDownFoldPlan's structural heuristic deliberately never
+        // searches (see collectRequestValuesIncludingHeaders's docstring),
+        // so the heuristic resolves no plan at all here — only the declared
+        // drillResultsPath can resolve this fold, isolating
+        // buildFoldPlanFromSpec's own single-object resolution.
+        requestPostData: '{"lookup":true}',
+        requestHeaders: { "Content-Type": "application/json", "X-Item-Sku": "sku-a" },
         responseBody: { detail: { sku: "sku-a", amount: 19.99 } },
         timestamp: "2024-04-01T00:00:01Z",
       }),
@@ -842,7 +849,23 @@ describe("resolveFoldPlan", () => {
       joinFields: ["sku"],
     };
 
-    expect(resolveFoldPlan(steps, spec)[0]?.targets[0]?.drillArrayPath).toEqual(["detail"]);
+    expect(resolveFoldPlan(steps, spec)).toEqual([
+      {
+        primaryStepIndex: 0,
+        primaryArrayPath: ["results"],
+        targets: [
+          {
+            joinFields: ["sku"],
+            drillStepIndex: 1,
+            drillArrayPath: ["detail"],
+            primaryMatchedItemIndex: 0,
+            chain: [1],
+            chainArrayPath: ["detail"],
+            chainTerminalIndex: 1,
+          },
+        ],
+      },
+    ]);
   });
 
   it("returns null when the declared drillResultsPath resolves to no non-empty object array", () => {
