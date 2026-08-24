@@ -105,6 +105,7 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     );
 
     expect(body).toContain("for (const item of foldItems) {");
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting emitted template-literal source
     expect(body).toContain("region=${item.region}&accountId=${item.accountId}");
     expect(body).not.toContain("region=eu");
     expect(body).not.toContain("accountId=9");
