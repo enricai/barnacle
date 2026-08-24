@@ -918,6 +918,64 @@ describe("resolveFoldPlan", () => {
     expect(resolveFoldPlan(steps, SINGLE_SHOT_SPEC)).toEqual([]);
   });
 
+  it("resolves a chained flat-object terminal two hops downstream via a declared foldReturn, matching the structural heuristic's own resolution", () => {
+    // Same token->flat-detail chain as detectDrillDownFoldPlan's own 2-hop
+    // terminal-selection case (recon-generate-multistep-return.test.ts:
+    // "folds a flat-object chain terminal two hops downstream, past an
+    // intermediate token-only step"): r1 (pricing/) is the immediate drill
+    // step but carries only a `priceToken`, no data of its own; r2
+    // (price-history/) threads that token and returns a flat object richer
+    // than r1's — 3 primitive fields versus r1's 1 — so computeFoldChain
+    // must recognize r2, not r1, as the chain's genuine terminal even
+    // though neither response is an array. Unlike that fixture, the join
+    // (`sku`) is threaded only through a request HEADER here, so the
+    // structural heuristic never sees it — isolating buildFoldPlanFromSpec's
+    // own reuse of computeFoldChain, not detectDrillDownFoldPlan's.
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/catalog/search/",
+        requestPostData: '{"page":1}',
+        responseBody: { results: [{ sku: "sku-a" }] },
+        timestamp: "2024-11-15T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/catalog/pricing/",
+        requestPostData: '{"lookup":true}',
+        requestHeaders: { "Content-Type": "application/json", "X-Item-Sku": "sku-a" },
+        responseBody: { priceToken: "tok-a1" },
+        timestamp: "2024-11-15T00:00:01Z",
+      }),
+      buildStep("r2", {
+        url: "https://api.example.com/catalog/price-history/",
+        requestPostData: '{"priceToken":"tok-a1"}',
+        responseBody: { status: "confirmed", amount: 18.5, asOf: "2024-11-01" },
+        timestamp: "2024-11-15T00:00:02Z",
+      }),
+    ];
+
+    // The header-only join is invisible to detectDrillDownFoldPlan, so
+    // without a declared spec there is no plan at all.
+    expect(resolveFoldPlan(steps)).toEqual([]);
+
+    expect(resolveFoldPlan(steps, SINGLE_SHOT_SPEC)).toEqual([
+      {
+        primaryStepIndex: 0,
+        primaryArrayPath: ["results"],
+        targets: [
+          {
+            joinFields: ["sku"],
+            drillStepIndex: 1,
+            drillArrayPath: [],
+            primaryMatchedItemIndex: 0,
+            chain: [1, 2],
+            chainArrayPath: [],
+            chainTerminalIndex: 2,
+          },
+        ],
+      },
+    ]);
+  });
+
   it("returns null when the resolved drill-down step is multipart", () => {
     const steps = buildMulticallSingleShotSearchDrillDownActionSteps();
     const multipartDrill = steps.map((step, i) =>
