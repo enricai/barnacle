@@ -5123,23 +5123,50 @@ function collectRequestStringValues(capture: Capture): Set<string> {
 }
 
 /**
- * Finds the ordered list of an array item's string/numeric field names whose
+ * Yields every string/numeric leaf reachable from `item` by walking nested
+ * plain objects only (not arrays — a join key is a scalar field of the item
+ * or one of its nested objects, never an element drawn from a nested array),
+ * paired with its dot-separated path from `item`'s root. A bare top-level
+ * field yields a single-segment path (e.g. `["sku"]`), matching every
+ * existing joinFields entry's shape unchanged; a field nested inside an
+ * object (e.g. `{ identifiers: { sku } }`) yields `["identifiers", "sku"]`.
+ */
+function* walkItemFieldPaths(
+  item: Record<string, unknown>,
+  path: string[] = []
+): Generator<{ path: string[]; value: unknown }, void, unknown> {
+  for (const [k, v] of Object.entries(item)) {
+    const childPath = [...path, k];
+    if (v !== null && typeof v === "object" && !Array.isArray(v)) {
+      yield* walkItemFieldPaths(v as Record<string, unknown>, childPath);
+      continue;
+    }
+    yield { path: childPath, value: v };
+  }
+}
+
+/**
+ * Finds the ordered list of an array item's string/numeric field paths whose
  * values are threaded into `drillCapture`'s outbound request — the join key a
- * dependent drill-down call was built from. Field order follows the item's
- * own key order, so a composite join (e.g. `accountId` + `region`) comes
- * out in the same order the primary response declares them, not sorted.
- * Returns `[]` when no field of the item threads into the request at all.
+ * dependent drill-down call was built from. Each entry is a dot-separated
+ * path (see {@link readValueAtPath} / {@link pathToAccessor}), so a bare
+ * top-level field stays a single segment (e.g. `"sku"`) and a field nested
+ * inside an object becomes e.g. `"identifiers.sku"`. Field order follows the
+ * item's own key order (nested objects walked depth-first as encountered),
+ * so a composite join (e.g. `accountId` + `region`) comes out in the same
+ * order the primary response declares them, not sorted. Returns `[]` when no
+ * field of the item threads into the request at all.
  */
 function findThreadedJoinFields(item: Record<string, unknown>, drillCapture: Capture): string[] {
   const requestValues = collectRequestStringValues(drillCapture);
   if (requestValues.size === 0) return [];
-  return Object.entries(item)
+  return [...walkItemFieldPaths(item)]
     .filter(
-      ([, v]) =>
+      ({ value: v }) =>
         (typeof v === "string" && v.length > 0 && requestValues.has(v)) ||
         (typeof v === "number" && requestValues.has(String(v)))
     )
-    .map(([k]) => k);
+    .map(({ path }) => path.join("."));
 }
 
 /** Every string and numeric leaf value present anywhere in a response body —
