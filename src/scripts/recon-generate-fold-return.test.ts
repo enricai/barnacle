@@ -14,6 +14,7 @@ import {
   buildMulticallSingleShotSearchDrillDownActionSteps,
   buildMulticallSingleShotSearchDrillDownMultiMatchActionSteps,
   buildMulticallSingleShotSearchDrillDownTypeMismatchJoinActionSteps,
+  buildMulticallSingleShotSearchHeuristicAndSpecTwoTargetActionSteps,
   buildStep,
   type MulticallFixtureStep,
 } from "@/scripts/recon-generate-multicall-fixture";
@@ -497,6 +498,56 @@ describe("resolveFoldPlan", () => {
     expect(merged).toHaveLength(1);
     expect(merged[0]?.primaryArrayPath).toEqual(["results"]);
     expect(merged[0]?.targets.map((target) => target.drillStepIndex).sort()).toEqual([1, 2]);
+  });
+
+  it("merges a spec-declared target onto the same primary the heuristic already resolved", () => {
+    const steps = buildMulticallSingleShotSearchHeuristicAndSpecTwoTargetActionSteps();
+
+    // The heuristic resolves the body-threaded pricing drill-down on its
+    // own; the header-threaded stock drill-down is invisible to it.
+    const heuristicOnly = resolveFoldPlan(steps);
+    expect(heuristicOnly).toHaveLength(1);
+    expect(heuristicOnly[0]?.targets).toEqual([
+      {
+        joinFields: ["sku"],
+        drillStepIndex: 1,
+        drillArrayPath: ["prices"],
+        primaryMatchedItemIndex: 0,
+        chain: [1],
+        chainArrayPath: ["prices"],
+        chainTerminalIndex: 1,
+      },
+    ]);
+
+    const merged = resolveFoldPlan(steps, {
+      endpointPattern: "/catalog/stock/",
+      resultsPath: "results",
+      joinFields: ["itemId"],
+    });
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.primaryStepIndex).toBe(0);
+    expect(merged[0]?.primaryArrayPath).toEqual(["results"]);
+    expect(merged[0]?.targets).toEqual([
+      {
+        joinFields: ["sku"],
+        drillStepIndex: 1,
+        drillArrayPath: ["prices"],
+        primaryMatchedItemIndex: 0,
+        chain: [1],
+        chainArrayPath: ["prices"],
+        chainTerminalIndex: 1,
+      },
+      {
+        joinFields: ["itemId"],
+        drillStepIndex: 2,
+        drillArrayPath: ["stock"],
+        primaryMatchedItemIndex: 0,
+        chain: [2],
+        chainArrayPath: ["stock"],
+        chainTerminalIndex: 2,
+      },
+    ]);
   });
 
   it("does not duplicate a target when the spec re-declares the same drillStepIndex the heuristic already found", () => {
