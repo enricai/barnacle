@@ -126,6 +126,38 @@ function buildHeaderThreadedNonFirstItemDrillDownActionSteps(): MulticallFixture
   ];
 }
 
+/** A primary `results[]` array with TWO independent drill-downs: the first
+ * (`/catalog/pricing/`) threads its join value into the request body, so
+ * the structural heuristic resolves it on its own; the second
+ * (`/catalog/inventory/`) carries its join value only in a header the
+ * heuristic never inspects, so only a `foldReturn` spec naming it can
+ * resolve it. Isolates the SAME-primary merge: the heuristic's plan and the
+ * spec's plan must union onto one `targets` array, not OR against each
+ * other. */
+function buildPartiallyThreadedTwoDrillDownActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: "https://api.example.com/catalog/search/",
+      requestPostData: '{"page":1}',
+      responseBody: { results: [{ sku: "sku-a" }, { sku: "sku-b" }] },
+      timestamp: "2024-04-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: "https://api.example.com/catalog/pricing/",
+      requestPostData: '{"sku":"sku-a"}',
+      responseBody: { prices: [{ sku: "sku-a", amount: 19.99 }] },
+      timestamp: "2024-04-01T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: "https://api.example.com/catalog/inventory/",
+      requestPostData: '{"lookup":true}',
+      responseBody: { stock: [{ sku: "sku-a", quantity: 7 }] },
+      timestamp: "2024-04-01T00:00:02Z",
+      requestHeaders: { "Content-Type": "application/json", "X-Item-Sku": "sku-a" },
+    }),
+  ];
+}
+
 /** Same header-threaded join shape, except the header carries a value that
  * matches no primary item at all — the fixture for the fails-closed case:
  * `buildFoldPlanFromSpec` must return `null` rather than guess index 0. */
@@ -444,6 +476,41 @@ describe("resolveFoldPlan", () => {
 
   it("returns null when no spec is given and the heuristic finds nothing", () => {
     expect(resolveFoldPlan(buildMulticallHeterogeneousActionSteps())).toEqual([]);
+  });
+
+  it("merges a spec-declared drill-down target onto the heuristic's plan for the same primary", () => {
+    const steps = buildPartiallyThreadedTwoDrillDownActionSteps();
+    const heuristicOnly = resolveFoldPlan(steps);
+
+    // The heuristic resolves only the body-threaded pricing drill-down on
+    // its own — the header-threaded inventory drill-down is invisible to it.
+    expect(heuristicOnly).toHaveLength(1);
+    expect(heuristicOnly[0]?.targets).toHaveLength(1);
+    expect(heuristicOnly[0]?.targets[0]?.drillStepIndex).toBe(1);
+
+    const merged = resolveFoldPlan(steps, {
+      endpointPattern: "/catalog/inventory/",
+      resultsPath: "results",
+      joinFields: ["sku"],
+    });
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.primaryArrayPath).toEqual(["results"]);
+    expect(merged[0]?.targets.map((target) => target.drillStepIndex).sort()).toEqual([1, 2]);
+  });
+
+  it("does not duplicate a target when the spec re-declares the same drillStepIndex the heuristic already found", () => {
+    const steps = buildPartiallyThreadedTwoDrillDownActionSteps();
+
+    const merged = resolveFoldPlan(steps, {
+      endpointPattern: "/catalog/pricing/",
+      resultsPath: "results",
+      joinFields: ["sku"],
+    });
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.targets).toHaveLength(1);
+    expect(merged[0]?.targets[0]?.drillStepIndex).toBe(1);
   });
 
   it("returns null when the spec's endpointPattern matches no strictly-later action", () => {

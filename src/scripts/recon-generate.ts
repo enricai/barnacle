@@ -5476,6 +5476,39 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
 }
 
 /**
+ * Unions a flow-declared `foldReturn` spec's drill-down target into the
+ * structurally-detected plan for the SAME primary array (matched by
+ * `primaryStepIndex` and `primaryArrayPath`), so a spec declaring an
+ * independent target the heuristic missed is not silently discarded just
+ * because the heuristic already resolved something for that primary. A
+ * spec naming a different primary array is left alone, per
+ * {@link resolveFoldPlan}'s documented behavior. A spec re-declaring a
+ * `drillStepIndex` the heuristic already found is skipped, not duplicated.
+ */
+function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
+  structuralPlans: readonly FoldPlan[],
+  actions: readonly T[],
+  foldReturnSpec: FoldReturnSpec | null
+): FoldPlan[] {
+  if (foldReturnSpec === null) return [...structuralPlans];
+  const specPlan = buildFoldPlanFromSpec(actions, foldReturnSpec);
+  if (specPlan === null) return [...structuralPlans];
+  return structuralPlans.map((plan) => {
+    if (
+      plan.primaryStepIndex !== specPlan.primaryStepIndex ||
+      JSON.stringify(plan.primaryArrayPath) !== JSON.stringify(specPlan.primaryArrayPath)
+    ) {
+      return plan;
+    }
+    const existingDrillStepIndexes = new Set(plan.targets.map((target) => target.drillStepIndex));
+    const newTargets = specPlan.targets.filter(
+      (target) => !existingDrillStepIndexes.has(target.drillStepIndex)
+    );
+    return newTargets.length === 0 ? plan : { ...plan, targets: [...plan.targets, ...newTargets] };
+  });
+}
+
+/**
  * The single fold-plan entry point: {@link detectDrillDownFoldPlan}'s
  * structural heuristic first, falling back to a flow-declared `foldReturn`
  * spec when the heuristic finds nothing. `emitMultiStepExecuteHttp` and
@@ -5506,7 +5539,7 @@ export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boole
   const structuralPlans = detectDrillDownFoldPlan(actions);
   const plans =
     structuralPlans.length > 0
-      ? structuralPlans
+      ? mergeSpecPlanOntoSamePrimary(structuralPlans, actions, foldReturnSpec)
       : ((): FoldPlan[] => {
           if (foldReturnSpec === null) return [];
           const specPlan = buildFoldPlanFromSpec(actions, foldReturnSpec);
