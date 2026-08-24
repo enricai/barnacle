@@ -314,4 +314,63 @@ describe("recon-generate — G1 shape-inference target agrees with the return ta
       ],
     });
   });
+
+  it("merges two fold plans over the SAME endpoint (differing only by query string) instead of one clobbering the other", () => {
+    // r0/r2 both hit /products/search — endpointKey strips the query string,
+    // so they share a key ("products") once folded, but each threads a
+    // DIFFERENT drillStepIndex (r1 vs r3) into a different item, so
+    // detectDrillDownFoldPlan legitimately resolves two separate FoldPlans
+    // rather than collapsing them into one re-queried occurrence.
+    const sameEndpointTwicePlansSteps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/products/search?page=1",
+        requestPostData: JSON.stringify({ page: 1 }),
+        responseBody: {
+          products: [
+            { productId: "p1", name: "Widget" },
+            { productId: "p2", name: "Gadget" },
+          ],
+        },
+        timestamp: "2024-09-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/products/p1/reviews",
+        requestPostData: null,
+        responseBody: { reviews: [{ productId: "p1", rating: 5 }] },
+        timestamp: "2024-09-01T00:00:01Z",
+      }),
+      buildStep("r2", {
+        url: "https://api.example.com/products/search?page=2",
+        requestPostData: JSON.stringify({ page: 2 }),
+        responseBody: {
+          products: [
+            { productId: "p3", name: "Sprocket" },
+            { productId: "p4", name: "Cog" },
+          ],
+        },
+        timestamp: "2024-09-01T00:00:02Z",
+      }),
+      buildStep("r3", {
+        url: "https://api.example.com/products/p3/reviews",
+        requestPostData: null,
+        responseBody: { reviews: [{ productId: "p3", rating: 4 }] },
+        timestamp: "2024-09-01T00:00:03Z",
+      }),
+    ];
+
+    const effectiveResponseBody = selectEffectiveResponseBody(
+      true,
+      sameEndpointTwicePlansSteps,
+      null
+    );
+
+    const productsArray = (effectiveResponseBody as { products: unknown[] }).products;
+    expect(productsArray).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ productId: "p1", rating: 5 }),
+        expect.objectContaining({ productId: "p3", rating: 4 }),
+      ])
+    );
+    expect(productsArray).toHaveLength(4);
+  });
 });
