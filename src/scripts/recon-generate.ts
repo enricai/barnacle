@@ -5821,10 +5821,15 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
  * structurally-detected plan for the SAME primary array (matched by
  * `primaryStepIndex` and `primaryArrayPath`), so a spec declaring an
  * independent target the heuristic missed is not silently discarded just
- * because the heuristic already resolved something for that primary. A
- * spec naming a different primary array is left alone, per
- * {@link resolveFoldPlan}'s documented behavior. A spec re-declaring a
- * `drillStepIndex` the heuristic already found is skipped, not duplicated.
+ * because the heuristic already resolved something for that primary. A spec
+ * whose own primary/drill pair is entirely independent of every structural
+ * plan — its `primaryStepIndex` and its target chains touch no index any
+ * structural plan already consumes — is appended as a brand-new plan
+ * instead. Only a spec whose primary step is itself already consumed by an
+ * unrelated structural plan's own chain (not its own primary) is left alone,
+ * to avoid folding onto a step that plan already depends on. A spec
+ * re-declaring a `drillStepIndex` the heuristic already found (for the SAME
+ * primary) is skipped, not duplicated.
  */
 function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
   structuralPlans: readonly FoldPlan[],
@@ -5834,19 +5839,36 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
   if (foldReturnSpec === null) return [...structuralPlans];
   const specPlan = buildFoldPlanFromSpec(actions, foldReturnSpec);
   if (specPlan === null) return [...structuralPlans];
-  return structuralPlans.map((plan) => {
-    if (
-      plan.primaryStepIndex !== specPlan.primaryStepIndex ||
-      JSON.stringify(plan.primaryArrayPath) !== JSON.stringify(specPlan.primaryArrayPath)
-    ) {
-      return plan;
+  const samePrimaryPlan = structuralPlans.find(
+    (plan) =>
+      plan.primaryStepIndex === specPlan.primaryStepIndex &&
+      JSON.stringify(plan.primaryArrayPath) === JSON.stringify(specPlan.primaryArrayPath)
+  );
+  if (samePrimaryPlan !== undefined) {
+    return structuralPlans.map((plan) => {
+      if (plan !== samePrimaryPlan) return plan;
+      const existingDrillStepIndexes = new Set(plan.targets.map((target) => target.drillStepIndex));
+      const newTargets = specPlan.targets.filter(
+        (target) => !existingDrillStepIndexes.has(target.drillStepIndex)
+      );
+      return newTargets.length === 0
+        ? plan
+        : { ...plan, targets: [...plan.targets, ...newTargets] };
+    });
+  }
+  const consumedIndices = new Set<number>();
+  for (const plan of structuralPlans) {
+    consumedIndices.add(plan.primaryStepIndex);
+    for (const target of plan.targets) {
+      for (const chainIndex of target.chain) consumedIndices.add(chainIndex);
     }
-    const existingDrillStepIndexes = new Set(plan.targets.map((target) => target.drillStepIndex));
-    const newTargets = specPlan.targets.filter(
-      (target) => !existingDrillStepIndexes.has(target.drillStepIndex)
+  }
+  const specConsumesOnlyItsOwnIndices =
+    !consumedIndices.has(specPlan.primaryStepIndex) &&
+    specPlan.targets.every((target) =>
+      target.chain.every((chainIndex) => !consumedIndices.has(chainIndex))
     );
-    return newTargets.length === 0 ? plan : { ...plan, targets: [...plan.targets, ...newTargets] };
-  });
+  return specConsumesOnlyItsOwnIndices ? [...structuralPlans, specPlan] : [...structuralPlans];
 }
 
 /**

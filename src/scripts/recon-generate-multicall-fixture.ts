@@ -442,6 +442,54 @@ export function buildMulticallTwoIndependentPrimariesActionSteps(): MulticallFix
   ];
 }
 
+/**
+ * Same disjoint two-pair shape as
+ * {@link buildMulticallTwoIndependentPrimariesActionSteps}, except the SECOND
+ * pair's join value threads only through a request HEADER
+ * (`collectRequestStringValues` never scans headers), so
+ * `detectDrillDownFoldPlan`'s structural heuristic resolves only the FIRST
+ * pair (r0/r1) on its own; the second pair (r2/r3) is only reachable via a
+ * flow-declared `foldReturn` spec naming `vendors` as its `resultsPath`.
+ * Since the second pair's primary/drill steps (2, 3) are entirely outside the
+ * first pair's own consumed indices ({@link buildMulticallTwoIndependentPrimariesActionSteps}'s
+ * r0/r1), a correctly-behaving `resolveFoldPlan` must APPEND the spec's plan
+ * as a second, independent entry rather than discarding it just because its
+ * primary differs from the one the heuristic already resolved.
+ */
+export function buildMulticallTwoIndependentPrimariesSecondHeaderThreadedActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        products: [{ productId: "p1" }, { productId: "p2" }],
+      },
+      timestamp: "2024-05-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_PRICING_URL,
+      requestPostData: '{"productId":"p1"}',
+      responseBody: { reviews: [{ productId: "p1", rating: 5 }] },
+      timestamp: "2024-05-01T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: CATALOG_VENDORS_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        vendors: [{ vendorId: "v1" }, { vendorId: "v2" }],
+      },
+      timestamp: "2024-05-01T00:00:02Z",
+    }),
+    buildStep("r3", {
+      url: CATALOG_VENDOR_CONTRACTS_URL,
+      requestPostData: '{"lookup":true}',
+      responseBody: { contracts: [{ vendorId: "v1", contractId: "c1" }] },
+      timestamp: "2024-05-01T00:00:03Z",
+      requestHeaders: { "Content-Type": "application/json", "X-Vendor-Id": "v1" },
+    }),
+  ];
+}
+
 const CATALOG_STOCK_URL = "https://api.example.com/catalog/stock/";
 
 /** A single-shot search drilled by two INDEPENDENT later calls whose join
