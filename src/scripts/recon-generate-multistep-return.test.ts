@@ -111,14 +111,16 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     expect(body).not.toContain("accountId=7");
   });
 
-  it("refuses to emit when a later step threads a produced value out of the fold drill step's own response", () => {
+  it("folds every chained per-item step into the same loop instead of throwing when a later step threads the drill step's own response", () => {
     // r4 (available-units/) is the fold plan's drill step. Its own
     // `units[0].unitId` is declared as a produce here — the same way a
     // chained call's threaded id normally reaches a later step — and step 5
-    // threads it. `const r4` (and any produce read off it) is declared
-    // inside the fold loop's block scope, so a reference from step 5
-    // (outside that loop) can't resolve — emitting that would be broken
-    // TypeScript, so this must fail loudly at generation time instead.
+    // threads it, so detectDrillDownFoldPlan's computeFoldChain extends the
+    // plan's chain to [r4, r5]: both calls now render inside the same
+    // per-item loop, r5's threaded `unitId` resolved from a loop-scoped
+    // local (not the outer function scope the old throw refused to emit
+    // into), and the LAST chain step's (r5's) response is what gets folded
+    // onto the primary item.
     const withDrillDown = buildMulticallHeterogeneousActionStepsWithDrillDown();
     const drillStep = withDrillDown[withDrillDown.length - 1]!;
     const steps: MulticallFixtureStep[] = [
@@ -137,7 +139,16 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
       }),
     ];
 
-    expect(() => emit(steps)).toThrow(/fold plan drill step r4 is referenced outside/);
+    const body = emit(steps);
+
+    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain("const r4 = (await httpClient(");
+    expect(body).toContain("const r5 = (await httpClient(");
+    expect(body).toContain("const unitId = (r4 as { units: { \"0\": { unitId: string } } })");
+    expect(body).toContain("const foldMatches = (r5 as");
+    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
+    // r5 must not be re-issued a second time outside the fold loop.
+    expect(body.match(/const r5 = \(await httpClient\(/g)).toHaveLength(1);
   });
 
   it("still returns the search step when it is ALSO the terminal call", () => {
