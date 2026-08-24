@@ -451,6 +451,49 @@ export function buildMulticallSingleShotSearchHeuristicAndSpecTwoTargetActionSte
   ];
 }
 
+/**
+ * TWO occurrences of the SAME primary endpoint (same origin+pathname,
+ * differing only by query string), each independently drilling a
+ * DIFFERENT item into a DIFFERENT dependent call — unlike
+ * {@link buildMulticallSingleShotSearchDrillDownRequeriedPrimaryOverlapActionSteps}
+ * (whose two occurrences thread the SAME drill), these thread two distinct
+ * drills, so {@link detectDrillDownFoldPlan}'s freshest-wins collapse never
+ * applies and both occurrences resolve as their own independent
+ * {@link FoldPlan}. Both plans' primary responses share the SAME top-level
+ * array key (`results`) — the exact shape a plain `{ ...a, ...b }`
+ * object-spread silently collapses to the later plan's array alone, since
+ * the emitted return statement folds every resolved plan's own primary var
+ * together into the runtime response.
+ */
+export function buildMulticallTwoOccurrencesSamePrimaryDistinctDrillsActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: `${CATALOG_SEARCH_URL}?q=widgets`,
+      requestPostData: '{"page":1}',
+      responseBody: { results: [{ sku: "sku-a" }] },
+      timestamp: "2025-01-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_PRICING_URL,
+      requestPostData: '{"sku":"sku-a"}',
+      responseBody: { prices: [{ sku: "sku-a", amount: 19.99 }] },
+      timestamp: "2025-01-01T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: `${CATALOG_SEARCH_URL}?q=gadgets`,
+      requestPostData: '{"page":1}',
+      responseBody: { results: [{ sku: "sku-c" }] },
+      timestamp: "2025-01-01T00:00:02Z",
+    }),
+    buildStep("r3", {
+      url: CATALOG_INVENTORY_URL,
+      requestPostData: '{"sku":"sku-c"}',
+      responseBody: { stock: [{ sku: "sku-c", qty: 4 }] },
+      timestamp: "2025-01-01T00:00:03Z",
+    }),
+  ];
+}
+
 const CATALOG_SECTIONS_URL = "https://api.example.com/catalog/sections";
 const CATALOG_ENTRY_DETAIL_URL = "https://api.example.com/catalog/entries/e2/details";
 
