@@ -35,9 +35,9 @@ describe("detectDrillDownFoldPlan", () => {
 
     expect(plan).not.toBeNull();
     expect(plan?.primaryArrayPath).toEqual(["products"]);
-    expect(plan?.joinFields).toEqual(["productId"]);
-    expect(plan?.drillStepIndex).toBe(4);
-    expect(plan?.drillArrayPath).toEqual(["units"]);
+    expect(plan?.targets[0]?.joinFields).toEqual(["productId"]);
+    expect(plan?.targets[0]?.drillStepIndex).toBe(4);
+    expect(plan?.targets[0]?.drillArrayPath).toEqual(["units"]);
     // Primary must be one of the requeried available-products/ steps (r2/r3),
     // not the drill-down step itself.
     expect(plan && [2, 3]).toContain(plan?.primaryStepIndex);
@@ -74,9 +74,9 @@ describe("detectDrillDownFoldPlan", () => {
     expect(plan).not.toBeNull();
     expect(plan?.primaryStepIndex).toBe(0);
     expect(plan?.primaryArrayPath).toEqual(["results"]);
-    expect(plan?.joinFields).toEqual(["sku"]);
-    expect(plan?.drillStepIndex).toBe(1);
-    expect(plan?.drillArrayPath).toEqual(["prices"]);
+    expect(plan?.targets[0]?.joinFields).toEqual(["sku"]);
+    expect(plan?.targets[0]?.drillStepIndex).toBe(1);
+    expect(plan?.targets[0]?.drillArrayPath).toEqual(["prices"]);
   });
 
   it("resolves a fold plan and records the matched item's index when the drilled item is not first", () => {
@@ -85,10 +85,10 @@ describe("detectDrillDownFoldPlan", () => {
     expect(plan).not.toBeNull();
     expect(plan?.primaryStepIndex).toBe(0);
     expect(plan?.primaryArrayPath).toEqual(["results"]);
-    expect(plan?.joinFields).toEqual(["itemId"]);
-    expect(plan?.drillStepIndex).toBe(1);
-    expect(plan?.drillArrayPath).toEqual(["prices"]);
-    expect(plan?.primaryMatchedItemIndex).toBe(1);
+    expect(plan?.targets[0]?.joinFields).toEqual(["itemId"]);
+    expect(plan?.targets[0]?.drillStepIndex).toBe(1);
+    expect(plan?.targets[0]?.drillArrayPath).toEqual(["prices"]);
+    expect(plan?.targets[0]?.primaryMatchedItemIndex).toBe(1);
   });
 
   it("resolves a fold plan when the sole captured drill-down call threads the second (not first) item's sku", () => {
@@ -97,9 +97,9 @@ describe("detectDrillDownFoldPlan", () => {
     expect(plan).not.toBeNull();
     expect(plan?.primaryStepIndex).toBe(0);
     expect(plan?.primaryArrayPath).toEqual(["results"]);
-    expect(plan?.joinFields).toEqual(["sku"]);
-    expect(plan?.drillStepIndex).toBe(1);
-    expect(plan?.drillArrayPath).toEqual(["prices"]);
+    expect(plan?.targets[0]?.joinFields).toEqual(["sku"]);
+    expect(plan?.targets[0]?.drillStepIndex).toBe(1);
+    expect(plan?.targets[0]?.drillArrayPath).toEqual(["prices"]);
   });
 
   it("resolves a fold plan with a composite join key when the sole captured drill-down call threads the second (not first) item's key", () => {
@@ -110,17 +110,17 @@ describe("detectDrillDownFoldPlan", () => {
     expect(plan).not.toBeNull();
     expect(plan?.primaryStepIndex).toBe(0);
     expect(plan?.primaryArrayPath).toEqual(["accounts"]);
-    expect(plan?.joinFields).toEqual(["region", "accountId"]);
-    expect(plan?.drillStepIndex).toBe(1);
-    expect(plan?.drillArrayPath).toEqual(["transactions"]);
+    expect(plan?.targets[0]?.joinFields).toEqual(["region", "accountId"]);
+    expect(plan?.targets[0]?.drillStepIndex).toBe(1);
+    expect(plan?.targets[0]?.drillArrayPath).toEqual(["transactions"]);
   });
 
   it("resolves a numeric-typed join field threaded via a URL query param", () => {
     const plan = detect(buildMulticallSingleShotSearchDrillDownNumericJoinActionSteps());
 
     expect(plan).not.toBeNull();
-    expect(plan?.joinFields).toEqual(["accountId"]);
-    expect(plan?.drillArrayPath).toEqual(["transactions"]);
+    expect(plan?.targets[0]?.joinFields).toEqual(["accountId"]);
+    expect(plan?.targets[0]?.drillArrayPath).toEqual(["transactions"]);
   });
 
   it("resolves a numeric-typed join field threaded via a JSON body literal", () => {
@@ -142,24 +142,24 @@ describe("detectDrillDownFoldPlan", () => {
     const plan = detect(steps);
 
     expect(plan).not.toBeNull();
-    expect(plan?.joinFields).toEqual(["accountId"]);
-    expect(plan?.drillArrayPath).toEqual(["transactions"]);
+    expect(plan?.targets[0]?.joinFields).toEqual(["accountId"]);
+    expect(plan?.targets[0]?.drillArrayPath).toEqual(["transactions"]);
   });
 
   it("resolves a join field threaded only as a URL path segment, never a query param or body value", () => {
     const plan = detect(buildMulticallSingleShotSearchDrillDownPathThreadedJoinActionSteps());
 
     expect(plan).not.toBeNull();
-    expect(plan?.joinFields).toEqual(["accountId"]);
-    expect(plan?.drillArrayPath).toEqual(["transactions"]);
+    expect(plan?.targets[0]?.joinFields).toEqual(["accountId"]);
+    expect(plan?.targets[0]?.drillArrayPath).toEqual(["transactions"]);
   });
 
   it("resolves a composite join key mixing a string field and a numeric field, in item key order", () => {
     const plan = detect(buildMulticallSingleShotSearchDrillDownCompositeNumericJoinActionSteps());
 
     expect(plan).not.toBeNull();
-    expect(plan?.joinFields).toEqual(["region", "accountId"]);
-    expect(plan?.drillArrayPath).toEqual(["transactions"]);
+    expect(plan?.targets[0]?.joinFields).toEqual(["region", "accountId"]);
+    expect(plan?.targets[0]?.drillArrayPath).toEqual(["transactions"]);
   });
 
   it("resolves the real primary results array over a decoy positioned earlier in key order", () => {
@@ -172,8 +172,8 @@ describe("detectDrillDownFoldPlan", () => {
     expect(plan).not.toBeNull();
     expect(plan?.primaryArrayPath).toEqual(["results"]);
     expect(plan?.primaryArrayPath).not.toEqual(["facets"]);
-    expect(plan?.joinFields).toEqual(["sku"]);
-    expect(plan?.drillArrayPath).toEqual(["prices"]);
+    expect(plan?.targets[0]?.joinFields).toEqual(["sku"]);
+    expect(plan?.targets[0]?.drillArrayPath).toEqual(["prices"]);
   });
 
   it("resolves the real drill-down array over a decoy positioned earlier in key order", () => {
@@ -185,9 +185,9 @@ describe("detectDrillDownFoldPlan", () => {
     // drill-down request, so that's what must be selected instead.
     expect(plan).not.toBeNull();
     expect(plan?.primaryArrayPath).toEqual(["results"]);
-    expect(plan?.joinFields).toEqual(["sku"]);
-    expect(plan?.drillArrayPath).toEqual(["details"]);
-    expect(plan?.drillArrayPath).not.toEqual(["errors"]);
+    expect(plan?.targets[0]?.joinFields).toEqual(["sku"]);
+    expect(plan?.targets[0]?.drillArrayPath).toEqual(["details"]);
+    expect(plan?.targets[0]?.drillArrayPath).not.toEqual(["errors"]);
   });
 
   it("returns null when no candidate array on either side threads a join value into the drill request", () => {
@@ -266,10 +266,10 @@ describe("detectDrillDownFoldPlan — nested grouping array", () => {
     // (see ARRAY_WILDCARD_SEGMENT in recon-generate.ts) instead of freezing
     // whichever group happened to contain the matched item.
     expect(plan?.primaryArrayPath).toEqual(["sections", "*", "entries"]);
-    expect(plan?.joinFields).toEqual(["entryId"]);
-    expect(plan?.drillStepIndex).toBe(1);
-    expect(plan?.drillArrayPath).toEqual(["details"]);
-    expect(plan?.primaryMatchedItemIndex).toBe(1);
+    expect(plan?.targets[0]?.joinFields).toEqual(["entryId"]);
+    expect(plan?.targets[0]?.drillStepIndex).toBe(1);
+    expect(plan?.targets[0]?.drillArrayPath).toEqual(["details"]);
+    expect(plan?.targets[0]?.primaryMatchedItemIndex).toBe(1);
   });
 
   it("resolves primaryMatchedItemIndex as the GLOBAL flattened index across every outer group, not the local index within the one group that matched", () => {
@@ -284,10 +284,10 @@ describe("detectDrillDownFoldPlan — nested grouping array", () => {
     // both groups in outer-array order ([e1, e3, e2, e4]) it is index 2 —
     // freezing the local index (0) or assuming group 0 (as a single-group
     // fixture can never disprove) would land the fold on the wrong item.
-    expect(plan?.primaryMatchedItemIndex).toBe(2);
-    expect(plan?.joinFields).toEqual(["entryId"]);
-    expect(plan?.drillStepIndex).toBe(1);
-    expect(plan?.drillArrayPath).toEqual(["details"]);
+    expect(plan?.targets[0]?.primaryMatchedItemIndex).toBe(2);
+    expect(plan?.targets[0]?.joinFields).toEqual(["entryId"]);
+    expect(plan?.targets[0]?.drillStepIndex).toBe(1);
+    expect(plan?.targets[0]?.drillArrayPath).toEqual(["details"]);
   });
 });
 
@@ -321,17 +321,17 @@ describe("detectDrillDownFoldPlan — chained per-item dependency", () => {
 
     expect(plan).not.toBeNull();
     expect(plan?.primaryStepIndex).toBe(0);
-    expect(plan?.drillStepIndex).toBe(1);
-    expect(plan?.chain).toEqual([1, 2]);
-    expect(plan?.chainArrayPath).toEqual(["entries"]);
+    expect(plan?.targets[0]?.drillStepIndex).toBe(1);
+    expect(plan?.targets[0]?.chain).toEqual([1, 2]);
+    expect(plan?.targets[0]?.chainArrayPath).toEqual(["entries"]);
   });
 
   it("degrades to a single-entry chain when nothing downstream threads a value out of the drill response", () => {
     const plan = detect(buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps());
 
     expect(plan).not.toBeNull();
-    expect(plan?.chain).toEqual([plan?.drillStepIndex]);
-    expect(plan?.chainArrayPath).toEqual(plan?.drillArrayPath);
+    expect(plan?.targets[0]?.chain).toEqual([plan?.targets[0]?.drillStepIndex]);
+    expect(plan?.targets[0]?.chainArrayPath).toEqual(plan?.targets[0]?.drillArrayPath);
   });
 
   it("extends the chain past a drill step that is itself foldable, when a further step also depends on it", () => {
@@ -339,14 +339,14 @@ describe("detectDrillDownFoldPlan — chained per-item dependency", () => {
 
     expect(plan).not.toBeNull();
     expect(plan?.primaryStepIndex).toBe(0);
-    expect(plan?.joinFields).toEqual(["sku"]);
+    expect(plan?.targets[0]?.joinFields).toEqual(["sku"]);
     // r1 (the price lookup) is a valid drill step in isolation — its own
     // `prices[]` is foldable — but r2 (price-history) threads r1's
     // `priceToken`, so the chain must not stop at r1.
-    expect(plan?.drillStepIndex).toBe(1);
-    expect(plan?.drillArrayPath).toEqual(["prices"]);
-    expect(plan?.chain).toEqual([1, 2]);
-    expect(plan?.chainArrayPath).toEqual(["history"]);
+    expect(plan?.targets[0]?.drillStepIndex).toBe(1);
+    expect(plan?.targets[0]?.drillArrayPath).toEqual(["prices"]);
+    expect(plan?.targets[0]?.chain).toEqual([1, 2]);
+    expect(plan?.targets[0]?.chainArrayPath).toEqual(["history"]);
   });
 });
 
@@ -361,8 +361,8 @@ describe("resolveFoldPlan — multipart chain-step disqualification", () => {
     // fold loop re-issues every step in `chain`, not just drillStepIndex.
     const plan = detectDrillDownFoldPlan(steps);
     expect(plan).not.toBeNull();
-    expect(plan?.chain).toEqual([1, 2]);
-    expect(steps[plan!.drillStepIndex]!.isMultipart).toBe(false);
+    expect(plan?.targets[0]?.chain).toEqual([1, 2]);
+    expect(steps[plan!.targets[0]!.drillStepIndex]!.isMultipart).toBe(false);
     expect(steps[2]!.isMultipart).toBe(true);
 
     expect(resolveFoldPlan(steps)).toBeNull();
@@ -388,13 +388,17 @@ describe("resolveFoldPlan — header-threaded join boundary", () => {
     ).toEqual({
       primaryStepIndex: 0,
       primaryArrayPath: ["accounts"],
-      joinFields: ["accountId"],
-      drillStepIndex: 1,
-      drillArrayPath: ["transactions"],
-      primaryMatchedItemIndex: 0,
-      chain: [1],
-      chainArrayPath: ["transactions"],
-      chainTerminalIndex: 1,
+      targets: [
+        {
+          joinFields: ["accountId"],
+          drillStepIndex: 1,
+          drillArrayPath: ["transactions"],
+          primaryMatchedItemIndex: 0,
+          chain: [1],
+          chainArrayPath: ["transactions"],
+          chainTerminalIndex: 1,
+        },
+      ],
     });
   });
 });

@@ -4380,21 +4380,23 @@ export function emitMultiStepExecuteHttp(
   // get the normal single-call treatment this pass gives every other step, or
   // its request would be issued a second time, unconditionally, outside the
   // loop.
-  // Every step in the fold plan's chain (the drill step and every further
-  // step transitively dependent on it — see FoldPlan.chain) is emitted
+  // Every step in a fold target's chain (the drill step and every further
+  // step transitively dependent on it — see FoldTarget.chain) is emitted
   // together as a single per-item loop below, not by this pass's normal
   // per-step produce/response declarations: their responses and produces are
   // block-scoped to that loop and never escape to the rest of the function,
   // so none of them may run through the outer `declaredNames`/produceLines
   // bookkeeping below (that bookkeeping assumes function-scope declarations).
-  const foldChainIndices = new Set(foldPlan ? foldPlan.chain : []);
+  const foldChainIndices = new Set(
+    foldPlan ? foldPlan.targets.flatMap((target) => target.chain) : []
+  );
   for (let i = 0; i < actions.length; i++) {
     const step = actions[i]!;
     const cap = step.capture;
     const r = rendered[i]!;
 
     // The fold plan's drill-down step (and every further step transitively
-    // dependent on it — see FoldPlan.chain) is emitted as a per-item loop
+    // dependent on it — see FoldTarget.chain) is emitted as a per-item loop
     // instead of the single call every other step gets: each chain step
     // re-issues the SAME url/headers/bodyArg/schemaExpr this pass already
     // rendered for it, only with the captured join value(s) swapped for the
@@ -4403,7 +4405,11 @@ export function emitMultiStepExecuteHttp(
     // `${producedName}` templates — see deriveStateVarByValue), then merges
     // the terminal chain step's matched response back onto that item —
     // reusing the per-call render rather than a second HTTP-call emitter.
-    if (foldPlan && i === foldPlan.drillStepIndex) {
+    // Several independent targets can share the same primary step, so this
+    // is matched by drillStepIndex, not just plan membership.
+    const targetIndex = foldPlan ? foldPlan.targets.findIndex((t) => t.drillStepIndex === i) : -1;
+    if (foldPlan && targetIndex !== -1) {
+      const target = foldPlan.targets[targetIndex]!;
       const primaryStep = actions[foldPlan.primaryStepIndex]!;
       // Read at the plan's OWN path rather than re-running the DFS: a
       // flow-declared `resultsPath` (see FoldReturnSpec) can name a different
@@ -4415,14 +4421,22 @@ export function emitMultiStepExecuteHttp(
         primaryStep.capture.responseBody,
         foldPlan.primaryArrayPath
       );
-      const firstItem = primaryItems?.[foldPlan.primaryMatchedItemIndex];
+      const firstItem = primaryItems?.[target.primaryMatchedItemIndex];
       if (!firstItem) {
         throw new Error(
           `emitMultiStepExecuteHttp: fold plan primary step ${primaryStep.varName} no longer resolves an object array at ${foldPlan.primaryArrayPath.join(".")} — the fold plan and this emitter have drifted out of sync`
         );
       }
+      // Each target's per-item loop gets its own suffixed local names so
+      // multiple independent targets folding onto the same primary array can
+      // each emit their own `for` block into the same function scope without
+      // colliding on `foldItems`/`item`/`foldMatches`/`foldMatch`. The
+      // overwhelmingly common single-target case keeps the original
+      // unsuffixed names.
+      const suffix = foldPlan.targets.length > 1 ? String(targetIndex) : "";
+      const itemVar = `item${suffix}`;
       const joinAccessor = (field: string): string =>
-        isValidJsIdentifier(field) ? `item.${field}` : `item[${JSON.stringify(field)}]`;
+        isValidJsIdentifier(field) ? `${itemVar}.${field}` : `${itemVar}[${JSON.stringify(field)}]`;
       // A join field can reach the render either as the raw captured literal
       // (URL query params) or as an already-generic `${payload.<field>}`
       // reference (top-level JSON body keys — see
@@ -4441,7 +4455,7 @@ export function emitMultiStepExecuteHttp(
           replacement
         );
       const parameterize = (text: string): string =>
-        foldPlan.joinFields.reduce((acc, field) => {
+        target.joinFields.reduce((acc, field) => {
           const replacement = `\${${joinAccessor(field)}}`;
           const withAccessorSwapped = acc.split(`\${payload.${field}}`).join(replacement);
           const value = firstItem[field];
@@ -4462,7 +4476,10 @@ export function emitMultiStepExecuteHttp(
         foldPlan.primaryArrayPath
       );
 
-      lines.push(`    const foldItems = ${foldItemsExpr};`, `    for (const item of foldItems) {`);
+      lines.push(
+        `    const foldItems${suffix} = ${foldItemsExpr};`,
+        `    for (const ${itemVar} of foldItems${suffix}) {`
+      );
       // Every chain step's response and produces are block-scoped to this
       // `for` — they never escape to the rest of the function. That is
       // exactly the constraint the previous (now-removed) throw enforced by
@@ -4472,7 +4489,7 @@ export function emitMultiStepExecuteHttp(
       // templates by the pass above, same as it would be for any two
       // sequential non-fold steps) resolves them from this narrower scope.
       const chainDeclared = new Set<string>();
-      for (const chainIndex of foldPlan.chain) {
+      for (const chainIndex of target.chain) {
         const chainStep = actions[chainIndex]!;
         const chainRendered = rendered[chainIndex]!;
         lines.push(
@@ -4501,18 +4518,18 @@ export function emitMultiStepExecuteHttp(
           );
         }
       }
-      const terminalStep = actions[foldPlan.chainTerminalIndex]!;
-      const drillArrType = foldArrayAssertionType(foldPlan.chainArrayPath);
+      const terminalStep = actions[target.chainTerminalIndex]!;
+      const drillArrType = foldArrayAssertionType(target.chainArrayPath);
       const foldMatchesExpr = pathToFoldAccessorExpr(
         `(${terminalStep.varName} as ${drillArrType})`,
-        foldPlan.chainArrayPath
+        target.chainArrayPath
       );
       lines.push(
-        `      const foldMatches = ${foldMatchesExpr};`,
-        `      const foldMatch = foldMatches.find((m) => ${foldPlan.joinFields
+        `      const foldMatches${suffix} = ${foldMatchesExpr};`,
+        `      const foldMatch${suffix} = foldMatches${suffix}.find((m) => ${target.joinFields
           .map((f) => `String(m[${JSON.stringify(f)}]) === String(${joinAccessor(f)})`)
-          .join(" && ")}) ?? foldMatches[0];`,
-        `      Object.assign(item, foldMatch ?? {});`,
+          .join(" && ")}) ?? foldMatches${suffix}[0];`,
+        `      Object.assign(${itemVar}, foldMatch${suffix} ?? {});`,
         `    }`,
         ""
       );
@@ -5091,7 +5108,9 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
       // thread from that SAME array — a second, unrelated array on the same
       // primary response is not a valid target source for this plan.
       const candidatePool = primaryArrayPath
-        ? primaryCandidates.filter((c) => JSON.stringify(c.path) === JSON.stringify(primaryArrayPath))
+        ? primaryCandidates.filter(
+            (c) => JSON.stringify(c.path) === JSON.stringify(primaryArrayPath)
+          )
         : primaryCandidates;
       let primaryArray: { path: string[]; items: Record<string, unknown>[] } | undefined;
       let primaryMatchedItemIndex = -1;
@@ -5390,13 +5409,17 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
       return {
         primaryStepIndex,
         primaryArrayPath,
-        joinFields: spec.joinFields,
-        drillStepIndex,
-        drillArrayPath,
-        primaryMatchedItemIndex,
-        chain,
-        chainArrayPath,
-        chainTerminalIndex,
+        targets: [
+          {
+            joinFields: spec.joinFields,
+            drillStepIndex,
+            drillArrayPath,
+            primaryMatchedItemIndex,
+            chain,
+            chainArrayPath,
+            chainTerminalIndex,
+          },
+        ],
       };
     }
   }
@@ -5426,7 +5449,10 @@ export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boole
     detectDrillDownFoldPlan(actions) ??
     (foldReturnSpec === null ? null : buildFoldPlanFromSpec(actions, foldReturnSpec));
   if (plan === null) return null;
-  return plan.chain.some((chainIndex) => actions[chainIndex]!.isMultipart) ? null : plan;
+  const disqualified = plan.targets.some((target) =>
+    target.chain.some((chainIndex) => actions[chainIndex]!.isMultipart)
+  );
+  return disqualified ? null : plan;
 }
 
 /** Rebuilds `value` with every occurrence of `target` (compared by object
@@ -5474,16 +5500,18 @@ function foldResponseBodyForShapeInference<T extends { capture: Capture }>(
   foldPlan: FoldPlan
 ): unknown {
   const primaryBody = actionSteps[foldPlan.primaryStepIndex]!.capture.responseBody;
-  const drillBody = actionSteps[foldPlan.chainTerminalIndex]!.capture.responseBody;
-  const primaryItems = objectItemsAtPath(primaryBody, foldPlan.primaryArrayPath);
-  const drillItems = objectItemsAtPath(drillBody, foldPlan.chainArrayPath);
-  const matchedItem = primaryItems?.[foldPlan.primaryMatchedItemIndex];
-  const drillMatch =
-    drillItems?.find((d) =>
-      foldPlan.joinFields.every((f) => String(d[f]) === String(matchedItem?.[f]))
-    ) ?? drillItems?.[0];
-  if (!primaryItems || !matchedItem || !drillMatch) return primaryBody;
-  return replaceByReference(primaryBody, matchedItem, { ...matchedItem, ...drillMatch });
+  return foldPlan.targets.reduce<unknown>((body, target) => {
+    const drillBody = actionSteps[target.chainTerminalIndex]!.capture.responseBody;
+    const primaryItems = objectItemsAtPath(body, foldPlan.primaryArrayPath);
+    const drillItems = objectItemsAtPath(drillBody, target.chainArrayPath);
+    const matchedItem = primaryItems?.[target.primaryMatchedItemIndex];
+    const drillMatch =
+      drillItems?.find((d) =>
+        target.joinFields.every((f) => String(d[f]) === String(matchedItem?.[f]))
+      ) ?? drillItems?.[0];
+    if (!primaryItems || !matchedItem || !drillMatch) return body;
+    return replaceByReference(body, matchedItem, { ...matchedItem, ...drillMatch });
+  }, primaryBody);
 }
 
 /** Bounded-paging signal detected from a primary read operation's own

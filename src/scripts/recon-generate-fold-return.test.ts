@@ -374,13 +374,17 @@ describe("resolveFoldPlan", () => {
     expect(resolveFoldPlan(steps, SINGLE_SHOT_SPEC)).toEqual({
       primaryStepIndex: 0,
       primaryArrayPath: ["results"],
-      joinFields: ["sku"],
-      drillStepIndex: 1,
-      drillArrayPath: ["prices"],
-      primaryMatchedItemIndex: 0,
-      chain: [1],
-      chainArrayPath: ["prices"],
-      chainTerminalIndex: 1,
+      targets: [
+        {
+          joinFields: ["sku"],
+          drillStepIndex: 1,
+          drillArrayPath: ["prices"],
+          primaryMatchedItemIndex: 0,
+          chain: [1],
+          chainArrayPath: ["prices"],
+          chainTerminalIndex: 1,
+        },
+      ],
     });
   });
 
@@ -403,13 +407,17 @@ describe("resolveFoldPlan", () => {
     expect(resolveFoldPlan(steps)).toEqual({
       primaryStepIndex: 0,
       primaryArrayPath: ["results"],
-      joinFields: ["sku"],
-      drillStepIndex: 1,
-      drillArrayPath: ["prices"],
-      primaryMatchedItemIndex: 0,
-      chain: [1],
-      chainArrayPath: ["prices"],
-      chainTerminalIndex: 1,
+      targets: [
+        {
+          joinFields: ["sku"],
+          drillStepIndex: 1,
+          drillArrayPath: ["prices"],
+          primaryMatchedItemIndex: 0,
+          chain: [1],
+          chainArrayPath: ["prices"],
+          chainTerminalIndex: 1,
+        },
+      ],
     });
   });
 
@@ -458,13 +466,17 @@ describe("resolveFoldPlan", () => {
     expect(resolveFoldPlan(steps, COMPOSITE_SPEC)).toEqual({
       primaryStepIndex: 0,
       primaryArrayPath: ["results"],
-      joinFields: ["accountId", "region"],
-      drillStepIndex: 1,
-      drillArrayPath: ["details"],
-      primaryMatchedItemIndex: 0,
-      chain: [1],
-      chainArrayPath: ["details"],
-      chainTerminalIndex: 1,
+      targets: [
+        {
+          joinFields: ["accountId", "region"],
+          drillStepIndex: 1,
+          drillArrayPath: ["details"],
+          primaryMatchedItemIndex: 0,
+          chain: [1],
+          chainArrayPath: ["details"],
+          chainTerminalIndex: 1,
+        },
+      ],
     });
   });
 
@@ -478,13 +490,17 @@ describe("resolveFoldPlan", () => {
     expect(resolveFoldPlan(steps)).toEqual({
       primaryStepIndex: 0,
       primaryArrayPath: ["results"],
-      joinFields: ["sku"],
-      drillStepIndex: 1,
-      drillArrayPath: ["details"],
-      primaryMatchedItemIndex: 0,
-      chain: [1],
-      chainArrayPath: ["details"],
-      chainTerminalIndex: 1,
+      targets: [
+        {
+          joinFields: ["sku"],
+          drillStepIndex: 1,
+          drillArrayPath: ["details"],
+          primaryMatchedItemIndex: 0,
+          chain: [1],
+          chainArrayPath: ["details"],
+          chainTerminalIndex: 1,
+        },
+      ],
     });
   });
 
@@ -498,7 +514,7 @@ describe("resolveFoldPlan", () => {
 
     // Preserves today's behavior for specs that don't declare
     // drillResultsPath: the DFS first match (the decoy `errors[]`) is used.
-    expect(resolveFoldPlan(steps, spec)?.drillArrayPath).toEqual(["errors"]);
+    expect(resolveFoldPlan(steps, spec)?.targets[0]?.drillArrayPath).toEqual(["errors"]);
   });
 
   it("returns null when the declared drillResultsPath resolves to no non-empty object array", () => {
@@ -522,13 +538,17 @@ describe("resolveFoldPlan", () => {
     expect(resolveFoldPlan(steps, SINGLE_SHOT_SPEC)).toEqual({
       primaryStepIndex: 0,
       primaryArrayPath: ["results"],
-      joinFields: ["sku"],
-      drillStepIndex: 1,
-      drillArrayPath: ["prices"],
-      primaryMatchedItemIndex: 1,
-      chain: [1],
-      chainArrayPath: ["prices"],
-      chainTerminalIndex: 1,
+      targets: [
+        {
+          joinFields: ["sku"],
+          drillStepIndex: 1,
+          drillArrayPath: ["prices"],
+          primaryMatchedItemIndex: 1,
+          chain: [1],
+          chainArrayPath: ["prices"],
+          chainTerminalIndex: 1,
+        },
+      ],
     });
   });
 
@@ -823,9 +843,9 @@ describe("grouped/nested primary fold — detection, schema inference, and codeg
     );
     expect(plan).not.toBeNull();
     expect(plan?.primaryArrayPath).toEqual(["sections", "*", "entries"]);
-    expect(plan?.joinFields).toEqual(["entryId"]);
-    expect(plan?.drillArrayPath).toEqual(["details"]);
-    expect(plan?.primaryMatchedItemIndex).toBe(1);
+    expect(plan?.targets[0]?.joinFields).toEqual(["entryId"]);
+    expect(plan?.targets[0]?.drillArrayPath).toEqual(["details"]);
+    expect(plan?.targets[0]?.primaryMatchedItemIndex).toBe(1);
 
     // 2. selectEffectiveResponseBody must fold the drill-down's field in at
     // that SAME nested path — replaceByReference rebuilding through the
@@ -872,7 +892,7 @@ describe("grouped/nested primary fold — detection, schema inference, and codeg
     );
     expect(plan).not.toBeNull();
     expect(plan?.primaryArrayPath).toEqual(["sections", "*", "entries"]);
-    expect(plan?.joinFields).toEqual(["entryId"]);
+    expect(plan?.targets[0]?.joinFields).toEqual(["entryId"]);
 
     // 2. The emitted accessor flattens every group instead of indexing into
     // whichever one the matched item happened to be captured in.
