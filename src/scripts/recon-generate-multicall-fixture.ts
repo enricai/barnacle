@@ -585,6 +585,52 @@ export function buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinActionS
 }
 
 /**
+ * Sibling of {@link buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinActionSteps}
+ * whose primary `accounts[]` array holds TWO items rather than one, so a
+ * runtime fold loop built from this capture must re-key the drill-down's
+ * request header per iteration rather than replaying the single captured
+ * header value.
+ *
+ * Threaded on `API-Token` rather than the sibling fixture's `X-Account-Id`:
+ * `emitMultiStepExecuteHttp`'s per-call header emission only ever renders a
+ * captured header back into the generated request when it recognizes the
+ * header name (`API-Token`/`Authorization`, or a base-URL-/tenant-derived
+ * header passed in separately — recon-generate.ts:4273-4279) — an arbitrary
+ * custom header like `X-Account-Id` is captured but never re-emitted, so a
+ * fold loop built from it would have nothing to re-key at runtime. `API-Token`
+ * is still a request header the join value reaches through NO OTHER channel
+ * (not the URL, which is identical on every call, and not the body, which is
+ * empty), so it still exercises the same header-threaded-join runtime path
+ * {@link buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinActionSteps}
+ * demonstrates is invisible to the structural heuristic.
+ *
+ * The captured drill call was made for `accountId: 43` (the SECOND item),
+ * pinning `primaryMatchedItemIndex` away from the index-0 default.
+ */
+export function buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinMultiItemActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: ACCOUNT_SEARCH_URL,
+      requestPostData: JSON.stringify({ page: 1 }),
+      responseBody: {
+        accounts: [
+          { accountId: 42, name: "Acme" },
+          { accountId: 43, name: "Globex" },
+        ],
+      },
+      timestamp: "2024-08-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: ACCOUNT_DETAIL_URL,
+      requestPostData: null,
+      requestHeaders: { "Content-Type": "application/json", "API-Token": "43" },
+      responseBody: { transactions: [{ transactionId: "t2" }] },
+      timestamp: "2024-08-01T00:00:01Z",
+    }),
+  ];
+}
+
+/**
  * A single-shot search whose primary results array is NOT drilled into at
  * item 0 — only a single later drill call exists, and it threads the second
  * item's (`itemId: "i-a"`) join value, never the first's (`itemId: "i-b"`).
