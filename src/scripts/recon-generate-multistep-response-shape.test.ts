@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   emitContractTs,
+  emitMultiStepExecuteHttp,
   selectEffectiveResponseBody,
   selectReturnAction,
 } from "@/scripts/recon-generate";
@@ -10,6 +11,27 @@ import {
   buildStep,
   type MulticallFixtureStep,
 } from "@/scripts/recon-generate-multicall-fixture";
+
+/** `emitMultiStepExecuteHttp` takes the unexported `ActionStep[]`; the shared
+ * fixture's `MulticallFixtureStep` is structurally identical except for
+ * `produces` (`unknown[]` vs. the real `Produce[]`, always empty here), so a
+ * type-only cast through the emitter's own parameter type is safe. */
+function emit(steps: MulticallFixtureStep[]): string {
+  return emitMultiStepExecuteHttp(
+    steps as unknown as Parameters<typeof emitMultiStepExecuteHttp>[0],
+    null,
+    { stringMessageKey: null, nestedErrorPaths: [] },
+    new Map(),
+    new Set(),
+    new Map(),
+    new Set(),
+    new Map(),
+    new Map(),
+    "https://api.example.com",
+    new Map(),
+    new Map()
+  );
+}
 
 /**
  * Pins G1's second surface: recon-generate.ts's response-shape-inference
@@ -213,6 +235,66 @@ describe("recon-generate — G1 shape-inference target agrees with the return ta
           trackingCode: "TRK1",
           customerName: "Acme",
         },
+      ],
+    });
+  });
+});
+
+describe("recon-generate — G1 shape-inference target agrees with the return target across multiple independent fold plans", () => {
+  // Two unrelated primary/drill-down pairs in one action sequence —
+  // resolveFoldPlan resolves both (see "detectDrillDownFoldPlan — multiple
+  // independent primaries" in recon-generate-fold-plan.test.ts). Only the
+  // LAST plan's fold is what emitMultiStepExecuteHttp's `return { data }`
+  // references (see its own `lastFoldPlan` selection); shape inference must
+  // pick the SAME plan's folded body, not the first plan's.
+  const twoPrimarySteps: MulticallFixtureStep[] = [
+    buildStep("r0", {
+      url: "https://api.example.com/products/search",
+      requestPostData: JSON.stringify({ page: 1 }),
+      responseBody: {
+        products: [
+          { productId: "p1", name: "Widget" },
+          { productId: "p2", name: "Gadget" },
+        ],
+      },
+      timestamp: "2024-08-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: "https://api.example.com/products/p1/reviews",
+      requestPostData: null,
+      responseBody: { reviews: [{ productId: "p1", rating: 5 }] },
+      timestamp: "2024-08-01T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: "https://api.example.com/vendors/search",
+      requestPostData: JSON.stringify({ page: 1 }),
+      responseBody: {
+        vendors: [
+          { vendorId: "v1", name: "Acme" },
+          { vendorId: "v2", name: "Globex" },
+        ],
+      },
+      timestamp: "2024-08-01T00:00:02Z",
+    }),
+    buildStep("r3", {
+      url: "https://api.example.com/vendors/v1/contracts",
+      requestPostData: null,
+      responseBody: { contracts: [{ vendorId: "v1", contractId: "c1" }] },
+      timestamp: "2024-08-01T00:00:03Z",
+    }),
+  ];
+
+  it("selects the LAST plan's folded body, matching emitMultiStepExecuteHttp's return-value selection", () => {
+    const emitted = emit(twoPrimarySteps);
+    expect(emitted).toContain("return { data: r2 };");
+    expect(emitted).not.toContain("return { data: r0 };");
+
+    const effectiveResponseBody = selectEffectiveResponseBody(true, twoPrimarySteps, null);
+
+    expect(effectiveResponseBody).toEqual({
+      vendors: [
+        { vendorId: "v1", name: "Acme", contractId: "c1" },
+        { vendorId: "v2", name: "Globex" },
       ],
     });
   });
