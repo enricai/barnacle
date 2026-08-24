@@ -90,6 +90,36 @@ function stubDrillDecoyFetch(): void {
 }
 
 describe("recon-generate drill-down foldReturn spec executeHttp — generated-and-run runtime guard", () => {
+  it("falsifier: without a FoldReturnSpec, the structural heuristic emits no fold loop for this header-threaded fixture", () => {
+    const actionSteps = buildHeaderThreadedDoubleDecoyDrillDownActionSteps();
+    const inputBody = JSON.parse(actionSteps[0]!.capture.requestPostData ?? "null") as unknown;
+
+    const body = emitMultiStepExecuteHttp(
+      actionSteps as unknown as Parameters<typeof emitMultiStepExecuteHttp>[0],
+      inputBody,
+      { stringMessageKey: null, nestedErrorPaths: [] },
+      new Map(),
+      new Set(),
+      new Map(),
+      new Set(),
+      new Map(),
+      new Map(),
+      "https://api.example.com",
+      new Map(),
+      new Map(),
+      null,
+      new Map(),
+      new Map(),
+      new Set(),
+      [],
+      new Map(),
+      new Map(),
+      null
+    );
+
+    expect(body).not.toContain("for (const item of foldItems)");
+  });
+
   it("folds the declared drill-down onto EVERY primary item at runtime, resolving the declared resultsPath/drillResultsPath over the DFS-first decoy arrays", async () => {
     const actionSteps = buildHeaderThreadedDoubleDecoyDrillDownActionSteps();
     const inputBody = JSON.parse(actionSteps[0]!.capture.requestPostData ?? "null") as unknown;
