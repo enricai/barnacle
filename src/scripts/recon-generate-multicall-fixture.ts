@@ -1551,6 +1551,52 @@ export function buildMulticallSingleShotSearchDrillDownArrayWrappedNumericChaine
 }
 
 /**
+ * A sibling of
+ * {@link buildMulticallSingleShotSearchDrillDownArrayWrappedNumericChainedJoinFieldActionSteps}
+ * isolating a DIFFERENT gap in the numeric chain-produced join field family:
+ * `r1`'s produced token is a bare (non-array-wrapped) JSON number, and — the
+ * shape that matters here — it is SHORT (`42`/`43`, two digits) rather than
+ * an 8-digit token. `indexStateValues` gates every candidate state value on
+ * `MIN_STATE_VALUE_LENGTH` (8 chars), a threshold sized to keep an unrelated
+ * short STRING (an enum code, a page number) from colliding with arbitrary
+ * substrings elsewhere; applied uniformly to a bare NUMBER's stringified
+ * length, it also silently excludes a short numeric id/token — exactly the
+ * common shape for an order/account/status id — from ever being indexed as
+ * producible state. Without that index entry, `compileActionSteps` never
+ * emits a `produces[]` accessor for `r1`'s response, so `r2`'s templated
+ * body has nothing to substitute and falls back to treating `{"token":...}`
+ * as an opaque caller-supplied payload field (`payload.token`) instead of
+ * the per-item threaded value — every iteration would send whatever (or
+ * nothing) the caller passed, not each primary item's own token.
+ */
+export function buildMulticallSingleShotSearchDrillDownShortNumericChainedJoinFieldActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        results: [{ orderId: "order-a" }, { orderId: "order-b" }],
+      },
+      timestamp: "2024-10-04T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_ORDER_STATUS_URL,
+      requestPostData: '{"orderId":"order-a"}',
+      responseBody: [42],
+      timestamp: "2024-10-04T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: ORDER_HISTORY_URL,
+      requestPostData: '{"token":42}',
+      responseBody: {
+        entries: [{ token: 42, ts: "2024-10-04T00:00:02Z", event: "shipped" }],
+      },
+      timestamp: "2024-10-04T00:00:02Z",
+    }),
+  ];
+}
+
+/**
  * A different sibling of the same array-wrapped-join-field failure family:
  * here it's the IMMEDIATE drill step (`r1`), not a later chain hop, whose
  * request body wraps the value it threads — but that value is the PRIMARY
