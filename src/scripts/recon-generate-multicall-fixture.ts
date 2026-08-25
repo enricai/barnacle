@@ -435,6 +435,42 @@ export function buildMulticallSingleShotSearchTwoIndependentDrillDownsActionStep
   ];
 }
 
+/**
+ * A sibling of {@link buildMulticallSingleShotSearchTwoIndependentDrillDownsActionSteps}
+ * where BOTH per-item drills are threaded off the SAME primary join field
+ * (`sku`), rather than disjoint fields (`sku`/`itemId`). Each drill's
+ * response echoes that shared `sku` value back alongside its own field —
+ * an echo of the primary's own join value, not evidence the second drill
+ * depends on the first drill's response. Proves the fold loop still emits
+ * and merges BOTH independent drills onto every primary item even when
+ * their echoed join values collide, rather than collapsing the second
+ * drill into a chain under the first.
+ */
+export function buildMulticallSingleShotSearchTwoIndependentDrillDownsSharedJoinFieldActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        results: [{ sku: "sku-a" }, { sku: "sku-b" }],
+      },
+      timestamp: "2024-04-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_PRICING_URL,
+      requestPostData: '{"sku":"sku-a"}',
+      responseBody: { prices: [{ sku: "sku-a", amount: 19.99 }] },
+      timestamp: "2024-04-01T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: CATALOG_INVENTORY_URL,
+      requestPostData: '{"sku":"sku-a"}',
+      responseBody: { stock: [{ sku: "sku-a", qty: 7 }] },
+      timestamp: "2024-04-01T00:00:02Z",
+    }),
+  ];
+}
+
 const CATALOG_VENDORS_SEARCH_URL = "https://api.example.com/catalog/vendors/search";
 const CATALOG_VENDOR_CONTRACTS_URL = "https://api.example.com/catalog/vendors/contracts/";
 
