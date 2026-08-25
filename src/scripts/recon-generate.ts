@@ -2853,12 +2853,25 @@ function locateFormEnvelopePath(parsedBody: unknown): string[] {
  * whole blob is caller-supplied; the generator can't reach inside a value it
  * has delegated wholesale.
  *
+ * A candidate whose leaves include a value a PRIOR step's response already
+ * produced (e.g. a per-item join token wrapped in a bulk-lookup array like
+ * `{"tokens":["<prior-response-value>"]}`) is never swallowed here, no
+ * matter how array/object-shaped it looks: that value is a threaded
+ * dependent-drill-down coordinate the fold-chain machinery (`computeFoldChain`
+ * / `dependsOnChain`) already resolved, not caller-supplied history data, and
+ * `interpolateStateValues` (Pass 1, which runs AFTER this pass) must still be
+ * able to reach in and bind it — freezing it into an opaque
+ * `${JSON.stringify(payload.tokens)}` blob here would silently drop the
+ * per-item value the chain step's request depends on, breaking the fold at
+ * exactly the case an ARRAY-wrapped join field represents.
+ *
  * Site-agnostic: operates only on the recon body's own shape.
  */
 function applyStructuredValuePayloadSubstitutions(
   template: string,
   parsedBody: unknown,
-  outStructuredKeys: Map<string, string>
+  outStructuredKeys: Map<string, string>,
+  priorStepStateValues: ReadonlySet<string> = new Set()
 ): string {
   if (parsedBody === null || typeof parsedBody !== "object" || Array.isArray(parsedBody)) {
     return template;
@@ -2883,6 +2896,12 @@ function applyStructuredValuePayloadSubstitutions(
       !Array.isArray(value) &&
       Object.keys(value as Record<string, unknown>).length > 0;
     if (!isNonEmptyArray && !isNestedObject) continue;
+    if (priorStepStateValues.size > 0) {
+      const carriesThreadedValue = [...walkStringLeaves(value)].some(({ value: leaf }) =>
+        priorStepStateValues.has(leaf)
+      );
+      if (carriesThreadedValue) continue;
+    }
     const keyMarker = `"${key}":`;
     const markerIdx = result.indexOf(keyMarker);
     if (markerIdx === -1) continue;
@@ -4258,13 +4277,18 @@ export function emitMultiStepExecuteHttp(
     // (experienceData/educationData history, opaque eventData) BEFORE value
     // substitution reaches inside them: swallowing the entire array/object first
     // keeps interpolateStateValues from binding a code buried in the history
-    // sample (e.g. a work entry's state code) to an unrelated field.
+    // sample (e.g. a work entry's state code) to an unrelated field. Excludes
+    // any candidate that itself carries a PRIOR step's produced value (see
+    // applyStructuredValuePayloadSubstitutions' docstring) — an array-wrapped
+    // dependent-drill-down join field (e.g. a bulk `{"tokens":[...]}` lookup)
+    // must stay reachable for state threading, not get frozen as caller data.
     const rawBodyWithStructuredSubs =
       parsedBody !== null
         ? applyStructuredValuePayloadSubstitutions(
             rawBodyWithFormSubs,
             parsedBody,
-            outStructuredKeys
+            outStructuredKeys,
+            new Set(deriveStateVarByValue(prior).keys())
           )
         : rawBodyWithFormSubs;
     // Whole-value caller coordinates bind here — after structured subs, BEFORE

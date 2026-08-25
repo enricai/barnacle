@@ -1455,3 +1455,51 @@ export function buildMulticallSingleShotSearchDrillDownRichnessTiedConfirmationH
     }),
   ];
 }
+
+const ORDER_HISTORY_BULK_URL = "https://api.example.com/orders/history/bulk";
+
+/**
+ * An array-wrapped sibling of
+ * {@link buildMulticallSingleShotSearchDrillDownOpaqueIntermediateChainedDependentActionSteps}:
+ * the opaque intermediate hop (`r1`) is identical, but the chain's TERMINAL
+ * hop (`r2`) threads `r1`'s produced `statusToken` wrapped inside a
+ * single-element request-body ARRAY (`{"tokens":["status-token-order-a"]}`,
+ * a bulk/batch-lookup request shape) instead of as a flat top-level scalar
+ * field. `computeFoldChain`'s structural `dependsOnChain` detection (which
+ * walks every request-body leaf regardless of nesting) resolves the chain
+ * correctly either way, so this isolates a DIFFERENT failure: the
+ * request-body render must still be able to thread `statusToken` into that
+ * array slot instead of freezing the whole array as an opaque caller-payload
+ * blob (`applyStructuredValuePayloadSubstitutions`'s "swallow whole
+ * caller-supplied array/object" mechanism, which runs BEFORE state
+ * threading and has no concept of "this array actually wraps a threaded
+ * dependent-drill-down join value").
+ */
+export function buildMulticallSingleShotSearchDrillDownArrayWrappedChainedDependentActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        results: [{ orderId: "order-a" }, { orderId: "order-b" }],
+      },
+      timestamp: "2024-10-03T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_ORDER_STATUS_URL,
+      requestPostData: '{"orderId":"order-a"}',
+      responseBody: ["status-token-order-a"],
+      timestamp: "2024-10-03T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: ORDER_HISTORY_BULK_URL,
+      requestPostData: '{"tokens":["status-token-order-a"]}',
+      responseBody: {
+        entries: [
+          { statusToken: "status-token-order-a", ts: "2024-10-03T00:00:02Z", event: "shipped" },
+        ],
+      },
+      timestamp: "2024-10-03T00:00:02Z",
+    }),
+  ];
+}

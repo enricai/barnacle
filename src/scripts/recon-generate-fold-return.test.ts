@@ -12,6 +12,7 @@ import {
   buildMulticallHeterogeneousActionSteps,
   buildMulticallNestedGroupedDrillDownMultiGroupActionSteps,
   buildMulticallSingleShotSearchDrillDownActionSteps,
+  buildMulticallSingleShotSearchDrillDownArrayWrappedChainedDependentActionSteps,
   buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinRequeriedPrimaryOverlapActionSteps,
   buildMulticallSingleShotSearchDrillDownMultiMatchActionSteps,
   buildMulticallSingleShotSearchDrillDownTypeMismatchJoinActionSteps,
@@ -1550,5 +1551,32 @@ describe("grouped/nested primary fold — detection, schema inference, and codeg
         },
       ],
     });
+  });
+});
+
+describe("detectDrillDownFoldPlan — array-wrapped chained join field", () => {
+  it("resolves the chain past the opaque hop onto the bulk-lookup terminal, not dropped or misresolved", () => {
+    // The terminal chain hop's request body wraps its join value in a
+    // single-element array (`{"tokens":[...]}`, a bulk-lookup shape) rather
+    // than as a flat scalar field — dependsOnChain walks every request-body
+    // leaf regardless of array nesting, so detection resolves this exactly
+    // like the flat-field sibling
+    // (buildMulticallSingleShotSearchDrillDownOpaqueIntermediateChainedDependentActionSteps).
+    // See the runtime-e2e counterpart
+    // (recon-generate-drilldown-fold-dependent-drilldown-onto-primary-runtime-e2e.test.ts)
+    // for the actual reported symptom this fixture reproduces: the render
+    // pipeline, not detection, previously froze this array as an opaque
+    // caller-supplied `${JSON.stringify(payload.tokens)}` blob instead of
+    // threading the chain's own produced join value into it.
+    const steps = buildMulticallSingleShotSearchDrillDownArrayWrappedChainedDependentActionSteps();
+    const plan =
+      detectDrillDownFoldPlan(
+        steps as unknown as Parameters<typeof detectDrillDownFoldPlan>[0]
+      )[0] ?? null;
+    expect(plan).not.toBeNull();
+    expect(plan?.targets[0]?.joinFields).toEqual(["orderId"]);
+    expect(plan?.targets[0]?.chain).toEqual([1, 2]);
+    expect(plan?.targets[0]?.chainArrayPath).toEqual(["entries"]);
+    expect(plan?.targets[0]?.chainTerminalIndex).toBe(2);
   });
 });
