@@ -5499,14 +5499,28 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
       // selection computeFoldChain applies to every later chained step, so a
       // decoy is never disambiguated differently on the immediate drill call
       // than it is one hop further down the chain.
+      // An immediate hop with no object-array/flat-object candidate at all
+      // (a bare token/id array, a scalar, an empty body) must not abandon
+      // the whole candidate here — a LATER hop in the chain may still
+      // thread forward to the real per-item data (e.g. an id array whose
+      // values are looked up individually on a following step). Feed
+      // computeFoldChain the empty-path baseline FoldTarget already
+      // documents as its fallback contract, and only bail once the
+      // resolved chain terminal itself has no real items to fold onto.
       const drillArray = selectDisambiguatedCandidate(drill.capture.responseBody, drill.capture);
-      if (!drillArray) continue;
+      const drillArrayPath = drillArray?.path ?? [];
 
       const { chain, chainArrayPath, chainTerminalIndex } = computeFoldChain(
         actions,
         drillIndex,
-        drillArray.path
+        drillArrayPath
       );
+
+      const chainTerminalItems = objectItemsAtPath(
+        actions[chainTerminalIndex]!.capture.responseBody,
+        chainArrayPath
+      );
+      if (!chainTerminalItems || chainTerminalItems.length === 0) continue;
 
       // `primaryArray.path` can carry an ARRAY_WILDCARD_SEGMENT (a matched
       // item nested inside a multi-element outer array — e.g. a
@@ -5528,7 +5542,7 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
       targets.push({
         joinFields,
         drillStepIndex: drillIndex,
-        drillArrayPath: drillArray.path,
+        drillArrayPath,
         primaryMatchedItemIndex:
           globalMatchedItemIndex === -1 ? primaryMatchedItemIndex : globalMatchedItemIndex,
         chain,
@@ -5781,10 +5795,10 @@ function objectItemsAtPath(
  * Returns `null` — the same null-safe contract as
  * {@link detectDrillDownFoldPlan} — when `endpointPattern` is not a valid
  * regex, when `resultsPath` resolves to no object array on any action, when
- * no strictly-later action's URL matches `endpointPattern`, or when the
- * matched drill-down's own response holds no object array and is not itself
- * a flat object (the emitter folds `foldMatches[0]` out of that collection,
- * so a plan without one has nothing to merge).
+ * no strictly-later action's URL matches `endpointPattern`, or when neither
+ * the matched drill-down's own response nor any later chained hop off of it
+ * holds an object array or flat object (the emitter folds `foldMatches[0]`
+ * out of that collection, so a plan without one has nothing to merge).
  */
 /** Same value set as {@link collectRequestStringValues}, plus every request
  * header value — a flow-declared `foldReturn` exists specifically to cover
@@ -5855,6 +5869,15 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
       // an explicit foldReturn declaration must be able to express a
       // detail-by-id drill response exactly like the case the heuristic
       // detects on its own, not just an array field.
+      // Falls through with an empty `[]` path baseline — rather than
+      // bailing here — when the matched drill step's own response holds no
+      // object-array/flat-object candidate, so an intermediate hop that
+      // merely threads a value onward (holding no foldable data itself)
+      // still lets computeFoldChain walk to a later chained step that DOES
+      // hold the real per-item data, exactly as the structural heuristic
+      // now does (see detectDrillDownFoldPlan). Validated after the chain
+      // resolves, below, since `[]` is a valid empty baseline for
+      // computeFoldChain but not a valid final drillArrayPath on its own.
       const drillArrayPath = ((): string[] | null => {
         if (spec.drillResultsPath === undefined) {
           return findObjectArrayFieldOrWholeObject(drill.capture.responseBody)?.path ?? null;
@@ -5862,7 +5885,6 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
         const path = spec.drillResultsPath.split(".");
         return objectItemsAtPath(drill.capture.responseBody, path) ? path : null;
       })();
-      if (drillArrayPath === null) continue;
       const primaryMatchedItemIndex = resolveSpecMatchedPrimaryItemIndex(
         primaryItems,
         spec.joinFields,
@@ -5872,8 +5894,15 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
       const { chain, chainArrayPath, chainTerminalIndex } = computeFoldChain(
         actions,
         drillStepIndex,
-        drillArrayPath
+        drillArrayPath ?? []
       );
+      // The chain's resolved terminal must actually hold foldable data —
+      // an intermediate drill step with neither its own candidate NOR a
+      // later chained step that resolves one has nothing to merge, so it
+      // is skipped exactly as the pre-chain null check used to skip it.
+      if (!objectItemsAtPath(actions[chainTerminalIndex]!.capture.responseBody, chainArrayPath)) {
+        continue;
+      }
       freshestPlan = {
         primaryStepIndex,
         primaryArrayPath,
@@ -5881,7 +5910,7 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
           {
             joinFields: spec.joinFields,
             drillStepIndex,
-            drillArrayPath,
+            drillArrayPath: drillArrayPath ?? [],
             primaryMatchedItemIndex,
             chain,
             chainArrayPath,

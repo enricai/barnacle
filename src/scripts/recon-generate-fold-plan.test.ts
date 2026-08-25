@@ -18,6 +18,7 @@ import {
   buildMulticallSingleShotSearchDrillDownDrillDecoyActionSteps,
   buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinActionSteps,
   buildMulticallSingleShotSearchDrillDownNestedJoinFieldActionSteps,
+  buildMulticallSingleShotSearchDrillDownNestedJoinFieldChainedDependentActionSteps,
   buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps,
   buildMulticallSingleShotSearchDrillDownNonFirstItemSkuActionSteps,
   buildMulticallSingleShotSearchDrillDownNumericJoinActionSteps,
@@ -438,6 +439,42 @@ describe("detectDrillDownFoldPlan — chained per-item dependency", () => {
     expect(plan?.targets[0]?.chainArrayPath).toEqual(["entries"]);
   });
 
+  it("extends the chain past an immediate drill hop whose response has no object-array/flat-object candidate at all", () => {
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/orders/search",
+        requestPostData: JSON.stringify({ page: 1 }),
+        responseBody: { results: [{ orderId: "order-7" }] },
+        timestamp: "2024-06-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/orders/order-7/status",
+        requestPostData: null,
+        // A bare array of primitive strings — no object-array field and no
+        // flat-object shape, so `selectDisambiguatedCandidate` returns null
+        // for this hop. The real per-item data only shows up on the step
+        // this response's lone token threads into.
+        responseBody: ["tok-99"],
+        timestamp: "2024-06-01T00:00:01Z",
+      }),
+      buildStep("r2", {
+        url: "https://api.example.com/orders/history",
+        requestPostData: JSON.stringify({ token: "tok-99" }),
+        responseBody: { entries: [{ ts: "2024-06-01T00:00:02Z", event: "shipped" }] },
+        timestamp: "2024-06-01T00:00:02Z",
+      }),
+    ];
+
+    const plan = detect(steps);
+
+    expect(plan).not.toBeNull();
+    expect(plan?.primaryStepIndex).toBe(0);
+    expect(plan?.targets[0]?.drillStepIndex).toBe(1);
+    expect(plan?.targets[0]?.chain).toEqual([1, 2]);
+    expect(plan?.targets[0]?.chainArrayPath).toEqual(["entries"]);
+    expect(plan?.targets[0]?.chainTerminalIndex).toBe(2);
+  });
+
   it("disambiguates a decoy array positioned earlier in key order than the real array on the chain's SECOND step, not the immediate drill step", () => {
     const steps = buildMulticallSingleShotSearchDrillDownChainedDecoyOnChainTerminalActionSteps();
 
@@ -471,6 +508,27 @@ describe("detectDrillDownFoldPlan — chained per-item dependency", () => {
     expect(plan?.targets[0]?.drillArrayPath).toEqual(["prices"]);
     expect(plan?.targets[0]?.chain).toEqual([1, 2]);
     expect(plan?.targets[0]?.chainArrayPath).toEqual(["history"]);
+  });
+
+  it("resolves the chain past a foldable-in-isolation drill step when the primary's join key is nested", () => {
+    const plan = detect(
+      buildMulticallSingleShotSearchDrillDownNestedJoinFieldChainedDependentActionSteps()
+    );
+
+    expect(plan).not.toBeNull();
+    expect(plan?.targets[0]?.joinFields).toEqual(["identifiers.sku"]);
+    // The nested join value ("sku-b") only satisfies the SECOND primary
+    // item, so `primaryMatchedItemIndex` must resolve by walking into each
+    // item's nested fields rather than assuming the first item matches.
+    expect(plan?.targets[0]?.primaryMatchedItemIndex).toBe(1);
+    // r1 (the price lookup) is foldable on its own terms — its own
+    // `prices[]` is a real object-array — but r2 (price-history) threads
+    // r1's `priceToken`, so the chain must not stop at r1.
+    expect(plan?.targets[0]?.drillStepIndex).toBe(1);
+    expect(plan?.targets[0]?.drillArrayPath).toEqual(["prices"]);
+    expect(plan?.targets[0]?.chain).toEqual([1, 2]);
+    expect(plan?.targets[0]?.chainArrayPath).toEqual(["history"]);
+    expect(plan?.targets[0]?.chainTerminalIndex).toBe(2);
   });
 
   it("resolves the chain terminal to a flat-object response two hops past the immediate drill step", () => {
