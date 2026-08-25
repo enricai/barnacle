@@ -33,7 +33,9 @@ const HISTORY_BODY_FOR = (
   orderId: string
 ): { warnings: unknown[]; entries: Array<Record<string, unknown>> } => ({
   warnings: [{ code: "stale-cache" }],
-  entries: [{ statusToken: `status-token-${orderId}`, ts: "2024-09-01T00:00:02Z", event: "shipped" }],
+  entries: [
+    { statusToken: `status-token-${orderId}`, ts: "2024-09-01T00:00:02Z", event: "shipped" },
+  ],
 });
 
 /**
