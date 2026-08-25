@@ -10,6 +10,7 @@ import {
   buildMulticallHeterogeneousActionStepsWithDrillDown,
   buildMulticallNestedGroupedDrillDownMultiGroupActionSteps,
   buildMulticallSingleShotSearchDrillDownActionSteps,
+  buildMulticallSingleShotSearchDrillDownArrayWrappedChainedDependentActionSteps,
   buildMulticallSingleShotSearchDrillDownChainedDecoyOnChainTerminalActionSteps,
   buildMulticallSingleShotSearchDrillDownChainedDependentActionSteps,
   buildMulticallSingleShotSearchDrillDownChainedDependentMultipartChainStepActionSteps,
@@ -22,6 +23,7 @@ import {
   buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps,
   buildMulticallSingleShotSearchDrillDownNonFirstItemSkuActionSteps,
   buildMulticallSingleShotSearchDrillDownNumericJoinActionSteps,
+  buildMulticallSingleShotSearchDrillDownOpaqueIntermediateChainedDependentActionSteps,
   buildMulticallSingleShotSearchDrillDownOutOfOrderItemActionSteps,
   buildMulticallSingleShotSearchDrillDownPathThreadedJoinActionSteps,
   buildMulticallSingleShotSearchDrillDownRequeriedPrimaryOverlapActionSteps,
@@ -748,6 +750,32 @@ describe("detectDrillDownFoldPlan — chained per-item dependency", () => {
     expect(plan?.targets[0]?.chain).toEqual([1, 2, 3]);
     expect(plan?.targets[0]?.chainArrayPath).toEqual(["entries"]);
     expect(plan?.targets[0]?.chainTerminalIndex).toBe(3);
+  });
+
+  it("extends the chain past an opaque intermediate hop to the step holding the real per-item array", () => {
+    const plan = detect(
+      buildMulticallSingleShotSearchDrillDownOpaqueIntermediateChainedDependentActionSteps()
+    );
+
+    expect(plan).not.toBeNull();
+    expect(plan?.primaryStepIndex).toBe(0);
+    expect(plan?.targets[0]?.drillStepIndex).toBe(1);
+    expect(plan?.targets[0]?.chain).toEqual([1, 2]);
+    expect(plan?.targets[0]?.chainArrayPath).toEqual(["entries"]);
+    expect(plan?.targets[0]?.chainTerminalIndex).toBe(2);
+  });
+
+  it("resolves the chain to the terminal step even when it threads the drill step's value wrapped inside a request-body array", () => {
+    const plan = detect(
+      buildMulticallSingleShotSearchDrillDownArrayWrappedChainedDependentActionSteps()
+    );
+
+    expect(plan).not.toBeNull();
+    expect(plan?.primaryStepIndex).toBe(0);
+    expect(plan?.targets[0]?.drillStepIndex).toBe(1);
+    expect(plan?.targets[0]?.chain).toEqual([1, 2]);
+    expect(plan?.targets[0]?.chainArrayPath).toEqual(["entries"]);
+    expect(plan?.targets[0]?.chainTerminalIndex).toBe(2);
   });
 });
 
