@@ -1351,3 +1351,46 @@ export function buildMulticallSingleShotSearchDrillDownChainedDecoyOnChainTermin
     }),
   ];
 }
+
+const CATALOG_ORDER_STATUS_URL = "https://api.example.com/catalog/order-status";
+
+/**
+ * A single-shot search → per-item drill-down flow where the drill step's
+ * OWN response (`r1`) is entirely OPAQUE — a bare array holding a single
+ * token, satisfying neither `isObjectArrayItem` nor
+ * `findAllObjectArrayFields`, so `selectDisambiguatedCandidate` finds no
+ * candidate there at all — and is depended on by a THIRD step (`r2`) whose
+ * response carries the real per-item array this flow means to fold. Unlike
+ * {@link buildMulticallSingleShotSearchDrillDownChainedDependentActionSteps},
+ * whose `r1` is ALSO independently foldable, this fixture isolates the case
+ * where `computeFoldChain` has nothing to fall back on at the immediate hop
+ * and must extend the chain past it to `r2` to find any candidate at all.
+ */
+export function buildMulticallSingleShotSearchDrillDownOpaqueIntermediateChainedDependentActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        results: [{ orderId: "order-a" }, { orderId: "order-b" }],
+      },
+      timestamp: "2024-10-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_ORDER_STATUS_URL,
+      requestPostData: '{"orderId":"order-a"}',
+      responseBody: ["status-token-order-a"],
+      timestamp: "2024-10-01T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: ORDER_HISTORY_URL,
+      requestPostData: '{"statusToken":"status-token-order-a"}',
+      responseBody: {
+        entries: [
+          { statusToken: "status-token-order-a", ts: "2024-10-01T00:00:02Z", event: "shipped" },
+        ],
+      },
+      timestamp: "2024-10-01T00:00:02Z",
+    }),
+  ];
+}
