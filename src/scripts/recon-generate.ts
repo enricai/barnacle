@@ -4816,20 +4816,25 @@ export function emitMultiStepExecuteHttp(
   // isn't a plain object can't be merged meaningfully, so in that case this
   // falls back to the LAST plan's primary var alone, same as before this
   // merge was introduced.
+  //
+  // Deduped by var name (not one entry per plan): two plans anchored on the
+  // SAME primary step (e.g. a structural plan and a spec-only plan each
+  // resolving a different array on one shared response — see
+  // mergeSpecPlanOntoSamePrimary) both mutate that ONE response object's own
+  // arrays in place per their own loop above. Passing that same var into
+  // mergeFoldedPrimaryBodies once per plan would concatenate every one of its
+  // arrays with itself, duplicating every already-folded item.
   const lastFoldPlan = foldPlans[foldPlans.length - 1] ?? null;
+  const uniquePrimaryVarNames = [
+    ...new Set(foldPlans.map((plan) => actions[plan.primaryStepIndex]!.varName)),
+  ];
   const everyPrimaryIsPlainObject = foldPlans.every((plan) =>
     isPlainObject(actions[plan.primaryStepIndex]!.capture.responseBody)
   );
-  if (foldPlans.length > 1 && everyPrimaryIsPlainObject) {
-    // Two plans can share the SAME primaryStepIndex (independent arrays on
-    // one primary response, folded in place by two separate loops above) —
-    // deduping here keeps that shared var out of mergeFoldedPrimaryBodies
-    // twice, which would otherwise concatenate every array on the object
-    // with itself.
-    const mergedVars = [
-      ...new Set(foldPlans.map((plan) => actions[plan.primaryStepIndex]!.varName)),
-    ].join(", ");
-    lines.push(`    return { data: mergeFoldedPrimaryBodies(${mergedVars}) };`);
+  if (uniquePrimaryVarNames.length > 1 && everyPrimaryIsPlainObject) {
+    lines.push(
+      `    return { data: mergeFoldedPrimaryBodies(${uniquePrimaryVarNames.join(", ")}) };`
+    );
   } else {
     const returnVar = lastFoldPlan
       ? actions[lastFoldPlan.primaryStepIndex]!.varName
