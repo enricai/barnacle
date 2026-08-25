@@ -3110,10 +3110,9 @@ export function indexStateValues(
     // sweeps every header value as noise.
     for (const [headerName, headerValue] of Object.entries(c.responseHeaders)) {
       if (headerName.toLowerCase() === "set-cookie") continue;
-      if (headerValue.length < MIN_STATE_VALUE_LENGTH) continue;
+      if (!chainForceIncludeValues.has(headerValue)) continue;
       if (headerValue.length > MAX_COOKIE_STATE_VALUE_LENGTH) continue;
       if (PLACEHOLDER_STATE_VALUES.has(headerValue)) continue;
-      if (!chainForceIncludeValues.has(headerValue)) continue;
       if (!index.has(headerValue)) {
         index.set(headerValue, {
           value: headerValue,

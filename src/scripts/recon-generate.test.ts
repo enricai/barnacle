@@ -1569,6 +1569,27 @@ describe("indexStateValues — a non-cookie response header value threaded throu
     const untouchedIndex = indexStateValues(untouchedSteps.map((step) => step.capture));
     expect(untouchedIndex.has("req-untouched-99999999")).toBe(false);
   });
+
+  it("indexes a chain-confirmed header value shorter than MIN_STATE_VALUE_LENGTH (mirrors the body-value force-include bypass)", () => {
+    const shortValueSteps = [
+      steps[0]!,
+      {
+        ...steps[1]!,
+        capture: { ...steps[1]!.capture, responseHeaders: { "x-session-token": "s1a2b3" } },
+      },
+      {
+        ...steps[2]!,
+        capture: {
+          ...steps[2]!.capture,
+          requestHeaders: { "Content-Type": "application/json", "X-Session-Token": "s1a2b3" },
+        },
+      },
+    ];
+    const shortValueIndex = indexStateValues(shortValueSteps.map((step) => step.capture));
+    const sv = shortValueIndex.get("s1a2b3");
+    expect(sv).toBeDefined();
+    expect(sv?.headerOrigin).toEqual({ sourceHeader: "x-session-token" });
+  });
 });
 
 describe("collectHeaderBindings — multi-cookie regression (listings-fixture __pa first-wins bug)", () => {
