@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { detectDrillDownFoldPlan, type FoldPlan, resolveFoldPlan } from "@/scripts/recon-generate";
+import {
+  detectDrillDownFoldPlan,
+  type FoldPlan,
+  type FoldReturnSpec,
+  resolveFoldPlan,
+} from "@/scripts/recon-generate";
 import {
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
@@ -19,6 +24,7 @@ import {
   buildMulticallSingleShotSearchDrillDownPathThreadedJoinActionSteps,
   buildMulticallSingleShotSearchDrillDownRequeriedPrimaryOverlapActionSteps,
   buildMulticallSingleShotSearchDrillDownRicherFlatOutranksNestedArrayActionSteps,
+  buildMulticallSingleShotSearchTwoIndependentArraysActionSteps,
   buildStep,
   type MulticallFixtureStep,
 } from "@/scripts/recon-generate-multicall-fixture";
@@ -703,6 +709,95 @@ describe("detectDrillDownFoldPlan — multiple independent primaries", () => {
     expect(plans[1]?.targets[0]?.joinFields).toEqual(["vendorId"]);
     expect(plans[1]?.targets[0]?.drillStepIndex).toBe(3);
     expect(plans[1]?.targets[0]?.drillArrayPath).toEqual(["contracts"]);
+  });
+});
+
+describe("detectDrillDownFoldPlan — two independent arrays on the SAME primary step", () => {
+  it("returns one FoldPlan per distinct array field, not just whichever one the first drill-down threads from", () => {
+    const plans = detectAll(buildMulticallSingleShotSearchTwoIndependentArraysActionSteps());
+
+    expect(plans).toHaveLength(2);
+    expect(plans[0]?.primaryStepIndex).toBe(0);
+    expect(plans[0]?.primaryArrayPath).toEqual(["products"]);
+    expect(plans[0]?.targets).toHaveLength(1);
+    expect(plans[0]?.targets[0]?.joinFields).toEqual(["sku"]);
+    expect(plans[0]?.targets[0]?.drillStepIndex).toBe(1);
+    expect(plans[0]?.targets[0]?.drillArrayPath).toEqual(["prices"]);
+
+    expect(plans[1]?.primaryStepIndex).toBe(0);
+    expect(plans[1]?.primaryArrayPath).toEqual(["vendors"]);
+    expect(plans[1]?.targets).toHaveLength(1);
+    expect(plans[1]?.targets[0]?.joinFields).toEqual(["vendorId"]);
+    expect(plans[1]?.targets[0]?.drillStepIndex).toBe(2);
+    expect(plans[1]?.targets[0]?.drillArrayPath).toEqual(["contracts"]);
+  });
+
+  it("resolveFoldPlan folds both independent arrays on the same primary step", () => {
+    const resolved = resolveFoldPlan(
+      buildMulticallSingleShotSearchTwoIndependentArraysActionSteps()
+    );
+
+    expect(resolved).toHaveLength(2);
+    expect(resolved[0]?.primaryArrayPath).toEqual(["products"]);
+    expect(resolved[1]?.primaryArrayPath).toEqual(["vendors"]);
+  });
+});
+
+describe("resolveFoldPlan — spec plan for a second, independent array on an already-used primary step", () => {
+  it("appends the spec's plan instead of dropping it as already-consumed, when its primaryArrayPath differs from the structural plan's on the same step", () => {
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/catalog/search",
+        requestPostData: JSON.stringify({ page: 1 }),
+        responseBody: {
+          products: [{ sku: "sku-a" }],
+          vendors: [{ vendorId: "v1" }],
+        },
+        timestamp: "2025-02-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/catalog/pricing?sku=sku-a",
+        requestPostData: null,
+        responseBody: { prices: [{ sku: "sku-a", amount: 9.99 }] },
+        timestamp: "2025-02-01T00:00:01Z",
+      }),
+      // The vendor-detail call's join value threads only through a request
+      // header, invisible to the structural heuristic — only a flow-declared
+      // foldReturn spec naming `vendors` as its resultsPath can resolve it.
+      buildStep("r2", {
+        url: "https://api.example.com/catalog/vendors/detail",
+        requestPostData: '{"lookup":true}',
+        responseBody: { contracts: [{ vendorId: "v1", contractId: "c1" }] },
+        timestamp: "2025-02-01T00:00:02Z",
+        requestHeaders: { "Content-Type": "application/json", "X-Vendor-Id": "v1" },
+      }),
+    ];
+
+    // The structural heuristic resolves only the `products` array (r0/r1) —
+    // `vendors` is entirely invisible to it since r2's join threads only
+    // through a header.
+    const structuralPlans = detectDrillDownFoldPlan(steps);
+    expect(structuralPlans).toHaveLength(1);
+    expect(structuralPlans[0]?.primaryStepIndex).toBe(0);
+    expect(structuralPlans[0]?.primaryArrayPath).toEqual(["products"]);
+
+    const spec: FoldReturnSpec = {
+      endpointPattern: "catalog/vendors/detail",
+      resultsPath: "vendors",
+      joinFields: ["vendorId"],
+    };
+
+    const resolved = resolveFoldPlan(steps, spec);
+
+    // Before the fix, mergeSpecPlanOntoSamePrimary keyed its consumed-index
+    // check off primaryStepIndex alone, so the spec's plan — anchored on
+    // the SAME step 0, but naming a different array — was wrongly treated
+    // as already consumed and dropped, leaving only the structural plan.
+    expect(resolved).toHaveLength(2);
+    expect(resolved[0]?.primaryArrayPath).toEqual(["products"]);
+    expect(resolved[1]?.primaryStepIndex).toBe(0);
+    expect(resolved[1]?.primaryArrayPath).toEqual(["vendors"]);
+    expect(resolved[1]?.targets[0]?.drillStepIndex).toBe(2);
   });
 });
 
