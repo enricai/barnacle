@@ -517,7 +517,9 @@ describe("detectDrillDownFoldPlan — chained per-item dependency", () => {
   });
 
   it("extends the chain past a drill step whose response mints only a boolean value threaded into a later hop", () => {
-    const plan = detect(buildMulticallSingleShotSearchDrillDownBooleanChainedResponseValueActionSteps());
+    const plan = detect(
+      buildMulticallSingleShotSearchDrillDownBooleanChainedResponseValueActionSteps()
+    );
 
     expect(plan).not.toBeNull();
     expect(plan?.primaryStepIndex).toBe(0);
