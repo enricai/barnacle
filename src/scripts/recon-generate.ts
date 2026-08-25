@@ -3127,7 +3127,19 @@ export function indexStateValues(
       // Indexing them would let state-threading rewrite the anchors and
       // corrupt T2/T3's already-substituted Values.
       if (shieldedUuids.has(value)) continue;
-      if (isGet && !UUID_REGEX.test(value)) continue;
+      // Same chain/force exemption as the MIN_STATE_VALUE_LENGTH floor above:
+      // a value the fold-chain detector already confirmed is threaded from
+      // this GET hop's response into a later hop's request is exactly as
+      // legitimate as a UUID anchor, so it must not be dropped just because
+      // this hop happens to be a GET rather than every existing fixture's
+      // POST.
+      if (
+        isGet &&
+        !UUID_REGEX.test(value) &&
+        !chainForceIncludeValues.has(value) &&
+        !forceIncludeValues.has(value)
+      )
+        continue;
       if (!index.has(value)) {
         index.set(value, { value, originIndex: i, path });
       }
@@ -4293,7 +4305,8 @@ export function emitMultiStepExecuteHttp(
             const value = readValueAtPath(firstItem, field.split("."));
             return (
               (typeof value === "string" && value.length > 0 && value === headerValue) ||
-              (typeof value === "number" && String(value) === headerValue)
+              ((typeof value === "number" || typeof value === "boolean") &&
+                String(value) === headerValue)
             );
           });
           if (matchesJoinField) headerNames.add(headerName);
@@ -4303,7 +4316,8 @@ export function emitMultiStepExecuteHttp(
         for (const field of target.joinFields) {
           const value = readValueAtPath(firstItem, field.split("."));
           if (typeof value === "string" && value.length > 0) joinValues.add(value);
-          else if (typeof value === "number") joinValues.add(String(value));
+          else if (typeof value === "number" || typeof value === "boolean")
+            joinValues.add(String(value));
         }
         if (joinValues.size > 0) joinFieldValuesByStep.set(stepIndex, joinValues);
       }
@@ -4689,7 +4703,7 @@ export function emitMultiStepExecuteHttp(
             const stringValue =
               typeof value === "string" && value.length > 0
                 ? value
-                : typeof value === "number"
+                : typeof value === "number" || typeof value === "boolean"
                   ? String(value)
                   : null;
             return stringValue !== null
@@ -5285,14 +5299,14 @@ function collectRequestStringValues(capture: Capture): Set<string> {
   })();
   if (parsedBody !== undefined) {
     for (const { value } of walkAllPrimitiveLeaves(parsedBody)) {
-      if (typeof value === "number") values.add(String(value));
+      if (typeof value === "number" || typeof value === "boolean") values.add(String(value));
     }
   }
   return values;
 }
 
 /**
- * Yields every string/numeric leaf reachable from `item` by walking nested
+ * Yields every string/numeric/boolean leaf reachable from `item` by walking nested
  * plain objects only (not arrays — a join key is a scalar field of the item
  * or one of its nested objects, never an element drawn from a nested array),
  * paired with its dot-separated path from `item`'s root. A bare top-level
@@ -5315,8 +5329,8 @@ function* walkItemFieldPaths(
 }
 
 /**
- * Finds the ordered list of an array item's string/numeric field paths whose
- * values are threaded into `drillCapture`'s outbound request — the join key a
+ * Finds the ordered list of an array item's string/numeric/boolean field
+ * paths whose values are threaded into `drillCapture`'s outbound request — the join key a
  * dependent drill-down call was built from. Each entry is a dot-separated
  * path (see {@link readValueAtPath} / {@link pathToAccessor}), so a bare
  * top-level field stays a single segment (e.g. `"sku"`) and a field nested
@@ -5333,7 +5347,8 @@ function findThreadedJoinFields(item: Record<string, unknown>, drillCapture: Cap
     .filter(
       ({ value: v }) =>
         (typeof v === "string" && v.length > 0 && requestValues.has(v)) ||
-        (typeof v === "number" && requestValues.has(String(v)))
+        (typeof v === "number" && requestValues.has(String(v))) ||
+        (typeof v === "boolean" && requestValues.has(String(v)))
     )
     .map(({ path }) => path.join("."));
 }
@@ -5951,7 +5966,8 @@ function resolveSpecMatchedPrimaryItemIndex(
       const value = readValueAtPath(item, field.split("."));
       return (
         (typeof value === "string" && value.length > 0 && requestValues.has(value)) ||
-        (typeof value === "number" && requestValues.has(String(value)))
+        (typeof value === "number" && requestValues.has(String(value))) ||
+        (typeof value === "boolean" && requestValues.has(String(value)))
       );
     })
   );

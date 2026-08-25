@@ -19,11 +19,12 @@ export function buildCapture(overrides: {
   responseBody: unknown;
   timestamp: string;
   requestHeaders?: Record<string, string>;
+  method?: string;
 }): Capture {
   return {
     timestamp: overrides.timestamp,
     phase: "action",
-    method: "POST",
+    method: overrides.method ?? "POST",
     url: overrides.url,
     status: 200,
     requestHeaders: overrides.requestHeaders ?? { "Content-Type": "application/json" },
@@ -50,6 +51,7 @@ export function buildStep(
     responseBody: unknown;
     timestamp: string;
     requestHeaders?: Record<string, string>;
+    method?: string;
   }
 ): MulticallFixtureStep {
   return {
@@ -1678,6 +1680,46 @@ export function buildMulticallSingleShotSearchDrillDownArrayWrappedNumericImmedi
   ];
 }
 
+/**
+ * Same array-wrapped-immediate-join-field shape as
+ * {@link buildMulticallSingleShotSearchDrillDownArrayWrappedNumericImmediateJoinFieldActionSteps},
+ * but the primary item's join field is a bare JSON BOOLEAN (`flag: true`)
+ * rather than a number or string. `walkStringLeaves` (used by the spare
+ * check in `applyStructuredValuePayloadSubstitutions`) silently skips
+ * boolean leaves the same way it skips number leaves, so a boolean join
+ * value wrapped in `{"flags":[true]}` was frozen into an opaque
+ * `${JSON.stringify(payload.flags)}` blob instead of being spared for the
+ * fold-loop's later per-item `parameterize` pass.
+ */
+export function buildMulticallSingleShotSearchDrillDownArrayWrappedBooleanImmediateJoinFieldActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        results: [{ flag: true }, { flag: false }],
+      },
+      timestamp: "2024-10-03T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_ORDER_STATUS_URL,
+      requestPostData: '{"flags":[true]}',
+      responseBody: ["status-token-true"],
+      timestamp: "2024-10-03T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: ORDER_HISTORY_BULK_URL,
+      requestPostData: '{"tokens":["status-token-true"]}',
+      responseBody: {
+        entries: [
+          { statusToken: "status-token-true", ts: "2024-10-03T00:00:02Z", event: "shipped" },
+        ],
+      },
+      timestamp: "2024-10-03T00:00:02Z",
+    }),
+  ];
+}
+
 const ACCOUNT_STATUS_URL = "https://api.example.com/accounts/status";
 const ACCOUNT_TRANSACTIONS_URL = "https://api.example.com/accounts/transactions";
 
@@ -1726,6 +1768,55 @@ export function buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinChained
         transactions: [{ statusToken: "status-token-42", transactionId: "t-42", amount: 19.99 }],
       },
       timestamp: "2024-08-01T00:00:02Z",
+    }),
+  ];
+}
+
+const ORDER_STATUS_LOOKUP_URL = "https://api.example.com/orders/status-lookup";
+const ORDER_EVENTS_URL = "https://api.example.com/orders/events";
+
+/**
+ * A dependent (chained) drill-down whose ENTRY hop (`r1`) is a `GET`
+ * request — not the `POST` every other chained-dependent fixture in this
+ * file uses — and whose response produces the chain's join value
+ * (`statusToken`) as a non-UUID string. `indexStateValues` indexes a `GET`
+ * capture's response leaves ONLY when they are UUID-shaped
+ * (`isGet && !UUID_REGEX.test(value)` skips everything else, a filter aimed
+ * at excluding noisy short non-UUID strings a GET-only telemetry/schema
+ * fetch surfaces); that filter runs unconditionally, with no exemption for a
+ * value `collectDependentDrillDownChainValues` has already confirmed is
+ * threaded from this exact hop into a later chain hop's own request — unlike
+ * the `MIN_STATE_VALUE_LENGTH` floor a few lines above it, which DOES carry
+ * that exemption. So a chain-produced token minted by a GET response is
+ * never indexed as producible state at all, `compileActionSteps` never
+ * emits a `produces[]` accessor for it, and `r2`'s templated body has
+ * nothing to substitute — every iteration renders the literal string
+ * `"undefined"` instead of threading each primary item's own token.
+ */
+export function buildMulticallSingleShotSearchDrillDownGetEntryHopChainedDependentActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        results: [{ orderId: "order-a" }, { orderId: "order-b" }],
+      },
+      timestamp: "2024-10-05T00:00:00Z",
+    }),
+    buildStep("r1", {
+      method: "GET",
+      url: `${ORDER_STATUS_LOOKUP_URL}?orderId=order-a`,
+      requestPostData: null,
+      responseBody: { statusToken: "status-token-order-a" },
+      timestamp: "2024-10-05T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: ORDER_EVENTS_URL,
+      requestPostData: '{"token":"status-token-order-a"}',
+      responseBody: {
+        entries: [{ token: "status-token-order-a", ts: "2024-10-05T00:00:02Z", event: "shipped" }],
+      },
+      timestamp: "2024-10-05T00:00:02Z",
     }),
   ];
 }
