@@ -5908,6 +5908,43 @@ function resolveSpecMatchedPrimaryItemIndex(
   return matchedIndex === -1 ? null : matchedIndex;
 }
 
+/** Like {@link resolveSpecMatchedPrimaryItemIndex}, but also looks upstream of
+ * `drillStepIndex` for the join key when `drillStepIndex`'s own request
+ * doesn't carry it — a `foldReturn` spec's `endpointPattern` naturally names
+ * the chain TERMINAL (the response actually holding the data an author wants
+ * folded), not the opaque entry hop that carries the join key onward (e.g.
+ * as a header-threaded token). Walks every earlier step back to
+ * `primaryStepIndex`, in reverse so the closest (least ambiguous) candidate
+ * wins first, and accepts one only once {@link computeFoldChain} confirms it
+ * actually chains FORWARD to `drillStepIndex` — otherwise an unrelated
+ * earlier step matching the join key by coincidence could hijack the fold.
+ * Returns the resolved `entryIndex` alongside the matched item index so the
+ * caller can build the fold's `chain` starting from the step that ACTUALLY
+ * carries the join key, not from `drillStepIndex` — a chain built from
+ * `drillStepIndex` alone would never include this upstream entry hop, so it
+ * would never be re-executed (header-parameterized) per primary item at
+ * runtime. */
+function resolveSpecMatchedPrimaryItemIndexAlongChain<T extends { capture: Capture }>(
+  actions: readonly T[],
+  primaryItems: readonly Record<string, unknown>[],
+  joinFields: readonly string[],
+  primaryStepIndex: number,
+  drillStepIndex: number
+): { entryIndex: number; primaryMatchedItemIndex: number } | null {
+  for (let entryIndex = drillStepIndex; entryIndex > primaryStepIndex; entryIndex--) {
+    const matched = resolveSpecMatchedPrimaryItemIndex(
+      primaryItems,
+      joinFields,
+      actions[entryIndex]!.capture
+    );
+    if (matched === null) continue;
+    if (entryIndex === drillStepIndex) return { entryIndex, primaryMatchedItemIndex: matched };
+    const { chain } = computeFoldChain(actions, entryIndex, []);
+    if (chain.includes(drillStepIndex)) return { entryIndex, primaryMatchedItemIndex: matched };
+  }
+  return null;
+}
+
 function buildFoldPlanFromSpec<T extends { capture: Capture }>(
   actions: readonly T[],
   spec: FoldReturnSpec
@@ -5949,22 +5986,40 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
       // now does (see detectDrillDownFoldPlan). Validated after the chain
       // resolves, below, since `[]` is a valid empty baseline for
       // computeFoldChain but not a valid final drillArrayPath on its own.
+      const matchResult = resolveSpecMatchedPrimaryItemIndexAlongChain(
+        actions,
+        primaryItems,
+        spec.joinFields,
+        primaryStepIndex,
+        drillStepIndex
+      );
+      if (matchResult === null) continue;
+      const { entryIndex, primaryMatchedItemIndex } = matchResult;
+      // Rooted at `entryIndex` — the step whose request ACTUALLY carries the
+      // join key — not `drillStepIndex`, so an upstream entry hop the join
+      // key was only resolvable through (e.g. a header-threaded token) is
+      // itself part of `chain` and gets re-executed (join-parameterized) per
+      // primary item at runtime, same as every structurally-detected chain.
+      // `drillResultsPath`, when given, still targets `drillStepIndex`'s own
+      // response specifically (the endpoint the spec names); it is otherwise
+      // left for computeFoldChain's own forward richness walk to resolve,
+      // exactly as it does for every step beyond the chain's entry.
       const drillArrayPath = ((): string[] | null => {
+        if (entryIndex !== drillStepIndex) {
+          return (
+            findObjectArrayFieldOrWholeObject(actions[entryIndex]!.capture.responseBody)?.path ??
+            null
+          );
+        }
         if (spec.drillResultsPath === undefined) {
           return findObjectArrayFieldOrWholeObject(drill.capture.responseBody)?.path ?? null;
         }
         const path = spec.drillResultsPath.split(".");
         return objectItemsAtPath(drill.capture.responseBody, path) ? path : null;
       })();
-      const primaryMatchedItemIndex = resolveSpecMatchedPrimaryItemIndex(
-        primaryItems,
-        spec.joinFields,
-        drill.capture
-      );
-      if (primaryMatchedItemIndex === null) continue;
       const { chain, chainArrayPath, chainTerminalIndex } = computeFoldChain(
         actions,
-        drillStepIndex,
+        entryIndex,
         drillArrayPath ?? []
       );
       // The chain's resolved terminal must actually hold foldable data —
@@ -5980,7 +6035,7 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
         targets: [
           {
             joinFields: spec.joinFields,
-            drillStepIndex,
+            drillStepIndex: entryIndex,
             drillArrayPath: drillArrayPath ?? [],
             primaryMatchedItemIndex,
             chain,
