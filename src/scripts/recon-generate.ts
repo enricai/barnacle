@@ -5964,7 +5964,8 @@ function resolveSpecMatchedPrimaryItemIndex(
       const value = readValueAtPath(item, field.split("."));
       return (
         (typeof value === "string" && value.length > 0 && requestValues.has(value)) ||
-        (typeof value === "number" && requestValues.has(String(value)))
+        (typeof value === "number" && requestValues.has(String(value))) ||
+        (typeof value === "boolean" && requestValues.has(String(value)))
       );
     })
   );
