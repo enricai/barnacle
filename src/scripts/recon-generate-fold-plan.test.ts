@@ -10,6 +10,7 @@ import {
   buildMulticallHeterogeneousActionStepsWithDrillDown,
   buildMulticallNestedGroupedDrillDownMultiGroupActionSteps,
   buildMulticallSingleShotSearchDrillDownActionSteps,
+  buildMulticallSingleShotSearchDrillDownChainedDecoyOnChainTerminalActionSteps,
   buildMulticallSingleShotSearchDrillDownChainedDependentActionSteps,
   buildMulticallSingleShotSearchDrillDownChainedDependentMultipartChainStepActionSteps,
   buildMulticallSingleShotSearchDrillDownCompositeNumericJoinActionSteps,
@@ -427,6 +428,18 @@ describe("detectDrillDownFoldPlan — chained per-item dependency", () => {
         timestamp: "2024-06-01T00:00:02Z",
       }),
     ];
+
+    const plan = detect(steps);
+
+    expect(plan).not.toBeNull();
+    expect(plan?.primaryStepIndex).toBe(0);
+    expect(plan?.targets[0]?.drillStepIndex).toBe(1);
+    expect(plan?.targets[0]?.chain).toEqual([1, 2]);
+    expect(plan?.targets[0]?.chainArrayPath).toEqual(["entries"]);
+  });
+
+  it("disambiguates a decoy array positioned earlier in key order than the real array on the chain's SECOND step, not the immediate drill step", () => {
+    const steps = buildMulticallSingleShotSearchDrillDownChainedDecoyOnChainTerminalActionSteps();
 
     const plan = detect(steps);
 
